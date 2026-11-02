@@ -1,0 +1,17 @@
+[package]
+name = "core-math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+# Enables `Fx::from_f64` / `Fx::to_f64` for visuals and tests. Off by default; the crate itself
+# never uses floating point in the authoritative path.
+float-io = []

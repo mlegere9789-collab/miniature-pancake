@@ -1,0 +1,33 @@
+id = "john_c_pemberton"
+name = "John C. Pemberton"
+side = "confederate"
+
+[born]
+value = "1814-08-10"
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[academy_class]
+value = "1837, 27th of 50"
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[[career]]
+role = "Commander at Vicksburg"
+from = "1862-10-14"
+to = "1863-07-04"
+
+[career.fact]
+value = "Lieutenant general from 1862-10-10 and arrived to command at Vicksburg on 1862-10-14; beaten at Champion Hill on 1863-05-16 and the Big Black on 1863-05-17, then surrendered Vicksburg on 1863-07-04 with 2,166 officers, 27,230 men and 172 cannon."
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[[career]]
+role = "Later service"
+from = "1864-05-09"
+to = "1865-04-12"
+
+[career.fact]
+value = "Resigned his general's rank on 1864-05-09, took a lieutenant colonel's commission in the artillery and was captured at Salisbury, North Carolina on 1865-04-12."
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]

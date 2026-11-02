@@ -1,0 +1,41 @@
+id = "george_e_pickett"
+name = "George E. Pickett"
+side = "confederate"
+
+[died]
+value = "1875-07-30"
+confidence = "partial"
+sources = [{document = "CWV", page = 310, tag = "[V]"}]
+
+[academy_class]
+value = "1846, last of 59 graduates"
+confidence = "partial"
+sources = [{document = "CWV", page = 310, tag = "[V]"}]
+
+[[career]]
+role = "Pig War"
+from = "1859"
+
+[career.fact]
+value = "Held San Juan Island in 1859 with about 68 men during the Pig War."
+confidence = "partial"
+sources = [{document = "CWV", page = 310, tag = "[V]"}]
+
+[[career]]
+role = "Division commander at Gettysburg"
+from = "1863-07-03"
+
+[career.fact]
+value = "On 1863-07-03 his division of roughly 5,500 lost about 224 killed, 1,140 wounded and 1,499 missing or captured; step-off time of the assault is given variously as about 2 p.m. and about 3 p.m."
+confidence = "unverified"
+sources = [{document = "CWV", page = 310, tag = "[V]"}, {document = "CWV", page = 83, tag = "[UNVERIFIED]"}]
+flag = "The source marks Pickett's division loss figures as unverified, and gives conflicting step-off times (about 2 p.m. and about 3 p.m.) for the assault."
+
+[[career]]
+role = "Five Forks"
+from = "1865-04-01"
+
+[career.fact]
+value = "Was away from his troops at Five Forks on 1865-04-01, reportedly at a shad bake, and his left flank collapsed."
+confidence = "partial"
+sources = [{document = "CWV", page = 310, tag = "[V]"}]

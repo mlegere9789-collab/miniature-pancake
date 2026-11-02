@@ -1,0 +1,45 @@
+id = "gouverneur_k_warren"
+name = "Gouverneur K. Warren"
+side = "union"
+
+[died]
+value = "1882-08-08"
+confidence = "partial"
+sources = [{document = "CWV", page = 271, tag = "[V]"}]
+
+[academy_class]
+value = "1850, 2nd of 44"
+confidence = "partial"
+sources = [{document = "CWV", page = 271, tag = "[V]"}]
+
+[[career]]
+role = "Little Round Top"
+from = "1863-07-02"
+
+[career.fact]
+value = "Recognized on 1863-07-02 that Little Round Top was undefended and directed Vincent's brigade onto it just before the attack, earning the title Hero of Little Round Top."
+confidence = "partial"
+sources = [{document = "CWV", page = 271, tag = "[V]"}]
+
+[[career]]
+role = "Commander, V Corps"
+from = "1864-03-23"
+to = "1865-04-01"
+
+[career.fact]
+value = "Commanded V Corps from 1864-03-23 (with a break in January 1865) until Sheridan relieved him at Five Forks on 1865-04-01; a court of inquiry convened in 1879 found the relief unjustified."
+confidence = "partial"
+sources = [{document = "CWV", page = 271, tag = "[V]"}]
+
+[[traits]]
+trait = "engineer"
+evidence = "A topographical engineer who on 1863-07-02 spotted that Little Round Top was unoccupied and sent Vincent's brigade to hold it."
+confidence = "partial"
+sources = [{document = "CWV", page = 271, tag = "[V]"}]
+
+[[relationships]]
+with = "Philip H. Sheridan"
+kind = "feud"
+evidence = "Sheridan relieved him on the spot at Five Forks on 1865-04-01 for slowness; a later court of inquiry found the relief unjustified."
+confidence = "partial"
+sources = [{document = "CWV", page = 271, tag = "[V]"}]

@@ -1,0 +1,50 @@
+id = "james_longstreet"
+name = "James Longstreet"
+side = "confederate"
+
+[died]
+value = "1904-01-02"
+confidence = "partial"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]
+
+[academy_class]
+value = "1842, 54th of 62"
+confidence = "unverified"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]
+flag = "The class rank and size printed for Longstreet are a known problem in the source and should not be relied on."
+
+[[career]]
+role = "Commander, First Corps"
+from = "1862-10-09"
+to = "1865-04-09"
+
+[career.fact]
+value = "Lieutenant general from 1862-10-09; led the First Corps at Fredericksburg and Gettysburg, was sent west for Chickamauga and the Knoxville campaign, and surrendered at Appomattox."
+confidence = "partial"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]
+
+[[career]]
+role = "Wounded at the Wilderness"
+from = "1864-05-06"
+
+[career.fact]
+value = "Shot through the neck and shoulder by his own men at the Wilderness on 1864-05-06, permanently paralyzing his right arm."
+confidence = "partial"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]
+
+[[career]]
+role = "Postwar"
+from = "1867"
+to = "1904-01-02"
+
+[career.fact]
+value = "Urged cooperation with the Republicans in 1867, was pardoned in June 1868 with Grant's help and became Surveyor of Customs at New Orleans."
+confidence = "partial"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]
+
+[[relationships]]
+with = "Jubal A. Early"
+kind = "feud"
+evidence = "After the war Early and others led Lost Cause attacks on Longstreet."
+confidence = "partial"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]

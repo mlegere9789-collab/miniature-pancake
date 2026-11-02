@@ -1,0 +1,53 @@
+id = "william_t_sherman"
+name = "William T. Sherman"
+side = "union"
+
+[academy_class]
+value = "1840"
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[[career]]
+role = "Commander, Military Division of the Mississippi"
+from = "1864-03"
+
+[career.fact]
+value = "Commanded XV Corps in 1863, then the Army of the Tennessee, and succeeded Grant over the Military Division of the Mississippi in spring 1864."
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[[career]]
+role = "Atlanta and the March to the Sea"
+from = "1864-09-02"
+to = "1864-12-21"
+
+[career.fact]
+value = "Took Atlanta on 1864-09-02, began the March to the Sea on 1864-11-15 and took Savannah on 1864-12-21."
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[[career]]
+role = "Surrender terms with Johnston"
+from = "1865-04-17"
+to = "1865-04-26"
+
+[career.fact]
+value = "Agreed generous terms with Johnston at Bennett Place on 1865-04-17 that Washington rejected; Johnston accepted military terms from Grant on 1865-04-26."
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}, {document = "CWV", page = 269, tag = "[V]"}]
+
+[[career]]
+role = "Commanding General of the Army"
+from = "1869-03-04"
+to = "1883-11-01"
+
+[career.fact]
+value = "Commanding General of the Army from 1869-03-04 to 1883-11-01."
+confidence = "partial"
+sources = [{document = "CWV", page = 269, tag = "[V]"}]
+
+[[traits]]
+trait = "aggressive"
+evidence = "Launched frontal assaults at Chickasaw Bayou and Kennesaw Mountain."
+confidence = "unverified"
+sources = [{document = "CWV", page = 269, tag = "untagged"}]

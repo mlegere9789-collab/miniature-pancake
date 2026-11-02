@@ -1,0 +1,49 @@
+id = "jeb_stuart"
+name = "J.E.B. Stuart"
+side = "confederate"
+
+[died]
+value = "1864-05-12"
+confidence = "partial"
+sources = [{document = "CWV", page = 315, tag = "[V]"}]
+
+[academy_class]
+value = "1854, 13th of 46"
+confidence = "partial"
+sources = [{document = "CWV", page = 315, tag = "[V]"}]
+
+[[career]]
+role = "Ride around McClellan"
+from = "1862-06-12"
+to = "1862-06-15"
+
+[career.fact]
+value = "Rode around McClellan's army on 1862-06-12 to 1862-06-15 with about 1,200 troopers over 150 miles, taking 165 prisoners and 260 horses and mules."
+confidence = "partial"
+sources = [{document = "CWV", page = 315, tag = "[V]"}]
+
+[[career]]
+role = "Gettysburg ride"
+from = "1863-06-25"
+to = "1863-07-03"
+
+[career.fact]
+value = "Left on 1863-06-25, crossed the Potomac on 1863-06-28, fought at Hanover on 1863-06-30, reached Gettysburg only on the afternoon of 1863-07-02 and attacked at East Cavalry Field on 1863-07-03."
+confidence = "partial"
+sources = [{document = "CWV", page = 315, tag = "[V]"}]
+
+[[career]]
+role = "Death"
+from = "1864-05-11"
+to = "1864-05-12"
+
+[career.fact]
+value = "Shot in the abdomen at Yellow Tavern on 1864-05-11 and died in Richmond on 1864-05-12."
+confidence = "partial"
+sources = [{document = "CWV", page = 315, tag = "[V]"}]
+
+[[traits]]
+trait = "cavalry_flair"
+evidence = "Rode around McClellan's army on 1862-06-12 to 1862-06-15 and led the Chambersburg raid of 1862-10-10 to 1862-10-12 (126 miles in under 60 hours)."
+confidence = "partial"
+sources = [{document = "CWV", page = 315, tag = "[V]"}]

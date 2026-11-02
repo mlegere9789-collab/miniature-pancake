@@ -1,0 +1,34 @@
+id = "joseph_hooker"
+name = "Joseph Hooker"
+side = "union"
+
+[academy_class]
+value = "1837, 29th of 50"
+confidence = "partial"
+sources = [{document = "CWV", page = 267, tag = "[V]"}]
+
+[[career]]
+role = "Commander, Army of the Potomac"
+from = "1863-01-26"
+to = "1863-06-28"
+
+[career.fact]
+value = "Commanded the Army of the Potomac from 1863-01-26 to 1863-06-28; his army was routed on 1863-05-02 at Chancellorsville by Jackson's attack on XI Corps."
+confidence = "partial"
+sources = [{document = "CWV", page = 267, tag = "[V]"}]
+
+[[career]]
+role = "XX Corps and Northern Department"
+from = "1864-04-14"
+to = "1864-07-28"
+
+[career.fact]
+value = "Commanded XX Corps from 1864-04-14 to 1864-07-28 and the Northern Department from October 1864."
+confidence = "partial"
+sources = [{document = "CWV", page = 267, tag = "[V]"}]
+
+[[traits]]
+trait = "logistics"
+evidence = "After Fredericksburg he improved food, furloughs and hospitals, consolidated the cavalry into a corps, introduced corps badges and set up the Bureau of Military Information under Sharpe."
+confidence = "partial"
+sources = [{document = "CWV", page = 267, tag = "[V]"}]

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "district.schema.json",
+  "title": "Placeholder schema for district records (defined in a later ticket)",
+  "type": "object",
+  "required": ["id", "name"],
+  "properties": {"id": {"type": "string"}, "name": {"type": "string"}}
+}

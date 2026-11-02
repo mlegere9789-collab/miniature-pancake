@@ -1,0 +1,64 @@
+[[bad_value]]
+file = "data/history/battles/antietam.toml"
+path = "sides.union.engaged"
+bad_value = 53632
+
+[[bad_value]]
+file = "data/history/battles/antietam.toml"
+path = "sides.confederate.engaged"
+bad_value = 30646
+
+[[bad_value]]
+file = "data/history/battles/gettysburg.toml"
+path = "sides.union.engaged"
+bad_value = 93921
+
+[[bad_value]]
+file = "data/history/battles/gettysburg.toml"
+path = "sides.confederate.engaged"
+bad_value = 71699
+
+[[bad_value]]
+file = "data/history/battles/gettysburg.toml"
+path = "sides.union.casualties.total"
+bad_value = 23049
+
+[[bad_value]]
+file = "data/history/battles/gettysburg.toml"
+path = "sides.confederate.casualties.total"
+bad_value = 28063
+
+[[bad_value]]
+file = "data/history/commanders/george_h_thomas.toml"
+path = "career.0.fact"
+bad_value = "Won the victory at Mill Springs on 1862-01-20."
+
+[[bad_value]]
+file = "data/history/commanders/ambrose_e_burnside.toml"
+path = "academy_class"
+bad_value = "1847, 18th of 47"
+
+[[bad_value]]
+file = "data/history/commanders/winfield_scott_hancock.toml"
+path = "career.2.fact"
+bad_value = "Democratic nominee for president in 1880, losing to Garfield 214 to 155 in the electoral vote with a popular margin of about 40,000."
+
+[[bad_value]]
+file = "data/history/commanders/john_f_reynolds.toml"
+path = "academy_class"
+bad_value = "1841, 26th of 50"
+
+[[bad_value]]
+file = "data/history/commanders/james_longstreet.toml"
+path = "academy_class"
+bad_value = "1842, 54th of 62"
+
+[[bad_value]]
+file = "data/history/commanders/richard_s_ewell.toml"
+path = "academy_class"
+bad_value = "1840, 13th of 43"
+
+[[bad_value]]
+file = "data/history/commanders/nathan_bedford_forrest.toml"
+path = "career.1.fact"
+bad_value = "Became brigadier general about the end of 1862."

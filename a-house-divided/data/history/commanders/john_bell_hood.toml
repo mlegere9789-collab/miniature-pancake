@@ -1,0 +1,50 @@
+id = "john_bell_hood"
+name = "John Bell Hood"
+side = "confederate"
+
+[died]
+value = "1879-08-30"
+confidence = "partial"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]
+
+[academy_class]
+value = "1853"
+confidence = "partial"
+sources = [{document = "CWV", page = 305, tag = "[V]"}]
+flag = "Class rank is not given in the source."
+
+[[career]]
+role = "Texas Brigade and division commander"
+from = "1862"
+to = "1863-09-20"
+
+[career.fact]
+value = "Led the Texas Brigade from Seven Pines through Second Manassas, then a division; wounded in the arm at Gettysburg and lost a leg at Chickamauga on 1863-09-20."
+confidence = "partial"
+sources = [{document = "CWV", page = 305, tag = "[V]"}]
+
+[[career]]
+role = "Army of Tennessee"
+from = "1864-07-18"
+to = "1865-01-13"
+
+[career.fact]
+value = "Temporary full general from 1864-07-18, replacing Johnston in the Atlanta campaign; lost Atlanta, then led the Franklin-Nashville campaign (Franklin on 1864-11-30, Nashville on 1864-12-15/16) and resigned on 1865-01-13."
+confidence = "partial"
+sources = [{document = "CWV", page = 305, tag = "[V]"}, {document = "CWV", page = 306, tag = "[V]"}]
+
+[[career]]
+role = "Franklin losses"
+from = "1864-11-30"
+
+[career.fact]
+value = "Confederate losses at Franklin are given as about 6,252 by Schofield's estimate, which Confederate reports do not corroborate; 14 generals and 55 regimental commanders were casualties."
+confidence = "unverified"
+sources = [{document = "CWV", page = 305, tag = "[V]"}]
+flag = "Casualty figure rests on a Union estimate that Confederate reports do not corroborate."
+
+[[traits]]
+trait = "aggressive"
+evidence = "Ordered the frontal assault at Franklin on 1864-11-30 after a failed night flank at Spring Hill on 1864-11-29."
+confidence = "partial"
+sources = [{document = "CWV", page = 305, tag = "[V]"}]

@@ -1,0 +1,49 @@
+id = "ulysses_s_grant"
+name = "Ulysses S. Grant"
+side = "union"
+
+[academy_class]
+value = "1843, 21st of 39"
+confidence = "partial"
+sources = [{document = "CWV", page = 264, tag = "[V]"}]
+
+[[career]]
+role = "Brigadier general of volunteers"
+from = "1861-08-05"
+
+[career.fact]
+value = "Commissioned brigadier general of volunteers on 1861-08-05."
+confidence = "partial"
+sources = [{document = "CWV", page = 265, tag = "[V]"}]
+
+[[career]]
+role = "Western army commander"
+from = "1862-02"
+to = "1863-07"
+
+[career.fact]
+value = "Took Forts Henry and Donelson (Donelson surrendered 1862-02-16), fought at Shiloh in April 1862 and received the surrender of Vicksburg on 1863-07-04."
+confidence = "unverified"
+sources = [{document = "CWV", page = 265, tag = "untagged"}]
+
+[[career]]
+role = "Lieutenant general and general-in-chief"
+from = "1864-03-02"
+
+[career.fact]
+value = "Commissioned lieutenant general on 1864-03-02 and became general-in-chief in March 1864; directed the Overland Campaign, the Petersburg siege and the Appomattox surrender on 1865-04-09."
+confidence = "partial"
+sources = [{document = "CWV", page = 260, tag = "[V]"}, {document = "CWV", page = 264, tag = "untagged"}, {document = "CWV", page = 265, tag = "untagged"}]
+
+[[traits]]
+trait = "aggressive"
+evidence = "In 1864 coordinated simultaneous offensives in several theaters (Meade and Butler against Lee, Sherman against Johnston, Sheridan in the Valley) and pressed Lee by continuous contact in the Overland Campaign, accepting heavy losses."
+confidence = "unverified"
+sources = [{document = "CWV", page = 265, tag = "untagged"}]
+
+[[relationships]]
+with = "William T. Sherman"
+kind = "friendship"
+evidence = "The page describes Grant as friend and partner of Sherman and loyal to him; Sherman succeeded Grant over the Military Division of the Mississippi in spring 1864."
+confidence = "unverified"
+sources = [{document = "CWV", page = 265, tag = "untagged"}, {document = "CWV", page = 268, tag = "untagged"}]

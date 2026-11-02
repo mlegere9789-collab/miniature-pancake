@@ -1,0 +1,82 @@
+id = "first_bull_run"
+name = "First Bull Run (First Manassas)"
+theater = "eastern"
+notes = ["Union plan: demonstration at the fords while the main body made a long flank march to Sudley Ford; the march ran about three hours behind schedule and Tyler's division blocked the turnpike.", "Confederate reinforcement by rail: Johnston's army left Winchester on 1861-07-18 and about 9,000 of his men reached Manassas by 1861-07-21, a notable early use of railroads for concentration; Patterson's cautious stance in the Valley allowed this.", "Evans moved on his own authority to Matthews Hill after E.P. Alexander's signal warning; Jackson's brigade stood on Henry House Hill, the origin of the Stonewall nickname (Bee's remark is recorded in conflicting forms).", "Turning points listed: the Union pause after Matthews Hill, Jackson's reverse-slope defense, capture of Ricketts's and Griffin's guns, arrival of Early and Kirby Smith near 4 p.m., panic at the Cub Run bridge.", "Blackburn's Ford (1861-07-18) was a Union reconnaissance repulsed by Longstreet's brigade with light losses, which pushed McDowell toward a turning movement."]
+
+[start_date]
+value = "1861-07-21"
+confidence = "partial"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+
+[end_date]
+value = "1861-07-21"
+confidence = "partial"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+
+[location]
+state = "Virginia"
+near = "Manassas Junction, along Bull Run"
+terrain_notes = "Stream with steep banks and few crossings (Stone Bridge, Sudley Ford, lower fords); rolling farmland and woods with Matthews Hill, Henry House Hill and Chinn Ridge; hot, dry day."
+
+[sides]
+
+[sides.union]
+
+[sides.union.commander]
+value = "Irvin McDowell (Army of Northeastern Virginia)"
+confidence = "partial"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+
+[sides.union.engaged]
+value = 18000
+confidence = "unverified"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+flag = "About 35,000 were present; roughly 18,000 engaged. Approximate figure with no cited source."
+
+[sides.union.casualties]
+
+[sides.union.casualties.killed]
+value = 480
+confidence = "unverified"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+flag = "Roughly 480; the page states that sources differ on Union losses."
+
+[sides.union.casualties.total]
+value = 2800
+low = 2700
+high = 2900
+confidence = "unverified"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+flag = "Page gives about 2,700-2,900 and says sources differ; central value recorded. Missing or captured are given as over 1,200."
+
+[sides.confederate]
+
+[sides.confederate.commander]
+value = "P.G.T. Beauregard (Army of the Potomac) with Joseph E. Johnston (Army of the Shenandoah), co-equal commanders"
+confidence = "partial"
+sources = [{document = "CWV", page = 33, tag = "untagged"}, {document = "CWV", page = 35, tag = "untagged"}]
+
+[sides.confederate.engaged]
+value = 18000
+confidence = "unverified"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+flag = "Combined strength about 32,000-34,000; roughly 18,000 engaged. Approximate figure with no cited source."
+
+[sides.confederate.casualties]
+
+[sides.confederate.casualties.killed]
+value = 390
+confidence = "unverified"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+flag = "Roughly 390; the page states that sources differ."
+
+[sides.confederate.casualties.total]
+value = 2000
+confidence = "unverified"
+sources = [{document = "CWV", page = 33, tag = "untagged"}]
+flag = "About 2,000; the page states that sources differ."
+
+[outcome]
+value = "Confederate victory on the field, strategically ambiguous; the Union army fell back to Washington's defenses and McDowell was replaced by McClellan."
+confidence = "partial"
+sources = [{document = "CWV", page = 35, tag = "untagged"}, {document = "CWV", page = 36, tag = "untagged"}]

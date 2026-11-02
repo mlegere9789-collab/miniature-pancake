@@ -1,0 +1,89 @@
+id = "fredericksburg"
+name = "Fredericksburg"
+theater = "eastern"
+notes = ["Burnside's plan to cross before Lee concentrated failed when pontoon bridges arrived about two weeks late; Longstreet and then Jackson occupied the heights.", "Crossing on 1862-12-11 was delayed about twelve hours by Barksdale's Mississippi sharpshooters until volunteers crossed in boats at dusk; the town was then fought through house by house.", "South end: Meade's division broke through a gap in A.P. Hill's line, unsupported, and was driven back; Pelham's horse artillery delayed the Union advance for roughly an hour.", "North end: fourteen separate assaults by seven divisions against the Sunken Road; Hancock's division alone lost 2,032 men; Cobb was mortally wounded and replaced by Kershaw.", "Franklin held most of the Left Grand Division (about 55,000) in reserve and committed only about 8,000 to the main assault."]
+
+[start_date]
+value = "1862-12-11"
+confidence = "partial"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+
+[end_date]
+value = "1862-12-15"
+confidence = "partial"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "The heading spans 11-15 December; the main assaults took place on 1862-12-13."
+
+[location]
+state = "Virginia"
+near = "Fredericksburg, on the Rappahannock River"
+terrain_notes = "Town on the west bank below Marye's Heights, with a stone-walled sunken road at its foot and a millrace in front; wooded Prospect Hill and railroad to the south; Union guns on Stafford Heights across the river."
+
+[sides]
+
+[sides.union]
+
+[sides.union.commander]
+value = "Ambrose E. Burnside (Army of the Potomac)"
+confidence = "partial"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+
+[sides.union.engaged]
+value = 72500
+low = 70000
+high = 75000
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "About 114,000-123,000 in the army, about 100,000 crossing, and roughly 70,000-75,000 engaged on 13 December; midpoint of the engaged range recorded."
+
+[sides.union.casualties]
+
+[sides.union.casualties.killed]
+value = 1284
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "Wounded and missing components are omitted because the page's parts (1,284 + 9,600 + 1,769 = 12,653) do not sum to its stated total of 12,650."
+
+[sides.union.casualties.total]
+value = 12650
+low = 12500
+high = 12650
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "The page gives about 12,650 and notes that the sources it used give 12,500."
+
+[sides.confederate]
+
+[sides.confederate.commander]
+value = "Robert E. Lee (Army of Northern Virginia)"
+confidence = "partial"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+
+[sides.confederate.engaged]
+value = 75000
+low = 72000
+high = 78000
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "The page gives the army's strength as about 72,000-78,000, not a count of troops engaged; midpoint recorded."
+
+[sides.confederate.casualties]
+
+[sides.confederate.casualties.killed]
+value = 608
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "Wounded and missing components are omitted because the page's parts (608 + 4,116 + 653 = 5,377) do not sum to its stated total of about 5,300."
+
+[sides.confederate.casualties.total]
+value = 5300
+low = 5300
+high = 6000
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "The page gives about 5,300 and notes that the sources it used give 6,000."
+
+[outcome]
+value = "Decisive Confederate defensive victory; Union assaults on Marye's Heights and Prospect Hill were repulsed on 1862-12-13."
+confidence = "partial"
+sources = [{document = "CWV", page = 62, tag = "untagged"}]

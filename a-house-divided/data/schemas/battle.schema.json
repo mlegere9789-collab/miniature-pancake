@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "battle.schema.json",
+  "title": "Historical battle record",
+  "type": "object",
+  "required": ["id", "name", "theater", "start_date", "end_date", "location", "sides", "outcome"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"},
+    "name": {"type": "string"},
+    "theater": {"enum": ["eastern", "western", "trans_mississippi", "coastal_naval", "other"]},
+    "start_date": {"$ref": "common.schema.json#/$defs/fact_text"},
+    "end_date": {"$ref": "common.schema.json#/$defs/fact_text"},
+    "location": {
+      "type": "object", "required": ["state", "near"], "additionalProperties": false,
+      "properties": {"state": {"type": "string"}, "near": {"type": "string"}, "terrain_notes": {"type": "string"}}
+    },
+    "sides": {
+      "type": "object", "required": ["union", "confederate"], "additionalProperties": false,
+      "properties": {
+        "union": {"$ref": "#/$defs/side_record"},
+        "confederate": {"$ref": "#/$defs/side_record"}
+      }
+    },
+    "outcome": {"$ref": "common.schema.json#/$defs/fact_text"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "side_record": {
+      "type": "object", "required": ["commander", "engaged", "casualties"], "additionalProperties": false,
+      "properties": {
+        "commander": {"$ref": "common.schema.json#/$defs/fact_text"},
+        "formation": {"type": "string"},
+        "engaged": {"$ref": "common.schema.json#/$defs/fact_number"},
+        "casualties": {
+          "type": "object", "required": ["total"], "additionalProperties": false,
+          "properties": {
+            "killed": {"$ref": "common.schema.json#/$defs/fact_number"},
+            "wounded": {"$ref": "common.schema.json#/$defs/fact_number"},
+            "missing_captured": {"$ref": "common.schema.json#/$defs/fact_number"},
+            "total": {"$ref": "common.schema.json#/$defs/fact_number"}
+          }
+        }
+      }
+    }
+  }
+}

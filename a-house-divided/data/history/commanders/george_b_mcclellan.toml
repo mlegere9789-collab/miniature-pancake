@@ -1,0 +1,59 @@
+id = "george_b_mcclellan"
+name = "George B. McClellan"
+side = "union"
+
+[academy_class]
+value = "1846, second of 59"
+confidence = "partial"
+sources = [{document = "CWV", page = 263, tag = "[V]"}]
+
+[[career]]
+role = "Major general"
+from = "1861-04-23"
+
+[career.fact]
+value = "Commissioned major general of volunteers on 1861-04-23 and of the Regulars on 1861-05-14."
+confidence = "partial"
+sources = [{document = "CWV", page = 263, tag = "[V]"}]
+
+[[career]]
+role = "Commander, Army of the Potomac"
+from = "1861-08-20"
+to = "1862-11-05"
+
+[career.fact]
+value = "Led the Army of the Potomac from its formation on 1861-08-20 until Lincoln ordered his removal on 1862-11-05; commanded in the Peninsula Campaign and at Antietam."
+confidence = "partial"
+sources = [{document = "CWV", page = 264, tag = "[V]"}]
+
+[[career]]
+role = "General-in-chief"
+from = "1861-11-01"
+to = "1862-03-11"
+
+[career.fact]
+value = "Served as general-in-chief from 1861-11-01 to 1862-03-11."
+confidence = "partial"
+sources = [{document = "CWV", page = 264, tag = "[V]"}]
+
+[[career]]
+role = "Presidential nominee"
+from = "1864"
+
+[career.fact]
+value = "Ran as the Democratic nominee against Lincoln in 1864 and lost 212 electoral votes to 21; later governor of New Jersey from January 1878 to January 1881."
+confidence = "partial"
+sources = [{document = "CWV", page = 264, tag = "[V]"}]
+
+[[traits]]
+trait = "cautious"
+evidence = "At Antietam he held back reserves and did not pursue Lee decisively, and he repeatedly demanded reinforcements on the strength of Pinkerton's inflated estimates of Confederate numbers."
+confidence = "unverified"
+sources = [{document = "CWV", page = 264, tag = "untagged"}]
+
+[[relationships]]
+with = "Abraham Lincoln"
+kind = "rivalry"
+evidence = "Antagonized Lincoln and Stanton; Lincoln ordered his removal on 1862-11-05, and he then ran against Lincoln in 1864."
+confidence = "partial"
+sources = [{document = "CWV", page = 264, tag = "[V]"}]

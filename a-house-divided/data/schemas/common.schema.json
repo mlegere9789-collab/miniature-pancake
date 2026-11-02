@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "Shared definitions for historical records",
+  "$defs": {
+    "confidence": {"enum": ["verified", "partial", "unverified"]},
+    "source_ref": {
+      "type": "object",
+      "required": ["document", "page"],
+      "additionalProperties": false,
+      "properties": {
+        "document": {"type": "string", "description": "Short code of the research document, e.g. CWV for the Civil War research volume"},
+        "page": {"type": "integer", "minimum": 1},
+        "tag": {"type": "string", "description": "The tag the source itself used, copied verbatim, e.g. [V], [U], 'from memory'"},
+        "note": {"type": "string"}
+      }
+    },
+    "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source_ref"}},
+    "fact_number": {
+      "type": "object",
+      "required": ["value", "confidence", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {"type": "number"},
+        "low": {"type": "number"},
+        "high": {"type": "number"},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "sources": {"$ref": "#/$defs/sources"},
+        "second_source": {"type": "string", "description": "Independent confirmation. Required before confidence may be 'verified'."},
+        "flag": {"type": "string", "description": "Known conflict or doubt recorded by an audit"}
+      }
+    },
+    "fact_text": {
+      "type": "object",
+      "required": ["value", "confidence", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {"type": "string"},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "sources": {"$ref": "#/$defs/sources"},
+        "second_source": {"type": "string"},
+        "flag": {"type": "string"}
+      }
+    },
+    "iso_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "side": {"enum": ["union", "confederate"]}
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "commander.schema.json",
+  "title": "Historical commander record",
+  "type": "object",
+  "required": ["id", "name", "side", "career"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"},
+    "name": {"type": "string"},
+    "side": {"$ref": "common.schema.json#/$defs/side"},
+    "born": {"$ref": "common.schema.json#/$defs/fact_text"},
+    "died": {"$ref": "common.schema.json#/$defs/fact_text"},
+    "academy_class": {"$ref": "common.schema.json#/$defs/fact_text"},
+    "career": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["role", "fact"], "additionalProperties": false,
+        "properties": {
+          "role": {"type": "string"},
+          "from": {"type": "string"}, "to": {"type": "string"},
+          "fact": {"$ref": "common.schema.json#/$defs/fact_text"}
+        }
+      }
+    },
+    "traits": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["trait", "evidence", "confidence", "sources"], "additionalProperties": false,
+        "properties": {
+          "trait": {"enum": ["aggressive", "cautious", "engineer", "cavalry_flair", "logistics", "political", "defensive_skill", "high_discretion", "low_discretion", "inspiring", "feuding"]},
+          "evidence": {"type": "string", "description": "A documented act or event, not an adjective"},
+          "confidence": {"$ref": "common.schema.json#/$defs/confidence"},
+          "sources": {"$ref": "common.schema.json#/$defs/sources"}
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["with", "kind", "evidence", "confidence", "sources"], "additionalProperties": false,
+        "properties": {
+          "with": {"type": "string"}, "kind": {"enum": ["rivalry", "patronage", "friendship", "subordinate_of", "feud"]},
+          "evidence": {"type": "string"},
+          "confidence": {"$ref": "common.schema.json#/$defs/confidence"},
+          "sources": {"$ref": "common.schema.json#/$defs/sources"}
+        }
+      }
+    }
+  }
+}

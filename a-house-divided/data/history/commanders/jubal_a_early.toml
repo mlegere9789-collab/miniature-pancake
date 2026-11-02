@@ -1,0 +1,46 @@
+id = "jubal_a_early"
+name = "Jubal A. Early"
+side = "confederate"
+
+[died]
+value = "1894-03-02"
+confidence = "partial"
+sources = [{document = "CWV", page = 307, tag = "[V]"}]
+
+[academy_class]
+value = "1837, 18th of 50"
+confidence = "partial"
+sources = [{document = "CWV", page = 307, tag = "[V]"}]
+
+[[career]]
+role = "Commander, Second Corps in the Valley"
+from = "1864-06-18"
+to = "1865-03-30"
+
+[career.fact]
+value = "Led the Second Corps in the Valley in 1864: repelled Hunter at Lynchburg on 1864-06-18, won at Monocacy on 1864-07-09, then lost Third Winchester (1864-09-19), Fisher's Hill (1864-09-21/22) and Cedar Creek (1864-10-19); Sheridan nearly destroyed his remnant at Waynesboro on 1865-03-02 and Lee relieved him on 1865-03-30."
+confidence = "partial"
+sources = [{document = "CWV", page = 307, tag = "[V]"}]
+
+[[career]]
+role = "Postwar"
+from = "1873"
+to = "1894-03-02"
+
+[career.fact]
+value = "Pardoned in 1869 and led Lost Cause advocacy as president of the Southern Historical Society from 1873."
+confidence = "partial"
+sources = [{document = "CWV", page = 307, tag = "[V]"}]
+
+[[traits]]
+trait = "aggressive"
+evidence = "In July 1864 he won at Monocacy on 1864-07-09 and skirmished at Fort Stevens on 1864-07-11/12 after taking his corps into the Valley and north."
+confidence = "partial"
+sources = [{document = "CWV", page = 307, tag = "[V]"}]
+
+[[relationships]]
+with = "James Longstreet"
+kind = "feud"
+evidence = "Early led Lost Cause attacks on Longstreet after the war."
+confidence = "partial"
+sources = [{document = "CWV", page = 306, tag = "[V]"}]

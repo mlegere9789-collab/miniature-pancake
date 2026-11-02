@@ -1,0 +1,33 @@
+id = "john_f_reynolds"
+name = "John F. Reynolds"
+side = "union"
+
+[died]
+value = "1863-07-01"
+confidence = "partial"
+sources = [{document = "CWV", page = 272, tag = "[V]"}]
+
+[academy_class]
+value = "1841, 26th of 50"
+confidence = "unverified"
+sources = [{document = "CWV", page = 272, tag = "[V]"}]
+flag = "The source elsewhere gives a class size of 52 for the same rank, so the class size conflicts."
+
+[[career]]
+role = "Major general of volunteers"
+from = "1862-11-29"
+
+[career.fact]
+value = "Major general of volunteers with date of rank 1862-11-29."
+confidence = "partial"
+sources = [{document = "CWV", page = 272, tag = "[V]"}]
+
+[[career]]
+role = "Left wing commander at Gettysburg"
+from = "1863-07-01"
+to = "1863-07-01"
+
+[career.fact]
+value = "Commanded the left wing on 1863-07-01 and was killed that morning near Herbst's Woods while supervising the 2nd Wisconsin; whether the bullet came from enemy infantry, a sharpshooter or friendly fire is disputed."
+confidence = "partial"
+sources = [{document = "CWV", page = 272, tag = "[V]"}]

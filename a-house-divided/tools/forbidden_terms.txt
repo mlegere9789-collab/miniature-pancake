@@ -1,0 +1,14 @@
+# Brand and product names that must never appear in product code, data, strings or assets.
+# One term per line, case-insensitive substring match. Numeric/constant lists are kept
+# outside this repository (audit environment) and supplied through FORBIDDEN_EXTRA.
+total war
+totalwar
+creative assembly
+warscape
+warcore
+warhammer
+medieval ii
+rome ii
+shogun 2
+sega
+games workshop

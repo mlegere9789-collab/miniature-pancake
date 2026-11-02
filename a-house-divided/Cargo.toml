@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/core-math", "crates/sim-state"]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+debug = 1

@@ -1,0 +1,56 @@
+id = "george_g_meade"
+name = "George G. Meade"
+side = "union"
+
+[born]
+value = "1815-12-31"
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[died]
+value = "1872-11-06"
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[academy_class]
+value = "1835"
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[[career]]
+role = "Commander, Army of the Potomac"
+from = "1863-06-28"
+to = "1865"
+
+[career.fact]
+value = "Took command of the Army of the Potomac on 1863-06-28, three days before Gettysburg, and kept it under Grant's overall direction to the end of the war."
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[[career]]
+role = "Brigade commander wounded at Glendale"
+from = "1862-06-30"
+
+[career.fact]
+value = "Severely wounded in the right arm and back at Glendale on 1862-06-30."
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[[traits]]
+trait = "defensive_skill"
+evidence = "Won at Gettysburg with a defense in depth, relying on Hancock, Warren and Hunt."
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]
+
+[[traits]]
+trait = "cautious"
+evidence = "Critics fault his pursuit of Lee after Gettysburg and the aborted Mine Run operation of November 1863."
+confidence = "unverified"
+sources = [{document = "CWV", page = 268, tag = "[U]"}]
+
+[[relationships]]
+with = "Ulysses S. Grant"
+kind = "subordinate_of"
+evidence = "Remained in army command under Grant's overall direction until the end of the war."
+confidence = "partial"
+sources = [{document = "CWV", page = 268, tag = "[V]"}]

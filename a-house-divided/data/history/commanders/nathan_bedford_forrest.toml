@@ -1,0 +1,54 @@
+id = "nathan_bedford_forrest"
+name = "Nathan Bedford Forrest"
+side = "confederate"
+
+[born]
+value = "1821-07-13"
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[died]
+value = "1877-10-29"
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[[career]]
+role = "Fort Donelson"
+from = "1862-02"
+
+[career.fact]
+value = "Led his men out of Fort Donelson rather than surrender in February 1862."
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[[career]]
+role = "Brigadier general"
+from = "1862-12"
+
+[career.fact]
+value = "Became brigadier general about the end of 1862."
+confidence = "unverified"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+flag = "The date is a known problem: the source gives about the end of 1862 here and 21 July 1862 elsewhere."
+
+[[career]]
+role = "Major and lieutenant general"
+from = "1863-12"
+to = "1865-02"
+
+[career.fact]
+value = "Major general in December 1863 and lieutenant general in February 1865, the only man on either side to rise from private to that rank; beat a Union force about twice his size at Brice's Crossroads in June 1864."
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[[traits]]
+trait = "cavalry_flair"
+evidence = "Beat a Union force about twice his size at Brice's Crossroads in June 1864."
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]
+
+[[traits]]
+trait = "aggressive"
+evidence = "Led his men out of Fort Donelson rather than surrender in February 1862."
+confidence = "partial"
+sources = [{document = "CWV", page = 312, tag = "[V]"}]

@@ -1,0 +1,104 @@
+id = "shiloh"
+name = "Shiloh (Pittsburg Landing)"
+theater = "western"
+notes = ["Day 1: Confederates struck the unentrenched Union camps at dawn; the Hornet's Nest was held from about 9 a.m. until Prentiss surrendered about 2,200 men near 5:30 p.m. after a grand battery assembled by Ruggles; W.H.L. Wallace was mortally wounded.", "Johnston was the highest-ranking officer on either side killed in the war; Beauregard called off the attack near dusk, a decision still debated.", "Union last line near the landing included about 50 or more guns and gunboats; Lew Wallace's division reached the right flank about 7 p.m. and Buell's divisions crossed during the night.", "Day 2: about 25,000 fresh Union troops attacked at dawn; Beauregard ordered a retreat around 2:30-3:00 p.m.; Forrest repulsed Sherman at Fallen Timbers on 1862-04-08.", "Combined casualties are given as about 23,700."]
+
+[start_date]
+value = "1862-04-06"
+confidence = "partial"
+sources = [{document = "CWV", page = 131, tag = "untagged"}]
+
+[end_date]
+value = "1862-04-07"
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+
+[location]
+state = "Tennessee"
+near = "Pittsburg Landing on the Tennessee River, about 22 miles from Corinth, Mississippi"
+terrain_notes = "Wooded plateau and small farms between Owl Creek and Lick Creek with the Tennessee River at the Union back; sunken wagon road (Hornet's Nest), peach orchards, ravines and muddy creeks."
+
+[sides]
+
+[sides.union]
+
+[sides.union.commander]
+value = "Ulysses S. Grant (Army of the Tennessee), joined by Don Carlos Buell (Army of the Ohio) on 1862-04-06/07"
+confidence = "partial"
+sources = [{document = "CWV", page = 130, tag = "untagged"}, {document = "CWV", page = 131, tag = "untagged"}]
+
+[sides.union.engaged]
+value = 66800
+low = 65000
+high = 66800
+confidence = "unverified"
+sources = [{document = "CWV", page = 130, tag = "untagged"}]
+flag = "Army of the Tennessee about 48,900 on the rolls plus Buell's Army of the Ohio about 17,900 gives 66,800; the page also gives 65,000 for the two-day total, and not all rolls were present at dawn on the first day."
+
+[sides.union.casualties]
+
+[sides.union.casualties.killed]
+value = 1754
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+
+[sides.union.casualties.wounded]
+value = 8408
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+
+[sides.union.casualties.missing_captured]
+value = 2885
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+
+[sides.union.casualties.total]
+value = 13047
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+flag = "Page heads these figures as approximate; components sum to the total."
+
+[sides.confederate]
+
+[sides.confederate.commander]
+value = "Albert Sidney Johnston (Army of Mississippi), killed about 2:30 p.m. on 1862-04-06; P.G.T. Beauregard succeeded to command"
+confidence = "partial"
+sources = [{document = "CWV", page = 130, tag = "untagged"}, {document = "CWV", page = 132, tag = "untagged"}]
+
+[sides.confederate.engaged]
+value = 44700
+low = 44000
+high = 45000
+confidence = "unverified"
+sources = [{document = "CWV", page = 130, tag = "untagged"}, {document = "CWV", page = 131, tag = "untagged"}]
+flag = "The page says about 44,000 gathered at Corinth and about 44,700-45,000 in four corps."
+
+[sides.confederate.casualties]
+
+[sides.confederate.casualties.killed]
+value = 1728
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+
+[sides.confederate.casualties.wounded]
+value = 8012
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+
+[sides.confederate.casualties.missing_captured]
+value = 959
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]
+
+[sides.confederate.casualties.total]
+value = 10699
+low = 10669
+high = 10699
+confidence = "unverified"
+sources = [{document = "CWV", page = 132, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "The page notes that the ABT page prints 10,669 while its breakdown sums to 10,699; the summed figure is recorded."
+
+[outcome]
+value = "Union victory: after a Confederate surprise on 1862-04-06, Grant's line held at Pittsburg Landing and a counterattack on 1862-04-07 with Buell's army forced Beauregard to retreat toward Corinth."
+confidence = "partial"
+sources = [{document = "CWV", page = 132, tag = "untagged"}]

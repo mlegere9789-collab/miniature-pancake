@@ -1,0 +1,15 @@
+[package]
+name = "sim-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+core-math = { path = "../core-math" }
+
+[dev-dependencies]
+proptest = "1"

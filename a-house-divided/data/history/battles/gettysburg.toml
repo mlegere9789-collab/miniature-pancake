@@ -1,0 +1,106 @@
+id = "gettysburg"
+name = "Gettysburg"
+theater = "eastern"
+notes = ["Day 1 (1863-07-01): Heth's division met Buford's dismounted cavalry on McPherson Ridge; Reynolds was killed in the late morning and Doubleday took over I Corps; Davis's brigade was trapped in the railroad cut; Rodes and Early struck from the north after about 2 p.m. and both Union corps fell back through town, losing about 4,000 prisoners. Hancock took command on Cemetery Hill in the late afternoon. Ewell, ordered to take Cemetery Hill if practicable, did not attack. Casualties for the day per Wikipedia: nearly 9,000 Union, just over 6,000 Confederate.", "Day 2 (1863-07-02): Meade arrived about midnight and held a council that voted to stay. Sickles advanced III Corps to the Peach Orchard salient; Warren spotted the undefended Little Round Top and Vincent's brigade, the 20th Maine and the 140th New York held it against Hood's division; fighting at Devil's Den, the Wheatfield and the Peach Orchard; the 1st Minnesota charge bought time near Plum Run; Ewell's evening attacks on Culp's Hill and East Cemetery Hill failed. Day casualties estimated by Trudeau at about 10,000 Union and 6,800 Confederate, with other estimates higher.", "Day 3 (1863-07-03): Union XII Corps retook the lost trenches on Culp's Hill and the Confederates withdrew by about 11 a.m.; at East Cavalry Field Gregg's division and Custer's brigade stopped Stuart (Union 254 and Confederate 181 casualties); after a cannonade of 150-170 guns beginning about 1 p.m., Pickett's Charge advanced with about 12,500 men and was beaten off in roughly 20-30 minutes. Wikipedia gives Confederate losses for the charge as 6,555 and Union losses as about 1,500; the source notes the Confederate count is unsettled.", "Pickett's step-off time is given as roughly 2-3 p.m. and the source says sources differ; both about 2 p.m. and about 3 p.m. appear in the accounts and neither is established.", "Stuart reached the field only on the afternoon of 1863-07-02; the Stonewall Brigade took part in the Culp's Hill attacks on 1863-07-03.", "Retreat 1863-07-04 to 1863-07-14: Imboden's wagon train of wounded left first; Lee's army crossed the Potomac on the night of 1863-07-13/14, and Pettigrew was mortally wounded at Falling Waters on 1863-07-14."]
+
+[start_date]
+value = "1863-07-01"
+confidence = "partial"
+sources = [{document = "CWV", page = 79, tag = "untagged"}]
+
+[end_date]
+value = "1863-07-03"
+confidence = "partial"
+sources = [{document = "CWV", page = 79, tag = "untagged"}, {document = "CWV", page = 83, tag = "untagged"}]
+
+[location]
+state = "Pennsylvania"
+near = "Gettysburg, a market town where ten roads converge"
+terrain_notes = "Union fishhook line about 3 miles long from Culp's Hill through Cemetery Hill and Cemetery Ridge to Little Round Top; Confederate line wrapped it for roughly 5 miles on exterior lines from Seminary Ridge through town to Benner's Hill."
+
+[sides]
+
+[sides.union]
+
+[sides.union.commander]
+value = "George G. Meade (Army of the Potomac, in command from 1863-06-28)"
+confidence = "partial"
+sources = [{document = "CWV", page = 79, tag = "untagged"}, {document = "CWV", page = 81, tag = "untagged"}]
+
+[sides.union.engaged]
+value = 93921
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Headline figure of 93,921 Union and 71,699 Confederate engaged is cited to ABT; the source does not reconcile it with older tallies, so it is treated as uncertain."
+
+[sides.union.casualties]
+
+[sides.union.casualties.killed]
+value = 3155
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Component of the ABT-cited headline tally; older tallies differ in total."
+
+[sides.union.casualties.wounded]
+value = 14529
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Component of the ABT-cited headline tally; older tallies differ in total."
+
+[sides.union.casualties.missing_captured]
+value = 5365
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Component of the ABT-cited headline tally; older tallies differ in total."
+
+[sides.union.casualties.total]
+value = 23049
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}, {document = "CWV", page = 84, tag = "untagged"}]
+flag = "ABT-cited headline total; the campaign summary on a later page gives about 23,000 for the Union."
+
+[sides.confederate]
+
+[sides.confederate.commander]
+value = "Robert E. Lee (Army of Northern Virginia)"
+confidence = "partial"
+sources = [{document = "CWV", page = 80, tag = "untagged"}, {document = "CWV", page = 83, tag = "untagged"}]
+
+[sides.confederate.engaged]
+value = 71699
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Headline figure of 93,921 Union and 71,699 Confederate engaged is cited to ABT; the source does not reconcile it with older tallies, so it is treated as uncertain."
+
+[sides.confederate.casualties]
+
+[sides.confederate.casualties.killed]
+value = 3903
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Component of the ABT-cited headline tally; older tallies put total Confederate losses lower."
+
+[sides.confederate.casualties.wounded]
+value = 18735
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Component of the ABT-cited headline tally; older tallies put total Confederate losses lower."
+
+[sides.confederate.casualties.missing_captured]
+value = 5425
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}]
+flag = "Component of the ABT-cited headline tally; older tallies put total Confederate losses lower."
+
+[sides.confederate.casualties.total]
+value = 28063
+low = 23000
+high = 28063
+confidence = "unverified"
+sources = [{document = "CWV", page = 79, tag = "untagged", note = "Figure cited to ABT"}, {document = "CWV", page = 84, tag = "untagged"}]
+flag = "ABT-cited headline total of 28,063; older tallies give around 23,000 and the campaign summary gives 23,000-28,000, so the Confederate figure remains uncertain."
+
+[outcome]
+value = "Union victory; Lee's invasion failed and the Army of Northern Virginia withdrew from Pennsylvania from 1863-07-04."
+confidence = "partial"
+sources = [{document = "CWV", page = 84, tag = "untagged"}, {document = "CWV", page = 85, tag = "untagged"}]

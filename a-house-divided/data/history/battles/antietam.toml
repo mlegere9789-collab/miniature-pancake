@@ -1,0 +1,85 @@
+id = "antietam"
+name = "Antietam (Sharpsburg)"
+theater = "eastern"
+notes = ["Combined casualties given as about 22,700, the bloodiest single day of the war per the source.", "Corps-commander deaths in the campaign: the source text calls Reno the second corps commander killed in the campaign and then places Mansfield's death afterward. Reno was killed at Fox's Gap on 1862-09-14 and Mansfield was shot on 1862-09-17 and died the next day (the source also says three days after Reno), so the ordinal 'second' is inconsistent and should not be relied on.", "Sequence: Cornfield and East Woods (Hooker, then Mansfield's XII Corps); West Woods (Sumner's lead division lost about 2,200 men in 15-20 minutes); Sunken Road (French and Richardson against D.H. Hill); Burnside Bridge taken about 1:00 p.m., with A.P. Hill's arrival from Harpers Ferry about 3:30-4:00 p.m. driving IX Corps back.", "McClellan kept Porter's V Corps and Franklin's VI Corps largely uncommitted and did not attack on 1862-09-18; the source records that he believed Lee had up to 100,000 men.", "Shepherdstown action on 1862-09-19/20: A.P. Hill's counterattack drove back Porter's detachment, with the 118th Pennsylvania losing about 270 men."]
+
+[start_date]
+value = "1862-09-17"
+confidence = "partial"
+sources = [{document = "CWV", page = 57, tag = "untagged"}]
+
+[end_date]
+value = "1862-09-17"
+confidence = "partial"
+sources = [{document = "CWV", page = 57, tag = "untagged"}]
+
+[location]
+state = "Maryland"
+near = "Sharpsburg, Washington County, along Antietam Creek"
+terrain_notes = "Rolling farmland with fences; Antietam Creek crossed by three stone bridges; East Woods, Cornfield, West Woods, Dunker Church plateau, Sunken Road and the Lower (Burnside) Bridge; Potomac and Boteler's Ford behind the Confederate line."
+
+[sides]
+
+[sides.union]
+
+[sides.union.commander]
+value = "George B. McClellan (Army of the Potomac)"
+confidence = "partial"
+sources = [{document = "CWV", page = 57, tag = "untagged"}]
+
+[sides.union.engaged]
+value = 53632
+low = 53632
+high = 87000
+confidence = "unverified"
+sources = [{document = "CWV", page = 57, tag = "untagged"}]
+flag = "The source quotes strengths from several conflicting sources: Union about 75,000-87,000 present (Battlefields Trust about 87,000), 53,632 engaged (Wikipedia) and 72,199 available (Hartwig); Confederate 30,646 engaged (Wikipedia), about 37,600 available (Hartwig) and about 45,000 (Battlefields Trust). The figure labelled engaged is recorded as value; the range spans the quoted figures."
+
+[sides.union.casualties]
+
+[sides.union.casualties.killed]
+value = 2100
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "Approximate figure with no cited source."
+
+[sides.union.casualties.total]
+value = 12400
+confidence = "unverified"
+sources = [{document = "CWV", page = 57, tag = "untagged"}, {document = "CWV", page = 59, tag = "untagged"}]
+flag = "About 12,400; approximate figure with no cited source."
+
+[sides.confederate]
+
+[sides.confederate.commander]
+value = "Robert E. Lee (Army of Northern Virginia)"
+confidence = "partial"
+sources = [{document = "CWV", page = 57, tag = "untagged"}]
+
+[sides.confederate.engaged]
+value = 30646
+low = 30646
+high = 45000
+confidence = "unverified"
+sources = [{document = "CWV", page = 57, tag = "untagged"}]
+flag = "The source quotes strengths from several conflicting sources: Union about 75,000-87,000 present (Battlefields Trust about 87,000), 53,632 engaged (Wikipedia) and 72,199 available (Hartwig); Confederate 30,646 engaged (Wikipedia), about 37,600 available (Hartwig) and about 45,000 (Battlefields Trust). The figure labelled engaged is recorded as value; the range spans the quoted figures."
+
+[sides.confederate.casualties]
+
+[sides.confederate.casualties.killed]
+value = 1550
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "Approximate figure with no cited source."
+
+[sides.confederate.casualties.total]
+value = 10300
+confidence = "unverified"
+sources = [{document = "CWV", page = 57, tag = "untagged"}, {document = "CWV", page = 59, tag = "untagged"}]
+flag = "About 10,300; the page notes that some estimates for the Confederates go higher."
+
+[outcome]
+value = "Tactical stalemate in which Lee held the field on 1862-09-17 and withdrew across the Potomac on the night of 1862-09-18; McClellan did not renew the attack."
+confidence = "unverified"
+sources = [{document = "CWV", page = 59, tag = "untagged"}]
+flag = "The page narrates the 18 September stand-off and retreat but does not label an outcome; this summary is derived from that narrative."
