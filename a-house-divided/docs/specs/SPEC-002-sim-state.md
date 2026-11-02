@@ -49,3 +49,13 @@ footer       total_ticks u64, final_hash u64, body_hash u64 (FNV-1a 64 of every 
 
 ## 6. Done when
 fmt, clippy `-D warnings`, `cargo test --workspace` pass; no `unsafe`; no floating point; docs on every public item; the byte layout documented.
+
+## Amendment A1 (from independent review, cycle 01)
+1. The replay reader additionally rejects: duplicate `(tick, actor, seq)` input keys (keys must be strictly increasing); checkpoints that are not strictly increasing
+   in tick; any checkpoint tick greater than `total_ticks`; `tick_hz == 0`; `checkpoint_interval == 0` when `total_ticks > 0`. The footer body hash is verified
+   before structural parsing beyond the fixed-size prefix, so corruption reports `BodyHashMismatch` before any structural error. Pre-allocation is bounded by the bytes actually remaining
+   (at most one record per minimum record size), never by a declared count.
+2. `SpatialGrid::new` returns `Result<SpatialGrid, GridError>`: it rejects zero dimensions, non-positive cell size, `width * height` overflow (checked) and more than 2^26 cells.
+   (The earlier clamp-to-minimum behaviour is removed.) Query results are a snapshot of the last `rebuild`; this is documented on `rebuild`, `query_radius` and `nearest`,
+   and `AgentStore`-aware helpers `query_radius_alive` / `nearest_alive` that also filter ids no longer alive are added.
+3. Golden files and hash layout are unchanged: no golden hash may change in this amendment.

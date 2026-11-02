@@ -34,3 +34,8 @@ It runs a deliberately simple **toy scenario** so the determinism machinery is p
 ## 5. Done when
 fmt, clippy `-D warnings`, `cargo test --workspace`, `cargo build --release -p hd-sim`, then `hd-sim verify` passes on all committed goldens; `bench` for the large scenario prints
 its numbers (record them in `docs/cycle-reports/` as the baseline for the 20,000-agent tick budget).
+
+## Amendment A1 (from independent review, cycle 01)
+`verify` and `run` enforce resource limits before running anything: `total_ticks <= 10_000_000`, `agents <= MAX_AGENTS` (the existing constant), and
+`agents * total_ticks <= 20_000_000_000`; violations exit 2 with a readable message. A replay whose header has `checkpoint_interval == 0` while `total_ticks > 0` is malformed (exit 2).
+A replay missing any scheduled checkpoint, or carrying extra ones, is malformed (exit 2). Boundary values of each limit are tested (value accepted, value plus one rejected).

@@ -53,3 +53,7 @@ Algorithm: xoshiro256** seeded through SplitMix64 (both published, public-domain
 ## 6. Done when
 `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` pass; no `unsafe`; no `f32`/`f64` outside
 `#[cfg(test)]` and the `float-io` feature; public items documented; the stub's public surface unchanged.
+
+## Amendment A1 (from independent review, cycle 01)
+`Rng::from_state` keeps its signature for existing callers but is documented as substituting the seed-0 state for the invalid all-zero state; a new `Rng::try_from_state([u64; 4]) -> Option<Rng>`
+returns `None` for the all-zero state and is the exact round-trip API. `coin(num, den)` with `num >= den` consumes no random draw and returns true; `num == 0` consumes none and returns false (tests pin both).
