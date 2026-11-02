@@ -91457,6 +91457,24 @@ void TestAcisSatSheetBodyReadsAndRoundTrips() {
         "AcisSat: sheet write-then-read keeps face count and area 6");
 }
 
+void TestAcisSatRoundTripTorus() {
+  RoundTrip("torus (UNVERIFIED layout)", Brep::Torus(Point3d(1, 2, 3), Vector3d(0, 0, 1), 3.0, 1.0), 1e-3, false, true);
+}
+
+// Every proper prefix of a valid file must be refused (never crash, never
+// yield a body): the End-of-ACIS-data trailer is mandatory.
+void TestAcisSatTruncationSweepRefusesEveryPrefix() {
+  const std::string text = BoxSat(1, 2, 3);
+  int tried = 0, refused = 0;
+  for (size_t cut = 0; cut + 1 < text.size(); cut += 29) {
+    const AcisSatReadResult r = ReadText(text.substr(0, cut));
+    ++tried;
+    if (!r.ok && r.bodies.empty() && !r.error.empty()) ++refused;
+  }
+  std::printf("  truncation sweep: %d prefixes tried, %d refused with a reason\n", tried, refused);
+  Check(tried > 50 && refused == tried, "AcisSat: every truncated prefix of a valid file is refused with a reason");
+}
+
 }  // namespace acis_sat_tests
 
 
@@ -92880,6 +92898,8 @@ int main() {
   RunTest("acis_sat_tests::TestAcisSatRoundTripCylinder", acis_sat_tests::TestAcisSatRoundTripCylinder);
   RunTest("acis_sat_tests::TestAcisSatRoundTripFilletedBox", acis_sat_tests::TestAcisSatRoundTripFilletedBox);
   RunTest("acis_sat_tests::TestAcisSatSheetBodyReadsAndRoundTrips", acis_sat_tests::TestAcisSatSheetBodyReadsAndRoundTrips);
+  RunTest("acis_sat_tests::TestAcisSatRoundTripTorus", acis_sat_tests::TestAcisSatRoundTripTorus);
+  RunTest("acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix", acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix);
   RunTest("acis_sat_tests::TestAcisSatRefusesBadInput", acis_sat_tests::TestAcisSatRefusesBadInput);
 
   RunTest("ON::End", ON::End);
