@@ -1,0 +1,62 @@
+# CPU path tracer QC: material library presets, RenderAssignMaterialToObjects
+# Preset=, the RayTracedViewport display mode (now a real per-frame GPU
+# BVH-traversal fragment shader - render::GpuRaytracer - not the CPU
+# PathTracer; see src/viewport/Viewport.cpp and tests/gpu_render_notes.md),
+# and Render/RenderPreview/RenderArctic/RenderBlowup with Quality=Raytraced
+# (those still use the CPU PathTracer for offline/batch renders).
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+#
+# FloorMat/CrateMat deliberately use two *different* procedurally-textured
+# presets (Stone Granite = proc:stone:1, Wood Oak = proc:wood:1), not two
+# untextured metals - PathTracer::AlbedoAt only calls the lazy TextureFor()
+# cache (see PathTracer.h's tex_cache_) for a material with a non-empty
+# texture_path. Rendering both together, at a resolution/sample count large
+# enough to spread across every hardware_concurrency() worker thread, means
+# several threads can hit two distinct not-yet-cached texture paths in the
+# same first frame - the concurrent-insert scenario PathTracer's texture
+# cache mutex (and the std::deque backing it, so a concurrent insert can't
+# invalidate another thread's already-returned TexCache*) has to survive
+# without a crash or corrupted pixels.
+Box 0,0,0 20,20,0 10
+Sphere 35,10,8 8
+Plane -20,-20,0 20,40,0
+SelID 1
+RenderAssignMaterialToObjects ChromeMat Preset=Chrome
+SelNone
+SelID 2
+RenderAssignMaterialToObjects CrateMat Preset="Wood Oak"
+SelNone
+SelID 3
+RenderAssignMaterialToObjects FloorMat Preset="Stone Granite"
+SelNone
+PointLight 10,-30,40 Intensity=1.5
+MaterialLibrary
+Perspective
+ZoomExtents
+RayTracedViewport
+RotateView 20
+RotateView 20
+Render 96 64 Quality=Raytraced Samples=4 Bounces=2
+SaveRenderWindowAs @TMP@/raytrace.bmp
+RenderArctic Quality=Raytraced Samples=2 Bounces=2
+SaveRenderWindowAs @TMP@/arctic.bmp
+RenderPreview Quality=Raytraced Samples=2
+SaveRenderWindowAs @TMP@/preview.bmp
+RenderBlowup Quality=Raytraced Samples=2
+-10,-10,-10
+40,40,30
+SaveRenderWindowAs @TMP@/blowup.bmp
+Wireframe
+Save @TMP@/raytrace.3dm
+
+# Background=Image in the CPU path tracer (PathTracer::SkyColor's
+# equirectangular env-map lookup): a fresh, empty document (New) so every
+# primary ray misses all geometry and hits the environment for 100% of
+# pixels, then Render at Quality=Raytraced with Environments Image=
+# pointing at @TMP@/env_test.ppm (a solid-colour PPM smoke.sh writes before
+# running this script) - the whole frame should come back that colour.
+New
+Environments Image=@TMP@/env_test.ppm
+Perspective
+Render 24 24 Quality=Raytraced Samples=1 Bounces=1
+SaveRenderWindowAs @TMP@/env_bg.bmp

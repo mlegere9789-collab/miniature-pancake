@@ -1,0 +1,26 @@
+# DXF INSERT export QC: ExportDxf had no BLOCKS/INSERT writer function at
+# all before this change (see WriteDxfBlockMember/the BLOCKS section and
+# the "Block"-tagged dedup branch in ExportDxf, FileExchange.cpp) - a Dino8
+# block instance (Block/Insert - see InstantiateBlockInDocument, cmd_
+# drafting.cpp) used to round-trip out as bare flattened curves per
+# instance, losing the fact either copy was ever a block. Makes a small
+# block (two lines), places a second instance of it, exports, and reopens
+# the exported file in a fresh document: the reimported curves must carry
+# the same Block/BlockInsert user-text tags InstantiateBlockInDocument
+# already writes, and BlockManager must report the same definition/
+# instance counts as before export, proving the new writer and
+# DxfImporter::Insert() (also new this pass) agree on the wire format.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+SelAll
+Block FixtureBlock 0,0,0
+Insert FixtureBlock 20,5,0
+Enter
+SelAll
+Export @TMP@/dxf_block_export.dxf
+New
+Open @TMP@/dxf_block_export.dxf
+SelAll
+What
+BlockManager

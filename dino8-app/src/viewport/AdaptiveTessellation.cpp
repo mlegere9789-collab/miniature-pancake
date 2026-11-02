@@ -1,0 +1,63 @@
+#include "viewport/AdaptiveTessellation.h"
+
+#include <algorithm>
+
+namespace dino8::app {
+
+namespace {
+// The app's own curve/surface display-tolerance Options are tuned for a
+// viewport showing roughly this many world units per screen pixel (an
+// 80-unit-tall ortho view in a ~800px-tall docked viewport - Viewport's own
+// constructor default), so that pixel size is the "no scaling" reference
+// point: a viewport actually showing fewer world units per pixel than this
+// (zoomed in) tessellates finer than the raw Option value, and one showing
+// more (zoomed out) tessellates coarser.
+constexpr double kLodReferencePixelSize = 0.1;
+// Clamped so neither an extreme close-up nor a zoomed-way-out view can
+// drive the triangle count unbounded in either direction.
+constexpr double kLodMinScale = 0.2;
+constexpr double kLodMaxScale = 6.0;
+// The zoom-level scale (LodScaleForPixelSize) may go much finer than the
+// per-object distance correction above: it used to share the 0.2 floor, so
+// past ~5x deeper than the reference zoom the on-screen chord error grew
+// without bound (measured: a sphere's facets visibly widen). The finer floor
+// is safe only because SceneObject::EnsureAdaptiveDisplay enforces a
+// per-object triangle budget (SceneObject::kAdaptiveTriangleBudget).
+constexpr double kLodDeepZoomMinScale = 0.02;
+}  // namespace
+
+double LodScaleForPixelSize(double pixel_size) {
+  if (!(pixel_size > 0.0)) return 1.0;  // degenerate camera state: no scaling
+  return std::clamp(pixel_size / kLodReferencePixelSize, kLodDeepZoomMinScale, kLodMaxScale);
+}
+
+double DistanceLodFactor(double object_distance, double target_distance, bool is_perspective) {
+  if (!is_perspective) return 1.0;  // true parallel projection: no distance falloff at all
+  if (!(target_distance > 0.0)) return 1.0;  // degenerate camera state: no scaling
+  if (!(object_distance >= 0.0)) return 1.0;  // should never happen, but be safe rather than wrong
+  return std::clamp(object_distance / target_distance, kLodMinScale, kLodMaxScale);
+}
+
+double FinestLodScale(const std::vector<double>& viewport_pixel_sizes) {
+  double finest = 1.0;
+  bool any = false;
+  for (double pixel_size : viewport_pixel_sizes) {
+    const double scale = LodScaleForPixelSize(pixel_size);
+    if (!any || scale < finest) { finest = scale; any = true; }
+  }
+  return any ? finest : 1.0;
+}
+
+}  // namespace dino8::app
+
+namespace dino8::app {
+
+double ScreenSpaceErrorPixels(double tolerance, double pixel_size) {
+  if (!(pixel_size > 0.0) || !(tolerance > 0.0)) return 0.0;
+  return tolerance / pixel_size;
+}
+
+double LodMinScale() { return kLodDeepZoomMinScale; }
+double LodMaxScale() { return kLodMaxScale; }
+
+}  // namespace dino8::app

@@ -1,0 +1,52 @@
+# STEP rational B-spline interoperability QC (see smoke.sh's own section).
+# --- A hand-written file in the STANDARD ISO 10303-21 complex-entity layout
+# real CAD exporters emit (B_SPLINE_SURFACE(...)B_SPLINE_SURFACE_WITH_KNOTS(...)
+# RATIONAL_B_SPLINE_SURFACE(...), and the curve equivalent): a rational
+# quarter-cylinder face (radius 10, height 20), a rational quarter arc in
+# that same split layout, and the same arc in the FLAT layout Dino 8's own
+# ExportStep wrote before (which must keep importing). Before the fix the
+# reader refused both standard-layout entities ("args.size() < 12" /
+# "< 9"): "STEP: 0 breps, 1 curve; 1 unsupported entity skipped".
+Open @TMP@/step_rational_standard_layout_fixture.stp
+@expect_objects 3
+SelAll
+List
+SelCrv
+Length
+SelNone
+SelPolysrf
+Area
+BoundingBox
+# --- The file the KERNEL's own NurbsSurface::SaveStep writes for a sphere's
+# NURBS form (centre 1,2,3, radius 2.5; a bare top-level rational
+# B_SPLINE_SURFACE entity, standard layout, no face/shell around it): must
+# import as one free surface object with the sphere's exact definition.
+cancel
+New
+Open @TMP@/step_kernel_rational_sphere_fixture.stp
+@expect_objects 1
+SelAll
+List
+Area
+BoundingBox
+# --- Round trip through the app's own writer: a sphere (rational faces)
+# and a free circle written by ExportStep must come back from ImportStep
+# with their exact properties, and the file must carry the standard layout.
+cancel
+New
+Sphere 0,0,0 10
+SelAll
+Volume
+Circle 40,0,0 5
+SelAll
+Export @TMP@/rational_roundtrip.stp
+New
+Open @TMP@/rational_roundtrip.stp
+@expect_objects 2
+SelAll
+List
+SelPolysrf
+Volume
+SelNone
+SelCrv
+Length

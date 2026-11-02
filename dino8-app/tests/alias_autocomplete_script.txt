@@ -1,0 +1,27 @@
+# Command-line autocomplete: a user's (or Rhino's shipped default) command
+# aliases must show up in the popup too, not just catalog command names.
+#
+# "b" is Rhino's own default alias for Box (CommandEngine::
+# InstallDefaultAliases). Before this fix, the autocomplete popup only ever
+# consulted CommandCatalog::FuzzyMatch, which knows nothing about aliases -
+# so typing "b" showed ordinary catalog matches (shortest/best prefix match
+# first, which is the literal command "Box" - a 3-letter catalog name with
+# nothing shorter starting with 'b'), never the alias itself. Highlighting
+# the first popup row (one Down press) and running it with Enter used to
+# fill the command line with "Box" (the catalog match); now it fills the
+# alias's own text, "b" (still resolved to Box when it runs, exactly like
+# typing "b" directly would - see CommandEngine::ResolveName), because
+# alias rows are placed ahead of catalog fuzzy matches. The echoed
+# "Command: b" line (not "Command: Box") is the proof the alias row, not a
+# catalog fallback, is what Down actually highlighted first.
+@wait 5
+@text b
+@wait 2
+@key Down
+@wait 1
+@key Enter
+@wait 2
+@text cancel
+@wait 1
+@key Enter
+@wait 2

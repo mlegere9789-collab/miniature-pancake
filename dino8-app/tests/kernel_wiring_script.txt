@@ -1,0 +1,1576 @@
+# Kernel-primitive app wirings: MergeSrf -> kernel::NurbsSurface::Join (which
+# first brings a mismatched pair to a compatible form - degree, knots, direction,
+# weights - so only boundaries that really do not coincide reach the refit),
+# ChamferEdge/ChamferSrf on a cylinder rim -> kernel::ChamferCylinderRim,
+# curve MakeUniform -> kernel::NurbsCurve::MakeUniform, and (later sections)
+# NetworkSrf 3 curves -> NurbsSurface::CoonsPatchTriangular, Sweep2 with several
+# cross-sections -> Brep::Sweep2Sections, Patch of non-planar data ->
+# NurbsSurface::FitPatch + Brep::TrimmedPatchFace. Every section deletes
+# its own objects, so each @expect_objects check below is per-section. The
+# last part (from "Section-anchored single-section Sweep1/Sweep2" on) covers
+# the section-anchored Sweep1/Sweep2 and the exact interpolating Loft; its
+# cases each begin with `New` instead.
+SetActiveViewport Top
+# --- MergeSrf, exact: a NON-planar bicubic (4x4 control net, z up to 3, built
+# with SrfControlPtGrid so the control net is exactly the points typed here)
+# is cut in two by SplitFace along a V-shaped cutter that crosses it twice in
+# the plane x = 3.6 (u = 0.4 of its 0..9 extent, since u is linear in x for an
+# evenly spaced net), then merged back. Kernel Split() of a 4x4 net at 0.4 is
+# two 4x4 halves; Join() splices them to the exact 7x4 net (4 + 4 - the shared
+# boundary row) - the old route resampled a 25x17 point grid and refit it.
+Point 0,0,0
+Point 0,3,1
+Point 0,6,2
+Point 0,9,0
+Point 3,0,1
+Point 3,3,3
+Point 3,6,1
+Point 3,9,0
+Point 6,0,0
+Point 6,3,2
+Point 6,6,3
+Point 6,9,1
+Point 9,0,2
+Point 9,3,0
+Point 9,6,1
+Point 9,9,3
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelSrf
+List
+BoundingBox
+Area
+Polyline 3.6,1,10 3.6,4.5,-10 3.6,8,10
+Enter
+SplitFace
+3.6,4.5,1.5850
+3.6,4.5,-10
+SelNone
+SelCrv
+Delete
+SelNone
+SelSrf
+List
+BoundingBox
+Area
+MergeSrf
+SelSrf
+List
+BoundingBox
+Area
+# 4 objects: the merged surface plus the three boxes BoundingBox leaves behind
+@expect_objects 4
+SelAll
+Delete
+# --- MergeSrf negative control: two planes with no shared edge are still
+# refused with the original diagnostic, nothing merged.
+Plane 0,0,0 10,10,0
+Plane 50,0,0 60,10,0
+SelSrf
+MergeSrf
+@expect_objects 2
+SelAll
+Delete
+# --- MergeSrf, degree mismatch: a bicubic patch (4 x 4 net) and a biquadratic patch
+# (3 x 3 net) sharing the edge x = 3. The cubic's edge row is the quadratic's
+# (3,0,0) (3,3,3) (3,9,0) degree-elevated by hand: (3,0,0) (3,2,2) (3,5,2) (3,9,0),
+# the same curve in a different control polygon. The kernel raises the quadratic
+# to degree 3 in both directions and splices: 4 + 4 - 1 = 7 rows by 4 columns.
+Point 0,0,0
+Point 1,0,1
+Point 2,0,0
+Point 3,0,0
+Point 0,2,1
+Point 1,2,3
+Point 2,2,2
+Point 3,2,2
+Point 0,5,2
+Point 1,5,1
+Point 2,5,3
+Point 3,5,2
+Point 0,9,0
+Point 1,9,0
+Point 2,9,1
+Point 3,9,0
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+Point 3,0,0
+Point 5,0,1
+Point 7,0,2
+Point 3,3,3
+Point 5,3,2
+Point 7,3,0
+Point 3,9,0
+Point 5,9,1
+Point 7,9,3
+SelPt
+SrfControlPtGrid
+3
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
+SelAll
+Delete
+# --- MergeSrf, different knot spacing along the shared edge: two bicubic patches
+# (SrfControlPtGrid, 4 x 5 and 4 x 6 nets) whose shared edge is ONE cubic Bezier curve
+# written with an interior knot at 1/2 on the first patch (5 control points) and at
+# 1/3 and 2/3 on the second (6 control points). The edge control points are the
+# exact Boehm knot-insertion results (to 6 digits), so the two boundary polygons are
+# different but the curves are the same; the kernel inserts the union {1/3, 1/2, 2/3}
+# into both and splices: 4 + 4 - 1 = 7 rows across, 7 columns along the edge.
+Point 0,0,-0.5
+Point 1,0,-1
+Point 2,0,-1.5
+Point 3,0,0
+Point 0,1.5,0.1
+Point 1,1.5,0.1
+Point 2,1.5,0.1
+Point 3,1.5,3
+Point 0,6,0.7
+Point 1,6,1.2
+Point 2,6,1.7
+Point 3,6,1.5
+Point 0,10.5,-0.2
+Point 1,10.5,-0.7
+Point 2,10.5,-1.2
+Point 3,10.5,0
+Point 0,12,0.4
+Point 1,12,0.4
+Point 2,12,0.4
+Point 3,12,3
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+Point 3,0,0
+Point 4,0,-0.4
+Point 5,0,-0.8
+Point 6,0,-1.2
+Point 3,1,2
+Point 4,1,0.5
+Point 5,1,0.9
+Point 6,1,1.3
+Point 3,3.666667,2.666667
+Point 4,3.666667,-0.2
+Point 5,3.666667,-0.6
+Point 6,3.666667,-1
+Point 3,8.333333,0.333333
+Point 4,8.333333,0.7
+Point 5,8.333333,1.1
+Point 6,8.333333,1.5
+Point 3,11,1
+Point 4,11,0
+Point 5,11,-0.4
+Point 6,11,-0.8
+Point 3,12,3
+Point 4,12,0.9
+Point 5,12,1.3
+Point 6,12,1.7
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
+SelAll
+Delete
+# --- MergeSrf, shared edge traversed in opposite directions: two bicubic patches
+# (4 x 4 nets) meeting along y = 3, the first one Flip'd (Flip reverses a surface's U,
+# which here runs ALONG the shared edge), so the two walk the edge the other way.
+# The kernel turns the second back (and swaps its U/V, the edge being a V side):
+# 4 columns along the edge, 4 + 4 - 1 = 7 rows across.
+Point 0,3,0
+Point 1,3,2
+Point 2,3,1
+Point 3,3,3
+Point 0,4,0.5
+Point 1,4,1.5
+Point 2,4,0.5
+Point 3,4,2.5
+Point 0,5,0
+Point 1,5,1
+Point 2,5,0
+Point 3,5,2
+Point 0,6,1.5
+Point 1,6,2.5
+Point 2,6,1.5
+Point 3,6,3.5
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelSrf
+Flip
+SelNone
+Point 0,0,-0.5
+Point 1,0,-1.5
+Point 2,0,0.5
+Point 3,0,-0.5
+Point 0,1,0
+Point 1,1,-0.75
+Point 2,1,1.5
+Point 3,1,0.75
+Point 0,2,0.5
+Point 1,2,-0.5
+Point 2,2,1.5
+Point 3,2,0.5
+Point 0,3,0
+Point 1,3,2
+Point 2,3,1
+Point 3,3,3
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
+SelAll
+Delete
+# --- MergeSrf, the sample-and-refit fallback is kept ONLY for a pair the exact merge
+# cannot take. A unit square (2 x 2 net) and a neighbour (2 x 3 net, degree 1 x 2)
+# whose shared edge x = 1 is the same segment traced quadratically (middle control
+# point at y = 0.4, so its parameter-1/2 point sits at y = 0.45, not 0.5): the two
+# parameterizations of the edge are 0.05 apart, which the app's own (100x looser)
+# edge match accepts but no exact splice can bridge. The kernel refuses, MergeSrf
+# falls back to the refit and SAYS why.
+Point 0,0,0
+Point 1,0,0
+Point 0,1,0
+Point 1,1,0
+SelPt
+SrfControlPtGrid
+2
+SelNone
+SelPt
+Delete
+Point 1,0,0
+Point 2,0,0
+Point 1,0.4,0
+Point 2,0.4,0
+Point 1,1,0
+Point 2,1,0
+SelPt
+SrfControlPtGrid
+2
+SelNone
+SelPt
+Delete
+SelSrf
+MergeSrf
+SelNone
+@expect_objects 1
+SelAll
+Delete
+# --- ChamferEdge on a cylinder's rim: R=2 L=5, Distance1 (wall) 0.6 and
+# Distance2 (cap) 0.4 reach kernel::ChamferCylinderRim's exact cone; the
+# command's own Volume reads the plain cylinder as 62.7 (exact 62.83, the
+# display mesh is a 0.2% inscribed polygon either way) and the chamfered one
+# 1.41 lower: the revolved-triangle closed form (2*pi*dw/dc)*(R^3/3 -
+# (R-dc)*R^2/2 + (R-dc)^3/6) = 1.4074. The result is a closed 4-face/
+# 7-edge solid (wall, cone, two circle-bounded caps), not a polygon shell.
+Cylinder 0,0,0 2 5
+SelAll
+Volume
+ChamferEdge
+Radius=0.6
+Distance2=0.4
+0,2,5
+Enter
+SelAll
+Volume
+Area
+List
+SelAll
+Delete
+# --- the same two distances swapped (wall 0.4, cap 0.6): removes 1.3572 by
+# the same closed form, so the volume must differ from the case above - the
+# two distances are not interchangeable.
+Cylinder 0,0,0 2 5
+ChamferEdge
+Radius=0.4
+Distance2=0.6
+0,2,5
+Enter
+SelAll
+Volume
+Area
+SelAll
+Delete
+# --- the bottom rim (mirrored end), wall 0.6 / cap 0.4: same removed volume
+# as the top rim.
+Cylinder 0,0,0 2 5
+ChamferEdge
+Radius=0.6
+Distance2=0.4
+0,2,0
+Enter
+SelAll
+Volume
+List
+SelAll
+Delete
+# --- ChamferSrf on the cap and the wall (symmetric distance 0.5): removed
+# volume 2*pi*(R^3/3 - (R-dc)*R^2/2 + (R-dc)^3/6) = 1.4399. Before this
+# wiring this fell to the approximate RuledBetween path, which left the
+# cylinder whole and added a loose 2x25-CV ruled surface.
+Cylinder 0,0,0 2 5
+ChamferSrf
+Radius=0.5
+0,0,5
+0,2,2.5
+SelAll
+Volume
+Area
+List
+SelAll
+Delete
+# --- Fallthrough: a cap setback of 3 exceeds the radius 2, the kernel
+# refuses, and ChamferSrf keeps building the approximate surface exactly as
+# before (the cylinder itself stays).
+Cylinder 0,0,0 2 5
+ChamferSrf
+Radius=3
+0,0,5
+0,2,2.5
+SelAll
+List
+SelAll
+Delete
+# --- Distance/Angle has no cone construction: still refused with the
+# diagnostic, and the cylinder is untouched.
+Cylinder 0,0,0 2 5
+ChamferEdge
+Radius=0.6
+Angle=45
+0,2,5
+Enter
+SelAll
+Volume
+List
+SelAll
+Delete
+@expect_objects 0
+# --- Curve MakeUniform: a line 0,0,0 -> 3,0,0 (domain 0..1) with a kink
+# inserted at x=1 becomes a 3-control-point degree-1 curve (control points
+# 0,1,3 on the x axis) with knots {0,1/3,1}. Re-knotting it to the uniform
+# {0,1/2,1} with the control points held fixed moves it by exactly 0.5 (at
+# t=1/2: x = 1.5 before, 1 after) - the kernel measures that; the old raw
+# MakeClampedUniformKnotVector(1.0) call shipped it unmeasured AND moved the
+# domain to 0..2. The default Tolerance is the document tolerance, so the
+# plain run refuses and reports 0.5; 0.4 still refuses; 0.6 commits and the
+# domain stays 0 to 1; a second run finds it already uniform.
+Line 0,0,0 3,0,0
+SelCrv
+InsertKink
+1,0,0
+Enter
+SelCrv
+Domain
+Enter
+SelCrv
+MakeUniform
+Enter
+SelCrv
+MakeUniform
+Tolerance=0.4
+Enter
+Domain
+Enter
+SelCrv
+MakeUniform
+Tolerance=0.6
+Enter
+Domain
+Enter
+SelCrv
+MakeUniform
+Enter
+SelAll
+Delete
+@expect_objects 0
+# =====================================================================
+# Surface construction commands -> kernel: NetworkSrf (3 curves, exact
+# Coons), Sweep2 (several cross-sections, exact two-rail multi-section
+# sweep), Patch (non-planar data, least-squares NURBS patch). Each section
+# deletes its own objects; ids are never hard-coded (layers + object names).
+# =====================================================================
+
+# --- NetworkSrf, exactly 3 straight curves around the right triangle
+# (0,0,0) (10,0,0) (10,10,0), picked in scrambled order and with two of them
+# drawn the "wrong" way round (their heads are not at the previous tail). The
+# kernel's CoonsPatchTriangular resolves the order and directions itself and
+# reproduces all three edges exactly; the patch is the collapsed-bilinear
+# triangle map, so its area is the triangle's 50.
+Line 10,10,0 10,0,0
+Line 0,0,0 10,10,0
+Line 0,0,0 10,0,0
+SelCrv
+NetworkSrf
+SelSrf
+Area
+SelAll
+Delete
+@expect_objects 0
+# --- NetworkSrf, 3 curves with a curved, out-of-plane third edge: a
+# quadratic arc from (5,8,4) back to (0,0,0) bulging to z = 6 closes the
+# triangle (0,0,0) (10,0,0) (5,8,4). Non-planar, so not a degenerate case of
+# the straight one: the exact patch must still reproduce the arc.
+Line 0,0,0 10,0,0
+Line 10,0,0 5,8,4
+Curve 5,8,4 1,5,6 0,0,0 Enter
+SelCrv
+NetworkSrf
+SelAll
+Delete
+@expect_objects 0
+# --- NetworkSrf, 3 curves whose last corner is open by 0.0005: inside the
+# document tolerance (0.001), so the loop counts as closed, the two ends are
+# moved to their midpoint and the exact patch is still built.
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0.0005,0,0
+SelCrv
+NetworkSrf
+SelAll
+Delete
+@expect_objects 0
+# --- NetworkSrf, 3 curves whose last corner is open by 0.5: NOT a loop within
+# the document tolerance, so the reason is printed and the old fitted bilinear
+# Coons patch runs (the fail-open path).
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0.5,0,0
+SelCrv
+NetworkSrf
+SelAll
+Delete
+@expect_objects 0
+# --- NetworkSrf, 4 curves around the unit-10 square with one corner open by
+# 0.0004 (inside tolerance): the same closure handling reaches the 4-curve
+# exact Coons patch.
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0,10,0
+Line 0,10,0 0.0004,0,0
+SelCrv
+NetworkSrf
+SelAll
+Delete
+@expect_objects 0
+
+# --- Sweep2 with THREE cross-sections between two straight diverging rails
+# (x = 0 and x = 4 -> 6 over z = 0..10); each section is a quadratic arc drawn
+# between the rails at z = 0, 5, 10 with the same rail-local shape (it scales
+# with the rail separation), so the exact multi-section wall IS the exact
+# one-section Brep::Sweep2 wall of the first section: the same area, below.
+NewLayer S2Rails
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName S2Rail1
+Line 4,0,0 6,0,10
+SelLast
+SetObjectName S2Rail2
+NewLayer S2Sections
+Curve 0,0,0 2,2,0 4,0,0 Enter
+Curve 0,0,5 2.5,2.5,5 5,0,5 Enter
+Curve 0,0,10 3,3,10 6,0,10 Enter
+SelNone
+SelName S2Rail1
+Sweep2
+SelName S2Rail2
+Enter
+SelLayer
+Enter
+SelSrf
+Area
+BoundingBox
+# the same wall from ONE section (the exact kernel Sweep2 path) for comparison
+SelAll
+Delete
+@expect_objects 0
+NewLayer S2Rails1
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName S2OneRail1
+Line 4,0,0 6,0,10
+SelLast
+SetObjectName S2OneRail2
+NewLayer S2Section1
+Curve 0,0,0 2,2,0 4,0,0 Enter
+SelNone
+SelName S2OneRail1
+Sweep2
+SelName S2OneRail2
+Enter
+SelLayer
+Enter
+SelSrf
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- Sweep2 with three DIFFERENT sections on two CURVED rails: cubic rails
+# (0,0,0)(1,0,3)(-1,0,7)(0,0,10) and (6,0,0)(8,1,3)(7,-1,7)(9,0,10); sections
+# are quadratic arcs from rail1 to rail2 at the rails' parameters 0, 1/2 and 1
+# (the cubic Beziers' midpoints are (0,0,5) and (7.5,0,5)) with mid control
+# points raised 0.5, 3 and 1: the command prints the kernel's MEASURED accuracy
+# against the rails and sections.
+NewLayer S2CRails
+Curve 0,0,0 1,0,3 -1,0,7 0,0,10 Enter
+SelLast
+SetObjectName S2CRail1
+Curve 6,0,0 8,1,3 7,-1,7 9,0,10 Enter
+SelLast
+SetObjectName S2CRail2
+NewLayer S2CSections
+Curve 0,0,0 3,0.5,0 6,0,0 Enter
+Curve 0,0,5 3.75,3,5 7.5,0,5 Enter
+Curve 0,0,10 4.5,1,10 9,0,10 Enter
+SelNone
+SelName S2CRail1
+Sweep2
+SelName S2CRail2
+Enter
+SelLayer
+Enter
+SelSrf
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- Sweep2 negative control: two sections whose anchors CROSS along the rails
+# (the first runs from low on rail1 to high on rail2, the second from high on
+# rail1 to low on rail2): the kernel refuses, the reason is printed and the old
+# scaled-frame fit runs.
+NewLayer S2XRails
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName S2XRail1
+Line 4,0,0 4,0,10
+SelLast
+SetObjectName S2XRail2
+NewLayer S2XSections
+Line 0,0,2 4,0,8
+Line 0,0,6 4,0,4
+SelNone
+SelName S2XRail1
+Sweep2
+SelName S2XRail2
+Enter
+SelLayer
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Patch through a closed NON-planar curve: a cubic whose 24 control points
+# sit on the saddle ring r = 5, z = 1.5 cos(2 theta). The best-fit plane misses
+# it by 1.5, which the old command flattened (boundary projected onto the
+# plane). Now the kernel's least-squares NURBS patch is trimmed by the curve:
+# the printed edge deviation is measured, and the area is the saddle's
+# (about 85), not the flat disc's 78.5. The curve is deleted before the area
+# and box are read, so they are the patch's alone.
+Curve 5.000000,0.000000,1.500000 4.829629,1.294095,1.299038 4.330127,2.500000,0.750000 3.535534,3.535534,0.000000 2.500000,4.330127,-0.750000 1.294095,4.829629,-1.299038 0.000000,5.000000,-1.500000 -1.294095,4.829629,-1.299038 -2.500000,4.330127,-0.750000 -3.535534,3.535534,-0.000000 -4.330127,2.500000,0.750000 -4.829629,1.294095,1.299038 -5.000000,0.000000,1.500000 -4.829629,-1.294095,1.299038 -4.330127,-2.500000,0.750000 -3.535534,-3.535534,0.000000 -2.500000,-4.330127,-0.750000 -1.294095,-4.829629,-1.299038 -0.000000,-5.000000,-1.500000 1.294095,-4.829629,-1.299038 2.500000,-4.330127,-0.750000 3.535534,-3.535534,-0.000000 4.330127,-2.500000,0.750000 4.829629,-1.294095,1.299038 Close
+SelCrv
+Patch
+SelCrv
+Delete
+SelPolysrf
+Area
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- Patch through nine NON-coplanar points on the saddle z = x y / 4 over
+# [-2, 2]^2: the least-squares surface passes through all of them (z = x y / 4 is bilinear,
+# so a 2 x 2 net suffices) and its area is the closed-form integral of
+# sqrt(1 + (x^2 + y^2) / 16) over the square, about 17.27.
+Point -2,-2,1
+Point -2,0,-0
+Point -2,2,-1
+Point 0,-2,-0
+Point 0,0,0
+Point 0,2,0
+Point 2,-2,-1
+Point 2,0,0
+Point 2,2,1
+SelPt
+Patch
+SelSrf
+Area
+SelAll
+Delete
+@expect_objects 0
+# --- Patch negative control: three COPLANAR points keep the planar construction
+# (the old least-squares rectangle) with no kernel fit attempted.
+Point 0,0,0
+Point 4,0,0
+Point 0,3,0
+SelPt
+Patch
+SelAll
+Delete
+@expect_objects 0
+# --- Patch negative control: collinear points. Not planar-within-tolerance is
+# false (a line is in every plane through it) so this stays on the old path and
+# keeps its original diagnostic.
+Point 0,0,0
+Point 1,1,1
+Point 2,2,2
+SelPt
+Patch
+SelAll
+Delete
+@expect_objects 0
+
+# ===========================================================================
+# Section-anchored single-section Sweep1/Sweep2 and the exact interpolating
+# Loft (cmd_surface.cpp's AnchoredSweep1/AnchoredSweep2, cmd_solids.cpp's
+# RebuildLoft; measurement helpers in commands/section_fit.h).
+#
+# Every case starts with `New` (a fresh document, so object ids restart at 1
+# and the SelID picks below are deterministic) and ends with an
+# @expect_objects marker.
+#
+# Sweep1/Sweep2: kernel::Brep::Sweep1/Sweep2 carry the section rigidly from
+# the rail START, so a section anywhere else produced a surface running from
+# the section for the rail's whole length (a section 40% along a straight
+# rail of length 10 gave z = 4..14, overshooting the rail's end; on a curved
+# rail the transported copies left the rail altogether - measured: the rail's
+# own points were 7.2, 4.0, 1.5, 1.2, 0.46 and 0.28 from a tube of radius 1.5
+# that should have been 1.5 from all of them). The rebuild now anchors the
+# section on the rail, cuts the rail there, sweeps each side from the section
+# (so the section is station 0 of both), joins the halves, and measures the
+# result against the section before returning it (see smoke.sh for what each
+# check below asserts).
+# ===========================================================================
+# --- Straight vertical rail, radius-2 circle at 0%, 40% and 100% of its
+# length. The swept bounding box must be the rail's own z = 0..10 every time
+# (before: z = 0..10, 4..14 and 10..20).
+New
+SetActiveViewport Top
+Line 0,0,0 0,0,10
+Circle3Pt 2,0,0 0,2,0 -2,0,0
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelNone
+SelID 3
+BoundingBox
+New
+SetActiveViewport Top
+Line 0,0,0 0,0,10
+Circle3Pt 2,0,4 0,2,4 -2,0,4
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelNone
+SelID 3
+BoundingBox
+New
+SetActiveViewport Top
+Line 0,0,0 0,0,10
+Circle3Pt 2,0,10 0,2,10 -2,0,10
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelNone
+SelID 3
+BoundingBox
+@expect_objects 4
+# --- Sweep2 along two straight parallel rails 5 apart, with a 3-point
+# polyline section spanning them 40% of the way up (its apex is 2 above the
+# chord, so the far end of the sweep rises to z = 12). Before: z = 4..16.
+New
+SetActiveViewport Top
+Line 0,0,0 0,0,10
+Line 5,0,0 5,0,10
+Polyline 0,0,4 2.5,0,6 5,0,4
+Enter
+SelNone
+SelID 1
+SelID 2
+Sweep2
+SelID 3
+Enter
+SelNone
+SelID 4
+BoundingBox
+@expect_objects 4
+# --- Sweep1 along a CLOSED rail (circle radius 10), radius-1 circle section
+# 40% of the way round: the closed rail is re-seamed at the section instead of
+# being split. The tube (radius 1) is 1 from every rail point.
+New
+SetActiveViewport Top
+Circle 0,0,0 10
+Circle3Pt -8.090169944,5.877852523,1.000000000 -8.899186938,6.465637775,0.000000000 -8.090169944,5.877852523,-1.000000000
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelNone
+SelID 3
+ClosestPt
+10.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+8.090169944,5.877852523,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.000000000,10.000000000,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+-8.090169944,5.877852523,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+-9.396926208,-3.420201433,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+5.000000000,-8.660254038,0.000000000
+Enter
+@expect_objects 9
+# --- Sweep2 where the section is at the start of rail 1 but 40% of the way
+# along rail 2: one rail has nothing to sweep on one side of the section, so
+# the exact path refuses with the reason and the older approximate sweep is
+# used (the command still produces a surface).
+New
+SetActiveViewport Top
+Line 0,0,0 0,0,10
+Line 5,0,0 5,0,10
+Line 0,0,0 5,0,4
+SelNone
+SelID 1
+SelID 2
+Sweep2
+SelID 3
+Enter
+@expect_objects 4
+
+# --- Curved (non-circular) cubic Bezier rail, radius-1.5 circle sections perpendicular to it.
+# After each Sweep1 come 8 points ON the section circle (must be on the surface
+# to < 1e-6) and 6 rail points 0..100% (each must be exactly the tube radius,
+# 1.5, from the surface; before: 7.2, 4.0, 1.5, 1.2, 0.46, 0.28 for the 40% case).
+# --- Sweep1, curved non-circular rail, circle section AT the rail start (0%): the kernel call unchanged.
+New
+SetActiveViewport Top
+Curve 0.000000000,0.000000000,0.000000000 6.000000000,0.000000000,4.000000000 6.000000000,6.000000000,10.000000000 0.000000000,10.000000000,14.000000000
+Enter
+Circle3Pt 0.000000000,-1.500000000,0.000000000 0.832050294,0.000000000,-1.248075442 0.000000000,1.500000000,0.000000000
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.318411863,-1.385819299,-0.477617794
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.768714237,-0.574025149,-1.153071355
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.768714237,0.574025149,-1.153071355
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.318411863,1.385819299,-0.477617794
+Enter
+SelNone
+SelID 3
+ClosestPt
+-0.318411863,1.385819299,0.477617794
+Enter
+SelNone
+SelID 3
+ClosestPt
+-0.768714237,0.574025149,1.153071355
+Enter
+SelNone
+SelID 3
+ClosestPt
+-0.768714237,-0.574025149,1.153071355
+Enter
+SelNone
+SelID 3
+ClosestPt
+-0.318411863,-1.385819299,0.477617794
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+2.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 3
+ClosestPt
+2.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.000000000,10.000000000,14.000000000
+Enter
+@expect_objects 17
+# --- Sweep1, same rail, section 40% of the way along.
+New
+SetActiveViewport Top
+Curve 0.000000000,0.000000000,0.000000000 6.000000000,0.000000000,4.000000000 6.000000000,6.000000000,10.000000000 0.000000000,10.000000000,14.000000000
+Enter
+Circle3Pt 5.861555467,2.304423547,5.900955172 4.682605615,3.817923016,4.995749889 2.944624470,3.005503828,5.900955172
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelNone
+SelID 3
+ClosestPt
+5.857502398,2.776152094,5.554548107
+Enter
+SelNone
+SelID 3
+ClosestPt
+5.219459336,3.595252104,5.064654538
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.103198170,3.863543912,5.064654538
+Enter
+SelNone
+SelID 3
+ClosestPt
+3.162609553,3.423865816,5.554548107
+Enter
+SelNone
+SelID 3
+ClosestPt
+2.948677539,2.533775281,6.247362237
+Enter
+SelNone
+SelID 3
+ClosestPt
+3.586720601,1.714675271,6.737255806
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.702981767,1.446383463,6.737255806
+Enter
+SelNone
+SelID 3
+ClosestPt
+5.643570385,1.886061559,6.247362237
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+2.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 3
+ClosestPt
+2.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.000000000,10.000000000,14.000000000
+Enter
+@expect_objects 17
+# --- Sweep1, same rail, section AT the rail end (100%).
+New
+SetActiveViewport Top
+Curve 0.000000000,0.000000000,0.000000000 6.000000000,0.000000000,4.000000000 6.000000000,6.000000000,10.000000000 0.000000000,10.000000000,14.000000000
+Enter
+Circle3Pt 0.832050294,11.248075442,14.000000000 -0.605405515,10.403603676,12.688288052 -0.832050294,8.751924558,14.000000000
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.537035577,11.307523796,13.498029569
+Enter
+SelNone
+SelID 3
+ClosestPt
+-0.240909901,10.850498970,12.788136178
+Enter
+SelNone
+SelID 3
+ClosestPt
+-0.877733626,9.895263382,12.788136178
+Enter
+SelNone
+SelID 3
+ClosestPt
+-1.000392897,9.001381085,13.498029569
+Enter
+SelNone
+SelID 3
+ClosestPt
+-0.537035577,8.692476204,14.501970431
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.240909901,9.149501030,15.211863822
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.877733626,10.104736618,15.211863822
+Enter
+SelNone
+SelID 3
+ClosestPt
+1.000392897,10.998618915,14.501970431
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 3
+ClosestPt
+2.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 3
+ClosestPt
+4.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 3
+ClosestPt
+2.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 3
+ClosestPt
+0.000000000,10.000000000,14.000000000
+Enter
+@expect_objects 17
+
+# --- Two parallel curved rails 6 apart and a 3-point polyline spanning them. After each Sweep2: 5 points on the section (< 1e-6 from the surface),
+# then both rails sampled at 0, 20, ..., 100% (all within 0.05 of the surface: the rails are the surface's own
+# sides, to within the 32-station interpolation; before: up to 7.8 away).
+# --- Sweep2, two parallel curved rails 6 apart, 3-point polyline section spanning them AT the start (0%).
+New
+SetActiveViewport Top
+Curve 0.000000000,0.000000000,0.000000000 6.000000000,0.000000000,4.000000000 6.000000000,6.000000000,10.000000000 0.000000000,10.000000000,14.000000000
+Enter
+Curve 6.000000000,0.000000000,0.000000000 12.000000000,0.000000000,4.000000000 12.000000000,6.000000000,10.000000000 6.000000000,10.000000000,14.000000000
+Enter
+Polyline 0.000000000,0.000000000,0.000000000 3.000000000,0.000000000,2.000000000 6.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 1
+SelID 2
+Sweep2
+SelID 3
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+3.000000000,0.000000000,2.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+1.500000000,0.000000000,1.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.500000000,0.000000000,1.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+2.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 4
+ClosestPt
+8.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+10.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 4
+ClosestPt
+10.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 4
+ClosestPt
+2.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 4
+ClosestPt
+8.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,10.000000000,14.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,10.000000000,14.000000000
+Enter
+@expect_objects 21
+# --- Sweep2, same rails, section 40% of the way along both.
+New
+SetActiveViewport Top
+Curve 0.000000000,0.000000000,0.000000000 6.000000000,0.000000000,4.000000000 6.000000000,6.000000000,10.000000000 0.000000000,10.000000000,14.000000000
+Enter
+Curve 6.000000000,0.000000000,0.000000000 12.000000000,0.000000000,4.000000000 12.000000000,6.000000000,10.000000000 6.000000000,10.000000000,14.000000000
+Enter
+Polyline 4.403089969,2.654963688,5.900955172 7.403089969,2.654963688,7.900955172 10.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 1
+SelID 2
+Sweep2
+SelID 3
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+7.403089969,2.654963688,7.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+10.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+5.903089969,2.654963688,6.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+8.903089969,2.654963688,6.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+2.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 4
+ClosestPt
+8.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+10.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 4
+ClosestPt
+10.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 4
+ClosestPt
+2.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 4
+ClosestPt
+8.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,10.000000000,14.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,10.000000000,14.000000000
+Enter
+@expect_objects 21
+# --- Sweep2, same rails, section AT the end (100%).
+New
+SetActiveViewport Top
+Curve 0.000000000,0.000000000,0.000000000 6.000000000,0.000000000,4.000000000 6.000000000,6.000000000,10.000000000 0.000000000,10.000000000,14.000000000
+Enter
+Curve 6.000000000,0.000000000,0.000000000 12.000000000,0.000000000,4.000000000 12.000000000,6.000000000,10.000000000 6.000000000,10.000000000,14.000000000
+Enter
+Polyline 0.000000000,10.000000000,14.000000000 3.000000000,10.000000000,16.000000000 6.000000000,10.000000000,14.000000000
+Enter
+SelNone
+SelID 1
+SelID 2
+Sweep2
+SelID 3
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,10.000000000,14.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+3.000000000,10.000000000,16.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,10.000000000,14.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+1.500000000,10.000000000,15.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.500000000,10.000000000,15.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,0.000000000,0.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+2.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 4
+ClosestPt
+8.940975180,0.691995386,2.687460223
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+10.403089969,2.654963688,5.900955172
+Enter
+SelNone
+SelID 4
+ClosestPt
+4.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 4
+ClosestPt
+10.166704699,5.223841475,9.031046520
+Enter
+SelNone
+SelID 4
+ClosestPt
+2.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 4
+ClosestPt
+8.577925789,7.782842159,11.762050378
+Enter
+SelNone
+SelID 4
+ClosestPt
+0.000000000,10.000000000,14.000000000
+Enter
+SelNone
+SelID 4
+ClosestPt
+6.000000000,10.000000000,14.000000000
+Enter
+@expect_objects 21
+
+# --- Loft through three straight lines (the middle one drawn against the
+# others' direction), the exact interpolating kernel loft: the surface must
+# contain every sampled point of all three lines (before: the 24 samples per
+# curve were control points handed to FromControlGrid in the wrong index
+# order - a ribbon along the sample polyline of area 6.7, missing the line
+# ends by 0.88 - and the middle line was not reproduced), and the middle line
+# is reversed to run the same way. Exact area of the quadratic sheet: 147.9.
+New
+SetActiveViewport Top
+Line 0,0,0 10,0,0
+Line 10,5,5 0,5,5
+Line 0,0,10 10,0,10
+SelCrv
+Loft
+SelNone
+SelSrf
+Area
+SelNone
+SelSrf
+ClosestPt
+0,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+5,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+10,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,5,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+2.5,5,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+5,5,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+7.5,5,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+10,5,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,0,10
+Enter
+SelNone
+SelSrf
+ClosestPt
+5,0,10
+Enter
+SelNone
+SelSrf
+ClosestPt
+10,0,10
+Enter
+@expect_objects 15
+# --- Loft through three circles (radius 5, 3, 5 at z = 0, 5, 10) after the
+# middle one is rotated a quarter turn about its axis and reversed and the last
+# one is rotated 200 degrees: the loft reverses the middle circle, moves two
+# seams, and caps both ends into a closed polysurface solid (before: an
+# uncapped-seam-unaligned mesh of volume 165.6). Exact volume
+# 10 pi * 13.8 = 433.5 (radius 5 - 8v(1-v) at height 10v).
+New
+SetActiveViewport Top
+Circle 0,0,0 5
+Circle 0,0,5 3
+Circle 0,0,10 5
+SelNone
+SelID 2
+Rotate 0,0,5 90
+SelNone
+SelID 2
+Flip
+SelNone
+SelID 3
+Rotate 0,0,10 200
+SelNone
+SelCrv
+Loft
+SelLast
+List
+Volume
+@expect_objects 4
+# --- A line and a circle cannot be lofted (no point-for-point correspondence):
+# refused with the reason printed, nothing created.
+New
+SetActiveViewport Top
+Line 0,0,0 10,0,0
+Circle 0,0,5 3
+SelCrv
+Loft
+@expect_objects 2
+# --- Style=Straight is degree 1 in the loft direction (the exact cone frustum
+# between a radius-5 and a radius-3 circle 10 apart: lateral area
+# pi (5 + 3) sqrt(104) = 256.3, solid volume pi 10/3 (25 + 15 + 9) = 513.2);
+# Cap=No leaves the periodic wall surface only.
+New
+SetActiveViewport Top
+Circle 0,0,0 5
+Circle 0,0,10 3
+SelCrv
+Loft Style=Straight Cap=No
+SelLast
+List
+Area
+@expect_objects 3
+SelAll
+Delete
+Circle 0,0,0 5
+Circle 0,0,10 3
+SelCrv
+Loft Style=Straight
+SelLast
+List
+Volume
+# --- Two coincident circles: the kernel refuses ("nothing to loft"), the older
+# control-point fit is kept as the fail-open path and the reason is printed.
+New
+SetActiveViewport Top
+Circle 0,0,0 5
+Circle 0,0,0 5
+SelCrv
+Loft
+SelLast
+List
+# --- Two squares (the second starting at a different corner): the seam moves
+# and the exact capped solid is a closed polysurface of lateral+cap area 600.
+New
+SetActiveViewport Top
+Polyline 0,0,0 10,0,0 10,10,0 0,10,0 0,0,0
+Enter
+Polyline 10,10,10 0,10,10 0,0,10 10,0,10 10,10,10
+Enter
+SelCrv
+Loft Style=Straight
+SelLast
+List
+Area
+# --- History: the Loft is recorded; the middle line is moved 2 in y; UpdateHistory
+# re-lofts through the moved line, so the surface now contains (5,7,5).
+New
+SetActiveViewport Top
+History On
+Line 0,0,0 10,0,0
+Line 0,5,5 10,5,5
+Line 0,0,10 10,0,10
+SelCrv
+Loft
+SelNone
+SelID 2
+Move
+0,0,0
+0,2,0
+UpdateHistory
+SelNone
+SelID 4
+ClosestPt
+5,7,5
+Enter
+History Off
+# --- SubDLoft is untouched by the exact path: closed circles still make a SubD;
+# open lines still make a control-point-fit NURBS surface (now laid out
+# correctly: area 114.8 instead of the ribbon's 6.7).
+New
+SetActiveViewport Top
+Line 0,0,0 10,0,0
+Line 0,5,5 10,5,5
+Line 0,0,10 10,0,10
+SelCrv
+SubDLoft
+SelNone
+SelSrf
+List
+Area
+SelAll
+Delete
+Circle 0,0,0 5
+Circle 0,0,5 3
+Circle 0,0,10 5
+SelCrv
+SubDLoft
+SelLast
+List
+# --- Four lines, cubic through all four (the exact loft interpolates every one).
+New
+SetActiveViewport Top
+Line 0,0,0 10,0,0
+Line 0,4,3 10,4,3
+Line 0,-2,7 10,-2,7
+Line 0,1,10 10,1,10
+SelCrv
+Loft
+SelNone
+SelSrf
+ClosestPt
+5,4,3
+Enter
+SelNone
+SelSrf
+ClosestPt
+5,-2,7
+Enter
+SelNone
+SelSrf
+ClosestPt
+5,1,10
+Enter
+@expect_objects 8
+New

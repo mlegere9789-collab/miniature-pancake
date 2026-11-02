@@ -1,0 +1,683 @@
+// Miscellaneous commands: help, options, aliases, snaps, macros, calculators,
+// scripting (RunScript / LoadScript / EditScript / ScriptEditor).
+#include "commands/cmd_common.h"
+
+#include <cstring>
+#include <filesystem>
+#include <map>
+#include <fstream>
+#include <sstream>
+
+#include "script/LuaEngine.h"
+#include "script/PythonEngine.h"
+#include "ui/Panels.h"
+
+namespace dino8::app {
+
+namespace {
+
+class AliasCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("Alias name (or Enter to list)"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (!alias_) { alias_ = t; WantText("Command for alias " + t); return; }
+    ctx.Engine().Aliases()[ToLower(*alias_)] = t;
+    ctx.Print("Alias " + *alias_ + " -> " + t);
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (!alias_) { for (const auto& [a, c] : ctx.Engine().Aliases()) ctx.Print(a + " -> " + c); }
+    Finish();
+  }
+  std::optional<std::string> alias_;
+};
+
+class CalcCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("Expression"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    double v; std::string err;
+    if (EvaluateExpression(t, v, err)) { ctx.Print(t + " = " + FormatNumber(v)); ctx.App().Notify(FormatNumber(v)); }
+    else ctx.Warn(err);
+    Finish();
+  }
+};
+
+bool ParseMiscNumber(const std::string& t, double& v) {
+  char* e = nullptr;
+  v = std::strtod(t.c_str(), &e);
+  return e && e != t.c_str() && *e == 0;
+}
+
+// Reverse Polish (postfix) evaluator: space-separated numbers, binary
+// operators (+ - * / ^), and unary functions (sqrt neg sin cos tan abs).
+bool EvaluateRPN(const std::string& text, double& out, std::string& error) {
+  std::istringstream in(text);
+  std::string tok;
+  std::vector<double> s;
+  auto pop = [&](double& v) { if (s.empty()) return false; v = s.back(); s.pop_back(); return true; };
+  while (in >> tok) {
+    double a, b;
+    if (tok == "+" || tok == "-" || tok == "*" || tok == "/" || tok == "^") {
+      if (!pop(b) || !pop(a)) { error = "not enough operands for '" + tok + "'"; return false; }
+      if (tok == "+") s.push_back(a + b);
+      else if (tok == "-") s.push_back(a - b);
+      else if (tok == "*") s.push_back(a * b);
+      else if (tok == "/") { if (b == 0) { error = "division by zero"; return false; } s.push_back(a / b); }
+      else s.push_back(std::pow(a, b));
+      continue;
+    }
+    if (tok == "sqrt" || tok == "neg" || tok == "sin" || tok == "cos" || tok == "tan" || tok == "abs") {
+      if (!pop(a)) { error = "not enough operands for '" + tok + "'"; return false; }
+      if (tok == "sqrt") { if (a < 0) { error = "sqrt of a negative number"; return false; } s.push_back(std::sqrt(a)); }
+      else if (tok == "neg") s.push_back(-a);
+      else if (tok == "sin") s.push_back(std::sin(a));
+      else if (tok == "cos") s.push_back(std::cos(a));
+      else if (tok == "tan") s.push_back(std::tan(a));
+      else s.push_back(std::fabs(a));
+      continue;
+    }
+    double v;
+    if (!ParseMiscNumber(tok, v)) { error = "unknown token '" + tok + "'"; return false; }
+    s.push_back(v);
+  }
+  if (s.size() != 1) { error = s.empty() ? "empty expression" : "leftover operands (missing operator)"; return false; }
+  out = s.back();
+  return true;
+}
+
+class CalcRPNCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("RPN expression (e.g. \"3 4 +\")"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    double v; std::string err;
+    if (EvaluateRPN(t, v, err)) { ctx.Print(t + " = " + FormatNumber(v)); ctx.App().Notify(FormatNumber(v)); }
+    else ctx.Warn("CalcRPN: " + err);
+    Finish();
+  }
+};
+
+class MacroRunCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("Macro (commands separated by ';')"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    Finish();
+    // "Macro Line 0,0,0 10,0,0;SelAll": the rest of the typed line belongs to the macro too.
+    std::string text = t;
+    while (auto tok = ctx.Engine().TakePendingInput()) text += " " + *tok;
+    std::istringstream in(text);
+    std::string part;
+    while (std::getline(in, part, ';')) if (!part.empty()) ctx.Engine().Execute(part);
+  }
+};
+
+// RecordMacro: the macro editor's action recorder (PARITY_MAP.md's "VBA-
+// style macro recorder and editor" item). While on, CommandEngine::Execute
+// appends every top-level typed command line verbatim to
+// AppState::macro_text - see its own comment there and Execute's call
+// site in CommandEngine.cpp. Same On/Off-report shape as History/
+// RecordHistory (cmd_history.cpp's ToggleOrReport): no argument reports
+// the current state, On/Off (Yes/No/1/0 also accepted) sets it.
+void ToggleOrReportMacroRecording(CommandContext& ctx) {
+  bool& on = ctx.App().State().macro_recording;
+  if (std::optional<std::string> tok = ctx.Engine().TakePendingInput()) {
+    const std::string v = ToLower(*tok);
+    if (v == "clear") {
+      ctx.App().State().macro_text.clear();
+      ctx.Print("Macro recorder buffer cleared (SaveMacro turns a recorded buffer into a named macro first)");
+      return;
+    }
+    if (v == "on" || v == "yes" || v == "y" || v == "1") on = true;
+    else if (v == "off" || v == "no" || v == "n" || v == "0") on = false;
+    else { ctx.Warn("RecordMacro: expected On, Off or Clear"); return; }
+    ctx.Print(std::string("Macro recording: ") + (on ? "on - every command line you type is appended to the Macro Editor's buffer" : "off"));
+    return;
+  }
+  // No argument: report the On/Off state and dump the buffer's current
+  // contents line by line, so a recorded session can be inspected/verified
+  // from the command line or a script, not only by opening the Macro
+  // Editor panel.
+  ctx.Print(std::string("Macro recording: ") + (on ? "on" : "off") + (on ? "" : " (type On to start)") + ". Buffer:");
+  std::istringstream in(ctx.App().State().macro_text);
+  std::string line;
+  while (std::getline(in, line)) ctx.Print("  " + line);
+}
+
+class HelpCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    const std::vector<std::string>& recent = ctx.Engine().RecentCommands();
+    if (recent.size() > 1) { ctx.App().ShowHelpFor(recent[1]); Finish(); return; }
+    WantText("Command name for help");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().ShowHelpFor(t); Finish(); }
+  void OnEnter(CommandContext& ctx) override { ctx.App().Panels().help = true; Finish(); }
+};
+
+CommandFactory Toggle(std::function<bool&(CommandContext&)> get, const char* label) {
+  return Immediate([get, label](CommandContext& ctx) { bool& b = get(ctx); b = !b; ctx.Print(std::string(label) + (b ? " on" : " off")); });
+}
+
+bool ParseMiscColor(const std::string& text, Color& out) {
+  int r, g, b;
+  if (std::sscanf(text.c_str(), "%d,%d,%d", &r, &g, &b) == 3) { out = Color::FromBytes(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255)); return true; }
+  static const std::map<std::string, Color> named = {
+      {"white", Color::FromBytes(255, 255, 255)}, {"black", Color::FromBytes(0, 0, 0)}, {"red", Color::FromBytes(220, 40, 40)},
+      {"green", Color::FromBytes(40, 180, 60)}, {"blue", Color::FromBytes(50, 90, 220)}, {"yellow", Color::FromBytes(240, 220, 60)},
+      {"gray", Color::FromBytes(128, 128, 128)}, {"grey", Color::FromBytes(128, 128, 128)}, {"orange", Color::FromBytes(240, 150, 40)}};
+  auto it = named.find(ToLower(text));
+  if (it == named.end()) return false;
+  out = it->second;
+  return true;
+}
+
+// Sets the selected objects' own display colour (not their layer's),
+// scriptable from the command line as "SetRenderColor 255,0,0" - Properties
+// offers the same field with a colour-picker widget, which this build has
+// no headless equivalent for.
+class SetRenderColorCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to set the colour of"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids.empty()) { ctx.Warn("SetRenderColor: nothing selected"); Finish(); return; }
+    ids_ = ids;
+    WantText("Colour (r,g,b 0-255, or a colour name)");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    Color c;
+    if (!ParseMiscColor(t, c)) { ctx.Warn("SetRenderColor: use r,g,b (0-255) or a colour name"); Finish(); return; }
+    // ids_ is the fixed selection from OnObjects above; only color/
+    // color_by_layer change on those existing objects - fast path.
+    // FindMany() resolves the whole selection in one O(document size) pass
+    // instead of a Find() per id (see cmd_edit.cpp's SetObjectName/
+    // SetUserText for the same fix).
+    ctx.Doc().BeginChangeForObjects("SetRenderColor", ids_);
+    int n = 0;
+    for (SceneObject* o : ctx.Doc().FindMany(ids_)) {
+      if (!o) continue;
+      o->color = c;
+      o->color_by_layer = false;
+      o->InvalidateDisplay();
+      ++n;
+    }
+    ctx.Print("SetRenderColor: " + std::to_string(n) + " object(s) set to " + t);
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+};
+
+// ---------------------------------------------------------------------------
+// Scripting: RunScript / LoadScript run a Lua file (or a queued Script
+// Editor / "= expr" chunk) through the shared LuaEngine, staying interactive
+// while it's suspended on rs.GetPoint / rs.GetObject / rs.GetString / rs.GetReal
+// / rs.GetInteger - exactly like any other command's Want* prompt, so script
+// tokens on the command line ("RunScript t.lua 5,5,5") feed them the same
+// way. A ".txt"/".dino"/".cmd" file still runs as a plain command script
+// (ReadCommandFile's behaviour), for scripts written before Lua existed.
+class ScriptCommand : public Command {
+ public:
+  explicit ScriptCommand(std::string label, std::string preface = "")
+      : label_(std::move(label)), preface_(std::move(preface)) {}
+
+  void Begin(CommandContext& ctx) override {
+    if (!preface_.empty()) ctx.Print(preface_);
+    Application& app = ctx.App();
+    std::string code, chunk;
+    bool expr = false;
+    if (app.TakeQueuedScript(code, chunk, expr)) {
+      if (expr ? app.Lua().StartExpression(code) : app.Lua().Start(code, chunk)) Pump(ctx);
+      else Finish();
+      return;
+    }
+    if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) {
+      RunPath(ctx, *path);
+      return;
+    }
+    if (ctx.ScriptMode() || app.headless) {
+      ctx.Warn(label_ + ": no script file given");
+      Finish();
+      return;
+    }
+    app.ShowFileDialog(label_, {".lua", ".txt", ".dino", ".cmd"}, false, [&app, label = label_](const std::string& path) {
+      app.Engine().Execute("-" + label + " \"" + path + "\"");
+    });
+    Finish();
+  }
+
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (python_active_) ctx.App().Python().ResumePoint(p);
+    else ctx.App().Lua().ResumePoint(p);
+    Pump(ctx);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (python_active_) ctx.App().Python().ResumeNumber(v);
+    else ctx.App().Lua().ResumeNumber(v);
+    Pump(ctx);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (python_active_) ctx.App().Python().ResumeText(t);
+    else ctx.App().Lua().ResumeText(t);
+    Pump(ctx);
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (python_active_) ctx.App().Python().ResumeObjects(ids);
+    else ctx.App().Lua().ResumeObjects(ids);
+    Pump(ctx);
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (python_active_) {
+      if (want == Want::Objects) ctx.App().Python().ResumeObjects({});
+      else ctx.App().Python().ResumeNil();
+    } else if (want == Want::Objects) {
+      ctx.App().Lua().ResumeObjects({});
+    } else {
+      ctx.App().Lua().ResumeNil();
+    }
+    Pump(ctx);
+  }
+  void OnCancel(CommandContext& ctx) override {
+    if (python_active_) ctx.App().Python().Abort();
+    else ctx.App().Lua().Abort();
+  }
+
+ private:
+  void RunPath(CommandContext& ctx, const std::string& raw_path) {
+    Application& app = ctx.App();
+    const std::string ext = ToLower(std::filesystem::path(raw_path).extension().string());
+    if (ext == ".py") {
+      if (!PythonEngine::Available()) {
+        ctx.Warn(label_ + ": " + raw_path +
+                 " is a Python file, but this build has no Python 3 development install (DINO8_HAVE_PYTHON is off); "
+                 "rewrite it as Lua (rs.* API) and run that instead, or use RunPythonScript on a build with Python support.");
+        Finish();
+        return;
+      }
+      python_active_ = true;
+      if (app.Python().StartFile(raw_path)) Pump(ctx);
+      else Finish();
+      return;
+    }
+    if (ext == ".txt" || ext == ".dino" || ext == ".cmd") {
+      std::ifstream in(raw_path);
+      if (!in) { ctx.Warn(label_ + ": cannot open " + raw_path); Finish(); return; }
+      // RunNested keeps this command's own state intact while each line
+      // runs (and finishes) as an ordinary top-level command in between.
+      std::string line;
+      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') ctx.Engine().RunNested(line);
+      Finish();
+      return;
+    }
+    if (app.Lua().StartFile(raw_path)) Pump(ctx);
+    else Finish();
+  }
+
+  // Reflects the running script's current rs.Get*/dino8.Get* prompt (or
+  // finishes the command once the script itself has finished or failed).
+  // Python and Lua now both reach every ScriptWant (see PythonEngine.h), so
+  // both branches share the same switch.
+  void Pump(CommandContext& ctx) {
+    if (python_active_) {
+      PythonEngine& py = ctx.App().Python();
+      if (!py.Running() || !py.Suspended()) { Finish(); return; }
+      const ScriptRequest& r = py.Request();
+      switch (r.want) {
+        case ScriptWant::Point: WantPoint(r.prompt); break;
+        case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+        case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+        case ScriptWant::Number:
+        case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+        case ScriptWant::Nothing: default: Finish(); break;
+      }
+      return;
+    }
+    LuaEngine& lua = ctx.App().Lua();
+    if (!lua.Running()) { Finish(); return; }
+    const ScriptRequest& r = lua.Request();
+    switch (r.want) {
+      case ScriptWant::Point: WantPoint(r.prompt); break;
+      case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+      case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+      case ScriptWant::Number:
+      case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+      case ScriptWant::Nothing: default: Finish(); break;
+    }
+  }
+
+  std::string label_;
+  std::string preface_;
+  bool python_active_ = false;  // set once RunPath dispatches a .py file, so OnPoint/OnEnter/OnCancel/Pump know which engine owns this run
+};
+
+// RunPythonScript: runs a .py file through the embedded `dino8` module
+// (PythonEngine) when this build has one (DINO8_HAVE_PYTHON - see
+// CMakeLists.txt), or prints an honest "not available" message otherwise.
+//
+// PythonEngine.Start()/StartFile() run the script on a worker thread and
+// suspend it there when it calls any dino8.Get*() prompt (see PythonEngine.h)
+// - Pump/OnPoint/OnNumber/OnText/OnObjects/OnEnter/OnCancel below mirror
+// ScriptCommand's own Lua pump loop so a RunPythonScript invocation can go
+// interactive too, not just finish in the same call that started it.
+class PythonScriptCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    Application& app = ctx.App();
+    if (!PythonEngine::Available()) {
+      ctx.Warn(
+          "RunPythonScript: this build of Dino 8 was compiled without a Python 3 development install "
+          "(no DINO8_HAVE_PYTHON); rewrite the script as Lua (rs.* API) and use RunScript instead.");
+      Finish();
+      return;
+    }
+    std::string code, chunk;
+    bool expr = false;
+    if (app.TakeQueuedScript(code, chunk, expr)) {
+      // The Script Editor's Run button queues the buffer's text directly
+      // (RunScriptEditor, Panels.cpp) so a non-macro .py tab's chunk name
+      // stays "Script Editor"/its own file name instead of a generic
+      // "_last.py" a round trip through disk would otherwise give it.
+      if (app.Python().Start(code, chunk)) Pump(ctx);
+      else Finish();
+      return;
+    }
+    if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) {
+      if (app.Python().StartFile(*path)) Pump(ctx);
+      else Finish();
+      return;
+    }
+    if (ctx.ScriptMode() || app.headless) {
+      ctx.Warn("RunPythonScript: no script file given");
+      Finish();
+      return;
+    }
+    app.ShowFileDialog("RunPythonScript", {".py"}, false, [&app](const std::string& path) {
+      app.Engine().Execute("-RunPythonScript \"" + path + "\"");
+    });
+    Finish();
+  }
+
+  void OnPoint(CommandContext& ctx, Point3d p) override { ctx.App().Python().ResumePoint(p); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Python().ResumeNumber(v); Pump(ctx); }
+  void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().Python().ResumeText(t); Pump(ctx); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ctx.App().Python().ResumeObjects(ids); Pump(ctx); }
+  void OnEnter(CommandContext& ctx) override {
+    if (want == Want::Objects) ctx.App().Python().ResumeObjects({});
+    else ctx.App().Python().ResumeNil();
+    Pump(ctx);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.App().Python().Abort(); }
+
+ private:
+  // Reflects the running script's current dino8.Get*() prompt (or finishes
+  // the command once the script itself has finished or failed). Every
+  // ScriptWant now reaches here (see PythonEngine.h) - mirrors ScriptCommand's
+  // own Lua/Python Pump switch above.
+  void Pump(CommandContext& ctx) {
+    PythonEngine& py = ctx.App().Python();
+    if (!py.Running() || !py.Suspended()) { Finish(); return; }
+    const ScriptRequest& r = py.Request();
+    switch (r.want) {
+      case ScriptWant::Point: WantPoint(r.prompt); break;
+      case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+      case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+      case ScriptWant::Number:
+      case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+      case ScriptWant::Nothing: default: Finish(); break;
+    }
+  }
+};
+
+// A genuine per-object display-mode override (SceneObject::force_wireframe /
+// force_shaded / force_ghosted / force_xray / force_monochrome / force_pen /
+// force_arctic / force_rendered / force_technical / force_artistic, honoured
+// by Viewport::DrawObjects) for every viewport display mode that is a
+// per-object concept: Wireframe (never filled), Shaded (always filled, same
+// as ShadeSelected), Rendered (the full material/texture/lighting/
+// transparency path), Ghosted/X-Ray (always filled at that mode's own fixed
+// transparency), Monochrome/Technical/Artistic (flat grey, lit, opaque -
+// Technical and Artistic differ from Monochrome and each other in their line
+// work, exactly as the viewport-wide modes do), Pen/Arctic (flat white,
+// unlit/lit). Each override carries its mode's FULL style (Viewport.cpp's
+// ObjectStyleFor): fill, edges, isocurves and edge colour, not just a fill
+// colour. Scope follows Rhino ("sets how the selected objects display in the
+// current viewport; their display in other viewports won't be affected"): the
+// override applies to the ACTIVE viewport only, unless the word `All` is
+// typed after the mode ("Pen All" / "All Pen"), which sets it for every
+// viewport (and clears any per-viewport entries). RayTraced is the one
+// viewport mode with no per-object form - it is a whole-frame path-traced
+// image - and is refused with that explanation (nothing changes) rather than
+// silently treated as UseViewport. The override is saved in the .3dm.
+class SetObjectDisplayModeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to set a display mode for", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids.empty()) { Finish(); return; }
+    ids_ = ids;
+    WantText("Mode (Wireframe/Shaded/Rendered/RayTraced/Ghosted/X-Ray/Technical/Artistic/Pen/Arctic/Monochrome/UseViewport; add All for every viewport)", "Shaded");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    // Tokens: one mode word plus an optional "All".
+    std::string mode_word;
+    bool all = false;
+    {
+      // "SetObjectDisplayMode Pen All" arrives as two tokens: the mode text and
+      // whatever the script/command line still has queued.
+      std::string line = t;
+      while (auto extra = ctx.Engine().TakePendingInput()) line += " " + *extra;
+      std::istringstream in(line);
+      std::string tok;
+      while (in >> tok) {
+        const std::string low = ToLower(tok);
+        if (low == "all" || low == "allviewports") all = true;
+        else if (mode_word.empty()) mode_word = tok;
+      }
+    }
+    std::string mode = ToLower(mode_word);
+    mode.erase(std::remove(mode.begin(), mode.end(), '-'), mode.end());
+    // One-letter / short forms the command always accepted, plus the new modes.
+    static const std::map<std::string, std::string> alias = {
+        {"w", "Wireframe"}, {"s", "Shaded"}, {"g", "Ghosted"}, {"x", "X-Ray"}, {"m", "Monochrome"},
+        {"p", "Pen"},      {"a", "Arctic"},  {"r", "Rendered"}, {"t", "Technical"}, {"art", "Artistic"},
+        {"raytrace", "RayTraced"}, {"rt", "RayTraced"}};
+    const auto al = alias.find(mode);
+    const std::string name = al != alias.end() ? al->second : mode_word;
+    const std::string canonical = SceneObject::CanonicalDisplayOverrideName(name);
+    if (canonical.empty()) {
+      ctx.Warn("SetObjectDisplayMode: unknown mode '" + t + "' - nothing changed. Modes: " + JoinModeNames() + ".");
+      Finish();
+      return;
+    }
+    Viewport* vp = ctx.ActiveViewport();
+    const bool all_viewports = all || !vp;
+    const std::string vp_name = vp ? vp->Name() : std::string();
+    Document& doc = ctx.Doc();
+    // An undo step (and a Modified()/Revision() bump): only the listed objects
+    // are touched. Undo restores their override flags.
+    doc.BeginChangeForObjects("SetObjectDisplayMode", ids_);
+    int n = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = doc.Find(id);
+      if (!o) continue;
+      if (all_viewports) {
+        o->SetDisplayOverride(canonical);
+        o->viewport_display_overrides.clear();
+      } else {
+        o->SetViewportDisplayOverride(vp_name, canonical);
+      }
+      o->InvalidateDisplay();
+      ++n;
+    }
+    const std::string scope = all_viewports ? "all viewports" : "viewport " + vp_name;
+    const std::string who = "SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown ";
+    std::string msg;
+    if (canonical == "UseViewport")
+      msg = "SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode.";
+    else if (canonical == "Wireframe")
+      msg = "SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown as wireframe, even in a shaded/rendered viewport.";
+    else if (canonical == "Shaded")
+      msg = who + "shaded (see ShadeSelected), even in Wireframe or another line-only viewport.";
+    else if (canonical == "Ghosted")
+      msg = who + "Ghosted (35% opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "X-Ray")
+      msg = who + "X-Ray (18% opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Monochrome")
+      msg = who + "Monochrome (flat grey, fully opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Pen")
+      msg = who + "Pen (flat white, unlit, fully opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Arctic")
+      msg = who + "Arctic (flat white, lit, fully opaque), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Rendered")
+      msg = who + "Rendered (full material/lighting), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Technical")
+      msg = who + "Technical (flat grey fill, dark technical line work), even in Wireframe or another viewport display mode.";
+    else if (canonical == "Artistic")
+      msg = who + "Artistic (flat grey fill, warm sketch line work), even in Wireframe or another viewport display mode.";
+    else if (canonical == "RayTraced")
+      msg = who + "RayTraced: path-traced by the GPU raytracer and depth-composited with the objects the viewport rasterizes (the traced frame carries no depth of its own; the rasterizer's depth of the same tessellation stands in for it), even in a Shaded/Wireframe viewport.";
+    ctx.Print(msg + " Scope: " + scope + ".");
+    Finish();
+  }
+
+  static std::string JoinModeNames() {
+    std::string out;
+    for (const std::string& n : SceneObject::DisplayOverrideNames()) out += (out.empty() ? "" : "/") + n;
+    return out;
+  }
+
+ private:
+  std::vector<ObjectId> ids_;
+};
+
+// ObjectDisplayModes: the query side of SetObjectDisplayMode. Lists every
+// object that carries a per-object display-mode override - an all-viewports
+// one ("= Pen") and/or per-viewport ones ("= Pen (viewport Top)") - or, with
+// the argument "All", every object, plus a per-mode tally.
+class ObjectDisplayModesCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    bool all = false;
+    while (auto t = ctx.Engine().TakePendingInput()) if (ToLower(*t) == "all") all = true;
+    std::map<std::string, int> tally;
+    int overridden = 0, total = 0;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      ++total;
+      const std::string head = "ObjectDisplayModes: object " + std::to_string(static_cast<unsigned long long>(o.id)) + " " + ObjectKindName(o.kind) + " = ";
+      if (!o.HasAnyDisplayOverride()) {
+        if (all) ctx.Print(head + "UseViewport");
+        continue;
+      }
+      ++overridden;
+      if (o.HasDisplayOverride()) { ctx.Print(head + o.DisplayOverrideName()); ++tally[o.DisplayOverrideName()]; }
+      for (const auto& [vp, mode] : o.viewport_display_overrides) { ctx.Print(head + mode + " (viewport " + vp + ")"); ++tally[mode]; }
+    }
+    std::string summary = "ObjectDisplayModes: " + std::to_string(overridden) + " of " + std::to_string(total) +
+                          " object(s) carry a per-object display mode";
+    for (const std::string& n : SceneObject::DisplayOverrideNames()) {
+      const auto it = tally.find(n);
+      if (it != tally.end()) summary += " " + n + "=" + std::to_string(it->second);
+    }
+    ctx.Print(summary);
+    Finish();
+  }
+};
+
+}  // namespace
+
+void RegisterMiscCommands(CommandEngine& e) {
+  Reg(e, "Help", Make<HelpCommand>());
+  Reg(e, "CommandHelp", Make<HelpCommand>());
+  Reg(e, "CommandList", Immediate([](CommandContext& ctx) { ctx.App().Panels().command_list = true; }));
+  Reg(e, "CommandHistory", Immediate([](CommandContext& ctx) { ctx.App().Panels().command_history = true; }));
+  Reg(e, "CommandPaste", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }));
+  Reg(e, "Options", Immediate([](CommandContext& ctx) { ctx.App().Panels().options = true; }));
+  Reg(e, "ToggleLeftSidebar", Immediate([](CommandContext& ctx) { ctx.App().show_left_sidebar = !ctx.App().show_left_sidebar; ctx.Print(std::string("Left sidebar ") + (ctx.App().show_left_sidebar ? "shown." : "hidden.")); }));
+  Reg(e, "Toolbar", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = !ctx.App().Panels().toolbars; }));
+  Reg(e, "ToolbarReset", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = true; ctx.App().SetViewportLayout(4); }));
+  Reg(e, "ObjectDisplayModes", Make<ObjectDisplayModesCommand>(), CommandStatus::Implemented, "Lists the per-object display-mode overrides (SetObjectDisplayMode); ObjectDisplayModes All lists every object.");
+  Reg(e, "Alias", Make<AliasCommand>());
+  Reg(e, "Calc", Make<CalcCommand>());
+  Reg(e, "CalcRPN", Make<CalcRPNCommand>(), CommandStatus::Implemented, "Evaluates a postfix expression (numbers then + - * / ^ or sqrt/neg/sin/cos/tan/abs) with an explicit operand stack.");
+  Reg(e, "Macro", Make<MacroRunCommand>());
+  Reg(e, "MacroEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }));
+  Reg(e, "RecordMacro", Immediate(ToggleOrReportMacroRecording), CommandStatus::Implemented,
+      "A real action recorder for the Macro Editor's buffer: with no argument, reports the On/Off state and dumps the buffer's current contents line by line; On/Off (Yes/No/1/0 also accepted) toggles it. While on, every top-level command line you type on the command line (or via the Macro Editor's own Record button) is appended verbatim to the Macro Editor's buffer, which already Run/Copy and persists across restarts - so a session of typed commands can be replayed or saved as a macro without retyping them. Scope: this observes typed command LINES, the same unit Rhino's own command-line macro recording captures - not raw mouse clicks or panel interactions with no command-line equivalent.");
+  Reg(e, "ReadCommandFile", Immediate([](CommandContext& ctx) {
+        Application& app = ctx.App();
+        app.ShowFileDialog("Read command file", {".txt", ".dino", ".cmd"}, false, [&app](const std::string& path) {
+          std::ifstream in(path); std::string line;
+          while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
+        });
+      }));
+  // Runs after Repeat itself has finished (Execute defers while a command runs); Repeat is never recorded as the last command.
+  Reg(e, "Repeat", Immediate([](CommandContext& ctx) { if (!ctx.Engine().LastCommand().empty()) ctx.Engine().Execute(ctx.Engine().LastCommand()); }));
+  Reg(e, "Snap", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().grid_snap; }, "Grid snap"));
+  Reg(e, "Ortho", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().ortho; }, "Ortho"));
+  Reg(e, "Planar", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().planar; }, "Planar"));
+  Reg(e, "SmartTrack", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().smart_track; }, "SmartTrack"));
+  Reg(e, "DisableOsnap", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().disable_all; }, "Osnaps disabled"));
+  Reg(e, "Osnap", Immediate([](CommandContext& ctx) { ctx.App().Panels().object_snaps = true; }));
+  Reg(e, "Gumball", Immediate([](CommandContext& ctx) { ctx.App().gumball_enabled = !ctx.App().gumball_enabled; ctx.Print(std::string("Gumball ") + (ctx.App().gumball_enabled ? "on" : "off")); }), CommandStatus::Implemented, "Toggles the gumball widget (move, rotate and scale handles; see GumballSettings).");
+  Reg(e, "Materials", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
+  Reg(e, "MaterialEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
+  Reg(e, "Notifications", Immediate([](CommandContext& ctx) { ctx.App().Panels().notifications = true; }));
+  Reg(e, "About", Immediate([](CommandContext& ctx) { ctx.App().Panels().about = true; }));
+  Reg(e, "Licenses", Immediate([](CommandContext& ctx) { ctx.Print("Dino 8 is free software. No licence keys, subscriptions or activation exist."); ctx.App().Panels().about = true; }));
+  Reg(e, "CheckForUpdates", Immediate([](CommandContext& ctx) { ctx.Print("Dino 8 does not phone home. Get new builds from the project's GitHub releases."); }));
+  Reg(e, "WhatsNew", Immediate([](CommandContext& ctx) { ctx.App().Panels().whats_new = true; ctx.Print("WhatsNew: opened the What's New window (data/changelog.md, by version)."); }));
+  Reg(e, "TechSupport", Immediate([](CommandContext& ctx) { ctx.Print("Support: open an issue at https://github.com/mlegere9789-collab/miniature-pancake"); }));
+  Reg(e, "LearnRhino", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
+  Reg(e, "Tutorials", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
+  Reg(e, "SetRenderColor", Make<SetRenderColorCommand>(), CommandStatus::Implemented, "Sets the selected objects' own display colour to the given r,g,b value or colour name.");
+  Reg(e, "SetObjectDisplayMode", Make<SetObjectDisplayModeCommand>(), CommandStatus::Implemented,
+      "A genuine per-object override for Wireframe, Shaded (see ShadeSelected), Ghosted, X-Ray, Monochrome, Pen and Arctic; the other Rhino modes (Rendered/Technical/Artistic/...) are viewport-wide render styles with no per-object equivalent, so Mode=UseViewport (or any other name) clears the override instead.");
+  // Dragmode: same command name as cmd_state.cpp's "DragMode" (registry
+  // keys are case-insensitive) - superseded by that real ChoiceCommand
+  // (RegisterStateCommands runs after this file, so it always won here
+  // anyway; this stub was dead code).
+  // History / RecordHistory / UpdateHistory: real, scoped constructional
+  // history (Extrude/ExtrudeCrv, ExtrudeCrvToPoint, Revolve, Loft,
+  // SubDLoft) - registered by RegisterHistoryCommands (cmd_history.cpp),
+  // which runs after this file, so it always wins here anyway.
+  // Grasshopper: superseded, dead code - cmd_flow.cpp's real Dino Flow node
+  // editor (RegisterFlowCommands runs last, so it always wins here anyway).
+  Reg(e, "RunScript", Make<ScriptCommand>("RunScript"),
+      CommandStatus::Implemented, "Runs a .lua script (embedded Lua 5.4, rhinoscriptsyntax-like rs.* API) or a .txt command file.");
+  Reg(e, "LoadScript", Make<ScriptCommand>("LoadScript"),
+      CommandStatus::Implemented, "Runs a .lua script; its top-level functions stay callable afterwards (Lua globals persist for the session).");
+  Reg(e, "EditScript", Immediate([](CommandContext& ctx) {
+        if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
+        ctx.App().Panels().script_editor = true;
+      }), CommandStatus::Implemented, "Opens the Lua Script Editor.");
+  Reg(e, "RunPythonScript", Make<PythonScriptCommand>(),
+      PythonEngine::Available() ? CommandStatus::Implemented : CommandStatus::Partial,
+      PythonEngine::Available()
+          ? "Runs a .py script through an embedded CPython 3 interpreter (pybind11; see the dino8.* module: "
+            "Point3d/Vector3d, doc.Objects.Add*/Find/Delete, object.Name/Layer/Color, RunCommand). A "
+            "dino8.GetPoint() call mid-script suspends it for a viewport pick or typed point, the same way "
+            "Lua's rs.GetPoint does for RunScript (on a worker thread, not a coroutine - see PythonEngine.h); "
+            "other rs.Get*-style prompts (objects/text/number) remain unported."
+          : "This build has no Python 3 development install (DINO8_HAVE_PYTHON is off); prints an honest "
+            "message instead of running the file - rewrite it as Lua (rs.* API) and use RunScript.");
+  Reg(e, "EditPythonScript", Immediate([](CommandContext& ctx) {
+        if (!PythonEngine::Available())
+          ctx.Print("This build has no Python 3 development install; opening the (Lua-oriented) Script Editor as a plain text editor for the file.");
+        if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
+        ctx.App().Panels().script_editor = true;
+      }), CommandStatus::Implemented, "Opens the given .py file in the Script Editor panel; the panel's Run button detects the .py extension and dispatches to the embedded Python 3 interpreter (same engine as RunPythonScript), while .lua files there still run as Lua.");
+  Reg(e, "ScriptEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }));
+  // ScriptEditorRun: headless equivalent of clicking the Script Editor
+  // panel's Run button - goes through the exact same RunScriptEditor()
+  // dispatch (Panels.cpp), so a .py file loaded there (EditPythonScript,
+  // Open..., or the scripts list) runs through PythonEngine and a .lua one
+  // still runs through Lua/RunScript. Not surfaced in the menu (there is no
+  // reason to type it interactively - the panel button already does this);
+  // it exists so scripts/tests can exercise the panel's real routing logic
+  // instead of calling RunPythonScript/RunScript directly.
+  Reg(e, "ScriptEditorRun", Immediate([](CommandContext& ctx) { RunScriptEditor(ctx.App()); }),
+      CommandStatus::Implemented, "Runs whatever the Script Editor panel currently holds, exactly as its Run button would (Python for a loaded .py file, Lua otherwise). Not shown in the menu.");
+  Reg(e, "ScriptingReference", Immediate([](CommandContext& ctx) { ctx.App().Panels().scripting_reference = true; }));
+  // PackageManager / PluginManager: superseded, dead code - cmd_flow.cpp
+  // registers the real panel-opening commands (RegisterFlowCommands runs
+  // last, so it always wins here anyway).
+}
+
+}  // namespace dino8::app

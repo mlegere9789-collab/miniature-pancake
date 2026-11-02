@@ -1,0 +1,16 @@
+# DataLink / DataLinkUpdate to .xlsx: stage 2 (see smoke.sh) - smoke.sh has
+# rewritten @TMP@/xlsx_datalink.xlsx externally (Python's zipfile/zlib, real
+# DEFLATE compression, a shared-strings table) since stage 1's push, so the
+# file is now the only side that changed since the link's last sync:
+# DataLinkUpdate with no Direction= should auto-pull it. GetUserText then
+# prints every selected object's user text, including the rebuilt table's
+# own "TableData" JSON tag (its "cells" array), so smoke.sh can verify the
+# pulled cell content directly without a second DataLink call that would
+# re-link the table to a different file.
+Open @TMP@/xlsx_datalink.3dm
+SelAll
+DataLinkUpdate
+SelAll
+GetUserText
+SelNone
+Save @TMP@/xlsx_datalink.3dm

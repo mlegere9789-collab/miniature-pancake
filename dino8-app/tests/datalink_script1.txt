@@ -1,0 +1,11 @@
+# DataLink / DataLinkUpdate: stage 1 (see smoke.sh) - build a 2x2 table and
+# link it to a CSV file that doesn't exist yet, which is always an initial
+# push (nothing to pull from). smoke.sh substitutes @TMP@ with a scratch
+# directory and, between stages, edits @TMP@/datalink.csv on disk itself to
+# simulate someone editing the file in a real spreadsheet program.
+Table Rows=2 Cols=2 Data=A,B;C,D
+0,0,0
+SelAll
+DataLink File=@TMP@/datalink.csv
+SelAll
+Save @TMP@/datalink.3dm

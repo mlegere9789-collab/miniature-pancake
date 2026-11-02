@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "index_name": "Uninstall Test Index (plugin dependency resolution fixture)",
+  "plugins": [
+    {
+      "id": "shareddeps",
+      "name": "SharedDeps",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "A dependency of both toolboxpro and othersuite below - must survive uninstalling just one of them, since the other still needs it.",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino"
+    },
+    {
+      "id": "orphanlib",
+      "name": "OrphanLib",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "A dependency of only toolboxpro below - uninstalling toolboxpro must cascade and remove this one too, since nothing else needs it.",
+      "api_version": 2,
+      "bundled_path": "plugins/mesh_tools"
+    },
+    {
+      "id": "toolboxpro",
+      "name": "ToolboxPro",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on shareddeps and orphanlib. Uninstalling this must remove orphanlib (nothing else needs it) but leave shareddeps installed (othersuite still does).",
+      "api_version": 2,
+      "bundled_path": "plugins/curve_tools",
+      "dependencies": ["shareddeps", "orphanlib"]
+    },
+    {
+      "id": "othersuite",
+      "name": "OtherSuite",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on shareddeps too, and stays installed throughout - proving the orphan check actually checks for other consumers rather than always cascading everything.",
+      "api_version": 2,
+      "bundled_path": "plugins/analysis_tools",
+      "dependencies": ["shareddeps"]
+    }
+  ]
+}

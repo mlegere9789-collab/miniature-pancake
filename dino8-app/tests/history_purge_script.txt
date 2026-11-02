@@ -1,0 +1,53 @@
+# HistoryPurge/HistoryUpdate/SelObjectsWithHistory against a document with
+# REAL recorded construction history - complementary to state_script2.txt's
+# HistoryPurge/HistoryUpdate checks, which only prove the empty-document (0
+# objects) case. Before this fix, all three were dead: HistoryPurge and
+# HistoryUpdate (cmd_state.cpp) always claimed "no construction history is
+# recorded" regardless of what was actually tracked, and
+# SelObjectsWithHistory (cmd_select2.cpp) always selected 0 objects and
+# claimed "Dino 8 keeps no construction history" outright - even though
+# cmd_history.cpp's real HistoryRecord mechanism, right next to both, had
+# live records the whole time. Object ids below are the deterministic
+# 1-based counter Document::Add assigns, in creation order (see
+# history_script.txt's own header comment for the same assumption).
+History On
+Line 0,0,0 10,0,0
+SelNone
+SelID 1
+Extrude
+5
+@expect_objects 2
+
+Line 20,0,0 30,0,0
+SelNone
+SelID 3
+Extrude
+5
+@expect_objects 4
+
+# Both extrusions (object 2 and object 4) are now tracked.
+SelNone
+SelObjectsWithHistory
+@expect_selected 2
+
+# HistoryPurge with a selection only purges the selected object's history -
+# object 2 stops being tracked, object 4 is untouched.
+SelNone
+SelID 2
+HistoryPurge
+SelNone
+SelObjectsWithHistory
+@expect_selected 1
+
+# HistoryUpdate (Rhino's own alternate name for UpdateHistory) still finds
+# and rebuilds the one surviving tracked object (4).
+HistoryUpdate
+
+# HistoryPurge with nothing selected purges every remaining record in the
+# document (just object 4's).
+SelNone
+HistoryPurge
+SelNone
+SelObjectsWithHistory
+@expect_selected 0
+HistoryUpdate

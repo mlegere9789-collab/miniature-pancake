@@ -1,0 +1,113 @@
+# QC for this increment's real NURBS algorithm work (see smoke.sh):
+# RefitTrim (a real constrained least-squares curve fit), ExtractPipedCurve
+# (Pipe now tags its result with the rail curve), and MakePeriodic Smooth=No
+# (the exact-shape-preserving re-knot).
+SetActiveViewport Top
+
+# --- RefitTrim on a cylinder's own end-cap circle: a real end-to-end run
+# of the whole command (pick an edge, sample its trim curve, least-squares
+# fit at increasing control-point counts, clamp into the surface's own
+# (u,v) domain, re-verify the tolerance). This specific surface's domain is
+# exactly the trim curve's own tight bounding square (a cap's underlying
+# plane is sized to the circle itself, with no margin to spare), and any
+# NURBS approximation of a circular arc has control points that overshoot
+# the arc's own radius (a real, hand-verifiable geometric fact - see
+# kernel test TestCurveFitLeastSquaresConstrainedRefit, which proves the
+# identical algorithm SUCCEEDS with real domain margin and only reports
+# this exact kind of case infeasible when the domain is genuinely tight) -
+# so the command's honest "left unchanged" refusal here is the CORRECT
+# answer, not a bug, and is itself the thing this checks.
+Cylinder 0,0,0 5 10
+RefitTrim
+5,0,10
+0.01
+SelAll
+Delete
+@expect_objects 0
+
+# --- ExtractPipedCurve: Pipe tags its surface with the rail curve (a real
+# geometry copy, not a live reference), so ExtractPipedCurve pulls a new,
+# independent curve object back out - even after the original rail curve
+# is deleted.
+Line 0,0,0 20,0,0
+SelLast
+Pipe Cap=No
+1
+@expect_objects 2
+SelCrv
+Delete
+@expect_objects 1
+SelLast
+ExtractPipedCurve
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
+
+# --- MakePeriodic Smooth=No: the real exact-shape-preserving re-knot on a
+# closed, non-periodic curve (a circle's own clamped NURBS form).
+Circle 100,0,0 5
+SelLast
+MakePeriodic
+Smooth=No
+Enter
+SelLast
+List
+Delete
+@expect_objects 0
+
+# --- MakePeriodic on a Surface: NurbsSurface::MakePeriodicExact
+# (kernel-only until now) wired into MakePeriodic for the first time -
+# PARITY_MAP.md's own "Make periodic (surface)" gap ("app's command still
+# curves-only"). Sweep1 on a closed (circle) profile along a straight rail
+# builds a genuinely closed-but-NOT-yet-periodic surface (the same
+# "clamped, duplicate-seam-CV" convention a closed curve's own clamped
+# NURBS form uses, confirmed directly against a real run: CVs 9x2, not
+# already periodic) - MakePeriodicExact(0) must genuinely re-knot it
+# (CVs 9x2 -> 10x2, the periodic degree-2 form's own real CV count), not
+# just no-op. There is no periodic-uniform REFIT for a surface the way
+# CreatePeriodicUniformNurbs gives a curve, so Smooth=Yes/No both resolve
+# to this same real re-knot for a Surface selection (the command's own
+# help text discloses this).
+Line 110,0,0 110,0,10
+Circle 110,0,0 2
+SelID 6
+Sweep1
+SelID 7
+Enter
+SelLast
+List
+MakePeriodic
+Enter
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0
+
+# --- RebuildUV: the real command data/commands.json itself documents -
+# "Reconstructs selected surfaces to degree 3, with a specified control
+# point number, in EITHER the u or v direction" - previously registered
+# as a bare alias of MakeUniformUV (PARITY_MAP.md's own disclosed
+# "Rebuild/Refit" gap: "a separate, untouched gap"), not its own command
+# at all. A degree-1, 2x2-control-point Plane rebuilt in U to 8 points
+# must land at degree 3 x 1, CVs 8 x 2 - V's own point count/degree
+# completely untouched - then rebuilt again in V to 12 points must land
+# at degree 3 x 3, CVs 8 x 12 - U's own just-rebuilt 8 points now
+# untouched in turn, proving each call only ever touches the ONE
+# direction it was asked for, not both.
+Plane 200,0,0 210,10,0
+SelLast
+RebuildUV
+Direction=U
+8
+SelLast
+List
+RebuildUV
+Direction=V
+12
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0

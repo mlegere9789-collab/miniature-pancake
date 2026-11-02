@@ -1,0 +1,9 @@
+# Second process, SAME config directory as macro_objects_script.txt: the
+# macro library, the alias bound to a macro by name and its toolbar button
+# must all have survived the app restart (settings.json "macro_library",
+# "aliases", "toolbar"). smoke.sh asserts this script's output.
+ListMacros
+ShowMacro cubic
+# The persisted alias runs the persisted macro: Volume must read 7^3.
+cubea size=7
+OptionsExport @MODIR@/opts_persisted.json

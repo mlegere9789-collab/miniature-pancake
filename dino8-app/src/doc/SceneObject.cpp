@@ -1,0 +1,1491 @@
+#include "doc/SceneObject.h"
+
+#include "geom/BrepMesher.h"
+
+#include <algorithm>
+#include <array>
+#include <map>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <sstream>
+#include <stdexcept>
+#include <unordered_map>
+
+namespace dino8::app {
+
+const char* AnalysisModeName(AnalysisMode mode) {
+  switch (mode) {
+    case AnalysisMode::None: return "None";
+    case AnalysisMode::Zebra: return "Zebra";
+    case AnalysisMode::EMap: return "EMap";
+    case AnalysisMode::Curvature: return "CurvatureAnalysis";
+    case AnalysisMode::DraftAngle: return "DraftAngleAnalysis";
+    case AnalysisMode::Thickness: return "ThicknessAnalysis";
+  }
+  return "None";
+}
+
+const char* TextureMappingName(TextureMapping m) {
+  switch (m) {
+    case TextureMapping::Default: return "Default";
+    case TextureMapping::Surface: return "Surface";
+    case TextureMapping::Planar: return "Planar";
+    case TextureMapping::Box: return "Box";
+    case TextureMapping::Cylindrical: return "Cylindrical";
+    case TextureMapping::Spherical: return "Spherical";
+    case TextureMapping::Custom: return "Custom";
+  }
+  return "Default";
+}
+
+bool ParseTextureMapping(const std::string& text, TextureMapping& out) {
+  std::string t;
+  for (char c : text) t.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  static const std::pair<const char*, TextureMapping> names[] = {
+      {"default", TextureMapping::Default}, {"surface", TextureMapping::Surface}, {"planar", TextureMapping::Planar},
+      {"box", TextureMapping::Box}, {"cylindrical", TextureMapping::Cylindrical}, {"spherical", TextureMapping::Spherical},
+      {"custom", TextureMapping::Custom}};
+  for (const auto& [n, m] : names) if (t == n) { out = m; return true; }
+  return false;
+}
+
+const char* ObjectKindName(ObjectKind kind) {
+  switch (kind) {
+    case ObjectKind::Point: return "point";
+    case ObjectKind::Curve: return "curve";
+    case ObjectKind::Surface: return "surface";
+    case ObjectKind::Brep: return "polysurface";
+    case ObjectKind::Mesh: return "mesh";
+    case ObjectKind::SubD: return "SubD";
+    case ObjectKind::PointCloud: return "point cloud";
+  }
+  return "object";
+}
+
+SceneObject::SceneObject() = default;
+SceneObject::~SceneObject() = default;
+SceneObject::SceneObject(SceneObject&&) noexcept = default;
+SceneObject& SceneObject::operator=(SceneObject&&) noexcept = default;
+
+SceneObject::SceneObject(const SceneObject& other) { CopyFrom(other); }
+
+SceneObject& SceneObject::operator=(const SceneObject& other) {
+  if (this != &other) CopyFrom(other);
+  return *this;
+}
+
+void SceneObject::CopyFrom(const SceneObject& other) {
+  id = other.id;
+  name = other.name;
+  layer_index = other.layer_index;
+  kind = other.kind;
+  color = other.color;
+  color_by_layer = other.color_by_layer;
+  visible = other.visible;
+  locked = other.locked;
+  selected = other.selected;
+  show_control_points = other.show_control_points;
+  hidden_control_points = other.hidden_control_points;
+  show_direction_arrow = other.show_direction_arrow;
+  show_control_net = other.show_control_net;
+  highlight_edges = other.highlight_edges;
+  force_shaded = other.force_shaded;
+  force_wireframe = other.force_wireframe;
+  force_ghosted = other.force_ghosted;
+  force_xray = other.force_xray;
+  force_monochrome = other.force_monochrome;
+  force_raytraced = other.force_raytraced;
+  force_pen = other.force_pen;
+  force_arctic = other.force_arctic;
+  force_rendered = other.force_rendered;
+  force_technical = other.force_technical;
+  force_artistic = other.force_artistic;
+  viewport_display_overrides = other.viewport_display_overrides;
+  show_render_mesh_wires = other.show_render_mesh_wires;
+  custom_mesh_tolerance = other.custom_mesh_tolerance;
+  analysis = other.analysis;
+  group_id = other.group_id;
+  material_name = other.material_name;
+  mapping = other.mapping;
+  mapping_scale = other.mapping_scale;
+  has_custom_mapping_frame = other.has_custom_mapping_frame;
+  custom_mapping_origin = other.custom_mapping_origin;
+  custom_mapping_x = other.custom_mapping_x;
+  custom_mapping_y = other.custom_mapping_y;
+  custom_mapping_size = other.custom_mapping_size;
+  linetype = other.linetype;
+  user_text = other.user_text;
+  point = other.point;
+  curve = other.curve ? std::make_unique<kernel::NurbsCurve>(*other.curve) : nullptr;
+  surface = other.surface ? std::make_unique<kernel::NurbsSurface>(*other.surface) : nullptr;
+  brep = other.brep ? std::make_unique<kernel::Brep>(*other.brep) : nullptr;
+  mesh = other.mesh ? std::make_unique<kernel::Mesh>(*other.mesh) : nullptr;
+  subd = other.subd ? std::make_unique<kernel::SubD>(*other.subd) : nullptr;
+  point_cloud = other.point_cloud ? std::make_unique<kernel::PointCloud>(*other.point_cloud) : nullptr;
+  cache_ = other.view_current_ ? other.other_cache_ : other.cache_;  // the copy starts on the fixed level
+  other_cache_ = DisplayCache{};
+  view_current_ = false;
+  lod_stash_.clear();  // the extra tessellation levels are a per-instance cache, never copied
+  lod_surface_floor_ = 0.0;
+  display_dashes_ = other.display_dashes_;
+}
+
+void SceneObject::SetDisplayDashes(const std::vector<double>& dashes) const {
+  if (dashes == display_dashes_) return;
+  display_dashes_ = dashes;
+  InvalidateDisplay();
+}
+
+std::vector<std::vector<kernel::Point3d>> DashPolyline(const std::vector<kernel::Point3d>& points,
+                                                       const std::vector<double>& pattern) {
+  std::vector<std::vector<kernel::Point3d>> out;
+  double total = 0;
+  for (double d : pattern) total += std::max(0.0, d);
+  if (points.size() < 2 || pattern.empty() || total <= 1e-9) {
+    if (points.size() >= 2) out.push_back(points);
+    return out;
+  }
+  // Walk the polyline, consuming pattern elements (even = dash, odd = gap).
+  size_t idx = 0;
+  double left = std::max(0.0, pattern[0]);
+  bool on = true;
+  std::vector<kernel::Point3d> run;
+  run.push_back(points[0]);
+  auto flush = [&]() {
+    if (on && run.size() >= 2) out.push_back(run);
+    run.clear();
+  };
+  auto next_element = [&](kernel::Point3d at) {
+    flush();
+    idx = (idx + 1) % pattern.size();
+    on = (idx % 2) == 0;
+    left = std::max(0.0, pattern[idx]);
+    run.push_back(at);
+  };
+  for (size_t i = 1; i < points.size(); ++i) {
+    kernel::Point3d a = points[i - 1];
+    const kernel::Point3d b = points[i];
+    double seg = a.DistanceTo(b);
+    int guard = 0;
+    while (seg > 1e-12 && guard++ < 100000) {
+      if (left <= 1e-12) { next_element(a); continue; }
+      if (seg <= left) {
+        run.push_back(b);
+        left -= seg;
+        seg = 0;
+      } else {
+        const kernel::Point3d m = a + (b - a) * (left / seg);
+        run.push_back(m);
+        seg -= left;
+        left = 0;
+        a = m;
+      }
+    }
+  }
+  flush();
+  return out;
+}
+
+SceneObject SceneObject::MakePoint(kernel::Point3d p) {
+  SceneObject o;
+  o.kind = ObjectKind::Point;
+  o.point = p;
+  return o;
+}
+
+SceneObject SceneObject::MakeCurve(const kernel::NurbsCurve& c) {
+  SceneObject o;
+  o.kind = ObjectKind::Curve;
+  o.curve = std::make_unique<kernel::NurbsCurve>(c);
+  return o;
+}
+
+SceneObject SceneObject::MakeSurface(const kernel::NurbsSurface& s) {
+  SceneObject o;
+  o.kind = ObjectKind::Surface;
+  o.surface = std::make_unique<kernel::NurbsSurface>(s);
+  return o;
+}
+
+SceneObject SceneObject::MakeBrep(const kernel::Brep& b) {
+  SceneObject o;
+  o.kind = ObjectKind::Brep;
+  o.brep = std::make_unique<kernel::Brep>(b);
+  return o;
+}
+
+SceneObject SceneObject::MakeMesh(const kernel::Mesh& m) {
+  SceneObject o;
+  o.kind = ObjectKind::Mesh;
+  o.mesh = std::make_unique<kernel::Mesh>(m);
+  return o;
+}
+
+SceneObject SceneObject::MakeSubD(const kernel::SubD& s) {
+  SceneObject o;
+  o.kind = ObjectKind::SubD;
+  o.subd = std::make_unique<kernel::SubD>(s);
+  return o;
+}
+
+SceneObject SceneObject::MakePointCloud(const kernel::PointCloud& pc) {
+  SceneObject o;
+  o.kind = ObjectKind::PointCloud;
+  o.point_cloud = std::make_unique<kernel::PointCloud>(pc);
+  return o;
+}
+
+void SceneObject::Transform(const ON_Xform& xform) {
+  switch (kind) {
+    case ObjectKind::Point: point = xform * point; break;
+    case ObjectKind::Curve: curve->raw().Transform(xform); break;
+    case ObjectKind::Surface: surface->raw().Transform(xform); break;
+    case ObjectKind::Brep: *brep = brep->Transform(xform); break;
+    case ObjectKind::Mesh: *mesh = mesh->Transform(xform); break;
+    case ObjectKind::SubD:
+      // ON_SubD::Transform() leaves face windings alone, so a reflection
+      // (negative determinant) would turn the cage inside out; the kernel's
+      // TransformOriented() reverses the loops for that case.
+      if (xform.Determinant() < 0.0) *subd = subd->TransformOriented(xform);
+      else subd->raw().Transform(xform);
+      break;
+    case ObjectKind::PointCloud: *point_cloud = point_cloud->Transform(xform); break;
+  }
+  // Block instances remember their insertion point (see cmd_drafting.cpp).
+  auto it = user_text.find("BlockInsert");
+  if (it != user_text.end()) {
+    double x = 0, y = 0, z = 0;
+    if (std::sscanf(it->second.c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3) {
+      const kernel::Point3d p = xform * kernel::Point3d(x, y, z);
+      char buf[128];
+      std::snprintf(buf, sizeof(buf), "%g,%g,%g", p.x, p.y, p.z);
+      it->second = buf;
+    }
+  }
+  InvalidateDisplay();
+}
+
+namespace {
+
+void ExpandBox(kernel::BoundingBox& box, bool& has, const kernel::Point3d& p) {
+  if (!has) {
+    box.min = box.max = p;
+    has = true;
+    return;
+  }
+  box.min.x = std::min(box.min.x, p.x);
+  box.min.y = std::min(box.min.y, p.y);
+  box.min.z = std::min(box.min.z, p.z);
+  box.max.x = std::max(box.max.x, p.x);
+  box.max.y = std::max(box.max.y, p.y);
+  box.max.z = std::max(box.max.z, p.z);
+}
+
+void AppendMeshTriangles(const kernel::Mesh& mesh, std::vector<float>& out,
+                         kernel::BoundingBox& box, bool& has_box, std::vector<float>* uvs = nullptr,
+                         std::vector<float>* colors_out = nullptr) {
+  const ON_Mesh& raw = mesh.raw();
+  const int face_count = raw.m_F.Count();
+  std::vector<kernel::Vector3d> normals = mesh.ComputeVertexNormals();
+  // Texture coordinates: ON_Mesh keeps them in m_S (surface parameters,
+  // what the kernel writes) or the older m_T array (what Rhino files carry).
+  const bool has_s = raw.m_S.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
+  const bool has_t = !has_s && raw.m_T.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
+  if (uvs && !has_s && !has_t) uvs = nullptr;
+  const bool has_c = raw.m_C.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
+  if (colors_out && !has_c) colors_out = nullptr;
+  auto push = [&](int vi, const ON_3fPoint& p, const ON_3fVector& fn) {
+    out.push_back(p.x);
+    out.push_back(p.y);
+    out.push_back(p.z);
+    if (uvs) {
+      if (has_s) { uvs->push_back(static_cast<float>(raw.m_S[vi].x)); uvs->push_back(static_cast<float>(raw.m_S[vi].y)); }
+      else { uvs->push_back(raw.m_T[vi].x); uvs->push_back(raw.m_T[vi].y); }
+    }
+    if (colors_out) {
+      const ON_Color& col = raw.m_C[vi];
+      colors_out->push_back(static_cast<float>(col.Red()) / 255.f);
+      colors_out->push_back(static_cast<float>(col.Green()) / 255.f);
+      colors_out->push_back(static_cast<float>(col.Blue()) / 255.f);
+    }
+    // Prefer smooth vertex normals; fall back to the face normal.
+    if (vi >= 0 && vi < static_cast<int>(normals.size()) && normals[vi].Length() > 0.5) {
+      out.push_back(static_cast<float>(normals[vi].x));
+      out.push_back(static_cast<float>(normals[vi].y));
+      out.push_back(static_cast<float>(normals[vi].z));
+    } else {
+      out.push_back(fn.x);
+      out.push_back(fn.y);
+      out.push_back(fn.z);
+    }
+    ExpandBox(box, has_box, kernel::Point3d(p.x, p.y, p.z));
+  };
+  for (int i = 0; i < face_count; ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    const ON_3fPoint a = raw.m_V[f.vi[0]];
+    const ON_3fPoint b = raw.m_V[f.vi[1]];
+    const ON_3fPoint c = raw.m_V[f.vi[2]];
+    ON_3fVector fn = ON_CrossProduct(b - a, c - a);
+    fn.Unitize();
+    push(f.vi[0], a, fn);
+    push(f.vi[1], b, fn);
+    push(f.vi[2], c, fn);
+    if (f.IsQuad()) {
+      const ON_3fPoint d = raw.m_V[f.vi[3]];
+      push(f.vi[0], a, fn);
+      push(f.vi[2], c, fn);
+      push(f.vi[3], d, fn);
+    }
+  }
+}
+
+// The i-th of n equal steps across [d.min, d.max], guaranteed to land inside
+// the domain. `d.min + (d.max - d.min) * i / n` can overshoot d.max by one
+// ulp at i == n (the product/quotient rounds up, or d.min + length rounds
+// above d.max) -- and NurbsSurface::IsoCurve() throws std::invalid_argument
+// for a parameter even 1 ulp outside the domain. Whether that happens depends
+// on the exact last bits of the domain, which come out of platform libm
+// results (a chamfer's chord-length parameterization), so the same script
+// drew fine on Linux and escaped as an uncaught C++ exception (MSVC
+// 0xE06D7363) on Windows. Pin the endpoints exactly and clamp the rest.
+double DomainParameter(const kernel::Interval& d, int i, int n) {
+  if (n <= 0 || i <= 0) return d.min;
+  if (i >= n) return d.max;
+  return std::clamp(d.min + (d.max - d.min) * i / n, d.min, d.max);
+}
+
+// Tessellates a NURBS surface on a u x v grid, emitting normalised
+// parameter-space texture coordinates alongside the triangles.
+void AppendSurfaceGrid(const kernel::NurbsSurface& srf, int nu, int nv, std::vector<float>& out,
+                       std::vector<float>& uvs, kernel::BoundingBox& box, bool& has_box) {
+  const kernel::Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const int cols = nu + 1, rows = nv + 1;
+  std::vector<kernel::Point3d> pts(static_cast<size_t>(cols) * rows);
+  std::vector<kernel::Vector3d> nrm(static_cast<size_t>(cols) * rows);
+  for (int i = 0; i < cols; ++i) {
+    for (int j = 0; j < rows; ++j) {
+      const double u = DomainParameter(du, i, nu), v = DomainParameter(dv, j, nv);
+      pts[static_cast<size_t>(i) * rows + j] = srf.PointAt(u, v);
+      kernel::Vector3d n(0, 0, 0);
+      // A grid sample can land exactly on a singular point (parallel or
+      // zero partial derivatives -- e.g. a degenerate corner of a fitted
+      // blend/loft surface); NormalAt() throws there rather than guessing,
+      // so fall back to a zero normal (patched from a neighbour below) the
+      // same way an unrelated near-zero normal already is.
+      try { n = srf.NormalAt(u, v); } catch (const std::exception&) {}
+      if (!n.Unitize()) n = kernel::Vector3d(0, 0, 0);
+      nrm[static_cast<size_t>(i) * rows + j] = n;
+    }
+  }
+  auto emit = [&](int i, int j, const kernel::Vector3d& fallback) {
+    const kernel::Point3d& p = pts[static_cast<size_t>(i) * rows + j];
+    kernel::Vector3d n = nrm[static_cast<size_t>(i) * rows + j];
+    if (n.Length() < 0.5) n = fallback;
+    out.push_back(static_cast<float>(p.x)); out.push_back(static_cast<float>(p.y)); out.push_back(static_cast<float>(p.z));
+    out.push_back(static_cast<float>(n.x)); out.push_back(static_cast<float>(n.y)); out.push_back(static_cast<float>(n.z));
+    uvs.push_back(static_cast<float>(i) / nu); uvs.push_back(static_cast<float>(j) / nv);
+    ExpandBox(box, has_box, p);
+  };
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      const kernel::Point3d& a = pts[static_cast<size_t>(i) * rows + j];
+      const kernel::Point3d& b = pts[static_cast<size_t>(i + 1) * rows + j];
+      const kernel::Point3d& c = pts[static_cast<size_t>(i + 1) * rows + j + 1];
+      const kernel::Point3d& d = pts[static_cast<size_t>(i) * rows + j + 1];
+      kernel::Vector3d fn = ON_CrossProduct(c - a, d - b);
+      if (!fn.Unitize()) fn = kernel::Vector3d(0, 0, 1);
+      // Degenerate grid cells (poles) collapse to one triangle.
+      if ((b - a).Length() > 1e-12 || (c - b).Length() > 1e-12) { emit(i, j, fn); emit(i + 1, j, fn); emit(i + 1, j + 1, fn); }
+      if ((d - c).Length() > 1e-12 || (a - d).Length() > 1e-12) { emit(i, j, fn); emit(i + 1, j + 1, fn); emit(i, j + 1, fn); }
+    }
+  }
+}
+
+void AppendMeshEdges(const kernel::Mesh& mesh, std::vector<float>& out) {
+  const ON_Mesh& raw = mesh.raw();
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    const int n = f.IsQuad() ? 4 : 3;
+    for (int k = 0; k < n; ++k) {
+      const ON_3fPoint a = raw.m_V[f.vi[k]];
+      const ON_3fPoint b = raw.m_V[f.vi[(k + 1) % n]];
+      out.push_back(a.x); out.push_back(a.y); out.push_back(a.z);
+      out.push_back(b.x); out.push_back(b.y); out.push_back(b.z);
+    }
+  }
+}
+
+void AppendCurvePolyline(const kernel::NurbsCurve& curve, double tolerance,
+                         std::vector<float>& out, kernel::BoundingBox& box, bool& has_box) {
+  std::vector<double> params = curve.SuggestedParameterValues(tolerance, 10);
+  // Guarantee a reasonable minimum sample density for long, gently curved
+  // spans that the chord test alone would leave coarse.
+  if (params.size() < 8) {
+    const kernel::Interval d = curve.Domain();
+    params.clear();
+    for (int i = 0; i <= 24; ++i) params.push_back(d.min + (d.max - d.min) * i / 24.0);
+  }
+  kernel::Point3d prev = curve.PointAt(params.front());
+  ExpandBox(box, has_box, prev);
+  for (size_t i = 1; i < params.size(); ++i) {
+    const kernel::Point3d p = curve.PointAt(params[i]);
+    out.push_back(static_cast<float>(prev.x)); out.push_back(static_cast<float>(prev.y)); out.push_back(static_cast<float>(prev.z));
+    out.push_back(static_cast<float>(p.x)); out.push_back(static_cast<float>(p.y)); out.push_back(static_cast<float>(p.z));
+    ExpandBox(box, has_box, p);
+    prev = p;
+  }
+}
+
+// Draws each isocurve as a real kernel NurbsSurface::IsoCurve() - a genuine
+// sliced NURBS curve, not a resampled approximation - then polylines it
+// through AppendCurvePolyline()'s own chord_tolerance-driven adaptive
+// sampling (the same curvature-aware density a standalone NurbsCurve
+// object already gets in wireframe display), instead of a fixed 24-segment
+// straight evaluation per isocurve regardless of how much the surface
+// actually curves there.
+void AppendSurfaceIsocurves(const kernel::NurbsSurface& s, double chord_tolerance, std::vector<float>& out) {
+  const kernel::Interval du = s.Domain(0);
+  const kernel::Interval dv = s.Domain(1);
+  const int iso_u = std::max(2, s.CVCountU());
+  const int iso_v = std::max(2, s.CVCountV());
+  kernel::BoundingBox unused_box;
+  bool unused_has_box = false;
+  for (int i = 0; i < iso_u; ++i) {
+    const double u = DomainParameter(du, i, iso_u - 1);
+    AppendCurvePolyline(s.IsoCurve(1, u), chord_tolerance, out, unused_box, unused_has_box);
+  }
+  for (int j = 0; j < iso_v; ++j) {
+    const double v = DomainParameter(dv, j, iso_v - 1);
+    AppendCurvePolyline(s.IsoCurve(0, v), chord_tolerance, out, unused_box, unused_has_box);
+  }
+}
+
+// The four boundary curves of an (untrimmed) surface - each one is itself
+// a real isocurve at a domain endpoint, sliced via the same
+// NurbsSurface::IsoCurve() the interior isocurves above use, and
+// polylined the same adaptive way.
+void AppendSurfaceBoundary(const kernel::NurbsSurface& s, double chord_tolerance, std::vector<float>& out) {
+  const kernel::Interval du = s.Domain(0);
+  const kernel::Interval dv = s.Domain(1);
+  kernel::BoundingBox unused_box;
+  bool unused_has_box = false;
+  AppendCurvePolyline(s.IsoCurve(0, dv.min), chord_tolerance, out, unused_box, unused_has_box);
+  AppendCurvePolyline(s.IsoCurve(0, dv.max), chord_tolerance, out, unused_box, unused_has_box);
+  AppendCurvePolyline(s.IsoCurve(1, du.min), chord_tolerance, out, unused_box, unused_has_box);
+  AppendCurvePolyline(s.IsoCurve(1, du.max), chord_tolerance, out, unused_box, unused_has_box);
+}
+
+// Mesh edges: every edge once into `edges`, edges used by a single face
+// into `naked`.
+void AppendMeshNakedEdges(const kernel::Mesh& mesh, std::vector<float>& edges, std::vector<float>& naked) {
+  const ON_Mesh& raw = mesh.raw();
+  std::unordered_map<std::uint64_t, int> use_count;
+  auto key = [](int a, int b) {
+    if (a > b) std::swap(a, b);
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a)) << 32) | static_cast<std::uint32_t>(b);
+  };
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    const int n = f.IsQuad() ? 4 : 3;
+    for (int k = 0; k < n; ++k) use_count[key(f.vi[k], f.vi[(k + 1) % n])]++;
+  }
+  for (const auto& [k, count] : use_count) {
+    const int a = static_cast<int>(k >> 32), b = static_cast<int>(k & 0xffffffffu);
+    if (a == b || a >= raw.m_V.Count() || b >= raw.m_V.Count()) continue;
+    const ON_3fPoint pa = raw.m_V[a], pb = raw.m_V[b];
+    const float seg[6] = {pa.x, pa.y, pa.z, pb.x, pb.y, pb.z};
+    edges.insert(edges.end(), seg, seg + 6);
+    if (count == 1) naked.insert(naked.end(), seg, seg + 6);
+  }
+}
+
+// Appends the brep's edge polylines to `out` (wires) and, sorted by
+// topology, to `edges` (all) and `naked` (edges with a single trim).
+void AppendBrepEdges(const kernel::Brep& brep, double chord_tolerance, std::vector<float>& out,
+                     std::vector<float>& edges, std::vector<float>& naked) {
+  const ON_Brep& raw = brep.raw();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index < 0) continue;
+    const ON_Interval d = e.Domain();
+    const int samples = 32;
+    const bool is_naked = e.TrimCount() == 1;
+    ON_3dPoint prev = e.PointAt(d.Min());
+    for (int k = 1; k <= samples; ++k) {
+      const ON_3dPoint p = e.PointAt(d.ParameterAt(static_cast<double>(k) / samples));
+      const float seg[6] = {static_cast<float>(prev.x), static_cast<float>(prev.y), static_cast<float>(prev.z),
+                            static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)};
+      out.insert(out.end(), seg, seg + 6);
+      edges.insert(edges.end(), seg, seg + 6);
+      if (is_naked) naked.insert(naked.end(), seg, seg + 6);
+      prev = p;
+    }
+  }
+  // Isocurves on untrimmed, non-planar faces (a sphere is otherwise just
+  // its seam in wireframe). Trimmed faces keep edges only so no isocurve
+  // strays outside the trim.
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = raw.m_F[fi];
+    if (f.m_face_index < 0 || f.m_li.Count() != 1) continue;
+    const ON_Surface* srf = f.SurfaceOf();
+    if (!srf || srf->IsPlanar(nullptr, 1e-6)) continue;
+    const ON_BrepLoop& loop = raw.m_L[f.m_li[0]];
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    const ON_BoundingBox pb = loop.m_pbox;
+    const double eu = 1e-6 * (1 + du.Length()), ev = 1e-6 * (1 + dv.Length());
+    if (!pb.IsValid() || std::fabs(pb.m_min.x - du.Min()) > eu || std::fabs(pb.m_max.x - du.Max()) > eu ||
+        std::fabs(pb.m_min.y - dv.Min()) > ev || std::fabs(pb.m_max.y - dv.Max()) > ev) continue;
+    const int samples = 48;
+    auto emit = [&](bool along_u, double fixed) {
+      ON_3dPoint prev = along_u ? srf->PointAt(du.Min(), fixed) : srf->PointAt(fixed, dv.Min());
+      for (int k = 1; k <= samples; ++k) {
+        const double t = static_cast<double>(k) / samples;
+        const ON_3dPoint p = along_u ? srf->PointAt(du.ParameterAt(t), fixed) : srf->PointAt(fixed, dv.ParameterAt(t));
+        out.push_back(static_cast<float>(prev.x)); out.push_back(static_cast<float>(prev.y)); out.push_back(static_cast<float>(prev.z));
+        out.push_back(static_cast<float>(p.x)); out.push_back(static_cast<float>(p.y)); out.push_back(static_cast<float>(p.z));
+        prev = p;
+      }
+    };
+    for (double q : {0.25, 0.5, 0.75}) {
+      emit(true, dv.ParameterAt(q));
+      emit(false, du.ParameterAt(q));
+    }
+  }
+  // Breps built by the kernel's own primitives may carry no edge topology
+  // yet (they store trim loops separately); fall back to surface isocurves.
+  if (raw.m_E.Count() == 0) {
+    for (int i = 0; i < raw.m_S.Count(); ++i) {
+      const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(raw.m_S[i]);
+      if (!ns) continue;
+      kernel::NurbsSurface wrapper;
+      wrapper.raw() = *ns;
+      AppendSurfaceIsocurves(wrapper, chord_tolerance, out);
+    }
+  }
+}
+
+// Smooth display of a SubD: Catmull-Clark subdivides a copy (up to two
+// levels, bounded by the resulting face count) and shows that control net.
+kernel::Mesh SmoothSubDMesh(const kernel::SubD& subd, const kernel::Mesh& net, int max_levels = 2, int max_faces = 24000) {
+  int faces = subd.FaceCount(), levels = 0;
+  while (levels < max_levels && faces > 0 && faces * 4 <= max_faces) { faces *= 4; ++levels; }
+  if (levels == 0) return net;
+  try {
+    kernel::SubD copy = subd;
+    copy.Subdivide(levels);
+    return copy.ToApproximateMesh();
+  } catch (...) {
+    return net;
+  }
+}
+
+}  // namespace
+
+void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance) const {
+  // Every caller except the viewport's EnsureAdaptiveDisplay wants the FIXED level: bring it
+  // back if the viewport's zoom-dependent one is installed.
+  if (view_current_) { std::swap(cache_, other_cache_); view_current_ = false; }
+  BuildDisplay(curve_tolerance, surface_tolerance);
+}
+
+void SceneObject::BuildDisplay(double curve_tolerance, double surface_tolerance) const {
+  if (!cache_.dirty) return;
+  if (custom_mesh_tolerance > 0.0) surface_tolerance = custom_mesh_tolerance;  // SetMeshSurfaceParameters override
+  cache_.triangles.clear();
+  cache_.lines.clear();
+  cache_.points.clear();
+  cache_.control_polygon.clear();
+  cache_.control_points.clear();
+  cache_.triangle_face.clear();
+  cache_.edges.clear();
+  cache_.naked_edges.clear();
+  cache_.colors.clear();
+  cache_.colors_valid = false;
+  cache_.mesh_vertex_colors.clear();
+  cache_.uvs.clear();
+  cache_.mapped_uvs.clear();
+  cache_.mapped_type = TextureMapping::Default;
+  cache_.mapped_scale = 0.f;
+  cache_.has_bbox = false;
+  // Tessellation runs from the per-frame draw path (and from BoundingBox(),
+  // which the LOD/cull/pick code calls for every object), outside any
+  // command's DINO8_GUARD: a kernel function that throws on one degenerate
+  // object (NurbsSurface::IsoCurve/SuggestedDivisions/NormalAt, a trimmed
+  // brep's edge sampling, ...) used to escape through Application::Frame()
+  // and terminate the whole process (MSVC: code 0xE06D7363 in CI). Contain
+  // it here: that one object simply displays nothing, and the cache is
+  // marked clean so the failure isn't retried (and re-reported) every
+  // frame.
+  try {
+  switch (kind) {
+    case ObjectKind::Point:
+      cache_.points = {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)};
+      ExpandBox(cache_.bbox, cache_.has_bbox, point);
+      break;
+    case ObjectKind::Curve: {
+      if (display_dashes_.empty()) {
+        AppendCurvePolyline(*curve, curve_tolerance, cache_.lines, cache_.bbox, cache_.has_bbox);
+      } else {
+        // Dashed linetype: sample the curve, then keep only the dashes.
+        std::vector<float> full;
+        AppendCurvePolyline(*curve, curve_tolerance, full, cache_.bbox, cache_.has_bbox);
+        std::vector<kernel::Point3d> pts;
+        for (size_t i = 0; i + 5 < full.size(); i += 6) {
+          if (pts.empty()) pts.emplace_back(full[i], full[i + 1], full[i + 2]);
+          pts.emplace_back(full[i + 3], full[i + 4], full[i + 5]);
+        }
+        for (const std::vector<kernel::Point3d>& dash : DashPolyline(pts, display_dashes_)) {
+          for (size_t i = 1; i < dash.size(); ++i) {
+            const kernel::Point3d& p = dash[i - 1];
+            const kernel::Point3d& q = dash[i];
+            cache_.lines.push_back(static_cast<float>(p.x)); cache_.lines.push_back(static_cast<float>(p.y)); cache_.lines.push_back(static_cast<float>(p.z));
+            cache_.lines.push_back(static_cast<float>(q.x)); cache_.lines.push_back(static_cast<float>(q.y)); cache_.lines.push_back(static_cast<float>(q.z));
+          }
+        }
+      }
+      if (show_control_points) {
+        for (int i = 0; i < curve->ControlPointCount(); ++i) {
+          const kernel::Point3d p = curve->ControlPointAt(i);
+          cache_.control_points.push_back(static_cast<float>(p.x));
+          cache_.control_points.push_back(static_cast<float>(p.y));
+          cache_.control_points.push_back(static_cast<float>(p.z));
+          if (i > 0) {
+            const kernel::Point3d q = curve->ControlPointAt(i - 1);
+            cache_.control_polygon.push_back(static_cast<float>(q.x)); cache_.control_polygon.push_back(static_cast<float>(q.y)); cache_.control_polygon.push_back(static_cast<float>(q.z));
+            cache_.control_polygon.push_back(static_cast<float>(p.x)); cache_.control_polygon.push_back(static_cast<float>(p.y)); cache_.control_polygon.push_back(static_cast<float>(p.z));
+          }
+        }
+      }
+      break;
+    }
+    case ObjectKind::Surface: {
+      const kernel::SurfaceDivisions div = surface->SuggestedDivisions(surface_tolerance);
+      // A refinement build (display_face_cap_ raised to the triangle budget) may use up to
+      // sqrt(budget / 2) divisions per direction instead of the fixed 96, so a deep zoom on
+      // a surface keeps getting finer until the per-object budget is reached.
+      const int max_div = display_face_cap_ > kDefaultFaceTriangleCap
+          ? std::clamp(static_cast<int>(std::sqrt(display_face_cap_ / 2.0)), 96, 270) : 96;
+      const int u = std::clamp(div.u, 4, max_div);
+      const int v = std::clamp(div.v, 4, max_div);
+      AppendSurfaceGrid(*surface, u, v, cache_.triangles, cache_.uvs, cache_.bbox, cache_.has_bbox);
+      AppendSurfaceIsocurves(*surface, surface_tolerance, cache_.lines);
+      AppendSurfaceBoundary(*surface, surface_tolerance, cache_.edges);
+      cache_.naked_edges = cache_.edges;  // an untrimmed surface's edges are all naked
+      if (show_control_points) {
+        for (int i = 0; i < surface->CVCountU(); ++i) {
+          for (int j = 0; j < surface->CVCountV(); ++j) {
+            const kernel::Point3d p = surface->ControlPointAt(i, j);
+            cache_.control_points.push_back(static_cast<float>(p.x));
+            cache_.control_points.push_back(static_cast<float>(p.y));
+            cache_.control_points.push_back(static_cast<float>(p.z));
+            // Control polygon: grid lines to the previous CV in each direction.
+            auto seg = [&](const kernel::Point3d& q) {
+              cache_.control_polygon.push_back(static_cast<float>(q.x)); cache_.control_polygon.push_back(static_cast<float>(q.y)); cache_.control_polygon.push_back(static_cast<float>(q.z));
+              cache_.control_polygon.push_back(static_cast<float>(p.x)); cache_.control_polygon.push_back(static_cast<float>(p.y)); cache_.control_polygon.push_back(static_cast<float>(p.z));
+            };
+            if (i > 0) seg(surface->ControlPointAt(i - 1, j));
+            if (j > 0) seg(surface->ControlPointAt(i, j - 1));
+          }
+        }
+      }
+      break;
+    }
+    case ObjectKind::Brep: {
+      std::vector<kernel::Mesh> meshes;
+      try {
+        BrepMeshOptions opt;
+        opt.chord_tolerance = surface_tolerance;
+        opt.max_triangles_per_face = display_face_cap_;
+        const int nf = brep->raw().m_F.Count();
+        if (display_fine_faces_.size() == static_cast<size_t>(nf) && nf > 0) {
+          // Region build: visible (fine) faces at the requested tolerance and the
+          // per-object budget split over them; the rest at the coarse base level.
+          opt.face_chord_tolerance.assign(static_cast<size_t>(nf), std::max(display_coarse_tol_, surface_tolerance));
+          opt.face_max_triangles.assign(static_cast<size_t>(nf), 3000);  // off-screen faces: a small fixed cap
+          for (int f = 0; f < nf; ++f)
+            if (display_fine_faces_[static_cast<size_t>(f)]) {
+              opt.face_chord_tolerance[static_cast<size_t>(f)] = surface_tolerance;
+              opt.face_max_triangles[static_cast<size_t>(f)] = display_face_cap_;
+            }
+        }
+        meshes = MeshBrepFaces(brep->raw(), opt);
+      } catch (...) {
+        meshes.clear();
+      }
+      for (size_t fi = 0; fi < meshes.size(); ++fi) {
+        const size_t before = cache_.triangles.size() / 18;
+        AppendMeshTriangles(meshes[fi], cache_.triangles, cache_.bbox, cache_.has_bbox);
+        cache_.triangle_face.resize(cache_.triangles.size() / 18, static_cast<int>(fi));
+        (void)before;
+      }
+      AppendBrepEdges(*brep, surface_tolerance, cache_.lines, cache_.edges, cache_.naked_edges);
+      if (show_control_points) {
+        // SolidPtOn: the brep vertices are the grips.
+        const ON_Brep& raw = brep->raw();
+        for (int i = 0; i < raw.m_V.Count(); ++i) {
+          const ON_3dPoint p = raw.m_V[i].point;
+          cache_.control_points.push_back(static_cast<float>(p.x)); cache_.control_points.push_back(static_cast<float>(p.y)); cache_.control_points.push_back(static_cast<float>(p.z));
+        }
+      }
+      break;
+    }
+    case ObjectKind::Mesh: {
+      AppendMeshTriangles(*mesh, cache_.triangles, cache_.bbox, cache_.has_bbox, &cache_.uvs, &cache_.mesh_vertex_colors);
+      AppendMeshEdges(*mesh, cache_.lines);
+      AppendMeshNakedEdges(*mesh, cache_.edges, cache_.naked_edges);
+      // One entry per display triangle: quads produce two triangles.
+      const ON_Mesh& raw = mesh->raw();
+      for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+        cache_.triangle_face.push_back(fi);
+        if (raw.m_F[fi].IsQuad()) cache_.triangle_face.push_back(fi);
+      }
+      if (cache_.triangle_face.size() != cache_.triangles.size() / 18) cache_.triangle_face.clear();
+      if (show_control_points) {
+        for (int i = 0; i < raw.VertexCount(); ++i) {
+          const ON_3dPoint p = raw.Vertex(i);
+          cache_.control_points.push_back(static_cast<float>(p.x)); cache_.control_points.push_back(static_cast<float>(p.y)); cache_.control_points.push_back(static_cast<float>(p.z));
+        }
+      }
+      break;
+    }
+    case ObjectKind::SubD: {
+      const kernel::Mesh net = subd->ToApproximateMesh();
+      // Zoom-dependent smoothing: a refinement build (display_face_cap_ raised to the triangle
+      // budget by EnsureAdaptiveDisplay) subdivides one level deeper per halving of the
+      // chord tolerance below the default 0.05 (Catmull-Clark quarters the error per level),
+      // up to the budget; every other build keeps the fixed 2 levels / 24000 faces.
+      int sd_levels = 2, sd_faces = 24000;
+      if (display_face_cap_ > kDefaultFaceTriangleCap && surface_tolerance > 0.0 && surface_tolerance < 0.05) {
+        sd_levels = 2 + static_cast<int>(std::ceil(0.5 * std::log2(0.05 / surface_tolerance)));
+        sd_levels = std::clamp(sd_levels, 2, 5);
+        sd_faces = static_cast<int>(kAdaptiveTriangleBudget / 2);
+      }
+      const kernel::Mesh m = show_control_net ? net : SmoothSubDMesh(*subd, net, sd_levels, sd_faces);
+      AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
+      AppendMeshEdges(show_control_net ? net : m, cache_.lines);
+      AppendMeshNakedEdges(m, cache_.edges, cache_.naked_edges);
+      if (show_control_points) {
+        // The control net doubles as the control polygon.
+        const ON_Mesh& raw = net.raw();
+        for (int i = 0; i < raw.VertexCount(); ++i) {
+          const ON_3dPoint p = raw.Vertex(i);
+          cache_.control_points.push_back(static_cast<float>(p.x)); cache_.control_points.push_back(static_cast<float>(p.y)); cache_.control_points.push_back(static_cast<float>(p.z));
+        }
+        AppendMeshEdges(net, cache_.control_polygon);
+      }
+      break;
+    }
+    case ObjectKind::PointCloud: {
+      const int n = point_cloud->PointCount();
+      cache_.points.reserve(static_cast<size_t>(n) * 3);
+      for (int i = 0; i < n; ++i) {
+        const kernel::Point3d p = point_cloud->PointAt(i);
+        cache_.points.push_back(static_cast<float>(p.x));
+        cache_.points.push_back(static_cast<float>(p.y));
+        cache_.points.push_back(static_cast<float>(p.z));
+        ExpandBox(cache_.bbox, cache_.has_bbox, p);
+      }
+      break;
+    }
+  }
+  } catch (const std::exception& ex) {
+    std::fprintf(stderr, "dino8: display tessellation of object %llu (%s) failed, object not drawn: %s\n",
+                 static_cast<unsigned long long>(id), ObjectKindName(kind), ex.what());
+    std::fflush(stderr);
+    cache_.triangles.clear();
+    cache_.lines.clear();
+    cache_.points.clear();
+    cache_.control_polygon.clear();
+    cache_.control_points.clear();
+    cache_.triangle_face.clear();
+    cache_.edges.clear();
+    cache_.naked_edges.clear();
+    cache_.uvs.clear();
+    cache_.has_bbox = false;
+  }
+  cache_.dirty = false;
+  cache_.fine_faces = (kind == ObjectKind::Brep && brep && display_fine_faces_.size() == static_cast<size_t>(brep->raw().m_F.Count()))
+                          ? display_fine_faces_ : std::vector<char>{};
+  cache_.built_curve_tolerance = curve_tolerance;
+  cache_.built_surface_tolerance = surface_tolerance;
+}
+
+namespace {
+// Hysteresis band for EnsureAdaptiveDisplay: a tolerance is considered a
+// real change worth re-tessellating for only once it has moved more than
+// this factor away from whatever built the cache currently in hand -
+// otherwise a barely-perceptible camera nudge (or float noise) would force
+// a rebuild every frame.
+constexpr double kLodHysteresis = 1.35;
+
+bool DriftedPastHysteresis(double built, double requested) {
+  if (built <= 0.0) return true;  // never built at a known tolerance yet
+  const double ratio = requested / built;
+  return ratio > kLodHysteresis || ratio < 1.0 / kLodHysteresis;
+}
+
+bool SameTolerance(double built, double requested) {
+  return std::fabs(built - requested) <= 1e-12 * std::max(1.0, std::fabs(requested));
+}
+
+SceneObject::AdaptiveLodCounters g_lod_counters;
+bool g_face_level_refinement = true;
+}  // namespace
+
+void SceneObject::SetFaceLevelRefinement(bool on) { g_face_level_refinement = on; }
+bool SceneObject::FaceLevelRefinement() { return g_face_level_refinement; }
+SceneObject::AdaptiveLodCounters SceneObject::LodCounters() { return g_lod_counters; }
+void SceneObject::ResetLodCounters() { g_lod_counters = AdaptiveLodCounters{}; }
+
+SceneObject::AdaptiveLodInfo SceneObject::LodInfo() const {
+  AdaptiveLodInfo i;
+  i.stashed_levels = lod_stash_.size();
+  i.surface_floor = lod_surface_floor_;
+  i.current_triangles = cache_.triangles.size() / 18;
+  if (kind == ObjectKind::Brep && brep) {
+    i.total_faces = static_cast<std::size_t>(brep->raw().m_F.Count());
+    for (char c : cache_.fine_faces) i.fine_faces += c ? 1 : 0;
+  }
+  return i;
+}
+
+void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance, double base_surface_tolerance,
+                                        bool adaptive, const FaceVisibilityFn* face_visible) const {
+  // Points, meshes and point clouds display the same geometry at every tolerance: nothing to
+  // refine, so no second level (a 1M-triangle mesh must not be cached twice) and no rebuild on zoom.
+  if (kind == ObjectKind::Point || kind == ObjectKind::Mesh || kind == ObjectKind::PointCloud) {
+    EnsureDisplay(curve_tolerance, surface_tolerance);
+    return;
+  }
+  // The viewport's level lives in cache_ while it draws; the fixed level waits in other_cache_.
+  if (!view_current_) { std::swap(cache_, other_cache_); view_current_ = true; }
+  const bool pinned = custom_mesh_tolerance > 0.0;  // SetMeshSurfaceParameters: the user fixed the surface tolerance
+  const double effective_surface_tolerance = pinned ? custom_mesh_tolerance : surface_tolerance;
+
+  if (!adaptive) {
+    // Toggle off: plain fixed-tolerance tessellation. Rebuild only when the
+    // cache was not built at exactly this tolerance (e.g. just after
+    // switching adaptive tessellation off).
+    if (!cache_.dirty && (!SameTolerance(cache_.built_curve_tolerance, curve_tolerance) ||
+                          !SameTolerance(cache_.built_surface_tolerance, effective_surface_tolerance)))
+      cache_.dirty = true;  // not InvalidateDisplay(): the geometry is unchanged, the stash stays valid
+    BuildDisplay(curve_tolerance, surface_tolerance);
+    return;
+  }
+
+  // Budget floor (see kAdaptiveTriangleBudget): a refinement request below a
+  // floor already discovered for this object is raised to it. Never applies
+  // to a pinned tolerance (the user's explicit choice) nor to requests at or
+  // coarser than the base.
+  double request_surface = effective_surface_tolerance;
+  const bool budgeted = !pinned && base_surface_tolerance > 0.0;
+  if (budgeted && lod_surface_floor_ > 0.0 && request_surface < lod_surface_floor_) request_surface = lod_surface_floor_;
+
+  // A refinement (finer than the base) is allowed to put up to the whole
+  // triangle budget on one brep face; everything else keeps the mesher's
+  // default per-face cap. Restored right after the build so any other
+  // EnsureDisplay caller sees the default.
+  if (!g_face_level_refinement) face_visible = nullptr;
+  // Face-level refinement inputs (brep, refinement only): `need` = faces visible
+  // in the tight frustum right now; `guard` = faces visible in the guard-band
+  // frustum, which is what a region build keeps fine.
+  const int nfaces = (kind == ObjectKind::Brep && brep) ? brep->raw().m_F.Count() : 0;
+  const bool refining = budgeted && request_surface < base_surface_tolerance;
+  std::vector<char> need, guard;
+  bool region = false;
+  if (refining && nfaces >= 2 && face_visible && *face_visible) {
+    if (face_boxes_.size() != static_cast<std::size_t>(nfaces)) {
+      face_boxes_.assign(static_cast<std::size_t>(nfaces), kernel::BoundingBox{});
+      for (int f = 0; f < nfaces; ++f) {
+        const ON_BrepFace& bf = brep->raw().m_F[f];
+        ON_BoundingBox bb = bf.BoundingBox();
+        if (bf.m_face_index < 0 || !bb.IsValid()) { bb = ON_BoundingBox(ON_3dPoint(-1e300, -1e300, -1e300), ON_3dPoint(1e300, 1e300, 1e300)); }
+        face_boxes_[static_cast<std::size_t>(f)] = kernel::BoundingBox{kernel::Point3d(bb.m_min.x, bb.m_min.y, bb.m_min.z),
+                                                                      kernel::Point3d(bb.m_max.x, bb.m_max.y, bb.m_max.z)};
+      }
+    }
+    need.assign(static_cast<std::size_t>(nfaces), 0);
+    guard.assign(static_cast<std::size_t>(nfaces), 0);
+    int n_guard = 0;
+    for (int f = 0; f < nfaces; ++f) {
+      const kernel::BoundingBox& fb = face_boxes_[static_cast<std::size_t>(f)];
+      need[static_cast<std::size_t>(f)] = (*face_visible)(fb, false) ? 1 : 0;
+      guard[static_cast<std::size_t>(f)] = (need[static_cast<std::size_t>(f)] || (*face_visible)(fb, true)) ? 1 : 0;
+      n_guard += guard[static_cast<std::size_t>(f)];
+    }
+    region = n_guard < nfaces;  // everything in view: an ordinary whole-object build
+  } else if (refining && nfaces >= 1) {
+    need.assign(static_cast<std::size_t>(nfaces), 1);  // no visibility info: every face must be fine
+  }
+  // A cached level serves this request only if every face needed NOW is fine in it.
+  auto covers = [&](const DisplayCache& c) {
+    if (c.fine_faces.empty() || need.empty()) return true;
+    if (c.fine_faces.size() != need.size()) return false;
+    for (std::size_t f = 0; f < need.size(); ++f)
+      if (need[f] && !c.fine_faces[f]) return false;
+    return true;
+  };
+
+  auto build = [&](double ct, double st) {
+    int cap = kDefaultFaceTriangleCap;
+    display_fine_faces_.clear();
+    if (region) {
+      display_fine_faces_ = guard;
+      display_coarse_tol_ = base_surface_tolerance * 6.0;  // off-screen faces: the zoomed-out level (LodMaxScale)
+    }
+    if (budgeted && st < base_surface_tolerance) {
+      // The whole object's budget, split across its faces (only the FINE ones in
+      // a region build) so a many-face brep cannot reach faces x budget
+      // triangles (never below the default cap).
+      int faces = (kind == ObjectKind::Brep && brep) ? std::max(1, brep->raw().m_F.Count()) : 1;
+      int coarse_faces = 0;
+      if (region) { faces = 0; for (char c : guard) faces += c ? 1 : 0; faces = std::max(1, faces); coarse_faces = nfaces - faces; }
+      // The fine faces share what the budget leaves after the small off-screen faces (3000 each).
+      cap = std::max(kDefaultFaceTriangleCap, (static_cast<int>(kAdaptiveTriangleBudget) - 3000 * coarse_faces) / faces);
+      if (region && std::getenv("DINO8_LOD_DEBUG")) {
+        std::fprintf(stderr, "lod: object %llu region build st=%g fine=%d/%d cap=%d\n", static_cast<unsigned long long>(id), st, faces, nfaces, cap);
+        for (int f = 0; f < nfaces; ++f) {
+          const kernel::BoundingBox& fb = face_boxes_[static_cast<std::size_t>(f)];
+          std::fprintf(stderr, "lod:   face %d need=%d guard=%d box (%.1f %.1f %.1f)-(%.1f %.1f %.1f)\n", f, int(need[static_cast<std::size_t>(f)]), int(guard[static_cast<std::size_t>(f)]),
+                       fb.min.x, fb.min.y, fb.min.z, fb.max.x, fb.max.y, fb.max.z);
+        }
+      }
+    }
+    display_face_cap_ = cap;
+    BuildDisplay(ct, st);
+    display_face_cap_ = kDefaultFaceTriangleCap;
+    display_fine_faces_.clear();
+  };
+
+  if (cache_.dirty) {
+    // First build, or the geometry/settings changed (InvalidateDisplay already
+    // dropped the stash): just build at the requested level.
+    build(curve_tolerance, request_surface);
+  } else if (DriftedPastHysteresis(cache_.built_curve_tolerance, curve_tolerance) ||
+             DriftedPastHysteresis(cache_.built_surface_tolerance, request_surface) || !covers(cache_)) {
+    // The zoom moved past the hysteresis band. First: does an already-built
+    // level in the stash fit? Pick the closest one.
+    int best = -1;
+    double best_dist = 0.0;
+    for (std::size_t i = 0; i < lod_stash_.size(); ++i) {
+      const DisplayCache& c = lod_stash_[i];
+      if (DriftedPastHysteresis(c.built_curve_tolerance, curve_tolerance) ||
+          DriftedPastHysteresis(c.built_surface_tolerance, request_surface) || !covers(c))
+        continue;
+      const double dist = std::fabs(std::log(request_surface / c.built_surface_tolerance)) +
+                          std::fabs(std::log(curve_tolerance / c.built_curve_tolerance));
+      if (best < 0 || dist < best_dist) { best = static_cast<int>(i); best_dist = dist; }
+    }
+    if (best >= 0) {
+      // Swap the stashed level in; the level that was current becomes the
+      // most-recently-used stash entry. No tessellation happens.
+      DisplayCache hit = std::move(lod_stash_[static_cast<std::size_t>(best)]);
+      lod_stash_.erase(lod_stash_.begin() + best);
+      if (cache_.triangles.size() / 18 <= kLodStashMaxTriangles && cache_.lines.size() / 6 <= 4 * kLodStashMaxTriangles) lod_stash_.push_back(std::move(cache_));
+      cache_ = std::move(hit);
+      ++g_lod_counters.stash_hits;
+    } else {
+      // Re-tessellate. Keep the level we are leaving (if it is small enough
+      // to be worth the memory) so zooming back is free.
+      if (cache_.triangles.size() / 18 <= kLodStashMaxTriangles && cache_.lines.size() / 6 <= 4 * kLodStashMaxTriangles) {
+        lod_stash_.push_back(std::move(cache_));
+        while (lod_stash_.size() > kLodStashCapacity) lod_stash_.erase(lod_stash_.begin());
+      }
+      cache_ = DisplayCache{};  // dirty
+      build(curve_tolerance, request_surface);
+      ++g_lod_counters.rebuilds;
+    }
+  } else {
+    return;
+  }
+
+  // Triangle budget. A refinement is allowed to put up to kAdaptiveTriangleBudget
+  // triangles on the object (the per-face cap in `build` above is that budget
+  // split across faces). A mesh that reaches ~90% of it has saturated: asking
+  // for a still finer tolerance would only rebuild the same capped mesh at
+  // every zoom step, so the request tolerance that saturated it is remembered
+  // as a floor and any later, finer request is raised to it (no rebuild).
+  if (budgeted && request_surface < base_surface_tolerance && cache_.triangles.size() / 18 * 10 >= kAdaptiveTriangleBudget * 9 &&
+      (lod_surface_floor_ <= 0.0 || request_surface < lod_surface_floor_)) {
+    lod_surface_floor_ = request_surface;
+    ++g_lod_counters.budget_clamps;
+  }
+}
+
+// ---- per-object display-mode override (SetObjectDisplayMode) ---------------
+
+const std::vector<std::string>& SceneObject::DisplayOverrideNames() {
+  static const std::vector<std::string> names = {"UseViewport", "Wireframe", "Shaded",    "Rendered", "Ghosted", "X-Ray",
+                                                  "Technical",   "Artistic",  "Pen",       "Arctic",   "Monochrome", "RayTraced"};
+  return names;
+}
+
+namespace {
+std::string NormalizeModeName(const std::string& in) {
+  std::string out;
+  for (char c : in)
+    if (c != '-' && c != ' ' && c != '_') out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  return out;
+}
+}  // namespace
+
+std::string SceneObject::CanonicalDisplayOverrideName(const std::string& name) {
+  const std::string n = NormalizeModeName(name);
+  if (n == "useviewport" || n == "useview" || n == "viewport" || n == "default" || n == "none") return "UseViewport";
+  for (const std::string& canonical : DisplayOverrideNames())
+    if (n == NormalizeModeName(canonical)) return canonical;
+  return "";
+}
+
+bool SceneObject::SetDisplayOverride(const std::string& name) {
+  const std::string c = CanonicalDisplayOverrideName(name);
+  if (c.empty()) return false;
+  force_wireframe = c == "Wireframe";
+  force_shaded = c == "Shaded";
+  force_rendered = c == "Rendered";
+  force_ghosted = c == "Ghosted";
+  force_xray = c == "X-Ray";
+  force_technical = c == "Technical";
+  force_artistic = c == "Artistic";
+  force_pen = c == "Pen";
+  force_arctic = c == "Arctic";
+  force_monochrome = c == "Monochrome";
+  force_raytraced = c == "RayTraced";
+  return true;
+}
+
+bool SceneObject::SetViewportDisplayOverride(const std::string& viewport, const std::string& name) {
+  const std::string c = CanonicalDisplayOverrideName(name);
+  if (c.empty()) return false;
+  if (c == "UseViewport") viewport_display_overrides.erase(viewport);
+  else viewport_display_overrides[viewport] = c;
+  return true;
+}
+
+const char* SceneObject::DisplayOverrideName() const {
+  if (force_wireframe) return "Wireframe";
+  if (force_shaded) return "Shaded";
+  if (force_rendered) return "Rendered";
+  if (force_ghosted) return "Ghosted";
+  if (force_xray) return "X-Ray";
+  if (force_technical) return "Technical";
+  if (force_artistic) return "Artistic";
+  if (force_pen) return "Pen";
+  if (force_arctic) return "Arctic";
+  if (force_monochrome) return "Monochrome";
+  if (force_raytraced) return "RayTraced";
+  return "UseViewport";
+}
+
+std::string SceneObject::DisplayOverrideNameFor(const std::string& viewport) const {
+  const auto it = viewport_display_overrides.find(viewport);
+  return it != viewport_display_overrides.end() ? it->second : std::string(DisplayOverrideName());
+}
+
+SceneObject::DisplayOverrideFlags SceneObject::DisplayOverrideFlagsFor(const std::string& viewport) const {
+  DisplayOverrideFlags f;
+  const auto it = viewport_display_overrides.find(viewport);
+  if (it == viewport_display_overrides.end()) {
+    f.wireframe = force_wireframe; f.shaded = force_shaded; f.rendered = force_rendered; f.ghosted = force_ghosted;
+    f.xray = force_xray; f.technical = force_technical; f.artistic = force_artistic; f.pen = force_pen;
+    f.arctic = force_arctic; f.monochrome = force_monochrome; f.raytraced = force_raytraced;
+    return f;
+  }
+  const std::string& c = it->second;
+  f.wireframe = c == "Wireframe"; f.shaded = c == "Shaded"; f.rendered = c == "Rendered"; f.ghosted = c == "Ghosted";
+  f.xray = c == "X-Ray"; f.technical = c == "Technical"; f.artistic = c == "Artistic"; f.pen = c == "Pen";
+  f.arctic = c == "Arctic"; f.monochrome = c == "Monochrome"; f.raytraced = c == "RayTraced";
+  return f;
+}
+
+bool SceneObject::HasDisplayOverride() const { return std::strcmp(DisplayOverrideName(), "UseViewport") != 0; }
+
+void SceneObject::EnsureMappedUVs(TextureMapping mapping, float scale) const {
+  if (mapping == TextureMapping::Default) mapping = TextureMapping::Surface;
+  if (scale <= 0.f) scale = 1.f;
+  const size_t n = cache_.triangles.size() / 6;
+  if (!cache_.mapped_uvs.empty() && cache_.mapped_type == mapping && cache_.mapped_scale == scale &&
+      cache_.mapped_uvs.size() == n * 2) return;
+  cache_.mapped_type = mapping;
+  cache_.mapped_scale = scale;
+  cache_.mapped_uvs.assign(n * 2, 0.f);
+  if (mapping == TextureMapping::Surface && cache_.uvs.size() == n * 2) {
+    for (size_t i = 0; i < n * 2; ++i) cache_.mapped_uvs[i] = cache_.uvs[i] * scale;
+    return;
+  }
+  if (mapping == TextureMapping::Surface) mapping = TextureMapping::Box;
+  // Bounding-box space: every projection is expressed in the object's
+  // own box so a texture tiles once across the object at scale 1.
+  const kernel::Point3d mn = cache_.has_bbox ? cache_.bbox.min : kernel::Point3d(0, 0, 0);
+  const kernel::Point3d mx = cache_.has_bbox ? cache_.bbox.max : kernel::Point3d(1, 1, 1);
+  const double sx = std::max(mx.x - mn.x, 1e-9), sy = std::max(mx.y - mn.y, 1e-9), sz = std::max(mx.z - mn.z, 1e-9);
+  const kernel::Point3d c((mn.x + mx.x) / 2, (mn.y + mx.y) / 2, (mn.z + mx.z) / 2);
+  for (size_t i = 0; i < n; ++i) {
+    const float* v = &cache_.triangles[i * 6];
+    const double x = v[0], y = v[1], z = v[2];
+    double u = 0, w = 0;
+    switch (mapping) {
+      case TextureMapping::Planar:
+        u = (x - mn.x) / sx; w = (y - mn.y) / sy;
+        break;
+      case TextureMapping::Custom:
+        if (has_custom_mapping_frame) {
+          const kernel::Vector3d rel(x - custom_mapping_origin.x, y - custom_mapping_origin.y, z - custom_mapping_origin.z);
+          const double s = std::max(custom_mapping_size, 1e-9);
+          u = ON_DotProduct(rel, custom_mapping_x) / s;
+          w = ON_DotProduct(rel, custom_mapping_y) / s;
+        } else {
+          u = (x - mn.x) / sx; w = (y - mn.y) / sy;
+        }
+        break;
+      case TextureMapping::Box: {
+        const double ax = std::fabs(v[3]), ay = std::fabs(v[4]), az = std::fabs(v[5]);
+        if (az >= ax && az >= ay) { u = (x - mn.x) / sx; w = (y - mn.y) / sy; }
+        else if (ax >= ay) { u = (y - mn.y) / sy; w = (z - mn.z) / sz; }
+        else { u = (x - mn.x) / sx; w = (z - mn.z) / sz; }
+        break;
+      }
+      case TextureMapping::Cylindrical:
+        u = std::atan2(y - c.y, x - c.x) / (2 * ON_PI) + 0.5; w = (z - mn.z) / sz;
+        break;
+      case TextureMapping::Spherical: {
+        kernel::Vector3d d(x - c.x, y - c.y, z - c.z);
+        if (!d.Unitize()) d = kernel::Vector3d(0, 0, 1);
+        u = std::atan2(d.y, d.x) / (2 * ON_PI) + 0.5; w = 1.0 - std::acos(std::clamp(d.z, -1.0, 1.0)) / ON_PI;
+        break;
+      }
+      default: break;
+    }
+    cache_.mapped_uvs[i * 2] = static_cast<float>(u * scale);
+    cache_.mapped_uvs[i * 2 + 1] = static_cast<float>(w * scale);
+  }
+}
+
+namespace {
+
+// Rhino-style analysis ramp: blue -> cyan -> green -> yellow -> red.
+void RampColor(double t, float& r, float& g, float& b) {
+  t = std::clamp(t, 0.0, 1.0);
+  struct Stop { double t; float r, g, b; };
+  static const Stop stops[] = {{0.0, 0.0f, 0.0f, 1.0f}, {0.25, 0.0f, 1.0f, 1.0f}, {0.5, 0.0f, 1.0f, 0.0f},
+                               {0.75, 1.0f, 1.0f, 0.0f}, {1.0, 1.0f, 0.0f, 0.0f}};
+  for (int i = 0; i < 4; ++i) {
+    if (t <= stops[i + 1].t) {
+      const double f = (t - stops[i].t) / (stops[i + 1].t - stops[i].t);
+      r = static_cast<float>(stops[i].r + (stops[i + 1].r - stops[i].r) * f);
+      g = static_cast<float>(stops[i].g + (stops[i + 1].g - stops[i].g) * f);
+      b = static_cast<float>(stops[i].b + (stops[i + 1].b - stops[i].b) * f);
+      return;
+    }
+  }
+  r = 1.0f; g = 0.0f; b = 0.0f;
+}
+
+struct VertexKey {
+  float x, y, z;
+  bool operator==(const VertexKey& o) const { return x == o.x && y == o.y && z == o.z; }
+};
+struct VertexKeyHash {
+  size_t operator()(const VertexKey& k) const {
+    std::uint32_t a, b, c;
+    std::memcpy(&a, &k.x, 4); std::memcpy(&b, &k.y, 4); std::memcpy(&c, &k.z, 4);
+    return (static_cast<size_t>(a) * 73856093u) ^ (static_cast<size_t>(b) * 19349663u) ^ (static_cast<size_t>(c) * 83492791u);
+  }
+};
+
+// Discrete curvature on the (unindexed) display triangles: vertices are
+// welded by exact position, Gaussian curvature is the angle deficit divided
+// by the barycentric vertex area, mean curvature comes from the cotangent
+// Laplacian of the position. Boundary vertices, where neither formula
+// holds, take the average of their interior neighbours.
+std::vector<double> DiscreteCurvature(const std::vector<float>& tri, bool gaussian) {
+  const size_t n_verts = tri.size() / 6;
+  std::vector<int> index(n_verts);
+  std::vector<kernel::Point3d> pos;
+  std::vector<kernel::Vector3d> nrm;
+  std::unordered_map<VertexKey, int, VertexKeyHash> weld;
+  for (size_t i = 0; i < n_verts; ++i) {
+    const VertexKey k{tri[i * 6], tri[i * 6 + 1], tri[i * 6 + 2]};
+    auto it = weld.find(k);
+    if (it == weld.end()) {
+      it = weld.emplace(k, static_cast<int>(pos.size())).first;
+      pos.emplace_back(k.x, k.y, k.z);
+      nrm.emplace_back(tri[i * 6 + 3], tri[i * 6 + 4], tri[i * 6 + 5]);
+    }
+    index[i] = it->second;
+  }
+  const size_t n = pos.size();
+  std::vector<double> angle_sum(n, 0.0), area(n, 0.0);
+  std::vector<kernel::Vector3d> lap(n, kernel::Vector3d(0, 0, 0));
+  std::unordered_map<std::uint64_t, int> edge_uses;
+  auto ekey = [](int a, int b) {
+    if (a > b) std::swap(a, b);
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a)) << 32) | static_cast<std::uint32_t>(b);
+  };
+  auto cot = [](const kernel::Vector3d& u, const kernel::Vector3d& v) {
+    const double c = ON_CrossProduct(u, v).Length();
+    return c > 1e-18 ? ON_DotProduct(u, v) / c : 0.0;
+  };
+  for (size_t t = 0; t + 2 < n_verts; t += 3) {
+    const int i0 = index[t], i1 = index[t + 1], i2 = index[t + 2];
+    if (i0 == i1 || i1 == i2 || i0 == i2) continue;
+    const kernel::Point3d& p0 = pos[i0]; const kernel::Point3d& p1 = pos[i1]; const kernel::Point3d& p2 = pos[i2];
+    const double a = ON_CrossProduct(p1 - p0, p2 - p0).Length() * 0.5;
+    if (a < 1e-18) continue;
+    const int idx[3] = {i0, i1, i2};
+    const kernel::Point3d* pp[3] = {&p0, &p1, &p2};
+    for (int k = 0; k < 3; ++k) {
+      const kernel::Vector3d u = *pp[(k + 1) % 3] - *pp[k];
+      const kernel::Vector3d v = *pp[(k + 2) % 3] - *pp[k];
+      angle_sum[idx[k]] += ON_3dVector::Angle(u, v);
+      area[idx[k]] += a / 3.0;
+      // Cotangent weights: the angle at vertex k is opposite the edge (k+1, k+2).
+      const double w = cot(u, v);
+      const int ia = idx[(k + 1) % 3], ib = idx[(k + 2) % 3];
+      lap[ia] += (*pp[(k + 2) % 3] - *pp[(k + 1) % 3]) * w;
+      lap[ib] += (*pp[(k + 1) % 3] - *pp[(k + 2) % 3]) * w;
+      edge_uses[ekey(ia, ib)]++;
+    }
+  }
+  std::vector<bool> boundary(n, false);
+  std::vector<std::vector<int>> nbrs(n);
+  for (const auto& [k, uses] : edge_uses) {
+    const int a = static_cast<int>(k >> 32), b = static_cast<int>(k & 0xffffffffu);
+    nbrs[a].push_back(b); nbrs[b].push_back(a);
+    if (uses == 1) { boundary[a] = true; boundary[b] = true; }
+  }
+  std::vector<double> value(n, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    if (boundary[i] || area[i] <= 1e-18) continue;
+    if (gaussian) {
+      value[i] = (2.0 * ON_PI - angle_sum[i]) / area[i];
+    } else {
+      // Laplace-Beltrami of the position is -2 H n (outward normal, convex positive).
+      const kernel::Vector3d d = lap[i] / (2.0 * area[i]);
+      value[i] = -0.5 * ON_DotProduct(d, nrm[i]);
+    }
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (!boundary[i]) continue;
+    double sum = 0; int cnt = 0;
+    for (int j : nbrs[i]) if (!boundary[j]) { sum += value[j]; ++cnt; }
+    if (cnt == 0) for (int j : nbrs[i]) for (int k : nbrs[j]) if (!boundary[k]) { sum += value[k]; ++cnt; }
+    value[i] = cnt ? sum / cnt : 0.0;
+  }
+  // Two passes of neighbour averaging: discrete curvature on an uneven
+  // display tessellation is noisy vertex to vertex, and Rhino's analysis
+  // mesh is smoother than ours.
+  for (int pass = 0; pass < 2; ++pass) {
+    std::vector<double> smoothed(n);
+    for (size_t i = 0; i < n; ++i) {
+      double sum = value[i]; int cnt = 1;
+      for (int j : nbrs[i]) { sum += value[j]; ++cnt; }
+      smoothed[i] = sum / cnt;
+    }
+    value.swap(smoothed);
+  }
+  std::vector<double> out(n_verts);
+  for (size_t i = 0; i < n_verts; ++i) out[i] = value[index[i]];
+  return out;
+}
+
+// Thickness at every display vertex: the distance along -normal from the
+// vertex to the first triangle hit on the far side (Moeller-Trumbore over
+// the display triangles), or `far` when nothing is hit. A tiny start
+// offset skips the triangles the vertex itself belongs to.
+std::vector<double> RayThickness(const std::vector<float>& tris, double far_dist) {
+  const size_t n_verts = tris.size() / 6, n_tris = n_verts / 3;
+  std::vector<double> out(n_verts, far_dist);
+  if (n_tris == 0) return out;
+  // Bounding box diagonal sets the skip epsilon.
+  double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+  for (size_t i = 0; i < n_verts; ++i) for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], static_cast<double>(tris[i * 6 + k])); hi[k] = std::max(hi[k], static_cast<double>(tris[i * 6 + k])); }
+  const double diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+  const double eps = std::max(diag * 1e-5, 1e-9);
+  // Per-triangle data.
+  std::vector<ON_3dPoint> a(n_tris), b(n_tris), c(n_tris);
+  for (size_t t = 0; t < n_tris; ++t) {
+    a[t] = ON_3dPoint(tris[t * 18], tris[t * 18 + 1], tris[t * 18 + 2]);
+    b[t] = ON_3dPoint(tris[t * 18 + 6], tris[t * 18 + 7], tris[t * 18 + 8]);
+    c[t] = ON_3dPoint(tris[t * 18 + 12], tris[t * 18 + 13], tris[t * 18 + 14]);
+  }
+  // Deduplicate rays by vertex position + normal so shared corners are cast once.
+  std::map<std::array<float, 6>, double> memo;
+  for (size_t i = 0; i < n_verts; ++i) {
+    std::array<float, 6> key;
+    for (int k = 0; k < 6; ++k) key[static_cast<size_t>(k)] = tris[i * 6 + k];
+    auto it = memo.find(key);
+    if (it != memo.end()) { out[i] = it->second; continue; }
+    ON_3dVector n(tris[i * 6 + 3], tris[i * 6 + 4], tris[i * 6 + 5]);
+    if (!n.Unitize()) { memo[key] = far_dist; continue; }
+    const ON_3dVector d = -n;
+    const ON_3dPoint o = ON_3dPoint(tris[i * 6], tris[i * 6 + 1], tris[i * 6 + 2]) + d * eps;
+    double best = far_dist;
+    for (size_t t = 0; t < n_tris; ++t) {
+      const ON_3dVector e1 = b[t] - a[t], e2 = c[t] - a[t];
+      const ON_3dVector p = ON_CrossProduct(d, e2);
+      const double det = ON_DotProduct(e1, p);
+      if (std::fabs(det) < 1e-12) continue;
+      const double inv = 1.0 / det;
+      const ON_3dVector s = o - a[t];
+      const double u = ON_DotProduct(s, p) * inv;
+      if (u < -1e-9 || u > 1 + 1e-9) continue;
+      const ON_3dVector q = ON_CrossProduct(s, e1);
+      const double v = ON_DotProduct(d, q) * inv;
+      if (v < -1e-9 || u + v > 1 + 1e-9) continue;
+      const double dist = ON_DotProduct(e2, q) * inv;
+      if (dist > eps && dist < best) best = dist;
+    }
+    out[i] = best + (best < far_dist ? eps : 0.0);
+    memo[key] = out[i];
+  }
+  return out;
+}
+
+}  // namespace
+
+void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
+  const bool wants_colors = settings.mode == AnalysisMode::Curvature || settings.mode == AnalysisMode::DraftAngle ||
+                            settings.mode == AnalysisMode::Thickness;
+  if (!wants_colors) {
+    cache_.colors.clear();
+    cache_.colors_valid = false;
+    return;
+  }
+  if (cache_.colors_valid && cache_.colors_settings.SameColoring(settings) &&
+      cache_.colors.size() == cache_.triangles.size() / 2) return;
+  const size_t n_verts = cache_.triangles.size() / 6;
+  std::vector<double> values(n_verts, 0.0);
+  double lo = settings.range_min, hi = settings.range_max;
+  if (settings.mode == AnalysisMode::Curvature) {
+    values = DiscreteCurvature(cache_.triangles, settings.curvature_style == CurvatureStyle::Gaussian);
+    if (settings.auto_range && !values.empty()) {
+      // Robust range: 5th .. 95th percentile so a few noisy vertices do not
+      // wash out the ramp.
+      std::vector<double> sorted = values;
+      std::sort(sorted.begin(), sorted.end());
+      lo = sorted[static_cast<size_t>(sorted.size() * 0.05)];
+      hi = sorted[std::min(sorted.size() - 1, static_cast<size_t>(sorted.size() * 0.95))];
+    }
+  } else if (settings.mode == AnalysisMode::Thickness) {
+    values = RayThickness(cache_.triangles, settings.thickness_max);
+    lo = settings.thickness_min; hi = settings.thickness_max;
+    // Thin = red, thick = blue (Rhino's convention), so invert the ramp.
+    for (double& v : values) v = hi + lo - v;
+  } else {
+    kernel::Vector3d pull = settings.draft_direction;
+    if (!pull.Unitize()) pull = kernel::Vector3d(0, 0, 1);
+    for (size_t i = 0; i < n_verts; ++i) {
+      kernel::Vector3d nv(cache_.triangles[i * 6 + 3], cache_.triangles[i * 6 + 4], cache_.triangles[i * 6 + 5]);
+      const double ang = ON_3dVector::Angle(nv, pull);  // 0 .. pi
+      values[i] = 90.0 - ang * 180.0 / ON_PI;
+    }
+    lo = settings.draft_min; hi = settings.draft_max;
+  }
+  if (hi - lo < 1e-12) {
+    const double mid = (hi + lo) * 0.5;
+    const double half = std::max(std::fabs(mid) * 0.5, 1e-9);
+    lo = mid - half; hi = mid + half;
+  }
+  cache_.colors.resize(n_verts * 3);
+  for (size_t i = 0; i < n_verts; ++i) {
+    float r, g, b;
+    RampColor((values[i] - lo) / (hi - lo), r, g, b);
+    cache_.colors[i * 3] = r; cache_.colors[i * 3 + 1] = g; cache_.colors[i * 3 + 2] = b;
+  }
+  cache_.colors_min = lo;
+  cache_.colors_max = hi;
+  cache_.colors_settings = settings;
+  cache_.colors_valid = true;
+}
+
+kernel::BoundingBox SceneObject::BoundingBox() const {
+  if (base_bbox_valid_ && !cache_.dirty) return base_bbox_;
+  // Always measured on the fixed base tessellation, never on whichever
+  // zoom-dependent level the viewport last installed in cache_ (adaptive
+  // tessellation swaps cache_ per frame; a bounding box that changed with the
+  // camera made BoundingBox/Describe/zoom-extents depend on the view). Build
+  // the base level in a scratch cache and put the viewport's level back.
+  const bool was_dirty = cache_.dirty;
+  DisplayCache saved = std::move(cache_);
+  cache_ = DisplayCache{};  // dirty
+  BuildDisplay(0.05, 0.1);
+  base_bbox_ = cache_.has_bbox ? cache_.bbox : kernel::BoundingBox{point, point};
+  cache_ = std::move(saved);
+  // While the display is dirty the geometry may still be mid-edit (several
+  // edit sequences mark it dirty, then keep mutating, relying on the next
+  // rebuild to see the final state): answer now, but only remember the answer
+  // once the live cache is clean.
+  base_bbox_valid_ = !was_dirty;
+  return base_bbox_;
+}
+
+std::string SceneObject::Describe() const {
+  std::ostringstream out;
+  out << ObjectKindName(kind);
+  if (!name.empty()) out << " \"" << name << "\"";
+  out << "\n  ID: " << id << "\n  Layer index: " << layer_index;
+  if (linetype != "ByLayer") out << "\n  Linetype: " << linetype;
+  switch (kind) {
+    case ObjectKind::Point:
+      out << "\n  Location: " << point.x << ", " << point.y << ", " << point.z;
+      break;
+    case ObjectKind::Curve:
+      out << "\n  Degree: " << curve->Degree() << "\n  Control points: " << curve->ControlPointCount()
+          << "\n  Rational: " << (curve->IsRational() ? "yes" : "no")
+          << "\n  Closed: " << (curve->IsClosed() ? "yes" : "no")
+          << "\n  Length: " << curve->Length();
+      break;
+    case ObjectKind::Surface:
+      out << "\n  Degree: " << surface->DegreeU() << " x " << surface->DegreeV()
+          << "\n  Control points: " << surface->CVCountU() << " x " << surface->CVCountV()
+          << "\n  Rational: " << (surface->IsRational() ? "yes" : "no");
+      break;
+    case ObjectKind::Brep:
+      out << "\n  Faces: " << brep->FaceCount();
+      break;
+    case ObjectKind::Mesh:
+      out << "\n  Vertices: " << mesh->VertexCount() << "\n  Faces: " << mesh->FaceCount()
+          << "\n  Closed: " << (mesh->IsClosedManifold() ? "yes" : "no");
+      break;
+    case ObjectKind::SubD:
+      out << "\n  Faces: " << subd->FaceCount() << "\n  Vertices: " << subd->VertexCount()
+          << "\n  Edges: " << subd->EdgeCount() << "\n  Crease edges: " << subd->CreaseEdgeCount();
+      break;
+    case ObjectKind::PointCloud:
+      out << "\n  Points: " << point_cloud->PointCount()
+          << "\n  Colors: " << (point_cloud->HasColors() ? "yes" : "no")
+          << "\n  Normals: " << (point_cloud->HasNormals() ? "yes" : "no");
+      break;
+  }
+  const kernel::BoundingBox b = BoundingBox();
+  out << "\n  Bounding box: (" << b.min.x << ", " << b.min.y << ", " << b.min.z << ") to ("
+      << b.max.x << ", " << b.max.y << ", " << b.max.z << ")";
+  for (const auto& kv : user_text) out << "\n  " << kv.first << " = " << kv.second;
+  return out.str();
+}
+
+void FlipObject(SceneObject& o) {
+  if (o.kind == ObjectKind::Curve && o.curve) o.curve->Reverse();
+  else if (o.kind == ObjectKind::Surface && o.surface) o.surface->Reverse(0);
+  else if (o.kind == ObjectKind::Mesh && o.mesh) *o.mesh = o.mesh->FlipNormals();
+  else if (o.kind == ObjectKind::Brep && o.brep) o.brep->raw().Flip();
+  o.InvalidateDisplay();
+}
+
+std::optional<DirArrow> ComputeDirArrow(const SceneObject& o) {
+  if (o.kind == ObjectKind::Curve && o.curve) {
+    const kernel::Interval d = o.curve->Domain();
+    return DirArrow{o.curve->PointAt(d.min), o.curve->TangentAt(d.min)};
+  }
+  if (o.kind == ObjectKind::Surface && o.surface) {
+    const kernel::Interval du = o.surface->Domain(0), dv = o.surface->Domain(1);
+    const double u = (du.min + du.max) / 2, v = (dv.min + dv.max) / 2;
+    return DirArrow{o.surface->PointAt(u, v), o.surface->NormalAt(u, v)};
+  }
+  return std::nullopt;
+}
+
+}  // namespace dino8::app
