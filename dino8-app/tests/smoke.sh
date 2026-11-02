@@ -9745,7 +9745,7 @@ sats_check "SplitByObject: 1 solid(s) split into 2 piece(s) (SubD boolean: the p
 sats_check "Object 14 (SubD) layer Default" "the inside piece is a SubD object (before: a Mesh)"
 sats_check "469 faces, 823 edges, 356 vertices, 162 creases" "inside piece: 469 faces, 162 creases (Euler 356 - 823 + 469 = 2, one closed body)"
 sats_check "639 faces, 1165 edges, 528 vertices, 160 creases" "outside piece: 639 faces, 160 creases (Euler 528 - 1165 + 639 = 2, one closed body)"
-sats_check "SplitByObject: 1 solid(s) split into 2 piece(s) (SubD boolean: the pieces are editable SubDs, 676 face(s) in all, 144 crease edge(s) on the cut seams)" "a SubD cutter through a Brep box target also yields SubD pieces (676 faces, 144 seam creases)"
+sats_check "SplitByObject: 1 solid(s) split into 2 piece(s) (SubD boolean: the pieces are editable SubDs, 67[56] face(s) in all, 144 crease edge(s) on the cut seams)" "a SubD cutter through a Brep box target also yields SubD pieces (675 or 676 faces - the mesh boolean under it tessellates one triangle differently on Windows - and 144 seam creases)"
 sats_check "does not intersect the cutting object(s)" "a SubD cutter that misses the target splits nothing"
 sats_check "Object 20 (SubD) layer Default name 'MissTarget'" "the missed SubD target is still there, unchanged"
 sats_check "Object 21 (SubD) layer Default name 'MissCutter'" "the missing cutter is not consumed"
