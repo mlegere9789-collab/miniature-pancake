@@ -378,6 +378,14 @@ void RegisterBuiltinParams() {
                     return "";
                   }),
       YesNoParam("solid", "build a solid between the surface and its offset", "solid", false)});
+  SetParams("Shell", {
+      NumberParam("thickness", "wall thickness", "> 0",
+                  [](const HistoryRecord& r) { return NumOf(r, "t"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (!(d > 0.0)) return "thickness must be positive";
+                    r.num["t"] = d;
+                    return "";
+                  })});
   for (const char* name : {"BooleanUnion", "BooleanDifference", "BooleanIntersection", "Boolean2Objects"}) SetParams(name, BooleanParams());
 }
 
@@ -418,6 +426,7 @@ void RegisterBuiltinRebuilders() {
   RegisterHistoryRebuilder("NetworkSrf", "NetworkSrf/EdgeSrf, 3 or 4 curves (Coons)", CurveList(NetworkLoopAdapter, 3, 4));
   RegisterHistoryRebuilder("Offset", "Offset of a curve", OneCurve(RebuildOffsetCurve));
   RegisterHistoryRebuilder("OffsetSrf", "OffsetSrf of a surface or polysurface", OneSurface(RebuildOffsetSrf));
+  RegisterHistoryRebuilder("Shell", "Shell of a closed solid (uniform thickness, no opened faces)", OneSurface(RebuildShell));
   for (const char* name : {"BooleanUnion", "BooleanDifference", "BooleanIntersection", "Boolean2Objects"})
     RegisterHistoryRebuilder(name, std::string(name) + " of closed solid B-reps (exact engines)", RebuildBoolean);
 }
@@ -909,11 +918,11 @@ void RegisterHistoryCommands(CommandEngine& e) {
   RegisterBuiltinRebuilders();
   RegisterBuiltinParams();
   Reg(e, "History", Immediate([](CommandContext& ctx) { ToggleOrReport(ctx, /*report=*/true); }), CommandStatus::Implemented,
-      "Construction history: with no argument, reports the On/Off state and every object with live history and its source(s); On/Off toggles whether NEW results of the registered constructions (Extrude/ExtrudeCrv/ExtrudeSrf/ExtrudeCrvToPoint/ExtrudeCrvAlongCrv/ExtrudeCrvTapered, Revolve, RailRevolve, Loft, SubDLoft, Sweep1/Sweep2 single section, Pipe, Patch, PlanarSrf, NetworkSrf/EdgeSrf, Offset, OffsetSrf, and the exact-B-rep BooleanUnion/Difference/Intersection/Boolean2Objects) record their source object(s) and options - existing objects and every other construction command are unaffected, matching Rhino's own History On/Off gating 'new construction only'. While History is On the inputs a boolean consumes are hidden (kept as the boolean's recorded sources) instead of deleted, as Rhino does. UpdateHistory does the actual rebuild-on-edit, in dependency order through chains of any depth.");
+      "Construction history: with no argument, reports the On/Off state and every object with live history and its source(s); On/Off toggles whether NEW results of the registered constructions (Extrude/ExtrudeCrv/ExtrudeSrf/ExtrudeCrvToPoint/ExtrudeCrvAlongCrv/ExtrudeCrvTapered, Revolve, RailRevolve, Loft, SubDLoft, Sweep1/Sweep2 single section, Pipe, Patch, PlanarSrf, NetworkSrf/EdgeSrf, Offset, OffsetSrf, Shell (closed, uniform thickness, no opened faces), and the exact-B-rep BooleanUnion/Difference/Intersection/Boolean2Objects) record their source object(s) and options - existing objects and every other construction command are unaffected, matching Rhino's own History On/Off gating 'new construction only'. While History is On the inputs a boolean consumes are hidden (kept as the boolean's recorded sources) instead of deleted, as Rhino does. UpdateHistory does the actual rebuild-on-edit, in dependency order through chains of any depth.");
   Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ToggleOrReport(ctx, /*report=*/false); }), CommandStatus::Implemented,
       "The same On/Off toggle as History (Rhino's own alternate name for it); use History with no argument for the live report.");
   Reg(e, "UpdateHistory", Immediate(DoUpdateHistory), CommandStatus::Implemented,
-      "Re-runs every recorded construction (see History for the list) against its source object(s)' *current* geometry (moved, reshaped, or control-point-edited since) and replaces that object's geometry in place - same object id, same layer/color/name/user text, only the shape changes. One registry-based dispatch (history_rebuild.h): sources may be curves, surfaces, polysurfaces or the results of other recorded constructions, which are rebuilt first (curve -> Extrude -> BooleanUnion updates in order). A source that was deleted, changed kind, or that the construction now refuses leaves that object exactly as it was, prints the reason, and skips everything built from it. The explicit-recompute shape of ElecRebuild (cmd_elec.cpp) and UpdateDimensions (cmd_annotate.cpp), not an automatic hook on every document edit. Revolve's axis is recorded as-picked and does not move with the curve, matching Rhino. Sweep1/Sweep2 only record from a single cross-section; Revolve Output=SubD, FilletEdge/ChamferEdge, Project/Pull, Shell, mesh/SubD booleans and every other command record nothing. Objects made before History was turned On have no recorded history and are left untouched.");
+      "Re-runs every recorded construction (see History for the list) against its source object(s)' *current* geometry (moved, reshaped, or control-point-edited since) and replaces that object's geometry in place - same object id, same layer/color/name/user text, only the shape changes. One registry-based dispatch (history_rebuild.h): sources may be curves, surfaces, polysurfaces or the results of other recorded constructions, which are rebuilt first (curve -> Extrude -> BooleanUnion updates in order). A source that was deleted, changed kind, or that the construction now refuses leaves that object exactly as it was, prints the reason, and skips everything built from it. The explicit-recompute shape of ElecRebuild (cmd_elec.cpp) and UpdateDimensions (cmd_annotate.cpp), not an automatic hook on every document edit. Revolve's axis is recorded as-picked and does not move with the curve, matching Rhino. Sweep1/Sweep2 only record from a single cross-section; Revolve Output=SubD, FilletEdge/ChamferEdge, Project/Pull, Shell with opened or individually-thickened faces, mesh/SubD booleans and every other command record nothing. Objects made before History was turned On have no recorded history and are left untouched.");
   Reg(e, "EditHistory", Immediate(DoEditHistory), CommandStatus::Implemented,
       "EditHistory <id> [key=value ...]: re-runs the recorded construction of an object with NEW options (Extrude distance/bothsides/solid, ExtrudeCrvTapered distance/draft, Revolve angle/startangle, Loft style/cap, Pipe radius/cap, Offset and OffsetSrf distance, boolean operation/swap, ...). With no key=value it lists the object's editable parameters, their current values and valid ranges. Values are validated and the new geometry computed before anything changes; an accepted edit prints the measured before/after (bounding box and length/area/volume), re-evaluates every dependent and is one undo step (the record is part of it).");
   Reg(e, "ListHistory", Immediate(DoListHistory), CommandStatus::Implemented,

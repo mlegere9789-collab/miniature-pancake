@@ -1954,6 +1954,26 @@ class ShellCommand : public Command {
       const bool has_remove = rem_it != open_faces_.end() && !rem_it->second.empty();
       const auto fth_it = face_thickness_.find(id);
       const bool has_overrides = fth_it != face_thickness_.end() && !fth_it->second.empty();
+      // The plain case - a closed solid, one uniform thickness, no opened or
+      // individually-thickened faces - lives in RebuildShell (below the
+      // anonymous namespace) so UpdateHistory re-runs exactly what this does,
+      // and is the only Shell that records construction history (face indices
+      // are not a stable thing to re-run against an edited solid).
+      if (!has_remove && !has_overrides) {
+        HistoryRecord rec;
+        rec.command = "Shell";
+        rec.num = {{"t", t}, {"exact", exact_ ? 1.0 : 0.0}};
+        std::optional<SceneObject> built = RebuildShell(ctx, *o, rec);
+        if (!built) continue;
+        plain_.insert(id);
+        if (built->kind == ObjectKind::Brep && built->brep) {
+          exact_results.push_back({id, *built->brep});
+          exact_notes_.push_back({0, 0});
+        } else if (built->mesh) {
+          results.push_back({id, *built->mesh});
+        }
+        continue;
+      }
       // Exact B-rep first (TryExactShell above): convex planar solids with or
       // without opened faces / per-face thickness, and whole spheres / tori.
       // Fails open to the mesh constructions below, printing the kernel's
@@ -1994,30 +2014,34 @@ class ShellCommand : public Command {
         if (has_overrides && overrides_applied) per_face.push_back(id);
         continue;
       }
-      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
-      if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
-      kernel::Mesh outer = Outward(*m);
-      kernel::Mesh inner = OffsetMesh(outer, -t);
-      try {
-        kernel::Mesh r = kernel::BooleanCombine(outer, inner, kernel::BooleanOp::Difference);
-        if (r.FaceCount() == 0) { ctx.Warn("Shell: object " + std::to_string(id) + " is thinner than the thickness; skipped"); continue; }
-        results.push_back({id, r});
-      } catch (const std::exception& ex) {
-        ctx.Warn("Shell: object " + std::to_string(id) + " rejected by the mesh kernel (" + ex.what() + "); skipped");
-      }
     }
     if (results.empty() && exact_results.empty()) { Finish(); return; }
     ctx.Doc().BeginChange("Shell");
+    // History On: the solid a plain Shell hollowed is HIDDEN instead of
+    // deleted (as the booleans do), so the result can name it as its recorded
+    // source and editing it - or the curve it was extruded from - re-shells it.
+    const bool keep_source = ctx.App().State().history_recording;
+    auto retire = [&](ObjectId id) {
+      if (keep_source && plain_.count(id)) {
+        if (SceneObject* s = ctx.Doc().Find(id)) { s->visible = false; s->selected = false; s->InvalidateDisplay(); }
+      } else {
+        ctx.Doc().Remove(id);
+      }
+    };
+    auto record = [&](ObjectId id, ObjectId new_id) {
+      if (plain_.count(id)) RecordHistoryIfEnabled(ctx, new_id, "Shell", {id}, {{"t", t}, {"exact", exact_ ? 1.0 : 0.0}});
+    };
     size_t exact_i = 0;
     for (auto& [id, r] : exact_results) {
       const std::pair<size_t, size_t> note = exact_i < exact_notes_.size() ? exact_notes_[exact_i] : std::pair<size_t, size_t>{0, 0};
       ++exact_i;
       int layer = 0;
       if (const SceneObject* o = ctx.Doc().Find(id)) layer = o->layer_index;
-      ctx.Doc().Remove(id);
+      retire(id);
       SceneObject n = SceneObject::MakeBrep(r);
       n.layer_index = layer;
       const ObjectId new_id = ctx.Doc().Add(std::move(n));
+      record(id, new_id);
       // Brep::Volume() refuses a FromPlanarFaces()-built face as "trimmed"
       // (it only integrates over a face's full surface parameter domain,
       // which a general polygon loop isn't considered to be, even a plain
@@ -2045,10 +2069,10 @@ class ShellCommand : public Command {
     for (auto& [id, r] : results) {
       int layer = 0;
       if (const SceneObject* o = ctx.Doc().Find(id)) layer = o->layer_index;
-      ctx.Doc().Remove(id);
+      retire(id);
       SceneObject n = SceneObject::MakeMesh(r);
       n.layer_index = layer;
-      ctx.Doc().Add(std::move(n));
+      record(id, ctx.Doc().Add(std::move(n)));
       const bool is_open = std::find(opened.begin(), opened.end(), id) != opened.end();
       const bool is_per_face = std::find(per_face.begin(), per_face.end(), id) != per_face.end();
       const std::string face_note = is_per_face ? (", " + std::to_string(face_thickness_[id].size()) + " face(s) at their own thickness") : "";
@@ -2068,6 +2092,7 @@ class ShellCommand : public Command {
     WantNumber("Thickness", thickness_);
   }
   std::vector<ObjectId> ids_;
+  std::set<ObjectId> plain_;  // ids whose result is a plain uniform shell (RebuildShell): the only ones that record history
   std::vector<std::pair<size_t, size_t>> exact_notes_;  // per exact result: (faces removed, per-face overrides)
   bool exact_ = true;  // Exact=No keeps the mesh constructions only
   std::map<ObjectId, std::vector<int>> open_faces_;
@@ -2806,6 +2831,40 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
     n = SceneObject::MakeMesh(off);
   }
   return n;
+}
+
+// Shell's plain construction (closed solid, one uniform wall thickness, no
+// opened or individually-thickened faces), shared by ShellCommand and
+// UpdateHistory. Reads num: t (> 0), exact (1/0, absent means 1). The kernel's
+// exact ShellConvexPlanar / whole sphere or torus shell first; otherwise the
+// mesh construction (outer minus the inward vertex-normal offset). The result
+// kind therefore follows the source's current shape. Layer is the caller's.
+std::optional<SceneObject> RebuildShell(CommandContext& ctx, const SceneObject& o, const HistoryRecord& rec) {
+  const auto t_it = rec.num.find("t");
+  const double t = t_it == rec.num.end() ? 0.0 : t_it->second;
+  const auto ex_it = rec.num.find("exact");
+  const bool exact = ex_it == rec.num.end() || ex_it->second != 0.0;
+  if (!(t > 0)) return std::nullopt;
+  if (exact && o.kind == ObjectKind::Brep && o.brep) {
+    static const std::vector<int> kNoRemoveExact;
+    static const std::map<int, double> kNoOverridesExact;
+    std::string why;
+    if (std::optional<kernel::Brep> ex = TryExactShell(o, kNoRemoveExact, kNoOverridesExact, t, why)) return SceneObject::MakeBrep(*ex);
+    if (!why.empty() && o.brep->raw().IsSolid())
+      ctx.Print("Shell: object " + std::to_string(o.id) + " - exact B-rep shell not used (" + why + "); using the mesh construction");
+  }
+  std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
+  if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(o.id) + " is not a closed solid; skipped"); return std::nullopt; }
+  kernel::Mesh outer = Outward(*m);
+  kernel::Mesh inner = OffsetMesh(outer, -t);
+  try {
+    kernel::Mesh r = kernel::BooleanCombine(outer, inner, kernel::BooleanOp::Difference);
+    if (r.FaceCount() == 0) { ctx.Warn("Shell: object " + std::to_string(o.id) + " is thinner than the thickness; skipped"); return std::nullopt; }
+    return SceneObject::MakeMesh(r);
+  } catch (const std::exception& ex) {
+    ctx.Warn("Shell: object " + std::to_string(o.id) + " rejected by the mesh kernel (" + ex.what() + "); skipped");
+    return std::nullopt;
+  }
 }
 
 // ExtrudeCrvAlongCrv's construction: exact translational sum surface.

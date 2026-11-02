@@ -238,6 +238,14 @@ std::optional<SceneObject> RebuildRailRevolve(CommandContext& ctx, const kernel:
 // distance), solid (1/0).
 std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObject& src, const HistoryRecord& rec);
 
+// Shell (cmd_surface.cpp), the plain case only - a closed solid, one uniform wall
+// thickness, no opened or individually-thickened faces (face indices are not a
+// stable thing to re-run against an edited solid, so those Shell calls stay
+// one-shot). Reads num: t (> 0), exact (1/0). The kernel's exact shell when the
+// solid allows it (convex planar faces, whole sphere/torus), else the mesh
+// construction, so the result kind follows the source's current shape.
+std::optional<SceneObject> RebuildShell(CommandContext& ctx, const SceneObject& src, const HistoryRecord& rec);
+
 // Offset (cmd_edit.cpp), curves: NurbsCurve::OffsetInPlane in the curve's own
 // plane, else in the CPlane that was active. Reads num: d (signed),
 // corner (0 Sharp, 1 Round, 2 Chamfer, 3 Smooth), ox,oy,oz / xx,xy,xz /
