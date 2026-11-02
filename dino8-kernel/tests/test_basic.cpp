@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "dino8/kernel/acis_sat.h"
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
@@ -91039,6 +91040,426 @@ void TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot() {
   Check(corner_vertices == 4, "exactly the 4 sheet corners have their limit point on their control point");
 }
 
+// ACIS .sat text import/export (src/acis_sat.cpp). Fixtures are written from the
+// record layouts in docs/ACIS_SAT_NOTES.md; layouts that document does not
+// state are marked UNVERIFIED and exercised only with the explicit opt-in.
+namespace acis_sat_tests {
+
+using dino8::kernel::AcisSatReadResult;
+using dino8::kernel::Brep;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+bool Near(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
+
+std::string SatHeader(int version = 700) {
+  return std::to_string(version) + " 0 1 0\n@12 Dino8 tests @11 ACIS 7.0 NT @24 Mon Jan 01 00:00:00 2024\n1 1e-06 1e-10\n";
+}
+
+std::string D(double v) {
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%.17g", v);
+  return buf;
+}
+
+// A box [0,X] x [0,Y] x [0,Z] written straight from the documented record
+// layout (NOT through WriteAcisSat): records are numbered body, lump, shell,
+// 6 faces, 6 loops, 24 coedges, 12 edges, 8 vertices, 8 points, 6 planes,
+// 12 straight-curves. Corner k has x = bit0, y = bit1, z = bit2 of k; the
+// edge along axis a at the other two bits has its start at the low corner.
+std::string BoxSat(double X, double Y, double Z) {
+  const double dim[3] = {X, Y, Z};
+  const int body = 0, lump = 1, shell = 2, face0 = 3, loop0 = 9, ce0 = 15, edge0 = 39, vert0 = 51, pt0 = 59,
+            plane0 = 67, line0 = 73;
+  auto edge_id = [&](int a, int lo_corner) {  // edge along axis a starting at corner lo_corner (bit a = 0)
+    const int b = (a + 1) % 3, c = (a + 2) % 3;
+    const int idx_in_axis = ((lo_corner >> b) & 1) + 2 * ((lo_corner >> c) & 1);
+    return edge0 + a * 4 + idx_in_axis;
+  };
+  std::vector<std::string> r;
+  auto P = [](int i) { return "$" + std::to_string(i); };
+  r.push_back("body $-1 -1 $-1 $-1 " + P(lump) + " $-1 $-1");
+  r.push_back("lump $-1 -1 $-1 $-1 " + P(shell) + " " + P(body));
+  r.push_back("shell $-1 -1 $-1 $-1 $-1 " + P(face0) + " $-1 " + P(lump));
+  struct FaceInfo {
+    int axis, side;
+  };
+  std::vector<FaceInfo> fi;
+  for (int a = 0; a < 3; ++a)
+    for (int s = 0; s < 2; ++s) fi.push_back({a, s});
+  for (int f = 0; f < 6; ++f)
+    r.push_back("face $-1 -1 $-1 " + (f < 5 ? P(face0 + f + 1) : std::string("$-1")) + " " + P(loop0 + f) + " " + P(shell) +
+                " $-1 " + P(plane0 + f) + " forward single");
+  for (int f = 0; f < 6; ++f) r.push_back("loop $-1 -1 $-1 $-1 " + P(ce0 + 4 * f) + " " + P(face0 + f));
+  std::vector<std::string> ce;
+  for (int f = 0; f < 6; ++f) {
+    const int a = fi[f].axis, s = fi[f].side;
+    const int b = (a + 1) % 3, c = (a + 2) % 3;  // (a,b,c) right-handed
+    // corners CCW seen from the +a side: (b0,c0),(b1,c0),(b1,c1),(b0,c1)
+    int cyc[4];
+    const int bb[4] = {0, 1, 1, 0}, cc[4] = {0, 0, 1, 1};
+    for (int q = 0; q < 4; ++q) cyc[q] = (s << a) | (bb[q] << b) | (cc[q] << c);
+    if (s == 0) std::swap(cyc[1], cyc[3]);  // seen from outside (-a side) the order reverses
+    for (int q = 0; q < 4; ++q) {
+      const int v0 = cyc[q], v1 = cyc[(q + 1) % 4];
+      const int axis = (v0 ^ v1) == 1 ? 0 : ((v0 ^ v1) == 2 ? 1 : 2);
+      const int lo = std::min(v0, v1);
+      const bool fwd = (v0 == lo);
+      ce.push_back("coedge $-1 -1 $-1 " + P(ce0 + 4 * f + (q + 1) % 4) + " " + P(ce0 + 4 * f + (q + 3) % 4) + " $-1 " +
+                   P(edge_id(axis, lo)) + " " + (fwd ? "forward" : "reversed") + " " + P(loop0 + f) + " $-1");
+    }
+  }
+  for (auto& s : ce) r.push_back(s);
+  for (int a = 0; a < 3; ++a)
+    for (int k = 0; k < 4; ++k) {
+      const int b = (a + 1) % 3, c = (a + 2) % 3;
+      const int lo = ((k & 1) << b) | (((k >> 1) & 1) << c);
+      const int hi = lo | (1 << a);
+      r.push_back("edge $-1 -1 $-1 " + P(vert0 + lo) + " 0 " + P(vert0 + hi) + " " + D(dim[a]) + " $-1 " + P(line0 + a * 4 + k) +
+                  " forward @7 unknown");
+    }
+  for (int v = 0; v < 8; ++v) r.push_back("vertex $-1 -1 $-1 " + P(edge_id(0, v & ~1)) + " " + P(pt0 + v));
+  for (int v = 0; v < 8; ++v)
+    r.push_back("point $-1 -1 $-1 " + D((v & 1) ? X : 0.0) + " " + D(((v >> 1) & 1) ? Y : 0.0) + " " + D(((v >> 2) & 1) ? Z : 0.0));
+  for (int f = 0; f < 6; ++f) {
+    const int a = fi[f].axis, s = fi[f].side;
+    double o[3] = {0, 0, 0}, n[3] = {0, 0, 0}, u[3] = {0, 0, 0};
+    o[a] = s ? dim[a] : 0.0;
+    n[a] = s ? 1.0 : -1.0;
+    u[(a + 1) % 3] = 1.0;
+    r.push_back("plane-surface $-1 -1 $-1 " + D(o[0]) + " " + D(o[1]) + " " + D(o[2]) + " " + D(n[0]) + " " + D(n[1]) + " " + D(n[2]) +
+                " " + D(u[0]) + " " + D(u[1]) + " " + D(u[2]) + " forward_v I I I I");
+  }
+  for (int a = 0; a < 3; ++a)
+    for (int k = 0; k < 4; ++k) {
+      const int b = (a + 1) % 3, c = (a + 2) % 3;
+      double o[3] = {0, 0, 0}, d[3] = {0, 0, 0};
+      o[b] = (k & 1) ? dim[b] : 0.0;
+      o[c] = ((k >> 1) & 1) ? dim[c] : 0.0;
+      d[a] = 1.0;
+      r.push_back("straight-curve $-1 -1 $-1 " + D(o[0]) + " " + D(o[1]) + " " + D(o[2]) + " " + D(d[0]) + " " + D(d[1]) + " " + D(d[2]) +
+                  " I I");
+    }
+  std::string out = SatHeader();
+  for (size_t i = 0; i < r.size(); ++i) out += "-" + std::to_string(i) + " " + r[i] + " #\n";
+  out += "End-of-ACIS-data\n";
+  return out;
+}
+
+// Hand-written cylinder, radius 2, height 5, axis +z from the origin. Two
+// planar caps, one cone-surface wall with two circle loops (no seam), two
+// circle edges. Record numbers: 0 body, 1 lump, 2 shell, 3-5 faces (bottom
+// cap, top cap, wall), 6-9 loops, 10-13 coedges, 14-15 edges, 16-17 vertices,
+// 18-19 points, 20-22 surfaces, 23-24 curves.
+std::string CylinderSat() {
+  const char* recs[] = {
+      "body $-1 -1 $-1 $-1 $1 $-1 $-1",
+      "lump $-1 -1 $-1 $-1 $2 $0",
+      "shell $-1 -1 $-1 $-1 $-1 $3 $-1 $1",
+      "face $-1 -1 $-1 $4 $6 $2 $-1 $20 forward single",
+      "face $-1 -1 $-1 $5 $7 $2 $-1 $21 forward single",
+      "face $-1 -1 $-1 $-1 $8 $2 $-1 $22 forward single",
+      "loop $-1 -1 $-1 $-1 $10 $3",
+      "loop $-1 -1 $-1 $-1 $11 $4",
+      "loop $-1 -1 $-1 $9 $12 $5",
+      "loop $-1 -1 $-1 $-1 $13 $5",
+      "coedge $-1 -1 $-1 $10 $10 $12 $14 reversed $6 $-1",
+      "coedge $-1 -1 $-1 $11 $11 $13 $15 forward $7 $-1",
+      "coedge $-1 -1 $-1 $12 $12 $10 $14 forward $8 $-1",
+      "coedge $-1 -1 $-1 $13 $13 $11 $15 reversed $9 $-1",
+      "edge $-1 -1 $-1 $16 0 $16 6.2831853071795862 $10 $23 forward @7 unknown",
+      "edge $-1 -1 $-1 $17 0 $17 6.2831853071795862 $11 $24 forward @7 unknown",
+      "vertex $-1 -1 $-1 $14 $18",
+      "vertex $-1 -1 $-1 $15 $19",
+      "point $-1 -1 $-1 2 0 0",
+      "point $-1 -1 $-1 2 0 5",
+      "plane-surface $-1 -1 $-1 0 0 0 0 0 -1 1 0 0 forward_v I I I I",
+      "plane-surface $-1 -1 $-1 0 0 5 0 0 1 1 0 0 forward_v I I I I",
+      "cone-surface $-1 -1 $-1 0 0 0 0 0 1 2 0 0 1 0 1 1 forward_v I I I I",
+      "ellipse-curve $-1 -1 $-1 0 0 0 0 0 1 2 0 0 1 I I",
+      "ellipse-curve $-1 -1 $-1 0 0 5 0 0 1 2 0 0 1 I I",
+  };
+  std::string out = SatHeader();
+  int i = 0;
+  for (const char* r : recs) out += "-" + std::to_string(i++) + " " + r + " #\n";
+  out += "End-of-ACIS-data\n";
+  return out;
+}
+
+// Hand-written sphere: radius 3 centred at (1,2,3), one face with no loop.
+std::string SphereSat() {
+  std::string out = SatHeader();
+  out += "-0 body $-1 -1 $-1 $-1 $1 $-1 $-1 #\n";
+  out += "-1 lump $-1 -1 $-1 $-1 $2 $0 #\n";
+  out += "-2 shell $-1 -1 $-1 $-1 $-1 $3 $-1 $1 #\n";
+  out += "-3 face $-1 -1 $-1 $-1 $-1 $2 $-1 $4 forward single #\n";
+  out += "-4 sphere-surface $-1 -1 $-1 1 2 3 3 1 0 0 0 0 1 forward_v I I I I #\n";
+  out += "End-of-ACIS-data\n";
+  return out;
+}
+
+// `unverified` opts in to the layouts the public documentation does not state
+// (cone/sphere/torus surfaces, ellipse curves) - see docs/ACIS_SAT_NOTES.md.
+AcisSatReadResult ReadText(const std::string& text, bool unverified = false) {
+  std::istringstream is(text);
+  dino8::kernel::AcisSatOptions opt;
+  opt.allow_unverified_layouts = unverified;
+  return dino8::kernel::ReadAcisSat(is, opt);
+}
+
+void Dump(const AcisSatReadResult& r) {
+  std::fprintf(stderr, "  reason: %s\n", r.error.c_str());
+  for (const auto& w : r.warnings) std::fprintf(stderr, "  warning: %s\n", w.c_str());
+}
+
+void TestAcisSatReadsHandDerivedBox() {
+  const AcisSatReadResult r = ReadText(BoxSat(2.0, 3.0, 5.0));
+  Check(r.ok && r.bodies.size() == 1, "AcisSat: hand-derived box fixture reads as exactly one body");
+  if (!r.ok || r.bodies.size() != 1) {
+    Dump(r);
+    return;
+  }
+  const Brep& b = r.bodies[0];
+  Check(b.FaceCount() == 6 && b.EdgeCount() == 12 && b.VertexCount() == 8, "AcisSat: box has 6 faces / 12 edges / 8 vertices");
+  Check(b.raw().IsValid() && b.raw().IsSolid(), "AcisSat: box ON_Brep is valid and a closed solid");
+  std::printf("  box volume %.12g (expect 30) area %.12g (expect 62)\n", b.Volume(), b.Area());
+  Check(Near(b.Volume(), 30.0, 1e-9), "AcisSat: box volume equals 2*3*5 = 30 (1e-9)");
+  Check(Near(b.Area(), 62.0, 1e-9), "AcisSat: box area equals 2*(6+10+15) = 62 (1e-9)");
+}
+
+void TestAcisSatReadsHandDerivedCylinder() {
+  const AcisSatReadResult r = ReadText(CylinderSat(), true);
+  Check(r.ok && r.bodies.size() == 1, "AcisSat: hand-derived cylinder fixture reads as exactly one body");
+  if (!r.ok || r.bodies.size() != 1) {
+    Dump(r);
+    return;
+  }
+  const Brep& b = r.bodies[0];
+  // 3 faces; edges: 2 circles + the seam the reader adds to the periodic wall.
+  Check(b.FaceCount() == 3 && b.EdgeCount() == 3 && b.VertexCount() == 2,
+        "AcisSat: cylinder has 3 faces, 3 edges (2 circles + synthesized seam), 2 vertices");
+  Check(b.raw().IsValid() && b.raw().IsSolid(), "AcisSat: cylinder ON_Brep is valid and a closed solid");
+  const double V = 20.0 * ON_PI, A = 28.0 * ON_PI;
+  const dino8::kernel::Mesh mesh = b.TessellateToClosedMeshAdaptive(1e-7);
+  std::printf("  cylinder (adaptive closed mesh) volume %.12g (expect %.12g) area %.12g (expect %.12g)\n", mesh.Volume(), V,
+              mesh.Area(), A);
+  Check(Near(mesh.Volume(), V, V * 5e-4), "AcisSat: cylinder volume equals pi*r^2*h = 20 pi (relative 5e-4, mesh-based)");
+  Check(Near(mesh.Area(), A, A * 5e-4), "AcisSat: cylinder area equals 2 pi r (h + r) = 28 pi (relative 5e-4, mesh-based)");
+}
+
+void TestAcisSatReadsHandDerivedSphere() {
+  const AcisSatReadResult r = ReadText(SphereSat(), true);
+  Check(r.ok && r.bodies.size() == 1, "AcisSat: hand-derived sphere fixture reads as exactly one body");
+  if (!r.ok || r.bodies.size() != 1) {
+    Dump(r);
+    return;
+  }
+  const Brep& b = r.bodies[0];
+  Check(b.FaceCount() == 1 && b.EdgeCount() == 0 && b.VertexCount() == 0, "AcisSat: sphere is one face with no edges or vertices");
+  const double V = 4.0 / 3.0 * ON_PI * 27.0, A = 4.0 * ON_PI * 9.0;
+  std::printf("  sphere volume %.12g (expect %.12g) area %.12g (expect %.12g)\n", b.Volume(), V, b.Area(), A);
+  Check(Near(b.Volume(), V, V * 1e-3), "AcisSat: sphere volume equals 4/3 pi r^3 (relative 1e-3)");
+  Check(Near(b.Area(), A, A * 1e-3), "AcisSat: sphere area equals 4 pi r^2 (relative 1e-3)");
+}
+
+struct Measured {
+  double volume = 0.0, area = 0.0;
+  int faces = 0, edges = 0, verts = 0;
+};
+bool g_mesh_measure = false;
+Measured Measure(const Brep& b) {
+  Measured m;
+  if (g_mesh_measure) {
+    const dino8::kernel::Mesh mesh = b.TessellateToClosedMeshAdaptive(1e-7);
+    m.volume = mesh.Volume();
+    m.area = mesh.Area();
+  } else {
+    m.volume = b.Volume();
+    m.area = b.Area();
+  }
+  m.faces = b.LiveFaceCount();
+  m.edges = b.LiveEdgeCount();
+  m.verts = b.LiveVertexCount();
+  return m;
+}
+
+// Writes `b`, reads it back, and compares volume/area (relative `tol`) and
+// face counts; edge/vertex counts are compared too unless `seams_differ`
+// (periodic faces gain/lose a seam edge across the round trip).
+void RoundTrip(const std::string& label, const Brep& b, double tol, bool seams_differ, bool unverified) {
+  const Measured before = Measure(b);
+  std::ostringstream os;
+  dino8::kernel::AcisSatOptions opt;
+  opt.allow_unverified_layouts = unverified;
+  const auto w = dino8::kernel::WriteAcisSat(os, {b}, opt);
+  Check(w.ok, ("AcisSat: " + label + " writes without refusal").c_str());
+  if (!w.ok) {
+    std::fprintf(stderr, "  write refused: %s\n", w.error.c_str());
+    return;
+  }
+  const AcisSatReadResult r = ReadText(os.str(), unverified);
+  Check(r.ok && r.bodies.size() == 1, ("AcisSat: " + label + " reads back as one body").c_str());
+  if (!r.ok || r.bodies.size() != 1) {
+    Dump(r);
+    return;
+  }
+  const Measured after = Measure(r.bodies[0]);
+  std::printf("  %s: volume %.12g -> %.12g, area %.12g -> %.12g, F %d->%d E %d->%d V %d->%d\n", label.c_str(), before.volume,
+              after.volume, before.area, after.area, before.faces, after.faces, before.edges, after.edges, before.verts, after.verts);
+  Check(Near(before.volume, after.volume, std::fabs(before.volume) * tol), ("AcisSat: " + label + " round-trip volume within tolerance").c_str());
+  Check(Near(before.area, after.area, std::fabs(before.area) * tol), ("AcisSat: " + label + " round-trip area within tolerance").c_str());
+  Check(before.faces == after.faces, ("AcisSat: " + label + " round-trip face count identical").c_str());
+  if (!seams_differ) {
+    Check(before.edges == after.edges && before.verts == after.verts,
+          ("AcisSat: " + label + " round-trip edge and vertex counts identical").c_str());
+  }
+}
+
+void TestAcisSatRoundTripBox() { RoundTrip("box", Brep::BoxWelded(0, 0, 0, 2, 3, 4), 1e-9, false, false); }
+
+void TestAcisSatRoundTripSphere() { RoundTrip("sphere (UNVERIFIED layout)", Brep::Sphere(Point3d(1, 2, 3), 2.5), 1e-3, false, true); }
+
+void TestAcisSatRoundTripCylinder() {
+  using dino8::kernel::NurbsCurve;
+  const NurbsCurve prof = NurbsCurve::FromControlPoints({Point3d(2, 0, 0), Point3d(2, 0, 5)}, 1);
+  const Brep cyl = Brep::Revolve(prof, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  g_mesh_measure = true;
+  RoundTrip("cylinder (UNVERIFIED layout)", cyl, 1e-3, true, true);
+  g_mesh_measure = false;
+}
+
+void TestAcisSatRoundTripFilletedBox() {
+  const Brep box = Brep::BoxWelded(0, 0, 0, 2, 3, 4);
+  const Brep f = dino8::kernel::FilletConvexEdge(box, Point3d(0, 0, 4), Point3d(2, 0, 4), 0.5);
+  g_mesh_measure = true;  // Volume() refuses the kernel's own fillet result at 8x8; use the adaptive closed mesh
+  RoundTrip("filleted box (UNVERIFIED layout)", f, 1e-3, false, true);
+  g_mesh_measure = false;
+}
+
+void TestAcisSatRefusesBadInput() {
+  const std::string box = BoxSat(1, 1, 1);
+  {
+    const AcisSatReadResult r = ReadText(box.substr(0, box.size() / 2));
+    Check(!r.ok && r.bodies.empty() && !r.error.empty(), "AcisSat: truncated file is refused with a reason");
+    std::printf("  truncated: %s\n", r.error.c_str());
+  }
+  {
+    std::string t = box;
+    const size_t p = t.find("plane-surface");
+    t.replace(p, 13, "wobble-surface");
+    const AcisSatReadResult r = ReadText(t);
+    Check(!r.ok && r.bodies.empty() && r.error.find("wobble-surface") != std::string::npos,
+          "AcisSat: unknown surface entity is refused and named in the reason");
+    std::printf("  unknown entity: %s\n", r.error.c_str());
+  }
+  {
+    std::string t = box;
+    t.replace(0, 3, "21200");
+    const AcisSatReadResult r = ReadText(t);
+    Check(!r.ok && r.bodies.empty() && r.error.find("version") != std::string::npos, "AcisSat: unsupported version is refused with a reason");
+    std::printf("  wrong version: %s\n", r.error.c_str());
+  }
+  {
+    // Layouts the public documentation does not state are refused by default.
+    const AcisSatReadResult rc = ReadText(CylinderSat());
+    Check(!rc.ok && rc.bodies.empty() && rc.error.find("UNVERIFIED") != std::string::npos,
+          "AcisSat: cone-surface cylinder is refused by default as an unverified layout");
+    const AcisSatReadResult rs = ReadText(SphereSat());
+    Check(!rs.ok && rs.error.find("UNVERIFIED") != std::string::npos, "AcisSat: sphere-surface is refused by default as an unverified layout");
+    std::printf("  unverified: %s\n", rc.error.c_str());
+    std::ostringstream os;
+    const auto w = dino8::kernel::WriteAcisSat(os, {Brep::Sphere(Point3d(0, 0, 0), 1.0)});
+    Check(!w.ok && w.error.find("UNVERIFIED") != std::string::npos && os.str().empty(),
+          "AcisSat: writing a sphere is refused by default as an unverified layout, nothing written");
+  }
+  {
+    const AcisSatReadResult r = ReadText("this is not a sat file\n");
+    Check(!r.ok && !r.error.empty(), "AcisSat: garbage input is refused with a reason");
+  }
+  {
+    // A dangling pointer must be refused, not crash.
+    std::string t = box;
+    const size_t p = t.find("-3 face $-1 -1 $-1 $4 $9");
+    if (p != std::string::npos) t.replace(p, 24, "-3 face $-1 -1 $-1 $4 $999");
+    const AcisSatReadResult r = ReadText(t);
+    Check(p != std::string::npos && !r.ok && !r.error.empty(), "AcisSat: out-of-range pointer is refused with a reason");
+    std::printf("  dangling pointer: %s\n", r.error.c_str());
+  }
+  {
+    // Writer refusal: a body with a free-form surface cannot be written.
+    using dino8::kernel::NurbsCurve;
+    const Brep rolled = Brep::Revolve(NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(2, 0, 1), Point3d(1, 0, 2)}, 2),
+                                      Point3d(0, 0, 0), Vector3d(0, 0, 1));
+    std::ostringstream os;
+    dino8::kernel::AcisSatOptions opt;
+    opt.allow_unverified_layouts = true;
+    const auto w = dino8::kernel::WriteAcisSat(os, {rolled}, opt);
+    Check(!w.ok && !w.error.empty() && os.str().empty(), "AcisSat: unsupported (free-form) surface is refused on write, nothing written");
+    std::printf("  write refusal: %s\n", w.error.c_str());
+  }
+}
+
+// Hand-written planar sheet body: the 2 x 3 rectangle z = 0, one double-sided
+// face (documentation: double_sided faces belong to hollow/sheet objects).
+std::string SheetSat() {
+  const char* recs[] = {
+      "body $-1 -1 $-1 $-1 $1 $-1 $-1",
+      "lump $-1 -1 $-1 $-1 $2 $0",
+      "shell $-1 -1 $-1 $-1 $-1 $3 $-1 $1",
+      "face $-1 -1 $-1 $-1 $4 $2 $-1 $21 forward double out",
+      "loop $-1 -1 $-1 $-1 $5 $3",
+      "coedge $-1 -1 $-1 $6 $8 $-1 $9 forward $4 $-1",
+      "coedge $-1 -1 $-1 $7 $5 $-1 $10 forward $4 $-1",
+      "coedge $-1 -1 $-1 $8 $6 $-1 $11 forward $4 $-1",
+      "coedge $-1 -1 $-1 $5 $7 $-1 $12 forward $4 $-1",
+      "edge $-1 -1 $-1 $13 0 $14 2 $5 $22 forward @7 unknown",
+      "edge $-1 -1 $-1 $14 0 $15 3 $6 $23 forward @7 unknown",
+      "edge $-1 -1 $-1 $15 0 $16 2 $7 $24 forward @7 unknown",
+      "edge $-1 -1 $-1 $16 0 $13 3 $8 $25 forward @7 unknown",
+      "vertex $-1 -1 $-1 $9 $17",
+      "vertex $-1 -1 $-1 $9 $18",
+      "vertex $-1 -1 $-1 $10 $19",
+      "vertex $-1 -1 $-1 $11 $20",
+      "point $-1 -1 $-1 0 0 0",
+      "point $-1 -1 $-1 2 0 0",
+      "point $-1 -1 $-1 2 3 0",
+      "point $-1 -1 $-1 0 3 0",
+      "plane-surface $-1 -1 $-1 0 0 0 0 0 1 1 0 0 forward_v I I I I",
+      "straight-curve $-1 -1 $-1 0 0 0 1 0 0 I I",
+      "straight-curve $-1 -1 $-1 2 0 0 0 1 0 I I",
+      "straight-curve $-1 -1 $-1 2 3 0 -1 0 0 I I",
+      "straight-curve $-1 -1 $-1 0 3 0 0 -1 0 I I",
+  };
+  std::string out = SatHeader();
+  int i = 0;
+  for (const char* r : recs) out += "-" + std::to_string(i++) + " " + r + " #\n";
+  out += "End-of-ACIS-data\n";
+  return out;
+}
+
+void TestAcisSatSheetBodyReadsAndRoundTrips() {
+  const AcisSatReadResult r = ReadText(SheetSat());
+  Check(r.ok && r.bodies.size() == 1, "AcisSat: hand-derived planar sheet reads as one body");
+  if (!r.ok || r.bodies.size() != 1) {
+    Dump(r);
+    return;
+  }
+  const Brep& b = r.bodies[0];
+  Check(b.FaceCount() == 1 && b.EdgeCount() == 4 && b.VertexCount() == 4, "AcisSat: sheet has 1 face, 4 edges, 4 vertices");
+  Check(b.raw().IsValid() && !b.raw().IsSolid(), "AcisSat: sheet ON_Brep is valid and open (not a solid)");
+  std::printf("  sheet area %.12g (expect 6)\n", b.Area());
+  Check(Near(b.Area(), 6.0, 1e-9), "AcisSat: sheet area equals 2*3 = 6 (1e-9)");
+  std::ostringstream os;
+  const auto w = dino8::kernel::WriteAcisSat(os, {b});
+  Check(w.ok && os.str().find("double out") != std::string::npos, "AcisSat: open body is written with double-sided faces");
+  const AcisSatReadResult r2 = ReadText(os.str());
+  Check(r2.ok && r2.bodies.size() == 1 && Near(r2.bodies[0].Area(), 6.0, 1e-9) && r2.bodies[0].FaceCount() == 1,
+        "AcisSat: sheet write-then-read keeps face count and area 6");
+}
+
+}  // namespace acis_sat_tests
+
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -92450,6 +92871,16 @@ int main() {
   RunTest("TestSubDToNurbsPatchesWatertightClosesEverySeam", TestSubDToNurbsPatchesWatertightClosesEverySeam);
 
   RunTest("TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot", TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot);
+
+  RunTest("acis_sat_tests::TestAcisSatReadsHandDerivedBox", acis_sat_tests::TestAcisSatReadsHandDerivedBox);
+  RunTest("acis_sat_tests::TestAcisSatReadsHandDerivedCylinder", acis_sat_tests::TestAcisSatReadsHandDerivedCylinder);
+  RunTest("acis_sat_tests::TestAcisSatReadsHandDerivedSphere", acis_sat_tests::TestAcisSatReadsHandDerivedSphere);
+  RunTest("acis_sat_tests::TestAcisSatRoundTripBox", acis_sat_tests::TestAcisSatRoundTripBox);
+  RunTest("acis_sat_tests::TestAcisSatRoundTripSphere", acis_sat_tests::TestAcisSatRoundTripSphere);
+  RunTest("acis_sat_tests::TestAcisSatRoundTripCylinder", acis_sat_tests::TestAcisSatRoundTripCylinder);
+  RunTest("acis_sat_tests::TestAcisSatRoundTripFilletedBox", acis_sat_tests::TestAcisSatRoundTripFilletedBox);
+  RunTest("acis_sat_tests::TestAcisSatSheetBodyReadsAndRoundTrips", acis_sat_tests::TestAcisSatSheetBodyReadsAndRoundTrips);
+  RunTest("acis_sat_tests::TestAcisSatRefusesBadInput", acis_sat_tests::TestAcisSatRefusesBadInput);
 
   RunTest("ON::End", ON::End);
 
