@@ -1,0 +1,25 @@
+[package]
+name = "hd-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Headless simulation harness and determinism proof (SPEC-003)"
+
+[lints]
+workspace = true
+
+[lib]
+name = "hd_sim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hd-sim"
+path = "src/main.rs"
+
+[dependencies]
+core-math = { path = "../../crates/core-math" }
+sim-state = { path = "../../crates/sim-state" }
+
+[dev-dependencies]
+proptest = "1"

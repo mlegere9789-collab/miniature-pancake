@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "replays": [
+    {"file": "toy-small.hdrp", "agents": 100, "ticks": 2000, "seed": 1, "checkpoint_interval": 100, "final_hash": "79ce686827f92517"},
+    {"file": "toy-medium.hdrp", "agents": 1000, "ticks": 2000, "seed": 7, "checkpoint_interval": 100, "final_hash": "e7e08120266858fa"},
+    {"file": "toy-large.hdrp", "agents": 20000, "ticks": 600, "seed": 42, "checkpoint_interval": 100, "final_hash": "dd9a31d011f3ecd8"}
+  ]
+}

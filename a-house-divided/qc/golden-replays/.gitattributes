@@ -1,0 +1,2 @@
+*.hdrp binary
+expected.json text eol=lf
