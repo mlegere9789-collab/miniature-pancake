@@ -1,0 +1,9 @@
+{
+  "plugin_name": "My Command Plugin",
+  "plugin_slug": "my_command_plugin",
+  "command_name": "MyCommand",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "Drops a point and says hello.",
+  "index_tags": "\"command\""
+}

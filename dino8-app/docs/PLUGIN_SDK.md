@@ -1,5 +1,10 @@
 # Dino 8 Plug-in SDK
 
+> Building a plug-in **outside this source tree**, versioning/compatibility rules, the
+> marketplace, review and signing: see [`PLUGIN_GUIDE.md`](PLUGIN_GUIDE.md). Installable SDK:
+> `plugin-sdk/`; project templates: `plugin-templates/`. (Where this page and the guide differ
+> on the current API - e.g. geometry port kinds exist since API v2 - the header and the guide win.)
+
 Dino 8 plug-ins are plain shared libraries (`.so` / `.dll` / `.dylib`) built
 against one public C header, [`include/dino8_plugin.h`](../include/dino8_plugin.h).
 No SDK download, no build-system lock-in, no account, no network call: any

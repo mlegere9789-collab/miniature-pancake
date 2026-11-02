@@ -557,6 +557,12 @@ if(DINO8_BUILD_EXAMPLE_PLUGINS)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/plugins/analysis_tools ${CMAKE_BINARY_DIR}/plugins/analysis_tools)
 endif()
 
+# The third-party plug-in SDK (plugin-sdk/, docs/PLUGIN_GUIDE.md): one ABI header
+# plus a CMake package, installable on its own. Adds the `dino8-plugin-sdk`
+# target (stages it in ${CMAKE_BINARY_DIR}/dino8-plugin-sdk) and COMPONENT sdk
+# install rules that CPACK_COMPONENTS_ALL (app only) keeps out of the installers.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/plugin-sdk ${CMAKE_BINARY_DIR}/plugin-sdk)
+
 option(DINO8_BUILD_TESTS "Build Dino 8 unit tests" ON)
 if(DINO8_BUILD_TESTS)
   enable_testing()
