@@ -446,7 +446,7 @@ bool PrepareRebuild(CommandContext& ctx, const HistoryRecord& rec, PreparedRebui
   if (!rb) { why = "no rebuild is registered for '" + rec.command + "'"; return false; }  // unknown/future command name in an old side-table entry
   for (ObjectId sid : rec.sources) {
     const SceneObject* src = ctx.Doc().Find(sid);
-    if (!src) { why = "source object " + std::to_string(sid) + " no longer exists"; return false; }
+    if (!src) { why = sid == kNoObject ? "its source object was deleted before the file was saved" : "source object " + std::to_string(sid) + " no longer exists"; return false; }
     out.inputs.push_back(src);
   }
   try {
@@ -609,7 +609,7 @@ bool IsUndoRedoName(const std::string& n) { return n == "Undo" || n == "Redo" ||
 
 std::string SourcesText(const HistoryRecord& rec) {
   std::string s;
-  for (size_t i = 0; i < rec.sources.size(); ++i) { if (i) s += ","; s += std::to_string(rec.sources[i]); }
+  for (size_t i = 0; i < rec.sources.size(); ++i) { if (i) s += ","; s += rec.sources[i] == kNoObject ? std::string("(deleted)") : std::to_string(rec.sources[i]); }
   return s.empty() ? "(no source)" : s;
 }
 
@@ -843,6 +843,8 @@ void DoHistoryPurge(CommandContext& ctx) {
 }
 
 }  // namespace
+
+void HistoryResync(Document& doc) { ResyncAuto(doc); }
 
 int HistoryAutoRebuilt() { return g_auto_rebuilt; }
 int HistoryAutoKept() { return g_auto_kept; }

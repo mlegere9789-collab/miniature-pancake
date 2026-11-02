@@ -259,6 +259,11 @@ std::optional<SceneObject> RebuildPlanarSrf(CommandContext& ctx, const kernel::N
 // guarded; a no-op when the document has no records. Undo/Redo only resync
 // the fingerprints: the dependents travel with the edit in the same undo step.
 void HistoryAutoUpdate(CommandContext& ctx, const std::string& cause);
+// Re-baselines the automatic propagation's source fingerprints for `doc` as it is
+// NOW. Call after the document's contents were replaced wholesale (Open): the
+// fingerprints of the previous contents are keyed by object id and would
+// otherwise read as "source edited" for whatever now carries those ids.
+void HistoryResync(Document& doc);
 // Number of dependent rebuilds the automatic propagation has done / refused in
 // this session (shown by History).
 int HistoryAutoRebuilt();

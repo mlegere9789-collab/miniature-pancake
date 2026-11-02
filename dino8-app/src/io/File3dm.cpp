@@ -585,6 +585,92 @@ BlockDefinition BuildBlockDefinitionFromIdef(const ONX_Model& model, const ON_In
 // .3dm
 // ---------------------------------------------------------------------------
 
+// Construction-history records (Document::HistoryRecords(), doc/Document.h).
+// Stored as ONE document user string, "Dino8.HistoryMeta" - the same carrier
+// the block/cage tables use - so a reader that does not know it (an older
+// Dino8, or Rhino itself) just carries it along as an unknown document user
+// string and the file opens exactly as before. One record per line:
+//   <result object uuid>|<command>|<straight 0/1>|<source uuids, ',' separated; '-' = no
+//   longer resolvable>|<key=value;key=value ...>
+// The numeric document ids are NOT stable across Open (every object gets a fresh
+// id), so results and sources are written as the objects' stable uuids and
+// remapped through the loader's uuid -> new id table (object_ids) on load, the
+// same way DimRefObj*/cage/captive references are. Numbers are written with
+// 17 significant digits so a rebuild after reopen sees the exact recorded value.
+// An empty source field means no sources. A "H1" first line marks the layout version.
+bool HistoryTextSafe(const std::string& t, const char* bad) {
+  return !t.empty() && t.find_first_of(bad) == std::string::npos;
+}
+
+std::string EncodeHistoryRecords(const std::map<ObjectId, HistoryRecord>& recs, const std::map<ObjectId, ON_UUID>& uuids) {
+  std::string out;
+  for (const auto& [rid, rec] : recs) {
+    const auto ru = uuids.find(rid);
+    if (ru == uuids.end()) continue;  // result object not written (deleted/orphaned, or an excluded reference)
+    if (!HistoryTextSafe(rec.command, "|\n\r")) continue;
+    std::string srcs, nums;
+    for (ObjectId sid : rec.sources) {
+      const auto su = uuids.find(sid);
+      srcs += (srcs.empty() ? "" : ",") + (su == uuids.end() ? std::string("-") : UuidString(su->second));
+    }
+    bool ok = true;
+    for (const auto& [k, v] : rec.num) {
+      if (!HistoryTextSafe(k, "|;=\n\r")) { ok = false; break; }
+      char buf[40];
+      std::snprintf(buf, sizeof(buf), "%.17g", v);
+      nums += (nums.empty() ? "" : ";") + k + "=" + buf;
+    }
+    if (!ok) continue;
+    out += UuidString(ru->second) + "|" + rec.command + "|" + (rec.straight ? "1" : "0") + "|" + srcs + "|" + nums + "\n";
+  }
+  return out.empty() ? out : "H1\n" + out;
+}
+
+// `ids` maps object uuid -> the id the loader just gave that object.
+void DecodeHistoryRecords(Document& doc, const std::string& text,
+                          const UuidMap& ids) {
+  std::istringstream in(text);
+  std::string line;
+  if (!std::getline(in, line) || line != "H1") return;  // unknown layout version: ignore rather than guess
+  auto split = [](const std::string& s, char sep) {
+    std::vector<std::string> parts;
+    std::size_t at = 0;
+    for (;;) {
+      const std::size_t e = s.find(sep, at);
+      parts.push_back(s.substr(at, e == std::string::npos ? std::string::npos : e - at));
+      if (e == std::string::npos) break;
+      at = e + 1;
+    }
+    return parts;
+  };
+  while (std::getline(in, line)) {
+    const std::vector<std::string> f = split(line, '|');
+    if (f.size() != 5) continue;
+    const auto res = ids.find(ON_UuidFromString(f[0].c_str()));
+    if (res == ids.end()) continue;  // the result object did not survive the load
+    HistoryRecord rec;
+    rec.command = f[1];
+    rec.straight = f[2] == "1";
+    if (!f[3].empty()) {  // an empty field is a record with no sources at all
+      for (const std::string& u : split(f[3], ',')) {
+        const auto sr = u == "-" ? ids.end() : ids.find(ON_UuidFromString(u.c_str()));
+        // A source that no longer exists keeps its slot as kNoObject (never a valid id):
+        // the rebuild then reports it as missing and leaves the result as it was,
+        // exactly like a source deleted in the live session.
+        rec.sources.push_back(sr == ids.end() ? kNoObject : static_cast<ObjectId>(sr->second));
+      }
+    }
+    if (!f[4].empty()) {
+      for (const std::string& kv : split(f[4], ';')) {
+        const std::size_t eq = kv.find('=');
+        if (eq == std::string::npos || eq == 0) continue;
+        rec.num[kv.substr(0, eq)] = std::strtod(kv.c_str() + eq + 1, nullptr);
+      }
+    }
+    doc.SetHistoryRecord(static_cast<ObjectId>(res->second), std::move(rec));
+  }
+}
+
 bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   ONX_Model model;
   ON_TextLog log;
@@ -1562,6 +1648,12 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         else { o.user_text.erase(it); o.user_text.erase(pair[1]); }
       }
     }
+  }
+  // Construction history (see EncodeHistoryRecords): every object now has its
+  // new id, so the uuid-keyed records can be mapped back onto them.
+  {
+    ON_wString v;
+    if (model.GetDocumentUserString(L"Dino8.HistoryMeta", v)) DecodeHistoryRecords(doc, FromWide(v), object_ids);
   }
   // Per-detail hidden objects (saved as object uuids).
   for (const PendingDetail& pd : pending_details) {
@@ -2551,6 +2643,11 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       }
     }
     model.SetDocumentUserString(L"Dino8.CageBindingsMeta", ON_wString(EncodeCageBindingsMeta(metas).c_str()));
+  }
+  // Construction history records (uuid-keyed; see EncodeHistoryRecords).
+  {
+    const std::string hist = EncodeHistoryRecords(doc.HistoryRecords(), object_uuids);
+    if (!hist.empty()) model.SetDocumentUserString(L"Dino8.HistoryMeta", ON_wString(hist.c_str()));
   }
 
   // Lights are geometry components in the 3dm.

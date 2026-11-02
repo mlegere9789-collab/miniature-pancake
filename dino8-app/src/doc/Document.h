@@ -658,7 +658,9 @@ struct ProvenanceInfo {
 // table expects it (see kHistoryRebuilders in cmd_misc.cpp). Kept in a side
 // table for the same reason as HoleFeature/PipeFeature/ProvenanceInfo
 // above: ordinary objects, Save3dm, ObjectCount() and the object list are
-// untouched by it. Session state only - not written to the .3dm and not
+// untouched by it. Written to the .3dm (document user string
+// "Dino8.HistoryMeta", io/File3dm.cpp: object uuids on disk, remapped to the
+// new ids on Open, so a reopened file propagates edits again) but not
 // restored by Undo/Redo (an Undo past the construction leaves a harmless
 // orphaned entry, cleared whenever the dependent object itself is removed -
 // same tradeoff HoleFeature/PipeFeature accept above).

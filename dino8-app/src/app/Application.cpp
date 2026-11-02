@@ -933,6 +933,7 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   doc_ = std::move(fresh);
   doc_.SetPath(path);
   doc_.SetModified(false);
+  HistoryResync(doc_);  // construction history loaded from the file: baseline its sources, drop the old document's
   AddRecentFile(path);
   ZoomExtentsAll();
   doc_.LoadActivityLog();          // pick up this file's persisted Activity Log, if any
