@@ -10263,6 +10263,15 @@ else
   for n in $PSITE_REQUIRED; do
     if ! grep -q "^ok   $n[: ]" <<<"$PSITE"; then echo "FAIL $n did not report ok (check missing or helper skipped it)"; fail=1; fi
   done
+  # Touch support of the exported web viewer (src/io/WebViewer.cpp): markers in
+  # the real exported HTML, plus - where node + Playwright + Chromium exist - real
+  # touch input (one-finger orbit, two-finger pinch) via tests/web_viewer_touch_check.js.
+  PWV="$(timeout 900 bash "$HERE/web_viewer_touch_test.sh" "$BIN" 2>&1)" || { echo "$PWV" | tail -30; echo "FAIL: web_viewer_touch_test.sh exited non-zero"; fail=1; }
+  echo "$PWV" | grep -E "^(ok|FAIL|skip)" || true
+  if grep -q "^FAIL" <<<"$PWV"; then fail=1; fi
+  for n in pwv_export pwv_viewport_meta pwv_touch_action pwv_pointer_events pwv_coarse_ui pwv_no_mouse_only pwv_self_contained; do
+    if ! grep -q "^ok   $n[: ]" <<<"$PWV"; then echo "FAIL $n did not report ok"; fail=1; fi
+  done
 fi
 
 exit $fail

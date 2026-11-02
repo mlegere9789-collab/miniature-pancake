@@ -61,6 +61,15 @@ invalid index (same rules as the app's parser, plus unique safe ids, http(s) dow
 no external requests in any output file, a CSP that forbids other origins, hostile index text is
 escaped, and the app loads the generated `plugin-index.json`.
 
+## Touch / phone use
+
+There is no native companion app and no sync-back from a phone to a Dino 8 document. What exists: the
+`ExportWebViewer Path=<file.html>` output is one self-contained file that now works with fingers on a
+phone or tablet browser - one-finger orbit, two-finger pinch zoom, a mobile viewport, larger Scale
+sliders on touch screens (Pointer Events; `src/io/WebViewer.cpp`). `tests/web_viewer_touch_test.sh`
+checks the exported HTML and, where node + Playwright + Chromium are installed, drives real touch
+input through `tests/web_viewer_touch_check.js`. Pan, selection and editing on touch are not implemented.
+
 ## Video tutorials
 
 Video needs a person on camera and a channel; the repository can only prepare for it. Each of the
