@@ -18,6 +18,7 @@
 // exits 0 and prints "all passed" on success, 1 otherwise.
 const { spawn } = require('child_process');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 
 let chromium;
@@ -42,9 +43,9 @@ async function waitFor(fn, what, ms) {
   }
 }
 
-function startApp() {
+function startApp(extra) {
   return new Promise((resolve, reject) => {
-    const args = ['-a', '-s', '-screen 0 1600x900x24', BIN, '--serve', '0', '--serve-touch', '--touch-dir', WEB];
+    const args = ['-a', '-s', '-screen 0 1600x900x24', BIN, '--serve', '0', '--serve-touch', '--touch-dir', WEB].concat(extra || []);
     const child = spawn('timeout', ['900', 'xvfb-run', ...args], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', port = 0, token = '';
     const onData = (d) => {
@@ -57,6 +58,14 @@ function startApp() {
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     child.on('exit', (c) => { if (!(port && token)) reject(new Error('Dino 8 exited early (' + c + '):\n' + out)); });
     setTimeout(() => { if (!(port && token)) reject(new Error('Dino 8 did not start serving in 60s:\n' + out)); }, 60000);
+  });
+}
+
+function runToExit(args) {
+  return new Promise((resolve) => {
+    const child = spawn('timeout', ['120', 'xvfb-run', '-a', '-s', '-screen 0 1600x900x24', BIN].concat(args), { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = ''; child.stdout.on('data', (d) => out += d); child.stderr.on('data', (d) => out += d);
+    child.on('exit', (code) => resolve({ code, out }));
   });
 }
 
@@ -107,6 +116,26 @@ async function main() {
     r = await get('/touch/api/scene');
     j = await r.json();
     check(j.objects.length === 2 && j.objects[0].tri.length >= 36 * 3 && j.objects[0].tri.length % 9 === 0, 'GET /touch/api/scene returns tessellated triangles for both boxes (' + (j.objects[0] ? j.objects[0].tri.length / 9 : 0) + ' triangles in the first)');
+
+    // ------------------------------------------------------- network exposure
+    console.log('--- LAN exposure');
+    const lanIp = [].concat(...Object.values(os.networkInterfaces())).filter((i) => i.family === 'IPv4' && !i.internal).map((i) => i.address)[0];
+    const noTok = await runToExit(['--serve', '0', '--serve-lan']);
+    check(noTok.code === 1 && /--serve-lan needs/.test(noTok.out), '--serve-lan without any token refuses to start (exit ' + noTok.code + ')');
+    if (lanIp) {
+      const viaLan = await fetch('http://' + lanIp + ':' + app.port + '/touch/api/ping', { headers: auth }).then((x) => x.status).catch(() => 'refused');
+      check(viaLan === 'refused', 'the default server is bound to loopback only: ' + lanIp + ':' + app.port + ' -> ' + viaLan);
+      const lanApp = await startApp(['--serve-lan']);
+      try {
+        const priv = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.)/.test(lanIp);
+        const ok = await fetch('http://' + lanIp + ':' + lanApp.port + '/touch/api/ping', { headers: { Authorization: 'Bearer ' + lanApp.token } }).then((x) => x.status).catch(() => 'dropped');
+        const bad = await fetch('http://' + lanIp + ':' + lanApp.port + '/touch/api/ping').then((x) => x.status).catch(() => 'dropped');
+        const loop = await fetch('http://127.0.0.1:' + lanApp.port + '/touch/api/ping', { headers: { Authorization: 'Bearer ' + lanApp.token } }).then((x) => x.status).catch(() => 'dropped');
+        check(loop === 200, '--serve-lan: still reachable over loopback with the token (' + loop + ')');
+        if (priv) check(ok === 200 && bad === 401, '--serve-lan: reachable at private address ' + lanIp + ' with the token (' + ok + ') and 401 without it (' + bad + ')');
+        else check(ok === 'dropped' && bad === 'dropped', '--serve-lan: this host\'s only address ' + lanIp + ' is NOT a private range, so the peer filter drops the connection even with the token (' + ok + ', ' + bad + ')');
+      } finally { try { process.kill(-lanApp.child.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+    } else console.log('     info: no non-loopback IPv4 interface here; LAN reachability checks skipped');
 
     // ---------------------------------------------------------------- browser
     console.log('--- PWA in touch-emulating Chromium');
@@ -281,6 +310,33 @@ async function main() {
     await waitFor(() => page.evaluate(() => window.__dino8Touch.measureResult > 0), 'measure result', 5000);
     const md = await page.evaluate(() => window.__dino8Touch.measureResult);
     check(near(md, 12, 0.5), 'Measure tool: two taps on the ground 12 units apart measured ' + md.toFixed(3));
+
+    // Rotate tool: a 45 degree screen-space arc about the selection's centre
+    const centreOf = (bb) => bb.min.map((v, i) => (v + bb.max[i]) / 2);
+    const sizeOf = (bb) => bb.max.map((v, i) => v - bb.min[i]);
+    await page.evaluate(() => window.__dino8Touch.zoomExtents());
+    await sleep(100);
+    let bbR0 = await bboxOf(1);
+    check(near(sizeOf(bbR0)[0], 10, 0.05), 'before Rotate the box is 10 wide (' + sizeOf(bbR0)[0].toFixed(3) + ')');
+    const cR = await page.evaluate((c) => window.__dino8Touch.projectPoint(c), centreOf(bbR0));
+    await page.tap('button[data-tool="rotate"]');
+    await drag([[cR.x + 100, cR.y]], [[100 * Math.cos(Math.PI / 4) - 100, 100 * Math.sin(Math.PI / 4)]], 10);
+    await waitFor(async () => Math.abs(sizeOf(await bboxOf(1))[0] - 10) > 0.5, 'Rotate to reach the desktop', 8000);
+    const bbR1 = await bboxOf(1);
+    check(near(sizeOf(bbR1)[0], 10 * Math.SQRT2, 0.1) && near(sizeOf(bbR1)[1], 10 * Math.SQRT2, 0.1) && near(sizeOf(bbR1)[2], 10, 0.05),
+      'Rotate tool: a 45 degree drag turned the box on the desktop (bbox ' + sizeOf(bbR1).map((v) => v.toFixed(3)) + ', expected 14.142 x 14.142 x 10)');
+    check(centreOf(bbR1).every((v, i) => near(v, centreOf(bbR0)[i], 0.05)), 'Rotate keeps the box centred on its own centre');
+    check(!(await state()).active, 'no command is left waiting on the desktop after the Rotate');
+
+    // Scale tool: dragging up 138.63 px is a factor of exactly 2
+    const bbS0 = await bboxOf(1);
+    const cS = await page.evaluate((c) => window.__dino8Touch.projectPoint(c), centreOf(bbS0));
+    await page.tap('button[data-tool="scale"]');
+    await drag([[cS.x, cS.y + 160]], [[0, -200 * Math.LN2]], 10);
+    await waitFor(async () => sizeOf(await bboxOf(1))[2] > 15, 'Scale to reach the desktop', 8000);
+    const bbS1 = await bboxOf(1);
+    check(near(sizeOf(bbS1)[2], 20, 0.1) && near(sizeOf(bbS1)[0] / sizeOf(bbS0)[0], 2, 0.01), 'Scale tool: dragging up 138.6 px doubled the box on the desktop (height 10 -> ' + sizeOf(bbS1)[2].toFixed(3) + ', width x' + (sizeOf(bbS1)[0] / sizeOf(bbS0)[0]).toFixed(3) + ')');
+    check(!(await state()).active, 'no command is left waiting on the desktop after the Scale');
 
     // ------------------------------------------------------------ service worker
     console.log('--- offline cache');
