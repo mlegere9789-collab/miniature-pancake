@@ -97,6 +97,7 @@ async function main() {
     r = await fetch(base + '/touch/', {});
     const html = await r.text();
     check(r.status === 200 && /<title>Dino 8 Touch<\/title>/.test(html), 'GET /touch/ serves the app shell without a token (static code only)');
+    check(/default-src 'self'/.test(r.headers.get('content-security-policy') || '') && !/https?:\/\/(?!127)/.test(html.replace(/xmlns="[^"]*"/g, '')), 'the app shell carries a same-origin Content-Security-Policy and references no external http(s) URL (no CDN, fonts or trackers)');
     for (const f of ['app.js', 'app.css', 'sw.js', 'manifest.webmanifest', 'icon-192.png']) {
       r = await fetch(base + '/touch/' + f);
       check(r.status === 200, 'GET /touch/' + f + ' is served (' + r.status + ', ' + r.headers.get('content-type') + ')');

@@ -38,6 +38,16 @@
 //                 the command line uses, with the captured print() output
 //                 coming back as the response body. See docs/COMPUTE_SERVER.md
 //                 and PARITY_MAP.md's "Cloud/network compute service" item.
+//   --serve-touch with --serve: also serve the Dino 8 Touch companion PWA at
+//                 /touch/ and its token-gated JSON API at /touch/api/
+//                 (net/TouchApi.h, touch/README.md). Generates a random
+//                 pairing token when no --serve-token/--serve-token-file is
+//                 given and prints the pairing URL ("touch: open ...").
+//   --serve-lan   with --serve: bind all interfaces instead of loopback only;
+//                 peers outside loopback/private/link-local ranges are
+//                 dropped and a token is mandatory.
+//   --touch-dir DIR   with --serve-touch: serve the PWA from DIR instead of
+//                 the bundled data/touch.
 //   --serve-max-requests N   with --serve: exit after N requests have been
 //                 serviced instead of running until killed (used by
 //                 tests/smoke.sh for a deterministic, self-terminating run).

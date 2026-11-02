@@ -354,6 +354,14 @@ HttpResponse ServeTouchStatic(const std::string& web_root, const HttpRequest& re
   r.headers["Cache-Control"] = "no-cache";
   r.headers["X-Content-Type-Options"] = "nosniff";
   if (rel == "sw.js") r.headers["Service-Worker-Allowed"] = "/touch/";
+  // The app is a closed set of same-origin files; it may only *connect* out
+  // (to the paired desktop, whatever host:port the user typed).
+  if (ext == ".html") {
+    r.headers["Content-Security-Policy"] =
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src *; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    r.headers["Referrer-Policy"] = "no-referrer";
+  }
   return r;
 }
 

@@ -342,3 +342,27 @@ $ curl -s --data '{"type":"bogus"}' http://127.0.0.1:8080/objects
 
 Closing any of the above further is real, separate follow-up work, not
 something this server already does quietly.
+
+## Dino 8 Touch routes (`--serve-touch`)
+
+`--serve PORT --serve-touch` additionally serves the touch companion app
+(`touch/`, a PWA for tablets and phones) and its API; see `touch/README.md`.
+
+* `GET /touch/` and the other files under `/touch/` (HTML/CSS/JS, manifest,
+  service worker, icons) are public static code - a page navigation cannot
+  carry a bearer header. A fixed extension whitelist, no `..`, GET/HEAD only.
+* `/touch/api/{ping,state,scene,command,select,layer}` always require the
+  same `Authorization: Bearer` token as every other route (`--serve-token`,
+  `--serve-token-file`; with `--serve-touch` and neither, a random pairing
+  token is generated and printed). A missing/wrong token is 401. `OPTIONS`
+  (CORS preflight) is answered without a token. `POST /touch/api/command`
+  runs command lines on the desktop's own command engine and returns the new
+  history lines; script-running commands (`RunScript`, `RunPythonScript`,
+  `= <lua>`, `Python`, `Macro`, plug-in installs) are refused with 403.
+* `--serve-lan` binds `0.0.0.0` instead of loopback. The server then drops
+  any peer that is not loopback, RFC 1918 private or link-local, and refuses
+  to start without a token. Default stays loopback only. There is no TLS, so
+  browsers will only run the service worker / offer install from `localhost`.
+* `--touch-dir DIR` serves the PWA from `DIR` (default: the bundled
+  `data/touch`). A connection that sends no byte within 300 ms (a browser's
+  speculative preconnect) is closed so it cannot stall the frame loop.
