@@ -288,6 +288,32 @@ int main() {
     server.Stop();
   }
 
+  // Dino 8 Touch additions: extra response headers, the LAN peer filter and
+  // the bind-address argument.
+  {
+    HttpResponse r;
+    r.status = 301;
+    r.headers["Location"] = "/touch/";
+    const std::string wire = BuildHttpResponse(r);
+    Check(wire.find("HTTP/1.1 301 Moved Permanently\r\n") == 0, "BuildHttpResponse knows 301");
+    Check(wire.find("Location: /touch/\r\n") != std::string::npos, "BuildHttpResponse emits extra headers");
+    Check(wire.find("Connection: close\r\n") != std::string::npos && wire.find("\r\n\r\n") != std::string::npos, "extra headers do not displace the fixed ones");
+    using dino8::app::IsLocalNetworkAddress;
+    auto ip = [](unsigned a, unsigned b, unsigned c, unsigned d) { return (a << 24) | (b << 16) | (c << 8) | d; };
+    Check(IsLocalNetworkAddress(ip(127, 0, 0, 1)) && IsLocalNetworkAddress(ip(10, 1, 2, 3)) && IsLocalNetworkAddress(ip(192, 168, 1, 20)) &&
+              IsLocalNetworkAddress(ip(172, 16, 0, 5)) && IsLocalNetworkAddress(ip(172, 31, 255, 1)) && IsLocalNetworkAddress(ip(169, 254, 3, 4)),
+          "loopback, 10/8, 172.16/12, 192.168/16 and link-local peers count as local network");
+    Check(!IsLocalNetworkAddress(ip(8, 8, 8, 8)) && !IsLocalNetworkAddress(ip(172, 32, 0, 1)) && !IsLocalNetworkAddress(ip(172, 15, 0, 1)) &&
+              !IsLocalNetworkAddress(ip(192, 169, 1, 1)) && !IsLocalNetworkAddress(ip(100, 64, 0, 1)),
+          "public addresses and the edges just outside the private ranges do not");
+    dino8::app::ComputeServer bad;
+    std::string err;
+    Check(!bad.Start(0, err, "not-an-address") && err.find("bad bind address") != std::string::npos, "Start rejects a malformed bind address with a clear error");
+    dino8::app::ComputeServer lan;
+    Check(lan.Start(0, err, "0.0.0.0") && lan.Port() > 0, "Start can bind all interfaces on request (the --serve-lan opt-in)");
+    lan.Stop();
+  }
+
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");
   return failures ? 1 : 0;

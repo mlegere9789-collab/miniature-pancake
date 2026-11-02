@@ -383,6 +383,7 @@ set(DINO8_SOURCES
   src/commands/cmd_compare.cpp
   src/commands/cmd_sheetset.cpp
   src/net/ComputeServer.cpp
+  src/net/TouchApi.cpp
   src/net/Collab.cpp
   src/net/CollabSession.cpp
   src/commands/cmd_collab.cpp
@@ -536,6 +537,8 @@ add_custom_command(TARGET Dino8 POST_BUILD
   # treatment plugin-index/index.json gets just above.
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data/ml
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt $<TARGET_FILE_DIR:Dino8>/data/ml/
+  # Dino 8 Touch (touch/web/): the PWA files --serve-touch serves at /touch/.
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/touch/web $<TARGET_FILE_DIR:Dino8>/data/touch
   COMMENT "Copying Dino8 data files next to the executable")
 
 # ---------------------------------------------------------------------------
@@ -1312,18 +1315,21 @@ if(APPLE)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION "Dino8.app/Contents/Resources/data" COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION "Dino8.app/Contents/Resources/data/plugin-index" COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt DESTINATION "Dino8.app/Contents/Resources/data/ml" COMPONENT app)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/touch/web/ DESTINATION "Dino8.app/Contents/Resources/data/touch" COMPONENT app)
 elseif(WIN32)
   install(TARGETS Dino8 RUNTIME DESTINATION . COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION data COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION data COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION data/plugin-index COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt DESTINATION data/ml COMPONENT app)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/touch/web/ DESTINATION data/touch COMPONENT app)
 else()
   install(TARGETS Dino8 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data/plugin-index COMPONENT app)
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/ml/command_predictor_weights.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data/ml COMPONENT app)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/touch/web/ DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data/touch COMPONENT app)
   install(FILES packaging/linux/dino8.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT app)
   install(FILES resources/dino8.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps RENAME dino8.png COMPONENT app OPTIONAL)
 endif()

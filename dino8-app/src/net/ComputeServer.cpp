@@ -185,10 +185,22 @@ bool TryParseHttpRequest(const std::string& buffer, HttpRequest* out, size_t* co
   return true;
 }
 
+bool IsLocalNetworkAddress(uint32_t ip) {
+  const uint32_t a = ip >> 24, b = (ip >> 16) & 0xFF;
+  if (a == 127 || a == 10) return true;
+  if (a == 172 && b >= 16 && b <= 31) return true;
+  if (a == 192 && b == 168) return true;
+  if (a == 169 && b == 254) return true;
+  return false;
+}
+
 std::string BuildHttpResponse(const HttpResponse& resp) {
   const char* reason = "OK";
   switch (resp.status) {
     case 200: reason = "OK"; break;
+    case 204: reason = "No Content"; break;
+    case 301: reason = "Moved Permanently"; break;
+    case 403: reason = "Forbidden"; break;
     case 400: reason = "Bad Request"; break;
     case 401: reason = "Unauthorized"; break;
     case 404: reason = "Not Found"; break;
@@ -201,15 +213,16 @@ std::string BuildHttpResponse(const HttpResponse& resp) {
   out << "HTTP/1.1 " << resp.status << ' ' << reason << "\r\n"
       << "Content-Type: " << resp.content_type << "\r\n"
       << "Content-Length: " << resp.body.size() << "\r\n"
-      << "Connection: close\r\n"
-      << "\r\n"
+      << "Connection: close\r\n";
+  for (const auto& [k, v] : resp.headers) out << k << ": " << v << "\r\n";
+  out << "\r\n"
       << resp.body;
   return out.str();
 }
 
 ComputeServer::~ComputeServer() { Stop(); }
 
-bool ComputeServer::Start(int port, std::string& error) {
+bool ComputeServer::Start(int port, std::string& error, const std::string& bind_address) {
   Stop();
   if (!EnsureWinsock(error)) return false;
   const NativeSocket fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -230,6 +243,17 @@ bool ComputeServer::Start(int port, std::string& error) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  restrict_peers_ = false;
+  if (bind_address != "127.0.0.1" && bind_address != "localhost") {
+    in_addr parsed{};
+    if (::inet_pton(AF_INET, bind_address.c_str(), &parsed) != 1) {
+      error = "compute server: bad bind address '" + bind_address + "' (expected a dotted IPv4 address)";
+      CloseSocket(fd);
+      return false;
+    }
+    addr.sin_addr = parsed;
+    restrict_peers_ = true;
+  }
   addr.sin_port = htons(static_cast<uint16_t>(port));
   if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
     error = "compute server: bind() failed: " + LastSocketError();
@@ -269,8 +293,30 @@ bool ComputeServer::PollOnce(const ComputeHandler& handler, int timeout_ms) {
   const int ready = ::select(static_cast<int>(listen_fd + 1), &read_fds, nullptr, nullptr, &tv);
   if (ready <= 0) return false;
 
-  const NativeSocket conn_fd = ::accept(listen_fd, nullptr, nullptr);
+  sockaddr_in peer{};
+  socklen_t peer_len = sizeof(peer);
+  const NativeSocket conn_fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer), &peer_len);
   if (IsInvalid(conn_fd)) return false;
+  if (restrict_peers_ && !IsLocalNetworkAddress(ntohl(peer.sin_addr.s_addr))) {
+    CloseSocket(conn_fd);  // not loopback / private / link-local: never serviced
+    return false;
+  }
+  {
+    // A browser opens speculative idle connections that never send a byte;
+    // do not let one hold the single-threaded frame loop for the whole
+    // 5-second read timeout below. A real client writes its request
+    // immediately after connecting.
+    fd_set first_byte;
+    FD_ZERO(&first_byte);
+    FD_SET(conn_fd, &first_byte);
+    timeval grace{};
+    grace.tv_sec = 0;
+    grace.tv_usec = 300 * 1000;
+    if (::select(static_cast<int>(conn_fd + 1), &first_byte, nullptr, nullptr, &grace) <= 0) {
+      CloseSocket(conn_fd);
+      return false;
+    }
+  }
 
   // A slow/stalled client can't hang this call forever: cap both the total
   // time spent reading one request (a receive timeout on the socket) and

@@ -50,7 +50,18 @@ struct HttpResponse {
   int status = 200;
   std::string content_type = "text/plain";
   std::string body;
+  // Extra response headers (e.g. Location, Cache-Control, the CORS headers
+  // the touch companion app's cross-origin API calls need). Emitted after
+  // the fixed Content-Type/Content-Length/Connection headers.
+  std::map<std::string, std::string> headers;
 };
+
+// True for an IPv4 peer address (host byte order) that is loopback
+// (127/8), RFC 1918 private (10/8, 172.16/12, 192.168/16) or link-local
+// (169.254/16). Used when the server is bound beyond loopback (--serve-lan)
+// so only same-site peers are ever serviced - a port-forwarded or
+// mistakenly public interface still gets its connections dropped.
+bool IsLocalNetworkAddress(uint32_t ipv4_host_order);
 
 // Looks for one complete HTTP/1.1 request (a request line, headers ending
 // in a blank line, then a Content-Length body if one was declared) at the
@@ -87,7 +98,12 @@ class ComputeServer {
   // ephemeral port - see Port() below). Returns false, with `error` set to
   // a human-readable reason, if the socket/bind/listen calls fail (e.g. the
   // port is already in use, or Winsock could not be initialised).
-  bool Start(int port, std::string& error);
+  // `bind_address` defaults to loopback only; a dotted IPv4 such as
+  // "0.0.0.0" (all interfaces - the --serve-lan opt-in) or a specific LAN
+  // address binds there instead. When the bind address is not loopback,
+  // PollOnce drops any connection whose peer is not a loopback/private/
+  // link-local address (see IsLocalNetworkAddress).
+  bool Start(int port, std::string& error, const std::string& bind_address = "127.0.0.1");
   void Stop();
   bool IsRunning() const { return listen_fd_ >= 0; }
   // The port actually bound (useful after Start(0)); 0 if not running.
@@ -100,9 +116,12 @@ class ComputeServer {
   // full request, calls `handler`, writes the response and closes the
   // connection. A request that never completes (bad client, or one that
   // exceeds the internal 8 MiB request-size cap) gets a 400/413 response
-  // instead of hanging this call forever. Returns true if a connection was
-  // accepted and serviced (regardless of the response status), false if no
-  // connection was waiting.
+  // instead of hanging this call forever. A connection that sends no byte at
+  // all within a short grace period (a browser's speculative preconnect) is
+  // closed without a response so it cannot stall the frame loop for the full
+  // read timeout. Returns true if a connection was accepted and serviced
+  // (regardless of the response status), false if no connection was waiting
+  // or the connection was an idle/disallowed one that was just dropped.
   bool PollOnce(const ComputeHandler& handler, int timeout_ms = 0);
 
  private:
@@ -112,6 +131,7 @@ class ComputeServer {
   // non-negative value, so ">= 0" means "running" on both.
   intptr_t listen_fd_ = -1;
   int port_ = 0;
+  bool restrict_peers_ = false;  // bound beyond loopback: only local-network peers are serviced
 };
 
 }  // namespace dino8::app

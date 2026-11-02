@@ -10274,4 +10274,38 @@ else
   done
 fi
 
+# ---------------------------------------------------------------------------
+# Dino 8 Touch (touch/, the PWA companion app) + its /touch/ and /touch/api/
+# server routes (src/net/TouchApi.cpp). touch/tests/touch_gestures.test.js
+# starts this very binary headless with --serve --serve-touch under its own
+# xvfb-run, loads the PWA in touch-emulating Chromium (Playwright), drives it
+# with synthetic CDP touch events and asserts measured camera changes (orbit
+# angle, pan distance, pinch ratio), long-press selection, a three-finger
+# undo and a typed command read back through the server, that unauthenticated
+# requests are refused, and that the service worker loads the app with the
+# network blocked. Skipped with a clear line when node, the playwright
+# package or xvfb-run is missing (it is not a hard dependency of the app).
+TCH_TEST="$HERE/../touch/tests/touch_gestures.test.js"
+if ! command -v node >/dev/null 2>&1; then
+  echo "skip TCH_ Dino 8 Touch PWA test (node is not installed)"
+elif ! node -e "require('playwright')" >/dev/null 2>&1; then
+  echo "skip TCH_ Dino 8 Touch PWA test (the node 'playwright' package is not installed)"
+elif ! command -v xvfb-run >/dev/null 2>&1; then
+  echo "skip TCH_ Dino 8 Touch PWA test (xvfb-run is not installed)"
+elif [ ! -f "$TCH_TEST" ]; then
+  echo "skip TCH_ Dino 8 Touch PWA test ($TCH_TEST not found)"
+else
+  TCH_RC=0
+  TCH_OUT="$(timeout 900 node "$TCH_TEST" "$BIN" 2>&1)" || TCH_RC=$?
+  TCH_OK="$(grep -c '^ok ' <<<"$TCH_OUT" || true)"
+  TCH_BAD="$(grep -c '^FAIL' <<<"$TCH_OUT" || true)"
+  if [ "$TCH_RC" -eq 0 ] && grep -q '^all passed' <<<"$TCH_OUT"; then
+    echo "ok   TCH_touch: Dino 8 Touch PWA test passed ($TCH_OK checks: gestures, auth refusal, command round trip, offline service worker)"
+  else
+    echo "$TCH_OUT"
+    echo "FAIL TCH_touch: Dino 8 Touch PWA test exited $TCH_RC ($TCH_OK ok, $TCH_BAD failed)"
+    fail=1
+  fi
+fi
+
 exit $fail

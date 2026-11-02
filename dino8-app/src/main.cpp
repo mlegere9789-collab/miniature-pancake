@@ -169,6 +169,7 @@
 #include "app/Settings.h"
 #include "doc/Document.h"
 #include "net/ComputeServer.h"
+#include "net/TouchApi.h"
 #include "platform/Accessibility.h"
 #include "platform/Clipboard.h"
 #include "plugins/PluginPanel.h"
@@ -713,6 +714,13 @@ int main(int argc, char** argv) {
   // last-write time is more than this many seconds old (see
   // compute_handler below).
   double serve_token_file_ttl = -1.0;
+  // --serve-lan: bind all interfaces (peers still limited to loopback/
+  // private/link-local addresses) instead of loopback only; needs a token.
+  bool serve_lan = false;
+  // --serve-touch: serve the Dino 8 Touch PWA (/touch/) and its token-gated
+  // API (/touch/api/); generates a pairing token when none was given.
+  bool serve_touch = false;
+  std::string touch_dir;  // --touch-dir: PWA files override (default: bundled data/touch)
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
@@ -729,6 +737,9 @@ int main(int argc, char** argv) {
     }
     else if (std::strcmp(argv[i], "--serve-token-file") == 0 && i + 1 < argc) serve_token_file = argv[++i];
     else if (std::strcmp(argv[i], "--serve-token-file-ttl") == 0 && i + 1 < argc) serve_token_file_ttl = std::atof(argv[++i]);
+    else if (std::strcmp(argv[i], "--serve-lan") == 0) serve_lan = true;
+    else if (std::strcmp(argv[i], "--serve-touch") == 0) serve_touch = true;
+    else if (std::strcmp(argv[i], "--touch-dir") == 0 && i + 1 < argc) touch_dir = argv[++i];
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -944,13 +955,39 @@ int main(int argc, char** argv) {
   // engine ever sees the body.
   dino8::app::ComputeServer compute_server;
   int serve_requests_handled = 0;
+  std::string touch_web_root;
   if (serve_port >= 0) {
+    std::string pairing_token;
+    if (serve_touch) {
+      touch_web_root = dino8::app::FindTouchWebRoot(app.ExeDir(), touch_dir);
+      if (serve_tokens.empty() && serve_token_file.empty()) {
+        pairing_token = dino8::app::GeneratePairingToken();
+        serve_tokens.emplace_back("touch", pairing_token);
+      } else if (!serve_tokens.empty()) {
+        pairing_token = serve_tokens.front().second;
+      }
+    }
+    if (serve_lan && serve_tokens.empty() && serve_token_file.empty()) {
+      std::fprintf(stderr, "serve: --serve-lan needs --serve-token, --serve-token-file or --serve-touch (refusing to expose an open server to the network)\n");
+      return 1;
+    }
     std::string serve_error;
-    if (!compute_server.Start(serve_port, serve_error)) {
+    if (!compute_server.Start(serve_port, serve_error, serve_lan ? "0.0.0.0" : "127.0.0.1")) {
       std::fprintf(stderr, "%s\n", serve_error.c_str());
       return 1;
     }
     std::printf("serve: listening on port %d\n", compute_server.Port());
+    if (serve_touch) {
+      if (touch_web_root.empty()) std::printf("touch: PWA files not found (pass --touch-dir DIR); API still available\n");
+      // The token rides in the URL fragment, which a browser never sends to a server.
+      if (!pairing_token.empty() && pairing_token.rfind("sha256:", 0) != 0) {
+        std::printf("touch: open http://%s:%d/touch/#token=%s on the tablet (same network)\n", serve_lan ? "<this-machine-ip>" : "127.0.0.1",
+                    compute_server.Port(), pairing_token.c_str());
+      } else {
+        std::printf("touch: open http://%s:%d/touch/ and enter your pairing token\n", serve_lan ? "<this-machine-ip>" : "127.0.0.1",
+                    compute_server.Port());
+      }
+    }
     std::fflush(stdout);
   }
   // JSON-wraps a script run's result when the request asked for it (an
@@ -977,7 +1014,7 @@ int main(int argc, char** argv) {
     body += "}\n";
     return body;
   };
-  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, &serve_token_file, &serve_token_file_ttl, json_wrap_output](const dino8::app::HttpRequest& req) {
+  const dino8::app::ComputeHandler compute_handler = [&app, &serve_tokens, &serve_token_file, &serve_token_file_ttl, &serve_touch, &touch_web_root, json_wrap_output](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
     // TryParseHttpRequest hands back the request-line path verbatim,
     // query string and all ("/objects?geometry=1") - split it once here so
@@ -989,6 +1026,15 @@ int main(int argc, char** argv) {
     const bool is_run = path == "/run" || path == "/run/python";
     const bool is_objects = path == "/objects";
     const bool is_plugins = path == "/plugins";
+    // Dino 8 Touch (net/TouchApi.h). The PWA's own files are public code
+    // (a page navigation cannot carry a bearer header); everything under
+    // /touch/api/ goes through the same token gate as every other route
+    // below, and is refused outright when no token is configured.
+    const bool is_touch_api = serve_touch && dino8::app::IsTouchApiPath(path);
+    if (serve_touch && dino8::app::IsTouchPath(path) && !is_touch_api) {
+      return dino8::app::ServeTouchStatic(touch_web_root, req, path);
+    }
+    if (is_touch_api && req.method == "OPTIONS") return dino8::app::TouchPreflight();
     if ((is_run && req.method != "POST") ||
         (is_objects && req.method != "GET" && req.method != "POST") ||
         (is_plugins && req.method != "GET")) {
@@ -1051,9 +1097,23 @@ int main(int argc, char** argv) {
       if (!matched) {
         resp.status = 401;
         resp.body = "Dino 8 compute service: missing or incorrect Authorization: Bearer token\n";
+        if (is_touch_api) {
+          resp.content_type = "application/json";
+          resp.body = "{\"ok\":false,\"error\":\"missing or incorrect pairing token\"}\n";
+          resp.headers["Access-Control-Allow-Origin"] = "*";
+          resp.headers["Cache-Control"] = "no-store";
+        }
         return resp;
       }
+    } else if (is_touch_api) {
+      // No token configured at all: the touch API never runs open.
+      resp.status = 403;
+      resp.content_type = "application/json";
+      resp.body = "{\"ok\":false,\"error\":\"the touch API needs a pairing token (start with --serve-touch or --serve-token)\"}\n";
+      resp.headers["Access-Control-Allow-Origin"] = "*";
+      return resp;
     }
+    if (is_touch_api) return dino8::app::HandleTouchApi(app, req, path, caller_name);
     // GET /objects: a real, if minimal, structured geometry wire format -
     // the id/type/name/layer/bounding-box of every object currently in the
     // running document, as JSON - rather than only the plain print() text
