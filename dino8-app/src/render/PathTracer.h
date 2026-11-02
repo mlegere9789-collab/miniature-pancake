@@ -97,13 +97,6 @@ class PathTracer {
   const render::Bvh& SceneBvh() const { return bvh_; }
   const std::vector<Material>& SceneMaterials() const { return materials_; }
   const std::vector<SceneLight>& SceneLights() const { return lights_; }
-  // One line describing what the tracer will see: how many triangles face the
-  // camera, how many are lit by the first point/spot light with a clear shadow
-  // ray, and the camera. Diagnostic only (printed by Render).
-  std::string SceneDiagnostics() const;
-  // What the last Render() measured: non-finite samples zeroed, the largest
-  // linear value before and after the denoise. Diagnostic only.
-  std::string RenderStats() const;
 
  private:
   struct GroundPlane {
@@ -177,8 +170,6 @@ class PathTracer {
   // keeps working unchanged; only SkyColor's environment-image branch
   // reads `hdr` when it is present.
   struct TexCache { int w = 0, h = 0; std::vector<unsigned char> rgba; std::vector<float> hdr; };
-  mutable long last_nonfinite_samples_ = 0;
-  mutable float last_raw_max_ = 0.f, last_denoised_max_ = 0.f;
   mutable std::mutex tex_cache_mutex_;
   mutable std::deque<std::pair<std::string, TexCache>> tex_cache_;
   const TexCache* TextureFor(const std::string& path) const;

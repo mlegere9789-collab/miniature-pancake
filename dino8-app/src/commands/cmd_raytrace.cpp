@@ -135,14 +135,12 @@ bool RenderFullFrame(CommandContext& ctx, Viewport* vp, int w, int h, const Qual
     std::snprintf(scene, sizeof scene, "Render: path-traced scene has %zu triangles and %zu lights", tracer.SceneBvh().Triangles().size(),
                   tracer.SceneLights().size());
     ctx.Print(scene);
-    ctx.Print("Render: path-traced scene: " + tracer.SceneDiagnostics());
   }
   PathTraceSettings s;
   s.width = w; s.height = h; s.samples = std::max(q.samples, 1); s.bounces = std::max(q.bounces, 1);
   s.denoise = q.denoise; s.arctic = arctic;
   std::vector<float> hdr_rgb;
   std::vector<unsigned char> rgb = tracer.Render(s, nullptr, q.hdr ? &hdr_rgb : nullptr);
-  ctx.Print("Render: path-traced image: " + tracer.RenderStats());
   seconds_out = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   RenderImage& img = app.LastRender();
   if (img.texture) app.Renderer().DeleteTexture(img.texture);

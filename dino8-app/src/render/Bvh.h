@@ -70,7 +70,7 @@ class Bvh {
   };
   std::vector<BvhTriangle> tris_;
   std::vector<Node> nodes_;
-  int BuildRange(int start, int count, int depth);
+  int BuildRange(int start, int count, int depth, int node_slot = -1);
 };
 
 }  // namespace dino8::render

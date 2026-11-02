@@ -941,6 +941,12 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_adaptive_display PRIVATE dino8_kernel)
   add_test(NAME dino8_adaptive_display COMMAND dino8_test_adaptive_display)
 
+  # The path tracer's BVH against a scan over every triangle (tests/test_bvh.cpp).
+  add_executable(dino8_test_bvh tests/test_bvh.cpp src/render/Bvh.cpp)
+  target_include_directories(dino8_test_bvh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_bvh PRIVATE dino8_kernel)
+  add_test(NAME dino8_bvh COMMAND dino8_test_bvh)
+
   # ObjectGrid::EnsureFresh's non-finite-bounding-box guard (src/spatial/
   # ObjectGrid.cpp) - a NaN/Infinity object box (reachable with no
   # validation at all via rs.AddPoint()/dino8.AddPoint() in LuaEngine.cpp/

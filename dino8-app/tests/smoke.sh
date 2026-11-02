@@ -1870,7 +1870,7 @@ Sphere 0,0,0 5
 SelLast
 RenderAssignMaterialToObjects HdrRtTestMat Gloss=1 Reflectivity=0
 SelNone
-PointLight Intensity=1000
+PointLight Intensity=100
 10,0,10
 RenderedViewport
 Render Width=24 Height=24 Quality=Raytraced Samples=16 Bounces=2 Hdr=Yes

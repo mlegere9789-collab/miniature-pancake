@@ -61,9 +61,15 @@ void Bvh::Build(std::vector<BvhTriangle> triangles) {
   BuildRange(0, static_cast<int>(tris_.size()), 0);
 }
 
-int Bvh::BuildRange(int start, int count, int depth) {
-  const int node_index = static_cast<int>(nodes_.size());
-  nodes_.emplace_back();
+int Bvh::BuildRange(int start, int count, int depth, int node_slot) {
+  // An internal node's two children must sit in CONSECUTIVE slots (traversal
+  // and the GPU export both read the right child as left + 1), so the caller
+  // reserves both slots before either subtree is built into them.
+  int node_index = node_slot;
+  if (node_index < 0) {
+    node_index = static_cast<int>(nodes_.size());
+    nodes_.emplace_back();
+  }
   Box bounds;
   for (int i = 0; i < count; ++i) bounds.Grow(TriBox(tris_[static_cast<size_t>(start + i)]));
 
@@ -135,12 +141,14 @@ int Bvh::BuildRange(int start, int count, int depth) {
   int left_count = static_cast<int>(mid - (tris_.begin() + start));
   if (left_count == 0 || left_count == count) left_count = count / 2;  // partition degenerated; force a split
 
-  const int left = BuildRange(start, left_count, depth + 1);
-  const int right = BuildRange(start + left_count, count - left_count, depth + 1);
+  const int left = static_cast<int>(nodes_.size());
+  nodes_.emplace_back();
+  nodes_.emplace_back();
+  BuildRange(start, left_count, depth + 1, left);
+  BuildRange(start + left_count, count - left_count, depth + 1, left + 1);
   nodes_[static_cast<size_t>(node_index)].bmin = bounds.bmin;
   nodes_[static_cast<size_t>(node_index)].bmax = bounds.bmax;
   nodes_[static_cast<size_t>(node_index)].left = left;
-  (void)right;  // right child is always left+1
   return node_index;
 }
 
