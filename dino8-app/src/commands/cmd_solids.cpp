@@ -1258,6 +1258,61 @@ std::optional<SubDFidelityResult> BuildSubDVerifiedAgainstBrep(const SceneObject
   return have_best ? std::make_optional(best) : std::nullopt;
 }
 
+// Result of ExactCageForBrep(): the SubD::FromBrep cage with its sharp Brep
+// edges creased, and the MEASURED distance of its limit surface from the Brep.
+struct ExactCageResult {
+  kernel::SubD subd;
+  int crease_edges = 0;     // interior cage edges tagged Crease (dihedral above kFidelityCreaseAngleDeg)
+  double deviation = 0.0;   // worst measured distance of a limit-surface sample from the Brep
+  int samples = 0;
+  bool verified = false;    // deviation <= tol
+};
+
+// ToSubD's exact path for a Brep SubD::FromBrep accepts (a solid or sheet of
+// untrimmed planar quads). FromBrep only creases NAKED boundary edges, so a
+// closed box would come out as an uncreased 6-face cage whose Catmull-Clark
+// limit surface is a rounded blob (about a third of the box's volume): the
+// cage is exact, the SHAPE is not. Edges between two faces whose normals
+// differ by more than kFidelityCreaseAngleDeg (a box's 12 edges) are
+// therefore creased with SubD::SetCreasesByDihedral, and the fidelity is
+// then MEASURED rather than assumed: the limit points of Subdivide(2) of
+// the creased cage (exact limit evaluation at every vertex, edge midpoint
+// and face centre of two refinement rounds) against the Brep's planar
+// faces (exact: see the tessellation comment below). nullopt if FromBrep
+// refuses the Brep or the measurement itself fails (the caller then falls
+// through to the tessellate-and-verify path).
+std::optional<ExactCageResult> ExactCageForBrep(const SceneObject& o, double tol) {
+  if (!o.brep) return std::nullopt;
+  ExactCageResult r;
+  try {
+    r.subd = kernel::SubD::FromBrep(*o.brep, 1);
+    r.crease_edges = r.subd.SetCreasesByDihedral(kFidelityCreaseAngleDeg);
+    // FromBrep accepts only untrimmed PLANAR quad faces, so a 16 x 16 grid
+    // tessellation of each face lies exactly ON the Brep: the distance to
+    // it is the distance to the Brep itself, with no tessellation error
+    // (and no per-face closest-point trim test, which is unreliable for a
+    // limit point that lies on a shared edge).
+    const kernel::Mesh reference = o.brep->TessellateToClosedMesh(16, 16);
+    if (reference.FaceCount() == 0) return std::nullopt;
+    const kernel::MeshClosestPointIndex index(reference);
+    kernel::SubD refined = r.subd;
+    refined.Subdivide(2);
+    const std::vector<kernel::SubDLimitPoint> lps = refined.LimitPoints();
+    if (lps.empty()) return std::nullopt;
+    const size_t step = std::max<size_t>(1, lps.size() / static_cast<size_t>(kMaxFidelitySamples));
+    for (size_t i = 0; i < lps.size(); i += step) {
+      const Point3d& q = lps[i].limit_point;
+      const double dd = (index.ClosestPoint(q) - q).Length();
+      r.deviation = std::max(r.deviation, dd);
+      ++r.samples;
+    }
+    r.verified = r.deviation <= tol;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+  return r;
+}
+
 // Joins coincident naked edges of `b` like JoinNakedEdges (cmd_common.h)
 // but with a spatial hash on edge mid points instead of an all-pairs scan,
 // so a thousand-patch SubD conversion joins in milliseconds instead of
@@ -1396,6 +1451,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   double fidelity_worst = 0.0;
   int fit_iterations_max = 0, creases_total = 0, fit_runs = 0, samples_total = 0;
   double fit_residual_worst = 0.0;
+  int exact_runs = 0, exact_creases_total = 0, exact_samples_total = 0;
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -1434,16 +1490,22 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
       // per original Brep face - the natural, most editable cage for the
       // shape this accepts, matching how a plain box's own faces already
       // read.
-      std::optional<kernel::SubD> exact;
-      try {
-        exact = kernel::SubD::FromBrep(*o->brep, 1);
-      } catch (const std::exception&) {
-        exact = std::nullopt;
-      }
+      //
+      // FromBrep creases only NAKED edges, so the cage is then given
+      // creases along the Brep's sharp edges and its limit surface is
+      // MEASURED against the Brep (ExactCageForBrep above) - the old
+      // unconditional "++fidelity_verified" claimed a verification that
+      // was never made, for a closed box whose uncreased limit surface is
+      // a rounded blob.
+      const std::optional<ExactCageResult> exact = ExactCageForBrep(*o, tol);
       if (exact) {
-        n = SceneObject::MakeSubD(*exact);
+        n = SceneObject::MakeSubD(exact->subd);
         ++fidelity_checked;
-        ++fidelity_verified;
+        if (exact->verified) ++fidelity_verified;
+        fidelity_worst = std::max(fidelity_worst, exact->deviation);
+        ++exact_runs;
+        exact_creases_total += exact->crease_edges;
+        exact_samples_total += exact->samples;
       } else {
         std::optional<SubDFidelityResult> fr = BuildSubDVerifiedAgainstBrep(*o, tol);
         if (!fr) continue;
@@ -1477,6 +1539,11 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              std::to_string(fit_iterations_max) + " iteration(s), residual " + std::to_string(fit_residual_worst) + "), " +
              std::to_string(creases_total) + " feature edge(s) creased, deviation measured at " + std::to_string(samples_total) +
              " exact limit-surface points";
+    }
+    if (exact_runs > 0) {
+      msg += "; exact Brep-face cage (no tessellation), " + std::to_string(exact_creases_total) +
+             " sharp edge(s) creased (dihedral above " + std::to_string(static_cast<int>(kFidelityCreaseAngleDeg)) +
+             " degrees), deviation measured at " + std::to_string(exact_samples_total) + " exact limit-surface points";
     }
   }
   ctx.Print(msg);

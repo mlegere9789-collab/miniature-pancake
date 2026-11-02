@@ -1630,8 +1630,8 @@ sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified wit
 # verification at exactly 0 deviation, with the natural, clean 6-face
 # control cage a Box's own 6 flat faces should give, not a triangulated
 # approximation of it.
-sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0.000000)" "ToSubD on a Box fully verifies at 0 deviation (confirmed directly against the pre-this-change binary that this used to be a genuine 0-of-1 miss at ~0.8 deviation instead)"
-sdcheck "6 faces, 12 edges, 8 vertices, 0 creases" "ToSubD on a Box takes the exact SubD::FromBrep path: the natural 6-face cube cage, not a triangulated-then-recombined approximation of it (unique among this script's own SubD List outputs - the Sphere gives 11310/16965/5657, the PlanarSrf rectangle gives 6/13/8/8)"
+sdcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.000[0-9]*); exact Brep-face cage (no tessellation), 12 sharp edge(s) creased" "ToSubD on a Box verifies within tolerance by a MEASURED limit-surface deviation (the exact path used to claim 'verified, 0.000000' without measuring; it is now measured against the Brep, with the box's 12 sharp edges creased)"
+sdcheck "6 faces, 12 edges, 8 vertices, 12 creases" "ToSubD on a Box takes the exact SubD::FromBrep path: the natural 6-face cube cage, not a triangulated-then-recombined approximation of it, with its 12 sharp edges creased so the limit surface stays a box (was '0 creases', a rounded blob; unique among this script's own SubD List outputs - the Sphere gives 11310/16965/5657, the PlanarSrf rectangle gives 6/13/8/8)"
 # SubDRevolve/SubDMultiPipe: the SubD menu (MenuBar.cpp) has always listed
 # both names, with no command of either name ever registered - a broken
 # menu entry, not an implemented-but-limited feature (PARITY_MAP.md's own
@@ -10015,5 +10015,46 @@ srcheck C_cone_rim "Object 1: valid" "...valid"
 srcheck C_cone_toobig "cone-rim attempt: a chamfer distance consumes the whole wall or cap" "a cap distance larger than the cap: refused WITH the cone-rim reason in the diagnostic"
 srcheck C_cone_toobig "2 faces, 2 edges, closed solid" "...and the cone is left untouched"
 if grep -q "^FAIL" <<<"$SROUT"; then echo "FAIL solidsrev script reported an in-script FAIL"; fail=1; fi
+
+# --- SBX: ToSubD on a closed Brep box (sbx_script.txt) -------------------------
+# MeshFromSelection's exact path (SubD::FromBrep) used to count every Brep it
+# accepted as "verified" with worst deviation 0.000000 WITHOUT measuring, and
+# FromBrep creases only naked edges, so a closed box became a 6-face cage with
+# 0 creases whose Catmull-Clark limit surface is a rounded blob (ToNURBS
+# volume 327.1 instead of 1000). The sharp Brep edges (dihedral > 35 degrees)
+# are now creased and the limit surface is measured against the Brep.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SBX_OUT="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/sbx_script.txt" 2>&1)" || { echo "$SBX_OUT"; echo "FAIL: sbx script exited non-zero"; exit 1; }
+else
+  SBX_OUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/sbx_script.txt" 2>&1)" || { echo "$SBX_OUT"; echo "FAIL: sbx script exited non-zero"; exit 1; }
+fi
+sbxcheck() { if grep -q -- "$1" <<<"$SBX_OUT"; then echo "ok   $2"; else echo "FAIL $2"; near "$SBX_OUT" "$1"; fail=1; fi; }
+# The first ToSubD line is the box's, the last is the sphere's (negative control).
+SBX_BOX_LINE="$(grep -m1 "^history: ToSubD: created" <<<"$SBX_OUT" || true)"
+SBX_SPH_LINE="$(grep "^history: ToSubD: created" <<<"$SBX_OUT" | tail -n 1 || true)"
+SBX_BOX_VERIFIED="$(grep -o "([0-9]* of 1 limit-surface-fidelity" <<<"$SBX_BOX_LINE" | grep -o "[0-9]*" | head -n 1 || true)"
+SBX_BOX_DEV="$(grep -o "worst measured deviation [0-9.]*" <<<"$SBX_BOX_LINE" | grep -o "[0-9.]*$" || true)"
+# (1) the printed fidelity claim is consistent with the measured number: "1 of 1"
+# only when the deviation is within the printed 0.001 tolerance, "0 of 1" otherwise.
+if [ -n "$SBX_BOX_DEV" ] && [ -n "$SBX_BOX_VERIFIED" ] && awk -v d="$SBX_BOX_DEV" -v v="$SBX_BOX_VERIFIED" 'BEGIN{exit !((v==1 && d<=0.001) || (v==0 && d>0.001))}'; then
+  echo "ok   sbx: the box's printed fidelity claim ($SBX_BOX_VERIFIED of 1, deviation $SBX_BOX_DEV) is consistent with the measured deviation vs tolerance 0.001"
+else
+  echo "FAIL sbx: the box's fidelity line is inconsistent or unparseable: $SBX_BOX_LINE"; fail=1
+fi
+sbxcheck "ToSubD: created 1 object(s) (1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.000[0-9]*); exact Brep-face cage (no tessellation), 12 sharp edge(s) creased (dihedral above 35 degrees), deviation measured at [1-9][0-9]* exact limit-surface points" "ToSubD on a 10x10x10 Brep box reports 1 of 1 verified from MEASURED limit-surface samples (not an unconditional claim), within 0.001, with 12 sharp edges creased"
+# (2) crease count: the cage's 12 box edges are creases (was 0 creases).
+sbxcheck "6 faces, 12 edges, 8 vertices, 12 creases" "the box's SubD cage has 12 creases (was 0)"
+sbxcheck "Crease edges: 12" "What reports the box SubD's 12 crease edges"
+# (3) the limit surface, converted to a NURBS solid, is a box again: volume 1000
+# (measured 1000.0; asserted 995..1005 - tessellation-derived numbers differ
+# slightly across platforms). With the old uncreased cage this was 327.1.
+sbxcheck "closed solid: yes, manifold" "ToNURBS of the creased box SubD is a closed manifold solid"
+SBX_VOL="$(grep -o "Volume = [0-9.e+-]*" <<<"$SBX_OUT" | head -n 1 | awk '{print $3}' || true)"
+if [ -n "$SBX_VOL" ] && awk -v a="$SBX_VOL" 'BEGIN{exit !(a>995 && a<1005)}'; then echo "ok   sbx: ToNURBS of the converted 10x10x10 box encloses $SBX_VOL (true 1000, asserted 995..1005; the uncreased cage gave 327.1)"; else echo "FAIL sbx: ToNURBS volume of the converted box is '$SBX_VOL' (expected 995..1005)"; fail=1; fi
+SBX_NVOL="$(grep -c "Volume = " <<<"$SBX_OUT" || true)"
+if [ "$SBX_NVOL" = "1" ]; then echo "ok   sbx: exactly one Volume line was printed (the NURBS solid's)"; else echo "FAIL sbx: expected exactly one Volume line, got $SBX_NVOL"; fail=1; fi
+# (4) negative control: a smooth shape keeps its existing tessellate-and-verify figure.
+if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.000[0-9]*); cage interpolated onto the Brep surface (limit surface passes through every cage vertex: [0-9]* iteration(s), residual 0\.0000[0-9]*), 0 feature edge(s) creased" <<<"$SBX_SPH_LINE" && ! grep -q "exact Brep-face cage" <<<"$SBX_SPH_LINE"; then echo "ok   sbx: Sphere ToSubD still reports its tessellate-and-verify figure (1 of 1, 0.000x, 0 feature edges) and does not take the exact-cage path"; else echo "FAIL sbx: Sphere ToSubD line changed: $SBX_SPH_LINE"; fail=1; fi
+sbxcheck "18240 faces, 27360 edges, 9122 vertices, 0 creases" "the Sphere SubD is still the 96 x 96 grid cage with 0 creases"
 
 exit $fail
