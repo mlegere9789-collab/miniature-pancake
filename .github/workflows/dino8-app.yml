@@ -3,16 +3,21 @@ name: Dino 8 App
 on:
   push:
     branches: [main, 'claude/pdf-audit-i2bvwm']
-    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml', '.github/actions/**', 'scripts/**']
   pull_request:
-    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml', '.github/actions/**', 'scripts/**']
   workflow_dispatch:
 
 env:
   BUILD_TYPE: Release
 
+# Least privilege by default: the build/test/package jobs only read the
+# repository (artifact upload uses the Actions runtime token, not this one).
+# The write scopes - contents (create the release), id-token (keyless Sigstore
+# signing) and attestations (build-provenance) - are granted ONLY to the
+# `release` job, which never runs for pull_request events.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   linux:
@@ -54,7 +59,11 @@ jobs:
     name: Windows (build, installer .exe)
     runs-on: windows-latest
     env:
-      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
+      # Which Authenticode method is configured, decided from which secrets
+      # exist ('none' today). GitHub does not allow `secrets` inside `if:`, so
+      # the decision is made here once and the steps test env.WINDOWS_SIGN_METHOD.
+      # Precedence if several are configured: signpath > azure > pfx.
+      WINDOWS_SIGN_METHOD: ${{ (secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORGANIZATION_ID != '' && secrets.SIGNPATH_PROJECT_SLUG != '' && secrets.SIGNPATH_SIGNING_POLICY_SLUG != '' && 'signpath') || (secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT != '' && secrets.AZURE_TRUSTED_SIGNING_PROFILE != '' && 'azure') || (secrets.WINDOWS_CERT_BASE64 != '' && 'pfx') || 'none' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
@@ -135,27 +144,33 @@ jobs:
         shell: bash
         timeout-minutes: 60
         run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
-      # Inert until a real certificate exists: skipped entirely (no-op) when
-      # the WINDOWS_CERT_BASE64 secret is unset, so this changes nothing
-      # about today's unsigned builds. Signing the built exe here (before the
-      # install tree, installer, and portable zip are made from it) means all
-      # three downstream artifacts carry the signed binary. See
-      # dino8-app/docs/CODE_SIGNING.md for exactly what secret to add and
-      # where the certificate comes from.
+      # Authenticode signing, inert until a signing secret exists: when none is
+      # configured WINDOWS_SIGN_METHOD is 'none' and the step is skipped, so
+      # today's builds are unchanged. Never runs for pull_request events. Signing
+      # the built exe here (before the install tree, installer and portable zip
+      # are made from it) means all three downstream artifacts carry the signed
+      # binary. The composite action signs (PFX / Azure Trusted Signing /
+      # SignPath), timestamps, and verifies the signature. See docs/CODE_SIGNING.md
+      # for the exact secret names.
       - name: Sign Dino8.exe (Authenticode)
-        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
-        shell: pwsh
-        env:
-          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          $certPath = "$env:RUNNER_TEMP\dino8-signing.pfx"
-          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
-          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
-          & $signtool sign /f $certPath /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dino8-app\build\Dino8.exe
-          $code = $LASTEXITCODE
-          Remove-Item $certPath
-          if ($code -ne 0) { exit $code }
+        if: ${{ github.event_name != 'pull_request' && env.WINDOWS_SIGN_METHOD != 'none' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          method: ${{ env.WINDOWS_SIGN_METHOD }}
+          label: windows-exe
+          files: dino8-app/build/Dino8.exe
+          pfx-base64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          signpath-api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
       - name: Install tree
         run: cmake --install dino8-app/build --prefix dino8-app/build/install --component app
       # The installed exe must run on a machine that has nothing but Windows
@@ -196,23 +211,28 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dino8-app\packaging\windows\Dino8.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # Same secret gate as above: signs the installer wrapper itself once
-      # ISCC has produced it (the payload it embeds, build\install\Dino8.exe,
-      # is already the signed binary from the step above).
+      # Same gate as above: signs the installer wrapper itself once ISCC has
+      # produced it (the payload it embeds, build\install\Dino8.exe, is already
+      # the signed binary from the step above).
       - name: Sign Windows installer (Authenticode)
-        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
-        shell: pwsh
-        env:
-          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          $certPath = "$env:RUNNER_TEMP\dino8-signing.pfx"
-          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
-          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
-          & $signtool sign /f $certPath /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dino8-app\dist\*.exe
-          $code = $LASTEXITCODE
-          Remove-Item $certPath
-          if ($code -ne 0) { exit $code }
+        if: ${{ github.event_name != 'pull_request' && env.WINDOWS_SIGN_METHOD != 'none' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          method: ${{ env.WINDOWS_SIGN_METHOD }}
+          label: windows-installer
+          files: dino8-app/dist/*.exe
+          pfx-base64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          signpath-api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
       - name: Portable zip
         run: cd dino8-app/build && cpack
       - uses: actions/upload-artifact@v4
@@ -230,6 +250,9 @@ jobs:
     name: Windows on ARM (build, portable zip)
     runs-on: windows-11-arm
     continue-on-error: true
+    env:
+      # See the x64 job: which Authenticode method the configured secrets allow.
+      WINDOWS_SIGN_METHOD: ${{ (secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORGANIZATION_ID != '' && secrets.SIGNPATH_PROJECT_SLUG != '' && secrets.SIGNPATH_SIGNING_POLICY_SLUG != '' && 'signpath') || (secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT != '' && secrets.AZURE_TRUSTED_SIGNING_PROFILE != '' && 'azure') || (secrets.WINDOWS_CERT_BASE64 != '' && 'pfx') || 'none' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
@@ -255,6 +278,27 @@ jobs:
           $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
           $bad = $dlls | Where-Object { $_ -match $denied }
           if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the portable zip does not ship: $($bad -join ', ')" }
+      # Same optional Authenticode signing as the x64 job (inert, event-gated,
+      # verified); signs the exe before the portable zip is cut from it.
+      - name: Sign Dino8.exe (Authenticode)
+        if: ${{ github.event_name != 'pull_request' && env.WINDOWS_SIGN_METHOD != 'none' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          method: ${{ env.WINDOWS_SIGN_METHOD }}
+          label: windows-arm-exe
+          files: dino8-app/build/Dino8.exe
+          pfx-base64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          signpath-api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
       - name: Portable zip
         run: cd dino8-app/build && cpack
       - uses: actions/upload-artifact@v4
@@ -266,7 +310,8 @@ jobs:
     name: macOS (build, .dmg)
     runs-on: macos-15
     env:
-      HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_BASE64 != '' }}
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_BASE64 != '' && secrets.APPLE_CERT_PASSWORD != '' && secrets.APPLE_KEYCHAIN_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+      HAS_APPLE_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Ninja
@@ -293,14 +338,19 @@ jobs:
       # unit tests above still give real coverage on this platform.
       - name: Unit tests
         run: cd dino8-app/build && ctest --output-on-failure
-      # Inert until a real certificate exists: both steps below are skipped
-      # entirely (no-op) when the APPLE_CERT_BASE64 secret is unset, so this
-      # changes nothing about today's unsigned/unnotarized .dmg. See
-      # dino8-app/docs/CODE_SIGNING.md for exactly what secrets to add and
-      # where the Developer ID certificate and app-specific password come
-      # from.
+      # Developer ID signing + notarization. Inert until the Apple secrets exist:
+      # every step below is skipped (and the .dmg stays exactly as CPack made it)
+      # when HAS_APPLE_CERT is not 'true', and none of them ever runs for a
+      # pull_request event. See docs/CODE_SIGNING.md for the exact secret names.
+      #
+      # NOTE the order: the app is signed INSIDE the .dmg after `cpack`, not in
+      # the build tree before it. CPack's DragNDrop generator stages its own
+      # fresh copy of the app, so a signature applied to build/Dino8.app was
+      # never part of the shipped image (see packaging/macos/sign-dmg.sh).
+      - name: Package
+        run: cd dino8-app/build && cpack
       - name: Import Developer ID certificate
-        if: ${{ env.HAS_APPLE_CERT == 'true' }}
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
         env:
           APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
@@ -316,28 +366,31 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           rm -f "$CERT_PATH"
-      - name: Code-sign the app bundle
-        if: ${{ env.HAS_APPLE_CERT == 'true' }}
+      - name: Code-sign the app inside the disk image (hardened runtime)
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" dino8-app/build/Dino8.app
-          codesign --verify --deep --strict --verbose=2 dino8-app/build/Dino8.app
-      - name: Package
-        run: cd dino8-app/build && cpack
-      # Same secret gate: notarizes and staples the .dmg cpack just produced,
-      # skipped entirely when there is no certificate to sign it with (Apple
-      # refuses to notarize an unsigned bundle).
+          DMG="$(ls dino8-app/build/*.dmg | head -1)"
+          dino8-app/packaging/macos/sign-dmg.sh sign "$DMG"
+      # Apple refuses to notarize an unsigned bundle, so this additionally needs
+      # the signing step above. Without the three notary secrets the image is
+      # signed but NOT notarized (Gatekeeper will still warn).
       - name: Notarize and staple the disk image
-        if: ${{ env.HAS_APPLE_CERT == 'true' }}
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_NOTARY == 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           DMG="$(ls dino8-app/build/*.dmg | head -1)"
-          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
-          xcrun stapler staple "$DMG"
+          dino8-app/packaging/macos/sign-dmg.sh notarize "$DMG"
+      - name: Warn - signed but not notarized
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_NOTARY != 'true' }}
+        run: echo "::warning::The .dmg is Developer-ID signed but NOT notarized (APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD missing). Gatekeeper will still warn users."
+      - name: Remove the temporary signing keychain
+        if: ${{ always() && github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
+        run: security delete-keychain "$RUNNER_TEMP/dino8-signing.keychain-db" || true
       - uses: actions/upload-artifact@v4
         with:
           name: Dino8-macos
@@ -352,12 +405,75 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: [linux, windows, windows-arm, macos]
     runs-on: ubuntu-latest
+    # The ONLY job with write scopes. id-token lets the job obtain the
+    # workflow's OIDC identity token (keyless Sigstore signing + build
+    # provenance); attestations lets it store the provenance attestations;
+    # contents lets it create the release. It never runs for pull_request.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
+      # Only for the repository's own scripts/ (checksums, verification). This
+      # job runs on push / workflow_dispatch only, i.e. on code that is already
+      # in the repository, never on a pull request's untrusted head.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Only the release artifacts: SignPath's temporary "signpath-unsigned-*"
+      # uploads (Windows signing hand-off) must never be published.
       - uses: actions/download-artifact@v4
         with:
+          pattern: Dino8-*
           path: dist
       - name: List files
         run: find dist -type f | sort
+      # Flattens the per-platform artifacts into release/ (same file names as
+      # before) and writes <file>.sha256 for every artifact plus SHA256SUMS.
+      - name: Stage release files and write SHA-256 checksums
+        run: scripts/stage-release.sh dist release
+      # GitHub build-provenance attestation: a signed statement, stored by
+      # GitHub, that these exact file digests were produced by this workflow
+      # run of this repository at this commit. Check with
+      # `gh attestation verify <file> --repo <owner>/<repo>`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release/*.exe
+            release/*.zip
+            release/*.deb
+            release/*.tar.gz
+            release/*.dmg
+            release/SHA256SUMS
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+      # Keyless Sigstore signing with this run's OIDC identity: no key to
+      # store or leak. Writes <file>.sigstore.json (signature + short-lived
+      # certificate + transparency-log proof) next to every artifact and
+      # next to SHA256SUMS.
+      - name: Sign release files with cosign (keyless)
+        working-directory: release
+        run: |
+          set -euo pipefail
+          # cosign 2.4.x writes the new Sigstore bundle format only with
+          # --new-bundle-format; cosign 3.x does by default.
+          flag=""
+          if cosign sign-blob --help 2>&1 | grep -q -e '--new-bundle-format'; then flag="--new-bundle-format"; fi
+          for f in $(ls -1 | grep -v -e '\.sha256$' -e '\.sigstore\.json$'); do
+            echo "cosign sign-blob $f"
+            cosign sign-blob --yes $flag --bundle "$f.sigstore.json" "$f" > /dev/null
+          done
+          ls -l
+      # Fail the release rather than publish a signature that does not verify:
+      # runs the same script users are told to run, against the files about to
+      # be uploaded, pinned to this repository.
+      - name: Verify what is about to be published
+        env:
+          REPO: ${{ github.repository }}
+        run: scripts/verify-release.sh --repo "$REPO" release
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: dino8-beta-${{ github.run_number }}
@@ -373,10 +489,14 @@ jobs:
             * **macOS** (Apple Silicon): `Dino8-0.1.0-Darwin.dmg`
 
             Totally free. No subscription, no payment, no licence keys, no accounts.
-          files: |
-            dist/Dino8-windows-installer/*.exe
-            dist/Dino8-windows-portable/*.zip
-            dist/Dino8-windows-arm64/*.zip
-            dist/Dino8-linux/*.deb
-            dist/Dino8-linux/*.tar.gz
-            dist/Dino8-macos/*.dmg
+
+            **Verifying your download.** Every file has a `.sha256` checksum, a
+            keyless Sigstore signature (`.sigstore.json`) made by this repository's
+            release workflow, and a GitHub build-provenance attestation. Run
+            `scripts/verify-release.sh` (or `verify-release.ps1` on Windows) from
+            the repository on the files you downloaded. Windows and macOS
+            installers carry a publisher signature (Authenticode / Developer ID)
+            only once the project has configured a code-signing certificate;
+            until then SmartScreen / Gatekeeper will warn. What each signature
+            does and does not prove is in `docs/CODE_SIGNING.md`.
+          files: release/*
