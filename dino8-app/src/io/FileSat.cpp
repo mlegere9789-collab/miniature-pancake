@@ -93,6 +93,10 @@ bool ImportSat(Document& doc, const std::string& path, std::string& summary) {
     if (second.ok && second.bodies.size() > strict_bodies) {
       res = std::move(second);
       used_unverified = true;
+    } else if (second.ok) {
+      // The relaxed pass found nothing more: its refusals are the real reasons (the strict pass can only say the opt-in flag was off).
+      res.warnings = std::move(second.warnings);
+      res.warnings.push_back("the unverified-layout entities were tried as well and still did not convert");
     }
   }
   if (!res.ok) {
@@ -109,8 +113,13 @@ bool ImportSat(Document& doc, const std::string& path, std::string& summary) {
     kernel::Brep body = res.bodies[i];
     kernel::Brep rebuilt;
     const char* prim = "";
+    const bool file_reversed = body.raw().m_F.Count() == 1 && body.raw().m_F[0].m_bRev;
     if (RebuildWholePrimitive(body, rebuilt, prim)) {
       body = rebuilt;
+      if (file_reversed) {
+        body.raw().Flip();
+        rebuilt_notes += "\nNote: " + name + " is a REVERSED " + std::string(prim) + " face in the file (material outside the surface); that orientation was kept.";
+      }
       rebuilt_notes += std::string("\nNote: ") + name + " is a whole " + prim + " face with no edges; it was rebuilt as the application's native " + prim +
                        " Brep (outward orientation) so it can be displayed and measured.";
     }

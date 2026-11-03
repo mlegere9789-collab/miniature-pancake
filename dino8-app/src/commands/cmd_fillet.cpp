@@ -19,6 +19,7 @@
 // Anything else (cylinder/plane, doubly-curved, non-planar corners) falls
 // back to a mesh boolean of a swept cutting tool, and says so in the
 // command's printed note ("mesh fallback").
+#include <array>
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
 #include "commands/revolved_solid.h"
@@ -607,6 +608,48 @@ bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBl
       bnd_segs.push_back(line);
       if (tl[j] > 0) { BndSeg arc; arc.a = ca[j]; arc.b = cb[j]; arc.mid = cm[j]; arc.arc = true; bnd_segs.push_back(arc); }
     }
+  }
+  // The rebuilt outline must still be a simple closed curve with the hole's widened rim well inside it.
+  // (The per-corner tests above see only the corner's own neighbours: on a non-convex outline a large
+  // rounding can cut across a far edge, and a hole sitting in the removed wedge would lie outside.)
+  if (!corners.empty()) {
+    auto to2 = [&](const ON_3dPoint& q) {
+      const ON_3dVector w = q - g.c0;
+      return std::array<double, 2>{w * g.u, w * side_axis};
+    };
+    std::vector<std::array<double, 2>> bp;  // dense boundary polyline
+    for (const BndSeg& sg : bnd_segs) {
+      if (!sg.arc) { bp.push_back(to2(sg.a)); continue; }
+      ON_Arc arc(sg.a, sg.mid, sg.b);
+      for (int k = 0; k < 64; ++k) bp.push_back(to2(arc.PointAt(arc.Domain().ParameterAt(static_cast<double>(k) / 64.0))));
+    }
+    const size_t m = bp.size();
+    auto seg_inter = [](const std::array<double, 2>& a, const std::array<double, 2>& b, const std::array<double, 2>& c, const std::array<double, 2>& d) {
+      auto cr = [](const std::array<double, 2>& o, const std::array<double, 2>& p, const std::array<double, 2>& q) {
+        return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+      };
+      const double d1 = cr(a, b, c), d2 = cr(a, b, d), d3 = cr(c, d, a), d4 = cr(c, d, b);
+      return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0)) && d1 != 0 && d2 != 0 && d3 != 0 && d4 != 0;
+    };
+    for (size_t i = 0; i < m; ++i) {
+      for (size_t j = i + 2; j < m; ++j) {
+        if (i == 0 && j == m - 1) continue;  // adjacent through the closing segment
+        if (seg_inter(bp[i], bp[(i + 1) % m], bp[j], bp[(j + 1) % m])) { why = "the rounded outline would cross itself"; return false; }
+      }
+    }
+    const std::array<double, 2> hc2 = to2(g.c0);  // (0,0)
+    bool inside = false;
+    double mind = 1e300;
+    for (size_t i = 0; i < m; ++i) {
+      const auto &a = bp[i], &b = bp[(i + 1) % m];
+      if (((a[1] > hc2[1]) != (b[1] > hc2[1])) && (hc2[0] < (b[0] - a[0]) * (hc2[1] - a[1]) / (b[1] - a[1]) + a[0])) inside = !inside;
+      const double dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+      double t = L2 > 0 ? ((hc2[0] - a[0]) * dx + (hc2[1] - a[1]) * dy) / L2 : 0.0;
+      t = std::max(0.0, std::min(1.0, t));
+      mind = std::min(mind, std::hypot(a[0] + t * dx - hc2[0], a[1] + t * dy - hc2[1]));
+    }
+    if (!inside) { why = "the rounded outline no longer encloses the hole"; return false; }
+    if (!(mind > g.R + max_cap + 1e-6)) { why = "the corner fillet would run into the hole"; return false; }
   }
   // 1. Exact prism with the plain hole: extrusion of (outer polygon, hole circle) along the axis.
   auto make_face = [&](const ON_3dPoint& origin, double hole_r) -> ON_Brep* {

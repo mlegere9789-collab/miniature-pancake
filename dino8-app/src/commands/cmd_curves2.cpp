@@ -2107,7 +2107,7 @@ class OffsetCrvOnSrfCommand : public Command {
       std::string why;
       std::optional<SceneObject> built;
       if (in[0] && in[1]) built = RebuildOffsetCrvOnSrf(ctx, in, rec, why);
-      if (!built || !built->curve) continue;
+      if (!built || !built->curve) { if (!why.empty()) ctx.Warn("OffsetCrvOnSrf: " + why); continue; }
       const ObjectId nid = AddCurveLike(ctx, *built->curve, c.attrs);
       RecordHistoryIfEnabled(ctx, nid, "OffsetCrvOnSrf", rec.sources, rec.num);
       ++made;
@@ -2857,7 +2857,7 @@ std::optional<SceneObject> RebuildOffsetCrvOnSrf(CommandContext& ctx, const Hist
   if (!c) return std::nullopt;
   const auto it = rec.num.find("d");
   const double d = it == rec.num.end() ? 0.0 : it->second;
-  if (d == 0.0) { why = "the recorded offset distance is zero"; return std::nullopt; }
+  // A zero distance is a legitimate (identity) offset, as it was for the command before history existed.
   const std::optional<kernel::NurbsSurface> srf = FindSurface(ctx, {in[1]->id});
   if (!srf) { why = "source object " + std::to_string(in[1]->id) + " is " + HistoryKindName(in[1]->kind) + ", not a surface or polysurface"; return std::nullopt; }
   kernel::NurbsCurve offset;

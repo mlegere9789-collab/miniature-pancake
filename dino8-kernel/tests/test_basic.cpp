@@ -91550,6 +91550,30 @@ void TestAcisSatTruncationSweepRefusesEveryPrefix() {
   Check(tried > 50 && refused == tried, "AcisSat: every truncated prefix of a valid file is refused with a reason");
 }
 
+void TestAcisSatRefusesHostilePointersAndCyclicFaceChains() {
+  auto replace_first = [](std::string t, const std::string& a, const std::string& b) {
+    const size_t at = t.find(a);
+    if (at != std::string::npos) t.replace(at, a.size(), b);
+    return t;
+  };
+  const std::string good = BoxSat(2.0, 3.0, 5.0);
+  Check(ReadText(good).ok, "AcisSat hostile: the unmodified box fixture reads");
+  // (a) the last face's next-face pointer points back at the first face: the chain must be refused, not rebuilt a million times
+  const std::string cyc = replace_first(good, "face $-1 -1 $-1 $-1 $14 $2 ", "face $-1 -1 $-1 $3 $14 $2 ");
+  Check(cyc != good, "AcisSat hostile: the cyclic-chain edit applied to the fixture");
+  const AcisSatReadResult rc = ReadText(cyc);
+  Check(!rc.ok && rc.error.find("loops back") != std::string::npos, ("AcisSat hostile: a cyclic face chain is refused: " + rc.error).c_str());
+  // (b) a pointer far outside the records must not wrap onto a valid index
+  const std::string wrap = replace_first(good, "$67 forward single", "$4294967363 forward single");
+  Check(wrap != good, "AcisSat hostile: the wrapping-pointer edit applied to the fixture");
+  const AcisSatReadResult rw = ReadText(wrap);
+  Check(!rw.ok, ("AcisSat hostile: pointer $4294967363 (= 67 + 2^32) is refused instead of wrapping to record 67: " + rw.error).c_str());
+  // (c) non-finite numbers never reach the integer cast
+  const std::string inf = replace_first(good, "forward single", "inf forward single");
+  const AcisSatReadResult ri = ReadText(inf);
+  Check(!ri.ok || ri.bodies.size() <= 1, "AcisSat hostile: an inf token does not crash the reader");
+}
+
 }  // namespace acis_sat_tests
 
 
@@ -93703,6 +93727,7 @@ int main() {
   RunTest("TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot", TestSubDSetCreasesByDihedralPinsSheetCornersSoFitCannotOvershoot);
 
   RunTest("acis_sat_tests::TestAcisSatReadsHandDerivedBox", acis_sat_tests::TestAcisSatReadsHandDerivedBox);
+  RunTest("acis_sat_tests::TestAcisSatRefusesHostilePointersAndCyclicFaceChains", acis_sat_tests::TestAcisSatRefusesHostilePointersAndCyclicFaceChains);
   RunTest("acis_sat_tests::TestAcisSatReadsHandDerivedCylinder", acis_sat_tests::TestAcisSatReadsHandDerivedCylinder);
   RunTest("acis_sat_tests::TestAcisSatReadsHandDerivedSphere", acis_sat_tests::TestAcisSatReadsHandDerivedSphere);
   RunTest("acis_sat_tests::TestAcisSatRoundTripBox", acis_sat_tests::TestAcisSatRoundTripBox);

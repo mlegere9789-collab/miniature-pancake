@@ -235,6 +235,24 @@ Enter
 SelAll
 List
 
+# a hole sitting in the wedge a large corner rounding removes (hole at (9,9) r 0.5, corner (10,10) rounded with r 5):
+# every sample of the arc clears the hole, yet the hole would be outside the plate -> refused, solid unchanged
+New
+FRHBEGIN_E_corner_wedge
+Box 0,0,0 10,10,0 4
+Cylinder 9,9,-1 0.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=5
+10,10,2
+Enter
+SelAll
+List
+
 # an OFF-CENTRE hole in a plate rotated 30 degrees about z (the outer polygon is not axis-aligned): rim fillet r = 0.4
 # removes 2*pi*0.4^2*(1.5 + 0.2 - (pi/4)*1.9 + 0.4/3) = 0.3428 -> 115.383
 New

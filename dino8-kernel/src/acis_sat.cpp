@@ -16,6 +16,7 @@
 #include "dino8/kernel/acis_sat.h"
 
 #include <algorithm>
+#include <limits>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -103,7 +104,8 @@ bool ParseNumberWord(const std::string& w, Tok& t) {
   if (end != w.c_str() + w.size()) return false;
   t.kind = Tok::Num;
   t.d = d;
-  t.i = static_cast<long long>(d);
+  // inf/nan or a value outside long long would make the cast undefined; the integer view is then a harmless sentinel
+  t.i = (std::isfinite(d) && std::fabs(d) < 9.0e18) ? static_cast<long long>(d) : std::numeric_limits<long long>::min() + 1;
   return true;
 }
 
@@ -229,6 +231,8 @@ struct Cur {
   int Ptr() {
     const Tok& t = Next();
     if (t.kind != Tok::Ptr) Fail("expected a $pointer");
+    // A pointer outside int range must not wrap onto a valid record index.
+    if (t.i < -1 || t.i > 2000000000LL) Fail("pointer $" + std::to_string(t.i) + " is outside the file's records");
     return static_cast<int>(t.i);
   }
   double Real() {
@@ -445,9 +449,9 @@ class BodyBuilder {
         sc.End();
         if (subshell >= 0) Refuse("shell " + std::to_string(s) + " has a subshell (not supported)");
         if (swire >= 0) Refuse("shell " + std::to_string(s) + " has a wire (not supported)");
-        int g3 = 0;
+        std::set<int> seen_faces;  // a face pointing back into its own chain would build the same face again and again
         for (int f = face; f >= 0;) {
-          if (++g3 > 1000000) Refuse("face chain does not terminate");
+          if (!seen_faces.insert(f).second) Refuse("face chain of shell " + std::to_string(s) + " loops back to face record " + std::to_string(f));
           f = BuildFace(f);
         }
         s = next_shell;

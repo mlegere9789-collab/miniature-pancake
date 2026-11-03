@@ -934,7 +934,9 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   if (!ok) return false;
   SetActiveLayout(-1);
   doc_ = std::move(fresh);
-  doc_.SetPath(path);
+  // A .sat export writes only the Brep bodies it can express, so a plain Save must never overwrite the source .sat in place:
+  // the opened document stays untitled and Save asks for a name.
+  doc_.SetPath(ext == ".sat" ? std::string() : path);
   doc_.SetModified(false);
   HistoryResync(doc_);  // construction history loaded from the file: baseline its sources, drop the old document's
   AddRecentFile(path);
