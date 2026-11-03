@@ -362,6 +362,7 @@ struct HolePlatePlan {
   std::vector<ON_3dPoint> poly;  // outer polygon of the lower end face (straight edges, on the lower plane)
   bool top = false;              // which end the picked edge bounds
   int corner = -1;               // for a picked vertical corner edge: its index in `poly`
+  double floor = 0;              // blind hole: height of the hole floor above the lower (closed) end; 0 = a through-hole
 };
 
 // One rim blend: a fillet (d_wall == d_cap == radius) or a chamfer (distances along the wall / across the cap).
@@ -406,15 +407,44 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
     else if (dn < 1e-9) sides.push_back(f);
     else { why = "a planar face is neither an end face nor a side face of a prism along the hole axis"; return false; }
   }
-  if (ends.size() != 2 || sides.size() < 3) { why = "not a prism with one cylindrical through-hole (needs two end faces and at least three side faces)"; return false; }
-  double h[2];
-  for (int k = 0; k < 2; ++k) {
+  if ((ends.size() != 2 && ends.size() != 3) || sides.size() < 3) { why = "not a prism with one cylindrical hole (needs two end faces, plus the hole floor if blind, and at least three side faces)"; return false; }
+  const bool blind = ends.size() == 3;
+  std::vector<double> h(ends.size());
+  std::vector<bool> touch(ends.size(), false);  // does the hole wall share an edge with this end plane?
+  for (size_t k = 0; k < ends.size(); ++k) {
     ON_Plane pl;
-    b.m_F[ends[static_cast<size_t>(k)]].SurfaceOf()->IsPlanar(&pl, tol);
+    b.m_F[ends[k]].SurfaceOf()->IsPlanar(&pl, tol);
     h[k] = (pl.origin - cyl.circle.plane.origin) * ax;
+    for (int ei = 0; ei < b.m_E.Count() && !touch[k]; ++ei) {
+      const ON_BrepEdge& ee = b.m_E[ei];
+      if (ee.m_edge_index < 0 || ee.TrimCount() != 2) continue;
+      const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
+      touch[k] = (x == wall && y == ends[k]) || (y == wall && x == ends[k]);
+    }
   }
-  const int lower = h[0] <= h[1] ? 0 : 1;
-  const double h0 = h[lower], h1 = h[1 - lower];
+  size_t lower = 0, upper = 0, floor_k = 0;  // indices into ends: the plate's lower end, its upper end (the rim end if blind), the hole floor
+  if (!blind) {
+    if (!touch[0] || !touch[1]) { why = "the hole is not a through-hole"; return false; }
+    lower = h[0] <= h[1] ? 0 : 1;
+    upper = 1 - lower;
+  } else {
+    // a blind hole: the wall touches the open end and the floor; the untouched end is the closed one. Orient the axis
+    // from the closed end to the open end.
+    int untouched = -1, touched = 0;
+    for (size_t k = 0; k < 3; ++k) { if (touch[k]) ++touched; else untouched = static_cast<int>(k); }
+    if (touched != 2 || untouched < 0) { why = "not a blind hole in a prism (the wall must meet exactly the open end and the floor)"; return false; }
+    lower = static_cast<size_t>(untouched);
+    size_t t1 = (lower + 1) % 3, t2 = (lower + 2) % 3;
+    const bool t1_nearer = std::fabs(h[t1] - h[lower]) < std::fabs(h[t2] - h[lower]);
+    floor_k = t1_nearer ? t1 : t2;
+    upper = t1_nearer ? t2 : t1;
+    if (h[upper] < h[lower]) {
+      ax = -ax;
+      for (double& x : h) x = -x;
+    }
+    if (!(h[floor_k] > h[lower] + tol && h[upper] > h[floor_k] + tol)) { why = "the hole floor is not between the closed end and the open end"; return false; }
+  }
+  const double h0 = h[lower], h1 = h[upper];
   if (!(h1 - h0 > tol)) { why = "degenerate plate thickness"; return false; }
   // The picked edge must separate the cylinder from one end face; both end faces must carry the hole (a through-hole).
   const ON_BrepEdge& e = b.m_E[edge_index];
@@ -429,25 +459,18 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
   } else if (want_corner) {
     why = "the picked edge is not a corner edge between two side faces";
     return false;
-  } else if (endface < 0 || (endface != ends[0] && endface != ends[1])) {
+  } else if (endface < 0 || std::find(ends.begin(), ends.end(), endface) == ends.end()) {
     why = "the picked edge is not on a hole rim (it must lie between the hole wall and an end face)";
     return false;
+  } else if (blind && endface != ends[upper]) {
+    why = "the picked edge is the foot of the blind hole (its floor), not the rim of its opening";
+    return false;
   }
-  // A through-hole: the wall must touch BOTH end faces (a blind hole's wall meets only one).
-  for (int k = 0; k < 2; ++k) {
-    bool touches = false;
-    for (int ei = 0; ei < b.m_E.Count() && !touches; ++ei) {
-      const ON_BrepEdge& ee = b.m_E[ei];
-      if (ee.m_edge_index < 0 || ee.TrimCount() != 2) continue;
-      const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
-      touches = (x == wall && y == ends[static_cast<size_t>(k)]) || (y == wall && x == ends[static_cast<size_t>(k)]);
-    }
-    if (!touches) { why = "the hole is blind (its wall meets only one end face)"; return false; }
-  }
-  plan.top = !corner_edge && endface == ends[static_cast<size_t>(1 - lower)];
+  plan.top = !corner_edge && endface == ends[upper];
   plan.ax = ax;
   plan.R = cyl.circle.radius;
   plan.H = h1 - h0;
+  plan.floor = blind ? h[floor_k] - h0 : 0.0;
   plan.c0 = cyl.circle.plane.origin + h0 * ax;
   plan.u = cyl.circle.plane.xaxis;
   // Outer polygon: the side planes are exact (the sewn Boolean result's own end-face loop is a keyhole whose
@@ -528,7 +551,9 @@ bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBl
     if (!((*bl)->d_wall > 0) || !((*bl)->d_cap > 0)) { why = "blend distances must be positive"; return false; }
     max_cap = std::max(max_cap, (*bl)->d_cap);
   }
-  if (!(lw + hw < g.H)) { why = "the blends together consume the whole hole wall"; return false; }
+  const bool blind = g.floor > 0;
+  if (blind && lo) { why = "the closed end of a blind hole has no rim to blend"; return false; }
+  if (!(lw + hw < g.H - g.floor)) { why = "the blends together consume the whole hole wall"; return false; }
   // the widened hole must stay inside the outer polygon
   for (size_t i = 0; i < g.poly.size(); ++i) {
     const ON_3dPoint& p = g.poly[i];
@@ -594,6 +619,7 @@ bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBl
     }
     ON_Brep* f = ON_BrepTrimmedPlane(pl, bnd, false);
     if (!f) { for (int i = 0; i < bnd.Count(); ++i) delete bnd[i]; return nullptr; }
+    if (!(hole_r > 0)) { f->Compact(); return f; }  // a full end face (the closed end of a blind hole)
     ON_ArcCurve* hc = new ON_ArcCurve(ON_Circle(pl, hole_r));
     // the hole runs opposite to the outer boundary
     double outer_area = 0;
@@ -636,7 +662,7 @@ bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBl
     }
     if (std::fabs(pl.zaxis * g.ax) > 1.0 - 1e-9) {
       const double hh = (pl.origin - g.c0) * g.ax;
-      if ((lo && std::fabs(hh) < 1e-6) || (hi && std::fabs(hh - g.H) < 1e-6)) drop.push_back(f);
+      if (((lo || blind) && std::fabs(hh) < 1e-6) || (hi && std::fabs(hh - g.H) < 1e-6)) drop.push_back(f);
     }
   }
   std::sort(drop.rbegin(), drop.rend());
@@ -672,7 +698,13 @@ bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBl
     const ON_3dPoint on_cap = g.c0 + (g.R + bl.d_cap) * g.u + z * g.ax;
     return revolve(new ON_LineCurve(on_wall, on_cap));
   };
-  const double wall_lo = lo ? lo->d_wall : 0.0, wall_hi = hi ? hi->d_wall : 0.0;
+  const double wall_lo = blind ? g.floor : (lo ? lo->d_wall : 0.0), wall_hi = hi ? hi->d_wall : 0.0;
+  if (blind) {
+    // the closed end becomes a full face (no hole) and the hole gets its flat floor
+    const ON_Plane fp(g.c0 + g.floor * g.ax, g.u, side_axis);
+    const ON_ArcCurve floor_circle{ON_Circle(fp, g.R)};
+    if (!add(make_face(g.c0, 0.0)) || !add(ON_BrepTrimmedPlane(fp, floor_circle))) { why = "could not build the closed end / floor of the blind hole"; return false; }
+  }
   {
     ON_Cylinder wall(ON_Circle(ON_Plane(g.c0 + wall_lo * g.ax, g.u, side_axis), g.R), g.H - wall_lo - wall_hi);
     if (!add(ON_BrepCylinder(wall, false, false))) { why = "could not build the shortened hole wall"; return false; }
