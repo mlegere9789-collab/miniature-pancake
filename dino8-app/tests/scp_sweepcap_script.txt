@@ -253,3 +253,41 @@ Check
 List
 BoundingBox
 History
+
+# --- 11: a BOW-TIE section (closed but crossing itself): Cap=Yes refused with the reason, the surface is kept
+SelAll
+Delete
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail11
+Polyline 0,0,0 4,4,0 4,0,0 0,4,0 0,0,0
+Enter
+SelLast
+SetObjectName SCPSec11
+SelNone
+SelName SCPRail11
+Sweep1 Cap=Yes
+SelName SCPSec11
+Enter
+SelLast
+List
+
+# --- 12: a CONCAVE simple L-shaped section (area 5) swept 10: still capped, volume 50
+SelAll
+Delete
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail12
+Polyline 0,0,0 3,0,0 3,1,0 1,1,0 1,3,0 0,3,0 0,0,0
+Enter
+SelLast
+SetObjectName SCPSec12
+SelNone
+SelName SCPRail12
+Sweep1 Cap=Yes
+SelName SCPSec12
+Enter
+SelLast
+Volume
+Check
+List

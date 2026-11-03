@@ -11478,7 +11478,7 @@ scp_bbox() {
   fi
 }
 SCP_1="$(scp_case 1)"; SCP_2="$(scp_case 2)"; SCP_3="$(scp_case 3)"; SCP_4="$(scp_case 4)"; SCP_5="$(scp_case 5)"
-SCP_6="$(scp_case 6)"; SCP_7="$(scp_case 7)"; SCP_8="$(scp_case 8)"; SCP_9="$(scp_case 9)"; SCP_10="$(scp_case 10)"
+SCP_6="$(scp_case 6)"; SCP_7="$(scp_case 7)"; SCP_8="$(scp_case 8)"; SCP_9="$(scp_case 9)"; SCP_10="$(scp_case 10)"; SCP_11="$(scp_case 11)"; SCP_12="$(scp_case 12)"
 # 1: Sweep1 Cap=Yes, circle r = 2, rail 10 -> cylinder, pi r^2 L = 125.6637
 scp_has "$SCP_1" "Sweep1: Cap=Yes - closed B-rep solid with 3 faces (wall + two planar end caps)" "SCP_1: Sweep1 Cap=Yes caps the circle's sweep with two planar end caps (3 faces)"
 scp_exactvol "$SCP_1" x 125.6617 125.6657 "SCP_1: cylinder volume pi*2^2*10 = 125.6637"
@@ -11507,6 +11507,13 @@ scp_solid "$SCP_5" "SCP_5"
 # 6: an open section cannot be capped: refused with the reason, the surface is kept
 scp_has "$SCP_6" "Sweep1: Cap=Yes not applied (the cross section is not closed); the uncapped surface is kept" "SCP_6: an open arc section is refused with that reason"
 scp_has "$SCP_6" "(surface)" "SCP_6: ...and the swept surface is kept"
+# 11: a bow-tie section closes topologically but is not a simple loop: refused with the reason, the surface is kept
+scp_has "$SCP_11" "Sweep1: Cap=Yes not applied (the cross section crosses itself); the uncapped surface is kept" "SCP_11: a self-crossing (bow-tie) section is refused with that reason"
+scp_has "$SCP_11" "(surface)" "SCP_11: ...and the swept surface is kept"
+# 12: a concave but simple L section still caps: area 5 * length 10 = 50
+scp_has "$SCP_12" "Sweep1: Cap=Yes - closed B-rep solid" "SCP_12: a concave simple L section is still capped"
+scp_exactvol "$SCP_12" x 49.99 50.01 "SCP_12: exact volume 5 * 10 = 50"
+scp_solid "$SCP_12" "SCP_12"
 # 7: torus from a circle section on a circle rail, Cap=No -> surface of revolution
 scp_has "$SCP_7" "the rail is an exact circle, so the sweep is the section revolved once about the rail's axis" "SCP_7: the closed circular rail is an exact surface of revolution, not the 32-station skin"
 SCP_DEV="$({ grep -o "from the revolved section [0-9.e+-]*" <<<"$SCP_7" || true; } | head -1 | awk '{print $5}')"
@@ -11534,7 +11541,7 @@ scp_has "$SCP_10" "History: source object(s) 2 changed - 1 dependent(s) re-evalu
 scp_solid "$SCP_10" "SCP_10 (after the rebuild)"
 scp_bbox "$SCP_10" "-1.05 -0.95 -2.05 -1.95 -0.01 0.01 2.95 3.05 1.95 2.05 9.99 10.01" "SCP_10: the rebuilt solid followed the section 1 unit in +x"
 SCP_TOTAL="$(grep -c "Cap=Yes - closed B-rep solid" <<<"$SCP_OUT" || true)"
-if [ "$SCP_TOTAL" = "7" ]; then scp_ok "SCP_count: 7 capped solids in the whole run (cases 1, 3, 4, 5, 8 and 10 twice)"; else scp_bad "SCP_count: $SCP_TOTAL capped solids, expected 7"; fi
+if [ "$SCP_TOTAL" = "8" ]; then scp_ok "SCP_count: 8 capped solids in the whole run (cases 1, 3, 4, 5, 8, 12 and 10 twice; the bow-tie case 11 is refused)"; else scp_bad "SCP_count: $SCP_TOTAL capped solids, expected 8"; fi
 
 # HSO: exact Shell / OffsetSrf of a right prism with a cylindrical THROUGH-HOLE - the exact
 # Boolean result of a box minus a cylinder (hso_script.txt; prism_solid.h RecognizeHole /

@@ -3066,12 +3066,65 @@ bool CapRequested(const HistoryRecord& rec) {
 // kernel's own cap=true call would pick, so a result that is not a positive-volume closed solid is retried with
 // the section direction turned. Anything that cannot be capped (an open or non-planar section, a closed rail with
 // no ends) keeps the uncapped surface and says why - never a silently wrong solid. Cap=No is the plain surface.
+// A capped solid needs a section that is a SIMPLE closed loop, wound once: a figure-eight, a self-crossing loop or a loop
+// traversed twice would still close topologically and have a positive signed volume, but not bound a solid.  The wall's
+// section at several stations is sampled, flattened onto its own best-fit plane, and tested for self-crossing and for a total
+// exterior turn of one revolution.  Returns an empty string when the sections are simple, else the reason.
+std::string SectionLoopProblem(const kernel::NurbsSurface& wall) {
+  const ON_NurbsSurface& srf = wall.raw();
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const int N = 160;
+  for (int vi = 0; vi < 3; ++vi) {
+    const double v = dv.ParameterAt(vi * 0.5);
+    std::vector<ON_3dPoint> pts;
+    pts.reserve(N);
+    for (int k = 0; k < N; ++k) pts.push_back(srf.PointAt(du.ParameterAt(static_cast<double>(k) / N), v));
+    ON_3dVector nrm(0, 0, 0);  // Newell normal
+    for (int k = 0; k < N; ++k) {
+      const ON_3dPoint &a = pts[k], &b = pts[(k + 1) % N];
+      nrm.x += (a.y - b.y) * (a.z + b.z);
+      nrm.y += (a.z - b.z) * (a.x + b.x);
+      nrm.z += (a.x - b.x) * (a.y + b.y);
+    }
+    if (!nrm.Unitize()) return "the cross section encloses no area";
+    ON_3dPoint c(0, 0, 0);
+    for (const ON_3dPoint& q : pts) c += q;
+    c = c * (1.0 / N);
+    ON_3dVector ex = pts[0] - c;
+    ex -= (ex * nrm) * nrm;
+    if (!ex.Unitize()) return "the cross section is degenerate";
+    const ON_3dVector ey = ON_CrossProduct(nrm, ex);
+    std::vector<std::pair<double, double>> q2;
+    for (const ON_3dPoint& q : pts) q2.emplace_back((q - c) * ex, (q - c) * ey);
+    auto cross = [](double ax, double ay, double bx, double by, double cx, double cy) { return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax); };
+    for (int i = 0; i < N; ++i) {
+      for (int j = i + 2; j < N; ++j) {
+        if (i == 0 && j == N - 1) continue;
+        const auto &a = q2[i], &b = q2[(i + 1) % N], &c2 = q2[j], &d = q2[(j + 1) % N];
+        const double d1 = cross(a.first, a.second, b.first, b.second, c2.first, c2.second), d2 = cross(a.first, a.second, b.first, b.second, d.first, d.second);
+        const double d3 = cross(c2.first, c2.second, d.first, d.second, a.first, a.second), d4 = cross(c2.first, c2.second, d.first, d.second, b.first, b.second);
+        if (((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0))) return "the cross section crosses itself";
+      }
+    }
+    double turn = 0;  // sum of exterior angles: +-2 pi for any simple closed loop (convex or not), 0 for a figure-eight, 4 pi for a doubled loop
+    for (int k = 0; k < N; ++k) {
+      const auto &a = q2[k], &b = q2[(k + 1) % N], &c2 = q2[(k + 2) % N];
+      const double ux = b.first - a.first, uy = b.second - a.second, wx = c2.first - b.first, wy = c2.second - b.second;
+      turn += std::atan2(ux * wy - uy * wx, ux * wx + uy * wy);
+    }
+    if (!(std::fabs(std::fabs(turn) - 2.0 * ON_PI) < 0.5)) return "the cross section is not a simple loop wound once (total turn " + std::to_string(turn / (2.0 * ON_PI)) + " revolutions)";
+  }
+  return std::string();
+}
+
 SceneObject CapOrKeepWall(CommandContext& ctx, const char* caller, const kernel::NurbsSurface& wall, bool cap) {
   if (!cap) return SceneObject::MakeSurface(wall);
   std::string why;
   try {
     if (!wall.IsClosed(0)) {
       why = "the cross section is not closed";
+    } else if (const std::string loop = SectionLoopProblem(wall); !loop.empty()) {
+      why = loop;
     } else {
       // A closed rail has no ends: the wall, closed both ways (a torus-like face), already bounds the solid.
       const bool ends = !wall.IsClosed(1);
