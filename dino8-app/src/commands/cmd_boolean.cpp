@@ -216,6 +216,53 @@ std::optional<GeneralBooleanResult> TryGeneralBrepBoolean(CommandContext& ctx, c
     res.volume = std::fabs(m.Volume());
     return res;
   };
+  // A single-group Union of several solids: members that are themselves the unchanged result of an earlier
+  // exact Union are expanded into their own members (see GeneralRecipe). The engine folds the group left to
+  // right, and a fold step that starts from the raw result of the previous step can fail to sew (a box with a
+  // sphere on top and another on the bottom does), so a failed fold is retried as "largest member united with
+  // the union of all the others", which is the same solid and sews.
+  if (op == kernel::BooleanOp::Union && second_ids.empty() && g1.size() >= 2) {
+    std::vector<kernel::Brep> members;
+    bool expanded = false;
+    for (const kernel::Brep& g : g1) {
+      const auto it = GeneralRecipes().find(g.raw().DataCRC(0));
+      if (it != GeneralRecipes().end() && it->second.op == kernel::BooleanOp::Union) {
+        members.push_back(it->second.base);
+        members.insert(members.end(), it->second.tools.begin(), it->second.tools.end());
+        expanded = true;
+      } else {
+        members.push_back(g);
+      }
+    }
+    auto run_union = [&](const std::vector<kernel::Brep>& ms, std::string& fail) -> std::optional<GeneralBooleanResult> {
+      std::optional<GeneralBooleanResult> r = run(ms, {}, fail);
+      if (!r && ms.size() >= 3) {
+        size_t big = 0;
+        double big_diag = -1;
+        for (size_t i = 0; i < ms.size(); ++i) {
+          ON_BoundingBox mb;
+          ms[i].raw().GetBoundingBox(mb);
+          if (mb.Diagonal().Length() > big_diag) { big_diag = mb.Diagonal().Length(); big = i; }
+        }
+        std::vector<kernel::Brep> rest;
+        for (size_t i = 0; i < ms.size(); ++i) if (i != big) rest.push_back(ms[i]);
+        std::string second_fail;
+        std::optional<GeneralBooleanResult> r2 = run({ms[big]}, rest, second_fail);
+        if (r2) { fail.clear(); return r2; }
+      }
+      return r;
+    };
+    std::string fail;
+    std::optional<GeneralBooleanResult> r = run_union(members, fail);
+    if (r && r->brep.raw().m_F.Count() > 0 && r->brep.raw().IsSolid()) {
+      if (expanded) r->recorded_tools = static_cast<int>(members.size()) - 1;
+      std::vector<kernel::Brep> tools(members.begin() + 1, members.end());
+      RememberGeneralRecipe(r->brep, {kernel::BooleanOp::Union, members[0], tools});
+      return r;
+    }
+    why = fail;
+    return r;
+  }
   // A single base that is itself the unchanged result of an earlier General Difference/Union of the same
   // kind is replaced by that result's own base and tools (see GeneralRecipe).
   const bool recordable = (op == kernel::BooleanOp::Difference || op == kernel::BooleanOp::Union) && g1.size() == 1 && !g2.empty();

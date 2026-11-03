@@ -8979,13 +8979,15 @@ sxvol B_two_holes_at_once 857.5 860.5 "two holes Volume = 1000 - 2*pi*1.5^2*10 =
 sxcheck B_scale_small "closed solid" "the same hole at 1/10 size is still exact and closed"
 sxvol B_scale_small 0.870 0.880 "1/10-size hole Volume = 1 - pi*0.04*1 = 0.8743"
 # --- Declined with a reason; the result is a closed mesh (never an open polysurface)
-sxcheck B_sphere_plus_box "exact B-rep boolean declined (the sewn result does not tessellate to a closed mesh); using the mesh boolean, so the result is a mesh" "box + sphere: declined WITH the reason (the sphere's pole does not weld watertight), mesh boolean used"
-sxcheck B_sphere_plus_box "(mesh)" "...and the result is a mesh"
-sxvol B_sphere_plus_box 1130 1136 "box + sphere mesh result is a closed solid with Volume = 1000 + 2/3*pi*64 = 1134.04"
+sxcheck B_sphere_plus_box "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sewn into a closed solid" "box + sphere is now an exact B-rep (before: declined 'the sewn result does not tessellate to a closed mesh' because the display mesh's keyhole-corridor gaps were only closeable by a weld that also fused the sphere's pole fan; the mesher now re-welds only boundary vertices)"
+sxcheck B_sphere_plus_box "(polysurface)" "...and the result is a polysurface, not a mesh"
+sxvol B_sphere_plus_box 1130 1136 "box + sphere exact result is a closed solid with Volume = 1000 + 2/3*pi*64 = 1134.04"
 sxcheck B_cyl_offaxis "exact B-rep boolean declined (dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more fragment loops" "off-axis cylinder union: the engine's own refusal is printed as the reason"
-sxcheck B_chain "exact B-rep boolean declined (the engine's result has gaps between faces that sewing could not close" "a second SEQUENTIAL hole in an already-sewn result is declined with the reason (cut both holes in one Boolean, above, to stay exact)"
-sxvol B_chain 857 861 "...and the mesh fallback still gives the right volume 1000 - 2*pi*1.5^2*10 = 858.62"
-sxcheck B_scale_large "exact B-rep boolean declined" "100x-size hole: declined with a reason (the engine's absolute 1e-3 refinement leaves gaps the closed-mesh check rejects)"
+sxcheck B_chain "re-evaluated from the recorded original operands (the base and 2 tool(s) in one pass" "a second SEQUENTIAL hole is now exact (before: declined 'gaps between faces that sewing could not close'): re-evaluated as base minus both cutters in one pass"
+sxcheck B_chain "(polysurface)" "...and the result is a polysurface, not a mesh"
+sxvol B_chain 857 861 "...and its Volume is 1000 - 2*pi*1.5^2*10 = 858.62"
+sxcheck B_scale_large "7 face(s), sewn into a closed solid" "100x-size hole is now exact and closed (before: declined 'exact B-rep boolean declined' because the uniform re-weld could not close the display mesh; the boundary-only re-weld does)"
+sxvol B_scale_large 870000000 879000000 "100x-size hole Volume = 1e9 - pi*200^2*1000 = 874336294"
 sxcheck B_far_from_origin "exact B-rep boolean declined" "a hole 100000 units from the origin: declined with a reason"
 sxcheck B_meshalias "MeshBooleanDifference: [0-9]* faces, volume" "old behaviour stays reachable: MeshBooleanDifference always returns the mesh"
 sxcheck B_then_shell "Shell: thickness 0.5, closed, volume" "Shell of the sewn Boolean result now works (before: 'Object 3 is not a closed solid; skipped')"
@@ -10388,5 +10390,65 @@ if grep -q "Sweep1: the exact multi-section sweep was not used (dino8::kernel::B
 if grep -q "Sweep1: the exact multi-section sweep was not used (dino8::kernel::Brep::Sweep1Sections: a closed rail is not supported" <<<"$S1S_E" && grep -q "Sweep1: 2 section(s) along " <<<"$S1S_E"; then s1s_ok "S1S_E_refusal: a closed rail is refused with that reason and the old sampled sweep builds"; else s1s_bad "S1S_E_refusal: refusal text or fallback line missing"; fi
 S1S_N="$(grep -c "exact kernel multi-section sweep" <<<"$S1S" || true)"
 if [ "$S1S_N" = "3" ]; then s1s_ok "S1S_count: exactly the three well-formed multi-section sweeps reached the kernel"; else s1s_bad "S1S_count: $S1S_N multi-section sweeps reached the kernel, expected 3"; fi
+
+# B2S_: sequential exact Booleans (b2s_script.txt). A second hole cut in the result of a first exact
+# Boolean, and box + sphere (also with a second sphere), stay exact B-rep: every accepted exact result
+# is a closed solid (IsSolid, Check() clean at the sewing step) whose display-mesh volume is within the
+# stated range of the analytic value, and a case the engine cannot do is declined WITH a reason (never an
+# open or wrong solid). Volumes are read from the display mesh (chord 0.05% of the diagonal), so the
+# ranges carry that tessellation error (measured ~0.1% here; the Windows CI tessellates slightly
+# differently, hence the +-0.5% windows).
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  B2SOUT="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/b2s_script.txt" 2>&1)" || { echo "$B2SOUT"; echo "FAIL b2s_script exited non-zero"; exit 1; }
+else
+  B2SOUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/b2s_script.txt" 2>&1)" || { echo "$B2SOUT"; echo "FAIL b2s_script exited non-zero"; exit 1; }
+fi
+b2s_block() { awk -v name="$1" '$0 ~ ("Unknown command: B2SBEGIN_" name "$") { on = 1; next } on && /Unknown command: B2SBEGIN_|Unknown command: B2SEND/ { exit } on { print }' <<<"$B2SOUT"; }
+b2s_check() {
+  local blk; blk="$(b2s_block "$1")"
+  if grep -q -- "$2" <<<"$blk"; then echo "ok   b2s_$1: $3"; else
+    echo "FAIL b2s_$1: $3"; echo "     expected: $2"
+    { grep -E "^history: (Boolean|Shell|Object|  [0-9]|Volume|Area|!)" <<<"$blk" || true; } | head -8 | sed 's/^/     actual:   /'
+    fail=1
+  fi
+}
+# b2s_num NAME KEY MIN MAX DESC: the case's last "KEY = V" (Volume / Area) must lie in [MIN, MAX]
+b2s_num() {
+  local blk v; blk="$(b2s_block "$1")"
+  v="$({ grep -E "^history: $2 = " <<<"$blk" || true; } | tail -1 | sed -E "s/^history: $2 = ([0-9.eE+-]+).*/\\1/")"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$3" -v hi="$4" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   b2s_$1: $5 ($2 $v in [$3, $4])"; else echo "FAIL b2s_$1: $5 ($2 '${v:-none}' not in [$3, $4])"; fail=1; fi
+}
+# --- second sequential hole: exact, re-evaluated from the recorded operands
+b2s_check chain2 "exact B-rep boolean (no tessellation, general engine), 7 face(s), sewn into a closed solid" "first hole is exact and closed"
+b2s_check chain2 "exact B-rep boolean (no tessellation, general engine), 8 face(s), re-evaluated from the recorded original operands (the base and 2 tool(s) in one pass" "second sequential hole is exact (before: declined, mesh)"
+b2s_check chain2 "(polysurface)" "...result is a polysurface, not a mesh"
+b2s_check chain2 "8 faces, [0-9]* edges, closed solid" "...8 faces (6 box + 2 hole walls), closed solid"
+b2s_check chain2 "mesh cross-check" "...with its independent mesh-boolean cross-check volume printed"
+b2s_num chain2 Volume 855.5 861.7 "two holes r1.5 in a 10-cube: 1000 - 2*pi*1.5^2*10 = 858.62"
+b2s_num chain2 Area 755 765 "area = 400 + 2*(100-2*pi*1.5^2) + 2*(2*pi*1.5*10) = 760.2"
+b2s_check chain3 "(the base and 3 tool(s) in one pass" "third sequential hole is exact too"
+b2s_check chain3 "9 faces, [0-9]* edges, closed solid" "...9 faces, closed solid"
+b2s_num chain3 Volume 861 868 "three holes r1.2: 1000 - 3*pi*1.44*10 = 864.28"
+# --- a moved intermediate result must NOT use the recorded operands: declined with the engine's reason, mesh volume right
+b2s_check moved "exact B-rep boolean declined (the engine's result has gaps between faces that sewing could not close" "a MOVED first result is not re-evaluated from its recorded operands: declined WITH the reason"
+b2s_check moved "(mesh)" "...and the fallback is a mesh"
+b2s_num moved Volume 855.5 861.7 "...whose volume is still 1000 - 2*pi*1.5^2*10 = 858.62"
+# --- box + sphere
+b2s_check box_sphere "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sewn into a closed solid" "box + sphere is exact (before: declined, mesh)"
+b2s_check box_sphere "7 faces, [0-9]* edges, closed solid" "...7 faces (5 box + box top with the circle removed + hemisphere), closed solid"
+b2s_num box_sphere Volume 1130 1136 "box + upper hemisphere: 1000 + 2/3*pi*64 = 1134.04"
+b2s_num box_sphere Area 646 655 "area = 600 - pi*16 + 2*pi*16 = 650.27"
+b2s_check box_sphere_shell "Shell: thickness 0.5, closed, volume" "a Shell takes the box + sphere result as a closed solid (mesh construction: a curved face has no exact kernel shell)"
+b2s_check box_sphere_sphere "re-evaluated from the recorded original operands" "box + sphere, then + a second sphere: exact"
+b2s_check box_sphere_sphere "8 faces, [0-9]* edges, closed solid" "...8 faces, closed solid"
+b2s_num box_sphere_sphere Volume 1264 1272 "1000 + 2*(2/3*pi*64) = 1268.08"
+b2s_check box_two_spheres "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 8 face(s), sewn into a closed solid" "box + two spheres in one Boolean is exact (the left-to-right fold fails; the retry unites the spheres first)"
+b2s_num box_two_spheres Volume 1264 1272 "1000 + 2*(2/3*pi*64) = 1268.08"
+# --- still declined, honestly: a different operation on the box + sphere result
+b2s_check sphere_then_hole "BooleanDifference: exact B-rep boolean declined (the engine's result has gaps between faces that sewing could not close" "a hole drilled in the box + sphere result (Difference after a Union) is declined WITH the reason"
+b2s_check sphere_then_hole "(mesh)" "...mesh fallback"
+b2s_num sphere_then_hole Volume 1098 1106 "...with the right volume 1134.04 - pi*10 = 1102.6"
+
 
 exit $fail
