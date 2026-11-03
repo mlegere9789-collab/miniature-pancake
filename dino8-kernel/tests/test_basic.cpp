@@ -91727,6 +91727,150 @@ void TestSweep1SectionsRefusalsLeaveInputsUntouched() {
 
 }  // namespace sweep1_sections_tests
 
+// NurbsSurface::FitCurveNetwork: a crossing-curve network (surface.h). Curves
+// are fitted to smooth height-field data so the measured deviations are real.
+namespace curve_network_tests {
+
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+
+// Curve through `n`+1 samples of `f` over t in [0, 1], a cubic least-squares fit.
+NurbsCurve Sampled(const std::function<Point3d(double)>& f, int n = 48) {
+  std::vector<Point3d> pts;
+  for (int k = 0; k <= n; ++k) pts.push_back(f(static_cast<double>(k) / n));
+  NurbsCurve c;
+  Check(NurbsCurve::FitLeastSquares(pts, 3, 8, c) == dino8::kernel::Result::Ok, "curve network test: sampled curve fits");
+  return c;
+}
+
+// z = a bump that is 0 on the rectangle [0,6] x [0,4] and 0.72 at its centre
+// (biquadratic, so a bicubic surface can hold it exactly).
+double Bump(double x, double y) { return 0.02 * x * (6.0 - x) * y * (4.0 - y); }
+
+// u-curves run along x at y = 0, 2, 4 and v-curves along y at x = 0, 3, 6.
+NurbsCurve AlongX(double y, bool flip = false) {
+  return Sampled([=](double t) { const double s = flip ? 1.0 - t : t; return Point3d(6.0 * s, y, Bump(6.0 * s, y)); });
+}
+NurbsCurve AlongY(double x, bool flip = false) {
+  return Sampled([=](double t) { const double s = flip ? 1.0 - t : t; return Point3d(x, 4.0 * s, Bump(x, 4.0 * s)); });
+}
+
+// Worst distance of 33 points of each curve to the surface, by the surface's
+// own closest-point search, independent of the routine's report.
+double WorstDistance(const NurbsSurface& s, const std::vector<NurbsCurve>& curves) {
+  double worst = 0.0;
+  for (const NurbsCurve& c : curves) {
+    for (int k = 0; k <= 32; ++k) {
+      const Point3d p = c.PointAt(c.Domain().min + (c.Domain().max - c.Domain().min) * k / 32.0);
+      worst = std::max(worst, p.DistanceTo(s.ClosestPoint(p, 40, 40)));
+    }
+  }
+  return worst;
+}
+
+bool Has(const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; }
+
+void TestCurveNetworkThreeByThreeShuffledAndFlippedFitsWithMeasuredDeviation() {
+  // Shuffled, some drawn backwards: u = AlongX(y), v = AlongY(x).
+  const std::vector<NurbsCurve> curves = {AlongY(3.0), AlongX(4.0, true), AlongX(0.0), AlongY(6.0, true), AlongX(2.0), AlongY(0.0)};
+  NurbsSurface s;
+  NurbsSurface::CurveNetworkReport r;
+  const dino8::kernel::Result ok = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+  Check(ok == dino8::kernel::Result::Ok, ("curve network: 3 x 3 network fits: " + r.reason).c_str());
+  Check(r.u_curves + r.v_curves == 6 && r.u_curves == 3 && r.v_curves == 3 && r.intersections == 9, "curve network: 3 + 3 curves, 9 meetings");
+  Check(r.direction.size() == 6 && r.order.size() == 6 && r.curve_deviation.size() == 6, "curve network: per-curve report is filled");
+  // curves[0], [3], [5] are the x = const curves, [1], [2], [4] the y = const ones.
+  Check(r.direction[0] == r.direction[3] && r.direction[0] == r.direction[5] && r.direction[1] == r.direction[2] &&
+            r.direction[1] == r.direction[4] && r.direction[0] != r.direction[1],
+        "curve network: curves sorted into the two directions by their intersections");
+  // Order across: x = 0, 3, 6 -> positions 0, 1, 2 (or 2, 1, 0 if the whole group is counted from the other end).
+  const bool fwd = r.order[5] == 0 && r.order[0] == 1 && r.order[3] == 2;
+  const bool bwd = r.order[5] == 2 && r.order[0] == 1 && r.order[3] == 0;
+  Check(fwd || bwd, "curve network: x = const curves ordered 0, 3, 6 along the other direction");
+  const bool fwd2 = r.order[2] == 0 && r.order[4] == 1 && r.order[1] == 2;
+  const bool bwd2 = r.order[2] == 2 && r.order[4] == 1 && r.order[1] == 0;
+  Check(fwd2 || bwd2, "curve network: y = const curves ordered 0, 2, 4 along the other direction");
+  // 9 meetings; the 4 corners are end-to-end, the other 5 involve an interior crossing.
+  Check(r.interior_crossings == 5, "curve network: 5 of the 9 meetings are interior crossings");
+  Check(r.max_intersection_gap < 5e-4, ("curve network: fitted curves meet within 5e-4, gap " + std::to_string(r.max_intersection_gap)).c_str());
+  Check(r.max_deviation <= 1e-3 && r.met_tolerance, "curve network: measured deviation within the tolerance");
+  double worst = 0.0;
+  for (double d : r.curve_deviation) worst = std::max(worst, d);
+  Check(std::fabs(worst - r.max_deviation) < 1e-15, "curve network: max_deviation is the worst per-curve deviation");
+  Check(WorstDistance(s, curves) < 2e-3, "curve network: independent closest-point check of every curve is within 2e-3");
+  // The interior curves are honoured: the centre of the surface is the bump's 0.72.
+  const Point3d centre = s.ClosestPoint(Point3d(3.0, 2.0, 0.72), 40, 40);
+  Check(std::fabs(centre.z - 0.72) < 3e-3 && std::fabs(centre.x - 3.0) < 2e-2, "curve network: surface passes through the interior crossing (3, 2, 0.72)");
+  Check(r.net_u >= 3 && r.net_v >= 3, "curve network: bicubic net reported");
+}
+
+void TestCurveNetworkRefusalsNameTheirReasonAndLeaveOutUntouched() {
+  NurbsSurface sentinel;
+  NurbsSurface::CurveNetworkReport r;
+  // (a) a v-curve lifted off the others misses them.
+  {
+    NurbsSurface s = sentinel;
+    const std::vector<NurbsCurve> curves = {AlongX(0.0), AlongX(2.0), AlongX(4.0), AlongY(0.0), AlongY(6.0),
+                                            Sampled([](double t) { return Point3d(3.0, 4.0 * t, Bump(3.0, 4.0 * t) + 0.5); })};
+    const dino8::kernel::Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == dino8::kernel::Result::Failed, "curve network: a lifted curve is refused");
+    Check(Has(r.reason, "miss") || Has(r.reason, "meet"), ("curve network: the refusal says the curves miss: " + r.reason).c_str());
+    Check(s.raw().CVCount(0) == sentinel.raw().CVCount(0), "curve network: a refusal leaves the output untouched");
+  }
+  // (b) too few curves.
+  {
+    NurbsSurface s;
+    const dino8::kernel::Result fr = NurbsSurface::FitCurveNetwork({AlongX(0.0), AlongY(0.0), AlongY(6.0)}, 1e-3, s, r);
+    Check(fr == dino8::kernel::Result::Failed && Has(r.reason, "at least 4"), "curve network: 3 curves refused (needs 4)");
+  }
+  // (c) one u-curve, three v-curves: each direction needs two.
+  {
+    NurbsSurface s;
+    const dino8::kernel::Result fr = NurbsSurface::FitCurveNetwork({AlongX(2.0), AlongY(0.0), AlongY(3.0), AlongY(6.0)}, 1e-3, s, r);
+    Check(fr == dino8::kernel::Result::Failed && Has(r.reason, "at least 2"), ("curve network: 1 + 3 refused: " + r.reason).c_str());
+  }
+  // (d) a 2 x 2 grid plus two curves crossing each other far away: the network splits.
+  {
+    NurbsSurface s;
+    std::vector<NurbsCurve> curves = {AlongX(0.0), AlongX(4.0), AlongY(0.0), AlongY(6.0)};
+    curves.push_back(Sampled([](double t) { return Point3d(20.0 + 6.0 * t, 2.0, 10.0); }));
+    curves.push_back(Sampled([](double t) { return Point3d(23.0, 4.0 * t, 10.0); }));
+    const dino8::kernel::Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == dino8::kernel::Result::Failed && Has(r.reason, "does not meet the rest"), ("curve network: disconnected curves refused: " + r.reason).c_str());
+  }
+  // (d2) the u-curve y = 2 sits 0.01 above the v-curves: a near miss is refused with the gap.
+  {
+    NurbsSurface s;
+    const std::vector<NurbsCurve> curves = {AlongX(0.0), AlongX(4.0), AlongY(0.0), AlongY(6.0),
+                                            Sampled([](double t) { return Point3d(6.0 * t, 2.0, Bump(6.0 * t, 2.0) + 0.01); })};
+    const dino8::kernel::Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == dino8::kernel::Result::Failed && Has(r.reason, "0.0"), ("curve network: a 0.01 near miss is refused: " + r.reason).c_str());
+  }
+  // (e) a network that wraps a cylinder cannot be a height field: the measured
+  // deviation exceeds the tolerance and the result is refused with that figure.
+  {
+    NurbsSurface s = sentinel;
+    auto ring = [](double z) { return Sampled([=](double t) { const double a = 5.0 * t; return Point3d(2.0 * std::cos(a), 2.0 * std::sin(a), z); }, 80); };
+    auto rod = [](double a) { return Sampled([=](double t) { return Point3d(2.0 * std::cos(a), 2.0 * std::sin(a), 2.0 * t); }); };
+    const std::vector<NurbsCurve> curves = {ring(0.0), ring(1.0), ring(2.0), rod(0.0), rod(2.5), rod(5.0)};
+    const dino8::kernel::Result fr = NurbsSurface::FitCurveNetwork(curves, 0.05, s, r);
+    Check(fr == dino8::kernel::Result::Failed, "curve network: a cylinder-wrapped network is refused");
+    Check(Has(r.reason, "misses an input curve by") && r.max_deviation > 0.05 && !r.met_tolerance,
+          ("curve network: the refusal carries the measured deviation: " + r.reason).c_str());
+    Check(s.raw().CVCount(0) == sentinel.raw().CVCount(0), "curve network: the deviation refusal leaves the output untouched");
+  }
+  // (f) tolerance argument.
+  {
+    NurbsSurface s;
+    bool threw = false;
+    try { NurbsSurface::FitCurveNetwork({AlongX(0.0)}, 0.0, s, r); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw, "curve network: tolerance <= 0 throws");
+  }
+}
+
+}  // namespace curve_network_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -93157,6 +93301,11 @@ int main() {
           sweep1_sections_tests::TestSweep1SectionsCurvedRailPassesThroughEverySection);
   RunTest("sweep1_sections_tests::TestSweep1SectionsRefusalsLeaveInputsUntouched",
           sweep1_sections_tests::TestSweep1SectionsRefusalsLeaveInputsUntouched);
+
+  RunTest("curve_network_tests::TestCurveNetworkThreeByThreeShuffledAndFlippedFitsWithMeasuredDeviation",
+          curve_network_tests::TestCurveNetworkThreeByThreeShuffledAndFlippedFitsWithMeasuredDeviation);
+  RunTest("curve_network_tests::TestCurveNetworkRefusalsNameTheirReasonAndLeaveOutUntouched",
+          curve_network_tests::TestCurveNetworkRefusalsNameTheirReasonAndLeaveOutUntouched);
 
   RunTest("ON::End", ON::End);
 

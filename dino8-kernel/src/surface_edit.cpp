@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "dino8/kernel/curve.h"
@@ -2105,6 +2106,271 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const
     report->plane_y = yaxis;
     report->plane_z = zaxis;
   }
+  return Result::Ok;
+}
+
+// ---------------------------------------------------------------------------
+// FitCurveNetwork (see surface.h): a crossing-curve network -> fitted surface.
+// ---------------------------------------------------------------------------
+namespace {
+namespace curve_network_detail {
+
+struct Meeting {
+  bool met = false;
+  double distance = std::numeric_limits<double>::infinity();  // minimum distance between the two curves
+  double ta = 0.0, tb = 0.0;                                   // fractions [0,1] of each domain at the minimum
+  Point3d mid;                                                  // midpoint of the closest pair
+  bool multi = false;                                           // the curves come within tolerance in two separate places
+  bool interior = false;                                        // at least one curve is crossed away from its own ends
+};
+
+double Fraction(const NurbsCurve& c, double t) {
+  const auto d = c.Domain();
+  return d.max > d.min ? (t - d.min) / (d.max - d.min) : 0.0;
+}
+
+Meeting Meet(const NurbsCurve& a, const NurbsCurve& b, double tol) {
+  Meeting m;
+  const int N = 240;
+  const auto da = a.Domain();
+  std::vector<double> d(static_cast<size_t>(N) + 1);
+  double best = std::numeric_limits<double>::infinity();
+  int best_k = 0;
+  double h = 0.0;
+  Point3d prev;
+  for (int k = 0; k <= N; ++k) {
+    const double t = da.min + (da.max - da.min) * k / N;
+    const Point3d p = a.PointAt(t);
+    if (k > 0) h = std::max(h, p.DistanceTo(prev));
+    prev = p;
+    d[static_cast<size_t>(k)] = p.DistanceTo(b.ClosestPoint(p));
+    if (d[static_cast<size_t>(k)] < best) { best = d[static_cast<size_t>(k)]; best_k = k; }
+  }
+  double ta = da.min + (da.max - da.min) * best_k / N;
+  double tb = b.ClosestPointParameter(a.PointAt(ta));
+  double polished = 0.0, pa = ta, pb = tb;
+  if (a.MinDistanceTo(b, 1e-9, polished, &pa, &pb) == Result::Ok && polished <= best + 1e-12) { ta = pa; tb = pb; best = polished; }
+  m.distance = best;
+  m.ta = Fraction(a, ta);
+  m.tb = Fraction(b, tb);
+  const Point3d pa3 = a.PointAt(ta), pb3 = b.PointAt(tb);
+  m.mid = (pa3 + pb3) * 0.5;
+  m.met = best <= tol;
+  // How many separate places do the curves come within reach of each other?
+  const double thr = tol + 2.0 * h;
+  int runs = 0;
+  bool in_run = false;
+  for (int k = 0; k <= N; ++k) {
+    const bool close = d[static_cast<size_t>(k)] <= thr;
+    if (close && !in_run) ++runs;
+    in_run = close;
+  }
+  if (a.IsClosed() && runs > 1 && d.front() <= thr && d.back() <= thr) --runs;  // the seam splits one run
+  m.multi = m.met && runs > 1;
+  const double end_eps = std::max(2.0 * tol, 1e-6);
+  auto interior_of = [&](const NurbsCurve& c) {
+    return m.mid.DistanceTo(c.PointAt(c.Domain().min)) > end_eps && m.mid.DistanceTo(c.PointAt(c.Domain().max)) > end_eps;
+  };
+  m.interior = interior_of(a) || interior_of(b);
+  return m;
+}
+
+}  // namespace curve_network_detail
+}  // namespace
+
+Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, double tolerance, NurbsSurface& out,
+                                     CurveNetworkReport& report) {
+  using namespace curve_network_detail;
+  if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitCurveNetwork: tolerance must be positive and finite");
+  }
+  report = CurveNetworkReport{};
+  report.tolerance = tolerance;
+  const size_t n = curves_in.size();
+  auto refuse = [&](const std::string& why) {
+    report.reason = why;
+    return Result::Failed;
+  };
+  auto name = [](size_t i) { return "curve " + std::to_string(i + 1); };
+  if (n < 4) return refuse("a curve network needs at least 4 curves (2 in each direction), " + std::to_string(n) + " given");
+  std::vector<NurbsCurve> curves = curves_in;
+  for (size_t i = 0; i < n; ++i) {
+    if (!curves[i].raw().IsValid()) return refuse(name(i) + " is not a valid curve");
+    double len = 0.0;
+    const auto dom = curves[i].Domain();
+    Point3d prev = curves[i].PointAt(dom.min);
+    for (int k = 1; k <= 64; ++k) {
+      const Point3d p = curves[i].PointAt(dom.min + (dom.max - dom.min) * k / 64.0);
+      len += p.DistanceTo(prev);
+      prev = p;
+    }
+    if (!(len > 10.0 * tolerance)) return refuse(name(i) + " is shorter than ten times the tolerance");
+  }
+
+  // Meetings of every pair.
+  std::vector<std::vector<Meeting>> M(n, std::vector<Meeting>(n));
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      M[i][j] = Meet(curves[i], curves[j], tolerance);
+      M[j][i] = M[i][j];
+      std::swap(M[j][i].ta, M[j][i].tb);
+    }
+  }
+  double nearest_miss = std::numeric_limits<double>::infinity();
+  size_t miss_i = 0, miss_j = 0;
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      if (M[i][j].met && M[i][j].interior) report.any_interior_meeting = true;
+      if (!M[i][j].met && M[i][j].distance < nearest_miss) { nearest_miss = M[i][j].distance; miss_i = i; miss_j = j; }
+    }
+  }
+  const std::string miss_note = std::isfinite(nearest_miss)
+      ? " (the closest pair that does not meet is " + name(miss_i) + " and " + name(miss_j) + ", " + std::to_string(nearest_miss) + " apart)"
+      : std::string();
+
+  // Two-colour the meeting graph.
+  std::vector<int> color(n, -1);
+  color[0] = 0;
+  std::vector<size_t> queue = {0};
+  for (size_t qi = 0; qi < queue.size(); ++qi) {
+    const size_t i = queue[qi];
+    for (size_t j = 0; j < n; ++j) {
+      if (j == i || !M[i][j].met) continue;
+      if (color[j] < 0) { color[j] = 1 - color[i]; queue.push_back(j); }
+      else if (color[j] == color[i]) {
+        return refuse(name(i) + " and " + name(j) + " are in the same direction (both meet a common curve) but meet each other: not a network of two crossing directions" + miss_note);
+      }
+    }
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (color[i] < 0) {
+      double nearest = std::numeric_limits<double>::infinity();
+      size_t with = i;
+      for (size_t j = 0; j < n; ++j) {
+        if (j != i && color[j] >= 0 && M[i][j].distance < nearest) { nearest = M[i][j].distance; with = j; }
+      }
+      return refuse(name(i) + " does not meet the rest of the network within the tolerance (nearest is " + name(with) + ", " + std::to_string(nearest) + " apart)");
+    }
+  }
+  std::vector<size_t> g[2];
+  for (size_t i = 0; i < n; ++i) g[color[i]].push_back(i);
+  if (g[0].size() < 2 || g[1].size() < 2) {
+    return refuse("each direction needs at least 2 curves; the network splits " + std::to_string(g[0].size()) + " + " + std::to_string(g[1].size()));
+  }
+  for (size_t a : g[0]) {
+    for (size_t b : g[1]) {
+      if (!M[a][b].met) {
+        return refuse(name(a) + " (direction 1) and " + name(b) + " (direction 2) miss each other by " + std::to_string(M[a][b].distance) +
+                      ", more than the tolerance " + std::to_string(tolerance) + ": every curve must meet every curve of the other direction");
+      }
+      if (M[a][b].multi) return refuse(name(a) + " and " + name(b) + " come within the tolerance in more than one place");
+    }
+  }
+
+  // Order and orient. frac(a, b) = fraction along a where it meets b.
+  auto frac = [&](size_t a, size_t b) { return M[a][b].ta; };
+  std::vector<bool> rev(n, false);
+  std::vector<size_t> ord[2];
+  ord[0] = g[0];
+  ord[1] = g[1];
+  auto sort_by = [&](std::vector<size_t>& v, size_t ref) {
+    std::sort(v.begin(), v.end(), [&](size_t x, size_t y) { return frac(ref, x) < frac(ref, y); });
+  };
+  // Direction-2 curves ordered by where they cross the first direction-1 curve (as drawn);
+  // every direction-1 curve is then turned to cross them in that order.
+  auto orient = [&](const std::vector<size_t>& group, const std::vector<size_t>& across, size_t first) -> std::string {
+    for (size_t a : group) {
+      const double mean_r = 0.5 * (static_cast<double>(across.size()) - 1.0);
+      double mean_t = 0.0;
+      for (size_t b : across) mean_t += frac(a, b);
+      mean_t /= static_cast<double>(across.size());
+      double corr = 0.0;
+      for (size_t r = 0; r < across.size(); ++r) corr += (static_cast<double>(r) - mean_r) * (frac(a, across[r]) - mean_t);
+      rev[a] = corr < 0.0;
+      for (size_t r = 1; r < across.size(); ++r) {
+        double t0 = frac(a, across[r - 1]), t1 = frac(a, across[r]);
+        if (rev[a]) { t0 = 1.0 - t0; t1 = 1.0 - t1; }
+        if (!(t1 > t0)) return name(a) + " crosses the other direction in a different order than " + name(first) + ": the network is not a regular grid";
+      }
+    }
+    return std::string();
+  };
+  sort_by(ord[1], g[0][0]);
+  if (std::string why = orient(g[0], ord[1], g[0][0]); !why.empty()) return refuse(why);
+  sort_by(ord[0], ord[1][0]);
+  if (std::string why = orient(g[1], ord[0], ord[1][0]); !why.empty()) return refuse(why);
+  report.u_curves = static_cast<int>(g[0].size());
+  report.v_curves = static_cast<int>(g[1].size());
+  report.direction.assign(n, 0);
+  report.order.assign(n, 0);
+  report.reversed = rev;
+  for (int dir = 0; dir < 2; ++dir) {
+    for (size_t r = 0; r < ord[dir].size(); ++r) {
+      report.direction[ord[dir][r]] = dir;
+      report.order[ord[dir][r]] = static_cast<int>(r);
+    }
+  }
+
+  // Meeting grid and the data to fit.
+  std::vector<Point3d> boundary, interior;
+  for (size_t a : g[0]) {
+    for (size_t b : g[1]) {
+      report.max_intersection_gap = std::max(report.max_intersection_gap, M[a][b].distance);
+      if (M[a][b].interior) ++report.interior_crossings;
+      ++report.intersections;
+      interior.push_back(M[a][b].mid);
+    }
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const auto d = curves[i].Domain();
+    for (int k = 0; k <= 64; ++k) boundary.push_back(curves[i].PointAt(d.min + (d.max - d.min) * k / 64.0));
+  }
+
+  // Fit, then measure every input curve against the result.
+  NurbsSurface best;
+  bool have = false;
+  double best_dev = std::numeric_limits<double>::infinity();
+  std::vector<double> best_curve_dev;
+  for (const int max_count : {16, 24}) {
+    NurbsSurface patch;
+    PatchFitReport rep;
+    Result fr = Result::Failed;
+    try {
+      fr = FitPatch(boundary, interior, tolerance, patch, &rep, max_count);
+    } catch (const std::exception& e) {
+      return refuse(std::string("the patch fit threw: ") + e.what());
+    }
+    if (fr != Result::Ok) return refuse("the curves are (nearly) collinear or the patch fit is singular");
+    std::vector<double> dev(n, 0.0);
+    double worst = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+      const auto d = curves[i].Domain();
+      for (int k = 0; k <= 100; ++k) {
+        const Point3d p = curves[i].PointAt(d.min + (d.max - d.min) * k / 100.0);
+        dev[i] = std::max(dev[i], p.DistanceTo(patch.ClosestPoint(p, 40, 40)));
+      }
+      worst = std::max(worst, dev[i]);
+    }
+    if (!have || worst < best_dev) {
+      have = true;
+      best_dev = worst;
+      best = patch;
+      best_curve_dev = dev;
+      report.fit = rep;
+      report.net_u = rep.u_count;
+      report.net_v = rep.v_count;
+    }
+    if (worst <= tolerance) break;
+  }
+  report.curve_deviation = best_curve_dev;
+  report.max_deviation = best_dev;
+  report.met_tolerance = best_dev <= tolerance && report.max_intersection_gap <= tolerance;
+  if (!(best_dev <= tolerance)) {
+    return refuse("the best fitted surface (" + std::to_string(report.net_u) + " x " + std::to_string(report.net_v) + " net) misses an input curve by " +
+                  std::to_string(best_dev) + ", more than the tolerance " + std::to_string(tolerance) +
+                  ": the network is not a smooth height field over its best-fit plane or needs a finer net");
+  }
+  out = best;
   return Result::Ok;
 }
 

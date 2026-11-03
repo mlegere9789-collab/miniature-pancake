@@ -1045,6 +1045,40 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) { curves.push_back(*c); curve_ids.push_back(id); }
   }
   if (curves.size() < 2) { ctx.Warn("Select 2, 3 or 4 curves"); return; }
+  // A CURVE NETWORK (4 or more curves, some crossing in their interiors - e.g.
+  // 3 curves one way crossing 3 the other): the kernel sorts the curves into
+  // the two directions by where they meet, requires every curve to meet every
+  // curve of the other direction within the document tolerance, fits one
+  // bicubic NURBS surface through the curves and the meeting points and MEASURES
+  // every input curve's distance to it, refusing above the tolerance. A set that
+  // only meets end to end (a boundary loop) is left to the loop paths below; a
+  // refusal prints its reason and the old behaviour carries on.
+  if (curves.size() >= 4) {
+    const double net_tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+    kernel::NurbsSurface net;
+    kernel::NurbsSurface::CurveNetworkReport rep;
+    kernel::Result nr = kernel::Result::Failed;
+    try {
+      nr = kernel::NurbsSurface::FitCurveNetwork(curves, net_tol, net, rep);
+    } catch (const std::exception& e) {
+      rep.reason = e.what();
+    }
+    if (nr == kernel::Result::Ok && rep.interior_crossings > 0) {
+      ctx.Doc().BeginChange("NetworkSrf");
+      ctx.Doc().Add(SceneObject::MakeSurface(net));
+      std::string per;
+      for (size_t i = 0; i < rep.curve_deviation.size(); ++i) per += (i ? ", " : "") + FormatDeviation(rep.curve_deviation[i]);
+      ctx.Print("NetworkSrf: curve network of " + std::to_string(rep.u_curves) + " x " + std::to_string(rep.v_curves) + " curves (" +
+                std::to_string(rep.intersections) + " meetings, " + std::to_string(rep.interior_crossings) + " crossing in their interiors, worst meeting gap " +
+                FormatDeviation(rep.max_intersection_gap) + "); NURBS surface (cubic where the net allows) fitted through the curves and the meetings (" + std::to_string(rep.net_u) + " x " +
+                std::to_string(rep.net_v) + " net); measured distance of each input curve from the surface: " + per + " (worst " + FormatDeviation(rep.max_deviation) +
+                ", document tolerance " + FormatNumber(net_tol) + ": met). Approximate least-squares fit over the curves' bounding rectangle, not an interpolating or trimmed surface.");
+      return;
+    }
+    if (nr != kernel::Result::Ok && rep.any_interior_meeting) {
+      ctx.Warn("NetworkSrf: these curves cross in their interiors but cannot be fitted as a curve network (" + rep.reason + "); using the older loop behaviour");
+    }
+  }
   if (curves.size() > 4) {
     std::string many_note, many_reason;
     std::optional<SceneObject> many = BuildNetworkSrfMany(ctx, curves, many_note, many_reason);
@@ -3087,7 +3121,7 @@ std::optional<SceneObject> RebuildNetworkSrfLoop(CommandContext& ctx, const std:
 void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; two or more cross sections call the kernel's exact Brep::Sweep1Sections (each section anchored on the rail - a closed planar one where the rail crosses its plane - decoded in its rotation-minimizing frame, blended between neighbours and skinned through the stations: every section reproduced exactly, the wall measured against the exact blended sections between stations and held to the document tolerance, retried at up to 256 stations; an uncapped surface; closed cross sections must already share a seam and direction, the kernel refuses seams more than 60 degrees apart; no history recorded); it falls back, with the reason printed, to the old sampled approximation (24 samples per section, fitted to a degree-3 surface) when the kernel refuses (closed rail, a section plane the rail never crosses or contains, two sections at one station, mismatched seams) or misses the document tolerance.");
   Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape. Two or more cross sections call the kernel's Brep::Sweep2Sections (each section decoded in its own station's two-rail frame, blended between neighbours and skinned through the stations: every section reproduced, wall edges within the document tolerance of the rails when the sections touch them, measured and printed; closed cross sections must already share a seam and direction, the kernel does not align them; no history recorded); it falls back, with the reason printed, to the old approximated two-rail-scaled sweep fitted to a degree-3 surface when the kernel refuses (crossing section anchors, closed rails, touching rails) or misses the document tolerance.");
-  Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface. Five or more curves that close into a loop within the document tolerance are chained (any order or direction), joined into one loop and trimmed out of the kernel's least-squares NurbsSurface::FitPatch surface as one B-rep face (approximate, not an interpolating Coons patch: the worst deviation from the curves and the trimmed edge's deviation are printed and a miss of the tolerance is flagged); a set that does not close, or whose loop folds over its best-fit plane, prints why and uses the first 4 curves as before.");
+  Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface. Five or more curves that close into a loop within the document tolerance are chained (any order or direction), joined into one loop and trimmed out of the kernel's least-squares NurbsSurface::FitPatch surface as one B-rep face (approximate, not an interpolating Coons patch: the worst deviation from the curves and the trimmed edge's deviation are printed and a miss of the tolerance is flagged); a set that does not close, or whose loop folds over its best-fit plane, prints why and uses the first 4 curves as before. Four or more curves that CROSS in their interiors form a curve network: the kernel (NurbsSurface::FitCurveNetwork) sorts them into two directions by where they meet, requires every curve to meet every curve of the other direction within the document tolerance, fits one NURBS surface (cubic where the net allows) through the curves and the meetings, and prints the measured distance of EVERY input curve from it (approximate least-squares fit over the curves' bounding rectangle, untrimmed); a network that misses the tolerance, whose curves do not all meet, or whose order is not a regular grid prints why and the older behaviour runs.");
   Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. No history is recorded for the non-planar result.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");

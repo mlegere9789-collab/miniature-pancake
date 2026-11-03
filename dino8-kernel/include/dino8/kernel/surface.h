@@ -278,6 +278,52 @@ class NurbsSurface {
   static Result FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
                          double tolerance, NurbsSurface& out, PatchFitReport* report = nullptr, int max_count = 16);
 
+  // What `FitCurveNetwork()` measured. `reason` is the refusal text when it
+  // returned Result::Failed (empty on success); the other figures are filled
+  // as far as the routine got.
+  struct CurveNetworkReport {
+    int u_curves = 0, v_curves = 0;       // curves sorted into the two directions
+    std::vector<int> direction;           // per INPUT curve: 0 = u group, 1 = v group
+    std::vector<int> order;               // per input curve: its position within its group (0-based, across the other direction)
+    std::vector<bool> reversed;           // per input curve: turned to run with its group
+    int intersections = 0;                // u_curves * v_curves meeting points used
+    int interior_crossings = 0;           // meetings where at least one curve is crossed away from its own ends
+    bool any_interior_meeting = false;    // set before any refusal: some pair of the curves meets away from the ends of one of them
+    double max_intersection_gap = 0.0;    // worst distance between the two curves of any meeting
+    double tolerance = 0.0;               // the tolerance asked for
+    std::vector<double> curve_deviation;  // per input curve, input order: worst distance of 101 samples to the surface
+    double max_deviation = 0.0;           // the largest of curve_deviation
+    bool met_tolerance = false;           // max_deviation <= tolerance (and every intersection gap <= tolerance)
+    int net_u = 0, net_v = 0;             // control net of the returned surface
+    PatchFitReport fit;                   // FitPatch's own report of the surface returned (or last tried)
+    std::string reason;                   // refusal reason
+  };
+
+  // FitCurveNetwork: Rhino's NetworkSrf from a CURVE NETWORK - curves running
+  // one way crossing curves running the other, interior curves included.
+  // Sorting: two curves "meet" when their minimum distance is <= `tolerance`
+  // (dense sampled closest-point search polished by `NurbsCurve::
+  // MinDistanceTo`); the meeting graph must be connected, 2-colourable (the
+  // two directions), and COMPLETE between the colours - every u-curve meets
+  // every v-curve exactly once - with at least 2 curves per direction.
+  // Each curve is turned to run with its group and the groups are ordered by
+  // where they cross the other direction; an order that differs between
+  // curves of the other direction is refused. The surface is a `FitPatch()`
+  // least-squares bicubic NURBS height field through dense samples of every
+  // curve plus the meeting points (grown to a 16, then a 24 net if the first
+  // misses); the measured deviation of EVERY input curve (101 samples, closest
+  // point on the surface - an upper bound of the true distance) is returned
+  // and a result is produced only when the worst is <= `tolerance`. NOT an
+  // interpolating surface and NOT trimmed: it spans the bounding rectangle of
+  // the curves in its best-fit plane. Returns Result::Failed with
+  // `report.reason` (and `out` untouched) for: fewer than 4 curves, a
+  // degenerate curve, a network that is not a two-direction grid, a pair
+  // meeting more than once, an inconsistent crossing order, a fit failure or
+  // a deviation above `tolerance`. Throws std::invalid_argument for
+  // tolerance <= 0.
+  static Result FitCurveNetwork(const std::vector<NurbsCurve>& curves, double tolerance, NurbsSurface& out,
+                                CurveNetworkReport& report);
+
   // Surface-to-surface continuity blend - the genuine kernel-library
   // counterpart to NurbsCurve::BlendCurves() (curve.h), closing this
   // PARITY_MAP.md gap's own "No G3/G4, no kernel API" half the same way
