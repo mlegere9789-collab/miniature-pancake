@@ -447,9 +447,17 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
         if ((x == wall && y == bf) || (y == wall && x == bf)) wall_bf = true;
         if ((x == ends[k] && y == bf) || (y == ends[k] && x == bf)) bf_end = true;
       }
-      if (wall_bf && bf_end) blend_end[k] = bf;
+      if (wall_bf && bf_end) {
+        if (blend_end[k] >= 0 && blend_end[k] != bf) { why = "more than one blend patch between the wall and one end face"; return false; }
+        blend_end[k] = bf;
+      }
     }
     if (blend_end[k] >= 0) touch[k] = true;
+  }
+  // Every curved non-cylinder face must be a rim blend this analysis reads: rebuilding from the plan alone would silently delete
+  // any other revolved feature (a dimple, a dome, an unrelated cone).
+  for (int bf : blends) {
+    if (std::find(blend_end.begin(), blend_end.end(), bf) == blend_end.end()) { why = "a curved face that is not a blend between the hole wall and an end face"; return false; }
   }
   size_t lower = 0, upper = 0, floor_k = 0;  // indices into ends: the plate's lower end, its upper end (the rim end if blind), the hole floor
   if (!blind) {
@@ -490,11 +498,24 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
       BrepMeshOptions mopt;
       mopt.chord_tolerance = std::max(1e-6, bb.Diagonal().Length() * 2e-4);
       double vol = 0;
-      try { vol = std::fabs(MeshBrepClosed(b, mopt).Volume()); } catch (const std::exception&) { vol = 0; }
+      kernel::Mesh closed_mesh;
+      bool have_mesh = false;
+      try { closed_mesh = MeshBrepClosed(b, mopt); vol = std::fabs(closed_mesh.Volume()); have_mesh = true; } catch (const std::exception&) { vol = 0; }
       const double v_hole = A * Hh - ON_PI * Rr * Rr * (Hh - fl), v_boss = A * fl + ON_PI * Rr * Rr * (Hh - fl);
-      const double dh = std::fabs(vol - v_hole), db = std::fabs(vol - v_boss);
-      if (!(vol > 0) || !(A > 0) || std::min(dh, db) > 0.02 * vol) { why = "the volume matches neither a blind hole nor a boss on a straight-edged plate"; return false; }
-      is_boss = db < dh;
+      // Boss or blind hole is decided by STRUCTURE (a boss wall faces away from the axis, a hole wall toward it); the volume only
+      // has to agree with that reading. (Volumes alone tie exactly when the plate area equals 2 pi R^2.)
+      const ON_Surface* ws = b.m_F[wall].SurfaceOf();
+      const double uu = ws->Domain(0).ParameterAt(0.37), vv = ws->Domain(1).ParameterAt(0.41);
+      const ON_3dPoint wp = ws->PointAt(uu, vv);
+      ON_3dVector radial = wp - cyl.circle.plane.origin;
+      radial -= (radial * ax) * ax;
+      if (!radial.Unitize()) { why = "degenerate hole wall"; return false; }
+      // A point just OUTSIDE the cylinder's radius lies in the material for a hole (the void is inside) and in the void for a boss.
+      const ON_3dPoint probe = wp + 0.01 * cyl.circle.radius * radial;
+      if (!have_mesh) { why = "could not mesh the solid to tell a boss from a blind hole"; return false; }
+      is_boss = !closed_mesh.ContainsPoint(Point3d(probe.x, probe.y, probe.z));
+      const double chosen = std::fabs(vol - (is_boss ? v_boss : v_hole));
+      if (!(vol > 0) || !(A > 0) || chosen > 0.02 * vol) { why = std::string("the volume does not match a ") + (is_boss ? "boss" : "blind hole") + " on a straight-edged plate"; return false; }
     }
     if (is_boss && want_corner) { why = "corner edges of a plate carrying a boss are not supported"; return false; }
   }
