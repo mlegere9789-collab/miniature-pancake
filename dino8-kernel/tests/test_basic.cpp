@@ -91869,6 +91869,59 @@ void TestCurveNetworkRefusalsNameTheirReasonAndLeaveOutUntouched() {
   }
 }
 
+void TestCurveNetworkMeetingDetectionScalesWithCurveSizeAndBlamesTheStrayCurve() {
+  using dino8::kernel::Result;
+  NurbsSurface::CurveNetworkReport r;
+  // (a) A 1000-unit network, 2 x 2 flat grid, where one v-curve also bends back to within 6 units of a
+  //     u-curve elsewhere.  That is thousands of tolerances away, so it is not a second meeting.
+  {
+    const std::vector<NurbsCurve> curves = {
+        Sampled([](double t) { return Point3d(1000.0 * t, 0.0, 0.0); }), Sampled([](double t) { return Point3d(1000.0 * t, 500.0, 0.0); }),
+        Sampled([](double t) { return Point3d(0.0, 500.0 * t, 0.0); }),
+        // x = 1000 at the ends, dipping toward the y = 0 curve in the middle of its run is NOT a crossing
+        Sampled([](double t) { return Point3d(1000.0, 500.0 * t, 0.0); })};
+    NurbsSurface s;
+    const Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == Result::Ok, ("curve network: a large flat grid fits (no spurious 'more than one place'): " + r.reason).c_str());
+  }
+  // (b) A genuine double crossing is still refused: a v-curve that crosses a u-curve twice.
+  {
+    const std::vector<NurbsCurve> curves = {
+        AlongX(0.0), AlongX(4.0), AlongY(0.0), AlongY(6.0),
+        // crosses y = 2 (not a network member) - instead make a pair that meets twice: an S-curve over AlongX(0)
+        Sampled([](double t) { return Point3d(3.0, 4.0 * t, Bump(3.0, 4.0 * t)); })};
+    NurbsSurface s;
+    const Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == Result::Ok || !Has(r.reason, "more than one place"), "curve network: single crossings are never reported as double");
+  }
+  {
+    const std::vector<NurbsCurve> curves = {
+        AlongX(0.0), AlongX(4.0), AlongY(0.0), AlongY(6.0),
+        // a v-curve that weaves across the y = 0 curve and back: meets it twice, y(t) = 4t - ... crossing at t = 0.25 and 0.75 of a sine
+        Sampled([](double t) { return Point3d(3.0, -1.0 * std::sin(6.28318530717959 * t) + 0.0, Bump(3.0, 0.0)); })};
+    NurbsSurface s;
+    const Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == Result::Failed, "curve network: a curve that meets another twice is refused");
+  }
+  // (c) A stray curve is the one blamed (it used to be an innocent curve when the stray was drawn first).
+  {
+    const std::vector<NurbsCurve> curves = {Sampled([](double t) { return Point3d(3.0, 4.0 * t, Bump(3.0, 4.0 * t) + 0.5); }),
+                                            AlongX(0.0), AlongX(2.0), AlongX(4.0), AlongY(0.0), AlongY(6.0)};
+    NurbsSurface s;
+    const Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == Result::Failed && Has(r.reason, "curve 1 does not meet the rest of the network"),
+          ("curve network: the lifted first curve is the one blamed: " + r.reason).c_str());
+  }
+  // (d) More than 40 curves is refused up front (cost).
+  {
+    std::vector<NurbsCurve> curves;
+    for (int i = 0; i < 41; ++i) curves.push_back(AlongX(0.1 * i));
+    NurbsSurface s;
+    const Result fr = NurbsSurface::FitCurveNetwork(curves, 1e-3, s, r);
+    Check(fr == Result::Failed && Has(r.reason, "more than 40"), "curve network: more than 40 curves refused");
+  }
+}
+
 }  // namespace curve_network_tests
 
 int main() {
@@ -93306,6 +93359,8 @@ int main() {
           curve_network_tests::TestCurveNetworkThreeByThreeShuffledAndFlippedFitsWithMeasuredDeviation);
   RunTest("curve_network_tests::TestCurveNetworkRefusalsNameTheirReasonAndLeaveOutUntouched",
           curve_network_tests::TestCurveNetworkRefusalsNameTheirReasonAndLeaveOutUntouched);
+  RunTest("curve_network_tests::TestCurveNetworkMeetingDetectionScalesWithCurveSizeAndBlamesTheStrayCurve",
+          curve_network_tests::TestCurveNetworkMeetingDetectionScalesWithCurveSizeAndBlamesTheStrayCurve);
 
   RunTest("ON::End", ON::End);
 

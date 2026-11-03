@@ -2129,44 +2129,89 @@ double Fraction(const NurbsCurve& c, double t) {
   return d.max > d.min ? (t - d.min) / (d.max - d.min) : 0.0;
 }
 
+// Alternating closest-point projection: a cheap local polish of a near-minimal pair (a(ta), b(tb)).
+// Each step can only shrink the distance, so the result is never worse than the start.
+void PolishPair(const NurbsCurve& a, const NurbsCurve& b, double& ta, double& tb, double& dist) {
+  for (int it = 0; it < 12; ++it) {
+    const double nb = b.ClosestPointParameter(a.PointAt(ta));
+    const double na = a.ClosestPointParameter(b.PointAt(nb));
+    const double d = a.PointAt(na).DistanceTo(b.PointAt(nb));
+    if (d < dist - 1e-15) { dist = d; ta = na; tb = nb; } else break;
+  }
+}
+
 Meeting Meet(const NurbsCurve& a, const NurbsCurve& b, double tol) {
   Meeting m;
-  const int N = 240;
   const auto da = a.Domain();
-  std::vector<double> d(static_cast<size_t>(N) + 1);
-  double best = std::numeric_limits<double>::infinity();
-  int best_k = 0;
+  // Sample curve a and measure each sample against b.  A coarse pass first: if no sample comes
+  // within tol + (largest chord), the curves cannot meet (a point of a that touches b is within
+  // half a chord of a sample), so the dense pass - the expensive part - is skipped.
+  std::vector<double> d;
   double h = 0.0;
-  Point3d prev;
-  for (int k = 0; k <= N; ++k) {
-    const double t = da.min + (da.max - da.min) * k / N;
-    const Point3d p = a.PointAt(t);
-    if (k > 0) h = std::max(h, p.DistanceTo(prev));
-    prev = p;
-    d[static_cast<size_t>(k)] = p.DistanceTo(b.ClosestPoint(p));
-    if (d[static_cast<size_t>(k)] < best) { best = d[static_cast<size_t>(k)]; best_k = k; }
+  auto scan = [&](int N) {
+    d.assign(static_cast<size_t>(N) + 1, 0.0);
+    h = 0.0;
+    Point3d prev;
+    for (int k = 0; k <= N; ++k) {
+      const double t = da.min + (da.max - da.min) * k / N;
+      const Point3d p = a.PointAt(t);
+      if (k > 0) h = std::max(h, p.DistanceTo(prev));
+      prev = p;
+      d[static_cast<size_t>(k)] = p.DistanceTo(b.ClosestPoint(p));
+    }
+  };
+  int N = 48;
+  scan(N);
+  if (*std::min_element(d.begin(), d.end()) > tol + h) {
+    // Cannot meet.  Keep the sampled minimum as the distance, polished locally.
+  } else {
+    N = 240;
+    scan(N);
   }
+  int best_k = static_cast<int>(std::min_element(d.begin(), d.end()) - d.begin());
+  double best = d[static_cast<size_t>(best_k)];
   double ta = da.min + (da.max - da.min) * best_k / N;
   double tb = b.ClosestPointParameter(a.PointAt(ta));
-  double polished = 0.0, pa = ta, pb = tb;
-  if (a.MinDistanceTo(b, 1e-9, polished, &pa, &pb) == Result::Ok && polished <= best + 1e-12) { ta = pa; tb = pb; best = polished; }
+  PolishPair(a, b, ta, tb, best);
   m.distance = best;
   m.ta = Fraction(a, ta);
   m.tb = Fraction(b, tb);
   const Point3d pa3 = a.PointAt(ta), pb3 = b.PointAt(tb);
   m.mid = (pa3 + pb3) * 0.5;
   m.met = best <= tol;
-  // How many separate places do the curves come within reach of each other?
-  const double thr = tol + 2.0 * h;
-  int runs = 0;
-  bool in_run = false;
-  for (int k = 0; k <= N; ++k) {
-    const bool close = d[static_cast<size_t>(k)] <= thr;
-    if (close && !in_run) ++runs;
-    in_run = close;
+  // Separate meeting places: every local minimum of the sampled distance that is plausibly a
+  // meeting (within tol + one chord) is polished and counted when it really is within tol.
+  // Two such places count as separate when they sit more than a few samples apart along a.
+  if (m.met && N == 240) {
+    struct Hit { double frac; Point3d pt; };
+    std::vector<Hit> hits;
+    for (int k = 0; k <= N; ++k) {
+      const double dk = d[static_cast<size_t>(k)];
+      if (dk > tol + h) continue;
+      const bool left_ok = k == 0 || dk <= d[static_cast<size_t>(k) - 1];
+      const bool right_ok = k == N || dk < d[static_cast<size_t>(k) + 1];
+      if (!(left_ok && right_ok)) continue;
+      double sa = da.min + (da.max - da.min) * k / N;
+      double sb = b.ClosestPointParameter(a.PointAt(sa));
+      double sd = dk;
+      PolishPair(a, b, sa, sb, sd);
+      if (sd > tol) continue;
+      hits.push_back({Fraction(a, sa), a.PointAt(sa)});
+    }
+    const bool closed = a.IsClosed();
+    int places = 0;
+    std::vector<Hit> kept;
+    for (const Hit& hit : hits) {
+      bool same = false;
+      for (const Hit& k : kept) {
+        double df = std::fabs(hit.frac - k.frac);
+        if (closed) df = std::min(df, 1.0 - df);
+        if (df < 4.0 / N || hit.pt.DistanceTo(k.pt) <= 10.0 * tol) { same = true; break; }
+      }
+      if (!same) { kept.push_back(hit); ++places; }
+    }
+    m.multi = places > 1;
   }
-  if (a.IsClosed() && runs > 1 && d.front() <= thr && d.back() <= thr) --runs;  // the seam splits one run
-  m.multi = m.met && runs > 1;
   const double end_eps = std::max(2.0 * tol, 1e-6);
   auto interior_of = [&](const NurbsCurve& c) {
     return m.mid.DistanceTo(c.PointAt(c.Domain().min)) > end_eps && m.mid.DistanceTo(c.PointAt(c.Domain().max)) > end_eps;
@@ -2193,6 +2238,7 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
   };
   auto name = [](size_t i) { return "curve " + std::to_string(i + 1); };
   if (n < 4) return refuse("a curve network needs at least 4 curves (2 in each direction), " + std::to_string(n) + " given");
+  if (n > 40) return refuse("a curve network of more than 40 curves is not supported (" + std::to_string(n) + " given)");
   std::vector<NurbsCurve> curves = curves_in;
   for (size_t i = 0; i < n; ++i) {
     if (!curves[i].raw().IsValid()) return refuse(name(i) + " is not a valid curve");
@@ -2230,8 +2276,14 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
 
   // Two-colour the meeting graph.
   std::vector<int> color(n, -1);
-  color[0] = 0;
-  std::vector<size_t> queue = {0};
+  size_t root = 0, root_deg = 0;  // start from the best-connected curve: a lone stray curve is then the one blamed
+  for (size_t i = 0; i < n; ++i) {
+    size_t deg = 0;
+    for (size_t j = 0; j < n; ++j) if (j != i && M[i][j].met) ++deg;
+    if (deg > root_deg) { root_deg = deg; root = i; }
+  }
+  color[root] = 0;
+  std::vector<size_t> queue = {root};
   for (size_t qi = 0; qi < queue.size(); ++qi) {
     const size_t i = queue[qi];
     for (size_t j = 0; j < n; ++j) {
