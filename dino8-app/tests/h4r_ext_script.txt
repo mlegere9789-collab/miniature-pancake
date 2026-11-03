@@ -4,8 +4,8 @@
 # result that cannot be rebuilt (a contour plane the edited source no longer meets) keeps its old geometry. Every claim
 # is a measured Bounding box / Volume / Length, compared with the SAME operation performed fresh (History Off) on the
 # source in its edited position. @TMP@ is the test temp directory.
-# Objects: 1 plane A, 2 path line, 3 plane B, 4 plane C, 5 box (contoured), 6 box (sectioned), 7 curve, 8 sphere (contoured) |
-# 9 AlongCrv, 10 Tapered, 11 ToPoint, 12-15 Contour of the box, 16 Section, 17-18 OffsetMultiple, 19-22 Contour of the sphere |
+# Objects: 1 plane A, 2 path line, 3 plane B, 4 plane C, 5 box (contoured), 6 box (sectioned), 7 curve, 8 second box (contoured, moved) |
+# 9 AlongCrv, 10 Tapered, 11 ToPoint, 12-15 Contour of the box, 16 Section, 17-18 OffsetMultiple, 19-22 Contour of the second box |
 # controls (History Off) 35 AlongCrv, 37 Tapered, 39 ToPoint, 41-44 Contour of the box, 46 Section, 47-48 OffsetMultiple
 # (BoundingBox itself adds a box/rectangle object each time it runs, which is why the numbers skip).
 SetActiveViewport Top
@@ -19,7 +19,7 @@ Plane 40,0,0 50,10,0
 Box 60,0,0 70,10,0 10
 Box 80,0,0 90,10,0 10
 Curve 100,0,0 103,2,0 106,0,0 110,3,0 Enter
-Sphere 130,5,5 5
+Box 130,0,0 140,10,0 10
 SelNone
 SelID 1
 ExtrudeSrfAlongCrv
@@ -68,7 +68,7 @@ SelNone
 SelID 11
 BoundingBox
 Volume
-# ---- Lengths: box contour 12-15 (sum), section 16, offsets 17-18 (sum), sphere contour 19-22 (sum)
+# ---- Lengths: box contour 12-15 (sum), section 16, offsets 17-18 (sum), second-box contour 19-22 (sum)
 SelNone
 SelID 12
 SelID 13
@@ -132,8 +132,8 @@ Scale 80,0,0 2
 SelNone
 SelID 7
 Scale 100,0,0 2
-# Contour of the sphere: moved (+4, 0, +0.5). A tessellated sphere's section chain can split at some planes (the fresh
-# command does too, see the control below); a piece whose count changed is kept as it was.
+# Contour of a second box: moved (+4, 0, +0.5). (A box, not a tessellated sphere: a sphere's section chains split at
+# platform-dependent planes, which changed the piece count and shifted every later object id on Windows.)
 SelNone
 SelID 8
 Move
@@ -231,7 +231,7 @@ SelID 47
 SelID 48
 Length
 BoundingBox
-# the sphere control last (its piece count is not fixed): only its own report line is used
+# the second-box control last: only its own report line is used
 SelNone
 SelID 8
 Contour
