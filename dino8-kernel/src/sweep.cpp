@@ -4217,9 +4217,14 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   // seam at the first section.
   const bool cyclic = rail1.IsClosed() && rail2.IsClosed();
   if (!cyclic) {
-    // Same direction convention as Sweep2().
-    if (rail1.PointAtStart().DistanceTo(rail2.PointAtEnd()) < rail1.PointAtStart().DistanceTo(rail2.PointAtStart())) {
-      ReverseKeepDomain(rail2);
+    // Direction: keep rail2 as drawn unless pairing its end with rail1's start is strictly
+    // closer overall.  The SUM of the two end separations is compared (not rail1's start
+    // alone), so rails that meet only at their last station, or open out widely, keep
+    // their drawn direction.
+    {
+      const double same = rail1.PointAtStart().DistanceTo(rail2.PointAtStart()) + rail1.PointAtEnd().DistanceTo(rail2.PointAtEnd());
+      const double flip = rail1.PointAtStart().DistanceTo(rail2.PointAtEnd()) + rail1.PointAtEnd().DistanceTo(rail2.PointAtStart());
+      if (flip < same) ReverseKeepDomain(rail2);
     }
   } else {
     // Closed rails have no start/end to compare: sample rail1, find the closest
@@ -4238,6 +4243,13 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
         winding += d;
       }
       prev = f;
+    }
+    // A usable pairing goes once round: |winding| is about 1.  Rails that do not encircle
+    // each other (an oblique cylinder leaning past its radius, say) telescope to ~0 and the
+    // sign would be noise, so refuse rather than guess a direction.
+    if (std::fabs(winding) < 0.5) {
+      Fail(caller, "the two closed rails do not go round each other (closest-point winding " + std::to_string(winding) +
+                       " instead of +-1), so their circulation direction is not defined");
     }
     if (winding < 0.0) ReverseKeepDomain(rail2);
   }

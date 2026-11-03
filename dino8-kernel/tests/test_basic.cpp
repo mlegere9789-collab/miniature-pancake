@@ -92186,6 +92186,36 @@ void TestSweep2SectionsStationLadderOnTightBendAndCorner() {
         "sweep2 sections (polyline corner): known limit - even 512 stations leave the wall edges > 2e-3 from rails with a tangent jump (measured 0.0108)");
 }
 
+void TestSweep2SectionsRailDirectionIsNotGuessed() {
+  // (a) Closed rails that do not go round each other (an oblique cylinder leaning past its radius): the
+  //     closest-point winding is ~0 and its sign would be noise, so the sweep refuses with that reason.
+  {
+    const NurbsCurve rail1 = FlatRing(1.0, 0.0);
+    const NurbsCurve rail2 = CircleCurve(ON_Plane(ON_3dPoint(5, 0, 3), ON_3dVector(1, 0, 0), ON_3dVector(0, -1, 0)), 1.0);
+    const NurbsCurve sa = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(6, 0, 3)}, 1);
+    const NurbsCurve sb = NurbsCurve::FromControlPoints({Point3d(-1, 0, 0), Point3d(4, 0, 3)}, 1);
+    std::string why;
+    try { Brep::Sweep2Sections({sa, sb}, rail1, rail2, 32); } catch (const std::invalid_argument& e) { why = e.what(); }
+    Check(why.find("go round each other") != std::string::npos,
+          ("sweep2 sections: closed rails that do not encircle each other are refused, not given a noise direction: " + why).c_str());
+  }
+  // (b) Open rails that meet only at their LAST station and open out by more than 60 degrees keep their drawn
+  //     direction (comparing only rail1's start with rail2's ends used to reverse rail2 here).
+  {
+    const NurbsCurve r1 = NurbsCurve::FromControlPoints({Point3d(6, 8, 0), Point3d(0, 0, 0)}, 1);
+    const NurbsCurve r2 = NurbsCurve::FromControlPoints({Point3d(6, -8, 0), Point3d(0, 0, 0)}, 1);
+    const NurbsCurve s0 = NurbsCurve::FromControlPoints({Point3d(6, 8, 0), Point3d(6, -8, 0)}, 1);
+    const NurbsCurve s1 = NurbsCurve::FromControlPoints({Point3d(3, 4, 0), Point3d(3, -4, 0)}, 1);
+    Brep::Sweep2SectionsReport rep;
+    bool threw = false;
+    std::string why;
+    try { Brep::Sweep2Sections({s0, s1}, r1, r2, 32, &rep); } catch (const std::invalid_argument& e) { threw = true; why = e.what(); }
+    Check(!threw, ("sweep2 sections: rails meeting only at the last station keep their drawn direction (no 'anchors cross'): " + why).c_str());
+    if (!threw) Check(rep.max_section_deviation < 1e-9 && rep.max_rail1_deviation < 1e-3 && rep.max_rail2_deviation < 1e-3,
+                      "sweep2 sections: that wall reproduces both sections and lies on both rails");
+  }
+}
+
 }  // namespace sweep2_sections_cyclic_tests
 
 int main() {
@@ -93636,6 +93666,8 @@ int main() {
           sweep2_sections_cyclic_tests::TestSweep2SectionsTouchingRailsMakeAnExactSphere);
   RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsStationLadderOnTightBendAndCorner",
           sweep2_sections_cyclic_tests::TestSweep2SectionsStationLadderOnTightBendAndCorner);
+  RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsRailDirectionIsNotGuessed",
+          sweep2_sections_cyclic_tests::TestSweep2SectionsRailDirectionIsNotGuessed);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {
