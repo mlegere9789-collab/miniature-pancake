@@ -11038,4 +11038,77 @@ if grep -q "Sweep2: the exact multi-section sweep was not used (the wall edges a
 S2C_N="$(grep -c "exact kernel multi-section sweep" <<<"$S2C" || true)"
 if [ "$S2C_N" = "5" ]; then s2c_ok "S2C_count: exactly the five well-formed sweeps reached the kernel"; else s2c_bad "S2C_count: $S2C_N multi-section sweeps reached the kernel, expected 5"; fi
 
+# TS3: ToNURBS of the cone's SubD (tosubd3_script.txt). The radius-4 cone's
+# SubD used to be the 64-segment cage (960 faces): ToNURBS reported "closed
+# solid: yes, manifold" but Volume then said "Object N is not closed" and
+# printed 0, because the mesher could not weld the 64-segment cage's tiny cap
+# patches (the apex is NOT the cause: a radius-2 cone, same apex, 32 segments,
+# measures fine). The segment ladder now also tries 40 and 48 before 64, and
+# the radius-4 cone verifies at 40 (380 faces). The last two blocks show what
+# the SubD's own Volume is: the volume of the current CONTROL NET (an
+# interpolated cage lies outside its limit surface), which falls onto the
+# exact figure as the net is refined with SubDivide. Ranges, not exact
+# numbers (deviation and volumes depend on the platform's float evaluation).
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  TS3="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/tosubd3_script.txt" 2>&1)" || { echo "$TS3"; echo "FAIL: tosubd3 script exited non-zero"; exit 1; }
+else
+  TS3="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/tosubd3_script.txt" 2>&1)" || { echo "$TS3"; echo "FAIL: tosubd3 script exited non-zero"; exit 1; }
+fi
+ts3check() { if grep -q -- "$1" <<<"$TS3"; then echo "ok   $2"; else echo "FAIL $2"; near "$TS3" "$1"; fail=1; fi; }
+# in range: ts3range VALUE LO HI DESC
+ts3range() { if [ -n "$1" ] && awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 ($1 in [$2, $3])"; else echo "FAIL $4 ('${1:-none}' not in [$2, $3])"; fail=1; fi; }
+mapfile -t TS3_TOSUBD < <(grep -F "history: ToSubD: created" <<<"$TS3" || true)
+mapfile -t TS3_NURBS < <(grep -F "history: ToNURBS: watertight conversion" <<<"$TS3" || true)
+mapfile -t TS3_LIST < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, [0-9]+ vertices, [0-9]+ creases" <<<"$TS3" || true)
+mapfile -t TS3_SOLID < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, closed solid" <<<"$TS3" || true)
+mapfile -t TS3_VOL < <(grep -o "Volume = [0-9.e+-]*" <<<"$TS3" | awk '{print $3}' || true)
+TS3_NOTCLOSED="$(grep -c "is not closed" <<<"$TS3" || true)"
+# ToSubD lines in script order: cone r4, cone r2, cylinder, TCone. Volumes: 0 cone r4 SubD, 1 cone r4 ToNURBS,
+# 2 cone r2 ToNURBS, 3-6 cylinder after 0..3 SubDivide, 7-10 TCone after 0..3 SubDivide.
+if [ "${#TS3_TOSUBD[@]}" -eq 4 ] && [ "${#TS3_NURBS[@]}" -eq 2 ] && [ "${#TS3_LIST[@]}" -eq 2 ] && [ "${#TS3_SOLID[@]}" -eq 2 ] && [ "${#TS3_VOL[@]}" -eq 11 ]; then
+  echo "ok   tosubd3 script printed 4 ToSubD, 2 ToNURBS, 2 SubD List, 2 polysurface List lines and 11 volumes"
+  if [ "$TS3_NOTCLOSED" = "0" ]; then echo "ok   no Volume reported \"is not closed\" (before: the radius-4 cone's ToNURBS polysurface did, and printed Volume = 0)"; else echo "FAIL $TS3_NOTCLOSED Volume line(s) reported \"is not closed\""; fail=1; fi
+  if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS3_TOSUBD[0]}"; then
+    ts3range "$(sed -E 's/.*worst measured deviation ([0-9.]+)\).*/\1/' <<<"${TS3_TOSUBD[0]}")" 0 0.001 "ToSubD of the radius-4 cone is VERIFIED: measured limit-surface deviation within the 0.001 tolerance"
+  else
+    echo "FAIL ToSubD of the radius-4 cone is not verified: ${TS3_TOSUBD[0]}"; fail=1
+  fi
+  if grep -q "analytic revolved-solid cage (4[08] segments around x [0-9]* along the wall, all-quad O-grid caps" <<<"${TS3_TOSUBD[0]}"; then
+    echo "ok   the radius-4 cone verifies at 40 or 48 segments around (before: 64, whose cap patches the mesher could not weld)"
+  else
+    echo "FAIL the radius-4 cone does not use a 40/48-segment cage: ${TS3_TOSUBD[0]}"; fail=1
+  fi
+  read -r TS3F TS3E TS3V TS3C <<<"$(sed -E 's/^history: +([0-9]+) faces, ([0-9]+) edges, ([0-9]+) vertices, ([0-9]+) creases.*/\1 \2 \3 \4/' <<<"${TS3_LIST[0]}")"
+  ts3range "$TS3F" 300 700 "the radius-4 cone cage has a few hundred faces (before: 960)"
+  if [ "$((TS3V - TS3E + TS3F))" -eq 2 ]; then echo "ok   the radius-4 cone cage is a closed manifold: Euler $TS3V - $TS3E + $TS3F = 2"; else echo "FAIL the radius-4 cone cage Euler $TS3V - $TS3E + $TS3F != 2"; fail=1; fi
+  ts3range "$TS3C" 80 200 "the radius-4 cone cage creases its rim and apex spokes"
+  if grep -q "0 naked edge(s) left, closed solid: yes, manifold" <<<"${TS3_NURBS[0]}"; then echo "ok   ToNURBS of the radius-4 cone's SubD: 0 naked edges, closed manifold solid"; else echo "FAIL ToNURBS of the radius-4 cone: ${TS3_NURBS[0]}"; fail=1; fi
+  ts3range "${TS3_VOL[1]}" 164.5 170.5 "ToNURBS of the radius-4 cone SubD: closed polysurface, Volume vs pi r^2 h / 3 = 167.55 (before: 'not closed', 0)"
+  ts3range "${TS3_VOL[0]}" 163.5 172.0 "radius-4 cone SubD Volume (control net) vs 167.55"
+  if grep -q "32 segments around" <<<"${TS3_TOSUBD[1]}" && grep -q "0 naked edge(s) left, closed solid: yes, manifold" <<<"${TS3_NURBS[1]}"; then
+    echo "ok   the radius-2 cone (same apex, 32 segments) converts to a closed manifold solid: the apex is not the problem"
+  else
+    echo "FAIL the radius-2 cone: ${TS3_TOSUBD[1]} / ${TS3_NURBS[1]}"; fail=1
+  fi
+  ts3range "${TS3_VOL[2]}" 40.6 42.8 "ToNURBS of the radius-2 cone SubD: Volume vs pi r^2 h / 3 = 41.89"
+  # Volume of a SubD is the volume of its control net: above the exact figure, falling onto it as the net is refined.
+  if awk -v a="${TS3_VOL[3]}" -v b="${TS3_VOL[4]}" -v c="${TS3_VOL[5]}" -v d="${TS3_VOL[6]}" 'BEGIN { exit !(a > b && b > c && c >= d) }'; then
+    echo "ok   cylinder SubD Volume falls monotonically as the net is refined: ${TS3_VOL[3]} > ${TS3_VOL[4]} > ${TS3_VOL[5]} >= ${TS3_VOL[6]}"
+  else
+    echo "FAIL cylinder SubD Volume is not monotone under SubDivide: ${TS3_VOL[3]} ${TS3_VOL[4]} ${TS3_VOL[5]} ${TS3_VOL[6]}"; fail=1
+  fi
+  ts3range "${TS3_VOL[3]}" 503.5 509.0 "cylinder cage (control net) Volume overshoots pi r^2 h = 502.65 (the cage lies outside the limit surface)"
+  ts3range "${TS3_VOL[6]}" 502.0 503.3 "cylinder Volume after 3 SubDivide rounds converges onto pi r^2 h = 502.65"
+  if awk -v a="${TS3_VOL[7]}" -v b="${TS3_VOL[8]}" -v c="${TS3_VOL[9]}" -v d="${TS3_VOL[10]}" 'BEGIN { exit !(a > b && b > c && c >= d) }'; then
+    echo "ok   TCone SubD Volume falls monotonically as the net is refined: ${TS3_VOL[7]} > ${TS3_VOL[8]} > ${TS3_VOL[9]} >= ${TS3_VOL[10]}"
+  else
+    echo "FAIL TCone SubD Volume is not monotone under SubDivide: ${TS3_VOL[7]} ${TS3_VOL[8]} ${TS3_VOL[9]} ${TS3_VOL[10]}"; fail=1
+  fi
+  ts3range "${TS3_VOL[10]}" 292.5 294.0 "TCone Volume after 3 SubDivide rounds converges onto pi h (R^2 + R r + r^2) / 3 = 293.2"
+else
+  echo "FAIL tosubd3 script printed ${#TS3_TOSUBD[@]} ToSubD / ${#TS3_NURBS[@]} ToNURBS / ${#TS3_LIST[@]} SubD List / ${#TS3_SOLID[@]} polysurface List / ${#TS3_VOL[@]} Volume lines (expected 4 / 2 / 2 / 2 / 11)"; fail=1
+fi
+ts3check "gl_error=0" "tosubd3 script ran without OpenGL errors"
+
 exit $fail

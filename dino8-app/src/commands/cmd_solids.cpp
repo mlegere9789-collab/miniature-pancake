@@ -1540,7 +1540,7 @@ struct AnalyticCageResult {
 };
 
 // ToSubD for a revolved solid (see BuildRevolvedCage): builds the analytic
-// cage at 32, 64, 128 segments around until the interpolated Catmull-Clark
+// cage at 32, 40, 48, 64, 128 segments around until the interpolated Catmull-Clark
 // limit surface is within `tol`. The MEASURE compares sampled limit-surface
 // points (every vertex, edge midpoint and face centre of two further
 // subdivision rounds: exact limit evaluation) with the exact surface of the
@@ -1565,7 +1565,13 @@ std::optional<AnalyticCageResult> AnalyticCageForBrep(const SceneObject& o, doub
     if (!ref) return std::nullopt;
     const kernel::MeshClosestPointIndex ref_index(ref->mesh);
     std::optional<AnalyticCageResult> best;
-    for (int around : {32, 64, 128}) {
+    // 40 and 48 sit between 32 and 64 on purpose: the 64-segment cage of a
+    // radius-4 cone (960 faces, O-grid cap cells ~0.1 across once refined for
+    // ToNURBS) converts to a polysurface the Brep mesher cannot weld at the
+    // Volume tolerance (ToNURBS said "closed solid", Volume said "not
+    // closed"); the 40-segment cage verifies (0.00086 < 0.001), is a third
+    // the size, and its ToNURBS result measures a correct Volume.
+    for (int around : {32, 40, 48, 64, 128}) {
       const int along = std::min(12, std::max(4, static_cast<int>(std::lround(diag / (6.2831853 * R / around) * 0.5))));
       const std::optional<RevolvedCage> cage = BuildRevolvedCage(b, around, along, false);
       if (!cage) { if (!best) return std::nullopt; break; }
