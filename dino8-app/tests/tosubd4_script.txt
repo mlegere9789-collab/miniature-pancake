@@ -74,3 +74,44 @@ SubDivide
 Volume
 SubDivide
 Volume
+SelAll
+Hide
+# --- 5 box 10 x 10 x 6 with TWO ADJACENT vertical edges rounded r=2 (a line tangent at one end and sharp at the other:
+# before, the 7.5 degree rung verified at 0.00096 by luck and every finer rung blew up to 0.13-0.24 because a
+# sliver column next to a sharp corner made the interpolating crease overshoot; area 100 - 2 (4 - pi) = 98.283, volume about 589.7)
+Box 500,0,0 510,10,0 6
+FilletEdge
+Radius=2
+510,10,3
+500,10,3
+Enter
+SelAll
+Volume
+SelAll
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 6 box with two OPPOSITE vertical edges rounded r=1.5 and one edge rounded r=3
+Box 600,0,0 610,10,0 6
+FilletEdge
+Radius=1.5
+610,10,3
+600,0,3
+Enter
+SelAll
+ToSubD
+SelLast
+List
+SelAll
+Hide
+Box 700,0,0 710,10,0 6
+FilletEdge
+Radius=3
+710,10,3
+Enter
+SelAll
+ToSubD
+SelLast
+List

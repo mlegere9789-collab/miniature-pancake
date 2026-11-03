@@ -1819,26 +1819,52 @@ struct PrismColumns {
   std::vector<char> sharp;  // 1 where the profile has a corner (tangent turn > 2 degrees) at this column
 };
 
+// Column positions strictly inside a straight line of length L, measured from its start. An end that
+// joins a tangent neighbour (ja / jb) starts with the arc's own spacing `s` and the spacing then
+// grows geometrically towards the other end (at most 1.5x per interval). The ratio is solved so the
+// intervals add up to the length EXACTLY: a leftover sliver next to a long interval (the old
+// "grow until the next step would overshoot" rule left a 0.26 sliver after a 2.7 interval at a sharp
+// corner) makes the interpolating cubic overshoot past the corner by tenths of a unit. Two tangent
+// ends are graded towards the middle, which is a column of its own (equal spacing on both sides).
+std::vector<double> GradedRun(double L, double s) {  // spacing s at 0, growing towards L; interior breaks only
+  std::vector<double> out;
+  if (!(s > 0.0) || !(L > 1.5 * s)) return out;
+  constexpr double kGrow = 1.5, kShrink = 0.5;
+  const auto total = [&](double g, int n) {
+    double sum = 0.0, st = s;
+    for (int k = 0; k < n; ++k) { sum += st; st *= g; }
+    return sum;
+  };
+  int n = 2;
+  while (n < 4096 && total(kGrow, n) < L) ++n;
+  double lo = kShrink, hi = kGrow;  // total(g, n) is increasing in g; total(kShrink, n) <= L for the minimal n >= 2 here
+  if (total(lo, n) > L) return out;
+  for (int it = 0; it < 80; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    (total(mid, n) < L ? lo : hi) = mid;
+  }
+  const double g = 0.5 * (lo + hi);
+  double x = 0.0, st = s;
+  for (int k = 0; k + 1 < n; ++k) { x += st; st *= g; out.push_back(x); }
+  return out;
+}
+
 std::vector<double> GradedBreaks(double L, double s, bool ja, bool jb) {
   std::vector<double> br;
   if ((!ja && !jb) || !(s > 0.0) || !(L > 1.5 * s)) return br;
-  constexpr double kGrow = 1.5;
-  if (ja) {
-    double x = 0.0, st = s;
-    while (true) { x += st; if (x > L - 0.3 * s) break; br.push_back(x); st *= kGrow; if (jb && x > 0.5 * L) break; }
+  if (ja && jb) {
+    const std::vector<double> half = GradedRun(0.5 * L, s);
+    for (double x : half) br.push_back(x);
+    br.push_back(0.5 * L);
+    for (auto it = half.rbegin(); it != half.rend(); ++it) br.push_back(L - *it);
+    return br;
   }
+  br = GradedRun(L, s);
   if (jb) {
-    double x = 0.0, st = s;
-    while (true) { x += st; if (x > L - 0.3 * s) break; br.push_back(L - x); st *= kGrow; if (ja && x > 0.5 * L) break; }
+    for (double& x : br) x = L - x;
+    std::sort(br.begin(), br.end());
   }
-  std::sort(br.begin(), br.end());
-  std::vector<double> out;
-  for (double x : br) {
-    if (x < 0.3 * s || x > L - 0.3 * s) continue;
-    if (!out.empty() && x - out.back() < 0.3 * s) continue;
-    out.push_back(x);
-  }
-  return out;
+  return br;
 }
 
 PrismColumns DiscretizeProfile(const std::vector<prism::Seg>& P, double dth, double s_line) {
@@ -2021,7 +2047,12 @@ struct PrismCageResult {
   bool verified = false;
 };
 
-std::optional<PrismCageResult> PrismCageForBrep(const SceneObject& o, double tol) {
+// The cage is only ever accepted on a ladder that CONVERGES. A rung that verifies with a comfortable
+// margin (at most half the tolerance) is accepted as it stands. A rung that verifies only marginally
+// is accepted only if the next finer rung also verifies and is no worse (then that finer rung is the
+// result); a marginal rung whose finer neighbour fails or gets worse is luck, not convergence, and
+// the whole cage is refused (`refused` says why) so ToSubD falls through to the dense path.
+std::optional<PrismCageResult> PrismCageForBrep(const SceneObject& o, double tol, std::string* refused = nullptr) {
   if (!o.brep) return std::nullopt;
   const ON_Brep& b = o.brep->raw();
   if (b.m_F.Count() < 3) return std::nullopt;  // two caps + at least one wall face (an extruded polyline is ONE wall face)
@@ -2045,22 +2076,19 @@ std::optional<PrismCageResult> PrismCageForBrep(const SceneObject& o, double tol
     for (const prism::Seg& g : pr.prof)
       if (g.arc) { rmin = arcs == 0 ? g.r : std::min(rmin, g.r); ++arcs; }
     const double scale = prism::Scale(pr);
-    std::optional<PrismCageResult> best;
+    std::optional<PrismCageResult> best, marginal;
     struct Rung { double dth_deg; int rows; };
     for (const Rung rung : {Rung{7.5, 3}, Rung{4.5, 4}, Rung{3.0, 4}, Rung{2.0, 4}}) {
-      if (std::getenv("D8_TS4_DEBUG") && std::getenv("D8_TS4_SKIP") && rung.dth_deg > std::atof(std::getenv("D8_TS4_SKIP"))) continue;
       const double dth = rung.dth_deg * 3.14159265358979 / 180.0;
       const double s_line = arcs > 0 ? rmin * dth : scale;
-      const double s_line_eff = std::getenv("D8_TS4_NOGRADE") ? scale : s_line;
-      const std::optional<PrismCageMesh> cage = BuildPrismCage(pr, dth, s_line_eff, std::getenv("D8_TS4_ROWS") ? std::atoi(std::getenv("D8_TS4_ROWS")) : rung.rows);
-      if (!cage) { if (!best) return std::nullopt; break; }
+      const std::optional<PrismCageMesh> cage = BuildPrismCage(pr, dth, s_line, rung.rows);
+      if (!cage) { if (!best && !marginal) return std::nullopt; break; }
       if (cage->mesh.FaceCount() > 20000) break;
       PrismCageResult cur;
       kernel::SubD sd = kernel::SubD::FromControlMesh(cage->mesh);
       cur.crease_edges = sd.SetCreasesByDihedral(kFidelityCreaseAngleDeg);
       int cr_ok = 0;
       for (const auto& e : cage->corner_edges) if (sd.SetCrease(e.first, e.second, true, 1e-5 * scale)) { ++cur.crease_edges; ++cr_ok; }
-      if (std::getenv("D8_TS4_DEBUG")) std::fprintf(stderr, "TS4DBG creases dihedral=%d corner_edges=%zu set_ok=%d corners=%d\n", cur.crease_edges - cr_ok, cage->corner_edges.size(), cr_ok, cage->corners);
       kernel::SubDInterpolationReport frep;
       const kernel::BoundingBox cbb = cage->mesh.GetBoundingBox();
       const double extent = (cbb.max - cbb.min).Length();
@@ -2080,11 +2108,9 @@ std::optional<PrismCageResult> PrismCageForBrep(const SceneObject& o, double tol
         const double h = v * pr.n;
         const double dc = std::min(std::fabs(h), std::fabs(h - pr.H));
         if (dc < d && ref->Inside(prism::V2{v * pr.X, v * pr.Y})) d = dc;
-        if (d > dev && std::getenv("D8_TS4_DEBUG")) std::fprintf(stderr, "TS4DBG dev %.6f at %.4f %.4f %.4f (h=%.4f)\n", d, q.x, q.y, q.z, h);
         dev = std::max(dev, d);
         ++cur.samples;
       }
-      if (std::getenv("D8_TS4_DEBUG")) std::fprintf(stderr, "TS4DBG rung dth=%.1f cols=%d rows=%d faces=%d dev=%.6f sag=%.6f fit_it=%d fit_res=%.6g\n", rung.dth_deg, cage->columns, cage->rows, cage->mesh.FaceCount(), dev, ref->sag, cur.fit_iterations, cur.fit_residual);
       cur.reference_sag = ref->sag;
       cur.deviation = dev + ref->sag;
       cur.verified = cur.deviation <= tol;
@@ -2094,9 +2120,23 @@ std::optional<PrismCageResult> PrismCageForBrep(const SceneObject& o, double tol
       cur.corners = cage->corners;
       cur.profile_segments = static_cast<int>(pr.prof.size());
       cur.arcs = arcs;
+      if (marginal) {
+        if (cur.verified && cur.deviation <= marginal->deviation) return cur;  // the finer neighbour confirms the ladder
+        if (refused)
+          *refused = "prism cage refused: the " + std::to_string(marginal->columns) + "-column rung verified only marginally (deviation " + std::to_string(marginal->deviation) +
+                     ") and the next finer rung (" + std::to_string(cur.columns) + " columns) " + (cur.verified ? "got worse" : "does not verify") + " (deviation " + std::to_string(cur.deviation) +
+                     "), so the ladder does not converge";
+        return std::nullopt;
+      }
+      if (cur.verified) {
+        if (cur.deviation <= 0.5 * tol) return cur;
+        marginal = std::move(cur);
+        continue;
+      }
       best = std::move(cur);
-      if (best->verified && !std::getenv("D8_TS4_DEBUG")) break;
     }
+    if (marginal && refused) *refused = "prism cage refused: the finest rung verified only marginally (deviation " + std::to_string(marginal->deviation) + ") and there is no finer rung to confirm it";
+    if (marginal) return std::nullopt;
     return best;
   } catch (const std::exception&) {
     return std::nullopt;
@@ -2249,6 +2289,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   double tor_fit_residual = 0.0, tor_ref_sag = 0.0;
   int pri_runs = 0, pri_cols = 0, pri_rows = 0, pri_corners = 0, pri_segments = 0, pri_arcs = 0, pri_creases = 0, pri_fit_iterations = 0, pri_samples = 0;
   double pri_fit_residual = 0.0, pri_ref_sag = 0.0;
+  std::string pri_refused;  // why the right-prism cage was refused (the object then took the dense path)
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -2303,7 +2344,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         ++exact_runs;
         exact_creases_total += exact->crease_edges;
         exact_samples_total += exact->samples;
-      } else if (const std::optional<PrismCageResult> pri = PrismCageForBrep(*o, tol); pri && pri->verified) {
+      } else if (const std::optional<PrismCageResult> pri = PrismCageForBrep(*o, tol, &pri_refused); pri && pri->verified) {
         // A right prism over a profile of lines and circular arcs (see PrismCageForBrep); verified only.
         n = SceneObject::MakeSubD(pri->subd);
         ++fidelity_checked;
@@ -2412,6 +2453,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              std::to_string(pri_samples) + " exact limit-surface points against the exact prism (ruled wall strip + exact cap planes), reference chord sag " +
              std::to_string(pri_ref_sag) + " included in the deviation";
     }
+    if (!pri_refused.empty()) msg += "; " + pri_refused;
     if (exact_runs > 0) {
       msg += "; exact Brep-face cage (no tessellation), " + std::to_string(exact_creases_total) +
              " sharp edge(s) creased (dihedral above " + std::to_string(static_cast<int>(kFidelityCreaseAngleDeg)) +
