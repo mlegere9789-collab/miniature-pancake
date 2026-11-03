@@ -20,6 +20,7 @@
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
 #include "commands/revolved_solid.h"
+#include "commands/prism_solid.h"
 #include "commands/section_fit.h"
 
 namespace dino8::app {
@@ -1503,10 +1504,32 @@ std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d
         return std::nullopt;
       }
     }
+    // A right prism (extruded L / U, a box with parallel edges rounded by FilletEdge): the exact
+    // analytic offset of its profile (prism_solid.h). Tried for the three-face wall prisms and,
+    // after the convex planar construction declines, for every other shape.
+    auto try_prism = [&](std::string& reason) -> std::optional<kernel::Brep> {
+      prism::Prism pr;
+      bool not_prism = true;
+      std::string r;
+      if (!prism::Recognize(b, pr, r, not_prism)) { reason = r; return std::nullopt; }
+      std::string w;
+      if (!solid) {
+        std::optional<kernel::Brep> k = prism::OffsetSolid(pr, d, w);
+        if (!k) reason = w;
+        return k;
+      }
+      std::optional<kernel::Brep> o = prism::OffsetSolid(pr, d, w);
+      if (!o) { reason = w; return std::nullopt; }
+      std::optional<kernel::Brep> h = d > 0 ? HollowSolid(new ON_Brep(o->raw()), new ON_Brep(b)) : HollowSolid(new ON_Brep(b), new ON_Brep(o->raw()));
+      if (!h) reason = "the hollow prism did not assemble into a valid solid";
+      return h;
+    };
     if (b.m_F.Count() == 3) {
       PlainCylinder pc;
       if (!RecognizePlainCylinder(b, pc)) {
-        why = "no exact offset for this solid (needs all-planar convex faces, a whole sphere/torus, or a plain capped cylinder)";
+        if (std::optional<kernel::Brep> k = try_prism(why)) return k;
+        if (why.empty() || why.rfind("not a right prism", 0) == 0)
+          why = "no exact offset for this solid (needs all-planar convex faces, a whole sphere/torus, a plain capped cylinder, or a right prism)";
         return std::nullopt;
       }
       const double r2 = pc.R + d;
@@ -1523,9 +1546,17 @@ std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d
       return std::nullopt;
     }
     // All-planar convex solid.
-    if (!solid) return kernel::OffsetSolidConvexPlanar(kb, d);
-    if (d > 0) return kernel::ShellConvexPlanar(kernel::OffsetSolidConvexPlanar(kb, d), {}, d);
-    return kernel::ShellConvexPlanar(kb, {}, -d);
+    try {
+      if (!solid) return kernel::OffsetSolidConvexPlanar(kb, d);
+      if (d > 0) return kernel::ShellConvexPlanar(kernel::OffsetSolidConvexPlanar(kb, d), {}, d);
+      return kernel::ShellConvexPlanar(kb, {}, -d);
+    } catch (const std::exception& ex) {
+      // Not convex-planar: a right prism (L extrusion, rounded box) is still exact.
+      std::string pw;
+      if (std::optional<kernel::Brep> k = try_prism(pw)) return k;
+      why = pw.empty() || pw.rfind("not a right prism", 0) == 0 ? std::string(ex.what()) : pw;
+      return std::nullopt;
+    }
   } catch (const std::exception& ex) {
     why = ex.what();
     return std::nullopt;
@@ -1893,6 +1924,24 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
     }
     return kernel::ShellConvexPlanar(*o.brep, removed, thick);
   } catch (const std::exception& ex) {
+    // Not a convex planar solid. A closed hollow shell of a right prism (extruded L / U, a box with
+    // parallel edges rounded by FilletEdge) is still exact: the inner cavity is the same prism with
+    // its profile offset inward by t and both caps moved in by t (prism_solid.h).
+    if (removed.empty() && overrides.empty()) {
+      prism::Prism pr;
+      bool not_prism = true;
+      std::string pw;
+      if (prism::Recognize(b, pr, pw, not_prism)) {
+        std::optional<kernel::Brep> inner = prism::OffsetSolid(pr, -t, pw);
+        if (inner) {
+          if (std::optional<kernel::Brep> h = HollowSolid(new ON_Brep(b), new ON_Brep(inner->raw()))) return h;
+          pw = "the hollow prism did not assemble into a valid solid";
+        }
+        why = pw;
+        return std::nullopt;
+      }
+      if (!not_prism) { why = pw; return std::nullopt; }
+    }
     why = ex.what();
     return std::nullopt;
   }

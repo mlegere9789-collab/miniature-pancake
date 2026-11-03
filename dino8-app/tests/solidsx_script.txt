@@ -334,6 +334,7 @@ Enter
 1
 SelAll
 List
+Volume
 
 # ===================== OffsetSrf =====================
 # sphere r5 grown by 1: exact sphere r6, 4/3*pi*216 = 904.78
@@ -410,6 +411,7 @@ OffsetSrf
 1
 SelLast
 List
+Volume
 
 # ===================== Pipe on a closed rail =====================
 # circle r10, pipe r1: exact torus, 2*pi^2*10*1 = 197.39 (was a 1152-triangle mesh)
