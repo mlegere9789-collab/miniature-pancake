@@ -1581,6 +1581,25 @@ std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d
     // analytic offset of its profile (prism_solid.h). Tried for the three-face wall prisms and,
     // after the convex planar construction declines, for every other shape.
     auto try_prism = [&](std::string& reason) -> std::optional<kernel::Brep> {
+      // A prism with one round through-hole (box minus cylinder): read from the exact faces.
+      {
+        prism::HolePrism hp;
+        bool not_hole = true;
+        std::string hw;
+        if (prism::RecognizeHole(b, hp, hw, not_hole)) {
+          std::string w;
+          std::optional<kernel::Brep> o = prism::OffsetHoleSolid(hp, d, w);
+          if (!o) { reason = w; return std::nullopt; }
+          if (!solid) return o;
+          std::optional<kernel::Brep> orig = prism::OffsetHoleSolid(hp, 0.0, w);
+          if (!orig) { reason = w; return std::nullopt; }
+          std::optional<kernel::Brep> h = d > 0 ? HollowSolid(new ON_Brep(o->raw()), new ON_Brep(orig->raw()))
+                                                : HollowSolid(new ON_Brep(orig->raw()), new ON_Brep(o->raw()));
+          if (!h) reason = "the hollow prism with its hole did not assemble into a valid solid";
+          return h;
+        }
+        if (!not_hole) { reason = hw; return std::nullopt; }
+      }
       prism::Prism pr;
       bool not_prism = true;
       std::string r;
@@ -2001,6 +2020,24 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
     // parallel edges rounded by FilletEdge) is still exact: the inner cavity is the same prism with
     // its profile offset inward by t and both caps moved in by t (prism_solid.h).
     if (removed.empty() && overrides.empty()) {
+      {
+        // A prism with one round through-hole (box minus cylinder): the cavity is the same prism with the profile
+        // inset by t and the hole widened by t, read from the exact faces (prism_solid.h).
+        prism::HolePrism hp;
+        bool not_hole = true;
+        std::string hw;
+        if (prism::RecognizeHole(b, hp, hw, not_hole)) {
+          std::optional<kernel::Brep> outer = prism::OffsetHoleSolid(hp, 0.0, hw);
+          std::optional<kernel::Brep> inner = outer ? prism::OffsetHoleSolid(hp, -t, hw) : std::nullopt;
+          if (outer && inner) {
+            if (std::optional<kernel::Brep> h = HollowSolid(new ON_Brep(outer->raw()), new ON_Brep(inner->raw()))) return h;
+            hw = "the hollow prism with its hole did not assemble into a valid solid";
+          }
+          why = hw;
+          return std::nullopt;
+        }
+        if (!not_hole) { why = hw; return std::nullopt; }
+      }
       prism::Prism pr;
       bool not_prism = true;
       std::string pw;

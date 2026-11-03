@@ -355,6 +355,12 @@ bool BuildFilletedCylinder(const CylinderRimPlan& g, double rt, double rb, ON_Br
 // polylines of many short edges, so the plan is read from the faces (the cylinder, the two end
 // planes and the end face's outer polygon), never from the picked edge's own geometry.
 // ---------------------------------------------------------------------------
+// One rim blend: a fillet (d_wall == d_cap == radius) or a chamfer (distances along the wall / across the cap).
+struct HoleRimBlend {
+  bool chamfer = false;
+  double d_wall = 0, d_cap = 0;
+};
+
 struct HolePlatePlan {
   ON_3dPoint c0;                 // point of the hole axis on the lower end plane
   ON_3dVector ax;                // unit axis, lower end -> upper end
@@ -364,12 +370,12 @@ struct HolePlatePlan {
   bool top = false;              // which end the picked edge bounds
   int corner = -1;               // for a picked vertical corner edge: its index in `poly`
   double floor = 0;              // blind hole: height of the hole floor above the lower (closed) end; 0 = a through-hole
-};
-
-// One rim blend: a fillet (d_wall == d_cap == radius) or a chamfer (distances along the wall / across the cap).
-struct HoleRimBlend {
-  bool chamfer = false;
-  double d_wall = 0, d_cap = 0;
+  // A blend (exact torus / cone patch) that an earlier FilletEdge / ChamferEdge already put on the OTHER rim of the hole,
+  // recovered from the patch's own geometry so a second operation keeps it (mixed fillet + chamfer rims, both rims in one run).
+  std::optional<HoleRimBlend> exist_lo, exist_hi;
+  // A BOSS (cylinder standing on the plate) instead of a hole: `floor` is then the plate thickness, `H` the height of the boss
+  // cap above the plate's bottom, and the picked rim is the base (boss_base, a concave blend that ADDS material) or the top.
+  bool boss = false, boss_base = false;
 };
 
 // want_corner = false: the picked edge must be a hole rim (cylinder/end face); true: a vertical corner edge between
@@ -382,6 +388,7 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
   const double tol = std::max(1e-6, bb.Diagonal().Length() * 1e-6);
   int wall = -1;
   ON_Cylinder cyl;
+  std::vector<int> blends;
   for (int f = 0; f < b.m_F.Count(); ++f) {
     const ON_Surface* surf = b.m_F[f].SurfaceOf();
     if (!surf) { why = "face without a surface"; return false; }
@@ -392,15 +399,20 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
       if (wall >= 0) { why = "more than one cylindrical face"; return false; }
       wall = f;
       cyl = c;
+    } else if (dynamic_cast<const ON_RevSurface*>(surf) != nullptr) {
+      blends.push_back(f);  // a fillet / chamfer patch an earlier operation left on a rim: analysed below
     } else { why = "a face is neither planar nor the one cylindrical wall"; return false; }
   }
   if (wall < 0) { why = "no cylindrical face"; return false; }
+  if (blends.size() > 2) { why = "more than two blend faces on the hole"; return false; }
   ON_3dVector ax = cyl.Axis();
   if (!ax.Unitize()) { why = "degenerate cylinder axis"; return false; }
+  bool is_boss = false;
+  // (a boss versus a blind hole is decided below, once the end faces are known: both have the same face structure)
   // The two end planes (normal parallel to the axis) and the side planes (normal perpendicular to it).
   std::vector<int> ends, sides;
   for (int f = 0; f < b.m_F.Count(); ++f) {
-    if (f == wall) continue;
+    if (f == wall || std::find(blends.begin(), blends.end(), f) != blends.end()) continue;
     ON_Plane pl;
     b.m_F[f].SurfaceOf()->IsPlanar(&pl, tol);
     const double dn = std::fabs(pl.zaxis * ax);
@@ -410,8 +422,11 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
   }
   if ((ends.size() != 2 && ends.size() != 3) || sides.size() < 3) { why = "not a prism with one cylindrical hole (needs two end faces, plus the hole floor if blind, and at least three side faces)"; return false; }
   const bool blind = ends.size() == 3;
+  // A boss (a cylinder standing on a plate) has the face structure of a blind hole: the wall meets the plate's top face and
+  // the boss cap, the plate's bottom face is untouched. Only its base and top rims are supported, never a corner edge.
   std::vector<double> h(ends.size());
   std::vector<bool> touch(ends.size(), false);  // does the hole wall share an edge with this end plane?
+  std::vector<int> blend_end(ends.size(), -1);   // the blend face between the wall and this end plane, if that rim is already blended
   for (size_t k = 0; k < ends.size(); ++k) {
     ON_Plane pl;
     b.m_F[ends[k]].SurfaceOf()->IsPlanar(&pl, tol);
@@ -422,6 +437,19 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
       const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
       touch[k] = (x == wall && y == ends[k]) || (y == wall && x == ends[k]);
     }
+    // an end that is already blended: the wall meets a blend patch and that patch meets this end plane
+    for (int bf : blends) {
+      bool wall_bf = false, bf_end = false;
+      for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+        const ON_BrepEdge& ee = b.m_E[ei];
+        if (ee.m_edge_index < 0 || ee.TrimCount() != 2) continue;
+        const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
+        if ((x == wall && y == bf) || (y == wall && x == bf)) wall_bf = true;
+        if ((x == ends[k] && y == bf) || (y == ends[k] && x == bf)) bf_end = true;
+      }
+      if (wall_bf && bf_end) blend_end[k] = bf;
+    }
+    if (blend_end[k] >= 0) touch[k] = true;
   }
   size_t lower = 0, upper = 0, floor_k = 0;  // indices into ends: the plate's lower end, its upper end (the rim end if blind), the hole floor
   if (!blind) {
@@ -444,9 +472,81 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
       for (double& x : h) x = -x;
     }
     if (!(h[floor_k] > h[lower] + tol && h[upper] > h[floor_k] + tol)) { why = "the hole floor is not between the closed end and the open end"; return false; }
+    // A BOSS (a cylinder unioned onto a plate) has the face structure of a blind hole: the wall meets the plate's top face (here
+    // `floor_k`) and the boss cap (`upper`), the plate's bottom face (`lower`) is untouched. Tell them apart by volume: the
+    // bottom face is the full plate outline (area A), so V = A*H - pi R^2 (H - f) for a hole and A*f + pi R^2 (H - f) for a boss.
+    {
+      const ON_BrepLoop* ol = b.m_F[ends[lower]].OuterLoop();
+      double A2 = 0;
+      if (ol) {
+        for (int ti = 0; ti < ol->TrimCount(); ++ti) {
+          const ON_BrepTrim* t = ol->Trim(ti);
+          ON_3dPoint pa = t->Edge()->PointAtStart(), pb = t->Edge()->PointAtEnd();
+          if (t->m_bRev3d) std::swap(pa, pb);
+          A2 += ON_CrossProduct(pa - ON_3dPoint(0, 0, 0), pb - ON_3dPoint(0, 0, 0)) * ax;
+        }
+      }
+      const double A = 0.5 * std::fabs(A2), Rr = cyl.circle.radius, fl = h[floor_k] - h[lower], Hh = h[upper] - h[lower];
+      BrepMeshOptions mopt;
+      mopt.chord_tolerance = std::max(1e-6, bb.Diagonal().Length() * 2e-4);
+      double vol = 0;
+      try { vol = std::fabs(MeshBrepClosed(b, mopt).Volume()); } catch (const std::exception&) { vol = 0; }
+      const double v_hole = A * Hh - ON_PI * Rr * Rr * (Hh - fl), v_boss = A * fl + ON_PI * Rr * Rr * (Hh - fl);
+      const double dh = std::fabs(vol - v_hole), db = std::fabs(vol - v_boss);
+      if (!(vol > 0) || !(A > 0) || std::min(dh, db) > 0.02 * vol) { why = "the volume matches neither a blind hole nor a boss on a straight-edged plate"; return false; }
+      is_boss = db < dh;
+    }
+    if (is_boss && want_corner) { why = "corner edges of a plate carrying a boss are not supported"; return false; }
   }
   const double h0 = h[lower], h1 = h[upper];
   if (!(h1 - h0 > tol)) { why = "degenerate plate thickness"; return false; }
+  if (blind && !is_boss && !blends.empty()) { why = "a blind hole that already carries a blend is not supported"; return false; }
+  // Blends an earlier operation left: read their (d_wall, d_cap) and kind from the patch geometry. A blend sits between the wall
+  // and one end plane: its wall contact is (R, z_end + s*d_wall), its cap contact (R + sigma*d_cap, z_end), with s = +-1 the side
+  // of the end plane it lies on and sigma = +1 when it widens the opening (hole rim, boss base), -1 when it narrows the cylinder
+  // (boss top). A fillet is the quarter circle centred (R + sigma*r, z_end + s*r), a chamfer the straight cone between them.
+  {
+    const ON_3dPoint lowpt = cyl.circle.plane.origin + h0 * ax;
+    const double Rr = cyl.circle.radius, gt = 10 * tol;
+    for (size_t k = 0; k < ends.size(); ++k) {
+      if (blend_end[k] < 0) continue;
+      const ON_Surface* sf = b.m_F[blend_end[k]].SurfaceOf();
+      const ON_Interval du = sf->Domain(0), dv = sf->Domain(1);
+      double zmin = 1e300, zmax = -1e300, rmin = 1e300, rmax = -1e300;
+      std::vector<std::pair<double, double>> pts;
+      for (int i = 0; i <= 8; ++i) {
+        for (int j = 0; j <= 8; ++j) {
+          const ON_3dVector w = sf->PointAt(du.ParameterAt(i / 8.0), dv.ParameterAt(j / 8.0)) - lowpt;
+          const double z = w * ax, rho = (w - z * ax).Length();
+          pts.emplace_back(rho, z);
+          zmin = std::min(zmin, z); zmax = std::max(zmax, z);
+          rmin = std::min(rmin, rho); rmax = std::max(rmax, rho);
+        }
+      }
+      const double ze = h[k] - h0;
+      if (std::fabs(zmin - ze) > gt && std::fabs(zmax - ze) > gt) { why = "an existing blend on the cylinder does not lie on an end plane"; return false; }
+      const double s = 0.5 * (zmin + zmax) > ze ? 1.0 : -1.0;
+      const double sigma = std::fabs(rmin - Rr) <= gt ? 1.0 : (std::fabs(rmax - Rr) <= gt ? -1.0 : 0.0);
+      if (sigma == 0.0) { why = "an existing blend on the cylinder is not a fillet or chamfer of a rim"; return false; }
+      HoleRimBlend bl;
+      bl.d_wall = zmax - zmin;
+      bl.d_cap = rmax - rmin;
+      if (!(bl.d_wall > gt) || !(bl.d_cap > gt)) { why = "degenerate existing blend"; return false; }
+      const double wx = Rr, wy = ze + s * bl.d_wall, cx = Rr + sigma * bl.d_cap, cy = ze;
+      const double ll = std::hypot(cx - wx, cy - wy);
+      bool on_line = true, on_circle = std::fabs(bl.d_wall - bl.d_cap) <= gt;
+      const double r = bl.d_wall, ccx = Rr + sigma * r, ccy = ze + s * r;
+      for (const auto& pz : pts) {
+        if (std::fabs((pz.first - wx) * (cy - wy) - (pz.second - wy) * (cx - wx)) / std::max(ll, 1e-300) > gt) on_line = false;
+        if (std::fabs(std::hypot(pz.first - ccx, pz.second - ccy) - r) > gt) on_circle = false;
+      }
+      if (on_circle) bl.chamfer = false;
+      else if (on_line) bl.chamfer = true;
+      else { why = "an existing blend on the cylinder is neither a rolling-ball fillet nor a chamfer cone"; return false; }
+      const bool is_lo = blind ? (k == floor_k) : (k == lower);
+      (is_lo ? plan.exist_lo : plan.exist_hi) = bl;
+    }
+  }
   // The picked edge must separate the cylinder from one end face; both end faces must carry the hole (a through-hole).
   const ON_BrepEdge& e = b.m_E[edge_index];
   if (e.TrimCount() != 2) { why = "the picked edge does not separate two faces"; return false; }
@@ -463,10 +563,15 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
   } else if (endface < 0 || std::find(ends.begin(), ends.end(), endface) == ends.end()) {
     why = "the picked edge is not on a hole rim (it must lie between the hole wall and an end face)";
     return false;
-  } else if (blind && endface != ends[upper]) {
+  } else if (blind && !is_boss && endface != ends[upper]) {
     why = "the picked edge is the foot of the blind hole (its floor), not the rim of its opening";
     return false;
+  } else if (is_boss && endface != ends[upper] && endface != ends[floor_k]) {
+    why = "the picked edge is not at the base or the top rim of the boss";
+    return false;
   }
+  plan.boss = is_boss;
+  plan.boss_base = is_boss && endface == ends[floor_k];
   plan.top = !corner_edge && endface == ends[upper];
   plan.ax = ax;
   plan.R = cyl.circle.radius;
@@ -539,6 +644,8 @@ bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan,
   }
   return true;
 }
+
+bool JoinAndOrientSolid(const ON_Brep& all, double tol, ON_Brep& out, std::string& why);
 
 // Builds the prism-with-hole from `plan` with the given blends at the lower / upper rim (std::nullopt = sharp).
 // `corners` (corner index in g.poly -> radius) rounds those vertical prism edges with an exact cylindrical fillet.
@@ -758,6 +865,12 @@ bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBl
   if (hi) {
     if (!add(make_face(g.c0 + g.H * g.ax, g.R + hi->d_cap)) || !add(patch(*hi, true))) { why = "could not build the upper rim blend"; return false; }
   }
+  return JoinAndOrientSolid(all, tol, out, why);
+}
+
+// Joins the loose exact pieces along their shared circles / lines and orients the shell outward; false (with the reason)
+// unless the result is a valid closed solid.
+bool JoinAndOrientSolid(const ON_Brep& all, double tol, ON_Brep& out, std::string& why) {
   kernel::Brep res;
   res.raw() = all;
   try {
@@ -792,6 +905,123 @@ bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBl
   }
   out = res.raw();
   return true;
+}
+
+// Exact fillet / chamfer at the BASE and/or the top rim of a cylindrical BOSS standing on a straight-edged plate (what
+// BooleanUnion of a box and a cylinder resting on its top face gives; the plan comes from ClassifyHolePlateRim's boss
+// reading of the exact faces, not from the sewn keyhole loop). The base blend is concave and ADDS material: a torus
+// (centre outside the wall, major radius R + r, minor r) or a cone, sharing its geometry with the hole rim's patch; the
+// plate's top face gets a circular hole of radius R + (base cap setback), the wall is shortened, and the top blend is the
+// ordinary convex rim blend (centre inside the wall) closed by a smaller cap disc.
+bool BuildBlendedBoss(const HolePlatePlan& g, const std::optional<HoleRimBlend>& base, const std::optional<HoleRimBlend>& top, ON_Brep& out,
+                      std::string& why) {
+  if (!base && !top) { why = "no blend requested"; return false; }
+  for (const auto* bl : {&base, &top}) {
+    if (!*bl) continue;
+    if (!((*bl)->d_wall > 0) || !((*bl)->d_cap > 0)) { why = "blend distances must be positive"; return false; }
+  }
+  const double zp = g.floor, Hc = g.H - zp;
+  const double bw = base ? base->d_wall : 0.0, tw = top ? top->d_wall : 0.0;
+  if (!(zp > 0) || !(Hc > 0)) { why = "degenerate boss"; return false; }
+  if (!(bw + tw < Hc)) { why = "the blends together consume the whole boss wall"; return false; }
+  if (top && !(top->d_cap < g.R)) { why = "the top blend would consume the whole boss cap"; return false; }
+  const double foot = g.R + (base ? base->d_cap : 0.0);
+  for (size_t i = 0; i < g.poly.size(); ++i) {
+    const ON_3dPoint& p = g.poly[i];
+    ON_3dVector d = g.poly[(i + 1) % g.poly.size()] - p;
+    if (!d.Unitize()) continue;
+    const ON_3dVector w = g.c0 - p;
+    if (!((w - (w * d) * d).Length() > foot + 1e-6)) { why = "the base blend would run off the plate"; return false; }
+  }
+  const double tol = 1e-6;
+  const ON_3dVector side_axis = ON_CrossProduct(g.ax, g.u);
+  auto make_face = [&](const ON_3dPoint& origin, double hole_r) -> ON_Brep* {
+    ON_Plane pl(origin, g.u, side_axis);
+    ON_SimpleArray<ON_Curve*> bnd;
+    const ON_3dVector shift = origin - g.c0;
+    for (size_t i = 0; i < g.poly.size(); ++i) bnd.Append(new ON_LineCurve(g.poly[i] + shift, g.poly[(i + 1) % g.poly.size()] + shift));
+    ON_Brep* f = ON_BrepTrimmedPlane(pl, bnd, false);
+    if (!f) { for (int i = 0; i < bnd.Count(); ++i) delete bnd[i]; return nullptr; }
+    if (!(hole_r > 0)) { f->Compact(); return f; }
+    ON_ArcCurve* hc = new ON_ArcCurve(ON_Circle(pl, hole_r));
+    double outer_area = 0;
+    if (const ON_BrepLoop* ol = f->m_F[0].OuterLoop()) {
+      for (int ti = 0; ti < ol->TrimCount(); ++ti) {
+        const ON_BrepTrim* t = ol->Trim(ti);
+        ON_3dPoint a = t->Edge()->PointAtStart(), c = t->Edge()->PointAtEnd();
+        if (t->m_bRev3d) std::swap(a, c);
+        outer_area += ON_CrossProduct(a - origin, c - origin) * g.ax;
+      }
+    }
+    if (outer_area > 0) hc->Reverse();
+    ON_SimpleArray<ON_Curve*> loop;
+    loop.Append(hc);
+    if (!f->NewPlanarFaceLoop(0, ON_BrepLoop::inner, loop, false)) { delete hc; delete f; return nullptr; }
+    f->Compact();
+    return f;
+  };
+  // the plate: a plain prism (full bottom face), its top face then replaced by one with the circular footing
+  ON_Brep* plate = make_face(g.c0, 0.0);
+  if (!plate) { why = "could not build the plate"; return false; }
+  {
+    ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + zp * g.ax));
+    if (ON_BrepExtrudeFace(*plate, 0, path, true) < 0) { delete plate; why = "could not extrude the plate"; return false; }
+  }
+  kernel::Brep k;
+  k.raw() = *plate;
+  delete plate;
+  std::vector<int> drop;
+  for (int f = 0; f < k.raw().m_F.Count(); ++f) {
+    ON_Plane pl;
+    if (k.raw().m_F[f].SurfaceOf()->IsPlanar(&pl, 1e-7) && std::fabs(pl.zaxis * g.ax) > 1.0 - 1e-9 && std::fabs((pl.origin - g.c0) * g.ax - zp) < 1e-6) drop.push_back(f);
+  }
+  if (drop.size() != 1) { why = "could not find the plate's top face"; return false; }
+  try { k.DeleteFace(drop[0], false); } catch (const std::exception& ex) { why = ex.what(); return false; }
+  ON_Brep all = k.raw();
+  auto add = [&](ON_Brep* p) -> bool {
+    if (!p) return false;
+    all.Append(*p);
+    delete p;
+    return true;
+  };
+  auto revolve = [&](ON_Curve* crv) -> ON_Brep* {
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = crv;
+    rev->m_axis = ON_Line(g.c0, g.c0 + g.ax);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    return ON_BrepRevSurface(rev, false, false);
+  };
+  if (!add(make_face(g.c0 + zp * g.ax, foot))) { why = "could not build the plate's top face"; return false; }
+  if (base) {
+    if (!base->chamfer) {
+      const double r = base->d_wall;
+      const ON_3dPoint centre = g.c0 + (g.R + r) * g.u + (zp + r) * g.ax;
+      if (!add(revolve(new ON_ArcCurve(ON_Arc(ON_Circle(ON_Plane(centre, g.u, g.ax), r), ON_Interval(ON_PI, 1.5 * ON_PI)))))) { why = "could not build the base fillet"; return false; }
+    } else {
+      if (!add(revolve(new ON_LineCurve(g.c0 + g.R * g.u + (zp + base->d_wall) * g.ax, g.c0 + (g.R + base->d_cap) * g.u + zp * g.ax)))) { why = "could not build the base chamfer"; return false; }
+    }
+  }
+  {
+    ON_Cylinder wall(ON_Circle(ON_Plane(g.c0 + (zp + bw) * g.ax, g.u, side_axis), g.R), Hc - bw - tw);
+    if (!add(ON_BrepCylinder(wall, false, false))) { why = "could not build the boss wall"; return false; }
+  }
+  if (top) {
+    if (!top->chamfer) {
+      const double r = top->d_wall;
+      const ON_3dPoint centre = g.c0 + (g.R - r) * g.u + (g.H - r) * g.ax;
+      if (!add(revolve(new ON_ArcCurve(ON_Arc(ON_Circle(ON_Plane(centre, g.u, g.ax), r), ON_Interval(0.0, ON_PI / 2)))))) { why = "could not build the top fillet"; return false; }
+    } else {
+      if (!add(revolve(new ON_LineCurve(g.c0 + g.R * g.u + (g.H - top->d_wall) * g.ax, g.c0 + (g.R - top->d_cap) * g.u + g.H * g.ax)))) { why = "could not build the top chamfer"; return false; }
+    }
+  }
+  {
+    const ON_Plane cp(g.c0 + g.H * g.ax, g.u, side_axis);
+    const ON_ArcCurve cap_circle{ON_Circle(cp, g.R - (top ? top->d_cap : 0.0))};
+    if (!add(ON_BrepTrimmedPlane(cp, cap_circle))) { why = "could not build the boss cap"; return false; }
+  }
+  return JoinAndOrientSolid(all, tol, out, why);
 }
 
 struct EdgePick { ObjectId id = kNoObject; int edge = -1; double dist = 0; };
@@ -2775,10 +3005,15 @@ class FilletEdgeCommand : public Command {
         if (ei < 0 || !ClassifyHolePlateRim(*b, ei, p, why, r.corner)) { ok = false; if (ei < 0) why = "staged rim edge no longer exists"; break; }
         plan = p;
         if (r.corner) corners[p.corner] = r.radius;
+        else if (p.boss) (p.boss_base ? lo : hi) = HoleRimBlend{false, r.radius, r.radius};  // a boss: lo = base, hi = top rim
         else (p.top ? hi : lo) = HoleRimBlend{false, r.radius, r.radius};
       }
+      if (ok) {  // keep a blend an earlier operation put on the other rim
+        if (plan.exist_lo && !lo) lo = plan.exist_lo;
+        if (plan.exist_hi && !hi) hi = plan.exist_hi;
+      }
       ON_Brep out;
-      if (ok && BuildBlendedHolePlate(plan, lo, hi, out, why, corners)) {
+      if (ok && (plan.boss ? BuildBlendedBoss(plan, lo, hi, out, why) : BuildBlendedHolePlate(plan, lo, hi, out, why, corners))) {
         ctx.Doc().BeginChange(label);
         if (SceneObject* orig = ctx.Doc().Find(id)) {
           orig->kind = ObjectKind::Brep;
@@ -2787,10 +3022,15 @@ class FilletEdgeCommand : public Command {
           orig->surface.reset();
           orig->InvalidateDisplay();
         }
-        if (lo || hi) {
+        if (plan.boss) {
+          ctx.Print(label + ": boss of object " + std::to_string(id) + " replaced with an exact fillet (" +
+                     (lo ? "base radius " + FormatNumber(lo->d_wall) : std::string()) + (hi && lo ? ", " : "") +
+                     (hi ? "top radius " + FormatNumber(hi->d_wall) : std::string()) + "; exact torus patch" + (hi && lo ? "es" : "") +
+                     " at the boss, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        } else if (lo || hi) {
           ctx.Print(label + ": hole rim(s) of object " + std::to_string(id) + " replaced with an exact fillet (" +
-                     (hi ? "upper radius " + FormatNumber(hi->d_wall) : std::string()) + (hi && lo ? ", " : "") +
-                     (lo ? "lower radius " + FormatNumber(lo->d_wall) : std::string()) + "; exact torus patch" + (hi && lo ? "es" : "") +
+                     (hi ? (hi->chamfer ? "upper chamfer " + FormatNumber(hi->d_wall) + " x " + FormatNumber(hi->d_cap) : "upper radius " + FormatNumber(hi->d_wall)) : std::string()) + (hi && lo ? ", " : "") +
+                     (lo ? (lo->chamfer ? "lower chamfer " + FormatNumber(lo->d_wall) + " x " + FormatNumber(lo->d_cap) : "lower radius " + FormatNumber(lo->d_wall)) : std::string()) + "; exact torus patch" + (hi && lo ? "es" : "") +
                      " on the concave hole wall" + (corners.empty() ? "" : ", " + std::to_string(corners.size()) + " exact cylindrical corner fillet(s)") + ", " +
                      std::to_string(out.m_F.Count()) + " faces, closed solid)");
         } else {
@@ -3127,7 +3367,7 @@ class FilletEdgeCommand : public Command {
           ctx.Print(label + ": corner edge of object " + std::to_string(pick.id) + " (a prism with a cylindrical hole) staged for an exact cylindrical fillet (radius " +
                      FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
         else
-          ctx.Print(label + ": " + std::string(hplan.top ? "upper" : "lower") + " rim of the cylindrical hole in object " + std::to_string(pick.id) +
+          ctx.Print(label + ": " + (hplan.boss ? std::string(hplan.boss_base ? "base" : "top") + " rim of the cylindrical boss on object " : std::string(hplan.top ? "upper" : "lower") + " rim of the cylindrical hole in object ") + std::to_string(pick.id) +
                      " staged for an exact torus fillet (radius " + FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
         return;
       }
@@ -3988,8 +4228,11 @@ class FilletEdgeCommand : public Command {
       HolePlatePlan hplan;
       if (ei >= 0 && ClassifyHolePlateRim(solid, ei, hplan, hole_err)) {
         std::optional<HoleRimBlend> lo, hi;
-        (hplan.top ? hi : lo) = HoleRimBlend{true, d_i, d_j};
-        if (BuildBlendedHolePlate(hplan, lo, hi, out, hole_err)) {
+        if (hplan.boss) (hplan.boss_base ? lo : hi) = HoleRimBlend{true, d_i, d_j};  // a boss: lo = base, hi = top rim
+        else (hplan.top ? hi : lo) = HoleRimBlend{true, d_i, d_j};
+        if (hplan.exist_lo && !lo) lo = hplan.exist_lo;  // keep a blend an earlier operation put on the other rim
+        if (hplan.exist_hi && !hi) hi = hplan.exist_hi;
+        if (hplan.boss ? BuildBlendedBoss(hplan, lo, hi, out, hole_err) : BuildBlendedHolePlate(hplan, lo, hi, out, hole_err)) {
           if (rim_chamfer) *rim_chamfer = true;
           return true;
         }

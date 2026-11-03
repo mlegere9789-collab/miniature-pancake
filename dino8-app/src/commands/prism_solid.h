@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <string>
@@ -378,9 +380,13 @@ inline ON_Curve* SegCurve(const Prism& pr, const Seg& g, double h0) {
   return arc.IsValid() ? new ON_ArcCurve(arc) : nullptr;
 }
 
-// Builds the closed solid: the profile `prof` extruded from height h0 to h0 + H along the axis.
-// Builds the closed solid: the profile `prof` extruded from height h0 to h0 + H along the axis.
-inline std::optional<kernel::Brep> Build(const Prism& pr, const std::vector<Seg>& prof, double h0, double H) {
+// A circular through-hole of the extrusion: centre in the profile plane, radius.
+struct Hole2 { V2 c; double r = 0; };
+
+// Builds the closed solid: the profile `prof` extruded from height h0 to h0 + H along the axis;
+// with `hole`, the end faces carry that circular hole and the extrusion adds its cylindrical wall.
+inline std::optional<kernel::Brep> Build(const Prism& pr, const std::vector<Seg>& prof, double h0, double H,
+                                         const std::optional<Hole2>& hole = std::nullopt) {
   if (!(H > 0)) return std::nullopt;
   ON_SimpleArray<ON_Curve*> bnd;
   for (const Seg& g : prof) {
@@ -391,6 +397,24 @@ inline std::optional<kernel::Brep> Build(const Prism& pr, const std::vector<Seg>
   ON_Plane plane(To3(pr, V2{0, 0}, h0), pr.X, pr.Y);
   ON_Brep* br = ON_BrepTrimmedPlane(plane, bnd, false);
   if (!br) { for (int i = 0; i < bnd.Count(); ++i) delete bnd[i]; return std::nullopt; }
+  if (hole) {
+    ON_Plane hp(To3(pr, hole->c, h0), pr.X, pr.Y);
+    ON_ArcCurve* hc = new ON_ArcCurve(ON_Circle(hp, hole->r));
+    double outer_area = 0;  // the hole runs opposite to the outer boundary
+    if (const ON_BrepLoop* ol = br->m_F[0].OuterLoop()) {
+      for (int ti = 0; ti < ol->TrimCount(); ++ti) {
+        const ON_BrepTrim* t = ol->Trim(ti);
+        ON_3dPoint a = t->Edge()->PointAtStart(), c = t->Edge()->PointAtEnd();
+        if (t->m_bRev3d) std::swap(a, c);
+        outer_area += ON_CrossProduct(a - plane.origin, c - plane.origin) * pr.n;
+      }
+    }
+    if (outer_area > 0) hc->Reverse();
+    ON_SimpleArray<ON_Curve*> loop;
+    loop.Append(hc);
+    if (!br->NewPlanarFaceLoop(0, ON_BrepLoop::inner, loop, false)) { delete hc; delete br; return std::nullopt; }
+    br->Compact();
+  }
   ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + H * pr.n));
   if (ON_BrepExtrudeFace(*br, 0, path, true) < 0) { delete br; return std::nullopt; }
   kernel::Brep k;
@@ -418,6 +442,168 @@ inline std::optional<kernel::Brep> OffsetSolid(const Prism& pr, double d, std::s
   if (!q) return std::nullopt;
   std::optional<kernel::Brep> k = Build(pr, *q, -d, pr.H + 2 * d);
   if (!k) why = "the offset prism did not assemble into a valid closed solid";
+  return k;
+}
+
+
+// ---------------------------------------------------------------------------
+// A right prism with ONE circular THROUGH-HOLE along its axis - what BooleanDifference of a box
+// (or any straight-sided prism) and a cylinder gives. As with ClassifyHolePlateRim
+// (cmd_fillet.cpp) the plan is read from the exact FACES - the cylinder, the two end planes and
+// the side planes' ring - never from the sewn cap loop (a keyhole polyline whose vertices were
+// snapped by the sewing tolerance). The offset is analytic: the outer polygon is offset like any
+// prism profile, the hole stays concentric with radius R - d (the material grows into the hole),
+// the caps move along the axis. The recognition is cross-checked against the solid's own volume.
+// ---------------------------------------------------------------------------
+struct HolePrism {
+  Prism pr;        // the OUTER profile (straight edges) and the caps; the axis passes through the origin of the profile plane
+  Hole2 hole;      // centre (0,0) and the radius
+};
+
+// `not_hole` is true when the solid is simply not that shape (the caller keeps its own message).
+inline bool RecognizeHole(const ON_Brep& b, HolePrism& hp, std::string& why, bool& not_hole) {
+  not_hole = true;
+  if (!b.IsSolid()) { why = "the polysurface is not a closed solid"; return false; }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double diag = std::max(1e-9, bb.Diagonal().Length());
+  const double tol = std::max(1e-6, diag * 1e-6);
+  int wall = -1;
+  ON_Cylinder cyl;
+  for (int f = 0; f < b.m_F.Count(); ++f) {
+    const ON_Surface* surf = b.m_F[f].SurfaceOf();
+    if (!surf) return false;
+    ON_Cylinder c;
+    ON_Plane pl;
+    if (surf->IsPlanar(&pl, tol)) continue;
+    if (surf->IsCylinder(&c, tol)) { if (wall >= 0) return false; wall = f; cyl = c; }
+    else return false;
+  }
+  if (wall < 0) return false;
+  ON_3dVector ax = cyl.Axis();
+  if (!ax.Unitize()) return false;
+  std::vector<int> ends, sides;
+  for (int f = 0; f < b.m_F.Count(); ++f) {
+    if (f == wall) continue;
+    ON_Plane pl;
+    b.m_F[f].SurfaceOf()->IsPlanar(&pl, tol);
+    const double dn = std::fabs(pl.zaxis * ax);
+    if (dn > 1.0 - 1e-9) ends.push_back(f);
+    else if (dn < 1e-9) sides.push_back(f);
+    else return false;
+  }
+  if (ends.size() != 2 || sides.size() < 3) return false;
+  double h[2];
+  bool touch[2] = {false, false};
+  for (int k = 0; k < 2; ++k) {
+    ON_Plane pl;
+    b.m_F[ends[static_cast<size_t>(k)]].SurfaceOf()->IsPlanar(&pl, tol);
+    h[k] = (pl.origin - cyl.circle.plane.origin) * ax;
+    for (int ei = 0; ei < b.m_E.Count() && !touch[k]; ++ei) {
+      const ON_BrepEdge& ee = b.m_E[ei];
+      if (ee.m_edge_index < 0 || ee.TrimCount() != 2) continue;
+      const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
+      touch[k] = (x == wall && y == ends[static_cast<size_t>(k)]) || (y == wall && x == ends[static_cast<size_t>(k)]);
+    }
+  }
+  if (!touch[0] || !touch[1]) return false;  // blind hole or boss: not a through-hole
+  const double h0 = std::min(h[0], h[1]), h1 = std::max(h[0], h[1]);
+  if (!(h1 - h0 > tol)) return false;
+  const ON_3dPoint c0 = cyl.circle.plane.origin + h0 * ax;
+  // The side planes must form one closed ring (each meets exactly two others).
+  std::map<int, std::set<int>> adj;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    const ON_BrepEdge& ee = b.m_E[ei];
+    if (ee.m_edge_index < 0 || ee.TrimCount() != 2) continue;
+    const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
+    if (x == y || std::find(sides.begin(), sides.end(), x) == sides.end() || std::find(sides.begin(), sides.end(), y) == sides.end()) continue;
+    adj[x].insert(y);
+    adj[y].insert(x);
+  }
+  for (int sfi : sides) if (adj[sfi].size() != 2) return false;
+  std::vector<int> ring{sides[0]};
+  int prev = -1, cur = sides[0];
+  while (true) {
+    int nxt = -1;
+    for (int cand : adj[cur]) if (cand != prev) { nxt = cand; break; }
+    if (nxt < 0 || nxt == sides[0]) break;
+    if (ring.size() > sides.size()) return false;
+    ring.push_back(nxt);
+    prev = cur;
+    cur = nxt;
+  }
+  if (ring.size() != sides.size()) return false;
+  const ON_Plane lower_plane(c0, ax);
+  std::vector<ON_3dPoint> poly3;
+  for (size_t i = 0; i < ring.size(); ++i) {
+    ON_Plane pa, pb;
+    b.m_F[ring[i]].SurfaceOf()->IsPlanar(&pa, tol);
+    b.m_F[ring[(i + 1) % ring.size()]].SurfaceOf()->IsPlanar(&pb, tol);
+    ON_3dPoint corner;
+    if (!ON_Intersect(pa, pb, lower_plane, corner)) return false;
+    poly3.push_back(corner);
+  }
+  // From here on the solid IS a hole-plate candidate: failures carry a reason the caller prints.
+  ON_3dVector X = cyl.circle.plane.xaxis;
+  X = X - (X * ax) * ax;
+  if (!X.Unitize()) return false;
+  hp.pr.n = ax;
+  hp.pr.O = c0;
+  hp.pr.X = X;
+  hp.pr.Y = ON_CrossProduct(ax, X);
+  hp.pr.H = h1 - h0;
+  const ON_3dPoint axis_pt = cyl.circle.plane.origin;
+  auto to2 = [&](const ON_3dPoint& p) { const ON_3dVector v = p - hp.pr.O; return V2{v * hp.pr.X, v * hp.pr.Y}; };
+  std::vector<V2> poly;
+  for (const ON_3dPoint& p : poly3) poly.push_back(to2(p));
+  double area = 0;
+  for (size_t i = 0; i < poly.size(); ++i) area += 0.5 * Cross(poly[i], poly[(i + 1) % poly.size()]);
+  if (area < 0) { std::reverse(poly.begin(), poly.end()); area = -area; }
+  hp.pr.prof.clear();
+  for (size_t i = 0; i < poly.size(); ++i) {
+    Seg g;
+    g.a = poly[i];
+    g.b = poly[(i + 1) % poly.size()];
+    hp.pr.prof.push_back(g);
+  }
+  const V2 axis2 = to2(axis_pt - ((axis_pt - c0) * ax) * ax);
+  hp.hole.c = axis2;
+  hp.hole.r = cyl.circle.radius;
+  not_hole = false;
+  for (const Seg& g : hp.pr.prof) {
+    if (!(DistToSeg(g, hp.hole.c) > hp.hole.r + 10 * tol)) { why = "the hole is not inside the outer polygon"; return false; }
+  }
+  BrepMeshOptions opt;
+  opt.chord_tolerance = std::max(1e-6, diag * 2e-4);
+  double vol = 0;
+  try { vol = std::fabs(MeshBrepClosed(b, opt).Volume()); } catch (const std::exception&) { vol = 0; }
+  const double expect = (area - ON_PI * hp.hole.r * hp.hole.r) * hp.pr.H;
+  if (!(expect > 0) || !(std::fabs(vol - expect) <= 5e-3 * expect)) {
+    why = "the solid is not a right prism with one round through-hole (volume check failed)";
+    return false;
+  }
+  return true;
+}
+
+// The prism-with-hole offset outward by d (negative = inward; d == 0 rebuilds it exactly):
+// outer polygon offset, hole radius R - d, caps moved by d.
+inline std::optional<kernel::Brep> OffsetHoleSolid(const HolePrism& hp, double d, std::string& why) {
+  const Prism& pr = hp.pr;
+  const double sc = Scale(pr);
+  if (!(pr.H + 2 * d > sc * 1e-6)) { why = "the prism would collapse between its caps at that offset"; return std::nullopt; }
+  const double r2 = hp.hole.r - d;
+  if (!(r2 > sc * 1e-6)) { why = "the hole would vanish at that offset (its radius reaches zero)"; return std::nullopt; }
+  std::vector<Seg> q = pr.prof;
+  if (d != 0) {
+    std::optional<std::vector<Seg>> o = OffsetLoop(pr.prof, d, sc, why);
+    if (!o) return std::nullopt;
+    q = *o;
+  }
+  for (const Seg& g : q) {
+    if (!(DistToSeg(g, hp.hole.c) > r2 + sc * 1e-6)) { why = "the hole would reach the outer wall at that offset"; return std::nullopt; }
+  }
+  std::optional<kernel::Brep> k = Build(pr, q, -d, pr.H + 2 * d, Hole2{hp.hole.c, r2});
+  if (!k) why = "the offset prism with its hole did not assemble into a valid closed solid";
   return k;
 }
 
