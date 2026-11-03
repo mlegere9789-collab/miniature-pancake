@@ -1,6 +1,7 @@
 // Surface, solid, mesh and SubD creation commands.
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
+#include "commands/prism_solid.h"
 #include "commands/section_fit.h"
 
 #include <array>
@@ -1614,6 +1615,494 @@ std::optional<AnalyticCageResult> AnalyticCageForBrep(const SceneObject& o, doub
   }
 }
 
+// ---------------------------------------------------------------------------
+// Analytic cage for a TORUS (one face, closed in both parameter directions).
+// The old path tessellated it into the kernel's uniform grid at n = 24, 48,
+// 96, 192 divisions per direction (a 18432-face cage for the default
+// document tolerance: 96 x 96 x 2 triangles). Here the cage is the plain
+// N x M quad grid of the face's own parametrisation (every vertex ON the
+// Brep, no pole, no irregular vertex: every vertex has valence 4 and the
+// grid is doubly periodic), interpolated onto the surface with
+// SubD::InterpolateControlNet, and the Catmull-Clark limit surface is then
+// MEASURED against the exact surface sampled far finer than the tolerance
+// (the same parametrisation at a chord sag of about tol/6; its own estimated
+// sag is added to the reported deviation), exactly as the revolved-solid
+// cage does it. nullopt / unverified falls through to the unchanged path.
+// ---------------------------------------------------------------------------
+struct TorusGrid {
+  kernel::Mesh mesh;
+  double chord_sag = 0.0;  // largest |midpoint of a cell diagonal - surface at the cell's parameter centre| (sampled cells)
+};
+
+// Orients a polygon soup outward (positive signed volume) and wraps it in a kernel::Mesh. Faces are
+// 4 indices; a triangle repeats its third index.
+kernel::Mesh MeshFromOrientedPolys(const std::vector<ON_3dPoint>& pos, const std::vector<std::array<int, 4>>& faces) {
+  double sv = 0.0;
+  for (const auto& f : faces) {
+    for (int t = 0; t < (f[3] == f[2] ? 1 : 2); ++t) {
+      const ON_3dVector a(pos[static_cast<size_t>(f[0])]);
+      const ON_3dVector bq(pos[static_cast<size_t>(f[t + 1])]);
+      const ON_3dVector cq(pos[static_cast<size_t>(f[t + 2])]);
+      sv += ON_DotProduct(a, ON_CrossProduct(bq, cq)) / 6.0;
+    }
+  }
+  const bool flip = sv < 0.0;
+  kernel::Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+  raw.m_V.Reserve(static_cast<int>(pos.size()));
+  for (const ON_3dPoint& p : pos) raw.m_V.Append(ON_3fPoint(p));
+  raw.m_F.Reserve(static_cast<int>(faces.size()));
+  for (const auto& f : faces) {
+    const bool tri = f[3] == f[2];
+    ON_MeshFace mf;
+    if (!flip) {
+      mf.vi[0] = f[0]; mf.vi[1] = f[1]; mf.vi[2] = f[2]; mf.vi[3] = f[3];
+    } else if (tri) {
+      mf.vi[0] = f[2]; mf.vi[1] = f[1]; mf.vi[2] = f[0]; mf.vi[3] = f[0];
+    } else {
+      mf.vi[0] = f[3]; mf.vi[1] = f[2]; mf.vi[2] = f[1]; mf.vi[3] = f[0];
+    }
+    if (tri) mf.vi[3] = mf.vi[2];
+    raw.m_F.Append(mf);
+  }
+  return mesh;
+}
+
+// The surface of a one-face, doubly-closed Brep (null for anything else).
+const ON_Surface* DoublyClosedFaceSurface(const ON_Brep& b) {
+  if (b.m_F.Count() != 1) return nullptr;
+  const ON_Surface* s = b.m_F[0].SurfaceOf();
+  if (s == nullptr || !s->IsClosed(0) || !s->IsClosed(1)) return nullptr;
+  return s;
+}
+
+std::optional<TorusGrid> BuildTorusGrid(const ON_Brep& b, int N, int M, bool with_sag) {
+  if (N < 8 || M < 8) return std::nullopt;
+  const ON_Surface* srf = DoublyClosedFaceSurface(b);
+  if (srf == nullptr) return std::nullopt;
+  const ON_BoundingBox bbox = b.BoundingBox();
+  const double scale = std::max(bbox.Diagonal().Length(), 1e-9);
+  ON_Plane pl;
+  if (srf->IsPlanar(&pl, 1e-6 * scale)) return std::nullopt;
+  const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+  std::vector<ON_3dPoint> pos(static_cast<size_t>(N) * M);
+  const auto at = [&](int i, int j) { return (j % M) * N + (i % N); };
+  for (int j = 0; j < M; ++j)
+    for (int i = 0; i < N; ++i) pos[static_cast<size_t>(at(i, j))] = srf->PointAt(du.ParameterAt(static_cast<double>(i) / N), dv.ParameterAt(static_cast<double>(j) / M));
+  std::vector<std::array<int, 4>> faces;
+  faces.reserve(static_cast<size_t>(N) * M);
+  for (int j = 0; j < M; ++j)
+    for (int i = 0; i < N; ++i) faces.push_back({at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)});
+  for (const auto& f : faces)
+    for (int k = 0; k < 4; ++k)
+      if (pos[static_cast<size_t>(f[k])].DistanceTo(pos[static_cast<size_t>(f[(k + 1) % 4])]) < 1e-9 * scale) return std::nullopt;  // a collapsed edge: not a regular torus grid
+  TorusGrid g;
+  if (with_sag) {
+    const int istep = std::max(1, N / 16);
+    for (int j = 0; j < M; ++j) {
+      for (int i = 0; i < N; i += istep) {
+        const ON_3dPoint& p00 = pos[static_cast<size_t>(at(i, j))];
+        const ON_3dPoint& p10 = pos[static_cast<size_t>(at(i + 1, j))];
+        const ON_3dPoint& p11 = pos[static_cast<size_t>(at(i + 1, j + 1))];
+        const ON_3dPoint& p01 = pos[static_cast<size_t>(at(i, j + 1))];
+        const ON_3dPoint mid = srf->PointAt(du.ParameterAt((i + 0.5) / N), dv.ParameterAt((j + 0.5) / M));
+        const ON_3dPoint d0((p00.x + p11.x) * 0.5, (p00.y + p11.y) * 0.5, (p00.z + p11.z) * 0.5);
+        const ON_3dPoint d1((p10.x + p01.x) * 0.5, (p10.y + p01.y) * 0.5, (p10.z + p01.z) * 0.5);
+        g.chord_sag = std::max({g.chord_sag, d0.DistanceTo(mid), d1.DistanceTo(mid)});
+      }
+    }
+  }
+  g.mesh = MeshFromOrientedPolys(pos, faces);
+  if (!g.mesh.IsClosedManifold()) return std::nullopt;
+  return g;
+}
+
+// Result of an analytic cage (revolved solid, torus, right prism) - reuses AnalyticCageResult.
+std::optional<AnalyticCageResult> TorusCageForBrep(const SceneObject& o, double tol) {
+  if (!o.brep) return std::nullopt;
+  const ON_Brep& b = o.brep->raw();
+  const ON_Surface* srf = DoublyClosedFaceSurface(b);
+  if (srf == nullptr) return std::nullopt;
+  try {
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    // Circumference of the u and v parameter circles through the middle of the other domain: sets the cage's aspect.
+    const auto circ = [&](bool along_u) {
+      const int n = 96;
+      double len = 0.0;
+      ON_3dPoint prev;
+      for (int k = 0; k <= n; ++k) {
+        const double t = static_cast<double>(k) / n;
+        const ON_3dPoint p = along_u ? srf->PointAt(du.ParameterAt(t), dv.ParameterAt(0.25)) : srf->PointAt(du.ParameterAt(0.25), dv.ParameterAt(t));
+        if (k > 0) len += p.DistanceTo(prev);
+        prev = p;
+      }
+      return len;
+    };
+    const double lu = circ(true), lv = circ(false);
+    if (!(lu > 0.0) || !(lv > 0.0)) return std::nullopt;
+    const double ratio = std::min(4.0, std::max(1.0, lu / lv));
+    // Reference: the same parametrisation at a chord sag of about tol/6.
+    const ON_BoundingBox bb = b.BoundingBox();
+    const double rho = std::max(0.5 * bb.Diagonal().Length(), 1e-6);
+    int nref = static_cast<int>(std::ceil(3.14159265 * std::sqrt(3.0 * rho / std::max(tol, 1e-12))));
+    nref = std::min(1024, std::max(192, (nref + 7) / 8 * 8));
+    const double lratio = std::max(0.25, std::min(1.0, lv / lu));
+    int mref = std::max(96, (static_cast<int>(std::ceil(nref * lratio * 1.1)) + 7) / 8 * 8);
+    while (static_cast<long long>(nref) * mref > 300000 && mref > 96) mref -= 8;
+    const std::optional<TorusGrid> ref = BuildTorusGrid(b, nref, mref, true);
+    if (!ref) return std::nullopt;
+    const kernel::MeshClosestPointIndex ref_index(ref->mesh);
+    std::optional<AnalyticCageResult> best;
+    for (int M : {16, 20, 24, 32, 48}) {
+      const int N = std::max(32, static_cast<int>(std::lround(M * ratio / 4.0)) * 4);
+      const std::optional<TorusGrid> cage = BuildTorusGrid(b, N, M, false);
+      if (!cage) { if (!best) return std::nullopt; break; }
+      AnalyticCageResult cur;
+      kernel::SubD sd = kernel::SubD::FromControlMesh(cage->mesh);
+      // No creases: a torus is smooth everywhere; the grid is all valence-4, so Catmull-Clark is exactly bicubic B-spline.
+      kernel::SubDInterpolationReport frep;
+      const kernel::BoundingBox cbb = cage->mesh.GetBoundingBox();
+      const double extent = (cbb.max - cbb.min).Length();
+      cur.subd = sd.InterpolateControlNet(std::max(tol * 0.05, 2e-7 * std::max(extent, 1.0)), 150, &frep);
+      cur.fit_iterations = frep.iterations;
+      cur.fit_residual = frep.final_max_residual;
+      kernel::SubD probe = cur.subd;
+      probe.Subdivide(2);
+      const std::vector<kernel::SubDLimitPoint> lps = probe.LimitPoints();
+      if (lps.empty()) return std::nullopt;
+      const size_t step = std::max<size_t>(1, lps.size() / 40000);
+      double dev = 0.0;
+      for (size_t i = 0; i < lps.size(); i += step) {
+        const Point3d& q = lps[i].limit_point;
+        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        ++cur.samples;
+      }
+      cur.reference_sag = ref->chord_sag;
+      cur.reference_around = nref;
+      cur.reference_along = mref;
+      cur.deviation = dev + ref->chord_sag;
+      cur.verified = cur.deviation <= tol;
+      cur.cage_faces = cage->mesh.FaceCount();
+      cur.cage_around = N;
+      cur.cage_along = M;
+      best = std::move(cur);
+      if (best->verified) break;
+    }
+    return best;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Analytic cage for a RIGHT PRISM whose profile is lines and circular arcs
+// (an extruded L or U, a box with its vertical edges rounded by FilletEdge,
+// a slab with rounded ends). The profile is read by prism::Recognize (the
+// same recogniser the exact Offset / Shell of a prism uses; it cross-checks
+// the solid's volume against profile area x height). The cage is one quad
+// ring per profile column (arcs cut every `dth`, a straight line that meets a
+// tangent neighbour is graded 1.5x away from the joint so the interpolating
+// limit curve does not swing across it), J rows along the axis, and the two
+// flat caps ear-clipped from the same boundary points (a flat cap is exactly
+// planar whatever its triangulation: every Catmull-Clark limit point of
+// coplanar control points is an affine combination of them, and its rim
+// points come from the crease rule). Rims are creased (dihedral), vertical
+// edges at profile corners are creased explicitly (also for turns below the
+// dihedral threshold), the cage is interpolated onto the surface and the
+// limit surface is MEASURED: against the exact wall (a ruled strip over the
+// profile sampled at a chord sag of about tol/10, exact for an extrusion)
+// and, for the caps, against the exact cap planes wherever the sample lies
+// inside the profile. The reported deviation includes the reference's sag.
+// ---------------------------------------------------------------------------
+struct PrismColumns {
+  std::vector<prism::V2> pts;
+  std::vector<char> sharp;  // 1 where the profile has a corner (tangent turn > 2 degrees) at this column
+};
+
+std::vector<double> GradedBreaks(double L, double s, bool ja, bool jb) {
+  std::vector<double> br;
+  if ((!ja && !jb) || !(s > 0.0) || !(L > 1.5 * s)) return br;
+  constexpr double kGrow = 1.5;
+  if (ja) {
+    double x = 0.0, st = s;
+    while (true) { x += st; if (x > L - 0.3 * s) break; br.push_back(x); st *= kGrow; if (jb && x > 0.5 * L) break; }
+  }
+  if (jb) {
+    double x = 0.0, st = s;
+    while (true) { x += st; if (x > L - 0.3 * s) break; br.push_back(L - x); st *= kGrow; if (ja && x > 0.5 * L) break; }
+  }
+  std::sort(br.begin(), br.end());
+  std::vector<double> out;
+  for (double x : br) {
+    if (x < 0.3 * s || x > L - 0.3 * s) continue;
+    if (!out.empty() && x - out.back() < 0.3 * s) continue;
+    out.push_back(x);
+  }
+  return out;
+}
+
+PrismColumns DiscretizeProfile(const std::vector<prism::Seg>& P, double dth, double s_line) {
+  PrismColumns cols;
+  const size_t S = P.size();
+  const auto turn = [&](size_t k) {  // tangent turn at the start of segment k
+    const prism::V2 t0 = prism::EndTangent(P[(k + S - 1) % S]), t1 = prism::StartTangent(P[k]);
+    return std::atan2(std::fabs(prism::Cross(t0, t1)), prism::Dot(t0, t1));
+  };
+  constexpr double kCornerTurn = 0.035;  // 2 degrees
+  for (size_t k = 0; k < S; ++k) {
+    const prism::Seg& g = P[k];
+    const bool sharp0 = turn(k) > kCornerTurn;
+    cols.pts.push_back(g.a);
+    cols.sharp.push_back(sharp0 ? 1 : 0);
+    if (g.arc) {
+      const double th = prism::Sweep(g);
+      const int n = std::max(1, static_cast<int>(std::ceil(th / dth - 1e-9)));
+      const double p0 = std::atan2(g.a.y - g.c.y, g.a.x - g.c.x);
+      for (int t = 1; t < n; ++t) {
+        const double p = p0 + g.s * th * t / n;
+        cols.pts.push_back(g.c + prism::V2{g.r * std::cos(p), g.r * std::sin(p)});
+        cols.sharp.push_back(0);
+      }
+    } else {
+      const bool sharp1 = turn((k + 1) % S) > kCornerTurn;
+      const double L = prism::Len(g.b - g.a);
+      for (double x : GradedBreaks(L, s_line, !sharp0, !sharp1)) {
+        cols.pts.push_back(g.a + (x / L) * (g.b - g.a));
+        cols.sharp.push_back(0);
+      }
+    }
+  }
+  return cols;
+}
+
+// Ear clipping of a counter-clockwise simple polygon; empty on failure.
+std::vector<std::array<int, 3>> EarClip(const std::vector<prism::V2>& p, double scale) {
+  const int n = static_cast<int>(p.size());
+  std::vector<std::array<int, 3>> tris;
+  if (n < 3) return tris;
+  std::vector<int> idx(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) idx[static_cast<size_t>(i)] = i;
+  const double eps = 1e-9 * scale * scale;
+  const auto cross3 = [&](int a, int b, int c) { return prism::Cross(p[static_cast<size_t>(b)] - p[static_cast<size_t>(a)], p[static_cast<size_t>(c)] - p[static_cast<size_t>(a)]); };
+  const auto inside = [&](int a, int b, int c, int q) {
+    return cross3(a, b, q) >= -eps && cross3(b, c, q) >= -eps && cross3(c, a, q) >= -eps;
+  };
+  // Ears are taken shortest-diagonal first: that peels the polygon like an onion instead of fanning
+  // it from one vertex (a fan puts a very high valence vertex on the flat cap, whose Catmull-Clark
+  // limit overshoots the cap's convex hull by tenths of a unit).
+  int guard = 0;
+  while (idx.size() > 3 && guard++ < 4 * n) {
+    const int m = static_cast<int>(idx.size());
+    int found = -1;
+    for (int pass = 0; pass < 2 && found < 0; ++pass) {
+      std::vector<std::pair<double, int>> cand;
+      for (int k = 0; k < m; ++k) {
+        const int a = idx[static_cast<size_t>((k + m - 1) % m)], b = idx[static_cast<size_t>(k)], c = idx[static_cast<size_t>((k + 1) % m)];
+        const double cr = cross3(a, b, c);
+        if (pass == 0 ? !(cr > eps) : !(cr >= -eps)) continue;
+        cand.emplace_back(prism::Len(p[static_cast<size_t>(c)] - p[static_cast<size_t>(a)]), k);
+      }
+      std::sort(cand.begin(), cand.end());
+      for (const auto& kc : cand) {
+        const int k = kc.second;
+        const int a = idx[static_cast<size_t>((k + m - 1) % m)], b = idx[static_cast<size_t>(k)], c = idx[static_cast<size_t>((k + 1) % m)];
+        bool ok = true;
+        for (int t = 0; t < m && ok; ++t) {
+          const int q = idx[static_cast<size_t>(t)];
+          if (q == a || q == b || q == c) continue;
+          if (pass == 0 ? inside(a, b, c, q) : (cross3(a, b, q) > eps && cross3(b, c, q) > eps && cross3(c, a, q) > eps)) ok = false;
+        }
+        if (ok) { found = k; break; }
+      }
+    }
+    if (found < 0) return {};
+    tris.push_back({idx[static_cast<size_t>((found + m - 1) % m)], idx[static_cast<size_t>(found)], idx[static_cast<size_t>((found + 1) % m)]});
+    idx.erase(idx.begin() + found);
+  }
+  if (idx.size() == 3) tris.push_back({idx[0], idx[1], idx[2]});
+  return tris;
+}
+
+struct PrismCageMesh {
+  kernel::Mesh mesh;
+  int columns = 0, rows = 0, corners = 0;
+  std::vector<std::pair<ON_3dPoint, ON_3dPoint>> corner_edges;  // vertical wall edges at profile corners (float-rounded positions)
+};
+
+std::optional<PrismCageMesh> BuildPrismCage(const prism::Prism& pr, double dth, double s_line, int J) {
+  const PrismColumns cols = DiscretizeProfile(pr.prof, dth, s_line);
+  const int C = static_cast<int>(cols.pts.size());
+  if (C < 3 || C > 1500 || J < 1) return std::nullopt;
+  const double scale = prism::Scale(pr);
+  const std::vector<std::array<int, 3>> tris = EarClip(cols.pts, scale);
+  if (static_cast<int>(tris.size()) != C - 2) return std::nullopt;
+  std::vector<ON_3dPoint> pos;
+  pos.reserve(static_cast<size_t>(C) * (J + 1));
+  for (int j = 0; j <= J; ++j)
+    for (int c = 0; c < C; ++c) pos.push_back(prism::To3(pr, cols.pts[static_cast<size_t>(c)], pr.H * j / J));
+  const auto vi = [&](int c, int j) { return j * C + (c % C); };
+  std::vector<std::array<int, 4>> faces;
+  for (int j = 0; j < J; ++j)
+    for (int c = 0; c < C; ++c) faces.push_back({vi(c, j), vi(c + 1, j), vi(c + 1, j + 1), vi(c, j + 1)});
+  for (const auto& t : tris) {
+    faces.push_back({vi(t[0], J), vi(t[1], J), vi(t[2], J), vi(t[2], J)});  // top cap, counter-clockwise about the axis
+    faces.push_back({vi(t[2], 0), vi(t[1], 0), vi(t[0], 0), vi(t[0], 0)});  // bottom cap, reversed
+  }
+  PrismCageMesh out;
+  out.columns = C;
+  out.rows = J;
+  for (int c = 0; c < C; ++c) {
+    if (!cols.sharp[static_cast<size_t>(c)]) continue;
+    ++out.corners;
+    for (int j = 0; j < J; ++j)
+      out.corner_edges.emplace_back(ON_3dPoint(ON_3fPoint(pos[static_cast<size_t>(vi(c, j))])), ON_3dPoint(ON_3fPoint(pos[static_cast<size_t>(vi(c, j + 1))])));
+  }
+  out.mesh = MeshFromOrientedPolys(pos, faces);
+  if (!out.mesh.IsClosedManifold()) return std::nullopt;
+  return out;
+}
+
+// The exact prism as a measuring stick: a ruled strip over the finely sampled profile (exact for an
+// extrusion, bar the arcs' chord sag) and the two exact cap planes with the profile polygon.
+struct PrismReference {
+  kernel::Mesh walls;
+  std::vector<prism::V2> poly;
+  double sag = 0.0;
+  bool Inside(prism::V2 q) const {
+    bool in = false;
+    const size_t n = poly.size();
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+      if (((poly[i].y > q.y) != (poly[j].y > q.y)) && (q.x < (poly[j].x - poly[i].x) * (q.y - poly[i].y) / (poly[j].y - poly[i].y) + poly[i].x)) in = !in;
+    }
+    return in;
+  }
+};
+
+std::optional<PrismReference> BuildPrismReference(const prism::Prism& pr, double tol) {
+  PrismReference ref;
+  for (const prism::Seg& g : pr.prof) {
+    ref.poly.push_back(g.a);
+    if (!g.arc) continue;
+    const double s = tol / 10.0;
+    const double dth = std::max(2.0 * std::acos(std::max(-1.0, 1.0 - s / g.r)), 1e-3);
+    const int n = std::min(4096, std::max(2, static_cast<int>(std::ceil(prism::Sweep(g) / dth))));
+    const double th = prism::Sweep(g), p0 = std::atan2(g.a.y - g.c.y, g.a.x - g.c.x);
+    for (int t = 1; t < n; ++t) {
+      const double p = p0 + g.s * th * t / n;
+      ref.poly.push_back(g.c + prism::V2{g.r * std::cos(p), g.r * std::sin(p)});
+    }
+    ref.sag = std::max(ref.sag, g.r * (1.0 - std::cos(0.5 * th / n)));
+  }
+  const int C = static_cast<int>(ref.poly.size());
+  if (C < 3) return std::nullopt;
+  std::vector<ON_3dPoint> pos;
+  for (int j = 0; j < 2; ++j)
+    for (int c = 0; c < C; ++c) pos.push_back(prism::To3(pr, ref.poly[static_cast<size_t>(c)], j == 0 ? 0.0 : pr.H));
+  ON_Mesh& raw = ref.walls.raw();
+  for (const ON_3dPoint& p : pos) raw.m_V.Append(ON_3fPoint(p));
+  const auto tri = [&](int a, int b, int c) {
+    ON_MeshFace mf;
+    mf.vi[0] = a; mf.vi[1] = b; mf.vi[2] = c; mf.vi[3] = c;
+    raw.m_F.Append(mf);
+  };
+  for (int c = 0; c < C; ++c) {
+    const int c1 = (c + 1) % C;
+    tri(c, c1, C + c1);
+    tri(c, C + c1, C + c);
+  }
+  return ref;
+}
+
+struct PrismCageResult {
+  kernel::SubD subd;
+  int cage_faces = 0, columns = 0, rows = 0, corners = 0, profile_segments = 0, arcs = 0;
+  int crease_edges = 0, fit_iterations = 0, samples = 0;
+  double fit_residual = 0.0, deviation = 0.0, reference_sag = 0.0;
+  bool verified = false;
+};
+
+std::optional<PrismCageResult> PrismCageForBrep(const SceneObject& o, double tol) {
+  if (!o.brep) return std::nullopt;
+  const ON_Brep& b = o.brep->raw();
+  if (b.m_F.Count() < 3) return std::nullopt;  // two caps + at least one wall face (an extruded polyline is ONE wall face)
+  try {
+    prism::Prism pr;
+    std::string why;
+    bool not_prism = false;
+    if (!prism::Recognize(b, pr, why, not_prism)) return std::nullopt;
+    {
+      // A profile that is one circle (an extruded circle, a Cylinder) belongs to the revolved-solid cage.
+      bool all_arcs_one_circle = true;
+      for (const prism::Seg& g : pr.prof)
+        if (!g.arc || prism::Len(g.c - pr.prof[0].c) > 1e-6 * prism::Scale(pr) || std::fabs(g.r - pr.prof[0].r) > 1e-6 * prism::Scale(pr)) { all_arcs_one_circle = false; break; }
+      if (all_arcs_one_circle) return std::nullopt;
+    }
+    const std::optional<PrismReference> ref = BuildPrismReference(pr, tol);
+    if (!ref) return std::nullopt;
+    const kernel::MeshClosestPointIndex ref_index(ref->walls);
+    double rmin = 0.0;
+    int arcs = 0;
+    for (const prism::Seg& g : pr.prof)
+      if (g.arc) { rmin = arcs == 0 ? g.r : std::min(rmin, g.r); ++arcs; }
+    const double scale = prism::Scale(pr);
+    std::optional<PrismCageResult> best;
+    struct Rung { double dth_deg; int rows; };
+    for (const Rung rung : {Rung{7.5, 3}, Rung{4.5, 4}, Rung{3.0, 4}, Rung{2.0, 4}}) {
+      if (std::getenv("D8_TS4_DEBUG") && std::getenv("D8_TS4_SKIP") && rung.dth_deg > std::atof(std::getenv("D8_TS4_SKIP"))) continue;
+      const double dth = rung.dth_deg * 3.14159265358979 / 180.0;
+      const double s_line = arcs > 0 ? rmin * dth : scale;
+      const double s_line_eff = std::getenv("D8_TS4_NOGRADE") ? scale : s_line;
+      const std::optional<PrismCageMesh> cage = BuildPrismCage(pr, dth, s_line_eff, std::getenv("D8_TS4_ROWS") ? std::atoi(std::getenv("D8_TS4_ROWS")) : rung.rows);
+      if (!cage) { if (!best) return std::nullopt; break; }
+      if (cage->mesh.FaceCount() > 20000) break;
+      PrismCageResult cur;
+      kernel::SubD sd = kernel::SubD::FromControlMesh(cage->mesh);
+      cur.crease_edges = sd.SetCreasesByDihedral(kFidelityCreaseAngleDeg);
+      int cr_ok = 0;
+      for (const auto& e : cage->corner_edges) if (sd.SetCrease(e.first, e.second, true, 1e-5 * scale)) { ++cur.crease_edges; ++cr_ok; }
+      if (std::getenv("D8_TS4_DEBUG")) std::fprintf(stderr, "TS4DBG creases dihedral=%d corner_edges=%zu set_ok=%d corners=%d\n", cur.crease_edges - cr_ok, cage->corner_edges.size(), cr_ok, cage->corners);
+      kernel::SubDInterpolationReport frep;
+      const kernel::BoundingBox cbb = cage->mesh.GetBoundingBox();
+      const double extent = (cbb.max - cbb.min).Length();
+      cur.subd = sd.InterpolateControlNet(std::max(tol * 0.05, 2e-7 * std::max(extent, 1.0)), 150, &frep);
+      cur.fit_iterations = frep.iterations;
+      cur.fit_residual = frep.final_max_residual;
+      kernel::SubD probe = cur.subd;
+      probe.Subdivide(2);
+      const std::vector<kernel::SubDLimitPoint> lps = probe.LimitPoints();
+      if (lps.empty()) return std::nullopt;
+      const size_t step = std::max<size_t>(1, lps.size() / 40000);
+      double dev = 0.0;
+      for (size_t i = 0; i < lps.size(); i += step) {
+        const Point3d& q = lps[i].limit_point;
+        double d = (ref_index.ClosestPoint(q) - q).Length();
+        const ON_3dVector v = ON_3dPoint(q.x, q.y, q.z) - pr.O;
+        const double h = v * pr.n;
+        const double dc = std::min(std::fabs(h), std::fabs(h - pr.H));
+        if (dc < d && ref->Inside(prism::V2{v * pr.X, v * pr.Y})) d = dc;
+        if (d > dev && std::getenv("D8_TS4_DEBUG")) std::fprintf(stderr, "TS4DBG dev %.6f at %.4f %.4f %.4f (h=%.4f)\n", d, q.x, q.y, q.z, h);
+        dev = std::max(dev, d);
+        ++cur.samples;
+      }
+      if (std::getenv("D8_TS4_DEBUG")) std::fprintf(stderr, "TS4DBG rung dth=%.1f cols=%d rows=%d faces=%d dev=%.6f sag=%.6f fit_it=%d fit_res=%.6g\n", rung.dth_deg, cage->columns, cage->rows, cage->mesh.FaceCount(), dev, ref->sag, cur.fit_iterations, cur.fit_residual);
+      cur.reference_sag = ref->sag;
+      cur.deviation = dev + ref->sag;
+      cur.verified = cur.deviation <= tol;
+      cur.cage_faces = cage->mesh.FaceCount();
+      cur.columns = cage->columns;
+      cur.rows = cage->rows;
+      cur.corners = cage->corners;
+      cur.profile_segments = static_cast<int>(pr.prof.size());
+      cur.arcs = arcs;
+      best = std::move(cur);
+      if (best->verified && !std::getenv("D8_TS4_DEBUG")) break;
+    }
+    return best;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 // Joins coincident naked edges of `b` like JoinNakedEdges (cmd_common.h)
 // but with a spatial hash on edge mid points instead of an all-pairs scan,
 // so a thousand-patch SubD conversion joins in milliseconds instead of
@@ -1756,6 +2245,10 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   int rev_runs = 0, rev_creases_total = 0, rev_samples_total = 0, rev_fit_iterations_max = 0;
   int rev_around = 0, rev_along = 0, rev_ref_around = 0, rev_ref_along = 0;
   double rev_fit_residual_worst = 0.0, rev_ref_sag = 0.0;
+  int tor_runs = 0, tor_around = 0, tor_along = 0, tor_ref_around = 0, tor_ref_along = 0, tor_fit_iterations = 0, tor_samples = 0;
+  double tor_fit_residual = 0.0, tor_ref_sag = 0.0;
+  int pri_runs = 0, pri_cols = 0, pri_rows = 0, pri_corners = 0, pri_segments = 0, pri_arcs = 0, pri_creases = 0, pri_fit_iterations = 0, pri_samples = 0;
+  double pri_fit_residual = 0.0, pri_ref_sag = 0.0;
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -1810,6 +2303,23 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         ++exact_runs;
         exact_creases_total += exact->crease_edges;
         exact_samples_total += exact->samples;
+      } else if (const std::optional<PrismCageResult> pri = PrismCageForBrep(*o, tol); pri && pri->verified) {
+        // A right prism over a profile of lines and circular arcs (see PrismCageForBrep); verified only.
+        n = SceneObject::MakeSubD(pri->subd);
+        ++fidelity_checked;
+        ++fidelity_verified;
+        fidelity_worst = std::max(fidelity_worst, pri->deviation);
+        ++pri_runs;
+        pri_cols = pri->columns;
+        pri_rows = pri->rows;
+        pri_corners = pri->corners;
+        pri_segments = pri->profile_segments;
+        pri_arcs = pri->arcs;
+        pri_creases += pri->crease_edges;
+        pri_fit_iterations = std::max(pri_fit_iterations, pri->fit_iterations);
+        pri_fit_residual = std::max(pri_fit_residual, pri->fit_residual);
+        pri_samples += pri->samples;
+        pri_ref_sag = std::max(pri_ref_sag, pri->reference_sag);
       } else if (const std::optional<AnalyticCageResult> rev = AnalyticCageForBrep(*o, tol)) {
         // A revolved solid (Cylinder, Cone, TCone...): the cage is built from
         // the Brep's own wall parametrisation and shared rim ring, see
@@ -1828,6 +2338,22 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         rev_ref_around = rev->reference_around;
         rev_ref_along = rev->reference_along;
         rev_ref_sag = std::max(rev_ref_sag, rev->reference_sag);
+      } else if (const std::optional<AnalyticCageResult> tor = TorusCageForBrep(*o, tol); tor && tor->verified) {
+        // A torus: the face's own N x M parametrisation grid (see TorusCageForBrep). Only a VERIFIED
+        // cage is used; anything else falls through to the unchanged grid-tessellation path.
+        n = SceneObject::MakeSubD(tor->subd);
+        ++fidelity_checked;
+        ++fidelity_verified;
+        fidelity_worst = std::max(fidelity_worst, tor->deviation);
+        ++tor_runs;
+        tor_around = tor->cage_around;
+        tor_along = tor->cage_along;
+        tor_ref_around = tor->reference_around;
+        tor_ref_along = tor->reference_along;
+        tor_fit_iterations = std::max(tor_fit_iterations, tor->fit_iterations);
+        tor_fit_residual = std::max(tor_fit_residual, tor->fit_residual);
+        tor_samples += tor->samples;
+        tor_ref_sag = std::max(tor_ref_sag, tor->reference_sag);
       } else {
         std::optional<SubDFidelityResult> fr = BuildSubDVerifiedAgainstBrep(*o, tol);
         if (!fr) continue;
@@ -1870,6 +2396,21 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              " exact limit-surface points against the exact surface sampled " + std::to_string(rev_ref_around) + " x " +
              std::to_string(rev_ref_along) + " (planar caps exact), reference chord sag " + std::to_string(rev_ref_sag) +
              " included in the deviation";
+    }
+    if (tor_runs > 0) {
+      msg += "; analytic torus cage (" + std::to_string(tor_around) + " x " + std::to_string(tor_along) +
+             " quad grid of the face's own parametrisation, every vertex valence 4, no creases), cage interpolated onto the Brep surface (" +
+             std::to_string(tor_fit_iterations) + " iteration(s), residual " + std::to_string(tor_fit_residual) + "); deviation measured at " +
+             std::to_string(tor_samples) + " exact limit-surface points against the exact surface sampled " + std::to_string(tor_ref_around) + " x " +
+             std::to_string(tor_ref_along) + ", reference chord sag " + std::to_string(tor_ref_sag) + " included in the deviation";
+    }
+    if (pri_runs > 0) {
+      msg += "; analytic right-prism cage (profile of " + std::to_string(pri_segments) + " segment(s), " + std::to_string(pri_arcs) + " of them arcs: " +
+             std::to_string(pri_cols) + " columns x " + std::to_string(pri_rows) + " rows, flat caps ear-clipped from the rim, " + std::to_string(pri_corners) +
+             " profile corner(s)), cage interpolated onto the Brep surface (" + std::to_string(pri_fit_iterations) + " iteration(s), residual " +
+             std::to_string(pri_fit_residual) + "), " + std::to_string(pri_creases) + " feature edge(s) creased; deviation measured at " +
+             std::to_string(pri_samples) + " exact limit-surface points against the exact prism (ruled wall strip + exact cap planes), reference chord sag " +
+             std::to_string(pri_ref_sag) + " included in the deviation";
     }
     if (exact_runs > 0) {
       msg += "; exact Brep-face cage (no tessellation), " + std::to_string(exact_creases_total) +
