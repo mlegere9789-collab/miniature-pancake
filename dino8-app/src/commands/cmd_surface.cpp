@@ -474,6 +474,51 @@ class Sweep1Command : public Command {
         return;
       }
     }
+    // Several cross-sections: the kernel's exact Brep::Sweep1Sections first -
+    // every section anchored on the rail (a closed planar one where the rail
+    // crosses its plane), decoded in the rotation-minimizing frame there,
+    // blended between neighbours and skinned through the stations, so each
+    // section is reproduced exactly. The kernel measures the wall against the
+    // exact blended sections between stations; that figure is held to the
+    // DOCUMENT tolerance here (retried at 64, 128 and 256 stations when 32 are
+    // not enough). Anything the kernel refuses (a closed rail, a plane the rail
+    // never crosses, two sections at one station, seams that do not line up) or
+    // that misses tolerance falls through, with the reason printed, to the
+    // older sampled construction below unchanged. Always an uncapped Surface,
+    // like every other result of this command; no history is recorded.
+    if (profiles.size() >= 2) {
+      const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+      std::string multi_reason;
+      for (const int stations : {32, 64, 128, 256}) {
+        try {
+          kernel::Brep::Sweep1SectionsReport rep;
+          kernel::Brep body = kernel::Brep::Sweep1Sections(profiles, rail, stations, /*cap=*/false, &rep);
+          const ON_NurbsSurface* ns = body.raw().m_F.Count() > 0 ? ON_NurbsSurface::Cast(body.raw().m_F[0].SurfaceOf()) : nullptr;
+          if (!ns) { multi_reason = "the kernel result has no NURBS wall"; break; }
+          if (rep.max_section_deviation > tol) {
+            multi_reason = "the kernel wall misses an input section by " + FormatDeviation(rep.max_section_deviation) + " (tolerance " + FormatNumber(tol) + ")";
+            break;
+          }
+          if (rep.max_between_station_deviation > tol) {
+            multi_reason = "between its " + std::to_string(rep.stations) + " stations the wall is " + FormatDeviation(rep.max_between_station_deviation) +
+                           " from the exact blended sections (tolerance " + FormatNumber(tol) + ")";
+            continue;  // more stations
+          }
+          kernel::NurbsSurface k;
+          k.raw() = *ns;
+          ctx.Doc().Add(SceneObject::MakeSurface(k));
+          ctx.Print("Sweep1: exact kernel multi-section sweep (" + std::to_string(rep.sections) + " sections, " + std::to_string(rep.stations) +
+                    " rail stations); measured: sections reproduced to " + FormatDeviation(rep.max_section_deviation) +
+                    ", between stations within " + FormatDeviation(rep.max_between_station_deviation) + " of the exact blended sections; document tolerance " +
+                    FormatNumber(tol));
+          return;
+        } catch (const std::exception& e) {
+          multi_reason = e.what();
+          break;
+        }
+      }
+      ctx.Print("Sweep1: the exact multi-section sweep was not used (" + multi_reason + "); using the sampled approximation");
+    }
     const bool wrap = closed_ && rail.IsClosed();
     const int nrows = rail.IsLinear() && !wrap ? 2 : kRailSamples;
     const std::vector<double> params = ArcLengthParams(rail, wrap ? nrows + 1 : nrows, false);
@@ -2918,7 +2963,7 @@ std::optional<SceneObject> RebuildNetworkSrfLoop(CommandContext& ctx, const std:
 }
 
 void RegisterSurfaceCommands(CommandEngine& e) {
-  Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; multiple cross sections still blend as an approximated lofted sweep fitted to a degree-3 surface, with no history recorded.");
+  Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; two or more cross sections call the kernel's exact Brep::Sweep1Sections (each section anchored on the rail - a closed planar one where the rail crosses its plane - decoded in its rotation-minimizing frame, blended between neighbours and skinned through the stations: every section reproduced exactly, the wall measured against the exact blended sections between stations and held to the document tolerance, retried at up to 256 stations; an uncapped surface; closed cross sections must already share a seam and direction, the kernel refuses seams more than 60 degrees apart; no history recorded); it falls back, with the reason printed, to the old sampled approximation (24 samples per section, fitted to a degree-3 surface) when the kernel refuses (closed rail, a section plane the rail never crosses or contains, two sections at one station, mismatched seams) or misses the document tolerance.");
   Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape. Two or more cross sections call the kernel's Brep::Sweep2Sections (each section decoded in its own station's two-rail frame, blended between neighbours and skinned through the stations: every section reproduced, wall edges within the document tolerance of the rails when the sections touch them, measured and printed; closed cross sections must already share a seam and direction, the kernel does not align them; no history recorded); it falls back, with the reason printed, to the old approximated two-rail-scaled sweep fitted to a degree-3 surface when the kernel refuses (crossing section anchors, closed rails, touching rails) or misses the document tolerance.");
   Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface. Five or more curves that close into a loop within the document tolerance are chained (any order or direction), joined into one loop and trimmed out of the kernel's least-squares NurbsSurface::FitPatch surface as one B-rep face (approximate, not an interpolating Coons patch: the worst deviation from the curves and the trimmed edge's deviation are printed and a miss of the tolerance is flagged); a set that does not close, or whose loop folds over its best-fit plane, prints why and uses the first 4 curves as before.");
   Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. No history is recorded for the non-planar result.");
