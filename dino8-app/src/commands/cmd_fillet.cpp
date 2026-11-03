@@ -1876,7 +1876,19 @@ struct EdgeSig {
   ON_3dPoint mid;
   ON_3dPoint rel;  // midpoint relative to the solid's bounding box
   ON_3dVector dir, na, nb;
+  // Rotation- and uniform-scale-invariant fallback identity (used only when no edge matches the
+  // geometry above, e.g. after the solid was Rotated): the edge's index and the solid's edge count,
+  // the cosine of the dihedral angle and the edge length relative to the mean edge length.
+  int index = -1, count = 0;
+  double dih = 0, lenrel = 0;
 };
+
+double MeanEdgeLength(const ON_Brep& b) {
+  double sum = 0;
+  int n = 0;
+  for (int i = 0; i < b.m_E.Count(); ++i) { sum += b.m_E[i].PointAtStart().DistanceTo(b.m_E[i].PointAtEnd()); ++n; }
+  return n ? sum / n : 0.0;
+}
 
 bool FaceNormalAtEdgeMid(const ON_Brep& b, const ON_BrepEdge& e, int k, ON_3dVector& n) {
   if (k < 0 || k >= e.TrimCount()) return false;
@@ -1893,7 +1905,7 @@ bool FaceNormalAtEdgeMid(const ON_Brep& b, const ON_BrepEdge& e, int k, ON_3dVec
   return true;
 }
 
-bool EdgeSignatureOf(const ON_Brep& b, int ei, EdgeSig& s, std::string& why) {
+bool EdgeSignatureOf(const ON_Brep& b, int ei, EdgeSig& s, std::string& why, double mean_len = -1.0) {
   if (ei < 0 || ei >= b.m_E.Count()) { why = "edge index out of range"; return false; }
   const ON_BrepEdge& e = b.m_E[ei];
   if (e.TrimCount() != 2) { why = "the edge does not separate exactly two faces"; return false; }
@@ -1912,6 +1924,11 @@ bool EdgeSignatureOf(const ON_Brep& b, int ei, EdgeSig& s, std::string& why) {
   const ON_3dPoint ctr = (bb.m_min + bb.m_max) * 0.5;
   auto rel = [&](double v, double c0, double lo, double hi) { const double sz = hi - lo; return (v - c0) / (sz > 1e-9 ? sz : 1.0); };
   s.rel = ON_3dPoint(rel(s.mid.x, ctr.x, bb.m_min.x, bb.m_max.x), rel(s.mid.y, ctr.y, bb.m_min.y, bb.m_max.y), rel(s.mid.z, ctr.z, bb.m_min.z, bb.m_max.z));
+  if (mean_len < 0) mean_len = MeanEdgeLength(b);
+  s.index = ei;
+  s.count = b.m_E.Count();
+  s.dih = ON_DotProduct(s.na, s.nb);
+  s.lenrel = mean_len > 1e-12 ? len / mean_len : 0.0;
   return true;
 }
 
@@ -1927,6 +1944,10 @@ void StoreSig(std::map<std::string, double>& num, int k, int group, const EdgeSi
   put3("a", s.na.x, s.na.y, s.na.z);
   put3("b", s.nb.x, s.nb.y, s.nb.z);
   num[EdgeKey(k, "g")] = group;
+  num[EdgeKey(k, "i")] = s.index;
+  num[EdgeKey(k, "c")] = s.count;
+  num[EdgeKey(k, "dh")] = s.dih;
+  num[EdgeKey(k, "lr")] = s.lenrel;
 }
 
 bool LoadSig(const std::map<std::string, double>& num, int k, EdgeSig& s) {
@@ -1936,6 +1957,11 @@ bool LoadSig(const std::map<std::string, double>& num, int k, EdgeSig& s) {
     x = ix->second; y = iy->second; z = iz->second;
     return true;
   };
+  auto get1 = [&](const char* f, double dflt) { const auto it = num.find(EdgeKey(k, f)); return it == num.end() ? dflt : it->second; };
+  s.index = static_cast<int>(get1("i", -1));
+  s.count = static_cast<int>(get1("c", 0));
+  s.dih = get1("dh", 0);
+  s.lenrel = get1("lr", 0);
   return get3("r", s.rel.x, s.rel.y, s.rel.z) && get3("m", s.mid.x, s.mid.y, s.mid.z) && get3("d", s.dir.x, s.dir.y, s.dir.z) &&
          get3("a", s.na.x, s.na.y, s.na.z) && get3("b", s.nb.x, s.nb.y, s.nb.z);
 }
@@ -1943,13 +1969,14 @@ bool LoadSig(const std::map<std::string, double>& num, int k, EdgeSig& s) {
 std::string P3(const ON_3dPoint& p) { return FormatNumber(p.x) + "," + FormatNumber(p.y) + "," + FormatNumber(p.z); }
 
 // Re-finds the recorded edge on `b`. Returns its index, or -1 with the reason.
-int FindEdgeBySignature(const ON_Brep& b, const EdgeSig& want, std::string& why) {
+int FindEdgeBySignature(const ON_Brep& b, const EdgeSig& want, std::string& why, bool* by_index = nullptr) {
   constexpr double kCos = 0.999;  // about 2.6 degrees
   std::vector<std::pair<double, int>> cand;
+  const double mean_len = MeanEdgeLength(b);
   for (int i = 0; i < b.m_E.Count(); ++i) {
     EdgeSig s;
     std::string ignore;
-    if (!EdgeSignatureOf(b, i, s, ignore)) continue;
+    if (!EdgeSignatureOf(b, i, s, ignore, mean_len)) continue;
     if (std::fabs(ON_DotProduct(s.dir, want.dir)) < kCos) continue;
     const bool straight = ON_DotProduct(s.na, want.na) >= kCos && ON_DotProduct(s.nb, want.nb) >= kCos;
     const bool swapped = ON_DotProduct(s.na, want.nb) >= kCos && ON_DotProduct(s.nb, want.na) >= kCos;
@@ -1957,7 +1984,22 @@ int FindEdgeBySignature(const ON_Brep& b, const EdgeSig& want, std::string& why)
     cand.emplace_back(s.rel.DistanceTo(want.rel), i);
   }
   const std::string what = "the edge at " + P3(want.mid) + " (direction " + P3(want.dir) + ", between faces with outward normals " + P3(want.na) + " and " + P3(want.nb) + ")";
-  if (cand.empty()) { why = what + " no longer exists on the edited source: no edge has that direction between faces with those normals"; return -1; }
+  if (cand.empty()) {
+    // Nothing has that direction and those normals. If the solid kept its topology and the same edge still has the
+    // same dihedral angle and the same length relative to the mean edge length, the solid was re-oriented (rotated):
+    // accept it by its position in the edge list, and say so.
+    if (want.count > 0 && b.m_E.Count() == want.count && want.index >= 0 && want.index < b.m_E.Count()) {
+      EdgeSig s;
+      std::string ignore;
+      if (EdgeSignatureOf(b, want.index, s, ignore, mean_len) && std::fabs(s.dih - want.dih) < 1e-3 && std::fabs(s.lenrel - want.lenrel) < 1e-3) {
+        if (by_index) *by_index = true;
+        return want.index;
+      }
+    }
+    why = what + " no longer exists on the edited source: no edge has that direction between faces with those normals, and the solid's own edge " +
+          std::to_string(want.index) + " no longer has the recorded dihedral angle and length";
+    return -1;
+  }
   std::sort(cand.begin(), cand.end());
   if (cand.size() > 1 && !(cand[0].first * 2.0 < cand[1].first)) {
     why = what + " is ambiguous on the edited source: " + std::to_string(cand.size()) + " edges match its direction and face normals and none is clearly nearest";
@@ -5229,10 +5271,13 @@ std::optional<SceneObject> RebuildEdgeBlend(CommandContext& ctx, const HistoryIn
       EdgeSig want;
       if (!LoadSig(rec.num, k, want)) { why = "the record of edge " + std::to_string(k + 1) + " is incomplete"; return std::nullopt; }
       std::string reason;
-      const int ei = FindEdgeBySignature(cur, want, reason);
+      bool by_index = false;
+      const int ei = FindEdgeBySignature(cur, want, reason, &by_index);
       if (ei < 0) { why = "edge " + std::to_string(k + 1) + " of " + std::to_string(n) + ": " + reason; return std::nullopt; }
       es.emplace_back(Point3d(cur.m_E[ei].PointAtStart()), Point3d(cur.m_E[ei].PointAtEnd()));
-      ctx.Print(rec.command + ": edge " + std::to_string(k + 1) + " re-found as edge " + std::to_string(ei) + " of the source (direction and both face normals match)");
+      ctx.Print(rec.command + ": edge " + std::to_string(k + 1) + " re-found as edge " + std::to_string(ei) + " of the source (" +
+                (by_index ? "the solid was re-oriented: same position in its edge list, same dihedral angle and relative length"
+                          : "direction and both face normals match") + ")");
     }
     if (es.empty()) { why = "step " + std::to_string(g + 1) + " has no edges"; return std::nullopt; }
     kernel::Brep kb;

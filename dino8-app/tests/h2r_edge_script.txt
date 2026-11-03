@@ -156,9 +156,10 @@ SelNone
 SelID 1
 Volume
 
-# ============================================================ N2: sources that cannot be followed
-# Rotating the source 30 degrees about Z: the recorded edge direction/normals no
-# longer exist, so the automatic rebuild refuses, says why, keeps the old result.
+# ============================================================ N2: a rotated source is still followed
+# Rotating the source 30 degrees about Z: no edge keeps the recorded direction/normals, but the
+# solid kept its topology and the same edge (same position in the edge list) keeps its dihedral
+# angle and relative length, so the edge is re-found that way and the rebuild says so.
 New
 History On
 Box 0,0,0 10,10,0 10
@@ -176,7 +177,33 @@ Volume
 SelNone
 SelID 2
 BoundingBox
+
+# ============================================================ N3: the recorded edge vanished from the source: refused, old result kept
+# The source box is edited in place (History Off) with a chamfer on the very edge the fillet was recorded on,
+# so no edge has the recorded direction between faces with the recorded normals any more.
+New
+History On
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+Show
+SelNone
+SelID 2
+Hide
+History Off
+SelNone
+ChamferEdge
+Radius=3
+10,10,5
+Enter
+History On
 UpdateHistory
+Show
+SelNone
+SelID 2
+Volume
 # A Rho fillet and an angle chamfer are not what the rebuild re-runs: nothing is recorded.
 New
 History On
@@ -231,3 +258,20 @@ Enter
 SelNone
 SelID 1
 Volume
+# X4: the 10^3 box rotated 30 degrees about (5,5,0) (the N2 source), fillet radius 2 on the rotated edge.
+New
+History Off
+Box 0,0,0 10,10,0 10
+SelNone
+SelID 1
+Rotate 5,5,0 30
+FilletEdge
+Radius=2
+6.830,11.830,5
+Enter
+SelNone
+SelID 1
+Volume
+SelNone
+SelID 1
+BoundingBox
