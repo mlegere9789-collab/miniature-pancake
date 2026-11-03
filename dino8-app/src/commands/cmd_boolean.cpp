@@ -3,6 +3,8 @@
 #include "commands/history_rebuild.h"
 #include "dino8/kernel/boolean_general.h"
 
+#include <map>
+
 namespace dino8::app {
 
 namespace {
@@ -117,7 +119,36 @@ struct GeneralBooleanResult {
   kernel::Brep brep;
   double volume = 0;          // |volume| of the closed display tessellation
   double heal_tolerance = 0;  // 0 when the engine's result was already a solid
+  int recorded_tools = 0;     // > 0: evaluated from the recorded original operands (see GeneralRecipe), this many tools
 };
+
+// What an exact General-engine Difference/Union was made from: the base solid
+// and the tool solids combined into it. The engine's own result of a Boolean
+// carries thin "keyhole" corridors (BridgeHolesIntoOuter) that sewing joins
+// within a tolerance; fed back in as an operand of a SECOND Boolean those
+// corridors are re-cut and re-sewn, and the second sewing no longer closes
+// (the corridor mouth and the hole wall are subdivided differently, so the
+// naked edges have no one-to-one partners). `base - c1 - c2` is the same solid
+// as `base - (c1 + c2)`, which the engine does handle in one pass (cutting two
+// holes at once is exact), so a result remembers its operands and a following
+// Boolean of the same kind on UNCHANGED geometry is re-evaluated from them.
+// Keyed by the geometry CRC of the result: any edit, move or rebuild of the
+// object changes the CRC and the recipe is simply not found, so a stale recipe
+// can never be applied to different geometry.
+struct GeneralRecipe {
+  kernel::BooleanOp op = kernel::BooleanOp::Difference;
+  kernel::Brep base;
+  std::vector<kernel::Brep> tools;
+};
+std::map<unsigned int, GeneralRecipe>& GeneralRecipes() {
+  static std::map<unsigned int, GeneralRecipe> recipes;
+  return recipes;
+}
+void RememberGeneralRecipe(const kernel::Brep& result, GeneralRecipe recipe) {
+  auto& all = GeneralRecipes();
+  if (all.size() >= 16) all.erase(all.begin());  // bounded: a recipe is only useful for the next Boolean or two
+  all[result.raw().DataCRC(0)] = std::move(recipe);
+}
 
 // Tries BooleanCombineGeneral/BooleanCombineGeneralNAry when the Planar
 // engine above declines - PARITY_MAP.md's own "kernel: Boolean operations"
@@ -158,30 +189,55 @@ std::optional<GeneralBooleanResult> TryGeneralBrepBoolean(CommandContext& ctx, c
   std::vector<kernel::Brep> g1, g2;
   if (!collect(first_ids, g1)) return std::nullopt;
   if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
-  GeneralBooleanResult res;
-  try {
-    if (second_ids.empty()) res.brep = kernel::BooleanCombineGeneralNAry(g1, {}, kernel::BooleanOp::Union);
-    else res.brep = kernel::BooleanCombineGeneralNAry(g1, g2, op);
-  } catch (const std::exception& ex) {
-    why = ex.what();
-    return std::nullopt;
+  // Runs the engine on the given operands, sews and tessellation-checks the result.
+  auto run = [&](const std::vector<kernel::Brep>& first, const std::vector<kernel::Brep>& second, std::string& fail) -> std::optional<GeneralBooleanResult> {
+    GeneralBooleanResult res;
+    try {
+      if (second.empty()) res.brep = kernel::BooleanCombineGeneralNAry(first, {}, kernel::BooleanOp::Union);
+      else res.brep = kernel::BooleanCombineGeneralNAry(first, second, op);
+    } catch (const std::exception& ex) {
+      fail = ex.what();
+      return std::nullopt;
+    }
+    if (res.brep.raw().m_F.Count() == 0) return res;  // an empty result is reported as such by the caller
+    if (!HealGeneralBooleanResult(res.brep, res.heal_tolerance)) {
+      fail = "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
+      return std::nullopt;
+    }
+    ON_BoundingBox bb;
+    res.brep.raw().GetBoundingBox(bb);
+    BrepMeshOptions mopt;
+    mopt.chord_tolerance = std::clamp(bb.Diagonal().Length() * 5e-4, 1e-5, 1.0);  // same 0.05%-of-diagonal rule as AdaptiveMeshTolerance
+    const kernel::Mesh m = MeshBrepClosed(res.brep.raw(), mopt);
+    if (!m.IsClosedManifold()) {
+      fail = "the sewn result does not tessellate to a closed mesh";
+      return std::nullopt;
+    }
+    res.volume = std::fabs(m.Volume());
+    return res;
+  };
+  // A single base that is itself the unchanged result of an earlier General Difference/Union of the same
+  // kind is replaced by that result's own base and tools (see GeneralRecipe).
+  const bool recordable = (op == kernel::BooleanOp::Difference || op == kernel::BooleanOp::Union) && g1.size() == 1 && !g2.empty();
+  if (recordable) {
+    const auto it = GeneralRecipes().find(g1[0].raw().DataCRC(0));
+    if (it != GeneralRecipes().end() && it->second.op == op) {
+      const GeneralRecipe recipe = it->second;  // copy: RememberGeneralRecipe below may evict the map entry
+      std::vector<kernel::Brep> tools = recipe.tools;
+      tools.insert(tools.end(), g2.begin(), g2.end());
+      std::string ignored;
+      std::optional<GeneralBooleanResult> r = run({recipe.base}, tools, ignored);
+      if (r && r->brep.raw().m_F.Count() > 0 && r->brep.raw().IsSolid()) {
+        r->recorded_tools = static_cast<int>(tools.size());
+        RememberGeneralRecipe(r->brep, {op, recipe.base, tools});
+        return r;
+      }
+      // Re-evaluation failed: fall through to the plain evaluation of the sewn operand (declined with its own reason).
+    }
   }
-  if (res.brep.raw().m_F.Count() == 0) return res;  // an empty result is reported as such by the caller
-  if (!HealGeneralBooleanResult(res.brep, res.heal_tolerance)) {
-    why = "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
-    return std::nullopt;
-  }
-  ON_BoundingBox bb;
-  res.brep.raw().GetBoundingBox(bb);
-  BrepMeshOptions mopt;
-  mopt.chord_tolerance = std::clamp(bb.Diagonal().Length() * 5e-4, 1e-5, 1.0);  // same 0.05%-of-diagonal rule as AdaptiveMeshTolerance
-  const kernel::Mesh m = MeshBrepClosed(res.brep.raw(), mopt);
-  if (!m.IsClosedManifold()) {
-    why = "the sewn result does not tessellate to a closed mesh";
-    return std::nullopt;
-  }
-  res.volume = std::fabs(m.Volume());
-  return res;
+  std::optional<GeneralBooleanResult> r = run(g1, g2, why);
+  if (r && recordable && r->brep.raw().m_F.Count() > 0 && r->brep.raw().IsSolid()) RememberGeneralRecipe(r->brep, {op, g1[0], g2});
+  return r;
 }
 
 // |volume| of the same boolean done on closed meshes (Manifold) - the
@@ -414,7 +470,9 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
           why = "its volume " + FormatNumber(g->volume) + " disagrees with the mesh boolean's " + FormatNumber(*ref) + " by more than 2%";
           g.reset();
         } else {
-          general_note = std::string(g->heal_tolerance > 0 ? ", sewn into a closed solid (tolerance " + FormatNumber(g->heal_tolerance) + ")" : "") +
+          general_note = std::string(g->recorded_tools > 0 ? ", re-evaluated from the recorded original operands (the base and " + std::to_string(g->recorded_tools) +
+                                                                  " tool(s) in one pass, because the first operand is the unchanged result of an earlier exact boolean)" : "") +
+                         std::string(g->heal_tolerance > 0 ? ", sewn into a closed solid (tolerance " + FormatNumber(g->heal_tolerance) + ")" : "") +
                          ", volume " + FormatNumber(g->volume) + (ref ? " (mesh cross-check " + FormatNumber(*ref) + ")" : "");
         }
       }

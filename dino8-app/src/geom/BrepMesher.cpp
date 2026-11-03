@@ -815,6 +815,78 @@ kernel::Mesh MeshBrepClosedOnce(const ON_Brep& brep, const BrepMeshOptions& opti
                                 const std::vector<kernel::Mesh>* precomputed_faces = nullptr);
 }
 
+namespace {
+// Re-welds ONLY the vertices that lie on an unmatched edge (an edge used by
+// one triangle, or by three or more), leaving every other vertex of `m`
+// untouched. A General-boolean result carries thin keyhole corridors and
+// T-gaps whose two sides differ by ~1e-3 of the object's size, so the uniform
+// grid re-weld below has to be that coarse to close them - but at that
+// tolerance it also fuses interior vertices of finely tessellated faces (a
+// sphere's pole fan is ~1e-3 across), which turns the open edges into
+// non-manifold ones. Restricting the coarse weld to boundary vertices closes
+// the gaps without touching any interior vertex. Returns an empty mesh when
+// `m` has anything but triangles.
+kernel::Mesh WeldBoundaryVertices(const kernel::Mesh& in, double tol) {
+  const ON_Mesh& src = in.raw();
+  const int nv = src.m_V.Count(), nf = src.m_F.Count();
+  for (int i = 0; i < nf; ++i) if (!src.m_F[i].IsTriangle()) return kernel::Mesh();
+  std::map<std::pair<int, int>, int> uses;
+  for (int i = 0; i < nf; ++i) {
+    const ON_MeshFace& f = src.m_F[i];
+    for (int k = 0; k < 3; ++k) { int a = f.vi[k], b = f.vi[(k + 1) % 3]; ++uses[{std::min(a, b), std::max(a, b)}]; }
+  }
+  std::vector<char> on_boundary(static_cast<size_t>(nv), 0);
+  for (const auto& [e, c] : uses) if (c != 2) on_boundary[static_cast<size_t>(e.first)] = on_boundary[static_cast<size_t>(e.second)] = 1;
+  // Union-find over boundary vertices within `tol` of each other (3x3x3 cell search).
+  std::vector<int> parent(static_cast<size_t>(nv));
+  for (int i = 0; i < nv; ++i) parent[static_cast<size_t>(i)] = i;
+  std::function<int(int)> find = [&](int x) { while (parent[static_cast<size_t>(x)] != x) { parent[static_cast<size_t>(x)] = parent[static_cast<size_t>(parent[static_cast<size_t>(x)])]; x = parent[static_cast<size_t>(x)]; } return x; };
+  using Cell = std::array<long long, 3>;
+  std::map<Cell, std::vector<int>> grid;
+  auto cell_of = [&](const ON_3fPoint& p) { return Cell{(long long)std::floor(p.x / tol), (long long)std::floor(p.y / tol), (long long)std::floor(p.z / tol)}; };
+  for (int i = 0; i < nv; ++i) if (on_boundary[static_cast<size_t>(i)]) grid[cell_of(src.m_V[i])].push_back(i);
+  for (int i = 0; i < nv; ++i) {
+    if (!on_boundary[static_cast<size_t>(i)]) continue;
+    const ON_3fPoint& p = src.m_V[i];
+    const Cell c = cell_of(p);
+    for (long long dx = -1; dx <= 1; ++dx) for (long long dy = -1; dy <= 1; ++dy) for (long long dz = -1; dz <= 1; ++dz) {
+      auto it = grid.find(Cell{c[0] + dx, c[1] + dy, c[2] + dz});
+      if (it == grid.end()) continue;
+      for (int j : it->second) {
+        if (j <= i) continue;
+        const ON_3fPoint& q = src.m_V[j];
+        const double d2 = double(p.x - q.x) * (p.x - q.x) + double(p.y - q.y) * (p.y - q.y) + double(p.z - q.z) * (p.z - q.z);
+        if (d2 <= tol * tol) parent[static_cast<size_t>(find(j))] = find(i);
+      }
+    }
+  }
+  kernel::Mesh out;
+  ON_Mesh& dst = out.raw();
+  std::vector<int> remap(static_cast<size_t>(nv), -1);
+  for (int i = 0; i < nv; ++i) {
+    const int r = find(i);
+    if (remap[static_cast<size_t>(r)] < 0) { remap[static_cast<size_t>(r)] = dst.m_V.Count(); dst.m_V.Append(src.m_V[r]); }
+    remap[static_cast<size_t>(i)] = remap[static_cast<size_t>(r)];
+  }
+  std::set<std::array<int, 3>> seen;
+  for (int i = 0; i < nf; ++i) {
+    const ON_MeshFace& f = src.m_F[i];
+    const int a = remap[static_cast<size_t>(f.vi[0])], b = remap[static_cast<size_t>(f.vi[1])], c = remap[static_cast<size_t>(f.vi[2])];
+    if (a == b || b == c || a == c) continue;
+    std::array<int, 3> key = {a, b, c};
+    std::sort(key.begin(), key.end());
+    if (!seen.insert(key).second) continue;
+    ON_MeshFace nf2;
+    nf2.vi[0] = a; nf2.vi[1] = b; nf2.vi[2] = nf2.vi[3] = c;
+    dst.m_F.Append(nf2);
+  }
+  dst.Compact();
+  dst.ComputeFaceNormals();
+  dst.ComputeVertexNormals();
+  return out;
+}
+}  // namespace
+
 kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options) {
   kernel::Mesh m = MeshBrepClosedOnce(brep, options);
   // A closed brep that did not mesh watertight at this tolerance usually
@@ -845,6 +917,16 @@ kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options)
       for (double fraction : {1e-4, 3e-4, 1e-3, 3e-3}) {
         kernel::Mesh welded = MeshBrepClosedOnce(brep, options, fraction, &faces);
         if (welded.IsClosedManifold()) return welded;
+      }
+      // Still not closed: the uniform weld either left the gap or fused interior
+      // vertices (non-manifold). Weld only the vertices on unmatched edges.
+      const kernel::Mesh exact = MeshBrepClosedOnce(brep, options, 1e-8, &faces);
+      ON_BoundingBox bbox;
+      brep.GetBoundingBox(bbox);
+      const double size = std::max(1e-9, bbox.Diagonal().Length());
+      for (double fraction : {1e-4, 3e-4, 1e-3, 3e-3}) {
+        kernel::Mesh welded = WeldBoundaryVertices(exact, size * fraction);
+        if (welded.FaceCount() > 0 && welded.IsClosedManifold()) return welded;
       }
     }
   }
