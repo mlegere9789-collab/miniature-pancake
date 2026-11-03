@@ -1313,6 +1313,301 @@ std::optional<ExactCageResult> ExactCageForBrep(const SceneObject& o, double tol
   return r;
 }
 
+// ---------------------------------------------------------------------------
+// Analytic cage for a revolved solid (Cylinder, Cone, TCone, a revolved
+// profile with planar caps): ONE surface-of-revolution wall face plus planar
+// cap faces. The kernel's grid tessellation cannot weld such a Brep into a
+// closed manifold (the trimmed planar caps are meshed on their own lattice,
+// which does not meet the wall's rim vertices), so ToSubD used to fall back
+// to the chord-tolerance mesher: an 11894-face triangle cage whose limit
+// surface was NOT verified. Here the cage is built straight from the Brep's
+// own topology instead:
+//  - the wall is a structured n_around x n_along quad grid evaluated on the
+//    wall face's own analytic parametrisation (every vertex ON the Brep);
+//    an end row that collapses to a point (a cone's apex) becomes one vertex
+//    with a triangle fan;
+//  - each planar cap is meshed from the wall's SHARED rim ring: an all-quad
+//    O-grid (a square patch in the middle, one ring of wedge quads out to
+//    the rim) or, for the measuring reference, a plain fan to the centroid;
+//  - the result is a closed manifold by construction and is checked.
+// nullopt for anything that is not that shape (a sphere has no cap, a torus
+// has no open direction, a tube has two wall faces, a cap with a hole...).
+struct RevolvedCage {
+  kernel::Mesh mesh;
+  double chord_sag = 0.0;  // largest |centre of a wall cell - surface at the cell's parameter centre|
+  int caps = 0;
+  std::vector<std::pair<ON_3dPoint, ON_3dPoint>> apex_spokes;  // edges into a collapsed end row's apex (float-rounded positions)
+};
+
+std::optional<RevolvedCage> BuildRevolvedCage(const ON_Brep& b, int n_around, int n_along, bool fan_caps) {
+  if (n_around < 8 || (!fan_caps && (n_around % 8) != 0) || n_along < 1) return std::nullopt;
+  if (b.m_F.Count() < 2 || b.m_F.Count() > 3) return std::nullopt;
+  const ON_BoundingBox bbox = b.BoundingBox();
+  const double scale = std::max(bbox.Diagonal().Length(), 1e-9);
+  const double ptol = 1e-6 * scale;
+  int wall = -1;
+  std::vector<int> planar;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_Surface* s = b.m_F[fi].SurfaceOf();
+    if (s == nullptr) return std::nullopt;
+    ON_Plane pl;
+    if (s->IsPlanar(&pl, ptol)) {
+      if (b.m_F[fi].m_li.Count() != 1) return std::nullopt;  // a hole in a cap
+      planar.push_back(fi);
+    } else {
+      if (wall >= 0) return std::nullopt;  // two curved faces: not a plain revolved wall
+      wall = fi;
+    }
+  }
+  if (wall < 0) return std::nullopt;
+  const ON_Surface* srf = b.m_F[wall].SurfaceOf();
+  const bool closed0 = srf->IsClosed(0) != 0, closed1 = srf->IsClosed(1) != 0;
+  if (closed0 == closed1) return std::nullopt;  // torus-like (both closed) or not a revolution at all
+  const int cdir = closed0 ? 0 : 1, odir = 1 - cdir;
+  const ON_Interval dc = srf->Domain(cdir), dov = srf->Domain(odir);
+  const auto eval = [&](double tc, double to) {
+    double uv[2];
+    uv[cdir] = tc;
+    uv[odir] = to;
+    return srf->PointAt(uv[0], uv[1]);
+  };
+  const int N = n_around, M = n_along;
+  std::vector<ON_3dPoint> pos;
+  std::vector<std::vector<int>> row(static_cast<size_t>(M) + 1);
+  std::vector<char> degenerate(static_cast<size_t>(M) + 1, 0);
+  for (int j = 0; j <= M; ++j) {
+    const double to = dov.ParameterAt(static_cast<double>(j) / M);
+    std::vector<ON_3dPoint> ring(static_cast<size_t>(N));
+    for (int i = 0; i < N; ++i) ring[static_cast<size_t>(i)] = eval(dc.ParameterAt(static_cast<double>(i) / N), to);
+    bool all_same = true;
+    for (int i = 1; i < N; ++i) if (ring[static_cast<size_t>(i)].DistanceTo(ring[0]) > ptol) { all_same = false; break; }
+    if ((j == 0 || j == M) && all_same) {
+      degenerate[static_cast<size_t>(j)] = 1;
+      row[static_cast<size_t>(j)].assign(static_cast<size_t>(N), static_cast<int>(pos.size()));
+      pos.push_back(ring[0]);
+    } else {
+      for (int i = 0; i < N; ++i) {
+        row[static_cast<size_t>(j)].push_back(static_cast<int>(pos.size()));
+        pos.push_back(ring[static_cast<size_t>(i)]);
+      }
+    }
+  }
+  std::vector<std::array<int, 4>> faces;  // 4th == 3rd for a triangle
+  const auto add_poly = [&](std::vector<int> v) {
+    std::vector<int> u;
+    for (size_t k = 0; k < v.size(); ++k) if (v[k] != v[(k + 1) % v.size()]) u.push_back(v[k]);
+    if (u.size() == 3) faces.push_back({u[0], u[1], u[2], u[2]});
+    else if (u.size() == 4) faces.push_back({u[0], u[1], u[2], u[3]});
+  };
+  RevolvedCage rc;
+  const auto at = [&](int j, int i) { return row[static_cast<size_t>(j)][static_cast<size_t>(i)]; };
+  for (int j = 0; j < M; ++j) {
+    for (int i = 0; i < N; ++i) {
+      const int i1 = (i + 1) % N;
+      add_poly({at(j, i), at(j, i1), at(j + 1, i1), at(j + 1, i)});
+      // Reference sag of this cell: its corner average against the surface at the cell's parameter centre.
+      if (!degenerate[static_cast<size_t>(j)] && !degenerate[static_cast<size_t>(j + 1)]) {
+        const ON_3dPoint& p00 = pos[static_cast<size_t>(at(j, i))];
+        const ON_3dPoint& p10 = pos[static_cast<size_t>(at(j, i1))];
+        const ON_3dPoint& p11 = pos[static_cast<size_t>(at(j + 1, i1))];
+        const ON_3dPoint& p01 = pos[static_cast<size_t>(at(j + 1, i))];
+        const ON_3dPoint avg((p00.x + p10.x + p11.x + p01.x) * 0.25, (p00.y + p10.y + p11.y + p01.y) * 0.25, (p00.z + p10.z + p11.z + p01.z) * 0.25);
+        const ON_3dPoint mid = eval(dc.ParameterAt((i + 0.5) / N), dov.ParameterAt((j + 0.5) / M));
+        rc.chord_sag = std::max(rc.chord_sag, avg.DistanceTo(mid));
+      }
+    }
+  }
+  // Caps: one planar face per non-degenerate end ring, containing every ring point.
+  int ends = 0;
+  for (int e : {0, M}) {
+    if (degenerate[static_cast<size_t>(e)]) continue;
+    ++ends;
+    bool matched = false;
+    for (int fi : planar) {
+      ON_Plane pl;
+      b.m_F[fi].SurfaceOf()->IsPlanar(&pl, ptol);
+      bool all_on = true;
+      for (int i = 0; i < N && all_on; ++i) all_on = std::fabs(pl.DistanceTo(pos[static_cast<size_t>(at(e, i))])) <= 1e-5 * scale;
+      if (all_on) { matched = true; break; }
+    }
+    if (!matched) return std::nullopt;
+    // The cap polygon is the shared ring, traversed against the wall at the j = 0 end, with it at the j = M end.
+    const bool forward = (e == M);
+    const std::vector<int>& ring = row[static_cast<size_t>(e)];
+    ON_3dPoint c(0, 0, 0);
+    for (int i = 0; i < N; ++i) { const ON_3dPoint& p = pos[static_cast<size_t>(ring[static_cast<size_t>(i)])]; c.x += p.x / N; c.y += p.y / N; c.z += p.z / N; }
+    const auto poly = [&](std::vector<int> v) {
+      if (!forward) std::reverse(v.begin(), v.end());
+      if (v.size() == 3) faces.push_back({v[0], v[1], v[2], v[2]});
+      else faces.push_back({v[0], v[1], v[2], v[3]});
+    };
+    if (fan_caps) {
+      const int ci = static_cast<int>(pos.size());
+      pos.push_back(c);
+      for (int i = 0; i < N; ++i) poly({ring[static_cast<size_t>(i)], ring[static_cast<size_t>((i + 1) % N)], ci});
+    } else {
+      const int k = N / 4;
+      constexpr double kAlpha = 0.55;  // square corner at this fraction of the rim radius
+      std::vector<int> grid(static_cast<size_t>((k + 1) * (k + 1)), -1);
+      const auto gi = [&](int x, int y) -> int& { return grid[static_cast<size_t>(y * (k + 1) + x)]; };
+      std::array<ON_3dPoint, 4> q;
+      for (int m = 0; m < 4; ++m) {
+        const ON_3dPoint& rp = pos[static_cast<size_t>(ring[static_cast<size_t>((N / 8 + m * k) % N)])];
+        q[static_cast<size_t>(m)] = ON_3dPoint(c.x + kAlpha * (rp.x - c.x), c.y + kAlpha * (rp.y - c.y), c.z + kAlpha * (rp.z - c.z));
+      }
+      for (int y = 0; y <= k; ++y) {
+        for (int x = 0; x <= k; ++x) {
+          const double s = static_cast<double>(x) / k, t = static_cast<double>(y) / k;
+          const double w0 = (1 - s) * (1 - t), w1 = s * (1 - t), w2 = s * t, w3 = (1 - s) * t;
+          const ON_3dPoint p(w0 * q[0].x + w1 * q[1].x + w2 * q[2].x + w3 * q[3].x, w0 * q[0].y + w1 * q[1].y + w2 * q[2].y + w3 * q[3].y,
+                             w0 * q[0].z + w1 * q[1].z + w2 * q[2].z + w3 * q[3].z);
+          gi(x, y) = static_cast<int>(pos.size());
+          pos.push_back(p);
+        }
+      }
+      // Side m, step t of the square's boundary, walking the ring direction.
+      const auto side = [&](int m, int t) {
+        switch (m) {
+          case 0: return gi(t, 0);
+          case 1: return gi(k, t);
+          case 2: return gi(k - t, k);
+          default: return gi(0, k - t);
+        }
+      };
+      for (int y = 0; y < k; ++y)
+        for (int x = 0; x < k; ++x) poly({gi(x, y), gi(x + 1, y), gi(x + 1, y + 1), gi(x, y + 1)});
+      for (int m = 0; m < 4; ++m) {
+        for (int t = 0; t < k; ++t) {
+          const int a = ring[static_cast<size_t>((N / 8 + m * k + t) % N)], bb = ring[static_cast<size_t>((N / 8 + m * k + t + 1) % N)];
+          poly({a, bb, side(m, t + 1), side(m, t)});
+        }
+      }
+    }
+    ++rc.caps;
+  }
+  if (ends == 0 || rc.caps != ends || rc.caps != static_cast<int>(planar.size())) return std::nullopt;
+
+  // Orient outward: the signed volume of the triangulated faces must be positive.
+  double sv = 0.0;
+  for (const auto& f : faces) {
+    for (int t = 0; t < (f[3] == f[2] ? 1 : 2); ++t) {
+      const ON_3dVector a(pos[static_cast<size_t>(f[0])]);
+      const ON_3dVector bq(pos[static_cast<size_t>(f[t + 1])]);
+      const ON_3dVector cq(pos[static_cast<size_t>(f[t + 2])]);
+      sv += ON_DotProduct(a, ON_CrossProduct(bq, cq)) / 6.0;
+    }
+  }
+  for (int e : {0, M}) {
+    if (!degenerate[static_cast<size_t>(e)]) continue;
+    const int nj = (e == 0) ? 1 : M - 1;
+    const ON_3fPoint apex(pos[static_cast<size_t>(at(e, 0))]);
+    for (int i = 0; i < N; ++i) rc.apex_spokes.emplace_back(ON_3dPoint(apex), ON_3dPoint(ON_3fPoint(pos[static_cast<size_t>(at(nj, i))])));
+  }
+  const bool flip = sv < 0.0;
+  ON_Mesh& raw = rc.mesh.raw();
+  raw.m_V.Reserve(static_cast<int>(pos.size()));
+  for (const ON_3dPoint& p : pos) raw.m_V.Append(ON_3fPoint(p));
+  raw.m_F.Reserve(static_cast<int>(faces.size()));
+  for (const auto& f : faces) {
+    const bool tri = f[3] == f[2];
+    ON_MeshFace mf;
+    if (!flip) {
+      mf.vi[0] = f[0]; mf.vi[1] = f[1]; mf.vi[2] = f[2]; mf.vi[3] = f[3];
+    } else if (tri) {
+      mf.vi[0] = f[2]; mf.vi[1] = f[1]; mf.vi[2] = f[0]; mf.vi[3] = f[0];
+    } else {
+      mf.vi[0] = f[3]; mf.vi[1] = f[2]; mf.vi[2] = f[1]; mf.vi[3] = f[0];
+    }
+    if (tri) mf.vi[3] = mf.vi[2];
+    raw.m_F.Append(mf);
+  }
+  if (!fan_caps && !rc.mesh.IsClosedManifold()) return std::nullopt;
+  return rc;
+}
+
+// Result of AnalyticCageForBrep().
+struct AnalyticCageResult {
+  kernel::SubD subd;
+  int cage_faces = 0, cage_around = 0, cage_along = 0;
+  int crease_edges = 0;
+  int fit_iterations = 0;
+  double fit_residual = 0.0;
+  double deviation = 0.0;        // measured limit-surface distance + the reference's own chord sag (an upper bound)
+  double reference_sag = 0.0;    // chord sag of the reference sampling of the exact surface
+  int reference_around = 0, reference_along = 0;
+  int samples = 0;
+  bool verified = false;
+};
+
+// ToSubD for a revolved solid (see BuildRevolvedCage): builds the analytic
+// cage at 32, 64, 128 segments around until the interpolated Catmull-Clark
+// limit surface is within `tol`. The MEASURE compares sampled limit-surface
+// points (every vertex, edge midpoint and face centre of two further
+// subdivision rounds: exact limit evaluation) with the exact surface of the
+// Brep sampled much finer than the tolerance (the same analytic wall
+// parametrisation at a segment count chosen so the chord sag is about
+// tol/10, and exactly planar caps), through the mesh closest-point index;
+// the reference's own estimated chord sag is added to the reported
+// deviation, so the number is an upper bound on the distance to the exact
+// surface (up to the cell-centre sag estimate).
+std::optional<AnalyticCageResult> AnalyticCageForBrep(const SceneObject& o, double tol) {
+  if (!o.brep) return std::nullopt;
+  const ON_Brep& b = o.brep->raw();
+  try {
+    const ON_BoundingBox bb = b.BoundingBox();
+    const double diag = std::max(bb.Diagonal().Length(), 1e-9);
+    const double R = std::max(0.5 * diag, 1e-6);
+    int nref = static_cast<int>(std::ceil(3.14159265 * std::sqrt(5.0 * R / std::max(tol, 1e-12))));
+    nref = std::min(1024, std::max(256, (nref + 7) / 8 * 8));
+    const int mref = 64;
+    // Building the reference first also decides whether this is a revolved solid at all.
+    const std::optional<RevolvedCage> ref = BuildRevolvedCage(b, nref, mref, true);
+    if (!ref) return std::nullopt;
+    const kernel::MeshClosestPointIndex ref_index(ref->mesh);
+    std::optional<AnalyticCageResult> best;
+    for (int around : {32, 64, 128}) {
+      const int along = std::min(12, std::max(4, static_cast<int>(std::lround(diag / (6.2831853 * R / around) * 0.5))));
+      const std::optional<RevolvedCage> cage = BuildRevolvedCage(b, around, along, false);
+      if (!cage) { if (!best) return std::nullopt; break; }
+      AnalyticCageResult cur;
+      kernel::SubD sd = kernel::SubD::FromControlMesh(cage->mesh);
+      cur.crease_edges = sd.SetCreasesByDihedral(kFidelityCreaseAngleDeg);
+      // A cone's apex is a sharp point: crease its spokes so Catmull-Clark does not round the tip off.
+      for (const auto& sp : cage->apex_spokes) if (sd.SetCrease(sp.first, sp.second, true, 1e-5 * diag)) ++cur.crease_edges;
+      kernel::SubDInterpolationReport frep;
+      const kernel::BoundingBox cbb = cage->mesh.GetBoundingBox();
+      const double extent = (cbb.max - cbb.min).Length();
+      cur.subd = sd.InterpolateControlNet(std::max(tol * 0.05, 2e-7 * std::max(extent, 1.0)), 150, &frep);
+      cur.fit_iterations = frep.iterations;
+      cur.fit_residual = frep.final_max_residual;
+      kernel::SubD probe = cur.subd;
+      probe.Subdivide(2);
+      const std::vector<kernel::SubDLimitPoint> lps = probe.LimitPoints();
+      if (lps.empty()) return std::nullopt;
+      const size_t step = std::max<size_t>(1, lps.size() / 20000);
+      double dev = 0.0;
+      for (size_t i = 0; i < lps.size(); i += step) {
+        const Point3d& q = lps[i].limit_point;
+        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        ++cur.samples;
+      }
+      cur.reference_sag = ref->chord_sag;
+      cur.reference_around = nref;
+      cur.reference_along = mref;
+      cur.deviation = dev + ref->chord_sag;
+      cur.verified = cur.deviation <= tol;
+      cur.cage_faces = cage->mesh.FaceCount();
+      cur.cage_around = around;
+      cur.cage_along = along;
+      best = std::move(cur);
+      if (best->verified) break;
+    }
+    return best;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 // Joins coincident naked edges of `b` like JoinNakedEdges (cmd_common.h)
 // but with a spatial hash on edge mid points instead of an all-pairs scan,
 // so a thousand-patch SubD conversion joins in milliseconds instead of
@@ -1452,6 +1747,9 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   int fit_iterations_max = 0, creases_total = 0, fit_runs = 0, samples_total = 0;
   double fit_residual_worst = 0.0;
   int exact_runs = 0, exact_creases_total = 0, exact_samples_total = 0;
+  int rev_runs = 0, rev_creases_total = 0, rev_samples_total = 0, rev_fit_iterations_max = 0;
+  int rev_around = 0, rev_along = 0, rev_ref_around = 0, rev_ref_along = 0;
+  double rev_fit_residual_worst = 0.0, rev_ref_sag = 0.0;
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -1506,6 +1804,24 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         ++exact_runs;
         exact_creases_total += exact->crease_edges;
         exact_samples_total += exact->samples;
+      } else if (const std::optional<AnalyticCageResult> rev = AnalyticCageForBrep(*o, tol)) {
+        // A revolved solid (Cylinder, Cone, TCone...): the cage is built from
+        // the Brep's own wall parametrisation and shared rim ring, see
+        // BuildRevolvedCage above.
+        n = SceneObject::MakeSubD(rev->subd);
+        ++fidelity_checked;
+        if (rev->verified) ++fidelity_verified;
+        fidelity_worst = std::max(fidelity_worst, rev->deviation);
+        ++rev_runs;
+        rev_creases_total += rev->crease_edges;
+        rev_samples_total += rev->samples;
+        rev_fit_iterations_max = std::max(rev_fit_iterations_max, rev->fit_iterations);
+        rev_fit_residual_worst = std::max(rev_fit_residual_worst, rev->fit_residual);
+        rev_around = rev->cage_around;
+        rev_along = rev->cage_along;
+        rev_ref_around = rev->reference_around;
+        rev_ref_along = rev->reference_along;
+        rev_ref_sag = std::max(rev_ref_sag, rev->reference_sag);
       } else {
         std::optional<SubDFidelityResult> fr = BuildSubDVerifiedAgainstBrep(*o, tol);
         if (!fr) continue;
@@ -1539,6 +1855,15 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              std::to_string(fit_iterations_max) + " iteration(s), residual " + std::to_string(fit_residual_worst) + "), " +
              std::to_string(creases_total) + " feature edge(s) creased, deviation measured at " + std::to_string(samples_total) +
              " exact limit-surface points";
+    }
+    if (rev_runs > 0) {
+      msg += "; analytic revolved-solid cage (" + std::to_string(rev_around) + " segments around x " + std::to_string(rev_along) +
+             " along the wall, all-quad O-grid caps welded to the wall's rim ring), cage interpolated onto the Brep surface (" +
+             std::to_string(rev_fit_iterations_max) + " iteration(s), residual " + std::to_string(rev_fit_residual_worst) + "), " +
+             std::to_string(rev_creases_total) + " feature edge(s) creased; deviation measured at " + std::to_string(rev_samples_total) +
+             " exact limit-surface points against the exact surface sampled " + std::to_string(rev_ref_around) + " x " +
+             std::to_string(rev_ref_along) + " (planar caps exact), reference chord sag " + std::to_string(rev_ref_sag) +
+             " included in the deviation";
     }
     if (exact_runs > 0) {
       msg += "; exact Brep-face cage (no tessellation), " + std::to_string(exact_creases_total) +
