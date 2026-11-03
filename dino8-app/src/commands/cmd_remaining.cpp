@@ -5,6 +5,7 @@
 // depend on subsystems Dino 8 does not have (IGES/STEP readers, a script
 // editor, UV editing). Registered right before the curve-edit commands.
 #include "commands/cmd_common.h"
+#include "commands/history_rebuild.h"
 
 #include <array>
 #include <cstdio>
@@ -1028,7 +1029,7 @@ class ExtrudeSrfCommand : public Command {
       WantNumber("Extrusion distance <" + FormatNumber(10.0) + ">", 10.0);
       return;
     }
-    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve && o->curve) { BuildAlong(ctx, *o->curve); Finish(); return; }
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve && o->curve) { BuildAlong(ctx, id, *o->curve); Finish(); return; }
     ctx.Warn("Select a path curve");
     Finish();
   }
@@ -1054,53 +1055,49 @@ class ExtrudeSrfCommand : public Command {
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
 
  private:
-  int Emit(CommandContext& ctx, const char* label, const std::function<std::optional<kernel::Mesh>(const RawMesh&, const SceneObject&)>& make) {
+  // One mesh solid per selected surface, each built by RebuildExtrudeSrfMesh (below the anonymous
+  // namespace) - the same function UpdateHistory re-runs - and recorded in the construction history
+  // while History is On. `extra` are further history sources after the surface (the path curve).
+  int Emit(CommandContext& ctx, const char* label, const std::map<std::string, double>& num, const std::vector<ObjectId>& extra) {
     ctx.Doc().BeginChange(label);
     int made = 0;
     for (ObjectId id : srfs_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
-      std::optional<RawMesh> cap = CapMeshOf(ctx, *o);
-      if (!cap || cap->f.empty()) { ctx.Warn(std::string(label) + ": object " + std::to_string(id) + " has no mesh; skipped"); continue; }
       const Attrs a = Attrs::Of(*o);
-      std::optional<kernel::Mesh> m;
-      try { m = make(*cap, *o); } catch (const std::exception& e) { ctx.Warn(std::string(label) + ": " + e.what()); }
-      if (!m) continue;
-      AddLike(ctx, SceneObject::MakeMesh(*m), a);
+      HistoryRecord rec;
+      rec.command = label;
+      rec.num = num;
+      HistoryInputs in = {o};
+      std::vector<ObjectId> srcs = {id};
+      for (ObjectId e : extra) { in.push_back(ctx.Doc().Find(e)); srcs.push_back(e); }
+      std::string why;
+      std::optional<SceneObject> built;
+      try { built = RebuildExtrudeSrfMesh(ctx, in, rec, why); } catch (const std::exception& e) { why = e.what(); }
+      if (!built || !built->mesh) { if (!why.empty()) ctx.Warn(std::string(label) + ": " + why); continue; }
+      const bool closed = built->mesh->IsClosedManifold();
+      const double volume = std::fabs(built->mesh->Volume());
+      const ObjectId nid = AddLike(ctx, std::move(*built), a);
+      RecordHistoryIfEnabled(ctx, nid, label, srcs, num);
       ++made;
-      ctx.Print(std::string(label) + ": " + (m->IsClosedManifold() ? "closed" : "open") + " mesh solid, volume " + FormatNumber(std::fabs(m->Volume())));
+      ctx.Print(std::string(label) + ": " + (closed ? "closed" : "open") + " mesh solid, volume " + FormatNumber(volume));
     }
     return made;
   }
-  void BuildAlong(CommandContext& ctx, const kernel::NurbsCurve& path) {
-    const std::vector<double> params = ArcLengthParams(path, path.IsLinear() ? 2 : 32, false);
-    const Point3d p0 = path.PointAt(params.front());
-    std::vector<ON_Xform> stations;
-    for (double t : params) stations.push_back(ON_Xform::TranslationTransformation(path.PointAt(t) - p0));
-    const int made = Emit(ctx, "ExtrudeSrfAlongCrv", [&](const RawMesh& cap, const SceneObject&) -> std::optional<kernel::Mesh> { return SweepCap(cap, stations, nullptr); });
-    ctx.Print("ExtrudeSrfAlongCrv: " + std::to_string(made) + " solid(s) along a path of length " + FormatNumber(path.Length()));
+  void BuildAlong(CommandContext& ctx, ObjectId path_id, const kernel::NurbsCurve& path) {
+    const double path_length = path.Length();  // before Emit adds objects
+    const int made = Emit(ctx, "ExtrudeSrfAlongCrv", {}, {path_id});
+    ctx.Print("ExtrudeSrfAlongCrv: " + std::to_string(made) + " solid(s) along a path of length " + FormatNumber(path_length));
   }
   void BuildTapered(CommandContext& ctx, double d) {
     ctx.ClearPreview();
     const Vector3d n = ActiveNormal(ctx);
-    const int made = Emit(ctx, "ExtrudeSrfTapered", [&](const RawMesh& cap, const SceneObject&) -> std::optional<kernel::Mesh> {
-      const Point3d c = Centroid(cap.v);
-      double radius = 0;
-      for (const Point3d& p : cap.v) { const Vector3d v = p - c; radius = std::max(radius, (v - n * ON_DotProduct(v, n)).Length()); }
-      const double inset = std::fabs(d) * std::tan(angle_ * ON_PI / 180.0);
-      double scale = radius > 1e-12 ? (radius - inset) / radius : 1;
-      if (scale < 0.01) { ctx.Warn("Draft angle closes the surface before the full distance; clamped"); scale = 0.01; }
-      std::vector<ON_Xform> stations = {ON_Xform::IdentityTransformation, ON_Xform::TranslationTransformation(n * d) * ON_Xform::ScaleTransformation(c, scale)};
-      return SweepCap(cap, stations, nullptr);
-    });
+    const int made = Emit(ctx, "ExtrudeSrfTapered", {{"nx", n.x}, {"ny", n.y}, {"nz", n.z}, {"d", d}, {"angle", angle_}}, {});
     ctx.Print("ExtrudeSrfTapered: " + std::to_string(made) + " solid(s), distance " + FormatNumber(d) + ", draft angle " + FormatNumber(angle_));
   }
   void BuildToPoint(CommandContext& ctx, Point3d apex) {
     ctx.ClearPreview();
-    const int made = Emit(ctx, "ExtrudeSrfToPoint", [&](const RawMesh& cap, const SceneObject&) -> std::optional<kernel::Mesh> {
-      std::vector<ON_Xform> stations = {ON_Xform::IdentityTransformation};
-      return SweepCap(cap, stations, &apex);
-    });
+    const int made = Emit(ctx, "ExtrudeSrfToPoint", {{"ax", apex.x}, {"ay", apex.y}, {"az", apex.z}}, {});
     ctx.Print("ExtrudeSrfToPoint: " + std::to_string(made) + " solid(s) to " + FormatPoint(apex));
   }
   Kind kind_;
@@ -2288,6 +2285,50 @@ class OcsMappingCommand : public Command {
 };
 
 }  // namespace
+
+std::optional<SceneObject> RebuildExtrudeSrfMesh(CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) {
+  auto num = [&](const char* k) { const auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  if (in.empty() || !in[0]) { why = "the record has no source surface"; return std::nullopt; }
+  const SceneObject& src = *in[0];
+  if (src.kind != ObjectKind::Surface && src.kind != ObjectKind::Brep && src.kind != ObjectKind::Mesh) {
+    why = "source object " + std::to_string(src.id) + " is " + HistoryKindName(src.kind) + ", not a surface, polysurface or mesh";
+    return std::nullopt;
+  }
+  std::optional<RawMesh> cap = CapMeshOf(ctx, src);
+  if (!cap || cap->f.empty()) { why = "object " + std::to_string(src.id) + " has no mesh; skipped"; return std::nullopt; }
+  std::optional<kernel::Mesh> m;
+  if (rec.command == "ExtrudeSrfAlongCrv") {
+    if (in.size() != 2 || !in[1]) { why = "expected a surface and a path curve, the record has " + std::to_string(in.size()) + " source object(s)"; return std::nullopt; }
+    const kernel::NurbsCurve* path = HistoryRequireCurve(in[1], why);
+    if (!path) return std::nullopt;
+    const std::vector<double> params = ArcLengthParams(*path, path->IsLinear() ? 2 : 32, false);
+    const Point3d p0 = path->PointAt(params.front());
+    std::vector<ON_Xform> stations;
+    for (double t : params) stations.push_back(ON_Xform::TranslationTransformation(path->PointAt(t) - p0));
+    m = SweepCap(*cap, stations, nullptr);
+  } else if (rec.command == "ExtrudeSrfTapered") {
+    Vector3d n(num("nx"), num("ny"), num("nz"));
+    const double d = num("d"), angle = num("angle");
+    if (!n.Unitize() || d == 0.0) { why = "the recorded extrusion direction or distance is zero"; return std::nullopt; }
+    const Point3d c = Centroid(cap->v);
+    double radius = 0;
+    for (const Point3d& p : cap->v) { const Vector3d v = p - c; radius = std::max(radius, (v - n * ON_DotProduct(v, n)).Length()); }
+    const double inset = std::fabs(d) * std::tan(angle * ON_PI / 180.0);
+    double scale = radius > 1e-12 ? (radius - inset) / radius : 1;
+    if (scale < 0.01) { ctx.Warn("Draft angle closes the surface before the full distance; clamped"); scale = 0.01; }
+    std::vector<ON_Xform> stations = {ON_Xform::IdentityTransformation, ON_Xform::TranslationTransformation(n * d) * ON_Xform::ScaleTransformation(c, scale)};
+    m = SweepCap(*cap, stations, nullptr);
+  } else if (rec.command == "ExtrudeSrfToPoint") {
+    const Point3d apex(num("ax"), num("ay"), num("az"));
+    std::vector<ON_Xform> stations = {ON_Xform::IdentityTransformation};
+    m = SweepCap(*cap, stations, &apex);
+  } else {
+    why = "unknown extrusion kind " + rec.command;
+    return std::nullopt;
+  }
+  if (!m) { why = "the sweep produced no mesh"; return std::nullopt; }
+  return SceneObject::MakeMesh(*m);
+}
 
 void RegisterRemainingCommands(CommandEngine& e) {
   // ---- curves ----

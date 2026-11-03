@@ -369,6 +369,41 @@ void RegisterBuiltinParams() {
                     return std::string(c == 1 ? "round" : c == 2 ? "chamfer" : c == 3 ? "smooth" : "sharp");
                   },
                   [](HistoryRecord& r, const std::string& l) { r.num["corner"] = l == "round" ? 1 : l == "chamfer" ? 2 : l == "smooth" ? 3 : 0; return std::string(); })});
+  SetParams("OffsetCrvOnSrf", {
+      NumberParam("distance", "in-surface offset distance", "non-zero; the sign picks the side",
+                  [](const HistoryRecord& r) { return NumOf(r, "d"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (d == 0.0) return "distance must be non-zero";
+                    r.num["d"] = d;
+                    return "";
+                  })});
+  SetParams("OffsetMultiple", {
+      NumberParam("distance", "distance between successive offsets (this result is the i-th one)", "> 0",
+                  [](const HistoryRecord& r) { return NumOf(r, "dist"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (!(d > 0.0)) return "distance must be positive";
+                    r.num["dist"] = d;
+                    return "";
+                  })});
+  SetParams("ExtrudeSrfTapered", {
+      NumberParam("distance", "extrusion distance along the recorded direction", "non-zero; negative flips the direction",
+                  [](const HistoryRecord& r) { return NumOf(r, "d"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (d == 0.0) return "distance must be non-zero";
+                    r.num["d"] = d;
+                    return "";
+                  }),
+      NumberParam("draft", "draft (taper) angle in degrees", "-90 < angle < 90 exclusive",
+                  [](const HistoryRecord& r) { return NumOf(r, "angle"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (!(std::fabs(d) < 90.0)) return "draft must be between -90 and 90 degrees (exclusive)";
+                    r.num["angle"] = d;
+                    return "";
+                  })});
+  SetParams("ExtrudeSrfToPoint", {
+      NumberParam("apexx", "apex point X", "any", [](const HistoryRecord& r) { return NumOf(r, "ax"); }, [](HistoryRecord& r, double d) { r.num["ax"] = d; return std::string(); }),
+      NumberParam("apexy", "apex point Y", "any", [](const HistoryRecord& r) { return NumOf(r, "ay"); }, [](HistoryRecord& r, double d) { r.num["ay"] = d; return std::string(); }),
+      NumberParam("apexz", "apex point Z", "any", [](const HistoryRecord& r) { return NumOf(r, "az"); }, [](HistoryRecord& r, double d) { r.num["az"] = d; return std::string(); })});
   SetParams("OffsetSrf", {
       NumberParam("distance", "signed offset distance", "non-zero; the sign picks the side",
                   [](const HistoryRecord& r) { return NumOf(r, "d"); },
@@ -497,6 +532,13 @@ void RegisterBuiltinRebuilders() {
   RegisterHistoryRebuilder("NetworkSrf2", "NetworkSrf/EdgeSrf, 2 curves (ruled)", TwoCurves(RebuildNetworkSrf2));
   RegisterHistoryRebuilder("NetworkSrf", "NetworkSrf/EdgeSrf, 3 or 4 curves (Coons)", CurveList(NetworkLoopAdapter, 3, 4));
   RegisterHistoryRebuilder("Offset", "Offset of a curve", OneCurve(RebuildOffsetCurve));
+  RegisterHistoryRebuilder("OffsetCrvOnSrf", "OffsetCrvOnSrf {curve, surface}: the curve offset along the surface", RebuildOffsetCrvOnSrf);
+  RegisterHistoryRebuilder("OffsetMultiple", "OffsetMultiple: one of the planar offsets of a curve", OneCurve(RebuildOffsetMultiple));
+  RegisterHistoryRebuilder("ExtrudeSrfAlongCrv", "ExtrudeSrfAlongCrv {surface, path} (mesh solid)", RebuildExtrudeSrfMesh);
+  RegisterHistoryRebuilder("ExtrudeSrfTapered", "ExtrudeSrfTapered of a surface (mesh solid)", RebuildExtrudeSrfMesh);
+  RegisterHistoryRebuilder("ExtrudeSrfToPoint", "ExtrudeSrfToPoint of a surface (mesh solid)", RebuildExtrudeSrfMesh);
+  RegisterHistoryRebuilder("Contour", "Contour: one piece of an object cut by a contour plane (same piece count required)", RebuildSlicePiece);
+  RegisterHistoryRebuilder("Section", "Section: one piece of an object cut by the section plane (same piece count required)", RebuildSlicePiece);
   RegisterHistoryRebuilder("OffsetSrf", "OffsetSrf of a surface or polysurface", OneSurface(RebuildOffsetSrf));
   RegisterHistoryRebuilder("Shell", "Shell of a closed solid (uniform thickness, no opened faces)", OneSurface(RebuildShell));
   RegisterHistoryRebuilder("Cap", "Cap of an open polysurface (every planar closed naked-edge loop)", RebuildCap);

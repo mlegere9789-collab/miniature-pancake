@@ -307,6 +307,27 @@ std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel:
 // non-self-intersecting curve. Reads no num parameters.
 std::optional<SceneObject> RebuildPlanarSrf(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
 
+// ExtrudeSrfAlongCrv / ExtrudeSrfTapered / ExtrudeSrfToPoint (cmd_remaining.cpp): the mesh-solid
+// extrusions of a surface's tessellation. rec.command selects which; sources {surface, path curve}
+// for AlongCrv and {surface} for the others. Reads num: Tapered nx,ny,nz (the extrusion direction,
+// unit), d (signed distance), angle (draft, degrees); ToPoint ax,ay,az (apex). The cap mesh is the
+// source's CURRENT tessellation, so the result follows an edited source.
+std::optional<SceneObject> RebuildExtrudeSrfMesh(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// Contour / Section (cmd_curves2.cpp): one piece of the intersection of ONE source object with a
+// plane. Reads num: ox,oy,oz / nx,ny,nz (the plane), n (how many pieces the live command got from this
+// source) and k (which piece this record is, 0-based). The rebuild re-slices the edited source and
+// refuses, with the reason, when the number of pieces is no longer n (the result is then kept as it
+// was) - the same one-result-piece rule Project uses.
+std::optional<SceneObject> RebuildSlicePiece(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// OffsetCrvOnSrf (cmd_curves2.cpp): sources {curve, surface or polysurface}; reads num: d (signed in-surface
+// distance, non-zero). Refuses, with the reason, when the surface is no longer a surface or the offset fails.
+std::optional<SceneObject> RebuildOffsetCrvOnSrf(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// OffsetMultiple (cmd_curves2.cpp): the i-th planar offset of a curve. Reads num: dist (> 0), sign
+// (+1/-1, the side picked), i (1-based step), ux,uy,uz (the plane normal that was active).
+std::optional<SceneObject> RebuildOffsetMultiple(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
 
 // Automatic propagation (cmd_history.cpp): called by CommandEngine after every
 // finished command (`cause` is its name) and by Application::Frame (cause

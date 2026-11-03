@@ -2,6 +2,7 @@
 // sub-curves, seams, knot and control-point editing, tweening, fitting,
 // curve arrays, alignment, and planar slicing (Contour/Section/CutPlane).
 #include "commands/cmd_common.h"
+#include "commands/history_rebuild.h"
 
 #include <algorithm>
 #include <cstring>
@@ -370,22 +371,52 @@ std::vector<Point3d> CurvePlaneHits(const kernel::NurbsCurve& c, const ON_Plane&
   return out;
 }
 
-int SliceObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Plane& plane, const std::string& label) {
-  int made = 0;
+// The pieces (points for a curve source, polylines for anything with a surface mesh) where `o` meets
+// `plane`, in the order the live command adds them. Shared by SliceObjects (Contour/Section/CSec)
+// and RebuildSlicePiece (UpdateHistory), so a rebuild cuts exactly what the command cut.
+std::vector<SceneObject> SlicePieces(CommandContext& ctx, const SceneObject& o, const ON_Plane& plane) {
+  std::vector<SceneObject> out;
   const double tol = ctx.Settings().absolute_tolerance * 10;
+  if (o.kind == ObjectKind::Curve && o.curve) {
+    for (const Point3d& p : CurvePlaneHits(*o.curve, plane)) out.push_back(SceneObject::MakePoint(p));
+    return out;
+  }
+  std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
+  if (!m) return out;
+  for (const auto& pl : SliceMesh(m->raw(), plane, tol)) {
+    if (pl.size() < 2) continue;
+    out.push_back(SceneObject::MakeCurve(PolylineCurve(pl)));
+  }
+  return out;
+}
+
+// `history` (a registry command name, "Contour"/"Section") makes every piece record a HistoryRecord
+// while History is On: sources {the sliced object}, the plane, how many pieces that object gave and
+// which one this is.
+int SliceObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Plane& plane, const std::string& label,
+                 const char* history = nullptr) {
+  int made = 0;
   for (ObjectId id : ids) {
     const SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
-    SceneObject like = *o;
-    if (o->kind == ObjectKind::Curve && o->curve) {
-      for (const Point3d& p : CurvePlaneHits(*o->curve, plane)) { SceneObject n = SceneObject::MakePoint(p); n.layer_index = like.layer_index; ctx.Doc().Add(std::move(n)); ++made; }
-      continue;
-    }
-    std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
-    if (!m) continue;
-    for (const auto& pl : SliceMesh(m->raw(), plane, tol)) {
-      if (pl.size() < 2) continue;
-      AddCurveLike(ctx, PolylineCurve(pl), like);
+    const SceneObject like = *o;  // the document may reallocate on Add
+    std::vector<SceneObject> pieces = SlicePieces(ctx, like, plane);
+    const double n = static_cast<double>(pieces.size());
+    double k = 0;
+    for (SceneObject& p : pieces) {
+      p.layer_index = like.layer_index;
+      if (p.kind == ObjectKind::Curve) {  // a curve piece takes the sliced object's look, as AddCurveLike does
+        p.color = like.color;
+        p.color_by_layer = like.color_by_layer;
+        p.name = like.name;
+        p.user_text = like.user_text;
+      }
+      const ObjectId nid = ctx.Doc().Add(std::move(p));
+      if (history)
+        RecordHistoryIfEnabled(ctx, nid, history, {id},
+                               {{"ox", plane.origin.x}, {"oy", plane.origin.y}, {"oz", plane.origin.z},
+                                {"nx", plane.zaxis.x}, {"ny", plane.zaxis.y}, {"nz", plane.zaxis.z}, {"n", n}, {"k", k}});
+      k += 1.0;
       ++made;
     }
   }
@@ -1228,7 +1259,7 @@ class ContourCommand : public Command {
     int made = 0, planes = 0;
     for (double d = std::ceil(lo / spacing) * spacing; d <= hi + 1e-9; d += spacing) {
       ON_Plane pl(*base_ + dir_ * d, dir_);
-      made += SliceObjects(ctx, ids_, pl, "Contour");
+      made += SliceObjects(ctx, ids_, pl, "Contour", "Contour");
       ++planes;
     }
     ctx.Print("Contour: " + std::to_string(made) + " curve(s) from " + std::to_string(planes) + " plane(s)");
@@ -1254,7 +1285,7 @@ class SectionCommand : public Command {
     if (!n.Unitize()) { ctx.Warn("Section line has no length"); return; }
     ctx.ClearPreview();
     ctx.Doc().BeginChange("Section");
-    int made = SliceObjects(ctx, ids_, ON_Plane(*a_, n), "Section");
+    int made = SliceObjects(ctx, ids_, ON_Plane(*a_, n), "Section", "Section");
     ctx.Print("Section: " + std::to_string(made) + " curve(s)");
     Finish();
   }
@@ -2007,7 +2038,19 @@ class OffsetMultipleCommand : public Command {
       Vector3d tan = c.curve.TangentAt(t);
       Vector3d n = ON_CrossProduct(tan, up);
       const int sign = ON_DotProduct(side - c.curve.PointAt(t), n) >= 0 ? 1 : -1;
-      for (int i = 1; i <= count_; ++i) { AddCurveLike(ctx, OffsetPlanar(ctx, c.curve, distance_ * sign * i, up), c.attrs); ++made; }
+      for (int i = 1; i <= count_; ++i) {
+        // The construction is RebuildOffsetMultiple (below the anonymous namespace), shared with UpdateHistory.
+        std::map<std::string, double> num = {{"dist", distance_}, {"sign", static_cast<double>(sign)}, {"i", static_cast<double>(i)},
+                                             {"ux", up.x}, {"uy", up.y}, {"uz", up.z}};
+        HistoryRecord rec;
+        rec.command = "OffsetMultiple";
+        rec.num = num;
+        std::optional<SceneObject> built = RebuildOffsetMultiple(ctx, c.curve, rec);
+        if (!built || !built->curve) continue;
+        const ObjectId nid = AddCurveLike(ctx, *built->curve, c.attrs);
+        RecordHistoryIfEnabled(ctx, nid, "OffsetMultiple", {c.id}, num);
+        ++made;
+      }
     }
     ctx.Print("OffsetMultiple: " + std::to_string(made) + " curve(s) created (" + std::to_string(count_) + " offsets x " + FormatNumber(distance_) + ")");
     Finish();
@@ -2019,15 +2062,15 @@ class OffsetMultipleCommand : public Command {
 };
 
 // Best-effort surface lookup shared by the *OnSrf commands below.
-std::optional<kernel::NurbsSurface> FindSurface(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+std::optional<kernel::NurbsSurface> FindSurface(CommandContext& ctx, const std::vector<ObjectId>& ids, ObjectId* found = nullptr) {
   for (ObjectId id : ids) {
     const SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
-    if (o->kind == ObjectKind::Surface && o->surface) return *o->surface;
+    if (o->kind == ObjectKind::Surface && o->surface) { if (found) *found = id; return *o->surface; }
     if (o->kind == ObjectKind::Brep && o->brep && o->brep->raw().m_F.Count() > 0) {
       const ON_Surface* s = o->brep->raw().m_F[0].SurfaceOf();
       kernel::NurbsSurface ns;
-      if (s && SurfaceFromON(*s, ns)) return ns;
+      if (s && SurfaceFromON(*s, ns)) { if (found) *found = id; return ns; }
     }
   }
   return std::nullopt;
@@ -2046,7 +2089,7 @@ class OffsetCrvOnSrfCommand : public Command {
       WantObjects("Select the surface the curves lie on");
       return;
     }
-    srf_ = FindSurface(ctx, ids);
+    srf_ = FindSurface(ctx, ids, &srf_id_);
     if (!srf_) { ctx.Warn("Select a surface"); Finish(); return; }
     WantNumber("Offset distance (in-surface, along the tangent x normal direction)", 1.0);
   }
@@ -2055,9 +2098,18 @@ class OffsetCrvOnSrfCommand : public Command {
     ctx.Doc().BeginChange("OffsetCrvOnSrf");
     int made = 0;
     for (const CurveCopy& c : curves_) {
-      kernel::NurbsCurve offset;
-      if (c.curve.OffsetInSurface(*srf_, d, offset) != kernel::Result::Ok) continue;
-      AddCurveLike(ctx, offset, c.attrs);
+      // The construction is RebuildOffsetCrvOnSrf (below the anonymous namespace), shared with UpdateHistory.
+      HistoryRecord rec;
+      rec.command = "OffsetCrvOnSrf";
+      rec.sources = {c.id, srf_id_};
+      rec.num = {{"d", d}};
+      const HistoryInputs in = {ctx.Doc().Find(c.id), ctx.Doc().Find(srf_id_)};
+      std::string why;
+      std::optional<SceneObject> built;
+      if (in[0] && in[1]) built = RebuildOffsetCrvOnSrf(ctx, in, rec, why);
+      if (!built || !built->curve) continue;
+      const ObjectId nid = AddCurveLike(ctx, *built->curve, c.attrs);
+      RecordHistoryIfEnabled(ctx, nid, "OffsetCrvOnSrf", rec.sources, rec.num);
       ++made;
     }
     ctx.Print("OffsetCrvOnSrf: " + std::to_string(made) + " curve(s) offset along the surface");
@@ -2068,6 +2120,7 @@ class OffsetCrvOnSrfCommand : public Command {
   std::vector<CurveCopy> curves_;
   bool picked_curves_ = false;
   std::optional<kernel::NurbsSurface> srf_;
+  ObjectId srf_id_ = kNoObject;
 };
 
 class ExtendCrvOnSrfCommand : public Command {
@@ -2781,6 +2834,45 @@ void RemoveSymmetryOf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 }
 
 }  // namespace
+
+std::optional<SceneObject> RebuildSlicePiece(CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) {
+  auto num = [&](const char* k) { const auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  if (in.size() != 1 || !in[0]) { why = "expected 1 source object, the record has " + std::to_string(in.size()); return std::nullopt; }
+  const Vector3d nrm(num("nx"), num("ny"), num("nz"));
+  if (nrm.IsZero()) { why = "the recorded cutting plane has no normal"; return std::nullopt; }
+  const ON_Plane plane(Point3d(num("ox"), num("oy"), num("oz")), nrm);
+  std::vector<SceneObject> pieces = SlicePieces(ctx, *in[0], plane);
+  const size_t want_n = static_cast<size_t>(num("n")), k = static_cast<size_t>(num("k"));
+  if (pieces.size() != want_n || k >= pieces.size()) {
+    why = std::string(rec.command) + ": the edited source now meets the plane in " + std::to_string(pieces.size()) +
+          " piece(s), it gave " + std::to_string(want_n) + " when this result was made; kept as it was";
+    return std::nullopt;
+  }
+  return std::move(pieces[k]);
+}
+
+std::optional<SceneObject> RebuildOffsetCrvOnSrf(CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) {
+  if (in.size() != 2 || !in[0] || !in[1]) { why = "expected a curve and a surface, the record has " + std::to_string(in.size()) + " source object(s)"; return std::nullopt; }
+  const kernel::NurbsCurve* c = HistoryRequireCurve(in[0], why);
+  if (!c) return std::nullopt;
+  const auto it = rec.num.find("d");
+  const double d = it == rec.num.end() ? 0.0 : it->second;
+  if (d == 0.0) { why = "the recorded offset distance is zero"; return std::nullopt; }
+  const std::optional<kernel::NurbsSurface> srf = FindSurface(ctx, {in[1]->id});
+  if (!srf) { why = "source object " + std::to_string(in[1]->id) + " is " + HistoryKindName(in[1]->kind) + ", not a surface or polysurface"; return std::nullopt; }
+  kernel::NurbsCurve offset;
+  if (c->OffsetInSurface(*srf, d, offset) != kernel::Result::Ok) { why = "the curve can no longer be offset along the surface"; return std::nullopt; }
+  return SceneObject::MakeCurve(offset);
+}
+
+std::optional<SceneObject> RebuildOffsetMultiple(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { const auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const double d = num("dist") * num("sign") * num("i");
+  if (num("dist") <= 0.0 || d == 0.0) return std::nullopt;
+  const Vector3d up(num("ux"), num("uy"), num("uz"));
+  if (up.IsZero()) return std::nullopt;
+  return SceneObject::MakeCurve(OffsetPlanar(ctx, curve, d, up));
+}
 
 // Called once per frame by Application::Frame() (see UpdateSymmetryPairs'
 // own comment above) - external linkage wrapper, same shape as
