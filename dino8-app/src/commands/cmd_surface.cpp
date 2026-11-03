@@ -422,7 +422,10 @@ int NearestIndex(const std::vector<double>& params, double t) {
 
 class Sweep1Command : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select rail"); }
+  void Begin(CommandContext&) override {
+    options = {{"Cap", "No", {"Yes", "No"}, false, true}};
+    WantObjects("Select rail");
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (!rail_) {
       // Id kept alongside the curve copy (not just CurvesOf's plain copy)
@@ -435,7 +438,7 @@ class Sweep1Command : public Command {
       if (!rail_) { ctx.Warn("Select a rail curve"); Finish(); return; }
       DeselectAll(ctx, ids);
       closed_ = rail_->IsClosed();
-      options = {{"Closed", closed_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+      options = {{"Closed", closed_ ? "Yes" : "No", {"Yes", "No"}, false, true}, {"Cap", cap_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
       WantObjects("Select cross section curves");
       accept_preselection = false;
       return;
@@ -450,7 +453,10 @@ class Sweep1Command : public Command {
     Finish();
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
-    if (n == "Closed") { closed_ = (v == "Yes"); options[0].value = closed_ ? "Yes" : "No"; }
+    for (OptionSpec& o : options) {
+      if (o.name == "Closed" && n == "Closed") { closed_ = (v == "Yes"); o.value = closed_ ? "Yes" : "No"; }
+      if (o.name == "Cap" && n == "Cap") { cap_ = (v == "Yes"); o.value = cap_ ? "Yes" : "No"; }
+    }
   }
   void Build(CommandContext& ctx, std::vector<kernel::NurbsCurve> profiles) {
     const kernel::NurbsCurve& rail = *rail_;
@@ -468,6 +474,7 @@ class Sweep1Command : public Command {
     if (profiles.size() == 1) {
       HistoryRecord rec;
       rec.command = "Sweep1";
+      if (cap_) rec.num["cap"] = 1.0;
       if (std::optional<SceneObject> exact = RebuildSweep1(ctx, profiles.front(), rail, rec)) {
         const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
         if (rail_id_ && !profile_ids_.empty()) RecordHistoryIfEnabled(ctx, new_id, "Sweep1", {*rail_id_, profile_ids_.front()}, rec.num);
@@ -491,6 +498,7 @@ class Sweep1Command : public Command {
       std::string multi_reason;
       HistoryRecord rec;
       rec.command = "Sweep1";
+      if (cap_) rec.num["cap"] = 1.0;
       std::vector<const kernel::NurbsCurve*> ptrs;
       for (const kernel::NurbsCurve& c : profiles) ptrs.push_back(&c);
       if (std::optional<SceneObject> exact = RebuildSweep1Sections(ctx, ptrs, rail, rec, multi_reason)) {
@@ -505,6 +513,7 @@ class Sweep1Command : public Command {
       }
       ctx.Print("Sweep1: the exact multi-section sweep was not used (" + multi_reason + "); using the sampled approximation");
     }
+    if (cap_) ctx.Print("Sweep1: Cap=Yes not applied - the sampled approximation is an uncapped surface (only the kernel's exact sweeps are capped)");
     const bool wrap = closed_ && rail.IsClosed();
     const int nrows = rail.IsLinear() && !wrap ? 2 : kRailSamples;
     const std::vector<double> params = ArcLengthParams(rail, wrap ? nrows + 1 : nrows, false);
@@ -551,6 +560,7 @@ class Sweep1Command : public Command {
   std::optional<ObjectId> rail_id_;
   std::vector<ObjectId> profile_ids_;
   bool closed_ = false;
+  bool cap_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -559,7 +569,13 @@ class Sweep1Command : public Command {
 
 class Sweep2Command : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select first rail"); }
+  void Begin(CommandContext&) override {
+    options = {{"Cap", "No", {"Yes", "No"}, false, true}};
+    WantObjects("Select first rail");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Cap") { cap_ = (v == "Yes"); if (!options.empty()) options[0].value = cap_ ? "Yes" : "No"; }
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (rails_.size() < 2) {
       // Ids kept alongside each rail curve copy (not just CurvesOf's plain
@@ -606,6 +622,7 @@ class Sweep2Command : public Command {
     if (profiles.size() == 1) {
       HistoryRecord rec;
       rec.command = "Sweep2";
+      if (cap_) rec.num["cap"] = 1.0;
       if (std::optional<SceneObject> exact = RebuildSweep2(ctx, profiles.front(), rails_[0], rails_[1], rec)) {
         ctx.Doc().BeginChange("Sweep2");
         const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
@@ -633,6 +650,7 @@ class Sweep2Command : public Command {
       std::string multi_reason;
       HistoryRecord rec;
       rec.command = "Sweep2";
+      if (cap_) rec.num["cap"] = 1.0;
       std::vector<const kernel::NurbsCurve*> ptrs;
       for (const kernel::NurbsCurve& c : profiles) ptrs.push_back(&c);
       if (std::optional<SceneObject> exact = RebuildSweep2Sections(ctx, ptrs, rails_[0], rails_[1], rec, multi_reason)) {
@@ -648,6 +666,7 @@ class Sweep2Command : public Command {
       }
       ctx.Print("Sweep2: the exact multi-section sweep was not used (" + multi_reason + "); using the scaled-frame fit");
     }
+    if (cap_) ctx.Print("Sweep2: Cap=Yes not applied - the scaled-frame fit is an uncapped surface (only the kernel's exact sweeps are capped)");
     kernel::NurbsCurve a = rails_[0], b = rails_[1];
     const Point3d a0 = a.PointAt(a.Domain().min), b0 = b.PointAt(b.Domain().min), b1 = b.PointAt(b.Domain().max);
     if (a0.DistanceTo(b1) < a0.DistanceTo(b0)) b.Reverse();
@@ -701,6 +720,7 @@ class Sweep2Command : public Command {
   std::vector<kernel::NurbsCurve> rails_;
   std::vector<ObjectId> rail_ids_;
   std::vector<ObjectId> profile_ids_;
+  bool cap_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -2801,6 +2821,72 @@ std::optional<kernel::NurbsSurface> SweepBothSides(const Sweep& sweep, bool have
   return back;
 }
 
+// A closed rail that is an exact planar circle (every one of 65 samples within 1e-9 of its size of the circle
+// through three of them, and in its plane): rotation-minimizing frames on a circle have no torsion, so they are
+// the rigid rotation about the circle's axis through its centre, and the sweep of ANY section placed at the
+// rail start is that section revolved once round the axis - an exact rational surface (a torus for a circle
+// section), not the kernel's 32-station interpolating skin (about 3e-5 off a torus). Returns nullopt for any
+// other rail, or when the kernel's Revolve refuses the section (it touches or crosses the axis); the caller then
+// takes the ordinary kernel sweep.
+std::optional<kernel::NurbsSurface> RevolveAboutCircularRail(const kernel::NurbsCurve& section, const kernel::NurbsCurve& rail, double& deviation) {
+  if (!rail.IsClosed()) return std::nullopt;
+  const kernel::Interval d = rail.Domain();
+  auto at = [&](double f) { return rail.PointAt(d.min + f * (d.max - d.min)); };
+  const ON_Circle circle(at(0.0), at(1.0 / 3.0), at(2.0 / 3.0));
+  if (!circle.IsValid() || !(circle.radius > 0.0)) return std::nullopt;
+  const double tol = 1e-9 * std::max(circle.radius, 1e-9);
+  for (int i = 0; i <= 64; ++i) {
+    const Point3d p = at(static_cast<double>(i) / 64.0);
+    const Vector3d r = p - circle.plane.origin;
+    if (std::fabs(ON_DotProduct(r, circle.plane.zaxis)) > tol || std::fabs(r.Length() - circle.radius) > tol) return std::nullopt;
+  }
+  // Rotation about `axis` by +theta must carry the rail's start along its start tangent.
+  Vector3d axis = ON_CrossProduct(at(0.0) - circle.plane.origin, rail.TangentAt(d.min));
+  if (!axis.Unitize()) return std::nullopt;
+  try {
+    kernel::Brep b = kernel::Brep::Revolve(section, circle.plane.origin, axis, 2.0 * ON_PI, /*cap=*/false);
+    std::optional<kernel::NurbsSurface> wall = SweptWall(b);
+    if (!wall) return std::nullopt;
+    // MEASURED, not assumed: the distance of a point from a surface of revolution is its distance, in the
+    // (radius, height) half-plane about the axis, from the section's own (radius, height) profile. Compare a
+    // 33 x 65 grid of the wall's points with 4001 samples of the section (refined by a local ternary search).
+    const Point3d o = circle.plane.origin;
+    auto meridian = [&](const Point3d& p, double& rho, double& z) {
+      const Vector3d r = p - o;
+      z = ON_DotProduct(r, axis);
+      rho = (r - axis * z).Length();
+    };
+    const kernel::Interval sd = section.Domain();
+    constexpr int kProfile = 4000;
+    std::vector<std::pair<double, double>> prof(kProfile + 1);
+    for (int i = 0; i <= kProfile; ++i) meridian(section.PointAt(sd.min + (sd.max - sd.min) * i / kProfile), prof[static_cast<size_t>(i)].first, prof[static_cast<size_t>(i)].second);
+    const kernel::Interval wu = wall->Domain(0), wv = wall->Domain(1);
+    double worst = 0.0;
+    for (int i = 0; i <= 32; ++i) for (int j = 0; j <= 64; ++j) {
+      double rho, z;
+      meridian(wall->PointAt(wu.min + (wu.max - wu.min) * i / 32.0, wv.min + (wv.max - wv.min) * j / 64.0), rho, z);
+      int best = 0;
+      double bd = 1e300;
+      for (int k = 0; k <= kProfile; ++k) {
+        const double dd = (prof[static_cast<size_t>(k)].first - rho) * (prof[static_cast<size_t>(k)].first - rho) + (prof[static_cast<size_t>(k)].second - z) * (prof[static_cast<size_t>(k)].second - z);
+        if (dd < bd) { bd = dd; best = k; }
+      }
+      double lo = sd.min + (sd.max - sd.min) * std::max(best - 1, 0) / kProfile, hi = sd.min + (sd.max - sd.min) * std::min(best + 1, kProfile) / kProfile;
+      auto dist_at = [&](double t) { double r2, z2; meridian(section.PointAt(t), r2, z2); return std::hypot(r2 - rho, z2 - z); };
+      for (int it = 0; it < 60; ++it) {
+        const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
+        if (dist_at(m1) < dist_at(m2)) hi = m2; else lo = m1;
+      }
+      worst = std::max(worst, dist_at(0.5 * (lo + hi)));
+    }
+    deviation = worst;
+    if (!(worst <= 1e-9 * std::max(sectionfit::CurveSize(section), 1e-9))) return std::nullopt;
+    return wall;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 AnchoredSweep AnchoredSweep1(const kernel::NurbsCurve& section, const kernel::NurbsCurve& rail) {
   AnchoredSweep out;
   const kernel::Interval dom = rail.Domain();
@@ -2812,13 +2898,19 @@ AnchoredSweep AnchoredSweep1(const kernel::NurbsCurve& section, const kernel::Nu
   const bool at_end = !closed && pa.DistanceTo(rail.PointAt(dom.max)) <= rail_tol;
   const double join_tol = 1e-8 * std::max(sectionfit::CurveSize(section), 1e-6);
 
-  auto wall_of = [&](const kernel::NurbsCurve& r) { return SweptWall(kernel::Brep::Sweep1(section, r, /*stations=*/32, /*cap=*/false)); };
+  bool revolved = false;
+  double revolve_dev = 0.0;
+  auto wall_of = [&](const kernel::NurbsCurve& r) {
+    if (std::optional<kernel::NurbsSurface> rev = RevolveAboutCircularRail(section, r, revolve_dev)) { revolved = true; return rev; }
+    return SweptWall(kernel::Brep::Sweep1(section, r, /*stations=*/32, /*cap=*/false));
+  };
 
   if (at_start) {
     // The case Brep::Sweep1 is right for: the call, unchanged.
     out.surface = wall_of(rail);
     if (!out.surface) { out.refusal = "the kernel sweep returned no surface"; return out; }
-    out.how = "the section is at the rail start";
+    out.how = revolved ? "the rail is an exact circle, so the sweep is the section revolved once about the rail's axis (exact rational surface, not a skin; measured distance of 2145 wall points from the revolved section " + sectionfit::Sci(revolve_dev) + ")"
+                       : "the section is at the rail start";
     VerifyStation(out, *out.surface, out.surface->Domain(1).min, section, /*gated=*/false);
     return out;
   }
@@ -2830,7 +2922,8 @@ AnchoredSweep AnchoredSweep1(const kernel::NurbsCurve& section, const kernel::Nu
     out.surface = wall_of(reseamed);
     if (!out.surface) { out.refusal = "the kernel sweep returned no surface"; return out; }
     v_station = out.surface->Domain(1).min;
-    out.how = where + "; the closed rail was re-seamed there";
+    out.how = where + (revolved ? "; the closed rail is an exact circle, so the sweep is the section revolved once about the rail's axis (exact rational surface, not a skin; measured distance of 2145 wall points from the revolved section " + sectionfit::Sci(revolve_dev) + ")"
+                                : "; the closed rail was re-seamed there");
   } else {
     kernel::NurbsCurve left, right;
     if (!at_end && rail.Split(an.t, left, right) != kernel::Result::Ok) { out.refusal = "could not split the rail at the section"; return out; }
@@ -2902,6 +2995,45 @@ AnchoredSweep AnchoredSweep2(const kernel::NurbsCurve& section, const kernel::Nu
   return out;
 }
 
+bool CapRequested(const HistoryRecord& rec) {
+  const auto it = rec.num.find("cap");
+  return it != rec.num.end() && it->second != 0.0;
+}
+
+// Cap=Yes for a swept wall: the kernel's own AssembleSweptBody (the capping Brep::Sweep1/Sweep2/Pipe use) turns
+// the wall plus a closed planar section's two end isocurves into a closed B-rep solid. The wall may come from a
+// section anywhere along the rail (the two sides joined), whose section direction need not be the one the
+// kernel's own cap=true call would pick, so a result that is not a positive-volume closed solid is retried with
+// the section direction turned. Anything that cannot be capped (an open or non-planar section, a closed rail with
+// no ends) keeps the uncapped surface and says why - never a silently wrong solid. Cap=No is the plain surface.
+SceneObject CapOrKeepWall(CommandContext& ctx, const char* caller, const kernel::NurbsSurface& wall, bool cap) {
+  if (!cap) return SceneObject::MakeSurface(wall);
+  std::string why;
+  try {
+    if (!wall.IsClosed(0)) {
+      why = "the cross section is not closed";
+    } else {
+      // A closed rail has no ends: the wall, closed both ways (a torus-like face), already bounds the solid.
+      const bool ends = !wall.IsClosed(1);
+      for (int attempt = 0; attempt < 2 && why.empty(); ++attempt) {
+        kernel::NurbsSurface w = wall;
+        if (attempt == 1 && w.Reverse(0) != kernel::Result::Ok) { why = "could not turn the section direction"; break; }
+        kernel::Brep b = kernel::Brep::AssembleSweptBody(new ON_NurbsSurface(w.raw()), ends, ends, false, false, caller);
+        const double vol = b.Volume();
+        if (b.raw().IsValid() && b.raw().IsSolid() && vol > 0.0) {
+          ctx.Print(std::string(caller) + ": Cap=Yes - closed B-rep solid with " + std::to_string(b.raw().m_F.Count()) + (ends ? " faces (wall + two planar end caps)" : " face (the closed rail has no ends: the wall closed both ways bounds the solid)") + ", exact volume " + [&] { char buf[40]; std::snprintf(buf, sizeof(buf), "%.9g", vol); return std::string(buf); }());
+          return SceneObject::MakeBrep(b);
+        }
+        if (attempt == 1) why = "the capped result is not a valid closed solid";
+      }
+    }
+  } catch (const std::exception& ex) {
+    why = ex.what();
+  }
+  ctx.Print(std::string(caller) + ": Cap=Yes not applied (" + why + "); the uncapped surface is kept");
+  return SceneObject::MakeSurface(wall);
+}
+
 }  // namespace
 
 // Shared by Sweep1Command::Build above and UpdateHistory (cmd_history.cpp) -
@@ -2944,7 +3076,7 @@ AnchoredSweep AnchoredSweep2(const kernel::NurbsCurve& section, const kernel::Nu
 // file already follows, so neither the live command nor UpdateHistory ever
 // crashes on an input the exact path can't handle.
 std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::NurbsCurve& section,
-                                          const kernel::NurbsCurve& rail, const HistoryRecord&) {
+                                          const kernel::NurbsCurve& rail, const HistoryRecord& rec) {
   try {
     AnchoredSweep r = AnchoredSweep1(section, rail);
     if (!r.surface) {
@@ -2952,7 +3084,7 @@ std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::Nurb
       return std::nullopt;
     }
     ctx.Print("Sweep1: " + r.how + "; " + (r.gated ? "the result reproduces the section to " : "the section's isocurve on the result deviates by ") + sectionfit::Sci(r.deviation));
-    return SceneObject::MakeSurface(*r.surface);
+    return CapOrKeepWall(ctx, "Sweep1", *r.surface, CapRequested(rec));
   } catch (const std::exception& ex) {
     ctx.Print(std::string("Sweep1: exact sweep not used - the kernel refused (") + ex.what() + "); falling back to the approximate section-anchored sweep");
     return std::nullopt;
@@ -2982,7 +3114,7 @@ std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::Nurb
 // approximate path.
 std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
-                                          const HistoryRecord&) {
+                                          const HistoryRecord& rec) {
   try {
     AnchoredSweep r = AnchoredSweep2(section, rail1, rail2);
     if (!r.surface) {
@@ -2990,7 +3122,7 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
       return std::nullopt;
     }
     ctx.Print("Sweep2: " + r.how + "; " + (r.gated ? "the result reproduces the section to " : "the section's isocurve on the result deviates by ") + sectionfit::Sci(r.deviation));
-    return SceneObject::MakeSurface(*r.surface);
+    return CapOrKeepWall(ctx, "Sweep2", *r.surface, CapRequested(rec));
   } catch (const std::exception& ex) {
     ctx.Print(std::string("Sweep2: exact sweep not used - the kernel refused (") + ex.what() + "); falling back to the approximate section-anchored sweep");
     return std::nullopt;
@@ -3010,7 +3142,7 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
 // command then takes its older sampled construction, UpdateHistory keeps the
 // object as it was. Prints one measured line on success.
 std::optional<SceneObject> RebuildSweep1Sections(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& sections,
-                                                  const kernel::NurbsCurve& rail, const HistoryRecord&, std::string& why) {
+                                                  const kernel::NurbsCurve& rail, const HistoryRecord& rec, std::string& why) {
   if (sections.size() < 2) { why = "needs at least two cross sections"; return std::nullopt; }
   std::vector<kernel::NurbsCurve> profiles;
   for (const kernel::NurbsCurve* c : sections) profiles.push_back(*c);
@@ -3036,7 +3168,7 @@ std::optional<SceneObject> RebuildSweep1Sections(CommandContext& ctx, const std:
                 " rail stations); measured: sections reproduced to " + FormatDeviation(rep.max_section_deviation) +
                 ", between stations within " + FormatDeviation(rep.max_between_station_deviation) + " of the exact blended sections; document tolerance " +
                 FormatNumber(tol));
-      return SceneObject::MakeSurface(k);
+      return CapOrKeepWall(ctx, "Sweep1", k, CapRequested(rec));
     } catch (const std::exception& e) {
       why = e.what();
       return std::nullopt;
@@ -3052,7 +3184,7 @@ std::optional<SceneObject> RebuildSweep1Sections(CommandContext& ctx, const std:
 // 64, 128, 256 and 512 stations - a long straight run into a tight bend needs 256).
 std::optional<SceneObject> RebuildSweep2Sections(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& sections,
                                                   const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
-                                                  const HistoryRecord&, std::string& why) {
+                                                  const HistoryRecord& rec, std::string& why) {
   if (sections.size() < 2) { why = "needs at least two cross sections"; return std::nullopt; }
   std::vector<kernel::NurbsCurve> profiles;
   for (const kernel::NurbsCurve* c : sections) profiles.push_back(*c);
@@ -3080,7 +3212,7 @@ std::optional<SceneObject> RebuildSweep2Sections(CommandContext& ctx, const std:
                 (touches ? ", wall edges within " + FormatDeviation(rail_dev) + " of the rails"
                          : ", sections do not touch both rails (largest gap " + FormatDeviation(rep.section_rail_gap) + ") so no rail-edge claim is made") +
                 "; document tolerance " + FormatNumber(tol));
-      return SceneObject::MakeSurface(k);
+      return CapOrKeepWall(ctx, "Sweep2", k, CapRequested(rec));
     } catch (const std::exception& e) {
       why = e.what();
       return std::nullopt;

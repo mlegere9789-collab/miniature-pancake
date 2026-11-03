@@ -11420,4 +11420,114 @@ if grep -q "^FAIL" <<<"$FRH_OUT"; then echo "FAIL frh script reported an in-scri
 frhcheck_gl() { if grep -q "gl_error=0" <<<"$FRH_OUT"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 frhcheck_gl "frh script ran without OpenGL errors"
 
+# ---------------------------------------------------------------------------
+# SCP_: Sweep1 / Sweep2 "Cap" option and the exact closed circular rail (scp_sweepcap_script.txt).
+# Cap=Yes (default No, so every earlier pin holds) turns a CLOSED PLANAR cross section's sweep into a closed B-rep solid
+# with the kernel's own capping (Brep::AssembleSweptBody, the capping Pipe / Brep::Sweep1 cap=true use), from the
+# single-section Sweep1/Sweep2 exact path (a section anywhere along the rail included) and the multi-section Sweep1
+# wall; an open section, or a fallback construction, keeps the surface and prints why. A closed rail that is an exact
+# planar circle is a surface of revolution (the rotation-minimizing frames of a circle have no torsion), built by the
+# kernel's Brep::Revolve and MEASURED against the revolved section; Cap=Yes there gives the closed torus-like solid.
+# Every figure is compared with its analytic value: cylinder pi r^2 L, cone frustum pi h/3 (r0^2 + r0 r1 + r1^2),
+# torus 2 pi^2 R r^2 and area 4 pi^2 R r. The mesh-derived figures (Volume/Area/BoundingBox) use ranges (Windows
+# tessellates slightly differently); the kernel's exact figures are tight.
+# ---------------------------------------------------------------------------
+scp_ok() { echo "ok   $1"; }
+scp_bad() { echo "FAIL $1"; fail=1; }
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SCP_OUT="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/scp_sweepcap_script.txt" 2>&1)" || { echo "$SCP_OUT" | tail -40; echo "FAIL SCP_run: sweep cap script exited non-zero"; fail=1; SCP_OUT=""; }
+else
+  SCP_OUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/scp_sweepcap_script.txt" 2>&1)" || { echo "$SCP_OUT" | tail -40; echo "FAIL SCP_run: sweep cap script exited non-zero"; fail=1; SCP_OUT=""; }
+fi
+if grep -q "^FAIL" <<<"$SCP_OUT"; then scp_bad "SCP_script: an @expect line of the script failed"; else scp_ok "SCP_script: every @expect_objects line of the script held"; fi
+# The output of the n-th Sweep1/Sweep2 command (up to the next one); the last case is cut at the end of the output.
+scp_case() { awk -v n="$1" '/Command: Sweep[12]/ { c++ } c == n' <<<"$SCP_OUT"; }
+scp_in() { awk -v v="${1:-}" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v != "" && v + 0 >= lo && v + 0 <= hi) }'; }
+# $1 = case output, $2 unused, checked: the number after "exact volume " in [$3, $4]
+scp_exactvol() {
+  local v
+  v="$({ grep -o "exact volume [0-9.e+-]*" <<<"$1" || true; } | head -1 | awk '{print $3}')"
+  if scp_in "$v" "$3" "$4"; then scp_ok "$5 (kernel exact volume $v in $3..$4)"; else scp_bad "$5 (exact volume '$v' not in $3..$4)"; fi
+}
+scp_meshvol() {
+  local v
+  v="$({ grep -o "^history: Volume = [0-9.e+-]*" <<<"$1" || true; } | head -1 | awk '{print $4}')"
+  if scp_in "$v" "$2" "$3"; then scp_ok "$4 (the Volume command reads $v in $2..$3; its display mesh is coarser than the exact figure)"; else scp_bad "$4 (Volume '$v' not in $2..$3)"; fi
+}
+scp_has() { if grep -qF -- "$2" <<<"$1"; then scp_ok "$3"; else scp_bad "$3"; near "$1" "$2"; fi; }
+scp_hasnot() { if grep -qF -- "$2" <<<"$1"; then scp_bad "$3"; near "$1" "$2"; else scp_ok "$3"; fi; }
+scp_solid() {
+  if grep -q "(polysurface)" <<<"$1" && grep -q "closed solid" <<<"$1" && grep -q "Object [0-9]*: valid" <<<"$1"; then scp_ok "$2: a polysurface, closed solid, passes Check"; else scp_bad "$2: not a valid closed polysurface solid"; near "$1" "closed solid"; fi
+}
+# $1 = case, $2 = "x0lo x0hi y0lo y0hi z0lo z0hi x1lo x1hi y1lo y1hi z1lo z1hi"
+scp_bbox() {
+  local line
+  line="$({ grep -o "Bounding box min [^ ]* max [^ ]*" <<<"$1" || true; } | head -1)"
+  if [ -n "$line" ] && awk -v r="$2" '{ split($4, a, ","); split($6, b, ","); split(r, q, " ");
+        ok = (a[1] >= q[1] && a[1] <= q[2] && a[2] >= q[3] && a[2] <= q[4] && a[3] >= q[5] && a[3] <= q[6] &&
+              b[1] >= q[7] && b[1] <= q[8] && b[2] >= q[9] && b[2] <= q[10] && b[3] >= q[11] && b[3] <= q[12]); exit !ok }' <<<"$line"; then
+    scp_ok "$3 ($line)"
+  else
+    scp_bad "$3 (box '$line' outside $2)"
+  fi
+}
+SCP_1="$(scp_case 1)"; SCP_2="$(scp_case 2)"; SCP_3="$(scp_case 3)"; SCP_4="$(scp_case 4)"; SCP_5="$(scp_case 5)"
+SCP_6="$(scp_case 6)"; SCP_7="$(scp_case 7)"; SCP_8="$(scp_case 8)"; SCP_9="$(scp_case 9)"; SCP_10="$(scp_case 10)"
+# 1: Sweep1 Cap=Yes, circle r = 2, rail 10 -> cylinder, pi r^2 L = 125.6637
+scp_has "$SCP_1" "Sweep1: Cap=Yes - closed B-rep solid with 3 faces (wall + two planar end caps)" "SCP_1: Sweep1 Cap=Yes caps the circle's sweep with two planar end caps (3 faces)"
+scp_exactvol "$SCP_1" x 125.6617 125.6657 "SCP_1: cylinder volume pi*2^2*10 = 125.6637"
+scp_meshvol "$SCP_1" 124.0 126.5 "SCP_1: Volume of the closed solid"
+scp_solid "$SCP_1" "SCP_1"
+scp_bbox "$SCP_1" "-2.05 -1.95 -2.05 -1.95 -0.01 0.01 1.95 2.05 1.95 2.05 9.99 10.01" "SCP_1: box is the r = 2 circle's extent and z = 0..10"
+# 2: the default is unchanged: an uncapped surface
+scp_hasnot "$SCP_2" "Cap=Yes" "SCP_2: without the option no capping happens or is mentioned"
+scp_has "$SCP_2" "(surface)" "SCP_2: the default result is still a plain surface"
+scp_has "$SCP_2" "is not closed" "SCP_2: ...which has no volume (not closed)"
+# 3: section half way along the rail
+scp_has "$SCP_3" "the section sits 50.0% along the rail; the rail was split there and both sides swept from the section and joined" "SCP_3: the circle at 50% of the rail takes the split-and-join path"
+scp_exactvol "$SCP_3" x 125.6617 125.6657 "SCP_3: capped joined sweep has the same cylinder volume 125.6637"
+scp_solid "$SCP_3" "SCP_3"
+scp_bbox "$SCP_3" "-2.05 -1.95 -2.05 -1.95 -0.01 0.01 1.95 2.05 1.95 2.05 9.99 10.01" "SCP_3: the joined, capped solid spans z = 0..10"
+# 4: Sweep2 cone frustum, pi h/3 (r0^2 + r0 r1 + r1^2) = 70 pi / 3 = 73.3038
+scp_has "$SCP_4" "Sweep2: Cap=Yes - closed B-rep solid with 3 faces (wall + two planar end caps)" "SCP_4: Sweep2 Cap=Yes caps the two-rail sweep"
+scp_exactvol "$SCP_4" x 73.302 73.306 "SCP_4: cone frustum volume pi*10/3*(4+2+1) = 73.3038"
+scp_meshvol "$SCP_4" 72.0 74.5 "SCP_4: Volume of the closed frustum"
+scp_solid "$SCP_4" "SCP_4"
+# 5: multi-section Sweep1 (Brep::Sweep1Sections wall) capped: the same frustum
+scp_has "$SCP_5" "Sweep1: exact kernel multi-section sweep (2 sections, " "SCP_5: two circles reach the kernel's Brep::Sweep1Sections"
+scp_has "$SCP_5" "Sweep1: Cap=Yes - closed B-rep solid with 3 faces" "SCP_5: ...and its wall is capped"
+scp_exactvol "$SCP_5" x 73.302 73.306 "SCP_5: frustum volume 73.3038"
+scp_solid "$SCP_5" "SCP_5"
+# 6: an open section cannot be capped: refused with the reason, the surface is kept
+scp_has "$SCP_6" "Sweep1: Cap=Yes not applied (the cross section is not closed); the uncapped surface is kept" "SCP_6: an open arc section is refused with that reason"
+scp_has "$SCP_6" "(surface)" "SCP_6: ...and the swept surface is kept"
+# 7: torus from a circle section on a circle rail, Cap=No -> surface of revolution
+scp_has "$SCP_7" "the rail is an exact circle, so the sweep is the section revolved once about the rail's axis" "SCP_7: the closed circular rail is an exact surface of revolution, not the 32-station skin"
+SCP_DEV="$({ grep -o "from the revolved section [0-9.e+-]*" <<<"$SCP_7" || true; } | head -1 | awk '{print $5}')"
+if scp_in "$SCP_DEV" 0 1e-12; then scp_ok "SCP_7: measured distance of 2145 wall points from the revolved section $SCP_DEV <= 1e-12"; else scp_bad "SCP_7: measured revolve deviation '$SCP_DEV' not in 0..1e-12"; fi
+SCP_D="$({ grep -o "Closest point [^ ]* distance [0-9.e+-]*" <<<"$SCP_7" || true; } | awk '{print $NF}')"
+SCP_DN="$(grep -c . <<<"$SCP_D" || true)"
+if [ "$SCP_DN" = "5" ] && awk '{ if ($1 + 0 >= 1e-6) bad = 1 } END { exit bad }' <<<"$SCP_D"; then scp_ok "SCP_7: 5 points of the EXACT torus (R = 10, r = 1, off the 32-station grid) are within 1e-6 of the surface (the old skin missed by 3e-5; got: $(echo $SCP_D))"; else scp_bad "SCP_7: expected 5 distances below 1e-6, got $SCP_DN: $(echo $SCP_D)"; fi
+SCP_A="$({ grep -o "Area = [0-9.e+-]*" <<<"$SCP_7" || true; } | head -1 | awk '{print $3}')"
+if scp_in "$SCP_A" 390 397; then scp_ok "SCP_7: torus area $SCP_A matches 4 pi^2 R r = 394.78 to the display mesh"; else scp_bad "SCP_7: area '$SCP_A' not near 394.78"; fi
+if grep -q "Object [0-9]*: valid" <<<"$SCP_7"; then scp_ok "SCP_7: the torus surface passes Check"; else scp_bad "SCP_7: Check did not report valid"; fi
+# 8: Cap=Yes on the closed rail: a closed one-face torus solid, 2 pi^2 R r^2 = 197.3921
+scp_has "$SCP_8" "closed B-rep solid with 1 face (the closed rail has no ends" "SCP_8: a closed rail has no ends: the wall closed both ways bounds the solid (1 face)"
+scp_exactvol "$SCP_8" x 197.390 197.395 "SCP_8: torus volume 2 pi^2 * 10 * 1^2 = 197.3921"
+scp_meshvol "$SCP_8" 185 199 "SCP_8: Volume of the torus solid"
+scp_solid "$SCP_8" "SCP_8"
+# 9: control - an ellipse rail is not a circle: the kernel's ordinary sweep, unchanged
+scp_has "$SCP_9" "Sweep1: the section is at the rail start" "SCP_9: an elliptical closed rail still takes the kernel's ordinary Brep::Sweep1"
+scp_hasnot "$SCP_9" "revolved once" "SCP_9: ...and is not mistaken for a circle"
+SCP_A9="$({ grep -o "Area = [0-9.e+-]*" <<<"$SCP_9" || true; } | head -1 | awk '{print $3}')"
+if scp_in "$SCP_A9" 300 340; then scp_ok "SCP_9: ellipse-rail sweep area $SCP_A9 in 300..340 (control; measured 319.9 when written)"; else scp_bad "SCP_9: area '$SCP_A9' not in 300..340"; fi
+# 10: History On + Cap=Yes: moving the section rebuilds the capped solid
+SCP_N10="$(grep -c "Cap=Yes - closed B-rep solid" <<<"$SCP_10" || true)"
+if [ "$SCP_N10" = "2" ]; then scp_ok "SCP_10: the capped solid was built and then rebuilt from its recorded Cap=Yes when the section moved"; else scp_bad "SCP_10: Cap=Yes solid built $SCP_N10 time(s), expected 2"; fi
+scp_has "$SCP_10" "History: source object(s) 2 changed - 1 dependent(s) re-evaluated (3)" "SCP_10: the section move re-evaluated the sweep with no UpdateHistory"
+scp_solid "$SCP_10" "SCP_10 (after the rebuild)"
+scp_bbox "$SCP_10" "-1.05 -0.95 -2.05 -1.95 -0.01 0.01 2.95 3.05 1.95 2.05 9.99 10.01" "SCP_10: the rebuilt solid followed the section 1 unit in +x"
+SCP_TOTAL="$(grep -c "Cap=Yes - closed B-rep solid" <<<"$SCP_OUT" || true)"
+if [ "$SCP_TOTAL" = "7" ]; then scp_ok "SCP_count: 7 capped solids in the whole run (cases 1, 3, 4, 5, 8 and 10 twice)"; else scp_bad "SCP_count: $SCP_TOTAL capped solids, expected 7"; fi
+
 exit $fail
