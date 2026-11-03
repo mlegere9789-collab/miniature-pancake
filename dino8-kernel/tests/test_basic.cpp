@@ -91478,6 +91478,255 @@ void TestAcisSatTruncationSweepRefusesEveryPrefix() {
 }  // namespace acis_sat_tests
 
 
+// ---------------------------------------------------------------------------
+// Brep::Sweep1Sections: SEVERAL cross-sections along one rail (brep.h's own doc
+// comment has the contract). Bounds below leave a stated margin over values
+// measured against the built kernel (printed by each test as "s1s measured").
+// ---------------------------------------------------------------------------
+namespace sweep1_sections_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+
+NurbsSurface WallOf(const Brep& b) {
+  NurbsSurface ns;
+  ns.raw() = *ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+  return ns;
+}
+
+// Circle of `radius` about `center`, in the plane with normal `normal` and
+// x axis `xdir` (made perpendicular), so every section has the same seam
+// direction.
+NurbsCurve CircleIn(const ON_3dPoint& center, const ON_3dVector& normal, const ON_3dVector& xdir, double radius) {
+  ON_3dVector n = normal;
+  n.Unitize();
+  ON_3dVector x = xdir - n * ON_DotProduct(xdir, n);
+  x.Unitize();
+  const ON_Circle circle(ON_Plane(center, x, ON_CrossProduct(n, x)), radius);
+  ON_NurbsCurve nurbs;
+  circle.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+// Closed degree-1 rectangle (half sizes a x b) starting at the middle of its
+// +x edge and running counter-clockwise about +z, in the plane z = `z`.
+NurbsCurve RectAtZ(double z, double a, double b) {
+  return NurbsCurve::FromControlPoints({Point3d(a, 0, z), Point3d(a, b, z), Point3d(-a, b, z), Point3d(-a, -b, z), Point3d(a, -b, z), Point3d(a, 0, z)}, 1);
+}
+
+NurbsCurve CircleAtZ(double z, double r) { return CircleIn(ON_3dPoint(0, 0, z), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), r); }
+
+NurbsCurve StraightRail(double length = 10.0) { return NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, length)}, 1); }
+
+NurbsCurve CurvedRail() {
+  return NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(6, 0, 4), Point3d(6, 6, 10), Point3d(0, 10, 14)}, 3);
+}
+
+// Worst distance from 17 points of `section` to the wall by the surface's own
+// closest-point search (independent of the kernel's own report).
+double SectionToWallDistance(const NurbsSurface& wall, const NurbsCurve& section) {
+  double worst = 0.0;
+  for (int k = 0; k <= 16; ++k) {
+    const Point3d p = section.PointAt(section.Domain().min + (section.Domain().max - section.Domain().min) * k / 16.0);
+    worst = std::max(worst, p.DistanceTo(wall.ClosestPoint(p)));
+  }
+  return worst;
+}
+
+// The refusal's message (empty if it did not throw).
+std::string RefusalOf(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    return e.what();
+  }
+  return std::string();
+}
+
+bool Contains(const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; }
+
+void TestSweep1SectionsStraightRailTwoAndThreeSectionsPassThroughAndFrustumVolume() {
+  const NurbsCurve rail = StraightRail();
+  // Two circles: a cone frustum, r = 2 at z = 0 and r = 1 at z = 10.
+  const std::vector<NurbsCurve> two = {CircleAtZ(0, 2.0), CircleAtZ(10, 1.0)};
+  Brep::Sweep1SectionsReport r2;
+  const Brep open2 = Brep::Sweep1Sections(two, rail, 32, false, &r2);
+  Check(open2.FaceCount() == 1 && open2.raw().IsValid(), "sweep1 sections: two circles, uncapped, give one valid face");
+  Check(r2.sections == 2 && r2.max_section_deviation < 1e-9 && r2.max_between_station_deviation < 1e-9,
+        "sweep1 sections: two circles on a straight rail: sections reproduced and the wall equals the blend between stations (< 1e-9)");
+  std::printf("s1s measured: two circles dev %.3e between %.3e stations %d\n", r2.max_section_deviation, r2.max_between_station_deviation, r2.stations);
+  const NurbsSurface wall2 = WallOf(open2);
+  Check(SectionToWallDistance(wall2, two[0]) < 1e-6 && SectionToWallDistance(wall2, two[1]) < 1e-6,
+        "sweep1 sections: both circles lie on the wall by an independent closest-point search (< 1e-6)");
+  // The surface IS the cone: at z = 5 the radius is 1.5 (every wall point of the isocurve).
+  {
+    double worst = 0.0;
+    const double zv = wall2.Domain(1).min + (wall2.Domain(1).max - wall2.Domain(1).min) * 0.5;
+    for (int k = 0; k <= 12; ++k) {
+      const Point3d p = wall2.PointAt(wall2.Domain(0).min + (wall2.Domain(0).max - wall2.Domain(0).min) * k / 12.0, zv);
+      worst = std::max(worst, std::fabs(std::hypot(p.x, p.y) - (2.0 - 0.1 * p.z)));
+    }
+    Check(worst < 1e-9, "sweep1 sections: every sampled wall point sits on the cone r = 2 - z/10 (< 1e-9)");
+  }
+  const Brep capped2 = Brep::Sweep1Sections(two, rail, 32, true);
+  const double frustum = ON_PI * 10.0 / 3.0 * (4.0 + 2.0 + 1.0);
+  std::printf("s1s measured: frustum volume %.9f analytic %.9f faces %d\n", capped2.Volume(), frustum, capped2.FaceCount());
+  Check(capped2.FaceCount() == 3 && capped2.raw().IsValid() && capped2.raw().IsSolid(), "sweep1 sections: capped two-circle sweep is a valid solid with wall + 2 caps");
+  Check(std::fabs(capped2.Volume() - frustum) < 1e-6 * frustum, "sweep1 sections: capped frustum volume matches (pi h / 3)(r0^2 + r0 r1 + r1^2) to 1e-6 relative");
+
+  // Three circles on the same cone (r = 1.6 at z = 4 is on the line): still
+  // the exact frustum, and the middle section is an input, not an extra.
+  const std::vector<NurbsCurve> three = {CircleAtZ(0, 2.0), CircleAtZ(4, 1.6), CircleAtZ(10, 1.0)};
+  Brep::Sweep1SectionsReport r3;
+  const Brep capped3 = Brep::Sweep1Sections(three, rail, 32, true, &r3);
+  std::printf("s1s measured: three collinear circles dev %.3e between %.3e volume %.9f stations %d\n", r3.max_section_deviation,
+              r3.max_between_station_deviation, capped3.Volume(), r3.stations);
+  Check(r3.sections == 3 && r3.max_section_deviation < 1e-9, "sweep1 sections: three circles reproduced (< 1e-9)");
+  Check(std::fabs(capped3.Volume() - frustum) < 1e-5 * frustum, "sweep1 sections: three collinear-radius circles give the same frustum volume (1e-5 relative)");
+
+  // Three genuinely different sections: circle -> rectangle -> smaller circle.
+  const std::vector<NurbsCurve> mixed = {CircleAtZ(0, 2.0), RectAtZ(4, 3.0, 1.5), CircleAtZ(10, 1.0)};
+  Brep::Sweep1SectionsReport rm;
+  const Brep open_m = Brep::Sweep1Sections(mixed, rail, 32, false, &rm);
+  std::printf("s1s measured: circle/rect/circle dev %.3e between %.3e stations %d\n", rm.max_section_deviation, rm.max_between_station_deviation, rm.stations);
+  const NurbsSurface wall_m = WallOf(open_m);
+  Check(open_m.FaceCount() == 1 && open_m.raw().IsValid() && rm.stations >= 9, "sweep1 sections: circle/rectangle/circle sweep is one valid face on >= 9 stations");
+  Check(rm.max_section_deviation < 1e-9, "sweep1 sections: circle/rectangle/circle reproduced by the wall isocurves (< 1e-9)");
+  Check(SectionToWallDistance(wall_m, mixed[0]) < 1e-6 && SectionToWallDistance(wall_m, mixed[1]) < 1e-6 && SectionToWallDistance(wall_m, mixed[2]) < 1e-6,
+        "sweep1 sections: each of circle, rectangle and circle lies on the wall by an independent closest-point search (< 1e-6)");
+  // A real interpolation error at the circle -> rectangle -> circle morph's C1 kink at the middle section (measured 1.4e-3 at 32 stations).
+  Check(rm.max_between_station_deviation < 5e-3 && rm.max_between_station_deviation > 0.0,
+        "sweep1 sections: circle/rectangle/circle between-station deviation is measured and < 5e-3 at 32 stations");
+  // Sections given in another order produce the same wall (sorted by station).
+  const Brep shuffled = Brep::Sweep1Sections({mixed[2], mixed[0], mixed[1]}, rail, 32, false);
+  {
+    double worst = 0.0;
+    const NurbsSurface a = wall_m, b = WallOf(shuffled);
+    for (int i = 0; i <= 10; ++i) {
+      for (int j = 0; j <= 10; ++j) {
+        const double fu = i / 10.0, fv = j / 10.0;
+        worst = std::max(worst, a.PointAt(a.Domain(0).min + (a.Domain(0).max - a.Domain(0).min) * fu, a.Domain(1).min + (a.Domain(1).max - a.Domain(1).min) * fv)
+                                    .DistanceTo(b.PointAt(b.Domain(0).min + (b.Domain(0).max - b.Domain(0).min) * fu, b.Domain(1).min + (b.Domain(1).max - b.Domain(1).min) * fv)));
+      }
+    }
+    Check(worst < 1e-9, "sweep1 sections: the input order does not matter (11x11 grid gap < 1e-9)");
+  }
+  const Brep capped_m = Brep::Sweep1Sections(mixed, rail, 32, true);
+  Check(capped_m.raw().IsValid() && capped_m.raw().IsSolid() && capped_m.Volume() > 0.0, "sweep1 sections: the capped circle/rectangle/circle sweep is a valid solid of positive volume");
+  std::printf("s1s measured: capped mixed volume %.6f\n", capped_m.Volume());
+}
+
+void TestSweep1SectionsCurvedRailPassesThroughEverySection() {
+  const NurbsCurve rail = CurvedRail();
+  const auto at = [&](double t, double r) {
+    const double tt = rail.Domain().min + (rail.Domain().max - rail.Domain().min) * t;
+    const Point3d c = rail.PointAt(tt);
+    return CircleIn(ON_3dPoint(c.x, c.y, c.z), rail.TangentAt(tt), ON_3dVector(1, 0, 0), r);
+  };
+  const std::vector<NurbsCurve> sections = {at(0.0, 1.0), at(0.45, 1.8), at(1.0, 0.8)};
+  Brep::Sweep1SectionsReport r16, r32, r64;
+  const Brep b16 = Brep::Sweep1Sections(sections, rail, 16, false, &r16);
+  const Brep b32 = Brep::Sweep1Sections(sections, rail, 32, false, &r32);
+  const Brep b64 = Brep::Sweep1Sections(sections, rail, 64, false, &r64);
+  std::printf("s1s measured: curved rail section dev %.3e/%.3e/%.3e between %.3e/%.3e/%.3e stations %d/%d/%d\n", r16.max_section_deviation,
+              r32.max_section_deviation, r64.max_section_deviation, r16.max_between_station_deviation, r32.max_between_station_deviation,
+              r64.max_between_station_deviation, r16.stations, r32.stations, r64.stations);
+  Check(b16.FaceCount() == 1 && b32.FaceCount() == 1 && b64.FaceCount() == 1, "sweep1 sections (curved rail): one face at every station count");
+  Check(r16.max_section_deviation < 1e-9 && r32.max_section_deviation < 1e-9 && r64.max_section_deviation < 1e-9,
+        "sweep1 sections (curved rail): all 3 sections reproduced to < 1e-9 at 16, 32 and 64 stations");
+  const NurbsSurface wall = WallOf(b32);
+  Check(SectionToWallDistance(wall, sections[0]) < 1e-6 && SectionToWallDistance(wall, sections[1]) < 1e-6 && SectionToWallDistance(wall, sections[2]) < 1e-6,
+        "sweep1 sections (curved rail): each section lies on the wall by an independent closest-point search (< 1e-6)");
+  Check(r32.max_between_station_deviation < 1e-3 && r64.max_between_station_deviation < r16.max_between_station_deviation,
+        "sweep1 sections (curved rail): between-station error < 1e-3 at 32 stations and shrinks from 16 to 64 stations");
+  Check(r16.max_between_station_deviation > 0.0, "sweep1 sections (curved rail): the between-station error is a real, measured interpolation error (not zero by accident)");
+  // The wall's own centreline follows the rail: the average of opposite
+  // circle points (u and u + half) of the isocurve at a section station is
+  // the rail point there.
+  {
+    const double v1 = wall.Domain(1).min;  // first section is at the rail start
+    const Point3d a = wall.PointAt(wall.Domain(0).min, v1), b = wall.PointAt(wall.Domain(0).min + 0.5 * (wall.Domain(0).max - wall.Domain(0).min), v1);
+    const Point3d mid((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    Check(mid.DistanceTo(rail.PointAt(rail.Domain().min)) < 1e-9, "sweep1 sections (curved rail): the first circle is centred on the rail start (< 1e-9)");
+  }
+  const Brep capped = Brep::Sweep1Sections(sections, rail, 32, true);
+  Check(capped.raw().IsValid() && capped.raw().IsSolid() && capped.FaceCount() == 3, "sweep1 sections (curved rail): capped sweep is a valid solid with 3 faces");
+  // Volume bracketed by a tube of the smallest (0.8) and of the largest (1.8,
+  // plus 5% for the Hermite's overshoot) radius along the rail: a sanity
+  // bracket, not an exact reference (the frustum test is the exact one).
+  const double len = rail.Length();
+  std::printf("s1s measured: curved capped volume %.6f rail length %.6f bracket [%.3f, %.3f]\n", capped.Volume(), len, ON_PI * 0.64 * len,
+              ON_PI * 1.89 * 1.89 * len);
+  Check(capped.Volume() > ON_PI * 0.64 * len && capped.Volume() < ON_PI * 1.89 * 1.89 * len,
+        "sweep1 sections (curved rail): capped volume lies between the thinnest and the thickest tube along the rail");
+}
+
+void TestSweep1SectionsRefusalsLeaveInputsUntouched() {
+  const NurbsCurve rail = StraightRail();
+  const std::vector<NurbsCurve> good = {CircleAtZ(0, 2.0), CircleAtZ(10, 1.0)};
+  const auto snapshot = [](const std::vector<NurbsCurve>& v, const NurbsCurve& r) {
+    std::vector<double> out;
+    for (const NurbsCurve& c : v) {
+      for (int i = 0; i < c.raw().CVCount(); ++i) {
+        ON_4dPoint p;
+        c.raw().GetCV(i, p);
+        out.insert(out.end(), {p.x, p.y, p.z, p.w});
+      }
+    }
+    for (int i = 0; i < r.raw().CVCount(); ++i) {
+      ON_4dPoint p;
+      r.raw().GetCV(i, p);
+      out.insert(out.end(), {p.x, p.y, p.z, p.w});
+    }
+    return out;
+  };
+  const auto refuses = [&](const char* label, std::vector<NurbsCurve> sections, const NurbsCurve& r, const char* needle, bool cap = false) {
+    const std::vector<double> before = snapshot(sections, r);
+    const std::string why = RefusalOf([&] { Brep::Sweep1Sections(sections, r, 32, cap); });
+    const bool unchanged = snapshot(sections, r) == before;
+    std::printf("s1s measured: refusal (%s): %s\n", label, why.c_str());
+    Check(!why.empty() && Contains(why, needle), (std::string("sweep1 sections refuses ") + label + " with a reason naming it").c_str());
+    Check(unchanged, (std::string("sweep1 sections: inputs untouched after refusing ") + label).c_str());
+  };
+  // A section whose plane the rail never reaches (z = 20 on a rail ending at z = 10).
+  refuses("a section the rail never crosses", {CircleAtZ(0, 2.0), CircleAtZ(20, 1.0)}, rail, "never crosses");
+  // A section in a plane that contains the rail (the xz plane, normal y).
+  refuses("a section whose plane contains the rail tangent", {CircleAtZ(0, 2.0), CircleIn(ON_3dPoint(0, 0, 5), ON_3dVector(0, 1, 0), ON_3dVector(1, 0, 0), 1.0)}, rail, "tangent");
+  // Counts / kinds that do not match.
+  refuses("a single section", {CircleAtZ(0, 2.0)}, rail, "at least 2");
+  refuses("open and closed sections mixed", {CircleAtZ(0, 2.0), NurbsCurve::FromControlPoints({Point3d(-1, 0, 10), Point3d(0, 1, 10), Point3d(1, 0, 10)}, 2)}, rail, "mix");
+  refuses("two sections at one station", {CircleAtZ(5, 2.0), CircleAtZ(5, 1.0), CircleAtZ(10, 1.0)}, rail, "same station");
+  // Seams half a turn apart (the skin would twist).
+  refuses("seams half a turn apart", {CircleAtZ(0, 2.0), CircleIn(ON_3dPoint(0, 0, 10), ON_3dVector(0, 0, 1), ON_3dVector(-1, 0, 0), 1.0)}, rail, "seams");
+  // A closed rail, and caps on open sections.
+  refuses("a closed rail", good, NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(5, 0, 0), Point3d(5, 5, 0), Point3d(0, 0, 0)}, 1), "closed rail");
+  refuses("caps on open sections",
+          {NurbsCurve::FromControlPoints({Point3d(-1, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0)}, 2), NurbsCurve::FromControlPoints({Point3d(-1, 0, 10), Point3d(0, 1, 10), Point3d(1, 0, 10)}, 2)}, rail,
+          "cap requested", /*cap=*/true);
+  // The gate: the same abrupt radius change skinned through too few stations
+  // is refused or, when it passes, is measured within the stated limit.
+  {
+    const std::vector<NurbsCurve> abrupt = {CircleAtZ(0, 1.0), CircleAtZ(5, 6.0), CircleAtZ(5.2, 1.0), CircleAtZ(10, 1.0)};
+    Brep::Sweep1SectionsReport rep;
+    std::string why = RefusalOf([&] { Brep::Sweep1Sections(abrupt, rail, 8, false, &rep); });
+    std::printf("s1s measured: abrupt sections at 8 stations: %s (between %.3e)\n", why.empty() ? "accepted" : why.c_str(), rep.max_between_station_deviation);
+    Check(!why.empty() && Contains(why, "stations") && Contains(why, "exact blended"), "sweep1 sections: abrupt sections on 8 stations fail the between-station gate with a reason");
+    Check(rep.max_between_station_deviation > 1e-2, "sweep1 sections: the failed gate's report shows the measured deviation (> 1e-2)");
+    Brep::Sweep1SectionsReport rep_dense;
+    why = RefusalOf([&] { Brep::Sweep1Sections(abrupt, rail, 256, false, &rep_dense); });
+    std::printf("s1s measured: abrupt sections at 256 stations: %s (between %.3e)\n", why.empty() ? "accepted" : why.c_str(),
+                rep_dense.max_between_station_deviation);
+    Check(rep_dense.max_between_station_deviation < 0.8 * rep.max_between_station_deviation,
+          "sweep1 sections: many more stations lower the same sections' between-station deviation (measured 4.9e-2 at 8 stations, 3.0e-2 at 256: the C1 blend between abrupt sections converges slowly)");
+  }
+}
+
+}  // namespace sweep1_sections_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -92901,6 +93150,13 @@ int main() {
   RunTest("acis_sat_tests::TestAcisSatRoundTripTorus", acis_sat_tests::TestAcisSatRoundTripTorus);
   RunTest("acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix", acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix);
   RunTest("acis_sat_tests::TestAcisSatRefusesBadInput", acis_sat_tests::TestAcisSatRefusesBadInput);
+
+  RunTest("sweep1_sections_tests::TestSweep1SectionsStraightRailTwoAndThreeSectionsPassThroughAndFrustumVolume",
+          sweep1_sections_tests::TestSweep1SectionsStraightRailTwoAndThreeSectionsPassThroughAndFrustumVolume);
+  RunTest("sweep1_sections_tests::TestSweep1SectionsCurvedRailPassesThroughEverySection",
+          sweep1_sections_tests::TestSweep1SectionsCurvedRailPassesThroughEverySection);
+  RunTest("sweep1_sections_tests::TestSweep1SectionsRefusalsLeaveInputsUntouched",
+          sweep1_sections_tests::TestSweep1SectionsRefusalsLeaveInputsUntouched);
 
   RunTest("ON::End", ON::End);
 

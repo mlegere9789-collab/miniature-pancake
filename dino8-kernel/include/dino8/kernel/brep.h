@@ -1170,6 +1170,54 @@ class Brep {
   static Brep Sweep2Sections(const std::vector<NurbsCurve>& sections, const NurbsCurve& rail1,
                              const NurbsCurve& rail2, int stations = 32, Sweep2SectionsReport* report = nullptr);
 
+  // What `Sweep1Sections()` measured on its own result (model units; sampled
+  // bounds, not proofs).
+  struct Sweep1SectionsReport {
+    int sections = 0;                            // sections used
+    int stations = 0;                            // skin stations (rail stations incl. one per section)
+    double max_section_deviation = 0.0;          // wall isocurve at each section's station vs that section, 65 samples each
+    double max_between_station_deviation = 0.0;  // exact blended sections at the midpoints between stations (never
+                                                 // skinned through) vs the wall: the skin's interpolation error
+  };
+
+  // Sweep1Sections: SEVERAL cross-sections carried along ONE `rail` - the
+  // multi-section counterpart of Sweep1() (which is exactly this with one
+  // section). Each section is anchored at its own rail parameter: a closed
+  // planar section where the rail crosses its plane (the crossing nearest the
+  // closest rail point to its centroid; planes within 3 degrees of containing
+  // the rail tangent are refused), any other section at the closest rail
+  // point to its control-point centroid. Closed planar sections are turned to
+  // run counter-clockwise about the rail tangent, open ones to run the same
+  // way as the first. Sections are made structurally compatible (common
+  // degree, rationality, knots) and each is decoded ONCE into the
+  // rotation-minimizing frame (Sweep1()'s own) at its anchor as local
+  // control-point offsets and weights; between neighbouring anchors every
+  // local coordinate is blended with a cubic Hermite (Catmull-Rom tangents
+  // against the rail's arc length; two sections give the plain linear blend),
+  // weights linearly, and beyond the first and last anchor the end section's
+  // local shape is held, so the sweep spans the whole rail. The blend is
+  // placed in the frame of every station (packed per segment between anchors,
+  // never fewer than 8 skin intervals per segment, `stations - 1` shared out
+  // in proportion to rail length plus the change in section size, an exact station AT every anchor) and Loft()'s
+  // interpolating skin passes through them. So every input section is
+  // reproduced exactly; between stations the wall is the skin's interpolant
+  // of the blended sections.
+  // The result is MEASURED before it is returned (see the report): sections
+  // reproduced to 1e-6 of the model scale, and the exact blended section at
+  // the midpoint between every two stations (a check station never skinned
+  // through) within 1e-3 of it; otherwise it refuses rather than return a
+  // surface that misses its sections. With `cap`, a body with planar end
+  // caps (closed sections, the two end sections planar); otherwise an
+  // UNCAPPED single-face wall. Closed sections are not re-seamed: their start
+  // points must lie within 60 degrees of each other about the rail (refused
+  // otherwise), and they must share a direction convention. Throws
+  // std::invalid_argument for fewer than 2 sections, stations < 2, an
+  // invalid curve, a closed rail, mixed open/closed sections, a section the
+  // rail does not cross, two sections at one station, a seam mismatch, a
+  // cap request with open or non-planar end sections, or a failed gate.
+  static Brep Sweep1Sections(const std::vector<NurbsCurve>& sections, const NurbsCurve& rail, int stations = 32,
+                             bool cap = false, Sweep1SectionsReport* report = nullptr);
+
   // Pipe: an exact rational circle of `radius`, centered on the rail's
   // start point in the plane perpendicular to the rail there, swept by
   // Sweep1(). Along a straight rail this is the exact rational cylinder
