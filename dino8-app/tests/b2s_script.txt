@@ -149,5 +149,26 @@ Enter
 SelAll
 List
 Volume
+# other sphere placements are still declined WITH the reason (never an open or wrong solid); the mesh
+# fallback has the right volume. Sphere r4 centred at z=8 (cap of height 2 above the top face): 1000 + pi*4*(12-2)/3 = 1041.89
+New
+B2SBEGIN_sph_cap
+Box 0,0,0 10,10,0 10
+Sphere 5,5,8 4
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+# sphere r3 centred on a side face: 1000 + 2/3*pi*27 = 1056.55
+New
+B2SBEGIN_sph_side
+Box 0,0,0 10,10,0 10
+Sphere 10,5,5 3
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
 New
 B2SEND
