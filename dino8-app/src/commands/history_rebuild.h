@@ -246,6 +246,35 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
 // construction, so the result kind follows the source's current shape.
 std::optional<SceneObject> RebuildShell(CommandContext& ctx, const SceneObject& src, const HistoryRecord& rec);
 
+// FilletEdge / ChamferEdge (cmd_fillet.cpp), exact kernel paths only. One source
+// solid; the record holds the options (num: r = radius or distance1, d2 =
+// distance2, sym = 1 when distance2 follows r), the number of edge entries (n),
+// the number of steps (groups) and, per edge k, its geometric signature
+// (e<k>_{r,m,d,a,b}{x,y,z}: bounding-box-relative midpoint, midpoint, direction,
+// the two face normals) and its step (e<k>_g). Each edge is re-found on the
+// edited source by direction + both face normals (+ relative position when
+// several match); no edge, or no clear nearest one, refuses with the reason.
+std::optional<SceneObject> RebuildEdgeBlend(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// Cap (cmd_solids.cpp): one open polysurface in; every planar closed naked-edge
+// loop is capped on a copy. Reads no num parameters (the loops are re-derived
+// from the source's current naked edges). Refuses, with the reason, when the
+// source is no longer an open polysurface or no loop can be capped.
+std::optional<SceneObject> RebuildCap(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// Project / Pull (cmd_surface.cpp). sources = {curve or point, target...}; num: dx,dy,dz
+// (the projection direction, unused by Pull), pull (1/0). Recorded only for a source that
+// maps to exactly ONE result piece; the rebuild refuses (reason printed, result kept) when
+// the curve now maps to zero or several pieces, or a point no longer hits a target.
+std::optional<SceneObject> RebuildProject(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// BlendSrf (cmd_fillet.cpp): sources {surface or polysurface A, B} (not consumed); num:
+// dir_a/max_a/face_a and dir_b/max_b/face_b (each boundary edge as the isoparametric
+// direction, whether the fixed parameter sits at its maximum, and the polysurface face
+// index) and cont (1 Tangency, 2 Curvature, 3 G3, 4 G4). Refuses, with the reason, when a
+// source is no longer a surface/polysurface with that face or the blend cannot be built.
+std::optional<SceneObject> RebuildBlendSrf(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
 // Offset (cmd_edit.cpp), curves: NurbsCurve::OffsetInPlane in the curve's own
 // plane, else in the CPlane that was active. Reads num: d (signed),
 // corner (0 Sharp, 1 Round, 2 Chamfer, 3 Smooth), ox,oy,oz / xx,xy,xz /

@@ -1551,6 +1551,81 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
 
 }  // namespace
 
+// Cap's per-object construction, shared by the live command and UpdateHistory
+// (history_rebuild.h): caps every planar closed naked-edge loop of an open
+// polysurface on a COPY of it. `caps_here` receives the number of loops capped;
+// nullopt (with `why`) when the object is not an open polysurface or no loop
+// could be capped.
+std::optional<SceneObject> CapObject(CommandContext& ctx, const SceneObject& src, int& caps_here, std::string& why) {
+  caps_here = 0;
+  if (src.kind != ObjectKind::Brep || !src.brep) { why = std::string("the object is ") + HistoryKindName(src.kind) + ", not an open polysurface"; return std::nullopt; }
+  kernel::Brep nb;
+  nb.raw() = src.brep->raw();
+  ON_Brep& b = nb.raw();
+  if (b.IsSolid()) { why = "the object is already a closed solid, there is nothing to cap"; return std::nullopt; }
+  std::vector<int> naked;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) if (b.m_E[ei].TrimCount() == 1) naked.push_back(ei);
+  if (naked.empty()) { why = "the object has no naked edges"; return std::nullopt; }
+      // Group the naked edges into their separate closed loops by shared
+      // vertices (a polysurface can have more than one hole to cap), then
+      // walk each loop tip-to-tail so its polyline is in order instead of
+      // just concatenating edges in array order (which only happened to
+      // work when there was exactly one loop).
+      std::vector<bool> used(naked.size(), false);
+      std::unordered_map<int, std::vector<int>> by_vertex;  // vertex index -> positions in naked[]
+      for (size_t i = 0; i < naked.size(); ++i) {
+        const ON_BrepEdge& ed = b.m_E[naked[i]];
+        by_vertex[ed.m_vi[0]].push_back(static_cast<int>(i));
+        by_vertex[ed.m_vi[1]].push_back(static_cast<int>(i));
+      }
+      for (size_t start = 0; start < naked.size(); ++start) {
+        if (used[start]) continue;
+        std::vector<int> loop_idx{static_cast<int>(start)};
+        std::vector<bool> loop_rev{false};
+        used[start] = true;
+        const ON_BrepEdge& first = b.m_E[naked[start]];
+        const int loop_start_vertex = first.m_vi[0];
+        int end_vertex = first.m_vi[1];
+        while (end_vertex != loop_start_vertex) {
+          int next = -1;
+          for (int cand : by_vertex[end_vertex]) if (!used[cand]) { next = cand; break; }
+          if (next < 0) break;  // dangling chain: not a closed loop
+          used[next] = true;
+          const ON_BrepEdge& ne = b.m_E[naked[next]];
+          const bool rev = (ne.m_vi[0] != end_vertex);
+          loop_idx.push_back(next);
+          loop_rev.push_back(rev);
+          end_vertex = rev ? ne.m_vi[0] : ne.m_vi[1];
+        }
+        if (end_vertex != loop_start_vertex) continue;  // open chain, can't cap
+        ON_Polyline pl;
+        for (size_t k = 0; k < loop_idx.size(); ++k) {
+          const ON_BrepEdge& ed = b.m_E[naked[loop_idx[k]]];
+          for (int s = 0; s < 8; ++s) {
+            const double t = loop_rev[k] ? (1.0 - s / 8.0) : (s / 8.0);
+            pl.Append(ed.PointAt(ed.Domain().ParameterAt(t)));
+          }
+        }
+        ON_Plane plane;
+        if (!pl.IsClosed(ctx.Settings().absolute_tolerance)) pl.Append(pl[0]);
+        ON_PolylineCurve pc(pl);
+        if (pc.IsPlanar(&plane, ctx.Settings().absolute_tolerance * 10)) {
+          if (ON_Brep* cap = ON_BrepTrimmedPlane(plane, pc)) { b.Append(*cap); delete cap; ++caps_here; }
+        }
+      }
+  if (caps_here == 0) { why = "none of its " + std::to_string(naked.size()) + " naked edge(s) forms a closed planar loop"; return std::nullopt; }
+  JoinNakedEdges(b, ctx.Settings().absolute_tolerance * 10);
+  return SceneObject::MakeBrep(nb);
+}
+
+std::optional<SceneObject> RebuildCap(CommandContext& ctx, const HistoryInputs& in, const HistoryRecord&, std::string& why) {
+  if (in.size() != 1) { why = "expected 1 source object, the record has " + std::to_string(in.size()); return std::nullopt; }
+  int caps = 0;
+  std::optional<SceneObject> r = CapObject(ctx, *in[0], caps, why);
+  if (!r && !why.empty()) why = "source object " + std::to_string(in[0]->id) + ": " + why;
+  return r;
+}
+
 void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "Box", Make<BoxCommand>(BoxCommand::Out::Brep));
   Reg(e, "MeshBox", Make<BoxCommand>(BoxCommand::Out::Mesh));
@@ -1761,67 +1836,35 @@ void RegisterSolidCommands(CommandEngine& e) {
                                           }));
   Reg(e, "Cap", OnSelection("Select open surfaces to cap", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Cap");
-        int capped = 0, openings = 0;
+        int capped = 0, openings = 0, recorded = 0;
+        const bool keep_source = ctx.App().State().history_recording;
         for (ObjectId id : ids) {
-          SceneObject* o = ctx.Doc().Find(id);
-          if (!o || o->kind != ObjectKind::Brep) continue;
-          ON_Brep& b = o->brep->raw();
-          if (b.IsSolid()) continue;
-          std::vector<int> naked;
-          for (int ei = 0; ei < b.m_E.Count(); ++ei) if (b.m_E[ei].TrimCount() == 1) naked.push_back(ei);
-          if (naked.empty()) continue;
-          // Group the naked edges into their separate closed loops by shared
-          // vertices (a polysurface can have more than one hole to cap), then
-          // walk each loop tip-to-tail so its polyline is in order instead of
-          // just concatenating edges in array order (which only happened to
-          // work when there was exactly one loop).
-          std::vector<bool> used(naked.size(), false);
-          std::unordered_map<int, std::vector<int>> by_vertex;  // vertex index -> positions in naked[]
-          for (size_t i = 0; i < naked.size(); ++i) {
-            const ON_BrepEdge& ed = b.m_E[naked[i]];
-            by_vertex[ed.m_vi[0]].push_back(static_cast<int>(i));
-            by_vertex[ed.m_vi[1]].push_back(static_cast<int>(i));
-          }
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
           int caps_here = 0;
-          for (size_t start = 0; start < naked.size(); ++start) {
-            if (used[start]) continue;
-            std::vector<int> loop_idx{static_cast<int>(start)};
-            std::vector<bool> loop_rev{false};
-            used[start] = true;
-            const ON_BrepEdge& first = b.m_E[naked[start]];
-            const int loop_start_vertex = first.m_vi[0];
-            int end_vertex = first.m_vi[1];
-            while (end_vertex != loop_start_vertex) {
-              int next = -1;
-              for (int cand : by_vertex[end_vertex]) if (!used[cand]) { next = cand; break; }
-              if (next < 0) break;  // dangling chain: not a closed loop
-              used[next] = true;
-              const ON_BrepEdge& ne = b.m_E[naked[next]];
-              const bool rev = (ne.m_vi[0] != end_vertex);
-              loop_idx.push_back(next);
-              loop_rev.push_back(rev);
-              end_vertex = rev ? ne.m_vi[0] : ne.m_vi[1];
-            }
-            if (end_vertex != loop_start_vertex) continue;  // open chain, can't cap
-            ON_Polyline pl;
-            for (size_t k = 0; k < loop_idx.size(); ++k) {
-              const ON_BrepEdge& ed = b.m_E[naked[loop_idx[k]]];
-              for (int s = 0; s < 8; ++s) {
-                const double t = loop_rev[k] ? (1.0 - s / 8.0) : (s / 8.0);
-                pl.Append(ed.PointAt(ed.Domain().ParameterAt(t)));
-              }
-            }
-            ON_Plane plane;
-            if (!pl.IsClosed(ctx.Settings().absolute_tolerance)) pl.Append(pl[0]);
-            ON_PolylineCurve pc(pl);
-            if (pc.IsPlanar(&plane, ctx.Settings().absolute_tolerance * 10)) {
-              if (ON_Brep* cap = ON_BrepTrimmedPlane(plane, pc)) { b.Append(*cap); delete cap; ++caps_here; }
-            }
+          std::string why;
+          std::optional<SceneObject> built = CapObject(ctx, *o, caps_here, why);
+          if (!built) continue;
+          ++capped;
+          openings += caps_here;
+          SceneObject* t = ctx.Doc().Find(id);
+          if (keep_source) {
+            // History On: the open polysurface is hidden (kept as the recorded source), the capped copy is a new object.
+            built->layer_index = t->layer_index;
+            t->visible = false;
+            t->selected = false;
+            t->InvalidateDisplay();
+            const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+            RecordHistoryIfEnabled(ctx, new_id, "Cap", {id}, {});
+            ++recorded;
+          } else {
+            t->brep->raw() = built->brep->raw();
+            t->InvalidateDisplay();
           }
-          if (caps_here > 0) { JoinNakedEdges(b, ctx.Settings().absolute_tolerance * 10); o->InvalidateDisplay(); ++capped; openings += caps_here; }
         }
-        ctx.Print("Capped " + std::to_string(capped) + " object(s), " + std::to_string(openings) + " opening(s)");
-      }), CommandStatus::Implemented, "Caps every planar closed naked-edge loop on each selected polysurface (one call handles multiple separate holes).");
+        ctx.Print("Capped " + std::to_string(capped) + " object(s), " + std::to_string(openings) + " opening(s)" +
+                  (recorded ? "; History is On: the open polysurface(s) are kept hidden as the source of " + std::to_string(recorded) + " recorded result(s)" : std::string()));
+      }), CommandStatus::Implemented, "Caps every planar closed naked-edge loop on each selected polysurface (one call handles multiple separate holes). With History On the open polysurface is kept hidden as the recorded source and the capped copy follows edits of it.");
 }
 
 }  // namespace dino8::app

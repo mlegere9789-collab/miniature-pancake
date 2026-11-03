@@ -20,6 +20,7 @@
 // back to a mesh boolean of a swept cutting tool, and says so in the
 // command's printed note ("mesh fallback").
 #include "commands/cmd_common.h"
+#include "commands/history_rebuild.h"
 #include "commands/revolved_solid.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/fillet.h"
@@ -32,6 +33,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace dino8::app {
@@ -1854,6 +1856,219 @@ class FilletTwoSurfacesCommand : public Command {
 // geom/BlendSurface.{h,cpp} - shared with tests/test_g2_blend.cpp, which
 // numerically checks BuildBlendSurfaceG2's curvature-matching claim.
 
+// ---------------------------------------------------------------------------
+// Construction history for FilletEdge / ChamferEdge (exact kernel paths only).
+//
+// Face and edge indices are not stable across edits of the source solid, so
+// each filleted/chamfered edge is recorded by a GEOMETRIC SIGNATURE and
+// re-found on the edited source by RebuildEdgeBlend (end of this file): the
+// edge's direction (sign-free), the outward normals of its two faces at the
+// edge midpoint (an unordered pair) and its midpoint relative to the solid's
+// bounding box (centre-relative, divided by the box size, so it survives a Move
+// and a Scale). The rebuild accepts an edge only when exactly one edge matches
+// direction and both normals, or when the nearest of several matches is
+// clearly (2x) nearer than the next; otherwise it refuses with the reason and
+// the dependent is kept as it was.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct EdgeSig {
+  ON_3dPoint mid;
+  ON_3dPoint rel;  // midpoint relative to the solid's bounding box
+  ON_3dVector dir, na, nb;
+};
+
+bool FaceNormalAtEdgeMid(const ON_Brep& b, const ON_BrepEdge& e, int k, ON_3dVector& n) {
+  if (k < 0 || k >= e.TrimCount()) return false;
+  const ON_BrepTrim& t = b.m_T[e.m_ti[k]];
+  const int fi = t.FaceIndexOf();
+  if (fi < 0 || fi >= b.m_F.Count()) return false;
+  const ON_BrepFace& f = b.m_F[fi];
+  const ON_Surface* srf = f.SurfaceOf();
+  if (!srf) return false;
+  const ON_3dPoint uv = t.PointAt(t.Domain().ParameterAt(0.5));
+  n = srf->NormalAt(uv.x, uv.y);
+  if (!n.Unitize()) return false;
+  if (f.m_bRev) n = -n;
+  return true;
+}
+
+bool EdgeSignatureOf(const ON_Brep& b, int ei, EdgeSig& s, std::string& why) {
+  if (ei < 0 || ei >= b.m_E.Count()) { why = "edge index out of range"; return false; }
+  const ON_BrepEdge& e = b.m_E[ei];
+  if (e.TrimCount() != 2) { why = "the edge does not separate exactly two faces"; return false; }
+  const ON_3dPoint p0 = e.PointAtStart(), p1 = e.PointAtEnd();
+  ON_3dVector d = p1 - p0;
+  const double len = d.Length();
+  if (!d.Unitize()) { why = "the edge is degenerate"; return false; }
+  s.mid = e.PointAt(e.Domain().ParameterAt(0.5));
+  if (s.mid.DistanceTo(ON_3dPoint((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, (p0.z + p1.z) / 2)) > 1e-6 * len + 1e-9) { why = "the edge is not straight"; return false; }
+  // Sign-free direction: the first significant component is positive.
+  const double* c = &d.x;
+  for (int i = 0; i < 3; ++i) { if (std::fabs(c[i]) > 1e-9) { if (c[i] < 0) d = -d; break; } }
+  s.dir = d;
+  if (!FaceNormalAtEdgeMid(b, e, 0, s.na) || !FaceNormalAtEdgeMid(b, e, 1, s.nb)) { why = "a face normal at the edge midpoint could not be evaluated"; return false; }
+  const ON_BoundingBox bb = b.BoundingBox();
+  const ON_3dPoint ctr = (bb.m_min + bb.m_max) * 0.5;
+  auto rel = [&](double v, double c0, double lo, double hi) { const double sz = hi - lo; return (v - c0) / (sz > 1e-9 ? sz : 1.0); };
+  s.rel = ON_3dPoint(rel(s.mid.x, ctr.x, bb.m_min.x, bb.m_max.x), rel(s.mid.y, ctr.y, bb.m_min.y, bb.m_max.y), rel(s.mid.z, ctr.z, bb.m_min.z, bb.m_max.z));
+  return true;
+}
+
+std::string EdgeKey(int k, const std::string& f) { return "e" + std::to_string(k) + "_" + f; }
+
+void StoreSig(std::map<std::string, double>& num, int k, int group, const EdgeSig& s) {
+  auto put3 = [&](const char* f, double x, double y, double z) {
+    num[EdgeKey(k, f) + "x"] = x; num[EdgeKey(k, f) + "y"] = y; num[EdgeKey(k, f) + "z"] = z;
+  };
+  put3("r", s.rel.x, s.rel.y, s.rel.z);
+  put3("m", s.mid.x, s.mid.y, s.mid.z);
+  put3("d", s.dir.x, s.dir.y, s.dir.z);
+  put3("a", s.na.x, s.na.y, s.na.z);
+  put3("b", s.nb.x, s.nb.y, s.nb.z);
+  num[EdgeKey(k, "g")] = group;
+}
+
+bool LoadSig(const std::map<std::string, double>& num, int k, EdgeSig& s) {
+  auto get3 = [&](const char* f, double& x, double& y, double& z) {
+    const auto ix = num.find(EdgeKey(k, f) + "x"), iy = num.find(EdgeKey(k, f) + "y"), iz = num.find(EdgeKey(k, f) + "z");
+    if (ix == num.end() || iy == num.end() || iz == num.end()) return false;
+    x = ix->second; y = iy->second; z = iz->second;
+    return true;
+  };
+  return get3("r", s.rel.x, s.rel.y, s.rel.z) && get3("m", s.mid.x, s.mid.y, s.mid.z) && get3("d", s.dir.x, s.dir.y, s.dir.z) &&
+         get3("a", s.na.x, s.na.y, s.na.z) && get3("b", s.nb.x, s.nb.y, s.nb.z);
+}
+
+std::string P3(const ON_3dPoint& p) { return FormatNumber(p.x) + "," + FormatNumber(p.y) + "," + FormatNumber(p.z); }
+
+// Re-finds the recorded edge on `b`. Returns its index, or -1 with the reason.
+int FindEdgeBySignature(const ON_Brep& b, const EdgeSig& want, std::string& why) {
+  constexpr double kCos = 0.999;  // about 2.6 degrees
+  std::vector<std::pair<double, int>> cand;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    EdgeSig s;
+    std::string ignore;
+    if (!EdgeSignatureOf(b, i, s, ignore)) continue;
+    if (std::fabs(ON_DotProduct(s.dir, want.dir)) < kCos) continue;
+    const bool straight = ON_DotProduct(s.na, want.na) >= kCos && ON_DotProduct(s.nb, want.nb) >= kCos;
+    const bool swapped = ON_DotProduct(s.na, want.nb) >= kCos && ON_DotProduct(s.nb, want.na) >= kCos;
+    if (!straight && !swapped) continue;
+    cand.emplace_back(s.rel.DistanceTo(want.rel), i);
+  }
+  const std::string what = "the edge at " + P3(want.mid) + " (direction " + P3(want.dir) + ", between faces with outward normals " + P3(want.na) + " and " + P3(want.nb) + ")";
+  if (cand.empty()) { why = what + " no longer exists on the edited source: no edge has that direction between faces with those normals"; return -1; }
+  std::sort(cand.begin(), cand.end());
+  if (cand.size() > 1 && !(cand[0].first * 2.0 < cand[1].first)) {
+    why = what + " is ambiguous on the edited source: " + std::to_string(cand.size()) + " edges match its direction and face normals and none is clearly nearest";
+    return -1;
+  }
+  return cand[0].second;
+}
+
+int EdgeIndexByEndpoints(const ON_Brep& b, Point3d p0, Point3d p1, double tol) {
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = b.m_E[i];
+    const Point3d a = e.PointAtStart(), c = e.PointAtEnd();
+    if ((a.DistanceTo(p0) <= tol && c.DistanceTo(p1) <= tol) || (a.DistanceTo(p1) <= tol && c.DistanceTo(p0) <= tol)) return i;
+  }
+  return -1;
+}
+
+// What a successful exact FilletEdge/ChamferEdge hands to CommitEdgeBlend.
+struct EdgeBlendOp {
+  bool chamfer = false;
+  double d1 = 0;                  // radius (fillet) / distance1 (chamfer)
+  std::optional<double> d2;       // chamfer distance2 (unset = symmetric)
+  bool recordable = true;         // false: this build is not what the rebuild reproduces (angle chamfer)
+  std::vector<std::pair<Point3d, Point3d>> edges;  // endpoints on the PRE-edit solid
+};
+
+// Writes an exact result into the document. With History Off (or a build the
+// rebuild cannot reproduce) it replaces the solid's geometry in place, as
+// before. With History On the source solid is HIDDEN (not deleted), the result
+// becomes a new object and records {source, options, edge signatures}; a
+// further pick on a result of this same run extends that record (the rebuild
+// replays the groups in order, each edge re-found on the intermediate solid).
+// Returns the id that now holds the result and appends a note for the message.
+ObjectId CommitEdgeBlend(CommandContext& ctx, ObjectId id, const ON_Brep& before, const ON_Brep& result, const std::string& label,
+                         const EdgeBlendOp& op, std::set<ObjectId>& made, std::string& note) {
+  ctx.Doc().BeginChange(label);
+  SceneObject* orig = ctx.Doc().Find(id);
+  if (!orig) return id;
+  const bool want = ctx.App().State().history_recording && orig->kind == ObjectKind::Brep;
+  const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+  const bool extend = made.count(id) > 0 && ctx.Doc().FindHistoryRecord(id) != nullptr;
+  std::map<std::string, double> sigs;
+  std::string why;
+  const int k0 = extend ? static_cast<int>(ctx.Doc().FindHistoryRecord(id)->num.at("n")) : 0;
+  const int group = extend ? static_cast<int>(ctx.Doc().FindHistoryRecord(id)->num.at("groups")) : 0;
+  bool sig_ok = want && op.recordable;
+  if (want && !op.recordable) why = "this chamfer mode (distance and angle) is not one the rebuild reproduces";
+  if (sig_ok) {
+    int k = k0;
+    for (const auto& e : op.edges) {
+      const int ei = EdgeIndexByEndpoints(before, e.first, e.second, tol);
+      EdgeSig s;
+      if (ei < 0) { sig_ok = false; why = "the edge could not be located on the solid"; break; }
+      if (!EdgeSignatureOf(before, ei, s, why)) { sig_ok = false; break; }
+      StoreSig(sigs, k++, group, s);
+    }
+  }
+  auto replace_in_place = [&]() {
+    orig->kind = ObjectKind::Brep;
+    if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+    orig->brep->raw() = result;
+    orig->surface.reset();
+    orig->InvalidateDisplay();
+  };
+  if (sig_ok && extend) {
+    HistoryRecord rec = *ctx.Doc().FindHistoryRecord(id);
+    for (const auto& kv : sigs) rec.num[kv.first] = kv.second;
+    rec.num["n"] = k0 + static_cast<double>(op.edges.size());
+    rec.num["groups"] = group + 1;
+    ctx.Doc().SetHistoryRecord(id, std::move(rec));
+    replace_in_place();
+    note = "; recorded in the history of object " + std::to_string(id) + " (now " + std::to_string(group + 1) + " step(s))";
+    return id;
+  }
+  if (sig_ok) {
+    const int layer = orig->layer_index;
+    orig->visible = false;
+    orig->selected = false;
+    orig->InvalidateDisplay();
+    kernel::Brep made_brep;
+    made_brep.raw() = result;
+    SceneObject n = SceneObject::MakeBrep(made_brep);
+    n.layer_index = layer;
+    const ObjectId new_id = ctx.Doc().Add(std::move(n));
+    HistoryRecord rec;
+    rec.command = op.chamfer ? "ChamferEdge" : "FilletEdge";
+    rec.sources = {id};
+    rec.num = sigs;
+    rec.num["n"] = static_cast<double>(op.edges.size());
+    rec.num["groups"] = 1;
+    rec.num["r"] = op.d1;
+    rec.num["d2"] = op.d2.value_or(op.d1);
+    rec.num["sym"] = op.d2.has_value() ? 0.0 : 1.0;
+    ctx.Doc().SetHistoryRecord(new_id, std::move(rec));
+    made.insert(new_id);
+    note = "; History is On: the original solid " + std::to_string(id) + " is kept hidden as the source and the result is object " + std::to_string(new_id) +
+           " (it follows edits of the source; edges are re-found by direction, face normals and position)";
+    return new_id;
+  }
+  if (want && made.count(id)) {
+    ctx.Doc().ClearHistoryRecord(id);
+    note = "; this step cannot be recorded (" + why + "), so the history of object " + std::to_string(id) + " was dropped";
+  } else if (want) {
+    note = "; not recorded in history (" + why + ")";
+  }
+  replace_in_place();
+  return id;
+}
+
+}  // namespace
+
 class FilletEdgeCommand : public Command {
  public:
   enum class Mode { Fillet, Chamfer, Blend };
@@ -2091,21 +2306,18 @@ class FilletEdgeCommand : public Command {
         }
       }
       if (ok) {
-        ctx.Doc().BeginChange(label);
-        if (SceneObject* orig = ctx.Doc().Find(id)) {
-          orig->kind = ObjectKind::Brep;
-          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
-          orig->brep->raw() = result.raw();
-          orig->surface.reset();
-          orig->InvalidateDisplay();
-        }
+        EdgeBlendOp op;
+        op.d1 = radius_;
+        op.edges = edges;
+        std::string note;
+        CommitEdgeBlend(ctx, id, *b, result.raw(), label, op, made_, note);
         if (edges.size() == 1) {
           const int ei = FindEdgeIndexByEndpoints(*b, edges.front().first, edges.front().second, tol);
           ctx.Print(label + ": edge " + std::to_string(ei) + " of object " + std::to_string(id) +
-                     " replaced with an exact fillet (" + RadiusDescription() + ")");
+                     " replaced with an exact fillet (" + RadiusDescription() + ")" + note);
         } else {
           ctx.Print(label + ": " + std::to_string(edges.size()) + " staged edges of object " + std::to_string(id) +
-                     " replaced with an exact multi-edge fillet (" + RadiusDescription() + ")");
+                     " replaced with an exact multi-edge fillet (" + RadiusDescription() + ")" + note);
         }
         return;
       }
@@ -2350,17 +2562,17 @@ class FilletEdgeCommand : public Command {
       std::string detail;
       bool rim_chamfer = false;
       if (TryExactChamfer(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail, &rim_chamfer)) {
-        ctx.Doc().BeginChange(label);
-        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
-          orig->kind = ObjectKind::Brep;
-          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
-          orig->brep->raw() = exact;
-          orig->surface.reset();
-          orig->InvalidateDisplay();
-        }
+        EdgeBlendOp op;
+        op.chamfer = true;
+        op.d1 = radius_;
+        if (distance2_ && std::fabs(*distance2_ - radius_) > 1e-9) op.d2 = *distance2_;
+        op.recordable = !angled && !rim_chamfer;  // the angle and cylinder/cone-rim chamfers are not what the rebuild re-runs
+        op.edges.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
+        std::string note;
+        CommitEdgeBlend(ctx, pick.id, *b, exact, label, op, made_, note);
         ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
                    " replaced with an exact chamfer (" + ChamferDistanceDescription() +
-                   (rim_chamfer ? "; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap" : "") + ")");
+                   (rim_chamfer ? "; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap" : "") + ")" + note);
         return;
       }
       if (asymmetric || angled) {
@@ -3373,6 +3585,7 @@ class FilletEdgeCommand : public Command {
   // Run() steps aside and the ordinary TryExactFillet-or-approximate logic
   // underneath it runs instead, exactly as if staging never existed.
   bool flushing_fillet_ = false;
+  std::set<ObjectId> made_;  // results of this run that carry a FilletEdge/ChamferEdge history record (later picks extend it)
 };
 
 // ---------------------------------------------------------------------------
@@ -3613,6 +3826,61 @@ static int ContinuityOptionToInt(const std::string& v) {
   return v == "G4" ? 4 : (v == "G3" ? 3 : (v == "Curvature" ? 2 : 1));
 }
 
+// The boundary isoparametric edge of `s` named by (dir, at_max) - the same pair
+// NearestBoundaryIsoEdge reports for a pick. Caller owns the returned curve.
+static ON_Curve* BoundaryIsoEdge(const ON_NurbsSurface& s, int dir, bool at_max) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  return dir == 1 ? s.IsoCurve(1, at_max ? du.Max() : du.Min()) : s.IsoCurve(0, at_max ? dv.Max() : dv.Min());
+}
+
+// BlendSrf's construction between two boundary edges (shared by BlendSrfCommand and the
+// history rebuild RebuildBlendSrf): the exact kernel Hermite skin first, then (G1/G2 only)
+// the app's generic Hermite build. `used_exact` says which one produced `built`.
+static bool BuildBlendBetween(CommandContext& ctx, const ON_NurbsSurface& sa, int dir_a, bool at_max_a, const ON_NurbsSurface& sb,
+                              int dir_b, bool at_max_b, int continuity, ON_NurbsSurface& built, bool& used_exact) {
+  std::unique_ptr<ON_Curve> ea(BoundaryIsoEdge(sa, dir_a, at_max_a)), eb(BoundaryIsoEdge(sb, dir_b, at_max_b));
+  if (!ea || !eb) return false;
+  const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+  const double max_gap = std::max(std::max(SurfaceScale(sa), SurfaceScale(sb)) * 1e-3, tol * 10);
+  double achieved_gap = std::numeric_limits<double>::infinity();
+  // Try the exact kernel::NurbsSurface::BlendSurfaces() Hermite-skin
+  // construction FIRST - reachable here because both rails are genuine
+  // isoparametric boundaries (surface.h's own documented scope) - ahead
+  // of the app's own generic BuildBlendSurfaceG1/G2Adaptive fallback,
+  // the same "exact kernel construction first, fail open" structure
+  // TryExactFillet/TryExactChamfer already establish elsewhere in this
+  // file. This is also the only path that reaches Continuity=G3 at all.
+  kernel::NurbsSurface ksa, ksb;
+  ksa.raw() = sa;
+  ksb.raw() = sb;
+  const bool reverse1 = BlendRailsNeedReversal(*ea, *eb);
+  const bool exact_ok = BuildBlendSurfaceKernelAdaptive(dir_a, at_max_a, ksa, dir_b, at_max_b, ksb, reverse1,
+                                                         continuity, max_gap, 8, 256, built, &achieved_gap);
+  bool ok = exact_ok && std::isfinite(achieved_gap);
+  used_exact = ok;
+  if (!ok && continuity < 3) {
+    // G1/G2 can still fall back to the app's own generic Hermite build
+    // (e.g. the exact construction's own degenerate-rail rejection); a
+    // caller-requested G3 or G4 has no approximate equivalent to fall
+    // back to at all, so it is reported as a failure instead of silently
+    // dropping to a G1/G2 result the caller never asked for.
+    auto uv_on = [&](const ON_NurbsSurface& s, const ON_Curve& c, double t01) {
+      const ON_Interval d = c.Domain();
+      const Point3d p3 = c.PointAt(d.ParameterAt(t01));
+      double u, v;
+      SurfaceClosestPoint(s, p3, u, v);
+      return ON_2dPoint(u, v);
+    };
+    auto uv_a_fn = [&](double t) { return uv_on(sa, *ea, t); };
+    auto uv_b_fn = [&](double t) { return uv_on(sb, *eb, t); };
+    achieved_gap = std::numeric_limits<double>::infinity();
+    continuity == 2 ? BuildBlendSurfaceG2Adaptive(*ea, sa, uv_a_fn, *eb, sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
+                    : BuildBlendSurfaceG1Adaptive(*ea, sa, uv_a_fn, *eb, sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
+    ok = std::isfinite(achieved_gap);
+  }
+  return ok;
+}
+
 class BlendSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override {
@@ -3647,52 +3915,22 @@ class BlendSrfCommand : public Command {
     ON_Curve* ea = NearestBoundaryIsoEdge(*sa, pa, &dir_a, &at_max_a);
     ON_Curve* eb = NearestBoundaryIsoEdge(*sb, pb, &dir_b, &at_max_b);
     if (!ea || !eb) { ctx.Warn("BlendSrf: could not find a boundary edge at the pick"); delete ea; delete eb; return; }
-    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
-    const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
-    ON_NurbsSurface built;
-    double achieved_gap = std::numeric_limits<double>::infinity();
-    // Try the exact kernel::NurbsSurface::BlendSurfaces() Hermite-skin
-    // construction FIRST - reachable here because both rails are genuine
-    // isoparametric boundaries (surface.h's own documented scope) - ahead
-    // of the app's own generic BuildBlendSurfaceG1/G2Adaptive fallback,
-    // the same "exact kernel construction first, fail open" structure
-    // TryExactFillet/TryExactChamfer already establish elsewhere in this
-    // file. This is also the only path that reaches Continuity=G3 at all.
-    kernel::NurbsSurface ksa, ksb;
-    ksa.raw() = *sa;
-    ksb.raw() = *sb;
-    const bool reverse1 = BlendRailsNeedReversal(*ea, *eb);
-    const bool exact_ok = BuildBlendSurfaceKernelAdaptive(dir_a, at_max_a, ksa, dir_b, at_max_b, ksb, reverse1,
-                                                           continuity_, max_gap, 8, 256, built, &achieved_gap);
-    bool ok = exact_ok && std::isfinite(achieved_gap);
-    bool used_exact = ok;
-    if (!ok && continuity_ < 3) {
-      // G1/G2 can still fall back to the app's own generic Hermite build
-      // (e.g. the exact construction's own degenerate-rail rejection); a
-      // caller-requested G3 or G4 has no approximate equivalent to fall
-      // back to at all, so it is reported as a failure instead of silently
-      // dropping to a G1/G2 result the caller never asked for.
-      auto uv_on = [&](const ON_NurbsSurface& s, const ON_Curve& c, double t01) {
-        const ON_Interval d = c.Domain();
-        const Point3d p3 = c.PointAt(d.ParameterAt(t01));
-        double u, v;
-        SurfaceClosestPoint(s, p3, u, v);
-        return ON_2dPoint(u, v);
-      };
-      auto uv_a_fn = [&](double t) { return uv_on(*sa, *ea, t); };
-      auto uv_b_fn = [&](double t) { return uv_on(*sb, *eb, t); };
-      achieved_gap = std::numeric_limits<double>::infinity();
-      continuity_ == 2 ? BuildBlendSurfaceG2Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
-                        : BuildBlendSurfaceG1Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
-      ok = std::isfinite(achieved_gap);
-    }
     delete ea;
     delete eb;
+    ON_NurbsSurface built;
+    bool used_exact = false;
+    const bool ok = BuildBlendBetween(ctx, *sa, dir_a, at_max_a, *sb, dir_b, at_max_b, continuity_, built, used_exact);
     if (!ok) { ctx.Warn("BlendSrf: could not build the blend"); return; }
     ctx.Doc().BeginChange("BlendSrf");
     SceneObject like = *oa;
     ObjectId nid = AddSurfaceFrom(ctx, built, like);
     ctx.Doc().Select(nid, true);
+    // History On: the blend is recorded as {surface A, surface B} with the boundary edges as (iso direction, at max)
+    // and the face indices - intrinsic to each surface, so they survive Move/Rotate/Scale and control-point edits.
+    RecordHistoryIfEnabled(ctx, nid, "BlendSrf", {fa.id, fb.id},
+                           {{"dir_a", static_cast<double>(dir_a)}, {"max_a", at_max_a ? 1.0 : 0.0}, {"face_a", static_cast<double>(fa.face)},
+                            {"dir_b", static_cast<double>(dir_b)}, {"max_b", at_max_b ? 1.0 : 0.0}, {"face_b", static_cast<double>(fb.face)},
+                            {"cont", static_cast<double>(continuity_)}});
     const char* cname = continuity_ == 4 ? "G4" : (continuity_ == 3 ? "G3" : (continuity_ == 2 ? "Curvature" : "Tangency"));
     ctx.Print(std::string("BlendSrf: blend surface added between object ") + std::to_string(fa.id) + " and " + std::to_string(fb.id) +
                " (Continuity=" + cname + (used_exact ? ", exact kernel blend" : "") + ")");
@@ -4960,6 +5198,102 @@ class RemoveFilletCommand : public Command {
 };
 
 // ---------------------------------------------------------------------------
+
+// FilletEdge / ChamferEdge re-execution (history_rebuild.h): replays the recorded
+// steps on the CURRENT source solid. Each recorded edge is re-found by its
+// geometric signature on the solid as it stands at that step (so a chamfer
+// recorded after an earlier one is searched for on the already-chamfered
+// intermediate), then the same exact kernel calls the live command made are
+// run: FilletConvexEdges/FilletConcaveEdges for a fillet step, ChamferConvexEdge/
+// ChamferConcaveEdge for a chamfer. There is no approximate fallback: a
+// refusal names the edge or the kernel's reason and the dependent is kept.
+std::optional<SceneObject> RebuildEdgeBlend(CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) {
+  if (in.size() != 1) { why = "expected 1 source object, the record has " + std::to_string(in.size()); return std::nullopt; }
+  const SceneObject& src = *in[0];
+  if (src.kind != ObjectKind::Brep || !src.brep) {
+    why = "source object " + std::to_string(src.id) + " is " + HistoryKindName(src.kind) + ", not a polysurface solid";
+    return std::nullopt;
+  }
+  const bool fillet = rec.command == "FilletEdge";
+  auto num = [&](const std::string& k, double d = 0.0) { const auto it = rec.num.find(k); return it == rec.num.end() ? d : it->second; };
+  const double r = num("r");
+  const bool sym = num("sym", 1.0) != 0.0;
+  const double d2 = sym ? r : num("d2", r);
+  const int n = static_cast<int>(num("n")), groups = static_cast<int>(num("groups", 1));
+  if (!(r > 0) || n < 1) { why = "the record holds no usable distance or edge list"; return std::nullopt; }
+  ON_Brep cur = src.brep->raw();
+  for (int g = 0; g < groups; ++g) {
+    std::vector<std::pair<Point3d, Point3d>> es;
+    for (int k = 0; k < n; ++k) {
+      if (static_cast<int>(num(EdgeKey(k, "g"), 0.0)) != g) continue;
+      EdgeSig want;
+      if (!LoadSig(rec.num, k, want)) { why = "the record of edge " + std::to_string(k + 1) + " is incomplete"; return std::nullopt; }
+      std::string reason;
+      const int ei = FindEdgeBySignature(cur, want, reason);
+      if (ei < 0) { why = "edge " + std::to_string(k + 1) + " of " + std::to_string(n) + ": " + reason; return std::nullopt; }
+      es.emplace_back(Point3d(cur.m_E[ei].PointAtStart()), Point3d(cur.m_E[ei].PointAtEnd()));
+      ctx.Print(rec.command + ": edge " + std::to_string(k + 1) + " re-found as edge " + std::to_string(ei) + " of the source (direction and both face normals match)");
+    }
+    if (es.empty()) { why = "step " + std::to_string(g + 1) + " has no edges"; return std::nullopt; }
+    kernel::Brep kb;
+    kb.raw() = cur;
+    std::string convex_err, concave_err;
+    kernel::Brep out;
+    auto attempt = [&](bool convex, std::string& err) {
+      try {
+        if (fillet) {
+          out = convex ? kernel::FilletConvexEdges(kb, es, r) : kernel::FilletConcaveEdges(kb, es, r);
+        } else {
+          kernel::Brep b = kb;
+          for (const auto& e : es) b = convex ? kernel::ChamferConvexEdge(b, e.first, e.second, r, d2) : kernel::ChamferConcaveEdge(b, e.first, e.second, r, d2);
+          out = b;
+        }
+        return true;
+      } catch (const std::exception& ex) {
+        err = ex.what();
+        return false;
+      }
+    };
+    const bool ok = attempt(true, convex_err) || attempt(false, concave_err);
+    if (!ok) {
+      why = std::string("the exact kernel ") + (fillet ? "fillet" : "chamfer") + " refused the edited source (convex attempt: " + convex_err + "; concave attempt: " + concave_err + ")";
+      return std::nullopt;
+    }
+    cur = out.raw();
+  }
+  kernel::Brep result;
+  result.raw() = cur;
+  return SceneObject::MakeBrep(result);
+}
+
+// BlendSrf re-execution (history_rebuild.h): the same boundary edges (iso direction,
+// min/max, face index) of the sources' CURRENT surfaces, the same continuity.
+std::optional<SceneObject> RebuildBlendSrf(CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) {
+  if (in.size() != 2) { why = "expected 2 source objects, the record has " + std::to_string(in.size()); return std::nullopt; }
+  auto num = [&](const char* k) { const auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  std::optional<ON_NurbsSurface> sa, sb;
+  for (int k = 0; k < 2; ++k) {
+    const SceneObject& o = *in[k];
+    const int face = static_cast<int>(num(k == 0 ? "face_a" : "face_b"));
+    if (o.kind != ObjectKind::Surface && o.kind != ObjectKind::Brep) {
+      why = "source object " + std::to_string(o.id) + " is " + HistoryKindName(o.kind) + ", not a surface or polysurface";
+      return std::nullopt;
+    }
+    std::optional<ON_NurbsSurface> s = SurfaceOfObject(o, face);
+    if (!s) { why = "source object " + std::to_string(o.id) + " has no face " + std::to_string(face) + " any more"; return std::nullopt; }
+    (k == 0 ? sa : sb) = s;
+  }
+  ON_NurbsSurface built;
+  bool used_exact = false;
+  if (!BuildBlendBetween(ctx, *sa, static_cast<int>(num("dir_a")), num("max_a") != 0.0, *sb, static_cast<int>(num("dir_b")), num("max_b") != 0.0,
+                         static_cast<int>(num("cont")), built, used_exact)) {
+    why = "the blend could not be built between the sources' current boundary edges";
+    return std::nullopt;
+  }
+  kernel::NurbsSurface k;
+  k.raw() = built;
+  return SceneObject::MakeSurface(k);
+}
 
 void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectAny, 1), CommandStatus::Implemented,

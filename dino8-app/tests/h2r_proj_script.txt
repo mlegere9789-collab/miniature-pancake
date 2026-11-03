@@ -1,0 +1,143 @@
+# Project and Pull record construction history (tests/smoke.sh section H2R_, part 3).
+# With History On, a curve (or point) that maps to exactly ONE result is recorded as
+# {source, targets...} with its projection direction; moving the source or a target
+# then rebuilds the result automatically. A curve that would now map to several
+# pieces or to none refuses (reason printed) and the result is kept as it was.
+# Every claim is a measured Bounding box, compared with the SAME operation performed
+# fresh (History Off) on the moved geometry.
+# @TMP@ is the test temp directory.
+SetActiveViewport Top
+
+# ============================================================ P1: Project a line onto a plane along +Z
+History On
+Plane 0,0,0 20,20,0
+Line 2,2,-5 18,18,-5
+SelNone
+SelID 2
+Project
+SelNone
+SelID 1
+Enter
+0,0,0
+0,0,1
+SelNone
+SelID 3
+BoundingBox
+History
+# The line moves +1,+1: the projection follows (3,3 .. 19,19 on the plane).
+SelNone
+SelID 2
+Move
+0,0,0
+1,1,0
+SelNone
+SelID 3
+BoundingBox
+# The TARGET plane moves +4 in Z: the projected line lifts onto it.
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,4
+SelNone
+SelID 3
+BoundingBox
+# EditHistory has nothing to edit for a projection: it lists no parameters.
+EditHistory 3
+# The line moves +3 in X: its end (21,19) now misses the plane (x > 20) -> the curve would
+# map to a single point (no piece): refused, the previous projection is kept.
+SelNone
+SelID 2
+Move
+0,0,0
+3,0,0
+SelNone
+SelID 3
+BoundingBox
+UpdateHistory
+Save @TMP@/h2r_proj.3dm
+New
+Open @TMP@/h2r_proj.3dm
+History On
+History
+SelNone
+SelID 2
+Move
+0,0,0
+-3,0,0
+SelNone
+SelID 3
+BoundingBox
+
+# ============================================================ P2: Pull a point to a plane
+New
+History On
+Plane 0,0,0 20,20,0
+Point 5,5,-3
+SelNone
+SelID 2
+Pull
+SelNone
+SelID 1
+Enter
+SelNone
+SelID 3
+BoundingBox
+History
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,4
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 2
+Move
+0,0,0
+2,0,0
+SelNone
+SelID 3
+BoundingBox
+
+# ============================================================ P3: controls performed fresh, History Off
+New
+History Off
+Plane 0,0,0 20,20,0
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,4
+Line 3,3,-5 19,19,-5
+SelNone
+SelID 2
+Project
+SelNone
+SelID 1
+Enter
+0,0,0
+0,0,1
+SelNone
+SelID 3
+BoundingBox
+History
+
+# ============================================================ P4: History On, a curve that splits into two pieces is not recorded
+New
+History On
+Plane 0,0,0 20,20,0
+Plane 30,0,0 50,20,0
+Polyline 2,2,-5 18,2,-5 25,2,-5 35,2,-5 45,2,-5
+Enter
+SelNone
+SelID 3
+Project
+SelNone
+SelID 1
+SelID 2
+Enter
+0,0,0
+0,0,1
+History
