@@ -235,6 +235,28 @@ Enter
 SelAll
 List
 
+# an OFF-CENTRE hole in a plate rotated 30 degrees about z (the outer polygon is not axis-aligned): rim fillet r = 0.4
+# removes 2*pi*0.4^2*(1.5 + 0.2 - (pi/4)*1.9 + 0.4/3) = 0.3428 -> 115.383
+New
+FRHBEGIN_R_rot
+Box 0,0,0 6,6,0 4
+Cylinder 4,2,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Rotate 3,3,0 30
+FilletEdge
+Radius=0.4
+4.366,4.134,4
+Enter
+SelAll
+List
+Volume
+Check
+
 # control: a plain box edge is still the kernel's exact planar fillet (volume 144 - (1-pi/4)*1*4 = 143.142)
 New
 FRHBEGIN_control_box
