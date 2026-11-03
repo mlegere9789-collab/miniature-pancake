@@ -338,6 +338,306 @@ bool BuildFilletedCylinder(const CylinderRimPlan& g, double rt, double rb, ON_Br
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Exact fillet / chamfer of the rim of a CYLINDRICAL THROUGH-HOLE.
+//
+// The solid a BooleanDifference of a box and a cylinder gives (and, in general, any
+// straight-edged prism with ONE cylindrical through-hole whose axis is perpendicular to both end
+// faces) has, at a hole rim, a planar end face meeting the concave hole wall. The rolling ball
+// between a plane and a cylinder is again an exact torus patch (for a hole it is centred
+// OUTSIDE the wall: major radius R + r, minor radius r), and the chamfer is an exact cone, so
+// the result is assembled from exact pieces the same way the plain-cylinder rim fillet above is:
+// the prism's side faces are the extrusion of its outer polygon (untouched), the end face gets
+// a circular inner loop of radius R + (cap setback), the wall is shortened by the blend height,
+// and one revolved patch (ON_RevSurface of an exact rational arc or a line) joins the two along
+// shared circles (Brep::JoinNakedEdges). Rim circles on the original Boolean result are
+// polylines of many short edges, so the plan is read from the faces (the cylinder, the two end
+// planes and the end face's outer polygon), never from the picked edge's own geometry.
+// ---------------------------------------------------------------------------
+struct HolePlatePlan {
+  ON_3dPoint c0;                 // point of the hole axis on the lower end plane
+  ON_3dVector ax;                // unit axis, lower end -> upper end
+  ON_3dVector u;                 // unit direction perpendicular to ax
+  double R = 0, H = 0;           // hole radius, plate thickness (along ax)
+  std::vector<ON_3dPoint> poly;  // outer polygon of the lower end face (straight edges, on the lower plane)
+  bool top = false;              // which end the picked edge bounds
+};
+
+// One rim blend: a fillet (d_wall == d_cap == radius) or a chamfer (distances along the wall / across the cap).
+struct HoleRimBlend {
+  bool chamfer = false;
+  double d_wall = 0, d_cap = 0;
+};
+
+bool ClassifyHolePlateRim(const ON_Brep& b, int edge_index, HolePlatePlan& plan, std::string& why) {
+  if (!b.IsSolid()) { why = "not a closed solid"; return false; }
+  if (edge_index < 0 || edge_index >= b.m_E.Count()) { why = "invalid edge"; return false; }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double tol = std::max(1e-6, bb.Diagonal().Length() * 1e-6);
+  int wall = -1;
+  ON_Cylinder cyl;
+  for (int f = 0; f < b.m_F.Count(); ++f) {
+    const ON_Surface* surf = b.m_F[f].SurfaceOf();
+    if (!surf) { why = "face without a surface"; return false; }
+    ON_Cylinder c;
+    ON_Plane pl;
+    if (surf->IsPlanar(&pl, tol)) continue;
+    if (surf->IsCylinder(&c, tol)) {
+      if (wall >= 0) { why = "more than one cylindrical face"; return false; }
+      wall = f;
+      cyl = c;
+    } else { why = "a face is neither planar nor the one cylindrical wall"; return false; }
+  }
+  if (wall < 0) { why = "no cylindrical face"; return false; }
+  ON_3dVector ax = cyl.Axis();
+  if (!ax.Unitize()) { why = "degenerate cylinder axis"; return false; }
+  // The two end planes (normal parallel to the axis) and the side planes (normal perpendicular to it).
+  std::vector<int> ends, sides;
+  for (int f = 0; f < b.m_F.Count(); ++f) {
+    if (f == wall) continue;
+    ON_Plane pl;
+    b.m_F[f].SurfaceOf()->IsPlanar(&pl, tol);
+    const double dn = std::fabs(pl.zaxis * ax);
+    if (dn > 1.0 - 1e-9) ends.push_back(f);
+    else if (dn < 1e-9) sides.push_back(f);
+    else { why = "a planar face is neither an end face nor a side face of a prism along the hole axis"; return false; }
+  }
+  if (ends.size() != 2 || sides.size() < 3) { why = "not a prism with one cylindrical through-hole (needs two end faces and at least three side faces)"; return false; }
+  double h[2];
+  for (int k = 0; k < 2; ++k) {
+    ON_Plane pl;
+    b.m_F[ends[static_cast<size_t>(k)]].SurfaceOf()->IsPlanar(&pl, tol);
+    h[k] = (pl.origin - cyl.circle.plane.origin) * ax;
+  }
+  const int lower = h[0] <= h[1] ? 0 : 1;
+  const double h0 = h[lower], h1 = h[1 - lower];
+  if (!(h1 - h0 > tol)) { why = "degenerate plate thickness"; return false; }
+  // The picked edge must separate the cylinder from one end face; both end faces must carry the hole (a through-hole).
+  const ON_BrepEdge& e = b.m_E[edge_index];
+  if (e.TrimCount() != 2) { why = "the picked edge does not separate two faces"; return false; }
+  const int fa = b.m_T[e.m_ti[0]].FaceIndexOf(), fb = b.m_T[e.m_ti[1]].FaceIndexOf();
+  int endface = -1;
+  if (fa == wall) endface = fb;
+  else if (fb == wall) endface = fa;
+  if (endface < 0 || (endface != ends[0] && endface != ends[1])) { why = "the picked edge is not on a hole rim (it must lie between the hole wall and an end face)"; return false; }
+  // A through-hole: the wall must touch BOTH end faces (a blind hole's wall meets only one).
+  for (int k = 0; k < 2; ++k) {
+    bool touches = false;
+    for (int ei = 0; ei < b.m_E.Count() && !touches; ++ei) {
+      const ON_BrepEdge& ee = b.m_E[ei];
+      if (ee.m_edge_index < 0 || ee.TrimCount() != 2) continue;
+      const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
+      touches = (x == wall && y == ends[static_cast<size_t>(k)]) || (y == wall && x == ends[static_cast<size_t>(k)]);
+    }
+    if (!touches) { why = "the hole is blind (its wall meets only one end face)"; return false; }
+  }
+  plan.top = endface == ends[static_cast<size_t>(1 - lower)];
+  plan.ax = ax;
+  plan.R = cyl.circle.radius;
+  plan.H = h1 - h0;
+  plan.c0 = cyl.circle.plane.origin + h0 * ax;
+  plan.u = cyl.circle.plane.xaxis;
+  // Outer polygon: the side planes are exact (the sewn Boolean result's own end-face loop is a keyhole whose
+  // vertices were snapped by the sewing tolerance), so the corners are the intersections of consecutive side planes
+  // with the lower end plane; consecutive = sharing an edge.
+  std::map<int, std::set<int>> adj;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    const ON_BrepEdge& ee = b.m_E[ei];
+    if (ee.m_edge_index < 0 || ee.TrimCount() != 2) continue;
+    const int x = b.m_T[ee.m_ti[0]].FaceIndexOf(), y = b.m_T[ee.m_ti[1]].FaceIndexOf();
+    if (x == y || std::find(sides.begin(), sides.end(), x) == sides.end() || std::find(sides.begin(), sides.end(), y) == sides.end()) continue;
+    adj[x].insert(y);
+    adj[y].insert(x);
+  }
+  for (int sfi : sides) if (adj[sfi].size() != 2) { why = "the side faces do not form a single closed ring"; return false; }
+  std::vector<int> ring{sides[0]};
+  int prev = -1, cur = sides[0];
+  while (true) {
+    int nxt = -1;
+    for (int cand : adj[cur]) if (cand != prev) { nxt = cand; break; }
+    if (nxt < 0 || nxt == sides[0]) break;
+    if (ring.size() > sides.size()) { why = "the side faces do not form a single closed ring"; return false; }
+    ring.push_back(nxt);
+    prev = cur;
+    cur = nxt;
+  }
+  if (ring.size() != sides.size()) { why = "the side faces do not form a single closed ring"; return false; }
+  const ON_Plane lower_plane(plan.c0, ax);
+  std::vector<ON_3dPoint> poly;
+  for (size_t i = 0; i < ring.size(); ++i) {
+    ON_Plane pa, pb;
+    b.m_F[ring[i]].SurfaceOf()->IsPlanar(&pa, tol);
+    b.m_F[ring[(i + 1) % ring.size()]].SurfaceOf()->IsPlanar(&pb, tol);
+    ON_3dPoint corner;
+    if (!ON_Intersect(pa, pb, lower_plane, corner)) { why = "two adjacent side faces are parallel"; return false; }
+    poly.push_back(corner);
+  }
+  // counter-clockwise about the axis
+  double area = 0;
+  for (size_t i = 0; i < poly.size(); ++i) area += ON_CrossProduct(poly[i] - plan.c0, poly[(i + 1) % poly.size()] - plan.c0) * ax;
+  if (area < 0) std::reverse(poly.begin(), poly.end());
+  if (poly.size() < 3) { why = "degenerate outer polygon"; return false; }
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const ON_3dPoint& p = poly[i];
+    const ON_3dPoint& q = poly[(i + 1) % poly.size()];
+    ON_3dVector d = q - p;
+    if (!d.Unitize()) continue;
+    const ON_3dVector w = plan.c0 - p;
+    const double dist = (w - (w * d) * d).Length();
+    if (!(dist > plan.R + 10 * tol)) { why = "the hole is not inside the end face's outer boundary"; return false; }
+  }
+  plan.poly = poly;
+  return true;
+}
+
+// Builds the prism-with-hole from `plan` with the given blends at the lower / upper rim (std::nullopt = sharp).
+bool BuildBlendedHolePlate(const HolePlatePlan& g, const std::optional<HoleRimBlend>& lo, const std::optional<HoleRimBlend>& hi, ON_Brep& out,
+                           std::string& why) {
+  if (!lo && !hi) { why = "no blend requested"; return false; }
+  double max_cap = 0;
+  const double lw = lo ? lo->d_wall : 0, hw = hi ? hi->d_wall : 0;
+  for (const auto* bl : {&lo, &hi}) {
+    if (!*bl) continue;
+    if (!((*bl)->d_wall > 0) || !((*bl)->d_cap > 0)) { why = "blend distances must be positive"; return false; }
+    max_cap = std::max(max_cap, (*bl)->d_cap);
+  }
+  if (!(lw + hw < g.H)) { why = "the blends together consume the whole hole wall"; return false; }
+  // the widened hole must stay inside the outer polygon
+  for (size_t i = 0; i < g.poly.size(); ++i) {
+    const ON_3dPoint& p = g.poly[i];
+    ON_3dVector d = g.poly[(i + 1) % g.poly.size()] - p;
+    if (!d.Unitize()) continue;
+    const ON_3dVector w = g.c0 - p;
+    if (!((w - (w * d) * d).Length() > g.R + max_cap + 1e-6)) { why = "the blend would run off the end face"; return false; }
+  }
+  const double tol = 1e-6;
+  const ON_3dVector side_axis = ON_CrossProduct(g.ax, g.u);  // plane yaxis: (u, side_axis) is right-handed about ax
+  // 1. Exact prism with the plain hole: extrusion of (outer polygon, hole circle) along the axis.
+  auto make_face = [&](const ON_3dPoint& origin, double hole_r) -> ON_Brep* {
+    ON_Plane pl(origin, g.u, side_axis);
+    ON_SimpleArray<ON_Curve*> bnd;
+    for (size_t i = 0; i < g.poly.size(); ++i) bnd.Append(new ON_LineCurve(g.poly[i] + (origin - g.c0), g.poly[(i + 1) % g.poly.size()] + (origin - g.c0)));
+    ON_Brep* f = ON_BrepTrimmedPlane(pl, bnd, false);
+    if (!f) { for (int i = 0; i < bnd.Count(); ++i) delete bnd[i]; return nullptr; }
+    ON_ArcCurve* hc = new ON_ArcCurve(ON_Circle(pl, hole_r));
+    // the hole runs opposite to the outer boundary
+    double outer_area = 0;
+    if (const ON_BrepLoop* ol = f->m_F[0].OuterLoop()) {
+      for (int ti = 0; ti < ol->TrimCount(); ++ti) {
+        const ON_BrepTrim* t = ol->Trim(ti);
+        ON_3dPoint a = t->Edge()->PointAtStart(), c = t->Edge()->PointAtEnd();
+        if (t->m_bRev3d) std::swap(a, c);
+        outer_area += ON_CrossProduct(a - origin, c - origin) * g.ax;
+      }
+    }
+    if (outer_area > 0) hc->Reverse();  // the circle is counter-clockwise about ax; the hole must run opposite to the outer boundary
+    ON_SimpleArray<ON_Curve*> loop;
+    loop.Append(hc);
+    if (!f->NewPlanarFaceLoop(0, ON_BrepLoop::inner, loop, false)) { delete hc; delete f; return nullptr; }
+    f->Compact();
+    return f;
+  };
+  ON_Brep* plate = make_face(g.c0, g.R);
+  if (!plate) { why = "could not build the end face with its hole"; return false; }
+  {
+    ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + g.H * g.ax));
+    if (ON_BrepExtrudeFace(*plate, 0, path, true) < 0) { delete plate; why = "could not extrude the prism"; return false; }
+  }
+  kernel::Brep k;
+  k.raw() = *plate;
+  delete plate;
+  // 2. Drop the faces being replaced: the wall, and each blended end.
+  std::vector<int> drop;
+  for (int f = 0; f < k.raw().m_F.Count(); ++f) {
+    ON_Plane pl;
+    const ON_Surface* s = k.raw().m_F[f].SurfaceOf();
+    if (!s->IsPlanar(&pl, 1e-7)) { drop.push_back(f); continue; }  // the only non-planar face is the hole wall
+    if (std::fabs(pl.zaxis * g.ax) > 1.0 - 1e-9) {
+      const double hh = (pl.origin - g.c0) * g.ax;
+      if ((lo && std::fabs(hh) < 1e-6) || (hi && std::fabs(hh - g.H) < 1e-6)) drop.push_back(f);
+    }
+  }
+  std::sort(drop.rbegin(), drop.rend());
+  try {
+    for (int f : drop) k.DeleteFace(f, false);
+  } catch (const std::exception& ex) { why = ex.what(); return false; }
+  ON_Brep all = k.raw();
+  // 3. New end faces, shortened wall, revolved blend patches.
+  auto add = [&](ON_Brep* p) -> bool {
+    if (!p) return false;
+    all.Append(*p);
+    delete p;
+    return true;
+  };
+  auto revolve = [&](ON_Curve* crv) -> ON_Brep* {
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = crv;
+    rev->m_axis = ON_Line(g.c0, g.c0 + g.ax);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    return ON_BrepRevSurface(rev, false, false);
+  };
+  auto patch = [&](const HoleRimBlend& bl, bool upper) -> ON_Brep* {
+    const double z = upper ? g.H : 0.0, dir = upper ? -1.0 : 1.0;  // dir: from the end plane into the plate
+    if (!bl.chamfer) {
+      const double r = bl.d_wall;
+      const ON_3dPoint centre = g.c0 + (g.R + r) * g.u + (z + dir * r) * g.ax;
+      const ON_Circle circ(ON_Plane(centre, g.u, g.ax), r);
+      return revolve(new ON_ArcCurve(ON_Arc(circ, upper ? ON_Interval(ON_PI / 2, ON_PI) : ON_Interval(ON_PI, 1.5 * ON_PI))));
+    }
+    const ON_3dPoint on_wall = g.c0 + g.R * g.u + (z + dir * bl.d_wall) * g.ax;
+    const ON_3dPoint on_cap = g.c0 + (g.R + bl.d_cap) * g.u + z * g.ax;
+    return revolve(new ON_LineCurve(on_wall, on_cap));
+  };
+  const double wall_lo = lo ? lo->d_wall : 0.0, wall_hi = hi ? hi->d_wall : 0.0;
+  {
+    ON_Cylinder wall(ON_Circle(ON_Plane(g.c0 + wall_lo * g.ax, g.u, side_axis), g.R), g.H - wall_lo - wall_hi);
+    if (!add(ON_BrepCylinder(wall, false, false))) { why = "could not build the shortened hole wall"; return false; }
+  }
+  if (lo) {
+    if (!add(make_face(g.c0, g.R + lo->d_cap)) || !add(patch(*lo, false))) { why = "could not build the lower rim blend"; return false; }
+  }
+  if (hi) {
+    if (!add(make_face(g.c0 + g.H * g.ax, g.R + hi->d_cap)) || !add(patch(*hi, true))) { why = "could not build the upper rim blend"; return false; }
+  }
+  kernel::Brep res;
+  res.raw() = all;
+  try {
+    res.JoinNakedEdges(tol);
+    res.UnifyNormals();
+  } catch (const std::exception& ex) {
+    why = ex.what();
+    return false;
+  }
+  if (!res.raw().IsSolid() && res.raw().IsManifold() && res.raw().IsValid()) {
+    // Face orientations disagree (the revolved patches and the extruded faces come out with their own senses): find the
+    // smallest set of face flips that makes the shell consistently oriented, then orient it outward.
+    ON_Brep& rb = res.raw();
+    const int nf = rb.m_F.Count();
+    bool fixed = false;
+    // (at most 2^nf subsets, nf <= 10 here; smallest subsets first)
+    for (int pop = 1; pop <= nf && !fixed && nf <= 12; ++pop) {
+      for (unsigned mask = 1; mask < (1u << nf) && !fixed; ++mask) {
+        int bits = 0;
+        for (unsigned m = mask; m; m &= m - 1) ++bits;  // portable popcount
+        if (bits != pop) continue;
+        ON_Brep t = rb;
+        for (int i = 0; i < nf; ++i) if (mask & (1u << i)) t.FlipFace(t.m_F[i]);
+        if (t.SolidOrientation() != 0) { rb = t; fixed = true; }
+      }
+    }
+    if (fixed && rb.SolidOrientation() < 0) rb.Flip();
+  }
+  if (!res.raw().IsSolid() || !res.raw().IsValid()) {
+    why = "the assembled pieces did not form a valid closed solid";
+    return false;
+  }
+  out = res.raw();
+  return true;
+}
+
 struct EdgePick { ObjectId id = kNoObject; int edge = -1; double dist = 0; };
 
 std::optional<EdgePick> PickEdge(CommandContext& ctx, Point3d p) {
@@ -2307,7 +2607,35 @@ class FilletEdgeCommand : public Command {
     const SceneObject* o = ctx.Doc().Find(id);
     std::optional<ON_Brep> b = o ? BrepOfObject(*o) : std::nullopt;
     std::string why = "object not found";
-    if (b) {
+    if (b && rims.front().hole) {
+      // Rims of a cylindrical through-hole in a prism (ClassifyHolePlateRim / BuildBlendedHolePlate above).
+      HolePlatePlan plan;
+      std::optional<HoleRimBlend> lo, hi;
+      bool ok = true;
+      for (const PendingRim& r : rims) {
+        const int ei = FindEdgeIndexByEndpoints(*b, r.start, r.end, tol);
+        HolePlatePlan p;
+        if (ei < 0 || !ClassifyHolePlateRim(*b, ei, p, why)) { ok = false; if (ei < 0) why = "staged rim edge no longer exists"; break; }
+        plan = p;
+        (p.top ? hi : lo) = HoleRimBlend{false, r.radius, r.radius};
+      }
+      ON_Brep out;
+      if (ok && BuildBlendedHolePlate(plan, lo, hi, out, why)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = out;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Print(label + ": hole rim(s) of object " + std::to_string(id) + " replaced with an exact fillet (" +
+                   (hi ? "upper radius " + FormatNumber(hi->d_wall) : std::string()) + (hi && lo ? ", " : "") +
+                   (lo ? "lower radius " + FormatNumber(lo->d_wall) : std::string()) + "; exact torus patch" + (hi && lo ? "es" : "") +
+                   " on the concave hole wall, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        return;
+      }
+    } else if (b) {
       double rt = 0, rb = 0;
       CylinderRimPlan plan;
       bool ok = true;
@@ -2341,7 +2669,7 @@ class FilletEdgeCommand : public Command {
       const SceneObject* oc = ctx.Doc().Find(id);
       std::optional<ON_Brep> bc = oc ? BrepOfObject(*oc) : std::nullopt;
       if (!bc) continue;
-      const int ei = FindEdgeIndexByEndpoints(*bc, r.start, r.start, tol);
+      const int ei = FindEdgeIndexByEndpoints(*bc, r.start, r.hole ? r.end : r.start, tol);
       if (ei < 0) continue;
       EdgePick replay;
       replay.id = id;
@@ -2609,6 +2937,24 @@ class FilletEdgeCommand : public Command {
         pending_rim_id_ = pick.id;
         pending_rims_.push_back({edge.PointAtStart(), plan.top, radius_});
         ctx.Print(label + ": " + std::string(plan.top ? "top" : "bottom") + " rim of cylinder object " + std::to_string(pick.id) +
+                   " staged for an exact torus fillet (radius " + FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
+        return;
+      }
+      // A rim of a cylindrical through-hole in a prism (e.g. a box minus a cylinder): an exact torus patch on the
+      // concave wall (ClassifyHolePlateRim / BuildBlendedHolePlate above), staged like the plain-cylinder rims.
+      HolePlatePlan hplan;
+      std::string hwhy;
+      if (ClassifyHolePlateRim(*b, pick.edge, hplan, hwhy)) {
+        if ((!pending_fillet_.empty() && pending_fillet_id_ != pick.id) || (!pending_rims_.empty() && pending_rim_id_ != pick.id)) {
+          ctx.Warn(label + ": an edge on a different object is already staged in this FilletEdge run; press Enter to apply it first, then run FilletEdge again for this object");
+          return;
+        }
+        pending_rim_id_ = pick.id;
+        PendingRim pr{edge.PointAtStart(), hplan.top, radius_};
+        pr.end = edge.PointAtEnd();
+        pr.hole = true;
+        pending_rims_.push_back(pr);
+        ctx.Print(label + ": " + std::string(hplan.top ? "upper" : "lower") + " rim of the cylindrical hole in object " + std::to_string(pick.id) +
                    " staged for an exact torus fillet (radius " + FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
         return;
       }
@@ -3461,7 +3807,24 @@ class FilletEdgeCommand : public Command {
       if (rim_chamfer) *rim_chamfer = true;
       return true;
     }
-    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err + "; cone-rim attempt: " + cone_err;
+    // Fifth attempt: a rim of a cylindrical through-hole in a prism (box minus cylinder): an exact conical bevel
+    // on the concave wall; distance1 along the wall, distance2 across the end face.
+    std::string hole_err = "Distance/Angle mode has no hole-rim construction";
+    if (!use_angle) {
+      const int ei = FindEdgeIndexByEndpoints(solid, p0, p1, 1e-6);
+      HolePlatePlan hplan;
+      if (ei >= 0 && ClassifyHolePlateRim(solid, ei, hplan, hole_err)) {
+        std::optional<HoleRimBlend> lo, hi;
+        (hplan.top ? hi : lo) = HoleRimBlend{true, d_i, d_j};
+        if (BuildBlendedHolePlate(hplan, lo, hi, out, hole_err)) {
+          if (rim_chamfer) *rim_chamfer = true;
+          return true;
+        }
+      } else if (ei < 0) {
+        hole_err = "edge not found";
+      }
+    }
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err + "; cone-rim attempt: " + cone_err + "; hole-rim attempt: " + hole_err;
     return false;
   }
 
@@ -3606,7 +3969,7 @@ class FilletEdgeCommand : public Command {
   RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
-  struct PendingRim { Point3d start; bool top; double radius; };
+  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; };
   std::vector<PendingRim> pending_rims_;  // staged plain-cylinder rim fillets (see Run()/FlushPendingRims)
   ObjectId pending_rim_id_ = kNoObject;
   bool exact_rim_ = true;  // Exact=No skips the exact cylinder-rim torus fillet
