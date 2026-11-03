@@ -94,10 +94,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           # Authenticated: the anonymous api.github.com quota is shared by
+          # Pinned to 26.2.5: 26.2.6 (released 2026-11) ships a WGL driver that
+          # cannot create a GL 3.3 window on the runner ("WGL: The driver does
+          # not appear to support OpenGL"); 26.2.5 passed every earlier run.
+          # Unpinned "latest" made the build depend on upstream timing.
           # every runner behind the same egress IP and has already failed a
           # build outright ("API rate limit exceeded for 172.185.150.240",
           # run 531). GITHUB_TOKEN is per-job and gets the authenticated quota.
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest" -Headers @{ "User-Agent" = "dino8-ci"; "Authorization" = "Bearer $env:GITHUB_TOKEN" }
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/tags/26.2.5" -Headers @{ "User-Agent" = "dino8-ci"; "Authorization" = "Bearer $env:GITHUB_TOKEN" }
           $asset = $release.assets | Where-Object { $_.name -match "release-msvc\.7z$" } | Select-Object -First 1
           if (-not $asset) { throw "mesa-dist-win: no release-msvc .7z asset found in latest release $($release.tag_name)" }
           Write-Host "Using $($asset.name) from mesa-dist-win $($release.tag_name)"
