@@ -110,6 +110,18 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
                                           const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
                                           const HistoryRecord& rec);
 
+// Sweep1 / Sweep2 with SEVERAL cross-sections (cmd_surface.cpp): the kernel's exact
+// Brep::Sweep1Sections / Sweep2Sections. History sources are {rail, section 1, section 2,
+// ...} and {rail 1, rail 2, section 1, section 2, ...}. Reads no num parameters. Returns
+// nullopt with `why` set when the kernel refuses or the measured result misses the document
+// tolerance (the live command then falls back to its older sampled construction and records
+// nothing; UpdateHistory keeps the object as it was).
+std::optional<SceneObject> RebuildSweep1Sections(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& sections,
+                                                  const kernel::NurbsCurve& rail, const HistoryRecord& rec, std::string& why);
+std::optional<SceneObject> RebuildSweep2Sections(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& sections,
+                                                  const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
+                                                  const HistoryRecord& rec, std::string& why);
+
 // Patch (the free Patch function, cmd_surface.cpp), single-closed-planar-
 // curve case only - ON_BrepTrimmedPlane against the curve's own fitted
 // plane. Reads no num parameters: this sub-case has none of its own.
@@ -119,6 +131,11 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
 // which would change the object's own shape in a way the recorded source
 // list (just this one curve) cannot honestly explain.
 std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
+
+// Patch, non-planar fitted case (cmd_surface.cpp): sources = every selected curve and point, in selection
+// order; reads no num parameters. Re-runs the least-squares fit (and the trim by the largest closed curve) on
+// their current shape. Refuses with `why` when the data became planar, the fit fails or is no better than the plane.
+std::optional<SceneObject> RebuildPatchFit(CommandContext& ctx, const std::vector<const SceneObject*>& inputs, const HistoryRecord& rec, std::string& why);
 
 // NetworkSrf (the free NetworkSrf function, cmd_surface.cpp), 2-curve case
 // only - ON_NurbsSurface::CreateRuledSurface between the two boundary
@@ -274,6 +291,11 @@ std::optional<SceneObject> RebuildProject(CommandContext& ctx, const HistoryInpu
 // index) and cont (1 Tangency, 2 Curvature, 3 G3, 4 G4). Refuses, with the reason, when a
 // source is no longer a surface/polysurface with that face or the blend cannot be built.
 std::optional<SceneObject> RebuildBlendSrf(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
+// FilletSrf / ChamferSrf (and the Variable forms), Trim=No only (cmd_fillet.cpp): sources {A, B} (not consumed); num:
+// face_a, face_b, r0, r1, variable. The record's command name selects fillet (FilletSrf) or ruled chamfer (ChamferSrf).
+// Refuses, with the reason, when a source has no such face any more or no fillet can be built.
+std::optional<SceneObject> RebuildSurfaceFillet(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
 
 // Offset (cmd_edit.cpp), curves: NurbsCurve::OffsetInPlane in the curve's own
 // plane, else in the CPlane that was active. Reads num: d (signed),

@@ -488,35 +488,20 @@ class Sweep1Command : public Command {
     // older sampled construction below unchanged. Always an uncapped Surface,
     // like every other result of this command; no history is recorded.
     if (profiles.size() >= 2) {
-      const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
       std::string multi_reason;
-      for (const int stations : {32, 64, 128, 256}) {
-        try {
-          kernel::Brep::Sweep1SectionsReport rep;
-          kernel::Brep body = kernel::Brep::Sweep1Sections(profiles, rail, stations, /*cap=*/false, &rep);
-          const ON_NurbsSurface* ns = body.raw().m_F.Count() > 0 ? ON_NurbsSurface::Cast(body.raw().m_F[0].SurfaceOf()) : nullptr;
-          if (!ns) { multi_reason = "the kernel result has no NURBS wall"; break; }
-          if (rep.max_section_deviation > tol) {
-            multi_reason = "the kernel wall misses an input section by " + FormatDeviation(rep.max_section_deviation) + " (tolerance " + FormatNumber(tol) + ")";
-            break;
-          }
-          if (rep.max_between_station_deviation > tol) {
-            multi_reason = "between its " + std::to_string(rep.stations) + " stations the wall is " + FormatDeviation(rep.max_between_station_deviation) +
-                           " from the exact blended sections (tolerance " + FormatNumber(tol) + ")";
-            continue;  // more stations
-          }
-          kernel::NurbsSurface k;
-          k.raw() = *ns;
-          ctx.Doc().Add(SceneObject::MakeSurface(k));
-          ctx.Print("Sweep1: exact kernel multi-section sweep (" + std::to_string(rep.sections) + " sections, " + std::to_string(rep.stations) +
-                    " rail stations); measured: sections reproduced to " + FormatDeviation(rep.max_section_deviation) +
-                    ", between stations within " + FormatDeviation(rep.max_between_station_deviation) + " of the exact blended sections; document tolerance " +
-                    FormatNumber(tol));
-          return;
-        } catch (const std::exception& e) {
-          multi_reason = e.what();
-          break;
+      HistoryRecord rec;
+      rec.command = "Sweep1";
+      std::vector<const kernel::NurbsCurve*> ptrs;
+      for (const kernel::NurbsCurve& c : profiles) ptrs.push_back(&c);
+      if (std::optional<SceneObject> exact = RebuildSweep1Sections(ctx, ptrs, rail, rec, multi_reason)) {
+        const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
+        // History: {rail, section 1, section 2, ...} - the same order UpdateHistory rebuilds from.
+        if (rail_id_ && profile_ids_.size() == profiles.size()) {
+          std::vector<ObjectId> srcs{*rail_id_};
+          srcs.insert(srcs.end(), profile_ids_.begin(), profile_ids_.end());
+          RecordHistoryIfEnabled(ctx, new_id, "Sweep1", srcs, rec.num);
         }
+        return;
       }
       ctx.Print("Sweep1: the exact multi-section sweep was not used (" + multi_reason + "); using the sampled approximation");
     }
@@ -642,39 +627,22 @@ class Sweep2Command : public Command {
     // Anything the kernel refuses (anchors that cross, closed rails, a station
     // where the rails touch) or that misses tolerance falls through, with the
     // reason printed, to the original scaled-frame fit below unchanged.
-    std::string multi_reason;
     if (profiles.size() >= 2) {
-      const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
-      for (const int stations : {32, 64, 128}) {
-        try {
-          kernel::Brep::Sweep2SectionsReport rep;
-          kernel::Brep body = kernel::Brep::Sweep2Sections(profiles, rails_[0], rails_[1], stations, &rep);
-          const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(body.raw().m_F[0].SurfaceOf());
-          if (!ns) { multi_reason = "the kernel result has no NURBS wall"; break; }
-          const bool touches = rep.rails_on_boundary && rep.section_rail_gap <= tol;
-          const double rail_dev = std::max(rep.max_rail1_deviation, rep.max_rail2_deviation);
-          if (rep.max_section_deviation > tol) {
-            multi_reason = "the kernel wall misses an input section by " + FormatDeviation(rep.max_section_deviation) + " (tolerance " + FormatNumber(tol) + ")";
-            break;
-          }
-          if (touches && rail_dev > tol) {
-            multi_reason = "the wall edges are " + FormatDeviation(rail_dev) + " from the rails at " + std::to_string(rep.stations) + " stations (tolerance " + FormatNumber(tol) + ")";
-            continue;  // more stations
-          }
-          kernel::NurbsSurface k;
-          k.raw() = *ns;
-          ctx.Doc().BeginChange("Sweep2");
-          ctx.Doc().Add(SceneObject::MakeSurface(k));
-          ctx.Print("Sweep2: exact kernel multi-section sweep (" + std::to_string(rep.sections) + " sections, " + std::to_string(rep.stations) +
-                    " rail stations); measured: sections reproduced to " + FormatDeviation(rep.max_section_deviation) +
-                    (touches ? ", wall edges within " + FormatDeviation(rail_dev) + " of the rails"
-                             : ", sections do not touch both rails (largest gap " + FormatDeviation(rep.section_rail_gap) + ") so no rail-edge claim is made") +
-                    "; document tolerance " + FormatNumber(tol));
-          return;
-        } catch (const std::exception& e) {
-          multi_reason = e.what();
-          break;
+      std::string multi_reason;
+      HistoryRecord rec;
+      rec.command = "Sweep2";
+      std::vector<const kernel::NurbsCurve*> ptrs;
+      for (const kernel::NurbsCurve& c : profiles) ptrs.push_back(&c);
+      if (std::optional<SceneObject> exact = RebuildSweep2Sections(ctx, ptrs, rails_[0], rails_[1], rec, multi_reason)) {
+        ctx.Doc().BeginChange("Sweep2");
+        const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
+        // History: {rail 1, rail 2, section 1, section 2, ...}.
+        if (rail_ids_.size() == 2 && profile_ids_.size() == profiles.size()) {
+          std::vector<ObjectId> srcs{rail_ids_[0], rail_ids_[1]};
+          srcs.insert(srcs.end(), profile_ids_.begin(), profile_ids_.end());
+          RecordHistoryIfEnabled(ctx, new_id, "Sweep2", srcs, rec.num);
         }
+        return;
       }
       ctx.Print("Sweep2: the exact multi-section sweep was not used (" + multi_reason + "); using the scaled-frame fit");
     }
@@ -1124,44 +1092,19 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 // Patch: planar fit through curves and points.
 // ---------------------------------------------------------------------------
 
-void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
-  Row pts;
-  Row point_objects;                          // the selected Point objects (through-points for the non-planar fit)
-  std::vector<kernel::NurbsCurve> all_curves;  // every selected curve, open or closed (boundary constraints for the fit)
+// The non-planar Patch: the kernel's least-squares NurbsSurface::FitPatch through the boundary samples of every
+// selected curve and the selected point objects, trimmed by the largest closed curve (others becoming holes) when
+// there is one. Shared by Patch (live) and RebuildPatchFit (UpdateHistory). Returns the object (notes printed), or
+// nullopt with `planar_reason` set when the data are not better served by the fitted surface than by the flat plane
+// (the live command then runs its planar construction, the rebuild refuses). `pts` holds every curve sample (32 per
+// curve) and point, `flat_dev` the worst distance of those from their own best-fit plane.
+std::optional<SceneObject> FitNonPlanarPatch(CommandContext& ctx, const Row& pts, const std::vector<kernel::NurbsCurve>& all_curves,
+                                              const Row& point_objects, double flat_dev, double patch_tol, int ncrv, int npts,
+                                              std::string& planar_reason) {
+  (void)pts;
   std::vector<kernel::NurbsCurve> closed;
-  std::vector<ObjectId> closed_ids;
-  int npts = 0, ncrv = 0;
-  for (ObjectId id : ids) {
-    const SceneObject* o = ctx.Doc().Find(id);
-    if (!o) continue;
-    if (o->kind == ObjectKind::Point) { pts.push_back(o->point); point_objects.push_back(o->point); ++npts; }
-    else if (o->kind == ObjectKind::Curve && o->curve) {
-      all_curves.push_back(*o->curve);
-      Row s = SampleCurve(*o->curve, 32, o->curve->IsClosed());
-      pts.insert(pts.end(), s.begin(), s.end());
-      if (o->curve->IsClosed()) { closed.push_back(*o->curve); closed_ids.push_back(id); }
-      ++ncrv;
-    }
-  }
-  if (pts.size() < 3) { ctx.Warn("Select curves and/or at least three points"); return; }
-  const ON_Plane fit = FitPlane(pts);
-  ctx.Doc().BeginChange("Patch");
-  // Non-planar input: data that stray from their own best-fit plane by more
-  // than the document tolerance used to be flattened onto that plane (a closed
-  // curve's boundary projected onto it, or a flat rectangle). The kernel's
-  // least-squares NurbsSurface::FitPatch fits a real NURBS surface through the
-  // curve samples (boundary constraints) and the point objects instead, and
-  // reports its own measured deviation; a single closed curve is then trimmed
-  // out of that surface by Brep::TrimmedPatchFace so the result is bounded by
-  // the curve. It is used only when it beats the flat plane at the data (a
-  // smaller worst deviation); otherwise, or if the kernel refuses (fewer than
-  // three points, collinear data), the reason is printed and the original
-  // planar construction below runs unchanged.
-  const double patch_tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
-  double flat_dev = 0.0;
-  for (const Point3d& p : pts) flat_dev = std::max(flat_dev, std::fabs(fit.DistanceTo(p)));
-  std::string planar_reason;
-  if (flat_dev > patch_tol) {
+  for (const kernel::NurbsCurve& c : all_curves) if (c.IsClosed()) closed.push_back(c);
+  {
     Row boundary_samples;
     for (const kernel::NurbsCurve& c : all_curves) {
       const Row smp = SampleCurve(c, 96, c.IsClosed());
@@ -1234,12 +1177,12 @@ void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
             for (size_t i = 0; i < closed.size(); ++i) if (i != outer_i) holes.push_back(closed[i]);
             double edge_dev = 0.0;
             kernel::Brep face = kernel::Brep::TrimmedPatchFace(patch, rep, closed[outer_i], holes, &edge_dev);
-            ctx.Doc().Add(SceneObject::MakeBrep(std::move(face)));
+            SceneObject made = SceneObject::MakeBrep(std::move(face));
             ctx.Print("Patch: non-planar data - kernel least-squares NURBS patch (" + net + ") trimmed by the closed curve" +
                       (holes.empty() ? "; the face's edge is within " + FormatDeviation(edge_dev) + " of the curve"
                                      : " with " + std::to_string(holes.size()) + " hole(s) cut by the other closed curve(s); the worst of the " +
                                            std::to_string(holes.size() + 1) + " trimmed edges is within " + FormatDeviation(edge_dev) + " of its curve"));
-            return;
+            return made;
           } catch (const std::exception& e) {
             ctx.Print(std::string("Patch: the closed curve(s) could not be trimmed out of the fitted surface (") + e.what() + "); keeping the untrimmed fitted surface");
           }
@@ -1247,14 +1190,65 @@ void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
           ctx.Print("Patch: " + hole_problem + "; keeping the untrimmed fitted surface");
         }
       }
-      ctx.Doc().Add(SceneObject::MakeSurface(patch));
+      SceneObject made_srf = SceneObject::MakeSurface(patch);
       ctx.Print("Patch: non-planar data - kernel least-squares NURBS surface through " + std::to_string(ncrv) + " curve(s) and " + std::to_string(npts) +
                 " point(s) (" + net + "); untrimmed, spanning the data's extent");
-      return;
+      return made_srf;
     }
     if (planar_reason.empty()) {
       planar_reason = fr != kernel::Result::Ok ? "the kernel could not fit a surface to this data (fewer than three points, collinear data, or a singular solve)"
                                                : "the fitted surface (worst deviation " + FormatDeviation(rep.max_deviation) + ") is no better than the flat plane (" + FormatDeviation(flat_dev) + ")";
+    }
+  }
+  return std::nullopt;
+}
+
+void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  Row pts;
+  Row point_objects;                          // the selected Point objects (through-points for the non-planar fit)
+  std::vector<kernel::NurbsCurve> all_curves;  // every selected curve, open or closed (boundary constraints for the fit)
+  std::vector<kernel::NurbsCurve> closed;
+  std::vector<ObjectId> closed_ids;
+  std::vector<ObjectId> fit_ids;               // every curve and point, in selection order (the history sources)
+  int npts = 0, ncrv = 0;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    if (o->kind == ObjectKind::Point) { pts.push_back(o->point); point_objects.push_back(o->point); fit_ids.push_back(id); ++npts; }
+    else if (o->kind == ObjectKind::Curve && o->curve) {
+      all_curves.push_back(*o->curve);
+      fit_ids.push_back(id);
+      Row s = SampleCurve(*o->curve, 32, o->curve->IsClosed());
+      pts.insert(pts.end(), s.begin(), s.end());
+      if (o->curve->IsClosed()) { closed.push_back(*o->curve); closed_ids.push_back(id); }
+      ++ncrv;
+    }
+  }
+  if (pts.size() < 3) { ctx.Warn("Select curves and/or at least three points"); return; }
+  const ON_Plane fit = FitPlane(pts);
+  ctx.Doc().BeginChange("Patch");
+  // Non-planar input: data that stray from their own best-fit plane by more
+  // than the document tolerance used to be flattened onto that plane (a closed
+  // curve's boundary projected onto it, or a flat rectangle). The kernel's
+  // least-squares NurbsSurface::FitPatch fits a real NURBS surface through the
+  // curve samples (boundary constraints) and the point objects instead, and
+  // reports its own measured deviation; a single closed curve is then trimmed
+  // out of that surface by Brep::TrimmedPatchFace so the result is bounded by
+  // the curve. It is used only when it beats the flat plane at the data (a
+  // smaller worst deviation); otherwise, or if the kernel refuses (fewer than
+  // three points, collinear data), the reason is printed and the original
+  // planar construction below runs unchanged.
+  const double patch_tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  double flat_dev = 0.0;
+  for (const Point3d& p : pts) flat_dev = std::max(flat_dev, std::fabs(fit.DistanceTo(p)));
+  std::string planar_reason;
+  if (flat_dev > patch_tol) {
+    std::optional<SceneObject> fitted = FitNonPlanarPatch(ctx, pts, all_curves, point_objects, flat_dev, patch_tol, ncrv, npts, planar_reason);
+    if (fitted) {
+      const ObjectId new_id = ctx.Doc().Add(std::move(*fitted));
+      // History: {every selected curve and point, in selection order}; RebuildPatchFit re-runs the same fit.
+      if (fit_ids.size() == static_cast<size_t>(ncrv + npts)) RecordHistoryIfEnabled(ctx, new_id, "Patch", fit_ids, {{"fit", 1.0}});
+      return;
     }
     ctx.Print("Patch: non-planar data (best-fit plane misses it by " + FormatDeviation(flat_dev) + ") but " + planar_reason + "; using the planar construction");
   }
@@ -2659,6 +2653,41 @@ std::optional<SceneObject> RebuildPatch(CommandContext& ctx, const kernel::Nurbs
   return SceneObject::MakeBrep(WrapBrep(b));
 }
 
+// Patch, the non-planar fitted case (Patch above): sources are every selected curve and point in selection order. The
+// fit is re-run on their current shape. Refuses (reason in `why`, the object kept) when a source is no longer a curve or
+// point, or the data are now within tolerance of a plane (the live command would build a planar patch, a different
+// construction), or the fit is no better than the flat plane or fails.
+std::optional<SceneObject> RebuildPatchFit(CommandContext& ctx, const std::vector<const SceneObject*>& inputs, const HistoryRecord&, std::string& why) {
+  Row pts, point_objects;
+  std::vector<kernel::NurbsCurve> all_curves;
+  int ncrv = 0, npts = 0;
+  for (const SceneObject* o : inputs) {
+    if (o->kind == ObjectKind::Point) { pts.push_back(o->point); point_objects.push_back(o->point); ++npts; }
+    else if (o->kind == ObjectKind::Curve && o->curve) {
+      all_curves.push_back(*o->curve);
+      const Row smp = SampleCurve(*o->curve, 32, o->curve->IsClosed());
+      pts.insert(pts.end(), smp.begin(), smp.end());
+      ++ncrv;
+    } else {
+      why = "source object " + std::to_string(o->id) + " is " + HistoryKindName(o->kind) + ", not a curve or a point";
+      return std::nullopt;
+    }
+  }
+  if (pts.size() < 3) { why = "fewer than three points are left in the sources"; return std::nullopt; }
+  const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  const ON_Plane fit = FitPlane(pts);
+  double flat_dev = 0.0;
+  for (const Point3d& p : pts) flat_dev = std::max(flat_dev, std::fabs(fit.DistanceTo(p)));
+  if (flat_dev <= tol) {
+    why = "the sources are now flat (within " + FormatNumber(tol) + " of their best-fit plane), so the fitted patch no longer applies";
+    return std::nullopt;
+  }
+  std::string reason;
+  std::optional<SceneObject> r = FitNonPlanarPatch(ctx, pts, all_curves, point_objects, flat_dev, tol, ncrv, npts, reason);
+  if (!r) why = "the patch fit no longer works on the edited sources: " + reason;
+  return r;
+}
+
 // ---------------------------------------------------------------------------
 // Section-anchored single-section sweeps (RebuildSweep1 / RebuildSweep2).
 //
@@ -2967,6 +2996,98 @@ std::optional<SceneObject> RebuildSweep2(CommandContext& ctx, const kernel::Nurb
 }
 
 
+// Sweep1 with SEVERAL cross-sections (Sweep1Command::Build and UpdateHistory):
+// the kernel's exact Brep::Sweep1Sections. Every section is anchored on the
+// rail, decoded in its rotation-minimizing frame, blended between neighbours and
+// skinned through the stations, so each section is reproduced. The kernel's own
+// report is held to the DOCUMENT tolerance (sections reproduced; the wall
+// against the exact blended sections between stations, retried at up to 256
+// stations). Always an uncapped Surface. Returns nullopt with `why` set when the
+// kernel refuses (closed rail, a plane the rail never crosses, two sections at
+// one station, seams that do not line up) or the tolerance is missed; the live
+// command then takes its older sampled construction, UpdateHistory keeps the
+// object as it was. Prints one measured line on success.
+std::optional<SceneObject> RebuildSweep1Sections(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& sections,
+                                                  const kernel::NurbsCurve& rail, const HistoryRecord&, std::string& why) {
+  if (sections.size() < 2) { why = "needs at least two cross sections"; return std::nullopt; }
+  std::vector<kernel::NurbsCurve> profiles;
+  for (const kernel::NurbsCurve* c : sections) profiles.push_back(*c);
+  const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  for (const int stations : {32, 64, 128, 256}) {
+    try {
+      kernel::Brep::Sweep1SectionsReport rep;
+      kernel::Brep body = kernel::Brep::Sweep1Sections(profiles, rail, stations, /*cap=*/false, &rep);
+      const ON_NurbsSurface* ns = body.raw().m_F.Count() > 0 ? ON_NurbsSurface::Cast(body.raw().m_F[0].SurfaceOf()) : nullptr;
+      if (!ns) { why = "the kernel result has no NURBS wall"; return std::nullopt; }
+      if (rep.max_section_deviation > tol) {
+        why = "the kernel wall misses an input section by " + FormatDeviation(rep.max_section_deviation) + " (tolerance " + FormatNumber(tol) + ")";
+        return std::nullopt;
+      }
+      if (rep.max_between_station_deviation > tol) {
+        why = "between its " + std::to_string(rep.stations) + " stations the wall is " + FormatDeviation(rep.max_between_station_deviation) +
+              " from the exact blended sections (tolerance " + FormatNumber(tol) + ")";
+        continue;  // more stations
+      }
+      kernel::NurbsSurface k;
+      k.raw() = *ns;
+      ctx.Print("Sweep1: exact kernel multi-section sweep (" + std::to_string(rep.sections) + " sections, " + std::to_string(rep.stations) +
+                " rail stations); measured: sections reproduced to " + FormatDeviation(rep.max_section_deviation) +
+                ", between stations within " + FormatDeviation(rep.max_between_station_deviation) + " of the exact blended sections; document tolerance " +
+                FormatNumber(tol));
+      return SceneObject::MakeSurface(k);
+    } catch (const std::exception& e) {
+      why = e.what();
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+// Sweep2 with SEVERAL cross-sections: the kernel's Brep::Sweep2Sections, same
+// contract as RebuildSweep1Sections (each section decoded in its own station's
+// two-rail frame; sections reproduced within the document tolerance and, when
+// the sections touch the rails, the wall edges within it of the rails; retried at
+// 64 and 128 stations).
+std::optional<SceneObject> RebuildSweep2Sections(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& sections,
+                                                  const kernel::NurbsCurve& rail1, const kernel::NurbsCurve& rail2,
+                                                  const HistoryRecord&, std::string& why) {
+  if (sections.size() < 2) { why = "needs at least two cross sections"; return std::nullopt; }
+  std::vector<kernel::NurbsCurve> profiles;
+  for (const kernel::NurbsCurve* c : sections) profiles.push_back(*c);
+  const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  for (const int stations : {32, 64, 128}) {
+    try {
+      kernel::Brep::Sweep2SectionsReport rep;
+      kernel::Brep body = kernel::Brep::Sweep2Sections(profiles, rail1, rail2, stations, &rep);
+      const ON_NurbsSurface* ns = body.raw().m_F.Count() > 0 ? ON_NurbsSurface::Cast(body.raw().m_F[0].SurfaceOf()) : nullptr;
+      if (!ns) { why = "the kernel result has no NURBS wall"; return std::nullopt; }
+      const bool touches = rep.rails_on_boundary && rep.section_rail_gap <= tol;
+      const double rail_dev = std::max(rep.max_rail1_deviation, rep.max_rail2_deviation);
+      if (rep.max_section_deviation > tol) {
+        why = "the kernel wall misses an input section by " + FormatDeviation(rep.max_section_deviation) + " (tolerance " + FormatNumber(tol) + ")";
+        return std::nullopt;
+      }
+      if (touches && rail_dev > tol) {
+        why = "the wall edges are " + FormatDeviation(rail_dev) + " from the rails at " + std::to_string(rep.stations) + " stations (tolerance " + FormatNumber(tol) + ")";
+        continue;  // more stations
+      }
+      kernel::NurbsSurface k;
+      k.raw() = *ns;
+      ctx.Print("Sweep2: exact kernel multi-section sweep (" + std::to_string(rep.sections) + " sections, " + std::to_string(rep.stations) +
+                " rail stations); measured: sections reproduced to " + FormatDeviation(rep.max_section_deviation) +
+                (touches ? ", wall edges within " + FormatDeviation(rail_dev) + " of the rails"
+                         : ", sections do not touch both rails (largest gap " + FormatDeviation(rep.section_rail_gap) + ") so no rail-edge claim is made") +
+                "; document tolerance " + FormatNumber(tol));
+      return SceneObject::MakeSurface(k);
+    } catch (const std::exception& e) {
+      why = e.what();
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+
 // OffsetSrf's construction for ONE object - shared by OffsetSrfCommand and
 // UpdateHistory. Reads num: d (signed distance, FlipAll already applied) and
 // solid (1/0). A surface goes through the kernel's tolerance-driven
@@ -3119,10 +3240,10 @@ std::optional<SceneObject> RebuildNetworkSrfLoop(CommandContext& ctx, const std:
 }
 
 void RegisterSurfaceCommands(CommandEngine& e) {
-  Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; two or more cross sections call the kernel's exact Brep::Sweep1Sections (each section anchored on the rail - a closed planar one where the rail crosses its plane - decoded in its rotation-minimizing frame, blended between neighbours and skinned through the stations: every section reproduced exactly, the wall measured against the exact blended sections between stations and held to the document tolerance, retried at up to 256 stations; an uncapped surface; closed cross sections must already share a seam and direction, the kernel refuses seams more than 60 degrees apart; no history recorded); it falls back, with the reason printed, to the old sampled approximation (24 samples per section, fitted to a degree-3 surface) when the kernel refuses (closed rail, a section plane the rail never crosses or contains, two sections at one station, mismatched seams) or misses the document tolerance.");
-  Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape. Two or more cross sections call the kernel's Brep::Sweep2Sections (each section decoded in its own station's two-rail frame, blended between neighbours and skinned through the stations: every section reproduced, wall edges within the document tolerance of the rails when the sections touch them, measured and printed; closed cross sections must already share a seam and direction, the kernel does not align them; no history recorded); it falls back, with the reason printed, to the old approximated two-rail-scaled sweep fitted to a degree-3 surface when the kernel refuses (crossing section anchors, closed rails, touching rails) or misses the document tolerance.");
+  Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; two or more cross sections call the kernel's exact Brep::Sweep1Sections (each section anchored on the rail - a closed planar one where the rail crosses its plane - decoded in its rotation-minimizing frame, blended between neighbours and skinned through the stations: every section reproduced exactly, the wall measured against the exact blended sections between stations and held to the document tolerance, retried at up to 256 stations; an uncapped surface; closed cross sections must already share a seam and direction, the kernel refuses seams more than 60 degrees apart; with History On it records {rail, section 1, section 2, ...} and rebuilds when the rail or a section is edited, a rebuild the kernel refuses keeping the old wall with the reason printed); it falls back, with the reason printed, to the old sampled approximation (24 samples per section, fitted to a degree-3 surface) when the kernel refuses (closed rail, a section plane the rail never crosses or contains, two sections at one station, mismatched seams) or misses the document tolerance.");
+  Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape. Two or more cross sections call the kernel's Brep::Sweep2Sections (each section decoded in its own station's two-rail frame, blended between neighbours and skinned through the stations: every section reproduced, wall edges within the document tolerance of the rails when the sections touch them, measured and printed; closed cross sections must already share a seam and direction, the kernel does not align them; with History On it records {rail 1, rail 2, section 1, section 2, ...} and rebuilds when a rail or a section is edited, a rebuild the kernel refuses keeping the old wall with the reason printed); it falls back, with the reason printed, to the old approximated two-rail-scaled sweep fitted to a degree-3 surface when the kernel refuses (crossing section anchors, closed rails, touching rails) or misses the document tolerance.");
   Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface. Five or more curves that close into a loop within the document tolerance are chained (any order or direction), joined into one loop and trimmed out of the kernel's least-squares NurbsSurface::FitPatch surface as one B-rep face (approximate, not an interpolating Coons patch: the worst deviation from the curves and the trimmed edge's deviation are printed and a miss of the tolerance is flagged); a set that does not close, or whose loop folds over its best-fit plane, prints why and uses the first 4 curves as before. Four or more curves that CROSS in their interiors form a curve network: the kernel (NurbsSurface::FitCurveNetwork) sorts them into two directions by where they meet, requires every curve to meet every curve of the other direction within the document tolerance, fits one NURBS surface (cubic where the net allows) through the curves and the meetings, and prints the measured distance of EVERY input curve from it (approximate least-squares fit over the curves' bounding rectangle, untrimmed); a network that misses the tolerance, whose curves do not all meet, or whose order is not a regular grid prints why and the older behaviour runs.");
-  Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. No history is recorded for the non-planar result.");
+  Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. With History On the non-planar result records every selected curve and point (in selection order) and the fit (and trim) is re-run when one is edited; a rebuild that no longer applies (the data became flat, a source deleted, the fit failing) keeps the old patch with the reason printed.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
   Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");

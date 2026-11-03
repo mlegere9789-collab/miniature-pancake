@@ -417,6 +417,26 @@ void RegisterBuiltinParams() {
                     r.num["sym"] = 0.0;
                     return "";
                   })});
+  for (const char* name : {"FilletSrf", "ChamferSrf"}) {
+    SetParams(name, {
+        NumberParam("radius", "radius (distance) at the start of the spine; a constant-radius result keeps its end radius equal", "> 0",
+                    [](const HistoryRecord& r) { return NumOf(r, "r0"); },
+                    [](HistoryRecord& r, double d) -> std::string {
+                      if (!(d > 0.0)) return "radius must be positive";
+                      const bool follows = NumOf(r, "r1") == NumOf(r, "r0");
+                      r.num["r0"] = d;
+                      if (follows) r.num["r1"] = d;
+                      return "";
+                    }),
+        NumberParam("endradius", "radius at the end of the spine (setting it makes the result variable)", "> 0",
+                    [](const HistoryRecord& r) { return NumOf(r, "r1"); },
+                    [](HistoryRecord& r, double d) -> std::string {
+                      if (!(d > 0.0)) return "endradius must be positive";
+                      r.num["r1"] = d;
+                      r.num["variable"] = 1.0;
+                      return "";
+                    })});
+  }
   for (const char* name : {"BooleanUnion", "BooleanDifference", "BooleanIntersection", "Boolean2Objects"}) SetParams(name, BooleanParams());
 }
 
@@ -441,17 +461,38 @@ void RegisterBuiltinRebuilders() {
   RegisterHistoryRebuilder("Loft", "Loft", CurveList(RebuildLoft, 2, 1000000));
   RegisterHistoryRebuilder("SubDLoft", "SubDLoft", CurveList(RebuildLoft, 2, 1000000));
   RegisterHistoryRebuilder("Pipe", "Pipe (single radius)", OneCurve(RebuildPipe));
-  // Sweep1 sources are {rail, section}; the kernel call takes (section, rail).
-  RegisterHistoryRebuilder("Sweep1", "Sweep1 {rail, section} (single cross-section)",
-      TwoCurves([](CommandContext& ctx, const kernel::NurbsCurve& rail, const kernel::NurbsCurve& section, const HistoryRecord& rec) {
-        return RebuildSweep1(ctx, section, rail, rec);
-      }));
-  // Sweep2 sources are {rail1, rail2, section}.
-  RegisterHistoryRebuilder("Sweep2", "Sweep2 {rail1, rail2, section} (single cross-section)",
-      ThreeCurves([](CommandContext& ctx, const kernel::NurbsCurve& r1, const kernel::NurbsCurve& r2, const kernel::NurbsCurve& section, const HistoryRecord& rec) {
-        return RebuildSweep2(ctx, section, r1, r2, rec);
-      }));
-  RegisterHistoryRebuilder("Patch", "Patch (single closed planar curve)", OneCurve(RebuildPatch));
+  // Sweep1 sources are {rail, section...}; the kernel call takes (section, rail). Two sources: the
+  // single-section sweep; three or more: the multi-section sweep (Brep::Sweep1Sections).
+  RegisterHistoryRebuilder("Sweep1", "Sweep1 {rail, section...} (one or several cross-sections)",
+      [](CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) -> std::optional<SceneObject> {
+        if (in.size() < 2) { why = "expected a rail and at least one cross section, the record has " + std::to_string(in.size()) + " source object(s)"; return std::nullopt; }
+        std::vector<const kernel::NurbsCurve*> curves;
+        for (const SceneObject* o : in) { const kernel::NurbsCurve* c = HistoryRequireCurve(o, why); if (!c) return std::nullopt; curves.push_back(c); }
+        if (curves.size() == 2) return RebuildSweep1(ctx, *curves[1], *curves[0], rec);
+        std::vector<const kernel::NurbsCurve*> sections(curves.begin() + 1, curves.end());
+        return RebuildSweep1Sections(ctx, sections, *curves[0], rec, why);
+      });
+  // Sweep2 sources are {rail1, rail2, section...}.
+  RegisterHistoryRebuilder("Sweep2", "Sweep2 {rail1, rail2, section...} (one or several cross-sections)",
+      [](CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) -> std::optional<SceneObject> {
+        if (in.size() < 3) { why = "expected two rails and at least one cross section, the record has " + std::to_string(in.size()) + " source object(s)"; return std::nullopt; }
+        std::vector<const kernel::NurbsCurve*> curves;
+        for (const SceneObject* o : in) { const kernel::NurbsCurve* c = HistoryRequireCurve(o, why); if (!c) return std::nullopt; curves.push_back(c); }
+        if (curves.size() == 3) return RebuildSweep2(ctx, *curves[2], *curves[0], *curves[1], rec);
+        std::vector<const kernel::NurbsCurve*> sections(curves.begin() + 2, curves.end());
+        return RebuildSweep2Sections(ctx, sections, *curves[0], *curves[1], rec, why);
+      });
+  // Patch: one source that is a closed planar curve = the planar trim (RebuildPatch); anything else = the
+  // non-planar least-squares fit through all the recorded curves and points (RebuildPatchFit).
+  RegisterHistoryRebuilder("Patch", "Patch (planar trim of one closed curve, or the least-squares fit through curves and points)",
+      [](CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) -> std::optional<SceneObject> {
+        if (in.empty()) { why = "the record has no source object"; return std::nullopt; }
+        if (in.size() == 1 && in[0]->kind == ObjectKind::Curve && in[0]->curve && rec.num.count("fit") == 0) {
+          const kernel::NurbsCurve* c = HistoryRequireCurve(in[0], why);
+          return c ? RebuildPatch(ctx, *c, rec) : std::nullopt;
+        }
+        return RebuildPatchFit(ctx, in, rec, why);
+      });
   RegisterHistoryRebuilder("PlanarSrf", "PlanarSrf", OneCurve(RebuildPlanarSrf));
   RegisterHistoryRebuilder("NetworkSrf2", "NetworkSrf/EdgeSrf, 2 curves (ruled)", TwoCurves(RebuildNetworkSrf2));
   RegisterHistoryRebuilder("NetworkSrf", "NetworkSrf/EdgeSrf, 3 or 4 curves (Coons)", CurveList(NetworkLoopAdapter, 3, 4));
@@ -462,6 +503,8 @@ void RegisterBuiltinRebuilders() {
   RegisterHistoryRebuilder("Project", "Project of a curve or point onto surfaces/polysurfaces/meshes (one result piece)", RebuildProject);
   RegisterHistoryRebuilder("Pull", "Pull of a curve or point to surfaces/polysurfaces/meshes (one result piece)", RebuildProject);
   RegisterHistoryRebuilder("BlendSrf", "BlendSrf between two surface edges (Tangency/Curvature/G3/G4)", RebuildBlendSrf);
+  RegisterHistoryRebuilder("FilletSrf", "FilletSrf/VariableFilletSrf between two surfaces (Trim=No, general rolling-ball construction)", RebuildSurfaceFillet);
+  RegisterHistoryRebuilder("ChamferSrf", "ChamferSrf/VariableChamferSrf between two surfaces (Trim=No, ruled between the contact curves)", RebuildSurfaceFillet);
   RegisterHistoryRebuilder("FilletEdge", "FilletEdge of a solid (exact kernel fillet, edges re-found by direction and face normals)", RebuildEdgeBlend);
   RegisterHistoryRebuilder("ChamferEdge", "ChamferEdge of a solid (exact kernel chamfer, edges re-found by direction and face normals)", RebuildEdgeBlend);
   for (const char* name : {"BooleanUnion", "BooleanDifference", "BooleanIntersection", "Boolean2Objects"})

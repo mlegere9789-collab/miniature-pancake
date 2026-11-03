@@ -1270,6 +1270,57 @@ kernel::Mesh BuildFilletSolid(const std::vector<Point3d>& spine_in, const std::v
 
 }  // namespace
 
+namespace {
+// The general (approximate rolling-ball / ruled) construction of FilletSrf/ChamferSrf/VariableFilletSrf/VariableChamferSrf
+// between two surfaces, shared by FilletTwoSurfacesCommand::Run and RebuildSurfaceFillet (UpdateHistory). Returns false with
+// fb2.error set when no fillet can be built.
+bool BuildSurfaceFilletBetween(const ON_NurbsSurface& sa, const ON_NurbsSurface& sb, double r0, double r1, bool variable, bool chamfer,
+                               double tol, FilletBuild& fb2, ON_NurbsSurface& result_surface) {
+  auto radius_at = [&](double t) { return r0 + (r1 - r0) * t; };
+    // Same exact plane+perpendicular-cylinder closed form FilletEdge uses
+    // for its Radii= option (see BuildPlaneCylinderVariableFillet's own
+    // comment) - here the two faces are independently picked rather than a
+    // brep edge, so there is no ready-made edge curve; get one the same way
+    // BuildFillet itself finds a spine, by intersecting the two (untouched,
+    // zero-offset) surfaces directly - for a face pair that actually share
+    // a boundary, that IS the shared edge curve.
+    if (variable && r0 != r1) {
+      const double scale = std::max(SurfaceScale(sa), SurfaceScale(sb));
+      const double geo_tol = scale > 0 ? scale * 1e-6 : 0.0;
+      IntersectOptions opt;
+      opt.tolerance = std::max(std::max(tol, geo_tol), 1e-6);
+      opt.mesh_tolerance = std::max(opt.tolerance * 4, geo_tol > 0 ? geo_tol * 4 : 1e-4);
+      std::vector<IntersectionCurve> touch = IntersectSurfaces(sa, sb, opt);
+      if (!touch.empty()) {
+        const IntersectionCurve* best = &touch.front();
+        for (const IntersectionCurve& c : touch) if (c.Length() > best->Length()) best = &c;
+        fb2 = BuildPlaneCylinderVariableFillet(sa, sb, best->curve, radius_at, tol);
+      }
+    }
+    if (!fb2.ok) {
+      // Adaptive, not a bare fixed-net call - closes PARITY_MAP.md's own
+      // "Rolling-ball blend surface accuracy on freeform surfaces...
+      // max_gap is never enforced against a tolerance" gap for this
+      // command's own general (curved-face) fallback. Same scale-aware
+      // floor FilletEdgeCommand's own blend/tapered-fillet wiring already
+      // uses elsewhere in this file (SurfaceScale * 1e-3, clamped against
+      // the document tolerance), so a tiny or huge surface pair gets a
+      // sane target either way.
+      const double max_gap = std::max(std::max(SurfaceScale(sa), SurfaceScale(sb)) * 1e-3, tol * 10);
+      fb2 = BuildFilletAdaptive(sa, sb, radius_at, tol, max_gap);
+    }
+  if (!fb2.ok) return false;
+  if (chamfer) {  // ruled between the two contact curves (FilletTwoSurfacesCommand::RuledBetween)
+    ON_NurbsCurve b2 = fb2.contact_curve_b;
+    b2.SetDomain(fb2.contact_curve_a.Domain().Min(), fb2.contact_curve_a.Domain().Max());
+    result_surface = RuledSurface(fb2.contact_curve_a, b2);
+  } else {
+    result_surface = fb2.fillet;
+  }
+  return true;
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // FilletSrf / ChamferSrf: pick two faces/surfaces directly.
 // ---------------------------------------------------------------------------
@@ -1620,42 +1671,12 @@ class FilletTwoSurfacesCommand : public Command {
       }
     }
     FilletBuild fb2;
-    // Same exact plane+perpendicular-cylinder closed form FilletEdge uses
-    // for its Radii= option (see BuildPlaneCylinderVariableFillet's own
-    // comment) - here the two faces are independently picked rather than a
-    // brep edge, so there is no ready-made edge curve; get one the same way
-    // BuildFillet itself finds a spine, by intersecting the two (untouched,
-    // zero-offset) surfaces directly - for a face pair that actually share
-    // a boundary, that IS the shared edge curve.
-    if (variable && r0 != r1) {
-      const double scale = std::max(SurfaceScale(*sa), SurfaceScale(*sb));
-      const double geo_tol = scale > 0 ? scale * 1e-6 : 0.0;
-      IntersectOptions opt;
-      opt.tolerance = std::max(std::max(tol, geo_tol), 1e-6);
-      opt.mesh_tolerance = std::max(opt.tolerance * 4, geo_tol > 0 ? geo_tol * 4 : 1e-4);
-      std::vector<IntersectionCurve> touch = IntersectSurfaces(*sa, *sb, opt);
-      if (!touch.empty()) {
-        const IntersectionCurve* best = &touch.front();
-        for (const IntersectionCurve& c : touch) if (c.Length() > best->Length()) best = &c;
-        fb2 = BuildPlaneCylinderVariableFillet(*sa, *sb, best->curve, radius_at, tol);
-      }
+    ON_NurbsSurface result_surface;
+    if (!BuildSurfaceFilletBetween(*sa, *sb, r0, r1, variable, chamfer, tol, fb2, result_surface)) {
+      ctx.Warn(std::string(chamfer ? "ChamferSrf" : "FilletSrf") + ": " + fb2.error);
+      return;
     }
-    if (!fb2.ok) {
-      // Adaptive, not a bare fixed-net call - closes PARITY_MAP.md's own
-      // "Rolling-ball blend surface accuracy on freeform surfaces...
-      // max_gap is never enforced against a tolerance" gap for this
-      // command's own general (curved-face) fallback. Same scale-aware
-      // floor FilletEdgeCommand's own blend/tapered-fillet wiring already
-      // uses elsewhere in this file (SurfaceScale * 1e-3, clamped against
-      // the document tolerance), so a tiny or huge surface pair gets a
-      // sane target either way.
-      const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
-      fb2 = BuildFilletAdaptive(*sa, *sb, radius_at, tol, max_gap);
-    }
-    if (!fb2.ok) { ctx.Warn(std::string(chamfer ? "ChamferSrf" : "FilletSrf") + ": " + fb2.error); return; }
     ctx.Doc().BeginChange(chamfer ? "ChamferSrf" : "FilletSrf");
-    ON_NurbsSurface result_surface = fb2.fillet;
-    if (chamfer) result_surface = RuledBetween(fb2.contact_curve_a, fb2.contact_curve_b);
     SceneObject like = *oa;
     const ObjectId fillet_id = AddSurfaceFrom(ctx, result_surface, like);
     int trimmed = 0;
@@ -1687,6 +1708,15 @@ class FilletTwoSurfacesCommand : public Command {
       }
       trimmed = (okA ? 1 : 0) + (okB ? 1 : 0);
       fell_back = trimmed < 2;
+    }
+    // History On, Trim=No: the fillet is a standalone surface between two UNTOUCHED sources, so it can be re-run when either
+    // moves. With Trim=Yes the sources themselves are cut by the fillet's contact curves, which a re-run could not undo: not recorded.
+    if (!trim_) {
+      RecordHistoryIfEnabled(ctx, fillet_id, chamfer ? "ChamferSrf" : "FilletSrf", {fa.id, fb.id},
+                             {{"face_a", static_cast<double>(fa.face)}, {"face_b", static_cast<double>(fb.face)}, {"r0", r0}, {"r1", r1},
+                              {"variable", variable ? 1.0 : 0.0}});
+    } else if (ctx.App().State().history_recording) {
+      ctx.Print(std::string(chamfer ? "ChamferSrf" : "FilletSrf") + ": no history recorded - Trim=Yes cuts the two source surfaces, which a rebuild could not undo (use Trim=No to keep it associative)");
     }
     ctx.Doc().Select(fillet_id, true);
     ctx.Print(std::string(chamfer ? "ChamferSrf" : "FilletSrf") + ": built between object " + std::to_string(fa.id) + " and " + std::to_string(fb.id) + (variable ? (", radius " + FormatNumber(r0) + " to " + FormatNumber(r1)) : (", radius " + FormatNumber(radius_))) +
@@ -5340,11 +5370,42 @@ std::optional<SceneObject> RebuildBlendSrf(CommandContext& ctx, const HistoryInp
   return SceneObject::MakeSurface(k);
 }
 
+// FilletSrf / ChamferSrf / VariableFilletSrf / VariableChamferSrf, general untrimmed case (Trim=No): sources {A, B}; num: face_a, face_b
+// (polysurface face indices), r0, r1 (radius at the start/end of the spine; equal unless variable), variable (1/0). Re-runs the
+// same BuildSurfaceFilletBetween the live command builds with, so the result follows either source. Chamfer or fillet is the
+// record's command name. Refuses with the reason when a source has no such face any more or no fillet can be built.
+std::optional<SceneObject> RebuildSurfaceFillet(CommandContext& ctx, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) {
+  if (in.size() != 2) { why = "expected 2 source objects, the record has " + std::to_string(in.size()); return std::nullopt; }
+  auto num = [&](const char* k) { const auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  std::optional<ON_NurbsSurface> sa, sb;
+  for (int k = 0; k < 2; ++k) {
+    const SceneObject& o = *in[k];
+    const int face = static_cast<int>(num(k == 0 ? "face_a" : "face_b"));
+    if (o.kind != ObjectKind::Surface && o.kind != ObjectKind::Brep) {
+      why = "source object " + std::to_string(o.id) + " is " + HistoryKindName(o.kind) + ", not a surface or polysurface";
+      return std::nullopt;
+    }
+    std::optional<ON_NurbsSurface> s = SurfaceOfObject(o, face);
+    if (!s) { why = "source object " + std::to_string(o.id) + " has no face " + std::to_string(face) + " any more"; return std::nullopt; }
+    (k == 0 ? sa : sb) = s;
+  }
+  const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+  FilletBuild fb2;
+  ON_NurbsSurface built;
+  if (!BuildSurfaceFilletBetween(*sa, *sb, num("r0"), num("r1"), num("variable") != 0.0, rec.command == "ChamferSrf", tol, fb2, built)) {
+    why = "the fillet could not be built between the sources' current shapes: " + fb2.error;
+    return std::nullopt;
+  }
+  kernel::NurbsSurface k;
+  k.raw() = built;
+  return SceneObject::MakeSurface(k);
+}
+
 void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectAny, 1), CommandStatus::Implemented,
       "Curve/curve and closed-solid pairs as before; surface/surface, brep/brep, curve/surface and brep/curve now use a real mesh-seeded, Newton-refined intersector (SSX/CSX).");
   Reg(e, "FilletSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::Fillet), CommandStatus::Implemented,
-      "Rolling-ball fillet via offset+SSX+exact contact arcs; real planar trim when both inputs are planar, otherwise left untrimmed.");
+      "Rolling-ball fillet via offset+SSX+exact contact arcs; real planar trim when both inputs are planar, otherwise left untrimmed. With History On and Trim=No (the sources stay untouched) the result is recorded {surface A, surface B} + faces + radii and rebuilt when either surface is edited (EditHistory radius=/endradius=); Trim=Yes cuts the sources and is not recorded (the reason is printed).");
   Reg(e, "ChamferSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::Chamfer), CommandStatus::Implemented,
       "Exact kernel::ChamferConvexEdge/ChamferConcaveEdge flat-bevel B-rep when both picks land on the same solid's two adjacent planar faces (Trim=Yes); otherwise a ruled surface between the two exact contact curves found the same way as FilletSrf.");
   Reg(e, "VariableFilletSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::VariableFillet), CommandStatus::Implemented,
