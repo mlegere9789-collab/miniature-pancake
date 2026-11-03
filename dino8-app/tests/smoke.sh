@@ -8839,8 +8839,14 @@ kwcount "Sweep1: the section sits 40.0% along the rail; the rail was split there
 kwcount "Sweep1: the section sits 100.0% along the rail; swept back along the rail from the section; the result reproduces the section to [0-9.]*$KWTINY" 2 "Sweep1 with the section AT the rail end (100%) sweeps back along the reversed rail and reproduces the section to < 1e-6 (straight rail and curved rail)"
 kwcount "Bounding box min -2,-1.912,0 max 2,1.912,10" 3 "a radius-2 circle swept along a straight z = 0..10 rail covers exactly the rail's z = 0..10 whether the circle sits at 0%, 40% or 100% of it (before: z = 0..10, 4..14 and 10..20)"
 kwcheck "Bounding box min 0,0,0 max 5,0,12" "Sweep2 along two straight rails with the section 40% of the way up spans the rails' own z = 0..10 (the polyline's 2-high apex rises to 12 at the far end; before: z = 4..16)"
-kwcheck "Sweep1: the section sits 40.0% along the rail; the closed rail was re-seamed there; the result reproduces the section to [0-9.]*$KWTINY" "Sweep1 along a CLOSED rail re-seams the rail at the section (no split) and reproduces the section to < 1e-6"
-kwdist "the closed rail was re-seamed there" 1 0 6 1 0.001 "...and the periodic tube is the section's radius (1) from the rail at 0, 36, 90, 144, 200 and 300 degrees"
+# CHANGED with the SCP_ work (see the SCP_ section at the end of this file): this closed rail is an exact circle, so the
+# sweep is no longer the kernel's re-seamed 32-station skin but the section revolved once about the rail's axis (an exact
+# rational surface; the command measures 2145 wall points against the revolved section and prints it, then still verifies
+# the section reproduced at the 40% station). The old text "the closed rail was re-seamed there" is now printed only for a
+# closed rail that is NOT a circle (SCP_9 pins the control).
+KWTINYI='\(e-\(0[7-9]\|[1-9][0-9]\)\|e+00\)'
+kwcheck "Sweep1: the section sits 40.0% along the rail; the closed rail is an exact circle, so the sweep is the section revolved once about the rail's axis (exact rational surface, not a skin; measured distance of 2145 wall points from the revolved section [0-9.]*$KWTINYI); the result reproduces the section to [0-9.]*$KWTINY" "Sweep1 along a CLOSED circular rail is now the exact surface of revolution (was: re-seamed skin) - the wall is measured < 1e-7 from the revolved section and reproduces the section at 40% to < 1e-6"
+kwdist "the closed rail is an exact circle, so the sweep is the section revolved once" 1 0 6 1 0.001 "...and the revolved tube is the section's radius (1) from the rail at 0, 36, 90, 144, 200 and 300 degrees"
 kwcheck "Sweep2: exact sweep not used - the section sits at the start of rail 1 but at the interior of rail 2, so one rail has nothing to sweep on one side of it; falling back to the approximate section-anchored sweep" "Sweep2 with the section at the start of rail 1 but interior to rail 2 refuses the exact path, prints why, and falls back"
 kwcheck "Sweep2: 1 section(s) along 2 rail stations" "...and the older approximate section-anchored sweep still produces the surface"
 kwdist "Sweep1: the section is at the rail start" 2 0 8 0 0.000001 "curved rail, section at 0%: 8 points on the section circle lie on the swept surface to < 1e-6"
