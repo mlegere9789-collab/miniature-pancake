@@ -12,6 +12,7 @@
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
 #include "io/FileIgesStep.h"
+#include "io/FileSat.h"
 
 namespace dino8::app {
 
@@ -229,6 +230,7 @@ bool LoadCompareSource(Document& out, const std::string& path, std::string& erro
   if (ext == ".obj" || ext == ".stl") return ImportMeshFile(out, path, error);
   if (ext == ".igs" || ext == ".iges") return ImportIges(out, path, error);
   if (ext == ".stp" || ext == ".step") return ImportStep(out, path, error);
+  if (ext == ".sat") return ImportSat(out, path, error);
   error = "Unsupported file type for compare: " + ext;
   return false;
 }

@@ -11111,4 +11111,62 @@ else
 fi
 ts3check "gl_error=0" "tosubd3 script ran without OpenGL errors"
 
+# SATF: ACIS SAT (.sat text) through Import/Export/Open/SaveAs (satf_script.txt,
+# satf_bool_script.txt; io/FileSat.cpp over the kernel's clean-room reader and
+# writer). The format support is self-consistent only - no real ACIS-written
+# file was available - so these checks pin the app wiring and the honesty of the
+# printed summary (verified vs UNVERIFIED layouts, refusals with a reason), not
+# compatibility with another CAD system. Ranges, not exact numbers.
+printf 'this is not an ACIS save file\n' > "$TMPW/satf_bad.sat"
+sed "s|@TMP@|$TMPW|g" "$HERE/satf_script.txt" > "$TMPW/satf_script.txt"
+sed "s|@TMP@|$TMPW|g" "$HERE/satf_bool_script.txt" > "$TMPW/satf_bool_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SATF="$(timeout 900 "$BIN" --smoke 40 --script "$TMPW/satf_script.txt" 2>&1)" || { echo "$SATF"; echo "FAIL: satf script exited non-zero"; exit 1; }
+  SATFB="$(timeout 900 "$BIN" --smoke 40 --script "$TMPW/satf_bool_script.txt" 2>&1)" || { echo "$SATFB"; echo "FAIL: satf boolean script exited non-zero"; exit 1; }
+else
+  SATF="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/satf_script.txt" 2>&1)" || { echo "$SATF"; echo "FAIL: satf script exited non-zero"; exit 1; }
+  SATFB="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/satf_bool_script.txt" 2>&1)" || { echo "$SATFB"; echo "FAIL: satf boolean script exited non-zero"; exit 1; }
+fi
+satf_has() { if grep -qF -- "$1" <<<"$SATF"; then echo "ok   $2"; else echo "FAIL $2"; near "$SATF" "$1"; fail=1; fi; }
+# count of lines containing a literal: satf_count TEXT MIN DESC
+satf_count() { local n; n="$(grep -cF -- "$1" <<<"$SATF" || true)"; if [ "${n:-0}" -ge "$2" ]; then echo "ok   $3 ($n >= $2)"; else echo "FAIL $3 (got ${n:-0}, expected >= $2)"; near "$SATF" "$1"; fail=1; fi; }
+satf_range() { if [ -n "$1" ] && awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 ($1 in [$2, $3])"; else echo "FAIL $4 ('${1:-none}' not in [$2, $3])"; fail=1; fi; }
+mapfile -t SATF_VOLS < <(grep -o "Volume = [0-9.e+-]*" <<<"$SATF" | awk '{print $3}' || true)
+satf_has "SAT export satf_box.sat (ACIS 7.0 text, version 700): 1 of 1 object(s) written" "Export of a box to .sat wrote 1 of 1 objects and says ACIS 7.0 text"
+satf_has "[documented layouts only]" "the box export is labelled as documented layouts only"
+satf_has "SAT import satf_box.sat: 1 Brep body(ies) read" "Open of the .sat box read one Brep body"
+satf_has "Every entity read uses a layout that public documentation states" "the box import says it used documented layouts only"
+satf_has "closed solid" "the imported box is reported as a closed solid"
+satf_count "no real ACIS-written file has been used to test it" 2 "every SAT summary carries the self-consistency-only note"
+if [ "${#SATF_VOLS[@]}" -ge 4 ]; then
+  satf_range "${SATF_VOLS[0]}" 3999.5 4000.5 "box Volume before export (20 x 20 x 10 = 4000)"
+  satf_range "${SATF_VOLS[1]}" 3999.5 4000.5 "box Volume after .sat export and Open (4000)"
+  satf_range "${SATF_VOLS[2]}" 2090 2160 "sphere Volume after .sat export and Import vs 4/3 pi r^3 = 2144.7 (it was 0 before the whole-sphere face was rebuilt as a native sphere)"
+  satf_range "${SATF_VOLS[3]}" 770 800 "cylinder Volume after .sat export and Open vs pi r^2 h = 785.4"
+else
+  echo "FAIL satf script printed only ${#SATF_VOLS[@]} Volume lines (expected 4)"; fail=1
+fi
+satf_has "is a whole sphere face with no edges; it was rebuilt as the application's native sphere Brep" "a whole-sphere body from the file is rebuilt as the app's native sphere and the summary says so"
+satf_count "UNVERIFIED LAYOUT: the bodies marked above" 2 "sphere and cylinder exports both disclose the UNVERIFIED layout"
+satf_count "[UNVERIFIED cone/sphere/torus/ellipse layout]" 2 "...and mark the body line itself"
+satf_has "SAT import satf_sphere.sat: 1 Brep body(ies) read" "Import of the .sat sphere read one body"
+satf_count "UNVERIFIED LAYOUT: 1 of 1 bodies use cone/sphere/torus/ellipse entities" 2 "sphere and cylinder imports both disclose that they rest on UNVERIFIED layouts"
+satf_has "SAT export wrote nothing" "exporting only a mesh writes nothing"
+satf_has "SAT export writes Brep bodies only" "...and says why (no body representation for a mesh)"
+satf_has "SAT import refused (satf_bad.sat)" "a file that is not an ACIS save file is refused with the file name"
+# boolean result: reported honestly whichever way it goes
+if grep -qF "SAT export satf_bool.sat (ACIS 7.0 text, version 700): 1 of 1 object(s) written" <<<"$SATFB"; then
+  mapfile -t SATFB_VOLS < <(grep -o "Volume = [0-9.e+-]*" <<<"$SATFB" | awk '{print $3}' || true)
+  if [ "${#SATFB_VOLS[@]}" -ge 2 ]; then
+    satf_range "${SATFB_VOLS[0]}" 2990 3010 "box with a 10 x 10 through-hole, BooleanDifference Volume (4000 - 1000 = 3000)"
+    satf_range "${SATFB_VOLS[1]}" 2990 3010 "the same body after .sat export and Open (3000)"
+  else
+    echo "FAIL satf boolean script printed only ${#SATFB_VOLS[@]} Volume lines (expected 2)"; fail=1
+  fi
+  if grep -qF "SAT import satf_bool.sat: 1 Brep body(ies) read" <<<"$SATFB"; then echo "ok   the boolean result was read back as one Brep body"; else echo "FAIL the boolean result did not read back as one Brep body"; near "$SATFB" "SAT import"; fail=1; fi
+else
+  # the app's boolean result is not a Brep the SAT writer accepts: it must have said so with a reason
+  if grep -qF "SAT export wrote nothing" <<<"$SATFB"; then echo "ok   the boolean result was refused by the SAT writer with a reason (see the output above)"; else echo "FAIL the boolean export neither wrote the body nor printed a refusal"; near "$SATFB" "SAT export"; fail=1; fi
+fi
+
 exit $fail

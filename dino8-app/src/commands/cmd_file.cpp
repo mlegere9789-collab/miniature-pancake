@@ -4,6 +4,7 @@
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
 #include "io/FileIgesStep.h"
+#include "io/FileSat.h"
 
 #include <algorithm>
 #include <cctype>
@@ -24,8 +25,8 @@ std::string LowerExt(const std::string& path) {
   return e;
 }
 
-const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step", ".ifc", ".xyz", ".pts", ".las"};
-const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step", ".ifc", ".xyz", ".pts", ".las"};
+const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step", ".sat", ".ifc", ".xyz", ".pts", ".las"};
+const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step", ".sat", ".ifc", ".xyz", ".pts", ".las"};
 
 void SaveTo(CommandContext& ctx, const std::string& path, int dm_version = 0) {
   std::string err;
@@ -88,6 +89,7 @@ bool ExportDocument(const Document& doc, const std::string& path, std::string& e
   if (ext == ".ply") return ExportPly(doc, path, true, error);
   if (ext == ".igs" || ext == ".iges") return ExportIges(doc, path, true, error);
   if (ext == ".stp" || ext == ".step") return ExportStep(doc, path, true, error);
+  if (ext == ".sat") return ExportSat(doc, path, true, error);  // on success `error` holds the summary (printed by the caller)
   if (ext == ".ifc") return ExportIfc(doc, path, true, error);
   if (ext == ".xyz") return ExportXyz(doc, path, true, error);
   if (ext == ".pts") return ExportPts(doc, path, true, error);
@@ -121,8 +123,10 @@ void RunExportWithOrigin(Application& app, Document& doc, const std::vector<Obje
     }
     ok = ExportDocument(tmp, path, error);
   }
-  if (ok) app.Notify("Exported " + path + " (origin at " + FormatPoint(origin) + ")");
-  else app.Notify(error);
+  if (ok) {
+    app.Notify("Exported " + path + " (origin at " + FormatPoint(origin) + ")");
+    if (!error.empty()) app.Notify(error);  // ExportSat reports its summary through `error` on success
+  } else app.Notify(error);
 }
 
 // ExportWithOrigin: select objects, pick a point to become the new origin,

@@ -22,6 +22,7 @@
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
 #include "io/FileIgesStep.h"
+#include "io/FileSat.h"
 #include "input/SpaceMouse.h"
 #include "render/ImageIO.h"
 #include "ui/Icons.h"
@@ -925,6 +926,8 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
     ok = ImportIges(fresh, path, error);
   } else if (ext == ".stp" || ext == ".step") {
     ok = ImportStep(fresh, path, error);
+  } else if (ext == ".sat") {
+    ok = ImportSat(fresh, path, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
@@ -1035,6 +1038,9 @@ bool Application::SaveDocument(const std::string& path, std::string& error, int 
   } else if (ext == ".stp" || ext == ".step") {
     ok = ExportStep(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
+  } else if (ext == ".sat") {
+    ok = ExportSat(doc_, path, false, error);
+    if (ok) { Notify("Exported " + path); if (!error.empty()) Notify(error); error.clear(); }
   } else if (ext == ".ifc") {
     ok = ExportIfc(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
@@ -1080,6 +1086,8 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
     ok = ImportIges(doc_, path, error);
   } else if (ext == ".stp" || ext == ".step") {
     ok = ImportStep(doc_, path, error);
+  } else if (ext == ".sat") {
+    ok = ImportSat(doc_, path, error);
   } else if (ext == ".ifc") {
     ok = ImportIfc(doc_, path, error);
   } else if (ext == ".xyz") {
@@ -1114,6 +1122,11 @@ bool Application::ExportSelected(const std::string& path, std::string& error, in
   if (ext == ".ply") return ExportPly(doc_, path, true, error);
   if (ext == ".igs" || ext == ".iges") return ExportIges(doc_, path, true, error);
   if (ext == ".stp" || ext == ".step") return ExportStep(doc_, path, true, error);
+  if (ext == ".sat") {
+    const bool ok = ExportSat(doc_, path, true, error);
+    if (ok) { if (!error.empty()) Notify(error); error.clear(); }  // ExportSat's success text is a summary, not an error
+    return ok;
+  }
   if (ext == ".ifc") return ExportIfc(doc_, path, true, error);
   if (ext == ".xyz") return ExportXyz(doc_, path, true, error);
   if (ext == ".pts") return ExportPts(doc_, path, true, error);

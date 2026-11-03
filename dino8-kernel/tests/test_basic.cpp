@@ -91464,6 +91464,78 @@ void TestAcisSatRoundTripTorus() {
   RoundTrip("torus (UNVERIFIED layout)", Brep::Torus(Point3d(1, 2, 3), Vector3d(0, 0, 1), 3.0, 1.0), 1e-3, false, true);
 }
 
+// Boolean results are genuine multi-loop, non-convex planar faces (trimmed
+// faces): a pocket gives an L-shaped/notched top, a through-hole gives faces
+// with an inner loop. Verified-layout entities only (planes + straight
+// curves), so these round trips need no opt-in. Volumes are checked against
+// the analytic values as well as against the pre-write Brep.
+void RoundTripBoolean(const std::string& label, const Brep& b, double expect_volume, double expect_area) {
+  Check(b.FaceCount() > 6, ("AcisSat: " + label + " boolean result has more than 6 faces").c_str());
+  Check(Near(b.Volume(), expect_volume, 1e-9) && Near(b.Area(), expect_area, 1e-9),
+        ("AcisSat: " + label + " source volume and area match the analytic values").c_str());
+  RoundTrip(label, b, 1e-9, false, false);
+}
+
+void TestAcisSatRoundTripBooleanPocketAndHole() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  const Brep big = Brep::BoxWelded(0, 0, 0, 4, 4, 4);
+  // Blind pocket 2x2x3 from the top face: volume 64 - 12 = 52; the top loses 4, the floor adds 4 and the four walls add
+  // 4 * (2 * 3) = 24, so area = 96 + 24 = 120.
+  const Brep pocket = BooleanCombinePlanar(big, Brep::BoxWelded(1, 1, 1, 3, 3, 5), BooleanOp::Difference);
+  RoundTripBoolean("pocket box", pocket, 52.0, 120.0);
+  // Through hole 2x2: volume 64 - 16, area 96 - 8 + 4 * (2 * 4) = 120.
+  const Brep hole = BooleanCombinePlanar(big, Brep::BoxWelded(1, 1, -1, 3, 3, 5), BooleanOp::Difference);
+  RoundTripBoolean("through-hole box", hole, 48.0, 120.0);
+  // Union of two overlapping boxes: an L-shaped footprint (non-convex outer loop).
+  const Brep uni = BooleanCombinePlanar(Brep::BoxWelded(0, 0, 0, 4, 2, 2), Brep::BoxWelded(0, 0, 0, 2, 4, 2), BooleanOp::Union);
+  // Volume 16 + 16 - 8 = 24; area 2 * 12 (L footprint) + 16 * 2 (perimeter x height) = 56.
+  RoundTripBoolean("L-shaped union", uni, 24.0, 56.0);
+}
+
+// The primitives the application's Box/Sphere/Cylinder commands build are raw
+// OpenNURBS breps (ON_BrepBox / ON_BrepSphere / ON_BrepCylinder wrapped in a
+// Brep), not the kernel's own Brep::BoxWelded / Brep::Sphere factories used by
+// the round trips above; the Import/Export/Open/SaveAs .sat paths see exactly
+// these, so they get their own round trips (box with documented layouts only,
+// the others with the UNVERIFIED opt-in the app applies and discloses).
+Brep WrapOn(ON_Brep* b) {
+  Brep k;
+  k.raw() = *b;
+  delete b;
+  return k;
+}
+
+void TestAcisSatRoundTripAppStylePrimitives() {
+  // Same corner order as the app's Box command: bottom face counter-clockwise, then the top face above it.
+  ON_3dPoint box_corners[8] = {ON_3dPoint(0, 0, 0),  ON_3dPoint(20, 0, 0),  ON_3dPoint(20, 20, 0),  ON_3dPoint(0, 20, 0),
+                               ON_3dPoint(0, 0, 10), ON_3dPoint(20, 0, 10), ON_3dPoint(20, 20, 10), ON_3dPoint(0, 20, 10)};
+  RoundTrip("app-style box (ON_BrepBox)", WrapOn(ON_BrepBox(box_corners)), 1e-9, false, false);
+  g_mesh_measure = true;
+  ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0), 10.0);
+  RoundTrip("app-style cylinder (ON_BrepCylinder, UNVERIFIED layout)", WrapOn(ON_BrepCylinder(cyl, true, true)), 2e-3, true, true);
+  g_mesh_measure = false;
+  // ON_BrepSphere's face is an ON_RevSurface, which Brep::Volume()/TessellateToClosedMeshAdaptive cannot integrate, so the
+  // source is not measured: the written file is read back and the result compared with the analytic sphere instead.
+  {
+    const Brep sph = WrapOn(ON_BrepSphere(ON_Sphere(ON_3dPoint(1, 2, 3), 4.0)));
+    std::ostringstream os;
+    dino8::kernel::AcisSatOptions opt;
+    opt.allow_unverified_layouts = true;
+    const auto w = dino8::kernel::WriteAcisSat(os, {sph}, opt);
+    Check(w.ok, "AcisSat: app-style sphere (ON_BrepSphere, UNVERIFIED layout) writes without refusal");
+    if (!w.ok) std::fprintf(stderr, "  write refused: %s\n", w.error.c_str());
+    const AcisSatReadResult r = ReadText(w.ok ? os.str() : std::string(), true);
+    Check(w.ok && r.ok && r.bodies.size() == 1 && r.bodies[0].FaceCount() == 1, "AcisSat: app-style sphere reads back as one one-face body");
+    if (r.ok && r.bodies.size() == 1) {
+      const double V = 4.0 / 3.0 * ON_PI * 64.0, A = 4.0 * ON_PI * 16.0;
+      std::printf("  app-style sphere (ON_BrepSphere) read back: volume %.12g (analytic %.12g), area %.12g (analytic %.12g)\n", r.bodies[0].Volume(), V,
+                  r.bodies[0].Area(), A);
+      Check(Near(r.bodies[0].Volume(), V, V * 2e-3) && Near(r.bodies[0].Area(), A, A * 2e-3), "AcisSat: app-style sphere read-back volume and area match 4/3 pi r^3 and 4 pi r^2 (2e-3)");
+    }
+  }
+}
+
 // Every proper prefix of a valid file must be refused (never crash, never
 // yield a body): the End-of-ACIS-data trailer is mandatory.
 void TestAcisSatTruncationSweepRefusesEveryPrefix() {
@@ -93639,6 +93711,8 @@ int main() {
   RunTest("acis_sat_tests::TestAcisSatRoundTripFilletedBox", acis_sat_tests::TestAcisSatRoundTripFilletedBox);
   RunTest("acis_sat_tests::TestAcisSatSheetBodyReadsAndRoundTrips", acis_sat_tests::TestAcisSatSheetBodyReadsAndRoundTrips);
   RunTest("acis_sat_tests::TestAcisSatRoundTripTorus", acis_sat_tests::TestAcisSatRoundTripTorus);
+  RunTest("acis_sat_tests::TestAcisSatRoundTripBooleanPocketAndHole", acis_sat_tests::TestAcisSatRoundTripBooleanPocketAndHole);
+  RunTest("acis_sat_tests::TestAcisSatRoundTripAppStylePrimitives", acis_sat_tests::TestAcisSatRoundTripAppStylePrimitives);
   RunTest("acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix", acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix);
   RunTest("acis_sat_tests::TestAcisSatRefusesBadInput", acis_sat_tests::TestAcisSatRefusesBadInput);
 

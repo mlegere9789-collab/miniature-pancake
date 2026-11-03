@@ -346,6 +346,7 @@ set(DINO8_SOURCES
   src/io/AciPalette.cpp
   src/io/FileExchange.cpp
   src/io/FileIgesStep.cpp
+  src/io/FileSat.cpp
   src/geom/BrepMesher.cpp
   src/geom/SurfaceIntersect.cpp
   src/geom/BlendSurface.cpp

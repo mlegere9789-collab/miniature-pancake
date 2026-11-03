@@ -120,3 +120,106 @@ once other than the two-circle periodic case, seam misalignment, any B-spline /
 
 NURBS surfaces and non-line/non-circle edge curves; trimmed sphere/torus faces;
 (unless opted in) cone/sphere/torus surfaces and circular arcs.
+
+## Round 2: public documentation re-check (what could and could not be added)
+
+Fetched again this round (WebFetch, raw.githubusercontent.com only; the GitHub
+API, the repository file-listing tool and every other host were not reachable):
+
+* https://raw.githubusercontent.com/mozman/ezdxf/master/docs/source/acis.rst -
+  the same document as round 1. It names these entities: Transform, Body,
+  Pattern, Lump, Wire, Shell, Subshell, Face, Loop, Coedge, Edge, Vertex,
+  Surface, Plane, Curve, StraightCurve, PCurve, Point. Pattern, Wire, Subshell
+  and PCurve are marked "Not implemented" there. `cone-surface`,
+  `sphere-surface`, `torus-surface`, `ellipse-curve`, `intcurve-curve` are NOT
+  described (`spline-surface` appears only as a name in the Face description).
+  `.sab` appears only as the name of the binary export (`export_sab`, for DXF
+  R2013-R2018 data); no byte layout is given.
+* https://raw.githubusercontent.com/mozman/ezdxf/master/docs/source/dxfentities/3dsolid.rst -
+  describes the DXF 3DSOLID entity only; no SAT record layout.
+
+Consequences: nothing on the "not supported" list could be justified from text
+that was actually fetched, so the reader's accepted set is UNCHANGED this
+round. In particular: still no cone/sphere/torus/ellipse verification, no body
+transforms (the `Transform` entity's attribute is documented as a matrix, but
+how the matrix and its flags are serialised in a SAT record is not), no wire
+bodies or subshells (documented as unimplemented), no splines/procedural
+geometry, and **no binary `.sab`** (no public byte-layout documentation was
+found to cite). The ezdxf Python source was again deliberately not read
+(clean-room rule above).
+
+## Application wiring (round 2)
+
+`dino8-app/src/io/FileSat.{h,cpp}`: `ImportSat` / `ExportSat`, dispatched by the
+`.sat` extension from `Application::OpenDocument`, `ImportFile`, `SaveDocument`
+(Save As), `ExportSelected`, the Open / Import / Export / SaveAs / ExportWithOrigin
+file dialogs and extension lists (`cmd_file.cpp`), the command-line open path
+(`main.cpp` calls `OpenDocument`) and the drawing-compare loader
+(`DwgCompare.cpp`). The application has no drag-and-drop handler at all, so
+there is nothing to wire there.
+
+Policy, stated so nobody mistakes it for verification:
+
+* Import first reads with the kernel default (documented layouts only). If the
+  file also contains cone/sphere/torus/ellipse entities, it is read a second
+  time with `allow_unverified_layouts`, and the printed summary says
+  `UNVERIFIED LAYOUT: N of M bodies use ...`.
+* Export tests each Brep with the documented layouts first, then with the
+  UNVERIFIED ones; bodies needing the latter are marked on their summary line and
+  the summary carries an `UNVERIFIED LAYOUT` paragraph. Objects the writer cannot
+  express (meshes, curves, points, SubDs, NURBS-surface bodies, trimmed
+  sphere/torus faces, ...) are left out and listed under `Not written:` with the
+  writer's reason; if nothing can be written the export fails with the reasons.
+* Every summary ends with the sentence that no real ACIS-written file has been
+  used to test the reader/writer.
+* Coordinates are taken as document units (no unit conversion); the writer
+  writes header units 1 and does not record the document unit system.
+
+## Measured round trips (round 2, kernel test output, this build)
+
+All are write-then-read with this library only (self-consistency, not
+compatibility with another product). "documented" = planes and straight curves
+only, no opt-in needed; "UNVERIFIED" = needed the opt-in.
+
+| Body | Layouts | Volume before -> after | Area before -> after | F / E / V before -> after |
+|---|---|---|---|---|
+| box 2x3x4 (`Brep::BoxWelded`) | documented | 24 -> 24 | 52 -> 52 | 6/12/8 -> 6/12/8 |
+| app-style box 20x20x10 (`ON_BrepBox`, as the Box command builds it) | documented | 4000 -> 4000 | 1600 -> 1600 | 6/12/8 -> 6/12/8 |
+| boolean pocket (box 4^3 minus 2x2x3 blind pocket) | documented | 52 -> 52 | 120 -> 120 | 46/92/48 -> 46/92/48 |
+| boolean through-hole (4^3 minus 2x2 hole) | documented | 48 -> 48 | 120 -> 120 | 32/64/32 -> 32/64/32 |
+| boolean L-shaped union | documented | 24 -> 24 | 56 -> 56 | 14/28/16 -> 14/28/16 |
+| cylinder r2 h5 (`Brep::Revolve`) | UNVERIFIED | 62.8318 -> 62.8234 (mesh) | 87.9646 -> 87.9544 (mesh) | 3/5/4 -> 3/3/2 (seam edge dropped) |
+| app-style cylinder r5 h10 (`ON_BrepCylinder`) | UNVERIFIED | 785.2923 -> 785.2923 (mesh) | 471.1754 -> 471.1754 (mesh) | 3/3/2 -> 3/3/2 |
+| sphere r2.5 (`Brep::Sphere`) | UNVERIFIED | 65.44997 -> 65.44997 | 78.53996 -> 78.53996 | 1/0/0 -> 1/0/0 |
+| app-style sphere r4 (`ON_BrepSphere`) | UNVERIFIED | not measurable at source (RevSurface); read back 268.0831 vs analytic 268.0826 | read back 201.0623 vs analytic 201.0619 | 1 face |
+| torus | UNVERIFIED | 59.2176 -> 59.2176 | 118.4353 -> 118.4353 | 1/0/0 -> 1/0/0 |
+| filleted box | UNVERIFIED | 23.89270 -> 23.89270 (mesh) | 51.46350 -> 51.46350 | 7/15/10 -> 7/15/10 |
+
+The boolean rows are the "trimmed faces" case: faces with an inner loop and
+non-convex outer loops come back with identical face/edge/vertex counts and
+volume/area to 1e-9, using documented layouts only.
+
+### Measured in the application (headless, `tests/satf_script.txt`, `satf_bool_script.txt`)
+
+Export (selected bodies) then Open/Import of the written file, in the real app.
+The app's `Volume`/`Area` commands are tessellation based for non-NURBS
+surfaces, hence the small deviations from the analytic values.
+
+| Body (as the app's commands build it) | Layouts | Before -> after |
+|---|---|---|
+| Box 20x20x10 | documented | Volume 4000 -> 4000, area 1600 -> 1600, bbox 20x20x10 -> 20x20x10, 6/12/8 -> 6/12/8 |
+| Box 4x6x8 via `SaveAs x.sat` then Open | documented | Volume 192 -> 192 |
+| BooleanDifference: 20x20x10 box minus a 10x10 through-hole box | documented | Volume 3000 -> 3000, area 1800 -> 1800, bbox 20x20x10 -> 20x20x10, 32/64/32 -> 32/64/32 |
+| Cylinder r5 h10 | UNVERIFIED | Volume re-opened 784.8 (analytic 785.4), 3/3/2 -> 3/3/2 |
+| Sphere r8 | UNVERIFIED | Volume re-imported 2132 (analytic 2144.7), area 802 (804.2) |
+| MeshBox | refused | "SAT export wrote nothing ... Brep bodies only" |
+| text file that is not ACIS | refused | "SAT import refused (...): malformed header line 1" |
+
+Finding fixed on the way: a whole-sphere body from a file (one face, no edges)
+used to import as an object the application could neither display nor measure
+(bounding box, Volume and Area all 0). `ImportSat` now rebuilds such a body as
+the same native `ON_BrepSphere` / `ON_BrepTorus` the Sphere / Torus commands
+create (outward orientation) and says so in the summary.
+
+Not measured in the application: torus and the other UNVERIFIED shapes beyond
+the table (the kernel table above covers them); Windows (no Windows machine).
