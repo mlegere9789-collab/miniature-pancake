@@ -1159,14 +1159,27 @@ class Brep {
   //    not an exact claim, shrinking as `stations` grows; with several
   //    identical-shape sections the surface is the Sweep2() surface of one of
   //    them.
-  // Always an UNCAPPED single-face body (the wall). Does not support two
-  // closed rails, and closed sections are not seam- or direction-aligned with
-  // each other (give them consistent seams and directions). Throws
-  // std::invalid_argument for fewer than 2 sections, stations < 2, an invalid
-  // curve, two closed rails, a zero-length rail, rails that touch at a
-  // station, sections whose anchors do not advance along BOTH rails (they
-  // cross, or two share a station), or two consecutive identical sections
-  // (the skin parameter would not increase).
+  // TWO CLOSED RAILS give a CYCLIC sweep: rail2 is turned to circulate with
+  // rail1 (by the winding of the closest-point parameter round rail1), the
+  // anchors are ordered round the ring (rail2's anchors must follow rail1's in
+  // the same cyclic order, within one turn), the last segment runs from the
+  // last anchor across the rails' seams back to the first, the blend is
+  // periodic (Catmull-Rom tangents wrap round the ring; two sections give
+  // zero slopes) and the skin is periodic: the wall is closed in v with its
+  // seam at the first section (in rail1 order), C2 across the seam, and the
+  // rails' own seams may be anywhere. RAILS THAT TOUCH AT AN END (zero
+  // separation at the first and/or last station) are allowed: the section
+  // copy at a touching end collapses onto the meeting point, the wall's
+  // end row is a genuine singular side (a pole), and no section may sit
+  // there. Rails touching at an interior station are still refused.
+  // Always an UNCAPPED single-face body (the wall). Closed sections are not
+  // seam- or direction-aligned with each other (give them consistent seams
+  // and directions). Throws std::invalid_argument for fewer than 2 sections,
+  // stations < 2, an invalid curve, a zero-length rail, rails that touch at
+  // an interior station, a section where the rails touch, sections whose
+  // anchors do not advance along BOTH rails (they cross, or two share a
+  // station; round closed rails: not in the same cyclic order), or two
+  // consecutive identical sections (the skin parameter would not increase).
   static Brep Sweep2Sections(const std::vector<NurbsCurve>& sections, const NurbsCurve& rail1,
                              const NurbsCurve& rail2, int stations = 32, Sweep2SectionsReport* report = nullptr);
 

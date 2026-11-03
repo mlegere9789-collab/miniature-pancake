@@ -1640,9 +1640,15 @@ struct TwoRailFrame {
   double width = 0.0;
 };
 
+// `allow_touching_ends` (Sweep2Sections only): the FIRST and/or LAST station
+// may have zero rail separation (the rails meet at that end). Its width is 0
+// - every section copy placed there collapses to the meeting point - and its
+// x/y/z/sweep_dir are taken from the neighbouring station (any frame places a
+// point at the same spot); an interior station with zero separation is still
+// refused.
 std::vector<TwoRailFrame> TwoRailFrames(const ON_NurbsCurve& rail1, const ON_NurbsCurve& rail2,
                                         const std::vector<double>& p1, const std::vector<double>& p2,
-                                        const char* caller) {
+                                        const char* caller, bool allow_touching_ends = false) {
   const int m = static_cast<int>(p1.size());
   if (static_cast<int>(p2.size()) != m) Internal(caller, "rail station count mismatch");
   const double scale = 1.0 + CurveScale(rail1) + CurveScale(rail2);
@@ -1654,6 +1660,10 @@ std::vector<TwoRailFrame> TwoRailFrames(const ON_NurbsCurve& rail1, const ON_Nur
     ON_3dVector x = q - f.origin;
     f.width = x.Length();
     if (f.width <= 1e-9 * scale) {
+      if (allow_touching_ends && m >= 3 && (k == 0 || k == m - 1)) {
+        f.width = 0.0;  // frame vectors copied from the neighbouring station below
+        continue;
+      }
       Fail(caller, "the two rails touch (zero separation) at a station - Sweep2 does not support this");
     }
     x = x / f.width;
@@ -1672,6 +1682,18 @@ std::vector<TwoRailFrame> TwoRailFrames(const ON_NurbsCurve& rail1, const ON_Nur
     f.z = z;
     f.y = ON_CrossProduct(z, x);
     f.sweep_dir = t;
+  }
+  if (allow_touching_ends && m >= 3) {
+    for (const int k : {0, m - 1}) {
+      TwoRailFrame& f = frames[static_cast<size_t>(k)];
+      if (f.width != 0.0) continue;
+      const TwoRailFrame& nb = frames[static_cast<size_t>(k == 0 ? 1 : m - 2)];
+      if (nb.width == 0.0) Fail(caller, "the two rails touch at the first and the second station - too few stations for a touching end");
+      f.x = nb.x;
+      f.y = nb.y;
+      f.z = nb.z;
+      f.sweep_dir = nb.sweep_dir;
+    }
   }
   return frames;
 }
@@ -4190,12 +4212,34 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   ON_NurbsCurve rail2 = rail2_in.raw();
   if (!rail1.IsValid()) Fail(caller, "rail1 is not a valid NURBS curve");
   if (!rail2.IsValid()) Fail(caller, "rail2 is not a valid NURBS curve");
-  if (rail1.IsClosed() && rail2.IsClosed()) {
-    Fail(caller, "two closed rails are not supported with several sections (use Sweep2() with one section)");
-  }
-  // Same direction convention as Sweep2().
-  if (rail1.PointAtStart().DistanceTo(rail2.PointAtEnd()) < rail1.PointAtStart().DistanceTo(rail2.PointAtStart())) {
-    ReverseKeepDomain(rail2);
+  // Two closed rails: a CYCLIC sweep (wrapped anchors, a segment crossing the
+  // seam, a periodic blend, a wrapped skin); the wall is closed in v with its
+  // seam at the first section.
+  const bool cyclic = rail1.IsClosed() && rail2.IsClosed();
+  if (!cyclic) {
+    // Same direction convention as Sweep2().
+    if (rail1.PointAtStart().DistanceTo(rail2.PointAtEnd()) < rail1.PointAtStart().DistanceTo(rail2.PointAtStart())) {
+      ReverseKeepDomain(rail2);
+    }
+  } else {
+    // Closed rails have no start/end to compare: sample rail1, find the closest
+    // rail2 parameter of each sample and sum the wrapped parameter steps - a
+    // negative winding means rail2 circulates against rail1.
+    NurbsCurve k2;
+    k2.raw() = rail2;
+    const double a2 = rail2.Domain().Min(), len2 = rail2.Domain().Length();
+    double winding = 0.0, prev = 0.0;
+    for (int j = 0; j <= 32; ++j) {
+      const ON_3dPoint p = rail1.PointAt(rail1.Domain().ParameterAt(j / 32.0));
+      const double f = (k2.ClosestPointParameter(Point3d(p.x, p.y, p.z), 400) - a2) / len2;
+      if (j > 0) {
+        double d = f - prev;
+        d -= std::floor(d + 0.5);
+        winding += d;
+      }
+      prev = f;
+    }
+    if (winding < 0.0) ReverseKeepDomain(rail2);
   }
 
   std::vector<ON_NurbsCurve> sections;
@@ -4226,7 +4270,9 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
           if (flo * fm <= 0.0) hi = mid; else { lo = mid; flo = fm; }
         }
         const double root = 0.5 * (lo + hi);
-        if (std::fabs(root - t0) < best_gap) { best_gap = std::fabs(root - t0); best = root; }
+        double gap = std::fabs(root - t0);
+        if (cyclic) gap = std::min(gap, (hi_d - lo_d) - gap);
+        if (gap < best_gap) { best_gap = gap; best = root; }
       }
       prev_t = t;
       prev_f = ft;
@@ -4290,11 +4336,18 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   // fraction of the length of a sub-range).
   // (a 512-chord polyline table of the sub-range: station SPACING only, so a
   // relative error of ~1e-6 here moves a station along the rail, never off it)
+  // (cyclic: parameters beyond the domain end wrap around the closed rail)
+  auto wrapped = [&](const ON_NurbsCurve& r, double t) {
+    if (!cyclic) return t;
+    const double lo = r.Domain().Min(), len = r.Domain().Length();
+    t -= std::floor((t - lo) / len) * len;
+    return t;
+  };
   auto arc_table = [&](const ON_NurbsCurve& r, double a, double b) {
     std::vector<double> cum(513, 0.0);
-    ON_3dPoint prev = r.PointAt(a);
+    ON_3dPoint prev = r.PointAt(wrapped(r, a));
     for (int q = 1; q <= 512; ++q) {
-      const ON_3dPoint cur = r.PointAt(a + (b - a) * q / 512.0);
+      const ON_3dPoint cur = r.PointAt(wrapped(r, a + (b - a) * q / 512.0));
       cum[static_cast<size_t>(q)] = cum[static_cast<size_t>(q - 1)] + prev.DistanceTo(cur);
       prev = cur;
     }
@@ -4317,65 +4370,131 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   if (!(len1_total > 1e-9 * scale) || !(len2_total > 1e-9 * scale)) Fail(caller, "a rail has zero length");
   const double eps1 = 1e-9 * (d1_max - d1_min), eps2 = 1e-9 * (d2_max - d2_min);
 
-  // Breakpoints: both rails' parameters at the domain start, every anchor and
-  // the domain end. Anchors must advance on BOTH rails (the sections are
-  // ordered along the sweep, and cannot cross or share a station).
-  std::vector<double> bp1{d1_min}, bp2{d2_min};
-  std::vector<int> anchor_at{-1};  // anchor index (into `anchors`) living at each breakpoint
-  for (size_t i = 0; i < anchors.size(); ++i) {
-    const double t1 = anchors[i].t1, t2 = anchors[i].t2;
-    const bool same1 = t1 - bp1.back() <= eps1, same2 = t2 - bp2.back() <= eps2;
-    if (same1 != same2 || t2 < bp2.back() - eps2) {
-      Fail(caller, "the sections are not ordered consistently along the two rails (their anchors cross)");
+  std::vector<double> bp1, bp2;  // breakpoints on each rail (cyclic: unwrapped, the last = the first one + the rail's period)
+  std::vector<int> anchor_at;    // anchor index (into `anchors`) living at each breakpoint
+  std::vector<double> x_at_bp;   // rail1 arc length at each breakpoint
+  std::vector<double> p1, p2, xs;  // station parameters on each rail (wrapped into the domain) and the rail1 abscissa
+  std::vector<int> station_of_bp;
+  size_t nbp = 0;
+  double ring_length = 0.0;  // cyclic: rail1 arc length once round the ring
+  if (cyclic) {
+    const size_t na0 = anchors.size();
+    const double P1 = d1_max - d1_min, P2 = d2_max - d2_min;
+    // Anchors in rail1 order; rail2's anchors, unwrapped from the first one's, must then increase too (the sections
+    // are ordered round the ring on both rails) and stay within one turn.
+    std::vector<double> u1(na0), u2(na0);
+    for (size_t i = 0; i < na0; ++i) {
+      u1[i] = anchors[i].t1;
+      u2[i] = anchors[i].t2 < anchors[0].t2 - eps2 ? anchors[i].t2 + P2 : anchors[i].t2;
+      if (i > 0) {
+        const bool same1 = u1[i] - u1[i - 1] <= eps1, same2 = std::fabs(u2[i] - u2[i - 1]) <= eps2;
+        if (same1 && same2) Fail(caller, "two sections sit at the same station of the rails");
+        if (same1 != same2 || u2[i] < u2[i - 1]) {
+          Fail(caller, "the sections are not ordered consistently along the two rails (their anchors cross)");
+        }
+      }
     }
-    if (same1 && same2) {
-      if (anchor_at.back() != -1) Fail(caller, "two sections sit at the same station of the rails");
-      anchor_at.back() = static_cast<int>(i);
-      continue;
+    // The closing step back to the first anchor must be a forward step on both rails too.
+    {
+      const bool same1 = u1[0] + P1 - u1[na0 - 1] <= eps1, same2 = u2[0] + P2 - u2[na0 - 1] <= eps2;
+      if (same1 && same2) Fail(caller, "two sections sit at the same station of the rails");
+      if (same1 != same2 || u2[na0 - 1] > u2[0] + P2) {
+        Fail(caller, "the sections are not ordered consistently along the two rails (their anchors cross)");
+      }
     }
-    bp1.push_back(t1);
-    bp2.push_back(t2);
-    anchor_at.push_back(static_cast<int>(i));
-  }
-  if (d1_max - bp1.back() > eps1 || d2_max - bp2.back() > eps2) {
-    if ((d1_max - bp1.back() > eps1) != (d2_max - bp2.back() > eps2)) {
-      Fail(caller, "the last section is at the end of one rail but not the other");
+    for (size_t i = 0; i < na0; ++i) {
+      bp1.push_back(u1[i]);
+      bp2.push_back(u2[i]);
+      anchor_at.push_back(static_cast<int>(i));
     }
-    bp1.push_back(d1_max);
-    bp2.push_back(d2_max);
+    bp1.push_back(u1[0] + P1);
+    bp2.push_back(u2[0] + P2);
     anchor_at.push_back(-1);
-  }
-  const size_t nbp = bp1.size();
-  if (nbp < 2) Fail(caller, "the rails are degenerate");
-
-  // Segment lengths along rail1 (used for the station budget and the blend's
-  // abscissa), then the station list: segment s gets round(stations-1) times
-  // its share of rail1's length subdivisions, never fewer than 4, each station
-  // at the same arc-length FRACTION of the segment on both rails (the pairing
-  // Sweep2() uses over the whole rails). Breakpoints are placed exactly.
-  std::vector<double> x_at_bp(nbp, 0.0);  // rail1 arc length at each breakpoint
-  for (size_t b = 1; b < nbp; ++b) x_at_bp[b] = x_at_bp[b - 1] + arc_len(rail1, bp1[b - 1], bp1[b]);
-  std::vector<double> p1, p2, xs;  // station parameters on each rail and the rail1 abscissa
-  std::vector<int> station_of_bp(nbp, 0);
-  p1.push_back(bp1[0]);
-  p2.push_back(bp2[0]);
-  xs.push_back(0.0);
-  for (size_t b = 1; b < nbp; ++b) {
-    const double seg = x_at_bp[b] - x_at_bp[b - 1];
-    const int sub = std::max(4, static_cast<int>(std::lround((stations - 1) * seg / x_at_bp.back())));
-    for (int q = 1; q < sub; ++q) {
-      const double f = static_cast<double>(q) / sub;
-      p1.push_back(param_at_fraction(rail1, bp1[b - 1], bp1[b], f));
-      p2.push_back(param_at_fraction(rail2, bp2[b - 1], bp2[b], f));
-      xs.push_back(x_at_bp[b - 1] + f * seg);
+    nbp = bp1.size();
+    x_at_bp.assign(nbp, 0.0);
+    for (size_t b = 1; b < nbp; ++b) x_at_bp[b] = x_at_bp[b - 1] + arc_len(rail1, bp1[b - 1], bp1[b]);
+    ring_length = x_at_bp.back();
+    station_of_bp.assign(nbp, 0);
+    p1.push_back(wrapped(rail1, bp1[0]));
+    p2.push_back(wrapped(rail2, bp2[0]));
+    xs.push_back(0.0);
+    for (size_t b = 1; b < nbp; ++b) {
+      const double seg = x_at_bp[b] - x_at_bp[b - 1];
+      const int sub = std::max(4, static_cast<int>(std::lround(stations * seg / ring_length)));
+      for (int q = 1; q < sub; ++q) {
+        const double f = static_cast<double>(q) / sub;
+        p1.push_back(wrapped(rail1, param_at_fraction(rail1, bp1[b - 1], bp1[b], f)));
+        p2.push_back(wrapped(rail2, param_at_fraction(rail2, bp2[b - 1], bp2[b], f)));
+        xs.push_back(x_at_bp[b - 1] + f * seg);
+      }
+      if (b + 1 < nbp) {  // the closing breakpoint is station 0 again
+        p1.push_back(wrapped(rail1, bp1[b]));
+        p2.push_back(wrapped(rail2, bp2[b]));
+        xs.push_back(x_at_bp[b]);
+        station_of_bp[b] = static_cast<int>(p1.size()) - 1;
+      }
     }
-    p1.push_back(bp1[b]);
-    p2.push_back(bp2[b]);
-    xs.push_back(x_at_bp[b]);
-    station_of_bp[b] = static_cast<int>(p1.size()) - 1;
+  } else {
+    // Breakpoints: both rails' parameters at the domain start, every anchor and
+    // the domain end. Anchors must advance on BOTH rails (the sections are
+    // ordered along the sweep, and cannot cross or share a station).
+    bp1 = {d1_min};
+    bp2 = {d2_min};
+    anchor_at = {-1};
+    for (size_t i = 0; i < anchors.size(); ++i) {
+      const double t1 = anchors[i].t1, t2 = anchors[i].t2;
+      const bool same1 = t1 - bp1.back() <= eps1, same2 = t2 - bp2.back() <= eps2;
+      if (same1 != same2 || t2 < bp2.back() - eps2) {
+        Fail(caller, "the sections are not ordered consistently along the two rails (their anchors cross)");
+      }
+      if (same1 && same2) {
+        if (anchor_at.back() != -1) Fail(caller, "two sections sit at the same station of the rails");
+        anchor_at.back() = static_cast<int>(i);
+        continue;
+      }
+      bp1.push_back(t1);
+      bp2.push_back(t2);
+      anchor_at.push_back(static_cast<int>(i));
+    }
+    if (d1_max - bp1.back() > eps1 || d2_max - bp2.back() > eps2) {
+      if ((d1_max - bp1.back() > eps1) != (d2_max - bp2.back() > eps2)) {
+        Fail(caller, "the last section is at the end of one rail but not the other");
+      }
+      bp1.push_back(d1_max);
+      bp2.push_back(d2_max);
+      anchor_at.push_back(-1);
+    }
+    nbp = bp1.size();
+    if (nbp < 2) Fail(caller, "the rails are degenerate");
+
+    // Segment lengths along rail1 (used for the station budget and the blend's
+    // abscissa), then the station list: segment s gets round(stations-1) times
+    // its share of rail1's length subdivisions, never fewer than 4, each station
+    // at the same arc-length FRACTION of the segment on both rails (the pairing
+    // Sweep2() uses over the whole rails). Breakpoints are placed exactly.
+    x_at_bp.assign(nbp, 0.0);
+    for (size_t b = 1; b < nbp; ++b) x_at_bp[b] = x_at_bp[b - 1] + arc_len(rail1, bp1[b - 1], bp1[b]);
+    station_of_bp.assign(nbp, 0);
+    p1.push_back(bp1[0]);
+    p2.push_back(bp2[0]);
+    xs.push_back(0.0);
+    for (size_t b = 1; b < nbp; ++b) {
+      const double seg = x_at_bp[b] - x_at_bp[b - 1];
+      const int sub = std::max(4, static_cast<int>(std::lround((stations - 1) * seg / x_at_bp.back())));
+      for (int q = 1; q < sub; ++q) {
+        const double f = static_cast<double>(q) / sub;
+        p1.push_back(param_at_fraction(rail1, bp1[b - 1], bp1[b], f));
+        p2.push_back(param_at_fraction(rail2, bp2[b - 1], bp2[b], f));
+        xs.push_back(x_at_bp[b - 1] + f * seg);
+      }
+      p1.push_back(bp1[b]);
+      p2.push_back(bp2[b]);
+      xs.push_back(x_at_bp[b]);
+      station_of_bp[b] = static_cast<int>(p1.size()) - 1;
+    }
   }
   const int m = static_cast<int>(p1.size());
-  const std::vector<TwoRailFrame> frames = TwoRailFrames(rail1, rail2, p1, p2, caller);
+  const std::vector<TwoRailFrame> frames = TwoRailFrames(rail1, rail2, p1, p2, caller, /*allow_touching_ends=*/!cyclic);
 
   // Common control structure, then every section decoded ONCE into its own
   // anchor station's frame: the local coordinates of a control point are its
@@ -4399,6 +4518,7 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   }
   for (size_t i = 0; i < na; ++i) {
     const TwoRailFrame& f = frames[static_cast<size_t>(anchor_station[i])];
+    if (!(f.width > 0.0)) Fail(caller, "a section sits where the two rails touch - it has no width to be decoded against");
     for (int c = 0; c < n; ++c) {
       const ON_3dVector d = EuclideanCV(compat[i], c) - f.origin;
       local[i][static_cast<size_t>(c)] =
@@ -4411,8 +4531,9 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   // sections that is the chord, i.e. a linear blend).
   std::vector<std::vector<ON_3dVector>> slope(na, std::vector<ON_3dVector>(static_cast<size_t>(n)));
   for (size_t i = 0; i < na; ++i) {
-    const size_t lo = i == 0 ? 0 : i - 1, hi = i + 1 == na ? na - 1 : i + 1;
-    const double dx = anchor_x[hi] - anchor_x[lo];
+    // (cyclic: the neighbours wrap round the ring, an abscissa one ring length further on/back across the seam)
+    const size_t lo = cyclic ? (i + na - 1) % na : (i == 0 ? 0 : i - 1), hi = cyclic ? (i + 1) % na : (i + 1 == na ? na - 1 : i + 1);
+    const double dx = (anchor_x[hi] + (cyclic && i + 1 == na ? ring_length : 0.0)) - (anchor_x[lo] - (cyclic && i == 0 ? ring_length : 0.0));
     for (int c = 0; c < n; ++c) {
       slope[i][static_cast<size_t>(c)] = (local[hi][static_cast<size_t>(c)] - local[lo][static_cast<size_t>(c)]) / dx;
     }
@@ -4428,8 +4549,9 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
     while (seg + 1 < na && anchor_station[seg + 1] <= k) ++seg;
     const TwoRailFrame& f = frames[static_cast<size_t>(k)];
     ON_NurbsCurve ck = compat.front();
-    const bool before_first = k <= anchor_station[0];
-    const bool after_last = k >= anchor_station[na - 1];
+    const bool before_first = !cyclic && k <= anchor_station[0];
+    const bool after_last = !cyclic && k >= anchor_station[na - 1];
+    const size_t seg_next = (seg + 1) % na;  // cyclic: the last segment runs on to the first anchor, one ring further
     for (int c = 0; c < n; ++c) {
       ON_3dVector l;
       double w;
@@ -4438,12 +4560,12 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
         l = local[e][static_cast<size_t>(c)];
         w = weight[e][static_cast<size_t>(c)];
       } else {
-        const double x0 = anchor_x[seg], x1 = anchor_x[seg + 1], h = x1 - x0;
+        const double x0 = anchor_x[seg], x1 = seg + 1 < na ? anchor_x[seg + 1] : ring_length, h = x1 - x0;
         const double s = (xs[static_cast<size_t>(k)] - x0) / h;
         const double s2 = s * s, s3 = s2 * s;
         l = local[seg][static_cast<size_t>(c)] * (2 * s3 - 3 * s2 + 1) + slope[seg][static_cast<size_t>(c)] * (h * (s3 - 2 * s2 + s)) +
-            local[seg + 1][static_cast<size_t>(c)] * (-2 * s3 + 3 * s2) + slope[seg + 1][static_cast<size_t>(c)] * (h * (s3 - s2));
-        w = weight[seg][static_cast<size_t>(c)] * (1.0 - s) + weight[seg + 1][static_cast<size_t>(c)] * s;
+            local[seg_next][static_cast<size_t>(c)] * (-2 * s3 + 3 * s2) + slope[seg_next][static_cast<size_t>(c)] * (h * (s3 - s2));
+        w = weight[seg][static_cast<size_t>(c)] * (1.0 - s) + weight[seg_next][static_cast<size_t>(c)] * s;
       }
       const ON_3dPoint p = f.origin + (f.x * l.x + f.y * l.y + f.z * l.z) * f.width;
       ck.SetCV(c, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
@@ -4452,8 +4574,8 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   }
   MakeCompatible(copies, caller);  // no-op (same control structure at every station)
   double period = 1.0;
-  const std::vector<double> params_v = SkinParameters(copies, false, &period, caller);
-  std::unique_ptr<ON_NurbsSurface> wall = SkinSections(copies, std::min(3, m - 1), false, params_v, period, caller);
+  const std::vector<double> params_v = SkinParameters(copies, cyclic, &period, caller);
+  std::unique_ptr<ON_NurbsSurface> wall = SkinSections(copies, std::min(3, m - 1), cyclic, params_v, period, caller);
 
   if (report) {
     *report = Sweep2SectionsReport{};

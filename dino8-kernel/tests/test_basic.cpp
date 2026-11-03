@@ -88748,7 +88748,10 @@ void TestSweep2SectionsFloatingSectionsAndRefusals() {
         "sweep2 sections: sections whose anchors cross along the two rails throw");
   const NurbsCurve ring_a = [&] { ON_NurbsCurve r; ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0).GetNurbForm(r); NurbsCurve k; k.raw() = r; return k; }();
   const NurbsCurve ring_b = [&] { ON_NurbsCurve r; ON_Circle(ON_Plane(ON_3dPoint(0, 0, 1), ON_3dVector(0, 0, 1)), 7.0).GetNurbForm(r); NurbsCurve k; k.raw() = r; return k; }();
-  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s0, s10}, ring_a, ring_b, 32); }), "sweep2 sections: two closed rails throw (documented limit)");
+  // (two closed rails used to be refused outright here; they are a cyclic sweep now - see sweep2_sections_cyclic_tests. These
+  // two lines sections s0/s10 are not a ring of sections, so the closed-rail input is still refused: they sit on one side of
+  // the rings, and their anchors do not go round both of them in step.)
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s0, s10}, ring_a, ring_b, 32); }), "sweep2 sections: two closed rails with sections that do not go round them in step still throw");
   (void)s5;
 }
 
@@ -91924,6 +91927,267 @@ void TestCurveNetworkMeetingDetectionScalesWithCurveSizeAndBlamesTheStrayCurve()
 
 }  // namespace curve_network_tests
 
+// ---------------------------------------------------------------------------
+// Brep::Sweep2Sections on CLOSED rails (a cyclic sweep: wrapped anchors, a
+// segment crossing the seam, a periodic blend, a periodic skin) and on rails
+// that TOUCH at an end (a degenerate end row). Every bound below was first
+// measured by a standalone driver against the built kernel and leaves a
+// stated margin over that measurement.
+// ---------------------------------------------------------------------------
+namespace sweep2_sections_cyclic_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Point3d;
+
+bool ThrowsInvalid(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument&) {
+    return true;
+  }
+  return false;
+}
+
+const ON_NurbsSurface& Wall(const Brep& b) { return *ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf()); }
+
+NurbsCurve CircleCurve(const ON_Plane& plane, double radius) {
+  ON_NurbsCurve raw;
+  ON_Circle(plane, radius).GetNurbForm(raw);
+  NurbsCurve k;
+  k.raw() = raw;
+  return k;
+}
+
+// Circle of radius `r` in the plane z = 0 whose seam sits at `seam_deg`.
+NurbsCurve FlatRing(double r, double seam_deg) {
+  const double a = seam_deg * ON_PI / 180.0;
+  return CircleCurve(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(std::cos(a), std::sin(a), 0), ON_3dVector(-std::sin(a), std::cos(a), 0)), r);
+}
+
+Point3d OnRing(double r, double deg, double z = 0.0) {
+  const double a = deg * ON_PI / 180.0;
+  return Point3d(r * std::cos(a), r * std::sin(a), z);
+}
+
+// Section from the ring of radius r1 to the ring of radius r2 at angle `deg`, bulging up by h in the middle.
+NurbsCurve RadialArc(double r1, double r2, double deg, double h) {
+  const Point3d a = OnRing(r1, deg), b = OnRing(r2, deg), m = OnRing(0.5 * (r1 + r2), deg, h);
+  return NurbsCurve::FromControlPoints({a, m, b}, 2);
+}
+
+NurbsCurve RadialLine(double r1, double r2, double deg) { return NurbsCurve::FromControlPoints({OnRing(r1, deg), OnRing(r2, deg)}, 1); }
+
+// Worst |dist(p, ring) - expected| over a 25 x 25 grid is computed by the caller; this returns the wall's
+// point at normalized (fu, fv).
+ON_3dPoint WallAt(const ON_NurbsSurface& w, double fu, double fv) { return w.PointAt(w.Domain(0).ParameterAt(fu), w.Domain(1).ParameterAt(fv)); }
+
+void TestSweep2SectionsClosedRailsFlatAnnulusIsExact() {
+  // Concentric rings r = 5 and r = 8 in z = 0; rail2's seam is at 77 degrees, rail1's at 0. Three identical radial
+  // line sections at 30, 150 and 270 degrees: the closing segment (270 -> 390) crosses rail1's seam. In rail-local
+  // coordinates the sections are all the same, so the wall must be the flat annulus with radius 5 + 3u at normalized u.
+  const NurbsCurve rail1 = FlatRing(5.0, 0.0), rail2 = FlatRing(8.0, 77.0);
+  const std::vector<NurbsCurve> sections = {RadialLine(5, 8, 30), RadialLine(5, 8, 150), RadialLine(5, 8, 270)};
+  Brep::Sweep2SectionsReport report;
+  const Brep body = Brep::Sweep2Sections(sections, rail1, rail2, 48, &report);
+  const ON_NurbsSurface& w = Wall(body);
+  Check(body.FaceCount() == 1 && body.raw().IsValid() && w.IsClosed(1) && !w.IsClosed(0),
+        "sweep2 sections (closed rails): one valid face, closed round the ring (v), open across it (u)");
+  double radial = 0.0, flat = 0.0;
+  for (int i = 0; i <= 24; ++i) {
+    for (int j = 0; j <= 48; ++j) {
+      const ON_3dPoint p = WallAt(w, i / 24.0, j / 48.0);
+      radial = std::max(radial, std::fabs(std::hypot(p.x, p.y) - (5.0 + 3.0 * i / 24.0)));
+      flat = std::max(flat, std::fabs(p.z));
+    }
+  }
+  std::printf("  [cyclic annulus] stations %d, section dev %.3g, rail1 dev %.3g, rail2 dev %.3g, radial err %.3g, z err %.3g\n", report.stations,
+              report.max_section_deviation, report.max_rail1_deviation, report.max_rail2_deviation, radial, flat);
+  Check(radial < 1e-6 && flat < 1e-12, "sweep2 sections (closed rails): every sampled wall point is on the flat annulus, radius 5 + 3u (49 x 25 grid, < 1e-6)");
+  Check(report.sections == 3 && report.max_section_deviation < 1e-12 && report.rails_on_boundary,
+        "sweep2 sections (closed rails): all three sections reproduced to < 1e-12 and they touch both rails");
+  Check(std::max(report.max_rail1_deviation, report.max_rail2_deviation) < 2e-5,
+        "sweep2 sections (closed rails): the wall edges follow both rings to < 2e-5 at 48 stations (report; measured 3.9e-6 / 6.3e-6)");
+  // Periodic closure: the seam is C1 (the skin is periodic), not just a position match.
+  double seam_pos = 0.0, seam_tan = 0.0;
+  for (int i = 0; i <= 8; ++i) {
+    const double u = w.Domain(0).ParameterAt(i / 8.0);
+    ON_3dPoint p0, p1;
+    ON_3dVector su0, sv0, su1, sv1;
+    w.Ev1Der(u, w.Domain(1).Min(), p0, su0, sv0);
+    w.Ev1Der(u, w.Domain(1).Max(), p1, su1, sv1);
+    seam_pos = std::max(seam_pos, p0.DistanceTo(p1));
+    seam_tan = std::max(seam_tan, (sv0 - sv1).Length() / (1.0 + sv0.Length()));
+  }
+  Check(seam_pos < 1e-12 && seam_tan < 1e-9, "sweep2 sections (closed rails): the seam closes in position (< 1e-12) and in the v tangent (relative < 1e-9)");
+  // Same wall for a shuffled section order and a rail2 drawn the other way round.
+  NurbsCurve rail2_rev = rail2;
+  rail2_rev.raw().Reverse();
+  const Brep other = Brep::Sweep2Sections({sections[2], sections[0], sections[1]}, rail1, rail2_rev, 48);
+  double gap = 0.0;
+  for (int i = 0; i <= 10; ++i)
+    for (int j = 0; j <= 20; ++j) gap = std::max(gap, WallAt(w, i / 10.0, j / 20.0).DistanceTo(WallAt(Wall(other), i / 10.0, j / 20.0)));
+  Check(gap < 1e-6, "sweep2 sections (closed rails): shuffled sections + rail2 drawn against rail1 give the same wall (< 1e-6)");
+}
+
+void TestSweep2SectionsClosedRailsVaryingSectionsAndTwoSections() {
+  const NurbsCurve rail1 = FlatRing(5.0, 0.0), rail2 = FlatRing(8.0, 200.0);
+  Brep::Sweep2SectionsReport report;
+  const Brep body = Brep::Sweep2Sections({RadialArc(5, 8, 20, 0.5), RadialArc(5, 8, 100, 3.0), RadialArc(5, 8, 190, 1.0), RadialArc(5, 8, 300, 2.0)},
+                                         rail1, rail2, 64, &report);
+  std::printf("  [cyclic varying] stations %d, section dev %.3g, rail1 dev %.3g, rail2 dev %.3g\n", report.stations, report.max_section_deviation,
+              report.max_rail1_deviation, report.max_rail2_deviation);
+  Check(body.FaceCount() == 1 && Wall(body).IsClosed(1) && body.raw().IsValid(), "sweep2 sections (closed rails, varying): one valid face, closed round the ring");
+  Check(report.sections == 4 && report.max_section_deviation < 1e-12,
+        "sweep2 sections (closed rails, varying): the four different sections are reproduced to < 1e-12");
+  Check(report.max_rail1_deviation < 1e-4 && report.max_rail2_deviation < 1e-4,
+        "sweep2 sections (closed rails, varying): the wall edges stay within 1e-4 of the rings at 64 stations");
+  // The bulge really varies round the ring: the arch height at the middle of each section is its own.
+  const ON_NurbsSurface& w = Wall(body);
+  // Wall edges have z = 0; the bulge lives in the middle of the wall. Its tallest point round the ring is the 3.0 section's.
+  double zmax = 0.0;
+  for (int j = 0; j <= 200; ++j) zmax = std::max(zmax, WallAt(w, 0.5, j / 200.0).z);
+  std::printf("  [cyclic varying] tallest point of the wall mid-line %.6g\n", zmax);
+  Check(zmax > 1.5 - 0.02 && zmax < 1.5 + 0.3,
+        "sweep2 sections (closed rails, varying): the tallest mid-line height round the ring is the 3.0-control-height section's arch, 3.0 / 2 = 1.5 (blend overshoot < 0.3)");
+  // Two sections only (a periodic blend with zero slopes).
+  Brep::Sweep2SectionsReport two;
+  const Brep b2 = Brep::Sweep2Sections({RadialArc(5, 8, 0, 1.0), RadialArc(5, 8, 180, 2.0)}, rail1, rail2, 48, &two);
+  Check(b2.FaceCount() == 1 && Wall(b2).IsClosed(1) && two.max_section_deviation < 1e-12 && two.sections == 2,
+        "sweep2 sections (closed rails): two sections 180 degrees apart also close round the ring, both reproduced to < 1e-12");
+  // Refusals.
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({RadialLine(5, 8, 30), RadialLine(5, 8, 30)}, rail1, rail2, 32); }),
+        "sweep2 sections (closed rails): two sections at the same angle throw");
+  // Crossing anchors: sections whose rail2 end is at the angle of the section after the next one.
+  // (with only two sections every pairing is cyclically consistent, so three are needed: rail1 order 10, 130, 250 degrees
+  // against rail2 order 10, 250, 130)
+  const NurbsCurve s_a = NurbsCurve::FromControlPoints({OnRing(5, 10), OnRing(8, 10)}, 1);
+  const NurbsCurve s_b = NurbsCurve::FromControlPoints({OnRing(5, 130), OnRing(8, 250)}, 1);
+  const NurbsCurve s_c = NurbsCurve::FromControlPoints({OnRing(5, 250), OnRing(8, 130)}, 1);
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({s_a, s_b, s_c}, rail1, rail2, 32); }),
+        "sweep2 sections (closed rails): three sections whose rail-2 ends swap places round the ring (anchors cross) throw");
+}
+
+void TestSweep2SectionsClosedRailsTorusFromClosedSections() {
+  // Rails: rings of radius 12 and 8 (z = 0). Closed circle sections of radius 2 about the core circle R = 10, in the
+  // radial planes at 15, 135 and 255 degrees: in rail-local coordinates all identical, so the wall IS the torus
+  // R = 10, r = 2 (distance of every wall point from the core circle = 2).
+  const NurbsCurve rail1 = FlatRing(12.0, 0.0), rail2 = FlatRing(8.0, 33.0);
+  const auto section = [&](double deg) {
+    const double a = deg * ON_PI / 180.0;
+    const ON_Plane pl(ON_3dPoint(10 * std::cos(a), 10 * std::sin(a), 0), ON_3dVector(std::cos(a), std::sin(a), 0), ON_3dVector(0, 0, 1));
+    return CircleCurve(pl, 2.0);
+  };
+  Brep::Sweep2SectionsReport report;
+  const Brep body = Brep::Sweep2Sections({section(15), section(135), section(255)}, rail1, rail2, 48, &report);
+  const ON_NurbsSurface& w = Wall(body);
+  Check(body.FaceCount() == 1 && body.raw().IsValid() && w.IsClosed(0) && w.IsClosed(1),
+        "sweep2 sections (torus): one valid face, closed both round the section and round the ring");
+  double worst = 0.0;
+  for (int i = 0; i <= 32; ++i) {
+    for (int j = 0; j <= 48; ++j) {
+      const ON_3dPoint p = WallAt(w, i / 32.0, j / 48.0);
+      worst = std::max(worst, std::fabs(std::hypot(std::hypot(p.x, p.y) - 10.0, p.z) - 2.0));
+    }
+  }
+  std::printf("  [cyclic torus] stations %d, section dev %.3g, torus radius err %.3g\n", report.stations, report.max_section_deviation, worst);
+  Check(report.max_section_deviation < 1e-12 && !report.rails_on_boundary, "sweep2 sections (torus): the three circles are reproduced to < 1e-12 (closed sections make no rail-edge claim)");
+  Check(worst < 1e-5, "sweep2 sections (torus): every sampled wall point is 2 from the core circle R = 10 (33 x 49 grid, < 1e-5)");
+}
+
+void TestSweep2SectionsTouchingRailsMakeAnExactSphere() {
+  // Rails: the upper and lower half of the circle of radius 5 in z = 0 centred (5,0,0): they meet at (0,0,0) and
+  // (10,0,0). Closed circle sections of radius sqrt(25 - (c-5)^2) in the planes x = c (c = 2, 5, 8): in rail-local
+  // coordinates all identical, so the wall IS the sphere (every wall point 5 from (5,0,0)), pinched to a point at
+  // each end.
+  const auto half = [&](double sign) {
+    ON_NurbsCurve raw;
+    ON_Arc(ON_Circle(ON_Plane(ON_3dPoint(5, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), 5.0), ON_Interval(0.0, ON_PI)).GetNurbForm(raw);
+    NurbsCurve k;
+    k.raw() = raw;  // from (10,0,0) over (5,5,0) to (0,0,0)
+    if (sign < 0) {
+      NurbsCurve lower;
+      ON_NurbsCurve r2;
+      ON_Arc(ON_Circle(ON_Plane(ON_3dPoint(5, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), 5.0), ON_Interval(ON_PI, 2.0 * ON_PI)).GetNurbForm(r2);
+      lower.raw() = r2;  // from (0,0,0) over (5,-5,0) to (10,0,0)
+      return lower;
+    }
+    k.raw().Reverse();  // from (0,0,0) to (10,0,0)
+    return k;
+  };
+  const NurbsCurve rail1 = half(+1), rail2 = half(-1);
+  const auto section = [&](double c) {
+    return CircleCurve(ON_Plane(ON_3dPoint(c, 0, 0), ON_3dVector(1, 0, 0)), std::sqrt(25.0 - (c - 5) * (c - 5)));
+  };
+  Brep::Sweep2SectionsReport report;
+  const Brep body = Brep::Sweep2Sections({section(2), section(5), section(8)}, rail1, rail2, 48, &report);
+  const ON_NurbsSurface& w = Wall(body);
+  Check(body.FaceCount() == 1 && body.raw().IsValid() && w.IsClosed(0), "sweep2 sections (touching rails): one valid face, closed round the circle");
+  Check(w.IsSingular(0) && w.IsSingular(2) && !w.IsSingular(1) && !w.IsSingular(3),
+        "sweep2 sections (touching rails): both ends where the rails meet are genuine singular sides (poles), the circle seam is not");
+  double worst = 0.0;
+  for (int i = 0; i <= 32; ++i) {
+    for (int j = 0; j <= 64; ++j) {
+      const ON_3dPoint p = WallAt(w, i / 32.0, j / 64.0);
+      worst = std::max(worst, std::fabs(p.DistanceTo(ON_3dPoint(5, 0, 0)) - 5.0));
+    }
+  }
+  const ON_3dPoint pole0 = WallAt(w, 0.3, 0.0), pole1 = WallAt(w, 0.7, 1.0);
+  std::printf("  [touching sphere] stations %d, section dev %.3g, sphere radius err %.3g, pole gaps %.3g %.3g\n", report.stations,
+              report.max_section_deviation, worst, pole0.DistanceTo(ON_3dPoint(0, 0, 0)), pole1.DistanceTo(ON_3dPoint(10, 0, 0)));
+  Check(report.max_section_deviation < 1e-12, "sweep2 sections (touching rails): the three circles are reproduced to < 1e-12");
+  Check(worst < 1e-4, "sweep2 sections (touching rails): every sampled wall point is 5 from the centre (33 x 65 grid, < 1e-4)");
+  Check(pole0.DistanceTo(ON_3dPoint(0, 0, 0)) < 1e-12 && pole1.DistanceTo(ON_3dPoint(10, 0, 0)) < 1e-12,
+        "sweep2 sections (touching rails): the end rows collapse exactly onto the points where the rails meet (< 1e-12)");
+  // Refusals: a section where the rails touch; rails that touch in the middle.
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({section(5), NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 0.5)}, 1)}, rail1, rail2, 32); }),
+        "sweep2 sections (touching rails): a section sitting where the rails touch throws");
+  // Rails that share the stretch x = 4..6 (zero separation at interior stations, not at an end).
+  const NurbsCurve x1 = NurbsCurve::FromControlPoints({Point3d(0, -2, 0), Point3d(4, 0, 0), Point3d(6, 0, 0), Point3d(10, -2, 0)}, 1);
+  const NurbsCurve x2 = NurbsCurve::FromControlPoints({Point3d(0, 2, 0), Point3d(4, 0, 0), Point3d(6, 0, 0), Point3d(10, 2, 0)}, 1);
+  const auto cut = [&](double c, double h) { return NurbsCurve::FromControlPoints({Point3d(c, -h, 0), Point3d(c, h, 0)}, 1); };
+  Check(ThrowsInvalid([&] { Brep::Sweep2Sections({cut(1, 1.5), cut(9, 1.5)}, x1, x2, 32); }),
+        "sweep2 sections (touching rails): rails that touch along an interior stretch (zero separation at interior stations) still throw");
+}
+
+
+void TestSweep2SectionsStationLadderOnTightBendAndCorner() {
+  // The station budget is shared out by rail length, so a long straight run into a tight bend leaves the bend few
+  // stations. The deviation of the wall edges from the rails (the report) falls with the station count; this pins the
+  // MEASURED ladder 32 -> 512 (0.29, 0.0206, 0.0165, 2.44e-4, 6.0e-6 on rail 1 and rail 2 alike) so the app's retry
+  // ladder 32, 64, 128, 256, 512 against a 1e-3 document tolerance is known to succeed at 256.
+  const NurbsCurve bend1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(100, 0, 0), Point3d(104, 0, 0), Point3d(104, 0, 4)}, 3);
+  const NurbsCurve bend2 = NurbsCurve::FromControlPoints({Point3d(0, 4, 0), Point3d(100, 4, 0), Point3d(104, 4, 0), Point3d(104, 4, 4)}, 3);
+  const NurbsCurve first = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 0)}, 1);
+  const NurbsCurve last = NurbsCurve::FromControlPoints({Point3d(104, 0, 4), Point3d(104, 4, 4)}, 1);
+  double dev[5] = {0, 0, 0, 0, 0};
+  const int ladder[5] = {32, 64, 128, 256, 512};
+  for (int i = 0; i < 5; ++i) {
+    Brep::Sweep2SectionsReport r;
+    Brep::Sweep2Sections({first, last}, bend1, bend2, ladder[i], &r);
+    dev[i] = std::max(r.max_rail1_deviation, r.max_rail2_deviation);
+    std::printf("  [ladder] tight bend: %d stations (%d built): rail dev %.3g, section dev %.3g\n", ladder[i], r.stations, dev[i], r.max_section_deviation);
+    Check(r.stations == ladder[i] && r.max_section_deviation < 1e-12, "sweep2 sections (tight bend): the station count asked for is built and both sections are reproduced to < 1e-12");
+  }
+  Check(dev[2] > 1e-2, "sweep2 sections (tight bend): 128 stations still miss a 1e-3 tolerance by an order of magnitude (measured 0.0165)");
+  Check(dev[3] < 1e-3 && dev[3] > 1e-4, "sweep2 sections (tight bend): 256 stations meet 1e-3 (measured 2.44e-4)");
+  Check(dev[4] < 2e-5, "sweep2 sections (tight bend): 512 stations are within 2e-5 of the rails (measured 6.0e-6)");
+  Check(dev[0] > dev[1] && dev[1] > dev[2] && dev[2] > dev[3] && dev[3] > dev[4], "sweep2 sections (tight bend): the deviation falls at every doubling");
+  // A polyline corner mid-way is NOT closed by more stations: the skin cannot follow a tangent jump between stations
+  // (measured 0.252/0.366, 0.0886/0.223, 0.0823/0.0762, 0.0156/0.0228, 0.0108/0.00442 at 32..512 on rails 1/2).
+  const NurbsCurve c1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(40, 0, 0), Point3d(40, 0, 30)}, 1);
+  const NurbsCurve c2 = NurbsCurve::FromControlPoints({Point3d(0, 4, 0), Point3d(44, 4, 0), Point3d(44, 4, 30)}, 1);
+  const NurbsCurve cs0 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 0)}, 1);
+  const NurbsCurve cs1 = NurbsCurve::FromControlPoints({Point3d(40, 0, 30), Point3d(44, 4, 30)}, 1);
+  Brep::Sweep2SectionsReport rc;
+  Brep::Sweep2Sections({cs0, cs1}, c1, c2, 512, &rc);
+  std::printf("  [ladder] polyline corner: 512 stations: rail dev %.3g / %.3g\n", rc.max_rail1_deviation, rc.max_rail2_deviation);
+  Check(std::max(rc.max_rail1_deviation, rc.max_rail2_deviation) > 2e-3,
+        "sweep2 sections (polyline corner): known limit - even 512 stations leave the wall edges > 2e-3 from rails with a tangent jump (measured 0.0108)");
+}
+
+}  // namespace sweep2_sections_cyclic_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -93362,6 +93626,16 @@ int main() {
   RunTest("curve_network_tests::TestCurveNetworkMeetingDetectionScalesWithCurveSizeAndBlamesTheStrayCurve",
           curve_network_tests::TestCurveNetworkMeetingDetectionScalesWithCurveSizeAndBlamesTheStrayCurve);
 
+  RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsClosedRailsFlatAnnulusIsExact",
+          sweep2_sections_cyclic_tests::TestSweep2SectionsClosedRailsFlatAnnulusIsExact);
+  RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsClosedRailsVaryingSectionsAndTwoSections",
+          sweep2_sections_cyclic_tests::TestSweep2SectionsClosedRailsVaryingSectionsAndTwoSections);
+  RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsClosedRailsTorusFromClosedSections",
+          sweep2_sections_cyclic_tests::TestSweep2SectionsClosedRailsTorusFromClosedSections);
+  RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsTouchingRailsMakeAnExactSphere",
+          sweep2_sections_cyclic_tests::TestSweep2SectionsTouchingRailsMakeAnExactSphere);
+  RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsStationLadderOnTightBendAndCorner",
+          sweep2_sections_cyclic_tests::TestSweep2SectionsStationLadderOnTightBendAndCorner);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {
