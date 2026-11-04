@@ -3699,4 +3699,149 @@ SubD SubD::TransformOriented(const ON_Xform& xform) const {
   return out;
 }
 
+
+namespace {
+
+// Mesh of `s`'s current control-net faces with every vertex moved to its
+// exact Catmull-Clark limit point (crease/corner aware) - a polyhedral
+// stand-in for the limit surface itself, used as the distance oracle of
+// SubD::ToNurbsPatchesToTolerance().
+Mesh LimitPointMeshOf(const ON_SubD& s) {
+  Mesh out;
+  ON_Mesh& m = out.raw();
+  std::unordered_map<const ON_SubDVertex*, int> index;
+  ON_SubDVertexIterator vit = s.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    const ON_3dPoint p = v->SurfacePoint();
+    if (!p.IsValid()) {
+      throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesToTolerance: a vertex has no evaluable limit point");
+    }
+    index[v] = m.m_V.Count();
+    m.m_V.Append(ON_3fPoint(p));
+  }
+  ON_SubDFaceIterator fit = s.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    const unsigned int n = f->EdgeCount();
+    std::vector<int> vi;
+    for (unsigned int i = 0; i < n; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (v == nullptr || index.find(v) == index.end()) { vi.clear(); break; }
+      vi.push_back(index[v]);
+    }
+    if (n == 4 && vi.size() == 4) {
+      ON_MeshFace q;
+      q.vi[0] = vi[0]; q.vi[1] = vi[1]; q.vi[2] = vi[2]; q.vi[3] = vi[3];
+      m.m_F.Append(q);
+    } else if (n >= 3 && vi.size() == n) {
+      for (unsigned int i = 1; i + 1 < n; ++i) {
+        ON_MeshFace t;
+        t.vi[0] = vi[0]; t.vi[1] = vi[i]; t.vi[2] = t.vi[3] = vi[i + 1];
+        m.m_F.Append(t);
+      }
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, SubDFitReport* report, int max_levels,
+                                                            int face_budget) const {
+  if (!std::isfinite(tolerance) || tolerance <= 0.0) {
+    throw std::invalid_argument("dino8::kernel::SubD::ToNurbsPatchesToTolerance: tolerance must be finite and positive");
+  }
+  if (max_levels < 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::ToNurbsPatchesToTolerance: max_levels must be non-negative");
+  }
+  if (face_budget <= 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::ToNurbsPatchesToTolerance: face_budget must be positive");
+  }
+  if (FaceCount() <= 0) {
+    throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesToTolerance: the SubD has no faces");
+  }
+  constexpr int kSamples = 8;  // (kSamples+1)^2 grid samples per measured patch
+  constexpr int kReferenceLevels = 3;
+  constexpr long long kReferenceFaceCap = 400000;
+  SubDFitReport rep;
+  rep.tolerance = tolerance;
+  rep.samples_per_patch = (kSamples + 1) * (kSamples + 1);
+  SubD work = *this;
+  bool all_quads = true;
+  {
+    ON_SubDFaceIterator fit = work.subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      if (f->EdgeCount() != 4) { all_quads = false; break; }
+    }
+  }
+  int base_levels = 0;
+  if (!all_quads) {
+    work.Subdivide(1);
+    base_levels = 1;
+  }
+  double best = std::numeric_limits<double>::infinity();
+  for (int extra = 0; extra <= max_levels; ++extra) {
+    if (extra > 0) {
+      if (static_cast<long long>(work.FaceCount()) * 4 > face_budget) {
+        rep.reason = "face budget " + std::to_string(face_budget) + " would be exceeded by the next subdivision level (" +
+                     std::to_string(work.FaceCount()) + " faces now); best sampled deviation " + std::to_string(best) +
+                     " > tolerance " + std::to_string(tolerance);
+        break;
+      }
+      work.Subdivide(1);
+    }
+    rep.levels_used = base_levels + extra;
+    if (work.FaceCount() > face_budget) {
+      rep.reason = "the cage already has " + std::to_string(work.FaceCount()) + " faces, above face_budget " +
+                   std::to_string(face_budget);
+      rep.deviation_per_level.push_back(-1.0);
+      break;
+    }
+    SubDWatertightReport wrep;
+    std::vector<SubDNurbsPatch> patches = work.ToNurbsPatchesWatertight(&wrep);
+    int ref_levels = kReferenceLevels;
+    long long ref_faces = work.FaceCount();
+    for (int i = 0; i < ref_levels; ++i) ref_faces *= 4;
+    while (ref_levels > 1 && ref_faces > kReferenceFaceCap) { --ref_levels; ref_faces /= 4; }
+    double dev = 0.0;
+    int measured = 0, exact = 0;
+    if (wrep.coons_patches > 0) {
+      SubD ref = work;
+      ref.Subdivide(ref_levels);
+      const Mesh ref_mesh = LimitPointMeshOf(ref.subd_);
+      const MeshClosestPointIndex idx(ref_mesh);
+      for (const SubDNurbsPatch& p : patches) {
+        if (p.exact) { ++exact; continue; }
+        ++measured;
+        for (int i = 0; i <= kSamples; ++i) {
+          for (int j = 0; j <= kSamples; ++j) {
+            const Point3d q = p.surface.PointAt(static_cast<double>(i) / kSamples, static_cast<double>(j) / kSamples);
+            dev = std::max(dev, (idx.ClosestPoint(q) - q).Length());
+          }
+        }
+      }
+    } else {
+      exact = static_cast<int>(patches.size());
+    }
+    rep.deviation_per_level.push_back(dev);
+    best = std::min(best, dev);
+    rep.max_deviation = dev;
+    rep.patches = static_cast<int>(patches.size());
+    rep.exact_patches = exact;
+    rep.measured_patches = measured;
+    rep.reference_levels = wrep.coons_patches > 0 ? ref_levels : 0;
+    if (dev <= tolerance) {
+      rep.converged = true;
+      rep.reason.clear();
+      if (report) *report = rep;
+      return patches;
+    }
+  }
+  if (rep.reason.empty()) {
+    rep.reason = "tolerance " + std::to_string(tolerance) + " not met within max_levels " + std::to_string(max_levels) +
+                 " extra subdivisions: best sampled deviation " + std::to_string(best);
+  }
+  if (report) *report = rep;
+  return {};
+}
+
 }  // namespace dino8::kernel

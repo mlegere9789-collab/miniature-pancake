@@ -4740,6 +4740,74 @@ class Brep {
   // number of faces removed.
   int RemoveSliverFaces(double max_width = tolerance::kEdgeJoin);
 
+  // ---------------------------------------------------------------------
+  // Gated, reported healing: HealChecked().
+  // ---------------------------------------------------------------------
+  struct HealOptions {
+    // Gap / overlap distance: naked edges whose end points lie within this
+    // distance (either side of the other edge - a gap or an overlap) are
+    // joined, and T-junctions within it are split and sewn.
+    double gap_tolerance = tolerance::kEdgeJoin;
+    // Faces whose boundary is within this distance of one line are
+    // removed (degenerate and sliver faces) and their exposed neighbour
+    // edges tolerantly re-joined.
+    double sliver_width = tolerance::kEdgeJoin;
+    // A heal is refused if the closed-shell volume (measured on the
+    // tolerant tessellation before and after) changes by more than this
+    // fraction of the original volume.
+    double max_relative_volume_change = 1e-3;
+    // Also run UnifyNormals() (consistent, outward orientation).
+    bool unify_normals = true;
+  };
+  struct HealReport {
+    // True iff the healed result was kept. When false this Brep is
+    // bit-for-bit what it was before the call and `reason` says why.
+    bool accepted = false;
+    // True iff accepted AND the Brep actually changed.
+    bool changed = false;
+    std::string reason;
+    // What the (kept or discarded) trial did.
+    int joined_edges = 0;
+    int split_t_junctions = 0;
+    int degenerate_faces_removed = 0;
+    int sliver_faces_removed = 0;
+    int faces_flipped = 0;
+    // Check() before and after the trial (the "after" report is of the
+    // trial even when it was discarded, so the cause is visible).
+    CheckReport before;
+    CheckReport after;
+    bool valid_before = false;  // raw().IsValid()
+    bool valid_after = false;
+    bool volume_measured_before = false;  // tolerant tessellation closed -> Volume() measured
+    bool volume_measured_after = false;
+    double volume_before = 0.0;
+    double volume_after = 0.0;
+  };
+
+  // Heals gaps, overlaps, T-junctions, degenerate/sliver faces and
+  // inconsistent orientation in ONE trial on a private copy, then keeps
+  // the copy only if it passes a validity gate; otherwise this Brep is
+  // left exactly as it was and the report says which gate refused it.
+  // Steps (in order): JoinNakedEdges(gap_tolerance), SewTJunctions,
+  // RemoveDegenerateFaces, RemoveSliverFaces(sliver_width), JoinNakedEdges
+  // again (the removals expose new naked edges), UnifyNormals().
+  // Gate (ALL must hold): (1) no CheckIssue kind has MORE instances after
+  // than before; (2) strictly fewer issues in total after than before
+  // (otherwise "no improvement"); (3) raw().IsValid() did not go from true
+  // to false and topology_valid did not regress; (4) if the closed-shell
+  // volume could be measured both before and after
+  // (TessellateToClosedMeshTolerant closed manifold), it moved by at most
+  // max_relative_volume_change of the original; (5) a face count that did
+  // not drop below half (a heal that would delete most of the body is
+  // refused). A Brep that is already clean is reported accepted=true,
+  // changed=false, and not touched. HONEST LIMITS: sliver/degenerate
+  // removal is still delete-and-tolerant-join (the neighbour surfaces are
+  // not moved to meet geometrically - the joined edges carry the removed
+  // width as their recorded tolerance); the gate measures Check() kinds,
+  // validity and volume, not an exact geometric deviation. Never throws on
+  // a Brep it cannot heal (it reports instead).
+  HealReport HealChecked(const HealOptions& options = HealOptions()) ;
+
   // Deletes face `face_index` outright (ON_Brep::DeleteFace, freeing its
   // own edges) - the general-purpose counterpart RemoveDegenerateFaces()/
   // RemoveSliverFaces() never gave a caller for a face THEY didn't already
