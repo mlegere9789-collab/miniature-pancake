@@ -1,4 +1,4 @@
-# Loft Spacing option (tests/sections/61_lsp.sh, section LSP_): the kernel's Brep::LoftSpacing from the app.
+# Loft Spacing option (tests/sections/61_lsp.sh, section LSPC_): the kernel's Brep::LoftSpacing from the app.
 # Three coaxial circles: (r=1, z=0), (r=1, z=1), (r=3, z=4). Every spacing interpolates the three sections; only the
 # loft-direction station parameters v_k differ, so the lateral AREA differs and has a closed form for Uniform
 # (v = 0, 1/2, 1: z(v) = 4 v^2, r(v) = 1 - 2 v + 4 v^2, area = integral 2 pi r sqrt(r'^2 + z'^2) dv = 50.860).
