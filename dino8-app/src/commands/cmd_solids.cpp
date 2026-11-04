@@ -1622,6 +1622,7 @@ struct AnalyticCageResult {
   int samples = 0;
   bool verified = false;
   int profile_cvs = 0, profile_degree = 0, rings = 0, poles = 0, caps = 0;  // curved-profile revolve cage only
+  Point3d worst_point{0, 0, 0};  // the limit-surface sample that realised `deviation` (for a refusal message)
 };
 
 // ToSubD for a revolved solid (see BuildRevolvedCage): builds the analytic
@@ -1679,7 +1680,8 @@ std::optional<AnalyticCageResult> AnalyticCageForBrep(const SceneObject& o, doub
       double dev = 0.0;
       for (size_t i = 0; i < lps.size(); i += step) {
         const Point3d& q = lps[i].limit_point;
-        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        const double dq = (ref_index.ClosestPoint(q) - q).Length();
+        if (dq > dev) { dev = dq; cur.worst_point = q; }
         ++cur.samples;
       }
       cur.reference_sag = ref->chord_sag;
@@ -1871,7 +1873,8 @@ std::optional<AnalyticCageResult> TorusCageForBrep(const SceneObject& o, double 
       double dev = 0.0;
       for (size_t i = 0; i < lps.size(); i += step) {
         const Point3d& q = lps[i].limit_point;
-        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        const double dq = (ref_index.ClosestPoint(q) - q).Length();
+        if (dq > dev) { dev = dq; cur.worst_point = q; }
         ++cur.samples;
       }
       cur.reference_sag = ref->chord_sag;
@@ -1953,6 +1956,9 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
     const ON_NurbsSurface* wall_nurbs = ON_NurbsSurface::Cast(ns);
     const ON_RevSurface* wall_rev = ON_RevSurface::Cast(ns);
     const ON_NurbsCurve* prof = wall_rev != nullptr ? ON_NurbsCurve::Cast(wall_rev->m_curve) : nullptr;
+    // A primitive's own generating curve (the Sphere's ON_ArcCurve) is not a NURBS curve: use its exact NURBS form.
+    ON_NurbsCurve profile_nurbs_form;
+    if (prof == nullptr && wall_rev != nullptr && wall_rev->m_curve != nullptr && wall_rev->m_curve->GetNurbForm(profile_nurbs_form) > 0) prof = &profile_nurbs_form;
     if (wall_nurbs == nullptr && prof == nullptr) return std::nullopt;
     if (prof != nullptr && (std::fabs(prof->Domain()[0] - dov[0]) > 1e-9 * (1.0 + std::fabs(dov[0])) || std::fabs(prof->Domain()[1] - dov[1]) > 1e-9 * (1.0 + std::fabs(dov[1])))) return std::nullopt;
     const int ncv = prof != nullptr ? prof->CVCount() : wall_nurbs->CVCount(odir);
@@ -2038,7 +2044,8 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
       double dev = 0.0;
       for (size_t i = 0; i < lps.size(); i += step) {
         const Point3d& q = lps[i].limit_point;
-        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        const double dq = (ref_index.ClosestPoint(q) - q).Length();
+        if (dq > dev) { dev = dq; cur.worst_point = q; }
         ++cur.samples;
       }
       cur.reference_sag = ref->chord_sag;
@@ -2061,6 +2068,7 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
     std::optional<AnalyticCageResult> fine;
     std::vector<double> fr;
     double last_dev = -1.0;
+    Point3d last_worst(0, 0, 0);
     int last_rings = 0;
     for (int k : {2, 3, 4, 5, 6, 8}) {
       fr = rings_for((ncv - 1) * k + 1);
@@ -2069,12 +2077,13 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
       const std::optional<AnalyticCageResult> cur = measure(128, fr);
       if (!cur) return refuse("the wall could not be caged: not a plain revolved wall with flat caps or poles");
       last_dev = cur->deviation;
+      last_worst = cur->worst_point;
       last_rings = static_cast<int>(fr.size());
       if (cur->verified) { fine = cur; break; }
     }
     if (!fine) {
-      char buf[160];
-      std::snprintf(buf, sizeof(buf), "deviation %.6f at %d rings x 128 segments exceeds the tolerance %.6f", last_dev, last_rings, tol);
+      char buf[260];
+      std::snprintf(buf, sizeof(buf), "deviation %.6f at %d rings x 128 segments exceeds the tolerance %.6f, worst limit point (%.3f, %.3f, %.3f)", last_dev, last_rings, tol, last_worst.x, last_worst.y, last_worst.z);
       return refuse(buf);
     }
     std::optional<AnalyticCageResult> best = fine;
