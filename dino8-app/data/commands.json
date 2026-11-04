@@ -4315,9 +4315,25 @@
   "help": ""
  },
  {
+  "name": "Lisp",
+  "description": "Evaluate an AutoLISP-style expression: (+ 1 2) typed directly or Lisp (expr).",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
   "name": "List",
   "description": "Report information about object's data structure.",
   "toolbars": "Diagnostics",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
+  "name": "LoadLisp",
+  "description": "Evaluate an AutoLISP-style .lsp file.",
+  "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],
   "help": ""

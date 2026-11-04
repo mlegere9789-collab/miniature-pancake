@@ -127,7 +127,7 @@ near() {
   fi
 }
 check() { if echo "$OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$OUT" "$1"; fail=1; fi; }
-check "1057 commands loaded" "catalog has all 1057 commands (1055 plus this pass's new SubDRevolve/SubDMultiPipe entries)"
+check "1059 commands loaded" "catalog has all 1059 commands (1055 plus SubDRevolve/SubDMultiPipe plus the Lisp and LoadLisp entries)"
 check "BooleanDifference:" "boolean difference ran"
 check "Volume = " "volume measured"
 check "Extruded 1 object" "extrusion created a solid"
