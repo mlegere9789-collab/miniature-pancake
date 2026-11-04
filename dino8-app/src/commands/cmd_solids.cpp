@@ -1699,6 +1699,19 @@ std::optional<AnalyticCageResult> AnalyticCageForBrep(const SceneObject& o, doub
   }
 }
 
+// The straight-wall cage (a revolved or extruded solid) is only used when its MEASURED limit-surface deviation is
+// within `tol`; otherwise `refused` states the measurement and the object takes the dense generic path.
+bool RevCageVerifiedOrRefuse(const AnalyticCageResult& r, double tol, std::string* refused) {
+  if (r.verified) return true;
+  if (refused != nullptr) {
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "straight-wall revolved/extruded cage refused (measured deviation %.6f at %d segments around x %d rings exceeds the tolerance %.6f), using the existing path",
+                  r.deviation, r.cage_around, r.cage_along + 1, tol);
+    *refused = buf;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Analytic cage for a TORUS (one face, closed in both parameter directions).
 // The old path tessellated it into the kernel's uniform grid at n = 24, 48,
@@ -2489,6 +2502,11 @@ int JoinNakedEdgesHashed(ON_Brep& b, double tol) {
         }
   }
   if (joined) {
+    // CombineCoincidentVertices / CombineCoincidentEdges only MARK the merged-away components deleted (index -1) and leave
+    // them in the arrays; Check (ON_Brep::IsValid) then reports "Corrupt ON_BrepVertex.m_vertex_index back pointer" on
+    // the ToNURBS polysurface (measured on the cylinder's: 5632 faces, 0 naked edges, closed solid, yet INVALID). Compact()
+    // removes them and re-indexes.
+    b.Compact();
     OrientBrepFaces(b);
     b.SetTolerancesBoxesAndFlags();
   }
@@ -2579,6 +2597,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   int cur_ref_around = 0, cur_ref_along = 0;
   double cur_fit_residual = 0.0, cur_ref_sag = 0.0;
   std::string cur_refused;  // why the curved-profile revolve cage was refused (the object then took the existing path)
+  std::string rev_refused;  // why the straight-wall revolved / extruded cage was refused (measured deviation above the tolerance)
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -2676,7 +2695,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         cur_ref_around = crv->reference_around;
         cur_ref_along = crv->reference_along;
         cur_ref_sag = std::max(cur_ref_sag, crv->reference_sag);
-      } else if (const std::optional<AnalyticCageResult> rev = AnalyticCageForBrep(*o, tol)) {
+      } else if (const std::optional<AnalyticCageResult> rev = AnalyticCageForBrep(*o, tol); rev && RevCageVerifiedOrRefuse(*rev, tol, &rev_refused)) {
         // A revolved solid (Cylinder, Cone, TCone...): the cage is built from
         // the Brep's own wall parametrisation and shared rim ring, see
         // BuildRevolvedCage above.
@@ -2782,6 +2801,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              std::to_string(cur_ref_around) + " x " + std::to_string(cur_ref_along) + ", reference chord sag " + std::to_string(cur_ref_sag) + " included in the deviation";
     }
     if (!cur_refused.empty()) msg += "; " + cur_refused;
+    if (!rev_refused.empty()) msg += "; " + rev_refused;
     if (!pri_refused.empty()) msg += "; " + pri_refused;
     if (exact_runs > 0) {
       msg += "; exact Brep-face cage (no tessellation), " + std::to_string(exact_creases_total) +
