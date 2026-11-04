@@ -105314,8 +105314,9 @@ void TestSplitEdgeCurvedSharedArcAtClosedFormAngle() {
     // the edge's own parameter fraction at that angle: the fixture is a genuinely NON-proportional case (a rational arc)
     ON_NurbsCurve enc;
     raw.m_E[fx.shared_edge].GetNurbForm(enc);
-    double t_at = 0.0;
-    enc.GetClosestPoint(target, &t_at);
+    dino8::kernel::NurbsCurve enc_wrap;
+    enc_wrap.raw() = enc;
+    const double t_at = enc_wrap.ClosestPointParameter(Point3d(target.x, target.y, target.z), 4000);
     const double param_fraction = enc.Domain().NormalizedParameterAt(t_at);
     Check(std::fabs(param_fraction - frac) > 1e-3,
           "setup: the edge's normalized parameter at the target angle differs from the angle fraction by more than 1e-3, "
