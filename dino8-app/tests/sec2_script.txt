@@ -50,6 +50,17 @@ Enter
 ClippingPlane Name=CutP -20,-20,5 20,20,5
 ClippingDrawings
 ExtractClippingSlices
+
+New
+SEC2BEGIN_drill_sv
+Box 0,0,0 20,20,0 10
+Cylinder 10,10,-5 0.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ClippingPlane Name=CutP -20,-20,5 20,20,5
 SectionView plane=CutP
 UpdateSectionViews
 
@@ -119,4 +130,20 @@ Move
 0,0,2
 UpdateHistory
 SelCrv
+Length
+List
+SelNone
+SelID 2
+Length
+SelNone
+SelID 3
+Length
+SelNone
+SelID 4
+Length
+SelNone
+SelID 5
+Length
+SelNone
+SelID 6
 Length
