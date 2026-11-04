@@ -12737,11 +12737,21 @@ if grep -q "gl_error=0" <<<"$FSRO"; then echo "ok   FSR script ran without OpenG
 # build -> pre -> Undo -> Redo -> Save .3dm -> New -> Open -> post -> per exchange format Export + New + Import).
 # Readings are what the app printed (Volume/Area print 4 significant digits, so volumes are compared at 0.3 percent); a format
 # that cannot carry an object must refuse WITH a reason line and leave no object behind, never crash or silently change it.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  RTA_OUT="$(sed "s#@TMP@#$TMPW#g" "$HERE/rta_script.txt" > "$TMPW/rta_run.txt"; timeout 900 "$BIN" --smoke 60 --script "$TMPW/rta_run.txt" 2>&1)" || { echo "$RTA_OUT"; echo "FAIL: RTA_ script exited non-zero"; exit 1; }
-else
-  RTA_OUT="$(sed "s#@TMP@#$TMPW#g" "$HERE/rta_script.txt" > "$TMPW/rta_run.txt"; timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/rta_run.txt" 2>&1)" || { echo "$RTA_OUT"; echo "FAIL: RTA_ script exited non-zero"; exit 1; }
-fi
+# The script is cut at its "# RTAPART" lines and every part runs as its own app session (one session for all of it ran past
+# the 900 s limit on a loaded machine); the parts share the temp directory, the printed output is concatenated in order.
+mkdir -p "$TMPW/rtaparts"
+sed "s#@TMP@#$TMPW#g" "$HERE/rta_script.txt" | awk -v d="$TMPW/rtaparts" '/^# RTAPART$/ { n++; next } n > 0 { print > (d "/p" n ".txt") } END { print n > (d "/count") }'
+RTA_N="$(cat "$TMPW/rtaparts/count")"
+RTA_OUT=""
+for ((rta_i = 1; rta_i <= RTA_N; rta_i++)); do
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    RTA_PART="$(timeout 900 "$BIN" --smoke 60 --script "$TMPW/rtaparts/p$rta_i.txt" 2>&1)" || { echo "$RTA_PART"; echo "FAIL: RTA_ script part $rta_i exited non-zero"; exit 1; }
+  else
+    RTA_PART="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/rtaparts/p$rta_i.txt" 2>&1)" || { echo "$RTA_PART"; echo "FAIL: RTA_ script part $rta_i exited non-zero"; exit 1; }
+  fi
+  RTA_OUT+="$RTA_PART"$'
+'
+done
 rtablock() { awk -v name="$1" '$0 ~ ("Unknown command: RTAB_" name "$") { on = 1; next } on && /Unknown command: RTAB_/ { exit } on { print }' <<<"$RTA_OUT"; }
 # rtasig BLOCK: "n nvalid nbad nclosed vol area x0 y0 z0 x1 y1 z1" (missing numbers print as -)
 rtasig() {
@@ -12777,6 +12787,12 @@ rtaround() {
   r="$(rtacmp "$sa" "$sb" "${5:-0.003}" "${6:-0.003}" "${7:-0.01}" "${8:-1}")"
   if [ "$r" = ok ]; then rta_ok "RTA_$1: $4 [$sa]"; else rta_bad "RTA_$1: $4:$r  ($2 '$sa' vs $3 '$sb')"; fi
 }
+# rtaundo CASE: the Undo really changed the state (count, Volume or Area differ from the pre-state), so the Redo check can fail
+rtaundo() {
+  local sa sb
+  sa="$(rtasig "$(rtablock "$1_pre")")"; sb="$(rtasig "$(rtablock "$1_undo")")"
+  if [ "$(cut -d' ' -f1,5,6 <<<"$sa")" != "$(cut -d' ' -f1,5,6 <<<"$sb")" ]; then rta_ok "RTA_$1_sensitive: Undo changed the state ('$(cut -d' ' -f1,5,6 <<<"$sa")' -> '$(cut -d' ' -f1,5,6 <<<"$sb")')"; else rta_bad "RTA_$1_sensitive: Undo changed nothing the check reads"; fi
+}
 # rtafmt CASE FMT TOLV TOLA BBABS CLOSED: the import of the CASE exported as FMT equals the reopened .3dm, or the format refused with a reason
 rtafmt() {
   local xb sb si r reason
@@ -12790,6 +12806,7 @@ rtafmt() {
   fi
 }
 for c in sblcut sblunion sbltwo rvr ptf cntloft cntpatch cntnet spsscale vase; do
+  rtaundo $c
   rtaround $c pre redo "Undo then Redo returns the state exactly"
   rtaround $c pre post "Save .3dm, New, Open returns count / validity / closed status / Volume / Area / box"
 done

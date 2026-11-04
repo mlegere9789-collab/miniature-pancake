@@ -4,6 +4,8 @@
 # "read" = SelAll, Check, List, Volume, Area, BoundingBox, bracketed by unknown-command markers RTAB_<case>_<phase>.
 # @TMP@ is replaced by smoke.sh.
 SetActiveViewport Top
+# RTAPART
+SetActiveViewport Top
 New
 Box 0,0,0 10,10,0 10
 Cylinder 5,5,-5 2 20
@@ -20,13 +22,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_sblcut_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_sblcut_redo
 SelAll
@@ -35,6 +37,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/sblcut.3dm
 New
@@ -130,6 +133,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Box 0,0,0 10,10,0 10
 Cylinder 5,5,-5 2 20
@@ -143,13 +148,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_sblunion_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_sblunion_redo
 SelAll
@@ -158,6 +163,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/sblunion.3dm
 New
@@ -253,6 +259,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Box 0,0,0 10,10,0 10
 Cylinder 3,5,-5 1.5 20
@@ -271,13 +279,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_sbltwo_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_sbltwo_redo
 SelAll
@@ -286,6 +294,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/sbltwo.3dm
 New
@@ -381,6 +390,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Cylinder 0,0,0 5 4
 ChamferEdge
@@ -399,13 +410,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_rvr_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_rvr_redo
 SelAll
@@ -414,6 +425,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/rvr.3dm
 New
@@ -509,6 +521,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Cylinder 0,0,-3 2 6
 Cylinder 0,0,0 1 5
@@ -528,13 +542,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_ptf_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_ptf_redo
 SelAll
@@ -543,6 +557,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/ptf.3dm
 New
@@ -638,6 +653,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Plane -10,0,0 0,10,0
 Line 0,0,0 0,10,0
@@ -655,13 +672,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_cntloft_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_cntloft_redo
 SelAll
@@ -670,6 +687,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/cntloft.3dm
 New
@@ -737,6 +755,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Plane -10,0,0 0,10,0
 Line 0,0,0 0,10,0
@@ -755,13 +775,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_cntpatch_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_cntpatch_redo
 SelAll
@@ -770,6 +790,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/cntpatch.3dm
 New
@@ -837,6 +858,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Plane -10,0,0 0,10,0
 Curve 0,0,0 0,3.333333,0 0,6.666667,0 0,10,0 Enter
@@ -855,13 +878,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_cntnet_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_cntnet_redo
 SelAll
@@ -870,6 +893,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/cntnet.3dm
 New
@@ -937,6 +961,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Line 0,0,0 0,0,10
 SelLast
@@ -957,13 +983,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_spsscale_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_spsscale_redo
 SelAll
@@ -972,6 +998,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/spsscale.3dm
 New
@@ -1067,6 +1094,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Curve 3,0,0 6,0,3 2,0,6 4,0,10
 Enter
@@ -1090,13 +1119,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_vase_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_vase_redo
 SelAll
@@ -1105,6 +1134,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/vase.3dm
 New
@@ -1158,6 +1188,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Box 0,0,0 20,20,0 10
 SelAll
@@ -1167,6 +1199,8 @@ New
 Cylinder 0,0,0 5 10
 SelAll
 Export @TMP@/acisbox2.sat
+# RTAPART
+SetActiveViewport Top
 New
 Import @TMP@/acisbox.sat
 RTAB_satimp_pre
@@ -1177,13 +1211,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_satimp_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_satimp_redo
 SelAll
@@ -1192,6 +1226,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/satimp.3dm
 New
@@ -1259,6 +1294,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Import @TMP@/acisbox.sab
 RTAB_sabimp_pre
@@ -1269,13 +1306,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_sabimp_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_sabimp_redo
 SelAll
@@ -1284,6 +1321,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/sabimp.3dm
 New
@@ -1351,6 +1389,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 Import @TMP@/acisbox2.sat
 RTAB_satcyl_pre
@@ -1361,13 +1401,13 @@ Volume
 Area
 BoundingBox
 Undo
+Undo
 RTAB_satcyl_undo
 SelAll
 Check
 List
 Volume
 Area
-BoundingBox
 Redo
 RTAB_satcyl_redo
 SelAll
@@ -1376,6 +1416,7 @@ List
 Volume
 Area
 BoundingBox
+Undo
 SelAll
 Save @TMP@/satcyl.3dm
 New
@@ -1443,6 +1484,8 @@ List
 Volume
 Area
 BoundingBox
+# RTAPART
+SetActiveViewport Top
 # ---- (d) History On: save, reopen, edit the source, compare the rebuilt result with a fresh build
 New
 History On
@@ -1462,8 +1505,8 @@ SetObjectName RTHWall
 SelNone
 SelName RTHWall
 RTAB_hs_orig
-BoundingBox
 Area
+BoundingBox
 SelAll
 Save @TMP@/hs.3dm
 New
@@ -1476,8 +1519,8 @@ Move
 SelNone
 SelName RTHWall
 RTAB_hs_moved
-BoundingBox
 Area
+BoundingBox
 History Off
 New
 Line 0,0,0 0,0,10
@@ -1493,8 +1536,10 @@ SelName RTHSec
 Enter
 SelSrf
 RTAB_hs_fresh
-BoundingBox
 Area
+BoundingBox
+# RTAPART
+SetActiveViewport Top
 New
 History On
 Box 0,0,0 10,10,0 10
