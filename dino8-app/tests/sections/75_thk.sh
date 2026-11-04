@@ -32,6 +32,8 @@ thkbbox() { { grep -E "Bounding box: \(" <<<"$(thkblock "$1")" || true; } | head
 thkapprox() {
   if [ -n "$1" ] && awk -v v="$1" -v e="$2" -v r="$3" 'BEGIN { d = v - e; if (d < 0) d = -d; a = e < 0 ? -e : e; exit !(d <= r * a + 1e-6) }'; then thk_ok "$4 (measured $1, expected $2 +-${3} rel)"; else thk_bad "$4 (measured '${1:-none}', expected $2 +-${3} rel)"; fi
 }
+# thkrange VALUE LO HI DESC
+thkrange() { if [ -n "$1" ] && awk -v v="$1" -v l="$2" -v h="$3" 'BEGIN { exit !(v >= l && v <= h) }'; then thk_ok "$4 (measured $1)"; else thk_bad "$4 (measured '${1:-none}')"; fi; }
 thkabs() { if [ -n "$1" ] && awk -v v="$1" -v e="$2" -v a="$3" 'BEGIN { d = v - e; if (d < 0) d = -d; exit !(d <= a) }'; then thk_ok "$4 (measured $1, expected $2 +-$3)"; else thk_bad "$4 (measured '${1:-none}', expected $2 +-$3)"; fi; }
 
 # ---- flat 10 x 10 sheet
@@ -52,7 +54,10 @@ thkhas bump_t01 "Thicken: object 17 thickened by 0.1" "THK_bump_t01: default Thi
 thklacks bump_t01 "is not closed" "THK_bump_t01: the thickened freeform sheet is closed"
 thkapprox "$(thkvol bump_t01)" 1.00137 0.03 "THK_bump_t01: Volume matches the independent offset-map integral"
 thkabs "$(thkbbox bump_t01 3)" 0 1e-6 "THK_bump_t01: bbox z min = 0 (the sheet's flat corners, offset only upward)"
-thkabs "$(thkbbox bump_t01 6)" 0.640541 1e-3 "THK_bump_t01: bbox z max = 0.5339 (sheet peak) + 0.1 along the local normal"
+# The app's "Bounding box" is a sampled bound (it prints 0.5339 for the sheet whose exact peak is 0.5926, EvaluateUVPt at u=v=2/3), so the exact top is asserted
+# as a two-sided bound, not as an echo of the printed value: at the peak the normal is vertical, so the offset reaches exactly 0.5926 + 0.1 = 0.69257 there and
+# nowhere higher (z + t*nz <= z + t); the sampled bound can only be below that, and a cap that is not above the sheet's own peak is wrong.
+thkrange "$(thkbbox bump_t01 6)" 0.5926 0.6927 "THK_bump_t01: bbox z max lies in [sheet peak 0.5926, 0.5926 + 0.1 = 0.6926]"
 thkhas bump_t02 "thickened by 0.2" "THK_bump_t02: Thickness=0.2 is the thickness used"
 thkapprox "$(thkvol bump_t02)" 2.04024 0.03 "THK_bump_t02: Volume matches the independent offset-map integral"
 thkhas bump_sym "(symmetric)" "THK_bump_sym: Symmetric=Yes reported"
