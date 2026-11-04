@@ -13172,4 +13172,73 @@ qca_has same_twice "is in both sets; an object cannot be combined with itself - 
 qca_hasnot same_twice "BooleanDifference: exact B-rep boolean" "QCA_same_twice: ...and computes nothing"
 qca_objs same_twice 2 "QCA_same_twice: both operands are left untouched"
 
+
+# ---------------------------------------------------------------------------
+# OFR: remainder closers for the app Offset commands (ofr_script.txt).
+#  (1) OffsetSrf Tolerance= and Loose= options on a FREEFORM bump surface (the 4x4 bicubic net with one control point
+#      raised to z = 3, the kernel tests' own fixture), the freeform refit measured against the true offset locus
+#      S + d*N, the documented fallback to the first-order Greville-normal approximation when the refit refuses
+#      (fold guard at d = 1.0; unreachable tolerance 1e-12), and Loose on a flat net (exact) and past the fold (refused).
+#  (2) Offset of a non-planar polyline: the curve's own fitted plane refuses it, so the active-CPlane overload runs
+#      (exact mitre of the projection, vertices keep their heights). Closed forms for the 4-vertex fixture
+#      (0,0,0) (10,0,0) (10,10,5) (0,10,8), offset 1: outside w = (0,-1,0) (11,-1,0) (11,11,5) (0,11,8), length
+#      11 + 13 + sqrt(130) = 35.4018; inside w = (0,1,0) (9,1,0) (9,9,5) (0,9,8), length 9 + sqrt(89) + sqrt(90) = 27.92.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  OFRO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/ofr_script.txt" 2>&1)" || { echo "$OFRO"; echo "FAIL: ofr script exited non-zero"; exit 1; }
+else
+  OFRO="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/ofr_script.txt" 2>&1)" || { echo "$OFRO"; echo "FAIL: ofr script exited non-zero"; exit 1; }
+fi
+ofrblock() { awk -v name="$1" '$0 ~ ("Unknown command: OFRBEGIN_" name "$") { on = 1; next } on && /Unknown command: OFRBEGIN_/ { exit } on { print }' <<<"$OFRO"; }
+ofr_ok() { echo "ok   $1"; }
+ofr_bad() { echo "FAIL $1"; fail=1; }
+# ofrhas NAME PATTERN DESC (fixed-string match inside the case's block)
+ofrhas() {
+  local blk; blk="$(ofrblock "$1")"
+  if grep -qF -- "$2" <<<"$blk"; then ofr_ok "$3"; else ofr_bad "$3"; echo "     expected: $2"; { grep -E "^(history: )?(OffsetSrf|Warning|Offset)" <<<"$blk" || true; } | head -6 | sed 's/^/     actual:   /'; fi
+}
+ofrlacks() {
+  local blk; blk="$(ofrblock "$1")"
+  if grep -qF -- "$2" <<<"$blk"; then ofr_bad "$3"; echo "     unexpected: $2"; else ofr_ok "$3"; fi
+}
+# ofrdev NAME: the printed "measured deviation from the true offset locus X" of the case (first such value)
+ofrdev() { { grep -oE "measured deviation from the true offset locus [0-9.eE+-]+" <<<"$(ofrblock "$1")" || true; } | head -1 | sed -E 's/.*locus //'; }
+ofrle() { if [ -n "$1" ] && awk -v v="$1" -v hi="$2" 'BEGIN { exit !(v + 0 <= hi + 0) }'; then ofr_ok "$3 (measured $1 <= $2)"; else ofr_bad "$3 (measured '${1:-none}' not <= $2)"; fi; }
+ofrge() { if [ -n "$1" ] && awk -v v="$1" -v lo="$2" 'BEGIN { exit !(v + 0 >= lo + 0) }'; then ofr_ok "$3 (measured $1 >= $2)"; else ofr_bad "$3 (measured '${1:-none}' not >= $2)"; fi; }
+# ---- (1a) freeform bump OffsetSrf by 0.2: the tolerance-controlled refit, measured against S + d*N
+ofrhas bump_refit_doc "tolerance-controlled refit (non-rational; kernel-measured deviation" "OFR_bump_refit_doc: the freeform bump takes the tolerance-controlled refit (not an analytic or Greville path)"
+ofrlacks bump_refit_doc "FALLBACK" "OFR_bump_refit_doc: ...and no fallback warning fires at the document tolerance"
+OFR_DOC_TOL="$({ grep -oE "<= tolerance [0-9.eE+-]+\)" <<<"$(ofrblock bump_refit_doc)" || true; } | head -1 | sed -E 's/<= tolerance ([0-9.eE+-]+)\)/\1/')"
+OFR_DOC_DEV="$(ofrdev bump_refit_doc)"
+ofrle "$OFR_DOC_DEV" "${OFR_DOC_TOL:-0}" "OFR_bump_refit_doc: the independently measured deviation from the true offset locus (9x9 grid) is within the printed document tolerance ${OFR_DOC_TOL:-none}"
+# ---- (1b) Tolerance=0.0001 reaches the kernel (printed tolerance changes) and is met
+ofrhas bump_refit_tol "<= tolerance 0.0001)" "OFR_bump_refit_tol: Tolerance=0.0001 is the tolerance the kernel refit used"
+ofrle "$(ofrdev bump_refit_tol)" "0.0001" "OFR_bump_refit_tol: the measured deviation is within Tolerance=0.0001"
+ofrhas bump_refit_loose_tol "<= tolerance 0.05)" "OFR_bump_refit_loose_tol: Tolerance=0.05 is the tolerance the kernel refit used (the option works in both directions)"
+ofrle "$(ofrdev bump_refit_loose_tol)" "0.05" "OFR_bump_refit_loose_tol: the measured deviation is within Tolerance=0.05"
+# ---- (1c) Loose=Yes: the kernel's OffsetApproximate, same control net, genuinely approximate, bounded, and coarser than the refit
+ofrhas bump_loose "loose offset (kernel OffsetApproximate: each control point moved along its own Greville-point normal, the input's 4x4 control net kept" "OFR_bump_loose: Loose=Yes builds the kernel OffsetApproximate surface and keeps the 4x4 control net"
+ofrlacks bump_loose "tolerance-controlled refit" "OFR_bump_loose: ...and does not take the refit path"
+OFR_LOOSE_DEV="$(ofrdev bump_loose)"
+ofrge "$OFR_LOOSE_DEV" "0.0001" "OFR_bump_loose: the loose offset is genuinely approximate (measured deviation above 1e-4, the kernel test's own floor), not secretly the refit"
+ofrle "$OFR_LOOSE_DEV" "0.15" "OFR_bump_loose: ...and bounded by the kernel test's 0.15 for this distance"
+ofrge "$OFR_LOOSE_DEV" "$(ofrdev bump_refit_tol)" "OFR_bump_loose: ...and no better than the Tolerance=0.0001 refit of the same surface"
+ofrhas flat_loose "loose offset (kernel OffsetApproximate" "OFR_flat_loose: Loose=Yes on a flat net takes the loose path"
+ofrle "$(ofrdev flat_loose)" "1e-9" "OFR_flat_loose: Loose is exact on a plane (measured deviation at rounding level)"
+ofrhas bump_loose_fold "Loose offset refused" "OFR_bump_loose_fold: Loose=Yes at d = 1.0 (past the bump's radius of curvature) is refused with the reason"
+ofrhas bump_loose_fold "OffsetSrf: distance 1, 0 object(s)" "OFR_bump_loose_fold: ...and no object is made (no silent substitute)"
+# ---- (1d) the documented fallback to the first-order Greville-normal approximation, with a message that says so
+ofrhas bump_fallback_fold "FALLBACK: using the first-order Greville-normal approximation instead" "OFR_bump_fallback_fold: d = 1.0 (curvature fold) falls back to the first-order Greville-normal approximation and the message says FALLBACK"
+ofrhas bump_fallback_fold "freeform offset refused: " "OFR_bump_fallback_fold: ...and states the kernel's refusal reason"
+ofrhas bump_fallback_fold "NOT within the tolerance - measured deviation from the true offset locus " "OFR_bump_fallback_fold: ...and prints the fallback's own measured deviation, stating it is not within the tolerance"
+ofrhas bump_fallback_fold "OffsetSrf: distance 1, 1 object(s)" "OFR_bump_fallback_fold: ...and the fallback surface is still made (1 object)"
+ofrhas bump_fallback_tol "FALLBACK: using the first-order Greville-normal approximation instead" "OFR_bump_fallback_tol: Tolerance=1e-12 (unreachable) also falls back, with the FALLBACK message"
+# ---- (2) Offset of a non-planar polyline: the active-CPlane overload, exact mitre of the projection
+ofrhas crv_outside "2 object(s) selected" "OFR_crv_outside: the non-planar polyline's offset exists (2 objects; before the exact mitre the tight document tolerance refused it)"
+ofrhas crv_outside "Bounding box min 0,-1,0 max 11,11,8" "OFR_crv_outside: Offset 1 to the outside has the closed-form mitred bounding box (0,-1,0)-(11,11,8): vertices (0,-1,0) (11,-1,0) (11,11,5) (0,11,8), heights kept"
+ofrhas crv_outside "Total length = 35.40" "OFR_crv_outside: its length is 11 + 13 + sqrt(130) = 35.4018"
+ofrhas crv_inside "Bounding box min 0,1,0 max 9,9,8" "OFR_crv_inside: a side point inside gives the inward mitre (0,1,0) (9,1,0) (9,9,5) (0,9,8)"
+ofrhas crv_inside "Total length = 27.92" "OFR_crv_inside: its length is 9 + sqrt(89) + sqrt(90) = 27.92"
+ofrhas crv_tol "Bounding box min 0,-1,0 max 11,11,8" "OFR_crv_tol: Offset Tolerance=0.0001 is accepted and gives the same exact mitre"
+
 exit $fail
