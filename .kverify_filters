@@ -2,3 +2,6 @@ ClosedMeshDeviationTracksTolerance
 sweep_adaptive
 extra::Sealed
 OffsetInPlaneClosedPolygon
+extrude_along
+loft_spacing
+sweep2_accuracy
