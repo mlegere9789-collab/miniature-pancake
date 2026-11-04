@@ -168,6 +168,8 @@ jobs:
           set -e
           echo "group ${{ matrix.g }} exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
           grep -E '^FAIL' group.log | sort | uniq -c | head -60 || true
+          grep -E '^={10,}|^run_sections|^  [A-Za-z0-9_]+ +exit' group.log | cut -c1-200 | head -60 || true
+          echo '--- tail'; tail -n 25 group.log | cut -c1-240
           exit $rc
       - uses: actions/upload-artifact@v4
         if: always()
