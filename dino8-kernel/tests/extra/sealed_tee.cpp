@@ -182,17 +182,31 @@ D8_EXTRA_TEST(SealedOffAxisCylinderThroughBox) {
       }
     }
   }
-  // x0 = 1.5: the cylinder crosses the x = 2 face. Whatever the engine does, a sealed result must be a valid solid and a
-  // refusal must name its cause.
+}
+
+// Cylinder r=1 centred x0=1.5 (its seam line lies INSIDE the box, and it crosses the x=2 face): the loop where the box cuts the
+// wall straddles the cylinder's periodic seam. The part of the unit disk with x < 2 has area pi - (acos(0.5) - 0.5 sqrt(0.75));
+// the overlap with the box is that times the box height 2.
+D8_EXTRA_TEST(SealedOffAxisCylinderStraddlingSeamAcrossBoxFace) {
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
   const Brep cyl = TeeCylinder(ON_3dPoint(1.5, 0, -2), ON_3dVector(0, 0, 1), 1.0, 4.0);
-  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+  const double overlap = 2.0 * (ON_PI - (std::acos(0.5) - 0.5 * std::sqrt(0.75)));
+  const double box_v = 32.0, cyl_v = 4.0 * ON_PI;
+  struct Case {
+    BooleanOp op;
+    const char* name;
+    double expect;
+  };
+  const Case cases[] = {{BooleanOp::Union, "Union", box_v + cyl_v - overlap},
+                        {BooleanOp::Intersection, "Intersection", overlap},
+                        {BooleanOp::Difference, "Difference (box - cylinder)", box_v - overlap}};
+  for (const Case& c : cases) {
     SealedGeneralBoolean s;
-    const std::string why = SealOrRefusal(box, cyl, op, s);
-    const std::string label = "off-axis x0=1.5 op " + std::to_string(static_cast<int>(op)) + ": ";
-    if (why.empty()) {
-      d8test::Check(Valid(s), (label + "sealed, so IsValid and IsSolid").c_str());
-    } else {
-      d8test::Check(NamesMeasuredCause(why), (label + "the refusal names a measured cause: " + why).c_str());
-    }
+    const std::string why = SealOrRefusal(box, cyl, c.op, s);
+    const std::string label = std::string("off-axis x0=1.5 ") + c.name + ": ";
+    d8test::Check(why.empty(), (label + "seals: " + why).c_str());
+    if (!why.empty()) continue;
+    d8test::Check(Valid(s), (label + "IsValid and IsSolid").c_str());
+    d8test::Check(std::fabs(s.volume - c.expect) < 0.1, (label + "exact volume matches the closed form to 0.1").c_str());
   }
 }

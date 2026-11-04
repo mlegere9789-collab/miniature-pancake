@@ -1027,6 +1027,79 @@ std::pair<std::vector<UVPt>, std::vector<UVPt>> SpliceOpenChain(const std::vecto
   return {fragA, fragB};
 }
 
+// The seam-end handling of ONE seam crossing of a chain (see the long comments inside): `ending` is the piece whose last sample is
+// the sample BEFORE the crossing, `starting` the piece whose first sample is the one AFTER it. For a chain cut open at a single
+// crossing they are the same vector (its back and front); for a closed chain cut at two crossings they are two different pieces.
+void FinishSeamCrossing(const ON_Surface& s, int wrap_dir, std::vector<UVPt>& ending, std::vector<UVPt>& starting) {
+  const double lo = s.Domain(wrap_dir).Min(), hi = s.Domain(wrap_dir).Max();
+  const double L = hi - lo;
+  const UVPt& straddle_before = ending.back();
+  const UVPt& straddle_after = starting.front();
+  const double w_before = wrap_dir == 0 ? straddle_before.uv.x : straddle_before.uv.y;
+  const double w_after = wrap_dir == 0 ? straddle_after.uv.x : straddle_after.uv.y;
+  const double c_before = wrap_dir == 0 ? straddle_before.uv.y : straddle_before.uv.x;
+  const double c_after = wrap_dir == 0 ? straddle_after.uv.y : straddle_after.uv.x;
+  const double w_after_un = w_after + (w_before > w_after ? L : -L);
+  const double seam_before = w_before > w_after ? hi : lo;
+  const double denom = w_after_un - w_before;
+  const double t = std::fabs(denom) > 1e-300 ? std::clamp((seam_before - w_before) / denom, 0.0, 1.0) : 0.5;
+  const double cross_val = c_before + (c_after - c_before) * t;
+  const double fu = w_after;
+  const bool front_is_lo = std::fabs(fu - lo) < std::fabs(fu - hi);
+  // Exact-domain-clamp check: much tighter than "near the seam" - this
+  // only ever fires for a sample Newton already snapped bit-exactly to
+  // the boundary, never for the ordinary "up to one mesh cell off" case.
+  const double exact_eps = 1e-9 * std::max(L, 1.0);
+  auto already_at_seam = [&](double w, double snapped) { return std::fabs(w - snapped) <= exact_eps; };
+  // `near_pt`, not `near`: the latter is a legacy Windows SDK macro (see
+  // the is_close rename elsewhere in this file for the same MSVC break).
+  auto make_seam_point = [&](const UVPt& near_pt, double snapped) {
+    UVPt sp = near_pt;
+    if (wrap_dir == 0) { sp.uv.x = snapped; sp.uv.y = cross_val; } else { sp.uv.y = snapped; sp.uv.x = cross_val; }
+    sp.p = s.PointAt(sp.uv.x, sp.uv.y);
+    return sp;
+  };
+  const double front_snap = front_is_lo ? lo : hi;
+  const double back_snap = front_is_lo ? hi : lo;
+  const bool front_reused = already_at_seam(w_after, front_snap);
+  const bool back_reused = already_at_seam(w_before, back_snap);
+  if (front_reused) {
+    // Reuse the existing straddling sample in place: no new vertex. Its
+    // own `p` is deliberately left untouched (see this function's own
+    // doc comment above) - it must still match the OTHER solid's
+    // independently-built copy of this same intersection-curve sample.
+    if (wrap_dir == 0) { starting.front().uv.x = front_snap; starting.front().uv.y = cross_val; }
+    else { starting.front().uv.y = front_snap; starting.front().uv.x = cross_val; }
+  } else {
+    UVPt sp = make_seam_point(starting.front(), front_snap);
+    // If the OTHER end of this same crossing reused an existing sample
+    // (kept its own small SSX-tolerance-scale residual `p`, per above),
+    // this freshly-synthesized point has no such obligation of its own
+    // (it is not a real intersection-curve sample) - copy that
+    // neighbor's `p` here rather than independently evaluating
+    // s.PointAt(front_snap, cross_val). Both calls are analytically the
+    // same physical point (a periodic surface's own two domain ends at
+    // equal cross-direction value), but confirmed by direct trace
+    // (sweep case 08) to differ by ~8.8e-5 in practice - comfortably
+    // inside ON_Brep::IsValid()'s own trim-vs-edge tolerance, but far
+    // above VertexWelder's much tighter kWeldTol (1e-6), so the two
+    // seam-side copies of this ONE crossing point welded into two
+    // DIFFERENT vertices instead of one - the confirmed root cause of
+    // "outer loop contains boundary trims ... They should be seam trims
+    // connected to the same edge".
+    if (back_reused) sp.p = ending.back().p;
+    starting.insert(starting.begin(), sp);
+  }
+  if (back_reused) {
+    if (wrap_dir == 0) { ending.back().uv.x = back_snap; ending.back().uv.y = cross_val; }
+    else { ending.back().uv.y = back_snap; ending.back().uv.x = cross_val; }
+  } else {
+    UVPt sp = make_seam_point(ending.back(), back_snap);
+    if (front_reused) sp.p = starting.front().p;
+    ending.push_back(sp);
+  }
+}
+
 // A 3D-closed chain (front and back coincide) that is really a single FULL
 // SWEEP of one of `s`'s own periodic (u or v) directions - e.g. the circle
 // where a plane exactly perpendicular to a cylinder's axis cuts its
@@ -1205,73 +1278,64 @@ bool SplitPeriodicWrapChain(const Chain& c, const ON_Surface& s, Chain& out_open
   // against, and the small (u, v)-vs-`p` residual this leaves is the same
   // order as any ordinary open-chain splice endpoint's own SSX tolerance,
   // which ON_Brep::IsValid()'s trim-vs-edge check already tolerates.
-  const double lo = s.Domain(wrap_dir).Min(), hi = s.Domain(wrap_dir).Max();
-  const double L = hi - lo;
-  const UVPt& straddle_before = out_open.back();   // pts[cut_at]
-  const UVPt& straddle_after = out_open.front();   // pts[cut_at + 1]
-  const double w_before = wrap_dir == 0 ? straddle_before.uv.x : straddle_before.uv.y;
-  const double w_after = wrap_dir == 0 ? straddle_after.uv.x : straddle_after.uv.y;
-  const double c_before = wrap_dir == 0 ? straddle_before.uv.y : straddle_before.uv.x;
-  const double c_after = wrap_dir == 0 ? straddle_after.uv.y : straddle_after.uv.x;
-  const double w_after_un = w_after + (w_before > w_after ? L : -L);
-  const double seam_before = w_before > w_after ? hi : lo;
-  const double denom = w_after_un - w_before;
-  const double t = std::fabs(denom) > 1e-300 ? std::clamp((seam_before - w_before) / denom, 0.0, 1.0) : 0.5;
-  const double cross_val = c_before + (c_after - c_before) * t;
-  const double fu = w_after;
-  const bool front_is_lo = std::fabs(fu - lo) < std::fabs(fu - hi);
-  // Exact-domain-clamp check: much tighter than "near the seam" - this
-  // only ever fires for a sample Newton already snapped bit-exactly to
-  // the boundary, never for the ordinary "up to one mesh cell off" case.
-  const double exact_eps = 1e-9 * std::max(L, 1.0);
-  auto already_at_seam = [&](double w, double snapped) { return std::fabs(w - snapped) <= exact_eps; };
-  // `near_pt`, not `near`: the latter is a legacy Windows SDK macro (see
-  // the is_close rename elsewhere in this file for the same MSVC break).
-  auto make_seam_point = [&](const UVPt& near_pt, double snapped) {
-    UVPt sp = near_pt;
-    if (wrap_dir == 0) { sp.uv.x = snapped; sp.uv.y = cross_val; } else { sp.uv.y = snapped; sp.uv.x = cross_val; }
-    sp.p = s.PointAt(sp.uv.x, sp.uv.y);
-    return sp;
-  };
-  const double front_snap = front_is_lo ? lo : hi;
-  const double back_snap = front_is_lo ? hi : lo;
-  const bool front_reused = already_at_seam(w_after, front_snap);
-  const bool back_reused = already_at_seam(w_before, back_snap);
-  if (front_reused) {
-    // Reuse the existing straddling sample in place: no new vertex. Its
-    // own `p` is deliberately left untouched (see this function's own
-    // doc comment above) - it must still match the OTHER solid's
-    // independently-built copy of this same intersection-curve sample.
-    if (wrap_dir == 0) { out_open.front().uv.x = front_snap; out_open.front().uv.y = cross_val; }
-    else { out_open.front().uv.y = front_snap; out_open.front().uv.x = cross_val; }
-  } else {
-    UVPt sp = make_seam_point(out_open.front(), front_snap);
-    // If the OTHER end of this same crossing reused an existing sample
-    // (kept its own small SSX-tolerance-scale residual `p`, per above),
-    // this freshly-synthesized point has no such obligation of its own
-    // (it is not a real intersection-curve sample) - copy that
-    // neighbor's `p` here rather than independently evaluating
-    // s.PointAt(front_snap, cross_val). Both calls are analytically the
-    // same physical point (a periodic surface's own two domain ends at
-    // equal cross-direction value), but confirmed by direct trace
-    // (sweep case 08) to differ by ~8.8e-5 in practice - comfortably
-    // inside ON_Brep::IsValid()'s own trim-vs-edge tolerance, but far
-    // above VertexWelder's much tighter kWeldTol (1e-6), so the two
-    // seam-side copies of this ONE crossing point welded into two
-    // DIFFERENT vertices instead of one - the confirmed root cause of
-    // "outer loop contains boundary trims ... They should be seam trims
-    // connected to the same edge".
-    if (back_reused) sp.p = out_open.back().p;
-    out_open.insert(out_open.begin(), sp);
+  FinishSeamCrossing(s, wrap_dir, out_open, out_open);
+  return true;
+}
+
+// A 3D-closed chain that bounds a patch STRADDLING a periodic surface's seam: in flat (u, v) it leaves the domain on one side and
+// re-enters on the other twice, once in each direction (e.g. the loop where a box cuts a cylinder wall whose seam line lies inside
+// the box: the top arc runs past u = hi and wraps to u = lo, the bottom arc wraps back). SplitPeriodicWrapChain() above only takes
+// ONE crossing (a full sweep of the periodic direction); with two crossings the chain used to stay a "closed island" whose
+// polygon jumps across the whole domain - a self-crossing nonsense hole, with the inside/outside of the patch swapped (measured:
+// a cylinder r=1 centred 1.5 off a box's centre, seam line inside the box: the wall's kept fragment was the patch outside the
+// box and the rest was lost, so the end caps' rims had no partner at all).
+//
+// The loop is cut open at BOTH crossings into two open pieces, each running from the seam back to the seam; every piece then
+// ends on the domain boundary (the u = lo side or the u = hi side), which SplitFaceLoop() splices like any other open chain, giving
+// the two halves of the patch as separate fragments. Two crossings of the same sign (the chain winds twice, or once around the
+// whole periodic direction and back) are not this case and are left alone.
+bool SplitPeriodicTwoCrossingChain(const Chain& c, const ON_Surface& s, Chain& piece_a, Chain& piece_b) {
+  if (c.size() < 4) return false;
+  Chain pts = c;
+  if (pts.size() >= 2 && (pts.front().p - pts.back().p).Length() <= kWeldTol * 100) pts.pop_back();
+  const size_t n = pts.size();
+  if (n < 4) return false;
+  int count = 0;
+  size_t cut[2] = {0, 0};
+  int dirs[2] = {-1, -1};
+  double sgn[2] = {0, 0};
+  for (size_t i = 0; i < n; ++i) {
+    const size_t j = (i + 1) % n;
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!s.IsClosed(dir)) continue;
+      const double len = s.Domain(dir).Length();
+      if (len <= 0) continue;
+      const double vi = dir == 0 ? pts[i].uv.x : pts[i].uv.y;
+      const double vj = dir == 0 ? pts[j].uv.x : pts[j].uv.y;
+      if (std::fabs(vi - vj) > 0.5 * len) {
+        if (count < 2) {
+          cut[count] = i;
+          dirs[count] = dir;
+          sgn[count] = vj > vi ? 1.0 : -1.0;
+        }
+        ++count;
+      }
+    }
   }
-  if (back_reused) {
-    if (wrap_dir == 0) { out_open.back().uv.x = back_snap; out_open.back().uv.y = cross_val; }
-    else { out_open.back().uv.y = back_snap; out_open.back().uv.x = cross_val; }
-  } else {
-    UVPt sp = make_seam_point(out_open.back(), back_snap);
-    if (front_reused) sp.p = out_open.front().p;
-    out_open.push_back(sp);
+  if (count != 2 || dirs[0] != dirs[1] || sgn[0] * sgn[1] > 0.0) return false;
+  piece_a.clear();
+  piece_b.clear();
+  for (size_t k = (cut[0] + 1) % n;; k = (k + 1) % n) {
+    piece_a.push_back(pts[k]);
+    if (k == cut[1]) break;
   }
+  for (size_t k = (cut[1] + 1) % n;; k = (k + 1) % n) {
+    piece_b.push_back(pts[k]);
+    if (k == cut[0]) break;
+  }
+  if (piece_a.size() < 2 || piece_b.size() < 2) return false;
+  FinishSeamCrossing(s, dirs[0], piece_b, piece_a);  // crossing 0: piece_b ends before it, piece_a starts after it
+  FinishSeamCrossing(s, dirs[0], piece_a, piece_b);  // crossing 1: piece_a ends before it, piece_b starts after it
   return true;
 }
 
@@ -3211,6 +3275,58 @@ struct FaceFrags {
   std::vector<Fragment> frags;
 };
 
+// The end of an intersection curve that lands on a third face's boundary (a corner where, say, a cylinder wall meets a box's
+// top face and side face at one point of the box edge) is found once per face PAIR: the wall/top curve and the wall/side curve each
+// Newton-refine their own end to `opt.tolerance`, so the "same" corner comes out as two points up to a tolerance apart (measured:
+// 5.1e-4 along the box edge). The wall, which holds both curves, then gets a sliver edge between them that neither the top nor the
+// side face has, and the body can never close (four 0.0005-long unpaired edges on a box x cylinder union).
+//
+// Snaps every cluster of curve ends closer than `tol` (union-find, single linkage) to the cluster's mean, so every face that
+// meets that corner uses ONE point. Both faces of one curve hold bit-identical copies of its end, so they fall in the same
+// cluster and move together. Only the 3D point moves (by less than `tol`); each side keeps its own (u, v).
+void SnapSharedChainEnds(std::vector<std::vector<Chain>>& raw_a, std::vector<std::vector<Chain>>& raw_b, double tol) {
+  std::vector<Point3d*> ends;
+  for (auto* raw : {&raw_a, &raw_b}) {
+    for (std::vector<Chain>& chains : *raw) {
+      for (Chain& c : chains) {
+        if (c.size() < 2) continue;
+        ends.push_back(&c.front().p);
+        ends.push_back(&c.back().p);
+      }
+    }
+  }
+  const size_t n = ends.size();
+  if (n < 2) return;
+  std::vector<size_t> parent(n);
+  for (size_t i = 0; i < n; ++i) parent[i] = i;
+  const auto find = [&](size_t x) {
+    while (parent[x] != x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      if (ends[i]->DistanceTo(*ends[j]) <= tol) parent[find(i)] = find(j);
+    }
+  }
+  std::map<size_t, std::vector<size_t>> clusters;
+  for (size_t i = 0; i < n; ++i) clusters[find(i)].push_back(i);
+  for (auto& [root, members] : clusters) {
+    if (members.size() < 2) continue;
+    double sx = 0, sy = 0, sz = 0;
+    for (size_t m : members) { sx += ends[m]->x; sy += ends[m]->y; sz += ends[m]->z; }
+    const Point3d mean(sx / members.size(), sy / members.size(), sz / members.size());
+    bool differs = false;
+    for (size_t m : members) {
+      if (ends[m]->DistanceTo(mean) > 1e-12) differs = true;
+    }
+    if (!differs) continue;
+    for (size_t m : members) *ends[m] = mean;
+  }
+}
+
 std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw,
                                       double stitch_tol, const IntersectOptions& opt, bool debug) {
   std::vector<FaceFrags> out;
@@ -3239,9 +3355,12 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
         }
       }
       if ((c.front().p - c.back().p).Length() <= stitch_tol) {
-        Chain wrap_open;
+        Chain wrap_open, wrap_second;
         if (face_surface && SplitPeriodicWrapChain(c, *face_surface, wrap_open)) {
           open_chains.push_back(std::move(wrap_open));
+        } else if (face_surface && SplitPeriodicTwoCrossingChain(c, *face_surface, wrap_open, wrap_second)) {
+          open_chains.push_back(std::move(wrap_open));
+          open_chains.push_back(std::move(wrap_second));
         } else {
           closed_chains.push_back(c);
         }
@@ -3955,6 +4074,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 
   // Fragment every face of both operands (FragmentFaces() - shared with
   // ImprintFaces() below, see its own doc comment).
+  SnapSharedChainEnds(raw_a, raw_b, opt.tolerance);
   std::vector<FaceFrags> frags_a = FragmentFaces(ba, na, raw_a, stitch_tol, opt, debug);
   std::vector<FaceFrags> frags_b = FragmentFaces(bb, nb, raw_b, stitch_tol, opt, debug);
 
