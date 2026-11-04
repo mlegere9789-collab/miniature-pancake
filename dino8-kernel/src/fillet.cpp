@@ -8823,8 +8823,49 @@ struct Fit {
   int N = 0;
   std::vector<double> s;                  // N + 1 station parameters
   std::vector<double> U;                  // full knot vector, N + 5
-  std::vector<std::array<double, 13>> Q;  // control rows: A xyz, w*M xyz + w, B xyz, centre xyz
+  std::vector<std::array<double, 17>> Q;  // control rows: A xyz, w*M xyz + w, B xyz, centre xyz (periodic fit: + uv_a, uv_b)
 };
+
+void StationRow(const Station& q, double r, double* row) {
+  const ON_3dVector ua = (q.ca - q.c) / r, ub = (q.cb - q.c) / r;
+  const double d = ua * ub, w1 = std::sqrt(0.5 * (1.0 + d));
+  const ON_3dPoint P1 = q.c + (r / (1.0 + d)) * (ua + ub);
+  const double v[13] = {q.ca.x, q.ca.y, q.ca.z, w1 * P1.x, w1 * P1.y, w1 * P1.z, w1, q.cb.x, q.cb.y, q.cb.z, q.c.x, q.c.y, q.c.z};
+  for (int c = 0; c < 13; ++c) row[c] = v[c];
+}
+
+// Periodic cubic interpolation of the N station rows st[0..N-1] at ss[0..N-1], period P = ss[N] - ss[0] (ss has N + 1
+// entries, ss[N] = ss[0] + P is the same station again). The knots are the stations themselves, extended periodically
+// (F[k] = ss[k mod N] + floor(k / N) P), so the result is C2 across the seam; the control rows repeat Q[i + N] = Q[i].
+// A station at the knot t = F[j + 3] sees the control rows j, j + 1, j + 2 (mod N): a cyclic tridiagonal system.
+bool BuildFitPeriodic(const std::vector<Station>& st, const std::vector<double>& ss, double r, Fit& fit) {
+  const int N = (int)st.size();
+  if (N < 8 || (int)ss.size() != N + 1) return false;
+  const double P = ss[(size_t)N] - ss[0];
+  fit.N = N;
+  fit.s = ss;
+  fit.U.assign((size_t)N + 7, 0.0);
+  for (int k = 0; k < N + 7; ++k) {
+    const int kk = k - 3;
+    const int wraps = (int)std::floor((double)kk / N);
+    fit.U[(size_t)k] = ss[(size_t)(kk - wraps * N)] + wraps * P;
+  }
+  const int m = 17;
+  std::vector<double> A((size_t)N * N, 0.0), B((size_t)N * m, 0.0);
+  for (int j = 0; j < N; ++j) {
+    StationRow(st[(size_t)j], r, &B[(size_t)j * m]);
+    B[(size_t)j * m + 13] = st[(size_t)j].uv_a.x; B[(size_t)j * m + 14] = st[(size_t)j].uv_a.y;
+    B[(size_t)j * m + 15] = st[(size_t)j].uv_b.x; B[(size_t)j * m + 16] = st[(size_t)j].uv_b.y;
+    double Nb[4];
+    CubicBasis(fit.U, j + 3, fit.s[(size_t)j], Nb);
+    for (int k = 0; k < 4; ++k) A[(size_t)j * N + (size_t)((j + k) % N)] += Nb[k];
+  }
+  if (!SolveDenseSystem(A, B, N, m)) return false;
+  fit.Q.assign((size_t)N + 3, {});
+  for (int i = 0; i < N + 3; ++i) for (int c = 0; c < m; ++c) fit.Q[(size_t)i][(size_t)c] = B[(size_t)(i % N) * m + c];
+  for (int i = 0; i < N + 3; ++i) if (!(fit.Q[(size_t)i][6] > 1e-6)) return false;
+  return true;
+}
 
 bool BuildFit(const std::vector<Station>& st, double r, Fit& fit) {
   const int N = (int)st.size() - 1;
@@ -8870,6 +8911,38 @@ ON_NurbsSurface* FitSurface(const Fit& fit) {
   return S;
 }
 
+ON_NurbsSurface* FitSurfacePeriodic(const Fit& fit) {
+  const int N = fit.N;
+  ON_NurbsSurface* S = new ON_NurbsSurface(3, true, 4, 3, N + 3, 3);
+  for (int i = 0; i < N + 5; ++i) S->m_knot[0][i] = fit.U[(size_t)i + 1];
+  S->m_knot[1][0] = 0; S->m_knot[1][1] = 0; S->m_knot[1][2] = 1; S->m_knot[1][3] = 1;
+  for (int i = 0; i < N + 3; ++i) {
+    const auto& q = fit.Q[(size_t)i];
+    const double r0[4] = {q[0], q[1], q[2], 1.0}, r1[4] = {q[3], q[4], q[5], q[6]}, r2[4] = {q[7], q[8], q[9], 1.0};
+    S->SetCV(i, 0, ON::homogeneous_rational, r0);
+    S->SetCV(i, 1, ON::homogeneous_rational, r1);
+    S->SetCV(i, 2, ON::homogeneous_rational, r2);
+  }
+  return S;
+}
+
+ON_NurbsCurve* FitCurve3Periodic(const Fit& fit, int c0) {
+  const int N = fit.N;
+  ON_NurbsCurve* c = new ON_NurbsCurve(3, false, 4, N + 3);
+  for (int i = 0; i < N + 5; ++i) c->m_knot[i] = fit.U[(size_t)i + 1];
+  for (int i = 0; i < N + 3; ++i)
+    c->SetCV(i, ON_3dPoint(fit.Q[(size_t)i][(size_t)c0], fit.Q[(size_t)i][(size_t)c0 + 1], fit.Q[(size_t)i][(size_t)c0 + 2]));
+  return c;
+}
+
+ON_NurbsCurve* FitCurve2Periodic(const Fit& fit, int c0) {
+  const int N = fit.N;
+  ON_NurbsCurve* c = new ON_NurbsCurve(2, false, 4, N + 3);
+  for (int i = 0; i < N + 5; ++i) c->m_knot[i] = fit.U[(size_t)i + 1];
+  for (int i = 0; i < N + 3; ++i) c->SetCV(i, ON_3dPoint(fit.Q[(size_t)i][(size_t)c0], fit.Q[(size_t)i][(size_t)c0 + 1], 0.0));
+  return c;
+}
+
 ON_NurbsCurve* FitCurve3(const Fit& fit, int c0) {
   const int N = fit.N;
   ON_NurbsCurve* c = new ON_NurbsCurve(3, false, 4, N + 1);
@@ -8908,8 +8981,19 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
   if (curves.empty()) return refuse("the surfaces do not intersect (parallel, separated, or only touching): there is no edge to blend");
   if (curves.size() > 1) return refuse("the surfaces meet along " + std::to_string(curves.size()) + " intersection curves; blend one edge at a time (pass surfaces that meet along one curve)");
   const IntersectionCurve& ic = curves[0];
-  if (ic.closed) return refuse("the intersection curve is closed (a periodic rim); closed rims are not supported by this routine");
   if (ic.points.size() < 4 || !ic.curve.IsValid()) return refuse("the intersection curve is degenerate");
+  const bool closed = ic.closed;
+  if (closed) {
+    // A rim that crosses a parent's periodic seam is stored with a jump in that parent's parameter; the stations (clamped
+    // to the parent's domain) cannot follow it across.
+    for (size_t i = 0; i < ic.points.size(); ++i) {
+      const size_t j = (i + 1) % ic.points.size();
+      for (int d = 0; d < 2; ++d) {
+        if (std::fabs(ic.uv_a[i][d] - ic.uv_a[j][d]) > 0.5 * a.raw().Domain(d).Length() || std::fabs(ic.uv_b[i][d] - ic.uv_b[j][d]) > 0.5 * b.raw().Domain(d).Length())
+          return refuse("the closed rim crosses a periodic seam of a parent surface (its parameter jumps across the seam); re-seam the parent so the rim stays inside its domain");
+      }
+    }
+  }
 
   Ctx cx;
   cx.a = &a; cx.b = &b; cx.sa = options.side_a; cx.sb = options.side_b; cx.r = radius; cx.ic = &ic;
@@ -8929,17 +9013,22 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
   const int M = 160;
   std::vector<Station> scan((size_t)M + 1);
   int first = -1, last = -1;
-  for (int i = 0; i <= M; ++i) {
+  for (int i = 0; i <= (closed ? M - 1 : M); ++i) {
     scan[(size_t)i] = SolveStation(cx, s0 + (s1 - s0) * i / M);
     const Code c = scan[(size_t)i].code;
     if (c == Code::Fold || c == Code::Tangent || c == Code::Singular) return hard_refusal(scan[(size_t)i], "scan");
+    if (closed && c != Code::Ok) {
+      if (c == Code::OutOfDomain) return refuse("the closed rim's rolling-ball contact points leave a parent's parameter domain at s = " + std::to_string(scan[(size_t)i].s) + " (the blend would run past a free edge of a parent; a closed blend needs the whole rim, offset by the radius, inside both parents)");
+      return hard_refusal(scan[(size_t)i], "closed-rim scan");
+    }
     if (c == Code::Ok) { if (first < 0) first = i; last = i; }
   }
+  if (closed) { first = 0; last = M - 1; }
   if (first < 0) return refuse("the offsets do not intersect: the centre equations (both surfaces offset by the radius) have no solution at any of " + std::to_string(M + 1) + " stations along the edge - the ball does not fit or its contact points leave the surfaces");
   for (int i = first; i <= last; ++i)
     if (scan[(size_t)i].code != Code::Ok)
       return refuse("the centre curve is interrupted between s = " + std::to_string(scan[(size_t)first].s) + " and s = " + std::to_string(scan[(size_t)last].s) + " (" + CodeText(scan[(size_t)i].code) + " at s = " + std::to_string(scan[(size_t)i].s) + ")");
-  double sa_ = scan[(size_t)first].s, sb_ = scan[(size_t)last].s;
+  double sa_ = closed ? s0 : scan[(size_t)first].s, sb_ = closed ? s1 : scan[(size_t)last].s;
   auto bisect = [&](double bad, double good) {
     for (int k = 0; k < 40; ++k) {
       const double mid = 0.5 * (bad + good);
@@ -8947,8 +9036,8 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
     }
     return good;
   };
-  if (first > 0) sa_ = bisect(scan[(size_t)first - 1].s, sa_);
-  if (last < M) sb_ = bisect(scan[(size_t)last + 1].s, sb_);
+  if (!closed && first > 0) sa_ = bisect(scan[(size_t)first - 1].s, sa_);
+  if (!closed && last < M) sb_ = bisect(scan[(size_t)last + 1].s, sb_);
   if (!(sb_ - sa_ > 1e-6 * (s1 - s0))) return refuse("the usable stretch of the edge is empty");
   out.s_start = sa_;
   out.s_end = sb_;
@@ -8973,9 +9062,10 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
   int best_N = 0;
   for (int pass = 0; pass < 20; ++pass) {
     const int N = (int)ss.size() - 1;
+    const int NR = closed ? N : N + 1;  // station rows (a closed rim's last station is the first again)
     std::vector<Station> st;
     st.reserve(ss.size());
-    for (int i = 0; i <= N; ++i) {
+    for (int i = 0; i < NR; ++i) {
       st.push_back(station(ss[(size_t)i]));
       const Station& q = st.back();
       if (q.code != Code::Ok) return hard_refusal(q, "station");
@@ -8985,17 +9075,21 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
         if (dc > 4.0 * dp + 1e-9) return refuse("the centre curve jumps between stations s = " + std::to_string(st[(size_t)i - 1].s) + " and " + std::to_string(q.s) + " (a branch or turning point)");
       }
     }
+    if (closed) {
+      const double dp = st.back().p.DistanceTo(st.front().p), dc = st.back().c.DistanceTo(st.front().c);
+      if (dc > 4.0 * dp + 1e-9) return refuse("the centre curve jumps across the closing seam of the rim (a branch or turning point)");
+    }
     Fit fit;
-    if (!BuildFit(st, radius, fit)) return refuse("the interpolation of the blend rows failed (singular system or non-positive arc weight)");
-    std::unique_ptr<ON_NurbsSurface> S(FitSurface(fit));
+    if (!(closed ? BuildFitPeriodic(st, ss, radius, fit) : BuildFit(st, radius, fit))) return refuse("the interpolation of the blend rows failed (singular system or non-positive arc weight)");
+    std::unique_ptr<ON_NurbsSurface> S(closed ? FitSurfacePeriodic(fit) : FitSurface(fit));
     double sdev = 0;
-    for (int i = 0; i <= N; ++i)
+    for (int i = 0; i < NR; ++i)
       for (double v : vs) sdev = std::max(sdev, S->PointAt(st[(size_t)i].s, v).DistanceTo(ArcPoint(st[(size_t)i], radius, v)));
     double dev = sdev;
     std::vector<double> idev((size_t)N, 0.0);
     for (int i = 0; i < N; ++i) {
       for (double f : {0.25, 0.5, 0.75}) {
-        const double s = st[(size_t)i].s + f * (st[(size_t)i + 1].s - st[(size_t)i].s);
+        const double s = ss[(size_t)i] + f * (ss[(size_t)i + 1] - ss[(size_t)i]);
         const Station q = SolveStation(cx, s);
         if (q.code != Code::Ok) return hard_refusal(q, "interval sample");
         for (double v : vs) idev[(size_t)i] = std::max(idev[(size_t)i], S->PointAt(s, v).DistanceTo(ArcPoint(q, radius, v)));
@@ -9005,7 +9099,7 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
     if (dev < best_dev) { best_dev = dev; best_N = N; }
     if (dev <= tolerance) {
       // --- accepted: final checks on the blend --------------------------------------------------------------------
-      std::unique_ptr<ON_NurbsCurve> cen(FitCurve3(fit, 10));
+      std::unique_ptr<ON_NurbsCurve> cen(closed ? FitCurve3Periodic(fit, 10) : FitCurve3(fit, 10));
       double min_align = 1e300;
       int sign = 0;
       for (int i = 0; i <= 3 * N; ++i) {
@@ -9028,12 +9122,19 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
       if (min_align < 0.5) return refuse("the blend's normal departs from the rolling-ball direction by more than 60 degrees (|cos| " + std::to_string(min_align) + ")");
       out.blend.raw() = *S;
       {
-        std::unique_ptr<ON_NurbsCurve> ca(FitCurve3(fit, 0)), cb(FitCurve3(fit, 7));
+        std::unique_ptr<ON_NurbsCurve> ca(closed ? FitCurve3Periodic(fit, 0) : FitCurve3(fit, 0)), cb(closed ? FitCurve3Periodic(fit, 7) : FitCurve3(fit, 7));
         out.contact_a.raw() = *ca;
         out.contact_b.raw() = *cb;
       }
       out.centre.raw() = *cen;
+      if (closed) {
+        std::unique_ptr<ON_NurbsCurve> ta(FitCurve2Periodic(fit, 13)), tb(FitCurve2Periodic(fit, 15));
+        out.trim_a.raw() = *ta;
+        out.trim_b.raw() = *tb;
+      }
       for (const Station& q : st) { out.uv_a.push_back(q.uv_a); out.uv_b.push_back(q.uv_b); out.station_s.push_back(q.s); }
+      if (closed) { out.uv_a.push_back(st.front().uv_a); out.uv_b.push_back(st.front().uv_b); out.station_s.push_back(ss.back()); }
+      out.closed = closed;
       out.intervals = N;
       out.station_deviation = sdev;
       out.deviation = dev;
@@ -9064,6 +9165,276 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
   out.deviation = best_dev;
   out.intervals = best_N;
   return refuse("tolerance " + std::to_string(tolerance) + " not reached: the best sampled deviation is " + std::to_string(best_dev) + " at " + std::to_string(best_N) + " intervals (limit " + std::to_string(options.max_intervals) + ")");
+}
+
+// --- FilletBossOnSlab -----------------------------------------------------------
+// See fillet.h for the contract.
+namespace {
+namespace boss_slab {
+
+double SignedArea2d(const ON_NurbsCurve& c, int n = 1440) {
+  const ON_Interval d = c.Domain();
+  double a = 0;
+  ON_3dPoint prev = c.PointAt(d.ParameterAt(0.0));
+  const ON_3dPoint first = prev;
+  for (int i = 1; i <= n; ++i) {
+    const ON_3dPoint p = (i == n) ? first : c.PointAt(d.ParameterAt((double)i / n));
+    a += 0.5 * (prev.x * p.y - p.x * prev.y);
+    prev = p;
+  }
+  return a;
+}
+
+}  // namespace boss_slab
+}  // namespace
+
+BossOnSlabFillet FilletBossOnSlab(const NurbsSurface& boss, double floor_z, double x0, double x1, double y0, double y1, double depth, double radius,
+                                  double tolerance) {
+  using namespace boss_slab;
+  BossOnSlabFillet out;
+  out.radius = radius;
+  const std::string who = "dino8::kernel::FilletBossOnSlab: ";
+  auto refuse = [&](const std::string& why) {
+    out.status = Result::Failed;
+    out.reason = who + why;
+    return out;
+  };
+  if (!std::isfinite(floor_z) || !std::isfinite(x0) || !std::isfinite(x1) || !std::isfinite(y0) || !std::isfinite(y1) || !std::isfinite(depth))
+    return refuse("the slab extents must be finite");
+  if (!(x1 > x0) || !(y1 > y0) || !(depth > 0.0)) return refuse("the slab needs x1 > x0, y1 > y0 and depth > 0");
+  if (!boss.raw().IsValid()) return refuse("the boss surface is not a valid NURBS surface");
+
+  // The boss: a graph-like patch that rises above the floor in its interior and lies below it along its whole boundary,
+  // with its normal pointing up (reversed here on a copy when it points down).
+  NurbsSurface B;
+  B.raw() = boss.raw();
+  const ON_Interval du = B.raw().Domain(0), dv = B.raw().Domain(1);
+  {
+    ON_3dPoint P;
+    ON_3dVector n;
+    if (!B.raw().EvNormal(du.ParameterAt(0.5), dv.ParameterAt(0.5), P, n)) return refuse("the boss has a singular normal at its parameter centre");
+    if (n.z < 0) B.raw().Reverse(0);
+  }
+  {
+    const ON_3dPoint c = B.raw().PointAt(du.ParameterAt(0.5), dv.ParameterAt(0.5));
+    if (!(c.z > floor_z)) return refuse("the boss does not rise above the floor plane at its parameter centre");
+    for (int i = 0; i <= 64; ++i) {
+      const double t = i / 64.0;
+      const ON_3dPoint e[4] = {B.raw().PointAt(du.ParameterAt(t), dv.Min()), B.raw().PointAt(du.ParameterAt(t), dv.Max()),
+                               B.raw().PointAt(du.Min(), dv.ParameterAt(t)), B.raw().PointAt(du.Max(), dv.ParameterAt(t))};
+      for (const ON_3dPoint& p : e)
+        if (!(p.z < floor_z)) return refuse("the boss reaches the floor plane or rises above it along its parameter boundary: it must lie below the floor all around so that its intersection with the floor is a closed rim inside its domain");
+    }
+    ON_BoundingBox bb;
+    B.raw().GetBoundingBox(bb);
+    const double m = 4.0 * radius;
+    if (bb.m_min.x < x0 + m || bb.m_max.x > x1 - m || bb.m_min.y < y0 + m || bb.m_max.y > y1 - m)
+      return refuse("the boss's footprint (plus four ball radii) does not lie inside the slab rectangle");
+  }
+
+  // The floor: a bilinear patch over the slab rectangle, parameterised by (x, y) so its parameter space IS the plane.
+  NurbsSurface F;
+  {
+    const std::vector<Point3d> g = {Point3d(x0, y0, floor_z), Point3d(x0, y1, floor_z), Point3d(x1, y0, floor_z), Point3d(x1, y1, floor_z)};
+    F = NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
+    F.raw().SetDomain(0, x0, x1);
+    F.raw().SetDomain(1, y0, y1);
+  }
+  SurfaceFilletOptions opt;
+  opt.side_a = +1;  // the ball sits above the floor ...
+  opt.side_b = +1;  // ... and outside the boss (its normal points up/outwards)
+  out.fillet = FilletSurfaces(F, B, radius, tolerance, opt);
+  if (out.fillet.status != Result::Ok) return refuse("the blend failed: " + out.fillet.reason);
+  const SurfaceFillet& fl = out.fillet;
+  if (!fl.closed) return refuse("the floor and the boss do not meet along a closed rim");
+
+  // --- orientation: the blend's normal must point at the ball centre (out of the solid) ---
+  ON_NurbsSurface* blend = new ON_NurbsSurface(fl.blend.raw());
+  bool ru = false;
+  {
+    double score = 0;
+    const ON_Interval bu = blend->Domain(0);
+    for (int i = 0; i < 24; ++i) {
+      const double s = bu.ParameterAt((i + 0.5) / 24.0);
+      ON_3dPoint P;
+      ON_3dVector n;
+      if (!blend->EvNormal(s, 0.5, P, n)) { delete blend; return refuse("the blend has a singular normal"); }
+      ON_3dPoint C = fl.centre.raw().PointAt(s);
+      score += n * (C - P);
+    }
+    if (score < 0) { blend->Reverse(0); ru = true; }
+  }
+  const ON_Interval cd = fl.contact_a.raw().Domain();
+  const double s0 = cd.Min(), s1 = cd.Max();
+
+  // --- B-rep ---
+  ON_Brep br;
+  const double zt = floor_z, zb = floor_z - depth;
+  const ON_3dPoint corner[8] = {ON_3dPoint(x0, y0, zb), ON_3dPoint(x1, y0, zb), ON_3dPoint(x1, y1, zb), ON_3dPoint(x0, y1, zb),
+                                ON_3dPoint(x0, y0, zt), ON_3dPoint(x1, y0, zt), ON_3dPoint(x1, y1, zt), ON_3dPoint(x0, y1, zt)};
+  int cv[8];
+  for (int i = 0; i < 8; ++i) cv[i] = br.NewVertex(corner[i], 0.0).m_vertex_index;
+  std::map<std::pair<int, int>, int> line_edge;
+  auto get_edge = [&](int a, int b) {
+    const std::pair<int, int> key(std::min(a, b), std::max(a, b));
+    auto it = line_edge.find(key);
+    if (it != line_edge.end()) return it->second;
+    const int ci = br.AddEdgeCurve(new ON_LineCurve(corner[key.first], corner[key.second]));
+    const int ei = br.NewEdge(br.m_V[cv[key.first]], br.m_V[cv[key.second]], ci).m_edge_index;
+    line_edge[key] = ei;
+    return ei;
+  };
+  // A planar face through the corner indices (counter-clockwise seen from outside); `plane` fixes the (u, v) chart.
+  auto plane_face = [&](const int* ids, const ON_Plane& plane, const ON_Interval& ue, const ON_Interval& ve) {
+    ON_PlaneSurface* ps = new ON_PlaneSurface(plane);
+    ps->SetExtents(0, ue, true);
+    ps->SetExtents(1, ve, true);
+    const int si = br.AddSurface(ps);
+    const int fi = br.NewFace(si).m_face_index;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    for (int k = 0; k < 4; ++k) {
+      const int a = ids[k], b = ids[(k + 1) % 4];
+      const int ei = get_edge(a, b);
+      const bool rev = (br.m_E[ei].m_vi[0] != cv[a]);
+      const ON_3dVector pa = corner[a] - plane.origin, pb = corner[b] - plane.origin;
+      const int c2 = br.AddTrimCurve(new ON_LineCurve(ON_2dPoint(pa * plane.xaxis, pa * plane.yaxis), ON_2dPoint(pb * plane.xaxis, pb * plane.yaxis)));
+      br.NewTrim(br.m_E[ei], rev, br.m_L[lo], c2);
+    }
+    return fi;
+  };
+  auto face_plane = [&](const int* ids) {
+    const ON_3dPoint o = corner[ids[0]];
+    ON_3dVector X = corner[ids[1]] - o, Y = corner[ids[3]] - o;
+    X.Unitize();
+    Y.Unitize();
+    return ON_Plane(o, X, Y);
+  };
+  auto face_extents = [&](const int* ids, ON_Interval& ue, ON_Interval& ve) {
+    ue = ON_Interval(0.0, corner[ids[0]].DistanceTo(corner[ids[1]]));
+    ve = ON_Interval(0.0, corner[ids[0]].DistanceTo(corner[ids[3]]));
+  };
+  const int f_bottom[4] = {0, 3, 2, 1}, f_front[4] = {0, 1, 5, 4}, f_right[4] = {1, 2, 6, 5}, f_back[4] = {2, 3, 7, 6}, f_left[4] = {3, 0, 4, 7};
+  const int f_top[4] = {4, 5, 6, 7};
+  for (const int* ids : {f_bottom, f_front, f_right, f_back, f_left}) {
+    ON_Interval ue, ve;
+    face_extents(ids, ue, ve);
+    plane_face(ids, face_plane(ids), ue, ve);
+  }
+  // Top: chart (x, y) so the hole's trim is simply the contact curve's (x, y).
+  const int top_face = plane_face(f_top, ON_Plane(ON_3dPoint(0, 0, zt), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), ON_Interval(x0, x1), ON_Interval(y0, y1));
+
+  // Rim edges, the seam arc and the surfaces.
+  ON_NurbsCurve* ca = new ON_NurbsCurve(fl.contact_a.raw());
+  ON_NurbsCurve* cb = new ON_NurbsCurve(fl.contact_b.raw());
+  const ON_3dPoint pa0 = blend->PointAt(blend->Domain(0).Min(), 0.0), pb0 = blend->PointAt(blend->Domain(0).Min(), 1.0);
+  const int v_a = br.NewVertex(pa0, 0.0).m_vertex_index, v_b = br.NewVertex(pb0, 0.0).m_vertex_index;
+  const int e_a = br.NewEdge(br.m_V[v_a], br.m_V[v_a], br.AddEdgeCurve(ca)).m_edge_index;
+  const int e_b = br.NewEdge(br.m_V[v_b], br.m_V[v_b], br.AddEdgeCurve(cb)).m_edge_index;
+  // The seam arc: the blend's own u = u_min isocurve (checked below against its end points).
+  ON_Curve* seam = blend->IsoCurve(1, blend->Domain(0).Min());
+  if (!seam) { delete blend; return refuse("could not extract the blend's seam arc"); }
+  {
+    const ON_3dPoint q0 = seam->PointAt(seam->Domain().Min()), q1 = seam->PointAt(seam->Domain().Max());
+    if (!(q0.DistanceTo(pa0) < 1e-9 * std::max(1.0, pa0.MaximumCoordinate()) && q1.DistanceTo(pb0) < 1e-9 * std::max(1.0, pb0.MaximumCoordinate()))) {
+      delete seam;
+      seam = blend->IsoCurve(0, blend->Domain(0).Min());
+      if (!seam) { delete blend; return refuse("could not extract the blend's seam arc"); }
+      const ON_3dPoint r0 = seam->PointAt(seam->Domain().Min()), r1 = seam->PointAt(seam->Domain().Max());
+      if (!(r0.DistanceTo(pa0) < 1e-9 * std::max(1.0, pa0.MaximumCoordinate()) && r1.DistanceTo(pb0) < 1e-9 * std::max(1.0, pb0.MaximumCoordinate()))) {
+        delete seam; delete blend;
+        return refuse("the blend's seam isocurve does not run from the floor contact to the boss contact");
+      }
+    }
+  }
+  seam->SetDomain(0.0, 1.0);
+  const int e_seam = br.NewEdge(br.m_V[v_a], br.m_V[v_b], br.AddEdgeCurve(seam)).m_edge_index;
+  const int s_blend = br.AddSurface(blend);
+  const int s_boss = br.AddSurface(new ON_NurbsSurface(B.raw()));
+
+  auto line2 = [&](double a0, double b0, double a1, double b1, double t0, double t1) {
+    ON_LineCurve* c = new ON_LineCurve(ON_2dPoint(a0, b0), ON_2dPoint(a1, b1));
+    c->SetDomain(t0, t1);
+    return c;
+  };
+  auto trim = [&](int loop_index, int e, bool rev, ON_Curve* c2) {
+    const int c2i = br.AddTrimCurve(c2);
+    br.NewTrim(br.m_E[e], rev, br.m_L[loop_index], c2i);
+  };
+  // Floor hole: the blend runs along e_a in the +u direction (+s unless reversed); the floor goes the other way round.
+  const bool floor_plus_s = ru;  // the floor's traversal of e_a, in terms of the edge's own direction
+  {
+    ON_NurbsCurve* h = new ON_NurbsCurve(fl.trim_a.raw());
+    if (!floor_plus_s) h->Reverse();
+    const double area = SignedArea2d(*h);
+    if (!(area < 0)) { delete h; return refuse("internal orientation check failed: the floor's hole loop is not clockwise"); }
+    const int hi = br.NewLoop(ON_BrepLoop::inner, br.m_F[top_face]).m_loop_index;
+    trim(hi, e_a, !floor_plus_s, h);
+  }
+  // Blend face.
+  int blend_face = -1;
+  {
+    const int fi = br.NewFace(s_blend).m_face_index;
+    blend_face = fi;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    trim(lo, e_a, ru, line2(s0, 0, s1, 0, s0, s1));
+    trim(lo, e_seam, false, line2(s1, 0, s1, 1, 0, 1));
+    trim(lo, e_b, !ru, line2(s1, 1, s0, 1, s0, s1));
+    trim(lo, e_seam, true, line2(s0, 1, s0, 0, 0, 1));
+  }
+  // Boss face: one outer loop, the contact curve in the boss's own chart.
+  int boss_face = -1;
+  {
+    const int fi = br.NewFace(s_boss).m_face_index;
+    boss_face = fi;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    ON_NurbsCurve* h = new ON_NurbsCurve(fl.trim_b.raw());
+    const bool rev = ru;  // boss traverses e_b opposite to the blend's top edge (-u')
+    if (rev) h->Reverse();
+    const double area = SignedArea2d(*h);
+    if (!(area > 0)) { delete h; return refuse("internal orientation check failed: the boss's outer loop is not counter-clockwise"); }
+    trim(lo, e_b, rev, h);
+  }
+  br.SetTrimIsoFlags();
+  br.SetTrimTypeFlags();
+  double worst_edge_gap = 0;
+  for (int ei = 0; ei < br.m_E.Count(); ++ei) {
+    ON_BrepEdge& e = br.m_E[ei];
+    double gap = 0;
+    const ON_Interval ed = e.Domain();
+    for (int k = 0; k < e.m_ti.Count(); ++k) {
+      const ON_BrepTrim& tr = br.m_T[e.m_ti[k]];
+      const ON_Surface* srf = br.m_F[br.m_L[tr.m_li].m_fi].SurfaceOf();
+      const ON_Interval td = tr.Domain();
+      for (int j = 0; j <= 64; ++j) {
+        const double f = j / 64.0;
+        const ON_2dPoint uv = tr.PointAt(td.ParameterAt(f));
+        const double ep = ed.ParameterAt(tr.m_bRev3d ? 1.0 - f : f);
+        gap = std::max(gap, srf->PointAt(uv.x, uv.y).DistanceTo(e.PointAt(ep)));
+      }
+    }
+    e.m_tolerance = gap;
+    worst_edge_gap = std::max(worst_edge_gap, gap);
+  }
+  br.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  if (br.SolidOrientation() < 0) br.Flip();
+  out.solid.raw() = br;
+  out.floor_face = top_face;
+  out.blend_face = blend_face;
+  out.boss_face = boss_face;
+  out.edge_gap = worst_edge_gap;
+  ON_wString log_text;
+  ON_TextLog log(log_text);
+  const bool valid = out.solid.raw().IsValid(&log), solid = out.solid.raw().IsSolid();
+  if (!valid || !solid) {
+    const ON_String log_utf8(log_text);
+    std::string txt = log_utf8.Array() ? std::string(log_utf8.Array()) : std::string();
+    if (txt.size() > 400) txt.resize(400);
+    out.solid = Brep();
+    return refuse("the assembled pieces did not form a valid closed solid (IsValid=" + std::to_string(valid) + ", IsSolid=" + std::to_string(solid) + "): " + txt);
+  }
+  out.status = Result::Ok;
+  out.reason.clear();
+  return out;
 }
 
 }  // namespace dino8::kernel
