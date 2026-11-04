@@ -2417,13 +2417,38 @@ Brep ChamferCapRimAngle(const Brep& solid, Point3d point_on_rim, double distance
 // cylinder face (exactly one of the two faces at the rim must be planar), producing an exact cone / plane bevel.
 //
 // Refusals (std::invalid_argument with the reason; no degraded body): a non-positive / non-finite radius or distance;
-// a solid that is not such a solid of revolution (non-analytic face, non-coaxial cylinder, a cone apex on the axis, a
+// a solid that is not such a solid of revolution (non-analytic face other than the exact torus blend faces, non-coaxial cylinder, a cone apex on the axis, a
 // void or second shell, more than two circles on a face); a point on no rim circle; two tangent faces at the rim
 // (nothing to blend); a blend whose setback is not strictly less than an adjacent face's profile length (it would
-// consume the face); a blend that would reach the axis. NOT checked: collision of the blend with a non-adjacent face
-// of a very narrow profile (the result's IsValid() / IsSolid() gate is the only guard there).
+// consume the face); a blend that would reach the axis; a blended profile whose pieces come within ~2e-6 of the
+// largest radius of a non-adjacent piece (collision with a non-adjacent face of a narrow profile; the profile
+// polyline, arcs in 16 chords, is tested, then the result's IsValid() / IsSolid() gate).
 Brep FilletRevolveRim(const Brep& solid, Point3d point_on_rim, double radius);
 Brep ChamferRevolveRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap);
+
+// Several rims of the same solid in one exact rebuild, each with its own radius / distances. The input solid may
+// already carry the exact torus blend faces and bevel cones that earlier FilletRevolveRim / ChamferRevolveRim (or
+// *Rims) calls produced: a face is read back as a plane, cylinder, cone or torus (ON_Surface::IsTorus; a torus must be
+// the plain minor arc between its two bounding circles), so rims can be blended one call after another (stepped
+// shaft: fillet each step; rounded flange: fillet both rims). Every rim's setbacks are taken from the ORIGINAL profile
+// corner, so the result does not depend on the order the rims are listed in (same B-rep up to face order), and a
+// profile segment shared by two blended corners must hold both setbacks with a positive length left over. Refusals
+// (std::invalid_argument naming the offending rim index) add to the single-rim ones: an empty list, the same rim
+// twice, overlapping setbacks on a shared face ("overlapping setbacks: rims i and j ..."), a rim that is the tangent
+// seam of an earlier blend or borders a torus face (corner against a curved piece), and a blended profile that would
+// run into itself (a blend colliding with a non-adjacent face; checked on the new profile polyline for ALL rim counts).
+// The face count of the result is input + number of rims.
+struct RevolveRimFillet {
+  Point3d point_on_rim;
+  double radius = 0;
+};
+struct RevolveRimChamfer {
+  Point3d point_on_rim;
+  double distance_wall = 0;
+  double distance_cap = 0;
+};
+Brep FilletRevolveRims(const Brep& solid, const std::vector<RevolveRimFillet>& rims);
+Brep ChamferRevolveRims(const Brep& solid, const std::vector<RevolveRimChamfer>& rims);
 
 // --- FilletPipeTee -------------------------------------------------------------
 //
