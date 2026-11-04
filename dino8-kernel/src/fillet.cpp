@@ -2151,6 +2151,47 @@ double InteriorJoinTolerance(double max_sagittaA, double max_deviationB, const s
   return std::max(max_sagittaA, max_deviationB) * (1.0 + 1e-9) + 1e-12 + noise;
 }
 
+// The fillet contact line (rail) on a face must stay on that face: a station whose radius reaches past the face's own
+// far boundary (radius 11 on a 10-wide face) has its contact point OFF the face, and the body assembled from such a
+// rail is a closed, "valid" surface that is not the fillet of anything (and cannot be meshed to a closed volume).
+// Checked per station against the face polygon (ray casting in the face plane; a point within `tol` of the boundary,
+// such as the start of the rail on the end wall's edge, counts as on the face).
+void RefuseRailOffFace(const Brep::PlanarFace& face, const std::vector<Point3d>& rail,
+                       const std::vector<FilletRadiusStation>& stations, bool reversed, double tol, const char* who) {
+  const ON_Plane& pl = face.plane;
+  const size_t n = face.loop.size();
+  std::vector<Point2d> poly(n);
+  for (size_t i = 0; i < n; ++i) {
+    const Vector3d d = face.loop[i] - pl.origin;
+    poly[i] = Point2d(d * pl.xaxis, d * pl.yaxis);
+  }
+  const double slack = std::max(tol, 1e-9);
+  for (size_t k = 0; k < rail.size(); ++k) {
+    const Vector3d d = rail[k] - pl.origin;
+    const double px = d * pl.xaxis, py = d * pl.yaxis;
+    bool inside = false;
+    double best = std::numeric_limits<double>::infinity();
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+      const Point2d& a = poly[j];
+      const Point2d& b = poly[i];
+      if (((a.y > py) != (b.y > py)) && (px < (b.x - a.x) * (py - a.y) / (b.y - a.y) + a.x)) inside = !inside;
+      const double ex = b.x - a.x, ey = b.y - a.y, len2 = ex * ex + ey * ey;
+      const double u = len2 > 0.0 ? std::min(1.0, std::max(0.0, ((px - a.x) * ex + (py - a.y) * ey) / len2)) : 0.0;
+      best = std::min(best, std::hypot(px - (a.x + u * ex), py - (a.y + u * ey)));
+    }
+    if (!inside && best > slack) {
+      const size_t si = reversed ? rail.size() - 1 - k : k;
+      char buf[360];
+      std::snprintf(buf, sizeof buf,
+                    "dino8::kernel::%s: radius too large for this solid's geometry: at t=%.6g (radius %.6g) the fillet "
+                    "contact line leaves the adjacent face by %.4g - the radius law must stay within the face width "
+                    "along the whole edge",
+                    who, stations[si].t, stations[si].radius, best);
+      throw std::invalid_argument(buf);
+    }
+  }
+}
+
 // A tapered cone segment is a patch between two end curves, drawn in the cone's own (angle, axial height) plane: its
 // first end (cap0) must lie strictly below its second end (cap1) at EVERY angle, or the patch folds over itself and its
 // trim polygon is self-intersecting (the B-rep is still assembled, but it cannot be tessellated, meshed or measured -
@@ -2403,6 +2444,8 @@ Brep BuildMultiStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d 
   railJ_pts.reserve(n_stations);
   for (size_t k = 0; k < n_stations; ++k) railI_pts.push_back(rail_i(stations[k].t));
   for (size_t k = n_stations; k-- > 0;) railJ_pts.push_back(rail_j(stations[k].t));
+  RefuseRailOffFace(faces[static_cast<size_t>(idx_i)], railI_pts, stations, false, tol, "FilletConvexEdgeTapered");
+  RefuseRailOffFace(faces[static_cast<size_t>(idx_j)], railJ_pts, stations, true, tol, "FilletConvexEdgeTapered");
 
   Brep::PlanarFace retrimmed_i = faces[static_cast<size_t>(idx_i)];
   retrimmed_i.loop = SpliceLoopEdge(retrimmed_i.loop, edge_p0, edge_p1, railI_pts, tol);
@@ -2671,6 +2714,8 @@ Brep BuildMultiStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, P
   railJ_pts.reserve(n_stations);
   for (size_t k = 0; k < n_stations; ++k) railI_pts.push_back(rail_i(stations[k].t));
   for (size_t k = n_stations; k-- > 0;) railJ_pts.push_back(rail_j(stations[k].t));
+  RefuseRailOffFace(faces[static_cast<size_t>(idx_i)], railI_pts, stations, false, tol, "FilletConcaveEdgeTapered");
+  RefuseRailOffFace(faces[static_cast<size_t>(idx_j)], railJ_pts, stations, true, tol, "FilletConcaveEdgeTapered");
 
   Brep::PlanarFace retrimmed_i = faces[static_cast<size_t>(idx_i)];
   if (loop_has_consecutive(idx_i, edge_p0, edge_p1)) {

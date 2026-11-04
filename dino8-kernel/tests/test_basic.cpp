@@ -99033,6 +99033,30 @@ void TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatable
   Check(why.empty(), ("[quadratic law] is not refused: " + why).c_str());
 }
 
+// A radius law whose radius outgrows the face it is rolling on (radius 11 or 12 on a 10-wide face) used to build: the
+// contact line left the face, and the result was a "valid" closed B-rep that is the fillet of nothing (measured before
+// the refusal existed: IsValid/IsManifold/IsSolid all true for 6 -> 12 and 3 -> 11 over a 10 x 10 x 60 box). A law that
+// stays inside the face width (3 -> 9.5) must still build.
+void TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation() {
+  const double L = 60.0;
+  const auto law_between = [](double a, double b) { return [=](double s) { return a + (b - a) * s * s * (3.0 - 2.0 * s); }; };
+  for (const std::pair<double, double>& ab : {std::make_pair(6.0, 12.0), std::make_pair(3.0, 11.0)}) {
+    const std::string tag = "[smooth " + std::to_string(static_cast<int>(ab.first)) + " -> " + std::to_string(static_cast<int>(ab.second)) + " on a 10-wide box] ";
+    const std::string why = Why([&] {
+      (void)FilletConvexEdgeLaw(Brep::Box(0, 0, 0, 10, 10, L), Point3d(10, 10, 0), Point3d(10, 10, L), law_between(ab.first, ab.second), 0.06);
+    });
+    Check(Has(why.c_str(), "radius too large for this solid") && Has(why.c_str(), "contact line leaves the adjacent face"),
+          (tag + "is refused naming the radius and the face: " + why).c_str());
+  }
+  const std::string ok_why = Why([&] {
+    const Brep f = FilletConvexEdgeLaw(Brep::Box(0, 0, 0, 10, 10, L), Point3d(10, 10, 0), Point3d(10, 10, L), law_between(3.0, 9.5), 0.05);
+    bool oriented = false, has_boundary = true;
+    if (!(f.raw().IsValid() && f.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary && f.raw().IsSolid()))
+      throw std::runtime_error("built but is not a valid closed solid");
+  });
+  Check(ok_why.empty(), ("[smooth 3 -> 9.5 on a 10-wide box] still builds a valid solid: " + ok_why).c_str());
+}
+
 }  // namespace blend_law_tests
 
 // ---------------------------------------------------------------------------
@@ -104854,6 +104878,7 @@ int main() {
   RunTest("blend_law_tests::TestLawRefusalsStateTheirReason", blend_law_tests::TestLawRefusalsStateTheirReason);
   RunTest("blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls", blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls);
   RunTest("blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody", blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody);
+  RunTest("blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation", blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation);
   RunTest("blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin", blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin);
 
   RunTest("units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions", units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions);
