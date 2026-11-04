@@ -6545,9 +6545,190 @@ std::optional<SceneObject> RebuildSurfaceFillet(CommandContext& ctx, const Histo
   return SceneObject::MakeSurface(k);
 }
 
+// ---------------------------------------------------------------------------
+// FilletSurfaces: the kernel's tolerance-bounded constant-radius rolling-ball blend (kernel::FilletSurfaces) between two
+// freeform surfaces / polysurface faces. Builds the blend PATCH only (a new surface object); the parents are NOT trimmed and
+// no solid is made. The two picks choose the ball sides; the measured deviation, interval count, normal alignment and the
+// trimmed ends are printed from the kernel's own result; a refusal prints the kernel's reason and builds nothing.
+// ---------------------------------------------------------------------------
+
+static std::string FsSci(double v) {
+  char b[48];
+  std::snprintf(b, sizeof(b), "%.3e", v);
+  return b;
+}
+static std::string FsPt(const Point3d& p) {
+  char b[128];
+  std::snprintf(b, sizeof(b), "%.6f,%.6f,%.6f", p.x, p.y, p.z);
+  return b;
+}
+static std::string FsSide(int s) { return s > 0 ? "+1 (along the surface normal)" : "-1 (against the surface normal)"; }
+
+// Which side of `s` faces `target`: +1 when the surface normal at the point of `s` closest to `pick` has a positive component
+// towards `target`, -1 when negative; 0 when `target` lies in the tangent plane there (the side is then ambiguous).
+static int FsBallSide(const kernel::NurbsSurface& s, Point3d pick, Point3d target) {
+  const kernel::Point2d uv = s.ClosestPointParameter(pick, 40, 40);
+  const Point3d q = s.PointAt(uv.x, uv.y);
+  const Vector3d n = s.NormalAt(uv.x, uv.y);
+  const Vector3d d = target - q;
+  const double len = d.Length();
+  if (!(len > 1e-12)) return 0;
+  const double c = (n * d) / len;
+  if (std::abs(c) < 1e-6) return 0;
+  return c > 0 ? 1 : -1;
+}
+
+// The construction shared by the command and the history rebuild.
+static kernel::SurfaceFillet FsRunKernel(const ON_NurbsSurface& sa, const ON_NurbsSurface& sb, int side_a, int side_b, double radius, double tolerance) {
+  kernel::NurbsSurface ka, kb;
+  ka.raw() = sa;
+  kb.raw() = sb;
+  kernel::SurfaceFilletOptions o;
+  o.side_a = side_a;
+  o.side_b = side_b;
+  try {
+    return kernel::FilletSurfaces(ka, kb, radius, tolerance, o);
+  } catch (const std::exception& ex) {
+    kernel::SurfaceFillet f;
+    f.reason = std::string("the kernel threw: ") + ex.what();
+    return f;
+  }
+}
+
+// Largest distance from n + 1 points along `c` to the surface `s` (global closest point search), independent of the kernel's own
+// report of its contact curves.
+static double FsContactGap(const kernel::NurbsCurve& c, const kernel::NurbsSurface& s, int n) {
+  const kernel::Interval d = c.Domain();
+  double worst = 0;
+  for (int i = 0; i <= n; ++i) {
+    const Point3d p = c.PointAt(d.min + (d.max - d.min) * static_cast<double>(i) / n);
+    const kernel::Point2d uv = s.ClosestPointParameter(p, 40, 40);
+    worst = std::max(worst, s.PointAt(uv.x, uv.y).DistanceTo(p));
+  }
+  return worst;
+}
+
+class FilletSurfacesCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    tolerance_ = std::max(ctx.Settings().absolute_tolerance, 1e-12);
+    options = {{"Radius", FormatNumber(radius_), {}, true, false}, {"Tolerance", FormatNumber(tolerance_), {}, true, false}};
+    WantPoint("Click the first surface (the ball sits on the side facing the second pick); options Radius= and Tolerance= (default: document tolerance)");
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    const double x = std::atof(v.c_str());
+    if (n == "Radius") {
+      if (!(x > 0) || !std::isfinite(x)) { ctx.Warn("FilletSurfaces: Radius must be a positive number (kept " + FormatNumber(radius_) + ")"); return; }
+      radius_ = x;
+    }
+    if (n == "Tolerance") {
+      if (!(x > 0) || !std::isfinite(x)) { ctx.Warn("FilletSurfaces: Tolerance must be a positive number (kept " + FormatNumber(tolerance_) + ")"); return; }
+      tolerance_ = x;
+    }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!first_) {
+      first_ = PickFace(ctx, p);
+      if (!first_) { ctx.Warn("No surface near that point"); return; }
+      first_pt_ = p;
+      WantPoint("Click the second surface");
+      return;
+    }
+    std::optional<FacePick> second = PickFace(ctx, p);
+    if (!second) { ctx.Warn("No surface near that point"); return; }
+    Run(ctx, *first_, first_pt_, *second, p);
+    Finish();
+  }
+
+ private:
+  void Run(CommandContext& ctx, const FacePick& fa, Point3d pa, const FacePick& fb, Point3d pb) {
+    const std::string head = "FilletSurfaces: ";
+    if (fa.id == fb.id && fa.face == fb.face) {
+      ctx.Warn(head + "refused - both picks are the same surface (object " + std::to_string(fa.id) + ", face " + std::to_string(fa.face) +
+               "); a fillet needs two different surfaces; nothing was built");
+      return;
+    }
+    const SceneObject *oa = ctx.Doc().Find(fa.id), *ob = ctx.Doc().Find(fb.id);
+    if (!oa || !ob) return;
+    std::optional<ON_NurbsSurface> sa = SurfaceOfObject(*oa, fa.face), sb = SurfaceOfObject(*ob, fb.face);
+    if (!sa || !sb) { ctx.Warn(head + "refused - could not read the underlying surfaces; nothing was built"); return; }
+    kernel::NurbsSurface ka, kb;
+    ka.raw() = *sa;
+    kb.raw() = *sb;
+    // Ball sides: each surface's side that faces the OTHER pick's closest point on its own surface.
+    const kernel::Point2d uva = ka.ClosestPointParameter(pa, 40, 40), uvb = kb.ClosestPointParameter(pb, 40, 40);
+    const Point3d qa = ka.PointAt(uva.x, uva.y), qb = kb.PointAt(uvb.x, uvb.y);
+    const int side_a = FsBallSide(ka, pa, qb), side_b = FsBallSide(kb, pb, qa);
+    if (side_a == 0 || side_b == 0) {
+      ctx.Warn(head + "refused - the ball side of " + std::string(side_a == 0 ? "the first" : "the second") +
+               " surface is ambiguous (the other pick lies in its tangent plane); pick the two surfaces farther from their meeting curve; nothing was built");
+      return;
+    }
+    ctx.Print(head + "ball sides chosen from the picks - object " + std::to_string(fa.id) + " face " + std::to_string(fa.face) + ": side " + FsSide(side_a) +
+              " (facing the second pick); object " + std::to_string(fb.id) + " face " + std::to_string(fb.face) + ": side " + FsSide(side_b) + " (facing the first pick)");
+    const kernel::SurfaceFillet f = FsRunKernel(*sa, *sb, side_a, side_b, radius_, tolerance_);
+    if (f.status != kernel::Result::Ok || !f.blend.raw().IsValid()) {
+      ctx.Warn(head + "refused - " + (f.reason.empty() ? std::string("no blend") : f.reason) + "; nothing was built");
+      return;
+    }
+    const double gap_a = FsContactGap(f.contact_a, ka, 32), gap_b = FsContactGap(f.contact_b, kb, 32);
+    ctx.Doc().BeginChange("FilletSurfaces");
+    const ObjectId nid = AddSurfaceFrom(ctx, f.blend.raw(), *oa);
+    ctx.Doc().Select(nid, true);
+    RecordHistoryIfEnabled(ctx, nid, "FilletSurfaces", {fa.id, fb.id},
+                           {{"face_a", static_cast<double>(fa.face)}, {"face_b", static_cast<double>(fb.face)}, {"side_a", static_cast<double>(side_a)},
+                            {"side_b", static_cast<double>(side_b)}, {"r", radius_}, {"tol", tolerance_}});
+    ctx.Print(head + "blend patch added as object " + std::to_string(nid) + " between object " + std::to_string(fa.id) + " and object " + std::to_string(fb.id) +
+              " (radius " + FormatNumber(radius_) + ", tolerance " + FsSci(tolerance_) + "): a rational cubic x quadratic NURBS patch, no solid");
+    ctx.Print(head + "MEASURED deviation " + FsSci(f.deviation) + " (sampled max distance to the exact rolling-ball surface, tolerance " + FsSci(tolerance_) +
+              ") over " + std::to_string(f.intervals) + " intervals; station deviation " + FsSci(f.station_deviation));
+    ctx.Print(head + "normal alignment " + FsSci(f.min_normal_alignment) + " (smallest |cos| of the blend normal against the ball direction, 1 = exact); largest radius x curvature " +
+              FormatNumber(f.max_radius_times_curvature));
+    ctx.Print(head + "start trim " + FsSci(f.start_trim) + ", end trim " + FsSci(f.end_trim) + " (length of the intersection curve not covered at each end, where the contact points would leave a surface's domain)");
+    ctx.Print(head + "contact curves measured against the parents (32 samples each): on object " + std::to_string(fa.id) + " " + FsSci(gap_a) + ", on object " +
+              std::to_string(fb.id) + " " + FsSci(gap_b));
+    const kernel::Interval da = f.contact_a.Domain(), db = f.contact_b.Domain();
+    ctx.Print(head + "contact A points " + FsPt(f.contact_a.PointAt(da.min)) + " " + FsPt(f.contact_a.PointAt(0.5 * (da.min + da.max))) + " " + FsPt(f.contact_a.PointAt(da.max)));
+    ctx.Print(head + "contact B points " + FsPt(f.contact_b.PointAt(db.min)) + " " + FsPt(f.contact_b.PointAt(0.5 * (db.min + db.max))) + " " + FsPt(f.contact_b.PointAt(db.max)));
+    ctx.Print(head + "the two parent surfaces are NOT trimmed back to the contact curves (this command builds the blend patch only; faces are used as their untrimmed underlying surfaces)");
+  }
+
+  std::optional<FacePick> first_;
+  Point3d first_pt_{0, 0, 0};
+  double radius_ = 1.0;
+  double tolerance_ = 1e-3;
+};
+
+// FilletSurfaces re-execution (history_rebuild.h): the same two faces' CURRENT surfaces, the recorded ball sides, radius and
+// tolerance. Refuses with the kernel's reason; the old patch is then kept.
+std::optional<SceneObject> RebuildKernelSurfaceFillet(CommandContext&, const HistoryInputs& in, const HistoryRecord& rec, std::string& why) {
+  if (in.size() != 2) { why = "expected 2 source objects, the record has " + std::to_string(in.size()); return std::nullopt; }
+  auto num = [&](const char* k) { const auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  std::optional<ON_NurbsSurface> sa, sb;
+  for (int k = 0; k < 2; ++k) {
+    const SceneObject& o = *in[k];
+    const int face = static_cast<int>(num(k == 0 ? "face_a" : "face_b"));
+    if (o.kind != ObjectKind::Surface && o.kind != ObjectKind::Brep) {
+      why = "source object " + std::to_string(o.id) + " is " + HistoryKindName(o.kind) + ", not a surface or polysurface";
+      return std::nullopt;
+    }
+    std::optional<ON_NurbsSurface> s = SurfaceOfObject(o, face);
+    if (!s) { why = "source object " + std::to_string(o.id) + " has no face " + std::to_string(face) + " any more"; return std::nullopt; }
+    (k == 0 ? sa : sb) = s;
+  }
+  const kernel::SurfaceFillet f = FsRunKernel(*sa, *sb, num("side_a") < 0 ? -1 : 1, num("side_b") < 0 ? -1 : 1, num("r"), num("tol"));
+  if (f.status != kernel::Result::Ok || !f.blend.raw().IsValid()) {
+    why = "FilletSurfaces refused on the sources' current shapes: " + (f.reason.empty() ? std::string("no blend") : f.reason);
+    return std::nullopt;
+  }
+  return SceneObject::MakeSurface(f.blend);
+}
+
 void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectAny, 1), CommandStatus::Implemented,
       "Curve/curve and closed-solid pairs as before; surface/surface, brep/brep, curve/surface and brep/curve now use a real mesh-seeded, Newton-refined intersector (SSX/CSX).");
+  Reg(e, "FilletSurfaces", Make<FilletSurfacesCommand>(), CommandStatus::Implemented,
+      "Constant-radius rolling-ball blend PATCH between two freeform surfaces / polysurface faces (kernel::FilletSurfaces): pick surface A, then surface B (each pick chooses the ball side: the side facing the other pick), with Radius= and Tolerance= (default: the document tolerance). Builds a new rational NURBS surface only - the parents are NOT trimmed and no solid is made (there is no Trim option: trimming both parents exactly back to the contact curves is not available). Prints the sampled deviation from the exact rolling-ball surface (<= Tolerance), the interval count, the smallest blend-normal alignment, the start/end trim (intersection-curve length not covered) and the contact curves measured against the parents. Needs one open intersection curve; refuses with the kernel's reason (parallel / separated surfaces, radius too large for the geometry or a local curvature, tangent or back-to-back surfaces, closed or multiple intersection curves, tolerance not reachable) and builds nothing. With History On the patch is recorded {surface A, surface B} + faces + ball sides + radius + tolerance and follows edits of either parent.");
   Reg(e, "FilletSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::Fillet), CommandStatus::Implemented,
       "Rolling-ball fillet via offset+SSX+exact contact arcs; real planar trim when both inputs are planar, otherwise left untrimmed. With History On and Trim=No (the sources stay untouched) the result is recorded {surface A, surface B} + faces + radii and rebuilt when either surface is edited (EditHistory radius=/endradius=); Trim=Yes cuts the sources and is not recorded (the reason is printed).");
   Reg(e, "ChamferSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::Chamfer), CommandStatus::Implemented,

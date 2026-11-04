@@ -1,0 +1,265 @@
+# FilletSurfaces: kernel::FilletSurfaces wired into the app (tests/smoke.sh section FSR_, at the end of smoke.sh).
+# A constant-radius rolling-ball blend PATCH between two surfaces: a new surface object, the parents are left alone. The two picks
+# choose the ball sides. Every case starts from `New` and is bracketed by a marker line ("FSRBEGIN_<name>", an unknown command)
+# that smoke.sh uses to slice this script's output into per-case blocks.
+#
+# Fixtures
+#  floor/wall planes (analytic): floor z = 0, x 0..20, y 0..10; wall x = 0, y 0..10, z 0..10. Radius r ball in the corner: centre
+#    line x = r, z = r, contacts (r, y, 0) and (0, y, r); the blend is a quarter cylinder with bounding box x 0..r, z 0..r.
+#  curved: a floor lofted through 4 control-point sections (z = 0.3 sin(x/3) cos(y/4) at the CVs) and a leaning wavy wall lofted
+#    through 4 sections (x = 4 + 0.4 sin(y/2) + 0.1 z), crossing the floor near x = 4.3.
+SetActiveViewport Top
+
+# ===== analytic: plane floor + plane wall, r = 1
+New
+FSRBEGIN_plane
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSurfaces
+Radius=1
+15,5,0
+0,5,8
+SelAll
+List
+SelLast
+BoundingBox
+SelNone
+SelID 1
+BoundingBox
+SelNone
+SelID 2
+BoundingBox
+
+# ===== curved: lofted floor + lofted wall, r = 0.8, tolerance 1e-4
+New
+FSRBEGIN_curved
+Curve 0,0,0.0000 0,2.5,0.0000 0,5,0.0000 0,7.5,-0.0000 0,10,-0.0000 Enter
+Curve 7,0,0.2169 7,2.5,0.1759 7,5,0.0684 7,7.5,-0.0650 7,10,-0.1738 Enter
+Curve 14,0,-0.2997 14,2.5,-0.2430 14,5,-0.0945 14,7.5,0.0898 14,10,0.2401 Enter
+Curve 20,0,0.1122 20,2.5,0.0910 20,5,0.0354 20,7.5,-0.0336 20,10,-0.0899 Enter
+SelNone
+SelCrv
+Loft
+SelCrv
+Delete
+Curve 3.9,0,-1 4.2796,2.5,-1 4.1394,5,-1 3.6714,7.5,-1 3.5164,10,-1 Enter
+Curve 4.2,0,2 4.5796,2.5,2 4.4394,5,2 3.9714,7.5,2 3.8164,10,2 Enter
+Curve 4.5,0,5 4.8796,2.5,5 4.7394,5,5 4.2714,7.5,5 4.1164,10,5 Enter
+Curve 4.8,0,8 5.1796,2.5,8 5.0394,5,8 4.5714,7.5,8 4.4164,10,8 Enter
+SelNone
+SelCrv
+Loft
+SelCrv
+Delete
+SelAll
+List
+FilletSurfaces
+Radius=0.8
+Tolerance=0.0001
+14,5,0
+4.6,5,6
+SelAll
+List
+SelNone
+SelLast
+BoundingBox
+
+FSRBEGIN_curved_ref_big
+FilletSurfaces
+Radius=40
+14,5,0
+4.6,5,6
+SelAll
+List
+FSRBEGIN_curved_ref_tol
+FilletSurfaces
+Radius=0.8
+Tolerance=1e-14
+14,5,0
+4.6,5,6
+SelAll
+List
+FSRBEGIN_curved_under
+FilletSurfaces
+Radius=0.3
+Tolerance=0.0001
+14,5,0
+4.4,5,-0.9
+SelAll
+List
+SelNone
+SelLast
+BoundingBox
+
+FSRBEGIN_curved_tol_loose
+FilletSurfaces
+Radius=0.8
+Tolerance=0.001
+14,5,0
+4.6,5,6
+
+FSRBEGIN_curved_tol_tight
+FilletSurfaces
+Radius=0.8
+Tolerance=0.000001
+14,5,0
+4.6,5,6
+
+# ===== refusals: each builds nothing and prints the kernel's reason (object count stays at the two parents)
+# radius far too large for the lofted geometry
+New
+FSRBEGIN_ref_big
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSurfaces
+Radius=40
+15,5,0
+0,5,8
+SelAll
+List
+
+# parallel surfaces (z = 0 and z = 5)
+New
+FSRBEGIN_ref_parallel
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,5 20,0,5 20,10,5
+FilletSurfaces
+Radius=1
+15,5,0
+15,5,5
+SelAll
+List
+
+# the same surface picked twice
+New
+FSRBEGIN_ref_same
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSurfaces
+Radius=1
+15,5,0
+5,5,0
+SelAll
+List
+
+# a non-positive Tolerance is rejected at the option (the default is kept) and the fillet then builds with the default
+New
+FSRBEGIN_opt_zero_tol
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSurfaces
+Radius=1
+Radius=0
+Tolerance=0
+15,5,0
+0,5,8
+SelAll
+List
+
+# ===== History: the patch is recorded {floor, wall} + faces + ball sides + radius + tolerance and follows an edit of either parent
+# Bounding boxes in order: 1 fillet r = 1   2 wall moved +3 X (rebuilt automatically)   3 EditHistory radius=2   4 the SAME r = 2 fillet built fresh (History Off) between the moved surfaces (= 3)
+New
+FSRBEGIN_hist
+History On
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSurfaces
+Radius=1
+15,5,0
+0,5,8
+History
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 2
+Move
+0,0,0
+3,0,0
+SelNone
+SelID 3
+BoundingBox
+EditHistory 3
+EditHistory 3 radius=2
+SelNone
+SelID 3
+BoundingBox
+History Off
+FilletSurfaces
+Radius=2
+15,5,0
+3,5,8
+SelLast
+BoundingBox
+History
+
+# ===== a refused fillet records nothing even with History On
+New
+FSRBEGIN_hist_refused
+History On
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,5 20,0,5 20,10,5
+FilletSurfaces
+Radius=1
+15,5,0
+15,5,5
+History
+
+# ===== a source deleted: the rebuild is refused with the reason and the old patch is kept
+New
+FSRBEGIN_hist_keep
+History On
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSurfaces
+Radius=1
+15,5,0
+0,5,8
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 1
+Delete
+SelNone
+SelID 3
+BoundingBox
+History Off
+
+# ===== negative controls: the existing BlendSrf / FilletEdge / FilletSrf are untouched (same fixtures and windows as H2R_blend, PTF_ctl_box, H3R_fillet)
+New
+FSRBEGIN_ctl_blend
+Plane 0,0,0 10,10,0
+Plane 20,0,0 30,10,0
+BlendSrf
+10,5,0
+20,5,0
+SelLast
+BoundingBox
+
+New
+FSRBEGIN_ctl_filletedge
+Box 0,0,0 6,6,0 4
+FilletEdge
+Radius=1
+6,3,4
+Enter
+SelAll
+List
+Volume
+Check
+
+New
+FSRBEGIN_ctl_filletsrf
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSrf
+Radius=1
+Trim=No
+15,5,0
+0,5,8
+SelLast
+BoundingBox
+Area
+
+FSRBEGIN_end

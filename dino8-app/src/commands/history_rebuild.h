@@ -297,6 +297,11 @@ std::optional<SceneObject> RebuildBlendSrf(CommandContext& ctx, const HistoryInp
 // Refuses, with the reason, when a source has no such face any more or no fillet can be built.
 std::optional<SceneObject> RebuildSurfaceFillet(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
 
+// FilletSurfaces (cmd_fillet.cpp): the kernel's tolerance-bounded rolling-ball blend patch between two surfaces / polysurface faces;
+// sources {A, B} (not consumed, never trimmed); num: face_a, face_b, side_a, side_b (+1/-1 ball sides), r (radius), tol (tolerance).
+// Refuses, with the kernel's reason, when a source has no such face any more or the kernel refuses; the old patch is then kept.
+std::optional<SceneObject> RebuildKernelSurfaceFillet(CommandContext& ctx, const HistoryInputs& inputs, const HistoryRecord& rec, std::string& why);
+
 // Offset (cmd_edit.cpp), curves: NurbsCurve::OffsetInPlane in the curve's own
 // plane, else in the CPlane that was active. Reads num: d (signed),
 // corner (0 Sharp, 1 Round, 2 Chamfer, 3 Smooth), ox,oy,oz / xx,xy,xz /

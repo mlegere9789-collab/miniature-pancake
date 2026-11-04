@@ -452,6 +452,21 @@ void RegisterBuiltinParams() {
                     r.num["sym"] = 0.0;
                     return "";
                   })});
+  SetParams("FilletSurfaces", {
+      NumberParam("radius", "ball radius", "> 0",
+                  [](const HistoryRecord& r) { return NumOf(r, "r"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (!(d > 0.0)) return "radius must be positive";
+                    r.num["r"] = d;
+                    return "";
+                  }),
+      NumberParam("tolerance", "largest allowed sampled deviation of the patch from the exact rolling-ball surface", "> 0",
+                  [](const HistoryRecord& r) { return NumOf(r, "tol"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (!(d > 0.0)) return "tolerance must be positive";
+                    r.num["tol"] = d;
+                    return "";
+                  })});
   for (const char* name : {"FilletSrf", "ChamferSrf"}) {
     SetParams(name, {
         NumberParam("radius", "radius (distance) at the start of the spine; a constant-radius result keeps its end radius equal", "> 0",
@@ -547,6 +562,7 @@ void RegisterBuiltinRebuilders() {
   RegisterHistoryRebuilder("BlendSrf", "BlendSrf between two surface edges (Tangency/Curvature/G3/G4)", RebuildBlendSrf);
   RegisterHistoryRebuilder("FilletSrf", "FilletSrf/VariableFilletSrf between two surfaces (Trim=No, general rolling-ball construction)", RebuildSurfaceFillet);
   RegisterHistoryRebuilder("ChamferSrf", "ChamferSrf/VariableChamferSrf between two surfaces (Trim=No, ruled between the contact curves)", RebuildSurfaceFillet);
+  RegisterHistoryRebuilder("FilletSurfaces", "FilletSurfaces: kernel rolling-ball blend patch between two surfaces (never trims them; ball sides, radius and tolerance recorded)", RebuildKernelSurfaceFillet);
   RegisterHistoryRebuilder("FilletEdge", "FilletEdge of a solid (exact kernel fillet, edges re-found by direction and face normals)", RebuildEdgeBlend);
   RegisterHistoryRebuilder("ChamferEdge", "ChamferEdge of a solid (exact kernel chamfer, edges re-found by direction and face normals)", RebuildEdgeBlend);
   for (const char* name : {"BooleanUnion", "BooleanDifference", "BooleanIntersection", "Boolean2Objects"})
