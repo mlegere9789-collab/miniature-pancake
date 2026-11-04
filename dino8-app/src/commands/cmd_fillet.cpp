@@ -22,6 +22,7 @@
 #include <array>
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
+#include "commands/profiled_hole.h"
 #include "commands/revolved_solid.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/fillet.h"
@@ -3231,6 +3232,39 @@ class FilletEdgeCommand : public Command {
         }
         return;
       }
+    } else if (b && rims.front().prof) {
+      // Rims of a stepped round hole in a prism plate (profiled_hole.h), all blended in ONE rebuild.
+      prism::ProfiledHole ph;
+      std::vector<prism::RimBlendSpec> specs;
+      bool ok = prism::RecognizeProfiledHole(*b, ph, why);
+      for (const PendingRim& r : rims) {
+        if (!ok) break;
+        const int v = prism::FindRimVertex(ph, r.start, tol);
+        if (v < 0) { ok = false; why = "staged rim no longer exists"; break; }
+        bool dup = false;
+        for (prism::RimBlendSpec& sp : specs) if (sp.v == v) { sp.d1 = sp.d2 = r.radius; dup = true; }
+        if (!dup) specs.push_back({v, false, r.radius, r.radius});
+      }
+      ON_Brep out;
+      std::vector<prism::PSeg> psegs;
+      std::optional<ON_Brep> built;
+      if (ok) built = prism::BuildBlendedProfiledHole(ph, specs, &psegs, why);
+      if (built) {
+        out = *built;
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = out;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        std::string radii;
+        for (const prism::RimBlendSpec& sp : specs) radii += (radii.empty() ? "" : ", ") + FormatNumber(sp.d1);
+        ctx.Print(label + ": " + std::to_string(specs.size()) + " rim(s) of the stepped round hole in object " + std::to_string(id) + " replaced with an exact fillet (radius " + radii +
+                   "; exact torus patch" + (specs.size() > 1 ? "es" : "") + " tangent to both faces, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        return;
+      }
     } else if (b && rims.front().rev) {
       // One rim of a polygonal solid of revolution through the kernel (FilletRevolveRim); see Run().
       ON_Brep out;
@@ -3591,6 +3625,38 @@ class FilletEdgeCommand : public Command {
         ctx.Print(label + ": " + std::string(plan.top ? "top" : "bottom") + " rim of cylinder object " + std::to_string(pick.id) +
                    " staged for an exact torus fillet (radius " + FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
         return;
+      }
+      // A rim of a STEPPED round hole in a prism plate (countersink cone + cylinder, counterbore cylinder in cylinder, any
+      // chain of cones / cylinders / annular steps; profiled_hole.h): an exact torus patch on that rim. Dry run now so a
+      // refusal (blend does not fit, reaches the outline) is printed before anything is staged.
+      {
+        prism::ProfiledHole ph;
+        std::string pwhy;
+        if (edge.IsClosed() && prism::RecognizeProfiledHole(*b, ph, pwhy) && ph.pts.size() >= 3) {
+          const int v = prism::FindRimVertex(ph, edge.PointAtStart(), tol);
+          if (v >= 0 && !prism::PlainHoleOwnsRim(ph, v)) {
+            std::string bwhy;
+            if (!prism::BuildBlendedProfiledHole(ph, {prism::RimBlendSpec{v, false, radius_, radius_}}, nullptr, bwhy)) {
+              ctx.Warn(label + ": refused - exact rim fillet of the stepped hole: " + bwhy);
+              return;
+            }
+            if ((!pending_fillet_.empty() && pending_fillet_id_ != pick.id) || (!pending_rims_.empty() && pending_rim_id_ != pick.id)) {
+              ctx.Warn(label + ": an edge on a different object is already staged in this FilletEdge run; press Enter to apply it first, then run FilletEdge again for this object");
+              return;
+            }
+            if (!pending_rims_.empty() && !pending_rims_.front().prof) {
+              ctx.Warn(label + ": a rim of another kind is already staged on this object in this FilletEdge run; press Enter to apply it first");
+              return;
+            }
+            pending_rim_id_ = pick.id;
+            PendingRim pr{edge.PointAtStart(), false, radius_};
+            pr.prof = true;
+            pending_rims_.push_back(pr);
+            ctx.Print(label + ": rim " + std::to_string(v) + " of the stepped round hole in object " + std::to_string(pick.id) + " staged for an exact torus fillet (radius " +
+                       FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
+            return;
+          }
+        }
       }
       // A rim of a cylindrical through-hole in a prism (e.g. a box minus a cylinder): an exact torus patch on the
       // concave wall (ClassifyHolePlateRim / BuildBlendedHolePlate above), staged like the plain-cylinder rims.
@@ -4600,6 +4666,25 @@ class FilletEdgeCommand : public Command {
     // Fifth attempt: a rim of a cylindrical through-hole in a prism (box minus cylinder): an exact conical bevel
     // on the concave wall; distance1 along the wall, distance2 across the end face.
     std::string hole_err = "Distance/Angle mode has no hole-rim construction";
+    // A rim of a STEPPED round hole in a prism plate (countersink / counterbore; profiled_hole.h): an exact cone patch,
+    // distance1 along the wall (or the earlier piece), distance2 across the planar face (or the later piece).
+    if (!use_angle) {
+      prism::ProfiledHole ph;
+      std::string pwhy;
+      if (solid.IsSolid() && prism::RecognizeProfiledHole(solid, ph, pwhy) && ph.pts.size() >= 3) {
+        const int v = prism::FindRimVertex(ph, p0, 1e-5);
+        if (v >= 0 && !prism::PlainHoleOwnsRim(ph, v)) {
+          std::optional<ON_Brep> built = prism::BuildBlendedProfiledHole(ph, {prism::RimBlendSpec{v, true, d_i, d_j}}, nullptr, pwhy);
+          if (built) {
+            out = *built;
+            if (rim_chamfer) *rim_chamfer = true;
+            rim_note_ = "; exact cone patch on rim " + std::to_string(v) + " of the stepped round hole, distance1 " + FormatNumber(d_i) + " along the wall (or earlier piece), distance2 " + FormatNumber(d_j) + " across the planar face (or later piece)";
+            return true;
+          }
+          hole_err = "stepped round hole rim: " + pwhy;
+        }
+      }
+    }
     if (!use_angle) {
       const int ei = FindEdgeIndexByEndpoints(solid, p0, p1, 1e-6);
       HolePlatePlan hplan;
@@ -4774,7 +4859,7 @@ class FilletEdgeCommand : public Command {
   RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
-  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; bool cap = false; bool rev = false; bool tee = false; };
+  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; bool cap = false; bool rev = false; bool tee = false; bool prof = false; };
   mutable std::string rim_note_;  // TryExactChamfer: what the "; exact ..." suffix of a rim-chamfer message says
   std::vector<PendingRim> pending_rims_;  // staged plain-cylinder rim fillets (see Run()/FlushPendingRims)
   ObjectId pending_rim_id_ = kNoObject;
