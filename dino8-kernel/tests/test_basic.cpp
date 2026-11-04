@@ -69540,13 +69540,17 @@ void TestMakeCounterboreHolesTwoHolesMatchSumOfIndividualVolumes() {
           "MakeCounterboreHoles leaves a genuine flat pilot-bore bottom at both centers");
   }
 
-  const Brep sequential = MakeCounterboreHole(MakeCounterboreHole(slab, c1, down, bore_r, bore_depth, false, cb_r, cb_depth),
-                                               c2, down, bore_r, bore_depth, false, cb_r, cb_depth);
-  const Mesh m_batch = drilled.TessellateToClosedMesh(32, 128);
-  const Mesh m_sequential = sequential.TessellateToClosedMesh(32, 128);
-  Check(std::abs(m_batch.Volume() - m_sequential.Volume()) < 0.5,
-        "MakeCounterboreHoles' single-compound-tool construction removes the same volume as two sequential "
-        "MakeCounterboreHole() calls on well-separated holes");
+  // This used to compare the batch mesh volume with a SEQUENTIAL two-call mesh volume within 0.5 and passed with both ~399.6,
+  // while the exact answer is 400 - 2 (pi bore_r^2 (bore_depth - cb_depth) + pi cb_r^2 cb_depth) = 396.607: the engine used to
+  // drop a hole it could not bridge into the face outline (BridgeHolesIntoOuter), so both were short of material removed.
+  // With the holes kept the batch result is a sealed solid whose exact B-rep volume matches the closed form; the sequential
+  // construction (the second cut re-fragments a face that already carries the first hole) is a separate engine limitation
+  // and is deliberately no longer used as the reference.
+  Check(drilled.raw().IsSolid(), "MakeCounterboreHoles (two holes): the batch result is a closed, consistently oriented solid");
+  const double exact_volume = 400.0 - 2.0 * (ON_PI * bore_r * bore_r * (bore_depth - cb_depth) + ON_PI * cb_r * cb_r * cb_depth);
+  Check(drilled.raw().IsSolid() && std::abs(drilled.VolumeOfSealedSolid() - exact_volume) < 0.05,
+        "MakeCounterboreHoles' single-compound-tool construction removes exactly the two stepped holes' volume "
+        "(exact B-rep volume 396.607 to 0.05)");
 }
 
 void TestMakeCounterboreHolesRejectsInvalidArguments() {
