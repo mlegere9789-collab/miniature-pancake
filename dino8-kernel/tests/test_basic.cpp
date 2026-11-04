@@ -97504,6 +97504,348 @@ void TestSurfaceFilletRefusesWithReasonsNeverAPatch() {
 
 }  // namespace surface_fillet_tests
 
+// Adaptive Sweep1 (tolerance + max_stations + Sweep1Report). Every claim here is measured two ways: by the kernel's own
+// measurement (Sweep1Report) and by an INDEPENDENT check in this file that does not use the kernel's reference frames: the
+// exact swept section is written down in closed form (straight rail along z; planar circle rail) or, for free-form rails, a
+// far finer adaptive build stands in for the exact surface, and its points are looked up on the coarse wall with the
+// surface's own closest-point search.
+namespace sweep_adaptive_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using Sched = std::vector<std::pair<double, double>>;
+
+double SchedAt(const Sched& s, double f) {
+  if (f <= s.front().first) return s.front().second;
+  for (size_t i = 1; i < s.size(); ++i) {
+    if (f <= s[i].first) return s[i - 1].second + (f - s[i - 1].first) / (s[i].first - s[i - 1].first) * (s[i].second - s[i - 1].second);
+  }
+  return s.back().second;
+}
+
+NurbsCurve CircleCurve(const ON_3dPoint& center, const ON_3dVector& normal, const ON_3dVector& xdir, double radius) {
+  ON_3dVector n = normal;
+  n.Unitize();
+  ON_3dVector x = xdir - n * ON_DotProduct(xdir, n);
+  x.Unitize();
+  ON_NurbsCurve nurbs;
+  ON_Circle(ON_Plane(center, x, ON_CrossProduct(n, x)), radius).GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+NurbsSurface WallSurface(const Brep& b) {
+  NurbsSurface ns;
+  ns.raw() = *ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+  return ns;
+}
+
+std::string RefusalOf(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    return e.what();
+  }
+  return std::string();
+}
+
+// Independent worst distance from the exact section points to the wall: `exact(f, th)` is the closed-form point of the
+// exact swept section at rail fraction f and section angle th. The fractions are an irrational-step grid (so they hit no
+// station of any build), plus the given breakpoints and a point either side of each.
+double IndependentDeviation(const NurbsSurface& wall, const std::function<ON_3dPoint(double, double)>& exact, const std::vector<double>& breakpoints, int nf = 97,
+                            int nth = 24) {
+  std::vector<double> fs;
+  for (int i = 0; i < nf; ++i) fs.push_back(std::fmod(0.0131 + i * 0.6180339887, 1.0));
+  for (const double b : breakpoints) {
+    fs.push_back(b);
+    fs.push_back(b - 1e-3);
+    fs.push_back(b + 1e-3);
+  }
+  double worst = 0.0;
+  for (const double f : fs) {
+    if (f < 0.0 || f > 1.0) continue;
+    for (int j = 0; j < nth; ++j) {
+      const double th = 2.0 * ON_PI * (j + 0.37) / nth;
+      const ON_3dPoint p = exact(f, th);
+      const Point3d pp(p.x, p.y, p.z);
+      worst = std::max(worst, pp.DistanceTo(wall.ClosestPoint(pp)));
+    }
+  }
+  return worst;
+}
+
+// Straight rail along +z of length L; section: circle of radius 1 centred (0.5, 0.3) in the x-y plane. The exact section
+// at f: the circle's frame coordinates rotated by the twist and scaled (sx, sy) in x, y (z = L f).
+struct StraightCase {
+  double L = 10.0;
+  Sched twist, sx, sy, scale;
+  bool has_twist = false, has_xy = false, has_scale = false;
+  ON_3dPoint Exact(double f, double th) const {
+    double lx = 0.5 + std::cos(th), ly = 0.3 + std::sin(th);
+    if (has_xy) {
+      lx *= SchedAt(sx, f);
+      ly *= SchedAt(sy, f);
+    }
+    if (has_scale) {
+      lx *= SchedAt(scale, f);
+      ly *= SchedAt(scale, f);
+    }
+    if (has_twist) {
+      const double a = SchedAt(twist, f), c = std::cos(a), s = std::sin(a);
+      const double rx = lx * c - ly * s, ry = lx * s + ly * c;
+      lx = rx;
+      ly = ry;
+    }
+    return ON_3dPoint(lx, ly, L * f);
+  }
+};
+
+NurbsCurve StraightRailZ(double L) { return NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, L)}, 1); }
+
+void TestAdaptiveStraightRailKinkedPerAxisScaleMeetsToleranceWhereTheFixedBuildRang() {
+  // The previously reported case: kinked per-axis schedules at 32 stations rang to 0.0098 between stations.
+  StraightCase c;
+  c.has_xy = true;
+  c.sx = {{0.0, 1.0}, {0.4, 2.0}, {1.0, 1.2}};
+  c.sy = {{0.0, 1.0}, {0.7, 0.5}, {1.0, 0.8}};
+  const NurbsCurve section = CircleCurve(ON_3dPoint(0.5, 0.3, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.0);
+  const NurbsCurve rail = StraightRailZ(c.L);
+  const std::vector<double> bps = {0.4, 0.7};
+  const auto exact = [&](double f, double th) { return c.Exact(f, th); };
+
+  Brep::Sweep1Report base;
+  const Brep fixed = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, nullptr, &c.sx, &c.sy, nullptr, 0.0, 512, &base);
+  const double fixed_indep = IndependentDeviation(WallSurface(fixed), exact, bps);
+  std::printf("  [adaptive kinked scale] fixed build, %d stations: kernel-measured max %.4g (stations %.3g, between %.4g, breakpoints %.4g), independent %.4g\n", base.stations, base.max_deviation,
+              base.max_station_deviation, base.max_between_station_deviation, base.max_breakpoint_deviation, fixed_indep);
+  Check(fixed_indep > 5e-3 && base.max_deviation > 5e-3 && !base.met && base.rounds == 1,
+        "adaptive sweep1 (kinked per-axis scale, straight rail): the fixed 32+2-station build measures > 5e-3 between stations by BOTH the kernel measurement and the independent closed form (the ringing, reproduced), nothing refined (1 round)");
+
+  const double tols[4] = {1e-3, 1e-4, 1e-5, 1e-6};
+  int prev_stations = 0;
+  bool all_ok = true, stations_nondec = true;
+  for (const double tol : tols) {
+    Brep::Sweep1Report rep;
+    const Brep body = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, nullptr, &c.sx, &c.sy, nullptr, tol, 512, &rep);
+    const double indep = IndependentDeviation(WallSurface(body), exact, bps);
+    std::printf("  [adaptive kinked scale] tol %.0e: %d stations (started %d, %d rounds, %d C0 corners), kernel max %.3g (st %.3g, between %.3g, bp %.3g), independent %.3g\n", tol, rep.stations,
+                rep.stations_initial, rep.rounds, rep.corner_stations, rep.max_deviation, rep.max_station_deviation, rep.max_between_station_deviation, rep.max_breakpoint_deviation, indep);
+    all_ok = all_ok && rep.met && rep.max_deviation <= tol && indep <= tol && body.raw().IsValid() && body.FaceCount() == 1;
+    stations_nondec = stations_nondec && rep.stations >= prev_stations;
+    prev_stations = rep.stations;
+  }
+  Check(all_ok, "adaptive sweep1 (kinked per-axis scale, straight rail): tolerance 1e-3, 1e-4, 1e-5, 1e-6 each met - the kernel's measured maximum AND the independent closed-form distance (97 fractions x 24 points + breakpoints) are <= the tolerance, valid single-face wall");
+  Check(stations_nondec, "adaptive sweep1 (kinked per-axis scale): the station count never falls as the tolerance tightens");
+}
+
+void TestAdaptiveStraightRailTwistScheduleWithSlopeChanges() {
+  // A twist schedule with slope changes on a straight rail: the ruled 2-station shortcut is exact for a scale but NOT for a twist.
+  StraightCase c;
+  c.has_twist = true;
+  c.twist = {{0.0, 0.0}, {0.3, 1.0}, {0.7, 3.0}, {1.0, 3.4}};
+  const NurbsCurve section = CircleCurve(ON_3dPoint(0.5, 0.3, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.0);
+  const NurbsCurve rail = StraightRailZ(c.L);
+  const std::vector<double> bps = {0.3, 0.7};
+  const auto exact = [&](double f, double th) { return c.Exact(f, th); };
+  Brep::Sweep1Report base;
+  const Brep fixed = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &c.twist, nullptr, nullptr, nullptr, nullptr, 0.0, 512, &base);
+  const double fixed_indep = IndependentDeviation(WallSurface(fixed), exact, bps);
+  std::printf("  [adaptive twist] fixed build, %d stations: kernel max %.4g, independent %.4g\n", base.stations, base.max_deviation, fixed_indep);
+  Check(fixed_indep > 1e-4 && base.max_deviation > 1e-4, "adaptive sweep1 (twist schedule, straight rail): the fixed build has a measurable error between stations (both measures > 1e-4)");
+  const double tols[4] = {1e-3, 1e-4, 1e-5, 1e-6};
+  bool all_ok = true;
+  for (const double tol : tols) {
+    Brep::Sweep1Report rep;
+    const Brep body = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &c.twist, nullptr, nullptr, nullptr, nullptr, tol, 512, &rep);
+    const double indep = IndependentDeviation(WallSurface(body), exact, bps);
+    std::printf("  [adaptive twist] tol %.0e: %d stations (%d rounds, %d C0 corners), kernel max %.3g (st %.3g, between %.3g, bp %.3g), independent %.3g\n", tol, rep.stations, rep.rounds,
+                rep.corner_stations, rep.max_deviation, rep.max_station_deviation, rep.max_between_station_deviation, rep.max_breakpoint_deviation, indep);
+    all_ok = all_ok && rep.met && rep.max_deviation <= tol && indep <= tol && rep.corner_stations == 2;
+  }
+  Check(all_ok, "adaptive sweep1 (twist schedule with 2 slope changes, straight rail): tolerance 1e-3 .. 1e-6 each met by the kernel's measurement AND the independent helix closed form; the skin is C0 at the 2 breakpoints");
+  // A straight rail with a pure scale schedule is exact with the first stations (no refinement).
+  const Sched s = {{0.0, 1.0}, {0.4, 2.0}, {1.0, 1.2}};
+  Brep::Sweep1Report r2;
+  Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, &s, nullptr, nullptr, nullptr, 1e-9, 512, &r2);
+  std::printf("  [adaptive scale] kinked uniform scale on a straight rail at tol 1e-9: %d stations, %d rounds, max %.3g\n", r2.stations, r2.rounds, r2.max_deviation);
+  Check(r2.met && r2.rounds == 1 && r2.max_deviation < 1e-9, "adaptive sweep1 (kinked uniform scale, straight rail): affine in the fraction, so the C0 cubic skin is exact - tolerance 1e-9 met in the first round");
+}
+
+// Closed circle rail of radius R in the x-y plane starting at (R, 0, 0) heading +y; section: circle radius 1 centred (R + 0.5, 0, 0.3) in the
+// plane y = 0. The rotation-minimizing frame of a planar circle is (r, s, t) = (radial, -z, tangent) with no holonomy.
+struct RingCase {
+  double R = 5.0;
+  Sched twist, scale;
+  ON_3dPoint Exact(double f, double th) const {
+    // frame-0 coordinates of the section point: the section circle's own plane basis is (x, -z) (normal y, x-direction x)
+    const double lr = 0.5 + std::cos(th), ls = -(0.3 + std::sin(th));  // r0 = +x, s0 = -z
+    const double a = SchedAt(twist, f), c = std::cos(a), s = std::sin(a), k = SchedAt(scale, f);
+    const double phi = 2.0 * ON_PI * f;
+    const ON_3dVector r(std::cos(phi), std::sin(phi), 0.0), sv(0.0, 0.0, -1.0);
+    const ON_3dVector off = (r * c + sv * s) * lr + (sv * c - r * s) * ls;
+    return ON_3dPoint(R * std::cos(phi), R * std::sin(phi), 0.0) + off * k;
+  }
+};
+
+void TestAdaptiveClosedCircleRailTwistAndScaleSchedulesWithSlopeChanges() {
+  RingCase c;
+  c.twist = {{0.0, 0.0}, {0.25, 0.5 * ON_PI}, {0.6, 1.7 * ON_PI}, {1.0, 2.0 * ON_PI}};  // one whole turn, three different slopes
+  c.scale = {{0.0, 1.0}, {0.5, 1.6}, {1.0, 1.0}};                                         // out and back, slope change at 0.5
+  ON_NurbsCurve ring;
+  ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), c.R).GetNurbForm(ring);
+  NurbsCurve rail;
+  rail.raw() = ring;
+  const NurbsCurve section = CircleCurve(ON_3dPoint(c.R + 0.5, 0, 0.3), ON_3dVector(0, 1, 0), ON_3dVector(1, 0, 0), 1.0);
+  const std::vector<double> bps = {0.25, 0.5, 0.6};
+  const auto exact = [&](double f, double th) { return c.Exact(f, th); };
+  // The measure-only mode on the legacy construction (nothing refused: its 32 stations would step 30+ degrees, so use 64).
+  Brep::Sweep1Report base;
+  const Brep fixed = Brep::Sweep1(section, rail, 64, false, 0.0, 1.0, nullptr, &c.twist, &c.scale, nullptr, nullptr, nullptr, 0.0, 512, &base);
+  const double fixed_indep = IndependentDeviation(WallSurface(fixed), exact, bps);
+  std::printf("  [adaptive ring] fixed build, %d stations: kernel max %.4g (st %.3g, between %.3g), independent %.4g\n", base.stations, base.max_deviation, base.max_station_deviation,
+              base.max_between_station_deviation, fixed_indep);
+  const double tols[4] = {1e-3, 1e-4, 1e-5, 1e-6};
+  bool all_ok = true;
+  for (const double tol : tols) {
+    Brep::Sweep1Report rep;
+    const Brep body = Brep::Sweep1(section, rail, 16, false, 0.0, 1.0, nullptr, &c.twist, &c.scale, nullptr, nullptr, nullptr, tol, 1024, &rep);
+    const NurbsSurface wall = WallSurface(body);
+    const double indep = IndependentDeviation(wall, exact, bps);
+    std::printf("  [adaptive ring] tol %.0e: %d stations (from 16+3, %d rounds), kernel max %.3g (st %.3g, between %.3g, bp %.3g), independent %.3g, wall closed in v: %d\n", tol, rep.stations,
+                rep.rounds, rep.max_deviation, rep.max_station_deviation, rep.max_between_station_deviation, rep.max_breakpoint_deviation, indep, wall.raw().IsClosed(1) ? 1 : 0);
+    all_ok = all_ok && rep.met && rep.max_deviation <= tol && indep <= tol && wall.raw().IsClosed(1) && body.raw().IsValid() && rep.corner_stations == 0;
+  }
+  Check(all_ok, "adaptive sweep1 (closed circle rail, whole-turn twist schedule + out-and-back scale schedule, 3 slope changes): tolerance 1e-3 .. 1e-6 each met by the kernel's measurement AND the independent closed form, wall closed round the rail, started from 16 stations (the default would refuse: > 30 degrees per station)");
+  // the default-argument construction at 16 stations refuses (30 degree step limit) while the adaptive one bisects it away
+  const std::string r16 = RefusalOf([&] { Brep::Sweep1(section, rail, 16, false, 0.0, 1.0, nullptr, &c.twist, &c.scale); });
+  Check(r16.find("degrees between consecutive stations") != std::string::npos, "sweep1 (closed rail, 16 stations, default arguments): still refused by the unchanged 30-degree step rule");
+}
+
+NurbsCurve FreeformOpenRail() {
+  return NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(3, 1.5, 2), Point3d(6, -2, 3.5), Point3d(9, 2.5, 3), Point3d(12, 0.5, 6), Point3d(14, -1, 9)}, 3);
+}
+
+NurbsCurve FreeformClosedRail() {
+  std::vector<ON_3dPoint> pts;
+  for (int i = 0; i < 16; ++i) {
+    const double t = 2.0 * ON_PI * i / 16.0;
+    pts.push_back(ON_3dPoint(10.0 * std::cos(t), 10.0 * std::sin(t), 1.5 * std::sin(2.0 * t)));
+  }
+  ON_NurbsCurve periodic;
+  periodic.CreatePeriodicUniformNurbs(3, 4, 16, pts.data(), 1.0);
+  NurbsCurve rail;
+  rail.raw() = periodic;
+  return rail;
+}
+
+// Worst distance from a dense grid of points of the finer surface `fine` to the coarser `coarse` (closest point).
+double SurfaceToSurface(const Brep& fine, const Brep& coarse, int nu, int nv) {
+  const NurbsSurface f = WallSurface(fine), c = WallSurface(coarse);
+  const ON_Interval du = f.raw().Domain(0), dv = f.raw().Domain(1);
+  double worst = 0.0;
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j <= nv; ++j) {
+      const ON_3dPoint p = f.raw().PointAt(du.ParameterAt((i + 0.3) / nu), dv.ParameterAt(static_cast<double>(j) / nv));
+      const Point3d pp(p.x, p.y, p.z);
+      worst = std::max(worst, pp.DistanceTo(c.ClosestPoint(pp)));
+    }
+  }
+  return worst;
+}
+
+void TestAdaptiveFreeformRailsOpenAndClosedAgainstAFinerBuild() {
+  const NurbsCurve section_open = CircleCurve(ON_3dPoint(0.3, 0.2, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0), 1.0);
+  // ---- open free-form rail, twist + uniform scale schedules with slope changes
+  {
+    const NurbsCurve rail = FreeformOpenRail();
+    const Sched tw = {{0.0, 0.0}, {0.35, 1.2}, {0.8, 2.0}, {1.0, 2.1}}, sc = {{0.0, 1.0}, {0.5, 1.5}, {1.0, 0.9}};
+    Brep::Sweep1Report fine_rep, base;
+    const Brep fine = Brep::Sweep1(section_open, rail, 32, false, 0.0, 1.0, nullptr, &tw, &sc, nullptr, nullptr, nullptr, 2e-7, 1024, &fine_rep);
+    const Brep fixed = Brep::Sweep1(section_open, rail, 32, false, 0.0, 1.0, nullptr, &tw, &sc, nullptr, nullptr, nullptr, 0.0, 512, &base);
+    const double fixed_x = SurfaceToSurface(fine, fixed, 24, 160);
+    std::printf("  [adaptive open freeform] reference build tol 2e-7: %d stations; fixed 32+3-station build: kernel max %.4g, vs reference %.4g\n", fine_rep.stations, base.max_deviation, fixed_x);
+    bool ok = fine_rep.met;
+    for (const double tol : {1e-3, 1e-4, 1e-5}) {
+      Brep::Sweep1Report rep;
+      const Brep body = Brep::Sweep1(section_open, rail, 32, false, 0.0, 1.0, nullptr, &tw, &sc, nullptr, nullptr, nullptr, tol, 512, &rep);
+      const double x = SurfaceToSurface(fine, body, 24, 160);
+      std::printf("  [adaptive open freeform] tol %.0e: %d stations (%d rounds, %d C0), kernel max %.3g, vs the 2e-7 reference %.3g\n", tol, rep.stations, rep.rounds, rep.corner_stations, rep.max_deviation, x);
+      ok = ok && rep.met && rep.max_deviation <= tol && x <= tol + 2.5e-7;
+    }
+    Check(ok, "adaptive sweep1 (open free-form rail, twist + scale schedules with slope changes): tolerance 1e-3, 1e-4, 1e-5 met by the kernel's measurement, and a dense grid of points of an independent 2e-7 build lies within tol + 2.5e-7 of each wall (closest-point search)");
+  }
+  // ---- closed free-form rail (non-planar periodic cubic: holonomy), twist schedule whole turn
+  {
+    const NurbsCurve rail = FreeformClosedRail();
+    const NurbsCurve section = CircleCurve(ON_3dPoint(10.4, 0, 0.2), ON_3dVector(0, 1, 0), ON_3dVector(1, 0, 0), 1.0);
+    const Sched tw = {{0.0, 0.0}, {0.3, 0.8 * ON_PI}, {0.75, 1.5 * ON_PI}, {1.0, 2.0 * ON_PI}}, sc = {{0.0, 1.0}, {0.5, 1.4}, {1.0, 1.0}};
+    Brep::Sweep1Report fine_rep;
+    const Brep fine = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &tw, &sc, nullptr, nullptr, nullptr, 3e-7, 1024, &fine_rep);
+    std::printf("  [adaptive closed freeform] reference build tol 3e-7: %d stations, met %d\n", fine_rep.stations, fine_rep.met ? 1 : 0);
+    bool ok = fine_rep.met && WallSurface(fine).raw().IsClosed(1);
+    for (const double tol : {1e-3, 1e-4, 1e-5}) {
+      Brep::Sweep1Report rep;
+      const Brep body = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &tw, &sc, nullptr, nullptr, nullptr, tol, 1024, &rep);
+      const double x = SurfaceToSurface(fine, body, 24, 160);
+      std::printf("  [adaptive closed freeform] tol %.0e: %d stations (%d rounds), kernel max %.3g (between %.3g), vs the 3e-7 reference %.3g\n", tol, rep.stations, rep.rounds, rep.max_deviation,
+                  rep.max_between_station_deviation, x);
+      ok = ok && rep.met && rep.max_deviation <= tol && x <= tol + 3.5e-7 && WallSurface(body).raw().IsClosed(1);
+    }
+    Check(ok, "adaptive sweep1 (closed non-planar free-form rail with holonomy, whole-turn twist + out-and-back scale schedules): tolerance 1e-3, 1e-4, 1e-5 met by the kernel's measurement, wall closed in v, and the independent 3e-7 build lies within tol + 3.5e-7 of each wall");
+  }
+}
+
+void TestAdaptiveNegativeControlsCeilingToleranceAndDefaults() {
+  StraightCase c;
+  c.has_twist = true;
+  c.twist = {{0.0, 0.0}, {0.3, 1.0}, {0.7, 3.0}, {1.0, 3.4}};
+  const NurbsCurve section = CircleCurve(ON_3dPoint(0.5, 0.3, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.0);
+  const NurbsCurve rail = StraightRailZ(c.L);
+  // (1) station ceiling: tolerance 1e-6 cannot be met with 12 stations -> refusal with the reason and the best measured deviation
+  Brep::Sweep1Report rep;
+  const std::string why = RefusalOf([&] { Brep::Sweep1(section, rail, 8, false, 0.0, 1.0, nullptr, &c.twist, nullptr, nullptr, nullptr, nullptr, 1e-6, 12, &rep); });
+  std::printf("  [adaptive refusal] ceiling 12: \"%s\"\n  report: stations %d, rounds %d, max %.4g, met %d\n", why.c_str(), rep.stations, rep.rounds, rep.max_deviation, rep.met ? 1 : 0);
+  Check(!why.empty() && why.find("best measured deviation") != std::string::npos && why.find("12 stations") != std::string::npos && !rep.met && rep.max_deviation > 1e-6 && rep.stations <= 12,
+        "adaptive sweep1 (negative control, station ceiling 12): refused with a reason naming the best measured deviation and the ceiling, report filled with met = false and the measured deviation > tolerance - no unverified surface");
+  // (2) unreachable tolerance: below the double-precision floor of the measurement, even with a generous ceiling
+  Brep::Sweep1Report rep2;
+  const std::string why2 = RefusalOf([&] { Brep::Sweep1(section, rail, 8, false, 0.0, 1.0, nullptr, &c.twist, nullptr, nullptr, nullptr, nullptr, 1e-15, 80, &rep2); });
+  std::printf("  [adaptive refusal] tolerance 1e-15, ceiling 80: \"%s\"\n  report: stations %d, rounds %d, max %.4g\n", why2.c_str(), rep2.stations, rep2.rounds, rep2.max_deviation);
+  Check(!why2.empty() && !rep2.met && rep2.max_deviation > 1e-15, "adaptive sweep1 (negative control, tolerance 1e-15 unreachable): refused, with the measured deviation reported");
+  // (3) invalid arguments
+  const std::string neg = RefusalOf([&] { Brep::Sweep1(section, rail, 8, false, 0.0, 1.0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, -1e-3); });
+  const std::string nan = RefusalOf([&] { Brep::Sweep1(section, rail, 8, false, 0.0, 1.0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, std::nan("")); });
+  const std::string tiny = RefusalOf([&] { Brep::Sweep1(section, rail, 8, false, 0.0, 1.0, nullptr, &c.twist, nullptr, nullptr, nullptr, nullptr, 1e-3, 3); });
+  Check(!neg.empty() && !nan.empty() && !tiny.empty(), "adaptive sweep1: a negative or NaN tolerance and max_stations < 4 are refused");
+  // (4) default behaviour untouched: a measure-only call (tolerance 0 + report) returns the same wall, control point for control point, as the call without a report
+  const Brep a = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &c.twist);
+  Brep::Sweep1Report rep3;
+  const Brep b = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &c.twist, nullptr, nullptr, nullptr, nullptr, 0.0, 512, &rep3);
+  const ON_NurbsSurface& wa = *ON_NurbsSurface::Cast(a.raw().m_F[0].SurfaceOf());
+  const ON_NurbsSurface& wb = *ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf());
+  bool same = wa.CVCount(0) == wb.CVCount(0) && wa.CVCount(1) == wb.CVCount(1);
+  for (int i = 0; same && i < wa.CVCount(0); ++i) {
+    for (int j = 0; same && j < wa.CVCount(1); ++j) {
+      ON_4dPoint pa, pb;
+      wa.GetCV(i, j, pa);
+      wb.GetCV(i, j, pb);
+      same = pa.x == pb.x && pa.y == pb.y && pa.z == pb.z && pa.w == pb.w;
+    }
+  }
+  Check(same && rep3.rounds == 1 && !rep3.met, "sweep1 default arguments (tolerance 0): the measure-only call returns the identical wall, control point for control point, as the call without a report");
+  // (5) the measurement sees a wrong surface: sweep with the twist schedule, measure against another by reusing the closed form of a different twist
+  StraightCase wrong = c;
+  wrong.twist = {{0.0, 0.0}, {0.3, 1.0}, {0.7, 2.5}, {1.0, 3.4}};
+  const double d = IndependentDeviation(WallSurface(a), [&](double f, double th) { return wrong.Exact(f, th); }, {0.3, 0.7});
+  Check(d > 0.05, "negative control of the independent check: against a different twist schedule it reports a large deviation (> 0.05), so it can see a wrong surface");
+  std::printf("  [adaptive control] independent check against a different twist schedule: %.4g\n", d);
+}
+
+}  // namespace sweep_adaptive_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -99094,6 +99436,16 @@ int main() {
   RunTest("surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces", surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces);
   RunTest("surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError", surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError);
   RunTest("surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch", surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch);
+  RunTest("sweep_adaptive_tests::TestAdaptiveStraightRailKinkedPerAxisScaleMeetsToleranceWhereTheFixedBuildRang",
+          sweep_adaptive_tests::TestAdaptiveStraightRailKinkedPerAxisScaleMeetsToleranceWhereTheFixedBuildRang);
+  RunTest("sweep_adaptive_tests::TestAdaptiveStraightRailTwistScheduleWithSlopeChanges",
+          sweep_adaptive_tests::TestAdaptiveStraightRailTwistScheduleWithSlopeChanges);
+  RunTest("sweep_adaptive_tests::TestAdaptiveClosedCircleRailTwistAndScaleSchedulesWithSlopeChanges",
+          sweep_adaptive_tests::TestAdaptiveClosedCircleRailTwistAndScaleSchedulesWithSlopeChanges);
+  RunTest("sweep_adaptive_tests::TestAdaptiveFreeformRailsOpenAndClosedAgainstAFinerBuild",
+          sweep_adaptive_tests::TestAdaptiveFreeformRailsOpenAndClosedAgainstAFinerBuild);
+  RunTest("sweep_adaptive_tests::TestAdaptiveNegativeControlsCeilingToleranceAndDefaults",
+          sweep_adaptive_tests::TestAdaptiveNegativeControlsCeilingToleranceAndDefaults);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {
