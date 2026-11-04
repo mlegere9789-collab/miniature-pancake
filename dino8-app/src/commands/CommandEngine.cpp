@@ -781,7 +781,7 @@ void CommandEngine::FeedText(const std::string& text) {
         Print(FormatPoint(p));
         DINO8_GUARD(active_->OnPoint(ctx, p));
         last_point_ = p;
-      } else if (std::sscanf(text.c_str(), "%lf", &number) == 1 && last_point_ && hover_point_ &&
+      } else if (std::sscanf(text.c_str(), "%lf", &number) == 1 && std::isfinite(number) && last_point_ && hover_point_ &&
                  !active_->NumberIsLiteralValue()) {
         // Distance constraint: a number places the point `number` units
         // from the last point, in the direction of the cursor.
@@ -799,7 +799,9 @@ void CommandEngine::FeedText(const std::string& text) {
     }
     case Want::Number: {
       double number = 0;
-      if (std::sscanf(text.c_str(), "%lf", &number) == 1) {
+      // "nan" / "inf" / "1e999" scan as numbers; every OnNumber would have to repeat the finite test (most did not,
+      // so OffsetSrf nan built a surface of NaN points and Contour nan finished with 0 planes).
+      if (std::sscanf(text.c_str(), "%lf", &number) == 1 && std::isfinite(number)) {
         DINO8_GUARD(active_->OnNumber(ctx, number));
       } else {
         Print("Invalid number: " + text);
