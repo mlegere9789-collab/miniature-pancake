@@ -2124,6 +2124,32 @@ std::vector<Point3d> SpliceLoopEdge(const std::vector<Point3d>& loop, const Poin
       "bug");
 }
 
+// The tolerance recorded on an interior-station cap join (see
+// Brep::ConicalFace::cap0_surface_fit_tolerance): the WORSE of the two
+// geometric bounds measured by the caller (segA's polyline sagitta and the
+// radial deviation of segA's v1 circle from segB's cone), plus a
+// floating-point noise allowance. The measured bound is a max over the SAME
+// sample points FromMixedFaces() later re-checks against the real NURBS cone,
+// so the two agree up to rounding - and that rounding is NOT a fixed
+// relative fraction of the bound: it is the evaluation noise of a point
+// whose coordinates are as large as the part's position, ~ a few
+// DBL_EPSILON * |coordinate| amplified by the cone slope (radius = tan *
+// height). A purely relative 1e-9 margin on a bound that is itself ~1e-3
+// leaves ~1e-12 of headroom, which a part sitting 1.5e6 from the origin
+// (noise ~1e-9) exceeds - the "cap notch point does not lie on the cone's own
+// real surface" refusal this allowance fixes. The allowance is derived from
+// the largest coordinate magnitude involved, so a part near the origin keeps
+// the previous (essentially exact) bound.
+double InteriorJoinTolerance(double max_sagittaA, double max_deviationB, const std::vector<Point3d>& shared,
+                             const TaperedConeSegment& segB) {
+  double mag = 1.0;
+  for (const Point3d& p : shared) mag = std::max({mag, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+  mag = std::max({mag, std::fabs(segB.apex.x), std::fabs(segB.apex.y), std::fabs(segB.apex.z)});
+  const double noise =
+      256.0 * std::numeric_limits<double>::epsilon() * mag * (1.0 + std::fabs(segB.tan_half_angle));
+  return std::max(max_sagittaA, max_deviationB) * (1.0 + 1e-9) + 1e-12 + noise;
+}
+
 // The N-station (N >= 3) general case: builds N-1 genuine
 // Brep::ConicalFace segments (one per [stations[k].t, stations[k+1].t]
 // sub-interval, via BuildTaperedConeSegment), splices the FULL piecewise
@@ -2300,7 +2326,7 @@ Brep BuildMultiStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d 
     // different floating-point path inside FromMixedFaces()'s own
     // independent re-derivation of the same quantity (brep.cpp's own
     // notch_uv).
-    const double combined_tol = std::max(max_sagittaA, max_deviationB) * (1.0 + 1e-9) + 1e-12;
+    const double combined_tol = InteriorJoinTolerance(max_sagittaA, max_deviationB, shared, segB);
 
     conical_faces[k].cap1_notch_points = shared;
     conical_faces[k].cap1_notch_tolerance = combined_tol;
@@ -2545,7 +2571,7 @@ Brep BuildMultiStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, P
       const double actual_radial = std::sqrt(x * x + y * y);
       max_deviationB = std::max(max_deviationB, std::fabs(actual_radial - true_radius));
     }
-    const double combined_tol = std::max(max_sagittaA, max_deviationB) * (1.0 + 1e-9) + 1e-12;
+    const double combined_tol = InteriorJoinTolerance(max_sagittaA, max_deviationB, shared, segB);
 
     conical_faces[k].cap1_notch_points = shared;
     conical_faces[k].cap1_notch_tolerance = combined_tol;
