@@ -1,0 +1,43 @@
+# QCA_: adversarial QC cases for recent app wiring (see the "QCA_" section at the end of smoke.sh).
+# Every case starts from `New` and is bracketed by a marker line ("QCABEGIN_<name>", an unknown command) that smoke.sh
+# uses to slice this script's output into per-case blocks.
+SetActiveViewport Top
+
+# --- Sweep1: a REFUSED ScaleX followed by a VALID ScaleY used to forgive the refusal (one shared refusal string was
+# cleared by the later valid option), so the command built a sweep whose X scale was silently dropped (1,1) while only
+# the ScaleY took effect. Both refused axes must keep the command from building until each is replaced by a valid value.
+New
+QCABEGIN_scale_forgive
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName QRail
+Circle 0,0,0 1
+SelLast
+SetObjectName QSec
+SelNone
+SelName QRail
+Sweep1 ScaleX=-1,2
+ScaleY=2,2
+SelName QSec
+Enter
+SelAll
+List
+
+# control: the refused ScaleX is REPLACED by a valid one afterwards: the sweep is built, scaled on both axes
+New
+QCABEGIN_scale_replaced
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName QRail
+Circle 0,0,0 1
+SelLast
+SetObjectName QSec
+SelNone
+SelName QRail
+Sweep1 ScaleX=-1,2
+ScaleX=2,2
+ScaleY=2,2
+SelName QSec
+Enter
+SelAll
+List

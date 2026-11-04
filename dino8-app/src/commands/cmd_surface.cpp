@@ -489,12 +489,13 @@ class Sweep1Command : public Command {
           dst[0] = a;
           dst[1] = b;
           o.value = ScalePairText(a, b);
-          scale_refusal_.clear();
+          scale_refusal_[n == "ScaleX" ? 0 : 1].clear();  // only this axis's own refusal: a valid ScaleY must not forgive a refused ScaleX
           ctx.Print("Sweep1: " + n + " = " + o.value + " (scale along the section's " + (n == "ScaleX" ? "X" : "Y") + " axis at the rail start, at the rail end)");
         } else {
           // A refused scale must never turn into a silently UNSCALED sweep: the command builds nothing until a valid one is given.
-          scale_refusal_ = n + " must be 'start,end' - two positive numbers (or one), got '" + v + "'; zero, negative and non-numeric scales are refused";
-          ctx.Warn("Sweep1: " + scale_refusal_);
+          std::string& refusal = scale_refusal_[n == "ScaleX" ? 0 : 1];
+          refusal = n + " must be 'start,end' - two positive numbers (or one), got '" + v + "'; zero, negative and non-numeric scales are refused";
+          ctx.Warn("Sweep1: " + refusal);
         }
       }
     }
@@ -506,8 +507,9 @@ class Sweep1Command : public Command {
   }
   void Build(CommandContext& ctx, std::vector<kernel::NurbsCurve> profiles) {
     const kernel::NurbsCurve& rail = *rail_;
-    if (!scale_refusal_.empty()) {
-      ctx.Print("Sweep1: no surface created - " + scale_refusal_);
+    for (const std::string& refusal : scale_refusal_) {
+      if (refusal.empty()) continue;
+      ctx.Print("Sweep1: no surface created - " + refusal);
       return;
     }
     ctx.Doc().BeginChange("Sweep1");
@@ -623,7 +625,7 @@ class Sweep1Command : public Command {
   bool cap_ = false;
   double sx_[2] = {1.0, 1.0};  // ScaleX: scale along the section's X axis at the rail start / end
   double sy_[2] = {1.0, 1.0};  // ScaleY
-  std::string scale_refusal_;  // set by a refused ScaleX / ScaleY value; Build then creates nothing
+  std::string scale_refusal_[2];  // [0] ScaleX, [1] ScaleY: set by a refused value of that axis; Build then creates nothing until it is replaced by a valid one
 };
 
 // ---------------------------------------------------------------------------
