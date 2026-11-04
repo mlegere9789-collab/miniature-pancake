@@ -102219,6 +102219,162 @@ void TestOffsetInPlaneClosedPolygonRefusalsStayRefused() {
   }
 }
 
+// A SIMPLE raw mitre polygon is not necessarily a valid inward offset: the mitre point of a thin sliver's acute corner can
+// land outside the polygon without any edge crossing, giving a simple polygon that cuts into the forbidden zone (the true
+// offset there needs the offset LINES extended past those mitre points). The kernel used to return that polygon as Ok.
+// Oracle: GEOS mitre buffer. Where the raw polygon is sound (every edge >= |d| from the original and inside it) it equals the
+// GEOS polygon and is built; where it is not, GEOS differs (area given) and the kernel refuses instead of returning it.
+void TestOffsetInPlaneClosedPolygonUnsoundSimpleInwardOffsetIsRefused() {
+  struct SoundCase {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double d;
+    std::vector<std::pair<double, double>> expect;
+    double expect_area;
+  };
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto build = [](const std::vector<std::pair<double, double>>& v) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : v) pts.push_back(Point3d(ab.first, ab.second, 0.0));
+    pts.push_back(pts.front());
+    return NurbsCurve::FromControlPoints(pts, 1);
+  };
+  // GEOS-valid single-polygon results (the simple raw mitre polygon is sound here)
+  const std::vector<SoundCase> sound = {
+      {"A thin-sliver pentagon", {{5.8, 5.1}, {-3.4, 8.2}, {-5.3, 4.1}, {-5.7, 1.4}, {-8.4, 0.1}}, -0.1, {{-3.346966862795, 8.076605748122}, {-5.203196246995, 4.071058129585}, {-5.608849337231, 1.332899770490}, {-6.722581202482, 0.796658502036}, {5.493002572919, 5.097920394783}}, 35.784712933182},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -0.2, {{-1.191627455465, 2.209977937202}, {-4.299595858812, 5.242142233151}, {1.985701323522, -5.629723163319}, {1.897214117743, -0.851414051254}, {8.228049775395, 1.021086636220}}, 27.192466888004},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -0.6, {{-1.374882366395, 1.829933811607}, {-2.498787576435, 2.926426699452}, {1.557103970567, -4.089169489957}, {1.491642353230, -0.554242153763}, {6.284149326185, 0.863259908660}}, 14.451989045538},
+      {"C pentagon", {{0.7, 2.1}, {0.4, 5.0}, {0.4, -7.2}, {6.3, -1.9}, {3.3, -0.9}}, -0.1, {{0.500000000000, 3.061508017526}, {0.500000000000, -6.975746575872}, {6.105273879515, -1.940500548511}, {3.242379093307, -0.986202286441}, {0.603776032096, 2.058339707264}}, 22.479713692538},
+  };
+  struct Bad { const char* name; std::vector<std::pair<double, double>> v; double d; double geos_area; double raw_area; };
+  const std::vector<Bad> unsound = {
+      {"A thin-sliver pentagon", {{5.8, 5.1}, {-3.4, 8.2}, {-5.3, 4.1}, {-5.7, 1.4}, {-8.4, 0.1}}, -0.2, 32.916259246, 32.930410607},
+      {"A thin-sliver pentagon", {{5.8, 5.1}, {-3.4, 8.2}, {-5.3, 4.1}, {-5.7, 1.4}, {-8.4, 0.1}}, -0.9, 16.524577329, 25.017867047},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -0.9, 7.980411143, 8.006895498},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -1.3, 2.459121898, 3.560457212},
+      {"C pentagon", {{0.7, 2.1}, {0.4, 5.0}, {0.4, -7.2}, {6.3, -1.9}, {3.3, -0.9}}, -0.2, 20.108195301, 20.144573226},
+      {"C pentagon", {{0.7, 2.1}, {0.4, 5.0}, {0.4, -7.2}, {6.3, -1.9}, {3.3, -0.9}}, -0.9, 7.394787794, 16.542673507},
+  };
+  for (const SoundCase& c : sound) {
+    const NurbsCurve poly = build(c.v);
+    NurbsCurve out;
+    const std::string nm = std::string(c.name) + " d=" + std::to_string(c.d);
+    const Result r = poly.OffsetInPlane(xy, c.d, out);
+    Check(r == Result::Ok, (nm + ": a sound simple inward offset is still built").c_str());
+    if (r != Result::Ok) continue;
+    std::vector<std::pair<double, double>> got;
+    for (int i = 0; i + 1 < out.ControlPointCount(); ++i) got.push_back({out.ControlPointAt(i).x, out.ControlPointAt(i).y});
+    const double match = CyclicMatch(got, c.expect);
+    std::printf("  %s: %zu vertices, max vertex error vs GEOS %g, area %.9f (GEOS %.9f)\n", nm.c_str(), got.size(), match, PolyAreaAB(got), c.expect_area);
+    Check(match < 1e-8 && std::fabs(PolyAreaAB(got) - c.expect_area) < 1e-8, (nm + ": equals the GEOS mitre buffer (vertices to 1e-8, area to 1e-8)").c_str());
+  }
+  for (const Bad& c : unsound) {
+    const NurbsCurve poly = build(c.v);
+    const NurbsCurve sentinel = NurbsCurve::FromControlPoints({Point3d(7, 7, 7), Point3d(8, 7, 7)}, 1);
+    NurbsCurve out = sentinel;
+    const std::string nm = std::string(c.name) + " d=" + std::to_string(c.d);
+    std::printf("  %s: raw mitre area %.6f, GEOS area %.6f (differ by %.6f)\n", nm.c_str(), c.raw_area, c.geos_area, c.raw_area - c.geos_area);
+    // the control: the raw polygon is NOT the GEOS answer (the oracle can tell them apart), so returning it would be wrong
+    Check(std::fabs(c.raw_area - c.geos_area) > 0.005, (nm + ": control - the simple raw mitre polygon's area differs from the GEOS offset's").c_str());
+    Check(poly.OffsetInPlane(xy, c.d, out) == Result::Failed && out.ControlPointCount() == 2,
+          (nm + ": refused (the raw mitre polygon is simple but cuts into the forbidden zone), out untouched").c_str());
+  }
+}
+
+// Closed-polygon Round / Chamfer inward offsets had no validity check at all: a polygon offset past a feature size was
+// returned as Ok with whatever the corner assembly produced (loops, or a curve cutting into the forbidden zone). Loop REMOVAL
+// is not done for these styles (only Sharp), but they are now refused when provably invalid:
+//  * Round: every point of a valid Round offset is exactly |d| from the original polygon, so a curve point closer, or outside
+//    the polygon, proves the offset invalid (checked with 4000+ samples; fuzz vs GEOS round buffers: never accepted a wrong one);
+//  * Chamfer: the assembled polyline must be simple and keep the original winding.
+// Oracles: GEOS round buffer (quad_segs=512) and bevel buffer areas; a sampled distance-to-polygon check for Round.
+void TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets() {
+  struct FillCase {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double d;
+    double geos_area;
+  };
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto build = [](const std::vector<std::pair<double, double>>& v) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : v) pts.push_back(Point3d(ab.first, ab.second, 0.0));
+    pts.push_back(pts.front());
+    return NurbsCurve::FromControlPoints(pts, 1);
+  };
+  const std::vector<FillCase> round_ok = {
+      {"spike", {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}}, -0.9, 108.527833902},
+      {"L", {{0, 0}, {10, 0}, {10, 3}, {3, 3.2}, {3, 10}, {0, 10}}, -1.2, 9.985611124},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -0.6, 14.496094566},
+      {"C pentagon", {{0.7, 2.1}, {0.4, 5.0}, {0.4, -7.2}, {6.3, -1.9}, {3.3, -0.9}}, -0.1, 22.479878103},
+      {"A thin-sliver pentagon", {{5.8, 5.1}, {-3.4, 8.2}, {-5.3, 4.1}, {-5.7, 1.4}, {-8.4, 0.1}}, -0.1, 35.785139745},
+  };
+  const std::vector<FillCase> round_bad = {
+      {"A thin-sliver pentagon", {{5.8, 5.1}, {-3.4, 8.2}, {-5.3, 4.1}, {-5.7, 1.4}, {-8.4, 0.1}}, -0.9, 16.524577329},
+      {"C pentagon", {{0.7, 2.1}, {0.4, 5.0}, {0.4, -7.2}, {6.3, -1.9}, {3.3, -0.9}}, -0.9, 7.400107256},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -1.2, 3.701961600},
+      {"L", {{0, 0}, {10, 0}, {10, 3}, {3, 3.2}, {3, 10}, {0, 10}}, -1.6, 0.334024079},
+      {"spike", {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}}, -1.6, 76.983152794},
+  };
+  const std::vector<FillCase> cham_ok = {
+      {"spike", {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}}, -0.9, 108.888748524},
+      {"L", {{0, 0}, {10, 0}, {10, 3}, {3, 3.2}, {3, 10}, {0, 10}}, -1.2, 10.376310604},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -0.6, 14.564857962},
+      {"C pentagon", {{0.7, 2.1}, {0.4, 5.0}, {0.4, -7.2}, {6.3, -1.9}, {3.3, -0.9}}, -0.1, 22.480190431},
+      {"A thin-sliver pentagon", {{5.8, 5.1}, {-3.4, 8.2}, {-5.3, 4.1}, {-5.7, 1.4}, {-8.4, 0.1}}, -0.1, 35.785876216},
+  };
+  const std::vector<FillCase> cham_bad = {
+      {"spike", {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}}, -1.5, 81.685978233},
+      {"L", {{0, 0}, {10, 0}, {10, 3}, {3, 3.2}, {3, 10}, {0, 10}}, -1.6, 0.944537751},
+      {"B pentagon", {{9.2, 1.1}, {-1.1, 2.4}, {-5.2, 6.4}, {2.2, -6.4}, {2.1, -1.0}}, -1.5, 1.488825681},
+  };
+  const NurbsCurve sentinel = NurbsCurve::FromControlPoints({Point3d(7, 7, 7), Point3d(8, 7, 7)}, 1);
+  for (const FillCase& c : round_ok) {
+    const NurbsCurve poly = build(c.v);
+    NurbsCurve out;
+    const std::string nm = std::string("Round ") + c.name + " d=" + std::to_string(c.d);
+    const Result r = poly.OffsetInPlane(xy, c.d, out, -1.0, CurveOffsetCornerStyle::Round);
+    Check(r == Result::Ok, (nm + ": a valid inward Round offset is built").c_str());
+    if (r != Result::Ok) continue;
+    std::vector<std::pair<double, double>> samp;
+    double min_dist = 1e30;
+    const Interval dom = out.Domain();
+    for (int k = 0; k < 40000; ++k) {
+      const Point3d q = out.PointAt(dom.min + (dom.max - dom.min) * k / 40000.0);
+      samp.push_back({q.x, q.y});
+      if (k % 10 == 0) min_dist = std::min(min_dist, DistAB(q.x, q.y, c.v));
+    }
+    const double area = PolyAreaAB(samp);
+    std::printf("  %s: area %.6f (GEOS round %.6f), min sampled distance %.9f (|d| = %g)\n", nm.c_str(), area, c.geos_area, min_dist, std::fabs(c.d));
+    Check(std::fabs(area - c.geos_area) < 1e-4 * (1.0 + c.geos_area), (nm + ": enclosed area equals the GEOS round buffer's to 1e-4 relative").c_str());
+    Check(min_dist > std::fabs(c.d) - 1e-7, (nm + ": every sampled point is at least |d| from the original polygon").c_str());
+  }
+  for (const FillCase& c : round_bad) {
+    NurbsCurve out = sentinel;
+    const std::string nm = std::string("Round ") + c.name + " d=" + std::to_string(c.d);
+    Check(build(c.v).OffsetInPlane(xy, c.d, out, -1.0, CurveOffsetCornerStyle::Round) == Result::Failed && out.ControlPointCount() == 2,
+          (nm + ": refused (the assembled curve cuts into the forbidden zone), out untouched").c_str());
+  }
+  for (const FillCase& c : cham_ok) {
+    const NurbsCurve poly = build(c.v);
+    NurbsCurve out;
+    const std::string nm = std::string("Chamfer ") + c.name + " d=" + std::to_string(c.d);
+    const Result r = poly.OffsetInPlane(xy, c.d, out, -1.0, CurveOffsetCornerStyle::Chamfer);
+    Check(r == Result::Ok, (nm + ": a valid inward Chamfer offset is built").c_str());
+    if (r != Result::Ok) continue;
+    std::vector<std::pair<double, double>> got;
+    for (int i = 0; i + 1 < out.ControlPointCount(); ++i) got.push_back({out.ControlPointAt(i).x, out.ControlPointAt(i).y});
+    std::printf("  %s: %zu vertices, area %.9f (GEOS bevel %.9f)\n", nm.c_str(), got.size(), PolyAreaAB(got), c.geos_area);
+    Check(std::fabs(PolyAreaAB(got) - c.geos_area) < 1e-7 * (1.0 + c.geos_area), (nm + ": enclosed area equals the GEOS bevel buffer's to 1e-7 relative").c_str());
+  }
+  for (const FillCase& c : cham_bad) {
+    NurbsCurve out = sentinel;
+    const std::string nm = std::string("Chamfer ") + c.name + " d=" + std::to_string(c.d);
+    Check(build(c.v).OffsetInPlane(xy, c.d, out, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Failed && out.ControlPointCount() == 2,
+          (nm + ": refused (the assembled polygon self-intersects), out untouched").c_str());
+  }
+}
+
 }  // namespace offset_remainder_tests
 
 // ---------------------------------------------------------------------------
@@ -108276,6 +108432,11 @@ int main() {
   RunTest("surface_fillet_refusal_tests::TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals", surface_fillet_refusal_tests::TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals);
   RunTest("chained_edge_fillet_tests::TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox", chained_edge_fillet_tests::TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox);
   RunTest("chained_edge_fillet_tests::TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend", chained_edge_fillet_tests::TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend);
+
+  RunTest("offset_remainder_tests::TestOffsetInPlaneClosedPolygonUnsoundSimpleInwardOffsetIsRefused",
+          offset_remainder_tests::TestOffsetInPlaneClosedPolygonUnsoundSimpleInwardOffsetIsRefused);
+  RunTest("offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets",
+          offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;

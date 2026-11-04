@@ -436,83 +436,6 @@ bool RepairClosedOffsetPolygon(const std::vector<Point3d>& orig, std::vector<Poi
   std::vector<double> OA(orig.size()), OB(orig.size());
   for (size_t i = 0; i < orig.size(); ++i) pl.Of(orig[i], OA[i], OB[i]);
   std::vector<Point3d> poly = offset;
-  const bool raw_simple = IsOffsetPolygonSimple(poly, normal);
-  if (raw_simple && ProjectedArea(poly, pl) * sign0 > 0.0) return true;  // already valid (the common case)
-  // A simple polygon of the OPPOSITE orientation is the whole shape collapsed through itself: no offset exists.
-  if (raw_simple || !coplanar) return false;
-  // Limited to INWARD offsets (an erosion): the repair is certified there; an outward offset that closes a notch is refused.
-  if (!(distance * sign0 < 0.0)) return false;
-
-  for (int iteration = 0; iteration < 64; ++iteration) {
-    const size_t n = poly.size();
-    if (n < 3) return false;
-    std::vector<double> A(n), B(n);
-    for (size_t i = 0; i < n; ++i) pl.Of(poly[i], A[i], B[i]);
-    size_t ci = 0, cj = 0;
-    double ct = 0.0;
-    bool found = false;
-    for (size_t i = 0; i < n && !found; ++i) {
-      const size_t i1 = (i + 1) % n;
-      for (size_t j = i + 2; j < n && !found; ++j) {
-        if (i == 0 && j == n - 1) continue;
-        const size_t j1 = (j + 1) % n;
-        double t;
-        if (ProperCrossing(A[i], B[i], A[i1], B[i1], A[j], B[j], A[j1], B[j1], t)) {
-          found = true;
-          ci = i;
-          cj = j;
-          ct = t;
-        }
-      }
-    }
-    if (!found) break;
-    const Point3d x = poly[ci] + ct * (poly[(ci + 1) % n] - poly[ci]);
-    std::vector<Point3d> loop, rest;  // loop: x, poly[ci+1..cj]; rest: poly[0..ci], x, poly[cj+1..]
-    loop.push_back(x);
-    for (size_t k = ci + 1; k <= cj; ++k) loop.push_back(poly[k]);
-    for (size_t k = 0; k <= ci; ++k) rest.push_back(poly[k]);
-    rest.push_back(x);
-    for (size_t k = cj + 1; k < n; ++k) rest.push_back(poly[k]);
-    if (ProjectedArea(loop, pl) * sign0 < 0.0) {
-      poly = rest;
-    } else if (ProjectedArea(rest, pl) * sign0 < 0.0) {
-      poly = loop;
-    } else {
-      // Neither piece is wound against the original (a notch closed by an OUTWARD offset leaves a tiny loop of the
-      // original's own winding at its bottom): drop the piece with more vertices closer than |distance| to the
-      // original polygon; a tie is not a case this repair understands.
-      const auto too_close = [&](const std::vector<Point3d>& piece) {
-        int c = 0;
-        for (const Point3d& q : piece) {
-          double qa, qb;
-          pl.Of(q, qa, qb);
-          for (size_t e = 0; e < orig.size(); ++e) {
-            const size_t e1 = (e + 1) % orig.size();
-            if (DistPointSegment2(qa, qb, OA[e], OB[e], OA[e1], OB[e1]) < need) {
-              ++c;
-              break;
-            }
-          }
-        }
-        return c;
-      };
-      const int cl = too_close(loop), cr = too_close(rest);
-      if (cl > cr) poly = rest;
-      else if (cr > cl) poly = loop;
-      else return false;
-    }
-  }
-  if (poly.size() < 3 || !IsOffsetPolygonSimple(poly, normal) || !(ProjectedArea(poly, pl) * sign0 > 0.0)) return false;
-
-  // Certificate. The repaired polygon is accepted only if it is exactly the boundary of the valid offset region, checked
-  // two independent ways against the RAW mitre polygon (all in the plane projection):
-  //  (1) Soundness: every result edge is valid over its whole length - at least |distance| from every original edge, and
-  //      on the correct (inner) side of the original polygon. The part of a line within |distance| of one original edge is
-  //      one interval (a capsule is convex), so this is exact, not sampled.
-  //  (2) Completeness: the raw polygon, cut at all its self-crossings, has boundary pieces that separate positive from
-  //      non-positive winding number (region on the left of travel); the total length of those pieces that are valid in
-  //      the sense of (1) must equal the result's total length. Nothing valid is left out, nothing else is kept.
-  // Anything else - e.g. a pinch splitting the offset into several pieces - is refused.
   const auto inside_original = [&](double a, double b) {
     bool in = false;
     for (size_t e = 0; e < orig.size(); ++e) {
@@ -588,6 +511,100 @@ bool RepairClosedOffsetPolygon(const std::vector<Point3d>& orig, std::vector<Poi
     }
     return sum;
   };
+  const bool raw_simple = IsOffsetPolygonSimple(poly, normal);
+  if (raw_simple && ProjectedArea(poly, pl) * sign0 > 0.0) {
+    // A simple raw polygon is the answer for an outward offset and for any non-coplanar polygon (the common case). For an
+    // INWARD offset of a coplanar polygon it must still be sound: a thin sliver's mitre points can land outside the
+    // polygon without any edge crossing, giving a simple polygon that cuts into the forbidden zone (fuzzed against GEOS:
+    // 416 of 1099 simple inward raw offsets of random spiky polygons were unsound, 0 of 683 sound ones disagreed). The
+    // true offset there needs the offset LINES extended past those mitre points - not derivable from this polygon -
+    // so it is refused instead of returned wrong.
+    if (!coplanar || !(distance * sign0 < 0.0)) return true;
+    double len_all = 0.0, len_valid = 0.0;
+    for (size_t k = 0; k < poly.size(); ++k) {
+      double pa, pb, qa, qb;
+      pl.Of(poly[k], pa, pb);
+      pl.Of(poly[(k + 1) % poly.size()], qa, qb);
+      len_all += std::hypot(qa - pa, qb - pb);
+      len_valid += valid_length(pa, pb, qa, qb);
+    }
+    return std::fabs(len_valid - len_all) < 1e-8 * (1.0 + len_all);
+  }
+  // A simple polygon of the OPPOSITE orientation is the whole shape collapsed through itself: no offset exists.
+  if (raw_simple || !coplanar) return false;
+  // Limited to INWARD offsets (an erosion): the repair is certified there; an outward offset that closes a notch is refused.
+  if (!(distance * sign0 < 0.0)) return false;
+
+  for (int iteration = 0; iteration < 64; ++iteration) {
+    const size_t n = poly.size();
+    if (n < 3) return false;
+    std::vector<double> A(n), B(n);
+    for (size_t i = 0; i < n; ++i) pl.Of(poly[i], A[i], B[i]);
+    size_t ci = 0, cj = 0;
+    double ct = 0.0;
+    bool found = false;
+    for (size_t i = 0; i < n && !found; ++i) {
+      const size_t i1 = (i + 1) % n;
+      for (size_t j = i + 2; j < n && !found; ++j) {
+        if (i == 0 && j == n - 1) continue;
+        const size_t j1 = (j + 1) % n;
+        double t;
+        if (ProperCrossing(A[i], B[i], A[i1], B[i1], A[j], B[j], A[j1], B[j1], t)) {
+          found = true;
+          ci = i;
+          cj = j;
+          ct = t;
+        }
+      }
+    }
+    if (!found) break;
+    const Point3d x = poly[ci] + ct * (poly[(ci + 1) % n] - poly[ci]);
+    std::vector<Point3d> loop, rest;  // loop: x, poly[ci+1..cj]; rest: poly[0..ci], x, poly[cj+1..]
+    loop.push_back(x);
+    for (size_t k = ci + 1; k <= cj; ++k) loop.push_back(poly[k]);
+    for (size_t k = 0; k <= ci; ++k) rest.push_back(poly[k]);
+    rest.push_back(x);
+    for (size_t k = cj + 1; k < n; ++k) rest.push_back(poly[k]);
+    if (ProjectedArea(loop, pl) * sign0 < 0.0) {
+      poly = rest;
+    } else if (ProjectedArea(rest, pl) * sign0 < 0.0) {
+      poly = loop;
+    } else {
+      // Neither piece is wound against the original (a notch closed by an OUTWARD offset leaves a tiny loop of the
+      // original's own winding at its bottom): drop the piece with more vertices closer than |distance| to the
+      // original polygon; a tie is not a case this repair understands.
+      const auto too_close = [&](const std::vector<Point3d>& piece) {
+        int c = 0;
+        for (const Point3d& q : piece) {
+          double qa, qb;
+          pl.Of(q, qa, qb);
+          for (size_t e = 0; e < orig.size(); ++e) {
+            const size_t e1 = (e + 1) % orig.size();
+            if (DistPointSegment2(qa, qb, OA[e], OB[e], OA[e1], OB[e1]) < need) {
+              ++c;
+              break;
+            }
+          }
+        }
+        return c;
+      };
+      const int cl = too_close(loop), cr = too_close(rest);
+      if (cl > cr) poly = rest;
+      else if (cr > cl) poly = loop;
+      else return false;
+    }
+  }
+  if (poly.size() < 3 || !IsOffsetPolygonSimple(poly, normal) || !(ProjectedArea(poly, pl) * sign0 > 0.0)) return false;
+
+  // Certificate. The repaired polygon is accepted only if it is exactly the boundary of the valid offset region, checked
+  // two independent ways against the RAW mitre polygon (all in the plane projection):
+  //  (1) Soundness: every result edge is valid over its whole length - at least |distance| from every original edge, and
+  //      on the correct (inner) side of the original polygon. The part of a line within |distance| of one original edge is
+  //      one interval (a capsule is convex), so this is exact, not sampled.
+  //  (2) Completeness: the raw polygon, cut at all its self-crossings, has boundary pieces that separate positive from
+  //      non-positive winding number (region on the left of travel); the total length of those pieces that are valid in
+  //      the sense of (1) must equal the result's total length. Nothing valid is left out, nothing else is kept.
+  // Anything else - e.g. a pinch splitting the offset into several pieces - is refused.
 
   double total = 0.0, valid_result = 0.0;
   const size_t m = poly.size();
@@ -654,6 +671,53 @@ bool RepairClosedOffsetPolygon(const std::vector<Point3d>& orig, std::vector<Poi
   }
   if (!(std::fabs(boundary - total) < ctol)) return false;
   offset = poly;
+  return true;
+}
+
+
+// Closed-polygon Round / Chamfer offsets are assembled corner by corner with no check that the result is a valid offset. For
+// a coplanar polygon this refuses the two failures that can be told apart exactly (loop REMOVAL is not attempted for these
+// corner styles - only the Sharp case repairs):
+//  * Chamfer (a polyline): the assembled polygon must be simple and keep the original's winding;
+//  * Round, INWARD: every point of a Round offset is exactly |distance| from the original polygon (an arc about a vertex, a
+//    line parallel to an edge, or an intersection of two such lines), so a point of the assembled curve closer than that,
+//    or outside the polygon, proves the offset cut into the forbidden zone. 4000+ samples of the curve are tested
+//    (fuzzed against GEOS round buffers: sound samples <=> the assembled polygon equals the GEOS offset, 67 of 67; every
+//    unsound one differed, 12 of 12).
+// Returns false = refuse. Non-coplanar polygons and outward Round offsets are returned as before.
+bool ValidateClosedFillOffset(const std::vector<Point3d>& orig, const NurbsCurve& assembled, const Vector3d& normal,
+                              double distance, CurveOffsetCornerStyle style, bool coplanar) {
+  if (!coplanar) return true;
+  const PlaneXY pl(orig[0], normal);
+  const double area0 = ProjectedArea(orig, pl);
+  if (!(std::fabs(area0) > 0.0)) return false;
+  const double sign0 = area0 > 0.0 ? 1.0 : -1.0;
+  if (style == CurveOffsetCornerStyle::Chamfer) {
+    ON_SimpleArray<ON_3dPoint> pline;
+    if (!assembled.raw().IsPolyline(&pline) || pline.Count() < 4) return true;  // not a plain polyline: leave as before
+    std::vector<Point3d> poly;
+    for (int i = 0; i + 1 < pline.Count(); ++i) poly.push_back(pline[i]);
+    return IsOffsetPolygonSimple(poly, normal) && ProjectedArea(poly, pl) * sign0 > 0.0;
+  }
+  if (style != CurveOffsetCornerStyle::Round || !(distance * sign0 < 0.0)) return true;
+  std::vector<double> OA(orig.size()), OB(orig.size());
+  for (size_t i = 0; i < orig.size(); ++i) pl.Of(orig[i], OA[i], OB[i]);
+  const double need = std::fabs(distance) - 1e-7 * (1.0 + std::fabs(distance));
+  const Interval dom = assembled.Domain();
+  const int samples = std::max(4000, 400 * static_cast<int>(orig.size()));
+  for (int k = 0; k < samples; ++k) {
+    const Point3d q = assembled.PointAt(dom.min + (dom.max - dom.min) * k / samples);
+    double qa, qb;
+    pl.Of(q, qa, qb);
+    bool in = false;
+    double best = 1e300;
+    for (size_t e = 0; e < orig.size(); ++e) {
+      const size_t e1 = (e + 1) % orig.size();
+      if ((OB[e] > qb) != (OB[e1] > qb) && OA[e] + (qb - OB[e]) * (OA[e1] - OA[e]) / (OB[e1] - OB[e]) > qa) in = !in;
+      best = std::min(best, DistPointSegment2(qa, qb, OA[e], OB[e], OA[e1], OB[e1]));
+    }
+    if (!in || best < need) return false;
+  }
   return true;
 }
 
@@ -804,6 +868,10 @@ bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& norma
     }
   }
 
+  if (closed && !ValidateClosedFillOffset(v, assembled, normal, distance, corner_style, coplanar_in_plane)) {
+    result = Result::Failed;
+    return true;
+  }
   out = assembled;
   result = Result::Ok;
   return true;
