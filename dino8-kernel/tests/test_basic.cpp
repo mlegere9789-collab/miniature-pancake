@@ -99001,6 +99001,426 @@ void TestStepReadsForeignUnitStylesAndRefusesBadOnes() {
 
 }  // namespace units_exchange_tests
 
+// HL-BEGIN subd_fit_tests
+// ===========================================================================
+// SubD -> NURBS fit tolerance (ToNurbsPatchesToTolerance): measured, watertight,
+// refusing with a reason. Independent oracles: Catmull-Clark limit-point mask
+// closed form (cube corner), uniform bicubic B-spline closed form (regular
+// torus cage), the exact cube surface (fully creased cube), and a deeper
+// limit-point mesh built in the TEST from SubD::LimitPoints().
+// ===========================================================================
+namespace subd_fit_tests {
+
+using dino8::kernel::Mesh;
+using dino8::kernel::Point3d;
+using dino8::kernel::SubD;
+using dino8::kernel::SubDFitReport;
+using dino8::kernel::SubDNurbsPatch;
+
+// Limit-point mesh of `s` built here (not by the kernel): vertex positions
+// are SubD::LimitPoints(), connectivity is ToApproximateMesh() matched by
+// the (float) control position.
+Mesh FitTestLimitMesh(const SubD& s) {
+  const Mesh net = s.ToApproximateMesh();
+  std::map<std::tuple<float, float, float>, Point3d> lim;
+  for (const dino8::kernel::SubDLimitPoint& lp : s.LimitPoints()) {
+    lim[std::make_tuple(static_cast<float>(lp.control_point.x), static_cast<float>(lp.control_point.y),
+                        static_cast<float>(lp.control_point.z))] = lp.limit_point;
+  }
+  Mesh out;
+  ON_Mesh& m = out.raw();
+  const ON_Mesh& n = net.raw();
+  for (int i = 0; i < n.m_V.Count(); ++i) {
+    const auto it = lim.find(std::make_tuple(n.m_V[i].x, n.m_V[i].y, n.m_V[i].z));
+    if (it == lim.end()) { m.m_V.Append(n.m_V[i]); continue; }  // would be caught by the position checks
+    m.m_V.Append(ON_3fPoint(it->second));
+  }
+  for (int i = 0; i < n.m_F.Count(); ++i) m.m_F.Append(n.m_F[i]);
+  return out;
+}
+
+double FitTestDenseDeviation(const std::vector<SubDNurbsPatch>& patches, const SubD& cage_at_patch_level, int ref_extra, int grid) {
+  SubD ref = cage_at_patch_level;
+  ref.Subdivide(ref_extra);
+  const Mesh lm = FitTestLimitMesh(ref);
+  const dino8::kernel::MeshClosestPointIndex idx(lm);
+  double worst = 0.0;
+  for (const SubDNurbsPatch& p : patches) {
+    for (int i = 0; i <= grid; ++i)
+      for (int j = 0; j <= grid; ++j) {
+        const Point3d q = p.surface.PointAt(static_cast<double>(i) / grid, static_cast<double>(j) / grid);
+        worst = std::max(worst, (idx.ClosestPoint(q) - q).Length());
+      }
+  }
+  return worst;
+}
+
+// Number of distinct boundary-curve keys that occur other than exactly twice.
+int FitTestSeamViolations(const std::vector<SubDNurbsPatch>& patches) {
+  std::map<std::vector<long long>, int> count;
+  const auto push = [&](const SubDNurbsPatch& p, bool along_u, double fixed) {
+    std::vector<Point3d> pts;
+    for (int k = 0; k <= 6; ++k) {
+      const double t = k / 6.0;
+      pts.push_back(along_u ? p.surface.PointAt(t, fixed) : p.surface.PointAt(fixed, t));
+    }
+    const auto flat = [](const std::vector<Point3d>& v) {
+      std::vector<long long> key;
+      for (const Point3d& q : v) {
+        key.push_back(std::llround(q.x * 1e7)); key.push_back(std::llround(q.y * 1e7)); key.push_back(std::llround(q.z * 1e7));
+      }
+      return key;
+    };
+    std::vector<Point3d> rev(pts.rbegin(), pts.rend());
+    const std::vector<long long> a = flat(pts), b = flat(rev);
+    ++count[std::min(a, b)];
+  };
+  for (const SubDNurbsPatch& p : patches) {
+    push(p, true, 0.0); push(p, true, 1.0); push(p, false, 0.0); push(p, false, 1.0);
+  }
+  int bad = 0;
+  for (const auto& kv : count) if (kv.second != 2) ++bad;
+  return bad;
+}
+
+void TestSubDFitToleranceCubeCornerClosedFormAndMeasuredBound() {
+  SubD cube = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  // Closed form: Catmull-Clark limit of a valence-n vertex = (n^2 v + 4 sum(edge nbrs) + sum(face-diagonal nbrs)) / (n (n+5)).
+  // Cube corner (0,0,0), n = 3: (9*0 + 4*(10,10,10) + (20,20,20)) / 24 = (2.5, 2.5, 2.5).
+  const double corner_closed_form = (4.0 * 10.0 + 20.0) / 24.0;
+  Check(std::abs(corner_closed_form - 2.5) < 1e-15, "closed form: the cube corner's Catmull-Clark limit point is (2.5, 2.5, 2.5)");
+
+  const double tol = 0.25;
+  SubDFitReport rep;
+  const std::vector<SubDNurbsPatch> patches = cube.ToNurbsPatchesToTolerance(tol, &rep);
+  Check(rep.converged && rep.reason.empty(), "cube cage: tolerance 0.25 converges and states no refusal reason");
+  Check(!patches.empty() && static_cast<int>(patches.size()) == rep.patches, "one patch per face of the final level");
+  Check(rep.max_deviation <= tol, "reported max sampled deviation is within the requested tolerance");
+  Check(rep.levels_used >= 1 && rep.levels_used <= 5, "the cage was refined at least once (level 0 is far worse than 0.25) but within the budget");
+  Check(rep.deviation_per_level.size() == static_cast<size_t>(rep.levels_used + 1), "one measurement per level tried");
+  bool decreasing = true;
+  for (size_t i = 1; i < rep.deviation_per_level.size(); ++i) if (!(rep.deviation_per_level[i] < rep.deviation_per_level[i - 1])) decreasing = false;
+  Check(decreasing && rep.deviation_per_level.front() > tol, "measured deviation strictly decreases per level and level 0 alone is out of tolerance (the loop was needed)");
+  if (rep.deviation_per_level.size() >= 3) {
+    const size_t n = rep.deviation_per_level.size();
+    Check(rep.deviation_per_level[n - 2] / rep.deviation_per_level[n - 1] > 2.5,
+          "the deviation shrinks by more than 2.5x per extra level (about 4x expected from h^2)");
+  }
+  // 8 patches have a corner exactly at the closed-form limit point of one of the 8 cube corners.
+  int corners_found = 0;
+  for (int cx = 0; cx < 2; ++cx) for (int cy = 0; cy < 2; ++cy) for (int cz = 0; cz < 2; ++cz) {
+    const Point3d want(cx ? 10.0 - corner_closed_form : corner_closed_form, cy ? 10.0 - corner_closed_form : corner_closed_form,
+                       cz ? 10.0 - corner_closed_form : corner_closed_form);
+    bool hit = false;
+    for (const SubDNurbsPatch& p : patches) {
+      for (int a = 0; a < 2 && !hit; ++a) for (int b = 0; b < 2 && !hit; ++b) {
+        if (p.surface.PointAt(a, b).DistanceTo(want) < 1e-9) hit = true;
+      }
+    }
+    if (hit) ++corners_found;
+  }
+  Check(corners_found == 8, "all 8 closed-form corner limit points (2.5 / 7.5) are patch corners to 1e-9");
+  // Independent dense check: 33x33 samples per patch against a limit mesh built in the test, 4 levels deeper than the patches.
+  SubD at_level = cube;
+  at_level.Subdivide(rep.levels_used);
+  const double dense = FitTestDenseDeviation(patches, at_level, 4, 32);
+  Check(dense <= 1.5 * tol, "independent 33x33 sampling against a 4-level-deeper test-built limit mesh stays within 1.5x the tolerance");
+  Check(dense >= 0.2 * rep.max_deviation, "...and the independent figure is of the same magnitude as the reported one (not vacuous)");
+}
+
+void TestSubDFitToleranceIsWatertightAndTighterToleranceNeedsMoreLevels() {
+  SubD cube = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  SubDFitReport loose, tight;
+  const std::vector<SubDNurbsPatch> a = cube.ToNurbsPatchesToTolerance(0.5, &loose);
+  const std::vector<SubDNurbsPatch> b = cube.ToNurbsPatchesToTolerance(0.05, &tight);
+  Check(loose.converged && tight.converged, "both tolerances converge on the cube cage");
+  Check(tight.levels_used > loose.levels_used, "a 10x tighter tolerance uses strictly more subdivision levels");
+  Check(tight.max_deviation <= 0.05 && loose.max_deviation <= 0.5, "each reported deviation is within its own tolerance");
+  Check(FitTestSeamViolations(a) == 0, "loose result: every patch boundary curve is shared by exactly one other patch (closed, watertight)");
+  Check(FitTestSeamViolations(b) == 0, "tight result: every patch boundary curve is shared by exactly one other patch (closed, watertight)");
+  Check(static_cast<int>(a.size()) == cube.FaceCount() * (1 << (2 * loose.levels_used)), "patch count = 6 * 4^levels (no hidden extra faces)");
+}
+
+void TestSubDFitToleranceNegativeControlsRefuseWithAReason() {
+  SubD cube = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  {
+    SubDFitReport r;
+    const auto p = cube.ToNurbsPatchesToTolerance(1e-9, &r, /*max_levels=*/2);
+    Check(!r.converged && p.empty(), "unreachable tolerance within max_levels: not converged, NO patches returned");
+    Check(r.reason.find("not met") != std::string::npos && r.reason.find("max_levels 2") != std::string::npos,
+          "...and the reason names the tolerance, the level budget and the best deviation reached");
+    Check(r.max_deviation > 1e-9 && r.levels_used == 2, "...with the measured (> tolerance) deviation and the last level tried reported");
+  }
+  {
+    SubDFitReport r;
+    const auto p = cube.ToNurbsPatchesToTolerance(1e-6, &r, /*max_levels=*/6, /*face_budget=*/30);
+    Check(!r.converged && p.empty() && r.reason.find("face budget") != std::string::npos,
+          "a face budget of 30 stops the refinement and says so (6 -> 24 faces fits, 96 does not)");
+  }
+  {
+    SubDFitReport r;
+    const auto p = cube.ToNurbsPatchesToTolerance(1e-6, &r, 6, /*face_budget=*/3);
+    Check(!r.converged && p.empty() && r.reason.find("already has 6 faces") != std::string::npos,
+          "a cage already over the face budget is refused up front with that reason");
+  }
+  bool t0 = false, tn = false, tl = false, tb = false;
+  try { (void)cube.ToNurbsPatchesToTolerance(0.0); } catch (const std::invalid_argument&) { t0 = true; }
+  try { (void)cube.ToNurbsPatchesToTolerance(std::numeric_limits<double>::quiet_NaN()); } catch (const std::invalid_argument&) { tn = true; }
+  try { (void)cube.ToNurbsPatchesToTolerance(0.1, nullptr, -1); } catch (const std::invalid_argument&) { tl = true; }
+  try { (void)cube.ToNurbsPatchesToTolerance(0.1, nullptr, 3, 0); } catch (const std::invalid_argument&) { tb = true; }
+  Check(t0 && tn && tl && tb, "zero / NaN tolerance, negative max_levels and a zero face budget throw std::invalid_argument");
+  SubD before = cube;
+  (void)cube.ToNurbsPatchesToTolerance(0.5);
+  Check(cube.FaceCount() == before.FaceCount() && cube.VertexCount() == before.VertexCount(), "the SubD itself is not subdivided or otherwise modified");
+}
+
+void TestSubDFitToleranceRegularTorusCageIsExactClosedForm() {
+  // 6 x 6 torus cage: every vertex valence 4, closed -> every face regular -> exact patches, deviation 0, level 0.
+  constexpr double kPi = 3.14159265358979323846;
+  const int N = 6;
+  const double R = 5.0, r = 2.0;
+  const auto P = [&](int i, int j) {
+    i = ((i % N) + N) % N; j = ((j % N) + N) % N;
+    const double u = 2 * kPi * i / N, v = 2 * kPi * j / N;
+    return Point3d((R + r * std::cos(v)) * std::cos(u), (R + r * std::cos(v)) * std::sin(u), r * std::sin(v));
+  };
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  for (int i = 0; i < N; ++i) for (int j = 0; j < N; ++j) raw.m_V.Append(ON_3fPoint(P(i, j)));
+  const auto id = [&](int i, int j) { return ((i % N + N) % N) * N + ((j % N + N) % N); };
+  for (int i = 0; i < N; ++i) for (int j = 0; j < N; ++j) {
+    ON_MeshFace f;
+    f.vi[0] = id(i, j); f.vi[1] = id(i + 1, j); f.vi[2] = id(i + 1, j + 1); f.vi[3] = id(i, j + 1);
+    raw.m_F.Append(f);
+  }
+  SubD torus = SubD::FromControlMesh(m);
+  SubDFitReport rep;
+  const std::vector<SubDNurbsPatch> patches = torus.ToNurbsPatchesToTolerance(1e-12, &rep);
+  Check(rep.converged && rep.levels_used == 0 && rep.max_deviation == 0.0 && rep.measured_patches == 0,
+        "regular closed cage: converges at level 0 with deviation exactly 0 (nothing irregular to measure) even at tolerance 1e-12");
+  Check(static_cast<int>(patches.size()) == N * N && rep.exact_patches == N * N, "36 patches, all exact");
+  // Closed form: face (i,j) centre = sum_{a,b} w_a w_b P(i-1+a, j-1+b), w = (1, 23, 23, 1)/48 (uniform cubic B-spline at t = 1/2).
+  // Compare against the float-rounded cage (the cage the kernel actually received).
+  const auto Pf = [&](int i, int j) {
+    const Point3d q = P(i, j);
+    return Point3d(static_cast<float>(q.x), static_cast<float>(q.y), static_cast<float>(q.z));
+  };
+  const double w[4] = {1.0 / 48, 23.0 / 48, 23.0 / 48, 1.0 / 48};
+  std::vector<Point3d> centres;
+  for (int i = 0; i < N; ++i) for (int j = 0; j < N; ++j) {
+    double x = 0, y = 0, z = 0;
+    for (int a = 0; a < 4; ++a) for (int b = 0; b < 4; ++b) {
+      const Point3d q = Pf(i - 1 + a, j - 1 + b);
+      x += w[a] * w[b] * q.x; y += w[a] * w[b] * q.y; z += w[a] * w[b] * q.z;
+    }
+    centres.push_back(Point3d(x, y, z));
+  }
+  int matched = 0;
+  for (const Point3d& c : centres) {
+    for (const SubDNurbsPatch& p : patches) {
+      if (p.surface.PointAt(0.5, 0.5).DistanceTo(c) < 1e-6) { ++matched; break; }
+    }
+  }
+  Check(matched == N * N, "every one of the 36 closed-form B-spline face centres is a patch centre point to 1e-6");
+  Check(FitTestSeamViolations(patches) == 0, "the regular torus patch set is watertight");
+}
+
+void TestSubDFitToleranceFullyCreasedCubeIsTheExactCube() {
+  SubD cube = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
+  Check(cube.SetCreasesByDihedral(30.0) == 12, "all 12 cube edges creased (every vertex a corner)");
+  SubDFitReport rep;
+  const std::vector<SubDNurbsPatch> patches = cube.ToNurbsPatchesToTolerance(1e-6, &rep);
+  Check(rep.converged, "fully creased cube converges to 1e-6");
+  // The limit surface of a fully creased cube is the cube itself: every sample must lie ON the cube surface.
+  double worst = 0.0;
+  bool inside_box = true;
+  for (const SubDNurbsPatch& p : patches) {
+    for (int i = 0; i <= 8; ++i) for (int j = 0; j <= 8; ++j) {
+      const Point3d q = p.surface.PointAt(i / 8.0, j / 8.0);
+      if (q.x < -1e-9 || q.y < -1e-9 || q.z < -1e-9 || q.x > 10 + 1e-9 || q.y > 10 + 1e-9 || q.z > 10 + 1e-9) inside_box = false;
+      const double d = std::min({std::abs(q.x), std::abs(q.x - 10), std::abs(q.y), std::abs(q.y - 10), std::abs(q.z), std::abs(q.z - 10)});
+      worst = std::max(worst, d);
+    }
+  }
+  Check(inside_box, "every sample lies inside the closed cube [0,10]^3");
+  Check(worst < 1e-6, "every sample lies on the cube surface (distance to the nearest face plane < 1e-6): the creased-cube limit is the cube");
+  Check(FitTestSeamViolations(patches) == 0, "creased cube: watertight");
+}
+
+void TestSubDFitToleranceTriangleCageIsSubdividedFirstAndConverges() {
+  // Octahedron (all triangles): ToNurbsPatchesWatertight refuses it at level 0; the fit subdivides once itself.
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  const float v[6][3] = {{5, 0, 0}, {-5, 0, 0}, {0, 5, 0}, {0, -5, 0}, {0, 0, 5}, {0, 0, -5}};
+  for (const auto& q : v) raw.m_V.Append(ON_3fPoint(q[0], q[1], q[2]));
+  const int tris[8][3] = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4}, {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+  for (const auto& t : tris) { ON_MeshFace f; f.vi[0] = t[0]; f.vi[1] = t[1]; f.vi[2] = f.vi[3] = t[2]; raw.m_F.Append(f); }
+  SubD oct = SubD::FromControlMesh(m);
+  bool plain_threw = false;
+  try { (void)oct.ToNurbsPatchesWatertight(); } catch (const std::runtime_error&) { plain_threw = true; }
+  Check(plain_threw, "(control) the plain watertight conversion refuses the triangle cage");
+  SubDFitReport rep;
+  const std::vector<SubDNurbsPatch> patches = oct.ToNurbsPatchesToTolerance(0.1, &rep);
+  Check(rep.converged && rep.levels_used >= 1 && rep.max_deviation <= 0.1, "the fit subdivides the triangle cage itself and meets 0.1");
+  Check(!patches.empty() && FitTestSeamViolations(patches) == 0, "...and the result is watertight");
+  SubD at_level = oct;
+  at_level.Subdivide(rep.levels_used);
+  const double dense = FitTestDenseDeviation(patches, at_level, 3, 24);
+  Check(dense <= 0.15, "independent dense check against a test-built limit mesh stays within 0.15");
+}
+
+}  // namespace subd_fit_tests
+
+
+// HL-END subd_fit_tests
+
+// HL-BEGIN heal_gate_tests
+// ===========================================================================
+// Brep::HealChecked: gaps, overlaps, T-junction sewing, degenerate and sliver
+// faces healed in one trial with a Check() before/after report and a validity
+// gate that refuses (leaving the Brep untouched) with a stated reason.
+// ===========================================================================
+namespace heal_gate_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Point3d;
+namespace tol = dino8::kernel::tolerance;
+
+// Axis-aligned slab 1 x 1 x h built from six planar faces (outward).
+std::vector<Brep::PlanarFace> HealGateSlabFaces(double h) {
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, h), Point3d(1, 0, h), Point3d(1, 1, h), Point3d(0, 1, h)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+  faces.push_back(CheckHealFace({t[0], t[1], t[2], t[3]}, ON_3dVector(0, 0, 1)));
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+std::vector<Brep::PlanarFace> HealGateStripFaces(double width) {
+  std::vector<Brep::PlanarFace> faces = CheckHealBoxFaces();
+  faces[1] = CheckHealFace({Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1 - width, 1), Point3d(0, 1 - width, 1)}, ON_3dVector(0, 0, 1));
+  faces.push_back(CheckHealFace({Point3d(0, 1 - width, 1), Point3d(1, 1 - width, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}, ON_3dVector(0, 0, 1)));
+  return faces;
+}
+
+int HealGateTolerantEdges(const Brep& b) {
+  int n = 0;
+  for (int ei = 0; ei < b.raw().m_E.Count(); ++ei) if (b.raw().m_E[ei].m_tolerance > tol::kDistance) ++n;
+  return n;
+}
+
+void TestHealCheckedClosesGapAndOverlapWithReportAndKeepsVolume() {
+  for (const double sign : {1.0, -1.0}) {  // +: top plate floats 1e-4 ABOVE the walls (gap); -: it sinks 1e-4 below their top edge (overlap of the walls past it)
+    const double d = 1e-4;
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(1.0, 1.0 + sign * d));
+    const int faces_before = box.FaceCount();
+    Brep::HealOptions opt;
+    opt.gap_tolerance = 2.0 * d;
+    const Brep::HealReport rep = box.HealChecked(opt);
+    const char* what = sign > 0 ? "gap" : "overlap";
+    Check(rep.before.Count(Brep::CheckIssue::Kind::NakedEdge) == 4, sign > 0 ? "gap fixture: report.before has exactly the 4 naked edges of the lifted top" : "overlap fixture: report.before has exactly the 4 naked edges of the sunk top");
+    Check(rep.accepted && rep.changed && rep.reason.rfind("accepted", 0) == 0, sign > 0 ? "gap: the heal is accepted and changed the Brep" : "overlap: the heal is accepted and changed the Brep");
+    Check(rep.joined_edges >= 4, sign > 0 ? "gap: at least 4 edge pairs joined" : "overlap: at least 4 edge pairs joined");
+    Check(rep.after.Count(Brep::CheckIssue::Kind::NakedEdge) == 0 && rep.after.is_closed && rep.after.is_oriented,
+          sign > 0 ? "gap: report.after has no naked edge and is closed + oriented" : "overlap: report.after has no naked edge and is closed + oriented");
+    // Independent confirmation on the Brep itself, not on the report.
+    const Brep::CheckReport fresh = box.Check();
+    Check(fresh.Count(Brep::CheckIssue::Kind::NakedEdge) == 0 && box.FaceCount() == faces_before && box.raw().IsValid(),
+          sign > 0 ? "gap: a fresh Check() of the kept Brep agrees: no naked edge, 6 faces, ON_Brep valid" : "overlap: a fresh Check() of the kept Brep agrees: no naked edge, 6 faces, ON_Brep valid");
+    const dino8::kernel::Mesh m = box.TessellateToClosedMeshTolerant(8, 8);
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - 1.0) <= 2.0 * d,
+          sign > 0 ? "gap: tolerant tessellation of the healed Brep is a closed manifold with volume within 2e-4 of 1" : "overlap: tolerant tessellation of the healed Brep is a closed manifold with volume within 2e-4 of 1");
+    Check(HealGateTolerantEdges(box) >= 4, sign > 0 ? "gap: the closed gap is recorded as >= 4 tolerant edges (not silently hidden)" : "overlap: the closed overlap is recorded as >= 4 tolerant edges (not silently hidden)");
+    (void)what;
+  }
+}
+
+void TestHealCheckedRemovesSliverAndDegenerateStripsAndReportsKinds() {
+  for (const double width : {1e-5, 8e-7}) {
+    const bool sliver = width > tol::kDistance;
+    Brep box = Brep::FromPlanarFaces(HealGateStripFaces(width));
+    Brep::HealOptions opt;
+    opt.gap_tolerance = 2e-5;
+    opt.sliver_width = 2e-5;
+    const Brep::HealReport rep = box.HealChecked(opt);
+    const auto kind = sliver ? Brep::CheckIssue::Kind::SliverFace : Brep::CheckIssue::Kind::DegenerateFace;
+    Check(rep.before.Count(kind) == 1, sliver ? "1e-5 strip: report.before lists exactly 1 SliverFace" : "8e-7 strip: report.before lists exactly 1 DegenerateFace");
+    Check(rep.accepted && rep.changed, sliver ? "1e-5 strip: accepted and changed" : "8e-7 strip: accepted and changed");
+    Check(rep.sliver_faces_removed + rep.degenerate_faces_removed >= 1 && box.FaceCount() == 6,
+          sliver ? "1e-5 strip: the strip is removed, 6 faces remain" : "8e-7 strip: the strip is removed, 6 faces remain");
+    Check(rep.after.IsClean() && rep.after.is_closed && rep.valid_after && box.raw().IsValid() && box.raw().IsSolid(),
+          sliver ? "1e-5 strip: report.after is clean/closed and the kept ON_Brep is a valid solid" : "8e-7 strip: report.after is clean/closed and the kept ON_Brep is a valid solid");
+    Check(rep.after.Count(kind) == 0 && box.Check().Count(kind) == 0, sliver ? "1e-5 strip: no SliverFace in a fresh Check()" : "8e-7 strip: no DegenerateFace in a fresh Check()");
+    const dino8::kernel::Mesh m = box.TessellateToClosedMeshTolerant(8, 8);
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - 1.0) <= 2.0 * width + 1e-9,
+          sliver ? "1e-5 strip: closed tolerant mesh, volume within the strip width of 1" : "8e-7 strip: closed tolerant mesh, volume within the strip width of 1");
+  }
+}
+
+void TestHealCheckedLeavesACleanBrepAlone() {
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const int e_before = box.raw().m_E.Count();
+  const Brep::HealReport rep = box.HealChecked();
+  Check(rep.accepted && !rep.changed && rep.reason.find("already clean") != std::string::npos, "a clean box: accepted, changed == false, reason says already clean");
+  Check(box.FaceCount() == 6 && box.raw().m_E.Count() == e_before && rep.joined_edges == 0 && rep.faces_flipped == 0, "...and nothing was joined, removed or flipped");
+}
+
+void TestHealCheckedRefusesWithAReasonAndLeavesTheBrepUntouched() {
+  // (a) a gap too large for the stated gap tolerance: nothing healable -> no improvement, refused.
+  {
+    Brep box = Brep::FromPlanarFaces(CheckHealScaledBoxFaces(1.0, 1.0 + 1e-3));
+    const int naked_before = box.Check().Count(Brep::CheckIssue::Kind::NakedEdge);
+    const int edges_before = box.raw().m_E.Count();
+    Brep::HealOptions opt;
+    opt.gap_tolerance = 2e-4;
+    opt.sliver_width = 2e-4;
+    const Brep::HealReport rep = box.HealChecked(opt);
+    std::printf("  [info] 1e-3 gap, 2e-4 tolerance: %s\n", rep.reason.c_str());
+    Check(!rep.accepted && !rep.changed && rep.reason.rfind("refused: no improvement", 0) == 0, "a 1e-3 gap with gap_tolerance 2e-4: refused as 'no improvement'");
+    Check(box.Check().Count(Brep::CheckIssue::Kind::NakedEdge) == naked_before && naked_before == 4 && box.raw().m_E.Count() == edges_before && box.FaceCount() == 6,
+          "...and the Brep is exactly as before (still 4 naked edges, same edge count, 6 faces)");
+  }
+  // (b) a 5e-6-thick slab: its 4 side walls are 'slivers' at sliver_width 1e-4, but deleting them destroys the body.
+  {
+    Brep slab = Brep::FromPlanarFaces(HealGateSlabFaces(5e-6));
+    Check(slab.Check().Count(Brep::CheckIssue::Kind::SliverFace) >= 4, "(control) Check(): the thin slab's 4 side walls are reported as slivers");
+    const int edges_before = slab.raw().m_E.Count();
+    Brep::HealOptions opt;
+    opt.gap_tolerance = 1e-4;
+    opt.sliver_width = 1e-4;
+    const Brep::HealReport rep = slab.HealChecked(opt);
+    std::printf("  [info] thin slab: %s\n", rep.reason.c_str());
+    Check(!rep.accepted && !rep.changed && rep.reason.rfind("refused", 0) == 0, "thin slab: the heal that would delete its walls is refused, with a reason");
+    Check(slab.FaceCount() == 6 && slab.raw().m_E.Count() == edges_before, "...and the slab keeps all 6 faces and its edge count");
+    Check(rep.sliver_faces_removed + rep.degenerate_faces_removed >= 1 && !rep.after.issues.empty(),
+          "...the report still shows what the discarded trial did");
+  }
+  // (c) the volume gate: same strip heal as the accepted case, but with an impossible volume budget.
+  {
+    Brep box = Brep::FromPlanarFaces(HealGateStripFaces(1e-5));
+    Brep::HealOptions opt;
+    opt.gap_tolerance = 2e-5;
+    opt.sliver_width = 2e-5;
+    opt.max_relative_volume_change = 1e-12;
+    const Brep::HealReport rep = box.HealChecked(opt);
+    std::printf("  [info] strip, volume budget 1e-12: measured_before=%d vol_before=%.12g measured_after=%d vol_after=%.12g -> %s\n",
+                rep.volume_measured_before ? 1 : 0, rep.volume_before, rep.volume_measured_after ? 1 : 0, rep.volume_after, rep.reason.c_str());
+    Check(!rep.accepted && box.FaceCount() == 7, "an impossible volume budget refuses the strip heal and keeps all 7 faces");
+    Check(rep.reason.find("volume") != std::string::npos, "...and the reason names the volume gate");
+  }
+}
+
+}  // namespace heal_gate_tests
+
+
+// HL-END heal_gate_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -100623,6 +101043,21 @@ int main() {
   RunTest("units_exchange_tests::TestIgesUnitRefusalsGiveReasonsAndNeverCrash", units_exchange_tests::TestIgesUnitRefusalsGiveReasonsAndNeverCrash);
   RunTest("units_exchange_tests::TestStepWritesAndReadsEveryUnitContext", units_exchange_tests::TestStepWritesAndReadsEveryUnitContext);
   RunTest("units_exchange_tests::TestStepReadsForeignUnitStylesAndRefusesBadOnes", units_exchange_tests::TestStepReadsForeignUnitStylesAndRefusesBadOnes);
+
+  // HL-REG-BEGIN subd_fit_tests
+  RunTest("subd_fit_tests::TestSubDFitToleranceCubeCornerClosedFormAndMeasuredBound", subd_fit_tests::TestSubDFitToleranceCubeCornerClosedFormAndMeasuredBound);
+  RunTest("subd_fit_tests::TestSubDFitToleranceIsWatertightAndTighterToleranceNeedsMoreLevels", subd_fit_tests::TestSubDFitToleranceIsWatertightAndTighterToleranceNeedsMoreLevels);
+  RunTest("subd_fit_tests::TestSubDFitToleranceNegativeControlsRefuseWithAReason", subd_fit_tests::TestSubDFitToleranceNegativeControlsRefuseWithAReason);
+  RunTest("subd_fit_tests::TestSubDFitToleranceRegularTorusCageIsExactClosedForm", subd_fit_tests::TestSubDFitToleranceRegularTorusCageIsExactClosedForm);
+  RunTest("subd_fit_tests::TestSubDFitToleranceFullyCreasedCubeIsTheExactCube", subd_fit_tests::TestSubDFitToleranceFullyCreasedCubeIsTheExactCube);
+  RunTest("subd_fit_tests::TestSubDFitToleranceTriangleCageIsSubdividedFirstAndConverges", subd_fit_tests::TestSubDFitToleranceTriangleCageIsSubdividedFirstAndConverges);
+  // HL-REG-END subd_fit_tests
+  // HL-REG-BEGIN heal_gate_tests
+  RunTest("heal_gate_tests::TestHealCheckedClosesGapAndOverlapWithReportAndKeepsVolume", heal_gate_tests::TestHealCheckedClosesGapAndOverlapWithReportAndKeepsVolume);
+  RunTest("heal_gate_tests::TestHealCheckedRemovesSliverAndDegenerateStripsAndReportsKinds", heal_gate_tests::TestHealCheckedRemovesSliverAndDegenerateStripsAndReportsKinds);
+  RunTest("heal_gate_tests::TestHealCheckedLeavesACleanBrepAlone", heal_gate_tests::TestHealCheckedLeavesACleanBrepAlone);
+  RunTest("heal_gate_tests::TestHealCheckedRefusesWithAReasonAndLeavesTheBrepUntouched", heal_gate_tests::TestHealCheckedRefusesWithAReasonAndLeavesTheBrepUntouched);
+  // HL-REG-END heal_gate_tests
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {
