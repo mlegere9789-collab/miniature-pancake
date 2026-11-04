@@ -2558,6 +2558,36 @@ Brep ThickenTrimmedPlanarSheet(const ON_Surface* raw_surface, const std::vector<
 Result OffsetKeepingNet(const NurbsSurface& src, double distance, NurbsSurface& out) {
   ON_Cylinder cyl;
   if (!src.raw().IsCylinder(&cyl) || !(cyl.circle.radius > 0.0)) {
+    // A sphere (full, or a zone / patch of one) is offset exactly the same way: a uniform scale of the control net about
+    // the centre is an affine map, under which the NURBS surface and the sphere it traces transform together, and the
+    // image of the sphere of radius r is the sphere of radius s*r. OffsetApproximate() would translate the off-curve
+    // control points of the rational arcs by `distance` instead of distance / cos(half-arc), leaving the offset arcs
+    // inside the true offset sphere (the same defect the cylinder branch documents).
+    ON_Sphere sph;
+    ON_BoundingBox sbb;
+    src.raw().GetBoundingBox(sbb);
+    if (src.raw().IsSphere(&sph, 1e-7 * (1.0 + sbb.Diagonal().Length())) && sph.radius > 0.0) {
+      const Interval du = src.Domain(0), dv = src.Domain(1);
+      const double um = 0.5 * (du.min + du.max), vm = 0.5 * (dv.min + dv.max);
+      const ON_3dVector n = src.NormalAt(um, vm);
+      const ON_3dVector radial = src.PointAt(um, vm) - sph.plane.origin;
+      const double new_r = sph.radius + ((radial * n) >= 0.0 ? distance : -distance);
+      if (new_r <= 0.0) return Result::Failed;
+      const double s = new_r / sph.radius;
+      ON_NurbsSurface moved = src.raw();
+      for (int i = 0; i < moved.CVCount(0); ++i) {
+        for (int j = 0; j < moved.CVCount(1); ++j) {
+          ON_4dPoint cv;
+          moved.GetCV(i, j, cv);
+          const double w = cv.w;
+          const ON_3dPoint e(cv.x / w, cv.y / w, cv.z / w);
+          const ON_3dPoint scaled = sph.plane.origin + s * (e - sph.plane.origin);
+          moved.SetCV(i, j, ON_4dPoint(scaled.x * w, scaled.y * w, scaled.z * w, w));
+        }
+      }
+      out.raw() = moved;
+      return Result::Ok;
+    }
     return src.OffsetApproximate(distance, out);
   }
   const ON_3dPoint axis_origin = cyl.circle.plane.origin;
@@ -2603,8 +2633,12 @@ Result OffsetKeepingNet(const NurbsSurface& src, double distance, NurbsSurface& 
 Result OffsetForThicken(const NurbsSurface& src, double distance, NurbsSurface& out) {
   ON_Cylinder cyl;
   ON_Plane plane;
+  ON_Sphere sph;
   const ON_NurbsSurface& r = src.raw();
-  if (r.IsCylinder(&cyl) || r.IsPlanar(&plane, tolerance::kDistance) || r.IsClosed(0) || r.IsClosed(1)) {
+  ON_BoundingBox rbb;
+  r.GetBoundingBox(rbb);
+  if (r.IsCylinder(&cyl) || r.IsSphere(&sph, 1e-7 * (1.0 + rbb.Diagonal().Length())) ||
+      r.IsPlanar(&plane, tolerance::kDistance) || r.IsClosed(0) || r.IsClosed(1)) {
     return OffsetKeepingNet(src, distance, out);
   }
   ON_BoundingBox bb;
