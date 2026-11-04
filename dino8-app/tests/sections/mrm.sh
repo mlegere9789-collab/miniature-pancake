@@ -13,6 +13,10 @@
 #   overlap  r=1.8 @(5,3) alone (the (4,4) pick is refused)   297.356 (both would be 295.624)
 #   chamfer_two  wall 1 x cap 0.5 @(5,0) + bevel 1.0 x cap 0.8 @(4,4)   284.853 (one alone: 291.906 / 292.445)
 #   mixed    bottom chamfer 1 x 0.5, then r=0.8 at both ends of its bevel   290.670 (one alone: 290.755 / 291.821)
+#   ChamferEdge stages revolve rims too and bevels them together (kernel::ChamferRevolveRims), distance1 along the wall /
+#   bevel, distance2 across the planar face; the closed forms use the same Green integral with straight chamfer cuts:
+#   chamfer_unequal  wall 0.8 x cap 1.2 @(5,0) + bevel 0.5 x cap 2 @(4,4)   277.959 (one alone: 285.625 / 291.832)
+#   chamfer_big      wall 2.5 x cap 3.5 @(5,0) + bevel 1.2 x cap 3 @(4,4)   167.871 (one alone: 194.124 / 273.245)
 # Face / edge counts and "closed solid" are topological and exact: the kernel result gains one face and two edges per rim.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   MRMO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/mrm_script.txt" 2>&1)" || { echo "$MRMO"; echo "FAIL: mrm script exited non-zero"; exit 1; }
@@ -74,6 +78,35 @@ mrmnum same 285.346 "MRM_same: only the first r=1.5 applies"
 mrmcheck chamfer_two "$MRM_VALID" "MRM_chamfer_two: Check valid"
 mrmcheck chamfer_two "6 faces" "MRM_chamfer_two: 6 faces, closed solid"
 mrmnum chamfer_two 284.853 "MRM_chamfer_two: Green volume wall 1 x cap 0.5 @(5,0) + bevel 1.0 x cap 0.8 @(4,4)"
+mrmcheck chamfer_two "ChamferEdge: 2 rims of solid-of-revolution object 1 replaced with an exact chamfer (distance1 1, distance2 0.5; distance1 1, distance2 0.8; exact kernel revolve-rim bevels (cone / plane), distance1 along the wall and distance2 across the planar face, 6 faces, closed solid)" "MRM_chamfer_two: both rims are bevelled in ONE rebuild (one message, distances listed in pick order)"
+mrmcheck chamfer_two "ChamferEdge: rim of solid-of-revolution object 1 staged for an exact kernel revolve-rim bevel (distance1 1, distance2 0.5) - 1 staged, Enter to apply" "MRM_chamfer_two: the first rim is staged, not applied at its pick"
+mrmcheck chamfer_two "- 2 staged, Enter to apply" "MRM_chamfer_two: ...and the second joins it"
+mrmcheck chamfer_two "6 faces, 11 edges, closed solid" "MRM_chamfer_two: 6 faces (input + 2 rims), 11 edges, closed solid"
+mrmobjs chamfer_two 1 "MRM_chamfer_two: replaced in place, no mesh object"
+mrmcheck chamfer_swapped "$MRM_VALID" "MRM_chamfer_swapped: Check valid"
+mrmcheck chamfer_swapped "distance1 1, distance2 0.8; distance1 1, distance2 0.5;" "MRM_chamfer_swapped: distances listed in pick order"
+mrmnum chamfer_swapped 284.853 "MRM_chamfer_swapped: same Green volume in the other pick order"
+mrmsame chamfer_two chamfer_swapped "MRM_chamfer_swapped: pick order does not change the volume"
+mrmcheck chamfer_unequal "$MRM_VALID" "MRM_chamfer_unequal: Check valid"
+mrmcheck chamfer_unequal "6 faces, 11 edges, closed solid" "MRM_chamfer_unequal: 6 faces, closed solid"
+mrmcheck chamfer_unequal "distance1 0.8, distance2 1.2; distance1 0.5, distance2 2;" "MRM_chamfer_unequal: each rim keeps its own two distances"
+mrmnum chamfer_unequal 277.959 "MRM_chamfer_unequal: Green volume wall 0.8 x cap 1.2 @(5,0) + bevel 0.5 x cap 2 @(4,4) (one alone: 285.625 / 291.832)"
+mrmcheck chamfer_big "$MRM_VALID" "MRM_chamfer_big: Check valid"
+mrmcheck chamfer_big "6 faces, 11 edges, closed solid" "MRM_chamfer_big: 6 faces, closed solid"
+mrmnum chamfer_big 167.871 "MRM_chamfer_big: Green volume wall 2.5 x cap 3.5 @(5,0) + bevel 1.2 x cap 3 @(4,4) (one alone: 194.124 / 273.245)"
+mrmnum chamfer_runs 284.853 "MRM_chamfer_runs: the second bevel in a SECOND run on a solid that already carries the first: same Green volume"
+mrmsame chamfer_two chamfer_runs "MRM_chamfer_runs: one run vs two runs"
+mrmcheck chamfer_runs "$MRM_VALID" "MRM_chamfer_runs: Check valid"
+mrmcheck chamfer_runs "6 faces, 11 edges, closed solid" "MRM_chamfer_runs: 6 faces, closed solid"
+mrmcheck chamfer_same "cannot be bevelled together with the 1 rim(s) of this solid of revolution already staged" "MRM_chamfer_same: the same rim picked twice is refused"
+mrmcheck chamfer_same "the same rim is listed twice" "MRM_chamfer_same: ...with the kernel's reason"
+mrmcheck chamfer_same "replaced with an exact chamfer (distance1 1, distance2 0.5; exact kernel revolve-rim bevel (cone / plane)" "MRM_chamfer_same: the first pick still applies (single-rim wording)"
+mrmnum chamfer_same 291.906 "MRM_chamfer_same: only the first bevel (wall 1 x cap 0.5) is in the solid"
+mrmcheck chamfer_same "$MRM_VALID" "MRM_chamfer_same: Check valid"
+mrmnum chamfer_undo 299.498 "MRM_chamfer_undo: one Undo removes both staged bevels (the chamfered cylinder, V1 = 299.498)"
+mrmcheck chamfer_undo "4 faces" "MRM_chamfer_undo: ...back to the 4-face solid"
+mrmcheck chamfer_other "different object is already staged in this ChamferEdge run" "MRM_chamfer_other: an edge on another object is refused while a rim is staged"
+mrmcheck chamfer_other "replaced with an exact chamfer (distance1 1, distance2 0.5; exact kernel revolve-rim bevel (cone / plane)" "MRM_chamfer_other: ...and the staged rim applies at Enter"
 # --- rims on a bevel cone an earlier chamfer made
 mrmcheck mixed "FilletEdge: 2 rims of solid-of-revolution object 1 replaced with an exact fillet (radii 0.8, 0.8;" "MRM_mixed: both ends of a bevel cone from an earlier run are blended in one run"
 mrmcheck mixed "$MRM_VALID" "MRM_mixed: Check valid"

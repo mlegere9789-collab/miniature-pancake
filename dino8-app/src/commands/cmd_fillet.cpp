@@ -324,6 +324,33 @@ bool TryRevolveRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double dis
   }
 }
 
+// SEVERAL rims of one solid of revolution bevelled in one exact rebuild (kernel::ChamferRevolveRims): every rim keeps
+// its own (distance along the wall, distance across the planar face), the setbacks are taken from the ORIGINAL profile
+// corners (the order of the picks does not matter), overlapping setbacks are refused naming both rims.
+struct RevolveRimBevel {
+  Point3d point_on_rim;
+  double distance_wall = 0;
+  double distance_cap = 0;
+};
+bool TryRevolveRimsChamfer(const ON_Brep& solid, const std::vector<RevolveRimBevel>& rims, ON_Brep& out, std::string& err) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    std::vector<kernel::RevolveRimChamfer> kr;
+    for (const auto& r : rims) {
+      kernel::RevolveRimChamfer c;
+      c.point_on_rim = r.point_on_rim;
+      c.distance_wall = r.distance_wall;
+      c.distance_cap = r.distance_cap;
+      kr.push_back(c);
+    }
+    return AcceptCapRimResult(kernel::ChamferRevolveRims(kb, kr), out, err);
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Kernel pipe-tee wrapper (kernel::FilletPipeTee, fillet.h): the rolling-ball fillet along the SADDLE edge where a
 // perpendicular branch cylinder (radius rb) meets a larger main cylinder (radius R) - the solid the app's sealed
@@ -3297,6 +3324,47 @@ class FilletEdgeCommand : public Command {
                    "; exact torus patch" + (specs.size() > 1 ? "es" : "") + " tangent to both faces, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
         return;
       }
+    } else if (b && rims.front().rev && rims.front().chamfer) {
+      // One or several rims of a polygonal solid of revolution bevelled through the kernel (ChamferRevolveRim /
+      // ChamferRevolveRims, one exact rebuild, each rim with its own distances); see Run(). A single rim keeps the
+      // message and history behaviour the immediate chamfer always had.
+      ON_Brep out;
+      bool built = false;
+      if (rims.size() == 1) {
+        built = TryRevolveRimChamfer(*b, rims.front().start, rims.front().radius, rims.front().d_cap, out, why);
+      } else {
+        std::vector<RevolveRimBevel> kr;
+        for (const PendingRim& r : rims) kr.push_back({r.start, r.radius, r.d_cap});
+        built = TryRevolveRimsChamfer(*b, kr, out, why);
+      }
+      auto dist_text = [](double d1, double d2) {
+        return std::fabs(d2 - d1) > 1e-9 ? "distance1 " + FormatNumber(d1) + ", distance2 " + FormatNumber(d2) : "radius " + FormatNumber(d1);
+      };
+      if (built) {
+        const std::string clabel = "ChamferEdge";
+        EdgeBlendOp op;
+        op.chamfer = true;
+        op.d1 = rims.front().radius;
+        if (std::fabs(rims.front().d_cap - rims.front().radius) > 1e-9) op.d2 = rims.front().d_cap;
+        op.recordable = false;  // the revolve-rim bevels are not what the rebuild re-runs
+        for (const PendingRim& r : rims) op.edges.emplace_back(r.start, r.start);
+        std::string note;
+        CommitEdgeBlend(ctx, id, *b, out, clabel, op, made_, note);
+        if (rims.size() == 1) {
+          ctx.Print(clabel + ": edge " + std::to_string(rims.front().edge_index) + " of object " + std::to_string(id) + " replaced with an exact chamfer (" +
+                     dist_text(rims.front().radius, rims.front().d_cap) +
+                     "; exact kernel revolve-rim bevel (cone / plane), distance1 along the wall and distance2 across the planar face)" + note);
+        } else {
+          std::string ds;
+          for (size_t i = 0; i < rims.size(); ++i) ds += (i ? "; " : "") + dist_text(rims[i].radius, rims[i].d_cap);
+          ctx.Print(clabel + ": " + std::to_string(rims.size()) + " rims of solid-of-revolution object " + std::to_string(id) + " replaced with an exact chamfer (" + ds +
+                     "; exact kernel revolve-rim bevels (cone / plane), distance1 along the wall and distance2 across the planar face, " + std::to_string(out.m_F.Count()) +
+                     " faces, closed solid)" + note);
+        }
+        return;
+      }
+      ctx.Warn("ChamferEdge: the staged revolve-rim bevel(s) could not be applied (" + why + "); the solid is unchanged");
+      return;
     } else if (b && rims.front().rev) {
       // One or several rims of a polygonal solid of revolution through the kernel (FilletRevolveRim / FilletRevolveRims, one
       // exact rebuild, each rim with its own radius); see Run().
@@ -3861,7 +3929,42 @@ class FilletEdgeCommand : public Command {
       ON_Brep exact;
       std::string detail;
       bool rim_chamfer = false;
-      if (TryExactChamfer(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail, &rim_chamfer)) {
+      bool via_revolve = false;
+      if (TryExactChamfer(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail, &rim_chamfer, &via_revolve)) {
+        if (via_revolve) {
+          // A rim of a polygonal solid of revolution: STAGED, and every rim picked on this solid in the run is bevelled
+          // together at Enter in ONE exact kernel rebuild (kernel::ChamferRevolveRims), each with the distances current at
+          // its pick. The dry run above already proved this rim alone; a pick that cannot be bevelled together with the
+          // rims already staged (overlapping setbacks, the same rim twice...) is refused with the kernel's reason and
+          // the staged rims stay staged.
+          if (!pending_rims_.empty() && pending_rim_id_ != pick.id) {
+            ctx.Warn(label + ": an edge on a different object is already staged in this ChamferEdge run; press Enter to apply it first, then run ChamferEdge again for this object");
+            return;
+          }
+          const double d_wall = radius_, d_cap = distance2_.value_or(radius_);
+          if (!pending_rims_.empty()) {
+            std::vector<RevolveRimBevel> trial;
+            for (const PendingRim& pr : pending_rims_) trial.push_back({pr.start, pr.radius, pr.d_cap});
+            trial.push_back({edge.PointAtStart(), d_wall, d_cap});
+            ON_Brep together;
+            std::string together_why;
+            if (!TryRevolveRimsChamfer(*b, trial, together, together_why)) {
+              ctx.Warn(label + ": this rim cannot be bevelled together with the " + std::to_string(pending_rims_.size()) + " rim(s) of this solid of revolution already staged (" + together_why +
+                        "); the staged rim(s) stay staged - press Enter to apply them, then run ChamferEdge again for this rim");
+              return;
+            }
+          }
+          pending_rim_id_ = pick.id;
+          PendingRim pr{edge.PointAtStart(), false, d_wall};
+          pr.rev = true;
+          pr.chamfer = true;
+          pr.d_cap = d_cap;
+          pr.edge_index = pick.edge;
+          pending_rims_.push_back(pr);
+          ctx.Print(label + ": rim of solid-of-revolution object " + std::to_string(pick.id) + " staged for an exact kernel revolve-rim bevel (" + ChamferDistanceDescription() +
+                     ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
+          return;
+        }
         EdgeBlendOp op;
         op.chamfer = true;
         op.d1 = radius_;
@@ -4676,7 +4779,7 @@ class FilletEdgeCommand : public Command {
   // with both underlying exception messages joined into `detail` so a
   // caller that needs to report a real failure (as opposed to silently
   // falling back) has something concrete to show, not just "didn't work".
-  bool TryExactChamfer(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail, bool* rim_chamfer = nullptr) const {
+  bool TryExactChamfer(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail, bool* rim_chamfer = nullptr, bool* via_revolve = nullptr) const {
     kernel::Brep kb;
     kb.raw() = solid;
     rim_note_ = "; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap";
@@ -4774,6 +4877,7 @@ class FilletEdgeCommand : public Command {
     if (!use_angle && TryRevolveRimChamfer(solid, p0, d_i, d_j, out, rev_err)) {
       if (rim_chamfer) *rim_chamfer = true;
       rim_note_ = "; exact kernel revolve-rim bevel (cone / plane), distance1 along the wall and distance2 across the planar face";
+      if (via_revolve) *via_revolve = true;
       return true;
     }
     detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err + "; cone-rim attempt: " + cone_err +
@@ -5046,7 +5150,7 @@ class FilletEdgeCommand : public Command {
   RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
-  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; bool cap = false; bool rev = false; bool tee = false; bool prof = false; };
+  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; bool cap = false; bool rev = false; bool tee = false; bool prof = false; bool chamfer = false; double d_cap = 0; int edge_index = -1; };
   mutable std::string rim_note_;  // TryExactChamfer: what the "; exact ..." suffix of a rim-chamfer message says
   std::vector<PendingRim> pending_rims_;  // staged plain-cylinder rim fillets (see Run()/FlushPendingRims)
   ObjectId pending_rim_id_ = kNoObject;

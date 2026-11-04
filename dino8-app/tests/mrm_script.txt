@@ -154,6 +154,160 @@ List
 Volume
 Check
 
+# chamfers, same two picks in the OTHER order: staged and applied together, the order of the picks does not matter
+New
+MRMBEGIN_chamfer_swapped
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.8
+0,4,4
+Radius=1
+Distance2=0.5
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfers, unequal distances: wall 0.8 x cap 1.2 at the bottom rim, bevel 0.5 x cap 2 at the top rim
+New
+MRMBEGIN_chamfer_unequal
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=0.8
+Distance2=1.2
+0,5,0
+Radius=0.5
+Distance2=2
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfers, large distances close to the faces' limits: wall 2.5 of 3 x cap 3.5 of 5, bevel 1.2 of 1.414 x cap 3 of 4
+New
+MRMBEGIN_chamfer_big
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=2.5
+Distance2=3.5
+0,5,0
+Radius=1.2
+Distance2=3
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfers, the same two bevels in two SEPARATE runs (the second one on a solid that already carries the first bevel)
+New
+MRMBEGIN_chamfer_runs
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.8
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfers, the same rim picked twice in one run: the second pick is refused, the first applies
+New
+MRMBEGIN_chamfer_same
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Radius=0.6
+Distance2=0.5
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfers, one step of history: the two staged bevels are ONE undo step
+New
+MRMBEGIN_chamfer_undo
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Radius=1
+Distance2=0.8
+0,4,4
+Enter
+Undo
+SelAll
+List
+Volume
+Check
+
+# a rim of a DIFFERENT object in the same chamfer run is refused (the staged rim stays staged and applies at Enter)
+New
+MRMBEGIN_chamfer_other
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+Cylinder 20,0,0 5 4
+ChamferEdge
+Radius=1
+20,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Radius=1
+Distance2=0.5
+20,5,0
+Enter
+SelAll
+List
+Check
+
 # rims that border a bevel cone an earlier run made: chamfer the bottom rim, then fillet BOTH ends of the new bevel cone in one run
 New
 MRMBEGIN_mixed
