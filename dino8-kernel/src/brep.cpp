@@ -2326,7 +2326,13 @@ Brep::CylindricalFace ExtractCylindricalFace(const ON_Brep& brep, int face_index
   cf.frame.yaxis.Unitize();
   cf.frame.UpdateEquation();
   cf.radius = radius;
-  cf.length = v_max - v_min;
+  // The patch's extent ALONG THE AXIS (the documented meaning of `length`),
+  // measured between the two trim-corner points, not the v-parameter span:
+  // the two agree only when the surface's v parameter is arc length (an
+  // ON_Cylinder NURBS form), while a Brep::Pipe() wall - and any such wall
+  // after Transform() - has a normalised v domain (a 4-long Pipe read back
+  // length 1, a z-scaled one read 1 instead of 2).
+  cf.length = ON_DotProduct(p_far - p_corner, zaxis);
   // `outward` is read off the REAL face normal (the surface's own normal
   // at the trim corner, reversed by m_bRev) against the radial direction
   // from the axis, not assumed from m_bRev alone: every cylinder this

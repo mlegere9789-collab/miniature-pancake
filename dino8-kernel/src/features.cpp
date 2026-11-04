@@ -1846,7 +1846,37 @@ Brep DrillHolePatternInstances(const Brep& solid, const HoleFeature& hole, const
                                 std::to_string(2.0 * hole.radius) + ")");
   }
   const size_t before = RecognizeHoles(solid).size();
-  const Brep drilled = MakeHoles(solid, instance_centers, hole.axis, hole.radius, hole.depth, hole.through);
+  // One compound cut first (a single Difference, MakeHoles()). A target that already carries a bore has an inner loop on
+  // the faces the new bores pierce, and for several instances at once the general boolean can refuse that with "an edge
+  // is claimed by 3 or more fragment loops" (measured: 3 through instances into a slab that already has one through
+  // hole). The fallback is the instance-by-instance MakeHole() chain - each step drills ONE tool into the previous
+  // result, which the kernel handles (see TestMakeHolesTwoThroughHolesMatchSumOfIndividualVolumes). If that fails too,
+  // the refusal says how far it got.
+  Brep drilled;
+  std::string compound_reason;
+  try {
+    drilled = MakeHoles(solid, instance_centers, hole.axis, hole.radius, hole.depth, hole.through);
+  } catch (const std::exception& ex) {
+    compound_reason = ex.what();
+  }
+  if (!compound_reason.empty()) {
+    drilled = solid;
+    size_t done = 0;
+    for (const Point3d& c : instance_centers) {
+      try {
+        drilled = MakeHole(drilled, c, hole.axis, hole.radius, hole.depth, hole.through);
+        ++done;
+      } catch (const std::exception& ex) {
+        throw std::invalid_argument(name + ": only " + std::to_string(done) + " of " +
+                                    std::to_string(instance_centers.size()) +
+                                    " pattern instances came out as complete bores (the compound cut failed: " +
+                                    compound_reason + "; drilling them one at a time then failed at instance " +
+                                    std::to_string(done + 1) + ": " + ex.what() +
+                                    "; an instance may run off the solid's edge, lie outside the solid, or break into "
+                                    "an existing feature)");
+      }
+    }
+  }
   const size_t after = RecognizeHoles(drilled).size();
   if (after != before + instance_centers.size()) {
     throw std::invalid_argument(name + ": only " + std::to_string(after - std::min(after, before)) + " of " +
@@ -2018,8 +2048,11 @@ std::vector<CurveArrayStation> ArrayStationsAlongCurveOnSurface(const NurbsCurve
     Vector3d nrm = surface.NormalAt(uv.x, uv.y);
     Vector3d tan = path.TangentAt(st.parameter);
     if (!nrm.Unitize()) throw std::invalid_argument(name + ": degenerate surface normal at station " + std::to_string(i));
+    if (!tan.Unitize()) throw std::invalid_argument(name + ": degenerate path tangent at station " + std::to_string(i));
     tan = tan - nrm * ON_DotProduct(tan, nrm);
-    if (!tan.Unitize()) {
+    // A relative test: a path along the normal leaves ~1e-16 of rounding residue, which Unitize() alone would happily
+    // blow up into a meaningless in-plane direction.
+    if (tan.Length() < 1e-9 || !tan.Unitize()) {
       throw std::invalid_argument(name + ": the path tangent is parallel to the surface normal at station " +
                                   std::to_string(i));
     }
