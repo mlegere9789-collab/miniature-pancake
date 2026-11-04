@@ -1372,15 +1372,6 @@ double Brep::VolumeOfSealedSolid() const {
 
 double Brep::VolumeImpl(bool allow_analytic) const {
   double total = 0.0;
-  // The divergence integrand (p . n) / 3 sums to the volume for ANY origin on a closed surface (the integral of n over a
-  // closed surface is zero), so it is taken about the bounding-box centre: far from the origin the raw p . n terms are
-  // ~1e9 times the volume and the trimmed-face integrator's RELATIVE tolerance (1e-6 of the face integral) then allowed
-  // volume errors of 0.1 % (measured: 999.986 for a box of volume 1000 at offset 1e7).
-  ON_3dPoint c0(0.0, 0.0, 0.0);
-  {
-    ON_BoundingBox bb;
-    if (brep_.GetBoundingBox(bb) && bb.IsValid()) c0 = bb.Center();
-  }
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     const ON_BrepFace& face = brep_.m_F[i];
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
@@ -1408,7 +1399,7 @@ double Brep::VolumeImpl(bool allow_analytic) const {
         throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " + std::to_string(i));
       }
       const ON_3dVector n = ON_CrossProduct(su, sv);
-      return ((p.x - c0.x) * n.x + (p.y - c0.y) * n.y + (p.z - c0.z) * n.z) / 3.0;
+      return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
     };
     if (is_cap || FaceCoversWholeDomain(i)) {
       if (!s) {
