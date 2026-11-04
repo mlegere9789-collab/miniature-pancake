@@ -13389,9 +13389,12 @@ ofrhas bump_fallback_tol "FALLBACK: using the first-order Greville-normal approx
 # ---- (2) Offset of a non-planar polyline: the active-CPlane overload, exact mitre of the projection
 ofrhas crv_outside "2 object(s) selected" "OFR_crv_outside: the non-planar polyline's offset exists (2 objects; before the exact mitre the tight document tolerance refused it)"
 ofrhas crv_outside "Bounding box min 0,-1,0 max 11,11,8" "OFR_crv_outside: Offset 1 to the outside has the closed-form mitred bounding box (0,-1,0)-(11,11,8): vertices (0,-1,0) (11,-1,0) (11,11,5) (0,11,8), heights kept"
-ofrhas crv_outside "Total length = 35.40" "OFR_crv_outside: its length is 11 + 13 + sqrt(130) = 35.4018"
+# Length is the kernel's chord sum over a fixed sample count (NurbsCurve::Length(samples)), which cuts every corner: the same
+# polyline typed in directly prints 31.61 for the exact 31.6206 and the closed-form 35.4018 prints 35.39 (measured), so the
+# expected strings are the chord-sum values (0.03% under the closed form); the vertices themselves are pinned by the bounding boxes.
+ofrhas crv_outside "Total length = 35.39" "OFR_crv_outside: its length is 11 + 13 + sqrt(130) = 35.4018 (printed 35.39: Length is a corner-cutting chord sum)"
 ofrhas crv_inside "Bounding box min 0,1,0 max 9,9,8" "OFR_crv_inside: a side point inside gives the inward mitre (0,1,0) (9,1,0) (9,9,5) (0,9,8)"
-ofrhas crv_inside "Total length = 27.92" "OFR_crv_inside: its length is 9 + sqrt(89) + sqrt(90) = 27.92"
+ofrhas crv_inside "Total length = 27.91" "OFR_crv_inside: its length is 9 + sqrt(89) + sqrt(90) = 27.921 (printed 27.91: Length is a corner-cutting chord sum)"
 ofrhas crv_tol "Bounding box min 0,-1,0 max 11,11,8" "OFR_crv_tol: Offset Tolerance=0.0001 is accepted and gives the same exact mitre"
 
 

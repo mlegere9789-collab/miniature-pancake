@@ -271,9 +271,8 @@ Offset Distance=1 5,-3,0
 SelAll
 List
 SelLast
-BoundingBox
-SelLast
 Length
+BoundingBox
 New
 OFRBEGIN_crv_inside
 Polyline 0,0,0 10,0,0 10,10,5 0,10,8
@@ -281,9 +280,8 @@ Enter
 SelLast
 Offset Distance=1 5,3,0
 SelLast
-BoundingBox
-SelLast
 Length
+BoundingBox
 New
 OFRBEGIN_crv_tol
 Polyline 0,0,0 10,0,0 10,10,5 0,10,8
