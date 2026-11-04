@@ -12813,7 +12813,7 @@ rtafmt() {
 # STL of a solid re-imports with Area right but Volume 0 (open triangle soup, not welded); a STEP re-import of an ACIS-imported
 # box is reported invalid; the hidden-operand vase compares against a .3dm that lost the Hide state until the File3dm fix was built;
 # IGES: tens to hundreds of loose trimmed faces instead of one solid; G1 surfaces: STEP re-imports two objects invalid, SAT/SAB lose objects.
-RTA_KNOWN=" sblcut:stp sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntloft:sat cntloft:sab cntpatch:stp cntpatch:sat cntpatch:sab cntnet:stp cntnet:sat cntnet:sab sblcut:stl sblunion:stl sbltwo:stl rvr:stl ptf:stl spsscale:stl spsscale:obj vase:obj vase:stl vase:stp satimp:stp satimp:stl sabimp:stp sabimp:stl satcyl:stp satcyl:stl "
+RTA_KNOWN=" "
 for c in sblcut sblunion sbltwo rvr ptf cntloft cntpatch cntnet spsscale vase; do
   rtaundo $c
   rtaround $c pre redo "Undo then Redo returns the state exactly"
