@@ -24,7 +24,44 @@ std::vector<SceneObject> ResolveObjects(CommandContext& ctx, const std::vector<O
   return out;
 }
 
-void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label) {
+// One diagnostic line per transformed B-rep / mesh (the first few): the map's
+// determinant, whether the result still has outward faces, and its volume -
+// what a mirror (det < 0) or a non-uniform scale (volume x |det|) must get
+// right. A mirrored mesh keeps outward windings (Mesh::Transform) and a
+// non-uniform / mirrored B-rep keeps a valid outward solid (Brep::Transform).
+void ReportSolidResults(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, const std::string& label) {
+  int shown = 0;
+  for (const SceneObject* o : ctx.Doc().FindMany(ids)) {
+    if (!o || (o->kind != ObjectKind::Brep && o->kind != ObjectKind::Mesh)) continue;
+    if (shown++ >= 4) break;
+    const bool is_brep = o->kind == ObjectKind::Brep;
+    std::string line = label + ": object " + std::to_string(o->id) + " (" + (is_brep ? "B-rep" : "mesh") + "), determinant " + FormatNumber(xf.Determinant());
+    std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+    int orientation = 0;
+    if (is_brep) orientation = o->brep->raw().SolidOrientation();
+    else if (m && m->IsClosedManifold()) orientation = m->Volume() >= 0 ? 1 : -1;
+    line += orientation > 0 ? ", closed solid with outward faces" : orientation < 0 ? ", closed solid with INWARD faces" : ", not a closed solid";
+    if (m && m->IsClosedManifold()) line += ", volume " + FormatNumber(std::fabs(m->Volume()));
+    ctx.Print(line);
+  }
+}
+
+// Returns false (and changes nothing) when the kernel refuses the map for a
+// selected B-rep - see BrepTransformRefusal(). `report` adds the per-solid
+// diagnostic line of ReportSolidResults() (Scale / ScaleNU / Mirror).
+bool ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label, bool report = false) {
+  {
+    // Atomic refusal: a singular map (zero scale factor, projection) would
+    // flatten a B-rep onto a plane. Brep::Transform() refuses it with a
+    // reason; checking up front means no object (curves included) is half
+    // transformed when it does.
+    bool any_brep = false;
+    for (const SceneObject* o : ctx.Doc().FindMany(ids)) if (o && o->kind == ObjectKind::Brep) { any_brep = true; break; }
+    if (any_brep) {
+      const std::string why = BrepTransformRefusal(xf);
+      if (!why.empty()) { ctx.Warn(label + ": refused, nothing changed - " + why); return false; }
+    }
+  }
   // Move/Rotate/Scale/Mirror/Orient/Nudge/ProjectToCPlane (copy=false): the
   // full set of ids about to be Transform()-ed in place is known upfront
   // and nothing else about the document changes, so this qualifies for
@@ -49,6 +86,7 @@ void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_
       made.push_back(ctx.Doc().Add(std::move(src)));  // may reallocate objects_
     }
     ctx.Print("Copied " + std::to_string(made.size()) + " object(s)");
+    if (report) ReportSolidResults(ctx, made, xf, label);
   } else {
     ctx.Doc().BeginChangeForObjects(label, ids);
     // FindMany() resolves the whole selection in one O(document size) pass
@@ -62,7 +100,9 @@ void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_
     for (SceneObject* o : ctx.Doc().FindMany(ids)) {
       if (o) o->Transform(xf);
     }
+    if (report) ReportSolidResults(ctx, ids, xf, label);
   }
+  return true;
 }
 
 // "Copy=Yes" / "Copy=No" set the flag; a bare "Copy" (or a click) toggles it.
@@ -281,7 +321,7 @@ class ScaleCommand : public Command {
   }
   void Apply(CommandContext& ctx, double f, Point3d dir_point) {
     if (f == 0) { ctx.Warn("Scale factor must be non-zero"); return; }
-    ApplyXform(ctx, ids_, Xform(ctx, f, dir_point), copy_, "Scale");
+    ApplyXform(ctx, ids_, Xform(ctx, f, dir_point), copy_, "Scale", true);
     ctx.ClearPreview();
     Finish();
   }
@@ -328,7 +368,7 @@ class ScaleNUCommand : public Command {
     ON_Plane pl = ActivePlane(ctx);
     pl.SetOrigin(*origin_);
     ON_Xform xf = ON_Xform::ScaleTransformation(pl, fx_, fy_, fz_);
-    ApplyXform(ctx, ids_, xf, copy_, "ScaleNU");
+    ApplyXform(ctx, ids_, xf, copy_, "ScaleNU", true);
     ctx.ClearPreview();
     Finish();
   }
@@ -367,7 +407,7 @@ class MirrorCommand : public Command {
   }
   void Apply(CommandContext& ctx, Point3d a, Point3d b) {
     const size_t before = ctx.Doc().Objects().size();
-    ApplyXform(ctx, ids_, Xform(ctx, a, b), copy_, "Mirror");
+    ApplyXform(ctx, ids_, Xform(ctx, a, b), copy_, "Mirror", true);
     // Tag every block-instance member object this Mirror actually touched
     // (in place, or the freshly-made copy) as Mirrored, so SelMirroredBlocks
     // - previously a stub that could never find anything, since nothing

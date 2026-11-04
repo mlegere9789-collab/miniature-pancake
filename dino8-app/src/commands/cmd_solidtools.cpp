@@ -9,6 +9,8 @@
 // runs on closed meshes through the Manifold-backed kernel booleans and the
 // results are mesh objects; each command says so on the command line.
 #include "commands/cmd_common.h"
+#include "dino8/kernel/boolean_general.h"
+#include "dino8/kernel/features.h"
 
 #include <algorithm>
 #include <cctype>
@@ -992,7 +994,100 @@ void HoleArray(CommandContext& ctx, const Input& in, const std::vector<ObjectId>
   CommitSolidsWithHole(ctx, solids, label, pre_cut, cutter_used);
 }
 
+// Exact B-rep hole patterns (Exact=Yes): the first hole is drilled with the
+// kernel MakeHole() at the picked point (axis = into the material, from the
+// outward normal of the solid there), recognised again by RecognizeHoles(),
+// and the remaining instances are drilled by the kernel
+// Linear/Rectangular/PolarHolePattern() in ONE compound cut. The result is a
+// B-rep with true cylindrical bores, not a mesh. The kernel refuses (with a
+// reason, printed here) a pattern whose bores touch or overlap, whose
+// direction is not perpendicular to the hole axis, a polar axis not parallel
+// to the hole axis, a single instance, or an instance that would not come
+// out as a complete bore (off the solid's edge); the object is then left as
+// it was.
+struct ExactHoleSpec {
+  bool polar = false;
+  double radius = 2, depth = 10;
+  bool through = true;
+  int nx = 1, ny = 1;               // grid (rectangular)
+  double sx = 10, sy = 10;          // spacing (rectangular)
+  Point3d center;                   // polar centre
+  int count = 6;                    // polar count
+};
+
+std::string FixedNumber(double v, int digits = 3) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.*f", digits, v);
+  return buf;
+}
+
+void ArrayHoleExact(CommandContext& ctx, const Input& in, Point3d first, const ExactHoleSpec& sp, const std::string& label) {
+  if (!in.O(1).empty()) { ctx.Warn(label + ": Exact=Yes drills round holes; clear the profile curve (press Enter at the profile prompt) or use Exact=No for profile holes"); return; }
+  ctx.Doc().BeginChange(label);
+  int made = 0;
+  for (ObjectId id : in.O(0)) {
+    SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    if (o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn(label + ": Exact=Yes needs a B-rep solid; object " + Id(id) + " is not one (use Exact=No for the mesh path)"); continue; }
+    try {
+      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      if (!m || !m->IsClosedManifold()) throw std::invalid_argument("object " + Id(id) + " is not a closed solid");
+      const SurfaceHit hit = NearestOnMesh(Outward(*m), first);
+      Vector3d axis = -hit.normal;
+      if (!axis.Unitize()) throw std::invalid_argument("no surface normal at the picked point");
+      const kernel::Brep one = kernel::MakeHole(*o->brep, hit.point, axis, sp.radius, sp.depth, sp.through);
+      // Instance 0: the bore just drilled (the recognised hole whose axis passes through the picked point).
+      const kernel::HoleFeature* seed = nullptr;
+      const std::vector<kernel::HoleFeature> found = kernel::RecognizeHoles(one);
+      double best = 1e300;
+      for (const kernel::HoleFeature& h : found) {
+        Vector3d ax = h.axis;
+        if (!ax.Unitize()) continue;
+        const Vector3d d = hit.point - h.origin;
+        const double off = (d - ax * ON_DotProduct(d, ax)).Length();
+        if (off < best && std::fabs(h.radius - sp.radius) < 1e-6) { best = off; seed = &h; }
+      }
+      if (!seed || best > std::max(sp.radius * 0.5, 1e-6)) throw std::invalid_argument("the first hole was not recognised as a bore at the picked point");
+      kernel::Brep result;
+      if (sp.polar) {
+        result = kernel::PolarHolePattern(one, *seed, sp.center, ActiveNormal(ctx), sp.count);
+      } else {
+        const ON_Plane pl = ActivePlane(ctx);
+        const Vector3d ux = sp.sx < 0 ? -pl.xaxis : pl.xaxis, uy = sp.sy < 0 ? -pl.yaxis : pl.yaxis;
+        const double ax_s = std::fabs(sp.sx), ay_s = std::fabs(sp.sy);
+        if (sp.nx > 1 && sp.ny == 1) result = kernel::LinearHolePattern(one, *seed, ux, ax_s, sp.nx);
+        else if (sp.nx == 1 && sp.ny > 1) result = kernel::LinearHolePattern(one, *seed, uy, ay_s, sp.ny);
+        else result = kernel::RectangularHolePattern(one, *seed, ux, ax_s, sp.nx, uy, ay_s, sp.ny);
+      }
+      const std::vector<kernel::HoleFeature> holes = kernel::RecognizeHoles(result);
+      const kernel::Mesh rm = result.TessellateToClosedMesh(32, 128);
+      *o->brep = result;
+      o->InvalidateDisplay();
+      ++made;
+      ctx.Print(label + " (exact B-rep): object " + Id(id) + ", " + std::to_string(holes.size()) + " bore(s) recognised, radius " + FormatNumber(sp.radius) +
+                (sp.through ? ", through" : ", depth " + FormatNumber(sp.depth)) + ", volume " + FixedNumber(std::fabs(rm.Volume())));
+      int shown = 0;
+      for (const kernel::HoleFeature& h : holes) {
+        if (shown++ >= 16) { ctx.Print(label + ": ..."); break; }
+        ctx.Print(label + ": bore at " + FixedNumber(h.origin.x) + "," + FixedNumber(h.origin.y) + "," + FixedNumber(h.origin.z) + " axis " + FixedNumber(h.axis.x, 2) + "," + FixedNumber(h.axis.y, 2) + "," + FixedNumber(h.axis.z, 2));
+      }
+    } catch (const std::exception& ex) {
+      ctx.Warn(label + ": refused for object " + Id(id) + ", left unchanged - " + ex.what());
+    }
+  }
+  if (made == 0) ctx.Print(label + ": no solid was changed");
+}
+
 void ArrayHole(CommandContext& ctx, const Input& in) {
+  if (in.Yes("Exact")) {
+    ExactHoleSpec sp;
+    sp.radius = std::fabs(in.N(3, 2)); sp.depth = std::fabs(in.N(4, 10));
+    sp.through = in.Yes("Through");
+    sp.nx = std::max(1, static_cast<int>(in.N(5, 3))); sp.ny = std::max(1, static_cast<int>(in.N(6, 2)));
+    sp.sx = in.N(7, 10); sp.sy = in.N(8, 10);
+    ArrayHoleExact(ctx, in, in.P(2), sp, "ArrayHole");
+    return;
+  }
   const ArrayProfile profile = ResolveArrayProfile(ctx, in.O(1), "ArrayHole");
   const double radius = std::fabs(in.N(3, 2)), depth = std::fabs(in.N(4, 10));
   const int nx = std::max(1, static_cast<int>(in.N(5, 3))), ny = std::max(1, static_cast<int>(in.N(6, 2)));

@@ -3,6 +3,7 @@
 // curve arrays, alignment, and planar slicing (Contour/Section/CutPlane).
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
+#include "dino8/kernel/features.h"
 #include "dino8/kernel/surface_intersect.h"
 
 #include <algorithm>
@@ -1089,8 +1090,27 @@ class ArrayCrvCommand : public Command {
     ON_Plane f0 = FrameAt(path_->curve, path_->curve.Domain().min, up);
     std::vector<double> params = path_->curve.DivideByCount(count - 1);
     if (params.empty()) { Finish(); return; }
+    // B-reps are arrayed by the kernel ArrayAlongCurve() (same arc-length
+    // stations and ON_Xform::Rotation(frame0, frame_i) frames as below, each
+    // copy a Brep::Transform()). Unlike the legacy frame fallback, it refuses
+    // an `up` parallel to the path tangent at a station with a reason; then
+    // nothing at all is created.
+    std::map<ObjectId, std::vector<kernel::Brep>> brep_copies;
+    try {
+      for (ObjectId id : ids_) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (!o || o->kind != ObjectKind::Brep || !o->brep || o->user_text.count("BlockInsert")) continue;
+        brep_copies[id] = kernel::ArrayAlongCurve(*o->brep, path_->curve, count,
+                                                  freeform_ ? kernel::CurveArrayOrientation::Frame : kernel::CurveArrayOrientation::None, up);
+      }
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("ArrayCrv: refused, nothing created - ") + ex.what());
+      Finish();
+      return;
+    }
     ctx.Doc().BeginChange("ArrayCrv");
     int made = 0;
+    int exact = 0;
     for (size_t i = 0; i < params.size(); ++i) {
       ON_Xform xf;
       if (freeform_) {
@@ -1102,11 +1122,15 @@ class ArrayCrvCommand : public Command {
       for (ObjectId id : ids_) {
         const SceneObject* o = ctx.Doc().Find(id);
         if (!o) continue;
-        SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
+        SceneObject dup = *o; dup.id = kNoObject; dup.selected = false;
+        auto kc = brep_copies.find(id);
+        if (kc != brep_copies.end() && i < kc->second.size()) { *dup.brep = kc->second[i]; dup.InvalidateDisplay(); ++exact; }
+        else dup.Transform(xf);
         ctx.Doc().Add(std::move(dup)); ++made;
       }
     }
     ctx.Print("ArrayCrv: " + std::to_string(made) + " object(s) placed along the curve");
+    if (exact > 0) ctx.Print("ArrayCrv: " + std::to_string(exact) + " B-rep cop" + (exact == 1 ? "y" : "ies") + " from the kernel ArrayAlongCurve (" + (freeform_ ? "frame-oriented" : "translated only") + ")");
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
@@ -1158,6 +1182,25 @@ class ArrayCrvOnSrfCommand : public Command {
     int count = std::max(2, static_cast<int>(v));
     std::vector<double> params = path_->curve.DivideByCount(count - 1);
     if (params.empty()) { Finish(); return; }
+    // B-reps are placed by the kernel ArrayAlongCurveOnSurface() (frame from
+    // the surface point nearest each station, z = surface normal, x = the
+    // tangent projected into the tangent plane): it refuses a path that
+    // leaves the surface (farther than the tolerance), or a tangent parallel
+    // to the normal, with a reason, and then nothing is created. Other
+    // object kinds keep the lenient legacy placement below.
+    std::map<ObjectId, std::vector<kernel::Brep>> brep_copies;
+    try {
+      const double on_srf_tol = std::max(ctx.Settings().absolute_tolerance, 1e-3);
+      for (ObjectId id : ids_) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (!o || o->kind != ObjectKind::Brep || !o->brep || o->user_text.count("BlockInsert")) continue;
+        brep_copies[id] = kernel::ArrayAlongCurveOnSurface(*o->brep, path_->curve, *srf_, count, on_srf_tol);
+      }
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("ArrayCrvOnSrf: refused, nothing created - ") + ex.what());
+      Finish();
+      return;
+    }
     auto frame_at = [&](double t) {
       Point3d pc = path_->curve.PointAt(t);
       ON_2dPoint uv = srf_->ClosestPointParameter(pc);
@@ -1175,6 +1218,8 @@ class ArrayCrvOnSrfCommand : public Command {
     ON_Plane f0 = frame_at(path_->curve.Domain().min);
     ctx.Doc().BeginChange("ArrayCrvOnSrf");
     int made = 0;
+    int exact = 0;
+    size_t station = 0;
     for (double t : params) {
       ON_Plane fi = frame_at(t);
       ON_Xform xf;
@@ -1185,12 +1230,16 @@ class ArrayCrvOnSrfCommand : public Command {
         SceneObject dup = *o;
         dup.id = kNoObject;
         dup.selected = false;
-        dup.Transform(xf);
+        auto kc = brep_copies.find(id);
+        if (kc != brep_copies.end() && station < kc->second.size()) { *dup.brep = kc->second[station]; dup.InvalidateDisplay(); ++exact; }
+        else dup.Transform(xf);
         ctx.Doc().Add(std::move(dup));
         ++made;
       }
+      ++station;
     }
     ctx.Print("ArrayCrvOnSrf: " + std::to_string(made) + " object(s) placed along the curve, oriented to the surface normal");
+    if (exact > 0) ctx.Print("ArrayCrvOnSrf: " + std::to_string(exact) + " B-rep cop" + (exact == 1 ? "y" : "ies") + " from the kernel ArrayAlongCurveOnSurface");
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }

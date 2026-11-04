@@ -140,6 +140,19 @@ inline double AdaptiveMeshTolerance(const SceneObject& o, double fallback = 0.00
 // (ui/DirectionArrows.cpp) without either the commands or the ui layer
 // needing to include the other.
 
+// The kernel's reason for refusing to apply `xf` to a B-rep (a singular or
+// non-finite map would flatten the body onto a plane or line), or an empty
+// string when Brep::Transform() accepts it. Probes a unit box through the
+// kernel's own Brep::Transform() so the wording is the kernel's, not ours.
+inline std::string BrepTransformRefusal(const ON_Xform& xf) {
+  try {
+    (void)kernel::Brep::Box(0, 0, 0, 1, 1, 1).Transform(xf);
+  } catch (const std::exception& ex) {
+    return ex.what();
+  }
+  return std::string();
+}
+
 // Best-effort closed mesh for an object (for booleans, volume, export).
 inline std::optional<kernel::Mesh> MeshOf(const SceneObject& o, double tol = 0.01) {
   switch (o.kind) {
