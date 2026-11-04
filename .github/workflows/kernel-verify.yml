@@ -156,9 +156,10 @@ jobs:
         shell: bash
         timeout-minutes: 120
         run: |
-          chmod +x appbin/dino8-app/build/Dino8 2>/dev/null || chmod +x appbin/Dino8
-          BIN=$(ls appbin/dino8-app/build/Dino8 appbin/Dino8 2>/dev/null | head -1)
-          JSON=$(ls appbin/section_groups.json | head -1)
+          find appbin -type f | head
+          BIN=$(find appbin -type f -name Dino8 | head -1)
+          JSON=$(find appbin -type f -name section_groups.json | head -1)
+          chmod +x "$BIN"
           NAMES=$(python3 -c "import json;print(' '.join(json.load(open('$JSON'))[${{ matrix.g }}]))")
           echo "group ${{ matrix.g }}: $NAMES"
           set +e
