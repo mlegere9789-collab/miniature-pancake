@@ -85,8 +85,12 @@ jobs:
             mkdir -p scratch2 && cd scratch2
             while IFS= read -r f; do
               [ -z "$f" ] && continue
+              set +e
               DINO8_TEST_FILTER="$f" timeout 1200 ../bundle/dino8_kernel_tests > ../f.log 2> ../f.err
-              echo "filter $f: exit=$? ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
+              frc=$?
+              set -e
+              echo "filter $f: exit=$frc ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
+              grep -E '^FAILED|^\[probe|threw|exception' ../f.err ../f.log 2>/dev/null | cut -c1-260 | sort | uniq -c | head -25 || true
             done < ../.kverify_filters
             cd ..
           fi
@@ -118,7 +122,7 @@ jobs:
       - name: Configure
         run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
-        run: cmake --build dino8-app/build --target Dino8
+        run: cmake --build dino8-app/build   # all targets: smoke.sh sections use helper binaries (text3dm, hatch3dm, mesh_fixture_gen, ...)
       - name: Plan the section groups
         run: |
           python3 - <<'PY'
@@ -129,7 +133,9 @@ jobs:
               m = re.match(r'\s+(\S+)\s+(\d+)\s+(\d+)\s*$', line)
               if m: items.append((m.group(1), int(m.group(3)) - int(m.group(2)) + 1))
               else:
-                  m = re.match(r'\s+(\S+)\s*(.*)$', line)
+                  # section FILES (tests/sections/NN_name.sh) are listed as "  NAME /path/to/file.sh": schedule them too
+                  m = re.match(r'\s+(\S+)\s+(\S+\.sh)\s*$', line)
+                  if m: items.append((m.group(1), 150))
           items.sort(key=lambda t: -t[1])
           G = 12
           groups = [[] for _ in range(G)]; load = [0] * G
@@ -142,7 +148,11 @@ jobs:
         with:
           name: app-binary
           path: |
-            dino8-app/build/Dino8
+            dino8-app/build/
+            !dino8-app/build/**/*.o
+            !dino8-app/build/**/*.a
+            !dino8-app/build/CMakeFiles/**
+            !dino8-app/build/_deps/**
             section_groups.json
           retention-days: 3
 
@@ -169,7 +179,7 @@ jobs:
         shell: bash
         timeout-minutes: 120
         run: |
-          find appbin -type f | head
+          find appbin -type f | head || true
           BIN=$(find appbin -type f -name Dino8 | head -1)
           JSON=$(find appbin -type f -name section_groups.json | head -1)
           chmod +x "$BIN"
@@ -181,6 +191,8 @@ jobs:
           set -e
           echo "group ${{ matrix.g }} exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
           grep -E '^FAIL' group.log | sort | uniq -c | head -60 || true
+          echo "---- run_sections summary (tail) ----"
+          tail -n 40 group.log | cut -c1-200 || true
           exit $rc
       - uses: actions/upload-artifact@v4
         if: always()
