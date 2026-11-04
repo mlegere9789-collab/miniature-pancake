@@ -1579,6 +1579,8 @@ std::optional<SceneObject> RebuildBoolean(CommandContext& ctx, const HistoryInpu
   if (!r.declined.empty()) ctx.Print("History rebuild of a boolean: " + r.declined);
   if (!r.ok) { why = "the operands' current shapes cannot be combined (not closed solids, or every boolean engine refused them)"; return std::nullopt; }
   if (!r.object) { why = "the boolean of the operands' current shapes is empty"; return std::nullopt; }
+  // Say which engine produced the new shape (exact planar / general sealed / SubD / mesh), in the live command's words.
+  ctx.Print("History rebuild of a boolean: " + r.how);
   return std::move(r.object);
 }
 

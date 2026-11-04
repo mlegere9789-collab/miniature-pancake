@@ -1,0 +1,102 @@
+# History of a sealed general-engine Boolean survives Save / New / Open (tests/smoke.sh section HGB_, part 2).
+# @TMP@ is the test temp dir. Document ON: a throw-away box is built and deleted first so the saved ids are NOT
+# 1,2,3 (box 2, cylinder 3, sealed difference 4); after New + Open in this same process the ids are REMAPPED
+# (box 1, cylinder 2, result 3) and moving the cylinder rebuilds the result with no UpdateHistory. Document MESH:
+# everything is moved 100000 away first, so the rebuild is already the mesh-boolean fallback when it is saved;
+# after reopening, moving it back must give the sealed B-rep again.
+SetActiveViewport Top
+
+New
+History On
+HGBBEGIN_save
+Box 100,100,0 110,110,0 10
+SelNone
+SelID 1
+Delete
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 2
+BooleanDifference
+SelID 3
+Enter
+SelNone
+SelID 4
+Check
+Volume
+History
+Save @TMP@/hgb_on.3dm
+New
+Open @TMP@/hgb_on.3dm
+History On
+History
+Show
+SelNone
+SelID 3
+Check
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,10
+SelNone
+SelID 3
+Check
+Volume
+List
+Undo
+SelNone
+SelID 3
+Check
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+20,0,0
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND
+
+New
+History On
+HGBBEGIN_mesh
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Show
+SelAll
+Move
+0,0,0
+100000,100000,0
+SelNone
+SelID 3
+Volume
+List
+Save @TMP@/hgb_mesh.3dm
+New
+Open @TMP@/hgb_mesh.3dm
+History On
+History
+SelNone
+SelID 3
+Volume
+List
+SelAll
+Move
+0,0,0
+-100000,-100000,0
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND

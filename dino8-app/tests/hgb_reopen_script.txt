@@ -1,0 +1,56 @@
+# History of a sealed general-engine Boolean, part 3 (tests/smoke.sh section HGB_): a FRESH app process opens the
+# documents hgb_save_script.txt wrote (box 1, cylinder 2, sealed difference 3 after the ids were remapped), so nothing
+# in memory survives from the session that built them.
+SetActiveViewport Top
+
+Open @TMP@/hgb_on.3dm
+History On
+HGBBEGIN_fresh
+History
+Show
+SelNone
+SelID 3
+Check
+Volume
+SelNone
+SelID 2
+Scale 5,5,5 1.5
+SelNone
+SelID 3
+Check
+Volume
+List
+Undo
+SelNone
+SelID 3
+Check
+Volume
+SelNone
+SelID 1
+Move
+0,0,0
+3,0,0
+SelNone
+SelID 3
+Check
+Volume
+HGBEND
+
+Open @TMP@/hgb_mesh.3dm
+History On
+HGBBEGIN_fresh_mesh
+History
+SelNone
+SelID 3
+Volume
+List
+SelAll
+Move
+0,0,0
+-100000,-100000,0
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND
