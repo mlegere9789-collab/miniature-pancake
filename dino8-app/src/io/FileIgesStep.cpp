@@ -87,6 +87,11 @@ double MillimetresPerUnit(const std::string& u) {
   if (u == "Feet") return 304.8;
   if (u == "Centimeters") return 10.0;
   if (u == "Meters") return 1000.0;
+  if (u == "Kilometers") return 1e6;
+  if (u == "Microns") return 1e-3;
+  if (u == "Mils") return 0.0254;
+  if (u == "Microinches") return 25.4e-6;
+  if (u == "Miles") return 1609344.0;
   return 1.0;
 }
 
@@ -967,6 +972,8 @@ bool ExportIges(const Document& doc, const std::string& path, bool selected_only
   int flag = 2;
   std::string uname = "MM";
   if (u == "Inches") { flag = 1; uname = "IN"; } else if (u == "Feet") { flag = 4; uname = "FT"; } else if (u == "Meters") { flag = 6; uname = "M"; } else if (u == "Centimeters") { flag = 10; uname = "CM"; }
+  else if (u == "Kilometers") { flag = 7; uname = "KM"; } else if (u == "Microns") { flag = 9; uname = "MICRON"; } else if (u == "Miles") { flag = 5; uname = "MI"; }
+  else if (u == "Mils") { flag = 8; uname = "MIL"; } else if (u == "Microinches") { flag = 11; uname = "UIN"; }
   w.Write(os, doc.Settings().title.empty() ? std::filesystem::path(path).stem().string() : doc.Settings().title,
           std::filesystem::path(path).filename().string(), uname, flag, tol, max_coord);
   if (!os) { error = "Could not write " + path; return false; }
@@ -1428,7 +1435,7 @@ std::string FormatUnitFactor(double f) {
 
 // Metres per unit for an IGES Global-section units flag (parameter 14) and
 // unit name (parameter 15); 0.0 = a flag this reader does not convert
-// (0, 8 mils, 11 microinches, or 3 with a name other than YARD/YD).
+// (0, an undefined flag, or 3 with a name other than YARD/YD).
 double IgesFlagMetres(int flag, const std::string& upper_name) {
   switch (flag) {
     case 1: return 0.0254;
@@ -1438,8 +1445,10 @@ double IgesFlagMetres(int flag, const std::string& upper_name) {
     case 5: return 1609.344;
     case 6: return 1.0;
     case 7: return 1000.0;
+    case 8: return 2.54e-5;
     case 9: return 1e-6;
     case 10: return 0.01;
+    case 11: return 2.54e-8;
     default: return 0.0;
   }
 }
@@ -2036,8 +2045,13 @@ int AddStepLengthUnit(StepWriter& w, const std::string& unit_system) {
   double conv_mm = 0.0;
   if (unit_system == "Inches") { conv_name = "INCH"; conv_mm = 25.4; }
   else if (unit_system == "Feet") { conv_name = "FOOT"; conv_mm = 304.8; }
+  else if (unit_system == "Mils") { conv_name = "MIL"; conv_mm = 0.0254; }
+  else if (unit_system == "Microinches") { conv_name = "MICROINCH"; conv_mm = 25.4e-6; }
+  else if (unit_system == "Miles") { conv_name = "MILE"; conv_mm = 1609344.0; }
   else if (unit_system == "Centimeters") si_prefix = ".CENTI.";
   else if (unit_system == "Meters") si_prefix = "$";
+  else if (unit_system == "Kilometers") si_prefix = ".KILO.";
+  else if (unit_system == "Microns") si_prefix = ".MICRO.";
   else si_prefix = ".MILLI.";
   if (si_prefix) return w.AddComplex({{"LENGTH_UNIT", ""}, {"NAMED_UNIT", "*"}, {"SI_UNIT", std::string(si_prefix) + ",.METRE."}});
   const int base = w.AddComplex({{"LENGTH_UNIT", ""}, {"NAMED_UNIT", "*"}, {"SI_UNIT", ".MILLI.,.METRE."}});
