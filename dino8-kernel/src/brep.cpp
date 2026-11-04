@@ -5616,6 +5616,62 @@ RowChain BuildFlatRowChain(double u_min, double u_max, double v_flat, double u_t
   return chain;
 }
 
+// True when two literal notch lists are the same sampled curve - the same
+// points, in either direction (a producer hands one canonical vector to
+// every fragment bounded by a shared seam; one consumer may store it
+// reversed).
+bool SameSeamChain(const std::vector<Point3d>& a, const std::vector<Point3d>& b) {
+  if (a.size() != b.size() || a.size() < 3) return false;
+  const size_t last = a.size() - 1, mid = a.size() / 2;
+  const double eps = 1e-12;
+  const bool fwd = a[0].DistanceTo(b[0]) < eps && a[last].DistanceTo(b[last]) < eps && a[mid].DistanceTo(b[mid]) < eps;
+  const bool rev = a[0].DistanceTo(b[last]) < eps && a[last].DistanceTo(b[0]) < eps &&
+                   a[mid].DistanceTo(b[last - mid]) < eps;
+  return fwd || rev;
+}
+
+// The coarsest stride at which a sampled seam polyline can be meshed while
+// every chord stays within half of `chord_tolerance` of every cylinder wall
+// that shares it (the other half is the margin for the strip mesher's
+// cross edges between the two rows). A seam of N + 1 samples admits only the
+// divisors of N as strides - then the kept index set {0, s, 2 s, ..., N} is
+// symmetric under reversal, so two consumers reading the chain in opposite
+// directions keep the same vertices. Each candidate chord is tested at its
+// quarter points, midpoint and three-quarter point against |distance to the
+// wall's axis - radius|, which is exactly the facet deviation of a ruled
+// chord on a cylinder. 1 (the verbatim chain) is always admissible and is
+// the answer when no walls are known or nothing coarser fits.
+size_t SeamStrideForChain(const std::vector<Point3d>& pts, const std::vector<const Brep::CylindricalFace*>& walls,
+                          double chord_tolerance) {
+  if (walls.empty() || pts.size() < 5) return 1;
+  const size_t n = pts.size() - 1;
+  const double budget = 0.5 * chord_tolerance;
+  auto wall_deviation = [&](const Point3d& p, const Brep::CylindricalFace& cf) {
+    const Vector3d d = p - cf.frame.origin;
+    const double axial = ON_DotProduct(d, cf.frame.zaxis);
+    const Vector3d radial = d - axial * cf.frame.zaxis;
+    return std::fabs(radial.Length() - cf.radius);
+  };
+  for (size_t s = n / 2; s >= 2; --s) {
+    if (n % s != 0) continue;
+    bool fits = true;
+    for (size_t a = 0; a + s <= n && fits; a += s) {
+      for (const double t : {0.25, 0.5, 0.75}) {
+        const Point3d p = pts[a] + t * (pts[a + s] - pts[a]);
+        for (const Brep::CylindricalFace* cf : walls) {
+          if (wall_deviation(p, *cf) > budget) {
+            fits = false;
+            break;
+          }
+        }
+        if (!fits) break;
+      }
+    }
+    if (fits) return s;
+  }
+  return 1;
+}
+
 // A notched row: the side table's literal points, verbatim, at the (u, v)
 // FromMixedFaces() already computed for them (see CylinderNotchRows' own
 // doc comment in brep.h). The table's contract is increasing angle, hence
@@ -5624,10 +5680,16 @@ RowChain BuildFlatRowChain(double u_min, double u_max, double v_flat, double u_t
 // samples over at least a quarter sweep), and adding unforced columns
 // to a row that must match a neighbour's literal polyline vertex-for-
 // vertex would reintroduce exactly the T-junction this mesher removes.
-RowChain BuildNotchRowChain(const std::vector<Point3d>& points, const std::vector<Point2d>& uv) {
+//
+// `stride` > 1 keeps only every stride-th sample (indices 0, stride, 2 stride,
+// ..., the last one); the caller guarantees stride divides points.size() - 1
+// so the kept set is symmetric under reversal and both cylinders sharing the
+// chain keep the identical vertices (see SeamStrideForChain).
+RowChain BuildNotchRowChain(const std::vector<Point3d>& points, const std::vector<Point2d>& uv, size_t stride = 1) {
   RowChain chain;
-  chain.reserve(points.size());
-  for (size_t i = 0; i < points.size() && i < uv.size(); ++i) chain.push_back({uv[i].x, uv[i].y, &points[i]});
+  chain.reserve(points.size() / std::max<size_t>(stride, 1) + 1);
+  const size_t count = std::min(points.size(), uv.size());
+  for (size_t i = 0; i < count; i += std::max<size_t>(stride, 1)) chain.push_back({uv[i].x, uv[i].y, &points[i]});
   if (chain.size() >= 2 && chain.front().u > chain.back().u) std::reverse(chain.begin(), chain.end());
   return chain;
 }
@@ -6978,7 +7040,8 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
 // passes' "one count per edge" reasoning intact. A null `curved_divisions`
 // is bit-for-bit the pre-existing TessellateConforming().
 std::vector<Mesh> Brep::TessellateConformingImpl(int u_divisions, int v_divisions, int boundary_samples,
-                                                 const std::vector<SurfaceDivisions>* curved_divisions) const {
+                                                 const std::vector<SurfaceDivisions>* curved_divisions,
+                                                 double seam_chord_tolerance) const {
   if (u_divisions < 1 || v_divisions < 1) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::TessellateConforming: u_divisions and v_divisions must be at least 1");
@@ -7039,6 +7102,38 @@ std::vector<Mesh> Brep::TessellateConformingImpl(int u_divisions, int v_division
   for (const CylEntry& ce : cyls) cyl_by_face[ce.face_index] = &ce.cf;
 
   const double tol = 1e-9;
+
+  // Tolerance-driven seam decimation (adaptive fallback only). The stride a
+  // notch chain is meshed at is a pure function of the chain's own points
+  // and of the set of cylinder walls whose notch rows carry that same chain
+  // (both lobes of a Steinmetz / unequal-radius crossing), so every face
+  // sharing the chain keeps the identical vertices and the weld still closes.
+  // A chain that a planar face also consumes (an ArcRun's literal points: the
+  // oblique-plane ellipse pieces) is never decimated - that planar face's
+  // trim loop carries every sample.
+  const auto seam_stride = [&](const std::vector<Point3d>& pts) -> size_t {
+    if (!(seam_chord_tolerance > 0.0) || pts.size() < 5) return 1;
+    for (const std::vector<PlanarFace::ArcRun>& runs : face_arc_runs_) {
+      for (const PlanarFace::ArcRun& run : runs) {
+        for (const Point3d& q : run.literal_points) {
+          if (q.DistanceTo(pts[pts.size() / 2]) < 1e-12) return 1;
+        }
+      }
+    }
+    std::vector<const Brep::CylindricalFace*> walls;
+    for (size_t j = 0; j < face_notch_rows_.size(); ++j) {
+      if (!face_notch_rows_[j].present) continue;
+      const auto it = cyl_by_face.find(static_cast<int>(j));
+      if (it == cyl_by_face.end()) continue;
+      for (const std::vector<Point3d>* other : {&face_notch_rows_[j].cap0_points, &face_notch_rows_[j].cap1_points}) {
+        if (SameSeamChain(*other, pts)) {
+          walls.push_back(it->second);
+          break;
+        }
+      }
+    }
+    return SeamStrideForChain(pts, walls, seam_chord_tolerance);
+  };
 
   std::unordered_map<int, std::vector<std::pair<SubRange, std::vector<Point3d>>>> wedge_subs;
   std::unordered_map<int, std::vector<ConformingMatch>> cyl_matches;
@@ -7627,10 +7722,12 @@ std::vector<Mesh> Brep::TessellateConformingImpl(int u_divisions, int v_division
       const double v_end0 = notch_rows != nullptr ? notch_rows->v_end0 : v_min;
       const double v_end1 = notch_rows != nullptr ? notch_rows->v_end1 : v_max;
       const RowChain bottom = (notch_rows != nullptr && !notch_rows->cap0_points.empty())
-                                  ? BuildNotchRowChain(notch_rows->cap0_points, notch_rows->cap0_uv)
+                                  ? BuildNotchRowChain(notch_rows->cap0_points, notch_rows->cap0_uv,
+                                                       seam_stride(notch_rows->cap0_points))
                                   : BuildFlatRowChain(u_min, u_max, v_end0, u_tol, face_div.u, matches, /*at_v0=*/true);
       const RowChain top = (notch_rows != nullptr && !notch_rows->cap1_points.empty())
-                               ? BuildNotchRowChain(notch_rows->cap1_points, notch_rows->cap1_uv)
+                               ? BuildNotchRowChain(notch_rows->cap1_points, notch_rows->cap1_uv,
+                                                    seam_stride(notch_rows->cap1_points))
                                : BuildFlatRowChain(u_min, u_max, v_end1, u_tol, face_div.u, matches, /*at_v0=*/false);
       result.push_back(BuildConformingCylinderStripMesh(wrapper, bottom, top, face_div.v, u_tol, v_tol));
     } else if (cyl_it != cyl_matches.end()) {
@@ -7799,7 +7896,8 @@ bool Brep::HasConformingSeamData() const {
 // fallback existed.
 Mesh Brep::ConformingClosedMeshAtAdaptiveDivisions(Mesh welded,
                                                    const std::function<SurfaceDivisions(const NurbsSurface&)>& suggest,
-                                                   double certify_chord_tolerance, int max_refinements) const {
+                                                   double certify_chord_tolerance, int max_refinements,
+                                                   double seam_chord_tolerance) const {
   if (welded.IsClosedManifold() || !HasConformingSeamData()) return welded;
   const int n = brep_.m_F.Count();
   std::vector<SurfaceDivisions> curved(static_cast<size_t>(n), SurfaceDivisions{0, 0});
@@ -7826,7 +7924,7 @@ Mesh Brep::ConformingClosedMeshAtAdaptiveDivisions(Mesh welded,
   const bool certify = certify_chord_tolerance > 0.0;
   for (int attempt = 0; attempt <= (certify ? std::max(max_refinements, 0) : 0); ++attempt) {
     const std::vector<Mesh> faces =
-        TessellateConformingImpl(planar.u, planar.v, std::max(planar.u, planar.v), &curved);
+        TessellateConformingImpl(planar.u, planar.v, std::max(planar.u, planar.v), &curved, seam_chord_tolerance);
     if (faces.size() != resolved_faces.size()) return welded;
     if (certify) {
       bool all_certified = true;
@@ -7839,7 +7937,13 @@ Mesh Brep::ConformingClosedMeshAtAdaptiveDivisions(Mesh welded,
           curved[fi].v *= 2;
         }
       }
-      if (!all_certified) continue;
+      // A decimated seam chain is a chord-of-circle sagitta ~ stride^2, so a
+      // quarter of the budget halves the stride: densify the shared seams
+      // alongside the doubled grids.
+      if (!all_certified) {
+        seam_chord_tolerance *= 0.25;
+        continue;
+      }
     }
     Mesh conforming = StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(faces), /*geometry_preserving=*/certify);
     if (conforming.IsClosedManifold()) return conforming;
@@ -7860,7 +7964,8 @@ Mesh Brep::ConformingClosedMeshAtAdaptiveDivisions(Mesh welded,
 Mesh Brep::TessellateToClosedMeshAdaptive(double chord_tolerance) const {
   return ConformingClosedMeshAtAdaptiveDivisions(
       StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateAdaptive(chord_tolerance))),
-      [chord_tolerance](const NurbsSurface& s) { return s.SuggestedDivisions(chord_tolerance); }, 0.0, 0);
+      [chord_tolerance](const NurbsSurface& s) { return s.SuggestedDivisions(chord_tolerance); }, 0.0, 0,
+      chord_tolerance);
 }
 
 Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const {
@@ -7874,7 +7979,7 @@ Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) cons
         return SurfaceDivisions{static_cast<int>(s.SuggestedParameterValues(0, chord_tolerance).size()) - 1,
                                 static_cast<int>(s.SuggestedParameterValues(1, chord_tolerance).size()) - 1};
       },
-      0.0, 0);
+      0.0, 0, chord_tolerance);
 }
 
 Mesh Brep::TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance, int max_refinements) const {
@@ -7882,7 +7987,7 @@ Mesh Brep::TessellateToClosedMeshCertifiedAdaptive(double chord_tolerance, int m
       StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(TessellateCertifiedAdaptive(chord_tolerance, max_refinements)),
                              /*geometry_preserving=*/true),
       [chord_tolerance](const NurbsSurface& s) { return s.SuggestedDivisions(chord_tolerance); }, chord_tolerance,
-      max_refinements);
+      max_refinements, chord_tolerance);
 }
 
 Mesh Brep::TessellateToClosedMeshAdaptiveByAngle(double angle_tolerance) const {
