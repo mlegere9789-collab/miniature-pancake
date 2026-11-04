@@ -5,6 +5,13 @@
 #
 #   sign-dmg.sh sign     <dmg>   re-sign the app INSIDE the disk image, then the image
 #   sign-dmg.sh notarize <dmg>   submit to Apple's notary service, staple, verify
+#   sign-dmg.sh adhoc    <dmg>   CI SELF-TEST ONLY: the same code path as `sign`, but with the
+#                                ad-hoc identity (`codesign --sign -`, needs no certificate and
+#                                no secret) and no secure timestamp. The result is NOT
+#                                Developer-ID signed and Gatekeeper does not trust it. Refuses
+#                                to run unless the .dmg sits in a directory containing the
+#                                marker file .dino8-test-signing-dir (a scratch COPY made by
+#                                test-adhoc-signing.sh), so the published image stays as built.
 #
 # Why "inside the image": CPack's DragNDrop generator installs a fresh copy of
 # the app into its own staging folder (copying the binary and adding Resources
@@ -24,11 +31,24 @@ here=$(cd "$(dirname "$0")" && pwd)
 entitlements="$here/entitlements.plist"
 mode=${1:-}
 dmg=${2:-}
-[ -n "$mode" ] && [ -f "$dmg" ] || { echo "usage: $0 sign|notarize <dmg>" >&2; exit 2; }
+[ -n "$mode" ] && [ -f "$dmg" ] || { echo "usage: $0 sign|notarize|adhoc <dmg>" >&2; exit 2; }
 dmg=$(cd "$(dirname "$dmg")" && pwd)/$(basename "$dmg")
 
 sign() {
-  : "${APPLE_SIGNING_IDENTITY:?APPLE_SIGNING_IDENTITY is empty}"
+  # Identity and timestamp are the ONLY differences between the production
+  # `sign` mode and the `adhoc` self-test: everything else below is shared.
+  local identity ts_flag
+  if [ "$mode" = "adhoc" ]; then
+    [ -f "$(dirname "$dmg")/.dino8-test-signing-dir" ] \
+      || { echo "adhoc: refusing to sign $dmg - its directory has no .dino8-test-signing-dir marker (test mode only signs scratch copies)" >&2; exit 2; }
+    echo "*** AD-HOC TEST SIGNING (codesign --sign -): NOT Developer-ID signed, NOT notarized, not trusted by Gatekeeper ***"
+    identity="-"
+    ts_flag=""   # an ad-hoc signature has no certificate to timestamp
+  else
+    : "${APPLE_SIGNING_IDENTITY:?APPLE_SIGNING_IDENTITY is empty}"
+    identity="$APPLE_SIGNING_IDENTITY"
+    ts_flag="--timestamp"
+  fi
   local stage mnt app vol main details
   stage=$(mktemp -d "${RUNNER_TEMP:-/tmp}/dino8-dmg-stage.XXXXXX")
   mnt=$(mktemp -d "${RUNNER_TEMP:-/tmp}/dino8-dmg-mnt.XXXXXX")
@@ -47,13 +67,15 @@ sign() {
     [ "$f" = "$main" ] && continue
     if file -b "$f" | grep -q 'Mach-O'; then
       echo "signing nested code: ${f#"$stage"/}"
-      codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$f"
+      # shellcheck disable=SC2086  # ts_flag is deliberately unquoted: empty or one flag
+      codesign --force --options runtime $ts_flag --sign "$identity" "$f"
     fi
   done < <(find "$app/Contents" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' \))
 
   # The bundle (this also signs the main executable, with the entitlements).
-  codesign --force --options runtime --timestamp \
-    --entitlements "$entitlements" --sign "$APPLE_SIGNING_IDENTITY" "$app"
+  # shellcheck disable=SC2086
+  codesign --force --options runtime $ts_flag \
+    --entitlements "$entitlements" --sign "$identity" "$app"
 
   echo "--- verifying the signed app"
   codesign --verify --deep --strict --verbose=2 "$app"
@@ -64,7 +86,8 @@ sign() {
 
   rm -f "$dmg"
   hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDZO "$dmg"
-  codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+  # shellcheck disable=SC2086
+  codesign --force $ts_flag --sign "$identity" "$dmg"
   codesign --verify --verbose=2 "$dmg"
   rm -rf "$stage" "$mnt"
   echo "signed: $dmg"
@@ -95,7 +118,7 @@ notarize() {
 }
 
 case "$mode" in
-  sign) sign ;;
+  sign|adhoc) sign ;;
   notarize) notarize ;;
   *) echo "unknown mode: $mode" >&2; exit 2 ;;
 esac

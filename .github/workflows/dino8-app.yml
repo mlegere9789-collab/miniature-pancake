@@ -237,6 +237,45 @@ jobs:
           signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
           signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
           signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+      # ---------------------------------------------------------------------
+      # Authenticode SELF-TEST with a THROWAWAY certificate (no secret needed,
+      # runs on every event including pull requests). Purpose: prove the real
+      # signing code path (.github/actions/sign-windows -> packaging/windows/
+      # sign.ps1) actually executes and that its output is checked, even though
+      # no trusted certificate exists. It signs SCRATCH COPIES of Dino8.exe and
+      # the installer with a self-signed certificate generated in this job; the
+      # files that are uploaded below are never touched, so the published
+      # installer is exactly as unsigned as before unless real secrets exist
+      # (then the production steps above already ran, unchanged). Nothing it
+      # produces is trusted-signed: the certificate is self-signed and not in any
+      # trust store. See docs/CODE_SIGNING.md "What CI proves today".
+      # ---------------------------------------------------------------------
+      - name: Authenticode self-test 1/4 - create throwaway TEST certificate and scratch copies
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\test-signing.ps1" -Mode prepare -Source 'dino8-app\build\Dino8.exe', 'dino8-app\dist\*.exe'
+      - name: Authenticode self-test 2/4 - sign the scratch copies (real sign-windows action, method test-pfx)
+        uses: ./.github/actions/sign-windows
+        with:
+          method: test-pfx
+          label: windows-selftest
+          files: ${{ runner.temp }}\dino8-signtest\signed\*.exe
+          pfx-base64: ${{ env.DINO8_TEST_PFX_BASE64 }}
+          pfx-password: ${{ env.DINO8_TEST_PFX_PASSWORD }}
+      - name: Authenticode self-test 3/4 - assert signature present, untrusted, tamper-evident (TEST certificate, NOT trusted)
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\test-signing.ps1" -Mode verify
+      - name: Authenticode self-test 4/4 - remove the throwaway certificate and scratch copies
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\test-signing.ps1" -Mode cleanup
+      # The PowerShell verifier must also be able to say "no": modified file,
+      # wrong checksum entry, missing checksum, missing signature -> exit 1.
+      - name: verify-release.ps1 negative (tamper) test
+        shell: pwsh
+        run: scripts\test-verify-release.ps1
       - name: Portable zip
         run: cd dino8-app/build && cpack
       - uses: actions/upload-artifact@v4
@@ -395,11 +434,47 @@ jobs:
       - name: Remove the temporary signing keychain
         if: ${{ always() && github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
         run: security delete-keychain "$RUNNER_TEMP/dino8-signing.keychain-db" || true
+      # Ad-hoc signing SELF-TEST (no certificate, no secret, every event
+      # including pull requests): runs the real packaging/macos/sign-dmg.sh in
+      # `adhoc` mode (codesign --sign -) on a COPY of the .dmg, then requires
+      # `codesign --verify --deep --strict` to pass, `codesign -dv` to say
+      # Signature=adhoc, and a tampered copy to FAIL verification. The .dmg
+      # uploaded below is not touched. NOT Developer ID signing and NOT
+      # notarization: notarization is skipped because it needs Apple
+      # credentials. See docs/CODE_SIGNING.md "What CI proves today".
+      - name: macOS ad-hoc signing self-test (copy of the .dmg; not Developer ID, not notarized)
+        run: |
+          echo "::notice title=macOS signing self-test::Ad-hoc signature on a COPY of the disk image to prove the sign-dmg.sh code path and tamper detection. Not Developer ID, not notarized (no Apple credentials); the published .dmg is unaffected."
+          dino8-app/packaging/macos/test-adhoc-signing.sh "$(ls dino8-app/build/*.dmg | head -1)"
       - uses: actions/upload-artifact@v4
         with:
           name: Dino8-macos
           path: dino8-app/build/*.dmg
           if-no-files-found: error
+
+  release-tooling:
+    name: Release tooling negative tests (verify-release must reject tampering)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # cosign makes the garbage-signature-bundle case run as well; the other
+      # cases need no network and no signature at all.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+      # Staged fixture of fake artifacts; a modified file, a wrong SHA256SUMS or
+      # .sha256 entry, a missing checksum or a missing/garbage signature bundle
+      # must each make scripts/verify-release.sh exit 1. No release involved.
+      - name: verify-release.sh negative (tamper) test
+        run: scripts/test-verify-release.sh
+      # The platform-independent parts of the macOS signing self-test (argument
+      # handling, the scratch-copy guard of sign-dmg.sh, byte-flip helper); the
+      # codesign parts run in the macos job.
+      - name: macOS signing script helpers (platform independent)
+        run: dino8-app/packaging/macos/test-adhoc-signing.sh --check-helpers
 
   release:
     name: Publish beta pre-release
@@ -407,7 +482,7 @@ jobs:
     # all three platforms publishes a downloadable pre-release with the
     # installers attached. Free software: no licence keys involved.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    needs: [linux, windows, windows-arm, macos]
+    needs: [linux, windows, windows-arm, macos, release-tooling]
     runs-on: ubuntu-latest
     # The ONLY job with write scopes. id-token lets the job obtain the
     # workflow's OIDC identity token (keyless Sigstore signing + build

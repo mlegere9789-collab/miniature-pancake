@@ -9,6 +9,17 @@
   azure  sign with Azure Trusted Signing (signtool + Azure.CodeSigning.Dlib)
   verify do not sign; only verify that every file carries a valid, timestamped
          Authenticode signature (used after SignPath returned signed files)
+  test-pfx  CI SELF-TEST ONLY. Same code path as 'pfx' (decode the base64 PFX
+         from WINDOWS_CERT_BASE64 / WINDOWS_CERT_PASSWORD, run signtool sign with
+         SHA-256, remove the decoded file) but the certificate is a THROWAWAY
+         self-signed certificate generated inside the CI job by
+         test-signing.ps1, so: no timestamp server is contacted, and the result
+         is checked for "signature PRESENT and made by the expected thumbprint"
+         (DINO8_TEST_CERT_THUMBPRINT) instead of "chain trusted". The output is
+         NOT trusted-signed and must never be published; the script refuses to
+         run unless every file sits in a directory holding the marker file
+         .dino8-test-signing-dir (test-signing.ps1 creates it in a scratch copy
+         directory).
 .PARAMETER Files
   Files to sign / verify.
 
@@ -21,7 +32,7 @@ tolerable on an ephemeral runner but not something to widen):
           AZURE_TRUSTED_SIGNING_PROFILE
 #>
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('pfx', 'azure', 'verify')][string]$Method,
+  [Parameter(Mandatory = $true)][ValidateSet('pfx', 'azure', 'verify', 'test-pfx')][string]$Method,
   [Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)][string[]]$Files
 )
 $ErrorActionPreference = 'Stop'
@@ -66,26 +77,58 @@ function Test-Signed([string]$signtool, [string]$file) {
   Write-Host "OK  $file  signer: $($sig.SignerCertificate.Subject)  timestamp: $($sig.TimeStamperCertificate.Subject)"
 }
 
+function Test-TestSigned([string]$file) {
+  # Test-certificate result check: the signature must be PRESENT and made by the
+  # throwaway certificate. It is deliberately NOT required to be trusted - a
+  # self-signed certificate is not (Status UnknownError / NotTrusted).
+  $expected = $env:DINO8_TEST_CERT_THUMBPRINT
+  if (-not $expected) { throw 'DINO8_TEST_CERT_THUMBPRINT is empty' }
+  $sig = Get-AuthenticodeSignature -LiteralPath $file
+  if (-not $sig.SignerCertificate) { throw "TEST signing left no signature on $file (status $($sig.Status))" }
+  if ($sig.SignerCertificate.Thumbprint -ne $expected) { throw "$file is signed by $($sig.SignerCertificate.Thumbprint), expected the throwaway certificate $expected" }
+  Write-Host "TEST-SIGNED (NOT TRUSTED)  $file  status: $($sig.Status)  thumbprint: $($sig.SignerCertificate.Thumbprint)"
+}
+
 $signtool = Find-SignTool
 Write-Host "signtool: $signtool"
 $resolved = $Files | ForEach-Object { (Resolve-Path -LiteralPath $_).Path }
 
+$isTest = ($Method -eq 'test-pfx')
+if ($isTest) {
+  Write-Host '*** TEST CERTIFICATE MODE: signing SCRATCH COPIES with a throwaway self-signed certificate. ***'
+  Write-Host '*** The result is NOT trusted-signed and is never published. The released binaries stay as built. ***'
+  foreach ($f in $resolved) {
+    if (-not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $f) '.dino8-test-signing-dir'))) {
+      throw "refusing test-pfx signing of $f : its directory has no .dino8-test-signing-dir marker (test mode only signs scratch copies)"
+    }
+  }
+}
+
 switch ($Method) {
   'verify' { }
-  'pfx' {
+  { $_ -in 'pfx', 'test-pfx' } {
     if (-not $env:WINDOWS_CERT_BASE64) { throw 'WINDOWS_CERT_BASE64 is empty' }
     $pfx = Join-Path $env:RUNNER_TEMP 'dino8-signing.pfx'
     try {
       [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
-      $servers = 'http://timestamp.digicert.com', 'http://timestamp.sectigo.com', 'http://timestamp.globalsign.com/tsa/r6advanced1'
-      foreach ($f in $resolved) {
-        $done = $false
-        foreach ($ts in $servers) {
-          & $signtool sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr $ts /td SHA256 /d 'Dino 8' $f
-          if ($LASTEXITCODE -eq 0) { $done = $true; break }
-          Write-Warning "signtool sign with timestamp server $ts failed (exit $LASTEXITCODE)"
+      if ($isTest) {
+        # Throwaway certificate: no timestamp server (nothing to gain from a
+        # third party timestamping a signature nobody will trust).
+        foreach ($f in $resolved) {
+          & $signtool sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /d 'Dino 8 (TEST CERTIFICATE - NOT TRUSTED)' $f
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign (test certificate) failed for $f (exit $LASTEXITCODE)" }
         }
-        if (-not $done) { throw "could not sign $f with any timestamp server" }
+      } else {
+        $servers = 'http://timestamp.digicert.com', 'http://timestamp.sectigo.com', 'http://timestamp.globalsign.com/tsa/r6advanced1'
+        foreach ($f in $resolved) {
+          $done = $false
+          foreach ($ts in $servers) {
+            & $signtool sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr $ts /td SHA256 /d 'Dino 8' $f
+            if ($LASTEXITCODE -eq 0) { $done = $true; break }
+            Write-Warning "signtool sign with timestamp server $ts failed (exit $LASTEXITCODE)"
+          }
+          if (-not $done) { throw "could not sign $f with any timestamp server" }
+        }
       }
     } finally {
       if (Test-Path $pfx) { Remove-Item -Force $pfx }
@@ -118,4 +161,8 @@ switch ($Method) {
   }
 }
 
-foreach ($f in $resolved) { Test-Signed $signtool $f }
+if ($isTest) {
+  foreach ($f in $resolved) { Test-TestSigned $f }
+} else {
+  foreach ($f in $resolved) { Test-Signed $signtool $f }
+}

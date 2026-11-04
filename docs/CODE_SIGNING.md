@@ -60,6 +60,47 @@ If the repository is private, GitHub attestations need GitHub Enterprise Cloud,
 and keyless Sigstore signing records the repository name in the public Rekor
 log. Both are fine for this public project.
 
+## 1a. What CI proves today (and what it does not)
+
+No installer is signed with a trusted certificate: none exists, and nothing in
+this repository can obtain one. What CI does since the self-tests below were
+added is run the signing code, with throwaway material and no secret, so the
+code path is exercised and its output is checked. Only the trusted certificate
+is missing. These self-tests run on every push **and on pull requests** (they
+need no secret) and each prints a banner saying it is a test.
+
+**Proved by CI (each is a step in `.github/workflows/dino8-app.yml`):**
+
+| Check | Where | What it does | What it shows |
+|---|---|---|---|
+| Authenticode signing with a throwaway certificate | `windows` job, "Authenticode self-test 1/4 ... 4/4" | `dino8-app/packaging/windows/test-signing.ps1` generates a **self-signed** code-signing certificate in the job (`New-SelfSignedCertificate -Type CodeSigningCert`, random password generated in the job, never stored, PFX deleted at once, certificate removed from the store at the end). The real composite action `.github/actions/sign-windows` then runs the real `sign.ps1` (method `test-pfx`, the `pfx` code path minus the timestamp server) on **scratch copies** of `Dino8.exe` and the installer. | `signtool sign` works with our arguments; `Get-AuthenticodeSignature` finds a signature on each copy; its thumbprint equals the throwaway certificate's; the status is `UnknownError`/`NotTrusted` (present but **not trusted**); the signed hash differs from the unsigned hash. |
+| Authenticode tamper detection | same | One byte inside the signed range of each signed copy is flipped. | `Get-AuthenticodeSignature` reports `HashMismatch`. |
+| Published installer stays unsigned | same | The originals that get uploaded are checked to be byte-identical to what was built, not signed by the throwaway certificate, and `NotSigned` while no real signing method is configured. | The test certificate never reaches a release artifact. |
+| macOS ad-hoc signing | `macos` job, "macOS ad-hoc signing self-test" | `dino8-app/packaging/macos/test-adhoc-signing.sh` runs the real `sign-dmg.sh` in `adhoc` mode (`codesign --sign -`, hardened runtime, the real entitlements file, no timestamp) on a **copy** of the `.dmg`. | `codesign --verify --deep --strict` passes on the app inside, `codesign -dv` reports `Signature=adhoc` and no Developer ID authority, the signed copy differs from the original, and the original `.dmg` is unchanged. |
+| macOS tamper detection | same | One byte of the main executable, and separately a sealed resource file, is modified in a copy of the signed app. | `codesign --verify --deep --strict` fails in both cases. |
+| Release verifier says "no" | `release-tooling` job (Linux) and `windows` job (PowerShell twin) | `scripts/test-verify-release.sh` / `.ps1` build a small fixture of fake artifacts (staged with the real `stage-release.sh` on Linux) and run the real `verify-release.sh` / `.ps1`: the untouched fixture passes; a modified file, a wrong `SHA256SUMS` entry, a wrong `.sha256` entry, a file missing from `SHA256SUMS`, no checksum file, a missing signature bundle and (with cosign installed) a garbage bundle must each exit 1. | The verifier fails closed. No release is needed. |
+| Keyless Sigstore signature, checksums, provenance | `release` job | As in section 1; the positive path is asserted on a real release by `verify-release.sh`. | Origin of the published files: this repository's workflow run. |
+
+**Not done, and not proved by any of the above:**
+
+- **A trusted Authenticode certificate.** The self-signed certificate used in CI
+  chains to nothing; Windows treats a file
+  signed with it as having an unverified publisher, no better than unsigned. The Windows installer published today
+  is **not** signed at all. SignPath, Azure Trusted Signing and PFX production
+  paths are unchanged and have still never run against a real account.
+- **A trusted timestamp.** The test mode does not contact a timestamp server;
+  the timestamp retry loop and the "has a trusted timestamp" check belong to the
+  production paths only.
+- **An Apple Developer ID certificate** (the `sign` mode of `sign-dmg.sh` with a
+  real identity, the temporary keychain import) and **notarization/stapling**
+  (`notarize` mode, `notarytool`, `stapler`, `spctl --assess` acceptance). Both
+  need Apple credentials; CI skips them. An ad-hoc signature does not satisfy
+  Gatekeeper.
+- **SmartScreen and Gatekeeper reputation.** Neither is something a CI job can
+  test or grant; see section 5.
+- Signing of the Windows-on-ARM binaries is not self-tested (that job is
+  `continue-on-error`); it shares the same `sign.ps1` code the x64 self-test runs.
+
 ## 2. What each certificate-based path adds
 
 | Path | Turns on when these secrets all exist | Adds |
@@ -196,6 +237,9 @@ macOS.
 - The macOS signing moved from the build-tree app to the app inside the `.dmg`
   (see above); the certificate keychain is deleted at the end of the job.
 - All signing steps additionally require `github.event_name != 'pull_request'`.
+- Self-tests (section 1a) run the signing code with a throwaway certificate /
+  ad-hoc signatures on copies, and a `release-tooling` job proves
+  `verify-release.sh` rejects tampering; the `release` job waits for it.
 - The release job stages files with `scripts/stage-release.sh`, publishes
   `release/*`, and only downloads artifacts named `Dino8-*`.
 
@@ -248,8 +292,11 @@ and Linux desktops do not gate on signatures for a manually installed package.
   developer named; no Open Anyway detour, and it works offline because the
   ticket is stapled.
 
-Status: the checksum, cosign and attestation steps are the only ones that will
-run today. The Authenticode, SignPath, Azure and Apple steps have never run
-against a real certificate or account (none exists), so expect to fix small
+Status: the checksum, cosign and attestation steps are the only ones that
+produce a signature on a published file today. The signing code itself is now
+exercised in CI with a throwaway self-signed Authenticode certificate and macOS
+ad-hoc signing on copies (section 1a), with tamper checks. The SignPath, Azure
+and Apple Developer ID paths, notarization and any trusted timestamp have never
+run against a real certificate or account (none exists), so expect to fix small
 details on the first real run, and treat the entitlements file in particular as
 a starting point.

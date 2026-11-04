@@ -8,7 +8,11 @@ description: >-
 
 inputs:
   method:
-    description: pfx, azure or signpath
+    description: >-
+      pfx, azure or signpath for real signing. 'test-pfx' is the CI self-test:
+      same step and script as 'pfx' but with a throwaway self-signed certificate
+      on scratch copies (see dino8-app/packaging/windows/test-signing.ps1); its
+      output is NOT trusted-signed and is never published.
     required: true
   label:
     description: Short unique name for this call (used to name the SignPath upload)
@@ -60,7 +64,7 @@ runs:
   using: composite
   steps:
     - name: Sign with PFX certificate or Azure Trusted Signing
-      if: ${{ inputs.method == 'pfx' || inputs.method == 'azure' }}
+      if: ${{ inputs.method == 'pfx' || inputs.method == 'azure' || inputs.method == 'test-pfx' }}
       shell: pwsh
       env:
         SIGN_METHOD: ${{ inputs.method }}
