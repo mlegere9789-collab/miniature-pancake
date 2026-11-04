@@ -106284,6 +106284,97 @@ void TestClosedGridTorusBothDirectionsAndRefusals() {
 
 }  // namespace grid_interp_degree_tests
 
+// FilletSurfaces refusals found by probing (kverify run 41916207274, asserted in run 41918883353): a creased wall and a tight smooth
+// bend. Each must be a clean refusal - status Failed, a reason naming the centre curve / the fold, no blend returned, no throw -
+// never a bad patch. Self-contained: it builds its own floor and walls.
+namespace surface_fillet_refusal_tests {
+
+using dino8::kernel::FilletSurfaces;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Result;
+using dino8::kernel::SurfaceFillet;
+using dino8::kernel::SurfaceFilletOptions;
+
+NurbsSurface FloorPlane(double x0, double x1, double y0, double y1, double z) {
+  const std::vector<dino8::kernel::Point3d> g = {dino8::kernel::Point3d(x0, y0, z), dino8::kernel::Point3d(x0, y1, z), dino8::kernel::Point3d(x1, y0, z),
+                                                 dino8::kernel::Point3d(x1, y1, z)};
+  NurbsSurface s = NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
+  s.raw().SetDomain(0, x0, x1);
+  s.raw().SetDomain(1, y0, y1);
+  return s;
+}
+
+// A bicubic NURBS surface from an nu x nv control net sampled from f over the unit square.
+NurbsSurface MakeNet(int nu, int nv, const std::function<ON_3dPoint(double, double)>& f) {
+  std::vector<ON_3dPoint> g;
+  for (int i = 0; i < nu; ++i)
+    for (int j = 0; j < nv; ++j) g.push_back(f((double)i / (nu - 1), (double)j / (nv - 1)));
+  return NurbsSurface::FromControlGrid(g, nu, nv, 3, 3);
+}
+
+void TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals() {
+  const NurbsSurface fl = FloorPlane(-2.5, 6, -3.5, 3.5, 0.0);
+  auto fillet = [&](const NurbsSurface& w, double r, int sb) {
+    SurfaceFilletOptions o;
+    o.side_a = 1;
+    o.side_b = sb;
+    return FilletSurfaces(fl, w, r, 1e-3, o);
+  };
+  auto contains = [](const SurfaceFillet& f, const char* s) { return f.reason.find(s) != std::string::npos; };
+  // (1) V-shaped crease wall (degree 1 in y): the wall normal jumps at the crease, so the centre curve breaks there.
+  for (double k : {0.2, 0.6, 1.5}) {
+    const std::vector<dino8::kernel::Point3d> g = {
+        dino8::kernel::Point3d(3 + k * 3, -3, -0.5), dino8::kernel::Point3d(3 + k * 3, -3, 2.0), dino8::kernel::Point3d(3, 0, -0.5), dino8::kernel::Point3d(3, 0, 2.0),
+        dino8::kernel::Point3d(3 + k * 3, 3, -0.5), dino8::kernel::Point3d(3 + k * 3, 3, 2.0)};
+    const NurbsSurface v = NurbsSurface::FromControlGrid(g, 3, 2, 1, 1);
+    for (double r : {0.1, 0.4})
+      for (int sb : {1, -1}) {
+        const SurfaceFillet f = fillet(v, r, sb);
+        Check(f.status == Result::Failed && contains(f, "centre") && !f.blend.raw().IsValid(),
+              "creased (V-shaped) wall: refused with a centre-curve reason, no blend returned");
+      }
+  }
+  // (2) Tight smooth bend (amp 0.45): the side whose offset folds is refused as 'folds'; the other side blends until the ball leaves
+  // the bend, then 'branch or turning point'.
+  const NurbsSurface bend = MakeNet(120, 6, [](double a, double b) {
+    const double y = -3.0 + 6.0 * a, z = -0.5 + 3.0 * b;
+    return ON_3dPoint(3.0 + 0.45 * std::exp(-(y * y) / 0.06), y, z);
+  });
+  for (double r : {0.12, 0.2, 0.26}) {
+    const SurfaceFillet f = fillet(bend, r, -1);
+    Check(f.status == Result::Failed && contains(f, "the offset folds") && !f.blend.raw().IsValid(), "tight bend, folding side: refused as the offset folds");
+  }
+  for (double r : {0.12, 0.2}) Check(fillet(bend, r, 1).status == Result::Ok, "tight bend, open side: radius below the curvature radius blends");
+  for (double r : {0.24, 0.26}) {
+    const SurfaceFillet f = fillet(bend, r, 1);
+    Check(f.status == Result::Failed && contains(f, "branch or turning point") && !f.blend.raw().IsValid(),
+          "tight bend, open side: radius past the bend is refused as a branch / turning point");
+  }
+  // (3) Walls leaning until nearly parallel to the floor, and a parabolic wall tangent to the floor: the ball cannot fit on one side
+  // (offset folds / offsets do not intersect) and does on the other; a refusal is always a clean one.
+  for (double lean : {5.0, 8.0}) {
+    const NurbsSurface w = MakeNet(12, 12, [lean](double a, double b) {
+      const double y = -3.0 + 6.0 * a, z = -0.5 + 2.5 * b;
+      return ON_3dPoint(3.0 + lean * z * z * 0.5, y, z);
+    });
+    const SurfaceFillet f1 = fillet(w, 0.4, 1), f2 = fillet(w, 0.4, -1);
+    Check(f1.status == Result::Failed && contains(f1, "the offset folds") && !f1.blend.raw().IsValid(), "leaning wall, folding side: refused as the offset folds");
+    Check(f2.status == Result::Ok, "leaning wall, open side: blends");
+  }
+  {
+    const NurbsSurface w = MakeNet(10, 14, [](double a, double b) {
+      const double y = -3.0 + 6.0 * a, z = -0.5 + 3.0 * b;
+      return ON_3dPoint(3.0 + 2.0 * (z - 0.05) * (z - 0.05), y, z);
+    });
+    const SurfaceFillet f1 = fillet(w, 0.3, 1), f2 = fillet(w, 0.3, -1);
+    Check(f1.status == Result::Failed && contains(f1, "the offsets do not intersect") && !f1.blend.raw().IsValid(),
+          "parabolic wall tangent to the floor, one side: refused as the offsets do not intersect");
+    Check(f2.status == Result::Ok, "parabolic wall tangent to the floor, other side: blends");
+  }
+}
+
+}  // namespace surface_fillet_refusal_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -108101,6 +108192,8 @@ int main() {
           grid_interp_degree_tests::TestClosedGridCylinderSeamAndClosedFormSagitta);
   RunTest("grid_interp_degree_tests::TestClosedGridTorusBothDirectionsAndRefusals",
           grid_interp_degree_tests::TestClosedGridTorusBothDirectionsAndRefusals);
+
+  RunTest("surface_fillet_refusal_tests::TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals", surface_fillet_refusal_tests::TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
