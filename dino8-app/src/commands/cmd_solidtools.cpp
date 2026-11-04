@@ -9,6 +9,7 @@
 // runs on closed meshes through the Manifold-backed kernel booleans and the
 // results are mesh objects; each command says so on the command line.
 #include "commands/cmd_common.h"
+#include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2410,8 +2411,155 @@ void TagHoleFeature(CommandContext& ctx, ObjectId result_id, const kernel::Mesh&
 
 void UpdateCageCaptives(Document& doc) { UpdateCages(doc); }
 
+// ---------------------------------------------------------------------------
+// CountersinkHole / CounterboreHole: EXACT analytic hole features in a plate.
+//
+// RoundHole and the other hole commands above cut a mesh. These two keep the plate an exact B-rep: the cutter is one
+// stepped-profile solid of revolution (a cone + cylinder, or a cylinder in a cylinder) subtracted by the kernel's general
+// Boolean (kernel::MakeCountersinkHole / MakeCounterboreHole) and the raw result is SEALED (kernel::SealGeneralBooleanResult:
+// sewn, ON_Brep::IsValid, IsSolid, keyholes opened into real inner loops). The faces are planes, cylinders and cones only.
+// Everything is checked BEFORE the kernel is called (picked point on a flat face, sizes against the plate thickness and the
+// face's nearest edge) so a refusal carries its reason, and AFTER (valid + closed + the volume removed against the closed
+// form), so a result that is not the intended feature is refused instead of committed.
+// ---------------------------------------------------------------------------
+void ExactHoleFeature(CommandContext& ctx, const Input& in, bool sink) {
+  const std::string label = sink ? "CountersinkHole" : "CounterboreHole";
+  const double D = std::fabs(in.N(2, 6)), depth = std::fabs(in.N(3, 10));
+  const bool through = in.Yes("Through");
+  double big_d = in.OptNum(sink ? "CountersinkDiameter" : "CounterboreDiameter", 0);
+  const double angle = in.OptNum("Angle", 90);
+  const double cb_depth = in.OptNum("CounterboreDepth", 3);
+  if (!(D > 0)) { ctx.Warn(label + ": refused - the hole diameter must be positive"); return; }
+  if (!through && !(depth > 0)) { ctx.Warn(label + ": refused - the depth must be positive (or use Through=Yes)"); return; }
+  if (big_d <= 0) big_d = sink ? 2 * D : 1.6 * D;
+  if (!(big_d > D * (1 + 1e-9))) { ctx.Warn(label + ": refused - the " + std::string(sink ? "countersink" : "counterbore") + " diameter " + FormatNumber(big_d) + " must exceed the hole diameter " + FormatNumber(D)); return; }
+  if (sink && !(angle > 0 && angle < 180)) { ctx.Warn(label + ": refused - the countersink angle " + FormatNumber(angle) + " must be between 0 and 180 degrees"); return; }
+  if (!sink && !(cb_depth > 0)) { ctx.Warn(label + ": refused - the counterbore depth must be positive"); return; }
+  const double r = 0.5 * D, Rc = 0.5 * big_d;
+  const double cone_d = sink ? (Rc - r) / std::tan(angle * ON_PI / 360.0) : 0.0;
+  const double step_d = sink ? cone_d : cb_depth;  // depth of the wide part below the picked face
+  int done = 0;
+  for (ObjectId id : in.O(0)) {
+    SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn(label + ": refused - object " + Id(id) + " is not an exact B-rep solid (a mesh or surface has no analytic faces to keep; RoundHole cuts meshes)"); continue; }
+    const ON_Brep& b = o->brep->raw();
+    if (!b.IsSolid()) { ctx.Warn(label + ": refused - object " + Id(id) + " is not a closed solid"); continue; }
+    std::optional<kernel::Mesh> pm = MeshOf(*o, 0.005);
+    if (!pm || pm->FaceCount() == 0 || !pm->IsClosedManifold()) { ctx.Warn(label + ": refused - object " + Id(id) + " does not tessellate to a closed solid"); continue; }
+    const kernel::Mesh pmesh = Outward(*pm);
+    ON_BoundingBox bb;
+    b.GetBoundingBox(bb);
+    const double diag = std::max(1e-9, bb.Diagonal().Length());
+    const double tol = std::max(1e-6, diag * 1e-6);
+    // The picked face: a planar face through the nearest surface point, normal along the mesh's outward normal there.
+    const SurfaceHit hit = NearestOnMesh(pmesh, in.P(1));
+    ON_3dVector nout(hit.normal.x, hit.normal.y, hit.normal.z);
+    if (!nout.Unitize()) { ctx.Warn(label + ": refused - no surface at the picked point"); continue; }
+    const ON_3dPoint entry(hit.point.x, hit.point.y, hit.point.z);
+    bool flat = false;
+    for (int f = 0; f < b.m_F.Count() && !flat; ++f) {
+      ON_Plane pl;
+      const ON_Surface* s = b.m_F[f].SurfaceOf();
+      if (!s || !s->IsPlanar(&pl, tol)) continue;
+      if (std::fabs(pl.zaxis * nout) > 1.0 - 1e-6 && std::fabs((entry - pl.origin) * pl.zaxis) < 10 * tol) flat = true;
+    }
+    if (!flat) { ctx.Warn(label + ": refused - the picked point is not on a flat face of object " + Id(id) + " (pick a point on a planar face of the plate)"); continue; }
+    const ON_3dVector axis = -nout;  // into the material
+    // Plate thickness along the axis: spread of the planar faces perpendicular to it; the picked face must be the top one.
+    double hmin = 1e300, hmax = -1e300;
+    for (int f = 0; f < b.m_F.Count(); ++f) {
+      ON_Plane pl;
+      const ON_Surface* s = b.m_F[f].SurfaceOf();
+      if (!s || !s->IsPlanar(&pl, tol) || std::fabs(pl.zaxis * nout) < 1.0 - 1e-9) continue;
+      const double h = (pl.origin - entry) * nout;
+      hmin = std::min(hmin, h);
+      hmax = std::max(hmax, h);
+    }
+    if (!(hmax < 10 * tol) || !(hmin < -10 * tol)) { ctx.Warn(label + ": refused - the picked face is not the outer face of a plate (no flat face lies deeper behind it)"); continue; }
+    const double T = -hmin;
+    if (through) {
+      if (!(step_d < T - 10 * tol)) { ctx.Warn(label + ": refused - the " + std::string(sink ? "countersink cone is " : "counterbore is ") + FormatNumber(step_d) + " deep, which is not less than the plate thickness " + FormatNumber(T)); continue; }
+    } else {
+      if (!(depth < T - 10 * tol)) { ctx.Warn(label + ": refused - depth " + FormatNumber(depth) + " is not less than the plate thickness " + FormatNumber(T) + " (use Through=Yes for a through hole)"); continue; }
+      if (!(step_d < depth - 10 * tol)) { ctx.Warn(label + ": refused - the " + std::string(sink ? "countersink cone is " : "counterbore is ") + FormatNumber(step_d) + " deep, which is not less than the hole depth " + FormatNumber(depth)); continue; }
+    }
+    // Lateral room: every edge lying in the picked plane (the face's outer boundary and any existing hole) must be clear of the widest circle.
+    double near_edge = 1e300;
+    for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (e.m_edge_index < 0) continue;
+      std::vector<ON_3dPoint> pts;
+      bool in_plane = true;
+      for (int k = 0; k <= 64 && in_plane; ++k) {
+        const ON_3dPoint p = e.PointAt(e.Domain().ParameterAt(k / 64.0));
+        if (std::fabs((p - entry) * nout) > 10 * tol) in_plane = false;
+        pts.push_back(p);
+      }
+      if (!in_plane) continue;
+      for (size_t k = 0; k + 1 < pts.size(); ++k) {
+        const ON_3dVector d = pts[k + 1] - pts[k];
+        const double l2 = d * d;
+        const double t = l2 > 0 ? std::clamp(((entry - pts[k]) * d) / l2, 0.0, 1.0) : 0.0;
+        near_edge = std::min(near_edge, entry.DistanceTo(pts[k] + t * d));
+      }
+    }
+    if (!(near_edge > Rc + 10 * tol)) { ctx.Warn(label + ": refused - a diameter of " + FormatNumber(big_d) + " does not fit: the nearest edge of the picked face (its border or another hole) is " + FormatNumber(near_edge) + " from the hole axis, so the radius " + FormatNumber(Rc) + " would reach it"); continue; }
+    // Build and seal.
+    const Vector3d kaxis(axis.x, axis.y, axis.z);
+    const Point3d kcenter(entry.x, entry.y, entry.z);
+    kernel::SealedGeneralBoolean sb;
+    try {
+      // A through hole is cut by a bore that overshoots the far face (the kernel's own `through` flag builds a cutter two plate
+      // diagonals long, which seals less reliably than a cutter that ends just past the plate).
+      const double kdepth = through ? T + std::max(1.0, 0.25 * T) : depth;
+      const kernel::Brep raw = sink ? kernel::MakeCountersinkHole(*o->brep, kcenter, kaxis, r, kdepth, false, big_d, angle)
+                                    : kernel::MakeCounterboreHole(*o->brep, kcenter, kaxis, r, kdepth, false, Rc, cb_depth);
+      sb = kernel::SealGeneralBooleanResult(raw, kernel::BooleanOp::Difference, std::nan(""), std::nan(""));
+    } catch (const std::exception& ex) {
+      ctx.Warn(label + ": refused - the exact Boolean did not give a sealed solid: " + ex.what());
+      continue;
+    }
+    ON_Brep out = sb.brep.raw();
+    if (out.m_F.Count() == 0 || !out.IsSolid() || !out.IsValid()) { ctx.Warn(label + ": refused - the exact Boolean result is not a valid closed solid"); continue; }
+    // Closed-form check: volume removed = bore + the wide part.
+    double removed = 0;
+    if (sink) removed = ON_PI * r * r * ((through ? T : depth) - cone_d) + ON_PI * cone_d / 3.0 * (Rc * Rc + Rc * r + r * r);
+    else removed = ON_PI * Rc * Rc * cb_depth + ON_PI * r * r * ((through ? T : depth) - cb_depth);
+    BrepMeshOptions mo;
+    mo.chord_tolerance = std::max(1e-6, diag * 2e-4);
+    double v_before = 0, v_after = 0;
+    try {
+      v_before = std::fabs(MeshBrepClosed(b, mo).Volume());
+      v_after = std::fabs(MeshBrepClosed(out, mo).Volume());
+    } catch (const std::exception& ex) { ctx.Warn(label + ": refused - could not measure the result: " + ex.what()); continue; }
+    if (!(std::fabs((v_before - v_after) - removed) <= 0.01 * v_before + 1e-9)) {
+      ctx.Warn(label + ": refused - the result removed " + FormatNumber(v_before - v_after) + " but the feature should remove " + FormatNumber(removed) + " (the Boolean did not give the intended hole)");
+      continue;
+    }
+    ctx.Doc().BeginChange(label);
+    SceneObject* orig = ctx.Doc().Find(id);
+    if (!orig) continue;
+    orig->brep->raw() = out;
+    orig->surface.reset();
+    orig->InvalidateDisplay();
+    ++done;
+    ctx.Print(label + ": object " + Id(id) + " now has a " + (through ? std::string("through") : "blind (depth " + FormatNumber(depth) + ")") + " hole of diameter " + FormatNumber(D) + " with a " +
+              (sink ? "countersink of diameter " + FormatNumber(big_d) + ", angle " + FormatNumber(angle) + " (exact cone + cylinder" : "counterbore of diameter " + FormatNumber(big_d) + ", depth " + FormatNumber(cb_depth) + " (exact cylinder in cylinder") +
+              ", " + std::to_string(out.m_F.Count()) + " faces, " + std::to_string(out.m_E.Count()) + " edges, closed solid, sealed Boolean)");
+  }
+  if (done == 0) ctx.Print(label + ": no object was changed");
+}
+
 void RegisterSolidToolsCommands(CommandEngine& e) {
   // ---- holes ------------------------------------------------------------------
+  Reg(e, "CountersinkHole", Tool({ObjectsStep("Select the plate (an exact solid)"), PointStep("Point on the plate face for the hole"), NumberStep("Diameter", 6), NumberStep("Depth", 10)},
+                                 {Toggle("Through", true), Numeric("CountersinkDiameter", 0), Numeric("Angle", 90)}, Guarded("CountersinkHole", [](CommandContext& ctx, const Input& in) { ExactHoleFeature(ctx, in, true); })),
+      CommandStatus::Implemented,
+      "Exact countersunk hole: a cone + cylinder cut from an exact B-rep plate by the kernel's sealed general Boolean (planes, cylinder and cone only, real inner loops, Check-valid closed solid). CountersinkDiameter (0 = twice the hole diameter) is the cone's diameter at the picked face, Angle its full included angle. Refuses, with the reason, a diameter that does not fit the face, a depth not less than the plate thickness, or a cone deeper than the hole. Mesh plates are refused (use RoundHole).");
+  Reg(e, "CounterboreHole", Tool({ObjectsStep("Select the plate (an exact solid)"), PointStep("Point on the plate face for the hole"), NumberStep("Diameter", 6), NumberStep("Depth", 10)},
+                                 {Toggle("Through", true), Numeric("CounterboreDiameter", 0), Numeric("CounterboreDepth", 3)}, Guarded("CounterboreHole", [](CommandContext& ctx, const Input& in) { ExactHoleFeature(ctx, in, false); })),
+      CommandStatus::Implemented,
+      "Exact counterbored hole: a cylinder in a cylinder cut from an exact B-rep plate by the kernel's sealed general Boolean (planes and cylinders only, real inner loops, Check-valid closed solid). CounterboreDiameter (0 = 1.6 times the hole diameter) and CounterboreDepth set the recess. Refuses, with the reason, a diameter that does not fit the face, a depth not less than the plate thickness, or a recess deeper than the hole. Mesh plates are refused (use RoundHole).");
   Reg(e, "RoundHole", Tool({ObjectsStep("Select solids to cut"), PointStep("Center of hole on the solid"), NumberStep("Radius", 2), NumberStep("Depth", 10)},
                            {Toggle("Through", true), Choice("Direction", "Normal", {"Normal", "CPlane"})}, Guarded("RoundHole", RoundHole)));
   Reg(e, "MakeHole", Tool({ObjectsStep("Select closed planar curves for the hole"), ObjectsStep("Select solids to cut"), NumberStep("Depth", 10)},

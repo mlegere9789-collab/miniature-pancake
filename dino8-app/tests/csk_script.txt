@@ -1,0 +1,213 @@
+# Exact countersink / counterbore holes in a plate (see the "CSK" section at the end of smoke.sh).
+#
+# Every case starts from `New` (object ids restart at 1) and is bracketed by a marker line (an unknown command,
+# "CSKBEGIN_<name>") that smoke.sh uses to slice this script's output into per-case blocks. The plate is a 20 x 20 x 10
+# box (Box 0,0,0 20,20,0 10: the top face is z = 10); the hole is picked on the top face at (10,10,10).
+SetActiveViewport Top
+
+New
+CSKBEGIN_sink
+Box 0,0,0 20,20,0 10
+SelLast
+CountersinkHole
+CountersinkDiameter=12
+Angle=90
+10,10,10
+6
+10
+SelAll
+List
+Volume
+Check
+
+New
+CSKBEGIN_sink120
+Box 0,0,0 20,20,0 10
+SelLast
+CountersinkHole
+CountersinkDiameter=10
+Angle=120
+10,10,10
+6
+10
+SelAll
+List
+Volume
+Check
+
+New
+CSKBEGIN_sink_blind
+Box 0,0,0 20,20,0 10
+SelLast
+CountersinkHole
+Through=No
+CountersinkDiameter=12
+Angle=90
+10,10,10
+6
+6
+SelAll
+List
+Volume
+Check
+
+New
+CSKBEGIN_bore
+Box 0,0,0 20,20,0 10
+SelLast
+CounterboreHole
+CounterboreDiameter=10
+CounterboreDepth=3
+10,10,10
+6
+10
+SelAll
+List
+Volume
+Check
+
+New
+CSKBEGIN_bore_blind
+Box 0,0,0 20,20,0 10
+SelLast
+CounterboreHole
+Through=No
+CounterboreDiameter=10
+CounterboreDepth=3
+10,10,10
+6
+7
+SelAll
+List
+Volume
+Check
+
+# --- refusals, each with its reason
+New
+CSKBEGIN_r_wide
+Box 0,0,0 20,20,0 10
+SelLast
+CountersinkHole
+CountersinkDiameter=30
+Angle=90
+10,10,10
+6
+10
+SelAll
+List
+
+New
+CSKBEGIN_r_deep
+Box 0,0,0 20,20,0 10
+SelLast
+CountersinkHole
+Through=No
+CountersinkDiameter=12
+Angle=90
+10,10,10
+6
+12
+SelAll
+List
+
+New
+CSKBEGIN_r_cone
+Box 0,0,0 20,20,0 10
+SelLast
+CountersinkHole
+CountersinkDiameter=18
+Angle=40
+10,10,10
+6
+10
+SelAll
+List
+
+New
+CSKBEGIN_r_bore_wide
+Box 0,0,0 20,20,0 10
+SelLast
+CounterboreHole
+CounterboreDiameter=24
+CounterboreDepth=3
+10,10,10
+6
+10
+SelAll
+List
+
+New
+CSKBEGIN_r_bore_deep
+Box 0,0,0 20,20,0 10
+SelLast
+CounterboreHole
+Through=No
+CounterboreDiameter=10
+CounterboreDepth=3
+10,10,10
+6
+2
+SelAll
+List
+
+New
+CSKBEGIN_r_mesh
+Box 0,0,0 20,20,0 10
+SelLast
+RoundHole
+10,10,10
+3
+10
+SelLast
+CountersinkHole
+10,10,10
+6
+10
+SelAll
+List
+
+New
+CSKBEGIN_r_curved
+Sphere 10,10,10 8
+SelLast
+CounterboreHole
+10,10,18
+4
+5
+SelAll
+List
+
+# --- negative control: RoundHole is unchanged (a mesh result)
+New
+CSKBEGIN_c_round
+Box 0,0,0 20,20,0 10
+SelLast
+RoundHole
+10,10,10
+3
+10
+SelLast
+Volume
+
+# --- a second hole in the same plate
+New
+CSKBEGIN_two
+Box 0,0,0 40,20,0 10
+SelLast
+CountersinkHole
+CountersinkDiameter=12
+Angle=90
+10,10,10
+6
+10
+SelAll
+CounterboreHole
+CounterboreDiameter=10
+CounterboreDepth=3
+30,10,10
+6
+10
+SelAll
+List
+Volume
+Check
