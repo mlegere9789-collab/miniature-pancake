@@ -2530,6 +2530,36 @@ Result OffsetKeepingNet(const NurbsSurface& src, double distance, NurbsSurface& 
   out.raw() = moved;
   return Result::Ok;
 }
+
+// The cap offset Thicken() uses. OffsetKeepingNet() (exact for a plane and a right circular cylinder, a first-order
+// per-control-point translation otherwise) is kept for those; for any other OPEN freeform sheet the translation is
+// measurably wrong (NurbsSurface::OffsetApproximate()'s doc comment: 0.085 for a 4x4 bump at 0.2, i.e. 42% of the
+// distance - the thickened body's volume was ~9t, a vertical extrusion's, instead of the true normal-offset volume), so
+// the cap is a tolerance-bounded refit of the TRUE parallel surface (OffsetRefit(), tolerance 1e-4 of the sheet's
+// diagonal). The side walls are then ruled between boundary isocurves made compatible by exact knot insertion / degree
+// elevation (see add_wall in Thicken()), so the refit's different control net costs nothing in watertightness. A
+// curvature fold is refused exactly as before; any other refit refusal ("tolerance not reachable") falls back to the
+// old translation rather than refusing a sheet that used to thicken.
+Result OffsetForThicken(const NurbsSurface& src, double distance, NurbsSurface& out) {
+  ON_Cylinder cyl;
+  ON_Plane plane;
+  const ON_NurbsSurface& r = src.raw();
+  if (r.IsCylinder(&cyl) || r.IsPlanar(&plane, tolerance::kDistance) || r.IsClosed(0) || r.IsClosed(1)) {
+    return OffsetKeepingNet(src, distance, out);
+  }
+  ON_BoundingBox bb;
+  r.GetBoundingBox(bb);
+  const double tol = std::max(1e-9, 1e-4 * bb.Diagonal().Length());
+  std::string why;
+  NurbsSurface refit;
+  const Result res = src.OffsetRefit(distance, refit, tol, nullptr, &why);
+  if (res == Result::Ok) {
+    out = refit;
+    return Result::Ok;
+  }
+  if (why.find("fold") != std::string::npos) return Result::Failed;
+  return OffsetKeepingNet(src, distance, out);
+}
 }  // namespace
 
 Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
@@ -2600,7 +2630,7 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   NurbsSurface lo, hi;
   if (symmetric) {
     const double half = std::fabs(thickness) * 0.5;
-    if (OffsetKeepingNet(original, -half, lo) != Result::Ok || OffsetKeepingNet(original, half, hi) != Result::Ok) {
+    if (OffsetForThicken(original, -half, lo) != Result::Ok || OffsetForThicken(original, half, hi) != Result::Ok) {
       Fail(caller,
            "the requested thickness is too large for this surface's own curvature - the offset would fold "
            "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard; for a "
@@ -2608,7 +2638,7 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
     }
   } else {
     NurbsSurface offset;
-    if (OffsetKeepingNet(original, thickness, offset) != Result::Ok) {
+    if (OffsetForThicken(original, thickness, offset) != Result::Ok) {
       Fail(caller,
            "the requested thickness is too large for this surface's own curvature - the offset would fold "
            "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard; for a "
@@ -2712,6 +2742,19 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
     if (reverse_iso) {
       ReverseKeepDomain(*c_lo);
       ReverseKeepDomain(*c_hi);
+    }
+    // A refit cap (OffsetForThicken) has its own knots/degree: make the pair compatible by exact refinement first (only
+    // then - the net-keeping caps are compatible already and keep their original wall parameterization).
+    bool same = c_lo->CVCount() == c_hi->CVCount() && c_lo->Degree() == c_hi->Degree() &&
+                c_lo->IsRational() == c_hi->IsRational() && c_lo->KnotCount() == c_hi->KnotCount();
+    for (int i = 0; same && i < c_lo->KnotCount(); ++i) same = c_lo->Knot(i) == c_hi->Knot(i);
+    if (!same) {
+      std::vector<ON_NurbsCurve> pair;
+      pair.push_back(*c_lo);
+      pair.push_back(*c_hi);
+      MakeCompatible(pair, caller);
+      *c_lo = pair[0];
+      *c_hi = pair[1];
     }
     std::unique_ptr<ON_NurbsSurface> wall = RuledBetween(*c_lo, *c_hi, 0.0, 1.0, caller);
     const int si = brep.AddSurface(wall.release());
