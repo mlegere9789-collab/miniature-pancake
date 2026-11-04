@@ -1,0 +1,41 @@
+# ChamferEdge overflow reporting (kernel::MaxChamferDistance wired into the failure message).
+# 100x5x2 box, vertical corner edge at (1300520,5,*): its two faces extend 5 (the x=max face, across y) and 100 (the
+# y=max face, across x) from the edge. A distance of 50 fits the long face and overflows the short one.
+Box 1300420,0,0 1300520,5,0 2
+ChamferEdge
+Radius=50
+1300520,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
+# Asymmetric request (Distance1=1 fits, Distance2=50 overflows the 5-wide face): the exact path refuses and the message
+# names the real bound instead of only the planar-face diagnostic.
+Box 1300420,0,0 1300520,5,0 2
+ChamferEdge
+Radius=1
+Distance2=50
+1300520,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
+# In-range control: a fitting symmetric chamfer must NOT carry the bound note, and the exact volume is
+# 1000 minus the corner prism (1*1/2) * 2 = 1 -> 999 (edge length 2).
+Box 1300420,0,0 1300520,5,0 2
+ChamferEdge
+Radius=1
+1300520,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0

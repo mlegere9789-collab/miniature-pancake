@@ -3748,7 +3748,8 @@ class FilletEdgeCommand : public Command {
       }
       if (asymmetric || angled) {
         ctx.Warn(label + ": an asymmetric Distance1/Distance2 or Distance/Angle chamfer needs the whole object to be planar-faced at this edge (" + detail +
-                  "); use a plain Radius for the approximate rolling-ball-derived chamfer instead");
+                  "); use a plain Radius for the approximate rolling-ball-derived chamfer instead" +
+                  ChamferBoundNote(*b, edge.PointAtStart(), edge.PointAtEnd()));
         return;
       }
       // Symmetric distance, exact path unavailable here (a curved adjacent
@@ -4120,6 +4121,8 @@ class FilletEdgeCommand : public Command {
           // exact path for a different reason) - leave `err` as it was.
         }
       }
+      // Mode::Chamfer: the same closed-form bound for the chamfer's two independent distances (kernel::MaxChamferDistance).
+      if (mode_ == Mode::Chamfer && radii_.empty()) err += ChamferBoundNote(*b, edge.PointAtStart(), edge.PointAtEnd());
       ctx.Warn(label + ": " + err);
       return;
     }
@@ -4497,6 +4500,28 @@ class FilletEdgeCommand : public Command {
     for (size_t i = 0; i < radii_.size(); ++i) s += (i ? ", " : " ") + FormatNumber(radii_[i].second) + " at t=" + FormatNumber(radii_[i].first);
     s += variable_engine_used_ ? " (exact)" : " (approximate: adjacent faces are neither both planar nor a plane and a perpendicular-axis cylinder, so no exact closed form applies)";
     return s;
+  }
+
+  // The real fittable chamfer distances of one planar edge, via kernel::MaxChamferDistance (the closed-form bound the
+  // kernel's own "chamfer distance is too large to fit" check uses). Returns a " (...)" suffix naming each distance that
+  // exceeds its face's bound, or "" when the request fits, the angle leg is derived, or the edge is not a planar pair.
+  std::string ChamferBoundNote(const ON_Brep& solid, Point3d p0, Point3d p1) const {
+    try {
+      kernel::Brep kb;
+      kb.raw() = solid;
+      const kernel::ChamferDistanceLimit lim = kernel::MaxChamferDistance(kb, p0, p1);
+      const double d_j = distance2_.value_or(radius_);
+      std::string over;
+      if (radius_ > lim.max_distance_i) over += "distance1 " + FormatNumber(radius_) + " exceeds the " + FormatNumber(lim.max_distance_i) + " face 1 supports";
+      if (!angle_deg_ && d_j > lim.max_distance_j) {
+        if (!over.empty()) over += ", ";
+        over += "distance2 " + FormatNumber(d_j) + " exceeds the " + FormatNumber(lim.max_distance_j) + " face 2 supports";
+      }
+      if (over.empty()) return "";
+      return " (the largest distances this edge's own two faces support are " + FormatNumber(lim.max_distance_i) + " and " + FormatNumber(lim.max_distance_j) + ": " + over + ")";
+    } catch (const std::exception&) {
+      return "";  // not a planar-faced two-face edge: the kernel bound does not apply
+    }
   }
 
   // Printable summary for the exact-chamfer path only (Run() prints this
