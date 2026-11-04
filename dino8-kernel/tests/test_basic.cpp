@@ -99111,7 +99111,10 @@ void TestIgesConvertsBetweenEveryUnitPairByTheDefinitions() {
     Check(circle.SaveIges(path, from.u) == Result::Ok, "setup: SaveIges circle");
     NurbsCurve cb;
     Check(NurbsCurve::LoadIges(path, cb, UnitSystem::Millimeters) == Result::Ok, "rational circle loads with conversion");
-    Check(Near(cb.Length(), 2.0 * M_PI * 5.0 * from.metres / 0.001, 1e-6), "rational circle circumference converts as 2 pi r * factor");
+    {  // Length(20000): the default 64-sample polyline undershoots a circle by about 4e-4 relative, which is not a unit-conversion error.
+      const double want = 2.0 * M_PI * 5.0 * from.metres / 0.001;
+      Check(Near(cb.Length(20000), want, 1e-6 * want), "rational circle circumference converts as 2 pi r * factor (20000-sample length, relative 1e-6)");
+    }
     std::remove(path.c_str());
   }
   // Round trip in -> mm -> in lands on the original within the %.9g text precision.
@@ -99206,7 +99209,7 @@ void TestStepWritesAndReadsEveryUnitContext() {
     Check(circle.SaveStep(path, r.u) == Result::Ok, "setup: rational circle SaveStep");
     NurbsCurve cb;
     Check(NurbsCurve::LoadStep(path, cb, UnitSystem::Meters) == Result::Ok &&
-              Near(cb.Length(), 2.0 * M_PI * 5.0 * r.metres, 1e-9),
+              Near(cb.Length(20000), 2.0 * M_PI * 5.0 * r.metres, 1e-6 * 2.0 * M_PI * 5.0 * r.metres),
           "rational circle circumference converted to metres equals 2 pi r times metres per unit");
     std::remove(path.c_str());
   }
