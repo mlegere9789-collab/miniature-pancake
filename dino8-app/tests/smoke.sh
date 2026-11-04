@@ -13076,4 +13076,14 @@ unx_len 14 '= 393\.70[0-9]* Inches' "step_10_m_into_inch_document_becomes_393.70
 unx_len 15 '= 10 Inches' "iges_inch_file_into_inch_document_is_untouched_10_in"
 unx_len 16 '= 1 Millimeters' "app_survived_the_truncated_files_and_a_fresh_document_is_millimetres"
 
+# >>> sections/*.sh sourced here
+# Section files in tests/sections/ (see README_sections.md) are sourced, in sorted (C-locale) order, into THIS shell, so
+# they see every helper and variable above (BIN, HERE, TMP, TMPW, HEREW, OUT, fail, check, near, ...) and set `fail=1`
+# on a failure like any inline section. New sections go in their own file there instead of being appended to this file.
+if [ -d "$HERE/sections" ]; then
+  while IFS= read -r _sec_file; do
+    [ -f "$_sec_file" ] && . "$_sec_file"
+  done < <(printf '%s\n' "$HERE"/sections/*.sh | LC_ALL=C sort | grep -v '[*]')
+fi
+
 exit $fail
