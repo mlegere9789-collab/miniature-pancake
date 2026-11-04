@@ -966,12 +966,18 @@ constexpr double kMassPropsGaussWeights[kMassPropsGaussPoints] = {
 // polynomial) integrand, the same knot-merging idea sweep.cpp's own
 // MakeCompatible() already uses for a different purpose.
 std::vector<double> MassPropsSpanBreakpoints(const ON_NurbsSurface& s, int dir) {
+  // Clipped to the surface's own domain: a PERIODIC surface (FilletSurfaces' closed blend) carries knots outside its
+  // domain (the periodic extension), and integrating those spans would wrap around and count them a second time.
+  const ON_Interval dom = s.Domain(dir);
   std::vector<double> breaks;
   const int kc = s.KnotCount(dir);
   for (int i = 0; i < kc; ++i) {
     const double k = s.Knot(dir, i);
+    if (k <= dom.Min() || k >= dom.Max()) continue;
     if (breaks.empty() || k > breaks.back()) breaks.push_back(k);
   }
+  breaks.insert(breaks.begin(), dom.Min());
+  breaks.push_back(dom.Max());
   return breaks;
 }
 
