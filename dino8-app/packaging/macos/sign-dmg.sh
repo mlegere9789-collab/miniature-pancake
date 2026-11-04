@@ -54,7 +54,8 @@ sign() {
   mnt=$(mktemp -d "${RUNNER_TEMP:-/tmp}/dino8-dmg-mnt.XXXXXX")
   vol=$(basename "$dmg" .dmg)   # CPack's default volume name
 
-  hdiutil attach "$dmg" -readonly -nobrowse -noverify -mountpoint "$mnt"
+  # the image carries a license agreement (the MIT text): hdiutil asks to agree on a pager and cancels without a terminal
+  printf "Y\n" | PAGER=true hdiutil attach "$dmg" -readonly -nobrowse -noverify -mountpoint "$mnt"
   ditto "$mnt" "$stage"
   hdiutil detach "$mnt"
 

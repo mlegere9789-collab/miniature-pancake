@@ -118,7 +118,8 @@ echo "--- checks on the ad-hoc signed copy"
 if [ "$(sha_of "$copy")" != "$orig_hash" ]; then pass "signed copy differs from the original image"; else fail "signed copy is identical to the original image - nothing was signed"; fi
 if codesign --verify --verbose=2 "$copy"; then pass "codesign --verify on the signed .dmg copy"; else fail "codesign --verify on the signed .dmg copy"; fi
 
-hdiutil attach "$copy" -readonly -nobrowse -noverify -mountpoint "$mnt" >/dev/null
+# the image carries a license agreement: answer it non-interactively (no terminal on a CI runner)
+printf "Y\n" | PAGER=true hdiutil attach "$copy" -readonly -nobrowse -noverify -mountpoint "$mnt" >/dev/null
 ditto "$mnt/Dino8.app" "$work/app"
 hdiutil detach "$mnt" -quiet
 
