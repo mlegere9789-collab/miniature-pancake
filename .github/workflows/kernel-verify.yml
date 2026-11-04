@@ -36,7 +36,9 @@ jobs:
       - name: Configure
         run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
-        run: cmake --build dino8-kernel/build --target dino8_kernel_tests dino8_continuity2_tests dino8_surface_fillet_extra
+        run: cmake --build dino8-kernel/build --target dino8_kernel_tests dino8_continuity2_tests
+      - name: Build optional extra test targets (only if the branch defines them)
+        run: cmake --build dino8-kernel/build --target dino8_surface_fillet_extra || true
       - name: Package the test binaries
         run: |
           mkdir -p bundle
