@@ -1405,6 +1405,47 @@ bool BuildIgesSurface(const IgesRawEntity& e, ON_NurbsSurface& out) {
 
 }  // namespace
 
+namespace {
+
+// Metres per document length unit (Document::Settings().unit_system).
+double DocMetresPerUnit(const Document& doc) { return 0.001 * MillimetresPerUnit(doc.Settings().unit_system); }
+
+// Uniformly scales (about the world origin) the objects added to `doc`
+// since `first`, then marks the document changed so caches rebuild.
+void ScaleImportedObjects(Document& doc, size_t first, double factor) {
+  if (factor == 1.0 || !(factor > 0.0) || !std::isfinite(factor)) return;
+  const ON_Xform xf = ON_Xform::DiagonalTransformation(factor);
+  auto& objs = doc.Objects();
+  for (size_t i = first; i < objs.size(); ++i) objs[i].Transform(xf);
+  doc.Touch();
+}
+
+std::string FormatUnitFactor(double f) {
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%.10g", f);
+  return buf;
+}
+
+// Metres per unit for an IGES Global-section units flag (parameter 14) and
+// unit name (parameter 15); 0.0 = a flag this reader does not convert
+// (0, 8 mils, 11 microinches, or 3 with a name other than YARD/YD).
+double IgesFlagMetres(int flag, const std::string& upper_name) {
+  switch (flag) {
+    case 1: return 0.0254;
+    case 2: return 0.001;
+    case 3: return (upper_name == "YARD" || upper_name == "YD") ? 0.9144 : 0.0;
+    case 4: return 0.3048;
+    case 5: return 1609.344;
+    case 6: return 1.0;
+    case 7: return 1000.0;
+    case 9: return 1e-6;
+    case 10: return 0.01;
+    default: return 0.0;
+  }
+}
+
+}  // namespace
+
 bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
   summary.clear();
   std::ifstream is(path, std::ios::binary);
@@ -1440,6 +1481,36 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
     size_t i = 0;
     if (g.rfind("1H", 0) == 0 && g.size() > 2) { pd = g[2]; i = 3; if (g[i] == pd) ++i; if (i < g.size() && g.compare(i, 2, "1H") == 0 && g.size() > i + 2) rd = g[i + 2]; }
   }
+
+  // Global-section units (parameters 14 / 15): the file's length unit,
+  // converted to the document's own unit after the geometry is read.
+  double unit_scale = 1.0;
+  std::string unit_note;
+  {
+    std::string g;
+    for (const std::string& l : glines) g += l;
+    size_t gi = 0;
+    if (g.rfind("1H", 0) == 0 && g.size() > 2) {
+      gi = 3;
+      if (gi < g.size() && g[gi] == pd) ++gi;
+      if (gi + 2 < g.size() && g.compare(gi, 2, "1H") == 0) { gi += 3; if (gi < g.size() && g[gi] == pd) ++gi; }
+    } else if (g.size() >= 2 && g[0] == pd) {
+      gi = 2;  // both delimiter parameters defaulted (",,")
+    }
+    const std::vector<std::string> gp = SplitIgesParams(gi <= g.size() ? g.substr(gi) : std::string(), pd, rd);
+    if (gp.size() > 11 && !Trim(gp[11]).empty()) {
+      const int flag = std::atoi(Trim(gp[11]).c_str());
+      std::string name = gp.size() > 12 ? Upper(Trim(PStr(gp, 12))) : std::string();
+      const double file_m = IgesFlagMetres(flag, name);
+      if (file_m > 0.0) {
+        unit_scale = file_m / DocMetresPerUnit(doc);
+        if (std::fabs(unit_scale - 1.0) > 1e-12) unit_note = "units flag " + std::to_string(flag) + " -> document " + doc.Settings().unit_system + ", scaled x" + FormatUnitFactor(unit_scale);
+      } else {
+        unit_note = "units flag " + std::to_string(flag) + (flag == 3 ? " (" + name + ")" : std::string()) + " is not supported; coordinates taken as document units";
+      }
+    }
+  }
+  const size_t first_new_object = doc.Objects().size();
 
   // Directory entries: two 80-char (72 usable) lines each.
   std::map<int, IgesRawEntity> entities;
@@ -1478,7 +1549,10 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
     entities[e.de] = std::move(e);
   }
 
-  const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
+  // The document tolerance is in document units; geometry is read in the
+  // file's units and scaled afterwards, so healing tolerances are
+  // expressed in file units here.
+  const double tol = (doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001) / unit_scale;
   IgesImportStats stats;
   IgesImporter importer(doc, stats, tol);
 
@@ -1687,6 +1761,7 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
     }
   }
   importer.FlushGroups(entities);
+  ScaleImportedObjects(doc, first_new_object, unit_scale);
 
   std::ostringstream ss;
   ss << "IGES: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point" << (stats.points == 1 ? "" : "s")
@@ -1696,6 +1771,7 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
   if (stats.meshes) ss << ", " << stats.meshes << " mesh" << (stats.meshes == 1 ? "" : "es");
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
+  if (!unit_note.empty()) ss << " [" << unit_note << "]";
   summary = ss.str();
   if (stats.curves + stats.points + stats.surfaces + stats.breps == 0) {
     if (entities.empty()) summary = "No entities found in " + path;
@@ -1948,6 +2024,30 @@ int WriteStepFace(StepWriter& w, const ON_Brep& b, const ON_BrepFace& face, doub
 
 }  // namespace
 
+namespace {
+
+// Declares the document's own length unit in the STEP file (the geometry is
+// written in document units, so the file must say so): an SI_UNIT for
+// millimetres / centimetres / metres, a CONVERSION_BASED_UNIT through a
+// LENGTH_MEASURE_WITH_UNIT in millimetres for inches / feet.
+int AddStepLengthUnit(StepWriter& w, const std::string& unit_system) {
+  const char* si_prefix = nullptr;
+  const char* conv_name = nullptr;
+  double conv_mm = 0.0;
+  if (unit_system == "Inches") { conv_name = "INCH"; conv_mm = 25.4; }
+  else if (unit_system == "Feet") { conv_name = "FOOT"; conv_mm = 304.8; }
+  else if (unit_system == "Centimeters") si_prefix = ".CENTI.";
+  else if (unit_system == "Meters") si_prefix = "$";
+  else si_prefix = ".MILLI.";
+  if (si_prefix) return w.AddComplex({{"LENGTH_UNIT", ""}, {"NAMED_UNIT", "*"}, {"SI_UNIT", std::string(si_prefix) + ",.METRE."}});
+  const int base = w.AddComplex({{"LENGTH_UNIT", ""}, {"NAMED_UNIT", "*"}, {"SI_UNIT", ".MILLI.,.METRE."}});
+  const int meas = w.Add("LENGTH_MEASURE_WITH_UNIT", "LENGTH_MEASURE(" + Num(conv_mm) + "),#" + std::to_string(base));
+  const int dim = w.Add("DIMENSIONAL_EXPONENTS", "1.,0.,0.,0.,0.,0.,0.");
+  return w.AddComplex({{"CONVERSION_BASED_UNIT", std::string("'") + conv_name + "',#" + std::to_string(meas)}, {"LENGTH_UNIT", ""}, {"NAMED_UNIT", "#" + std::to_string(dim)}});
+}
+
+}  // namespace
+
 bool ExportStep(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   std::vector<const SceneObject*> objs = ExportObjects(doc, selected_only);
   if (objs.empty()) { error = "Nothing to export"; return false; }
@@ -1957,11 +2057,11 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
   const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
   const double mm = MillimetresPerUnit(doc.Settings().unit_system);
 
-  // A minimal, valid AP214 product structure: one SI_UNIT (millimetre)
-  // representation context that every shape references indirectly via the
+  // A minimal, valid AP214 product structure: one length unit (the document's
+  // own: an SI_UNIT, or a CONVERSION_BASED_UNIT for inches/feet) representation context that every shape references indirectly via the
   // header, plus a PRODUCT / PRODUCT_DEFINITION pair so FreeCAD, Onshape
   // and other AP214 readers recognise the file as a single part.
-  const int si_mm = w.Add("SI_UNIT", "$,.MILLI.,.METRE.");
+  const int si_mm = AddStepLengthUnit(w, doc.Settings().unit_system);
   const int uncertainty = w.Add("UNCERTAINTY_MEASURE_WITH_UNIT", "LENGTH_MEASURE(" + Num(tol) + "),#" + std::to_string(si_mm) + "," + StepStr("distance") + "," + StepStr("model tolerance"));
   const int geom_ctx = w.AddComplex({{"GEOMETRIC_REPRESENTATION_CONTEXT", "3"},
                                       {"GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT", "(#" + std::to_string(uncertainty) + ")"},
@@ -2865,6 +2965,75 @@ bool ParseStepPhysicalFile(const std::string& text, StepModel& model, std::strin
 
 }  // namespace
 
+namespace {
+
+// Metres per unit of the STEP length unit entity `id`: 1 = ok, 0 = not a
+// length unit (an angle unit etc.), -1 = refused (*why says why).
+int StepLengthUnitMetres(const StepModel& model, int id, int depth, double* metres, std::string* why) {
+  if (depth > 4) { *why = "length unit definition nests too deeply"; return -1; }
+  const StepEntity* e = model.Get(id);
+  if (!e) { *why = "length unit #" + std::to_string(id) + " is missing"; return -1; }
+  const bool is_length = e->Find("LENGTH_UNIT") != nullptr;
+  if (const StepPart* cb = e->Find("CONVERSION_BASED_UNIT")) {
+    if (!is_length) return 0;
+    if (cb->args.size() < 2 || !IsRef(cb->args[1])) { *why = "CONVERSION_BASED_UNIT has no conversion factor reference"; return -1; }
+    const StepEntity* me = model.Get(StepRef(cb->args[1]));
+    const StepPart* mp = me ? me->Find("LENGTH_MEASURE_WITH_UNIT") : nullptr;
+    if (!mp || mp->args.size() < 2 || !IsRef(mp->args[1])) { *why = "CONVERSION_BASED_UNIT conversion factor is not a LENGTH_MEASURE_WITH_UNIT"; return -1; }
+    const std::string v = Trim(mp->args[0]);
+    const size_t lp = v.find('(');
+    const double value = lp == std::string::npos ? 0.0 : std::strtod(v.c_str() + lp + 1, nullptr);
+    if (!std::isfinite(value) || value <= 0.0) { *why = "CONVERSION_BASED_UNIT conversion value is not a finite positive number"; return -1; }
+    double base = 0.0;
+    const int rc = StepLengthUnitMetres(model, StepRef(mp->args[1]), depth + 1, &base, why);
+    if (rc != 1) { if (rc == 0) *why = "CONVERSION_BASED_UNIT is defined in a non-length unit"; return -1; }
+    *metres = value * base;
+    return 1;
+  }
+  if (const StepPart* si = e->Find("SI_UNIT")) {
+    if (si->args.size() < 2) { *why = "SI_UNIT has too few arguments"; return -1; }
+    const std::string prefix = Trim(si->args[si->args.size() - 2]);
+    const std::string name = Trim(si->args[si->args.size() - 1]);
+    if (name == ".RADIAN." || name == ".STERADIAN.") return 0;
+    if (name != ".METRE.") { *why = "SI length unit " + name + " is not a metre"; return -1; }
+    double f = 1.0;
+    if (prefix == "$" || prefix == "*") f = 1.0;
+    else if (prefix == ".MILLI.") f = 1e-3;
+    else if (prefix == ".CENTI.") f = 1e-2;
+    else if (prefix == ".DECI.") f = 1e-1;
+    else if (prefix == ".KILO.") f = 1e3;
+    else if (prefix == ".MICRO.") f = 1e-6;
+    else if (prefix == ".NANO.") f = 1e-9;
+    else { *why = "SI prefix " + prefix + " is not supported"; return -1; }
+    *metres = f;
+    return 1;
+  }
+  return 0;
+}
+
+// The file's single declared length unit (via every
+// GLOBAL_UNIT_ASSIGNED_CONTEXT). 1 = found, 0 = none declared, -1 = refused.
+int StepFileLengthUnitMetres(const StepModel& model, double* metres, std::string* why) {
+  bool found = false;
+  for (const auto& [id, e] : model.entities) {
+    (void)id;
+    const StepPart* g = e.Find("GLOBAL_UNIT_ASSIGNED_CONTEXT");
+    if (!g || g->args.empty()) continue;
+    for (int ref : StepRefList(g->args[0])) {
+      double m = 0.0;
+      const int rc = StepLengthUnitMetres(model, ref, 0, &m, why);
+      if (rc < 0) return -1;
+      if (rc == 0) continue;
+      if (found && std::fabs(m - *metres) > 1e-12 * std::fabs(*metres)) { *why = "the file declares two different length units"; return -1; }
+      *metres = m;
+      found = true;
+    }
+  }
+  return found ? 1 : 0;
+}
+
+}  // namespace
+
 bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
   summary.clear();
   std::ifstream is(path, std::ios::binary);
@@ -2907,7 +3076,22 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
     if (have) model.item_colour_[item] = found;
   }
 
-  const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
+  // The file's declared length unit, converted to the document's unit after
+  // the geometry is read (so healing tolerances below are in file units).
+  double unit_scale = 1.0;
+  std::string unit_note;
+  {
+    double file_m = 0.0;
+    std::string why;
+    const int rc = StepFileLengthUnitMetres(model, &file_m, &why);
+    if (rc < 0) { summary = "Unsupported STEP length unit (" + why + "): " + path; return false; }
+    if (rc == 1) {
+      unit_scale = file_m / DocMetresPerUnit(doc);
+      if (std::fabs(unit_scale - 1.0) > 1e-12) unit_note = "file length unit " + FormatUnitFactor(file_m) + " m -> document " + doc.Settings().unit_system + ", scaled x" + FormatUnitFactor(unit_scale);
+    }
+  }
+  const size_t first_new_object = doc.Objects().size();
+  const double tol = (doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001) / unit_scale;
   StepImportStats stats;
   auto name_of = [&](const StepEntity& e, const char* kw) -> std::string {
     const StepPart* p = e.Find(kw);
@@ -3152,6 +3336,8 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
     }
   }
 
+  ScaleImportedObjects(doc, first_new_object, unit_scale);
+
   std::ostringstream ss;
   ss << "STEP: " << stats.breps << " brep" << (stats.breps == 1 ? "" : "s") << " (" << stats.faces_trimmed << " trimmed face" << (stats.faces_trimmed == 1 ? "" : "s") << ")"
      << ", " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point" << (stats.points == 1 ? "" : "s");
@@ -3160,6 +3346,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
   if (stats.faces_untrimmed_fallback) ss << ", " << stats.faces_untrimmed_fallback << " face" << (stats.faces_untrimmed_fallback == 1 ? "" : "s") << " fell back to untrimmed";
   if (stats.assembly_parts) ss << ", " << stats.assembly_parts << " part" << (stats.assembly_parts == 1 ? "" : "s") << " placed via real assembly (MAPPED_ITEM) transforms";
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
+  if (!unit_note.empty()) ss << " [" << unit_note << "]";
   summary = ss.str();
   if (stats.breps + stats.curves + stats.points + stats.meshes + stats.surfaces == 0) { summary = "No usable geometry found in " + path; return false; }
   return true;
