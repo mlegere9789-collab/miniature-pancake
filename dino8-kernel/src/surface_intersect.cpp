@@ -2301,8 +2301,10 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
       ps[i] = pc.PointAtStart();
       pe[i] = pc.PointAtEnd();
       pm[i] = pc.PointAt(pc.Domain().ParameterAt(0.5));
-      double len = 0.0;
-      if (!pc.GetLength(&len)) continue;
+      NurbsCurve tmp;
+      tmp.raw() = pc;
+      const double len = tmp.Length();
+      if (!(len >= 0.0)) continue;
       pl[i] = len;
       ok[i] = true;
     }
