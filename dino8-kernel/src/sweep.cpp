@@ -298,34 +298,48 @@ std::unique_ptr<ON_NurbsSurface> RuledBetween(const ON_NurbsCurve& c0, const ON_
 // Exact tensor-product sum surface S(u, v) = profile(u) + (path(v) -
 // path(v_min)): a translational sweep of `profile` along `path`'s own
 // displacement, with no frame rotation at all (unlike Sweep1's RMF
-// transport). This is exact, not a fit, because a B-spline basis is a
-// partition of unity: writing profile(u) = sum_i A_i N_i(u) and
-// path(v) - path(v_min) = sum_j B_j M_j(v) (B_j already measured from the
-// path's own first control point, which - since `path` is clamped -
-// equals path(v_min) exactly), the tensor-product surface with control
-// net P_ij = A_i + B_j reduces pointwise to
-//   sum_i sum_j (A_i + B_j) N_i(u) M_j(v)
-//     = A(u) * (sum_j M_j(v)) + (path(v) - path(v_min)) * (sum_i N_i(u))
-//     = A(u) + path(v) - path(v_min),
-// using partition of unity (sum_i N_i(u) = 1, sum_j M_j(v) = 1) in the
-// last step - true for ANY B-spline basis regardless of degree or knot
-// vector, but only for a NON-rational one (a rational basis divides by a
-// per-parameter weight sum that does not itself decompose this way, so
-// the same additive control-net trick is not exact for a rational curve
-// in either direction - both `profile` and `path` must be non-rational,
-// checked by the caller).
+// transport). This is exact, not a fit.
+//
+// NON-RATIONAL curves: a B-spline basis is a partition of unity, so with
+// profile(u) = sum_i A_i N_i(u) and path(v) - path(v_min) = sum_j B_j M_j(v)
+// (B_j measured from the path's own first control point, which - `path` is
+// clamped - equals path(v_min) exactly) the net P_ij = A_i + B_j reduces
+// pointwise to A(u) * sum_j M_j + (path(v) - path(v_min)) * sum_i N_i
+// = A(u) + path(v) - path(v_min).
+//
+// RATIONAL curves (either or both): write profile(u) = sum_i w_i N_i A_i /
+// a(u), a(u) = sum_i w_i N_i, and path(v) = sum_j W_j M_j Q_j / b(v),
+// b(v) = sum_j W_j M_j (a non-rational curve is the all-weights-1 case).
+// The surface with control points P_ij = A_i + Q_j - Q_0 and weights
+// w_i W_j has denominator sum_ij w_i W_j N_i M_j = a(u) b(v) and
+//   S = [sum_ij w_i W_j N_i M_j (A_i + Q_j - Q_0)] / (a b)
+//     = [b * sum_i w_i N_i A_i + a * sum_j W_j M_j Q_j] / (a b) - Q_0
+//     = profile(u) + path(v) - Q_0,
+// and Q_0 = path(v_min) because a clamped (rational) curve interpolates
+// its first control point. So the sum surface of ANY clamped NURBS pair is
+// again an exact NURBS surface, rational iff either curve is.
 std::unique_ptr<ON_NurbsSurface> SumSurface(const ON_NurbsCurve& profile, const ON_NurbsCurve& path,
                                             const char* caller) {
   const int nu = profile.CVCount();
   const int nv = path.CVCount();
+  const bool rational = profile.IsRational() || path.IsRational();
   auto s = std::make_unique<ON_NurbsSurface>();
-  if (!s->Create(3, false, profile.Order(), path.Order(), nu, nv)) Internal(caller, "ON_NurbsSurface::Create failed");
+  if (!s->Create(3, rational, profile.Order(), path.Order(), nu, nv)) Internal(caller, "ON_NurbsSurface::Create failed");
   CopyKnots(profile, *s, 0);
   CopyKnots(path, *s, 1);
   const ON_3dPoint origin = EuclideanCV(path, 0);
   for (int j = 0; j < nv; ++j) {
     const ON_3dVector offset = EuclideanCV(path, j) - origin;
-    for (int i = 0; i < nu; ++i) s->SetCV(i, j, EuclideanCV(profile, i) + offset);
+    const double wj = path.IsRational() ? path.Weight(j) : 1.0;
+    for (int i = 0; i < nu; ++i) {
+      const ON_3dPoint p = EuclideanCV(profile, i) + offset;
+      if (!rational) {
+        s->SetCV(i, j, p);
+      } else {
+        const double w = (profile.IsRational() ? profile.Weight(i) : 1.0) * wj;
+        s->SetCV(i, j, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
+      }
+    }
   }
   return s;
 }
@@ -334,11 +348,28 @@ std::unique_ptr<ON_NurbsSurface> SumSurface(const ON_NurbsCurve& profile, const 
 // columns (Piegl & Tiller 10.3). Returns N values starting at 0; for a
 // closed skin the wrap-around chord is included and `period` receives
 // the total, else the values are scaled to end at 1.
+// `spacing`: 0 = chord length (the default above), 1 = uniform (k / segments,
+// no geometry used), 2 = centripetal (square-root chord lengths).
 std::vector<double> SkinParameters(const std::vector<ON_NurbsCurve>& sections, bool closed, double* period,
-                                   const char* caller) {
+                                   const char* caller, int spacing = 0) {
   const int N = static_cast<int>(sections.size());
   const int n = sections.front().CVCount();
   const int segments = closed ? N : N - 1;
+  if (spacing == 1) {
+    // Uniform stations ignore the geometry, but two consecutive coincident
+    // sections are still refused (the interpolation would be degenerate).
+    for (int k = 1; k <= segments; ++k) {
+      bool apart = false;
+      for (int i = 0; i < n && !apart; ++i) {
+        apart = EuclideanCV(sections[static_cast<size_t>(k - 1)], i).DistanceTo(EuclideanCV(sections[static_cast<size_t>(k % N)], i)) > 0.0;
+      }
+      if (!apart) Fail(caller, "two consecutive sections coincide - station parameters must strictly increase");
+    }
+    std::vector<double> uniform(static_cast<size_t>(N), 0.0);
+    for (int k = 1; k < N; ++k) uniform[static_cast<size_t>(k)] = static_cast<double>(k) / segments;
+    *period = 1.0;
+    return uniform;
+  }
   std::vector<double> accum(static_cast<size_t>(segments) + 1, 0.0);
   int used_columns = 0;
   for (int i = 0; i < n; ++i) {
@@ -347,7 +378,7 @@ std::vector<double> SkinParameters(const std::vector<ON_NurbsCurve>& sections, b
     for (int k = 1; k <= segments; ++k) {
       const ON_3dPoint a = EuclideanCV(sections[static_cast<size_t>(k - 1)], i);
       const ON_3dPoint b = EuclideanCV(sections[static_cast<size_t>(k % N)], i);
-      total += a.DistanceTo(b);
+      total += spacing == 2 ? std::sqrt(a.DistanceTo(b)) : a.DistanceTo(b);
       d[static_cast<size_t>(k)] = total;
     }
     if (total <= 0.0) continue;  // a column shared by every section (a loft to a point) says nothing
@@ -1863,23 +1894,26 @@ Brep Brep::ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, 
   const char* caller = "ExtrudeAlongCurve";
   ON_NurbsCurve c = profile.raw();
   if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
-  if (c.IsRational()) {
-    Fail(caller, "profile must be a non-rational NURBS curve - the exact tensor-product sum construction has no "
-                 "rational form (see this function's own brep.h doc comment)");
-  }
   ClampIfPeriodic(c);
 
   ON_NurbsCurve path_c = path.raw();
   if (!path_c.IsValid()) Fail(caller, "path is not a valid NURBS curve");
-  if (path_c.IsRational()) {
-    Fail(caller, "path must be a non-rational NURBS curve - the exact tensor-product sum construction has no "
-                 "rational form (see this function's own brep.h doc comment)");
-  }
-  if (path_c.IsClosed()) {
-    Fail(caller, "path must be an open curve - a closed path has no well-defined start/end displacement to "
-                 "translate the profile by, and the resulting wall would need periodic capping this does not attempt");
-  }
   ClampIfPeriodic(path_c);
+  if (path_c.IsClosed()) {
+    // A closed path is allowed for an OPEN profile only (a periodic sheet,
+    // e.g. a line carried round a circle = the exact cylinder wall). A
+    // closed profile carried round a closed path returns to where it
+    // began: its enclosed signed volume is exactly zero (Cavalieri: the
+    // net displacement along the profile's normal is zero), so the
+    // doubly periodic wall self-overlaps and is not a solid - refused.
+    if (c.IsClosed()) {
+      Fail(caller, "a closed profile carried along a closed path returns to its start: the swept body has "
+                   "zero net volume (it folds back through itself) and is not a solid - use an open profile "
+                   "for a periodic sheet, or an open path");
+    }
+    std::unique_ptr<ON_NurbsSurface> sheet = SumSurface(c, path_c, caller);
+    return AssembleSweptBody(sheet.release(), false, false, false, false, caller);
+  }
 
   const ON_3dPoint path_start = path_c.PointAtStart();
   const ON_3dPoint path_end = path_c.PointAtEnd();
@@ -3617,8 +3651,9 @@ Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3
 }
 
 Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool closed, bool cap,
-                const NurbsCurve* start_tangent, const NurbsCurve* end_tangent) {
+                const NurbsCurve* start_tangent, const NurbsCurve* end_tangent, LoftSpacing spacing_style) {
   const char* caller = "Loft";
+  const int spacing = spacing_style == LoftSpacing::Uniform ? 1 : spacing_style == LoftSpacing::Centripetal ? 2 : 0;
   const int N = static_cast<int>(sections_in.size());
   if (N < 2) Fail(caller, "at least 2 sections are required");
   if (degree < 1) Fail(caller, "degree must be at least 1");
@@ -3692,7 +3727,7 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
       }
     }
     double period = 1.0;
-    const std::vector<double> params = SkinParameters(sections, false, &period, caller);
+    const std::vector<double> params = SkinParameters(sections, false, &period, caller, spacing);
     wall = SkinSectionsTangent(sections, q, params, start_dirs, end_dirs, caller);
   } else if (closed && q == 1) {
     // A degree-1 closed loft is the piecewise-ruled loop back to the
@@ -3702,12 +3737,12 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
     std::vector<ON_NurbsCurve> wrapped = sections;
     wrapped.push_back(sections.front());
     double period = 1.0;
-    const std::vector<double> params = SkinParameters(wrapped, false, &period, caller);
+    const std::vector<double> params = SkinParameters(wrapped, false, &period, caller, spacing);
     wall = SkinSections(wrapped, 1, false, params, period, caller);
     if (!wall->IsClosed(1)) Internal(caller, "the degree-1 closed loft does not report closed");
   } else {
     double period = 1.0;
-    const std::vector<double> params = SkinParameters(sections, closed, &period, caller);
+    const std::vector<double> params = SkinParameters(sections, closed, &period, caller, spacing);
     if (!closed && q == 1 && N == 2) {
       wall = RuledBetween(sections[0], sections[1], 0.0, 1.0, caller);
     } else {

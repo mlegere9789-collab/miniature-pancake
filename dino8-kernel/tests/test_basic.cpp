@@ -67251,16 +67251,10 @@ void TestExtrudeAlongCurveNegativeControls() {
   const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
   const NurbsCurve straight_path = Polyline({P(0, 0, 0), P(0, 0, 5)});
 
-  // A rational profile or path has no exact tensor-sum form (see
-  // SumSurface()'s own comment in sweep.cpp).
-  Check(Throws([&] { Brep::ExtrudeAlongCurve(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), straight_path); }),
-        "a rational profile throws");
-  Check(Throws([&] { Brep::ExtrudeAlongCurve(rect, Circle(P(0, 0, 0), Vector3d(1, 0, 0), 1.0)); }),
-        "a rational path throws");
-
-  // A closed path has no well-defined net start/end displacement.
+  // (A rational profile or path is now supported exactly - see
+  // extrude_along_tests; a closed profile on a closed path is still refused.)
   const NurbsCurve closed_path = Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0), P(0, 0, 0)});
-  Check(Throws([&] { Brep::ExtrudeAlongCurve(rect, closed_path); }), "a closed path throws");
+  Check(Throws([&] { Brep::ExtrudeAlongCurve(rect, closed_path); }), "a closed profile on a closed path throws");
 
   // The path's net displacement lying in the profile's own plane makes a
   // requested cap flat (undefined), but the same path sweeps fine
@@ -103659,6 +103653,478 @@ void TestAdaptiveNegativeControlsCeilingToleranceAndDefaults() {
 
 }  // namespace sweep_adaptive_tests
 
+// ---------------------------------------------------------------------------
+// Sweeping/lofting/extruding/revolving: ExtrudeAlongCurve for RATIONAL
+// profiles and paths (exact weighted sum surface) and closed paths.
+// ---------------------------------------------------------------------------
+namespace extrude_along_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+using sweep_tests::Arc;
+using sweep_tests::Circle;
+using sweep_tests::CheckClosedMeshVolume;
+using sweep_tests::CheckSolidTopology;
+using sweep_tests::FaceSurface;
+using sweep_tests::P;
+using sweep_tests::Polyline;
+
+// True when `f` throws std::invalid_argument whose message contains `needle`
+// (a refusal must carry its stated reason, not merely throw).
+bool ThrowsWith(const std::function<void()>& f, const char* needle) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    return std::string(e.what()).find(needle) != std::string::npos;
+  }
+  return false;
+}
+
+// Largest distance between the swept wall and the INDEPENDENT closed form
+// profile(u) + path(v) - path(v_min), evaluated by openNURBS' own curve
+// evaluator (never through the kernel's sum-surface code).
+double WallVsSumOfCurves(const Brep& b, const NurbsCurve& profile, const NurbsCurve& path) {
+  const NurbsSurface wall = FaceSurface(b, 0);
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  const ON_Interval pu = profile.raw().Domain(), pv = path.raw().Domain();
+  const ON_3dPoint q0 = path.raw().PointAt(pv.Min());
+  double worst = 0.0;
+  for (int i = 0; i <= 16; ++i) {
+    for (int j = 0; j <= 16; ++j) {
+      const double fu = i / 16.0, fv = j / 16.0;
+      const Point3d got = wall.PointAt(du.ParameterAt(fu), dv.ParameterAt(fv));
+      const ON_3dPoint want = profile.raw().PointAt(pu.ParameterAt(fu)) + (path.raw().PointAt(pv.ParameterAt(fv)) - q0);
+      worst = std::max(worst, got.DistanceTo(Point3d(want.x, want.y, want.z)));
+    }
+  }
+  return worst;
+}
+
+void TestExtrudeAlongCurveRationalProfileCylinderExact() {
+  // A true (rational) circle carried along a straight path IS the cylinder.
+  const double r = 2.0, h = 5.0;
+  const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), r);
+  Check(circle.raw().IsRational(), "fixture: the profile circle is rational");
+  const Brep cyl = Brep::ExtrudeAlongCurve(circle, Polyline({P(0, 0, 0), P(0, 0, h)}));
+  CheckSolidTopology(cyl, 3, "rational circle along a straight path");
+  Check(FaceSurface(cyl, 0).raw().IsRational(), "the wall is itself rational (weights carried)");
+  Check(FaceSurface(cyl, 0).IsCylinder(1e-9), "the wall classifies as the exact analytic cylinder");
+  // Every wall point is at EXACTLY radius r from the axis (a polynomial
+  // approximation of a circle could not satisfy this to 1e-12).
+  const NurbsSurface wall = FaceSurface(cyl, 0);
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  double radial = 0.0, zerr = 0.0;
+  for (int i = 0; i <= 40; ++i) {
+    for (int j = 0; j <= 4; ++j) {
+      const Point3d p = wall.PointAt(du.ParameterAt(i / 40.0), dv.ParameterAt(j / 4.0));
+      radial = std::max(radial, std::fabs(std::hypot(p.x, p.y) - r));
+      zerr = std::max(zerr, std::fabs(p.z - h * j / 4.0));
+    }
+  }
+  Check(radial < 1e-12, "wall points lie at radius r from the axis to 1e-12 (exact circle, not a fit)");
+  Check(zerr < 1e-12, "wall heights are linear in v to 1e-12");
+  const double exact = M_PI * r * r * h;
+  Check(std::fabs(cyl.Volume() - exact) <= 1e-6 * exact, "analytic Brep::Volume() equals pi r^2 h");
+  CheckClosedMeshVolume(cyl, 96, 4, exact, 0.002, "rational-circle cylinder");
+  Check(std::fabs(cyl.Area() - (2.0 * M_PI * r * h + 2.0 * M_PI * r * r)) <= 1e-6 * exact,
+        "analytic Brep::Area() equals 2 pi r h + 2 pi r^2");
+}
+
+void TestExtrudeAlongCurveRationalProfileOnWobblyPath() {
+  // Rational circle (r = 1.5, XY plane) along a quadratic Bezier path that
+  // wanders in x and y but climbs monotonically in z: Cavalieri gives the
+  // volume pi r^2 * (net z), independent of the in-plane wander.
+  const double r = 1.5;
+  const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), r);
+  const NurbsCurve path = NurbsCurve::FromControlPoints({P(0, 0, 0), P(3, 2, 2), P(-1, 1, 4)}, 2);
+  const Brep swept = Brep::ExtrudeAlongCurve(circle, path);
+  CheckSolidTopology(swept, 3, "rational circle along a curved path");
+  Check(WallVsSumOfCurves(swept, circle, path) < 1e-12,
+        "wall equals profile(u) + path(v) - path(v_min) to 1e-12 over a 17x17 grid");
+  const double exact = M_PI * r * r * 4.0;
+  Check(std::fabs(swept.Volume() - exact) <= 1e-6 * exact, "analytic Brep::Volume() equals pi r^2 * net z (Cavalieri)");
+  CheckClosedMeshVolume(swept, 96, 48, exact, 0.003, "rational circle on a curved path");
+}
+
+void TestExtrudeAlongCurveRationalPathAndBothRational() {
+  // Rational PATH: an eighth circle (radius 3, in the XZ plane, 0 to pi/4) from
+  // (3,0,0) to (3/sqrt2, 0, 3/sqrt2), non-rational rectangle profile in XY: z is
+  // monotone along the arc so Cavalieri gives area * net z = 6 * 3 sin(pi/4),
+  // whatever the x wander. (A full quarter arc ends with a tangent lying IN the
+  // profile plane, which cannot be capped - that case is refused, see the
+  // negative controls.)
+  const double net_z = 3.0 * std::sin(M_PI / 4);
+  const NurbsCurve arc_path = Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 0, 1), 3.0, 0.0, M_PI / 4);
+  Check(arc_path.raw().IsRational(), "fixture: the path arc is rational");
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Brep a = Brep::ExtrudeAlongCurve(rect, arc_path);
+  CheckSolidTopology(a, 3, "rectangle along a rational quarter-circle path");
+  Check(WallVsSumOfCurves(a, rect, arc_path) < 1e-12, "rational-path wall equals profile(u) + path(v) - path(v_min) to 1e-12");
+  Check(std::fabs(a.Volume() - 6.0 * net_z) <= 1e-6 * 6.0 * net_z, "analytic volume = area 6 x net z 3 sin(pi/4)");
+  CheckClosedMeshVolume(a, 8, 96, 6.0 * net_z, 0.002, "rectangle along a rational eighth circle");
+  // A full quarter arc ends tangent to the profile plane: capping is refused with its reason.
+  const NurbsCurve quarter = Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 0, 1), 3.0, 0.0, M_PI / 2);
+  Check(ThrowsWith([&] { Brep::ExtrudeAlongCurve(rect, quarter); }, "parallel to the sweep direction"),
+        "a rational quarter-arc path whose end tangent lies in the profile plane refuses to cap, with that reason");
+  Check(!ThrowsWith([&] { Brep::ExtrudeAlongCurve(rect, quarter, false); }, ""), "...but sweeps uncapped");
+
+  // BOTH rational: circle profile (r = 1) along the same arc.
+  const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const Brep b = Brep::ExtrudeAlongCurve(circle, arc_path);
+  CheckSolidTopology(b, 3, "rational circle along a rational arc");
+  Check(FaceSurface(b, 0).raw().IsRational(), "both-rational wall is rational");
+  Check(WallVsSumOfCurves(b, circle, arc_path) < 1e-12, "both-rational wall equals the sum of the curves to 1e-12");
+  const double exact = M_PI * net_z;
+  Check(std::fabs(b.Volume() - exact) <= 1e-6 * exact, "both-rational analytic volume = pi r^2 x net z");
+}
+
+void TestExtrudeAlongCurveRationalProfileOnCubicPath() {
+  // Higher degree on the path side: rational circle (r = 1, XY) along a CUBIC
+  // Bezier whose z rises monotonically (0 -> 5) while x,y wander. The wall must
+  // equal profile(u) + path(v) - path(v_min) to 1e-12 and the volume is
+  // pi r^2 * net z by Cavalieri.
+  const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve path = NurbsCurve::FromControlPoints({P(0, 0, 0), P(2, -1, 1), P(-2, 3, 3), P(1, 1, 5)}, 3);
+  const Brep swept = Brep::ExtrudeAlongCurve(circle, path);
+  CheckSolidTopology(swept, 3, "rational circle along a cubic path");
+  Check(WallVsSumOfCurves(swept, circle, path) < 1e-12, "cubic-path wall equals the independent sum of the curves to 1e-12");
+  const double exact = M_PI * 5.0;
+  Check(std::fabs(swept.Volume() - exact) <= 1e-6 * exact, "analytic volume = pi r^2 x net z 5");
+}
+
+void TestExtrudeAlongCurveClosedPathMakesAPeriodicSheet() {
+  // A vertical line segment carried round a rational circle of radius 2
+  // (starting at (2,0,0)) is the exact cylinder wall of radius 2 about the
+  // axis x = -2, y = 0: the sum surface (cos t * 2 - 2, 2 sin t, z).
+  const double r = 2.0, h = 3.0;
+  const NurbsCurve ring = Circle(P(0, 0, 0), Vector3d(0, 0, 1), r);
+  const NurbsCurve rod = Polyline({P(0, 0, 0), P(0, 0, h)});
+  const Brep sheet = Brep::ExtrudeAlongCurve(rod, ring);
+  Check(sheet.FaceCount() == 1 && sheet.raw().IsValid(), "closed path + open profile -> one valid periodic face");
+  Check(!sheet.raw().IsSolid(), "...an open sheet, not a solid");
+  Check(FaceSurface(sheet, 0).raw().IsClosed(1), "the wall is closed (periodic) in the path direction");
+  const NurbsSurface wall = FaceSurface(sheet, 0);
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  const ON_3dPoint start = ring.raw().PointAtStart();
+  double radial = 0.0;
+  for (int i = 0; i <= 8; ++i) {
+    for (int j = 0; j <= 48; ++j) {
+      const Point3d p = wall.PointAt(du.ParameterAt(i / 8.0), dv.ParameterAt(j / 48.0));
+      radial = std::max(radial, std::fabs(std::hypot(p.x + start.x, p.y + start.y) - r));
+    }
+  }
+  Check(radial < 1e-12, "every wall point is at radius r from the shifted axis to 1e-12");
+  const double exact_area = 2.0 * M_PI * r * h;
+  Check(std::fabs(sheet.Area() - exact_area) <= 1e-6 * exact_area, "analytic Brep::Area() = 2 pi r h");
+  Check(WallVsSumOfCurves(sheet, rod, ring) < 1e-12, "wall equals the independent sum of the curves");
+  bool oriented = false, has_boundary = false;
+  Check(sheet.raw().IsManifold(&oriented, &has_boundary) && has_boundary, "manifold with boundary (the two rod-end circles)");
+}
+
+void TestExtrudeAlongCurveNegativeControlsReasons() {
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const NurbsCurve ring = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 2.0);
+  const NurbsCurve rod = Polyline({P(0, 0, 0), P(0, 0, 3)});
+  // Closed profile on a closed path: zero net volume, refused with that reason.
+  Check(ThrowsWith([&] { Brep::ExtrudeAlongCurve(rect, ring); }, "zero net volume"),
+        "closed profile + closed path refused with the zero-net-volume reason");
+  Check(ThrowsWith([&] { Brep::ExtrudeAlongCurve(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), ring, false); },
+                   "zero net volume"),
+        "...even with cap=false and a rational closed profile");
+  // Zero-length open path still refused.
+  Check(ThrowsWith([&] { Brep::ExtrudeAlongCurve(rect, Polyline({P(0, 0, 0), P(0, 0, 0)})); }, ""),
+        "a degenerate path throws");
+  // Net displacement in the profile plane + cap still refused (flat), uncapped fine.
+  const NurbsCurve flat_arc = Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 3.0, 0.0, M_PI / 2);
+  Check(ThrowsWith([&] { Brep::ExtrudeAlongCurve(rect, flat_arc); }, "flat"),
+        "rational path whose net displacement lies in the profile plane refused when capped (flat)");
+  Check(Brep::ExtrudeAlongCurve(rect, flat_arc, false).FaceCount() == 1, "...but sweeps uncapped");
+  // Non-planar closed profile still refuses to cap.
+  const NurbsCurve skew = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 1), P(0, 3, 0), P(0, 0, 0)});
+  Check(ThrowsWith([&] { Brep::ExtrudeAlongCurve(skew, rod); }, "not planar"),
+        "non-planar closed profile refuses to cap with the planarity reason");
+}
+
+}  // namespace extrude_along_tests
+
+// ---------------------------------------------------------------------------
+// Sweeping/lofting/extruding/revolving: Loft station-spacing style
+// (Chord / Uniform / Centripetal), independent closed-form oracles.
+// ---------------------------------------------------------------------------
+namespace loft_spacing_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+using sweep_tests::Circle;
+using sweep_tests::CheckClosedMeshVolume;
+using sweep_tests::CheckSolidTopology;
+using sweep_tests::FaceSurface;
+using sweep_tests::P;
+using sweep_tests::Polyline;
+using Spacing = Brep::LoftSpacing;
+
+// Three coaxial unit circles at z = 0, 1, 4 (gaps 1 and 3).
+std::vector<NurbsCurve> SpacedCircles() {
+  std::vector<NurbsCurve> c;
+  for (double z : {0.0, 1.0, 4.0}) c.push_back(Circle(P(0, 0, z), Vector3d(0, 0, 1), 1.0));
+  return c;
+}
+
+// z-height of the wall along the loft direction at fraction v (every section is a
+// horizontal circle, so the height does not depend on u), and the worst deviation
+// of the radius from 1 over a u grid.
+double WallZ(const NurbsSurface& wall, double v, double* radial_err) {
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  double z = 0.0;
+  for (int j = 0; j <= 12; ++j) {
+    const Point3d p = wall.PointAt(du.ParameterAt(j / 12.0), dv.ParameterAt(v));
+    if (radial_err) *radial_err = std::max(*radial_err, std::fabs(std::hypot(p.x, p.y) - 1.0));
+    z = p.z;
+  }
+  return z;
+}
+
+// Degree-2 interpolant z(v) = a v + b v^2 through (0, 0), (t, 1), (1, 4),
+// solved by hand (independent of the kernel's skinning code).
+void QuadThrough(double t, double* a, double* b) {
+  *b = (4.0 * t - 1.0) / (t - t * t);
+  *a = 4.0 - *b;
+}
+
+void TestLoftSpacingStylesFollowTheirClosedForms() {
+  const std::vector<NurbsCurve> secs = SpacedCircles();
+  const double t_cent = 1.0 / (1.0 + std::sqrt(3.0));  // sqrt-chord station of the middle section
+  struct Style {
+    Spacing s;
+    double mid;  // v of the middle section
+    const char* name;
+  };
+  const Style styles[] = {{Spacing::Chord, 0.25, "chord"}, {Spacing::Uniform, 0.5, "uniform"}, {Spacing::Centripetal, t_cent, "centripetal"}};
+  double z03[3] = {0, 0, 0};
+  int idx = 0;
+  for (const Style& st : styles) {
+    const Brep b = Brep::Loft(secs, 2, /*closed=*/false, /*cap=*/false, nullptr, nullptr, st.s);
+    const std::string tag = std::string("loft spacing ") + st.name;
+    Check(b.FaceCount() == 1 && b.raw().IsValid(), (tag + ": one valid face").c_str());
+    const NurbsSurface wall = FaceSurface(b, 0);
+    double radial = 0.0;
+    Check(std::fabs(WallZ(wall, 0.0, &radial) - 0.0) < 1e-9 && std::fabs(WallZ(wall, st.mid, &radial) - 1.0) < 1e-9 &&
+              std::fabs(WallZ(wall, 1.0, &radial) - 4.0) < 1e-9,
+          (tag + ": sections at z = 0, 1, 4 sit at v = 0, " + std::to_string(st.mid) + ", 1").c_str());
+    Check(radial < 1e-12, (tag + ": every wall point stays on the unit circle of its height (exact rational circles)").c_str());
+    double a, bq;
+    QuadThrough(st.mid, &a, &bq);
+    double worst = 0.0;
+    for (int i = 0; i <= 20; ++i) {
+      const double v = i / 20.0;
+      worst = std::max(worst, std::fabs(WallZ(wall, v, nullptr) - (a * v + bq * v * v)));
+    }
+    Check(worst < 1e-10, (tag + ": z(v) equals the hand-solved quadratic through the three stations to 1e-10").c_str());
+    z03[idx++] = WallZ(wall, 0.3, nullptr);
+  }
+  // The three styles really are different parametrizations (negative control for
+  // "the option does nothing"): chord is linear 4v = 1.2, uniform 4v^2 = 0.36.
+  Check(std::fabs(z03[0] - 1.2) < 1e-10, "chord: z(0.3) = 4 * 0.3 = 1.2 (collinear stations are exactly linear)");
+  Check(std::fabs(z03[1] - 0.36) < 1e-10, "uniform: z(0.3) = 4 * 0.3^2 = 0.36");
+  Check(std::fabs(z03[0] - z03[2]) > 0.05 && std::fabs(z03[1] - z03[2]) > 0.05, "centripetal differs from both at v = 0.3");
+}
+
+void TestLoftSpacingKeepsTheSolidAndCaps() {
+  // Same sections capped: identical unit-circle cross-sections with monotone
+  // z(v), so Cavalieri gives pi * 1^2 * 4 for every style.
+  std::vector<NurbsCurve> capped_secs;  // z = 0, 1, 2.5: every style has dz/dv > 0 on [0, 1]
+  for (double z : {0.0, 1.0, 2.5}) capped_secs.push_back(Circle(P(0, 0, z), Vector3d(0, 0, 1), 1.0));
+  const std::vector<NurbsCurve> secs = SpacedCircles();
+  const double exact = M_PI * 2.5;
+  for (Spacing s : {Spacing::Chord, Spacing::Uniform, Spacing::Centripetal}) {
+    const Brep b = Brep::Loft(capped_secs, 2, false, true, nullptr, nullptr, s);
+    CheckSolidTopology(b, 3, "capped loft under a spacing style");
+    CheckClosedMeshVolume(b, 64, 64, exact, 0.003, "capped loft volume = pi r^2 * net z under a spacing style");
+  }
+  // Negative control with its reason: uniform stations on z = 0, 1, 4 give
+  // z(v) = 4 v^2, whose speed is ZERO at v = 0, so the start cap plane is
+  // parallel to the (vanishing) sweep direction and capping is refused.
+  Check(sweep_tests::Throws([&] { Brep::Loft(secs, 2, false, true, nullptr, nullptr, Spacing::Uniform); }),
+        "uniform z = 0,1,4 (dz/dv = 0 at v = 0) refuses to cap");
+  Check(!sweep_tests::Throws([&] { Brep::Loft(secs, 2, false, false, nullptr, nullptr, Spacing::Uniform); }), "...but lofts uncapped");
+  // Degree 1: the same polyline surface under every style, the kink sits at v_mid.
+  const Brep uni = Brep::Loft(secs, 1, false, false, nullptr, nullptr, Spacing::Uniform);
+  const Brep chd = Brep::Loft(secs, 1, false, false, nullptr, nullptr, Spacing::Chord);
+  const NurbsSurface wu = FaceSurface(uni, 0), wc = FaceSurface(chd, 0);
+  double e = 0.0;
+  for (int i = 0; i <= 20; ++i) {
+    const double v = i / 20.0;
+    const double zu = v <= 0.5 ? 2.0 * v : 1.0 + 6.0 * (v - 0.5);  // uniform: kink at 1/2
+    const double zc = 4.0 * v;                                     // chord: collinear, linear
+    e = std::max(e, std::fabs(WallZ(wu, v, nullptr) - zu));
+    e = std::max(e, std::fabs(WallZ(wc, v, nullptr) - zc));
+  }
+  Check(e < 1e-10, "degree-1 loft: uniform z(v) is the 2-piece line through (0,0),(1/2,1),(1,4); chord is 4v");
+}
+
+void TestLoftSpacingClosedAndTangentAndRefusals() {
+  // Closed (periodic) loft of 6 unit squares at unequal angles: Uniform puts
+  // section k at v = k/6 although the angular gaps differ (40..80 degrees).
+  const double ang[6] = {0, 40, 100, 150, 230, 300};
+  std::vector<NurbsCurve> ring;
+  for (double deg : ang) {
+    const double a = deg * M_PI / 180.0;
+    const Vector3d er(std::cos(a), std::sin(a), 0), ez(0, 0, 1);
+    const Point3d c = Point3d(0, 0, 0) + er * 5;
+    ring.push_back(Polyline({c - er * 0.5 - ez * 0.5, c + er * 0.5 - ez * 0.5, c + er * 0.5 + ez * 0.5, c - er * 0.5 + ez * 0.5,
+                             c - er * 0.5 - ez * 0.5}));
+  }
+  for (Spacing s : {Spacing::Uniform, Spacing::Centripetal}) {
+    const Brep closed = Brep::Loft(ring, 3, /*closed=*/true, false, nullptr, nullptr, s);
+    CheckSolidTopology(closed, 1, "closed loft under a spacing style");
+    const NurbsSurface wall = FaceSurface(closed, 0);
+    Check(wall.IsClosed(1), "...closed in the loft direction");
+    if (s == Spacing::Uniform) {
+      double worst = 0.0;
+      const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+      for (int k = 0; k < 6; ++k) {
+        for (int corner = 0; corner < 4; ++corner) {
+          const Point3d c = ring[static_cast<size_t>(k)].ControlPointAt(corner);
+          double best = 1e9;
+          for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.ParameterAt(k / 6.0)).DistanceTo(c));
+          worst = std::max(worst, best);
+        }
+      }
+      Check(worst < 1e-9, "uniform closed loft: every section's corners lie on the surface at v = k/6 (to 1e-9)");
+    }
+  }
+  // Tangent-constrained ends combine with Uniform: sections at k/3 despite unequal gaps.
+  std::vector<NurbsCurve> sections;
+  for (double z : {0.0, 1.0, 3.0, 6.0}) sections.push_back(Polyline({P(0, 0, z), P(1, 0, z)}));
+  const NurbsCurve start_tangent = Polyline({P(0, 2, 0), P(0, 3, 1)});
+  const NurbsCurve end_tangent = Polyline({P(0, -1, 5), P(0, -2, 4)});
+  const Brep loft = Brep::Loft(sections, 3, false, false, &start_tangent, &end_tangent, Spacing::Uniform);
+  const NurbsSurface wall = FaceSurface(loft, 0);
+  const ON_Interval du = wall.raw().Domain(0);
+  double worst = 0.0, wstart = 0.0, wend = 0.0;
+  for (int k = 0; k < 4; ++k) {
+    const ON_Interval dc = sections[static_cast<size_t>(k)].raw().Domain();
+    for (int j = 0; j <= 10; ++j) {
+      worst = std::max(worst, wall.PointAt(du.ParameterAt(j / 10.0), k / 3.0).DistanceTo(sections[static_cast<size_t>(k)].PointAt(dc.ParameterAt(j / 10.0))));
+    }
+  }
+  for (int j = 0; j <= 10; ++j) {
+    const double u = j / 10.0;
+    ON_3dPoint pt;
+    ON_3dVector su, sv;
+    wall.raw().Ev1Der(du.ParameterAt(u), 0.0, pt, su, sv);
+    const Point3d es = start_tangent.PointAt(start_tangent.raw().Domain().ParameterAt(u));
+    wstart = std::max(wstart, std::hypot(std::hypot(sv.x - es.x, sv.y - es.y), sv.z - es.z));
+    wall.raw().Ev1Der(du.ParameterAt(u), 1.0, pt, su, sv);
+    const Point3d ee = end_tangent.PointAt(end_tangent.raw().Domain().ParameterAt(u));
+    wend = std::max(wend, std::hypot(std::hypot(sv.x - ee.x, sv.y - ee.y), sv.z - ee.z));
+  }
+  Check(worst < 1e-9, "uniform + tangent ends: sections at v = k/3 to 1e-9");
+  Check(wstart < 1e-6 && wend < 1e-6, "uniform + tangent ends: dS/dv at v = 0 and v = 1 still equal the prescribed fields");
+  // Refusals keep their reasons under a non-default style.
+  Check(sweep_tests::Throws([&] { Brep::Loft({sections[0]}, 1, false, false, nullptr, nullptr, Spacing::Uniform); }),
+        "a single section is still refused under Uniform");
+  Check(sweep_tests::Throws([&] { Brep::Loft({sections[0], sections[0]}, 1, false, false, nullptr, nullptr, Spacing::Centripetal); }),
+        "coincident sections are still refused under Centripetal");
+  Check(sweep_tests::Throws([&] { Brep::Loft({sections[0], sections[1], sections[1]}, 2, false, false, nullptr, nullptr, Spacing::Uniform); }),
+        "consecutive coincident sections are still refused under Uniform");
+}
+
+}  // namespace loft_spacing_tests
+
+// ---------------------------------------------------------------------------
+// Sweeping/lofting/extruding/revolving: single-section Sweep2 on curved
+// rails against a closed form, and the parallel-tangent refusal.
+// ---------------------------------------------------------------------------
+namespace sweep2_accuracy_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Mesh;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+using sweep_tests::Arc;
+using sweep_tests::CheckSolidTopology;
+using sweep_tests::P;
+using sweep_tests::Polyline;
+
+bool ThrowsWithText(const std::function<void()>& f, const char* needle) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    return std::string(e.what()).find(needle) != std::string::npos;
+  }
+  return false;
+}
+
+// Concentric quarter arcs in the z = 0 plane (r1 = 3, r2 = 5, angle pi/2) with a
+// square section centered on rail1's start and spanning the rail separation
+// (width 2): at every station the section is the radial interval [r1 - 1, r1 + 1]
+// by z in [-1, 1] (the frame is x = radial, z = x cross tangent = world z, the
+// width stays 2), so the body is exactly the annular-sector prism
+//   V = height * (R^2 - r^2) / 2 * angle = 2 * (16 - 4) / 2 * (pi / 2) = 6 pi.
+void TestSweep2CurvedRailsAnnularSectorVolume() {
+  const double r1 = 3.0, r2 = 5.0, theta = M_PI / 2;
+  const NurbsCurve rail1 = Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), r1, 0.0, theta);
+  const NurbsCurve rail2 = Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), r2, 0.0, theta);
+  const double w = r2 - r1;
+  const Point3d o(r1, 0, 0);
+  const NurbsCurve sec = Polyline({o + Vector3d(-w / 2, 0, -w / 2), o + Vector3d(w / 2, 0, -w / 2), o + Vector3d(w / 2, 0, w / 2),
+                                   o + Vector3d(-w / 2, 0, w / 2), o + Vector3d(-w / 2, 0, -w / 2)});
+  const double exact = 2.0 * (4.0 * 4.0 - 2.0 * 2.0) / 2.0 * theta;
+  double err_prev = 1e9;
+  for (int stations : {16, 32, 96}) {
+    const Brep b = Brep::Sweep2(sec, rail1, rail2, stations);
+    CheckSolidTopology(b, 3, "single-section Sweep2 on concentric quarter arcs");
+    const double vol = b.TessellateToClosedMesh(8, 192).Volume();
+    const double err = std::fabs(vol - exact) / exact;
+    std::printf("[sweep2 annular sector] stations=%d volume=%.9g exact=%.9g rel err=%.3e\n", stations, vol, exact, err);
+    Check(err < 5e-3, "annular-sector volume within 0.5% of 6 pi at this station count (mesh + interpolant error)");
+    if (stations == 96) Check(err < 2e-3, "...within 0.2% at 96 stations");
+    err_prev = err;
+  }
+  (void)err_prev;
+  // Rail edges: the wall's two radial extremes of the section stay on the circles
+  // of radius r1 - 1 and r1 + 1 at the mid-sweep (z-mid of the section), to the
+  // interpolant's accuracy; measured and bounded here.
+  const Brep b = Brep::Sweep2(sec, rail1, rail2, 64);
+  const Mesh m = b.TessellateToClosedMesh(8, 192);
+  double rmin = 1e9, rmax = 0.0, zmin = 1e9, zmax = -1e9;
+  for (int i = 0; i < m.VertexCount(); ++i) {
+    const ON_3dPoint p(m.raw().m_V[i]);
+    const double r = std::hypot(p.x, p.y);
+    rmin = std::min(rmin, r);
+    rmax = std::max(rmax, r);
+    zmin = std::min(zmin, p.z);
+    zmax = std::max(zmax, p.z);
+  }
+  std::printf("[sweep2 annular sector] radial range [%.6f, %.6f] (exact [2, 4]), z range [%.6f, %.6f] (exact [-1, 1])\n", rmin, rmax, zmin, zmax);
+  Check(std::fabs(rmin - 2.0) < 5e-3 && std::fabs(rmax - 4.0) < 5e-3, "swept radial extent is [2, 4] to 5e-3");
+  Check(std::fabs(zmin + 1.0) < 1e-6 && std::fabs(zmax - 1.0) < 1e-6, "swept height is [-1, 1] to 1e-6 (z is exactly constant by symmetry)");
+}
+
+void TestSweep2ParallelTangentRefusedWithReason() {
+  // Two collinear rails on the x axis: the rail-to-rail direction is along x and
+  // so is every rail tangent, so the two-rail frame (x cross tangent) is undefined.
+  const NurbsCurve rail1 = Polyline({P(0, 0, 0), P(4, 0, 0)});
+  const NurbsCurve rail2 = Polyline({P(6, 0, 0), P(10, 0, 0)});
+  const NurbsCurve sec = Polyline({P(-1, -1, 0), P(1, -1, 0), P(1, 1, 0), P(-1, 1, 0), P(-1, -1, 0)});
+  Check(ThrowsWithText([&] { Brep::Sweep2(sec, rail1, rail2, 16); }, "parallel"),
+        "a rail tangent parallel to the rail-to-rail direction is refused with that reason");
+  // Control: moving rail2 off the line makes the same call succeed.
+  const NurbsCurve rail2_ok = Polyline({P(6, 2, 0), P(10, 2, 0)});
+  Check(!sweep_tests::Throws([&] { Brep::Sweep2(sec, rail1, rail2_ok, 16, false); }),
+        "...and the identical call with rail2 moved off the line is accepted");
+}
+
+}  // namespace sweep2_accuracy_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -105403,6 +105869,23 @@ int main() {
           sweep_adaptive_tests::TestAdaptiveFreeformRailsOpenAndClosedAgainstAFinerBuild);
   RunTest("sweep_adaptive_tests::TestAdaptiveNegativeControlsCeilingToleranceAndDefaults",
           sweep_adaptive_tests::TestAdaptiveNegativeControlsCeilingToleranceAndDefaults);
+  RunTest("extrude_along_tests::TestExtrudeAlongCurveRationalProfileCylinderExact",
+          extrude_along_tests::TestExtrudeAlongCurveRationalProfileCylinderExact);
+  RunTest("extrude_along_tests::TestExtrudeAlongCurveRationalProfileOnWobblyPath",
+          extrude_along_tests::TestExtrudeAlongCurveRationalProfileOnWobblyPath);
+  RunTest("extrude_along_tests::TestExtrudeAlongCurveRationalPathAndBothRational",
+          extrude_along_tests::TestExtrudeAlongCurveRationalPathAndBothRational);
+  RunTest("extrude_along_tests::TestExtrudeAlongCurveRationalProfileOnCubicPath",
+          extrude_along_tests::TestExtrudeAlongCurveRationalProfileOnCubicPath);
+  RunTest("extrude_along_tests::TestExtrudeAlongCurveClosedPathMakesAPeriodicSheet",
+          extrude_along_tests::TestExtrudeAlongCurveClosedPathMakesAPeriodicSheet);
+  RunTest("extrude_along_tests::TestExtrudeAlongCurveNegativeControlsReasons",
+          extrude_along_tests::TestExtrudeAlongCurveNegativeControlsReasons);
+  RunTest("loft_spacing_tests::TestLoftSpacingStylesFollowTheirClosedForms", loft_spacing_tests::TestLoftSpacingStylesFollowTheirClosedForms);
+  RunTest("loft_spacing_tests::TestLoftSpacingKeepsTheSolidAndCaps", loft_spacing_tests::TestLoftSpacingKeepsTheSolidAndCaps);
+  RunTest("loft_spacing_tests::TestLoftSpacingClosedAndTangentAndRefusals", loft_spacing_tests::TestLoftSpacingClosedAndTangentAndRefusals);
+  RunTest("sweep2_accuracy_tests::TestSweep2CurvedRailsAnnularSectorVolume", sweep2_accuracy_tests::TestSweep2CurvedRailsAnnularSectorVolume);
+  RunTest("sweep2_accuracy_tests::TestSweep2ParallelTangentRefusedWithReason", sweep2_accuracy_tests::TestSweep2ParallelTangentRefusedWithReason);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
