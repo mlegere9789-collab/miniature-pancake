@@ -13441,7 +13441,7 @@ rm -f "$HGB_DIR"/*.3dm 2>/dev/null || true
 #   agree with the source Brep's own Volume to 1 percent.
 #   B (tosubd6b_script.txt): arc-profile revolves (hemisphere, two sphere segments, a dome about the Y axis), a teardrop (sharp
 #   tip at one pole), an extruded circle and ellipse, a loft through three circles and a Sphere. The measured limit-surface
-#   deviation must be within the 0.001 tolerance whenever a cage is reported; a refused cage must say why.
+#   deviation must be within the 0.001 tolerance whenever a cage is reported (the teardrop is verified once the ring refinement ladder reaches k = 14).
 # Ranges rather than exact numbers (platform float evaluation); reference-run values are in the descriptions.
 # ---------------------------------------------------------------------------
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -13489,10 +13489,12 @@ if [ "${#TS6B_TOSUBD[@]}" -eq 9 ] && [ "${#TS6B_LIST[@]}" -eq 9 ] && [ "${#TS6B_
   # Arc-profile revolves (indices 0-3): the Arc command's output revolves into a wall + one flat cap (closed solid), caged by the curved-profile path.
   # Reference run: faces 416 / 352 / 608 / 416, deviation 0.000959 / 0.000851 / 0.000328 / 0.000959, Volume 261.3 / 54.3 / 468.2 / 261.3
   # (closed forms 261.80 / 54.45 / 469.20 / 261.80).
-  ts6bflo=(350 300 500 350)
-  ts6bfhi=(500 420 720 500)
-  ts6bvlo=(260.5 53.8 466.0 260.5)
-  ts6bvhi=(262.2 54.8 470.0 262.2)
+  ts6bflo=(400 340 580 400)
+  ts6bfhi=(430 365 630 430)
+  ts6bvlo=(261.0 54.0 467.5 261.0)
+  ts6bvhi=(261.8 54.6 469.0 261.8)
+  ts6bdlo=(0.00085 0.00075 0.00028 0.00085)
+  ts6bdhi=(0.001 0.001 0.0004 0.001)
   for i in 0 1 2 3; do
     if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[$i]}" && grep -qF -- "curved-profile revolve cage (profile of " <<<"${TS6B_TOSUBD[$i]}" && grep -qF -- "1 flat O-grid cap(s)" <<<"${TS6B_TOSUBD[$i]}"; then
       echo "ok   ToSubD of the ${ts6bname[$i]} is VERIFIED by the curved-profile revolve cage with its flat cap"
@@ -13500,36 +13502,38 @@ if [ "${#TS6B_TOSUBD[@]}" -eq 9 ] && [ "${#TS6B_LIST[@]}" -eq 9 ] && [ "${#TS6B_
       echo "FAIL ToSubD of the ${ts6bname[$i]} is not the verified capped curved-profile cage: ${TS6B_TOSUBD[$i]}"; fail=1
     fi
     if grep -q "^history:   2 faces, [0-9]* edges, closed solid" <<<"${TS6B_SRC[$i]}"; then echo "ok   ...the ${ts6bname[$i]} Revolve result is a 2-face closed solid (wall + cap)"; else echo "FAIL ...the ${ts6bname[$i]} Revolve result: ${TS6B_SRC[$i]}"; fail=1; fi
-    ts6range "$(ts6bdev "$i")" 0.0002 0.001 "...measured limit-surface deviation of the ${ts6bname[$i]} (tolerance 0.001, reference chord sag included)"
+    ts6range "$(ts6bdev "$i")" "${ts6bdlo[$i]}" "${ts6bdhi[$i]}" "...measured limit-surface deviation of the ${ts6bname[$i]} (tolerance 0.001, reference chord sag included)"
     ts6range "$(ts6bfaces "$i")" "${ts6bflo[$i]}" "${ts6bfhi[$i]}" "...cage face count of the ${ts6bname[$i]}"
     ts6range "${TS6B_VOL[$i]}" "${ts6bvlo[$i]}" "${ts6bvhi[$i]}" "...source Brep Volume of the ${ts6bname[$i]} vs its closed form"
   done
-  # Teardrop (index 4): a sharp tip at the bottom pole, a smooth top pole. Verified, or refused with the measured reason.
+  # Teardrop (index 4): a sharp tip at the bottom pole, a smooth top pole. Reference run: VERIFIED by the curved-profile cage after the
+  # ring refinement ladder reached k = 14 (31 rings x 32 segments, 960 faces, deviation 0.000563, Volume 89.87); with the ladder ending
+  # at k = 8 (25 rings) it was refused at 0.001332 and took the dense 18240-face path.
   if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[4]}" && grep -qF -- "curved-profile revolve cage (profile of 4 control point(s)" <<<"${TS6B_TOSUBD[4]}" && grep -qF -- ", sharp pole tip," <<<"${TS6B_TOSUBD[4]}"; then
     echo "ok   ToSubD of the teardrop is VERIFIED by the curved-profile cage with a creased (sharp) pole tip"
-    ts6range "$(ts6bdev 4)" 0.0002 0.001 "...measured limit-surface deviation of the teardrop"
-    ts6range "$(ts6bfaces 4)" 300 4000 "...teardrop cage face count (before: refused at 0.001332, dense 18240)"
-  elif grep -qE "curved-profile revolve cage refused \(deviation [0-9.]+ at [0-9]+ rings x 128 segments exceeds the tolerance 0\.001000, worst limit point \(" <<<"${TS6B_TOSUBD[4]}"; then
-    echo "ok   ToSubD of the teardrop is refused WITH the measured reason and takes the existing path: $(grep -oE 'refused \(deviation [0-9.]+ at [0-9]+ rings' <<<"${TS6B_TOSUBD[4]}")"
+    ts6range "$(ts6bdev 4)" 0.00045 0.00070 "...measured limit-surface deviation of the teardrop"
+    ts6range "$(ts6bfaces 4)" 900 1020 "...teardrop cage face count (before: refused at 0.001332, dense 18240)"
+    ts6range "${TS6B_VOL[4]}" 89.0 90.7 "...source Volume of the teardrop"
   else
-    echo "FAIL ToSubD of the teardrop is neither verified nor refused with a reason: ${TS6B_TOSUBD[4]}"; fail=1
+    echo "FAIL ToSubD of the teardrop is not the verified curved-profile cage with a sharp tip: ${TS6B_TOSUBD[4]}"; fail=1
   fi
   # Curved-profile extrusions and a loft (indices 5-7) and the Sphere (8).
-  # Reference run: extruded circle 352 faces / 0.000312, extruded ellipse 352 / 0.000425 (analytic revolved-solid cage), loft 576 / 0.000820 (curved-profile cage), Sphere 512 / 0.000627 (before: dense 18240).
-  ts6bx() { # index, description, marker, face lo, face hi, volume lo, volume hi
+  # Reference run: extruded circle 352 faces / 0.000312 / Volume 401.7, extruded ellipse 352 / 0.000425 / 452.2 (analytic revolved-solid cage),
+  # loft 576 / 0.000820 / 644.2 (curved-profile cage), Sphere 512 / 0.000627 / 267.4 (before: dense 18240).
+  ts6bx() { # index, description, marker, face lo, face hi, volume lo, volume hi, deviation lo, deviation hi
     if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[$1]}" && grep -qF -- "$3" <<<"${TS6B_TOSUBD[$1]}"; then
       echo "ok   ToSubD of $2 is VERIFIED ($3...)"
     else
       echo "FAIL ToSubD of $2 is not the verified '$3' cage: ${TS6B_TOSUBD[$1]}"; fail=1
     fi
-    ts6range "$(ts6bdev "$1")" 0.0001 0.001 "...measured limit-surface deviation of $2"
+    ts6range "$(ts6bdev "$1")" "$8" "$9" "...measured limit-surface deviation of $2"
     ts6range "$(ts6bfaces "$1")" "$4" "$5" "...cage face count of $2"
-    if [ -n "$6" ]; then ts6range "${TS6B_VOL[$1]}" "$6" "$7" "...source Volume of $2 vs its closed form"; fi
+    ts6range "${TS6B_VOL[$1]}" "$6" "$7" "...source Volume of $2"
   }
-  ts6bx 5 "the extruded circle" "analytic revolved-solid cage (" 300 420 400.5 402.5
-  ts6bx 6 "the extruded ellipse" "analytic revolved-solid cage (" 300 420 451 453.5
-  ts6bx 7 "the loft through three circles" "curved-profile revolve cage (profile of " 480 680 "" ""
-  ts6bx 8 "the Sphere" "curved-profile revolve cage (profile of " 400 640 "" ""
+  ts6bx 5 "the extruded circle" "analytic revolved-solid cage (" 340 365 401.0 402.5 0.00025 0.0004
+  ts6bx 6 "the extruded ellipse" "analytic revolved-solid cage (" 340 365 451.0 453.0 0.00034 0.00052
+  ts6bx 7 "the loft through three circles" "curved-profile revolve cage (profile of " 560 590 640.0 648.0 0.00068 0.001
+  ts6bx 8 "the Sphere" "curved-profile revolve cage (profile of " 495 530 266.5 268.3 0.0005 0.00078
 else
   echo "FAIL tosubd6b script printed ${#TS6B_TOSUBD[@]} ToSubD / ${#TS6B_LIST[@]} List / ${#TS6B_SRC[@]} source List / ${#TS6B_VOL[@]} Volume lines (expected 9 / 9 / 8 / 9)"; fail=1
 fi
