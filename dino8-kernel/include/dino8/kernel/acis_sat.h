@@ -1,9 +1,17 @@
 #pragma once
 
-// ACIS text save-file (.sat) reader and writer - written clean-room from the
-// record layouts listed in docs/ACIS_SAT_NOTES.md (read that file for exactly
-// which public documents were used, what could and could not be verified, and
-// which layouts are assumptions).
+// ACIS text save-file (.sat) and binary save-file (.sab) reader and writer -
+// written clean-room from the record layouts listed in docs/ACIS_SAT_NOTES.md
+// (read that file for exactly which public documents were used, what could and
+// could not be verified, and which layouts are assumptions).
+//
+// SAB status, stated plainly: NO public prose describing the SAB byte layout
+// was reachable (the only public document used mentions .sab by name and gives
+// no layout). Every SAB token tag value, the header layout and the
+// bool/enum encoding are therefore UNVERIFIED recollection and first-principles
+// choices, listed in acis_sat.cpp ("SAB wire format") and in the notes. The SAB
+// writer is tested against THIS reader only; its output has never been read by
+// any other product and must not be described as ACIS-compatible.
 //
 // Round-1 scope: solid and sheet bodies made of planes, cones (including
 // cylinders), spheres and tori, bounded by straight and circular/elliptical
@@ -57,5 +65,28 @@ AcisSatReadResult ReadAcisSat(std::istream& in, const AcisSatOptions& options = 
 // naming the body and face; nothing is written in that case.
 AcisSatWriteResult WriteAcisSat(const std::string& path, const std::vector<Brep>& bodies, const AcisSatOptions& options = {});
 AcisSatWriteResult WriteAcisSat(std::ostream& out, const std::vector<Brep>& bodies, const AcisSatOptions& options = {});
+
+// ---- Binary (.sab) ------------------------------------------------------
+// Same entity/record layer as the text format (identical hardening, identical
+// refusals); only the token encoding differs. Hostile input (bad signature,
+// truncation, lengths or counts that exceed the data, unknown token tags,
+// non-finite numbers, files over 128 MiB or over 2 Mi tokens / 1 Mi records,
+// cyclic chains) is refused with a reason in `error` - never a crash. The tag
+// table is UNVERIFIED (see the top of this header).
+AcisSatReadResult ReadAcisSab(const std::string& path, const AcisSatOptions& options = {});
+AcisSatReadResult ReadAcisSab(std::istream& in, const AcisSatOptions& options = {});
+
+// Writes the bodies as a version-700 binary save file using the UNVERIFIED tag
+// table. Same refusals as WriteAcisSat; nothing is written on refusal.
+AcisSatWriteResult WriteAcisSab(const std::string& path, const std::vector<Brep>& bodies, const AcisSatOptions& options = {});
+AcisSatWriteResult WriteAcisSab(std::ostream& out, const std::vector<Brep>& bodies, const AcisSatOptions& options = {});
+
+// Detects the encoding from the first bytes (the "ACIS BinaryFile" signature
+// means SAB, anything else is tried as SAT text) and reads accordingly.
+AcisSatReadResult ReadAcis(const std::string& path, const AcisSatOptions& options = {});
+AcisSatReadResult ReadAcis(std::istream& in, const AcisSatOptions& options = {});
+
+// True when `bytes` (at least the first 15) begin with the SAB signature.
+bool LooksLikeAcisSab(const std::string& bytes);
 
 }  // namespace dino8::kernel

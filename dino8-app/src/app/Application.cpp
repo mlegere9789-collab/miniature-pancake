@@ -926,7 +926,7 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
     ok = ImportIges(fresh, path, error);
   } else if (ext == ".stp" || ext == ".step") {
     ok = ImportStep(fresh, path, error);
-  } else if (ext == ".sat") {
+  } else if (ext == ".sat" || ext == ".sab") {
     ok = ImportSat(fresh, path, error);
   } else {
     error = "Unsupported file type: " + ext;
@@ -934,9 +934,9 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   if (!ok) return false;
   SetActiveLayout(-1);
   doc_ = std::move(fresh);
-  // A .sat export writes only the Brep bodies it can express, so a plain Save must never overwrite the source .sat in place:
+  // A .sat/.sab export writes only the Brep bodies it can express, so a plain Save must never overwrite the source file in place:
   // the opened document stays untitled and Save asks for a name.
-  doc_.SetPath(ext == ".sat" ? std::string() : path);
+  doc_.SetPath((ext == ".sat" || ext == ".sab") ? std::string() : path);
   doc_.SetModified(false);
   HistoryResync(doc_);  // construction history loaded from the file: baseline its sources, drop the old document's
   AddRecentFile(path);
@@ -1040,8 +1040,8 @@ bool Application::SaveDocument(const std::string& path, std::string& error, int 
   } else if (ext == ".stp" || ext == ".step") {
     ok = ExportStep(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
-  } else if (ext == ".sat") {
-    ok = ExportSat(doc_, path, false, error);
+  } else if (ext == ".sat" || ext == ".sab") {
+    ok = ext == ".sab" ? ExportSab(doc_, path, false, error) : ExportSat(doc_, path, false, error);
     if (ok) { Notify("Exported " + path); if (!error.empty()) Notify(error); error.clear(); }
   } else if (ext == ".ifc") {
     ok = ExportIfc(doc_, path, false, error);
@@ -1088,7 +1088,7 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
     ok = ImportIges(doc_, path, error);
   } else if (ext == ".stp" || ext == ".step") {
     ok = ImportStep(doc_, path, error);
-  } else if (ext == ".sat") {
+  } else if (ext == ".sat" || ext == ".sab") {
     ok = ImportSat(doc_, path, error);
   } else if (ext == ".ifc") {
     ok = ImportIfc(doc_, path, error);
@@ -1124,8 +1124,8 @@ bool Application::ExportSelected(const std::string& path, std::string& error, in
   if (ext == ".ply") return ExportPly(doc_, path, true, error);
   if (ext == ".igs" || ext == ".iges") return ExportIges(doc_, path, true, error);
   if (ext == ".stp" || ext == ".step") return ExportStep(doc_, path, true, error);
-  if (ext == ".sat") {
-    const bool ok = ExportSat(doc_, path, true, error);
+  if (ext == ".sat" || ext == ".sab") {
+    const bool ok = ext == ".sab" ? ExportSab(doc_, path, true, error) : ExportSat(doc_, path, true, error);
     if (ok) { if (!error.empty()) Notify(error); error.clear(); }  // ExportSat's success text is a summary, not an error
     return ok;
   }

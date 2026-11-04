@@ -1,7 +1,7 @@
 # ACIS SAT (.sat text) notes - clean-room record
 
 Implementation: `src/acis_sat.cpp`, `include/dino8/kernel/acis_sat.h`.
-Round 1 covers the TEXT format only (no `.sab`).
+Round 1 covered the TEXT format only; round 3 (below) adds the binary `.sab` encoding with an UNVERIFIED tag table.
 
 ## Clean-room statement
 
@@ -223,3 +223,109 @@ create (outward orientation) and says so in the summary.
 
 Not measured in the application: torus and the other UNVERIFIED shapes beyond
 the table (the kernel table above covers them); Windows (no Windows machine).
+
+## Round 3: binary `.sab` (ReadAcisSab / WriteAcisSab / ReadAcis)
+
+Implementation: same `src/acis_sat.cpp`. SAB shares the entity/record layer with
+the text reader: `ParseSab()` produces the same `Rec`/`Tok` stream as
+`ParseSat()`, so every entity builder, refusal and hardening check below the
+tokenizer is one code path; the writer builds one encoding-neutral record list
+and either prints it (SAT) or packs it (SAB). `ReadAcis` picks the encoding from
+the first 15 bytes (`ACIS BinaryFile` means SAB, anything else is tried as text);
+`ReadAcisSat` on a SAB file and `ReadAcisSab` on text each refuse with a reason
+that names the other encoding.
+
+### Sources: none for the byte layout
+
+The only public document used (ezdxf "ACIS Tools", re-fetched this round)
+mentions SAB solely as the name of an export function for DXF R2013-R2018 data
+and gives no byte layout. No other host on the network allowlist could be read.
+**Every SAB fact below is therefore UNVERIFIED**: the token tag values are the
+author's unsourced recollection of the published format, and the places where
+recollection was silent are first-principles choices (marked "chosen"). The
+full table is in the comment block "SAB wire format" in `acis_sat.cpp`. In short:
+
+| UNVERIFIED item | Value used |
+|---|---|
+| signature | `ACIS BinaryFile` (15 bytes) then four untagged little-endian i32: version, record count, entity count, flags (layout chosen) |
+| header strings / numbers | three strings (tag 0x07, 8-bit length), three doubles (tag 0x06): units, resabs, resnor |
+| numeric tags | 0x01 byte, 0x02 char, 0x03 short, 0x04 int, 0x05 float, 0x06 double, 0x13 position (3 doubles), 0x14 vector (3 doubles) |
+| strings | 0x07 / 0x08 / 0x09: 8 / 16 / 32-bit length prefix |
+| other tags | 0x0A true, 0x0B false, 0x0C pointer (i32), 0x0D name, 0x0F `{`, 0x10 `}`, 0x11 record terminator |
+| two-valued words | encoded as bools (chosen): forward=false/reversed=true, single=false/double=true, in=false/out=true, forward_v=false/reverse_v=true, range `I`=false, range `F value`=true then a double |
+| record framing | entity name is one 0x0D token holding the dashed name (`plane-surface`), not split; no record index (position is the index); the end record is the name `End-of-ACIS-data` plus a terminator (chosen) |
+| not accepted | tags 0x0E, 0x12, 0x15 and every other value: refused with a reason naming the tag |
+
+On top of that, everything already UNVERIFIED for SAT stays UNVERIFIED for SAB:
+the three-item record header, the coedge sense position, cone/sphere/torus/ellipse
+layouts (still refused unless `allow_unverified_layouts` is set), and so on. The
+real format is very likely different in details this table cannot show (for
+example how split entity names, enumerations and sub-type braces are encoded),
+so a real `.sab` file from another product will probably be refused, or worse
+misread; none was available to test. The SAB writer is round-trip tested against
+this library's reader and against a second encoder written in the test file from
+the same table; **its output has never been read by any other product and must
+not be called ACIS-compatible.**
+
+### Hostile-input hardening (SAT and SAB share it unless noted)
+
+* Input larger than 128 MiB, more than 2 Mi tokens or 1 Mi records: refused with
+  the limit named; the reader stops reading at the limit instead of draining the stream.
+* SAB: every read is bounds-checked against the bytes left; string lengths are
+  checked against the remaining data before any allocation; a header record
+  count that cannot fit in the file, negative counts, an unknown tag, a missing
+  or unterminated end record, unbalanced or more than 64-deep braces, non-printable
+  entity names and a missing terminator are all refused with the byte offset.
+* Non-finite doubles (inf/nan, binary or text) are refused (SAB at the byte
+  level, SAT in the number accessor and in the header).
+* Pointers outside the record range are refused (as before); lump, shell, face,
+  loop chains and coedge rings are now cycle-checked with visited sets instead of
+  fixed iteration counts, and a work budget (64 record visits per record plus
+  100000) stops files whose pointers make the builder revisit records.
+* Every failure comes back in `error` / `warnings`; the entry points catch
+  `std::bad_alloc` and other exceptions as well.
+* Not hardened: opennurbs itself on adversarial but finite geometry (huge magnitudes
+  etc.) is only covered by the fuzz run below, which is not a proof.
+
+## Round 3 measurements (kernel tests `acis_sat_tests::TestAcisSab*`, this build, Linux)
+
+All figures are write-SAB-then-read with this library only (self-consistency,
+not compatibility with another product). "vs source" uses the SAT tests'
+tolerances (1e-9 for planar bodies, 1e-3 for mesh-measured/curved ones); "vs SAT"
+is the same body through the SAT text path, agreeing to 1e-9 in every row.
+
+| Body | SAB bytes | Volume source -> SAB read-back | Area source -> SAB read-back | F / E / V before -> after |
+|---|---|---|---|---|
+| box 2x3x4 | 5263 | 24 -> 24 | 52 -> 52 | 6/12/8 -> 6/12/8 |
+| boolean pocket (4^3 minus 2x2x3) | 37543 | 52 -> 52 | 120 -> 120 | 46/92/48 -> 46/92/48 |
+| cylinder r2 h5 (mesh-measured) | 1678 | 62.8318488654 -> 62.8233850038 | 87.9645916133 -> 87.9544350148 | 3/5/4 -> 3/3/2 (seam dropped, as for SAT) |
+| sphere r2.5 | 427 | 65.4499660292 -> 65.4499660292 | 78.5399592351 -> 78.5399592351 | 1/0/0 -> 1/0/0 |
+| torus 3/1 | 435 | 59.2176439326 -> 59.2176439326 | 118.435287865 -> 118.435287865 | 1/0/0 -> 1/0/0 |
+| filleted box (mesh-measured) | 6517 | 23.89269898 -> 23.8926989781 | 51.4634954264 -> 51.4634955009 | 7/15/10 -> 7/15/10 |
+
+* The library writer's bytes are identical to a second encoder written in the
+  test file from the same table (box, cylinder, sphere, torus, filleted box).
+  That checks the writer against the table, not the table against any product.
+* SAT -> SAB -> SAT: for each body above, re-writing the SAB-path read-back as
+  SAT text, and as SAB bytes, is byte-identical to the same re-write of the
+  SAT-path read-back.
+* Fuzz (fixed seeds, `TestAcisSabFuzzTruncationAndBitFlips`): 23267 inputs
+  (every proper prefix of the 5263-byte box and 435-byte torus files, every 5th/3rd
+  prefix of the pocket and cylinder files, plus 3000/2500/2500/1500 random one-bit,
+  one-byte, 0x00/0xFF and four-bit mutations): 19821 refused with a reason, 3446
+  still read as a valid body (e.g. a flipped coordinate), 0 malformed results, 0
+  exceptions escaped. Every proper prefix was refused. Not run under a sanitizer.
+* An endless zero stream was refused after 134283264 bytes served (the 128 MiB limit).
+
+### App wiring (round 3)
+
+`.sab` is dispatched next to `.sat` in `Application::OpenDocument`, `ImportFile`,
+`SaveDocument` (Save As), `ExportSelected`, the Open / Import / Export / SaveAs /
+ExportWithOrigin dialogs (`cmd_file.cpp`) and the drawing-compare loader. Import
+uses `ReadAcis`, i.e. the encoding is taken from the file's first bytes, not its
+extension (a text file named `.sab` opens as text, a SAB file named `.sat` as
+binary); the summary says `SAB import` or `SAT import` accordingly and every SAB
+summary carries the UNVERIFIED byte-layout note. Smoke section `SABF_`
+(`tests/sabf_script.txt`, `tests/sabf_detect_script.txt`): 21 checks, all passing
+in the run made for this commit (box 4000 -> 4000, sphere 2132 vs analytic 2144.7,
+cylinder 784.8 vs 785.4: the app's Volume is tessellation based).

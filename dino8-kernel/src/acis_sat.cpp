@@ -8,6 +8,11 @@
 // supported set throws SatError with a reason; the body is then skipped and
 // the reason is reported - never a degraded body.
 //
+// SAB (binary) shares everything below the tokenizer: ParseSab() produces the
+// same Rec/Tok stream as ParseSat(), so the entity builders, the hardening and
+// the writer's record generation are one code path. See "SAB wire format" below
+// for the token tag table - every value in it is UNVERIFIED.
+//
 // Writer pipeline: each live face is classified (plane / cylinder / sphere /
 // torus via OpenNURBS' own recognisers), each edge curve as line or circular
 // arc; seam edges of periodic faces are dropped (ACIS periodic faces carry
@@ -16,6 +21,8 @@
 #include "dino8/kernel/acis_sat.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <cctype>
 #include <cmath>
@@ -26,6 +33,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <new>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -47,8 +55,22 @@ struct SatError : std::runtime_error {
 // Tokens and records
 // ---------------------------------------------------------------------------
 
+// Hostile-input limits (shared by the text and binary readers). A file or
+// stream larger than kMaxFileBytes, or one that would expand to more than
+// kMaxTokens tokens / kMaxRecords records, is refused with a stated reason
+// instead of allocating. (A token costs ~60 bytes in memory but may be a single
+// input byte, hence the separate token cap.)
+constexpr size_t kMaxFileBytes = size_t(128) << 20;
+constexpr size_t kMaxTokens = size_t(2) << 20;
+constexpr size_t kMaxRecords = size_t(1) << 20;
+constexpr int kMaxBraceDepth = 64;
+
 struct Tok {
-  enum Kind { Ptr, Num, Ident, Str, LBrace, RBrace } kind = Ident;
+  // Bool: SAB-only two-valued token (forward/reversed, single/double, in/out,
+  // forward_v/reverse_v, "I"=false / "F"=true for parameter ranges); the word
+  // it stands for depends on the field, so Cur::Id(word_if_false, word_if_true)
+  // resolves it. Text files carry the words themselves (Ident).
+  enum Kind { Ptr, Num, Ident, Str, LBrace, RBrace, Bool } kind = Ident;
   double d = 0.0;
   long long i = 0;
   std::string s;
@@ -62,6 +84,7 @@ struct Rec {
 
 struct ParsedFile {
   int version = 0;
+  std::vector<std::string> notes;  // tolerated oddities (reported as warnings)
   double units = 1.0, resabs = 1e-6, resnor = 1e-10;
   std::vector<Rec> recs;
 };
@@ -109,9 +132,31 @@ bool ParseNumberWord(const std::string& w, Tok& t) {
   return true;
 }
 
-ParsedFile ParseSat(std::istream& in) {
-  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+// Reads the whole stream, refusing (with a reason) beyond kMaxFileBytes.
+std::string ReadAllBounded(std::istream& in) {
+  std::string data;
+  char buf[1 << 16];
+  while (in) {
+    in.read(buf, sizeof(buf));
+    const std::streamsize got = in.gcount();
+    if (got <= 0) break;
+    if (data.size() + static_cast<size_t>(got) > kMaxFileBytes) {
+      Refuse("input larger than the " + std::to_string(kMaxFileBytes >> 20) + " MiB limit (refused without reading further)");
+    }
+    data.append(buf, static_cast<size_t>(got));
+  }
+  return data;
+}
+
+const char kSabMagic[] = "ACIS BinaryFile";  // 15 bytes, UNVERIFIED (see "SAB wire format")
+constexpr size_t kSabMagicLen = 15;
+
+ParsedFile ParseSat(const std::string& text) {
   if (text.empty()) Refuse("empty file");
+  if (text.size() > kMaxFileBytes) Refuse("input larger than the " + std::to_string(kMaxFileBytes >> 20) + " MiB limit");
+  if (text.size() >= kSabMagicLen && std::memcmp(text.data(), kSabMagic, kSabMagicLen) == 0) {
+    Refuse("this is a binary SAB file, not SAT text (use ReadAcisSab or ReadAcis)");
+  }
   ParsedFile pf;
   size_t pos = 0;
   std::string line;
@@ -132,12 +177,14 @@ ParsedFile ParseSat(std::istream& in) {
     Refuse("malformed header line 2 (expected product id, ACIS version and date strings)");
   }
   if (!NextLine(text, pos, line)) Refuse("missing header line 3 (units and tolerances)");
-  if (std::sscanf(line.c_str(), "%lf %lf %lf", &pf.units, &pf.resabs, &pf.resnor) != 3 || !(pf.units > 0.0)) {
-    Refuse("malformed header line 3 (expected: units resabs resnor)");
+  if (std::sscanf(line.c_str(), "%lf %lf %lf", &pf.units, &pf.resabs, &pf.resnor) != 3 || !(pf.units > 0.0) ||
+      !std::isfinite(pf.units) || !std::isfinite(pf.resabs) || !std::isfinite(pf.resnor)) {
+    Refuse("malformed header line 3 (expected finite: units resabs resnor, units > 0)");
   }
 
   std::vector<Tok> cur;
   bool end_marker = false;
+  size_t token_count = 0;
   const size_t n = text.size();
   auto finish = [&]() {
     if (cur.empty()) return;
@@ -147,6 +194,7 @@ ParsedFile ParseSat(std::istream& in) {
     if (cur[0].kind == Tok::Num && cur.size() > 1 && cur[1].kind == Tok::Ident) first = 1;
     if (cur[first].kind != Tok::Ident) Refuse("record " + std::to_string(pf.recs.size()) + " does not start with an entity name");
     r.type = cur[first].s;
+    if (pf.recs.size() >= kMaxRecords) Refuse("more than " + std::to_string(kMaxRecords) + " records (limit)");
     r.index = static_cast<int>(pf.recs.size());
     if (first == 1) {
       const long long ix = std::llabs(cur[0].i);
@@ -207,10 +255,300 @@ ParsedFile ParseSat(std::istream& in) {
         t.s = w;
       }
     }
+    if (++token_count > kMaxTokens) Refuse("more than " + std::to_string(kMaxTokens) + " tokens (limit)");
     cur.push_back(std::move(t));
   }
   if (!cur.empty()) Refuse("truncated file: last record has no terminating '#'");
   if (!end_marker) Refuse("truncated file: missing End-of-ACIS-data marker");
+  return pf;
+}
+
+// ---------------------------------------------------------------------------
+// SAB wire format
+//
+// *** EVERYTHING IN THIS SECTION IS UNVERIFIED. *** No public prose describing
+// the SAB byte layout could be fetched (the one public document used, the
+// ezdxf "ACIS Tools" page, only names .sab). The tag values below are the
+// author's unsourced recollection of the published format, plus first-
+// principles choices where recollection is silent (marked "chosen"). They have
+// never been compared with a file produced or consumed by any other product.
+// The writer is round-trip tested against THIS reader only.
+//
+//   file    := "ACIS BinaryFile"(15 bytes)  i32 version  i32 record-count
+//              i32 entity-count  i32 flags
+//              str str str                      (product id, ACIS version, date)
+//              f64 f64 f64                      (units, resabs, resnor)
+//              record*  end-record
+//   record  := NAME token*  TERM
+//   end     := NAME("End-of-ACIS-data") TERM    (chosen)
+//   All multi-byte values are little-endian (chosen).
+//   The four i32 after the signature are plain (untagged) in the header
+//   (chosen); the header strings and doubles carry their tags.
+//
+//   tag  meaning                         payload
+//   0x01 unsigned byte                   u8
+//   0x02 signed char                     i8
+//   0x03 signed short                    i16
+//   0x04 signed int                      i32
+//   0x05 float                           f32
+//   0x06 double                          f64
+//   0x07 string, 8-bit length            u8 len, bytes
+//   0x08 string, 16-bit length           u16 len, bytes
+//   0x09 string, 32-bit length           u32 len, bytes
+//   0x0A bool true                       -
+//   0x0B bool false                      -
+//   0x0C pointer (record index, -1=null) i32
+//   0x0D name (entity type / identifier) u8 len, bytes
+//   0x0F '{'  0x10 '}'  0x11 record terminator (no payload)
+//   0x13 position                        3 x f64
+//   0x14 direction vector                3 x f64
+//   Not accepted (refused with a reason): 0x0E, 0x12, 0x15 and anything else.
+//
+//   Two-valued words are bools here (chosen): forward=false reversed=true,
+//   single=false double=true, in=false out=true, forward_v=false
+//   reverse_v=true; a parameter range is false ("I", infinite) or
+//   true followed by a double ("F value"). Entity type names are one 0x0D token
+//   with the dashed name ("plane-surface"), not split (chosen). There is no
+//   record index in SAB; a record's index is its position.
+// ---------------------------------------------------------------------------
+namespace sabtag {
+constexpr uint8_t kByte = 0x01, kChar = 0x02, kShort = 0x03, kInt = 0x04, kFloat = 0x05, kDouble = 0x06, kStr8 = 0x07,
+                  kStr16 = 0x08, kStr32 = 0x09, kTrue = 0x0A, kFalse = 0x0B, kPtr = 0x0C, kName = 0x0D, kLBrace = 0x0F,
+                  kRBrace = 0x10, kTerm = 0x11, kPos = 0x13, kVec = 0x14;
+}
+
+constexpr const char kSabEndName[] = "End-of-ACIS-data";
+
+class SabCursor {
+ public:
+  explicit SabCursor(const std::string& d) : d_(reinterpret_cast<const unsigned char*>(d.data())), n_(d.size()) {}
+  size_t pos() const { return p_; }
+  size_t remaining() const { return n_ - p_; }
+  bool AtEnd() const { return p_ >= n_; }
+  uint8_t Peek() const { return d_[p_]; }
+  [[noreturn]] void Fail(const std::string& what) const {
+    Refuse("SAB file, byte offset " + std::to_string(p_) + ": " + what);
+  }
+  void Need(size_t k, const char* what) const {
+    if (n_ - p_ < k) Fail(std::string("truncated file: ") + what + " needs " + std::to_string(k) + " byte(s), " + std::to_string(n_ - p_) + " left");
+  }
+  uint8_t U8(const char* what) {
+    Need(1, what);
+    return d_[p_++];
+  }
+  uint32_t U32(const char* what) {
+    Need(4, what);
+    const uint32_t v = uint32_t(d_[p_]) | (uint32_t(d_[p_ + 1]) << 8) | (uint32_t(d_[p_ + 2]) << 16) | (uint32_t(d_[p_ + 3]) << 24);
+    p_ += 4;
+    return v;
+  }
+  int32_t I32(const char* what) { return static_cast<int32_t>(U32(what)); }
+  uint16_t U16(const char* what) {
+    Need(2, what);
+    const uint16_t v = static_cast<uint16_t>(d_[p_] | (d_[p_ + 1] << 8));
+    p_ += 2;
+    return v;
+  }
+  double F64(const char* what) {
+    Need(8, what);
+    uint64_t u = 0;
+    for (int i = 7; i >= 0; --i) u = (u << 8) | d_[p_ + static_cast<size_t>(i)];
+    p_ += 8;
+    double v;
+    std::memcpy(&v, &u, 8);
+    if (!std::isfinite(v)) Fail(std::string("non-finite (inf/nan) ") + what);
+    return v;
+  }
+  double F32(const char* what) {
+    const uint32_t u = U32(what);
+    float f;
+    std::memcpy(&f, &u, 4);
+    if (!std::isfinite(f)) Fail(std::string("non-finite (inf/nan) ") + what);
+    return static_cast<double>(f);
+  }
+  // `len` bytes of payload; the length is checked against the data left BEFORE anything is allocated.
+  std::string Bytes(size_t len, const char* what) {
+    if (len > n_ - p_) {
+      Fail(std::string(what) + " length " + std::to_string(len) + " runs past the end of the file (" + std::to_string(n_ - p_) +
+           " bytes left)");
+    }
+    std::string s(reinterpret_cast<const char*>(d_ + p_), len);
+    p_ += len;
+    return s;
+  }
+
+ private:
+  const unsigned char* d_;
+  size_t n_;
+  size_t p_ = 0;
+};
+
+Tok MakeNumTok(double d) {
+  Tok t;
+  t.kind = Tok::Num;
+  t.d = d;
+  t.i = (std::isfinite(d) && std::fabs(d) < 9.0e18) ? static_cast<long long>(d) : std::numeric_limits<long long>::min() + 1;
+  return t;
+}
+
+// A header/body string token: tag 0x07/0x08/0x09 already consumed.
+std::string SabString(SabCursor& c, uint8_t tag) {
+  size_t len = 0;
+  if (tag == sabtag::kStr8) len = c.U8("string length");
+  else if (tag == sabtag::kStr16) len = c.U16("string length");
+  else len = c.U32("string length");
+  return c.Bytes(len, "string");
+}
+
+bool IsSabStringTag(uint8_t t) { return t == sabtag::kStr8 || t == sabtag::kStr16 || t == sabtag::kStr32; }
+
+ParsedFile ParseSab(const std::string& data) {
+  if (data.empty()) Refuse("empty file");
+  if (data.size() > kMaxFileBytes) Refuse("input larger than the " + std::to_string(kMaxFileBytes >> 20) + " MiB limit");
+  if (!LooksLikeAcisSab(data)) Refuse("not an ACIS SAB file (missing the 'ACIS BinaryFile' signature)");
+  SabCursor c(data);
+  c.Bytes(kSabMagicLen, "signature");
+  ParsedFile pf;
+  const int32_t version = c.I32("version");
+  const int32_t declared_records = c.I32("record count");
+  const int32_t declared_entities = c.I32("entity count");
+  c.I32("flags");
+  if (version < 400 || version > 1100) {
+    Refuse("unsupported ACIS save-file version " + std::to_string(version) + " (supported: 400..1100, i.e. ACIS 4.0 to 11.0)");
+  }
+  pf.version = version;
+  if (declared_records < 0 || declared_entities < 0) c.Fail("negative record or entity count in the header");
+  // Every record needs at least 3 bytes (name tag + length + terminator at the very least): a larger declared count is a lie.
+  if (static_cast<uint64_t>(declared_records) > c.remaining() / 3) {
+    c.Fail("header declares " + std::to_string(declared_records) + " records, which cannot fit in the " + std::to_string(c.remaining()) +
+           " bytes that follow");
+  }
+  for (int k = 0; k < 3; ++k) {
+    const uint8_t tag = c.U8("header string tag");
+    if (!IsSabStringTag(tag)) c.Fail("malformed header: expected a string tag (product id, ACIS version, date)");
+    SabString(c, tag);
+  }
+  double hd[3];
+  for (int k = 0; k < 3; ++k) {
+    if (c.U8("header number tag") != sabtag::kDouble) c.Fail("malformed header: expected a double tag (units, resabs, resnor)");
+    hd[k] = c.F64("header number");
+  }
+  pf.units = hd[0];
+  pf.resabs = hd[1];
+  pf.resnor = hd[2];
+  if (!(pf.units > 0.0)) c.Fail("malformed header: units must be > 0");
+
+  size_t token_count = 0;
+  bool end_marker = false;
+  while (!c.AtEnd()) {
+    if (c.U8("record") != sabtag::kName) c.Fail("record " + std::to_string(pf.recs.size()) + " does not start with an entity name token");
+    const size_t nlen = c.U8("entity name length");
+    const std::string name = c.Bytes(nlen, "entity name");
+    if (name.empty()) c.Fail("empty entity name");
+    for (char ch : name) {
+      if (static_cast<unsigned char>(ch) < 0x21 || static_cast<unsigned char>(ch) > 0x7E) c.Fail("entity name contains a non-printable byte");
+    }
+    if (name == kSabEndName || name == "End-of-ASM-data") {
+      if (c.U8("end-record terminator") != sabtag::kTerm) c.Fail("the End-of-ACIS-data record is not terminated");
+      if (!c.AtEnd()) pf.notes.push_back("SAB: " + std::to_string(c.remaining()) + " byte(s) after the end marker were ignored");
+      end_marker = true;
+      break;
+    }
+    if (pf.recs.size() >= kMaxRecords) c.Fail("more than " + std::to_string(kMaxRecords) + " records (limit)");
+    Rec r;
+    r.type = name;
+    r.index = static_cast<int>(pf.recs.size());
+    int depth = 0;
+    bool terminated = false;
+    while (!terminated) {
+      if (c.AtEnd()) c.Fail("truncated file: record " + std::to_string(r.index) + " (" + name + ") has no terminator");
+      const uint8_t tag = c.U8("token tag");
+      if (++token_count > kMaxTokens) c.Fail("more than " + std::to_string(kMaxTokens) + " tokens (limit)");
+      switch (tag) {
+        case sabtag::kTerm:
+          terminated = true;
+          break;
+        case sabtag::kByte:
+          r.f.push_back(MakeNumTok(c.U8("byte")));
+          break;
+        case sabtag::kChar:
+          r.f.push_back(MakeNumTok(static_cast<int8_t>(c.U8("char"))));
+          break;
+        case sabtag::kShort:
+          r.f.push_back(MakeNumTok(static_cast<int16_t>(c.U16("short"))));
+          break;
+        case sabtag::kInt:
+          r.f.push_back(MakeNumTok(c.I32("int")));
+          break;
+        case sabtag::kFloat:
+          r.f.push_back(MakeNumTok(c.F32("float")));
+          break;
+        case sabtag::kDouble:
+          r.f.push_back(MakeNumTok(c.F64("double")));
+          break;
+        case sabtag::kStr8:
+        case sabtag::kStr16:
+        case sabtag::kStr32: {
+          Tok t;
+          t.kind = Tok::Str;
+          t.s = SabString(c, tag);
+          r.f.push_back(std::move(t));
+          break;
+        }
+        case sabtag::kTrue:
+        case sabtag::kFalse: {
+          Tok t;
+          t.kind = Tok::Bool;
+          t.i = (tag == sabtag::kTrue) ? 1 : 0;
+          r.f.push_back(std::move(t));
+          break;
+        }
+        case sabtag::kPtr: {
+          Tok t;
+          t.kind = Tok::Ptr;
+          t.i = c.I32("pointer");
+          r.f.push_back(std::move(t));
+          break;
+        }
+        case sabtag::kName: {
+          Tok t;
+          t.kind = Tok::Ident;
+          t.s = c.Bytes(c.U8("identifier length"), "identifier");
+          r.f.push_back(std::move(t));
+          break;
+        }
+        case sabtag::kLBrace:
+        case sabtag::kRBrace: {
+          if (tag == sabtag::kLBrace) {
+            if (++depth > kMaxBraceDepth) c.Fail("sub-type nesting deeper than " + std::to_string(kMaxBraceDepth));
+          } else if (--depth < 0) {
+            c.Fail("unbalanced '}' in record " + std::to_string(r.index));
+          }
+          Tok t;
+          t.kind = (tag == sabtag::kLBrace) ? Tok::LBrace : Tok::RBrace;
+          r.f.push_back(std::move(t));
+          break;
+        }
+        case sabtag::kPos:
+        case sabtag::kVec:
+          token_count += 2;
+          if (token_count > kMaxTokens) c.Fail("more than " + std::to_string(kMaxTokens) + " tokens (limit)");
+          for (int k = 0; k < 3; ++k) r.f.push_back(MakeNumTok(c.F64("coordinate")));
+          break;
+        default: {
+          char hex[8];
+          std::snprintf(hex, sizeof(hex), "0x%02X", tag);
+          c.Fail(std::string("token tag ") + hex + " is not in the (UNVERIFIED) tag table this reader knows");
+        }
+      }
+    }
+    if (depth != 0) c.Fail("unbalanced '{' in record " + std::to_string(r.index));
+    pf.recs.push_back(std::move(r));
+  }
+  if (!end_marker) Refuse("truncated SAB file: missing the End-of-ACIS-data record");
+  if (declared_records > 0 && static_cast<size_t>(declared_records) != pf.recs.size()) {
+    pf.notes.push_back("SAB: header declares " + std::to_string(declared_records) + " records but " + std::to_string(pf.recs.size()) + " were found");
+  }
   return pf;
 }
 
@@ -238,10 +576,13 @@ struct Cur {
   double Real() {
     const Tok& t = Next();
     if (t.kind != Tok::Num) Fail("expected a number");
+    if (!std::isfinite(t.d)) Fail("non-finite number (inf/nan)");
     return t.d;
   }
-  std::string Id() {
+  // A keyword. In a SAB file the same field is a bool: `if_false` / `if_true` say which word each value stands for.
+  std::string Id(const char* if_false = nullptr, const char* if_true = nullptr) {
     const Tok& t = Next();
+    if (t.kind == Tok::Bool && if_false && if_true) return t.i ? if_true : if_false;
     if (t.kind != Tok::Ident) Fail("expected a keyword");
     return t.s;
   }
@@ -270,7 +611,7 @@ struct Cur {
   // `n` range items: "I" (infinite) or "F value". Absent items are tolerated.
   void Ranges(int n) {
     for (int k = 0; k < n && More(); ++k) {
-      const std::string id = Id();
+      const std::string id = Id("I", "F");
       if (id == "F") {
         Real();
       } else if (id != "I") {
@@ -403,6 +744,10 @@ struct Ctx {
   int h = 3;
   bool allow = false;
   std::vector<std::string>* warnings = nullptr;
+  // Work budget: every record fetched counts. A well-formed file touches each record a handful of times; a file
+  // whose pointers make the walk revisit records over and over (shared loops, rings that never close) runs out.
+  long long visits = 0;
+  long long max_visits = 0;
 };
 
 class BodyBuilder {
@@ -425,9 +770,9 @@ class BodyBuilder {
     if (wire >= 0) Refuse("body " + std::to_string(body_idx) + " has a wire (wire bodies are not supported)");
     if (xform >= 0) CheckIdentityTransform(xform);
     if (lump < 0) Refuse("body " + std::to_string(body_idx) + " has no lump");
-    int guard = 0;
+    std::set<int> seen_lumps;
     for (int l = lump; l >= 0;) {
-      if (++guard > 100000) Refuse("lump chain does not terminate");
+      if (!seen_lumps.insert(l).second) Refuse("lump chain does not terminate (loops back to lump record " + std::to_string(l) + ")");
       const Rec& lr = Get(l, "lump");
       Cur lc = MakeCur(lr);
       lc.Header();
@@ -435,9 +780,9 @@ class BodyBuilder {
       const int shell = lc.Ptr();
       lc.Ptr();  // owning body
       lc.End();
-      int g2 = 0;
+      std::set<int> seen_shells;
       for (int s = shell; s >= 0;) {
-        if (++g2 > 100000) Refuse("shell chain does not terminate");
+        if (!seen_shells.insert(s).second) Refuse("shell chain does not terminate (loops back to shell record " + std::to_string(s) + ")");
         const Rec& sr = Get(s, "shell");
         Cur sc = MakeCur(sr);
         sc.Header();
@@ -512,6 +857,9 @@ class BodyBuilder {
   }
 
   const Rec& GetAny(int idx) const {
+    if (++c_.visits > c_.max_visits) {
+      Refuse("work limit exceeded: the file's pointers make the reader revisit records far more often than a valid body would (cyclic or shared chains)");
+    }
     if (idx < 0 || idx >= static_cast<int>(c_.pf.recs.size())) {
       Refuse("pointer $" + std::to_string(idx) + " is outside the file's " + std::to_string(c_.pf.recs.size()) + " records");
     }
@@ -575,7 +923,7 @@ class BodyBuilder {
     const double t1 = c.Real();
     c.Ptr();  // coedge
     const int curve = c.Ptr();
-    const std::string sense = c.Id();
+    const std::string sense = c.Id("forward", "reversed");
     if (c.PeekStr()) c.Next();  // convexity string
     c.End();
     if (sense != "forward" && sense != "reversed") c.Fail("bad sense '" + sense + "'");
@@ -702,9 +1050,9 @@ class BodyBuilder {
   // Walks a face's loop ring, returning each loop's coedge list.
   std::vector<std::vector<CoedgeRef>> LoopsOf(int first_loop) {
     std::vector<std::vector<CoedgeRef>> loops;
-    int guard = 0;
+    std::set<int> seen_loops;
     for (int l = first_loop; l >= 0;) {
-      if (++guard > 100000) Refuse("loop chain does not terminate");
+      if (!seen_loops.insert(l).second) Refuse("loop chain does not terminate (loops back to loop record " + std::to_string(l) + ")");
       const Rec& lr = Get(l, "loop");
       Cur lc = MakeCur(lr);
       lc.Header();
@@ -714,9 +1062,9 @@ class BodyBuilder {
       lc.End();
       if (first_ce < 0) Refuse("loop " + std::to_string(l) + " has no coedge");
       std::vector<CoedgeRef> ring;
-      int g2 = 0;
+      std::set<int> seen_ce;
       for (int ce = first_ce;;) {
-        if (++g2 > 1000000) Refuse("coedge ring of loop " + std::to_string(l) + " does not close");
+        if (!seen_ce.insert(ce).second) Refuse("coedge ring of loop " + std::to_string(l) + " does not close (revisits coedge record " + std::to_string(ce) + ")");
         const Rec& cr = Get(ce, "coedge");
         Cur cc = MakeCur(cr);
         cc.Header();
@@ -724,7 +1072,7 @@ class BodyBuilder {
         cc.Ptr();  // previous
         cc.Ptr();  // partner
         const int edge = cc.Ptr();
-        const std::string sense = cc.Id();
+        const std::string sense = cc.Id("forward", "reversed");
         cc.Ptr();  // owner
         if (cc.More()) cc.Ptr();  // pcurve
         cc.End();
@@ -776,9 +1124,9 @@ class BodyBuilder {
     c.Ptr();  // shell
     const int subshell = c.Ptr();
     const int surf = c.Ptr();
-    const std::string sense = c.Id();
-    const std::string sides = c.Id();
-    if (sides == "double") c.Id();  // containment in/out
+    const std::string sense = c.Id("forward", "reversed");
+    const std::string sides = c.Id("single", "double");
+    if (sides == "double") c.Id("in", "out");  // containment in/out
     else if (sides != "single") c.Fail("bad sides '" + sides + "'");
     c.End();
     if (sense != "forward" && sense != "reversed") c.Fail("bad sense '" + sense + "'");
@@ -817,7 +1165,7 @@ class BodyBuilder {
     const ON_3dPoint O = c.Pt();
     ON_3dVector N = c.Vec();
     ON_3dVector U = c.Vec();
-    const std::string vsense = c.Id();
+    const std::string vsense = c.Id("forward_v", "reverse_v");
     c.Ranges(4);
     c.End();
     (void)vsense;
@@ -902,7 +1250,7 @@ class BodyBuilder {
     const double sinA = c.Real();
     const double cosA = c.Real();
     if (c.PeekNum()) c.Real();  // u-parameter scale in some versions
-    c.Id();                      // forward_v / reverse_v
+    c.Id("forward_v", "reverse_v");
     c.Ranges(4);
     c.End();
     if (!Unit(A)) c.Fail("zero axis");
@@ -1173,7 +1521,7 @@ class BodyBuilder {
         c.Vec();
         c.Vec();
       }
-      c.Id();
+      c.Id("forward_v", "reverse_v");
       c.Ranges(4);
       c.End();
       if (!(radius > 0.0)) Refuse("sphere with non-positive radius is not supported");
@@ -1183,7 +1531,7 @@ class BodyBuilder {
       const double major = c.Real() * c.scale;
       const double minor = c.Real() * c.scale;
       if (c.PeekNum()) c.Vec();
-      c.Id();
+      c.Id("forward_v", "reverse_v");
       c.Ranges(4);
       c.End();
       if (!Unit(axis)) c.Fail("zero axis");
@@ -1208,11 +1556,16 @@ class BodyBuilder {
 
 }  // namespace
 
-AcisSatReadResult ReadAcisSat(std::istream& in, const AcisSatOptions& options) {
+namespace {
+
+enum class Encoding { Sat, Sab };
+
+// Shared by every entry point: bytes -> tokens -> records -> bodies.
+AcisSatReadResult ReadBytes(const std::string& bytes, Encoding enc, const AcisSatOptions& options) {
   AcisSatReadResult res;
   ParsedFile pf;
   try {
-    pf = ParseSat(in);
+    pf = (enc == Encoding::Sab) ? ParseSab(bytes) : ParseSat(bytes);
   } catch (const SatError& e) {
     res.error = e.what();
     return res;
@@ -1220,10 +1573,12 @@ AcisSatReadResult ReadAcisSat(std::istream& in, const AcisSatOptions& options) {
     res.error = std::string("internal error while parsing: ") + e.what();
     return res;
   }
+  for (const std::string& n : pf.notes) res.warnings.push_back(n);
   Ctx ctx{pf};
   ctx.scale = pf.units;
   ctx.warnings = &res.warnings;
   ctx.allow = options.allow_unverified_layouts;
+  ctx.max_visits = 64LL * static_cast<long long>(pf.recs.size()) + 100000LL;
   ctx.h = (pf.version >= 700) ? 3 : 1;
   for (const Rec& r : pf.recs) {
     if (r.type == "point") {
@@ -1248,6 +1603,8 @@ AcisSatReadResult ReadAcisSat(std::istream& in, const AcisSatOptions& options) {
       res.bodies.push_back(bb.Build(b));
     } catch (const SatError& e) {
       reasons.push_back("body " + std::to_string(b) + " refused: " + e.what());
+    } catch (const std::bad_alloc&) {
+      reasons.push_back("body " + std::to_string(b) + " refused: out of memory while building it");
     } catch (const std::exception& e) {
       reasons.push_back("body " + std::to_string(b) + " refused (internal error): " + e.what());
     }
@@ -1261,15 +1618,46 @@ AcisSatReadResult ReadAcisSat(std::istream& in, const AcisSatOptions& options) {
   return res;
 }
 
-AcisSatReadResult ReadAcisSat(const std::string& path, const AcisSatOptions& options) {
+AcisSatReadResult ReadStream(std::istream& in, int mode, const AcisSatOptions& options) {  // mode: 0 SAT, 1 SAB, 2 auto
+  std::string bytes;
+  try {
+    bytes = ReadAllBounded(in);
+  } catch (const SatError& e) {
+    AcisSatReadResult r;
+    r.error = e.what();
+    return r;
+  } catch (const std::exception& e) {
+    AcisSatReadResult r;
+    r.error = std::string("cannot read the input: ") + e.what();
+    return r;
+  }
+  Encoding enc = (mode == 1) ? Encoding::Sab : Encoding::Sat;
+  if (mode == 2) enc = LooksLikeAcisSab(bytes) ? Encoding::Sab : Encoding::Sat;
+  return ReadBytes(bytes, enc, options);
+}
+
+AcisSatReadResult ReadPath(const std::string& path, int mode, const AcisSatOptions& options) {
   std::ifstream f(path, std::ios::binary);
   if (!f) {
     AcisSatReadResult r;
     r.error = "cannot open '" + path + "'";
     return r;
   }
-  return ReadAcisSat(f, options);
+  return ReadStream(f, mode, options);
 }
+
+}  // namespace
+
+bool LooksLikeAcisSab(const std::string& bytes) {
+  return bytes.size() >= kSabMagicLen && std::memcmp(bytes.data(), kSabMagic, kSabMagicLen) == 0;
+}
+
+AcisSatReadResult ReadAcisSat(std::istream& in, const AcisSatOptions& options) { return ReadStream(in, 0, options); }
+AcisSatReadResult ReadAcisSat(const std::string& path, const AcisSatOptions& options) { return ReadPath(path, 0, options); }
+AcisSatReadResult ReadAcisSab(std::istream& in, const AcisSatOptions& options) { return ReadStream(in, 1, options); }
+AcisSatReadResult ReadAcisSab(const std::string& path, const AcisSatOptions& options) { return ReadPath(path, 1, options); }
+AcisSatReadResult ReadAcis(std::istream& in, const AcisSatOptions& options) { return ReadStream(in, 2, options); }
+AcisSatReadResult ReadAcis(const std::string& path, const AcisSatOptions& options) { return ReadPath(path, 2, options); }
 
 // ---------------------------------------------------------------------------
 // Writer
@@ -1281,36 +1669,54 @@ struct WChain {
   std::vector<int> trims;  // ON trim indices, in loop order
 };
 
+// One output token / record, encoding-neutral: the text writer prints it, the
+// binary writer packs it. Idents are the two-valued words (and "I"), see kSabBool.
+struct WTok {
+  enum K { Ptr, Int, Real, Ident, Str, Pos, Vec } k = Int;
+  long long i = 0;
+  double d[3] = {0.0, 0.0, 0.0};
+  std::string s;
+};
+struct WRec {
+  std::string type;
+  std::vector<WTok> f;
+  WRec& Ptr(int v) { WTok t; t.k = WTok::Ptr; t.i = v; f.push_back(t); return *this; }
+  WRec& Int(long long v) { WTok t; t.k = WTok::Int; t.i = v; f.push_back(t); return *this; }
+  WRec& Real(double v) { WTok t; t.k = WTok::Real; t.d[0] = v; f.push_back(t); return *this; }
+  WRec& Id(const char* w) { WTok t; t.k = WTok::Ident; t.s = w; f.push_back(t); return *this; }
+  WRec& Str(const std::string& w) { WTok t; t.k = WTok::Str; t.s = w; f.push_back(t); return *this; }
+  WRec& Pos(const ON_3dPoint& p) { WTok t; t.k = WTok::Pos; t.d[0] = p.x; t.d[1] = p.y; t.d[2] = p.z; f.push_back(t); return *this; }
+  WRec& Vec(const ON_3dVector& v) { WTok t; t.k = WTok::Vec; t.d[0] = v.x; t.d[1] = v.y; t.d[2] = v.z; f.push_back(t); return *this; }
+  WRec& Hdr() { return Ptr(-1).Int(-1).Ptr(-1); }  // attribute, id, history (UNVERIFIED third item)
+  WRec& Ranges(int n) { for (int k = 0; k < n; ++k) Id("I"); return *this; }
+};
+
 struct WFace {
   int on_face = -1;
   std::vector<WChain> chains;
   int surf_kind = 0;  // 1 plane, 2 cylinder, 3 sphere, 4 torus
-  std::string surf_text;  // everything after "<type> $-1 -1 $-1"
-  std::string surf_type;
+  WRec surf;  // type + everything after the header triple
   bool reversed = false;
 };
 
 [[noreturn]] void WRefuse(const std::string& m) { throw SatError(m); }
 
-std::string P3(const ON_3dPoint& p) { return Num(p.x) + " " + Num(p.y) + " " + Num(p.z); }
-std::string V3(const ON_3dVector& v) { return Num(v.x) + " " + Num(v.y) + " " + Num(v.z); }
 
 class BodyWriter {
  public:
   BodyWriter(const ON_Brep& b, std::vector<std::string>& warnings, bool allow) : b_(b), warnings_(warnings), allow_(allow) {}
 
-  // Appends this body's records to `lines`; `base` is the record index of its
-  // first record.
-  void Write(std::vector<std::string>& lines) {
+  // Appends this body's records; their indices start at recs.size().
+  void Write(std::vector<WRec>& recs) {
     Classify();
-    Emit(lines);
+    Emit(recs);
   }
 
  private:
   struct WEdge {
     int on_edge = -1;
     int sv = -1, ev = -1;   // ON vertex ids
-    std::string curve_type, curve_text;
+    WRec curve;  // type + everything after the header triple
     double t0 = 0.0, t1 = 0.0;
     bool reversed = false;
     int first_coedge = -1;  // index into coedge list
@@ -1394,24 +1800,23 @@ class BodyWriter {
       ON_Torus tor;
       if (srf->IsPlanar(&pl, tol)) {
         if (wf.chains.empty()) WRefuse(fname + ": planar face without boundary loops");
-        wf.surf_type = "plane-surface";
-        wf.surf_text = P3(pl.origin) + " " + V3(pl.zaxis) + " " + V3(pl.xaxis) + " forward_v I I I I";
+        wf.surf.type = "plane-surface";
+        wf.surf.Hdr().Pos(pl.origin).Vec(pl.zaxis).Vec(pl.xaxis).Id("forward_v").Ranges(4);
         wf.reversed = (fn * pl.zaxis) < 0.0;
       } else if (srf->IsCylinder(&cyl, tol)) {
         NeedUnverified(fname, "cone-surface");
         const ON_3dVector ax = cyl.circle.plane.zaxis;
         const ON_3dVector d = sp - cyl.circle.plane.origin;
         const ON_3dVector rad = d - (d * ax) * ax;
-        wf.surf_type = "cone-surface";
-        wf.surf_text = P3(cyl.circle.plane.origin) + " " + V3(ax) + " " + V3(cyl.circle.plane.xaxis * cyl.circle.radius) +
-                       " 1 0 1 1 forward_v I I I I";
+        wf.surf.type = "cone-surface";
+        wf.surf.Hdr().Pos(cyl.circle.plane.origin).Vec(ax).Vec(cyl.circle.plane.xaxis * cyl.circle.radius);
+        wf.surf.Real(1).Real(0).Real(1).Real(1).Id("forward_v").Ranges(4);
         wf.reversed = (fn * rad) < 0.0;
       } else if (srf->IsSphere(&sph, tol)) {
         NeedUnverified(fname, "sphere-surface");
         if (!wf.chains.empty()) WRefuse(fname + ": a trimmed sphere face is not supported");
-        wf.surf_type = "sphere-surface";
-        wf.surf_text = P3(sph.plane.origin) + " " + Num(sph.radius) + " " + V3(sph.plane.xaxis) + " " + V3(sph.plane.zaxis) +
-                       " forward_v I I I I";
+        wf.surf.type = "sphere-surface";
+        wf.surf.Hdr().Pos(sph.plane.origin).Real(sph.radius).Vec(sph.plane.xaxis).Vec(sph.plane.zaxis).Id("forward_v").Ranges(4);
         wf.reversed = (fn * (sp - sph.plane.origin)) < 0.0;
       } else if (srf->IsTorus(&tor, tol)) {
         NeedUnverified(fname, "torus-surface");
@@ -1421,9 +1826,9 @@ class BodyWriter {
         ON_3dVector rh = rad;
         rh.Unitize();
         const ON_3dPoint tube = tor.plane.origin + rh * tor.major_radius;
-        wf.surf_type = "torus-surface";
-        wf.surf_text = P3(tor.plane.origin) + " " + V3(tor.plane.zaxis) + " " + Num(tor.major_radius) + " " +
-                       Num(tor.minor_radius) + " " + V3(tor.plane.xaxis) + " forward_v I I I I";
+        wf.surf.type = "torus-surface";
+        wf.surf.Hdr().Pos(tor.plane.origin).Vec(tor.plane.zaxis).Real(tor.major_radius).Real(tor.minor_radius).Vec(tor.plane.xaxis);
+        wf.surf.Id("forward_v").Ranges(4);
         wf.reversed = (fn * (sp - tube)) < 0.0;
       } else {
         WRefuse(fname + ": surface is not a plane, cylinder, sphere or torus (NURBS/other surfaces are not supported in this round)");
@@ -1533,16 +1938,16 @@ class BodyWriter {
       const double len = d.Length();
       if (!(len > kTol)) WRefuse("edge " + std::to_string(ei) + " is a degenerate line");
       d.Unitize();
-      we.curve_type = "straight-curve";
-      we.curve_text = P3(P0) + " " + V3(d) + " I I";
+      we.curve.type = "straight-curve";
+      we.curve.Hdr().Pos(P0).Vec(d).Ranges(2);
       we.t0 = 0.0;
       we.t1 = len;
     } else if (c->IsArc(nullptr, &arc, kTol) && arc.IsValid()) {
       NeedUnverified("edge " + std::to_string(ei), "ellipse-curve");
       const bool closed = c->IsClosed();
       const double a0 = arc.DomainRadians().Min(), a1 = arc.DomainRadians().Max();
-      we.curve_type = "ellipse-curve";
-      we.curve_text = P3(arc.Center()) + " " + V3(arc.Plane().zaxis) + " " + V3(arc.Plane().xaxis * arc.Radius()) + " 1 I I";
+      we.curve.type = "ellipse-curve";
+      we.curve.Hdr().Pos(arc.Center()).Vec(arc.Plane().zaxis).Vec(arc.Plane().xaxis * arc.Radius()).Real(1).Ranges(2);
       we.t0 = a0;
       we.t1 = a1;
       if (!closed) {
@@ -1558,9 +1963,9 @@ class BodyWriter {
     return we;
   }
 
-  void Emit(std::vector<std::string>& lines) {
+  void Emit(std::vector<WRec>& recs) {
     // index allocation
-    const int body_i = static_cast<int>(lines.size());
+    const int body_i = static_cast<int>(recs.size());
     int next = body_i;
     const int body_idx = next++;
     std::vector<int> lump_idx(shells_.size()), shell_idx(shells_.size());
@@ -1577,17 +1982,19 @@ class BodyWriter {
     for (auto& x : surf_idx) x = next++;
     for (auto& x : curve_idx) x = next++;
 
-    auto P = [](int i) { return "$" + std::to_string(i); };
-    auto rec = [&](const std::string& body) {
-      lines.push_back("-" + std::to_string(lines.size()) + " " + body + " #");
+    // Starts a record (type + the header triple) and returns it for chaining.
+    auto rec = [&](const char* type) -> WRec& {
+      recs.emplace_back();
+      recs.back().type = type;
+      recs.back().Hdr();
+      return recs.back();
     };
-    const std::string hdr = "$-1 -1 $-1";
-    rec("body " + hdr + " $-1 " + P(lump_idx.front()) + " $-1 $-1");
+    rec("body").Ptr(-1).Ptr(lump_idx.front()).Ptr(-1).Ptr(-1);
     for (size_t s = 0; s < shells_.size(); ++s) {
-      rec("lump " + hdr + " " + (s + 1 < shells_.size() ? P(lump_idx[s + 1]) : "$-1") + " " + P(shell_idx[s]) + " " + P(body_idx));
+      rec("lump").Ptr(s + 1 < shells_.size() ? lump_idx[s + 1] : -1).Ptr(shell_idx[s]).Ptr(body_idx);
     }
     for (size_t s = 0; s < shells_.size(); ++s) {
-      rec("shell " + hdr + " $-1 $-1 " + P(face_idx[static_cast<size_t>(shells_[s].front())]) + " $-1 " + P(lump_idx[s]));
+      rec("shell").Ptr(-1).Ptr(-1).Ptr(face_idx[static_cast<size_t>(shells_[s].front())]).Ptr(-1).Ptr(lump_idx[s]);
     }
     // faces: chain faces within a shell
     std::vector<int> next_face(faces_.size(), -1), shell_of_face(faces_.size(), 0);
@@ -1611,35 +2018,45 @@ class BodyWriter {
       }
     }
     for (size_t f = 0; f < faces_.size(); ++f) {
-      rec("face " + hdr + " " + (next_face[f] >= 0 ? P(next_face[f]) : "$-1") + " " + (first_loop[f] >= 0 ? P(first_loop[f]) : "$-1") + " " +
-          P(shell_idx[static_cast<size_t>(shell_of_face[f])]) + " $-1 " + P(surf_idx[f]) + " " +
-          (faces_[f].reversed ? "reversed" : "forward") + " " + (solid_ ? "single" : "double out"));
+      WRec& r = rec("face").Ptr(next_face[f]).Ptr(first_loop[f]).Ptr(shell_idx[static_cast<size_t>(shell_of_face[f])]).Ptr(-1).Ptr(surf_idx[f]);
+      r.Id(faces_[f].reversed ? "reversed" : "forward").Id(solid_ ? "single" : "double");
+      if (!solid_) r.Id("out");
     }
     for (size_t l = 0; l < loops_.size(); ++l) {
-      rec("loop " + hdr + " " + (next_loop[l] >= 0 ? P(next_loop[l]) : "$-1") + " " + P(ce_idx[static_cast<size_t>(loops_[l].coedges.front())]) + " " +
-          P(face_idx[static_cast<size_t>(loops_[l].face)]));
+      rec("loop").Ptr(next_loop[l]).Ptr(ce_idx[static_cast<size_t>(loops_[l].coedges.front())]).Ptr(face_idx[static_cast<size_t>(loops_[l].face)]);
     }
     for (size_t c = 0; c < coedges_.size(); ++c) {
       const WCoedge& ce = coedges_[c];
-      rec("coedge " + hdr + " " + P(ce_idx[static_cast<size_t>(ce.next)]) + " " + P(ce_idx[static_cast<size_t>(ce.prev)]) + " " +
-          (ce.partner >= 0 ? P(ce_idx[static_cast<size_t>(ce.partner)]) : "$-1") + " " + P(edge_idx[static_cast<size_t>(ce.edge)]) + " " +
-          (ce.rev ? "reversed" : "forward") + " " + P(loop_idx[static_cast<size_t>(ce.loop)]) + " $-1");
+      rec("coedge")
+          .Ptr(ce_idx[static_cast<size_t>(ce.next)])
+          .Ptr(ce_idx[static_cast<size_t>(ce.prev)])
+          .Ptr(ce.partner >= 0 ? ce_idx[static_cast<size_t>(ce.partner)] : -1)
+          .Ptr(edge_idx[static_cast<size_t>(ce.edge)])
+          .Id(ce.rev ? "reversed" : "forward")
+          .Ptr(loop_idx[static_cast<size_t>(ce.loop)])
+          .Ptr(-1);
     }
     std::map<int, int> edge_of_vertex;
     for (size_t e = 0; e < edges_.size(); ++e) {
       const WEdge& we = edges_[e];
       edge_of_vertex.emplace(we.sv, edge_idx[e]);
       edge_of_vertex.emplace(we.ev, edge_idx[e]);
-      rec("edge " + hdr + " " + P(vert_idx[static_cast<size_t>(vertex_slot_[we.sv])]) + " " + Num(we.t0) + " " +
-          P(vert_idx[static_cast<size_t>(vertex_slot_[we.ev])]) + " " + Num(we.t1) + " " + P(ce_idx[static_cast<size_t>(we.first_coedge)]) + " " +
-          P(curve_idx[e]) + " " + (we.reversed ? "reversed" : "forward") + " @7 unknown");
+      rec("edge")
+          .Ptr(vert_idx[static_cast<size_t>(vertex_slot_[we.sv])])
+          .Real(we.t0)
+          .Ptr(vert_idx[static_cast<size_t>(vertex_slot_[we.ev])])
+          .Real(we.t1)
+          .Ptr(ce_idx[static_cast<size_t>(we.first_coedge)])
+          .Ptr(curve_idx[e])
+          .Id(we.reversed ? "reversed" : "forward")
+          .Str("unknown");
     }
     for (size_t v = 0; v < vertices_.size(); ++v) {
-      rec("vertex " + hdr + " " + P(edge_of_vertex[vertices_[v]]) + " " + P(pt_idx[v]));
+      rec("vertex").Ptr(edge_of_vertex[vertices_[v]]).Ptr(pt_idx[v]);
     }
-    for (size_t v = 0; v < vertices_.size(); ++v) rec("point " + hdr + " " + P3(b_.m_V[vertices_[v]].point));
-    for (size_t f = 0; f < faces_.size(); ++f) rec(faces_[f].surf_type + " " + hdr + " " + faces_[f].surf_text);
-    for (size_t e = 0; e < edges_.size(); ++e) rec(edges_[e].curve_type + " " + hdr + " " + edges_[e].curve_text);
+    for (size_t v = 0; v < vertices_.size(); ++v) rec("point").Pos(b_.m_V[vertices_[v]].point);
+    for (size_t f = 0; f < faces_.size(); ++f) recs.push_back(faces_[f].surf);
+    for (size_t e = 0; e < edges_.size(); ++e) recs.push_back(edges_[e].curve);
   }
 
   const ON_Brep& b_;
@@ -1658,26 +2075,156 @@ class BodyWriter {
 
 }  // namespace
 
-AcisSatWriteResult WriteAcisSat(std::ostream& out, const std::vector<Brep>& bodies, const AcisSatOptions& options) {
-  AcisSatWriteResult res;
+namespace {
+
+// Collects every body's records. Returns false (with the reason in `res.error`) on refusal.
+bool CollectRecords(const std::vector<Brep>& bodies, const AcisSatOptions& options, AcisSatWriteResult& res, std::vector<WRec>& recs) {
   if (bodies.empty()) {
     res.error = "no bodies to write";
-    return res;
+    return false;
   }
-  std::vector<std::string> lines;
   for (size_t b = 0; b < bodies.size(); ++b) {
     try {
       BodyWriter w(bodies[b].raw(), res.warnings, options.allow_unverified_layouts);
-      w.Write(lines);
+      w.Write(recs);
     } catch (const SatError& e) {
       res.error = "body " + std::to_string(b) + " cannot be written: " + e.what();
-      return res;
+      return false;
+    } catch (const std::exception& e) {
+      res.error = "body " + std::to_string(b) + " cannot be written (internal error): " + e.what();
+      return false;
     }
   }
+  return true;
+}
+
+std::string TokText(const WTok& t) {
+  switch (t.k) {
+    case WTok::Ptr: return "$" + std::to_string(t.i);
+    case WTok::Int: return std::to_string(t.i);
+    case WTok::Real: return Num(t.d[0]);
+    case WTok::Ident: return t.s;
+    case WTok::Str: return "@" + std::to_string(t.s.size()) + " " + t.s;
+    case WTok::Pos:
+    case WTok::Vec: return Num(t.d[0]) + " " + Num(t.d[1]) + " " + Num(t.d[2]);
+  }
+  return std::string();
+}
+
+// The two-valued words and their bool (see "SAB wire format": UNVERIFIED choice).
+// "F" is true and is followed by its double in the stream, exactly as in text.
+bool SabBoolOf(const std::string& word) {
+  static const char* const kFalse[] = {"forward", "single", "in", "forward_v", "I"};
+  static const char* const kTrue[] = {"reversed", "double", "out", "reverse_v", "F"};
+  for (const char* w : kFalse)
+    if (word == w) return false;
+  for (const char* w : kTrue)
+    if (word == w) return true;
+  throw SatError("internal: keyword '" + word + "' has no SAB bool encoding");
+}
+
+void PutU32(std::string& o, uint32_t v) {
+  for (int i = 0; i < 4; ++i) o.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+}
+void PutF64(std::string& o, double v) {
+  if (!std::isfinite(v) || v == 0.0) v = 0.0;  // same rule as the text writer's Num(): non-finite and -0 both become +0
+  uint64_t u;
+  std::memcpy(&u, &v, 8);
+  for (int i = 0; i < 8; ++i) o.push_back(static_cast<char>((u >> (8 * i)) & 0xFF));
+}
+void PutStr8(std::string& o, const std::string& s) {
+  if (s.size() > 255) throw SatError("string longer than 255 bytes cannot be written with the 8-bit length tag");
+  o.push_back(static_cast<char>(sabtag::kStr8));
+  o.push_back(static_cast<char>(s.size()));
+  o += s;
+}
+
+std::string EncodeSab(const std::vector<WRec>& recs, size_t bodies) {
+  std::string o;
+  o.append(kSabMagic, kSabMagicLen);
+  PutU32(o, 700u);
+  PutU32(o, static_cast<uint32_t>(recs.size()));
+  PutU32(o, static_cast<uint32_t>(bodies));
+  PutU32(o, 0u);
+  PutStr8(o, "Dino8 kernel");
+  PutStr8(o, "ACIS 7.0 NT");
+  PutStr8(o, "Mon Jan 01 00:00:00 2024");
+  for (double v : {1.0, 1e-06, 1e-10}) {
+    o.push_back(static_cast<char>(sabtag::kDouble));
+    PutF64(o, v);
+  }
+  auto name = [&](const std::string& n) {
+    if (n.empty() || n.size() > 255) throw SatError("entity name length out of range");
+    o.push_back(static_cast<char>(sabtag::kName));
+    o.push_back(static_cast<char>(n.size()));
+    o += n;
+  };
+  for (const WRec& r : recs) {
+    name(r.type);
+    for (const WTok& t : r.f) {
+      switch (t.k) {
+        case WTok::Ptr:
+          o.push_back(static_cast<char>(sabtag::kPtr));
+          PutU32(o, static_cast<uint32_t>(static_cast<int32_t>(t.i)));
+          break;
+        case WTok::Int:
+          o.push_back(static_cast<char>(sabtag::kInt));
+          PutU32(o, static_cast<uint32_t>(static_cast<int32_t>(t.i)));
+          break;
+        case WTok::Real:
+          o.push_back(static_cast<char>(sabtag::kDouble));
+          PutF64(o, t.d[0]);
+          break;
+        case WTok::Ident:
+          o.push_back(static_cast<char>(SabBoolOf(t.s) ? sabtag::kTrue : sabtag::kFalse));
+          break;
+        case WTok::Str:
+          PutStr8(o, t.s);
+          break;
+        case WTok::Pos:
+        case WTok::Vec:
+          o.push_back(static_cast<char>(t.k == WTok::Pos ? sabtag::kPos : sabtag::kVec));
+          for (double v : t.d) PutF64(o, v);
+          break;
+      }
+    }
+    o.push_back(static_cast<char>(sabtag::kTerm));
+  }
+  name(kSabEndName);
+  o.push_back(static_cast<char>(sabtag::kTerm));
+  return o;
+}
+
+AcisSatWriteResult FlushToFile(const std::string& path, const std::string& bytes, AcisSatWriteResult res) {
+  std::ofstream f(path, std::ios::binary);
+  if (!f) {
+    res.ok = false;
+    res.error = "cannot open '" + path + "' for writing";
+    return res;
+  }
+  f << bytes;
+  f.flush();
+  if (!f) {
+    res.ok = false;
+    res.error = "write to '" + path + "' failed";
+  }
+  return res;
+}
+
+}  // namespace
+
+AcisSatWriteResult WriteAcisSat(std::ostream& out, const std::vector<Brep>& bodies, const AcisSatOptions& options) {
+  AcisSatWriteResult res;
+  std::vector<WRec> recs;
+  if (!CollectRecords(bodies, options, res, recs)) return res;
   out << "700 0 " << bodies.size() << " 0\n";
   out << "@12 Dino8 kernel @11 ACIS 7.0 NT @24 Mon Jan 01 00:00:00 2024\n";
   out << "1 1e-06 1e-10\n";
-  for (const std::string& l : lines) out << l << "\n";
+  for (size_t i = 0; i < recs.size(); ++i) {
+    out << "-" << i << " " << recs[i].type;
+    for (const WTok& t : recs[i].f) out << " " << TokText(t);
+    out << " #\n";
+  }
   out << "End-of-ACIS-data\n";
   if (!out) {
     res.error = "write failed";
@@ -1691,19 +2238,34 @@ AcisSatWriteResult WriteAcisSat(const std::string& path, const std::vector<Brep>
   std::ostringstream os;
   AcisSatWriteResult res = WriteAcisSat(os, bodies, options);
   if (!res.ok) return res;
-  std::ofstream f(path, std::ios::binary);
-  if (!f) {
-    res.ok = false;
-    res.error = "cannot open '" + path + "' for writing";
+  return FlushToFile(path, os.str(), res);
+}
+
+AcisSatWriteResult WriteAcisSab(std::ostream& out, const std::vector<Brep>& bodies, const AcisSatOptions& options) {
+  AcisSatWriteResult res;
+  std::vector<WRec> recs;
+  if (!CollectRecords(bodies, options, res, recs)) return res;
+  std::string bytes;
+  try {
+    bytes = EncodeSab(recs, bodies.size());
+  } catch (const std::exception& e) {
+    res.error = std::string("cannot encode the SAB file: ") + e.what();
     return res;
   }
-  f << os.str();
-  f.flush();
-  if (!f) {
-    res.ok = false;
-    res.error = "write to '" + path + "' failed";
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  if (!out) {
+    res.error = "write failed";
+    return res;
   }
+  res.ok = true;
   return res;
+}
+
+AcisSatWriteResult WriteAcisSab(const std::string& path, const std::vector<Brep>& bodies, const AcisSatOptions& options) {
+  std::ostringstream os;
+  AcisSatWriteResult res = WriteAcisSab(os, bodies, options);
+  if (!res.ok) return res;
+  return FlushToFile(path, os.str(), res);
 }
 
 }  // namespace dino8::kernel

@@ -12066,4 +12066,65 @@ rvrcheck ctl_box "edge 5 of object 1 replaced with an exact fillet (radius 1)" "
 rvrnot ctl_box "revolve-rim" "RVR_ctl_box: ...with no revolve-rim message for an ordinary open edge"
 if grep -q "gl_error=0" <<<"$RVRO"; then echo "ok   RVR script ran without OpenGL errors"; else echo "FAIL RVR script ran without OpenGL errors"; fail=1; fi
 
+# SABF: ACIS SAB (.sab binary) through Import/Export/Open/SaveAs (sabf_script.txt,
+# sabf_detect_script.txt; io/FileSat.cpp over the kernel's ReadAcis/WriteAcisSab).
+# The SAB byte layout (token tags, header, bool encoding) is UNVERIFIED - no public
+# description was reachable - and the writer has only been read back by this
+# program's own reader, so these checks pin the app wiring and the honesty of the
+# printed summary (UNVERIFIED notices, refusals with a reason), not compatibility
+# with another CAD system. Ranges, not exact numbers.
+printf 'this is not an ACIS binary file\n' > "$TMPW/sabf_bad.sab"
+printf 'ACIS BinaryFile\274\002\000\000' > "$TMPW/sabf_trunc.sab"
+sed "s|@TMP@|$TMPW|g" "$HERE/sabf_script.txt" > "$TMPW/sabf_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SABF="$(timeout 900 "$BIN" --smoke 40 --script "$TMPW/sabf_script.txt" 2>&1)" || { echo "$SABF"; echo "FAIL: sabf script exited non-zero"; exit 1; }
+else
+  SABF="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/sabf_script.txt" 2>&1)" || { echo "$SABF"; echo "FAIL: sabf script exited non-zero"; exit 1; }
+fi
+sabf_has() { if grep -qF -- "$1" <<<"$SABF"; then echo "ok   $2"; else echo "FAIL $2"; near "$SABF" "$1"; fail=1; fi; }
+sabf_count() { local n; n="$(grep -cF -- "$1" <<<"$SABF" || true)"; if [ "${n:-0}" -ge "$2" ]; then echo "ok   $3 ($n >= $2)"; else echo "FAIL $3 (got ${n:-0}, expected >= $2)"; near "$SABF" "$1"; fail=1; fi; }
+sabf_range() { if [ -n "$1" ] && awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 ($1 in [$2, $3])"; else echo "FAIL $4 ('${1:-none}' not in [$2, $3])"; fail=1; fi; }
+mapfile -t SABF_VOLS < <(grep -o "Volume = [0-9.e+-]*" <<<"$SABF" | awk '{print $3}' || true)
+sabf_has "SAB export sabf_box.sab (ACIS 7.0 binary, version 700): 1 of 1 object(s) written" "SABF_box_export: Export of a box to .sab wrote 1 of 1 objects and says ACIS 7.0 binary"
+sabf_has "SAB import sabf_box.sab: 1 Brep body(ies) read" "SABF_box_open: Open of the .sab box read one Brep body and names the SAB encoding"
+sabf_has "closed solid" "SABF_box_solid: the imported box is reported as a closed solid"
+sabf_count "SAB status: the binary token tags, header layout and two-valued-word encoding are UNVERIFIED" 6 "SABF_unverified_note: every SAB export and import summary carries the UNVERIFIED-byte-layout note"
+sabf_count "never against a file from a real ACIS-based product" 6 "SABF_selftest_only: ...and says it was only tested against this program's own reader"
+if [ "${#SABF_VOLS[@]}" -ge 4 ]; then
+  sabf_range "${SABF_VOLS[0]}" 3999.5 4000.5 "SABF_box_vol_before: box Volume before export (20 x 20 x 10 = 4000)"
+  sabf_range "${SABF_VOLS[1]}" 3999.5 4000.5 "SABF_box_vol_after: box Volume after .sab export and Open (4000)"
+  sabf_range "${SABF_VOLS[2]}" 2090 2160 "SABF_sphere_vol: sphere Volume after .sab export and Import vs 4/3 pi r^3 = 2144.7"
+  sabf_range "${SABF_VOLS[3]}" 770 800 "SABF_cyl_vol: cylinder Volume after .sab export and Open vs pi r^2 h = 785.4"
+else
+  echo "FAIL SABF script printed only ${#SABF_VOLS[@]} Volume lines (expected 4)"; fail=1
+fi
+sabf_has "SAB import sabf_sphere.sab: 1 Brep body(ies) read" "SABF_sphere_import: Import of the .sab sphere read one body"
+sabf_count "UNVERIFIED LAYOUT: the bodies marked above" 2 "SABF_unverified_layout_export: sphere and cylinder .sab exports both disclose the UNVERIFIED surface layout"
+sabf_count "UNVERIFIED LAYOUT: 1 of 1 bodies use cone/sphere/torus/ellipse entities" 2 "SABF_unverified_layout_import: sphere and cylinder .sab imports both disclose it"
+sabf_has "SAB export wrote nothing" "SABF_mesh_refused: exporting only a mesh to .sab writes nothing"
+sabf_has "SAB export writes Brep bodies only" "SABF_mesh_reason: ...and says why (no body representation for a mesh)"
+sabf_has "SAT import refused (sabf_bad.sab)" "SABF_bad_text_refused: a text file under a .sab name is refused with the file name (and read as text, since the encoding comes from the content)"
+sabf_has "SAB import refused (sabf_trunc.sab)" "SABF_truncated_refused: a truncated binary header is refused with the file name"
+sabf_has "truncated file" "SABF_truncated_reason: ...and the reason says the file is truncated"
+
+# SABF detection: encoding from content, not extension.
+cp "$TMPW/satf_box.sat" "$TMPW/sabf_text_as.sab"
+cp "$TMPW/sabf_box.sab" "$TMPW/sabf_bin_as.sat"
+sed "s|@TMP@|$TMPW|g" "$HERE/sabf_detect_script.txt" > "$TMPW/sabf_detect_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SABFD="$(timeout 900 "$BIN" --smoke 40 --script "$TMPW/sabf_detect_script.txt" 2>&1)" || { echo "$SABFD"; echo "FAIL: sabf detect script exited non-zero"; exit 1; }
+else
+  SABFD="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/sabf_detect_script.txt" 2>&1)" || { echo "$SABFD"; echo "FAIL: sabf detect script exited non-zero"; exit 1; }
+fi
+sabfd_has() { if grep -qF -- "$1" <<<"$SABFD"; then echo "ok   $2"; else echo "FAIL $2"; near "$SABFD" "$1"; fail=1; fi; }
+sabfd_has "SAT import sabf_text_as.sab: 1 Brep body(ies) read" "SABF_detect_text: SAT text under a .sab name is read as text and the summary says SAT"
+sabfd_has "SAB import sabf_bin_as.sat: 1 Brep body(ies) read" "SABF_detect_binary: SAB bytes under a .sat name are read as binary and the summary says SAB"
+mapfile -t SABFD_VOLS < <(grep -o "Volume = [0-9.e+-]*" <<<"$SABFD" | awk '{print $3}' || true)
+if [ "${#SABFD_VOLS[@]}" -ge 2 ]; then
+  sabf_range "${SABFD_VOLS[0]}" 3999.5 4000.5 "SABF_detect_text_vol: the text-as-.sab box has Volume 4000"
+  sabf_range "${SABFD_VOLS[1]}" 3999.5 4000.5 "SABF_detect_binary_vol: the binary-as-.sat box has Volume 4000"
+else
+  echo "FAIL SABF detect script printed only ${#SABFD_VOLS[@]} Volume lines (expected 2)"; fail=1
+fi
+
 exit $fail

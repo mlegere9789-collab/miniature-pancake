@@ -91574,6 +91574,653 @@ void TestAcisSatRefusesHostilePointersAndCyclicFaceChains() {
   Check(!ri.ok || ri.bodies.size() <= 1, "AcisSat hostile: an inf token does not crash the reader");
 }
 
+
+// ===========================================================================
+// SAB (binary) tests. The tag table is UNVERIFIED (no public prose for the
+// byte layout was reachable); everything here is self-consistency against THIS
+// library's reader/writer plus a second, test-side encoder written from the
+// same table. Nothing here shows compatibility with any other product.
+// ===========================================================================
+
+// Minimal byte builder for fixtures (independent of the library's writer).
+struct SabB {
+  std::string o;
+  void Raw(const char* p, size_t n) { o.append(p, n); }
+  void U8(int v) { o.push_back(static_cast<char>(v)); }
+  void U32(uint32_t v) {
+    for (int i = 0; i < 4; ++i) o.push_back(static_cast<char>((v >> (8 * i)) & 0xFF));
+  }
+  void F64(double v) {
+    uint64_t u;
+    std::memcpy(&u, &v, 8);
+    for (int i = 0; i < 8; ++i) o.push_back(static_cast<char>((u >> (8 * i)) & 0xFF));
+  }
+  void Header(int version, int nrec, int nent, double units = 1.0, double resabs = 1e-06, double resnor = 1e-10) {
+    Raw("ACIS BinaryFile", 15);
+    U32(static_cast<uint32_t>(version));
+    U32(static_cast<uint32_t>(nrec));
+    U32(static_cast<uint32_t>(nent));
+    U32(0);
+    for (const char* s : {"Dino8 kernel", "ACIS 7.0 NT", "Mon Jan 01 00:00:00 2024"}) Str8(s);
+    for (double v : {units, resabs, resnor}) {
+      U8(0x06);
+      F64(v);
+    }
+  }
+  void Name(const std::string& n) {
+    U8(0x0D);
+    U8(static_cast<int>(n.size()));
+    o += n;
+  }
+  void Str8(const std::string& s) {
+    U8(0x07);
+    U8(static_cast<int>(s.size()));
+    o += s;
+  }
+  void Ptr(int v) {
+    U8(0x0C);
+    U32(static_cast<uint32_t>(v));
+  }
+  void Int(int v) {
+    U8(0x04);
+    U32(static_cast<uint32_t>(v));
+  }
+  void Dbl(double v) {
+    U8(0x06);
+    F64(v);
+  }
+  void Bool(bool v) { U8(v ? 0x0A : 0x0B); }
+  void Pos(double x, double y, double z) {
+    U8(0x13);
+    F64(x);
+    F64(y);
+    F64(z);
+  }
+  void Vec(double x, double y, double z) {
+    U8(0x14);
+    F64(x);
+    F64(y);
+    F64(z);
+  }
+  void Term() { U8(0x11); }
+  void End() {
+    Name("End-of-ACIS-data");
+    Term();
+  }
+};
+
+std::vector<std::string> SplitWords(const std::string& s) {
+  std::vector<std::string> w;
+  std::istringstream is(s);
+  std::string t;
+  while (is >> t) w.push_back(t);
+  return w;
+}
+
+// Test-side encoder: SAT text (header + "-N record #" lines) -> SAB bytes, by the table in acis_sat.cpp, not by the library's writer.
+std::string EncodeSatTextAsSab(const std::string& sat, double units_override = 0.0) {
+  std::istringstream in(sat);
+  std::string l1, l2, l3, line;
+  std::getline(in, l1);
+  std::getline(in, l2);
+  std::getline(in, l3);
+  int version = 0, nrec = 0, nent = 0, flags = 0;
+  std::sscanf(l1.c_str(), "%d %d %d %d", &version, &nrec, &nent, &flags);
+  double units = 1, resabs = 1e-6, resnor = 1e-10;
+  std::sscanf(l3.c_str(), "%lf %lf %lf", &units, &resabs, &resnor);
+  if (units_override > 0.0) units = units_override;
+  std::vector<std::string> recs;
+  while (std::getline(in, line)) {
+    if (line.rfind("End-of-ACIS-data", 0) == 0) break;
+    const size_t sp = line.find(' ');
+    std::string body = line.substr(sp + 1);  // drop "-N "
+    body = body.substr(0, body.size() - 2);  // drop " #"
+    recs.push_back(body);
+  }
+  SabB b;
+  b.Header(version, static_cast<int>(recs.size()), nent, units, resabs, resnor);
+  auto layout = [](const std::string& t) -> std::string {
+    if (t == "plane-surface" || t == "cone-surface") return "PVV";
+    if (t == "sphere-surface") return "PdVV";
+    if (t == "torus-surface") return "PVddV";
+    if (t == "straight-curve") return "PV";
+    if (t == "ellipse-curve") return "PVVd";
+    if (t == "point") return "P";
+    return "";
+  };
+  const std::set<std::string> falses = {"forward", "single", "in", "forward_v", "I"};
+  const std::set<std::string> trues = {"reversed", "double", "out", "reverse_v", "F"};
+  for (const std::string& r : recs) {
+    const std::vector<std::string> w = SplitWords(r);
+    b.Name(w[0]);
+    const std::string lay = layout(w[0]);
+    size_t li = 0;
+    bool id_done = false;
+    for (size_t i = 1; i < w.size();) {
+      const std::string& t = w[i];
+      if (t[0] == '$') {
+        b.Ptr(std::atoi(t.c_str() + 1));
+        ++i;
+      } else if (t[0] == '@') {
+        b.Str8(w[i + 1]);
+        i += 2;
+      } else if (falses.count(t) || trues.count(t)) {
+        b.Bool(trues.count(t) != 0);
+        ++i;
+      } else if (!id_done) {
+        b.Int(std::atoi(t.c_str()));
+        id_done = true;
+        ++i;
+      } else if (li < lay.size()) {
+        const char k = lay[li++];
+        if (k == 'd') {
+          b.Dbl(std::strtod(t.c_str(), nullptr));
+          ++i;
+        } else {
+          const double x = std::strtod(w[i].c_str(), nullptr), y = std::strtod(w[i + 1].c_str(), nullptr),
+                       z = std::strtod(w[i + 2].c_str(), nullptr);
+          if (k == 'P') b.Pos(x, y, z);
+          else b.Vec(x, y, z);
+          i += 3;
+        }
+      } else {
+        b.Dbl(std::strtod(t.c_str(), nullptr));
+        ++i;
+      }
+    }
+    b.Term();
+  }
+  b.End();
+  return b.o;
+}
+
+AcisSatReadResult ReadSab(const std::string& bytes, bool unverified = false) {
+  std::istringstream is(bytes);
+  dino8::kernel::AcisSatOptions opt;
+  opt.allow_unverified_layouts = unverified;
+  return dino8::kernel::ReadAcisSab(is, opt);
+}
+
+bool WriteSab(const Brep& b, bool unverified, std::string& out, std::string* why = nullptr) {
+  std::ostringstream os;
+  dino8::kernel::AcisSatOptions opt;
+  opt.allow_unverified_layouts = unverified;
+  const auto w = dino8::kernel::WriteAcisSab(os, {b}, opt);
+  if (!w.ok && why) *why = w.error;
+  out = w.ok ? os.str() : std::string();
+  return w.ok;
+}
+
+std::string WriteSatText(const Brep& b, bool unverified) {
+  std::ostringstream os;
+  dino8::kernel::AcisSatOptions opt;
+  opt.allow_unverified_layouts = unverified;
+  const auto w = dino8::kernel::WriteAcisSat(os, {b}, opt);
+  return w.ok ? os.str() : std::string();
+}
+
+void TestAcisSabReadsHandBuiltBytesAndFixtureBox() {
+  // (1) Hand-assembled literal bytes: header + one `point` record + end record. No body, so the reader must get through the
+  // whole byte stream (header, strings, doubles, tags 0x0C/0x04/0x13, terminators) and then say "no body entity".
+  const unsigned char lit[] = {
+      0x41, 0x43, 0x49, 0x53, 0x20, 0x42, 0x69, 0x6E, 0x61, 0x72, 0x79, 0x46, 0x69, 0x6C, 0x65,  // "ACIS BinaryFile"
+      0xBC, 0x02, 0x00, 0x00,                                                                    // version 700 (little endian)
+      0x01, 0x00, 0x00, 0x00,                                                                    // 1 record
+      0x00, 0x00, 0x00, 0x00,                                                                    // 0 entities
+      0x00, 0x00, 0x00, 0x00,                                                                    // flags
+      0x07, 0x01, 'A', 0x07, 0x01, 'B', 0x07, 0x01, 'C',                                         // three 8-bit-length strings
+      0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,                                      // units 1.0
+      0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xE0, 0x3F,                                      // resabs 0.5
+      0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,                                      // resnor 2.0
+      0x0D, 0x05, 'p', 'o', 'i', 'n', 't',                                                        // entity name
+      0x0C, 0xFF, 0xFF, 0xFF, 0xFF,                                                              // attribute pointer -1
+      0x04, 0xFF, 0xFF, 0xFF, 0xFF,                                                              // id -1
+      0x0C, 0xFF, 0xFF, 0xFF, 0xFF,                                                              // history pointer -1
+      0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0,  // position (1, 2, -2)
+      0x11,                                           // record terminator
+      0x0D, 0x10, 'E', 'n', 'd', '-', 'o', 'f', '-', 'A', 'C', 'I', 'S', '-', 'd', 'a', 't', 'a', 0x11};
+  const std::string lit_s(reinterpret_cast<const char*>(lit), sizeof(lit));
+  const AcisSatReadResult rl = ReadSab(lit_s);
+  Check(!rl.ok && rl.error == "no body entity in the file", ("AcisSab: hand-assembled bytes parse completely (reason: " + rl.error + ")").c_str());
+  SabB mirror;  // the test builder must produce the same bytes as the literal (guards the fixture builder itself)
+  mirror.Header(700, 1, 0, 1.0, 0.5, 2.0);
+  // header strings in the builder are fixed; compare only the record part
+  const size_t rec_at = lit_s.find(std::string("\x0D\x05point", 7));
+  mirror.Name("point");
+  mirror.Ptr(-1);
+  mirror.Int(-1);
+  mirror.Ptr(-1);
+  mirror.Pos(1, 2, -2);
+  mirror.Term();
+  mirror.End();
+  Check(rec_at != std::string::npos && mirror.o.substr(mirror.o.find(std::string("\x0D\x05point", 7))) == lit_s.substr(rec_at),
+        "AcisSab: the test builder's record bytes equal the hand-assembled literal");
+
+  // (2) The hand-derived box fixture (BoxSat, used by the SAT tests) re-encoded by the test-side encoder reads as a box.
+  const std::string sab = EncodeSatTextAsSab(BoxSat(2.0, 3.0, 5.0));
+  const AcisSatReadResult r = ReadSab(sab);
+  Check(r.ok && r.bodies.size() == 1, ("AcisSab: hand-derived box fixture (test-encoded) reads as one body: " + r.error).c_str());
+  if (!r.ok || r.bodies.size() != 1) return;
+  const Brep& b = r.bodies[0];
+  std::printf("  SAB fixture box: %zu bytes, volume %.12g (expect 30) area %.12g (expect 62), F/E/V %d/%d/%d\n", sab.size(), b.Volume(),
+              b.Area(), b.FaceCount(), b.EdgeCount(), b.VertexCount());
+  Check(b.FaceCount() == 6 && b.EdgeCount() == 12 && b.VertexCount() == 8, "AcisSab: fixture box has 6 faces / 12 edges / 8 vertices");
+  Check(b.raw().IsValid() && b.raw().IsSolid(), "AcisSab: fixture box ON_Brep is valid and a closed solid");
+  Check(Near(b.Volume(), 30.0, 1e-9) && Near(b.Area(), 62.0, 1e-9), "AcisSab: fixture box volume 30 and area 62 to 1e-9");
+  // header units are honoured: units 2 scales every coordinate, so volume x8
+  const AcisSatReadResult ru = ReadSab(EncodeSatTextAsSab(BoxSat(2.0, 3.0, 5.0), 2.0));
+  Check(ru.ok && ru.bodies.size() == 1 && Near(ru.bodies[0].Volume(), 240.0, 1e-9), "AcisSab: header units 2 scale the box volume to 8 x 30 = 240 (1e-9)");
+  // (3) auto-detection and wrong-reader refusals
+  {
+    std::istringstream is(sab);
+    const AcisSatReadResult ra = dino8::kernel::ReadAcis(is);
+    Check(ra.ok && ra.bodies.size() == 1, "AcisSab: ReadAcis auto-detects the binary file");
+    std::istringstream it(BoxSat(2.0, 3.0, 5.0));
+    const AcisSatReadResult rt = dino8::kernel::ReadAcis(it);
+    Check(rt.ok && rt.bodies.size() == 1, "AcisSab: ReadAcis auto-detects the text file");
+    std::istringstream is2(sab);
+    const AcisSatReadResult rs = dino8::kernel::ReadAcisSat(is2);
+    Check(!rs.ok && rs.error.find("binary SAB") != std::string::npos, ("AcisSab: ReadAcisSat refuses a SAB file and names it: " + rs.error).c_str());
+    const AcisSatReadResult rb = ReadSab(BoxSat(2.0, 3.0, 5.0));
+    Check(!rb.ok && rb.error.find("signature") != std::string::npos, ("AcisSab: ReadAcisSab refuses SAT text: " + rb.error).c_str());
+    Check(dino8::kernel::LooksLikeAcisSab(sab) && !dino8::kernel::LooksLikeAcisSab(BoxSat(1, 1, 1)), "AcisSab: LooksLikeAcisSab tells the encodings apart");
+  }
+}
+
+void TestAcisSabWriterBytesEqualTestSideEncoder() {
+  // The library writer's bytes must equal the test-side encoder applied to the library's own SAT text, for planes only
+  // (box), and for the layouts that need the opt-in (cylinder, sphere, torus, filleted box).
+  struct Case {
+    const char* label;
+    Brep b;
+    bool unverified;
+  };
+  using dino8::kernel::NurbsCurve;
+  std::vector<Case> cases;
+  cases.push_back({"box", Brep::BoxWelded(0, 0, 0, 2, 3, 4), false});
+  cases.push_back({"cylinder", Brep::Revolve(NurbsCurve::FromControlPoints({Point3d(2, 0, 0), Point3d(2, 0, 5)}, 1), Point3d(0, 0, 0), Vector3d(0, 0, 1)), true});
+  cases.push_back({"sphere", Brep::Sphere(Point3d(1, 2, 3), 2.5), true});
+  cases.push_back({"torus", Brep::Torus(Point3d(1, 2, 3), Vector3d(0, 0, 1), 3.0, 1.0), true});
+  cases.push_back({"filleted box", dino8::kernel::FilletConvexEdge(Brep::BoxWelded(0, 0, 0, 2, 3, 4), Point3d(0, 0, 4), Point3d(2, 0, 4), 0.5), true});
+  for (const Case& c : cases) {
+    std::string sab, why;
+    const bool ok = WriteSab(c.b, c.unverified, sab, &why);
+    Check(ok, (std::string("AcisSab: ") + c.label + " writes to SAB: " + why).c_str());
+    if (!ok) continue;
+    const std::string ref = EncodeSatTextAsSab(WriteSatText(c.b, c.unverified));
+    std::printf("  SAB bytes %s: %zu bytes written, %zu by the independent test encoder\n", c.label, sab.size(), ref.size());
+    Check(sab == ref, (std::string("AcisSab: ") + c.label + " writer bytes are identical to the test-side encoder's bytes").c_str());
+  }
+  std::string sab;
+  WriteSab(Brep::BoxWelded(0, 0, 0, 2, 3, 4), false, sab);
+  Check(sab.compare(0, 15, "ACIS BinaryFile") == 0 && sab.compare(15, 4, std::string("\xBC\x02\0\0", 4)) == 0,
+        "AcisSab: writer starts with the signature and version 700 little-endian (BC 02 00 00)");
+  const std::string tail = std::string("\x0D\x10", 2) + "End-of-ACIS-data" + std::string("\x11", 1);
+  Check(sab.size() > tail.size() && sab.compare(sab.size() - tail.size(), tail.size(), tail) == 0, "AcisSab: writer ends with the End-of-ACIS-data record");
+  // refusals match the text writer's: UNVERIFIED layouts need the opt-in, nothing is written
+  std::string out, why;
+  const bool ok = WriteSab(Brep::Sphere(Point3d(0, 0, 0), 1.0), false, out, &why);
+  Check(!ok && out.empty() && why.find("UNVERIFIED") != std::string::npos, ("AcisSab: writing a sphere without the opt-in is refused: " + why).c_str());
+}
+
+// Round trip through SAB: counts and measures against the source (same tolerances as the SAT round trips) AND against the SAT round trip
+// of the same body, which must agree to 1e-9 because the binary doubles are bit-exact.
+void RoundTripSab(const std::string& label, const Brep& b, double tol_vs_source, bool seams_differ, bool unverified) {
+  const Measured before = Measure(b);
+  std::string sab, why;
+  const bool wrote = WriteSab(b, unverified, sab, &why);
+  Check(wrote, ("AcisSab: " + label + " writes without refusal: " + why).c_str());
+  if (!wrote) return;
+  const AcisSatReadResult r = ReadSab(sab, unverified);
+  Check(r.ok && r.bodies.size() == 1, ("AcisSab: " + label + " reads back as one body: " + r.error).c_str());
+  if (!r.ok || r.bodies.size() != 1) return;
+  const Measured after = Measure(r.bodies[0]);
+  const AcisSatReadResult rs = ReadText(WriteSatText(b, unverified), unverified);
+  Check(rs.ok && rs.bodies.size() == 1, ("AcisSab: " + label + " SAT round trip (for comparison) reads back").c_str());
+  if (!rs.ok || rs.bodies.size() != 1) return;
+  const Measured via_sat = Measure(rs.bodies[0]);
+  std::printf("  %s via SAB: %zu bytes, volume %.12g -> %.12g (via SAT %.12g), area %.12g -> %.12g (via SAT %.12g), F %d->%d E %d->%d V %d->%d\n",
+              label.c_str(), sab.size(), before.volume, after.volume, via_sat.volume, before.area, after.area, via_sat.area, before.faces,
+              after.faces, before.edges, after.edges, before.verts, after.verts);
+  Check(Near(before.volume, after.volume, std::fabs(before.volume) * tol_vs_source), ("AcisSab: " + label + " volume vs source within tolerance").c_str());
+  Check(Near(before.area, after.area, std::fabs(before.area) * tol_vs_source), ("AcisSab: " + label + " area vs source within tolerance").c_str());
+  Check(Near(via_sat.volume, after.volume, std::fabs(via_sat.volume) * 1e-9) && Near(via_sat.area, after.area, std::fabs(via_sat.area) * 1e-9),
+        ("AcisSab: " + label + " SAB and SAT read-backs agree on volume and area to 1e-9").c_str());
+  Check(before.faces == after.faces && after.faces == via_sat.faces, ("AcisSab: " + label + " face count identical").c_str());
+  Check(after.edges == via_sat.edges && after.verts == via_sat.verts, ("AcisSab: " + label + " edge and vertex counts equal the SAT read-back's").c_str());
+  if (!seams_differ) {
+    Check(before.edges == after.edges && before.verts == after.verts, ("AcisSab: " + label + " edge and vertex counts equal the source's").c_str());
+  }
+  // SAT -> SAB -> SAT equality. B1 is a body read from SAT text. Path A re-writes B1 as SAT and reads that; path B writes B1 as SAB and
+  // reads that. Both read the same record stream, so re-writing either result as SAT text (and as SAB bytes) must give identical bytes.
+  // (Write-then-read is not idempotent on its own for every body - the writer reorders records - so B1 itself is not the reference.)
+  const AcisSatReadResult b1 = ReadText(WriteSatText(b, unverified), unverified);
+  std::string sab_b1;
+  WriteSab(b1.bodies[0], unverified, sab_b1);
+  const AcisSatReadResult path_a = ReadText(WriteSatText(b1.bodies[0], unverified), unverified);
+  const AcisSatReadResult path_b = ReadSab(sab_b1, unverified);
+  Check(path_a.ok && path_a.bodies.size() == 1 && path_b.ok && path_b.bodies.size() == 1, ("AcisSab: " + label + " SAT-path and SAB-path second-generation bodies read").c_str());
+  if (!(path_a.ok && path_a.bodies.size() == 1 && path_b.ok && path_b.bodies.size() == 1)) return;
+  const std::string sat_a = WriteSatText(path_a.bodies[0], unverified), sat_b = WriteSatText(path_b.bodies[0], unverified);
+  std::string sab_a, sab_b;
+  WriteSab(path_a.bodies[0], unverified, sab_a);
+  WriteSab(path_b.bodies[0], unverified, sab_b);
+  Check(!sat_a.empty() && sat_a == sat_b, ("AcisSab: " + label + " SAT -> SAB -> SAT: text re-written from the SAB path equals the SAT path's (" + std::to_string(sat_a.size()) + " bytes)").c_str());
+  Check(!sab_a.empty() && sab_a == sab_b, ("AcisSab: " + label + " SAB bytes re-written from the SAB path equal the SAT path's (" + std::to_string(sab_a.size()) + " bytes)").c_str());
+}
+
+void TestAcisSabRoundTripBox() { RoundTripSab("box", Brep::BoxWelded(0, 0, 0, 2, 3, 4), 1e-9, false, false); }
+void TestAcisSabRoundTripBooleanPocket() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  const Brep pocket = BooleanCombinePlanar(Brep::BoxWelded(0, 0, 0, 4, 4, 4), Brep::BoxWelded(1, 1, 1, 3, 3, 5), BooleanOp::Difference);
+  Check(Near(pocket.Volume(), 52.0, 1e-9) && Near(pocket.Area(), 120.0, 1e-9), "AcisSab: pocket source volume 52 and area 120");
+  RoundTripSab("pocket box", pocket, 1e-9, false, false);
+}
+void TestAcisSabRoundTripCylinder() {
+  using dino8::kernel::NurbsCurve;
+  const Brep cyl = Brep::Revolve(NurbsCurve::FromControlPoints({Point3d(2, 0, 0), Point3d(2, 0, 5)}, 1), Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  g_mesh_measure = true;
+  RoundTripSab("cylinder (UNVERIFIED layout)", cyl, 1e-3, true, true);
+  g_mesh_measure = false;
+}
+void TestAcisSabRoundTripSphere() { RoundTripSab("sphere (UNVERIFIED layout)", Brep::Sphere(Point3d(1, 2, 3), 2.5), 1e-3, false, true); }
+void TestAcisSabRoundTripTorus() {
+  RoundTripSab("torus (UNVERIFIED layout)", Brep::Torus(Point3d(1, 2, 3), Vector3d(0, 0, 1), 3.0, 1.0), 1e-3, false, true);
+}
+void TestAcisSabRoundTripFilletedBox() {
+  const Brep f = dino8::kernel::FilletConvexEdge(Brep::BoxWelded(0, 0, 0, 2, 3, 4), Point3d(0, 0, 4), Point3d(2, 0, 4), 0.5);
+  g_mesh_measure = true;
+  RoundTripSab("filleted box (UNVERIFIED layout)", f, 1e-3, false, true);
+  g_mesh_measure = false;
+}
+
+void TestAcisSabSheetBodyRoundTrips() {
+  const AcisSatReadResult r = ReadSab(EncodeSatTextAsSab(SheetSat()));
+  Check(r.ok && r.bodies.size() == 1 && r.bodies[0].FaceCount() == 1 && Near(r.bodies[0].Area(), 6.0, 1e-9),
+        ("AcisSab: sheet fixture (double-sided face = two-valued bools 'double' and 'out') reads, area 6 to 1e-9: " + r.error).c_str());
+  if (!r.ok) return;
+  std::string sab;
+  Check(WriteSab(r.bodies[0], false, sab), "AcisSab: sheet body writes");
+  const AcisSatReadResult r2 = ReadSab(sab);
+  Check(r2.ok && r2.bodies.size() == 1 && Near(r2.bodies[0].Area(), 6.0, 1e-9), "AcisSab: sheet body SAB write-then-read keeps area 6 (1e-9)");
+}
+
+// ----- hostile input -----
+
+std::string Refusal(const std::string& bytes, bool* refused_cleanly = nullptr) {
+  const AcisSatReadResult r = ReadSab(bytes, true);
+  if (refused_cleanly) *refused_cleanly = !r.ok && r.bodies.empty() && !r.error.empty();
+  return r.ok ? std::string("(accepted)") : r.error;
+}
+
+void TestAcisSabRefusesHostileInput() {
+  const std::string good = EncodeSatTextAsSab(BoxSat(2.0, 3.0, 5.0));
+  Check(ReadSab(good).ok, "AcisSab hostile: the unmodified fixture reads");
+  auto expect_refused = [&](const std::string& what, const std::string& bytes, const char* needle) {
+    bool clean = false;
+    const std::string why = Refusal(bytes, &clean);
+    std::printf("  hostile %s: %s\n", what.c_str(), why.c_str());
+    Check(clean && (!needle || why.find(needle) != std::string::npos), ("AcisSab hostile: " + what + " is refused with a reason naming '" + (needle ? needle : "") + "'").c_str());
+  };
+  expect_refused("empty input", "", "empty");
+  expect_refused("signature only", good.substr(0, 15), "truncated");
+  {
+    std::string t = good;
+    t[3] = 'X';
+    expect_refused("corrupt signature", t, "signature");
+  }
+  {
+    std::string t = good;
+    t[15] = static_cast<char>(0x01);  // version 0x2BC -> 0x201 = 513? low byte only; use a clearly bad version below
+    t[16] = 0x7F;
+    expect_refused("unsupported version", t, "version");
+  }
+  {
+    std::string t = good;
+    t.replace(19, 4, std::string("\xFF\xFF\xFF\x7F", 4));  // declared record count 2^31-1
+    expect_refused("declared record count larger than the file can hold", t, "cannot fit");
+  }
+  {
+    std::string t = good;
+    t.replace(19, 4, std::string("\xFF\xFF\xFF\xFF", 4));  // -1
+    expect_refused("negative record count", t, "negative");
+  }
+  {
+    // string length 0xFFFFFFFF in a 32-bit-length string tag: must be refused before any allocation
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("body");
+    b.U8(0x09);
+    b.U32(0xFFFFFFFFu);
+    b.Raw("abc", 3);
+    b.Term();
+    b.End();
+    expect_refused("string length 0xFFFFFFFF", b.o, "runs past the end");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("body");
+    b.U8(0x7F);
+    b.Term();
+    b.End();
+    expect_refused("unknown token tag 0x7F", b.o, "0x7F");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("body");
+    b.U8(0x15);
+    b.U32(1);
+    b.Term();
+    b.End();
+    expect_refused("enum tag 0x15 (not in the table)", b.o, "0x15");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("point");
+    b.Ptr(-1);
+    b.Int(-1);
+    b.Ptr(-1);
+    b.Pos(1, std::numeric_limits<double>::quiet_NaN(), 3);
+    b.Term();
+    b.End();
+    expect_refused("NaN coordinate", b.o, "non-finite");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("point");
+    b.U8(0x06);
+    b.F64(std::numeric_limits<double>::infinity());
+    b.Term();
+    b.End();
+    expect_refused("infinite double", b.o, "non-finite");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0, std::numeric_limits<double>::infinity());
+    b.End();
+    expect_refused("infinite header units", b.o, "non-finite");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0, -1.0);
+    b.End();
+    expect_refused("negative header units", b.o, "units");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("body");
+    for (int i = 0; i < 100; ++i) b.U8(0x0F);
+    b.Term();
+    b.End();
+    expect_refused("sub-type nesting 100 deep", b.o, "nesting");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("body");
+    b.U8(0x10);
+    b.Term();
+    b.End();
+    expect_refused("unbalanced closing brace", b.o, "unbalanced");
+  }
+  {
+    SabB b;
+    b.Header(700, 0, 0);
+    b.U8(0x0C);  // a record that does not start with a name
+    b.End();
+    expect_refused("record without a name token", b.o, "entity name");
+  }
+  {
+    // a token flood: one record holding more tokens than the limit; refused by the token cap without building 4M+ tokens' worth of anything else
+    SabB b;
+    b.Header(700, 0, 0);
+    b.Name("body");
+    b.o.append(size_t(2u << 20) + 16, static_cast<char>(0x0A));
+    b.Term();
+    b.End();
+    expect_refused("more than 2 Mi tokens in one record", b.o, "tokens (limit)");
+  }
+  {
+    // pointers and chains, via the text fixture re-encoded
+    auto edit = [&](const std::string& a, const std::string& b2) {
+      std::string t = BoxSat(2.0, 3.0, 5.0);
+      const size_t at = t.find(a);
+      if (at != std::string::npos) t.replace(at, a.size(), b2);
+      return std::make_pair(at != std::string::npos, EncodeSatTextAsSab(t));
+    };
+    auto cyc = edit("face $-1 -1 $-1 $-1 $14 $2 ", "face $-1 -1 $-1 $3 $14 $2 ");
+    Check(cyc.first, "AcisSab hostile: cyclic face chain edit applied");
+    expect_refused("cyclic face chain", cyc.second, "loops back");
+    auto dangling = edit("$67 forward single", "$99999 forward single");
+    Check(dangling.first, "AcisSab hostile: dangling pointer edit applied");
+    expect_refused("dangling pointer", dangling.second, "outside");
+    auto loopring = edit("coedge $-1 -1 $-1 $17 $15 ", "coedge $-1 -1 $-1 $16 $15 ");  // coedge 16 points at itself: the ring never returns to coedge 15
+    Check(loopring.first, "AcisSab hostile: self-referencing coedge edit applied");
+    expect_refused("coedge ring that revisits a coedge", loopring.second, "does not close");
+    auto lumploop = edit("lump $-1 -1 $-1 $-1 $2 $0", "lump $-1 -1 $-1 $1 $2 $0");  // lump whose next-lump is itself
+    Check(lumploop.first, "AcisSab hostile: self-referencing lump edit applied");
+    expect_refused("lump chain that points at itself", lumploop.second, "lump chain");
+  }
+  {
+    // trailing bytes after the end record are tolerated with a warning
+    const AcisSatReadResult r = ReadSab(good + "junk");
+    bool noted = false;
+    for (const auto& w : r.warnings) noted = noted || w.find("after the end marker") != std::string::npos;
+    Check(r.ok && noted, "AcisSab: bytes after the end record are ignored with a warning");
+  }
+}
+
+// A stream that yields an endless run of zero bytes: the reader must stop at its size limit, not keep reading or allocate without bound.
+struct EndlessZeros : std::streambuf {
+  std::vector<char> buf = std::vector<char>(1 << 16, '\0');
+  long long served = 0;
+  int_type underflow() override {
+    setg(buf.data(), buf.data(), buf.data() + buf.size());
+    served += static_cast<long long>(buf.size());
+    return traits_type::to_int_type(buf[0]);
+  }
+};
+
+void TestAcisSabRefusesOversizedInputWithoutReadingItAll() {
+  EndlessZeros src;
+  std::istream is(&src);
+  // starts like a SAB file so that only the size limit can be the reason
+  const AcisSatReadResult r = dino8::kernel::ReadAcisSab(is);
+  std::printf("  oversized: served %lld bytes before refusing: %s\n", src.served, r.error.c_str());
+  Check(!r.ok && r.error.find("limit") != std::string::npos, "AcisSab: an endless input is refused with the size-limit reason");
+  Check(src.served <= (130LL << 20), "AcisSab: the reader stopped reading near the 128 MiB limit (did not drain the stream)");
+  EndlessZeros src2;
+  std::istream is2(&src2);
+  const AcisSatReadResult r2 = dino8::kernel::ReadAcisSat(is2);
+  Check(!r2.ok && r2.error.find("limit") != std::string::npos && src2.served <= (130LL << 20), "AcisSab: the SAT text reader has the same size limit");
+}
+
+struct FuzzStats {
+  int tried = 0, refused = 0, accepted = 0, malformed_result = 0, threw = 0;
+};
+
+void FuzzOne(const std::string& bytes, FuzzStats& st) {
+  ++st.tried;
+  try {
+    const AcisSatReadResult r = ReadSab(bytes, true);
+    if (!r.ok) {
+      if (r.bodies.empty() && !r.error.empty()) ++st.refused;
+      else ++st.malformed_result;
+    } else {
+      bool sane = !r.bodies.empty();
+      for (const Brep& b : r.bodies) sane = sane && b.FaceCount() > 0;
+      if (sane) ++st.accepted;
+      else ++st.malformed_result;
+    }
+  } catch (...) {
+    ++st.threw;
+  }
+}
+
+void FuzzFile(const char* label, const std::string& valid, size_t trunc_step, int flips, uint64_t seed, FuzzStats& total) {
+  FuzzStats st;
+  for (size_t cut = 0; cut < valid.size(); cut += trunc_step) FuzzOne(valid.substr(0, cut), st);
+  const int trunc_tried = st.tried;
+  const int trunc_refused = st.refused;
+  uint64_t x = seed;
+  auto rnd = [&]() {
+    x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+    return static_cast<uint32_t>(x >> 33);
+  };
+  for (int k = 0; k < flips; ++k) {
+    std::string t = valid;
+    const int mode = static_cast<int>(rnd() % 4);
+    const size_t pos = rnd() % t.size();
+    if (mode == 0) t[pos] = static_cast<char>(t[pos] ^ (1 << (rnd() % 8)));         // one bit
+    else if (mode == 1) t[pos] = static_cast<char>(rnd() & 0xFF);                    // one random byte
+    else if (mode == 2) t[pos] = (rnd() & 1) ? static_cast<char>(0xFF) : '\0';       // 0x00 / 0xFF
+    else {                                                                           // several bits at once
+      for (int q = 0; q < 4; ++q) {
+        const size_t p2 = rnd() % t.size();
+        t[p2] = static_cast<char>(t[p2] ^ (1 << (rnd() % 8)));
+      }
+    }
+    FuzzOne(t, st);
+  }
+  std::printf("  fuzz %s (%zu bytes): %d truncations (%d refused), %d mutations; totals: %d tried, %d refused with a reason, %d accepted, %d malformed results, %d exceptions\n",
+              label, valid.size(), trunc_tried, trunc_refused, flips, st.tried, st.refused, st.accepted, st.malformed_result, st.threw);
+  Check(trunc_tried == trunc_refused, (std::string("AcisSab fuzz: every proper prefix of the ") + label + " file is refused with a reason").c_str());
+  total.tried += st.tried;
+  total.refused += st.refused;
+  total.accepted += st.accepted;
+  total.malformed_result += st.malformed_result;
+  total.threw += st.threw;
+}
+
+void TestAcisSabFuzzTruncationAndBitFlips() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::NurbsCurve;
+  FuzzStats total;
+  FuzzFile("box fixture", EncodeSatTextAsSab(BoxSat(2.0, 3.0, 5.0)), 1, 3000, 0x5AB0001ULL, total);
+  std::string pocket;
+  WriteSab(BooleanCombinePlanar(Brep::BoxWelded(0, 0, 0, 4, 4, 4), Brep::BoxWelded(1, 1, 1, 3, 3, 5), BooleanOp::Difference), false, pocket);
+  FuzzFile("pocket box", pocket, 5, 2500, 0x5AB0002ULL, total);
+  std::string cyl;
+  WriteSab(Brep::Revolve(NurbsCurve::FromControlPoints({Point3d(2, 0, 0), Point3d(2, 0, 5)}, 1), Point3d(0, 0, 0), Vector3d(0, 0, 1)), true, cyl);
+  FuzzFile("cylinder", cyl, 3, 2500, 0x5AB0003ULL, total);
+  std::string tor;
+  WriteSab(Brep::Torus(Point3d(1, 2, 3), Vector3d(0, 0, 1), 3.0, 1.0), true, tor);
+  FuzzFile("torus", tor, 1, 1500, 0x5AB0004ULL, total);
+  std::printf("  fuzz total: %d inputs, %d refused with a reason, %d still read as a valid body, %d malformed results, %d exceptions\n", total.tried,
+              total.refused, total.accepted, total.malformed_result, total.threw);
+  Check(total.threw == 0, "AcisSab fuzz: no exception escaped the reader on any input");
+  Check(total.malformed_result == 0, "AcisSab fuzz: every result is either ok with at least one valid body or refused with a reason and no bodies");
+  Check(total.tried > 8000 && total.refused > 0, "AcisSab fuzz: thousands of inputs were exercised");
+}
+
 }  // namespace acis_sat_tests
 
 
@@ -97574,6 +98221,18 @@ int main() {
   RunTest("acis_sat_tests::TestAcisSatRoundTripAppStylePrimitives", acis_sat_tests::TestAcisSatRoundTripAppStylePrimitives);
   RunTest("acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix", acis_sat_tests::TestAcisSatTruncationSweepRefusesEveryPrefix);
   RunTest("acis_sat_tests::TestAcisSatRefusesBadInput", acis_sat_tests::TestAcisSatRefusesBadInput);
+  RunTest("acis_sat_tests::TestAcisSabReadsHandBuiltBytesAndFixtureBox", acis_sat_tests::TestAcisSabReadsHandBuiltBytesAndFixtureBox);
+  RunTest("acis_sat_tests::TestAcisSabWriterBytesEqualTestSideEncoder", acis_sat_tests::TestAcisSabWriterBytesEqualTestSideEncoder);
+  RunTest("acis_sat_tests::TestAcisSabRoundTripBox", acis_sat_tests::TestAcisSabRoundTripBox);
+  RunTest("acis_sat_tests::TestAcisSabRoundTripBooleanPocket", acis_sat_tests::TestAcisSabRoundTripBooleanPocket);
+  RunTest("acis_sat_tests::TestAcisSabRoundTripCylinder", acis_sat_tests::TestAcisSabRoundTripCylinder);
+  RunTest("acis_sat_tests::TestAcisSabRoundTripSphere", acis_sat_tests::TestAcisSabRoundTripSphere);
+  RunTest("acis_sat_tests::TestAcisSabRoundTripTorus", acis_sat_tests::TestAcisSabRoundTripTorus);
+  RunTest("acis_sat_tests::TestAcisSabRoundTripFilletedBox", acis_sat_tests::TestAcisSabRoundTripFilletedBox);
+  RunTest("acis_sat_tests::TestAcisSabSheetBodyRoundTrips", acis_sat_tests::TestAcisSabSheetBodyRoundTrips);
+  RunTest("acis_sat_tests::TestAcisSabRefusesHostileInput", acis_sat_tests::TestAcisSabRefusesHostileInput);
+  RunTest("acis_sat_tests::TestAcisSabRefusesOversizedInputWithoutReadingItAll", acis_sat_tests::TestAcisSabRefusesOversizedInputWithoutReadingItAll);
+  RunTest("acis_sat_tests::TestAcisSabFuzzTruncationAndBitFlips", acis_sat_tests::TestAcisSabFuzzTruncationAndBitFlips);
 
   RunTest("sweep1_sections_tests::TestSweep1SectionsStraightRailTwoAndThreeSectionsPassThroughAndFrustumVolume",
           sweep1_sections_tests::TestSweep1SectionsStraightRailTwoAndThreeSectionsPassThroughAndFrustumVolume);
