@@ -3,6 +3,7 @@
 // curve arrays, alignment, and planar slicing (Contour/Section/CutPlane).
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
+#include "dino8/kernel/surface_intersect.h"
 
 #include <algorithm>
 #include <cstring>
@@ -374,12 +375,37 @@ std::vector<Point3d> CurvePlaneHits(const kernel::NurbsCurve& c, const ON_Plane&
 // The pieces (points for a curve source, polylines for anything with a surface mesh) where `o` meets
 // `plane`, in the order the live command adds them. Shared by SliceObjects (Contour/Section/CSec)
 // and RebuildSlicePiece (UpdateHistory), so a rebuild cuts exactly what the command cut.
-std::vector<SceneObject> SlicePieces(CommandContext& ctx, const SceneObject& o, const ON_Plane& plane) {
+//
+// A B-rep object (a primitive, a polysurface) is sectioned on the EXACT route first: the kernel's
+// SectionBrepByPlaneJoined() intersects the plane with every face's own surface and joins the pieces into
+// one NURBS curve per physical contour (a true circle for a cylinder cut, no chord error), instead of
+// slicing the render mesh. Only when that finds nothing (a face type the surface intersector cannot
+// seed, a grazing plane) does it fall back to the mesh slice below, so nothing the command used to find
+// is lost. `exact` (optional) is set when the pieces came from the exact route.
+std::vector<SceneObject> SlicePieces(CommandContext& ctx, const SceneObject& o, const ON_Plane& plane, bool* exact = nullptr) {
   std::vector<SceneObject> out;
   const double tol = ctx.Settings().absolute_tolerance * 10;
+  if (exact) *exact = false;
   if (o.kind == ObjectKind::Curve && o.curve) {
     for (const Point3d& p : CurvePlaneHits(*o.curve, plane)) out.push_back(SceneObject::MakePoint(p));
     return out;
+  }
+  if (o.kind == ObjectKind::Brep && o.brep) {
+    try {
+      kernel::IntersectOptions opt;
+      opt.tolerance = 1e-5;
+      opt.mesh_tolerance = 0.02;
+      for (kernel::BrepSectionContour& c : kernel::SectionBrepByPlaneJoined(o.brep->raw(), plane, opt)) {
+        if (c.curve.Length() <= tol) continue;  // a grazing touch, not a contour
+        out.push_back(SceneObject::MakeCurve(std::move(c.curve)));
+      }
+    } catch (const std::exception&) {
+      out.clear();
+    }
+    if (!out.empty()) {
+      if (exact) *exact = true;
+      return out;
+    }
   }
   std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
   if (!m) return out;
@@ -394,13 +420,15 @@ std::vector<SceneObject> SlicePieces(CommandContext& ctx, const SceneObject& o, 
 // while History is On: sources {the sliced object}, the plane, how many pieces that object gave and
 // which one this is.
 int SliceObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Plane& plane, const std::string& label,
-                 const char* history = nullptr) {
+                 const char* history = nullptr, int* exact_made = nullptr) {
   int made = 0;
   for (ObjectId id : ids) {
     const SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
     const SceneObject like = *o;  // the document may reallocate on Add
-    std::vector<SceneObject> pieces = SlicePieces(ctx, like, plane);
+    bool was_exact = false;
+    std::vector<SceneObject> pieces = SlicePieces(ctx, like, plane, &was_exact);
+    if (was_exact && exact_made) *exact_made += static_cast<int>(pieces.size());
     const double n = static_cast<double>(pieces.size());
     double k = 0;
     for (SceneObject& p : pieces) {
@@ -1256,13 +1284,14 @@ class ContourCommand : public Command {
       lo = std::min(lo, d); hi = std::max(hi, d);
     }
     ctx.Doc().BeginChange("Contour");
-    int made = 0, planes = 0;
+    int made = 0, planes = 0, exact = 0;
     for (double d = std::ceil(lo / spacing) * spacing; d <= hi + 1e-9; d += spacing) {
       ON_Plane pl(*base_ + dir_ * d, dir_);
-      made += SliceObjects(ctx, ids_, pl, "Contour", "Contour");
+      made += SliceObjects(ctx, ids_, pl, "Contour", "Contour", &exact);
       ++planes;
     }
-    ctx.Print("Contour: " + std::to_string(made) + " curve(s) from " + std::to_string(planes) + " plane(s)");
+    ctx.Print("Contour: " + std::to_string(made) + " curve(s) from " + std::to_string(planes) + " plane(s)" +
+              (exact > 0 ? " (" + std::to_string(exact) + " exact B-rep section curve(s), the rest mesh slices)" : " (mesh slices)"));
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
@@ -1285,8 +1314,10 @@ class SectionCommand : public Command {
     if (!n.Unitize()) { ctx.Warn("Section line has no length"); return; }
     ctx.ClearPreview();
     ctx.Doc().BeginChange("Section");
-    int made = SliceObjects(ctx, ids_, ON_Plane(*a_, n), "Section", "Section");
-    ctx.Print("Section: " + std::to_string(made) + " curve(s)");
+    int exact = 0;
+    int made = SliceObjects(ctx, ids_, ON_Plane(*a_, n), "Section", "Section", &exact);
+    ctx.Print("Section: " + std::to_string(made) + " curve(s)" +
+              (exact > 0 ? " (" + std::to_string(exact) + " exact B-rep section curve(s), the rest mesh slices)" : " (mesh slices)"));
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override { if (a_) { ctx.ClearPreview(); ctx.AddPreviewLine(*a_, h); } }

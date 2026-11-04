@@ -2192,6 +2192,64 @@ std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const 
   return out;
 }
 
+std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
+  std::vector<BrepSectionContour> out;
+  std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, plane, opt);
+  if (hits.empty()) return out;
+  const double jtol = std::max(opt.tolerance * 10.0, 1e-6);
+  const size_t n = hits.size();
+  std::vector<bool> used(n, false);
+  auto usable = [&](size_t i) { return hits[i].curve.curve.IsValid() && hits[i].curve.curve.CVCount() >= 2; };
+  for (size_t i = 0; i < n; ++i) {
+    if (used[i] || !usable(i)) continue;
+    used[i] = true;
+    BrepSectionContour c;
+    c.curve.raw() = hits[i].curve.curve;
+    c.piece_count = 1;
+    c.face_indices.push_back(hits[i].face_index);
+    if (hits[i].curve.closed || c.curve.raw().PointAtStart().DistanceTo(c.curve.raw().PointAtEnd()) <= jtol) {
+      c.closed = true;
+      out.push_back(std::move(c));
+      continue;
+    }
+    // Grow at the end, then reverse and grow at the (former) start.
+    for (int pass = 0; pass < 2; ++pass) {
+      bool grew = true;
+      while (grew) {
+        grew = false;
+        const Point3d tail = c.curve.raw().PointAtEnd();
+        for (size_t j = 0; j < n; ++j) {
+          if (used[j] || !usable(j)) continue;
+          NurbsCurve q;
+          q.raw() = hits[j].curve.curve;
+          const double ds = q.raw().PointAtStart().DistanceTo(tail), de = q.raw().PointAtEnd().DistanceTo(tail);
+          if (std::min(ds, de) > jtol) continue;
+          try {
+            if (c.curve.Join(q, jtol) != Result::Ok) continue;
+          } catch (const std::exception&) {
+            continue;
+          }
+          used[j] = true;
+          ++c.piece_count;
+          c.face_indices.push_back(hits[j].face_index);
+          grew = true;
+          break;
+        }
+      }
+      if (pass == 0) {
+        c.curve.Reverse();
+        std::reverse(c.face_indices.begin(), c.face_indices.end());
+      }
+    }
+    if (c.piece_count >= 2 && c.curve.raw().PointAtStart().DistanceTo(c.curve.raw().PointAtEnd()) <= jtol) {
+      c.closed = true;
+      c.curve.SetControlPointAt(c.curve.ControlPointCount() - 1, c.curve.ControlPointAt(0));
+    }
+    out.push_back(std::move(c));
+  }
+  return out;
+}
+
 namespace {
 
 // Segment / triangle intersection (Moller-Trumbore), returns the segment parameter.

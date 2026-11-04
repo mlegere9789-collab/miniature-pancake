@@ -202,6 +202,33 @@ struct BrepPlaneIntersection {
 // the same way a caller of IntersectBreps() would).
 std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt);
 
+// One physical plane-section contour of a whole B-rep, stitched out of the
+// per-face pieces IntersectBrepByPlane() returns (see
+// SectionBrepByPlaneJoined() just below).
+struct BrepSectionContour {
+  NurbsCurve curve;                // one continuous NURBS curve (C0 across face seams)
+  bool closed = false;             // its end meets its start within the join tolerance (seam snapped shut)
+  int piece_count = 0;             // how many IntersectBrepByPlane() pieces were joined into it
+  std::vector<int> face_indices;   // the face each piece came from, in chain order
+};
+
+// The "Body sectioning" feature operation (PARITY_MAP.md: kernel: Feature
+// operations, "Body sectioning" - the app's Section/Contour used to slice the
+// render MESH, a chord-approximated polyline): the exact-route counterpart
+// that hands back ONE joined NURBS curve per physical section contour.
+// IntersectBrepByPlane() returns un-stitched, one-or-more pieces per face
+// (its own doc comment says so); this chains pieces whose endpoints meet
+// within `max(opt.tolerance * 10, 1e-6)` using NurbsCurve::Join() (exact
+// splice, reversing a piece when its far end is the one that meets), and
+// snaps a chain whose end returns to its start shut (so IsClosed() is true).
+// A piece that is already closed (a full circle on a cylinder wall) is
+// returned as is. Every returned point still lies on the true section of the
+// faces (refined to opt.tolerance on both the face and the plane), not on a
+// tessellation of them. Returns empty for an invalid plane or a plane that
+// misses the B-rep. Pieces are never merged across a gap larger than the join
+// tolerance, so a section with a genuine gap yields separate contours.
+std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt);
+
 struct CurveSurfaceHit {
   double t = 0;           // curve parameter
   ON_2dPoint uv;          // surface parameters

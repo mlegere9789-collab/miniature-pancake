@@ -99735,9 +99735,153 @@ void TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency() {
 
 }  // namespace topology_shell_tests
 
+// "Body sectioning" feature operation (kernel: Feature operations): SectionBrepByPlaneJoined() hands back ONE joined
+// NURBS curve per physical plane-section contour of a B-rep, via the exact surface-vs-plane route (not a mesh slice).
+// Oracles are closed forms (circle circumference, sphere cap radius sqrt(R^2-d^2), rectangle perimeter, ellipse
+// perimeter by an independent numerical integral) and point-membership measured against the primitive's own equation.
+namespace body_section_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::BrepSectionContour;
+using dino8::kernel::IntersectOptions;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Point3d;
+using dino8::kernel::SectionBrepByPlaneJoined;
+
+IntersectOptions SectionOpt() {
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+  return opt;
+}
+
+// Max / min of f(point) over dense samples of the contour's curve.
+template <class F>
+void SampleRange(const NurbsCurve& c, int n, F f, double& lo, double& hi) {
+  lo = 1e300;
+  hi = -1e300;
+  const auto d = c.Domain();
+  for (int i = 0; i <= n; ++i) {
+    const double v = f(c.PointAt(d.min + (d.max - d.min) * i / n));
+    lo = std::min(lo, v);
+    hi = std::max(hi, v);
+  }
+}
+
+void TestBodySectionCylinderIsOneClosedExactCircle() {
+  const double R = 2.0, H = 10.0;
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({Point3d(1, -2, 0), Point3d(1, -2, H)}, 1);
+  const Brep rod = Brep::Pipe(rail, R, /*cap=*/true, /*stations=*/2);
+  const ON_Plane plane(ON_3dPoint(0, 0, 5.0), ON_3dVector(0, 0, 1));
+  const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(rod.raw(), plane, SectionOpt());
+  Check(sec.size() == 1, "a plane across a cylinder wall gives exactly ONE joined contour (not one piece per face/seam)");
+  if (sec.size() != 1) return;
+  const BrepSectionContour& c = sec[0];
+  Check(c.closed, "the cylinder section contour is closed");
+  Check(c.curve.IsClosed(), "the returned NURBS curve itself reports IsClosed()");
+  double rlo, rhi, zlo, zhi;
+  SampleRange(c.curve, 720, [](Point3d p) { return std::hypot(p.x - 1.0, p.y + 2.0); }, rlo, rhi);
+  SampleRange(c.curve, 720, [](Point3d p) { return p.z; }, zlo, zhi);
+  Check(rlo > R - 1e-4 && rhi < R + 1e-4, "every sampled point of the contour (not only its refined input points) is within 1e-4 of the radius R from the axis");
+  Check(zlo > 5.0 - 1e-6 && zhi < 5.0 + 1e-6, "the whole contour lies on the section plane z=5 to 1e-6");
+  Check(std::fabs(c.curve.Length() - 2.0 * ON_PI * R) < 1e-3 * 2.0 * ON_PI * R,
+        "the contour length equals the circle circumference 2*pi*R to 0.1 percent");
+}
+
+void TestBodySectionSphereMatchesCapRadiusFormula() {
+  const Point3d ctr(1, 2, 3);
+  const double R = 5.0, d = 3.0;  // plane z = 3 + 3 -> cap radius sqrt(25-9) = 4
+  const Brep sph = Brep::Sphere(ctr, R);
+  const ON_Plane plane(ON_3dPoint(0, 0, ctr.z + d), ON_3dVector(0, 0, 1));
+  const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(sph.raw(), plane, SectionOpt());
+  Check(!sec.empty(), "an off-centre plane through a sphere yields at least one contour");
+  if (sec.empty()) return;
+  const double want = std::sqrt(R * R - d * d);
+  double total_len = 0;
+  bool all_on_sphere = true;
+  for (const BrepSectionContour& c : sec) {
+    total_len += c.curve.Length();
+    double lo, hi;
+    SampleRange(c.curve, 400, [&](Point3d p) { return std::hypot(p.x - ctr.x, p.y - ctr.y); }, lo, hi);
+    if (lo < want - 1e-3 || hi > want + 1e-3) all_on_sphere = false;
+  }
+  Check(all_on_sphere, "every contour point is at in-plane radius sqrt(R^2-d^2)=4 from the sphere axis to 1e-3");
+  Check(std::fabs(total_len - 2.0 * ON_PI * want) < 2e-3 * 2.0 * ON_PI * want,
+        "total contour length equals the cap-circle circumference 2*pi*sqrt(R^2-d^2) to 0.2 percent");
+  bool all_closed = true;
+  for (const BrepSectionContour& c : sec) all_closed = all_closed && c.closed;
+  Check(all_closed, "the sphere cap section is closed (even across the sphere's own parametric seam)");
+}
+
+void TestBodySectionBoxStitchesFourWallsIntoOnePerimeter() {
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+  const ON_Plane plane(ON_3dPoint(0, 0, 1.5), ON_3dVector(0, 0, 1));
+  const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(box.raw(), plane, SectionOpt());
+  Check(sec.size() == 1, "a z=1.5 plane through a 2x3x4 box gives ONE contour, the four wall pieces stitched together");
+  if (sec.size() != 1) return;
+  const BrepSectionContour& c = sec[0];
+  Check(c.closed && c.piece_count >= 4, "the box section is closed and was joined from at least the four side walls");
+  std::set<int> faces(c.face_indices.begin(), c.face_indices.end());
+  Check(faces.size() == 4, "exactly four distinct faces (the side walls; top/bottom contribute nothing) fed the contour");
+  Check(std::fabs(c.curve.Length() - 10.0) < 1e-3, "the stitched contour length equals the rectangle perimeter 2*(2+3)=10 to 1e-3");
+  double zlo, zhi, xlo, xhi, ylo, yhi;
+  SampleRange(c.curve, 800, [](Point3d p) { return p.z; }, zlo, zhi);
+  SampleRange(c.curve, 800, [](Point3d p) { return p.x; }, xlo, xhi);
+  SampleRange(c.curve, 800, [](Point3d p) { return p.y; }, ylo, yhi);
+  Check(zlo > 1.5 - 1e-6 && zhi < 1.5 + 1e-6, "the box contour lies on z=1.5");
+  Check(xlo > -1e-4 && xhi < 2.0 + 1e-4 && ylo > -1e-4 && yhi < 3.0 + 1e-4 && xhi > 2.0 - 1e-3 && yhi > 3.0 - 1e-3,
+        "the box contour spans exactly [0,2]x[0,3] (its bounding rectangle equals the box footprint)");
+}
+
+// Plane tilted by theta about the Y axis through a Z cylinder of radius R: the section is an ellipse with semi-axes
+// R (along Y) and R/cos(theta) (in the tilt direction). Perimeter from an independent midpoint-rule quadrature of
+// the ellipse's parametric speed (not from the NURBS).
+void TestBodySectionObliquePlaneThroughCylinderIsEllipse() {
+  const double R = 2.0, theta = 30.0 * ON_PI / 180.0;
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({Point3d(0, 0, -10), Point3d(0, 0, 10)}, 1);
+  const Brep rod = Brep::Pipe(rail, R, /*cap=*/true, /*stations=*/2);
+  const ON_3dVector n(std::sin(theta), 0.0, std::cos(theta));
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), n);
+  const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(rod.raw(), plane, SectionOpt());
+  Check(sec.size() == 1 && sec[0].closed, "an oblique plane across a cylinder gives one closed contour");
+  if (sec.size() != 1) return;
+  const double a = R / std::cos(theta), b = R;
+  double per = 0;
+  const int N = 200000;
+  for (int i = 0; i < N; ++i) {
+    const double t = 2.0 * ON_PI * (i + 0.5) / N;
+    per += std::hypot(a * std::sin(t), b * std::cos(t)) * (2.0 * ON_PI / N);
+  }
+  Check(std::fabs(sec[0].curve.Length() - per) < 2e-3 * per, "the oblique contour length matches the independently integrated ellipse perimeter to 0.2 percent");
+  double rlo, rhi, plo, phi;
+  SampleRange(sec[0].curve, 720, [](Point3d p) { return std::hypot(p.x, p.y); }, rlo, rhi);
+  SampleRange(sec[0].curve, 720, [&](Point3d p) { return n.x * p.x + n.y * p.y + n.z * p.z; }, plo, phi);
+  Check(rlo > R - 1e-4 && rhi < R + 1e-4, "every ellipse point stays on the cylinder wall (distance R from the axis) to 1e-4");
+  Check(plo > -1e-5 && phi < 1e-5, "every ellipse point lies on the tilted plane to 1e-5");
+}
+
+void TestBodySectionRefusesMissesAndInvalidPlanes() {
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 10)}, 1);
+  const Brep rod = Brep::Pipe(rail, 2.0, /*cap=*/true, /*stations=*/2);
+  Check(SectionBrepByPlaneJoined(rod.raw(), ON_Plane(ON_3dPoint(0, 0, 50.0), ON_3dVector(0, 0, 1)), SectionOpt()).empty(),
+        "a plane 40 above the cylinder gives no contour (negative control: it does not invent curves)");
+  Check(SectionBrepByPlaneJoined(rod.raw(), ON_Plane(ON_3dPoint(30.0, 0, 5.0), ON_3dVector(1, 0, 0)), SectionOpt()).empty(),
+        "a plane beside the cylinder (x=30) gives no contour");
+  Check(SectionBrepByPlaneJoined(rod.raw(), ON_Plane(), SectionOpt()).empty(), "an invalid (default) plane gives no contour");
+  const ON_Brep none;
+  Check(SectionBrepByPlaneJoined(none, ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), SectionOpt()).empty(), "an empty B-rep gives no contour");
+}
+
+}  // namespace body_section_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
+  RunTest("body_section_tests::TestBodySectionCylinderIsOneClosedExactCircle", body_section_tests::TestBodySectionCylinderIsOneClosedExactCircle);
+  RunTest("body_section_tests::TestBodySectionSphereMatchesCapRadiusFormula", body_section_tests::TestBodySectionSphereMatchesCapRadiusFormula);
+  RunTest("body_section_tests::TestBodySectionBoxStitchesFourWallsIntoOnePerimeter", body_section_tests::TestBodySectionBoxStitchesFourWallsIntoOnePerimeter);
+  RunTest("body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse", body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse);
+  RunTest("body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes", body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes);
 
   RunTest("TestCurveDegreeElevation", TestCurveDegreeElevation);
   RunTest("TestCurveFromControlPointsRejectsDegenerateInput", TestCurveFromControlPointsRejectsDegenerateInput);
