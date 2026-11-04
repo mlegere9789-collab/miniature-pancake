@@ -13565,6 +13565,11 @@ lsp_hasnot() {
   local blk; blk="$(lsp_blk "$1" "$2" "$3")"
   if grep -qF -- "$4" <<<"$blk"; then lsp_bad "$5: '$2' unexpectedly printed '$4'"; else lsp_ok "$5"; fi
 }
+# whole-output count of a substring (where a nested command's own "Command:" echo splits the block)
+lsp_all() {  # <output> <needle> <expected count> <description>
+  local n; n="$(grep -cF -- "$2" <<<"$1" || true)"
+  if [ "$n" = "$3" ]; then lsp_ok "$4"; else lsp_bad "$4 (found $n, expected $3)"; near "$1" "$2"; fi
+}
 lsp_vol() {  # <output> <nth Volume> <expected> <description>
   local blk got; blk="$(lsp_blk "$1" "Volume" "$2")"
   got="$(grep -m1 -o 'Volume = [-0-9.e+]*' <<<"$blk" || true)"; got="${got#Volume = }"
@@ -13666,10 +13671,10 @@ lsp_has "$LSP_A" "(+ 1 2))" 1 "extra close parenthesis" "LSP_neg: an extra close
 lsp_has "$LSP_A" "(nosuchfn 1)" 1 "no function definition: NOSUCHFN" "LSP_neg: an undefined function is reported by name"
 lsp_has "$LSP_A" "(/ 1 0)" 1 "divide by zero" "LSP_neg: integer division by zero"
 lsp_has "$LSP_A" "(+ 1 \"a\")" 1 "bad argument type" "LSP_neg: a string where a number is needed"
-lsp_has "$LSP_A" "(progn (command \"Box\" \"0,0,0\") (setq after 1))" 1 "command failed: Box" "LSP_neg: a command that cannot complete with the given arguments is an error"
+lsp_all "$LSP_A" "Lisp error: command failed: Box" 1 "LSP_neg: a command that cannot complete with the given arguments is an error"
 lsp_is "$LSP_A" "(null after)" 1 "T" "LSP_neg: the statement after the failed command did not run (after is still unset)"
-lsp_has "$LSP_A" "(command \"NoSuchCmdXYZ\")" 1 "command failed: NoSuchCmdXYZ" "LSP_neg: an unknown command name"
-lsp_has "$LSP_A" "(command 5)" 1 "command failed" "LSP_neg: a non-command first argument"
+lsp_all "$LSP_A" "Lisp error: command failed: NoSuchCmdXYZ" 1 "LSP_neg: an unknown command name"
+lsp_all "$LSP_A" "Lisp error: command failed: 5" 1 "LSP_neg: a non-command first argument"
 lsp_has "$LSP_A" "(defun c:Box () 1)" 1 "would replace the built-in command Box" "LSP_neg: c:Box may not replace the real Box"
 lsp_vol "$LSP_A" 4 "1" "LSP_neg: after the refused c:Box, typing Box still runs the real command (a 1x1x1 box, Volume 1)"
 lsp_has "$LSP_A" "(while T 1)" 1 "evaluation step limit exceeded" "LSP_neg: an endless loop is stopped"
