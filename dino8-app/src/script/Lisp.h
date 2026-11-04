@@ -33,11 +33,23 @@ struct Value {
   std::string s;                 // string text, symbol name (lowercase), subr name
   std::shared_ptr<List> l;       // list elements
   std::shared_ptr<Func> f;       // lambda
+  bool dotted = false;           // a List of exactly two elements printed and taken apart as a dotted pair (a . b)
+  bool pickset = false;          // a List that is a selection set: ssadd / ssdel change it in place
 };
 
 class LispError : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
+};
+
+// One DXF-style group of an entity: (code . value) or, for a point, (code x y z).
+struct DxfItem {
+  enum class K { Str, Real, Int, Point };
+  int code = 0;
+  K k = K::Str;
+  std::string s;
+  double x = 0, y = 0, z = 0;    // Real: x; Point: x y z
+  long long i = 0;
 };
 
 // What the interpreter needs from the application. Unset members make the
@@ -51,6 +63,13 @@ struct LispHost {
   std::function<std::vector<long long>()> all_entities;          // (ssget "X")
   std::function<void(const std::string& cmd_name)> on_define_command;  // (defun c:name ...)
   std::function<bool(const std::string& path, std::string& text)> read_file;  // (load "file.lsp")
+  // Entity access (entget / entmod / entdel / entnext). Entity names are the object ids.
+  std::function<bool(long long id, std::vector<DxfItem>& out)> ent_get;      // false: no such entity
+  std::function<std::string(long long id, const std::vector<DxfItem>& items)> ent_mod;  // "" ok, else the reason it was refused
+  std::function<bool(long long id)> ent_del;
+  std::function<std::optional<long long>(std::optional<long long> after)> ent_next;  // nullopt after: the first entity
+  // The next queued typed input for getint / getreal / getpoint / getstring / getkword (nullopt: none left).
+  std::function<std::optional<std::string>()> next_input;
 };
 
 class Interp {
@@ -69,6 +88,10 @@ class Interp {
 
   // Parsing helpers (also used by `read`).
   static List ParseAll(const std::string& text);
+  // "(setq n (getint \"n: \")) 5 7": splits a line that starts with "(" into its leading
+  // balanced forms and the typed input that follows them (the queue the get* functions
+  // read). A line that does not start with "(" or never balances is all `forms`.
+  static void SplitInput(const std::string& text, std::string& forms, std::string& rest);
 
   Value Eval(const Value& v);
   Value Apply(const Value& fn, List args);
@@ -84,6 +107,8 @@ class Interp {
   void Emit(const std::string& text);
 
   std::map<std::string, Value> globals_;
+  int init_bits_ = 0;             // (initget bits "Keyword ...") applies to the next get* call only
+  std::string init_kw_;
   std::string out_buf_;
   int depth_ = 0;
   long long steps_ = 0;
