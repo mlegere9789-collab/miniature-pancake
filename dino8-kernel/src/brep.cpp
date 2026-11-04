@@ -1,4 +1,5 @@
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>
 #include <array>
@@ -11144,7 +11145,7 @@ Brep::HealReport Brep::HealChecked(const HealOptions& options) {
     *ok = false;
     *volume = 0.0;
     try {
-      const Mesh m = b.TessellateToClosedMeshTolerant(8, 8);
+      const Mesh m = b.TessellateToClosedMeshTolerantImpl(8, 8, /*seal_curved_trims=*/false);
       if (m.IsClosedManifold()) {
         *volume = m.Volume();
         *ok = true;
@@ -13672,6 +13673,16 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
 }
 
 Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {
+  return TessellateToClosedMeshTolerantImpl(u_divisions, v_divisions, /*seal_curved_trims=*/true);
+}
+
+// `seal_curved_trims` adds the last resort described at TessellateToClosedMeshTolerant() in brep.h: when the
+// tolerance weld still leaves the mesh open on a valid Brep with curved faces (a general-boolean result such as
+// box - cylinder or box & cylinder, whose planar cap polygons and trimmed curved wall sample the shared circle at
+// different angles - a sagitta apart, never within any weld tolerance, and no Brep edge to split), the mesh of
+// TessellateGeneralBooleanClosedMesh() replaces it, but only if THAT is a closed manifold; otherwise the weld result
+// is returned untouched. HealChecked() passes false: it uses closedness to decide whether a volume was measurable.
+Mesh Brep::TessellateToClosedMeshTolerantImpl(int u_divisions, int v_divisions, bool seal_curved_trims) const {
   Mesh mesh = TessellateToClosedMesh(u_divisions, v_divisions);
   double max_tolerance = 0.0;
   for (int ei = 0; ei < brep_.m_E.Count(); ++ei) {
@@ -13679,6 +13690,25 @@ Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) cons
     if (e.m_edge_index >= 0 && e.m_tolerance > max_tolerance) max_tolerance = e.m_tolerance;
   }
   mesh.CloseNakedEdges(std::max(tolerance::kWeld, 2.0 * max_tolerance));
+  if (!seal_curved_trims || mesh.IsClosedManifold() || !brep_.IsValid()) return mesh;
+  bool has_curved_face = false;
+  for (int fi = 0; fi < brep_.m_F.Count() && !has_curved_face; ++fi) {
+    const ON_Surface* surface = brep_.m_F[fi].SurfaceOf();
+    NurbsSurface wrapper;
+    if (surface != nullptr) {
+      ON_NurbsSurface nurbs;
+      if (surface->GetNurbForm(nurbs) != 0) {
+        wrapper.raw() = nurbs;
+        has_curved_face = !wrapper.IsPlanar();
+      }
+    }
+  }
+  if (!has_curved_face) return mesh;
+  try {
+    Mesh sealed = TessellateGeneralBooleanClosedMesh(*this, u_divisions, v_divisions);
+    if (sealed.IsClosedManifold()) return sealed;
+  } catch (const std::exception&) {
+  }
   return mesh;
 }
 

@@ -6055,6 +6055,18 @@ class Brep {
   // (FromMixedFaces) already carry genuinely computed edge tolerances,
   // and the plain path's output on them is pinned by existing tests, so
   // widening their weld silently was not an option in this pass.
+  //
+  // Sealed trimmed solids with curved faces: if the tolerance weld STILL
+  // leaves the mesh open on a valid Brep with a non-planar face (a general
+  // boolean result like box - cylinder or box & cylinder, where a planar
+  // cap polygon and the trimmed wall sample their shared circle at
+  // different angles, a sagitta apart and so never within any weld
+  // tolerance), the result of TessellateGeneralBooleanClosedMesh() (its
+  // per-face tessellation plus zip/stitch passes, boolean_general.h) is
+  // returned instead - but only if that mesh is itself a closed manifold;
+  // otherwise the weld result comes back untouched. A mesh that was already
+  // closed is never altered. Its vertices stay on the surfaces: they are the
+  // same per-face samples, only the closing triangles are added.
   Mesh TessellateToClosedMeshTolerant(int u_divisions = 8, int v_divisions = 8) const;
 
   // Rhino's ShrinkTrimmedSrf WITH a tolerance contract (the app used to call
@@ -6297,6 +6309,9 @@ class Brep {
   // Volume()/VolumeMassProperties()/VolumeCertifiedAdaptive()'s shared
   // precondition - see its own doc comment in brep.cpp.
   bool IsWatertightForIntegration() const;
+  // TessellateToClosedMeshTolerant()'s body; `seal_curved_trims` = false is
+  // the bare tolerance weld (what HealChecked() measures volumes with).
+  Mesh TessellateToClosedMeshTolerantImpl(int u_divisions, int v_divisions, bool seal_curved_trims) const;
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.
