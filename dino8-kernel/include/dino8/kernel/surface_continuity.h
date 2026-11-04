@@ -10,7 +10,10 @@
 //    one scale (the ratio of the two surfaces' mean cross speeds) although the adjacent surface only prescribes its
 //    direction (the tangent plane); a wrong magnitude pulls the interior sections off their data. With `optimize_scale` each
 //    matched end searches the scale (a scan over 2^-4 .. 2^4 times the default, then golden-section refinement) that
-//    minimises the worst distance of the sections' samples from the rewritten surface.
+//    minimises the worst distance of the sections' samples from the rewritten surface. A Curvature (G2) end searches a
+//    second parameter as well, the second derivative of the cross reparameterization (MatchEdgeWithAcceleration): with the
+//    scale alone the third control row is tied to the second, which leaves a circular wall's loft no way to follow the
+//    sections (measured: a 4-section loft off a cylinder wall moved section 3 by 0.027 at the best scale).
 #pragma once
 
 #include <vector>
@@ -24,7 +27,19 @@ struct LoftMatchScaleReport {
   double start_scale = 0.0, end_scale = 0.0;
   // Worst distance of any section sample from the surface after MatchEdge() at ITS DEFAULT scale (before the search).
   double start_default_deviation = 0.0, end_default_deviation = 0.0;
+  // Curvature (G2) ends only: the second reparameterization derivative the search chose (0 = plain C2 in v' = scale * v), in
+  // the units of MatchEdgeWithAcceleration().
+  double start_accel = 0.0, end_accel = 0.0;
 };
+
+// NurbsSurface::MatchEdge() with a second degree of freedom for Curvature matching. MatchEdge() makes this surface continue
+// the target as S(u, v) = T(-phi(v)) with phi linear, phi' = scale, so S_vv = scale^2 T_tt. Any phi with phi'(0) = scale gives
+// the same tangent plane and the same normal curvature (G2); the second derivative phi''(0) = `cross_accel` only changes the
+// part of S_vv along the cross-derivative: S_vv = scale^2 T_tt - cross_accel T_t. cross_accel = 0 is MatchEdge() exactly.
+// Ignored for Position / Tangent. `self` is edited in place (restored on Result::Failed).
+Result MatchEdgeWithAcceleration(NurbsSurface& self, int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
+                                 bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report, double cross_scale,
+                                 double cross_accel);
 
 // NurbsSurface::LoftMatched() with the scale search switchable. `scale_report` may be null.
 Result LoftMatchedScaled(const std::vector<NurbsCurve>& sections, int degree, const NurbsSurface::LoftEndMatch* start,
