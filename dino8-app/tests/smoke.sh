@@ -12813,7 +12813,7 @@ rtafmt() {
 # STL of a solid re-imports with Area right but Volume 0 (open triangle soup, not welded); a STEP re-import of an ACIS-imported
 # box is reported invalid; the hidden-operand vase compares against a .3dm that lost the Hide state until the File3dm fix was built;
 # IGES: tens to hundreds of loose trimmed faces instead of one solid; G1 surfaces: STEP re-imports two objects invalid, SAT/SAB lose objects.
-RTA_KNOWN=" sblcut:stp sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntloft:sat cntloft:sab cntpatch:stp cntpatch:sat cntpatch:sab cntnet:stp cntnet:sat cntnet:sab sblcut:stl sblunion:stl sbltwo:stl rvr:stl ptf:stl spsscale:stl spsscale:obj vase:obj vase:stl vase:stp satimp:stp satimp:stl sabimp:stp sabimp:stl satcyl:stp satcyl:stl "
+RTA_KNOWN=" sblcut:stp sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntpatch:stp cntnet:stp sblcut:stl sblunion:stl sbltwo:stl rvr:stl ptf:stl spsscale:stl spsscale:obj vase:obj vase:stl vase:stp satimp:stp satimp:stl sabimp:stp sabimp:stl satcyl:stp satcyl:stl "
 for c in sblcut sblunion sbltwo rvr ptf cntloft cntpatch cntnet spsscale vase; do
   rtaundo $c
   rtaround $c pre redo "Undo then Redo returns the state exactly"
@@ -12823,8 +12823,32 @@ for c in sblcut sblunion sbltwo rvr ptf spsscale; do
   for f in stp igs sat sab; do rtafmt $c $f 0.01 0.02 0.05 1; done
   for f in stl obj ply; do rtafmt $c $f 0.01 0.03 0.1 0; done
 done
+# rtaacis CASE FMT: ACIS (.sat/.sab) export of a document that holds objects the writer cannot carry (the guide curves, and the
+# G1 loft / patch / network surfaces, which are NURBS - the writer only has plane / cylinder / sphere / torus surfaces and
+# straight / circular edges, and does not invent a spline layout). Hard checks: the export says "K of M object(s) written", M is
+# the object count of the reopened .3dm, every one of the M-K objects it did not write has its own "Not written:" line with a
+# reason, the import holds exactly K objects, and the imported Area equals the sum of the areas the export printed for the K written
+# bodies. Nothing may be lost without being counted and named.
+rtaacis() {
+  local xb sb si line k m nw ni area_sum area_in ok=1 why=""
+  xb="$(rtablock "$1_x$2")"; sb="$(rtasig "$(rtablock "$1_post")")"; si="$(rtasig "$(rtablock "$1_i$2")")"
+  line="$({ grep -oE '(SAT|SAB) export [^ ]+ \(ACIS[^)]*\): [0-9]+ of [0-9]+ object\(s\) written' <<<"$xb" || true; } | head -1)"
+  if [ -z "$line" ]; then rta_bad "RTA_$1: .$2 export printed no 'K of M object(s) written' line"; return; fi
+  k="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) object.*/\1/' <<<"$line")"; m="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) object.*/\2/' <<<"$line")"
+  nw="$({ grep -c 'Not written: ' <<<"$xb" || true; })"; ni="${si%% *}"
+  [ "$m" = "${sb%% *}" ] || { ok=0; why+=" M=$m but the reopened .3dm holds ${sb%% *} objects;"; }
+  [ $((k + nw)) = "$m" ] || { ok=0; why+=" $k written + $nw 'Not written' lines != $m objects;"; }
+  [ "$ni" = "$k" ] || { ok=0; why+=" import holds $ni objects, export said $k written;"; }
+  area_sum="$({ grep -oE ', area [-0-9.eE+]+' <<<"$xb" || true; } | sed 's/, area //' | awk '{ s += $1 } END { printf "%.6g", s }')"
+  area_in="$(cut -d' ' -f6 <<<"$si")"
+  if [ "$k" -gt 0 ] && [ "$area_in" != "-" ]; then
+    awk -v a="$area_sum" -v b="$area_in" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d <= 0.01 * a + 1e-9) }' || { ok=0; why+=" imported Area $area_in vs written bodies' printed area sum $area_sum;"; }
+  fi
+  if [ $ok = 1 ]; then rta_ok "RTA_$1: .$2 export wrote $k of $m objects, named the $nw it could not write, import holds exactly those $k, Area $area_in = printed sum $area_sum"; else rta_bad "RTA_$1: .$2 ACIS accounting:$why  ('$line'; 3dm '$sb' vs import '$si')"; fi
+}
 for c in cntloft cntpatch cntnet; do
-  for f in stp igs sat sab; do rtafmt $c $f 0.01 0.02 0.05 0; done
+  for f in stp igs; do rtafmt $c $f 0.01 0.02 0.05 0; done
+  for f in sat sab; do rtaacis $c $f; done
 done
 for f in obj stl stp; do rtafmt vase $f 0.02 0.04 0.1 0; done
 for c in satimp sabimp satcyl; do
