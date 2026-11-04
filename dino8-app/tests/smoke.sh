@@ -12127,4 +12127,117 @@ else
   echo "FAIL SABF detect script printed only ${#SABFD_VOLS[@]} Volume lines (expected 2)"; fail=1
 fi
 
+
+# ---------------------------------------------------------------------------
+# PTF_: rolling-ball fillet of the SADDLE edge of a perpendicular pipe tee (ptf_script.txt).
+# FilletEdge now ends its exact attempts with kernel::FilletPipeTee (cmd_fillet.cpp TryPipeTeeFillet / EdgeOnPipeTeeSaddle),
+# tried ONLY after the capped-cylinder / frustum, hole-plate and revolve-rim paths declined. The fixture is the app's own
+# sealed Boolean union (TryGeneralBrepBoolean, "5 face(s), sealed: valid B-rep") of a main cylinder (R = 2, z = -3 .. 3) and
+# a branch cylinder (rb = 1, from the axis crossing along +y to y = 5, ending in its own planar cap).
+# Independent values (a standalone program, not the kernel's code): the plain tee is V = pi R^2 H + pi rb^2 L - overlap,
+# overlap = integral 2 sqrt(rb^2 - y^2) sqrt(R^2 - y^2) dy (2e6-point midpoint rule) -> V = 85.0260; the filleted solid adds
+# dV by the divergence theorem, (1/3)[ integral over the blend of p.n dS - R^2 (main-wall strip area in (theta, z)) -
+# rb^2 (branch-wall strip area) ], the blend sampled by the ball's arc ANGLE (not the kernel's rational quadratic):
+#   r = 0.4: dV = 0.1257 -> 85.1517      r = 1.0: dV = 0.7685 -> 85.7945
+# Volume is read from the display mesh, which measures 0.2-0.25% BELOW the analytic value here (84.81 against 85.026 for the
+# unfilleted tee), so each window is the analytic value minus that bias (-0.25%) up to +0.05%. The r = 0.4 fillet adds only
+# 0.15% (0.126), barely more than the mesh bias, so its window (84.92 .. 85.20) is only just clear of the unfilleted tee
+# (84.81); the r = 1 window (85.45 .. 85.85, dV = 0.77) is clear of it by 0.64. Counts ("6 faces, 8 edges, closed solid",
+# "Object 3: valid", objects) are topological and exact. The blend is a NURBS fit to the exact rolling-ball surface
+# (tolerance 1e-6, sampled at interval midpoints), so every message says "fitted"; ptfdev reads the reported deviation back.
+# The kernel result (tangency, ball radius and normals measured along the whole edge, exact volume) is pinned by
+# pipe_tee_fillet_tests in dino8-kernel/tests/test_basic.cpp; this section pins the WIRING.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PTFO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/ptf_script.txt" 2>&1)" || { echo "$PTFO"; echo "FAIL: ptf script exited non-zero"; exit 1; }
+else
+  PTFO="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/ptf_script.txt" 2>&1)" || { echo "$PTFO"; echo "FAIL: ptf script exited non-zero"; exit 1; }
+fi
+ptfblock() { awk -v name="$1" '$0 ~ ("Unknown command: PTFBEGIN_" name "$") { on = 1; next } on && /Unknown command: PTFBEGIN_/ { exit } on { print }' <<<"$PTFO"; }
+ptfcheck() { local blk; blk="$(ptfblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   $3"; else echo "FAIL $3"; echo "     expected: $2"; grep -E "^history: (FilletEdge|ChamferEdge|!|Object|  [0-9]|Volume)" <<<"$blk" | head -8 | sed 's/^/     actual:   /' || true; fail=1; fi; }
+ptfnot() { local blk; blk="$(ptfblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
+# ptfnum NAME MIN MAX DESC: the case's last "Volume = V" lies in [MIN, MAX]
+ptfnum() {
+  local blk v; blk="$(ptfblock "$1")"
+  v="$(grep -E "^history: Volume = " <<<"$blk" | tail -1 | sed -E 's/^history: Volume = ([0-9.eE+-]+).*/\1/' || true)"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 (Volume $v in [$2, $3])"; else echo "FAIL $4 (Volume '${v:-none}' not in [$2, $3])"; fail=1; fi
+}
+# ptfobjs NAME N DESC: the case's List shows exactly N objects
+ptfobjs() {
+  local blk n; blk="$(ptfblock "$1")"
+  n="$(grep -cE "^history: Object [0-9]+ \(" <<<"$blk" || true)"
+  if [ "$n" = "$2" ]; then echo "ok   $3 ($n object(s))"; else echo "FAIL $3 ('$n' object(s), expected $2)"; fail=1; fi
+}
+# ptfdev NAME MAXDEV DESC: the reported "sampled deviation X over N intervals" has 0 < X <= MAXDEV and N >= 1
+ptfdev() {
+  local blk s d n; blk="$(ptfblock "$1")"
+  s="$(grep -oE "sampled deviation [0-9.eE+-]+ over [0-9]+ intervals" <<<"$blk" | tail -1 || true)"
+  d="$(sed -E 's/sampled deviation ([0-9.eE+-]+) over ([0-9]+) intervals/\1/' <<<"$s")"
+  n="$(sed -E 's/sampled deviation ([0-9.eE+-]+) over ([0-9]+) intervals/\2/' <<<"$s")"
+  if [ -n "$s" ] && awk -v d="$d" -v n="$n" -v hi="$2" 'BEGIN { exit !(d > 0 && d <= hi && n >= 1) }'; then echo "ok   $3 (deviation $d over $n intervals, <= $2)"; else echo "FAIL $3 (reported '${s:-none}', wanted deviation <= $2)"; fail=1; fi
+}
+PTF_MSG="saddle edge of pipe-tee object 3 replaced with a rolling-ball fillet"
+# --- fixture: the sealed union of the two cylinders (no fillet)
+ptfcheck base "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 5 face(s), sealed: valid B-rep" "PTF_base: the fixture is the app's SEALED Boolean union, 5 faces"
+ptfcheck base "5 faces, [0-9]* edges, closed solid" "PTF_base: 5 faces, closed solid"
+ptfcheck base "Object 3: valid" "PTF_base: Check valid"
+ptfnum base 84.6 85.03 "PTF_base: unfilleted tee, analytic V = 85.026 (display mesh reads ~0.25% low)"
+ptfnot base "pipe-tee" "PTF_base: ...no pipe-tee path involved"
+# --- fillet r = 0.4
+ptfcheck F_r04 "FilletEdge: saddle edge of pipe-tee object 3 staged for a kernel rolling-ball fillet (radius 0.4) - 1 staged, Enter to apply" "PTF_F_r04: the saddle pick is staged by the kernel pipe-tee path (before: mesh fallback)"
+ptfcheck F_r04 "FilletEdge: $PTF_MSG (radius 0.4, main radius 2, branch radius 1; analytic cylinder walls, blend fitted to the exact rolling-ball surface with sampled deviation" "PTF_F_r04: applied, message states radii and that the blend is FITTED"
+ptfdev F_r04 1e-6 "PTF_F_r04: reported fit deviation is within the 1e-6 tolerance"
+ptfcheck F_r04 ", 6 faces, closed solid)" "PTF_F_r04: message states 6 faces, closed solid"
+ptfcheck F_r04 "6 faces, 8 edges, closed solid" "PTF_F_r04: List: 6 faces (the 5 of the union + the blend), 8 edges, closed solid"
+ptfcheck F_r04 "Object 3: valid" "PTF_F_r04: Check valid"
+ptfobjs F_r04 1 "PTF_F_r04: replaced in place, no mesh object left behind"
+ptfnum F_r04 84.92 85.20 "PTF_F_r04: independent V = 85.026 + 0.1257 = 85.152 (the unfilleted tee reads 84.81, outside)"
+ptfnot F_r04 "mesh fallback" "PTF_F_r04: ...no mesh fallback"
+# --- fillet r = 1, picked on the other side of the saddle
+ptfcheck F_r1 "FilletEdge: $PTF_MSG (radius 1, main radius 2, branch radius 1;" "PTF_F_r1: r = 1 picked at (-1, sqrt 3, 0) is applied too"
+ptfdev F_r1 1e-6 "PTF_F_r1: reported fit deviation is within the 1e-6 tolerance"
+ptfcheck F_r1 "6 faces, 8 edges, closed solid" "PTF_F_r1: 6 faces, 8 edges, closed solid"
+ptfcheck F_r1 "Object 3: valid" "PTF_F_r1: Check valid"
+ptfobjs F_r1 1 "PTF_F_r1: one object"
+ptfnum F_r1 85.45 85.85 "PTF_F_r1: independent V = 85.026 + 0.7685 = 85.794 (display mesh 0.2% low; the unfilleted tee 84.81 is outside)"
+# --- the tee turned 37 degrees about its main axis (the kernel reads the frame back from the faces)
+ptfcheck F_rot "FilletEdge: $PTF_MSG (radius 0.4, main radius 2, branch radius 1;" "PTF_F_rot: the tee turned 37 degrees about z is filleted"
+ptfdev F_rot 1e-6 "PTF_F_rot: reported fit deviation is within the 1e-6 tolerance"
+ptfcheck F_rot "6 faces, 8 edges, closed solid" "PTF_F_rot: 6 faces, 8 edges, closed solid"
+ptfcheck F_rot "Object 3: valid" "PTF_F_rot: Check valid"
+ptfnum F_rot 84.92 85.20 "PTF_F_rot: volume unchanged by the rotation (independent 85.152)"
+# --- two picks on the saddle in one run: the whole edge is filleted once
+ptfcheck F_two "the saddle edge of this pipe tee is already staged in this FilletEdge run" "PTF_F_two: the second pick on the same saddle is refused with the one-per-run explanation"
+ptfcheck F_two "FilletEdge: $PTF_MSG (radius 0.4" "PTF_F_two: ...the first pick is still applied"
+ptfcheck F_two "6 faces, 8 edges, closed solid" "PTF_F_two: 6 faces, closed solid"
+ptfnum F_two 84.92 85.20 "PTF_F_two: filleted once (independent 85.152), not twice"
+# --- refusals carry the kernel's reason and leave the solid alone (the old approximate attempts then run, as before)
+ptfcheck R_toobig "kernel pipe-tee fillet not used (dino8::kernel::FilletPipeTee: the ball is too large for the main cylinder: the blend reaches z = +-(rb + r) = 4.000000 but the main cylinder ends at -3.000000 / 3.000000)" "PTF_R_toobig: r = 3 on a main cylinder with half-length 3 is refused WITH the kernel's reason (rb + r = 4 > 3)"
+ptfnot R_toobig "$PTF_MSG" "PTF_R_toobig: ...no pipe-tee fillet is claimed"
+ptfcheck R_toobig "5 faces, [0-9]* edges, closed solid" "PTF_R_toobig: ...and the tee is left unchanged (5 faces)"
+ptfcheck R_shortbranch "kernel pipe-tee fillet not used (dino8::kernel::FilletPipeTee: the ball is too large for the branch: the blend reaches x = R + r = 2.400000 but the branch cap is at 2.200000)" "PTF_R_shortbranch: a branch ending at 2.2 < R + r = 2.4 is refused WITH the kernel's reason"
+ptfnot R_shortbranch "$PTF_MSG" "PTF_R_shortbranch: ...no pipe-tee fillet is claimed"
+ptfcheck R_nonperp "kernel pipe-tee fillet not used (dino8::kernel::FilletPipeTee: the cylinder axes are not perpendicular (|cos| = 0.342020); only a right-angle tee is supported)" "PTF_R_nonperp: a branch tilted 20 degrees is refused WITH the kernel's reason (|cos 70| = 0.342020)"
+ptfnot R_nonperp "$PTF_MSG" "PTF_R_nonperp: ...no pipe-tee fillet is claimed"
+ptfcheck R_boxboss "kernel pipe-tee fillet not used (dino8::kernel::FilletPipeTee: the faces are not exactly two distinct cylinders (found 1))" "PTF_R_boxboss: a box with a cylinder boss (curved edge, not a tee) is refused WITH the kernel's reason"
+ptfnot R_boxboss "$PTF_MSG" "PTF_R_boxboss: ...no pipe-tee fillet is claimed"
+ptfcheck R_offsaddle "kernel pipe-tee fillet not used (the picked edge is not on the saddle edge of the pipe tee" "PTF_R_offsaddle: an edge of the tee that is NOT the saddle (branch cap rim) is refused by the pick gate, with its reason"
+ptfnot R_offsaddle "$PTF_MSG" "PTF_R_offsaddle: ...the rim is not hijacked by the tee fillet"
+# --- negative controls: every existing exact rim / edge fillet is unchanged and never reaches the tee path
+ptfcheck ctl_cyl "cylinder rim(s) of object 1 replaced with an exact fillet (top radius 1; exact quarter-torus patch, 4 faces, closed solid)" "PTF_ctl_cyl: plain cylinder rim fillet still gives the app's pinned message"
+ptfnot ctl_cyl "pipe-tee" "PTF_ctl_cyl: ...and never reaches the tee path"
+ptfnum ctl_cyl 306.7 308.7 "PTF_ctl_cyl: Pappus Volume = 307.718"
+ptfcheck ctl_cyl "Object 1: valid" "PTF_ctl_cyl: Check valid"
+ptfcheck ctl_tcone "cap rim(s) of object 1 replaced with an exact fillet (radius 1; exact kernel torus patch tangent to the cap and the wall, 4 faces, closed solid)" "PTF_ctl_tcone: cone frustum rim still takes the kernel cap-rim path"
+ptfnot ctl_tcone "pipe-tee" "PTF_ctl_tcone: ...and never reaches the tee path"
+ptfnum ctl_tcone 507.7 513.8 "PTF_ctl_tcone: Pappus Volume = 510.74"
+ptfcheck ctl_rev "rim of solid-of-revolution object 1 replaced with an exact fillet (radius 3; exact kernel torus patch tangent to both faces at the rim, 5 faces, closed solid)" "PTF_ctl_rev: the chamfered cylinder's bevel rim still takes the kernel revolve-rim path"
+ptfnot ctl_rev "pipe-tee" "PTF_ctl_rev: ...and never reaches the tee path"
+ptfnum ctl_rev 293.7 295.7 "PTF_ctl_rev: Green volume = 294.723"
+ptfcheck ctl_box "edge 5 of object 1 replaced with an exact fillet (radius 1)" "PTF_ctl_box: a box edge is still the kernel's exact planar fillet"
+ptfnot ctl_box "pipe-tee" "PTF_ctl_box: ...with no pipe-tee message for an ordinary planar edge"
+ptfnum ctl_box 142.5 142.9 "PTF_ctl_box: Volume = 144 - (1 - pi/4)*6 = 142.712"
+ptfcheck ctl_box "Object 1: valid" "PTF_ctl_box: Check valid"
+if grep -q "gl_error=0" <<<"$PTFO"; then echo "ok   PTF script ran without OpenGL errors"; else echo "FAIL PTF script ran without OpenGL errors"; fail=1; fi
+
 exit $fail

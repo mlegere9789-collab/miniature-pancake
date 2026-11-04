@@ -300,6 +300,60 @@ bool TryRevolveRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double dis
   }
 }
 
+// ---------------------------------------------------------------------------
+// Kernel pipe-tee wrapper (kernel::FilletPipeTee, fillet.h): the rolling-ball fillet along the SADDLE edge where a
+// perpendicular branch cylinder (radius rb) meets a larger main cylinder (radius R) - the solid the app's sealed
+// Boolean union (TryGeneralBrepBoolean) makes of two capped cylinders. It is tried only AFTER every other exact attempt
+// declined. The kernel reads the tee back from its faces and refuses everything else (a box, a cross, equal radii,
+// non-perpendicular or skew axes, a ball that would reach a cap or fold over itself, a fit that misses the tolerance)
+// with a stated reason, handed back in `err` with `out` untouched. The cylinder walls, caps and the ball's arcs are
+// analytic; the blend is a NURBS surface fitted to the exact rolling-ball surface to `tolerance` (measured at the
+// interval midpoints, see PipeTeeFillet::fit_deviation), which is why the messages say "fitted", never "exact".
+// The kernel fillets the whole saddle edge, so the picked edge only has to BE a piece of it (EdgeOnPipeTeeSaddle).
+// The fit tolerance is 1e-7 of the solid's bounding-box diagonal (never below the kernel's default 1e-6).
+// ---------------------------------------------------------------------------
+double PipeTeeTolerance(const ON_Brep& solid) {
+  ON_BoundingBox bb;
+  solid.GetBoundingBox(bb);
+  return std::max(1e-6, bb.Diagonal().Length() * 1e-7);
+}
+
+bool TryPipeTeeFillet(const ON_Brep& solid, double radius, ON_Brep& out, std::string& err, kernel::PipeTeeFillet* info = nullptr) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    kernel::PipeTeeFillet f = kernel::FilletPipeTee(kb, radius, PipeTeeTolerance(solid));
+    if (!AcceptCapRimResult(f.solid, out, err)) return false;
+    if (info) *info = std::move(f);
+    return true;
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
+// True when `p` lies on the main cylinder (radius R about the main axis) AND on the branch cylinder (radius rb about the
+// branch axis) of the tee that `f` describes, within `band`: that is the saddle curve and nothing else. The cap rims of
+// either cylinder are at least one ball radius off the other cylinder, and a seam of the main wall meets the branch
+// cylinder only at its ends, so a `band` below the ball radius separates them.
+bool OnPipeTeeSaddle(const kernel::PipeTeeFillet& f, Point3d p, double band) {
+  auto dist_to_line = [&](const Vector3d& axis) {
+    const Vector3d v = p - f.crossing;
+    return (v - (v * axis) * axis).Length();
+  };
+  return std::fabs(dist_to_line(f.main_axis) - f.main_radius) <= band && std::fabs(dist_to_line(f.branch_axis) - f.branch_radius) <= band;
+}
+
+// True when the picked edge is a piece of the saddle: its two ends (vertices of the Boolean's intersection chain) lie on
+// both cylinders to a tight band, its middle to a wider one (the chain is a polyline of chords, so a middle is off the true
+// curve by up to the chord's sagitta).
+bool EdgeOnPipeTeeSaddle(const kernel::PipeTeeFillet& f, const ON_BrepEdge& edge, double ball_radius, double tol) {
+  const double tight = std::min(0.1 * ball_radius, std::max(tol, 1e-2 * f.branch_radius));
+  const double loose = 0.25 * ball_radius;
+  return OnPipeTeeSaddle(f, edge.PointAtStart(), tight) && OnPipeTeeSaddle(f, edge.PointAtEnd(), tight) &&
+         OnPipeTeeSaddle(f, edge.PointAt(edge.Domain().ParameterAt(0.5)), loose);
+}
+
 // True when `p` lies on an edge of `b` (within tol).
 bool PointOnAnyEdge(const ON_Brep& b, Point3d p, double tol) {
   for (int i = 0; i < b.m_E.Count(); ++i) {
@@ -3193,6 +3247,25 @@ class FilletEdgeCommand : public Command {
                    "; exact kernel torus patch tangent to both faces at the rim, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
         return;
       }
+    } else if (b && rims.front().tee) {
+      // The saddle edge of a perpendicular pipe tee through the kernel (FilletPipeTee); see Run().
+      ON_Brep out;
+      kernel::PipeTeeFillet info;
+      if (TryPipeTeeFillet(*b, rims.front().radius, out, why, &info)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = out;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Print(label + ": saddle edge of pipe-tee object " + std::to_string(id) + " replaced with a rolling-ball fillet (radius " + FormatNumber(rims.front().radius) +
+                   ", main radius " + FormatNumber(info.main_radius) + ", branch radius " + FormatNumber(info.branch_radius) +
+                   "; analytic cylinder walls, blend fitted to the exact rolling-ball surface with sampled deviation " + FormatNumber(info.fit_deviation) +
+                   " over " + std::to_string(info.intervals) + " intervals, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        return;
+      }
     } else if (b && rims.front().cap) {
       // Rims of a plain capped cone frustum / cylinder through the kernel (FilletCapRim / FilletCapRims), one solid.
       std::vector<std::pair<Point3d, double>> kr;
@@ -3603,6 +3676,40 @@ class FilletEdgeCommand : public Command {
           return;
         }
         if (edge.IsClosed()) ctx.Print(label + ": exact kernel revolve-rim fillet not used (" + rev_why + ")");
+      }
+      // Last of all: the kernel's FilletPipeTee along the SADDLE edge of a perpendicular pipe tee (the sealed Boolean
+      // union of a main cylinder and a thinner branch cylinder). The kernel fillets the whole saddle edge, so the pick
+      // only has to lie on it. Dry run now (a refusal is known before anything is staged); one tee edge per run. A
+      // refusal is printed with the kernel's reason when the pick has a curved adjacent face (a box edge, whose two
+      // faces are planar, stays silent and goes to the planar paths below exactly as before).
+      {
+        ON_Brep tee_probe;
+        std::string tee_why;
+        kernel::PipeTeeFillet tee_info;
+        const bool curved_pick = !sa->IsPlanar(nullptr, tol) || !sb->IsPlanar(nullptr, tol);
+        bool tee_ok = TryPipeTeeFillet(*b, radius_, tee_probe, tee_why, &tee_info);
+        if (tee_ok && !EdgeOnPipeTeeSaddle(tee_info, edge, radius_, tol)) {
+          tee_ok = false;
+          tee_why = "the picked edge is not on the saddle edge of the pipe tee (pick the curve where the branch meets the main cylinder)";
+        }
+        if (tee_ok) {
+          if ((!pending_fillet_.empty() && pending_fillet_id_ != pick.id) || (!pending_rims_.empty() && pending_rim_id_ != pick.id)) {
+            ctx.Warn(label + ": an edge on a different object is already staged in this FilletEdge run; press Enter to apply it first, then run FilletEdge again for this object");
+            return;
+          }
+          if (!pending_rims_.empty()) {
+            ctx.Warn(label + ": the saddle edge of this pipe tee is already staged in this FilletEdge run (the kernel fillets the whole edge in one go); press Enter to apply it");
+            return;
+          }
+          pending_rim_id_ = pick.id;
+          PendingRim pr{edge.PointAtStart(), false, radius_};
+          pr.tee = true;
+          pending_rims_.push_back(pr);
+          ctx.Print(label + ": saddle edge of pipe-tee object " + std::to_string(pick.id) + " staged for a kernel rolling-ball fillet (radius " +
+                     FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
+          return;
+        }
+        if (curved_pick && !edge.IsClosed()) ctx.Print(label + ": kernel pipe-tee fillet not used (" + tee_why + ")");
       }
     }
     // Exact planar chamfer, tried FIRST (ahead of the rolling-ball-derived
@@ -4642,7 +4749,7 @@ class FilletEdgeCommand : public Command {
   RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
-  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; bool cap = false; bool rev = false; };
+  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; bool cap = false; bool rev = false; bool tee = false; };
   mutable std::string rim_note_;  // TryExactChamfer: what the "; exact ..." suffix of a rim-chamfer message says
   std::vector<PendingRim> pending_rims_;  // staged plain-cylinder rim fillets (see Run()/FlushPendingRims)
   ObjectId pending_rim_id_ = kNoObject;
