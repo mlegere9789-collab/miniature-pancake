@@ -32,11 +32,17 @@ double OffsetSignAlong(const Vector3d& dir, const Vector3d& true_outward) {
 // parallel to the line, whether that normal comes from this curve's own
 // `IsPlanar()` fit or a plane the caller supplied directly.
 Result OffsetLineAlongNormal(const Point3d& p0, const Point3d& p1, const Vector3d& normal,
-                              double distance, NurbsCurve& out) {
+                              double distance, NurbsCurve& out, std::string* why = nullptr) {
   Vector3d dir = p1 - p0;
-  if (!dir.Unitize()) return Result::Failed;
+  if (!dir.Unitize()) {
+    if (why != nullptr) *why = "degenerate line: zero length";
+    return Result::Failed;
+  }
   Vector3d offset_dir = ON_CrossProduct(dir, normal);
-  if (!offset_dir.Unitize()) return Result::Failed;
+  if (!offset_dir.Unitize()) {
+    if (why != nullptr) *why = "offset direction degenerates: the line is parallel to the plane normal, so line x normal vanishes";
+    return Result::Failed;
+  }
   out = NurbsCurve::FromControlPoints({p0 + distance * offset_dir, p1 + distance * offset_dir}, 1);
   return Result::Ok;
 }
@@ -50,7 +56,11 @@ Result OffsetLineAlongNormal(const Point3d& p0, const Point3d& p1, const Vector3
 // itself doesn't care which, since it never asks whether `curve` is
 // actually planar in `normal`'s plane at all.
 Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
-                                 double tol, NurbsCurve& out) {
+                                 double tol, NurbsCurve& out, std::string* why = nullptr) {
+  auto refuse = [&](const char* msg) {
+    if (why != nullptr) *why = msg;
+    return Result::Failed;
+  };
   const Interval dom = curve.Domain();
   const BoundingBox bbox = curve.GetTightBoundingBox();
   const double diag = (bbox.max - bbox.min).Length();
@@ -58,10 +68,29 @@ Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal,
   const int n = std::max(curve.SuggestedSamples(chord_tol), 4 * curve.ControlPointCount());
   std::vector<Point3d> offset_points;
   offset_points.reserve(static_cast<size_t>(n) + 1);
+  Vector3d previous_dir;
   for (int i = 0; i <= n; ++i) {
     const double t = dom.min + (dom.max - dom.min) * i / n;
     Vector3d offset_dir = ON_CrossProduct(curve.TangentAt(t), normal);
-    if (!offset_dir.Unitize()) return Result::Failed;  // tangent parallel to normal here
+    // Tangent parallel to the plane normal: no offset direction exists.
+    // Also refused when tangent x normal is merely tiny (sine of the angle
+    // below 1e-3) or when the unit direction jumps by more than 90 degrees
+    // between consecutive samples: that is the direction field flipping
+    // sign THROUGH a parallel point between two samples (e.g. a plane whose
+    // normal lies in the circle's own plane), which would otherwise produce
+    // a zig-zag "offset" that is no offset at all.
+    if (!offset_dir.Unitize() || ON_CrossProduct(curve.TangentAt(t), normal).Length() < 1e-3 * normal.Length()) {
+      return refuse(
+          "offset direction degenerates: the curve's tangent is parallel (or nearly parallel) to the plane "
+          "normal at some parameter, so tangent x normal vanishes and no offset direction exists");
+    }
+    if (i > 0 && ON_DotProduct(previous_dir, offset_dir) < 0.0) {
+      return refuse(
+          "offset direction flips: the curve's tangent crosses the plane normal's direction between samples "
+          "(the plane normal lies in the curve's own plane), so tangent x normal changes sign and the offset "
+          "locus is discontinuous");
+    }
+    previous_dir = offset_dir;
 
     const Vector3d kappa_vec = curve.CurvatureAt(t);
     const double kappa = kappa_vec.Length();
@@ -69,7 +98,11 @@ Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal,
       Vector3d to_center = kappa_vec;
       to_center.Unitize();
       const double inward_component = distance * OffsetSignAlong(offset_dir, to_center);
-      if (inward_component >= 1.0 / kappa) return Result::Failed;  // folds through its own center of curvature
+      if (inward_component >= 1.0 / kappa) {
+        return refuse(
+            "curvature fold: |distance| reaches the local radius of curvature, so the offset folds through "
+            "its own center of curvature");
+      }
     }
 
     offset_points.push_back(curve.PointAt(t) + distance * offset_dir);
@@ -78,9 +111,10 @@ Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal,
   const int max_cv_count = static_cast<int>(offset_points.size());
   int cv_count = std::min(curve.ControlPointCount(), max_cv_count);
   NurbsCurve fitted;
+  double best_worst = std::numeric_limits<double>::infinity();
   for (;;) {
     if (NurbsCurve::FitLeastSquares(offset_points, curve.Degree(), cv_count, fitted) != Result::Ok) {
-      return Result::Failed;
+      return refuse("offset fit failed: the least-squares refit could not be solved");
     }
     double worst = 0.0;
     for (const Point3d& p : offset_points) {
@@ -90,7 +124,16 @@ Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal,
       out = fitted;
       return Result::Ok;
     }
-    if (cv_count >= max_cv_count) return Result::Failed;  // tolerance unreachable even at the maximum feasible count
+    best_worst = std::min(best_worst, worst);
+    if (cv_count >= max_cv_count) {
+      if (why != nullptr) {
+        *why = "tolerance not reachable: the offset needs more control points than the sample ceiling (" +
+               std::to_string(max_cv_count) + ") can resolve at tolerance " + std::to_string(tol) +
+               "; the best fit reached a deviation of " + std::to_string(best_worst) +
+               ". No offset is returned rather than an out-of-tolerance fit";
+      }
+      return Result::Failed;
+    }
     cv_count = std::min(cv_count * 2, max_cv_count);
   }
 }
@@ -2968,7 +3011,12 @@ Result NurbsCurve::Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) 
 }
 
 Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolerance,
-                                  CurveOffsetCornerStyle corner_style) const {
+                                  CurveOffsetCornerStyle corner_style, std::string* refusal_reason) const {
+  if (refusal_reason != nullptr) refusal_reason->clear();
+  auto refuse = [&](const char* msg) {
+    if (refusal_reason != nullptr) *refusal_reason = msg;
+    return Result::Failed;
+  };
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
@@ -2980,7 +3028,7 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
 
   ON_Plane plane;
   if (!curve_.IsPlanar(&plane, tol)) {
-    return Result::Failed;
+    return refuse("curve is not planar within the tolerance, so it has no single plane to offset in");
   }
 
   if (distance == 0.0) {
@@ -2993,7 +3041,7 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
 
   // --- Line ------------------------------------------------------------
   if (curve_.IsLinear(tol)) {
-    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
+    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out, refusal_reason);
   }
 
   // --- Polyline (3+ segments): exact per-corner miter, not a blurred fit -
@@ -3002,7 +3050,12 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
     NurbsCurve polyline_out;
     if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, corner_style, polyline_out,
                                       polyline_result)) {
-      if (polyline_result == Result::Ok) out = polyline_out;
+      if (polyline_result != Result::Ok) {
+        return refuse(
+            "polyline offset refused: a zero-length edge, an edge parallel to the plane normal, a near-180-degree "
+            "fold, or a self-crossing offset polygon");
+      }
+      out = polyline_out;
       return polyline_result;
     }
   }
@@ -3014,25 +3067,30 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
       const Vector3d tangent = TangentAt(t_mid);
       Vector3d offset_dir = ON_CrossProduct(tangent, arc.plane.zaxis);
       Vector3d radial = PointAt(t_mid) - arc.Center();
-      if (!offset_dir.Unitize() || !radial.Unitize()) return Result::Failed;
+      if (!offset_dir.Unitize() || !radial.Unitize()) return refuse("degenerate arc: offset direction undefined");
       const double sign = OffsetSignAlong(offset_dir, radial);
       const double new_radius = arc.radius + sign * distance;
-      if (!(new_radius > 0.0)) return Result::Failed;
+      if (!(new_radius > 0.0)) return refuse("arc offset radius would reach zero or below (curvature fold)");
       const ON_Circle new_circle(arc.plane, new_radius);
       const ON_Arc new_arc(new_circle, arc.DomainRadians());
       ON_NurbsCurve nc;
-      if (new_arc.GetNurbForm(nc) == 0) return Result::Failed;
+      if (new_arc.GetNurbForm(nc) == 0) return refuse("arc offset could not be built");
       out.curve_ = nc;
       return Result::Ok;
     }
   }
 
   // --- General planar curve: approximate, curvature-checked ---------------
-  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out);
+  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out, refusal_reason);
 }
 
 Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out, double tolerance,
-                                  CurveOffsetCornerStyle corner_style) const {
+                                  CurveOffsetCornerStyle corner_style, std::string* refusal_reason) const {
+  if (refusal_reason != nullptr) refusal_reason->clear();
+  auto refuse = [&](const char* msg) {
+    if (refusal_reason != nullptr) *refusal_reason = msg;
+    return Result::Failed;
+  };
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
@@ -3053,7 +3111,7 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
 
   // --- Line: still exact, for ANY plane not parallel to it -------------
   if (curve_.IsLinear(tol)) {
-    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
+    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out, refusal_reason);
   }
 
   // --- Polyline (3+ segments), coplanar in `plane`: exact per-corner
@@ -3066,7 +3124,12 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
     NurbsCurve polyline_out;
     if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, corner_style, polyline_out,
                                       polyline_result)) {
-      if (polyline_result == Result::Ok) out = polyline_out;
+      if (polyline_result != Result::Ok) {
+        return refuse(
+            "polyline offset refused: a zero-length edge, an edge parallel to the plane normal, a near-180-degree "
+            "fold, or a self-crossing offset polygon");
+      }
+      out = polyline_out;
       return polyline_result;
     }
   }
@@ -3089,14 +3152,14 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
         const double arc_mid = 0.5 * (arc_dom.min + arc_dom.max);
         Vector3d offset_dir = ON_CrossProduct(TangentAt(arc_mid), plane.zaxis);
         Vector3d radial = PointAt(arc_mid) - arc.Center();
-        if (!offset_dir.Unitize() || !radial.Unitize()) return Result::Failed;
+        if (!offset_dir.Unitize() || !radial.Unitize()) return refuse("degenerate arc: offset direction undefined");
         const double sign = OffsetSignAlong(offset_dir, radial);
         const double new_radius = arc.radius + sign * distance;
-        if (!(new_radius > 0.0)) return Result::Failed;
+        if (!(new_radius > 0.0)) return refuse("arc offset radius would reach zero or below (curvature fold)");
         const ON_Circle new_circle(arc.plane, new_radius);
         const ON_Arc new_arc(new_circle, arc.DomainRadians());
         ON_NurbsCurve nc;
-        if (new_arc.GetNurbForm(nc) == 0) return Result::Failed;
+        if (new_arc.GetNurbForm(nc) == 0) return refuse("arc offset could not be built");
         out.curve_ = nc;
         return Result::Ok;
       }
@@ -3107,7 +3170,7 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
   // No `IsPlanar()` precondition here - the whole point of this overload
   // is offsetting along a caller-chosen plane's normal even when this
   // curve doesn't lie in any single plane at all.
-  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out);
+  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out, refusal_reason);
 }
 
 }  // namespace dino8::kernel

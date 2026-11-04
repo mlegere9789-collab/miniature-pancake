@@ -94268,6 +94268,507 @@ void TestCircleOffsetByTiltedPlaneIsNotACircleAndMeetsToleranceAgainstClosedForm
   }
 }
 
+
+// =====================================================================
+// Hardening: ceiling refusal, closed/periodic freeform, singular/degenerate
+// freeform, sharper multi-span / trimmed freeform, truthful near-analytic
+// reporting, tilted-plane arcs and explicit-plane curve refusals.
+// =====================================================================
+
+// A closed freeform tube: rational quadratic circle in u (9 control points,
+// closed, C1 across the seam), cubic in v over 6 rows whose radius, ellipticity
+// and height vary. Not a plane, sphere, cylinder, cone or torus.
+NurbsSurface ClosedFreeformTube() {
+  ON_NurbsSurface cyl;
+  ON_Cylinder(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0), 1.0).GetNurbForm(cyl);
+  const int nu = cyl.CVCount(0), nv = 6;
+  ON_NurbsSurface ns(3, true, cyl.Order(0), 4, nu, nv);
+  for (int k = 0; k < ns.KnotCount(0); ++k) ns.SetKnot(0, k, cyl.Knot(0, k));
+  ns.MakeClampedUniformKnotVector(1, 1.0);
+  for (int j = 0; j < nv; ++j) {
+    const double r = 1.6 + 0.35 * std::sin(1.7 * j + 0.4);
+    const double ay = 1.0 + 0.3 * std::cos(0.9 * j);
+    for (int i = 0; i < nu; ++i) {
+      ON_4dPoint h;
+      cyl.GetCV(i, 0, h);
+      ns.SetCV(i, j, ON_4dPoint(r * h.x, r * ay * h.y, 0.8 * j * h.w, h.w));
+    }
+  }
+  NurbsSurface s;
+  s.raw() = ns;
+  return s;
+}
+
+// A rational ellipsoid (3,3,2): closed in u, with a collapsed edge (pole) at
+// each v end whose limiting normal is unique. Not recognised as a sphere.
+NurbsSurface FreeformEllipsoid() {
+  ON_NurbsSurface raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(raw);
+  raw.Transform(ON_Xform::DiagonalTransformation(1.0, 1.0, 2.0 / 3.0));
+  NurbsSurface s;
+  s.raw() = raw;
+  return s;
+}
+
+// A cone-like rational patch: u closed over an ELLIPTIC rim (a linear image of the circle, so smooth),
+// v degree 1 from a COLLAPSED apex row (v = 0) to the rim (v = 1). Not an analytic (circular) cone.
+// `crease_wobble` > 0 instead modulates each rim control point's radius by its angle: that breaks the
+// collinearity of the rim's (corner, on-curve, corner) control triples, giving a G1 CREASE every 90 degrees
+// (the offset locus of a creased surface has a gap there, so no fit can reach a tight tolerance).
+NurbsSurface ApexCone(double crease_wobble = 0.0) {
+  ON_NurbsSurface cyl;
+  ON_Cylinder(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0), 1.0).GetNurbForm(cyl);
+  const int nu = cyl.CVCount(0);
+  ON_NurbsSurface ns(3, true, cyl.Order(0), 2, nu, 2);
+  for (int k = 0; k < ns.KnotCount(0); ++k) ns.SetKnot(0, k, cyl.Knot(0, k));
+  ns.SetKnot(1, 0, 0.0);
+  ns.SetKnot(1, 1, 1.0);
+  for (int i = 0; i < nu; ++i) {
+    ON_4dPoint h;
+    cyl.GetCV(i, 0, h);
+    ns.SetCV(i, 0, ON_4dPoint(0, 0, 3.0 * h.w, h.w));
+    if (crease_wobble > 0.0) {
+      const double r = 2.0 + crease_wobble * std::sin(3.0 * std::atan2(h.y, h.x));
+      ns.SetCV(i, 1, ON_4dPoint(r * h.x, r * h.y, 0.0, h.w));
+    } else {
+      ns.SetCV(i, 1, ON_4dPoint(2.3 * h.x, 1.5 * h.y, 0.0, h.w));
+    }
+  }
+  NurbsSurface s;
+  s.raw() = ns;
+  return s;
+}
+
+// Multi-span, high-degree, sharp-featured freeform patch (n x n control net,
+// degree `deg`, a deterministic jitter on top of a sinusoid so no symmetry helps the fit).
+NurbsSurface SharpMultiSpanSurface(int n, int deg, double amp, double freq) {
+  std::vector<Point3d> g;
+  Lcg rng;
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j)
+      g.push_back(Point3d(1.0 * i, 1.0 * j, amp * std::sin(freq * i + 0.3) * std::cos(0.9 * freq * j) + 0.15 * (rng.Next() - 0.5)));
+  return NurbsSurface::FromControlGrid(g, n, n, deg, deg);
+}
+
+double MaxPrincipalCurvature(const NurbsSurface& s) {
+  double k = 0.0;
+  for (int i = 0; i < 40; ++i)
+    for (int j = 0; j < 40; ++j) {
+      const dino8::kernel::SurfaceCurvature c =
+          s.CurvatureAt(s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * (i + 0.5) / 40.0,
+                        s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * (j + 0.5) / 40.0);
+      k = std::max({k, std::fabs(c.k1), std::fabs(c.k2)});
+    }
+  return k;
+}
+
+NurbsSurface OffsetSentinel() {
+  std::vector<Point3d> g;
+  for (int i = 0; i < 2; ++i)
+    for (int j = 0; j < 2; ++j) g.push_back(Point3d(100 + i, 100 + j, 7.0));
+  return NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
+}
+
+bool OffsetSentinelUntouched(const NurbsSurface& out) {
+  return out.PointAt(0.5, 0.5).DistanceTo(OffsetSentinel().PointAt(0.5, 0.5)) < 1e-12;
+}
+
+bool Contains(const std::string& s, const char* needle) { return s.find(needle) != std::string::npos; }
+
+// Worst position gap and worst normal angle between the two opposite domain edges of `s` in `dir`.
+void SeamGap(const NurbsSurface& s, int dir, double& pos_gap, double& normal_angle) {
+  const Interval d0 = s.Domain(dir), d1 = s.Domain(1 - dir);
+  pos_gap = 0.0;
+  normal_angle = 0.0;
+  for (int k = 0; k <= 300; ++k) {
+    const double t = d1.min + (d1.max - d1.min) * (0.002 + 0.996 * k / 300.0);
+    const double a_u = dir == 0 ? d0.min : t, a_v = dir == 0 ? t : d0.min;
+    const double b_u = dir == 0 ? d0.max : t, b_v = dir == 0 ? t : d0.max;
+    pos_gap = std::max(pos_gap, s.PointAt(a_u, a_v).DistanceTo(s.PointAt(b_u, b_v)));
+    const double c = std::min(1.0, ON_DotProduct(s.NormalAt(a_u, a_v), s.NormalAt(b_u, b_v)));
+    normal_angle = std::max(normal_angle, std::acos(c));
+  }
+}
+
+// Max distance to the exact locus over `n` random points, a third of which are within 1e-4 of the
+// u-seam (both ends), so a seam defect cannot hide between interior samples.
+double LocusWorstWithSeamPoints(const NurbsSurface& base, const NurbsSurface& out, double d, int n) {
+  Lcg rng;
+  rng.s ^= 0x5eedu;
+  const Interval du = base.Domain(0), dv = base.Domain(1);
+  double worst = 0.0;
+  for (int k = 0; k < n; ++k) {
+    double fu = 0.003 + 0.994 * rng.Next();
+    if (k % 3 == 0) fu = (k % 2) ? 1e-4 * rng.Next() + 1e-6 : 1.0 - 1e-4 * rng.Next() - 1e-6;
+    const double fv = 0.003 + 0.994 * rng.Next();
+    const double u = du.min + (du.max - du.min) * fu, v = dv.min + (dv.max - dv.min) * fv;
+    worst = std::max(worst, out.PointAt(u, v).DistanceTo(base.PointAt(u, v) + d * base.NormalAt(u, v)));
+  }
+  return worst;
+}
+
+// (a) The "tolerance not reachable before the sample-grid ceiling" path.
+void TestOffsetToleranceBeyondSampleCeilingIsRefusedWithItsOwnReason() {
+  // A trimmed cone-like patch with a G1 crease every 90 degrees around its rim: the true offset locus
+  // has a gap at each crease, so no fit can ever reach 1e-3 however many control points it is given
+  // (a deviation of ~0.066 remains at the ceiling) and the call must refuse, not return a fit
+  // that is out of tolerance.
+  NurbsSurface cone = ApexCone(0.4);
+  cone.Trim(1, 0.35, 1.0);
+  Check(!cone.IsPlanar(1e-3) && !cone.IsSphere(1e-3) && !cone.IsCylinder(1e-3) && !cone.IsCone(1e-3) && !cone.IsTorus(1e-3),
+        "ceiling fixture is a freeform surface (not recognised as any analytic primitive)");
+  for (double d : {0.2, -0.2}) {
+    NurbsSurface out = OffsetSentinel();
+    NurbsSurface::OffsetInfo info;
+    const Result r = cone.Offset(d, out, 1e-3, &info);
+    std::printf("  ceiling d=%g -> %s\n", d, info.refusal_reason.c_str());
+    Check(r == Result::Failed, "Offset(trimmed elliptic cone, tol 1e-3): refused, never an out-of-tolerance fit");
+    Check(OffsetSentinelUntouched(out), "ceiling refusal leaves out untouched");
+    Check(Contains(info.refusal_reason, "tolerance not reachable") && Contains(info.refusal_reason, "ceiling"),
+          "ceiling refusal states that the tolerance is not reachable before the sample-grid ceiling");
+    Check(!Contains(info.refusal_reason, "curvature fold") && !Contains(info.refusal_reason, "singular"),
+          "ceiling refusal is NOT the curvature-fold or singular-surface reason");
+    // The same call through OffsetRefit with a reason out-parameter.
+    std::string why;
+    NurbsSurface out2 = OffsetSentinel();
+    Check(cone.OffsetRefit(d, out2, 1e-3, nullptr, &why) == Result::Failed && Contains(why, "tolerance not reachable") &&
+              OffsetSentinelUntouched(out2),
+          "OffsetRefit reports the ceiling reason through its own out-parameter, out untouched");
+    // A looser tolerance on the very same surface and distance succeeds and is honoured.
+    NurbsSurface loose;
+    NurbsSurface::OffsetInfo li;
+    Check(cone.Offset(d, loose, 0.15, &li) == Result::Ok && li.achieved_deviation <= 0.15 && li.refusal_reason.empty(),
+          "the same surface/distance succeeds at a looser tolerance (so the refusal is the tolerance, not the geometry)");
+    Check(li.refusal_reason.empty() && OffsetWorstAgainstLocus(cone, loose, d, 2000) <= 0.15, "looser-tolerance result is within its stated tolerance of base + d*N");
+  }
+  // The curvature-fold refusal keeps its own, different reason.
+  {
+    NurbsSurface out = OffsetSentinel();
+    NurbsSurface::OffsetInfo info;
+    Check(BumpSurface().Offset(1.0, out, 1e-3, &info) == Result::Failed && Contains(info.refusal_reason, "curvature fold") &&
+              !Contains(info.refusal_reason, "tolerance not reachable") && OffsetSentinelUntouched(out),
+          "curvature-fold refusal carries the fold reason, not the ceiling reason");
+  }
+}
+
+// (b) Closed freeform surfaces: the offset stays closed and G1 across the seam.
+void TestOffsetClosedFreeformTubeStaysClosedAndMeetsTolerance() {
+  const NurbsSurface tube = ClosedFreeformTube();
+  Check(tube.raw().IsValid() && tube.IsClosed(0) && !tube.IsClosed(1), "closed tube fixture: valid, closed in u only");
+  Check(!tube.IsPlanar(1e-3) && !tube.IsSphere(1e-3) && !tube.IsCylinder(1e-3) && !tube.IsCone(1e-3) && !tube.IsTorus(1e-3),
+        "closed tube fixture is freeform");
+  for (double d : {0.2, -0.2}) {
+    for (double tol : {1e-3, 1e-4}) {
+      NurbsSurface out;
+      NurbsSurface::OffsetInfo info;
+      Check(tube.Offset(d, out, tol, &info) == Result::Ok && !info.exact && info.achieved_deviation <= tol, "closed tube offset succeeds as a fit within tol");
+      double pos_gap = 0.0, ang = 0.0;
+      SeamGap(out, 0, pos_gap, ang);
+      const double locus = LocusWorstWithSeamPoints(tube, out, d, 3000);
+      double worst_locus = 0.0, worst_base = 0.0;
+      MeasureAgainstExactLocus(tube, out, d, 600, 60, worst_locus, worst_base);
+      std::printf("  tube d=%g tol=%g cv=%dx%d seam position gap=%g seam normal angle=%g rad locus(seam-biased)=%g dist-to-base err=%g\n", d, tol,
+                  out.CVCountU(), out.CVCountV(), pos_gap, ang, locus, worst_base);
+      Check(out.IsClosed(0), "closed tube offset: ON reports the result closed in u");
+      Check(pos_gap <= 1e-9, "closed tube offset: positions across the u-seam coincide (<= 1e-9, far below tol)");
+      Check(ang <= 1e-6, "closed tube offset: surface normals across the u-seam agree to 1e-6 rad (G1 across the seam)");
+      Check(locus <= tol, "closed tube offset: 3000 independent points (one third within 1e-4 of the seam) all within tol of base + d*normal");
+      Check(worst_base <= tol, "closed tube offset: 60 offset points at distance |d| from the base surface within tol");
+    }
+  }
+}
+
+// (b)+(c) A closed surface WITH poles whose limiting normal is unique is offset correctly.
+void TestOffsetFreeformEllipsoidWithPolesAndSeam() {
+  const NurbsSurface e = FreeformEllipsoid();
+  Check(e.IsClosed(0) && !e.IsSphere(1e-3) && !e.IsCylinder(1e-3) && !e.IsCone(1e-3) && !e.IsTorus(1e-3), "ellipsoid fixture: closed in u, freeform");
+  for (double d : {0.3, -0.3}) {
+    const double tol = 1e-3;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(e.Offset(d, out, tol, &info) == Result::Ok && !info.exact && info.achieved_deviation <= tol,
+          "ellipsoid offset (poles with a unique limiting normal) succeeds as a fit within tol");
+    double pos_gap = 0.0, ang = 0.0;
+    SeamGap(out, 0, pos_gap, ang);
+    const double locus = LocusWorstWithSeamPoints(e, out, d, 3000);
+    // Pole rows: every sample of the collapsed edge is the same point.
+    double pole_spread = 0.0;
+    const Point3d p0 = out.PointAt(out.Domain(0).min, out.Domain(1).min);
+    for (int k = 0; k <= 50; ++k)
+      pole_spread = std::max(pole_spread, p0.DistanceTo(out.PointAt(out.Domain(0).min + (out.Domain(0).max - out.Domain(0).min) * k / 50.0, out.Domain(1).min)));
+    std::printf("  ellipsoid d=%g cv=%dx%d seam gap=%g seam angle=%g locus=%g pole spread=%g\n", d, out.CVCountU(), out.CVCountV(), pos_gap, ang, locus, pole_spread);
+    Check(pos_gap <= 1e-9 && ang <= 1e-6, "ellipsoid offset: closed and G1 across the seam");
+    Check(locus <= tol, "ellipsoid offset: 3000 independent points within tol of base + d*normal");
+    Check(pole_spread <= tol, "ellipsoid offset: the collapsed pole edge stays a single point to within tol");
+  }
+}
+
+// (c) Singular / degenerate freeform surfaces: refuse with a reason or offset correctly, never garbage.
+void TestOffsetSingularFreeformIsRefusedWithAReasonNeverGarbage() {
+  const NurbsSurface cone = ApexCone();
+  Check(cone.raw().IsValid() && !cone.IsCone(1e-3) && !cone.IsCylinder(1e-3) && !cone.IsSphere(1e-3) && !cone.IsPlanar(1e-3),
+        "apex cone: valid, collapsed apex edge, NOT recognised as an analytic cone");
+  bool singular_seen = false;
+  for (double d : {0.2, -0.2}) {
+    NurbsSurface out = OffsetSentinel();
+    NurbsSurface::OffsetInfo info;
+    bool threw = false;
+    Result r = Result::Ok;
+    try { r = cone.Offset(d, out, 1e-3, &info); } catch (...) { threw = true; }
+    std::printf("  apex cone d=%g -> %s\n", d, info.refusal_reason.c_str());
+    Check(!threw, "Offset(apex cone) does not throw");
+    Check(r == Result::Failed && !info.refusal_reason.empty() && OffsetSentinelUntouched(out),
+          "Offset(apex cone, either sign): refused with a reason, out untouched (the apex normal depends on the direction of approach)");
+    Check(!Contains(info.refusal_reason, "tolerance not reachable"), "apex cone refusal is not the ceiling reason");
+    if (Contains(info.refusal_reason, "singular")) singular_seen = true;
+  }
+  Check(singular_seen, "at least the side that does not fold first is refused as a singular surface (collapsed edge, direction-dependent normal)");
+  // The same cone trimmed away from the apex is a regular surface: offset at a small distance is correct.
+  {
+    NurbsSurface t = cone;
+    t.Trim(1, 0.35, 1.0);
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(t.Offset(0.02, out, 1e-3, &info) == Result::Ok && info.achieved_deviation <= 1e-3, "trimmed (apex removed) elliptic cone offsets correctly at d=0.02");
+    if (!info.refusal_reason.empty()) std::printf("  trimmed cone reason: %s\n", info.refusal_reason.c_str());
+    else Check(OffsetWorstAgainstLocus(t, out, 0.02, 2000) <= 1e-3, "trimmed elliptic cone: 2000 independent points within tol of base + d*normal");
+  }
+  // A bicubic patch whose control net is a single straight line has zero area everywhere.
+  {
+    std::vector<Point3d> g;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 4; ++j) g.push_back(Point3d(1.0 * i + 0.3 * j, 0.0, 0.0));
+    const NurbsSurface line = NurbsSurface::FromControlGrid(g, 4, 4, 3, 3);
+    NurbsSurface out = OffsetSentinel();
+    NurbsSurface::OffsetInfo info;
+    bool threw = false;
+    Result r = Result::Ok;
+    try { r = line.Offset(0.1, out, 1e-3, &info); } catch (...) { threw = true; }
+    std::printf("  zero-area patch -> %s (result %d)\n", info.refusal_reason.c_str(), static_cast<int>(r));
+    Check(!threw && r == Result::Failed && !info.refusal_reason.empty() && OffsetSentinelUntouched(out),
+          "Offset(zero-area patch): refused with a reason, no throw, out untouched");
+  }
+}
+
+// (d) Multi-span, higher-degree, sharper freeform, large offset, trimmed patch.
+void TestOffsetSharpMultiSpanHighDegreeLargeDistanceAndTrimmedPatch() {
+  const NurbsSurface s = SharpMultiSpanSurface(7, 4, 1.0, 2.2);
+  Check(s.raw().IsValid() && s.raw().SpanCount(0) >= 3 && s.raw().SpanCount(1) >= 3 && s.DegreeU() == 4,
+        "sharp fixture: degree 4 with at least 3 spans in each direction");
+  const double kmax = MaxPrincipalCurvature(s);
+  // "Large-ish" is relative to the surface's own sharpest feature: |d| * kmax = 0.5 and 0.35.
+  struct Case { double d; double tol; const char* name; };
+  const Case cases[] = {{0.5 / kmax, 1e-4, "d*kmax=0.5 tol 1e-4"}, {-0.35 / kmax, 1e-4, "d*kmax=-0.35 tol 1e-4"}};
+  std::printf("  sharp fixture kmax=%g\n", kmax);
+  for (const Case& c : cases) {
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    const Result r = s.Offset(c.d, out, c.tol, &info);
+    Check(r == Result::Ok, (std::string("sharp multi-span: ") + c.name + ": succeeds").c_str());
+    if (r != Result::Ok) { std::printf("  reason: %s\n", info.refusal_reason.c_str()); continue; }
+    double worst_locus = 0.0, worst_base = 0.0;
+    MeasureAgainstExactLocus(s, out, c.d, 2500, 80, worst_locus, worst_base);
+    std::printf("  sharp %s d=%g cv=%dx%d internal=%g random-locus=%g dist-to-base-err=%g\n", c.name, c.d, out.CVCountU(), out.CVCountV(),
+                info.achieved_deviation, worst_locus, worst_base);
+    Check(!info.exact && info.achieved_deviation <= c.tol, (std::string("sharp ") + c.name + ": fit, internally within tol").c_str());
+    Check(worst_locus <= c.tol, (std::string("sharp ") + c.name + ": 2500 independent random points within tol of base + d*normal").c_str());
+    Check(worst_base <= c.tol, (std::string("sharp ") + c.name + ": offset points at |d| from the base within tol").c_str());
+  }
+  // A partial / trimmed-domain patch of the same surface.
+  {
+    NurbsSurface t = s;
+    Check(t.Trim(0, 1.3, 4.1) != Result::Failed && t.Trim(1, 0.7, 5.2) != Result::Failed, "trim the sharp patch to a partial domain");
+    const double d = 0.5 / kmax;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    const Result r = t.Offset(d, out, 1e-4, &info);
+    Check(r == Result::Ok, "trimmed sharp patch: offset succeeds");
+    if (r == Result::Ok) {
+      double worst_locus = 0.0, worst_base = 0.0;
+      MeasureAgainstExactLocus(t, out, d, 2500, 80, worst_locus, worst_base);
+      std::printf("  trimmed sharp patch cv=%dx%d internal=%g random-locus=%g dist-to-base-err=%g\n", out.CVCountU(), out.CVCountV(),
+                  info.achieved_deviation, worst_locus, worst_base);
+      Check(std::fabs(out.Domain(0).min - t.Domain(0).min) < 1e-12 && std::fabs(out.Domain(1).max - t.Domain(1).max) < 1e-12,
+            "trimmed patch offset keeps the trimmed domain");
+      Check(worst_locus <= 1e-4 && worst_base <= 1e-4 && info.achieved_deviation <= 1e-4, "trimmed sharp patch: within the stated tolerance against the exact locus");
+    }
+  }
+}
+
+// (e) The analytic path reports what it actually achieved on a NEAR-analytic input.
+void TestOffsetNearAnalyticSphereReportsTrueDeviation() {
+  const double tol = 1e-3;
+  // A full sphere (r=3) whose z extent is stretched by `a` (deviation from a sphere of about a/2 to a). The
+  // OpenNURBS primitive recognition behind Offset() accepts only a ~1e-9 stretch whatever tolerance is asked
+  // (1e-7 is already refused at tol 1e-2), so only the first case reaches the closed form; the others are
+  // fitted. Each must report the deviation it really has.
+  for (double a : {1.0e-9, 1.0e-6, 0.5e-3, 4.0e-3}) {
+    ON_NurbsSurface raw;
+    ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(raw);
+    raw.Transform(ON_Xform::DiagonalTransformation(1.0, 1.0, 1.0 + a / 3.0));
+    NurbsSurface s;
+    s.raw() = raw;
+    const bool recognised = s.IsSphere(tol);
+    for (double d : {-0.8, 0.8}) {
+      NurbsSurface out;
+      NurbsSurface::OffsetInfo info;
+      const Result r = s.Offset(d, out, tol, &info);
+      Check(r == Result::Ok, "near-analytic sphere: offset succeeds");
+      if (r != Result::Ok) { std::printf("  reason: %s\n", info.refusal_reason.c_str()); continue; }
+      const double oracle = OffsetWorstAgainstLocus(s, out, d, 4000);
+      std::printf("  near-sphere a=%g (%.2f tol) recognised=%d d=%g exact=%d reported=%g independent=%g cv=%dx%d\n", a, a / tol, recognised, d,
+                  info.exact, info.achieved_deviation, oracle, out.CVCountU(), out.CVCountV());
+      Check(oracle <= tol, "near-analytic: independent deviation within the stated tolerance");
+      Check(info.achieved_deviation <= tol, "near-analytic: reported deviation within the stated tolerance");
+      Check(!(info.exact && oracle > 3e-9), "near-analytic: exact is claimed only when the independent deviation is at numerical noise (<= 3e-9)");
+      if (!info.exact) Check(info.achieved_deviation > 0.0, "near-analytic: a non-exact result never reports a zero deviation");
+      if (recognised) Check(oracle <= 1.1 * info.achieved_deviation + 1e-9, "near-analytic closed form: the reported deviation is not understated (denser than the independent sample)");
+    }
+  }
+  // The pristine sphere is still exact with a zero deviation, and the closed form really is exact.
+  {
+    ON_NurbsSurface raw;
+    ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    const Result r = s.Offset(0.8, out, tol, &info);
+    Check(r == Result::Ok && info.exact && info.achieved_deviation == 0.0, "pristine full sphere: exact with a zero reported deviation");
+    Check(OffsetWorstAgainstLocus(s, out, 0.8, 4000) < 1e-9, "pristine full sphere: independent deviation at numerical noise");
+  }
+}
+
+// (f) Curves: tilted-plane partial arcs and explicit-plane refusals.
+void TestArcOffsetByTiltedPlaneMeetsToleranceAgainstClosedForm() {
+  const double r = 4.0, a0 = 0.3, a1 = 0.3 + 100.0 * ON_PI / 180.0;
+  const ON_Circle circ(ON_Plane(ON_3dPoint(1, 2, 3), ON_3dVector(0, 0, 1)), r);
+  const ON_Arc arc(circ, ON_Interval(a0, a1));
+  ON_NurbsCurve raw;
+  arc.GetNurbForm(raw);
+  NurbsCurve c;
+  c.raw() = raw;
+  struct Case { ON_3dVector n; double d; };
+  const Case cases[] = {{ON_3dVector(0.6, 0.0, 0.8), 0.5}, {ON_3dVector(0.0, -0.6, 0.8), -0.7}, {ON_3dVector(0.5, 0.5, 0.7071), 0.4}};
+  for (const Case& cs : cases) {
+    ON_3dVector n = cs.n;
+    n.Unitize();
+    auto locus = [&](double theta) {
+      const ON_3dPoint p = circ.PointAt(theta);
+      ON_3dVector dir = ON_CrossProduct(circ.TangentAt(theta), n);
+      dir.Unitize();
+      return Point3d(p + cs.d * dir);
+    };
+    for (double tol : {1e-4, 1e-6}) {
+      NurbsCurve out;
+      std::string why = "stale";
+      Check(c.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), n), cs.d, out, tol, dino8::kernel::CurveOffsetCornerStyle::Sharp, &why) == Result::Ok &&
+                why.empty(),
+            "tilted-plane partial arc offset succeeds and clears the reason");
+      double worst = 0.0;
+      for (int i = 0; i <= 1500; ++i) {
+        const Point3d e = locus(a0 + (a1 - a0) * i / 1500.0);
+        worst = std::max(worst, out.ClosestPoint(e, 2000).DistanceTo(e));
+      }
+      const double e0 = out.PointAt(out.Domain().min).DistanceTo(locus(a0));
+      const double e1 = out.PointAt(out.Domain().max).DistanceTo(locus(a1));
+      // The converse direction: result points are on the locus.
+      double conv = 0.0;
+      for (int i = 0; i <= 400; ++i) {
+        const Point3d q = out.PointAt(out.Domain().min + (out.Domain().max - out.Domain().min) * i / 400.0);
+        int bk = 0;
+        double best = 1e300;
+        for (int k = 0; k <= 400; ++k) {
+          const double dd = q.DistanceTo(locus(a0 + (a1 - a0) * k / 400.0));
+          if (dd < best) { best = dd; bk = k; }
+        }
+        double lo = a0 + (a1 - a0) * std::max(0, bk - 1) / 400.0, hi = a0 + (a1 - a0) * std::min(400, bk + 1) / 400.0;
+        for (int it = 0; it < 60; ++it) {
+          const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
+          if (q.DistanceTo(locus(m1)) < q.DistanceTo(locus(m2))) hi = m2; else lo = m1;
+        }
+        conv = std::max(conv, q.DistanceTo(locus(0.5 * (lo + hi))));
+      }
+      std::printf("  tilted arc n=(%g,%g,%g) d=%g tol=%g cv=%d locus->result=%g result->locus=%g ends=%g,%g\n", n.x, n.y, n.z, cs.d, tol,
+                  out.ControlPointCount(), worst, conv, e0, e1);
+      Check(worst <= tol, "tilted-plane partial arc: 1501 exact locus points all within tol of the result");
+      Check(e0 <= tol && e1 <= tol, "tilted-plane partial arc: the end points are at the locus end points (angular extent kept) within tol");
+      Check(conv <= tol, "tilted-plane partial arc: every result point is within tol of the locus (no overshoot past the arc's ends)");
+    }
+  }
+}
+
+void TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched() {
+  auto sentinel = []() { return NurbsCurve::FromControlPoints({Point3d(50, 50, 50), Point3d(51, 50, 50)}, 1); };
+  auto untouched = [&](const NurbsCurve& o) { return o.PointAt(o.Domain().min).DistanceTo(Point3d(50, 50, 50)) < 1e-12 && o.PointAt(o.Domain().max).DistanceTo(Point3d(51, 50, 50)) < 1e-12; };
+  const ON_Circle circ(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  ON_NurbsCurve raw;
+  circ.GetNurbForm(raw);
+  NurbsCurve full;
+  full.raw() = raw;
+  // Plane normal lying IN the circle's own plane: tangent x normal changes sign at the two points where the
+  // tangent is parallel to the normal; there is no offset direction.
+  for (const ON_3dVector& n : {ON_3dVector(1, 0, 0), ON_3dVector(0.8, 0.6, 0)}) {
+    NurbsCurve out = sentinel();
+    std::string why;
+    const Result rr = full.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), n), 0.3, out, 1e-5, dino8::kernel::CurveOffsetCornerStyle::Sharp, &why);
+    std::printf("  in-plane normal (%g,%g,%g): %s\n", n.x, n.y, n.z, why.c_str());
+    Check(rr == Result::Failed && untouched(out), "circle offset by a plane whose normal lies in the circle's plane: refused, out untouched");
+    Check(Contains(why, "offset direction") && !Contains(why, "curvature fold") && !Contains(why, "tolerance not reachable"),
+          "in-plane-normal refusal states that the offset direction degenerates (not the fold or ceiling reason)");
+  }
+  // A partial arc whose tangent crosses the normal direction strictly inside it is refused too.
+  {
+    const ON_Arc arc(circ, ON_Interval(0.5, 2.5));  // tangent parallel to (1,0,0) at theta = pi/2
+    ON_NurbsCurve ar;
+    arc.GetNurbForm(ar);
+    NurbsCurve ac;
+    ac.raw() = ar;
+    NurbsCurve out = sentinel();
+    std::string why;
+    Check(ac.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0)), 0.3, out, 1e-5, dino8::kernel::CurveOffsetCornerStyle::Sharp, &why) ==
+                  Result::Failed &&
+              untouched(out) && Contains(why, "offset direction"),
+          "partial arc whose tangent crosses the plane normal: refused with the degenerate-direction reason, out untouched");
+  }
+  // Curvature fold under an explicit foreign (tilted) plane: for this normal the offset direction always has an
+  // OUTWARD radial component 0.8 for d > 0, so d = -3 is the folding sign (inward 2.4 > R = 2).
+  {
+    NurbsCurve out = sentinel();
+    std::string why;
+    Check(full.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0.6, 0, 0.8)), -3.0, out, 1e-5, dino8::kernel::CurveOffsetCornerStyle::Sharp, &why) ==
+                  Result::Failed &&
+              untouched(out),
+          "circle R=2 offset by -3.0 under a tilted foreign plane: refused (folds through the centre), out untouched");
+    std::printf("  fold: %s\n", why.c_str());
+    Check(Contains(why, "curvature fold"), "tilted-plane fold refusal carries the curvature-fold reason");
+    // The same offset at a safe distance is fine.
+    NurbsCurve ok;
+    Check(full.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0.6, 0, 0.8)), 0.3, ok, 1e-5) == Result::Ok, "the same tilted plane at distance 0.3 succeeds");
+  }
+  // Single-plane overload: an arc whose radius would reach zero gets the fold reason; a non-planar curve its own reason.
+  {
+    NurbsCurve out = sentinel();
+    std::string why;
+    Check(full.OffsetInPlane(-2.0, out, 1e-6, dino8::kernel::CurveOffsetCornerStyle::Sharp, &why) == Result::Failed && untouched(out) &&
+              Contains(why, "radius"),
+          "single-plane arc offset to radius zero: refused with a radius reason, out untouched");
+    const NurbsCurve helix = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 1, 1), Point3d(2, -1, 2), Point3d(3, 2, -1)}, 3);
+    out = sentinel();
+    why.clear();
+    Check(helix.OffsetInPlane(0.2, out, 1e-6, dino8::kernel::CurveOffsetCornerStyle::Sharp, &why) == Result::Failed && untouched(out) &&
+              Contains(why, "not planar"),
+          "single-plane offset of a non-planar curve: refused with the not-planar reason, out untouched");
+    // ...while the explicit-plane overload accepts the same curve (3D offset), and a huge distance folds with its reason.
+    out = sentinel();
+    why.clear();
+    Check(helix.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 40.0, out, 1e-4, dino8::kernel::CurveOffsetCornerStyle::Sharp, &why) ==
+                  Result::Failed &&
+              untouched(out) && Contains(why, "curvature fold"),
+          "3D curve, explicit plane, distance far beyond the radius of curvature: refused with the fold reason, out untouched");
+  }
+}
+
 }  // namespace offset_unified_tests
 
 int main() {
@@ -95775,6 +96276,22 @@ int main() {
           offset_unified_tests::TestCircleOffsetByParallelPlaneIsExactConcentricCircle);
   RunTest("offset_unified_tests::TestCircleOffsetByTiltedPlaneIsNotACircleAndMeetsToleranceAgainstClosedForm",
           offset_unified_tests::TestCircleOffsetByTiltedPlaneIsNotACircleAndMeetsToleranceAgainstClosedForm);
+  RunTest("offset_unified_tests::TestOffsetToleranceBeyondSampleCeilingIsRefusedWithItsOwnReason",
+          offset_unified_tests::TestOffsetToleranceBeyondSampleCeilingIsRefusedWithItsOwnReason);
+  RunTest("offset_unified_tests::TestOffsetClosedFreeformTubeStaysClosedAndMeetsTolerance",
+          offset_unified_tests::TestOffsetClosedFreeformTubeStaysClosedAndMeetsTolerance);
+  RunTest("offset_unified_tests::TestOffsetFreeformEllipsoidWithPolesAndSeam",
+          offset_unified_tests::TestOffsetFreeformEllipsoidWithPolesAndSeam);
+  RunTest("offset_unified_tests::TestOffsetSingularFreeformIsRefusedWithAReasonNeverGarbage",
+          offset_unified_tests::TestOffsetSingularFreeformIsRefusedWithAReasonNeverGarbage);
+  RunTest("offset_unified_tests::TestOffsetSharpMultiSpanHighDegreeLargeDistanceAndTrimmedPatch",
+          offset_unified_tests::TestOffsetSharpMultiSpanHighDegreeLargeDistanceAndTrimmedPatch);
+  RunTest("offset_unified_tests::TestOffsetNearAnalyticSphereReportsTrueDeviation",
+          offset_unified_tests::TestOffsetNearAnalyticSphereReportsTrueDeviation);
+  RunTest("offset_unified_tests::TestArcOffsetByTiltedPlaneMeetsToleranceAgainstClosedForm",
+          offset_unified_tests::TestArcOffsetByTiltedPlaneMeetsToleranceAgainstClosedForm);
+  RunTest("offset_unified_tests::TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched",
+          offset_unified_tests::TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

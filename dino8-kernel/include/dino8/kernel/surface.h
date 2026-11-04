@@ -2233,8 +2233,23 @@ class NurbsSurface {
   // (true surface normal at every sample), not against
   // OffsetApproximate()'s first-order per-control-point translation,
   // which this method never uses as a fit target.
+  //
+  // `refusal_reason` (optional, default null): on Result::Failed receives
+  // WHY (cleared on success), and `out` is left untouched. Three distinct
+  // causes are reported: "curvature fold" (|distance| reaches the local
+  // radius of curvature), "singular surface" (zero-area / direction-
+  // dependent normal, e.g. a cone apex), and "tolerance not reachable"
+  // (the fit needs more control points than the sample-grid ceiling can
+  // resolve at the requested tolerance, with the best deviation reached).
+  //
+  // A surface closed in a direction (opposite domain edges coincide with
+  // the same normal) gets a closed offset in that direction: the fitted net
+  // is forced closed across the seam (identical end control points and,
+  // when the base's first derivative is continuous across the seam, equal
+  // end tangents), and the reported deviation is measured on the surface
+  // actually returned.
   Result OffsetRefit(double distance, NurbsSurface& out, double tolerance = -1.0,
-                     double* achieved_deviation = nullptr) const;
+                     double* achieved_deviation = nullptr, std::string* refusal_reason = nullptr) const;
 
   // What Offset() did, so a caller can tell an exact construction from a
   // tolerance-bounded fit and read the reason for a refusal.
@@ -2244,11 +2259,21 @@ class NurbsSurface {
     // exactly, partial-patch extent kept), AND it is on this surface's own
     // parametrization: out(u,v) == this(u,v) + distance * NormalAt(u,v)
     // on this surface's own domain, with its u/v roles and directions.
-    // False: `out` is a non-rational tolerance-bounded fit (OffsetRefit()).
+    // `exact` is true only when the measured deviation (below) is at the
+    // numerical-noise level of the rational closed form (1e-11 relative to the
+    // surface size plus |distance|).
+    // False: `out` is within `achieved_deviation` <= tolerance_used of the
+    // true locus but is not an exact offset of THIS surface: either a
+    // non-rational tolerance-bounded fit (OffsetRefit()), or, for an input
+    // that is only NEAR a recognised primitive (within the tolerance), that
+    // primitive's closed-form offset with its measured deviation reported.
     bool exact = false;
-    // Worst measured distance from `out` to the true offset locus
-    // (0.0 when `exact`; the OffsetRefit() verification-grid maximum
-    // otherwise, always <= the tolerance used).
+    // Worst MEASURED distance from `out` to the true offset locus
+    // base(u,v) + distance * N_base(u,v): on the OffsetRefit()
+    // verification grid for a fit, and on a dense (>= 65 x 65, 8 per
+    // control point) half-cell grid for the closed-form path (0.0 only
+    // when that measurement is at numerical-noise level, so `exact`).
+    // Always <= the tolerance used.
     double achieved_deviation = 0.0;
     // The tolerance actually applied (the requested one, or the
     // size-based default when the request was <= 0).

@@ -1861,8 +1861,15 @@ class NurbsCurve {
   // (`detail::IsSimplePolygon()`) - a detection-only guard for the
   // long-disclosed "inward offset of a concave curve can self-intersect"
   // gap, not a repair: a distance that is genuinely safe still succeeds.
+  //
+  // `refusal_reason` (optional, default null): on `Result::Failed` receives
+  // why (cleared on success), `out` untouched. Distinct causes: not planar,
+  // arc radius reaching zero, offset direction degenerate (tangent parallel
+  // to the plane normal, or flipping sign between samples), curvature fold,
+  // and "tolerance not reachable" (with the best deviation reached).
   Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0,
-                       CurveOffsetCornerStyle corner_style = CurveOffsetCornerStyle::Sharp) const;
+                       CurveOffsetCornerStyle corner_style = CurveOffsetCornerStyle::Sharp,
+                       std::string* refusal_reason = nullptr) const;
 
   // Same construction as `OffsetInPlane(double, ...)` above, but the
   // sweep direction at every parameter is `TangentAt(t) x plane.zaxis`
@@ -1932,8 +1939,12 @@ class NurbsCurve {
   //
   // `corner_style` - see the other overload's own doc comment - applies
   // the same way to this overload's own coplanar-polyline case.
+  // `refusal_reason` - see the other overload; also set when the offset
+  // direction `TangentAt(t) x plane.zaxis` is degenerate or flips sign
+  // (the plane normal lies in the curve's own plane).
   Result OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out, double tolerance = -1.0,
-                       CurveOffsetCornerStyle corner_style = CurveOffsetCornerStyle::Sharp) const;
+                       CurveOffsetCornerStyle corner_style = CurveOffsetCornerStyle::Sharp,
+                       std::string* refusal_reason = nullptr) const;
 
   // Offsets this curve - assumed to (approximately) lie on `surface` -
   // along `surface`'s own normal, sampled and refit: the kernel

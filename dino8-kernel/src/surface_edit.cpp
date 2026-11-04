@@ -881,10 +881,16 @@ Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) 
   return already_bezier ? Result::NoOpAlreadySatisfied : Result::Ok;
 }
 
-Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tolerance, double* achieved_deviation) const {
+Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tolerance, double* achieved_deviation,
+                                 std::string* refusal_reason) const {
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::OffsetRefit: distance must be finite");
   }
+  if (refusal_reason != nullptr) refusal_reason->clear();
+  auto refuse = [&](const std::string& why) {
+    if (refusal_reason != nullptr) *refusal_reason = why;
+    return Result::Failed;
+  };
   if (distance == 0.0) {
     out.surface_ = surface_;
     if (achieved_deviation != nullptr) *achieved_deviation = 0.0;
@@ -907,13 +913,25 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   const SurfaceDivisions divs = SuggestedDivisions(tol);
   const int guard_nu = std::max({divs.u, 4 * CVCountU(), 1});
   const int guard_nv = std::max({divs.v, 4 * CVCountV(), 1});
-  for (int i = 0; i < guard_nu; ++i) {
-    const double u = du.min + u_range * (i + 0.5) / guard_nu;
-    for (int j = 0; j < guard_nv; ++j) {
-      const double v = dv.min + v_range * (j + 0.5) / guard_nv;
-      const SurfaceCurvature sc = CurvatureAt(u, v);
-      if (distance * sc.k1 >= 1.0 || distance * sc.k2 >= 1.0) return Result::Failed;
+  const std::string kDegenerateReason =
+      "singular surface: the surface normal is undefined or direction-dependent (a collapsed edge whose normal "
+      "differs along it, as at a cone apex, a zero-area fold, or a row/column of coincident control points), so "
+      "the parallel surface is not a regular surface; no fitted substitute is returned";
+  try {
+    for (int i = 0; i < guard_nu; ++i) {
+      const double u = du.min + u_range * (i + 0.5) / guard_nu;
+      for (int j = 0; j < guard_nv; ++j) {
+        const double v = dv.min + v_range * (j + 0.5) / guard_nv;
+        const SurfaceCurvature sc = CurvatureAt(u, v);
+        if (distance * sc.k1 >= 1.0 || distance * sc.k2 >= 1.0) {
+          return refuse(
+              "curvature fold: |distance| reaches the local radius of curvature, so the true offset locus folds "
+              "through itself (no refit can represent it)");
+        }
+      }
     }
+  } catch (const std::runtime_error&) {
+    return refuse(kDegenerateReason);
   }
 
   // Ground-truth sample grid of the TRUE offset locus (the same formula
@@ -951,15 +969,115 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   for (int j = 0; j < v_samples; ++j) v_params[static_cast<size_t>(j)] = dv.min + v_range * j / (v_samples - 1.0);
   std::vector<std::vector<ON_3dPoint>> offset_pts(static_cast<size_t>(u_samples),
                                                     std::vector<ON_3dPoint>(static_cast<size_t>(v_samples)));
-  for (int i = 0; i < u_samples; ++i) {
-    for (int j = 0; j < v_samples; ++j) {
-      const double u = u_params[static_cast<size_t>(i)];
-      const double v = v_params[static_cast<size_t>(j)];
-      const double nu = std::clamp(u, du.min + nudge_u, du.max - nudge_u);
-      const double nv = std::clamp(v, dv.min + nudge_v, dv.max - nudge_v);
-      offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)] = PointAt(u, v) + distance * NormalAt(nu, nv);
+  // A sample where the two partial derivatives vanish or are parallel has no
+  // well-defined normal there. That is acceptable ONLY on a collapsed edge
+  // (a pole) whose limiting normal is the same however the pole is
+  // approached (a sphere/ellipsoid/dome pole): the nudged normals of every
+  // coincident degenerate sample must then agree. A cone apex (normal
+  // depends on the direction of approach), an interior zero-area point or a
+  // wholly degenerate patch is refused: no regular parallel surface exists.
+  struct PoleSample { Point3d p; ON_3dVector n; };
+  std::vector<PoleSample> poles;
+  try {
+    for (int i = 0; i < u_samples; ++i) {
+      for (int j = 0; j < v_samples; ++j) {
+        const double u = u_params[static_cast<size_t>(i)];
+        const double v = v_params[static_cast<size_t>(j)];
+        const double nu = std::clamp(u, du.min + nudge_u, du.max - nudge_u);
+        const double nv = std::clamp(v, dv.min + nudge_v, dv.max - nudge_v);
+        ON_3dPoint pt;
+        ON_3dVector su, sv;
+        if (!surface_.Ev1Der(u, v, pt, su, sv)) return refuse(kDegenerateReason);
+        const double e = su * su, g = sv * sv, f = su * sv;
+        const double denom = e * g - f * f;
+        const bool degenerate = !(e > 0.0) || !(g > 0.0) || !(denom > 1e-16 * e * g) ||
+                                !(std::min(e, g) > 1e-16 * std::max(e, g));
+        const ON_3dVector n = degenerate ? NormalAt(nu, nv) : NormalAt(u, v);
+        if (degenerate) {
+          const bool on_boundary = (i == 0 || i == u_samples - 1 || j == 0 || j == v_samples - 1);
+          if (!on_boundary) return refuse(kDegenerateReason);
+          for (const PoleSample& q : poles) {
+            if (q.p.DistanceTo(pt) <= tol && ON_DotProduct(q.n, n) < 1.0 - 1e-6) return refuse(kDegenerateReason);
+          }
+          poles.push_back({pt, n});
+        }
+        offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)] = PointAt(u, v) + distance * n;
+      }
     }
+  } catch (const std::runtime_error&) {
+    return refuse(kDegenerateReason);
   }
+
+  // Seam closure. A surface closed in a direction (opposite domain edges
+  // coincide, with the same normal and the same first derivative across the
+  // seam) has a CLOSED offset locus too, but the clamped non-periodic
+  // least-squares fit below treats the two seam rows independently, so
+  // positions agree only to the fit error and the tangent not at all. When
+  // the sampled locus is closed in a direction, the fitted control net is
+  // forced closed there (end control points identical, and, when the base is
+  // first-derivative continuous across the seam, the end tangents equal), and
+  // the verification below measures the surface actually returned.
+  //   level 0: not closed; 1: positions closed; 2: positions and tangent closed.
+  auto seam_level = [&](int dir) {
+    const int count = dir == 0 ? u_samples : v_samples;
+    const int other = dir == 0 ? v_samples : u_samples;
+    if (count < 3) return 0;
+    bool pos_closed = true, tangent_closed = true;
+    for (int k = 0; k < other && pos_closed; ++k) {
+      const ON_3dPoint a = dir == 0 ? offset_pts.front()[static_cast<size_t>(k)] : offset_pts[static_cast<size_t>(k)].front();
+      const ON_3dPoint b = dir == 0 ? offset_pts.back()[static_cast<size_t>(k)] : offset_pts[static_cast<size_t>(k)].back();
+      if (a.DistanceTo(b) > 0.05 * tol) pos_closed = false;
+    }
+    if (!pos_closed) return 0;
+    for (int k = 0; k < other && tangent_closed; ++k) {
+      const double ou = dir == 0 ? du.min : u_params[static_cast<size_t>(k)];
+      const double ov = dir == 0 ? v_params[static_cast<size_t>(k)] : dv.min;
+      const double eu = dir == 0 ? du.max : u_params[static_cast<size_t>(k)];
+      const double ev = dir == 0 ? v_params[static_cast<size_t>(k)] : dv.max;
+      ON_3dPoint p0, p1;
+      ON_3dVector a0, b0, a1, b1;
+      if (!surface_.Ev1Der(ou, ov, p0, a0, b0) || !surface_.Ev1Der(eu, ev, p1, a1, b1)) return 1;
+      const ON_3dVector t0 = dir == 0 ? a0 : b0;
+      const ON_3dVector t1 = dir == 0 ? a1 : b1;
+      const ON_3dVector n0 = dir == 0 ? b0 : a0;
+      const ON_3dVector n1 = dir == 0 ? b1 : a1;
+      const double scale = std::max({t0.Length(), t1.Length(), 1e-300});
+      if ((t0 - t1).Length() > 1e-6 * scale) tangent_closed = false;
+      // The cross-seam derivative (along the seam) must also match: it is
+      // the same curve, so it does whenever positions agree; checked anyway.
+      const double scale2 = std::max({n0.Length(), n1.Length(), 1e-300});
+      if ((n0 - n1).Length() > 1e-6 * scale2) tangent_closed = false;
+    }
+    return tangent_closed ? 2 : 1;
+  };
+  const int seam_u = seam_level(0);
+  const int seam_v = seam_level(1);
+  auto close_seam = [&](ON_NurbsSurface& surf, int dir, int level) {
+    const int count = dir == 0 ? surf.CVCount(0) : surf.CVCount(1);
+    const int other = dir == 0 ? surf.CVCount(1) : surf.CVCount(0);
+    if (level == 0 || count < 4) return;
+    const bool tangent = level == 2 && (dir == 0 ? DegreeU() : DegreeV()) >= 2;
+    for (int k = 0; k < other; ++k) {
+      auto get = [&](int idx) {
+        ON_3dPoint q;
+        if (dir == 0) surf.GetCV(idx, k, q); else surf.GetCV(k, idx, q);
+        return q;
+      };
+      auto set = [&](int idx, const ON_3dPoint& q) {
+        if (dir == 0) surf.SetCV(idx, k, q); else surf.SetCV(k, idx, q);
+      };
+      const ON_3dPoint a = get(0), b = get(count - 1);
+      const ON_3dPoint m = ON_3dPoint(0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z));
+      set(0, m);
+      set(count - 1, m);
+      if (tangent) {
+        const ON_3dPoint a1 = get(1), b1 = get(count - 2);
+        const ON_3dVector t = 0.5 * ((a1 - a) + (b - b1));
+        set(1, m + t);
+        set(count - 2, m - t);
+      }
+    }
+  };
 
   const int u_degree = DegreeU();
   const int v_degree = DegreeV();
@@ -970,6 +1088,7 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   int cv_u = std::clamp(CVCountU(), u_degree + 1, max_cv_u);
   int cv_v = std::clamp(CVCountV(), v_degree + 1, max_cv_v);
 
+  double best_worst = std::numeric_limits<double>::infinity();
   for (;;) {
     const std::vector<double> u_knot = ClampedUniformKnots(cv_u, u_order, du.min, du.max);
     const std::vector<double> v_knot = ClampedUniformKnots(cv_v, v_order, dv.min, dv.max);
@@ -996,6 +1115,11 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
       }
     } else {
       ok = false;
+    }
+
+    if (ok) {
+      close_seam(result, 0, seam_u);
+      close_seam(result, 1, seam_v);
     }
 
     if (ok && result.IsValid()) {
@@ -1031,9 +1155,16 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
         if (achieved_deviation != nullptr) *achieved_deviation = worst;
         return Result::Ok;
       }
+      best_worst = std::min(best_worst, worst);
     }
 
-    if (cv_u >= max_cv_u && cv_v >= max_cv_v) return Result::Failed;
+    if (cv_u >= max_cv_u && cv_v >= max_cv_v) {
+      return refuse("tolerance not reachable: the offset needs more control points than the sample-grid ceiling (" +
+                    std::to_string(max_cv_u) + " x " + std::to_string(max_cv_v) +
+                    ") can resolve at the requested tolerance " + std::to_string(tol) +
+                    "; the best fit reached a deviation of " + std::to_string(best_worst) +
+                    ". No offset is returned rather than an out-of-tolerance fit");
+    }
     cv_u = std::min(cv_u * 2, max_cv_u);
     cv_v = std::min(cv_v * 2, max_cv_v);
   }
@@ -1049,7 +1180,8 @@ namespace {
 // at most `tol` (otherwise `cand` is not a faithful offset of `base` at the
 // same parameters - wrong frame, transposed roles, or a parametrization the
 // primitive form does not share - and the caller must not call it exact).
-bool AlignOffsetToBase(const NurbsSurface& base, double d, NurbsSurface& cand, double tol) {
+bool AlignOffsetToBase(const NurbsSurface& base, double d, NurbsSurface& cand, double tol, double& measured) {
+  measured = std::numeric_limits<double>::infinity();
   const Interval du = base.Domain(0);
   const Interval dv = base.Domain(1);
   if (cand.SetDomain(0, du.min, du.max) == Result::Failed) return false;
@@ -1094,8 +1226,28 @@ bool AlignOffsetToBase(const NurbsSurface& base, double d, NurbsSurface& cand, d
   if (best_rv) {
     if (cand.Reverse(1) != Result::Ok || cand.SetDomain(1, dv.min, dv.max) == Result::Failed) return false;
   }
-  // Re-measured on the surface actually returned (not assumed).
-  return deviation(cand, false, false) <= tol;
+  // Re-measured on the surface actually returned (not assumed), on a grid
+  // far denser than the 7x7 orientation probe and offset from it: the
+  // recognition of "this is a sphere/cylinder/..." is only within `tol`, so
+  // the true deviation of the closed-form candidate from base + d*N_base is
+  // whatever this grid finds, and that number is what the caller reports.
+  // Half-cell offsets keep the grid off a parametrization's poles.
+  const int nu = std::clamp(8 * std::max(base.CVCountU(), cand.CVCountU()), 65, 201);
+  const int nv = std::clamp(8 * std::max(base.CVCountV(), cand.CVCountV()), 65, 201);
+  double worst = 0.0;
+  try {
+    for (int i = 0; i < nu; ++i) {
+      const double u = du.min + (du.max - du.min) * (i + 0.5) / nu;
+      for (int j = 0; j < nv; ++j) {
+        const double v = dv.min + (dv.max - dv.min) * (j + 0.5) / nv;
+        worst = std::max(worst, cand.PointAt(u, v).DistanceTo(base.PointAt(u, v) + d * base.NormalAt(u, v)));
+      }
+    }
+  } catch (const std::runtime_error&) {
+    return false;
+  }
+  measured = worst;
+  return worst <= tol;
 }
 
 }  // namespace
@@ -1144,10 +1296,16 @@ Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance
       const double work_distance = attempt == 1 ? -distance : distance;
       if (work.OffsetAnalytic(work_distance, candidate, tol) != Result::Ok) continue;
       analytic_built_but_unusable = true;
-      if (!AlignOffsetToBase(work, work_distance, candidate, tol)) continue;
+      double measured = 0.0;
+      if (!AlignOffsetToBase(work, work_distance, candidate, tol, measured)) continue;
       if (attempt == 1) candidate.Transpose();
       out.surface_ = candidate.surface_;
-      report.exact = true;
+      // Numerical noise of a rational closed form is not a deviation;
+      // anything above it is the measured gap between the input and the
+      // primitive it was recognised as, and is reported, not hidden.
+      const double noise = 1e-11 * (bbox.Diagonal().Length() + std::fabs(distance));
+      report.exact = measured <= noise;
+      report.achieved_deviation = report.exact ? 0.0 : measured;
       return Result::Ok;
     }
     if (!analytic_built_but_unusable) {
@@ -1167,15 +1325,13 @@ Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance
   }
 
   double deviation = 0.0;
-  if (OffsetRefit(distance, out, tol, &deviation) == Result::Ok) {
+  std::string why;
+  if (OffsetRefit(distance, out, tol, &deviation, &why) == Result::Ok) {
     report.exact = false;
     report.achieved_deviation = deviation;
     return Result::Ok;
   }
-  report.refusal_reason =
-      "freeform offset refused: either |distance| reaches the local radius of curvature (the true offset "
-      "locus folds through itself), or the offset needs more control points than the sample-grid ceiling can "
-      "resolve at the requested tolerance";
+  report.refusal_reason = "freeform offset refused: " + why;
   return Result::Failed;
 }
 
