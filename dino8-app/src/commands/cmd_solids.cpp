@@ -2765,7 +2765,10 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              std::to_string(pri_ref_sag) + " included in the deviation";
     }
     if (cur_runs > 0) {
-      msg += "; curved-profile revolve cage (profile of " + std::to_string(cur_cvs) + " control point(s), degree " + std::to_string(cur_degree) + ": " +
+      // The per-solid figures below (profile, rings, faces...) are those of the LAST solid caged this way; with more than one
+      // the message says so rather than presenting one solid's cage as the description of all of them.
+      msg += std::string("; ") + (cur_runs > 1 ? std::to_string(cur_runs) + " solids took the curved-profile revolve cage, the figures that follow are those of the last one: " : std::string()) +
+             "curved-profile revolve cage (profile of " + std::to_string(cur_cvs) + " control point(s), degree " + std::to_string(cur_degree) + ": " +
              std::to_string(cur_rings) + " rings (control-point spans x a refinement factor, equally spaced in profile arc length, clustered toward the ends) x " + std::to_string(cur_around) +
              " segments around, " + std::to_string(cur_caps) + " flat O-grid cap(s), " + (cur_poles > 0 ? "sharp pole tip" : "no sharp pole tip") + ", " +
              std::to_string(cur_faces) + " cage faces), cage interpolated onto the Brep surface (" + std::to_string(cur_fit_iterations) +

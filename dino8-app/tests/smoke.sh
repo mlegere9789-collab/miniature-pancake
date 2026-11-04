@@ -13139,7 +13139,7 @@ qca_has() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; th
 qca_hasnot() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
 qca_objs() { local blk n; blk="$(qcablock "$1")"; n="$({ grep -cE "^history: Object [0-9]+ \(" <<<"$blk" || true; })"; if [ "$n" = "$2" ]; then echo "ok   $3 ($n object(s))"; else echo "FAIL $3 ('$n' object(s), expected $2)"; fail=1; fi; }
 # the case blocks must exist at all (a renamed marker would otherwise make every qca_hasnot pass vacuously)
-for QCA_CASE in scale_forgive scale_replaced; do
+for QCA_CASE in scale_forgive scale_replaced two_vases; do
   if [ -n "$(qcablock "$QCA_CASE")" ]; then echo "ok   QCA_block_$QCA_CASE: the case's output was found"; else echo "FAIL QCA_block_$QCA_CASE: no output between the markers"; fail=1; fi
 done
 # Sweep1: a refused ScaleX must not be forgiven by a later valid ScaleY
@@ -13149,5 +13149,8 @@ qca_objs scale_forgive 2 "QCA_scale_forgive: only the rail and the section exist
 # control: replacing the refused value by a valid one builds the sweep, scaled on both axes
 qca_has scale_replaced "exact kernel sweep with a per-axis scale along the rail (x 2,2, y 2,2;" "QCA_scale_replaced: a refused ScaleX REPLACED by a valid one builds the scaled sweep"
 qca_objs scale_replaced 3 "QCA_scale_replaced: rail, section and the swept surface"
+# ToSubD of two different curved-profile revolves: the message says that two solids took the cage and that the figures are the last one's
+qca_has two_vases "2 solids took the curved-profile revolve cage, the figures that follow are those of the last one: curved-profile revolve cage (profile of" "QCA_two_vases: ToSubD of two vases says two solids took the curved-profile cage and whose figures follow"
+qca_objs two_vases 6 "QCA_two_vases: two curves, two solids and two SubDs"
 
 exit $fail

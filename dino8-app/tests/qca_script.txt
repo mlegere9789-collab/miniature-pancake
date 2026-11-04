@@ -41,3 +41,24 @@ SelName QSec
 Enter
 SelAll
 List
+
+# --- ToSubD of TWO different curved-profile revolves in one run: the cage figures printed (profile control points, rings,
+# faces) were those of the last solid only, yet the sentence read as the description of both SubDs.
+New
+QCABEGIN_two_vases
+Curve 3,0,0 6,0,3 2,0,6 4,0,10
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+Curve 0,0,0 5,0,0 5,0,5 2,0,8 2,0,12
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelAll
+ToSubD
+SelAll
+List
