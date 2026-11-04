@@ -345,7 +345,13 @@ void SamplePcurve(const ON_NurbsSurface& s, const ON_NurbsCurve& c3, double tol,
     const ON_3dPoint p = c3.PointAt(dom.ParameterAt(static_cast<double>(i) / n));
     // The first point of a loop segment starts where the previous segment ended: seed with that (the grid seed alone
     // landed on the far side of the seam / the wrong grid cell on a 2e5-long cylinder).
-    const UV* seed = have_prev ? &prev : start_seed;
+    // (the walking value `prev` may have left the domain by whole periods: the seed must lie inside it)
+    UV wrapped = have_prev ? prev : (start_seed ? *start_seed : UV());
+    if (closed_u) wrapped.u = du.Min() + std::fmod(std::fmod(wrapped.u - du.Min(), du.Length()) + du.Length(), du.Length());
+    if (closed_v) wrapped.v = dv.Min() + std::fmod(std::fmod(wrapped.v - dv.Min(), dv.Length()) + dv.Length(), dv.Length());
+    wrapped.u = std::clamp(wrapped.u, du.Min(), du.Max());
+    wrapped.v = std::clamp(wrapped.v, dv.Min(), dv.Max());
+    const UV* seed = (have_prev || start_seed) ? &wrapped : nullptr;
     UV uv = ClosestUV(s, p, seed, tol);
     if (have_prev) {
       if (closed_u) uv.u -= std::round((uv.u - prev.u) / du.Length()) * du.Length();
