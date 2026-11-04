@@ -98933,14 +98933,13 @@ void TestLawRefusalsStateTheirReason() {
   Check(!m.empty(), "the concave law on a convex edge is refused");
 }
 
-// A 10-wide box edge filleted with every genuinely non-linear law (radii 1 -> 3) must build a valid solid whose removed
+// A 10-wide box edge filleted with every gentle-start non-linear law (radii 1 -> 3) must build a valid solid whose removed
 // volume matches the independent union-of-balls integral - and must do so wherever the box sits, not only near the
 // origin. Regression: the multi-segment sampled-law path was refused by Brep::FromMixedFaces ("a ConicalFace's own cap
 // notch point does not lie on the cone's own real surface") for a box at x = 1.5e6 (the app's far-from-origin fixture).
 struct NonLinearLaw { const char* name; std::function<double(double)> f; };
 std::vector<NonLinearLaw> NonLinearLaws() {
   return {
-      {"sqrt", [](double s) { return 1.0 + 2.0 * std::sqrt(s); }},
       {"quadratic", [](double s) { return 1.0 + 2.0 * s * s; }},
       {"smooth", [](double s) { return 1.0 + 2.0 * (3 * s * s - 2 * s * s * s); }},
       {"3-sample", [](double s) { return s <= 0.3 ? 1.0 + 0.5 * (s / 0.3) : 1.5 + 1.5 * ((s - 0.3) / 0.7); }},
@@ -99003,6 +99002,35 @@ void TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin() {
       Check(same, (tag + "the same conical segments (radii, length, sweep) as the box at the origin").c_str());
     }
   }
+}
+
+// r(s) = 1 + 2 sqrt(s) has a vertical tangent at s = 0: its first sampled segments have dr/dt >= ~1, so the tapered cone
+// for such a segment folds over itself (its two end curves cross in the cone's own (angle, height) plane) and the
+// resulting body could not be tessellated ("trim_polygon must be simple"). The fillet must refuse it up front, with a
+// reason that names the offending slope, rather than return a body no mesher/volume/boolean can use. Measured before the
+// refusal existed: FilletConvexEdgeLaw built it (valid closed solid) and TessellateToClosedMeshAdaptive threw.
+void TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody() {
+  const auto sqrt_law = [](double s) { return 1.0 + 2.0 * std::sqrt(s); };
+  for (double x0 : {0.0, 1.5e6}) {
+    const std::string tag = std::string("[sqrt law, box at x=") + std::to_string(static_cast<long long>(x0)) + "] ";
+    const Brep box = Brep::Box(x0, 0, 0, x0 + 10, 10, 10);
+    std::string why;
+    bool built = false;
+    try {
+      const Brep f = FilletConvexEdgeLaw(box, Point3d(x0 + 10, 10, 0), Point3d(x0 + 10, 10, 10), sqrt_law, 0.015);
+      built = true;
+      (void)f.TessellateToClosedMeshAdaptive(1e-6);  // must not be reachable with an unusable body
+    } catch (const std::exception& e) { why = e.what(); }
+    Check(!built, (tag + "is refused (no body is returned)").c_str());
+    Check(why.find("too steep") != std::string::npos && why.find("slope dr/dt") != std::string::npos &&
+              why.find("trim_polygon") == std::string::npos,
+          (tag + "the refusal names the slope of the offending segment: " + why).c_str());
+  }
+  // a law with the same end radii but a gentle start is NOT refused by the same check
+  const auto gentle = [](double s) { return 1.0 + 2.0 * s * s; };
+  std::string why;
+  try { (void)FilletConvexEdgeLaw(Brep::Box(0, 0, 0, 10, 10, 10), Point3d(10, 10, 0), Point3d(10, 10, 10), gentle, 0.015); } catch (const std::exception& e) { why = e.what(); }
+  Check(why.empty(), ("[quadratic law] is not refused: " + why).c_str());
 }
 
 }  // namespace blend_law_tests
@@ -104512,6 +104540,7 @@ int main() {
   RunTest("blend_law_tests::TestConcaveLawFilletTangencyAndAddedVolume", blend_law_tests::TestConcaveLawFilletTangencyAndAddedVolume);
   RunTest("blend_law_tests::TestLawRefusalsStateTheirReason", blend_law_tests::TestLawRefusalsStateTheirReason);
   RunTest("blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls", blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls);
+  RunTest("blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody", blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody);
   RunTest("blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin", blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin);
 
   RunTest("units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions", units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <map>
@@ -2150,6 +2151,66 @@ double InteriorJoinTolerance(double max_sagittaA, double max_deviationB, const s
   return std::max(max_sagittaA, max_deviationB) * (1.0 + 1e-9) + 1e-12 + noise;
 }
 
+// A tapered cone segment is a patch between two end curves, drawn in the cone's own (angle, axial height) plane: its
+// first end (cap0) must lie strictly below its second end (cap1) at EVERY angle, or the patch folds over itself and its
+// trim polygon is self-intersecting (the B-rep is still assembled, but it cannot be tessellated, meshed or measured -
+// "TessellateGridClippedExact: trim_polygon must be simple"). That happens when the segment's radius changes so fast
+// along the edge that the cone's half-angle approaches the tilt of its axis: the end-plane ellipse then runs away
+// towards a parabola and crosses the natural circle that closes the previous/next segment. The radius law
+// r(s) = 1 + 2 sqrt(s) (infinite slope at s = 0) is the typical offender: its first sampled segment has dr/dt ~ 1.
+// Detected here from the very end curves FromMixedFaces() will trim with (the notch point lists), and refused with a
+// reason naming the segment's slope, instead of returning a body that cannot be used.
+void RefuseFoldedConeSegments(const std::vector<Brep::ConicalFace>& cones,
+                              const std::vector<FilletRadiusStation>& stations, const char* who) {
+  auto height_and_angle = [](const Brep::ConicalFace& cf, const std::vector<Point3d>& pts) {
+    std::vector<std::pair<double, double>> out;  // (angle, axial height from the apex)
+    out.reserve(pts.size());
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const Vector3d d = pts[i] - cf.frame.origin;
+      double phi;
+      if (i == 0) {
+        phi = 0.0;
+      } else if (i + 1 == pts.size()) {
+        phi = cf.angle;
+      } else {
+        phi = std::atan2(d * cf.frame.yaxis, d * cf.frame.xaxis);
+        if (phi < 0.0) phi += 2.0 * ON_PI;
+      }
+      out.emplace_back(phi, d * cf.frame.zaxis);
+    }
+    return out;
+  };
+  for (size_t k = 0; k < cones.size(); ++k) {
+    const Brep::ConicalFace& cf = cones[k];
+    if (cf.cap0_notch_points.size() < 2 || cf.cap1_notch_points.size() < 2) continue;
+    const auto lo = height_and_angle(cf, cf.cap0_notch_points);
+    const auto hi = height_and_angle(cf, cf.cap1_notch_points);
+    double worst_gap = std::numeric_limits<double>::infinity();
+    for (const auto& [phi, h0] : lo) {
+      // h1 at the same angle: linear interpolation along the (angle-ordered) second end curve
+      size_t j = 1;
+      while (j + 1 < hi.size() && hi[j].first < phi) ++j;
+      const double a0 = hi[j - 1].first, a1 = hi[j].first;
+      const double w = a1 > a0 ? std::min(1.0, std::max(0.0, (phi - a0) / (a1 - a0))) : 0.0;
+      const double h1 = hi[j - 1].second + w * (hi[j].second - hi[j - 1].second);
+      worst_gap = std::min(worst_gap, h1 - h0);
+    }
+    if (!(worst_gap > 1e-3 * cf.length)) {
+      const double t0 = stations[k].t, t1 = stations[k + 1].t;
+      const double slope = (stations[k + 1].radius - stations[k].radius) / (t1 - t0);
+      char buf[480];
+      std::snprintf(buf, sizeof buf,
+                    "dino8::kernel::%s: the radius law is too steep to be built from tapered cones: over "
+                    "[t=%.6g, t=%.6g] the radius changes from %.6g to %.6g, a slope dr/dt of %.4g, and the cone "
+                    "for that segment folds over itself (its end curves cross; closest axial gap %.3g against "
+                    "a segment length of %.3g). Use a law whose slope stays well below 1 (it must not start "
+                    "with a vertical tangent such as sqrt), or fillet with fewer/lower-slope stations.",
+                    who, t0, t1, stations[k].radius, stations[k + 1].radius, slope, worst_gap, cf.length);
+      throw std::invalid_argument(buf);
+    }
+  }
+}
+
 // The N-station (N >= 3) general case: builds N-1 genuine
 // Brep::ConicalFace segments (one per [stations[k].t, stations[k+1].t]
 // sub-interval, via BuildTaperedConeSegment), splices the FULL piecewise
@@ -2373,6 +2434,7 @@ Brep BuildMultiStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d 
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
+  RefuseFoldedConeSegments(conical_faces, stations, "FilletConvexEdgeTapered");
   return Brep::FromMixedFaces(mixed_planar, {}, conical_faces);
 }
 
@@ -2646,6 +2708,7 @@ Brep BuildMultiStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, P
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
+  RefuseFoldedConeSegments(conical_faces, stations, "FilletConcaveEdgeTapered");
   return Brep::FromMixedFaces(mixed_planar, {}, conical_faces);
 }
 
