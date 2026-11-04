@@ -1082,6 +1082,8 @@ bool PlanarSurfaceClosestUV(const ON_Surface& s, const ON_3dPoint& p, double* u_
 // its area (1.1e-3 at n = 76), and the divergence theorem then charges that deficit to the volume. When the
 // neighbour's curve lies IN the plane (verified, not assumed) its points are the true edge, so this inserts them,
 // subdivided until the chord deviation is below `tol`, as extra polygon vertices of the planar face.
+// `out` starts with the trim's own start vertex (projected from the neighbour's curve, not read from the trim's
+// stored (u, v), which the Boolean can leave off the vertex) and ends before the next trim's start.
 // Returns false (leave the trim as sampled) when the edge is not shared by exactly two faces, the neighbour is
 // planar too (a chord is then exact), or the neighbour's curve is not in this face's plane.
 bool NeighborCurveUVPoints(const ON_Brep& b, const ON_BrepFace& face, const ON_Surface& fs, const ON_BrepTrim& trim,
@@ -1117,12 +1119,21 @@ bool NeighborCurveUVPoints(const ON_Brep& b, const ON_BrepFace& face, const ON_S
       };
   split(0.0, eval(0.0), 1.0, eval(1.0), 8);
   if (pts.empty()) return false;
+  // The trim's own start comes first and is taken from the neighbour's curve too (its (u, v) is projected like the
+  // interior points): the general Boolean's cap trims start at a (u, v) that can sit tenths of a degree off the
+  // vertex on a circular edge, which would put a kink at every trim joint of the otherwise exact polygon (and
+  // EarClipTriangulate() then stalls on the resulting reflex vertices, losing a few percent of the face's area).
   std::vector<ON_2dPoint> uvs;
-  for (const auto& fp : pts) {
+  const auto project = [&](const ON_3dPoint& p) {
     double u = 0.0, v = 0.0;
-    if (!PlanarSurfaceClosestUV(fs, fp.second, &u, &v)) return false;
-    if (fs.PointAt(u, v).DistanceTo(fp.second) > tol) return false;  // the neighbour's curve is not in this plane
+    if (!PlanarSurfaceClosestUV(fs, p, &u, &v)) return false;
+    if (fs.PointAt(u, v).DistanceTo(p) > tol) return false;  // the neighbour's curve is not in this plane
     uvs.emplace_back(u, v);
+    return true;
+  };
+  if (!project(eval(0.0))) return false;
+  for (const auto& fp : pts) {
+    if (!project(fp.second)) return false;
   }
   out = std::move(uvs);
   return true;
@@ -1150,9 +1161,7 @@ std::vector<ON_2dPoint> RefinedLoopPolygon(const ON_Brep& b, int loop_index, int
     const ON_Interval d = trim.Domain();
     std::vector<ON_2dPoint> extra;
     if (planar && tol > 0.0 && NeighborCurveUVPoints(b, *face, *fs, trim, tol, extra)) {
-      const ON_3dPoint uv = trim.PointAt(d.Min());
-      poly.emplace_back(uv.x, uv.y);
-      poly.insert(poly.end(), extra.begin(), extra.end());
+      poly.insert(poly.end(), extra.begin(), extra.end());  // starts with the trim's own start vertex
       continue;
     }
     const bool line = trim.m_iso != ON_Surface::not_iso;
@@ -1223,7 +1232,14 @@ double IntegrateTriangleAdaptive(const Point2d& a, const Point2d& b, const Point
 // disclosed "can't handle this" error) if the face has zero, or more
 // than one, ON_BrepLoop::outer loop - a face with disjoint outer
 // boundaries is a real but rare case this does not attempt.
-std::vector<Point2d> TrimmedFaceUVPolygon(const ON_Brep& b, const ON_BrepFace& face) {
+//
+// `holes_out` (VolumeOfSealedSolid() only): when non-null the hole loops are NOT bridged in; they are handed back
+// as separate polygons and the returned vector is the outer loop alone. A slit-bridged polygon of ~1500 dense,
+// nearly collinear arc vertices defeats EarClipTriangulate() (it clips across the hole or stops early, so the
+// triangulated area differs from the polygon's by tens of percent), while "outer minus each hole", each simple
+// polygon triangulated on its own, is exact by additivity of the integral.
+std::vector<Point2d> TrimmedFaceUVPolygon(const ON_Brep& b, const ON_BrepFace& face,
+                                          std::vector<std::vector<Point2d>>* holes_out = nullptr) {
   std::vector<Point2d> outer;
   int outer_count = 0;
   std::vector<std::vector<Point2d>> holes;
@@ -1253,6 +1269,10 @@ std::vector<Point2d> TrimmedFaceUVPolygon(const ON_Brep& b, const ON_BrepFace& f
   }
   if (outer_count != 1 || outer.size() < 3) return {};
   if (holes.empty()) return outer;
+  if (holes_out) {
+    *holes_out = std::move(holes);
+    return outer;
+  }
 
   // The bridging technique below only produces a correct "outer minus
   // hole" region if the hole ring is walked with the OPPOSITE rotational
@@ -1476,7 +1496,7 @@ double Brep::VolumeOfSealedSolid() const {
     Knobs() {
       g_trimmed_face_rel_tol = 1e-6;
       g_trimmed_face_max_depth = 4;
-      g_trimmed_face_follow_neighbor_curves = std::getenv("DINO8_VOLUME_POLYGON_ONLY") == nullptr;  // TEMP: A/B for the baseline
+      g_trimmed_face_follow_neighbor_curves = true;
     }
     ~Knobs() {
       g_trimmed_face_follow_neighbor_curves = false;
@@ -1559,27 +1579,37 @@ double Brep::VolumeImpl(bool allow_analytic) const {
           "convention), not real ON_Brep loop topology - exact integration over that convention's own trim "
           "region is a materially different problem this does not attempt");
     }
-    const std::vector<Point2d> polygon = TrimmedFaceUVPolygon(brep_, face);
+    // VolumeOfSealedSolid(): outer loop and each hole integrated as separate simple polygons (hole subtracted),
+    // see TrimmedFaceUVPolygon(). Volume() keeps the single slit-bridged polygon, bit-for-bit.
+    std::vector<std::vector<Point2d>> hole_polygons;
+    const std::vector<Point2d> polygon =
+        TrimmedFaceUVPolygon(brep_, face, g_trimmed_face_follow_neighbor_curves ? &hole_polygons : nullptr);
     if (polygon.size() < 3) {
       throw std::invalid_argument(
           "dino8::kernel::Brep::Volume: face " + std::to_string(i) +
           " has no single well-formed ON_BrepLoop::outer loop (zero, or more than one, disjoint outer "
           "boundary) - this does not attempt that case");
     }
-    const std::vector<std::array<int, 3>> tris = dino8::kernel::detail::EarClipTriangulate(polygon);
-    std::vector<double> coarse(tris.size());
-    double coarse_total = 0.0;
-    for (size_t t = 0; t < tris.size(); ++t) {
-      coarse[t] = TriangleQuad7(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
-                                 polygon[static_cast<size_t>(tris[t][2])], integrand);
-      coarse_total += std::fabs(coarse[t]);
-    }
-    const double tol_total = std::max(1e-12, g_trimmed_face_rel_tol * coarse_total);
-    for (size_t t = 0; t < tris.size(); ++t) {
-      const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
-      total += sign * IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
-                                                 polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
-                                                 g_trimmed_face_max_depth);
+    const auto integrate_polygon = [&](const std::vector<Point2d>& poly, double loop_sign) {
+      const std::vector<std::array<int, 3>> tris = dino8::kernel::detail::EarClipTriangulate(poly);
+      std::vector<double> coarse(tris.size());
+      double coarse_total = 0.0;
+      for (size_t t = 0; t < tris.size(); ++t) {
+        coarse[t] = TriangleQuad7(poly[static_cast<size_t>(tris[t][0])], poly[static_cast<size_t>(tris[t][1])],
+                                   poly[static_cast<size_t>(tris[t][2])], integrand);
+        coarse_total += std::fabs(coarse[t]);
+      }
+      const double tol_total = std::max(1e-12, g_trimmed_face_rel_tol * coarse_total);
+      for (size_t t = 0; t < tris.size(); ++t) {
+        const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
+        total += loop_sign * sign * IntegrateTriangleAdaptive(poly[static_cast<size_t>(tris[t][0])], poly[static_cast<size_t>(tris[t][1])],
+                                                              poly[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
+                                                              g_trimmed_face_max_depth);
+      }
+    };
+    integrate_polygon(polygon, 1.0);
+    for (const std::vector<Point2d>& hole : hole_polygons) {
+      if (hole.size() >= 3) integrate_polygon(hole, -1.0);
     }
   }
   return total;

@@ -97633,6 +97633,9 @@ void TestSealedAppCylinderVolumesAgainstClosedForm() {
        BooleanOp::Union, 2 * pi * 9 * 10},
       {"stacked r3 h8 + r2 h8, Union", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 8), SealedAppCylinder(ON_3dPoint(0, 0, 8), 2, 8),
        BooleanOp::Union, pi * 9 * 8 + pi * 4 * 8},
+      // A cap with a hole: the annulus' outer and inner loops both follow the walls' true circles.
+      {"r3 h5 minus a coaxial r1 h7 bore, Difference", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 5), SealedAppCylinder(ON_3dPoint(0, 0, -1), 1, 7),
+       BooleanOp::Difference, pi * (9 - 1) * 5},
   };
   for (const Case& c : cases) {
     try {
