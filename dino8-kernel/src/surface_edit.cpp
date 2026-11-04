@@ -1210,7 +1210,7 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   // grid cannot resolve is refused after a bounded amount of work, naming the
   // best deviation actually reached. The control net is never allowed to
   // exceed its own grid anyway (ncv > samples ends the loop).
-  constexpr int kMaxRefitDivisions = 500;
+  constexpr int kMaxRefitDivisions = 1500;
   const SurfaceDivisions divs = SuggestedDivisions(tol);
   const int guard_nu = std::min(std::max({divs.u, 4 * CVCountU(), 1}), std::max(kMaxRefitDivisions, 4 * CVCountU()));
   const int guard_nv = std::min(std::max({divs.v, 4 * CVCountV(), 1}), std::max(kMaxRefitDivisions, 4 * CVCountV()));
