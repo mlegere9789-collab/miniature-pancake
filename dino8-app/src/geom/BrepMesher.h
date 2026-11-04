@@ -28,6 +28,14 @@ struct BrepMeshOptions {
   // `chord_tolerance` should be the FINEST of these (it also sizes edge sampling).
   std::vector<double> face_chord_tolerance;
   std::vector<int> face_max_triangles;
+  // For a brep whose faces were built independently, with no edge shared between two of them (every
+  // ON_BrepEdge has exactly one trim; Brep::Thicken()'s caps and walls are like this). Each face's
+  // copy of a physically coincident edge is then sampled on its own, at its own neighbourhood's
+  // spacing, so a thin wall (spacing = its thickness) puts 100 samples on an edge its 10-unit cap
+  // gives 2 - T-junctions no vertex weld can close. With this set every edge is instead sampled
+  // uniformly (sample count from its length and the finest face spacing in the whole brep), so the
+  // coincident copies agree vertex for vertex. MeshBrepClosed() sets it itself as a retry.
+  bool unify_edge_spacing = false;
 };
 
 // Meshes each face separately (for display: per-face normals / colours).
