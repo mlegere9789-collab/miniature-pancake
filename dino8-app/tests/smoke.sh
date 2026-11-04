@@ -10962,7 +10962,7 @@ else
 fi
 ts2check "ToNURBS: watertight conversion of a 352-face SubD (2 Catmull-Clark refinement round(s) first): 5632 bicubic patches" "ToNURBS of the cylinder SubD converts the 352-face cage"
 ts2check "0 naked edge(s) left, closed solid: yes, manifold" "...to a closed manifold polysurface"
-ts2check "5632 faces, 22528 edges, closed solid" "...which lists as a closed solid"
+ts2check "5632 faces, 11264 edges, closed solid" "...which lists as a closed solid (11264 = 5632 x 4 / 2: every edge shared by two faces; before the Compact after the coincident merges the merged-away edges were still counted: 22528)"
 ts2check "gl_error=0" "tosubd2 script ran without OpenGL errors"
 
 # ---------------------------------------------------------------------------
@@ -12376,7 +12376,8 @@ if grep -q "gl_error=0" <<<"$CNTO"; then echo "ok   CNT script ran without OpenG
 # surface is MEASURED against the exact wall (the reference's chord sag included); a
 # cage is used only when verified within the document tolerance, else the reason is
 # printed and the existing path runs (the 7-point zig-zag profile: 0.17 off at 37
-# rings, so it still takes the old 3840-face cage, unverified, with the reason).
+# rings, and the straight-wall cage is 0.29 off, so it takes the existing dense path -
+# 10772 faces, unverified - with both reasons printed).
 # Eight solids in script order: vase, bottle, egg, zig-zag (fallback), then the
 # negative controls Cylinder, Cone, Torus and an extruded L, whose cages the TS2_ and
 # TS4_ sections pin and which must be untouched. Ranges rather than exact numbers
@@ -12422,14 +12423,16 @@ if [ "${#TS5_TOSUBD[@]}" -eq 8 ] && [ "${#TS5_LIST[@]}" -eq 8 ] && [ "${#TS5_VOL
   ts5range "${TS5_VOL[0]}" 440 443 "vase Brep Volume (display tessellation)"
   ts5range "${TS5_VOL[3]}" 440.5 443.5 "vase SubD control-net Volume after two SubDivide rounds matches the Brep Volume"
   if awk -v a="${TS5_VOL[0]}" -v b="${TS5_VOL[3]}" 'BEGIN { r = b / a; exit !(r > 0.995 && r < 1.005) }'; then echo "ok   vase SubD Volume is within 0.5% of the Brep Volume (${TS5_VOL[3]} vs ${TS5_VOL[0]})"; else echo "FAIL vase SubD Volume differs from the Brep Volume by more than 0.5% (${TS5_VOL[3]} vs ${TS5_VOL[0]})"; fail=1; fi
-  # Fallback: the zig-zag profile is refused WITH the measured reason and keeps the existing path.
-  if grep -qE "curved-profile revolve cage refused \(deviation [0-9.]+ at 37 rings x 128 segments exceeds the tolerance 0\.001000\), using the existing path" <<<"${TS5_TOSUBD[3]}" && grep -qF -- "analytic revolved-solid cage (128 segments around x 12 along the wall" <<<"${TS5_TOSUBD[3]}" && ! grep -qF -- "curved-profile revolve cage (profile of " <<<"${TS5_TOSUBD[3]}"; then
-    echo "ok   fallback: the zig-zag profile is refused with the stated reason and takes the existing path"
-    ts5range "$(sed -E 's/.*refused \(deviation ([0-9.]+) at .*/\1/' <<<"${TS5_TOSUBD[3]}")" 0.01 1 "...the refusing deviation (reference run 0.1729, far above the 0.001 tolerance)"
+  # Fallback: the zig-zag profile is refused WITH the measured reasons (the curved-profile cage: 0.1729 at 37 rings, worst limit point named;
+  # then the straight-wall cage, which is no longer used unverified: 0.2940 at 128 segments x 13 rings) and takes the existing dense path.
+  if grep -qE "curved-profile revolve cage refused \(deviation [0-9.]+ at 37 rings x 128 segments exceeds the tolerance 0\.001000, worst limit point \([-0-9., ]+\)\)" <<<"${TS5_TOSUBD[3]}" && grep -qE "straight-wall revolved/extruded cage refused \(measured deviation [0-9.]+ at 128 segments around x 13 rings exceeds the tolerance 0\.001000\), using the existing path" <<<"${TS5_TOSUBD[3]}" && ! grep -qF -- "analytic revolved-solid cage (" <<<"${TS5_TOSUBD[3]}" && ! grep -qF -- "curved-profile revolve cage (profile of " <<<"${TS5_TOSUBD[3]}"; then
+    echo "ok   fallback: the zig-zag profile is refused with the stated reasons and takes the existing dense path"
+    ts5range "$(sed -E 's/.*curved-profile revolve cage refused \(deviation ([0-9.]+) at .*/\1/' <<<"${TS5_TOSUBD[3]}")" 0.01 1 "...the refusing deviation (reference run 0.1729, far above the 0.001 tolerance)"
+    ts5range "$(sed -E 's/.*straight-wall revolved\/extruded cage refused \(measured deviation ([0-9.]+) at .*/\1/' <<<"${TS5_TOSUBD[3]}")" 0.01 1 "...the straight-wall refusing deviation (reference run 0.2940)"
   else
     echo "FAIL fallback: the zig-zag profile line is not the refusal + existing path: ${TS5_TOSUBD[3]}"; fail=1
   fi
-  ts5range "$(ts5faces 3)" 3000 4500 "...the fallback cage is the unchanged existing 3840-face one"
+  ts5range "$(ts5faces 3)" 10500 11000 "...the fallback is the existing dense grid cage (reference run 10772 faces; before the straight-wall cage was refused above tolerance: the unverified 3840-face one)"
   # Negative controls: the existing cages are untouched (their windows are the TS2_ / TS4_ ones).
   ts5nc() { # index, description, marker, face lo, face hi
     if grep -qF -- "$3" <<<"${TS5_TOSUBD[$1]}" && ! grep -qF -- "curved-profile revolve cage" <<<"${TS5_TOSUBD[$1]}" && grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000" <<<"${TS5_TOSUBD[$1]}"; then
