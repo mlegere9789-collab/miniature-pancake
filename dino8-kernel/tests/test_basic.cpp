@@ -101028,6 +101028,559 @@ void TestOffsetAnalyticDirectTorusProportions() {
 
 }  // namespace offset_remainder_tests
 
+// ---------------------------------------------------------------------------
+// kernel: Transformations, patterns, splitting - affine transforms, mirror
+// fix-up, hole patterns, arrays along a curve / on a surface. Every oracle
+// is independent of the code under test (closed-form volumes, the surface
+// equations of the transformed quadrics, the transformed vertex positions,
+// analytic circle / parabola frames).
+// ---------------------------------------------------------------------------
+namespace transform_pattern_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Mesh;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+bool ThrowsContaining(const std::function<void()>& f, const char* needle) {
+  try {
+    f();
+  } catch (const std::exception& e) {
+    return std::string(e.what()).find(needle) != std::string::npos;
+  }
+  return false;
+}
+
+ON_Xform ShearXform() {
+  ON_Xform s = ON_Xform::IdentityTransformation;
+  s.m_xform[0][1] = 0.5;
+  s.m_xform[0][2] = 0.3;
+  s.m_xform[1][2] = -0.2;
+  return s;
+}
+
+// Largest |expected - actual| over every vertex of `moved`, where expected is
+// xform applied to the matching vertex of `original` (Transform() keeps the
+// vertex order).
+double MaxVertexError(const Brep& original, const Brep& moved, const ON_Xform& xform) {
+  double worst = 0.0;
+  if (original.raw().m_V.Count() != moved.raw().m_V.Count()) return 1e9;
+  for (int i = 0; i < original.raw().m_V.Count(); ++i) {
+    const ON_3dPoint expect = xform * original.raw().m_V[i].point;
+    worst = std::max(worst, expect.DistanceTo(moved.raw().m_V[i].point));
+  }
+  return worst;
+}
+
+// Largest |residual(p)| over a (n+1)x(n+1) grid of every face surface.
+double MaxSurfaceResidual(const Brep& b, const std::function<double(const ON_3dPoint&)>& residual) {
+  double worst = 0.0;
+  for (int f = 0; f < b.raw().m_F.Count(); ++f) {
+    const ON_Surface* s = b.raw().m_F[f].SurfaceOf();
+    if (!s) return 1e9;
+    for (int i = 0; i <= 8; ++i) {
+      for (int j = 0; j <= 8; ++j) {
+        const ON_3dPoint p = s->PointAt(s->Domain(0).ParameterAt(i / 8.0), s->Domain(1).ParameterAt(j / 8.0));
+        worst = std::max(worst, std::fabs(residual(p)));
+      }
+    }
+  }
+  return worst;
+}
+
+void TestNonUniformScaleAndShearOfBoxMatchClosedForms() {
+  const Brep box = Brep::BoxWelded(1, 1, 1, 4, 5, 7);  // 3 x 4 x 6, V = 72
+  const ON_Xform scale = ON_Xform::DiagonalTransformation(2.0, 3.0, 0.5);
+  const ON_Xform shear = ShearXform();
+  const ON_Xform both = shear * scale;
+  Check(std::fabs(scale.Determinant() - 3.0) < 1e-12 && std::fabs(shear.Determinant() - 1.0) < 1e-12 &&
+            std::fabs(both.Determinant() - 3.0) < 1e-12 && scale.IsRigid() == 0 && shear.IsRigid() == 0,
+        "fixture: diag(2,3,0.5) has det 3, the shear det 1, both are non-rigid, the product has det 3");
+
+  struct Case {
+    const char* name;
+    ON_Xform x;
+    double volume;
+    double area;
+  };
+  // Axis-aligned scale: 6 x 12 x 3 box, area 2(72 + 18 + 36) = 252. The shear
+  // changes area, so only its volume (det 1) is a closed form.
+  const Case cases[] = {{"diag(2,3,0.5)", scale, 3.0 * 72.0, 252.0}, {"shear", shear, 72.0, -1.0},
+                        {"shear*diag(2,3,0.5)", both, 3.0 * 72.0, -1.0}};
+  for (const Case& c : cases) {
+    const std::string tag = std::string("BoxWelded under ") + c.name;
+    const Brep moved = box.Transform(c.x);
+    Check(MaxVertexError(box, moved, c.x) < 1e-12, (tag + ": every vertex is exactly xform * original vertex").c_str());
+    Check(std::fabs(moved.Volume() - c.volume) < 1e-9, (tag + ": exact Volume() equals det * 72").c_str());
+    Check(moved.raw().IsValid() && moved.raw().IsSolid(), (tag + ": raw().IsValid() and IsSolid()").c_str());
+    const Brep::CheckReport rep = moved.Check();
+    Check(rep.issues.empty() && rep.is_closed && rep.is_oriented, (tag + ": Check() reports no issue, closed, oriented").c_str());
+    const Mesh mesh = moved.TessellateToClosedMesh(8, 8);
+    Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - c.volume) < 1e-9,
+          (tag + ": tessellation is a closed manifold with the same volume").c_str());
+    if (c.area > 0.0) {
+      Check(std::fabs(moved.Area() - c.area) < 1e-9, (tag + ": Area() equals the closed-form 252").c_str());
+    }
+    // Planar faces stay exactly planar, and the kernel's own planar records
+    // are re-derived exactly: each record's loop lies on its plane.
+    bool all_planar = true;
+    for (int f = 0; f < moved.raw().m_F.Count(); ++f) {
+      ON_Plane pl;
+      all_planar = all_planar && moved.raw().m_F[f].SurfaceOf()->IsPlanar(&pl, 1e-9);
+    }
+    Check(all_planar, (tag + ": all 6 faces are still exactly planar surfaces").c_str());
+    const std::vector<Brep::PlanarFace> records = moved.PlanarFaces();
+    double off_plane = 0.0;
+    for (const Brep::PlanarFace& pf : records) {
+      for (const Point3d& p : pf.loop) off_plane = std::max(off_plane, std::fabs(pf.plane.DistanceTo(p)));
+    }
+    Check(records.size() == 6 && off_plane < 1e-9,
+          (tag + ": PlanarFaces() gives 6 exact records (loop points on their planes to 1e-9)").c_str());
+  }
+}
+
+void TestNonUniformScaleOfQuadricsStaysExactAndAnalyticWhereItCan() {
+  // Cylinder r = 1.5, axis z, height 4, base at the origin: V = pi * 2.25 * 4.
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 4)}, 1);
+  const Brep cyl = Brep::Pipe(rail, 1.5);
+
+  {  // x/y scaled differently: an elliptic cylinder, semi-axes 3 and 4.5, height 2.
+    const ON_Xform x = ON_Xform::DiagonalTransformation(2.0, 3.0, 0.5);
+    const Brep moved = cyl.Transform(x);
+    const double v = 27.0 * ON_PI;
+    Check(std::fabs(moved.Volume() - v) / v < 1e-4, "elliptic cylinder: Volume() matches pi*a*b*h = 27*pi to 1e-4");
+    // Every sampled surface point is on the elliptic wall or on one of the two cap planes inside it.
+    const double wall_or_cap = MaxSurfaceResidual(moved, [](const ON_3dPoint& p) {
+      const double e = (p.x / 3.0) * (p.x / 3.0) + (p.y / 4.5) * (p.y / 4.5) - 1.0;
+      const bool on_cap = std::fabs(p.z) < 1e-9 || std::fabs(p.z - 2.0) < 1e-9;
+      return on_cap ? std::max(0.0, e) : e;  // cap points only need to be inside the ellipse
+    });
+    Check(wall_or_cap < 1e-9, "elliptic cylinder: every sampled wall point satisfies (x/3)^2+(y/4.5)^2 = 1 to 1e-9");
+    const Mesh m = moved.TessellateToClosedMesh(16, 64);
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - v) / v < 0.03,
+          "elliptic cylinder: tessellation closed manifold, volume within 3% of 27*pi");
+    Check(ThrowsContaining([&] { moved.MixedFaces(); }, "MixedFaces"),
+          "elliptic cylinder: MixedFaces() refuses (reason names MixedFaces) - the wall is no longer a circular "
+          "CylindricalFace, and is not mislabeled as one");
+  }
+  {  // x/y scaled equally, z differently: still a circular cylinder, radius exactly 3, height 2.
+    const ON_Xform x = ON_Xform::DiagonalTransformation(2.0, 2.0, 0.5);
+    const Brep moved = cyl.Transform(x);
+    const Brep::MixedFacesResult mf = moved.MixedFaces();
+    Check(mf.cylindrical.size() == 1 && std::fabs(mf.cylindrical[0].radius - 3.0) < 1e-9 &&
+              std::fabs(mf.cylindrical[0].length - 2.0) < 1e-9,
+          "equal x/y scale keeps the wall an analytic CylindricalFace: radius exactly 3, length exactly 2");
+    const double v = ON_PI * 9.0 * 2.0;
+    Check(std::fabs(moved.Volume() - v) / v < 1e-4, "equal x/y scale: Volume() matches pi*9*2");
+  }
+
+  {  // sphere r = 2 at (1,2,3) under diag(2,3,0.5): ellipsoid centred (2,6,1.5), semi-axes 4,6,1.
+    const Brep sphere = Brep::Sphere(Point3d(1, 2, 3), 2.0);
+    const Brep moved = sphere.Transform(ON_Xform::DiagonalTransformation(2.0, 3.0, 0.5));
+    const double res = MaxSurfaceResidual(moved, [](const ON_3dPoint& p) {
+      return ((p.x - 2.0) / 4.0) * ((p.x - 2.0) / 4.0) + ((p.y - 6.0) / 6.0) * ((p.y - 6.0) / 6.0) +
+             (p.z - 1.5) * (p.z - 1.5) - 1.0;
+    });
+    Check(res < 1e-9, "ellipsoid: every sampled surface point satisfies the ellipsoid equation to 1e-9 (rational NURBS stays exact)");
+    const double v = 4.0 / 3.0 * ON_PI * 4.0 * 6.0 * 1.0;
+    Check(std::fabs(moved.Volume() - v) / v < 1e-4, "ellipsoid: Volume() matches 4/3*pi*a*b*c = 32*pi to 1e-4");
+    Check(moved.TessellateToClosedMesh(32, 32).IsClosedManifold(), "ellipsoid: tessellates to a closed manifold");
+  }
+
+  {  // torus R = 5, r = 1: V = 2 pi^2 R r^2; det 3 under diag(2,3,0.5).
+    const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, 1.0);
+    const Brep moved = torus.Transform(ON_Xform::DiagonalTransformation(2.0, 3.0, 0.5));
+    const double v = 3.0 * 2.0 * ON_PI * ON_PI * 5.0;
+    Check(std::fabs(moved.Volume() - v) / v < 1e-3, "torus: Volume() matches det * 2*pi^2*R*r^2 to 1e-3");
+    Check(moved.TessellateToClosedMesh(48, 24).IsClosedManifold(), "torus: tessellates to a closed manifold");
+  }
+}
+
+void TestAffineTransformRefusals() {
+  const Brep box = Brep::BoxWelded(0, 0, 0, 2, 2, 2);
+  Check(ThrowsContaining([&] { box.Transform(ON_Xform::DiagonalTransformation(1.0, 1.0, 0.0)); }, "singular"),
+        "a zero scale factor (flattening the body) is refused with the reason 'singular'");
+  ON_Xform nan = ON_Xform::IdentityTransformation;
+  nan.m_xform[0][3] = ON_DBL_QNAN;
+  Check(ThrowsContaining([&] { box.Transform(nan); }, "NaN"), "a NaN coefficient is refused with the reason NaN");
+  ON_Xform proj = ON_Xform::IdentityTransformation;
+  proj.m_xform[2][2] = 0.0;
+  proj.m_xform[2][0] = 1.0;  // z := x, collinear columns
+  Check(ThrowsContaining([&] { box.Transform(proj); }, "singular"), "a rank-deficient shear is refused as singular");
+  Check(box.Transform(ON_Xform::DiagonalTransformation(1e-3, 1e-3, 1e-3)).Volume() > 0.0,
+        "negative control: a small but genuine uniform scale (1e-3) is NOT refused");
+}
+
+void TestMirrorKeepsSphericalPatchOrientedAndMeshStaysOutward() {
+  // A spherical octant patch (FromMixedFaces' SphericalFace) mirrored through a
+  // NON-axis-aligned plane x + y = 3: MixedFaces() used to refuse the
+  // left-handed sphere frame outright.
+  Brep::SphericalFace sf;
+  sf.frame = ON_Plane(Point3d(1, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0));
+  sf.radius = 2.0;
+  sf.angle = ON_PI / 2.0;
+  sf.lat0 = 0.0;
+  sf.lat1 = ON_PI / 2.0;
+  sf.outward = true;
+  const Brep octant = Brep::FromMixedFaces({}, {}, {}, {sf});
+  const ON_3dVector n = ON_3dVector(1, 1, 0) / std::sqrt(2.0);
+  const ON_Xform mirror = ON_Xform::MirrorTransformation(ON_PlaneEquation(n.x, n.y, n.z, -3.0 / std::sqrt(2.0)));
+  const Brep moved = octant.Transform(mirror);
+  const Brep::MixedFacesResult mf = moved.MixedFaces();
+  Check(mf.spherical.size() == 1, "a mirrored spherical patch no longer throws 'foreign sphere' from MixedFaces()");
+  const Brep::SphericalFace& r = mf.spherical[0];
+  Check(std::fabs(r.radius - 2.0) < 1e-9 && std::fabs(r.angle - ON_PI / 2.0) < 1e-6 &&
+            std::fabs(r.lat0) < 1e-6 && std::fabs(r.lat1 - ON_PI / 2.0) < 1e-6,
+        "the recovered record keeps radius 2, sweep 90 degrees, latitudes [0, 90 degrees]");
+  Check((ON_CrossProduct(r.frame.xaxis, r.frame.yaxis) - r.frame.zaxis).Length() < 1e-9,
+        "the recovered frame is right-handed (x cross y == z)");
+  Check(r.outward == sf.outward, "the mirrored patch keeps its outward-ness (it is not read inside-out)");
+  // Independent geometric oracle: every sample of the record lands on the
+  // mirror image of the ORIGINAL patch (mirror is an involution, so map it back).
+  double worst = 0.0;
+  bool inside_original = true;
+  for (int i = 0; i <= 6; ++i) {
+    for (int j = 0; j <= 6; ++j) {
+      const double phi = r.angle * i / 6.0, lat = r.lat0 + (r.lat1 - r.lat0) * j / 6.0;
+      const ON_3dPoint p = r.frame.origin + r.radius * (std::cos(lat) * std::cos(phi) * r.frame.xaxis +
+                                                         std::cos(lat) * std::sin(phi) * r.frame.yaxis +
+                                                         std::sin(lat) * r.frame.zaxis);
+      const ON_3dPoint q = mirror * p;  // back into the original patch's side
+      const ON_3dVector d = q - sf.frame.origin;
+      worst = std::max(worst, std::fabs(d.Length() - 2.0));
+      const double lon = std::atan2(d * sf.frame.yaxis, d * sf.frame.xaxis);
+      inside_original = inside_original && lon > -1e-9 && lon < ON_PI / 2.0 + 1e-9 && d * sf.frame.zaxis > -1e-9;
+    }
+  }
+  Check(worst < 1e-9 && inside_original,
+        "49 samples of the recovered record map back (by the mirror) onto the original octant: on the sphere and inside its longitude/latitude range");
+  // Flipped-outward patch stays flipped.
+  Brep::SphericalFace inward = sf;
+  inward.outward = false;
+  const Brep::MixedFacesResult mf_in = Brep::FromMixedFaces({}, {}, {}, {inward}).Transform(mirror).MixedFaces();
+  Check(mf_in.spherical.size() == 1 && !mf_in.spherical[0].outward, "an inward patch stays inward after the mirror");
+  // Unmirrored control: the same extraction on the original is unchanged.
+  const Brep::SphericalFace o = octant.MixedFaces().spherical[0];
+  Check(std::fabs(o.angle - ON_PI / 2.0) < 1e-6 && o.outward, "control: the un-mirrored patch reads back angle 90 degrees, outward");
+
+  // The mesh half: a mirrored closed mesh is no longer inside-out.
+  const Mesh box = Brep::Box(0, 0, 0, 10, 10, 10).TessellateToClosedMesh(4, 4);
+  const ON_Xform mx = ON_Xform::MirrorTransformation(ON_PlaneEquation(1, 0, 0, 0));
+  const Mesh mm = box.Transform(mx);
+  Check(std::fabs(box.Volume() - 1000.0) < 1e-9 && std::fabs(mm.Volume() - 1000.0) < 1e-9,
+        "Mesh::Transform under a mirror keeps Volume() +1000 (was -1000)");
+  Check(mm.IsClosedManifold(), "the mirrored mesh is still a closed manifold");
+  const ON_Mesh& om = mm.raw();
+  bool all_out = om.m_F.Count() > 0;
+  for (int i = 0; i < om.m_F.Count(); ++i) {
+    const ON_3dPoint a = om.m_V[om.m_F[i].vi[0]], b = om.m_V[om.m_F[i].vi[1]], c = om.m_V[om.m_F[i].vi[2]];
+    const ON_3dVector fn = ON_CrossProduct(b - a, c - a);
+    all_out = all_out && fn * (a - ON_3dPoint(-5, 5, 5)) > 0.0;
+  }
+  Check(all_out, "every winding normal of the mirrored mesh points away from its centre (-5,5,5)");
+  if (om.HasVertexNormals()) {
+    bool vn_out = true;
+    for (int i = 0; i < om.m_V.Count(); ++i) {
+      vn_out = vn_out && ON_3dVector(om.m_N[i]) * (ON_3dPoint(om.m_V[i]) - ON_3dPoint(-5, 5, 5)) > 0.0;
+    }
+    Check(vn_out, "stored vertex normals of the mirrored mesh also point outward");
+  }
+  Check(std::fabs(box.Transform(ON_Xform::TranslationTransformation(Vector3d(1, 2, 3))).Volume() - 1000.0) < 1e-9,
+        "control: a rigid transform of a mesh is unchanged (+1000)");
+  Check(std::fabs(mm.Transform(mx).Volume() - 1000.0) < 1e-9, "mirroring a mesh twice keeps +1000");
+}
+
+}  // namespace transform_pattern_tests
+
+namespace transform_pattern_tests {
+
+using dino8::kernel::HoleFeature;
+
+// (x, y) of every recognized hole, sorted by (y, x), with the radius and |axis.z| checked on the way.
+std::vector<std::pair<double, double>> HoleXY(const Brep& b, double radius, bool axis_is_z) {
+  std::vector<std::pair<double, double>> xy;
+  for (const HoleFeature& h : dino8::kernel::RecognizeHoles(b)) {
+    if (std::fabs(h.radius - radius) > 1e-6 || (axis_is_z && std::fabs(std::fabs(h.axis.z) - 1.0) > 1e-9)) {
+      return {};
+    }
+    xy.emplace_back(h.origin.x, h.origin.y);
+  }
+  std::sort(xy.begin(), xy.end(), [](const std::pair<double, double>& a, const std::pair<double, double>& c) {
+    return a.second != c.second ? a.second < c.second : a.first < c.first;
+  });
+  return xy;
+}
+
+bool SameXY(const std::vector<std::pair<double, double>>& got, const std::vector<std::pair<double, double>>& want) {
+  if (got.size() != want.size()) return false;
+  std::vector<std::pair<double, double>> w = want;
+  std::sort(w.begin(), w.end(), [](const std::pair<double, double>& a, const std::pair<double, double>& c) {
+    return a.second != c.second ? a.second < c.second : a.first < c.first;
+  });
+  for (size_t i = 0; i < got.size(); ++i) {
+    if (std::fabs(got[i].first - w[i].first) > 1e-6 || std::fabs(got[i].second - w[i].second) > 1e-6) return false;
+  }
+  return true;
+}
+
+void TestHolePatternsLinearRectangularPolarAgainstClosedForms() {
+  using dino8::kernel::LinearHolePattern;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::PolarHolePattern;
+  using dino8::kernel::RectangularHolePattern;
+  using dino8::kernel::RecognizeHoles;
+  const Vector3d down(0, 0, -1);
+  const double r = 0.5;
+  const double hole_volume = ON_PI * r * r * 4.0;  // through a 4-thick slab
+
+  {  // Linear: 4 holes along +y, spacing 3, in a 4 x 16 x 4 slab (volume 256).
+    const Brep slab = Brep::Box(0, 0, 0, 4, 16, 4);
+    const Brep one = MakeHole(slab, Point3d(2, 2, 4), down, r, 0.0, true);
+    const std::vector<HoleFeature> found = RecognizeHoles(one);
+    Check(found.size() == 1, "linear fixture: the slab has exactly one recognized hole before the pattern");
+    const Brep four = LinearHolePattern(one, found[0], Vector3d(0, 1, 0), 3.0, 4);
+    Check(four.raw().IsValid(), "linear pattern: result raw().IsValid()");
+    Check(SameXY(HoleXY(four, r, true), {{2, 2}, {2, 5}, {2, 8}, {2, 11}}),
+          "linear pattern: RecognizeHoles() finds exactly 4 holes of radius 0.5 at y = 2, 5, 8, 11 (x = 2), axis +-z");
+    const Mesh m = four.TessellateToClosedMesh(32, 128);
+    Check(m.IsClosedManifold(), "linear pattern: tessellation is a closed manifold");
+    Check(std::fabs(m.Volume() - (256.0 - 4.0 * hole_volume)) < 0.5,
+          "linear pattern: volume equals 256 - 4*pi*r^2*4 (closed form) within 0.5");
+    // Independent cross-check: the same result as chaining MakeHole for each instance by hand.
+    const Brep by_hand =
+        MakeHole(MakeHole(MakeHole(one, Point3d(2, 5, 4), down, r, 0.0, true), Point3d(2, 8, 4), down, r, 0.0, true),
+                 Point3d(2, 11, 4), down, r, 0.0, true);
+    Check(std::fabs(by_hand.TessellateToClosedMesh(32, 128).Volume() - m.Volume()) < 0.5,
+          "linear pattern: matches three hand-chained MakeHole() calls within 0.5");
+    // Blind variant keeps depth.
+    const Brep blind1 = MakeHole(slab, Point3d(2, 2, 4), down, r, 2.0, false);
+    const std::vector<HoleFeature> bf = RecognizeHoles(blind1);
+    Check(bf.size() == 1 && !bf[0].through, "blind fixture: one blind hole recognized");
+    const Brep blind3 = LinearHolePattern(blind1, bf[0], Vector3d(0, 1, 0), 4.0, 3);
+    const std::vector<HoleFeature> b3 = RecognizeHoles(blind3);
+    bool all_blind = b3.size() == 3;
+    for (const HoleFeature& h : b3) all_blind = all_blind && !h.through && std::fabs(h.depth - 2.0) < 1e-6;
+    Check(all_blind, "blind linear pattern: 3 blind holes, each depth 2, none through");
+    Check(std::fabs(blind3.TessellateToClosedMesh(32, 128).Volume() - (256.0 - 3.0 * ON_PI * r * r * 2.0)) < 0.5,
+          "blind linear pattern: volume equals 256 - 3*pi*r^2*2 within 0.5");
+  }
+
+  {  // Rectangular: 3 x 2 grid (x spacing 3, y spacing 3) in a 10 x 7 x 4 slab (volume 280).
+    const Brep slab = Brep::Box(0, 0, 0, 10, 7, 4);
+    const Brep one = MakeHole(slab, Point3d(2, 2, 4), down, r, 0.0, true);
+    const Brep six = RectangularHolePattern(one, RecognizeHoles(one)[0], Vector3d(1, 0, 0), 3.0, 3, Vector3d(0, 1, 0), 3.0, 2);
+    Check(SameXY(HoleXY(six, r, true), {{2, 2}, {5, 2}, {8, 2}, {2, 5}, {5, 5}, {8, 5}}),
+          "rectangular pattern: exactly 6 holes at x in {2,5,8} x y in {2,5}");
+    const Mesh m = six.TessellateToClosedMesh(32, 128);
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - (280.0 - 6.0 * hole_volume)) < 0.5,
+          "rectangular pattern: closed manifold, volume equals 280 - 6*pi*r^2*4 within 0.5");
+    Check(six.raw().IsValid(), "rectangular pattern: raw().IsValid()");
+  }
+
+  {  // Polar: bolt circle of radius 3 about (5,5) in a 10 x 10 x 4 slab (volume 400).
+    const Brep slab = Brep::Box(0, 0, 0, 10, 10, 4);
+    const Brep one = MakeHole(slab, Point3d(8, 5, 4), down, r, 0.0, true);
+    const HoleFeature hf = RecognizeHoles(one)[0];
+    const Brep four = PolarHolePattern(one, hf, Point3d(5, 5, 0), Vector3d(0, 0, 1), 4);
+    Check(SameXY(HoleXY(four, r, true), {{8, 5}, {5, 8}, {2, 5}, {5, 2}}),
+          "polar pattern (full circle, 4): holes at the 4 closed-form bolt-circle positions");
+    const Mesh m = four.TessellateToClosedMesh(32, 128);
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - (400.0 - 4.0 * hole_volume)) < 0.5,
+          "polar pattern: closed manifold, volume equals 400 - 4*pi*r^2*4 within 0.5");
+    const Brep arc3 = PolarHolePattern(one, hf, Point3d(5, 5, 0), Vector3d(0, 0, 1), 3, ON_PI);
+    Check(SameXY(HoleXY(arc3, r, true), {{8, 5}, {5, 8}, {2, 5}}),
+          "polar pattern (half circle, 3): end-to-end arc, holes at 0, 90 and 180 degrees");
+    // A reversed polar axis sweeps the other way round: the 90-degree step lands on the opposite side.
+    const Brep rev = PolarHolePattern(one, hf, Point3d(5, 5, 0), Vector3d(0, 0, -1), 2, ON_PI / 2.0);
+    Check(SameXY(HoleXY(rev, r, true), {{8, 5}, {5, 2}}),
+          "polar pattern: a -z axis rotates clockwise, so the second hole lands at (5,2), not (5,8)");
+  }
+}
+
+void TestHolePatternRefusalsStateTheirReason() {
+  using dino8::kernel::LinearHolePattern;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::PolarHolePattern;
+  using dino8::kernel::RectangularHolePattern;
+  using dino8::kernel::RecognizeHoles;
+  const Vector3d down(0, 0, -1);
+  const Brep slab = Brep::Box(0, 0, 0, 4, 16, 4);
+  const Brep one = MakeHole(slab, Point3d(2, 2, 4), down, 0.5, 0.0, true);
+  const HoleFeature hf = RecognizeHoles(one)[0];
+  const Vector3d dy(0, 1, 0);
+  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 3.0, 1); }, "count must be at least 2"),
+        "count 1 is refused: 'count must be at least 2'");
+  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 0.0, 3); }, "spacing must be positive"),
+        "spacing 0 is refused: 'spacing must be positive'");
+  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, Vector3d(0, 0, 1), 3.0, 3); }, "not perpendicular to the hole axis"),
+        "a direction along the hole axis is refused: 'not perpendicular to the hole axis'");
+  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, Vector3d(0, 0, 0), 3.0, 3); }, "must be nonzero"),
+        "a zero direction is refused: 'must be nonzero'");
+  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 1.0, 3); }, "touching or overlapping"),
+        "spacing equal to the diameter (bores touching) is refused: 'touching or overlapping'");
+  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 0.8, 3); }, "touching or overlapping"),
+        "spacing below the diameter (bores overlapping) is refused: 'touching or overlapping'");
+  // Instances off the solid: y = 2, 6.6, 11.2, 15.8 - the last bore (r 0.5) sticks out of the slab end at y = 16.
+  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 4.6, 4); }, "complete bores"),
+        "an instance whose bore runs off the slab edge is refused after drilling: 'complete bores'");
+  {
+    bool threw = false;
+    std::string msg;
+    try {
+      LinearHolePattern(one, hf, dy, 20.0, 2);  // wholly outside the slab (y = 22)
+    } catch (const std::exception& e) {
+      threw = true;
+      msg = e.what();
+    }
+    Check(threw && msg.find("complete bores") != std::string::npos,
+          "an instance wholly outside the solid is refused with 'complete bores', never a silent no-op");
+  }
+  Check(RecognizeHoles(one).size() == 1, "refusals leave the input solid untouched (still exactly one hole)");
+  Check(ThrowsContaining([&] { RectangularHolePattern(one, hf, dy, 3.0, 2, dy, 3.0, 2); }, "parallel"),
+        "rectangular: two parallel grid directions are refused: 'parallel'");
+  Check(ThrowsContaining([&] { RectangularHolePattern(one, hf, dy, 3.0, 1, Vector3d(1, 0, 0), 3.0, 1); }, "at least 2 instances"),
+        "rectangular: a 1 x 1 grid is refused: 'at least 2 instances'");
+  const Brep sq = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep s1 = MakeHole(sq, Point3d(8, 5, 4), down, 0.5, 0.0, true);
+  const HoleFeature sh = RecognizeHoles(s1)[0];
+  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(1, 0, 0), 4); }, "not parallel to the hole axis"),
+        "polar: an axis not parallel to the hole axis is refused: 'not parallel to the hole axis'");
+  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(8, 5, 0), Vector3d(0, 0, 1), 4); }, "on (or within one diameter of)"),
+        "polar: a centre on the hole's own axis is refused: 'on (or within one diameter of)'");
+  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(0, 0, 1), 4, 7.0); }, "total_angle"),
+        "polar: a total angle above 2*pi is refused: 'total_angle'");
+  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(0, 0, 1), 1); }, "count must be at least 2"),
+        "polar: count 1 is refused");
+  // 12 instances on a circle of radius 3: chord = 2*3*sin(pi/12) = 1.55 > 1.0 is fine, 40 instances: 0.47 < 1.0 refused.
+  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(0, 0, 1), 40); }, "touching or overlapping"),
+        "polar: 40 instances on a radius-3 circle (chord 0.47 < diameter 1) are refused: 'touching or overlapping'");
+}
+
+// ---- arrays along a curve --------------------------------------------------
+
+NurbsCurve MakeArcPath(double radius, double sweep) {
+  NurbsCurve c;
+  const ON_Arc arc(ON_Circle(ON_xy_plane, radius), sweep);
+  arc.GetNurbForm(c.raw());
+  return c;
+}
+
+void TestArrayAlongCurveFrameAndTranslateAgainstAnalyticCircle() {
+  using dino8::kernel::ArrayAlongCurve;
+  using dino8::kernel::ArrayStationsAlongCurve;
+  using dino8::kernel::CurveArrayOrientation;
+  const double R = 10.0, sweep = 1.5 * ON_PI;
+  const NurbsCurve path = MakeArcPath(R, sweep);
+  const Brep body = Brep::BoxWelded(9.0, -1.0, 0.0, 10.0, 2.0, 1.5);  // straddles the start point (10,0,0)
+  const int n = 7;
+
+  const std::vector<Brep> copies = ArrayAlongCurve(body, path, n, CurveArrayOrientation::Frame, Vector3d(0, 0, 1));
+  Check(static_cast<int>(copies.size()) == n, "frame array: 7 copies for count 7");
+  const std::vector<dino8::kernel::CurveArrayStation> st =
+      ArrayStationsAlongCurve(path, n, CurveArrayOrientation::Frame, Vector3d(0, 0, 1));
+  double worst_pose = 0.0, worst_angle = 0.0, worst_vol = 0.0;
+  bool all_rigid = true, all_solid = true;
+  for (int i = 0; i < n; ++i) {
+    // Angle of the station read back from its OWN point (independent of how the station was computed).
+    double th = std::atan2(st[i].point.y, st[i].point.x);
+    if (th < -1e-9) th += 2.0 * ON_PI;
+    worst_angle = std::max(worst_angle, std::fabs(th - sweep * i / (n - 1)));
+    const ON_3dVector T(-std::sin(th), std::cos(th), 0.0), Y(-std::cos(th), -std::sin(th), 0.0), Z(0, 0, 1);
+    const ON_3dPoint P(R * std::cos(th), R * std::sin(th), 0.0);
+    const ON_3dVector T0(0, 1, 0), Y0(-1, 0, 0), Z0(0, 0, 1);
+    for (int v = 0; v < body.raw().m_V.Count(); ++v) {
+      const ON_3dVector d = body.raw().m_V[v].point - ON_3dPoint(R, 0, 0);
+      const ON_3dPoint expect = P + (d * T0) * T + (d * Y0) * Y + (d * Z0) * Z;
+      worst_pose = std::max(worst_pose, expect.DistanceTo(copies[i].raw().m_V[v].point));
+    }
+    worst_vol = std::max(worst_vol, std::fabs(copies[i].Volume() - 4.5));
+    all_rigid = all_rigid && st[i].xform.IsRigid() == 1;
+    all_solid = all_solid && copies[i].raw().IsValid() && copies[i].raw().IsSolid();
+  }
+  Check(worst_pose < 1e-9, "frame array: every vertex of every copy = P_i + a*T_i + b*Y_i + c*Z to 1e-9 (analytic circle frames)");
+  Check(worst_angle < 2e-3, "frame array: stations are arc-length even - station angles are i*270deg/6 to 2e-3 rad");
+  Check(worst_vol < 1e-9 && all_rigid && all_solid, "frame array: every copy keeps volume 4.5, is a proper rigid motion, valid and solid");
+  Check(copies[0].raw().m_V[0].point.DistanceTo(body.raw().m_V[0].point) < 1e-9, "frame array: copy 0 sits exactly on the body");
+  Check(st.front().point.DistanceTo(ON_3dPoint(R, 0, 0)) < 1e-9 && st.back().point.DistanceTo(ON_3dPoint(0, -R, 0)) < 1e-6,
+        "frame array: first station is the curve start (10,0,0), last is the curve end (0,-10,0)");
+
+  // Translate-only: orientation never changes, positions follow the curve.
+  const std::vector<Brep> moved = ArrayAlongCurve(body, path, n, CurveArrayOrientation::None);
+  double worst_t = 0.0;
+  bool same_extents = true;
+  const std::vector<dino8::kernel::CurveArrayStation> st_t = ArrayStationsAlongCurve(path, n, CurveArrayOrientation::None);
+  for (int i = 0; i < n; ++i) {
+    const ON_3dVector shift = st_t[i].point - ON_3dPoint(R, 0, 0);
+    for (int v = 0; v < body.raw().m_V.Count(); ++v) {
+      worst_t = std::max(worst_t, (body.raw().m_V[v].point + shift).DistanceTo(moved[i].raw().m_V[v].point));
+    }
+    const ON_BoundingBox bb = moved[i].raw().BoundingBox(), b0 = body.raw().BoundingBox();
+    same_extents = same_extents && std::fabs((bb.Max() - bb.Min()).Length() - (b0.Max() - b0.Min()).Length()) < 1e-9;
+  }
+  Check(worst_t < 1e-9 && same_extents, "translate-only array: each copy is the body shifted by P_i - P_0, extents unchanged (no rotation)");
+
+  // Refusals.
+  Check(ThrowsContaining([&] { ArrayAlongCurve(body, path, 1, CurveArrayOrientation::Frame); }, "count must be at least 2"),
+        "count 1 is refused: 'count must be at least 2'");
+  Check(ThrowsContaining([&] { ArrayAlongCurve(body, path, 4, CurveArrayOrientation::Frame, Vector3d(0, 0, 0)); }, "up must be nonzero"),
+        "a zero up vector is refused: 'up must be nonzero'");
+  const NurbsCurve vertical = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 10)}, 1);
+  Check(ThrowsContaining([&] { ArrayAlongCurve(body, vertical, 4, CurveArrayOrientation::Frame, Vector3d(0, 0, 1)); }, "parallel to the curve tangent"),
+        "up parallel to the tangent (vertical path, up = z) is refused: 'parallel to the curve tangent'");
+  Check(ArrayAlongCurve(body, vertical, 4, CurveArrayOrientation::None).size() == 4,
+        "negative control: the same vertical path is fine for translate-only (no frame needed)");
+}
+
+void TestArrayAlongCurveOnSurfaceFollowsSurfaceNormalClosedForm() {
+  using dino8::kernel::ArrayAlongCurveOnSurface;
+  using dino8::kernel::ArrayStationsAlongCurveOnSurface;
+  // Parabolic cylinder z = x^2 over x in [0,1], y in [0,1] (exact degree-2 Bezier), and a path on it: (s, 0.5, s^2).
+  const NurbsSurface srf = NurbsSurface::FromControlGrid(
+      {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(0.5, 0, 0), Point3d(0.5, 1, 0), Point3d(1, 0, 1), Point3d(1, 1, 1)}, 3, 2, 2, 1);
+  const NurbsCurve path = NurbsCurve::FromControlPoints({Point3d(0, 0.5, 0), Point3d(0.5, 0.5, 0), Point3d(1, 0.5, 1)}, 2);
+  const Brep body = Brep::BoxWelded(0.0, 0.3, 0.0, 0.1, 0.7, 0.2);
+  const int n = 5;
+  const std::vector<dino8::kernel::CurveArrayStation> st = ArrayStationsAlongCurveOnSurface(path, srf, n);
+  const std::vector<Brep> copies = ArrayAlongCurveOnSurface(body, path, srf, n);
+  Check(static_cast<int>(copies.size()) == n && st.size() == copies.size(), "on-surface array: 5 copies for count 5");
+  // Arc length of (s, s^2) from 0 to s is F(s) = s*sqrt(1+4s^2)/2 + asinh(2s)/4.
+  const auto F = [](double s) { return s * std::sqrt(1.0 + 4.0 * s * s) / 2.0 + std::asinh(2.0 * s) / 4.0; };
+  double worst_len = 0.0, worst_pose = 0.0, worst_vol = 0.0, worst_on = 0.0;
+  const ON_3dPoint P0(0, 0.5, 0);
+  for (int i = 0; i < n; ++i) {
+    const double x = st[i].point.x;
+    worst_len = std::max(worst_len, std::fabs(F(x) - F(1.0) * i / (n - 1)));
+    worst_on = std::max(worst_on, std::fabs(st[i].point.z - x * x) + std::fabs(st[i].point.y - 0.5));
+    const double k = std::sqrt(1.0 + 4.0 * x * x);
+    const ON_3dVector T(1.0 / k, 0, 2.0 * x / k), N(-2.0 * x / k, 0, 1.0 / k);
+    const ON_3dVector Y = ON_CrossProduct(N, T);
+    const ON_3dPoint P(x, 0.5, x * x);
+    for (int v = 0; v < body.raw().m_V.Count(); ++v) {
+      const ON_3dVector d = body.raw().m_V[v].point - P0;  // frame 0: T0 = x, Y0 = y, N0 = z
+      const ON_3dPoint expect = P + d.x * T + d.y * Y + d.z * N;
+      worst_pose = std::max(worst_pose, expect.DistanceTo(copies[i].raw().m_V[v].point));
+    }
+    worst_vol = std::max(worst_vol, std::fabs(copies[i].Volume() - 0.1 * 0.4 * 0.2));
+  }
+  Check(worst_on < 1e-6, "on-surface array: every station lies on the surface (z = x^2, y = 0.5) to 1e-6");
+  Check(worst_len < 2e-3, "on-surface array: stations are arc-length even - F(x_i) = i/4 * F(1) to 2e-3");
+  Check(worst_pose < 1e-5, "on-surface array: every vertex of every copy = P_i + a*T_i + b*(N x T)_i + c*N_i, N = (-2x,0,1)/sqrt(1+4x^2), to 1e-5");
+  Check(worst_vol < 1e-9, "on-surface array: every copy keeps the body volume 0.008");
+  // Refusals.
+  const NurbsCurve off = NurbsCurve::FromControlPoints({Point3d(0, 0.5, 0.5), Point3d(0.5, 0.5, 0.5), Point3d(1, 0.5, 1.5)}, 2);
+  Check(ThrowsContaining([&] { ArrayAlongCurveOnSurface(body, off, srf, 4); }, "leaves the surface"),
+        "a path off the surface is refused: 'leaves the surface'");
+  const NurbsCurve across = NurbsCurve::FromControlPoints({Point3d(0.5, 0.5, -1), Point3d(0.5, 0.5, 1)}, 1);
+  Check(ThrowsContaining([&] { ArrayAlongCurveOnSurface(body, across, srf, 3, 10.0); }, "parallel to the surface normal"),
+        "a path piercing the surface along its normal is refused: 'parallel to the surface normal'");
+  Check(ThrowsContaining([&] { ArrayAlongCurveOnSurface(body, path, srf, 1); }, "count must be at least 2"),
+        "count 1 is refused");
+}
+
+}  // namespace transform_pattern_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -102705,6 +103258,14 @@ int main() {
           offset_remainder_tests::TestOffsetAnalyticDirectOracleNegativeControls);
   RunTest("offset_remainder_tests::TestOffsetAnalyticDirectTorusProportions",
           offset_remainder_tests::TestOffsetAnalyticDirectTorusProportions);
+  RunTest("transform_pattern_tests::TestNonUniformScaleAndShearOfBoxMatchClosedForms", transform_pattern_tests::TestNonUniformScaleAndShearOfBoxMatchClosedForms);
+  RunTest("transform_pattern_tests::TestNonUniformScaleOfQuadricsStaysExactAndAnalyticWhereItCan", transform_pattern_tests::TestNonUniformScaleOfQuadricsStaysExactAndAnalyticWhereItCan);
+  RunTest("transform_pattern_tests::TestAffineTransformRefusals", transform_pattern_tests::TestAffineTransformRefusals);
+  RunTest("transform_pattern_tests::TestMirrorKeepsSphericalPatchOrientedAndMeshStaysOutward", transform_pattern_tests::TestMirrorKeepsSphericalPatchOrientedAndMeshStaysOutward);
+  RunTest("transform_pattern_tests::TestHolePatternsLinearRectangularPolarAgainstClosedForms", transform_pattern_tests::TestHolePatternsLinearRectangularPolarAgainstClosedForms);
+  RunTest("transform_pattern_tests::TestHolePatternRefusalsStateTheirReason", transform_pattern_tests::TestHolePatternRefusalsStateTheirReason);
+  RunTest("transform_pattern_tests::TestArrayAlongCurveFrameAndTranslateAgainstAnalyticCircle", transform_pattern_tests::TestArrayAlongCurveFrameAndTranslateAgainstAnalyticCircle);
+  RunTest("transform_pattern_tests::TestArrayAlongCurveOnSurfaceFollowsSurfaceNormalClosedForm", transform_pattern_tests::TestArrayAlongCurveOnSurfaceFollowsSurfaceNormalClosedForm);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
