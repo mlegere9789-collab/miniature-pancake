@@ -3948,12 +3948,33 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (scale_schedule && scale_end != 1.0) {
     Fail(caller, "scale_end must be 1 when scale_schedule is given - the two are mutually exclusive");
   }
-  if (wrap && (twist_total != 0.0 || twist_schedule)) {
-    Fail(caller, "twist is not supported for a closed rail - a non-multiple-of-2*pi twist would keep the tube from "
-                 "closing up smoothly, and the multiple-of-2*pi spiral case is not attempted here");
+  // A closed rail closes up only when the twist is a whole number of turns (the last station's section is then
+  // the first one again); anything else would leave a step at the seam, so it is refused.
+  const double twist_turns = twist_total / (2.0 * ON_PI);
+  const bool whole_turns = twist_total != 0.0 && std::fabs(twist_turns - std::round(twist_turns)) < 1e-9 * (1.0 + std::fabs(twist_turns));
+  if (wrap && twist_total != 0.0 && !whole_turns) {
+    Fail(caller, "twist on a closed rail must be a whole number of turns (a multiple of 2*pi) so the tube closes up at "
+                 "the seam");
   }
-  if (wrap && (scale_end != 1.0 || scale_schedule)) {
-    Fail(caller, "scale is not supported for a closed rail - the tube would not meet itself at the seam");
+  // A schedule closes up the same way: the twist must change by a whole number of turns over the loop, the scale
+  // must return to its starting value (a linear scale_end ramp cannot).
+  if (wrap && twist_schedule) {
+    const double turns = (ScheduleAt(*twist_schedule, 1.0) - ScheduleAt(*twist_schedule, 0.0)) / (2.0 * ON_PI);
+    if (std::fabs(turns - std::round(turns)) > 1e-9 * (1.0 + std::fabs(turns))) {
+      Fail(caller, "a twist_schedule on a closed rail must change by a whole number of turns (a multiple of 2*pi) "
+                   "between t = 0 and t = 1 so the tube closes up at the seam");
+    }
+  }
+  if (wrap && scale_end != 1.0) {
+    Fail(caller, "scale_end is a one-way ramp and cannot close up on a closed rail - use a scale_schedule that "
+                 "returns to its starting value");
+  }
+  if (wrap && scale_schedule) {
+    const double s0 = ScheduleAt(*scale_schedule, 0.0), s1 = ScheduleAt(*scale_schedule, 1.0);
+    if (std::fabs(s1 - s0) > 1e-9 * (s0 + s1)) {
+      Fail(caller, "a scale_schedule on a closed rail must return to its starting value at t = 1 so the tube meets "
+                   "itself at the seam");
+    }
   }
   ON_3dVector up;
   if (roadlike_up) {
@@ -3961,7 +3982,7 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     if (!up.Unitize()) Fail(caller, "roadlike_up must be a nonzero vector");
   }
   const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
-  const bool has_schedule = twist_schedule || scale_schedule;  // wrap already refused above when true
+  const bool has_schedule = twist_schedule || scale_schedule;  // (closed rail: only schedules that close up got past the checks above)
 
   // Station fractions (of the rail's own arc length from its start) and
   // the rail parameter at each.
@@ -3983,7 +4004,8 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     if (wrap) params.pop_back();
     if (static_cast<int>(params.size()) != m_) Internal(caller, "station count mismatch");
     fractions.resize(static_cast<size_t>(m_));
-    for (int k = 0; k < m_; ++k) fractions[static_cast<size_t>(k)] = static_cast<double>(k) / static_cast<double>(m_ - 1);
+    // (a closed rail's stations exclude the closing point, so they run 0 .. (m-1)/m of the loop)
+    for (int k = 0; k < m_; ++k) fractions[static_cast<size_t>(k)] = static_cast<double>(k) / static_cast<double>(wrap ? m_ : m_ - 1);
   } else {
     // A schedule was given (wrap already refused above, so there is no
     // holonomy concern here). A schedule of exactly the two endpoints
@@ -4006,7 +4028,8 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       std::vector<double> raw;
       raw.reserve(static_cast<size_t>(m_even) + (twist_schedule ? twist_schedule->size() : 0) +
                   (scale_schedule ? scale_schedule->size() : 0));
-      for (int k = 0; k < m_even; ++k) raw.push_back(static_cast<double>(k) / static_cast<double>(m_even - 1));
+      // (closed rail: the closing point t = 1 is station 0 again and is not a station of its own)
+      for (int k = 0; k < m_even; ++k) raw.push_back(static_cast<double>(k) / static_cast<double>(wrap ? m_even : m_even - 1));
       if (twist_schedule) {
         for (const auto& p : *twist_schedule) raw.push_back(p.first);
       }
@@ -4015,6 +4038,7 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       }
       std::sort(raw.begin(), raw.end());
       for (double f : raw) {
+        if (wrap && f > 1.0 - 1e-9) continue;
         if (fractions.empty() || f - fractions.back() > 1e-9) fractions.push_back(f);
       }
       if (fractions.size() < 2) Internal(caller, "station count mismatch");
@@ -4118,6 +4142,183 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
+namespace {
+
+// Interior corners (tangent jumps) of a rail: the parameters of every interior
+// knot of multiplicity >= degree (a C0 join) whose one-sided unit tangents turn
+// by more than 1e-3 rad. A smooth rail (or one whose C0 knots are tangent
+// continuous) has none. The domain ends are not corners here.
+std::vector<double> RailCorners(const ON_NurbsCurve& rail) {
+  std::vector<double> out;
+  const int p = rail.Degree();
+  if (p < 1) return out;
+  const double lo = rail.Domain().Min(), hi = rail.Domain().Max(), eps = 1e-9 * (hi - lo);
+  for (int i = 0; i < rail.KnotCount();) {
+    const double t = rail.Knot(i);
+    const int mult = rail.KnotMultiplicity(i);
+    i += std::max(1, mult);
+    if (!(t > lo + eps && t < hi - eps) || mult < p) continue;
+    ON_3dPoint pt;
+    ON_3dVector below, above;
+    if (!rail.Ev1Der(t, pt, below, -1) || !rail.Ev1Der(t, pt, above, +1)) continue;
+    if (!below.Unitize() || !above.Unitize()) continue;
+    if (ON_DotProduct(below, above) < 1.0 - 5e-7) out.push_back(t);
+  }
+  return out;
+}
+
+// True when a CLOSED rail has a tangent jump anywhere, including at its own seam.
+bool ClosedRailHasCorner(const ON_NurbsCurve& rail) {
+  if (!RailCorners(rail).empty()) return true;
+  ON_3dPoint pt;
+  ON_3dVector at_end, at_start;
+  if (!rail.Ev1Der(rail.Domain().Max(), pt, at_end, -1) || !rail.Ev1Der(rail.Domain().Min(), pt, at_start, +1)) return false;
+  if (!at_end.Unitize() || !at_start.Unitize()) return false;
+  return ON_DotProduct(at_end, at_start) < 1.0 - 5e-7;
+}
+
+// Polyline-chord cumulative arc-length table of rail[a, b] (512 chords): station SPACING only.
+std::vector<double> RailArcTable(const ON_NurbsCurve& r, double a, double b) {
+  std::vector<double> cum(513, 0.0);
+  ON_3dPoint prev = r.PointAt(a);
+  for (int q = 1; q <= 512; ++q) {
+    const ON_3dPoint cur = r.PointAt(a + (b - a) * q / 512.0);
+    cum[static_cast<size_t>(q)] = cum[static_cast<size_t>(q - 1)] + prev.DistanceTo(cur);
+    prev = cur;
+  }
+  return cum;
+}
+
+double RailParamAtFractionOf(const std::vector<double>& cum, double a, double b, double f) {
+  const double target = f * cum.back();
+  size_t q = static_cast<size_t>(std::upper_bound(cum.begin(), cum.end(), target) - cum.begin());
+  if (q == 0) q = 1;
+  if (q > 512) q = 512;
+  const double span = cum[q] - cum[q - 1];
+  const double frac = span > 0.0 ? (target - cum[q - 1]) / span : 0.0;
+  return a + (b - a) * (static_cast<double>(q - 1) + frac) / 512.0;
+}
+
+double RailParamAtFraction(const ON_NurbsCurve& r, double a, double b, double f) {
+  return RailParamAtFractionOf(RailArcTable(r, a, b), a, b, f);
+}
+
+// Pairs the interior corners of two OPEN rails (rail2 already turned to run with rail1) for a two-rail
+// sweep: the i-th corner of one with the i-th of the other when both have the same number; otherwise every
+// corner is paired with the point of the OTHER rail at the same arc-length fraction of the whole rail
+// (a corner on one rail only still gets a station there, its partner just sits on a smooth stretch).
+// Returned sorted by rail1 parameter, both parameters strictly increasing.
+std::vector<std::pair<double, double>> PairRailCorners(const ON_NurbsCurve& rail1, const ON_NurbsCurve& rail2,
+                                                       const char* caller) {
+  const std::vector<double> c1 = RailCorners(rail1), c2 = RailCorners(rail2);
+  std::vector<std::pair<double, double>> pairs;
+  if (c1.empty() && c2.empty()) return pairs;
+  const double a1 = rail1.Domain().Min(), b1 = rail1.Domain().Max(), a2 = rail2.Domain().Min(), b2 = rail2.Domain().Max();
+  if (c1.size() == c2.size()) {
+    for (size_t i = 0; i < c1.size(); ++i) pairs.emplace_back(c1[i], c2[i]);
+  } else {
+    const std::vector<double> t1 = RailArcTable(rail1, a1, b1), t2 = RailArcTable(rail2, a2, b2);
+    auto fraction = [](const std::vector<double>& cum, const ON_NurbsCurve& r, double a, double t) {
+      // arc-length fraction of parameter t along the rail (table lookup, linear inside a chord)
+      const double u = (t - a) / (r.Domain().Max() - a) * 512.0;
+      const size_t q = std::min<size_t>(511, static_cast<size_t>(std::max(0.0, std::floor(u))));
+      return (cum[q] + (cum[q + 1] - cum[q]) * (u - static_cast<double>(q))) / cum.back();
+    };
+    for (const double c : c1) pairs.emplace_back(c, RailParamAtFractionOf(t2, a2, b2, fraction(t1, rail1, a1, c)));
+    for (const double c : c2) pairs.emplace_back(RailParamAtFractionOf(t1, a1, b1, fraction(t2, rail2, a2, c)), c);
+    std::sort(pairs.begin(), pairs.end());
+    // two pairs (nearly) coincident on both rails are one corner
+    std::vector<std::pair<double, double>> merged;
+    for (const auto& pr : pairs) {
+      if (!merged.empty() && pr.first - merged.back().first < 1e-3 * (b1 - a1) && std::fabs(pr.second - merged.back().second) < 1e-3 * (b2 - a2)) continue;
+      merged.push_back(pr);
+    }
+    pairs.swap(merged);
+  }
+  for (size_t i = 1; i < pairs.size(); ++i) {
+    if (!(pairs[i].first > pairs[i - 1].first) || !(pairs[i].second > pairs[i - 1].second)) {
+      Fail(caller, "the corners of the two rails cannot be paired in order (they cross)");
+    }
+  }
+  return pairs;
+}
+
+// A skin through compatible `copies` (open, params in [0, 1]) that is exactly C0 (a tangent jump, knot
+// multiplicity = degree) at the given interior stations `breaks` and the usual interpolating skin of degree
+// `q` between them: each piece between consecutive breaks is skinned on its own and the pieces are joined
+// at their shared end station. The surface still passes through every copy exactly.
+std::unique_ptr<ON_NurbsSurface> SkinSectionsC0(const std::vector<ON_NurbsCurve>& copies, const std::vector<int>& breaks, int q,
+                                                const std::vector<double>& params, const char* caller) {
+  const int m = static_cast<int>(copies.size());
+  std::vector<int> cuts;
+  cuts.push_back(0);
+  for (const int b : breaks) {
+    if (!(b > cuts.back() && b < m - 1)) Internal(caller, "break stations must be strictly increasing and interior");
+    cuts.push_back(b);
+  }
+  cuts.push_back(m - 1);
+  const size_t np = cuts.size() - 1;
+  std::vector<std::unique_ptr<ON_NurbsSurface>> pieces;
+  for (size_t pi = 0; pi < np; ++pi) {
+    const int a = cuts[pi], b = cuts[pi + 1], N = b - a + 1;
+    if (N < q + 1) Fail(caller, "too few stations between two corners of the rails - raise the station count");
+    const std::vector<ON_NurbsCurve> sub(copies.begin() + a, copies.begin() + b + 1);
+    std::vector<double> sp(static_cast<size_t>(N));
+    for (int i = 0; i < N; ++i) {
+      sp[static_cast<size_t>(i)] = (params[static_cast<size_t>(a + i)] - params[static_cast<size_t>(a)]) /
+                                   (params[static_cast<size_t>(b)] - params[static_cast<size_t>(a)]);
+    }
+    pieces.push_back(SkinSections(sub, q, false, sp, 1.0, caller));
+  }
+  int nv = 1;
+  for (const auto& pc : pieces) nv += pc->CVCount(1) - 1;
+  // full knot vector of the joined surface (q + 1 copies of each end, q copies at each join)
+  std::vector<double> K;
+  for (size_t pi = 0; pi < np; ++pi) {
+    const ON_NurbsSurface& P = *pieces[pi];
+    const int cvn = P.CVCount(1);
+    const double lo = params[static_cast<size_t>(cuts[pi])], hi = params[static_cast<size_t>(cuts[pi + 1])];
+    auto full = [&](int j) {  // ON stores the full vector without its first and last entry
+      const int jj = j == 0 ? 0 : (j == cvn + q ? cvn + q - 2 : j - 1);
+      return lo + (hi - lo) * P.Knot(1, jj);
+    };
+    if (pi == 0) {
+      for (int j = 0; j < cvn; ++j) K.push_back(j <= q ? lo : full(j));
+    } else {
+      for (int j = q + 1; j < cvn; ++j) K.push_back(full(j));
+    }
+    if (pi + 1 < np) {
+      for (int j = 0; j < q; ++j) K.push_back(hi);
+    } else {
+      for (int j = 0; j <= q; ++j) K.push_back(hi);
+    }
+  }
+  if (static_cast<int>(K.size()) != nv + q + 1) Internal(caller, "joined knot vector has the wrong length");
+  const bool rational = copies.front().IsRational();
+  auto s = std::make_unique<ON_NurbsSurface>();
+  const int nu = copies.front().CVCount();
+  if (!s->Create(3, rational, copies.front().Order(), q + 1, nu, nv)) Internal(caller, "Create failed");
+  CopyKnots(copies.front(), *s, 0);
+  for (int j = 0; j < nv + q - 1; ++j) s->SetKnot(1, j, K[static_cast<size_t>(j + 1)]);
+  int base = 0;
+  for (size_t pi = 0; pi < np; ++pi) {
+    const ON_NurbsSurface& P = *pieces[pi];
+    const int cvn = P.CVCount(1);
+    for (int j = pi == 0 ? 0 : 1; j < cvn; ++j) {
+      for (int i = 0; i < nu; ++i) {
+        const double* cv = P.CV(i, j);
+        const ON_4dPoint h = rational ? ON_4dPoint(cv[0], cv[1], cv[2], cv[3]) : ON_4dPoint(cv[0], cv[1], cv[2], 1.0);
+        s->SetCV(i, base + (pi == 0 ? j : j - 1), h);
+      }
+    }
+    base += pi == 0 ? cvn : cvn - 1;
+  }
+  if (!s->IsValid()) Internal(caller, "the corner-joined skin is not valid");
+  return s;
+}
+
+}  // namespace
+
 Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, const NurbsCurve& rail2_in, int stations,
                   bool cap) {
   const char* caller = "Sweep2";
@@ -4137,17 +4338,58 @@ Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, cons
   if (a0.DistanceTo(b1) < a0.DistanceTo(b0)) ReverseKeepDomain(rail2);
 
   const bool wrap = rail1.IsClosed() && rail2.IsClosed();
+  if (wrap && (ClosedRailHasCorner(rail1) || ClosedRailHasCorner(rail2))) {
+    Fail(caller, "a closed rail has a corner (tangent jump); the periodic skin round a closed ring cannot follow a corner, "
+                 "so the wall edges would leave the rails - make the closed rails tangent continuous");
+  }
   const double rail_scale = 1e-9 * (CurveScale(rail1) + CurveScale(rail2));
   const bool straight = !wrap && rail1.IsLinear(rail_scale) && rail2.IsLinear(rail_scale);
-  const int m = straight ? 2 : std::max(stations, 3);
+  int m = straight ? 2 : std::max(stations, 3);
 
-  std::vector<double> p1 = rail1_in.DivideByCount(wrap ? m : m - 1);
-  NurbsCurve rail2_k;
-  rail2_k.raw() = rail2;
-  std::vector<double> p2 = rail2_k.DivideByCount(wrap ? m : m - 1);
-  if (wrap) {
-    p1.pop_back();
-    p2.pop_back();
+  std::vector<double> p1, p2;
+  std::vector<int> corner_stations;  // open rails with tangent jumps: stations exactly at the paired corners
+  const std::vector<std::pair<double, double>> corner_pairs = wrap ? std::vector<std::pair<double, double>>() : PairRailCorners(rail1, rail2, caller);
+  if (corner_pairs.empty()) {
+    p1 = rail1_in.DivideByCount(wrap ? m : m - 1);
+    NurbsCurve rail2_k;
+    rail2_k.raw() = rail2;
+    p2 = rail2_k.DivideByCount(wrap ? m : m - 1);
+    if (wrap) {
+      p1.pop_back();
+      p2.pop_back();
+    }
+  } else {
+    // Segments between the paired corners (and the rail ends): each gets its share of the station budget by
+    // rail1 arc length (never fewer than 4 intervals), stations at equal arc-length FRACTIONS of the segment on
+    // both rails, a station pair exactly at every corner pair.
+    std::vector<double> b1 = {rail1.Domain().Min()}, b2 = {rail2.Domain().Min()};
+    for (const auto& cp : corner_pairs) {
+      b1.push_back(cp.first);
+      b2.push_back(cp.second);
+    }
+    b1.push_back(rail1.Domain().Max());
+    b2.push_back(rail2.Domain().Max());
+    std::vector<double> seg_len(b1.size(), 0.0);
+    double total = 0.0;
+    for (size_t b = 1; b < b1.size(); ++b) {
+      seg_len[b] = RailArcTable(rail1, b1[b - 1], b1[b]).back();
+      total += seg_len[b];
+    }
+    p1.push_back(b1[0]);
+    p2.push_back(b2[0]);
+    for (size_t b = 1; b < b1.size(); ++b) {
+      const int sub = std::max(4, static_cast<int>(std::lround((m - 1) * seg_len[b] / total)));
+      const std::vector<double> t1 = RailArcTable(rail1, b1[b - 1], b1[b]), t2 = RailArcTable(rail2, b2[b - 1], b2[b]);
+      for (int q = 1; q < sub; ++q) {
+        const double f = static_cast<double>(q) / sub;
+        p1.push_back(RailParamAtFractionOf(t1, b1[b - 1], b1[b], f));
+        p2.push_back(RailParamAtFractionOf(t2, b2[b - 1], b2[b], f));
+      }
+      p1.push_back(b1[b]);
+      p2.push_back(b2[b]);
+      if (b + 1 < b1.size()) corner_stations.push_back(static_cast<int>(p1.size()) - 1);
+    }
+    m = static_cast<int>(p1.size());
   }
   if (static_cast<int>(p1.size()) != m || static_cast<int>(p2.size()) != m) Internal(caller, "station count mismatch");
 
@@ -4198,7 +4440,8 @@ Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, cons
   } else {
     double period = 1.0;
     const std::vector<double> params_v = SkinParameters(copies, wrap, &period, caller);
-    wall = SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller);
+    wall = corner_stations.empty() ? SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller)
+                                   : SkinSectionsC0(copies, corner_stations, 3, params_v, caller);
   }
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
@@ -4216,6 +4459,12 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   // seam, a periodic blend, a wrapped skin); the wall is closed in v with its
   // seam at the first section.
   const bool cyclic = rail1.IsClosed() && rail2.IsClosed();
+  if (cyclic && (ClosedRailHasCorner(rail1) || ClosedRailHasCorner(rail2))) {
+    // A periodic skin is smooth round the whole ring: it would cut every corner. Refuse (with the reason)
+    // rather than return a wall whose edges leave the rails; open rails with corners are handled exactly.
+    Fail(caller, "a closed rail has a corner (tangent jump); the periodic skin round a closed ring cannot follow a corner, "
+                 "so the wall edges would leave the rails - make the closed rails tangent continuous");
+  }
   if (!cyclic) {
     // Direction: keep rail2 as drawn unless pairing its end with rail1's start is strictly
     // closer overall.  The SUM of the two end separations is compared (not rail1's start
@@ -4384,6 +4633,7 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
 
   std::vector<double> bp1, bp2;  // breakpoints on each rail (cyclic: unwrapped, the last = the first one + the rail's period)
   std::vector<int> anchor_at;    // anchor index (into `anchors`) living at each breakpoint
+  std::vector<char> corner_at;   // open rails: 1 where the breakpoint is a paired corner of the rails
   std::vector<double> x_at_bp;   // rail1 arc length at each breakpoint
   std::vector<double> p1, p2, xs;  // station parameters on each rail (wrapped into the domain) and the rail1 abscissa
   std::vector<int> station_of_bp;
@@ -4475,6 +4725,28 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
       bp1.push_back(d1_max);
       bp2.push_back(d2_max);
       anchor_at.push_back(-1);
+    }
+    // Corners (tangent jumps) of the rails: a station pair sits exactly at every paired corner pair and the
+    // skin is C0 there, so the wall edges follow the rails round the corner instead of cutting it.
+    corner_at.assign(bp1.size(), 0);
+    for (const auto& cp : PairRailCorners(rail1, rail2, caller)) {
+      const double merge1 = 1e-8 * (d1_max - d1_min), merge2 = 1e-8 * (d2_max - d2_min);
+      size_t i = 0;
+      while (i < bp1.size() && bp1[i] < cp.first - merge1) ++i;
+      if (i < bp1.size() && std::fabs(bp1[i] - cp.first) <= merge1) {
+        if (std::fabs(bp2[i] - cp.second) > merge2 * 1e3) {
+          Fail(caller, "a section's anchor sits at a corner of one rail but not at the matching corner of the other");
+        }
+        corner_at[i] = 1;
+        continue;
+      }
+      if (i == 0 || i >= bp1.size() || !(bp2[i - 1] < cp.second - merge2) || !(cp.second < bp2[i] - merge2)) {
+        Fail(caller, "the rails' corners cannot be paired in order with the section anchors (a section sits between the two rails' matching corners)");
+      }
+      bp1.insert(bp1.begin() + static_cast<std::ptrdiff_t>(i), cp.first);
+      bp2.insert(bp2.begin() + static_cast<std::ptrdiff_t>(i), cp.second);
+      anchor_at.insert(anchor_at.begin() + static_cast<std::ptrdiff_t>(i), -1);
+      corner_at.insert(corner_at.begin() + static_cast<std::ptrdiff_t>(i), 1);
     }
     nbp = bp1.size();
     if (nbp < 2) Fail(caller, "the rails are degenerate");
@@ -4587,10 +4859,17 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   MakeCompatible(copies, caller);  // no-op (same control structure at every station)
   double period = 1.0;
   const std::vector<double> params_v = SkinParameters(copies, cyclic, &period, caller);
-  std::unique_ptr<ON_NurbsSurface> wall = SkinSections(copies, std::min(3, m - 1), cyclic, params_v, period, caller);
+  std::vector<int> corner_stations;
+  for (size_t b = 0; b < nbp && !cyclic; ++b) {
+    if (b < corner_at.size() && corner_at[b]) corner_stations.push_back(station_of_bp[b]);
+  }
+  std::unique_ptr<ON_NurbsSurface> wall = corner_stations.empty()
+                                              ? SkinSections(copies, std::min(3, m - 1), cyclic, params_v, period, caller)
+                                              : SkinSectionsC0(copies, corner_stations, 3, params_v, caller);
 
   if (report) {
     *report = Sweep2SectionsReport{};
+    report->corners = static_cast<int>(corner_stations.size());
     report->sections = static_cast<int>(na);
     report->stations = m;
     report->section_rail_gap = section_rail_gap;
@@ -4627,7 +4906,10 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   if (sections_in.size() < 2) Fail(caller, "at least 2 sections are required (one section is Sweep1())");
   ON_NurbsCurve rail = rail_in.raw();
   if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
-  if (rail.IsClosed()) Fail(caller, "a closed rail is not supported with several sections (use Sweep1() with one section)");
+  // A CLOSED rail gives a cyclic sweep (wrapped anchors, a blend that wraps round the loop, Sweep1()'s own
+  // holonomy-corrected rotation-minimizing frames, a periodic skin): the wall is closed in v with its seam at
+  // the first section in rail order, and has no ends (so `cap` is irrelevant to it, as in Sweep1()).
+  const bool cyclic = rail.IsClosed();
   std::vector<ON_NurbsCurve> sections;
   sections.reserve(sections_in.size());
   double section_scale = 0.0;
@@ -4662,7 +4944,9 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
           if (flo * fm <= 0.0) hi = mid; else { lo = mid; flo = fm; }
         }
         const double root = 0.5 * (lo + hi);
-        if (std::fabs(root - t0) < best_gap) { best_gap = std::fabs(root - t0); root_out = root; found = true; }
+        double gap = std::fabs(root - t0);
+        if (cyclic) gap = std::min(gap, (d_max - d_min) - gap);
+        if (gap < best_gap) { best_gap = gap; root_out = root; found = true; }
       }
       prev_t = t;
       prev_f = ft;
@@ -4707,32 +4991,51 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   const size_t na = anchors.size();
   const double eps_t = 1e-9 * (d_max - d_min);
 
-  // Breakpoints: the domain start, every anchor, the domain end.
-  std::vector<double> bp{d_min};
-  std::vector<int> anchor_at{-1};  // anchor index living at each breakpoint
-  for (size_t i = 0; i < na; ++i) {
-    if (i > 0 && anchors[i].t - anchors[i - 1].t <= eps_t) Fail(caller, "two sections sit at the same station of the rail");
-    if (anchors[i].t - bp.back() <= eps_t) {
-      anchor_at.back() = static_cast<int>(i);
-      continue;
+  // Breakpoints: the domain start, every anchor, the domain end. (Closed rail: every anchor in rail order and
+  // the first anchor one period on - the last segment runs across the rail's seam.)
+  const double period_t = d_max - d_min;
+  std::vector<double> bp;
+  std::vector<int> anchor_at;  // anchor index living at each breakpoint
+  if (cyclic) {
+    for (size_t i = 0; i < na; ++i) {
+      if (i > 0 && anchors[i].t - anchors[i - 1].t <= eps_t) Fail(caller, "two sections sit at the same station of the rail");
+      bp.push_back(anchors[i].t);
+      anchor_at.push_back(static_cast<int>(i));
     }
-    bp.push_back(anchors[i].t);
-    anchor_at.push_back(static_cast<int>(i));
-  }
-  if (d_max - bp.back() > eps_t) {
-    bp.push_back(d_max);
+    if (anchors[0].t + period_t - anchors.back().t <= eps_t) Fail(caller, "two sections sit at the same station of the rail");
+    bp.push_back(anchors[0].t + period_t);
     anchor_at.push_back(-1);
+  } else {
+    bp.push_back(d_min);
+    anchor_at.push_back(-1);
+    for (size_t i = 0; i < na; ++i) {
+      if (i > 0 && anchors[i].t - anchors[i - 1].t <= eps_t) Fail(caller, "two sections sit at the same station of the rail");
+      if (anchors[i].t - bp.back() <= eps_t) {
+        anchor_at.back() = static_cast<int>(i);
+        continue;
+      }
+      bp.push_back(anchors[i].t);
+      anchor_at.push_back(static_cast<int>(i));
+    }
+    if (d_max - bp.back() > eps_t) {
+      bp.push_back(d_max);
+      anchor_at.push_back(-1);
+    }
   }
   const size_t nbp = bp.size();
   if (nbp < 2) Fail(caller, "the rail is degenerate");
 
   // Rail arc length (a 512-chord polyline table per sub-range: station SPACING
   // only, so its ~1e-6 relative error moves a station along the rail).
+  auto wrapped = [&](double t) {
+    if (!cyclic) return t;
+    return t - std::floor((t - d_min) / period_t) * period_t;
+  };
   auto arc_table = [&](double a, double b) {
     std::vector<double> cum(513, 0.0);
-    ON_3dPoint prev = rail.PointAt(a);
+    ON_3dPoint prev = rail.PointAt(wrapped(a));
     for (int q = 1; q <= 512; ++q) {
-      const ON_3dPoint cur = rail.PointAt(a + (b - a) * q / 512.0);
+      const ON_3dPoint cur = rail.PointAt(wrapped(a + (b - a) * q / 512.0));
       cum[static_cast<size_t>(q)] = cum[static_cast<size_t>(q - 1)] + prev.DistanceTo(cur);
       prev = cur;
     }
@@ -4764,8 +5067,9 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   double weight_total = 0.0;
   for (size_t b = 1; b < nbp; ++b) {
     double w = x_at_bp[b] - x_at_bp[b - 1];
-    if (anchor_at[b - 1] >= 0 && anchor_at[b] >= 0) {
-      w += std::fabs(CurveScale(sections[anchors[static_cast<size_t>(anchor_at[b])].section]) -
+    const int a_end = cyclic && b + 1 == nbp ? 0 : anchor_at[b];
+    if (anchor_at[b - 1] >= 0 && a_end >= 0) {
+      w += std::fabs(CurveScale(sections[anchors[static_cast<size_t>(a_end)].section]) -
                      CurveScale(sections[anchors[static_cast<size_t>(anchor_at[b - 1])].section]));
     }
     weight_of_seg[b] = w;
@@ -4781,13 +5085,20 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
       pf.push_back(param_at_fraction(bp[b - 1], bp[b], f));
       xf.push_back(x_at_bp[b - 1] + f * seg);
     }
-    pf.push_back(bp[b]);
-    xf.push_back(x_at_bp[b]);
-    fine_of_bp[b] = static_cast<int>(pf.size()) - 1;
+    if (cyclic && b + 1 == nbp) {
+      fine_of_bp[b] = static_cast<int>(pf.size());  // the closing breakpoint is station 0 again
+    } else {
+      pf.push_back(bp[b]);
+      xf.push_back(x_at_bp[b]);
+      fine_of_bp[b] = static_cast<int>(pf.size()) - 1;
+    }
   }
+  const double ring_length = x_at_bp.back();
   const int mf = static_cast<int>(pf.size());
   const int m = (mf + 1) / 2;
-  const std::vector<Frame> frames = RmfFrames(rail, pf, false, caller);
+  std::vector<double> pf_wrapped(pf.size());
+  for (size_t k = 0; k < pf.size(); ++k) pf_wrapped[k] = wrapped(pf[k]);
+  const std::vector<Frame> frames = RmfFrames(rail, pf_wrapped, cyclic, caller);
   std::vector<int> anchor_fine(na, 0);
   std::vector<double> anchor_x(na, 0.0);
   for (size_t b = 0; b < nbp; ++b) {
@@ -4826,7 +5137,8 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   // Closed sections must share a seam (start point) within 60 degrees about
   // their own centroids, seen down the rail; the kernel does not re-seam.
   if (closed_sections) {
-    double prev_angle = 0.0;
+    double prev_angle = 0.0, first_angle = 0.0;
+    bool have_first = false;
     for (size_t i = 0; i < na; ++i) {
       const Frame& f = frames[static_cast<size_t>(anchor_fine[i])];
       ON_3dPoint centroid(0, 0, 0);
@@ -4846,6 +5158,15 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
         }
       }
       prev_angle = angle;
+      if (cyclic && i == 0) first_angle = angle, have_first = true;
+      if (cyclic && i + 1 == na && have_first) {
+        double d = std::fabs(angle - first_angle);
+        if (d > ON_PI) d = 2.0 * ON_PI - d;
+        if (d > ON_PI / 3.0) {
+          Fail(caller, "the seams (start points) of the last and the first section round the closed rail are " +
+                           std::to_string(static_cast<int>(std::lround(d * 180.0 / ON_PI))) + " degrees apart about the rail - align them (the skin would twist)");
+        }
+      }
     }
   }
   std::vector<std::vector<ON_3dVector>> local(na, std::vector<ON_3dVector>(static_cast<size_t>(n)));
@@ -4862,8 +5183,8 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   // plain linear blend).
   std::vector<std::vector<ON_3dVector>> slope(na, std::vector<ON_3dVector>(static_cast<size_t>(n)));
   for (size_t i = 0; i < na; ++i) {
-    const size_t lo = i == 0 ? 0 : i - 1, hi = i + 1 == na ? na - 1 : i + 1;
-    const double dx = anchor_x[hi] - anchor_x[lo];
+    const size_t lo = cyclic ? (i + na - 1) % na : (i == 0 ? 0 : i - 1), hi = cyclic ? (i + 1) % na : (i + 1 == na ? na - 1 : i + 1);
+    const double dx = (anchor_x[hi] + (cyclic && i + 1 == na ? ring_length : 0.0)) - (anchor_x[lo] - (cyclic && i == 0 ? ring_length : 0.0));
     for (int c = 0; c < n; ++c) {
       slope[i][static_cast<size_t>(c)] = (local[hi][static_cast<size_t>(c)] - local[lo][static_cast<size_t>(c)]) / dx;
     }
@@ -4876,8 +5197,9 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
     const Frame& f = frames[static_cast<size_t>(k)];
     size_t seg = 0;
     while (seg + 1 < na && anchor_fine[seg + 1] <= k) ++seg;
-    const bool before_first = k <= anchor_fine[0];
-    const bool after_last = k >= anchor_fine[na - 1];
+    const bool before_first = !cyclic && k <= anchor_fine[0];
+    const bool after_last = !cyclic && k >= anchor_fine[na - 1];
+    const size_t seg_next = (seg + 1) % na;  // closed rail: the last segment runs on to the first anchor, one ring further
     for (int c = 0; c < n; ++c) {
       ON_3dVector l;
       double w;
@@ -4886,12 +5208,12 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
         l = local[e][static_cast<size_t>(c)];
         w = weight[e][static_cast<size_t>(c)];
       } else {
-        const double x0 = anchor_x[seg], x1 = anchor_x[seg + 1], h = x1 - x0;
+        const double x0 = anchor_x[seg], x1 = seg + 1 < na ? anchor_x[seg + 1] : ring_length, h = x1 - x0;
         const double s = (xf[static_cast<size_t>(k)] - x0) / h;
         const double s2 = s * s, s3 = s2 * s;
         l = local[seg][static_cast<size_t>(c)] * (2 * s3 - 3 * s2 + 1) + slope[seg][static_cast<size_t>(c)] * (h * (s3 - 2 * s2 + s)) +
-            local[seg + 1][static_cast<size_t>(c)] * (-2 * s3 + 3 * s2) + slope[seg + 1][static_cast<size_t>(c)] * (h * (s3 - s2));
-        w = weight[seg][static_cast<size_t>(c)] * (1.0 - s) + weight[seg + 1][static_cast<size_t>(c)] * s;
+            local[seg_next][static_cast<size_t>(c)] * (-2 * s3 + 3 * s2) + slope[seg_next][static_cast<size_t>(c)] * (h * (s3 - s2));
+        w = weight[seg][static_cast<size_t>(c)] * (1.0 - s) + weight[seg_next][static_cast<size_t>(c)] * s;
       }
       const ON_3dPoint p = f.origin + f.t * l.x + f.r * l.y + f.s * l.z;
       ck.SetCV(c, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
@@ -4903,8 +5225,8 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   for (int k = 0; k < mf; k += 2) copies.push_back(copy_at(k));
   MakeCompatible(copies, caller);  // no-op (same control structure at every station)
   double period = 1.0;
-  const std::vector<double> params_v = SkinParameters(copies, false, &period, caller);
-  std::unique_ptr<ON_NurbsSurface> wall = SkinSections(copies, std::min(3, m - 1), false, params_v, period, caller);
+  const std::vector<double> params_v = SkinParameters(copies, cyclic, &period, caller);
+  std::unique_ptr<ON_NurbsSurface> wall = SkinSections(copies, std::min(3, m - 1), cyclic, params_v, period, caller);
 
   // The gate, measured on the finished wall. (1) Every input section is
   // reproduced by the wall's isocurve at its own station. (2) Between
@@ -4926,7 +5248,7 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   }
   for (int k = 1; k < mf; k += 2) {
     const ON_NurbsCurve ck = copy_at(k);
-    const double va = params_v[static_cast<size_t>((k - 1) / 2)], vb = params_v[static_cast<size_t>((k + 1) / 2)];
+    const double va = params_v[static_cast<size_t>((k - 1) / 2)], vb = (k + 1) / 2 >= m ? period : params_v[static_cast<size_t>((k + 1) / 2)];
     for (int q = 0; q <= 32; ++q) {
       const double u = du.ParameterAt(q / 32.0);
       const ON_3dPoint p = ck.PointAt(ck.Domain().ParameterAt(q / 32.0));
@@ -4954,14 +5276,14 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
                      " from the exact blended sections (limit " + std::to_string(1e-3 * scale) + ") - the sections change too abruptly along the rail for this many stations");
   }
 
-  if (cap) {
+  if (cap && !cyclic) {
     if (!closed_sections) Fail(caller, "cap requested but the sections are open curves");
     ON_Plane plane;
     for (const size_t e : {size_t{0}, na - 1}) {
       if (!compat[e].IsPlanar(&plane, 1e-8 * CurveScale(compat[e]))) Fail(caller, "cap requested but an end section is not planar");
     }
   }
-  return AssembleSweptBody(wall.release(), cap, cap, false, false, caller);
+  return AssembleSweptBody(wall.release(), cap && !cyclic, cap && !cyclic, false, false, caller);
 }
 
 Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, bool round_caps) {

@@ -1009,10 +1009,16 @@ class Brep {
   // station k), so a straight rail's 2-station exact-extrusion path
   // stays exact: the far end is the near end's section rotated by
   // EXACTLY `twist_total` about the rail direction, nothing else
-  // changed. Not supported on a closed rail (throws if `twist_total`
-  // is nonzero there) - a non-multiple-of-2*pi twist would keep the
-  // tube from closing up smoothly, and this does not attempt the
-  // partial-turn spiral case.
+  // changed. On a closed rail only a WHOLE NUMBER OF TURNS (a nonzero
+  // multiple of 2*pi, either sign) is allowed: the twist then returns the
+  // section to itself at the seam, so the periodic skin closes up (the
+  // stations run 0 .. (m-1)/m of the loop, so the twist at station k is
+  // twist_total * k / m). Verified against the closed form: a circle
+  // centred off a circular rail and twisted by 2*pi about the rail's
+  // tangent encloses pi r^2 * 2 pi R (the centroid's winding cancels the
+  // curvature term), not pi r^2 * 2 pi (R + d). Any other twist on a
+  // closed rail throws (it would leave a step at the seam), as does a
+  // twist_schedule.
   //
   // `scale_end` uniformly scales the section about each station's own
   // rail point, linear in arc-length station fraction from 1.0 at the
@@ -1028,8 +1034,8 @@ class Brep {
   // scaled this way along a straight rail reproduces
   // `PipeVariable()`'s own exact 2-point cone frustum bit-for-bit.
   // Throws std::invalid_argument for a non-positive `scale_end`, or a
-  // nonzero deviation from 1.0 on a closed rail (the same "would not
-  // close up smoothly" reasoning as `twist_total`).
+  // nonzero deviation from 1.0 on a closed rail (a one-way ramp cannot close
+  // up; use `scale_schedule` there, below).
   //
   // `roadlike_up`, when non-null, replaces the rotation-minimizing
   // frame's own reference direction at EVERY station with `*roadlike_up`
@@ -1057,9 +1063,16 @@ class Brep {
   // `PipeVariable()`'s own doc comment states, reused here verbatim).
   // Passing one is mutually exclusive with its own plain scalar
   // (`twist_total` must stay 0, `scale_end` must stay 1) - not a silent
-  // override - and, like both scalars, neither is supported on a closed
-  // rail (throws, same reasoning as `twist_total`/`scale_end` above: the
-  // tube would not meet itself at the seam). Every schedule breakpoint's
+  // override. On a closed rail a schedule is supported only if it CLOSES UP:
+  // a twist_schedule whose value changes by a whole number of turns between
+  // t = 0 and t = 1, a scale_schedule that returns to its t = 0 value at t = 1
+  // (a one-way `scale_end` ramp is still refused there, with a reason): the
+  // closing point is station 0 again, every breakpoint strictly inside the
+  // loop is a real station, and the periodic skin is exact at the stations
+  // (the schedule's kinks between them are the usual skin interpolant).
+  // Verified on a circle rail: a centered circle with a scale schedule
+  // 1 -> 2 -> 1 encloses pi r^2 * 2 pi R * 7/3, the closed form
+  // pi r^2 2 pi R * integral s(f)^2 df. Every schedule breakpoint's
   // own fraction is inserted as a real station (in addition to `stations`
   // stations spaced evenly in arc length), the same "insert exact stations
   // at the given points, then skin through them" construction
@@ -1110,6 +1123,28 @@ class Brep {
   // station where the rails touch (zero separation) or a rail's tangent
   // is parallel to the rail-to-rail direction (the frame is undefined
   // there) - genuine, disclosed limits, not silently degraded output.
+  //
+  // CORNERS. Open rails with a tangent jump (an interior C0 knot whose
+  // one-sided tangents differ by more than 1e-3 rad: a polyline vertex, an
+  // arc joined to a line) no longer cut the corner. The i-th corner of
+  // rail1 is paired with the i-th corner of rail2 (unequal counts: each
+  // corner is paired with the point of the other rail at the same
+  // arc-length fraction of the whole rail); the stations are packed per
+  // segment between paired corners (equal arc-length fractions of the
+  // segment on both rails, at least 4 intervals each, `stations - 1`
+  // shared out by rail1 length) with a station pair exactly AT every
+  // corner pair, and the skin is built piece by piece and joined with a
+  // C0 knot (multiplicity = degree) at each corner station. So the wall
+  // edges follow the rails round the corner: two straight legs reproduce
+  // the closed-form area to 1e-6 and the edges stay within 1e-9 of the
+  // rails at any station count, where one smooth skin left 0.0108 at 512
+  // stations. The frame AT a corner station uses the average of the two
+  // rails' tangents there, so a section with content out of the rail plane
+  // is carried through the corner by that one averaged frame (the edges
+  // are exact; the interior is that interpolant). The total station count
+  // can exceed `stations` (each leg gets at least 4 intervals). CLOSED
+  // rails with a corner are refused (a periodic skin cannot follow a
+  // tangent jump); smooth closed rails are unchanged.
   static Brep Sweep2(const NurbsCurve& section, const NurbsCurve& rail1, const NurbsCurve& rail2,
                      int stations = 32, bool cap = true);
 
@@ -1118,6 +1153,7 @@ class Brep {
   struct Sweep2SectionsReport {
     int sections = 0;                    // sections used
     int stations = 0;                    // skin stations (rail stations incl. one per section)
+    int corners = 0;                     // paired rail corners (tangent jumps) given their own station pair and a C0 skin join
     double max_section_deviation = 0.0;  // wall isocurve at each section's station vs that section, 65 samples each
     double section_rail_gap = 0.0;       // open sections: worst distance of a section end from the rail it is
                                          // meant to touch (start to rail1, end to rail2); 0 if none is open
@@ -1172,6 +1208,12 @@ class Brep {
   // copy at a touching end collapses onto the meeting point, the wall's
   // end row is a genuine singular side (a pole), and no section may sit
   // there. Rails touching at an interior station are still refused.
+  // OPEN rails with a TANGENT JUMP (corner) get a station pair exactly at each
+  // paired corner pair and a skin that is C0 there (pairing rule: see Sweep2()
+  // above), so the wall edges stay on the rails round the corner
+  // (`Sweep2SectionsReport::corners` counts them); two straight legs reproduce
+  // the closed-form area to 1e-6 with the edges within 1e-9 of the rails at any
+  // station count. CLOSED rails with a corner are refused with a reason.
   // Always an UNCAPPED single-face body (the wall). Closed sections are not
   // seam- or direction-aligned with each other (give them consistent seams
   // and directions). Throws std::invalid_argument for fewer than 2 sections,
@@ -1223,11 +1265,29 @@ class Brep {
   // caps (closed sections, the two end sections planar); otherwise an
   // UNCAPPED single-face wall. Closed sections are not re-seamed: their start
   // points must lie within 60 degrees of each other about the rail (refused
-  // otherwise), and they must share a direction convention. Throws
-  // std::invalid_argument for fewer than 2 sections, stations < 2, an
-  // invalid curve, a closed rail, mixed open/closed sections, a section the
+  // otherwise), and they must share a direction convention.
+  // A CLOSED RAIL gives a CYCLIC sweep: anchors are ordered round the loop
+  // (the last segment runs from the last anchor across the rail's seam back
+  // to the first), the Catmull-Rom blend wraps round the loop (two sections
+  // give zero slopes), the frames are Sweep1()'s own rotation-minimizing
+  // frames with their holonomy spread round the loop, and the skin is
+  // periodic: the wall is closed in v (C2 across its seam, which is at the
+  // first section in rail order; the rail's own seam may be anywhere), a
+  // closed solid for closed sections, an annulus-like single face for open
+  // ones. `cap` is irrelevant there (a closed rail has no ends). Closed
+  // sections must also be within 60 degrees of seam alignment across the
+  // closing pair (last to first), not only consecutive pairs. Measured
+  // against closed forms: a torus from three equal circles (every wall point
+  // within 6e-5 of radius r at 32 stations, enclosed volume 2 pi^2 R r^2),
+  // an ellipse-rail tube (volume pi r^2 L), a flat annulus from open radial
+  // sections. Sections that are not seam-aligned with the rotation-minimizing
+  // frames (a non-planar rail) are blended as drawn: the blended circle
+  // shrinks by about r (1 - cos(drift / 2)) between them.
+  // Throws std::invalid_argument for fewer than 2 sections, stations < 2, an
+  // invalid curve, mixed open/closed sections, a section the
   // rail does not cross, two sections at one station, a seam mismatch, a
-  // cap request with open or non-planar end sections, or a failed gate.
+  // cap request with open or non-planar end sections on an open rail, or a
+  // failed gate.
   static Brep Sweep1Sections(const std::vector<NurbsCurve>& sections, const NurbsCurve& rail, int stations = 32,
                              bool cap = false, Sweep1SectionsReport* report = nullptr);
 
