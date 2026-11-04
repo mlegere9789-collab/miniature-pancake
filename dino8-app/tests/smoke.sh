@@ -13103,7 +13103,8 @@ spe_num() {
   v="$({ grep -o "$2 = [0-9.e+-]*" <<<"$1" || true; } | head -1 | awk '{print $3}')"
   if spe_in "$v" "$3" "$4"; then spe_ok "$5 ($2 $v in $3..$4)"; else spe_bad "$5 ($2 '$v' not in $3..$4)"; fi
 }
-SPE_1="$(spe_case 1)"; SPE_2="$(spe_case 2)"; SPE_3="$(spe_case 3)"; SPE_4="$(spe_case 4)"; SPE_5="$(spe_case 5)"; SPE_6="$(spe_case 6)"
+# case 4 holds TWO SplitEdge commands, so it occupies the awk case indices 4 and 5 (the Check/Volume follow the second one); the cylinder and the vertex pick are then 6 and 7
+SPE_1="$(spe_case 1)"; SPE_2="$(spe_case 2)"; SPE_3="$(spe_case 3)"; SPE_4="$(spe_case 4; spe_case 5)"; SPE_5="$(spe_case 6)"; SPE_6="$(spe_case 7)"
 # 1: shared straight edge, off-centre pick
 spe_has "$SPE_1" "SplitEdge: edge " "SPE_1: the shared box edge is split"
 spe_has "$SPE_1" "kernel exact split: 2 trim(s) cut on their own faces' surfaces" "SPE_1: both trims of the shared edge are cut by the kernel"
