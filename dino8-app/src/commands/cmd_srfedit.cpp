@@ -1369,20 +1369,6 @@ void MakeUniformUV(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Print("MakeUniformUV: " + std::to_string(n) + " surface(s), max shape deviation " + FormatNumber(max_dev));
 }
 
-// RebuildUV: the real command `data/commands.json` itself documents -
-// "Reconstructs selected surfaces to degree 3, with a specified control
-// point number, in EITHER the u or v direction" - a genuinely different
-// operation from both `Rebuild` (rebuilds BOTH directions together) and
-// `MakeUniformUV` above (re-knots only, no refit of the control-point
-// count at all). PARITY_MAP.md's own "Rebuild/Refit" bullet named this
-// as "still a separate, untouched gap": `RebuildUV` was registered as a
-// bare alias of `MakeUniformUV`, not its own command. Reuses the kernel's
-// own `NurbsSurface::Rebuild()` - the identical tensor-product
-// least-squares refit `RebuildCommand` (cmd_edit.cpp) already calls for
-// the both-directions case - holding the UNCHOSEN direction's own current
-// point count and degree fixed while only the chosen direction refits to
-// the typed count at degree 3, matching the real command's own documented
-// scope (one direction at a time, not both).
 // FitSrf: replaces each selected standalone surface with the smallest
 // least-squares control net (same degrees as the surface) whose deviation from
 // it stays within Tolerance, through kernel::NurbsSurface::FitToTolerance. The
@@ -1456,6 +1442,20 @@ class FitSrfCommand : public Command {
   int max_pts_ = 40;
 };
 
+// RebuildUV: the real command `data/commands.json` itself documents -
+// "Reconstructs selected surfaces to degree 3, with a specified control
+// point number, in EITHER the u or v direction" - a genuinely different
+// operation from both `Rebuild` (rebuilds BOTH directions together) and
+// `MakeUniformUV` above (re-knots only, no refit of the control-point
+// count at all). PARITY_MAP.md's own "Rebuild/Refit" bullet named this
+// as "still a separate, untouched gap": `RebuildUV` was registered as a
+// bare alias of `MakeUniformUV`, not its own command. Reuses the kernel's
+// own `NurbsSurface::Rebuild()` - the identical tensor-product
+// least-squares refit `RebuildCommand` (cmd_edit.cpp) already calls for
+// the both-directions case - holding the UNCHOSEN direction's own current
+// point count and degree fixed while only the chosen direction refits to
+// the typed count at degree 3, matching the real command's own documented
+// scope (one direction at a time, not both).
 class RebuildUVCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select surfaces to rebuild in U or V"); }
