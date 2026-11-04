@@ -12589,7 +12589,28 @@ Line 0,0,0 10,0,0
 SelAll
 Export $UNXD/mm.igs
 Export $UNXD/mm.stp
+New
+RunScript $UNXD/metre.lua
+Line 0,0,0 10,0,0
+SelAll
+Export $UNXD/metre.igs
+Export $UNXD/metre.stp
+New
+RunScript $UNXD/km.lua
+Line 0,0,0 10,0,0
+SelAll
+Export $UNXD/km.igs
+Export $UNXD/km.stp
+New
+RunScript $UNXD/mil.lua
+Line 0,0,0 10,0,0
+SelAll
+Export $UNXD/mil.igs
+Export $UNXD/mil.stp
 EOS
+echo 'rs.UnitSystem(4)' > "$UNXD/metre.lua"
+echo 'rs.UnitSystem(5)' > "$UNXD/km.lua"
+echo 'rs.UnitSystem(7)' > "$UNXD/mil.lua"
 unx_run() {
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     timeout 900 "$BIN" --smoke 120 --script "$1" 2>&1 || true
@@ -12636,7 +12657,7 @@ base = m.group(0) if m else ',1.0,2,2HMM,'
 patch_iges('mm.igs', 'm.igs', base, ',1.0,6,1HM,')
 patch_iges('mm.igs', 'cm.igs', base, ',1.0,10,2HCM,')
 patch_iges('mm.igs', 'yard.igs', base, ',1.0,3,4HYARD,')
-patch_iges('mm.igs', 'mils.igs', base, ',1.0,8,4HMILS,')
+patch_iges('mm.igs', 'flag12.igs', base, ',1.0,12,4HXXXX,')
 patch_iges('mm.igs', 'furlong.igs', base, ',1.0,3,7HFURLONG,')
 patch_iges('mm.igs', 'noflag.igs', base, ',1.0,,,')
 t = open(os.path.join(d, 'mm.igs')).read()
@@ -12664,6 +12685,28 @@ open(os.path.join(d, 'trunc.stp'), 'w').write(s[:len(s) * 6 // 10])
 PY
 if ls "$UNXD"/*.PATCHFAIL >/dev/null 2>&1; then unx_bad "iges_global_patch_found_the_millimetre_declaration"; else unx_ok "iges_global_patch_found_the_millimetre_declaration"; fi
 if grep -Eq ',1\.0,\s*1,\s*2HIN,' "$UNXD/in.igs.global"; then unx_ok "iges_export_from_inch_document_declares_flag_1_IN"; else unx_bad "iges_export_from_inch_document_declares_flag_1_IN"; fi
+# the other documents' declarations (metre, kilometre, mil): STEP SI prefix / conversion unit, IGES flag
+for f in metre km mil; do
+  if [ -s "$UNXD/$f.igs" ] && [ -s "$UNXD/$f.stp" ]; then unx_ok "export_wrote_$f"; else unx_bad "export_wrote_$f"; fi
+done
+if grep -q "SI_UNIT(\$,.METRE.)" "$UNXD/metre.stp" && ! grep -q "CONVERSION_BASED_UNIT" "$UNXD/metre.stp"; then unx_ok "step_export_from_metre_document_declares_metre"; else unx_bad "step_export_from_metre_document_declares_metre"; fi
+if grep -q "SI_UNIT(.KILO.,.METRE.)" "$UNXD/km.stp" && ! grep -q "SI_UNIT(.MILLI.,.METRE.)" "$UNXD/km.stp"; then unx_ok "step_export_from_kilometre_document_declares_kilometre"; else unx_bad "step_export_from_kilometre_document_declares_kilometre"; fi
+if grep -q "CONVERSION_BASED_UNIT('MIL'" "$UNXD/mil.stp" && grep -q "LENGTH_MEASURE(0.0254)" "$UNXD/mil.stp"; then unx_ok "step_export_from_mil_document_declares_MIL_0.0254mm"; else unx_bad "step_export_from_mil_document_declares_MIL_0.0254mm"; fi
+python3 - "$UNXD" <<'PY'
+import re, sys, os
+d = sys.argv[1]
+def glob(text):
+    g = ''
+    for l in text.split('\n'):
+        if len(l) >= 73 and l[72] == 'G': g += l[:72].rstrip()
+    return g
+for name, want in (('metre', r',1\.0,\s*6,\s*1HM,'), ('km', r',1\.0,\s*7,\s*2HKM,'), ('mil', r',1\.0,\s*8,\s*3HMIL,')):
+    ok = re.search(want, glob(open(os.path.join(d, name + '.igs')).read())) is not None
+    open(os.path.join(d, name + '.igs.flag'), 'w').write('ok' if ok else 'bad')
+PY
+for f in metre km mil; do
+  if [ "$(cat "$UNXD/$f.igs.flag" 2>/dev/null)" = ok ]; then unx_ok "iges_export_from_${f}_document_declares_its_unit_flag"; else unx_bad "iges_export_from_${f}_document_declares_its_unit_flag"; fi
+done
 
 cat > "$UNXD/imp.txt" <<EOS
 New
@@ -12695,7 +12738,7 @@ Open $UNXD/yard.igs
 SelAll
 Length
 New
-Open $UNXD/mils.igs
+Open $UNXD/flag12.igs
 SelAll
 Length
 New
@@ -12750,6 +12793,26 @@ Open $UNXD/in.igs
 SelAll
 Length
 New
+Open $UNXD/metre.igs
+SelAll
+Length
+New
+Open $UNXD/metre.stp
+SelAll
+Length
+New
+Open $UNXD/mil.igs
+SelAll
+Length
+New
+Open $UNXD/mil.stp
+SelAll
+Length
+New
+Open $UNXD/km.stp
+SelAll
+Length
+New
 Line 0,0,0 1,0,0
 SelAll
 Length
@@ -12766,13 +12829,13 @@ unx_len 3 '= 10 Millimeters' "step_declared_mm_into_mm_document_is_untouched"
 unx_len 4 '= 10000 Millimeters' "iges_flag_6_metres_10_m_becomes_10000_mm"
 unx_len 5 '= 100 Millimeters' "iges_flag_10_centimetres_10_cm_becomes_100_mm"
 unx_len 6 '= 9144 Millimeters' "iges_flag_3_YARD_10_yd_becomes_9144_mm"
-unx_len 7 '= 10 Millimeters' "negative_control_iges_flag_8_mils_is_not_converted"
+unx_len 7 '= 10 Millimeters' "negative_control_iges_undefined_flag_12_is_not_converted"
 unx_len 8 '= 10 Millimeters' "negative_control_iges_flag_3_FURLONG_is_not_converted"
 unx_len 9 '= 10 Millimeters' "negative_control_iges_with_no_units_flag_is_not_converted"
 unx_len 10 '= 10000 Millimeters' "step_si_metre_10_m_becomes_10000_mm"
 unx_len 11 '= 254 Millimeters' "step_hand_built_conversion_based_inch_becomes_254_mm"
 unx_len 12 '= 10 Millimeters' "negative_control_step_with_no_length_unit_is_not_converted"
-if grep -q "units flag 8 is not supported" <<<"$UNX_OUT"; then unx_ok "iges_mils_refusal_names_flag_8_in_the_import_summary"; else unx_bad "iges_mils_refusal_names_flag_8_in_the_import_summary"; fi
+if grep -q "units flag 12 is not supported" <<<"$UNX_OUT"; then unx_ok "iges_undefined_flag_12_refusal_names_the_flag_in_the_import_summary"; else unx_bad "iges_undefined_flag_12_refusal_names_the_flag_in_the_import_summary"; fi
 if grep -q "units flag 3 (FURLONG) is not supported" <<<"$UNX_OUT"; then unx_ok "iges_furlong_refusal_names_the_unit"; else unx_bad "iges_furlong_refusal_names_the_unit"; fi
 if grep -q "units flag 1 -> document Millimeters, scaled x25.4" <<<"$UNX_OUT"; then unx_ok "iges_summary_reports_the_conversion_factor_25.4"; else unx_bad "iges_summary_reports_the_conversion_factor_25.4"; fi
 if grep -q "file length unit 1 m -> document Millimeters, scaled x1000" <<<"$UNX_OUT"; then unx_ok "step_summary_reports_the_metre_factor_1000"; else unx_bad "step_summary_reports_the_metre_factor_1000"; fi
@@ -12785,6 +12848,11 @@ if [ "$(grep -c '^ok   expect_objects 0' <<<"$UNX_OUT")" -ge 4 ]; then unx_ok "a
 unx_len 13 '= 10 Inches' "same_unit_inch_file_into_inch_document_is_untouched_10_in"
 unx_len 14 '= 393\.70[0-9]* Inches' "step_10_m_into_inch_document_becomes_393.70_in"
 unx_len 15 '= 10 Inches' "iges_inch_file_into_inch_document_is_untouched_10_in"
-unx_len 16 '= 1 Millimeters' "app_survived_the_truncated_files_and_a_fresh_document_is_millimetres"
+unx_len 16 '= 10000 Millimeters' "round_trip_metre_document_iges_10_m_into_mm_document_is_10000_mm"
+unx_len 17 '= 10000 Millimeters' "round_trip_metre_document_step_10_m_into_mm_document_is_10000_mm"
+unx_len 18 '= 0\.254 Millimeters' "round_trip_mil_document_iges_10_mil_into_mm_document_is_0.254_mm"
+unx_len 19 '= 0\.254 Millimeters' "round_trip_mil_document_step_10_mil_into_mm_document_is_0.254_mm"
+unx_len 20 '= (1e\+0?07|10000000) Millimeters' "round_trip_kilometre_document_step_10_km_into_mm_document_is_1e7_mm"
+unx_len 21 '= 1 Millimeters' "app_survived_the_truncated_files_and_a_fresh_document_is_millimetres"
 
 exit $fail
