@@ -60,6 +60,7 @@ jobs:
       matrix:
         k: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: kernel-test-binaries
@@ -77,6 +78,18 @@ jobs:
           grep '^FAILED' ../shard.err | sort | uniq -c | head -50 || true
           if [ "${{ matrix.k }}" = "0" ]; then ../bundle/dino8_continuity2_tests 2>&1 | tail -3 || true; fi
           if [ "${{ matrix.k }}" = "1" ] && [ -x ../bundle/dino8_surface_fillet_extra ]; then (../bundle/dino8_surface_fillet_extra > ../fillet_extra.log 2>&1; echo "surface_fillet_extra exit=$? ok=$(grep -c '^ok' ../fillet_extra.log) FAILED=$(grep -c '^FAILED' ../fillet_extra.log)"; grep -E '^\[probe|^FAILED' ../fillet_extra.log | head -40) || true; fi
+          cd ..
+          # Per-feature evidence: every non-empty line of .kverify_filters (a file in the repo root of the
+          # verified branch) is run as DINO8_TEST_FILTER=<line> on shard 0 and its ok / FAILED counts printed.
+          if [ "${{ matrix.k }}" = "0" ] && [ -f .kverify_filters ]; then
+            mkdir -p scratch2 && cd scratch2
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              DINO8_TEST_FILTER="$f" timeout 1200 ../bundle/dino8_kernel_tests > ../f.log 2> ../f.err
+              echo "filter $f: exit=$? ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
+            done < ../.kverify_filters
+            cd ..
+          fi
           exit $rc
       - uses: actions/upload-artifact@v4
         if: always()
