@@ -14,6 +14,8 @@
 
 namespace dino8::app {
 
+void RunLispFile(CommandContext& ctx, const std::string& path);  // cmd_lisp.cpp
+
 namespace {
 
 class AliasCommand : public Command {
@@ -238,7 +240,7 @@ class ScriptCommand : public Command {
       Finish();
       return;
     }
-    app.ShowFileDialog(label_, {".lua", ".txt", ".dino", ".cmd"}, false, [&app, label = label_](const std::string& path) {
+    app.ShowFileDialog(label_, {".lua", ".lsp", ".txt", ".dino", ".cmd"}, false, [&app, label = label_](const std::string& path) {
       app.Engine().Execute("-" + label + " \"" + path + "\"");
     });
     Finish();
@@ -295,6 +297,11 @@ class ScriptCommand : public Command {
       python_active_ = true;
       if (app.Python().StartFile(raw_path)) Pump(ctx);
       else Finish();
+      return;
+    }
+    if (ext == ".lsp") {
+      RunLispFile(ctx, raw_path);
+      Finish();
       return;
     }
     if (ext == ".txt" || ext == ".dino" || ext == ".cmd") {

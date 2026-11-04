@@ -53,7 +53,15 @@ class CommandEngine {
   // in a Lua script): the active command is set aside, the line runs to
   // completion, and the active command is restored. Returns false when the
   // command was unknown, failed, or needed input the line did not supply.
-  bool RunNested(const std::string& line);
+  // `immediate` (used by the Lisp (command ...) function) additionally lets the
+  // line run to completion right now even when this is called from inside a
+  // running command's callback (Execute() would otherwise queue it until the
+  // callback returned, so a script could not read the result).
+  bool RunNested(const std::string& line, bool immediate = false);
+  // The raw text of an AutoLISP expression typed at the command line ("(+ 1 2)");
+  // taken by the Lisp command, which cannot get it from the tokenised pending inputs
+  // because tokenising strips the double quotes.
+  std::string& PendingLispText() { return pending_lisp_; }
   // Splits a command line into tokens; double-quoted text stays one token.
   static std::vector<std::string> Tokenize(const std::string& line);
   bool IsRunning() const { return active_ != nullptr; }
@@ -154,6 +162,7 @@ class CommandEngine {
   std::vector<ObjectId> ids_before_;
   void CheckNewObjects();
   std::deque<std::string> pending_inputs_;  // extra tokens from a macro line
+  std::string pending_lisp_;
   int callback_depth_ = 0;
   std::vector<std::string> deferred_;       // command lines to run once the active command returns
   std::deque<std::string> history_;

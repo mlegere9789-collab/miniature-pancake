@@ -61,6 +61,8 @@ void RegisterLayerCommands(CommandEngine&);
 void RegisterFileCommands(CommandEngine&);
 void RegisterMiscCommands(CommandEngine&);
 void RegisterMacroCommands(CommandEngine&);
+void RegisterLispCommands(CommandEngine&);
+void LoadLispAutoload(Application&);
 void RegisterAnnotateCommands(CommandEngine&);
 void RegisterDraftingCommands(CommandEngine&);
 void RegisterSmartBlockCommands(CommandEngine&);
@@ -175,6 +177,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
                  std::to_string(engine_->CountWithStatus(CommandStatus::Partial)) + " partial, " +
                  std::to_string(engine_->CountWithStatus(CommandStatus::Planned)) + " planned)");
   engine_->Print("Type a command name, or press F1 for the command list.");
+  LoadLispAutoload(*this);  // <config dir>/acad.lsp: its c: commands exist from the first frame
   if (!startup_script.empty()) {
     engine_->Print("Startup script: " + startup_script);
     engine_->Execute("-RunScript \"" + startup_script + "\"");
@@ -396,6 +399,7 @@ void Application::RegisterCommands() {
   RegisterFileCommands(*engine_);
   RegisterMiscCommands(*engine_);
   RegisterMacroCommands(*engine_);
+  RegisterLispCommands(*engine_);
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
   RegisterSmartBlockCommands(*engine_);

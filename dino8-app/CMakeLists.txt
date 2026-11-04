@@ -337,6 +337,8 @@ set(DINO8_SOURCES
   src/commands/cmd_file.cpp
   src/commands/cmd_misc.cpp
   src/commands/cmd_macros.cpp
+  src/commands/cmd_lisp.cpp
+  src/script/Lisp.cpp
   src/commands/cmd_render.cpp
   src/script/LuaEngine.cpp
   src/script/PythonEngine.cpp

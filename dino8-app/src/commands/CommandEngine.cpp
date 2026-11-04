@@ -235,7 +235,7 @@ void CommandEngine::RunLuaLine(const std::string& code) {
   RunCommand("RunScript", true);
 }
 
-bool CommandEngine::RunNested(const std::string& line) {
+bool CommandEngine::RunNested(const std::string& line, bool immediate) {
   if (nested_depth_ > 8) { Print("! rs.Command: nesting too deep"); return false; }
   std::unique_ptr<Command> saved_active = std::move(active_);
   const std::string saved_name = active_name_;
@@ -243,6 +243,8 @@ bool CommandEngine::RunNested(const std::string& line) {
   const bool saved_script = script_mode_;
   const std::optional<Point3d> saved_last_point = last_point_;
   const std::string saved_last_command = last_command_;
+  const int saved_callback_depth = callback_depth_;
+  if (immediate) callback_depth_ = 0;
   active_.reset();
   active_name_.clear();
   pending_inputs_.clear();
@@ -256,6 +258,7 @@ bool CommandEngine::RunNested(const std::string& line) {
     ok = false;
   }
   --nested_depth_;
+  callback_depth_ = saved_callback_depth;
   active_ = std::move(saved_active);
   active_name_ = saved_name;
   pending_inputs_ = saved_pending;
@@ -320,6 +323,15 @@ void CommandEngine::Execute(const std::string& raw_input) {
   if (input.front() == '=') {
     Print("Command: " + input);
     RunLuaLine(input.substr(1));
+    return;
+  }
+  // "(expr)" evaluates an AutoLISP expression, as AutoCAD's command line does;
+  // the raw text goes to the Lisp command (cmd_lisp.cpp) untokenised.
+  if (input.front() == '(') {
+    Print("Command: " + input);
+    pending_inputs_.clear();
+    pending_lisp_ = input;
+    RunCommand("Lisp", true);
     return;
   }
   // Tokenise: first token is the command, the rest are queued inputs
