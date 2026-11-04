@@ -227,6 +227,68 @@ class NurbsSurface {
   static Result CoonsPatchTriangular(const NurbsCurve& a, const NurbsCurve& b, const NurbsCurve& c, NurbsSurface& out,
                                       double tolerance = 1e-6, double* out_corner_gap = nullptr);
 
+  // ----- Continuity (G0 / G1 / G2) of a NEW surface with an EXISTING one ------
+  //
+  // What `MeasureEdgeContinuity()` and the continuity-aware constructions
+  // below MEASURE along a shared edge, by evaluating both surfaces at probe
+  // points on the edge (each surface's own closest point to the probe,
+  // Gauss-Newton polished) - never inferred from how the surface was built:
+  //  - `max_position_gap`: worst distance between the two surfaces' closest
+  //    points to a probe (G0);
+  //  - `max_tangent_angle`: worst angle, in RADIANS, between the two unit
+  //    normals taken without orientation (the tangent-plane deviation, G1);
+  //  - `max_cross_curvature_diff`: worst |k_new - k_adjacent| of the normal
+  //    curvature in the direction across the edge (in the tangent plane,
+  //    perpendicular to the edge), both taken against the adjacent surface's
+  //    normal (G2; units 1/length);
+  //  - `max_gaussian_diff`: worst |K_new - K_adjacent| (units 1/length^2).
+  struct EdgeContinuityMeasure {
+    int samples = 0;
+    double max_position_gap = 0.0;
+    double max_tangent_angle = 0.0;
+    double max_cross_curvature_diff = 0.0;
+    double max_gaussian_diff = 0.0;
+  };
+
+  // A boundary of a point-fitted surface that must continue an adjacent,
+  // already-existing surface (used by `FitPatch()`).
+  //  - `points`: at least 8 samples ORDERED along the new surface's boundary
+  //    edge. They must lie on `adjacent` within the tolerance of the fit,
+  //    else the request is refused (G0 not met).
+  //  - `continuity`: Position = G0 only (checked), Tangent = G1, Curvature =
+  //    G2 (the second fundamental form, i.e. the full Hessian of the fitted
+  //    height field, is matched at the edge points - stronger than the
+  //    cross-edge normal curvature alone).
+  //  - `angle_tolerance` (radians) / `curvature_tolerance` (1/length): the
+  //    request is REFUSED if the finished surface, measured at probe points
+  //    BETWEEN the given samples, exceeds them.
+  struct FitEdgeContinuity {
+    std::vector<Point3d> points;
+    const NurbsSurface* adjacent = nullptr;
+    MatchContinuity continuity = MatchContinuity::Tangent;
+    double angle_tolerance = 1e-3;
+    double curvature_tolerance = 1e-2;
+  };
+
+  // `FitCurveNetwork()`'s form of the same request: the boundary is input
+  // curve number `curve_index` (0-based, input order).
+  struct NetworkEdgeContinuity {
+    int curve_index = 0;
+    const NurbsSurface* adjacent = nullptr;
+    MatchContinuity continuity = MatchContinuity::Tangent;
+    double angle_tolerance = 1e-3;
+    double curvature_tolerance = 1e-2;
+  };
+
+  // Measures this surface against `adjacent` along the isoparametric edge
+  // of `adjacent` selected by (`adjacent_fixed_direction`, `adjacent_at_min`),
+  // at `samples` (>= 2) parameters spaced evenly along it, filling `out`.
+  // Pure measurement: nothing is modified. Returns Result::Failed if a
+  // surface cannot be evaluated; throws std::invalid_argument for a
+  // direction outside 0/1 or samples < 2.
+  Result MeasureEdgeContinuity(const NurbsSurface& adjacent, int adjacent_fixed_direction, bool adjacent_at_min, int samples,
+                               EdgeContinuityMeasure& out) const;
+
   // What `FitPatch()` measured on its own result and where its surface sits.
   struct PatchFitReport {
     int u_count = 0, v_count = 0;       // control net of the returned surface
@@ -243,6 +305,10 @@ class NurbsSurface {
     // plane_origin along plane_x / plane_y (what a trim curve needs).
     Point3d plane_origin;
     Vector3d plane_x, plane_y, plane_z;
+    // Filled by the continuity-aware FitPatch() only: one measurement per
+    // requested edge (same order) and the refusal text when it returned Failed.
+    std::vector<EdgeContinuityMeasure> edge_continuity;
+    std::string reason;
   };
 
   // Patch: a bicubic (lower where the data are few) least-squares NURBS
@@ -278,6 +344,33 @@ class NurbsSurface {
   static Result FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
                          double tolerance, NurbsSurface& out, PatchFitReport* report = nullptr, int max_count = 16);
 
+  // FitPatch with G0/G1/G2 CONTINUITY to adjacent surfaces along boundary
+  // edges (Rhino's Patch "match to adjacent surfaces" idea). Everything above
+  // applies, plus, for every entry of `edges`: the target's tangent plane (and
+  // for Curvature its second fundamental form) is read at the closest point
+  // of `adjacent` to each edge sample, converted to the first (and second)
+  // derivatives of the fitted height field in the best-fit plane frame, and
+  // added to the least-squares system as heavily weighted rows - so the
+  // boundary position stays a fitted datum and the tangent plane is a soft
+  // but strongly weighted constraint, NOT an exact interpolation. The net
+  // grows until the data deviation AND the constraint residuals are small
+  // (or `max_count` is reached); the finished surface is then MEASURED at
+  // probe points BETWEEN the edge samples (`PatchFitReport::edge_continuity`)
+  // and the call returns Result::Failed, `out` untouched and
+  // `report->reason` set, unless every edge meets its own `angle_tolerance`
+  // / `curvature_tolerance` and the fit meets `tolerance`. Also refused, with
+  // a reason: an edge sample that is farther than `tolerance` from the
+  // adjacent surface (G0 not met), an adjacent tangent plane steeper than
+  // about 78 degrees from the best-fit plane (not representable as a height
+  // field), fewer than 8 edge samples, a null `adjacent`, or Curvature on an
+  // adjacent surface of degree < 2. `report` must be non-null. With an
+  // empty `edges` this is exactly the plain FitPatch(). The surface is still
+  // the untrimmed bounding-rectangle patch: continuity is enforced AT the
+  // given boundary points, wherever they run inside it.
+  static Result FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
+                         double tolerance, NurbsSurface& out, PatchFitReport* report, int max_count,
+                         const std::vector<FitEdgeContinuity>& edges);
+
   // What `FitCurveNetwork()` measured. `reason` is the refusal text when it
   // returned Result::Failed (empty on success); the other figures are filled
   // as far as the routine got.
@@ -296,6 +389,7 @@ class NurbsSurface {
     bool met_tolerance = false;           // max_deviation <= tolerance (and every intersection gap <= tolerance)
     int net_u = 0, net_v = 0;             // control net of the returned surface
     PatchFitReport fit;                   // FitPatch's own report of the surface returned (or last tried)
+    std::vector<EdgeContinuityMeasure> edge_continuity;  // continuity-aware overload only: one per requested edge, measured
     std::string reason;                   // refusal reason
   };
 
@@ -323,6 +417,56 @@ class NurbsSurface {
   // tolerance <= 0.
   static Result FitCurveNetwork(const std::vector<NurbsCurve>& curves, double tolerance, NurbsSurface& out,
                                 CurveNetworkReport& report);
+
+  // FitCurveNetwork with G0/G1/G2 continuity to adjacent surfaces along
+  // input curves: the same construction as FitPatch()'s continuity overload
+  // (see there for what is constrained, what is measured, and the
+  // refusals), applied to 65 samples of each `edges[i].curve_index` curve.
+  // The extra refusals: a `curve_index` outside the input, and a result
+  // whose measured continuity or whose deviation from EVERY input curve
+  // (including the interior ones, which the tangent constraint can pull
+  // away from the surface - the stated cost of an incompatible request)
+  // exceeds the tolerance. `report.edge_continuity` holds the measurements.
+  // With an empty `edges` this is exactly the plain FitCurveNetwork().
+  static Result FitCurveNetwork(const std::vector<NurbsCurve>& curves, double tolerance, NurbsSurface& out,
+                                CurveNetworkReport& report, const std::vector<NetworkEdgeContinuity>& edges);
+
+  // What `LoftMatched()` measured.
+  struct LoftMatchReport {
+    double section_deviation_max = 0.0;          // worst distance of any section's samples to the finished surface
+    std::vector<double> section_deviation;       // per section
+    EdgeContinuityMeasure start, end;            // measured, when that end was requested
+    bool start_matched = false, end_matched = false;
+    std::string reason;                          // refusal text when Failed
+  };
+
+  // One end of a loft that must continue an adjacent surface: the isoparametric
+  // edge (`fixed_direction`, `at_min`) of `surface`, with `continuity`.
+  struct LoftEndMatch {
+    const NurbsSurface* surface = nullptr;
+    int fixed_direction = 0;
+    bool at_min = false;
+    MatchContinuity continuity = MatchContinuity::Tangent;
+  };
+
+  // Loft (Brep::Loft's exact interpolating skin, degree `degree`, uncapped)
+  // whose first section (`start`) and/or last section (`end`) continues an
+  // adjacent surface with G0/G1/G2: the loft's v-min / v-max edge is made
+  // IDENTICAL to the adjacent edge and its next rows are rewritten by
+  // `MatchEdge()` (exact NURBS algebra). That rewrite is not free: the
+  // sections nearest a matched end are no longer interpolated exactly unless
+  // they were already compatible, so the deviation of EVERY section from the
+  // finished surface is measured (`section_deviation`) and the call is
+  // refused if it exceeds `tolerance`. Also refused, with `report.reason`:
+  // a first/last section farther than `tolerance` from the adjacent edge
+  // (G0 not met) or spanning a different range than it, kernel loft refusals
+  // (mixed open/closed sections, ...), a `MatchEdge()` refusal, and a
+  // measured tangent angle above `angle_tolerance` / cross-curvature
+  // difference above `curvature_tolerance` after the match. `out` is only
+  // written on Ok. Sections must be open (a closed loft has no ends).
+  static Result LoftMatched(const std::vector<NurbsCurve>& sections, int degree, const LoftEndMatch* start,
+                            const LoftEndMatch* end, double tolerance, NurbsSurface& out, LoftMatchReport& report,
+                            double angle_tolerance = 1e-3, double curvature_tolerance = 1e-2);
 
   // Surface-to-surface continuity blend - the genuine kernel-library
   // counterpart to NurbsCurve::BlendCurves() (curve.h), closing this

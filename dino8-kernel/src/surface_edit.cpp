@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
@@ -2206,9 +2207,70 @@ inline bool CholeskySolve(std::vector<double>& A, std::vector<double>& b, int n)
   return true;
 }
 
+// Basis values and first two derivatives at x (Piegl & Tiller A2.3):
+// ders[k][j] is the k-th derivative of basis function first + j. Derivatives
+// above the degree are zero.
+inline void BasisDerivs(const std::vector<double>& t, int n, int p, double x, double ders[3][16], int* first) {
+  int span = p;
+  while (span < n - 1 && x >= t[static_cast<size_t>(span + 1)]) ++span;
+  double ndu[5][5], a[2][5], left[5], right[5];
+  ndu[0][0] = 1.0;
+  for (int j = 1; j <= p; ++j) {
+    left[j] = x - t[static_cast<size_t>(span + 1 - j)];
+    right[j] = t[static_cast<size_t>(span + j)] - x;
+    double saved = 0.0;
+    for (int r = 0; r < j; ++r) {
+      ndu[j][r] = right[r + 1] + left[j - r];
+      const double temp = ndu[j][r] != 0.0 ? ndu[r][j - 1] / ndu[j][r] : 0.0;
+      ndu[r][j] = saved + right[r + 1] * temp;
+      saved = left[j - r] * temp;
+    }
+    ndu[j][j] = saved;
+  }
+  for (int k = 0; k < 3; ++k)
+    for (int j = 0; j < 16; ++j) ders[k][j] = 0.0;
+  for (int j = 0; j <= p; ++j) ders[0][j] = ndu[j][p];
+  for (int r = 0; r <= p; ++r) {
+    int s1 = 0, s2 = 1;
+    a[0][0] = 1.0;
+    for (int k = 1; k <= 2 && k <= p; ++k) {
+      double d = 0.0;
+      const int rk = r - k, pk = p - k;
+      if (r >= k) {
+        a[s2][0] = ndu[pk + 1][rk] != 0.0 ? a[s1][0] / ndu[pk + 1][rk] : 0.0;
+        d = a[s2][0] * ndu[rk][pk];
+      }
+      const int j1 = rk >= -1 ? 1 : -rk;
+      const int j2 = (r - 1 <= pk) ? k - 1 : p - r;
+      for (int j = j1; j <= j2; ++j) {
+        a[s2][j] = ndu[pk + 1][rk + j] != 0.0 ? (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][rk + j] : 0.0;
+        d += a[s2][j] * ndu[rk + j][pk];
+      }
+      if (r <= pk) {
+        a[s2][k] = ndu[pk + 1][r] != 0.0 ? -a[s1][k - 1] / ndu[pk + 1][r] : 0.0;
+        d += a[s2][k] * ndu[r][pk];
+      }
+      ders[k][r] = d;
+      std::swap(s1, s2);
+    }
+  }
+  double factor = p;
+  for (int k = 1; k <= 2 && k <= p; ++k) {
+    for (int j = 0; j <= p; ++j) ders[k][j] *= factor;
+    factor *= (p - k);
+  }
+  *first = span - p;
+}
+
 struct Datum {
   double x, y, h, w;
   bool boundary;
+};
+
+// A derivative of the height field prescribed at (x, y): kind 0 = h_x, 1 = h_y, 2 = h_xx, 3 = h_xy, 4 = h_yy.
+struct DerivConstraint {
+  double x, y, value, w;
+  int kind;
 };
 
 struct FitResult {
@@ -2216,10 +2278,13 @@ struct FitResult {
   int nu = 0, nv = 0;
   std::vector<double> c;  // control heights, c[i * nv + j]
   double max_dev = 0.0, rms_dev = 0.0, max_boundary_dev = 0.0;
+  double grad_err = 0.0, hess_err = 0.0;  // worst residual of the first / second derivative constraints
 };
 
 // Least-squares height fit h(x, y) with a (nu x nv) cubic net over [x0,x1] x [y0,y1].
-inline FitResult FitHeights(const std::vector<Datum>& data, double x0, double x1, double y0, double y1, int nu, int nv, double lambda) {
+// `cons`, if given, adds weighted derivative rows (see DerivConstraint).
+inline FitResult FitHeights(const std::vector<Datum>& data, double x0, double x1, double y0, double y1, int nu, int nv, double lambda,
+                            const std::vector<DerivConstraint>* cons = nullptr) {
   FitResult r;
   r.nu = nu;
   r.nv = nv;
@@ -2229,6 +2294,31 @@ inline FitResult FitHeights(const std::vector<Datum>& data, double x0, double x1
   std::vector<double> A(static_cast<size_t>(N) * N, 0.0), b(static_cast<size_t>(N), 0.0);
   double wsum = 0.0;
   double bu[16], bv[16];
+  // Row coefficients of one derivative constraint: coef[a * 16 + c] on control (fu + a, fv + c).
+  auto constraint_row = [&](const DerivConstraint& k, double* coef, int* fu, int* fv) {
+    double du[3][16], dv[3][16];
+    BasisDerivs(tu, nu, pu, k.x, du, fu);
+    BasisDerivs(tv, nv, pv, k.y, dv, fv);
+    const int iu = (k.kind == 0) ? 1 : (k.kind == 2) ? 2 : (k.kind == 3) ? 1 : 0;
+    const int iv = (k.kind == 1) ? 1 : (k.kind == 4) ? 2 : (k.kind == 3) ? 1 : 0;
+    for (int a = 0; a <= pu; ++a)
+      for (int c = 0; c <= pv; ++c) coef[a * 16 + c] = du[iu][a] * dv[iv][c];
+  };
+  if (cons) {
+    double coef[16 * 16];
+    for (const DerivConstraint& k : *cons) {
+      int fu = 0, fv = 0;
+      constraint_row(k, coef, &fu, &fv);
+      for (int a = 0; a <= pu; ++a) {
+        for (int c = 0; c <= pv; ++c) {
+          const int row = (fu + a) * nv + (fv + c);
+          b[static_cast<size_t>(row)] += k.w * coef[a * 16 + c] * k.value;
+          for (int a2 = 0; a2 <= pu; ++a2)
+            for (int c2 = 0; c2 <= pv; ++c2) A[static_cast<size_t>(row) * N + (fu + a2) * nv + (fv + c2)] += k.w * coef[a * 16 + c] * coef[a2 * 16 + c2];
+        }
+      }
+    }
+  }
   for (const Datum& d : data) {
     int fu = 0, fv = 0;
     BasisValues(tu, nu, pu, d.x, bu, &fu);
@@ -2292,22 +2382,201 @@ inline FitResult FitHeights(const std::vector<Datum>& data, double x0, double x1
     sq += e * e;
   }
   r.rms_dev = std::sqrt(sq / data.size());
+  if (cons) {
+    double coef[16 * 16];
+    for (const DerivConstraint& k : *cons) {
+      int fu = 0, fv = 0;
+      constraint_row(k, coef, &fu, &fv);
+      double v = 0.0;
+      for (int a = 0; a <= pu; ++a)
+        for (int c = 0; c <= pv; ++c) v += coef[a * 16 + c] * sol[static_cast<size_t>((fu + a) * nv + (fv + c))];
+      const double e = std::fabs(v - k.value);
+      if (k.kind <= 1) r.grad_err = std::max(r.grad_err, e);
+      else r.hess_err = std::max(r.hess_err, e);
+    }
+  }
   r.ok = true;
   return r;
 }
 
 }  // namespace patch_fit_detail
 
+// ---------------------------------------------------------------------------
+// Edge continuity (G0/G1/G2) helpers shared by MeasureEdgeContinuity(), the
+// continuity-aware FitPatch()/FitCurveNetwork() and LoftMatched().
+// ---------------------------------------------------------------------------
+namespace continuity_detail {
+
+struct Jet {
+  ON_3dPoint P;
+  ON_3dVector Su, Sv, Suu, Suv, Svv;
+};
+
+inline bool EvalJet(const ON_NurbsSurface& ns, double u, double v, Jet& j) {
+  return ns.Ev2Der(u, v, j.P, j.Su, j.Sv, j.Suu, j.Suv, j.Svv);
+}
+
+// Closest point of `s` to `p`: the surface's own grid search, then Newton
+// iterations on the squared distance (clamped to the domain).
+inline bool Project(const NurbsSurface& s, const ON_3dPoint& p, Jet& j) {
+  const ON_NurbsSurface& ns = s.raw();
+  const Point2d uv0 = s.ClosestPointParameter(p, 40, 40);
+  const ON_Interval dU = ns.Domain(0), dV = ns.Domain(1);
+  double u = uv0.x, v = uv0.y;
+  Jet t;
+  for (int it = 0; it < 20; ++it) {
+    if (!EvalJet(ns, u, v, t)) return false;
+    const ON_3dVector r = p - t.P;
+    double a11 = t.Su * t.Su, a12 = t.Su * t.Sv, a22 = t.Sv * t.Sv;
+    const double f11 = a11 - r * t.Suu, f12 = a12 - r * t.Suv, f22 = a22 - r * t.Svv;
+    if (f11 > 0.0 && f11 * f22 - f12 * f12 > 0.0) { a11 = f11; a12 = f12; a22 = f22; }
+    const double b1 = r * t.Su, b2 = r * t.Sv;
+    const double det = a11 * a22 - a12 * a12;
+    if (!(std::fabs(det) > 1e-300)) break;
+    const double du = (b1 * a22 - b2 * a12) / det, dv = (a11 * b2 - a12 * b1) / det;
+    const double nu = std::min(dU.Max(), std::max(dU.Min(), u + du));
+    const double nv = std::min(dV.Max(), std::max(dV.Min(), v + dv));
+    const double step = std::fabs(nu - u) + std::fabs(nv - v);
+    u = nu;
+    v = nv;
+    if (step < 1e-14 * (dU.Length() + dV.Length())) break;
+  }
+  return EvalJet(ns, u, v, j);
+}
+
+inline bool UnitNormal(const Jet& j, ON_3dVector& n) {
+  n = ON_CrossProduct(j.Su, j.Sv);
+  return n.Unitize();
+}
+
+struct Forms {
+  double E, F, G, L, M, N;
+};
+
+inline Forms FormsOf(const Jet& j, const ON_3dVector& n) {
+  return Forms{j.Su * j.Su, j.Su * j.Sv, j.Sv * j.Sv, j.Suu * n, j.Suv * n, j.Svv * n};
+}
+
+// Normal curvature (against `n`) along the unit tangent-plane direction nearest `w`.
+inline double NormalCurvatureAlong(const Jet& j, const ON_3dVector& n, ON_3dVector w) {
+  w -= (w * n) * n;
+  if (!w.Unitize()) return std::numeric_limits<double>::quiet_NaN();
+  const Forms f = FormsOf(j, n);
+  const double det = f.E * f.G - f.F * f.F;
+  if (!(std::fabs(det) > 1e-300)) return std::numeric_limits<double>::quiet_NaN();
+  const double r1 = w * j.Su, r2 = w * j.Sv;
+  const double a = (r1 * f.G - r2 * f.F) / det, b = (f.E * r2 - f.F * r1) / det;
+  return a * a * f.L + 2.0 * a * b * f.M + b * b * f.N;
+}
+
+inline double GaussianOf(const Jet& j, const ON_3dVector& n) {
+  const Forms f = FormsOf(j, n);
+  return (f.L * f.N - f.M * f.M) / (f.E * f.G - f.F * f.F);
+}
+
+// Folds the continuity of `nw` against `adj` at the probe point `p` (near the
+// shared edge, running along `edge_dir`) into `m`. False if either surface
+// cannot be evaluated or is singular there.
+inline bool MeasureAt(const NurbsSurface& nw, const NurbsSurface& adj, const ON_3dPoint& p, const ON_3dVector& edge_dir,
+                      NurbsSurface::EdgeContinuityMeasure& m) {
+  Jet ja, jn;
+  if (!Project(adj, p, ja) || !Project(nw, p, jn)) return false;
+  ON_3dVector na, nn;
+  if (!UnitNormal(ja, na) || !UnitNormal(jn, nn)) return false;
+  if (na * nn < 0.0) nn = -nn;  // compare tangent planes, not orientations
+  const double angle = std::atan2(ON_CrossProduct(na, nn).Length(), na * nn);
+  ON_3dVector w = ON_CrossProduct(na, edge_dir);
+  if (!w.Unitize()) return false;
+  const double ka = NormalCurvatureAlong(ja, na, w), kn = NormalCurvatureAlong(jn, nn, w);
+  const double Ka = GaussianOf(ja, na), Kn = GaussianOf(jn, nn);
+  if (!std::isfinite(ka) || !std::isfinite(kn) || !std::isfinite(Ka) || !std::isfinite(Kn)) return false;
+  ++m.samples;
+  m.max_position_gap = std::max(m.max_position_gap, ja.P.DistanceTo(jn.P));
+  m.max_tangent_angle = std::max(m.max_tangent_angle, angle);
+  m.max_cross_curvature_diff = std::max(m.max_cross_curvature_diff, std::fabs(ka - kn));
+  m.max_gaussian_diff = std::max(m.max_gaussian_diff, std::fabs(Ka - Kn));
+  return true;
+}
+
+struct PlaneFrame {
+  ON_3dPoint c;
+  ON_3dVector X, Y, Z;
+};
+
+// First (and optionally second) derivatives of the adjacent surface seen as a
+// height field over the fit plane, at jet `j`: out = {h_x, h_y, h_xx, h_xy, h_yy}.
+// Returns an empty string on success, else why it cannot be one.
+inline std::string GraphDerivatives(const Jet& j, const PlaneFrame& f, bool second, double out[5]) {
+  ON_3dVector n;
+  if (!UnitNormal(j, n)) return "the adjacent surface is singular (no normal) at an edge sample";
+  const double nz = n * f.Z;
+  if (std::fabs(nz) < 0.2) {
+    return "the adjacent surface's tangent plane is " + std::to_string(std::acos(std::min(1.0, std::fabs(nz))) * 180.0 / ON_PI) +
+           " degrees from the patch's best-fit plane (limit 78.5): it cannot be continued by a height field over that plane";
+  }
+  const double xu = j.Su * f.X, xv = j.Sv * f.X, yu = j.Su * f.Y, yv = j.Sv * f.Y, hu = j.Su * f.Z, hv = j.Sv * f.Z;
+  const double det = xu * yv - xv * yu;
+  if (!(std::fabs(det) > 1e-300)) return "the adjacent surface's parameterization is singular at an edge sample";
+  const double hx = (hu * yv - yu * hv) / det, hy = (xu * hv - xv * hu) / det;
+  out[0] = hx;
+  out[1] = hy;
+  if (second) {
+    const double quu = j.Suu * f.Z - hx * (j.Suu * f.X) - hy * (j.Suu * f.Y);
+    const double quv = j.Suv * f.Z - hx * (j.Suv * f.X) - hy * (j.Suv * f.Y);
+    const double qvv = j.Svv * f.Z - hx * (j.Svv * f.X) - hy * (j.Svv * f.Y);
+    // J = [[xu, xv], [yu, yv]], Ji = J^-1; G = Ji^T Q Ji.
+    const double i00 = yv / det, i01 = -xv / det, i10 = -yu / det, i11 = xu / det;
+    const double g00 = i00 * (quu * i00 + quv * i10) + i10 * (quv * i00 + qvv * i10);
+    const double g01 = i00 * (quu * i01 + quv * i11) + i10 * (quv * i01 + qvv * i11);
+    const double g11 = i01 * (quu * i01 + quv * i11) + i11 * (quv * i01 + qvv * i11);
+    out[2] = g00;
+    out[3] = g01;
+    out[4] = g11;
+  }
+  return std::string();
+}
+
+}  // namespace continuity_detail
+
 }  // namespace
 
 Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
                               double tolerance, NurbsSurface& out, PatchFitReport* report, int max_count) {
+  return FitPatch(boundary_points, interior_points, tolerance, out, report, max_count, std::vector<FitEdgeContinuity>());
+}
+
+Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points_in, const std::vector<Point3d>& interior_points,
+                              double tolerance, NurbsSurface& out, PatchFitReport* report, int max_count,
+                              const std::vector<FitEdgeContinuity>& edges) {
   using namespace patch_fit_detail;
+  namespace cd = continuity_detail;
   if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: tolerance must be positive and finite");
   }
   if (max_count < 2 || max_count > 32) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: max_count must be in [2, 32]");
+  }
+  if (!edges.empty() && report == nullptr) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: a report is required when edge continuity is requested");
+  }
+  auto refuse = [&](const std::string& why) {
+    if (report) {
+      *report = PatchFitReport{};
+      report->reason = why;
+    }
+    return Result::Failed;
+  };
+  // Edge samples are fitted as boundary data too (G0), then constrained.
+  std::vector<Point3d> boundary_points = boundary_points_in;
+  for (size_t e = 0; e < edges.size(); ++e) {
+    const std::string tag = "edge " + std::to_string(e + 1) + ": ";
+    if (edges[e].adjacent == nullptr) return refuse(tag + "no adjacent surface given");
+    if (edges[e].points.size() < 8) return refuse(tag + "needs at least 8 ordered edge samples, " + std::to_string(edges[e].points.size()) + " given");
+    if (!(edges[e].angle_tolerance > 0.0) || !(edges[e].curvature_tolerance > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: continuity tolerances must be positive");
+    }
+    if (!edges[e].adjacent->raw().IsValid()) return refuse(tag + "the adjacent surface is not a valid surface");
+    boundary_points.insert(boundary_points.end(), edges[e].points.begin(), edges[e].points.end());
   }
   std::vector<Point3d> all = boundary_points;
   all.insert(all.end(), interior_points.begin(), interior_points.end());
@@ -2353,19 +2622,74 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const
   for (const Point3d& p : interior_points) push(p, 1.0, false);
   if (!(x1 - x0 > 1e-12) || !(y1 - y0 > 1e-12)) return Result::Failed;
 
+  // Tangent-plane / curvature rows from the adjacent surfaces, in the fit plane's frame.
+  std::vector<DerivConstraint> cons;
+  double angle_scale = std::numeric_limits<double>::max(), curv_scale = std::numeric_limits<double>::max();
+  if (!edges.empty()) {
+    const cd::PlaneFrame frame{centre, xaxis, yaxis, zaxis};
+    const double lref = 0.125 * ((x1 - x0) + (y1 - y0));
+    const double w1 = 1e3 * lref * lref, w2 = 1e3 * lref * lref * lref * lref;
+    for (size_t e = 0; e < edges.size(); ++e) {
+      const std::string tag = "edge " + std::to_string(e + 1) + ": ";
+      const FitEdgeContinuity& fe = edges[e];
+      angle_scale = std::min(angle_scale, fe.angle_tolerance);
+      const bool second = fe.continuity == MatchContinuity::Curvature;
+      if (second) curv_scale = std::min(curv_scale, fe.curvature_tolerance);
+      if (second && fe.adjacent->raw().Degree(0) < 2 && fe.adjacent->raw().Degree(1) < 2) {
+        return refuse(tag + "curvature continuity requested but the adjacent surface is degree 1 (it has no curvature to continue)");
+      }
+      double worst_gap = 0.0;
+      for (const Point3d& p : fe.points) {
+        cd::Jet ja;
+        if (!cd::Project(*fe.adjacent, p, ja)) return refuse(tag + "the adjacent surface could not be evaluated");
+        worst_gap = std::max(worst_gap, ja.P.DistanceTo(p));
+      }
+      if (worst_gap > tolerance) {
+        return refuse(tag + "the boundary samples lie up to " + std::to_string(worst_gap) + " from the adjacent surface, more than the tolerance " +
+                      std::to_string(tolerance) + ": position (G0) continuity is not met, so tangent/curvature continuity is meaningless");
+      }
+      if (fe.continuity == MatchContinuity::Position) continue;
+      for (const Point3d& p : fe.points) {
+        cd::Jet ja;
+        cd::Project(*fe.adjacent, p, ja);
+        double g[5] = {0, 0, 0, 0, 0};
+        const std::string why = cd::GraphDerivatives(ja, frame, second, g);
+        if (!why.empty()) return refuse(tag + why);
+        const ON_3dVector d = p - centre;
+        const double px = d * xaxis, py = d * yaxis;
+        cons.push_back({px, py, g[0], w1, 0});
+        cons.push_back({px, py, g[1], w1, 1});
+        if (second) {
+          cons.push_back({px, py, g[2], w2, 2});
+          cons.push_back({px, py, g[3], w2, 3});
+          cons.push_back({px, py, g[4], w2, 4});
+        }
+      }
+    }
+  }
+
   FitResult best;
+  double best_score = std::numeric_limits<double>::max();
   const double aspect = (y1 - y0) / (x1 - x0);
   for (int n = 2; n <= max_count; ++n) {
     int nu = n, nv = n;
     if (aspect >= 1.0) nv = std::min(max_count, std::max(2, static_cast<int>(std::lround(n * aspect))));
     else nu = std::min(max_count, std::max(2, static_cast<int>(std::lround(n / aspect))));
     if (static_cast<size_t>(nu) * static_cast<size_t>(nv) > data.size()) break;  // never underdetermined
-    FitResult r = FitHeights(data, x0, x1, y0, y1, nu, nv, 1e-9);
+    FitResult r = FitHeights(data, x0, x1, y0, y1, nu, nv, 1e-9, cons.empty() ? nullptr : &cons);
     if (!r.ok) continue;
-    if (!best.ok || r.max_dev < best.max_dev) best = r;
-    if (r.max_dev <= tolerance) break;
+    if (cons.empty()) {
+      if (!best.ok || r.max_dev < best.max_dev) best = r;
+      if (r.max_dev <= tolerance) break;
+    } else {
+      // Net growth is driven by the data deviation AND the derivative-row residuals.
+      const double score = std::max({r.max_dev / tolerance, r.grad_err / angle_scale,
+                                     curv_scale < std::numeric_limits<double>::max() ? r.hess_err / curv_scale : 0.0});
+      if (!best.ok || score < best_score) { best = r; best_score = score; }
+      if (score <= 0.25) break;
+    }
   }
-  if (!best.ok) return Result::Failed;
+  if (!best.ok) return edges.empty() ? Result::Failed : refuse("the patch fit is singular");
 
   const int pu = std::min(3, best.nu - 1), pv = std::min(3, best.nv - 1);
   const std::vector<double> tu = PatchFitKnots(best.nu, pu, x0, x1), tv = PatchFitKnots(best.nv, pv, y0, y1);
@@ -2385,25 +2709,69 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const
       surface.SetCV(i, j, centre + xaxis * gx + yaxis * gy + zaxis * best.c[static_cast<size_t>(i * best.nv + j)]);
     }
   }
-  if (!surface.IsValid()) return Result::Failed;
+  if (!surface.IsValid()) return edges.empty() ? Result::Failed : refuse("the fitted surface is not valid");
+
+  PatchFitReport rep;
+  rep.u_count = best.nu;
+  rep.v_count = best.nv;
+  rep.data_points = static_cast<int>(data.size());
+  rep.tolerance = tolerance;
+  rep.met_tolerance = best.max_dev <= tolerance;
+  rep.max_deviation = best.max_dev;
+  rep.rms_deviation = best.rms_dev;
+  rep.max_boundary_deviation = best.max_boundary_dev;
+  rep.flat_deviation = flat;
+  rep.plane_origin = centre;
+  rep.plane_x = xaxis;
+  rep.plane_y = yaxis;
+  rep.plane_z = zaxis;
+
+  if (!edges.empty()) {
+    // Measure the finished surface at probes BETWEEN the constrained samples
+    // (segment midpoints), against the adjacent surface itself.
+    NurbsSurface candidate;
+    candidate.raw() = surface;
+    std::string why;
+    for (size_t e = 0; e < edges.size() && why.empty(); ++e) {
+      const FitEdgeContinuity& fe = edges[e];
+      EdgeContinuityMeasure m;
+      for (size_t k = 0; k + 1 < fe.points.size(); ++k) {
+        const ON_3dPoint mid = (fe.points[k] + fe.points[k + 1]) * 0.5;
+        const ON_3dVector dir = fe.points[k + 1] - fe.points[k];
+        if (!(dir.Length() > 0.0)) continue;
+        if (!cd::MeasureAt(candidate, *fe.adjacent, mid, dir, m)) {
+          why = "edge " + std::to_string(e + 1) + ": a probe between the samples could not be evaluated on one of the surfaces";
+          break;
+        }
+      }
+      rep.edge_continuity.push_back(m);
+      const std::string tag = "edge " + std::to_string(e + 1) + ": ";
+      if (!why.empty()) break;
+      if (m.max_position_gap > tolerance) {
+        why = tag + "the finished surface is " + std::to_string(m.max_position_gap) + " from the adjacent surface at a probe, more than the tolerance " + std::to_string(tolerance);
+      } else if (fe.continuity != MatchContinuity::Position && m.max_tangent_angle > fe.angle_tolerance) {
+        why = tag + "tangent-plane deviation " + std::to_string(m.max_tangent_angle) + " rad exceeds the requested " + std::to_string(fe.angle_tolerance) +
+              " rad (the data and the adjacent surface's tangent plane cannot both be met by a net of " + std::to_string(best.nu) + " x " + std::to_string(best.nv) + ")";
+      } else if (fe.continuity == MatchContinuity::Curvature && m.max_cross_curvature_diff > fe.curvature_tolerance) {
+        why = tag + "cross-edge curvature difference " + std::to_string(m.max_cross_curvature_diff) + " exceeds the requested " +
+              std::to_string(fe.curvature_tolerance) + " (net of " + std::to_string(best.nu) + " x " + std::to_string(best.nv) + ")";
+      }
+    }
+    if (why.empty() && !rep.met_tolerance) {
+      why = "with the requested edge continuity the fit misses its data by " + std::to_string(best.max_dev) + ", more than the tolerance " +
+            std::to_string(tolerance);
+    }
+    if (!why.empty()) {
+      if (report) {
+        *report = rep;
+        report->reason = why;
+      }
+      return Result::Failed;
+    }
+  }
 
   out.raw() = surface;
-  if (report) {
-    *report = PatchFitReport{};
-    report->u_count = best.nu;
-    report->v_count = best.nv;
-    report->data_points = static_cast<int>(data.size());
-    report->tolerance = tolerance;
-    report->met_tolerance = best.max_dev <= tolerance;
-    report->max_deviation = best.max_dev;
-    report->rms_deviation = best.rms_dev;
-    report->max_boundary_deviation = best.max_boundary_dev;
-    report->flat_deviation = flat;
-    report->plane_origin = centre;
-    report->plane_x = xaxis;
-    report->plane_y = yaxis;
-    report->plane_z = zaxis;
-  }
+  if (report) *report = rep;
   return Result::Ok;
 }
 
@@ -2523,6 +2891,11 @@ Meeting Meet(const NurbsCurve& a, const NurbsCurve& b, double tol) {
 
 Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, double tolerance, NurbsSurface& out,
                                      CurveNetworkReport& report) {
+  return FitCurveNetwork(curves_in, tolerance, out, report, std::vector<NetworkEdgeContinuity>());
+}
+
+Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, double tolerance, NurbsSurface& out,
+                                     CurveNetworkReport& report, const std::vector<NetworkEdgeContinuity>& net_edges) {
   using namespace curve_network_detail;
   if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::FitCurveNetwork: tolerance must be positive and finite");
@@ -2549,6 +2922,26 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
       prev = p;
     }
     if (!(len > 10.0 * tolerance)) return refuse(name(i) + " is shorter than ten times the tolerance");
+  }
+
+  // Continuity requests: 65 ordered samples of the named input curve each.
+  std::vector<FitEdgeContinuity> fit_edges;
+  for (size_t e = 0; e < net_edges.size(); ++e) {
+    const NetworkEdgeContinuity& ne = net_edges[e];
+    if (ne.curve_index < 0 || static_cast<size_t>(ne.curve_index) >= n) {
+      return refuse("edge continuity " + std::to_string(e + 1) + " names curve " + std::to_string(ne.curve_index + 1) + ", but the network has " +
+                    std::to_string(n) + " curves");
+    }
+    if (ne.adjacent == nullptr) return refuse("edge continuity " + std::to_string(e + 1) + " has no adjacent surface");
+    FitEdgeContinuity fe;
+    fe.adjacent = ne.adjacent;
+    fe.continuity = ne.continuity;
+    fe.angle_tolerance = ne.angle_tolerance;
+    fe.curvature_tolerance = ne.curvature_tolerance;
+    const NurbsCurve& c = curves[static_cast<size_t>(ne.curve_index)];
+    const auto d = c.Domain();
+    for (int k = 0; k <= 64; ++k) fe.points.push_back(c.PointAt(d.min + (d.max - d.min) * k / 64.0));
+    fit_edges.push_back(std::move(fe));
   }
 
   // Meetings of every pair.
@@ -2681,16 +3074,25 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
   bool have = false;
   double best_dev = std::numeric_limits<double>::infinity();
   std::vector<double> best_curve_dev;
+  std::string continuity_reason;
   for (const int max_count : {16, 24}) {
     NurbsSurface patch;
     PatchFitReport rep;
     Result fr = Result::Failed;
     try {
-      fr = FitPatch(boundary, interior, tolerance, patch, &rep, max_count);
+      fr = fit_edges.empty() ? FitPatch(boundary, interior, tolerance, patch, &rep, max_count)
+                             : FitPatch(boundary, interior, tolerance, patch, &rep, max_count, fit_edges);
     } catch (const std::exception& e) {
       return refuse(std::string("the patch fit threw: ") + e.what());
     }
-    if (fr != Result::Ok) return refuse("the curves are (nearly) collinear or the patch fit is singular");
+    if (fr != Result::Ok) {
+      if (!fit_edges.empty() && !rep.reason.empty()) {
+        continuity_reason = rep.reason;
+        if (!have) report.edge_continuity = rep.edge_continuity;
+        continue;  // a finer net may still meet it
+      }
+      return refuse("the curves are (nearly) collinear or the patch fit is singular");
+    }
     std::vector<double> dev(n, 0.0);
     double worst = 0.0;
     for (size_t i = 0; i < n; ++i) {
@@ -2709,16 +3111,23 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
       report.fit = rep;
       report.net_u = rep.u_count;
       report.net_v = rep.v_count;
+      report.edge_continuity = rep.edge_continuity;
     }
     if (worst <= tolerance) break;
   }
+  if (!have) return refuse(continuity_reason.empty() ? std::string("the patch fit failed") : continuity_reason);
   report.curve_deviation = best_curve_dev;
   report.max_deviation = best_dev;
   report.met_tolerance = best_dev <= tolerance && report.max_intersection_gap <= tolerance;
   if (!(best_dev <= tolerance)) {
-    return refuse("the best fitted surface (" + std::to_string(report.net_u) + " x " + std::to_string(report.net_v) + " net) misses an input curve by " +
-                  std::to_string(best_dev) + ", more than the tolerance " + std::to_string(tolerance) +
-                  ": the network is not a smooth height field over its best-fit plane or needs a finer net");
+    std::string why = "the best fitted surface (" + std::to_string(report.net_u) + " x " + std::to_string(report.net_v) + " net) misses an input curve by " +
+                      std::to_string(best_dev) + ", more than the tolerance " + std::to_string(tolerance);
+    if (!fit_edges.empty()) {
+      why += ": the requested edge continuity pulls the surface away from the input curves (the curves and the adjacent surface's tangent plane/curvature are incompatible)";
+    } else {
+      why += ": the network is not a smooth height field over its best-fit plane or needs a finer net";
+    }
+    return refuse(why);
   }
   out = best;
   return Result::Ok;
@@ -2862,6 +3271,160 @@ std::vector<NurbsSurface> NurbsSurface::SplitAtCreases(double angle_tolerance_ra
     if (!split_done) pieces.push_back(std::move(current));
   }
   return pieces;
+}
+
+
+// ---------------------------------------------------------------------------
+// MeasureEdgeContinuity / LoftMatched (see surface.h).
+// ---------------------------------------------------------------------------
+Result NurbsSurface::MeasureEdgeContinuity(const NurbsSurface& adjacent, int adjacent_fixed_direction, bool adjacent_at_min, int samples,
+                                           EdgeContinuityMeasure& out) const {
+  namespace cd = continuity_detail;
+  if (adjacent_fixed_direction != 0 && adjacent_fixed_direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MeasureEdgeContinuity: direction must be 0 (U) or 1 (V)");
+  }
+  if (samples < 2) throw std::invalid_argument("dino8::kernel::NurbsSurface::MeasureEdgeContinuity: samples must be at least 2");
+  out = EdgeContinuityMeasure{};
+  const ON_NurbsSurface& a = adjacent.raw();
+  const ON_Interval fixed_dom = a.Domain(adjacent_fixed_direction), run_dom = a.Domain(1 - adjacent_fixed_direction);
+  const double fixed = adjacent_at_min ? fixed_dom.Min() : fixed_dom.Max();
+  for (int k = 0; k < samples; ++k) {
+    const double t = run_dom.Min() + run_dom.Length() * k / (samples - 1);
+    const double u = adjacent_fixed_direction == 0 ? fixed : t, v = adjacent_fixed_direction == 0 ? t : fixed;
+    cd::Jet j;
+    if (!cd::EvalJet(a, u, v, j)) return Result::Failed;
+    const ON_3dVector along = adjacent_fixed_direction == 0 ? j.Sv : j.Su;
+    if (!cd::MeasureAt(*this, adjacent, j.P, along, out)) return Result::Failed;
+  }
+  return Result::Ok;
+}
+
+Result NurbsSurface::LoftMatched(const std::vector<NurbsCurve>& sections, int degree, const LoftEndMatch* start, const LoftEndMatch* end,
+                                 double tolerance, NurbsSurface& out, LoftMatchReport& report, double angle_tolerance,
+                                 double curvature_tolerance) {
+  namespace cd = continuity_detail;
+  if (!(tolerance > 0.0) || !std::isfinite(tolerance) || !(angle_tolerance > 0.0) || !(curvature_tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::LoftMatched: tolerances must be positive and finite");
+  }
+  report = LoftMatchReport{};
+  auto refuse = [&](const std::string& why) {
+    report.reason = why;
+    return Result::Failed;
+  };
+  if (sections.size() < 2) return refuse("a loft needs at least 2 sections");
+  if (start == nullptr && end == nullptr) return refuse("no end continuity requested (use Brep::Loft for a plain loft)");
+  for (const LoftEndMatch* m : {start, end}) {
+    if (m == nullptr) continue;
+    if (m->surface == nullptr || !m->surface->raw().IsValid()) return refuse("an adjacent surface is missing or invalid");
+    if (m->fixed_direction != 0 && m->fixed_direction != 1) return refuse("an adjacent edge direction must be 0 or 1");
+  }
+  for (const NurbsCurve& s : sections) {
+    if (s.IsClosed()) return refuse("a closed section has no loft end to continue an adjacent surface from (open sections only)");
+  }
+
+  NurbsSurface loft;
+  try {
+    Brep b = Brep::Loft(sections, degree, /*closed=*/false, /*cap=*/false);
+    if (b.raw().m_F.Count() < 1) return refuse("the kernel loft produced no face");
+    const ON_Surface* srf = b.raw().m_F[0].SurfaceOf();
+    if (srf == nullptr || !srf->GetNurbForm(loft.raw())) return refuse("the kernel loft surface could not be read as a NURBS surface");
+  } catch (const std::exception& e) {
+    return refuse(std::string("the kernel loft refused: ") + e.what());
+  }
+
+  // The loft runs along v; its first section is the v-min edge, its last the v-max edge.
+  struct End {
+    const LoftEndMatch* m;
+    bool at_min;
+    const char* name;
+  };
+  NurbsSurface work = loft;
+  const End ends[2] = {{start, true, "start"}, {end, false, "end"}};
+  const ON_NurbsSurface& wn = loft.raw();
+  for (const End& e : ends) {
+    if (e.m == nullptr) continue;
+    const ON_NurbsSurface& adj = e.m->surface->raw();
+    // G0 precheck: the section's edge must lie on the adjacent surface and span the same range as its edge.
+    const double vfix = e.at_min ? wn.Domain(1).Min() : wn.Domain(1).Max();
+    double gap = 0.0;
+    for (int k = 0; k <= 64; ++k) {
+      const double u = wn.Domain(0).Min() + wn.Domain(0).Length() * k / 64.0;
+      cd::Jet jl, ja;
+      if (!cd::EvalJet(wn, u, vfix, jl) || !cd::Project(*e.m->surface, jl.P, ja)) return refuse(std::string(e.name) + ": evaluation failed");
+      gap = std::max(gap, jl.P.DistanceTo(ja.P));
+      // Side check: the loft's body must leave the edge AWAY from the adjacent surface. Matching forces the tangent to
+      // continue the adjacent surface, so a loft heading back over it would fold; a distance test on the sections alone
+      // cannot see that (the folded surface passes through the sections again further along).
+      const ON_3dVector into_adjacent = (e.m->at_min ? 1.0 : -1.0) * (e.m->fixed_direction == 0 ? ja.Su : ja.Sv);
+      const ON_3dVector body = e.at_min ? jl.Sv : -jl.Sv;
+      if (e.m->continuity != MatchContinuity::Position && !(body * into_adjacent < 0.0)) {
+        return refuse(std::string(e.name) + " section: the loft leaves the adjacent edge towards (or along) the adjacent surface, so tangent/curvature continuity would fold it back over that surface; "
+                      "the sections must continue away from it");
+      }
+    }
+    if (gap > tolerance) {
+      return refuse(std::string(e.name) + " section lies up to " + std::to_string(gap) + " from the adjacent surface, more than the tolerance " +
+                    std::to_string(tolerance) + ": position (G0) continuity is not met");
+    }
+    const int rd = 1 - e.m->fixed_direction;
+    const double af = e.m->at_min ? adj.Domain(e.m->fixed_direction).Min() : adj.Domain(e.m->fixed_direction).Max();
+    auto adj_pt = [&](bool at_run_min) {
+      const double t = at_run_min ? adj.Domain(rd).Min() : adj.Domain(rd).Max();
+      return e.m->fixed_direction == 0 ? adj.PointAt(af, t) : adj.PointAt(t, af);
+    };
+    const ON_3dPoint l0 = wn.PointAt(wn.Domain(0).Min(), vfix), l1 = wn.PointAt(wn.Domain(0).Max(), vfix);
+    const double straight = std::max(l0.DistanceTo(adj_pt(true)), l1.DistanceTo(adj_pt(false)));
+    const double flipped = std::max(l0.DistanceTo(adj_pt(false)), l1.DistanceTo(adj_pt(true)));
+    if (std::min(straight, flipped) > tolerance) {
+      return refuse(std::string(e.name) + " section's end points are " + std::to_string(std::min(straight, flipped)) +
+                    " from the adjacent edge's end points: the section does not span that edge");
+    }
+    MatchEdgeReport mr;
+    const Result r = work.MatchEdge(1, e.at_min, *e.m->surface, e.m->fixed_direction, e.m->at_min, e.m->continuity, &mr);
+    if (r != Result::Ok) return refuse(std::string(e.name) + ": MatchEdge refused (non-clamped surface, adjacent surface of too low a degree, or a self-check failure)");
+  }
+
+  // Every section against the finished surface.
+  report.section_deviation.assign(sections.size(), 0.0);
+  for (size_t i = 0; i < sections.size(); ++i) {
+    const auto d = sections[i].Domain();
+    for (int k = 0; k <= 32; ++k) {
+      const Point3d p = sections[i].PointAt(d.min + (d.max - d.min) * k / 32.0);
+      cd::Jet j;
+      if (!cd::Project(work, p, j)) return refuse("a section could not be projected onto the finished surface");
+      report.section_deviation[i] = std::max(report.section_deviation[i], p.DistanceTo(j.P));
+    }
+    report.section_deviation_max = std::max(report.section_deviation_max, report.section_deviation[i]);
+  }
+  if (report.section_deviation_max > tolerance) {
+    size_t worst = 0;
+    for (size_t i = 0; i < sections.size(); ++i) if (report.section_deviation[i] > report.section_deviation[worst]) worst = i;
+    return refuse("matching the adjacent surface moves section " + std::to_string(worst + 1) + " by " + std::to_string(report.section_deviation_max) +
+                  ", more than the tolerance " + std::to_string(tolerance) +
+                  ": the sections are incompatible with the adjacent surface's tangent plane/curvature (e.g. the loft heads back over the adjacent surface)");
+  }
+
+  // Independent measurement against the adjacent surfaces.
+  for (const End& e : ends) {
+    if (e.m == nullptr) continue;
+    EdgeContinuityMeasure m;
+    if (work.MeasureEdgeContinuity(*e.m->surface, e.m->fixed_direction, e.m->at_min, 97, m) != Result::Ok) {
+      return refuse(std::string(e.name) + ": the continuity measurement could not be evaluated");
+    }
+    (e.at_min ? report.start : report.end) = m;
+    (e.at_min ? report.start_matched : report.end_matched) = true;
+    if (m.max_position_gap > tolerance) return refuse(std::string(e.name) + ": measured gap " + std::to_string(m.max_position_gap) + " exceeds the tolerance");
+    if (e.m->continuity != MatchContinuity::Position && m.max_tangent_angle > angle_tolerance) {
+      return refuse(std::string(e.name) + ": measured tangent-plane deviation " + std::to_string(m.max_tangent_angle) + " rad exceeds " +
+                    std::to_string(angle_tolerance));
+    }
+    if (e.m->continuity == MatchContinuity::Curvature && m.max_cross_curvature_diff > curvature_tolerance) {
+      return refuse(std::string(e.name) + ": measured cross-edge curvature difference " + std::to_string(m.max_cross_curvature_diff) + " exceeds " +
+                    std::to_string(curvature_tolerance));
+    }
+  }
+  out = work;
+  return Result::Ok;
 }
 
 }  // namespace dino8::kernel
