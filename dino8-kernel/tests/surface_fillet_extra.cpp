@@ -671,111 +671,6 @@ void TestSurfaceFilletRefusalProbe() {
     info(tag, w, 0.3);
   }
 }
-
-// ---- temporary diagnostic: why do the concave cone corner tests in test_basic.cpp fail on CI? Prints [probe cc ...] lines. ----
-struct DRZ { double rho, z; };
-dino8::kernel::Brep DiagRevolved(const std::vector<DRZ>& poly, dino8::kernel::Point3d base, dino8::kernel::Vector3d axis) {
-  axis.Unitize();
-  const ON_Plane pl(base, axis);
-  auto P = [&](const DRZ& q) { return base + q.rho * pl.xaxis + q.z * axis; };
-  ON_Brep all;
-  for (size_t i = 0; i < poly.size(); ++i) {
-    const DRZ a = poly[i], b = poly[(i + 1) % poly.size()];
-    if (a.rho == 0.0 && b.rho == 0.0) continue;
-    if ((a.rho == 0.0 || b.rho == 0.0) && a.z == b.z) continue;
-    ON_RevSurface* rev = new ON_RevSurface();
-    rev->m_curve = new ON_LineCurve(P(a), P(b));
-    rev->m_axis = ON_Line(base, base + axis);
-    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
-    rev->m_t = rev->m_angle;
-    rev->m_bTransposed = false;
-    ON_Brep* piece = ON_BrepRevSurface(rev, false, false);
-    for (int f = 0; f < piece->m_F.Count(); ++f) {
-      ON_NurbsSurface* ns = piece->m_F[f].SurfaceOf()->NurbsSurface();
-      const int si = piece->m_F[f].m_si;
-      delete piece->m_S[si];
-      piece->m_S[si] = ns;
-    }
-    all.Append(*piece);
-    delete piece;
-  }
-  dino8::kernel::Brep k;
-  k.raw() = all;
-  k.JoinNakedEdges(1e-6);
-  k.CapPlanarHoles(1e-6);
-  k.UnifyNormals();
-  return k;
-}
-double DiagGreen(const std::vector<DRZ>& poly, int k, double r) {
-  const size_t n = poly.size();
-  std::vector<DRZ> pts;
-  for (size_t i = 0; i < n; ++i) {
-    if (k < 0 || (int)i != k) { pts.push_back(poly[i]); continue; }
-    const DRZ C = poly[i], A = poly[(i + n - 1) % n], B = poly[(i + 1) % n];
-    double ax = A.rho - C.rho, az = A.z - C.z, bx = B.rho - C.rho, bz = B.z - C.z;
-    const double la = std::hypot(ax, az), lb = std::hypot(bx, bz);
-    ax /= la; az /= la; bx /= lb; bz /= lb;
-    double nax = -az, naz = ax;
-    if (nax * bx + naz * bz < 0) { nax = -nax; naz = -naz; }
-    double nbx = -bz, nbz = bx;
-    if (nbx * ax + nbz * az < 0) { nbx = -nbx; nbz = -nbz; }
-    const double det = nax * nbz - naz * nbx;
-    const double dx = (r * nbz - naz * r) / det, dz = (nax * r - r * nbx) / det;
-    const DRZ cen{C.rho + dx, C.z + dz};
-    const DRZ t1{cen.rho - r * nax, cen.z - r * naz}, t2{cen.rho - r * nbx, cen.z - r * nbz};
-    double a0 = std::atan2(t1.z - cen.z, t1.rho - cen.rho), a1 = std::atan2(t2.z - cen.z, t2.rho - cen.rho);
-    while (a1 - a0 > ON_PI) a1 -= 2 * ON_PI;
-    while (a1 - a0 < -ON_PI) a1 += 2 * ON_PI;
-    for (int s = 0; s <= 4000; ++s) {
-      const double a = a0 + (a1 - a0) * s / 4000;
-      pts.push_back(DRZ{cen.rho + r * std::cos(a), cen.z + r * std::sin(a)});
-    }
-  }
-  double integral = 0;
-  for (size_t i = 0; i < pts.size(); ++i) {
-    const DRZ p = pts[i], q = pts[(i + 1) % pts.size()];
-    integral += (q.z - p.z) * (p.rho * p.rho + p.rho * q.rho + q.rho * q.rho) / 3.0;
-  }
-  return ON_PI * integral;
-}
-void TestConcaveConeDiag() {
-  using dino8::kernel::Brep;
-  using dino8::kernel::Point3d;
-  using dino8::kernel::Vector3d;
-  struct Case { const char* name; std::vector<DRZ> poly; int corner; Point3d base; Vector3d axis; double r; };
-  const std::vector<DRZ> post_in = {{0, 0}, {4, 0}, {4, 1}, {2.5, 1}, {1.5, 3}, {0, 3}};
-  const std::vector<DRZ> post_out = {{0, 0}, {4, 0}, {4, 1}, {2.5, 1}, {3.5, 3}, {0, 3}};
-  const std::vector<DRZ> hourglass = {{0, 0}, {3, 0}, {1.5, 3}, {3, 6}, {0, 6}};
-  const Case cases[] = {
-      {"in r.30", post_in, 3, Point3d(1.0, -2.0, 0.5), Vector3d(0, 0, 1), 0.30},
-      {"in r.90", post_in, 3, Point3d(-0.4, 0.7, 0.0), Vector3d(0, 0, 1), 0.90},
-      {"out r.30 obl", post_out, 3, Point3d(0.3, 0.2, -0.4), Vector3d(1, 2, 3), 0.30},
-      {"hg r.40", hourglass, 2, Point3d(2.0, 1.0, -1.0), Vector3d(0, 0, 1), 0.40},
-      {"hg r.70 tilt", hourglass, 2, Point3d(0, 0, 0), Vector3d(-1, 1, 2), 0.70},
-  };
-  for (const Case& c : cases) {
-    Vector3d ax = c.axis;
-    ax.Unitize();
-    const ON_Plane pl(c.base, ax);
-    const DRZ corner = c.poly[(size_t)c.corner];
-    const double phi = 0.9 + 0.37 * c.corner;
-    const Point3d rim = c.base + corner.rho * (std::cos(phi) * pl.xaxis + std::sin(phi) * pl.yaxis) + corner.z * ax;
-    const Brep sharp = DiagRevolved(c.poly, c.base, c.axis);
-    const double v0 = DiagGreen(c.poly, -1, 0);
-    std::printf("[probe cc %s] sharp: faces=%d valid=%d solid=%d vol=%.9f green=%.9f\n", c.name, sharp.raw().m_F.Count(), (int)sharp.raw().IsValid(), (int)sharp.raw().IsSolid(), sharp.Volume(), v0);
-    Brep res;
-    try { res = dino8::kernel::FilletRevolveRim(sharp, rim, c.r); } catch (const std::exception& e) { std::printf("[probe cc %s] THROW %s\n", c.name, std::string(e.what()).substr(0, 200).c_str()); continue; }
-    const double g = DiagGreen(c.poly, c.corner, c.r);
-    const Brep::CheckReport rep = res.Check();
-    std::printf("[probe cc %s] fillet: faces=%d valid=%d solid=%d vol=%.9f green=%.9f rel=%.2e closedmanifold=%d chk(closed=%d oriented=%d topo=%d issues=%d)\n", c.name, res.raw().m_F.Count(),
-                (int)res.raw().IsValid(), (int)res.raw().IsSolid(), res.Volume(), g, std::fabs(res.Volume() - g) / g, (int)res.TessellateToClosedMesh(48, 12).IsClosedManifold(),
-                (int)rep.is_closed, (int)rep.is_oriented, (int)rep.topology_valid, (int)rep.issues.size());
-    for (int f = 0; f < res.raw().m_F.Count(); ++f) {
-      ON_Torus t;
-      if (res.raw().m_F[f].SurfaceOf()->IsTorus(&t, 1e-8)) std::printf("[probe cc %s] torus minor=%.9f major=%.9f\n", c.name, t.minor_radius, t.major_radius);
-    }
-  }
-}
 }  // namespace surface_fillet_tests
 int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -787,7 +682,6 @@ int main(int argc, char** argv) {
   };
   run("Stub", surface_fillet_tests::TestSurfaceFilletRefusalBranchesAndStubOddity);
   run("Probe", surface_fillet_tests::TestSurfaceFilletRefusalProbe);
-  run("ConeDiag", surface_fillet_tests::TestConcaveConeDiag);
   run("Closed", surface_fillet_tests::TestSurfaceFilletClosedRimBossOnFloor);
   run("Solid", surface_fillet_tests::TestFilletBossOnSlabClosedSolid);
   ON::End();
