@@ -99375,6 +99375,123 @@ double FitTestDenseDeviation(const std::vector<SubDNurbsPatch>& patches, const S
         const Point3d q = p.surface.PointAt(static_cast<double>(i) / grid, static_cast<double>(j) / grid);
         worst = std::max(worst, (idx.ClosestPoint(q) - q).Length());
       }
+
+// ---------------------------------------------------------------------------
+// OFR: closes the three PARITY_MAP offset REMAINDER bullets that are kernel work.
+//  (2) A polyline that is NOT coplanar with the caller plane now has an exact
+//      mitred construction in NurbsCurve::OffsetInPlane(plane, ...): the exact
+//      mitre of its PROJECTION onto the plane, every vertex keeping its own
+//      height. Oracles are independent point-to-line distances computed here in
+//      the plane's own (a, b, h) coordinates from the original vertices; a naive
+//      un-mitred offset, a perturbed result and a wrong-sign hypothesis are the
+//      negative controls that prove the oracle can fail.
+//  (3) NurbsSurface::OffsetAnalytic() called DIRECTLY (not through Offset(),
+//      whose control-net map is tried first): partial patches that really
+//      straddle the recogniser frame's angle zero (detected here from the
+//      recogniser's own frame with plain ON_ code), patches wider than half a
+//      turn, several torus proportions, and sphere / cylinder / cone / torus
+//      oracles that are independent closed forms (distance to centre / axis /
+//      generator line / tube circle, closed-form normal field) - NOT the
+//      kernel's NormalAt (the orientation of the input is read off a central-
+//      difference cross product, a different code path, and cross-checked).
+// ---------------------------------------------------------------------------
+namespace offset_remainder_tests {
+
+using dino8::kernel::CurveOffsetCornerStyle;
+using dino8::kernel::Interval;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+using dino8::kernel::Vector3d;
+
+// ---- (2) polyline oracles -------------------------------------------------
+
+struct PlaneCoords {
+  ON_3dPoint o;
+  ON_3dVector x, y, z;
+  explicit PlaneCoords(const ON_Plane& pl) : o(pl.origin), x(pl.xaxis), y(pl.yaxis), z(pl.zaxis) {}
+  void Of(const ON_3dPoint& p, double& a, double& b, double& h) const {
+    const ON_3dVector r = p - o;
+    a = ON_DotProduct(r, x);
+    b = ON_DotProduct(r, y);
+    h = ON_DotProduct(r, z);
+  }
+};
+
+// Signed distance of (xa, xb) from the infinite line through (pa, pb)->(qa, qb), positive on the RIGHT of travel
+// (the side unit(edge x plane.zaxis) points to). Plain 2D algebra, shares nothing with the kernel.
+double RightDist(double pa, double pb, double qa, double qb, double xa, double xb) {
+  const double ea = qa - pa, eb = qb - pb;
+  const double len = std::hypot(ea, eb);
+  return -(ea * (xb - pb) - eb * (xa - pa)) / len;
+}
+
+// Worst violation of the exact-mitre claim by the vertex list `w` (the offset polyline's vertices, closed lists repeat the
+// first vertex) for the original vertices `v` offset by `d` in `plane`:
+//  * every vertex lies EXACTLY d to the right of the projected line of each adjacent edge (the ends: of their one edge),
+//  * every vertex keeps the height of the original vertex,
+//  * the ends equal v + d * unit(edge x z) (the documented single-edge offset point),
+//  * each offset edge's projection is parallel to, and points the same way as, the original edge's projection.
+double MitreError(const std::vector<Point3d>& v, bool closed, const ON_Plane& plane, double d, const std::vector<Point3d>& w) {
+  const PlaneCoords pc(plane);
+  const int n = static_cast<int>(v.size());  // closed: v.front() == v.back()
+  if (static_cast<int>(w.size()) != n) return 1e30;
+  const int edges = n - 1;
+  double worst = 0.0;
+  auto proj = [&](const Point3d& p, double& a, double& b, double& h) { pc.Of(p, a, b, h); };
+  for (int i = 0; i < n; ++i) {
+    double wa, wb, wh, va, vb, vh;
+    proj(w[i], wa, wb, wh);
+    proj(v[i], va, vb, vh);
+    worst = std::max(worst, std::fabs(wh - vh));
+    // adjacent edges of vertex i
+    std::vector<int> adj;
+    if (i > 0) adj.push_back(i - 1);
+    if (i < edges) adj.push_back(i);
+    if (closed && i == 0) adj = {edges - 1, 0};
+    if (closed && i == n - 1) adj = {edges - 1, 0};
+    for (int e : adj) {
+      double pa, pb, ph, qa, qb, qh;
+      proj(v[e], pa, pb, ph);
+      proj(v[e + 1], qa, qb, qh);
+      worst = std::max(worst, std::fabs(RightDist(pa, pb, qa, qb, wa, wb) - d));
+    }
+  }
+  for (int e = 0; e < edges; ++e) {
+    double pa, pb, ph, qa, qb, qh, ra, rb, rh, sa, sb, sh;
+    proj(v[e], pa, pb, ph);
+    proj(v[e + 1], qa, qb, qh);
+    proj(w[e], ra, rb, rh);
+    proj(w[e + 1], sa, sb, sh);
+    const double ea = qa - pa, eb = qb - pb, fa = sa - ra, fb = sb - rb;
+    const double cross = (ea * fb - eb * fa) / (std::hypot(ea, eb) * std::hypot(fa, fb));
+    const double dot = (ea * fa + eb * fb) / (std::hypot(ea, eb) * std::hypot(fa, fb));
+    worst = std::max(worst, std::fabs(cross));
+    if (dot <= 0.0) worst = std::max(worst, 1.0);
+  }
+  if (!closed) {
+    // ends: v + d * unit(edge x z), computed from the plane-frame coordinates of the first / last edge
+    auto end_pt = [&](const Point3d& p, const Point3d& q) {
+      double pa, pb, ph, qa, qb, qh;
+      proj(p, pa, pb, ph);
+      proj(q, qa, qb, qh);
+      const double ea = qa - pa, eb = qb - pb, len = std::hypot(ea, eb);
+      // (ea, eb, slope) x z = (eb, -ea, 0) in the plane frame, i.e. to the right of the projected edge
+      return pc.o + (pa + d * eb / len) * pc.x + (pb - d * ea / len) * pc.y + ph * pc.z;
+    };
+    worst = std::max(worst, end_pt(v[0], v[1]).DistanceTo(w.front()) + 0.0);
+    // last vertex: the offset point of the LAST edge at its end
+    {
+      double pa, pb, ph, qa, qb, qh;
+      proj(v[n - 2], pa, pb, ph);
+      proj(v[n - 1], qa, qb, qh);
+      const double ea = qa - pa, eb = qb - pb, len = std::hypot(ea, eb);
+      const ON_3dPoint expect = pc.o + (qa + d * eb / len) * pc.x + (qb - d * ea / len) * pc.y + qh * pc.z;
+      worst = std::max(worst, expect.DistanceTo(w.back()));
+    }
+  } else {
+    worst = std::max(worst, w.front().DistanceTo(w.back()));  // the offset stays closed
   }
   return worst;
 }
@@ -99782,6 +99899,362 @@ bool FacesPartition(const Brep::ShellClassification& c, int face_count) {
   }
   for (int n : seen) {
     if (n != 1) return false;
+
+std::vector<Point3d> ControlPointsOf(const NurbsCurve& c) {
+  std::vector<Point3d> out;
+  for (int i = 0; i < c.ControlPointCount(); ++i) out.push_back(c.ControlPointAt(i));
+  return out;
+}
+
+// Distance from p to the polyline `w` (segment-wise, plain vector algebra).
+double DistToPolyline(const Point3d& p, const std::vector<Point3d>& w) {
+  double best = 1e30;
+  for (size_t i = 0; i + 1 < w.size(); ++i) {
+    const ON_3dVector e = w[i + 1] - w[i];
+    const double l2 = e.LengthSquared();
+    double t = l2 > 0 ? ON_DotProduct(p - w[i], e) / l2 : 0.0;
+    t = std::max(0.0, std::min(1.0, t));
+    best = std::min(best, p.DistanceTo(w[i] + t * e));
+  }
+  return best;
+}
+
+// The naive un-mitred offset: every vertex translated by d * unit(outgoing edge x z) (the last vertex by its incoming
+// edge's). The negative control the oracle must reject.
+std::vector<Point3d> NaiveOffset(const std::vector<Point3d>& v, const ON_Plane& plane, double d) {
+  std::vector<Point3d> w;
+  for (size_t i = 0; i < v.size(); ++i) {
+    const size_t j = i + 1 < v.size() ? i : i - 1;
+    ON_3dVector e = j == i ? v[i] - v[i - 1] : v[i + 1] - v[i];
+    ON_3dVector n = ON_CrossProduct(e, plane.zaxis);
+    n.Unitize();
+    w.push_back(v[i] + d * n);
+  }
+  return w;
+}
+
+struct PolyCase {
+  const char* name;
+  std::vector<Point3d> v;  // closed: first == last
+  bool closed;
+  ON_Plane plane;
+  std::vector<double> distances;
+};
+
+std::vector<PolyCase> PolylineCases() {
+  std::vector<PolyCase> cs;
+  // (a) open, genuinely 3D, world XY plane
+  cs.push_back({"open skew 5-vertex polyline, plane z=0",
+                {Point3d(0, 0, 0), Point3d(10, 0, 2), Point3d(14, 6, 5), Point3d(8, 12, 1), Point3d(0, 9, 4)},
+                false,
+                ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)),
+                {1.3, -0.8}});
+  // (b) closed skew quadrilateral, a tilted off-origin caller plane
+  {
+    ON_Plane tilted(ON_3dPoint(1.0, -2.0, 0.5), ON_3dVector(0.2, -0.3, 1.0));
+    PolyCase c{"closed skew quadrilateral, tilted off-origin plane",
+               {},
+               true,
+               tilted,
+               {0.6, -0.5}};
+    const double a[4] = {-3, 4, 4.5, -3.5}, b[4] = {-3, -2.5, 3.5, 3};
+    const double h[4] = {0.0, 1.2, -0.7, 0.9};
+    for (int i = 0; i < 4; ++i) c.v.push_back(tilted.origin + a[i] * tilted.xaxis + b[i] * tilted.yaxis + h[i] * tilted.zaxis);
+    c.v.push_back(c.v.front());
+    cs.push_back(c);
+  }
+  // (c) a PLANAR rectangle, planar in a plane tilted 30 degrees about x, offset in the foreign world XY plane
+  {
+    PolyCase c{"closed planar rectangle in a 30-degree-tilted plane, foreign plane z=0", {}, true,
+               ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), {0.5, -0.5}};
+    const double ca = std::cos(ON_PI / 6.0), sa = std::sin(ON_PI / 6.0);
+    const double xs[4] = {0, 8, 8, 0}, ys[4] = {0, 0, 5, 5};
+    for (int i = 0; i < 4; ++i) c.v.push_back(Point3d(xs[i], ys[i] * ca, ys[i] * sa));
+    c.v.push_back(c.v.front());
+    cs.push_back(c);
+  }
+  return cs;
+}
+
+void TestOffsetInPlaneNonCoplanarPolylineExactMitre() {
+  int offsets = 0;
+  double worst = 0.0, worst_naive = 1e30, worst_perturbed = 1e30, worst_wrong_sign = 1e30;
+  for (const PolyCase& c : PolylineCases()) {
+    const NurbsCurve poly = NurbsCurve::FromControlPoints(c.v, 1);
+    Check(poly.raw().IsPolyline(), (std::string(c.name) + ": fixture is a polyline").c_str());
+    // genuinely NOT coplanar with the caller plane: heights along the plane normal differ by well over any tolerance
+    {
+      const PlaneCoords pc(c.plane);
+      double lo = 1e30, hi = -1e30;
+      for (const Point3d& p : c.v) {
+        double a, b, h;
+        pc.Of(p, a, b, h);
+        lo = std::min(lo, h);
+        hi = std::max(hi, h);
+      }
+      Check(hi - lo > 0.5, (std::string(c.name) + ": vertex heights above the caller plane span > 0.5 (not coplanar with it)").c_str());
+    }
+    for (double d : c.distances) {
+      NurbsCurve out;
+      std::string reason;
+      const Result r = poly.OffsetInPlane(c.plane, d, out, -1.0, CurveOffsetCornerStyle::Sharp, &reason);
+      const std::string nm = std::string(c.name) + " d=" + std::to_string(d);
+      Check(r == Result::Ok, (nm + ": exact mitre succeeds at the default (tight) tolerance, not refused").c_str());
+      if (r != Result::Ok) {
+        std::printf("  %s refused: %s\n", nm.c_str(), reason.c_str());
+        continue;
+      }
+      Check(out.raw().IsPolyline() && static_cast<size_t>(out.ControlPointCount()) == c.v.size(),
+            (nm + ": result is a polyline with one vertex per original vertex (a mitre, not a refit)").c_str());
+      const std::vector<Point3d> w = ControlPointsOf(out);
+      const double err = MitreError(c.v, c.closed, c.plane, d, w);
+      worst = std::max(worst, err);
+      ++offsets;
+      Check(err < 1e-10, (nm + ": every vertex exactly |d| (signed) from each adjacent projected edge line, original height kept, "
+                               "ends at v + d*unit(edge x z), edges parallel, to 1e-10")
+                              .c_str());
+      // the kernel curve itself (not just its control points) is that polyline: 1500 samples on it
+      double curve_dev = 0.0;
+      const Interval dom = out.Domain();
+      for (int k = 0; k <= 1500; ++k) curve_dev = std::max(curve_dev, DistToPolyline(out.PointAt(dom.min + (dom.max - dom.min) * k / 1500.0), w));
+      Check(curve_dev < 1e-10, (nm + ": 1501 samples of the returned curve lie on the mitred polyline to 1e-10").c_str());
+      if (c.closed) Check(out.IsClosed(), (nm + ": a closed polyline's offset is closed").c_str());
+      // ---- negative controls: the same oracle must reject wrong answers
+      const double naive = MitreError(c.v, c.closed, c.plane, d, NaiveOffset(c.v, c.plane, d));
+      worst_naive = std::min(worst_naive, naive);
+      Check(naive > 0.05, (nm + ": control - the naive un-mitred offset is rejected by the oracle (error > 0.05)").c_str());
+      std::vector<Point3d> bent = w;
+      bent[1] = bent[1] + Vector3d(2e-6, 0, 0);
+      const double pert = MitreError(c.v, c.closed, c.plane, d, bent);
+      worst_perturbed = std::min(worst_perturbed, pert);
+      Check(pert > 1e-7, (nm + ": control - moving one vertex by 2e-6 is detected (the oracle resolves 1e-7)").c_str());
+      const double wrong = MitreError(c.v, c.closed, c.plane, -d, w);
+      worst_wrong_sign = std::min(worst_wrong_sign, wrong);
+      Check(wrong > 0.9 * std::fabs(d), (nm + ": control - the opposite-sign hypothesis is rejected (error >= 0.9|d|)").c_str());
+    }
+  }
+  std::printf("  non-coplanar polyline mitre: %d offsets, worst oracle error %g; controls: smallest naive error %g, smallest "
+              "2e-6-perturbation error %g, smallest wrong-sign error %g\n",
+              offsets, worst, worst_naive, worst_perturbed, worst_wrong_sign);
+}
+
+// Every corner style reaches the non-coplanar polyline; Round pieces are exactly |d| from the projected polyline;
+// refusals carry reasons and leave out untouched; the coplanar case is unchanged.
+void TestOffsetInPlaneNonCoplanarPolylineCornerStylesRefusalsAndCoplanarRegression() {
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> v = {Point3d(0, 0, 0), Point3d(10, 0, 2), Point3d(14, 6, 5), Point3d(8, 12, 1), Point3d(0, 9, 4)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(v, 1);
+  const PlaneCoords pc(xy);
+  // projected polyline, for the set-distance oracle
+  std::vector<Point3d> flat;
+  for (const Point3d& p : v) flat.push_back(Point3d(p.x, p.y, 0.0));
+  for (double d : {0.7, -0.7}) {
+    NurbsCurve round, chamfer, sharp;
+    Check(poly.OffsetInPlane(xy, d, round, -1.0, CurveOffsetCornerStyle::Round) == Result::Ok,
+          "non-coplanar polyline: Corner=Round offset succeeds");
+    Check(poly.OffsetInPlane(xy, d, chamfer, -1.0, CurveOffsetCornerStyle::Chamfer) == Result::Ok,
+          "non-coplanar polyline: Corner=Chamfer offset succeeds");
+    Check(poly.OffsetInPlane(xy, d, sharp, -1.0, CurveOffsetCornerStyle::Sharp) == Result::Ok,
+          "non-coplanar polyline: Corner=Sharp offset succeeds");
+    // Round: every point of the result is exactly |d| from the projected polyline (arcs about the vertices, mitre lines
+    // elsewhere); plain distance-to-segments computed here.
+    double worst = 0.0;
+    const Interval dom = round.Domain();
+    for (int k = 0; k <= 3000; ++k) {
+      const Point3d q = round.PointAt(dom.min + (dom.max - dom.min) * k / 3000.0);
+      worst = std::max(worst, std::fabs(DistToPolyline(Point3d(q.x, q.y, 0.0), flat) - std::fabs(d)));
+    }
+    std::printf("  Round corners d=%g: worst | distance to projected polyline - |d| | over 3001 samples = %g\n", d, worst);
+    Check(worst < 1e-9, "non-coplanar polyline Corner=Round: all 3001 samples exactly |d| from the projected polyline to 1e-9");
+    // Round / Chamfer / Sharp are different curves (the style option is not ignored): they differ in length
+    Check(round.Length() != sharp.Length() && chamfer.Length() != sharp.Length() && round.Length() != chamfer.Length(),
+          "non-coplanar polyline: Sharp, Round and Chamfer give three different curves");
+    // the ends are the documented single-edge points for every style
+    for (const NurbsCurve* oc : {&round, &chamfer, &sharp}) {
+      Vector3d e0 = ON_CrossProduct(v[1] - v[0], xy.zaxis);
+      e0.Unitize();
+      Check(oc->PointAt(oc->Domain().min).DistanceTo(v[0] + d * e0) < 1e-9, "non-coplanar polyline: start is v0 + d*unit(edge x z) for every style");
+    }
+  }
+  // refusals
+  {
+    const NurbsCurve vertical = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(5, 0, 1), Point3d(5, 0, 4), Point3d(9, 3, 4)}, 1);
+    const NurbsCurve sentinel = NurbsCurve::FromControlPoints({Point3d(7, 7, 7), Point3d(8, 7, 7)}, 1);
+    NurbsCurve out = sentinel;
+    std::string reason;
+    // the edge (5,0,1)->(5,0,4) is parallel to the plane normal: no offset direction
+    Check(vertical.OffsetInPlane(xy, 1.0, out, -1.0, CurveOffsetCornerStyle::Sharp, &reason) == Result::Failed && !reason.empty() &&
+              out.ControlPointCount() == 2,
+          "non-coplanar polyline with an edge parallel to the plane normal: refused with a reason, out untouched");
+    const NurbsCurve fold = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(5, 0, 1), Point3d(0, 0, 3)}, 1);
+    out = sentinel;
+    reason.clear();
+    Check(fold.OffsetInPlane(xy, 1.0, out, -1.0, CurveOffsetCornerStyle::Sharp, &reason) == Result::Failed && !reason.empty() &&
+              out.ControlPointCount() == 2,
+          "non-coplanar polyline whose projection folds back 180 degrees: refused with a reason, out untouched");
+  }
+  // coplanar regression: a polygon in z = 0 offsets identically through both overloads (the lift is a no-op)
+  {
+    const NurbsCurve sq = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(8, 0, 0), Point3d(8, 5, 0), Point3d(3, 7, 0), Point3d(0, 5, 0), Point3d(0, 0, 0)}, 1);
+    NurbsCurve a, b;
+    Check(sq.OffsetInPlane(0.8, a) == Result::Ok && sq.OffsetInPlane(xy, 0.8, b) == Result::Ok, "coplanar polygon: both overloads succeed");
+    double diff = 0.0;
+    for (int i = 0; i < a.ControlPointCount(); ++i) diff = std::max(diff, a.ControlPointAt(i).DistanceTo(b.ControlPointAt(i)));
+    Check(a.ControlPointCount() == b.ControlPointCount() && diff < 1e-12, "coplanar polygon: single-plane and explicit-plane overloads agree vertex by vertex to 1e-12");
+  }
+}
+
+// ---- (3) OffsetAnalytic, called directly -------------------------------------
+
+// Closed-form description of the analytic primitive a patch was cut from (built from the ON_ primitive's own parameters,
+// never from the kernel's offset or recogniser).
+struct ClosedForm {
+  int kind = 0;  // 0 sphere, 1 cylinder, 2 cone, 3 torus
+  ON_3dPoint c;  // centre / axis point / apex / torus centre
+  ON_3dVector a; // unit axis (cone: from the apex into the body)
+  double r = 0;  // radius (sphere, cylinder) or tube radius (torus)
+  double alpha = 0;  // cone half-angle
+  double R = 0;  // torus major radius
+  void Split(const ON_3dPoint& p, double& h, ON_3dVector& perp_hat, double& rho) const {
+    const ON_3dVector rel = p - c;
+    h = ON_DotProduct(rel, a);
+    ON_3dVector perp = rel - h * a;
+    rho = perp.Length();
+    perp_hat = perp;
+    perp_hat.Unitize();
+  }
+  // Unit normal pointing AWAY from the axis / centre / tube circle.
+  ON_3dVector N(const ON_3dPoint& p) const {
+    double h, rho;
+    ON_3dVector ph;
+    Split(p, h, ph, rho);
+    ON_3dVector n;
+    if (kind == 0) n = p - c;
+    else if (kind == 1) n = ph;
+    else if (kind == 2) n = std::cos(alpha) * ph - std::sin(alpha) * a;
+    else n = p - (c + R * ph);
+    n.Unitize();
+    return n;
+  }
+  // 0 on the primitive; the signed distance away from it (sphere, cylinder, cone) / the tube distance minus the tube radius (torus).
+  double Field(const ON_3dPoint& p) const {
+    double h, rho;
+    ON_3dVector ph;
+    Split(p, h, ph, rho);
+    if (kind == 0) return (p - c).Length() - r;
+    if (kind == 1) return rho - r;
+    if (kind == 2) return rho * std::cos(alpha) - h * std::sin(alpha);
+    return std::hypot(rho - R, h) - r;
+  }
+};
+
+struct Patch {
+  NurbsSurface s;
+  ClosedForm f;
+  std::string name;
+};
+
+ON_Plane SpunPlane(double rot) {
+  const ON_Plane pl(ON_3dPoint(0.7, -0.4, 1.1), ON_3dVector(0.25, 0.1, 1.0));
+  ON_Plane r = pl;
+  r.Rotate(rot, pl.zaxis, pl.origin);
+  return r;
+}
+
+// A full primitive with its seam rotated by `rot`.
+Patch FullPrimitive(int kind, double rot, double R = 5.0, double a = 1.5) {
+  const ON_Plane pl(ON_3dPoint(0.7, -0.4, 1.1), ON_3dVector(0.25, 0.1, 1.0));
+  const ON_Plane r = SpunPlane(rot);
+  Patch p;
+  p.f.kind = kind;
+  ON_NurbsSurface raw;
+  if (kind == 0) {
+    ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(raw);
+    ON_Xform to_pl;
+    to_pl.Rotation(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), ON_Plane(pl.origin, pl.xaxis, pl.yaxis));
+    ON_Xform spin;
+    spin.Rotation(rot, pl.zaxis, pl.origin);
+    raw.Transform(spin * to_pl);
+    p.s.raw() = raw;
+    p.f.c = pl.origin;
+    p.f.r = 3.0;
+    p.name = "sphere";
+  } else if (kind == 1) {
+    ON_Cylinder(ON_Circle(r, 2.5), 4.0).GetNurbForm(raw);
+    p.s.raw() = raw;
+    p.f.c = r.origin;
+    p.f.a = r.zaxis;
+    p.f.r = 2.5;
+    p.name = "cylinder";
+  } else if (kind == 2) {
+    const ON_Cone cone(r, 4.0, 2.0);
+    cone.GetNurbForm(raw);
+    p.s.raw() = raw;
+    p.f.c = cone.ApexPoint();
+    p.f.a = r.origin - cone.ApexPoint();  // from the apex into the body (base plane at r.origin)
+    p.f.a.Unitize();
+    p.f.alpha = std::atan2(2.0, 4.0);
+    p.name = "cone";
+  } else {
+    p.s = offset_parity_tests::PhasedTorus(r, R, a, 0.0, 0.0);
+    p.f.c = r.origin;
+    p.f.a = r.zaxis;
+    p.f.a.Unitize();
+    p.f.R = R;
+    p.f.r = a;
+    p.name = "torus";
+  }
+  return p;
+}
+
+Vector3d FdNormal(const NurbsSurface& s, double u, double v) {
+  const Interval du = s.Domain(0), dv = s.Domain(1);
+  const double hu = 1e-5 * (du.max - du.min), hv = 1e-5 * (dv.max - dv.min);
+  Vector3d pu = s.PointAt(u + hu, v) - s.PointAt(u - hu, v);
+  Vector3d pv = s.PointAt(u, v + hv) - s.PointAt(u, v - hv);
+  Vector3d n = ON_CrossProduct(pu, pv);
+  n.Unitize();
+  return n;
+}
+
+// +1 if the input's own orientation (central-difference Su x Sv) points away from the axis / centre / tube circle, -1 if
+// toward it, 0 if it is not consistent over the patch. Independent of NormalAt.
+int InputOrientation(const NurbsSurface& s, const ClosedForm& f) {
+  const Interval du = s.Domain(0), dv = s.Domain(1);
+  int pos = 0, neg = 0;
+  for (int i = 1; i <= 6; ++i)
+    for (int j = 1; j <= 6; ++j) {
+      const double u = du.min + (du.max - du.min) * i / 7.0, v = dv.min + (dv.max - dv.min) * j / 7.0;
+      const double dotn = ON_DotProduct(FdNormal(s, u, v), f.N(s.PointAt(u, v)));
+      if (dotn > 0.5) ++pos;
+      else if (dotn < -0.5) ++neg;
+    }
+  return (pos > 0 && neg == 0) ? 1 : ((neg > 0 && pos == 0) ? -1 : 0);
+}
+
+// Unwrapped angle sweep of the points at(f), f in [0,1], about `frame` (counter-clockwise, from frame.xaxis); lo / hi of the
+// unwrapped angles.
+bool AngleRange(const std::function<Point3d(double)>& at, const ON_Plane& frame, double& lo, double& hi, double* start = nullptr) {
+  double prev = 0, acc = 0;
+  lo = 1e30;
+  hi = -1e30;
+  for (int i = 0; i <= 256; ++i) {
+    const ON_3dVector r = at(i / 256.0) - frame.origin;
+    const double x = ON_DotProduct(r, frame.xaxis), y = ON_DotProduct(r, frame.yaxis);
+    if (!(std::hypot(x, y) > 1e-12)) return false;
+    const double a = std::atan2(y, x);
+    if (i == 0) {
+      acc = a;
+      if (start != nullptr) *start = a;
+    } else {
+      double dd = a - prev;
+      while (dd > ON_PI) dd -= 2 * ON_PI;
+      while (dd < -ON_PI) dd += 2 * ON_PI;
+      acc += dd;
+    }
+    prev = a;
+    lo = std::min(lo, acc);
+    hi = std::max(hi, acc);
   }
   return true;
 }
@@ -100243,6 +100716,298 @@ void TestBodySectionTrimmedSolidWithThroughHole() {
 }
 
 }  // namespace body_section_tests
+
+// Does the patch's angular range (u direction, at mid-v) about the RECOGNISER's own frame contain that frame's angle zero
+// strictly inside? Uses ON_Surface::IsSphere/IsCylinder/IsCone/IsTorus (the frames OffsetAnalytic() is handed) and plain atan2.
+bool StraddlesRecogniserZero(const Patch& p, double* span_out = nullptr) {
+  const double tol = 1e-6;
+  ON_Plane frame;
+  bool have = false;
+  if (p.f.kind == 0) {
+    ON_Sphere sp;
+    if (p.s.raw().IsSphere(&sp, tol)) { frame = sp.plane; have = true; }
+  } else if (p.f.kind == 1) {
+    ON_Cylinder cy;
+    if (p.s.raw().IsCylinder(&cy, tol)) { frame = cy.circle.plane; have = true; }
+  } else if (p.f.kind == 2) {
+    ON_Cone co;
+    if (p.s.raw().IsCone(&co, tol)) { frame = co.plane; have = true; }
+  } else {
+    ON_Torus to;
+    if (p.s.raw().IsTorus(&to, tol)) { frame = to.plane; have = true; }
+  }
+  if (!have) return false;
+  const Interval du = p.s.Domain(0), dv = p.s.Domain(1);
+  const double vm = 0.5 * (dv.min + dv.max);
+  double lo, hi;
+  if (!AngleRange([&](double f) { return p.s.PointAt(du.min + f * (du.max - du.min), vm); }, frame, lo, hi)) return false;
+  if (span_out != nullptr) *span_out = hi - lo;
+  for (int k = -2; k <= 2; ++k)
+    if (lo < 2 * ON_PI * k - 1e-9 && hi > 2 * ON_PI * k + 1e-9) return true;
+  return false;
+}
+
+// Sweep (radians) of the patch's u direction at mid-v about the closed-form axis: the independent angular extent.
+double USpan(const NurbsSurface& s, const ClosedForm& f, double* centre_angle = nullptr) {
+  ON_3dVector xr(1, 0, 0);
+  if (std::fabs(ON_DotProduct(xr, f.a)) > 0.9) xr = ON_3dVector(0, 1, 0);
+  xr = xr - ON_DotProduct(xr, f.a) * f.a;
+  xr.Unitize();
+  const ON_Plane frame(f.c, xr, ON_CrossProduct(f.a, xr));
+  const Interval du = s.Domain(0), dv = s.Domain(1);
+  const double vm = 0.5 * (dv.min + dv.max);
+  double lo, hi;
+  if (!AngleRange([&](double t) { return s.PointAt(du.min + t * (du.max - du.min), vm); }, frame, lo, hi)) return -1.0;
+  if (centre_angle != nullptr) *centre_angle = 0.5 * (lo + hi);
+  return hi - lo;
+}
+
+// Sweep of the torus tube direction (v) at mid-u about the tube centre circle.
+double VSpan(const NurbsSurface& s, const ClosedForm& f) {
+  const Interval du = s.Domain(0), dv = s.Domain(1);
+  const double um = 0.5 * (du.min + du.max);
+  const ON_3dPoint on_axis_pt = s.PointAt(um, 0.5 * (dv.min + dv.max));
+  double h;
+  ON_3dVector ph;
+  double rho;
+  f.Split(on_axis_pt, h, ph, rho);
+  const ON_3dPoint centre = f.c + f.R * ph;
+  const ON_Plane frame(centre, ph, f.a);
+  double lo, hi;
+  if (!AngleRange([&](double t) { return s.PointAt(um, dv.min + t * (dv.max - dv.min)); }, frame, lo, hi)) return -1.0;
+  return hi - lo;
+}
+
+struct OffsetMeasure {
+  double field = 0, corners = 0, cover = 0, span_u = 0, span_v = 0;
+  bool ok = false;
+};
+
+// OffsetAnalytic(d) of `in`, measured against the closed form only. `check_cover` adds the (slow) kernel ClosestPoint cover test.
+OffsetMeasure MeasureDirect(const Patch& in, double d, int sigma0, bool check_cover, const std::string& nm) {
+  OffsetMeasure m;
+  NurbsSurface out;
+  std::string reason;
+  bool degenerate = false;
+  const Result r = in.s.OffsetAnalytic(d, out, -1.0, &reason, &degenerate);
+  Check(r == Result::Ok, (nm + ": OffsetAnalytic succeeds").c_str());
+  if (r != Result::Ok) {
+    std::printf("  %s refused: %s\n", nm.c_str(), reason.c_str());
+    return m;
+  }
+  m.ok = true;
+  Check(out.raw().IsValid(), (nm + ": result valid").c_str());
+  const Interval ou = out.Domain(0), ov = out.Domain(1);
+  // 1) every sampled output point is at the closed-form offset field value sigma0*d (torus: tube radius + sigma0*d)
+  for (int i = 0; i <= 20; ++i)
+    for (int j = 0; j <= 20; ++j) {
+      const Point3d q = out.PointAt(ou.min + (ou.max - ou.min) * i / 20.0, ov.min + (ov.max - ov.min) * j / 20.0);
+      m.field = std::max(m.field, std::fabs(in.f.Field(q) - sigma0 * d));
+    }
+  // 2) the four corners of the output are exactly the closed-form images of the four corners of the input
+  const Interval iu = in.s.Domain(0), iv = in.s.Domain(1);
+  std::vector<Point3d> expect, got;
+  for (double u : {iu.min, iu.max})
+    for (double v : {iv.min, iv.max}) {
+      const Point3d p = in.s.PointAt(u, v);
+      expect.push_back(p + sigma0 * d * in.f.N(p));
+    }
+  for (double u : {ou.min, ou.max})
+    for (double v : {ov.min, ov.max}) got.push_back(out.PointAt(u, v));
+  std::vector<bool> used(4, false);
+  for (const Point3d& e : expect) {
+    double best = 1e30;
+    int bi = -1;
+    for (int k = 0; k < 4; ++k)
+      if (!used[k] && e.DistanceTo(got[k]) < best) { best = e.DistanceTo(got[k]); bi = k; }
+    if (bi >= 0) used[bi] = true;
+    m.corners = std::max(m.corners, best);
+  }
+  // 3) angular extent preserved (independent atan2 sweep about the closed-form axis); torus also the tube sweep
+  if (in.f.kind != 3 || true) {
+    const double si = USpan(in.s, in.f), so = USpan(out, in.f);
+    m.span_u = std::fabs(si - so);
+    if (in.f.kind == 3) {
+      // torus: the u direction of the output may be the tube direction only if the canonical form transposes - it does not
+      m.span_v = std::fabs(VSpan(in.s, in.f) - VSpan(out, in.f));
+    }
+  }
+  // 4) cover: closed-form images of an interior grid of the input lie ON the output (kernel ClosestPoint, 1e-6)
+  if (check_cover) {
+    for (int i = 1; i <= 3; ++i)
+      for (int j = 1; j <= 3; ++j) {
+        const Point3d p = in.s.PointAt(iu.min + (iu.max - iu.min) * i / 4.0, iv.min + (iv.max - iv.min) * j / 4.0);
+        const Point3d q = p + sigma0 * d * in.f.N(p);
+        const dino8::kernel::Point2d uv = out.ClosestPointParameter(q, 30, 30);
+        m.cover = std::max(m.cover, out.PointAt(uv.x, uv.y).DistanceTo(q));
+      }
+  }
+  return m;
+}
+
+// Cuts the window [u0f, u0f + uspan] x [v0f, v0f + vspan] (fractions of the full domain; 1.0 means untrimmed) from `full`.
+NurbsSurface Window(NurbsSurface full, double u0f, double uspan, double v0f, double vspan) {
+  const Interval du = full.Domain(0), dv = full.Domain(1);
+  if (uspan < 1.0) full.Trim(0, du.min + u0f * (du.max - du.min), du.min + (u0f + uspan) * (du.max - du.min));
+  if (vspan < 1.0) full.Trim(1, dv.min + v0f * (dv.max - dv.min), dv.min + (v0f + vspan) * (dv.max - dv.min));
+  return full;
+}
+
+void TestOffsetAnalyticDirectSeamStraddlingAndWidePatchesAgainstClosedForms() {
+  // Per family: 12 seam rotations x u-window spans from 0.2 turn to 0.97 turn (1.26 rad ... 6.1 rad, i.e. past half a turn)
+  // x window starts that slide the patch around the recogniser frame's angle zero.
+  const double spans[] = {0.20, 0.45, 0.62, 0.80, 0.97};
+  const double starts[] = {0.0, 0.5, 1.0};  // as a fraction of the free room (1 - span)
+  int total = 0, straddling = 0, wide = 0, wide_straddling = 0, refused = 0, covers = 0;
+  int per_kind_straddle[4] = {0, 0, 0, 0}, per_kind_wide[4] = {0, 0, 0, 0}, per_kind_n[4] = {0, 0, 0, 0};
+  double w_field = 0, w_corner = 0, w_cover = 0, w_span = 0;
+  for (int kind = 0; kind < 4; ++kind) {
+    for (int k = 0; k < 12; ++k) {
+      const double rot = 2.0 * ON_PI * k / 12.0;
+      const Patch full = FullPrimitive(kind, rot);
+      for (double span : spans)
+        for (double st : starts) {
+          // v window: sphere / cone / torus trimmed in v as well (a torus tube window of 1.3 rad..); cylinder trimmed to 0.6 of its height
+          const double vspan = kind == 3 ? 0.62 : 0.6;
+          Patch p = full;
+          p.s = Window(full.s, st * (1.0 - span), span, 0.2, vspan);
+          char tag[128];
+          std::snprintf(tag, sizeof tag, "%s rot=%d u-span=%.2f start=%.1f", p.f.kind == 0 ? "sphere" : p.f.kind == 1 ? "cylinder" : p.f.kind == 2 ? "cone" : "torus", k, span, st);
+          // sanity: the fixture lies on its closed form (so the closed-form oracle is about THIS surface)
+          {
+            const Interval du = p.s.Domain(0), dv = p.s.Domain(1);
+            double on = 0;
+            for (int i = 0; i <= 6; ++i)
+              for (int j = 0; j <= 6; ++j) on = std::max(on, std::fabs(p.f.Field(p.s.PointAt(du.min + (du.max - du.min) * i / 6.0, dv.min + (dv.max - dv.min) * j / 6.0))));
+            if (on > 1e-9) {
+              Check(false, (std::string(tag) + ": fixture does not lie on its closed form").c_str());
+              continue;
+            }
+          }
+          const int sigma0 = InputOrientation(p.s, p.f);
+          Check(sigma0 != 0, (std::string(tag) + ": the input's orientation (central-difference Su x Sv) is consistent over the patch").c_str());
+          if (kind == 0 || kind == 1) Check(sigma0 == 1, (std::string(tag) + ": cross-check, an ON_Sphere/ON_Cylinder NURBS form faces outward").c_str());
+          if (sigma0 == 0) continue;
+          double rec_span = 0;
+          const bool straddle = StraddlesRecogniserZero(p, &rec_span);
+          const bool is_wide = USpan(p.s, p.f) > ON_PI + 1e-9;
+          ++per_kind_n[kind];
+          if (straddle) { ++straddling; ++per_kind_straddle[kind]; }
+          if (is_wide) { ++wide; ++per_kind_wide[kind]; }
+          if (straddle && is_wide) ++wide_straddling;
+          ++total;
+          for (double d : {0.35, -0.4}) {
+            const bool check_cover = d > 0 && ((k % 3) == 0);
+            const OffsetMeasure m = MeasureDirect(p, d, sigma0, check_cover, std::string(tag) + " d=" + std::to_string(d));
+            if (!m.ok) { ++refused; continue; }
+            w_field = std::max(w_field, m.field);
+            w_corner = std::max(w_corner, m.corners);
+            w_span = std::max(w_span, std::max(m.span_u, m.span_v));
+            if (check_cover) { w_cover = std::max(w_cover, m.cover); ++covers; }
+            Check(m.field < 1e-9, (std::string(tag) + " d=" + std::to_string(d) + ": 441 output points at the closed-form offset field to 1e-9").c_str());
+            Check(m.corners < 1e-9, (std::string(tag) + " d=" + std::to_string(d) + ": the 4 output corners are the closed-form images of the 4 input corners to 1e-9").c_str());
+            Check(m.span_u < 1e-9 && m.span_v < 1e-9, (std::string(tag) + " d=" + std::to_string(d) + ": angular extent (independent atan2 sweep) preserved to 1e-9").c_str());
+            if (check_cover) Check(m.cover < 1e-6, (std::string(tag) + " d=" + std::to_string(d) + ": closed-form images of an interior grid lie on the output (kernel ClosestPoint, 1e-6)").c_str());
+          }
+        }
+    }
+  }
+  std::printf("  OffsetAnalytic direct: %d patches (%d straddle the recogniser frame's angle zero, %d wider than half a turn, %d both), "
+              "%d offsets refused; worst closed-form field %g, corner %g, angular extent %g, cover(%d probes) %g\n",
+              total, straddling, wide, wide_straddling, refused, w_field, w_corner, w_span, covers, w_cover);
+  for (int kind = 0; kind < 4; ++kind)
+    std::printf("    kind %d: %d patches, %d straddling the recogniser zero, %d wider than half a turn\n", kind, per_kind_n[kind],
+                per_kind_straddle[kind], per_kind_wide[kind]);
+  for (int kind = 0; kind < 4; ++kind) {
+    Check(per_kind_straddle[kind] >= 1, ("family " + std::to_string(kind) + ": at least one tested patch truly straddles the recogniser frame's angle zero").c_str());
+    Check(per_kind_wide[kind] >= 12, ("family " + std::to_string(kind) + ": at least 12 tested patches are wider than half a turn").c_str());
+  }
+  Check(refused == 0, "OffsetAnalytic refused none of the seam-straddling / wide patches (no sphere seam-straddle refusal reached)");
+}
+
+// Negative controls for the closed-form oracle itself.
+void TestOffsetAnalyticDirectOracleNegativeControls() {
+  for (int kind = 0; kind < 4; ++kind) {
+    Patch p = FullPrimitive(kind, 0.7);
+    p.s = Window(p.s, 0.3, 0.45, 0.2, 0.6);
+    const int sigma0 = InputOrientation(p.s, p.f);
+    NurbsSurface out;
+    Check(p.s.OffsetAnalytic(0.35, out) == Result::Ok, "control: baseline offset succeeds");
+    // wrong orientation hypothesis -> field error 2|d|
+    const OffsetMeasure bad = MeasureDirect(p, 0.35, -sigma0, false, "control wrong sign");
+    Check(bad.field > 0.6 && bad.corners > 0.6, ("family " + std::to_string(kind) + ": control - the opposite orientation is rejected by the field and corner oracles (> 0.6)").c_str());
+    // wrong distance -> rejected
+    NurbsSurface shifted;
+    p.s.OffsetAnalytic(0.30, shifted);
+    double field = 0;
+    const Interval ou = shifted.Domain(0), ov = shifted.Domain(1);
+    for (int i = 0; i <= 10; ++i)
+      for (int j = 0; j <= 10; ++j) field = std::max(field, std::fabs(p.f.Field(shifted.PointAt(ou.min + (ou.max - ou.min) * i / 10.0, ov.min + (ov.max - ov.min) * j / 10.0)) - sigma0 * 0.35));
+    Check(field > 0.04, ("family " + std::to_string(kind) + ": control - an offset by 0.30 is rejected as 0.35 (oracle resolves 0.05)").c_str());
+    // a patch of a different extent: the images of THIS patch's corners must not match the corners of a narrower patch's offset
+    Patch q = p;
+    q.s = Window(FullPrimitive(kind, 0.7).s, 0.3, 0.30, 0.2, 0.6);
+    NurbsSurface out_q;
+    q.s.OffsetAnalytic(0.35, out_q);
+    const Interval iu = p.s.Domain(0), iv = p.s.Domain(1);
+    double max_best = 0;
+    for (double u : {iu.min, iu.max})
+      for (double v : {iv.min, iv.max}) {
+        const Point3d pt = p.s.PointAt(u, v);
+        const Point3d e = pt + sigma0 * 0.35 * p.f.N(pt);
+        double best = 1e30;
+        for (double uu : {out_q.Domain(0).min, out_q.Domain(0).max})
+          for (double vv : {out_q.Domain(1).min, out_q.Domain(1).max}) best = std::min(best, e.DistanceTo(out_q.PointAt(uu, vv)));
+        max_best = std::max(max_best, best);
+      }
+    Check(max_best > 0.3, ("family " + std::to_string(kind) + ": control - a narrower patch's offset fails the corner-extent oracle (the extent check can fail)").c_str());
+  }
+}
+
+// Several torus proportions: full and wide-partial, both signs, feasible and refused.
+void TestOffsetAnalyticDirectTorusProportions() {
+  const double dims[][2] = {{3.0, 0.5}, {5.0, 1.5}, {8.0, 3.2}, {4.0, 3.6}, {2.0, 0.3}, {10.0, 4.9}, {6.0, 0.05}, {2.5, 2.4}};
+  int ok = 0, refused_ok = 0;
+  double worst_field = 0, worst_corner = 0;
+  for (const auto& rd : dims) {
+    const double R = rd[0], a = rd[1];
+    for (int variant = 0; variant < 3; ++variant) {  // full, wide u + wide v window, narrow window
+      Patch p = FullPrimitive(3, 0.9, R, a);
+      if (variant == 1) p.s = Window(p.s, 0.1, 0.75, 0.15, 0.7);
+      if (variant == 2) p.s = Window(p.s, 0.4, 0.2, 0.5, 0.3);
+      const int sigma0 = InputOrientation(p.s, p.f);
+      const std::string base = "torus R=" + std::to_string(R) + " a=" + std::to_string(a) + " variant " + std::to_string(variant);
+      Check(sigma0 != 0, (base + ": consistent orientation").c_str());
+      if (sigma0 == 0) continue;
+      for (double d : {0.3 * a, -0.5 * a, 0.9 * (R - a), -1.2 * a, 1.1 * (R - a)}) {
+        const double new_a = a + sigma0 * d;
+        const bool feasible = new_a > 1e-9 && new_a < R - 1e-9;
+        const std::string nm = base + " d=" + std::to_string(d);
+        if (feasible) {
+          const OffsetMeasure m = MeasureDirect(p, d, sigma0, false, nm);
+          if (!m.ok) continue;
+          ++ok;
+          worst_field = std::max(worst_field, m.field);
+          worst_corner = std::max(worst_corner, m.corners);
+          Check(m.field < 1e-9 && m.corners < 1e-9 && m.span_u < 1e-9 && m.span_v < 1e-9,
+                (nm + ": tube radius a+sigma*d = " + std::to_string(new_a) + " everywhere, corners and both angular extents exact").c_str());
+        } else {
+          NurbsSurface out = NurbsSurface::FromControlGrid({Point3d(7, 7, 7), Point3d(8, 7, 7), Point3d(7, 8, 7), Point3d(8, 8, 7)}, 2, 2, 1, 1);
+          std::string reason;
+          bool degenerate = false;
+          Check(p.s.OffsetAnalytic(d, out, -1.0, &reason, &degenerate) == Result::Failed && degenerate && !reason.empty() && out.CVCountU() == 2,
+                (nm + ": new tube radius " + std::to_string(new_a) + " is outside (0, R): refused as degenerate with a reason, out untouched").c_str());
+          ++refused_ok;
+        }
+      }
+    }
+  }
+  std::printf("  torus proportions: %d exact offsets (worst field %g, corner %g), %d correct refusals\n", ok, worst_field, worst_corner, refused_ok);
+  Check(ok >= 40, "torus proportions: at least 40 feasible offsets were measured");
+}
+
+}  // namespace offset_remainder_tests
+
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -101911,6 +102676,17 @@ int main() {
           topology_shell_tests::TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare);
   RunTest("topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency",
           topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency);
+
+  RunTest("offset_remainder_tests::TestOffsetInPlaneNonCoplanarPolylineExactMitre",
+          offset_remainder_tests::TestOffsetInPlaneNonCoplanarPolylineExactMitre);
+  RunTest("offset_remainder_tests::TestOffsetInPlaneNonCoplanarPolylineCornerStylesRefusalsAndCoplanarRegression",
+          offset_remainder_tests::TestOffsetInPlaneNonCoplanarPolylineCornerStylesRefusalsAndCoplanarRegression);
+  RunTest("offset_remainder_tests::TestOffsetAnalyticDirectSeamStraddlingAndWidePatchesAgainstClosedForms",
+          offset_remainder_tests::TestOffsetAnalyticDirectSeamStraddlingAndWidePatchesAgainstClosedForms);
+  RunTest("offset_remainder_tests::TestOffsetAnalyticDirectOracleNegativeControls",
+          offset_remainder_tests::TestOffsetAnalyticDirectOracleNegativeControls);
+  RunTest("offset_remainder_tests::TestOffsetAnalyticDirectTorusProportions",
+          offset_remainder_tests::TestOffsetAnalyticDirectTorusProportions);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
