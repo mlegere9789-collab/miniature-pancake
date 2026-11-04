@@ -95870,6 +95870,284 @@ void TestLoftMatchedRefusals() {
 
 }  // namespace edge_continuity_tests
 
+// FilletPipeTee (fillet.h): exact rolling-ball fillet along the saddle edge of a perpendicular pipe tee.
+namespace pipe_tee_fillet_tests {
+
+using dino8::kernel::BooleanCombineGeneralSealed;
+using dino8::kernel::BooleanOp;
+using dino8::kernel::Brep;
+using dino8::kernel::FilletPipeTee;
+using dino8::kernel::PipeTeeFillet;
+using sealed_boolean_tests::CountLoops;
+using sealed_boolean_tests::SealedCylinder;
+
+// Main cylinder of radius R, length H centred on `o` along ez; branch of radius rb from the axis crossing to length L along ex.
+Brep MakeTee(double R, double rb, double H, double L, ON_3dVector ez, ON_3dVector ex, ON_3dPoint o = ON_3dPoint(0, 0, 0)) {
+  // The engine unions the axis-aligned pair (its sealing is not robust for every orientation of the cylinders' own
+  // frames); a rotated / translated tee is that sealed body moved rigidly.
+  ez.Unitize();
+  ex.Unitize();
+  const Brep m = SealedCylinder(ON_3dPoint(0, 0, -0.5 * H), ON_3dVector(0, 0, 1), R, H);
+  const Brep b = SealedCylinder(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), rb, L);
+  Brep u = BooleanCombineGeneralSealed(m, b, BooleanOp::Union).brep;
+  ON_3dVector ey = ON_CrossProduct(ez, ex);
+  ey.Unitize();
+  ON_Xform xf;
+  xf.Rotation(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), ON_Plane(o, ex, ey));
+  u.raw().Transform(xf);
+  return u;
+}
+
+double DistToLine(const ON_3dPoint& p, const ON_3dPoint& o, const ON_3dVector& d) {
+  const ON_3dVector v = p - o;
+  return (v - (v * d) * d).Length();
+}
+
+struct EdgeMeasure {
+  double max_main = 0, max_branch = 0, max_ball = 0, max_centre_main = 0, max_centre_branch = 0, max_normal_main = 0, max_normal_branch = 0;
+  double min_v = 1e300;
+  int samples = 0;
+};
+
+// Measures the NURBS blend along the WHOLE edge (2 * intervals + 1 parameters, including interval midpoints).
+EdgeMeasure MeasureBlend(const PipeTeeFillet& f) {
+  EdgeMeasure m;
+  const ON_BrepFace& face = f.solid.raw().m_F[f.blend_face];
+  const ON_Surface* s = face.SurfaceOf();
+  const ON_3dVector ez = f.main_axis, ex = f.branch_axis;
+  ON_3dVector ey = ON_CrossProduct(ez, ex);
+  ey.Unitize();
+  const double R = f.main_radius, rb = f.branch_radius, r = f.ball_radius;
+  const ON_Interval du = s->Domain(0);
+  const int n = 2 * f.intervals + 1;
+  for (int i = 0; i < n; ++i) {
+    const double t = du.ParameterAt((double)i / (n - 1));
+    const double Y = (rb + r) * std::cos(t), Z = (rb + r) * std::sin(t), X = std::sqrt((R + r) * (R + r) - Y * Y);
+    const ON_3dPoint C = f.crossing + X * ex + Y * ey + Z * ez;  // exact ball centre
+    for (int j = 0; j <= 4; ++j) {
+      const double v = 0.25 * j;
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      s->Ev1Der(t, v, p, su, sv);
+      m.max_ball = std::max(m.max_ball, std::fabs(p.DistanceTo(C) - r));
+      ON_3dVector nrm = ON_CrossProduct(su, sv);
+      nrm.Unitize();
+      ++m.samples;
+      if (j == 0) {
+        m.max_main = std::max(m.max_main, std::fabs(DistToLine(p, f.crossing, ez) - R));
+        // normal of the blend vs outward normal of the main cylinder at the same point
+        const ON_3dVector rad = (p - f.crossing) - (((p - f.crossing) * ez)) * ez;
+        ON_3dVector nm = rad;
+        nm.Unitize();
+        m.max_normal_main = std::max(m.max_normal_main, std::acos(std::min(1.0, nrm * nm)));
+        const ON_3dPoint c = p + r * nrm;  // ball centre implied by the blend's own normal
+        m.max_centre_main = std::max(m.max_centre_main, std::fabs(DistToLine(c, f.crossing, ez) - (R + r)));
+        m.max_centre_branch = std::max(m.max_centre_branch, std::fabs(DistToLine(c, f.crossing, ex) - (rb + r)));
+      }
+      if (j == 4) {
+        m.max_branch = std::max(m.max_branch, std::fabs(DistToLine(p, f.crossing, ex) - rb));
+        const ON_3dVector rad = (p - f.crossing) - (((p - f.crossing) * ex)) * ex;
+        ON_3dVector nb = rad;
+        nb.Unitize();
+        m.max_normal_branch = std::max(m.max_normal_branch, std::acos(std::min(1.0, nrm * nb)));
+      }
+      m.min_v = std::min(m.min_v, nrm * ((C - p) / r));
+    }
+  }
+  return m;
+}
+
+// Exact volume of the filleted solid from the analytic faces (cylinder walls and caps in closed form, the blend by a
+// composite midpoint rule on the EXACT rolling-ball formula): independent of the NURBS fit and of the trim machinery.
+double AnalyticFilletedTeeVolume(double R, double rb, double r, double zlo, double zhi, double L) {
+  auto cen = [&](double t, double& X, double& Y, double& Z) {
+    Y = (rb + r) * std::cos(t);
+    Z = (rb + r) * std::sin(t);
+    X = std::sqrt((R + r) * (R + r) - Y * Y);
+  };
+  auto S = [&](double t, double v) {
+    double X, Y, Z;
+    cen(t, X, Y, Z);
+    const double nmx = X / (R + r), nmy = Y / (R + r), nby = std::cos(t), nbz = std::sin(t);
+    const double d = nmy * nby, w1 = std::sqrt(0.5 * (1 + d)), k = r / (1 + d);
+    const ON_3dPoint P(X - r * nmx, Y - r * nmy, Z), Q(X, Y - r * nby, Z - r * nbz);
+    const ON_3dPoint M(X - k * nmx, Y - k * (nmy + nby), Z - k * nbz);
+    const double b0 = (1 - v) * (1 - v), b1 = 2 * v * (1 - v) * w1, b2 = v * v, den = b0 + b1 + b2;
+    return (b0 * ON_3dVector(P) + b1 * ON_3dVector(M) + b2 * ON_3dVector(Q)) / den;
+  };
+  const int nt = 4000, nv = 40;
+  double vb = 0;
+  for (int i = 0; i < nt; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      const double t = 2 * ON_PI * (i + 0.5) / nt, v = (j + 0.5) / nv, e = 1e-6;
+      const ON_3dVector p = S(t, v);
+      const ON_3dVector su = (S(t + e, v) - S(t - e, v)) / (2 * e), sv = (S(t, v + e) - S(t, v - e)) / (2 * e);
+      vb += (p * ON_CrossProduct(su, sv)) / 3.0 * (2 * ON_PI / nt) / nv;
+    }
+  }
+  // Hole area on the main wall in (angle, height) = |closed integral of u dz|, branch wall lower boundary x_b(t).
+  double ah = 0, ab = 0;
+  const int m = 200000;
+  for (int i = 0; i < m; ++i) {
+    const double t = 2 * ON_PI * (i + 0.5) / m;
+    double X, Y, Z;
+    cen(t, X, Y, Z);
+    ah += (ON_PI + std::atan2(Y, X)) * (rb + r) * std::cos(t) * (2 * ON_PI / m);
+    ab += X * (2 * ON_PI / m);
+  }
+  const double vm = R * R / 3 * (2 * ON_PI * (zhi - zlo) - std::fabs(ah));
+  const double vbr = rb * rb / 3 * (2 * ON_PI * L - ab);
+  const double vcaps = (zhi - zlo) * ON_PI * R * R / 3 + L * ON_PI * rb * rb / 3;
+  return vb + vm + vbr + vcaps;
+}
+
+// Volume of the plain tee (two capped cylinders united): the branch part inside the main wall is the elliptic integral
+// of 2 sqrt(rb^2 - y^2) sqrt(R^2 - y^2), done by the midpoint rule.
+double AnalyticTeeVolume(double R, double rb, double H, double L) {
+  const int n = 400000;
+  double ov = 0;
+  for (int i = 0; i < n; ++i) {
+    const double y = -rb + 2 * rb * (i + 0.5) / n;
+    ov += 2 * std::sqrt(rb * rb - y * y) * std::sqrt(R * R - y * y) * (2 * rb / n);
+  }
+  return ON_PI * R * R * H + ON_PI * rb * rb * L - ov;
+}
+
+void TestPipeTeeFilletIsValidSolidWithMeasuredTangencyAndBallRadius() {
+  const double R = 2, rb = 1, r = 0.4, H = 6, L = 5;
+  const Brep tee = MakeTee(R, rb, H, L, ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0));
+  const PipeTeeFillet f = FilletPipeTee(tee, r);
+  const ON_Brep& b = f.solid.raw();
+  Check(b.IsValid(), "pipe-tee fillet passes ON_Brep::IsValid()");
+  Check(b.IsSolid(), "pipe-tee fillet passes ON_Brep::IsSolid()");
+  const Brep::CheckReport rep = f.solid.Check();
+  Check(rep.IsClean() && rep.is_closed && rep.is_oriented, "pipe-tee fillet is Check()-clean (closed, oriented, no gap/degenerate/inside-out issue)");
+  Check(f.solid.FaceCount() == 6, "6 faces: main wall, 2 main caps, branch wall, branch cap, blend");
+  Check(CountLoops(b, ON_BrepLoop::inner) == 1, "the main wall carries the contact curve as one REAL inner loop");
+  Check(f.fit_deviation <= 1e-6, "sampled NURBS-vs-exact deviation is within the default 1e-6 tolerance");
+  Check(f.edge_gap <= 1e-6, "every edge agrees with all its trims' surface images to 1e-6");
+  const EdgeMeasure m = MeasureBlend(f);
+  std::printf("  pipe tee R=2 rb=1 r=0.4: intervals=%d fit_dev=%.3g edge_gap=%.3g samples=%d | dist to main cyl %.3g, to branch cyl %.3g, "
+              "|ball dist - r| %.3g, centre-on-offset-cyl %.3g / %.3g, normal dev main %.3g rad, branch %.3g rad, min cos(normal,centre) %.4f\n",
+              f.intervals, f.fit_deviation, f.edge_gap, m.samples, m.max_main, m.max_branch, m.max_ball, m.max_centre_main, m.max_centre_branch,
+              m.max_normal_main, m.max_normal_branch, m.min_v);
+  Check(m.max_main < 2e-6, "blend row v=0 lies on the main cylinder (R=2) to 2e-6 along the whole edge");
+  Check(m.max_branch < 2e-6, "blend row v=1 lies on the branch cylinder (rb=1) to 2e-6 along the whole edge");
+  Check(m.max_ball < 2e-6, "every blend point is at distance r=0.4 from the exact ball centre to 2e-6");
+  Check(m.max_centre_main < 2e-5 && m.max_centre_branch < 2e-5, "ball centre implied by the blend normal stays on both offset cylinders (R+r, rb+r) to 2e-5");
+  Check(m.max_normal_main < 1e-4 && m.max_normal_branch < 1e-4, "blend normal equals the cylinders' normals at the contact edges to 1e-4 rad (tangent)");
+  Check(m.min_v > 0.3, "the blend normal faces the ball centre everywhere (no fold-over)");
+  const double v = f.solid.VolumeOfSealedSolid();
+  const double v_expect = AnalyticFilletedTeeVolume(R, rb, r, -3, 3, L);
+  const double v_tee = AnalyticTeeVolume(R, rb, H, L);
+  std::printf("  volume: B-rep exact integral %.6f, independent analytic-face integral %.6f, plain tee %.6f, added material %.6f\n", v, v_expect, v_tee, v - v_tee);
+  Check(std::fabs(v - v_expect) < 5e-3, "B-rep volume matches the independent analytic-face integral to 5e-3");
+  Check(v - v_tee > 0.05 && v - v_tee < 0.25, "the fillet adds a small positive volume to the plain tee (0.05..0.25)");
+}
+
+void TestPipeTeeFilletRotatedTeeOtherRadiiAndTolerance() {
+  const double R = 3, rb = 2, r = 0.5, H = 12, L = 8;
+  const ON_3dVector ez(1, 2, 2), ex(2, 1, -2);  // perpendicular: 2 + 2 - 4 = 0
+  const ON_3dPoint o(1.5, -2.0, 0.7);
+  const Brep tee = MakeTee(R, rb, H, L, ez, ex, o);
+  const PipeTeeFillet f = FilletPipeTee(tee, r, 1e-7);
+  Check(f.solid.raw().IsValid() && f.solid.raw().IsSolid() && f.solid.Check().IsClean(), "rotated, offset tee R=3 rb=2 r=0.5: IsValid, IsSolid and Check()-clean");
+  Check(f.fit_deviation <= 1e-7, "a tighter requested tolerance (1e-7) is met");
+  Check(f.crossing.DistanceTo(o) < 1e-6, "the axes' crossing point is recovered");
+  const EdgeMeasure m = MeasureBlend(f);
+  std::printf("  rotated tee R=3 rb=2 r=0.5: intervals=%d fit_dev=%.3g | main %.3g branch %.3g ball %.3g normal %.3g/%.3g\n", f.intervals, f.fit_deviation,
+              m.max_main, m.max_branch, m.max_ball, m.max_normal_main, m.max_normal_branch);
+  Check(m.max_main < 1e-6 && m.max_branch < 1e-6 && m.max_ball < 1e-6, "tangency to both cylinders and the ball radius hold to 1e-6 in the rotated frame");
+  Check(m.max_normal_main < 1e-4 && m.max_normal_branch < 1e-4, "normals are tangent-continuous to 1e-4 rad");
+  const double v = f.solid.VolumeOfSealedSolid();
+  const double v_expect = AnalyticFilletedTeeVolume(R, rb, r, -6, 6, L);
+  std::printf("  rotated tee volume %.6f vs analytic-face %.6f\n", v, v_expect);
+  Check(std::fabs(v - v_expect) < 0.02, "rotated tee volume matches the independent analytic-face integral to 0.02");
+}
+
+template <typename Fn>
+bool RefusesWith(Fn fn, const char* needle, std::string* got = nullptr) {
+  try {
+    fn();
+  } catch (const std::invalid_argument& e) {
+    if (got) *got = e.what();
+    return std::string(e.what()).find(needle) != std::string::npos;
+  } catch (...) {
+    return false;
+  }
+  return false;
+}
+
+void TestPipeTeeFilletRefusesWithReasonsNeverADegradedBody() {
+  const Brep tee = MakeTee(2, 1, 6, 5, ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0));
+  std::string msg;
+  Check(RefusesWith([&] { FilletPipeTee(tee, 0.0); }, "strictly positive"), "radius 0 is refused");
+  Check(RefusesWith([&] { FilletPipeTee(tee, std::nan("")); }, "strictly positive"), "NaN radius is refused");
+  Check(RefusesWith([&] { FilletPipeTee(tee, 0.4, 0.0); }, "tolerance"), "tolerance 0 is refused");
+  const Brep longmain = MakeTee(2, 1, 12, 5, ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0));
+  Check(RefusesWith([&] { FilletPipeTee(longmain, 3.5); }, "too large for the branch", &msg), "a ball whose blend would pass the branch cap (R + r = 5.5 > 5) is refused");
+  std::printf("  refusal (branch length): %s\n", msg.c_str());
+  Check(RefusesWith([&] { FilletPipeTee(tee, 2.5); }, "too large for the main cylinder", &msg), "a ball whose blend would pass the main cylinder's end is refused");
+  std::printf("  refusal (main length): %s\n", msg.c_str());
+  const Brep longtee = MakeTee(2, 1, 20, 20, ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0));
+  Check(RefusesWith([&] { FilletPipeTee(longtee, 4.0); }, "folds over itself", &msg), "on a long tee, a ball of radius 4 (> curvature radius of the centre curve) is refused as a fold");
+  std::printf("  refusal (fold): %s\n", msg.c_str());
+  const PipeTeeFillet ok = FilletPipeTee(longtee, 1.0);
+  Check(ok.solid.raw().IsValid() && ok.solid.raw().IsSolid(), "the same long tee with r = 1.0 (large but regular) is valid and solid");
+  // Non-perpendicular branch: the first of several angles the Boolean engine can still union and seal.
+  {
+    bool tested = false;
+    for (double deg : {60.0, 75.0, 85.0, 45.0, 30.0}) {
+      const double a = deg * ON_PI / 180.0;
+      const Brep m = SealedCylinder(ON_3dPoint(0, 0, -6), ON_3dVector(0, 0, 1), 2, 12);
+      const Brep b = SealedCylinder(ON_3dPoint(0, 0, 0), ON_3dVector(std::sin(a), 0, std::cos(a)), 1, 5);
+      Brep u;
+      try {
+        u = dino8::kernel::BooleanCombineGeneral(m, b, BooleanOp::Union);  // raw engine result (the sealing step cannot close oblique unions)
+      } catch (...) {
+        continue;
+      }
+      tested = true;
+      Check(RefusesWith([&] { FilletPipeTee(u, 0.4); }, "not perpendicular", &msg), "a branch that is not at a right angle to the main axis is refused as not perpendicular");
+      std::printf("  refusal (angle %g deg from the main axis): %s\n", deg, msg.c_str());
+      break;
+    }
+    Check(tested, "the Boolean engine produced a (raw) non-perpendicular union to exercise the refusal");
+  }
+  // Skew (non-intersecting) axes: the branch axis is offset 0.3 from the main axis.
+  {
+    const Brep m = SealedCylinder(ON_3dPoint(0, 0, -3), ON_3dVector(0, 0, 1), 2, 6);
+    const Brep b = SealedCylinder(ON_3dPoint(0, 0.3, 0), ON_3dVector(1, 0, 0), 1, 5);
+    bool built = true;
+    Brep u;
+    try {
+      u = BooleanCombineGeneralSealed(m, b, BooleanOp::Union).brep;
+    } catch (...) {
+      built = false;
+    }
+    if (built) Check(RefusesWith([&] { FilletPipeTee(u, 0.4); }, "do not intersect", &msg), "a branch whose axis misses the main axis (offset 0.3) is refused as skew");
+    else Check(false, "could not build the offset union to test the refusal");
+    std::printf("  refusal (skew): %s\n", msg.c_str());
+  }
+  // Equal radii and a non-tee body.
+  {
+    const Brep m = SealedCylinder(ON_3dPoint(0, 0, -3), ON_3dVector(0, 0, 1), 1, 6);
+    const Brep b = SealedCylinder(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), 1, 5);
+    bool built = true;
+    Brep u;
+    try {
+      u = BooleanCombineGeneralSealed(m, b, BooleanOp::Union).brep;
+    } catch (...) {
+      built = false;
+    }
+    if (built) Check(RefusesWith([&] { FilletPipeTee(u, 0.2); }, "equal radii", &msg), "two equal-radius cylinders are refused (no distinct branch)");
+    else Check(true, "the equal-radius union itself is refused by the Boolean engine (nothing to fillet)");
+  }
+  Check(RefusesWith([&] { FilletPipeTee(Brep::Box(0, 0, 0, 1, 1, 1), 0.1); }, "two distinct cylinders"), "a plain box is refused as not a pipe tee");
+}
+
+}  // namespace pipe_tee_fillet_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -97422,6 +97700,13 @@ int main() {
   RunTest("edge_continuity_tests::TestLoftMatchedG1TangentPlaneAlongStartEdge", edge_continuity_tests::TestLoftMatchedG1TangentPlaneAlongStartEdge);
   RunTest("edge_continuity_tests::TestLoftMatchedG2CurvatureAlongStartEdge", edge_continuity_tests::TestLoftMatchedG2CurvatureAlongStartEdge);
   RunTest("edge_continuity_tests::TestLoftMatchedRefusals", edge_continuity_tests::TestLoftMatchedRefusals);
+
+  RunTest("pipe_tee_fillet_tests::TestPipeTeeFilletIsValidSolidWithMeasuredTangencyAndBallRadius",
+          pipe_tee_fillet_tests::TestPipeTeeFilletIsValidSolidWithMeasuredTangencyAndBallRadius);
+  RunTest("pipe_tee_fillet_tests::TestPipeTeeFilletRotatedTeeOtherRadiiAndTolerance",
+          pipe_tee_fillet_tests::TestPipeTeeFilletRotatedTeeOtherRadiiAndTolerance);
+  RunTest("pipe_tee_fillet_tests::TestPipeTeeFilletRefusesWithReasonsNeverADegradedBody",
+          pipe_tee_fillet_tests::TestPipeTeeFilletRefusesWithReasonsNeverADegradedBody);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

@@ -1098,7 +1098,18 @@ std::vector<Point2d> TrimmedFaceUVPolygon(const ON_Brep& b, const ON_BrepFace& f
     const int li = face.m_li[k];
     if (li < 0 || li >= b.m_L.Count()) continue;
     const ON_BrepLoop& loop = b.m_L[li];
-    std::vector<ON_2dPoint> poly = LoopPolygon(b, li, 24);
+    // Samples per trim: 24 is enough for a polyline or a few-span trim, but a 24-gon of a circle is 1.1% short in
+    // area and a many-span fitted NURBS trim is far longer than 24 chords can follow, so those trims get a
+    // sampling that scales with their own structure (an exact circle: 360 chords, 4e-5 relative area; a NURBS trim:
+    // 6 chords per span).
+    int samples = 24;
+    for (int ti = 0; ti < loop.m_ti.Count(); ++ti) {
+      const ON_Curve* tc = b.m_T[loop.m_ti[ti]].TrimCurveOf();
+      if (!tc) continue;
+      if (ON_ArcCurve::Cast(tc)) samples = std::max(samples, 360);
+      else if (const ON_NurbsCurve* nc = ON_NurbsCurve::Cast(tc)) samples = std::max(samples, 6 * nc->SpanCount());
+    }
+    std::vector<ON_2dPoint> poly = LoopPolygon(b, li, samples);
     if (poly.size() < 3) continue;
     if (loop.m_type == ON_BrepLoop::outer) {
       outer = poly;
@@ -10157,7 +10168,13 @@ bool TrimWalksMaterialLeft(const ON_Brep& b, const ON_BrepTrim& trim) {
   const ON_BrepFace* face = trim.Face();
   if (face && face->m_bRev) d = !d;
   const ON_BrepLoop* loop = trim.Loop();
-  if (loop && b.LoopDirection(*loop) < 0) d = !d;
+  // An INNER loop is correctly stored clockwise (opposite to its face's outer loop), so for it the deviation to
+  // correct is a counter-clockwise loop; flagging every clockwise inner loop made each face with a real hole (the
+  // sealed general Booleans' output) report InconsistentFaceOrientation along the hole's edges.
+  if (loop) {
+    const int dir = b.LoopDirection(*loop);
+    if (loop->m_type == ON_BrepLoop::inner ? dir > 0 : dir < 0) d = !d;
+  }
   return d;
 }
 

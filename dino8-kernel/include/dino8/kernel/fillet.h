@@ -2387,4 +2387,58 @@ Brep ChamferCapRimAngle(const Brep& solid, Point3d point_on_rim, double distance
 Brep FilletRevolveRim(const Brep& solid, Point3d point_on_rim, double radius);
 Brep ChamferRevolveRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap);
 
+// --- FilletPipeTee -------------------------------------------------------------
+//
+// Rolling-ball fillet along the saddle intersection edge of a PIPE TEE: a capped main cylinder (radius R) and a capped
+// branch cylinder (radius rb < R) whose axes meet at a right angle, united into one solid (for example the
+// BooleanCombineGeneralSealed() Union of the two capped cylinders, the branch starting on the main axis and ending in
+// its own planar cap outside the main cylinder). The edge is concave (the union has material on the reflex side), so
+// the ball of radius r rolls on the OUTSIDE of both cylinders: its centre stays at distance R + r from the main axis
+// and rb + r from the branch axis, i.e. on the intersection of two cylinders of those radii, and the fillet ADDS
+// material. With Y = (rb + r) cos t, Z = (rb + r) sin t, X = sqrt((R + r)^2 - Y^2) (axes: main = z, branch = x) the
+// centre is C(t) = (X, Y, Z); the contact points are C - r n_main and C - r n_branch, n_main = (X, Y, 0) / (R + r),
+// n_branch = (0, cos t, sin t); the blend is the exact circular arc of radius r about C(t) between the two, a rational
+// quadratic, lofted over t.
+//
+// WHAT IS EXACT AND WHAT IS NOT. Each arc is exact; the t-direction is not rational, so the blend is a cubic-in-t,
+// quadratic-in-v rational NURBS surface interpolating the exact arcs (and their exact end tangents) at 2^k uniform
+// parameters, with k raised until the SAMPLED deviation between the NURBS surface and the exact rolling-ball surface
+// (taken at the interval midpoints, five points across each arc) is at most `tolerance`; the two contact curves are
+// the NURBS surface's own edge rows, and the 2D trim curves are fitted the same way, so every edge of the result is a
+// literally shared edge. The cylinders, caps and arcs are analytic (ON_RevSurface / plane / circle). The deviation is
+// measured at midpoints, not bounded between them. The result is a closed 6-face B-rep (main wall with a real inner
+// trim loop whose seam is moved to the far side, bottom and top cap, branch wall with a curved lower trim, branch
+// cap, blend), ON_Brep::IsValid() and IsSolid() are required to hold or the call throws.
+//
+// `tee` is read back from its faces (never trusted): a closed solid whose faces are only planes and cylinders, exactly
+// two distinct cylinders with perpendicular, intersecting axes and different radii, two planar caps perpendicular to
+// the larger one and exactly ONE planar cap perpendicular to the smaller (a tee, not a cross). Because the faces are
+// only classified, not re-integrated, a body that carries these faces but is not a true union is not detected.
+//
+// Refusals (std::invalid_argument naming the reason, never a degraded body): non-positive / non-finite radius or
+// tolerance; a tee that cannot be read as above (non-perpendicular, skew / non-intersecting axes, equal or reversed
+// radii, a cross, other faces); a ball so large that the centre curve's tube is singular (the blend would fold over
+// itself) or that the blend would reach a cap (the main wall must extend beyond +-(rb + r) of the axes' crossing
+// point and the branch beyond R + r); a fit that does not reach `tolerance` within 1024 intervals.
+// NOT done: a chamfer of this edge (a constant-distance bevel on two cylinders has no closed-form contact curves
+// here), a fillet of a tee whose branch is not perpendicular, convex-side (hollow) variants.
+struct PipeTeeFillet {
+  Brep solid;
+  // Face indices in `solid.raw().m_F`.
+  int main_wall_face = -1, branch_wall_face = -1, blend_face = -1;
+  double ball_radius = 0, main_radius = 0, branch_radius = 0;
+  // Sampled max distance between the NURBS blend and the exact rolling-ball surface (model units), and the number of
+  // fitted intervals along the edge (the blend has intervals + 3 control columns).
+  double fit_deviation = 0;
+  // Largest measured gap between an edge curve and the image of one of its trims on the face surface (also stored as
+  // that edge's tolerance), sampled at 33 points per trim.
+  double edge_gap = 0;
+  int intervals = 0;
+  // Local frame the tee was read in: the crossing point of the axes, the unit main axis and the unit branch direction
+  // (pointing from the main axis to the branch cap).
+  Point3d crossing;
+  Vector3d main_axis, branch_axis;
+};
+PipeTeeFillet FilletPipeTee(const Brep& tee, double radius, double tolerance = 1e-6);
+
 }  // namespace dino8::kernel

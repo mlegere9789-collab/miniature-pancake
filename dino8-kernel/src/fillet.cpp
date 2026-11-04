@@ -7838,4 +7838,497 @@ Brep ChamferRevolveRim(const Brep& solid, Point3d point_on_rim, double distance_
   return BuildRevolveRim(solid, point_on_rim, s, who);
 }
 
+
+// --- FilletPipeTee ------------------------------------------------------------
+// See fillet.h for the contract. Everything is built in a local frame (main axis = z, branch along +x, both axes
+// through the origin) and transformed to the tee's own frame at the end.
+namespace {
+
+constexpr int kTeeCols = 14;
+
+struct TeeGeo {
+  double R = 0, rb = 0, r = 0;
+  // Columns: 0-2 contact point on the main wall, 3-5 w1 * middle control point, 6 w1, 7-9 contact point on the branch
+  // wall, 10 main-wall angle u (seam on the far side, branch at u = pi), 11 main-wall height, 12 t, 13 branch-wall x.
+  void Eval(double t, double* o) const {
+    const double Y = (rb + r) * std::cos(t), Z = (rb + r) * std::sin(t);
+    const double X = std::sqrt((R + r) * (R + r) - Y * Y);
+    const double nmx = X / (R + r), nmy = Y / (R + r);
+    const double nby = std::cos(t), nbz = std::sin(t);
+    const double d = nmy * nby;  // n_main . n_branch = cos(arc angle)
+    o[0] = X - r * nmx; o[1] = Y - r * nmy; o[2] = Z;
+    const double w1 = std::sqrt(0.5 * (1.0 + d));
+    const double k = r / (1.0 + d);
+    o[3] = w1 * (X - k * nmx); o[4] = w1 * (Y - k * (nmy + nby)); o[5] = w1 * (Z - k * nbz); o[6] = w1;
+    o[7] = X; o[8] = Y - r * nby; o[9] = Z - r * nbz;
+    o[10] = ON_PI + std::atan2(Y, X); o[11] = Z; o[12] = t; o[13] = X;
+  }
+  // Exact rolling-ball surface point at (t, v), v in [0, 1] across the arc.
+  ON_3dPoint Surface(double t, double v) const {
+    double c[kTeeCols];
+    Eval(t, c);
+    const double w1 = c[6];
+    const double b0 = (1 - v) * (1 - v), b1 = 2 * v * (1 - v), b2 = v * v;
+    const double den = b0 + b1 * w1 + b2;
+    return ON_3dPoint((b0 * c[0] + b1 * c[3] + b2 * c[7]) / den, (b0 * c[1] + b1 * c[4] + b2 * c[8]) / den,
+                      (b0 * c[2] + b1 * c[5] + b2 * c[9]) / den);
+  }
+};
+
+// Dense Gaussian elimination with partial pivoting; A is n x n, B is n x m, both row-major, B overwritten by the solution.
+bool SolveDenseSystem(std::vector<double>& A, std::vector<double>& B, int n, int m) {
+  for (int c = 0; c < n; ++c) {
+    int piv = c;
+    for (int r = c + 1; r < n; ++r)
+      if (std::fabs(A[(size_t)r * n + c]) > std::fabs(A[(size_t)piv * n + c])) piv = r;
+    if (std::fabs(A[(size_t)piv * n + c]) < 1e-14) return false;
+    if (piv != c) {
+      for (int k = 0; k < n; ++k) std::swap(A[(size_t)piv * n + k], A[(size_t)c * n + k]);
+      for (int k = 0; k < m; ++k) std::swap(B[(size_t)piv * m + k], B[(size_t)c * m + k]);
+    }
+    const double inv = 1.0 / A[(size_t)c * n + c];
+    for (int r = c + 1; r < n; ++r) {
+      const double f = A[(size_t)r * n + c] * inv;
+      if (f == 0.0) continue;
+      for (int k = c; k < n; ++k) A[(size_t)r * n + k] -= f * A[(size_t)c * n + k];
+      for (int k = 0; k < m; ++k) B[(size_t)r * m + k] -= f * B[(size_t)c * m + k];
+    }
+  }
+  for (int c = n - 1; c >= 0; --c) {
+    for (int k = 0; k < m; ++k) {
+      double v = B[(size_t)c * m + k];
+      for (int j = c + 1; j < n; ++j) v -= A[(size_t)c * n + j] * B[(size_t)j * m + k];
+      B[(size_t)c * m + k] = v / A[(size_t)c * n + c];
+    }
+  }
+  return true;
+}
+
+void CubicBasis(const std::vector<double>& U, int span, double t, double* N) {
+  double left[4], right[4];
+  N[0] = 1.0;
+  for (int j = 1; j <= 3; ++j) {
+    left[j] = t - U[span + 1 - j];
+    right[j] = U[span + j] - t;
+    double saved = 0.0;
+    for (int r = 0; r < j; ++r) {
+      const double tmp = N[r] / (right[r + 1] + left[j - r]);
+      N[r] = saved + right[r + 1] * tmp;
+      saved = left[j - r] * tmp;
+    }
+    N[j] = saved;
+  }
+}
+
+// Clamped cubic interpolation of a smooth 2 pi-periodic vector function at N+1 uniform parameters, end derivatives
+// taken from the function itself (so both ends carry the same position and tangent: the seam is G1).
+struct ClosedFit {
+  int N = 0;
+  std::vector<double> U;                        // full knot vector, N + 7 entries
+  std::vector<std::array<double, kTeeCols>> Q;  // N + 3 control points
+  void Eval(double t, double* o) const {
+    const double h = 2.0 * ON_PI / N;
+    int span = 3 + (int)std::floor(t / h);
+    span = std::max(3, std::min(N + 2, span));
+    double B[4];
+    CubicBasis(U, span, t, B);
+    for (int c = 0; c < kTeeCols; ++c) o[c] = 0;
+    for (int j = 0; j < 4; ++j)
+      for (int c = 0; c < kTeeCols; ++c) o[c] += B[j] * Q[(size_t)(span - 3 + j)][c];
+  }
+};
+
+bool FitClosed(const TeeGeo& g, int N, ClosedFit& fit) {
+  const double T = 2.0 * ON_PI, h = T / N;
+  fit.N = N;
+  fit.U.assign((size_t)N + 7, 0.0);
+  for (int i = 0; i < 4; ++i) { fit.U[i] = 0.0; fit.U[N + 3 + i] = T; }
+  for (int k = 1; k < N; ++k) fit.U[3 + k] = k * h;
+  fit.Q.assign((size_t)N + 3, {});
+  double f0[kTeeCols], fT[kTeeCols], a[kTeeCols], b[kTeeCols];
+  const double eps = 1e-6;
+  g.Eval(0.0, f0);
+  g.Eval(T, fT);
+  double d0[kTeeCols], dT[kTeeCols];
+  g.Eval(eps, a); g.Eval(-eps, b);
+  for (int c = 0; c < kTeeCols; ++c) d0[c] = (a[c] - b[c]) / (2 * eps);
+  g.Eval(T + eps, a); g.Eval(T - eps, b);
+  for (int c = 0; c < kTeeCols; ++c) dT[c] = (a[c] - b[c]) / (2 * eps);
+  for (int c = 0; c < kTeeCols; ++c) {
+    fit.Q[0][c] = f0[c];
+    fit.Q[1][c] = f0[c] + h * d0[c] / 3.0;
+    fit.Q[N + 2][c] = fT[c];
+    fit.Q[N + 1][c] = fT[c] - h * dT[c] / 3.0;
+  }
+  const int n = N - 1;
+  std::vector<double> A((size_t)n * n, 0.0), B((size_t)n * kTeeCols, 0.0);
+  for (int k = 1; k <= N - 1; ++k) {
+    double Nb[4], f[kTeeCols];
+    CubicBasis(fit.U, 3 + k, k * h, Nb);
+    g.Eval(k * h, f);
+    for (int c = 0; c < kTeeCols; ++c) B[(size_t)(k - 1) * kTeeCols + c] = f[c];
+    for (int j = 0; j < 4; ++j) {
+      const int i = k + j;  // control point index
+      if (i >= 2 && i <= N) A[(size_t)(k - 1) * n + (i - 2)] = Nb[j];
+      else for (int c = 0; c < kTeeCols; ++c) B[(size_t)(k - 1) * kTeeCols + c] -= Nb[j] * fit.Q[i][c];
+    }
+  }
+  if (!SolveDenseSystem(A, B, n, kTeeCols)) return false;
+  for (int i = 2; i <= N; ++i)
+    for (int c = 0; c < kTeeCols; ++c) fit.Q[i][c] = B[(size_t)(i - 2) * kTeeCols + c];
+  return true;
+}
+
+// Sampled deviation of the fitted blend surface from the exact rolling-ball surface (interval midpoints, five points across).
+double FitDeviation(const TeeGeo& g, const ClosedFit& fit) {
+  double worst = 0;
+  const double h = 2.0 * ON_PI / fit.N;
+  for (int k = 0; k < fit.N; ++k) {
+    const double t = (k + 0.5) * h;
+    double c[kTeeCols];
+    fit.Eval(t, c);
+    for (int j = 0; j <= 4; ++j) {
+      const double v = 0.25 * j;
+      const double b0 = (1 - v) * (1 - v), b1 = 2 * v * (1 - v), b2 = v * v;
+      const double den = b0 + b1 * c[6] + b2;
+      const ON_3dPoint p((b0 * c[0] + b1 * c[3] + b2 * c[7]) / den, (b0 * c[1] + b1 * c[4] + b2 * c[8]) / den,
+                         (b0 * c[2] + b1 * c[5] + b2 * c[9]) / den);
+      worst = std::max(worst, p.DistanceTo(g.Surface(t, v)));
+    }
+    double e[kTeeCols];
+    g.Eval(t, e);  // the 2D trim columns too, in model units
+    worst = std::max({worst, std::fabs(c[10] - e[10]) * g.R, std::fabs(c[11] - e[11]), std::fabs(c[13] - e[13])});
+  }
+  return worst;
+}
+
+ON_NurbsCurve* FitCurve(const ClosedFit& fit, int dim, const int* cols) {
+  ON_NurbsCurve* c = new ON_NurbsCurve(dim, false, 4, fit.N + 3);
+  for (int i = 0; i < fit.N + 5; ++i) c->m_knot[i] = fit.U[(size_t)i + 1];
+  for (int i = 0; i < fit.N + 3; ++i) {
+    ON_3dPoint p(0, 0, 0);
+    p.x = fit.Q[(size_t)i][cols[0]];
+    p.y = fit.Q[(size_t)i][cols[1]];
+    if (dim == 3) p.z = fit.Q[(size_t)i][cols[2]];
+    c->SetCV(i, p);
+  }
+  return c;
+}
+
+struct TeeInput {
+  ON_3dPoint crossing;
+  ON_3dVector ez, ex;  // main axis, branch direction
+  double R = 0, rb = 0, zlo = 0, zhi = 0, L = 0;
+};
+
+bool ClassifyPipeTee(const Brep& tee, TeeInput& in, std::string& why) {
+  const ON_Brep& b = tee.raw();
+  if (b.m_F.Count() < 5) { why = "fewer than five faces - not a pipe tee"; return false; }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double diag = bb.Diagonal().Length();
+  const double tol = std::max(1e-9, diag * 1e-7);
+  std::vector<ON_Cylinder> cyls;
+  std::vector<ON_Plane> planes;
+  for (int f = 0; f < b.m_F.Count(); ++f) {
+    const ON_BrepFace& face = b.m_F[f];
+    if (face.m_face_index < 0) continue;
+    const ON_Surface* s = face.SurfaceOf();
+    if (!s) { why = "a face has no surface"; return false; }
+    ON_Plane pl;
+    ON_Cylinder cy;
+    if (s->IsPlanar(&pl, tol)) planes.push_back(pl);
+    else if (s->IsCylinder(&cy, tol)) {
+      bool known = false;
+      for (const ON_Cylinder& e : cyls) {
+        const ON_3dVector d = cy.circle.plane.origin - e.circle.plane.origin;
+        const ON_3dVector off = d - (d * e.Axis()) * e.Axis();
+        if (std::fabs(cy.circle.radius - e.circle.radius) <= 1e-6 * diag && ON_CrossProduct(cy.Axis(), e.Axis()).Length() < 1e-7 && off.Length() <= 1e-6 * diag) known = true;
+      }
+      if (!known) cyls.push_back(cy);
+    } else { why = "a face is neither a plane nor a cylinder - not a pipe tee"; return false; }
+  }
+  if (cyls.size() != 2) { why = "the faces are not exactly two distinct cylinders (found " + std::to_string(cyls.size()) + ")"; return false; }
+  if (cyls[0].circle.radius < cyls[1].circle.radius) std::swap(cyls[0], cyls[1]);
+  const ON_Cylinder& M = cyls[0];
+  const ON_Cylinder& Bc = cyls[1];
+  in.R = M.circle.radius;
+  in.rb = Bc.circle.radius;
+  if (!(in.R > in.rb * (1.0 + 1e-6))) { why = "the two cylinders have equal radii - the intersection edge degenerates (no distinct branch)"; return false; }
+  ON_3dVector ez = M.Axis(), d2 = Bc.Axis();
+  ez.Unitize();
+  d2.Unitize();
+  if (std::fabs(ez * d2) > 1e-6) { why = "the cylinder axes are not perpendicular (|cos| = " + std::to_string(std::fabs(ez * d2)) + "); only a right-angle tee is supported"; return false; }
+  const ON_3dPoint P1 = M.circle.plane.origin, P2 = Bc.circle.plane.origin;
+  const ON_3dPoint O = P1 + ((P2 - P1) * ez) * ez;
+  const ON_3dVector off = (O - P2) - ((O - P2) * d2) * d2;
+  if (off.Length() > 1e-6 * diag) { why = "the cylinder axes do not intersect (skew by " + std::to_string(off.Length()) + ")"; return false; }
+  in.crossing = O;
+  in.ez = ez;
+  // Distinct cap planes (a cap may be split into several faces).
+  std::vector<double> mz, bz;
+  for (const ON_Plane& pl : planes) {
+    const double along_m = std::fabs(pl.zaxis * ez), along_b = std::fabs(pl.zaxis * d2);
+    if (along_m < 1.0 - 1e-6 && along_b < 1.0 - 1e-6) { why = "a planar face is not perpendicular to either axis"; return false; }
+    const bool is_main = along_m > 0.5;
+    const double pos = is_main ? (pl.origin - O) * ez : (pl.origin - O) * d2;
+    std::vector<double>& dst = is_main ? mz : bz;
+    bool seen = false;
+    for (double e : dst) seen = seen || std::fabs(e - pos) <= 1e-6 * diag;
+    if (!seen) dst.push_back(pos);
+  }
+  if (mz.size() != 2) { why = "the main cylinder does not have exactly two planar end caps (found " + std::to_string(mz.size()) + " cap planes)"; return false; }
+  if (bz.size() != 1) { why = bz.size() > 1 ? "the branch cylinder has more than one cap plane - a cross or a through pipe, not a tee" : "the branch cylinder has no cap plane"; return false; }
+  in.zlo = std::min(mz[0], mz[1]);
+  in.zhi = std::max(mz[0], mz[1]);
+  in.ex = bz[0] >= 0 ? d2 : -d2;
+  in.L = std::fabs(bz[0]);
+  if (!(in.L > in.R)) { why = "the branch cap lies inside the main cylinder - there is no branch outside it"; return false; }
+  if (!(in.zlo < -in.rb && in.zhi > in.rb)) { why = "the main cylinder does not extend past the branch on both sides"; return false; }
+  // Last, so the geometric reasons above are reported even for a body that was never sewn shut.
+  if (!b.IsSolid()) { why = "not a closed solid (ON_Brep::IsSolid() is false)"; return false; }
+  return true;
+}
+
+// 2D curve helpers.
+ON_Curve* Line2d(double a0, double b0, double a1, double b1, double t0, double t1) {
+  ON_LineCurve* c = new ON_LineCurve(ON_2dPoint(a0, b0), ON_2dPoint(a1, b1));
+  c->SetDomain(t0, t1);
+  return c;
+}
+
+ON_Curve* Circle2d(const ON_3dVector& xa, const ON_3dVector& ya, double radius) {
+  ON_Plane pl(ON_3dPoint(0, 0, 0), xa, ya);
+  ON_ArcCurve* c = new ON_ArcCurve(ON_Circle(pl, radius));
+  c->ChangeDimension(2);
+  return c;
+}
+
+ON_PlaneSurface* CapPlane(const ON_3dPoint& o, const ON_3dVector& xa, const ON_3dVector& ya, double ext) {
+  ON_PlaneSurface* ps = new ON_PlaneSurface(ON_Plane(o, xa, ya));
+  ps->SetExtents(0, ON_Interval(-ext, ext), true);
+  ps->SetExtents(1, ON_Interval(-ext, ext), true);
+  return ps;
+}
+
+}  // namespace
+
+PipeTeeFillet FilletPipeTee(const Brep& tee, double radius, double tolerance) {
+  const std::string who = "dino8::kernel::FilletPipeTee: ";
+  if (!std::isfinite(radius) || !(radius > 0.0)) throw std::invalid_argument(who + "radius must be finite and strictly positive");
+  if (!std::isfinite(tolerance) || !(tolerance > 0.0)) throw std::invalid_argument(who + "tolerance must be finite and strictly positive");
+  TeeInput in;
+  std::string why;
+  if (!ClassifyPipeTee(tee, in, why)) throw std::invalid_argument(who + why);
+  TeeGeo g;
+  g.R = in.R; g.rb = in.rb; g.r = radius;
+  const double R = g.R, rb = g.rb, r = g.r;
+  const double lim = 1e-9 * std::max(1.0, in.L);
+  if (!(in.zhi - (rb + r) > lim) || !(-in.zlo - (rb + r) > lim)) {
+    throw std::invalid_argument(who + "the ball is too large for the main cylinder: the blend reaches z = +-(rb + r) = " + std::to_string(rb + r) +
+                                " but the main cylinder ends at " + std::to_string(in.zlo) + " / " + std::to_string(in.zhi));
+  }
+  if (!(in.L - (R + r) > lim)) {
+    throw std::invalid_argument(who + "the ball is too large for the branch: the blend reaches x = R + r = " + std::to_string(R + r) +
+                                " but the branch cap is at " + std::to_string(in.L));
+  }
+  // The blend must stay a regular surface: the arc normal (toward the ball centre) must agree with Su x Sv everywhere.
+  {
+    double worst = 1e300;
+    const int nt = 720, nv = 6;
+    for (int i = 0; i < nt; ++i) {
+      const double t = 2.0 * ON_PI * (i + 0.37) / nt;
+      for (int j = 0; j <= nv; ++j) {
+        const double v = (double)j / nv, e = 1e-5;
+        const ON_3dPoint p = g.Surface(t, v);
+        const ON_3dVector su = (g.Surface(t + e, v) - g.Surface(t - e, v)) / (2 * e);
+        const double v0 = std::max(0.0, v - e), v1 = std::min(1.0, v + e);
+        const ON_3dVector sv = (g.Surface(t, v1) - g.Surface(t, v0)) / (v1 - v0);
+        const double Y = (rb + r) * std::cos(t), Z = (rb + r) * std::sin(t), X = std::sqrt((R + r) * (R + r) - Y * Y);
+        ON_3dVector toward_centre = ON_3dPoint(X, Y, Z) - p;
+        toward_centre.Unitize();
+        ON_3dVector nrm = ON_CrossProduct(su, sv);
+        const double len = nrm.Length();
+        if (len < 1e-300) { worst = -1; continue; }
+        worst = std::min(worst, (nrm * toward_centre) / len);
+      }
+    }
+    if (!(worst > 0.05)) {
+      throw std::invalid_argument(who + "the ball is too large: the rolling-ball envelope folds over itself (singular tube about the centre curve; min cos(normal, toward centre) = " +
+                                  std::to_string(worst) + ")");
+    }
+  }
+  // Fit: raise the interval count until the sampled deviation meets the tolerance.
+  ClosedFit fit;
+  double dev = 0;
+  bool ok = false;
+  for (int N = 64; N <= 1024; N *= 2) {
+    if (!FitClosed(g, N, fit)) continue;
+    dev = FitDeviation(g, fit);
+    if (dev <= tolerance) { ok = true; break; }
+  }
+  if (!ok) throw std::invalid_argument(who + "the NURBS fit did not reach the tolerance " + std::to_string(tolerance) + " within 1024 intervals (best sampled deviation " + std::to_string(dev) + ")");
+  const int N = fit.N;
+  const double T = 2.0 * ON_PI;
+
+  // --- surfaces ---
+  ON_Brep br;
+  ON_Cylinder mc(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(-1, 0, 0), ON_3dVector(0, -1, 0)), R), 0.0);
+  mc.height[0] = in.zlo; mc.height[1] = in.zhi;
+  ON_Cylinder bc(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1)), rb), 0.0);
+  bc.height[0] = 0.0; bc.height[1] = in.L;
+  ON_RevSurface* main_srf = mc.RevSurfaceForm();
+  ON_RevSurface* branch_srf = bc.RevSurfaceForm();
+  if (!main_srf || !branch_srf) { delete main_srf; delete branch_srf; throw std::invalid_argument(who + "could not build the cylinder walls"); }
+  const double ext = 1.5 * R;
+  ON_PlaneSurface* bot_srf = CapPlane(ON_3dPoint(0, 0, in.zlo), ON_3dVector(1, 0, 0), ON_3dVector(0, -1, 0), ext);
+  ON_PlaneSurface* top_srf = CapPlane(ON_3dPoint(0, 0, in.zhi), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0), ext);
+  ON_PlaneSurface* cap_srf = CapPlane(ON_3dPoint(in.L, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1), 1.5 * rb);
+  ON_NurbsSurface* blend = new ON_NurbsSurface(3, true, 4, 3, N + 3, 3);
+  for (int i = 0; i < N + 5; ++i) blend->m_knot[0][i] = fit.U[(size_t)i + 1];
+  blend->m_knot[1][0] = 0; blend->m_knot[1][1] = 0; blend->m_knot[1][2] = 1; blend->m_knot[1][3] = 1;
+  for (int i = 0; i < N + 3; ++i) {
+    const auto& q = fit.Q[(size_t)i];
+    const double row0[4] = {q[0], q[1], q[2], 1.0}, row1[4] = {q[3], q[4], q[5], q[6]}, row2[4] = {q[7], q[8], q[9], 1.0};
+    blend->SetCV(i, 0, ON::homogeneous_rational, row0);
+    blend->SetCV(i, 1, ON::homogeneous_rational, row1);
+    blend->SetCV(i, 2, ON::homogeneous_rational, row2);
+  }
+  const int s_main = br.AddSurface(main_srf), s_bot = br.AddSurface(bot_srf), s_top = br.AddSurface(top_srf);
+  const int s_branch = br.AddSurface(branch_srf), s_cap = br.AddSurface(cap_srf), s_blend = br.AddSurface(blend);
+
+  // --- vertices and edges ---
+  const int cols_m[3] = {0, 1, 2}, cols_b[3] = {7, 8, 9};
+  const ON_3dPoint pv_c(fit.Q[0][0], fit.Q[0][1], fit.Q[0][2]), pv_b(fit.Q[0][7], fit.Q[0][8], fit.Q[0][9]);
+  const int v_bot = br.NewVertex(ON_3dPoint(-R, 0, in.zlo), 0.0).m_vertex_index;
+  const int v_top = br.NewVertex(ON_3dPoint(-R, 0, in.zhi), 0.0).m_vertex_index;
+  const int v_c = br.NewVertex(pv_c, 0.0).m_vertex_index;
+  const int v_b = br.NewVertex(pv_b, 0.0).m_vertex_index;
+  const int v_cap = br.NewVertex(ON_3dPoint(in.L, rb, 0), 0.0).m_vertex_index;
+  auto edge = [&](ON_Curve* c, int v0, int v1) {
+    const int ci = br.AddEdgeCurve(c);
+    return br.NewEdge(br.m_V[v0], br.m_V[v1], ci).m_edge_index;
+  };
+  const int e_bot = edge(new ON_ArcCurve(ON_Circle(ON_Plane(ON_3dPoint(0, 0, in.zlo), ON_3dVector(-1, 0, 0), ON_3dVector(0, -1, 0)), R)), v_bot, v_bot);
+  const int e_top = edge(new ON_ArcCurve(ON_Circle(ON_Plane(ON_3dPoint(0, 0, in.zhi), ON_3dVector(-1, 0, 0), ON_3dVector(0, -1, 0)), R)), v_top, v_top);
+  const int e_seam_m = edge(new ON_LineCurve(ON_3dPoint(-R, 0, in.zlo), ON_3dPoint(-R, 0, in.zhi)), v_bot, v_top);
+  const int e_cm = edge(FitCurve(fit, 3, cols_m), v_c, v_c);
+  const int e_cb = edge(FitCurve(fit, 3, cols_b), v_b, v_b);
+  ON_NurbsCurve* arc = new ON_NurbsCurve(3, true, 3, 3);
+  arc->m_knot[0] = 0; arc->m_knot[1] = 0; arc->m_knot[2] = 1; arc->m_knot[3] = 1;
+  {
+    const auto& q = fit.Q[0];
+    const double h0[4] = {q[0], q[1], q[2], 1.0}, h1[4] = {q[3], q[4], q[5], q[6]}, h2[4] = {q[7], q[8], q[9], 1.0};
+    arc->SetCV(0, ON::homogeneous_rational, h0);
+    arc->SetCV(1, ON::homogeneous_rational, h1);
+    arc->SetCV(2, ON::homogeneous_rational, h2);
+  }
+  const int e_seam_blend = edge(arc, v_c, v_b);
+  const int e_seam_b = edge(new ON_LineCurve(pv_b, ON_3dPoint(in.L, rb, 0)), v_b, v_cap);
+  const int e_cap = edge(new ON_ArcCurve(ON_Circle(ON_Plane(ON_3dPoint(in.L, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1)), rb)), v_cap, v_cap);
+
+  // --- faces ---
+  auto trim = [&](int loop_index, int e, bool rev, ON_Curve* c2) {
+    const int c2i = br.AddTrimCurve(c2);
+    br.NewTrim(br.m_E[e], rev, br.m_L[loop_index], c2i);
+  };
+  const int c2m[2] = {10, 11}, c2b[2] = {12, 13};
+  {  // main wall: outer rectangle in (angle, height) + the contact loop as an inner loop
+    const int fi = br.NewFace(s_main).m_face_index;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    trim(lo, e_bot, false, Line2d(0, in.zlo, T, in.zlo, 0, T));
+    trim(lo, e_seam_m, false, Line2d(T, in.zlo, T, in.zhi, 0, 1));
+    trim(lo, e_top, true, Line2d(T, in.zhi, 0, in.zhi, 0, T));
+    trim(lo, e_seam_m, true, Line2d(0, in.zhi, 0, in.zlo, 0, 1));
+    const int hi = br.NewLoop(ON_BrepLoop::inner, br.m_F[fi]).m_loop_index;
+    ON_NurbsCurve* hole = FitCurve(fit, 2, c2m);
+    hole->Reverse();
+    trim(hi, e_cm, true, hole);
+  }
+  {  // bottom cap (outward normal -z)
+    const int fi = br.NewFace(s_bot).m_face_index;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    trim(lo, e_bot, true, Circle2d(ON_3dVector(-1, 0, 0), ON_3dVector(0, -1, 0), R));
+  }
+  {  // top cap
+    const int fi = br.NewFace(s_top).m_face_index;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    trim(lo, e_top, false, Circle2d(ON_3dVector(-1, 0, 0), ON_3dVector(0, -1, 0), R));
+  }
+  {  // branch wall: lower boundary is the curved contact curve
+    const int fi = br.NewFace(s_branch).m_face_index;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    const double x0 = fit.Q[0][13];
+    trim(lo, e_cb, false, FitCurve(fit, 2, c2b));
+    trim(lo, e_seam_b, false, Line2d(T, x0, T, in.L, 0, 1));
+    trim(lo, e_cap, true, Line2d(T, in.L, 0, in.L, 0, T));
+    trim(lo, e_seam_b, true, Line2d(0, in.L, 0, x0, 0, 1));
+  }
+  {  // branch cap (outward normal +x)
+    const int fi = br.NewFace(s_cap).m_face_index;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    trim(lo, e_cap, false, Circle2d(ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0), rb));
+  }
+  {  // blend
+    const int fi = br.NewFace(s_blend).m_face_index;
+    const int lo = br.NewLoop(ON_BrepLoop::outer, br.m_F[fi]).m_loop_index;
+    trim(lo, e_cm, false, Line2d(0, 0, T, 0, 0, T));
+    trim(lo, e_seam_blend, false, Line2d(T, 0, T, 1, 0, 1));
+    trim(lo, e_cb, true, Line2d(T, 1, 0, 1, 0, T));
+    trim(lo, e_seam_blend, true, Line2d(0, 1, 0, 0, 0, 1));
+  }
+  br.SetTrimIsoFlags();
+  br.SetTrimTypeFlags();
+  // Edge tolerance = the measured gap between the edge curve and the image of each of its trims on the face's surface
+  // (33 samples per trim); the trims and the edge curves are all fitted, so this is the honest "tolerant edge" value.
+  double worst_edge_gap = 0;
+  for (int ei = 0; ei < br.m_E.Count(); ++ei) {
+    ON_BrepEdge& e = br.m_E[ei];
+    double gap = 0;
+    const ON_Interval ed = e.Domain();
+    for (int k = 0; k < e.m_ti.Count(); ++k) {
+      const ON_BrepTrim& tr = br.m_T[e.m_ti[k]];
+      const ON_Surface* srf = br.m_F[br.m_L[tr.m_li].m_fi].SurfaceOf();
+      const ON_Interval td = tr.Domain();
+      for (int j = 0; j <= 32; ++j) {
+        const double f = j / 32.0;
+        const ON_2dPoint uv = tr.PointAt(td.ParameterAt(f));
+        const double ep = ed.ParameterAt(tr.m_bRev3d ? 1.0 - f : f);
+        gap = std::max(gap, srf->PointAt(uv.x, uv.y).DistanceTo(e.PointAt(ep)));
+      }
+    }
+    e.m_tolerance = gap;
+    worst_edge_gap = std::max(worst_edge_gap, gap);
+  }
+  br.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  // Local frame -> the tee's own frame.
+  ON_3dVector ey = ON_CrossProduct(in.ez, in.ex);
+  ey.Unitize();
+  ON_Xform xf;
+  xf.Rotation(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), ON_Plane(in.crossing, in.ex, ey));
+  if (!br.Transform(xf)) throw std::invalid_argument(who + "could not move the result into the tee's frame");
+  if (br.SolidOrientation() < 0) br.Flip();
+
+  PipeTeeFillet out;
+  out.solid.raw() = br;
+  out.main_wall_face = 0;
+  out.branch_wall_face = 3;
+  out.blend_face = 5;
+  out.ball_radius = radius;
+  out.main_radius = R;
+  out.branch_radius = rb;
+  out.fit_deviation = dev;
+  out.edge_gap = worst_edge_gap;
+  out.intervals = N;
+  out.crossing = in.crossing;
+  out.main_axis = in.ez;
+  out.branch_axis = in.ex;
+  ON_TextLog log;
+  if (!out.solid.raw().IsValid(&log) || !out.solid.raw().IsSolid()) {
+    throw std::invalid_argument(who + "the assembled pieces did not form a valid closed solid (IsValid=" + std::to_string(out.solid.raw().IsValid()) +
+                                ", IsSolid=" + std::to_string(out.solid.raw().IsSolid()) + ")");
+  }
+  return out;
+}
+
 }  // namespace dino8::kernel
