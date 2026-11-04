@@ -12732,4 +12732,87 @@ fsrrange "$(fsrblock ctl_filletsrf | grep -oE 'Area = [0-9.e+-]+' | tail -1 | se
 fsrnot ctl_filletsrf "FilletSurfaces:" "FSR_ctl_filletsrf: ...FilletSurfaces is not involved"
 if grep -q "gl_error=0" <<<"$FSRO"; then echo "ok   FSR script ran without OpenGL errors"; else echo "FAIL FSR script ran without OpenGL errors"; fail=1; fi
 
+
+# RTA_: round trip / undo / redo / history audit of the recently shipped objects (rta_script.txt, generated case by case:
+# build -> pre -> Undo -> Redo -> Save .3dm -> New -> Open -> post -> per exchange format Export + New + Import).
+# Readings are what the app printed (Volume/Area print 4 significant digits, so volumes are compared at 0.3 percent); a format
+# that cannot carry an object must refuse WITH a reason line and leave no object behind, never crash or silently change it.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RTA_OUT="$(sed "s#@TMP@#$TMPW#g" "$HERE/rta_script.txt" > "$TMPW/rta_run.txt"; timeout 900 "$BIN" --smoke 60 --script "$TMPW/rta_run.txt" 2>&1)" || { echo "$RTA_OUT"; echo "FAIL: RTA_ script exited non-zero"; exit 1; }
+else
+  RTA_OUT="$(sed "s#@TMP@#$TMPW#g" "$HERE/rta_script.txt" > "$TMPW/rta_run.txt"; timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/rta_run.txt" 2>&1)" || { echo "$RTA_OUT"; echo "FAIL: RTA_ script exited non-zero"; exit 1; }
+fi
+rtablock() { awk -v name="$1" '$0 ~ ("Unknown command: RTAB_" name "$") { on = 1; next } on && /Unknown command: RTAB_/ { exit } on { print }' <<<"$RTA_OUT"; }
+# rtasig BLOCK: "n nvalid nbad nclosed vol area x0 y0 z0 x1 y1 z1" (missing numbers print as -)
+rtasig() {
+  local blk="$1" n nv nb nc vol area bb
+  n="$({ grep -oE '[0-9]+ object\(s\) selected' <<<"$blk" || true; } | head -1 | grep -oE '^[0-9]+' || true)"; n="${n:-0}"
+  nv="$({ grep -cE '^history: Object [0-9]+: valid$' <<<"$blk" || true; })"
+  nb="$({ grep -E '^history: Object [0-9]+: ' <<<"$blk" || true; } | { grep -vcE ': valid$' || true; })"
+  nc="$({ grep -c 'closed solid' <<<"$blk" || true; })"
+  vol="$({ grep -oE '^history: Volume = [-0-9.eE+]+' <<<"$blk" || true; } | head -1 | sed 's/.*= //')"; vol="${vol:--}"
+  area="$({ grep -oE '^history: Area = [-0-9.eE+]+' <<<"$blk" || true; } | head -1 | sed 's/.*= //')"; area="${area:--}"
+  bb="$({ grep -oE 'Bounding box min [-0-9.eE+,]+ max [-0-9.eE+,]+' <<<"$blk" || true; } | head -1 | sed -E 's/Bounding box min //; s/ max /,/' | tr ',' ' ')"; bb="${bb:-- - - - - -}"
+  echo "$n $nv $nb $nc $vol $area $bb"
+}
+# rtacmp A B VOLTOL AREATOL BBABS CLOSEDTOO: prints "ok" or the list of differences
+rtacmp() {
+  awk -v a="$1" -v b="$2" -v vt="$3" -v at="$4" -v bt="$5" -v ct="$6" 'BEGIN {
+    na = split(a, x, " "); split(b, y, " "); r = "";
+    if (x[1] != y[1]) r = r " objects " x[1] "->" y[1] ";";
+    if (x[2] != y[2]) r = r " valid " x[2] "->" y[2] ";";
+    if (x[3] != y[3]) r = r " invalid " x[3] "->" y[3] ";";
+    if (ct == 1 && x[4] != y[4]) r = r " closed " x[4] "->" y[4] ";";
+    if (x[5] != y[5]) { if (x[5] == "-" || y[5] == "-") r = r " volume " x[5] "->" y[5] ";"; else { d = x[5] - y[5]; if (d < 0) d = -d; m = x[5] < 0 ? -x[5] : x[5]; if (d > vt * m + 1e-9) r = r " volume " x[5] "->" y[5] ";" } }
+    if (x[6] != y[6]) { if (x[6] == "-" || y[6] == "-") r = r " area " x[6] "->" y[6] ";"; else { d = x[6] - y[6]; if (d < 0) d = -d; if (d > at * x[6] + 1e-9) r = r " area " x[6] "->" y[6] ";" } }
+    for (i = 7; i <= 12; i++) if (x[i] != y[i]) { if (x[i] == "-" || y[i] == "-") { r = r " bbox"; break } d = x[i] - y[i]; if (d < 0) d = -d; if (d > bt) { r = r " bbox[" i - 6 "] " x[i] "->" y[i] ";" } }
+    print (r == "" ? "ok" : r) }'
+}
+rta_ok() { echo "ok   $1"; }
+rta_bad() { echo "FAIL $1"; fail=1; }
+# rtaround CASE PHASE_A PHASE_B DESC [VOLTOL AREATOL BBABS CLOSED]
+rtaround() {
+  local sa sb r
+  sa="$(rtasig "$(rtablock "$1_$2")")"; sb="$(rtasig "$(rtablock "$1_$3")")"
+  r="$(rtacmp "$sa" "$sb" "${5:-0.003}" "${6:-0.003}" "${7:-0.01}" "${8:-1}")"
+  if [ "$r" = ok ]; then rta_ok "RTA_$1: $4 [$sa]"; else rta_bad "RTA_$1: $4:$r  ($2 '$sa' vs $3 '$sb')"; fi
+}
+# rtafmt CASE FMT TOLV TOLA BBABS CLOSED: the import of the CASE exported as FMT equals the reopened .3dm, or the format refused with a reason
+rtafmt() {
+  local xb sb si r reason
+  xb="$(rtablock "$1_x$2")"; sb="$(rtasig "$(rtablock "$1_post")")"; si="$(rtasig "$(rtablock "$1_i$2")")"
+  if [ "${si%% *}" = 0 ]; then
+    reason="$({ grep -iE 'cannot|can.t|not |refus|unsupported|declin|fail|no (solid|brep|exportable|object)|only|nothing' <<<"$xb" || true; } | grep -v '^history: Command:' | head -2 | tr '\n' '|' | cut -c1-260)"
+    if [ -n "$reason" ]; then rta_ok "RTA_$1: .$2 refused with a reason, no object left behind (${reason})"; else rta_bad "RTA_$1: .$2 export+import left NO object and printed NO reason"; fi
+  else
+    r="$(rtacmp "$sb" "$si" "$3" "$4" "$5" "$6")"
+    if [ "$r" = ok ]; then rta_ok "RTA_$1: .$2 round trip equals the reopened .3dm [$si]"; else rta_bad "RTA_$1: .$2 round trip:$r  (3dm '$sb' vs .$2 '$si')"; fi
+  fi
+}
+for c in sblcut sblunion sbltwo rvr ptf cntloft cntpatch cntnet spsscale vase; do
+  rtaround $c pre redo "Undo then Redo returns the state exactly"
+  rtaround $c pre post "Save .3dm, New, Open returns count / validity / closed status / Volume / Area / box"
+done
+for c in sblcut sblunion sbltwo rvr ptf spsscale; do
+  for f in stp igs sat sab; do rtafmt $c $f 0.01 0.02 0.05 1; done
+  for f in stl obj; do rtafmt $c $f 0.01 0.03 0.1 0; done
+done
+for c in cntloft cntpatch cntnet; do
+  for f in stp igs sat sab; do rtafmt $c $f 0.01 0.02 0.05 0; done
+done
+for f in obj stl stp; do rtafmt vase $f 0.02 0.04 0.1 0; done
+for c in satimp sabimp satcyl; do
+  rtaround $c pre redo "Undo then Redo of the ACIS import returns the state exactly"
+  rtaround $c pre post "Save .3dm, New, Open of the ACIS-imported solid returns the same state"
+  for f in stp sat sab stl; do rtafmt $c $f 0.01 0.02 0.05 0; done
+done
+# (d) History
+rtahb() { local a b; a="$(rtasig "$(rtablock hb_moved)")"; b="$(rtasig "$(rtablock hb_fresh)")"; r="$(rtacmp "$a" "$b" 0.005 0.005 0.05 1)"; if [ "$r" = ok ]; then rta_ok "RTA_hb: History On Boolean, saved and reopened, operand moved, UpdateHistory result equals the fresh Boolean [$a]"; else rta_bad "RTA_hb: rebuilt vs fresh:$r ('$a' vs '$b')"; fi; }
+rtahb
+RTA_HS_M="$(rtablock hs_moved)"; RTA_HS_F="$(rtablock hs_fresh)"; RTA_HS_O="$(rtablock hs_orig)"
+RTA_HSM="$(rtasig "$RTA_HS_M")"; RTA_HSF="$(rtasig "$RTA_HS_F")"; RTA_HSO="$(rtasig "$RTA_HS_O")"
+r="$(rtacmp "$RTA_HSM" "$RTA_HSF" 0.005 0.005 0.03 0)"
+if [ "$r" = ok ]; then rta_ok "RTA_hs: History On sweep, saved and reopened, section moved: the rebuilt wall equals the fresh sweep [$RTA_HSM]"; else rta_bad "RTA_hs: rebuilt vs fresh:$r ('$RTA_HSM' vs '$RTA_HSF')"; fi
+if [ "$RTA_HSM" != "$RTA_HSO" ]; then rta_ok "RTA_hs_sensitive: the moved wall differs from the original one (the comparison can fail)"; else rta_bad "RTA_hs_sensitive: nothing moved"; fi
+
 exit $fail
