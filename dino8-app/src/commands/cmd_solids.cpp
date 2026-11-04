@@ -1098,7 +1098,9 @@ void LoftContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, const
   ctx.Doc().Add(SceneObject::MakeSurface(out));
   ctx.Print(head + ": kernel LoftMatched through " + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + " in the loft direction), the " + which +
             " section made identical to the edge and the next rows rewritten by MatchEdge as " + ContinuityWhat(req.continuity) + " continuity; " +
-            ContinuityMeasuredNote(req, m_end) + "; worst distance of any section's samples from the finished surface " + Sig3(rep.section_deviation_max) +
+            ContinuityMeasuredNote(req, m_end) + "; cross-derivative scale " + Sig3(at_start ? rep.start_scale : rep.end_scale) +
+            " searched to keep the sections on their data (MatchEdge's default scale would have moved a section by " + Sig3(at_start ? rep.start_default_deviation : rep.end_default_deviation) +
+            "); worst distance of any section's samples from the finished surface " + Sig3(rep.section_deviation_max) +
             " (document tolerance " + FormatNumber(tol) + (al.reversed ? ", " + std::to_string(al.reversed) + " curve(s) reversed first" : std::string()) + "); uncapped surface");
   NoHistoryNote(ctx, "Loft", req);
 }

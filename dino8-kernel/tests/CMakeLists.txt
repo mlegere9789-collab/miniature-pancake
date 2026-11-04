@@ -21,3 +21,9 @@ target_link_libraries(dino8_scratch_test PRIVATE dino8_kernel)
 # deliberately NOT registered with add_test - see its own top comment).
 add_executable(dino8_general_boolean_sweep general_boolean_sweep.cpp)
 target_link_libraries(dino8_general_boolean_sweep PRIVATE dino8_kernel)
+
+# Edge continuity, second pass (rational-adjacent LoftMatched, derivative-row re-weighting): a small standalone executable
+# so it builds in seconds instead of adding to the very large test_basic.cpp translation unit.
+add_executable(dino8_continuity2_tests continuity2_tests.cpp)
+target_link_libraries(dino8_continuity2_tests PRIVATE dino8_kernel)
+add_test(NAME dino8_continuity2_tests COMMAND dino8_continuity2_tests)

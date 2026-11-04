@@ -3001,11 +3001,16 @@ inline bool EvalJet(const ON_NurbsSurface& ns, double u, double v, Jet& j) {
 
 // Closest point of `s` to `p`: the surface's own grid search, then Newton
 // iterations on the squared distance (clamped to the domain).
+inline bool ProjectFrom(const NurbsSurface& s, const ON_3dPoint& p, double u, double v, Jet& j);
 inline bool Project(const NurbsSurface& s, const ON_3dPoint& p, Jet& j) {
-  const ON_NurbsSurface& ns = s.raw();
   const Point2d uv0 = s.ClosestPointParameter(p, 40, 40);
+  return ProjectFrom(s, p, uv0.x, uv0.y, j);
+}
+
+// Newton iterations on the squared distance from the seed (u, v) (clamped to the domain).
+inline bool ProjectFrom(const NurbsSurface& s, const ON_3dPoint& p, double u, double v, Jet& j) {
+  const ON_NurbsSurface& ns = s.raw();
   const ON_Interval dU = ns.Domain(0), dV = ns.Domain(1);
-  double u = uv0.x, v = uv0.y;
   Jet t;
   for (int it = 0; it < 20; ++it) {
     if (!EvalJet(ns, u, v, t)) return false;
@@ -3254,22 +3259,48 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points_in, co
   FitResult best;
   double best_score = std::numeric_limits<double>::max();
   const double aspect = (y1 - y0) / (x1 - x0);
-  for (int n = 2; n <= max_count; ++n) {
-    int nu = n, nv = n;
-    if (aspect >= 1.0) nv = std::min(max_count, std::max(2, static_cast<int>(std::lround(n * aspect))));
-    else nu = std::min(max_count, std::max(2, static_cast<int>(std::lround(n / aspect))));
-    if (static_cast<size_t>(nu) * static_cast<size_t>(nv) > data.size()) break;  // never underdetermined
-    FitResult r = FitHeights(data, x0, x1, y0, y1, nu, nv, 1e-9, cons.empty() ? nullptr : &cons);
-    if (!r.ok) continue;
-    if (cons.empty()) {
-      if (!best.ok || r.max_dev < best.max_dev) best = r;
-      if (r.max_dev <= tolerance) break;
-    } else {
-      // Net growth is driven by the data deviation AND the derivative-row residuals.
-      const double score = std::max({r.max_dev / tolerance, r.grad_err / angle_scale,
-                                     curv_scale < std::numeric_limits<double>::max() ? r.hess_err / curv_scale : 0.0});
-      if (!best.ok || score < best_score) { best = r; best_score = score; }
-      if (score <= 0.25) break;
+  // One growth pass: nets of increasing size under the derivative rows `cs`; the best by data deviation (plain) or by
+  // the worst of data deviation / gradient residual / Hessian residual relative to what was asked (continuity).
+  auto grow = [&](const std::vector<DerivConstraint>& cs, FitResult& gbest, double& gscore) {
+    gscore = std::numeric_limits<double>::max();
+    for (int n = 2; n <= max_count; ++n) {
+      int nu = n, nv = n;
+      if (aspect >= 1.0) nv = std::min(max_count, std::max(2, static_cast<int>(std::lround(n * aspect))));
+      else nu = std::min(max_count, std::max(2, static_cast<int>(std::lround(n / aspect))));
+      if (static_cast<size_t>(nu) * static_cast<size_t>(nv) > data.size()) break;  // never underdetermined
+      FitResult r = FitHeights(data, x0, x1, y0, y1, nu, nv, 1e-9, cs.empty() ? nullptr : &cs);
+      if (!r.ok) continue;
+      if (cs.empty()) {
+        if (!gbest.ok || r.max_dev < gbest.max_dev) gbest = r;
+        if (r.max_dev <= tolerance) break;
+      } else {
+        // Net growth is driven by the data deviation AND the derivative-row residuals.
+        const double score = std::max({r.max_dev / tolerance, r.grad_err / angle_scale,
+                                       curv_scale < std::numeric_limits<double>::max() ? r.hess_err / curv_scale : 0.0});
+        if (!gbest.ok || score < gscore) { gbest = r; gscore = score; }
+        if (score <= 0.25) break;
+      }
+    }
+  };
+  grow(cons, best, best_score);
+  // Re-weighting: the derivative rows are soft (weighted) constraints, so the tangent plane is met only as far as the net
+  // and the data allow at the weight chosen. Raise the weight of the rows by 100x per pass and keep the stiffer fit while
+  // it still meets the data tolerance and lowers the gradient residual (the data stay the arbiter: a request the data
+  // contradict stops at the last weight that honours the tolerance). The boost actually used is reported.
+  double boost_used = 1.0;
+  if (!cons.empty() && best.ok) {
+    double max_boost = 1.0;
+    for (const FitEdgeContinuity& fe : edges) max_boost = std::max(max_boost, fe.max_weight_boost);
+    for (double boost = 100.0; boost <= max_boost * 1.0000001; boost *= 100.0) {
+      std::vector<DerivConstraint> stiff = cons;
+      for (DerivConstraint& k : stiff) k.w *= boost;
+      FitResult cand;
+      double cscore = 0.0;
+      grow(stiff, cand, cscore);
+      if (!cand.ok || !(cand.max_dev <= tolerance) || !(cand.grad_err <= best.grad_err) || !(cand.hess_err <= best.hess_err * 1.0000001 + 1e-300)) break;
+      best = cand;
+      best_score = cscore;
+      boost_used = boost;
     }
   }
   if (!best.ok) return edges.empty() ? Result::Failed : refuse("the patch fit is singular");
@@ -3304,6 +3335,7 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points_in, co
   rep.rms_deviation = best.rms_dev;
   rep.max_boundary_deviation = best.max_boundary_dev;
   rep.flat_deviation = flat;
+  rep.weight_boost = boost_used;
   rep.plane_origin = centre;
   rep.plane_x = xaxis;
   rep.plane_y = yaxis;
@@ -3521,6 +3553,7 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
     fe.continuity = ne.continuity;
     fe.angle_tolerance = ne.angle_tolerance;
     fe.curvature_tolerance = ne.curvature_tolerance;
+    fe.max_weight_boost = ne.max_weight_boost;
     const NurbsCurve& c = curves[static_cast<size_t>(ne.curve_index)];
     const auto d = c.Domain();
     for (int k = 0; k <= 64; ++k) fe.points.push_back(c.PointAt(d.min + (d.max - d.min) * k / 64.0));
@@ -3884,7 +3917,7 @@ Result NurbsSurface::MeasureEdgeContinuity(const NurbsSurface& adjacent, int adj
 
 Result NurbsSurface::LoftMatched(const std::vector<NurbsCurve>& sections, int degree, const LoftEndMatch* start, const LoftEndMatch* end,
                                  double tolerance, NurbsSurface& out, LoftMatchReport& report, double angle_tolerance,
-                                 double curvature_tolerance) {
+                                 double curvature_tolerance, bool optimize_scale) {
   namespace cd = continuity_detail;
   if (!(tolerance > 0.0) || !std::isfinite(tolerance) || !(angle_tolerance > 0.0) || !(curvature_tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::LoftMatched: tolerances must be positive and finite");
@@ -3924,6 +3957,28 @@ Result NurbsSurface::LoftMatched(const std::vector<NurbsCurve>& sections, int de
   NurbsSurface work = loft;
   const End ends[2] = {{start, true, "start"}, {end, false, "end"}};
   const ON_NurbsSurface& wn = loft.raw();
+  // Where each section sample sits on the (exactly interpolating) plain loft: the Newton seeds for measuring how far a
+  // rewritten surface moves the sections.
+  std::vector<std::vector<std::pair<ON_3dPoint, std::pair<double, double>>>> seeds(sections.size());
+  for (size_t i = 0; i < sections.size() && optimize_scale; ++i) {
+    const auto d = sections[i].Domain();
+    for (int k = 0; k <= 32; ++k) {
+      const Point3d p = sections[i].PointAt(d.min + (d.max - d.min) * k / 32.0);
+      const Point2d uv = loft.ClosestPointParameter(p, 40, 40);
+      seeds[i].push_back({p, {uv.x, uv.y}});
+    }
+  }
+  auto deviation_of = [&](const NurbsSurface& cand) {
+    double worst = 0.0;
+    for (const auto& per_section : seeds) {
+      for (const auto& sd : per_section) {
+        cd::Jet j;
+        if (!cd::ProjectFrom(cand, sd.first, sd.second.first, sd.second.second, j)) return std::numeric_limits<double>::infinity();
+        worst = std::max(worst, sd.first.DistanceTo(j.P));
+      }
+    }
+    return worst;
+  };
   for (const End& e : ends) {
     if (e.m == nullptr) continue;
     const ON_NurbsSurface& adj = e.m->surface->raw();
@@ -3962,9 +4017,45 @@ Result NurbsSurface::LoftMatched(const std::vector<NurbsCurve>& sections, int de
       return refuse(std::string(e.name) + " section's end points are " + std::to_string(std::min(straight, flipped)) +
                     " from the adjacent edge's end points: the section does not span that edge");
     }
-    MatchEdgeReport mr;
-    const Result r = work.MatchEdge(1, e.at_min, *e.m->surface, e.m->fixed_direction, e.m->at_min, e.m->continuity, &mr);
-    if (r != Result::Ok) return refuse(std::string(e.name) + ": MatchEdge refused (non-clamped surface, adjacent surface of too low a degree, or a self-check failure)");
+    // MatchEdge fixes the cross-derivative MAGNITUDE with one scale (default: the ratio of the two surfaces' mean cross
+    // speeds). Only the tangent PLANE is prescribed by the adjacent surface, so the magnitude is free; a wrong one makes the
+    // rewritten row pull the interior sections off their data (a circular wall with a chord-length parameterised loft
+    // moved section 2 by 0.044). Search the scale that keeps the sections where they were given.
+    MatchEdgeReport mr0;
+    NurbsSurface best = work;
+    if (best.MatchEdge(1, e.at_min, *e.m->surface, e.m->fixed_direction, e.m->at_min, e.m->continuity, &mr0) != Result::Ok) {
+      return refuse(std::string(e.name) + ": MatchEdge refused (non-clamped surface, adjacent surface of too low a degree, or a self-check failure)");
+    }
+    double best_dev = deviation_of(best);
+    double best_scale = mr0.scale;
+    (e.at_min ? report.start_default_deviation : report.end_default_deviation) = best_dev;
+    if (optimize_scale && e.m->continuity != MatchContinuity::Position && best_dev > 1e-9 * tolerance) {
+      const double inf = std::numeric_limits<double>::infinity();
+      auto eval = [&](double x) {
+        NurbsSurface c = work;
+        MatchEdgeReport m;
+        const double sc = mr0.scale * std::exp2(x);
+        if (c.MatchEdge(1, e.at_min, *e.m->surface, e.m->fixed_direction, e.m->at_min, e.m->continuity, &m, sc) != Result::Ok) return inf;
+        const double d = deviation_of(c);
+        if (d < best_dev) { best_dev = d; best = c; best_scale = sc; }
+        return d;
+      };
+      double bx = 0.0, bd = best_dev;
+      for (int k = -8; k <= 8; ++k) {
+        if (k == 0) continue;
+        const double d = eval(0.5 * k);
+        if (d < bd) { bd = d; bx = 0.5 * k; }
+      }
+      const double g = 0.381966011250105;
+      double a = bx - 0.5, b = bx + 0.5, x1 = a + g * (b - a), x2 = b - g * (b - a);
+      double f1 = eval(x1), f2 = eval(x2);
+      for (int it = 0; it < 16; ++it) {
+        if (f1 < f2) { b = x2; x2 = x1; f2 = f1; x1 = a + g * (b - a); f1 = eval(x1); }
+        else { a = x1; x1 = x2; f1 = f2; x2 = b - g * (b - a); f2 = eval(x2); }
+      }
+    }
+    work = best;
+    (e.at_min ? report.start_scale : report.end_scale) = best_scale;
   }
 
   // Every section against the finished surface.

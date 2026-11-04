@@ -268,6 +268,11 @@ class NurbsSurface {
     MatchContinuity continuity = MatchContinuity::Tangent;
     double angle_tolerance = 1e-3;
     double curvature_tolerance = 1e-2;
+    // The derivative rows are weighted least-squares rows. After the first fit the weight is raised 100x at a time (up to
+    // this factor) while the fit still meets the data tolerance and the gradient / Hessian residuals do not grow: a
+    // request the data allow is then met far more tightly than the base weight can. 1 = the base weight only (the
+    // behaviour before re-weighting existed).
+    double max_weight_boost = 1e4;
   };
 
   // `FitCurveNetwork()`'s form of the same request: the boundary is input
@@ -278,6 +283,7 @@ class NurbsSurface {
     MatchContinuity continuity = MatchContinuity::Tangent;
     double angle_tolerance = 1e-3;
     double curvature_tolerance = 1e-2;
+    double max_weight_boost = 1e4;  // see FitEdgeContinuity
   };
 
   // Measures this surface against `adjacent` along the isoparametric edge
@@ -308,6 +314,7 @@ class NurbsSurface {
     // Filled by the continuity-aware FitPatch() only: one measurement per
     // requested edge (same order) and the refusal text when it returned Failed.
     std::vector<EdgeContinuityMeasure> edge_continuity;
+    double weight_boost = 1.0;  // the derivative-row weight factor of the returned fit (FitEdgeContinuity::max_weight_boost)
     std::string reason;
   };
 
@@ -437,6 +444,10 @@ class NurbsSurface {
     std::vector<double> section_deviation;       // per section
     EdgeContinuityMeasure start, end;            // measured, when that end was requested
     bool start_matched = false, end_matched = false;
+    // The cross-derivative scale MatchEdge was run with at each matched end (0 = end not matched), and the worst section
+    // deviation that end's match had with MatchEdge's default scale (before the search described at LoftMatched()).
+    double start_scale = 0.0, end_scale = 0.0;
+    double start_default_deviation = 0.0, end_default_deviation = 0.0;
     std::string reason;                          // refusal text when Failed
   };
 
@@ -464,9 +475,16 @@ class NurbsSurface {
   // measured tangent angle above `angle_tolerance` / cross-curvature
   // difference above `curvature_tolerance` after the match. `out` is only
   // written on Ok. Sections must be open (a closed loft has no ends).
+  //
+  // `optimize_scale` (default on): MatchEdge() fixes the magnitude of the cross derivative with one scale (the ratio of
+  // the two surfaces' mean cross speeds) although the adjacent surface only prescribes its DIRECTION; a wrong magnitude
+  // pulls the interior sections off their data. With the option on, each matched end searches the scale (a scan over
+  // 2^-4 .. 2^4 times the default, then golden-section refinement) that minimises the worst distance of the sections'
+  // samples from the rewritten surface; the default-scale deviation is reported next to it. Off = exactly the previous
+  // behaviour (the default scale).
   static Result LoftMatched(const std::vector<NurbsCurve>& sections, int degree, const LoftEndMatch* start,
                             const LoftEndMatch* end, double tolerance, NurbsSurface& out, LoftMatchReport& report,
-                            double angle_tolerance = 1e-3, double curvature_tolerance = 1e-2);
+                            double angle_tolerance = 1e-3, double curvature_tolerance = 1e-2, bool optimize_scale = true);
 
   // Surface-to-surface continuity blend - the genuine kernel-library
   // counterpart to NurbsCurve::BlendCurves() (curve.h), closing this
