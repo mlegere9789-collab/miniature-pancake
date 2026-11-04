@@ -1,0 +1,256 @@
+# Several rims of one solid of revolution blended exactly in ONE run (the "MRM_" section at the end of smoke.sh).
+#
+# FilletEdge now stages every revolve rim picked on the same solid and applies them together at Enter through
+# kernel::FilletRevolveRims (one exact rebuild, each rim with the radius current at its pick; cmd_fillet.cpp
+# TryRevolveRimsFillet); ChamferEdge applies each exact kernel bevel as it is picked, and the kernel now also reads back
+# the torus blends / bevel cones its own earlier calls made, so rims can follow one another across runs as well.
+#
+# The solid is the app's own chamfered cylinder (see rvr_script.txt): radius 5, height 4, top rim chamfered 1 x 1, a
+# 4-face solid of revolution with the (rho, z) profile (0,0) (5,0) (5,3) (4,4) (0,4); V1 = 299.498. Rim circles are
+# picked as 0,rho,z: (5,0) wall / bottom cap, (5,3) bevel / wall, (4,4) bevel / top cap.
+#
+# Every case starts from `New` and is bracketed by a marker line ("MRMBEGIN_<name>", an unknown command) that smoke.sh
+# uses to slice this script's output into per-case blocks.
+
+SetActiveViewport Top
+
+# two rims, two radii, one run: r=1.5 on the 90-degree wall / bottom rim and r=3 on the 135-degree bevel / top rim
+New
+MRMBEGIN_two
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Radius=3
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# the same two picks in the other order: same solid
+New
+MRMBEGIN_two_swapped
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=3
+0,4,4
+Radius=1.5
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# the same two rims in two separate runs (the second one on a solid that already carries the first torus)
+New
+MRMBEGIN_two_runs
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Enter
+FilletEdge
+Radius=3
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# three rims of the chamfered cylinder in one run, three radii; (5,3) and (4,4) share the 1.414-long bevel, (5,0) and (5,3) the 3-long wall
+New
+MRMBEGIN_three
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Radius=1.5
+0,5,3
+Radius=1.5
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# overlapping setbacks: r=1.8 on both ends of the bevel (0.745 + 0.745 > 1.414). The second pick is refused with the
+# kernel's reason, the first stays staged and applies.
+New
+MRMBEGIN_overlap
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.8
+0,5,3
+Radius=1.8
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# the same rim picked twice in one run: the second pick is refused, the first applies
+New
+MRMBEGIN_same
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Radius=1.0
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfers: two exact kernel bevels in one ChamferEdge run (wall 1 x cap 0.5 at the bottom rim, bevel 1.0 x cap 0.8 at the top rim)
+New
+MRMBEGIN_chamfer_two
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Radius=1
+Distance2=0.8
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# rims that border a bevel cone an earlier run made: chamfer the bottom rim, then fillet BOTH ends of the new bevel cone in one run
+New
+MRMBEGIN_mixed
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Enter
+FilletEdge
+Radius=0.8
+0,5,1
+Radius=0.8
+0,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# controls: the single-rim revolve fillet / chamfer are exactly what rvr_script.txt pins
+New
+MRMBEGIN_ctl_single
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+New
+MRMBEGIN_ctl_single_chamfer
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: both rims of a plain cylinder still take the app's own exact quarter tori, never the revolve path
+New
+MRMBEGIN_ctl_cyl_two
+Cylinder 0,0,0 5 4
+FilletEdge
+Radius=1
+0,5,4
+Radius=1
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: both rims of a cone frustum still take the kernel cap-rim path
+New
+MRMBEGIN_ctl_tcone_two
+TCone 0,0,0 5 10 3
+FilletEdge
+Radius=1
+0,3,10
+Radius=1
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a box edge is still the kernel's exact planar fillet
+New
+MRMBEGIN_ctl_box
+Box 0,0,0 6,6,0 4
+FilletEdge
+Radius=1
+6,3,4
+Enter
+SelAll
+List
+
+MRMBEGIN_end
