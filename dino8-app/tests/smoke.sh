@@ -12908,6 +12908,7 @@ unx_run() {
   fi
 }
 UNX_GEN="$(unx_run "$UNXD/gen.txt")"
+echo "DBG UNX_GEN lines=$(wc -l <<<"$UNX_GEN") tail: $(tail -12 <<<"$UNX_GEN" | cut -c1-200 | tr '\n' '|')"; echo "DBG UNXD: $(ls -la "$UNXD" | tr '\n' '|')"
 for f in in.igs in.stp mm.igs mm.stp; do
   if [ -s "$UNXD/$f" ]; then unx_ok "export_wrote_$f"; else unx_bad "export_wrote_$f"; echo "$UNX_GEN" | tail -5; fi
 done
@@ -13107,6 +13108,7 @@ SelAll
 Length
 EOS
 UNX_OUT="$(unx_run "$UNXD/imp.txt")"
+echo "DBG UNX_OUT lines=$(wc -l <<<"$UNX_OUT") tail: $(tail -25 <<<"$UNX_OUT" | cut -c1-200 | tr '\n' '|')"; echo "DBG UNX_OUT length-lines: $(grep -c "Total length = " <<<"$UNX_OUT" || true)"
 mapfile -t UNX_LEN < <(grep "Total length = " <<<"$UNX_OUT" || true)
 unx_len() {  # unx_len <index> <regex> <name>
   if [ "${#UNX_LEN[@]}" -gt "$1" ] && grep -Eq "$2" <<<"${UNX_LEN[$1]}"; then unx_ok "$3"; else unx_bad "$3 (got: ${UNX_LEN[$1]:-<none>})"; fi
