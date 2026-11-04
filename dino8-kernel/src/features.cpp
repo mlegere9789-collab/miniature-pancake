@@ -2013,6 +2013,12 @@ ON_Xform FrameToFrame(const ON_Plane& from, const ON_Plane& to) {
 
 void RequirePathAndCount(const NurbsCurve& path, int count, const std::string& name) {
   if (count < 2) throw std::invalid_argument(name + ": count must be at least 2");
+  // measured: count 100000 never returned (a Brep copy per station) and INT_MAX threw std::bad_alloc
+  constexpr int kMaxArrayStations = 10000;
+  if (count > kMaxArrayStations) {
+    throw std::invalid_argument(name + ": " + std::to_string(count) + " stations requested, more than the " +
+                                std::to_string(kMaxArrayStations) + " this operation supports");
+  }
   if (!(path.Length() > 0.0)) throw std::invalid_argument(name + ": the path curve has zero length");
 }
 
