@@ -51,3 +51,15 @@ dino8-app/tests/run_sections.sh -j2 -b build/Dino8 KWR HSO FRH widgets
 * Sections under `-j` see a persistent Xvfb for the whole job instead of a fresh one per app launch (as the full
   script gets from `xvfb-run -a`); in measured runs this made no difference to results, but it is a difference.
 * Each job repeats the harness's initial app launch (a few seconds).
+
+### Measured (one 4-core machine shared with about a dozen other jobs, load average 7-11)
+
+* `run_sections.sh KWR` alone: 58 s wall (53 ok, 1 FAIL: `KWR_O_cyl`, deterministic across two runs against the
+  prebuilt `Dino8` I had; not compared with a full run, see below). `FRH HSO KWR` in one job (`-j1`): 165 s
+  (189 ok, 1 FAIL). `FRH HSO -j2`: 165 s wall (FRH 120 s with 57 ok, HSO 165 s with 79 ok, 0 FAIL); HSO's 79 ok
+  lines were identical in count in the `-j1` and `-j2` runs.
+* The assembled script for FRH was diffed against smoke.sh (harness lines 1..129 + FRH range + `exit $fail`):
+  identical.
+* NOT verified: a count comparison against a complete `smoke.sh` run. Two attempts to run the whole baseline
+  smoke.sh in this sandbox (about 16 minutes each) stopped at the same early spot (the flow-script step, around
+  line 3409, before the KWR/HSO/FRH sections are reached), so no full-run counts exist for those sections.
