@@ -1,0 +1,51 @@
+# QC2_: hostile-input probes for Section / Contour (smoke section tests/sections/60_qc2.sh cuts the output at each
+# "Unknown command: QC2BEGIN_<name>" marker line).
+SetActiveViewport Top
+New
+
+QC2BEGIN_sec_nan_point
+Box 0,0,0 20,20,0 10
+SelAll
+Section
+nan,5,0
+7,-20,0
+7,20,0
+Cancel
+SelAll
+List
+New
+
+QC2BEGIN_sec_inf_point
+Box 0,0,0 20,20,0 10
+SelAll
+Section
+inf,5,0
+7,-20,0
+7,20,0
+Cancel
+New
+
+QC2BEGIN_contour_tiny
+Box 0,0,0 20,20,0 10
+SelAll
+Contour
+0,0,0
+0,0,1
+1e-9
+5
+Cancel
+New
+
+QC2BEGIN_contour_bad_spacing
+Box 0,0,0 20,20,0 10
+SelAll
+Contour
+0,0,0
+0,0,1
+-5
+nan
+5
+Cancel
+New
+
+QC2BEGIN_end
