@@ -2351,6 +2351,258 @@ Brep ShellClosedExtrusion(const NurbsCurve& profile, Vector3d direction, double 
   return Brep::Compound({outer, cavity});
 }
 
+Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
+                            const std::vector<double>& wall_thickness,
+                            double bottom_thickness, double top_thickness) {
+  const std::string fn = "dino8::kernel::ShellPolylineExtrusion: ";
+  auto bad = [&](const std::string& why) { return std::invalid_argument(fn + why); };
+  if (!std::isfinite(bottom_thickness) || !std::isfinite(top_thickness) || bottom_thickness < 0.0 || top_thickness < 0.0) {
+    throw bad("bottom_thickness and top_thickness must be finite and >= 0 (0 removes that cap)");
+  }
+  for (double w : wall_thickness) {
+    if (!std::isfinite(w) || w < 0.0) throw bad("every wall thickness must be finite and >= 0 (0 removes that wall)");
+  }
+  if (!std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z)) {
+    throw bad("direction must be finite");
+  }
+  const double height = direction.Length();
+  if (!(height > 0.0)) throw bad("direction must be non-zero");
+  if (!(bottom_thickness + top_thickness < height)) {
+    throw bad("bottom_thickness + top_thickness must be strictly less than the extrusion height - otherwise no cavity height is left");
+  }
+  if (!profile.IsClosed()) throw bad("profile must be a closed curve");
+  if (profile.Degree() != 1 || profile.raw().IsRational()) {
+    throw bad("profile must be a polyline (degree 1, non-rational); a curved profile has no exact planar-face construction here");
+  }
+  std::vector<Point3d> P;
+  for (int i = 0; i < profile.ControlPointCount(); ++i) P.push_back(profile.ControlPointAt(i));
+  const BoundingBox bbox = profile.GetTightBoundingBox();
+  const double size = std::sqrt((bbox.max.x - bbox.min.x) * (bbox.max.x - bbox.min.x) +
+                                (bbox.max.y - bbox.min.y) * (bbox.max.y - bbox.min.y) +
+                                (bbox.max.z - bbox.min.z) * (bbox.max.z - bbox.min.z));
+  const double tol = tolerance::DistanceForSize(size);
+  if (P.size() > 1 && P.front().DistanceTo(P.back()) <= tol) P.pop_back();
+  const size_t n = P.size();
+  if (n < 3) throw bad("profile needs at least 3 distinct vertices");
+  if (wall_thickness.size() != n) {
+    throw bad("wall_thickness must have one entry per profile edge (" + std::to_string(n) + " edges, got " +
+              std::to_string(wall_thickness.size()) + ")");
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (P[i].DistanceTo(P[(i + 1) % n]) <= tol) throw bad("profile has a zero-length edge");
+  }
+  ON_Plane plane;
+  if (!profile.raw().IsPlanar(&plane, tol)) throw bad("profile must be planar");
+  Vector3d dhat = direction;
+  dhat.Unitize();
+  if (std::fabs(ON_DotProduct(dhat, plane.zaxis)) < 1.0 - 1e-9) {
+    throw bad("direction must be perpendicular to the profile's plane - an oblique prism has no uniform normal wall thickness");
+  }
+  bool any_wall = false;
+  for (double w : wall_thickness) any_wall = any_wall || w > 0.0;
+  if (!any_wall) throw bad("at least one wall must keep a positive thickness (nothing would be hollowed)");
+
+  // Right-handed 2D frame (ex, ey, dhat) at P[0]; make the polygon CCW about dhat.
+  Vector3d ex = plane.xaxis;
+  ex = ex - ON_DotProduct(ex, dhat) * dhat;
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(dhat, ex);
+  const Point3d origin = P[0];
+  auto to2 = [&](const Point3d& p) { return Point2d(ON_DotProduct(p - origin, ex), ON_DotProduct(p - origin, ey)); };
+  auto to3 = [&](const Point2d& q, double z) { return origin + q.x * ex + q.y * ey + z * dhat; };
+  std::vector<Point2d> P2;
+  for (const Point3d& p : P) P2.push_back(to2(p));
+  std::vector<double> d = wall_thickness;
+  if (detail::SignedArea(P2) < 0.0) {
+    std::reverse(P2.begin(), P2.end());
+    // reversed vertex j is original n-1-j; reversed edge j (j -> j+1) is original edge n-2-j traversed backwards
+    std::vector<double> dr(n);
+    for (size_t j = 0; j < n; ++j) dr[j] = wall_thickness[(2 * n - 2 - j) % n];
+    d = dr;
+  }
+  const double area_p = detail::SignedArea(P2);
+  if (!(area_p > tol * tol)) throw bad("profile encloses no area");
+  if (!detail::IsSimplePolygon(P2)) throw bad("profile is self-crossing");
+
+  // Moved-edge corners.
+  std::vector<Point2d> nrm(n), C(n);
+  std::vector<double> len(n);
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a = P2[i];
+    const Point2d& b = P2[(i + 1) % n];
+    len[i] = std::hypot(b.x - a.x, b.y - a.y);
+    nrm[i] = Point2d(-(b.y - a.y) / len[i], (b.x - a.x) / len[i]);  // inward (left of a CCW edge)
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const size_t h = (i + n - 1) % n;  // edge arriving at vertex i
+    const double det = nrm[h].x * nrm[i].y - nrm[h].y * nrm[i].x;
+    const double dot = nrm[h].x * nrm[i].x + nrm[h].y * nrm[i].y;
+    if (std::fabs(det) < 1e-9) {
+      if (dot < 0.0) throw bad("a profile corner folds back on itself (adjacent edges antiparallel)");
+      if (std::fabs(d[h] - d[i]) > tol) {
+        throw bad("two collinear adjacent walls have different thicknesses - the cavity corner between them is not unique");
+      }
+      C[i] = Point2d(P2[i].x + d[i] * nrm[i].x, P2[i].y + d[i] * nrm[i].y);
+      continue;
+    }
+    const double r0 = d[h] + P2[i].x * nrm[h].x + P2[i].y * nrm[h].y;
+    const double r1 = d[i] + P2[i].x * nrm[i].x + P2[i].y * nrm[i].y;
+    C[i] = Point2d((r0 * nrm[i].y - r1 * nrm[h].y) / det, (nrm[h].x * r1 - nrm[i].x * r0) / det);
+  }
+
+  // Independent feasibility verification (does not trust the corner formula).
+  const double slack = 4.0 * tol;
+  const double area_c = detail::SignedArea(C);
+  if (!(area_c > tol * tol)) throw bad("the cavity collapsed or inverted (thickness beyond the profile's local half-width)");
+  if (!detail::IsSimplePolygon(C)) throw bad("the cavity outline self-crosses (thickness beyond the profile's local feature size)");
+  auto seg_dist = [](const Point2d& p, const Point2d& a, const Point2d& b) {
+    const double abx = b.x - a.x, aby = b.y - a.y, l2 = abx * abx + aby * aby;
+    double s = l2 > 0.0 ? ((p.x - a.x) * abx + (p.y - a.y) * aby) / l2 : 0.0;
+    s = std::min(1.0, std::max(0.0, s));
+    return std::hypot(p.x - (a.x + s * abx), p.y - (a.y + s * aby));
+  };
+  auto inside_p = [&](const Point2d& p) {
+    bool in = false;
+    for (size_t j = 0; j < n; ++j) {
+      const Point2d& a = P2[j];
+      const Point2d& b = P2[(j + 1) % n];
+      if ((a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y)) in = !in;
+    }
+    return in;
+  };
+  double quad_area = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& ci = C[i];
+    const Point2d& cj = C[(i + 1) % n];
+    if (d[i] > 0.0) {
+      const Point2d& a = P2[i];
+      const Point2d& b = P2[(i + 1) % n];
+      const double ex2 = b.x - a.x, ey2 = b.y - a.y;
+      if (!((cj.x - ci.x) * ex2 + (cj.y - ci.y) * ey2 > tol * len[i])) {
+        throw bad("the cavity edge behind wall " + std::to_string(i) + " collapsed or reversed (thickness beyond the local half-width)");
+      }
+      std::vector<Point2d> q = {a, b, cj, ci};
+      const double qa = detail::SignedArea(q);
+      if (!(qa > 0.0)) throw bad("the wall rim behind wall " + std::to_string(i) + " is inverted");
+      quad_area += qa;
+      // wall pinch: samples along this cavity edge keep their distance from every KEPT wall
+      for (int k = 0; k <= 8; ++k) {
+        const Point2d s(ci.x + (cj.x - ci.x) * k / 8.0, ci.y + (cj.y - ci.y) * k / 8.0);
+        if (!inside_p(s) && seg_dist(s, a, b) > slack) throw bad("the cavity leaves the profile");
+        for (size_t j = 0; j < n; ++j) {
+          if (!(d[j] > 0.0)) continue;
+          if (seg_dist(s, P2[j], P2[(j + 1) % n]) < std::min(d[i], d[j]) - slack) {
+            throw bad("the cavity comes closer to wall " + std::to_string(j) + " than the wall thickness asked for - walls would pinch");
+          }
+        }
+      }
+    } else {
+      // removed wall: both cavity corners must lie ON this wall's own edge, in order
+      const Point2d& a = P2[i];
+      const Point2d& b = P2[(i + 1) % n];
+      const double ux = (b.x - a.x) / len[i], uy = (b.y - a.y) / len[i];
+      const double s0 = (ci.x - a.x) * ux + (ci.y - a.y) * uy;
+      const double s1 = (cj.x - a.x) * ux + (cj.y - a.y) * uy;
+      if (!(s0 >= -slack && s1 <= len[i] + slack && s0 <= s1 + slack)) {
+        throw bad("removed wall " + std::to_string(i) + ": the cavity does not end inside this wall's own edge (a removed wall next to a reflex corner, or thick neighbours that overlap)");
+      }
+    }
+  }
+  if (std::fabs(quad_area - (area_p - area_c)) > 1e-9 * area_p + tol * tol) {
+    throw bad("the wall rim quads do not tile the profile minus the cavity (overlapping or inverted rim) - thickness is infeasible");
+  }
+
+  const double zb = bottom_thickness, zt = height - top_thickness, H = height;
+  std::vector<Brep::PlanarFace> faces;
+  auto add = [&](std::vector<Point3d> pts, const Vector3d& outward) {
+    std::vector<Point3d> q;
+    for (const Point3d& p : pts) {
+      if (q.empty() || q.back().DistanceTo(p) > tol) q.push_back(p);
+    }
+    while (q.size() > 1 && q.front().DistanceTo(q.back()) <= tol) q.pop_back();
+    if (q.size() < 3) return;
+    Vector3d nw(0, 0, 0);  // Newell normal (twice the area vector)
+    for (size_t i = 0; i < q.size(); ++i) {
+      const Point3d& a = q[i];
+      const Point3d& b = q[(i + 1) % q.size()];
+      nw.x += (a.y - b.y) * (a.z + b.z);
+      nw.y += (a.z - b.z) * (a.x + b.x);
+      nw.z += (a.x - b.x) * (a.y + b.y);
+    }
+    if (nw.Length() < 2.0 * tol * tol) return;  // zero-area sliver (flush degenerate strip)
+    if (ON_DotProduct(nw, outward) < 0.0) std::reverse(q.begin(), q.end());
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(q[0], outward);
+    f.loop = std::move(q);
+    faces.push_back(std::move(f));
+  };
+  auto Pz = [&](size_t i, double z) { return to3(P2[i % n], z); };
+  auto Cz = [&](size_t i, double z) { return to3(C[i % n], z); };
+  auto loopP = [&](double z) { std::vector<Point3d> v; for (size_t i = 0; i < n; ++i) v.push_back(Pz(i, z)); return v; };
+  auto loopC = [&](double z) { std::vector<Point3d> v; for (size_t i = 0; i < n; ++i) v.push_back(Cz(i, z)); return v; };
+  auto rim = [&](size_t i, double z) { return std::vector<Point3d>{Pz(i, z), Pz(i + 1, z), Cz(i + 1, z), Cz(i, z)}; };
+  const bool has_bottom = bottom_thickness > 0.0, has_top = top_thickness > 0.0;
+  // Caps.
+  if (has_bottom) add(loopP(0.0), -dhat);
+  else for (size_t i = 0; i < n; ++i) if (d[i] > 0.0) add(rim(i, 0.0), -dhat);
+  if (has_top) add(loopP(H), dhat);
+  else for (size_t i = 0; i < n; ++i) if (d[i] > 0.0) add(rim(i, H), dhat);
+  if (has_bottom) add(loopC(zb), dhat);   // cavity floor
+  if (has_top) add(loopC(zt), -dhat);     // cavity ceiling
+  // Walls.
+  for (size_t i = 0; i < n; ++i) {
+    const Vector3d out = -(nrm[i].x * ex + nrm[i].y * ey);
+    if (d[i] > 0.0) {
+      add({Pz(i, 0.0), Pz(i + 1, 0.0), Pz(i + 1, H), Pz(i, H)}, out);
+      add({Cz(i, zb), Cz(i + 1, zb), Cz(i + 1, zt), Cz(i, zt)}, -out);  // cavity wall, normal into the cavity
+    } else {
+      if (has_bottom) add({Pz(i, 0.0), Pz(i + 1, 0.0), Pz(i + 1, zb), Cz(i + 1, zb), Cz(i, zb), Pz(i, zb)}, out);
+      if (has_top) add({Pz(i, zt), Cz(i, zt), Cz(i + 1, zt), Pz(i + 1, zt), Pz(i + 1, H), Pz(i, H)}, out);
+      add({Pz(i, zb), Cz(i, zb), Cz(i, zt), Pz(i, zt)}, out);                  // end face of the previous wall's rim
+      add({Cz(i + 1, zb), Pz(i + 1, zb), Pz(i + 1, zt), Cz(i + 1, zt)}, out);  // end face of the next wall's rim
+    }
+  }
+  // Split every face edge at every vertex lying on it (no T-junctions).
+  std::vector<Point3d> verts;
+  for (const auto& f : faces) {
+    for (const Point3d& p : f.loop) {
+      bool seen = false;
+      for (const Point3d& v : verts) if (v.DistanceTo(p) <= tol) { seen = true; break; }
+      if (!seen) verts.push_back(p);
+    }
+  }
+  for (auto& f : faces) {
+    std::vector<Point3d> out;
+    const size_t m = f.loop.size();
+    for (size_t i = 0; i < m; ++i) {
+      const Point3d& a = f.loop[i];
+      const Point3d& b = f.loop[(i + 1) % m];
+      out.push_back(a);
+      const Vector3d ab = b - a;
+      const double l2 = ON_DotProduct(ab, ab);
+      std::vector<std::pair<double, Point3d>> on;
+      for (const Point3d& v : verts) {
+        if (v.DistanceTo(a) <= tol || v.DistanceTo(b) <= tol) continue;
+        const double s = ON_DotProduct(v - a, ab) / l2;
+        if (s <= 0.0 || s >= 1.0) continue;
+        if ((a + s * ab).DistanceTo(v) <= tol) on.emplace_back(s, v);
+      }
+      std::sort(on.begin(), on.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+      for (const auto& e : on) out.push_back(e.second);
+    }
+    f.loop = std::move(out);
+  }
+  Brep result = Brep::FromPlanarFaces(faces);
+  if (!result.raw().IsValid() || !result.raw().IsSolid()) {
+    throw bad("the assembled faces did not form a valid closed solid - thickness set is infeasible");
+  }
+  const double expected = area_p * H - area_c * (zt - zb);
+  if (std::fabs(result.Volume() - expected) > 1e-7 * std::max(1.0, expected)) {
+    throw bad("the assembled solid's volume disagrees with the closed form - refused rather than returned");
+  }
+  return result;
+}
+
 Brep OffsetFace(const Brep& solid, int face_index, double distance) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
