@@ -2143,11 +2143,21 @@ bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt
   std::vector<HoleAttachment> attachments;
   std::vector<bool> reserved(n, false);
   std::vector<std::vector<UVPt>> remaining;
+  // A hole that stays an ordinary ON_BrepLoop::inner loop must wind OPPOSITE to the outer loop in (u, v) (an inner loop is
+  // clockwise where the outer is anticlockwise); the intersection chain it came from is wound however the tracer walked it,
+  // and a wrongly wound inner loop makes its trims run the same way as the neighbouring face's - an edge-consistent but
+  // un-oriented body that ON_Brep::IsSolid() rejects.
+  const auto keep_as_inner = [&](std::vector<UVPt>&& hole) {
+    if (hole.size() >= 3 && outer_area != 0.0 && (SignedAreaUV(hole) >= 0.0) == (outer_area >= 0.0)) {
+      std::reverse(hole.begin(), hole.end());
+    }
+    remaining.push_back(std::move(hole));
+  };
   double accepted_hole_area = 0.0;
 
   for (std::vector<UVPt>& hole : holes) {
     if (hole.size() < 3) {
-      remaining.push_back(std::move(hole));
+      keep_as_inner(std::move(hole));
       continue;
     }
     // A closed intersection chain is stored with its own closing point
@@ -2170,7 +2180,7 @@ bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt
       hole_pts.pop_back();
     }
     if (hole_pts.size() < 3) {
-      remaining.push_back(std::move(hole));
+      keep_as_inner(std::move(hole));
       continue;
     }
     const size_t m = hole_pts.size();
@@ -2227,10 +2237,18 @@ bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt
       accepted_hole_area += hole_area;
       accepted = true;
     }
-    if (!accepted) remaining.push_back(std::move(hole));
+    if (!accepted) keep_as_inner(std::move(hole));
   }
 
-  if (attachments.empty()) return false;
+  if (attachments.empty()) {
+    // Nothing could be bridged. Every hole above was MOVED into `remaining`, so `holes` now holds empty vectors: hand the
+    // holes back, or the caller (which keeps whatever is left in `holes` as ordinary inner loops) silently loses them - the
+    // face would then be built without its hole (measured: a branch r=0.5 standing on a cylinder R=1 whose closed
+    // intersection loop is self-touching and so cannot be bridged lost the main wall's hole altogether, leaving the
+    // branch wall's cut edge with no partner).
+    holes = std::move(remaining);
+    return false;
+  }
   outer = AssembleWithAttachments(outer, attachments);
   holes = std::move(remaining);
   if (std::getenv("DINO8_BOOL_DEBUG")) {
