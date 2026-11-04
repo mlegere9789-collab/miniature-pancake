@@ -884,7 +884,20 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
     throw std::invalid_argument("dino8::kernel::FilletConvexEdge: radius must be positive");
   }
 
-  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  // A solid that ALREADY carries blend faces elsewhere (cylinders / cones / spheres from an earlier fillet) is read through
+  // MixedFaces(): the edge is still between two PLANAR faces, those are re-trimmed as always, and the curved faces are carried
+  // through unchanged. A purely planar solid takes the PlanarFaces() path exactly as before.
+  std::vector<Brep::PlanarFace> faces;
+  Brep::MixedFacesResult carried;
+  bool has_curved = false;
+  try {
+    faces = solid.PlanarFaces();
+  } catch (const std::invalid_argument&) {
+    carried = solid.MixedFaces();  // throws for a free-form face: refused as before
+    if (carried.cylindrical.empty() && carried.conical.empty() && carried.spherical.empty()) throw;
+    faces = carried.planar;
+    has_curved = true;
+  }
   const double tol = RelativeTol(faces);
 
   // --- (1) locate the two faces sharing (edge_p0, edge_p1), walked in
@@ -928,6 +941,24 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
   for (size_t f = 0; f < faces.size(); ++f) {
     if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) {
       others.push_back(faces[f]);
+    }
+  }
+
+  if (has_curved) {
+    // Each end of the edge needs its THIRD planar face (a convex corner has three faces); with only the two adjacent planar faces
+    // at an end, the third face there is a curved (blended) one, whose corner this routine cannot rebuild.
+    for (const Point3d* end : {&edge_p0, &edge_p1}) {
+      int planar_at_end = 0;
+      for (const Brep::PlanarFace& pf : faces) {
+        for (const Point3d& v : pf.loop) {
+          if (PointsEqual(v, *end, tol)) { ++planar_at_end; break; }
+        }
+      }
+      if (planar_at_end < 3) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConvexEdge: an end of the edge meets a curved (blended) face of `solid` - on an already-blended solid only an "
+            "edge whose two ends both meet planar faces can be filleted");
+      }
     }
   }
 
@@ -1130,7 +1161,15 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
-  return Brep::FromMixedFaces(mixed_planar, {fillet_face});
+  if (!has_curved) return Brep::FromMixedFaces(mixed_planar, {fillet_face});
+  std::vector<Brep::CylindricalFace> cylinders = std::move(carried.cylindrical);
+  cylinders.push_back(std::move(fillet_face));
+  Brep chained = Brep::FromMixedFaces(mixed_planar, cylinders, carried.conical, carried.spherical);
+  if (!chained.raw().IsValid() || !chained.raw().IsSolid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdge: the fillet of an edge on an already-blended solid did not assemble into a valid closed solid - refused");
+  }
+  return chained;
 }
 
 // CONCAVE (reflex) edge fillet - the rolling ball's own OTHER case, ADDING
