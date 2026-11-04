@@ -80184,20 +80184,18 @@ void TestNurbsSurfaceBlendSurfacesRejectsInvalidInput() {
 }
 
 // A genuinely 3D (non-coplanar-in-the-given-plane) polyline handed to the
-// explicit-plane overload: the exact per-corner miter formula does NOT
-// apply here (it only lands on both offset lines when every edge is
-// perpendicular to the given plane's normal), so this must fall through
-// to the old general sampled path instead of producing a silently wrong
-// "exact" result.
+// explicit-plane overload used to fall to the sampled refit (refused at the
+// tight default tolerance, smoothed into a non-polygon at a loose one). It
+// now takes the exact mitre of its projection onto the plane with every
+// vertex keeping its own height (the independent oracles are in
+// offset_remainder_tests::TestOffsetInPlaneNonCoplanarPolylineExactMitre*).
+// This test keeps the original fixture and asserts the old refusal is gone.
 void TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
   using dino8::kernel::Result;
   using dino8::kernel::Vector3d;
 
-  // NOT coplanar - the 4th point is deliberately off the plane the other
-  // three would otherwise define (verified below via `IsPlanar()`
-  // itself, not assumed from the coordinates alone).
   const std::vector<Point3d> cps = {
       Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 5), Point3d(0, 10, 8)};
   const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
@@ -80207,56 +80205,26 @@ void TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGenera
         "OffsetInPlane non-coplanar setup: this polyline is NOT planar at all (genuinely 3D), let alone "
         "coplanar in the z=0 plane below");
 
-  // At the tight DEFAULT tolerance, this is honestly refused: the exact
-  // miter path correctly declined (this polyline isn't coplanar in
-  // `plane`), so it falls to the general sampled path - but that path's
-  // own per-sample offset locus has a genuine jump at each kink here
-  // (each segment's own `tangent x plane.zaxis` is a different constant
-  // direction, and unlike the exact-miter case, nothing here reconciles
-  // them into a shared corner point), which a CONTINUOUS refit curve
-  // cannot close to within a tiny tolerance no matter how many control
-  // points it's given. This is the same honest "Result::Failed rather
-  // than silently returning a wrong-but-plausible result" contract the
-  // general path already enforces for curvature folds - not a defect,
-  // and not this new polyline code's own doing (any non-polyline curve
-  // whose `tangent x plane.zaxis` jumped this much would refuse the same
-  // way, at this curve's own tight default tolerance).
+  // At the tight DEFAULT tolerance this is no longer refused: the exact
+  // mitre of the projected polyline is returned, a plain 4-vertex polyline.
   NurbsCurve out;
-  Check(poly.OffsetInPlane(plane, 1.0, out) == Result::Failed,
-        "OffsetInPlane(plane, +1.0) on a non-coplanar polyline, at the tight default tolerance: honestly "
-        "refused rather than silently returning a blurred-together corner");
+  Check(poly.OffsetInPlane(plane, 1.0, out) == Result::Ok,
+        "OffsetInPlane(plane, +1.0) on a non-coplanar polyline at the tight default tolerance now succeeds "
+        "(exact mitre of the projection; it used to be refused)");
+  Check(out.ControlPointCount() == 4 && out.raw().IsPolyline(),
+        "OffsetInPlane(plane, ...) on a non-coplanar polyline: the result IS a plain 4-CV polyline (the exact "
+        "mitre's signature), not a refit");
 
-  // With an explicit, looser tolerance the SAME general fallback path
-  // succeeds (proving this was a real tolerance-driven refusal above,
-  // not a hard failure) - and even then, the result is NOT a plain 4-CV
-  // polygon (the exact-miter path's own signature), confirming this
-  // really did take the general refit, not a wrongly-applied miter.
-  Check(poly.OffsetInPlane(plane, 1.0, out, 0.5) == Result::Ok,
-        "OffsetInPlane(plane, +1.0, tolerance=0.5) succeeds on the same non-coplanar polyline via the general "
-        "fallback path");
-  Check(out.ControlPointCount() != 4,
-        "OffsetInPlane(plane, ...) on a non-coplanar polyline: result is NOT a plain 4-CV polygon - proof the "
-        "exact miter path correctly declined and this fell back to the general refit instead of returning a "
-        "wrong 'exact' corner");
-
-  // That looser-tolerance result still starts and ends exactly where the
-  // single-edge (non-miter) endpoint formula says it should - the SAME
-  // documented `TangentAt(t) x plane.zaxis` contract the exact-miter
-  // path's own endpoints use, checked here on the general fallback path
-  // instead (this curve's two ends are each adjacent to only one edge,
-  // so both paths must agree on them exactly regardless of which one
-  // ran in between).
+  // It still starts and ends exactly at the documented single-edge offset point.
   const dino8::kernel::Interval dom = poly.Domain();
   Vector3d start_dir = ON_CrossProduct(poly.TangentAt(dom.min), plane.zaxis);
   start_dir.Unitize();
   Vector3d end_dir = ON_CrossProduct(poly.TangentAt(dom.max), plane.zaxis);
   end_dir.Unitize();
-  Check(out.PointAt(out.Domain().min).DistanceTo(poly.PointAt(dom.min) + 1.0 * start_dir) < 1e-6,
-        "OffsetInPlane(plane, ..., tolerance=0.5) fallback on a non-coplanar polyline: still starts exactly "
-        "at the documented single-edge offset point");
-  Check(out.PointAt(out.Domain().max).DistanceTo(poly.PointAt(dom.max) + 1.0 * end_dir) < 1e-6,
-        "OffsetInPlane(plane, ..., tolerance=0.5) fallback on a non-coplanar polyline: still ends exactly at "
-        "the documented single-edge offset point");
+  Check(out.PointAt(out.Domain().min).DistanceTo(poly.PointAt(dom.min) + 1.0 * start_dir) < 1e-9,
+        "OffsetInPlane(plane, ...) on a non-coplanar polyline: starts exactly at the documented single-edge offset point");
+  Check(out.PointAt(out.Domain().max).DistanceTo(poly.PointAt(dom.max) + 1.0 * end_dir) < 1e-9,
+        "OffsetInPlane(plane, ...) on a non-coplanar polyline: ends exactly at the documented single-edge offset point");
 }
 
 // distance between two curves at 201 matching normalized domain positions.

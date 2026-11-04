@@ -1903,11 +1903,24 @@ class NurbsCurve {
   //    explicitly - not assumed) offsets exactly via the same
   //    corner-by-corner miter the single-plane overload above uses. A
   //    polyline that is NOT coplanar in `plane` (a genuinely 3D
-  //    polyline, offset along a plane unrelated to its own shape) falls
-  //    to the same general sampled path as any other curve below - the
-  //    exact miter formula only lands on both adjacent offset lines when
-  //    every edge is perpendicular to `plane.zaxis`, which a foreign
-  //    plane doesn't guarantee.
+  //    polyline, or one planar in some other plane) is offset by the
+  //    exact MITRE OF ITS PROJECTION onto `plane`, each vertex keeping
+  //    its own height along `plane.zaxis`: every edge's offset direction
+  //    is unit(edge x plane.zaxis) (in the plane's own directions, the
+  //    in-plane normal of the projected edge), and a corner moves by
+  //    (distance / (1 + n0.n1)) * (n0 + n1), so the lifted vertex lies
+  //    exactly |distance| from the projected line of BOTH adjacent edges
+  //    and at the original vertex's height. What is NOT claimed: the two
+  //    3D offset lines of a non-coplanar corner are skew (no point lies
+  //    on both), so the result is not an intersection of 3D lines, and
+  //    the offset edge is not parallel to the original edge in 3D (its
+  //    projection is). The ends are the documented single-edge points
+  //    p + distance * unit(edge x plane.zaxis). All four corner styles
+  //    apply (a Round/Chamfer/Smooth piece is built in the plane parallel
+  //    to `plane` through the vertex). A vertical edge (parallel to
+  //    `plane.zaxis`) or a 180-degree fold of the projection is refused
+  //    with a reason. A G0 curve with CURVED spans that is not coplanar
+  //    in `plane` still falls to the general sampled path below.
   //  - A circular arc or full circle whose axis is PARALLEL (or
   //    anti-parallel) to `plane.zaxis` offsets exactly: `TangentAt(t) x
   //    plane.zaxis` is then the unit in-plane radial direction at every

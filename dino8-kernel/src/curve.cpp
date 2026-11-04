@@ -364,9 +364,26 @@ bool IsOffsetPolygonSimple(const std::vector<Point3d>& poly, const Vector3d& nor
   return detail::IsSimplePolygon(poly2d);
 }
 
+// `allow_non_coplanar` (the explicit-plane overload only) lifts the
+// coplanarity requirement: a polyline whose vertices are NOT coplanar in a
+// plane normal to `normal` is offset by the exact mitre of its PROJECTION
+// onto that plane, every vertex keeping its own height along `normal`.
+// Each edge direction d_i gives the unit offset direction
+// n_i = unit(d_i x normal) - always perpendicular to `normal`, i.e. in
+// the caller plane's own directions, and equal to the in-plane normal of
+// the edge's projection - and a corner moves by the angle-bisector vector
+// (distance / (1 + n0.n1)) * (n0 + n1), which is horizontal too, so the
+// lifted vertex w_i = v_i + that vector lies exactly `distance` (in the
+// plane) from the projected line of BOTH adjacent edges and at v_i's own
+// height. The two 3D offset lines of a non-coplanar corner are skew (no
+// point lies on both), so this is the exact mitre of the projected
+// polyline, not an intersection of the 3D lines; see
+// NurbsCurve::OffsetInPlane(const ON_Plane&, ...) in curve.h for the
+// statement of what is and is not exact. A vertical edge (parallel to
+// `normal`) has no offset direction and is refused, as before.
 bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
                                    double tol, CurveOffsetCornerStyle corner_style, NurbsCurve& out,
-                                   Result& result) {
+                                   Result& result, bool allow_non_coplanar = false) {
   ON_SimpleArray<ON_3dPoint> pline;
   if (!curve.raw().IsPolyline(&pline)) return false;
 
@@ -378,8 +395,10 @@ bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& norma
   std::vector<Point3d> v(static_cast<size_t>(vcount));
   for (int i = 0; i < vcount; ++i) v[static_cast<size_t>(i)] = pline[i];
 
-  for (int i = 1; i < vcount; ++i) {
-    if (std::fabs(ON_DotProduct(v[static_cast<size_t>(i)] - v[0], normal)) > tol) return false;
+  if (!allow_non_coplanar) {
+    for (int i = 1; i < vcount; ++i) {
+      if (std::fabs(ON_DotProduct(v[static_cast<size_t>(i)] - v[0], normal)) > tol) return false;
+    }
   }
 
   const int edge_count = closed ? vcount : vcount - 1;
@@ -3114,16 +3133,16 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
     return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out, refusal_reason);
   }
 
-  // --- Polyline (3+ segments), coplanar in `plane`: exact per-corner
-  // miter. Falls through (not `false`-returning) to the general sampled
-  // path below for a polyline that ISN'T coplanar in `plane` - see
-  // `TryOffsetPolylineAlongNormal()`'s own doc comment for why that case
-  // can't use the exact miter formula.
+  // --- Polyline (3+ segments): exact per-corner miter. Coplanar in
+  // `plane` it is the ordinary planar miter; NOT coplanar in `plane` (a
+  // genuinely 3D polyline, or a polyline planar in some other plane) it is
+  // the exact mitre of the polyline's projection onto `plane` with every
+  // vertex keeping its own height - see TryOffsetPolylineAlongNormal().
   {
     Result polyline_result;
     NurbsCurve polyline_out;
     if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, corner_style, polyline_out,
-                                      polyline_result)) {
+                                      polyline_result, /*allow_non_coplanar=*/true)) {
       if (polyline_result != Result::Ok) {
         return refuse(
             "polyline offset refused: a zero-length edge, an edge parallel to the plane normal, a near-180-degree "
