@@ -13651,6 +13651,18 @@ lsp_is "$LSP_A" "(< 1 2 3)" 1 "T" "LSP_logic: < chains"
 lsp_is "$LSP_A" "(equal 1.0 1.0000001 0.001)" 1 "T" "LSP_logic: equal with a fuzz"
 lsp_is "$LSP_A" "(eq 'a 'a)" 1 "T" "LSP_logic: eq on symbols"
 lsp_is "$LSP_A" "Lisp (+ 10 20)" 1 "30" "LSP_entry: the Lisp command takes an expression as its argument"
+lsp_isnum "$LSP_A" "(distance '(0 0 0) '(3 4 12))" 1 "$(awk 'BEGIN{print sqrt(3*3+4*4+12*12)}')" "LSP_geom: distance of (0,0,0)-(3,4,12) equals awk's sqrt(169)"
+lsp_isnum "$LSP_A" "(car (polar '(1 1 0) 0 5))" 1 "$(awk 'BEGIN{print 1+5*cos(0)}')" "LSP_geom: polar x at angle 0, distance 5 from (1,1)"
+lsp_isnum "$LSP_A" "(cadr (polar '(0 0 0) (/ (* 4 (atan 1)) 2) 5))" 1 "$(awk 'BEGIN{pi=atan2(0,-1); print 5*sin(pi/2)}')" "LSP_geom: polar y at pi/2 (pi built as 4*atan 1) is 5"
+lsp_is "$LSP_A" "(last '(1 2 3))" 1 "3" "LSP_list: last"
+lsp_is "$LSP_A" "(cadr '(1 2 3))" 1 "2" "LSP_list: cadr"
+lsp_isnum "$LSP_A" "(atof \"2.5\")" 1 "2.5" "LSP_str: atof"
+lsp_is "$LSP_A" "(fix 3.9)" 1 "3" "LSP_arith: fix truncates toward zero"
+lsp_is "$LSP_A" "(float 3)" 1 "3.0" "LSP_arith: float"
+lsp_is "$LSP_A" "(zerop 0)" 1 "T" "LSP_logic: zerop"
+lsp_is "$LSP_A" "(minusp -2)" 1 "T" "LSP_logic: minusp"
+lsp_is "$LSP_A" "(sin 0)" 1 "0.0" "LSP_arith: sin 0"
+lsp_is "$LSP_A" "(cos 0)" 1 "1.0" "LSP_arith: cos 0"
 # sensitivity: the comparison helper can fail (a wrong expectation is reported as FAIL, not ok)
 if [ "$(lsp_is "$LSP_A" "(+ 1 2 3)" 1 "7" "sens" | grep -c '^FAIL')" = 1 ]; then lsp_ok "LSP_sens: lsp_is reports a wrong expectation (7 for (+ 1 2 3)) as FAIL"; else lsp_bad "LSP_sens: lsp_is accepted a wrong expectation"; fi
 
