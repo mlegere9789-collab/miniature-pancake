@@ -106375,6 +106375,84 @@ void TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals() {
 
 }  // namespace surface_fillet_refusal_tests
 
+// FilletConvexEdge on a solid that ALREADY carries a blend face elsewhere (a second blend chained onto an already-blended solid).
+// Every number is a closed form independent of the routine: removed volume per straight 90-degree edge = L r^2 (1 - pi/4); the
+// blend faces are read back as cylinders (ON_Surface::IsCylinder) with radius r and the axis along the filleted edge.
+namespace chained_edge_fillet_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::FilletConvexEdge;
+using dino8::kernel::Point3d;
+
+std::string ReasonOf(const std::function<void()>& f) {
+  try { f(); } catch (const std::exception& e) { return e.what(); }
+  return "";
+}
+
+// The cylinder blend faces of `b` with their radius and axis direction.
+struct Cyl { double radius; ON_3dVector axis; };
+std::vector<Cyl> CylinderFaces(const Brep& b) {
+  std::vector<Cyl> out;
+  for (int f = 0; f < b.raw().m_F.Count(); ++f) {
+    ON_Cylinder c;
+    if (b.raw().m_F[f].SurfaceOf()->IsCylinder(&c, 1e-8)) out.push_back({c.circle.Radius(), c.Axis()});
+  }
+  return out;
+}
+
+void TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox() {
+  const double r1 = 1.0, r2 = 1.5, L = 10.0;
+  const double a = 1.0 - ON_PI / 4.0;
+  const Brep box = Brep::Box(0, 0, 0, L, L, L);
+  // First blend: the vertical edge at x = 0, y = 0. Second (chained): the top edge at y = L, z = L - it shares no vertex with the first.
+  const Brep one = FilletConvexEdge(box, Point3d(0, 0, 0), Point3d(0, 0, L), r1);
+  Check(one.raw().IsValid() && one.raw().IsSolid() && one.FaceCount() == 7, "[chain] first blend: valid closed solid with 7 faces");
+  const double v1 = L * L * L - L * r1 * r1 * a;
+  Check(std::fabs(one.Volume() - v1) < 1e-6 * v1, ("[chain] first blend volume " + std::to_string(one.Volume()) + " vs closed form " + std::to_string(v1)).c_str());
+
+  Brep two;
+  const std::string why = ReasonOf([&] { two = FilletConvexEdge(one, Point3d(0, L, L), Point3d(L, L, L), r2); });
+  Check(why.empty(), ("[chain] FilletConvexEdge accepts an edge on an already-blended solid" + (why.empty() ? "" : ": " + why)).c_str());
+  if (!why.empty()) return;
+  Check(two.raw().IsValid() && two.raw().IsSolid() && two.FaceCount() == 8, "[chain] chained blend: valid closed solid with 8 faces (box 6 + 2 blends)");
+  const double v2 = L * L * L - L * r1 * r1 * a - L * r2 * r2 * a;
+  Check(std::fabs(two.Volume() - v2) < 1e-6 * v2,
+        ("[chain] chained volume " + std::to_string(two.Volume()) + " vs closed form " + std::to_string(v2)).c_str());
+  Check(two.TessellateToClosedMesh(48, 12).IsClosedManifold(), "[chain] the chained result tessellates to a closed manifold mesh");
+  // The result is the same body as filleting both edges in one FilletConvexEdges call only if the radii agree; with different radii
+  // compare against the OTHER order (second edge first): the two orders must give the same volume.
+  const Brep other = FilletConvexEdge(FilletConvexEdge(box, Point3d(0, L, L), Point3d(L, L, L), r2), Point3d(0, 0, 0), Point3d(0, 0, L), r1);
+  Check(std::fabs(other.Volume() - two.Volume()) < 1e-6 * v2 && other.FaceCount() == two.FaceCount(),
+        "[chain] fillet order does not matter: edge A then B equals edge B then A (volume and face count)");
+  // Both blends are exact cylinders: radius r1 along z, radius r2 along x.
+  const std::vector<Cyl> cyl = CylinderFaces(two);
+  int n1 = 0, n2 = 0;
+  for (const Cyl& c : cyl) {
+    if (std::fabs(c.radius - r1) < 1e-9 && std::fabs(std::fabs(c.axis.z) - 1.0) < 1e-9) ++n1;
+    if (std::fabs(c.radius - r2) < 1e-9 && std::fabs(std::fabs(c.axis.x) - 1.0) < 1e-9) ++n2;
+  }
+  Check(cyl.size() == 2 && n1 == 1 && n2 == 1, "[chain] two exact cylinders: radius 1.0 along z and radius 1.5 along x");
+  // Negative control: the oracle discriminates (the volume of the wrong second radius is NOT within tolerance).
+  const double wrong = L * L * L - L * r1 * r1 * a - L * (1.1 * r2) * (1.1 * r2) * a;
+  Check(std::fabs(two.Volume() - wrong) > 1e-4 * v2, "[chain] negative control: a 10% larger second radius would NOT match the volume");
+}
+
+void TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend() {
+  const double L = 10.0;
+  const Brep one = FilletConvexEdge(Brep::Box(0, 0, 0, L, L, L), Point3d(0, 0, 0), Point3d(0, 0, L), 1.0);
+  // The top edge along x at y = 0 now starts at the first blend's tangent line (x = 1): its end meets the cylinder.
+  std::string m = ReasonOf([&] { FilletConvexEdge(one, Point3d(1, 0, L), Point3d(L, 0, L), 0.5); });
+  Check(m.find("curved") != std::string::npos, ("[chain] an edge whose end meets the existing blend is refused with a reason: " + m).c_str());
+  // An edge that is not on the solid at all.
+  m = ReasonOf([&] { FilletConvexEdge(one, Point3d(0, 0, 0), Point3d(0, 0, L), 0.5); });
+  Check(!m.empty(), ("[chain] the already-filleted (no longer sharp) edge is refused: " + m).c_str());
+  // A radius that does not fit.
+  m = ReasonOf([&] { FilletConvexEdge(one, Point3d(0, L, L), Point3d(L, L, L), 50.0); });
+  Check(!m.empty(), ("[chain] an over-large radius is refused: " + m).c_str());
+}
+
+}  // namespace chained_edge_fillet_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -108194,6 +108272,8 @@ int main() {
           grid_interp_degree_tests::TestClosedGridTorusBothDirectionsAndRefusals);
 
   RunTest("surface_fillet_refusal_tests::TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals", surface_fillet_refusal_tests::TestSurfaceFilletCreasedWallAndTightBendAreCleanRefusals);
+  RunTest("chained_edge_fillet_tests::TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox", chained_edge_fillet_tests::TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox);
+  RunTest("chained_edge_fillet_tests::TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend", chained_edge_fillet_tests::TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
