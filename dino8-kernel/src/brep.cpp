@@ -1296,6 +1296,25 @@ bool Brep::SweepCapAnalysisFan(int i, ON_NurbsSurface& fan) const {
   return FindSweepCapFan(brep_, i, fan);
 }
 
+namespace {
+// Every closedness / volume decision that goes through an ON_Mesh sees float32 vertices (relative precision ~6e-8 of the
+// COORDINATE, not of the body). A unit box at offset 1e7 therefore welded to a different mesh than at the origin, and at
+// 1e8 / 1e9 the 8-division weld failed outright (measured: Volume() 999.986 at 1e7, 1001.95 / 512 at 1e8; ClassifyShells
+// 15 s and volume 1114.57 at 1e9). Closedness, volume and nesting are translation invariant, so those decisions are made
+// on a copy translated to the bounding-box centre. Returns true and fills `out` only when the body is far (> 4 half
+// diagonals) from the origin.
+bool RecenterIfFarFromOrigin(const Brep& b, Brep& out) {
+  ON_BoundingBox bb;
+  if (!b.raw().GetBoundingBox(bb) || !bb.IsValid()) return false;
+  const ON_3dPoint c = bb.Center();
+  const double half = 0.5 * bb.Diagonal().Length();
+  const double dist = std::max({std::fabs(c.x), std::fabs(c.y), std::fabs(c.z)});
+  if (!(dist > 4.0 * half) || !(dist > 0.0) || !std::isfinite(dist)) return false;
+  out = b.Transform(ON_Xform::TranslationTransformation(-c.x, -c.y, -c.z));
+  return true;
+}
+}  // namespace
+
 double Brep::Volume() const {
   // raw().IsSolid() is the WRONG check here: it requires genuine shared
   // ON_Brep edge/vertex topology between faces, which several of this
@@ -1343,6 +1362,15 @@ double Brep::VolumeOfSealedSolid() const {
 
 double Brep::VolumeImpl(bool allow_analytic) const {
   double total = 0.0;
+  // The divergence integrand (p . n) / 3 sums to the volume for ANY origin on a closed surface (the integral of n over a
+  // closed surface is zero), so it is taken about the bounding-box centre: far from the origin the raw p . n terms are
+  // ~1e9 times the volume and the trimmed-face integrator's RELATIVE tolerance (1e-6 of the face integral) then allowed
+  // volume errors of 0.1 % (measured: 999.986 for a box of volume 1000 at offset 1e7).
+  ON_3dPoint c0(0.0, 0.0, 0.0);
+  {
+    ON_BoundingBox bb;
+    if (brep_.GetBoundingBox(bb) && bb.IsValid()) c0 = bb.Center();
+  }
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     const ON_BrepFace& face = brep_.m_F[i];
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
@@ -1370,7 +1398,7 @@ double Brep::VolumeImpl(bool allow_analytic) const {
         throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " + std::to_string(i));
       }
       const ON_3dVector n = ON_CrossProduct(su, sv);
-      return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
+      return ((p.x - c0.x) * n.x + (p.y - c0.y) * n.y + (p.z - c0.z) * n.z) / 3.0;
     };
     if (is_cap || FaceCoversWholeDomain(i)) {
       if (!s) {
@@ -1606,6 +1634,10 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
 // integral below is well-defined (every face has real loop topology);
 // a genuinely open shell still fails both checks.
 bool Brep::IsWatertightForIntegration() const {
+  {
+    Brep moved;
+    if (RecenterIfFarFromOrigin(*this, moved)) return moved.IsWatertightForIntegration();
+  }
   if (TessellateToClosedMesh(8, 8).IsClosedManifold()) return true;
   return HasConformingSeamData() && TessellateToClosedMeshConforming(8, 8).IsClosedManifold();
 }
@@ -4726,6 +4758,12 @@ Brep::ShellClassification Brep::ClassifyShells(double volume_tolerance) const {
   // were silently accepted
   if (!std::isfinite(volume_tolerance) || volume_tolerance < 0.0 || volume_tolerance > 1e100) {
     throw std::invalid_argument("dino8::kernel::Brep::ClassifyShells: volume_tolerance must be finite and non-negative");
+  }
+  {
+    // shell volumes, closedness, nesting and Euler characteristics are all translation invariant, and the closed meshes
+    // they are decided on are float32 - see RecenterIfFarFromOrigin()
+    Brep moved;
+    if (RecenterIfFarFromOrigin(*this, moved)) return moved.ClassifyShells(volume_tolerance);
   }
   ShellClassification out;
   const std::vector<std::vector<int>> groups = ShellFaceGroups(brep_, LumpFaceRanges());
@@ -11039,7 +11077,9 @@ Brep::HealReport Brep::HealChecked(const HealOptions& options) {
     *ok = false;
     *volume = 0.0;
     try {
-      const Mesh m = b.TessellateToClosedMeshTolerant(8, 8);
+      Brep moved;  // closedness / volume are translation invariant; float32 mesh vertices are not - see RecenterIfFarFromOrigin()
+      const Brep& use = RecenterIfFarFromOrigin(b, moved) ? moved : b;
+      const Mesh m = use.TessellateToClosedMeshTolerant(8, 8);
       if (m.IsClosedManifold()) {
         *volume = m.Volume();
         *ok = true;

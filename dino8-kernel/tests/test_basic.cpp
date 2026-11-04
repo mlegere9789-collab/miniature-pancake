@@ -39,6 +39,7 @@
 #include "dino8/kernel/sheet_metal.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_continuity.h"
 #include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/tolerance.h"
 #include "test_registry.h"  // d8test::ShouldRun (filter / shard / list) + tests/extra/*.cpp self-registration
@@ -103247,6 +103248,139 @@ void TestSubDFitToleranceUnreachableToleranceStopsAtTheMeasurementBudget() {
 
 }  // namespace qc2_tests
 
+// ---- qc3_tests: float32 mesh precision far from the origin, array stations, LoftMatchedScaled happy path.
+namespace qc3_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+double Secs(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// A 10 x 10 x 10 box (volume 1000) at offsets 0 .. 1e9. Closedness, volume and shell nesting were decided on ON_Mesh
+// (float32) vertices, whose precision is relative to the COORDINATE: measured Volume() 999.986 at 1e7, 1001.95 / 512 at
+// 1e8, and ClassifyShells 15 s with volume 1114.57 at 1e9. They are now decided on a copy recentred at the bounding-box
+// centre.
+void TestBoxVolumeShellsAndHealAtLargeOffsets() {
+  for (double off : {0.0, 1e5, 1e7, 1e8, 1e9}) {
+    const std::string tag = "box offset " + std::to_string(static_cast<long long>(off)) + ": ";
+    Brep box;
+    try {
+      box = Brep::BoxWelded(off, off, off, off + 10, off + 10, off + 10);
+    } catch (const std::exception& e) {
+      Check(false, (tag + "fixture builds (" + e.what() + ")").c_str());
+      continue;
+    }
+    auto t0 = std::chrono::steady_clock::now();
+    double v = 0.0;
+    try {
+      v = box.Volume();
+    } catch (const std::exception&) {
+      v = -1.0;
+    }
+    Check(std::fabs(v - 1000.0) < 1e-6 * 1000.0, (tag + "Volume() within 1e-6 relative of 1000 (got " + std::to_string(v) + ")").c_str());
+    Check(Secs(t0) < 10.0, (tag + "Volume() in bounded time").c_str());
+    t0 = std::chrono::steady_clock::now();
+    const Brep::ShellClassification c = box.ClassifyShells();
+    Check(c.shells.size() == 1 && c.shells[0].role == Brep::ShellInfo::Role::OuterBoundary && c.consistent &&
+              std::fabs(c.shells[0].signed_volume - 1000.0) < 1e-6 * 1000.0,
+          (tag + "ClassifyShells: one OuterBoundary shell, volume 1000 within 1e-6 (got " +
+           std::to_string(c.shells.empty() ? 0.0 : c.shells[0].signed_volume) + ")").c_str());
+    Check(Secs(t0) < 10.0, (tag + "ClassifyShells() in bounded time").c_str());
+    t0 = std::chrono::steady_clock::now();
+    Brep heal_target = box;
+    const Brep::HealReport rep = heal_target.HealChecked();
+    Check(rep.volume_measured_before && std::fabs(rep.volume_before - 1000.0) < 1e-6 * 1000.0,
+          (tag + "HealChecked measures the volume before healing as 1000 within 1e-6 (got " + std::to_string(rep.volume_before) + ")").c_str());
+    Check(Secs(t0) < 10.0, (tag + "HealChecked() in bounded time").c_str());
+  }
+}
+
+// ArrayAlongCurve: count 100000 never returned (one Brep copy per station), INT_MAX threw std::bad_alloc. `up` of
+// magnitude 1e300 is a legitimate direction (it is normalized before use) and must give the same stations as a unit up.
+void TestArrayAlongCurveHugeCountsAndHugeUp() {
+  const Brep body = Brep::BoxWelded(-1, -1, -1, 1, 1, 1);
+  const NurbsCurve path = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(20, 10, 0), Point3d(30, 10, 5)}, 3);
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int n : {100000, 2147483647}) {
+    bool refused = false;
+    try {
+      (void)dino8::kernel::ArrayAlongCurve(body, path, n, dino8::kernel::CurveArrayOrientation::Frame);
+    } catch (const std::invalid_argument& e) {
+      refused = std::string(e.what()).find("stations requested") != std::string::npos;
+    } catch (...) {
+    }
+    Check(refused, "ArrayAlongCurve with 100000 / INT_MAX stations is refused with an invalid_argument naming the cap");
+  }
+  Check(Secs(t0) < 5.0, "...and both refusals take under 5 s");
+  const auto unit = dino8::kernel::ArrayStationsAlongCurve(path, 7, dino8::kernel::CurveArrayOrientation::Frame, Vector3d(0, 0, 1));
+  const auto huge = dino8::kernel::ArrayStationsAlongCurve(path, 7, dino8::kernel::CurveArrayOrientation::Frame, Vector3d(0, 0, 1e300));
+  bool same = unit.size() == 7 && huge.size() == 7;
+  for (size_t i = 0; same && i < unit.size(); ++i) {
+    same = unit[i].frame.zaxis.DistanceTo(huge[i].frame.zaxis) < 1e-12 && unit[i].frame.yaxis.DistanceTo(huge[i].frame.yaxis) < 1e-12;
+  }
+  Check(same, "an `up` of (0, 0, 1e300) gives the same frames as (0, 0, 1) (a finite direction is normalized, not refused)");
+  const auto ok = dino8::kernel::ArrayAlongCurve(body, path, 10000, dino8::kernel::CurveArrayOrientation::None);
+  Check(ok.size() == 10000, "the cap itself (10000 stations) still works");
+}
+
+// LoftMatchedScaled where the first section IS the adjacent surface's boundary isocurve (so G0 is met), and the others are
+// that curve moved away from the surface along +y. Independent checks: the loft's start edge lies on the adjacent edge, and
+// the surface leaves it tangent-continuously.
+void TestLoftMatchedScaledHappyPath() {
+  std::vector<Point3d> g;
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < 4; ++i) g.push_back(Point3d(i, -3 + j, 0.02 * i * j));
+  const NurbsSurface adj = NurbsSurface::FromControlGrid(g, 4, 4, 3, 3);
+  const NurbsCurve edge = adj.IsoCurve(0, adj.raw().Domain(1).Max());  // u varies, v = max (y = 0)
+  auto moved = [&](double dy, double dz) {
+    NurbsCurve c = edge;
+    for (int k = 0; k < c.ControlPointCount(); ++k) {
+      const Point3d p = c.ControlPointAt(k);
+      c.SetControlPointAt(k, Point3d(p.x, p.y + dy, p.z + dz));
+    }
+    return c;
+  };
+  const std::vector<NurbsCurve> sections = {edge, moved(1.5, 0.1), moved(3.0, 0.15), moved(4.5, 0.15)};
+  NurbsSurface::LoftEndMatch m;
+  m.surface = &adj;
+  m.fixed_direction = 1;
+  m.at_min = false;
+  m.continuity = dino8::kernel::MatchContinuity::Tangent;
+  NurbsSurface out;
+  NurbsSurface::LoftMatchReport rep;
+  dino8::kernel::LoftMatchScaleReport sc;
+  const dino8::kernel::Result r =
+      dino8::kernel::LoftMatchedScaled(sections, 3, &m, nullptr, 0.05, out, rep, 1e-3, 1e-2, true, &sc);
+  Check(r == dino8::kernel::Result::Ok, ("LoftMatchedScaled with sections that meet the adjacent edge: Ok (reason '" + rep.reason + "')").c_str());
+  if (r != dino8::kernel::Result::Ok) return;
+  Check(rep.start_matched && rep.start.max_position_gap < 1e-6, "the report says the start is matched with a position gap < 1e-6");
+  Check(rep.start.max_tangent_angle <= 1e-3 + 1e-9, "...and a measured tangent angle within the requested 1e-3");
+  Check(rep.section_deviation_max <= 0.05, "every section stays within the tolerance of the finished surface");
+  // independent: the loft's v-min edge against the adjacent surface's v-max edge, and the cross tangent direction
+  const ON_Interval ou = out.raw().Domain(0), ov = out.raw().Domain(1), au = adj.raw().Domain(0), av = adj.raw().Domain(1);
+  double gap = 0.0, worst_angle = 0.0;
+  for (int i = 0; i <= 20; ++i) {
+    const double f = i / 20.0;
+    const Point3d lp = out.raw().PointAt(ou.ParameterAt(f), ov.Min());
+    const Point3d ap = adj.raw().PointAt(au.ParameterAt(f), av.Max());
+    gap = std::max(gap, lp.DistanceTo(ap));
+    ON_3dPoint p; ON_3dVector du, dv, ad_u, ad_v;
+    out.raw().Ev1Der(ou.ParameterAt(f), ov.Min(), p, du, dv);
+    adj.raw().Ev1Der(au.ParameterAt(f), av.Max(), p, ad_u, ad_v);
+    ON_3dVector n1 = ON_CrossProduct(du, dv), n2 = ON_CrossProduct(ad_u, ad_v);
+    if (n1.Unitize() && n2.Unitize()) worst_angle = std::max(worst_angle, std::acos(std::min(1.0, std::fabs(n1 * n2))));
+  }
+  Check(gap < 1e-6, ("independent sampling: loft start edge lies on the adjacent edge (max gap " + std::to_string(gap) + ")").c_str());
+  Check(worst_angle < 2e-3, ("independent sampling: surface normals agree across the join (max angle " + std::to_string(worst_angle) + " rad)").c_str());
+}
+
+}  // namespace qc3_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -104953,6 +105087,9 @@ int main() {
   RunTest("qc2_tests::TestFilletRadiusLawThatThrowsIsRefusedWithAReason", qc2_tests::TestFilletRadiusLawThatThrowsIsRefusedWithAReason);
   RunTest("qc2_tests::TestRevolveFilletOnVeryLargeCylinder", qc2_tests::TestRevolveFilletOnVeryLargeCylinder);
   RunTest("qc2_tests::TestSubDFitToleranceUnreachableToleranceStopsAtTheMeasurementBudget", qc2_tests::TestSubDFitToleranceUnreachableToleranceStopsAtTheMeasurementBudget);
+  RunTest("qc3_tests::TestBoxVolumeShellsAndHealAtLargeOffsets", qc3_tests::TestBoxVolumeShellsAndHealAtLargeOffsets);
+  RunTest("qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp", qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp);
+  RunTest("qc3_tests::TestLoftMatchedScaledHappyPath", qc3_tests::TestLoftMatchedScaledHappyPath);
 
   RunTest("offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary",
           offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary);
