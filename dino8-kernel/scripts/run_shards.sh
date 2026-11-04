@@ -53,6 +53,9 @@ start=$(date +%s)
 pids=()
 for ((k = 0; k < N; k++)); do
   ( s=$(date +%s)
+    # Each shard runs in its own scratch directory: tests write fixed relative file names
+    # (dino8_units_step.stp, *.3dm ...) and parallel shards sharing a cwd overwrite and delete each other's files.
+    mkdir -p "$WORK/cwd.$k" && cd "$WORK/cwd.$k" || exit 2
     DINO8_TEST_SHARD="$k/$N" "$BIN" > "$WORK/out.$k" 2> "$WORK/err.$k"
     echo "$? $(( $(date +%s) - s ))" > "$WORK/rc.$k" ) &
   pids+=($!)
