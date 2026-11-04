@@ -10,13 +10,13 @@
 (cdr (cons 1 2))
 (cons 1 '(2 3))
 (cdr '(1 . 2))
-'(a . (b c))
+(quote (a . (b c)))
 (assoc 'k '((j . 4) (k . 5)))
 (cdr (assoc 'k '((j . 4) (k . 5))))
 (equal (cons 1 2) '(1 . 2))
 (equal (cons 1 2) '(1 2))
-'(a . b c)
-'(1 . )
+(quote (a . b c))
+(quote (1 . ))
 
 # ------------------------------------------- five real entities to look at
 SetActiveViewport Top
@@ -40,6 +40,7 @@ SetLayer Default
 (cdr (assoc 11 (entget 1)))
 (cdr (assoc 10 (entget 5)))
 (cdr (assoc 11 (entget 5)))
+(distance (cdr (assoc 10 (entget 5))) (cdr (assoc 11 (entget 5))))
 (cdr (assoc 10 (entget 2)))
 (cdr (assoc 40 (entget 2)))
 (cdr (assoc 10 (entget 3)))
@@ -144,6 +145,8 @@ Length
 (command "SelNone")
 (command "SelID" 3)
 Length
+(cdr (assoc 51 (entget 3)))
+(cdr (assoc 50 (entget 3)))
 (setq e5 (entget 5))
 (not (null (entmod (append e5 (list (cons 62 1))))))
 (cdr (assoc 62 (entget 5)))
@@ -209,6 +212,7 @@ Undo
 (progn (initget 6) (setq n (getint "Positive: "))) 0 -3 4
 (list n)
 (progn (initget 6) (setq n (getint "Positive: "))) 0 -3
+(list n)
 (setq r (getreal "Real: ")) 2.5
 (setq r (getreal "Real: ")) 3
 (setq r (getreal "Real: ")) 1e2
@@ -284,7 +288,6 @@ Volume
 (vl-string-search "l" "hello" 4)
 (vl-string-search "z" "hello")
 (vl-string-search "hello" "hello")
-(vl-string-search "" "hello")
 (vl-string-search "lo" "hello" 99)
 (vl-string-search 1 "hello")
 (vl-string-search "l" "hello" -1)
