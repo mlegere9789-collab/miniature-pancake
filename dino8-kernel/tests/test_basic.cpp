@@ -93915,11 +93915,14 @@ void TestRevolveRimRefusesWithReasons() {
     m = Reason([&] { FilletRevolveRim(split, Point3d(2, 0, 2), 0.3); });
     Check(m.find("tangent") != std::string::npos, ("[tangent faces at the rim] refused with a reason: " + m).c_str());
   }
-  // an already-filleted solid has a torus face: refused, never re-read as something else
+  // an already-filleted solid (it has a torus face) is read back as plane / cylinder / cone / torus: a SECOND rim is
+  // accepted now (revolve_rims_tests measures it); a face that is none of those is still refused with a reason
   {
     const Brep once = FilletRevolveRim(plate, top_rim, 0.3);
     m = Reason([&] { FilletRevolveRim(once, Point3d(5.0, 0, 2.0), 0.3); });
-    Check(m.find("not a plane, cylinder or cone") != std::string::npos, ("[already-blended solid] refused with a reason: " + m).c_str());
+    Check(m.empty(), ("[already-blended solid] a second rim is accepted: " + m).c_str());
+    m = Reason([&] { FilletRevolveRim(Brep::BoxWelded(0, 0, 0, 1, 1, 1), Point3d(1, 0, 0), 0.1); });
+    Check(m.find("no cylindrical or conical face") != std::string::npos, ("[non-revolved solid] still refused with a reason: " + m).c_str());
   }
   // two coaxial cylinders is fine; a NON-coaxial one is not a solid of revolution
   {
@@ -93941,6 +93944,349 @@ void TestRevolveRimRefusesWithReasons() {
 }
 
 }  // namespace revolve_rim_tests
+
+// ---------------------------------------------------------------------------
+// FilletRevolveRims / ChamferRevolveRims and rim blends on solids that ALREADY carry torus blend faces / bevel cones
+// (fillet.h). The independent reference is a Green's-theorem profile integral V = pi * closed-integral rho^2 dz written
+// here with the blends solved from "ball centre at distance r from both profile lines" (2x2 linear system) and the arc
+// integral in CLOSED FORM (no polyline), never the library's tangent-length formula. Each result is checked for Brep
+// Check() / ON_Brep IsValid / IsSolid / closed tessellation / G1 across every torus seam, the face count, the torus
+// parameters read back (minor radius, centre-circle radius), sequential == batch == any rim order, and refusals.
+// ---------------------------------------------------------------------------
+namespace revolve_rims_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::ChamferRevolveRim;
+using dino8::kernel::ChamferRevolveRims;
+using dino8::kernel::FilletRevolveRim;
+using dino8::kernel::FilletRevolveRims;
+using dino8::kernel::Point3d;
+using dino8::kernel::RevolveRimChamfer;
+using dino8::kernel::RevolveRimFillet;
+using dino8::kernel::Vector3d;
+using revolve_rim_tests::MakeRevolvedPolygon;
+using revolve_rim_tests::Reason;
+using revolve_rim_tests::RZ;
+
+struct CornerBlend {
+  int corner;          // vertex index of the polygon
+  double r = 0;        // > 0: fillet radius
+  double dprev = 0;    // chamfer: distance along the ray to the PREVIOUS vertex
+  double dnext = 0;    // chamfer: distance along the ray to the NEXT vertex
+};
+
+struct TorusExpect {
+  double minor, major;
+};
+
+// pi * closed-integral rho^2 dz of the polygon with the listed corners blended; fills the expected torus parameters.
+double ProfileVolume(const std::vector<RZ>& poly, const std::vector<CornerBlend>& blends, std::vector<TorusExpect>* tori = nullptr) {
+  const size_t n = poly.size();
+  auto seg = [](const RZ& p, const RZ& q) { return (q.z - p.z) * (p.rho * p.rho + p.rho * q.rho + q.rho * q.rho) / 3.0; };
+  std::vector<RZ> in(n), out(n);
+  std::vector<bool> is_fillet(n, false);
+  std::vector<RZ> cen(n, RZ{0, 0});
+  std::vector<double> rad(n, 0.0);
+  for (size_t i = 0; i < n; ++i) in[i] = out[i] = poly[i];
+  for (const CornerBlend& b : blends) {
+    const size_t i = (size_t)b.corner;
+    const RZ C = poly[i], A = poly[(i + n - 1) % n], B = poly[(i + 1) % n];
+    double ax = A.rho - C.rho, az = A.z - C.z, bx = B.rho - C.rho, bz = B.z - C.z;
+    const double la = std::hypot(ax, az), lb = std::hypot(bx, bz);
+    ax /= la; az /= la; bx /= lb; bz /= lb;
+    if (b.r > 0) {
+      double nax = -az, naz = ax;  // normal of ray a pointing to b's side, and vice versa
+      if (nax * bx + naz * bz < 0) { nax = -nax; naz = -naz; }
+      double nbx = -bz, nbz = bx;
+      if (nbx * ax + nbz * az < 0) { nbx = -nbx; nbz = -nbz; }
+      const double det = nax * nbz - naz * nbx;
+      const double dx = (b.r * nbz - naz * b.r) / det, dz = (nax * b.r - b.r * nbx) / det;
+      cen[i] = RZ{C.rho + dx, C.z + dz};
+      rad[i] = b.r;
+      in[i] = RZ{cen[i].rho - b.r * nax, cen[i].z - b.r * naz};
+      out[i] = RZ{cen[i].rho - b.r * nbx, cen[i].z - b.r * nbz};
+      is_fillet[i] = true;
+      if (tori) tori->push_back(TorusExpect{b.r, cen[i].rho});
+    } else {
+      in[i] = RZ{C.rho + b.dprev * ax, C.z + b.dprev * az};
+      out[i] = RZ{C.rho + b.dnext * bx, C.z + b.dnext * bz};
+    }
+  }
+  double integral = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (is_fillet[i]) {
+      const double r = rad[i], cx = cen[i].rho;
+      double a0 = std::atan2(in[i].z - cen[i].z, in[i].rho - cen[i].rho), a1 = std::atan2(out[i].z - cen[i].z, out[i].rho - cen[i].rho);
+      while (a1 - a0 > ON_PI) a1 -= 2 * ON_PI;
+      while (a1 - a0 < -ON_PI) a1 += 2 * ON_PI;
+      // rho = cx + r cos(phi), z = cz + r sin(phi), dz = r cos(phi) dphi
+      auto F = [&](double ph) {
+        const double s = std::sin(ph);
+        return r * (cx * cx * s + 2 * cx * r * (ph / 2 + std::sin(2 * ph) / 4) + r * r * (s - s * s * s / 3));
+      };
+      integral += F(a1) - F(a0);
+    } else {
+      integral += seg(in[i], out[i]);
+    }
+    integral += seg(out[i], in[(i + 1) % n]);
+  }
+  return ON_PI * integral;
+}
+
+std::vector<TorusExpect> ReadTori(const Brep& b) {
+  std::vector<TorusExpect> v;
+  for (int f = 0; f < b.raw().m_F.Count(); ++f) {
+    ON_Torus t;
+    if (b.raw().m_F[f].SurfaceOf()->IsTorus(&t, 1e-8)) v.push_back(TorusExpect{t.minor_radius, t.major_radius});
+  }
+  std::sort(v.begin(), v.end(), [](const TorusExpect& a, const TorusExpect& c) { return a.minor != c.minor ? a.minor < c.minor : a.major < c.major; });
+  return v;
+}
+
+bool SameTori(std::vector<TorusExpect> got, std::vector<TorusExpect> want, double tol) {
+  if (got.size() != want.size()) return false;
+  std::sort(want.begin(), want.end(), [](const TorusExpect& a, const TorusExpect& c) { return a.minor != c.minor ? a.minor < c.minor : a.major < c.major; });
+  for (size_t i = 0; i < got.size(); ++i)
+    if (std::fabs(got[i].minor - want[i].minor) > tol || std::fabs(got[i].major - want[i].major) > tol) return false;
+  return true;
+}
+
+struct Frame {
+  Point3d base;
+  Vector3d axis;
+  ON_Plane pl;
+  Frame(Point3d b, Vector3d a) : base(b), axis(a) {
+    axis.Unitize();
+    pl = ON_Plane(base, axis);
+  }
+  Point3d At(double rho, double z, double ang) const { return base + rho * (std::cos(ang) * pl.xaxis + std::sin(ang) * pl.yaxis) + z * axis; }
+};
+
+void CheckBlended(const Brep& res, int faces, const std::vector<RZ>& poly, const std::vector<CornerBlend>& bl, const std::string& tag, bool g1 = true) {
+  fillet_cap_rim_tests::CheckClosedValidSolid(res, faces, tag, g1);
+  const Brep::CheckReport rep = res.Check();
+  Check(rep.is_closed && rep.is_oriented && rep.topology_valid, (tag + "Brep::Check(): closed, oriented, topology valid; issues=" + std::to_string(rep.issues.size())).c_str());
+  std::vector<TorusExpect> want;
+  const double v = ProfileVolume(poly, bl, &want);
+  Check(std::fabs(res.Volume() - v) < 1e-6 * v, (tag + "volume " + std::to_string(res.Volume()) + " vs independent Green integral " + std::to_string(v)).c_str());
+  Check(SameTori(ReadTori(res), want, 1e-9), (tag + "torus faces read back: " + std::to_string(want.size()) + " tori with the solved minor / centre-circle radii").c_str());
+}
+
+// stepped shaft: flange R3 (z 0..1), shaft R2 (1..3), shaft R1 (3..5). Corners: 1 (3,0) 2 (3,1) 3 (2,1) concave 4 (2,3) 5 (1,3) concave 6 (1,5).
+const std::vector<RZ> kShaft = {{0, 0}, {3, 0}, {3, 1}, {2, 1}, {2, 3}, {1, 3}, {1, 5}, {0, 5}};
+// annular flange: hole R1, outer R4, thickness 1.5
+const std::vector<RZ> kFlange = {{1, 0}, {4, 0}, {4, 1.5}, {1, 1.5}};
+
+void TestRevolveRimsSteppedShaftSequentialBatchAndOrderIndependent() {
+  const Frame fr(Point3d(0.7, -1.2, 0.4), Vector3d(1, 2, 3));
+  const Brep shaft = MakeRevolvedPolygon(kShaft, fr.base, fr.axis);
+  Check(shaft.raw().IsSolid() && shaft.raw().m_F.Count() == 7, "[shaft] fixture: 7-face closed solid");
+  // radius per corner; the 3 rims on one 1-long wall pair up: corners (1,2): 0.5 + 0.3 < 1; (2,3): 0.3 + 0.4 < 1; (4,5): 0.25 + 0.3 < 1
+  struct R { int corner; double rho, z, r; };
+  const std::vector<R> rims = {{1, 3, 0, 0.5}, {2, 3, 1, 0.3}, {3, 2, 1, 0.4}, {4, 2, 3, 0.25}, {5, 1, 3, 0.3}, {6, 1, 5, 0.4}};
+  const double v0 = ON_PI * (9.0 * 1 + 4.0 * 2 + 1.0 * 2);
+
+  // 1. one rim after another, in a scrambled order; after EVERY call the solid is fully verified
+  const int order[] = {3, 0, 5, 2, 1, 4};
+  Brep cur = shaft;
+  std::vector<CornerBlend> done;
+  double prev_vol = v0;
+  for (int k = 0; k < 6; ++k) {
+    const R& r = rims[order[k]];
+    cur = FilletRevolveRim(cur, fr.At(r.rho, r.z, 0.3 + k), r.r);
+    done.push_back(CornerBlend{r.corner, r.r});
+    CheckBlended(cur, 7 + k + 1, kShaft, done, "[shaft sequential rim " + std::to_string(k + 1) + "/6 (corner " + std::to_string(r.corner) + ")] ");
+    const bool concave = r.corner == 3 || r.corner == 5;
+    Check(concave ? cur.Volume() > prev_vol : cur.Volume() < prev_vol, ("[shaft sequential rim " + std::to_string(k + 1) + "] a " + (concave ? "concave rim adds" : "convex rim removes") + " material").c_str());
+    prev_vol = cur.Volume();
+  }
+
+  // 2. all six at once
+  std::vector<RevolveRimFillet> batch;
+  std::vector<CornerBlend> all;
+  for (const R& r : rims) {
+    batch.push_back(RevolveRimFillet{fr.At(r.rho, r.z, 1.1 + r.corner), r.r});
+    all.push_back(CornerBlend{r.corner, r.r});
+  }
+  const Brep b6 = FilletRevolveRims(shaft, batch);
+  CheckBlended(b6, 13, kShaft, all, "[shaft batch of 6] ");
+  Check(std::fabs(b6.Volume() - cur.Volume()) < 1e-9 * b6.Volume(),
+        ("[shaft] batch == sequential volume " + std::to_string(b6.Volume()) + " vs " + std::to_string(cur.Volume())).c_str());
+  Check(SameTori(ReadTori(b6), ReadTori(cur), 1e-12), "[shaft] batch and sequential tori identical");
+
+  // 3. order independence: 3 rims sharing faces, all 6 permutations
+  std::vector<int> idx = {1, 2, 3};
+  std::vector<double> vols;
+  std::vector<std::vector<TorusExpect>> tor;
+  do {
+    std::vector<RevolveRimFillet> v;
+    for (int i : idx) v.push_back(RevolveRimFillet{fr.At(rims[i].rho, rims[i].z, 0.2 * i), rims[i].r});
+    const Brep res = FilletRevolveRims(shaft, v);
+    Check(res.raw().IsValid() && res.raw().IsSolid() && res.raw().m_F.Count() == 10, "[shaft permutation] valid closed 10-face solid");
+    vols.push_back(res.Volume());
+    tor.push_back(ReadTori(res));
+  } while (std::next_permutation(idx.begin(), idx.end()));
+  double spread = 0;
+  bool same_tori = true;
+  for (size_t i = 1; i < vols.size(); ++i) {
+    spread = std::max(spread, std::fabs(vols[i] - vols[0]) / vols[0]);
+    same_tori = same_tori && SameTori(tor[i], tor[0], 1e-12);
+  }
+  Check(vols.size() == 6 && spread < 1e-9, ("[shaft] 6 permutations of the rim order give the same volume, relative spread " + std::to_string(spread)).c_str());
+  Check(same_tori, "[shaft] 6 permutations give identical torus parameters");
+  // negative control: swapping two rims' RADII (not their order) must change the volume, so the comparison can fail
+  {
+    const Brep sw = FilletRevolveRims(shaft, {RevolveRimFillet{fr.At(3, 1, 0), rims[2].r}, RevolveRimFillet{fr.At(2, 1, 0), 0.3}});
+    const Brep ok = FilletRevolveRims(shaft, {RevolveRimFillet{fr.At(3, 1, 0), 0.3}, RevolveRimFillet{fr.At(2, 1, 0), rims[2].r}});
+    Check(std::fabs(sw.Volume() - ok.Volume()) > 1e-4 * ok.Volume(), "[shaft negative control] swapping the radii between two rims changes the volume");
+  }
+  // negative control: the Green reference has the power to reject a wrong radius (1% off)
+  {
+    std::vector<CornerBlend> wrong = all;
+    wrong[0].r *= 1.01;
+    Check(std::fabs(b6.Volume() - ProfileVolume(kShaft, wrong)) > 1e-6 * b6.Volume(), "[shaft negative control] a 1% wrong radius in the reference is detected by the 1e-6 volume check");
+  }
+  // single-rim pin: the list form with one rim is the single-rim call
+  {
+    const Brep a = FilletRevolveRim(shaft, fr.At(2, 3, 0.5), 0.25);
+    const Brep b = FilletRevolveRims(shaft, {RevolveRimFillet{fr.At(2, 3, 0.5), 0.25}});
+    Check(std::fabs(a.Volume() - b.Volume()) < 1e-12 * a.Volume() && a.raw().m_F.Count() == b.raw().m_F.Count(), "[shaft] a one-element FilletRevolveRims == FilletRevolveRim");
+  }
+}
+
+void TestRevolveRimsRoundedFlangeBothRimsAndInnerRims() {
+  const Frame fr(Point3d(-2.0, 0.5, 1.0), Vector3d(0, 1, 1));
+  const Brep fl = MakeRevolvedPolygon(kFlange, fr.base, fr.axis);
+  Check(fl.raw().IsSolid() && fl.raw().m_F.Count() == 4, "[flange] fixture: 4-face closed ring");
+  const double v0 = ON_PI * (16.0 - 1.0) * 1.5;
+  Check(std::fabs(fl.Volume() - v0) < 1e-6 * v0, "[flange] fixture volume = pi (R^2 - r^2) h");
+  // both outer rims one after the other: 0.6 then 0.7 on the 1.5-long wall
+  const Brep s1 = FilletRevolveRim(fl, fr.At(4, 1.5, 0.4), 0.6);
+  CheckBlended(s1, 5, kFlange, {{2, 0.6}}, "[flange outer top r=0.6] ");
+  const Brep s2 = FilletRevolveRim(s1, fr.At(4, 0, 2.0), 0.7);
+  CheckBlended(s2, 6, kFlange, {{2, 0.6}, {1, 0.7}}, "[flange outer top then bottom r=0.7] ");
+  // the hole rims too (hole wall 1.5 long: 0.3 + 0.5)
+  const Brep s3 = FilletRevolveRim(s2, fr.At(1, 1.5, 3.0), 0.3);
+  const Brep s4 = FilletRevolveRim(s3, fr.At(1, 0, 4.0), 0.5);
+  CheckBlended(s4, 8, kFlange, {{2, 0.6}, {1, 0.7}, {3, 0.3}, {0, 0.5}}, "[flange all four rims, one after another] ");
+  const Brep b4 = FilletRevolveRims(fl, {{fr.At(1, 0, 0.1), 0.5}, {fr.At(4, 0, 1.1), 0.7}, {fr.At(4, 1.5, 2.1), 0.6}, {fr.At(1, 1.5, 3.1), 0.3}});
+  CheckBlended(b4, 8, kFlange, {{2, 0.6}, {1, 0.7}, {3, 0.3}, {0, 0.5}}, "[flange all four rims, one batch] ");
+  Check(std::fabs(b4.Volume() - s4.Volume()) < 1e-9 * s4.Volume(), "[flange] batch == sequential volume");
+  // the symmetric case 0.7 + 0.7 < 1.5 works; the setback sum 0.75 + 0.75 = 1.5 does not (nothing of the wall would be left)
+  const Brep sym = FilletRevolveRims(fl, {{fr.At(4, 0, 0), 0.7}, {fr.At(4, 1.5, 0), 0.7}});
+  CheckBlended(sym, 6, kFlange, {{1, 0.7}, {2, 0.7}}, "[flange symmetric 0.7 / 0.7] ");
+  // the ring is symmetric about mid-height: Pappus check of the removed volume of one 0.7 rim at R=4 (2 pi [r^2 (R - r/2) - (pi r^2/4)(R - r) - r^3/3])
+  const double removed = 2.0 * ON_PI * (0.49 * (4 - 0.35) - (ON_PI * 0.49 / 4) * (4 - 0.7) - 0.343 / 3);
+  Check(std::fabs((v0 - sym.Volume()) - 2 * removed) < 1e-6 * v0, "[flange] symmetric result = sharp ring minus twice the closed-form Pappus removal");
+}
+
+void TestRevolveRimsChamferAndMixedOnBevelCones() {
+  const std::vector<RZ> plate = {{1, 0}, {5, 0}, {5, 2}, {2, 2}, {1, 1}};
+  const Frame fr(Point3d(0.2, 0.1, -0.3), Vector3d(0, 0, 1));
+  const Brep pl = MakeRevolvedPolygon(plate, fr.base, fr.axis);
+  // chamfer (5,2): wall 0.4 (down the cylinder), cap 0.6 (along the top); chamfer (5,0): cap 0.3 (bottom), wall 0.5
+  const Brep c1 = ChamferRevolveRim(pl, fr.At(5, 2, 0.3), 0.4, 0.6);
+  CheckBlended(c1, 6, plate, {{2, 0, 0.4, 0.6}}, "[plate chamfer 1] ", false);
+  const Brep c2 = ChamferRevolveRim(c1, fr.At(5, 0, 1.3), 0.5, 0.3);
+  CheckBlended(c2, 7, plate, {{2, 0, 0.4, 0.6}, {1, 0, 0.3, 0.5}}, "[plate chamfer 2 on a solid that already has a bevel cone] ", false);
+  const Brep cb = ChamferRevolveRims(pl, {RevolveRimChamfer{fr.At(5, 0, 0.9), 0.5, 0.3}, RevolveRimChamfer{fr.At(5, 2, 2.9), 0.4, 0.6}});
+  CheckBlended(cb, 7, plate, {{2, 0, 0.4, 0.6}, {1, 0, 0.3, 0.5}}, "[plate chamfer batch of 2] ", false);
+  Check(std::fabs(cb.Volume() - c2.Volume()) < 1e-9 * cb.Volume(), "[plate] chamfer batch == sequential volume");
+  // fillet the two 135-degree corners the first chamfer created (both ends of its bevel cone) one after another
+  const std::vector<RZ> poly2 = {{1, 0}, {5, 0}, {5, 1.6}, {4.4, 2}, {2, 2}, {1, 1}};
+  const Brep f1 = FilletRevolveRim(c1, fr.At(5, 1.6, 0.8), 0.2);
+  CheckBlended(f1, 7, poly2, {{2, 0.2}}, "[plate: fillet the bevel/wall rim of an earlier chamfer] ");
+  const Brep f2 = FilletRevolveRim(f1, fr.At(4.4, 2, 2.2), 0.2);
+  CheckBlended(f2, 8, poly2, {{2, 0.2}, {3, 0.2}}, "[plate: ...then the bevel/top rim] ");
+  // and the countersink rim (cone/top) on top of all that, plus the cone/hole rim
+  const Brep f3 = FilletRevolveRims(f2, {RevolveRimFillet{fr.At(2, 2, 0.1), 0.3}, RevolveRimFillet{fr.At(1, 1, 3.0), 0.2}});
+  CheckBlended(f3, 10, poly2, {{2, 0.2}, {3, 0.2}, {4, 0.3}, {5, 0.2}}, "[plate: countersink rim + hole rim fillets in one batch on the blended solid] ");
+}
+
+// G1 seam normals are asserted in CheckBlended through the shared MaxNormalJump; here a direct count that the check had seams to look at
+void TestRevolveRimsSeamsPresentAndRefusals() {
+  const Frame fr(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const Brep shaft = MakeRevolvedPolygon(kShaft, fr.base, fr.axis);
+  const double vol0 = shaft.Volume();
+  bool any = false;
+  const Brep two = FilletRevolveRims(shaft, {{fr.At(3, 1, 0), 0.3}, {fr.At(1, 5, 0), 0.4}});
+  const double jump = fillet_cap_rim_tests::MaxNormalJump(two, &any);
+  Check(any && jump < 1e-6, ("[seams] G1 normal jump over the torus seams of a 2-rim batch " + std::to_string(jump)).c_str());
+  // the G1 measurement only looks at edges touching a torus, so an unblended solid must report 'nothing measured' (never a vacuous pass)
+  {
+    const Brep sharp_edge = shaft;
+    bool any2 = false;
+    const double j = fillet_cap_rim_tests::MaxNormalJump(sharp_edge, &any2);
+    Check(!any2 && j == 0.0, "[seams negative control] the unblended shaft has no torus seam to measure (nothing to pass vacuously)");
+  }
+
+  std::string m;
+  // overlapping setbacks on the shared 1-long wall between corners 2 (3,1) and 3 (2,1)
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(3, 1, 0), 0.6}, {fr.At(2, 1, 0), 0.6}}); });
+  Check(m.find("overlapping setbacks") != std::string::npos && m.find("rims 0 and 1") != std::string::npos, ("[overlap 0.6 + 0.6 on a 1-long face] refused naming both rims: " + m).c_str());
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(2, 1, 0), 0.6}, {fr.At(3, 1, 0), 0.6}}); });
+  Check(m.find("overlapping setbacks") != std::string::npos, ("[overlap, rims listed in the other order] refused too: " + m).c_str());
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(3, 1, 0), 0.5}, {fr.At(2, 1, 0), 0.5}}); });
+  Check(m.find("overlapping setbacks") != std::string::npos, ("[overlap 0.5 + 0.5 = exactly the face length] refused (nothing of the face left): " + m).c_str());
+  {
+    const Brep just = FilletRevolveRims(shaft, {{fr.At(3, 1, 0), 0.49}, {fr.At(2, 1, 0), 0.49}});
+    Check(just.raw().IsValid() && just.raw().IsSolid() && just.raw().m_F.Count() == 9, "[overlap negative control] 0.49 + 0.49 (just inside the face) is accepted and valid");
+  }
+  // the same overlap discovered one call at a time: the second call finds the face already shortened
+  {
+    const Brep one = FilletRevolveRim(shaft, fr.At(3, 1, 0), 0.6);
+    m = Reason([&] { FilletRevolveRim(one, fr.At(2, 1, 0), 0.6); });
+    Check(m.find("consume a whole adjacent face") != std::string::npos, ("[sequential overlap] the second call is refused: " + m).c_str());
+    // ... and on a blended solid a rim whose setback still fits is accepted
+    const Brep okk = FilletRevolveRim(one, fr.At(2, 1, 0), 0.3);
+    Check(okk.raw().IsValid() && okk.raw().IsSolid(), "[sequential overlap negative control] 0.6 then 0.3 fits");
+  }
+  // same rim twice; seam circle of an earlier blend; point on no rim; bad numbers carry the rim index; empty list
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(2, 3, 0), 0.2}, {fr.At(2, 3, 1.0), 0.3}}); });
+  Check(m.find("listed twice") != std::string::npos, ("[same rim twice] refused: " + m).c_str());
+  {
+    const Brep one = FilletRevolveRim(shaft, fr.At(3, 1, 0), 0.3);
+    // T1 = (3, 0.7) on the wall, T2 = (2.7, 1) on the annulus: both are tangent seams
+    m = Reason([&] { FilletRevolveRim(one, fr.At(3, 0.7, 0.2), 0.1); });
+    Check(m.find("torus") != std::string::npos && m.find("tangent") != std::string::npos, ("[seam circle of an earlier blend] refused with a reason: " + m).c_str());
+    m = Reason([&] { FilletRevolveRims(one, {{fr.At(2.7, 1, 0.2), 0.1}, {fr.At(2, 3, 0), 0.2}}); });
+    Check(m.find("rim 0") != std::string::npos && m.find("torus") != std::string::npos, ("[seam circle inside a batch] refused naming rim 0: " + m).c_str());
+  }
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(3, 1, 0), 0.2}, {fr.At(2.5, 1, 0), 0.2}}); });
+  Check(m.find("rim 1") != std::string::npos && m.find("rim circle") != std::string::npos, ("[second point on no rim] refused naming rim 1: " + m).c_str());
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(3, 1, 0), 0.2}, {fr.At(2, 3, 0), -0.2}}); });
+  Check(m.find("rim 1") != std::string::npos, ("[negative radius on rim 1] refused naming rim 1: " + m).c_str());
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(3, 1, 0), std::nan("")}}); });
+  Check(!m.empty(), ("[NaN radius] refused: " + m).c_str());
+  m = Reason([&] { FilletRevolveRims(shaft, {}); });
+  Check(m.find("no rims") != std::string::npos, ("[empty list] refused: " + m).c_str());
+  m = Reason([&] { ChamferRevolveRims(shaft, {}); });
+  Check(m.find("no rims") != std::string::npos, ("[empty chamfer list] refused: " + m).c_str());
+  m = Reason([&] { ChamferRevolveRims(shaft, {{fr.At(3, 1, 0), 0.2, 0.0}}); });
+  Check(!m.empty(), ("[chamfer zero distance] refused: " + m).c_str());
+  // chamfer overlap: cap distances 0.6 + 0.6 on the same 1-long annulus
+  m = Reason([&] { ChamferRevolveRims(shaft, {{fr.At(3, 1, 0), 0.2, 0.6}, {fr.At(2, 1, 0), 0.2, 0.6}}); });
+  Check(m.find("overlapping setbacks") != std::string::npos, ("[chamfer overlap cap 0.6 + 0.6] refused: " + m).c_str());
+  // one bad rim in a batch refuses the whole call and leaves the input untouched
+  Check(std::fabs(shaft.Volume() - vol0) < 1e-12 * vol0 && shaft.raw().m_F.Count() == 7, "[refusals] the input solid is unchanged after refused calls");
+  // a 10x radius that fits no face: refused with the whole-face reason, also inside a batch
+  m = Reason([&] { FilletRevolveRims(shaft, {{fr.At(3, 1, 0), 0.2}, {fr.At(1, 5, 0), 7.0}}); });
+  Check(m.find("rim 1") != std::string::npos && m.find("consume a whole adjacent face") != std::string::npos, ("[radius too big, rim 1 of a batch] refused: " + m).c_str());
+  // a plain box and a non-coaxial union are still refused with the single-rim reasons
+  m = Reason([&] { FilletRevolveRims(Brep::BoxWelded(0, 0, 0, 1, 1, 1), {{Point3d(1, 0, 0), 0.1}}); });
+  Check(m.find("no cylindrical or conical face") != std::string::npos, ("[welded box] refused: " + m).c_str());
+  // single-rim pins unchanged: an already-filleted solid now takes a second rim (it used to be refused)
+  {
+    const std::vector<RZ> plate = {{1, 0}, {5, 0}, {5, 2}, {2, 2}, {1, 1}};
+    const Brep p = MakeRevolvedPolygon(plate, fr.base, fr.axis);
+    const Brep once = FilletRevolveRim(p, fr.At(2, 2, 0), 0.3);
+    const Brep twice = FilletRevolveRim(once, fr.At(5, 2, 0), 0.3);
+    CheckBlended(twice, 7, plate, {{3, 0.3}, {2, 0.3}}, "[plate: second rim on an already-filleted solid] ");
+  }
+}
+
+}  // namespace revolve_rims_tests
+
 
 // Sweep closures: (1) Sweep2 / Sweep2Sections along rails with TANGENT JUMPS
 // (corners): a station pair sits exactly at each paired corner pair and the skin
@@ -101412,6 +101758,14 @@ int main() {
           revolve_rim_tests::TestChamferRevolveRimCountersinkBevelMatchesGreenIntegral);
   RunTest("revolve_rim_tests::TestRevolveRimRefusesWithReasons",
           revolve_rim_tests::TestRevolveRimRefusesWithReasons);
+  RunTest("revolve_rims_tests::TestRevolveRimsSteppedShaftSequentialBatchAndOrderIndependent",
+          revolve_rims_tests::TestRevolveRimsSteppedShaftSequentialBatchAndOrderIndependent);
+  RunTest("revolve_rims_tests::TestRevolveRimsRoundedFlangeBothRimsAndInnerRims",
+          revolve_rims_tests::TestRevolveRimsRoundedFlangeBothRimsAndInnerRims);
+  RunTest("revolve_rims_tests::TestRevolveRimsChamferAndMixedOnBevelCones",
+          revolve_rims_tests::TestRevolveRimsChamferAndMixedOnBevelCones);
+  RunTest("revolve_rims_tests::TestRevolveRimsSeamsPresentAndRefusals",
+          revolve_rims_tests::TestRevolveRimsSeamsPresentAndRefusals);
 
   RunTest("sweep_closure_tests::TestSweep2CornerPolylineWallEdgesStayOnRails",
           sweep_closure_tests::TestSweep2CornerPolylineWallEdgesStayOnRails);
