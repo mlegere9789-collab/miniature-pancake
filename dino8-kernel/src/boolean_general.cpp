@@ -8524,6 +8524,7 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
   bool sealed = false;
   Brep best_attempt;
   int best_unpaired = std::numeric_limits<int>::max();
+  std::string naked_diag;  // per sew tolerance: the naked edges left after sewing (count, length, ends), for the refusal text
   for (const double fraction : {0.0, 2e-4, 1e-3, 3e-3, 1e-2}) {
     Brep c = r;
     const double tol = fraction * diag;
@@ -8534,7 +8535,27 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
           c.JoinNakedEdges(tol);
         }
         // What the weld cannot pair is a naked edge shorter than the tolerance with no partner: collapse it.
-        if (!c.raw().IsSolid() && CollapseSliverNakedEdges(c, tol) > 0) c.JoinNakedEdges(tol);
+        int collapsed = -1;
+        if (!c.raw().IsSolid()) {
+          collapsed = CollapseSliverNakedEdges(c, tol);
+          if (collapsed > 0) c.JoinNakedEdges(tol);
+        }
+        if (!c.raw().IsSolid()) {
+          char buf[200];
+          std::snprintf(buf, sizeof buf, " [tol %.4g: collapsed %d;", tol, collapsed);
+          naked_diag += buf;
+          int n = 0;
+          for (int i = 0; i < c.raw().m_E.Count() && n < 6; ++i) {
+            const ON_BrepEdge& e = c.raw().m_E[i];
+            if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+            const ON_3dPoint p0 = e.PointAtStart(), p1 = e.PointAtEnd();
+            std::snprintf(buf, sizeof buf, " naked#%d len %.5g (%.4f,%.4f,%.4f)->(%.4f,%.4f,%.4f);", i, SampledEdgeLength(e), p0.x, p0.y,
+                          p0.z, p1.x, p1.y, p1.z);
+            naked_diag += buf;
+            ++n;
+          }
+          naked_diag += "]";
+        }
       }
       if (!c.raw().IsSolid()) {
         int unpaired = 0;
@@ -8608,7 +8629,7 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
       // keep the generic reason
     }
   }
-  if (!sealed) throw std::runtime_error("BooleanCombineGeneralSealed: " + reason);
+  if (!sealed) throw std::runtime_error("BooleanCombineGeneralSealed: " + reason + naked_diag);
   return out;
 }
 
