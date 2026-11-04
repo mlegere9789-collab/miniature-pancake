@@ -2680,6 +2680,19 @@ class VertexWelder {
                        std::llround(p.z / kBrepWeldTolerance)};
     const auto it = index_of_.find(key);
     if (it != index_of_.end()) return it->second;
+    // Grid quantisation alone splits two points that are within the weld distance of each other but straddle a cell
+    // boundary - and a coordinate that is exactly a half-cell multiple (a dyadic fraction such as 0.0390625 =
+    // 39062.5 cells, 7.6328125, 8.9140625: the stations of a sampled fillet radius law) sits ON the rounding boundary,
+    // where a one-ulp difference between two derivations of the same point picks different cells, leaving a duplicate
+    // vertex that keeps the shared edge unpaired (an open shell). So a point whose own cell is empty also checks the 26
+    // neighbouring cells for a live point within the weld distance itself.
+    for (long long dx = -1; dx <= 1; ++dx)
+      for (long long dy = -1; dy <= 1; ++dy)
+        for (long long dz = -1; dz <= 1; ++dz) {
+          if (dx == 0 && dy == 0 && dz == 0) continue;
+          const auto nb = index_of_.find(WeldKey{key.x + dx, key.y + dy, key.z + dz});
+          if (nb != index_of_.end() && points_[nb->second].DistanceTo(p) <= kBrepWeldTolerance) return nb->second;
+        }
     const int id = static_cast<int>(points_.size());
     points_.push_back(p);
     index_of_.emplace(key, id);
