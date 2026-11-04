@@ -13139,7 +13139,7 @@ qca_has() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; th
 qca_hasnot() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
 qca_objs() { local blk n; blk="$(qcablock "$1")"; n="$({ grep -cE "^history: Object [0-9]+ \(" <<<"$blk" || true; })"; if [ "$n" = "$2" ]; then echo "ok   $3 ($n object(s))"; else echo "FAIL $3 ('$n' object(s), expected $2)"; fail=1; fi; }
 # the case blocks must exist at all (a renamed marker would otherwise make every qca_hasnot pass vacuously)
-for QCA_CASE in scale_forgive scale_replaced two_vases sweep_undo loft_typed_cap loft_typed_style loft_pre_cap subd_again sab_missing; do
+for QCA_CASE in scale_forgive scale_replaced two_vases sweep_undo loft_typed_cap loft_typed_style loft_pre_cap subd_again sab_missing same_twice; do
   if [ -n "$(qcablock "$QCA_CASE")" ]; then echo "ok   QCA_block_$QCA_CASE: the case's output was found"; else echo "FAIL QCA_block_$QCA_CASE: no output between the markers"; fail=1; fi
 done
 # Sweep1: a refused ScaleX must not be forgiven by a later valid ScaleY
@@ -13166,5 +13166,10 @@ qca_hasnot sab_missing "SAT import refused" "QCA_sab_missing: ...and never SAT"
 # ToSubD of a selection that holds a SubD: the SubD is skipped (said so), not copied crease-less
 qca_has subd_again "1 selected SubD object(s) skipped: already a SubD" "QCA_subd_again: the second ToSubD says the SubD in the selection was skipped"
 qca_objs subd_again 4 "QCA_subd_again: curve, solid, the first SubD and the solid's second SubD (no crease-less copy of the SubD)"
+
+# a solid picked as both base and tool is refused (it used to hang the application in the sealing of the engine's stray faces)
+qca_has same_twice "is in both sets; an object cannot be combined with itself - nothing done" "QCA_same_twice: BooleanDifference with the base also among the tools refuses, naming the object"
+qca_hasnot same_twice "BooleanDifference: exact B-rep boolean" "QCA_same_twice: ...and computes nothing"
+qca_objs same_twice 2 "QCA_same_twice: both operands are left untouched"
 
 exit $fail

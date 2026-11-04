@@ -137,3 +137,19 @@ QCABEGIN_sab_missing
 Import /nonexistent_qca_dir/qca_missing.sab
 SelAll
 List
+
+# --- BooleanDifference with the base picked again among the tools (SelID 1 as base, then SelID 1 and 2 as tools) HUNG the
+# application: the engine returned stray faces for solid-minus-itself and their sewing never ended. Last case of the script,
+# so a regression cannot take the other cases down with it (the whole script then times out and QCA_run fails).
+New
+QCABEGIN_same_twice
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 1
+SelID 2
+Enter
+SelAll
+List

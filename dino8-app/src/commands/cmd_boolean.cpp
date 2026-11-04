@@ -3,6 +3,7 @@
 #include "commands/history_rebuild.h"
 #include "dino8/kernel/boolean_general.h"
 
+#include <algorithm>
 #include <map>
 
 namespace dino8::app {
@@ -658,6 +659,17 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
 
 void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
                 bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
+  // An object picked into BOTH sets (the base picked again as a tool) is the difference/intersection of a solid with itself.
+  // The general engine does not return an empty result for it: it hands back stray faces whose sewing never ends, so the
+  // command used to hang the application (100% CPU, no message). Refuse it, naming the object, before anything is computed.
+  if (two_sets) {
+    for (ObjectId id : b) {
+      if (std::find(a.begin(), a.end(), id) != a.end()) {
+        ctx.Warn(label + ": object " + std::to_string(id) + " is in both sets; an object cannot be combined with itself - nothing done");
+        return;
+      }
+    }
+  }
   BooleanOutcome r = ComputeBoolean(ctx, a, b, op, two_sets, swap_sides, try_exact_brep);
   if (!r.declined.empty()) ctx.Print(label + ": " + r.declined);
   if (!r.ok) return;
