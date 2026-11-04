@@ -1,0 +1,7 @@
+# Fourth process: acad.lsp has a syntax error. Nothing of it runs (the whole
+# file is parsed first), the error is reported, and the app still works.
+okbox
+(list broken_marker)
+Box 0,0,0 1,1,0 2
+SelLast
+Volume

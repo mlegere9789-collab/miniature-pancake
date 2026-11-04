@@ -1,0 +1,139 @@
+# AutoLISP-style Lisp dialect (src/script/Lisp.cpp, commands/cmd_lisp.cpp).
+# Every expression is typed on the command line exactly as a user would. The
+# smoke.sh section (LSP_) compares each result with an independently computed
+# value, drives real commands through (command ...) and reads the document
+# back with Volume / Length / object counts, and runs the negative controls
+# (syntax errors, run-time errors, refused redefinitions, runaway loops).
+# @TMP@ is replaced by smoke.sh. Object ids are the deterministic 1-based counter.
+
+# ---------------------------------------------------------------- arithmetic
+(+ 1 2 3)
+(* 2 3.5)
+(/ 7 2)
+(/ 7 2.0)
+(rem 17 5)
+(expt 2 10)
+(sqrt 144)
+(- 5)
+(1+ 41)
+(max 3 9 4)
+(abs -7.5)
+(setq a 5 b (* a a))
+(+ a b)
+# --------------------------------------------------- defun, recursion, scoping
+(defun fact (n) (if (<= n 1) 1 (* n (fact (- n 1)))))
+(fact 10)
+(fact 20)
+(setq y 99)
+(defun dbl (x / y) (setq y (* 2 x)) y)
+(dbl 4)
+(list y)
+# -------------------------------------------------------------------- lists
+(mapcar '1+ '(1 2 3))
+(reverse '(1 2 3))
+(append '(1 2) '(3 4))
+(nth 2 '(a b c))
+(length '(1 2 3 4))
+(apply '+ '(1 2 3 4))
+(cons 0 '(1 2))
+(assoc 'b '((a 1) (b 2)))
+(member 3 '(1 2 3 4))
+(mapcar '(lambda (x) (* x x)) '(1 2 3 4))
+(foreach x '(1 2 3) (princ x))
+# ------------------------------------------------------------------ strings
+(strcat "ab" "cd" "ef")
+(substr "hello" 2 3)
+(strlen "hello")
+(itoa 42)
+(atoi "123")
+(rtos 3.14159 2 2)
+(strcase "Hello")
+(strcase "Hello" T)
+# ----------------------------------------------------- loops, cond, logic
+(setq i 0 s 0)
+(while (< i 5) (setq s (+ s i) i (1+ i)))
+(list s)
+(repeat 3 (setq s (+ s 10)))
+(list s)
+(cond ((= 1 2) "a") ((= 2 2) "b") (T "c"))
+(and 1 nil)
+(or nil 7)
+(= 3 3.0)
+(< 1 2 3)
+(equal 1.0 1.0000001 0.001)
+(eq 'a 'a)
+Lisp (+ 10 20)
+
+# ------------------------------------------------ driving real commands
+(command "Box" "0,0,0" "2,2,0" "3")
+(sslength (ssget "X"))
+(entlast)
+SelLast
+Volume
+(setq sz 4)
+(defun c:mybox () (command "Box" "10,0,0" (list (+ 10 sz) sz 0) sz))
+mybox
+SelLast
+Volume
+(setq sz 5)
+mybox
+(entlast)
+(command "SelNone")
+(command "SelID" (entlast))
+Volume
+(command "SelNone")
+(command "Line" "0,0,0" "10,0,0" "")
+SelLast
+Length
+(setq i 0)
+(while (< i 5) (command "Point" (list (* i 2) 0 0)) (setq i (1+ i)))
+(sslength (ssget "X"))
+@expect_objects 9
+
+# ----------------------------------------------------- negative controls
+(+ 1 2
+(+ 1 2))
+(nosuchfn 1)
+(/ 1 0)
+(+ 1 "a")
+(progn (command "Box" "0,0,0") (setq after 1))
+(null after)
+(command "NoSuchCmdXYZ")
+(command 5)
+(defun c:Box () 1)
+Box 0,0,0 1,1,0 1
+SelLast
+Volume
+@expect_objects 10
+(while T 1)
+(defun r (n) (r (1+ n)))
+(r 0)
+(defun car (x) 1)
+(setq car 1)
+(defun c:bad () (/ 1 0))
+bad
+(ssget "W")
+Lisp
+LoadLisp
+LoadLisp /nonexistent/none.lsp
+(load "/nonexistent/none.lsp")
+(car 5)
+(list (+ 1 1))
+
+# ------------------------------------------------ files: load, LoadLisp, RunScript
+(load "@TMP@/lsp_good.lsp")
+(sq 12)
+sqbox
+SelLast
+Volume
+@expect_objects 11
+LoadLisp @TMP@/lsp_syntax_bad.lsp
+(list zz)
+LoadLisp @TMP@/lsp_runtime_bad.lsp
+(list z1 z2)
+RunScript @TMP@/lsp_good2.lsp
+(list rs_loaded)
+rsbox
+SelLast
+Volume
+@expect_objects 12
