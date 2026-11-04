@@ -3159,9 +3159,20 @@ bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) 
     error = "Could not read a mesh from " + path;
     return false;
   }
+  // STL stores every triangle with its own three vertex records (no shared vertex list), so the loaded mesh is an open
+  // triangle soup: Area is right but a closed solid has no Volume (Mesh::IsClosedManifold() is false). Weld the coincident
+  // vertices (a true distance test, not a grid snap) within 1e-6 of the bounding-box diagonal, far above the float
+  // rounding of the file's coordinates and far below any real feature, and say how many were welded.
+  const int faces_before = mesh.FaceCount();
+  const kernel::BoundingBox bb = mesh.GetBoundingBox();
+  const double diag = mesh.VertexCount() > 0 ? (bb.max - bb.min).Length() : 0.0;
+  const int welded = mesh.MergeDuplicateVertices(std::max(1e-9, diag * 1e-6));
+  const bool closed = mesh.IsClosedManifold();
   SceneObject o = SceneObject::MakeMesh(mesh);
   o.name = std::filesystem::path(path).stem().string();
   doc.Add(std::move(o));
+  error = "STL: welded " + std::to_string(welded) + " coincident vertices of " + std::to_string(faces_before) + " triangles (" +
+          (closed ? "mesh is closed and manifold" : "mesh is NOT closed and manifold: open or non-manifold, no Volume") + ")";
   return true;
 }
 

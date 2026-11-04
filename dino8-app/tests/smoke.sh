@@ -12821,7 +12821,7 @@ for c in sblcut sblunion sbltwo rvr ptf cntloft cntpatch cntnet spsscale vase; d
 done
 for c in sblcut sblunion sbltwo rvr ptf spsscale; do
   for f in stp igs sat sab; do rtafmt $c $f 0.01 0.02 0.05 1; done
-  for f in stl obj; do rtafmt $c $f 0.01 0.03 0.1 0; done
+  for f in stl obj ply; do rtafmt $c $f 0.01 0.03 0.1 0; done
 done
 for c in cntloft cntpatch cntnet; do
   for f in stp igs sat sab; do rtafmt $c $f 0.01 0.02 0.05 0; done
