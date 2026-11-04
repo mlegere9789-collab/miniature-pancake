@@ -13079,6 +13079,115 @@ unx_len 14 '= 393\.70[0-9]* Inches' "step_10_m_into_inch_document_becomes_393.70
 unx_len 15 '= 10 Inches' "iges_inch_file_into_inch_document_is_untouched_10_in"
 unx_len 16 '= 1 Millimeters' "app_survived_the_truncated_files_and_a_fresh_document_is_millimetres"
 
+# ---------------------------------------------------------------------------
+# TS6_: ToNURBS of every ToSubD cage kind, arc-profile revolves, sharp-pole teardrop, curved-profile extrusions and lofts
+# (tosubd6_script.txt, tosubd6b_script.txt).
+#   A (tosubd6_script.txt): Brep -> ToSubD -> ToNURBS for a cylinder, cone, torus, extruded L prism, vase, bottle and egg. The
+#   polysurface must be a CLOSED SOLID with 0 naked edges, pass Check (ON_Brep::IsValid: before, the ToNURBS polysurface of the
+#   cylinder failed with "Corrupt ON_BrepVertex.m_vertex_index back pointer" - merged-away vertices/edges were never compacted -
+#   and then with "edge.m_tolerance=-1.23e308" - this openNURBS build leaves every edge tolerance unset), and its Volume must
+#   agree with the source Brep's own Volume to 1 percent.
+#   B (tosubd6b_script.txt): arc-profile revolves (hemisphere, two sphere segments, a dome about the Y axis), a teardrop (sharp
+#   tip at one pole), an extruded circle and ellipse, a loft through three circles and a Sphere. The measured limit-surface
+#   deviation must be within the 0.001 tolerance whenever a cage is reported (the teardrop is verified once the ring refinement ladder reaches k = 14).
+# Ranges rather than exact numbers (platform float evaluation); reference-run values are in the descriptions.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  TS6A="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/tosubd6_script.txt" 2>&1)" || { echo "$TS6A"; echo "FAIL: tosubd6 script exited non-zero"; exit 1; }
+  TS6B="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/tosubd6b_script.txt" 2>&1)" || { echo "$TS6B"; echo "FAIL: tosubd6b script exited non-zero"; exit 1; }
+else
+  TS6A="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/tosubd6_script.txt" 2>&1)" || { echo "$TS6A"; echo "FAIL: tosubd6 script exited non-zero"; exit 1; }
+  TS6B="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/tosubd6b_script.txt" 2>&1)" || { echo "$TS6B"; echo "FAIL: tosubd6b script exited non-zero"; exit 1; }
+fi
+# in range: ts6range VALUE LO HI DESC
+ts6range() { if [ -n "$1" ] && awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 ($1 in [$2, $3])"; else echo "FAIL $4 ('${1:-none}' not in [$2, $3])"; fail=1; fi; }
+mapfile -t TS6A_TOSUBD < <(grep -F "history: ToSubD: created" <<<"$TS6A" || true)
+mapfile -t TS6A_NURBS < <(grep -F "history: ToNURBS: watertight conversion" <<<"$TS6A" || true)
+mapfile -t TS6A_CHECK < <(grep -E "^history: Object [0-9]+: (valid|INVALID)" <<<"$TS6A" || true)
+mapfile -t TS6A_POLY < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, (closed solid|open)$" <<<"$TS6A" || true)
+mapfile -t TS6A_VOL < <(grep -o "Volume = [0-9.e+-]*" <<<"$TS6A" | awk '{print $3}' || true)
+if [ "${#TS6A_TOSUBD[@]}" -eq 7 ] && [ "${#TS6A_NURBS[@]}" -eq 7 ] && [ "${#TS6A_CHECK[@]}" -eq 7 ] && [ "${#TS6A_POLY[@]}" -eq 7 ] && [ "${#TS6A_VOL[@]}" -eq 14 ]; then
+  echo "ok   tosubd6 script printed 7 ToSubD, 7 ToNURBS, 7 Check, 7 polysurface List lines and 14 volumes"
+  ts6aname=("cylinder" "cone" "torus" "extruded L prism" "vase" "bottle (pole + cap)" "egg (two poles)")
+  for i in 0 1 2 3 4 5 6; do
+    if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000" <<<"${TS6A_TOSUBD[$i]}"; then echo "ok   ToSubD of the ${ts6aname[$i]} is verified within 0.001"; else echo "FAIL ToSubD of the ${ts6aname[$i]} is not verified: ${TS6A_TOSUBD[$i]}"; fail=1; fi
+    if grep -q "0 naked edge(s) left, closed solid: yes, manifold" <<<"${TS6A_NURBS[$i]}"; then echo "ok   ToNURBS of the ${ts6aname[$i]} SubD: 0 naked edges, closed manifold solid"; else echo "FAIL ToNURBS of the ${ts6aname[$i]}: ${TS6A_NURBS[$i]}"; fail=1; fi
+    if grep -q "closed solid" <<<"${TS6A_POLY[$i]}"; then echo "ok   the ${ts6aname[$i]} polysurface lists as a closed solid"; else echo "FAIL the ${ts6aname[$i]} polysurface is not a closed solid: ${TS6A_POLY[$i]}"; fail=1; fi
+    if grep -q "^history: Object [0-9]*: valid" <<<"${TS6A_CHECK[$i]}"; then echo "ok   Check: the ${ts6aname[$i]} ToNURBS polysurface is VALID (ON_Brep::IsValid)"; else echo "FAIL Check: the ${ts6aname[$i]} ToNURBS polysurface: ${TS6A_CHECK[$i]}"; fail=1; fi
+    if awk -v a="${TS6A_VOL[$((2 * i))]}" -v b="${TS6A_VOL[$((2 * i + 1))]}" 'BEGIN { exit !(a > 0 && b / a > 0.99 && b / a < 1.01) }'; then
+      echo "ok   Volume of the ${ts6aname[$i]} ToNURBS polysurface ${TS6A_VOL[$((2 * i + 1))]} is within 1 percent of the source Brep's ${TS6A_VOL[$((2 * i))]}"
+    else
+      echo "FAIL Volume of the ${ts6aname[$i]} ToNURBS polysurface ${TS6A_VOL[$((2 * i + 1))]} vs the source Brep's ${TS6A_VOL[$((2 * i))]}"; fail=1
+    fi
+  done
+else
+  echo "FAIL tosubd6 script printed ${#TS6A_TOSUBD[@]} ToSubD / ${#TS6A_NURBS[@]} ToNURBS / ${#TS6A_CHECK[@]} Check / ${#TS6A_POLY[@]} polysurface List / ${#TS6A_VOL[@]} Volume lines (expected 7 / 7 / 7 / 7 / 14)"; fail=1
+fi
+ts6acheck() { if grep -q -- "$1" <<<"$TS6A"; then echo "ok   $2"; else echo "FAIL $2"; near "$TS6A" "$1"; fail=1; fi; }
+ts6acheck "gl_error=0" "tosubd6 script ran without OpenGL errors"
+mapfile -t TS6B_TOSUBD < <(grep -F "history: ToSubD: created" <<<"$TS6B" || true)
+mapfile -t TS6B_LIST < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, [0-9]+ vertices, [0-9]+ creases" <<<"$TS6B" || true)
+mapfile -t TS6B_SRC < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, (closed solid|open)$" <<<"$TS6B" || true)
+mapfile -t TS6B_VOL < <(grep -o "Volume = [0-9.e+-]*" <<<"$TS6B" | awk '{print $3}' || true)
+if [ "${#TS6B_TOSUBD[@]}" -eq 9 ] && [ "${#TS6B_LIST[@]}" -eq 9 ] && [ "${#TS6B_SRC[@]}" -eq 8 ] && [ "${#TS6B_VOL[@]}" -eq 9 ]; then
+  echo "ok   tosubd6b script printed 9 ToSubD lines, 9 SubD List lines, 8 source List lines and 9 volumes"
+  ts6bdev() { sed -E 's/.*worst measured deviation ([0-9.]+)\).*/\1/' <<<"${TS6B_TOSUBD[$1]}"; }
+  ts6bfaces() { sed -E 's/^history: +([0-9]+) faces, .*/\1/' <<<"${TS6B_LIST[$1]}"; }
+  ts6bname=("hemisphere (Arc + Revolve)" "sphere segment below a hemisphere" "sphere segment above a hemisphere" "dome about the Y axis" "teardrop (sharp tip)")
+  # Arc-profile revolves (indices 0-3): the Arc command's output revolves into a wall + one flat cap (closed solid), caged by the curved-profile path.
+  # Reference run: faces 416 / 352 / 608 / 416, deviation 0.000959 / 0.000851 / 0.000328 / 0.000959, Volume 261.3 / 54.3 / 468.2 / 261.3
+  # (closed forms 261.80 / 54.45 / 469.20 / 261.80).
+  ts6bflo=(400 340 580 400)
+  ts6bfhi=(430 365 630 430)
+  ts6bvlo=(261.0 54.0 467.5 261.0)
+  ts6bvhi=(261.8 54.6 469.0 261.8)
+  ts6bdlo=(0.00085 0.00075 0.00028 0.00085)
+  ts6bdhi=(0.001 0.001 0.0004 0.001)
+  for i in 0 1 2 3; do
+    if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[$i]}" && grep -qF -- "curved-profile revolve cage (profile of " <<<"${TS6B_TOSUBD[$i]}" && grep -qF -- "1 flat O-grid cap(s)" <<<"${TS6B_TOSUBD[$i]}"; then
+      echo "ok   ToSubD of the ${ts6bname[$i]} is VERIFIED by the curved-profile revolve cage with its flat cap"
+    else
+      echo "FAIL ToSubD of the ${ts6bname[$i]} is not the verified capped curved-profile cage: ${TS6B_TOSUBD[$i]}"; fail=1
+    fi
+    if grep -q "^history:   2 faces, [0-9]* edges, closed solid" <<<"${TS6B_SRC[$i]}"; then echo "ok   ...the ${ts6bname[$i]} Revolve result is a 2-face closed solid (wall + cap)"; else echo "FAIL ...the ${ts6bname[$i]} Revolve result: ${TS6B_SRC[$i]}"; fail=1; fi
+    ts6range "$(ts6bdev "$i")" "${ts6bdlo[$i]}" "${ts6bdhi[$i]}" "...measured limit-surface deviation of the ${ts6bname[$i]} (tolerance 0.001, reference chord sag included)"
+    ts6range "$(ts6bfaces "$i")" "${ts6bflo[$i]}" "${ts6bfhi[$i]}" "...cage face count of the ${ts6bname[$i]}"
+    ts6range "${TS6B_VOL[$i]}" "${ts6bvlo[$i]}" "${ts6bvhi[$i]}" "...source Brep Volume of the ${ts6bname[$i]} vs its closed form"
+  done
+  # Teardrop (index 4): a sharp tip at the bottom pole, a smooth top pole. Reference run: VERIFIED by the curved-profile cage after the
+  # ring refinement ladder reached k = 14 (31 rings x 32 segments, 960 faces, deviation 0.000563, Volume 89.87); with the ladder ending
+  # at k = 8 (25 rings) it was refused at 0.001332 and took the dense 18240-face path.
+  if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[4]}" && grep -qF -- "curved-profile revolve cage (profile of 4 control point(s)" <<<"${TS6B_TOSUBD[4]}" && grep -qF -- ", sharp pole tip," <<<"${TS6B_TOSUBD[4]}"; then
+    echo "ok   ToSubD of the teardrop is VERIFIED by the curved-profile cage with a creased (sharp) pole tip"
+    ts6range "$(ts6bdev 4)" 0.00045 0.00070 "...measured limit-surface deviation of the teardrop"
+    ts6range "$(ts6bfaces 4)" 900 1020 "...teardrop cage face count (before: refused at 0.001332, dense 18240)"
+    ts6range "${TS6B_VOL[4]}" 89.0 90.7 "...source Volume of the teardrop"
+  else
+    echo "FAIL ToSubD of the teardrop is not the verified curved-profile cage with a sharp tip: ${TS6B_TOSUBD[4]}"; fail=1
+  fi
+  # Curved-profile extrusions and a loft (indices 5-7) and the Sphere (8).
+  # Reference run: extruded circle 352 faces / 0.000312 / Volume 401.7, extruded ellipse 352 / 0.000425 / 452.2 (analytic revolved-solid cage),
+  # loft 576 / 0.000820 / 644.2 (curved-profile cage), Sphere 512 / 0.000627 / 267.4 (before: dense 18240).
+  ts6bx() { # index, description, marker, face lo, face hi, volume lo, volume hi, deviation lo, deviation hi
+    if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[$1]}" && grep -qF -- "$3" <<<"${TS6B_TOSUBD[$1]}"; then
+      echo "ok   ToSubD of $2 is VERIFIED ($3...)"
+    else
+      echo "FAIL ToSubD of $2 is not the verified '$3' cage: ${TS6B_TOSUBD[$1]}"; fail=1
+    fi
+    ts6range "$(ts6bdev "$1")" "$8" "$9" "...measured limit-surface deviation of $2"
+    ts6range "$(ts6bfaces "$1")" "$4" "$5" "...cage face count of $2"
+    ts6range "${TS6B_VOL[$1]}" "$6" "$7" "...source Volume of $2"
+  }
+  ts6bx 5 "the extruded circle" "analytic revolved-solid cage (" 340 365 401.0 402.5 0.00025 0.0004
+  ts6bx 6 "the extruded ellipse" "analytic revolved-solid cage (" 340 365 451.0 453.0 0.00034 0.00052
+  ts6bx 7 "the loft through three circles" "curved-profile revolve cage (profile of " 560 590 640.0 648.0 0.00068 0.001
+  ts6bx 8 "the Sphere" "curved-profile revolve cage (profile of " 495 530 266.5 268.3 0.0005 0.00078
+else
+  echo "FAIL tosubd6b script printed ${#TS6B_TOSUBD[@]} ToSubD / ${#TS6B_LIST[@]} List / ${#TS6B_SRC[@]} source List / ${#TS6B_VOL[@]} Volume lines (expected 9 / 9 / 8 / 9)"; fail=1
+fi
+ts6bcheck() { if grep -q -- "$1" <<<"$TS6B"; then echo "ok   $2"; else echo "FAIL $2"; near "$TS6B" "$1"; fail=1; fi; }
+ts6bcheck "gl_error=0" "tosubd6b script ran without OpenGL errors"
+
 # >>> sections/*.sh sourced here
 # Section files in tests/sections/ (see README_sections.md) are sourced, in sorted (C-locale) order, into THIS shell, so
 # they see every helper and variable above (BIN, HERE, TMP, TMPW, HEREW, OUT, fail, check, near, ...) and set `fail=1`
@@ -13433,114 +13542,5 @@ hgb_vol fresh_mesh 1 874.34 "fresh process: the mesh-fallback document opens as 
 hgb_vol fresh_mesh 2 874.34 "fresh process: moved back, the sealed B-rep is rebuilt"
 hgb_has fresh_mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
 rm -f "$HGB_DIR"/*.3dm 2>/dev/null || true
-
-# ---------------------------------------------------------------------------
-# TS6_: ToNURBS of every ToSubD cage kind, arc-profile revolves, sharp-pole teardrop, curved-profile extrusions and lofts
-# (tosubd6_script.txt, tosubd6b_script.txt).
-#   A (tosubd6_script.txt): Brep -> ToSubD -> ToNURBS for a cylinder, cone, torus, extruded L prism, vase, bottle and egg. The
-#   polysurface must be a CLOSED SOLID with 0 naked edges, pass Check (ON_Brep::IsValid: before, the ToNURBS polysurface of the
-#   cylinder failed with "Corrupt ON_BrepVertex.m_vertex_index back pointer" - merged-away vertices/edges were never compacted -
-#   and then with "edge.m_tolerance=-1.23e308" - this openNURBS build leaves every edge tolerance unset), and its Volume must
-#   agree with the source Brep's own Volume to 1 percent.
-#   B (tosubd6b_script.txt): arc-profile revolves (hemisphere, two sphere segments, a dome about the Y axis), a teardrop (sharp
-#   tip at one pole), an extruded circle and ellipse, a loft through three circles and a Sphere. The measured limit-surface
-#   deviation must be within the 0.001 tolerance whenever a cage is reported (the teardrop is verified once the ring refinement ladder reaches k = 14).
-# Ranges rather than exact numbers (platform float evaluation); reference-run values are in the descriptions.
-# ---------------------------------------------------------------------------
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  TS6A="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/tosubd6_script.txt" 2>&1)" || { echo "$TS6A"; echo "FAIL: tosubd6 script exited non-zero"; exit 1; }
-  TS6B="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/tosubd6b_script.txt" 2>&1)" || { echo "$TS6B"; echo "FAIL: tosubd6b script exited non-zero"; exit 1; }
-else
-  TS6A="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/tosubd6_script.txt" 2>&1)" || { echo "$TS6A"; echo "FAIL: tosubd6 script exited non-zero"; exit 1; }
-  TS6B="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/tosubd6b_script.txt" 2>&1)" || { echo "$TS6B"; echo "FAIL: tosubd6b script exited non-zero"; exit 1; }
-fi
-# in range: ts6range VALUE LO HI DESC
-ts6range() { if [ -n "$1" ] && awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 ($1 in [$2, $3])"; else echo "FAIL $4 ('${1:-none}' not in [$2, $3])"; fail=1; fi; }
-mapfile -t TS6A_TOSUBD < <(grep -F "history: ToSubD: created" <<<"$TS6A" || true)
-mapfile -t TS6A_NURBS < <(grep -F "history: ToNURBS: watertight conversion" <<<"$TS6A" || true)
-mapfile -t TS6A_CHECK < <(grep -E "^history: Object [0-9]+: (valid|INVALID)" <<<"$TS6A" || true)
-mapfile -t TS6A_POLY < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, (closed solid|open)$" <<<"$TS6A" || true)
-mapfile -t TS6A_VOL < <(grep -o "Volume = [0-9.e+-]*" <<<"$TS6A" | awk '{print $3}' || true)
-if [ "${#TS6A_TOSUBD[@]}" -eq 7 ] && [ "${#TS6A_NURBS[@]}" -eq 7 ] && [ "${#TS6A_CHECK[@]}" -eq 7 ] && [ "${#TS6A_POLY[@]}" -eq 7 ] && [ "${#TS6A_VOL[@]}" -eq 14 ]; then
-  echo "ok   tosubd6 script printed 7 ToSubD, 7 ToNURBS, 7 Check, 7 polysurface List lines and 14 volumes"
-  ts6aname=("cylinder" "cone" "torus" "extruded L prism" "vase" "bottle (pole + cap)" "egg (two poles)")
-  for i in 0 1 2 3 4 5 6; do
-    if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000" <<<"${TS6A_TOSUBD[$i]}"; then echo "ok   ToSubD of the ${ts6aname[$i]} is verified within 0.001"; else echo "FAIL ToSubD of the ${ts6aname[$i]} is not verified: ${TS6A_TOSUBD[$i]}"; fail=1; fi
-    if grep -q "0 naked edge(s) left, closed solid: yes, manifold" <<<"${TS6A_NURBS[$i]}"; then echo "ok   ToNURBS of the ${ts6aname[$i]} SubD: 0 naked edges, closed manifold solid"; else echo "FAIL ToNURBS of the ${ts6aname[$i]}: ${TS6A_NURBS[$i]}"; fail=1; fi
-    if grep -q "closed solid" <<<"${TS6A_POLY[$i]}"; then echo "ok   the ${ts6aname[$i]} polysurface lists as a closed solid"; else echo "FAIL the ${ts6aname[$i]} polysurface is not a closed solid: ${TS6A_POLY[$i]}"; fail=1; fi
-    if grep -q "^history: Object [0-9]*: valid" <<<"${TS6A_CHECK[$i]}"; then echo "ok   Check: the ${ts6aname[$i]} ToNURBS polysurface is VALID (ON_Brep::IsValid)"; else echo "FAIL Check: the ${ts6aname[$i]} ToNURBS polysurface: ${TS6A_CHECK[$i]}"; fail=1; fi
-    if awk -v a="${TS6A_VOL[$((2 * i))]}" -v b="${TS6A_VOL[$((2 * i + 1))]}" 'BEGIN { exit !(a > 0 && b / a > 0.99 && b / a < 1.01) }'; then
-      echo "ok   Volume of the ${ts6aname[$i]} ToNURBS polysurface ${TS6A_VOL[$((2 * i + 1))]} is within 1 percent of the source Brep's ${TS6A_VOL[$((2 * i))]}"
-    else
-      echo "FAIL Volume of the ${ts6aname[$i]} ToNURBS polysurface ${TS6A_VOL[$((2 * i + 1))]} vs the source Brep's ${TS6A_VOL[$((2 * i))]}"; fail=1
-    fi
-  done
-else
-  echo "FAIL tosubd6 script printed ${#TS6A_TOSUBD[@]} ToSubD / ${#TS6A_NURBS[@]} ToNURBS / ${#TS6A_CHECK[@]} Check / ${#TS6A_POLY[@]} polysurface List / ${#TS6A_VOL[@]} Volume lines (expected 7 / 7 / 7 / 7 / 14)"; fail=1
-fi
-ts6acheck() { if grep -q -- "$1" <<<"$TS6A"; then echo "ok   $2"; else echo "FAIL $2"; near "$TS6A" "$1"; fail=1; fi; }
-ts6acheck "gl_error=0" "tosubd6 script ran without OpenGL errors"
-mapfile -t TS6B_TOSUBD < <(grep -F "history: ToSubD: created" <<<"$TS6B" || true)
-mapfile -t TS6B_LIST < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, [0-9]+ vertices, [0-9]+ creases" <<<"$TS6B" || true)
-mapfile -t TS6B_SRC < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, (closed solid|open)$" <<<"$TS6B" || true)
-mapfile -t TS6B_VOL < <(grep -o "Volume = [0-9.e+-]*" <<<"$TS6B" | awk '{print $3}' || true)
-if [ "${#TS6B_TOSUBD[@]}" -eq 9 ] && [ "${#TS6B_LIST[@]}" -eq 9 ] && [ "${#TS6B_SRC[@]}" -eq 8 ] && [ "${#TS6B_VOL[@]}" -eq 9 ]; then
-  echo "ok   tosubd6b script printed 9 ToSubD lines, 9 SubD List lines, 8 source List lines and 9 volumes"
-  ts6bdev() { sed -E 's/.*worst measured deviation ([0-9.]+)\).*/\1/' <<<"${TS6B_TOSUBD[$1]}"; }
-  ts6bfaces() { sed -E 's/^history: +([0-9]+) faces, .*/\1/' <<<"${TS6B_LIST[$1]}"; }
-  ts6bname=("hemisphere (Arc + Revolve)" "sphere segment below a hemisphere" "sphere segment above a hemisphere" "dome about the Y axis" "teardrop (sharp tip)")
-  # Arc-profile revolves (indices 0-3): the Arc command's output revolves into a wall + one flat cap (closed solid), caged by the curved-profile path.
-  # Reference run: faces 416 / 352 / 608 / 416, deviation 0.000959 / 0.000851 / 0.000328 / 0.000959, Volume 261.3 / 54.3 / 468.2 / 261.3
-  # (closed forms 261.80 / 54.45 / 469.20 / 261.80).
-  ts6bflo=(400 340 580 400)
-  ts6bfhi=(430 365 630 430)
-  ts6bvlo=(261.0 54.0 467.5 261.0)
-  ts6bvhi=(261.8 54.6 469.0 261.8)
-  ts6bdlo=(0.00085 0.00075 0.00028 0.00085)
-  ts6bdhi=(0.001 0.001 0.0004 0.001)
-  for i in 0 1 2 3; do
-    if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[$i]}" && grep -qF -- "curved-profile revolve cage (profile of " <<<"${TS6B_TOSUBD[$i]}" && grep -qF -- "1 flat O-grid cap(s)" <<<"${TS6B_TOSUBD[$i]}"; then
-      echo "ok   ToSubD of the ${ts6bname[$i]} is VERIFIED by the curved-profile revolve cage with its flat cap"
-    else
-      echo "FAIL ToSubD of the ${ts6bname[$i]} is not the verified capped curved-profile cage: ${TS6B_TOSUBD[$i]}"; fail=1
-    fi
-    if grep -q "^history:   2 faces, [0-9]* edges, closed solid" <<<"${TS6B_SRC[$i]}"; then echo "ok   ...the ${ts6bname[$i]} Revolve result is a 2-face closed solid (wall + cap)"; else echo "FAIL ...the ${ts6bname[$i]} Revolve result: ${TS6B_SRC[$i]}"; fail=1; fi
-    ts6range "$(ts6bdev "$i")" "${ts6bdlo[$i]}" "${ts6bdhi[$i]}" "...measured limit-surface deviation of the ${ts6bname[$i]} (tolerance 0.001, reference chord sag included)"
-    ts6range "$(ts6bfaces "$i")" "${ts6bflo[$i]}" "${ts6bfhi[$i]}" "...cage face count of the ${ts6bname[$i]}"
-    ts6range "${TS6B_VOL[$i]}" "${ts6bvlo[$i]}" "${ts6bvhi[$i]}" "...source Brep Volume of the ${ts6bname[$i]} vs its closed form"
-  done
-  # Teardrop (index 4): a sharp tip at the bottom pole, a smooth top pole. Reference run: VERIFIED by the curved-profile cage after the
-  # ring refinement ladder reached k = 14 (31 rings x 32 segments, 960 faces, deviation 0.000563, Volume 89.87); with the ladder ending
-  # at k = 8 (25 rings) it was refused at 0.001332 and took the dense 18240-face path.
-  if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[4]}" && grep -qF -- "curved-profile revolve cage (profile of 4 control point(s)" <<<"${TS6B_TOSUBD[4]}" && grep -qF -- ", sharp pole tip," <<<"${TS6B_TOSUBD[4]}"; then
-    echo "ok   ToSubD of the teardrop is VERIFIED by the curved-profile cage with a creased (sharp) pole tip"
-    ts6range "$(ts6bdev 4)" 0.00045 0.00070 "...measured limit-surface deviation of the teardrop"
-    ts6range "$(ts6bfaces 4)" 900 1020 "...teardrop cage face count (before: refused at 0.001332, dense 18240)"
-    ts6range "${TS6B_VOL[4]}" 89.0 90.7 "...source Volume of the teardrop"
-  else
-    echo "FAIL ToSubD of the teardrop is not the verified curved-profile cage with a sharp tip: ${TS6B_TOSUBD[4]}"; fail=1
-  fi
-  # Curved-profile extrusions and a loft (indices 5-7) and the Sphere (8).
-  # Reference run: extruded circle 352 faces / 0.000312 / Volume 401.7, extruded ellipse 352 / 0.000425 / 452.2 (analytic revolved-solid cage),
-  # loft 576 / 0.000820 / 644.2 (curved-profile cage), Sphere 512 / 0.000627 / 267.4 (before: dense 18240).
-  ts6bx() { # index, description, marker, face lo, face hi, volume lo, volume hi, deviation lo, deviation hi
-    if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS6B_TOSUBD[$1]}" && grep -qF -- "$3" <<<"${TS6B_TOSUBD[$1]}"; then
-      echo "ok   ToSubD of $2 is VERIFIED ($3...)"
-    else
-      echo "FAIL ToSubD of $2 is not the verified '$3' cage: ${TS6B_TOSUBD[$1]}"; fail=1
-    fi
-    ts6range "$(ts6bdev "$1")" "$8" "$9" "...measured limit-surface deviation of $2"
-    ts6range "$(ts6bfaces "$1")" "$4" "$5" "...cage face count of $2"
-    ts6range "${TS6B_VOL[$1]}" "$6" "$7" "...source Volume of $2"
-  }
-  ts6bx 5 "the extruded circle" "analytic revolved-solid cage (" 340 365 401.0 402.5 0.00025 0.0004
-  ts6bx 6 "the extruded ellipse" "analytic revolved-solid cage (" 340 365 451.0 453.0 0.00034 0.00052
-  ts6bx 7 "the loft through three circles" "curved-profile revolve cage (profile of " 560 590 640.0 648.0 0.00068 0.001
-  ts6bx 8 "the Sphere" "curved-profile revolve cage (profile of " 495 530 266.5 268.3 0.0005 0.00078
-else
-  echo "FAIL tosubd6b script printed ${#TS6B_TOSUBD[@]} ToSubD / ${#TS6B_LIST[@]} List / ${#TS6B_SRC[@]} source List / ${#TS6B_VOL[@]} Volume lines (expected 9 / 9 / 8 / 9)"; fail=1
-fi
-ts6bcheck() { if grep -q -- "$1" <<<"$TS6B"; then echo "ok   $2"; else echo "FAIL $2"; near "$TS6B" "$1"; fail=1; fi; }
-ts6bcheck "gl_error=0" "tosubd6b script ran without OpenGL errors"
 
 exit $fail
