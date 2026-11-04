@@ -103615,6 +103615,79 @@ void TestBrepShrinkSurfacesTolerance() {
   }
 }
 
+// A LARGE shrink on a raw (hand-assembled ON_Brep) face: a tilted 200 x 200 plane carries an 8 x 6 rectangle with a
+// 2 x 2 hole as its trims. Unlike the Welded constructor (which re-parameterises the face onto its own padded clip
+// surface and so only ever shrinks by a few percent), the surface here really is ~800 times larger than its trims.
+void TestBrepShrinkSurfacesLargeRawShrink() {
+  ON_Plane pl(ON_3dPoint(5, -3, 2), ON_3dVector(1, 0, 0.5), ON_3dVector(0, 1, 0.25));  // axes get orthonormalised
+  ON_Brep ob;
+  ON_PlaneSurface* ps = new ON_PlaneSurface(pl);
+  ps->SetExtents(0, ON_Interval(-100, 100));
+  ps->SetExtents(1, ON_Interval(-100, 100));
+  ps->SetDomain(0, -100, 100);
+  ps->SetDomain(1, -100, 100);
+  const int si = ob.AddSurface(ps);
+  ON_BrepFace& f = ob.NewFace(si);
+  auto loop_curves = [&](const std::vector<std::pair<double, double>>& q) {
+    ON_SimpleArray<ON_Curve*> a;
+    for (size_t i = 0; i < q.size(); ++i) {
+      const auto& p0 = q[i];
+      const auto& p1 = q[(i + 1) % q.size()];
+      a.Append(new ON_LineCurve(pl.PointAt(p0.first, p0.second), pl.PointAt(p1.first, p1.second)));
+    }
+    return a;
+  };
+  ON_SimpleArray<ON_Curve*> outer = loop_curves({{10, 10}, {18, 10}, {18, 16}, {10, 16}});
+  ON_SimpleArray<ON_Curve*> inner = loop_curves({{12, 12}, {12, 14}, {14, 14}, {14, 12}});
+  const bool loops_ok = ob.NewPlanarFaceLoop(f.m_face_index, ON_BrepLoop::outer, outer, true) &&
+                        ob.NewPlanarFaceLoop(f.m_face_index, ON_BrepLoop::inner, inner, true);
+  // The kernel integrates over NURBS faces only: swap the plane for its exact NURBS form (same parameterisation).
+  ON_NurbsSurface* ns = ps->NurbsSurface();
+  delete ob.m_S[si];
+  ob.m_S[si] = ns;
+  ob.m_F[0].SetProxySurface(ns);
+  ob.SetTolerancesBoxesAndFlags(true, true, true, true, true, true, true, true);
+  Check(loops_ok && ob.IsValid(), "LargeRawShrink setup: a raw ON_Brep with an outer and an inner trim loop on a 200 x 200 plane is valid");
+  Brep brep;
+  brep.raw() = ob;
+  const double exact_area = 8.0 * 6.0 - 2.0 * 2.0;  // the plane's axes are orthonormal, so 3D area == uv area
+  Check(std::fabs(brep.Area() - exact_area) < 1e-6, "...its trimmed area is the closed form 8 x 6 - 2 x 2 = 44");
+  const ON_Brep before = brep.raw();
+  const ON_Surface* sb = before.m_F[0].SurfaceOf();
+  Check(sb->Domain(0).Length() == 200.0 && sb->Domain(1).Length() == 200.0, "...the surface domain is 200 x 200");
+
+  Brep::ShrinkSurfacesReport rep;
+  const Result r = brep.ShrinkSurfaces(1e-9, &rep);
+  const ON_Surface* sa = brep.raw().m_F[0].SurfaceOf();
+  const ON_Interval ua = sa->Domain(0), va = sa->Domain(1);
+  std::printf("  LargeShrink: result %d domain u[%.6f,%.6f] v[%.6f,%.6f] area ratio %.3e slack %.3e shift %.3e violation %.3e\n", (int)r, ua.Min(), ua.Max(),
+              va.Min(), va.Max(), rep.min_domain_area_ratio, rep.max_slack_fraction, rep.max_trim_shift, rep.max_containment_violation);
+  Check(r == Result::Ok && rep.faces_shrunk == 1 && rep.faces_total == 1, "ShrinkSurfaces shrinks the over-sized plane (one face)");
+  // Independent oracle: the uv box of the trims is [10,18] x [10,16] by construction (not read from the report).
+  Check(ua.Length() <= 8.0 + 1e-6 && va.Length() <= 6.0 + 1e-6, "...the new domain is at most the trims' own 8 x 6 box (plus 1e-6)");
+  Check(ua.Min() <= 10.0 + 1e-9 && ua.Max() >= 18.0 - 1e-9 && va.Min() <= 10.0 + 1e-9 && va.Max() >= 16.0 - 1e-9, "...and still contains the whole [10,18] x [10,16] box");
+  const double ratio_closed_form = (8.0 * 6.0) / (200.0 * 200.0);
+  Check(rep.min_domain_area_ratio <= ratio_closed_form * 1.001 + 1e-9, "...a LARGE shrink: the domain area ratio is the closed form 48 / 40000 = 0.0012 (within 0.1%)");
+  Check(ua.Length() * va.Length() <= 40000.0 * 0.0013, "...independent: the new domain area is at most 0.13% of the old one");
+  Check(rep.max_trim_shift <= 1e-9 && rep.max_containment_violation <= 1e-9, "...the face boundary moved by <= 1e-9 and every trim sample is inside the new domain");
+  Check(std::fabs(brep.Area() - exact_area) < 1e-6 && std::fabs(rep.area_before - rep.area_after) < 1e-6, "...the trimmed area is still 44");
+  Check(brep.raw().IsValid(), "...the shrunk Brep is still valid");
+  double worst = 0.0;
+  for (int i = 0; i < 20; ++i)
+    for (int j = 0; j < 20; ++j) {
+      const double u = ua.ParameterAt((i + 0.5) / 20.0), v = va.ParameterAt((j + 0.5) / 20.0);
+      worst = std::max(worst, sb->PointAt(u, v).DistanceTo(sa->PointAt(u, v)));
+    }
+  Check(worst <= 1e-9, "...independent: surface points inside the new domain are unchanged (<= 1e-9)");
+  // A second shrink has nothing left to remove.
+  {
+    Brep again = brep;
+    Brep::ShrinkSurfacesReport rep2;
+    const Result r2 = again.ShrinkSurfaces(1e-9, &rep2);
+    Check(r2 == Result::NoOpAlreadySatisfied || rep2.min_domain_area_ratio > 0.99, "...shrinking the shrunk face again is a NoOp (or a <1% change)");
+  }
+}
+
 }  // namespace surfops_tolerance_tests
 // ---------------------------------------------------------------------------
 // Boolean operations: failure diagnostics (typed reasons for every failure,
@@ -109038,6 +109111,7 @@ int main() {
   RunTest("surfops_tolerance_tests::TestSurfaceRemoveMultiKnotsBothDirections", surfops_tolerance_tests::TestSurfaceRemoveMultiKnotsBothDirections);
   RunTest("surfops_tolerance_tests::TestSurfaceFitToToleranceMeetsToleranceOnIndependentGrid", surfops_tolerance_tests::TestSurfaceFitToToleranceMeetsToleranceOnIndependentGrid);
   RunTest("surfops_tolerance_tests::TestBrepShrinkSurfacesTolerance", surfops_tolerance_tests::TestBrepShrinkSurfacesTolerance);
+  RunTest("surfops_tolerance_tests::TestBrepShrinkSurfacesLargeRawShrink", surfops_tolerance_tests::TestBrepShrinkSurfacesLargeRawShrink);
   RunTest("qc2_tests::TestFitToToleranceRefusesEmptySurfaceAndAbsurdDegrees", qc2_tests::TestFitToToleranceRefusesEmptySurfaceAndAbsurdDegrees);
   RunTest("qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance", qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance);
   RunTest("qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs", qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs);
