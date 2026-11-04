@@ -1369,7 +1369,11 @@ class ContourCommand : public Command {
     WantNumber("Distance between contours", 10);
   }
   void OnNumber(CommandContext& ctx, double spacing) override {
-    if (!base_ || spacing <= 0) return;
+    if (!base_) return;
+    if (!std::isfinite(spacing) || spacing <= 0) {
+      ctx.Warn("Contour: the distance between contours must be a positive number");
+      return;
+    }
     kernel::BoundingBox bb;
     ctx.Doc().BoundingBoxOf(ids_, bb);
     double lo = 1e300, hi = -1e300;
@@ -1377,6 +1381,15 @@ class ContourCommand : public Command {
       Point3d p((c & 1) ? bb.max.x : bb.min.x, (c & 2) ? bb.max.y : bb.min.y, (c & 4) ? bb.max.z : bb.min.z);
       double d = ON_DotProduct(p - *base_, dir_);
       lo = std::min(lo, d); hi = std::max(hi, d);
+    }
+    // A spacing that is tiny next to the object (Contour 1e-9 on a 10 mm box asks for 1e10 planes) used to run for
+    // hours; refuse it before any plane is cut.
+    constexpr double kMaxContourPlanes = 5000;
+    const double wanted = std::floor((hi - lo) / spacing) + 1;
+    if (!(wanted <= kMaxContourPlanes)) {
+      ctx.Warn("Contour: a distance of " + FormatNumber(spacing) + " would need about " + FormatNumber(wanted) +
+               " planes (limit " + FormatNumber(kMaxContourPlanes) + "); give a larger distance");
+      return;
     }
     ctx.Doc().BeginChange("Contour");
     int made = 0, planes = 0, exact = 0;

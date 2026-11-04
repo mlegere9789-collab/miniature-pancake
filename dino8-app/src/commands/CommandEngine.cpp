@@ -674,6 +674,9 @@ bool CommandEngine::TryParsePoint(const std::string& text, Point3d& out) {
     if (n < 2) return false;
     if (n == 2) w = 0;
   }
+  // sscanf("%lf") accepts "nan", "inf" and "1e999"; a point with a non-finite coordinate poisons the command
+  // (every later length/angle test against it is false) instead of being refused as the typed text it is.
+  if (!std::isfinite(u) || !std::isfinite(v) || !std::isfinite(w)) return false;
   const Viewport* vp = app_.ActiveViewport();
   ConstructionPlane cp;
   if (vp) cp = const_cast<Viewport*>(vp)->CPlane();
