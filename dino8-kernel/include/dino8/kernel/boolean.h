@@ -111,6 +111,27 @@ enum class BooleanFailureReason {
   // from InvalidPolygon above, which is about a 2D vertex loop's own
   // shape, not a single direction vector.
   InvalidDirection,
+  // The reasons below are produced by DiagnoseBrepBoolean()/
+  // DiagnoseMeshBoolean() (boolean_diagnostics.h) when it classifies a
+  // refusal that the engine threw as plain free text, or a result it
+  // returned but that fails an independent validity check. No engine throws
+  // a BooleanOperationError with these itself.
+  //
+  // An operand is not a closed shell (it has naked edges); the report lists
+  // them.
+  OpenOperand,
+  // The result (or the reassembly that would have built it) has an edge used
+  // by 3 or more faces / fragment loops and the caller did not ask for a
+  // non-manifold result.
+  NonManifoldResult,
+  // The engine returned a body that still has naked edges (it is not a closed
+  // shell); the report lists them and carries the body for inspection.
+  OpenResult,
+  // The mesh engine (Manifold) reported a non-NoError status.
+  EngineFailure,
+  // A refusal whose free-text message matched no known pattern; the message
+  // is preserved verbatim in the report.
+  Unclassified,
 };
 
 // Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in

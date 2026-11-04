@@ -72,6 +72,7 @@ add_library(dino8_kernel STATIC
   src/mesh.cpp
   src/boolean.cpp
   src/boolean_general.cpp
+  src/boolean_diagnostics.cpp
   src/features.cpp
   src/fillet.cpp
   src/sweep.cpp

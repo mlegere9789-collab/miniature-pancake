@@ -135,6 +135,28 @@ Mesh FromManifold(const manifold::Manifold& m) {
   return mesh;
 }
 
+const char* ManifoldStatusName(manifold::Manifold::Error e) {
+  using E = manifold::Manifold::Error;
+  switch (e) {
+    case E::NoError: return "NoError";
+    case E::NonFiniteVertex: return "NonFiniteVertex";
+    case E::NotManifold: return "NotManifold";
+    case E::VertexOutOfBounds: return "VertexOutOfBounds";
+    case E::PropertiesWrongLength: return "PropertiesWrongLength";
+    case E::MissingPositionProperties: return "MissingPositionProperties";
+    case E::MergeVectorsDifferentLengths: return "MergeVectorsDifferentLengths";
+    case E::MergeIndexOutOfBounds: return "MergeIndexOutOfBounds";
+    case E::TransformWrongLength: return "TransformWrongLength";
+    case E::RunIndexWrongLength: return "RunIndexWrongLength";
+    case E::FaceIDWrongLength: return "FaceIDWrongLength";
+    case E::InvalidConstruction: return "InvalidConstruction";
+    case E::ResultTooLarge: return "ResultTooLarge";
+    case E::InvalidTangents: return "InvalidTangents";
+    case E::Cancelled: return "Cancelled";
+  }
+  return "Unknown";
+}
+
 manifold::OpType ToManifoldOp(BooleanOp op) {
   switch (op) {
     case BooleanOp::Union:
@@ -169,9 +191,14 @@ Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op) {
     if (tol > 0) result = ma.SetTolerance(tol).Boolean(mb.SetTolerance(tol), ToManifoldOp(op));
   }
   if (result.Status() != manifold::Manifold::Error::NoError) {
+    // Name the Manifold status of the result and of each operand, so a caller
+    // (and DiagnoseMeshBoolean()) can tell "an operand is not a manifold"
+    // from "the operation itself failed" - this used to be one generic string.
     throw std::runtime_error(
-        "dino8::kernel::BooleanCombine: boolean operation failed "
-        "(Manifold::Status() != NoError after Boolean())");
+        std::string("dino8::kernel::BooleanCombine: boolean operation failed "
+                    "(Manifold::Status() != NoError after Boolean()) [result status: ") +
+        ManifoldStatusName(result.Status()) + "; operand a status: " + ManifoldStatusName(ma.Status()) +
+        "; operand b status: " + ManifoldStatusName(mb.Status()) + "]");
   }
   return FromManifold(result);
 }
