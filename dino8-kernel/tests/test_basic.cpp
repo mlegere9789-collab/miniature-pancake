@@ -102166,9 +102166,12 @@ double SplitLoopVectorArea(const ON_Brep& raw, int fi, int samples) {
 }
 
 double SplitEdgeLength(const ON_Brep& raw, int ei) {
-  double len = 0.0;
-  raw.m_E[ei].GetLength(&len);
-  return len;
+  // OpenNURBS' public ON_Curve has no GetLength(): the kernel's own adaptive Gauss-Legendre quadrature of |C'(t)|.
+  ON_NurbsCurve nc;
+  raw.m_E[ei].GetNurbForm(nc);
+  kernel::NurbsCurve kc;
+  kc.raw() = nc;
+  return kc.LengthToTolerance(1e-10);
 }
 
 int SplitFindSpine(const ON_Brep& raw) {
