@@ -102910,6 +102910,66 @@ void TestMeshEngineReportsStatusAndOpenEdges() {
 
 }  // namespace boolean_diag_tests
 
+namespace offset_refit_budget_tests {
+
+// OffsetRefit with an unreachable tolerance must refuse after a bounded amount
+// of work and say what it reached, never run for minutes (a tolerance of 1e-12
+// used to make SuggestedDivisions() ask for millions of samples per direction).
+void TestOffsetRefitUnreachableToleranceRefusesQuicklyAndNamesTheNumber() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  auto seconds_since = [](std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  };
+
+  // (1) Below the double-precision floor: refused before any sampling, naming the floor.
+  {
+    NurbsSurface out;
+    std::string why;
+    double dev = -1.0;
+    const auto t0 = std::chrono::steady_clock::now();
+    const Result r = s.OffsetRefit(0.2, out, 1e-12, &dev, &why);
+    const double secs = seconds_since(t0);
+    Check(r == Result::Failed, "OffsetRefit(tol=1e-12) on the bump is refused");
+    Check(secs < 5.0, "...and returns within a bounded budget (well under 5 s; it used to run for minutes)");
+    Check(why.find("tolerance not reachable") != std::string::npos, "...the reason says the tolerance is not reachable");
+    Check(why.find("below what double precision can resolve") != std::string::npos, "...and why (below double precision)");
+    Check(why.find("at least ") != std::string::npos && why.find("e-10") != std::string::npos,
+          "...and names the smallest tolerance that can be asked for (about 1e-10 x the surface extent)");
+    Check(why.find("Best deviation reached") != std::string::npos, "...and states the best deviation reached (none: refused before sampling)");
+  }
+
+  // (2) Above the floor but far past what the capped sample grid can resolve:
+  //     a bounded amount of work, then a refusal that names the best deviation
+  //     actually measured (or success within tolerance, never an out-of-tolerance fit).
+  {
+    NurbsSurface out;
+    std::string why;
+    double dev = -1.0;
+    const double tol = 1e-8;
+    const auto t0 = std::chrono::steady_clock::now();
+    const Result r = s.OffsetRefit(0.2, out, tol, &dev, &why);
+    const double secs = seconds_since(t0);
+    Check(secs < 60.0, "OffsetRefit(tol=1e-8) on the bump returns within a bounded budget (under 60 s)");
+    if (r == Result::Ok) {
+      Check(dev <= tol, "...if it succeeds, the achieved deviation is within the tolerance");
+    } else {
+      Check(why.find("tolerance not reachable") != std::string::npos && why.find("best deviation") != std::string::npos,
+            "...if it refuses, the reason names the best deviation reached");
+    }
+  }
+}
+
+}  // namespace offset_refit_budget_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -104630,6 +104690,9 @@ int main() {
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonInvalidLoopRemoval);
   RunTest("offset_remainder_tests::TestOffsetInPlaneClosedPolygonRefusalsStayRefused",
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonRefusalsStayRefused);
+
+  RunTest("offset_refit_budget_tests::TestOffsetRefitUnreachableToleranceRefusesQuicklyAndNamesTheNumber",
+          offset_refit_budget_tests::TestOffsetRefitUnreachableToleranceRefusesQuicklyAndNamesTheNumber);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
