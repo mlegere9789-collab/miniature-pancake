@@ -981,6 +981,57 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
 // inverts or self-intersects).
 Brep ShellClosedExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness);
 
+// Open / variable-thickness shell (cup, case, tube, window) of a RIGHT PRISM
+// over ANY simple closed POLYLINE profile - convex or concave - with a
+// thickness of its own for EVERY wall and for each of the two caps, and any
+// subset of the faces removed (opened), adjacent or not. The B-rep sibling
+// of ShellClosedExtrusion() above (which is uniform and closed only) and of
+// ShellConvexPlanar() (convex solids only): this one sees an L, a U, a comb.
+//
+// Faces are indexed the way the caller drew them: profile edge `i` runs from
+// control point i to control point i+1 of `profile` (the closing duplicate
+// point, if any, is ignored). `wall_thickness[i]` is that side wall's
+// thickness; 0 REMOVES the wall (the cavity is open there, and the walls on
+// either side end flush in the removed wall's own plane - the same
+// "removed face's plane is never offset" convention ShellConvexPlanar uses).
+// `bottom_thickness` is the cap in the profile's own plane, `top_thickness`
+// the cap at the far end of `direction`; 0 removes that cap. Any number of
+// removals, adjacent or not, is allowed as long as at least one wall keeps a
+// positive thickness (otherwise nothing is hollowed) and the cavity keeps
+// positive height (`bottom + top < |direction|`).
+//
+// Construction (exact, every face planar): the cavity is the profile with
+// every edge moved inward by its own thickness (corner = the intersection of
+// the two moved edge lines, i.e. a sharp miter), spanning the height between
+// the caps. The solid is boundary-assembled directly with FromPlanarFaces():
+// outer walls, cavity walls, wall rim quads on an opened cap, flush end
+// faces beside a removed wall - every shared edge is split at every vertex
+// lying on it, so there are no T-junctions and IsSolid()/IsValid() hold.
+// Volume is exactly `area(profile)*|direction| - area(cavity)*cavity_height`.
+//
+// Verified inside the call before anything is returned (a failure is a
+// refusal, never a degraded body): the profile is planar, simple and
+// perpendicular to `direction`; no cavity corner is degenerate; the rim
+// quads of the positive-thickness walls tile `profile minus cavity` exactly
+// (their areas sum to the area difference, each non-inverted); every sampled
+// cavity point lies inside the profile and no closer than the walls' own
+// thickness to any kept wall; a removed wall's flush end faces lie inside
+// that wall's own edge (a removed wall next to a reflex corner is refused);
+// and the assembled Brep is a valid closed solid whose divergence-theorem
+// volume equals the closed form.
+//
+// Throws std::invalid_argument for: a non-finite or negative thickness; a
+// `wall_thickness` whose size is not the profile's edge count; no positive
+// wall; a zero/non-finite `direction`; `bottom + top >= |direction|`; an
+// open, curved (non-degree-1), non-planar or self-crossing profile; a
+// `direction` not perpendicular to the profile's plane; collinear adjacent
+// walls of different thickness (no unique corner); and any thickness set
+// that is infeasible (collapsed or inverted cavity edge, cavity leaving the
+// profile, wall pinched thinner than asked).
+Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
+                            const std::vector<double>& wall_thickness,
+                            double bottom_thickness, double top_thickness);
+
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
 // shrinks it), re-extending or re-trimming every OTHER face so the

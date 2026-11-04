@@ -102098,6 +102098,343 @@ void TestBrepShrinkSurfacesTolerance() {
 }
 
 }  // namespace surfops_tolerance_tests
+// ShellPolylineExtrusion (boolean.h): open / variable-thickness shell of a right prism over any simple closed polyline.
+// Oracles used below, none of which is the routine's own corner formula:
+//  * closed-form cavity outlines written down by hand from the moved edge LINES (x = 6 - d1, y = d0, ...),
+//  * an independent divergence-theorem volume over the result's own planar faces,
+//  * the closed-mesh volume of the tessellation (single precision, so 1e-5 relative),
+//  * the face planes of the result: every cavity wall sits at exactly its own wall thickness from its outer wall,
+//  * a second kernel algorithm (ShellConvexPlanar, and ShellClosedExtrusion) on shared cases,
+//  * negative controls: each refusal must carry its stated reason.
+namespace extrusion_shell_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+using dino8::kernel::ShellPolylineExtrusion;
+
+typedef std::vector<std::pair<double, double>> Poly2;
+
+NurbsCurve Closed(const Poly2& poly) {
+  std::vector<Point3d> pts;
+  for (const auto& p : poly) pts.emplace_back(p.first, p.second, 0.0);
+  pts.push_back(pts.front());
+  return NurbsCurve::FromControlPoints(pts, 1);
+}
+
+double Shoelace(const Poly2& poly) {
+  double a = 0.0;
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const auto& p = poly[i];
+    const auto& q = poly[(i + 1) % poly.size()];
+    a += p.first * q.second - q.first * p.second;
+  }
+  return 0.5 * a;
+}
+
+// Divergence-theorem volume summed over the planar faces' own loops (fan from loop[0]; exact for any simple planar polygon).
+double FaceVolume(const Brep& b) {
+  double v = 0.0;
+  for (const auto& f : b.PlanarFaces()) {
+    const auto& l = f.loop;
+    for (size_t i = 1; i + 1 < l.size(); ++i) {
+      const Point3d &a = l[0], &p = l[i], &c = l[i + 1];
+      v += (a.x * (p.y * c.z - p.z * c.y) - a.y * (p.x * c.z - p.z * c.x) + a.z * (p.x * c.y - p.y * c.x)) / 6.0;
+    }
+  }
+  return v;
+}
+
+double FaceArea(const Brep::PlanarFace& f) {
+  Vector3d n(0, 0, 0);
+  const auto& l = f.loop;
+  for (size_t i = 0; i < l.size(); ++i) {
+    const Point3d &a = l[i], &b = l[(i + 1) % l.size()];
+    n.x += (a.y - b.y) * (a.z + b.z);
+    n.y += (a.z - b.z) * (a.x + b.x);
+    n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  return 0.5 * n.Length();
+}
+
+// Area of all faces whose outward normal is `n` and which lie in the plane dot(p, n) == off.
+double AreaOnPlane(const Brep& b, Vector3d n, double off) {
+  double a = 0.0;
+  for (const auto& f : b.PlanarFaces()) {
+    if ((f.plane.zaxis - n).Length() < 1e-9 && std::fabs(ON_DotProduct(f.loop[0], n) - off) < 1e-9) a += FaceArea(f);
+  }
+  return a;
+}
+
+// Sorted geometric signature: (nx, ny, nz, plane offset, area) per face, rounded.
+std::vector<std::array<double, 5>> Signature(const Brep& b) {
+  std::vector<std::array<double, 5>> s;
+  auto r = [](double v) { return std::round(v * 1e6) / 1e6 + 0.0; };
+  for (const auto& f : b.PlanarFaces()) {
+    const Vector3d n = f.plane.zaxis;
+    s.push_back({r(n.x), r(n.y), r(n.z), r(ON_DotProduct(f.loop[0], n)), r(FaceArea(f))});
+  }
+  std::sort(s.begin(), s.end());
+  return s;
+}
+
+bool Refuses(const std::function<void()>& f, const char* reason_substring, std::string* got = nullptr) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    if (got) *got = e.what();
+    return std::string(e.what()).find(reason_substring) != std::string::npos;
+  } catch (...) {
+  }
+  return false;
+}
+
+// Standard fixture: the L of the existing shell tests, area 20, edges 0..5 =
+// bottom (y=0), right (x=6), inner-top (y=2), inner-right (x=2), top (y=6), left (x=0).
+const Poly2 kL = {{0, 0}, {6, 0}, {6, 2}, {2, 2}, {2, 6}, {0, 6}};
+
+// Hand-derived cavity outline of the L for wall thicknesses d[0..5]: the moved edge lines are
+// y = d0, x = 6-d1, y = 2-d2, x = 2-d3, y = 6-d4, x = d5.
+Poly2 LCavity(const std::vector<double>& d) {
+  return {{d[5], d[0]}, {6 - d[1], d[0]}, {6 - d[1], 2 - d[2]}, {2 - d[3], 2 - d[2]}, {2 - d[3], 6 - d[4]}, {d[5], 6 - d[4]}};
+}
+
+// Mesh-level cross-check: the tessellation is a closed manifold whose single-precision volume agrees.
+void CheckMesh(const Brep& b, double exact, const std::string& w) {
+  const dino8::kernel::Mesh m = b.TessellateToClosedMesh(24, 8);
+  Check(m.IsClosedManifold(), (w + ": tessellation is a closed manifold").c_str());
+  Check(std::fabs(m.Volume() - exact) < 1e-5 * std::max(1.0, exact), (w + ": closed-mesh volume agrees with the closed form to 1e-5").c_str());
+}
+
+void CheckSolid(const Brep& b, double exact, const std::string& w) {
+  Check(b.raw().IsValid() && b.raw().IsSolid(), (w + ": valid ON_Brep, IsSolid").c_str());
+  const Brep::CheckReport rep = b.Check(dino8::kernel::tolerance::kDistance, dino8::kernel::tolerance::kEdgeJoin, true);
+  Check(rep.IsClean() && rep.is_closed && rep.is_oriented, (w + ": Check(self-intersections on) is clean, closed and oriented").c_str());
+  Check(std::fabs(b.Volume() - exact) < 1e-9 * std::max(1.0, exact), (w + ": Brep::Volume() equals the hand-derived closed form").c_str());
+  Check(std::fabs(FaceVolume(b) - exact) < 1e-9 * std::max(1.0, exact), (w + ": independent face-loop divergence volume equals it too").c_str());
+  CheckMesh(b, exact, w);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Variable thickness: every wall and both caps have a thickness of their own, on a NON-convex body.
+void TestVariableThicknessShellOfNonConvexPrism() {
+  const std::vector<double> d = {0.5, 0.3, 0.4, 0.2, 0.25, 0.6};
+  const double H = 4.0, bot = 0.7, top = 0.35;
+  const Poly2 cav = LCavity(d);
+  const double expect = 20.0 * H - Shoelace(cav) * (H - bot - top);
+  // numeric pin of the closed form written out by hand: cavity = (6-.3-.6)*(6-.25-.5) - (6-.3-1.8)*(6-.25-1.6) = 5.1*5.25 - 3.9*4.15
+  Check(std::fabs(Shoelace(cav) - (5.1 * 5.25 - 3.9 * 4.15)) < 1e-12, "fixture: hand-derived cavity area 5.1*5.25 - 3.9*4.15 = 10.59");
+  const Brep s = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, bot, top);
+  CheckSolid(s, expect, "variable-thickness closed L shell");
+  Check(s.PlanarFaces().size() == 16, "closed shell of a hexagonal prism: 2*(6+2) = 16 planar faces");
+
+  // Measured wall thickness: each cavity wall face sits exactly its own thickness inside its outer wall.
+  const Vector3d inward[6] = {Vector3d(0, 1, 0), Vector3d(-1, 0, 0), Vector3d(0, -1, 0), Vector3d(-1, 0, 0), Vector3d(0, -1, 0), Vector3d(1, 0, 0)};
+  const double outer_off[6] = {0.0, 6.0, 2.0, 2.0, 6.0, 0.0};  // outer wall plane: dot(p, inward) = outer_off * sign
+  int found = 0;
+  for (int i = 0; i < 6; ++i) {
+    // the cavity wall's outward-from-material normal is `inward[i]`; its plane offset along that normal:
+    (void)outer_off;
+    const double outer_plane = ON_DotProduct(Point3d(kL[(size_t)i].first, kL[(size_t)i].second, 0.0), inward[i]);
+    const double want = outer_plane + d[i];
+    if (AreaOnPlane(s, inward[i], want) > 0.0) ++found;
+  }
+  Check(found == 6, "all 6 cavity walls lie at exactly their own thickness (0.5,0.3,0.4,0.2,0.25,0.6) from their outer wall plane");
+  Check(std::fabs(AreaOnPlane(s, Vector3d(0, 0, 1), bot) - Shoelace(cav)) < 1e-12, "cavity floor is at z = 0.7 (bottom thickness) with the cavity's area");
+  Check(std::fabs(AreaOnPlane(s, Vector3d(0, 0, -1), H - top) - Shoelace(cav)) < 1e-12, "cavity ceiling is at z = 4 - 0.35 (top thickness)");
+
+  // Uniform case reproduces the existing uniform closed shell exactly (a second implementation).
+  const Brep uni = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, 4.0), std::vector<double>(6, 0.5), 0.5, 0.5);
+  const Brep ref = dino8::kernel::ShellClosedExtrusion(Closed(kL), Vector3d(0, 0, 4.0), 0.5);
+  Check(std::fabs(uni.Volume() - 53.0) < 1e-9 && std::fabs(uni.Volume() - ref.Volume()) < 1e-9,
+        "uniform t=0.5 equals ShellClosedExtrusion and the hand-derived 53");
+  Check(uni.PlanarFaces().size() == ref.PlanarFaces().size(), "uniform t=0.5 has the same planar face count as ShellClosedExtrusion");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Cup / case: one cap removed.
+void TestCupOfNonConvexPrismOpenTop() {
+  const double H = 4.0, floor_t = 0.8;
+  const std::vector<double> d(6, 0.5);
+  const Poly2 cav = LCavity(d);
+  const double expect = 20.0 * H - Shoelace(cav) * (H - floor_t);
+  const Brep cup = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, floor_t, 0.0);
+  CheckSolid(cup, expect, "open-top L cup");
+  Check(cup.PlanarFaces().size() == 20, "cup faces: 6 outer walls + 6 cavity walls + bottom + floor + 6 top rim quads = 20");
+  Check(std::fabs(AreaOnPlane(cup, Vector3d(0, 0, 1), H) - (20.0 - Shoelace(cav))) < 1e-12, "the top is only the rim: its area is profile minus cavity");
+  Check(AreaOnPlane(cup, Vector3d(0, 0, -1), H - 0.35) == 0.0, "no ceiling exists (the cavity is open)");
+  // Open BOTTOM is the mirror: same volume with the floor on the far end.
+  const Brep cup_dn = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, 0.0, floor_t);
+  CheckSolid(cup_dn, expect, "open-bottom L cup");
+  Check(std::fabs(AreaOnPlane(cup_dn, Vector3d(0, 0, -1), 0.0) - (20.0 - Shoelace(cav))) < 1e-12, "open-bottom cup: the bottom plane carries only the rim");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Both caps removed (two removed faces): a tube / sleeve.
+void TestTubeBothCapsRemovedOnNonConvexPrism() {
+  const double H = 4.0;
+  const std::vector<double> d = {0.5, 0.4, 0.5, 0.4, 0.5, 0.4};
+  const Poly2 cav = LCavity(d);
+  const double expect = (20.0 - Shoelace(cav)) * H;
+  const Brep tube = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, 0.0, 0.0);
+  CheckSolid(tube, expect, "L tube (both caps removed)");
+  Check(tube.PlanarFaces().size() == 24, "tube faces: 6 outer + 6 inner walls + 6 bottom rim + 6 top rim quads = 24");
+  Check(std::fabs(AreaOnPlane(tube, Vector3d(0, 0, 1), H) - (20.0 - Shoelace(cav))) < 1e-12 &&
+            std::fabs(AreaOnPlane(tube, Vector3d(0, 0, -1), 0.0) - (20.0 - Shoelace(cav))) < 1e-12,
+        "both open ends carry exactly the rim area");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Multi-face openings: walls removed (adjacent pair; separated pair), alone and together with a cap.
+void TestMultiFaceOpeningsAdjacentAndSeparated() {
+  const double H = 4.0;
+  // (a) adjacent walls 0 and 1 (they meet at the convex corner (6,0)), top open, floor 0.8.
+  {
+    const std::vector<double> d = {0.0, 0.0, 0.5, 0.5, 0.5, 0.5};
+    const Poly2 cav = LCavity(d);  // {0.5,0},{6,0},{6,1.5},{1.5,1.5},{1.5,5.5},{0.5,5.5}
+    Check(std::fabs(Shoelace(cav) - (5.5 * 1.5 + 1.0 * 4.0)) < 1e-12, "fixture: window cavity area 5.5*1.5 + 1.0*4.0 = 12.25");
+    const double expect = 20.0 * H - Shoelace(cav) * (H - 0.8);
+    const Brep s = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, 0.8, 0.0);
+    CheckSolid(s, expect, "walls 0+1 (adjacent) and the top removed");
+    // No face survives in the removed walls' own planes except the flush end faces/strips of the neighbours.
+    Check(AreaOnPlane(s, Vector3d(0, -1, 0), 0.0) > 0.0 && AreaOnPlane(s, Vector3d(0, -1, 0), 0.0) < 6.0 * H - 1e-9,
+          "the y=0 plane keeps only the frame (bottom strip + wall end), strictly less than the full wall 6*4");
+    // frame area in plane y=0: full 6x4 wall minus the open window [0.5,6]x[0.8,4] seen in that plane
+    Check(std::fabs(AreaOnPlane(s, Vector3d(0, -1, 0), 0.0) - (6.0 * H - 5.5 * (H - 0.8))) < 1e-9,
+          "wall 0 plane: frame area = 24 - 5.5*3.2 = 6.4 (wall minus the window)");
+    // the rim around a window sits flush: the cavity must reach the removed walls' planes exactly
+    Check(AreaOnPlane(s, Vector3d(0, 1, 0), 0.0) == 0.0, "no inward-facing face exists on the removed wall's plane");
+  }
+  // (b) separated walls 0 and 4 with the top open: two independent windows.
+  {
+    const std::vector<double> d = {0.0, 0.5, 0.5, 0.5, 0.0, 0.5};
+    const Poly2 cav = LCavity(d);
+    const double expect = 20.0 * H - Shoelace(cav) * (H - 0.6);
+    const Brep s = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, 0.6, 0.0);
+    CheckSolid(s, expect, "walls 0 and 4 (separated windows) and the top removed");
+  }
+  // (c) windows combined with BOTH caps removed.
+  {
+    const std::vector<double> d = {0.0, 0.0, 0.5, 0.5, 0.5, 0.5};
+    const Poly2 cav = LCavity(d);
+    const Brep s = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, 0.0, 0.0);
+    CheckSolid(s, (20.0 - Shoelace(cav)) * H, "walls 0+1 and BOTH caps removed (a four-wall open band)");
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Index/orientation robustness: the same geometric request in a clockwise drawing, a reversed extrusion and a tilted plane.
+void TestEdgeIndexingOrientationAndTilt() {
+  const double H = 4.0;
+  const std::vector<double> d = {0.0, 0.0, 0.5, 0.45, 0.35, 0.5};
+  const Brep ccw = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, 0.8, 0.0);
+  // Clockwise drawing of the same L: vertices reversed, so edge j is original edge 4-j.. (cw edge e <-> original edge (4 - e) mod 6).
+  const Poly2 Lcw(kL.rbegin(), kL.rend());
+  std::vector<double> dcw(6);
+  for (int e = 0; e < 6; ++e) dcw[(size_t)e] = d[(size_t)(((4 - e) % 6 + 6) % 6)];
+  const Brep cw = ShellPolylineExtrusion(Closed(Lcw), Vector3d(0, 0, H), dcw, 0.8, 0.0);
+  Check(Signature(cw) == Signature(ccw), "clockwise drawing with remapped edge indices gives the identical set of faces (normals, offsets, areas)");
+  Check(std::fabs(cw.Volume() - ccw.Volume()) < 1e-9 && cw.raw().IsSolid(), "...and the same volume, valid solid");
+  // Profile drawn at z = 7, extruded DOWNWARD: the same body mirrored; the bottom cap is then the z=7 one.
+  NurbsCurve high = Closed(kL);
+  high.raw().Translate(ON_3dVector(0, 0, 7));
+  const Brep down = ShellPolylineExtrusion(high, Vector3d(0, 0, -H), d, 0.8, 0.0);
+  Check(std::fabs(down.Volume() - ccw.Volume()) < 1e-9 && down.raw().IsSolid(), "extruded along -z from z=7: same volume, valid solid");
+  Check(std::fabs(AreaOnPlane(down, Vector3d(0, 0, 1), 7.0) - AreaOnPlane(ccw, Vector3d(0, 0, -1), 0.0)) < 1e-9,
+        "the 'bottom' cap (profile plane, thickness 0.8) sits at z = 7 with the same area");
+  // A tilted plane.
+  ON_Xform rot;
+  rot.Rotation(0.7, ON_3dVector(1, 0.4, -0.2), ON_3dPoint(1, 2, 3));
+  NurbsCurve tilted = Closed(kL);
+  tilted.raw().Transform(rot);
+  ON_3dVector nrm(0, 0, 1);
+  nrm.Transform(rot);
+  const Brep tb = ShellPolylineExtrusion(tilted, H * Vector3d(nrm.x, nrm.y, nrm.z), d, 0.8, 0.0);
+  Check(std::fabs(tb.Volume() - ccw.Volume()) < 1e-7 && tb.raw().IsSolid() && tb.Check().IsClean(), "rotated into a tilted plane: same volume, valid solid, Check clean");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Second algorithm: ShellConvexPlanar on a box with an open top, uniform and per-face thicknesses.
+void TestAgreesWithShellConvexPlanarOnBoxCup() {
+  const Poly2 rect = {{0, 0}, {6, 0}, {6, 4}, {0, 4}};
+  const double H = 3.0;
+  const Brep box = Brep::Box(0, 0, 0, 6, 4, H);
+  const auto faces = box.PlanarFaces();
+  int top = -1, bottom = -1;
+  std::map<std::string, int> idx;
+  for (size_t i = 0; i < faces.size(); ++i) {
+    const Vector3d n = faces[i].plane.zaxis;
+    if (n.z > 0.9) top = (int)i;
+    if (n.z < -0.9) bottom = (int)i;
+    if (n.y < -0.9) idx["y0"] = (int)i;   // edge 0 (y = 0)
+    if (n.x > 0.9) idx["x6"] = (int)i;    // edge 1 (x = 6)
+    if (n.y > 0.9) idx["y4"] = (int)i;    // edge 2 (y = 4)
+    if (n.x < -0.9) idx["x0"] = (int)i;   // edge 3 (x = 0)
+  }
+  Check(top >= 0 && bottom >= 0 && idx.size() == 4, "fixture: located the box's six faces by normal");
+  const Brep ref_u = dino8::kernel::ShellConvexPlanar(box, {top}, 0.5);
+  const Brep mine_u = ShellPolylineExtrusion(Closed(rect), Vector3d(0, 0, H), std::vector<double>(4, 0.5), 0.5, 0.0);
+  Check(std::fabs(mine_u.Volume() - FaceVolume(ref_u)) < 1e-9, "uniform t=0.5 open-top box: volume equals ShellConvexPlanar's");
+  Check(Signature(mine_u).size() == Signature(ref_u).size(), "...with the same planar face count");
+  // Per-face thicknesses: wall thickness for every face of the box (top's is never read).
+  std::vector<double> t(faces.size(), 0.0);
+  t[(size_t)bottom] = 0.9;
+  t[(size_t)idx["y0"]] = 0.3;
+  t[(size_t)idx["x6"]] = 0.45;
+  t[(size_t)idx["y4"]] = 0.6;
+  t[(size_t)idx["x0"]] = 0.25;
+  const Brep ref_v = dino8::kernel::ShellConvexPlanar(box, {top}, t);
+  const Brep mine_v = ShellPolylineExtrusion(Closed(rect), Vector3d(0, 0, H), {0.3, 0.45, 0.6, 0.25}, 0.9, 0.0);
+  const double hand = 6.0 * 4.0 * H - (6 - 0.45 - 0.25) * (4 - 0.3 - 0.6) * (H - 0.9);
+  Check(std::fabs(FaceVolume(ref_v) - hand) < 1e-9, "fixture: ShellConvexPlanar per-face volume equals the hand formula");
+  Check(std::fabs(mine_v.Volume() - hand) < 1e-9 && std::fabs(mine_v.Volume() - FaceVolume(ref_v)) < 1e-9,
+        "per-face thicknesses (0.3,0.45,0.6,0.25; floor 0.9): equals ShellConvexPlanar's and the hand formula");
+  Check(Signature(mine_v) == Signature(ref_v), "...and the two algorithms produce the identical sorted set of face (normal, offset, area)");
+  // Two removed faces, top and bottom, both algorithms.
+  const Brep ref_t = dino8::kernel::ShellConvexPlanar(box, {top, bottom}, 0.5);
+  const Brep mine_t = ShellPolylineExtrusion(Closed(rect), Vector3d(0, 0, H), std::vector<double>(4, 0.5), 0.0, 0.0);
+  Check(std::fabs(mine_t.Volume() - FaceVolume(ref_t)) < 1e-9, "top+bottom removed (a tube): volume equals ShellConvexPlanar's");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Negative controls: each refusal states its reason; nothing degraded is ever returned.
+void TestRefusalsCarryTheirReasons() {
+  const Vector3d up(0, 0, 4);
+  const std::vector<double> u(6, 0.5);
+  std::string got;
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, std::vector<double>(6, 1.2), 0.5, 0.5); }, "cavity", &got),
+        "walls thicker than the L's half-arm-width (1.2 > 1): cavity inverts - refused with a cavity reason");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, std::vector<double>(6, 1.0), 0.5, 0.5); }, "cavity"),
+        "walls exactly the half-arm-width (1.0): cavity arm collapses to zero width - refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed({{0, 0}, {10, 0}, {10, 2}, {0, 2}}), up, {1.5, 0.3, 0.6, 0.3}, 0.5, 0.5); }, "cavity"),
+        "opposite walls 1.5 + 0.6 across a 2-wide slab (sum > width) - refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, {0.5, 0.5, 0.0, 0.5, 0.5, 0.5}, 0.5, 0.0); }, "removed wall 2", &got),
+        "removing wall 2 (it ends at a reflex corner, cavity would overrun its edge) is refused naming the wall");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, {0.5, 0.5, 0.5, 0.5, 0.5}, 0.5, 0.5); }, "one entry per profile edge"),
+        "wall_thickness of the wrong length");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, std::vector<double>(6, 0.0), 0.5, 0.0); }, "at least one wall"),
+        "every wall removed: nothing is hollowed - refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, u, 2.0, 2.0); }, "strictly less than the extrusion height"),
+        "bottom + top = height: no cavity height left - refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, {0.5, 0.5, 0.5, NAN, 0.5, 0.5}, 0.5, 0.5); }, "finite"), "NaN wall thickness refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, {0.5, 0.5, 0.5, -0.1, 0.5, 0.5}, 0.5, 0.5); }, ">= 0"), "negative wall thickness refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), up, u, INFINITY, 0.0); }, "finite"), "infinite cap thickness refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), Vector3d(1, 0, 4), u, 0.5, 0.5); }, "perpendicular"), "oblique extrusion direction refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, 0), u, 0.5, 0.5); }, "non-zero"), "zero direction refused");
+  Check(Refuses([&] { ShellPolylineExtrusion(shell_closed_tests::MakeCircleCurve(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0), up, u, 0.5, 0.0); }, "polyline"),
+        "a circular profile is refused as non-polyline (no silent approximation)");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed({{0, 0}, {4, 4}, {4, 0}, {0, 4}}), up, std::vector<double>(4, 0.2), 0.5, 0.5); }, "self-crossing"),
+        "a bow-tie profile is refused as self-crossing");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed({{0, 0}, {3, 0}, {6, 0}, {6, 4}, {0, 4}}), up, {0.5, 0.8, 0.5, 0.5, 0.5}, 0.5, 0.5); }, "collinear"),
+        "collinear adjacent walls of different thickness (no unique corner) refused");
+  // ...while the same collinear split with EQUAL thickness is accepted and equals the unsplit box.
+  const Brep split = ShellPolylineExtrusion(Closed({{0, 0}, {3, 0}, {6, 0}, {6, 4}, {0, 4}}), up, std::vector<double>(5, 0.5), 0.5, 0.5);
+  const Brep whole = ShellPolylineExtrusion(Closed({{0, 0}, {6, 0}, {6, 4}, {0, 4}}), up, std::vector<double>(4, 0.5), 0.5, 0.5);
+  Check(std::fabs(split.Volume() - whole.Volume()) < 1e-9 && split.raw().IsSolid(), "a collinear split with equal thickness is accepted and has the unsplit volume");
+}
+
+}  // namespace extrusion_shell_tests
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -103791,6 +104128,13 @@ int main() {
 
   RunTest("offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary",
           offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary);
+  RunTest("extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism", extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism);
+  RunTest("extrusion_shell_tests::TestCupOfNonConvexPrismOpenTop", extrusion_shell_tests::TestCupOfNonConvexPrismOpenTop);
+  RunTest("extrusion_shell_tests::TestTubeBothCapsRemovedOnNonConvexPrism", extrusion_shell_tests::TestTubeBothCapsRemovedOnNonConvexPrism);
+  RunTest("extrusion_shell_tests::TestMultiFaceOpeningsAdjacentAndSeparated", extrusion_shell_tests::TestMultiFaceOpeningsAdjacentAndSeparated);
+  RunTest("extrusion_shell_tests::TestEdgeIndexingOrientationAndTilt", extrusion_shell_tests::TestEdgeIndexingOrientationAndTilt);
+  RunTest("extrusion_shell_tests::TestAgreesWithShellConvexPlanarOnBoxCup", extrusion_shell_tests::TestAgreesWithShellConvexPlanarOnBoxCup);
+  RunTest("extrusion_shell_tests::TestRefusalsCarryTheirReasons", extrusion_shell_tests::TestRefusalsCarryTheirReasons);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
