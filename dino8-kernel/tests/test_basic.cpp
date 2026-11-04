@@ -99877,6 +99877,44 @@ void TestBodySectionRefusesMissesAndInvalidPlanes() {
   Check(SectionBrepByPlaneJoined(none, ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), SectionOpt()).empty(), "an empty B-rep gives no contour");
 }
 
+// A TRIMMED solid: a 4x4x4 box with a through hole of radius 0.5 on its centre axis (the trimmed cylinder wall and the
+// top/bottom faces with a circular inner loop). A z=2 plane across it gives the outer square (perimeter 16) AND the hole
+// circle (2*pi*0.5) as two separate closed contours; an x=2 plane through the hole axis cuts the trimmed top/bottom
+// faces and gives two 1.5 x 4 rectangles (perimeter 11 each) - all closed forms.
+void TestBodySectionTrimmedSolidWithThroughHole() {
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep drilled = dino8::kernel::MakeHole(box, Point3d(2, 2, 4), dino8::kernel::Vector3d(0, 0, -1), 0.5, 0.0, true);
+  Check(drilled.raw().IsValid(), "the drilled box fixture is a valid ON_Brep");
+  {
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(drilled.raw(), ON_Plane(ON_3dPoint(0, 0, 2.0), ON_3dVector(0, 0, 1)), SectionOpt());
+    Check(sec.size() == 2, "a z=2 plane across the drilled box gives exactly TWO contours (outer square + hole circle)");
+    if (sec.size() == 2) {
+      bool all_closed = sec[0].closed && sec[1].closed;
+      Check(all_closed, "both the outer square and the hole circle are closed contours");
+      const double l0 = sec[0].curve.Length(), l1 = sec[1].curve.Length();
+      const double big = std::max(l0, l1), small = std::min(l0, l1);
+      Check(std::fabs(big - 16.0) < 1e-3, "the outer contour length equals the square perimeter 16");
+      Check(std::fabs(small - ON_PI) < 2e-3 * ON_PI, "the inner contour length equals the hole circumference 2*pi*0.5");
+      const NurbsCurve& hole = (l0 < l1) ? sec[0].curve : sec[1].curve;
+      double lo, hi;
+      SampleRange(hole, 400, [](Point3d p) { return std::hypot(p.x - 2.0, p.y - 2.0); }, lo, hi);
+      Check(lo > 0.5 - 1e-3 && hi < 0.5 + 1e-3, "every hole-contour point is at distance 0.5 from the hole axis to 1e-3");
+    }
+  }
+  {
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(drilled.raw(), ON_Plane(ON_3dPoint(2.0, 0, 0), ON_3dVector(1, 0, 0)), SectionOpt());
+    Check(sec.size() == 2, "an x=2 plane through the hole axis gives TWO closed strips (the hole splits the section)");
+    double total = 0;
+    bool all_closed = !sec.empty();
+    for (const BrepSectionContour& c : sec) {
+      total += c.curve.Length();
+      all_closed = all_closed && c.closed;
+    }
+    Check(all_closed, "both strips are closed contours");
+    Check(std::fabs(total - 22.0) < 1e-2, "their total length equals 2 x perimeter(1.5 x 4) = 22");
+  }
+}
+
 }  // namespace body_section_tests
 
 int main() {
@@ -99887,6 +99925,7 @@ int main() {
   RunTest("body_section_tests::TestBodySectionBoxStitchesFourWallsIntoOnePerimeter", body_section_tests::TestBodySectionBoxStitchesFourWallsIntoOnePerimeter);
   RunTest("body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse", body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse);
   RunTest("body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes", body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes);
+  RunTest("body_section_tests::TestBodySectionTrimmedSolidWithThroughHole", body_section_tests::TestBodySectionTrimmedSolidWithThroughHole);
 
   RunTest("TestCurveDegreeElevation", TestCurveDegreeElevation);
   RunTest("TestCurveFromControlPointsRejectsDegenerateInput", TestCurveFromControlPointsRejectsDegenerateInput);
