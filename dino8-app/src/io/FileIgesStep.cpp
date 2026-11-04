@@ -328,6 +328,70 @@ bool IsAffinePatch(const ON_NurbsSurface& s, ON_3dPoint& origin, ON_3dVector& du
   return du_axis.Length() > 1e-12 && dv_axis.Length() > 1e-12;
 }
 
+// Closest-point samples (u, v) along a 3D curve, continuous across seams
+// within the curve (a jump of more than half a period is a wrap, undone).
+void SamplePcurve(const ON_NurbsSurface& s, const ON_NurbsCurve& c3, double tol, std::vector<ON_2dPoint>& pts) {
+  const int spans = std::max(1, c3.SpanCount());
+  int n = std::clamp(spans * std::max(2, c3.Degree()) * 6, 12, 256);
+  if (c3.Degree() == 1 && c3.SpanCount() == 1) n = 4;
+  const ON_Interval dom = c3.Domain();
+  pts.clear();
+  pts.reserve(static_cast<size_t>(n) + 1);
+  UV prev;
+  bool have_prev = false;
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const bool closed_u = s.IsClosed(0), closed_v = s.IsClosed(1);
+  for (int i = 0; i <= n; ++i) {
+    const ON_3dPoint p = c3.PointAt(dom.ParameterAt(static_cast<double>(i) / n));
+    UV uv = ClosestUV(s, p, have_prev ? &prev : nullptr, tol);
+    if (have_prev) {
+      if (closed_u) uv.u -= std::round((uv.u - prev.u) / du.Length()) * du.Length();
+      if (closed_v) uv.v -= std::round((uv.v - prev.v) / dv.Length()) * dv.Length();
+    }
+    pts.emplace_back(uv.u, uv.v);
+    prev = uv;
+    have_prev = true;
+  }
+}
+
+// The pcurve through the samples: optionally shifted back into the domain
+// (single curve), clamped, and two control points when it is straight.
+bool PcurveFromPoints(const ON_NurbsSurface& s, const ON_NurbsCurve& c3, std::vector<ON_2dPoint> pts, bool fix_range_first, ON_NurbsCurve& c2) {
+  if (pts.size() < 2) return false;
+  const int n = static_cast<int>(pts.size()) - 1;
+  const ON_Interval dom = c3.Domain();
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const bool closed_u = s.IsClosed(0), closed_v = s.IsClosed(1);
+  // A curve that starts on a seam may have been placed on the wrong edge of
+  // the domain: shift the whole polyline back inside.
+  auto fix_range = [&](bool closed, const ON_Interval& d, int comp) {
+    if (!closed) return;
+    double lo = 1e300, hi = -1e300;
+    for (const ON_2dPoint& q : pts) { const double x = comp == 0 ? q.x : q.y; lo = std::min(lo, x); hi = std::max(hi, x); }
+    double shift = 0;
+    if (hi > d.Max() + 1e-9 && lo - d.Length() >= d.Min() - 1e-9) shift = -d.Length();
+    else if (lo < d.Min() - 1e-9 && hi + d.Length() <= d.Max() + 1e-9) shift = d.Length();
+    if (shift != 0) for (ON_2dPoint& q : pts) { if (comp == 0) q.x += shift; else q.y += shift; }
+  };
+  if (fix_range_first) {
+    fix_range(closed_u, du, 0);
+    fix_range(closed_v, dv, 1);
+  }
+  for (ON_2dPoint& q : pts) { q.x = std::clamp(q.x, du.Min(), du.Max()); q.y = std::clamp(q.y, dv.Min(), dv.Max()); }
+  // Straight in parameter space? Then two control points suffice.
+  bool straight = true;
+  for (size_t i = 1; i + 1 < pts.size() && straight; ++i) {
+    const ON_2dPoint e = pts.front() + (pts.back() - pts.front()) * (static_cast<double>(i) / n);
+    if (e.DistanceTo(pts[i]) > 1e-7 * (1 + du.Length() + dv.Length())) straight = false;
+  }
+  if (straight) pts = {pts.front(), pts.back()};
+  if (!c2.Create(2, false, 2, static_cast<int>(pts.size()))) return false;
+  const int m = static_cast<int>(pts.size());
+  for (int i = 0; i < m; ++i) c2.SetCV(i, ON_3dPoint(pts[static_cast<size_t>(i)].x, pts[static_cast<size_t>(i)].y, 0));
+  for (int i = 0; i < c2.KnotCount(); ++i) c2.SetKnot(i, dom.ParameterAt(static_cast<double>(i) / (m - 1)));
+  return c2.IsValid();
+}
+
 // Projects a 3D curve onto a surface, producing the 2D pcurve. Exact
 // (control-point transform) on affine patches, otherwise a dense polyline
 // fit through closest-point samples that stays continuous across seams.
@@ -355,55 +419,60 @@ bool ProjectToSurface(const ON_NurbsSurface& s, const ON_NurbsCurve& c3, double 
     }
     return c2.IsValid();
   }
-  const int spans = std::max(1, c3.SpanCount());
-  int n = std::clamp(spans * std::max(2, c3.Degree()) * 6, 12, 256);
-  if (c3.Degree() == 1 && c3.SpanCount() == 1) n = 4;
-  const ON_Interval dom = c3.Domain();
   std::vector<ON_2dPoint> pts;
-  pts.reserve(static_cast<size_t>(n) + 1);
-  UV prev;
-  bool have_prev = false;
-  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
-  const bool closed_u = s.IsClosed(0), closed_v = s.IsClosed(1);
-  for (int i = 0; i <= n; ++i) {
-    const ON_3dPoint p = c3.PointAt(dom.ParameterAt(static_cast<double>(i) / n));
-    UV uv = ClosestUV(s, p, have_prev ? &prev : nullptr, tol);
-    if (have_prev) {
-      // Stay on the same side of a seam: a jump of more than half the
-      // period means the closest point wrapped.
-      if (closed_u && std::fabs(uv.u - prev.u) > 0.5 * du.Length()) uv.u = uv.u > prev.u ? uv.u - du.Length() : uv.u + du.Length();
-      if (closed_v && std::fabs(uv.v - prev.v) > 0.5 * dv.Length()) uv.v = uv.v > prev.v ? uv.v - dv.Length() : uv.v + dv.Length();
+  SamplePcurve(s, c3, tol, pts);
+  return PcurveFromPoints(s, c3, pts, true, c2);
+}
+
+// Projects the segments of ONE loop (in loop order) onto a surface so the
+// pcurves form a continuous closed curve in parameter space: every segment is
+// shifted by whole periods (periodic directions) to start where the previous
+// one ended, then the loop as a whole is shifted back into the domain. A
+// per-segment projection (ProjectToSurface) cannot do this - the seam of a
+// cylinder / revolve / periodic sweep is the same 3D point at u = 0 and at
+// u = 2 pi, so every independently projected segment picked either one, the
+// loop did not close in parameter space and the face fell back to untrimmed.
+bool ProjectLoopToSurface(const ON_NurbsSurface& s, std::vector<LoopSeg>& segs, double tol) {
+  ON_3dPoint o;
+  ON_3dVector ax, ay;
+  if (IsAffinePatch(s, o, ax, ay, tol) || (!s.IsClosed(0) && !s.IsClosed(1))) {
+    for (LoopSeg& seg : segs) {
+      if (!ProjectToSurface(s, seg.c3, tol, seg.c2)) return false;
+      seg.c2.ChangeDimension(3);
     }
-    pts.emplace_back(uv.u, uv.v);
-    prev = uv;
-    have_prev = true;
+    return true;
   }
-  // A curve that starts on a seam may have been placed on the wrong edge of
-  // the domain: shift the whole polyline back inside.
-  auto fix_range = [&](bool closed, const ON_Interval& d, int comp) {
-    if (!closed) return;
+  const ON_Interval dd[2] = {s.Domain(0), s.Domain(1)};
+  const bool closed[2] = {s.IsClosed(0), s.IsClosed(1)};
+  std::vector<std::vector<ON_2dPoint>> all(segs.size());
+  for (size_t k = 0; k < segs.size(); ++k) SamplePcurve(s, segs[k].c3, tol, all[k]);
+  for (int c = 0; c < 2; ++c) {
+    if (!closed[c]) continue;
+    const double period = dd[c].Length();
+    auto at = [c](ON_2dPoint& q) -> double& { return c == 0 ? q.x : q.y; };
+    bool have_prev = false;
+    double prev_end = 0;
+    for (std::vector<ON_2dPoint>& pts : all) {
+      if (pts.empty()) continue;
+      if (have_prev) {
+        const double shift = std::round((prev_end - at(pts.front())) / period) * period;
+        if (shift != 0) for (ON_2dPoint& q : pts) at(q) += shift;
+      }
+      prev_end = at(pts.back());
+      have_prev = true;
+    }
     double lo = 1e300, hi = -1e300;
-    for (const ON_2dPoint& q : pts) { const double x = comp == 0 ? q.x : q.y; lo = std::min(lo, x); hi = std::max(hi, x); }
-    double shift = 0;
-    if (hi > d.Max() + 1e-9 && lo - d.Length() >= d.Min() - 1e-9) shift = -d.Length();
-    else if (lo < d.Min() - 1e-9 && hi + d.Length() <= d.Max() + 1e-9) shift = d.Length();
-    if (shift != 0) for (ON_2dPoint& q : pts) { if (comp == 0) q.x += shift; else q.y += shift; }
-  };
-  fix_range(closed_u, du, 0);
-  fix_range(closed_v, dv, 1);
-  for (ON_2dPoint& q : pts) { q.x = std::clamp(q.x, du.Min(), du.Max()); q.y = std::clamp(q.y, dv.Min(), dv.Max()); }
-  // Straight in parameter space? Then two control points suffice.
-  bool straight = true;
-  for (size_t i = 1; i + 1 < pts.size() && straight; ++i) {
-    const ON_2dPoint e = pts.front() + (pts.back() - pts.front()) * (static_cast<double>(i) / n);
-    if (e.DistanceTo(pts[i]) > 1e-7 * (1 + du.Length() + dv.Length())) straight = false;
+    for (std::vector<ON_2dPoint>& pts : all) for (ON_2dPoint& q : pts) { lo = std::min(lo, at(q)); hi = std::max(hi, at(q)); }
+    if (lo <= hi) {
+      const double shift = -std::floor((lo - dd[c].Min() + 1e-9 * period) / period) * period;
+      if (shift != 0) for (std::vector<ON_2dPoint>& pts : all) for (ON_2dPoint& q : pts) at(q) += shift;
+    }
   }
-  if (straight) pts = {pts.front(), pts.back()};
-  if (!c2.Create(2, false, 2, static_cast<int>(pts.size()))) return false;
-  const int m = static_cast<int>(pts.size());
-  for (int i = 0; i < m; ++i) c2.SetCV(i, ON_3dPoint(pts[static_cast<size_t>(i)].x, pts[static_cast<size_t>(i)].y, 0));
-  for (int i = 0; i < c2.KnotCount(); ++i) c2.SetKnot(i, dom.ParameterAt(static_cast<double>(i) / (m - 1)));
-  return c2.IsValid();
+  for (size_t k = 0; k < segs.size(); ++k) {
+    if (!PcurveFromPoints(s, segs[k].c3, all[k], false, segs[k].c2)) return false;
+    segs[k].c2.ChangeDimension(3);
+  }
+  return true;
 }
 
 // The 3D curve of a 2D pcurve, evaluated through the surface (used when an
@@ -989,6 +1058,7 @@ struct IgesRawEntity {
   int level = 0;
   int color = 0;         // >0 = DE of a 314; <0 = -ACI (a handful of standard colours)
   int xform = 0;         // DE of a 124, or 0
+  int subordinate = 0;   // status "subordinate entity switch": 1/3 = physically dependent (only meaningful through its parent)
   std::string label;
   std::vector<std::string> params;  // free-format fields, in order
 };
@@ -1522,6 +1592,12 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
     const int pd_ptr = std::atoi(field(dlines[i], 1).c_str());
     e.level = std::atoi(field(dlines[i], 4).c_str());
     e.xform = std::atoi(field(dlines[i], 6).c_str());
+    {
+      // Status number: 8 digits = blank(2) subordinate(2) use(2) hierarchy(2); a blank field reads as 0.
+      std::string st = field(dlines[i], 8);
+      if (st.size() < 8) st.insert(0, 8 - st.size(), '0');
+      if (std::isdigit(static_cast<unsigned char>(st[2])) && std::isdigit(static_cast<unsigned char>(st[3]))) e.subordinate = (st[2] - '0') * 10 + (st[3] - '0');
+    }
     const std::string cf = field(dlines[i + 1], 2);
     e.color = std::atoi(cf.c_str());
     e.form = std::atoi(field(dlines[i + 1], 4).c_str());
@@ -1570,6 +1646,9 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
 
   for (const auto& [de, e] : entities) {
     if (e.type == 314 || e.type == 124 || e.type == 406 || e.type == 402 || e.type == 142 || e.type == 102) continue;  // support entities
+    // A physically dependent entity (the curves and surface a 144 trimmed face is made of) exists only through its parent:
+    // importing it on its own turned every face of an exported solid into hundreds of loose curves and surfaces next to the brep.
+    if (e.subordinate == 1 || e.subordinate == 3) continue;
     switch (e.type) {
       case 116: importer.AddPoint(e, entities); break;
       case 100: case 104: case 106: case 110: case 112: case 126: {
@@ -2784,10 +2863,10 @@ bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImp
       if (!m.EdgeCurve3D(StepRef(op->args[3]), orient == bound_orient, c3)) continue;
       LoopSeg seg;
       seg.c3 = c3;
-      if (!ProjectToSurface(srf, c3, tol, seg.c2)) continue;
-      seg.c2.ChangeDimension(3);
       segs.push_back(std::move(seg));
     }
+    // The whole loop at once, so the pcurves stay continuous across a seam.
+    if (!segs.empty() && !ProjectLoopToSurface(srf, segs, tol)) segs.clear();
     if (!segs.empty()) loops.push_back(std::move(segs));
   }
   if (loops.empty()) { brep.NewFace(srf); ++stats.faces_untrimmed_fallback; return true; }
@@ -2797,6 +2876,11 @@ bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImp
   // handler above.
   if (fi >= 0) test.SetTrimIsoFlags();
   if (fi < 0 || !test.IsValid()) {
+    if (std::getenv("DINO8_STEP_DEBUG")) {
+      ON_TextLog tl;
+      std::fprintf(stderr, "STEPDBG face #%d fi=%d loops=%zu segs0=%zu srf deg %d,%d cv %d,%d closed %d,%d\n", face_id, fi, loops.size(), loops.empty() ? 0 : loops[0].size(), srf.Degree(0), srf.Degree(1), srf.CVCount(0), srf.CVCount(1), (int)srf.IsClosed(0), (int)srf.IsClosed(1));
+      std::fprintf(stderr, "STEPDBG valid=%d\n", (int)test.IsValid(&tl));
+    }
     ON_Brep fresh;
     fresh.NewFace(srf);
     brep.Append(fresh);
