@@ -1,4 +1,4 @@
-name: Kernel verify
+name: App triage
 
 # Verification capacity for unmerged work: a push to a `kverify/**` branch builds the
 # kernel test binary once, then runs the whole kernel suite in parallel shards
@@ -18,92 +18,6 @@ env:
   BUILD_TYPE: Release
 
 jobs:
-  build:
-    name: Build dino8_kernel_tests
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
-          sudo apt-get update
-          sudo apt-get install -y ninja-build ccache
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: kverify-ccache-${{ github.sha }}
-          restore-keys: kverify-ccache-
-      - name: Configure
-        run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      - name: Build
-        run: cmake --build dino8-kernel/build --target dino8_kernel_tests dino8_continuity2_tests
-      - name: Build optional extra test targets (only if the branch defines them)
-        run: cmake --build dino8-kernel/build --target dino8_surface_fillet_extra || true
-      - name: Package the test binaries
-        run: |
-          mkdir -p bundle
-          cp dino8-kernel/build/tests/dino8_kernel_tests bundle/
-          cp dino8-kernel/build/tests/dino8_continuity2_tests bundle/ || true
-          cp dino8-kernel/build/tests/dino8_surface_fillet_extra bundle/ || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: kernel-test-binaries
-          path: bundle/
-          retention-days: 3
-
-  shard:
-    name: Shard ${{ matrix.k }} of 12
-    needs: build
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        k: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: kernel-test-binaries
-          path: bundle
-      - name: Run shard
-        shell: bash
-        run: |
-          chmod +x bundle/*
-          mkdir -p scratch && cd scratch
-          set +e
-          DINO8_TEST_SHARD="${{ matrix.k }}/12" timeout 3000 ../bundle/dino8_kernel_tests > ../shard.log 2> ../shard.err
-          rc=$?
-          set -e
-          echo "shard ${{ matrix.k }}/12 exit=$rc ok=$(grep -c '^ok' ../shard.log) FAILED=$(grep -c '^FAILED' ../shard.err)"
-          grep '^FAILED' ../shard.err | sort | uniq -c | head -50 || true
-          if [ "${{ matrix.k }}" = "0" ]; then ../bundle/dino8_continuity2_tests 2>&1 | tail -3 || true; fi
-          if [ "${{ matrix.k }}" = "1" ] && [ -x ../bundle/dino8_surface_fillet_extra ]; then (../bundle/dino8_surface_fillet_extra > ../fillet_extra.log 2>&1; echo "surface_fillet_extra exit=$? ok=$(grep -c '^ok' ../fillet_extra.log) FAILED=$(grep -c '^FAILED' ../fillet_extra.log)"; grep -E '^\[probe|^FAILED' ../fillet_extra.log | head -40) || true; fi
-          cd ..
-          # Per-feature evidence: every non-empty line of .kverify_filters (a file in the repo root of the
-          # verified branch) is run as DINO8_TEST_FILTER=<line> on shard 0 and its ok / FAILED counts printed.
-          if [ "${{ matrix.k }}" = "0" ] && [ -f .kverify_filters ]; then
-            mkdir -p scratch2 && cd scratch2
-            while IFS= read -r f; do
-              [ -z "$f" ] && continue
-              set +e
-              DINO8_TEST_FILTER="$f" timeout 1200 ../bundle/dino8_kernel_tests > ../f.log 2> ../f.err
-              frc=$?
-              set -e
-              echo "filter $f: exit=$frc ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
-              grep -E '^FAILED|^\[probe|threw|exception' ../f.err ../f.log 2>/dev/null | cut -c1-260 | sort | uniq -c | head -25 || true
-            done < ../.kverify_filters
-            cd ..
-          fi
-          exit $rc
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: shard-${{ matrix.k }}-logs
-          path: |
-            shard.log
-            shard.err
-          retention-days: 3
-
   app-build:
     name: Build Dino8 (app)
     runs-on: ubuntu-22.04
@@ -155,13 +69,13 @@ jobs:
           retention-days: 3
 
   app-sections:
-    name: App sections group ${{ matrix.g }} of 12
+    name: Section ${{ matrix.s }}
     needs: app-build
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        g: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        s: [RVR, SATF, SABF, B2S]
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -173,28 +87,65 @@ jobs:
         with:
           name: app-binary
           path: appbin
-      - name: Run this group of sections
+      - name: Run the section
         shell: bash
         timeout-minutes: 120
         run: |
-          find appbin -type f | head
           BIN=$(find appbin -type f -name Dino8 | head -1)
-          JSON=$(find appbin -type f -name section_groups.json | head -1)
           chmod +x "$BIN"
-          NAMES=$(python3 -c "import json;print(' '.join(json.load(open('$JSON'))[${{ matrix.g }}]))")
-          echo "group ${{ matrix.g }}: $NAMES"
+          find appbin -type f -name '*_gen' -o -type f -name '*_check' | xargs -r chmod +x
           set +e
-          bash dino8-app/tests/run_sections.sh -b "$PWD/$BIN" -t 6000 $NAMES > group.log 2>&1
+          bash dino8-app/tests/run_sections.sh -b "$PWD/$BIN" -t 6000 ${{ matrix.s }} > group.log 2>&1
           rc=$?
           set -e
-          echo "group ${{ matrix.g }} exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
-          grep -E '^FAIL' group.log | sort | uniq -c | head -60 || true
-          echo "---- run_sections summary (tail) ----"
-          tail -n 40 group.log | cut -c1-200 || true
+          echo "section ${{ matrix.s }} exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log) lines=$(wc -l < group.log)"
+          echo "=== per-prefix counts"
+          awk '/^(ok|FAIL) /{ t=$1; k=$2; sub(/[_:].*/,"",k); c[t" "k]++ } END{ for (x in c) print c[x], x }' group.log | sort -k3 || true
+          echo "=== FAIL lines"
+          grep -E '^FAIL' group.log | cut -c1-260 | head -80 || true
+          echo "=== FAIL context"
+          grep -E -B3 -A8 '^FAIL' group.log | cut -c1-300 | head -300 || true
+          echo "=== DBG lines"
+          grep -E 'DBG' group.log | cut -c1-400 | head -200 || true
+          echo "=== tail"
+          tail -n 60 group.log | cut -c1-240 || true
           exit $rc
-      - uses: actions/upload-artifact@v4
-        if: always()
+
+  bisect:
+    name: Bisect ${{ matrix.c }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        c: [8cc52ce7ff1148a6c01f2c31f730084205b8c133, 91ee56253507dcc4f1839526fa780359d49058bf, 6d522112758821a35b08f938947cb02f7de669bf, e0f9f90bf8a2798bd4c86b8faba4aef3e7091a46, 018b59dc0e2ab58caeb7e74d7db572f6de6cc923, 7fabbfa08fa38b48ec1aa7d27429269549aef07e]
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: group-${{ matrix.g }}-log
-          path: group.log
-          retention-days: 3
+          path: me
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.c }}
+          path: src
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils libgl1-mesa-dri
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-bisect-ccache-${{ matrix.c }}
+          restore-keys: kverify-app-ccache-
+      - name: Build
+        run: |
+          cmake -S src/dino8-app -B src/dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build src/dino8-app/build --target Dino8
+      - name: Run the marked curves2 script
+        run: |
+          cd src
+          timeout 1200 xvfb-run -a -s "-screen 0 1600x900x24" dino8-app/build/Dino8 --smoke 400 --script "$GITHUB_WORKSPACE/me/dino8-app/tests/curves2_marked.txt" > ../c2.out 2>&1 || echo "rc=$?"
+          grep -h "expect_objects 0" ../c2.out | sed 's/.*got \([0-9]*\).*/\1/' > ../cnt.txt
+          grep "^# MARK" "$GITHUB_WORKSPACE/me/dino8-app/tests/curves2_marked.txt" | cut -c1-70 > ../marks.txt
+          echo "MARKCOUNTS ${{ matrix.c }}"
+          paste -d'|' ../cnt.txt ../marks.txt | awk -F'|' '{printf "MC %s %s\n",$1,$2}'
+          grep -h "expect_objects 209\|smoke:" ../c2.out | tail -3
