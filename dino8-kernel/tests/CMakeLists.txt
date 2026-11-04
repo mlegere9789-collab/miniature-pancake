@@ -26,6 +26,8 @@ if(EXISTS ${DINO8_APP_BREP_MESHER})
 endif()
 
 add_test(NAME dino8_kernel_smoke COMMAND dino8_kernel_tests)
+add_executable(dino8_surface_fillet_extra surface_fillet_extra.cpp)
+target_link_libraries(dino8_surface_fillet_extra PRIVATE dino8_kernel)
 add_executable(dino8_scratch_test scratch_test.cpp)
 target_link_libraries(dino8_scratch_test PRIVATE dino8_kernel)
 # Standalone BooleanCombineGeneral coverage sweep (a measurement harness,
