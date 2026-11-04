@@ -1316,6 +1316,12 @@ bool RecenterIfFarFromOrigin(const Brep& b, Brep& out) {
 }  // namespace
 
 double Brep::Volume() const {
+  {
+    // integrating about the origin of a body 1e9 away spent 14 s in the trimmed-face integrator's adaptive refinement of
+    // coordinate round-off (measured, 10-box at 1e9); the same body recentred takes milliseconds
+    Brep moved;
+    if (RecenterIfFarFromOrigin(*this, moved)) return moved.Volume();
+  }
   // raw().IsSolid() is the WRONG check here: it requires genuine shared
   // ON_Brep edge/vertex topology between faces, which several of this
   // kernel's own factories never build (Box()/Sphere()/Torus() each add
@@ -1340,6 +1346,10 @@ double Brep::Volume() const {
 }
 
 double Brep::VolumeOfSealedSolid() const {
+  {
+    Brep moved;  // see Volume()
+    if (RecenterIfFarFromOrigin(*this, moved)) return moved.VolumeOfSealedSolid();
+  }
   if (!brep_.IsSolid()) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::VolumeOfSealedSolid: raw().IsSolid() is false (the faces do not share a closed set of edges)");
