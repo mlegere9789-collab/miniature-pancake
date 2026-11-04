@@ -48,4 +48,37 @@ nan
 Cancel
 New
 
+QC2BEGIN_rmk_bad_tol
+Polyline 0,0,0 5,0,0 5,4,0
+Enter
+SelCrv
+ChangeDegree
+3
+SelCrv
+RemoveMultiKnot
+Tolerance=nan
+Tolerance=-1
+Tolerance=100
+Enter
+New
+
+QC2BEGIN_fit_bad_opts
+Curve 0,0,0 2.5,0,1.5 5,0,-1.5 7.5,0,1.5 10,0,0 Enter
+Curve 0,3,0 2.5,3,-1 5,3,1 7.5,3,-1 10,3,0 Enter
+Curve 0,6,0 2.5,6,1.2 5,6,-1.2 7.5,6,1.2 10,6,0 Enter
+Curve 0,9,0 2.5,9,-0.5 5,9,0.5 7.5,9,-0.5 10,9,0 Enter
+SelNone
+SelCrv
+Loft
+SelNone
+SelCrv
+Delete
+SelSrf
+FitSrf
+Tolerance=abc
+MaxPoints=500
+Tolerance=0.05
+Enter
+New
+
 QC2BEGIN_end

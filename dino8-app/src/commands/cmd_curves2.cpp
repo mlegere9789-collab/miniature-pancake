@@ -812,14 +812,15 @@ class RemoveMultiKnotCommand : public Command {
     options = {{"Tolerance", FormatNumber(tol_), {}, true, false}};
     WantNumber("Largest shape change allowed (Enter to accept " + FormatNumber(tol_) + ")", tol_);
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n != "Tolerance") return;
     const double t = std::atof(v.c_str());
-    if (t > 0) { tol_ = t; options[0].value = FormatNumber(tol_); }
+    if (std::isfinite(t) && t > 0) { tol_ = t; options[0].value = FormatNumber(tol_); }
+    else ctx.Warn("RemoveMultiKnot: Tolerance must be a positive number, '" + v + "' ignored (Tolerance stays " + FormatNumber(tol_) + ")");
     WantNumber("Largest shape change allowed (Enter to accept " + FormatNumber(tol_) + ")", tol_);
   }
   void OnNumber(CommandContext& ctx, double v) override {
-    if (!(v > 0)) { ctx.Warn("RemoveMultiKnot: Tolerance must be positive"); return; }
+    if (!(v > 0) || !std::isfinite(v)) { ctx.Warn("RemoveMultiKnot: Tolerance must be a positive number"); return; }
     tol_ = v;
     Run(ctx);
   }
