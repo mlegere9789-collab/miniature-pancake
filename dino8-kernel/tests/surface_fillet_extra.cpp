@@ -329,7 +329,7 @@ double IndependentSolidVolume(const dino8::kernel::BossOnSlabFillet& r, const Nu
   const NurbsSurface& bl = r.fillet.blend;
   const ON_Interval bu = bl.raw().Domain(0);
   {
-    const int PU = 160, PV = 8;
+    const int PU = std::getenv("SFX_PU") ? std::atoi(std::getenv("SFX_PU")) : 160, PV = 8;
     double sum = 0;
     for (int i = 0; i < PU; ++i)
       for (int a = 0; a < 6; ++a) {
@@ -350,11 +350,11 @@ double IndependentSolidVolume(const dino8::kernel::BossOnSlabFillet& r, const Nu
     const ON_Interval du = boss.raw().Domain(0), dv = boss.raw().Domain(1);
     std::vector<ON_2dPoint> poly;
     const ON_Interval cd = r.fillet.trim_b.raw().Domain();
-    for (int i = 0; i < 4000; ++i) {
-      const ON_3dPoint p = r.fillet.trim_b.raw().PointAt(cd.ParameterAt(i / 4000.0));
+    for (int i = 0; i < 20000; ++i) {
+      const ON_3dPoint p = r.fillet.trim_b.raw().PointAt(cd.ParameterAt(i / 20000.0));
       poly.emplace_back(p.x, p.y);
     }
-    const int SL = 600;
+    const int SL = std::getenv("SFX_SL") ? std::atoi(std::getenv("SFX_SL")) : 600;
     double sum = 0;
     for (int i = 0; i < SL; ++i)
       for (int a = 0; a < 6; ++a) {
@@ -385,6 +385,104 @@ double IndependentSolidVolume(const dino8::kernel::BossOnSlabFillet& r, const Nu
   return v;
 }
 
+// A SECOND independent volume: the divergence theorem V = (1/3) sum of faces of INT p . (Su x Sv) dA, every face done here
+// (flat faces in closed form; the blend by 2D Gauss-Legendre over its whole patch; the boss over its chart region cut out by
+// scanlines against a 20000-gon of the boss contact curve) - none of the kernel's trimmed-face machinery.
+double FluxSolidVolume(const dino8::kernel::BossOnSlabFillet& r, const NurbsSurface& boss, double floor_z, double x0, double x1, double y0, double y1, double depth) {
+  static const double gx[6] = {-0.9324695142031521, -0.6612093864662645, -0.2386191860831969, 0.2386191860831969, 0.6612093864662645, 0.9324695142031521};
+  static const double gw[6] = {0.1713244923791704, 0.3607615730481386, 0.4679139345726910, 0.4679139345726910, 0.3607615730481386, 0.1713244923791704};
+  const double zb = floor_z - depth, A = (x1 - x0) * (y1 - y0);
+  // hole area (floor contact curve in the floor's (x, y) chart)
+  double hole = 0;
+  {
+    const ON_Interval cd = r.fillet.trim_a.raw().Domain();
+    const int n = 20000;
+    ON_3dPoint prev = r.fillet.trim_a.raw().PointAt(cd.ParameterAt(0.0));
+    const ON_3dPoint first = prev;
+    for (int i = 1; i <= n; ++i) {
+      const ON_3dPoint p = (i == n) ? first : r.fillet.trim_a.raw().PointAt(cd.ParameterAt((double)i / n));
+      hole += 0.5 * (prev.x * p.y - p.x * prev.y);
+      prev = p;
+    }
+    hole = std::fabs(hole);
+  }
+  double v = 0;
+  v += floor_z * (A - hole) / 3.0;               // top face (n = +z)
+  v += -zb * A / 3.0;                            // bottom (n = -z)
+  v += x1 * (y1 - y0) * depth / 3.0 + (-x0) * (y1 - y0) * depth / 3.0 + y1 * (x1 - x0) * depth / 3.0 + (-y0) * (x1 - x0) * depth / 3.0;
+  // blend
+  {
+    const NurbsSurface& bl = r.fillet.blend;
+    const ON_Interval bu = bl.raw().Domain(0);
+    double score = 0;
+    for (int i = 0; i < 24; ++i) {
+      const double s = bu.ParameterAt((i + 0.5) / 24.0);
+      ON_3dPoint P;
+      ON_3dVector n;
+      bl.raw().EvNormal(s, 0.5, P, n);
+      score += n * (r.fillet.centre.raw().PointAt(s) - P);
+    }
+    const double sgn = score > 0 ? 1.0 : -1.0;
+    const int PU = 400, PV = 8;
+    double sum = 0;
+    for (int i = 0; i < PU; ++i)
+      for (int a = 0; a < 6; ++a) {
+        const double u = bu.Min() + bu.Length() * (i + 0.5 + 0.5 * gx[a]) / PU;
+        for (int j = 0; j < PV; ++j)
+          for (int b = 0; b < 6; ++b) {
+            const double vv = (j + 0.5 + 0.5 * gx[b]) / PV;
+            ON_3dPoint P;
+            ON_3dVector Su, Sv;
+            bl.raw().Ev1Der(u, vv, P, Su, Sv);
+            const ON_3dVector n = ON_CrossProduct(Su, Sv);
+            sum += gw[a] * gw[b] * 0.25 * sgn * (P.x * n.x + P.y * n.y + P.z * n.z) / 3.0 * (bu.Length() / PU) * (1.0 / PV);
+          }
+      }
+    v += sum;
+  }
+  // boss (normal pointing up)
+  {
+    const ON_Interval du = boss.raw().Domain(0), dv = boss.raw().Domain(1);
+    ON_3dPoint P0;
+    ON_3dVector Su0, Sv0;
+    boss.raw().Ev1Der(du.ParameterAt(0.5), dv.ParameterAt(0.5), P0, Su0, Sv0);
+    const double sgn = ON_CrossProduct(Su0, Sv0).z >= 0 ? 1.0 : -1.0;
+    std::vector<ON_2dPoint> poly;
+    const ON_Interval cd = r.fillet.trim_b.raw().Domain();
+    for (int i = 0; i < 20000; ++i) {
+      const ON_3dPoint p = r.fillet.trim_b.raw().PointAt(cd.ParameterAt(i / 20000.0));
+      poly.emplace_back(p.x, p.y);
+    }
+    const int SL = 2400;
+    double sum = 0;
+    for (int i = 0; i < SL; ++i)
+      for (int a = 0; a < 6; ++a) {
+        const double u = du.Min() + du.Length() * (i + 0.5 + 0.5 * gx[a]) / SL;
+        std::vector<double> xs;
+        for (size_t k = 0; k < poly.size(); ++k) {
+          const ON_2dPoint &p = poly[k], &q = poly[(k + 1) % poly.size()];
+          if ((p.x <= u) != (q.x <= u)) xs.push_back(p.y + (u - p.x) * (q.y - p.y) / (q.x - p.x));
+        }
+        std::sort(xs.begin(), xs.end());
+        for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+          const double lo = xs[k], hi = xs[k + 1];
+          const int PV = 40;
+          for (int j = 0; j < PV; ++j)
+            for (int b = 0; b < 6; ++b) {
+              const double vv = lo + (hi - lo) * (j + 0.5 + 0.5 * gx[b]) / PV;
+              ON_3dPoint P;
+              ON_3dVector Su, Sv;
+              boss.raw().Ev1Der(u, vv, P, Su, Sv);
+              const ON_3dVector n = ON_CrossProduct(Su, Sv);
+              sum += gw[a] * gw[b] * 0.25 * sgn * (P.x * n.x + P.y * n.y + P.z * n.z) / 3.0 * (du.Length() / SL) * ((hi - lo) / PV);
+            }
+        }
+      }
+    v += sum;
+  }
+  return v;
+}
+
 void TestFilletBossOnSlabClosedSolid() {
   const NurbsSurface boss = FreeformBoss();
   const double x0 = -4.5, x1 = 4.5, y0 = -4.5, y1 = 4.5, depth = 1.5, r = 0.3, tol = 1e-4;
@@ -410,7 +508,8 @@ void TestFilletBossOnSlabClosedSolid() {
     std::printf("[boss on slab] VolumeOfSealedSolid threw: %s\n", e.what());
   }
   const double iv = IndependentSolidVolume(res, boss, 0.0, x0, x1, y0, y1, depth);
-  std::printf("[boss on slab] kernel exact volume %.8f, independent integral %.8f, relative difference %.3e\n", kv, iv, std::fabs(kv - iv) / iv);
+  const double fv = FluxSolidVolume(res, boss, 0.0, x0, x1, y0, y1, depth);
+  std::printf("[boss on slab] kernel exact volume %.8f, independent integral %.8f, relative difference %.3e; flux-form independent %.8f (vs height form %.3e)\n", kv, iv, std::fabs(kv - iv) / iv, fv, std::fabs(fv - iv) / iv);
   Check(std::isfinite(kv) && std::fabs(kv - iv) <= 2e-4 * iv, "boss on slab: kernel divergence-theorem volume agrees with the independent integral to 2e-4");
   // Slab-only reference: the fillet adds material (concave edge): volume must exceed the same solid with no fillet bits.
   const double slab = (x1 - x0) * (y1 - y0) * depth;
