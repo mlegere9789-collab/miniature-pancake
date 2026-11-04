@@ -9,7 +9,7 @@
 // runs on closed meshes through the Manifold-backed kernel booleans and the
 // results are mesh objects; each command says so on the command line.
 #include "commands/cmd_common.h"
-#include "dino8/kernel/boolean_general.h"
+#include "commands/prism_solid.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2411,6 +2411,145 @@ void TagHoleFeature(CommandContext& ctx, ObjectId result_id, const kernel::Mesh&
 
 void UpdateCageCaptives(Document& doc) { UpdateCages(doc); }
 
+// Joins the loose exact pieces along their shared circles / lines and orients the shell outward; false (with the reason)
+// unless the result is a valid closed solid. (Same recipe as cmd_fillet.cpp's JoinAndOrientSolid.)
+bool JoinPiecesToSolid(const ON_Brep& all, ON_Brep& out, std::string& why) {
+  kernel::Brep res;
+  res.raw() = all;
+  try {
+    res.JoinNakedEdges(1e-6);
+    res.UnifyNormals();
+  } catch (const std::exception& ex) { why = ex.what(); return false; }
+  if (!res.raw().IsSolid() && res.raw().IsManifold() && res.raw().IsValid()) {
+    ON_Brep& rb = res.raw();
+    const int nf = rb.m_F.Count();
+    bool fixed = false;
+    for (int pop = 1; pop <= nf && !fixed && nf <= 14; ++pop) {
+      for (unsigned mask = 1; mask < (1u << nf) && !fixed; ++mask) {
+        int bits = 0;
+        for (unsigned m = mask; m; m &= m - 1) ++bits;
+        if (bits != pop) continue;
+        ON_Brep t = rb;
+        for (int i = 0; i < nf; ++i) if (mask & (1u << i)) t.FlipFace(t.m_F[i]);
+        if (t.SolidOrientation() != 0) { rb = t; fixed = true; }
+      }
+    }
+    if (fixed && rb.SolidOrientation() < 0) rb.Flip();
+  }
+  if (!res.raw().IsSolid() || !res.raw().IsValid()) { why = "the assembled pieces did not form a valid closed solid"; return false; }
+  out = res.raw();
+  return true;
+}
+
+// The right prism `pr` (outer profile, caps) with ONE round hole whose axis passes through `hc` (profile coordinates) and
+// whose wall is the revolved profile `prof`: (radius, depth below the entry face) points, the first on the entry face, each
+// pair a cylinder (same radius), an annular step (same depth, radius shrinking) or a cone. A through hole ends on the far
+// face; a blind one ends at its last depth in a flat floor disc. Every face is exact (plane, cylinder, cone); the end faces
+// carry real inner loops. Built directly from faces (not by a Boolean): the prism's side faces are the extrusion of its
+// outer profile, the pieces are joined along their shared circles.
+std::optional<ON_Brep> BuildProfiledHolePlate(const prism::Prism& pr, prism::V2 hc, bool from_top, const std::vector<std::pair<double, double>>& prof, bool blind, std::string& why) {
+  using namespace prism;
+  const double H = pr.H;
+  auto zOf = [&](double depth) { return from_top ? H - depth : depth; };
+  auto plane_at = [&](double z) { return ON_Plane(To3(pr, hc, z), pr.X, pr.Y); };
+  auto make_face = [&](double z, double hole_r) -> ON_Brep* {
+    ON_SimpleArray<ON_Curve*> bnd;
+    for (const Seg& g : pr.prof) {
+      ON_Curve* c = SegCurve(pr, g, z);
+      if (!c) { for (int i = 0; i < bnd.Count(); ++i) delete bnd[i]; return nullptr; }
+      bnd.Append(c);
+    }
+    ON_Plane pl(To3(pr, V2{0, 0}, z), pr.X, pr.Y);
+    ON_Brep* f = ON_BrepTrimmedPlane(pl, bnd, false);
+    if (!f) { for (int i = 0; i < bnd.Count(); ++i) delete bnd[i]; return nullptr; }
+    if (!(hole_r > 0)) { f->Compact(); return f; }
+    ON_ArcCurve* hcv = new ON_ArcCurve(ON_Circle(plane_at(z), hole_r));
+    double outer_area = 0;
+    if (const ON_BrepLoop* ol = f->m_F[0].OuterLoop()) {
+      for (int ti = 0; ti < ol->TrimCount(); ++ti) {
+        const ON_BrepTrim* t = ol->Trim(ti);
+        ON_3dPoint a = t->Edge()->PointAtStart(), c = t->Edge()->PointAtEnd();
+        if (t->m_bRev3d) std::swap(a, c);
+        outer_area += ON_CrossProduct(a - pl.origin, c - pl.origin) * pr.n;
+      }
+    }
+    if (outer_area > 0) hcv->Reverse();
+    ON_SimpleArray<ON_Curve*> loop;
+    loop.Append(hcv);
+    if (!f->NewPlanarFaceLoop(0, ON_BrepLoop::inner, loop, false)) { delete hcv; delete f; return nullptr; }
+    f->Compact();
+    return f;
+  };
+  auto make_annulus = [&](double z, double ro, double ri) -> ON_Brep* {
+    const ON_Plane pl = plane_at(z);
+    ON_Brep* f = ON_BrepTrimmedPlane(pl, ON_ArcCurve(ON_Circle(pl, ro)));
+    if (!f) return nullptr;
+    ON_ArcCurve* hcv = new ON_ArcCurve(ON_Circle(pl, ri));
+    hcv->Reverse();
+    ON_SimpleArray<ON_Curve*> loop;
+    loop.Append(hcv);
+    if (!f->NewPlanarFaceLoop(0, ON_BrepLoop::inner, loop, false)) { delete hcv; delete f; return nullptr; }
+    f->Compact();
+    return f;
+  };
+  auto revolve = [&](ON_Curve* crv) -> ON_Brep* {
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = crv;
+    rev->m_axis = ON_Line(To3(pr, hc, 0), To3(pr, hc, 0) + pr.n);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    return ON_BrepRevSurface(rev, false, false);
+  };
+  // 1. The plain prism (extrusion of the full end face), then drop both end faces: they come back with their holes.
+  ON_Brep* base = make_face(0, 0);
+  if (!base) { why = "could not build the plate's end face"; return std::nullopt; }
+  {
+    ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + H * pr.n));
+    if (ON_BrepExtrudeFace(*base, 0, path, true) < 0) { delete base; why = "could not extrude the plate"; return std::nullopt; }
+  }
+  kernel::Brep k;
+  k.raw() = *base;
+  delete base;
+  std::vector<int> drop;
+  for (int f = 0; f < k.raw().m_F.Count(); ++f) {
+    ON_Plane pl;
+    if (k.raw().m_F[f].SurfaceOf()->IsPlanar(&pl, 1e-7) && std::fabs(pl.zaxis * pr.n) > 1.0 - 1e-9) drop.push_back(f);
+  }
+  std::sort(drop.rbegin(), drop.rend());
+  try { for (int f : drop) k.DeleteFace(f, false); } catch (const std::exception& ex) { why = ex.what(); return std::nullopt; }
+  ON_Brep all = k.raw();
+  auto add = [&](ON_Brep* p) -> bool {
+    if (!p) return false;
+    all.Append(*p);
+    delete p;
+    return true;
+  };
+  // 2. The two end faces: the entry face with the first radius, the far face with the last radius (through) or whole (blind).
+  const double r_first = prof.front().first, r_last = prof.back().first;
+  if (!add(make_face(zOf(0), r_first)) || !add(make_face(zOf(blind ? H : prof.back().second), blind ? 0.0 : r_last))) { why = "could not build the end faces with their holes"; return std::nullopt; }
+  // 3. The hole wall, piece by piece.
+  for (size_t i = 0; i + 1 < prof.size(); ++i) {
+    const double ra = prof[i].first, da = prof[i].second, rb = prof[i + 1].first, db = prof[i + 1].second;
+    const double za = zOf(da), zb = zOf(db);
+    if (std::fabs(ra - rb) < 1e-12) {  // cylinder
+      ON_Cylinder cyl(ON_Circle(ON_Plane(To3(pr, hc, std::min(za, zb)), pr.X, pr.Y), ra), std::fabs(zb - za));
+      if (!add(ON_BrepCylinder(cyl, false, false))) { why = "could not build a cylindrical wall"; return std::nullopt; }
+    } else if (std::fabs(da - db) < 1e-12) {  // annular step
+      if (!add(make_annulus(za, std::max(ra, rb), std::min(ra, rb)))) { why = "could not build an annular step"; return std::nullopt; }
+    } else {  // cone
+      if (!add(revolve(new ON_LineCurve(To3(pr, V2{hc.x + ra, hc.y}, za), To3(pr, V2{hc.x + rb, hc.y}, zb))))) { why = "could not build the conical wall"; return std::nullopt; }
+    }
+  }
+  if (blind) {
+    const ON_Plane fp = plane_at(zOf(prof.back().second));
+    if (!add(ON_BrepTrimmedPlane(fp, ON_ArcCurve(ON_Circle(fp, r_last))))) { why = "could not build the hole floor"; return std::nullopt; }
+  }
+  ON_Brep out;
+  if (!JoinPiecesToSolid(all, out, why)) return std::nullopt;
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // CountersinkHole / CounterboreHole: EXACT analytic hole features in a plate.
 //
@@ -2504,22 +2643,22 @@ void ExactHoleFeature(CommandContext& ctx, const Input& in, bool sink) {
       }
     }
     if (!(near_edge > Rc + 10 * tol)) { ctx.Warn(label + ": refused - a diameter of " + FormatNumber(big_d) + " does not fit: the nearest edge of the picked face (its border or another hole) is " + FormatNumber(near_edge) + " from the hole axis, so the radius " + FormatNumber(Rc) + " would reach it"); continue; }
-    // Build and seal.
-    const Vector3d kaxis(axis.x, axis.y, axis.z);
-    const Point3d kcenter(entry.x, entry.y, entry.z);
-    kernel::SealedGeneralBoolean sb;
-    try {
-      // A through hole is cut by a bore that overshoots the far face (the kernel's own `through` flag builds a cutter two plate
-      // diagonals long, which seals less reliably than a cutter that ends just past the plate).
-      const double kdepth = through ? T + std::max(1.0, 0.25 * T) : depth;
-      const kernel::Brep raw = sink ? kernel::MakeCountersinkHole(*o->brep, kcenter, kaxis, r, kdepth, false, big_d, angle)
-                                    : kernel::MakeCounterboreHole(*o->brep, kcenter, kaxis, r, kdepth, false, Rc, cb_depth);
-      sb = kernel::SealGeneralBooleanResult(raw, kernel::BooleanOp::Difference, std::nan(""), std::nan(""));
-    } catch (const std::exception& ex) {
-      ctx.Warn(label + ": refused - the exact Boolean did not give a sealed solid: " + ex.what());
-      continue;
-    }
-    ON_Brep out = sb.brep.raw();
+    // Build the plate with its hole directly from exact faces.
+    prism::Prism pr;
+    std::string why;
+    bool not_prism = false;
+    if (!prism::Recognize(b, pr, why, not_prism)) { ctx.Warn(label + ": refused - object " + Id(id) + " is not a plain right-prism plate (" + why + "); only a flat plate with straight or round sides and no other holes is supported"); continue; }
+    const bool from_top = nout * pr.n > 0;
+    if (std::fabs(pr.H - T) > 10 * tol) { ctx.Warn(label + ": refused - the plate thickness could not be read consistently"); continue; }
+    const ON_3dVector ev = entry - pr.O;
+    const prism::V2 hc{ev * pr.X, ev * pr.Y};
+    const double zfar = through ? T : depth;
+    std::vector<std::pair<double, double>> hprof;
+    if (sink) hprof = {{Rc, 0.0}, {r, cone_d}, {r, zfar}};
+    else hprof = {{Rc, 0.0}, {Rc, cb_depth}, {r, cb_depth}, {r, zfar}};
+    std::optional<ON_Brep> built = BuildProfiledHolePlate(pr, hc, from_top, hprof, !through, why);
+    if (!built) { ctx.Warn(label + ": refused - the exact faces did not assemble: " + why); continue; }
+    ON_Brep out = *built;
     if (out.m_F.Count() == 0 || !out.IsSolid() || !out.IsValid()) { ctx.Warn(label + ": refused - the exact Boolean result is not a valid closed solid"); continue; }
     // Closed-form check: volume removed = bore + the wide part.
     double removed = 0;
@@ -2545,7 +2684,7 @@ void ExactHoleFeature(CommandContext& ctx, const Input& in, bool sink) {
     ++done;
     ctx.Print(label + ": object " + Id(id) + " now has a " + (through ? std::string("through") : "blind (depth " + FormatNumber(depth) + ")") + " hole of diameter " + FormatNumber(D) + " with a " +
               (sink ? "countersink of diameter " + FormatNumber(big_d) + ", angle " + FormatNumber(angle) + " (exact cone + cylinder" : "counterbore of diameter " + FormatNumber(big_d) + ", depth " + FormatNumber(cb_depth) + " (exact cylinder in cylinder") +
-              ", " + std::to_string(out.m_F.Count()) + " faces, " + std::to_string(out.m_E.Count()) + " edges, closed solid, sealed Boolean)");
+              ", " + std::to_string(out.m_F.Count()) + " faces, " + std::to_string(out.m_E.Count()) + " edges, closed solid, built from exact faces)");
   }
   if (done == 0) ctx.Print(label + ": no object was changed");
 }
