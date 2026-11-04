@@ -1,0 +1,35 @@
+name: Kernel verify
+on:
+  push:
+    branches: ['kverify/**']
+permissions:
+  contents: read
+env:
+  BUILD_TYPE: Release
+jobs:
+  thk:
+    name: App THK and KWR sections
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils libgl1-mesa-dri libglu1-mesa libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-app-ccache-${{ github.sha }}
+          restore-keys: kverify-app-ccache-
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build dino8-app/build --target Dino8
+      - name: Run sections
+        run: |
+          set +e
+          bash dino8-app/tests/run_sections.sh -b "$PWD/dino8-app/build/Dino8" -t 3000 THK KWR > group.log 2>&1
+          echo "exit=$? ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
+          grep -E '^(FAIL|=====|run_sections)' group.log | cut -c1-250
+          grep -A3 '^FAIL' group.log | head -60
