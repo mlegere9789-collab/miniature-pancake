@@ -3137,7 +3137,7 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const
 Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
                               double tolerance, NurbsSurface& out, PatchFitReport* report, int max_count,
                               const std::vector<FitEdgeContinuity>& edges) {
-  return FitPatchReweighted(boundary_points, interior_points, tolerance, out, report, max_count, edges, 1e4, nullptr);
+  return FitPatchReweighted(boundary_points, interior_points, tolerance, out, report, max_count, edges, 1.0, nullptr);
 }
 
 Result FitPatchReweighted(const std::vector<Point3d>& boundary_points_in, const std::vector<Point3d>& interior_points, double tolerance,
@@ -3521,7 +3521,7 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
 
 Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, double tolerance, NurbsSurface& out,
                                      CurveNetworkReport& report, const std::vector<NetworkEdgeContinuity>& net_edges) {
-  return FitCurveNetworkReweighted(curves_in, tolerance, out, report, net_edges, 1e4, nullptr);
+  return FitCurveNetworkReweighted(curves_in, tolerance, out, report, net_edges, 1.0, nullptr);
 }
 
 Result FitCurveNetworkReweighted(const std::vector<NurbsCurve>& curves_in, double tolerance, NurbsSurface& out,
@@ -3992,7 +3992,7 @@ Result LoftMatchedScaled(const std::vector<NurbsCurve>& sections, int degree, co
   // Where each section sample sits on the (exactly interpolating) plain loft: the Newton seeds for measuring how far a
   // rewritten surface moves the sections.
   std::vector<std::vector<std::pair<ON_3dPoint, std::pair<double, double>>>> seeds(sections.size());
-  for (size_t i = 0; i < sections.size() && optimize_scale; ++i) {
+  for (size_t i = 0; i < sections.size(); ++i) {
     const auto d = sections[i].Domain();
     for (int k = 0; k <= 32; ++k) {
       const Point3d p = sections[i].PointAt(d.min + (d.max - d.min) * k / 32.0);

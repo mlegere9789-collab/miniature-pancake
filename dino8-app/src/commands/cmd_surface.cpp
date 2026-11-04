@@ -21,7 +21,6 @@
 
 #include "commands/cmd_common.h"
 #include "commands/continuity_request.h"
-#include "dino8/kernel/surface_continuity.h"
 #include "commands/history_rebuild.h"
 #include "commands/revolved_solid.h"
 #include "commands/prism_solid.h"
@@ -1444,9 +1443,8 @@ void NetworkSrfContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids,
   kernel::NurbsSurface net;
   kernel::NurbsSurface::CurveNetworkReport rep;
   kernel::Result nr = kernel::Result::Failed;
-  double net_boost = 1.0;
   try {
-    nr = kernel::FitCurveNetworkReweighted(curves, net_tol, net, rep, {ne}, 1e4, &net_boost);
+    nr = kernel::NurbsSurface::FitCurveNetwork(curves, net_tol, net, rep, {ne});
   } catch (const std::exception& e) {
     rep.reason = e.what();
   }
@@ -1461,7 +1459,7 @@ void NetworkSrfContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids,
   for (size_t i = 0; i < rep.curve_deviation.size(); ++i) per += (i ? ", " : "") + Sig3(rep.curve_deviation[i]);
   ctx.Print(head + ": input curve " + std::to_string(idx + 1) + " lies on the edge (worst distance " + Sig3(lying) + "); curve network of " + std::to_string(rep.u_curves) +
             " x " + std::to_string(rep.v_curves) + " curves fitted with the edge's " + ContinuityWhat(req.continuity) +
-            " as a weighted constraint (row weight raised " + Sig3(net_boost) + "x by re-weighting while the data tolerance held; " + std::to_string(rep.net_u) + " x " + std::to_string(rep.net_v) + " net, approximate least squares, untrimmed). " +
+            " as a weighted constraint (" + std::to_string(rep.net_u) + " x " + std::to_string(rep.net_v) + " net, approximate least squares, untrimmed). " +
             ContinuityMeasuredNote(req, rep.edge_continuity[0]) + ". Distance of each input curve from the surface: " + per + " (worst " + Sig3(rep.max_deviation) +
             ", document tolerance " + FormatNumber(net_tol) + ")");
   NoHistoryNote(ctx, "NetworkSrf", req);
@@ -1499,9 +1497,8 @@ void PatchContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, cons
   kernel::NurbsSurface patch;
   kernel::NurbsSurface::PatchFitReport rep;
   kernel::Result fr = kernel::Result::Failed;
-  double patch_boost = 1.0;
   try {
-    fr = kernel::FitPatchReweighted(boundary, point_objects, patch_tol, patch, &rep, 16, {fe}, 1e4, &patch_boost);
+    fr = kernel::NurbsSurface::FitPatch(boundary, point_objects, patch_tol, patch, &rep, 16, {fe});
   } catch (const std::exception& e) {
     rep.reason = e.what();
   }
@@ -1515,7 +1512,7 @@ void PatchContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, cons
   ctx.Doc().Add(SceneObject::MakeSurface(patch));
   ctx.Print(head + ": selected curve " + std::to_string(idx + 1) + " lies on the edge (worst distance " + Sig3(lying) + "); kernel least-squares NURBS surface through " +
             std::to_string(curves.size()) + " curve(s) and " + std::to_string(point_objects.size()) + " point(s) with the edge's " + ContinuityWhat(req.continuity) +
-            " as a weighted constraint (row weight raised " + Sig3(patch_boost) + "x by re-weighting while the data tolerance held; " + std::to_string(rep.u_count) + " x " + std::to_string(rep.v_count) + " net, worst data deviation " + Sig3(rep.max_deviation) +
+            " as a weighted constraint (" + std::to_string(rep.u_count) + " x " + std::to_string(rep.v_count) + " net, worst data deviation " + Sig3(rep.max_deviation) +
             " vs tolerance " + FormatNumber(patch_tol) + (rep.met_tolerance ? ": met" : ": NOT met") + "; untrimmed, spanning the data's extent). " +
             ContinuityMeasuredNote(req, rep.edge_continuity[0]));
   NoHistoryNote(ctx, "Patch", req);
