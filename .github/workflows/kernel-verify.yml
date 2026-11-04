@@ -177,7 +177,7 @@ jobs:
         shell: bash
         timeout-minutes: 120
         run: |
-          find appbin -type f | head
+          find appbin -type f | head || true
           BIN=$(find appbin -type f -name Dino8 | head -1)
           JSON=$(find appbin -type f -name section_groups.json | head -1)
           chmod +x "$BIN"
