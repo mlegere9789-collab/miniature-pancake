@@ -11,6 +11,7 @@
 #include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
 #include "commands/hatch_common.h"
+#include "commands/section_exact.h"
 #include "drafting/Gdt.h"
 #include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
@@ -1798,35 +1799,74 @@ class LibraryHatchCommand : public Command {
 // hatches the closed loops with `pattern_name` (the library default when
 // empty or unknown), tags the group with the plane and pattern so
 // UpdateSectionViews can regenerate it, and returns the object count.
-int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string& pattern_name, double scale, const std::string& plane_name) {
+//
+// A B-rep object is cut on the EXACT route first (kernel::SectionBrepByPlaneJoined: the cut outline is the true
+// section curve - a real circle for a drilled hole or a cylinder - not a chord polygon); its closed contours are
+// hatched together as one region (even-odd, so a drilled hole stays unhatched). A mesh object, and a B-rep whose
+// exact route finds nothing, slice their mesh as before. Every outline curve is tagged SectionRoute =
+// "exact B-rep" / "mesh slice"; `exact_made` (optional) counts the outline curves that came from the exact route.
+int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string& pattern_name, double scale, const std::string& plane_name,
+                      int* exact_made = nullptr) {
   std::vector<ObjectId> ids;
   const HatchPattern* pat = HatchLibrary::Instance().Find(pattern_name.empty() ? "ANSI31" : pattern_name);
   const double tol = ctx.Settings().absolute_tolerance * 10;
   int layer = ctx.Doc().FindLayer("Sections");
   if (layer < 0) layer = ctx.Doc().AddLayer("Sections", Color::FromBytes(200, 60, 60));
   const std::string style = ctx.Settings().annotation_style;
-  // Snapshot the meshes to slice before adding any objects below - Doc().Add()
+  // Snapshot the cuts (exact curves or the mesh to slice) before adding any objects below - Doc().Add()
   // can reallocate Document::Objects()'s backing vector, which would
   // invalidate this loop's own reference/iterator into it if it still held
   // one while calling Add() (as it used to, with the slicing and the Add()
   // calls interleaved in a single pass over Objects()).
-  std::vector<kernel::Mesh> meshes;
+  struct ObjectCut {
+    std::vector<kernel::NurbsCurve> exact;
+    std::optional<kernel::Mesh> mesh;
+  };
+  std::vector<ObjectCut> cuts;
   for (const SceneObject& o : ctx.Doc().Objects()) {
     if (!ctx.Doc().IsObjectVisible(o) || o.user_text.count("Annotation") || o.user_text.count("Hatch")) continue;
-    std::optional<kernel::Mesh> m = MeshOf(o, 0.01);
-    if (!m) continue;
-    meshes.push_back(std::move(*m));
+    ObjectCut oc;
+    oc.exact = ExactBrepSectionCurves(o, pl, tol);
+    if (oc.exact.empty()) {
+      oc.mesh = MeshOf(o, 0.01);
+      if (!oc.mesh) continue;
+    }
+    cuts.push_back(std::move(oc));
   }
-  for (const kernel::Mesh& m : meshes) {
-    for (std::vector<Point3d> chain : drafting::SliceMeshToChains(m.raw(), pl, tol)) {
+  auto tag_outline = [&](SceneObject& s, bool exact) {
+    s.layer_index = layer;
+    TagAnnotation(s, "SectionView", style);
+    s.user_text[kSectionRouteTag] = exact ? kSectionRouteExact : kSectionRouteMesh;
+    s.color = Color::FromBytes(200, 30, 30);
+    s.color_by_layer = false;
+  };
+  for (ObjectCut& oc : cuts) {
+    if (!oc.exact.empty()) {
+      std::vector<drafting::Loop> loops;  // every closed contour of this object: one hatch region, holes left open
+      for (kernel::NurbsCurve& c : oc.exact) {
+        if (c.raw().IsClosed()) loops.push_back(drafting::SampleClosedBoundary(c));
+        SceneObject s = SceneObject::MakeCurve(std::move(c));
+        tag_outline(s, true);
+        ids.push_back(ctx.Doc().Add(std::move(s)));
+        if (exact_made) ++*exact_made;
+      }
+      if (pat && !loops.empty()) {
+        for (const kernel::NurbsCurve& c : drafting::HatchPatternCurves(*pat, loops, pl, scale, 0, ctx.Settings().hatch_base)) {
+          SceneObject hs = SceneObject::MakeCurve(c);
+          hs.layer_index = layer;
+          TagAnnotation(hs, "SectionView", style);
+          hs.user_text["Hatch"] = pat->name;
+          ids.push_back(ctx.Doc().Add(std::move(hs)));
+        }
+      }
+      continue;
+    }
+    for (std::vector<Point3d> chain : drafting::SliceMeshToChains(oc.mesh->raw(), pl, tol)) {
       if (chain.size() < 2) continue;
       const bool closed = chain.size() > 2 && chain.front().DistanceTo(chain.back()) <= tol * 10;
       if (closed) chain.back() = chain.front();
       SceneObject s = SceneObject::MakeCurve(PolylineCurve(chain));
-      s.layer_index = layer;
-      TagAnnotation(s, "SectionView", style);
-      s.color = Color::FromBytes(200, 30, 30);
-      s.color_by_layer = false;
+      tag_outline(s, false);
       ids.push_back(ctx.Doc().Add(std::move(s)));
       if (closed && pat) {
         const std::vector<drafting::Loop> loops = {chain};
@@ -1856,6 +1896,11 @@ int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string
   return static_cast<int>(ids.size());
 }
 
+// Which route cut the outlines, for the report line: only the exact count is known here (the rest are mesh slices).
+std::string SectionViewRoute(int exact) {
+  return exact > 0 ? " (" + std::to_string(exact) + " outline curve(s) from the exact B-rep section, the rest mesh slices)" : " (mesh slices)";
+}
+
 class SectionViewCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -1872,8 +1917,9 @@ class SectionViewCommand : public Command {
     for (ClippingPlane& c : ctx.Doc().ClippingPlanes()) if (ToLower(c.name) == ToLower(plane_name_)) cp = &c;
     if (!cp) { ctx.Warn("SectionView: no clipping plane named '" + plane_name_ + "'"); Finish(); return; }
     ctx.Doc().BeginChange("SectionView");
-    const int made = BuildSectionGroup(ctx, ON_Plane(cp->origin, cp->x_axis, cp->y_axis), pattern_, scale_, cp->name);
-    ctx.Print("SectionView: " + std::to_string(made) + " curve(s) from plane '" + cp->name + "'");
+    int exact = 0;
+    const int made = BuildSectionGroup(ctx, ON_Plane(cp->origin, cp->x_axis, cp->y_axis), pattern_, scale_, cp->name, &exact);
+    ctx.Print("SectionView: " + std::to_string(made) + " curve(s) from plane '" + cp->name + "'" + SectionViewRoute(exact));
     Finish();
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
@@ -1886,8 +1932,9 @@ class SectionViewCommand : public Command {
     dir.Unitize();
     const ON_Plane cut(pts_[0], dir, base.zaxis);
     ctx.Doc().BeginChange("SectionView");
-    const int made = BuildSectionGroup(ctx, cut, pattern_, scale_, "");
-    ctx.Print("SectionView: " + std::to_string(made) + " curve(s)");
+    int exact = 0;
+    const int made = BuildSectionGroup(ctx, cut, pattern_, scale_, "", &exact);
+    ctx.Print("SectionView: " + std::to_string(made) + " curve(s)" + SectionViewRoute(exact));
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override { ctx.ClearPreview(); if (!pts_.empty()) ctx.AddPreviewLine(pts_[0], h); }
@@ -2218,7 +2265,7 @@ void RegisterDrafting2Commands(CommandEngine& e) {
             groups.push_back(o.group_id);
         if (groups.empty()) { ctx.Print("UpdateSectionViews: no section views in this document"); return; }
         ctx.Doc().BeginChange("UpdateSectionViews");
-        int updated = 0;
+        int updated = 0, exact_total = 0;
         for (int g : groups) {
           ON_Plane pl;
           bool have_plane = false;
@@ -2239,9 +2286,9 @@ void RegisterDrafting2Commands(CommandEngine& e) {
           }
           if (!have_plane) continue;
           for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          if (BuildSectionGroup(ctx, pl, pat_name, scale, plane_name) > 0) ++updated;
+          if (BuildSectionGroup(ctx, pl, pat_name, scale, plane_name, &exact_total) > 0) ++updated;
         }
-        ctx.Print("UpdateSectionViews: " + std::to_string(updated) + " section view(s) regenerated");
+        ctx.Print("UpdateSectionViews: " + std::to_string(updated) + " section view(s) regenerated" + SectionViewRoute(exact_total));
       }));
 
   Reg(e, "UpdateBillOfMaterials", Immediate([](CommandContext& ctx) {

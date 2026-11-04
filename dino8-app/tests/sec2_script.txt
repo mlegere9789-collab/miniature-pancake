@@ -1,0 +1,122 @@
+# SEC2_: clipping planes and drafting section views cut a B-rep on the EXACT route (kernel::SectionBrepByPlaneJoined),
+# not its render mesh; a mesh object, and a plane that misses the body, are still reported as such. Every case starts from
+# `New` and is bracketed by an unknown-command marker SEC2BEGIN_<name> that smoke.sh slices the output on.
+# Closed forms: sphere R=10 cut at z=6 -> circle r=8, 2 pi 8 = 50.2655; box 20x20x10 cut at z=5 -> perimeter 80;
+# the same box drilled by a through hole r=0.5 -> 80 + pi = 83.1416 (rectangle + hole circle); Section/Contour history
+# rebuild after moving the source sphere: x=6 plane, sphere moved to x=3 -> r = sqrt(100-9), 2 pi sqrt(91) = 59.9369.
+SetActiveViewport Top
+
+New
+SEC2BEGIN_cap
+Sphere 0,0,0 10
+ClippingPlane Name=CutP -20,-20,6 20,20,6
+ClippingSections
+SelCrv
+Length
+SelLast
+List
+
+New
+SEC2BEGIN_box
+Box 0,0,0 20,20,0 10
+ClippingPlane Name=CutP -20,-20,5 20,20,5
+ClippingSections
+SelCrv
+Length
+
+New
+SEC2BEGIN_drill
+Box 0,0,0 20,20,0 10
+Cylinder 10,10,-5 0.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ClippingPlane Name=CutP -20,-20,5 20,20,5
+ClippingSections
+SelCrv
+Length
+
+New
+SEC2BEGIN_drill_views
+Box 0,0,0 20,20,0 10
+Cylinder 10,10,-5 0.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ClippingPlane Name=CutP -20,-20,5 20,20,5
+ClippingDrawings
+ExtractClippingSlices
+SectionView plane=CutP
+UpdateSectionViews
+
+New
+SEC2BEGIN_miss
+Sphere 0,0,0 10
+ClippingPlane Name=FarP -20,-20,50 20,20,50
+ClippingSections
+ClippingDrawings
+SectionView plane=FarP
+
+New
+SEC2BEGIN_mesh
+MeshBox 0,0,0 20,20,0 10
+ClippingPlane Name=CutP -20,-20,5 20,20,5
+ClippingSections
+SelCrv
+Length
+SectionView plane=CutP
+
+New
+SEC2BEGIN_hist_section
+History On
+Sphere 0,0,0 10
+SelAll
+Section
+6,-20,0
+6,20,0
+SelLast
+Length
+SEC2BEGIN_hist_section_moved
+SelNone
+SelID 1
+Move
+0,0,0
+3,0,0
+UpdateHistory
+SelID 2
+Length
+List
+SEC2BEGIN_hist_section_missed
+SelNone
+SelID 1
+Move
+0,0,0
+17,0,0
+UpdateHistory
+SelID 2
+Length
+
+New
+SEC2BEGIN_hist_contour
+History On
+Sphere 0,0,0 10
+SelAll
+Contour
+0,0,-10
+0,0,10
+5
+SelCrv
+Length
+SEC2BEGIN_hist_contour_moved
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,2
+UpdateHistory
+SelCrv
+Length

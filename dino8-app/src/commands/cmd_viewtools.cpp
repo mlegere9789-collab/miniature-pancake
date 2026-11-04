@@ -7,6 +7,7 @@
 // be scripted: "Layout Name=Sheet1 Width=297 Height=210",
 // "SetTurntableAnimation Frames=36 Degrees=360", "NamedCPlane Save Front".
 #include "commands/cmd_common.h"
+#include "commands/section_exact.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -276,8 +277,43 @@ void SetPlanesEnabled(CommandContext& ctx, bool on) {
   ctx.Print(std::string(on ? "EnableClippingPlane" : "DisableClippingPlane") + ": " + std::to_string(planes.size()) + " plane(s) " + (on ? "enabled" : "disabled"));
 }
 
+// One cut curve of an object with a plane, with the route that made it.
+struct CutCurve {
+  kernel::NurbsCurve curve;
+  bool exact = false;   // from kernel::SectionBrepByPlaneJoined (a true section curve), not a mesh chain
+  bool closed = false;  // a closed loop (an exact closed contour; a mesh chain that comes back to its start)
+};
+
+// The curves where `o` meets `plane`: the EXACT section curves for a B-rep (a true circle for a cylinder or sphere
+// cut), falling back to the chained mesh slice (polylines) for every other object kind and whenever the exact route
+// returns nothing (an unseedable face type, a grazing or missing plane).
+std::vector<CutCurve> CutCurvesOf(const SceneObject& o, const ON_Plane& plane, double tol) {
+  std::vector<CutCurve> out;
+  for (kernel::NurbsCurve& c : ExactBrepSectionCurves(o, plane, tol)) {
+    CutCurve cc;
+    cc.closed = c.raw().IsClosed();
+    cc.exact = true;
+    cc.curve = std::move(c);
+    out.push_back(std::move(cc));
+  }
+  if (!out.empty()) return out;
+  std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
+  if (!m) return out;
+  for (std::vector<Point3d> pl : SliceMesh(m->raw(), plane, tol)) {
+    if (pl.size() < 2) continue;
+    // A chain that comes back to its start is a closed section loop.
+    // (Mesh seams leave a small gap between the chain's ends.)
+    CutCurve cc;
+    if (pl.size() > 2 && pl.front().DistanceTo(pl.back()) <= tol * 10) { pl.back() = pl.front(); cc.closed = pl.size() >= 4; }
+    cc.curve = PolylineCurve(pl);
+    out.push_back(std::move(cc));
+  }
+  return out;
+}
+
 // Section curves of the visible (or selected) objects with each plane.
-int AddSections(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids) {
+// `exact_made` (optional) counts the curves that came from the exact B-rep route.
+int AddSections(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids, int* exact_made = nullptr) {
   int made = 0;
   const double tol = ctx.Settings().absolute_tolerance * 10;
   std::vector<SceneObject> added;
@@ -286,19 +322,15 @@ int AddSections(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, 
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->user_text.count("ClippingSection")) continue;
-      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
-      if (!m) continue;
-      for (std::vector<Point3d> pl : SliceMesh(m->raw(), plane, tol)) {
-        if (pl.size() < 2) continue;
-        // A chain that comes back to its start is a closed section loop.
-        // (Mesh seams leave a small gap between the chain's ends.)
-        if (pl.size() > 2 && pl.front().DistanceTo(pl.back()) <= tol * 10) pl.back() = pl.front();
-        SceneObject c = SceneObject::MakeCurve(PolylineCurve(pl));
+      for (CutCurve& cut : CutCurvesOf(*o, plane, tol)) {
+        SceneObject c = SceneObject::MakeCurve(std::move(cut.curve));
         c.layer_index = o->layer_index;
         c.user_text["ClippingSection"] = cp->name;
+        c.user_text[kSectionRouteTag] = cut.exact ? kSectionRouteExact : kSectionRouteMesh;
         c.name = cp->name + " section";
         added.push_back(std::move(c));
         ++made;
+        if (cut.exact && exact_made) ++*exact_made;
       }
     }
   }
@@ -311,7 +343,7 @@ int AddSections(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, 
 // mesh slice as AddSections, but only the loops that come back to their
 // start (an open slice through an open surface can't bound a region) are
 // built into a trimmed planar face with ON_BrepTrimmedPlane.
-int AddSliceSurfaces(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids) {
+int AddSliceSurfaces(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids, int* exact_made = nullptr) {
   int made = 0;
   const double tol = ctx.Settings().absolute_tolerance * 10;
   std::vector<SceneObject> added;
@@ -320,12 +352,9 @@ int AddSliceSurfaces(CommandContext& ctx, const std::vector<ClippingPlane*>& pla
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->user_text.count("ClippingSection") || o->user_text.count("ClippingSlice")) continue;
-      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
-      if (!m) continue;
-      for (std::vector<Point3d> pl : SliceMesh(m->raw(), plane, tol)) {
-        if (pl.size() < 4 || pl.front().DistanceTo(pl.back()) > tol * 10) continue;  // not a closed loop
-        pl.back() = pl.front();
-        ON_Brep* b = ON_BrepTrimmedPlane(plane, PolylineCurve(pl).raw());
+      for (CutCurve& cut : CutCurvesOf(*o, plane, tol)) {
+        if (!cut.closed) continue;  // not a closed loop
+        ON_Brep* b = ON_BrepTrimmedPlane(plane, cut.curve.raw());
         if (!b) continue;
         kernel::Brep k;
         k.raw() = *b;
@@ -333,9 +362,11 @@ int AddSliceSurfaces(CommandContext& ctx, const std::vector<ClippingPlane*>& pla
         SceneObject s = SceneObject::MakeBrep(k);
         s.layer_index = o->layer_index;
         s.user_text["ClippingSlice"] = cp->name;
+        s.user_text[kSectionRouteTag] = cut.exact ? kSectionRouteExact : kSectionRouteMesh;
         s.name = cp->name + " slice";
         added.push_back(std::move(s));
         ++made;
+        if (cut.exact && exact_made) ++*exact_made;
       }
     }
   }
@@ -352,12 +383,16 @@ void ClippingSections(CommandContext& ctx, const char* label, bool slice_surface
   if (ids.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (ctx.Doc().IsObjectVisible(o)) ids.push_back(o.id);
   ctx.Doc().BeginChange(label);
   if (slice_surfaces) {
-    const int made = AddSliceSurfaces(ctx, planes, ids);
-    ctx.Print(std::string(label) + ": " + std::to_string(made) + " planar slice surface(s) from " + std::to_string(planes.size()) + " plane(s)");
+    int exact = 0;
+    const int made = AddSliceSurfaces(ctx, planes, ids, &exact);
+    ctx.Print(std::string(label) + ": " + std::to_string(made) + " planar slice surface(s) from " + std::to_string(planes.size()) + " plane(s)" +
+              SectionRouteSummary(exact, made - exact));
     return;
   }
-  const int made = AddSections(ctx, planes, ids);
-  ctx.Print(std::string(label) + ": " + std::to_string(made) + " curve(s) from " + std::to_string(planes.size()) + " plane(s)");
+  int exact = 0;
+  const int made = AddSections(ctx, planes, ids, &exact);
+  ctx.Print(std::string(label) + ": " + std::to_string(made) + " curve(s) from " + std::to_string(planes.size()) + " plane(s)" +
+            SectionRouteSummary(exact, made - exact));
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +402,8 @@ void ClippingSections(CommandContext& ctx, const char* label, bool slice_surface
 // regenerated, or exported as a set.
 // ---------------------------------------------------------------------------
 
-int AddClippingDrawingCurves(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids, int layer_index) {
+int AddClippingDrawingCurves(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids, int layer_index,
+                             int* exact_made = nullptr) {
   int made = 0;
   const double tol = ctx.Settings().absolute_tolerance * 10;
   std::vector<SceneObject> added;
@@ -376,17 +412,15 @@ int AddClippingDrawingCurves(CommandContext& ctx, const std::vector<ClippingPlan
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->user_text.count("ClippingDrawing")) continue;
-      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
-      if (!m) continue;
-      for (std::vector<Point3d> pl : SliceMesh(m->raw(), plane, tol)) {
-        if (pl.size() < 2) continue;
-        if (pl.size() > 2 && pl.front().DistanceTo(pl.back()) <= tol * 10) pl.back() = pl.front();
-        SceneObject c = SceneObject::MakeCurve(PolylineCurve(pl));
+      for (CutCurve& cut : CutCurvesOf(*o, plane, tol)) {
+        SceneObject c = SceneObject::MakeCurve(std::move(cut.curve));
         c.layer_index = layer_index;
         c.user_text["ClippingDrawing"] = cp->name;
+        c.user_text[kSectionRouteTag] = cut.exact ? kSectionRouteExact : kSectionRouteMesh;
         c.name = cp->name + " drawing";
         added.push_back(std::move(c));
         ++made;
+        if (cut.exact && exact_made) ++*exact_made;
       }
     }
   }
@@ -443,6 +477,10 @@ int ClippingDrawingDepth(CommandContext& ctx, ObjectId id, int guard = 0) {
 // curve here is built.
 std::vector<Point3d> PolylinePointsOf(const kernel::NurbsCurve& c) {
   std::vector<Point3d> pts;
+  if (c.Degree() > 1) {  // an exact section curve (a circle, a NURBS contour): its control points are NOT on it, so sample it
+    for (double t : c.SuggestedParameterValues(0.005)) pts.push_back(c.PointAt(t));
+    return pts;
+  }
   const ON_NurbsCurve& nc = c.raw();
   ON_3dPoint p;
   for (int i = 0; i < nc.CVCount(); ++i) { nc.GetCV(i, p); pts.push_back(Point3d(p)); }
@@ -569,8 +607,10 @@ void MakeClippingDrawings(CommandContext& ctx, const char* label, bool update = 
   if (layer_index < 0) layer_index = ctx.Doc().AddLayer("Clipping Drawings");
   std::vector<ObjectId> ids = ctx.Doc().SelectedIds();
   if (ids.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (ctx.Doc().IsObjectVisible(o) && !o.user_text.count("ClippingDrawing")) ids.push_back(o.id);
-  const int made = AddClippingDrawingCurves(ctx, planes, ids, layer_index);
-  ctx.Print(std::string(label) + ": " + std::to_string(made) + " drawing curve(s) on layer 'Clipping Drawings' from " + std::to_string(planes.size()) + " plane(s)");
+  int exact = 0;
+  const int made = AddClippingDrawingCurves(ctx, planes, ids, layer_index, &exact);
+  ctx.Print(std::string(label) + ": " + std::to_string(made) + " drawing curve(s) on layer 'Clipping Drawings' from " + std::to_string(planes.size()) + " plane(s)" +
+            SectionRouteSummary(exact, made - exact));
 }
 
 std::vector<ObjectId> ClippingDrawingIds(CommandContext& ctx, const std::vector<std::string>& names) {
