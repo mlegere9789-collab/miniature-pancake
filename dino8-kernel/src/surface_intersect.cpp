@@ -2285,6 +2285,40 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
   const size_t n = hits.size();
   std::vector<bool> used(n, false);
   auto usable = [&](size_t i) { return hits[i].curve.curve.IsValid() && hits[i].curve.curve.CVCount() >= 2; };
+  // A section plane that contains a body edge (or touches a face boundary) cuts BOTH faces that share the edge, so the same
+  // physical curve comes back once per face. Measured on a 10 x 10 x 10 box cut by the plane x = y (through two vertical
+  // edges): two OPEN contours of total length 68.2 instead of one closed contour of length 48.28 - each vertical edge was
+  // counted twice. A piece coincident with an earlier one (same ends in either order, same midpoint, same length within
+  // the join tolerance) is that duplicate and is dropped.
+  {
+    std::vector<ON_3dPoint> ps(n), pe(n), pm(n);
+    std::vector<double> pl(n, 0.0);
+    std::vector<bool> ok(n, false);
+    for (size_t i = 0; i < n; ++i) {
+      if (!usable(i)) continue;
+      const ON_NurbsCurve pc = PieceCurve(hits[i].curve);
+      if (!pc.IsValid()) continue;
+      ps[i] = pc.PointAtStart();
+      pe[i] = pc.PointAtEnd();
+      pm[i] = pc.PointAt(pc.Domain().ParameterAt(0.5));
+      double len = 0.0;
+      if (!pc.GetLength(&len)) continue;
+      pl[i] = len;
+      ok[i] = true;
+    }
+    for (size_t i = 0; i < n; ++i) {
+      if (!ok[i] || used[i]) continue;
+      for (size_t j = 0; j < i; ++j) {
+        if (!ok[j] || used[j]) continue;
+        const bool same_ends = (ps[i].DistanceTo(ps[j]) <= jtol && pe[i].DistanceTo(pe[j]) <= jtol) ||
+                               (ps[i].DistanceTo(pe[j]) <= jtol && pe[i].DistanceTo(ps[j]) <= jtol);
+        if (same_ends && pm[i].DistanceTo(pm[j]) <= jtol && std::fabs(pl[i] - pl[j]) <= 10.0 * jtol) {
+          used[i] = true;
+          break;
+        }
+      }
+    }
+  }
   for (size_t i = 0; i < n; ++i) {
     if (used[i] || !usable(i)) continue;
     used[i] = true;

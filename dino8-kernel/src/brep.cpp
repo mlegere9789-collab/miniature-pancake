@@ -4722,6 +4722,11 @@ std::vector<std::vector<int>> ShellFaceGroups(const ON_Brep& brep, const std::ve
 }  // namespace
 
 Brep::ShellClassification Brep::ClassifyShells(double volume_tolerance) const {
+  // measured: inf / 1e300 silently classified every closed shell Degenerate ("consistent", no problems) and NaN / negative
+  // were silently accepted
+  if (!std::isfinite(volume_tolerance) || volume_tolerance < 0.0 || volume_tolerance > 1e100) {
+    throw std::invalid_argument("dino8::kernel::Brep::ClassifyShells: volume_tolerance must be finite and non-negative");
+  }
   ShellClassification out;
   const std::vector<std::vector<int>> groups = ShellFaceGroups(brep_, LumpFaceRanges());
   const size_t ns = groups.size();

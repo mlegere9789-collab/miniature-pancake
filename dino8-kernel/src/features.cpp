@@ -1829,18 +1829,38 @@ namespace {
 // Shared tail of the three hole patterns: validates the hole, enforces the
 // instance spacing, drills every instance in one MakeHoles() call, then
 // re-runs RecognizeHoles() to prove each instance is a complete bore.
+// Instances beyond this are refused up front: the spacing check below is O(n^2) in the instance count and one tool per
+// instance goes into a single Boolean, so a count like 100000 (or INT_MAX, which also exhausts memory in the centre
+// list) never returned (measured: > 20 s hang for 100000 on a 100 x 100 x 10 slab).
+constexpr size_t kMaxHolePatternInstances = 2000;
+
 Brep DrillHolePatternInstances(const Brep& solid, const HoleFeature& hole, const std::vector<Point3d>& instance_centers,
                                const char* who) {
   const std::string name = std::string("dino8::kernel::") + who;
-  if (!(hole.radius > 0.0)) throw std::invalid_argument(name + ": hole radius must be positive");
+  if (!(hole.radius > 0.0) || !std::isfinite(hole.radius)) {
+    throw std::invalid_argument(name + ": hole radius must be positive (and finite)");
+  }
+  if (!hole.origin.IsValid() || !hole.axis.IsValid()) {
+    throw std::invalid_argument(name + ": the hole's origin and axis must be finite");
+  }
   if (instance_centers.empty()) throw std::invalid_argument(name + ": no instances requested");
+  if (instance_centers.size() > kMaxHolePatternInstances) {
+    throw std::invalid_argument(name + ": " + std::to_string(instance_centers.size() + 1) + " instances requested, more than the " +
+                                std::to_string(kMaxHolePatternInstances + 1) + " this operation supports");
+  }
   double min_gap = std::numeric_limits<double>::infinity();
   std::vector<Point3d> all = instance_centers;
   all.push_back(hole.origin);
+  for (const Point3d& c : all) {
+    if (!c.IsValid()) throw std::invalid_argument(name + ": an instance centre is not finite (spacing / extent overflow)");
+  }
   for (size_t i = 0; i < all.size(); ++i) {
     for (size_t j = i + 1; j < all.size(); ++j) min_gap = std::min(min_gap, all[i].DistanceTo(all[j]));
   }
-  if (!(min_gap > 2.0 * hole.radius * (1.0 + 1e-9) + 1e-9)) {
+  // The web between neighbouring bores must exceed the kernel's distance tolerance: a 1e-7 web made MakeHoles() spin
+  // for > 20 s (measured, spacing 2*r + 1e-7), where a refusal is the right answer for a bore pair that is touching to
+  // within the weld tolerance.
+  if (!(min_gap > 2.0 * hole.radius * (1.0 + 1e-9) + tolerance::kDistance)) {
     throw std::invalid_argument(name + ": instance spacing " + std::to_string(min_gap) +
                                 " leaves neighbouring bores touching or overlapping (needs > 2*radius = " +
                                 std::to_string(2.0 * hole.radius) + ")");
@@ -1853,6 +1873,10 @@ Brep DrillHolePatternInstances(const Brep& solid, const HoleFeature& hole, const
                                 std::to_string(instance_centers.size()) +
                                 " pattern instances came out as complete bores (an instance runs off the solid's "
                                 "edge, lies outside the solid, or breaks into an existing feature)");
+  }
+  if (!drilled.raw().IsValid()) {
+    throw std::invalid_argument(name + ": the drilled body fails ON_Brep::IsValid() (measured for a slab placed ~1e9 from the origin, where "
+                                       "the Boolean result loses its precision); refusing to return it");
   }
   return drilled;
 }
@@ -1873,7 +1897,11 @@ Vector3d UnitPerpendicularTo(const Vector3d& dir, const Vector3d& hole_axis, con
 Brep LinearHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction, double spacing, int count) {
   const std::string name = "dino8::kernel::LinearHolePattern";
   if (count < 2) throw std::invalid_argument(name + ": count must be at least 2 (instance 0 is the existing hole)");
-  if (!(spacing > 0.0)) throw std::invalid_argument(name + ": spacing must be positive");
+  if (!(spacing > 0.0) || !std::isfinite(spacing)) throw std::invalid_argument(name + ": spacing must be positive (and finite)");
+  if (static_cast<size_t>(count) > kMaxHolePatternInstances + 1) {
+    throw std::invalid_argument(name + ": " + std::to_string(count) + " instances requested, more than the " +
+                                std::to_string(kMaxHolePatternInstances + 1) + " this operation supports");
+  }
   const Vector3d d = UnitPerpendicularTo(direction, hole.axis, name);
   std::vector<Point3d> centers;
   for (int k = 1; k < count; ++k) centers.push_back(hole.origin + d * (spacing * k));
@@ -1883,10 +1911,16 @@ Brep LinearHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d dire
 Brep RectangularHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction_u, double spacing_u,
                             int count_u, Vector3d direction_v, double spacing_v, int count_v) {
   const std::string name = "dino8::kernel::RectangularHolePattern";
-  if (count_u < 1 || count_v < 1 || count_u * count_v < 2) {
+  if (count_u < 1 || count_v < 1 || static_cast<long long>(count_u) * count_v < 2) {  // 64-bit: int count_u * count_v overflowed
     throw std::invalid_argument(name + ": the grid must have at least 2 instances (instance 0 is the existing hole)");
   }
-  if (!(spacing_u > 0.0) || !(spacing_v > 0.0)) throw std::invalid_argument(name + ": spacings must be positive");
+  if (static_cast<long long>(count_u) * count_v > static_cast<long long>(kMaxHolePatternInstances) + 1) {
+    throw std::invalid_argument(name + ": " + std::to_string(static_cast<long long>(count_u) * count_v) + " instances requested, more than the " +
+                                std::to_string(kMaxHolePatternInstances + 1) + " this operation supports");
+  }
+  if (!(spacing_u > 0.0) || !(spacing_v > 0.0) || !std::isfinite(spacing_u) || !std::isfinite(spacing_v)) {
+    throw std::invalid_argument(name + ": spacings must be positive (and finite)");
+  }
   const Vector3d du = UnitPerpendicularTo(direction_u, hole.axis, name);
   const Vector3d dv = UnitPerpendicularTo(direction_v, hole.axis, name);
   if (ON_CrossProduct(du, dv).Length() < 1e-9) {
@@ -1908,6 +1942,10 @@ Brep PolarHolePattern(const Brep& solid, const HoleFeature& hole, Point3d center
   if (count < 2) throw std::invalid_argument(name + ": count must be at least 2 (instance 0 is the existing hole)");
   if (!(total_angle > 0.0) || total_angle > 2.0 * ON_PI * (1.0 + 1e-12)) {
     throw std::invalid_argument(name + ": total_angle must be in (0, 2*pi]");
+  }
+  if (static_cast<size_t>(count) > kMaxHolePatternInstances + 1) {
+    throw std::invalid_argument(name + ": " + std::to_string(count) + " instances requested, more than the " +
+                                std::to_string(kMaxHolePatternInstances + 1) + " this operation supports");
   }
   Vector3d ax = axis;
   Vector3d hax = hole.axis;
