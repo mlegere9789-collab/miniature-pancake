@@ -100544,9 +100544,30 @@ void TestOffsetInPlaneNonCoplanarPolylineCornerStylesRefusalsAndCoplanarRegressi
     }
     std::printf("  Round corners d=%g: worst | distance to projected polyline - |d| | over 3001 samples = %g\n", d, worst);
     Check(worst < 1e-9, "non-coplanar polyline Corner=Round: all 3001 samples exactly |d| from the projected polyline to 1e-9");
-    // Round / Chamfer / Sharp are different curves (the style option is not ignored): they differ in length
-    Check(round.Length() != sharp.Length() && chamfer.Length() != sharp.Length() && round.Length() != chamfer.Length(),
-          "non-coplanar polyline: Sharp, Round and Chamfer give three different curves");
+    // This polyline turns LEFT at every corner (projected z of d_i x d_{i+1} = +60, +60, +66). A positive distance offsets to
+    // the RIGHT, i.e. onto the OUTSIDE of every corner, where Round / Chamfer insert an arc / a bevel and so differ from the
+    // mitre: three different curves (the style option is not ignored). A negative distance offsets onto the INSIDE of every
+    // corner, where all three styles meet in the same mitre point and there is nothing to fill: the three curves are
+    // identical (measured: equal lengths and equal vertex lists). Asserting "three different curves" for d < 0 (as this
+    // test first did) was a wrong premise; the equality is asserted instead, and it fails if an inner corner gets a fill.
+    auto same_vertices = [](const NurbsCurve& a, const NurbsCurve& b) {
+      if (a.ControlPointCount() != b.ControlPointCount()) return false;
+      for (int i = 0; i < a.ControlPointCount(); ++i)
+        if (a.ControlPointAt(i).DistanceTo(b.ControlPointAt(i)) > 1e-12) return false;
+      return true;
+    };
+    std::printf("  corner styles d=%g: Length Sharp %.9f Round %.9f Chamfer %.9f; control points %d / %d / %d\n", d, sharp.Length(),
+                round.Length(), chamfer.Length(), sharp.ControlPointCount(), round.ControlPointCount(), chamfer.ControlPointCount());
+    if (d > 0.0) {
+      Check(round.Length() != sharp.Length() && chamfer.Length() != sharp.Length() && round.Length() != chamfer.Length(),
+            "non-coplanar polyline, offset onto the outside of every corner: Sharp, Round and Chamfer give three different curves");
+      Check(std::fabs(round.Length() - sharp.Length()) > 0.05 && std::fabs(chamfer.Length() - sharp.Length()) > 0.05 &&
+                std::fabs(round.Length() - chamfer.Length()) > 0.05,
+            "non-coplanar polyline, outside corners: the three lengths differ by more than 0.05 each (not a rounding-level difference)");
+    } else {
+      Check(same_vertices(sharp, round) && same_vertices(sharp, chamfer),
+            "non-coplanar polyline, offset onto the inside of every corner: Round and Chamfer have nothing to fill and equal the Sharp mitre vertex by vertex");
+    }
     // the ends are the documented single-edge points for every style
     for (const NurbsCurve* oc : {&round, &chamfer, &sharp}) {
       Vector3d e0 = ON_CrossProduct(v[1] - v[0], xy.zaxis);
@@ -100655,6 +100676,8 @@ Patch FullPrimitive(int kind, double rot, double R = 5.0, double a = 1.5) {
     raw.Transform(spin * to_pl);
     p.s.raw() = raw;
     p.f.c = pl.origin;
+    p.f.a = pl.zaxis;  // the polar axis (the longitude u runs about it): USpan / the angular-extent oracle need it
+    p.f.a.Unitize();
     p.f.r = 3.0;
     p.name = "sphere";
   } else if (kind == 1) {
@@ -100669,7 +100692,10 @@ Patch FullPrimitive(int kind, double rot, double R = 5.0, double a = 1.5) {
     cone.GetNurbForm(raw);
     p.s.raw() = raw;
     p.f.c = cone.ApexPoint();
-    p.f.a = r.origin - cone.ApexPoint();  // from the apex into the body (base plane at r.origin)
+    // ON_Cone(plane, height, radius): the apex is plane.origin and the base circle's centre is origin + height*zaxis
+    // (opennurbs_cone.h), so the axis from the apex into the body is base - apex. (An earlier version of this fixture
+    // took r.origin - ApexPoint(), which is the ZERO vector: ApexPoint() IS r.origin.)
+    p.f.a = cone.BasePoint() - cone.ApexPoint();
     p.f.a.Unitize();
     p.f.alpha = std::atan2(2.0, 4.0);
     p.name = "cone";
@@ -100739,7 +100765,7 @@ bool AngleRange(const std::function<Point3d(double)>& at, const ON_Plane& frame,
 
 // Does the patch's angular range (u direction, at mid-v) about the RECOGNISER's own frame contain that frame's angle zero
 // strictly inside? Uses ON_Surface::IsSphere/IsCylinder/IsCone/IsTorus (the frames OffsetAnalytic() is handed) and plain atan2.
-bool StraddlesRecogniserZero(const Patch& p, double* span_out = nullptr) {
+bool StraddlesRecogniserZero(const Patch& p, double* span_out = nullptr, bool* starts_at_zero = nullptr) {
   const double tol = 1e-6;
   ON_Plane frame;
   bool have = false;
@@ -100762,6 +100788,11 @@ bool StraddlesRecogniserZero(const Patch& p, double* span_out = nullptr) {
   double lo, hi;
   if (!AngleRange([&](double f) { return p.s.PointAt(du.min + f * (du.max - du.min), vm); }, frame, lo, hi)) return false;
   if (span_out != nullptr) *span_out = hi - lo;
+  if (starts_at_zero != nullptr) {
+    *starts_at_zero = false;
+    for (int k = -2; k <= 2; ++k)
+      if (std::fabs(lo - 2 * ON_PI * k) < 1e-9) *starts_at_zero = true;
+  }
   for (int k = -2; k <= 2; ++k)
     if (lo < 2 * ON_PI * k - 1e-9 && hi > 2 * ON_PI * k + 1e-9) return true;
   return false;
@@ -100879,7 +100910,7 @@ void TestOffsetAnalyticDirectSeamStraddlingAndWidePatchesAgainstClosedForms() {
   const double spans[] = {0.20, 0.45, 0.62, 0.80, 0.97};
   const double starts[] = {0.0, 0.5, 1.0};  // as a fraction of the free room (1 - span)
   int total = 0, straddling = 0, wide = 0, wide_straddling = 0, refused = 0, covers = 0;
-  int per_kind_straddle[4] = {0, 0, 0, 0}, per_kind_wide[4] = {0, 0, 0, 0}, per_kind_n[4] = {0, 0, 0, 0};
+  int per_kind_straddle[4] = {0, 0, 0, 0}, per_kind_wide[4] = {0, 0, 0, 0}, per_kind_n[4] = {0, 0, 0, 0}, per_kind_aligned[4] = {0, 0, 0, 0};
   double w_field = 0, w_corner = 0, w_cover = 0, w_span = 0;
   for (int kind = 0; kind < 4; ++kind) {
     for (int k = 0; k < 12; ++k) {
@@ -100909,10 +100940,12 @@ void TestOffsetAnalyticDirectSeamStraddlingAndWidePatchesAgainstClosedForms() {
           if (kind == 0 || kind == 1) Check(sigma0 == 1, (std::string(tag) + ": cross-check, an ON_Sphere/ON_Cylinder NURBS form faces outward").c_str());
           if (sigma0 == 0) continue;
           double rec_span = 0;
-          const bool straddle = StraddlesRecogniserZero(p, &rec_span);
+          bool aligned = false;
+          const bool straddle = StraddlesRecogniserZero(p, &rec_span, &aligned);
           const bool is_wide = USpan(p.s, p.f) > ON_PI + 1e-9;
           ++per_kind_n[kind];
           if (straddle) { ++straddling; ++per_kind_straddle[kind]; }
+          if (aligned) ++per_kind_aligned[kind];
           if (is_wide) { ++wide; ++per_kind_wide[kind]; }
           if (straddle && is_wide) ++wide_straddling;
           ++total;
@@ -100936,10 +100969,22 @@ void TestOffsetAnalyticDirectSeamStraddlingAndWidePatchesAgainstClosedForms() {
               "%d offsets refused; worst closed-form field %g, corner %g, angular extent %g, cover(%d probes) %g\n",
               total, straddling, wide, wide_straddling, refused, w_field, w_corner, w_span, covers, w_cover);
   for (int kind = 0; kind < 4; ++kind)
-    std::printf("    kind %d: %d patches, %d straddling the recogniser zero, %d wider than half a turn\n", kind, per_kind_n[kind],
-                per_kind_straddle[kind], per_kind_wide[kind]);
+    std::printf("    kind %d: %d patches, %d straddling the recogniser zero, %d starting exactly at it, %d wider than half a turn\n", kind,
+                per_kind_n[kind], per_kind_straddle[kind], per_kind_aligned[kind], per_kind_wide[kind]);
   for (int kind = 0; kind < 4; ++kind) {
-    Check(per_kind_straddle[kind] >= 1, ("family " + std::to_string(kind) + ": at least one tested patch truly straddles the recogniser frame's angle zero").c_str());
+    // Measured premise (probe over all 180 windows of each family, tolerances 1e-6 / 1e-3 / 1e-2, u reversed, transposed):
+    // ON_Surface::IsCylinder / IsCone / IsTorus put the recogniser frame's angle zero exactly AT THE PATCH'S OWN u START
+    // (lowest start angle -0.0000 rad over every window), so a patch cut from these families can never contain that zero
+    // strictly inside - "truly straddles" is unsatisfiable for them and was a wrong premise. Only the sphere recogniser
+    // (IsSphere returns a meridian-type frame unrelated to the patch start) yields straddlers. So: the sphere must have at
+    // least one straddler; for the other families EVERY tested patch must be exactly start-aligned (or, should a future
+    // opennurbs change the recogniser, at least one must straddle) - the check still fails if the frame moves off the start
+    // without producing a straddler, which would silently leave the seam-free arc trim untested.
+    if (kind == 0)
+      Check(per_kind_straddle[kind] >= 1, ("family " + std::to_string(kind) + ": at least one tested patch truly straddles the recogniser frame's angle zero").c_str());
+    else
+      Check(per_kind_straddle[kind] >= 1 || per_kind_aligned[kind] == per_kind_n[kind],
+            ("family " + std::to_string(kind) + ": the recogniser frame's angle zero is the patch's own u start for every tested patch (or some patch straddles it)").c_str());
     Check(per_kind_wide[kind] >= 12, ("family " + std::to_string(kind) + ": at least 12 tested patches are wider than half a turn").c_str());
   }
   Check(refused == 0, "OffsetAnalytic refused none of the seam-straddling / wide patches (no sphere seam-straddle refusal reached)");
@@ -101024,6 +101069,35 @@ void TestOffsetAnalyticDirectTorusProportions() {
   }
   std::printf("  torus proportions: %d exact offsets (worst field %g, corner %g), %d correct refusals\n", ok, worst_field, worst_corner, refused_ok);
   Check(ok >= 40, "torus proportions: at least 40 feasible offsets were measured");
+}
+
+// The cone fold-through-the-axis guard: a point at distance rho from the axis moves to rho + d*cos(alpha) under an inward
+// normal offset d, so the offset reaches the axis at |d| = rho_min / cos(alpha) (here 0.4 / cos(atan(0.5)) = 0.44721), not at
+// |d| = rho_min = 0.4 (the guard compared |d| with rho_min and refused regular offsets between the two - found by the
+// seam/wide-patch sweep above, whose d = -0.4 hits the narrow rim of radius exactly 0.4). Feasible just below the boundary
+// (offset rim at radius 0.4 - 0.44*0.894427 = 0.0065), refused just above it.
+void TestOffsetAnalyticDirectConeFoldGuardBoundary() {
+  const double rho_min = 0.4, cos_alpha = std::cos(std::atan2(2.0, 4.0));
+  const double boundary = rho_min / cos_alpha;
+  std::printf("  cone fold guard: narrow rim radius %g, cos(alpha) %.6f, offset reaches the axis at |d| = %.6f\n", rho_min, cos_alpha, boundary);
+  for (int k : {0, 5, 9}) {
+    Patch p = FullPrimitive(2, 2.0 * ON_PI * k / 12.0);
+    p.s = Window(p.s, 0.3, 0.45, 0.2, 0.6);
+    const int sigma0 = InputOrientation(p.s, p.f);
+    Check(sigma0 == 1, "cone fold guard fixture: the cone faces outward (away from its axis)");
+    for (double d : {-0.40, -0.44, -boundary * 0.999}) {
+      const std::string nm = "cone fold guard rot=" + std::to_string(k) + " d=" + std::to_string(d);
+      const OffsetMeasure m = MeasureDirect(p, d, sigma0, false, nm);
+      Check(m.ok && m.field < 1e-9 && m.corners < 1e-9, (nm + ": regular inward offset (|d|*cos(alpha) < rim radius) is built exactly, field and corners to 1e-9").c_str());
+    }
+    for (double d : {-boundary * 1.001, -0.46, -0.6}) {
+      NurbsSurface out = NurbsSurface::FromControlGrid({Point3d(7, 7, 7), Point3d(8, 7, 7), Point3d(7, 8, 7), Point3d(8, 8, 7)}, 2, 2, 1, 1);
+      std::string reason;
+      bool degenerate = false;
+      Check(p.s.OffsetAnalytic(d, out, -1.0, &reason, &degenerate) == Result::Failed && degenerate && !reason.empty() && out.CVCountU() == 2,
+            ("cone fold guard rot=" + std::to_string(k) + " d=" + std::to_string(d) + ": offset past the axis (|d|*cos(alpha) >= rim radius) is refused as degenerate with a reason, out untouched").c_str());
+    }
+  }
 }
 
 }  // namespace offset_remainder_tests
@@ -103714,6 +103788,9 @@ int main() {
   RunTest("surfops_tolerance_tests::TestSurfaceRemoveMultiKnotsBothDirections", surfops_tolerance_tests::TestSurfaceRemoveMultiKnotsBothDirections);
   RunTest("surfops_tolerance_tests::TestSurfaceFitToToleranceMeetsToleranceOnIndependentGrid", surfops_tolerance_tests::TestSurfaceFitToToleranceMeetsToleranceOnIndependentGrid);
   RunTest("surfops_tolerance_tests::TestBrepShrinkSurfacesTolerance", surfops_tolerance_tests::TestBrepShrinkSurfacesTolerance);
+
+  RunTest("offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary",
+          offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;

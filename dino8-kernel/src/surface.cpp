@@ -3554,16 +3554,23 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       const double signed_distance = sign * distance;
 
       // Self-intersection guard: shrinking the cone (signed_distance < 0)
-      // by at least the smallest radius anywhere in this surface's own
-      // v-domain folds the surface through the axis there - the cone's
-      // local radius of curvature, circumferentially, is exactly its
-      // distance from the axis.
+      // far enough folds the surface through the axis. A point at distance
+      // rho from the axis moves to rho + signed_distance * cos(alpha) (the
+      // normal leans cos(alpha) of its length into the radial direction),
+      // so the offset reaches the axis exactly when
+      // |signed_distance| * cos(alpha) == rho, i.e. at |signed_distance| ==
+      // rho / cos(alpha) - the cone's circumferential radius of curvature.
+      // (Comparing |signed_distance| with rho itself, as this guard used to,
+      // refused regular offsets between rho and rho / cos(alpha): e.g. a
+      // 0.4 inward offset of a cone of half-angle atan(0.5) at a rim of
+      // radius 0.4, whose offset rim sits at radius 0.042, is a perfectly
+      // regular cone patch.)
       if (signed_distance < 0.0) {
         const Point3d p_a = PointAt(umid, dv.min);
         const Point3d p_b = PointAt(umid, dv.max);
         const double r_a = (p_a - apex - ON_DotProduct(p_a - apex, axis) * axis).Length();
         const double r_b = (p_b - apex - ON_DotProduct(p_b - apex, axis) * axis).Length();
-        if (-signed_distance >= std::min(r_a, r_b)) {
+        if (-signed_distance * std::cos(alpha) >= std::min(r_a, r_b)) {
           return degenerate("cone offset would fold through its own axis (inward distance reaches the smallest radius)");
         }
       }
