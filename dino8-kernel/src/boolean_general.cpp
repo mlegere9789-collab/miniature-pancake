@@ -8301,17 +8301,30 @@ int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
     ++collapsed;
   }
   if (collapsed > 0) {
+    // The merged vertices and the snapped neighbours record the new gap: mark them unset so they are recomputed below.
     for (const int vi : touched_vertices) {
-      if (vi >= 0 && vi < b.m_V.Count() && b.m_V[vi].m_vertex_index >= 0) b.SetVertexTolerance(b.m_V[vi], false);
+      if (vi >= 0 && vi < b.m_V.Count() && b.m_V[vi].m_vertex_index >= 0) b.m_V[vi].m_tolerance = ON_UNSET_VALUE;
     }
     for (const int ei : touched_edges) {
-      if (ei >= 0 && ei < b.m_E.Count() && b.m_E[ei].m_edge_index >= 0) b.SetEdgeTolerance(b.m_E[ei], false);
+      if (ei >= 0 && ei < b.m_E.Count() && b.m_E[ei].m_edge_index >= 0) b.m_E[ei].m_tolerance = ON_UNSET_VALUE;
     }
     b.Compact();
     b.SetTrimIsoFlags();
     b.SetTrimTypeFlags();
     b.SetTrimTolerances();
     b.SetTrimBoundingBoxes();
+    // Tolerances after the trims' (they are derived from them). Compact() renumbers, so recompute every vertex and edge
+    // the collapse could have touched by testing for an unset/negative value instead of tracking indices.
+    for (int i = 0; i < b.m_V.Count(); ++i) {
+      ON_BrepVertex& v = b.m_V[i];
+      if (v.m_vertex_index >= 0 && !(v.m_tolerance >= 0.0)) b.SetVertexTolerance(v, false);
+      if (v.m_vertex_index >= 0 && !(v.m_tolerance >= 0.0)) v.m_tolerance = tolerance;
+    }
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      ON_BrepEdge& e = b.m_E[i];
+      if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) b.SetEdgeTolerance(e, false);
+      if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = tolerance;
+    }
   }
   return collapsed;
 }
