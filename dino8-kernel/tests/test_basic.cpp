@@ -103025,7 +103025,7 @@ void TestVariableThicknessShellOfNonConvexPrism() {
   }
   Check(found == 6, "all 6 cavity walls lie at exactly their own thickness (0.5,0.3,0.4,0.2,0.25,0.6) from their outer wall plane");
   Check(std::fabs(AreaOnPlane(s, Vector3d(0, 0, 1), bot) - Shoelace(cav)) < 1e-12, "cavity floor is at z = 0.7 (bottom thickness) with the cavity's area");
-  Check(std::fabs(AreaOnPlane(s, Vector3d(0, 0, -1), H - top) - Shoelace(cav)) < 1e-12, "cavity ceiling is at z = 4 - 0.35 (top thickness)");
+  Check(std::fabs(AreaOnPlane(s, Vector3d(0, 0, -1), -(H - top)) - Shoelace(cav)) < 1e-12, "cavity ceiling is at z = 4 - 0.35 (top thickness)");
 
   // Uniform case reproduces the existing uniform closed shell exactly (a second implementation).
   const Brep uni = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, 4.0), std::vector<double>(6, 0.5), 0.5, 0.5);
@@ -103046,7 +103046,11 @@ void TestCupOfNonConvexPrismOpenTop() {
   CheckSolid(cup, expect, "open-top L cup");
   Check(cup.PlanarFaces().size() == 20, "cup faces: 6 outer walls + 6 cavity walls + bottom + floor + 6 top rim quads = 20");
   Check(std::fabs(AreaOnPlane(cup, Vector3d(0, 0, 1), H) - (20.0 - Shoelace(cav))) < 1e-12, "the top is only the rim: its area is profile minus cavity");
-  Check(AreaOnPlane(cup, Vector3d(0, 0, -1), H - 0.35) == 0.0, "no ceiling exists (the cavity is open)");
+  {
+    double down_facing = 0.0;  // any downward-facing face above the floor would be a ceiling
+    for (const auto& f : cup.PlanarFaces()) if (f.plane.zaxis.z < -0.9 && f.loop[0].z > 0.5) down_facing += FaceArea(f);
+    Check(down_facing == 0.0, "no ceiling exists (the cavity is open): no downward-facing face above the bottom plane");
+  }
   // Open BOTTOM is the mirror: same volume with the floor on the far end.
   const Brep cup_dn = ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, H), d, 0.0, floor_t);
   CheckSolid(cup_dn, expect, "open-bottom L cup");
