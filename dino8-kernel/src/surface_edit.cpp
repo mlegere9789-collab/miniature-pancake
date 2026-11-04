@@ -5,6 +5,7 @@
 // code.
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cmath>
 #include <limits>
@@ -2157,24 +2158,31 @@ double MeanCrossSpeedAtMin(const ON_NurbsSurface& s, int fixed_direction, int sa
 Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
                                bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report,
                                double cross_scale) {
+  return MatchEdgeWithAcceleration(*this, fixed_direction, at_min, target, target_fixed_direction, target_at_min, continuity, report, cross_scale, 0.0);
+}
+
+// MatchEdge() with the second reparameterization derivative (see surface_continuity.h). `self` is the surface edited.
+Result MatchEdgeWithAcceleration(NurbsSurface& self, int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
+                                 bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report, double cross_scale,
+                                 double cross_accel) {
   if ((fixed_direction != 0 && fixed_direction != 1) || (target_fixed_direction != 0 && target_fixed_direction != 1)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::MatchEdge: directions must be 0 (U) or 1 (V)");
   }
   const int rows_needed = continuity == MatchContinuity::Position ? 1 : continuity == MatchContinuity::Tangent ? 2 : 3;
   const int edge_dir = 1 - fixed_direction;
   const int t_edge_dir = 1 - target_fixed_direction;
-  if (!surface_.IsClamped(0, 2) || !surface_.IsClamped(1, 2)) return Result::Failed;
-  if (!target.surface_.IsClamped(t_edge_dir, 2) || !target.surface_.IsClamped(target_fixed_direction, 2)) return Result::Failed;
-  if (target.surface_.Degree(target_fixed_direction) < rows_needed - 1) return Result::Failed;
+  if (!self.raw().IsClamped(0, 2) || !self.raw().IsClamped(1, 2)) return Result::Failed;
+  if (!target.raw().IsClamped(t_edge_dir, 2) || !target.raw().IsClamped(target_fixed_direction, 2)) return Result::Failed;
+  if (target.raw().Degree(target_fixed_direction) < rows_needed - 1) return Result::Failed;
 
-  const ON_NurbsSurface backup = surface_;
-  ON_NurbsSurface& s = surface_;
-  ON_NurbsSurface t = target.surface_;
+  const ON_NurbsSurface backup = self.raw();
+  ON_NurbsSurface& s = self.raw();
+  ON_NurbsSurface t = target.raw();
 
   // Normalize both to "edge at the cross direction's min" so one set of
   // end-derivative formulas applies; Reverse() is shape-preserving.
-  if (!at_min && !s.Reverse(fixed_direction)) { surface_ = backup; return Result::Failed; }
-  if (!target_at_min && !t.Reverse(target_fixed_direction)) { surface_ = backup; return Result::Failed; }
+  if (!at_min && !s.Reverse(fixed_direction)) { self.raw() = backup; return Result::Failed; }
+  if (!target_at_min && !t.Reverse(target_fixed_direction)) { self.raw() = backup; return Result::Failed; }
 
   // Orient the target edge the same way as this edge (corner distances).
   const ON_Interval s_edge = s.Domain(edge_dir), t_edge = t.Domain(t_edge_dir);
@@ -2183,8 +2191,8 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
   const double straight = s_corner(s_edge.Min()).DistanceTo(t_corner(t_edge.Min())) + s_corner(s_edge.Max()).DistanceTo(t_corner(t_edge.Max()));
   const double crossed = s_corner(s_edge.Min()).DistanceTo(t_corner(t_edge.Max())) + s_corner(s_edge.Max()).DistanceTo(t_corner(t_edge.Min()));
   const bool reversed = crossed < straight;
-  if (reversed && !t.Reverse(t_edge_dir)) { surface_ = backup; return Result::Failed; }
-  if (!t.SetDomain(t_edge_dir, s_edge.Min(), s_edge.Max())) { surface_ = backup; return Result::Failed; }
+  if (reversed && !t.Reverse(t_edge_dir)) { self.raw() = backup; return Result::Failed; }
+  if (!t.SetDomain(t_edge_dir, s_edge.Min(), s_edge.Max())) { self.raw() = backup; return Result::Failed; }
 
   // Scale: this surface's mean cross speed over the target's, measured
   // before any edit.
@@ -2199,8 +2207,8 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
   if (t.IsRational() && !s.IsRational()) s.MakeRational();
   if (s.IsRational() && !t.IsRational()) t.MakeRational();
   const int edge_degree = std::max(s.Degree(edge_dir), t.Degree(t_edge_dir));
-  if (s.Degree(edge_dir) < edge_degree && !s.IncreaseDegree(edge_dir, edge_degree)) { surface_ = backup; return Result::Failed; }
-  if (t.Degree(t_edge_dir) < edge_degree && !t.IncreaseDegree(t_edge_dir, edge_degree)) { surface_ = backup; return Result::Failed; }
+  if (s.Degree(edge_dir) < edge_degree && !s.IncreaseDegree(edge_dir, edge_degree)) { self.raw() = backup; return Result::Failed; }
+  if (t.Degree(t_edge_dir) < edge_degree && !t.IncreaseDegree(t_edge_dir, edge_degree)) { self.raw() = backup; return Result::Failed; }
   auto merge_knots = [&](ON_NurbsSurface& into, int into_dir, const ON_NurbsSurface& from, int from_dir) {
     const ON_Interval dom = into.Domain(into_dir);
     int k = 0;
@@ -2222,16 +2230,16 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
     }
     return true;
   };
-  if (!merge_knots(s, edge_dir, t, t_edge_dir) || !merge_knots(t, t_edge_dir, s, edge_dir)) { surface_ = backup; return Result::Failed; }
-  if (s.CVCount(edge_dir) != t.CVCount(t_edge_dir) || s.KnotCount(edge_dir) != t.KnotCount(t_edge_dir)) { surface_ = backup; return Result::Failed; }
+  if (!merge_knots(s, edge_dir, t, t_edge_dir) || !merge_knots(t, t_edge_dir, s, edge_dir)) { self.raw() = backup; return Result::Failed; }
+  if (s.CVCount(edge_dir) != t.CVCount(t_edge_dir) || s.KnotCount(edge_dir) != t.KnotCount(t_edge_dir)) { self.raw() = backup; return Result::Failed; }
   for (int k = 0; k < s.KnotCount(edge_dir); ++k) {
-    if (std::abs(s.Knot(edge_dir, k) - t.Knot(t_edge_dir, k)) > 1e-12 * s_edge.Length()) { surface_ = backup; return Result::Failed; }
+    if (std::abs(s.Knot(edge_dir, k) - t.Knot(t_edge_dir, k)) > 1e-12 * s_edge.Length()) { self.raw() = backup; return Result::Failed; }
   }
 
   // Enough rows in this surface's cross direction to leave the far edge alone.
-  if (s.Degree(fixed_direction) < rows_needed && !s.IncreaseDegree(fixed_direction, rows_needed)) { surface_ = backup; return Result::Failed; }
-  if (s.CVCount(fixed_direction) <= rows_needed && !s.InsertKnot(fixed_direction, s.Domain(fixed_direction).Mid(), 1)) { surface_ = backup; return Result::Failed; }
-  if (s.CVCount(fixed_direction) <= rows_needed) { surface_ = backup; return Result::Failed; }
+  if (s.Degree(fixed_direction) < rows_needed && !s.IncreaseDegree(fixed_direction, rows_needed)) { self.raw() = backup; return Result::Failed; }
+  if (s.CVCount(fixed_direction) <= rows_needed && !s.InsertKnot(fixed_direction, s.Domain(fixed_direction).Mid(), 1)) { self.raw() = backup; return Result::Failed; }
+  if (s.CVCount(fixed_direction) <= rows_needed) { self.raw() = backup; return Result::Failed; }
 
   // Rows and end-derivative coefficients (textbook knots; both surfaces
   // are clamped so V_1 is the domain start).
@@ -2254,14 +2262,17 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
       const double dt2 = TextbookKnot(t, target_fixed_direction, q + 2) - TextbookKnot(t, target_fixed_direction, 2);
       const double ds2 = TextbookKnot(s, fixed_direction, p + 2) - TextbookKnot(s, fixed_direction, 2);
       // B = q (q-1) / dt1 * [ (T2 - T1) / dt2 - (T1 - T0) / dt1 ];
-      // S_vv = p (p-1) / ds1 * [ (R2 - R1) / ds2 - (R1 - R0) / ds1 ] = scale^2 B.
+      // S_vv = p (p-1) / ds1 * [ (R2 - R1) / ds2 - (R1 - R0) / ds1 ] = scale^2 B - cross_accel * A (A = the target's first
+      // derivative row; cross_accel = 0 is the plain C2 in v' = scale * v).
       r2.resize(static_cast<size_t>(n));
       for (int i = 0; i < n; ++i) {
         const ON_4dPoint b = Scale4(Sub4(Scale4(Sub4(t2[static_cast<size_t>(i)], t1[static_cast<size_t>(i)]), 1.0 / dt2),
                                          Scale4(Sub4(t1[static_cast<size_t>(i)], t0[static_cast<size_t>(i)]), 1.0 / dt1)),
                                     q * (q - 1.0) / dt1);
         const ON_4dPoint d1 = Scale4(Sub4(r1[static_cast<size_t>(i)], r0[static_cast<size_t>(i)]), 1.0 / ds1);
-        const ON_4dPoint inner = Add4(Scale4(b, scale * scale * ds1 / (p * (p - 1.0))), d1);
+        const ON_4dPoint a_row = Scale4(Sub4(t1[static_cast<size_t>(i)], t0[static_cast<size_t>(i)]), q / dt1);
+        const ON_4dPoint target_vv = Sub4(Scale4(b, scale * scale), Scale4(a_row, cross_accel));
+        const ON_4dPoint inner = Add4(Scale4(target_vv, ds1 / (p * (p - 1.0))), d1);
         r2[static_cast<size_t>(i)] = Add4(r1[static_cast<size_t>(i)], Scale4(inner, ds2));
       }
     }
@@ -2269,7 +2280,7 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
   if (s.IsRational()) {
     for (const auto* row : {&r0, &r1, &r2}) {
       for (const ON_4dPoint& cv : *row) {
-        if (!(cv.w > 0.0)) { surface_ = backup; return Result::Failed; }
+        if (!(cv.w > 0.0)) { self.raw() = backup; return Result::Failed; }
       }
     }
   }
@@ -2305,14 +2316,14 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
     const ON_3dVector t_cc = target_fixed_direction == 0 ? tuu : tvv;
     local.max_position_error = std::max(local.max_position_error, sp.DistanceTo(tp));
     if (rows_needed >= 2) local.max_tangent_error = std::max(local.max_tangent_error, (s_cross + scale * t_cross).Length());
-    if (rows_needed >= 3) local.max_curvature_error = std::max(local.max_curvature_error, (s_cc - scale * scale * t_cc).Length());
+    if (rows_needed >= 3) local.max_curvature_error = std::max(local.max_curvature_error, (s_cc - scale * scale * t_cc + cross_accel * t_cross).Length());
   }
-  if (!at_min && !s.Reverse(fixed_direction)) { surface_ = backup; return Result::Failed; }
+  if (!at_min && !s.Reverse(fixed_direction)) { self.raw() = backup; return Result::Failed; }
   if (report) *report = local;
   const double tol = 1e-9 * size;
   if (!(local.max_position_error <= tol) || !(local.max_tangent_error <= tol * std::max(1.0, scale)) ||
-      !(local.max_curvature_error <= tol * std::max(1.0, scale * scale) * 10.0) || !s.IsValid()) {
-    surface_ = backup;
+      !(local.max_curvature_error <= tol * std::max({1.0, scale * scale, std::fabs(cross_accel)}) * 10.0) || !s.IsValid()) {
+    self.raw() = backup;
     return Result::Failed;
   }
   return Result::Ok;
@@ -4147,35 +4158,85 @@ Result LoftMatchedScaled(const std::vector<NurbsCurve>& sections, int degree, co
       return refuse(std::string(e.name) + ": MatchEdge refused (non-clamped surface, adjacent surface of too low a degree, or a self-check failure)");
     }
     double best_dev = deviation_of(best);
-    double best_scale = mr0.scale;
+    double best_scale = mr0.scale, best_accel = 0.0;
     if (scale_report) (e.at_min ? scale_report->start_default_deviation : scale_report->end_default_deviation) = best_dev;
     if (optimize_scale && e.m->continuity != MatchContinuity::Position && best_dev > 1e-9 * tolerance) {
       const double inf = std::numeric_limits<double>::infinity();
-      auto eval = [&](double x) {
+      const bool second = e.m->continuity == MatchContinuity::Curvature;
+      const double run_length = wn.Domain(1).Length();
+      // x = log2 of the scale relative to the default; y = the acceleration in units of scale / run_length.
+      auto eval = [&](double x, double y) {
         NurbsSurface c = work;
         MatchEdgeReport m;
-        const double sc = mr0.scale * std::exp2(x);
-        if (c.MatchEdge(1, e.at_min, *e.m->surface, e.m->fixed_direction, e.m->at_min, e.m->continuity, &m, sc) != Result::Ok) return inf;
+        const double sc = mr0.scale * std::exp2(x), acc = second ? sc * y / run_length : 0.0;
+        if (MatchEdgeWithAcceleration(c, 1, e.at_min, *e.m->surface, e.m->fixed_direction, e.m->at_min, e.m->continuity, &m, sc, acc) != Result::Ok) return inf;
         const double d = deviation_of(c);
-        if (d < best_dev) { best_dev = d; best = c; best_scale = sc; }
+        if (d < best_dev) { best_dev = d; best = c; best_scale = sc; best_accel = acc; }
         return d;
       };
-      double bx = 0.0, bd = best_dev;
+      double bx = 0.0, by = 0.0, bd = best_dev;
       for (int k = -8; k <= 8; ++k) {
         if (k == 0) continue;
-        const double d = eval(0.5 * k);
+        const double d = eval(0.5 * k, 0.0);
         if (d < bd) { bd = d; bx = 0.5 * k; }
       }
-      const double g = 0.381966011250105;
-      double a = bx - 0.5, b = bx + 0.5, x1 = a + g * (b - a), x2 = b - g * (b - a);
-      double f1 = eval(x1), f2 = eval(x2);
-      for (int it = 0; it < 16; ++it) {
-        if (f1 < f2) { b = x2; x2 = x1; f2 = f1; x1 = a + g * (b - a); f1 = eval(x1); }
-        else { a = x1; x1 = x2; f1 = f2; x2 = b - g * (b - a); f2 = eval(x2); }
+      if (!second) {
+        const double g = 0.381966011250105;
+        double a = bx - 0.5, b = bx + 0.5, x1 = a + g * (b - a), x2 = b - g * (b - a);
+        double f1 = eval(x1, 0.0), f2 = eval(x2, 0.0);
+        for (int it = 0; it < 16; ++it) {
+          if (f1 < f2) { b = x2; x2 = x1; f2 = f1; x1 = a + g * (b - a); f1 = eval(x1, 0.0); }
+          else { a = x1; x1 = x2; f1 = f2; x2 = b - g * (b - a); f2 = eval(x2, 0.0); }
+        }
+      } else {
+        // Coarse grid over both parameters, then Nelder-Mead from the best grid node.
+        for (int ix = -4; ix <= 4; ++ix) {
+          for (int iy = -4; iy <= 4; ++iy) {
+            const double d = eval(static_cast<double>(ix), 2.0 * iy);
+            if (d < bd) { bd = d; bx = ix; by = 2.0 * iy; }
+          }
+        }
+        std::array<std::array<double, 2>, 3> sx = {{{bx, by}, {bx + 0.5, by}, {bx, by + 1.0}}};
+        std::array<double, 3> sf = {eval(sx[0][0], sx[0][1]), eval(sx[1][0], sx[1][1]), eval(sx[2][0], sx[2][1])};
+        for (int it = 0; it < 120; ++it) {
+          std::array<int, 3> o = {0, 1, 2};
+          std::sort(o.begin(), o.end(), [&](int p, int q) { return sf[static_cast<size_t>(p)] < sf[static_cast<size_t>(q)]; });
+          const auto lo = sx[static_cast<size_t>(o[0])], mid = sx[static_cast<size_t>(o[1])], hi = sx[static_cast<size_t>(o[2])];
+          const double flo = sf[static_cast<size_t>(o[0])], fmid = sf[static_cast<size_t>(o[1])], fhi = sf[static_cast<size_t>(o[2])];
+          if (flo <= 1e-9 * tolerance) break;
+          const std::array<double, 2> c = {0.5 * (lo[0] + mid[0]), 0.5 * (lo[1] + mid[1])};
+          auto at = [&](double k) { return std::array<double, 2>{c[0] + k * (hi[0] - c[0]), c[1] + k * (hi[1] - c[1])}; };
+          const auto r = at(-1.0);
+          const double fr = eval(r[0], r[1]);
+          std::array<std::array<double, 2>, 3> nx = {lo, mid, hi};
+          std::array<double, 3> nf = {flo, fmid, fhi};
+          if (fr < flo) {
+            const auto ex = at(-2.0);
+            const double fe = eval(ex[0], ex[1]);
+            if (fe < fr) { nx[2] = ex; nf[2] = fe; } else { nx[2] = r; nf[2] = fr; }
+          } else if (fr < fmid) {
+            nx[2] = r; nf[2] = fr;
+          } else {
+            const auto co = fr < fhi ? at(-0.5) : at(0.5);
+            const double fc = eval(co[0], co[1]);
+            if (fc < std::min(fr, fhi)) { nx[2] = co; nf[2] = fc; }
+            else {
+              for (int k : {1, 2}) {
+                nx[static_cast<size_t>(k)] = {lo[0] + 0.5 * (nx[static_cast<size_t>(k)][0] - lo[0]), lo[1] + 0.5 * (nx[static_cast<size_t>(k)][1] - lo[1])};
+                nf[static_cast<size_t>(k)] = eval(nx[static_cast<size_t>(k)][0], nx[static_cast<size_t>(k)][1]);
+              }
+            }
+          }
+          sx = nx;
+          sf = nf;
+        }
       }
     }
     work = best;
-    if (scale_report) (e.at_min ? scale_report->start_scale : scale_report->end_scale) = best_scale;
+    if (scale_report) {
+      (e.at_min ? scale_report->start_scale : scale_report->end_scale) = best_scale;
+      (e.at_min ? scale_report->start_accel : scale_report->end_accel) = best_accel;
+    }
   }
 
   // Every section against the finished surface.
