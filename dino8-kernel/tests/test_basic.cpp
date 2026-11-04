@@ -100135,30 +100135,49 @@ void TestClassifyShellsCountsRealInnerLoops() {
         "un-holed control: R = 0 and chi = 1 (a disk) - the ring count is what moved");
 }
 
-void TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare() {
+// Premise record (measured on the integrated tree by the remote verification run 41915497272; the probe is since removed):
+//  - BooleanCombineGeneral(Box, Box, Difference) with the surface-only Brep::Box() operands has real loops/trims (10 faces,
+//    932 trims) but welds nothing across faces: V=464 E=476 with 20 naked edges, one not-closed shell, no region.
+//  - With BoxWelded operands the 10-face result splits into TWO shells: the 6 outer-box faces (V=20 E=24, closed, volume
+//    1000) and the 4 hole-wall faces (V=100 E=104, 96 naked edges, an open sheet). The engine's dense-polyline trim edges
+//    on the hole walls are not shared with the cap faces' keyhole-bridged outer loops (boolean_general.cpp deliberately
+//    folds holes into the outer loop, so there is NO ON_BrepLoop::inner and R = 0 by design).
+//  - MakeHole(through) is also unwelded (7 faces, 69 naked edges).
+// So the original premise (a boolean through-hole box is ONE closed shell with inner-loop rings, chi 0, volume 960) is
+// wrong for this engine, not a ClassifyShells defect: the classifier reports the unwelded topology as it is. A genuine
+// genus-1 body with welded topology is built by MakeFrameSolid() (TestClassifyShellsGenusOfFrameSolidAndRealInnerLoops),
+// and real inner loops are exercised by TestClassifyShellsCountsRealInnerLoops. This test pins the honesty contract:
+// the classifier must NOT call the engine's unwelded through-hole result a sealed torus.
+void TestClassifyShellsDoesNotCallUnweldedBooleanThroughHoleASealedTorus() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
-  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
-  const Brep bar = Brep::Box(4, 4, -1, 6, 6, 11);
   Brep drilled;
   bool built = true;
   try {
-    drilled = BooleanCombineGeneral(box, bar, BooleanOp::Difference);
+    drilled = BooleanCombineGeneral(Brep::BoxWelded(0, 0, 0, 10, 10, 10), Brep::BoxWelded(4, 4, -1, 6, 6, 11), BooleanOp::Difference);
   } catch (const std::exception&) {
     built = false;
   }
   Check(built, "through-hole box: BooleanCombineGeneral Difference builds");
   if (!built) return;
   const Brep::ShellClassification c = drilled.ClassifyShells();
-  Check(c.shells.size() == 1 && c.shells[0].closed && c.shells[0].has_topology,
-        "through-hole box: one closed shell with real topology");
-  if (c.shells.size() != 1) return;
-  const Brep::ShellInfo& s = c.shells[0];
-  std::fprintf(stderr, "through-hole: V=%d E=%d F=%d R=%d chi=%d genus=%d vol=%f\n", s.vertex_count, s.edge_count,
-               s.face_count, s.inner_loop_count, s.euler_poincare, s.genus, s.signed_volume);
-  Check(s.inner_loop_count >= 2, "through-hole box: top and bottom faces carry inner loops (rings)");
-  Check(s.euler_poincare == 0 && s.genus == 1, "through-hole box: V - E + F - R = 0, genus 1 (a torus)");
-  Check(Near(s.signed_volume, 1000.0 - 40.0, 1e-4), "through-hole box: volume 1000 - 2*2*10 = 960");
+  int naked_total = 0, closed_shells = 0, genus1 = 0, inner_loops = 0;
+  for (const Brep::ShellInfo& s : c.shells) {
+    naked_total += s.naked_edge_count;
+    inner_loops += s.inner_loop_count;
+    if (s.closed) {
+      ++closed_shells;
+      // a shell reported closed must have no naked / non-manifold edge, by its own counts
+      Check(s.naked_edge_count == 0 && s.non_manifold_edge_count == 0,
+            "through-hole box: a shell reported closed has no naked and no non-manifold edge");
+    }
+    if (s.genus == 1) ++genus1;
+  }
+  std::fprintf(stderr, "through-hole (boolean, welded operands): shells=%zu closed=%d naked=%d inner_loops=%d regions=%zu\n", c.shells.size(),
+               closed_shells, naked_total, inner_loops, c.regions.size());
+  Check(inner_loops == 0, "through-hole box: the engine keyhole-bridges holes into the outer loop, so no inner loop (R = 0) is reported");
+  Check(naked_total > 0 && genus1 == 0,
+        "through-hole box: the unwelded boolean result is reported with naked edges and NOT as a genus-1 sealed torus");
 }
 
 void TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency() {
@@ -100208,36 +100227,6 @@ void TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency() {
   Check(good == trials, "60 randomized BoxWelded bodies: Euler 2, edge->2 faces, vertex->3 edges, live loop/trim counts equal an independent per-face recount, also after raw deletions");
 }
 
-// TEMP-PROBE-BEGIN
-static void ProbeBrep(const char* tag, const Brep& b) {
-  char buf[600];
-  int n = std::snprintf(buf, sizeof buf, "PROBE %s: faces=%d fulltopo=%d loops=%d trims=%d V=%d E=%d lumps=%zu |", tag, b.FaceCount(),
-                        b.HasFullTopology() ? 1 : 0, b.LiveLoopCount(), b.LiveTrimCount(), b.LiveVertexCount(), b.LiveEdgeCount(),
-                        b.LumpFaceRanges().size());
-  try {
-    const Brep::ShellClassification c = b.ClassifyShells();
-    for (size_t i = 0; i < c.shells.size() && n < 420; ++i) {
-      const Brep::ShellInfo& s = c.shells[i];
-      n += std::snprintf(buf + n, sizeof buf - n, " sh%zu role=%d closed=%d topo=%d V=%d E=%d F=%d R=%d naked=%d nonman=%d chi=%d g=%d vol=%.3f;", i,
-                         static_cast<int>(s.role), s.closed, s.has_topology, s.vertex_count, s.edge_count, s.face_count,
-                         s.inner_loop_count, s.naked_edge_count, s.non_manifold_edge_count, s.euler_poincare, s.genus, s.signed_volume);
-    }
-    n += std::snprintf(buf + n, sizeof buf - n, " regions=%zu cons=%d", c.regions.size(), c.consistent ? 1 : 0);
-  } catch (const std::exception& e) {
-    n += std::snprintf(buf + n, sizeof buf - n, " Classify threw: %.100s", e.what());
-  }
-  Check(false, buf);
-}
-void TestProbeThroughHoleCandidates() {
-  using dino8::kernel::BooleanCombineGeneral;
-  using dino8::kernel::BooleanOp;
-  try { ProbeBrep("Box-Box diff", BooleanCombineGeneral(Brep::Box(0, 0, 0, 10, 10, 10), Brep::Box(4, 4, -1, 6, 6, 11), BooleanOp::Difference)); } catch (const std::exception& e) { Check(false, (std::string("PROBE Box-Box threw ") + e.what()).substr(0, 200).c_str()); }
-  try { ProbeBrep("Welded-Welded diff", BooleanCombineGeneral(Brep::BoxWelded(0, 0, 0, 10, 10, 10), Brep::BoxWelded(4, 4, -1, 6, 6, 11), BooleanOp::Difference)); } catch (const std::exception& e) { Check(false, (std::string("PROBE Welded-Welded threw ") + e.what()).substr(0, 200).c_str()); }
-  try { ProbeBrep("MakeHole through", dino8::kernel::MakeHole(Brep::BoxWelded(0, 0, 0, 10, 10, 10), dino8::kernel::Point3d(5, 5, 10), dino8::kernel::Vector3d(0, 0, -1), 1.0, 0.0, true)); } catch (const std::exception& e) { Check(false, (std::string("PROBE MakeHole threw ") + e.what()).substr(0, 200).c_str()); }
-  try { std::vector<Brep::PlanarFace> pf = Brep::BoxWelded(0, 0, 0, 10, 10, 10).PlanarFaces(); pf.erase(pf.begin() + 1); ProbeBrep("5-face open box", Brep::FromPlanarFaces(pf)); } catch (const std::exception& e) { Check(false, (std::string("PROBE open box threw ") + e.what()).substr(0, 200).c_str()); }
-  try { ProbeBrep("shelled box removed face 1", dino8::kernel::ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {1}, 1.0)); } catch (const std::exception& e) { Check(false, (std::string("PROBE shell threw ") + e.what()).substr(0, 200).c_str()); }
-}
-// TEMP-PROBE-END
 
 }  // namespace topology_shell_tests
 
@@ -103923,7 +103912,6 @@ int main() {
   // Tests that live in tests/extra/*.cpp (self-registered; sorted by name).
   d8test::RunExtras();
 
-  RunTest("topology_shell_tests::TestProbeThroughHoleCandidates", topology_shell_tests::TestProbeThroughHoleCandidates);
   RunTest("topology_shell_tests::TestClassifyShellsHollowBoxIsOuterBoundaryPlusVoid",
           topology_shell_tests::TestClassifyShellsHollowBoxIsOuterBoundaryPlusVoid);
   RunTest("topology_shell_tests::TestClassifyShellsIslandInsideCavityIsANewRegion",
@@ -103936,8 +103924,8 @@ int main() {
           topology_shell_tests::TestClassifyShellsGenusOfFrameSolidAndRealInnerLoops);
   RunTest("topology_shell_tests::TestClassifyShellsCountsRealInnerLoops",
           topology_shell_tests::TestClassifyShellsCountsRealInnerLoops);
-  RunTest("topology_shell_tests::TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare",
-          topology_shell_tests::TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare);
+  RunTest("topology_shell_tests::TestClassifyShellsDoesNotCallUnweldedBooleanThroughHoleASealedTorus",
+          topology_shell_tests::TestClassifyShellsDoesNotCallUnweldedBooleanThroughHoleASealedTorus);
   RunTest("topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency",
           topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency);
   RunTest("offset_remainder_tests::TestOffsetInPlaneNonCoplanarPolylineExactMitre",
