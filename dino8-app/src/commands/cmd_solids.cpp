@@ -2540,8 +2540,11 @@ int JoinNakedEdgesHashed(ON_Brep& b, double tol) {
         for (int j = 0; j <= 4; ++j) {
           const ON_3dPoint uv = tr.PointAt(tr.Domain().ParameterAt(j / 4.0));
           const ON_3dPoint sp = srf->PointAt(uv.x, uv.y);
-          double t = e.Domain().Min();
-          if (e.GetClosestPoint(sp, &t)) tol_e = std::max(tol_e, sp.DistanceTo(e.PointAt(t)));
+          const ON_Curve* ec = e.EdgeCurveOf();
+          if (ec == nullptr) continue;
+          const ON_Interval sub = e.ProxyCurveDomain();
+          double t = sub.Min();
+          if (ec->GetClosestPoint(sp, &t, 0.0, &sub)) tol_e = std::max(tol_e, sp.DistanceTo(ec->PointAt(t)));
         }
       }
       e.m_tolerance = tol_e <= ON_ZERO_TOLERANCE ? 0.0 : 1.001 * tol_e;
