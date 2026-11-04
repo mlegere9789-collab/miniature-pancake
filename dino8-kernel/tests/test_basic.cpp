@@ -97501,6 +97501,66 @@ void TestVolumeOfSealedSolidPreconditionsAndGenuineSeamsSurvive() {
   Check(std::abs(copy.VolumeOfSealedSolid() - s.volume) < 1e-12, "and its volume is unchanged");
 }
 
+// The application's Cylinder is a raw ON_BrepCylinder (exact ON_RevSurface wall, planar caps with circular trims). A
+// general Boolean of two of them leaves cap faces bounded by polyline trim loops; VolumeOfSealedSolid() must integrate
+// those caps along the TRUE circle, not along the polygon the loop was sampled into.
+Brep SealedAppCylinder(const ON_3dPoint& base, double r, double h) {
+  ON_Cylinder cyl(ON_Circle(ON_Plane(base, ON_3dVector(0, 0, 1)), r), h);
+  ON_Brep* b = ON_BrepCylinder(cyl, true, true);
+  Brep k;
+  k.raw() = *b;
+  delete b;
+  return k;
+}
+
+void ReportSealedFaces(const char* label, const Brep& s) {
+  const ON_Brep& b = s.raw();
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = b.m_F[fi];
+    std::string desc;
+    for (int k = 0; k < f.m_li.Count(); ++k) {
+      const ON_BrepLoop& l = b.m_L[f.m_li[k]];
+      desc += (l.m_type == ON_BrepLoop::outer ? " outer(" : " inner(") + std::to_string(l.m_ti.Count()) + " trims";
+      if (l.m_ti.Count() > 0) {
+        const ON_Curve* c = b.m_T[l.m_ti[0]].TrimCurveOf();
+        desc += c ? std::string(", first=") + (ON_ArcCurve::Cast(c) ? "arc" : ON_NurbsCurve::Cast(c) ? "nurbs" : ON_PolylineCurve::Cast(c) ? "polyline" : ON_LineCurve::Cast(c) ? "line" : "other") : "";
+      }
+      desc += ")";
+    }
+    std::printf("  [%s] face %d surface=%s loops:%s\n", label, fi, f.SurfaceOf() ? f.SurfaceOf()->ClassId()->ClassName() : "none", desc.c_str());
+  }
+}
+
+void TestSealedAppCylinderVolumesAgainstClosedForm() {
+  const double pi = ON_PI;
+  struct Case {
+    const char* name;
+    Brep a, b;
+    BooleanOp op;
+    double expect;
+  };
+  const Case cases[] = {
+      {"two stacked r3 h5 cylinders, Union", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 5), SealedAppCylinder(ON_3dPoint(0, 0, 5), 3, 5),
+       BooleanOp::Union, pi * 9 * 10},
+      {"two tangent r3 h10 cylinders, Union", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 10), SealedAppCylinder(ON_3dPoint(6, 0, 0), 3, 10),
+       BooleanOp::Union, 2 * pi * 9 * 10},
+      {"stacked r3 h8 + r2 h8, Union", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 8), SealedAppCylinder(ON_3dPoint(0, 0, 8), 2, 8),
+       BooleanOp::Union, pi * 9 * 8 + pi * 4 * 8},
+  };
+  for (const Case& c : cases) {
+    try {
+      const SealedGeneralBoolean s = BooleanCombineGeneralSealed(c.a, c.b, c.op);
+      const double rel = (s.volume - c.expect) / c.expect;
+      std::printf("  %s: VolumeOfSealedSolid %.6f, closed form %.6f, relative error %+.3e\n", c.name, s.volume, c.expect, rel);
+      ReportSealedFaces(c.name, s.brep);
+      Check(std::fabs(rel) < 1e-4, (std::string(c.name) + ": VolumeOfSealedSolid within 1e-4 relative of the closed form").c_str());
+    } catch (const std::exception& e) {
+      std::printf("  %s: threw %s\n", c.name, e.what());
+      Check(false, (std::string(c.name) + ": sealed boolean must not throw").c_str());
+    }
+  }
+}
+
 }  // namespace sealed_boolean_tests
 
 
@@ -103696,6 +103756,8 @@ int main() {
           sealed_boolean_tests::TestSealedRefusesWithReasonInsteadOfReturningADegradedBody);
   RunTest("sealed_boolean_tests::TestVolumeOfSealedSolidPreconditionsAndGenuineSeamsSurvive",
           sealed_boolean_tests::TestVolumeOfSealedSolidPreconditionsAndGenuineSeamsSurvive);
+  RunTest("sealed_boolean_tests::TestSealedAppCylinderVolumesAgainstClosedForm",
+          sealed_boolean_tests::TestSealedAppCylinderVolumesAgainstClosedForm);
   RunTest("edge_continuity_tests::TestMeasureEdgeContinuityAgainstClosedForm", edge_continuity_tests::TestMeasureEdgeContinuityAgainstClosedForm);
   RunTest("edge_continuity_tests::TestCurveNetworkG1TangentPlaneAlongSharedEdge", edge_continuity_tests::TestCurveNetworkG1TangentPlaneAlongSharedEdge);
   RunTest("edge_continuity_tests::TestCurveNetworkG2CurvatureAlongSharedEdge", edge_continuity_tests::TestCurveNetworkG2CurvatureAlongSharedEdge);
