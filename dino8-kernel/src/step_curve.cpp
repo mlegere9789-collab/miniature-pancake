@@ -85,9 +85,59 @@ ON_3dPoint StepCurveEuclideanCV(const ON_NurbsCurve& c, int i, double& w) {
   return ON_3dPoint(h.x, h.y, h.z);
 }
 
+// Writes the length-unit context a STEP file needs so a reader can tell
+// what a coordinate is measured in: an SI_UNIT for the metric systems, or a
+// CONVERSION_BASED_UNIT (name + LENGTH_MEASURE_WITH_UNIT in millimetres +
+// DIMENSIONAL_EXPONENTS) for inch/foot/yard/mile, then a
+// GLOBAL_UNIT_ASSIGNED_CONTEXT, a GEOMETRIC_CURVE_SET holding the curve and
+// a SHAPE_REPRESENTATION in that context.
+void StepCurveWriteUnitContext(std::ostream& out, int& next_id, UnitSystem units, int curve_id) {
+  const char* si_prefix = nullptr;
+  const char* conv_name = nullptr;
+  double conv_mm = 0.0;
+  switch (units) {
+    case UnitSystem::Millimeters: si_prefix = ".MILLI."; break;
+    case UnitSystem::Centimeters: si_prefix = ".CENTI."; break;
+    case UnitSystem::Meters: si_prefix = "$"; break;
+    case UnitSystem::Kilometers: si_prefix = ".KILO."; break;
+    case UnitSystem::Microns: si_prefix = ".MICRO."; break;
+    case UnitSystem::Inches: conv_name = "INCH"; conv_mm = 25.4; break;
+    case UnitSystem::Feet: conv_name = "FOOT"; conv_mm = 304.8; break;
+    case UnitSystem::Yards: conv_name = "YARD"; conv_mm = 914.4; break;
+    case UnitSystem::Miles: conv_name = "MILE"; conv_mm = 1609344.0; break;
+    case UnitSystem::None: break;
+  }
+  int len = 0;
+  if (si_prefix) {
+    len = next_id++;
+    out << "#" << len << "=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(" << si_prefix << ",.METRE.));\n";
+  } else {
+    const int base = next_id++;
+    out << "#" << base << "=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n";
+    const int meas = next_id++;
+    out << "#" << meas << "=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(" << StepCurveNum(conv_mm) << "),#" << base << ");\n";
+    const int dim = next_id++;
+    out << "#" << dim << "=DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n";
+    len = next_id++;
+    out << "#" << len << "=(CONVERSION_BASED_UNIT('" << conv_name << "',#" << meas << ")LENGTH_UNIT()NAMED_UNIT(#" << dim << "));\n";
+  }
+  const int ang = next_id++;
+  out << "#" << ang << "=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n";
+  const int ctx = next_id++;
+  out << "#" << ctx << "=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#" << len << ",#" << ang
+      << "))REPRESENTATION_CONTEXT('Context','3D Context with length unit'));\n";
+  const int set = next_id++;
+  out << "#" << set << "=GEOMETRIC_CURVE_SET('',(#" << curve_id << "));\n";
+  const int shape = next_id++;
+  out << "#" << shape << "=SHAPE_REPRESENTATION('',(#" << set << "),#" << ctx << ");\n";
+}
+
 }  // namespace
 
-Result NurbsCurve::SaveStep(const std::string& path) const {
+Result NurbsCurve::SaveStep(const std::string& path) const { return SaveStep(path, UnitSystem::Millimeters); }
+
+Result NurbsCurve::SaveStep(const std::string& path, UnitSystem units) const {
+  if (units == UnitSystem::None) return Result::Failed;  // no length unit can be declared
   if (!curve_.IsValid()) return Result::Failed;
   const int K = curve_.CVCount() - 1;
   const int M = curve_.Degree();
@@ -182,6 +232,9 @@ Result NurbsCurve::SaveStep(const std::string& path) const {
     out << "#" << curve_id << "=(BOUNDED_CURVE()B_SPLINE_CURVE(" << bsc_args << ")B_SPLINE_CURVE_WITH_KNOTS(" << knots_args
         << ")CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE(" << wts << ")REPRESENTATION_ITEM(''));\n";
   }
+
+  // Real length-unit context (see StepCurveWriteUnitContext above).
+  StepCurveWriteUnitContext(out, next_id, units, curve_id);
 
   out << "ENDSEC;\n";
   out << "END-ISO-10303-21;\n";
@@ -389,9 +442,116 @@ bool StepCurveParseFile(const std::string& path, std::map<int, StepCurveEntity>&
 
 }  // namespace
 
+namespace {
+
+// Metres per unit of the length unit entity `id`: 1 = ok (*metres set),
+// 0 = not a length unit (an angle unit etc., skipped), -1 = refused (*why).
+int StepCurveUnitMetres(const std::map<int, StepCurveEntity>& ents, int id, int depth, double* metres, std::string* why) {
+  if (depth > 4) { *why = "length unit definition nests too deeply"; return -1; }
+  auto it = ents.find(id);
+  if (it == ents.end()) { *why = "length unit #" + std::to_string(id) + " is missing"; return -1; }
+  const StepCurveEntity& e = it->second;
+  const bool is_length = e.Find("LENGTH_UNIT") != nullptr;
+  if (const StepCurvePart* cb = e.Find("CONVERSION_BASED_UNIT")) {
+    if (!is_length) return 0;
+    if (cb->args.size() < 2 || !StepCurveIsRef(cb->args[1])) { *why = "CONVERSION_BASED_UNIT has no conversion factor reference"; return -1; }
+    auto mit = ents.find(StepCurveRef(cb->args[1]));
+    const StepCurvePart* mp = mit == ents.end() ? nullptr : mit->second.Find("LENGTH_MEASURE_WITH_UNIT");
+    if (!mp || mp->args.size() < 2 || !StepCurveIsRef(mp->args[1])) { *why = "CONVERSION_BASED_UNIT conversion factor is not a LENGTH_MEASURE_WITH_UNIT"; return -1; }
+    const std::string v = StepCurveTrim(mp->args[0]);
+    const size_t lp = v.find('(');
+    const double value = lp == std::string::npos ? 0.0 : std::strtod(v.c_str() + lp + 1, nullptr);
+    if (!std::isfinite(value) || value <= 0.0) { *why = "CONVERSION_BASED_UNIT conversion value is not a finite positive number"; return -1; }
+    double base = 0.0;
+    const int rc = StepCurveUnitMetres(ents, StepCurveRef(mp->args[1]), depth + 1, &base, why);
+    if (rc != 1) { if (rc == 0) *why = "CONVERSION_BASED_UNIT is defined in a non-length unit"; return -1; }
+    *metres = value * base;
+    return 1;
+  }
+  if (const StepCurvePart* si = e.Find("SI_UNIT")) {
+    if (si->args.size() < 2) { *why = "SI_UNIT has too few arguments"; return -1; }
+    const std::string prefix = StepCurveTrim(si->args[si->args.size() - 2]);
+    const std::string name = StepCurveTrim(si->args[si->args.size() - 1]);
+    if (name == ".RADIAN." || name == ".STERADIAN.") return 0;
+    if (name != ".METRE.") { *why = "SI length unit " + name + " is not a metre"; return -1; }
+    double f = 1.0;
+    if (prefix == "$" || prefix == "*") f = 1.0;
+    else if (prefix == ".MILLI.") f = 1e-3;
+    else if (prefix == ".CENTI.") f = 1e-2;
+    else if (prefix == ".DECI.") f = 1e-1;
+    else if (prefix == ".KILO.") f = 1e3;
+    else if (prefix == ".MICRO.") f = 1e-6;
+    else if (prefix == ".NANO.") f = 1e-9;
+    else { *why = "SI prefix " + prefix + " is not supported"; return -1; }
+    *metres = f;
+    return 1;
+  }
+  return 0;
+}
+
+// The file's single declared length unit in metres per unit (via every
+// GLOBAL_UNIT_ASSIGNED_CONTEXT). 1 = found, 0 = none declared, -1 = refused.
+int StepCurveFileUnitMetres(const std::map<int, StepCurveEntity>& ents, double* metres, std::string* why) {
+  bool found = false;
+  for (const auto& [id, e] : ents) {
+    (void)id;
+    const StepCurvePart* g = e.Find("GLOBAL_UNIT_ASSIGNED_CONTEXT");
+    if (!g || g->args.empty()) continue;
+    for (const std::string& t : StepCurveSplitTop(StepCurveUnparen(g->args[0]), ',')) {
+      if (!StepCurveIsRef(t)) continue;
+      double m = 0.0;
+      const int rc = StepCurveUnitMetres(ents, StepCurveRef(t), 0, &m, why);
+      if (rc < 0) return -1;
+      if (rc == 0) continue;
+      if (found && std::fabs(m - *metres) > 1e-12 * std::fabs(*metres)) { *why = "the file declares two different length units"; return -1; }
+      *metres = m;
+      found = true;
+    }
+  }
+  return found ? 1 : 0;
+}
+
+UnitSystem StepCurveUnitSystemOf(double metres) {
+  for (UnitSystem u : {UnitSystem::Millimeters, UnitSystem::Centimeters, UnitSystem::Meters, UnitSystem::Kilometers, UnitSystem::Microns,
+                       UnitSystem::Inches, UnitSystem::Feet, UnitSystem::Yards, UnitSystem::Miles}) {
+    if (std::fabs(metres - MetersPerUnit(u)) <= 1e-9 * MetersPerUnit(u)) return u;
+  }
+  return UnitSystem::None;
+}
+
+}  // namespace
+
 Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
+  return LoadStep(path, out, UnitSystem::None, nullptr, nullptr);
+}
+
+Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out, UnitSystem target, UnitSystem* file_units, std::string* error) {
+  if (file_units) *file_units = UnitSystem::None;
+  if (error) error->clear();
   std::map<int, StepCurveEntity> entities;
-  if (!StepCurveParseFile(path, entities)) return Result::Failed;
+  if (!StepCurveParseFile(path, entities)) {
+    if (error) *error = "not a readable ISO-10303-21 file with a DATA section";
+    return Result::Failed;
+  }
+  double unit_scale = 1.0;
+  if (target != UnitSystem::None || file_units) {
+    double metres = 0.0;
+    std::string why;
+    const int rc = StepCurveFileUnitMetres(entities, &metres, &why);
+    if (rc < 0) {
+      if (error) *error = why;
+      return Result::Failed;
+    }
+    if (rc == 0) {
+      if (target != UnitSystem::None) {
+        if (error) *error = "the file declares no length unit (no GLOBAL_UNIT_ASSIGNED_CONTEXT with a LENGTH_UNIT); cannot convert units";
+        return Result::Failed;
+      }
+    } else {
+      if (file_units) *file_units = StepCurveUnitSystemOf(metres);
+      if (target != UnitSystem::None) unit_scale = metres / MetersPerUnit(target);
+    }
+  }
 
   for (const auto& [id, e] : entities) {
     (void)id;
@@ -450,6 +610,10 @@ Result NurbsCurve::LoadStep(const std::string& path, NurbsCurve& out) {
 
     ON_NurbsCurve nc;
     if (!StepCurveMakeNurbsCurve(degree, cvs, weights, full, nc)) return Result::Failed;
+    if (unit_scale != 1.0 && !nc.Scale(unit_scale)) {
+      if (error) *error = "scaling the curve to the target unit failed";
+      return Result::Failed;
+    }
     out.raw() = nc;
     return Result::Ok;
   }
