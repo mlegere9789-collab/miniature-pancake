@@ -6270,8 +6270,16 @@ class Brep {
   // pair for every NON-planar face (parallel to brep_.m_F; an entry with
   // u < 1 or v < 1 keeps the uniform pair) - see its own doc comment in
   // brep.cpp. A null `curved_divisions` is exactly TessellateConforming().
+  //
+  // `seam_chord_tolerance` > 0 (adaptive fallback only; 0 = every literal
+  // notch chain verbatim, exactly TessellateConforming()) decimates each
+  // cylinder-pair notch chain that no planar face also consumes to the
+  // coarsest uniform stride whose chords stay within half that distance of
+  // every cylinder wall sharing the chain - see SeamStrideForChain in
+  // brep.cpp.
   std::vector<Mesh> TessellateConformingImpl(int u_divisions, int v_divisions, int boundary_samples,
-                                             const std::vector<SurfaceDivisions>* curved_divisions) const;
+                                             const std::vector<SurfaceDivisions>* curved_divisions,
+                                             double seam_chord_tolerance = 0.0) const;
   // True when any face carries a PlanarFace::ArcRun or a cylinder cap-
   // notch row (face_arc_runs_/face_notch_rows_ below): the seam data only
   // TessellateConforming() consumes, i.e. this is a BooleanCombineMixed-
@@ -6284,7 +6292,8 @@ class Brep {
   // `max_refinements` times before accepting.
   Mesh ConformingClosedMeshAtAdaptiveDivisions(Mesh welded,
                                                const std::function<SurfaceDivisions(const NurbsSurface&)>& suggest,
-                                               double certify_chord_tolerance, int max_refinements) const;
+                                               double certify_chord_tolerance, int max_refinements,
+                                               double seam_chord_tolerance = 0.0) const;
   // Volume()/VolumeMassProperties()/VolumeCertifiedAdaptive()'s shared
   // precondition - see its own doc comment in brep.cpp.
   bool IsWatertightForIntegration() const;
