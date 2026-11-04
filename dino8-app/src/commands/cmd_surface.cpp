@@ -382,7 +382,7 @@ ON_Plane FitPlane(const Row& pts) {
 bool ParseNumber(const std::string& t, double& v) {
   char* e = nullptr;
   v = std::strtod(t.c_str(), &e);
-  return e && e != t.c_str() && *e == 0;
+  return e && e != t.c_str() && *e == 0 && std::isfinite(v);
 }
 
 std::optional<kernel::NurbsCurve> CurveOf(CommandContext& ctx, ObjectId id) {

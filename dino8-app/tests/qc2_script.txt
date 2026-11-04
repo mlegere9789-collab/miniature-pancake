@@ -81,4 +81,16 @@ Tolerance=0.05
 Enter
 New
 
+QC2BEGIN_offset_nan
+Circle 0,0,0 3
+SelLast
+PlanarSrf
+SelSrf
+OffsetSrf
+nan
+inf
+2
+Cancel
+New
+
 QC2BEGIN_end
