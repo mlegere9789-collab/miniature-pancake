@@ -16,6 +16,7 @@
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_continuity.h"
 #include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/tolerance.h"
 
@@ -3133,10 +3134,20 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const
   return FitPatch(boundary_points, interior_points, tolerance, out, report, max_count, std::vector<FitEdgeContinuity>());
 }
 
-Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points_in, const std::vector<Point3d>& interior_points,
+Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points, const std::vector<Point3d>& interior_points,
                               double tolerance, NurbsSurface& out, PatchFitReport* report, int max_count,
                               const std::vector<FitEdgeContinuity>& edges) {
+  return FitPatchReweighted(boundary_points, interior_points, tolerance, out, report, max_count, edges, 1e4, nullptr);
+}
+
+Result FitPatchReweighted(const std::vector<Point3d>& boundary_points_in, const std::vector<Point3d>& interior_points, double tolerance,
+                          NurbsSurface& out, NurbsSurface::PatchFitReport* report, int max_count,
+                          const std::vector<NurbsSurface::FitEdgeContinuity>& edges, double max_weight_boost, double* boost_used_out) {
   using namespace patch_fit_detail;
+  using FitEdgeContinuity = NurbsSurface::FitEdgeContinuity;
+  using EdgeContinuityMeasure = NurbsSurface::EdgeContinuityMeasure;
+  using PatchFitReport = NurbsSurface::PatchFitReport;
+  if (boost_used_out) *boost_used_out = 1.0;
   namespace cd = continuity_detail;
   if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::FitPatch: tolerance must be positive and finite");
@@ -3289,8 +3300,7 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points_in, co
   // contradict stops at the last weight that honours the tolerance). The boost actually used is reported.
   double boost_used = 1.0;
   if (!cons.empty() && best.ok) {
-    double max_boost = 1.0;
-    for (const FitEdgeContinuity& fe : edges) max_boost = std::max(max_boost, fe.max_weight_boost);
+    const double max_boost = std::max(1.0, max_weight_boost);
     for (double boost = 100.0; boost <= max_boost * 1.0000001; boost *= 100.0) {
       std::vector<DerivConstraint> stiff = cons;
       for (DerivConstraint& k : stiff) k.w *= boost;
@@ -3335,7 +3345,7 @@ Result NurbsSurface::FitPatch(const std::vector<Point3d>& boundary_points_in, co
   rep.rms_deviation = best.rms_dev;
   rep.max_boundary_deviation = best.max_boundary_dev;
   rep.flat_deviation = flat;
-  rep.weight_boost = boost_used;
+  if (boost_used_out) *boost_used_out = boost_used;
   rep.plane_origin = centre;
   rep.plane_x = xaxis;
   rep.plane_y = yaxis;
@@ -3511,7 +3521,18 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
 
 Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, double tolerance, NurbsSurface& out,
                                      CurveNetworkReport& report, const std::vector<NetworkEdgeContinuity>& net_edges) {
+  return FitCurveNetworkReweighted(curves_in, tolerance, out, report, net_edges, 1e4, nullptr);
+}
+
+Result FitCurveNetworkReweighted(const std::vector<NurbsCurve>& curves_in, double tolerance, NurbsSurface& out,
+                                 NurbsSurface::CurveNetworkReport& report, const std::vector<NurbsSurface::NetworkEdgeContinuity>& net_edges,
+                                 double max_weight_boost, double* boost_used_out) {
   using namespace curve_network_detail;
+  using CurveNetworkReport = NurbsSurface::CurveNetworkReport;
+  using NetworkEdgeContinuity = NurbsSurface::NetworkEdgeContinuity;
+  using FitEdgeContinuity = NurbsSurface::FitEdgeContinuity;
+  using PatchFitReport = NurbsSurface::PatchFitReport;
+  if (boost_used_out) *boost_used_out = 1.0;
   if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::FitCurveNetwork: tolerance must be positive and finite");
   }
@@ -3553,7 +3574,6 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
     fe.continuity = ne.continuity;
     fe.angle_tolerance = ne.angle_tolerance;
     fe.curvature_tolerance = ne.curvature_tolerance;
-    fe.max_weight_boost = ne.max_weight_boost;
     const NurbsCurve& c = curves[static_cast<size_t>(ne.curve_index)];
     const auto d = c.Domain();
     for (int k = 0; k <= 64; ++k) fe.points.push_back(c.PointAt(d.min + (d.max - d.min) * k / 64.0));
@@ -3694,10 +3714,11 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
   for (const int max_count : {16, 24}) {
     NurbsSurface patch;
     PatchFitReport rep;
+    double patch_boost = 1.0;
     Result fr = Result::Failed;
     try {
-      fr = fit_edges.empty() ? FitPatch(boundary, interior, tolerance, patch, &rep, max_count)
-                             : FitPatch(boundary, interior, tolerance, patch, &rep, max_count, fit_edges);
+      fr = fit_edges.empty() ? NurbsSurface::FitPatch(boundary, interior, tolerance, patch, &rep, max_count)
+                             : FitPatchReweighted(boundary, interior, tolerance, patch, &rep, max_count, fit_edges, max_weight_boost, &patch_boost);
     } catch (const std::exception& e) {
       return refuse(std::string("the patch fit threw: ") + e.what());
     }
@@ -3724,6 +3745,7 @@ Result NurbsSurface::FitCurveNetwork(const std::vector<NurbsCurve>& curves_in, d
       best_dev = worst;
       best = patch;
       best_curve_dev = dev;
+      if (boost_used_out) *boost_used_out = patch_boost;
       report.fit = rep;
       report.net_u = rep.u_count;
       report.net_v = rep.v_count;
@@ -3917,8 +3939,18 @@ Result NurbsSurface::MeasureEdgeContinuity(const NurbsSurface& adjacent, int adj
 
 Result NurbsSurface::LoftMatched(const std::vector<NurbsCurve>& sections, int degree, const LoftEndMatch* start, const LoftEndMatch* end,
                                  double tolerance, NurbsSurface& out, LoftMatchReport& report, double angle_tolerance,
-                                 double curvature_tolerance, bool optimize_scale) {
+                                 double curvature_tolerance) {
+  return LoftMatchedScaled(sections, degree, start, end, tolerance, out, report, angle_tolerance, curvature_tolerance, true, nullptr);
+}
+
+Result LoftMatchedScaled(const std::vector<NurbsCurve>& sections, int degree, const NurbsSurface::LoftEndMatch* start,
+                         const NurbsSurface::LoftEndMatch* end, double tolerance, NurbsSurface& out, NurbsSurface::LoftMatchReport& report,
+                         double angle_tolerance, double curvature_tolerance, bool optimize_scale, LoftMatchScaleReport* scale_report) {
   namespace cd = continuity_detail;
+  using LoftEndMatch = NurbsSurface::LoftEndMatch;
+  using LoftMatchReport = NurbsSurface::LoftMatchReport;
+  using EdgeContinuityMeasure = NurbsSurface::EdgeContinuityMeasure;
+  if (scale_report) *scale_report = LoftMatchScaleReport{};
   if (!(tolerance > 0.0) || !std::isfinite(tolerance) || !(angle_tolerance > 0.0) || !(curvature_tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::LoftMatched: tolerances must be positive and finite");
   }
@@ -4028,7 +4060,7 @@ Result NurbsSurface::LoftMatched(const std::vector<NurbsCurve>& sections, int de
     }
     double best_dev = deviation_of(best);
     double best_scale = mr0.scale;
-    (e.at_min ? report.start_default_deviation : report.end_default_deviation) = best_dev;
+    if (scale_report) (e.at_min ? scale_report->start_default_deviation : scale_report->end_default_deviation) = best_dev;
     if (optimize_scale && e.m->continuity != MatchContinuity::Position && best_dev > 1e-9 * tolerance) {
       const double inf = std::numeric_limits<double>::infinity();
       auto eval = [&](double x) {
@@ -4055,7 +4087,7 @@ Result NurbsSurface::LoftMatched(const std::vector<NurbsCurve>& sections, int de
       }
     }
     work = best;
-    (e.at_min ? report.start_scale : report.end_scale) = best_scale;
+    if (scale_report) (e.at_min ? scale_report->start_scale : scale_report->end_scale) = best_scale;
   }
 
   // Every section against the finished surface.

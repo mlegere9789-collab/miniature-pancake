@@ -16,6 +16,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_continuity.h"
 #include "opennurbs.h"
 
 using dino8::kernel::MatchContinuity;
@@ -176,19 +177,18 @@ void TestPatchReweighting(const char* label, MatchContinuity level, const Func2&
   e.continuity = level;
   e.angle_tolerance = angle_tol;
   e.curvature_tolerance = curv_tol;
-  e.max_weight_boost = 1.0;
-  const Result r1 = NurbsSurface::FitPatch(boundary, interior, tol, base, &rb, 16, {e});
-  e.max_weight_boost = 1e4;
-  const Result r2 = NurbsSurface::FitPatch(boundary, interior, tol, boosted, &rr, 16, {e});
+  double boost1 = 1.0, boost2 = 1.0;
+  const Result r1 = dino8::kernel::FitPatchReweighted(boundary, interior, tol, base, &rb, 16, {e}, 1.0, &boost1);
+  const Result r2 = dino8::kernel::FitPatchReweighted(boundary, interior, tol, boosted, &rr, 16, {e}, 1e4, &boost2);
   std::printf("[%s] base-weight reason '%s'; re-weighted reason '%s'\n", label, rb.reason.c_str(), rr.reason.c_str());
   Check(r2 == Result::Ok, std::string(label) + ": the re-weighted fit succeeds");
   if (r2 != Result::Ok) return;
   const Worst wb = WorstOnPlaneSurface(r1 == Result::Ok ? base : plain, rb);
   const Worst wr = WorstOnPlaneSurface(boosted, rr);
   std::printf("[%s] 97 points on the edge, closed form. no option: angle %.4e rad curv %.4e | base weight (%s): angle %.4e curv %.4e | re-weighted x%.0f: angle %.4e rad curv %.4e gap %.2e, data deviation %.3e (tol %.3g), net %dx%d; kernel-measured angle %.3e\n",
-              label, w0.angle, w0.curv, r1 == Result::Ok ? "ok" : "refused", wb.angle, wb.curv, rr.weight_boost, wr.angle, wr.curv, wr.gap, rr.max_deviation, tol,
+              label, w0.angle, w0.curv, r1 == Result::Ok ? "ok" : "refused", wb.angle, wb.curv, boost2, wr.angle, wr.curv, wr.gap, rr.max_deviation, tol,
               rr.u_count, rr.v_count, rr.edge_continuity.empty() ? -1.0 : rr.edge_continuity[0].max_tangent_angle);
-  Check(wr.n == 97 && rr.weight_boost > 1.0, std::string(label) + ": re-weighting raised the row weight (boost " + std::to_string(rr.weight_boost) + ")");
+  Check(wr.n == 97 && boost2 > 1.0, std::string(label) + ": re-weighting raised the row weight (boost " + std::to_string(boost2) + ")");
   Check(rr.met_tolerance && rr.max_deviation <= tol, std::string(label) + ": the re-weighted fit still honours the data tolerance");
   Check(wr.gap <= tol, std::string(label) + ": the edge stays within the tolerance of the adjacent surface");
   if (r1 == Result::Ok) Check(wr.angle * 10.0 <= wb.angle, std::string(label) + ": measured angle is >= 10x below the base-weight fit (" + std::to_string(wb.angle) + " -> " + std::to_string(wr.angle) + ")");
@@ -209,18 +209,17 @@ void TestNetworkReweighting(const char* label, MatchContinuity level, const Func
   e.continuity = level;
   e.angle_tolerance = angle_tol;
   e.curvature_tolerance = curv_tol;
-  e.max_weight_boost = 1.0;
-  const Result r1 = NurbsSurface::FitCurveNetwork(curves, tol, base, rb, {e});
-  e.max_weight_boost = 1e4;
-  const Result r2 = NurbsSurface::FitCurveNetwork(curves, tol, boosted, rr, {e});
+  double boost1 = 1.0, boost2 = 1.0;
+  const Result r1 = dino8::kernel::FitCurveNetworkReweighted(curves, tol, base, rb, {e}, 1.0, &boost1);
+  const Result r2 = dino8::kernel::FitCurveNetworkReweighted(curves, tol, boosted, rr, {e}, 1e4, &boost2);
   std::printf("[%s] base-weight reason '%s'; re-weighted reason '%s'\n", label, rb.reason.c_str(), rr.reason.c_str());
   Check(r2 == Result::Ok, std::string(label) + ": the re-weighted network fit succeeds");
   if (r2 != Result::Ok) return;
   const Worst wb = WorstOnPlaneSurface(r1 == Result::Ok ? base : plain, rb.fit);
   const Worst wr = WorstOnPlaneSurface(boosted, rr.fit);
   std::printf("[%s] 97 points on the edge, closed form. no option: angle %.4e rad curv %.4e | base weight (%s): angle %.4e curv %.4e | re-weighted x%.0f: angle %.4e rad curv %.4e gap %.2e, worst input-curve deviation %.3e (tol %.3g)\n",
-              label, w0.angle, w0.curv, r1 == Result::Ok ? "ok" : "refused", wb.angle, wb.curv, rr.fit.weight_boost, wr.angle, wr.curv, wr.gap, rr.max_deviation, tol);
-  Check(rr.fit.weight_boost > 1.0, std::string(label) + ": re-weighting raised the row weight (boost " + std::to_string(rr.fit.weight_boost) + ")");
+              label, w0.angle, w0.curv, r1 == Result::Ok ? "ok" : "refused", wb.angle, wb.curv, boost2, wr.angle, wr.curv, wr.gap, rr.max_deviation, tol);
+  Check(boost2 > 1.0, std::string(label) + ": re-weighting raised the row weight (boost " + std::to_string(boost2) + ")");
   Check(rr.met_tolerance && rr.max_deviation <= tol, std::string(label) + ": every input curve is still within the tolerance");
   Check(wr.gap <= tol, std::string(label) + ": the shared edge stays within the tolerance of the adjacent surface");
   if (r1 == Result::Ok) Check(wr.angle * 10.0 <= wb.angle, std::string(label) + ": measured angle is >= 10x below the base-weight fit (" + std::to_string(wb.angle) + " -> " + std::to_string(wr.angle) + ")");
@@ -259,7 +258,7 @@ EdgeRef EdgeAt(const NurbsSurface& s, double x, double y) {
   return r;
 }
 
-struct LoftRun { Result r; NurbsSurface::LoftMatchReport rep; };
+struct LoftRun { Result r; NurbsSurface::LoftMatchReport rep; dino8::kernel::LoftMatchScaleReport sc; };
 LoftRun RunLoft(const std::vector<NurbsCurve>& secs, const NurbsSurface& adj, EdgeRef er, MatchContinuity c, bool optimize, double tol = 1e-3) {
   NurbsSurface::LoftEndMatch m;
   m.surface = &adj;
@@ -268,7 +267,7 @@ LoftRun RunLoft(const std::vector<NurbsCurve>& secs, const NurbsSurface& adj, Ed
   m.continuity = c;
   LoftRun out;
   NurbsSurface surf;
-  out.r = NurbsSurface::LoftMatched(secs, std::min(3, static_cast<int>(secs.size()) - 1), &m, nullptr, tol, surf, out.rep, 1e-3, 1e-2, optimize);
+  out.r = dino8::kernel::LoftMatchedScaled(secs, std::min(3, static_cast<int>(secs.size()) - 1), &m, nullptr, tol, surf, out.rep, 1e-3, 1e-2, optimize, &out.sc);
   return out;
 }
 
@@ -283,7 +282,7 @@ void TestLoftOnCylinderWall() {
   const LoftRun new_g1 = RunLoft(secs3, wall, er, MatchContinuity::Tangent, true);
   std::printf("[cylinder G1, 3 sections] G0 only: ok=%d angle %.3e curv %.3e | default scale: ok=%d '%s' (default-scale deviation %.4g) | searched scale: ok=%d scale %.4g deviation %.3e angle %.3e curv %.3e gap %.2e '%s'\n",
               g0.r == Result::Ok, g0.rep.start.max_tangent_angle, g0.rep.start.max_cross_curvature_diff, old_g1.r == Result::Ok, old_g1.rep.reason.c_str(),
-              old_g1.rep.start_default_deviation, new_g1.r == Result::Ok, new_g1.rep.start_scale, new_g1.rep.section_deviation_max, new_g1.rep.start.max_tangent_angle,
+              old_g1.sc.start_default_deviation, new_g1.r == Result::Ok, new_g1.sc.start_scale, new_g1.rep.section_deviation_max, new_g1.rep.start.max_tangent_angle,
               new_g1.rep.start.max_cross_curvature_diff, new_g1.rep.start.max_position_gap, new_g1.rep.reason.c_str());
   Check(g0.r == Result::Ok && g0.rep.start.max_tangent_angle > 1e-4, "cylinder G1: the loft without tangent matching is measurably off the wall's tangent plane");
   Check(old_g1.r == Result::Failed && old_g1.rep.reason.find("moves section") != std::string::npos, "cylinder G1: MatchEdge's default scale is refused (a section would move too far)");
@@ -292,7 +291,7 @@ void TestLoftOnCylinderWall() {
     Check(new_g1.rep.section_deviation_max <= 1e-3, "cylinder G1: every section is within the tolerance 1e-3 of the finished surface");
     Check(new_g1.rep.start.max_tangent_angle < 1e-6 && new_g1.rep.start.max_position_gap < 1e-6, "cylinder G1: measured angle < 1e-6 rad and gap < 1e-6");
     Check(new_g1.rep.start.max_tangent_angle * 100.0 < g0.rep.start.max_tangent_angle, "cylinder G1: measured angle >= 100x below the loft without matching");
-    Check(new_g1.rep.start_default_deviation > 10.0 * new_g1.rep.section_deviation_max, "cylinder G1: the searched scale cuts the section deviation >= 10x");
+    Check(new_g1.sc.start_default_deviation > 10.0 * new_g1.rep.section_deviation_max, "cylinder G1: the searched scale cuts the section deviation >= 10x");
   }
   std::vector<NurbsCurve> secs4 = {VerticalLine(270, 5), VerticalLine(290, 5), VerticalLine(310, 5), VerticalLine(330, 5)};
   const LoftRun old_g2 = RunLoft(secs4, wall, er, MatchContinuity::Curvature, false);
@@ -300,7 +299,7 @@ void TestLoftOnCylinderWall() {
   const LoftRun g1_4 = RunLoft(secs4, wall, er, MatchContinuity::Position, true);
   std::printf("[cylinder G2, 4 sections] G0 only: angle %.3e curv %.3e | default scale: ok=%d '%s' | searched: ok=%d scale %.4g dev %.3e angle %.3e curv %.3e gauss %.3e '%s'\n",
               g1_4.rep.start.max_tangent_angle, g1_4.rep.start.max_cross_curvature_diff, old_g2.r == Result::Ok, old_g2.rep.reason.c_str(), new_g2.r == Result::Ok,
-              new_g2.rep.start_scale, new_g2.rep.section_deviation_max, new_g2.rep.start.max_tangent_angle, new_g2.rep.start.max_cross_curvature_diff,
+              new_g2.sc.start_scale, new_g2.rep.section_deviation_max, new_g2.rep.start.max_tangent_angle, new_g2.rep.start.max_cross_curvature_diff,
               new_g2.rep.start.max_gaussian_diff, new_g2.rep.reason.c_str());
 }
 
@@ -319,9 +318,9 @@ void TestLoftOnBicubic() {
   const LoftRun g1 = RunLoft(data, adj, er, MatchContinuity::Tangent, true, 0.05);
   const LoftRun g2 = RunLoft(data, adj, er, MatchContinuity::Curvature, true, 0.05);
   std::printf("[bicubic loft] G0 only: angle %.3e curv %.3e | G1: ok=%d dev %.3e (default scale %.3e) angle %.3e curv %.3e '%s' | G2: ok=%d dev %.3e (default %.3e) angle %.3e curv %.3e '%s'\n",
-              g0.rep.start.max_tangent_angle, g0.rep.start.max_cross_curvature_diff, g1.r == Result::Ok, g1.rep.section_deviation_max, g1.rep.start_default_deviation,
+              g0.rep.start.max_tangent_angle, g0.rep.start.max_cross_curvature_diff, g1.r == Result::Ok, g1.rep.section_deviation_max, g1.sc.start_default_deviation,
               g1.rep.start.max_tangent_angle, g1.rep.start.max_cross_curvature_diff, g1.rep.reason.c_str(), g2.r == Result::Ok, g2.rep.section_deviation_max,
-              g2.rep.start_default_deviation, g2.rep.start.max_tangent_angle, g2.rep.start.max_cross_curvature_diff, g2.rep.reason.c_str());
+              g2.sc.start_default_deviation, g2.rep.start.max_tangent_angle, g2.rep.start.max_cross_curvature_diff, g2.rep.reason.c_str());
 }
 
 }  // namespace

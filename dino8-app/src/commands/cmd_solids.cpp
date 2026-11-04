@@ -1,6 +1,7 @@
 // Surface, solid, mesh and SubD creation commands.
 #include "commands/cmd_common.h"
 #include "commands/continuity_request.h"
+#include "dino8/kernel/surface_continuity.h"
 #include "commands/history_rebuild.h"
 #include "commands/prism_solid.h"
 #include "commands/section_fit.h"
@@ -1081,9 +1082,10 @@ void LoftContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, const
   const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
   kernel::NurbsSurface out;
   kernel::NurbsSurface::LoftMatchReport rep;
+  kernel::LoftMatchScaleReport scale_rep;
   kernel::Result r = kernel::Result::Failed;
   try {
-    r = kernel::NurbsSurface::LoftMatched(al.curves, degree, at_start ? &m : nullptr, at_start ? nullptr : &m, tol, out, rep, req.angle_tol, req.curv_tol);
+    r = kernel::LoftMatchedScaled(al.curves, degree, at_start ? &m : nullptr, at_start ? nullptr : &m, tol, out, rep, req.angle_tol, req.curv_tol, true, &scale_rep);
   } catch (const std::exception& e) {
     rep.reason = e.what();
   }
@@ -1098,8 +1100,8 @@ void LoftContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, const
   ctx.Doc().Add(SceneObject::MakeSurface(out));
   ctx.Print(head + ": kernel LoftMatched through " + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + " in the loft direction), the " + which +
             " section made identical to the edge and the next rows rewritten by MatchEdge as " + ContinuityWhat(req.continuity) + " continuity; " +
-            ContinuityMeasuredNote(req, m_end) + "; cross-derivative scale " + Sig3(at_start ? rep.start_scale : rep.end_scale) +
-            " searched to keep the sections on their data (MatchEdge's default scale would have moved a section by " + Sig3(at_start ? rep.start_default_deviation : rep.end_default_deviation) +
+            ContinuityMeasuredNote(req, m_end) + "; cross-derivative scale " + Sig3(at_start ? scale_rep.start_scale : scale_rep.end_scale) +
+            " searched to keep the sections on their data (MatchEdge's default scale would have moved a section by " + Sig3(at_start ? scale_rep.start_default_deviation : scale_rep.end_default_deviation) +
             "); worst distance of any section's samples from the finished surface " + Sig3(rep.section_deviation_max) +
             " (document tolerance " + FormatNumber(tol) + (al.reversed ? ", " + std::to_string(al.reversed) + " curve(s) reversed first" : std::string()) + "); uncapped surface");
   NoHistoryNote(ctx, "Loft", req);
