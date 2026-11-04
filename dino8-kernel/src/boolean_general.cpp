@@ -8269,7 +8269,14 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
         }
         if (!c.raw().IsSolid()) {
           char buf[200];
-          std::snprintf(buf, sizeof buf, " [tol %.4g: collapsed %d;", tol, collapsed);
+          bool oriented = false, has_boundary = false;
+          const bool manifold = c.raw().IsManifold(&oriented, &has_boundary);
+          int tc[5] = {0, 0, 0, 0, 0};
+          for (int i = 0; i < c.raw().m_E.Count(); ++i) {
+            if (c.raw().m_E[i].m_edge_index >= 0) ++tc[std::min(4, c.raw().m_E[i].TrimCount())];
+          }
+          std::snprintf(buf, sizeof buf, " [tol %.4g: collapsed %d; manifold %d oriented %d boundary %d; edges by trims 0:%d 1:%d 2:%d 3:%d 4+:%d;", tol,
+                        collapsed, manifold, oriented, has_boundary, tc[0], tc[1], tc[2], tc[3], tc[4]);
           naked_diag += buf;
           int n = 0;
           for (int i = 0; i < c.raw().m_E.Count() && n < 6; ++i) {
