@@ -4399,10 +4399,21 @@ bool ImportPly(Document& doc, const std::string& path, std::string& error) {
   }
   if (m.m_N.Count() != m.VertexCount()) { m.m_N.Destroy(); }
   if (m.FaceCount() == 0) { error = "No faces found in " + path; return false; }
+  // A PLY written from a tessellated solid can carry the same corner twice (neighbouring faces meshed separately, the
+  // coordinates equal only to float rounding), which leaves an open mesh with no Volume. Weld coincident vertices with a
+  // true distance test (1e-6 of the bounding-box diagonal, the same rule the STL import uses) unless the file carries its
+  // own normals: those mark a deliberately split vertex, and welding would discard them.
+  int welded = 0;
+  if (m.m_N.Count() == 0) {
+    const kernel::BoundingBox bb = mesh.GetBoundingBox();
+    const double diag = (bb.max - bb.min).Length();
+    welded = mesh.MergeDuplicateVertices(std::max(1e-9, diag * 1e-6));
+  }
   if (m.m_N.Count() == 0) m.ComputeVertexNormals();
   SceneObject o = SceneObject::MakeMesh(mesh);
   o.name = std::filesystem::path(path).stem().string();
   doc.Add(std::move(o));
+  if (welded > 0) error = "PLY: welded " + std::to_string(welded) + " coincident vertices";
   return true;
 }
 

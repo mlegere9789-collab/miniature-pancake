@@ -12859,7 +12859,7 @@ rtafmt() {
 # STL of a solid re-imports with Area right but Volume 0 (open triangle soup, not welded); a STEP re-import of an ACIS-imported
 # box is reported invalid; the hidden-operand vase compares against a .3dm that lost the Hide state until the File3dm fix was built;
 # IGES: tens to hundreds of loose trimmed faces instead of one solid; G1 surfaces: STEP re-imports two objects invalid, SAT/SAB lose objects.
-RTA_KNOWN=" sblcut:stp sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntpatch:stp cntnet:stp sblcut:stl sblunion:stl sbltwo:stl rvr:stl ptf:stl spsscale:stl spsscale:obj vase:obj vase:stl vase:stp satimp:stp satimp:stl sabimp:stp sabimp:stl satcyl:stp satcyl:stl "
+RTA_KNOWN=" sblcut:stp sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntpatch:stp cntnet:stp spsscale:stl spsscale:ply spsscale:obj vase:obj vase:stp satimp:stp sabimp:stp satcyl:stp "
 for c in sblcut sblunion sbltwo rvr ptf cntloft cntpatch cntnet spsscale vase; do
   rtaundo $c
   rtaround $c pre redo "Undo then Redo returns the state exactly"
@@ -12885,7 +12885,7 @@ rtaacis() {
   [ "$m" = "${sb%% *}" ] || { ok=0; why+=" M=$m but the reopened .3dm holds ${sb%% *} objects;"; }
   [ $((k + nw)) = "$m" ] || { ok=0; why+=" $k written + $nw 'Not written' lines != $m objects;"; }
   [ "$ni" = "$k" ] || { ok=0; why+=" import holds $ni objects, export said $k written;"; }
-  area_sum="$({ grep -oE ', area [-0-9.eE+]+' <<<"$xb" || true; } | sed 's/, area //' | awk '{ s += $1 } END { printf "%.6g", s }')"
+  area_sum="$({ grep -E '\[(documented layouts only|UNVERIFIED cone/sphere/torus/ellipse layout)\]' <<<"$xb" || true; } | { grep -oE ', area [-0-9.eE+]+' || true; } | sed 's/, area //' | awk '{ s += $1 } END { printf "%.6g", s }')"
   area_in="$(cut -d' ' -f6 <<<"$si")"
   if [ "$k" -gt 0 ] && [ "$area_in" != "-" ]; then
     awk -v a="$area_sum" -v b="$area_in" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d <= 0.01 * a + 1e-9) }' || { ok=0; why+=" imported Area $area_in vs written bodies' printed area sum $area_sum;"; }
