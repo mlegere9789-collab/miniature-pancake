@@ -268,7 +268,9 @@ inline bool Explode(const ON_Curve& c, const Prism& pr, double tol, std::vector<
 
 // Recognises a right prism with ONE outer profile. On success `pr` holds the profile; otherwise
 // `why` says what is not a prism (and `not_prism` tells a plain "this is not that shape").
-inline bool Recognize(const ON_Brep& b, Prism& pr, std::string& why, bool& not_prism) {
+// `axis_hint` (optional): only consider the prism whose axis is parallel to it. A box is a prism along any of its three
+// axes; without a hint the first parallel pair of planes wins, which need not be the axis the caller means.
+inline bool Recognize(const ON_Brep& b, Prism& pr, std::string& why, bool& not_prism, const ON_3dVector* axis_hint = nullptr) {
   not_prism = true;
   if (!b.IsSolid()) { why = "the polysurface is not a closed solid"; return false; }
   ON_BoundingBox bb;
@@ -288,6 +290,7 @@ inline bool Recognize(const ON_Brep& b, Prism& pr, std::string& why, bool& not_p
     for (size_t j = i + 1; j < pf.size(); ++j) {
       ON_3dVector ni = pl[i].zaxis, nj = pl[j].zaxis;
       if (std::fabs(ni * nj) < 1.0 - 1e-9) continue;
+      if (axis_hint && std::fabs(ni * *axis_hint) < 1.0 - 1e-6) continue;
       const double sep = (pl[j].origin - pl[i].origin) * ni;
       if (std::fabs(sep) < tol * 10) continue;
       // Every other face must run along ni: its normal is perpendicular to the axis everywhere.

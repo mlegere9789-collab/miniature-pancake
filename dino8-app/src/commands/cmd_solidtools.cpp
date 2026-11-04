@@ -2647,7 +2647,7 @@ void ExactHoleFeature(CommandContext& ctx, const Input& in, bool sink) {
     prism::Prism pr;
     std::string why;
     bool not_prism = false;
-    if (!prism::Recognize(b, pr, why, not_prism)) { ctx.Warn(label + ": refused - object " + Id(id) + " is not a plain right-prism plate (" + why + "); only a flat plate with straight or round sides and no other holes is supported"); continue; }
+    if (!prism::Recognize(b, pr, why, not_prism, &nout)) { ctx.Warn(label + ": refused - object " + Id(id) + " is not a plain right-prism plate (" + why + "); only a flat plate with straight or round sides and no other holes is supported"); continue; }
     const bool from_top = nout * pr.n > 0;
     if (std::fabs(pr.H - T) > 10 * tol) { ctx.Warn(label + ": refused - the plate thickness could not be read consistently"); continue; }
     const ON_3dVector ev = entry - pr.O;
