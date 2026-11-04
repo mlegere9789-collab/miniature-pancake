@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
@@ -4049,6 +4050,33 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     }
   }
   const int m = static_cast<int>(fractions.size());
+  if (wrap && (twist_total != 0.0 || twist_schedule)) {
+    // Station k carries the twist of its own fraction and nothing looks at the angle BETWEEN consecutive copies,
+    // so a twist of several whole turns spread over too few stations aliases (at one turn per station every
+    // copy is the untwisted section again) or is a coarse interpolant. The skin through the copies is only a
+    // faithful twisted tube while consecutive copies differ by at most kMaxClosedTwistStep (30 degrees: the
+    // relative error of a periodic cubic through a rotation of theta per station is about theta^4/384, 2e-4 at
+    // 30 degrees); beyond that the call is refused, naming the angle and the station count that would do.
+    constexpr double kMaxClosedTwistStep = ON_PI / 6.0;
+    double worst = 0.0;
+    for (int k = 0; k < m; ++k) {
+      const double f0 = fractions[static_cast<size_t>(k)], f1 = k + 1 < m ? fractions[static_cast<size_t>(k + 1)] : 1.0;
+      const double tw0 = twist_schedule ? ScheduleAt(*twist_schedule, f0) : twist_total * f0;
+      const double tw1 = twist_schedule ? ScheduleAt(*twist_schedule, f1) : twist_total * f1;
+      worst = std::max(worst, std::fabs(tw1 - tw0));
+    }
+    if (worst > kMaxClosedTwistStep * (1.0 + 1e-9)) {
+      const double total_turn = twist_schedule ? std::fabs(ScheduleAt(*twist_schedule, 1.0) - ScheduleAt(*twist_schedule, 0.0)) : std::fabs(twist_total);
+      const int need = static_cast<int>(std::ceil(total_turn / kMaxClosedTwistStep)) + 1;
+      char buf[320];
+      std::snprintf(buf, sizeof(buf),
+                    "the twist on a closed rail turns the section by %.1f degrees between consecutive stations (at most 30 "
+                    "degrees is allowed, a larger step aliases or is skinned too coarsely) - use more stations (about %d or "
+                    "more) or a smaller twist",
+                    worst * 180.0 / ON_PI, need);
+      Fail(caller, buf);
+    }
+  }
   std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
   if (roadlike_up) {
     // Road-like alignment: replace RMF's own transported reference
@@ -4203,19 +4231,34 @@ double RailParamAtFraction(const ON_NurbsCurve& r, double a, double b, double f)
   return RailParamAtFractionOf(RailArcTable(r, a, b), a, b, f);
 }
 
+// One paired corner of two open rails: parameters on rail1 and rail2 (the pair is a station pair of the sweep).
+// real_on says where the corner genuinely is: 0 = a corner on BOTH rails (a matched pair), 1 = a corner of rail1
+// only (`second` is just the point of rail2 at the same arc-length fraction), 2 = a corner of rail2 only.
+struct CornerPair {
+  double first = 0.0, second = 0.0;
+  int real_on = 0;
+};
+
+// Two corners (one per rail) are a candidate pair only when their arc-length fractions of the whole rail differ
+// by at most this much (5% of the rail).
+constexpr double kCornerMatchFraction = 0.05;
+
 // Pairs the interior corners of two OPEN rails (rail2 already turned to run with rail1) for a two-rail
-// sweep: the i-th corner of one with the i-th of the other when both have the same number; otherwise every
-// corner is paired with the point of the OTHER rail at the same arc-length fraction of the whole rail
-// (a corner on one rail only still gets a station there, its partner just sits on a smooth stretch).
+// sweep. With the same number of corners the i-th of one is paired with the i-th of the other. Otherwise the
+// corners are MATCHED in order (never crossing) on proximity of their arc-length fractions of the whole rail:
+// an order-preserving alignment with the most matches first and then the smallest total fraction distance, a
+// candidate pair being two corners whose fractions differ by at most kCornerMatchFraction. So one extra or
+// spurious kink on a rail cannot displace the real corner pairs. A corner left unmatched is a corner of ONE
+// rail only: it is paired with the point of the other rail at the same arc-length fraction (real_on says which
+// side is the real corner), clamped to stay strictly between its neighbouring pairs on both rails.
 // Returned sorted by rail1 parameter, both parameters strictly increasing.
-std::vector<std::pair<double, double>> PairRailCorners(const ON_NurbsCurve& rail1, const ON_NurbsCurve& rail2,
-                                                       const char* caller) {
+std::vector<CornerPair> PairRailCorners(const ON_NurbsCurve& rail1, const ON_NurbsCurve& rail2, const char* caller) {
   const std::vector<double> c1 = RailCorners(rail1), c2 = RailCorners(rail2);
-  std::vector<std::pair<double, double>> pairs;
+  std::vector<CornerPair> pairs;
   if (c1.empty() && c2.empty()) return pairs;
   const double a1 = rail1.Domain().Min(), b1 = rail1.Domain().Max(), a2 = rail2.Domain().Min(), b2 = rail2.Domain().Max();
   if (c1.size() == c2.size()) {
-    for (size_t i = 0; i < c1.size(); ++i) pairs.emplace_back(c1[i], c2[i]);
+    for (size_t i = 0; i < c1.size(); ++i) pairs.push_back({c1[i], c2[i], 0});
   } else {
     const std::vector<double> t1 = RailArcTable(rail1, a1, b1), t2 = RailArcTable(rail2, a2, b2);
     auto fraction = [](const std::vector<double>& cum, const ON_NurbsCurve& r, double a, double t) {
@@ -4224,16 +4267,118 @@ std::vector<std::pair<double, double>> PairRailCorners(const ON_NurbsCurve& rail
       const size_t q = std::min<size_t>(511, static_cast<size_t>(std::max(0.0, std::floor(u))));
       return (cum[q] + (cum[q + 1] - cum[q]) * (u - static_cast<double>(q))) / cum.back();
     };
-    for (const double c : c1) pairs.emplace_back(c, RailParamAtFractionOf(t2, a2, b2, fraction(t1, rail1, a1, c)));
-    for (const double c : c2) pairs.emplace_back(RailParamAtFractionOf(t1, a1, b1, fraction(t2, rail2, a2, c)), c);
-    std::sort(pairs.begin(), pairs.end());
-    // two pairs (nearly) coincident on both rails are one corner
-    std::vector<std::pair<double, double>> merged;
-    for (const auto& pr : pairs) {
-      if (!merged.empty() && pr.first - merged.back().first < 1e-3 * (b1 - a1) && std::fabs(pr.second - merged.back().second) < 1e-3 * (b2 - a2)) continue;
-      merged.push_back(pr);
+    const size_t n1 = c1.size(), n2 = c2.size();
+    std::vector<double> f1(n1), f2(n2);
+    for (size_t i = 0; i < n1; ++i) f1[i] = fraction(t1, rail1, a1, c1[i]);
+    for (size_t j = 0; j < n2; ++j) f2[j] = fraction(t2, rail2, a2, c2[j]);
+    // order-preserving alignment: best[i][j] = (matches, -total fraction distance) over the first i / j corners
+    using Score = std::pair<int, double>;
+    std::vector<std::vector<Score>> best(n1 + 1, std::vector<Score>(n2 + 1, Score(0, 0.0)));
+    std::vector<std::vector<int>> how(n1 + 1, std::vector<int>(n2 + 1, 0));  // 0 skip rail1's, 1 skip rail2's, 2 match
+    for (size_t i = 0; i <= n1; ++i) {
+      for (size_t j = 0; j <= n2; ++j) {
+        if (i == 0 && j == 0) continue;
+        Score s(-1, 0.0);
+        int h = 0;
+        if (i > 0) {
+          s = best[i - 1][j];
+          h = 0;
+        }
+        if (j > 0 && (i == 0 || best[i][j - 1] > s)) {
+          s = best[i][j - 1];
+          h = 1;
+        }
+        if (i > 0 && j > 0) {
+          const double d = std::fabs(f1[i - 1] - f2[j - 1]);
+          if (d <= kCornerMatchFraction) {
+            const Score cand(best[i - 1][j - 1].first + 1, best[i - 1][j - 1].second - d);
+            if (cand > s) {
+              s = cand;
+              h = 2;
+            }
+          }
+        }
+        best[i][j] = s;
+        how[i][j] = h;
+      }
     }
-    pairs.swap(merged);
+    std::vector<int> match1(n1, -1);
+    std::vector<bool> matched2(n2, false);
+    for (size_t i = n1, j = n2; i > 0 || j > 0;) {
+      const int h = (i == 0) ? 1 : (j == 0 ? 0 : how[i][j]);
+      if (h == 2) {
+        match1[i - 1] = static_cast<int>(j - 1);
+        matched2[j - 1] = true;
+        --i;
+        --j;
+      } else if (h == 0) {
+        --i;
+      } else {
+        --j;
+      }
+    }
+    // Order: the matched pairs in order; every unmatched corner sits in the gap between the matched pairs that
+    // its OWN rail's parameter puts it in, and within a gap by arc-length fraction.
+    struct Keyed {
+      CornerPair cp;
+      size_t gap;
+      double key;
+    };
+    std::vector<CornerPair> matched;
+    for (size_t i = 0; i < n1; ++i) {
+      if (match1[i] >= 0) matched.push_back({c1[i], c2[static_cast<size_t>(match1[i])], 0});
+    }
+    auto gap_of = [&matched](double t, bool on_rail1) {
+      size_t g = 0;
+      while (g < matched.size() && (on_rail1 ? matched[g].first : matched[g].second) < t) ++g;
+      return g;
+    };
+    std::vector<Keyed> keyed;
+    size_t mk = 0;
+    for (size_t i = 0; i < n1; ++i) {
+      if (match1[i] >= 0) {
+        keyed.push_back({matched[mk], mk, 2.0});
+        ++mk;
+      } else {
+        keyed.push_back({{c1[i], RailParamAtFractionOf(t2, a2, b2, f1[i]), 1}, gap_of(c1[i], true), f1[i]});
+      }
+    }
+    for (size_t j = 0; j < n2; ++j) {
+      if (!matched2[j]) keyed.push_back({{RailParamAtFractionOf(t1, a1, b1, f2[j]), c2[j], 2}, gap_of(c2[j], false), f2[j]});
+    }
+    std::stable_sort(keyed.begin(), keyed.end(), [](const Keyed& x, const Keyed& y) {
+      return x.gap != y.gap ? x.gap < y.gap : x.key < y.key;
+    });
+    // A corner of one rail only: clamp its (fraction-derived) partner strictly between the previous pair and the
+    // next MATCHED pair; a pair it would still cross (or nearly coincide with) is dropped - never a matched one.
+    const double span1 = b1 - a1, span2 = b2 - a2;
+    auto crosses = [&](const CornerPair& p, const CornerPair& q) {  // q after p must be strictly later on both rails
+      return !(q.first > p.first + 1e-9 * span1) || !(q.second > p.second + 1e-9 * span2);
+    };
+    std::vector<CornerPair> out;
+    for (size_t k = 0; k < keyed.size(); ++k) {
+      CornerPair cp = keyed[k].cp;
+      if (cp.real_on != 0) {
+        const bool r1 = cp.real_on == 1;  // the partner is on the other rail
+        double lo = out.empty() ? (r1 ? a2 : a1) : (r1 ? out.back().second : out.back().first);
+        double hi = r1 ? b2 : b1;
+        for (size_t q = k + 1; q < keyed.size(); ++q) {
+          if (keyed[q].cp.real_on == 0) {
+            hi = r1 ? keyed[q].cp.second : keyed[q].cp.first;
+            break;
+          }
+        }
+        const double margin = 1e-3 * (r1 ? span2 : span1);
+        double& partner = r1 ? cp.second : cp.first;
+        partner = (hi - lo <= 2.0 * margin) ? 0.5 * (lo + hi) : std::min(std::max(partner, lo + margin), hi - margin);
+        if (!out.empty() && (cp.first - out.back().first < 1e-3 * span1 && std::fabs(cp.second - out.back().second) < 1e-3 * span2)) continue;
+        if (!out.empty() && crosses(out.back(), cp)) continue;
+      } else {
+        while (!out.empty() && out.back().real_on != 0 && crosses(out.back(), cp)) out.pop_back();
+      }
+      out.push_back(cp);
+    }
+    pairs.swap(out);
   }
   for (size_t i = 1; i < pairs.size(); ++i) {
     if (!(pairs[i].first > pairs[i - 1].first) || !(pairs[i].second > pairs[i - 1].second)) {
@@ -4348,7 +4493,7 @@ Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, cons
 
   std::vector<double> p1, p2;
   std::vector<int> corner_stations;  // open rails with tangent jumps: stations exactly at the paired corners
-  const std::vector<std::pair<double, double>> corner_pairs = wrap ? std::vector<std::pair<double, double>>() : PairRailCorners(rail1, rail2, caller);
+  const std::vector<CornerPair> corner_pairs = wrap ? std::vector<CornerPair>() : PairRailCorners(rail1, rail2, caller);
   if (corner_pairs.empty()) {
     p1 = rail1_in.DivideByCount(wrap ? m : m - 1);
     NurbsCurve rail2_k;
@@ -4731,6 +4876,30 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
     corner_at.assign(bp1.size(), 0);
     for (const auto& cp : PairRailCorners(rail1, rail2, caller)) {
       const double merge1 = 1e-8 * (d1_max - d1_min), merge2 = 1e-8 * (d2_max - d2_min);
+      if (cp.real_on != 0) {
+        // A corner of ONE rail only: its partner on the other rail is just a fraction-derived point, which must
+        // never override the user's anchors (that would refuse inputs that worked before corners were handled).
+        // An anchor on the real corner makes that station the corner (the anchor defines the partner); otherwise
+        // the pair is added only when its partner fits between the neighbouring anchors on the other rail, and
+        // is dropped (the wall then cuts that corner, as before) when it does not.
+        const bool r1 = cp.real_on == 1;
+        const std::vector<double>& bp_real = r1 ? bp1 : bp2;
+        const std::vector<double>& bp_other = r1 ? bp2 : bp1;
+        const double real = r1 ? cp.first : cp.second, partner = r1 ? cp.second : cp.first;
+        const double mreal = r1 ? merge1 : merge2, mother = r1 ? merge2 : merge1;
+        size_t i = 0;
+        while (i < bp_real.size() && bp_real[i] < real - mreal) ++i;
+        if (i < bp_real.size() && std::fabs(bp_real[i] - real) <= mreal) {
+          corner_at[i] = 1;
+          continue;
+        }
+        if (i == 0 || i >= bp_real.size() || !(bp_other[i - 1] < partner - mother) || !(partner < bp_other[i] - mother)) continue;
+        bp1.insert(bp1.begin() + static_cast<std::ptrdiff_t>(i), cp.first);
+        bp2.insert(bp2.begin() + static_cast<std::ptrdiff_t>(i), cp.second);
+        anchor_at.insert(anchor_at.begin() + static_cast<std::ptrdiff_t>(i), -1);
+        corner_at.insert(corner_at.begin() + static_cast<std::ptrdiff_t>(i), 1);
+        continue;
+      }
       size_t i = 0;
       while (i < bp1.size() && bp1[i] < cp.first - merge1) ++i;
       if (i < bp1.size() && std::fabs(bp1[i] - cp.first) <= merge1) {

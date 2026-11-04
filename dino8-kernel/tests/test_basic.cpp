@@ -93275,6 +93275,267 @@ void TestSweep1TwistOnAClosedRailIsAllowedForWholeTurns() {
         "sweep1 (closed rail): a scale_end ramp is refused with a reason that points at scale_schedule");
 }
 
+// (rail1 edge point, rail2 edge point) at every C0 knot of the wall's v direction: the corner stations.
+std::vector<std::pair<ON_3dPoint, ON_3dPoint>> CornerStationPairs(const ON_NurbsSurface& w) {
+  std::vector<std::pair<ON_3dPoint, ON_3dPoint>> out;
+  const ON_Interval dv = w.Domain(1), du = w.Domain(0);
+  double last = dv.Min();
+  for (int i = 0; i < w.KnotCount(1); ++i) {
+    const double t = w.Knot(1, i);
+    if (t > last + 1e-12 && t < dv.Max() - 1e-12 && w.KnotMultiplicity(1, i) >= w.Degree(1)) {
+      out.emplace_back(w.PointAt(du.Min(), t), w.PointAt(du.Max(), t));
+      last = t;
+    }
+  }
+  return out;
+}
+
+bool HasStationPair(const std::vector<std::pair<ON_3dPoint, ON_3dPoint>>& pairs, const ON_3dPoint& a, const ON_3dPoint& b, double tol) {
+  for (const auto& pr : pairs) {
+    if (pr.first.DistanceTo(a) < tol && pr.second.DistanceTo(b) < tol) return true;
+  }
+  return false;
+}
+
+void TestSweep2CornerPairingIgnoresASpuriousExtraKink() {
+  // rail1 has ONE corner A = (40,0,0); rail2 has the matching corner B = (44,4,0) AND one extra vertex bent by only 1 degree
+  // (a spurious kink above the 1e-3 rad corner threshold), so the corner counts are 1 vs 2. The real partners A and B sit at
+  // arc-length fractions 40/70 = 0.571 and 0.595 (2.4 percent apart): the pairing must match them, not give each a smooth point
+  // of the other rail (the old pairing gave A the point 42.3 along rail2's first leg and B the point 41.6 along rail1's).
+  const NurbsCurve r1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(40, 0, 0), Point3d(40, 0, 30)}, 1);
+  const double k = std::tan(ON_PI / 180.0), sn = std::sin(ON_PI / 180.0), cs = std::cos(ON_PI / 180.0);
+  const NurbsCurve s0 = Segment2(Point3d(0, 0, 0), Point3d(0, 4, 0));
+  // (1) the extra kink AFTER the corner, on rail2's second leg
+  {
+    const NurbsCurve r2 = NurbsCurve::FromControlPoints({Point3d(0, 4, 0), Point3d(44, 4, 0), Point3d(44, 4, 15), Point3d(44 + 15 * sn, 4, 15 + 15 * cs)}, 1);
+    const NurbsCurve s1 = Segment2(Point3d(40, 0, 30), Point3d(44 + 15 * sn, 4, 15 + 15 * cs));
+    Brep::Sweep2SectionsReport rep;
+    const Brep body = Brep::Sweep2Sections({s0, s1}, r1, r2, 32, &rep);
+    const ON_NurbsSurface& w = WallOfBody(body);
+    const auto stations = CornerStationPairs(w);
+    // The kink's partner Q on rail1 is whatever point the pairing chose (same arc-length fraction), the wall then is three
+    // ruled pieces: the z = 0 trapezoid (168), the planar strip A..Q / B..P (area sqrt(32) (zQ + 15) / 2) and the bilinear patch
+    // Q..E1 / P..E2 (integrated here by its own midpoint rule on S(s,t) = (1-t) a(s) + t b(s)).
+    const bool two = stations.size() == 2;
+    Check(body.raw().IsValid() && two && rep.corners == 2, "sweep2 sections (extra 1-degree kink after the corner): valid, two corner stations (the real corner and the kink)");
+    const ON_3dPoint A(40, 0, 0), B(44, 4, 0), P(44, 4, 15);
+    ON_3dPoint Q = ON_3dPoint::Origin;
+    bool real_pair = false, kink_on_rail1 = false;
+    for (const auto& pr : stations) {
+      if (pr.first.DistanceTo(A) < 1e-9 && pr.second.DistanceTo(B) < 1e-9) real_pair = true;
+      if (pr.second.DistanceTo(P) < 1e-9 && std::fabs(pr.first.x - 40) < 1e-9 && std::fabs(pr.first.y) < 1e-9 && pr.first.z > 0.5 && pr.first.z < 29.5) {
+        kink_on_rail1 = true;
+        Q = pr.first;
+      }
+    }
+    Check(real_pair, "sweep2 sections (extra kink after the corner): the real corners A (rail 1) and B (rail 2) are paired with EACH OTHER (a station pair A-B within 1e-9)");
+    Check(kink_on_rail1, "sweep2 sections (extra kink after the corner): the kink P is paired with a smooth point of rail1's second leg");
+    Check(std::max(rep.max_rail1_deviation, rep.max_rail2_deviation) < 1e-9 && rep.max_section_deviation < 1e-12,
+          "sweep2 sections (extra kink after the corner): both wall edges follow the rails to < 1e-9, both sections reproduced to < 1e-12");
+    double expect = 168.0 + std::sqrt(32.0) * (Q.z + 15.0) / 2.0;
+    {
+      const ON_3dPoint E1(40, 0, 30), E2(44 + 15 * sn, 4, 15 + 15 * cs);
+      const int N = 400;
+      double a3 = 0.0;
+      for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < N; ++j) {
+          const double s = (i + 0.5) / N, t = (j + 0.5) / N, h = 1.0 / N;
+          const ON_3dVector da = E1 - Q, db = E2 - P;
+          // dS/ds = (1-t) da + t db, dS/dt = b(s) - a(s)
+          const ON_3dPoint as = Q + da * s, bs = P + db * s;
+          a3 += ON_CrossProduct(da * (1.0 - t) + db * t, bs - as).Length() * h * h;
+        }
+      }
+      expect += a3;
+    }
+    const double area = WallArea(w, 40, 80);
+    std::printf("  [s2 corner] extra kink after: %zu corner stations, partner of the kink Q.z = %.4f, area %.6f vs independent piecewise %.6f\n", stations.size(), Q.z, area, expect);
+    Check(std::fabs(area - expect) < 2e-4 * expect, "sweep2 sections (extra kink after the corner): the wall's area equals the independent piecewise ruled-patch area (trapezoid + strip + bilinear patch) to 2e-4");
+  }
+  // (2) the extra kink BEFORE the corner (on rail2's first leg): the real partners are still matched
+  {
+    const ON_3dPoint K(20, 4, 0), Bq(44, 4 + 24 * k, 0), Top(44, 4 + 24 * k, 30);
+    const NurbsCurve r2 = NurbsCurve::FromControlPoints({Point3d(0, 4, 0), Point3d(K.x, K.y, K.z), Point3d(Bq.x, Bq.y, Bq.z), Point3d(Top.x, Top.y, Top.z)}, 1);
+    const NurbsCurve sa = Segment2(Point3d(0, 0, 0), Point3d(0, 4, 0)), sb = Segment2(Point3d(40, 0, 30), Point3d(Top.x, Top.y, Top.z));
+    Brep::Sweep2SectionsReport rep;
+    const Brep body = Brep::Sweep2Sections({sa, sb}, r1, r2, 32, &rep);
+    const auto stations = CornerStationPairs(WallOfBody(body));
+    std::printf("  [s2 corner] extra kink before: %zu corner stations, rail dev %.3g / %.3g\n", stations.size(), rep.max_rail1_deviation, rep.max_rail2_deviation);
+    Check(body.raw().IsValid() && stations.size() == 2 && HasStationPair(stations, ON_3dPoint(40, 0, 0), Bq, 1e-9),
+          "sweep2 sections (extra kink before the corner): the real corners A and B are paired with each other (station pair A-B within 1e-9)");
+    Check(std::max(rep.max_rail1_deviation, rep.max_rail2_deviation) < 1e-9, "sweep2 sections (extra kink before the corner): both wall edges follow the rails to < 1e-9");
+    // the same through the single-section Sweep2()
+    const Brep one = Brep::Sweep2(sa, r1, r2, 32, /*cap=*/false);
+    Check(HasStationPair(CornerStationPairs(WallOfBody(one)), ON_3dPoint(40, 0, 0), Bq, 1e-9), "sweep2 (extra kink before the corner): the real corners are paired with each other too");
+  }
+  // (3) without the extra kink the corner counts are equal and the area is the closed form
+  {
+    const NurbsCurve r2 = NurbsCurve::FromControlPoints({Point3d(0, 4, 0), Point3d(44, 4, 0), Point3d(44, 4, 30)}, 1);
+    const NurbsCurve s1 = Segment2(Point3d(40, 0, 30), Point3d(44, 4, 30));
+    const Brep body = Brep::Sweep2Sections({s0, s1}, r1, r2, 32);
+    const double area = WallArea(WallOfBody(body), 40, 60), exact = 168.0 + 30.0 * std::sqrt(32.0);
+    Check(std::fabs(area - exact) < 1e-6 && HasStationPair(CornerStationPairs(WallOfBody(body)), ON_3dPoint(40, 0, 0), ON_3dPoint(44, 4, 0), 1e-9),
+          "sweep2 sections (no extra kink): the area is still 168 + 30 sqrt(32) to 1e-6 with the A-B station pair");
+  }
+}
+
+void TestSweep2SectionsAnchorsWinOverOneRailOnlyCorners() {
+  // rail1: polyline with its corner at (20,0,0) (fraction 0.5 of 40); rail2: a SMOOTH quadratic, so the corner is a corner of
+  // one rail only and rail2's partner is just the point at the same arc-length fraction (0.5). The user's section anchors win.
+  const NurbsCurve p1 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(20, 0, 0), Point3d(20, 0, 20)}, 1);
+  const NurbsCurve p2 = NurbsCurve::FromControlPoints({Point3d(0, 5, 0), Point3d(24, 5, 0), Point3d(24, 5, 24)}, 2);
+  const double len2 = p2.Length();
+  const auto on2 = [&](double f) {
+    const ON_3dPoint q = p2.raw().PointAt(p2.ParameterAtArcLength(f * len2));
+    return Point3d(q.x, q.y, q.z);
+  };
+  const NurbsCurve first = Segment2(Point3d(0, 0, 0), Point3d(0, 5, 0)), last = Segment2(Point3d(20, 0, 20), Point3d(24, 5, 24));
+  // (a) a raked middle section from rail1 at fraction 0.6 (20,0,4) to rail2 at fraction 0.45: the corner's fraction partner
+  // (0.5) lies AFTER the middle anchor's rail2 parameter, so the derived pair cannot be placed - it is dropped, the call works
+  // (it used to throw "the rails' corners cannot be paired in order with the section anchors").
+  {
+    const NurbsCurve mid = Segment2(Point3d(20, 0, 4), on2(0.45));
+    Brep::Sweep2SectionsReport rep;
+    const Brep body = Brep::Sweep2Sections({first, mid, last}, p1, p2, 48, &rep);
+    std::printf("  [s2 corner] anchor between corner and its fraction partner: %d corner(s), section dev %.3g\n", rep.corners, rep.max_section_deviation);
+    Check(body.raw().IsValid() && body.FaceCount() == 1 && rep.sections == 3 && rep.corners == 0 && rep.max_section_deviation < 1e-12,
+          "sweep2 sections (corner on one rail, anchors that advance on both rails): works, the underivable corner pair is dropped, three sections reproduced to < 1e-12");
+  }
+  // (b) the same with the middle anchor at rail2 fraction 0.55: the derived pair (0.5) fits between the anchors and is kept
+  {
+    const NurbsCurve mid = Segment2(Point3d(20, 0, 4), on2(0.55));
+    Brep::Sweep2SectionsReport rep;
+    const Brep body = Brep::Sweep2Sections({first, mid, last}, p1, p2, 48, &rep);
+    Check(body.raw().IsValid() && rep.corners == 1 && rep.max_section_deviation < 1e-12 && rep.max_rail1_deviation < 1e-9,
+          "sweep2 sections (corner on one rail, anchors either side of its partner): the corner pair is kept, rail 1's edge exact (< 1e-9)");
+  }
+  // (c) a section exactly AT rail1's corner with an arbitrary rail2 end (fraction 0.35 != the corner's partner 0.5): the
+  // anchor defines the partner (it used to throw "a section's anchor sits at a corner of one rail but not at the matching corner")
+  {
+    const NurbsCurve at_corner = Segment2(Point3d(20, 0, 0), on2(0.35));
+    Brep::Sweep2SectionsReport rep;
+    const Brep body = Brep::Sweep2Sections({first, at_corner, last}, p1, p2, 48, &rep);
+    std::printf("  [s2 corner] section at a one-rail-only corner: %d corner(s), rail dev %.3g / %.3g, section dev %.3g\n", rep.corners, rep.max_rail1_deviation,
+                rep.max_rail2_deviation, rep.max_section_deviation);
+    Check(body.raw().IsValid() && rep.corners == 1 && rep.max_section_deviation < 1e-12 && rep.max_rail1_deviation < 1e-9,
+          "sweep2 sections (a section anchored at a one-rail-only corner): works, that station is the C0 corner, rail 1's edge exact (< 1e-9)");
+  }
+  // (d) a corner genuinely on BOTH rails (matched) still refuses an anchor at one corner with the other end elsewhere
+  {
+    const NurbsCurve q2 = NurbsCurve::FromControlPoints({Point3d(0, 5, 0), Point3d(24, 5, 0), Point3d(24, 5, 24)}, 1);
+    const NurbsCurve at_corner = Segment2(Point3d(20, 0, 0), Point3d(24, 5, 10));
+    const std::string why = RefusalText([&] { Brep::Sweep2Sections({first, at_corner, last}, p1, q2, 48); });
+    std::printf("  [s2 corner] anchor at a real corner, other end elsewhere: %s\n", why.c_str());
+    Check(why.find("anchor sits at a corner of one rail but not at the matching corner") != std::string::npos,
+          "sweep2 sections (a matched corner on both rails): an anchor at one corner with the other end elsewhere is still refused, with the reason");
+  }
+}
+
+void TestSweep1ClosedRailTwistStepIsBounded() {
+  // The twist of station k is twist_total * k / m and nothing looks at the angle BETWEEN consecutive copies: 32 turns at 32
+  // stations is exactly one turn per station (every copy the untwisted section: the volume of the UNtwisted tube, 227.0), 5 turns
+  // at 32 stations 56.25 degrees per station. Both are refused now, naming the step; a step up to 30 degrees passes.
+  const double R = 10.0, d = 1.5, rr = 1.0;
+  const NurbsCurve rail = RingRail(R);
+  const NurbsCurve off = CircleSection(ON_3dPoint(R + d, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1), rr);
+  const double v_turned = ON_PI * rr * rr * 2.0 * ON_PI * R;
+  const std::string why_alias = RefusalText([&] { Brep::Sweep1(off, rail, 32, false, 32.0 * 2.0 * ON_PI); });
+  const std::string why_coarse = RefusalText([&] { Brep::Sweep1(off, rail, 32, false, 5.0 * 2.0 * ON_PI); });
+  std::printf("  [sweep1 twist] 32 turns / 32 stations: %s\n  [sweep1 twist] 5 turns / 32 stations: %s\n", why_alias.c_str(), why_coarse.c_str());
+  Check(why_alias.find("360.0 degrees between consecutive stations") != std::string::npos, "sweep1 (closed rail): 32 turns at 32 stations (a whole turn per station, silently the untwisted tube) is refused, naming the 360-degree step");
+  Check(why_coarse.find("56.2 degrees between consecutive stations") != std::string::npos || why_coarse.find("56.3 degrees between consecutive stations") != std::string::npos,
+        "sweep1 (closed rail): 5 turns at 32 stations is refused, naming the 56.25-degree step");
+  Check(why_coarse.find("more stations") != std::string::npos, "sweep1 (closed rail): the refusal says to use more stations");
+  // a schedule is checked the same way (one turn over the second half of the loop is 5 turns' worth of rate when it is 5 turns)
+  const std::vector<std::pair<double, double>> fast = {{0.0, 0.0}, {0.5, 0.0}, {1.0, 5.0 * 2.0 * ON_PI}};
+  Check(RefusalText([&] { Brep::Sweep1(off, rail, 32, false, 0.0, 1.0, nullptr, &fast); }).find("degrees between consecutive stations") != std::string::npos,
+        "sweep1 (closed rail): a twist schedule that turns too fast per station is refused too");
+  // the bound itself: one turn is 36 degrees per station at 10 stations (refused), 30 at 12 (allowed, exactly at the bound)
+  Check(RefusalText([&] { Brep::Sweep1(off, rail, 10, false, 2.0 * ON_PI); }).find("degrees between consecutive stations") != std::string::npos, "sweep1 (closed rail): one turn at 10 stations (36 degrees per station) is refused");
+  Check(RefusalText([&] { Brep::Sweep1(off, rail, 12, false, 2.0 * ON_PI); }).empty(), "sweep1 (closed rail): one turn at 12 stations (exactly 30 degrees per station) is allowed");
+  // one turn at 32 stations (11.25 degrees) and five turns at 128 stations (14.06 degrees) still give the closed-form volume
+  for (const auto& cfg : std::vector<std::pair<int, double>>{{32, 1.0}, {128, 5.0}}) {
+    const Brep body = Brep::Sweep1(off, rail, cfg.first, false, cfg.second * 2.0 * ON_PI);
+    const double volume = WallVolumeByDivergence(WallOfBody(body), 200, 800);
+    std::printf("  [sweep1 twist] closed rail, %g turn(s) at %d stations: volume %.5f vs %.5f (rel %.2g)\n", cfg.second, cfg.first, volume, v_turned, std::fabs(volume - v_turned) / v_turned);
+    Check(body.raw().IsValid() && body.raw().IsSolid() && std::fabs(volume - v_turned) < 1e-3 * v_turned,
+          "sweep1 (closed rail): a twist within the per-station bound still gives the closed-form volume pi r^2 2 pi R to 1e-3");
+  }
+}
+
+void TestSweep1SectionsClosedRailVaryingSectionsMatchAnIndependentPeriodicBlend() {
+  // Five circles on the ring R = 10 (radial planes at 20 / 100 / 190 / 270 / 355 degrees: the last sits 5 degrees before the
+  // seam at 0, so the segment 355 -> 380 crosses it), whose centre offset d (radial), centre height h and radius rho all VARY
+  // smoothly round the ring. In the rail's own frames (radial, tangent, z) every control point of a section is linear in
+  // (d, h, rho), so the blended section is the circle with the blended (d, h, rho) and the wall point's distance to that circle is
+  // the error. The expected blend is computed HERE, independently of the kernel: a periodic cubic Hermite of each of d, h, rho
+  // against the ring angle (= arc length / R) with Catmull-Rom slopes (y[i+1] - y[i-1]) / (theta[i+1] - theta[i-1]), the
+  // neighbours wrapping by 2 pi, written out below in a few lines (the documented blend of Sweep1Sections).
+  const double R = 10.0;
+  const double deg[5] = {20, 100, 190, 270, 355};
+  const auto dfun = [](double a) { return 0.8 + 0.5 * std::cos(a); };
+  const auto hfun = [](double a) { return 0.3 * std::sin(2.0 * a); };
+  const auto rfun = [](double a) { return 1.5 + 0.4 * std::sin(a + 0.5); };
+  double th[5], y[3][5];
+  std::vector<NurbsCurve> sections;
+  for (int i = 0; i < 5; ++i) {
+    th[i] = deg[i] * ON_PI / 180.0;
+    y[0][i] = dfun(th[i]);
+    y[1][i] = hfun(th[i]);
+    y[2][i] = rfun(th[i]);
+    sections.push_back(CircleSection(ON_3dPoint((R + y[0][i]) * std::cos(th[i]), (R + y[0][i]) * std::sin(th[i]), y[1][i]), ON_3dVector(-std::sin(th[i]), std::cos(th[i]), 0),
+                                     ON_3dVector(std::cos(th[i]), std::sin(th[i]), 0), y[2][i]));
+  }
+  const auto idx = [](int j) { return ((j % 5) + 5) % 5; };
+  const auto theta_u = [&](int j) { return th[idx(j)] + 2.0 * ON_PI * std::floor(j / 5.0); };
+  // blend of value row `c` at ring angle a; `wrong_wrap` drops the 2 pi from the seam-crossing neighbours (a deliberately wrong
+  // reference, used only to show the check can tell the difference)
+  const auto blend = [&](int c, double a, bool wrong_wrap) {
+    while (a < th[0]) a += 2.0 * ON_PI;
+    while (a >= th[0] + 2.0 * ON_PI) a -= 2.0 * ON_PI;
+    int i = 0;
+    while (i < 4 && !(a < theta_u(i + 1))) ++i;
+    const auto slope = [&](int j) {
+      const double dx = wrong_wrap ? std::fabs(th[idx(j + 1)] - th[idx(j - 1)]) : theta_u(j + 1) - theta_u(j - 1);
+      return (y[c][idx(j + 1)] - y[c][idx(j - 1)]) / dx;
+    };
+    const double h = theta_u(i + 1) - theta_u(i), s = (a - theta_u(i)) / h;
+    const double h00 = 2 * s * s * s - 3 * s * s + 1, h10 = s * s * s - 2 * s * s + s, h01 = -2 * s * s * s + 3 * s * s, h11 = s * s * s - s * s;
+    return h00 * y[c][idx(i)] + h10 * h * slope(i) + h01 * y[c][idx(i + 1)] + h11 * h * slope(i + 1);
+  };
+  const NurbsCurve rail = RingRail(R);
+  Brep::Sweep1SectionsReport rep;
+  const Brep body = Brep::Sweep1Sections(sections, rail, 120, false, &rep);
+  const ON_NurbsSurface& w = WallOfBody(body);
+  Check(body.raw().IsValid() && body.raw().IsSolid() && rep.sections == 5 && rep.max_section_deviation < 1e-12,
+        "sweep1 sections (closed rail, varying sections): a valid solid, the five circles reproduced to < 1e-12");
+  double worst = 0.0, worst_seam = 0.0, sep_wrong = 0.0, sep_seam = 0.0;
+  for (int j = 0; j < 1440; ++j) {
+    for (int i = 0; i < 8; ++i) {
+      const ON_3dPoint p = w.PointAt(w.Domain(0).ParameterAt(i / 8.0), w.Domain(1).ParameterAt(j / 1440.0));
+      double a = std::atan2(p.y, p.x);
+      if (a < 0.0) a += 2.0 * ON_PI;
+      const auto resid = [&](bool wrong) {
+        return std::fabs(std::hypot(std::hypot(p.x, p.y) - R - blend(0, a, wrong), p.z - blend(1, a, wrong)) - blend(2, a, wrong));
+      };
+      const double err = resid(false);
+      worst = std::max(worst, err);
+      const bool in_seam_segment = a > th[4] - 1e-9 || a < th[0] + 1e-9;  // 355 .. 360 and 0 .. 20 degrees
+      if (in_seam_segment) {
+        worst_seam = std::max(worst_seam, err);
+        sep_seam = std::max(sep_seam, resid(true));
+      }
+      sep_wrong = std::max(sep_wrong, resid(true));
+    }
+  }
+  std::printf("  [s1s closed] varying d/h/rho, 5 sections: section dev %.3g, wall vs independent periodic Hermite: worst %.3g (seam segment %.3g); a wrong-wrap reference would differ by %.3g (seam segment %.3g)\n",
+              rep.max_section_deviation, worst, worst_seam, sep_wrong, sep_seam);
+  Check(worst < 2e-3, "sweep1 sections (closed rail, varying sections): every wall point is within 2e-3 of the independent periodic Hermite circle, all five segments");
+  Check(worst_seam < 2e-3, "sweep1 sections (closed rail, varying sections): the segment 355 -> 20 degrees that crosses the seam matches the independent blend within 2e-3");
+  Check(sep_seam > 20.0 * std::max(worst_seam, 1e-4),
+        "sweep1 sections (closed rail, varying sections): a reference with the seam neighbours' 2 pi wrap dropped differs by far more than the match, so this check can see a wrong wrap");
+}
+
 }  // namespace sweep_closure_tests
 
 // Offsetting & shelling: unified untrimmed-surface offset (exact for analytic
@@ -95184,6 +95445,14 @@ int main() {
           sweep_closure_tests::TestSweep1SectionsClosedRailNonPlanarRingIsAValidSolid);
   RunTest("sweep_closure_tests::TestSweep1TwistOnAClosedRailIsAllowedForWholeTurns",
           sweep_closure_tests::TestSweep1TwistOnAClosedRailIsAllowedForWholeTurns);
+  RunTest("sweep_closure_tests::TestSweep2CornerPairingIgnoresASpuriousExtraKink",
+          sweep_closure_tests::TestSweep2CornerPairingIgnoresASpuriousExtraKink);
+  RunTest("sweep_closure_tests::TestSweep2SectionsAnchorsWinOverOneRailOnlyCorners",
+          sweep_closure_tests::TestSweep2SectionsAnchorsWinOverOneRailOnlyCorners);
+  RunTest("sweep_closure_tests::TestSweep1ClosedRailTwistStepIsBounded",
+          sweep_closure_tests::TestSweep1ClosedRailTwistStepIsBounded);
+  RunTest("sweep_closure_tests::TestSweep1SectionsClosedRailVaryingSectionsMatchAnIndependentPeriodicBlend",
+          sweep_closure_tests::TestSweep1SectionsClosedRailVaryingSectionsMatchAnIndependentPeriodicBlend);
 
   RunTest("offset_unified_tests::TestOffsetFreeformBumpHonoursStatedToleranceAgainstExactLocus",
           offset_unified_tests::TestOffsetFreeformBumpHonoursStatedToleranceAgainstExactLocus);

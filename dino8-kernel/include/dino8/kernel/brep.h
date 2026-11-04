@@ -1017,8 +1017,13 @@ class Brep {
   // centred off a circular rail and twisted by 2*pi about the rail's
   // tangent encloses pi r^2 * 2 pi R (the centroid's winding cancels the
   // curvature term), not pi r^2 * 2 pi (R + d). Any other twist on a
-  // closed rail throws (it would leave a step at the seam), as does a
-  // twist_schedule.
+  // closed rail throws (it would leave a step at the seam). The twist
+  // BETWEEN consecutive stations must also stay within 30 degrees (the
+  // nothing-checks-the-copies aliasing guard: a whole-turn twist spread
+  // over too few stations would alias, at one turn per station every copy
+  // is the untwisted section) - a larger per-station step throws, naming
+  // the angle and about how many stations would do; `stations` is NOT
+  // raised automatically.
   //
   // `scale_end` uniformly scales the section about each station's own
   // rail point, linear in arc-length station fraction from 1.0 at the
@@ -1127,9 +1132,14 @@ class Brep {
   // CORNERS. Open rails with a tangent jump (an interior C0 knot whose
   // one-sided tangents differ by more than 1e-3 rad: a polyline vertex, an
   // arc joined to a line) no longer cut the corner. The i-th corner of
-  // rail1 is paired with the i-th corner of rail2 (unequal counts: each
-  // corner is paired with the point of the other rail at the same
-  // arc-length fraction of the whole rail); the stations are packed per
+  // rail1 is paired with the i-th corner of rail2. With unequal counts the
+  // corners are MATCHED in order (never crossing) on the proximity of their
+  // arc-length fractions of the whole rail (within 5% of the rail; most
+  // matches first, then the least total fraction distance), so an extra or
+  // spurious kink on one rail cannot displace the real corner pairs; a
+  // corner left unmatched is a corner of one rail only and is paired with
+  // the other rail's point at the same arc-length fraction (clamped to stay
+  // between its neighbouring pairs). The stations are packed per
   // segment between paired corners (equal arc-length fractions of the
   // segment on both rails, at least 4 intervals each, `stations - 1`
   // shared out by rail1 length) with a station pair exactly AT every
@@ -1214,6 +1224,14 @@ class Brep {
   // (`Sweep2SectionsReport::corners` counts them); two straight legs reproduce
   // the closed-form area to 1e-6 with the edges within 1e-9 of the rails at any
   // station count. CLOSED rails with a corner are refused with a reason.
+  // The user's section anchors win over the corner pairing: a corner of ONE
+  // rail only (its partner on the other rail is just the point at the same
+  // arc-length fraction) never makes an input fail - a section anchored at
+  // that corner makes that station the corner (the anchor defines the
+  // partner), and when the derived partner does not fit between the
+  // neighbouring anchors on the other rail that corner pair is dropped (the
+  // wall cuts that corner, as without corner handling). Only a corner that
+  // is genuinely on BOTH rails (matched) and conflicts with an anchor throws.
   // Always an UNCAPPED single-face body (the wall). Closed sections are not
   // seam- or direction-aligned with each other (give them consistent seams
   // and directions). Throws std::invalid_argument for fewer than 2 sections,
