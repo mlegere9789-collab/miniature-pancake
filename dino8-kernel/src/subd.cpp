@@ -1,0 +1,3702 @@
+#include "dino8/kernel/subd.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+
+#include "dino8/kernel/boolean.h"
+#include "dino8/kernel/brep.h"
+
+namespace dino8::kernel {
+
+namespace {
+
+// True if `uv`'s 4 corners are axis-aligned in their own (u, v) domain -
+// every one of the 4 edges is a constant-u or constant-v isocurve - the
+// same "plain quad" shape check Brep::Tessellate()'s own
+// IsAxisAlignedQuadUv (brep.cpp, anonymous namespace, so not reachable
+// from here) uses for the identical seam-matching purpose. Duplicated
+// rather than shared across the two files: it's a few lines of pure
+// (u, v) arithmetic with no Brep-specific state, and FromBrep() below is
+// this file's only caller.
+bool IsAxisAlignedQuadUvForSubD(const std::array<Point2d, 4>& uv) {
+  for (int e = 0; e < 4; ++e) {
+    const Point2d& from = uv[static_cast<size_t>(e)];
+    const Point2d& to = uv[static_cast<size_t>((e + 1) % 4)];
+    const double tol_u = 1e-9 * (1.0 + std::fabs(from.x) + std::fabs(to.x));
+    const double tol_v = 1e-9 * (1.0 + std::fabs(from.y) + std::fabs(to.y));
+    const bool u_constant = std::fabs(to.x - from.x) <= tol_u;
+    const bool v_constant = std::fabs(to.y - from.y) <= tol_v;
+    if (!u_constant && !v_constant) return false;  // a genuinely oblique edge
+  }
+  return true;
+}
+
+// One row (or column) of a uniform-knot cubic B-spline's control net,
+// re-expressed as the control polygon of the SAME curve on the SAME domain
+// over an UNCLAMPED uniform knot vector - the form in which a uniform
+// cubic B-spline span is literally a regular Catmull-Clark patch (see
+// SubD::FromUniformBicubicSurface()). Exact, not fitted: a clamped
+// uniform cubic differs from the unclamped one only on its first and last
+// span, so those two spans' exact Bezier points (OpenNURBS' own
+// ON_NurbsCurve::ConvertSpanToBezier, plain knot insertion) are mapped
+// back through the closed-form uniform-B-spline <-> Bezier relation for
+// one span with uniform control points P0..P3:
+//   B0 = (P0 + 4P1 + P2)/6, B1 = (2P1 + P2)/3, B2 = (P1 + 2P2)/3,
+//   B3 = (P1 + 4P2 + P3)/6
+// whose inverse is
+//   P1 = 2B1 - B2, P2 = 2B2 - B1, P0 = 6B0 - 7B1 + 2B2,
+//   P3 = 6B3 + 2B1 - 7B2.
+// Every other control point already carries a fully uniform basis
+// function and is kept as-is; for an already-unclamped row the first/last
+// spans are themselves uniform and the map is the identity. Needs the
+// knot vector to be uniform (ON_IsKnotVectorUniform, checked by the
+// caller) - on a non-uniform one the interior spans would not be uniform
+// B-spline spans at all and no cage could reproduce them.
+std::vector<ON_3dPoint> UnclampUniformCubicRow(const std::vector<ON_3dPoint>& cvs,
+                                                const std::vector<double>& knots) {
+  const int n = static_cast<int>(cvs.size());
+  ON_NurbsCurve row(3, false, 4, n);
+  for (int i = 0; i < n; ++i) row.SetCV(i, cvs[static_cast<size_t>(i)]);
+  for (int k = 0; k < n + 2; ++k) row.SetKnot(k, knots[static_cast<size_t>(k)]);
+
+  const auto bezier_of_span = [&row](int span, ON_3dPoint (&b)[4]) {
+    ON_BezierCurve bezier;
+    if (!row.ConvertSpanToBezier(span, bezier)) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::FromUniformBicubicSurface: ON_NurbsCurve::ConvertSpanToBezier "
+          "failed on an end span of a control-net row (empty span?)");
+    }
+    for (int i = 0; i < 4; ++i) bezier.GetCV(i, b[i]);
+  };
+  const auto comb = [](double a, const ON_3dPoint& A, double b, const ON_3dPoint& B, double c,
+                       const ON_3dPoint& C) {
+    return ON_3dPoint(a * A.x + b * B.x + c * C.x, a * A.y + b * B.y + c * C.y,
+                      a * A.z + b * B.z + c * C.z);
+  };
+
+  std::vector<ON_3dPoint> out = cvs;
+  ON_3dPoint b[4];
+  bezier_of_span(0, b);  // first span: uniform control points P0..P3 = out[0..3]
+  out[0] = comb(6.0, b[0], -7.0, b[1], 2.0, b[2]);
+  out[1] = comb(2.0, b[1], -1.0, b[2], 0.0, b[2]);
+  out[2] = comb(2.0, b[2], -1.0, b[1], 0.0, b[1]);
+  bezier_of_span(n - 4, b);  // last span: P0..P3 = out[n-4..n-1]
+  out[static_cast<size_t>(n - 3)] = comb(2.0, b[1], -1.0, b[2], 0.0, b[2]);
+  out[static_cast<size_t>(n - 2)] = comb(2.0, b[2], -1.0, b[1], 0.0, b[1]);
+  out[static_cast<size_t>(n - 1)] = comb(6.0, b[3], 2.0, b[1], -7.0, b[2]);
+  return out;
+}
+
+}  // namespace
+
+SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges) {
+  SubD result;
+  const ON_SubDFromMeshParameters& params = crease_at_double_edges
+                                                 ? ON_SubDFromMeshParameters::InteriorCreases
+                                                 : ON_SubDFromMeshParameters::Smooth;
+  const ON_SubD* built = ON_SubD::CreateFromMesh(&control_mesh.raw(), &params, &result.subd_);
+  if (built == nullptr) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::FromControlMesh: ON_SubD::CreateFromMesh failed "
+        "(control_mesh may have no faces or invalid topology)");
+  }
+  return result;
+}
+
+SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions) {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurface: u_divisions and v_divisions "
+        "must be at least 1");
+  }
+  if (!surface.raw().IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurface: surface is not IsValid() (e.g. "
+        "default-constructed or otherwise degenerate - has no usable domain or "
+        "control points to sample)");
+  }
+  const Interval u_domain = surface.Domain(0);
+  const Interval v_domain = surface.Domain(1);
+
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  const int u_points = u_divisions + 1;
+  const int v_points = v_divisions + 1;
+  const auto grid_index = [v_points](int i, int j) { return i * v_points + j; };
+
+  raw.m_V.Reserve(u_points * v_points);
+  for (int i = 0; i < u_points; ++i) {
+    const double u = u_domain.min + (u_domain.max - u_domain.min) * (static_cast<double>(i) / u_divisions);
+    for (int j = 0; j < v_points; ++j) {
+      const double v = v_domain.min + (v_domain.max - v_domain.min) * (static_cast<double>(j) / v_divisions);
+      raw.m_V.Append(ON_3fPoint(surface.PointAt(u, v)));
+    }
+  }
+
+  raw.m_F.Reserve(u_divisions * v_divisions);
+  for (int i = 0; i < u_divisions; ++i) {
+    for (int j = 0; j < v_divisions; ++j) {
+      ON_MeshFace f;
+      f.vi[0] = grid_index(i, j);
+      f.vi[1] = grid_index(i + 1, j);
+      f.vi[2] = grid_index(i + 1, j + 1);
+      f.vi[3] = grid_index(i, j + 1);
+      raw.m_F.Append(f);
+    }
+  }
+
+  return SubD::FromControlMesh(grid);
+}
+
+SubD SubD::FromUniformBicubicSurface(const NurbsSurface& surface) {
+  const ON_NurbsSurface& raw = surface.raw();
+  if (!raw.IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromUniformBicubicSurface: surface is not IsValid() (e.g. "
+        "default-constructed or otherwise degenerate)");
+  }
+  if (raw.Degree(0) != 3 || raw.Degree(1) != 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromUniformBicubicSurface: surface must be bicubic (degree 3 in "
+        "both directions), got degree (" +
+        std::to_string(raw.Degree(0)) + ", " + std::to_string(raw.Degree(1)) +
+        ") - only a uniform bicubic B-spline has an exact Catmull-Clark counterpart; use "
+        "FromNurbsSurface() for a sampled approximation of anything else");
+  }
+  if (raw.IsRational()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromUniformBicubicSurface: surface is rational - a Catmull-Clark "
+        "limit surface is polynomial, so no cage reproduces it exactly; use FromNurbsSurface() "
+        "for a sampled approximation");
+  }
+  for (int dir = 0; dir < 2; ++dir) {
+    if (!ON_IsKnotVectorUniform(raw.m_order[dir], raw.m_cv_count[dir], raw.m_knot[dir])) {
+      throw std::invalid_argument(
+          "dino8::kernel::SubD::FromUniformBicubicSurface: the " + std::string(dir == 0 ? "u" : "v") +
+          " knot vector is not uniform (every interior knot span must have the same length) - "
+          "only a uniform bicubic B-spline has an exact Catmull-Clark counterpart; use "
+          "FromNurbsSurface() for a sampled approximation");
+    }
+    if (raw.IsPeriodic(dir)) {
+      throw std::invalid_argument(
+          "dino8::kernel::SubD::FromUniformBicubicSurface: surface is periodic in " +
+          std::string(dir == 0 ? "u" : "v") +
+          " - a closed cage welded across the seam is out of scope here (the surface would have "
+          "to be treated as open, duplicating the seam's control points)");
+    }
+  }
+
+  const int n = raw.m_cv_count[0];
+  const int m = raw.m_cv_count[1];
+  std::vector<double> knots_u(static_cast<size_t>(n + 2));
+  std::vector<double> knots_v(static_cast<size_t>(m + 2));
+  for (int k = 0; k < n + 2; ++k) knots_u[static_cast<size_t>(k)] = raw.m_knot[0][k];
+  for (int k = 0; k < m + 2; ++k) knots_v[static_cast<size_t>(k)] = raw.m_knot[1][k];
+
+  // The cage: the surface's own control net, unclamped exactly in u (each
+  // column, i varying) and then in v (each row, j varying) - the two
+  // 1-D maps are linear, so applying them one direction at a time IS the
+  // tensor-product unclamping of the whole net.
+  std::vector<std::vector<ON_3dPoint>> cage(static_cast<size_t>(n),
+                                            std::vector<ON_3dPoint>(static_cast<size_t>(m)));
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < m; ++j) raw.GetCV(i, j, cage[static_cast<size_t>(i)][static_cast<size_t>(j)]);
+  }
+  for (int j = 0; j < m; ++j) {
+    std::vector<ON_3dPoint> column(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) column[static_cast<size_t>(i)] = cage[static_cast<size_t>(i)][static_cast<size_t>(j)];
+    column = UnclampUniformCubicRow(column, knots_u);
+    for (int i = 0; i < n; ++i) cage[static_cast<size_t>(i)][static_cast<size_t>(j)] = column[static_cast<size_t>(i)];
+  }
+  for (int i = 0; i < n; ++i) {
+    cage[static_cast<size_t>(i)] = UnclampUniformCubicRow(cage[static_cast<size_t>(i)], knots_v);
+  }
+
+  // Same quad grid FromNurbsSurface() builds, but with DOUBLE-precision
+  // vertices too: ON_SubD::CreateFromMesh reads m_dV whenever
+  // HasDoublePrecisionVertices() (ON_3dPointListRef::SetFromMesh), and a
+  // float-only cage would already cost ~1e-7 of the exactness this method
+  // exists for.
+  Mesh grid;
+  ON_Mesh& mesh = grid.raw();
+  mesh.m_V.Reserve(n * m);
+  mesh.m_dV.Reserve(n * m);
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < m; ++j) {
+      const ON_3dPoint& p = cage[static_cast<size_t>(i)][static_cast<size_t>(j)];
+      mesh.m_V.Append(ON_3fPoint(p));
+      mesh.m_dV.Append(p);
+    }
+  }
+  const auto grid_index = [m](int i, int j) { return i * m + j; };
+  mesh.m_F.Reserve((n - 1) * (m - 1));
+  for (int i = 0; i + 1 < n; ++i) {
+    for (int j = 0; j + 1 < m; ++j) {
+      ON_MeshFace f;
+      f.vi[0] = grid_index(i, j);
+      f.vi[1] = grid_index(i + 1, j);
+      f.vi[2] = grid_index(i + 1, j + 1);
+      f.vi[3] = grid_index(i, j + 1);
+      mesh.m_F.Append(f);
+    }
+  }
+  return SubD::FromControlMesh(grid);
+}
+
+SubD SubD::FromBrep(const Brep& brep, int divisions, double weld_tolerance) {
+  if (divisions < 1) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromBrep: divisions must be at least 1");
+  }
+  const int face_count = brep.FaceCount();
+  if (face_count <= 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromBrep: brep has no faces");
+  }
+
+  std::vector<Mesh> face_grids;
+  face_grids.reserve(static_cast<size_t>(face_count));
+
+  for (int face_index = 0; face_index < face_count; ++face_index) {
+    if (!brep.FaceCoversWholeDomain(face_index)) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+          " is trimmed - FromBrep only accepts a Brep whose faces are all untrimmed planar quads");
+    }
+    const ON_BrepFace& face = brep.raw().m_F[face_index];
+    const ON_Surface* face_surface = face.SurfaceOf();
+    if (face_surface == nullptr) {
+      throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                " has no surface");
+    }
+    ON_NurbsSurface nurbs_surface;
+    if (const auto* cast = ON_NurbsSurface::Cast(face_surface)) {
+      nurbs_surface = *cast;
+    } else if (face_surface->GetNurbForm(nurbs_surface) <= 0) {
+      throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                " has no NURBS form");
+    }
+    NurbsSurface surface;
+    surface.raw() = nurbs_surface;
+    if (!surface.IsPlanar()) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+          " is not planar - FromBrep only accepts a Brep whose faces are all untrimmed planar quads");
+    }
+
+    const Interval du = surface.Domain(0);
+    const Interval dv = surface.Domain(1);
+    const std::array<Point2d, 4> corner_uv = {Point2d(du.min, dv.min), Point2d(du.max, dv.min),
+                                               Point2d(du.max, dv.max), Point2d(du.min, dv.max)};
+    if (!IsAxisAlignedQuadUvForSubD(corner_uv)) {
+      throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                " is not an axis-aligned quad in its own (u, v) domain");
+    }
+    std::array<Point3d, 4> corner;
+    for (int c = 0; c < 4; ++c) {
+      corner[static_cast<size_t>(c)] =
+          surface.PointAt(corner_uv[static_cast<size_t>(c)].x, corner_uv[static_cast<size_t>(c)].y);
+    }
+    {
+      double scale = 0.0;
+      for (const Point3d& p : corner) scale = std::max(scale, p.MaximumCoordinate());
+      const double tol = 1e-9 * (1.0 + scale);
+      bool distinct = true;
+      for (int c = 0; c < 4 && distinct; ++c) {
+        for (int d = c + 1; d < 4; ++d) {
+          if (corner[static_cast<size_t>(c)].DistanceTo(corner[static_cast<size_t>(d)]) <= tol) {
+            distinct = false;
+            break;
+          }
+        }
+      }
+      if (!distinct) {
+        throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                  " does not have 4 distinct corners");
+      }
+    }
+
+    // Bilinear grid over the 4 corner points - see FromBrep()'s own doc
+    // comment (subd.h) for why this, not surface.PointAt(u, v) at
+    // intermediate parameters, is what makes adjacent faces' shared
+    // edges land on literally the same 3D points.
+    auto bilinear = [&](double a, double b) {
+      return (1.0 - a) * (1.0 - b) * corner[0] + a * (1.0 - b) * corner[1] + a * b * corner[2] +
+             (1.0 - a) * b * corner[3];
+    };
+    Mesh grid;
+    ON_Mesh& raw = grid.raw();
+    const int points = divisions + 1;
+    const auto grid_index = [points](int i, int j) { return i * points + j; };
+    raw.m_V.Reserve(points * points);
+    for (int i = 0; i < points; ++i) {
+      const double a = static_cast<double>(i) / divisions;
+      for (int j = 0; j < points; ++j) {
+        const double b = static_cast<double>(j) / divisions;
+        raw.m_V.Append(ON_3fPoint(bilinear(a, b)));
+      }
+    }
+    raw.m_F.Reserve(divisions * divisions);
+    for (int i = 0; i < divisions; ++i) {
+      for (int j = 0; j < divisions; ++j) {
+        ON_MeshFace f;
+        f.vi[0] = grid_index(i, j);
+        f.vi[1] = grid_index(i + 1, j);
+        f.vi[2] = grid_index(i + 1, j + 1);
+        f.vi[3] = grid_index(i, j + 1);
+        raw.m_F.Append(f);
+      }
+    }
+    // Match Brep::Tessellate()'s own per-face orientation convention so
+    // every face of a closed Brep points outward consistently.
+    if (face.m_bRev) grid = grid.FlipNormals();
+    face_grids.push_back(std::move(grid));
+  }
+
+  const Mesh combined = Mesh::MergeAndWeld(face_grids, weld_tolerance);
+  return SubD::FromControlMesh(combined, /*crease_at_double_edges=*/true);
+}
+
+SubD SubD::FromMeshQuadRemeshed(const Mesh& mesh, double max_dihedral_deg, bool crease_at_double_edges) {
+  Mesh result = mesh;
+  // See this method's own doc comment (subd.h) for why this composition
+  // - already proven by BooleanToSubD() - is always safe to expose
+  // directly: TrisToQuads() is a pure face-list rewrite, never touching
+  // a vertex, that is a no-op wherever nothing qualifies.
+  result.TrisToQuads(max_dihedral_deg);
+  return SubD::FromControlMesh(result, crease_at_double_edges);
+}
+
+SubD SubD::FromBrepTessellated(const Brep& brep, int u_divisions, int v_divisions, double max_dihedral_deg) {
+  if (brep.FaceCount() <= 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromBrepTessellated: brep has no faces");
+  }
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromBrepTessellated: u_divisions and v_divisions must be at least 1");
+  }
+  const Mesh mesh = brep.TessellateToClosedMesh(u_divisions, v_divisions);
+  return FromMeshQuadRemeshed(mesh, max_dihedral_deg, /*crease_at_double_edges=*/true);
+}
+
+void SubD::Subdivide(int levels) {
+  if (levels <= 0) {
+    return;
+  }
+  if (!subd_.GlobalSubdivide(static_cast<unsigned int>(levels))) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::Subdivide: ON_SubD::GlobalSubdivide failed "
+        "(levels may exceed ON_SubD::maximum_subd_level, or the SubD is empty)");
+  }
+}
+
+Mesh SubD::ToApproximateMesh() const {
+  Mesh result;
+  const ON_Mesh* out =
+      subd_.GetControlNetMesh(&result.raw(), ON_SubDGetControlNetMeshPriority::Geometry);
+  if (out == nullptr) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToApproximateMesh: ON_SubD::GetControlNetMesh failed");
+  }
+  // GetControlNetMesh() emits one ON_Mesh vertex per FACE-CORNER, not one
+  // per shared ON_SubDVertex - confirmed directly: a SubD built by sharing
+  // an existing vertex across faces added incrementally (e.g. Symmetrize()'s
+  // own FindOrAddVertex/FindOrAddFace welds at the SubD level - VertexCount()
+  // already reports the true, deduplicated count) still comes back from
+  // this call with duplicate ON_Mesh vertices at bit-identical positions
+  // wherever that shared vertex is a corner of more than one face, so the
+  // exported mesh fails IsClosedManifold() even though the SubD itself is a
+  // genuinely closed, manifold body (Check() reports 0 naked/non-manifold
+  // edges). A SubD built directly via FromControlMesh() from an
+  // already-closed mesh doesn't hit this (its own round trip is already
+  // exact - see TestSubDMeshRoundTripIsExactAtLevelZero), so this welds
+  // ONLY when there's something to weld: CombineIdenticalVertices() merges
+  // bit-identical positions (ignoring normals/texture coordinates - this is
+  // a topological "approximate" mesh, not a shaded render output, and
+  // per-face-corner normals are expected to differ at a shared vertex until
+  // an actual smoothing pass runs) and reports whether it changed anything,
+  // so an already-deduplicated export (nothing coincident to merge) is
+  // untouched.
+  result.raw().CombineIdenticalVertices(/*bIgnoreVertexNormals=*/true, /*bIgnoreTextureCoordinates=*/true);
+  return result;
+}
+
+Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
+  // Both ToApproximateMesh() calls, and BooleanCombine() itself, throw
+  // std::runtime_error on their own respective failures (an unbuildable
+  // control-net mesh; a non-closed/non-manifold operand) - none of that is
+  // caught or reinterpreted here, so a caller sees exactly the failing
+  // step's own message.
+  return BooleanCombine(ToApproximateMesh(), other.ToApproximateMesh(), op);
+}
+
+SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg) const {
+  // Delegates to FromMeshQuadRemeshed() (this class's own general
+  // TrisToQuads()+FromControlMesh() composition - BooleanToSubD() was
+  // that composition's only caller before FromMeshQuadRemeshed() existed)
+  // so the two methods can't drift apart; max_dihedral_deg forwards
+  // straight through instead of a hardcoded 20.0 (see this method's own
+  // doc comment, subd.h).
+  return FromMeshQuadRemeshed(Boolean(other, op), max_dihedral_deg);
+}
+
+SubD SubD::Transform(const ON_Xform& xform) const {
+  SubD result = *this;  // ON_SubD's copy ctor deep-copies (verified in SetEdgeSharpness()'s own comment)
+  if (!result.subd_.Transform(xform)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Transform: ON_SubD::Transform failed (xform is not a valid transform)");
+  }
+  return result;
+}
+
+SubD SubD::Offset(double distance) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Offset: distance must be finite");
+  }
+
+  // Computed on the ORIGINAL (un-moved) control net, before the copy
+  // below exists - every vertex's own limit normal depends on its
+  // neighbors' current positions, so this must be a single snapshot
+  // taken before any vertex moves, not recomputed vertex-by-vertex as
+  // the loop below mutates `result` (which would make each vertex's
+  // offset direction depend on the arbitrary order vertices happen to
+  // be visited in).
+  const std::vector<SubDLimitPoint> limit_points = LimitPoints();
+
+  SubD result = *this;  // ON_SubD's copy ctor deep-copies (verified in SetEdgeSharpness()'s own comment)
+  for (const SubDLimitPoint& lp : limit_points) {
+    if (lp.limit_normal.IsZero()) continue;  // undefined limit normal: leave this vertex unmoved (see this method's own doc comment)
+    ON_SubDVertex* v = const_cast<ON_SubDVertex*>(result.subd_.VertexFromId(lp.vertex_id));
+    if (v == nullptr) {
+      // Unreachable in practice: `lp.vertex_id` was enumerated from the
+      // exact same control net `result` was just deep-copied from, so
+      // every id LimitPoints() returned must still resolve here.
+      throw std::runtime_error("dino8::kernel::SubD::Offset: a vertex present before the copy is missing after it");
+    }
+    const Point3d moved = lp.control_point + distance * lp.limit_normal;
+    if (!v->SetControlNetPoint(moved, /*bClearNeighborhoodCache=*/true)) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::Offset: ON_SubDVertex::SetControlNetPoint failed (offset position is not finite)");
+    }
+  }
+  return result;
+}
+
+Mesh SubD::Thicken(double distance, double tessellation_tolerance, int max_resolution) const {
+  const Mesh tessellated = Tessellate(tessellation_tolerance, max_resolution);
+  return tessellated.Thicken(distance);
+}
+
+SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance,
+                       double weld_tolerance) const {
+  if (!plane_normal.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::Symmetrize: plane_normal must be nonzero");
+  }
+  if (!ON_IsValid(plane_offset)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Symmetrize: plane_offset must be finite");
+  }
+  // Unlike weld_tolerance (see below), point_tolerance has no "zero or
+  // negative means fall back to a default" convention - it alone decides
+  // which vertices are treated as lying ON the mirror plane (see the
+  // on_plane classification below), so a bad value here doesn't degrade
+  // to a sane default the way a bad weld_tolerance would: a NaN
+  // point_tolerance makes every `<= point_tolerance` comparison silently
+  // false (per IEEE 754, any comparison with NaN is false), and a
+  // negative one makes `abs(signed_distance) <= point_tolerance` false
+  // for every vertex including ones genuinely ON the plane - either way,
+  // NO vertex is ever welded as a seam, every boundary loop comes back
+  // duplicated-but-disconnected instead, silently wrong rather than
+  // refused.
+  if (!ON_IsValid(point_tolerance) || point_tolerance < 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::Symmetrize: point_tolerance must be finite and non-negative");
+  }
+
+  // See this method's own doc comment (subd.h) for why these are two
+  // separate roles: `point_tolerance` alone still decides on-plane
+  // classification below; `effective_weld_tolerance` is only ever used
+  // for the FindOrAddVertex position lookup, so a caller can widen it
+  // (to weld genuinely-distinct-but-nearly-coincident off-plane vertices
+  // together) without also changing which vertices get treated as lying
+  // on the mirror plane itself.
+  const double effective_weld_tolerance = weld_tolerance > 0.0 ? weld_tolerance : point_tolerance;
+
+  const auto signed_distance = [&](const Point3d& p) {
+    return plane_normal.x * p.x + plane_normal.y * p.y + plane_normal.z * p.z - plane_offset;
+  };
+  const auto reflect = [&](const Point3d& p, double signed_dist) {
+    return p - 2.0 * signed_dist * plane_normal;
+  };
+
+  // Snapshot the ORIGINAL faces' corner points (and which of them sit ON
+  // the mirror plane) before mutating `result` - once mirrored faces
+  // start getting added below, result's own iterators would otherwise
+  // walk those too.
+  struct FaceCorners {
+    std::vector<Point3d> points;
+    std::vector<bool> on_plane;
+  };
+  std::vector<FaceCorners> original_faces;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    const unsigned int count = f->EdgeCount();
+    FaceCorners corners;
+    corners.points.reserve(count);
+    corners.on_plane.reserve(count);
+    for (unsigned int i = 0; i < count; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (v == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::Symmetrize: a face has a null vertex");
+      }
+      const Point3d p = v->ControlNetPoint();
+      corners.points.push_back(p);
+      corners.on_plane.push_back(std::abs(signed_distance(p)) <= point_tolerance);
+    }
+    original_faces.push_back(std::move(corners));
+  }
+
+  // Interior crease edges and semi-sharp weights of the ORIGINAL half are
+  // snapshotted here (by end-point position) and re-applied to their
+  // mirror images at the end - the mirrored faces are created through
+  // FindOrAddFace with Unset tags, which would otherwise leave every
+  // mirrored crease smooth.
+  struct MirrorEdgeFeature { Point3d p0, p1; bool crease; double s0, s1; };
+  std::vector<MirrorEdgeFeature> edge_features;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->FaceCount() != 2 || e->Vertex(0u) == nullptr || e->Vertex(1u) == nullptr) continue;
+      const bool crease = e->IsCrease();
+      const double s0 = e->EndSharpness(0u), s1 = e->EndSharpness(1u);
+      if (!crease && !(s0 > 0.0 || s1 > 0.0)) continue;
+      edge_features.push_back({e->Vertex(0u)->ControlNetPoint(), e->Vertex(1u)->ControlNetPoint(), crease, s0, s1});
+    }
+  }
+
+  // A face lying entirely IN the mirror plane (every corner on-plane) is
+  // an interior wall once the two halves meet - mirroring a CLOSED solid
+  // across a plane that contains one of its faces (a box across its own
+  // far face) would otherwise leave that face twice, a non-manifold
+  // double wall (4 edges with 4 faces each, a body that no longer reports
+  // closed). Such faces are dropped from BOTH halves. ON_SubD has no safe
+  // local face removal (see Weld()/SplitNonManifoldVertex()), so when any
+  // exist the result is rebuilt face by face; the normal path below is
+  // untouched and byte-identical for every input without one.
+  bool has_in_plane_face = false;
+  for (const FaceCorners& face : original_faces) {
+    bool all_on = !face.on_plane.empty();
+    for (bool b : face.on_plane) all_on = all_on && b;
+    if (all_on) { has_in_plane_face = true; break; }
+  }
+  if (has_in_plane_face) {
+    SubD out;
+    const auto add_face = [&](const std::vector<Point3d>& pts) {
+      std::vector<const ON_SubDVertex*> vs(pts.size());
+      for (size_t i = 0; i < pts.size(); ++i) {
+        vs[i] = out.subd_.FindOrAddVertex(&pts[i].x, effective_weld_tolerance);
+        if (vs[i] == nullptr) {
+          throw std::runtime_error("dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddVertex failed");
+        }
+      }
+      if (out.subd_.FindOrAddFace(ON_SubDEdgeTag::Unset, vs.data(), static_cast<unsigned int>(vs.size())) == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddFace failed");
+      }
+    };
+    for (const FaceCorners& face : original_faces) {
+      bool all_on = true;
+      for (bool b : face.on_plane) all_on = all_on && b;
+      if (all_on) continue;
+      add_face(face.points);
+    }
+    for (const FaceCorners& face : original_faces) {
+      bool all_on = true;
+      for (bool b : face.on_plane) all_on = all_on && b;
+      if (all_on) continue;
+      std::vector<Point3d> mirrored;
+      for (size_t i = face.points.size(); i-- > 0;) {
+        const double sd = signed_distance(face.points[i]);
+        mirrored.push_back(std::abs(sd) <= point_tolerance ? face.points[i] : reflect(face.points[i], sd));
+      }
+      add_face(mirrored);
+    }
+    out.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+    const auto apply_feature = [&](const Point3d& a, const Point3d& b, const MirrorEdgeFeature& f) {
+      const ON_SubDVertex* v0 = out.subd_.FindVertex(&a.x, effective_weld_tolerance);
+      const ON_SubDVertex* v1 = out.subd_.FindVertex(&b.x, effective_weld_tolerance);
+      if (v0 == nullptr || v1 == nullptr) return;
+      const ON_SubDEdge* e = out.subd_.FindEdge(v0, v1).Edge();
+      if (e == nullptr || e->FaceCount() != 2) return;
+      if (f.crease) {
+        const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(e);
+        out.subd_.SetEdgeTags(&cptr, 1, ON_SubDEdgeTag::Crease);
+      } else if (e->IsSmooth()) {
+        const bool v0_is_end0 = (e->Vertex(0u) == v0);
+        const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(
+            ON_SubDEdgeSharpness::FromInterval(v0_is_end0 ? f.s0 : f.s1, v0_is_end0 ? f.s1 : f.s0));
+      }
+    };
+    for (const MirrorEdgeFeature& f : edge_features) {
+      const double d0 = signed_distance(f.p0), d1 = signed_distance(f.p1);
+      const bool on0 = std::abs(d0) <= point_tolerance, on1 = std::abs(d1) <= point_tolerance;
+      if (on0 && on1) continue;
+      apply_feature(f.p0, f.p1, f);
+      apply_feature(on0 ? f.p0 : reflect(f.p0, d0), on1 ? f.p1 : reflect(f.p1, d1), f);
+    }
+    return out;
+  }
+
+  SubD result = *this;  // keeps the original half exactly as-is
+
+  // A pre-existing edge between two vertices already IN `result` (found by
+  // walking v0's own edge list - `result` has no ON_SubD-level "find edge
+  // by vertex pair" lookup, so this is the direct equivalent). Returns
+  // nullptr if none connects them yet.
+  const auto find_edge_between = [](const ON_SubDVertex* v0, const ON_SubDVertex* v1) -> const ON_SubDEdge* {
+    const unsigned int n = v0->EdgeCount();
+    for (unsigned int i = 0; i < n; ++i) {
+      const ON_SubDEdge* e = v0->Edge(i);
+      if (e != nullptr && e->OtherEndVertex(v0) == v1) return e;
+    }
+    return nullptr;
+  };
+
+  for (const FaceCorners& face : original_faces) {
+    const unsigned int count = static_cast<unsigned int>(face.points.size());
+    // Reversed order: a reflection always flips orientation, so walking
+    // the original loop backwards is what keeps the mirrored face's
+    // winding consistent with the rest of `result` (see this method's
+    // own "flip" doc comment).
+    std::vector<const ON_SubDVertex*> mirrored_vertices(count);
+    std::vector<bool> mirrored_on_plane(count);
+    for (unsigned int i = 0; i < count; ++i) {
+      const unsigned int src = count - 1 - i;
+      const Point3d& original_point = face.points[src];
+      const double s = signed_distance(original_point);
+      // On-plane: reuse the SAME vertex (found by position in `result`,
+      // which already holds it from the initial copy) instead of adding
+      // a duplicate at its own unchanged position - this is the "weld".
+      const Point3d target = std::abs(s) <= point_tolerance ? original_point : reflect(original_point, s);
+      const ON_SubDVertex* v = result.subd_.FindOrAddVertex(&target.x, effective_weld_tolerance);
+      if (v == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddVertex failed");
+      }
+      mirrored_vertices[i] = v;
+      mirrored_on_plane[i] = face.on_plane[src];
+    }
+
+    // An edge whose BOTH endpoints are on-plane already existed before
+    // this mirrored face was added - it's exactly one of the naked
+    // boundary edges being welded shut, real by-construction Crease tag
+    // and all (not a user's own intentional sharp edge - that's a
+    // separate per-edge sharpness weight, see SetEdgeSharpness(),
+    // untouched here). FindOrAddFace() below only resolves NEW (Unset)
+    // components, so this edge's own stale Crease survives it unless
+    // reset to Unset here first - a real bug this file's own
+    // TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces caught via
+    // ToApproximateMesh().IsClosedManifold() (topology *and* tag
+    // sensitive, unlike SubD::Check()'s own edge/vertex counts, which
+    // stayed clean throughout): GetControlNetMesh() duplicates a mesh
+    // vertex per side of any still-Crease-tagged edge, even one with two
+    // faces, so the "welded" seam rendered as two coincident but UNWELDED
+    // mesh boundaries.
+    // The seam VERTICES themselves need the exact same treatment as their
+    // edges, for the exact same reason: a vertex's own tag is just as
+    // sticky as an edge's under UpdateVertexTags(bUnsetVertexTagsOnly=
+    // true) (both skip anything not already Unset), so a boundary
+    // vertex's stale Crease/Dart tag survives even once every one of its
+    // incident edges above has been correctly reset and re-inferred as
+    // Smooth - confirmed directly: without this, doubled.IsValid() itself
+    // fails (a Crease-tagged vertex with zero Crease edges among its
+    // incident set is an inconsistent SubD, not just a mesh-export
+    // cosmetic issue like the edge-only fix above already caught).
+    for (unsigned int i = 0; i < count; ++i) {
+      if (!mirrored_on_plane[i]) continue;
+      const ON_SubDVertex* v = mirrored_vertices[i];
+      if (v->m_vertex_tag == ON_SubDVertexTag::Crease || v->m_vertex_tag == ON_SubDVertexTag::Dart) {
+        const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Unset;
+      }
+    }
+    for (unsigned int i = 0; i < count; ++i) {
+      const unsigned int i1 = (i + 1) % count;
+      if (!mirrored_on_plane[i] || !mirrored_on_plane[i1]) continue;
+      const ON_SubDEdge* seam = find_edge_between(mirrored_vertices[i], mirrored_vertices[i1]);
+      if (seam != nullptr && seam->m_edge_tag == ON_SubDEdgeTag::Crease) {
+        const_cast<ON_SubDEdge*>(seam)->m_edge_tag = ON_SubDEdgeTag::Unset;
+      }
+    }
+
+    ON_SubDFace* added =
+        result.subd_.FindOrAddFace(ON_SubDEdgeTag::Unset, mirrored_vertices.data(), count);
+    if (added == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddFace failed for a mirrored face");
+    }
+  }
+
+  // New vertices/edges above (and every seam edge/vertex just reset to
+  // Unset) get resolved from context here - an edge with faces on both
+  // sides becomes Smooth, a still-naked one stays a boundary edge, etc.
+  // Restricted to Unset-only on purpose: anything else in this SubD keeps
+  // whatever tag it already had, including a genuinely intentional sharp
+  // edge unrelated to this mirror plane.
+  result.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  for (const MirrorEdgeFeature& f : edge_features) {
+    const double d0 = signed_distance(f.p0), d1 = signed_distance(f.p1);
+    const bool on0 = std::abs(d0) <= point_tolerance, on1 = std::abs(d1) <= point_tolerance;
+    if (on0 && on1) continue;  // lies in the mirror plane: it is its own mirror image
+    const Point3d m0 = on0 ? f.p0 : reflect(f.p0, d0);
+    const Point3d m1 = on1 ? f.p1 : reflect(f.p1, d1);
+    const ON_SubDVertex* v0 = result.subd_.FindVertex(&m0.x, effective_weld_tolerance);
+    const ON_SubDVertex* v1 = result.subd_.FindVertex(&m1.x, effective_weld_tolerance);
+    if (v0 == nullptr || v1 == nullptr) continue;
+    const ON_SubDEdge* me = result.subd_.FindEdge(v0, v1).Edge();
+    if (me == nullptr || me->FaceCount() != 2) continue;
+    if (f.crease) {
+      const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(me);
+      result.subd_.SetEdgeTags(&cptr, 1, ON_SubDEdgeTag::Crease);
+    } else if (me->IsSmooth()) {
+      const bool v0_is_end0 = (me->Vertex(0u) == v0);
+      const double s_end0 = v0_is_end0 ? f.s0 : f.s1;
+      const double s_end1 = v0_is_end0 ? f.s1 : f.s0;
+      const_cast<ON_SubDEdge*>(me)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromInterval(s_end0, s_end1));
+    }
+  }
+  return result;
+}
+
+int SubD::FaceCount() const { return static_cast<int>(subd_.FaceCount()); }
+int SubD::VertexCount() const { return static_cast<int>(subd_.VertexCount()); }
+int SubD::EdgeCount() const { return static_cast<int>(subd_.EdgeCount()); }
+
+bool SubD::IsValid() const {
+  // Low bit set -> ON_SubD::IsValid() suppresses its own ON_Error() call
+  // on failure (masked off again before use - never actually
+  // dereferenced as a real ON_TextLog*, see this method's own header
+  // comment). This is a validity check, not an assertion, so a "no"
+  // answer must never have that side effect.
+  return subd_.IsValid(reinterpret_cast<ON_TextLog*>(1));
+}
+
+namespace {
+
+// A tiny union-find over a dense [0, n) index space - shared by Check()'s
+// two independent components-questions (per-vertex fan connectivity, and
+// whole-SubD body connectivity) so neither needs to duplicate the other.
+class UnionFind {
+ public:
+  explicit UnionFind(size_t n) : parent_(n) {
+    for (size_t i = 0; i < n; ++i) parent_[i] = i;
+  }
+  size_t Find(size_t i) {
+    while (parent_[i] != i) {
+      parent_[i] = parent_[parent_[i]];
+      i = parent_[i];
+    }
+    return i;
+  }
+  void Union(size_t a, size_t b) {
+    a = Find(a);
+    b = Find(b);
+    if (a != b) parent_[a] = b;
+  }
+
+ private:
+  std::vector<size_t> parent_;
+};
+
+// Groups `points` by mutual `tolerance`-closeness via a spatial grid +
+// union-find - the same clustering shape mesh.cpp's own WeldGroups() uses
+// for Mesh::CheckReport::duplicate_vertices, reimplemented here rather than
+// shared because that one keys off ON_Mesh vertex INDICES into a fixed
+// mesh_.m_V array, while this one just takes a flat point list. Returns one
+// group id per input point (points[i] and points[j] are in the same group
+// iff result[i] == result[j]); NOT necessarily transitive by the pairwise
+// tolerance test alone (the same single-linkage caveat WeldGroups()'s own
+// comment documents - a chain of near-tolerance pairs can join into one
+// group spanning more than `tolerance`), which is fine here since this is
+// only ever used to COUNT/LOCATE existing near-coincident vertices, never
+// to decide how far apart a weld is allowed to move one.
+std::vector<size_t> GroupByProximity(const std::vector<ON_3dPoint>& points, double tolerance) {
+  const size_t n = points.size();
+  UnionFind uf(n);
+  const double cell = std::max(tolerance, 1e-12);
+  const auto key_of = [&](const ON_3dPoint& p) {
+    return std::make_tuple(static_cast<long long>(std::floor(p.x / cell)),
+                            static_cast<long long>(std::floor(p.y / cell)),
+                            static_cast<long long>(std::floor(p.z / cell)));
+  };
+  std::map<std::tuple<long long, long long, long long>, std::vector<size_t>> grid;
+  for (size_t i = 0; i < n; ++i) grid[key_of(points[i])].push_back(i);
+
+  for (size_t i = 0; i < n; ++i) {
+    const auto [kx, ky, kz] = key_of(points[i]);
+    for (long long dx = -1; dx <= 1; ++dx) {
+      for (long long dy = -1; dy <= 1; ++dy) {
+        for (long long dz = -1; dz <= 1; ++dz) {
+          const auto it = grid.find(std::make_tuple(kx + dx, ky + dy, kz + dz));
+          if (it == grid.end()) continue;
+          for (const size_t j : it->second) {
+            if (j <= i) continue;
+            if (points[i].DistanceTo(points[j]) <= tolerance) uf.Union(i, j);
+          }
+        }
+      }
+    }
+  }
+
+  std::vector<size_t> groups(n);
+  for (size_t i = 0; i < n; ++i) groups[i] = uf.Find(i);
+  return groups;
+}
+
+}  // namespace
+
+SubD::SubDCheckReport SubD::Check(double duplicate_vertex_tolerance) const {
+  SubDCheckReport report;
+
+  ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    const unsigned int face_count = e->FaceCount();
+    if (face_count == 1) {
+      ++report.naked_edges;
+    } else if (face_count >= 3) {
+      ++report.non_manifold_edges;
+      const ON_SubDVertex* v0 = e->Vertex(0);
+      const ON_SubDVertex* v1 = e->Vertex(1);
+      unsigned int a = v0 != nullptr ? v0->m_id : 0;
+      unsigned int b = v1 != nullptr ? v1->m_id : 0;
+      if (a > b) std::swap(a, b);
+      report.non_manifold_edge_list.emplace_back(a, b);
+    }
+  }
+
+  // Non-manifold ("bowtie") vertices: for each vertex, union its own
+  // incident faces via whichever of the vertex's incident edges they
+  // share, then check whether that leaves more than one group. A
+  // well-formed vertex's incident faces always form exactly one fan
+  // (open, at a boundary vertex, or closed, at an interior one); more
+  // than one group means two or more otherwise-unconnected cones of
+  // faces meet only at this single point.
+  ON_SubDVertexIterator vit = subd_.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    const unsigned int face_count = v->FaceCount();
+    if (face_count < 2) continue;  // 0 or 1 incident face can't be split into >1 group
+
+    std::vector<const ON_SubDFace*> faces(face_count);
+    for (unsigned int i = 0; i < face_count; ++i) faces[i] = v->Face(i);
+    const auto face_index = [&faces](const ON_SubDFace* f) -> int {
+      for (size_t i = 0; i < faces.size(); ++i) {
+        if (faces[i] == f) return static_cast<int>(i);
+      }
+      return -1;
+    };
+
+    UnionFind uf(faces.size());
+    const unsigned int edge_count = v->EdgeCount();
+    for (unsigned int i = 0; i < edge_count; ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e == nullptr) continue;
+      const unsigned int edge_face_count = e->FaceCount();
+      int first = -1;
+      for (unsigned int j = 0; j < edge_face_count; ++j) {
+        const int idx = face_index(e->Face(j));
+        if (idx < 0) continue;  // this edge's face doesn't touch v - can't happen, defensive only
+        if (first < 0) {
+          first = idx;
+        } else {
+          uf.Union(static_cast<size_t>(first), static_cast<size_t>(idx));
+        }
+      }
+    }
+
+    size_t group_count = 0;
+    {
+      std::vector<bool> seen_root(faces.size(), false);
+      for (size_t i = 0; i < faces.size(); ++i) {
+        const size_t root = uf.Find(i);
+        if (!seen_root[root]) {
+          seen_root[root] = true;
+          ++group_count;
+        }
+      }
+    }
+    if (group_count > 1) {
+      ++report.non_manifold_vertices;
+      report.non_manifold_vertex_list.push_back(v->m_id);
+    }
+  }
+
+  // Whole-SubD body count: union every pair of faces that share an edge,
+  // then count the distinct groups among ALL faces (not just one
+  // vertex's) - the same "faces sharing an edge are the same piece"
+  // definition Brep::SplitDisjointPieces()'s own
+  // ON_Brep::LabelConnectedComponents() uses for Breps.
+  std::vector<const ON_SubDFace*> all_faces;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    all_faces.push_back(f);
+  }
+  if (!all_faces.empty()) {
+    std::unordered_map<const ON_SubDFace*, size_t> all_face_index;
+    all_face_index.reserve(all_faces.size() * 2);
+    for (size_t i = 0; i < all_faces.size(); ++i) all_face_index.emplace(all_faces[i], i);
+
+    UnionFind uf(all_faces.size());
+    ON_SubDEdgeIterator eit2 = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit2.FirstEdge(); e != nullptr; e = eit2.NextEdge()) {
+      const unsigned int face_count = e->FaceCount();
+      if (face_count < 2) continue;
+      const auto first_it = all_face_index.find(e->Face(0));
+      if (first_it == all_face_index.end()) continue;  // defensive only - every edge's faces are in the SubD's own face list
+      for (unsigned int j = 1; j < face_count; ++j) {
+        const auto other_it = all_face_index.find(e->Face(j));
+        if (other_it == all_face_index.end()) continue;
+        uf.Union(first_it->second, other_it->second);
+      }
+    }
+
+    std::vector<bool> seen_root(all_faces.size(), false);
+    for (size_t i = 0; i < all_faces.size(); ++i) {
+      const size_t root = uf.Find(i);
+      if (!seen_root[root]) {
+        seen_root[root] = true;
+        ++report.body_count;
+      }
+    }
+  }
+
+  // Duplicate (coincident-but-distinct) vertices: every vertex is a
+  // candidate, grouped purely by spatial proximity (no topological
+  // relationship required) via GroupByProximity() above.
+  {
+    std::vector<unsigned int> vertex_ids;
+    std::vector<ON_3dPoint> points;
+    ON_SubDVertexIterator vit2 = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit2.FirstVertex(); v != nullptr; v = vit2.NextVertex()) {
+      vertex_ids.push_back(v->m_id);
+      points.push_back(v->ControlNetPoint());
+    }
+    const std::vector<size_t> groups = GroupByProximity(points, duplicate_vertex_tolerance);
+    std::unordered_map<size_t, int> group_size;
+    for (const size_t g : groups) ++group_size[g];
+    for (size_t i = 0; i < groups.size(); ++i) {
+      if (group_size[groups[i]] > 1) {
+        ++report.duplicate_vertices;
+        report.duplicate_vertex_list.push_back(vertex_ids[i]);
+      }
+    }
+  }
+
+  return report;
+}
+
+std::vector<SubD> SubD::SplitDisjointPieces() const {
+  std::vector<const ON_SubDFace*> all_faces;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) all_faces.push_back(f);
+  }
+  if (all_faces.empty()) return {};
+
+  // Exactly Check()'s own body_count grouping (faces sharing an edge, via
+  // FaceCount() >= 2), reproduced here rather than shared because that one
+  // only needs the group COUNT while this needs the actual membership.
+  std::unordered_map<const ON_SubDFace*, size_t> face_index;
+  face_index.reserve(all_faces.size() * 2);
+  for (size_t i = 0; i < all_faces.size(); ++i) face_index.emplace(all_faces[i], i);
+
+  UnionFind uf(all_faces.size());
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      const unsigned int face_count = e->FaceCount();
+      if (face_count < 2) continue;
+      const auto first_it = face_index.find(e->Face(0));
+      if (first_it == face_index.end()) continue;  // defensive only - every edge's faces are in the SubD's own face list
+      for (unsigned int j = 1; j < face_count; ++j) {
+        const auto other_it = face_index.find(e->Face(j));
+        if (other_it == face_index.end()) continue;
+        uf.Union(first_it->second, other_it->second);
+      }
+    }
+  }
+
+  // Group faces by root, preserving first-encountered order so the
+  // returned pieces come back in a stable, reproducible order rather than
+  // whatever order union-find roots happen to land on.
+  std::vector<size_t> root_order;
+  std::unordered_map<size_t, std::vector<size_t>> groups;
+  for (size_t i = 0; i < all_faces.size(); ++i) {
+    const size_t root = uf.Find(i);
+    auto it = groups.find(root);
+    if (it == groups.end()) {
+      groups.emplace(root, std::vector<size_t>{i});
+      root_order.push_back(root);
+    } else {
+      it->second.push_back(i);
+    }
+  }
+
+  if (root_order.size() <= 1) return {*this};
+
+  std::vector<SubD> pieces;
+  pieces.reserve(root_order.size());
+  for (const size_t root : root_order) {
+    const std::vector<size_t>& member_faces = groups[root];
+
+    std::unordered_set<unsigned int> vertex_ids_in_piece;
+    for (const size_t idx : member_faces) {
+      const ON_SubDFace* f = all_faces[idx];
+      const unsigned int n = f->EdgeCount();
+      for (unsigned int j = 0; j < n; ++j) {
+        const ON_SubDVertex* v = f->Vertex(j);
+        if (v != nullptr) vertex_ids_in_piece.insert(v->m_id);
+      }
+    }
+
+    // Same snapshot-and-replay rebuild Weld() uses above: add every
+    // member vertex via AddVertexForExperts() (preserving its original
+    // id and position), rebuild every member face via FindOrAddFace(),
+    // then reapply each wholly-interior original edge's tag/sharpness.
+    // Walking THIS SubD's own vertex iterator (rather than
+    // vertex_ids_in_piece's own unordered order) keeps each piece's
+    // vertex insertion order matching the original SubD's, same as
+    // Weld()'s own vertices_snapshot does.
+    ON_SubD piece_subd;
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (vertex_ids_in_piece.count(v->m_id) == 0) continue;
+      const ON_3dPoint p = v->ControlNetPoint();
+      if (piece_subd.AddVertexForExperts(v->m_id, ON_SubDVertexTag::Unset, &p.x, 0, 0) == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitDisjointPieces: ON_SubD::AddVertexForExperts failed");
+      }
+    }
+
+    for (const size_t idx : member_faces) {
+      const ON_SubDFace* f = all_faces[idx];
+      const unsigned int n = f->EdgeCount();
+      std::vector<const ON_SubDVertex*> corners(n);
+      for (unsigned int j = 0; j < n; ++j) {
+        const ON_SubDVertex* v = f->Vertex(j);
+        corners[j] = v != nullptr ? piece_subd.VertexFromId(v->m_id) : nullptr;
+        if (corners[j] == nullptr) {
+          throw std::runtime_error(
+              "dino8::kernel::SubD::SplitDisjointPieces: a rebuilt face corner vertex is missing");
+        }
+      }
+      if (piece_subd.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size()) == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitDisjointPieces: ON_SubD::FindOrAddFace failed while rebuilding a face");
+      }
+    }
+
+    {
+      ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+      for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+        if (e->FaceCount() != 2) continue;
+        if (e->m_vertex[0] == nullptr || e->m_vertex[1] == nullptr) continue;
+        if (vertex_ids_in_piece.count(e->m_vertex[0]->m_id) == 0) continue;
+        if (vertex_ids_in_piece.count(e->m_vertex[1]->m_id) == 0) continue;
+        const ON_SubDVertex* a = piece_subd.VertexFromId(e->m_vertex[0]->m_id);
+        const ON_SubDVertex* b = piece_subd.VertexFromId(e->m_vertex[1]->m_id);
+        if (a == nullptr || b == nullptr) continue;
+        const ON_SubDEdge* pe = piece_subd.FindEdge(a, b).Edge();
+        if (pe == nullptr) continue;  // defensive only - both endpoints are always in this piece's face(s)
+        const_cast<ON_SubDEdge*>(pe)->m_edge_tag = e->m_edge_tag;
+        if (e->m_edge_tag == ON_SubDEdgeTag::Smooth || e->m_edge_tag == ON_SubDEdgeTag::SmoothX) {
+          const_cast<ON_SubDEdge*>(pe)->SetSharpnessForExperts(e->Sharpness(/*bUseCreaseSharpness=*/false));
+        }
+      }
+    }
+
+    piece_subd.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+    SubD piece;
+    piece.subd_ = piece_subd;
+    pieces.push_back(std::move(piece));
+  }
+  return pieces;
+}
+
+bool SubD::SplitNonManifoldVertex(unsigned int vertex_id) {
+  const ON_SubDVertex* target = subd_.VertexFromId(vertex_id);
+  if (target == nullptr) return false;
+
+  // Exactly Check()'s own non_manifold_vertices grouping: union `target`'s
+  // own incident faces via whichever of ITS incident edges they share.
+  const unsigned int face_count = target->FaceCount();
+  if (face_count < 2) return false;  // 0 or 1 incident face can't be split into >1 group
+
+  std::vector<const ON_SubDFace*> faces(face_count);
+  for (unsigned int i = 0; i < face_count; ++i) faces[i] = target->Face(i);
+  const auto face_index = [&faces](const ON_SubDFace* f) -> int {
+    for (size_t i = 0; i < faces.size(); ++i) {
+      if (faces[i] == f) return static_cast<int>(i);
+    }
+    return -1;
+  };
+
+  UnionFind uf(faces.size());
+  const unsigned int edge_count = target->EdgeCount();
+  for (unsigned int i = 0; i < edge_count; ++i) {
+    const ON_SubDEdge* e = target->Edge(i);
+    if (e == nullptr) continue;
+    const unsigned int edge_face_count = e->FaceCount();
+    int first = -1;
+    for (unsigned int j = 0; j < edge_face_count; ++j) {
+      const int idx = face_index(e->Face(j));
+      if (idx < 0) continue;  // this edge's face doesn't touch target - can't happen, defensive only
+      if (first < 0) {
+        first = idx;
+      } else {
+        uf.Union(static_cast<size_t>(first), static_cast<size_t>(idx));
+      }
+    }
+  }
+
+  // Assign group indices in first-encountered order - group 0 always
+  // contains target->Face(0), matching Check()'s own "first-seen order"
+  // convention (and Brep::SplitNonManifoldVertex()'s: "group 0 keeps
+  // vertex_index itself").
+  std::vector<size_t> root_order;
+  std::unordered_map<size_t, size_t> root_to_group;
+  std::vector<size_t> face_group(faces.size());
+  for (size_t i = 0; i < faces.size(); ++i) {
+    const size_t root = uf.Find(i);
+    const auto it = root_to_group.find(root);
+    if (it == root_to_group.end()) {
+      const size_t g = root_order.size();
+      root_to_group.emplace(root, g);
+      root_order.push_back(root);
+      face_group[i] = g;
+    } else {
+      face_group[i] = it->second;
+    }
+  }
+  const size_t group_count = root_order.size();
+  if (group_count <= 1) return false;  // not actually non-manifold
+
+  // Whole-net snapshot-and-rebuild - the same DeleteComponents()-unsafety
+  // reason Weld()'s own doc comment gives for taking this approach rather
+  // than local surgery. Faces/edges not touching `target` at all are
+  // recorded with their corner/endpoint ids verbatim; a corner or endpoint
+  // that IS `target` is recorded as its own face's group index instead
+  // (resolved to a real id below, once every extra group's fresh vertex
+  // actually exists).
+  struct FSnap {
+    std::vector<unsigned int> corner_ids;  // real id, or (group index) for a target corner
+    std::vector<bool> corner_is_target;
+  };
+  std::vector<FSnap> faces_snapshot;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      const unsigned int n = f->EdgeCount();
+      const int local_idx = face_index(f);  // >= 0 iff this face touches target
+      FSnap fs;
+      fs.corner_ids.reserve(n);
+      fs.corner_is_target.reserve(n);
+      for (unsigned int j = 0; j < n; ++j) {
+        const ON_SubDVertex* v = f->Vertex(j);
+        if (v == nullptr) {
+          throw std::runtime_error(
+              "dino8::kernel::SubD::SplitNonManifoldVertex: a face has a null corner");
+        }
+        if (v == target) {
+          fs.corner_ids.push_back(static_cast<unsigned int>(
+              local_idx >= 0 ? face_group[static_cast<size_t>(local_idx)] : 0));
+          fs.corner_is_target.push_back(true);
+        } else {
+          fs.corner_ids.push_back(v->m_id);
+          fs.corner_is_target.push_back(false);
+        }
+      }
+      faces_snapshot.push_back(std::move(fs));
+    }
+  }
+
+  struct ESnap {
+    unsigned int a, b;  // real id, or (group index) where a_is_target/b_is_target
+    bool a_is_target, b_is_target;
+    ON_SubDEdgeTag tag;
+    ON_SubDEdgeSharpness sharpness;
+  };
+  std::vector<ESnap> edges_snapshot;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->m_vertex[0] == nullptr || e->m_vertex[1] == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: an edge has a null vertex");
+      }
+      // Same convention Weld() uses: only a genuinely interior edge's own
+      // tag/sharpness is worth reapplying verbatim.
+      if (e->FaceCount() != 2) continue;
+      const bool a_is_target = e->m_vertex[0] == target;
+      const bool b_is_target = e->m_vertex[1] == target;
+      size_t group = 0;
+      if (a_is_target || b_is_target) {
+        // Both of a 2-face edge's own faces are always in the SAME group
+        // here: if one of the edge's endpoints is target, target is a
+        // corner of both faces, so the union-find pass above always unions
+        // them together via this very edge - so either face's group
+        // suffices.
+        const int fidx = face_index(e->Face(0));
+        group = fidx >= 0 ? face_group[static_cast<size_t>(fidx)] : 0;
+      }
+      edges_snapshot.push_back({a_is_target ? static_cast<unsigned int>(group) : e->m_vertex[0]->m_id,
+                                 b_is_target ? static_cast<unsigned int>(group) : e->m_vertex[1]->m_id,
+                                 a_is_target, b_is_target, e->m_edge_tag,
+                                 e->Sharpness(/*bUseCreaseSharpness=*/false)});
+    }
+  }
+
+  ON_SubD new_subd;
+  std::vector<unsigned int> group_vertex_id(group_count, 0);
+  {
+    // Every original vertex, INCLUDING target itself (as group 0, at its
+    // own natural position in iteration order), each under its own
+    // preserved id. Critically, target must be re-added HERE, in its
+    // original relative position, rather than held back and appended
+    // afterward: ON_SubD::AddVertexForExperts()'s own candidate_id is only
+    // honored when it EXCEEDS the id watermark seen so far (there is no
+    // "unused id" slot to reclaim it from in a freshly built, never-had-
+    // a-deletion new_subd) - the same ordering invariant every OTHER
+    // preserved-id rebuild in this file (Weld(), SplitDisjointPieces())
+    // already relies on by never moving a kept vertex out of its own
+    // natural iteration position. Only once every original id is placed
+    // does the watermark correctly reflect the WHOLE original id range, so
+    // the extra per-group vertices added next (candidate_id 0) are
+    // guaranteed genuinely fresh.
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      const ON_3dPoint p = v->ControlNetPoint();
+      const ON_SubDVertex* nv = new_subd.AddVertexForExperts(v->m_id, ON_SubDVertexTag::Unset, &p.x, 0, 0);
+      if (nv == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: ON_SubD::AddVertexForExperts failed");
+      }
+      if (v == target) group_vertex_id[0] = nv->m_id;
+    }
+  }
+
+  // One brand-new vertex per EXTRA group (group_count - 1 of them), at
+  // target's own point, each with a genuinely fresh id (candidate_id 0) -
+  // safe only now that every original id above has already established
+  // the true watermark.
+  {
+    const ON_3dPoint p = target->ControlNetPoint();
+    for (size_t g = 1; g < group_count; ++g) {
+      const ON_SubDVertex* v = new_subd.AddVertexForExperts(0, ON_SubDVertexTag::Unset, &p.x, 0, 0);
+      if (v == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: ON_SubD::AddVertexForExperts failed "
+            "for a split vertex");
+      }
+      group_vertex_id[g] = v->m_id;
+    }
+  }
+
+  for (const FSnap& fs : faces_snapshot) {
+    std::vector<const ON_SubDVertex*> corners(fs.corner_ids.size());
+    for (size_t i = 0; i < fs.corner_ids.size(); ++i) {
+      const unsigned int id = fs.corner_is_target[i] ? group_vertex_id[fs.corner_ids[i]] : fs.corner_ids[i];
+      corners[i] = new_subd.VertexFromId(id);
+      if (corners[i] == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: a rebuilt face corner vertex is missing");
+      }
+    }
+    if (new_subd.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size()) == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::SplitNonManifoldVertex: ON_SubD::FindOrAddFace failed while "
+          "rebuilding a face");
+    }
+  }
+
+  for (const ESnap& es : edges_snapshot) {
+    const unsigned int a_id = es.a_is_target ? group_vertex_id[es.a] : es.a;
+    const unsigned int b_id = es.b_is_target ? group_vertex_id[es.b] : es.b;
+    const ON_SubDVertex* a = new_subd.VertexFromId(a_id);
+    const ON_SubDVertex* b = new_subd.VertexFromId(b_id);
+    if (a == nullptr || b == nullptr) continue;
+    const ON_SubDEdge* e = new_subd.FindEdge(a, b).Edge();
+    if (e == nullptr) continue;  // defensive only - both endpoints are always in this rebuild's own face(s)
+    const_cast<ON_SubDEdge*>(e)->m_edge_tag = es.tag;
+    if (es.tag == ON_SubDEdgeTag::Smooth || es.tag == ON_SubDEdgeTag::SmoothX) {
+      const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(es.sharpness);
+    }
+  }
+
+  new_subd.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  subd_ = new_subd;
+  return true;
+}
+
+int SubD::SplitNonManifoldVertices(double tolerance) {
+  const std::vector<unsigned int> to_split = Check(tolerance).non_manifold_vertex_list;
+  int count = 0;
+  for (const unsigned int id : to_split) {
+    if (SplitNonManifoldVertex(id)) ++count;
+  }
+  return count;
+}
+
+int SubD::MergeDuplicateVertices(double tolerance) {
+  std::vector<unsigned int> ids;
+  std::vector<ON_3dPoint> points;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      ids.push_back(v->m_id);
+      points.push_back(v->ControlNetPoint());
+    }
+  }
+  if (ids.size() < 2) return 0;
+
+  const std::vector<size_t> groups = GroupByProximity(points, tolerance);
+  std::vector<size_t> root_order;
+  std::unordered_map<size_t, std::vector<unsigned int>> group_members;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    const size_t root = groups[i];
+    const auto it = group_members.find(root);
+    if (it == group_members.end()) {
+      group_members.emplace(root, std::vector<unsigned int>{ids[i]});
+      root_order.push_back(root);
+    } else {
+      it->second.push_back(ids[i]);
+    }
+  }
+
+  int merged = 0;
+  for (const size_t root : root_order) {
+    const std::vector<unsigned int>& members = group_members[root];
+    if (members.size() < 2) continue;
+    const unsigned int keep = members.front();
+    for (size_t i = 1; i < members.size(); ++i) {
+      // Weld() itself independently re-checks keep's/this member's own
+      // distance (GroupByProximity()'s own grouping is not necessarily
+      // transitive within `tolerance` - see its doc comment), and refuses
+      // (false, no throw) if the two are already edge-connected or already
+      // two distinct corners of the same face - silently left unmerged
+      // either way, the same "can't, but that's not a bug" contract every
+      // Weld()-based repair here already has.
+      if (Weld(keep, members[i], tolerance)) ++merged;
+    }
+  }
+  return merged;
+}
+
+int SubD::CreaseEdgeCount() const {
+  int count = 0;
+  ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    if (e->IsCrease()) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1, double sharpness,
+                            double point_tolerance) {
+  return SetEdgeSharpness(p0, p1, sharpness, sharpness, point_tolerance);
+}
+
+bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1,
+                            double sharpness_at_p0, double sharpness_at_p1,
+                            double point_tolerance) {
+  if (!(sharpness_at_p0 >= 0.0) || sharpness_at_p0 > ON_SubDEdgeSharpness::MaximumValue) {
+    return false;
+  }
+  if (!(sharpness_at_p1 >= 0.0) || sharpness_at_p1 > ON_SubDEdgeSharpness::MaximumValue) {
+    return false;
+  }
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) {
+    return false;
+  }
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr || !e->IsSmooth()) {
+    return false;
+  }
+  // ON_SubDEdgeSharpness::FromInterval(s0, s1) is stored positionally
+  // against the edge's OWN m_vertex[0]/m_vertex[1] order, which need not
+  // match the (p0, p1) order the caller passed in - so map the caller's
+  // per-point weights onto the edge's own end indices before writing.
+  const bool p0_is_end0 = (e->Vertex(0u) == v0);
+  const double s_end0 = p0_is_end0 ? sharpness_at_p0 : sharpness_at_p1;
+  const double s_end1 = p0_is_end0 ? sharpness_at_p1 : sharpness_at_p0;
+  // SetSharpnessForExperts is the same primitive OpenNURBS' own
+  // ON_SubD::AddEdge(..., ON_SubDEdgeSharpness) overloads call on a
+  // freshly-created edge - here applied to an existing one found via the
+  // const FindVertex/FindEdge accessors, which is why the const_cast: it
+  // just writes one field (ON_SubDEdge::m_sharpness), verified by reading
+  // its implementation, with no other cached state to invalidate.
+  const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromInterval(s_end0, s_end1));
+  return true;
+}
+
+SubDEdgeSharpnessInfo SubD::EdgeSharpnessAt(const Point3d& p0, const Point3d& p1,
+                                            double point_tolerance) const {
+  SubDEdgeSharpnessInfo info;
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) {
+    return info;
+  }
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr || !e->IsSmooth()) {
+    return info;
+  }
+  // Same p0/p1-vs-m_vertex[0]/[1] mapping SetEdgeSharpness()'s own
+  // per-end overload already uses, applied here to reading.
+  const bool p0_is_end0 = (e->Vertex(0u) == v0);
+  info.sharpness_at_p0 = p0_is_end0 ? e->EndSharpness(0u) : e->EndSharpness(1u);
+  info.sharpness_at_p1 = p0_is_end0 ? e->EndSharpness(1u) : e->EndSharpness(0u);
+  info.found = true;
+  return info;
+}
+
+bool SubD::SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) {
+    return false;
+  }
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr) {
+    return false;
+  }
+  const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(e);
+  const unsigned int changed = subd_.SetEdgeTags(
+      &cptr, 1, crease ? ON_SubDEdgeTag::Crease : ON_SubDEdgeTag::Smooth);
+  return changed == 1;
+}
+
+namespace {
+
+// The other of `v`'s naked (single-face) edges - not `exclude` - or
+// nullptr if there isn't exactly one such edge. A boundary vertex has
+// exactly 2 naked edges; this is how SubD::CapBoundaryLoop() walks from
+// one to the "next" one around the loop.
+const ON_SubDEdge* OtherNakedEdge(const ON_SubDVertex* v, const ON_SubDEdge* exclude) {
+  if (v == nullptr) return nullptr;
+  const ON_SubDEdge* found = nullptr;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e == nullptr || e == exclude || e->FaceCount() != 1) continue;
+    if (found != nullptr) return nullptr;  // a bowtie's other side - ambiguous here, not guessed
+    found = e;
+  }
+  return found;
+}
+
+}  // namespace
+
+bool SubD::CapBoundaryLoop(const Point3d& start, double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&start.x, point_tolerance);
+  if (v0 == nullptr) return false;
+
+  const ON_SubDEdge* first_edge = nullptr;
+  for (unsigned int i = 0; i < v0->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v0->Edge(i);
+    if (e != nullptr && e->FaceCount() == 1) {
+      first_edge = e;
+      break;
+    }
+  }
+  if (first_edge == nullptr) return false;
+
+  std::vector<const ON_SubDEdge*> loop;
+  const ON_SubDEdge* e = first_edge;
+  const ON_SubDVertex* v = v0;
+  const unsigned int budget = subd_.EdgeCount();
+  for (unsigned int steps = 0; steps <= budget; ++steps) {
+    loop.push_back(e);
+    const ON_SubDVertex* next_v = e->OtherEndVertex(v);
+    if (next_v == nullptr) return false;
+    if (next_v == v0) {
+      ON_SimpleArray<ON_SubDEdge*> edges(static_cast<int>(loop.size()));
+      // AddFace() takes non-const ON_SubDEdge* - the same const_cast
+      // pattern OpenNURBS' own AddEdge()/SetEdgeTags() callers use on
+      // pointers obtained from const accessors (FindVertex()/Edge()
+      // here), never on anything actually declared const by the caller.
+      for (const ON_SubDEdge* le : loop) edges.Append(const_cast<ON_SubDEdge*>(le));
+      ON_SubDFace* face = subd_.AddFace(edges);
+      if (face == nullptr) return false;
+
+      std::vector<ON_SubDComponentPtr> cptrs;
+      cptrs.reserve(loop.size());
+      for (const ON_SubDEdge* le : loop) cptrs.push_back(ON_SubDComponentPtr::Create(le));
+      subd_.SetEdgeTags(cptrs.data(), cptrs.size(), ON_SubDEdgeTag::Smooth);
+      return true;
+    }
+    const ON_SubDEdge* next_edge = OtherNakedEdge(next_v, e);
+    if (next_edge == nullptr) return false;
+    e = next_edge;
+    v = next_v;
+  }
+  return false;
+}
+
+namespace {
+
+// The one face incident to both `v0` and `v1` (as one of its own corner
+// vertices each), or nullptr if there isn't exactly one such face -
+// InsertEdge()'s own vertex-pair-to-face lookup, since OpenNURBS'
+// ON_SubD::SplitFace() itself takes a face plus two of its vertices, not
+// a bare vertex pair.
+const ON_SubDFace* FindSharedFace(const ON_SubDVertex* v0, const ON_SubDVertex* v1) {
+  const ON_SubDFace* found = nullptr;
+  for (unsigned int i = 0; i < v0->FaceCount(); ++i) {
+    const ON_SubDFace* f = v0->Face(i);
+    if (f == nullptr) continue;
+    bool has_v1 = false;
+    for (unsigned int j = 0; j < f->EdgeCount(); ++j) {
+      if (f->Vertex(j) == v1) {
+        has_v1 = true;
+        break;
+      }
+    }
+    if (has_v1) {
+      if (found != nullptr) return nullptr;  // ambiguous - shared by 2+ faces
+      found = f;
+    }
+  }
+  return found;
+}
+
+}  // namespace
+
+bool SubD::InsertEdge(const Point3d& p0, const Point3d& p1, double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr || v0 == v1) return false;
+
+  const ON_SubDFace* face = FindSharedFace(v0, v1);
+  if (face == nullptr) return false;
+
+  // ON_SubD::SplitFace() takes non-const pointers - the same const_cast
+  // pattern CapBoundaryLoop() above already uses on pointers obtained
+  // from const accessors (FindVertex() here), never on anything actually
+  // declared const by the caller.
+  const ON_SubDEdge* inserted = subd_.SplitFace(const_cast<ON_SubDFace*>(face),
+                                                 const_cast<ON_SubDVertex*>(v0),
+                                                 const_cast<ON_SubDVertex*>(v1));
+  return inserted != nullptr;
+}
+
+bool SubD::SpinEdge(const Point3d& p0, const Point3d& p1, bool spin_clockwise,
+                    double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) return false;
+
+  const ON_SubDEdge* edge = subd_.FindEdge(v0, v1).Edge();
+  if (edge == nullptr || !edge->HasInteriorEdgeTopology(true)) return false;
+
+  const ON_SubDEdge* spun =
+      subd_.SpinEdge(const_cast<ON_SubDEdge*>(edge), spin_clockwise);
+  return spun != nullptr;
+}
+
+bool SubD::ExtrudeFace(unsigned int face_id, double distance) {
+  if (distance == 0.0) return false;
+  const ON_SubDFace* face = subd_.FaceFromId(face_id);
+  if (face == nullptr) return false;
+
+  Vector3d normal = face->ControlNetCenterNormal();
+  if (!normal.Unitize()) return false;
+
+  const ON_Xform xform = ON_Xform::TranslationTransformation(normal * distance);
+  const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(face);
+  const unsigned int changed = subd_.ExtrudeComponents(xform, &cptr, 1);
+  return changed != 0;
+}
+
+bool SubD::ExpandFaces(const std::vector<unsigned int>& face_ids, double distance) {
+  if (distance == 0.0) return false;
+  if (face_ids.empty()) return false;
+
+  std::vector<const ON_SubDFace*> faces;
+  faces.reserve(face_ids.size());
+  for (unsigned int id : face_ids) {
+    const ON_SubDFace* face = subd_.FaceFromId(id);
+    if (face == nullptr) return false;
+    for (const ON_SubDFace* existing : faces) {
+      if (existing == face) return false;  // duplicate id - ambiguous request
+    }
+    faces.push_back(face);
+  }
+
+  Vector3d direction = Vector3d::ZeroVector;
+  for (const ON_SubDFace* face : faces) {
+    Vector3d n = face->ControlNetCenterNormal();
+    if (!n.Unitize()) return false;
+    direction += n;
+  }
+  if (!direction.Unitize()) return false;
+
+  const ON_Xform xform = ON_Xform::TranslationTransformation(direction * distance);
+  std::vector<ON_SubDComponentPtr> cptrs;
+  cptrs.reserve(faces.size());
+  for (const ON_SubDFace* face : faces) cptrs.push_back(ON_SubDComponentPtr::Create(face));
+
+  const unsigned int changed = subd_.ExtrudeComponents(xform, cptrs.data(), cptrs.size());
+  return changed != 0;
+}
+
+bool SubD::Weld(unsigned int keep_vertex_id, unsigned int discard_vertex_id, double weld_tolerance) {
+  const ON_SubDVertex* v0 = subd_.VertexFromId(keep_vertex_id);
+  const ON_SubDVertex* v1 = subd_.VertexFromId(discard_vertex_id);
+  if (v0 == nullptr || v1 == nullptr || v0 == v1) return false;
+  if (v0->ControlNetPoint().DistanceTo(v1->ControlNetPoint()) > weld_tolerance) return false;
+  if (subd_.FindEdge(v0, v1).Edge() != nullptr) return false;  // already connected - nothing to weld
+
+  // Refuse if v0 and v1 are already two distinct corners of the same
+  // face - merging them would collapse that face to fewer distinct
+  // corners than it actually has, the same "already adjacent" ambiguity
+  // convention InsertEdge() above already refuses rather than guessing.
+  for (unsigned int i = 0; i < v0->FaceCount(); ++i) {
+    const ON_SubDFace* f = v0->Face(i);
+    if (f == nullptr) continue;
+    for (unsigned int j = 0; j < f->EdgeCount(); ++j) {
+      if (f->Vertex(j) == v1) return false;
+    }
+  }
+
+  // NOTE on why this is a whole-net rebuild rather than local surgery: the
+  // obvious approach - ON_SubD::DeleteComponents(v1) to tear down v1 and
+  // everything touching it, then FindOrAddFace() the affected faces back
+  // together onto v0 - turns out to be unsafe. DeleteComponents()'s own
+  // "delete isolated edges" pass (bDeleteIsolatedEdges=true, always on for
+  // the public overload - verified by reading ON_SubDimple::
+  // DeleteComponents in opennurbs_subd.cpp) also deletes any OTHER vertex
+  // left with zero faces once v1's own faces are gone, even if that vertex
+  // still has edges - not just v1 itself. A vertex whose only face WAS one
+  // of v1's former faces (an ordinary, common case - e.g. two quads placed
+  // edge-to-edge share no OTHER face) gets silently swept away too, taking
+  // the very corners this method needs to reconnect with it and leaving
+  // rebuild_faces holding dangling pointers (confirmed by direct
+  // reproduction: welding one coincident corner pair of two disjoint quads
+  // this way dropped the vertex count by 4, not 1, and left the result
+  // IsValid()==false).
+  //
+  // So instead: snapshot the CURRENT control net's entire vertex/face/edge
+  // set (ids, positions, corner-id lists, tags, sharpness), remap every
+  // reference to v1's id onto v0's id, and rebuild a fresh ON_SubD from
+  // that snapshot via ON_SubD::AddVertexForExperts() - explicitly
+  // documented for exactly this "copying portions of an existing SubD to a
+  // new SubD" use case - preserving every ORIGINAL vertex's own id, so a
+  // vertex/edge belonging to both the old and new net can be found by the
+  // very same id in either. Every original edge's tag and sharpness is
+  // reapplied by that same id pair afterward; only a handful of brand-new
+  // edges (directly between v0 and a former neighbor of v1) are left
+  // Unset for the final recompute to resolve, and no vertex's own tag
+  // needs any special-case preservation at all - every vertex starts
+  // Unset and is re-derived purely from its (correctly restored) edges,
+  // the same "vertex tags are always DERIVED, never stored history" fact
+  // Symmetrize()'s own seam handling above already relies on.
+  struct VSnap {
+    unsigned int id;
+    Point3d point;
+  };
+  std::vector<VSnap> vertices_snapshot;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (v == v1) continue;  // discarded - never re-added
+      vertices_snapshot.push_back({v->m_id, v->ControlNetPoint()});
+    }
+  }
+
+  const auto remap = [&](const ON_SubDVertex* v) { return v == v1 ? keep_vertex_id : v->m_id; };
+
+  struct FSnap {
+    std::vector<unsigned int> corner_ids;
+  };
+  std::vector<FSnap> faces_snapshot;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      const unsigned int n = f->EdgeCount();
+      FSnap fs;
+      fs.corner_ids.reserve(n);
+      for (unsigned int j = 0; j < n; ++j) fs.corner_ids.push_back(remap(f->Vertex(j)));
+      faces_snapshot.push_back(std::move(fs));
+    }
+  }
+
+  struct ESnap {
+    unsigned int a, b;
+    ON_SubDEdgeTag tag;
+    ON_SubDEdgeSharpness sharpness;
+  };
+  std::vector<ESnap> edges_snapshot;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->m_vertex[0] == nullptr || e->m_vertex[1] == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::Weld: an edge has a null vertex");
+      }
+      // Only a genuinely INTERIOR edge's (FaceCount()==2) tag is worth
+      // reapplying verbatim - it can only ever be Smooth or a real,
+      // intentional SetCrease()-set Crease, neither of which this merge
+      // ever has reason to change. A naked (FaceCount()==1) edge's own
+      // Crease tag is never that: it's purely the "an open SubD's own
+      // boundary edges are themselves always creases" construction
+      // convention, stale the instant a weld gives the edge a second
+      // face - so it's deliberately left OUT of the snapshot (never
+      // reapplied), leaving it Unset for UpdateAllTagsAndSectorCoefficients()
+      // below to re-derive fresh from whatever its ACTUAL new face count
+      // turns out to be: Crease again if it's still naked, Smooth if this
+      // weld just closed it into a real interior edge. The same holds for
+      // a pathological non-manifold (3+ face) original edge, which that
+      // recompute forces to Crease regardless, matching its untouched
+      // original state exactly.
+      if (e->FaceCount() != 2) continue;
+      edges_snapshot.push_back(
+          {remap(e->m_vertex[0]), remap(e->m_vertex[1]), e->m_edge_tag, e->Sharpness(/*bUseCreaseSharpness=*/false)});
+    }
+  }
+
+  ON_SubD new_subd;
+  for (const VSnap& vs : vertices_snapshot) {
+    if (new_subd.AddVertexForExperts(vs.id, ON_SubDVertexTag::Unset, &vs.point.x, 0, 0) == nullptr) {
+      throw std::runtime_error("dino8::kernel::SubD::Weld: ON_SubD::AddVertexForExperts failed");
+    }
+  }
+  for (const FSnap& fs : faces_snapshot) {
+    std::vector<const ON_SubDVertex*> corners(fs.corner_ids.size());
+    for (size_t i = 0; i < fs.corner_ids.size(); ++i) {
+      corners[i] = new_subd.VertexFromId(fs.corner_ids[i]);
+      if (corners[i] == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::Weld: a rebuilt face corner vertex is missing");
+      }
+    }
+    if (new_subd.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size()) == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::Weld: ON_SubD::FindOrAddFace failed while rebuilding a face");
+    }
+  }
+  for (const ESnap& es : edges_snapshot) {
+    const ON_SubDVertex* a = new_subd.VertexFromId(es.a);
+    const ON_SubDVertex* b = new_subd.VertexFromId(es.b);
+    if (a == nullptr || b == nullptr) continue;
+    const ON_SubDEdge* e = new_subd.FindEdge(a, b).Edge();
+    // A null result here only ever means a and b were v0 and v1 themselves
+    // (an edge directly between the kept and discarded vertex, already
+    // refused above) or - the double-edge case - two distinct original
+    // edges (v1-X and v0-X) that legitimately collapse onto the SAME
+    // rebuilt edge once v1 merges into v0; either way there is exactly one
+    // rebuilt edge to tag, and skipping a not-found one throws away
+    // nothing new.
+    if (e == nullptr) continue;
+    const_cast<ON_SubDEdge*>(e)->m_edge_tag = es.tag;
+    if (es.tag == ON_SubDEdgeTag::Smooth || es.tag == ON_SubDEdgeTag::SmoothX) {
+      const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(es.sharpness);
+    }
+  }
+
+  new_subd.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  subd_ = new_subd;
+  return true;
+}
+
+std::vector<SubDLimitPoint> SubD::LimitPoints() const {
+  std::vector<SubDLimitPoint> out;
+  ON_SubDVertexIterator vit = subd_.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    SubDLimitPoint lp;
+    lp.vertex_id = v->m_id;
+    lp.control_point = v->ControlNetPoint();
+    lp.valence = static_cast<int>(v->EdgeCount());
+    lp.smooth = v->IsSmooth();
+    // ON_SubDVertex::SurfacePoint() returns ON_3dPoint::NanPoint on
+    // failure rather than a bool - so the validity check IS the failure
+    // check, and it's an error here, never a NaN handed back as data.
+    const ON_3dPoint p = v->SurfacePoint();
+    if (!p.IsValid()) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::LimitPoints: ON_SubDVertex::SurfacePoint failed for "
+          "a vertex (no incident faces, or invalid SubD topology)");
+    }
+    lp.limit_point = p;
+    // The normal is per sector; use the sector containing the vertex's
+    // first face (SurfaceNormal(nullptr, ...) refuses a crease/corner
+    // vertex outright, since it would be ambiguous there). Undefined ->
+    // zero vector, documented on SubDLimitPoint.
+    const ON_SubDFace* sector_face = v->FaceCount() > 0 ? v->Face(0) : nullptr;
+    const ON_3dVector n = sector_face ? v->SurfaceNormal(sector_face, /*bUndefinedNormalPossible=*/true)
+                                      : ON_3dVector::NanVector;
+    lp.limit_normal = n.IsValid() ? n : ON_3dVector::ZeroVector;
+    out.push_back(lp);
+  }
+  return out;
+}
+
+namespace {
+
+// The vertex of `nf` (one of `v`'s incident faces, sharing the edge
+// `v`-`shared` with `f`) that neighbors `v` but is not `shared` - the
+// "outer" grid point one step past `v`, away from `f`, along that edge's
+// far face.
+const ON_SubDVertex* OuterNeighbor(const ON_SubDFace* nf, const ON_SubDVertex* v,
+                                    const ON_SubDVertex* shared) {
+  if (!nf) return nullptr;
+  const unsigned int n = nf->EdgeCount();
+  unsigned int idx = ON_UNSET_UINT_INDEX;
+  for (unsigned int i = 0; i < n; ++i) {
+    if (nf->Vertex(i) == v) { idx = i; break; }
+  }
+  if (idx == ON_UNSET_UINT_INDEX || n == 0) return nullptr;
+  const ON_SubDVertex* a = nf->Vertex((idx + n - 1) % n);
+  const ON_SubDVertex* b = nf->Vertex((idx + 1) % n);
+  if (a == shared) return b;
+  if (b == shared) return a;
+  return nullptr;
+}
+
+// The 4th face incident to ordinary-interior vertex `v` - the one that is
+// neither `f` (the regular face being evaluated) nor either of the two
+// faces across `f`'s two edges at `v` (`nf_a`, `nf_b`) - i.e. the face
+// diagonally opposite `f` around `v`.
+const ON_SubDFace* DiagonalFace(const ON_SubDVertex* v, const ON_SubDFace* f,
+                                 const ON_SubDFace* nf_a, const ON_SubDFace* nf_b) {
+  if (!v || v->FaceCount() != 4) return nullptr;
+  for (unsigned int i = 0; i < 4; ++i) {
+    const ON_SubDFace* cand = v->Face(i);
+    if (cand && cand != f && cand != nf_a && cand != nf_b) return cand;
+  }
+  return nullptr;
+}
+
+// `fd`'s own vertex diagonally opposite `v` within `fd` (`fd` is a quad
+// containing `v`).
+const ON_SubDVertex* DiagonalVertex(const ON_SubDFace* fd, const ON_SubDVertex* v) {
+  if (!fd || fd->EdgeCount() != 4) return nullptr;
+  unsigned int idx = ON_UNSET_UINT_INDEX;
+  for (unsigned int i = 0; i < 4; ++i) {
+    if (fd->Vertex(i) == v) { idx = i; break; }
+  }
+  if (idx == ON_UNSET_UINT_INDEX) return nullptr;
+  return fd->Vertex((idx + 2) % 4);
+}
+
+bool IsOrdinaryInterior(const ON_SubDVertex* v) {
+  return v != nullptr && v->EdgeCount() == 4 && v->FaceCount() == 4 &&
+         v->IsSmooth();
+}
+
+// Standard uniform-cubic-B-spline-to-Bezier conversion for one span's 4
+// control points (e.g. Piegl & Tiller, "The NURBS Book" - open, published
+// math; the same conversion Boehm's knot-insertion algorithm produces
+// when a uniform cubic knot is raised to triple multiplicity at both ends
+// of one span).
+void BsplineSpanToBezier(const ON_3dPoint p[4], ON_3dPoint b[4]) {
+  b[0] = (p[0] + 4.0 * p[1] + p[2]) / 6.0;
+  b[1] = (4.0 * p[1] + 2.0 * p[2]) / 6.0;
+  b[2] = (2.0 * p[1] + 4.0 * p[2]) / 6.0;
+  b[3] = (p[1] + 4.0 * p[2] + p[3]) / 6.0;
+}
+
+// Converts a 4x4 grid of regular Catmull-Clark control points (grid[row]
+// [col], row/col = 0..3) in place to its equivalent 4x4 bicubic Bezier
+// control grid: the 1D conversion applied to each row, then to each
+// column - valid because tensor-product B-spline<->Bezier conversion
+// separates exactly like this (it's just a change of basis applied
+// independently in each parametric direction).
+void GridToBezier(ON_3dPoint grid[4][4]) {
+  ON_3dPoint tmp[4][4];
+  for (int r = 0; r < 4; ++r) {
+    const ON_3dPoint row_in[4] = {grid[r][0], grid[r][1], grid[r][2], grid[r][3]};
+    ON_3dPoint row_out[4];
+    BsplineSpanToBezier(row_in, row_out);
+    for (int c = 0; c < 4; ++c) tmp[r][c] = row_out[c];
+  }
+  for (int c = 0; c < 4; ++c) {
+    const ON_3dPoint col_in[4] = {tmp[0][c], tmp[1][c], tmp[2][c], tmp[3][c]};
+    ON_3dPoint col_out[4];
+    BsplineSpanToBezier(col_in, col_out);
+    for (int r = 0; r < 4; ++r) grid[r][c] = col_out[r];
+  }
+}
+
+// True Catmull-Clark limit-surface position at an irregular face's own
+// corner vertex, used by BuildFaceBezierGrid()'s irregular branch below in
+// place of the raw, flat control-net point ToNurbsPatches()/
+// ToNurbsPatchesAdaptive() used at every irregular patch corner before
+// this - the same `ON_SubDVertex::GetSurfacePoint()` eigenbasis call
+// ExactVertexCorner() above already proved out for EvaluateFace()'s own
+// single-(u,v)-query corner case (see its own doc comment for why this is
+// the genuine Stam eigenbasis evaluator, not a hand-rolled approximation).
+// Unlike ExactVertexCorner(), this is a plain `const` free function with no
+// working-copy clone or GlobalSubdivide() step at all, deliberately: this
+// is called from a tight loop over every face of a (possibly large) SubD,
+// where cloning the whole net per corner query - the only safe way to
+// decay a semi-sharp edge first, since that mutates the clone in place -
+// would turn an O(faces) conversion into something far worse. So this
+// takes the one case ExactVertexCorner() already proves is safe without
+// any mutation at all (zero semi-sharp sharpness on every incident smooth
+// edge, the common case) and handles only that: it calls GetSurfacePoint()
+// directly on the CURRENT (un-subdivided) vertex/face, exactly as
+// ExactVertexCorner() itself does when its own `max_incident_sharpness`
+// is 0. Whenever a semi-sharp edge IS present nearby - or GetSurfacePoint()
+// itself can't resolve a limit point, e.g. a non-manifold neighborhood -
+// this falls back to the prior raw control-net point unchanged, per
+// corner, so a caller always gets a valid point and a face with 3
+// ordinary corners and 1 semi-sharp one still improves the 3 it can.
+ON_3dPoint IrregularCornerLimitOrControlPoint(const ON_SubDFace* f, int corner_index) {
+  const ON_SubDVertex* v = f->Vertex(static_cast<unsigned int>(corner_index));
+  if (v == nullptr) return ON_3dPoint::UnsetPoint;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e != nullptr && e->IsSmooth() && e->EndSharpness(v) > 0.0) return v->ControlNetPoint();
+  }
+  ON_SubDSectorSurfacePoint limit_point;
+  if (v->GetSurfacePoint(f, /*bUndefinedNormalIsPossible=*/true, limit_point)) {
+    const ON_3dPoint p = limit_point.Point();
+    if (p.IsValid()) return p;
+  }
+  return v->ControlNetPoint();
+}
+
+// Builds `f`'s 4x4 Bezier-form control grid: the exact regular
+// Catmull-Clark patch (grid[row][col], row/col = 0..3, row 0/3 = the
+// v=0/v=1 boundary curve's Bezier control points, col 0/3 = the u=0/u=1
+// boundary curve's, matching Vertex(0)=(0,0), Vertex(1)=(1,0),
+// Vertex(2)=(1,1), Vertex(3)=(0,1)) when `f` is regular, or the
+// tolerance-bounded bilinear-corner-interpolant approximation otherwise
+// - see ToNurbsPatches()'s own doc comment for what each case means.
+// `f` must be a quad (caller's responsibility - see ToNurbsPatches()'s
+// own n-gon-skipping comment). Sets `regular_out` to which case applied.
+//
+// `exact_irregular_corners`, when true, additionally substitutes each
+// IRREGULAR-case corner with its own true limit point via
+// IrregularCornerLimitOrControlPoint() above, instead of the raw
+// control-net point - see that function's own doc comment for why and
+// its disclosed semi-sharp-edge fallback. Deliberately NOT the default,
+// and deliberately NOT threaded through to every caller: ToNurbsPatches()/
+// ToNurbsPatchesAdaptiveRecurse() (the only two callers whose own `grid`
+// actually becomes patch output a caller keeps) pass true;
+// SubD::EvaluateFace()'s own top-level call and EvaluateFaceAdaptive()'s
+// internal one both pass false and are UNCHANGED by this parameter's
+// existence - their own irregular-face handling always resolves a
+// face-corner query through ExactVertexCorner() directly (never through
+// this grid at all) and otherwise only ever consults this grid for a
+// genuinely INTERIOR (u, v), where the flat bilinear fill (not just its
+// corners) was always understood as the approximation, not something
+// this pass changes for them.
+void BuildFaceBezierGrid(const ON_SubDFace* f, ON_3dPoint grid[4][4], bool& regular_out,
+                          bool exact_irregular_corners) {
+  const ON_SubDVertex* v[4] = {f->Vertex(0), f->Vertex(1), f->Vertex(2), f->Vertex(3)};
+  const ON_SubDEdge* e[4] = {f->Edge(0), f->Edge(1), f->Edge(2), f->Edge(3)};
+  const ON_SubDFace* nf[4] = {
+      e[0] ? e[0]->NeighborFace(f, true) : nullptr,
+      e[1] ? e[1]->NeighborFace(f, true) : nullptr,
+      e[2] ? e[2]->NeighborFace(f, true) : nullptr,
+      e[3] ? e[3]->NeighborFace(f, true) : nullptr,
+  };
+
+  bool regular = v[0] && v[1] && v[2] && v[3] && IsOrdinaryInterior(v[0]) &&
+                  IsOrdinaryInterior(v[1]) && IsOrdinaryInterior(v[2]) &&
+                  IsOrdinaryInterior(v[3]) && nf[0] && nf[1] && nf[2] && nf[3];
+
+  // grid[row][col]: face corners occupy the middle 2x2 block, v[0]..v[3]
+  // going v[0]->v[1] (row1, col1->col2), v[1]->v[2] (col2, row1->row2),
+  // matching the face's own CCW winding.
+  grid[1][1] = v[0]->ControlNetPoint();
+  grid[1][2] = v[1]->ControlNetPoint();
+  grid[2][2] = v[2]->ControlNetPoint();
+  grid[2][1] = v[3]->ControlNetPoint();
+
+  if (regular) {
+    const ON_SubDVertex* outer01_0 = OuterNeighbor(nf[0], v[0], v[1]);
+    const ON_SubDVertex* outer01_1 = OuterNeighbor(nf[0], v[1], v[0]);
+    const ON_SubDVertex* outer12_1 = OuterNeighbor(nf[1], v[1], v[2]);
+    const ON_SubDVertex* outer12_2 = OuterNeighbor(nf[1], v[2], v[1]);
+    const ON_SubDVertex* outer23_2 = OuterNeighbor(nf[2], v[2], v[3]);
+    const ON_SubDVertex* outer23_3 = OuterNeighbor(nf[2], v[3], v[2]);
+    const ON_SubDVertex* outer30_3 = OuterNeighbor(nf[3], v[3], v[0]);
+    const ON_SubDVertex* outer30_0 = OuterNeighbor(nf[3], v[0], v[3]);
+
+    const ON_SubDFace* fd0 = DiagonalFace(v[0], f, nf[0], nf[3]);
+    const ON_SubDFace* fd1 = DiagonalFace(v[1], f, nf[0], nf[1]);
+    const ON_SubDFace* fd2 = DiagonalFace(v[2], f, nf[1], nf[2]);
+    const ON_SubDFace* fd3 = DiagonalFace(v[3], f, nf[2], nf[3]);
+    const ON_SubDVertex* diag0 = DiagonalVertex(fd0, v[0]);
+    const ON_SubDVertex* diag1 = DiagonalVertex(fd1, v[1]);
+    const ON_SubDVertex* diag2 = DiagonalVertex(fd2, v[2]);
+    const ON_SubDVertex* diag3 = DiagonalVertex(fd3, v[3]);
+
+    if (outer01_0 && outer01_1 && outer12_1 && outer12_2 && outer23_2 && outer23_3 &&
+        outer30_3 && outer30_0 && diag0 && diag1 && diag2 && diag3) {
+      grid[0][1] = outer01_0->ControlNetPoint();
+      grid[0][2] = outer01_1->ControlNetPoint();
+      grid[1][3] = outer12_1->ControlNetPoint();
+      grid[2][3] = outer12_2->ControlNetPoint();
+      grid[3][2] = outer23_2->ControlNetPoint();
+      grid[3][1] = outer23_3->ControlNetPoint();
+      grid[2][0] = outer30_3->ControlNetPoint();
+      grid[1][0] = outer30_0->ControlNetPoint();
+      grid[0][0] = diag0->ControlNetPoint();
+      grid[0][3] = diag1->ControlNetPoint();
+      grid[3][3] = diag2->ControlNetPoint();
+      grid[3][0] = diag3->ControlNetPoint();
+    } else {
+      // A vertex reported valence 4 but its neighborhood didn't
+      // resolve cleanly (e.g. a non-manifold pole) - fall back to the
+      // honest irregular case below rather than use a half-filled grid.
+      regular = false;
+    }
+  }
+
+  if (regular) {
+    GridToBezier(grid);
+  } else {
+    // Irregular face (extraordinary vertex, crease, or boundary): no
+    // closed-form regular stencil applies. Fill the grid as a bilinear
+    // interpolant of the 4 corners, sampled at parameter values i/3, j/3
+    // - since a bilinear (ruled) surface's iso-parameter lines are
+    // straight lines, any monotonic sampling along them still lies
+    // exactly on that ruled surface, so the resulting "Bezier" patch
+    // below reproduces the flat corner interpolant exactly (only the
+    // internal parametrization is nonuniform, which is harmless for an
+    // untrimmed Brep face). This is the tolerance-bounded approximation
+    // documented on ToNurbsPatches() - narrowed, as of this pass, from a
+    // flat interpolant of the raw CONTROL-NET corners (this face's own
+    // 4 un-limited vertex positions) to one of their true Catmull-Clark
+    // LIMIT-surface positions instead (IrregularCornerLimitOrControlPoint()
+    // above): the patch's 4 corners now land exactly on the limit
+    // surface, same as a regular patch's corners always have, even
+    // though the interior between them is still the same flat bilinear
+    // fill as before - a real, bounded reduction in the approximation's
+    // own error, not a claim that the interior is now exact too.
+    const ON_3dPoint c00 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 0) : grid[1][1];
+    const ON_3dPoint c10 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 1) : grid[1][2];
+    const ON_3dPoint c11 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 2) : grid[2][2];
+    const ON_3dPoint c01 =
+        exact_irregular_corners ? IrregularCornerLimitOrControlPoint(f, 3) : grid[2][1];
+    for (int r = 0; r < 4; ++r) {
+      const double t = r / 3.0;
+      for (int c = 0; c < 4; ++c) {
+        const double s = c / 3.0;
+        grid[r][c] = (1.0 - t) * ((1.0 - s) * c00 + s * c10) + t * ((1.0 - s) * c01 + s * c11);
+      }
+    }
+  }
+
+  regular_out = regular;
+}
+
+}  // namespace
+
+std::vector<SubDNurbsPatch> SubD::ToNurbsPatches() const {
+  std::vector<SubDNurbsPatch> patches;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    // Catmull-Clark refinement always produces quads once subdivided at
+    // least once; a level-0 face built straight from a triangle/n-gon
+    // mesh can still be non-quad, and has no regular-patch stencil at
+    // all - skip it (callers wanting every face covered should
+    // Subdivide(1) first, which turns every face into a quad).
+    if (f->EdgeCount() != 4) continue;
+    if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
+
+    ON_3dPoint grid[4][4];
+    bool regular = false;
+    BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/true);
+
+    std::vector<Point3d> cvs(16);
+    for (int u = 0; u < 4; ++u) {
+      for (int w = 0; w < 4; ++w) {
+        cvs[static_cast<size_t>(u) * 4 + static_cast<size_t>(w)] = grid[w][u];
+      }
+    }
+    SubDNurbsPatch patch;
+    patch.surface = NurbsSurface::FromControlGrid(cvs, 4, 4, 3, 3);
+    patch.exact = regular;
+    patches.push_back(std::move(patch));
+  }
+  if (patches.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatches: no quad faces found (the SubD is "
+        "empty, or every face is a non-quad n-gon/triangle - call Subdivide(1) "
+        "first to convert those into quads)");
+  }
+  return patches;
+}
+
+namespace {
+
+// Position of a cubic Bezier curve (control points p[0..3]) at t in [0,1].
+ON_3dPoint EvalCubicBezierPos(const ON_3dPoint p[4], double t) {
+  const double mt = 1.0 - t;
+  return mt * mt * mt * p[0] + 3.0 * mt * mt * t * p[1] + 3.0 * mt * t * t * p[2] +
+         t * t * t * p[3];
+}
+
+// Derivative (w.r.t. t) of a cubic Bezier curve (control points p[0..3])
+// at t in [0,1] - the standard "3 * differences of a degree-2 Bezier"
+// formula.
+ON_3dVector EvalCubicBezierDeriv(const ON_3dPoint p[4], double t) {
+  const double mt = 1.0 - t;
+  return 3.0 * (mt * mt * (p[1] - p[0]) + 2.0 * mt * t * (p[2] - p[1]) + t * t * (p[3] - p[2]));
+}
+
+// Position and partial derivatives of the bicubic Bezier surface whose
+// 4x4 control grid is `grid` (row = v-direction control index, col =
+// u-direction control index - see BuildFaceBezierGrid()'s own comment),
+// at (u, v) in [0,1]x[0,1]. Standard tensor-product evaluation: reduce
+// each row to its u-curve's position AND derivative first, then reduce
+// those 4 values in v (partial derivatives commute for a tensor-product
+// surface, so reducing the u-derivative rows in v gives Su, and taking
+// the v-derivative of the position rows gives Sv).
+void EvalBicubicBezier(const ON_3dPoint grid[4][4], double u, double v, ON_3dPoint& position,
+                       ON_3dVector& tangent_u, ON_3dVector& tangent_v) {
+  ON_3dPoint row_pos[4];
+  ON_3dPoint row_deriv_u[4];  // du of each row, stored as points so it can be run back through
+                              // the same position-reduction basis functions
+  for (int r = 0; r < 4; ++r) {
+    row_pos[r] = EvalCubicBezierPos(grid[r], u);
+    const ON_3dVector d = EvalCubicBezierDeriv(grid[r], u);
+    row_deriv_u[r] = ON_3dPoint(d.x, d.y, d.z);
+  }
+  position = EvalCubicBezierPos(row_pos, v);
+  tangent_v = EvalCubicBezierDeriv(row_pos, v);
+  const ON_3dPoint du_point = EvalCubicBezierPos(row_deriv_u, v);
+  tangent_u = ON_3dVector(du_point.x, du_point.y, du_point.z);
+}
+
+SubDSurfacePoint EvalPatchPoint(const ON_3dPoint grid[4][4], double u, double v, bool exact) {
+  SubDSurfacePoint pt;
+  EvalBicubicBezier(grid, u, v, pt.position, pt.tangent_u, pt.tangent_v);
+  ON_3dVector n = ON_CrossProduct(pt.tangent_u, pt.tangent_v);
+  pt.normal = n.Unitize() ? n : ON_3dVector::ZeroVector;
+  pt.exact = exact;
+  return pt;
+}
+
+// Re-expresses (u, v) in a local frame centered on face-corner index k
+// (0..3): (0, 0) at Vertex(k), (1, 0) at Vertex(k+1), (0, 1) at
+// Vertex(k-1) - the inverse of FromVertexLocal() below. For (u, v)
+// inside the quadrant nearest Vertex(k) (both within 0.5 of Vertex(k)'s
+// own (0,0)/(1,0)/(1,1)/(0,1) corner), uk and vk both land in [0, 0.5].
+void ToVertexLocal(int k, double u, double v, double& uk, double& vk) {
+  switch (k & 3) {
+    case 0: uk = u; vk = v; break;
+    case 1: uk = v; vk = 1.0 - u; break;
+    case 2: uk = 1.0 - u; vk = 1.0 - v; break;
+    default: uk = 1.0 - v; vk = u; break;  // case 3
+  }
+}
+
+// The inverse of ToVertexLocal(): given a point (uk, vk) expressed in
+// the local frame centered on whichever face-corner index a *different*
+// face's Vertex(m) represents ((0,0) at Vertex(m), (1,0) toward
+// Vertex(m+1), (0,1) toward Vertex(m-1)), returns that face's own
+// (u, v) (Vertex(0) = (0,0), Vertex(1) = (1,0), Vertex(2) = (1,1),
+// Vertex(3) = (0,1)).
+void FromVertexLocal(int m, double uk, double vk, double& u, double& v) {
+  switch (m & 3) {
+    case 0: u = uk; v = vk; break;
+    case 1: u = 1.0 - vk; v = uk; break;
+    case 2: u = 1.0 - uk; v = 1.0 - vk; break;
+    default: u = vk; v = 1.0 - uk; break;  // case 3
+  }
+}
+
+// A distance tolerance for FindVertex() calls below, scaled to face
+// `f`'s own size: SubdivisionPoint()'s independently-computed value and
+// GlobalSubdivide()'s internally-computed one for the same point should
+// agree far more tightly than this (same formula, same inputs,
+// deterministic IEEE arithmetic - differing at most by summation-order
+// rounding), so this is a generous, not a tight, tolerance - it exists
+// to be scale-invariant, not to paper over a real mismatch.
+double FindTolerance(const ON_SubDFace* f) {
+  ON_3dPoint lo = ON_3dPoint::UnsetPoint;
+  ON_3dPoint hi = ON_3dPoint::UnsetPoint;
+  for (unsigned int i = 0; i < f->EdgeCount(); ++i) {
+    const ON_SubDVertex* v = f->Vertex(i);
+    if (!v) continue;
+    const ON_3dPoint p = v->ControlNetPoint();
+    if (!lo.IsValid()) {
+      lo = p;
+      hi = p;
+      continue;
+    }
+    lo.x = std::min(lo.x, p.x); lo.y = std::min(lo.y, p.y); lo.z = std::min(lo.z, p.z);
+    hi.x = std::max(hi.x, p.x); hi.y = std::max(hi.y, p.y); hi.z = std::max(hi.z, p.z);
+  }
+  const double diagonal = lo.IsValid() ? hi.DistanceTo(lo) : 0.0;
+  // The floor used to be a flat 1e-9, which is fine at the shallow
+  // adaptive depths EvaluateFace() originally reached but stops being
+  // scale-invariant once a deep adaptive level shrinks the face's own
+  // diagonal toward 1e-9 itself (a tolerance as large as the face
+  // can no longer tell neighboring vertices apart). The floor now tracks
+  // the actual floating-point noise floor instead - the magnitude of the
+  // coordinates themselves, times a few ulps' worth of slack - which is
+  // all it ever needed to absorb (predicted-vs-actual subdivision point
+  // differing only by summation order).
+  const double coordinate_magnitude =
+      lo.IsValid() ? std::max({std::abs(lo.x), std::abs(lo.y), std::abs(lo.z), std::abs(hi.x),
+                               std::abs(hi.y), std::abs(hi.z)})
+                   : 0.0;
+  return std::max({1e-300, diagonal * 1e-7, coordinate_magnitude * 1e-13});
+}
+
+// The unique face incident to all three of vF, vP, and vN (each has
+// valence exactly 4 - vF is a face-point, vP/vN are edge-points, always
+// true for quad-only Catmull-Clark subdivision - so this is a handful
+// of pointer comparisons, not a mesh-wide search). Returns nullptr if no
+// such face exists (should only happen if a FindVertex() call above it
+// already failed to resolve cleanly).
+const ON_SubDFace* FindCommonFace(const ON_SubDVertex* vF, const ON_SubDVertex* vP,
+                                   const ON_SubDVertex* vN) {
+  if (!vF || !vP || !vN) return nullptr;
+  auto touches = [](const ON_SubDVertex* v, const ON_SubDFace* face) {
+    for (unsigned int i = 0; i < v->FaceCount(); ++i) {
+      if (v->Face(i) == face) return true;
+    }
+    return false;
+  };
+  for (unsigned int i = 0; i < vF->FaceCount(); ++i) {
+    const ON_SubDFace* candidate = vF->Face(i);
+    if (candidate && candidate->EdgeCount() == 4 && touches(vP, candidate) &&
+        touches(vN, candidate)) {
+      return candidate;
+    }
+  }
+  return nullptr;
+}
+
+// Copies just the neighborhood of `f`'s corner `corner_index` out of `src`
+// into the standalone, much smaller SubD `out`, so EvaluateFace()'s deep
+// adaptive recursion refines a few dozen faces per level instead of
+// globally re-subdividing the WHOLE net (which grows 4x per level and used
+// to cap the reachable depth around 7-8 levels, see kMaxWorkingFaceCount).
+//
+// Why the neighborhood alone is enough: a subdivision-surface point's
+// refined position depends only on its own 1-ring of faces. Every vertex
+// within `rings - 1` vertex-steps of the tracked corner has its COMPLETE
+// 1-ring present in the copy (the faces gathered are every face touching
+// any vertex within `rings - 1` steps), so one global refinement of the
+// copy reproduces the exact refined positions for every vertex out to
+// distance 2 * (rings - 1) in the new mesh's own steps. EvaluateFace()
+// needs only the 2-ring around the tracked corner exact at every level (a
+// regular 4x4 stencil, or the next level's own copy), and 2 * (rings - 1)
+// >= rings whenever rings >= 2 - so the exact region never shrinks below
+// what the next level's own copy needs, however many levels deep this
+// repeats. The copy's own outer boundary (which OpenNURBS necessarily
+// treats as a naked boundary) only ever pollutes positions beyond that.
+//
+// Conservative, on purpose: any boundary/crease/dart/semi-sharp edge or
+// non-manifold vertex inside the exact region (every vertex within
+// `rings - 1` steps) refuses (returns false) rather than try to carry
+// those tags across, and the caller keeps using `src` itself exactly as it
+// did before this helper existed.
+bool TrimToNeighborhood(const ON_SubD& src, const ON_SubDFace* f, int corner_index, int rings,
+                        ON_SubD& out, const ON_SubDFace*& f_out) {
+  if (f == nullptr || rings < 2) return false;
+  const ON_SubDVertex* center = f->Vertex(static_cast<unsigned int>(corner_index));
+  if (center == nullptr) return false;
+
+  std::unordered_map<const ON_SubDVertex*, int> distance;
+  std::vector<const ON_SubDVertex*> frontier{center};
+  std::vector<const ON_SubDFace*> faces;
+  std::unordered_set<const ON_SubDFace*> seen_faces;
+  distance[center] = 0;
+  for (int r = 1; r <= rings; ++r) {
+    std::vector<const ON_SubDVertex*> next;
+    for (const ON_SubDVertex* v : frontier) {
+      for (unsigned int i = 0; i < v->FaceCount(); ++i) {
+        const ON_SubDFace* nf = v->Face(i);
+        if (nf == nullptr || nf->EdgeCount() < 3) return false;
+        if (!seen_faces.insert(nf).second) continue;
+        faces.push_back(nf);
+        for (unsigned int j = 0; j < nf->EdgeCount(); ++j) {
+          const ON_SubDVertex* nv = nf->Vertex(j);
+          if (nv == nullptr) return false;
+          if (distance.emplace(nv, r).second) next.push_back(nv);
+        }
+      }
+    }
+    frontier = std::move(next);
+  }
+
+  // Everything within rings - 1 steps must be an ordinary, untagged
+  // interior vertex whose incident edges are all smooth, zero-sharpness,
+  // two-faced edges.
+  for (const auto& entry : distance) {
+    if (entry.second > rings - 1) continue;
+    const ON_SubDVertex* v = entry.first;
+    if (!v->IsSmooth() || v->EdgeCount() != v->FaceCount() || v->EdgeCount() < 3) return false;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e == nullptr || !e->IsSmooth() || e->FaceCount() != 2) return false;
+      const ON_SubDVertex* other = e->OtherEndVertex(v);
+      if (other == nullptr || e->EndSharpness(v) > 0.0 || e->EndSharpness(other) > 0.0) return false;
+    }
+  }
+
+  std::unordered_map<const ON_SubDVertex*, const ON_SubDVertex*> copied;
+  const auto copy_vertex = [&](const ON_SubDVertex* v) -> const ON_SubDVertex* {
+    const auto it = copied.find(v);
+    if (it != copied.end()) return it->second;
+    const ON_3dPoint p = v->ControlNetPoint();
+    const ON_SubDVertex* nv = out.AddVertex(ON_SubDVertexTag::Unset, &p.x);
+    copied.emplace(v, nv);
+    return nv;
+  };
+  std::vector<const ON_SubDVertex*> corners;
+  const ON_SubDFace* mapped_face = nullptr;
+  for (const ON_SubDFace* face : faces) {
+    corners.clear();
+    for (unsigned int j = 0; j < face->EdgeCount(); ++j) {
+      const ON_SubDVertex* nv = copy_vertex(face->Vertex(j));
+      if (nv == nullptr) return false;
+      corners.push_back(nv);
+    }
+    const ON_SubDFace* nf = out.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size());
+    if (nf == nullptr) return false;
+    if (face == f) mapped_face = nf;
+  }
+  if (mapped_face == nullptr) return false;
+  out.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+
+  // The tracked corner must still be the same corner index of the same
+  // vertex in the copy.
+  const ON_SubDVertex* mapped_center = copied[center];
+  if (mapped_face->EdgeCount() != f->EdgeCount() ||
+      mapped_face->Vertex(static_cast<unsigned int>(corner_index)) != mapped_center ||
+      mapped_center->EdgeCount() != center->EdgeCount() || !mapped_center->IsSmooth()) {
+    return false;
+  }
+  f_out = mapped_face;
+  return true;
+}
+
+// The result of one real ON_SubD::GlobalSubdivide(1) step, tracking which
+// child face/corner-index is the refined position of a specific original
+// face corner. `face == nullptr` means the subdivide-and-relocate step
+// failed (any of the same lookup failures the inline version this
+// factors out of EvaluateFaceAdaptive() already fell back from).
+struct SubdividedCorner {
+  const ON_SubDFace* face = nullptr;
+  int corner_index = -1;
+};
+
+// Globally subdivides `s` once (mutating it in place) and returns
+// whichever of the 4 child faces this produces at face `f`'s own corner
+// `corner_index` shares, plus that child's own corner index for the same
+// vertex - the "which child continues this exact corner" lookup
+// EvaluateFaceAdaptive()'s quadrant recursion already needs every level
+// (predict the face/prev-edge/next-edge subdivision points, locate the
+// 3 matching new vertices, identify the common child face, then find its
+// 4th corner by elimination), factored out here so ExactVertexCorner()'s
+// own semi-sharp decay step below can reuse the identical, already-tested
+// mechanism for a plain "track this one corner through a subdivide" call
+// with no quadrant (u, v) math attached.
+SubdividedCorner SubdivideTrackingCorner(ON_SubD& s, const ON_SubDFace* f, int corner_index) {
+  // Same safety cap EvaluateFaceAdaptive()'s own inline version already
+  // applies - see its own doc comment for why.
+  constexpr unsigned int kMaxWorkingFaceCount = 500000;
+  if (s.FaceCount() > kMaxWorkingFaceCount) return {};
+
+  const int k = corner_index & 3;
+  const ON_SubDEdge* e_prev = f->Edge(static_cast<unsigned int>((k + 3) % 4));
+  const ON_SubDEdge* e_next = f->Edge(static_cast<unsigned int>(k));
+  if (!e_prev || !e_next) return {};
+  const ON_3dPoint face_ref = f->SubdivisionPoint();
+  const ON_3dPoint prev_ref = e_prev->SubdivisionPoint();
+  const ON_3dPoint next_ref = e_next->SubdivisionPoint();
+  if (!face_ref.IsValid() || !prev_ref.IsValid() || !next_ref.IsValid()) return {};
+
+  const double tolerance = FindTolerance(f);
+  // Once a face has shrunk (via deep adaptive levels) to where the
+  // floating-point noise floor of its own coordinates is a sizeable
+  // fraction of its own width, the predicted subdivision points can no
+  // longer be told apart from their neighbors by position - refuse to
+  // guess and let the caller fall back, rather than risk tracking the
+  // wrong child.
+  {
+    const ON_SubDVertex* a = f->Vertex(0);
+    const ON_SubDVertex* c = f->Vertex(2);
+    if (!a || !c || tolerance > 0.1 * a->ControlNetPoint().DistanceTo(c->ControlNetPoint())) return {};
+  }
+  if (!s.GlobalSubdivide(1)) return {};
+
+  const ON_SubDVertex* vF = s.FindVertex(&face_ref.x, tolerance);
+  const ON_SubDVertex* vP = s.FindVertex(&prev_ref.x, tolerance);
+  const ON_SubDVertex* vN = s.FindVertex(&next_ref.x, tolerance);
+  const ON_SubDFace* child = FindCommonFace(vF, vP, vN);
+  if (!child) return {};
+
+  // The child's 4th corner - whichever of its vertices is none of the 3
+  // just located - is the refined position of the original Vertex(k);
+  // its own array index there need not match k, so it's found by
+  // elimination rather than assumed.
+  int m = -1;
+  for (int i = 0; i < 4; ++i) {
+    const ON_SubDVertex* cv = child->Vertex(static_cast<unsigned int>(i));
+    if (cv != vF && cv != vP && cv != vN) {
+      m = i;
+      break;
+    }
+  }
+  if (m < 0) return {};
+  return {child, m};
+}
+
+// Recursive core of SubD::EvaluateFace(): `s` is the mutable working
+// copy (SubD::EvaluateFace()'s own `raw()` is never touched), `f` one
+// of its CURRENT faces, (u, v) the parameter within it. See
+// SubD::EvaluateFace()'s doc comment for the algorithm.
+// A face-corner query (u, v both exactly 0 or 1) resolves to a real
+// control-net vertex regardless of how many adaptive levels deep the
+// recursion already is - "the quadrant nearest this corner" would
+// otherwise be degenerate (zero-width) and, doubled again each level,
+// eventually lands exactly on some OTHER face's corner by pure binary-
+// fraction arithmetic (0.5 doubles to 1.0 exactly, etc.) - silently
+// drifting to an unrelated vertex instead of continuing to track the
+// original extraordinary one. Short-circuiting to the vertex's own
+// exact limit point/tangent-plane/normal sidesteps that entirely.
+//
+// The tangent plane at an extraordinary/crease/boundary vertex needs the
+// full Catmull-Clark eigenbasis, which OpenNURBS itself already computes
+// (and long predates the "not implemented here" comment this replaces):
+// `ON_SubDVertex::GetSurfacePoint(sector_face, ..., limit_point)`
+// (opennurbs_subd_eval.cpp) is the same real, non-stub routine
+// `SurfacePoint()`/`SurfaceNormal()` already call internally (verified by
+// reading it directly, not assumed) - it builds the sector's own point
+// ring and solves for its limit point/tangent/normal via that ring's own
+// eigenstructure (`ON_SubDSectorType`/its subdivision matrix, read in
+// opennurbs_subd_eval.cpp/opennurbs_subd_matrix.cpp), the exact same
+// eigenbasis evaluation Stam's 1998 paper (cited on Symmetrize()'s own
+// doc comment above) is named after, not a hand-rolled approximation of
+// it. `limit_point.Tangent(0)`/`Tangent(1)` (`m_limitT1`/`m_limitT2`) are
+// a genuine orthonormal basis for the exact tangent plane, with
+// `Tangent(0) x Tangent(1)` in the same direction as `Normal()` - but,
+// unlike EvalBicubicBezier()'s regular-patch tangent_u/tangent_v (real
+// dS/du, dS/dv partial derivatives at THIS face's own (u, v)), they are
+// unit vectors in a canonical sector-relative frame, not scaled or
+// oriented to match this specific face's own (u, v) axes. Reporting a
+// real, non-zero tangent-plane basis this way - rather than the zero
+// vector - is what SubDSurfacePoint::exact = true has always promised
+// callers for a corner query; the basis' own u/v-axis alignment was
+// already undocumented for this fallback (the zero vector it replaces
+// had none at all).
+//
+// Semi-sharp edge handling (this pass): `ON_SubDVertex::GetSurfacePoint`
+// builds its sector purely from `ON_SubDSectorType::Create`, which only
+// ever looks at edge TAGS (Smooth/Crease) - verified by reading
+// opennurbs_subd_eval.cpp's `GetSectorLimitPointHelper` directly, not
+// assumed: it never once reads `ON_SubDEdge::Sharpness()`/`EndSharpness()`
+// anywhere in its own call chain. A finite, nonzero sharpness weight on a
+// Smooth-tagged edge (`SetEdgeSharpness()`, below) stays tagged Smooth, so
+// a corner vertex touching one was silently evaluated as if that edge
+// carried NO sharpness at all - the fully-rounded smooth eigenbasis
+// answer, not the partially-creased one a real OpenSubdiv/Pixar-style
+// semi-sharp edge is supposed to pull the limit surface toward.
+//
+// The standard technique for this (the same one `ON_SubDEdgeSharpness::
+// Subdivided()` is built for - DeRose/Kass/Truong 1998's semi-sharp
+// creases) is: a semi-sharp edge's own weight decays by exactly 1.0 per
+// `ON_SubD::GlobalSubdivide()` level (confirmed by reading
+// `ON_SubDEdgeSharpness::Subdivided()` directly) until it reaches 0 and
+// becomes an ordinary smooth edge - at which point the closed-form
+// eigenbasis IS exact again, because there is no more residual sharpness
+// left to ignore. So rather than evaluate this vertex's limit point
+// directly, first globally subdivide a working copy exactly
+// ceil(max incident-edge sharpness) times - the same `GlobalSubdivide(1)`
+// + predicted-subdivision-point-match tracking EvaluateFaceAdaptive()'s
+// own quadrant recursion already uses, factored out as
+// SubdivideTrackingCorner() above, just driven by a corner-count loop
+// instead of a (u, v) quadrant - and only then call GetSurfacePoint() on
+// the now-fully-decayed descendant vertex. The limit SURFACE itself is
+// unchanged by subdividing its own control net (that is the entire point
+// of a subdivision surface), so the descendant vertex's exact eigenbasis
+// answer at that point is the same, single true limit value a real
+// semi-sharp evaluator would give - not a tolerance-bounded
+// approximation. A vertex with no semi-sharp edge in its own neighborhood
+// takes zero extra subdivide steps and reduces to exactly the prior
+// behavior.
+SubDSurfacePoint ExactVertexCorner(ON_SubD& s, const ON_SubDFace* f, int corner_index) {
+  const ON_SubDFace* face = f;
+  int idx = corner_index;
+
+  const ON_SubDVertex* v0 = face->Vertex(static_cast<unsigned int>(idx));
+  double max_incident_sharpness = 0.0;
+  for (unsigned int i = 0; i < v0->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v0->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      max_incident_sharpness = std::max(max_incident_sharpness, e->EndSharpness(v0));
+    }
+  }
+  if (max_incident_sharpness > 0.0) {
+    const int levels = static_cast<int>(std::ceil(max_incident_sharpness));
+    for (int i = 0; i < levels; ++i) {
+      const SubdividedCorner next = SubdivideTrackingCorner(s, face, idx);
+      if (next.face == nullptr) break;  // honest partial decay beats failing outright
+      face = next.face;
+      idx = next.corner_index;
+    }
+  }
+
+  const ON_SubDVertex* v = face->Vertex(static_cast<unsigned int>(idx));
+  SubDSurfacePoint pt;
+  ON_SubDSectorSurfacePoint limit_point;
+  if (v->GetSurfacePoint(face, /*bUndefinedNormalIsPossible=*/true, limit_point)) {
+    pt.position = limit_point.Point();
+    const ON_3dVector n = limit_point.Normal();
+    pt.normal = n.IsValid() ? n : ON_3dVector::ZeroVector;
+    const ON_3dVector t1 = limit_point.Tangent(0);
+    const ON_3dVector t2 = limit_point.Tangent(1);
+    pt.tangent_u = t1.IsValid() ? t1 : ON_3dVector::ZeroVector;
+    pt.tangent_v = t2.IsValid() ? t2 : ON_3dVector::ZeroVector;
+    pt.exact = true;
+  } else {
+    pt.position = v->ControlNetPoint();
+    pt.exact = false;
+  }
+  return pt;
+}
+
+// EvaluateFaceAdaptive()'s result plus whether `point.tangent_u/tangent_v`
+// are d(position)/du and d(position)/dv in the (u, v) of the face the call
+// was made on (`true`: a regular-patch / flat-fallback partial derivative)
+// or ExactVertexCorner()'s canonical unit tangent-plane basis (`false`:
+// not tied to any face's own (u, v) axes - see its own doc comment).
+struct AdaptiveResult {
+  SubDSurfacePoint point;
+  bool tangents_in_face_frame = true;
+};
+
+// How many adaptive levels may be spent refining the WHOLE net (a
+// neighborhood TrimToNeighborhood() refused: boundary/crease/semi-sharp tag
+// or non-manifold vertex nearby) - the pre-trim cost profile, where each
+// level quadruples the working copy. Levels spent on an already-trimmed
+// copy are not charged against this.
+constexpr int kMaxWholeNetLevels = 4;
+// A copy this size or smaller is not worth trimming further (see
+// TrimToNeighborhood()).
+constexpr unsigned int kTrimMinFaceCount = 128;
+// Face-rings TrimToNeighborhood() keeps around the tracked corner. Any
+// value >= 2 keeps the exact region from ever shrinking (see its own doc
+// comment); 4 leaves margin.
+constexpr int kTrimRings = 4;
+
+AdaptiveResult EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u, double v,
+                                    int depth_remaining, bool s_is_trimmed, int whole_net_left) {
+  ON_3dPoint grid[4][4];
+  bool regular = false;
+  BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/false);
+  if (regular) {
+    return {EvalPatchPoint(grid, u, v, true), true};
+  }
+  if (u == 0.0 && v == 0.0) return {ExactVertexCorner(s, f, 0), false};
+  if (u == 1.0 && v == 0.0) return {ExactVertexCorner(s, f, 1), false};
+  if (u == 1.0 && v == 1.0) return {ExactVertexCorner(s, f, 2), false};
+  if (u == 0.0 && v == 1.0) return {ExactVertexCorner(s, f, 3), false};
+  if (depth_remaining <= 0 || (!s_is_trimmed && whole_net_left <= 0)) {
+    return {EvalPatchPoint(grid, u, v, false), true};
+  }
+
+  int k = 0;
+  if (u < 0.5 && v < 0.5) {
+    k = 0;
+  } else if (u >= 0.5 && v < 0.5) {
+    k = 1;
+  } else if (u >= 0.5 && v >= 0.5) {
+    k = 2;
+  } else {
+    k = 3;
+  }
+  double uk = 0.0, vk = 0.0;
+  ToVertexLocal(k, u, v, uk, vk);
+  const double uk2 = 2.0 * uk;
+  const double vk2 = 2.0 * vk;
+
+  // Subdivide once and track which child face/corner continues quadrant
+  // k - the same SubdivideTrackingCorner() ExactVertexCorner()'s own
+  // semi-sharp decay step above reuses, so the two don't duplicate this
+  // predict-then-relocate logic.
+  const SubdividedCorner next = SubdivideTrackingCorner(s, f, k);
+  if (next.face == nullptr) {
+    return {EvalPatchPoint(grid, u, v, false), true};
+  }
+
+  double u2 = 0.0, v2 = 0.0;
+  FromVertexLocal(next.corner_index, uk2, vk2, u2, v2);
+
+  // Keep the working copy small: once it has grown past a handful of
+  // faces, carry on from a copy of just the tracked corner's neighborhood
+  // (refused, and harmlessly skipped, whenever that neighborhood has any
+  // boundary/crease/semi-sharp tag in it).
+  ON_SubD trimmed;
+  ON_SubD* work = &s;
+  const ON_SubDFace* child = next.face;
+  bool work_is_trimmed = s_is_trimmed;
+  if (s.FaceCount() > kTrimMinFaceCount) {
+    const ON_SubDFace* trimmed_child = nullptr;
+    if (TrimToNeighborhood(s, next.face, next.corner_index, kTrimRings, trimmed, trimmed_child)) {
+      work = &trimmed;
+      child = trimmed_child;
+      work_is_trimmed = true;
+    }
+  }
+
+  AdaptiveResult r = EvaluateFaceAdaptive(*work, child, u2, v2, depth_remaining - 1, work_is_trimmed,
+                                          s_is_trimmed ? whole_net_left : whole_net_left - 1);
+
+  // The child's tangents are partials with respect to ITS OWN (u2, v2),
+  // which relate to this face's (u, v) through the affine map just built
+  // (a quarter-turn rotation, then a doubling): chain rule, S_u = a*S_u2 +
+  // c*S_v2, S_v = b*S_u2 + d*S_v2 for u2 = a*u + b*v + ..., v2 = c*u +
+  // d*v + .... Before this, the child's raw (rotated, 2^-depth-scaled)
+  // partials were returned unchanged as if they were this face's own.
+  // The linear part is read off the same two functions used above (they
+  // are exactly affine, entries are 0 or +-2, so rounding recovers them
+  // exactly); the normal is a unit vector and the map is a pure rotation
+  // times a positive scale, so it needs no change.
+  if (r.tangents_in_face_frame) {
+    const auto map = [&](double pu, double pv, double& qu, double& qv) {
+      double a = 0.0, b = 0.0;
+      ToVertexLocal(k, pu, pv, a, b);
+      FromVertexLocal(next.corner_index, 2.0 * a, 2.0 * b, qu, qv);
+    };
+    double o_u, o_v, x_u, x_v, y_u, y_v;
+    map(0.0, 0.0, o_u, o_v);
+    map(1.0, 0.0, x_u, x_v);
+    map(0.0, 1.0, y_u, y_v);
+    const double a = std::round(x_u - o_u), c = std::round(x_v - o_v);
+    const double b = std::round(y_u - o_u), d = std::round(y_v - o_v);
+    const ON_3dVector tu = r.point.tangent_u, tv = r.point.tangent_v;
+    r.point.tangent_u = a * tu + c * tv;
+    r.point.tangent_v = b * tu + d * tv;
+  }
+  return r;
+}
+
+}  // namespace
+
+SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
+                                    int max_adaptive_levels) const {
+  if (!(u >= 0.0 && u <= 1.0) || !(v >= 0.0 && v <= 1.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: u and v must both be in [0, 1]");
+  }
+  if (max_adaptive_levels < 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: max_adaptive_levels must be >= 0");
+  }
+  const ON_SubDFace* f0 = subd_.FaceFromId(face_id);
+  if (f0 == nullptr) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::EvaluateFace: face_id doesn't identify a face of the "
+        "current subdivision level");
+  }
+  if (f0->EdgeCount() != 4) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::EvaluateFace: face is not a quad (Subdivide(1) first - "
+        "see ToNurbsPatches()'s own doc comment)");
+  }
+
+  ON_3dPoint grid[4][4];
+  bool regular = false;
+  BuildFaceBezierGrid(f0, grid, regular, /*exact_irregular_corners=*/false);
+  if (regular) {
+    // Skip the clone below entirely when it can't possibly be needed -
+    // a real (if minor) cost saving, not just a style choice, since
+    // cloning is O(the whole net)'s worth of work per call.
+    return EvalPatchPoint(grid, u, v, true);
+  }
+
+  // Prefer a copy of just the neighborhood of whichever corner (u, v) is
+  // nearest - the only corner the adaptive recursion ever tracks first -
+  // over cloning the whole net; falls back to the whole-net clone
+  // whenever that neighborhood carries any boundary/crease/semi-sharp tag
+  // (see TrimToNeighborhood()).
+  int corner = 0;
+  if (u < 0.5 && v < 0.5) {
+    corner = 0;
+  } else if (u >= 0.5 && v < 0.5) {
+    corner = 1;
+  } else if (u >= 0.5 && v >= 0.5) {
+    corner = 2;
+  } else {
+    corner = 3;
+  }
+  {
+    ON_SubD local;
+    const ON_SubDFace* f_local = nullptr;
+    if (max_adaptive_levels > 0 && TrimToNeighborhood(subd_, f0, corner, kTrimRings, local, f_local)) {
+      return EvaluateFaceAdaptive(local, f_local, u, v, max_adaptive_levels, /*s_is_trimmed=*/true,
+                                  kMaxWholeNetLevels)
+          .point;
+    }
+  }
+
+  ON_SubD working_copy(subd_);
+  const ON_SubDFace* f0_copy = working_copy.FaceFromId(face_id);
+  if (f0_copy == nullptr) {
+    return EvalPatchPoint(grid, u, v, false);
+  }
+  return EvaluateFaceAdaptive(working_copy, f0_copy, u, v, max_adaptive_levels, /*s_is_trimmed=*/false,
+                              kMaxWholeNetLevels)
+      .point;
+}
+
+namespace {
+
+// Bilinear interpolation of a quad's 4 corners at local (s, t) in
+// [0,1]x[0,1] - same corner-ordering convention EvaluateFace() itself
+// uses ((0,0)->p00, (1,0)->p10, (1,1)->p11, (0,1)->p01).
+ON_3dPoint BilinearCorners(const ON_3dPoint& p00, const ON_3dPoint& p10, const ON_3dPoint& p11,
+                           const ON_3dPoint& p01, double s, double t) {
+  return (1.0 - s) * (1.0 - t) * p00 + s * (1.0 - t) * p10 + s * t * p11 + (1.0 - s) * t * p01;
+}
+
+// A single face's (res+1) x (res+1) grid of real limit-surface points
+// (via EvaluateFace()), shared between Tessellate()'s own per-face
+// resolution search (which only needs the points to measure deviation)
+// and its final grid-building pass (which needs the exact same points to
+// turn into mesh quads) - factored out so neither copy can drift from the
+// other's sampling convention.
+std::vector<std::vector<ON_3dPoint>> SampleFaceGrid(const SubD& subd, unsigned int face_id, int res) {
+  std::vector<std::vector<ON_3dPoint>> grid(static_cast<size_t>(res) + 1,
+                                             std::vector<ON_3dPoint>(static_cast<size_t>(res) + 1));
+  for (int i = 0; i <= res; ++i) {
+    const double u = static_cast<double>(i) / res;
+    for (int j = 0; j <= res; ++j) {
+      const double v = static_cast<double>(j) / res;
+      grid[static_cast<size_t>(i)][static_cast<size_t>(j)] = subd.EvaluateFace(face_id, u, v).position;
+    }
+  }
+  return grid;
+}
+
+// Turns a SampleFaceGrid() result into one face's own all-quad Mesh,
+// ready for Mesh::MergeAndWeld() against its neighbors' grids.
+Mesh GridToFaceMesh(const std::vector<std::vector<ON_3dPoint>>& grid, int res) {
+  Mesh grid_mesh;
+  ON_Mesh& raw = grid_mesh.raw();
+  const int points = res + 1;
+  const auto grid_index = [points](int i, int j) { return i * points + j; };
+  raw.m_V.Reserve(points * points);
+  for (int i = 0; i <= res; ++i) {
+    for (int j = 0; j <= res; ++j) {
+      raw.m_V.Append(ON_3fPoint(grid[static_cast<size_t>(i)][static_cast<size_t>(j)]));
+    }
+  }
+  raw.m_F.Reserve(res * res);
+  for (int i = 0; i < res; ++i) {
+    for (int j = 0; j < res; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = grid_index(i, j);
+      face.vi[1] = grid_index(i + 1, j);
+      face.vi[2] = grid_index(i + 1, j + 1);
+      face.vi[3] = grid_index(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+  return grid_mesh;
+}
+
+}  // namespace
+
+Mesh SubD::Tessellate(double tolerance, int max_resolution) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Tessellate: tolerance must be strictly positive");
+  }
+  if (max_resolution < 1) {
+    throw std::invalid_argument("dino8::kernel::SubD::Tessellate: max_resolution must be at least 1");
+  }
+
+  std::vector<const ON_SubDFace*> faces;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    // Same "quads only" convention as ToNurbsPatchesAdaptive() - a
+    // level-0 n-gon face needs Subdivide(1) first (EvaluateFace()'s own
+    // requirement, which this delegates every sample point to).
+    if (f->EdgeCount() != 4) continue;
+    if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
+    faces.push_back(f);
+  }
+
+  if (faces.empty()) {
+    return Mesh();
+  }
+
+  std::unordered_map<const ON_SubDFace*, size_t> face_index;
+  face_index.reserve(faces.size() * 2);
+  for (size_t i = 0; i < faces.size(); ++i) face_index.emplace(faces[i], i);
+
+  // Pass 1: each face's own independently-required resolution, exactly
+  // the original per-face binary-doubling search (unchanged).
+  std::vector<int> own_resolution(faces.size());
+  for (size_t i = 0; i < faces.size(); ++i) {
+    const unsigned int face_id = faces[i]->FaceId();
+    int n = 1;
+    std::vector<std::vector<ON_3dPoint>> samples = SampleFaceGrid(*this, face_id, n);
+    for (;;) {
+      double max_deviation = 0.0;
+      for (int ii = 0; ii < n; ++ii) {
+        const double u_mid = (ii + 0.5) / n;
+        for (int jj = 0; jj < n; ++jj) {
+          const double v_mid = (jj + 0.5) / n;
+          const ON_3dPoint bilinear = BilinearCorners(
+              samples[static_cast<size_t>(ii)][static_cast<size_t>(jj)],
+              samples[static_cast<size_t>(ii) + 1][static_cast<size_t>(jj)],
+              samples[static_cast<size_t>(ii) + 1][static_cast<size_t>(jj) + 1],
+              samples[static_cast<size_t>(ii)][static_cast<size_t>(jj) + 1], 0.5, 0.5);
+          const ON_3dPoint truth = EvaluateFace(face_id, u_mid, v_mid).position;
+          max_deviation = std::max(max_deviation, bilinear.DistanceTo(truth));
+        }
+      }
+      if (max_deviation <= tolerance || n >= max_resolution) break;
+      n = std::min(n * 2, max_resolution);
+      samples = SampleFaceGrid(*this, face_id, n);
+    }
+    own_resolution[i] = n;
+  }
+
+  // Pass 2: harmonize resolution across shared edges so two faces that
+  // share one always sample their common boundary at the SAME density -
+  // closing the T-junction/crack gap this method's own doc comment
+  // discloses. Faces reachable from one another through a chain of
+  // shared (interior) edges are grouped via union-find, then every face
+  // in a group is raised to that group's own maximum independently-
+  // required resolution. Two faces sharing an edge, evaluated at the
+  // SAME number of equally-spaced samples along it, land on
+  // bit-identical 3D positions there (both sides evaluate the one real
+  // limit-surface curve that shared edge carries via the same
+  // EvaluateFace()), so MergeAndWeld()'s exact-position matching now
+  // welds every interior edge instead of leaving the finer side's extra
+  // mid-edge samples unwelded.
+  UnionFind uf(faces.size());
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      const unsigned int edge_face_count = e->FaceCount();
+      if (edge_face_count < 2) continue;
+      // Only harmonize across faces that are actually being tessellated
+      // here (quad faces with no missing corner) - a neighbor skipped
+      // above (e.g. a level-0 n-gon) contributes no grid of its own to
+      // merge against, so there's no boundary on that side to match.
+      std::vector<size_t> present;
+      for (unsigned int j = 0; j < edge_face_count; ++j) {
+        const auto it = face_index.find(e->Face(j));
+        if (it != face_index.end()) present.push_back(it->second);
+      }
+      for (size_t k = 1; k < present.size(); ++k) uf.Union(present[0], present[k]);
+    }
+  }
+
+  std::vector<int> final_resolution(faces.size());
+  {
+    std::unordered_map<size_t, int> group_max;
+    for (size_t i = 0; i < faces.size(); ++i) {
+      const size_t root = uf.Find(i);
+      auto it = group_max.find(root);
+      if (it == group_max.end() || it->second < own_resolution[i]) group_max[root] = own_resolution[i];
+    }
+    for (size_t i = 0; i < faces.size(); ++i) final_resolution[i] = group_max[uf.Find(i)];
+  }
+
+  // Pass 3: build every face's grid at its (possibly raised) final
+  // resolution. Raising a face's resolution above its own measured
+  // minimum can only ever reduce its already-passing deviation further
+  // (a finer sampling of the same continuous limit surface), never
+  // reopen it, so every face still satisfies `tolerance` - just
+  // occasionally by more margin than strictly required of it alone, in
+  // order to match a neighbor it shares a boundary with.
+  std::vector<Mesh> face_grids;
+  face_grids.reserve(faces.size());
+  for (size_t i = 0; i < faces.size(); ++i) {
+    const unsigned int face_id = faces[i]->FaceId();
+    const int n = final_resolution[i];
+    const std::vector<std::vector<ON_3dPoint>> grid = SampleFaceGrid(*this, face_id, n);
+    face_grids.push_back(GridToFaceMesh(grid, n));
+  }
+
+  return Mesh::MergeAndWeld(face_grids);
+}
+
+namespace {
+
+SubDNurbsPatch GridToPatch(const ON_3dPoint grid[4][4], bool exact) {
+  std::vector<Point3d> cvs(16);
+  for (int u = 0; u < 4; ++u) {
+    for (int w = 0; w < 4; ++w) {
+      cvs[static_cast<size_t>(u) * 4 + static_cast<size_t>(w)] = grid[w][u];
+    }
+  }
+  SubDNurbsPatch patch;
+  patch.surface = NurbsSurface::FromControlGrid(cvs, 4, 4, 3, 3);
+  patch.exact = exact;
+  return patch;
+}
+
+// Recursive core of SubD::ToNurbsPatchesAdaptive(): `s` is treated as
+// read-only (unlike EvaluateFaceAdaptive()'s single shared mutable
+// working copy, since here up to 4 sibling children may each need their
+// OWN further recursion, and mutating one shared copy across siblings
+// would invalidate the others' already-found face pointers) - splitting
+// only ever clones `s` into a fresh local copy, mirroring
+// SubD::EvaluateFace()'s own top-level "clone once, raw() untouched"
+// pattern, just done per-recursion-level instead of only once.
+void ToNurbsPatchesAdaptiveRecurse(const ON_SubD& s, unsigned int face_id, int depth_remaining,
+                                   std::vector<SubDNurbsPatch>& out) {
+  const ON_SubDFace* f = s.FaceFromId(face_id);
+  if (f == nullptr) return;  // Shouldn't happen; be defensive rather than crash.
+
+  ON_3dPoint grid[4][4];
+  bool regular = false;
+  BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/true);
+
+  constexpr unsigned int kMaxWorkingFaceCount = 500000;
+  if (regular || depth_remaining <= 0 || s.FaceCount() > kMaxWorkingFaceCount) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  // Capture the would-be refined positions of the face point and its 4
+  // edge points BEFORE subdividing - the same SubdivisionPoint()-based
+  // technique EvaluateFaceAdaptive() uses to relocate them afterward,
+  // since `f`'s own pointer (and everything else in `s`) goes stale the
+  // moment a copy is subdivided.
+  const ON_3dPoint face_ref = f->SubdivisionPoint();
+  ON_3dPoint edge_ref[4];
+  bool refs_ok = face_ref.IsValid();
+  for (unsigned int i = 0; refs_ok && i < 4; ++i) {
+    const ON_SubDEdge* e = f->Edge(i);
+    edge_ref[i] = e ? e->SubdivisionPoint() : ON_3dPoint::UnsetPoint;
+    refs_ok = edge_ref[i].IsValid();
+  }
+  if (!refs_ok) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  const double tolerance = FindTolerance(f);
+  ON_SubD refined(s);
+  if (!refined.GlobalSubdivide(1)) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  const ON_SubDVertex* vF = refined.FindVertex(&face_ref.x, tolerance);
+  const ON_SubDVertex* vE[4] = {nullptr, nullptr, nullptr, nullptr};
+  bool found = vF != nullptr;
+  for (int i = 0; found && i < 4; ++i) {
+    vE[i] = refined.FindVertex(&edge_ref[i].x, tolerance);
+    found = vE[i] != nullptr;
+  }
+
+  unsigned int child_id[4] = {0, 0, 0, 0};
+  for (int k = 0; found && k < 4; ++k) {
+    // Quadrant k's child touches the shared face point, the edge point
+    // "before" it and the edge point "after" it - the same
+    // FindCommonFace(vF, vP, vN) pairing EvaluateFaceAdaptive() uses for
+    // whichever single quadrant a query point lands in, just run here
+    // for all 4 in turn.
+    const ON_SubDFace* child = FindCommonFace(vF, vE[(k + 3) % 4], vE[k]);
+    found = child != nullptr;
+    if (found) child_id[k] = child->FaceId();
+  }
+
+  if (!found) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  for (int k = 0; k < 4; ++k) {
+    ToNurbsPatchesAdaptiveRecurse(refined, child_id[k], depth_remaining - 1, out);
+  }
+}
+
+}  // namespace
+
+std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesAdaptive(int max_adaptive_levels) const {
+  if (max_adaptive_levels < 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::ToNurbsPatchesAdaptive: max_adaptive_levels must be >= 0");
+  }
+  std::vector<unsigned int> face_ids;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
+    face_ids.push_back(f->FaceId());
+  }
+  if (face_ids.empty()) {
+    throw std::runtime_error(
+        "dino8::kernel::SubD::ToNurbsPatchesAdaptive: no quad faces found (the "
+        "SubD is empty, or every face is a non-quad n-gon/triangle - call "
+        "Subdivide(1) first to convert those into quads)");
+  }
+
+  std::vector<SubDNurbsPatch> patches;
+  for (unsigned int id : face_ids) {
+    ToNurbsPatchesAdaptiveRecurse(subd_, id, max_adaptive_levels, patches);
+  }
+  return patches;
+}
+
+// ===========================================================================
+// Limit-surface interpolation, dihedral creasing, limit-faithful creased
+// Boolean, radial symmetry and watertight NURBS conversion (app_subd_mesh).
+// ===========================================================================
+
+namespace {
+
+// Newell normal of a SubD face from its control-net points (not unitized).
+ON_3dVector SubDFaceNewellNormal(const ON_SubDFace* f) {
+  ON_3dVector n(0.0, 0.0, 0.0);
+  const unsigned int count = f->EdgeCount();
+  for (unsigned int i = 0; i < count; ++i) {
+    const ON_SubDVertex* a = f->Vertex(i);
+    const ON_SubDVertex* b = f->Vertex((i + 1) % count);
+    if (a == nullptr || b == nullptr) return ON_3dVector::ZeroVector;
+    const ON_3dPoint p = a->ControlNetPoint();
+    const ON_3dPoint q = b->ControlNetPoint();
+    n.x += (p.y - q.y) * (p.z + q.z);
+    n.y += (p.z - q.z) * (p.x + q.x);
+    n.z += (p.x - q.x) * (p.y + q.y);
+  }
+  return n;
+}
+
+// Angle in degrees between the two face normals of an interior edge, or 0
+// if either normal is degenerate.
+double SubDEdgeDihedralDegrees(const ON_SubDEdge* e) {
+  if (e == nullptr || e->FaceCount() != 2) return 0.0;
+  const ON_SubDFace* f0 = e->Face(0u);
+  const ON_SubDFace* f1 = e->Face(1u);
+  if (f0 == nullptr || f1 == nullptr) return 0.0;
+  ON_3dVector n0 = SubDFaceNewellNormal(f0);
+  ON_3dVector n1 = SubDFaceNewellNormal(f1);
+  if (!n0.Unitize() || !n1.Unitize()) return 0.0;
+  const double c = std::max(-1.0, std::min(1.0, ON_DotProduct(n0, n1)));
+  return std::acos(c) * 180.0 / ON_PI;
+}
+
+double PointSegmentDistance(const ON_3dPoint& p, const ON_3dPoint& a, const ON_3dPoint& b) {
+  const ON_3dVector ab = b - a;
+  const double len2 = ab.LengthSquared();
+  double t = 0.0;
+  if (len2 > 0.0) t = std::max(0.0, std::min(1.0, ON_DotProduct(p - a, ab) / len2));
+  return (p - (a + t * ab)).Length();
+}
+
+}  // namespace
+
+SubD SubD::InterpolateControlNet(double tolerance, int max_iterations,
+                                 SubDInterpolationReport* report) const {
+  if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
+    throw std::invalid_argument("dino8::kernel::SubD::InterpolateControlNet: tolerance must be positive and finite");
+  }
+  if (max_iterations < 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::InterpolateControlNet: max_iterations must be >= 0");
+  }
+  SubD result = *this;
+  std::vector<ON_SubDVertex*> verts;
+  std::vector<ON_3dPoint> targets;
+  {
+    ON_SubDVertexIterator vit = result.subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      verts.push_back(const_cast<ON_SubDVertex*>(v));
+      targets.push_back(v->ControlNetPoint());
+    }
+  }
+  if (verts.empty()) {
+    throw std::runtime_error("dino8::kernel::SubD::InterpolateControlNet: the SubD has no vertices");
+  }
+  SubDInterpolationReport rep;
+  std::vector<ON_3dVector> residual(verts.size());
+  double omega = 1.6;
+  double prev_max = std::numeric_limits<double>::infinity();
+  int worse = 0;
+  for (int it = 0;; ++it) {
+    double worst = 0.0;
+    for (size_t i = 0; i < verts.size(); ++i) {
+      const ON_3dPoint p = verts[i]->SurfacePoint();
+      if (!p.IsValid()) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::InterpolateControlNet: ON_SubDVertex::SurfacePoint failed for a vertex");
+      }
+      residual[i] = targets[i] - p;
+      worst = std::max(worst, residual[i].Length());
+    }
+    if (it == 0) rep.initial_max_residual = worst;
+    rep.final_max_residual = worst;
+    rep.iterations = it;
+    if (worst <= tolerance) { rep.converged = true; break; }
+    if (it >= max_iterations) break;
+    if (worst > prev_max) {
+      if (++worse >= 2) { omega *= 0.5; worse = 0; }
+    } else {
+      worse = 0;
+    }
+    prev_max = worst;
+    for (size_t i = 0; i < verts.size(); ++i) {
+      const ON_3dPoint moved = verts[i]->ControlNetPoint() + omega * residual[i];
+      if (!verts[i]->SetControlNetPoint(moved, /*bClearNeighborhoodCache=*/true)) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::InterpolateControlNet: SetControlNetPoint failed (non-finite update)");
+      }
+    }
+  }
+  if (report != nullptr) *report = rep;
+  return result;
+}
+
+int SubD::SetCreasesByDihedral(double min_dihedral_deg) {
+  if (!(min_dihedral_deg >= 0.0) || !(min_dihedral_deg < 180.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::SetCreasesByDihedral: min_dihedral_deg must be in [0, 180)");
+  }
+  ON_SimpleArray<ON_SubDComponentPtr> to_crease;
+  ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    if (e->FaceCount() != 2 || !e->IsSmooth()) continue;
+    if (SubDEdgeDihedralDegrees(e) > min_dihedral_deg) to_crease.Append(ON_SubDComponentPtr::Create(e));
+  }
+  int tagged = 0;
+  if (to_crease.Count() > 0) tagged = static_cast<int>(subd_.SetEdgeTags(to_crease, ON_SubDEdgeTag::Crease));
+
+  // A vertex where exactly two crease edges (a crease chain, or an open
+  // sheet's boundary) turn by more than the threshold is a CORNER: left as
+  // a plain crease vertex its limit point is the cubic B-spline average of
+  // its chain neighbours, which rounds the corner off - and an
+  // interpolating fit (InterpolateControlNet) then OVERSHOOTS it (a flat
+  // 10x10 sheet's refined extent came out [-0.36, 10.36]). Tagging it
+  // Corner pins the limit to the control point. Set directly (rather than
+  // via SetVertexTags(Corner), which would also crease every smooth edge
+  // at the vertex).
+  bool corners_changed = false;
+  ON_SubDVertexIterator vit = subd_.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    if (v->m_vertex_tag == ON_SubDVertexTag::Corner) continue;
+    const ON_SubDEdge* ce[2] = {nullptr, nullptr};
+    int nc = 0;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e != nullptr && e->IsCrease()) { if (nc < 2) ce[nc] = e; ++nc; }
+    }
+    if (nc != 2) continue;
+    const ON_SubDVertex* a = ce[0]->OtherEndVertex(v);
+    const ON_SubDVertex* b = ce[1]->OtherEndVertex(v);
+    if (a == nullptr || b == nullptr) continue;
+    ON_3dVector da = a->ControlNetPoint() - v->ControlNetPoint();
+    ON_3dVector db = b->ControlNetPoint() - v->ControlNetPoint();
+    if (!da.Unitize() || !db.Unitize()) continue;
+    const double interior = std::acos(std::max(-1.0, std::min(1.0, ON_DotProduct(da, db)))) * 180.0 / ON_PI;
+    if (180.0 - interior <= min_dihedral_deg) continue;
+    const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Corner;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      if (v->Edge(i) != nullptr) v->Edge(i)->UnsetSectorCoefficientsForExperts();
+    }
+    corners_changed = true;
+  }
+  if (corners_changed) {
+    subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+    subd_.ClearEvaluationCache();
+  }
+  return tagged;
+}
+
+SubD SubD::BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this, int levels_other,
+                                double sharp_angle_deg, double quad_dihedral_deg, bool interpolate,
+                                SubDBooleanReport* report) const {
+  if (levels_this < 0 || levels_other < 0 || levels_this > 6 || levels_other > 6) {
+    throw std::invalid_argument("dino8::kernel::SubD::BooleanToSubDCreased: refinement levels must be in [0, 6]");
+  }
+  if (!(sharp_angle_deg >= 0.0) || !(quad_dihedral_deg >= 0.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::BooleanToSubDCreased: angles must be >= 0");
+  }
+  // A refined Catmull-Clark cage still lies OUTSIDE its convex limit surface
+  // (a 2-round cube is visibly larger than the smooth blob it converges
+  // to), so after refining, every control point is moved onto its own
+  // exact limit point: the polyhedron the Boolean sees is then INSCRIBED in
+  // the limit surface (error ~ chord sag of the refined faces, shrinking 4x
+  // per round) instead of circumscribed about it by a fixed margin.
+  const auto refine_to_limit = [](SubD s, int levels) {
+    if (levels <= 0) return s;
+    s.Subdivide(levels);
+    std::vector<ON_SubDVertex*> verts;
+    std::vector<ON_3dPoint> limits;
+    ON_SubDVertexIterator vit = s.subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      const ON_3dPoint p = v->SurfacePoint();
+      if (!p.IsValid()) throw std::runtime_error("dino8::kernel::SubD::BooleanToSubDCreased: a refined vertex has no limit point");
+      verts.push_back(const_cast<ON_SubDVertex*>(v));
+      limits.push_back(p);
+    }
+    for (size_t i = 0; i < verts.size(); ++i) verts[i]->SetControlNetPoint(limits[i], /*bClearNeighborhoodCache=*/true);
+    return s;
+  };
+  const SubD a = refine_to_limit(*this, levels_this);
+  const SubD b = refine_to_limit(other, levels_other);
+  // Triangulated ONCE here (a refined Catmull-Clark quad is slightly
+  // non-planar, so which diagonal splits it matters): the Boolean and the
+  // seam-proximity queries below must see the very same triangles.
+  Mesh ma = a.ToApproximateMesh();
+  Mesh mb = b.ToApproximateMesh();
+  ma.raw().ConvertQuadsToTriangles();
+  mb.raw().ConvertQuadsToTriangles();
+
+  struct Seg { ON_3dPoint p, q; };
+  std::vector<Seg> operand_creases;
+  for (const SubD* s : {&a, &b}) {
+    ON_SubDEdgeIterator eit = s->subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->IsCrease() && e->FaceCount() == 2 && e->Vertex(0u) != nullptr && e->Vertex(1u) != nullptr) {
+        operand_creases.push_back({e->Vertex(0u)->ControlNetPoint(), e->Vertex(1u)->ControlNetPoint()});
+      }
+    }
+  }
+
+  ON_BoundingBox bb = ma.raw().BoundingBox();
+  bb.Union(mb.raw().BoundingBox());
+  const double diag = bb.IsValid() ? bb.Diagonal().Length() : 1.0;
+  const double eps = std::max(1e-5 * diag, 1e-7);
+
+  Mesh joined = BooleanCombine(ma, mb, op);
+  if (quad_dihedral_deg > 0.0) joined.TrisToQuads(quad_dihedral_deg);
+  SubD sd = FromControlMesh(joined);
+
+  const auto on_mesh = [&](const Mesh& m, const ON_3dPoint& p) { return (m.ClosestPoint(p) - p).Length() <= eps; };
+  const auto on_crease = [&](const ON_3dPoint& p) {
+    for (const Seg& s : operand_creases) if (PointSegmentDistance(p, s.p, s.q) <= eps) return true;
+    return false;
+  };
+
+  SubDBooleanReport rep;
+  ON_SimpleArray<ON_SubDComponentPtr> to_crease;
+  {
+    ON_SubDEdgeIterator eit = sd.subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->FaceCount() != 2 || !e->IsSmooth()) continue;
+      if (e->Vertex(0u) == nullptr || e->Vertex(1u) == nullptr) continue;
+      const double dih = SubDEdgeDihedralDegrees(e);
+      if (dih <= 1.0) continue;
+      const ON_3dPoint p = e->Vertex(0u)->ControlNetPoint();
+      const ON_3dPoint q = e->Vertex(1u)->ControlNetPoint();
+      const ON_3dPoint m = 0.5 * (p + q);
+      if (on_mesh(ma, p) && on_mesh(ma, q) && on_mesh(ma, m) && on_mesh(mb, p) && on_mesh(mb, q) && on_mesh(mb, m)) {
+        to_crease.Append(ON_SubDComponentPtr::Create(e));
+        ++rep.seam_crease_edges;
+      } else if (!operand_creases.empty() && on_crease(p) && on_crease(q) && on_crease(m)) {
+        to_crease.Append(ON_SubDComponentPtr::Create(e));
+        ++rep.operand_crease_edges;
+      } else if (sharp_angle_deg > 0.0 && dih > sharp_angle_deg) {
+        to_crease.Append(ON_SubDComponentPtr::Create(e));
+        ++rep.sharp_crease_edges;
+      }
+    }
+  }
+  if (to_crease.Count() > 0) sd.subd_.SetEdgeTags(to_crease, ON_SubDEdgeTag::Crease);
+  if (interpolate) {
+    sd = sd.InterpolateControlNet(std::max(1e-5 * diag, 1e-6), 150, &rep.interpolation);
+  }
+  rep.result_faces = sd.FaceCount();
+  rep.result_vertices = sd.VertexCount();
+  rep.total_crease_edges = sd.CreaseEdgeCount();
+  if (report != nullptr) *report = rep;
+  return sd;
+}
+
+SubD SubD::SymmetrizeRadial(Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance,
+                            double weld_tolerance) const {
+  if (count < 2 || count > 360) {
+    throw std::invalid_argument("dino8::kernel::SubD::SymmetrizeRadial: count must be in [2, 360]");
+  }
+  if (!axis_dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::SubD::SymmetrizeRadial: axis_dir must be nonzero");
+  }
+  if (!axis_point.IsValid()) {
+    throw std::invalid_argument("dino8::kernel::SubD::SymmetrizeRadial: axis_point must be finite");
+  }
+  if (!ON_IsValid(point_tolerance) || point_tolerance < 0.0) {
+    throw std::invalid_argument("dino8::kernel::SubD::SymmetrizeRadial: point_tolerance must be finite and non-negative");
+  }
+  const double eff_tol = weld_tolerance > 0.0 ? weld_tolerance : std::max(point_tolerance, 1e-6);
+
+  std::vector<std::vector<Point3d>> faces;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      std::vector<Point3d> pts;
+      for (unsigned int i = 0; i < f->EdgeCount(); ++i) {
+        const ON_SubDVertex* v = f->Vertex(i);
+        if (v == nullptr) throw std::runtime_error("dino8::kernel::SubD::SymmetrizeRadial: a face has a null vertex");
+        pts.push_back(v->ControlNetPoint());
+      }
+      faces.push_back(std::move(pts));
+    }
+  }
+  struct EdgeFeature { Point3d p0, p1; bool crease; double s0, s1; };
+  std::vector<EdgeFeature> features;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->FaceCount() != 2 || e->Vertex(0u) == nullptr || e->Vertex(1u) == nullptr) continue;
+      const bool crease = e->IsCrease();
+      const double s0 = e->EndSharpness(0u), s1 = e->EndSharpness(1u);
+      if (!crease && !(s0 > 0.0 || s1 > 0.0)) continue;
+      features.push_back({e->Vertex(0u)->ControlNetPoint(), e->Vertex(1u)->ControlNetPoint(), crease, s0, s1});
+    }
+  }
+
+  SubD result = *this;
+  const auto find_edge_between = [](const ON_SubDVertex* v0, const ON_SubDVertex* v1) -> const ON_SubDEdge* {
+    for (unsigned int i = 0; i < v0->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v0->Edge(i);
+      if (e != nullptr && e->OtherEndVertex(v0) == v1) return e;
+    }
+    return nullptr;
+  };
+
+  std::vector<ON_Xform> xforms(static_cast<size_t>(count));
+  for (int k = 1; k < count; ++k) {
+    xforms[static_cast<size_t>(k)].Rotation(2.0 * ON_PI * static_cast<double>(k) / static_cast<double>(count), axis_dir, axis_point);
+  }
+
+  for (int k = 1; k < count; ++k) {
+    const ON_Xform& xf = xforms[static_cast<size_t>(k)];
+    for (const std::vector<Point3d>& face : faces) {
+      const unsigned int n = static_cast<unsigned int>(face.size());
+      std::vector<const ON_SubDVertex*> verts(n);
+      std::vector<bool> existed(n, false);
+      for (unsigned int i = 0; i < n; ++i) {
+        Point3d q = face[i];
+        q.Transform(xf);
+        const unsigned int before = result.subd_.VertexCount();
+        const ON_SubDVertex* v = result.subd_.FindOrAddVertex(&q.x, eff_tol);
+        if (v == nullptr) throw std::runtime_error("dino8::kernel::SubD::SymmetrizeRadial: ON_SubD::FindOrAddVertex failed");
+        verts[i] = v;
+        existed[i] = result.subd_.VertexCount() == before;
+        if (existed[i] && (v->m_vertex_tag == ON_SubDVertexTag::Crease || v->m_vertex_tag == ON_SubDVertexTag::Dart)) {
+          const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Unset;
+        }
+      }
+      for (unsigned int i = 0; i < n; ++i) {
+        const unsigned int i1 = (i + 1) % n;
+        if (!existed[i] || !existed[i1]) continue;
+        const ON_SubDEdge* seam = find_edge_between(verts[i], verts[i1]);
+        if (seam != nullptr && seam->FaceCount() == 1 && seam->m_edge_tag == ON_SubDEdgeTag::Crease) {
+          const_cast<ON_SubDEdge*>(seam)->m_edge_tag = ON_SubDEdgeTag::Unset;
+        }
+      }
+      if (result.subd_.FindOrAddFace(ON_SubDEdgeTag::Unset, verts.data(), n) == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::SymmetrizeRadial: ON_SubD::FindOrAddFace failed for a rotated face");
+      }
+    }
+  }
+  result.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+
+  for (int k = 1; k < count; ++k) {
+    const ON_Xform& xf = xforms[static_cast<size_t>(k)];
+    for (const EdgeFeature& f : features) {
+      Point3d q0 = f.p0, q1 = f.p1;
+      q0.Transform(xf);
+      q1.Transform(xf);
+      const ON_SubDVertex* v0 = result.subd_.FindVertex(&q0.x, eff_tol);
+      const ON_SubDVertex* v1 = result.subd_.FindVertex(&q1.x, eff_tol);
+      if (v0 == nullptr || v1 == nullptr) continue;
+      const ON_SubDEdge* e = result.subd_.FindEdge(v0, v1).Edge();
+      if (e == nullptr || e->FaceCount() != 2) continue;
+      if (f.crease) {
+        const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(e);
+        result.subd_.SetEdgeTags(&cptr, 1, ON_SubDEdgeTag::Crease);
+      } else if (e->IsSmooth()) {
+        const bool v0_is_end0 = (e->Vertex(0u) == v0);
+        const double s_end0 = v0_is_end0 ? f.s0 : f.s1;
+        const double s_end1 = v0_is_end0 ? f.s1 : f.s0;
+        const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromInterval(s_end0, s_end1));
+      }
+    }
+  }
+  return result;
+}
+
+namespace {
+
+bool IsRegularForWatertight(const ON_SubDVertex* v) {
+  if (!IsOrdinaryInterior(v)) return false;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e != nullptr && e->IsSmooth() && e->EndSharpness(v) > 0.0) return false;
+  }
+  return true;
+}
+
+unsigned int CreaseEdgeCountAt(const ON_SubDVertex* v) {
+  unsigned int n = 0;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e != nullptr && e->IsCrease()) ++n;
+  }
+  return n;
+}
+
+// ONE limit-point definition per vertex, shared by every edge and face that
+// touches it, so patch corners coincide exactly.
+ON_3dPoint WatertightVertexLimit(const ON_SubDVertex* v) {
+  const unsigned int nc = CreaseEdgeCountAt(v);
+  if (nc == 2) {
+    const ON_SubDEdge* ce[2] = {nullptr, nullptr};
+    int k = 0;
+    for (unsigned int i = 0; i < v->EdgeCount() && k < 2; ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e != nullptr && e->IsCrease()) ce[k++] = e;
+    }
+    const ON_SubDVertex* a = ce[0]->OtherEndVertex(v);
+    const ON_SubDVertex* b = ce[1]->OtherEndVertex(v);
+    if (a != nullptr && b != nullptr) {
+      return (a->ControlNetPoint() + 4.0 * v->ControlNetPoint() + b->ControlNetPoint()) / 6.0;
+    }
+  }
+  if (nc >= 3 || v->m_vertex_tag == ON_SubDVertexTag::Corner) return v->ControlNetPoint();
+  const ON_3dPoint p = v->SurfacePoint();
+  if (!p.IsValid()) {
+    throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesWatertight: a vertex has no evaluable limit point");
+  }
+  return p;
+}
+
+// The neighbour of `x` in quad face `f` that is not `y` (x and y adjacent in f).
+ON_3dPoint QuadCrossNeighbor(const ON_SubDFace* f, const ON_SubDVertex* x, const ON_SubDVertex* y) {
+  const unsigned int n = f->EdgeCount();
+  for (unsigned int i = 0; i < n; ++i) {
+    if (f->Vertex(i) != x) continue;
+    const ON_SubDVertex* a = f->Vertex((i + n - 1) % n);
+    const ON_SubDVertex* b = f->Vertex((i + 1) % n);
+    return ((a == y) ? b : a)->ControlNetPoint();
+  }
+  return x->ControlNetPoint();
+}
+
+struct WatertightEdgeEnd {
+  ON_3dPoint L;
+  ON_3dVector D;  // Bezier control point 1 (or 2 from the far end) is L + D
+  bool exact = false;
+};
+
+WatertightEdgeEnd WatertightEdgeEndData(const ON_SubDEdge* e, const ON_SubDVertex* v, const ON_SubDVertex* o) {
+  WatertightEdgeEnd r;
+  r.L = WatertightVertexLimit(v);
+  const ON_3dPoint vp = v->ControlNetPoint();
+  const ON_3dPoint op = o->ControlNetPoint();
+  if (e->IsCrease()) {
+    const unsigned int nc = CreaseEdgeCountAt(v);
+    if (nc == 2) {
+      r.D = (2.0 * vp + op) / 3.0 - r.L;
+      r.exact = true;
+    } else if (nc >= 3 || v->m_vertex_tag == ON_SubDVertexTag::Corner) {
+      r.D = (op - vp) / 3.0;
+      r.exact = true;
+    } else {
+      r.D = (WatertightVertexLimit(o) - r.L) / 3.0;
+      r.exact = false;
+    }
+    return r;
+  }
+  if (e->FaceCount() == 2 && IsRegularForWatertight(v)) {
+    const ON_SubDFace* f0 = e->Face(0u);
+    const ON_SubDFace* f1 = e->Face(1u);
+    if (f0 != nullptr && f1 != nullptr && f0->EdgeCount() == 4 && f1->EdgeCount() == 4) {
+      const ON_3dPoint rv = (QuadCrossNeighbor(f0, v, o) + 4.0 * vp + QuadCrossNeighbor(f1, v, o)) / 6.0;
+      const ON_3dPoint ro = (QuadCrossNeighbor(f0, o, v) + 4.0 * op + QuadCrossNeighbor(f1, o, v)) / 6.0;
+      r.D = (2.0 * rv + ro) / 3.0 - r.L;
+      r.exact = IsRegularForWatertight(o);
+      return r;
+    }
+  }
+  // Extraordinary / crease-end / semi-sharp end on a smooth edge: cubic
+  // Hermite from the exact limit point, tangent from the limit tangent plane.
+  ON_3dVector t = WatertightVertexLimit(o) - r.L;
+  const double len = t.Length();
+  ON_3dVector dir = t;
+  const ON_SubDFace* sector_face = (e->FaceCount() > 0) ? e->Face(0u) : nullptr;
+  if (sector_face != nullptr && len > 0.0) {
+    ON_3dVector n = v->SurfaceNormal(sector_face, /*bUndefinedNormalPossible=*/true);
+    if (n.IsValid() && n.Unitize()) {
+      ON_3dVector proj = t - ON_DotProduct(t, n) * n;
+      if (proj.Unitize()) dir = proj * len;
+    }
+  }
+  r.D = dir / 3.0;
+  r.exact = false;
+  return r;
+}
+
+// The canonical cubic Bezier of edge `e` run from end vertex `a`.
+void WatertightEdgeCurve(const ON_SubDEdge* e, const ON_SubDVertex* a, ON_3dPoint q[4], bool* exact) {
+  const ON_SubDVertex* b = e->OtherEndVertex(a);
+  if (b == nullptr) throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesWatertight: edge does not touch the vertex");
+  const WatertightEdgeEnd ea = WatertightEdgeEndData(e, a, b);
+  const WatertightEdgeEnd eb = WatertightEdgeEndData(e, b, a);
+  q[0] = ea.L;
+  q[1] = ea.L + ea.D;
+  q[2] = eb.L + eb.D;
+  q[3] = eb.L;
+  if (exact != nullptr) *exact = ea.exact && eb.exact;
+}
+
+}  // namespace
+
+std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport* report) const {
+  std::vector<const ON_SubDFace*> faces;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      if (f->EdgeCount() != 4 || !f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::ToNurbsPatchesWatertight: every face must be a quad - call Subdivide(1) first");
+      }
+      faces.push_back(f);
+    }
+  }
+  if (faces.empty()) {
+    throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesWatertight: the SubD has no faces");
+  }
+  SubDWatertightReport rep;
+  std::unordered_set<const ON_SubDEdge*> seen_edges;
+  std::vector<SubDNurbsPatch> patches;
+  patches.reserve(faces.size());
+  for (const ON_SubDFace* f : faces) {
+    ON_3dPoint grid[4][4];
+    bool regular = false;
+    BuildFaceBezierGrid(f, grid, regular, /*exact_irregular_corners=*/true);
+    // A semi-sharp edge at a corner makes the regular stencil inexact there.
+    if (regular) {
+      for (unsigned int i = 0; i < 4; ++i) if (!IsRegularForWatertight(f->Vertex(i))) regular = false;
+    }
+
+    const ON_SubDVertex* v[4] = {f->Vertex(0), f->Vertex(1), f->Vertex(2), f->Vertex(3)};
+    const ON_SubDEdge* e[4] = {f->Edge(0), f->Edge(1), f->Edge(2), f->Edge(3)};
+    // Edge i must join Vertex(i) and Vertex(i+1); the four boundary
+    // curves, oriented to the Bezier grid: row 0 = v0->v1, column 3 =
+    // v1->v2, row 3 = v3->v2, column 0 = v0->v3.
+    const ON_SubDVertex* from[4] = {v[0], v[1], v[3], v[0]};
+    ON_3dPoint curve[4][4];
+    bool edge_exact[4];
+    for (int i = 0; i < 4; ++i) {
+      if (e[i] == nullptr) throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesWatertight: a face has a null edge");
+      const ON_SubDVertex* want_a = v[i];
+      const ON_SubDVertex* want_b = v[(i + 1) % 4];
+      if (!((e[i]->Vertex(0u) == want_a && e[i]->Vertex(1u) == want_b) ||
+            (e[i]->Vertex(0u) == want_b && e[i]->Vertex(1u) == want_a))) {
+        throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesWatertight: face edge order does not match its vertex order");
+      }
+      WatertightEdgeCurve(e[i], from[i], curve[i], &edge_exact[i]);
+      if (seen_edges.insert(e[i]).second) {
+        ++rep.shared_edges;
+        if (edge_exact[i]) ++rep.exact_edge_curves; else ++rep.hermite_edge_curves;
+      }
+    }
+    for (int c = 0; c < 4; ++c) grid[0][c] = curve[0][c];
+    for (int r = 0; r < 4; ++r) grid[r][3] = curve[1][r];
+    for (int c = 0; c < 4; ++c) grid[3][c] = curve[2][c];
+    for (int r = 0; r < 4; ++r) grid[r][0] = curve[3][r];
+    if (!regular) {
+      const ON_3dPoint c00 = grid[0][0], c03 = grid[0][3], c30 = grid[3][0], c33 = grid[3][3];
+      for (int r = 1; r <= 2; ++r) {
+        const double t = r / 3.0;
+        for (int c = 1; c <= 2; ++c) {
+          const double s = c / 3.0;
+          const ON_3dPoint lc = (1.0 - t) * grid[0][c] + t * grid[3][c];
+          const ON_3dPoint ld = (1.0 - s) * grid[r][0] + s * grid[r][3];
+          const ON_3dPoint bl = (1.0 - t) * ((1.0 - s) * c00 + s * c03) + t * ((1.0 - s) * c30 + s * c33);
+          grid[r][c] = ON_3dPoint(lc.x + ld.x - bl.x, lc.y + ld.y - bl.y, lc.z + ld.z - bl.z);
+        }
+      }
+    }
+    std::vector<Point3d> cvs(16);
+    for (int u = 0; u < 4; ++u) {
+      for (int w = 0; w < 4; ++w) cvs[static_cast<size_t>(u) * 4 + static_cast<size_t>(w)] = grid[w][u];
+    }
+    SubDNurbsPatch patch;
+    patch.surface = NurbsSurface::FromControlGrid(cvs, 4, 4, 3, 3);
+    patch.exact = regular;
+    patches.push_back(std::move(patch));
+    if (regular) ++rep.exact_patches; else ++rep.coons_patches;
+  }
+  rep.patches = static_cast<int>(patches.size());
+  if (report != nullptr) *report = rep;
+  return patches;
+}
+
+SubD SubD::TransformOriented(const ON_Xform& xform) const {
+  if (!xform.IsValid() || xform.Determinant() == 0.0) {
+    throw std::invalid_argument("dino8::kernel::SubD::TransformOriented: xform must be valid and invertible");
+  }
+  if (xform.Determinant() > 0.0) return Transform(xform);
+
+  SubD out;
+  std::unordered_map<const ON_SubDVertex*, const ON_SubDVertex*> vmap;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      ON_3dPoint p = v->ControlNetPoint();
+      p.Transform(xform);
+      const ON_SubDVertex* nv = out.subd_.AddVertex(&p.x);
+      if (nv == nullptr) throw std::runtime_error("dino8::kernel::SubD::TransformOriented: ON_SubD::AddVertex failed");
+      vmap[v] = nv;
+    }
+  }
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      const unsigned int n = f->EdgeCount();
+      std::vector<const ON_SubDVertex*> vs(n);
+      for (unsigned int i = 0; i < n; ++i) {
+        const ON_SubDVertex* ov = f->Vertex(n - 1 - i);  // reversed loop
+        const auto it = vmap.find(ov);
+        if (ov == nullptr || it == vmap.end()) {
+          throw std::runtime_error("dino8::kernel::SubD::TransformOriented: a face has an unmapped vertex");
+        }
+        vs[i] = it->second;
+      }
+      if (out.subd_.FindOrAddFace(ON_SubDEdgeTag::Unset, vs.data(), n) == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::TransformOriented: ON_SubD::FindOrAddFace failed");
+      }
+    }
+  }
+  out.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    if (e->FaceCount() != 2 || e->Vertex(0u) == nullptr || e->Vertex(1u) == nullptr) continue;
+    const bool crease = e->IsCrease();
+    const double s0 = e->EndSharpness(0u), s1 = e->EndSharpness(1u);
+    if (!crease && !(s0 > 0.0 || s1 > 0.0)) continue;
+    const ON_SubDVertex* n0 = vmap[e->Vertex(0u)];
+    const ON_SubDVertex* n1 = vmap[e->Vertex(1u)];
+    const ON_SubDEdge* ne = out.subd_.FindEdge(n0, n1).Edge();
+    if (ne == nullptr) continue;
+    if (crease) {
+      const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(ne);
+      out.subd_.SetEdgeTags(&cptr, 1, ON_SubDEdgeTag::Crease);
+    } else if (ne->IsSmooth()) {
+      const bool n0_is_end0 = (ne->Vertex(0u) == n0);
+      const_cast<ON_SubDEdge*>(ne)->SetSharpnessForExperts(
+          ON_SubDEdgeSharpness::FromInterval(n0_is_end0 ? s0 : s1, n0_is_end0 ? s1 : s0));
+    }
+  }
+  return out;
+}
+
+}  // namespace dino8::kernel

@@ -1,0 +1,17 @@
+# DataLink / DataLinkUpdate to a native .xlsx file (drafting/Xlsx.cpp, not
+# just CSV - see PARITY_MAP.md's "Live external data linking into tables"
+# entry): stage 1 (see smoke.sh) - build a 2x2 table and link it to an
+# .xlsx file that doesn't exist yet, which is always an initial push
+# (nothing to pull from), same rule datalink_script1.txt's CSV case uses.
+# Between this stage and stage 2, smoke.sh rewrites @TMP@/xlsx_datalink.xlsx
+# itself using Python's own zipfile/zlib - a genuinely independent writer,
+# not this app's own WriteXlsxCells - with real DEFLATE compression and
+# shared strings, to prove ReadXlsxCells reads a real-world-shaped external
+# edit (the kind an actual spreadsheet program would produce), not just a
+# round trip through its own writer.
+Table Rows=2 Cols=2 Data=E,F;G,H
+0,0,0
+SelAll
+DataLink File=@TMP@/xlsx_datalink.xlsx
+SelAll
+Save @TMP@/xlsx_datalink.3dm

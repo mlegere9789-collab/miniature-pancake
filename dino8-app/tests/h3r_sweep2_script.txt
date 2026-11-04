@@ -1,0 +1,159 @@
+# Sweep2 with SEVERAL cross-sections records construction history (tests/smoke.sh section H3R_, part 2).
+# With History On the exact multi-section two-rail sweep is recorded as {rail 1, rail 2, section 1, section 2}; editing a
+# section, or a rail by moving two of its CONTROL POINTS (the way a gizmo drag does), rebuilds the wall automatically (no
+# UpdateHistory), in the same undo step. Every claim is a measured Bounding box / Area, compared with the SAME sweep built
+# fresh (History Off) from the same, already moved, source curves.
+# @TMP@ is the test temp directory.
+# Bounding boxes, in order (Area in order of the Area lines):
+#  1 fresh wall   2 section 2 moved +1 Y   3 section 1 moved -1 Y   4 section 1 moved -1 Y again, then Undo (= 3)
+#  5 rail 2 control points 1 and 2 moved (HBarDragSelfTest)   6 fresh sweep from the same moved sources (History Off) (= 5)
+#  7 reopened, section 2 moved +1 Y   8 fresh control (= 7)
+#  9 a section moved onto the first rail's start (two sections at one station): refused, old wall kept (= 7)
+#  10 History Off control: a section moved afterwards leaves the wall alone (= measurement 1)
+SetActiveViewport Top
+
+# ============================================================ S1: a straight rail, a curved rail, two arcs, History On
+History On
+Line 0,0,0 0,0,10
+Curve 5,0,0 7,0,3 3,0,7 5,0,10 Enter
+Curve 0,0,0 2.5,2,0 5,0,0 Enter
+Curve 0,0,10 2.5,4,10 5,0,10 Enter
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+SelID 4
+Enter
+History
+SelNone
+SelID 5
+BoundingBox
+Area
+# Section 2 moved +1 in Y: the wall follows with no UpdateHistory.
+SelNone
+SelID 4
+Move
+0,0,0
+0,1,0
+SelNone
+SelID 5
+BoundingBox
+Area
+# Section 1 moved -1 in Y (3); moved -1 again and Undo straight after: the section AND the rebuilt wall go back in one step (4 = 3).
+SelNone
+SelID 3
+Move
+0,0,0
+0,-1,0
+SelNone
+SelID 5
+BoundingBox
+SelNone
+SelID 3
+Move
+0,0,0
+0,-1,0
+Undo
+SelNone
+SelID 5
+BoundingBox
+# Rail 2 edited by its CONTROL POINTS (control points 1 and 2, locked together by HBar, anchor dragged +1 in X).
+SelNone
+SelID 2
+PointsOn
+SelControlPointRegion
+6.5,-1,0
+7.5,1,0
+SelControlPointRegion
+2.5,-1,0
+3.5,1,0
+HBar
+HBarDragSelfTest 1,0,0
+HBarOff
+SelNone
+SelID 5
+BoundingBox
+Area
+# The SAME sweep built fresh (History Off) from the moved rails and sections.
+History Off
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+SelID 4
+Enter
+SelLast
+BoundingBox
+Area
+History On
+SelLast
+Delete
+Save @TMP@/h3r_sweep2.3dm
+New
+Open @TMP@/h3r_sweep2.3dm
+History On
+History
+# After New + Open the record is back: section 2 moved +1 in Y, the wall follows.
+SelNone
+SelID 4
+Move
+0,0,0
+0,1,0
+SelNone
+SelID 5
+BoundingBox
+Area
+History Off
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+SelID 4
+Enter
+SelLast
+BoundingBox
+Area
+History On
+# Negative control: section 2 moved onto section 1's station (z=0): the kernel refuses two sections at one station, the wall is kept.
+SelNone
+SelID 4
+Move
+0,0,0
+0,0,-10
+SelNone
+SelID 5
+BoundingBox
+Area
+History
+
+# ============================================================ S3: History Off control: moving a section leaves the wall alone
+New
+History Off
+Line 0,0,0 0,0,10
+Curve 5,0,0 7,0,3 3,0,7 5,0,10 Enter
+Curve 0,0,0 2.5,2,0 5,0,0 Enter
+Curve 0,0,10 2.5,4,10 5,0,10 Enter
+SelNone
+SelID 1
+Sweep2
+SelID 2
+Enter
+SelID 3
+SelID 4
+Enter
+SelNone
+SelID 4
+Move
+0,0,0
+0,1,0
+SelNone
+SelID 5
+BoundingBox
+Area
+History

@@ -1,0 +1,65 @@
+# Adversarial curve self-intersection QC: closed and open self-crossing
+# curves fed into commands (PlanarSrf, solid-capping Extrude, IntersectSelf)
+# that either assume a simple boundary or exist specifically to detect
+# self-crossings. See CurveSelfIntersects (src/commands/cmd_common.h) and
+# adversarial_corpus_notes.md. Each block starts from a clean document
+# (SelAll/Delete) so an object count assertion is never confused by a
+# leftover from the previous block.
+SetActiveViewport Top
+
+# --- A closed bowtie polyline (crosses itself once, in the middle) fed
+# into PlanarSrf: must be rejected with a clear diagnostic, not silently
+# built into a Brep whose single trim loop crosses itself in 2D.
+Polyline 0,0,0 10,10,0 10,0,0 0,10,0 0,0,0
+Enter
+SelLast
+PlanarSrf
+@expect_objects 1
+SelAll
+Delete
+
+# --- The same bowtie fed into a solid-capping Extrude: must degrade to an
+# open ruled surface (SumSurface has no "solid" claim to violate) instead
+# of either crashing or claiming a solid it cannot honestly build.
+Polyline 0,0,0 10,10,0 10,0,0 0,10,0 0,0,0
+Enter
+SelLast
+Extrude Solid=Yes
+0,0,10
+@expect_objects 2
+SelAll
+Delete
+
+# --- IntersectSelf still finds a real self-crossing on an open curve
+# (regression check: the shared CurveSelfIntersects refactor must not have
+# broken this existing, already-working detector). A straight-segment
+# Polyline is used, not a smooth Curve interpolation, so the crossing is
+# geometrically guaranteed rather than depending on how the spline bends.
+Polyline 0,0,0 10,10,0 0,10,0 10,0,0
+Enter
+SelLast
+IntersectSelf
+SelAll
+Delete
+
+# --- A simple (non-self-intersecting) closed curve must still build a
+# normal planar surface - the self-intersection check must not have
+# false-positived on ordinary geometry.
+Polyline 20,0,0 30,0,0 30,10,0 20,10,0 20,0,0
+Enter
+SelLast
+PlanarSrf
+@expect_objects 2
+SelAll
+Delete
+
+# --- ...and still build a normal solid extrusion, starting from a fresh
+# curve (not the previous block's surface) so Extrude has an actual curve
+# to work with.
+Polyline 20,0,0 30,0,0 30,10,0 20,10,0 20,0,0
+Enter
+SelLast
+Extrude Solid=Yes
+0,0,10
+SelAll
+Delete

@@ -1,0 +1,51 @@
+# Boolean QC for a gap PARITY_MAP.md's "kernel: Boolean operations" category
+# named as asserted but never actually exercised: a compound (multi-lump)
+# Brep operand - e.g. the result of an earlier Boolean2Objects
+# Result=SymmetricDifference call - reaching the app's exact
+# Difference/Intersection path through TryExactBrepBoolean
+# (dino8-app/src/commands/cmd_boolean.cpp). `BooleanCombinePlanarNAry`'s own
+# single-Brep-per-group fold has no intervening Union call to refuse a
+# compound on, so a compound operand was already reaching
+# BooleanCombinePlanar's own compound-accepting Difference/Intersection
+# path (see this category's "Sixth note") the first time TryExactBrepBoolean
+# was written - but this was only ever asserted from the kernel's own N-ary
+# fold contract, never exercised through a real app command end to end.
+# Fresh document, so ids are assigned in creation order starting at 1 (see
+# splitbyobject_regression.txt's own header for the same convention).
+SetActiveViewport Top
+# Two disjoint boxes (id 1: x 0..10, id 2: x 20..30, a 10-unit gap between
+# them) combined via Boolean2Objects cycled to Result=SymmetricDifference
+# (Union -> Intersection -> A-B -> B-A -> SymmetricDifference, 4 presses
+# from the default) become ONE object (id 3) - a two-lump Brep::Compound,
+# since neither box touches the other so XOR leaves both wholly intact. A
+# third box (id 4) overlapping ONLY the first lump (x 5..15, y 5..15, a
+# 5x5x10 = 250 overlap with id 1's box; id 2's box sits entirely past x=20
+# and is untouched) is then subtracted from the compound through
+# BooleanDifference. Expect the exact path (no tessellation) and volume
+# (1000-250) + 1000 = 1750 - the untouched lump keeps its full volume, the
+# touched one loses only its real overlap with the cutter.
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+SelNone
+SelID 1
+Boolean2Objects
+SelID 2
+Enter
+Result
+Result
+Result
+Result
+Enter
+@expect_objects 1
+Box 5,5,0 15,15,0 10
+SelNone
+SelID 3
+BooleanDifference
+SelID 4
+Enter
+@expect_objects 1
+SelAll
+Volume
+SelAll
+Delete
+@expect_objects 0

@@ -1,0 +1,9 @@
+{
+  "plugin_name": "My Xyz Exchange",
+  "plugin_slug": "my_xyz_exchange",
+  "command_name": "MyXyz",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "Imports and exports point lists as plain x y z text files.",
+  "index_tags": "\"import\", \"export\""
+}

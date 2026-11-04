@@ -1,0 +1,45 @@
+# Print/Export linetype (dash pattern) wiring: ExportSvg/ExportPdf
+# (io/FileExchange.cpp) previously always stroked every curve solid,
+# regardless of its own real linetype - Path2::dash_pattern now carries
+# each curve's own linetype pattern (Document::FindLinetype's raw
+# model-unit dash/gap lengths) through to a real vector stroke-dasharray
+# attribute (SVG) or "d" operator (PDF), scaled by the page's own fit/
+# forced scale the same way stroke-width already is.
+#
+# This is a real fix, not just a new feature: ObjectPolylines (used by
+# CollectPaths for every exported curve) already split a dashed curve into
+# several short, solid sub-paths by *coincidence* - it reuses
+# SceneObject::EnsureDisplay's own on-screen display geometry, which only
+# dash-splits when Document::Settings().linetype_display (the on-screen
+# "Linetype Display" toggle, LinetypeDisplay command) is on. With it off -
+# a purely cosmetic, display-only setting that should never affect what
+# Print/Export actually writes - the old code silently exported the curve
+# as one plain solid path instead. This script turns that toggle off
+# first, so what follows genuinely exercises the new vector-dasharray
+# mechanism rather than the pre-existing (and still-harmless, when the
+# toggle is on) geometry-split behavior.
+#
+# A 100-unit horizontal line on the "Dashed" custom linetype (pattern
+# 5,3 - 5-unit dashes, 3-unit gaps, Document units default to
+# Millimeters), printed from a Top (parallel) view with an exact forced
+# Scale=1 (page mm per model unit) so the expected dasharray values are
+# exact, not fit-to-page-dependent: SVG's "5,3" directly (scale 1:1), and
+# PDF's own point-space equivalent ("14.173 8.504", 1 mm = 72/25.4 pt).
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+SetCustomLinetype Dashed 5,3
+LinetypeDisplay Enable=No
+Line 0,0,0 100,0,0
+SelLast
+SetLinetype Dashed
+Top
+Print @TMP@/dash_scale1.svg Scale=1
+Print @TMP@/dash_scale1.pdf Scale=1
+
+# A second, Continuous-linetype line must still export perfectly solid -
+# no stray dasharray/d operator leaking onto an object that never asked
+# for one.
+Line 0,10,0 100,10,0
+SelLast
+Top
+Print @TMP@/solid_scale1.svg Scale=1
+Print @TMP@/solid_scale1.pdf Scale=1

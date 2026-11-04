@@ -1,0 +1,50 @@
+name: Plug-in listing request
+description: Ask for a plug-in to be added to the shared Dino 8 plug-in index.
+title: "[Listing] "
+labels: ["plugin-listing"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read `dino8-app/CONTRIBUTING-PLUGINS.md` first. Listing is not an audit: see "What the project does and does not promise" there.
+  - type: textarea
+    id: entry
+    attributes:
+      label: Index entry (JSON)
+      description: Paste the output of `plugin-templates/package_plugin.py` (one entry for each platform).
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Public source repository
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: Licence (SPDX id)
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: "`build_site.py --index <index> --check-only` passes with no `no sha256` warning."
+          required: true
+        - label: "`sha256` is the SHA-256 of the file at `download_url`."
+          required: true
+        - label: "The plug-in builds from a clean directory with the SDK alone."
+          required: true
+        - label: "`dino8_plugin_init` declines when `api->api_version < DINO8_PLUGIN_API_VERSION`."
+          required: true
+        - label: "Network access, files written outside the document, and launched processes are disclosed in the description (or there are none)."
+          required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything a reviewer should know
+    validations:
+      required: false
