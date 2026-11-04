@@ -1730,6 +1730,20 @@ class Brep {
   // Area() still has.
   double Volume() const;
 
+  // Volume() for a Brep whose closedness is established by its OWN TOPOLOGY
+  // rather than by a tessellation: requires raw().IsSolid() AND
+  // raw().IsValid() (genuinely shared, consistently oriented edges - what a
+  // sealed BooleanCombineGeneralSealed() result has and Box()/Sphere() do
+  // not), then runs the identical per-face divergence-theorem integration as
+  // Volume() (trimmed faces over their true outer-minus-holes (u, v)
+  // region). It exists because Volume()'s mesh-closedness precondition
+  // (TessellateToClosedMesh(8, 8).IsClosedManifold()) fails on every
+  // general-boolean result with a curved cut edge (two independently sampled
+  // dense polylines), although the exact integral is well defined. Throws
+  // std::invalid_argument naming the failed precondition otherwise, and the
+  // same errors as Volume() for an unintegrable face.
+  double VolumeOfSealedSolid() const;
+
   // Exact surface area: the same divergence-theorem machinery Volume()
   // uses, minus the dot with S(u,v) - sum over every face of
   // INT INT |Su(u,v) x Sv(u,v)| du dv over that face's own parameter
@@ -5862,6 +5876,9 @@ class Brep {
   };
 
  private:
+  // Shared body of Volume() / VolumeOfSealedSolid(): the integration only.
+  double VolumeImpl() const;
+
   // Shared body of FromMixedFaces()/FromMixedFacesNonManifold(): the
   // only difference is whether a third trim on one welded edge throws
   // (false - FromMixedFaces()'s own long-standing behavior) or is built.

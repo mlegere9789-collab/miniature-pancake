@@ -94771,6 +94771,198 @@ void TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched() {
 
 }  // namespace offset_unified_tests
 
+// ---------------------------------------------------------------------------
+// Boolean operations: sealed general-boolean results (BooleanCombineGeneralSealed,
+// OpenSewnKeyholes, Brep::VolumeOfSealedSolid). Every number is measured
+// against a closed form: the exact B-rep volume/area of the sealed body, the
+// face/loop counts of the analytic solid, and ON_Brep::IsValid()/IsSolid().
+// ---------------------------------------------------------------------------
+namespace sealed_boolean_tests {
+
+using dino8::kernel::BooleanCombineGeneral;
+using dino8::kernel::BooleanCombineGeneralSealed;
+using dino8::kernel::BooleanOp;
+using dino8::kernel::Brep;
+using dino8::kernel::OpenSewnKeyholes;
+using dino8::kernel::SealedGeneralBoolean;
+
+ON_Plane SealedFrameFromAxis(const ON_3dPoint& origin, ON_3dVector axis) {
+  axis.Unitize();
+  ON_3dVector seed = std::fabs(axis.z) < 0.9 ? ON_3dVector(0, 0, 1) : ON_3dVector(1, 0, 0);
+  ON_3dVector x = ON_CrossProduct(seed, axis);
+  x.Unitize();
+  ON_3dVector y = ON_CrossProduct(axis, x);
+  y.Unitize();
+  ON_Plane f;
+  f.origin = origin;
+  f.xaxis = x;
+  f.yaxis = y;
+  f.zaxis = axis;
+  f.UpdateEquation();
+  return f;
+}
+
+Brep::PlanarFace SealedDiskCap(const ON_Plane& frame, double h, double r, bool flip, int n = 128) {
+  Brep::PlanarFace pf;
+  const ON_3dPoint c = frame.origin + frame.zaxis * h;
+  pf.plane = ON_Plane(c, flip ? -frame.zaxis : frame.zaxis);
+  for (int i = 0; i < n; ++i) {
+    const double a = flip ? -2.0 * ON_PI * i / n : 2.0 * ON_PI * i / n;
+    pf.loop.push_back(c + frame.xaxis * (r * std::cos(a)) + frame.yaxis * (r * std::sin(a)));
+  }
+  pf.notch_begin = 0;
+  pf.notch_count = static_cast<int>(pf.loop.size());
+  return pf;
+}
+
+Brep SealedCylinder(const ON_3dPoint& base, const ON_3dVector& axis, double r, double length) {
+  Brep::CylindricalFace cf;
+  cf.frame = SealedFrameFromAxis(base, axis);
+  cf.radius = r;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = length;
+  return Brep::FromMixedFaces({SealedDiskCap(cf.frame, 0.0, r, true), SealedDiskCap(cf.frame, length, r, false)}, {cf});
+}
+
+int CountLoops(const ON_Brep& b, ON_BrepLoop::TYPE t) {
+  int n = 0;
+  for (int i = 0; i < b.m_L.Count(); ++i) {
+    if (b.m_L[i].m_type == t) ++n;
+  }
+  return n;
+}
+
+double Simpson(const std::function<double(double)>& f, double a, double b, int n = 2000) {
+  const double h = (b - a) / n;
+  double s = f(a) + f(b);
+  for (int i = 1; i < n; ++i) s += f(a + i * h) * (i % 2 ? 4.0 : 2.0);
+  return s * h / 3.0;
+}
+
+// Box [-2,2]^2 x [-1,1] (volume 32) pierced by an r = 1 cylinder along z (z in [-2, 2]).
+void TestSealedBoxCylinderThroughHoleHasRealInnerLoopsAndExactVolume() {
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = SealedCylinder(ON_3dPoint(0, 0, -2), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const double pi = ON_PI;
+  const double v_diff = 32.0 - pi * 2.0;           // box minus the r=1, h=2 bore
+  const double v_union = 32.0 + pi * 4.0 - pi * 2.0;  // box + cylinder - the part inside the box
+  const double v_int = pi * 2.0;                    // the bore itself
+
+  {
+    const SealedGeneralBoolean s = BooleanCombineGeneralSealed(box, cyl, BooleanOp::Difference);
+    Check(s.brep.raw().IsValid(), "sealed box-cylinder Difference passes ON_Brep::IsValid()");
+    Check(s.brep.raw().IsSolid(), "sealed box-cylinder Difference passes ON_Brep::IsSolid()");
+    Check(s.keyholes_opened == 2, "the top and the bottom face each had one keyhole opened");
+    Check(CountLoops(s.brep.raw(), ON_BrepLoop::inner) == 2,
+          "the through-hole is two real ON_BrepLoop::inner loops (top and bottom), not a slit in an outer loop");
+    Check(s.brep.FaceCount() == 7, "box with a through hole has 7 faces: 6 box faces + the bore wall");
+    Check(std::abs(s.volume - v_diff) < 0.02, "sealed Difference's exact B-rep volume matches 32 - 2 pi to 0.02");
+    Check(std::abs(s.brep.VolumeOfSealedSolid() - s.volume) < 1e-12, "the reported volume is VolumeOfSealedSolid()");
+    // Exact area: 2*(16 - pi) top/bottom + 4 sides * (4*2) + bore wall 2 pi r h
+    const double a_expect = 2.0 * (16.0 - pi) + 32.0 + 2.0 * pi * 1.0 * 2.0;
+    Check(std::abs(s.brep.Area() - a_expect) < 0.05 * 1.0, "sealed Difference's exact area matches the closed form 64 + 2 pi to 0.05");
+  }
+  {
+    const SealedGeneralBoolean s = BooleanCombineGeneralSealed(box, cyl, BooleanOp::Union);
+    Check(s.brep.raw().IsValid() && s.brep.raw().IsSolid(), "sealed box+cylinder Union is IsValid and IsSolid");
+    Check(s.keyholes_opened == 2, "the Union's top and bottom face each had one keyhole opened");
+    Check(std::abs(s.volume - v_union) < 0.06, "sealed Union's exact B-rep volume matches 32 + 2 pi to 0.06 (the 128-gon caps' inscribed deficit is ~0.04)");
+  }
+  {
+    const SealedGeneralBoolean s = BooleanCombineGeneralSealed(box, cyl, BooleanOp::Intersection);
+    Check(s.brep.raw().IsValid() && s.brep.raw().IsSolid(), "sealed box*cylinder Intersection is IsValid and IsSolid");
+    Check(s.keyholes_opened == 0 && CountLoops(s.brep.raw(), ON_BrepLoop::inner) == 0,
+          "the Intersection (a cylinder slab) needs no keyhole opened and has no inner loops");
+    Check(s.brep.FaceCount() == 3, "the cylinder slab has 3 faces");
+    Check(std::abs(s.volume - v_int) < 0.02, "sealed Intersection's exact volume matches 2 pi to 0.02");
+  }
+}
+
+// The sealed body's volume agrees with inclusion-exclusion: V(A+B) + V(A*B) = V(A) + V(B) and V(A-B) = V(A) - V(A*B).
+void TestSealedVolumesObeyInclusionExclusionExactly() {
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = SealedCylinder(ON_3dPoint(0, 0, -2), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const double vu = BooleanCombineGeneralSealed(box, cyl, BooleanOp::Union).volume;
+  const double vi = BooleanCombineGeneralSealed(box, cyl, BooleanOp::Intersection).volume;
+  const double vd = BooleanCombineGeneralSealed(box, cyl, BooleanOp::Difference).volume;
+  const double va = 32.0, vb = ON_PI * 4.0;
+  Check(std::abs(vu + vi - (va + vb)) < 0.15, "sealed Union + Intersection = V(A) + V(B) to 0.15 (the operand cylinder is the exact 4 pi, the result a 128-gon)");
+  Check(std::abs(vd - (va - vi)) < 0.1, "sealed Difference = V(A) - V(A*B) to 0.1");
+}
+
+// Two perpendicular equal-radius cylinders: the Steinmetz solid, 16 r^3 / 3.
+void TestSealedSteinmetzIsValidSolidWithClosedFormVolume() {
+  const Brep a = SealedCylinder(ON_3dPoint(0, 0, -3), ON_3dVector(0, 0, 1), 1.0, 6.0);
+  const Brep b = SealedCylinder(ON_3dPoint(-3, 0, 0), ON_3dVector(1, 0, 0), 1.0, 6.0);
+  const SealedGeneralBoolean s = BooleanCombineGeneralSealed(a, b, BooleanOp::Intersection);
+  Check(s.brep.raw().IsValid() && s.brep.raw().IsSolid(), "sealed Steinmetz Intersection is IsValid and IsSolid");
+  Check(std::abs(s.volume - 16.0 / 3.0) < 0.1, "sealed Steinmetz exact volume matches 16/3 to 0.1");
+  const SealedGeneralBoolean u = BooleanCombineGeneralSealed(a, b, BooleanOp::Union);
+  Check(u.brep.raw().IsValid() && u.brep.raw().IsSolid(), "sealed Steinmetz Union is IsValid and IsSolid");
+  Check(std::abs(u.volume - (2.0 * ON_PI * 6.0 - 16.0 / 3.0)) < 0.2, "sealed Steinmetz Union volume matches 12 pi - 16/3 to 0.2");
+}
+
+// Unequal radii (1 and 0.5), perpendicular intersecting axes: the closed form is a 1-D quadrature.
+void TestSealedUnequalRadiusCylindersMatchQuadrature() {
+  const Brep a = SealedCylinder(ON_3dPoint(0, 0, -3), ON_3dVector(0, 0, 1), 1.0, 6.0);
+  const Brep b = SealedCylinder(ON_3dPoint(-3, 0, 0), ON_3dVector(1, 0, 0), 0.5, 6.0);
+  const double ra = 1.0, rb = 0.5;
+  const double vi = Simpson([&](double y) { return 4 * std::sqrt(ra * ra - y * y) * std::sqrt(rb * rb - y * y); }, -rb, rb);
+  const double va = ON_PI * ra * ra * 6.0, vb = ON_PI * rb * rb * 6.0;
+  const SealedGeneralBoolean u = BooleanCombineGeneralSealed(a, b, BooleanOp::Union);
+  Check(u.brep.raw().IsValid() && u.brep.raw().IsSolid(), "sealed unequal-radius Union is IsValid and IsSolid");
+  Check(u.keyholes_opened >= 1, "the unequal-radius Union had at least one keyhole (the wall of A around B's bore) opened");
+  Check(std::abs(u.volume - (va + vb - vi)) < 0.15, "sealed unequal-radius Union volume matches Va + Vb - Vi to 0.15");
+  const SealedGeneralBoolean d = BooleanCombineGeneralSealed(a, b, BooleanOp::Difference);
+  Check(d.brep.raw().IsValid() && d.brep.raw().IsSolid(), "sealed unequal-radius A-B is IsValid and IsSolid");
+  Check(std::abs(d.volume - (va - vi)) < 0.15, "sealed unequal-radius A-B volume matches Va - Vi to 0.15");
+}
+
+// A result that cannot be sealed is refused with a reason, never returned as a degraded body.
+void TestSealedRefusesWithReasonInsteadOfReturningADegradedBody() {
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = SealedCylinder(ON_3dPoint(0, 0, -2), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  // Cylinder minus box: the raw engine result has gaps between faces that sewing cannot close (measured by
+  // tests/general_boolean_sweep.cpp with DINO8_SWEEP_SEALED=1).
+  bool threw = false;
+  std::string what;
+  try {
+    const SealedGeneralBoolean s = BooleanCombineGeneralSealed(cyl, box, BooleanOp::Difference);
+    // Should this ever seal in a later session, the contract still holds: it must then be a valid solid.
+    Check(s.brep.raw().IsValid() && s.brep.raw().IsSolid(), "if cylinder-box Difference seals, the body is valid and solid");
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    what = e.what();
+  }
+  if (threw) {
+    Check(what.find("BooleanCombineGeneralSealed:") == 0 && what.size() > 40, "the refusal names itself and carries a reason");
+  }
+  // An empty result is not an error and is not sealed: disjoint Intersection.
+  const Brep far_box = Brep::Box(10, 10, 10, 11, 11, 11);
+  const SealedGeneralBoolean e = BooleanCombineGeneralSealed(box, far_box, BooleanOp::Intersection);
+  Check(e.brep.FaceCount() == 0 && e.volume == 0.0, "a disjoint Intersection is the empty solid, volume 0");
+}
+
+// VolumeOfSealedSolid refuses what is not a closed valid solid, and OpenSewnKeyholes leaves genuine seams alone.
+void TestVolumeOfSealedSolidPreconditionsAndGenuineSeamsSurvive() {
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  bool threw = false;
+  try {
+    (void)box.VolumeOfSealedSolid();  // Box() has no shared ON_Brep edges: raw().IsSolid() is false
+  } catch (const std::invalid_argument& e) {
+    threw = std::string(e.what()).find("IsSolid() is false") != std::string::npos;
+  }
+  Check(threw, "VolumeOfSealedSolid refuses a Brep whose faces do not share edges, naming IsSolid()");
+  const Brep cyl = SealedCylinder(ON_3dPoint(0, 0, -2), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const SealedGeneralBoolean s = BooleanCombineGeneralSealed(box, cyl, BooleanOp::Intersection);
+  Brep copy = s.brep;
+  Check(OpenSewnKeyholes(copy) == 0, "OpenSewnKeyholes on an already sealed body opens nothing");
+  Check(copy.raw().IsValid() && copy.raw().IsSolid(), "the cylinder wall's genuine periodic seam survives (still valid and solid)");
+  Check(std::abs(copy.VolumeOfSealedSolid() - s.volume) < 1e-12, "and its volume is unchanged");
+}
+
+}  // namespace sealed_boolean_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -96292,6 +96484,19 @@ int main() {
           offset_unified_tests::TestArcOffsetByTiltedPlaneMeetsToleranceAgainstClosedForm);
   RunTest("offset_unified_tests::TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched",
           offset_unified_tests::TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched);
+
+  RunTest("sealed_boolean_tests::TestSealedBoxCylinderThroughHoleHasRealInnerLoopsAndExactVolume",
+          sealed_boolean_tests::TestSealedBoxCylinderThroughHoleHasRealInnerLoopsAndExactVolume);
+  RunTest("sealed_boolean_tests::TestSealedVolumesObeyInclusionExclusionExactly",
+          sealed_boolean_tests::TestSealedVolumesObeyInclusionExclusionExactly);
+  RunTest("sealed_boolean_tests::TestSealedSteinmetzIsValidSolidWithClosedFormVolume",
+          sealed_boolean_tests::TestSealedSteinmetzIsValidSolidWithClosedFormVolume);
+  RunTest("sealed_boolean_tests::TestSealedUnequalRadiusCylindersMatchQuadrature",
+          sealed_boolean_tests::TestSealedUnequalRadiusCylindersMatchQuadrature);
+  RunTest("sealed_boolean_tests::TestSealedRefusesWithReasonInsteadOfReturningADegradedBody",
+          sealed_boolean_tests::TestSealedRefusesWithReasonInsteadOfReturningADegradedBody);
+  RunTest("sealed_boolean_tests::TestVolumeOfSealedSolidPreconditionsAndGenuineSeamsSurvive",
+          sealed_boolean_tests::TestVolumeOfSealedSolidPreconditionsAndGenuineSeamsSurvive);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

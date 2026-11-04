@@ -8027,4 +8027,197 @@ bool ContainsPointExactIndexed(const Point3d& point, const ON_Brep& brep, const 
 }
 }  // namespace detail
 
+// ---------------------------------------------------------------------------
+// Sealed general-boolean results (see boolean_general.h)
+// ---------------------------------------------------------------------------
+namespace {
+
+double LoopSignedArea2d(const ON_Brep& b, const std::vector<int>& trims) {
+  double a = 0.0;
+  for (int ti : trims) {
+    const ON_Curve* c = b.m_T[ti].TrimCurveOf();
+    if (!c) continue;
+    const ON_3dPoint p = c->PointAtStart(), q = c->PointAtEnd();
+    a += p.x * q.y - q.x * p.y;
+  }
+  return 0.5 * a;
+}
+
+// Finds one openable slit in loop `li`: positions pi < pj in the loop's trim
+// list of the two trims of one edge, both `seam` without an iso flag.
+bool FindSlit(const ON_Brep& b, int li, int& pi, int& pj) {
+  const ON_BrepLoop& L = b.m_L[li];
+  const int n = L.TrimCount();
+  std::unordered_map<int, int> first_pos;
+  for (int k = 0; k < n; ++k) {
+    const ON_BrepTrim& t = b.m_T[L.m_ti[k]];
+    if (t.m_type != ON_BrepTrim::seam || t.m_ei < 0) continue;
+    if (t.m_iso == ON_Surface::N_iso || t.m_iso == ON_Surface::S_iso || t.m_iso == ON_Surface::E_iso ||
+        t.m_iso == ON_Surface::W_iso) {
+      continue;  // a genuine seam of a periodic surface
+    }
+    const auto it = first_pos.find(t.m_ei);
+    if (it == first_pos.end()) {
+      first_pos.emplace(t.m_ei, k);
+    } else {
+      pi = it->second;
+      pj = k;
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+int OpenSewnKeyholes(Brep& brep) {
+  ON_Brep& b = brep.raw();
+  int opened = 0;
+  const int guard_max = 4 * (b.m_L.Count() + 8);
+  for (int guard = 0; guard < guard_max; ++guard) {
+    int li = -1, pi = -1, pj = -1;
+    for (int l = 0; l < b.m_L.Count(); ++l) {
+      if (b.m_L[l].m_loop_index < 0 || b.m_L[l].m_type != ON_BrepLoop::outer) continue;
+      if (FindSlit(b, l, pi, pj)) {
+        li = l;
+        break;
+      }
+    }
+    if (li < 0) break;
+    const int fi = b.m_L[li].m_fi;
+    const std::string where = "OpenSewnKeyholes: face " + std::to_string(fi);
+    const int n = b.m_L[li].TrimCount();
+    std::vector<int> ring(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) ring[static_cast<size_t>(k)] = b.m_L[li].m_ti[k];
+    std::vector<int> between, around;  // trims strictly between the slit pair / the rest of the ring
+    for (int k = pi + 1; k < pj; ++k) between.push_back(ring[static_cast<size_t>(k)]);
+    for (int k = pj + 1; k < n; ++k) around.push_back(ring[static_cast<size_t>(k)]);
+    for (int k = 0; k < pi; ++k) around.push_back(ring[static_cast<size_t>(k)]);
+    if (between.empty() || around.empty()) throw std::runtime_error(where + ": a slit pair does not separate two cycles");
+    // The cycle with the larger signed (u, v) area is the face's outer boundary, the other the hole.
+    const bool between_is_outer = LoopSignedArea2d(b, between) > LoopSignedArea2d(b, around);
+    const std::vector<int>& outer_chain = between_is_outer ? between : around;
+    const std::vector<int>& hole_chain = between_is_outer ? around : between;
+    const int slit_a = ring[static_cast<size_t>(pi)], slit_b = ring[static_cast<size_t>(pj)];
+    b.DeleteTrim(b.m_T[slit_a], false);
+    b.DeleteTrim(b.m_T[slit_b], true);
+    // Snap each cycle's last 2D end onto its first start (the corridor was a thin but non-zero gap in (u, v)).
+    for (const std::vector<int>* chain : {&outer_chain, &hole_chain}) {
+      ON_Curve* last = const_cast<ON_Curve*>(b.m_T[chain->back()].TrimCurveOf());
+      const ON_Curve* first = b.m_T[chain->front()].TrimCurveOf();
+      if (!last || !first || !last->SetEndPoint(first->PointAtStart())) {
+        throw std::runtime_error(where + ": a trim next to a slit cannot move its 2D end point");
+      }
+    }
+    ON_BrepLoop& nl = b.NewLoop(ON_BrepLoop::inner, b.m_F[fi]);
+    const int nli = nl.m_loop_index;
+    b.m_L[li].m_ti.SetCount(0);
+    for (int ti : outer_chain) b.m_L[li].m_ti.Append(ti);
+    for (int ti : hole_chain) {
+      b.m_T[ti].m_li = nli;
+      b.m_L[nli].m_ti.Append(ti);
+    }
+    ++opened;
+  }
+  if (opened > 0) {
+    b.Compact();
+    b.SetTrimIsoFlags();
+    b.SetTrimTypeFlags();
+    b.SetTrimTolerances();
+    b.SetTrimBoundingBoxes();
+    // (ON_Brep::SetEdgeTolerances() would reset every edge to ON_UNSET_VALUE here, which IsValid() rejects.)
+  }
+  return opened;
+}
+
+SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
+  SealedGeneralBoolean out;
+  Brep r = BooleanCombineGeneral(a, b, op, tolerance);
+  if (r.raw().m_F.Count() == 0) {
+    out.brep = std::move(r);
+    return out;
+  }
+  ON_BoundingBox bb;
+  r.raw().GetBoundingBox(bb);
+  const double diag = bb.Diagonal().Length();
+  if (!(diag > 0) || !std::isfinite(diag)) {
+    throw std::runtime_error("BooleanCombineGeneralSealed: the result has no finite extent");
+  }
+  std::string reason = "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
+  bool sealed = false;
+  for (const double fraction : {0.0, 2e-4, 1e-3, 3e-3, 1e-2}) {
+    Brep c = r;
+    const double tol = fraction * diag;
+    try {
+      if (fraction > 0) {
+        for (int pass = 0; pass < 3 && !c.raw().IsSolid(); ++pass) {
+          c.SewTJunctions(tol);
+          c.JoinNakedEdges(tol);
+        }
+      }
+      if (!c.raw().IsSolid()) continue;
+      const int opened = OpenSewnKeyholes(c);
+      ON_wString wlog;
+      ON_TextLog log(wlog);
+      if (!c.raw().IsValid(&log) || !c.raw().IsSolid()) {
+        const ON_String utf8(wlog);
+        std::string first = utf8.Array() ? std::string(utf8.Array()) : std::string();
+        for (size_t pos = 0, lines = 0; pos < first.size() && lines < 4; ++pos) {  // first few log lines, joined
+          if (first[pos] == '\n') {
+            if (++lines == 4 || pos + 1 >= first.size()) { first.resize(pos); break; }
+            first[pos] = ';';
+          }
+        }
+        reason = "the sewn result is not a valid ON_Brep: " +
+                 (first.empty() ? std::string("IsSolid() failed after opening keyholes") : first);
+        continue;
+      }
+      const double v = c.VolumeOfSealedSolid();
+      if (!(v > 0) || !std::isfinite(v)) {
+        reason = "the sealed result's exact volume is not positive (" + std::to_string(v) + ")";
+        continue;
+      }
+      if (op == BooleanOp::Union || op == BooleanOp::Intersection || op == BooleanOp::Difference) {
+        double va = std::nan(""), vb = std::nan("");
+        try {
+          va = a.Volume();
+          vb = b.Volume();
+        } catch (const std::exception&) {
+          va = vb = std::nan("");
+        }
+        if (std::isfinite(va) && std::isfinite(vb)) {
+          const double slack = 0.01 * (std::fabs(va) + std::fabs(vb));
+          va = std::fabs(va);
+          vb = std::fabs(vb);
+          double lo = 0, hi = 0;
+          if (op == BooleanOp::Union) {
+            lo = std::max(va, vb);
+            hi = va + vb;
+          } else if (op == BooleanOp::Intersection) {
+            hi = std::min(va, vb);
+          } else {
+            lo = va - std::min(va, vb);
+            hi = va;
+          }
+          if (v < lo - slack || v > hi + slack) {
+            reason = "the sealed result's exact volume " + std::to_string(v) + " lies outside the operands' exact-volume bounds [" +
+                     std::to_string(lo) + ", " + std::to_string(hi) + "]";
+            continue;
+          }
+        }
+      }
+      out.volume = v;
+      out.brep = std::move(c);
+      out.sew_tolerance = tol;
+      out.keyholes_opened = opened;
+      sealed = true;
+      break;
+    } catch (const std::exception& e) {
+      reason = std::string("sewing the engine's result failed: ") + e.what();
+    }
+  }
+  if (!sealed) throw std::runtime_error("BooleanCombineGeneralSealed: " + reason);
+  return out;
+}
+
 }  // namespace dino8::kernel

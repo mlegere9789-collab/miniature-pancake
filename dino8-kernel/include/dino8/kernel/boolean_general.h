@@ -1911,4 +1911,61 @@ Brep ExtrudeToBoundary(const NurbsCurve& profile, Vector3d direction, const Brep
 //       statement is that the two boundaries are simply different curves.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
+// ---------------------------------------------------------------------------
+// Sealed (closed, ON_Brep::IsValid) general-boolean results
+// ---------------------------------------------------------------------------
+//
+// BooleanCombineGeneral() hands back a shell of faces trimmed by dense-polyline
+// intersection edges in which a face with a hole carries that hole folded into
+// its outer loop through a thin "keyhole" corridor (BridgeHolesIntoOuter). Such
+// a raw result tessellates to the right volume, but it has naked edges (the two
+// sides of every corridor, T-junctions where a straight edge meets a polyline),
+// so IsSolid() is false, and once the corridor is sewn shut the two sides of
+// the slit become a "seam" edge on a face whose surface has no seam there -
+// which ON_Brep::IsValid() rightly rejects ("m_type = seam but m_iso is not
+// N/E/W/S_iso"; measured on the box+cylinder piercing Union and A-B: valid=0
+// after SewTJunctions + JoinNakedEdges although the unsewn result is valid).
+//
+// OpenSewnKeyholes(brep) repairs exactly that: every pair of trims of ONE edge
+// that lie in the same outer loop of the same face, are typed `seam`, and are
+// not a genuine iso seam (a slit, not a periodic surface's seam) is removed,
+// and the loop is cut at the slit into an outer loop plus a proper
+// ON_BrepLoop::inner loop (the hole). Genuine seams are left untouched. Returns
+// the number of slits opened; 0 means there was nothing to do. Throws
+// std::runtime_error naming the face when a slit cannot be opened (a trim
+// next to the slit cannot move its 2D end point, or the cut does not yield
+// two cycles) - the brep is then left in an unspecified state, so call it on
+// a copy.
+int OpenSewnKeyholes(Brep& brep);
+
+// A sealed general-boolean result: `brep` is IsSolid() AND IsValid(), with
+// every keyhole opened into a real inner loop (see OpenSewnKeyholes()).
+struct SealedGeneralBoolean {
+  Brep brep;
+  double sew_tolerance = 0;  // 0 when the engine's result needed no sewing
+  int keyholes_opened = 0;
+  // Exact B-rep volume (Brep::VolumeOfSealedSolid(): divergence theorem per
+  // trimmed face, no tessellation) of the sealed result; 0 for an empty one.
+  // BooleanCombineGeneralSealed() refuses a result whose exact volume is not
+  // positive, or lies outside the operands' exact-volume bounds (Union:
+  // [max(Va, Vb), Va + Vb]; Intersection: [0, min(Va, Vb)]; Difference a - b:
+  // [Va - min(Va, Vb), Va]; each widened by 1% of Va + Vb for the polyline
+  // edges' quadrature error) - checked only when the operands' own exact
+  // Volume() is available.
+  double volume = 0;
+};
+
+// Runs BooleanCombineGeneral() and seals its result: (when the raw result is
+// not already a solid) SewTJunctions + JoinNakedEdges at an escalating
+// tolerance (0.02%, 0.1%, 0.3%, 1% of the bounding-box diagonal; the first that
+// yields IsSolid() wins), then OpenSewnKeyholes(), then requires
+// ON_Brep::IsValid() and IsSolid(). An empty result (a Difference that removes
+// everything, a disjoint Intersection) is returned as is. Anything else that
+// cannot be sealed is REFUSED with std::runtime_error whose message names the
+// reason ("the engine's result has gaps between faces that sewing could not
+// close, so it is not a closed solid" / "the sewn result is not a valid
+// ON_Brep: <first IsValid log line>") - a degraded body is never returned.
+// Exceptions of BooleanCombineGeneral() itself propagate unchanged.
+SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001);
+
 }  // namespace dino8::kernel

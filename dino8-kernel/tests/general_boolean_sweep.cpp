@@ -445,15 +445,30 @@ void RunCase(const Case& c) {
         res.raw().IsValid(&log);
       }
     }
+    // DINO8_SWEEP_SEALED=1: also run BooleanCombineGeneralSealed() (sew + open keyholes + IsValid/IsSolid
+    // required) and print its verdict per case, so the count of results that seal can be read off the sweep.
+    std::string sealed_note = "-";
+    if (faces > 0 && std::getenv("DINO8_SWEEP_SEALED")) {
+      try {
+        const SealedGeneralBoolean sg = BooleanCombineGeneralSealed(*r.x, *r.y, r.op);
+        char b[160];
+        std::snprintf(b, sizeof b, "SEALED(tol=%.2e keyholes=%d solid=%d valid=%d exactvol=%.4f err=%.4f)", sg.sew_tolerance,
+                      sg.keyholes_opened, (int)sg.brep.raw().IsSolid(), (int)sg.brep.raw().IsValid(), sg.volume,
+                      std::isnan(r.expect) ? NAN : std::fabs(sg.volume - r.expect));
+        sealed_note = b;
+      } catch (const std::exception& e) {
+        sealed_note = std::string("REFUSED: ") + e.what();
+      }
+    }
     const double err = (std::isnan(r.expect) || std::isnan(vol)) ? NAN : std::fabs(vol - r.expect);
     const char* verdict = !tess_error.empty() ? "TESSELLATION-EXCEPTION"
                           : !valid            ? "INVALID"
                           : std::isnan(err)   ? "NO-EXPECTATION"
                           : err <= tol        ? "OK"
                                               : "WRONG-VOLUME";
-    std::printf("  %s | %-13s | faces=%3d valid=%d closedmesh=%d nonsimple=%d | vol=%11.4f expect=%11.4f err=%9.4f (tol %.3f) | manifold-ref=%11.4f | %s%s%s%s\n",
+    std::printf("  %s | %-13s | faces=%3d valid=%d closedmesh=%d nonsimple=%d | vol=%11.4f expect=%11.4f err=%9.4f (tol %.3f) | manifold-ref=%11.4f | %s%s%s%s | %s\n",
                 c.name.c_str(), r.label, faces, (int)valid, (int)closed, nonsimple, vol, r.expect, err, tol, mref, verdict,
-                faces == 0 ? " (EMPTY result)" : "", tess_error.empty() ? "" : ": ", tess_error.c_str());
+                faces == 0 ? " (EMPTY result)" : "", tess_error.empty() ? "" : ": ", tess_error.c_str(), sealed_note.c_str());
   }
 }
 

@@ -1023,6 +1023,15 @@ double TriangleQuad7(const Point2d& a, const Point2d& b, const Point2d& c, Integ
 constexpr double kTrimmedFaceIntegralRelTol = 1e-9;
 constexpr int kTrimmedFaceIntegralMaxDepth = 10;
 
+// VolumeOfSealedSolid() integrates a trimmed face whose boundary is a dense
+// polyline (a general-boolean cut edge: ~4e-4 of the face size of chord
+// error), so Volume()'s 1e-9 relative target is unreachable and, on a rational
+// wall, burns the full 4^10 refinement per triangle (minutes). It runs the
+// same integrand at a target matched to the polyline (1e-6, depth 4) by
+// switching these two knobs for the duration of the call.
+thread_local double g_trimmed_face_rel_tol = kTrimmedFaceIntegralRelTol;
+thread_local int g_trimmed_face_max_depth = kTrimmedFaceIntegralMaxDepth;
+
 // Adaptive refinement of TriangleQuad7() over (a, b, c): compares the
 // single-triangle quadrature against the sum of the same rule applied to
 // the 4 congruent sub-triangles a standard midpoint split produces: if
@@ -1279,6 +1288,31 @@ double Brep::Volume() const {
         "TessellateToClosedMeshConforming(8, 8) is a closed manifold) - there is no well-defined "
         "enclosed volume otherwise");
   }
+  return VolumeImpl();
+}
+
+double Brep::VolumeOfSealedSolid() const {
+  if (!brep_.IsSolid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::VolumeOfSealedSolid: raw().IsSolid() is false (the faces do not share a closed set of edges)");
+  }
+  if (!brep_.IsValid()) {
+    throw std::invalid_argument("dino8::kernel::Brep::VolumeOfSealedSolid: raw().IsValid() is false");
+  }
+  struct Knobs {
+    Knobs() {
+      g_trimmed_face_rel_tol = 1e-6;
+      g_trimmed_face_max_depth = 4;
+    }
+    ~Knobs() {
+      g_trimmed_face_rel_tol = kTrimmedFaceIntegralRelTol;
+      g_trimmed_face_max_depth = kTrimmedFaceIntegralMaxDepth;
+    }
+  } knobs;
+  return VolumeImpl();
+}
+
+double Brep::VolumeImpl() const {
   double total = 0.0;
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     const ON_BrepFace& face = brep_.m_F[i];
@@ -1335,12 +1369,12 @@ double Brep::Volume() const {
                                  polygon[static_cast<size_t>(tris[t][2])], integrand);
       coarse_total += std::fabs(coarse[t]);
     }
-    const double tol_total = std::max(1e-12, kTrimmedFaceIntegralRelTol * coarse_total);
+    const double tol_total = std::max(1e-12, g_trimmed_face_rel_tol * coarse_total);
     for (size_t t = 0; t < tris.size(); ++t) {
       const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
       total += sign * IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
                                                  polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
-                                                 kTrimmedFaceIntegralMaxDepth);
+                                                 g_trimmed_face_max_depth);
     }
   }
   return total;
