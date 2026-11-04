@@ -2798,6 +2798,103 @@ Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p
 }
 
 // ---------------------------------------------------------------------------
+// Non-linear radius laws: adaptive sampling of r(s) into the piecewise-linear stations the N-station tapered
+// fillets build exactly (see fillet.h, FilletConvexEdgeLaw).
+namespace {
+
+void ValidateRadiusLaw(const char* who, const std::function<double(double)>& law, double tol, int max_segments) {
+  const std::string w = std::string("dino8::kernel::") + who + ": ";
+  if (!law) throw std::invalid_argument(w + "the radius law is empty");
+  if (!(tol > 0.0) || !std::isfinite(tol)) throw std::invalid_argument(w + "radius_tolerance must be finite and > 0");
+  if (max_segments < 2) throw std::invalid_argument(w + "max_segments must be at least 2");
+  int dir = 0;
+  double prev = 0.0;
+  for (int k = 0; k <= 256; ++k) {
+    const double r = law(k / 256.0);
+    if (!std::isfinite(r) || !(r > 0.0)) {
+      throw std::invalid_argument(w + "the radius law returned a non-finite or non-positive value at fraction " +
+                                  std::to_string(k / 256.0) + " (a radius must stay strictly positive)");
+    }
+    if (k > 0) {
+      const int d = r > prev ? 1 : (r < prev ? -1 : 0);
+      if (d == 0 || (dir != 0 && d != dir)) {
+        throw std::invalid_argument(w + "the radius law is not strictly monotone (an interior radius extremum or a flat "
+                                        "stretch near fraction " + std::to_string(k / 256.0) +
+                                    "); the tapered-fillet construction it feeds supports only a strictly monotone profile");
+      }
+      dir = d;
+    }
+    prev = r;
+  }
+}
+
+}  // namespace
+
+std::vector<FilletRadiusStation> SampleFilletRadiusLaw(double edge_length, const std::function<double(double)>& law,
+                                                        double tol, int max_segments) {
+  ValidateRadiusLaw("SampleFilletRadiusLaw", law, tol, max_segments);
+  if (!(edge_length > 0.0) || !std::isfinite(edge_length)) {
+    throw std::invalid_argument("dino8::kernel::SampleFilletRadiusLaw: edge_length must be finite and > 0");
+  }
+  std::vector<double> frac = {0.0, 1.0};
+  // Bisect any segment whose linear interpolant misses the law by more than tol at 7 interior probes.
+  for (int guard = 0; guard < 4096; ++guard) {
+    bool refined = false;
+    for (size_t k = 0; k + 1 < frac.size(); ++k) {
+      const double a = frac[k], b = frac[k + 1];
+      const double ra = law(a), rb = law(b);
+      double worst = 0.0;
+      for (int p = 1; p <= 7; ++p) {
+        const double u = p / 8.0;
+        worst = std::max(worst, std::fabs(ra + (rb - ra) * u - law(a + (b - a) * u)));
+      }
+      if (worst > tol) {
+        if (static_cast<int>(frac.size()) - 1 >= max_segments) {
+          throw std::invalid_argument("dino8::kernel::SampleFilletRadiusLaw: the radius law needs more than " +
+                                      std::to_string(max_segments) + " linear segments to stay within radius_tolerance " +
+                                      std::to_string(tol));
+        }
+        frac.insert(frac.begin() + static_cast<std::ptrdiff_t>(k) + 1, 0.5 * (a + b));
+        refined = true;
+        break;
+      }
+    }
+    if (!refined) break;
+  }
+  std::vector<FilletRadiusStation> st;
+  st.reserve(frac.size());
+  for (double f : frac) st.push_back({f * edge_length, law(f)});
+  st.back().t = edge_length;
+  return st;
+}
+
+namespace {
+Brep FilletEdgeLawImpl(bool convex, const Brep& solid, Point3d p0, Point3d p1, const std::function<double(double)>& law,
+                       double tol, int max_segments) {
+  const char* who = convex ? "FilletConvexEdgeLaw" : "FilletConcaveEdgeLaw";
+  ValidateRadiusLaw(who, law, tol, max_segments);
+  const double L = p0.DistanceTo(p1);
+  if (!(L > 0.0)) throw std::invalid_argument(std::string("dino8::kernel::") + who + ": coincident edge endpoints");
+  const double r0 = law(0.0), r1 = law(1.0);
+  if (std::fabs(r1 - r0) <= tol) {  // monotone: the whole law lies within tol of its mid value
+    const double mid = 0.5 * (r0 + r1);
+    return convex ? FilletConvexEdge(solid, p0, p1, mid) : FilletConcaveEdge(solid, p0, p1, mid);
+  }
+  std::vector<FilletRadiusStation> st = SampleFilletRadiusLaw(L, law, tol, max_segments);
+  return convex ? FilletConvexEdgeTapered(solid, p0, p1, st) : FilletConcaveEdgeTapered(solid, p0, p1, st);
+}
+}  // namespace
+
+Brep FilletConvexEdgeLaw(const Brep& solid, Point3d p0, Point3d p1, const std::function<double(double)>& law, double tol,
+                          int max_segments) {
+  return FilletEdgeLawImpl(true, solid, p0, p1, law, tol, max_segments);
+}
+Brep FilletConcaveEdgeLaw(const Brep& solid, Point3d p0, Point3d p1, const std::function<double(double)>& law, double tol,
+                           int max_segments) {
+  return FilletEdgeLawImpl(false, solid, p0, p1, law, tol, max_segments);
+}
+
+// ---------------------------------------------------------------------------
 // Exact planar chamfer (see fillet.h's own ChamferConvexEdge doc comment for
 // the construction this implements step by step).
 

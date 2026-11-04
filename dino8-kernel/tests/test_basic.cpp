@@ -98315,6 +98315,298 @@ void TestSweep1ClosedRailPerAxisScaleJumpIntoTheSeamIsRefused() {
 
 }  // namespace qc_review_tests
 
+// ---------------------------------------------------------------------------
+// Non-linear radius laws (fillet.h: FilletConvexEdgeLaw / FilletConcaveEdgeLaw / SampleFilletRadiusLaw).
+// Oracles are independent of the library: (1) a dense 2001-point probe of the requested law against the sampled
+// piecewise-linear profile, (2) the rails and the cone surface MEASURED off the returned B-rep against the rolling-ball
+// definition (ball centre c(t) at distance r from both faces; every surface point must be at ball-surface distance
+// ~0 from the centre family and never inside a ball; cone normals at the two contact curves equal the face normals),
+// (3) the removed (convex) / added (concave) volume against an exact column-by-column union-of-balls integral that
+// only uses the ball family, never the kernel's cones, (4) validity, and negative controls with stated reasons.
+// ---------------------------------------------------------------------------
+namespace blend_law_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::FilletConcaveEdgeLaw;
+using dino8::kernel::FilletConvexEdge;
+using dino8::kernel::FilletConvexEdgeLaw;
+using dino8::kernel::FilletConvexEdgeTapered;
+using dino8::kernel::FilletRadiusStation;
+using dino8::kernel::Point3d;
+using dino8::kernel::SampleFilletRadiusLaw;
+
+double Smooth(double s) { return 0.15 + 0.30 * (3 * s * s - 2 * s * s * s); }  // 0.15 -> 0.45, flat ends
+double Pl(const std::vector<FilletRadiusStation>& st, double t) {
+  for (size_t k = 0; k + 1 < st.size(); ++k) {
+    if (t <= st[k + 1].t + 1e-12) {
+      const double u = (t - st[k].t) / (st[k + 1].t - st[k].t);
+      return st[k].radius + u * (st[k + 1].radius - st[k].radius);
+    }
+  }
+  return st.back().radius;
+}
+std::string Why(const std::function<void()>& f) {
+  try { f(); } catch (const std::exception& e) { return e.what(); }
+  return "";
+}
+bool Has(const std::string& s, const char* sub) { return s.find(sub) != std::string::npos; }
+
+// Volume of the points of the square [0,r(x))^2 (in the two face-distance coordinates u,w) that no ball of the family
+// {centre (x', r', r'), radius r'} covers, integrated over the edge coordinate x in [0,L]. Exact in w per column
+// (union of intervals), midpoint rule in u and x.
+double UncoveredVolume(const std::vector<FilletRadiusStation>& st, double L, int nx, int nu) {
+  const double dxp = 0.002;
+  std::vector<double> rp;
+  const int np = static_cast<int>(std::lround(L / dxp));
+  for (int k = 0; k <= np; ++k) rp.push_back(Pl(st, k * L / np));
+  const double hp = L / np;
+  double total = 0.0;
+  for (int ix = 0; ix < nx; ++ix) {
+    const double x = (ix + 0.5) * L / nx;
+    const double rx = Pl(st, x);
+    double area = 0.0;
+    for (int iu = 0; iu < nu; ++iu) {
+      const double u = (iu + 0.5) * rx / nu;
+      std::vector<std::pair<double, double>> iv;
+      const int kmin = std::max(0, static_cast<int>(std::floor((x - 0.5) / hp)));
+      const int kmax = std::min(np, static_cast<int>(std::ceil((x + 0.5) / hp)));
+      for (int k = kmin; k <= kmax; ++k) {
+        const double r = rp[k], dx = x - k * hp;
+        const double s2 = r * r - dx * dx - (u - r) * (u - r);
+        if (s2 > 0) iv.emplace_back(r - std::sqrt(s2), r + std::sqrt(s2));
+      }
+      std::sort(iv.begin(), iv.end());
+      double covered = 0.0, cur_lo = 0.0, cur_hi = -1.0;
+      bool open = false;
+      for (auto& p : iv) {
+        const double lo = std::max(0.0, p.first), hi = std::min(rx, p.second);
+        if (hi <= lo) continue;
+        if (!open) { cur_lo = lo; cur_hi = hi; open = true; }
+        else if (lo <= cur_hi) cur_hi = std::max(cur_hi, hi);
+        else { covered += cur_hi - cur_lo; cur_lo = lo; cur_hi = hi; }
+      }
+      if (open) covered += cur_hi - cur_lo;
+      area += (rx - covered) * (rx / nu);
+    }
+    total += area * (L / nx);
+  }
+  return total;
+}
+
+Point3d ConePt(const Brep::ConicalFace& cf, double v, double phi) {
+  const double th = (cf.radius1 - cf.radius0) / cf.length;
+  return cf.frame.origin + v * cf.frame.zaxis +
+         (th * v) * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+}
+ON_3dVector ConeNormal(const Brep::ConicalFace& cf, double v, double phi) {
+  const double hv = 1e-6 * cf.length, hp = 1e-6;
+  const Point3d a = ConePt(cf, v + hv, phi), b = ConePt(cf, v - hv, phi);
+  const Point3d c = ConePt(cf, v, phi + hp), d = ConePt(cf, v, phi - hp);
+  ON_3dVector n = ON_CrossProduct(ON_3dVector(a.x - b.x, a.y - b.y, a.z - b.z), ON_3dVector(c.x - d.x, c.y - d.y, c.z - d.z));
+  n.Unitize();
+  return n;
+}
+
+void TestLawSamplingMeetsToleranceAgainstDenseProbeAndLinearLawIsTwoStations() {
+  const double L = 4.0;
+  double prev_dev = 1e9;
+  for (double tol : {4e-3, 1e-3, 2.5e-4}) {
+    const auto st = SampleFilletRadiusLaw(L, Smooth, tol);
+    double dev = 0.0;
+    for (int k = 0; k <= 2000; ++k) dev = std::max(dev, std::fabs(Pl(st, k * L / 2000.0) - Smooth(k / 2000.0)));
+    std::printf("law sampling tol %.2e: %zu stations, dense max deviation %.3e\n", tol, st.size(), dev);
+    Check(dev <= 1.5 * tol, "dense 2001-point probe: the sampled piecewise-linear profile stays within 1.5x radius_tolerance of the law everywhere");
+    Check(st.front().t == 0.0 && st.back().t == L && std::fabs(st.front().radius - 0.15) < 1e-12 && std::fabs(st.back().radius - 0.45) < 1e-12,
+          "stations span the whole edge and hit the law's end values exactly");
+    Check(dev < prev_dev, "a tighter tolerance gives a strictly smaller measured deviation");
+    prev_dev = dev;
+  }
+  const auto lin = SampleFilletRadiusLaw(L, [](double s) { return 0.15 + 0.10 * s; }, 1e-6);
+  Check(lin.size() == 2, "a linear law needs exactly 2 stations (no spurious subdivision)");
+}
+
+// Closed 4x2x2 box, edge (0,0,2)-(4,0,2), top face z=2, front face y=0.
+void TestConvexLawFilletRailsTangencyG1VolumeAndSolid() {
+  const Brep box = Brep::Box(0, 0, 0, 4, 2, 2);
+  const Point3d p0(0, 0, 2), p1(4, 0, 2);
+  const double L = 4.0, tol = 1e-3;
+  const auto st = SampleFilletRadiusLaw(L, Smooth, tol);
+  const Brep f = FilletConvexEdgeLaw(box, p0, p1, Smooth, tol);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(f.raw().IsValid(&log), "[convex law] ON_Brep::IsValid()");
+  Check(f.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary, "[convex law] oriented closed 2-manifold");
+  Check(f.raw().IsSolid(), "[convex law] IsSolid()");
+  const Brep::MixedFacesResult mf = f.MixedFaces();
+  Check(mf.conical.size() == st.size() - 1, "[convex law] exactly one conical face per sampled segment");
+
+  // Rails: every point of every cone's two contact curves lies in its face plane, at distance r_pl(x) (exact) and
+  // within tol of the REQUESTED law r(x/L) from the edge - the ball tangency distance along the whole edge.
+  double worst_pl = 0.0, worst_law = 0.0, worst_g1 = 1.0;
+  int rail_pts = 0;
+  bool planes_ok = true;
+  for (const Brep::ConicalFace& cf : mf.conical) {
+    const double th = (cf.radius1 - cf.radius0) / cf.length;
+    const double v0 = cf.radius0 / th;
+    for (int k = 0; k <= 20; ++k) {
+      const double v = v0 + cf.length * k / 20.0;
+      const Point3d a = ConePt(cf, v, 0.0), b = ConePt(cf, v, cf.angle);
+      const bool a_top = std::fabs(a.z - 2.0) < 1e-9 && std::fabs(b.y) < 1e-9;
+      const bool b_top = std::fabs(b.z - 2.0) < 1e-9 && std::fabs(a.y) < 1e-9;
+      if (!a_top && !b_top) { planes_ok = false; continue; }
+      const Point3d top = a_top ? a : b, front = a_top ? b : a;
+      const double ct = a_top ? 0.0 : cf.angle, cfr = a_top ? cf.angle : 0.0;
+      worst_pl = std::max({worst_pl, std::fabs(top.y - Pl(st, top.x)), std::fabs((2.0 - front.z) - Pl(st, front.x))});
+      worst_law = std::max({worst_law, std::fabs(top.y - Smooth(top.x / L)), std::fabs((2.0 - front.z) - Smooth(front.x / L))});
+      worst_g1 = std::min({worst_g1, std::fabs(ConeNormal(cf, v, ct).z), std::fabs(ConeNormal(cf, v, cfr).y)});
+      ++rail_pts;
+    }
+  }
+  std::printf("convex law: %d rail points, max |dist - r_pl| %.2e, max |dist - r_law| %.2e, min G1 |n.n_face| %.9f\n",
+              rail_pts, worst_pl, worst_law, worst_g1);
+  Check(planes_ok && rail_pts > 100, "[convex law] every sampled rail point lies exactly in the top plane (z=2) or the front plane (y=0)");
+  Check(worst_pl < 1e-9, "[convex law] rail distance from the edge equals the sampled radius r_pl to 1e-9 along the whole edge");
+  Check(worst_law <= tol * 1.01 + 1e-9, "[convex law] rail distance from the edge is within radius_tolerance of the requested law along the whole edge");
+  Check(worst_g1 > 1.0 - 1e-6, "[convex law] G1: the cone normal at both contact curves equals the face normal (|n.n_face| > 1-1e-6)");
+
+  // Envelope: points of the cone surface lie on the boundary of the ball family and never inside a ball.
+  double env_lo = 1e9, env_hi = -1e9;
+  for (const Brep::ConicalFace& cf : mf.conical) {
+    const double th = (cf.radius1 - cf.radius0) / cf.length;
+    const double v0 = cf.radius0 / th;
+    for (int iv = 0; iv <= 6; ++iv) for (int ip = 1; ip < 8; ++ip) {
+      const Point3d p = ConePt(cf, v0 + cf.length * iv / 6.0, cf.angle * ip / 8.0);
+      double m = 1e9;
+      for (int k = 0; k <= 4000; ++k) {
+        const double t = L * k / 4000.0, r = Pl(st, t);
+        m = std::min(m, p.DistanceTo(Point3d(t, r, 2.0 - r)) - r);
+      }
+      env_lo = std::min(env_lo, m); env_hi = std::max(env_hi, m);
+    }
+  }
+  std::printf("convex law: envelope distance range [%.3e, %.3e]\n", env_lo, env_hi);
+  Check(env_lo > -2e-4 && env_hi < 2e-4, "[convex law] every sampled surface point is on the ball-family envelope (min over t of |p-c(t)|-r(t) within 2e-4 of 0, never inside a ball)");
+
+  // Volume: removed volume against the exact union-of-balls integral.
+  const double removed = 16.0 - f.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  const double oracle = UncoveredVolume(st, L, 160, 240);
+  std::printf("convex law: removed %.6f, union-of-balls oracle %.6f, rel diff %.3e\n", removed, oracle, std::fabs(removed - oracle) / oracle);
+  Check(std::fabs(removed - oracle) < 5e-3 * oracle, "[convex law] removed volume matches the independent union-of-balls integral within 0.5%");
+  const double lo = (1 - M_PI / 4) * 0.15 * 0.15 * L, hi = (1 - M_PI / 4) * 0.45 * 0.45 * L;
+  Check(removed > lo && removed < hi, "[convex law] removed volume lies between the constant-radius closed forms for r=0.15 and r=0.45");
+}
+
+void TestConvexLawCreaseShrinksWithToleranceAndLinearLawMatchesTaper() {
+  const Brep box = Brep::Box(0, 0, 0, 4, 2, 2);
+  const Point3d p0(0, 0, 2), p1(4, 0, 2);
+  double crease[2] = {0, 0};
+  int idx = 0;
+  for (double tol : {5e-3, 4e-4}) {
+    const Brep f = FilletConvexEdgeLaw(box, p0, p1, Smooth, tol);
+    auto cones = f.MixedFaces().conical;
+    std::sort(cones.begin(), cones.end(), [](const Brep::ConicalFace& a, const Brep::ConicalFace& b) { return a.radius0 < b.radius0; });
+    double worst = 0.0;
+    for (size_t k = 0; k + 1 < cones.size(); ++k) {
+      const auto& a = cones[k];
+      const auto& b = cones[k + 1];
+      const double tha = (a.radius1 - a.radius0) / a.length, thb = (b.radius1 - b.radius0) / b.length;
+      const ON_3dVector na = ConeNormal(a, a.radius0 / tha + a.length, a.angle * 0.5);
+      const ON_3dVector nb = ConeNormal(b, b.radius0 / thb, b.angle * 0.5);
+      worst = std::max(worst, std::acos(std::min(1.0, std::fabs(na * nb))));
+    }
+    crease[idx++] = worst * 180.0 / M_PI;
+    std::printf("law crease tol %.1e: %zu cones, max normal jump across a station %.4f deg\n", tol, cones.size(), worst * 180.0 / M_PI);
+  }
+  Check(crease[1] < crease[0], "the station-to-station normal jump shrinks as the tolerance tightens (the documented C0 crease is bounded by the sampling)");
+  Check(crease[1] < 1.0, "at tolerance 4e-4 the measured normal jump across every station is under 1 degree");
+
+  const auto lin = [](double s) { return 0.20 + 0.15 * s; };
+  const Brep a = FilletConvexEdgeLaw(box, p0, p1, lin, 1e-6);
+  const Brep b = FilletConvexEdgeTapered(box, p0, p1, 0.20, 0.35);
+  Check(a.FaceCount() == b.FaceCount() && a.EdgeCount() == b.EdgeCount() &&
+            std::fabs(a.TessellateToClosedMeshAdaptive(1e-6).Volume() - b.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "a linear law reproduces the two-radius tapered fillet (same face/edge counts, same volume to 1e-9)");
+  const Brep c = FilletConvexEdgeLaw(box, p0, p1, [](double s) { return 0.25 + 1e-5 * s; }, 1e-3);
+  const Brep d = FilletConvexEdge(box, p0, p1, 0.25 + 0.5e-5);
+  Check(std::fabs(c.TessellateToClosedMeshAdaptive(1e-6).Volume() - d.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "a law whose total variation is within tolerance dispatches to the constant-radius fillet at its mid value");
+}
+
+void TestConcaveLawFilletTangencyAndAddedVolume() {
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d p0(1, 1, 0), p1(1, 1, 1);
+  const double L = 1.0, tol = 5e-4;
+  auto law = [](double s) { return 0.12 + 0.20 * (3 * s * s - 2 * s * s * s); };
+  const auto st = SampleFilletRadiusLaw(L, law, tol);
+  const Brep f = FilletConcaveEdgeLaw(prism, p0, p1, law, tol);
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(f.raw().IsValid(&log), "[concave law] ON_Brep::IsValid()");
+  Check(f.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary, "[concave law] oriented closed 2-manifold");
+  Check(f.raw().IsSolid(), "[concave law] IsSolid()");
+  const auto mf = f.MixedFaces();
+  Check(mf.conical.size() == st.size() - 1, "[concave law] exactly one conical face per sampled segment");
+
+  // Rails: contact on the face x=1 at (1, 1+r, z) and on the face y=1 at (1+r, 1, z).
+  double worst_pl = 0.0, worst_law = 0.0, worst_g1 = 1.0;
+  int pts = 0;
+  bool planes_ok = true;
+  for (const auto& cf : mf.conical) {
+    const double th = (cf.radius1 - cf.radius0) / cf.length;
+    const double v0 = cf.radius0 / th;
+    for (int k = 0; k <= 20; ++k) {
+      const double v = v0 + cf.length * k / 20.0;
+      const Point3d a = ConePt(cf, v, 0.0), b = ConePt(cf, v, cf.angle);
+      const bool a_x = std::fabs(a.x - 1.0) < 1e-9 && std::fabs(b.y - 1.0) < 1e-9;
+      const bool b_x = std::fabs(b.x - 1.0) < 1e-9 && std::fabs(a.y - 1.0) < 1e-9;
+      if (!a_x && !b_x) { planes_ok = false; continue; }
+      const Point3d px = a_x ? a : b, py = a_x ? b : a;
+      worst_pl = std::max({worst_pl, std::fabs((px.y - 1.0) - Pl(st, px.z)), std::fabs((py.x - 1.0) - Pl(st, py.z))});
+      worst_law = std::max({worst_law, std::fabs((px.y - 1.0) - law(px.z / L)), std::fabs((py.x - 1.0) - law(py.z / L))});
+      worst_g1 = std::min({worst_g1, std::fabs(ConeNormal(cf, v, a_x ? 0.0 : cf.angle).x), std::fabs(ConeNormal(cf, v, a_x ? cf.angle : 0.0).y)});
+      ++pts;
+    }
+  }
+  std::printf("concave law: %d rail points, max |dist - r_pl| %.2e, max |dist - r_law| %.2e, min G1 %.9f\n", pts, worst_pl, worst_law, worst_g1);
+  Check(planes_ok && pts > 50, "[concave law] every sampled rail point lies exactly in the x=1 or y=1 face plane");
+  Check(worst_pl < 1e-9, "[concave law] rail distance from the reflex edge equals r_pl to 1e-9 along the whole edge");
+  Check(worst_law <= tol * 1.01 + 1e-9, "[concave law] rail distance is within radius_tolerance of the requested law along the whole edge");
+  Check(worst_g1 > 1.0 - 1e-6, "[concave law] G1: cone normals at both contact curves equal the face normals");
+
+  const double added = f.TessellateToClosedMeshAdaptive(1e-6).Volume() - 3.0;
+  const double oracle = UncoveredVolume(st, L, 160, 240);
+  std::printf("concave law: added %.6f, union-of-balls oracle %.6f, rel diff %.3e\n", added, oracle, std::fabs(added - oracle) / oracle);
+  Check(std::fabs(added - oracle) < 5e-3 * oracle, "[concave law] added volume matches the independent union-of-balls integral within 0.5%");
+}
+
+void TestLawRefusalsStateTheirReason() {
+  const Brep box = Brep::Box(0, 0, 0, 4, 2, 2);
+  const Point3d p0(0, 0, 2), p1(4, 0, 2);
+  std::string m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, [](double s) { return 0.2 + 0.2 * std::sin(3.14159 * s); }, 1e-3); });
+  Check(Has(m, "monotone"), "a bump law (interior extremum) is refused with the 'monotone' reason");
+  m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, [](double s) { return 0.3 - 0.5 * s; }, 1e-3); });
+  Check(Has(m, "positive"), "a law that crosses zero is refused with the 'positive' reason");
+  m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, [](double s) { return s < 0.5 ? 0.2 : 0.2 + (s - 0.5); }, 1e-3); });
+  Check(Has(m, "monotone"), "a law with a flat stretch is refused (the tapered construction cannot mix a cylinder in)");
+  m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, Smooth, 0.0); });
+  Check(Has(m, "radius_tolerance"), "a zero tolerance is refused");
+  m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, Smooth, 1e-3, 1); });
+  Check(Has(m, "max_segments"), "max_segments < 2 is refused");
+  m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, Smooth, 1e-7, 4); });
+  Check(Has(m, "more than 4"), "a tolerance that needs more segments than max_segments is refused with the count");
+  m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, std::function<double(double)>(), 1e-3); });
+  Check(Has(m, "empty"), "an empty law is refused");
+  m = Why([&] { FilletConvexEdgeLaw(box, p0, p1, [](double s) { return 1.0 + 1.5 * s; }, 1e-3); });
+  Check(!m.empty(), "a law whose radius outgrows the faces (up to 2.5 on a 2-wide box) is refused by the kernel, never a degraded body");
+  m = Why([&] { FilletConvexEdgeLaw(box, Point3d(0, 0, 2), Point3d(3, 0, 2), Smooth, 1e-3); });
+  Check(!m.empty(), "a segment that is not a whole edge of the solid is refused");
+  m = Why([&] { FilletConcaveEdgeLaw(box, p0, p1, Smooth, 1e-3); });
+  Check(!m.empty(), "the concave law on a convex edge is refused");
+}
+
+}  // namespace blend_law_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -99924,6 +100216,12 @@ int main() {
           qc_review_tests::TestSatHugeAtStringLengthIsRefusedAsTruncatedNotLoopedOn);
   RunTest("qc_review_tests::TestSweep1ClosedRailPerAxisScaleJumpIntoTheSeamIsRefused",
           qc_review_tests::TestSweep1ClosedRailPerAxisScaleJumpIntoTheSeamIsRefused);
+
+  RunTest("blend_law_tests::TestLawSamplingMeetsToleranceAgainstDenseProbeAndLinearLawIsTwoStations", blend_law_tests::TestLawSamplingMeetsToleranceAgainstDenseProbeAndLinearLawIsTwoStations);
+  RunTest("blend_law_tests::TestConvexLawFilletRailsTangencyG1VolumeAndSolid", blend_law_tests::TestConvexLawFilletRailsTangencyG1VolumeAndSolid);
+  RunTest("blend_law_tests::TestConvexLawCreaseShrinksWithToleranceAndLinearLawMatchesTaper", blend_law_tests::TestConvexLawCreaseShrinksWithToleranceAndLinearLawMatchesTaper);
+  RunTest("blend_law_tests::TestConcaveLawFilletTangencyAndAddedVolume", blend_law_tests::TestConcaveLawFilletTangencyAndAddedVolume);
+  RunTest("blend_law_tests::TestLawRefusalsStateTheirReason", blend_law_tests::TestLawRefusalsStateTheirReason);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -723,6 +724,40 @@ Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p
 // scope, matching FilletConvexEdgeTapered's own N-station overload).
 Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
                                const std::vector<FilletRadiusStation>& stations);
+
+// --- NON-LINEAR RADIUS LAWS (FilletConvexEdgeLaw / FilletConcaveEdgeLaw) ----------------------------------------
+//
+// A variable-radius fillet whose radius follows an ARBITRARY smooth monotone law r(s), s = arc length / edge length in
+// [0,1] (a smoothstep, a cosine blend, a quadratic, ... ) instead of a straight line. The kernel's tapered fillet is
+// exact for a PIECEWISE-LINEAR radius profile (one ConicalFace per segment), so a law is built the only honest way
+// that keeps every face exact: the law is sampled into stations by adaptive bisection until, on every segment,
+// |linear interpolant - law| <= radius_tolerance at 7 interior probe points of the segment, then handed to the
+// N-station FilletConvexEdgeTapered / FilletConcaveEdgeTapered. The result is therefore the exact rolling-ball
+// fillet of the piecewise-linear radius r_pl(s), and r_pl differs from the requested law by at most
+// `radius_tolerance` at the probe points (and, for a law with bounded curvature, by the usual interpolation bound
+// between them); the ball tangency to both faces is exact for r_pl by construction. The surface is G1 across the
+// stations exactly where the law is (the rolling ball contact is continuous), but the cone axis rotates between
+// segments, so the faces carry the same documented C0 crease between adjacent cones that the N-station overload has
+// (it shrinks with the tolerance - more, shorter segments - and is bounded by Brep::ConicalFace's own fit tolerance).
+//
+// The law must be strictly monotone (the N-station overload refuses an interior radius extremum and a flat
+// sub-segment), strictly positive and finite on [0,1]; it is probed at 257 points for that. A law whose total
+// variation is within the tolerance is a constant radius and dispatches to FilletConvexEdge / FilletConcaveEdge with
+// the law's mid value. Refusals (std::invalid_argument, with the reason): empty law, non-positive / non-finite
+// tolerance or max_segments < 2, non-finite or non-positive law value, a non-monotone or flat-stretch law, a law that
+// needs more than `max_segments` segments to meet the tolerance, plus every refusal of the N-station overload (not a
+// two-planar-face edge, a radius that does not fit...).
+Brep FilletConvexEdgeLaw(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
+                          const std::function<double(double)>& radius_at_fraction, double radius_tolerance,
+                          int max_segments = 48);
+Brep FilletConcaveEdgeLaw(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
+                           const std::function<double(double)>& radius_at_fraction, double radius_tolerance,
+                           int max_segments = 48);
+// The station list a law is sampled to (exposed so a caller or a test can read exactly which piecewise-linear
+// profile was built). `edge_length` is the arc length the fractions scale to; same refusals as above for the law.
+std::vector<FilletRadiusStation> SampleFilletRadiusLaw(double edge_length,
+                                                        const std::function<double(double)>& radius_at_fraction,
+                                                        double radius_tolerance, int max_segments = 48);
 
 
 // Exact kernel-level CHAMFER of ONE straight, convex edge shared by two
