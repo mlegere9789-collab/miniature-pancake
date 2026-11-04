@@ -882,6 +882,179 @@ Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) 
   return already_bezier ? Result::NoOpAlreadySatisfied : Result::Ok;
 }
 
+namespace {
+
+// Output degree floor of OffsetRefit().
+constexpr int kRefitMinDegree = 3;
+
+// ---------------------------------------------------------------------------
+// OffsetRefit() machinery: a clamped spline space with free interior knots
+// (so the fit can put control points only where the measured error needs
+// them), a once-per-direction factorised least-squares fit of whole families
+// of sample lines, and a fast tensor-product evaluator for the error scan.
+// ---------------------------------------------------------------------------
+
+// Clamped spline space of degree `degree` in the textbook full-knot layout
+// (U[0..ncv+degree]); `ncv` is its control-point count.
+struct RefitSpace {
+  int degree = 0;
+  int ncv = 0;
+  std::vector<double> full;
+};
+
+RefitSpace MakeRefitSpace(int degree, double t0, double t1, const std::vector<std::pair<double, int>>& interior) {
+  RefitSpace s;
+  s.degree = degree;
+  s.full.assign(static_cast<size_t>(degree) + 1, t0);
+  for (const auto& b : interior) {
+    for (int k = 0; k < b.second; ++k) s.full.push_back(b.first);
+  }
+  s.full.insert(s.full.end(), static_cast<size_t>(degree) + 1, t1);
+  s.ncv = static_cast<int>(s.full.size()) - degree - 1;
+  return s;
+}
+
+int RefitFindSpan(const RefitSpace& s, double t) {
+  const int n = s.ncv - 1;
+  const int q = s.degree;
+  if (t >= s.full[static_cast<size_t>(n) + 1]) return n;
+  if (t <= s.full[static_cast<size_t>(q)]) return q;
+  int lo = q, hi = n + 1;
+  int mid = (lo + hi) / 2;
+  while (t < s.full[static_cast<size_t>(mid)] || t >= s.full[static_cast<size_t>(mid) + 1]) {
+    if (t < s.full[static_cast<size_t>(mid)]) hi = mid; else lo = mid;
+    mid = (lo + hi) / 2;
+  }
+  return mid;
+}
+
+// The degree+1 non-zero basis functions at `t` (Piegl & Tiller A2.2).
+void RefitBasis(const RefitSpace& s, int span, double t, double* N) {
+  const int q = s.degree;
+  double left[16], right[16];
+  N[0] = 1.0;
+  for (int j = 1; j <= q; ++j) {
+    left[j] = t - s.full[static_cast<size_t>(span + 1 - j)];
+    right[j] = s.full[static_cast<size_t>(span + j)] - t;
+    double saved = 0.0;
+    for (int r = 0; r < j; ++r) {
+      const double temp = N[r] / (right[r + 1] + left[j - r]);
+      N[r] = saved + right[r + 1] * temp;
+      saved = left[j - r] * temp;
+    }
+    N[j] = saved;
+  }
+}
+
+// Least-squares fit of `lines` (each a polyline of samples at `params`) by the
+// space `sp`, both end control points pinned to the first/last sample (the
+// clamped-spline corner values; the samples at the domain ends must be
+// measured exactly there). The normal matrix depends only on the parameters
+// and the space, so it is factorised ONCE and shared by every line.
+// Returns false if the normal equations are rank-deficient (a basis function
+// that no sample sees).
+bool RefitLeastSquares(const RefitSpace& sp, const std::vector<double>& params,
+                       const std::vector<std::vector<ON_3dPoint>>& lines,
+                       std::vector<std::vector<ON_3dPoint>>& out) {
+  const int m = static_cast<int>(params.size()) - 1;
+  const int n = sp.ncv - 1;
+  const int q = sp.degree;
+  const size_t line_count = lines.size();
+  out.assign(line_count, std::vector<ON_3dPoint>(static_cast<size_t>(sp.ncv), ON_3dPoint::Origin));
+  for (size_t l = 0; l < line_count; ++l) {
+    out[l].front() = lines[l].front();
+    out[l].back() = lines[l].back();
+  }
+  const int interior = n - 1;
+  if (interior <= 0) return true;
+
+  std::vector<int> first(static_cast<size_t>(m) + 1);
+  std::vector<double> basis(static_cast<size_t>(m + 1) * static_cast<size_t>(q + 1));
+  for (int k = 0; k <= m; ++k) {
+    const int span = RefitFindSpan(sp, params[static_cast<size_t>(k)]);
+    first[static_cast<size_t>(k)] = span - q;
+    RefitBasis(sp, span, params[static_cast<size_t>(k)], &basis[static_cast<size_t>(k) * static_cast<size_t>(q + 1)]);
+  }
+
+  const size_t sz = static_cast<size_t>(interior);
+  std::vector<double> a(sz * sz, 0.0);
+  for (int k = 1; k < m; ++k) {
+    const double* N = &basis[static_cast<size_t>(k) * static_cast<size_t>(q + 1)];
+    const int f = first[static_cast<size_t>(k)];
+    for (int r = 0; r <= q; ++r) {
+      const int ia = f + r;
+      if (ia < 1 || ia > n - 1) continue;
+      for (int s = 0; s <= q; ++s) {
+        const int ib = f + s;
+        if (ib < 1 || ib > n - 1) continue;
+        a[static_cast<size_t>(ia - 1) * sz + static_cast<size_t>(ib - 1)] += N[r] * N[s];
+      }
+    }
+  }
+  // Cholesky factorisation A = L L^T (lower triangle, in place).
+  double diag_max = 0.0;
+  for (size_t i = 0; i < sz; ++i) diag_max = std::max(diag_max, a[i * sz + i]);
+  if (!(diag_max > 0.0)) return false;
+  for (size_t j = 0; j < sz; ++j) {
+    double s = a[j * sz + j];
+    for (size_t k = 0; k < j; ++k) s -= a[j * sz + k] * a[j * sz + k];
+    if (!(s > 1e-13 * diag_max)) return false;
+    const double ljj = std::sqrt(s);
+    a[j * sz + j] = ljj;
+    for (size_t i = j + 1; i < sz; ++i) {
+      double t = a[i * sz + j];
+      for (size_t k = 0; k < j; ++k) t -= a[i * sz + k] * a[j * sz + k];
+      a[i * sz + j] = t / ljj;
+    }
+  }
+  std::vector<double> rhs(sz * 3);
+  for (size_t l = 0; l < line_count; ++l) {
+    std::fill(rhs.begin(), rhs.end(), 0.0);
+    const std::vector<ON_3dPoint>& data = lines[l];
+    for (int k = 1; k < m; ++k) {
+      const double* N = &basis[static_cast<size_t>(k) * static_cast<size_t>(q + 1)];
+      const int f = first[static_cast<size_t>(k)];
+      double n0 = 0.0, nn = 0.0;
+      if (f == 0) n0 = N[0];
+      if (f + q == n) nn = N[q];
+      const ON_3dPoint& p0 = data.front();
+      const ON_3dPoint& pm = data.back();
+      const ON_3dPoint& pk = data[static_cast<size_t>(k)];
+      const double rx = pk.x - n0 * p0.x - nn * pm.x;
+      const double ry = pk.y - n0 * p0.y - nn * pm.y;
+      const double rz = pk.z - n0 * p0.z - nn * pm.z;
+      for (int r = 0; r <= q; ++r) {
+        const int ia = f + r;
+        if (ia < 1 || ia > n - 1) continue;
+        double* b = &rhs[static_cast<size_t>(ia - 1) * 3];
+        b[0] += N[r] * rx;
+        b[1] += N[r] * ry;
+        b[2] += N[r] * rz;
+      }
+    }
+    for (size_t i = 0; i < sz; ++i) {  // forward: L y = b
+      for (int c = 0; c < 3; ++c) {
+        double s = rhs[i * 3 + static_cast<size_t>(c)];
+        for (size_t k = 0; k < i; ++k) s -= a[i * sz + k] * rhs[k * 3 + static_cast<size_t>(c)];
+        rhs[i * 3 + static_cast<size_t>(c)] = s / a[i * sz + i];
+      }
+    }
+    for (size_t ii = sz; ii-- > 0;) {  // backward: L^T x = y
+      for (int c = 0; c < 3; ++c) {
+        double s = rhs[ii * 3 + static_cast<size_t>(c)];
+        for (size_t k = ii + 1; k < sz; ++k) s -= a[k * sz + ii] * rhs[k * 3 + static_cast<size_t>(c)];
+        rhs[ii * 3 + static_cast<size_t>(c)] = s / a[ii * sz + ii];
+      }
+    }
+    for (size_t i = 0; i < sz; ++i) {
+      out[l][i + 1] = ON_3dPoint(rhs[i * 3], rhs[i * 3 + 1], rhs[i * 3 + 2]);
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tolerance, double* achieved_deviation,
                                  std::string* refusal_reason) const {
   if (!ON_IsValid(distance)) {
@@ -961,15 +1134,104 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   // the same hazard OffsetApproximate()'s own nudge exists for -
   // `PointAt()` itself is safe at an exact domain boundary (Rebuild()'s
   // own deviation measurement, above, already evaluates there directly).
-  const int u_samples = guard_nu + 1;
-  const int v_samples = guard_nv + 1;
+  // The fitted spline's degree. Raising a low source degree to kRefitMinDegree
+  // lets the same control-point count resolve the (smooth, but not low-degree
+  // polynomial) offset locus with a far smaller error; a higher source degree
+  // is kept.
+  const int u_degree = std::max(DegreeU(), kRefitMinDegree);
+  const int v_degree = std::max(DegreeV(), kRefitMinDegree);
+  const int src_u_degree = DegreeU();
+  const int src_v_degree = DegreeV();
+
+  // Starting knots: the source's own distinct interior knots. The offset
+  // P + d*N has one derivative less than the source (N is built from first
+  // derivatives), so a source knot of multiplicity m (continuity C^(p-m))
+  // becomes a knot of multiplicity m + 1 + (q - p) in the degree-q fit - the
+  // same continuity the TRUE offset has there, which is what keeps the fit
+  // from paying first-order error at every source knot.
+  auto source_breaks = [&](int dir, int src_degree, int degree, const Interval& dom) {
+    std::vector<std::pair<double, int>> breaks;
+    const int kc = surface_.KnotCount(dir);
+    int k = 0;
+    while (k < kc) {
+      const double t = surface_.Knot(dir, k);
+      int mult = 1;
+      while (k + mult < kc && surface_.Knot(dir, k + mult) == t) ++mult;
+      if (t > dom.min && t < dom.max) {
+        breaks.push_back({t, std::clamp(mult + 1 + (degree - src_degree), 1, degree)});
+      }
+      k += mult;
+    }
+    return breaks;
+  };
+  std::vector<std::pair<double, int>> u_breaks = source_breaks(0, src_u_degree, u_degree, du);
+  std::vector<std::pair<double, int>> v_breaks = source_breaks(1, src_v_degree, v_degree, dv);
+
+  // A base surface whose tangent plane jumps across a knot line (a G1 break,
+  // as when one control point of a smooth rational patch is moved) has a
+  // parallel surface that is genuinely torn there: the two sides of the knot
+  // are offset along different normals, leaving a gap of about
+  // |distance| * (normal turn). No continuous surface is nearer than half
+  // that gap to both sides, so a tolerance below it is unreachable however
+  // many control points are used. Measured directly on the exact locus just
+  // either side of every source knot, and reported as what it is.
+  {
+    double worst_gap = 0.0, gap_turn = 0.0, gap_at = 0.0;
+    int gap_dir = 0;
+    const double eps_u = 1e-9 * u_range, eps_v = 1e-9 * v_range;
+    auto locus = [&](double u, double v) { return PointAt(u, v) + distance * NormalAt(u, v); };
+    auto regular = [&](double u, double v) {
+      ON_3dPoint pt;
+      ON_3dVector su, sv;
+      if (!surface_.Ev1Der(u, v, pt, su, sv)) return false;
+      const double e = su * su, g = sv * sv, f = su * sv;
+      return e > 0.0 && g > 0.0 && (e * g - f * f) > 1e-10 * e * g;
+    };
+    try {
+      for (int dir = 0; dir < 2; ++dir) {
+        const std::vector<std::pair<double, int>>& br = dir == 0 ? u_breaks : v_breaks;
+        const Interval& od = dir == 0 ? dv : du;
+        constexpr int kLines = 121;
+        for (const auto& knot : br) {
+          for (int k = 0; k < kLines; ++k) {
+            const double c = od.min + (od.max - od.min) * (k + 0.5) / kLines;
+            const double ua = dir == 0 ? knot.first - eps_u : c, va = dir == 0 ? c : knot.first - eps_v;
+            const double ub2 = dir == 0 ? knot.first + eps_u : c, vb2 = dir == 0 ? c : knot.first + eps_v;
+            // A pole or other point where the tangent plane is undefined is not a tear.
+            if (!regular(ua, va) || !regular(ub2, vb2)) continue;
+            const double gap = locus(ua, va).DistanceTo(locus(ub2, vb2));
+            if (gap > worst_gap) {
+              worst_gap = gap;
+              gap_dir = dir;
+              gap_at = knot.first;
+              gap_turn = std::acos(std::clamp(ON_DotProduct(NormalAt(ua, va), NormalAt(ub2, vb2)), -1.0, 1.0));
+            }
+          }
+        }
+      }
+    } catch (const std::runtime_error&) {
+      worst_gap = 0.0;
+    }
+    if (0.5 * worst_gap > tol && worst_gap > 1e-6 * std::max(1.0, bbox.Diagonal().Length())) {
+      return refuse("tolerance not reachable: the exact parallel surface is torn across the " +
+                    std::string(gap_dir == 0 ? "u" : "v") + " = " + std::to_string(gap_at) +
+                    " knot line (the base surface's tangent plane turns by " + std::to_string(gap_turn) +
+                    " rad there, a G1 break), leaving a gap of " + std::to_string(worst_gap) +
+                    " that no continuous surface can bridge: the best possible deviation is half of it, " +
+                    std::to_string(0.5 * worst_gap) + ", above the requested tolerance " + std::to_string(tol) +
+                    ". This is a property of the base surface, not of the sample-grid ceiling (" +
+                    std::to_string(guard_nu + 1) + " x " + std::to_string(guard_nv + 1) +
+                    "); ask for a tolerance of at least " + std::to_string(0.5 * worst_gap) +
+                    " or smooth the base across that knot. No offset is returned rather than an out-of-tolerance fit");
+    }
+  }
+
+  int u_samples = guard_nu + 1;
+  int v_samples = guard_nv + 1;
   const double nudge_u = 1e-6 * u_range;
   const double nudge_v = 1e-6 * v_range;
-  std::vector<double> u_params(static_cast<size_t>(u_samples)), v_params(static_cast<size_t>(v_samples));
-  for (int i = 0; i < u_samples; ++i) u_params[static_cast<size_t>(i)] = du.min + u_range * i / (u_samples - 1.0);
-  for (int j = 0; j < v_samples; ++j) v_params[static_cast<size_t>(j)] = dv.min + v_range * j / (v_samples - 1.0);
-  std::vector<std::vector<ON_3dPoint>> offset_pts(static_cast<size_t>(u_samples),
-                                                    std::vector<ON_3dPoint>(static_cast<size_t>(v_samples)));
+  std::vector<double> u_params, v_params;
+  std::vector<std::vector<ON_3dPoint>> offset_pts;
   // A sample where the two partial derivatives vanish or are parallel has no
   // well-defined normal there. That is acceptable ONLY on a collapsed edge
   // (a pole) whose limiting normal is the same however the pole is
@@ -977,37 +1239,47 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   // coincident degenerate sample must then agree. A cone apex (normal
   // depends on the direction of approach), an interior zero-area point or a
   // wholly degenerate patch is refused: no regular parallel surface exists.
-  struct PoleSample { Point3d p; ON_3dVector n; };
-  std::vector<PoleSample> poles;
-  try {
-    for (int i = 0; i < u_samples; ++i) {
-      for (int j = 0; j < v_samples; ++j) {
-        const double u = u_params[static_cast<size_t>(i)];
-        const double v = v_params[static_cast<size_t>(j)];
-        const double nu = std::clamp(u, du.min + nudge_u, du.max - nudge_u);
-        const double nv = std::clamp(v, dv.min + nudge_v, dv.max - nudge_v);
-        ON_3dPoint pt;
-        ON_3dVector su, sv;
-        if (!surface_.Ev1Der(u, v, pt, su, sv)) return refuse(kDegenerateReason);
-        const double e = su * su, g = sv * sv, f = su * sv;
-        const double denom = e * g - f * f;
-        const bool degenerate = !(e > 0.0) || !(g > 0.0) || !(denom > 1e-16 * e * g) ||
-                                !(std::min(e, g) > 1e-16 * std::max(e, g));
-        const ON_3dVector n = degenerate ? NormalAt(nu, nv) : NormalAt(u, v);
-        if (degenerate) {
-          const bool on_boundary = (i == 0 || i == u_samples - 1 || j == 0 || j == v_samples - 1);
-          if (!on_boundary) return refuse(kDegenerateReason);
-          for (const PoleSample& q : poles) {
-            if (q.p.DistanceTo(pt) <= tol && ON_DotProduct(q.n, n) < 1.0 - 1e-6) return refuse(kDegenerateReason);
+  // Returns false for such a surface.
+  auto build_samples = [&]() -> bool {
+    u_params.assign(static_cast<size_t>(u_samples), 0.0);
+    v_params.assign(static_cast<size_t>(v_samples), 0.0);
+    for (int i = 0; i < u_samples; ++i) u_params[static_cast<size_t>(i)] = du.min + u_range * i / (u_samples - 1.0);
+    for (int j = 0; j < v_samples; ++j) v_params[static_cast<size_t>(j)] = dv.min + v_range * j / (v_samples - 1.0);
+    offset_pts.assign(static_cast<size_t>(u_samples), std::vector<ON_3dPoint>(static_cast<size_t>(v_samples)));
+    struct PoleSample { Point3d p; ON_3dVector n; };
+    std::vector<PoleSample> poles;
+    try {
+      for (int i = 0; i < u_samples; ++i) {
+        for (int j = 0; j < v_samples; ++j) {
+          const double u = u_params[static_cast<size_t>(i)];
+          const double v = v_params[static_cast<size_t>(j)];
+          const double nu = std::clamp(u, du.min + nudge_u, du.max - nudge_u);
+          const double nv = std::clamp(v, dv.min + nudge_v, dv.max - nudge_v);
+          ON_3dPoint pt;
+          ON_3dVector su, sv;
+          if (!surface_.Ev1Der(u, v, pt, su, sv)) return false;
+          const double e = su * su, g = sv * sv, f = su * sv;
+          const double denom = e * g - f * f;
+          const bool degenerate = !(e > 0.0) || !(g > 0.0) || !(denom > 1e-16 * e * g) ||
+                                  !(std::min(e, g) > 1e-16 * std::max(e, g));
+          const ON_3dVector n = degenerate ? NormalAt(nu, nv) : NormalAt(u, v);
+          if (degenerate) {
+            const bool on_boundary = (i == 0 || i == u_samples - 1 || j == 0 || j == v_samples - 1);
+            if (!on_boundary) return false;
+            for (const PoleSample& q : poles) {
+              if (q.p.DistanceTo(pt) <= tol && ON_DotProduct(q.n, n) < 1.0 - 1e-6) return false;
+            }
+            poles.push_back({pt, n});
           }
-          poles.push_back({pt, n});
+          offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)] = PointAt(u, v) + distance * n;
         }
-        offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)] = PointAt(u, v) + distance * n;
       }
+    } catch (const std::runtime_error&) {
+      return false;
     }
-  } catch (const std::runtime_error&) {
-    return refuse(kDegenerateReason);
-  }
+    return true;
+  };
+  if (!build_samples()) return refuse(kDegenerateReason);
 
   // Seam closure. A surface closed in a direction (opposite domain edges
   // coincide, with the same normal and the same first derivative across the
@@ -1080,95 +1352,211 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
     }
   };
 
-  const int u_degree = DegreeU();
-  const int v_degree = DegreeV();
-  const int u_order = u_degree + 1;
-  const int v_order = v_degree + 1;
-  const int max_cv_u = u_samples;
-  const int max_cv_v = v_samples;
-  int cv_u = std::clamp(CVCountU(), u_degree + 1, max_cv_u);
-  int cv_v = std::clamp(CVCountV(), v_degree + 1, max_cv_v);
-
-  double best_worst = std::numeric_limits<double>::infinity();
-  for (;;) {
-    const std::vector<double> u_knot = ClampedUniformKnots(cv_u, u_order, du.min, du.max);
-    const std::vector<double> v_knot = ClampedUniformKnots(cv_v, v_order, dv.min, dv.max);
-
-    // Stage 1: fit every sample row (fixed v_j) in U -> temp[j][i].
-    std::vector<std::vector<ON_3dPoint>> temp(static_cast<size_t>(v_samples));
-    std::vector<ON_3dPoint> row(static_cast<size_t>(u_samples));
-    bool ok = true;
-    for (int j = 0; j < v_samples && ok; ++j) {
-      for (int i = 0; i < u_samples; ++i) row[static_cast<size_t>(i)] = offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)];
-      ok = FitRowLeastSquares(row, u_params, u_knot, u_order, cv_u, temp[static_cast<size_t>(j)]);
+  // Truth at the verification points, measured once: a grid TWICE as fine as
+  // the fit samples and offset by half a step (Rebuild()'s own technique),
+  // deliberately never landing on a point the fit itself saw. Each point's
+  // "true" value is PointAt + distance*NormalAt of THIS surface at that
+  // point, never a lookup in the fit's own sample grid.
+  int verify_u = 0, verify_v = 0;
+  std::vector<double> vu, vv;
+  std::vector<Point3d> truth;
+  double u_spacing = 1.0, v_spacing = 1.0;
+  auto build_truth = [&]() -> bool {
+    verify_u = 2 * u_samples;
+    verify_v = 2 * v_samples;
+    vu.assign(static_cast<size_t>(verify_u), 0.0);
+    vv.assign(static_cast<size_t>(verify_v), 0.0);
+    for (int i = 0; i < verify_u; ++i) {
+      vu[static_cast<size_t>(i)] = std::clamp(du.min + u_range * (i + 0.5) / verify_u, du.min + nudge_u, du.max - nudge_u);
     }
-
-    ON_NurbsSurface result;
-    if (ok && result.Create(3, false, u_order, v_order, cv_u, cv_v)) {
-      for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, u_knot[static_cast<size_t>(k)]);
-      for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, v_knot[static_cast<size_t>(k)]);
-      // Stage 2: fit every column of intermediate points (fixed i) in V.
-      std::vector<ON_3dPoint> column(static_cast<size_t>(v_samples)), fitted;
-      for (int i = 0; i < cv_u && ok; ++i) {
-        for (int j = 0; j < v_samples; ++j) column[static_cast<size_t>(j)] = temp[static_cast<size_t>(j)][static_cast<size_t>(i)];
-        ok = FitRowLeastSquares(column, v_params, v_knot, v_order, cv_v, fitted);
-        if (ok) for (int j = 0; j < cv_v; ++j) result.SetCV(i, j, fitted[static_cast<size_t>(j)]);
-      }
-    } else {
-      ok = false;
+    for (int j = 0; j < verify_v; ++j) {
+      vv[static_cast<size_t>(j)] = std::clamp(dv.min + v_range * (j + 0.5) / verify_v, dv.min + nudge_v, dv.max - nudge_v);
     }
-
-    if (ok) {
-      close_seam(result, 0, seam_u);
-      close_seam(result, 1, seam_v);
-    }
-
-    if (ok && result.IsValid()) {
-      // Measured on a grid TWICE as fine as the fit samples and offset by
-      // half a step (Rebuild()'s own technique, surface_edit.cpp above),
-      // deliberately never landing on a point the fit itself saw: with
-      // `cv_u`/`cv_v` approaching `max_cv_u`/`max_cv_v` the row/column fit
-      // increasingly INTERPOLATES the fit grid, which would make a
-      // deviation check measured only at those same points trivially near
-      // zero regardless of how well the fit actually resolves the true
-      // offset locus BETWEEN samples - the exact self-referential mistake
-      // this independent grid avoids. Each verification point's own
-      // "true" value is recomputed directly from `PointAt`/`NormalAt` at
-      // that point (not looked up in `offset_pts`, which only holds the
-      // fit grid's own values), so this genuinely checks the fitted
-      // surface against the true offset formula, not against the sample
-      // grid.
-      NurbsSurface fitted_surface;
-      fitted_surface.surface_ = result;
-      const int verify_u = 2 * u_samples;
-      const int verify_v = 2 * v_samples;
-      double worst = 0.0;
+    truth.assign(static_cast<size_t>(verify_u) * static_cast<size_t>(verify_v), Point3d::Origin);
+    try {
       for (int i = 0; i < verify_u; ++i) {
-        const double u = std::clamp(du.min + u_range * (i + 0.5) / verify_u, du.min + nudge_u, du.max - nudge_u);
         for (int j = 0; j < verify_v; ++j) {
-          const double v = std::clamp(dv.min + v_range * (j + 0.5) / verify_v, dv.min + nudge_v, dv.max - nudge_v);
-          const Point3d expected = PointAt(u, v) + distance * NormalAt(u, v);
-          worst = std::max(worst, fitted_surface.PointAt(u, v).DistanceTo(expected));
+          truth[static_cast<size_t>(i) * static_cast<size_t>(verify_v) + static_cast<size_t>(j)] =
+              PointAt(vu[static_cast<size_t>(i)], vv[static_cast<size_t>(j)]) +
+              distance * NormalAt(vu[static_cast<size_t>(i)], vv[static_cast<size_t>(j)]);
         }
       }
-      if (worst <= tol) {
-        out.surface_ = result;
-        if (achieved_deviation != nullptr) *achieved_deviation = worst;
-        return Result::Ok;
+    } catch (const std::runtime_error&) {
+      return false;
+    }
+    u_spacing = u_range / std::max(1, u_samples - 1);
+    v_spacing = v_range / std::max(1, v_samples - 1);
+    return true;
+  };
+  if (!build_truth()) return refuse(kDegenerateReason);
+
+  auto distinct = [](double t0, double t1, const std::vector<std::pair<double, int>>& br) {
+    std::vector<double> b;
+    b.push_back(t0);
+    for (const auto& e : br) b.push_back(e.first);
+    b.push_back(t1);
+    return b;
+  };
+  // Index of the knot span (between distinct breakpoints) holding `t`.
+  auto span_of = [](const std::vector<double>& b, double t) {
+    const auto it = std::upper_bound(b.begin(), b.end(), t);
+    return std::clamp(static_cast<int>(it - b.begin()) - 1, 0, static_cast<int>(b.size()) - 2);
+  };
+
+  double best_worst = std::numeric_limits<double>::infinity();
+  std::vector<double> history;
+  int ceiling_u = 0, ceiling_v = 0;
+  int densify = 0;
+  for (int iteration = 0; iteration < 60; ++iteration) {
+    const RefitSpace space_u = MakeRefitSpace(u_degree, du.min, du.max, u_breaks);
+    const RefitSpace space_v = MakeRefitSpace(v_degree, dv.min, dv.max, v_breaks);
+    ceiling_u = space_u.ncv;
+    ceiling_v = space_v.ncv;
+    if (space_u.ncv > u_samples || space_v.ncv > v_samples) break;
+
+    // Stage 1: every sample row (fixed v_j) in U; stage 2: every column of the
+    // stage-1 control points in V.
+    std::vector<std::vector<ON_3dPoint>> rows(static_cast<size_t>(v_samples),
+                                              std::vector<ON_3dPoint>(static_cast<size_t>(u_samples)));
+    for (int j = 0; j < v_samples; ++j) {
+      for (int i = 0; i < u_samples; ++i) rows[static_cast<size_t>(j)][static_cast<size_t>(i)] = offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)];
+    }
+    std::vector<std::vector<ON_3dPoint>> temp, fitted;
+    if (!RefitLeastSquares(space_u, u_params, rows, temp)) break;
+    std::vector<std::vector<ON_3dPoint>> cols(static_cast<size_t>(space_u.ncv),
+                                              std::vector<ON_3dPoint>(static_cast<size_t>(v_samples)));
+    for (int a = 0; a < space_u.ncv; ++a) {
+      for (int j = 0; j < v_samples; ++j) cols[static_cast<size_t>(a)][static_cast<size_t>(j)] = temp[static_cast<size_t>(j)][static_cast<size_t>(a)];
+    }
+    if (!RefitLeastSquares(space_v, v_params, cols, fitted)) break;
+
+    ON_NurbsSurface result;
+    if (!result.Create(3, false, u_degree + 1, v_degree + 1, space_u.ncv, space_v.ncv)) break;
+    for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, space_u.full[static_cast<size_t>(k) + 1]);
+    for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, space_v.full[static_cast<size_t>(k) + 1]);
+    for (int a = 0; a < space_u.ncv; ++a) {
+      for (int b = 0; b < space_v.ncv; ++b) result.SetCV(a, b, fitted[static_cast<size_t>(a)][static_cast<size_t>(b)]);
+    }
+    close_seam(result, 0, seam_u);
+    close_seam(result, 1, seam_v);
+    if (!result.IsValid()) break;
+
+    // Error scan of the surface actually returned (control net read back after
+    // the seam closure), with a tensor-product evaluator on the verification
+    // grid; the span-wise maxima drive where knots are inserted.
+    std::vector<ON_3dPoint> net(static_cast<size_t>(space_u.ncv) * static_cast<size_t>(space_v.ncv));
+    for (int a = 0; a < space_u.ncv; ++a) {
+      for (int b = 0; b < space_v.ncv; ++b) result.GetCV(a, b, net[static_cast<size_t>(a) * static_cast<size_t>(space_v.ncv) + static_cast<size_t>(b)]);
+    }
+    const int qu1 = u_degree + 1, qv1 = v_degree + 1;
+    std::vector<int> fu(static_cast<size_t>(verify_u)), fv(static_cast<size_t>(verify_v));
+    std::vector<double> bu(static_cast<size_t>(verify_u) * static_cast<size_t>(qu1)), bv(static_cast<size_t>(verify_v) * static_cast<size_t>(qv1));
+    for (int i = 0; i < verify_u; ++i) {
+      const int sp = RefitFindSpan(space_u, vu[static_cast<size_t>(i)]);
+      fu[static_cast<size_t>(i)] = sp - u_degree;
+      RefitBasis(space_u, sp, vu[static_cast<size_t>(i)], &bu[static_cast<size_t>(i) * static_cast<size_t>(qu1)]);
+    }
+    for (int j = 0; j < verify_v; ++j) {
+      const int sp = RefitFindSpan(space_v, vv[static_cast<size_t>(j)]);
+      fv[static_cast<size_t>(j)] = sp - v_degree;
+      RefitBasis(space_v, sp, vv[static_cast<size_t>(j)], &bv[static_cast<size_t>(j) * static_cast<size_t>(qv1)]);
+    }
+    const std::vector<double> ub = distinct(du.min, du.max, u_breaks);
+    const std::vector<double> vb = distinct(dv.min, dv.max, v_breaks);
+    std::vector<double> err_u(ub.size() - 1, 0.0), err_v(vb.size() - 1, 0.0);
+    std::vector<int> su(static_cast<size_t>(verify_u)), sv(static_cast<size_t>(verify_v));
+    for (int i = 0; i < verify_u; ++i) su[static_cast<size_t>(i)] = span_of(ub, vu[static_cast<size_t>(i)]);
+    for (int j = 0; j < verify_v; ++j) sv[static_cast<size_t>(j)] = span_of(vb, vv[static_cast<size_t>(j)]);
+    double worst = 0.0;
+    for (int i = 0; i < verify_u; ++i) {
+      const double* Nu = &bu[static_cast<size_t>(i) * static_cast<size_t>(qu1)];
+      for (int j = 0; j < verify_v; ++j) {
+        const double* Nv = &bv[static_cast<size_t>(j) * static_cast<size_t>(qv1)];
+        double x = 0.0, y = 0.0, z = 0.0;
+        for (int r = 0; r < qu1; ++r) {
+          const size_t row = static_cast<size_t>(fu[static_cast<size_t>(i)] + r) * static_cast<size_t>(space_v.ncv);
+          for (int s = 0; s < qv1; ++s) {
+            const ON_3dPoint& c = net[row + static_cast<size_t>(fv[static_cast<size_t>(j)] + s)];
+            const double w = Nu[r] * Nv[s];
+            x += w * c.x; y += w * c.y; z += w * c.z;
+          }
+        }
+        const Point3d& t = truth[static_cast<size_t>(i) * static_cast<size_t>(verify_v) + static_cast<size_t>(j)];
+        const double e = std::sqrt((x - t.x) * (x - t.x) + (y - t.y) * (y - t.y) + (z - t.z) * (z - t.z));
+        worst = std::max(worst, e);
+        err_u[static_cast<size_t>(su[static_cast<size_t>(i)])] = std::max(err_u[static_cast<size_t>(su[static_cast<size_t>(i)])], e);
+        err_v[static_cast<size_t>(sv[static_cast<size_t>(j)])] = std::max(err_v[static_cast<size_t>(sv[static_cast<size_t>(j)])], e);
       }
-      best_worst = std::min(best_worst, worst);
     }
 
-    if (cv_u >= max_cv_u && cv_v >= max_cv_v) {
-      return refuse("tolerance not reachable: the offset needs more control points than the sample-grid ceiling (" +
-                    std::to_string(max_cv_u) + " x " + std::to_string(max_cv_v) +
-                    ") can resolve at the requested tolerance " + std::to_string(tol) +
-                    "; the best fit reached a deviation of " + std::to_string(best_worst) +
-                    ". No offset is returned rather than an out-of-tolerance fit");
+    if (worst <= tol) {
+      // Acceptance is measured on the real surface object (not the fast
+      // evaluator above) at every verification point.
+      NurbsSurface fitted_surface;
+      fitted_surface.surface_ = result;
+      double confirmed = 0.0;
+      for (int i = 0; i < verify_u; ++i) {
+        for (int j = 0; j < verify_v; ++j) {
+          confirmed = std::max(confirmed, fitted_surface.PointAt(vu[static_cast<size_t>(i)], vv[static_cast<size_t>(j)])
+                                              .DistanceTo(truth[static_cast<size_t>(i) * static_cast<size_t>(verify_v) + static_cast<size_t>(j)]));
+        }
+      }
+      if (confirmed <= tol) {
+        out.surface_ = result;
+        if (achieved_deviation != nullptr) *achieved_deviation = confirmed;
+        return Result::Ok;
+      }
+      worst = std::max(worst, confirmed);
     }
-    cv_u = std::min(cv_u * 2, max_cv_u);
-    cv_v = std::min(cv_v * 2, max_cv_v);
+    best_worst = std::min(best_worst, worst);
+
+    // Stagnation: two refinements that together gained less than 30% mean the
+    // error is not a resolution error (a gap in the true locus, say).
+    history.push_back(worst);
+    if (history.size() >= 3 && worst > 0.7 * history[history.size() - 3]) break;
+
+    // Error-driven refinement: bisect every knot span whose measured error is
+    // among the large ones, in each direction, provided each half still holds
+    // enough samples for the fit to stay determined.
+    const double threshold = std::max(0.7 * tol, 0.3 * worst);
+    bool split_any = false;
+    auto refine = [&](std::vector<std::pair<double, int>>& breaks, const std::vector<double>& b, const std::vector<double>& err,
+                      double spacing, int degree) {
+      const double min_half = (degree + 2) * spacing;
+      std::vector<std::pair<double, int>> added;
+      for (size_t s = 0; s + 1 < b.size(); ++s) {
+        if (err[s] < threshold) continue;
+        if (b[s + 1] - b[s] < 2.0 * min_half) continue;
+        added.push_back({0.5 * (b[s] + b[s + 1]), 1});
+      }
+      if (added.empty()) return;
+      split_any = true;
+      breaks.insert(breaks.end(), added.begin(), added.end());
+      std::sort(breaks.begin(), breaks.end());
+    };
+    refine(u_breaks, ub, err_u, u_spacing, u_degree);
+    refine(v_breaks, vb, err_v, v_spacing, v_degree);
+    if (!split_any) {
+      // Nothing left to split at this sample density: the spans are as narrow
+      // as the samples can support. Resolve the locus twice as finely (a few
+      // times at most) before giving up.
+      if (densify < 2 && 2 * (u_samples - 1) + 1 <= 700 && 2 * (v_samples - 1) + 1 <= 700) {
+        ++densify;
+        u_samples = 2 * (u_samples - 1) + 1;
+        v_samples = 2 * (v_samples - 1) + 1;
+        if (!build_samples() || !build_truth()) return refuse(kDegenerateReason);
+        history.clear();
+        continue;
+      }
+      break;
+    }
   }
+  return refuse("tolerance not reachable: the offset needs more control points than the sample-grid ceiling (" +
+                std::to_string(u_samples) + " x " + std::to_string(v_samples) +
+                ") can resolve at the requested tolerance " + std::to_string(tol) +
+                "; the adaptive fit stopped at " + std::to_string(ceiling_u) + " x " + std::to_string(ceiling_v) +
+                " control points with a best deviation of " + std::to_string(best_worst) +
+                ". No offset is returned rather than an out-of-tolerance fit");
 }
 
 namespace {

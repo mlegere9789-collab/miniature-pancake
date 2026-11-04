@@ -96683,6 +96683,311 @@ void TestPartialSphereCylinderConeSeamStraddlingAreExact() {
 }  // namespace offset_parity_tests
 
 // ---------------------------------------------------------------------------
+// Offset fit cost: how many control points and how much time the
+// tolerance-controlled freeform offset needs at 1e-3 .. 1e-6 on the bump,
+// wavy, rational, closed-tube and perturbed-torus fixtures, every result
+// re-measured against base + d*N_base and against the base distance, plus
+// OffsetApproximate's documented first-order contract against the unified
+// Offset(). The "before" columns are the numbers the previous uniform-
+// refinement refit produced on the same fixtures (measured once on the
+// development machine, with this same program, before the change); the
+// "after" columns are measured live on every run.
+// ---------------------------------------------------------------------------
+namespace offset_fit_cost_tests {
+
+using dino8::kernel::Interval;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+using offset_unified_tests::Lcg;
+using offset_unified_tests::MeasureAgainstExactLocus;
+
+struct FitFixture {
+  const char* name;
+  NurbsSurface s;
+  double d;
+};
+
+// The offset_parity_tests torus with one control point moved 0.02 in x and z
+// (about 0.028): no longer a torus, and its tangent plane now turns across the
+// u/v knot lines that border the moved point (a G1 break).
+NurbsSurface PerturbedTorus() {
+  const ON_Plane plane(ON_3dPoint(1.0, -2.0, 3.0), ON_3dVector(0.2, -0.3, 0.9));
+  const NurbsSurface t = offset_parity_tests::PhasedTorus(plane, 5.0, 1.5, 0.4, 0.9);
+  ON_NurbsSurface raw = t.raw();
+  ON_4dPoint cv;
+  raw.GetCV(3, 2, cv);
+  cv.x += 0.02 * cv.w;
+  cv.z += 0.02 * cv.w;
+  raw.SetCV(3, 2, cv);
+  NurbsSurface bent;
+  bent.raw() = raw;
+  return bent;
+}
+
+// The same torus squashed 3% along x by an affine map of its control net: still
+// G1 everywhere, still a smooth rational surface, but not a torus.
+NurbsSurface SquashedTorus() {
+  const ON_Plane plane(ON_3dPoint(1.0, -2.0, 3.0), ON_3dVector(0.2, -0.3, 0.9));
+  const NurbsSurface t = offset_parity_tests::PhasedTorus(plane, 5.0, 1.5, 0.4, 0.9);
+  ON_NurbsSurface raw = t.raw();
+  raw.Transform(ON_Xform::DiagonalTransformation(1.03, 1.0, 1.0));
+  NurbsSurface squashed;
+  squashed.raw() = raw;
+  return squashed;
+}
+
+std::vector<FitFixture> Fixtures() {
+  std::vector<FitFixture> f;
+  f.push_back({"bump", offset_unified_tests::BumpSurface(), 0.2});
+  f.push_back({"wavy", offset_unified_tests::WavySurface(), 0.12});
+  f.push_back({"rational", offset_unified_tests::RationalFreeformPatch(), 0.1});
+  f.push_back({"closed tube", offset_unified_tests::ClosedFreeformTube(), 0.2});
+  f.push_back({"perturbed torus", PerturbedTorus(), 0.3});
+  f.push_back({"squashed torus", SquashedTorus(), 0.3});
+  return f;
+}
+
+// Control points and milliseconds the previous refit (uniform doubling of the
+// control count, source degree kept) needed on the same fixture and tolerance,
+// measured once with the benchmark program of this change before the change
+// (-O2 build, shared development machine, so the times are indicative):
+// cv_u > 0 measured; cv_u = -1 it refused (needed more control points than its
+// sample-grid ceiling); cv_u = 0 not measured (run did not finish in the time
+// budget). Index: fixture, tolerance (1e-3, 1e-4, 1e-5, 1e-6).
+struct Before { int cv_u, cv_v; double ms; };
+constexpr Before kBefore[6][4] = {
+    {{16, 16, 33}, {32, 32, 250}, {64, 64, 3933}, {128, 128, 44385}},          // bump
+    {{12, 10, 18}, {24, 20, 139}, {96, 80, 3399}, {384, 320, 64899}},          // wavy
+    {{12, 12, 3}, {24, 24, 33}, {48, 48, 431}, {96, 96, 7274}},                // rational
+    {{72, 48, 191}, {144, 96, 2482}, {576, 384, 60605}, {0, 0, 0}},            // closed tube
+    {{-1, -1, 712}, {-1, -1, 17793}, {0, 0, 0}, {0, 0, 0}},                    // perturbed torus
+    {{72, 72, 331}, {288, 282, 8462}, {0, 0, 0}, {0, 0, 0}},                   // squashed torus
+};
+
+// The cases that are cheap enough for the regular suite. 1e-6 on the closed tube
+// and the two tori takes tens of seconds to minutes (the sample grid chosen from
+// the 1e-6 chord tolerance has millions of points), so it was measured with the
+// benchmark program only: closed tube 137 x 101 control points (43 s),
+// squashed torus 137 x 137 (135 s), perturbed torus refused as torn (12 s).
+bool RunsInSuite(size_t fixture, int tol_index) {
+  if (tol_index < 3) return true;
+  return fixture <= 2;  // bump, wavy, rational
+}
+
+void TestOffsetFitCostReportAndAccuracyAtFourTolerances() {
+  const std::vector<FitFixture> fx = Fixtures();
+  const double tols[4] = {1e-3, 1e-4, 1e-5, 1e-6};
+  std::printf("  %-16s %-6s %-11s %-11s %-21s %-9s %-9s\n", "fixture", "tol", "cv before", "cv after", "ms before -> after", "locus", "base-dist");
+  for (size_t fi = 0; fi < fx.size(); ++fi) {
+    for (int ti = 0; ti < 4; ++ti) {
+      if (!RunsInSuite(fi, ti)) continue;
+      const double tol = tols[ti];
+      NurbsSurface out;
+      NurbsSurface::OffsetInfo info;
+      const auto t0 = std::chrono::steady_clock::now();
+      const Result r = fx[fi].s.Offset(fx[fi].d, out, tol, &info);
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      const Before& b = kBefore[fi][ti];
+      char before_cv[32], before_ms[32], after_cv[32];
+      if (b.cv_u > 0) std::snprintf(before_cv, sizeof before_cv, "%dx%d", b.cv_u, b.cv_v);
+      else std::snprintf(before_cv, sizeof before_cv, b.cv_u < 0 ? "refused" : "n/a");
+      if (b.cv_u != 0) std::snprintf(before_ms, sizeof before_ms, "%.0f", b.ms); else std::snprintf(before_ms, sizeof before_ms, "n/a");
+      if (r == Result::Ok) std::snprintf(after_cv, sizeof after_cv, "%dx%d", out.CVCountU(), out.CVCountV());
+      else std::snprintf(after_cv, sizeof after_cv, "refused");
+      double worst_locus = 0.0, worst_base = 0.0;
+      if (r == Result::Ok) MeasureAgainstExactLocus(fx[fi].s, out, fx[fi].d, 2500, 60, worst_locus, worst_base);
+      std::printf("  %-16s %-6g %-11s %-11s %8s -> %-9.0f %-9.3g %-9.3g\n", fx[fi].name, tol, before_cv, after_cv, before_ms, ms, worst_locus, worst_base);
+      const std::string tag = std::string(fx[fi].name) + " tol=" + std::to_string(tol);
+      if (r != Result::Ok) {
+        // Only the one-control-point-perturbed torus may be refused here, and then for its own reason (see the next test).
+        Check(fi == 4 && info.refusal_reason.find("torn") != std::string::npos, (tag + ": refusal only for the G1-broken torus, with the torn-offset reason").c_str());
+        continue;
+      }
+      Check(!info.exact && info.achieved_deviation <= tol && out.raw().IsValid(), (tag + ": valid fit, reported deviation within tol, not claimed exact").c_str());
+      Check(worst_locus <= tol, (tag + ": 2500 independent points within tol of base + d*N_base").c_str());
+      Check(worst_base <= tol, (tag + ": 60 offset points at |d| from the BASE surface within tol").c_str());
+      if (b.cv_u > 0) {
+        Check(out.CVCountU() * out.CVCountV() < b.cv_u * b.cv_v,
+              (tag + ": strictly fewer control points than the uniform-refinement refit (" + before_cv + " -> " + after_cv + ")").c_str());
+      }
+    }
+  }
+}
+
+// The perturbed torus (one control point moved 0.028) is not out of reach because
+// of the fit: its parallel surface is torn where the base's tangent plane breaks.
+void TestOffsetFitTornOffsetIsRefusedWithItsGapAndSucceedsAboveIt() {
+  const NurbsSurface bent = PerturbedTorus();
+  const double d = 0.3;
+  // Independent measurement of the tear: the exact locus on either side of every
+  // interior knot line, 1e-9 of the domain apart.
+  double gap = 0.0;
+  for (int dir = 0; dir < 2; ++dir) {
+    const Interval along = bent.Domain(dir), across = bent.Domain(1 - dir);
+    const double eps = 1e-9 * (along.max - along.min);
+    for (int k = 0; k < bent.raw().KnotCount(dir); ++k) {
+      const double t = bent.raw().Knot(dir, k);
+      if (!(t > along.min + 1e-9 && t < along.max - 1e-9)) continue;
+      for (int m = 0; m <= 120; ++m) {
+        const double c = across.min + (across.max - across.min) * m / 120.0;
+        auto locus = [&](double a) {
+          const double u = dir == 0 ? a : c, v = dir == 0 ? c : a;
+          return bent.PointAt(u, v) + d * bent.NormalAt(u, v);
+        };
+        gap = std::max(gap, locus(t - eps).DistanceTo(locus(t + eps)));
+      }
+    }
+  }
+  std::printf("  perturbed torus: independently measured tear of the exact offset locus = %g (best possible deviation %g)\n", gap, 0.5 * gap);
+  Check(gap > 3e-3 && gap < 5e-3, "perturbed torus: the exact parallel surface is torn by about 0.004 across a knot line");
+
+  for (double tol : {1e-3, 1e-4, 0.45 * gap}) {
+    NurbsSurface out = offset_unified_tests::OffsetSentinel();
+    NurbsSurface::OffsetInfo info;
+    const Result r = bent.Offset(d, out, tol, &info);
+    std::printf("  tol=%g -> %s\n", tol, r == Result::Ok ? "fit" : info.refusal_reason.c_str());
+    Check(r == Result::Failed && offset_unified_tests::OffsetSentinelUntouched(out), "perturbed torus below half the tear: refused, out untouched");
+    Check(offset_unified_tests::Contains(info.refusal_reason, "tolerance not reachable") && offset_unified_tests::Contains(info.refusal_reason, "torn") &&
+              offset_unified_tests::Contains(info.refusal_reason, "G1 break") && !offset_unified_tests::Contains(info.refusal_reason, "curvature fold"),
+          "perturbed torus refusal says the offset is torn at a G1 break, not that a control-point ceiling was hit");
+    // The reason's own gap is the measured one.
+    const size_t at = info.refusal_reason.find("leaving a gap of ");
+    const double stated = at == std::string::npos ? -1.0 : std::atof(info.refusal_reason.c_str() + at + 17);
+    Check(stated > 0.0 && std::fabs(stated - gap) <= 0.05 * gap, "perturbed torus refusal states the tear it measured (within 5% of the independent measurement)");
+  }
+  // Above half the tear it IS offset within the tolerance, measured against the exact locus and the base distance.
+  {
+    const double tol = 4e-3;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    const Result r = bent.Offset(d, out, tol, &info);
+    Check(r == Result::Ok && !info.exact && info.achieved_deviation <= tol, "perturbed torus at tol 4e-3 (> half the tear): offset within tolerance");
+    if (r == Result::Ok) {
+      double worst_locus = 0.0, worst_base = 0.0;
+      MeasureAgainstExactLocus(bent, out, d, 6000, 80, worst_locus, worst_base);
+      std::printf("  perturbed torus tol=4e-3: cv=%dx%d locus=%g base-dist=%g\n", out.CVCountU(), out.CVCountV(), worst_locus, worst_base);
+      Check(worst_locus <= tol, "perturbed torus tol 4e-3: 6000 independent points within tol of base + d*N_base (including next to the torn knot lines)");
+      Check(worst_base <= tol, "perturbed torus tol 4e-3: 80 offset points at |d| from the base surface within tol");
+    }
+  }
+  // The smooth (G1) deformation of the same torus has no tear and is offset at 1e-4 with far fewer control points than the 288 x 282 the previous refit needed.
+  {
+    const NurbsSurface squashed = SquashedTorus();
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(squashed.Offset(d, out, 1e-4, &info) == Result::Ok && info.achieved_deviation <= 1e-4, "squashed torus (G1) is offset within 1e-4");
+    Check(out.CVCountU() * out.CVCountV() < 288 * 282 / 10, "squashed torus at 1e-4 uses under a tenth of the previous 288 x 282 control points");
+  }
+}
+
+// Worst |out - (base + d*N_base)| over n random parameter pairs.
+double LocusError(const NurbsSurface& base, const NurbsSurface& out, double d, int n) {
+  double a = 0.0, b = 0.0;
+  MeasureAgainstExactLocus(base, out, d, n, 0, a, b);
+  return a;
+}
+
+// Worst | (out - base)/d - (out2 - base)/d2 | : zero exactly when the offset is "base + d * (fixed vector field)".
+double ScalingResidual(const NurbsSurface& base, const NurbsSurface& o1, double d1, const NurbsSurface& o2, double d2, int n) {
+  Lcg rng;
+  rng.s ^= 0xabcdu;
+  const Interval du = base.Domain(0), dv = base.Domain(1);
+  double w = 0.0;
+  for (int k = 0; k < n; ++k) {
+    const double u = du.min + (du.max - du.min) * (0.002 + 0.996 * rng.Next());
+    const double v = dv.min + (dv.max - dv.min) * (0.002 + 0.996 * rng.Next());
+    const auto a = (o1.PointAt(u, v) - base.PointAt(u, v)) / d1;
+    const auto b = (o2.PointAt(u, v) - base.PointAt(u, v)) / d2;
+    w = std::max(w, (a - b).Length());
+  }
+  return w;
+}
+
+// What OffsetApproximate() promises, measured against the unified Offset(): NOT a
+// tolerance-controlled surface (it is deliberately not delegated to Offset(), see
+// its doc comment), but a structure-preserving first-order translation whose error
+// is exactly |d| times the error of the control-point normals as a normal field.
+void TestOffsetApproximateContractAgainstUnifiedOffset() {
+  struct Fx { const char* name; NurbsSurface s; double d; };
+  const std::vector<Fx> fx = {{"bump", offset_unified_tests::BumpSurface(), 0.2},
+                              {"wavy", offset_unified_tests::WavySurface(), 0.12},
+                              {"rational", offset_unified_tests::RationalFreeformPatch(), 0.1},
+                              {"closed tube", offset_unified_tests::ClosedFreeformTube(), 0.2}};
+  for (const Fx& f : fx) {
+    for (double sign : {1.0, -1.0}) {
+      const double d = sign * f.d;
+      const std::string tag = std::string(f.name) + " d=" + std::to_string(d);
+      NurbsSurface ap, half, uni;
+      NurbsSurface::OffsetInfo info;
+      Check(f.s.OffsetApproximate(d, ap) == Result::Ok && f.s.OffsetApproximate(0.5 * d, half) == Result::Ok, (tag + ": OffsetApproximate succeeds").c_str());
+      Check(f.s.Offset(d, uni, 1e-4, &info) == Result::Ok && info.achieved_deviation <= 1e-4, (tag + ": unified Offset succeeds within 1e-4").c_str());
+      // (1) It keeps the input's structure exactly: same control net size, degrees, rationality.
+      Check(ap.CVCountU() == f.s.CVCountU() && ap.CVCountV() == f.s.CVCountV() && ap.DegreeU() == f.s.DegreeU() && ap.DegreeV() == f.s.DegreeV() &&
+                ap.IsRational() == f.s.IsRational() && ap.raw().IsValid(),
+            (tag + ": OffsetApproximate keeps control-net size, degrees and rationality").c_str());
+      // (2) It is a first-order model: out = base + d * (a fixed vector field), so the error is exactly linear in d.
+      const double e_full = LocusError(f.s, ap, d, 3000);
+      const double e_half = LocusError(f.s, half, 0.5 * d, 3000);
+      const double e_uni = LocusError(f.s, uni, d, 3000);
+      const double resid = ScalingResidual(f.s, ap, d, half, 0.5 * d, 3000);
+      std::printf("  %-11s d=%+.2f OffsetApproximate error %.3g (half distance %.3g, ratio %.4f, field residual %.2g) vs unified Offset %.3g\n", f.name, d, e_full,
+                  e_half, e_half > 0 ? e_full / e_half : 0.0, resid, e_uni);
+      Check(resid < 1e-9, (tag + ": OffsetApproximate(d) - base is d times a distance-independent field (exactly linear in d)").c_str());
+      Check(e_half > 0.0 && std::fabs(e_full / e_half - 2.0) < 1e-6, (tag + ": error at half the distance is half (first-order, ratio 2)").c_str());
+      // (3) It is genuinely not tolerance-controlled: orders of magnitude worse than the unified Offset at 1e-4, which is the reason Offset() does not delegate to it.
+      Check(e_uni <= 1e-4 && e_full > 50.0 * 1e-4 && e_full > 100.0 * e_uni, (tag + ": OffsetApproximate error (>5e-3) is far above the unified Offset's (<= 1e-4)").c_str());
+      Check(e_full < 0.5 * std::fabs(d), (tag + ": ...but bounded: under half of |d| here").c_str());
+      // (4) It moves to the same side as the unified Offset (same sign convention), and is within its own error of it.
+      double side = 1e300, apart = 0.0;
+      Lcg rng;
+      const Interval du = f.s.Domain(0), dv = f.s.Domain(1);
+      for (int k = 0; k < 400; ++k) {
+        const double u = du.min + (du.max - du.min) * (0.01 + 0.98 * rng.Next());
+        const double v = dv.min + (dv.max - dv.min) * (0.01 + 0.98 * rng.Next());
+        side = std::min(side, sign * ON_DotProduct(ap.PointAt(u, v) - f.s.PointAt(u, v), f.s.NormalAt(u, v)));
+        apart = std::max(apart, ap.PointAt(u, v).DistanceTo(uni.PointAt(u, v)));
+      }
+      Check(side > 0.0, (tag + ": OffsetApproximate moves every sampled point along sign(d) * NormalAt, as Offset does").c_str());
+      Check(apart <= e_full + 1e-4 + 1e-12, (tag + ": distance to the unified Offset is within OffsetApproximate's own error plus 1e-4").c_str());
+    }
+  }
+  // Exact where the translation model is exact: a plane agrees with the unified Offset to 1e-9.
+  {
+    std::vector<Point3d> grid;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 4; ++j) grid.push_back(Point3d(1.5 * i, 2.0 * j, 0.7 * i - 0.3 * j));
+    const NurbsSurface plane = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+    NurbsSurface ap, uni;
+    NurbsSurface::OffsetInfo info;
+    Check(plane.OffsetApproximate(1.3, ap) == Result::Ok && plane.Offset(1.3, uni, 1e-6, &info) == Result::Ok && info.exact, "plane: both succeed, Offset exact");
+    double apart = 0.0;
+    const Interval pu = plane.Domain(0), pv = plane.Domain(1);
+    for (int i = 0; i <= 20; ++i) {
+      for (int j = 0; j <= 20; ++j) {
+        const double u = pu.min + (pu.max - pu.min) * i / 20.0, v = pv.min + (pv.max - pv.min) * j / 20.0;
+        apart = std::max(apart, ap.PointAt(u, v).DistanceTo(uni.PointAt(u, v)));
+      }
+    }
+    Check(apart < 1e-9, "plane: OffsetApproximate equals the unified Offset to 1e-9 (the case where first order is exact)");
+  }
+  // Same fold refusal as the unified Offset.
+  {
+    NurbsSurface out;
+    Check(offset_unified_tests::BumpSurface().OffsetApproximate(1.0, out) == Result::Failed && offset_unified_tests::BumpSurface().Offset(1.0, out, 1e-3) == Result::Failed,
+          "bump +1.0: both OffsetApproximate and Offset refuse (curvature fold)");
+  }
+  // A closed surface stays closed (the seam wrap), as the unified Offset's does.
+  {
+    const NurbsSurface tube = offset_unified_tests::ClosedFreeformTube();
+    NurbsSurface ap;
+    Check(tube.OffsetApproximate(0.2, ap) == Result::Ok && ap.IsClosed(0), "closed tube: OffsetApproximate result stays closed in u");
+  }
+}
+
+}  // namespace offset_fit_cost_tests
+
+// ---------------------------------------------------------------------------
 // Boolean operations: sealed general-boolean results (BooleanCombineGeneralSealed,
 // OpenSewnKeyholes, Brep::VolumeOfSealedSolid). Every number is measured
 // against a closed form: the exact B-rep volume/area of the sealed body, the
@@ -99521,6 +99826,12 @@ int main() {
           offset_parity_tests::TestPlaneEveryPresentationBothSignsPartialAndComposition);
   RunTest("offset_parity_tests::TestPartialSphereCylinderConeSeamStraddlingAreExact",
           offset_parity_tests::TestPartialSphereCylinderConeSeamStraddlingAreExact);
+  RunTest("offset_fit_cost_tests::TestOffsetFitCostReportAndAccuracyAtFourTolerances",
+          offset_fit_cost_tests::TestOffsetFitCostReportAndAccuracyAtFourTolerances);
+  RunTest("offset_fit_cost_tests::TestOffsetFitTornOffsetIsRefusedWithItsGapAndSucceedsAboveIt",
+          offset_fit_cost_tests::TestOffsetFitTornOffsetIsRefusedWithItsGapAndSucceedsAboveIt);
+  RunTest("offset_fit_cost_tests::TestOffsetApproximateContractAgainstUnifiedOffset",
+          offset_fit_cost_tests::TestOffsetApproximateContractAgainstUnifiedOffset);
 
   RunTest("sealed_boolean_tests::TestSealedBoxCylinderThroughHoleHasRealInnerLoopsAndExactVolume",
           sealed_boolean_tests::TestSealedBoxCylinderThroughHoleHasRealInnerLoopsAndExactVolume);
