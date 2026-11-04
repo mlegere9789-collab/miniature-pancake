@@ -55,7 +55,7 @@ mrmnum two_runs 280.570 "MRM_two_runs: second rim in a SECOND run on a solid tha
 mrmsame two two_runs "MRM_two_runs: one run vs two runs"
 mrmcheck two_runs "$MRM_VALID" "MRM_two_runs: Check valid"
 mrmcheck two_runs "6 faces, 11 edges, closed solid" "MRM_two_runs: 6 faces, closed solid"
-mrmnot two_runs "not used" "MRM_two_runs: the second run does not fall back to anything"
+mrmnot two_runs "revolve-rim fillet not used" "MRM_two_runs: the second run is not refused by the revolve-rim path"
 # --- three rims
 mrmcheck three "FilletEdge: 3 rims of solid-of-revolution object 1 replaced with an exact fillet (radii 1.5, 1.5, 1.5;" "MRM_three: three rims in one run"
 mrmcheck three "7 faces" "MRM_three: 7 faces (input + 3 rims)"
