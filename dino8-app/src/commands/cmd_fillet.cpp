@@ -4953,6 +4953,12 @@ class FilletEdgeCommand : public Command {
     ON_Brep out;
     bool convex = true, ok = false;
     try { out = kernel::FilletConvexEdgeLaw(kb, p0, p1, law, tol).raw(); ok = true; } catch (const std::exception& ex) { convex_err = ex.what(); }
+    // Only a "not a convex dihedral edge" refusal means the edge may be concave; any other convex refusal (a non-monotone
+    // law, a radius that does not fit, ...) is the real reason and is reported alone.
+    if (!ok && convex_err.find("not a convex dihedral edge") == std::string::npos) {
+      ctx.Warn(label + ": the kernel refused the radius law (" + desc + ", tolerance " + FormatNumber(tol) + "): " + convex_err);
+      return;
+    }
     if (!ok) {
       try { out = kernel::FilletConcaveEdgeLaw(kb, p0, p1, law, tol).raw(); ok = true; convex = false; }
       catch (const std::exception& ex) {
