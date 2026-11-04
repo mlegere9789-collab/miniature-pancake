@@ -814,6 +814,14 @@ void CommandEngine::FeedText(const std::string& text) {
       if (r && r->factory && ToLower(name).compare(0, 3, "sel") == 0) {
         std::unique_ptr<Command> nested = r->factory();
         DINO8_GUARD(nested->Begin(ctx));
+        // A selection that comes back empty while locked objects exist: selection skips locked objects, and the
+        // prompt keeps waiting - say why instead of leaving the user at an unexplained "0 object(s) selected".
+        if (doc_.SelectedCount() == 0) {
+          int locked = 0;
+          for (const SceneObject& o : doc_.Objects()) if (doc_.IsObjectVisible(o) && doc_.IsObjectLocked(o)) ++locked;
+          if (locked > 0)
+            Print("Note: " + std::to_string(locked) + " locked object(s) cannot be selected; Unlock them (or Escape to cancel " + active_name_ + ")");
+        }
       } else {
         DINO8_GUARD(active_->OnText(ctx, text));
       }

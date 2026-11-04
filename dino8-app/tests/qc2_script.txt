@@ -93,4 +93,41 @@ inf
 Cancel
 New
 
+QC2BEGIN_undo_noop_section
+Box 0,0,0 20,20,0 10
+SelLast
+SetObjectName KeepMe
+SelAll
+Section
+50,-20,0
+50,20,0
+Undo
+SelAll
+List
+New
+
+QC2BEGIN_redo_noop_section
+Box 0,0,0 20,20,0 10
+SelLast
+Move 0,0,0 5,0,0
+Undo
+SelAll
+Section
+50,-20,0
+50,20,0
+Redo
+SelAll
+BoundingBox
+New
+
+QC2BEGIN_locked_only
+Curve 0,0,0 2,3,0 5,-1,0 8,2,0 10,0,0 Enter
+SelCrv
+Lock
+SelNone
+RemoveMultiKnot
+SelCrv
+Cancel
+New
+
 QC2BEGIN_end

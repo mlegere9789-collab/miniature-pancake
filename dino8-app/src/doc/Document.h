@@ -1096,6 +1096,13 @@ class Document {
   // is pending (Undo/Redo just ran, or nothing called BeginChange): the
   // caller's follow-on edits then are not an undo step of their own.
   bool JoinPendingChange(const std::vector<ObjectId>& ids);
+  // Drops the change the last BeginChange/BeginChangeForObjects opened, for a command that found nothing to do
+  // (a Section that misses every object, a RemoveMultiKnot with nothing to clean): no undo step is recorded and the
+  // redo stack BeginChange set aside is put back, so a no-op neither adds an empty Undo entry nor wipes Redo.
+  // Only valid while the command has not modified anything; it refuses (returns false, change stays pending and
+  // is recorded as usual) if objects were added/removed or an id/group/light counter moved. In-place edits cannot
+  // be detected here - that part is the caller's contract.
+  bool AbandonChange();
   bool Undo();
   bool Redo();
 
@@ -1393,6 +1400,7 @@ class Document {
     std::vector<SceneObject> fast_path_before;    // fast path: just the declared ids
     std::map<std::string, std::string> user_text;  // see Snapshot::user_text above
     std::map<ObjectId, HistoryRecord> history;      // see StateDelta::history_before
+    std::vector<HistoryEntry> saved_redo;           // redo stack BeginChange set aside (AbandonChange puts it back)
   };
   void FinalizePending();
   void ApplyDelta(const StateDelta& delta, bool undo);
