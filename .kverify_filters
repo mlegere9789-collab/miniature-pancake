@@ -9,3 +9,7 @@ qc3_tests
 qc2_tests
 RefusesToCapAPathThatDoublesBack
 LoftRationalTangent
+LoftRationalTangent
+TestFilletRevolveRimConcaveConeCorners
+bridge_holes
+TestOffsetRefitUnreachable
