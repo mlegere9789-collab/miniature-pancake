@@ -218,7 +218,9 @@ struct BrepSectionContour {
 // that hands back ONE joined NURBS curve per physical section contour.
 // IntersectBrepByPlane() returns un-stitched, one-or-more pieces per face
 // (its own doc comment says so); this chains pieces whose endpoints meet
-// within `max(opt.tolerance * 10, 1e-6)` using NurbsCurve::Join() (exact
+// within `max(opt.tolerance * 10, 1e-6, 2e-4 * the body's bounding-box
+// diagonal)` (the last term absorbs the facet sagitta of a Boolean result's
+// polygonal hole/rim edges) using NurbsCurve::Join() (exact
 // splice, reversing a piece when its far end is the one that meets), and
 // snaps a chain whose end returns to its start shut (so IsClosed() is true).
 // A piece that is already closed (a full circle on a cylinder wall) is
