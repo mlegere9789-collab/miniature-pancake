@@ -11834,7 +11834,7 @@ kwrdev O_cyl 1 1e-9 "KWR_O_cyl: +1 offset measured against S + d*N: deviation at
 kwrdev O_cyl 2 1e-9 "KWR_O_cyl: -1 offset measured deviation at rounding level"
 kwrnum O_cyl Area 1 199.6 202.5 "KWR_O_cyl: +1 -> radius 4: Area = 2*pi*4*8 = 201.06"
 kwrnum O_cyl Area 2 99.8 101.3 "KWR_O_cyl: -1 -> radius 2: Area = 2*pi*2*8 = 100.53"
-kwrcheck O_cyl "OffsetSrf: object 2 not offset - recognised plane/sphere/cylinder/cone/torus: the exact offset was refused" "KWR_O_cyl: -3 (radius 0) is refused WITH the kernel's reason (before: the first-order fallback built a degraded surface)"
+kwrcheck O_cyl "OffsetSrf: object 2 not offset - recognised plane/sphere/cylinder/cone/torus: the exact offset is refused (" "KWR_O_cyl: -3 (radius 0) is refused WITH the kernel's reason (before: the first-order fallback built a degraded surface)"
 kwrcheck O_cyl "OffsetSrf: distance -3, 0 object(s)" "KWR_O_cyl: ...and no object is made for the refused distance"
 kwrcheck O_cyl "4 object(s) selected" "KWR_O_cyl: circle, cylinder and the two good offsets remain (4 objects)"
 # --- OffsetSrf of a tapered-cone SURFACE
