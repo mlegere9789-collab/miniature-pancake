@@ -1846,7 +1846,9 @@ class OffsetSrfCommand : public Command {
     for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind != ObjectKind::Curve && o->kind != ObjectKind::Point) ids_.push_back(id); }
     if (ids_.empty()) { ctx.Warn("Select surfaces, polysurfaces or meshes"); Finish(); return; }
     options = {{"Distance", FormatNumber(distance_), {}, true, false}, {"Solid", "No", {"Yes", "No"}, false, true}, {"FlipAll", "No", {"Yes", "No"}, false, true},
-               {"Exact", exact_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+               {"Exact", exact_ ? "Yes" : "No", {"Yes", "No"}, false, true},
+               {"Tolerance", tolerance_ > 0 ? FormatNumber(tolerance_) : std::string("document"), {}, true, false},
+               {"Loose", loose_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
     WantNumber("Offset distance", distance_);
   }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
@@ -1854,6 +1856,16 @@ class OffsetSrfCommand : public Command {
     if (n == "Solid") { solid_ = (v == "Yes"); options[1].value = solid_ ? "Yes" : "No"; }
     if (n == "FlipAll") { flip_ = (v == "Yes"); options[2].value = flip_ ? "Yes" : "No"; }
     if (n == "Exact") { exact_ = (v == "Yes"); options[3].value = exact_ ? "Yes" : "No"; }
+    // Tolerance= overrides the document's absolute tolerance for this offset (the refit target and the exact-primitive
+    // recognition tolerance); "document" puts the document tolerance back. Loose=Yes builds the kernel's OffsetApproximate
+    // surface instead (every control point moved along its own Greville normal; the input's control net is kept).
+    if (n == "Tolerance") {
+      double t;
+      if (v == "document" || v == "Document") { tolerance_ = 0; options[4].value = "document"; }
+      else if (ParseNumber(v, t) && t > 0) { tolerance_ = t; options[4].value = FormatNumber(t); }
+      else ctx.Warn("Invalid tolerance (a positive number, or 'document')");
+    }
+    if (n == "Loose") { loose_ = (v == "Yes"); options[5].value = loose_ ? "Yes" : "No"; }
   }
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double d) override {
@@ -1869,7 +1881,7 @@ class OffsetSrfCommand : public Command {
       // anonymous namespace) so UpdateHistory re-runs exactly what this does.
       HistoryRecord rec;
       rec.command = "OffsetSrf";
-      rec.num = {{"d", d}, {"solid", solid_ ? 1.0 : 0.0}, {"exact", exact_ ? 1.0 : 0.0}};
+      rec.num = {{"d", d}, {"solid", solid_ ? 1.0 : 0.0}, {"exact", exact_ ? 1.0 : 0.0}, {"tol", tolerance_}, {"loose", loose_ ? 1.0 : 0.0}};
       std::optional<SceneObject> built = RebuildOffsetSrf(ctx, *o, rec);
       if (!built) continue;
       if (built->kind == ObjectKind::Brep && o->kind != ObjectKind::Surface) ++exact_made;
@@ -1884,7 +1896,8 @@ class OffsetSrfCommand : public Command {
   }
   std::vector<ObjectId> ids_;
   double distance_ = 1;
-  bool solid_ = false, flip_ = false, exact_ = true;
+  double tolerance_ = 0;  // 0 = the document's absolute tolerance
+  bool solid_ = false, flip_ = false, exact_ = true, loose_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -3599,25 +3612,54 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
     // 9x9 grid of the input's domain. An analytic surface whose true offset folds through its own axis is
     // refused (the kernel never substitutes a fit for it); a freeform refusal keeps the old first-order
     // Greville-normal approximation, with its warning, exactly as before.
+    // Tolerance= (rec "tol", 0 = the document's) is the refit target and the primitive-recognition tolerance; Loose=Yes
+    // (rec "loose") builds the kernel's OffsetApproximate instead: every control point moved d along its own Greville-
+    // point normal, the input's control net, knots and weights kept, first-order and NOT tolerance-bounded (exact for a
+    // plane), refused - never replaced by anything - when d reaches the local radius of curvature (fold guard).
     kernel::NurbsSurface off;
     kernel::NurbsSurface::OffsetInfo info;
-    const double tol_doc = ctx.Settings().absolute_tolerance;
-    bool offset_ok = false;
-    try {
-      offset_ok = o.surface->Offset(d, off, tol_doc, &info) == kernel::Result::Ok;
-    } catch (const std::exception& ex) {
-      info.refusal_reason = ex.what();
-    }
-    if (offset_ok) {
+    const double tol_user = num("tol");
+    const double tol_doc = tol_user > 0 ? tol_user : ctx.Settings().absolute_tolerance;
+    const bool loose = num("loose") != 0.0;
+    // Worst distance from `cand` to S(u,v) + d*N(u,v) on a 9x9 grid of the input's domain.
+    auto measure = [&](const kernel::NurbsSurface& cand) {
       double worst = 0.0;
       const kernel::Interval du = o.surface->Domain(0), dv = o.surface->Domain(1);
       for (int i = 0; i <= 8; ++i) {
         for (int j = 0; j <= 8; ++j) {
           const double u = du.min + (du.max - du.min) * (0.03 + 0.94 * i / 8.0), v = dv.min + (dv.max - dv.min) * (0.03 + 0.94 * j / 8.0);
           const Point3d want = o.surface->PointAt(u, v) + d * o.surface->NormalAt(u, v);
-          worst = std::max(worst, off.PointAt(u, v).DistanceTo(want));
+          worst = std::max(worst, cand.PointAt(u, v).DistanceTo(want));
         }
       }
+      return worst;
+    };
+    bool offset_ok = false;
+    if (loose) {
+      try {
+        offset_ok = o.surface->OffsetApproximate(d, off, tol_doc) == kernel::Result::Ok;
+      } catch (const std::exception& ex) {
+        info.refusal_reason = ex.what();
+      }
+      if (!offset_ok) {
+        ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " not offset - Loose offset refused (distance " + FormatNumber(d) +
+                  " reaches the local radius of curvature, so the offset would fold through its own center of curvature)");
+        return std::nullopt;
+      }
+      ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - loose offset (kernel OffsetApproximate: each control point moved along its own Greville-point normal, "
+                 "the input's " + std::to_string(off.CVCountU()) + "x" + std::to_string(off.CVCountV()) + " control net kept; first-order, not tolerance-bounded); "
+                 "measured deviation from the true offset locus " + FormatDeviation(measure(off)));
+    } else {
+      try {
+        offset_ok = o.surface->Offset(d, off, tol_doc, &info) == kernel::Result::Ok;
+      } catch (const std::exception& ex) {
+        info.refusal_reason = ex.what();
+      }
+    }
+    if (loose) {
+      // handled above
+    } else if (offset_ok) {
+      const double worst = measure(off);
       ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - " +
                  (info.exact ? std::string("exact analytic offset (closed-form rational surface on the input's own parametrization")
                              : "tolerance-controlled refit (non-rational; kernel-measured deviation " + FormatDeviation(info.achieved_deviation) + " <= tolerance " + FormatNumber(info.tolerance_used)) +
@@ -3626,10 +3668,11 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
       ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " not offset - " + info.refusal_reason);
       return std::nullopt;
     } else {
-      ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " could not be refit to tolerance " + FormatNumber(tol_doc) +
-                " (fold-through-curvature guard, or this surface's own offset needs more control points than "
-                "the fit's own ceiling) - using the first-order Greville-normal approximation instead");
       off = OffsetNurbs(*o.surface, d);
+      ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " could not be refit to tolerance " + FormatNumber(tol_doc) +
+                " (" + (info.refusal_reason.empty() ? std::string("the kernel refused the refit") : info.refusal_reason) +
+                ") - FALLBACK: using the first-order Greville-normal approximation instead (each control point moved along its own normal; "
+                "NOT within the tolerance - measured deviation from the true offset locus " + FormatDeviation(measure(off)) + ")");
     }
     if (solid_) {
       const int nu = std::max(8, 2 * o.surface->CVCountU()), nv = std::max(8, 2 * o.surface->CVCountV());
@@ -3920,7 +3963,7 @@ void RegisterSurfaceCommands(CommandEngine& e) {
   }, CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. With History On the non-planar result records every selected curve and point (in selection order) and the fit (and trim) is re-run when one is edited; a rebuild that no longer applies (the data became flat, a source deleted, the fit failing) keeps the old patch with the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's continuity-aware FitPatch: the selected curve lying on that edge supplies ordered edge samples whose adjacent tangent plane (and second fundamental form) enter the least-squares fit as heavily weighted constraints; the finished UNTRIMMED surface is MEASURED between the samples (position gap, tangent angle, cross-edge and Gaussian curvature difference) and printed, and the request is refused with the kernel's reason (G0 not met, adjacent plane too steep, measured angle / curvature above tolerance, data deviation above the document tolerance). A continuity result is not recorded in History (the reason is printed).");
   Reg(e, "MeasureEdgeContinuity", Make<MeasureEdgeContinuityCommand>(), CommandStatus::Implemented, "Click two surface (or polysurface face) edges; prints the MEASURED position gap, tangent-plane angle, cross-edge normal curvature difference and Gaussian curvature difference at 97 probes evenly spaced along the second edge, each against the first surface's own closest point (kernel NurbsSurface::MeasureEdgeContinuity), then which of G0 (gap within the document tolerance), G1 (and angle within AngleTol, degrees, default 0.0573 = 0.001 rad) and G2 (and curvature difference within CurvTol, default 0.01 per length) are met. Pure measurement: nothing is modified. The edge is the nearest isoparametric edge of the face's underlying surface, so a trimmed face's trim edge is not measured.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
-  Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
+  Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: the kernel's unified offset (exact closed form for plane/sphere/cylinder/cone/torus, otherwise a tolerance-controlled refit; when the refit refuses, the first-order Greville-normal approximation with a warning that says so). Tolerance=<value> overrides the document tolerance; Loose=Yes builds the kernel's OffsetApproximate (control points moved along their own normals, same control net, first-order). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
   Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");
   Reg(e, "ExtrudeCrvAlongCrv", Make<ExtrudeAlongCommand>(), CommandStatus::Implemented, "Exact translational sweep (sum surface); the profile is not rotated along the path.");
   Reg(e, "ExtrudeCrvTapered", Make<ExtrudeTaperedCommand>(), CommandStatus::Implemented, "Ruled surface to a copy of the profile scaled about its centroid by the draft angle (exact for circles, approximate corners).");

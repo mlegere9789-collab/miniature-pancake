@@ -155,7 +155,8 @@ class OffsetCommand : public Command {
     WantPoint("Side to offset, or type a distance");
     options = {{"Distance", FormatNumber(distance_), {}, true, false},
                {"BothSides", "No", {"Yes", "No"}, false, true},
-               {"Corner", "Sharp", {"Sharp", "Round", "Chamfer", "Smooth"}, false, false}};
+               {"Corner", "Sharp", {"Sharp", "Round", "Chamfer", "Smooth"}, false, false},
+               {"Tolerance", "document", {}, true, false}};
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
     if (n == "Distance") { double d = std::atof(v.c_str()); if (d > 0) distance_ = d; options[0].value = FormatNumber(distance_); }
@@ -166,6 +167,12 @@ class OffsetCommand : public Command {
                      : v == "Smooth" ? kernel::CurveOffsetCornerStyle::Smooth
                      : kernel::CurveOffsetCornerStyle::Sharp;
       options[2].value = v;
+    }
+    // Tolerance= overrides the document's absolute tolerance for this offset ("document" restores it).
+    if (n == "Tolerance") {
+      char* e; double t = std::strtod(v.c_str(), &e);
+      if (v == "document") { tolerance_ = 0; options[3].value = "document"; }
+      else if (e && !*e && t > 0) { tolerance_ = t; options[3].value = FormatNumber(t); }
     }
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
@@ -221,7 +228,7 @@ class OffsetCommand : public Command {
     const int corner = corner_style_ == kernel::CurveOffsetCornerStyle::Round ? 1
                        : corner_style_ == kernel::CurveOffsetCornerStyle::Chamfer ? 2
                        : corner_style_ == kernel::CurveOffsetCornerStyle::Smooth ? 3 : 0;
-    rec.num = {{"d", d}, {"corner", static_cast<double>(corner)},
+    rec.num = {{"d", d}, {"corner", static_cast<double>(corner)}, {"tol", tolerance_},
                {"ox", pl.origin.x}, {"oy", pl.origin.y}, {"oz", pl.origin.z},
                {"xx", pl.xaxis.x}, {"xy", pl.xaxis.y}, {"xz", pl.xaxis.z},
                {"yx", pl.yaxis.x}, {"yy", pl.yaxis.y}, {"yz", pl.yaxis.z}};
@@ -247,6 +254,7 @@ class OffsetCommand : public Command {
   std::vector<ObjectId> ids_;
   double distance_ = 1.0;
   bool both_ = false;
+  double tolerance_ = 0;  // 0 = the document's absolute tolerance
   kernel::CurveOffsetCornerStyle corner_style_ = kernel::CurveOffsetCornerStyle::Sharp;
 };
 
@@ -580,7 +588,7 @@ std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel:
                                                : ci == 3 ? kernel::CurveOffsetCornerStyle::Smooth
                                                          : kernel::CurveOffsetCornerStyle::Sharp;
   kernel::NurbsCurve out;
-  const double tol = ctx.Settings().absolute_tolerance;
+  const double tol = num("tol") > 0 ? num("tol") : ctx.Settings().absolute_tolerance;
   const double d = num("d");
   kernel::Result r = c.OffsetInPlane(d, out, tol, style);
   if (r != kernel::Result::Ok) {
