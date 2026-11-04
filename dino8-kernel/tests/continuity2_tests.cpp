@@ -302,6 +302,18 @@ void TestLoftOnCylinderWall() {
               g1_4.rep.start.max_tangent_angle, g1_4.rep.start.max_cross_curvature_diff, old_g2.r == Result::Ok, old_g2.rep.reason.c_str(), new_g2.r == Result::Ok,
               new_g2.sc.start_scale, new_g2.rep.section_deviation_max, new_g2.rep.start.max_tangent_angle, new_g2.rep.start.max_cross_curvature_diff,
               new_g2.rep.start.max_gaussian_diff, new_g2.rep.reason.c_str());
+  std::printf("[cylinder G2, 4 sections] searched acceleration %.4g (0 = plain C2 in the scaled parameter), default-scale deviation %.4g\n", new_g2.sc.start_accel,
+              new_g2.sc.start_default_deviation);
+  // Measured before the second search parameter existed: ok=0, best scale 25.23, section 3 moved by 2.68e-2 (> 1e-3).
+  Check(old_g2.r == Result::Failed, "cylinder G2: MatchEdge's default scale is refused");
+  Check(new_g2.r == Result::Ok, "cylinder G2: scale + acceleration search builds the loft");
+  if (new_g2.r == Result::Ok) {
+    Check(new_g2.rep.section_deviation_max <= 1e-3, "cylinder G2: every section is within the tolerance 1e-3 of the finished surface");
+    Check(new_g2.rep.start.max_tangent_angle < 1e-6 && new_g2.rep.start.max_position_gap < 1e-6, "cylinder G2: measured angle < 1e-6 rad and gap < 1e-6");
+    Check(new_g2.rep.start.max_cross_curvature_diff < 1e-6, "cylinder G2: measured cross-edge curvature difference < 1e-6");
+    Check(new_g2.rep.start.max_cross_curvature_diff * 1000.0 < g1_4.rep.start.max_cross_curvature_diff, "cylinder G2: curvature mismatch >= 1000x below the loft without matching");
+    Check(new_g2.sc.start_accel != 0.0, "cylinder G2: the second parameter (acceleration) was needed");
+  }
 }
 
 // ---- 3. LoftMatched against the bicubic graph -------------------------------------------------------------------------------
