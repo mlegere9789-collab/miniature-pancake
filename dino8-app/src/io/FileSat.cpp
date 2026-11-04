@@ -3,6 +3,7 @@
 #include <opennurbs.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -97,7 +98,11 @@ bool ImportSat(Document& doc, const std::string& path, std::string& summary) {
   summary.clear();
   const std::string file = std::filesystem::path(path).filename().string();
   const bool binary = FileIsSab(path);
-  const char* const fmt = binary ? "SAB" : "SAT";
+  // The encoding comes from the file's content; a file that cannot be opened has none, so the name of what was asked for is the extension's.
+  std::error_code exists_ec;
+  std::string ext = std::filesystem::path(path).extension().string();
+  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  const char* const fmt = binary || (ext == ".sab" && !std::filesystem::exists(path, exists_ec)) ? "SAB" : "SAT";
   kernel::AcisSatOptions strict;
   kernel::AcisSatReadResult res = kernel::ReadAcis(path, strict);
   const size_t strict_bodies = res.bodies.size();

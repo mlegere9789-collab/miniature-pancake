@@ -13139,7 +13139,7 @@ qca_has() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; th
 qca_hasnot() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
 qca_objs() { local blk n; blk="$(qcablock "$1")"; n="$({ grep -cE "^history: Object [0-9]+ \(" <<<"$blk" || true; })"; if [ "$n" = "$2" ]; then echo "ok   $3 ($n object(s))"; else echo "FAIL $3 ('$n' object(s), expected $2)"; fail=1; fi; }
 # the case blocks must exist at all (a renamed marker would otherwise make every qca_hasnot pass vacuously)
-for QCA_CASE in scale_forgive scale_replaced two_vases sweep_undo loft_typed_cap loft_typed_style loft_pre_cap subd_again; do
+for QCA_CASE in scale_forgive scale_replaced two_vases sweep_undo loft_typed_cap loft_typed_style loft_pre_cap subd_again sab_missing; do
   if [ -n "$(qcablock "$QCA_CASE")" ]; then echo "ok   QCA_block_$QCA_CASE: the case's output was found"; else echo "FAIL QCA_block_$QCA_CASE: no output between the markers"; fail=1; fi
 done
 # Sweep1: a refused ScaleX must not be forgiven by a later valid ScaleY
@@ -13160,6 +13160,9 @@ qca_has loft_typed_cap "uncapped (Cap=No)" "QCA_loft_typed_cap: 'Loft Cap=No' ty
 qca_hasnot loft_typed_cap "end caps added" "QCA_loft_typed_cap: ...and adds no end caps"
 qca_has loft_typed_style "(degree 1 in the loft direction)" "QCA_loft_typed_style: 'Loft Style=Straight' typed with nothing preselected lofts linearly"
 qca_has loft_pre_cap "uncapped (Cap=No)" "QCA_loft_pre_cap: control, the preselected Cap=No is uncapped"
+# a missing .sab file is refused as a SAB import, by name
+qca_has sab_missing "SAB import refused (qca_missing.sab)" "QCA_sab_missing: importing a .sab that does not exist says SAB, not SAT"
+qca_hasnot sab_missing "SAT import refused" "QCA_sab_missing: ...and never SAT"
 # ToSubD of a selection that holds a SubD: the SubD is skipped (said so), not copied crease-less
 qca_has subd_again "1 selected SubD object(s) skipped: already a SubD" "QCA_subd_again: the second ToSubD says the SubD in the selection was skipped"
 qca_objs subd_again 4 "QCA_subd_again: curve, solid, the first SubD and the solid's second SubD (no crease-less copy of the SubD)"

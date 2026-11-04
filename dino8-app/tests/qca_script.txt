@@ -130,3 +130,10 @@ SelAll
 ToSubD
 SelAll
 List
+
+# --- Importing a .sab file that does not exist said "SAT import refused" (the encoding is read from content, and there is none).
+New
+QCABEGIN_sab_missing
+Import /nonexistent_qca_dir/qca_missing.sab
+SelAll
+List
