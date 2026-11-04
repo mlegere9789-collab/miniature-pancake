@@ -4,16 +4,17 @@
 
 As of commit `ab20e4ce` (last full re-score); Mass properties row updated at `e6081ae6`, Surface ops (surfaces) row at `9f869393` (see the notes under the Kernel table).
 
-## Kernel — headline 78.4% (total weight 17.75, 17 categories)
+## Kernel — headline 78.9% (total weight 17.75, 17 categories)
+**Row moves 2026-11-04 (Geometry representation 23/6/0 -> 24/5/0, 89.7% -> 91.4%; Offsetting & shelling 3/24/0 of 27 -> 7/23/0 of 30, 55.6% -> 61.7%; kernel headline 78.46% -> 78.90%, displayed 78.9% (truncated, the conservative reading)).** Five Offset bullets moved after a skeptic pass over the evidence that exists on origin `b40c10b0`: "Offset surfaces (NURBS, tolerance-controlled)" and "Untrimmed NURBS surface offset" `[partial]` -> `[present]`; "Tolerance-driven offset refit", "Curve offset in an arbitrary plane / 3D" and "Exact analytic-face offset" each split into a `[present]` kernel half and a `[partial]` remainder (three new bullets, so the category grows by 3 items). Evidence, kernel suite 22327 ok / 0 FAIL on that tree: `offset_unified_tests` (602 ok: freeform bump at 1e-3/1e-4/1e-5 with 3000 independent random points against S+d*N and 120 base-distance points, wavy and rational both signs, closed tube, poles, singular/fold/ceiling refusals), `offset_parity_tests` (6978 ok: 672 sphere/cylinder/cone patch offsets incl. seam positions, 504 torus patch offsets, 180 full-presentation torus offsets, 192 plane offsets, all exact to 1e-9 with negative controls), `TestArcOffsetByTiltedPlaneMeetsToleranceAgainstClosedForm`, `TestCircleOffsetByParallelPlaneIsExactConcentricCircle`, and app smoke `KWR_O_cyl`, `KWR_O_cone`, `KWR_O_hist`. **Residual, disclosed, not claimed:** analytic-face offset inside a general B-rep (trim loops and neighbours rebuilt), partial patches wider than half a turn, other torus proportions, `OffsetAnalytic`'s own seam-free trim fallback, the Loose/Tolerance options and the app's first-order fallback when a freeform refit refuses, and corner-bearing curves offset in a foreign plane remain `[partial]` as split-off bullets. The second skeptic and refuter batch (other rows) is still running; no other row moved.
 
 | Category | Weight | Items | Present | Partial | Missing | % |
 |---|---|---|---|---|---|---|
 | Topology | 1.0 | 27 | 13 | 14 | 0 | 74.1% |
-| Geometry representation | 1.0 | 29 | 23 | 6 | 0 | 89.7% |
+| Geometry representation | 1.0 | 29 | 24 | 5 | 0 | 91.4% |
 | Boolean operations | 1.5 | 25 | 9 | 15 | 1 | 66.0% |
 | Blending & chamfering | 1.5 | 24 | 6 | 18 | 0 | 62.5% |
 | Sweeping/lofting/extruding/revolving | 1.0 | 29 | 7 | 22 | 0 | 62.1% |
-| Offsetting & shelling | 1.0 | 27 | 3 | 24 | 0 | 55.6% |
+| Offsetting & shelling | 1.0 | 30 | 7 | 23 | 0 | 61.7% |
 | Local/direct-edit | 1.0 | 28 | 8 | 20 | 0 | 64.3% |
 | Intersections & projections | 1.5 | 29 | 29 | 0 | 0 | 100% |
 | Healing | 1.0 | 30 | 23 | 7 | 0 | 88.3% |
