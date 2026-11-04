@@ -82,13 +82,16 @@ Loft Continuity=Curvature
 SelAll
 List
 
-# sections that do not continue the plane tangentially (z = 0.02 x^2): the kernel refuses with its reason, nothing is built
+# sections that do not continue the plane tangentially (the straight ramp z = 0.5 x leaves the plane at slope 0.5, where the plane's
+# own tangent is flat): the kernel refuses with its reason, nothing is built. (This case was z = 0.02 x^2 until the kernel's
+# cross-derivative scale search: that parabola IS tangent to the plane at x = 0, and the app now builds it - measured, sections kept
+# within 4.5e-06 - so it was no longer an incompatible case.)
 New
 CNTBEGIN_loft_incompat
 Plane -10,0,0 0,10,0
 Line 0,0,0 0,10,0
-Line 5,0,0.5 5,10,0.5
-Line 10,0,2 10,10,2
+Line 5,0,2.5 5,10,2.5
+Line 10,0,5 10,10,5
 SelNone
 SelCrv
 Loft Continuity=Tangency
