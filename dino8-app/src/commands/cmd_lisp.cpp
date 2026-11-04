@@ -53,7 +53,7 @@ void BindHost(CommandContext& ctx) {
   h.command = [eng](const std::vector<std::string>& parts) {
     std::string line = parts[0];
     for (size_t k = 1; k < parts.size(); ++k) line += " " + QuoteArg(parts[k]);
-    return eng->RunNested(line, true);
+    return eng->RunNestedImmediate(line);
   };
   h.last_entity = [doc]() -> std::optional<long long> {
     const auto& objs = doc->Objects();

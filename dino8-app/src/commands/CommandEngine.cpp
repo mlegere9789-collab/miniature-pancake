@@ -235,7 +235,14 @@ void CommandEngine::RunLuaLine(const std::string& code) {
   RunCommand("RunScript", true);
 }
 
-bool CommandEngine::RunNested(const std::string& line, bool immediate) {
+bool CommandEngine::RunNested(const std::string& line) { return RunNestedImpl(line, false); }
+bool CommandEngine::RunNestedImmediate(const std::string& line) { return RunNestedImpl(line, true); }
+std::string& CommandEngine::PendingLispText() {
+  static std::string text;   // one command line at a time; kept out of the class so its layout is unchanged
+  return text;
+}
+
+bool CommandEngine::RunNestedImpl(const std::string& line, bool immediate) {
   if (nested_depth_ > 8) { Print("! rs.Command: nesting too deep"); return false; }
   std::unique_ptr<Command> saved_active = std::move(active_);
   const std::string saved_name = active_name_;
@@ -330,7 +337,7 @@ void CommandEngine::Execute(const std::string& raw_input) {
   if (input.front() == '(') {
     Print("Command: " + input);
     pending_inputs_.clear();
-    pending_lisp_ = input;
+    PendingLispText() = input;
     RunCommand("Lisp", true);
     return;
   }

@@ -57,11 +57,12 @@ class CommandEngine {
   // line run to completion right now even when this is called from inside a
   // running command's callback (Execute() would otherwise queue it until the
   // callback returned, so a script could not read the result).
-  bool RunNested(const std::string& line, bool immediate = false);
+  bool RunNested(const std::string& line);
+  bool RunNestedImmediate(const std::string& line);
   // The raw text of an AutoLISP expression typed at the command line ("(+ 1 2)");
   // taken by the Lisp command, which cannot get it from the tokenised pending inputs
   // because tokenising strips the double quotes.
-  std::string& PendingLispText() { return pending_lisp_; }
+  std::string& PendingLispText();
   // Splits a command line into tokens; double-quoted text stays one token.
   static std::vector<std::string> Tokenize(const std::string& line);
   bool IsRunning() const { return active_ != nullptr; }
@@ -162,12 +163,12 @@ class CommandEngine {
   std::vector<ObjectId> ids_before_;
   void CheckNewObjects();
   std::deque<std::string> pending_inputs_;  // extra tokens from a macro line
-  std::string pending_lisp_;
   int callback_depth_ = 0;
   std::vector<std::string> deferred_;       // command lines to run once the active command returns
   std::deque<std::string> history_;
   std::vector<std::string> recent_;
   std::string last_command_;
+  bool RunNestedImpl(const std::string& line, bool immediate);
   bool command_failed_ = false;   // set by HandleCommandException / unknown command (for RunNested)
   int nested_depth_ = 0;
   int deferred_depth_ = 0;       // RunDeferred recursion depth (a macro that runs itself must stop, not overflow the stack)
