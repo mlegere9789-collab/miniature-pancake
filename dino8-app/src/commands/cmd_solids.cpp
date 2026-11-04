@@ -2598,9 +2598,13 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   // BuildSubDVerifiedAgainstBrep() above now closes that remaining half
   // too - see its own doc comment.
   const double tol = to_subd ? ctx.Settings().absolute_tolerance : ctx.App().surface_display_tolerance;
+  int skipped_subd = 0;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
+    // A SubD is already what ToSubD makes. Converting its display mesh again produced a second, crease-less copy (the
+    // 64 creases of a vase's cage came back as 0, rounding its sharp edges) and the message did not say so.
+    if (to_subd && o->kind == ObjectKind::SubD) { ++skipped_subd; continue; }
     SceneObject n;
     if (to_subd && o->kind == ObjectKind::Brep) {
       // Exact path first: SubD::FromBrep (dino8-kernel/include/dino8/
@@ -2730,6 +2734,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
     ++made;
   }
   std::string msg = std::string(label) + ": created " + std::to_string(made) + " object(s)";
+  if (skipped_subd > 0) msg += " (" + std::to_string(skipped_subd) + " selected SubD object(s) skipped: already a SubD, converting its mesh again would drop its creases)";
   if (fidelity_checked > 0) {
     msg += " (" + std::to_string(fidelity_verified) + " of " + std::to_string(fidelity_checked) +
            " limit-surface-fidelity verified within tolerance " + std::to_string(tol) +

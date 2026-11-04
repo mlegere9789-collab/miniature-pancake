@@ -114,3 +114,19 @@ SelAll
 Loft Cap=No
 SelAll
 List
+
+# --- ToSubD with a SubD in the selection: the SubD was converted again into a crease-less copy (64 creases became 0).
+New
+QCABEGIN_subd_again
+Curve 3,0,0 6,0,3 2,0,6 4,0,10
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelLast
+ToSubD
+SelAll
+ToSubD
+SelAll
+List
