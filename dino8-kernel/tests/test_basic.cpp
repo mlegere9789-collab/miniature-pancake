@@ -99196,6 +99196,16 @@ void TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation() {
     Check(Has(why.c_str(), "radius too large for this solid") && Has(why.c_str(), "contact line leaves the adjacent face"),
           (tag + "is refused naming the radius and the face: " + why).c_str());
   }
+  // radius EXACTLY equal to the face width: the contact line lands on the far boundary (the far corner at the end
+  // station). Measured before this refusal: the body built with ON_Brep::IsValid() == false.
+  for (const std::pair<double, double>& ab : {std::make_pair(3.0, 10.0), std::make_pair(10.0, 3.0)}) {
+    const std::string tag = "[smooth " + std::to_string(static_cast<int>(ab.first)) + " -> " + std::to_string(static_cast<int>(ab.second)) + " (= the 10 face width) on a 10-wide box] ";
+    const std::string why = Why([&] {
+      (void)FilletConvexEdgeLaw(Brep::Box(0, 0, 0, 10, 10, L), Point3d(10, 10, 0), Point3d(10, 10, L), law_between(ab.first, ab.second), 0.05);
+    });
+    Check(Has(why.c_str(), "radius too large for this solid") && Has(why.c_str(), "the radius equals the face width"),
+          (tag + "is refused saying the radius equals the face width: " + why).c_str());
+  }
   const std::string ok_why = Why([&] {
     const Brep f = FilletConvexEdgeLaw(Brep::Box(0, 0, 0, 10, 10, L), Point3d(10, 10, 0), Point3d(10, 10, L), law_between(3.0, 9.5), 0.05);
     bool oriented = false, has_boundary = true;

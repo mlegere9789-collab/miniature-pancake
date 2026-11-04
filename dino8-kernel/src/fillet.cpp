@@ -2179,6 +2179,29 @@ void RefuseRailOffFace(const Brep::PlanarFace& face, const std::vector<Point3d>&
       const double u = len2 > 0.0 ? std::min(1.0, std::max(0.0, ((px - a.x) * ex + (py - a.y) * ey) / len2)) : 0.0;
       best = std::min(best, std::hypot(px - (a.x + u * ex), py - (a.y + u * ey)));
     }
+    // A radius equal to the face width puts the contact line ON the face's far boundary (measured: radius 10 on a
+    // 10-wide face builds a body with IsValid() false). Only the ends of the rail may sit on the boundary - on the end
+    // wall's own edge - and even there not on a polygon vertex (the far corner), which would leave the face a sliver.
+    const size_t si0 = reversed ? rail.size() - 1 - k : k;
+    const bool end_station = si0 == 0 || si0 + 1 == rail.size();
+    bool touches = false;
+    if (best <= slack) {
+      if (!end_station) {
+        touches = true;
+      } else {
+        for (const Point2d& v : poly)
+          if (std::hypot(px - v.x, py - v.y) <= slack) touches = true;
+      }
+    }
+    if (touches) {
+      char buf[360];
+      std::snprintf(buf, sizeof buf,
+                    "dino8::kernel::%s: radius too large for this solid's geometry: at t=%.6g (radius %.6g) the fillet "
+                    "contact line reaches the far boundary of the adjacent face (the radius equals the face width) - the "
+                    "radius law must stay strictly inside the face width",
+                    who, stations[si0].t, stations[si0].radius);
+      throw std::invalid_argument(buf);
+    }
     if (!inside && best > slack) {
       const size_t si = reversed ? rail.size() - 1 - k : k;
       char buf[360];
