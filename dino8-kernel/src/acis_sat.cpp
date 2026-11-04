@@ -227,12 +227,14 @@ ParsedFile ParseSat(const std::string& text) {
       size_t len = 0;
       bool any = false;
       while (pos < n && std::isdigit(static_cast<unsigned char>(text[pos]))) {
-        len = len * 10 + (text[pos++] - '0');
+        // A length beyond the file is refused as soon as it is known to be (also keeps len * 10 from wrapping).
+        if (len > n) Refuse("truncated file: string runs past the end");
+        len = len * 10 + static_cast<size_t>(text[pos++] - '0');
         any = true;
       }
       if (!any || pos >= n || !IsSpace(text[pos])) Refuse("malformed @-string");
       ++pos;
-      if (pos + len > n) Refuse("truncated file: string runs past the end");
+      if (len > n - pos) Refuse("truncated file: string runs past the end");
       t.kind = Tok::Str;
       t.s = text.substr(pos, len);
       pos += len;

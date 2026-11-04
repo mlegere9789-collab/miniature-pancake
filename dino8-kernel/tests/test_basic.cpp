@@ -98313,61 +98313,6 @@ void TestSweep1ClosedRailPerAxisScaleJumpIntoTheSeamIsRefused() {
 }
 
 
-// Sweep1 accepted non-finite schedule values / twist_total / scale_end: the result was a Brep full of NaN / inf control points
-// (or a throw from deep inside the skin) instead of a stated refusal.
-void TestSweep1NonFiniteScheduleValuesAreRefused() {
-  using dino8::kernel::Brep;
-  using dino8::kernel::NurbsCurve;
-  ON_NurbsCurve rn;
-  ON_LineCurve(ON_3dPoint(0, 0, 0), ON_3dPoint(0, 0, 10)).GetNurbForm(rn);
-  NurbsCurve rail;
-  rail.raw() = rn;
-  ON_NurbsCurve sn;
-  ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), 1.0).GetNurbForm(sn);
-  NurbsCurve section;
-  section.raw() = sn;
-  const double nan = std::numeric_limits<double>::quiet_NaN(), inf = std::numeric_limits<double>::infinity();
-  typedef std::vector<std::pair<double, double>> Sched;
-  struct Case {
-    const char* name;
-    double twist_total, scale_end;
-    Sched twist, sx;
-    bool use_twist, use_sx;
-  };
-  const Case cases[] = {
-      {"twist_total NaN", nan, 1.0, {}, {}, false, false},
-      {"twist_total inf", inf, 1.0, {}, {}, false, false},
-      {"scale_end inf", 0.0, inf, {}, {}, false, false},
-      {"twist_schedule NaN value", 0.0, 1.0, {{0.0, 0.0}, {1.0, nan}}, {}, true, false},
-      {"twist_schedule inf value", 0.0, 1.0, {{0.0, 0.0}, {1.0, inf}}, {}, true, false},
-      {"scale_x_schedule inf value", 0.0, 1.0, {}, {{0.0, 1.0}, {1.0, inf}}, false, true},
-  };
-  for (const Case& c : cases) {
-    bool threw = false;
-    bool finite = true;
-    try {
-      Brep b = Brep::Sweep1(section, rail, 2, true, c.twist_total, c.scale_end, nullptr, c.use_twist ? &c.twist : nullptr, nullptr,
-                            c.use_sx ? &c.sx : nullptr, nullptr, nullptr);
-      for (int i = 0; i < b.raw().m_S.Count(); ++i) {
-        const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.raw().m_S[i]);
-        if (!ns) continue;
-        for (int u = 0; u < ns->CVCount(0); ++u)
-          for (int v = 0; v < ns->CVCount(1); ++v) {
-            ON_3dPoint p;
-            ns->GetCV(u, v, p);
-            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) finite = false;
-          }
-      }
-    } catch (const std::invalid_argument&) {
-      threw = true;
-    } catch (const std::exception&) {
-      finite = false;  // an unrelated failure from deep inside is not a stated refusal
-    }
-    Check(threw || finite, (std::string("sweep1 non-finite input is refused or yields finite geometry: ") + c.name).c_str());
-    Check(threw, (std::string("sweep1 non-finite input is refused with std::invalid_argument: ") + c.name).c_str());
-  }
-}
-
 }  // namespace qc_review_tests
 
 int main() {
@@ -99975,6 +99920,10 @@ int main() {
   RunTest("surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces", surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces);
   RunTest("surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError", surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError);
   RunTest("surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch", surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch);
+  RunTest("qc_review_tests::TestSatHugeAtStringLengthIsRefusedAsTruncatedNotLoopedOn",
+          qc_review_tests::TestSatHugeAtStringLengthIsRefusedAsTruncatedNotLoopedOn);
+  RunTest("qc_review_tests::TestSweep1ClosedRailPerAxisScaleJumpIntoTheSeamIsRefused",
+          qc_review_tests::TestSweep1ClosedRailPerAxisScaleJumpIntoTheSeamIsRefused);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

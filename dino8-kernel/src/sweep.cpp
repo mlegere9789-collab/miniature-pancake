@@ -4109,9 +4109,10 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
                                                                                            {scale_y_schedule, "scale_y_schedule"}};
     for (const auto& pr : axes) {
       if (!pr.first) continue;
-      for (int k = 0; k + 1 < m; ++k) {
-        const double f0 = fractions[static_cast<size_t>(k)], f1 = fractions[static_cast<size_t>(k + 1)];
-        const double v0 = ScheduleAt(*pr.first, f0), v1 = ScheduleAt(*pr.first, f1);
+      // A closed rail also has the step from the last station into station 0 (the seam): the stations omit fraction 1.
+      for (int k = 0; k + 1 < m + (wrap ? 1 : 0); ++k) {
+        const double f0 = fractions[static_cast<size_t>(k)], f1 = k + 1 < m ? fractions[static_cast<size_t>(k + 1)] : 1.0;
+        const double v0 = ScheduleAt(*pr.first, f0), v1 = ScheduleAt(*pr.first, k + 1 < m ? f1 : fractions[0]);
         const double ratio = std::max(v0, v1) / std::min(v0, v1);
         if (ratio > kMaxAxisScaleStep * (1.0 + 1e-9)) {
           char buf[400];
