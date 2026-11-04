@@ -1805,6 +1805,19 @@ bool Mesh::IsClosedManifold() const {
 Mesh Mesh::Transform(const ON_Xform& xform) const {
   Mesh result = *this;
   result.mesh_.Transform(xform);
+  if (xform.Determinant() < 0.0) {
+    // A handedness-reversing map (mirror, or an odd number of negative
+    // scale factors) turns every triangle's winding inside out relative to
+    // its transformed normal: a mirrored closed box read Volume() == -1000.
+    // ON_Mesh::Flip() reverses the face windings AND negates the stored
+    // normals; the normals ON_Mesh::Transform() already mapped are the
+    // correct outward ones, so they are negated back, leaving only the
+    // winding fixed (the mesh counterpart of Brep::Transform()'s m_bRev
+    // toggle).
+    result.mesh_.Flip();
+    result.mesh_.FlipVertexNormals();
+    result.mesh_.FlipFaceNormals();
+  }
   return result;
 }
 

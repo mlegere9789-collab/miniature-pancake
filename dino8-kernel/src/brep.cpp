@@ -764,6 +764,24 @@ Brep Brep::Transform(const ON_Xform& xform) const {
     throw std::invalid_argument(
         "dino8::kernel::Brep::Transform: xform carries a NaN/unset coefficient (ON_Xform::IsValid() is false)");
   }
+  {
+    // A singular map (a zero scale factor, a projection) flattens the body
+    // onto a plane or line: ON_Brep::Transform() reports success and hands
+    // back a collapsed, invalid body. Refused here with the reason instead.
+    // Relative test (determinant against the product of the column norms,
+    // i.e. the volume of the box spanned by unit-scaled axes) so a small
+    // but genuine scale such as 1e-6 on all axes is still accepted.
+    double col_norm_product = 1.0;
+    for (int c = 0; c < 3; ++c) {
+      col_norm_product *= std::sqrt(xform.m_xform[0][c] * xform.m_xform[0][c] + xform.m_xform[1][c] * xform.m_xform[1][c] +
+                                    xform.m_xform[2][c] * xform.m_xform[2][c]);
+    }
+    if (!(std::fabs(xform.Determinant()) > 1e-9 * col_norm_product)) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::Transform: xform is singular (zero or near-zero determinant relative to its axis "
+          "lengths) - it would flatten the body onto a plane or line");
+    }
+  }
   Brep result = *this;
   if (!result.brep_.Transform(xform)) {
     throw std::invalid_argument(
@@ -2472,16 +2490,23 @@ Brep::SphericalFace ExtractSphericalFace(const ON_Brep& brep, int face_index, co
   if (std::fabs(x.Length() - sph.radius) > tol || std::fabs(y.Length() - sph.radius) > tol ||
       std::fabs(z.Length() - sph.radius) > tol || !x.Unitize() || !y.Unitize() || !z.Unitize() ||
       std::fabs(x * y) > 1e-6 || std::fabs(x * z) > 1e-6 || std::fabs(y * z) > 1e-6 ||
-      (ON_CrossProduct(x, y) - z).Length() > 1e-6) {
+      std::min((ON_CrossProduct(x, y) - z).Length(), (ON_CrossProduct(x, y) + z).Length()) > 1e-6) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
         " is spherical but not in ON_Sphere::GetNurbForm's own parameterization - a foreign sphere "
         "surface is out of scope here");
   }
+  // A reflected sphere (Brep::Transform() under a handedness-reversing
+  // map) has x cross y == -z: its (u, v) parameterization sweeps CLOCKWISE
+  // about the pole axis z and its natural Su x Sv normal points INWARD (so
+  // the toggled m_bRev == true means outward). The record's frame must be
+  // right-handed, so that case is re-expressed below once the u bounds are
+  // known, starting the sweep from the u_max end of the patch.
+  const bool left_handed = ON_DotProduct(ON_CrossProduct(x, y), z) < 0.0;
   f.frame = ON_Plane(center, x, y);
   f.frame.zaxis = z;
   f.frame.UpdateEquation();
-  f.outward = !brep.m_F[face_index].m_bRev;
+  f.outward = left_handed ? brep.m_F[face_index].m_bRev : !brep.m_F[face_index].m_bRev;
   const std::vector<Point2d> uv = FaceOuterUv(fg);
   double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
   for (const Point2d& p : uv) {
@@ -2495,7 +2520,9 @@ Brep::SphericalFace ExtractSphericalFace(const ON_Brep& brep, int face_index, co
         "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
         " is a spherical patch whose trim does not start at u = 0 - not a FromMixedFaces() SphericalFace");
   }
-  const ON_Circle circle(f.frame, f.radius);
+  // The angle <-> NURBS-parameter map belongs to the (x, y) plane alone,
+  // whatever side z is on.
+  const ON_Circle circle(ON_Plane(center, x, y), f.radius);
   double angle = 0.0, t0 = 0.0, t1 = 0.0;
   if (!circle.GetRadianFromNurbFormParameter(u_max, &angle) ||
       !circle.GetRadianFromNurbFormParameter(v_min + 0.5 * ON_PI, &t0) ||
@@ -2507,6 +2534,17 @@ Brep::SphericalFace ExtractSphericalFace(const ON_Brep& brep, int face_index, co
   f.angle = angle;
   f.lat0 = t0 - 0.5 * ON_PI;
   f.lat1 = t1 - 0.5 * ON_PI;
+  if (left_handed) {
+    // Longitude theta (from x toward y, clockwise about z) in [0, angle]
+    // equals counter-clockwise angle (angle - theta) from the direction at
+    // theta = angle, so that direction becomes the right-handed frame's x.
+    const Vector3d x_end = std::cos(angle) * x + std::sin(angle) * y;
+    Vector3d y_end = ON_CrossProduct(z, x_end);
+    y_end.Unitize();
+    f.frame = ON_Plane(center, x_end, y_end);
+    f.frame.zaxis = z;
+    f.frame.UpdateEquation();
+  }
   return f;
 }
 
