@@ -7523,4 +7523,319 @@ Brep ChamferCapRimAngle(const Brep& solid, Point3d point_on_rim, double distance
   return ChamferCapRim(solid, point_on_rim, dw, distance_cap);
 }
 
+// --- FilletRevolveRim / ChamferRevolveRim ------------------------------------
+// See fillet.h for the contract. The solid is read back as ONE closed profile polygon in the (rho, z) half plane of
+// its axis (each analytic face -> one straight profile segment), one corner of that polygon is replaced by an exact
+// circular arc (fillet) or a straight segment (chamfer), and the result is rebuilt by revolving every profile piece.
+namespace {
+
+enum class ProfKind { Plane, Cylinder, Cone, Axis };
+
+struct RevPt {
+  double rho = 0, z = 0;
+};
+
+struct RevolveProfile {
+  ON_3dPoint c0;
+  ON_3dVector ax, u;
+  std::vector<RevPt> v;        // closed polygon, v[i] -> v[(i+1) % n] is segment i
+  std::vector<ProfKind> kind;  // kind[i] = face type of segment i (Axis = the closing segment on the axis, no face)
+  int faces = 0;
+};
+
+bool ClassifyRevolvedProfile(const Brep& solid, RevolveProfile& prof, std::string& why) {
+  const ON_Brep& b = solid.raw();
+  if (b.m_F.Count() < 3 || !b.IsSolid()) { why = "not a closed solid with at least three faces"; return false; }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double tol = std::max(1e-9, bb.Diagonal().Length() * 1e-7);
+  const double rtol = std::max(tol, 1e-6 * bb.Diagonal().Length());
+  struct FaceInfo {
+    ProfKind kind;
+    ON_Plane plane;
+    ON_Cylinder cyl;
+    ON_Cone cone;
+    std::vector<ON_3dPoint> pts;
+  };
+  std::vector<FaceInfo> info;
+  int axis_face = -1;
+  for (int f = 0; f < b.m_F.Count(); ++f) {
+    const ON_BrepFace& face = b.m_F[f];
+    if (face.m_face_index < 0) continue;
+    const ON_Surface* s = face.SurfaceOf();
+    FaceInfo fi;
+    if (!s) { why = "a face has no surface"; return false; }
+    if (s->IsPlanar(&fi.plane, tol)) fi.kind = ProfKind::Plane;
+    else if (s->IsCylinder(&fi.cyl, tol)) fi.kind = ProfKind::Cylinder;
+    else if (s->IsCone(&fi.cone, tol)) fi.kind = ProfKind::Cone;
+    else { why = "a face is not a plane, cylinder or cone - not a polygonal solid of revolution"; return false; }
+    for (int li = 0; li < face.m_li.Count(); ++li) {
+      const ON_BrepLoop& lp = b.m_L[face.m_li[li]];
+      for (int ti = 0; ti < lp.m_ti.Count(); ++ti) {
+        const ON_BrepTrim& tr = b.m_T[lp.m_ti[ti]];
+        for (int k = 0; k < 2; ++k)
+          if (tr.m_vi[k] >= 0) fi.pts.push_back(b.m_V[tr.m_vi[k]].point);
+      }
+    }
+    if (axis_face < 0 && fi.kind != ProfKind::Plane) axis_face = (int)info.size();
+    info.push_back(std::move(fi));
+  }
+  if (axis_face < 0) { why = "no cylindrical or conical face to define a revolution axis"; return false; }
+  {
+    const FaceInfo& a = info[axis_face];
+    prof.c0 = a.kind == ProfKind::Cylinder ? a.cyl.circle.plane.origin : a.cone.ApexPoint();
+    prof.ax = a.kind == ProfKind::Cylinder ? a.cyl.Axis() : a.cone.Axis();
+  }
+  if (!prof.ax.Unitize()) { why = "degenerate axis"; return false; }
+  prof.u = ON_Plane(prof.c0, prof.ax).xaxis;
+  auto to_prof = [&](const ON_3dPoint& p) {
+    const ON_3dVector d = p - prof.c0;
+    const double z = d * prof.ax;
+    RevPt r;
+    r.z = z;
+    r.rho = (d - z * prof.ax).Length();
+    return r;
+  };
+  auto off_axis = [&](const ON_3dPoint& p) { return to_prof(p).rho; };
+  struct Seg {
+    RevPt a, b;
+    ProfKind kind;
+  };
+  std::vector<Seg> segs;
+  for (const FaceInfo& fi : info) {
+    // Coaxiality of the face with the axis.
+    if (fi.kind == ProfKind::Plane) {
+      if (ON_CrossProduct(fi.plane.zaxis, prof.ax).Length() > 1e-7) { why = "a planar face is not perpendicular to the revolution axis"; return false; }
+    } else {
+      const ON_3dVector fax = fi.kind == ProfKind::Cylinder ? fi.cyl.Axis() : fi.cone.Axis();
+      const ON_3dPoint fpt = fi.kind == ProfKind::Cylinder ? fi.cyl.circle.plane.origin : fi.cone.ApexPoint();
+      if (ON_CrossProduct(fax, prof.ax).Length() > 1e-7 || off_axis(fpt) > rtol) { why = "a cylinder / cone is not coaxial with the others (not a solid of revolution)"; return false; }
+    }
+    std::vector<RevPt> d;
+    for (const ON_3dPoint& p : fi.pts) {
+      const RevPt q = to_prof(p);
+      bool seen = false;
+      for (const RevPt& e : d) seen = seen || (std::fabs(e.rho - q.rho) <= rtol && std::fabs(e.z - q.z) <= rtol);
+      if (!seen) d.push_back(q);
+    }
+    Seg sg;
+    sg.kind = fi.kind;
+    if (fi.kind == ProfKind::Plane) {
+      const double z = to_prof(fi.plane.origin).z;
+      for (const RevPt& q : d) if (std::fabs(q.z - z) > rtol) { why = "a planar face's vertices are not in its plane"; return false; }
+      if (d.size() == 1) { sg.a = RevPt{0.0, z}; sg.b = d[0]; }  // a disc cap
+      else if (d.size() == 2) { sg.a = d[0]; sg.b = d[1]; }      // an annulus (or a disc whose rim carries a seam vertex pair)
+      else { why = "a planar face has more than two distinct circles - not a single profile segment"; return false; }
+      if (sg.a.rho > sg.b.rho) std::swap(sg.a, sg.b);
+    } else {
+      if (d.size() != 2) { why = "a cylinder / cone face does not bound exactly two circles - not a single profile segment"; return false; }
+      sg.a = d[0];
+      sg.b = d[1];
+      if (fi.kind == ProfKind::Cylinder) {
+        for (const RevPt& q : d) if (std::fabs(q.rho - fi.cyl.circle.radius) > rtol) { why = "a cylinder face's circles are off its radius"; return false; }
+      } else {
+        const double slope = std::fabs(fi.cone.radius / fi.cone.height);
+        const double zap = to_prof(fi.cone.ApexPoint()).z;
+        for (const RevPt& q : d)
+          if (std::fabs(q.rho - std::fabs(q.z - zap) * slope) > rtol * std::max(1.0, slope)) { why = "a cone face's circles are off its surface"; return false; }
+        for (const RevPt& q : d) if (q.rho <= rtol) { why = "a cone reaches its apex on the axis - not supported"; return false; }
+      }
+    }
+    if (std::hypot(sg.b.rho - sg.a.rho, sg.b.z - sg.a.z) <= rtol) { why = "a face has a degenerate profile segment"; return false; }
+    segs.push_back(sg);
+  }
+  prof.faces = (int)segs.size();
+  // Nodes of the profile polygon.
+  std::vector<RevPt> nodes;
+  std::vector<int> degree;
+  auto node_of = [&](const RevPt& q) {
+    for (size_t i = 0; i < nodes.size(); ++i)
+      if (std::fabs(nodes[i].rho - q.rho) <= rtol && std::fabs(nodes[i].z - q.z) <= rtol) return (int)i;
+    nodes.push_back(q);
+    degree.push_back(0);
+    return (int)nodes.size() - 1;
+  };
+  std::vector<std::array<int, 2>> ends;
+  for (const Seg& s : segs) {
+    const int a = node_of(s.a), bn = node_of(s.b);
+    ++degree[a];
+    ++degree[bn];
+    ends.push_back({a, bn});
+  }
+  std::vector<int> open;
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    if (degree[i] > 2) { why = "three or more faces meet on one profile circle - not a simple solid of revolution"; return false; }
+    if (degree[i] == 1) {
+      if (nodes[i].rho > rtol) { why = "a profile circle is not shared by two faces"; return false; }
+      open.push_back((int)i);
+    }
+  }
+  if (!(open.empty() || open.size() == 2)) { why = "the profile does not close (axis ends)"; return false; }
+  if (open.size() == 2) {
+    ends.push_back({open[0], open[1]});
+    Seg ax;
+    ax.a = nodes[open[0]];
+    ax.b = nodes[open[1]];
+    ax.kind = ProfKind::Axis;
+    segs.push_back(ax);
+  }
+  // Walk the closed polygon.
+  std::vector<bool> used(segs.size(), false);
+  int cur = ends[0][0];
+  const int start = cur;
+  size_t walked = 0;
+  while (true) {
+    int next_seg = -1;
+    for (size_t s = 0; s < segs.size(); ++s)
+      if (!used[s] && (ends[s][0] == cur || ends[s][1] == cur)) { next_seg = (int)s; break; }
+    if (next_seg < 0) break;
+    used[next_seg] = true;
+    ++walked;
+    const bool fwd = ends[next_seg][0] == cur;
+    prof.v.push_back(nodes[cur]);
+    prof.kind.push_back(segs[next_seg].kind);
+    cur = fwd ? ends[next_seg][1] : ends[next_seg][0];
+    if (cur == start) break;
+  }
+  if (cur != start || walked != segs.size()) { why = "the faces do not form ONE closed profile loop (a void or a second shell is not supported)"; return false; }
+  return true;
+}
+
+struct RevolveBlendSpec {
+  double radius = 0;                  // > 0: fillet
+  double d_cap = 0, d_wall = 0;       // > 0: chamfer (cap = the planar face, wall = the other)
+};
+
+Brep BuildRevolveRim(const Brep& solid, Point3d point_on_rim, const RevolveBlendSpec& spec, const std::string& who) {
+  RevolveProfile prof;
+  std::string why;
+  if (!ClassifyRevolvedProfile(solid, prof, why)) throw std::invalid_argument(who + why);
+  const size_t n = prof.v.size();
+  const double rtol = 1e-6 * std::max({1.0, prof.v[0].rho, std::fabs(prof.v[0].z)});
+  // The corner (profile vertex) under the picked point.
+  const ON_3dVector d = point_on_rim - prof.c0;
+  const double pz = d * prof.ax;
+  const double prho = (d - pz * prof.ax).Length();
+  const double ptol = tolerance::kDistance * std::max({1.0, prho, std::fabs(pz)});
+  int k = -1;
+  for (size_t i = 0; i < n; ++i)
+    if (prof.v[i].rho > rtol && std::fabs(prof.v[i].rho - prho) <= ptol && std::fabs(prof.v[i].z - pz) <= ptol) k = (int)i;
+  if (k < 0) throw std::invalid_argument(who + "`point_on_rim` does not lie on a rim circle of the solid");
+  const size_t kp = (k + n - 1) % n, kn = (k + 1) % n;
+  if (prof.kind[kp] == ProfKind::Axis || prof.kind[k] == ProfKind::Axis) throw std::invalid_argument(who + "the rim touches the axis");
+  const RevPt C = prof.v[k], P = prof.v[kp], N = prof.v[kn];
+  const double lp = std::hypot(P.rho - C.rho, P.z - C.z), ln = std::hypot(N.rho - C.rho, N.z - C.z);
+  const double ar = (P.rho - C.rho) / lp, az = (P.z - C.z) / lp;  // unit ray from the corner along the previous segment
+  const double br = (N.rho - C.rho) / ln, bz = (N.z - C.z) / ln;  // ... along the next segment
+  const double cosang = std::max(-1.0, std::min(1.0, ar * br + az * bz));
+  const double theta = std::acos(cosang);  // angle between the two rays, (0, pi)
+  if (!(theta > 1e-6 && theta < ON_PI - 1e-6)) throw std::invalid_argument(who + "the two faces at this rim are tangent (no edge to blend)");
+  double tp, tn;  // setbacks along the previous / next segment
+  if (spec.radius > 0.0) {
+    tp = tn = spec.radius / std::tan(0.5 * theta);
+  } else {
+    const bool prev_plane = prof.kind[kp] == ProfKind::Plane, next_plane = prof.kind[k] == ProfKind::Plane;
+    if (prev_plane == next_plane) throw std::invalid_argument(who + "a chamfer needs exactly one planar face at the rim (distance_cap is measured on it)");
+    tp = prev_plane ? spec.d_cap : spec.d_wall;
+    tn = next_plane ? spec.d_cap : spec.d_wall;
+  }
+  if (!(tp < lp) || !(tn < ln)) {
+    throw std::invalid_argument(who + "the blend would consume a whole adjacent face (setbacks " + std::to_string(tp) + " and " + std::to_string(tn) +
+                                " must be strictly less than the profile lengths " + std::to_string(lp) + " and " + std::to_string(ln) + ")");
+  }
+  const RevPt T1{C.rho + tp * ar, C.z + tp * az}, T2{C.rho + tn * br, C.z + tn * bz};
+  RevPt mid{0, 0};
+  if (spec.radius > 0.0) {
+    double sr = ar + br, sz = az + bz;
+    const double sl = std::hypot(sr, sz);
+    sr /= sl;
+    sz /= sl;
+    const double dc = spec.radius / std::sin(0.5 * theta);
+    const RevPt cen{C.rho + dc * sr, C.z + dc * sz};
+    mid = RevPt{cen.rho - spec.radius * sr, cen.z - spec.radius * sz};
+    // The whole arc must stay off the axis.
+    double min_rho = std::min({T1.rho, T2.rho, mid.rho});
+    if (!(min_rho > rtol)) throw std::invalid_argument(who + "the blend reaches the revolution axis");
+  } else if (!(std::min(T1.rho, T2.rho) > rtol)) {
+    throw std::invalid_argument(who + "the bevel reaches the revolution axis");
+  }
+
+  auto P3 = [&](const RevPt& q) { return prof.c0 + q.rho * prof.u + q.z * prof.ax; };
+  ON_Brep all;
+  auto append_revolved = [&](ON_Curve* crv, const char* what) {
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = crv;
+    rev->m_axis = ON_Line(prof.c0, prof.c0 + prof.ax);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    ON_Brep* p = ON_BrepRevSurface(rev, false, false);
+    if (!p) throw std::invalid_argument(who + "could not build the " + what);
+    for (int f = 0; f < p->m_F.Count(); ++f) {
+      ON_NurbsSurface* ns = p->m_F[f].SurfaceOf()->NurbsSurface();
+      if (!ns) { delete p; throw std::invalid_argument(who + "could not convert the " + what + " to its exact NURBS form"); }
+      const int si = p->m_F[f].m_si;
+      delete p->m_S[si];
+      p->m_S[si] = ns;
+    }
+    all.Append(*p);
+    delete p;
+  };
+  // Every profile piece in order; discs on the axis are left to CapPlanarHoles (as FilletCapRim does).
+  auto emit_line = [&](const RevPt& a, const RevPt& bq, const char* what) {
+    if (a.rho <= rtol || bq.rho <= rtol) {
+      if (std::fabs(a.z - bq.z) > rtol) throw std::invalid_argument(who + "a face reaches the axis away from a flat cap - not supported");
+      return;  // flat disc: capped below
+    }
+    append_revolved(new ON_LineCurve(P3(a), P3(bq)), what);
+  };
+  for (size_t i = 0; i < n; ++i) {
+    if (prof.kind[i] == ProfKind::Axis) continue;
+    RevPt a = prof.v[i], bq = prof.v[(i + 1) % n];
+    if (i == kp) bq = T1;
+    if (i == (size_t)k) a = T2;
+    emit_line(a, bq, "face");
+  }
+  if (spec.radius > 0.0) append_revolved(new ON_ArcCurve(ON_Arc(P3(T1), P3(mid), P3(T2))), "torus blend");
+  else append_revolved(new ON_LineCurve(P3(T1), P3(T2)), "bevel");
+
+  Brep out;
+  out.raw() = all;
+  double maxrho = 1.0;
+  for (const RevPt& q : prof.v) maxrho = std::max(maxrho, q.rho);
+  const double jt = 1e-6 * maxrho;
+  try {
+    out.JoinNakedEdges(jt);
+    out.CapPlanarHoles(jt);
+    out.UnifyNormals();
+  } catch (const std::exception& ex) {
+    throw std::invalid_argument(who + "assembly failed: " + ex.what());
+  }
+  if (!out.raw().IsSolid() || !out.raw().IsValid() || out.raw().m_F.Count() != prof.faces + 1) {
+    throw std::invalid_argument(who + "the assembled pieces did not form a valid closed solid");
+  }
+  return out;
+}
+
+}  // namespace
+
+Brep FilletRevolveRim(const Brep& solid, Point3d point_on_rim, double radius) {
+  const std::string who = "dino8::kernel::FilletRevolveRim: ";
+  if (!std::isfinite(radius) || !(radius > 0.0)) throw std::invalid_argument(who + "radius must be finite and strictly positive");
+  RevolveBlendSpec s;
+  s.radius = radius;
+  return BuildRevolveRim(solid, point_on_rim, s, who);
+}
+
+Brep ChamferRevolveRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap) {
+  const std::string who = "dino8::kernel::ChamferRevolveRim: ";
+  if (!std::isfinite(distance_wall) || !std::isfinite(distance_cap) || !(distance_wall > 0.0) || !(distance_cap > 0.0)) {
+    throw std::invalid_argument(who + "distance_wall and distance_cap must both be finite and strictly positive");
+  }
+  RevolveBlendSpec s;
+  s.d_wall = distance_wall;
+  s.d_cap = distance_cap;
+  return BuildRevolveRim(solid, point_on_rim, s, who);
+}
+
 }  // namespace dino8::kernel

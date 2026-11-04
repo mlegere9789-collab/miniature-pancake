@@ -92904,6 +92904,396 @@ void TestChamferCapRimMatchesChamferCylinderRimOnDensePolygonCylinder() {
 
 }  // namespace fillet_cap_rim_tests
 
+// ---------------------------------------------------------------------------
+// FilletRevolveRim / ChamferRevolveRim (fillet.h): exact torus-patch fillet / cone-plane bevel on ONE rim of a
+// polygonal solid of revolution - the countersink (cone meets plate top), a plain plate rim (Pappus closed form),
+// and an inside corner of a stepped shaft (concave: adds material). Every number is checked against a value derived
+// independently of the library's tangent-length formula: the ball centre is solved from "distance r from both
+// profile lines" (a 2x2 linear system), the volume by Green's theorem V = pi * closed-integral rho^2 dz over the
+// blended profile, and the whole blend surface is MEASURED point by point off the returned B-rep (circumcircle of
+// three surface points per meridian -> ball radius, ball-centre distance to both parent faces, tangency of the end
+// curves to the parents, surface normals against the parents' normals), never trusted from the construction.
+// ---------------------------------------------------------------------------
+namespace revolve_rim_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::ChamferRevolveRim;
+using dino8::kernel::FilletRevolveRim;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+struct RZ {
+  double rho, z;
+};
+
+// A solid of revolution from a closed (rho, z) polygon, counter-clockwise, about the axis through `base` along `axis`:
+// every profile segment off the axis is revolved (a flat segment ending on the axis is left for CapPlanarHoles).
+Brep MakeRevolvedPolygon(const std::vector<RZ>& poly, Point3d base, Vector3d axis) {
+  axis.Unitize();
+  const ON_Plane pl(base, axis);
+  auto P = [&](const RZ& q) { return base + q.rho * pl.xaxis + q.z * axis; };
+  ON_Brep all;
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const RZ a = poly[i], b = poly[(i + 1) % poly.size()];
+    if (a.rho == 0.0 && b.rho == 0.0) continue;                // on the axis
+    if ((a.rho == 0.0 || b.rho == 0.0) && a.z == b.z) continue;  // flat disc, capped below
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = new ON_LineCurve(P(a), P(b));
+    rev->m_axis = ON_Line(base, base + axis);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    ON_Brep* piece = ON_BrepRevSurface(rev, false, false);
+    for (int f = 0; f < piece->m_F.Count(); ++f) {
+      ON_NurbsSurface* ns = piece->m_F[f].SurfaceOf()->NurbsSurface();
+      const int si = piece->m_F[f].m_si;
+      delete piece->m_S[si];
+      piece->m_S[si] = ns;
+    }
+    all.Append(*piece);
+    delete piece;
+  }
+  Brep k;
+  k.raw() = all;
+  k.JoinNakedEdges(1e-6);
+  k.CapPlanarHoles(1e-6);
+  k.UnifyNormals();
+  return k;
+}
+
+// pi * closed-integral rho^2 dz over a polygon (counter-clockwise), with optional replacement of corner `k` by the
+// circular blend of radius r solved independently: centre c with (c - C).n_a = r and (c - C).n_b = r where n_a, n_b are
+// the unit normals of the two rays that point into the wedge. Returns the blended volume; fills the ball centre and the
+// two tangent points.
+struct Blended {
+  double volume = 0;
+  RZ centre{0, 0}, t1{0, 0}, t2{0, 0};
+};
+
+Blended GreenVolume(const std::vector<RZ>& poly, int k, double r) {
+  Blended out;
+  const size_t n = poly.size();
+  std::vector<RZ> pts;  // the polygon with the arc replaced by a fine polyline
+  for (size_t i = 0; i < n; ++i) {
+    if (k < 0 || (int)i != k) { pts.push_back(poly[i]); continue; }
+    const RZ C = poly[i], A = poly[(i + n - 1) % n], B = poly[(i + 1) % n];
+    double ax = A.rho - C.rho, az = A.z - C.z, bx = B.rho - C.rho, bz = B.z - C.z;
+    const double la = std::hypot(ax, az), lb = std::hypot(bx, bz);
+    ax /= la; az /= la; bx /= lb; bz /= lb;
+    // normal of ray a pointing towards b's side, and vice versa
+    double nax = -az, naz = ax;
+    if (nax * bx + naz * bz < 0) { nax = -nax; naz = -naz; }
+    double nbx = -bz, nbz = bx;
+    if (nbx * ax + nbz * az < 0) { nbx = -nbx; nbz = -nbz; }
+    // solve [nax naz; nbx nbz] (dx, dz) = (r, r)
+    const double det = nax * nbz - naz * nbx;
+    const double dx = (r * nbz - naz * r) / det, dz = (nax * r - r * nbx) / det;
+    out.centre = RZ{C.rho + dx, C.z + dz};
+    out.t1 = RZ{out.centre.rho - r * nax, out.centre.z - r * naz};  // foot on line a
+    out.t2 = RZ{out.centre.rho - r * nbx, out.centre.z - r * nbz};  // foot on line b
+    double a0 = std::atan2(out.t1.z - out.centre.z, out.t1.rho - out.centre.rho);
+    double a1 = std::atan2(out.t2.z - out.centre.z, out.t2.rho - out.centre.rho);
+    while (a1 - a0 > ON_PI) a1 -= 2 * ON_PI;
+    while (a1 - a0 < -ON_PI) a1 += 2 * ON_PI;
+    const int N = 4000;
+    for (int s = 0; s <= N; ++s) {
+      const double a = a0 + (a1 - a0) * s / N;
+      pts.push_back(RZ{out.centre.rho + r * std::cos(a), out.centre.z + r * std::sin(a)});
+    }
+  }
+  double integral = 0;
+  for (size_t i = 0; i < pts.size(); ++i) {
+    const RZ p = pts[i], q = pts[(i + 1) % pts.size()];
+    integral += (q.z - p.z) * (p.rho * p.rho + p.rho * q.rho + q.rho * q.rho) / 3.0;
+  }
+  out.volume = ON_PI * integral;
+  return out;
+}
+
+struct Parent {  // an infinite plane z = const (cone_slope = 0) or the infinite cone/cylinder generatrix line in the profile
+  RZ p, q;       // two points on the profile line
+};
+
+double DistToProfileLine(const Parent& L, const RZ& x) {
+  const double dx = L.q.rho - L.p.rho, dz = L.q.z - L.p.z;
+  return std::fabs((x.rho - L.p.rho) * dz - (x.z - L.p.z) * dx) / std::hypot(dx, dz);
+}
+
+struct Measured {
+  double radius_err = 0;      // | circumradius of 3 blend points on a meridian - r |
+  double centre_err = 0;      // | ball centre (circumcentre) distance to either parent face - r |
+  double tangent_err = 0;     // distance of the two end curves to the parent faces
+  double normal_err = 0;      // | surface normal at the end curves vs parent face normal | (angle, radians)
+  double axial_err = 0;       // meridian-plane spread of the blend: points off the revolution symmetry
+  int stations = 0;
+};
+
+// Sample the blend face (the face whose surface is neither plane/cylinder/cone) at `stations` meridians.
+Measured MeasureBlend(const Brep& res, const Point3d& base, Vector3d axis, double r, const Parent& pa, const Parent& pb,
+                      double tol_axis_plane) {
+  axis.Unitize();
+  const ON_Plane pl(base, axis);
+  auto rz = [&](const ON_3dPoint& x) {
+    const ON_3dVector d = x - base;
+    const double z = d * axis;
+    return RZ{(d - z * axis).Length(), z};
+  };
+  Measured m;
+  int blend_face = -1;
+  for (int f = 0; f < res.raw().m_F.Count(); ++f) {
+    const ON_Surface* s = res.raw().m_F[f].SurfaceOf();
+    if (!s->IsPlanar(nullptr, tol_axis_plane) && !s->IsCylinder(nullptr, tol_axis_plane) && !s->IsCone(nullptr, tol_axis_plane)) blend_face = f;
+  }
+  if (blend_face < 0) return m;
+  const ON_Surface* s = res.raw().m_F[blend_face].SurfaceOf();
+  const ON_Interval du = s->Domain(0), dv = s->Domain(1);
+  const int S = 36;
+  for (int i = 0; i < S; ++i) {
+    const double u = du.ParameterAt((i + 0.37) / S);
+    const ON_3dPoint e0 = s->PointAt(u, dv.ParameterAt(0.0)), mid = s->PointAt(u, dv.ParameterAt(0.5)), e1 = s->PointAt(u, dv.ParameterAt(1.0));
+    // circumcircle of (e0, mid, e1)
+    const ON_3dVector a = e0 - mid, b = e1 - mid;
+    const ON_3dVector ab = ON_CrossProduct(a, b);
+    const double ab2 = ab.LengthSquared();
+    const ON_3dVector off = (b.LengthSquared() * ON_CrossProduct(ab, a) + a.LengthSquared() * ON_CrossProduct(b, ab)) / (2.0 * ab2);
+    const ON_3dPoint cen = mid + off;
+    const double circum = off.Length();
+    m.radius_err = std::max(m.radius_err, std::fabs(circum - r));
+    const RZ c = rz(cen);
+    m.centre_err = std::max({m.centre_err, std::fabs(DistToProfileLine(pa, c) - r), std::fabs(DistToProfileLine(pb, c) - r)});
+    // the three points are in ONE meridian plane (revolution symmetry)
+    const ON_3dVector n_mer = ON_CrossProduct(axis, ON_3dVector(mid - base) - ((mid - base) * axis) * axis);
+    m.axial_err = std::max({m.axial_err, std::fabs((e0 - base) * n_mer) / std::max(1e-12, n_mer.Length()), std::fabs((e1 - base) * n_mer) / std::max(1e-12, n_mer.Length())});
+    // the end curves lie on the parent faces, one on each
+    const double d0a = DistToProfileLine(pa, rz(e0)), d0b = DistToProfileLine(pb, rz(e0));
+    const double d1a = DistToProfileLine(pa, rz(e1)), d1b = DistToProfileLine(pb, rz(e1));
+    m.tangent_err = std::max(m.tangent_err, std::min(std::max(d0a, d1b), std::max(d0b, d1a)));
+    // G1: surface normal at each end vs the profile-line normal direction (angle between, either sign)
+    for (int end = 0; end < 2; ++end) {
+      const double v = dv.ParameterAt(end);
+      ON_3dPoint Pt;
+      ON_3dVector Du, Dv;
+      if (!s->Ev1Der(u, v, Pt, Du, Dv)) continue;
+      ON_3dVector nrm = ON_CrossProduct(Du, Dv);
+      if (!nrm.Unitize()) continue;
+      const RZ q = rz(Pt);
+      const double d_a = DistToProfileLine(pa, q), d_b = DistToProfileLine(pb, q);
+      const Parent& L = d_a < d_b ? pa : pb;
+      // parent normal in the meridian plane: perpendicular to the profile line; express in 3D at this meridian
+      ON_3dVector rad = (Pt - base) - ((Pt - base) * axis) * axis;
+      rad.Unitize();
+      double tx = L.q.rho - L.p.rho, tz = L.q.z - L.p.z;
+      const double tl = std::hypot(tx, tz);
+      tx /= tl; tz /= tl;
+      ON_3dVector pn = (-tz) * rad + tx * axis;
+      m.normal_err = std::max(m.normal_err, std::acos(std::min(1.0, std::fabs(nrm * pn))));
+    }
+    ++m.stations;
+  }
+  return m;
+}
+
+std::string Reason(const std::function<void()>& f) {
+  try { f(); } catch (const std::exception& e) { return e.what(); }
+  return "";
+}
+
+// A 90-degree countersunk hole in a round plate: outer radius 5, thickness 2, through-hole radius 1, countersink to
+// radius 2 at the top (cone from (2,2) down to (1,1)).
+const std::vector<RZ> kCountersink = {{1, 0}, {5, 0}, {5, 2}, {2, 2}, {1, 1}};
+
+void TestFilletRevolveRimCountersinkMatchesGreenIntegralAndBallGeometry() {
+  const Point3d base(1.0, -2.0, 0.5);
+  const Vector3d axis(0, 0, 1);
+  const Brep plate = MakeRevolvedPolygon(kCountersink, base, axis);
+  // closed form of the sharp part: pi (25 - 1) 2 - 4 pi / 3
+  const double v0 = ON_PI * 24.0 * 2.0 - 4.0 * ON_PI / 3.0;
+  Check(plate.raw().IsSolid() && plate.raw().IsValid() && plate.raw().m_F.Count() == 5, "[countersink] fixture: 5-face closed valid revolved plate");
+  Check(std::fabs(plate.Volume() - v0) < 1e-6 * v0, ("[countersink] fixture volume " + std::to_string(plate.Volume()) + " vs closed form " + std::to_string(v0)).c_str());
+  Check(std::fabs(GreenVolume(kCountersink, -1, 0).volume - v0) < 1e-12 * v0, "[countersink] the independent Green integral reproduces the closed form of the sharp plate");
+
+  const Parent top{{2, 2}, {5, 2}}, cone{{2, 2}, {1, 1}};
+  struct C { const char* name; int corner; Point3d rim; double r; Parent a, b; };
+  // corner index 3 = (2,2): top rim of the countersink (cone meets the plate top); corner 4 = (1,1): cone meets the hole wall.
+  const Parent hole{{1, 1}, {1, 0}};
+  const C cases[] = {
+      {"top rim (cone/plane, 135 deg) r=0.30", 3, base + Vector3d(2.0 * std::cos(0.9), 2.0 * std::sin(0.9), 2.0), 0.30, top, cone},
+      {"top rim (cone/plane) r=0.80", 3, base + Vector3d(2.0, 0, 2.0), 0.80, top, cone},
+      {"cone/hole-wall rim (135 deg) r=0.20", 4, base + Vector3d(std::cos(2.2), std::sin(2.2), 1.0), 0.20, cone, hole},
+  };
+  for (const C& c : cases) {
+    const std::string tag = std::string("[countersink ") + c.name + "] ";
+    const Brep res = FilletRevolveRim(plate, c.rim, c.r);
+    fillet_cap_rim_tests::CheckClosedValidSolid(res, 6, tag);
+    const Brep::CheckReport rep = res.Check();
+    Check(rep.is_closed && rep.is_oriented && rep.topology_valid, (tag + "Brep::Check(): closed, oriented, topology valid; issues=" + std::to_string(rep.issues.size())).c_str());
+    const Blended ind = GreenVolume(kCountersink, c.corner, c.r);
+    Check(std::fabs(res.Volume() - ind.volume) < 1e-6 * ind.volume,
+          (tag + "volume " + std::to_string(res.Volume()) + " vs independent Green integral " + std::to_string(ind.volume)).c_str());
+    Check(res.Volume() < v0, (tag + "a convex rim blend removes material").c_str());
+    const Measured m = MeasureBlend(res, base, axis, c.r, c.a, c.b, 1e-8);
+    Check(m.stations == 36, (tag + "blend face found and sampled at 36 meridians").c_str());
+    Check(m.radius_err < 1e-9, (tag + "circumradius of the blend cross-section = r, max err " + std::to_string(m.radius_err)).c_str());
+    Check(m.centre_err < 1e-9, (tag + "ball centre is exactly r from BOTH parent faces, max err " + std::to_string(m.centre_err)).c_str());
+    Check(m.tangent_err < 1e-9, (tag + "the two end curves lie on the two parent faces, max dist " + std::to_string(m.tangent_err)).c_str());
+    Check(m.normal_err < 1e-7, (tag + "surface normal equals the parent face normal at both ends (G1), max angle " + std::to_string(m.normal_err)).c_str());
+    Check(m.axial_err < 1e-9, (tag + "every cross-section lies in one meridian plane, max off-plane " + std::to_string(m.axial_err)).c_str());
+    // Torus read back: minor radius r, centre-circle radius from the independently solved ball centre.
+    bool found = false;
+    for (int f = 0; f < res.raw().m_F.Count(); ++f) {
+      ON_Torus t;
+      if (res.raw().m_F[f].SurfaceOf()->IsTorus(&t, 1e-8)) {
+        found = true;
+        Check(std::fabs(t.minor_radius - c.r) < 1e-9 && std::fabs(t.major_radius - ind.centre.rho) < 1e-9,
+              (tag + "ON_Torus read back: minor " + std::to_string(t.minor_radius) + ", major " + std::to_string(t.major_radius) + " vs solved centre rho " +
+               std::to_string(ind.centre.rho)).c_str());
+      }
+    }
+    Check(found, (tag + "the blend is an exact torus (IsTorus)").c_str());
+  }
+}
+
+void TestFilletRevolveRimPlateRimMatchesPappusAndConcaveCornerAddsMaterial() {
+  // Convex 90-degree rim of the plate (the outer top edge) is the cylinder-rim torus FilletCapRim also builds: same
+  // closed Pappus form, an oblique axis.
+  {
+    const Point3d base(0.3, 0.2, -0.4);
+    const Vector3d axis(1, 2, 3);
+    const Brep plate = MakeRevolvedPolygon(kCountersink, base, axis);
+    ON_3dVector ax(axis);
+    ax.Unitize();
+    const ON_Plane pl(base, ax);
+    const double R = 5.0, r = 0.6;
+    const Point3d rim = base + R * (std::cos(1.3) * pl.xaxis + std::sin(1.3) * pl.yaxis) + 2.0 * ax;
+    const Brep res = FilletRevolveRim(plate, rim, r);
+    fillet_cap_rim_tests::CheckClosedValidSolid(res, 6, "[plate outer rim, oblique axis] ");
+    const double removed = 2.0 * ON_PI * (r * r * (R - r / 2) - (ON_PI * r * r / 4) * (R - r) - r * r * r / 3);
+    const double v0 = ON_PI * 24.0 * 2.0 - 4.0 * ON_PI / 3.0;
+    // Brep::Volume() is a numerical quadrature (~1e-7 relative on these parts): compare the ABSOLUTE volumes at 1e-6 of the part.
+    Check(std::fabs(res.Volume() - (v0 - removed)) < 1e-6 * v0,
+          ("[plate outer rim] volume " + std::to_string(res.Volume()) + " vs sharp-plate closed form minus the Pappus removal " + std::to_string(v0 - removed)).c_str());
+    const Measured m = MeasureBlend(res, base, axis, r, Parent{{5, 2}, {1, 2}}, Parent{{5, 2}, {5, 0}}, 1e-8);
+    Check(m.stations == 36 && m.radius_err < 1e-9 && m.centre_err < 1e-9 && m.tangent_err < 1e-9 && m.normal_err < 1e-7,
+          ("[plate outer rim, oblique axis] measured: radius err " + std::to_string(m.radius_err) + ", centre err " + std::to_string(m.centre_err) + ", tangent err " +
+           std::to_string(m.tangent_err) + ", normal err " + std::to_string(m.normal_err)).c_str());
+  }
+  // Concave inside corner of a stepped shaft: a flange (R2=3, 1 thick) carrying a shaft (R1=1.5, 3 long). The fillet
+  // ADDS material: V = V0 + 2 pi [ r^2 (R1 + r/2) - (pi r^2 / 4)(R1 + r) + r^3/3 ].
+  {
+    const double R1 = 1.5, R2 = 3.0, H1 = 1.0, H2 = 3.0, r = 0.4;
+    const std::vector<RZ> shaft = {{0, 0}, {R2, 0}, {R2, H1}, {R1, H1}, {R1, H1 + H2}, {0, H1 + H2}};
+    const Point3d base(-1, 2, 0);
+    const Vector3d axis(0, 0, 1);
+    const Brep sh = MakeRevolvedPolygon(shaft, base, axis);
+    const double v0 = ON_PI * (R2 * R2 * H1 + R1 * R1 * H2);
+    Check(sh.raw().IsSolid() && sh.raw().IsValid() && sh.raw().m_F.Count() == 5 && std::fabs(sh.Volume() - v0) < 1e-6 * v0, "[shaft] fixture: 5 faces, valid, volume = pi(R2^2 H1 + R1^2 H2)");
+    const Point3d rim = base + Vector3d(R1 * std::cos(0.5), R1 * std::sin(0.5), H1);
+    const Brep res = FilletRevolveRim(sh, rim, r);
+    fillet_cap_rim_tests::CheckClosedValidSolid(res, 6, "[shaft inside corner] ");
+    const double added = 2.0 * ON_PI * (r * r * (R1 + r / 2) - (ON_PI * r * r / 4) * (R1 + r) + r * r * r / 3);
+    Check(std::fabs(res.Volume() - (v0 + added)) < 1e-6 * v0 && res.Volume() > v0,
+          ("[shaft inside corner] volume " + std::to_string(res.Volume()) + " vs sharp closed form + ADDED closed form " + std::to_string(v0 + added)).c_str());
+    const Measured m = MeasureBlend(res, base, axis, r, Parent{{R1, H1}, {R1, H1 + H2}}, Parent{{R1, H1}, {R2, H1}}, 1e-8);
+    Check(m.stations == 36 && m.radius_err < 1e-9 && m.centre_err < 1e-9 && m.tangent_err < 1e-9 && m.normal_err < 1e-7,
+          ("[shaft inside corner] measured: radius err " + std::to_string(m.radius_err) + ", centre err " + std::to_string(m.centre_err) + ", tangent err " +
+           std::to_string(m.tangent_err) + ", normal err " + std::to_string(m.normal_err)).c_str());
+    // the solid-cylinder cap rim (profile touches the axis) through the same function: plain capped cylinder top rim
+    const Brep cyl = MakeRevolvedPolygon({{0, 0}, {2, 0}, {2, 5}, {0, 5}}, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+    const Brep rc = FilletRevolveRim(cyl, Point3d(2, 0, 5), 0.5);
+    const Brep rc2 = dino8::kernel::FilletCapRim(cyl, Point3d(2, 0, 5), 0.5);
+    Check(rc.raw().IsValid() && rc.raw().IsSolid() && std::fabs(rc.Volume() - rc2.Volume()) < 1e-9 * rc2.Volume(),
+          ("[solid cylinder] agrees with FilletCapRim: " + std::to_string(rc.Volume()) + " vs " + std::to_string(rc2.Volume())).c_str());
+  }
+}
+
+void TestChamferRevolveRimCountersinkBevelMatchesGreenIntegral() {
+  const Point3d base(0, 0, 0);
+  const Vector3d axis(0, 0, 1);
+  const Brep plate = MakeRevolvedPolygon(kCountersink, base, axis);
+  const double v0 = ON_PI * 24.0 * 2.0 - 4.0 * ON_PI / 3.0;
+  const double dcap = 0.5, dwall = 0.3;
+  const Point3d rim(2.0, 0, 2.0);
+  const Brep res = ChamferRevolveRim(plate, rim, dwall, dcap);
+  fillet_cap_rim_tests::CheckClosedValidSolid(res, 6, "[countersink chamfer] ", false);
+  // independent polygon: the corner (2,2) replaced by the two setback points: dcap along the plate top (+rho), dwall down the cone
+  const double s2 = std::sqrt(0.5);
+  const std::vector<RZ> poly = {{1, 0}, {5, 0}, {5, 2}, {2 + dcap, 2}, {2 - dwall * s2, 2 - dwall * s2}, {1, 1}};
+  const double vch = GreenVolume(poly, -1, 0).volume;
+  Check(std::fabs(res.Volume() - vch) < 1e-6 * vch, ("[countersink chamfer] volume " + std::to_string(res.Volume()) + " vs Green " + std::to_string(vch)).c_str());
+  // The bevel face is read back as an exact cone whose generatrix passes through both setback points.
+  bool found = false;
+  const ON_3dPoint pc(2 + dcap, 0, 2), pw(2 - dwall * s2, 0, 2 - dwall * s2);
+  for (int f = 0; f < res.raw().m_F.Count(); ++f) {
+    ON_Cone cone;
+    const ON_Surface* s = res.raw().m_F[f].SurfaceOf();
+    if (!s->IsCone(&cone, 1e-8)) continue;
+    // a cone whose profile contains both setback points: |rho - |z - z_apex| slope| = 0 at both
+    const double slope = std::fabs(cone.radius / cone.height);
+    const double zap = cone.ApexPoint().z;
+    if (std::fabs(pc.x - std::fabs(pc.z - zap) * slope) < 1e-8 && std::fabs(pw.x - std::fabs(pw.z - zap) * slope) < 1e-8) found = true;
+  }
+  Check(found, "[countersink chamfer] the bevel is an exact cone through both setback points (IsCone)");
+  Check(res.Volume() < v0, "[countersink chamfer] a convex bevel removes material");
+}
+
+void TestRevolveRimRefusesWithReasons() {
+  const Point3d base(0, 0, 0);
+  const Vector3d axis(0, 0, 1);
+  const Brep plate = MakeRevolvedPolygon(kCountersink, base, axis);
+  const Point3d top_rim(2.0, 0, 2.0);
+  std::string m;
+  // radius too big: the setback t = r / tan(67.5 deg) = 0.4142 r must stay below the 3-long plate top and the sqrt(2)-long cone (r < 3.414).
+  m = Reason([&] { FilletRevolveRim(plate, top_rim, 3.5); });
+  Check(m.find("consume a whole adjacent face") != std::string::npos, ("[radius too big for the cone face] refused with a reason: " + m).c_str());
+  m = Reason([&] { FilletRevolveRim(plate, Point3d(5.0, 0, 2.0), 2.0); });
+  Check(m.find("consume a whole adjacent face") != std::string::npos, ("[radius 2 on the outer rim of a 2-thick plate] refused with a reason: " + m).c_str());
+  // just inside the limit is accepted (the 90-degree outer rim: t = r must stay below the 2-long plate wall)
+  m = Reason([&] { FilletRevolveRim(plate, Point3d(5.0, 0, 2.0), 1.9); });
+  Check(m.empty(), ("[radius 1.9 on the outer rim] still accepted: " + m).c_str());
+  m = Reason([&] { FilletRevolveRim(plate, Point3d(3.0, 0, 2.0), 0.3); });
+  Check(m.find("rim circle") != std::string::npos, ("[point on a face, not on a rim] refused with a reason: " + m).c_str());
+  m = Reason([&] { FilletRevolveRim(plate, top_rim, -0.1); });
+  Check(!m.empty(), ("[negative radius] refused: " + m).c_str());
+  m = Reason([&] { FilletRevolveRim(plate, top_rim, std::nan("")); });
+  Check(!m.empty(), ("[NaN radius] refused: " + m).c_str());
+  // a box has no cylinder / cone to define an axis
+  m = Reason([&] { FilletRevolveRim(Brep::BoxWelded(0, 0, 0, 1, 1, 1), Point3d(1, 0, 0), 0.1); });
+  Check(m.find("no cylindrical or conical face") != std::string::npos, ("[welded box] refused with a reason: " + m).c_str());
+  m = Reason([&] { FilletRevolveRim(Brep::Box(0, 0, 0, 1, 1, 1), Point3d(1, 0, 0), 0.1); });
+  Check(m.find("not a closed solid") != std::string::npos, ("[surface-only box] refused with a reason: " + m).c_str());
+  // a cylinder split in two collinear faces: the rim between them is tangent, nothing to blend
+  {
+    const Brep split = MakeRevolvedPolygon({{0, 0}, {2, 0}, {2, 2}, {2, 5}, {0, 5}}, base, axis);
+    m = Reason([&] { FilletRevolveRim(split, Point3d(2, 0, 2), 0.3); });
+    Check(m.find("tangent") != std::string::npos, ("[tangent faces at the rim] refused with a reason: " + m).c_str());
+  }
+  // an already-filleted solid has a torus face: refused, never re-read as something else
+  {
+    const Brep once = FilletRevolveRim(plate, top_rim, 0.3);
+    m = Reason([&] { FilletRevolveRim(once, Point3d(5.0, 0, 2.0), 0.3); });
+    Check(m.find("not a plane, cylinder or cone") != std::string::npos, ("[already-blended solid] refused with a reason: " + m).c_str());
+  }
+  // two coaxial cylinders is fine; a NON-coaxial one is not a solid of revolution
+  {
+    const Brep a = fillet_cap_rim_tests::MakeCappedCylinder(Point3d(0, 0, 0), Vector3d(0, 0, 1), 2.0, 4.0);
+    const Brep b = fillet_cap_rim_tests::MakeCappedCylinder(Point3d(0, 0, 0), Vector3d(1, 0, 0), 1.0, 4.0);
+    m = Reason([&] {
+      const Brep u = dino8::kernel::BooleanCombineGeneral(a, b, dino8::kernel::BooleanOp::Union);
+      FilletRevolveRim(u, Point3d(2, 0, 4), 0.2);
+    });
+    Check(!m.empty(), ("[cylinder + perpendicular cylinder union] refused: " + m).c_str());
+  }
+  // chamfer: two distances needed, exactly one planar face, setbacks inside the faces
+  m = Reason([&] { ChamferRevolveRim(plate, top_rim, 0.0, 0.3); });
+  Check(!m.empty(), ("[chamfer zero distance] refused: " + m).c_str());
+  m = Reason([&] { ChamferRevolveRim(plate, top_rim, 5.0, 0.3); });
+  Check(m.find("consume a whole adjacent face") != std::string::npos, ("[chamfer longer than the cone] refused with a reason: " + m).c_str());
+  m = Reason([&] { ChamferRevolveRim(plate, Point3d(1.0, 0, 1.0), 0.3, 0.3); });
+  Check(m.find("exactly one planar face") != std::string::npos, ("[chamfer on the cone/cylinder rim] refused with a reason: " + m).c_str());
+}
+
+}  // namespace revolve_rim_tests
+
 // Sweep closures: (1) Sweep2 / Sweep2Sections along rails with TANGENT JUMPS
 // (corners): a station pair sits exactly at each paired corner pair and the skin
 // is C0 there, so the wall edges stay on the rails; closed rails with a corner
@@ -96428,6 +96818,14 @@ int main() {
           fillet_cap_rim_tests::TestChamferCapRimUnequalDistancesAndAngleMatchPappus);
   RunTest("fillet_cap_rim_tests::TestChamferCapRimMatchesChamferCylinderRimOnDensePolygonCylinder",
           fillet_cap_rim_tests::TestChamferCapRimMatchesChamferCylinderRimOnDensePolygonCylinder);
+  RunTest("revolve_rim_tests::TestFilletRevolveRimCountersinkMatchesGreenIntegralAndBallGeometry",
+          revolve_rim_tests::TestFilletRevolveRimCountersinkMatchesGreenIntegralAndBallGeometry);
+  RunTest("revolve_rim_tests::TestFilletRevolveRimPlateRimMatchesPappusAndConcaveCornerAddsMaterial",
+          revolve_rim_tests::TestFilletRevolveRimPlateRimMatchesPappusAndConcaveCornerAddsMaterial);
+  RunTest("revolve_rim_tests::TestChamferRevolveRimCountersinkBevelMatchesGreenIntegral",
+          revolve_rim_tests::TestChamferRevolveRimCountersinkBevelMatchesGreenIntegral);
+  RunTest("revolve_rim_tests::TestRevolveRimRefusesWithReasons",
+          revolve_rim_tests::TestRevolveRimRefusesWithReasons);
 
   RunTest("sweep_closure_tests::TestSweep2CornerPolylineWallEdgesStayOnRails",
           sweep_closure_tests::TestSweep2CornerPolylineWallEdgesStayOnRails);

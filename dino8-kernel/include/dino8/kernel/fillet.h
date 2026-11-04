@@ -2360,4 +2360,31 @@ Brep ChamferCapRims(const Brep& solid, double wall_low, double cap_low, double w
 Brep ChamferCapRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap);
 Brep ChamferCapRimAngle(const Brep& solid, Point3d point_on_rim, double distance_cap, double angle);
 
+// --- FilletRevolveRim / ChamferRevolveRim ------------------------------------
+//
+// Exact fillet / chamfer of ONE circular rim of a polygonal solid of revolution: a closed solid whose faces are all
+// planes perpendicular to one axis, cylinders and cones (not touching the axis at an apex) coaxial with it, and whose
+// faces form a single closed profile loop in the (rho, z) half plane (plates with a countersunk or counterbored hole,
+// stepped shafts, flanged rings, plain capped cylinders / frustums...). The classification reads the real faces back
+// (ON_Surface::IsPlanar / IsCylinder / IsCone, face vertices), never trusts how the solid was made. It is the
+// countersink / hole-rim sibling of FilletCapRim: a cone meeting a plane (the rim of a countersink, 135 degrees on the
+// material side for a 90-degree countersink) gets an exact torus patch, a cylinder meeting a plane the torus
+// FilletCapRim already builds, a cone meeting a cylinder a torus too - convex rims remove material, concave (inside
+// corner) rims add it, with the same formula t = r / tan(theta/2) for the tangent length on both faces (theta = the
+// angle between the two profile rays leaving the corner). Every face of the result is an exact rational NURBS
+// ON_RevSurface of a straight profile segment or one circular arc; seams are literally shared edges; the result is
+// ON_Brep::IsValid() and IsSolid(), face count input + 1.
+//
+// `ChamferRevolveRim` takes `distance_cap` along the planar face at the rim and `distance_wall` along the cone or
+// cylinder face (exactly one of the two faces at the rim must be planar), producing an exact cone / plane bevel.
+//
+// Refusals (std::invalid_argument with the reason; no degraded body): a non-positive / non-finite radius or distance;
+// a solid that is not such a solid of revolution (non-analytic face, non-coaxial cylinder, a cone apex on the axis, a
+// void or second shell, more than two circles on a face); a point on no rim circle; two tangent faces at the rim
+// (nothing to blend); a blend whose setback is not strictly less than an adjacent face's profile length (it would
+// consume the face); a blend that would reach the axis. NOT checked: collision of the blend with a non-adjacent face
+// of a very narrow profile (the result's IsValid() / IsSolid() gate is the only guard there).
+Brep FilletRevolveRim(const Brep& solid, Point3d point_on_rim, double radius);
+Brep ChamferRevolveRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap);
+
 }  // namespace dino8::kernel
