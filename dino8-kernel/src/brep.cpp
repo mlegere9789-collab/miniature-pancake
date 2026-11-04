@@ -1050,6 +1050,99 @@ constexpr int kTrimmedFaceIntegralMaxDepth = 10;
 thread_local double g_trimmed_face_rel_tol = kTrimmedFaceIntegralRelTol;
 thread_local int g_trimmed_face_max_depth = kTrimmedFaceIntegralMaxDepth;
 
+// Set (RAII) only by VolumeOfSealedSolid(): the trim polygon of a PLANAR face follows the 3D curve its neighbour
+// across each edge actually traces (see RefinedLoopPolygon()). Off for Area()/Volume(), which stay bit-for-bit.
+thread_local bool g_trimmed_face_follow_neighbor_curves = false;
+
+// The general Boolean stores every cut edge as a straight (u, v) segment between two sample points on BOTH of its
+// faces. On a cylinder wall that segment (an iso-v line) is a true circular arc, but on the planar cap the same
+// segment is the CHORD: a cap bounded by an n-gon whose vertices lie on the circle is short by (2 pi / n)^2 / 6 of
+// its area (1.1e-3 at n = 76), and the divergence theorem then charges that deficit to the volume. When the
+// neighbour's curve lies IN the plane (verified, not assumed) its points are the true edge, so this inserts them,
+// subdivided until the chord deviation is below `tol`, as extra polygon vertices of the planar face.
+// Returns false (leave the trim as sampled) when the edge is not shared by exactly two faces, the neighbour is
+// planar too (a chord is then exact), or the neighbour's curve is not in this face's plane.
+bool NeighborCurveUVPoints(const ON_Brep& b, const ON_BrepFace& face, const ON_Surface& fs, const ON_BrepTrim& trim,
+                           double tol, std::vector<ON_2dPoint>& out) {
+  if (trim.m_ei < 0 || trim.m_ei >= b.m_E.Count()) return false;
+  const ON_BrepEdge& e = b.m_E[trim.m_ei];
+  if (e.m_ti.Count() != 2) return false;
+  const int oi = e.m_ti[0] == trim.m_trim_index ? e.m_ti[1] : e.m_ti[0];
+  if (oi < 0 || oi >= b.m_T.Count() || oi == trim.m_trim_index) return false;
+  const ON_BrepTrim& o = b.m_T[oi];
+  if (o.m_li < 0 || o.m_li >= b.m_L.Count()) return false;
+  const int ofi = b.m_L[o.m_li].m_fi;
+  if (ofi < 0 || ofi >= b.m_F.Count() || ofi == face.m_face_index) return false;
+  const ON_Surface* os = b.m_F[ofi].SurfaceOf();
+  if (!os || os->IsPlanar(nullptr, 1e-9)) return false;
+  const bool same_dir = trim.m_vi[0] == o.m_vi[0];
+  const ON_Interval od = o.Domain();
+  const auto eval = [&](double f) {
+    const ON_3dPoint uv = o.PointAt(od.ParameterAt(same_dir ? f : 1.0 - f));
+    return os->PointAt(uv.x, uv.y);
+  };
+  std::vector<std::pair<double, ON_3dPoint>> pts;  // interior points, in order along the trim
+  const std::function<void(double, const ON_3dPoint&, double, const ON_3dPoint&, int)> split =
+      [&](double f0, const ON_3dPoint& p0, double f1, const ON_3dPoint& p1, int depth) {
+        const double fm = 0.5 * (f0 + f1);
+        const ON_3dPoint pm = eval(fm);
+        // The first two levels always split, so a curve that happens to cross its chord at the midpoint is seen.
+        if (depth <= 6 && pm.DistanceTo((p0 + p1) * 0.5) <= tol) return;
+        if (depth <= 0) return;
+        split(f0, p0, fm, pm, depth - 1);
+        pts.emplace_back(fm, pm);
+        split(fm, pm, f1, p1, depth - 1);
+      };
+  split(0.0, eval(0.0), 1.0, eval(1.0), 8);
+  if (pts.empty()) return false;
+  std::vector<ON_2dPoint> uvs;
+  for (const auto& fp : pts) {
+    double u = 0.0, v = 0.0;
+    if (!fs.GetClosestPoint(fp.second, &u, &v)) return false;
+    if (fs.PointAt(u, v).DistanceTo(fp.second) > tol) return false;  // the neighbour's curve is not in this plane
+    uvs.emplace_back(u, v);
+  }
+  out = std::move(uvs);
+  return true;
+}
+
+// LoopPolygon() with NeighborCurveUVPoints() applied to every trim of a planar face (see there).
+std::vector<ON_2dPoint> RefinedLoopPolygon(const ON_Brep& b, int loop_index, int samples_per_trim) {
+  std::vector<ON_2dPoint> poly;
+  if (loop_index < 0 || loop_index >= b.m_L.Count()) return poly;
+  const ON_BrepLoop& loop = b.m_L[loop_index];
+  const ON_BrepFace* face = (loop.m_fi >= 0 && loop.m_fi < b.m_F.Count()) ? &b.m_F[loop.m_fi] : nullptr;
+  const ON_Surface* fs = face ? face->SurfaceOf() : nullptr;
+  const bool planar = fs && fs->IsPlanar(nullptr, 1e-9);
+  double tol = 0.0;
+  if (planar) {
+    ON_BoundingBox bb;
+    for (int k = 0; k < loop.m_ti.Count(); ++k) {
+      const int vi = b.m_T[loop.m_ti[k]].m_vi[0];
+      if (vi >= 0 && vi < b.m_V.Count()) bb.Set(b.m_V[vi].point, true);
+    }
+    tol = bb.IsValid() ? 1e-5 * bb.Diagonal().Length() : 0.0;
+  }
+  for (int k = 0; k < loop.m_ti.Count(); ++k) {
+    const ON_BrepTrim& trim = b.m_T[loop.m_ti[k]];
+    const ON_Interval d = trim.Domain();
+    std::vector<ON_2dPoint> extra;
+    if (planar && tol > 0.0 && NeighborCurveUVPoints(b, *face, *fs, trim, tol, extra)) {
+      const ON_3dPoint uv = trim.PointAt(d.Min());
+      poly.emplace_back(uv.x, uv.y);
+      poly.insert(poly.end(), extra.begin(), extra.end());
+      continue;
+    }
+    const bool line = trim.m_iso != ON_Surface::not_iso;
+    const int ns = line ? 1 : samples_per_trim;
+    for (int i = 0; i < ns; ++i) {
+      const ON_3dPoint uv = trim.PointAt(d.ParameterAt(static_cast<double>(i) / ns));
+      poly.emplace_back(uv.x, uv.y);
+    }
+  }
+  return poly;
+}
+
 // Adaptive refinement of TriangleQuad7() over (a, b, c): compares the
 // single-triangle quadrature against the sum of the same rule applied to
 // the 4 congruent sub-triangles a standard midpoint split produces: if
@@ -1127,7 +1220,7 @@ std::vector<Point2d> TrimmedFaceUVPolygon(const ON_Brep& b, const ON_BrepFace& f
       if (ON_ArcCurve::Cast(tc)) samples = std::max(samples, 360);
       else if (const ON_NurbsCurve* nc = ON_NurbsCurve::Cast(tc)) samples = std::max(samples, 6 * nc->SpanCount());
     }
-    std::vector<ON_2dPoint> poly = LoopPolygon(b, li, samples);
+    std::vector<ON_2dPoint> poly = g_trimmed_face_follow_neighbor_curves ? RefinedLoopPolygon(b, li, samples) : LoopPolygon(b, li, samples);
     if (poly.size() < 3) continue;
     if (loop.m_type == ON_BrepLoop::outer) {
       outer = poly;
@@ -1361,8 +1454,10 @@ double Brep::VolumeOfSealedSolid() const {
     Knobs() {
       g_trimmed_face_rel_tol = 1e-6;
       g_trimmed_face_max_depth = 4;
+      g_trimmed_face_follow_neighbor_curves = std::getenv("DINO8_VOLUME_POLYGON_ONLY") == nullptr;  // TEMP: A/B for the baseline
     }
     ~Knobs() {
+      g_trimmed_face_follow_neighbor_curves = false;
       g_trimmed_face_rel_tol = kTrimmedFaceIntegralRelTol;
       g_trimmed_face_max_depth = kTrimmedFaceIntegralMaxDepth;
     }
