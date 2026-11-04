@@ -21,9 +21,7 @@ Enter
 SelCrv
 Length
 SelCrv
-RemoveMultiKnot
-Tolerance=0.000001
-Enter
+RemoveMultiKnot Tolerance=0.000001 Enter
 SelCrv
 Length
 SelCrv
@@ -41,15 +39,11 @@ ChangeDegree
 SelCrv
 Length
 SelCrv
-RemoveMultiKnot
-Tolerance=0.001
-Enter
+RemoveMultiKnot Tolerance=0.001 Enter
 SelCrv
 Length
 SelCrv
-RemoveMultiKnot
-Tolerance=100
-Enter
+RemoveMultiKnot Tolerance=100 Enter
 SelCrv
 Length
 SelNone
@@ -75,20 +69,13 @@ Delete
 SelSrf
 List
 SelSrf
-FitSrf
-Tolerance=0.02
-Enter
+FitSrf Tolerance=0.02 Enter
 SelSrf
 List
 SelSrf
-FitSrf
-Tolerance=0.000001
-Enter
+FitSrf Tolerance=0.000001 Enter
 SelSrf
-FitSrf
-Tolerance=0.000000001
-MaxPoints=4
-Enter
+FitSrf Tolerance=0.000000001 MaxPoints=4 Enter
 SelSrf
 List
 SelAll
