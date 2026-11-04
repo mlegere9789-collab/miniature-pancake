@@ -97513,6 +97513,8 @@ Brep SealedAppCylinder(const ON_3dPoint& base, double r, double h) {
   return k;
 }
 
+bool g_report_faces_as_failures = false;  // TEMP diagnostic: CI logs keep only FAILED lines
+
 void ReportSealedFaces(const char* label, const Brep& s) {
   const ON_Brep& b = s.raw();
   for (int fi = 0; fi < b.m_F.Count(); ++fi) {
@@ -97528,6 +97530,8 @@ void ReportSealedFaces(const char* label, const Brep& s) {
       desc += ")";
     }
     std::printf("  [%s] face %d surface=%s loops:%s\n", label, fi, f.SurfaceOf() ? f.SurfaceOf()->ClassId()->ClassName() : "none", desc.c_str());
+    if (g_report_faces_as_failures)
+      Check(false, (std::string("diag ") + label + " face " + std::to_string(fi) + " " + (f.SurfaceOf() ? f.SurfaceOf()->ClassId()->ClassName() : "none") + desc).c_str());
   }
 }
 
@@ -97552,7 +97556,10 @@ void TestSealedAppCylinderVolumesAgainstClosedForm() {
       const SealedGeneralBoolean s = BooleanCombineGeneralSealed(c.a, c.b, c.op);
       const double rel = (s.volume - c.expect) / c.expect;
       std::printf("  %s: VolumeOfSealedSolid %.6f, closed form %.6f, relative error %+.3e\n", c.name, s.volume, c.expect, rel);
+      g_report_faces_as_failures = std::fabs(rel) >= 1e-4;
+      if (g_report_faces_as_failures) Check(false, (std::string("diag ") + c.name + " rel " + std::to_string(rel) + " vol " + std::to_string(s.volume)).c_str());
       ReportSealedFaces(c.name, s.brep);
+      g_report_faces_as_failures = false;
       Check(std::fabs(rel) < 1e-4, (std::string(c.name) + ": VolumeOfSealedSolid within 1e-4 relative of the closed form").c_str());
     } catch (const std::exception& e) {
       std::printf("  %s: threw %s\n", c.name, e.what());
