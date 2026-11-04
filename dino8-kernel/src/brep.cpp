@@ -1054,6 +1054,28 @@ thread_local int g_trimmed_face_max_depth = kTrimmedFaceIntegralMaxDepth;
 // across each edge actually traces (see RefinedLoopPolygon()). Off for Area()/Volume(), which stay bit-for-bit.
 thread_local bool g_trimmed_face_follow_neighbor_curves = false;
 
+// (u, v) of the point of a PLANAR surface nearest `p`. ON_Surface has no closest-point query in this openNURBS build,
+// so this is Gauss-Newton on the surface's own Evaluate(); on a plane the map is affine and the first step lands.
+bool PlanarSurfaceClosestUV(const ON_Surface& s, const ON_3dPoint& p, double* u_out, double* v_out) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  double u = du.ParameterAt(0.5), v = dv.ParameterAt(0.5);
+  for (int it = 0; it < 6; ++it) {
+    double d[9];
+    if (!s.Evaluate(u, v, 1, 3, d)) return false;
+    const ON_3dVector su(d[3], d[4], d[5]), sv(d[6], d[7], d[8]), r = p - ON_3dPoint(d[0], d[1], d[2]);
+    const double a = su * su, b = su * sv, c = sv * sv, det = a * c - b * b;
+    if (!(det > 1e-300)) return false;
+    const double ru = su * r, rv = sv * r;
+    const double du_step = (c * ru - b * rv) / det, dv_step = (a * rv - b * ru) / det;
+    u = std::min(std::max(u + du_step, du.Min()), du.Max());
+    v = std::min(std::max(v + dv_step, dv.Min()), dv.Max());
+    if (std::fabs(du_step) <= 1e-14 * (1.0 + std::fabs(u)) && std::fabs(dv_step) <= 1e-14 * (1.0 + std::fabs(v))) break;
+  }
+  *u_out = u;
+  *v_out = v;
+  return true;
+}
+
 // The general Boolean stores every cut edge as a straight (u, v) segment between two sample points on BOTH of its
 // faces. On a cylinder wall that segment (an iso-v line) is a true circular arc, but on the planar cap the same
 // segment is the CHORD: a cap bounded by an n-gon whose vertices lie on the circle is short by (2 pi / n)^2 / 6 of
@@ -1098,7 +1120,7 @@ bool NeighborCurveUVPoints(const ON_Brep& b, const ON_BrepFace& face, const ON_S
   std::vector<ON_2dPoint> uvs;
   for (const auto& fp : pts) {
     double u = 0.0, v = 0.0;
-    if (!fs.GetClosestPoint(fp.second, &u, &v)) return false;
+    if (!PlanarSurfaceClosestUV(fs, fp.second, &u, &v)) return false;
     if (fs.PointAt(u, v).DistanceTo(fp.second) > tol) return false;  // the neighbour's curve is not in this plane
     uvs.emplace_back(u, v);
   }
