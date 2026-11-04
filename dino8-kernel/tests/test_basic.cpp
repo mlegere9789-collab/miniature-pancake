@@ -101685,7 +101685,10 @@ void TestNonUniformScaleAndShearOfBoxMatchClosedForms() {
     const Brep::CheckReport rep = moved.Check();
     Check(rep.issues.empty() && rep.is_closed && rep.is_oriented, (tag + ": Check() reports no issue, closed, oriented").c_str());
     const Mesh mesh = moved.TessellateToClosedMesh(8, 8);
-    Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - c.volume) < 1e-9,
+    // The exact Volume() above is held to 1e-9. The welded tessellation snaps its seam vertices to the weld grid
+    // (tolerance::kWeld = 1e-6), which moves the volume by ~1e-6 for a face set that has no planar records (measured
+    // 71.999999209 for the shear, an unsheared box reads 72.000000000), so the mesh is held to 1e-5.
+    Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - c.volume) < 1e-5,
           (tag + ": tessellation is a closed manifold with the same volume").c_str());
     if (c.area > 0.0) {
       Check(std::fabs(moved.Area() - c.area) < 1e-9, (tag + ": Area() equals the closed-form 252").c_str());
@@ -102139,7 +102142,9 @@ void TestArrayAlongCurveOnSurfaceFollowsSurfaceNormalClosedForm() {
   const NurbsCurve off = NurbsCurve::FromControlPoints({Point3d(0, 0.5, 0.5), Point3d(0.5, 0.5, 0.5), Point3d(1, 0.5, 1.5)}, 2);
   Check(ThrowsContaining([&] { ArrayAlongCurveOnSurface(body, off, srf, 4); }, "leaves the surface"),
         "a path off the surface is refused: 'leaves the surface'");
-  const NurbsCurve across = NurbsCurve::FromControlPoints({Point3d(0.5, 0.5, -1), Point3d(0.5, 0.5, 1)}, 1);
+  // Along the normal: the surface normal is (-2x,0,1)/sqrt(1+4x^2), so only at x = 0 is it parallel to the z-direction path
+  // (at the old x = 0.5 the normal is (-1,0,1)/sqrt2 and the path is legitimately NOT along it).
+  const NurbsCurve across = NurbsCurve::FromControlPoints({Point3d(0, 0.5, -1), Point3d(0, 0.5, 1)}, 1);
   Check(ThrowsContaining([&] { ArrayAlongCurveOnSurface(body, across, srf, 3, 10.0); }, "parallel to the surface normal"),
         "a path piercing the surface along its normal is refused: 'parallel to the surface normal'");
   Check(ThrowsContaining([&] { ArrayAlongCurveOnSurface(body, path, srf, 1); }, "count must be at least 2"),
