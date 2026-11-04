@@ -3925,12 +3925,34 @@ void ValidateSweep1Schedule(const std::vector<std::pair<double, double>>* schedu
   }
 }
 
+// Largest ratio between a per-axis scale at two consecutive stations (Sweep1 / Sweep1Sections): a design bound, not a
+// derived one - see the doc comment of Brep::Sweep1.
+constexpr double kMaxAxisScaleStep = 2.0;
+
+// Affine map about `origin` that scales by `sx` along the unit vector `x` and `sy` along `y = t x x` (both lying in the
+// plane perpendicular to the unit rail tangent `t`) and by sqrt(sx sy) along `t`, so equal factors give the uniform scale.
+ON_Xform AxisScaleAbout(const ON_3dPoint& origin, const ON_3dVector& t, const ON_3dVector& x, double sx, double sy) {
+  const ON_3dVector y = ON_CrossProduct(t, x);
+  const double sz = std::sqrt(sx * sy);
+  ON_Xform m(ON_Xform::IdentityTransformation);
+  const ON_3dVector ax[3] = {x, y, t};
+  const double f[3] = {sx, sy, sz};
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) m[i][j] = f[0] * ax[0][i] * ax[0][j] + f[1] * ax[1][i] * ax[1][j] + f[2] * ax[2][i] * ax[2][j];
+  }
+  const ON_3dVector o(origin);
+  for (int i = 0; i < 3; ++i) m[i][3] = o[i] - (m[i][0] * o.x + m[i][1] * o.y + m[i][2] * o.z);
+  return m;
+}
+
 }  // namespace
 
 Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap, double twist_total,
                   double scale_end, const Vector3d* roadlike_up,
                   const std::vector<std::pair<double, double>>* twist_schedule,
-                  const std::vector<std::pair<double, double>>* scale_schedule) {
+                  const std::vector<std::pair<double, double>>* scale_schedule,
+                  const std::vector<std::pair<double, double>>* scale_x_schedule,
+                  const std::vector<std::pair<double, double>>* scale_y_schedule, const Vector3d* scale_x_axis) {
   const char* caller = "Sweep1";
   if (stations < 2) Fail(caller, "stations must be at least 2");
   if (!(scale_end > 0.0)) Fail(caller, "scale_end must be positive");
@@ -3949,6 +3971,16 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (scale_schedule && scale_end != 1.0) {
     Fail(caller, "scale_end must be 1 when scale_schedule is given - the two are mutually exclusive");
   }
+  // Per-axis scale (scale_x_schedule / scale_y_schedule): same validation as the uniform schedule, and it replaces the
+  // uniform scale rather than stacking on it.
+  const bool axis_scale = scale_x_schedule || scale_y_schedule;
+  ValidateSweep1Schedule(scale_x_schedule, "scale_x_schedule", /*value_must_be_positive=*/true, caller);
+  ValidateSweep1Schedule(scale_y_schedule, "scale_y_schedule", /*value_must_be_positive=*/true, caller);
+  if (axis_scale && (scale_schedule || scale_end != 1.0)) {
+    Fail(caller, "scale_x_schedule / scale_y_schedule cannot be combined with scale_end or scale_schedule - give the uniform "
+                 "scale as equal x and y schedules instead");
+  }
+  if (scale_x_axis && !axis_scale) Fail(caller, "scale_x_axis is only meaningful with scale_x_schedule or scale_y_schedule");
   // A closed rail closes up only when the twist is a whole number of turns (the last station's section is then
   // the first one again); anything else would leave a step at the seam, so it is refused.
   const double twist_turns = twist_total / (2.0 * ON_PI);
@@ -3977,13 +4009,25 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
                    "itself at the seam");
     }
   }
+  if (wrap) {
+    const std::pair<const std::vector<std::pair<double, double>>*, const char*> axes[2] = {{scale_x_schedule, "scale_x_schedule"},
+                                                                                           {scale_y_schedule, "scale_y_schedule"}};
+    for (const auto& pr : axes) {
+      if (!pr.first) continue;
+      const double s0 = ScheduleAt(*pr.first, 0.0), s1 = ScheduleAt(*pr.first, 1.0);
+      if (std::fabs(s1 - s0) > 1e-9 * (s0 + s1)) {
+        Fail(caller, std::string(pr.second) + " on a closed rail must return to its starting value at t = 1 so the tube meets "
+                                              "itself at the seam");
+      }
+    }
+  }
   ON_3dVector up;
   if (roadlike_up) {
     up = *roadlike_up;
     if (!up.Unitize()) Fail(caller, "roadlike_up must be a nonzero vector");
   }
   const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
-  const bool has_schedule = twist_schedule || scale_schedule;  // (closed rail: only schedules that close up got past the checks above)
+  const bool has_schedule = twist_schedule || scale_schedule || axis_scale;  // (closed rail: only schedules that close up got past the checks above)
 
   // Station fractions (of the rail's own arc length from its start) and
   // the rail parameter at each.
@@ -4019,7 +4063,8 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     auto is_trivial_two_point = [](const std::vector<std::pair<double, double>>* s) {
       return !s || (s->size() == 2 && (*s)[0].first == 0.0 && (*s)[1].first == 1.0);
     };
-    if (straight && is_trivial_two_point(twist_schedule) && is_trivial_two_point(scale_schedule)) {
+    if (straight && is_trivial_two_point(twist_schedule) && is_trivial_two_point(scale_schedule) &&
+        is_trivial_two_point(scale_x_schedule) && is_trivial_two_point(scale_y_schedule)) {
       fractions = {0.0, 1.0};
       params = {rail.Domain().Min(), rail.Domain().Max()};
     } else {
@@ -4028,7 +4073,8 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       const int m_even = std::max(stations, 3);
       std::vector<double> raw;
       raw.reserve(static_cast<size_t>(m_even) + (twist_schedule ? twist_schedule->size() : 0) +
-                  (scale_schedule ? scale_schedule->size() : 0));
+                  (scale_schedule ? scale_schedule->size() : 0) + (scale_x_schedule ? scale_x_schedule->size() : 0) +
+                  (scale_y_schedule ? scale_y_schedule->size() : 0));
       // (closed rail: the closing point t = 1 is station 0 again and is not a station of its own)
       for (int k = 0; k < m_even; ++k) raw.push_back(static_cast<double>(k) / static_cast<double>(wrap ? m_even : m_even - 1));
       if (twist_schedule) {
@@ -4036,6 +4082,12 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       }
       if (scale_schedule) {
         for (const auto& p : *scale_schedule) raw.push_back(p.first);
+      }
+      if (scale_x_schedule) {
+        for (const auto& p : *scale_x_schedule) raw.push_back(p.first);
+      }
+      if (scale_y_schedule) {
+        for (const auto& p : *scale_y_schedule) raw.push_back(p.first);
       }
       std::sort(raw.begin(), raw.end());
       for (double f : raw) {
@@ -4050,6 +4102,28 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     }
   }
   const int m = static_cast<int>(fractions.size());
+  if (axis_scale && m > 2) {
+    // A scale that jumps between two consecutive stations (a near-discontinuity: breakpoints very close together with
+    // very different values) is not resolved by the skin through the stations - refused, not smoothed over.
+    const std::pair<const std::vector<std::pair<double, double>>*, const char*> axes[2] = {{scale_x_schedule, "scale_x_schedule"},
+                                                                                           {scale_y_schedule, "scale_y_schedule"}};
+    for (const auto& pr : axes) {
+      if (!pr.first) continue;
+      for (int k = 0; k + 1 < m; ++k) {
+        const double f0 = fractions[static_cast<size_t>(k)], f1 = fractions[static_cast<size_t>(k + 1)];
+        const double v0 = ScheduleAt(*pr.first, f0), v1 = ScheduleAt(*pr.first, f1);
+        const double ratio = std::max(v0, v1) / std::min(v0, v1);
+        if (ratio > kMaxAxisScaleStep * (1.0 + 1e-9)) {
+          char buf[400];
+          std::snprintf(buf, sizeof(buf),
+                        "%s changes by a factor of %.3g between the consecutive stations at rail fractions %.6g and %.6g (at most %.3g is "
+                        "allowed, a larger jump is not resolved by the skin) - use a gentler schedule (breakpoints further apart) or more stations",
+                        pr.second, ratio, f0, f1, kMaxAxisScaleStep);
+          Fail(caller, buf);
+        }
+      }
+    }
+  }
   if (wrap && (twist_total != 0.0 || twist_schedule)) {
     // Station k carries the twist of its own fraction and nothing looks at the angle BETWEEN consecutive copies,
     // so a twist of several whole turns spread over too few stations aliases (at one turn per station every
@@ -4136,6 +4210,23 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   // t afterward - the two are the same unique rigid rotation agreeing on
   // all three orthonormal axes), just decoupled from the frames array
   // itself so a nonzero twist_at(0) has somewhere to go.
+  // The section frame's "x" axis at station k: the frame's reference normal turned by the station's twist and by the fixed
+  // angle that takes the frame at station 0 onto `scale_x_axis` (projected into the plane perpendicular to the rail
+  // tangent there; none given: the reference normal itself). "y" is tangent x x.
+  double axis_phi = 0.0;
+  if (scale_x_axis) {
+    ON_3dVector ax = *scale_x_axis;
+    ax = ax - frames[0].t * ON_DotProduct(ax, frames[0].t);
+    if (!ax.Unitize()) Fail(caller, "scale_x_axis is zero or parallel to the rail tangent at the start - the section's x axis is undefined");
+    axis_phi = std::atan2(ON_DotProduct(ax, frames[0].s), ON_DotProduct(ax, frames[0].r));
+  }
+  auto axis_r = [&](int k, double twist) {
+    const Frame& fk = frames[static_cast<size_t>(k)];
+    ON_3dVector r = fk.r;
+    const double ang = axis_phi + twist;
+    if (ang != 0.0) r.Rotate(ang, fk.t);
+    return r;
+  };
   std::vector<ON_NurbsCurve> copies;
   copies.reserve(static_cast<size_t>(m));
   for (int k = 0; k < m; ++k) {
@@ -4148,11 +4239,19 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       twist_xf.Rotation(a, fk.t, fk.origin);
       xf = twist_xf * xf;
     }
-    const double s = scale_at(fractions[static_cast<size_t>(k)]);
-    if (s != 1.0) {
-      xf = ON_Xform::ScaleTransformation(fk.origin, s) * xf;
+    const double fr = fractions[static_cast<size_t>(k)];
+    double sx = scale_at(fr), sy = sx;
+    if (axis_scale) {
+      sx = scale_x_schedule ? ScheduleAt(*scale_x_schedule, fr) : 1.0;
+      sy = scale_y_schedule ? ScheduleAt(*scale_y_schedule, fr) : 1.0;
     }
-    if (a != 0.0 || s != 1.0 || k > 0) ck.Transform(xf);
+    if (sx == sy) {
+      // (uniform: the pre-existing transform, bit for bit)
+      if (sx != 1.0) xf = ON_Xform::ScaleTransformation(fk.origin, sx) * xf;
+    } else {
+      xf = AxisScaleAbout(fk.origin, fk.t, axis_r(k, a), sx, sy) * xf;
+    }
+    if (a != 0.0 || sx != 1.0 || sy != 1.0 || k > 0) ck.Transform(xf);
     copies.push_back(std::move(ck));
   }
   MakeCompatible(copies, caller);  // no-op for rigid+scaled copies; keeps one code path
@@ -5069,16 +5168,33 @@ Brep Brep::Sweep2Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
 }
 
 Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const NurbsCurve& rail_in, int stations, bool cap,
-                          Sweep1SectionsReport* report) {
+                          Sweep1SectionsReport* report, const std::vector<std::pair<double, double>>* scale_x_schedule,
+                          const std::vector<std::pair<double, double>>* scale_y_schedule, const Vector3d* scale_x_axis) {
   const char* caller = "Sweep1Sections";
   if (stations < 2) Fail(caller, "stations must be at least 2");
   if (sections_in.size() < 2) Fail(caller, "at least 2 sections are required (one section is Sweep1())");
   ON_NurbsCurve rail = rail_in.raw();
   if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
+  const bool axis_scale = scale_x_schedule || scale_y_schedule;
+  ValidateSweep1Schedule(scale_x_schedule, "scale_x_schedule", /*value_must_be_positive=*/true, caller);
+  ValidateSweep1Schedule(scale_y_schedule, "scale_y_schedule", /*value_must_be_positive=*/true, caller);
+  if (scale_x_axis && !axis_scale) Fail(caller, "scale_x_axis is only meaningful with scale_x_schedule or scale_y_schedule");
   // A CLOSED rail gives a cyclic sweep (wrapped anchors, a blend that wraps round the loop, Sweep1()'s own
   // holonomy-corrected rotation-minimizing frames, a periodic skin): the wall is closed in v with its seam at
   // the first section in rail order, and has no ends (so `cap` is irrelevant to it, as in Sweep1()).
   const bool cyclic = rail.IsClosed();
+  if (cyclic) {
+    const std::pair<const std::vector<std::pair<double, double>>*, const char*> axes[2] = {{scale_x_schedule, "scale_x_schedule"},
+                                                                                           {scale_y_schedule, "scale_y_schedule"}};
+    for (const auto& pr : axes) {
+      if (!pr.first) continue;
+      const double s0 = ScheduleAt(*pr.first, 0.0), s1 = ScheduleAt(*pr.first, 1.0);
+      if (std::fabs(s1 - s0) > 1e-9 * (s0 + s1)) {
+        Fail(caller, std::string(pr.second) + " on a closed rail must return to its starting value at t = 1 so the wall meets "
+                                              "itself at the seam");
+      }
+    }
+  }
   std::vector<ON_NurbsCurve> sections;
   sections.reserve(sections_in.size());
   double section_scale = 0.0;
@@ -5358,6 +5474,54 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
       slope[i][static_cast<size_t>(c)] = (local[hi][static_cast<size_t>(c)] - local[lo][static_cast<size_t>(c)]) / dx;
     }
   }
+  // Per-axis scale (scale_x_schedule / scale_y_schedule): applied to the blended local offsets of fine station k, i.e. in
+  // that station's rotation-minimizing frame (x axis = the frame's reference normal turned by the fixed angle that takes
+  // the frame at the first station onto `scale_x_axis`, projected perpendicular to the rail tangent; y = tangent x x),
+  // about the rail point; the tangent component scales by sqrt(sx sy). The schedule's argument is the fraction of the
+  // rail's arc length (the same table that spaces the stations).
+  double axis_phi = 0.0;
+  if (scale_x_axis) {
+    ON_3dVector ax = *scale_x_axis;
+    ax = ax - frames[0].t * ON_DotProduct(ax, frames[0].t);
+    if (!ax.Unitize()) Fail(caller, "scale_x_axis is zero or parallel to the rail tangent at the start - the section's x axis is undefined");
+    axis_phi = std::atan2(ON_DotProduct(ax, frames[0].s), ON_DotProduct(ax, frames[0].r));
+  }
+  const double axis_cos = std::cos(axis_phi), axis_sin = std::sin(axis_phi);
+  auto frac_of = [&](int k) { return xf[static_cast<size_t>(k)] / ring_length; };
+  if (axis_scale && m > 2) {
+    const std::pair<const std::vector<std::pair<double, double>>*, const char*> axes[2] = {{scale_x_schedule, "scale_x_schedule"},
+                                                                                           {scale_y_schedule, "scale_y_schedule"}};
+    for (const auto& pr : axes) {
+      if (!pr.first) continue;
+      for (int q = 0; q + 1 < m + (cyclic ? 1 : 0); ++q) {
+        const double f0 = frac_of(2 * q), f1 = q + 1 < m ? frac_of(2 * (q + 1)) : 1.0;
+        const double v0 = ScheduleAt(*pr.first, f0), v1 = ScheduleAt(*pr.first, f1);
+        const double ratio = std::max(v0, v1) / std::min(v0, v1);
+        if (ratio > kMaxAxisScaleStep * (1.0 + 1e-9)) {
+          char buf[400];
+          std::snprintf(buf, sizeof(buf),
+                        "%s changes by a factor of %.3g between the consecutive skin stations at rail fractions %.6g and %.6g (at most %.3g is "
+                        "allowed, a larger jump is not resolved by the skin) - use a gentler schedule (breakpoints further apart) or more stations",
+                        pr.second, ratio, f0, f1, kMaxAxisScaleStep);
+          Fail(caller, buf);
+        }
+      }
+    }
+  }
+  auto axis_scaled = [&](int k, const ON_3dVector& l) {
+    const double f = frac_of(k);
+    const double sx = scale_x_schedule ? ScheduleAt(*scale_x_schedule, f) : 1.0, sy = scale_y_schedule ? ScheduleAt(*scale_y_schedule, f) : 1.0;
+    ON_3dVector out(l.x * std::sqrt(sx * sy), 0.0, 0.0);
+    if (axis_phi == 0.0) {
+      out.y = l.y * sx;
+      out.z = l.z * sy;
+    } else {
+      const double a = (l.y * axis_cos + l.z * axis_sin) * sx, b = (-l.y * axis_sin + l.z * axis_cos) * sy;
+      out.y = a * axis_cos - b * axis_sin;
+      out.z = a * axis_sin + b * axis_cos;
+    }
+    return out;
+  };
   // The blended section placed in fine station k's frame: cubic Hermite
   // between the two neighbouring anchors, the end section's local shape held
   // beyond the first and last anchor.
@@ -5384,6 +5548,7 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
             local[seg_next][static_cast<size_t>(c)] * (-2 * s3 + 3 * s2) + slope[seg_next][static_cast<size_t>(c)] * (h * (s3 - s2));
         w = weight[seg][static_cast<size_t>(c)] * (1.0 - s) + weight[seg_next][static_cast<size_t>(c)] * s;
       }
+      if (axis_scale) l = axis_scaled(k, l);
       const ON_3dPoint p = f.origin + f.t * l.x + f.r * l.y + f.s * l.z;
       ck.SetCV(c, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
     }
@@ -5404,6 +5569,10 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   // minimised over v between the two neighbouring stations (an upper bound of
   // the true distance to the surface).
   const ON_Interval du = wall->Domain(0);
+  // (With a per-axis scale the reference of section i is the input section scaled by the schedule at its station.)
+  std::vector<ON_NurbsCurve> ref_section;
+  ref_section.reserve(na);
+  for (size_t i = 0; i < na; ++i) ref_section.push_back(axis_scale ? copy_at(anchor_fine[i]) : compat[i]);
   Sweep1SectionsReport rep;
   rep.sections = static_cast<int>(na);
   rep.stations = m;
@@ -5412,7 +5581,7 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
     for (int q = 0; q <= 64; ++q) {
       const double u = du.ParameterAt(q / 64.0);
       const double t = compat[i].Domain().ParameterAt(q / 64.0);
-      rep.max_section_deviation = std::max(rep.max_section_deviation, wall->PointAt(u, v).DistanceTo(compat[i].PointAt(t)));
+      rep.max_section_deviation = std::max(rep.max_section_deviation, wall->PointAt(u, v).DistanceTo(ref_section[i].PointAt(t)));
     }
   }
   for (int k = 1; k < mf; k += 2) {

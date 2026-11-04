@@ -94668,6 +94668,427 @@ void TestSweep1SectionsClosedRailVaryingSectionsMatchAnIndependentPeriodicBlend(
 
 }  // namespace sweep_closure_tests
 
+// Per-axis (non-uniform) scale schedules for Sweep1 / Sweep1Sections: scale_x_schedule / scale_y_schedule. Every claim is
+// MEASURED against a closed form that does not use the kernel: the expected cross-section at a rail fraction f is the input
+// section's frame coordinates times (sx(f), sy(f)) placed in the rail's own frame (analytic for a straight rail and for a
+// planar circular-arc rail), and its distance to the wall comes from the surface's own closest-point search.
+namespace sweep_peraxis_scale_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+using Sched = std::vector<std::pair<double, double>>;
+using sweep_closure_tests::WallVolumeByDivergence;
+
+const ON_NurbsSurface& WallOfBody(const Brep& b) { return *ON_NurbsSurface::Cast(b.raw().m_F[0].SurfaceOf()); }
+
+std::string RefusalText(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    return e.what();
+  }
+  return std::string();
+}
+
+// Independent piecewise-linear evaluator (held flat outside the given range).
+double At(const Sched& s, double f) {
+  if (f <= s.front().first) return s.front().second;
+  for (size_t i = 1; i < s.size(); ++i) {
+    if (f <= s[i].first) return s[i - 1].second + (f - s[i - 1].first) / (s[i].first - s[i - 1].first) * (s[i].second - s[i - 1].second);
+  }
+  return s.back().second;
+}
+
+NurbsCurve CircleIn(const ON_3dPoint& center, const ON_3dVector& normal, const ON_3dVector& xdir, double radius) {
+  ON_3dVector n = normal;
+  n.Unitize();
+  ON_3dVector x = xdir - n * ON_DotProduct(xdir, n);
+  x.Unitize();
+  ON_NurbsCurve nurbs;
+  ON_Circle(ON_Plane(center, x, ON_CrossProduct(n, x)), radius).GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+NurbsCurve StraightRail(double length) { return NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, length)}, 1); }
+
+// Quarter circle of radius R in the x-z plane from the origin heading +z, bending toward +x: P(f) = (R + R cos b, 0, -R sin b),
+// b = pi + f pi/2; unit tangent (-sin b, 0, -cos b). The rotation-minimizing frame of a planar curve is the in-plane normal
+// n(f) = (-cos b, 0, sin b) (= +x at the start, where it is the world axis least aligned with the tangent) and the constant
+// binormal y.
+NurbsCurve ArcRail(double R) {
+  ON_NurbsCurve nurbs;
+  ON_Arc(ON_Circle(ON_Plane(ON_3dPoint(R, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 0, -1)), R), ON_Interval(ON_PI, 1.5 * ON_PI)).GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+// Worst distance from points of the EXPECTED cross-section at rail fraction `f` to the wall (64 points, closest-point search).
+// `frame(f, out_origin, out_x, out_y)` gives the rail point and the unit frame axes there; the section is the circle of
+// radius `rad` centred (cx, cy) in the frame, scaled by (sx, sy) with the axes swapped when `swap` (a wrong-axes control).
+struct Expect {
+  ON_3dPoint o;
+  ON_3dVector x, y;
+};
+double CrossSectionDistance(const NurbsSurface& wall, const Expect& e, double cx, double cy, double rad, double sx, double sy) {
+  double worst = 0.0;
+  for (int q = 0; q < 64; ++q) {
+    const double th = 2.0 * ON_PI * q / 64.0;
+    const double lx = (cx + rad * std::cos(th)) * sx, ly = (cy + rad * std::sin(th)) * sy;
+    const ON_3dPoint p = e.o + e.x * lx + e.y * ly;
+    const Point3d pp(p.x, p.y, p.z);
+    worst = std::max(worst, pp.DistanceTo(wall.ClosestPoint(pp)));
+  }
+  return worst;
+}
+
+NurbsSurface Wrap(const Brep& b) {
+  NurbsSurface ns;
+  ns.raw() = WallOfBody(b);
+  return ns;
+}
+
+bool SameCVs(const ON_NurbsSurface& a, const ON_NurbsSurface& b) {
+  if (a.CVCount(0) != b.CVCount(0) || a.CVCount(1) != b.CVCount(1) || a.KnotCount(1) != b.KnotCount(1)) return false;
+  for (int j = 0; j < a.KnotCount(1); ++j) {
+    if (a.Knot(1, j) != b.Knot(1, j)) return false;
+  }
+  for (int i = 0; i < a.CVCount(0); ++i) {
+    for (int j = 0; j < a.CVCount(1); ++j) {
+      ON_4dPoint pa, pb;
+      a.GetCV(i, j, pa);
+      b.GetCV(i, j, pb);
+      if (pa.x != pb.x || pa.y != pb.y || pa.z != pb.z || pa.w != pb.w) return false;
+    }
+  }
+  return true;
+}
+
+void TestSweep1PerAxisScaleStationsStraightAndArcRail() {
+  // Section: circle radius 1 centred (0.5, 0.3) in the frame, so a scale about the rail point moves the centre as well as
+  // stretching the circle. Straight rail along +z (frame x = world x, y = world y).
+  const double cx = 0.5, cy = 0.3, rad = 1.0;
+  const NurbsCurve section = CircleIn(ON_3dPoint(cx, cy, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), rad);
+  // Smooth schedules (no interior slope change, but three points so the 2-station exact path is NOT taken) and kinked ones.
+  const Sched smooth_x = {{0.0, 1.0}, {0.5, 1.5}, {1.0, 2.0}}, smooth_y = {{0.0, 1.0}, {0.5, 0.75}, {1.0, 0.5}};
+  const Sched kink_x = {{0.0, 1.0}, {0.4, 2.0}, {1.0, 1.2}}, kink_y = {{0.0, 1.0}, {0.7, 0.5}, {1.0, 0.8}};
+  const double L = 10.0;
+  for (int variant = 0; variant < 2; ++variant) {
+    const Sched& sx = variant == 0 ? smooth_x : kink_x;
+    const Sched& sy = variant == 0 ? smooth_y : kink_y;
+    const Brep body = Brep::Sweep1(section, StraightRail(L), 32, false, 0.0, 1.0, nullptr, nullptr, nullptr, &sx, &sy);
+    const NurbsSurface wall = Wrap(body);
+    double worst_station = 0.0, worst_mid = 0.0, wrong_axes = 1e9, uniform = 1e9;
+    int n_st = 0;
+    std::vector<double> stations;
+    for (int k = 0; k < 32; ++k) stations.push_back(k / 31.0);  // the 32 equal-arc-length grid stations
+    if (variant == 1) {
+      stations.push_back(0.4);  // schedule breakpoints are stations too
+      stations.push_back(0.7);
+    }
+    for (const double f : stations) {
+      Expect e{ON_3dPoint(0, 0, L * f), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)};
+      worst_station = std::max(worst_station, CrossSectionDistance(wall, e, cx, cy, rad, At(sx, f), At(sy, f)));
+      ++n_st;
+    }
+    int n_mid = 0;
+    for (int k = 0; k < 31; ++k) {  // midway between grid stations (never skinned through)
+      const double f = (k + 0.5) / 31.0;
+      Expect e{ON_3dPoint(0, 0, L * f), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)};
+      worst_mid = std::max(worst_mid, CrossSectionDistance(wall, e, cx, cy, rad, At(sx, f), At(sy, f)));
+      ++n_mid;
+      // negative controls on the same fractions: the x/y values swapped, and a uniform scale of the mean
+      if (std::fabs(At(sx, f) - At(sy, f)) >= 0.2) {
+        wrong_axes = std::min(wrong_axes, CrossSectionDistance(wall, e, cx, cy, rad, At(sy, f), At(sx, f)));
+        uniform = std::min(uniform, CrossSectionDistance(wall, e, cx, cy, rad, 0.5 * (At(sx, f) + At(sy, f)), 0.5 * (At(sx, f) + At(sy, f))));
+      }
+    }
+    std::printf("  [peraxis straight %s] %d stations: worst section-to-wall distance %.3g; at %d fractions midway between stations %.3g; controls: swapped axes >= %.3g, uniform mean scale >= %.3g\n",
+                variant == 0 ? "smooth" : "kinked", n_st, worst_station, n_mid, worst_mid, wrong_axes, uniform);
+    if (variant == 0) {
+      Check(body.FaceCount() == 1 && body.raw().IsValid(), "sweep1 per-axis (straight rail): one valid face");
+      Check(worst_station < 1e-6, "sweep1 per-axis (straight rail, smooth): at the 32 stations the cross-section is the input section times (sx, sy) in the frame to < 1e-6 (closest-point distance of 64 expected points each; measured 1.4e-7)");
+      Check(worst_mid < 5e-5, "sweep1 per-axis (straight rail, smooth): midway between stations the wall is within 5e-5 of the scaled section (the skin's interpolation error)");
+    } else {
+      Check(worst_station < 1e-6, "sweep1 per-axis (straight rail, kinked schedules): at the 34 stations (32 grid + 2 breakpoints) the cross-section is the scaled section to < 1e-6");
+      Check(worst_mid < 2e-2, "sweep1 per-axis (straight rail, kinked schedules): midway between stations within 2e-2 - the skin rings next to a slope change (measured 0.0098), the documented caveat of every Sweep1 schedule");
+    }
+    Check(wrong_axes > 0.02 && uniform > 0.02, "sweep1 per-axis (straight rail): the same measurement rejects swapped axes and a uniform mean scale (distances > 0.02 where sx and sy differ by >= 0.2), so it can see a wrong scale");
+  }
+  // Planar arc rail (R = 8): the frame is analytic (see ArcRail). Stations are the 32 equal-arc-length grid points.
+  {
+    const double R = 8.0;
+    const NurbsCurve rail = ArcRail(R);
+    const Brep body = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, nullptr, &smooth_x, &smooth_y);
+    const NurbsSurface wall = Wrap(body);
+    auto frame = [&](double f) {
+      const double b = ON_PI + f * 0.5 * ON_PI;
+      return Expect{ON_3dPoint(R + R * std::cos(b), 0, -R * std::sin(b)), ON_3dVector(-std::cos(b), 0, std::sin(b)), ON_3dVector(0, 1, 0)};
+    };
+    double worst_station = 0.0, worst_mid = 0.0;
+    for (int k = 0; k < 32; ++k) {
+      const double f = k / 31.0;
+      worst_station = std::max(worst_station, CrossSectionDistance(wall, frame(f), cx, cy, rad, At(smooth_x, f), At(smooth_y, f)));
+    }
+    for (int k = 0; k < 31; ++k) {
+      const double f = (k + 0.5) / 31.0;
+      worst_mid = std::max(worst_mid, CrossSectionDistance(wall, frame(f), cx, cy, rad, At(smooth_x, f), At(smooth_y, f)));
+    }
+    std::printf("  [peraxis arc] R = 8 quarter arc, 32 stations, smooth schedules: worst section-to-wall distance at stations %.3g, midway %.3g\n", worst_station, worst_mid);
+    Check(body.raw().IsValid() && worst_station < 1e-4, "sweep1 per-axis (arc rail): at the 32 stations the cross-section equals the input times (sx, sy) in the rail's rotation-minimizing frame within 1e-4 (includes the discretized frame's own error)");
+    Check(worst_mid < 5e-4, "sweep1 per-axis (arc rail): midway between stations within 5e-4");
+  }
+}
+
+void TestSweep1PerAxisScaleAxisAndTwistFrame() {
+  // scale_x_axis turns the section's x axis: with x along world +y the scale pair acts the other way round. A twist turns the
+  // frame: the cross-section at fraction f is R(a(f)) diag(sx, sy) p, i.e. the scale acts along the TWISTED axes.
+  const double cx = 0.5, cy = 0.3, rad = 1.0, L = 10.0;
+  const NurbsCurve section = CircleIn(ON_3dPoint(cx, cy, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), rad);
+  const Sched sx = {{0.0, 1.0}, {1.0, 2.0}}, sy = {{0.0, 1.0}, {0.5, 0.6}, {1.0, 1.0}};
+  {
+    const Vector3d axis(0, 1, 0);
+    const Brep body = Brep::Sweep1(section, StraightRail(L), 32, false, 0.0, 1.0, nullptr, nullptr, nullptr, &sx, &sy, &axis);
+    const NurbsSurface wall = Wrap(body);
+    double worst = 0.0, sep = 1e9;
+    for (int k = 0; k < 32; k += 3) {
+      const double f = k / 31.0;
+      // x axis = world +y, y axis = tangent x x = z x y = -x_world: a section point (px, py) has coordinates (py, -px) on them,
+      // so it lands at (px sy, py sx) in the world frame.
+      Expect e{ON_3dPoint(0, 0, L * f), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)};
+      worst = std::max(worst, CrossSectionDistance(wall, e, cx, cy, rad, At(sy, f), At(sx, f)));
+      Expect plain{ON_3dPoint(0, 0, L * f), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)};
+      if (std::fabs(At(sx, f) - At(sy, f)) > 0.3) sep = std::min(sep, CrossSectionDistance(wall, plain, cx, cy, rad, At(sx, f), At(sy, f)));
+    }
+    std::printf("  [peraxis axis] scale_x_axis = +y: worst distance %.3g; the default-axis expectation is off by >= %.3g\n", worst, sep);
+    Check(worst < 1e-6, "sweep1 per-axis (scale_x_axis = +y): the cross-section is the section scaled along the chosen axes (x -> world +y, so the pair acts swapped in world x/y), to < 1e-6");
+    Check(sep > 0.02, "sweep1 per-axis (scale_x_axis = +y): the default-axis expectation is rejected by the same measurement (> 0.02)");
+  }
+  {
+    const double A = ON_PI / 2.0;  // twist_total: a quarter turn linear in the fraction
+    const Brep body = Brep::Sweep1(section, StraightRail(L), 32, false, A, 1.0, nullptr, nullptr, nullptr, &sx, &sy);
+    const NurbsSurface wall = Wrap(body);
+    double worst = 0.0;
+    for (int k = 0; k < 32; ++k) {
+      const double f = k / 31.0, a = A * f;
+      Expect e{ON_3dPoint(0, 0, L * f), ON_3dVector(std::cos(a), std::sin(a), 0), ON_3dVector(-std::sin(a), std::cos(a), 0)};
+      worst = std::max(worst, CrossSectionDistance(wall, e, cx, cy, rad, At(sx, f), At(sy, f)));
+    }
+    std::printf("  [peraxis twist] quarter-turn twist + per-axis scale: worst distance %.3g at 32 stations\n", worst);
+    Check(worst < 1e-5, "sweep1 per-axis (with twist_total = pi/2): the scale acts along the twisted section axes at every one of 32 stations, to < 1e-5 (measured 2.9e-6, closest-point tolerance)");
+  }
+}
+
+void TestSweep1PerAxisUniformScheduleIsBitForBit() {
+  const NurbsCurve section = CircleIn(ON_3dPoint(0.5, 0.3, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.0);
+  const Sched s = {{0.0, 1.0}, {0.3, 1.7}, {1.0, 0.9}};
+  for (int which = 0; which < 3; ++which) {
+    const NurbsCurve rail = which == 0 ? StraightRail(10.0) : which == 1 ? ArcRail(8.0) : NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(6, 0, 4), Point3d(6, 6, 10), Point3d(0, 10, 14)}, 3);
+    const Brep old_way = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, &s);
+    const Brep new_way = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, nullptr, &s, &s);
+    const Brep only_x_flat_y = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, nullptr, &s, nullptr);
+    const bool same = SameCVs(WallOfBody(old_way), WallOfBody(new_way));
+    // negative control: an x-only schedule is genuinely different
+    double diff = 0.0;
+    const ON_NurbsSurface &a = WallOfBody(old_way), &c = WallOfBody(only_x_flat_y);
+    for (int i = 0; i < a.CVCount(0) && i < c.CVCount(0); ++i) {
+      for (int j = 0; j < a.CVCount(1) && j < c.CVCount(1); ++j) {
+        ON_3dPoint pa, pc;
+        a.GetCV(i, j, pa);
+        c.GetCV(i, j, pc);
+        diff = std::max(diff, pa.DistanceTo(pc));
+      }
+    }
+    std::printf("  [peraxis uniform] rail %d: scale_x = scale_y = scale_schedule bit for bit: %s (control: x-only schedule differs by %.3g)\n", which, same ? "yes" : "NO", diff);
+    Check(same, "sweep1 per-axis: equal x and y schedules reproduce the uniform scale_schedule result bit for bit (every control point, weight and knot), straight / arc / free-form rail");
+    Check(diff > 0.05, "sweep1 per-axis: negative control - an x-only schedule differs from the uniform one by > 0.05 (the bit-for-bit check can fail)");
+  }
+}
+
+void TestSweep1PerAxisClosedRailWatertightAndVolume() {
+  // Circle rail R = 10 in the x-y plane; a centred circle of radius 1 perpendicular to it. A centred section keeps its
+  // centroid on the rail, so V = integral of A(s) ds = pi r^2 * 2 pi R * integral sx(f) sy(f) df.
+  const double R = 10.0, rr = 1.0;
+  ON_NurbsCurve rn;
+  ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), R).GetNurbForm(rn);
+  NurbsCurve rail;
+  rail.raw() = rn;
+  const NurbsCurve section = CircleIn(ON_3dPoint(R, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1), rr);
+  const Sched sx = {{0.0, 1.0}, {0.25, 1.6}, {0.5, 1.0}, {1.0, 1.0}}, sy = {{0.0, 1.0}, {0.5, 0.6}, {1.0, 1.0}};
+  double integral = 0.0;
+  const int N = 200000;
+  for (int i = 0; i < N; ++i) {
+    const double f = (i + 0.5) / N;
+    integral += At(sx, f) * At(sy, f) / N;
+  }
+  const double expect = ON_PI * rr * rr * 2.0 * ON_PI * R * integral;
+  const Brep body = Brep::Sweep1(section, rail, 96, false, 0.0, 1.0, nullptr, nullptr, nullptr, &sx, &sy);
+  const ON_NurbsSurface& w = WallOfBody(body);
+  const double volume = WallVolumeByDivergence(w, 200, 800);
+  // seam gap: the wall at the end of the periodic direction equals the start
+  double seam = 0.0;
+  for (int i = 0; i <= 64; ++i) {
+    const double u = w.Domain(0).ParameterAt(i / 64.0);
+    seam = std::max(seam, w.PointAt(u, w.Domain(1).Min()).DistanceTo(w.PointAt(u, w.Domain(1).Max())));
+  }
+  std::printf("  [peraxis closed] circle rail R = 10, sx/sy schedules: volume %.5f vs closed form %.5f (rel %.2g), seam gap %.3g\n", volume, expect,
+              std::fabs(volume - expect) / expect, seam);
+  Check(body.raw().IsValid() && body.raw().IsSolid() && w.IsClosed(0) && w.IsClosed(1), "sweep1 per-axis (closed rail): a valid, watertight (IsSolid) body with a wall closed in both directions");
+  Check(seam < 1e-9, "sweep1 per-axis (closed rail): the wall closes onto itself at the seam to < 1e-9");
+  Check(std::fabs(volume - expect) < 3e-3 * expect, "sweep1 per-axis (closed rail): enclosed volume is pi r^2 2 pi R * integral(sx sy) to 3e-3");
+  // refusals on a closed rail
+  const Sched ramp = {{0.0, 1.0}, {1.0, 2.0}};
+  const std::string why = RefusalText([&] { Brep::Sweep1(section, rail, 96, false, 0.0, 1.0, nullptr, nullptr, nullptr, &ramp, nullptr); });
+  Check(why.find("must return to its starting value") != std::string::npos, "sweep1 per-axis (closed rail): a one-way ramp is refused with that reason");
+}
+
+void TestSweep1SectionsPerAxisScale() {
+  const double cx = 0.5, cy = 0.3, rad = 1.0, L = 10.0;
+  auto circle_at = [&](double z) { return CircleIn(ON_3dPoint(cx, cy, z), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), rad); };
+  const std::vector<NurbsCurve> secs = {circle_at(0.0), circle_at(5.0), circle_at(10.0)};
+  const Sched smooth_x = {{0.0, 1.0}, {1.0, 2.0}}, smooth_y = {{0.0, 1.0}, {1.0, 0.5}};
+  const Sched kink_x = {{0.0, 1.0}, {0.5, 2.0}, {1.0, 1.2}}, kink_y = {{0.0, 1.0}, {1.0, 0.5}};
+  double kink_between = 0.0, smooth_between = 0.0;
+  for (int variant = 0; variant < 2; ++variant) {
+    const Sched& sx = variant == 0 ? smooth_x : kink_x;
+    const Sched& sy = variant == 0 ? smooth_y : kink_y;
+    Brep::Sweep1SectionsReport rep;
+    const Brep body = Brep::Sweep1Sections(secs, StraightRail(L), 32, false, &rep, &sx, &sy);
+    const NurbsSurface wall = Wrap(body);
+    double worst = 0.0, worst_anchor = 0.0, wrong = 1e9;
+    int n = 0;
+    for (int k = 0; k <= 40; ++k) {
+      const double f = k / 40.0;
+      Expect e{ON_3dPoint(0, 0, L * f), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)};
+      const double d = CrossSectionDistance(wall, e, cx, cy, rad, At(sx, f), At(sy, f));
+      worst = std::max(worst, d);
+      if (k == 0 || k == 20 || k == 40) worst_anchor = std::max(worst_anchor, d);  // fractions 0, .5, 1 are the three sections' stations
+      if (std::fabs(At(sx, f) - At(sy, f)) > 0.3) wrong = std::min(wrong, CrossSectionDistance(wall, e, cx, cy, rad, At(sy, f), At(sx, f)));
+      ++n;
+    }
+    (variant == 0 ? smooth_between : kink_between) = rep.max_between_station_deviation;
+    std::printf("  [s1s peraxis %s] 3 equal circles, straight rail: %d cross-sections, worst distance %.3g (at the sections' own fractions 0 / .5 / 1: %.3g); report: section dev %.3g, between-station %.3g; swapped-axes control >= %.3g\n",
+                variant == 0 ? "smooth" : "kinked", n, worst, worst_anchor, rep.max_section_deviation, rep.max_between_station_deviation, wrong);
+    Check(body.FaceCount() == 1 && body.raw().IsValid(), "sweep1 sections per-axis: one valid face");
+    Check(worst_anchor < 1e-6 && rep.max_section_deviation < 1e-9, "sweep1 sections per-axis: at the three sections' stations the wall equals the input section times (sx, sy) (closest-point distance < 1e-6; the kernel's report < 1e-9 against the scaled section)");
+    if (variant == 0) {
+      Check(worst < 1e-4 && rep.max_between_station_deviation < 1e-4, "sweep1 sections per-axis (smooth schedules): at 41 fractions along the rail the cross-section equals the input times (sx, sy) within 1e-4, and the kernel's own between-station figure agrees (< 1e-4)");
+    } else {
+      Check(worst < 3e-2 && rep.max_between_station_deviation < 3e-2, "sweep1 sections per-axis (slope change at the middle section): within 3e-2 between stations - the skin rings next to a slope change (the kernel's own figure is reported honestly, not hidden)");
+    }
+    Check(wrong > 0.02, "sweep1 sections per-axis: the swapped-axes expectation is rejected by the same measurement (> 0.02)");
+  }
+  Check(kink_between > 10.0 * smooth_between, "sweep1 sections per-axis: the kernel's between-station figure sees the difference between a smooth and a kinked schedule (more than 10x)");
+  // Different radii at the sections: the sections are reproduced scaled by the schedule at their own station.
+  const Sched& sx = smooth_x;
+  const Sched& sy = smooth_y;
+  const std::vector<NurbsCurve> diff = {CircleIn(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.0), CircleIn(ON_3dPoint(0, 0, 5), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.5),
+                                        CircleIn(ON_3dPoint(0, 0, 10), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 0.8)};
+  Brep::Sweep1SectionsReport rep2;
+  const Brep body2 = Brep::Sweep1Sections(diff, StraightRail(L), 32, false, &rep2, &sx, &sy);
+  const NurbsSurface wall2 = Wrap(body2);
+  const double rads[3] = {1.0, 1.5, 0.8};
+  double worst2 = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double f = 0.5 * i;
+    Expect e{ON_3dPoint(0, 0, L * f), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)};
+    worst2 = std::max(worst2, CrossSectionDistance(wall2, e, 0.0, 0.0, rads[i], At(sx, f), At(sy, f)));
+  }
+  std::printf("  [s1s peraxis] radii 1 / 1.5 / 0.8: scaled sections reproduced to %.3g (report %.3g, between %.3g)\n", worst2, rep2.max_section_deviation, rep2.max_between_station_deviation);
+  Check(worst2 < 1e-6 && rep2.max_section_deviation < 1e-9, "sweep1 sections per-axis (radii 1 / 1.5 / 0.8): every section is reproduced scaled by (sx, sy) at its own station (closest-point < 1e-6, report < 1e-9)");
+  // Constant-1 schedules are bit for bit the unscaled sweep.
+  const Sched ones = {{0.0, 1.0}, {1.0, 1.0}};
+  const Brep plain = Brep::Sweep1Sections(secs, StraightRail(L), 32, false);
+  const Brep ones_body = Brep::Sweep1Sections(secs, StraightRail(L), 32, false, nullptr, &ones, &ones);
+  const Brep real_body = Brep::Sweep1Sections(secs, StraightRail(L), 32, false, nullptr, &smooth_x, &smooth_y);
+  Check(SameCVs(WallOfBody(plain), WallOfBody(ones_body)), "sweep1 sections per-axis: schedules of constant 1 reproduce the unscaled sweep bit for bit (every control point, weight and knot)");
+  Check(!SameCVs(WallOfBody(plain), WallOfBody(real_body)), "sweep1 sections per-axis: negative control - the real schedule gives a different wall");
+}
+
+void TestSweep1SectionsPerAxisClosedRail() {
+  // Three equal circles on a circle rail R = 10 (a torus), scaled per axis: V = pi r^2 2 pi R * integral(sx sy).
+  const double R = 10.0, rr = 1.0;
+  ON_NurbsCurve rn;
+  ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)), R).GetNurbForm(rn);
+  NurbsCurve rail;
+  rail.raw() = rn;
+  std::vector<NurbsCurve> secs;
+  for (const double a : {0.0, 2.0 * ON_PI / 3.0, 4.0 * ON_PI / 3.0}) {
+    secs.push_back(CircleIn(ON_3dPoint(R * std::cos(a), R * std::sin(a), 0), ON_3dVector(-std::sin(a), std::cos(a), 0), ON_3dVector(std::cos(a), std::sin(a), 0), rr));
+  }
+  const Sched sx = {{0.0, 1.0}, {0.5, 1.5}, {1.0, 1.0}}, sy = {{0.0, 1.0}, {0.25, 0.7}, {0.75, 1.3}, {1.0, 1.0}};
+  double integral = 0.0;
+  const int N = 200000;
+  for (int i = 0; i < N; ++i) {
+    const double f = (i + 0.5) / N;
+    integral += At(sx, f) * At(sy, f) / N;
+  }
+  const double expect = ON_PI * rr * rr * 2.0 * ON_PI * R * integral;
+  Brep::Sweep1SectionsReport rep;
+  const Brep body = Brep::Sweep1Sections(secs, rail, 64, false, &rep, &sx, &sy);
+  const ON_NurbsSurface& w = WallOfBody(body);
+  const double volume = WallVolumeByDivergence(w, 200, 800);
+  std::printf("  [s1s peraxis closed] torus from 3 circles, per-axis schedules: volume %.5f vs %.5f (rel %.2g), section dev %.3g, between %.3g\n", volume, expect,
+              std::fabs(volume - expect) / expect, rep.max_section_deviation, rep.max_between_station_deviation);
+  Check(body.raw().IsValid() && body.raw().IsSolid() && w.IsClosed(0) && w.IsClosed(1), "sweep1 sections per-axis (closed rail): a valid watertight solid, wall closed in both directions");
+  Check(std::fabs(volume - expect) < 6e-3 * expect, "sweep1 sections per-axis (closed rail): enclosed volume is pi r^2 2 pi R * integral(sx sy) to 6e-3");
+  const Sched ramp = {{0.0, 1.0}, {1.0, 2.0}};
+  const std::string why = RefusalText([&] { Brep::Sweep1Sections(secs, rail, 64, false, nullptr, &ramp, nullptr); });
+  Check(why.find("must return to its starting value") != std::string::npos, "sweep1 sections per-axis (closed rail): a one-way ramp is refused with that reason");
+}
+
+void TestPerAxisScaleRefusalsWithReasons() {
+  const NurbsCurve section = CircleIn(ON_3dPoint(0.5, 0.3, 0), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.0);
+  const NurbsCurve rail = StraightRail(10.0);
+  const NurbsCurve arc = ArcRail(8.0);
+  const Sched ok = {{0.0, 1.0}, {1.0, 1.5}};
+  auto s1 = [&](const Sched* x, const Sched* y, const Vector3d* axis = nullptr, double scale_end = 1.0, const Sched* uni = nullptr, const NurbsCurve* r = nullptr) {
+    return RefusalText([&] { Brep::Sweep1(section, r ? *r : arc, 32, false, 0.0, scale_end, nullptr, nullptr, uni, x, y, axis); });
+  };
+  // zero / negative scale
+  const Sched zero = {{0.0, 1.0}, {1.0, 0.0}}, neg = {{0.0, 1.0}, {1.0, -0.5}};
+  const std::string z = s1(&zero, nullptr), n = s1(nullptr, &neg);
+  std::printf("  [peraxis refusals] zero: %s\n  [peraxis refusals] negative: %s\n", z.c_str(), n.c_str());
+  Check(z.find("scale_x_schedule") != std::string::npos && z.find("non-positive") != std::string::npos, "sweep1 per-axis: a zero scale is refused, naming scale_x_schedule and non-positive");
+  Check(n.find("scale_y_schedule") != std::string::npos && n.find("non-positive") != std::string::npos, "sweep1 per-axis: a negative scale is refused, naming scale_y_schedule and non-positive");
+  // discontinuity: a factor-4 jump between breakpoints 0.5 and 0.5001
+  const Sched jump = {{0.0, 1.0}, {0.5, 1.0}, {0.5001, 4.0}, {1.0, 4.0}};
+  const std::string j = s1(&jump, nullptr);
+  std::printf("  [peraxis refusals] jump: %s\n", j.c_str());
+  Check(j.find("scale_x_schedule changes by a factor of 4") != std::string::npos && j.find("0.5") != std::string::npos, "sweep1 per-axis: a factor-4 jump over 1e-4 of the rail is refused, naming the factor and the fractions");
+  const Sched jump_y = {{0.0, 2.0}, {0.3, 2.0}, {0.3002, 0.5}, {1.0, 0.5}};
+  Check(s1(nullptr, &jump_y).find("scale_y_schedule changes by a factor of 4") != std::string::npos, "sweep1 per-axis: the same refusal for scale_y_schedule");
+  // control: a smooth 1 -> 3 ramp over the whole rail (stations ratio ~1.07) is accepted
+  const Sched smooth = {{0.0, 1.0}, {1.0, 3.0}};
+  Check(s1(&smooth, &ok).empty(), "sweep1 per-axis: control - a smooth 1 -> 3 ramp is NOT refused");
+  // other contract violations
+  Check(s1(&ok, &ok, nullptr, 2.0).find("cannot be combined") != std::string::npos, "sweep1 per-axis: combining with scale_end != 1 is refused with a reason");
+  Check(s1(&ok, &ok, nullptr, 1.0, &ok).find("cannot be combined") != std::string::npos, "sweep1 per-axis: combining with scale_schedule is refused with a reason");
+  const Sched unordered = {{0.5, 1.0}, {0.2, 1.0}};
+  Check(s1(&unordered, nullptr).find("strictly increasing") != std::string::npos, "sweep1 per-axis: non-increasing t is refused");
+  const Vector3d along(0, 0, 1);
+  Check(s1(&ok, &ok, &along, 1.0, nullptr, &rail).find("scale_x_axis") != std::string::npos, "sweep1 per-axis: scale_x_axis parallel to the rail tangent is refused");
+  Check(s1(nullptr, nullptr, &along).find("only meaningful") != std::string::npos, "sweep1 per-axis: scale_x_axis without a schedule is refused");
+  // Sweep1Sections
+  auto circle_at = [&](double z) { return CircleIn(ON_3dPoint(0.5, 0.3, z), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 1.0); };
+  const std::vector<NurbsCurve> secs = {circle_at(0.0), circle_at(5.0), circle_at(10.0)};
+  auto ss = [&](const Sched* x, const Sched* y) { return RefusalText([&] { Brep::Sweep1Sections(secs, rail, 32, false, nullptr, x, y); }); };
+  Check(ss(&zero, nullptr).find("non-positive") != std::string::npos, "sweep1 sections per-axis: a zero scale is refused");
+  Check(ss(nullptr, &neg).find("non-positive") != std::string::npos, "sweep1 sections per-axis: a negative scale is refused");
+  const std::string sj = ss(&jump, nullptr);
+  std::printf("  [peraxis refusals] sections jump: %s\n", sj.c_str());
+  Check(sj.find("scale_x_schedule changes by a factor of") != std::string::npos, "sweep1 sections per-axis: a factor-4 jump over 1e-4 of the rail is refused, naming the factor and fractions");
+  Check(ss(&smooth, &ok).empty(), "sweep1 sections per-axis: control - the smooth 1 -> 3 ramp is NOT refused");
+}
+
+}  // namespace sweep_peraxis_scale_tests
+
+
 // Offsetting & shelling: unified untrimmed-surface offset (exact for analytic
 // surfaces, tolerance-bounded and measured for freeform) and the exact
 // parallel-plane circle case of the explicit-plane curve offset.
@@ -98585,6 +99006,20 @@ int main() {
           sweep_closure_tests::TestSweep1TwistOnAClosedRailIsAllowedForWholeTurns);
   RunTest("sweep_closure_tests::TestSweep2CornerPairingIgnoresASpuriousExtraKink",
           sweep_closure_tests::TestSweep2CornerPairingIgnoresASpuriousExtraKink);
+  RunTest("sweep_peraxis_scale_tests::TestSweep1PerAxisScaleStationsStraightAndArcRail",
+          sweep_peraxis_scale_tests::TestSweep1PerAxisScaleStationsStraightAndArcRail);
+  RunTest("sweep_peraxis_scale_tests::TestSweep1PerAxisScaleAxisAndTwistFrame",
+          sweep_peraxis_scale_tests::TestSweep1PerAxisScaleAxisAndTwistFrame);
+  RunTest("sweep_peraxis_scale_tests::TestSweep1PerAxisUniformScheduleIsBitForBit",
+          sweep_peraxis_scale_tests::TestSweep1PerAxisUniformScheduleIsBitForBit);
+  RunTest("sweep_peraxis_scale_tests::TestSweep1PerAxisClosedRailWatertightAndVolume",
+          sweep_peraxis_scale_tests::TestSweep1PerAxisClosedRailWatertightAndVolume);
+  RunTest("sweep_peraxis_scale_tests::TestSweep1SectionsPerAxisScale",
+          sweep_peraxis_scale_tests::TestSweep1SectionsPerAxisScale);
+  RunTest("sweep_peraxis_scale_tests::TestSweep1SectionsPerAxisClosedRail",
+          sweep_peraxis_scale_tests::TestSweep1SectionsPerAxisClosedRail);
+  RunTest("sweep_peraxis_scale_tests::TestPerAxisScaleRefusalsWithReasons",
+          sweep_peraxis_scale_tests::TestPerAxisScaleRefusalsWithReasons);
   RunTest("sweep_closure_tests::TestSweep2SectionsAnchorsWinOverOneRailOnlyCorners",
           sweep_closure_tests::TestSweep2SectionsAnchorsWinOverOneRailOnlyCorners);
   RunTest("sweep_closure_tests::TestSweep1ClosedRailTwistStepIsBounded",
