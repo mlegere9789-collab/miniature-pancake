@@ -1,0 +1,112 @@
+# Tolerance-contract surface/curve tools (tests/smoke.sh section SOT_): RemoveMultiKnot, FitSrf, ShrinkTrimmedSrf.
+# Every figure is MEASURED by the app (Length, ClosestPt, List, Area, BoundingBox) and compared in smoke.sh with a
+# closed form or an independent bound. Cases in order (smoke.sh cuts the output at each "Command: RemoveMultiKnot"
+# / "Command: FitSrf" / "Command: ShrinkTrimmedSrf" line):
+#  RMK1 a smooth cubic with a degree-multiplicity knot inserted by InsertKink: removal is exact (Length unchanged)
+#  RMK2 a right-angle polyline elevated to degree 3 (a genuine C0 corner, knot multiplicity 3): Tolerance 0.001 refused,
+#       curve unchanged (Length 9); Tolerance 100 removes it, ClosestPt of the old corner (5,0,0) to the new curve is
+#       positive (the corner really was smoothed) and <= the reported guaranteed bound
+#  FIT1 a lofted surface refit at Tolerance 0.02 and at 1e-6, then an impossible tolerance with MaxPoints=4 (refused)
+#  SHR1 a circle's planar surface: ShrinkTrimmedSrf keeps Area and BoundingBox
+SetActiveViewport Top
+
+# --- RMK1: exact removal
+Curve 0,0,0 2,3,0 5,-1,0 8,2,0 10,0,0 Enter
+SelCrv
+Length
+SelCrv
+InsertKink
+4,1,0
+Enter
+SelCrv
+Length
+SelCrv
+RemoveMultiKnot
+Tolerance=0.000001
+Enter
+SelCrv
+Length
+SelCrv
+List
+SelAll
+Delete
+@expect_objects 0
+
+# --- RMK2: a real corner
+Polyline 0,0,0 5,0,0 5,4,0
+Enter
+SelCrv
+ChangeDegree
+3
+SelCrv
+Length
+SelCrv
+RemoveMultiKnot
+Tolerance=0.001
+Enter
+SelCrv
+Length
+SelCrv
+RemoveMultiKnot
+Tolerance=100
+Enter
+SelCrv
+Length
+SelNone
+SelCrv
+ClosestPt
+5,0,0
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- FIT1: lofted surface
+Curve 0,0,0 2.5,0,1.5 5,0,-1.5 7.5,0,1.5 10,0,0 Enter
+Curve 0,3,0 2.5,3,-1 5,3,1 7.5,3,-1 10,3,0 Enter
+Curve 0,6,0 2.5,6,1.2 5,6,-1.2 7.5,6,1.2 10,6,0 Enter
+Curve 0,9,0 2.5,9,-0.5 5,9,0.5 7.5,9,-0.5 10,9,0 Enter
+SelNone
+SelCrv
+Loft
+SelNone
+SelCrv
+Delete
+SelSrf
+List
+SelSrf
+FitSrf
+Tolerance=0.02
+Enter
+SelSrf
+List
+SelSrf
+FitSrf
+Tolerance=0.000001
+Enter
+SelSrf
+FitSrf
+Tolerance=0.000000001
+MaxPoints=4
+Enter
+SelSrf
+List
+SelAll
+Delete
+@expect_objects 0
+
+# --- SHR1: planar surface from a circle
+Circle 0,0,0 3
+SelLast
+PlanarSrf
+SelSrf
+Area
+SelSrf
+BoundingBox
+SelSrf
+ShrinkTrimmedSrf
+SelSrf
+Area
+SelAll
+Delete
+@expect_objects 0
