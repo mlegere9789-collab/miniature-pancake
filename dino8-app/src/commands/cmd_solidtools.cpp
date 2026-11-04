@@ -1099,6 +1099,16 @@ void ArrayHole(CommandContext& ctx, const Input& in) {
 }
 
 void ArrayHolePolar(CommandContext& ctx, const Input& in) {
+  if (in.Yes("Exact")) {
+    ExactHoleSpec sp;
+    sp.polar = true;
+    sp.radius = std::fabs(in.N(3, 2)); sp.depth = std::fabs(in.N(4, 10));
+    sp.through = in.Yes("Through");
+    sp.center = in.P(5);
+    sp.count = static_cast<int>(in.N(6, 6));
+    ArrayHoleExact(ctx, in, in.P(2), sp, "ArrayHolePolar");
+    return;
+  }
   const ArrayProfile profile = ResolveArrayProfile(ctx, in.O(1), "ArrayHolePolar");
   const double radius = std::fabs(in.N(3, 2)), depth = std::fabs(in.N(4, 10));
   const int count = std::max(1, static_cast<int>(in.N(6, 6)));
@@ -2516,9 +2526,9 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
   Reg(e, "RevolvedHole", Tool({ObjectsStep("Select the profile curve"), ObjectsStep("Select solids to cut"), PointStep("Start of revolve axis"), PointStep("End of revolve axis")},
                               {Toggle("DeleteInput", false)}, Guarded("RevolvedHole", RevolvedHole)));
   Reg(e, "ArrayHole", Tool({ObjectsStep("Select solids to cut"), ObjectsStep("Select a closed planar profile curve for the hole shape, or Enter for round holes", 0), PointStep("Center of first hole"), NumberStep("Radius (round holes only)", 2), NumberStep("Depth", 10), NumberStep("Number in X direction", 3), NumberStep("Number in Y direction", 2), NumberStep("Spacing in X", 10), NumberStep("Spacing in Y", 10)},
-                           {Toggle("Through", true)}, Guarded("ArrayHole", ArrayHole)));
+                           {Toggle("Through", true), Toggle("Exact", false)}, Guarded("ArrayHole", ArrayHole)));
   Reg(e, "ArrayHolePolar", Tool({ObjectsStep("Select solids to cut"), ObjectsStep("Select a closed planar profile curve for the hole shape, or Enter for round holes", 0), PointStep("Center of first hole"), NumberStep("Radius (round holes only)", 2), NumberStep("Depth", 10), PointStep("Center of polar array"), NumberStep("Number of holes", 6)},
-                                {Toggle("Through", true)}, Guarded("ArrayHolePolar", ArrayHolePolar)));
+                                {Toggle("Through", true), Toggle("Exact", false)}, Guarded("ArrayHolePolar", ArrayHolePolar)));
   Reg(e, "MoveHole", Tool({ObjectsStep("Select hole features to move"), PointStep("Point to move from"), PointStep("Point to move to")}, {}, Guarded("MoveHole", MoveHole)));
   Reg(e, "CopyHole", Tool({ObjectsStep("Select hole features to copy"), PointStep("Point to copy from"), PointStep("Point to copy to")}, {}, Guarded("CopyHole", CopyHole)));
   Reg(e, "RotateHole", Tool({ObjectsStep("Select hole features to rotate"), PointStep("Center of rotation"), NumberStep("Rotation angle in degrees", 90)},

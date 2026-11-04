@@ -1,0 +1,292 @@
+# TPA: kernel hole patterns, ArrayAlongCurve(OnSurface) and Brep::Transform wired into the app commands
+# (ArrayHole / ArrayHolePolar Exact=Yes, ArrayCrv, ArrayCrvOnSrf, Scale / ScaleNU / Mirror).
+# Every case starts from `New` and is bracketed by an unknown-command marker ("TPABEGIN_<name>") that smoke.sh uses
+# to slice the output into per-case blocks. Closed forms are in smoke.sh next to each range.
+SetActiveViewport Top
+
+# ===================== ArrayHole Exact=Yes (kernel Rectangular/Linear/PolarHolePattern) =====================
+# 2x2 grid of r2 through holes at (10|30, 10|30) in a 40x40x10 slab: V = 16000 - 4*pi*2^2*10 = 15497.35
+New
+TPABEGIN_grid
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Exact=Yes
+Enter
+10,10,10
+2
+10
+2
+2
+20
+20
+SelLast
+Volume
+Check
+# 1x3 row of BLIND r2 holes (depth 4) at x = 10, 20, 30: V = 16000 - 3*pi*2^2*4 = 15849.20
+New
+TPABEGIN_blind
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Exact=Yes
+Through=No
+Enter
+10,20,10
+2
+4
+3
+1
+10
+0
+SelLast
+Volume
+# 4 r2 through holes on a circle of radius 10 about (20,20): V = 15497.35
+New
+TPABEGIN_polar
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHolePolar
+Exact=Yes
+Enter
+30,20,10
+2
+10
+20,20,0
+4
+SelLast
+Volume
+Check
+# --- negative controls: the kernel refuses and the slab is left untouched (V = 16000)
+# bores that overlap (spacing 3 < diameter 4)
+New
+TPABEGIN_overlap
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Exact=Yes
+Enter
+10,20,10
+2
+10
+3
+1
+3
+0
+SelLast
+Volume
+# a profile curve with Exact=Yes
+New
+TPABEGIN_profile
+Rectangle 0,0,0 4,4,0
+SelLast
+SetObjectName ProfileRect
+SelNone
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Exact=Yes
+SelName ProfileRect
+Enter
+5,5,10
+2
+10
+1
+3
+0
+10
+SelID 2
+Volume
+# a mesh solid with Exact=Yes
+New
+TPABEGIN_meshsolid
+MeshBox 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Exact=Yes
+Enter
+10,20,10
+2
+10
+3
+1
+10
+0
+SelLast
+Volume
+# a ring of ONE hole is not a pattern
+New
+TPABEGIN_polar1
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHolePolar
+Exact=Yes
+Enter
+30,20,10
+2
+10
+20,20,0
+1
+SelLast
+Volume
+# --- regression: the default (Exact=No) path is unchanged: still a mesh with the 2x2 grid through holes
+New
+TPABEGIN_legacy
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Enter
+10,10,10
+2
+10
+2
+2
+20
+20
+SelLast
+Volume
+
+# ===================== Scale / ScaleNU / Mirror (Brep::Transform, Mesh::Transform) =====================
+# 10x10x5 box (V = 500): ScaleNU 2,3,0.5 -> det 3, V = 1500; then a SINGULAR map (x factor 0) is refused, nothing changes
+New
+TPABEGIN_scalenu
+Box 0,0,0 10,10,0 5
+SelLast
+ScaleNU 0,0,0 2 3 0.5
+SelLast
+Volume
+BoundingBox
+ScaleNU 0,0,0 0 1 1
+SelLast
+Volume
+# uniform Scale 2: det 8, V = 4000
+New
+TPABEGIN_scale
+Box 0,0,0 10,10,0 5
+SelLast
+Scale 0,0,0 2
+SelLast
+Volume
+# non-uniform scale with a NEGATIVE factor is a mirror too: det -2*1*1 = -2, V = 1000 and outward faces
+New
+TPABEGIN_scalenu_neg
+Box 0,0,0 10,10,0 5
+SelLast
+ScaleNU 0,0,0 -2 1 1
+SelLast
+Volume
+BoundingBox
+# Mirror of a B-rep across x = 0: det -1, V = 500
+New
+TPABEGIN_mirror_brep
+Box 5,0,0 15,10,0 5
+SelLast
+Mirror Copy=No 0,0,0 0,10,0
+SelLast
+Volume
+BoundingBox
+# Mirror of a mesh: det -1, V = 1000, faces stay outward (before: the mirrored mesh had inward windings, V = -1000)
+New
+TPABEGIN_mirror_mesh
+MeshBox 100,0,0 110,10,0 10
+SelLast
+Mirror Copy=No 105,0,0 105,10,0
+SelLast
+Volume
+BoundingBox
+# non-uniform scale of a mesh: det 3, V = 3000
+New
+TPABEGIN_scalenu_mesh
+MeshBox 0,0,0 10,10,0 10
+SelLast
+ScaleNU 0,0,0 2 3 0.5
+SelLast
+Volume
+# Mirror with Copy=Yes of a B-rep: the original stays (2 objects)
+New
+TPABEGIN_mirror_copy
+Box 5,0,0 15,10,0 5
+SelLast
+Mirror Copy=Yes 0,0,0 0,10,0
+SelAll
+List
+
+# ===================== ArrayCrv (kernel ArrayAlongCurve) =====================
+# 2 x 4 x 2 box (x -1..1, y -1..3) at the start (20,0,0) of a circle r20, 5 items, Freeform: the copy at 90 degrees
+# is the box rotated 90 degrees about z and moved to (0,20): x -3..1, y 19..21, V = 16 unchanged
+New
+TPABEGIN_arrcrv
+Box 19,-1,0 21,3,0 2
+Circle 0,0,0 20
+SelID 1
+ArrayCrv
+SelID 2
+Enter
+5
+SelID 4
+BoundingBox
+Volume
+SelAll
+List
+# NoRotation: copies are only translated: a line from the origin to (40,0,0), 5 items -> the last copy is at x + 40
+New
+TPABEGIN_arrcrv_nr
+Box 0,0,0 2,4,0 2
+Line 0,0,0 40,0,0
+SelID 1
+ArrayCrv
+Orientation=NoRotation
+SelID 2
+Enter
+5
+SelLast
+BoundingBox
+Volume
+# negative: a path along the CPlane normal leaves the frame undefined for Freeform -> refused with the kernel's reason, nothing created
+New
+TPABEGIN_arrcrv_up
+Box 0,0,0 2,4,0 2
+Line 0,0,0 0,0,40
+SelID 1
+ArrayCrv
+SelID 2
+Enter
+5
+SelAll
+List
+
+# ===================== ArrayCrvOnSrf (kernel ArrayAlongCurveOnSurface) =====================
+# plane z = 0 (0..40 square), path y = 5 from x = 5 to 35, 4 items -> copies at x = 5, 15, 25, 35; a box 2x2x2 at the start
+New
+TPABEGIN_arrsrf
+Plane 0,0,0 40,40,0
+Line 5,5,0 35,5,0
+Box 4,4,0 6,6,0 2
+SelID 3
+ArrayCrvOnSrf
+SelID 2
+Enter
+SelID 1
+Enter
+4
+SelLast
+BoundingBox
+Volume
+SelAll
+List
+# negative: a path 3 above the surface does not lie on it -> refused with the kernel's reason, nothing created
+New
+TPABEGIN_arrsrf_off
+Plane 0,0,0 40,40,0
+Line 5,5,3 35,5,3
+Box 4,4,0 6,6,0 2
+SelID 3
+ArrayCrvOnSrf
+SelID 2
+Enter
+SelID 1
+Enter
+4
+SelAll
+List
+TPAEND
