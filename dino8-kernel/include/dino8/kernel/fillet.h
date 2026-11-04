@@ -1,9 +1,12 @@
 #pragma once
 
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/curve.h"
+#include "dino8/kernel/surface.h"
 
 namespace dino8::kernel {
 
@@ -2440,5 +2443,77 @@ struct PipeTeeFillet {
   Vector3d main_axis, branch_axis;
 };
 PipeTeeFillet FilletPipeTee(const Brep& tee, double radius, double tolerance = 1e-6);
+
+// --- FilletSurfaces ------------------------------------------------------------
+//
+// Constant-radius rolling-ball blend between two FREEFORM (NURBS) surfaces `a` and `b` that meet along an
+// intersection curve. Returns the blend PATCH and its two contact curves - NOT a solid and NOT trimmed parent faces
+// (the parents are left untouched; trimming them back to the contact curves is not done here).
+//
+// Construction. The ball of radius r touches `a` on the side `options.side_a` (+1 = along a.NormalAt(), -1 = against
+// it) and `b` on the side `options.side_b`, so its centre c satisfies
+//     c = a(u1,v1) + side_a r Na(u1,v1) = b(u2,v2) + side_b r Nb(u2,v2).
+// The surface offsets are evaluated EXACTLY point by point (position + side * r * unit normal), not through the
+// NURBS approximation NurbsSurface::Offset() returns - the centre curve would otherwise inherit that approximation's
+// error. The centre curve is the intersection of the two offset surfaces, traced station by station: the curve
+// IntersectSurfaces() returns for (a, b) supplies the stations (a point p(s) and tangent T(s)), a first-order guess
+// c0 = p + r (side_a Na + side_b Nb) / (1 + side_a side_b Na.Nb) seeds a Newton solve of the 3 centre equations plus the
+// plane (c - p).T = 0 in (u1,v1,u2,v2). The contact points are the feet a(u1,v1) and b(u2,v2) of that centre (so the
+// "projection of the centre onto each surface" is exact, not re-searched). At each station the blend is the exact
+// circular arc about c between the two contact points (a rational quadratic), the short arc.
+//
+// The rows are interpolated by a clamped cubic in s (s = the intersection curve's own chord-length parameter; the
+// blend's u-domain is [s_start, s_end]) through N + 1 stations: 16 uniform intervals to start, then every interval that
+// misses the tolerance is bisected (neighbours kept within a 2:1 length ratio) until the SAMPLED deviation from the
+// exact rolling-ball surface is at most `tolerance` or N would exceed options.max_intervals. Bisecting where needed
+// (instead of doubling everywhere) matters because the offset normal makes the centre path only C1 where it crosses a
+// parent's knot line. The deviation is measured at
+// the stations and at 1/4, 1/2 and 3/4 of every interval, with five points across each arc (distance between the
+// NURBS blend at (s, v) and the exact arc at the same (s, v) from a fresh Newton solve) - sampled, not bounded
+// between samples. `deviation` is that sampled maximum; the contact curves are the blend's own v = 0 / v = 1 edge
+// isocurves, `centre` interpolates the exact centres.
+//
+// Ends. The usable range is the stretch of the intersection curve whose centre solution keeps both contact points
+// inside the parents' parameter domains (the contact points sit up to ~r beside the intersection curve, so a patch
+// reaching the parents' free edges is shortened). `start_trim` / `end_trim` report the intersection-curve length
+// (chord length) NOT covered at each end. Contiguity of that range is required.
+//
+// Refusals (status = Failed, `reason` names it, patch left empty): non-positive / non-finite radius or tolerance;
+// no intersection curve (parallel / separated surfaces), more than one intersection curve, a closed one;
+// offsets that do not meet (the centre equations have no solution anywhere along the curve, e.g. the ball does not fit);
+// the radius reaching a local radius of curvature (1/k) of a parent at a contact point (the offset folds); surfaces
+// tangent along the curve (arc angle ~0) or back to back (~pi); an ill-conditioned or jumping centre solve (the centre
+// curve branches or turns); a blend whose normal flips against the rolling-ball direction; a tolerance not reached
+// within max_intervals.
+// NOT done: closed (periodic) intersection curves, several edge branches at once, varying radius, setback / vertex
+// blends, a closed B-rep result.
+struct SurfaceFilletOptions {
+  int side_a = +1;
+  int side_b = +1;
+  int max_intervals = 512;
+};
+
+struct SurfaceFillet {
+  Result status = Result::Failed;
+  std::string reason;
+  // u: along the edge (cubic, domain [s_start, s_end]), v: across the arc (rational quadratic, 0 at the contact on `a`).
+  NurbsSurface blend;
+  NurbsCurve contact_a, contact_b, centre;
+  // (u,v) of the contact point on `a` / `b` at the N + 1 stations station_s[i] (non-uniform: bisected where the fit needs it).
+  std::vector<Point2d> uv_a, uv_b;
+  std::vector<double> station_s;
+  int intervals = 0;
+  double s_start = 0, s_end = 0;
+  double start_trim = 0, end_trim = 0;
+  // Sampled max distance blend vs exact rolling-ball surface: at the stations / over all samples (quarter points included).
+  double station_deviation = 0, deviation = 0;
+  // Smallest |cos| between the blend's own normal and the rolling-ball direction (blend point -> centre) over a sample grid.
+  double min_normal_alignment = 0;
+  // Largest side * radius * principal curvature over the contact points visited (a fold at 1; refused at 0.98 and above).
+  double max_radius_times_curvature = 0;
+  double radius = 0;
+};
+SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, double radius, double tolerance,
+                             const SurfaceFilletOptions& options = SurfaceFilletOptions());
 
 }  // namespace dino8::kernel

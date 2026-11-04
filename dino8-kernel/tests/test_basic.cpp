@@ -96795,6 +96795,294 @@ void TestPipeTeeFilletRefusesWithReasonsNeverADegradedBody() {
 
 }  // namespace pipe_tee_fillet_tests
 
+// FilletSurfaces (fillet.h): constant-radius rolling-ball blend between two freeform NURBS surfaces. Every number below is
+// MEASURED here against the parents themselves (closest-point projection onto the two NurbsSurfaces and their own normals),
+// not read back from the routine's own report. The result is a blend PATCH plus contact curves - never a solid.
+namespace surface_fillet_tests {
+
+using dino8::kernel::FilletSurfaces;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Result;
+using dino8::kernel::SurfaceFillet;
+using dino8::kernel::SurfaceFilletOptions;
+
+// A bicubic (degree 3 x 3) NURBS surface from an nu x nv control net sampled from f over [x0,x1] x [y0,y1]; `w` (optional)
+// makes it genuinely rational.
+NurbsSurface MakeNet(int nu, int nv, const std::function<ON_3dPoint(double, double)>& f, const std::function<double(int, int)>& w = nullptr) {
+  std::vector<ON_3dPoint> g;
+  for (int i = 0; i < nu; ++i)
+    for (int j = 0; j < nv; ++j) g.push_back(f((double)i / (nu - 1), (double)j / (nv - 1)));
+  NurbsSurface s = NurbsSurface::FromControlGrid(g, nu, nv, 3, 3);
+  if (w)
+    for (int i = 0; i < nu; ++i)
+      for (int j = 0; j < nv; ++j) s.SetWeightAt(i, j, w(i, j));
+  return s;
+}
+
+// Floor: x in [0,6], y in [-3,3], heights = two Gaussian bumps.
+NurbsSurface BumpFloor() {
+  return MakeNet(10, 10, [](double a, double b) {
+    const double x = 6.0 * a, y = -3.0 + 6.0 * b;
+    const double z = 0.35 * std::exp(-((x - 2) * (x - 2) + (y - 1) * (y - 1)) / 1.2) + 0.25 * std::exp(-((x - 4.5) * (x - 4.5) + (y + 1.5) * (y + 1.5)) / 1.5);
+    return ON_3dPoint(x, y, z);
+  });
+}
+
+// Wall crossing the floor near x = 3.2: x = 3.2 + 0.4 sin(0.8 y) + 0.1 z + 0.05 z^2, y in [-3.2,3.2], z in [-1,2.5].
+NurbsSurface CurvedWall(double lean = 0.1) {
+  return MakeNet(10, 8, [lean](double a, double b) {
+    const double y = -3.2 + 6.4 * a, z = -1.0 + 3.5 * b;
+    return ON_3dPoint(3.2 + 0.4 * std::sin(0.8 * y) + lean * z + 0.05 * z * z, y, z);
+  });
+}
+
+// Wavy rational floor.
+NurbsSurface WavyRationalFloor() {
+  return MakeNet(
+      12, 12,
+      [](double a, double b) {
+        const double x = 6.0 * a, y = -3.0 + 6.0 * b;
+        return ON_3dPoint(x, y, 0.16 * std::sin(1.1 * x) * std::cos(0.8 * y));
+      },
+      [](int i, int j) { return 1.0 + 0.15 * std::sin(0.5 * i + 0.3 * j); });
+}
+
+// Rational wall bulging towards the floor's far side.
+NurbsSurface RationalBulgeWall() {
+  return MakeNet(
+      10, 9,
+      [](double a, double b) {
+        const double y = -3.2 + 6.4 * a, z = -1.0 + 3.5 * b;
+        return ON_3dPoint(3.0 + 0.5 * std::cos(0.5 * y) * std::cos(0.5 * y) + 0.18 * z + 0.12 * std::sin(1.3 * z) * std::cos(0.6 * y), y, z);
+      },
+      [](int i, int j) { return 1.0 + 0.12 * std::cos(0.5 * i - 0.4 * j); });
+}
+
+// Domed top (the body lies below it) for the convex-edge case.
+NurbsSurface DomedTop() {
+  return MakeNet(11, 10, [](double a, double b) {
+    const double x = 6.0 * a, y = -3.0 + 6.0 * b;
+    return ON_3dPoint(x, y, 1.5 + 0.22 * std::sin(0.7 * x) * std::cos(0.6 * y) - 0.02 * x * x);
+  });
+}
+
+// +1 / -1: the side of `s` whose normal at its parameter centre has a positive component along `want`.
+int SideToward(const NurbsSurface& s, const ON_3dVector& want) {
+  const ON_Interval du = s.raw().Domain(0), dv = s.raw().Domain(1);
+  return (s.NormalAt(du.ParameterAt(0.5), dv.ParameterAt(0.5)) * want) >= 0 ? 1 : -1;
+}
+
+double DistTo(const NurbsSurface& s, const ON_3dPoint& p, ON_2dPoint* uv = nullptr) {
+  const ON_2dPoint q = s.ClosestPointParameter(p, 40, 40);
+  if (uv) *uv = q;
+  return s.PointAt(q.x, q.y).DistanceTo(p);
+}
+
+struct Meas {
+  double gap_a = 0, gap_b = 0;          // blend edge rows vs the parents (distance to the parent)
+  double ball_err = 0;                  // | |blend - c| - r | over the whole arc, c from the parents' own normals at the contact feet
+  double centre_gap = 0;                // the two centres implied by a's and b's normals at the feet must coincide
+  double touch_a = 0, touch_b = 0;      // |dist(centre, parent) - r| (the ball touches, never penetrates)
+  double g1_a = 0, g1_b = 0;            // angle between the blend's normal and the parent's normal at the contact (radians)
+  double min_cos = 1e300;               // min |blend normal . rolling-ball direction| (fold-over would be <= 0)
+  bool one_sign = true;
+  int samples = 0;
+};
+
+Meas Measure(const SurfaceFillet& f, const NurbsSurface& a, const NurbsSurface& b, int sa, int sb, double r, bool midpoints) {
+  Meas m;
+  const int N = f.intervals;
+  int sign = 0;
+  for (int i = 0; i < (midpoints ? N : N + 1); ++i) {
+    const double s = midpoints ? 0.5 * (f.station_s[(size_t)i] + f.station_s[(size_t)i + 1]) : f.station_s[(size_t)i];
+    const ON_3dPoint P0 = f.blend.PointAt(s, 0.0), P1 = f.blend.PointAt(s, 1.0);
+    ON_2dPoint uva, uvb;
+    m.gap_a = std::max(m.gap_a, DistTo(a, P0, &uva));
+    m.gap_b = std::max(m.gap_b, DistTo(b, P1, &uvb));
+    const ON_3dVector Na = a.NormalAt(uva.x, uva.y), Nb = b.NormalAt(uvb.x, uvb.y);
+    const ON_3dPoint Qa = a.PointAt(uva.x, uva.y), Qb = b.PointAt(uvb.x, uvb.y);
+    const ON_3dPoint ca = Qa + (sa * r) * Na, cb = Qb + (sb * r) * Nb;
+    m.centre_gap = std::max(m.centre_gap, ca.DistanceTo(cb));
+    const ON_3dPoint c = 0.5 * (ca + cb);
+    m.touch_a = std::max(m.touch_a, std::fabs(DistTo(a, c) - r));
+    m.touch_b = std::max(m.touch_b, std::fabs(DistTo(b, c) - r));
+    for (int j = 0; j <= 8; ++j) {
+      const double v = j / 8.0;
+      ON_3dPoint P;
+      ON_3dVector n;
+      f.blend.raw().EvNormal(s, v, P, n);
+      m.ball_err = std::max(m.ball_err, std::fabs(P.DistanceTo(c) - r));
+      ON_3dVector toc = c - P;
+      toc.Unitize();
+      const double dt = n * toc;
+      const int sg = dt >= 0 ? 1 : -1;
+      if (sign == 0) sign = sg;
+      if (sg != sign) m.one_sign = false;
+      m.min_cos = std::min(m.min_cos, std::fabs(dt));
+      ++m.samples;
+      if (j == 0) m.g1_a = std::max(m.g1_a, std::acos(std::min(1.0, std::fabs(n * Na))));
+      if (j == 8) m.g1_b = std::max(m.g1_b, std::acos(std::min(1.0, std::fabs(n * Nb))));
+    }
+  }
+  return m;
+}
+
+void Report(const char* tag, const SurfaceFillet& f, const Meas& st, const Meas& mid) {
+  std::printf("[%s] N=%d s=[%.4f,%.4f] trims=(%.4f,%.4f) reported dev=%.3e (stations %.3e) minalign=%.4f max r*k=%.4f\n", tag, f.intervals, f.s_start, f.s_end, f.start_trim, f.end_trim,
+              f.deviation, f.station_deviation, f.min_normal_alignment, f.max_radius_times_curvature);
+  std::printf("[%s]   stations : gapA %.2e gapB %.2e ball %.2e centre %.2e touchA %.2e touchB %.2e g1A %.2e g1B %.2e mincos %.5f\n", tag, st.gap_a, st.gap_b, st.ball_err, st.centre_gap, st.touch_a, st.touch_b, st.g1_a, st.g1_b, st.min_cos);
+  std::printf("[%s]   midpoints: gapA %.2e gapB %.2e ball %.2e centre %.2e touchA %.2e touchB %.2e g1A %.2e g1B %.2e mincos %.5f\n", tag, mid.gap_a, mid.gap_b, mid.ball_err, mid.centre_gap, mid.touch_a, mid.touch_b, mid.g1_a, mid.g1_b, mid.min_cos);
+}
+
+// Runs the routine and checks every measured property against `tol` (geometry) and `g1_tol` (radians).
+SurfaceFillet RunCase(const char* tag, const NurbsSurface& a, const NurbsSurface& b, const ON_3dVector& want_a, const ON_3dVector& want_b, double r, double tol, double g1_tol) {
+  SurfaceFilletOptions o;
+  o.side_a = SideToward(a, want_a);
+  o.side_b = SideToward(b, want_b);
+  const SurfaceFillet f = FilletSurfaces(a, b, r, tol, o);
+  const std::string t(tag);
+  Check(f.status == Result::Ok, (t + ": the fillet is built (reason: " + f.reason + ")").c_str());
+  if (f.status != Result::Ok) return f;
+  const Meas st = Measure(f, a, b, o.side_a, o.side_b, r, false), mid = Measure(f, a, b, o.side_a, o.side_b, r, true);
+  Report(tag, f, st, mid);
+  Check(f.deviation <= tol, (t + ": reported sampled deviation is within the tolerance").c_str());
+  Check(f.station_deviation <= f.deviation, (t + ": station deviation <= overall deviation").c_str());
+  Check(f.intervals >= 8 && f.uv_a.size() == (size_t)f.intervals + 1 && f.uv_b.size() == f.uv_a.size(), (t + ": stations are reported").c_str());
+  Check(f.blend.raw().IsValid() && f.blend.IsRational() && f.blend.DegreeU() == 3 && f.blend.DegreeV() == 2, (t + ": the blend is a valid rational cubic x quadratic NURBS").c_str());
+  Check(f.s_end > f.s_start && f.start_trim >= 0 && f.end_trim >= 0, (t + ": the covered range is reported").c_str());
+  for (const Meas* m : {&st, &mid}) {
+    const std::string w = t + (m == &st ? " (stations)" : " (midpoints)");
+    // The measurements use their own closest-point searches, so allow them a small slack above the stated tolerance.
+    const double lim = 2.0 * tol;
+    Check(m->gap_a <= lim, (w + ": blend edge row lies on parent A").c_str());
+    Check(m->gap_b <= lim, (w + ": blend edge row lies on parent B").c_str());
+    Check(m->ball_err <= lim, (w + ": every blend point is at distance r from the ball centre").c_str());
+    // (the centre is rebuilt from closest points of off-surface midpoint samples, which amplifies the along-surface error: 5x)
+    Check(m->centre_gap <= 5.0 * tol, (w + ": the centres implied by A's and B's normals coincide").c_str());
+    Check(m->touch_a <= lim && m->touch_b <= lim, (w + ": the ball touches both parents at distance r (no penetration, no gap)").c_str());
+    Check(m->g1_a <= g1_tol, (w + ": G1 with parent A at the contact curve").c_str());
+    Check(m->g1_b <= g1_tol, (w + ": G1 with parent B at the contact curve").c_str());
+    Check(m->one_sign && m->min_cos > 0.999, (w + ": no fold-over (normal = rolling-ball direction, one orientation)").c_str());
+  }
+  return f;
+}
+
+void TestSurfaceFilletBumpFloorAndCurvedWallConcave() {
+  const NurbsSurface a = BumpFloor(), b = CurvedWall();
+  // Ball in the empty region: above the floor (+z) and on the near side of the wall (-x).
+  const SurfaceFillet f = RunCase("bump floor / curved wall, r=0.25", a, b, ON_3dVector(0, 0, 1), ON_3dVector(-1, 0, 0), 0.25, 1e-4, 1e-3);
+  if (f.status != Result::Ok) return;
+  // The centre curve stays at distance r from both parents (checked at its own control-curve samples) and the contact
+  // curves run along the edge: their end-to-end span is comparable to the intersection curve's length.
+  Check(f.contact_a.raw().IsValid() && f.contact_b.raw().IsValid() && f.centre.raw().IsValid(), "contact curves and centre curve are valid NURBS curves");
+  double worst = 0;
+  const ON_Interval cd = f.centre.raw().Domain();
+  for (int i = 0; i <= 60; ++i) {
+    const ON_3dPoint c = f.centre.raw().PointAt(cd.ParameterAt(i / 60.0));
+    worst = std::max({worst, std::fabs(DistTo(a, c) - 0.25), std::fabs(DistTo(b, c) - 0.25)});
+  }
+  std::printf("[bump/wall] centre curve |dist - r| to both parents: %.3e\n", worst);
+  Check(worst <= 2e-4, "centre curve points are at distance r from BOTH parents (measured with closest points on the parents)");
+  Check(f.contact_a.raw().PointAtStart().DistanceTo(f.blend.PointAt(f.s_start, 0.0)) < 1e-9, "contact curve A is the blend's own v=0 edge");
+}
+
+void TestSurfaceFilletRationalWavyFloorAndRationalWall() {
+  const NurbsSurface a = WavyRationalFloor(), b = RationalBulgeWall();
+  Check(a.IsRational() && b.IsRational(), "both parents are genuinely rational");
+  const SurfaceFillet f = RunCase("rational wavy floor / rational wall, r=0.3", a, b, ON_3dVector(0, 0, 1), ON_3dVector(-1, 0, 0), 0.3, 1e-5, 5e-4);
+  (void)f;
+}
+
+void TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces() {
+  const NurbsSurface a = DomedTop(), b = CurvedWall(0.15);
+  // Ball inside the body: below the dome (-z) and left of the wall (-x): a convex edge, the fillet removes material.
+  const SurfaceFillet f = RunCase("domed top / curved wall (convex), r=0.35", a, b, ON_3dVector(0, 0, -1), ON_3dVector(-1, 0, 0), 0.35, 1e-4, 1e-3);
+  (void)f;
+}
+
+void TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError() {
+  const NurbsSurface a = BumpFloor(), b = CurvedWall();
+  SurfaceFilletOptions o;
+  o.side_a = SideToward(a, ON_3dVector(0, 0, 1));
+  o.side_b = SideToward(b, ON_3dVector(-1, 0, 0));
+  int prev_n = 0;
+  double prev_err = 1e300;
+  for (double tol : {1e-3, 1e-4, 1e-5, 1e-6}) {
+    const SurfaceFillet f = FilletSurfaces(a, b, 0.25, tol, o);
+    Check(f.status == Result::Ok, ("tolerance " + std::to_string(tol) + " is reachable: " + f.reason).c_str());
+    if (f.status != Result::Ok) continue;
+    const Meas mid = Measure(f, a, b, o.side_a, o.side_b, 0.25, true);
+    std::printf("[tolerance sweep] tol %.0e -> N=%d reported dev %.2e measured midpoint ball err %.2e gapA %.2e gapB %.2e\n", tol, f.intervals, f.deviation, mid.ball_err, mid.gap_a, mid.gap_b);
+    Check(f.deviation <= tol, "reported deviation within the requested tolerance");
+    Check(std::max({mid.ball_err, mid.gap_a, mid.gap_b}) <= 2 * tol, "independently measured midpoint error within twice the requested tolerance");
+    Check(f.intervals >= prev_n, "a tighter tolerance never uses fewer intervals");
+    prev_n = f.intervals;
+    prev_err = std::min(prev_err, f.deviation);
+  }
+  Check(prev_n > 8, "the tightest tolerance needed more than the minimum 8 intervals");
+}
+
+void TestSurfaceFilletRefusesWithReasonsNeverAPatch() {
+  const NurbsSurface a = BumpFloor(), b = CurvedWall();
+  SurfaceFilletOptions o;
+  o.side_a = SideToward(a, ON_3dVector(0, 0, 1));
+  o.side_b = SideToward(b, ON_3dVector(-1, 0, 0));
+  auto refused = [&](const SurfaceFillet& f, const char* needle, const char* what) {
+    const bool ok = f.status == Result::Failed && f.reason.find(needle) != std::string::npos && f.intervals >= 0 && !f.blend.raw().IsValid();
+    if (!ok) std::fprintf(stderr, "  [%s] status=%d reason='%s'\n", what, (int)f.status, f.reason.c_str());
+    Check(ok, what);
+    if (f.status == Result::Failed) std::printf("[refusal] %s -> %s\n", what, f.reason.c_str());
+  };
+
+  // Radius too big for the local curvature: a floor with a tight trough (curvature radius ~0.37), ball in the trough.
+  const NurbsSurface trough = MakeNet(40, 12, [](double u, double v) {
+    const double x = 6.0 * u, y = -3.0 + 6.0 * v;
+    return ON_3dPoint(x, y, 0.3 * std::sin(3.0 * y));
+  });
+  {
+    const int sa = SideToward(trough, ON_3dVector(0, 0, 1));
+    SurfaceFilletOptions ot;
+    ot.side_a = sa;
+    ot.side_b = o.side_b;
+    const SurfaceFillet ok = FilletSurfaces(trough, b, 0.1, 1e-4, ot);
+    Check(ok.status == Result::Ok, ("positive control: r=0.1 fits the same trough: " + ok.reason).c_str());
+    if (ok.status == Result::Ok) std::printf("[trough] r=0.1 ok, largest r*k seen %.3f\n", ok.max_radius_times_curvature);
+    refused(FilletSurfaces(trough, b, 0.6, 1e-4, ot), "curvature", "radius 0.6 exceeds the trough's curvature radius -> refused as a fold");
+  }
+  // Parallel surfaces that never meet: the same floor lifted by 3.
+  {
+    const NurbsSurface lifted = MakeNet(10, 10, [](double u, double v) { return ON_3dPoint(6.0 * u, -3.0 + 6.0 * v, 3.0 + 0.1 * std::sin(3 * u)); });
+    const NurbsSurface under = MakeNet(10, 10, [](double u, double v) { return ON_3dPoint(6.0 * u, -3.0 + 6.0 * v, 0.1 * std::sin(3 * u)); });
+    refused(FilletSurfaces(under, lifted, 0.2, 1e-4), "do not intersect", "parallel (offset) surfaces that never meet are refused");
+  }
+  // Offsets do not meet: the ball cannot fit between a short wall stub and the floor.
+  {
+    const NurbsSurface stub = MakeNet(8, 4, [](double u, double v) { return ON_3dPoint(3.2 + 0.1 * (-0.2 + 0.4 * v), -3.2 + 6.4 * u, -0.2 + 0.4 * v); });
+    SurfaceFilletOptions os;
+    os.side_a = o.side_a;
+    os.side_b = SideToward(stub, ON_3dVector(-1, 0, 0));
+    refused(FilletSurfaces(a, stub, 2.0, 1e-3, os), "offsets do not intersect", "a ball far larger than the wall stub: the offsets do not meet");
+  }
+  // Tolerance not reachable.
+  {
+    const SurfaceFillet f = FilletSurfaces(a, b, 0.25, 1e-14, o);
+    refused(f, "not reached", "tolerance 1e-14 is unreachable and refused with its reason");
+    Check(f.deviation > 1e-14 && f.deviation < 1e-3, "the refusal carries the best deviation it did reach");
+    SurfaceFilletOptions few = o;
+    few.max_intervals = 8;
+    const SurfaceFillet g = FilletSurfaces(a, b, 0.25, 1e-9, few);
+    refused(g, "limit 8", "tolerance 1e-9 with only 8 intervals allowed is refused");
+  }
+  refused(FilletSurfaces(a, b, 0.0, 1e-4, o), "radius", "radius 0 is refused");
+  refused(FilletSurfaces(a, b, std::nan(""), 1e-4, o), "radius", "NaN radius is refused");
+  refused(FilletSurfaces(a, b, 0.25, -1.0, o), "tolerance", "negative tolerance is refused");
+  SurfaceFilletOptions bad = o;
+  bad.side_a = 0;
+  refused(FilletSurfaces(a, b, 0.25, 1e-4, bad), "side_a", "side 0 is refused");
+}
+
+}  // namespace surface_fillet_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -98366,6 +98654,11 @@ int main() {
           pipe_tee_fillet_tests::TestPipeTeeFilletRotatedTeeOtherRadiiAndTolerance);
   RunTest("pipe_tee_fillet_tests::TestPipeTeeFilletRefusesWithReasonsNeverADegradedBody",
           pipe_tee_fillet_tests::TestPipeTeeFilletRefusesWithReasonsNeverADegradedBody);
+  RunTest("surface_fillet_tests::TestSurfaceFilletBumpFloorAndCurvedWallConcave", surface_fillet_tests::TestSurfaceFilletBumpFloorAndCurvedWallConcave);
+  RunTest("surface_fillet_tests::TestSurfaceFilletRationalWavyFloorAndRationalWall", surface_fillet_tests::TestSurfaceFilletRationalWavyFloorAndRationalWall);
+  RunTest("surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces", surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces);
+  RunTest("surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError", surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError);
+  RunTest("surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch", surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

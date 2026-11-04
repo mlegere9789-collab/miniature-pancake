@@ -5,6 +5,8 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -13,6 +15,7 @@
 #include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
+#include "dino8/kernel/surface_intersect.h"
 
 namespace dino8::kernel {
 
@@ -8329,6 +8332,457 @@ PipeTeeFillet FilletPipeTee(const Brep& tee, double radius, double tolerance) {
                                 ", IsSolid=" + std::to_string(out.solid.raw().IsSolid()) + ")");
   }
   return out;
+}
+
+// --- FilletSurfaces -----------------------------------------------------------
+// See fillet.h for the contract.
+namespace {
+namespace surf_fillet {
+
+enum class Code { Ok, NoConverge, OutOfDomain, Tangent, Fold, Singular };
+
+struct Ctx {
+  const NurbsSurface* a = nullptr;
+  const NurbsSurface* b = nullptr;
+  double sa = 1, sb = 1, r = 0;
+  ON_Interval dom_a[2], dom_b[2];
+  const IntersectionCurve* ic = nullptr;
+  double worst_rk = -1e300;  // largest side * r * k seen
+};
+
+struct Station {
+  double s = 0;
+  ON_3dPoint p, ca, cb, c;
+  ON_2dPoint uv_a, uv_b;
+  Code code = Code::NoConverge;
+  double cond = 0, d = 0;  // cond estimate, cos of the arc angle
+};
+
+double Clamp(double x, const ON_Interval& d) { return std::max(d.Min(), std::min(d.Max(), x)); }
+
+// Exact offset point: surface point + side * r * unit normal.
+bool OffsetPoint(const NurbsSurface& S, double side, double r, double u, double v, ON_3dPoint& P, ON_3dPoint& O) {
+  ON_3dVector n;
+  if (!S.raw().EvNormal(u, v, P, n)) return false;
+  O = P + (side * r) * n;
+  return true;
+}
+
+// 4x4 Gauss-Jordan; returns false when singular. Writes the inverse into inv.
+bool Invert4(const double m[4][4], double inv[4][4]) {
+  double a[4][8];
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) { a[i][j] = m[i][j]; a[i][4 + j] = (i == j) ? 1.0 : 0.0; }
+  for (int c = 0; c < 4; ++c) {
+    int piv = c;
+    for (int r = c + 1; r < 4; ++r) if (std::fabs(a[r][c]) > std::fabs(a[piv][c])) piv = r;
+    if (std::fabs(a[piv][c]) < 1e-300) return false;
+    if (piv != c) for (int k = 0; k < 8; ++k) std::swap(a[piv][k], a[c][k]);
+    const double d = a[c][c];
+    for (int k = 0; k < 8; ++k) a[c][k] /= d;
+    for (int r = 0; r < 4; ++r) {
+      if (r == c) continue;
+      const double f = a[r][c];
+      if (f == 0) continue;
+      for (int k = 0; k < 8; ++k) a[r][k] -= f * a[c][k];
+    }
+  }
+  for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) inv[i][j] = a[i][4 + j];
+  return true;
+}
+
+// Solve for the station at curve parameter s. Never throws.
+Station SolveStation(Ctx& cx, double s) {
+  Station st;
+  const IntersectionCurve& ic = *cx.ic;
+  const ON_Interval cd = ic.curve.Domain();
+  s = std::max(cd.Min(), std::min(cd.Max(), s));
+  st.s = s;
+  st.p = ic.curve.PointAt(s);
+  ON_3dVector T = ic.curve.TangentAt(s);
+  if (!T.Unitize()) { st.code = Code::Singular; return st; }
+  const ON_3dPoint qa = ic.pcurve_a.PointAt(s), qb = ic.pcurve_b.PointAt(s);
+  double x[4] = {Clamp(qa.x, cx.dom_a[0]), Clamp(qa.y, cx.dom_a[1]), Clamp(qb.x, cx.dom_b[0]), Clamp(qb.y, cx.dom_b[1])};
+  // First-order seed from the two unit normals at the intersection point.
+  ON_3dPoint Pa, Pb;
+  ON_3dVector Na, Nb;
+  if (!cx.a->raw().EvNormal(x[0], x[1], Pa, Na) || !cx.b->raw().EvNormal(x[2], x[3], Pb, Nb)) { st.code = Code::Singular; return st; }
+  const double cosphi = cx.sa * cx.sb * (Na * Nb);  // cos of the angle between the two ball-side normals
+  if (cosphi > std::cos(0.5 * ON_PI / 180.0) || cosphi < -std::cos(5.0 * ON_PI / 180.0)) { st.code = Code::Tangent; st.d = cosphi; return st; }
+  const ON_3dPoint c_seed = st.p + (cx.r / (1.0 + cosphi)) * (cx.sa * Na + cx.sb * Nb);
+  const double scale = std::max({1.0, cx.r, st.p.MaximumCoordinate()});
+  const double tol_res = 1e-13 * scale;
+  const ON_Interval* dom[4] = {&cx.dom_a[0], &cx.dom_a[1], &cx.dom_b[0], &cx.dom_b[1]};
+  auto resid = [&](const double* xx, double* F) -> bool {
+    ON_3dPoint P1, O1, P2, O2;
+    if (!OffsetPoint(*cx.a, cx.sa, cx.r, xx[0], xx[1], P1, O1)) return false;
+    if (!OffsetPoint(*cx.b, cx.sb, cx.r, xx[2], xx[3], P2, O2)) return false;
+    const ON_3dVector d = O1 - O2;
+    F[0] = d.x; F[1] = d.y; F[2] = d.z;
+    F[3] = (O1 - st.p) * T;
+    return true;
+  };
+  auto norm = [](const double* F) { return std::max({std::fabs(F[0]), std::fabs(F[1]), std::fabs(F[2]), std::fabs(F[3])}); };
+  double F[4];
+  if (!resid(x, F)) { st.code = Code::Singular; return st; }
+  double J[4][4], Jinv[4][4];
+  bool converged = false;
+  for (int it = 0; it < 60; ++it) {
+    const double fn = norm(F);
+    // Jacobian by central differences in the (clamped) parameters.
+    for (int j = 0; j < 4; ++j) {
+      const double h = 1e-6 * dom[j]->Length();
+      double xp[4] = {x[0], x[1], x[2], x[3]}, xm[4] = {x[0], x[1], x[2], x[3]};
+      xp[j] = Clamp(x[j] + h, *dom[j]);
+      xm[j] = Clamp(x[j] - h, *dom[j]);
+      const double dx = xp[j] - xm[j];
+      double Fp[4], Fm[4];
+      if (dx <= 0 || !resid(xp, Fp) || !resid(xm, Fm)) { st.code = Code::Singular; return st; }
+      for (int i = 0; i < 4; ++i) J[i][j] = (Fp[i] - Fm[i]) / dx;
+    }
+    // Conditioning is judged on the domain-normalised (column-scaled) Jacobian.
+    double Js[4][4], Jsinv[4][4];
+    for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) Js[i][j] = J[i][j] * dom[j]->Length();
+    if (!Invert4(Js, Jsinv)) { st.code = Code::Singular; return st; }
+    double nj = 0, ni = 0;
+    for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) { nj += Js[i][j] * Js[i][j]; ni += Jsinv[i][j] * Jsinv[i][j]; }
+    st.cond = std::sqrt(nj) * std::sqrt(ni);
+    if (fn < tol_res) { converged = true; break; }
+    if (!Invert4(J, Jinv)) { st.code = Code::Singular; return st; }
+    double dxv[4];
+    for (int i = 0; i < 4; ++i) { dxv[i] = 0; for (int j = 0; j < 4; ++j) dxv[i] -= Jinv[i][j] * F[j]; }
+    double t = 1.0;
+    bool moved = false;
+    for (int ls = 0; ls < 12; ++ls, t *= 0.5) {
+      double xn[4], Fn[4];
+      for (int i = 0; i < 4; ++i) xn[i] = Clamp(x[i] + t * dxv[i], *dom[i]);
+      if (!resid(xn, Fn)) continue;
+      if (norm(Fn) < fn) {
+        for (int i = 0; i < 4; ++i) { x[i] = xn[i]; F[i] = Fn[i]; }
+        moved = true;
+        break;
+      }
+    }
+    if (!moved) break;
+  }
+  if (!converged) {
+    bool on_edge = false;
+    for (int i = 0; i < 4; ++i)
+      if (x[i] <= dom[i]->Min() + 1e-12 * dom[i]->Length() || x[i] >= dom[i]->Max() - 1e-12 * dom[i]->Length()) on_edge = true;
+    st.code = on_edge ? Code::OutOfDomain : Code::NoConverge;
+    if (!on_edge) {
+      // A Newton iteration that stalls inside the domain is most often the offset folding: look at the curvature at the
+      // intersection point and at the stalled iterate before calling it a plain failure.
+      try {
+        const double xs[2][4] = {{Clamp(qa.x, cx.dom_a[0]), Clamp(qa.y, cx.dom_a[1]), Clamp(qb.x, cx.dom_b[0]), Clamp(qb.y, cx.dom_b[1])},
+                                 {x[0], x[1], x[2], x[3]}};
+        for (const auto& q : xs) {
+          const SurfaceCurvature ka = cx.a->CurvatureAt(q[0], q[1]), kb = cx.b->CurvatureAt(q[2], q[3]);
+          const double rk = std::max({cx.sa * cx.r * ka.k1, cx.sa * cx.r * ka.k2, cx.sb * cx.r * kb.k1, cx.sb * cx.r * kb.k2});
+          cx.worst_rk = std::max(cx.worst_rk, rk);
+          if (rk >= 0.9) st.code = Code::Fold;
+        }
+      } catch (const std::exception&) {
+      }
+    }
+    return st;
+  }
+  ON_3dPoint P1, O1, P2, O2;
+  if (!OffsetPoint(*cx.a, cx.sa, cx.r, x[0], x[1], P1, O1) || !OffsetPoint(*cx.b, cx.sb, cx.r, x[2], x[3], P2, O2)) { st.code = Code::Singular; return st; }
+  st.ca = P1; st.cb = P2; st.c = 0.5 * (O1 + O2);
+  st.uv_a = ON_2dPoint(x[0], x[1]); st.uv_b = ON_2dPoint(x[2], x[3]);
+  if ((st.c - c_seed).Length() > cx.r) { st.code = Code::NoConverge; return st; }  // wrong branch: far from the first-order seed
+  // Fold: the offset distance reaches a local radius of curvature (CurvatureAt is signed against NormalAt()).
+  try {
+    const SurfaceCurvature ka = cx.a->CurvatureAt(x[0], x[1]), kb = cx.b->CurvatureAt(x[2], x[3]);
+    const double rk = std::max({cx.sa * cx.r * ka.k1, cx.sa * cx.r * ka.k2, cx.sb * cx.r * kb.k1, cx.sb * cx.r * kb.k2});
+    cx.worst_rk = std::max(cx.worst_rk, rk);
+    if (rk >= 0.98) { st.code = Code::Fold; return st; }
+  } catch (const std::exception&) { st.code = Code::Singular; return st; }
+  const ON_3dVector ua = (st.ca - st.c) / cx.r, ub = (st.cb - st.c) / cx.r;
+  st.d = ua * ub;
+  st.code = Code::Ok;
+  return st;
+}
+
+std::string CodeText(Code c) {
+  switch (c) {
+    case Code::NoConverge: return "the centre equations did not converge";
+    case Code::OutOfDomain: return "the contact point leaves a surface's parameter domain";
+    case Code::Tangent: return "the surfaces are tangent or back to back along the curve (arc angle ~0 or ~pi)";
+    case Code::Fold: return "the offset folds (the radius reaches a local radius of curvature of a surface at the contact point)";
+    case Code::Singular: return "singular surface normal or singular Jacobian (the centre curve branches or turns)";
+    default: return "ok";
+  }
+}
+
+// Exact rolling-ball surface point for a station at v in [0,1].
+ON_3dPoint ArcPoint(const Station& st, double r, double v) {
+  const ON_3dVector ua = (st.ca - st.c) / r, ub = (st.cb - st.c) / r;
+  const double d = ua * ub;
+  const double w1 = std::sqrt(0.5 * (1.0 + d));
+  const ON_3dPoint P1 = st.c + (r / (1.0 + d)) * (ua + ub);
+  const double b0 = (1 - v) * (1 - v), b1 = 2 * v * (1 - v) * w1, b2 = v * v;
+  const double den = b0 + b1 + b2;
+  return ON_3dPoint((b0 * st.ca.x + b1 * P1.x + b2 * st.cb.x) / den, (b0 * st.ca.y + b1 * P1.y + b2 * st.cb.y) / den,
+                    (b0 * st.ca.z + b1 * P1.z + b2 * st.cb.z) / den);
+}
+
+int FindSpan3(const std::vector<double>& U, int n, double t) {  // n = last control index; knots U[0..n+4]
+  if (t >= U[(size_t)n + 1]) return n;
+  int lo = 3, hi = n + 1;
+  while (hi - lo > 1) {
+    const int mid = (lo + hi) / 2;
+    if (t >= U[(size_t)mid]) lo = mid; else hi = mid;
+  }
+  return lo;
+}
+
+struct Fit {
+  int N = 0;
+  std::vector<double> s;                  // N + 1 station parameters
+  std::vector<double> U;                  // full knot vector, N + 5
+  std::vector<std::array<double, 13>> Q;  // control rows: A xyz, w*M xyz + w, B xyz, centre xyz
+};
+
+bool BuildFit(const std::vector<Station>& st, double r, Fit& fit) {
+  const int N = (int)st.size() - 1;
+  fit.N = N;
+  fit.s.resize(st.size());
+  for (int i = 0; i <= N; ++i) fit.s[(size_t)i] = st[(size_t)i].s;
+  fit.U.assign((size_t)N + 5, 0.0);
+  for (int i = 0; i < 4; ++i) { fit.U[(size_t)i] = fit.s[0]; fit.U[(size_t)N + 1 + (size_t)i] = fit.s[(size_t)N]; }
+  for (int j = 1; j <= N - 3; ++j) fit.U[(size_t)j + 3] = (fit.s[(size_t)j] + fit.s[(size_t)j + 1] + fit.s[(size_t)j + 2]) / 3.0;
+  const int n = N + 1, m = 13;
+  std::vector<double> A((size_t)n * n, 0.0), B((size_t)n * m, 0.0);
+  for (int i = 0; i <= N; ++i) {
+    const Station& q = st[(size_t)i];
+    const ON_3dVector ua = (q.ca - q.c) / r, ub = (q.cb - q.c) / r;
+    const double d = ua * ub, w1 = std::sqrt(0.5 * (1.0 + d));
+    const ON_3dPoint P1 = q.c + (r / (1.0 + d)) * (ua + ub);
+    const double row[13] = {q.ca.x, q.ca.y, q.ca.z, w1 * P1.x, w1 * P1.y, w1 * P1.z, w1, q.cb.x, q.cb.y, q.cb.z, q.c.x, q.c.y, q.c.z};
+    for (int c = 0; c < m; ++c) B[(size_t)i * m + c] = row[c];
+    const int span = FindSpan3(fit.U, N, fit.s[(size_t)i]);
+    double Nb[4];
+    CubicBasis(fit.U, span, fit.s[(size_t)i], Nb);
+    for (int j = 0; j < 4; ++j) A[(size_t)i * n + (size_t)(span - 3 + j)] = Nb[j];
+  }
+  if (!SolveDenseSystem(A, B, n, m)) return false;
+  fit.Q.assign((size_t)n, {});
+  for (int i = 0; i < n; ++i) for (int c = 0; c < m; ++c) fit.Q[(size_t)i][(size_t)c] = B[(size_t)i * m + c];
+  for (int i = 0; i < n; ++i) if (!(fit.Q[(size_t)i][6] > 1e-6)) return false;
+  return true;
+}
+
+ON_NurbsSurface* FitSurface(const Fit& fit) {
+  const int N = fit.N;
+  ON_NurbsSurface* S = new ON_NurbsSurface(3, true, 4, 3, N + 1, 3);
+  for (int i = 0; i < N + 3; ++i) S->m_knot[0][i] = fit.U[(size_t)i + 1];
+  S->m_knot[1][0] = 0; S->m_knot[1][1] = 0; S->m_knot[1][2] = 1; S->m_knot[1][3] = 1;
+  for (int i = 0; i <= N; ++i) {
+    const auto& q = fit.Q[(size_t)i];
+    const double r0[4] = {q[0], q[1], q[2], 1.0}, r1[4] = {q[3], q[4], q[5], q[6]}, r2[4] = {q[7], q[8], q[9], 1.0};
+    S->SetCV(i, 0, ON::homogeneous_rational, r0);
+    S->SetCV(i, 1, ON::homogeneous_rational, r1);
+    S->SetCV(i, 2, ON::homogeneous_rational, r2);
+  }
+  return S;
+}
+
+ON_NurbsCurve* FitCurve3(const Fit& fit, int c0) {
+  const int N = fit.N;
+  ON_NurbsCurve* c = new ON_NurbsCurve(3, false, 4, N + 1);
+  for (int i = 0; i < N + 3; ++i) c->m_knot[i] = fit.U[(size_t)i + 1];
+  for (int i = 0; i <= N; ++i)
+    c->SetCV(i, ON_3dPoint(fit.Q[(size_t)i][(size_t)c0], fit.Q[(size_t)i][(size_t)c0 + 1], fit.Q[(size_t)i][(size_t)c0 + 2]));
+  return c;
+}
+
+}  // namespace surf_fillet
+}  // namespace
+
+SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, double radius, double tolerance,
+                             const SurfaceFilletOptions& options) {
+  using namespace surf_fillet;
+  SurfaceFillet out;
+  out.radius = radius;
+  auto refuse = [&](const std::string& why) {
+    out.status = Result::Failed;
+    out.reason = "dino8::kernel::FilletSurfaces: " + why;
+    return out;
+  };
+  if (!(radius > 0.0) || !std::isfinite(radius)) return refuse("the radius must be strictly positive and finite");
+  if (!(tolerance > 0.0) || !std::isfinite(tolerance)) return refuse("the tolerance must be strictly positive and finite");
+  if ((options.side_a != 1 && options.side_a != -1) || (options.side_b != 1 && options.side_b != -1)) return refuse("side_a / side_b must be +1 or -1");
+  if (options.max_intervals < 8) return refuse("max_intervals must be at least 8");
+
+  IntersectOptions io;
+  io.tolerance = 1e-9;
+  std::vector<IntersectionCurve> curves;
+  try {
+    curves = IntersectSurfaces(a.raw(), b.raw(), io);
+  } catch (const std::exception& e) {
+    return refuse(std::string("the surface/surface intersection failed: ") + e.what());
+  }
+  if (curves.empty()) return refuse("the surfaces do not intersect (parallel, separated, or only touching): there is no edge to blend");
+  if (curves.size() > 1) return refuse("the surfaces meet along " + std::to_string(curves.size()) + " intersection curves; blend one edge at a time (pass surfaces that meet along one curve)");
+  const IntersectionCurve& ic = curves[0];
+  if (ic.closed) return refuse("the intersection curve is closed (a periodic rim); closed rims are not supported by this routine");
+  if (ic.points.size() < 4 || !ic.curve.IsValid()) return refuse("the intersection curve is degenerate");
+
+  Ctx cx;
+  cx.a = &a; cx.b = &b; cx.sa = options.side_a; cx.sb = options.side_b; cx.r = radius; cx.ic = &ic;
+  cx.dom_a[0] = a.raw().Domain(0); cx.dom_a[1] = a.raw().Domain(1);
+  cx.dom_b[0] = b.raw().Domain(0); cx.dom_b[1] = b.raw().Domain(1);
+  const ON_Interval cd = ic.curve.Domain();
+  const double s0 = cd.Min(), s1 = cd.Max();
+
+  auto hard_refusal = [&](const Station& q, const char* where) {
+    std::string msg = CodeText(q.code) + " at s = " + std::to_string(q.s) + " (" + where + ")";
+    if (q.code == Code::Fold) msg = "radius " + std::to_string(radius) + " too large: " + msg;
+    if (q.code == Code::Tangent) msg += "; cos(arc angle) = " + std::to_string(q.d);
+    return refuse(msg);
+  };
+
+  // --- usable range of the intersection curve -------------------------------------------------------------------------
+  const int M = 160;
+  std::vector<Station> scan((size_t)M + 1);
+  int first = -1, last = -1;
+  for (int i = 0; i <= M; ++i) {
+    scan[(size_t)i] = SolveStation(cx, s0 + (s1 - s0) * i / M);
+    const Code c = scan[(size_t)i].code;
+    if (c == Code::Fold || c == Code::Tangent || c == Code::Singular) return hard_refusal(scan[(size_t)i], "scan");
+    if (c == Code::Ok) { if (first < 0) first = i; last = i; }
+  }
+  if (first < 0) return refuse("the offsets do not intersect: the centre equations (both surfaces offset by the radius) have no solution at any of " + std::to_string(M + 1) + " stations along the edge - the ball does not fit or its contact points leave the surfaces");
+  for (int i = first; i <= last; ++i)
+    if (scan[(size_t)i].code != Code::Ok)
+      return refuse("the centre curve is interrupted between s = " + std::to_string(scan[(size_t)first].s) + " and s = " + std::to_string(scan[(size_t)last].s) + " (" + CodeText(scan[(size_t)i].code) + " at s = " + std::to_string(scan[(size_t)i].s) + ")");
+  double sa_ = scan[(size_t)first].s, sb_ = scan[(size_t)last].s;
+  auto bisect = [&](double bad, double good) {
+    for (int k = 0; k < 40; ++k) {
+      const double mid = 0.5 * (bad + good);
+      if (SolveStation(cx, mid).code == Code::Ok) good = mid; else bad = mid;
+    }
+    return good;
+  };
+  if (first > 0) sa_ = bisect(scan[(size_t)first - 1].s, sa_);
+  if (last < M) sb_ = bisect(scan[(size_t)last + 1].s, sb_);
+  if (!(sb_ - sa_ > 1e-6 * (s1 - s0))) return refuse("the usable stretch of the edge is empty");
+  out.s_start = sa_;
+  out.s_end = sb_;
+  out.start_trim = sa_ - s0;
+  out.end_trim = s1 - sb_;
+
+  // --- fit: adaptive bisection of the station list until the sampled deviation reaches the tolerance ---------------------
+  // (The offsets' normals make the centre curve only C1 where the centre path crosses a parent's knot line, so a uniform
+  // station spacing converges only quadratically there; intervals that miss the tolerance are bisected, and neighbours
+  // are kept within a 2:1 length ratio.)
+  const double vs[5] = {0.0, 0.25, 0.5, 0.75, 1.0};
+  std::vector<double> ss;
+  const int N0 = std::min(16, options.max_intervals);
+  for (int i = 0; i <= N0; ++i) ss.push_back(sa_ + (sb_ - sa_) * i / N0);
+  std::map<double, Station> sol;
+  auto station = [&](double s) -> const Station& {
+    auto it = sol.find(s);
+    if (it == sol.end()) it = sol.emplace(s, SolveStation(cx, s)).first;
+    return it->second;
+  };
+  double best_dev = 1e300;
+  int best_N = 0;
+  for (int pass = 0; pass < 20; ++pass) {
+    const int N = (int)ss.size() - 1;
+    std::vector<Station> st;
+    st.reserve(ss.size());
+    for (int i = 0; i <= N; ++i) {
+      st.push_back(station(ss[(size_t)i]));
+      const Station& q = st.back();
+      if (q.code != Code::Ok) return hard_refusal(q, "station");
+      if (q.cond > 1e6) return refuse("the centre solve is ill-conditioned (cond " + std::to_string(q.cond) + ") at s = " + std::to_string(q.s) + ": the centre curve branches or turns");
+      if (i > 0) {
+        const double dp = q.p.DistanceTo(st[(size_t)i - 1].p), dc = q.c.DistanceTo(st[(size_t)i - 1].c);
+        if (dc > 4.0 * dp + 1e-9) return refuse("the centre curve jumps between stations s = " + std::to_string(st[(size_t)i - 1].s) + " and " + std::to_string(q.s) + " (a branch or turning point)");
+      }
+    }
+    Fit fit;
+    if (!BuildFit(st, radius, fit)) return refuse("the interpolation of the blend rows failed (singular system or non-positive arc weight)");
+    std::unique_ptr<ON_NurbsSurface> S(FitSurface(fit));
+    double sdev = 0;
+    for (int i = 0; i <= N; ++i)
+      for (double v : vs) sdev = std::max(sdev, S->PointAt(st[(size_t)i].s, v).DistanceTo(ArcPoint(st[(size_t)i], radius, v)));
+    double dev = sdev;
+    std::vector<double> idev((size_t)N, 0.0);
+    for (int i = 0; i < N; ++i) {
+      for (double f : {0.25, 0.5, 0.75}) {
+        const double s = st[(size_t)i].s + f * (st[(size_t)i + 1].s - st[(size_t)i].s);
+        const Station q = SolveStation(cx, s);
+        if (q.code != Code::Ok) return hard_refusal(q, "interval sample");
+        for (double v : vs) idev[(size_t)i] = std::max(idev[(size_t)i], S->PointAt(s, v).DistanceTo(ArcPoint(q, radius, v)));
+      }
+      dev = std::max(dev, idev[(size_t)i]);
+    }
+    if (dev < best_dev) { best_dev = dev; best_N = N; }
+    if (dev <= tolerance) {
+      // --- accepted: final checks on the blend --------------------------------------------------------------------
+      std::unique_ptr<ON_NurbsCurve> cen(FitCurve3(fit, 10));
+      double min_align = 1e300;
+      int sign = 0;
+      for (int i = 0; i <= 3 * N; ++i) {
+        const double s = fit.s.front() + (fit.s.back() - fit.s.front()) * i / (3.0 * N);
+        const ON_3dPoint C = cen->PointAt(s);
+        for (int j = 0; j <= 8; ++j) {
+          const double v = j / 8.0;
+          ON_3dPoint P;
+          ON_3dVector n;
+          if (!S->EvNormal(s, v, P, n)) return refuse("the blend has a singular normal at s = " + std::to_string(s) + ", v = " + std::to_string(v));
+          ON_3dVector toc = C - P;
+          if (!toc.Unitize()) return refuse("the blend touches its own centre curve");
+          const double dt = n * toc;
+          const int sg = dt >= 0 ? 1 : -1;
+          if (sign == 0) sign = sg;
+          if (sg != sign) return refuse("the blend folds over itself: its normal flips against the rolling-ball direction at s = " + std::to_string(s) + ", v = " + std::to_string(v));
+          min_align = std::min(min_align, std::fabs(dt));
+        }
+      }
+      if (min_align < 0.5) return refuse("the blend's normal departs from the rolling-ball direction by more than 60 degrees (|cos| " + std::to_string(min_align) + ")");
+      out.blend.raw() = *S;
+      {
+        std::unique_ptr<ON_NurbsCurve> ca(FitCurve3(fit, 0)), cb(FitCurve3(fit, 7));
+        out.contact_a.raw() = *ca;
+        out.contact_b.raw() = *cb;
+      }
+      out.centre.raw() = *cen;
+      for (const Station& q : st) { out.uv_a.push_back(q.uv_a); out.uv_b.push_back(q.uv_b); out.station_s.push_back(q.s); }
+      out.intervals = N;
+      out.station_deviation = sdev;
+      out.deviation = dev;
+      out.min_normal_alignment = min_align;
+      out.max_radius_times_curvature = cx.worst_rk;
+      out.status = Result::Ok;
+      out.reason.clear();
+      return out;
+    }
+    // Refine: bisect the intervals above the tolerance, then split the longer of any neighbours more than 2:1 apart.
+    std::vector<char> split((size_t)N, 0);
+    for (int i = 0; i < N; ++i) if (idev[(size_t)i] > tolerance) split[(size_t)i] = 1;
+    if (sdev > tolerance) for (int i = 0; i < N; ++i) split[(size_t)i] = 1;
+    for (int i = 0; i + 1 < N; ++i) {
+      const double l0 = ss[(size_t)i + 1] - ss[(size_t)i], l1 = ss[(size_t)i + 2] - ss[(size_t)i + 1];
+      if (l0 > 2.0 * l1) split[(size_t)i] = 1;
+      if (l1 > 2.0 * l0) split[(size_t)i + 1] = 1;
+    }
+    std::vector<double> next;
+    for (int i = 0; i < N; ++i) {
+      next.push_back(ss[(size_t)i]);
+      if (split[(size_t)i]) next.push_back(0.5 * (ss[(size_t)i] + ss[(size_t)i + 1]));
+    }
+    next.push_back(ss.back());
+    if ((int)next.size() - 1 > options.max_intervals) break;
+    ss = next;
+  }
+  out.deviation = best_dev;
+  out.intervals = best_N;
+  return refuse("tolerance " + std::to_string(tolerance) + " not reached: the best sampled deviation is " + std::to_string(best_dev) + " at " + std::to_string(best_N) + " intervals (limit " + std::to_string(options.max_intervals) + ")");
 }
 
 }  // namespace dino8::kernel
