@@ -868,6 +868,32 @@ class NurbsCurve {
   // caller can see exactly how close a refused removal came.
   Result RemoveKnotAt(int knot_index, double tolerance, double* out_max_deviation = nullptr);
 
+  // Rhino's RemoveMultiKnot for a curve: lowers EVERY interior knot of
+  // multiplicity >= 2 as far as `tolerance` allows. Built directly on
+  // `RemoveKnotAt()` (one copy of a multiple knot per call, each call a
+  // Piegl & Tiller A5.8 removal with its own rigorous bound), repeated per
+  // knot until that knot is single or a removal is refused, and the
+  // per-step bounds are SUMMED against ONE shared budget: step k is only
+  // attempted with `tolerance - (sum of the bounds already spent)`, so by
+  // the triangle inequality the final curve is within the reported
+  // `*out_max_deviation` (<= `tolerance`) of the input everywhere on the
+  // domain - a rigorous upper bound, not a sample. A knot whose removal
+  // would exceed what is left of the budget is left at its current
+  // multiplicity (it is skipped, later knots are still tried), so the
+  // result may keep some multiple knots; callers can read the surviving
+  // multiplicities. Interior knots only (the clamped end knots are never
+  // touched); a multiplicity equal to the degree (a C0 kink) is removable
+  // exactly when the kink is within tolerance. Returns Result::Ok if at
+  // least one knot copy was removed, Result::NoOpAlreadySatisfied if the
+  // curve had no interior multiple knot (nothing measured, deviation 0),
+  // Result::Failed - curve left bit-identical - if it has interior
+  // multiple knots but none could be removed within `tolerance` (also for
+  // an unclamped/periodic curve, the scope `RemoveKnotAt` has). Throws
+  // std::invalid_argument if `tolerance` is not finite and positive.
+  // `out_max_deviation`, if non-null, receives the summed bound of what
+  // was actually removed (0 when nothing was).
+  Result RemoveMultiKnots(double tolerance, double* out_max_deviation = nullptr);
+
   // Promotes the curve to rational (every control point gets an
   // explicit weight of 1.0) if it isn't already - delegates to
   // `ON_NurbsCurve::MakeRational()`. Genuinely shape-preserving: giving

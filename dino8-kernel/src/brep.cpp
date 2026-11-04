@@ -13797,4 +13797,103 @@ int Brep::CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped) {
   return added;
 }
 
+
+Result Brep::ShrinkSurfaces(double tolerance, ShrinkSurfacesReport* report) {
+  if (!ON_IsValid(tolerance) || !(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::ShrinkSurfaces: tolerance must be a finite, positive number");
+  }
+  ShrinkSurfacesReport local;
+  ShrinkSurfacesReport& rep = report ? *report : local;
+  rep = ShrinkSurfacesReport{};
+  rep.faces_total = brep_.m_F.Count();
+
+  const ON_Brep before = brep_;
+  const bool valid_before = before.IsValid();
+  try {
+    rep.area_before = Area();
+  } catch (const std::exception&) {
+    rep.area_before = std::numeric_limits<double>::quiet_NaN();
+  }
+
+  // Samples every trim of face `fi` of `b`: (3D point the trim denotes, uv).
+  struct TrimSample { ON_3dPoint p; ON_2dPoint uv; };
+  auto sample_face = [](const ON_Brep& b, int fi) {
+    std::vector<TrimSample> out;
+    const ON_BrepFace& f = b.m_F[fi];
+    const ON_Surface* srf = f.SurfaceOf();
+    if (!srf) return out;
+    for (int li = 0; li < f.LoopCount(); ++li) {
+      const ON_BrepLoop* loop = f.Loop(li);
+      if (!loop) continue;
+      for (int ti = 0; ti < loop->TrimCount(); ++ti) {
+        const ON_BrepTrim* trim = loop->Trim(ti);
+        if (!trim) continue;
+        const ON_Interval d = trim->Domain();
+        for (int k = 0; k <= 32; ++k) {
+          const ON_3dPoint c = trim->PointAt(d.ParameterAt(k / 32.0));
+          out.push_back({srf->PointAt(c.x, c.y), ON_2dPoint(c.x, c.y)});
+        }
+      }
+    }
+    return out;
+  };
+
+  const bool ok_call = brep_.ShrinkSurfaces();
+  auto restore = [&](const char* why) {
+    brep_ = before;
+    rep.reason = why;
+    return Result::Failed;
+  };
+  if (!ok_call) return restore("ON_Brep::ShrinkSurfaces reported failure; Brep restored");
+  if (brep_.m_F.Count() != before.m_F.Count()) return restore("shrink changed the face count; Brep restored");
+
+  for (int fi = 0; fi < brep_.m_F.Count(); ++fi) {
+    const ON_Surface* sb = before.m_F[fi].SurfaceOf();
+    const ON_Surface* sa = brep_.m_F[fi].SurfaceOf();
+    if (!sb || !sa) continue;
+    const ON_Interval ub = sb->Domain(0), vb = sb->Domain(1), ua = sa->Domain(0), va = sa->Domain(1);
+    const double wu = ub.Length(), wv = vb.Length();
+    if (!(wu > 0.0) || !(wv > 0.0)) continue;
+    const double ratio = (ua.Length() * va.Length()) / (wu * wv);
+    const bool shrunk = ratio < 1.0 - 1e-12;
+    if (shrunk) {
+      ++rep.faces_shrunk;
+      rep.min_domain_area_ratio = std::min(rep.min_domain_area_ratio, ratio);
+    }
+    const std::vector<TrimSample> sam_b = sample_face(before, fi);
+    const std::vector<TrimSample> sam_a = sample_face(brep_, fi);
+    if (sam_b.size() != sam_a.size()) return restore("trim sample count changed by the shrink; Brep restored");
+    double umin = 1e300, umax = -1e300, vmin = 1e300, vmax = -1e300;
+    for (size_t i = 0; i < sam_a.size(); ++i) {
+      rep.max_trim_shift = std::max(rep.max_trim_shift, sam_b[i].p.DistanceTo(sam_a[i].p));
+      const ON_2dPoint& q = sam_a[i].uv;
+      umin = std::min(umin, q.x); umax = std::max(umax, q.x);
+      vmin = std::min(vmin, q.y); vmax = std::max(vmax, q.y);
+      const double over_u = std::max(ua.Min() - q.x, q.x - ua.Max()) / wu;
+      const double over_v = std::max(va.Min() - q.y, q.y - va.Max()) / wv;
+      rep.max_containment_violation = std::max({rep.max_containment_violation, over_u, over_v, 0.0});
+    }
+    if (shrunk && !sam_a.empty()) {
+      const double slack = std::max({umin - ua.Min(), ua.Max() - umax, vmin - va.Min(), va.Max() - vmax, 0.0});
+      rep.max_slack_fraction = std::max(rep.max_slack_fraction, slack / std::min(wu, wv));
+    }
+  }
+
+  try {
+    rep.area_after = Area();
+  } catch (const std::exception&) {
+    rep.area_after = std::numeric_limits<double>::quiet_NaN();
+  }
+
+  if (rep.max_containment_violation > 1e-9) return restore("shrunk surface domain no longer contains a trim sample; Brep restored");
+  if (rep.max_trim_shift > tolerance) return restore("a face boundary moved by more than the tolerance; Brep restored");
+  if (valid_before && !brep_.IsValid()) return restore("Brep was valid before the shrink and invalid after; Brep restored");
+  if (rep.faces_shrunk == 0) {
+    brep_ = before;
+    rep.reason = "no face's surface domain got smaller";
+    return Result::NoOpAlreadySatisfied;
+  }
+  return Result::Ok;
+}
+
 }  // namespace dino8::kernel

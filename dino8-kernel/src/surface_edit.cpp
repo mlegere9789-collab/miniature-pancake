@@ -584,6 +584,94 @@ Result NurbsSurface::ReparameterizeRational(int direction, double shape_factor, 
   return Result::Ok;
 }
 
+Result NurbsSurface::RemoveMultiKnots(int direction, double tolerance, double* out_max_deviation) {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::RemoveMultiKnots: direction must be 0 (U) or 1 (V)");
+  }
+  if (!ON_IsValid(tolerance) || !(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::RemoveMultiKnots: tolerance must be a finite, positive number");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  const Interval domain = Domain(direction);
+  std::vector<double> stuck;
+  auto find_multiple = [&]() {
+    for (int k = 0; k + 1 < surface_.KnotCount(direction); ++k) {
+      const double u = surface_.Knot(direction, k);
+      if (!(u > domain.min && u < domain.max)) continue;
+      if (surface_.Knot(direction, k + 1) != u) continue;
+      if (std::find(stuck.begin(), stuck.end(), u) != stuck.end()) continue;
+      return k;
+    }
+    return -1;
+  };
+  if (find_multiple() < 0) return Result::NoOpAlreadySatisfied;
+  double spent = 0.0;
+  bool changed = false;
+  for (int k = find_multiple(); k >= 0; k = find_multiple()) {
+    const double u = surface_.Knot(direction, k);
+    double d = 0.0;
+    if (RemoveKnotAt(direction, k, std::max(0.0, tolerance - spent), &d) == Result::Ok) {
+      spent += d;
+      changed = true;
+    } else {
+      stuck.push_back(u);
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = spent;
+  return changed ? Result::Ok : Result::Failed;
+}
+
+Result NurbsSurface::FitToTolerance(double tolerance, int u_degree, int v_degree, int max_control_points,
+                                    NurbsSurface& out, double* out_max_deviation, int* out_u_count,
+                                    int* out_v_count) const {
+  if (!ON_IsValid(tolerance) || !(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitToTolerance: tolerance must be a finite, positive number");
+  }
+  if (u_degree < 1 || v_degree < 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitToTolerance: degrees must be >= 1");
+  }
+  if (max_control_points <= u_degree || max_control_points <= v_degree || max_control_points > 120) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::FitToTolerance: max_control_points must exceed both degrees and be <= 120");
+  }
+  auto attempt = [&](int uc, int vc, NurbsSurface& cand, double& dev) {
+    double rebuild_dev = 0.0;
+    const int us = std::max(64, 2 * uc), vs = std::max(64, 2 * vc);
+    if (Rebuild(uc, vc, u_degree, v_degree, cand, &rebuild_dev, us, vs) != Result::Ok) return false;
+    dev = std::max(rebuild_dev, MaxSampledDeviationFrom(cand, 129, 129));
+    return true;
+  };
+  int uc = u_degree + 1, vc = v_degree + 1;
+  NurbsSurface cand;
+  double dev = 0.0;
+  double best = std::numeric_limits<double>::infinity();
+  if (!attempt(uc, vc, cand, dev)) {
+    if (out_max_deviation) *out_max_deviation = best;
+    return Result::Failed;
+  }
+  while (dev > tolerance) {
+    best = dev;
+    NurbsSurface cu, cv;
+    double du = std::numeric_limits<double>::infinity(), dv = du;
+    const bool can_u = uc < max_control_points, can_v = vc < max_control_points;
+    const bool ok_u = can_u && attempt(uc + 1, vc, cu, du);
+    const bool ok_v = can_v && attempt(uc, vc + 1, cv, dv);
+    if (!ok_u && !ok_v) {
+      if (out_max_deviation) *out_max_deviation = best;
+      if (out_u_count) *out_u_count = uc;
+      if (out_v_count) *out_v_count = vc;
+      return Result::Failed;
+    }
+    if (ok_u && (!ok_v || du <= dv)) { ++uc; cand = cu; dev = du; }
+    else { ++vc; cand = cv; dev = dv; }
+  }
+  if (out_max_deviation) *out_max_deviation = dev;
+  if (out_u_count) *out_u_count = uc;
+  if (out_v_count) *out_v_count = vc;
+  out = cand;
+  return Result::Ok;
+}
+
 Result NurbsSurface::MakeUniform(int direction, double tolerance, double* out_max_deviation) {
   if (direction != 0 && direction != 1) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::MakeUniform: direction must be 0 (U) or 1 (V)");

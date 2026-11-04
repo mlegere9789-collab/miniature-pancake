@@ -1712,6 +1712,25 @@ class NurbsSurface {
   Result RemoveKnotAt(int direction, int knot_index, double tolerance,
                       double* out_max_deviation = nullptr);
 
+  // Rhino's RemoveMultiKnot for a surface, one parameter direction
+  // (0 = U, 1 = V) at a time: lowers every interior knot of multiplicity
+  // >= 2 in `direction` as far as `tolerance` allows, by repeating
+  // `RemoveKnotAt()` (each step a Piegl & Tiller A5.8 removal over every
+  // row/column of the net with its own rigorous deviation bound) per knot
+  // until the knot is single or a removal is refused. The per-step bounds
+  // are summed against one shared budget (a step is attempted with
+  // `tolerance - spent`), so by the triangle inequality the result is
+  // within the reported `*out_max_deviation` (<= `tolerance`) of the input
+  // over the whole domain - a rigorous upper bound. A knot that does not
+  // fit the remaining budget keeps its current multiplicity and later
+  // knots are still tried. Returns Result::Ok if at least one knot copy
+  // was removed, Result::NoOpAlreadySatisfied if `direction` has no
+  // interior multiple knot (deviation 0), Result::Failed - surface left
+  // bit-identical - if it has some but none removable within `tolerance`
+  // (also for a non-clamped direction). Throws std::invalid_argument if
+  // `direction` is not 0/1 or `tolerance` is not finite and positive.
+  Result RemoveMultiKnots(int direction, double tolerance, double* out_max_deviation = nullptr);
+
   // Max 3D distance between `PointAt(u, v)` on this surface and on
   // `other` over a `u_samples` x `v_samples` grid of (u, v) values spread
   // across *this surface's* domain (both surfaces are evaluated at the
@@ -1833,6 +1852,29 @@ class NurbsSurface {
   // (an underdetermined fit).
   Result Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
                  double* out_max_deviation = nullptr, int u_samples = 64, int v_samples = 64) const;
+
+  // Rhino's FitSrf: the SMALLEST control net (in a greedy, not globally
+  // optimal, sense) of degree `u_degree` x `v_degree` whose refit stays
+  // within `tolerance` of this surface. Starts at the minimum net
+  // (degree + 1 per direction) and, while the measured deviation exceeds
+  // `tolerance`, grows by one control point in whichever direction
+  // (U or V) gives the smaller deviation, each candidate being a
+  // `Rebuild()` (least-squares, same domain and parameterization, so the
+  // comparison at identical (u, v) is a true pointwise one). The accepted
+  // deviation is the MAX of `Rebuild()`'s own half-step-offset 2x-fine
+  // sampled measure and an independent `MaxSampledDeviationFrom()` pass
+  // on a 129 x 129 grid - both sampled lower bounds on the true maximum
+  // (stated as such, not certified). Refuses (Result::Failed, `out`
+  // untouched) when `tolerance` is not met with at most
+  // `max_control_points` per direction; `out_max_deviation` then receives
+  // the best deviation reached at that ceiling. `out_u_count` /
+  // `out_v_count`, if non-null, receive the chosen (or, on refusal, the
+  // last attempted) net size. Throws std::invalid_argument for a degree <
+  // 1, `max_control_points` <= the degree in either direction or > 120,
+  // or a tolerance that is not finite and positive.
+  Result FitToTolerance(double tolerance, int u_degree, int v_degree, int max_control_points, NurbsSurface& out,
+                        double* out_max_deviation = nullptr, int* out_u_count = nullptr,
+                        int* out_v_count = nullptr) const;
 
   // Exact (not least-squares) interpolation through a `u_count` x
   // `v_count` grid of points - the construction `Rebuild()`'s own doc

@@ -1399,6 +1399,40 @@ Result NurbsCurve::RemoveKnotAt(int knot_index, double tolerance, double* out_ma
   return Result::Ok;
 }
 
+Result NurbsCurve::RemoveMultiKnots(double tolerance, double* out_max_deviation) {
+  if (!ON_IsValid(tolerance) || !(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::RemoveMultiKnots: tolerance must be a finite, positive number");
+  }
+  if (out_max_deviation) *out_max_deviation = 0.0;
+  const Interval domain = Domain();
+  std::vector<double> stuck;
+  auto find_multiple = [&]() {
+    for (int k = 0; k + 1 < curve_.KnotCount(); ++k) {
+      const double u = curve_.Knot(k);
+      if (!(u > domain.min && u < domain.max)) continue;
+      if (curve_.Knot(k + 1) != u) continue;
+      if (std::find(stuck.begin(), stuck.end(), u) != stuck.end()) continue;
+      return k;
+    }
+    return -1;
+  };
+  if (find_multiple() < 0) return Result::NoOpAlreadySatisfied;
+  double spent = 0.0;
+  bool changed = false;
+  for (int k = find_multiple(); k >= 0; k = find_multiple()) {
+    const double u = curve_.Knot(k);
+    double d = 0.0;
+    if (RemoveKnotAt(k, std::max(0.0, tolerance - spent), &d) == Result::Ok) {
+      spent += d;
+      changed = true;
+    } else {
+      stuck.push_back(u);
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = spent;
+  return changed ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::MakeRational() {
   if (curve_.IsRational()) {
     return Result::NoOpAlreadySatisfied;

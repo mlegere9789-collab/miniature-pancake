@@ -6057,6 +6057,51 @@ class Brep {
   // widening their weld silently was not an option in this pass.
   Mesh TessellateToClosedMeshTolerant(int u_divisions = 8, int v_divisions = 8) const;
 
+  // Rhino's ShrinkTrimmedSrf WITH a tolerance contract (the app used to call
+  // the raw `ON_Brep::ShrinkSurfaces()` and report only a count). Shrinks the
+  // underlying surface of every trimmed face to (just beyond) the bounding
+  // box of that face's own trim curves, then MEASURES that nothing the face
+  // means moved before committing:
+  //  * `max_trim_shift`: every trim curve of every face is sampled at 33
+  //    parameters; the 3D point the trim denotes (surface evaluated at the
+  //    trim's (u, v)) is compared before vs after the shrink - this is the
+  //    face boundary itself, so it bounds how far the face's outline moved;
+  //  * the new surface domain must still contain every sampled trim point
+  //    (containment, up to 1e-9 of the original domain width);
+  //  * `ON_Brep::IsValid()` must hold after, and a Brep valid before must
+  //    still be valid;
+  //  * `area_before` / `area_after` (`Area()`, exact) are reported so a
+  //    caller can see the trimmed area is unchanged.
+  // If any measure exceeds `tolerance` (or a check fails) the Brep is
+  // restored to its exact pre-call state and Result::Failed is returned
+  // with `report->reason` naming the check. Returns
+  // Result::NoOpAlreadySatisfied (Brep untouched) when no face's surface
+  // domain actually got smaller (e.g. every face already fits its trims, as
+  // on an untrimmed box), Result::Ok when at least one face shrank and all
+  // checks passed. `report`, if non-null, is always filled. Sampled
+  // measurements (lower bounds on the true maxima), stated as such.
+  // Throws std::invalid_argument if `tolerance` is not finite and positive.
+  struct ShrinkSurfacesReport {
+    int faces_total = 0;
+    int faces_shrunk = 0;
+    double max_trim_shift = 0.0;
+    // Largest parameter-space overshoot of a trim sample OUTSIDE the new
+    // surface domain, as a fraction of that direction's original width
+    // (0 = every trim sample is inside the shrunk domain).
+    double max_containment_violation = 0.0;
+    // Smallest (new domain area / old domain area) over the faces that shrank
+    // (1 when none did); < 1 proves the surface really got smaller.
+    double min_domain_area_ratio = 1.0;
+    // Largest gap between a shrunk domain and the bounding box of that
+    // face's trim samples, as a fraction of the ORIGINAL domain width
+    // (how tight the shrink is; ~0 is perfectly tight).
+    double max_slack_fraction = 0.0;
+    double area_before = 0.0;
+    double area_after = 0.0;
+    std::string reason;
+  };
+  Result ShrinkSurfaces(double tolerance, ShrinkSurfacesReport* report = nullptr);
+
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 
