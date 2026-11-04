@@ -40,7 +40,7 @@ void RegisterExchange2Commands(CommandEngine& e) {
         });
       }), CommandStatus::Implemented, "Reads the file into a scratch document and reports the summary; no standalone product-structure tree viewer.");
   Reg(e, "StepUnitsAndTolerance", Immediate([](CommandContext& ctx) {
-        ctx.Print("STEP export writes an SI_UNIT of millimetre and an UNCERTAINTY_MEASURE_WITH_UNIT of the document's absolute tolerance (" + FormatNumber(ctx.Settings().absolute_tolerance) + " " + ctx.Settings().unit_system + "); STEP import assumes the file is in millimetres.");
+        ctx.Print("STEP export declares the document's own length unit (" + ctx.Settings().unit_system + ") and an UNCERTAINTY_MEASURE_WITH_UNIT of the document's absolute tolerance (" + FormatNumber(ctx.Settings().absolute_tolerance) + "); STEP and IGES import read the file's declared length unit and scale the geometry to the document's unit (the import summary reports the factor).");
       }), CommandStatus::Implemented, "Reports the fixed units/tolerance policy; there is no per-import unit override dialog.");
 }
 
