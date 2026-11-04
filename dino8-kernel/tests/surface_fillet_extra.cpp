@@ -606,6 +606,61 @@ void TestSurfaceFilletRefusalBranchesAndStubOddity() {
     }
   }
 }
+
+// Probe: look for inputs that reach the 'centre curve branches or turns' and 'blend folds over' refusals.
+void TestSurfaceFilletRefusalProbe() {
+  const NurbsSurface fl = FloorPlane(-2.5, 6, -3.5, 3.5, 0.0);
+  auto trial = [&](const char* tag, const NurbsSurface& w, double r, double tol) {
+    for (int sb : {1, -1}) {
+      SurfaceFilletOptions o;
+      o.side_a = 1;
+      o.side_b = sb;
+      SurfaceFillet f;
+      try { f = FilletSurfaces(fl, w, r, tol, o); } catch (const std::exception& e) { std::printf("[probe %s] r=%.3f sb=%d THROW %s\n", tag, r, sb, e.what()); continue; }
+      std::printf("[probe %s] r=%.3f sb=%d: %s\n", tag, r, sb, f.status == Result::Ok ? "OK" : f.reason.substr(0, 150).c_str());
+    }
+  };
+  // V-shaped crease wall (degree 1 in y): normal jumps across the crease, the offset centre curve has a corner or a gap.
+  for (double k : {0.2, 0.6, 1.5}) {
+    const std::vector<dino8::kernel::Point3d> g = {
+        dino8::kernel::Point3d(3 + k * 3, -3, -0.5), dino8::kernel::Point3d(3 + k * 3, -3, 2.0), dino8::kernel::Point3d(3, 0, -0.5), dino8::kernel::Point3d(3, 0, 2.0),
+        dino8::kernel::Point3d(3 + k * 3, 3, -0.5), dino8::kernel::Point3d(3 + k * 3, 3, 2.0)};
+    const NurbsSurface v = NurbsSurface::FromControlGrid(g, 3, 2, 1, 1);
+    char tag[32];
+    std::snprintf(tag, sizeof(tag), "V k=%.1f", k);
+    for (double r : {0.1, 0.4}) trial(tag, v, r, 1e-3);
+  }
+  // Very sharp smooth bend, radius straddling the curvature radius.
+  for (double amp : {0.45, 0.9}) {
+    const NurbsSurface bw = MakeNet(120, 6, [amp](double a, double b) {
+      const double y = -3.0 + 6.0 * a, z = -0.5 + 3.0 * b;
+      return ON_3dPoint(3.0 + amp * std::exp(-(y * y) / 0.06), y, z);
+    });
+    char tag[32];
+    std::snprintf(tag, sizeof(tag), "sharp bend amp=%.2f", amp);
+    for (double r : {0.12, 0.16, 0.2, 0.22, 0.24, 0.26}) trial(tag, bw, r, 1e-3);
+  }
+  // Leaning wall near the limit.
+  for (double lean : {4.0, 4.5, 5.0, 5.5, 6.0, 8.0}) {
+    const NurbsSurface w = MakeNet(12, 12, [lean](double a, double b) {
+      const double y = -3.0 + 6.0 * a, z = -0.5 + 2.5 * b;
+      return ON_3dPoint(3.0 + lean * z * z * 0.5, y, z);
+    });
+    char tag[32];
+    std::snprintf(tag, sizeof(tag), "lean %.1f", lean);
+    for (double r : {0.1, 0.2, 0.4}) trial(tag, w, r, 1e-3);
+  }
+  // Wall that bends away in z so that the floor intersection has a turning point (parabolic wall tangent to a floor plane).
+  for (double h : {0.05, 0.2, 0.6}) {
+    const NurbsSurface w = MakeNet(10, 14, [h](double a, double b) {
+      const double y = -3.0 + 6.0 * a, z = -0.5 + 3.0 * b;
+      return ON_3dPoint(3.0 + 0.0 * y + 2.0 * (z - h) * (z - h), y, z);
+    });
+    char tag[32];
+    std::snprintf(tag, sizeof(tag), "parabola h=%.2f", h);
+    for (double r : {0.1, 0.3, 0.6}) trial(tag, w, r, 1e-3);
+  }
+}
 }  // namespace surface_fillet_tests
 int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -616,6 +671,7 @@ int main(int argc, char** argv) {
     try { fn(); } catch (const std::exception& e) { std::fprintf(stderr, "FAILED: %s threw %s\n", n, e.what()); ++g_failures; }
   };
   run("Stub", surface_fillet_tests::TestSurfaceFilletRefusalBranchesAndStubOddity);
+  run("Probe", surface_fillet_tests::TestSurfaceFilletRefusalProbe);
   run("Closed", surface_fillet_tests::TestSurfaceFilletClosedRimBossOnFloor);
   run("Solid", surface_fillet_tests::TestFilletBossOnSlabClosedSolid);
   ON::End();
