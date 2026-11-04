@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -3113,6 +3114,111 @@ class Brep {
   // method's own labeling just reported as valid, which should not
   // happen.
   std::vector<Brep> SplitDisjointPieces() const;
+
+  // ---- Shell / region classification (inner voids) ------------------
+  //
+  // PARITY_MAP.md's "Multi-shell / multi-lump bodies" item kept a
+  // "no inner-void (hollow) shell/region concept" gap: Compound() and
+  // SplitDisjointPieces() can hold and separate several shells, and
+  // ShellConvexPlanar(solid, {}, t) really does build a closed hollow body
+  // as a two-shell outer+cavity pair, but nothing could say which shell is
+  // the OUTER boundary of material, which one is a CAVITY wall, which
+  // shell sits inside which, or how many separate material regions the
+  // body has. ClassifyShells() answers all of that from the shells'
+  // geometry (not from Compound()'s own bookkeeping, so it also works on a
+  // Brep loaded from a file or raw()-assembled).
+  //
+  // A "shell" is a maximal group of faces joined by a shared edge record
+  // (the SplitDisjointPieces() definition - the same connectivity, the
+  // same refusal for a face with no loop topology in a non-Compound Brep).
+  // For each shell:
+  //   - signed_volume: Volume() of the shell alone. A closed shell whose
+  //     normals point away from the material it bounds has POSITIVE signed
+  //     volume (an outer boundary); one whose normals point into the
+  //     enclosed space (a cavity wall) has NEGATIVE signed volume.
+  //   - role: OuterBoundary (closed, volume > 0), Void (closed, volume <
+  //     0), OpenSheet (not closed, so it bounds nothing) or Degenerate
+  //     (closed but |volume| below `volume_tolerance`, e.g. a flat fold).
+  //   - closed is decided by the shell's own topology when it has loops
+  //     (no naked edge, no non-manifold edge) and by
+  //     TessellateToClosedMesh(8, 8).IsClosedManifold() when it has none
+  //     (Box()/Sphere() lumps), so both construction styles classify.
+  //   - vertex/edge/face/inner-loop counts and the Euler-Poincare number
+  //     V - E + F - R (R = inner loops, "rings"), only for shells with real
+  //     topology; for a closed, orientable manifold shell it equals
+  //     2 - 2*genus, which `genus` reports (-1 when not applicable).
+  //   - parent: the index of the closest shell that CONTAINS this one (a
+  //     closed shell; containment is a ray-cast of one of this shell's own
+  //     mesh vertices against the other shell's closed mesh, the cavity
+  //     orientation handled), -1 if none; depth = number of containing
+  //     shells.
+  // Regions: every OuterBoundary shell starts a material region; every
+  // Void shell whose nearest containing OuterBoundary shell is that one
+  // belongs to it as a cavity (so an island inside a cavity is a NEW
+  // region, and a shell inside it a deeper void, etc.). region_volume =
+  // outer signed volume + the cavities' (negative) ones.
+  //
+  // consistent == false (with `problems` naming why, one string per
+  // issue) when the nesting contradicts the orientations: a Void with no
+  // containing OuterBoundary, an OuterBoundary nested directly inside
+  // another OuterBoundary (overlapping solids, not an island in a cavity)
+  // , a Void nested directly in a Void, or a shell pair whose containment
+  // could not be decided. Classification itself never guesses past that:
+  // it reports what it measured.
+  //
+  // Honest limits: containment is decided with ONE sample vertex per
+  // shell, so two shells that touch or interpenetrate (rather than being
+  // cleanly nested or disjoint) can be mis-nested and are only flagged when
+  // the orientation rules above catch it; each closed shell is tessellated
+  // at 8x8 for the containment test (the volume itself is the exact
+  // divergence-theorem Volume()); a shell Volume() cannot integrate gets
+  // volume 0 and role Degenerate with a problem entry rather than a throw.
+  // Throws std::invalid_argument for the same topology-less-multi-face case
+  // SplitDisjointPieces() does.
+  struct ShellInfo {
+    enum class Role { OuterBoundary, Void, OpenSheet, Degenerate };
+    std::vector<int> faces;  // this Brep's own face indices, ascending
+    Role role = Role::Degenerate;
+    bool closed = false;
+    bool has_topology = false;
+    int vertex_count = 0, edge_count = 0, face_count = 0, inner_loop_count = 0;
+    int naked_edge_count = 0, non_manifold_edge_count = 0;
+    int euler_poincare = 0;  // V - E + F - R; meaningful only when has_topology
+    int genus = -1;          // (2 - euler_poincare) / 2 for a closed manifold shell, else -1
+    double signed_volume = 0.0;
+    int parent = -1;
+    int depth = 0;
+    int region = -1;  // index into ShellClassification::regions; -1 for an OpenSheet / Degenerate shell
+  };
+  struct MaterialRegion {
+    int outer_shell = -1;
+    std::vector<int> void_shells;  // cavities directly belonging to this region
+    double volume = 0.0;           // outer + sum of cavity signed volumes
+  };
+  struct ShellClassification {
+    std::vector<ShellInfo> shells;
+    std::vector<MaterialRegion> regions;
+    bool consistent = true;
+    std::vector<std::string> problems;
+  };
+  ShellClassification ClassifyShells(double volume_tolerance = 1e-9) const;
+
+  // Whole-Brep live loop/trim counts (the counterparts of LiveFaceCount()/
+  // LiveVertexCount()/LiveEdgeCount() for the loop and trim tables), closing
+  // the "LoopCount/TrimCount are per-face/per-loop scoped, not whole-Brep"
+  // gap in PARITY_MAP.md's topology-enumeration item. A slot counts only if
+  // its own m_loop_index/m_trim_index is still >= 0 AND (for a loop) its
+  // face is live; no side effect.
+  int LiveLoopCount() const;
+  int LiveTrimCount() const;
+
+  // True iff every LIVE face has at least one loop (real ON_Brep loop/trim
+  // topology) - false for Box()/Sphere()/Torus()/FromSurface()/
+  // TrimmedPlanarFace(), which use the surface-only NewFace(int) path and
+  // report 0 vertices/edges/loops/trims. Lets a caller discover that
+  // condition instead of reading zeros as a real answer. An empty Brep
+  // returns false.
+  bool HasFullTopology() const;
 
   // Bounding box over the Brep's actual curved geometry, not just its
   // control points - a real gap nothing here could answer without

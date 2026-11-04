@@ -4569,6 +4569,269 @@ std::vector<Brep> Brep::SplitDisjointPieces() const {
   return pieces;
 }
 
+int Brep::LiveLoopCount() const {
+  int n = 0;
+  for (int i = 0; i < brep_.m_L.Count(); ++i) {
+    const ON_BrepLoop& loop = brep_.m_L[i];
+    if (loop.m_loop_index < 0) continue;
+    const int fi = loop.m_fi;
+    if (fi < 0 || fi >= brep_.m_F.Count() || brep_.m_F[fi].m_face_index < 0) continue;
+    ++n;
+  }
+  return n;
+}
+
+int Brep::LiveTrimCount() const {
+  int n = 0;
+  for (int i = 0; i < brep_.m_T.Count(); ++i) {
+    const ON_BrepTrim& trim = brep_.m_T[i];
+    if (trim.m_trim_index < 0) continue;
+    const int li = trim.m_li;
+    if (li < 0 || li >= brep_.m_L.Count() || brep_.m_L[li].m_loop_index < 0) continue;
+    ++n;
+  }
+  return n;
+}
+
+bool Brep::HasFullTopology() const {
+  bool any = false;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (brep_.m_F[i].m_face_index < 0) continue;
+    any = true;
+    if (brep_.m_F[i].m_li.Count() == 0) return false;
+  }
+  return any;
+}
+
+namespace {
+
+// Groups of this Brep's own face indices, one per shell (see
+// Brep::ClassifyShells). Mirrors SplitDisjointPieces()'s connectivity
+// rules exactly (LabelConnectedComponents on a private copy; Compound()
+// lump ranges when faces carry no loops) but returns ORIGINAL face
+// indices, which SplitDisjointPieces() does not expose.
+std::vector<std::vector<int>> ShellFaceGroups(const ON_Brep& brep, const std::vector<std::pair<int, int>>& lump_ranges) {
+  const int n = brep.m_F.Count();
+  std::vector<std::vector<int>> groups;
+  if (n == 0) return groups;
+  auto label_groups = [](const ON_Brep& b, const std::vector<int>& original_of_face) {
+    std::vector<std::vector<int>> out;
+    ON_Brep copy(b);
+    const int count = copy.LabelConnectedComponents();
+    out.resize(static_cast<size_t>(std::max(count, 0)));
+    for (int fi = 0; fi < copy.m_F.Count(); ++fi) {
+      const int label = copy.m_F[fi].m_face_user.i;
+      if (label >= 1 && label <= count) out[static_cast<size_t>(label - 1)].push_back(original_of_face[static_cast<size_t>(fi)]);
+    }
+    return out;
+  };
+  bool any_missing = false;
+  for (int i = 0; i < n; ++i) {
+    if (brep.m_F[i].m_li.Count() == 0) any_missing = true;
+  }
+  if (!any_missing) {
+    std::vector<int> identity(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) identity[static_cast<size_t>(i)] = i;
+    groups = label_groups(brep, identity);
+  } else if (n == 1 || lump_ranges.size() > 1) {
+    for (const std::pair<int, int>& range : lump_ranges) {
+      std::vector<int> faces;
+      bool full = true;
+      for (int fi = range.first; fi < range.second; ++fi) {
+        faces.push_back(fi);
+        if (brep.m_F[fi].m_li.Count() == 0) full = false;
+      }
+      if (faces.empty()) continue;
+      if (!full || faces.size() == 1) {
+        groups.push_back(faces);
+        continue;
+      }
+      ON_Brep* dup = brep.DuplicateFaces(static_cast<int>(faces.size()), faces.data(), false);
+      if (dup == nullptr) {
+        groups.push_back(faces);
+        continue;
+      }
+      std::vector<int> orig(static_cast<size_t>(dup->m_F.Count()));
+      for (int j = 0; j < dup->m_F.Count(); ++j) orig[static_cast<size_t>(j)] = dup->m_F[j].m_face_user.i;
+      std::vector<std::vector<int>> sub = label_groups(*dup, orig);
+      delete dup;
+      for (auto& g : sub) groups.push_back(std::move(g));
+    }
+  } else {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::ClassifyShells: a face has no real ON_Brep loop/trim/edge topology, so the "
+        "connectivity between this Brep's faces cannot be determined, and it is not a Compound() of more "
+        "than one lump either (see LumpFaceRanges()); rebuild it through FromPlanarFaces()/FromMixedFaces() "
+        "(or load a genuine .3dm) before classifying its shells");
+  }
+  for (auto& g : groups) std::sort(g.begin(), g.end());
+  return groups;
+}
+
+}  // namespace
+
+Brep::ShellClassification Brep::ClassifyShells(double volume_tolerance) const {
+  ShellClassification out;
+  const std::vector<std::vector<int>> groups = ShellFaceGroups(brep_, LumpFaceRanges());
+  const size_t ns = groups.size();
+  out.shells.resize(ns);
+  std::vector<Mesh> oriented_mesh(ns);  // outward-oriented closed mesh, valid iff mesh_ok
+  std::vector<char> mesh_ok(ns, 0);
+  std::vector<Point3d> sample(ns, Point3d(0, 0, 0));
+
+  for (size_t k = 0; k < ns; ++k) {
+    ShellInfo& info = out.shells[k];
+    info.faces = groups[k];
+    Brep piece = BuildPieceFromFaceIndices(*this, info.faces);
+    info.face_count = static_cast<int>(info.faces.size());
+    info.has_topology = piece.HasFullTopology();
+    if (info.has_topology) {
+      const ON_Brep& pb = piece.raw();
+      info.vertex_count = piece.LiveVertexCount();
+      info.edge_count = piece.LiveEdgeCount();
+      for (int i = 0; i < pb.m_E.Count(); ++i) {
+        if (pb.m_E[i].m_edge_index < 0) continue;
+        const int tc = pb.m_E[i].m_ti.Count();
+        if (tc == 1) ++info.naked_edge_count;
+        if (tc > 2) ++info.non_manifold_edge_count;
+      }
+      for (int i = 0; i < pb.m_L.Count(); ++i) {
+        if (pb.m_L[i].m_loop_index >= 0 && pb.m_L[i].m_type == ON_BrepLoop::inner) ++info.inner_loop_count;
+      }
+      info.euler_poincare = info.vertex_count - info.edge_count + info.face_count - info.inner_loop_count;
+    }
+    // Closedness + a mesh for volume fallback / containment.
+    bool mesh_closed = false;
+    Mesh mesh;
+    try {
+      mesh = piece.TessellateToClosedMesh(8, 8);
+      mesh_closed = mesh.IsClosedManifold();
+    } catch (const std::exception&) {
+      mesh_closed = false;
+    }
+    info.closed = info.has_topology
+                      ? (info.edge_count > 0 && info.naked_edge_count == 0 && info.non_manifold_edge_count == 0)
+                      : mesh_closed;
+    if (info.has_topology && info.closed && info.euler_poincare <= 2 && (info.euler_poincare % 2) == 0) {
+      info.genus = (2 - info.euler_poincare) / 2;
+    }
+    if (!info.closed) {
+      info.role = ShellInfo::Role::OpenSheet;
+      continue;
+    }
+    double vol = 0.0;
+    bool have_vol = false;
+    try {
+      vol = piece.Volume();
+      have_vol = true;
+    } catch (const std::exception&) {
+    }
+    if (!have_vol) {
+      try {
+        vol = piece.VolumeOfSealedSolid();
+        have_vol = true;
+      } catch (const std::exception&) {
+      }
+    }
+    if (!have_vol && mesh_closed) {
+      vol = mesh.Volume();
+      have_vol = true;
+    }
+    if (!have_vol) {
+      out.consistent = false;
+      out.problems.push_back("shell " + std::to_string(k) + ": volume could not be integrated; classified Degenerate");
+    }
+    info.signed_volume = vol;
+    if (!have_vol || std::fabs(vol) <= volume_tolerance) {
+      info.role = ShellInfo::Role::Degenerate;
+    } else {
+      info.role = vol > 0.0 ? ShellInfo::Role::OuterBoundary : ShellInfo::Role::Void;
+    }
+    if (mesh_closed && info.role != ShellInfo::Role::Degenerate) {
+      const double mv = mesh.Volume();
+      oriented_mesh[k] = mv < 0.0 ? mesh.FlipNormals() : mesh;
+      const ON_Mesh& om = oriented_mesh[k].raw();
+      if (om.m_F.Count() > 0) {
+        const ON_MeshFace& f0 = om.m_F[0];
+        const ON_3dPoint a(om.m_V[f0.vi[0]]), b(om.m_V[f0.vi[1]]), c(om.m_V[f0.vi[2]]);
+        sample[k] = Point3d((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0, (a.z + b.z + c.z) / 3.0);
+        mesh_ok[k] = 1;
+      }
+    }
+  }
+
+  auto is_closed_role = [&](size_t k) {
+    return out.shells[k].role == ShellInfo::Role::OuterBoundary || out.shells[k].role == ShellInfo::Role::Void;
+  };
+  // contains[j][i]: closed shell j encloses shell i's sample point.
+  std::vector<std::vector<char>> contains(ns, std::vector<char>(ns, 0));
+  for (size_t i = 0; i < ns; ++i) {
+    if (!is_closed_role(i)) continue;
+    if (!mesh_ok[i]) {
+      out.consistent = false;
+      out.problems.push_back("shell " + std::to_string(i) + ": no usable closed mesh, nesting undecided");
+      continue;
+    }
+    for (size_t j = 0; j < ns; ++j) {
+      if (i == j || !is_closed_role(j) || !mesh_ok[j]) continue;
+      contains[j][i] = oriented_mesh[j].ContainsPoint(sample[i]) ? 1 : 0;
+    }
+  }
+  for (size_t i = 0; i < ns; ++i) {
+    int depth = 0;
+    int parent = -1;
+    int best_inside = -1;
+    for (size_t j = 0; j < ns; ++j) {
+      if (!contains[j][i]) continue;
+      ++depth;
+      // The closest container is the one that is itself inside the most others.
+      int inside_j = 0;
+      for (size_t m = 0; m < ns; ++m) inside_j += contains[m][j] ? 1 : 0;
+      if (inside_j > best_inside) {
+        best_inside = inside_j;
+        parent = static_cast<int>(j);
+      }
+    }
+    out.shells[i].depth = depth;
+    out.shells[i].parent = parent;
+  }
+  std::vector<int> region_of_outer(ns, -1);
+  for (size_t i = 0; i < ns; ++i) {
+    if (out.shells[i].role != ShellInfo::Role::OuterBoundary) continue;
+    region_of_outer[i] = static_cast<int>(out.regions.size());
+    MaterialRegion r;
+    r.outer_shell = static_cast<int>(i);
+    r.volume = out.shells[i].signed_volume;
+    out.regions.push_back(r);
+    out.shells[i].region = region_of_outer[i];
+  }
+  for (size_t i = 0; i < ns; ++i) {
+    ShellInfo& s = out.shells[i];
+    if (!is_closed_role(i)) continue;
+    const int par = s.parent;
+    const bool par_outer = par >= 0 && out.shells[static_cast<size_t>(par)].role == ShellInfo::Role::OuterBoundary;
+    const bool par_void = par >= 0 && out.shells[static_cast<size_t>(par)].role == ShellInfo::Role::Void;
+    if (s.role == ShellInfo::Role::Void) {
+      if (par_outer) {
+        const int reg = region_of_outer[static_cast<size_t>(par)];
+        s.region = reg;
+        out.regions[static_cast<size_t>(reg)].void_shells.push_back(static_cast<int>(i));
+        out.regions[static_cast<size_t>(reg)].volume += s.signed_volume;
+      } else {
+        out.consistent = false;
+        out.problems.push_back("shell " + std::to_string(i) + " is a Void (inward-facing) but " +
+                               (par_void ? "its closest container is another Void" : "no outer boundary encloses it"));
+      }
+    } else if (par_outer) {
+      out.consistent = false;
+      out.problems.push_back("shell " + std::to_string(i) +
+                             " is an OuterBoundary nested directly inside OuterBoundary shell " + std::to_string(par) +
+                             " (overlapping solids, not an island inside a cavity)");
+    }
+  }
+  return out;
+}
+
 namespace {
 // True (and fills the 4 corner control points) iff `srf` is a genuine,
 // non-rational, bilinear (degree (1,1), 2x2 control vertices) NURBS
