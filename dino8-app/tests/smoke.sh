@@ -11978,4 +11978,92 @@ sblcheck fb_cut_through "7 face(s), sewn into a closed solid (tolerance 0.01855)
 sblcheck fb_cut_through "INVALID - ON_Brep.m_T" "...which is the keyhole-slit structure Check rejects (why the sealed path exists)" "$SBL_FB"
 sblcheck fb_cut_through "closed solid" "...yet a closed solid" "$SBL_FB"
 
+# ---------------------------------------------------------------------------
+# RVR_: exact fillet / chamfer of ONE rim of a polygonal solid of revolution (rvr_script.txt).
+# FilletEdge / ChamferEdge now end their exact attempts with kernel::FilletRevolveRim / ChamferRevolveRim (cmd_fillet.cpp
+# TryRevolveRimFillet / TryRevolveRimChamfer), tried ONLY after the capped-cylinder / frustum kernel paths and the app's
+# own cylinder / hole classifiers declined. The fixture is the app's own chamfered cylinder: radius 5, height 4, top rim
+# chamfered 1 x 1 -> a 4-face solid of revolution with the (rho, z) profile (0,0) (5,0) (5,3) (4,4) (0,4) that FilletCapRim
+# refuses (not a plain capped cylinder / frustum). Closed forms are the Green integral V = pi * closed-integral rho^2 dz of
+# the blended profile (the circular arc integrated in 20000 steps, tangent length t = r / tan(theta/2)); the chamfer
+# triangle is checked against Pappus:
+#   V0 = 100 pi = 314.159   V1 (chamfer 1 x 1) = 299.498
+#   fillet r=3 on the 135-degree bevel / top-cap rim (setback 1.2426)  -> 294.723
+#   fillet r=1.5 on the 90-degree wall / bottom rim                     -> 285.346
+#   chamfer 1 (wall) x 0.5 (bottom cap)                                 -> 291.906
+# Volume is read from the display mesh (measured 0.07-0.11% low here, 4 significant digits), so each window is the closed
+# form +- 1.0 (0.35%): narrower than every removed volume (4.8 / 14.2 / 7.6 against V1), so an unchanged solid cannot pass.
+# Face / edge counts and "closed solid" are topological and exact. The kernel result itself (exact torus / cone faces,
+# Brep Check, ball radius, tangency, volume to 1e-6) is pinned by revolve_rim_tests in dino8-kernel/tests/test_basic.cpp.
+# Scope of this app wiring: the app can only BUILD revolve solids of this family by chamfering a cylinder (the Revolve
+# command makes one face, Booleans make sewn polyline solids the kernel classifier rightly refuses), so a countersunk
+# plate or a stepped-shaft inside corner is covered by the kernel tests, not here.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RVRO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/rvr_script.txt" 2>&1)" || { echo "$RVRO"; echo "FAIL: rvr script exited non-zero"; exit 1; }
+else
+  RVRO="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/rvr_script.txt" 2>&1)" || { echo "$RVRO"; echo "FAIL: rvr script exited non-zero"; exit 1; }
+fi
+rvrblock() { awk -v name="$1" '$0 ~ ("Unknown command: RVRBEGIN_" name "$") { on = 1; next } on && /Unknown command: RVRBEGIN_/ { exit } on { print }' <<<"$RVRO"; }
+rvrcheck() { local blk; blk="$(rvrblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   $3"; else echo "FAIL $3"; echo "     expected: $2"; grep -E "^history: (FilletEdge|ChamferEdge|!|Object|  [0-9]|Volume)" <<<"$blk" | head -8 | sed 's/^/     actual:   /' || true; fail=1; fi; }
+rvrnot() { local blk; blk="$(rvrblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
+# rvrnum NAME MIN MAX DESC: the case's last "Volume = V" lies in [MIN, MAX]
+rvrnum() {
+  local blk v; blk="$(rvrblock "$1")"
+  v="$(grep -E "^history: Volume = " <<<"$blk" | tail -1 | sed -E 's/^history: Volume = ([0-9.eE+-]+).*/\1/' || true)"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 (Volume $v in [$2, $3])"; else echo "FAIL $4 (Volume '${v:-none}' not in [$2, $3])"; fail=1; fi
+}
+# rvrobjs NAME N DESC: the case's List shows exactly N objects
+rvrobjs() {
+  local blk n; blk="$(rvrblock "$1")"
+  n="$(grep -cE "^history: Object [0-9]+ \(" <<<"$blk" || true)"
+  if [ "$n" = "$2" ]; then echo "ok   $3 ($n object(s))"; else echo "FAIL $3 ('$n' object(s), expected $2)"; fail=1; fi
+}
+# --- fixture: the chamfered cylinder (control: the app's own bevel, not the kernel revolve path)
+rvrcheck base "4 faces, 7 edges, closed solid" "RVR_base: fixture = chamfered cylinder, 4 faces, closed solid"
+rvrcheck base "Object 1: valid" "RVR_base: fixture Check valid"
+rvrnum base 298.0 301.0 "RVR_base: fixture V1 = 100 pi - 2 pi (5 - 1/3)(0.5) = 299.498"
+rvrnot base "revolve-rim" "RVR_base: ...no revolve-rim path involved"
+# --- fillet of the 135-degree bevel / cap rim
+rvrcheck F_bevelcap "exact kernel cap-rim fillet not used (dino8::kernel::FilletCapRim: not a plain capped cylinder or cone frustum" "RVR_F_bevelcap: the cap-rim path declines first, with its reason (existing message, unchanged)"
+rvrcheck F_bevelcap "rim of solid-of-revolution object 1 replaced with an exact fillet (radius 3; exact kernel torus patch tangent to both faces at the rim, 5 faces, closed solid)" "RVR_F_bevelcap: then FilletRevolveRim makes an exact torus fillet (before: mesh fallback)"
+rvrcheck F_bevelcap "5 faces, 9 edges, closed solid" "RVR_F_bevelcap: 5 faces (input + 1), 9 edges, closed solid"
+rvrcheck F_bevelcap "Object 1: valid" "RVR_F_bevelcap: Check valid"
+rvrobjs F_bevelcap 1 "RVR_F_bevelcap: replaced in place, no mesh object left behind"
+rvrnum F_bevelcap 293.7 295.7 "RVR_F_bevelcap: Green volume = 294.723 (r=3, tangent length 1.2426)"
+# --- fillet of the 90-degree wall / bottom rim
+rvrcheck F_bottom "replaced with an exact fillet (radius 1.5; exact kernel torus patch tangent to both faces at the rim, 5 faces, closed solid)" "RVR_F_bottom: exact torus fillet on the wall / bottom rim"
+rvrcheck F_bottom "5 faces, 9 edges, closed solid" "RVR_F_bottom: 5 faces, 9 edges, closed solid"
+rvrcheck F_bottom "Object 1: valid" "RVR_F_bottom: Check valid"
+rvrobjs F_bottom 1 "RVR_F_bottom: one object"
+rvrnum F_bottom 284.3 286.3 "RVR_F_bottom: Green volume = 285.346 (r=1.5)"
+# --- chamfer of the wall / bottom rim
+rvrcheck C_bottom "replaced with an exact chamfer (distance1 1, distance2 0.5; exact kernel revolve-rim bevel (cone / plane), distance1 along the wall and distance2 across the planar face)" "RVR_C_bottom: exact kernel bevel, distance1 along the wall, distance2 across the cap"
+rvrcheck C_bottom "5 faces, 9 edges, closed solid" "RVR_C_bottom: 5 faces, 9 edges, closed solid"
+rvrcheck C_bottom "Object 1: valid" "RVR_C_bottom: Check valid"
+rvrobjs C_bottom 1 "RVR_C_bottom: one object"
+rvrnum C_bottom 290.9 292.9 "RVR_C_bottom: Green volume = 291.906 (wall 1, cap 0.5)"
+# --- refusals carry the kernel's reason
+rvrcheck F_toobig "exact kernel revolve-rim fillet not used (dino8::kernel::FilletRevolveRim: the blend would consume a whole adjacent face (setbacks 1.656854 and 1.656854 must be strictly less than the profile lengths 1.414214 and 4.000000))" "RVR_F_toobig: r=4 on the 1.414-long bevel is refused WITH the kernel's reason (setback 4/tan(67.5) = 1.6569)"
+rvrcheck F_toobig "4 faces, 7 edges, closed solid" "RVR_F_toobig: ...and the solid is left unchanged (4 faces)"
+rvrnot F_toobig "rim of solid-of-revolution object 1 replaced" "RVR_F_toobig: ...no exact revolve-rim fillet is claimed"
+rvrcheck F_blended "exact kernel revolve-rim fillet not used (dino8::kernel::FilletRevolveRim: a face is not a plane, cylinder or cone - not a polygonal solid of revolution)" "RVR_F_blended: a solid that already carries the torus blend is refused WITH the kernel's reason"
+rvrcheck F_two "a rim of this solid of revolution is already staged in this FilletEdge run; the exact kernel revolve-rim fillet blends one rim per run" "RVR_F_two: a second rim in the same run is refused with the one-rim-per-run explanation"
+rvrcheck F_two "replaced with an exact fillet (radius 1.5; exact kernel torus patch" "RVR_F_two: ...the first rim is still applied exactly"
+rvrnum F_two 284.3 286.3 "RVR_F_two: only the first fillet is in the solid, Volume = 285.346"
+rvrcheck F_two "5 faces, 9 edges, closed solid" "RVR_F_two: 5 faces, closed solid"
+# --- negative controls: the old exact paths are unchanged and never reach the revolve path
+rvrcheck ctl_cyl "cylinder rim(s) of object 1 replaced with an exact fillet (top radius 1; exact quarter-torus patch, 4 faces, closed solid)" "RVR_ctl_cyl: plain cylinder rim fillet still gives the app's pinned message"
+rvrnot ctl_cyl "revolve-rim" "RVR_ctl_cyl: ...and never reaches the revolve path"
+rvrnum ctl_cyl 306.7 308.7 "RVR_ctl_cyl: Pappus Volume = 314.159 - 2 pi (r^2 (R - r/2) - (pi r^2/4)(R - r) - r^3/3) = 307.718"
+rvrcheck ctl_cyl "Object 1: valid" "RVR_ctl_cyl: Check valid"
+rvrcheck ctl_cyl_chamfer "replaced with an exact chamfer (radius 1; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap)" "RVR_ctl_cyl_chamfer: plain cylinder chamfer still gives the app's pinned message"
+rvrnot ctl_cyl_chamfer "revolve-rim" "RVR_ctl_cyl_chamfer: ...and never reaches the revolve path"
+rvrcheck ctl_tcone "cap rim(s) of object 1 replaced with an exact fillet (radius 1; exact kernel torus patch tangent to the cap and the wall, 4 faces, closed solid)" "RVR_ctl_tcone: cone frustum rim still takes the kernel cap-rim path"
+rvrnot ctl_tcone "revolve-rim" "RVR_ctl_tcone: ...and never reaches the revolve path"
+rvrnum ctl_tcone 507.7 513.8 "RVR_ctl_tcone: Pappus Volume = 513.13 - 2.390 = 510.74"
+rvrcheck ctl_box "edge 5 of object 1 replaced with an exact fillet (radius 1)" "RVR_ctl_box: a box edge is still the kernel's exact planar fillet"
+rvrnot ctl_box "revolve-rim" "RVR_ctl_box: ...with no revolve-rim message for an ordinary open edge"
+if grep -q "gl_error=0" <<<"$RVRO"; then echo "ok   RVR script ran without OpenGL errors"; else echo "FAIL RVR script ran without OpenGL errors"; fail=1; fi
+
 exit $fail
