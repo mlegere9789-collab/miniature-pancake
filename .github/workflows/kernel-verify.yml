@@ -1,0 +1,84 @@
+name: Kernel verify
+
+# Verification capacity for unmerged work: a push to a `kverify/**` branch builds the
+# kernel test binary once, then runs the whole kernel suite in parallel shards
+# (DINO8_TEST_SHARD=k/N, each shard in its own scratch directory) and reports the
+# exact ok / FAILED line counts per shard. It never publishes anything and does not
+# run on the main or claude/* branches.
+
+on:
+  push:
+    branches: ['kverify/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    name: Build dino8_kernel_tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-ccache-${{ github.sha }}
+          restore-keys: kverify-ccache-
+      - name: Configure
+        run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build dino8-kernel/build --target dino8_kernel_tests dino8_continuity2_tests
+      - name: Package the test binaries
+        run: |
+          mkdir -p bundle
+          cp dino8-kernel/build/tests/dino8_kernel_tests bundle/
+          cp dino8-kernel/build/tests/dino8_continuity2_tests bundle/ || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-test-binaries
+          path: bundle/
+          retention-days: 3
+
+  shard:
+    name: Shard ${{ matrix.k }} of 12
+    needs: build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        k: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-test-binaries
+          path: bundle
+      - name: Run shard
+        shell: bash
+        run: |
+          chmod +x bundle/*
+          mkdir -p scratch && cd scratch
+          set +e
+          DINO8_TEST_SHARD="${{ matrix.k }}/12" timeout 3000 ../bundle/dino8_kernel_tests > ../shard.log 2> ../shard.err
+          rc=$?
+          set -e
+          echo "shard ${{ matrix.k }}/12 exit=$rc ok=$(grep -c '^ok' ../shard.log) FAILED=$(grep -c '^FAILED' ../shard.err)"
+          grep '^FAILED' ../shard.err | sort | uniq -c | head -50 || true
+          if [ "${{ matrix.k }}" = "0" ]; then ../bundle/dino8_continuity2_tests 2>&1 | tail -3 || true; fi
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shard-${{ matrix.k }}-logs
+          path: |
+            shard.log
+            shard.err
+          retention-days: 3
