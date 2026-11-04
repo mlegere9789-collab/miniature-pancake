@@ -102558,7 +102558,11 @@ void TestHealedBooleanRandomizedBoxPairsFixedSeed() {
     const double e3 = std::fabs(d.result.Volume() - (va - ov));
     worst = std::max({worst, e1, e2, e3});
     Check(e1 < 1e-6 && e2 < 1e-6 && e3 < 1e-6, "healed Union / Intersection / Difference volumes match the closed forms (< 1e-6)");
-    Check(u.result.raw().IsSolid() && n.result.raw().IsSolid() && d.result.raw().IsSolid(), "...and every result is an ON_Brep solid");
+    // A result whose closed-form volume is zero (A wholly inside B for Difference) must be the legitimate EMPTY body; every
+    // other result must be an ON_Brep solid.
+    const bool d_shape = (va - ov > 1e-9) ? d.result.raw().IsSolid() : d.result.raw().m_F.Count() == 0;
+    Check(u.result.raw().IsSolid() && n.result.raw().IsSolid() && d_shape,
+          "...and every result is an ON_Brep solid (or the empty body when the closed-form volume is 0)");
   }
   std::printf("  [boolean_diag] randomized healed pairs: %d overlapping pairs checked (%d disjoint skipped), %d with a healed operand, worst volume error %.3g\n",
               checked, disjoint_skipped, healed_pairs, worst);
@@ -102582,9 +102586,11 @@ void TestTypedReasonComesStraightFromTheEngineOnAllThreeEngines() {
     Check(Has(r.function_name, c.fn), "...naming the refusing engine");
   }
   const BooleanReport x = DiagnoseBrepBoolean(Brep::BoxWelded(0, 0, 0, 1, 1, 1), other, BooleanOp::SymmetricDifference, BooleanEngineKind::General);
-  // The General engine now supports SymmetricDifference on single solids: no refusal reason is invented, the result is
-  // checked against the closed form V(A) + V(B) - 2 V(A n B) = 1 + 0.54 - 2 * 0.18.
-  Check(x.ok && x.has_result && std::fabs(x.result.Volume() - 1.18) < 1e-6, "General SymmetricDifference on single solids succeeds with volume 1.18");
+  // Negative control: this symmetric difference (B pokes through a face of A) is genuinely non-manifold (A\B and B\A meet
+  // along the rim of the hole). The General engine returns a body for it; the report must NOT call it ok - it is OpenResult,
+  // carries the body, and names the naked edges.
+  Check(!x.ok && x.has_result && x.reason == BooleanFailureReason::OpenResult && !x.result_open_edges.empty(),
+        "General SymmetricDifference with a non-manifold result: reported as OpenResult with the naked edges, never ok");
   BooleanDiagnoseOptions bad;
   bad.tolerance = 0.0;
   const BooleanReport t = DiagnoseBrepBoolean(Brep::BoxWelded(0, 0, 0, 1, 1, 1), other, BooleanOp::Union, BooleanEngineKind::Planar, bad);
