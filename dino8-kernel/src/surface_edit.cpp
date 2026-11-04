@@ -630,9 +630,19 @@ Result NurbsSurface::FitToTolerance(double tolerance, int u_degree, int v_degree
   if (u_degree < 1 || v_degree < 1) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::FitToTolerance: degrees must be >= 1");
   }
+  if (u_degree > 25 || v_degree > 25) {
+    // measured: degrees 100 x 100 with max_control_points 120 ran > 20 s (a 129 x 129 deviation grid of degree-100 bases per
+    // candidate net); no practical fit needs more than a few
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitToTolerance: degrees must be <= 25");
+  }
   if (max_control_points <= u_degree || max_control_points <= v_degree || max_control_points > 120) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::FitToTolerance: max_control_points must exceed both degrees and be <= 120");
+  }
+  if (!surface_.IsValid()) {
+    // An empty / default-constructed surface has no control net to sample; Rebuild() and the deviation sampler
+    // dereferenced it (measured: SIGSEGV on a default NurbsSurface).
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::FitToTolerance: the surface is empty or invalid");
   }
   auto attempt = [&](int uc, int vc, NurbsSurface& cand, double& dev) {
     double rebuild_dev = 0.0;

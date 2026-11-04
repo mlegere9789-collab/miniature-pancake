@@ -102099,6 +102099,146 @@ void TestBrepShrinkSurfacesTolerance() {
 
 }  // namespace surfops_tolerance_tests
 
+// ---- qc2_tests: adversarial QC of recently landed kernel features. Every test here failed (crash / hang /
+// ---- wrong answer / silently accepted garbage) before the fix next to it; the measured evidence is in each comment.
+namespace qc2_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::HoleFeature;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+template <class F>
+bool ThrowsInvalid(F&& f, const char* needle = nullptr) {
+  try {
+    f();
+  } catch (const std::invalid_argument& e) {
+    return needle == nullptr || std::string(e.what()).find(needle) != std::string::npos;
+  } catch (...) {
+    return false;
+  }
+  return false;
+}
+
+double SecondsSince(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// NurbsSurface::FitToTolerance on a default-constructed (empty) surface dereferenced a missing control net: SIGSEGV
+// (measured in a forked probe: signal 11). Degrees 100 x 100 with max_control_points 120 ran > 20 s.
+void TestFitToToleranceRefusesEmptySurfaceAndAbsurdDegrees() {
+  NurbsSurface empty, out;
+  Check(ThrowsInvalid([&] { empty.FitToTolerance(1e-3, 3, 3, 40, out); }, "empty or invalid"),
+        "FitToTolerance on an empty surface throws std::invalid_argument (was SIGSEGV)");
+  std::vector<Point3d> g;
+  for (int j = 0; j < 6; ++j)
+    for (int i = 0; i < 6; ++i) g.push_back(Point3d(i, j, std::sin(0.7 * i) * std::cos(0.5 * j)));
+  const NurbsSurface srf = NurbsSurface::FromControlGrid(g, 6, 6, 3, 3);
+  const auto t0 = std::chrono::steady_clock::now();
+  Check(ThrowsInvalid([&] { srf.FitToTolerance(1e-3, 100, 100, 120, out); }, "degrees must be <= 25"),
+        "FitToTolerance refuses degree 100 up front (was a > 20 s run)");
+  Check(SecondsSince(t0) < 2.0, "...and refuses it quickly");
+  double dev = -1.0;
+  Check(srf.FitToTolerance(1e-3, 3, 3, 40, out, &dev) != dino8::kernel::Result::Failed && dev <= 1e-3,
+        "a sane FitToTolerance call still succeeds within tolerance");
+}
+
+// ClassifyShells(volume_tolerance): inf and 1e300 silently turned every closed shell into a Degenerate one with
+// consistent == true and no problem text; NaN and -1 were silently accepted.
+void TestClassifyShellsRefusesNonsenseVolumeTolerance() {
+  const Brep hollow = dino8::kernel::ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {}, 1.0);
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (double t : {inf, nan, -1.0, 1e300}) {
+    Check(ThrowsInvalid([&] { hollow.ClassifyShells(t); }, "volume_tolerance must be finite and non-negative"),
+          "ClassifyShells(inf / NaN / -1 / 1e300) throws a descriptive std::invalid_argument");
+  }
+  const Brep::ShellClassification c = hollow.ClassifyShells(0.0);
+  Check(c.shells.size() == 2 && c.regions.size() == 1 && c.consistent, "ClassifyShells(0) is still valid: hollow box = 2 shells, 1 region");
+}
+
+Brep SlabWithOneBlindHole(HoleFeature& hf) {
+  const Brep slab = Brep::Box(0, 0, 0, 40, 40, 4);
+  const Vector3d down(0, 0, -1);
+  const Brep one = dino8::kernel::MakeHole(slab, Point3d(4, 20, 4), down, 0.5, 2.0, false);
+  const std::vector<HoleFeature> found = dino8::kernel::RecognizeHoles(one);
+  hf = found.empty() ? HoleFeature() : found[0];
+  return one;
+}
+
+// LinearHolePattern / PolarHolePattern / RectangularHolePattern: count 100000 (and INT_MAX) never returned (the spacing
+// check is O(n^2) in the instance count and the centre list is allocated first); spacing +inf was reported as
+// "instance spacing 0.000000 leaves neighbouring bores touching"; a web of 1e-7 between bores spun MakeHoles for > 20 s;
+// count_u * count_v overflowed int.
+void TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs() {
+  HoleFeature hf;
+  const Brep one = SlabWithOneBlindHole(hf);
+  Check(hf.radius > 0.0, "fixture: the slab has one recognized blind hole");
+  const Vector3d dx(1, 0, 0);
+  const double inf = std::numeric_limits<double>::infinity();
+  auto t0 = std::chrono::steady_clock::now();
+  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, 1.0, 100000); }, "instances requested"),
+        "LinearHolePattern count 100000 is refused up front (was a > 20 s hang)");
+  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, 1.0, 2147483647); }, "instances requested"),
+        "LinearHolePattern count INT_MAX is refused up front (was a hang / out-of-memory)");
+  Check(ThrowsInvalid([&] { dino8::kernel::PolarHolePattern(one, hf, Point3d(20, 20, 4), Vector3d(0, 0, 1), 100000); },
+                      "instances requested"),
+        "PolarHolePattern count 100000 is refused up front (was a > 20 s hang)");
+  Check(ThrowsInvalid([&] { dino8::kernel::RectangularHolePattern(one, hf, dx, 3.0, 65536, Vector3d(0, 1, 0), 3.0, 65536); },
+                      "instances requested"),
+        "RectangularHolePattern 65536 x 65536 (int product overflowed to 0) is refused with the instance-count message");
+  Check(SecondsSince(t0) < 5.0, "...all four refusals together take < 5 s");
+  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, inf, 3); }, "spacing must be positive"),
+        "LinearHolePattern spacing +inf is refused as a bad spacing (was reported as 'instance spacing 0.000000')");
+  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, 2.0 * hf.radius + 1e-7, 3); }, "touching or overlapping"),
+        "LinearHolePattern with a 1e-7 web between bores is refused (was a > 20 s hang)");
+  HoleFeature bad = hf;
+  bad.radius = inf;
+  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, bad, dx, 3.0, 3); }, "radius must be positive"),
+        "hole radius +inf is refused as a bad radius");
+  bad = hf;
+  bad.origin = Point3d(std::numeric_limits<double>::quiet_NaN(), 20, 4);
+  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, bad, dx, 3.0, 3); }, "must be finite"),
+        "a NaN hole origin is refused as non-finite (was reported as 'instance spacing 0.000000')");
+}
+
+Brep PlanarBox(double x0, double y0, double z0, double x1, double y1, double z1) {
+  auto face = [](std::vector<Point3d> loop, ON_3dVector n) {
+    Brep::PlanarFace f;
+    f.loop = std::move(loop);
+    f.plane = ON_Plane(f.loop[0], n);
+    return f;
+  };
+  const Point3d b[4] = {Point3d(x0, y0, z0), Point3d(x1, y0, z0), Point3d(x1, y1, z0), Point3d(x0, y1, z0)};
+  const Point3d t[4] = {Point3d(x0, y0, z1), Point3d(x1, y0, z1), Point3d(x1, y1, z1), Point3d(x0, y1, z1)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(face({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));
+  faces.push_back(face({t[0], t[1], t[2], t[3]}, ON_3dVector(0, 0, 1)));
+  for (int i = 0; i < 4; ++i) {
+    const int j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(face({b[i], b[j], t[j], t[i]}, n));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+// SectionBrepByPlaneJoined with a plane that contains body edges: each such edge lies on two faces, so it came back once
+// per face. Measured on a 10^3 box cut by x = y (which contains two vertical edges): TWO open contours of total length
+// 68.2 (11 pieces) instead of ONE closed contour of length 2*(10*sqrt(2) + 10) = 48.284.
+void TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates() {
+  const Brep box = PlanarBox(0, 0, 0, 10, 10, 10);
+  const ON_Plane plane(Point3d(0, 0, 0), Vector3d(1, -1, 0));
+  const auto contours = dino8::kernel::SectionBrepByPlaneJoined(box.raw(), plane, dino8::kernel::IntersectOptions());
+  double total = 0.0;
+  for (const auto& c : contours) total += c.curve.Length();
+  Check(contours.size() == 1 && contours[0].closed, "x = y through two box edges: exactly one closed contour");
+  Check(std::fabs(total - 2.0 * (10.0 * std::sqrt(2.0) + 10.0)) < 0.05, "...of length 2*(10*sqrt(2) + 10) = 48.284 (was 68.2)");
+}
+
+}  // namespace qc2_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -103788,6 +103928,10 @@ int main() {
   RunTest("surfops_tolerance_tests::TestSurfaceRemoveMultiKnotsBothDirections", surfops_tolerance_tests::TestSurfaceRemoveMultiKnotsBothDirections);
   RunTest("surfops_tolerance_tests::TestSurfaceFitToToleranceMeetsToleranceOnIndependentGrid", surfops_tolerance_tests::TestSurfaceFitToToleranceMeetsToleranceOnIndependentGrid);
   RunTest("surfops_tolerance_tests::TestBrepShrinkSurfacesTolerance", surfops_tolerance_tests::TestBrepShrinkSurfacesTolerance);
+  RunTest("qc2_tests::TestFitToToleranceRefusesEmptySurfaceAndAbsurdDegrees", qc2_tests::TestFitToToleranceRefusesEmptySurfaceAndAbsurdDegrees);
+  RunTest("qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance", qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance);
+  RunTest("qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs", qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs);
+  RunTest("qc2_tests::TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates", qc2_tests::TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates);
 
   RunTest("offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary",
           offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary);
