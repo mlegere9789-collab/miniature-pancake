@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -21,6 +22,7 @@
 
 #include "dino8/kernel/acis_sat.h"
 #include "dino8/kernel/boolean.h"
+#include "dino8/kernel/boolean_diagnostics.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/convex_hull.h"
@@ -102330,6 +102332,323 @@ void TestBrepShrinkSurfacesTolerance() {
 }
 
 }  // namespace surfops_tolerance_tests
+// ---------------------------------------------------------------------------
+// Boolean operations: failure diagnostics (typed reasons for every failure,
+// naked-edge reporting, mesh-engine status) and automatic planar operand
+// gap-healing (boolean_diagnostics.h). Oracles are closed forms (axis-aligned
+// box volumes, inclusion-exclusion), ON_Brep::IsValid()/IsSolid(), and the
+// unhealed operand's own Check() issue list; negative controls refuse with a
+// stated reason.
+// ---------------------------------------------------------------------------
+namespace boolean_diag_tests {
+
+using dino8::kernel::BooleanDiagnoseOptions;
+using dino8::kernel::BooleanEngineKind;
+using dino8::kernel::BooleanFailureReason;
+using dino8::kernel::BooleanOp;
+using dino8::kernel::BooleanReport;
+using dino8::kernel::Brep;
+using dino8::kernel::DiagnoseBrepBoolean;
+using dino8::kernel::DiagnoseMeshBoolean;
+using dino8::kernel::HealPlanarOperandGaps;
+using dino8::kernel::Point3d;
+using dino8::kernel::ReportOpenEdges;
+
+Brep::PlanarFace DiagFace(std::vector<Point3d> loop) {
+  Brep::PlanarFace f;
+  f.loop = std::move(loop);
+  ON_3dVector n(0, 0, 0);
+  for (size_t i = 0; i < f.loop.size(); ++i) {
+    const Point3d& p = f.loop[i];
+    const Point3d& q = f.loop[(i + 1) % f.loop.size()];
+    n.x += (p.y - q.y) * (p.z + q.z);
+    n.y += (p.z - q.z) * (p.x + q.x);
+    n.z += (p.x - q.x) * (p.y + q.y);
+  }
+  n.Unitize();
+  f.plane = ON_Plane(f.loop[0], n);
+  return f;
+}
+
+// Six independent planar faces of the box [x0,x1]x[y0,y1]x[z0,z1] whose TOP
+// face floats `gap` above z1 (so the sides and the top do not weld: 8 naked
+// edges). gap = 0 is a clean closed box. `with_top` = false drops the top
+// face entirely (4 naked rim edges).
+std::vector<Brep::PlanarFace> DiagBoxFaces(double x0, double y0, double z0, double x1, double y1, double z1,
+                                           double gap, bool with_top = true) {
+  const Point3d b[4] = {Point3d(x0, y0, z0), Point3d(x1, y0, z0), Point3d(x1, y1, z0), Point3d(x0, y1, z0)};
+  const Point3d t[4] = {Point3d(x0, y0, z1), Point3d(x1, y0, z1), Point3d(x1, y1, z1), Point3d(x0, y1, z1)};
+  std::vector<Brep::PlanarFace> fs;
+  fs.push_back(DiagFace({b[3], b[2], b[1], b[0]}));
+  if (with_top)
+    fs.push_back(DiagFace({Point3d(x0, y0, z1 + gap), Point3d(x1, y0, z1 + gap), Point3d(x1, y1, z1 + gap),
+                           Point3d(x0, y1, z1 + gap)}));
+  for (int i = 0; i < 4; ++i) {
+    const int j = (i + 1) % 4;
+    fs.push_back(DiagFace({b[i], b[j], t[j], t[i]}));
+  }
+  return fs;
+}
+
+Brep DiagBox(double x0, double y0, double z0, double x1, double y1, double z1, double gap = 0.0, bool with_top = true) {
+  return Brep::FromPlanarFaces(DiagBoxFaces(x0, y0, z0, x1, y1, z1, gap, with_top));
+}
+
+bool Has(const std::string& s, const char* needle) { return s.find(needle) != std::string::npos; }
+
+// --- gap-healing -------------------------------------------------------------
+
+void TestHealGappedBoxClosesWithMeasuredSmallestBoundAndClosedFormVolume() {
+  const double gap = 1e-4;
+  const Brep g = DiagBox(0, 0, 0, 2, 2, 2, gap);
+  Check(ReportOpenEdges(g).size() == 8 && !g.raw().IsSolid(), "control: the floating-top box has exactly 8 naked edges and is not a solid");
+  const auto h = HealPlanarOperandGaps(g, 1e-3);
+  Check(h.ok && !h.already_closed, "healing a 1e-4 gap with a 1e-3 upper bound succeeds");
+  // Candidate bounds are max_gap/64 = 1.5625e-5 and /16 = 6.25e-5 (both below the gap: must NOT close it) then /4 = 2.5e-4.
+  Check(std::fabs(h.gap_bound_used - 2.5e-4) < 1e-15, "the SMALLEST bound that closes the shell is used (1.5625e-5 and 6.25e-5 are below the 1e-4 gap)");
+  Check(h.vertices_merged == 4, "exactly the 4 top-rim vertex pairs merge");
+  Check(std::fabs(h.max_vertex_move - gap / 2) < 1e-12, "every moved vertex moves by exactly half the gap (centroid snap)");
+  Check(h.healed.raw().IsSolid() && h.healed.raw().IsValid(), "healed operand is ON_Brep IsSolid and IsValid");
+  const Brep::CheckReport cr = h.healed.Check();
+  Check(cr.IsClean() && cr.is_closed && cr.is_oriented, "healed operand's Check() is clean, closed and oriented");
+  const double expect = 2.0 * 2.0 * (2.0 + gap / 2);  // top sits at the mean of z = 2 and z = 2 + gap
+  Check(std::fabs(h.healed.Volume() - expect) < 1e-9, "healed volume equals the closed form 4 * (2 + gap/2)");
+}
+
+void TestHealRefusalsCarryReasonsAndTheOpenEdges() {
+  const Brep g = DiagBox(0, 0, 0, 2, 2, 2, 1e-3);
+  const auto too_small = HealPlanarOperandGaps(g, 1e-4);
+  Check(!too_small.ok && too_small.reason == BooleanFailureReason::OpenOperand,
+        "a 1e-3 gap with an upper bound of 1e-4 is refused as OpenOperand");
+  Check(too_small.remaining_open_edges.size() == 8, "...naming all 8 naked edges");
+  Check(Has(too_small.message, "could not be healed within gap"), "...with the stated reason in the message");
+  Check(too_small.healed.raw().IsSolid() == g.raw().IsSolid() && ReportOpenEdges(too_small.healed).size() == 8,
+        "...and the returned body is the untouched input (still 8 naked edges)");
+
+  const auto zero = HealPlanarOperandGaps(g, 0.0);
+  Check(!zero.ok && zero.reason == BooleanFailureReason::InvalidTolerance, "max_gap = 0 is refused as InvalidTolerance");
+  const auto nan = HealPlanarOperandGaps(g, std::nan(""));
+  Check(!nan.ok && nan.reason == BooleanFailureReason::InvalidTolerance, "max_gap = NaN is refused as InvalidTolerance");
+
+  // A feature smaller than the bound is never merged away: a 0.01 cube with a
+  // 1e-4 gap and bound 1.0 -> every candidate bound >= 0.0156 would fuse the cube.
+  const Brep tiny = DiagBox(0, 0, 0, 0.01, 0.01, 0.01, 1e-4);
+  const auto fused = HealPlanarOperandGaps(tiny, 1.0);
+  Check(!fused.ok && fused.reason == BooleanFailureReason::OpenOperand, "a cube smaller than every candidate bound is refused, not collapsed");
+  Check(Has(fused.message, "smaller than the bound") || Has(fused.message, "non-planar") || Has(fused.message, "not a closed"),
+        "...with a stated reason (a feature smaller than the bound)");
+  // The same cube with a bound well below its size heals fine.
+  const auto tiny_ok = HealPlanarOperandGaps(tiny, 1e-3);
+  Check(tiny_ok.ok && std::fabs(tiny_ok.healed.Volume() - 1e-4 * (0.01 + 0.5e-4)) < 1e-12,
+        "...while a bound well below the cube size heals it, volume = 1e-4 * (0.01 + gap/2)");
+
+  // Not planar: a bilinear saddle patch (one open, non-planar face).
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 3)};
+  const Brep saddle = Brep::FromSurface(dino8::kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1));
+  const auto np = HealPlanarOperandGaps(saddle, 1e-3);
+  Check(!np.ok && np.reason == BooleanFailureReason::UnsupportedGeometry, "a non-planar open operand is refused as UnsupportedGeometry");
+  Check(Has(np.message, "all-planar"), "...naming the planarity precondition");
+
+  const Brep empty;
+  const auto em = HealPlanarOperandGaps(empty, 1e-3);
+  Check(!em.ok && em.reason == BooleanFailureReason::EmptyOperand, "a faceless operand is refused as EmptyOperand");
+
+  const Brep closed = DiagBox(0, 0, 0, 1, 1, 1);
+  const auto ac = HealPlanarOperandGaps(closed, 1e-3);
+  Check(ac.ok && ac.already_closed && ac.max_vertex_move == 0.0 && std::fabs(ac.healed.Volume() - 1.0) < 1e-12,
+        "an already-closed operand is returned untouched (nothing moved)");
+}
+
+void TestBooleanOfGappedOperandsAfterHealingMatchesInclusionExclusion() {
+  const double gap = 1e-4;
+  const Brep a = DiagBox(0, 0, 0, 2, 2, 2, gap);  // top really at 2 + gap/2 after healing
+  const Brep b = DiagBox(1, 1, 1, 3, 3, 3);
+  const double va = 4.0 * (2.0 + gap / 2), vb = 8.0;
+  const double inter = 1.0 * 1.0 * (1.0 + gap / 2);  // [1,2]x[1,2]x[1, 2 + gap/2]
+
+  BooleanDiagnoseOptions heal;
+  heal.heal_max_gap = 1e-3;
+  double vol[3];
+  const BooleanOp ops[3] = {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference};
+  for (int k = 0; k < 3; ++k) {
+    const BooleanReport r = DiagnoseBrepBoolean(a, b, ops[k], BooleanEngineKind::Planar, heal);
+    Check(r.ok && r.has_result && r.a.healed && !r.b.healed, "with heal_max_gap the Boolean of a gapped operand succeeds, healing only the gapped one");
+    Check(r.a.naked_edges == 8 && r.b.naked_edges == 0, "...and the report keeps the ORIGINAL operands' naked-edge counts (8 and 0)");
+    Check(r.result_open_edges.empty(), "...with a result that has no open edges");
+    Check(r.result.raw().IsSolid() && r.result.raw().IsValid(), "...a valid solid");
+    vol[k] = r.result.Volume();
+  }
+  Check(std::fabs(vol[0] - (va + vb - inter)) < 1e-6, "Union volume = Va + Vb - Vint (closed form)");
+  Check(std::fabs(vol[1] - inter) < 1e-6, "Intersection volume = the analytic overlap box");
+  Check(std::fabs(vol[2] - (va - inter)) < 1e-6, "Difference volume = Va - Vint");
+  Check(std::fabs((vol[0] + vol[1]) - (va + vb)) < 1e-6, "inclusion-exclusion: V(A u B) + V(A n B) = V(A) + V(B)");
+
+  // Negative control: the SAME operands without healing do not come back ok.
+  const BooleanReport raw = DiagnoseBrepBoolean(a, b, BooleanOp::Union, BooleanEngineKind::Planar);
+  Check(!raw.ok, "without healing, the gapped operand's Boolean is NOT reported ok");
+  Check(raw.a.naked_edges == 8, "...and the report says why: operand a has 8 naked edges");
+  // Negative control: a bound below the gap refuses with the heal's reason and runs no engine.
+  BooleanDiagnoseOptions small;
+  small.heal_max_gap = 1e-6;
+  const BooleanReport sm = DiagnoseBrepBoolean(a, b, BooleanOp::Union, BooleanEngineKind::Planar, small);
+  Check(!sm.ok && !sm.has_result && sm.reason == BooleanFailureReason::OpenOperand && Has(sm.message, "operand a"),
+        "a bound below the gap refuses as OpenOperand naming operand a, with no result");
+}
+
+void TestHealedBooleanRandomizedBoxPairsFixedSeed() {
+  std::mt19937 rng(20261104u);
+  auto uni = [&](double lo, double hi) { return std::uniform_real_distribution<double>(lo, hi)(rng); };
+  int checked = 0, disjoint_skipped = 0, healed_pairs = 0;
+  double worst = 0.0;
+  for (int it = 0; it < 60; ++it) {
+    double lo[2][3], hi[2][3];
+    for (int k = 0; k < 2; ++k)
+      for (int d = 0; d < 3; ++d) {
+        const double c = uni(0.0, 2.0), h = uni(0.5, 1.5);
+        lo[k][d] = c - h;
+        hi[k][d] = c + h;
+      }
+    const double gap = uni(2e-5, 4e-4);
+    const bool gap_a = (it % 3) != 1, gap_b = (it % 3) != 0;  // a, b, or both gapped
+    const Brep a = DiagBox(lo[0][0], lo[0][1], lo[0][2], hi[0][0], hi[0][1], hi[0][2], gap_a ? gap : 0.0);
+    const Brep b = DiagBox(lo[1][0], lo[1][1], lo[1][2], hi[1][0], hi[1][1], hi[1][2], gap_b ? gap : 0.0);
+    // Healed tops sit at hi + gap/2.
+    const double ha = hi[0][2] + (gap_a ? gap / 2 : 0.0), hb = hi[1][2] + (gap_b ? gap / 2 : 0.0);
+    double ov = 1.0;
+    ov *= std::max(0.0, std::min(hi[0][0], hi[1][0]) - std::max(lo[0][0], lo[1][0]));
+    ov *= std::max(0.0, std::min(hi[0][1], hi[1][1]) - std::max(lo[0][1], lo[1][1]));
+    ov *= std::max(0.0, std::min(ha, hb) - std::max(lo[0][2], lo[1][2]));
+    const double va = (hi[0][0] - lo[0][0]) * (hi[0][1] - lo[0][1]) * (ha - lo[0][2]);
+    const double vb = (hi[1][0] - lo[1][0]) * (hi[1][1] - lo[1][1]) * (hb - lo[1][2]);
+    if (ov <= 0.0) {
+      ++disjoint_skipped;  // the property below is for overlapping pairs
+      continue;
+    }
+    BooleanDiagnoseOptions o;
+    o.heal_max_gap = 2e-3;
+    const BooleanReport u = DiagnoseBrepBoolean(a, b, BooleanOp::Union, BooleanEngineKind::Planar, o);
+    const BooleanReport n = DiagnoseBrepBoolean(a, b, BooleanOp::Intersection, BooleanEngineKind::Planar, o);
+    const BooleanReport d = DiagnoseBrepBoolean(a, b, BooleanOp::Difference, BooleanEngineKind::Planar, o);
+    if (!(u.ok && n.ok && d.ok)) {
+      std::fprintf(stderr, "iteration %d failed: [%s] [%s] [%s]\n", it, u.message.c_str(), n.message.c_str(), d.message.c_str());
+      Check(false, "every randomized healed pair succeeds");
+      continue;
+    }
+    ++checked;
+    if (u.a.healed || u.b.healed) ++healed_pairs;
+    const double e1 = std::fabs(u.result.Volume() - (va + vb - ov));
+    const double e2 = std::fabs(n.result.Volume() - ov);
+    const double e3 = std::fabs(d.result.Volume() - (va - ov));
+    worst = std::max({worst, e1, e2, e3});
+    Check(e1 < 1e-6 && e2 < 1e-6 && e3 < 1e-6, "healed Union / Intersection / Difference volumes match the closed forms (< 1e-6)");
+    Check(u.result.raw().IsSolid() && n.result.raw().IsSolid() && d.result.raw().IsSolid(), "...and every result is an ON_Brep solid");
+  }
+  std::printf("  [boolean_diag] randomized healed pairs: %d overlapping pairs checked (%d disjoint skipped), %d with a healed operand, worst volume error %.3g\n",
+              checked, disjoint_skipped, healed_pairs, worst);
+  Check(checked >= 15 && healed_pairs >= 15, "the fixed seed yields at least 15 overlapping pairs with a healed operand");
+}
+
+// --- diagnostics ---------------------------------------------------------------
+
+void TestTypedReasonComesStraightFromTheEngineOnAllThreeEngines() {
+  const Brep compound = Brep::Compound({Brep::BoxWelded(0, 0, 0, 1, 1, 1), Brep::BoxWelded(5, 0, 0, 6, 1, 1)});
+  const Brep other = Brep::BoxWelded(0.5, 0.2, 0.2, 2, 0.8, 0.8);
+  struct Case {
+    BooleanEngineKind e;
+    const char* fn;
+  };
+  const Case cases[3] = {{BooleanEngineKind::Planar, "Planar"}, {BooleanEngineKind::Mixed, "Mixed"}, {BooleanEngineKind::General, "General"}};
+  for (const Case& c : cases) {
+    const BooleanReport r = DiagnoseBrepBoolean(compound, other, BooleanOp::SymmetricDifference, c.e);
+    Check(!r.ok && !r.has_result, "a compound operand under SymmetricDifference is reported as a failure with no result");
+    Check(r.typed_at_source && r.reason == BooleanFailureReason::CompoundOperand, "...typed at source as CompoundOperand");
+    Check(Has(r.function_name, c.fn), "...naming the refusing engine");
+  }
+  const BooleanReport x = DiagnoseBrepBoolean(Brep::BoxWelded(0, 0, 0, 1, 1, 1), other, BooleanOp::SymmetricDifference, BooleanEngineKind::General);
+  Check(!x.ok && x.reason == BooleanFailureReason::UnsupportedOperation && x.typed_at_source, "General SymmetricDifference: typed UnsupportedOperation");
+  BooleanDiagnoseOptions bad;
+  bad.tolerance = 0.0;
+  const BooleanReport t = DiagnoseBrepBoolean(Brep::BoxWelded(0, 0, 0, 1, 1, 1), other, BooleanOp::Union, BooleanEngineKind::Planar, bad);
+  Check(!t.ok && t.reason == BooleanFailureReason::InvalidTolerance, "tolerance 0 on the Planar engine: InvalidTolerance");
+}
+
+void TestUntypedRefusalsAreClassifiedFromTheirMessageAndNeverLost() {
+  // Edge-touching union: the planar engine throws its free-text "shared by 3 or more faces".
+  const Brep a = DiagBox(0, 0, 0, 1, 1, 1), b = DiagBox(1, 1, 0, 2, 2, 1);
+  const BooleanReport r = DiagnoseBrepBoolean(a, b, BooleanOp::Union, BooleanEngineKind::Planar);
+  Check(!r.ok && !r.typed_at_source, "edge-touching boxes: a refusal that the engine throws untyped");
+  Check(r.reason == BooleanFailureReason::NonManifoldResult, "...is classified NonManifoldResult from its message");
+  Check(Has(r.message, "3 or more"), "...and the engine's own message is preserved verbatim");
+  // Opting in to non-manifold output turns it into a reported non-manifold edge.
+  BooleanDiagnoseOptions nm;
+  nm.allow_non_manifold_result = true;
+  const BooleanReport ok = DiagnoseBrepBoolean(a, b, BooleanOp::Union, BooleanEngineKind::Planar, nm);
+  Check(ok.ok && ok.has_result, "allow_non_manifold_result: the same union is ok");
+  int nonman = 0;
+  for (const auto& e : ok.result_open_edges)
+    if (e.trim_count >= 3) {
+      ++nonman;
+      Check(std::fabs(e.length - 1.0) < 1e-9, "...the reported non-manifold edge has length 1 (the shared unit edge)");
+    }
+  Check(nonman == 1, "...exactly one non-manifold edge reported");
+
+  // Planar engine on a sphere: an untyped "is not planar" refusal.
+  const BooleanReport cyl = DiagnoseBrepBoolean(Brep::Sphere(Point3d(0, 0, 0), 1.0), a,
+                                                BooleanOp::Union, BooleanEngineKind::Planar);
+  Check(!cyl.ok && cyl.reason == BooleanFailureReason::UnsupportedGeometry && Has(cyl.message, "not planar"),
+        "a sphere fed to the planar engine: UnsupportedGeometry with the verbatim message");
+
+  using dino8::kernel::ClassifyBooleanFailureMessage;
+  Check(ClassifyBooleanFailureMessage("an edge is claimed by 3 or more fragment loops") == BooleanFailureReason::NonManifoldResult, "fragment-loop refusal text -> NonManifoldResult");
+  Check(ClassifyBooleanFailureMessage("Manifold::Status() != NoError") == BooleanFailureReason::EngineFailure, "Manifold status text -> EngineFailure");
+  Check(ClassifyBooleanFailureMessage("the flux capacitor is out of phase") == BooleanFailureReason::Unclassified, "unrecognized text -> Unclassified (never a wrong reason)");
+}
+
+void TestNakedEdgeReportingForOpenOperandsAndResults() {
+  // An open box (top face missing): exactly the 4 top rim edges, each length 1 at z = 1.
+  const Brep open_box = DiagBox(0, 0, 0, 1, 1, 1, 0.0, /*with_top=*/false);
+  const auto edges = ReportOpenEdges(open_box);
+  Check(edges.size() == 4, "an open box reports exactly its 4 rim edges");
+  for (const auto& e : edges) {
+    Check(e.trim_count == 1 && std::fabs(e.length - 1.0) < 1e-9 && std::fabs(e.location.z - 1.0) < 1e-6,
+          "...each a single-trim edge of length 1 lying in the z = 1 plane");
+  }
+  Check(ReportOpenEdges(DiagBox(0, 0, 0, 1, 1, 1)).empty(), "control: a closed box reports no open edge");
+
+  // Fed to an engine: whatever the engine does, the report must not say ok.
+  const Brep closed = DiagBox(0.25, 0.25, 0.25, 0.75, 0.75, 0.75);
+  const BooleanReport r = DiagnoseBrepBoolean(open_box, closed, BooleanOp::Union, BooleanEngineKind::Planar);
+  Check(!r.ok, "a union with an open operand is never reported ok");
+  Check(r.a.naked_edges == 4 && r.b.naked_edges == 0, "...and the operand lists say operand a has the 4 naked edges, operand b none");
+  Check(r.reason == BooleanFailureReason::OpenOperand || r.reason == BooleanFailureReason::OpenResult ||
+            r.reason == BooleanFailureReason::NonManifoldResult,
+        "...with an open-shell reason (OpenOperand / OpenResult / NonManifoldResult), not Unclassified");
+}
+
+void TestMeshEngineReportsStatusAndOpenEdges() {
+  const dino8::kernel::Mesh ma = Brep::BoxWelded(0, 0, 0, 2, 2, 2).TessellateToClosedMesh(2, 2);
+  const dino8::kernel::Mesh mb = Brep::BoxWelded(1, 1, 1, 3, 3, 3).TessellateToClosedMesh(2, 2);
+  const auto ok = DiagnoseMeshBoolean(ma, mb, BooleanOp::Union);
+  Check(ok.ok && ok.manifold_status == "NoError" && ok.open_edges_a == 0 && ok.open_edges_b == 0 && ok.open_edges_result == 0,
+        "two closed box meshes: ok, status NoError, no open edge anywhere");
+  Check(std::fabs(ok.result.Volume() - 15.0) < 1e-3, "...union volume 8 + 8 - 1 = 15");
+
+  // Delete one triangle: exactly 3 open edges (the hole's boundary).
+  dino8::kernel::Mesh holed = ma;
+  holed.raw().m_F.Remove(0);
+  holed.raw().DestroyTopology();
+  const auto bad = DiagnoseMeshBoolean(holed, mb, BooleanOp::Union);
+  Check(bad.open_edges_a == 3 && bad.open_edges_b == 0, "a mesh with one triangle removed reports exactly 3 open edges");
+  Check(!bad.ok, "...and a Boolean on it is not reported ok");
+  Check(bad.reason == BooleanFailureReason::OpenOperand || bad.reason == BooleanFailureReason::OpenResult ||
+            bad.reason == BooleanFailureReason::EngineFailure,
+        "...with a stated open/engine reason");
+  Check(!bad.message.empty() || bad.reason == BooleanFailureReason::OpenResult, "...and a message (or an OpenResult with counts)");
+  std::printf("  [boolean_diag] holed-mesh union: ok=%d reason=%s status=%s open_result=%d msg=%s\n", bad.ok,
+              dino8::kernel::BooleanFailureReasonName(bad.reason), bad.manifold_status.c_str(), bad.open_edges_result, bad.message.c_str());
+}
+
+}  // namespace boolean_diag_tests
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -104029,6 +104348,22 @@ int main() {
 
   RunTest("offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary",
           offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary);
+  RunTest("boolean_diag_tests::TestHealGappedBoxClosesWithMeasuredSmallestBoundAndClosedFormVolume",
+          boolean_diag_tests::TestHealGappedBoxClosesWithMeasuredSmallestBoundAndClosedFormVolume);
+  RunTest("boolean_diag_tests::TestHealRefusalsCarryReasonsAndTheOpenEdges",
+          boolean_diag_tests::TestHealRefusalsCarryReasonsAndTheOpenEdges);
+  RunTest("boolean_diag_tests::TestBooleanOfGappedOperandsAfterHealingMatchesInclusionExclusion",
+          boolean_diag_tests::TestBooleanOfGappedOperandsAfterHealingMatchesInclusionExclusion);
+  RunTest("boolean_diag_tests::TestHealedBooleanRandomizedBoxPairsFixedSeed",
+          boolean_diag_tests::TestHealedBooleanRandomizedBoxPairsFixedSeed);
+  RunTest("boolean_diag_tests::TestTypedReasonComesStraightFromTheEngineOnAllThreeEngines",
+          boolean_diag_tests::TestTypedReasonComesStraightFromTheEngineOnAllThreeEngines);
+  RunTest("boolean_diag_tests::TestUntypedRefusalsAreClassifiedFromTheirMessageAndNeverLost",
+          boolean_diag_tests::TestUntypedRefusalsAreClassifiedFromTheirMessageAndNeverLost);
+  RunTest("boolean_diag_tests::TestNakedEdgeReportingForOpenOperandsAndResults",
+          boolean_diag_tests::TestNakedEdgeReportingForOpenOperandsAndResults);
+  RunTest("boolean_diag_tests::TestMeshEngineReportsStatusAndOpenEdges",
+          boolean_diag_tests::TestMeshEngineReportsStatusAndOpenEdges);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;

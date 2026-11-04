@@ -203,7 +203,8 @@ BooleanFailureReason ClassifyBooleanFailureMessage(const std::string& m) {
   if (Contains(m, "compound")) return BooleanFailureReason::CompoundOperand;
   if (Contains(m, "no faces")) return BooleanFailureReason::EmptyOperand;
   if (Contains(m, "must be non-zero") || Contains(m, "must be nonzero")) return BooleanFailureReason::InvalidDirection;
-  if (Contains(m, "is not planar") || Contains(m, "not a closed") || Contains(m, "closed solid") ||
+  if (Contains(m, "is not planar")) return BooleanFailureReason::UnsupportedGeometry;
+  if (Contains(m, "not a closed") || Contains(m, "closed solid") ||
       Contains(m, "open shell") || Contains(m, "not closed"))
     return BooleanFailureReason::OpenOperand;
   if (Contains(m, "SymmetricDifference") || Contains(m, "not supported") || Contains(m, "unsupported") ||
