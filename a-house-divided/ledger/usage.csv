@@ -1,5 +1,0 @@
-date,ticket,class,estimated_usage,actual_usage,review_defects,rework_count,notes
-2026-11-02,T-008/T-010 core-math (SPEC-001),L,,132180 tokens,0,0,fresh implementer agent; tests first; golden vectors from independent reference
-2026-11-02,T-009/T-010 sim-state (SPEC-002),M,,105403 tokens,0,0,fresh implementer agent; golden hash cross-checked by independent script
-2026-11-02,T-013 data extraction pass 1 (5 battles 30 commanders),M,,183242 tokens,0,0,mid-tier agent; 195 partial 53 unverified 0 verified; 13 regression fixtures
-2026-11-02,T-011/T-012 sim-cli + goldens (SPEC-003),M,,124569 tokens,0,0,fresh implementer agent; cross-platform proof wired in CI
