@@ -2,9 +2,11 @@ ClosedMeshDeviationTracksTolerance
 LoftRationalTangent
 OffsetInPlaneClosedPolygon
 RefusesToCapAPathThatDoublesBack
+Rib
 TestFilletRevolveRimConcaveConeCorners
 TestOffsetRefitUnreachable
 TestSealedAppCylinderVolumesAgainstClosedForm
+TrisToQuads
 bridge_holes
 extra::Sealed
 extrude_along

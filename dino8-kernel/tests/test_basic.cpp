@@ -26007,6 +26007,113 @@ dino8::kernel::Mesh MakeFlatUnitSquareMesh() {
   return m;
 }
 
+// A flat n x n grid of unit cells, every cell split into 2 triangles, is the
+// cleanest possible oracle for the greedy pairing: the n*n cell-diagonal
+// pairs are all unit squares, so a correct TrisToQuads() must find exactly
+// n*n quads, leave 0 triangles, and every quad must be a true square (all
+// four corner cosines 0). Before the shape-aware ranking, every dihedral-0
+// candidate tied and float noise picked an arbitrary winner - a sheared
+// parallelogram across a cell edge could claim triangles a square needed,
+// leaving stranded triangles (12/16 quads + 8 triangles for n = 4) - and
+// a corner-collinear degenerate "quad" was also accepted (the convexity
+// guard only refused a strictly negative turn). The three diagonal
+// patterns (uniform / checkerboard / pseudo-random per cell) and shuffled
+// vs. unshuffled face order cover both the ranking and its independence of
+// input order.
+void TestMeshTrisToQuadsFindsEveryCellSquareOfAFlatGridRegardlessOfDiagonalOrOrder() {
+  using dino8::kernel::Mesh;
+
+  for (int mode = 0; mode < 3; ++mode) {
+    for (const int n : {4, 7, 10}) {
+      for (int shuffled = 0; shuffled < 2; ++shuffled) {
+        unsigned rng = 12345u + static_cast<unsigned>(n) * 7919u + static_cast<unsigned>(mode);
+        auto next = [&rng]() { rng = rng * 1664525u + 1013904223u; return rng >> 16; };
+
+        Mesh m;
+        ON_Mesh& raw = m.raw();
+        for (int j = 0; j <= n; ++j) {
+          for (int i = 0; i <= n; ++i) raw.m_V.Append(ON_3fPoint(static_cast<float>(i), static_cast<float>(j), 0.0f));
+        }
+        std::vector<std::array<int, 3>> tris;
+        for (int j = 0; j < n; ++j) {
+          for (int i = 0; i < n; ++i) {
+            const int v00 = j * (n + 1) + i, v10 = v00 + 1, v01 = v00 + n + 1, v11 = v01 + 1;
+            const bool flip = mode == 0 ? false : mode == 1 ? ((i + j) & 1) != 0 : (next() & 1u) != 0;
+            if (!flip) {
+              tris.push_back({v00, v10, v11});
+              tris.push_back({v00, v11, v01});
+            } else {
+              tris.push_back({v00, v10, v01});
+              tris.push_back({v10, v11, v01});
+            }
+          }
+        }
+        if (shuffled) {
+          for (size_t k = tris.size(); k > 1; --k) std::swap(tris[k - 1], tris[next() % k]);
+        }
+        for (const auto& t : tris) {
+          ON_MeshFace f;
+          f.vi[0] = t[0]; f.vi[1] = t[1]; f.vi[2] = t[2]; f.vi[3] = t[2];
+          raw.m_F.Append(f);
+        }
+        const double area_before = m.Area();
+        const int naked_before = m.Check().naked_edges;
+
+        const int merged = m.TrisToQuads();
+        int quads = 0, triangles = 0;
+        double worst_cos = 0.0;
+        for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+          const ON_MeshFace& f = raw.m_F[fi];
+          if (!f.IsQuad()) { ++triangles; continue; }
+          ++quads;
+          for (int k = 0; k < 4; ++k) {
+            const ON_3dPoint p0(raw.m_V[f.vi[(k + 3) % 4]]), p1(raw.m_V[f.vi[k]]), p2(raw.m_V[f.vi[(k + 1) % 4]]);
+            const ON_3dVector u = p0 - p1, v = p2 - p1;
+            worst_cos = std::max(worst_cos, std::fabs(ON_DotProduct(u, v)) / (u.Length() * v.Length()));
+          }
+        }
+        char label[160];
+        std::snprintf(label, sizeof label, "flat grid n=%d diagonals=%d shuffled=%d", n, mode, shuffled);
+        const std::string tag(label);
+        Check(merged == n * n, (tag + ": returns exactly n*n merges (one per cell)").c_str());
+        Check(quads == n * n && triangles == 0, (tag + ": n*n quads and no stranded triangle").c_str());
+        Check(worst_cos < 1e-9, (tag + ": every quad is a true unit square (all corner cosines 0)").c_str());
+        Check(std::fabs(m.Area() - area_before) < 1e-9, (tag + ": total area exactly unchanged").c_str());
+        Check(m.Check().naked_edges == naked_before, (tag + ": outer boundary unchanged").c_str());
+      }
+    }
+  }
+}
+
+// A merged "quad" with a 180deg corner (one vertex sitting exactly on the
+// straight line between its two neighbours) is really a triangle with a
+// spare vertex - a degenerate valence-2 corner once it becomes a SubD
+// control cage face. The convexity guard used to refuse only a strictly
+// negative turn, so this collinear pair merged. Triangles
+// (a,b,c) = (0,0),(0,1),(-1,0) and (b,a,d) = (0,1),(0,0),(1,0) share edge
+// a-b; the merged quad (a,d,b,c) has c, a, d collinear along y = 0.
+void TestMeshTrisToQuadsRefusesCollinearCornerQuad() {
+  using dino8::kernel::Mesh;
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));    // 0 = a
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));    // 1 = b
+  raw.m_V.Append(ON_3fPoint(-1, 0, 0));   // 2 = c
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));    // 3 = d
+  ON_MeshFace f0, f1;
+  f0.vi[0] = 0; f0.vi[1] = 1; f0.vi[2] = 2; f0.vi[3] = 2;  // (a, b, c)
+  f1.vi[0] = 1; f1.vi[1] = 0; f1.vi[2] = 3; f1.vi[3] = 3;  // (b, a, d)
+  raw.m_F.Append(f0);
+  raw.m_F.Append(f1);
+  Check(m.FaceCount() == 2 && m.VertexCount() == 4, "sanity: 2 triangles over 4 vertices");
+  Check(std::fabs(m.Area() - 1.0) < 1e-12, "sanity: the two triangles tile a 2x1 triangle of area 1");
+
+  const int merged = m.TrisToQuads();
+  Check(merged == 0, "the collinear-corner merge is refused (0 quads created)");
+  Check(m.FaceCount() == 2 && !m.raw().m_F[0].IsQuad() && !m.raw().m_F[1].IsQuad(), "both triangles untouched");
+}
+
 void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
   using dino8::kernel::Point3d;
 
@@ -105596,6 +105703,8 @@ int main() {
   RunTest("TestMeshTrisToQuadsRefusesNonConvexMerge", TestMeshTrisToQuadsRefusesNonConvexMerge);
   RunTest("TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall", TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall);
   RunTest("TestMeshTrisToQuadsRefusesCoincidentApexes", TestMeshTrisToQuadsRefusesCoincidentApexes);
+  RunTest("TestMeshTrisToQuadsFindsEveryCellSquareOfAFlatGridRegardlessOfDiagonalOrOrder", TestMeshTrisToQuadsFindsEveryCellSquareOfAFlatGridRegardlessOfDiagonalOrOrder);
+  RunTest("TestMeshTrisToQuadsRefusesCollinearCornerQuad", TestMeshTrisToQuadsRefusesCollinearCornerQuad);
   RunTest("TestMeshOffsetMovesVerticesAlongExactVertexNormal", TestMeshOffsetMovesVerticesAlongExactVertexNormal);
   RunTest("TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector", TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector);
   RunTest("TestMeshThickenBuildsExactUnitCubeFromFlatSquare", TestMeshThickenBuildsExactUnitCubeFromFlatSquare);
