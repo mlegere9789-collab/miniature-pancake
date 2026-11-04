@@ -1,5 +1,16 @@
-add_executable(dino8_kernel_tests test_basic.cpp)
+add_executable(dino8_kernel_tests test_basic.cpp test_registry.cpp)
 target_link_libraries(dino8_kernel_tests PRIVATE dino8_kernel)
+
+# Every tests/extra/*.cpp is compiled into the test binary and self-registers
+# (D8_EXTRA_TEST in test_registry.h), so a new test is its own small
+# translation unit and needs no edit to the ~99,000-line test_basic.cpp.
+# CONFIGURE_DEPENDS re-runs the glob at build time, so a new file is picked up
+# by a plain `ninja` without re-running cmake by hand. See README_extra.md.
+file(GLOB DINO8_EXTRA_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/extra/*.cpp)
+if(DINO8_EXTRA_TEST_SOURCES)
+  target_sources(dino8_kernel_tests PRIVATE ${DINO8_EXTRA_TEST_SOURCES})
+endif()
+target_include_directories(dino8_kernel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # The capped-Loft regression (TestLoftPlanarCapsMeshClosedAndVolumeExact)
 # checks what the APP's mesher (dino8-app's face-by-face BrepMesher, behind
