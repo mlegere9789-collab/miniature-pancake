@@ -113,6 +113,19 @@ class ContinuityPickCommand : public Command {
     options[1].value = Sig3(req_.angle_tol * 180.0 / 3.14159265358979323846);
     options[2].value = Sig3(req_.curv_tol);
   }
+  // A `name=value` token typed while the curves are still being selected (`Loft Cap=No` with nothing preselected): the
+  // engine hands every token that is not one of this command's options (Continuity / AngleTol / CurvTol) to OnText, where
+  // the base class used to drop it silently, so Loft's Cap= / Style= were honoured only with a preselection. Kept for
+  // OnObjects, which merges it with the tokens still pending there.
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (want != Want::Objects || t.find('=') == std::string::npos) return;
+    std::string err;
+    if (ParseContinuityToken(t, req_, err)) {
+      if (!err.empty()) ctx.Warn(name_ + ": " + err);
+      return;
+    }
+    extra_.push_back(t);
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     while (std::optional<std::string> t = ctx.Engine().TakePendingInput()) {
       std::string err;

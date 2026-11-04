@@ -13139,7 +13139,7 @@ qca_has() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; th
 qca_hasnot() { local blk; blk="$(qcablock "$1")"; if grep -qF -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
 qca_objs() { local blk n; blk="$(qcablock "$1")"; n="$({ grep -cE "^history: Object [0-9]+ \(" <<<"$blk" || true; })"; if [ "$n" = "$2" ]; then echo "ok   $3 ($n object(s))"; else echo "FAIL $3 ('$n' object(s), expected $2)"; fail=1; fi; }
 # the case blocks must exist at all (a renamed marker would otherwise make every qca_hasnot pass vacuously)
-for QCA_CASE in scale_forgive scale_replaced two_vases; do
+for QCA_CASE in scale_forgive scale_replaced two_vases sweep_undo loft_typed_cap loft_typed_style loft_pre_cap; do
   if [ -n "$(qcablock "$QCA_CASE")" ]; then echo "ok   QCA_block_$QCA_CASE: the case's output was found"; else echo "FAIL QCA_block_$QCA_CASE: no output between the markers"; fail=1; fi
 done
 # Sweep1: a refused ScaleX must not be forgiven by a later valid ScaleY
@@ -13152,5 +13152,13 @@ qca_objs scale_replaced 3 "QCA_scale_replaced: rail, section and the swept surfa
 # ToSubD of two different curved-profile revolves: the message says that two solids took the cage and that the figures are the last one's
 qca_has two_vases "2 solids took the curved-profile revolve cage, the figures that follow are those of the last one: curved-profile revolve cage (profile of" "QCA_two_vases: ToSubD of two vases says two solids took the curved-profile cage and whose figures follow"
 qca_objs two_vases 6 "QCA_two_vases: two curves, two solids and two SubDs"
+# Sweep1: a refused per-axis scale opens no (empty) undo step, so Undo reverts the previous real edit (the section's name)
+qca_hasnot sweep_undo "name 'QSec'" "QCA_sweep_undo: Undo after a refused ScaleX sweep reverts the previous edit instead of an empty step"
+qca_has sweep_undo "name 'QRail'" "QCA_sweep_undo: ...and only that edit (the rail keeps its name)"
+# Loft: Cap= / Style= typed before the curves are selected are honoured, as with a preselection
+qca_has loft_typed_cap "uncapped (Cap=No)" "QCA_loft_typed_cap: 'Loft Cap=No' typed with nothing preselected leaves the surface uncapped"
+qca_hasnot loft_typed_cap "end caps added" "QCA_loft_typed_cap: ...and adds no end caps"
+qca_has loft_typed_style "(degree 1 in the loft direction)" "QCA_loft_typed_style: 'Loft Style=Straight' typed with nothing preselected lofts linearly"
+qca_has loft_pre_cap "uncapped (Cap=No)" "QCA_loft_pre_cap: control, the preselected Cap=No is uncapped"
 
 exit $fail

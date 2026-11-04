@@ -62,3 +62,55 @@ SelAll
 ToSubD
 SelAll
 List
+
+# --- Sweep1 ScaleX with the section NOT at the rail start is refused after the undo step was opened: the empty step made the
+# next Undo do nothing (the section kept the name given just before). Undo must revert that SetObjectName.
+New
+QCABEGIN_sweep_undo
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName QRail
+Circle 0,0,5 1
+SelLast
+SetObjectName QSec
+SelNone
+SelName QRail
+Sweep1 ScaleX=1,2
+SelName QSec
+Enter
+Undo
+SelAll
+List
+
+# --- Loft options typed before the curves are selected (nothing preselected) were dropped silently: Cap=No and Style=Straight
+# only worked with a preselection.
+New
+QCABEGIN_loft_typed_cap
+Circle 0,0,0 3
+Circle 0,0,10 2
+SelNone
+Loft Cap=No
+SelAll
+Enter
+SelAll
+List
+New
+QCABEGIN_loft_typed_style
+Circle 0,0,0 3
+Circle 0,0,10 2
+Circle 0,0,20 3
+SelNone
+Loft Style=Straight Cap=No
+SelAll
+Enter
+SelAll
+List
+# control: the same with a preselection (always worked)
+New
+QCABEGIN_loft_pre_cap
+Circle 0,0,0 3
+Circle 0,0,10 2
+SelAll
+Loft Cap=No
+SelAll
+List

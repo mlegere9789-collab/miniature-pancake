@@ -512,7 +512,8 @@ class Sweep1Command : public Command {
       ctx.Print("Sweep1: no surface created - " + refusal);
       return;
     }
-    ctx.Doc().BeginChange("Sweep1");
+    // The undo step opens only when something is added (below): a refused scaled sweep builds nothing, and an EMPTY step
+    // would make the user's next Undo appear to do nothing.
     // A single cross-section is the kernel's own exact Brep::Sweep1 case
     // (rotation-minimizing-frame transport + skin) - use it rather than
     // this file's own approximate RMF-loft-and-fit construction below
@@ -529,6 +530,7 @@ class Sweep1Command : public Command {
       if (cap_) rec.num["cap"] = 1.0;
       RecordAxisScale(rec);
       if (std::optional<SceneObject> exact = RebuildSweep1(ctx, profiles.front(), rail, rec)) {
+        ctx.Doc().BeginChange("Sweep1");
         const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
         if (rail_id_ && !profile_ids_.empty()) RecordHistoryIfEnabled(ctx, new_id, "Sweep1", {*rail_id_, profile_ids_.front()}, rec.num);
         ctx.Print("Sweep1: exact kernel sweep (rotation-minimizing frames)");
@@ -560,6 +562,7 @@ class Sweep1Command : public Command {
       std::vector<const kernel::NurbsCurve*> ptrs;
       for (const kernel::NurbsCurve& c : profiles) ptrs.push_back(&c);
       if (std::optional<SceneObject> exact = RebuildSweep1Sections(ctx, ptrs, rail, rec, multi_reason)) {
+        ctx.Doc().BeginChange("Sweep1");
         const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
         // History: {rail, section 1, section 2, ...} - the same order UpdateHistory rebuilds from.
         if (rail_id_ && profile_ids_.size() == profiles.size()) {
@@ -615,6 +618,7 @@ class Sweep1Command : public Command {
       for (const Vector3d& l : local) row.push_back(frames[static_cast<size_t>(j)].Place(l));
       rows.push_back(row);
     }
+    ctx.Doc().BeginChange("Sweep1");
     ctx.Doc().Add(SceneObject::MakeSurface(SurfaceFromRows(rows, closed_profile, wrap)));
     ctx.Print("Sweep1: " + std::to_string(profiles.size()) + " section(s) along " + std::to_string(nrows) + " rail stations" + (wrap ? ", closed" : ""));
   }
