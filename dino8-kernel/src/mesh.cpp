@@ -7459,9 +7459,18 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
   struct Candidate {
     int face_a, face_b;
     int q0, q1, q2, q3;
-    double score;
+    double score;       // dihedral angle (radians) between the two triangles
+    long long band;     // score quantized to kDihedralBand: the primary sort key
+    double shape;       // largest |cos(corner angle)| of the merged quad: 0 = a perfect rectangle
   };
   std::vector<Candidate> candidates;
+  // Two merges whose dihedral angles differ by less than this are "equally
+  // flat" for ranking purposes (float32 vertex storage alone makes a
+  // coplanar pair's computed angle wander by ~1e-7), so the SECOND key -
+  // how rectangular the merged quad is - decides between them instead of
+  // an arbitrary float-noise winner.
+  constexpr double kDihedralBand = 1e-5;
+  constexpr double kStrictConvexSine = 1e-6;  // sin(turn) at or below this = collinear/reflex corner
   const double max_dihedral_rad = std::max(0.0, max_dihedral_deg) * ON_PI / 180.0;
 
   for (const auto& [edge, faces] : tri_faces_of_edge) {
@@ -7499,20 +7508,44 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
     const int q[4] = {a, d, b, c};
     Vector3d qn = ni + nj;
     if (!qn.Unitize()) continue;
+    // Every corner must be STRICTLY convex: a corner whose two edges are
+    // collinear (a 180deg "corner" - the merged quad is really a triangle
+    // with an extra vertex sitting on one side) used to pass this check,
+    // since only a strictly negative turn was refused. Such a quad is a
+    // degenerate valence-2 corner in any SubD cage built from it, so it is
+    // refused here the same way a reflex corner is. `shape` is the largest
+    // |cos(corner)| over the 4 corners (0 for a perfect rectangle).
     bool convex = true;
+    double shape = 0.0;
     for (int k = 0; k < 4 && convex; ++k) {
       const Point3d p0(mesh_.m_V[q[(k + 3) % 4]]);
       const Point3d p1(mesh_.m_V[q[k]]);
       const Point3d p2(mesh_.m_V[q[(k + 1) % 4]]);
-      const Vector3d cr = ON_CrossProduct(p1 - p0, p2 - p1);
-      if (ON_DotProduct(cr, qn) < -tolerance::kZeroVector) convex = false;
+      const Vector3d e0 = p1 - p0;
+      const Vector3d e1 = p2 - p1;
+      const double l0 = e0.Length();
+      const double l1 = e1.Length();
+      if (!(l0 > 0.0) || !(l1 > 0.0)) { convex = false; break; }
+      const Vector3d cr = ON_CrossProduct(e0, e1);
+      const double sin_turn = ON_DotProduct(cr, qn) / (l0 * l1);
+      if (sin_turn <= kStrictConvexSine) { convex = false; break; }
+      shape = std::max(shape, std::fabs(ON_DotProduct(e0, e1)) / (l0 * l1));
     }
     if (!convex) continue;
 
-    candidates.push_back({fi, fj, q[0], q[1], q[2], q[3], dihedral});
+    candidates.push_back({fi, fj, q[0], q[1], q[2], q[3], dihedral,
+                          static_cast<long long>(std::floor(dihedral / kDihedralBand)), shape});
   }
 
-  std::sort(candidates.begin(), candidates.end(), [](const Candidate& x, const Candidate& y) { return x.score < y.score; });
+  // Best first: flattest dihedral band, then the most rectangular quad,
+  // then face indices - the last key makes the result independent of
+  // std::sort's unspecified order among otherwise-equal candidates.
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate& x, const Candidate& y) {
+    if (x.band != y.band) return x.band < y.band;
+    if (x.shape != y.shape) return x.shape < y.shape;
+    if (x.face_a != y.face_a) return x.face_a < y.face_a;
+    return x.face_b < y.face_b;
+  });
 
   std::vector<char> consumed(static_cast<size_t>(n), 0);
   std::vector<char> absorbed(static_cast<size_t>(n), 0);
