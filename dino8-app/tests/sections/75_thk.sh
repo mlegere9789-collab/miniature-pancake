@@ -71,3 +71,32 @@ if [ -n "$THK_V1" ] && [ -n "$THK_V2" ] && awk -v a="$THK_V1" -v b="$THK_V2" 'BE
 thklacks bump_fold "thickened by" "THK_bump_fold (negative control): Thickness=5 is refused (no 'thickened by' line)"
 thkhas bump_fold "no eligible single-face sheet" "THK_bump_fold: ...the command reports nothing was thickened"
 thkhas bump_fold "is not closed" "THK_bump_fold: ...and the sheet stays an open sheet (Volume still 'not closed')"
+
+# ---- curved sheets: closed-form shell volumes. A positive and a negative distance go to opposite sides of the sheet (the
+# sign follows the surface's own normal, which is not assumed here), so the pair must be {outer shell, inner shell} in
+# either order. Mesh volume of a curved body is a chord-tolerance polyhedron: +-3%.
+thkpair() { # NAME EXPECT_OUT EXPECT_IN DESC
+  local vp vn; vp="$(thkvol "$1_pos")"; vn="$(thkvol "$1_neg")"
+  if [ -n "$vp" ] && [ -n "$vn" ] && awk -v p="$vp" -v n="$vn" -v o="$2" -v i="$3" 'function ok(a,b){d=a-b;if(d<0)d=-d;return d<=0.03*b} BEGIN{exit !((ok(p,o)&&ok(n,i))||(ok(p,i)&&ok(n,o)))}'; then
+    thk_ok "$4: +0.2 and -0.2 give the outer ($2) and inner ($3) shell volumes, one each (measured $vp / $vn)"
+  else thk_bad "$4: +0.2 / -0.2 volumes are not {$2, $3} (measured '${vp:-none}' / '${vn:-none}')"; fi
+}
+CYL_OUT="$(awk 'BEGIN{pi=3.14159265358979; print pi*3*(2.2^2-2^2)}')"; CYL_IN="$(awk 'BEGIN{pi=3.14159265358979; print pi*3*(2^2-1.8^2)}')"
+CYL_SYM="$(awk 'BEGIN{pi=3.14159265358979; print pi*3*(2.2^2-1.8^2)}')"
+for c in cyl cylp; do
+  thklacks ${c}_pos "is not closed" "THK_${c}_pos: the thickened cylinder wall is a closed solid"
+  thklacks ${c}_neg "is not closed" "THK_${c}_neg: the negative-distance thickened cylinder wall is a closed solid"
+  thklacks ${c}_sym "is not closed" "THK_${c}_sym: the symmetric thickened cylinder wall is a closed solid"
+done
+thkpair cyl "$CYL_OUT" "$CYL_IN" "THK_cyl (r=2, h=3, full turn: pi*h*((r+t)^2-r^2) and pi*h*(r^2-(r-t)^2))"
+thkpair cylp "$(awk -v v=$CYL_OUT 'BEGIN{print v*0.75}')" "$(awk -v v=$CYL_IN 'BEGIN{print v*0.75}')" "THK_cylp (270 degree wall: 3/4 of the full-turn shells)"
+thkapprox "$(thkvol cyl_sym)" "$CYL_SYM" 0.03 "THK_cyl_sym: symmetric 0.4 = pi*h*((r+0.2)^2-(r-0.2)^2)"
+thkapprox "$(thkvol cylp_sym)" "$(awk -v v=$CYL_SYM 'BEGIN{print v*0.75}')" 0.03 "THK_cylp_sym: symmetric 0.4 on the 270 degree wall = 3/4 of the full-turn value"
+# sphere zone R=3 between polar angles 30 and 60 degrees: shell volume = 2*pi/3 * (R2^3 - R1^3) * (cos 30 - cos 60)
+SPH_C="$(awk 'BEGIN{print cos(30*3.14159265358979/180)-cos(60*3.14159265358979/180)}')"
+SPH_OUT="$(awk -v c=$SPH_C 'BEGIN{pi=3.14159265358979; print 2*pi/3*(3.2^3-3^3)*c}')"; SPH_IN="$(awk -v c=$SPH_C 'BEGIN{pi=3.14159265358979; print 2*pi/3*(3^3-2.8^3)*c}')"
+SPH_SYM="$(awk -v c=$SPH_C 'BEGIN{pi=3.14159265358979; print 2*pi/3*(3.2^3-2.8^3)*c}')"
+thklacks sph_pos "is not closed" "THK_sph_pos: the thickened spherical zone is a closed solid"
+thklacks sph_neg "is not closed" "THK_sph_neg: the negative-distance thickened spherical zone is a closed solid"
+thkpair sph "$SPH_OUT" "$SPH_IN" "THK_sph (R=3 zone 30..60 degrees: 2pi/3*(R2^3-R1^3)*(cos30-cos60))"
+thkapprox "$(thkvol sph_sym)" "$SPH_SYM" 0.03 "THK_sph_sym: symmetric 0.4 = 2pi/3*(3.2^3-2.8^3)*(cos30-cos60)"

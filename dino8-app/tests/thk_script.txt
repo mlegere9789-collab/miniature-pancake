@@ -194,3 +194,170 @@ SelAll
 Volume
 SelAll
 What
+
+# ===== curved sheets: exact cylinder / sphere homothety offsets (closed forms in 75_thk.sh) =====
+New
+THKBEGIN_cyl_pos
+Line 2,0,0 2,0,3
+SelLast
+Revolve Angle=360
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=0.2
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_cyl_neg
+Line 2,0,0 2,0,3
+SelLast
+Revolve Angle=360
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=-0.2
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_cyl_sym
+Line 2,0,0 2,0,3
+SelLast
+Revolve Angle=360
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=0.4
+Symmetric=Yes
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_cylp_pos
+Line 2,0,0 2,0,3
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=0.2
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_cylp_neg
+Line 2,0,0 2,0,3
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=-0.2
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_cylp_sym
+Line 2,0,0 2,0,3
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=0.4
+Symmetric=Yes
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_sph_pos
+Arc 1.5,0,2.598076 2.121320,0,2.121320 2.598076,0,1.5
+SelLast
+Revolve Angle=360
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=0.2
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_sph_neg
+Arc 1.5,0,2.598076 2.121320,0,2.121320 2.598076,0,1.5
+SelLast
+Revolve Angle=360
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=-0.2
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_sph_sym
+Arc 1.5,0,2.598076 2.121320,0,2.121320 2.598076,0,1.5
+SelLast
+Revolve Angle=360
+0,0,0
+0,0,1
+SelID 1
+Delete
+SelNone
+Thicken
+Thickness=0.4
+Symmetric=Yes
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
