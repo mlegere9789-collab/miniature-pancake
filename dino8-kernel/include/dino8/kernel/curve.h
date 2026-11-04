@@ -9,6 +9,7 @@
 
 #include "dino8/kernel/tolerance.h"
 #include "dino8/kernel/types.h"
+#include "dino8/kernel/units.h"
 
 namespace dino8::kernel {
 
@@ -2084,6 +2085,23 @@ class NurbsCurve {
   // actually has.
   static Result LoadIges(const std::string& path, NurbsCurve& out);
 
+  // Unit-aware IGES. SaveIges(path, units) writes the same Type 126 file but
+  // DECLARES `units` in the Global section (parameter 14 units flag and
+  // parameter 15 unit name: 1 IN, 2 MM, 3 + name "YARD" for yards, 4 FT,
+  // 5 MI, 6 M, 7 KM, 9 MICRON, 10 CM): the curve's coordinates are written
+  // as stored, i.e. they are taken to already be measured in `units`.
+  // UnitSystem::None cannot be declared and fails. SaveIges(path) above is
+  // SaveIges(path, UnitSystem::Millimeters).
+  Result SaveIges(const std::string& path, UnitSystem units) const;
+  // Reads the Global-section unit declaration and scales every coordinate
+  // from the file's unit to `target` (UnitSystem::None = leave coordinates
+  // as stored). *file_units (optional) receives the declared unit. Refused
+  // with Result::Failed and a reason in *error (optional): a missing
+  // units flag, flags 0/8/11 (mils, microinches), flag 3 with a name other
+  // than YARD/YD. When `target` is None no declaration is required.
+  static Result LoadIges(const std::string& path, NurbsCurve& out, UnitSystem target, UnitSystem* file_units = nullptr,
+                         std::string* error = nullptr);
+
   // Writes this curve as a single real ISO-10303-21 (STEP) physical file -
   // a minimal, single-curve, Document-free file closing the STEP half of
   // this kernel's own "App-independent (kernel library) STEP/IGES/PLY/DXF
@@ -2131,6 +2149,28 @@ class NurbsCurve {
   // knot-multiplicity list implies an untrustworthy (capped at 100000)
   // expansion.
   static Result LoadStep(const std::string& path, NurbsCurve& out);
+
+  // Unit-aware STEP. SaveStep(path, units) additionally writes a real
+  // length-unit context: an SI_UNIT (millimetre, centimetre, metre,
+  // kilometre, micrometre) or a CONVERSION_BASED_UNIT (INCH, FOOT, YARD,
+  // MILE, each through a LENGTH_MEASURE_WITH_UNIT in millimetres) referenced
+  // from a GLOBAL_UNIT_ASSIGNED_CONTEXT, the curve being stored as stated
+  // (already measured in `units`). UnitSystem::None fails. SaveStep(path)
+  // above is SaveStep(path, UnitSystem::Millimeters).
+  Result SaveStep(const std::string& path, UnitSystem units) const;
+  // Reads the file's declared length unit (the LENGTH_UNIT entities
+  // referenced by GLOBAL_UNIT_ASSIGNED_CONTEXT; SI prefixes and
+  // CONVERSION_BASED_UNIT through its LENGTH_MEASURE_WITH_UNIT) and scales
+  // the curve to `target` (None = as stored; then no declaration is
+  // required). *file_units receives the matching UnitSystem (None when the
+  // declared unit has no UnitSystem equivalent; it still scales by its
+  // metre value). Refused with a reason in *error: no declared length unit
+  // while `target` is not None, two contexts declaring different length
+  // units, a length unit that is not a metre-based SI_UNIT or a
+  // CONVERSION_BASED_UNIT onto one, a conversion value that is not finite
+  // and positive.
+  static Result LoadStep(const std::string& path, NurbsCurve& out, UnitSystem target, UnitSystem* file_units = nullptr,
+                         std::string* error = nullptr);
 
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }

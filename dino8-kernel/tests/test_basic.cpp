@@ -97504,6 +97504,400 @@ void TestSurfaceFilletRefusesWithReasonsNeverAPatch() {
 
 }  // namespace surface_fillet_tests
 
+// ---------------------------------------------------------------------------
+// Unit-aware IGES / STEP curve exchange (units.h; NurbsCurve::SaveIges/
+// LoadIges/SaveStep/LoadStep with a UnitSystem). Oracles are independent of
+// the implementation: the published unit definitions (1 in = 25.4 mm exactly,
+// 1 ft = 12 in, 1 yd = 3 ft, 1 mile = 5280 ft), the IGES 5.3 units-flag table
+// written out by hand below, and hand-written IGES / STEP fixture text.
+// ---------------------------------------------------------------------------
+namespace units_exchange_tests {
+
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::Result;
+using dino8::kernel::UnitSystem;
+
+std::string ReadAll(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+void WriteAll(const std::string& path, const std::string& text) {
+  std::ofstream o(path, std::ios::binary);
+  o << text;
+}
+
+std::vector<std::string> SplitLines(const std::string& t) {
+  std::vector<std::string> v;
+  std::string cur;
+  for (char c : t) {
+    if (c == '\n') { v.push_back(cur); cur.clear(); }
+    else cur += c;
+  }
+  if (!cur.empty()) v.push_back(cur);
+  return v;
+}
+
+// The Global section as one string (column-72 padding stripped per card).
+std::string IgesGlobal(const std::string& text) {
+  std::string g;
+  for (const std::string& l : SplitLines(text)) {
+    if (l.size() >= 73 && l[72] == 'G') {
+      std::string c = l.substr(0, 72);
+      while (!c.empty() && c.back() == ' ') c.pop_back();
+      g += c;
+    }
+  }
+  return g;
+}
+
+// Replaces `from` by `to` inside the Global section and rewraps it into
+// 72-column G cards; false if `from` is not there.
+bool PatchIgesGlobal(const std::string& path, const std::string& from, const std::string& to) {
+  const std::string text = ReadAll(path);
+  std::string g = IgesGlobal(text);
+  const size_t at = g.find(from);
+  if (at == std::string::npos) return false;
+  g.replace(at, from.size(), to);
+  std::string out;
+  bool emitted = false;
+  for (const std::string& l : SplitLines(text)) {
+    if (l.size() >= 73 && l[72] == 'G') {
+      if (emitted) continue;
+      emitted = true;
+      int seq = 1;
+      for (size_t i = 0; i < g.size(); i += 72, ++seq) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%-72sG%7d", g.substr(i, 72).c_str(), seq);
+        out += buf;
+        out += "\n";
+      }
+    } else {
+      out += l + "\n";
+    }
+  }
+  WriteAll(path, out);
+  return true;
+}
+
+NurbsCurve MakeLine123() {
+  ON_NurbsCurve nc;
+  nc.Create(3, false, 2, 2);
+  nc.SetCV(0, ON_3dPoint(0, 0, 0));
+  nc.SetCV(1, ON_3dPoint(1, 2, 3));
+  nc.SetKnot(0, 0.0);
+  nc.SetKnot(1, 1.0);
+  NurbsCurve c;
+  c.raw() = nc;
+  return c;
+}
+
+NurbsCurve MakeCircle(double r) {
+  const ON_Circle oc(ON_Plane(ON_3dPoint(2, 3, 4), ON_3dVector(0, 0, 1)), r);
+  ON_NurbsCurve nf;
+  oc.GetNurbForm(nf);
+  NurbsCurve c;
+  c.raw() = nf;
+  return c;
+}
+
+ON_3dPoint EndPoint(const NurbsCurve& c) {
+  ON_3dPoint p;
+  c.raw().GetCV(c.raw().CVCount() - 1, p);
+  return p;
+}
+
+bool Near(double a, double b, double rel) { return std::fabs(a - b) <= rel * std::max(1.0, std::fabs(b)); }
+
+struct UnitRow {
+  UnitSystem u;
+  double metres;     // published definition, independent of MetersPerUnit()
+  int iges_flag;     // IGES 5.3 table (3 = unit named in parameter 15)
+  const char* iges_name;
+  const char* step_marker;
+};
+const UnitRow kUnits[] = {
+    {UnitSystem::Millimeters, 0.001, 2, "MM", "SI_UNIT(.MILLI.,.METRE.)"},
+    {UnitSystem::Centimeters, 0.01, 10, "CM", "SI_UNIT(.CENTI.,.METRE.)"},
+    {UnitSystem::Meters, 1.0, 6, "M", "SI_UNIT($,.METRE.)"},
+    {UnitSystem::Kilometers, 1000.0, 7, "KM", "SI_UNIT(.KILO.,.METRE.)"},
+    {UnitSystem::Microns, 1e-6, 9, "MICRON", "SI_UNIT(.MICRO.,.METRE.)"},
+    {UnitSystem::Inches, 25.4 / 1000.0, 1, "IN", "CONVERSION_BASED_UNIT('INCH'"},
+    {UnitSystem::Feet, 12 * 25.4 / 1000.0, 4, "FT", "CONVERSION_BASED_UNIT('FOOT'"},
+    {UnitSystem::Yards, 36 * 25.4 / 1000.0, 3, "YARD", "CONVERSION_BASED_UNIT('YARD'"},
+    {UnitSystem::Miles, 63360 * 25.4 / 1000.0, 5, "MI", "CONVERSION_BASED_UNIT('MILE'"},
+};
+
+void TestUnitScaleFactorsMatchPublishedDefinitions() {
+  using namespace dino8::kernel;
+  for (const UnitRow& r : kUnits) Check(Near(MetersPerUnit(r.u), r.metres, 1e-12), "MetersPerUnit matches the published definition of the unit");
+  Check(Near(UnitScaleFactor(UnitSystem::Inches, UnitSystem::Millimeters), 25.4, 1e-12), "1 in = 25.4 mm");
+  Check(Near(UnitScaleFactor(UnitSystem::Feet, UnitSystem::Inches), 12.0, 1e-12), "1 ft = 12 in");
+  Check(Near(UnitScaleFactor(UnitSystem::Yards, UnitSystem::Feet), 3.0, 1e-12), "1 yd = 3 ft");
+  Check(Near(UnitScaleFactor(UnitSystem::Miles, UnitSystem::Feet), 5280.0, 1e-12), "1 mile = 5280 ft");
+  Check(Near(UnitScaleFactor(UnitSystem::Meters, UnitSystem::Microns), 1e6, 1e-12), "1 m = 1e6 micron");
+  Check(UnitScaleFactor(UnitSystem::None, UnitSystem::Meters) == 0.0 && UnitScaleFactor(UnitSystem::Meters, UnitSystem::None) == 0.0 &&
+            MetersPerUnit(UnitSystem::None) == 0.0,
+        "UnitSystem::None has no length: every factor involving it is 0");
+}
+
+void TestIgesWritesAndReadsEveryUnitDeclaration() {
+  const NurbsCurve line = MakeLine123();
+  for (const UnitRow& r : kUnits) {
+    const std::string path = "dino8_units_iges_decl.igs";
+    Check(line.SaveIges(path, r.u) == Result::Ok, "SaveIges(path, unit) succeeds");
+    const std::string g = IgesGlobal(ReadAll(path));
+    const std::string want = ",1.0," + std::to_string(r.iges_flag) + "," + std::to_string(std::strlen(r.iges_name)) + "H" + r.iges_name + ",";
+    Check(g.find(want) != std::string::npos, "the Global section carries the IGES 5.3 units flag and unit name for this unit");
+    NurbsCurve back;
+    UnitSystem fu = UnitSystem::None;
+    std::string err;
+    Check(NurbsCurve::LoadIges(path, back, r.u, &fu, &err) == Result::Ok, "LoadIges into the file's own unit succeeds");
+    Check(fu == r.u, "the declared unit read back equals the unit written");
+    const ON_3dPoint e = EndPoint(back);
+    Check(Near(e.x, 1.0, 1e-9) && Near(e.y, 2.0, 1e-9) && Near(e.z, 3.0, 1e-9), "same-unit load leaves coordinates untouched");
+    std::remove(path.c_str());
+  }
+  // The pre-existing one-argument SaveIges still declares millimetres.
+  line.SaveIges("dino8_units_iges_decl.igs");
+  UnitSystem fu = UnitSystem::Inches;
+  NurbsCurve back;
+  Check(NurbsCurve::LoadIges("dino8_units_iges_decl.igs", back, UnitSystem::None, &fu) == Result::Ok && fu == UnitSystem::Millimeters,
+        "SaveIges(path) is unchanged: it declares millimetres");
+  std::remove("dino8_units_iges_decl.igs");
+}
+
+void TestIgesConvertsBetweenEveryUnitPairByTheDefinitions() {
+  const NurbsCurve line = MakeLine123();
+  const NurbsCurve circle = MakeCircle(5.0);
+  for (const UnitRow& from : kUnits) {
+    const std::string path = "dino8_units_iges_pair.igs";
+    for (const UnitRow& to : kUnits) {
+      Check(line.SaveIges(path, from.u) == Result::Ok, "setup: SaveIges");
+      NurbsCurve back;
+      Check(NurbsCurve::LoadIges(path, back, to.u) == Result::Ok, "LoadIges converts across units");
+      const double k = from.metres / to.metres;  // independent expected factor
+      const ON_3dPoint e = EndPoint(back);
+      Check(Near(e.x, 1.0 * k, 1e-8) && Near(e.y, 2.0 * k, 1e-8) && Near(e.z, 3.0 * k, 1e-8),
+            "end point equals the original scaled by from-metres / to-metres");
+      Check(Near(back.Length(), std::sqrt(14.0) * k, 1e-8), "length of the converted line equals sqrt(14) * factor");
+    }
+    Check(circle.SaveIges(path, from.u) == Result::Ok, "setup: SaveIges circle");
+    NurbsCurve cb;
+    Check(NurbsCurve::LoadIges(path, cb, UnitSystem::Millimeters) == Result::Ok, "rational circle loads with conversion");
+    Check(Near(cb.Length(), 2.0 * M_PI * 5.0 * from.metres / 0.001, 1e-6), "rational circle circumference converts as 2 pi r * factor");
+    std::remove(path.c_str());
+  }
+  // Round trip in -> mm -> in lands on the original within the %.9g text precision.
+  line.SaveIges("dino8_units_iges_pair.igs", UnitSystem::Inches);
+  NurbsCurve mm;
+  NurbsCurve::LoadIges("dino8_units_iges_pair.igs", mm, UnitSystem::Millimeters);
+  mm.SaveIges("dino8_units_iges_pair.igs", UnitSystem::Millimeters);
+  NurbsCurve inch;
+  Check(NurbsCurve::LoadIges("dino8_units_iges_pair.igs", inch, UnitSystem::Inches) == Result::Ok, "round trip in -> mm -> in loads");
+  const ON_3dPoint e = EndPoint(inch);
+  Check(Near(e.x, 1.0, 1e-8) && Near(e.y, 2.0, 1e-8) && Near(e.z, 3.0, 1e-8), "inch -> mm -> inch returns the original within 1e-8");
+  // Negative control: the two-argument load never converts.
+  line.SaveIges("dino8_units_iges_pair.igs", UnitSystem::Inches);
+  NurbsCurve raw;
+  NurbsCurve::LoadIges("dino8_units_iges_pair.igs", raw);
+  Check(Near(EndPoint(raw).x, 1.0, 1e-9), "negative control: LoadIges(path, out) with no target leaves an inch file's 1.0 as 1.0");
+  std::remove("dino8_units_iges_pair.igs");
+}
+
+void TestIgesUnitRefusalsGiveReasonsAndNeverCrash() {
+  const NurbsCurve line = MakeLine123();
+  const std::string path = "dino8_units_iges_bad.igs";
+  std::string err;
+  NurbsCurve out;
+  Check(line.SaveIges(path, UnitSystem::None) == Result::Failed, "SaveIges refuses to declare UnitSystem::None");
+
+  struct Case { const char* from; const char* to; const char* reason; const char* what; };
+  const Case cases[] = {
+      {",1.0,2,2HMM,", ",1.0,8,3HMIL,", "flag 8", "flag 8 (mils)"},
+      {",1.0,2,2HMM,", ",1.0,11,2HUI,", "flag 11", "flag 11 (microinches)"},
+      {",1.0,2,2HMM,", ",1.0,0,2HXX,", "flag 0", "flag 0"},
+      {",1.0,2,2HMM,", ",1.0,3,7HFURLONG,", "FURLONG", "flag 3 with an unknown name"},
+  };
+  for (const Case& c : cases) {
+    line.SaveIges(path, UnitSystem::Millimeters);
+    Check(PatchIgesGlobal(path, c.from, c.to), "setup: patched the Global section");
+    err.clear();
+    Check(NurbsCurve::LoadIges(path, out, UnitSystem::Meters, nullptr, &err) == Result::Failed, c.what);
+    Check(err.find(c.reason) != std::string::npos, "the refusal names the offending flag / unit");
+    // Negative control: without a conversion request the same file still reads (coordinates as stored).
+    Check(NurbsCurve::LoadIges(path, out, UnitSystem::None) == Result::Ok && Near(EndPoint(out).x, 1.0, 1e-9),
+          "negative control: the same file loads unconverted when no target unit is asked for");
+  }
+  // Units flag missing entirely: Global section cut after parameter 12.
+  line.SaveIges(path, UnitSystem::Millimeters);
+  Check(PatchIgesGlobal(path, ",1.0,2,2HMM,", ";"), "setup: truncated the Global section before the units flag");
+  err.clear();
+  Check(NurbsCurve::LoadIges(path, out, UnitSystem::Meters, nullptr, &err) == Result::Failed && err.find("units flag") != std::string::npos,
+        "a Global section with no units flag is refused with that reason");
+  // Missing file and garbage.
+  err.clear();
+  Check(NurbsCurve::LoadIges("dino8_units_does_not_exist.igs", out, UnitSystem::Meters, nullptr, &err) == Result::Failed && !err.empty(),
+        "a missing file is refused with a reason");
+  // Truncation fuzz of a valid unit-converting load: every prefix returns Ok or Failed, never throws.
+  line.SaveIges(path, UnitSystem::Inches);
+  const std::string full = ReadAll(path);
+  int ok = 0, failed = 0;
+  for (size_t n = 0; n < full.size(); n += 37) {
+    WriteAll(path, full.substr(0, n));
+    NurbsCurve t;
+    std::string e2;
+    const Result r = NurbsCurve::LoadIges(path, t, UnitSystem::Millimeters, nullptr, &e2);
+    (r == Result::Ok ? ok : failed)++;
+  }
+  Check(failed > 0 && ok >= 0, "truncated IGES files are refused (and none of the prefixes crashed)");
+  WriteAll(path, full);
+  Check(NurbsCurve::LoadIges(path, out, UnitSystem::Millimeters) == Result::Ok && Near(EndPoint(out).x, 25.4, 1e-8),
+        "negative control: the untruncated file still converts 1 in -> 25.4 mm");
+  std::remove(path.c_str());
+}
+
+void TestStepWritesAndReadsEveryUnitContext() {
+  const NurbsCurve line = MakeLine123();
+  const NurbsCurve circle = MakeCircle(5.0);
+  for (const UnitRow& r : kUnits) {
+    const std::string path = "dino8_units_step.stp";
+    Check(line.SaveStep(path, r.u) == Result::Ok, "SaveStep(path, unit) succeeds");
+    const std::string text = ReadAll(path);
+    Check(text.find(r.step_marker) != std::string::npos, "the file contains the expected SI_UNIT / CONVERSION_BASED_UNIT definition");
+    Check(text.find("GLOBAL_UNIT_ASSIGNED_CONTEXT") != std::string::npos, "the unit is referenced from a GLOBAL_UNIT_ASSIGNED_CONTEXT");
+    UnitSystem fu = UnitSystem::None;
+    NurbsCurve same;
+    Check(NurbsCurve::LoadStep(path, same, r.u, &fu) == Result::Ok && fu == r.u, "reads back the same unit it wrote");
+    Check(Near(EndPoint(same).x, 1.0, 1e-12) && Near(EndPoint(same).z, 3.0, 1e-12), "same-unit load is bit-faithful to 1e-12");
+    for (const UnitRow& to : kUnits) {
+      NurbsCurve back;
+      Check(NurbsCurve::LoadStep(path, back, to.u) == Result::Ok, "LoadStep converts across units");
+      const double k = r.metres / to.metres;
+      Check(Near(EndPoint(back).y, 2.0 * k, 1e-12), "converted y equals the original times from-metres / to-metres");
+      Check(Near(back.Length(), std::sqrt(14.0) * k, 1e-12), "converted length equals sqrt(14) * factor");
+    }
+    Check(circle.SaveStep(path, r.u) == Result::Ok, "setup: rational circle SaveStep");
+    NurbsCurve cb;
+    Check(NurbsCurve::LoadStep(path, cb, UnitSystem::Meters) == Result::Ok &&
+              Near(cb.Length(), 2.0 * M_PI * 5.0 * r.metres, 1e-9),
+          "rational circle circumference converted to metres equals 2 pi r times metres per unit");
+    std::remove(path.c_str());
+  }
+  // Old one-argument SaveStep declares millimetres; two-argument None refused.
+  line.SaveStep("dino8_units_step.stp");
+  UnitSystem fu = UnitSystem::Inches;
+  NurbsCurve b;
+  Check(NurbsCurve::LoadStep("dino8_units_step.stp", b, UnitSystem::None, &fu) == Result::Ok && fu == UnitSystem::Millimeters,
+        "SaveStep(path) is unchanged in meaning: it now declares millimetres");
+  Check(line.SaveStep("dino8_units_step.stp", UnitSystem::None) == Result::Failed, "SaveStep refuses to declare UnitSystem::None");
+  // Negative control: the one-argument load never converts.
+  line.SaveStep("dino8_units_step.stp", UnitSystem::Inches);
+  NurbsCurve raw;
+  NurbsCurve::LoadStep("dino8_units_step.stp", raw);
+  Check(Near(EndPoint(raw).x, 1.0, 1e-12), "negative control: LoadStep(path, out) leaves an inch file's 1.0 as 1.0");
+  std::remove("dino8_units_step.stp");
+}
+
+// A hand-written minimal STEP file: a straight B-spline from (0,0,0) to
+// (10,20,30), plus whatever unit entities the caller appends to the DATA.
+std::string StepFixture(const std::string& unit_entities) {
+  return "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('x','2026',(''),(''),'','','');\n"
+         "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));\nENDSEC;\nDATA;\n"
+         "#1=CARTESIAN_POINT('',(0.,0.,0.));\n#2=CARTESIAN_POINT('',(10.,20.,30.));\n"
+         "#3=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2),.UNSPECIFIED.,.F.,.F.,(2,2),(0.,1.),.UNSPECIFIED.);\n" +
+         unit_entities + "ENDSEC;\nEND-ISO-10303-21;\n";
+}
+
+void TestStepReadsForeignUnitStylesAndRefusesBadOnes() {
+  const std::string path = "dino8_units_step_fix.stp";
+  NurbsCurve out;
+  std::string err;
+  UnitSystem fu = UnitSystem::None;
+
+  // (1) the simple three-argument SI_UNIT the app's own exporter writes, referenced by the context.
+  WriteAll(path, StepFixture("#10=SI_UNIT($,.MILLI.,.METRE.);\n#11=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#10))REPRESENTATION_CONTEXT('a','b'));\n"));
+  Check(NurbsCurve::LoadStep(path, out, UnitSystem::Meters, &fu, &err) == Result::Ok && fu == UnitSystem::Millimeters &&
+            Near(EndPoint(out).z, 0.030, 1e-12),
+        "app-style SI_UNIT($,.MILLI.,.METRE.): 30 mm -> 0.030 m");
+  // (2) a hand-built inch via CONVERSION_BASED_UNIT, written in the layout other CAD systems emit.
+  WriteAll(path, StepFixture("#20=(CONVERSION_BASED_UNIT('INCH',#21)LENGTH_UNIT()NAMED_UNIT(#22));\n#21=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#23);\n"
+                             "#22=DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n#23=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n"
+                             "#24=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n"
+                             "#25=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#20,#24))REPRESENTATION_CONTEXT('a','b'));\n"));
+  Check(NurbsCurve::LoadStep(path, out, UnitSystem::Millimeters, &fu, &err) == Result::Ok && fu == UnitSystem::Inches &&
+            Near(EndPoint(out).x, 254.0, 1e-12) && Near(EndPoint(out).z, 762.0, 1e-12),
+        "hand-built inch context: 10 in -> 254 mm and 30 in -> 762 mm (the plane-angle unit alongside is skipped)");
+  // (3) a decimetre-style prefix with no UnitSystem equivalent still scales by its metre value.
+  WriteAll(path, StepFixture("#10=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.DECI.,.METRE.));\n#11=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#10))REPRESENTATION_CONTEXT('a','b'));\n"));
+  Check(NurbsCurve::LoadStep(path, out, UnitSystem::Centimeters, &fu, &err) == Result::Ok && fu == UnitSystem::None &&
+            Near(EndPoint(out).x, 100.0, 1e-12),
+        "decimetre context (no UnitSystem): 10 dm -> 100 cm, reported file unit None");
+
+  struct Bad { const char* what; std::string data; const char* reason; };
+  const Bad bad[] = {
+      {"two contexts declaring different units",
+       "#10=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n#11=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT($,.METRE.));\n"
+       "#12=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#10))REPRESENTATION_CONTEXT('a','b'));\n"
+       "#13=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#11))REPRESENTATION_CONTEXT('a','b'));\n",
+       "two different"},
+      {"a file with no length unit at all", "", "no length unit"},
+      {"a LENGTH_UNIT that is not a metre",
+       "#10=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.GRAM.));\n#11=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#10))REPRESENTATION_CONTEXT('a','b'));\n",
+       "not a metre"},
+      {"an unsupported SI prefix",
+       "#10=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.EXA.,.METRE.));\n#11=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#10))REPRESENTATION_CONTEXT('a','b'));\n",
+       "prefix"},
+      {"a zero conversion factor",
+       "#20=(CONVERSION_BASED_UNIT('INCH',#21)LENGTH_UNIT()NAMED_UNIT(#22));\n#21=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.),#23);\n#22=DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n"
+       "#23=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n#25=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#20))REPRESENTATION_CONTEXT('a','b'));\n",
+       "positive"},
+      {"a negative conversion factor",
+       "#20=(CONVERSION_BASED_UNIT('INCH',#21)LENGTH_UNIT()NAMED_UNIT(#22));\n#21=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(-25.4),#23);\n#22=DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n"
+       "#23=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n#25=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#20))REPRESENTATION_CONTEXT('a','b'));\n",
+       "positive"},
+      {"a dangling unit reference",
+       "#25=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#99))REPRESENTATION_CONTEXT('a','b'));\n", "missing"},
+      {"a conversion unit defined in terms of itself (cycle)",
+       "#20=(CONVERSION_BASED_UNIT('X',#21)LENGTH_UNIT()NAMED_UNIT(#22));\n#21=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(2.),#20);\n#22=DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n"
+       "#25=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#20))REPRESENTATION_CONTEXT('a','b'));\n",
+       "deeply"},
+  };
+  for (const Bad& b : bad) {
+    WriteAll(path, StepFixture(b.data));
+    err.clear();
+    Check(NurbsCurve::LoadStep(path, out, UnitSystem::Meters, nullptr, &err) == Result::Failed, b.what);
+    Check(err.find(b.reason) != std::string::npos, "the STEP refusal reason names the problem");
+    // Negative control: with no target and no file_units request the very same file still loads as stored.
+    Check(NurbsCurve::LoadStep(path, out, UnitSystem::None) == Result::Ok && Near(EndPoint(out).x, 10.0, 1e-12),
+          "negative control: the same file loads unconverted when no conversion is requested");
+  }
+
+  // Truncation and bit-flip fuzz on a valid unit-converting file: always Ok or Failed, never a throw.
+  NurbsCurve ln = MakeLine123();
+  ln.SaveStep(path, UnitSystem::Inches);
+  const std::string full = ReadAll(path);
+  int failed = 0;
+  for (size_t n = 0; n < full.size(); n += 29) {
+    WriteAll(path, full.substr(0, n));
+    NurbsCurve t;
+    if (NurbsCurve::LoadStep(path, t, UnitSystem::Millimeters, nullptr, &err) == Result::Failed) ++failed;
+  }
+  for (size_t i = 0; i < full.size(); i += 53) {
+    std::string flipped = full;
+    flipped[i] = static_cast<char>(flipped[i] ^ 0x20);
+    WriteAll(path, flipped);
+    NurbsCurve t;
+    (void)NurbsCurve::LoadStep(path, t, UnitSystem::Millimeters, nullptr, &err);
+  }
+  Check(failed > 0, "truncated STEP files are refused (and no truncation or bit flip crashed)");
+  WriteAll(path, full);
+  Check(NurbsCurve::LoadStep(path, out, UnitSystem::Millimeters) == Result::Ok && Near(EndPoint(out).x, 25.4, 1e-12),
+        "negative control: the untouched file converts 1 in -> 25.4 mm");
+  std::remove(path.c_str());
+}
+
+}  // namespace units_exchange_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -99094,6 +99488,12 @@ int main() {
   RunTest("surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces", surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces);
   RunTest("surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError", surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError);
   RunTest("surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch", surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch);
+  RunTest("units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions", units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions);
+  RunTest("units_exchange_tests::TestIgesWritesAndReadsEveryUnitDeclaration", units_exchange_tests::TestIgesWritesAndReadsEveryUnitDeclaration);
+  RunTest("units_exchange_tests::TestIgesConvertsBetweenEveryUnitPairByTheDefinitions", units_exchange_tests::TestIgesConvertsBetweenEveryUnitPairByTheDefinitions);
+  RunTest("units_exchange_tests::TestIgesUnitRefusalsGiveReasonsAndNeverCrash", units_exchange_tests::TestIgesUnitRefusalsGiveReasonsAndNeverCrash);
+  RunTest("units_exchange_tests::TestStepWritesAndReadsEveryUnitContext", units_exchange_tests::TestStepWritesAndReadsEveryUnitContext);
+  RunTest("units_exchange_tests::TestStepReadsForeignUnitStylesAndRefusesBadOnes", units_exchange_tests::TestStepReadsForeignUnitStylesAndRefusesBadOnes);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

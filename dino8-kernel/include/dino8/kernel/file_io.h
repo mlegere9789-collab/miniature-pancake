@@ -12,6 +12,7 @@
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/point_cloud.h"
 #include "dino8/kernel/subd.h"
+#include "dino8/kernel/units.h"
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
@@ -60,28 +61,8 @@ struct LinetypeInfo {
   LinetypePattern pattern;
 };
 
-// The length unit a Model's coordinates are measured in, for
-// Model::SetUnitSystem()/GetUnitSystem() below, kept independent of
-// ON::LengthUnitSystem for the same reason Color/LinetypeSegment above are
-// kept independent of their own OpenNURBS counterparts. Covers the unit
-// systems dino8-app/src/io/File3dm.cpp's own units switch
-// (Inches/Feet/Centimeters/Meters, default Millimeters) already round-trips
-// at the app layer, plus Kilometers/Microns/Yards/Miles/None from
-// ON::LengthUnitSystem's own wider set, on the theory that a caller reaching
-// for a kernel-level unit system wants the same breadth OpenNURBS itself
-// offers, not just the five names the app happens to expose today.
-enum class UnitSystem {
-  Millimeters,
-  Centimeters,
-  Meters,
-  Kilometers,
-  Microns,
-  Inches,
-  Feet,
-  Yards,
-  Miles,
-  None,
-};
+// UnitSystem (the length unit a Model's coordinates are measured in) now lives
+// in units.h so the IGES/STEP curve exchange in curve.h can share it.
 
 // A render material read back from Model::MaterialAt() below - the
 // read-side counterpart to AddMaterial()'s own `diffuse_color`/

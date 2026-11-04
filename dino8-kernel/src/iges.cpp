@@ -126,7 +126,34 @@ int WriteIgesParamLines(std::ostream& os, const std::string& text) {
 
 }  // namespace
 
-Result NurbsCurve::SaveIges(const std::string& path) const {
+namespace {
+
+// IGES Global-section units flag (parameter 14) and unit name (parameter 15)
+// for a UnitSystem; flag 0 = not representable (UnitSystem::None).
+struct IgesUnitDecl { int flag; const char* name; };
+IgesUnitDecl IgesDeclFor(UnitSystem u) {
+  switch (u) {
+    case UnitSystem::Inches: return {1, "IN"};
+    case UnitSystem::Millimeters: return {2, "MM"};
+    case UnitSystem::Yards: return {3, "YARD"};
+    case UnitSystem::Feet: return {4, "FT"};
+    case UnitSystem::Miles: return {5, "MI"};
+    case UnitSystem::Meters: return {6, "M"};
+    case UnitSystem::Kilometers: return {7, "KM"};
+    case UnitSystem::Microns: return {9, "MICRON"};
+    case UnitSystem::Centimeters: return {10, "CM"};
+    case UnitSystem::None: break;
+  }
+  return {0, ""};
+}
+
+}  // namespace
+
+Result NurbsCurve::SaveIges(const std::string& path) const { return SaveIges(path, UnitSystem::Millimeters); }
+
+Result NurbsCurve::SaveIges(const std::string& path, UnitSystem units) const {
+  const IgesUnitDecl decl = IgesDeclFor(units);
+  if (decl.flag == 0) return Result::Failed;  // UnitSystem::None cannot be declared
   if (!curve_.IsValid()) return Result::Failed;
   const int K = curve_.CVCount() - 1;
   const int M = curve_.Degree();
@@ -167,13 +194,13 @@ Result NurbsCurve::SaveIges(const std::string& path) const {
   // the same field values FileIgesStep.cpp's own IgesWriter::Write uses for
   // everything this Document-free function has no caller-supplied
   // equivalent for (product/file/author/organization identifiers) -
-  // millimetres (units_flag 2) as a fixed, honest default since a bare
-  // NurbsCurve carries no unit-system field of its own to read one from.
+  // the units flag/name come from the caller (SaveIges(path) declares
+  // millimetres) since a bare NurbsCurve carries no unit-system field.
   std::vector<std::string> g = {"1H,",       "1H;",        HString("curve"),  HString(path),
                                 HString("Dino 8"), HString("Dino 8 kernel"),
                                 "32",        "38",         "6",               "308",
-                                "15",        HString("curve"), "1.0",         "2",
-                                HString("MM"), "1",          "0.01",            HString(date),
+                                "15",        HString("curve"), "1.0",         std::to_string(decl.flag),
+                                HString(decl.name), "1",          "0.01",            HString(date),
                                 IgesNum(1e-6), IgesNum(1e6), HString("Dino 8"), HString(""),
                                 "11",        "0",          HString(date),     ""};
   std::string gtext;
@@ -238,6 +265,9 @@ std::vector<std::string> IgesSplitParamsForRead(const std::string& text, char pd
   std::vector<std::string> out;
   size_t i = 0;
   while (i <= text.size()) {
+    // 80-column card padding can leave blanks before a token; skip them so
+    // a Hollerith (nHtext) string that follows is still recognised.
+    while (i < text.size() && text[i] == ' ') ++i;
     size_t j = i;
     if (j < text.size() && std::isdigit(static_cast<unsigned char>(text[j]))) {
       size_t k = j;
@@ -275,8 +305,18 @@ int IgesPInt(const std::vector<std::string>& p, size_t i) {
 }  // namespace
 
 Result NurbsCurve::LoadIges(const std::string& path, NurbsCurve& out) {
+  return LoadIges(path, out, UnitSystem::None, nullptr, nullptr);
+}
+
+Result NurbsCurve::LoadIges(const std::string& path, NurbsCurve& out, UnitSystem target, UnitSystem* file_units, std::string* error) {
+  if (file_units) *file_units = UnitSystem::None;
+  if (error) error->clear();
+  auto fail = [&](const std::string& why) {
+    if (error) *error = why;
+    return Result::Failed;
+  };
   std::ifstream is(path, std::ios::binary);
-  if (!is) return Result::Failed;
+  if (!is) return fail("cannot open " + path);
 
   std::string line;
   std::vector<std::string> glines, dlines, plines;
@@ -306,6 +346,54 @@ Result NurbsCurve::LoadIges(const std::string& path, NurbsCurve& out) {
       size_t i = 3;
       if (i < g.size() && g[i] == pd) ++i;
       if (i < g.size() && g.compare(i, 2, "1H") == 0 && g.size() > i + 2) rd = g[i + 2];
+    }
+  }
+
+  // Global-section unit declaration: parameter 14 (flag) / 15 (name),
+  // counted from the delimiter parameters (1 and 2) onward.
+  double unit_scale = 1.0;
+  {
+    std::string g;
+    for (const std::string& l : glines) g += l;
+    const std::vector<std::string> gp = IgesSplitParamsForRead(g, pd, rd);
+    const bool have_flag = gp.size() > 13 && !IgesTrim(gp[13]).empty();
+    if (!have_flag) {
+      if (target != UnitSystem::None) return fail("IGES Global section has no units flag (parameter 14); cannot convert units");
+    } else {
+      const int flag = IgesPInt(gp, 13);
+      std::string uname;
+      if (gp.size() > 14) {
+        const std::string& t = gp[14];
+        const size_t h = t.find('H');
+        uname = h == std::string::npos ? IgesTrim(t) : t.substr(h + 1);
+        for (char& c : uname) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        uname = IgesTrim(uname);
+      }
+      UnitSystem fu = UnitSystem::None;
+      bool known = true;
+      switch (flag) {
+        case 1: fu = UnitSystem::Inches; break;
+        case 2: fu = UnitSystem::Millimeters; break;
+        case 3:
+          if (uname == "YARD" || uname == "YD") fu = UnitSystem::Yards;
+          else known = false;
+          break;
+        case 4: fu = UnitSystem::Feet; break;
+        case 5: fu = UnitSystem::Miles; break;
+        case 6: fu = UnitSystem::Meters; break;
+        case 7: fu = UnitSystem::Kilometers; break;
+        case 9: fu = UnitSystem::Microns; break;
+        case 10: fu = UnitSystem::Centimeters; break;
+        default: known = false; break;
+      }
+      if (!known) {
+        if (target != UnitSystem::None)
+          return fail("IGES units flag " + std::to_string(flag) + (flag == 3 ? " with unit name '" + uname + "'" : std::string()) +
+                      " has no supported UnitSystem equivalent; cannot convert units");
+      } else {
+        if (file_units) *file_units = fu;
+        if (target != UnitSystem::None) unit_scale = UnitScaleFactor(fu, target);
+      }
     }
   }
 
@@ -342,6 +430,7 @@ Result NurbsCurve::LoadIges(const std::string& path, NurbsCurve& out) {
     }
     ON_NurbsCurve nc;
     if (!IgesMakeNurbsCurve(degree, cvs, all_one ? std::vector<double>() : weights, knots, nc)) return Result::Failed;
+    if (unit_scale != 1.0 && !nc.Scale(unit_scale)) return fail("scaling the curve to the target unit failed");
     out.raw() = nc;
     return Result::Ok;
   }
