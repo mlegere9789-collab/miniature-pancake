@@ -1115,6 +1115,50 @@ class Brep {
   //    factor 2 is a design bound, not a derived one; the 2-station exact straight-rail path (only the two end points
   //    {0, .} and {1, .}) is an exact ruled wall and is not subject to it;
   //  - on a closed rail each schedule must return to its t = 0 value at t = 1.
+  //
+  // ADAPTIVE MODE (`tolerance` > 0, absolute, in model units). The sweep is then built at `stations` stations (plus a
+  // station exactly at every schedule breakpoint), MEASURED against the exact swept section, and refined until the
+  // measured maximum deviation is within `tolerance` or `max_stations` is reached. The exact swept section at a rail
+  // arc-length fraction f is the input section carried by the rotation-minimizing frame of the continuous rail (a
+  // reference frame chain of 4096 steps, advanced by one more double-reflection step to f; on a closed rail the
+  // holonomy is spread in proportion to arc length), turned by twist(f) and scaled by the schedules at f. The
+  // measurement takes 48 points of every cross-section and, for each, its distance to the wall minimized over v (an
+  // upper bound of the distance to the surface), at every station, at 1/4, 1/2 and 3/4 of every interval between
+  // stations and, at every schedule breakpoint, at f -/+ 2% of the adjacent interval. Only the intervals whose measured
+  // error exceeds `tolerance` are bisected (the new station at the arc-length midpoint). Rules:
+  //  - on an OPEN rail the skin is exactly C0 (a knot of multiplicity = degree) at every interior schedule breakpoint
+  //    where the slope of a schedule changes, because the swept surface itself has a crease there: each piece between
+  //    breakpoints is skinned on its own (at least 4 stations per piece), so a slope change does not ring into its
+  //    neighbours. On a CLOSED rail the periodic skin has no corners: a slope change is handled by grading the stations
+  //    towards the breakpoint only (the error there falls like h^2 per bisection, not h^4), which costs more stations.
+  //  - in adaptive mode a scale that changes by more than a factor of 2 between two consecutive stations, and (closed
+  //    rail) a twist step above 30 degrees, are not refused but bisected away;
+  //  - a straight rail starts from 2 stations and keeps the exact ruled shortcut only if the measurement accepts it
+  //    (a pure scale schedule does, a twist does not: the ruled wall cuts the helix);
+  //  - at `max_stations` (at least 4) the call THROWS std::invalid_argument naming the best measured deviation, the
+  //    tolerance and the station count (`report`, if given, is filled first, with `met` false) rather than return an
+  //    unverified surface;
+  //  - the stations and the holonomy spread are those of the arc-length station set (not DivideByCount's), so an
+  //    adaptive result need not equal the default result bit for bit at the same station count.
+  // `tolerance` == 0 (the default) with `report` null is the unchanged non-adaptive construction. `tolerance` == 0 with
+  // a `report` MEASURES the unchanged construction and returns it whatever the deviation (nothing is refused and
+  // nothing refined; the reference chain and the station parameters then differ by about 1e-7 relative from the
+  // construction's own arc-length tables, and a closed rail whose stations are not equal in arc length has its holonomy
+  // spread by station index, not by arc length, which the measurement then includes).
+  struct Sweep1Report {
+    int stations = 0;                          // stations of the returned skin (incl. one per schedule breakpoint)
+    int stations_initial = 0;                  // stations of the first build
+    int rounds = 0;                            // builds performed (1 = no refinement was needed)
+    int corner_stations = 0;                   // open rail: stations where the skin is C0 (slope change of a schedule)
+    int samples = 0;                           // measured points of the last build
+    double tolerance = 0.0;                    // as given
+    double max_deviation = 0.0;                // maximum of the three below
+    double max_station_deviation = 0.0;        // exact section vs wall AT the stations
+    double max_between_station_deviation = 0.0;  // at 1/4, 1/2, 3/4 of every interval
+    double max_breakpoint_deviation = 0.0;     // at and either side of every schedule breakpoint (0 when there is none)
+    double worst_fraction = 0.0;               // rail arc-length fraction of the worst sample
+    bool met = false;                          // max_deviation <= tolerance (false in measure-only mode)
+  };
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
                      bool cap = true, double twist_total = 0.0, double scale_end = 1.0,
                      const Vector3d* roadlike_up = nullptr,
@@ -1122,7 +1166,8 @@ class Brep {
                      const std::vector<std::pair<double, double>>* scale_schedule = nullptr,
                      const std::vector<std::pair<double, double>>* scale_x_schedule = nullptr,
                      const std::vector<std::pair<double, double>>* scale_y_schedule = nullptr,
-                     const Vector3d* scale_x_axis = nullptr);
+                     const Vector3d* scale_x_axis = nullptr, double tolerance = 0.0, int max_stations = 512,
+                     Sweep1Report* report = nullptr);
 
   // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
   // Rhino's two-rail sweep with scaling). At each of `stations` equal-

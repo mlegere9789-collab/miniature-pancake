@@ -1552,8 +1552,11 @@ struct Frame {
   ON_3dVector t, r, s;  // tangent, reference normal, binormal (r x t = s? we use s = t x r)
 };
 
+// `wrap_fractions` (closed rails only; nullptr: the station INDEX k / m): the share of the holonomy correction given to
+// each station, e.g. its arc-length fraction of the loop, so a non-uniform station set gets the same frame field as a
+// uniform one.
 std::vector<Frame> RmfFrames(const ON_NurbsCurve& rail, const std::vector<double>& params, bool wrap,
-                             const char* caller) {
+                             const char* caller, const std::vector<double>* wrap_fractions = nullptr) {
   const int m = static_cast<int>(params.size());
   std::vector<Frame> frames(static_cast<size_t>(m));
   for (int k = 0; k < m; ++k) {
@@ -1607,7 +1610,7 @@ std::vector<Frame> RmfFrames(const ON_NurbsCurve& rail, const std::vector<double
     const double twist = std::atan2(ON_DotProduct(r, s0), ON_DotProduct(r, g0.r));
     for (int k = 1; k < m; ++k) {
       Frame& fk = frames[static_cast<size_t>(k)];
-      const double a = -twist * static_cast<double>(k) / m;
+      const double a = wrap_fractions ? -twist * (*wrap_fractions)[static_cast<size_t>(k)] : -twist * static_cast<double>(k) / m;
       const ON_3dVector sk = ON_CrossProduct(fk.t, fk.r);
       fk.r = fk.r * std::cos(a) + sk * std::sin(a);
     }
@@ -3945,6 +3948,163 @@ ON_Xform AxisScaleAbout(const ON_3dPoint& origin, const ON_3dVector& t, const ON
   return m;
 }
 
+// ---- Sweep1 adaptive mode: the exact-section reference --------------------------------------------------------------
+
+std::unique_ptr<ON_NurbsSurface> SkinSectionsC0(const std::vector<ON_NurbsCurve>& copies, const std::vector<int>& breaks, int q,
+                                                const std::vector<double>& params, const char* caller);
+
+// Chord table of a rail at uniform parameter spacing: arc-length fraction <-> parameter, consistent in both directions
+// (linear in the parameter within a chord). Station SPACING and the schedule argument only; its relative error against
+// the true arc length is far below 1e-6 for a rail the sweep accepts.
+struct ArcTable {
+  double a = 0.0, b = 1.0;
+  int n = 0;
+  std::vector<double> cum;
+  void Build(const ON_NurbsCurve& r, int chords) {
+    a = r.Domain().Min();
+    b = r.Domain().Max();
+    n = chords;
+    cum.assign(static_cast<size_t>(n) + 1, 0.0);
+    ON_3dPoint prev = r.PointAt(a);
+    for (int q = 1; q <= n; ++q) {
+      const ON_3dPoint cur = r.PointAt(q == n ? b : a + (b - a) * q / n);
+      cum[static_cast<size_t>(q)] = cum[static_cast<size_t>(q - 1)] + prev.DistanceTo(cur);
+      prev = cur;
+    }
+  }
+  double Total() const { return cum.back(); }
+  double ParamAtFraction(double f) const {
+    if (f <= 0.0) return a;
+    if (f >= 1.0) return b;
+    const double target = f * cum.back();
+    size_t q = static_cast<size_t>(std::upper_bound(cum.begin(), cum.end(), target) - cum.begin());
+    if (q == 0) q = 1;
+    if (q > static_cast<size_t>(n)) q = static_cast<size_t>(n);
+    const double span = cum[q] - cum[q - 1];
+    const double frac = span > 0.0 ? (target - cum[q - 1]) / span : 0.0;
+    return a + (b - a) * (static_cast<double>(q - 1) + frac) / n;
+  }
+};
+
+// The double-reflection step of RmfFrames(): the reference normal at the point `go` with unit tangent `gt`, from frame `f`.
+ON_3dVector RmfNextNormal(const Frame& f, const ON_3dPoint& go, const ON_3dVector& gt) {
+  const ON_3dVector v1 = go - f.origin;
+  const double c1 = ON_DotProduct(v1, v1);
+  if (c1 <= 0.0) return f.r;
+  const ON_3dVector rL = f.r - v1 * (2.0 / c1 * ON_DotProduct(v1, f.r));
+  const ON_3dVector tL = f.t - v1 * (2.0 / c1 * ON_DotProduct(v1, f.t));
+  const ON_3dVector v2 = gt - tL;
+  const double c2 = ON_DotProduct(v2, v2);
+  ON_3dVector r = c2 > 0.0 ? rL - v2 * (2.0 / c2 * ON_DotProduct(v2, rL)) : rL;
+  r = r - gt * ON_DotProduct(r, gt);
+  r.Unitize();
+  return r;
+}
+
+// Rotation-minimizing frame of the CONTINUOUS rail: a fine double-reflection chain (uniform in the rail parameter), and
+// the frame at any parameter by one more step from the chain point below it. A closed rail's holonomy (measured round
+// the whole chain) is spread in proportion to the arc-length fraction asked for.
+struct RefRmf {
+  const ON_NurbsCurve* rail = nullptr;
+  bool wrap = false;
+  int n = 0;
+  double a = 0.0, b = 1.0, holonomy = 0.0;
+  std::vector<Frame> chain;
+  void Build(const ON_NurbsCurve& r, bool closed, int steps, const char* caller) {
+    rail = &r;
+    wrap = closed;
+    n = steps;
+    a = r.Domain().Min();
+    b = r.Domain().Max();
+    const int count = closed ? n : n + 1;
+    chain.assign(static_cast<size_t>(count), Frame());
+    for (int q = 0; q < count; ++q) {
+      Frame& f = chain[static_cast<size_t>(q)];
+      const double t = a + (b - a) * q / n;
+      f.origin = r.PointAt(t);
+      ON_3dVector tg = r.TangentAt(t);
+      if (!tg.Unitize()) Fail(caller, "the rail has a zero tangent");
+      f.t = tg;
+    }
+    {
+      const ON_3dVector t0 = chain[0].t;
+      ON_3dVector ax = std::fabs(t0.x) <= std::fabs(t0.y) && std::fabs(t0.x) <= std::fabs(t0.z) ? ON_3dVector(1, 0, 0)
+                       : std::fabs(t0.y) <= std::fabs(t0.z)                                    ? ON_3dVector(0, 1, 0)
+                                                                                               : ON_3dVector(0, 0, 1);
+      ON_3dVector r0 = ax - t0 * ON_DotProduct(ax, t0);
+      r0.Unitize();
+      chain[0].r = r0;
+    }
+    for (int q = 0; q + 1 < count; ++q) {
+      Frame& nx = chain[static_cast<size_t>(q) + 1];
+      nx.r = RmfNextNormal(chain[static_cast<size_t>(q)], nx.origin, nx.t);
+    }
+    if (closed) {
+      const Frame& g0 = chain[0];
+      const ON_3dVector rr = RmfNextNormal(chain.back(), g0.origin, g0.t);
+      const ON_3dVector s0 = ON_CrossProduct(g0.t, g0.r);
+      holonomy = std::atan2(ON_DotProduct(rr, s0), ON_DotProduct(rr, g0.r));
+    }
+  }
+  Frame At(double t, double fraction) const {
+    const int q = std::min(std::max(static_cast<int>(std::floor((t - a) / (b - a) * n)), 0), static_cast<int>(chain.size()) - 1);
+    Frame g;
+    g.origin = rail->PointAt(t);
+    ON_3dVector tg = rail->TangentAt(t);
+    tg.Unitize();
+    g.t = tg;
+    g.r = RmfNextNormal(chain[static_cast<size_t>(q)], g.origin, g.t);
+    if (wrap) {
+      const double ang = -holonomy * fraction;
+      const ON_3dVector sk = ON_CrossProduct(g.t, g.r);
+      g.r = g.r * std::cos(ang) + sk * std::sin(ang);
+    }
+    g.s = ON_CrossProduct(g.t, g.r);
+    return g;
+  }
+};
+
+// Slope of a piecewise-linear schedule just before (side < 0) / after (side > 0) the point `i` (flat outside the range).
+double ScheduleSlope(const std::vector<std::pair<double, double>>& s, size_t i, int side) {
+  if (side < 0) return i == 0 ? 0.0 : (s[i].second - s[i - 1].second) / (s[i].first - s[i - 1].first);
+  return i + 1 == s.size() ? 0.0 : (s[i + 1].second - s[i].second) / (s[i + 1].first - s[i].first);
+}
+
+// Distance from `p` to the wall along the isoparametric curve v -> wall(u, v), minimised over v in [va, vb]: an 8-interval
+// grid, then a golden-section search round the best grid point (an upper bound of the distance to the surface).
+double WallDistanceAlongV(const ON_NurbsSurface& wall, double u, const ON_3dPoint& p, double va, double vb) {
+  double vs[9], ds[9];
+  int bi = 0;
+  for (int i = 0; i <= 8; ++i) {
+    vs[i] = va + (vb - va) * i / 8.0;
+    ds[i] = wall.PointAt(u, vs[i]).DistanceTo(p);
+    if (ds[i] < ds[bi]) bi = i;
+  }
+  double lo = vs[std::max(bi - 1, 0)], hi = vs[std::min(bi + 1, 8)];
+  constexpr double g = 0.6180339887498949;
+  double x1 = hi - g * (hi - lo), x2 = lo + g * (hi - lo);
+  double d1 = wall.PointAt(u, x1).DistanceTo(p), d2 = wall.PointAt(u, x2).DistanceTo(p);
+  double best = std::min(ds[bi], std::min(d1, d2));
+  for (int it = 0; it < 26; ++it) {
+    if (d1 < d2) {
+      hi = x2;
+      x2 = x1;
+      d2 = d1;
+      x1 = hi - g * (hi - lo);
+      d1 = wall.PointAt(u, x1).DistanceTo(p);
+      best = std::min(best, d1);
+    } else {
+      lo = x1;
+      x1 = x2;
+      d1 = d2;
+      x2 = lo + g * (hi - lo);
+      d2 = wall.PointAt(u, x2).DistanceTo(p);
+      best = std::min(best, d2);
+    }
+  }
+  return best;
+}
+
 }  // namespace
 
 Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap, double twist_total,
@@ -3952,7 +4112,8 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
                   const std::vector<std::pair<double, double>>* twist_schedule,
                   const std::vector<std::pair<double, double>>* scale_schedule,
                   const std::vector<std::pair<double, double>>* scale_x_schedule,
-                  const std::vector<std::pair<double, double>>* scale_y_schedule, const Vector3d* scale_x_axis) {
+                  const std::vector<std::pair<double, double>>* scale_y_schedule, const Vector3d* scale_x_axis, double tolerance,
+                  int max_stations, Sweep1Report* report) {
   const char* caller = "Sweep1";
   if (stations < 2) Fail(caller, "stations must be at least 2");
   if (!(scale_end > 0.0)) Fail(caller, "scale_end must be positive");
@@ -4028,12 +4189,24 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   }
   const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
   const bool has_schedule = twist_schedule || scale_schedule || axis_scale;  // (closed rail: only schedules that close up got past the checks above)
+  // Adaptive mode (tolerance > 0): build, measure against the exact swept section, bisect the failing intervals, repeat.
+  // Measure-only (tolerance == 0 with a report): the unchanged construction, measured and returned whatever it measures.
+  if (!(tolerance >= 0.0) || !std::isfinite(tolerance)) Fail(caller, "tolerance must be a finite number >= 0");
+  const bool adaptive = tolerance > 0.0;
+  const bool measure_only = !adaptive && report != nullptr;
+  if (adaptive && max_stations < 4) Fail(caller, "max_stations must be at least 4");
+  ArcTable table;
+  if (adaptive || measure_only) {
+    if (!(rail_in.Length() > 0.0)) Fail(caller, "the rail has zero length");
+    table.Build(rail, 4096);
+    if (!(table.Total() > 0.0)) Fail(caller, "the rail has zero length");
+  }
 
   // Station fractions (of the rail's own arc length from its start) and
   // the rail parameter at each.
   std::vector<double> fractions;
   std::vector<double> params;
-  if (!has_schedule) {
+  if (!has_schedule && !adaptive) {
     // Exactly the pre-existing construction, byte-for-byte - m = 2 on a
     // straight rail (the exact-extrusion shortcut), max(stations, 3)
     // otherwise; equal-arc-length stations via the wrapper's
@@ -4068,7 +4241,7 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       fractions = {0.0, 1.0};
       params = {rail.Domain().Min(), rail.Domain().Max()};
     } else {
-      const double total_length = rail_in.Length();
+      const double total_length = adaptive ? table.Total() : rail_in.Length();
       if (!(total_length > 0.0)) Fail(caller, "the rail has zero length");
       const int m_even = std::max(stations, 3);
       std::vector<double> raw;
@@ -4097,17 +4270,45 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       if (fractions.size() < 2) Internal(caller, "station count mismatch");
       params.resize(fractions.size());
       for (size_t k = 0; k < fractions.size(); ++k) {
-        params[k] = rail_in.ParameterAtArcLength(fractions[k] * total_length);
+        params[k] = adaptive ? table.ParamAtFraction(fractions[k]) : rail_in.ParameterAtArcLength(fractions[k] * total_length);
       }
     }
   }
-  const int m = static_cast<int>(fractions.size());
-  if (axis_scale && m > 2) {
+  if (adaptive && static_cast<int>(fractions.size()) > max_stations) {
+    Fail(caller, "the " + std::to_string(fractions.size()) + " initial stations (the requested ones plus one per schedule breakpoint) already exceed max_stations = " +
+                     std::to_string(max_stations));
+  }
+
+  // The consecutive-station limits (see kMaxAxisScaleStep and kMaxClosedTwistStep): refused by the non-adaptive
+  // construction, bisected away by the adaptive one (`step_bad` marks the offending intervals).
+  constexpr double kMaxClosedTwistStep = ON_PI / 6.0;
+  const std::pair<const std::vector<std::pair<double, double>>*, const char*> scale_axes[2] = {{scale_x_schedule, "scale_x_schedule"},
+                                                                                              {scale_y_schedule, "scale_y_schedule"}};
+  auto twist_at = [&](double f) { return twist_schedule ? ScheduleAt(*twist_schedule, f) : twist_total * f; };
+  auto scale_at = [&](double f) {
+    return scale_schedule ? ScheduleAt(*scale_schedule, f) : 1.0 + (scale_end - 1.0) * f;
+  };
+  auto step_bad = [&](const std::vector<double>& fr) {
+    const int mm = static_cast<int>(fr.size());
+    std::vector<char> bad(static_cast<size_t>(wrap ? mm : mm - 1), 0);
+    for (size_t k = 0; k < bad.size(); ++k) {
+      const double f0 = fr[k], f1 = static_cast<int>(k) + 1 < mm ? fr[k + 1] : 1.0;
+      if (axis_scale && mm > 2) {
+        for (const auto& pr : scale_axes) {
+          if (!pr.first) continue;
+          const double v0 = ScheduleAt(*pr.first, f0), v1 = ScheduleAt(*pr.first, f1);
+          if (std::max(v0, v1) / std::min(v0, v1) > kMaxAxisScaleStep * (1.0 + 1e-9)) bad[k] = 1;
+        }
+      }
+      if (wrap && (twist_total != 0.0 || twist_schedule) && std::fabs(twist_at(f1) - twist_at(f0)) > kMaxClosedTwistStep * (1.0 + 1e-9)) bad[k] = 1;
+    }
+    return bad;
+  };
+  if (!adaptive && axis_scale && fractions.size() > 2) {
+    const int m = static_cast<int>(fractions.size());
     // A scale that jumps between two consecutive stations (a near-discontinuity: breakpoints very close together with
     // very different values) is not resolved by the skin through the stations - refused, not smoothed over.
-    const std::pair<const std::vector<std::pair<double, double>>*, const char*> axes[2] = {{scale_x_schedule, "scale_x_schedule"},
-                                                                                           {scale_y_schedule, "scale_y_schedule"}};
-    for (const auto& pr : axes) {
+    for (const auto& pr : scale_axes) {
       if (!pr.first) continue;
       for (int k = 0; k + 1 < m; ++k) {
         const double f0 = fractions[static_cast<size_t>(k)], f1 = fractions[static_cast<size_t>(k + 1)];
@@ -4124,14 +4325,14 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       }
     }
   }
-  if (wrap && (twist_total != 0.0 || twist_schedule)) {
+  if (!adaptive && wrap && (twist_total != 0.0 || twist_schedule)) {
+    const int m = static_cast<int>(fractions.size());
     // Station k carries the twist of its own fraction and nothing looks at the angle BETWEEN consecutive copies,
     // so a twist of several whole turns spread over too few stations aliases (at one turn per station every
     // copy is the untwisted section again) or is a coarse interpolant. The skin through the copies is only a
     // faithful twisted tube while consecutive copies differ by at most kMaxClosedTwistStep (30 degrees: the
     // relative error of a periodic cubic through a rotation of theta per station is about theta^4/384, 2e-4 at
     // 30 degrees); beyond that the call is refused, naming the angle and the station count that would do.
-    constexpr double kMaxClosedTwistStep = ON_PI / 6.0;
     double worst = 0.0;
     for (int k = 0; k < m; ++k) {
       const double f0 = fractions[static_cast<size_t>(k)], f1 = k + 1 < m ? fractions[static_cast<size_t>(k + 1)] : 1.0;
@@ -4151,95 +4352,48 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       Fail(caller, buf);
     }
   }
-  std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
-  if (roadlike_up) {
-    // Road-like alignment: replace RMF's own transported reference
-    // direction at every station with `up` projected perpendicular to
-    // the tangent there, independent of every other station - see
-    // brep.h's own doc comment for why this needs no holonomy fix-up on
-    // a closed rail the way RMF itself does above.
-    for (int k = 0; k < m; ++k) {
-      Frame& f = frames[static_cast<size_t>(k)];
-      ON_3dVector r = up - f.t * ON_DotProduct(up, f.t);
-      if (r.LengthSquared() <= 1e-12) {
-        Fail(caller, "roadlike_up is parallel to the rail tangent at a station - road-like alignment is undefined there");
+
+  // Schedule breakpoints strictly inside (0, 1): the stations the adaptive mode always keeps, and (open rail) the
+  // ones where the skin is C0 because the slope of a schedule changes there.
+  std::vector<double> breakpoint_fractions, corner_fractions;
+  {
+    const std::vector<std::pair<double, double>>* all[4] = {twist_schedule, scale_schedule, scale_x_schedule, scale_y_schedule};
+    for (const auto* sch : all) {
+      if (!sch) continue;
+      for (size_t i = 0; i < sch->size(); ++i) {
+        const double t = (*sch)[i].first;
+        if (!(t > 1e-9 && t < 1.0 - 1e-9)) continue;
+        breakpoint_fractions.push_back(t);
+        const double sl = ScheduleSlope(*sch, i, -1), sr = ScheduleSlope(*sch, i, +1);
+        if (std::fabs(sr - sl) > 1e-9 * (1.0 + std::fabs(sl) + std::fabs(sr))) corner_fractions.push_back(t);
       }
-      r.Unitize();
-      f.r = r;
-      f.s = ON_CrossProduct(f.t, f.r);
     }
+    std::sort(breakpoint_fractions.begin(), breakpoint_fractions.end());
+    std::sort(corner_fractions.begin(), corner_fractions.end());
   }
 
-  // Absolute twist/scale at a given arc-length fraction: the schedule's
-  // own piecewise-linear value when given, otherwise the pre-existing
-  // linear-from-the-start formula (0 / 1.0 at f = 0, exactly
-  // twist_total / scale_end at f = 1).
-  auto twist_at = [&](double f) { return twist_schedule ? ScheduleAt(*twist_schedule, f) : twist_total * f; };
-  auto scale_at = [&](double f) {
-    return scale_schedule ? ScheduleAt(*scale_schedule, f) : 1.0 + (scale_end - 1.0) * f;
-  };
-
+  // Everything that depends on the station set is built inside the loop below.
   const bool closed_section = section.IsClosed();
   const bool want_caps = cap && closed_section && !wrap;
-  if (want_caps) {
-    ON_Plane plane;
-    if (!section.IsPlanar(&plane, 1e-8 * CurveScale(section))) Fail(caller, "cap requested but the section is not planar");
-    if (std::fabs(ON_DotProduct(plane.zaxis, frames[0].t)) <= 1e-9) {
-      Fail(caller, "the section's plane contains the rail tangent at the start - the sweep is flat there");
-    }
-    ON_Plane about_t(plane.origin, frames[0].t);
-    if (SignedAreaAbout(section, about_t) < 0.0) ReverseKeepDomain(section);
-  }
-
-  // Every station's own transform is built the SAME way, including k = 0
-  // (FrameToFrame(frames[0], frames[0]) is the identity, and the default
-  // twist_at(0) == 0 / scale_at(0) == 1.0 formulas are exact zeros there
-  // too) - unlike the old "skip k == 0" special case, this stays correct
-  // even for a schedule anchored away from a literal zero at the start
-  // (held-flat rather than forced to 0 / 1.0), rather than silently
-  // leaving station 0 unrotated/unscaled while every later station reads
-  // an absolute schedule value. The twist rotation is applied as its own
-  // explicit rotation about the station's OWN tangent at its OWN origin
-  // (mathematically identical to the old approach of baking the same
-  // rotation into the RMF frame's own (r, s) before computing
-  // FrameToFrame - both give the same rigid rotation mapping frame 0's
-  // basis onto the twisted frame k's basis, since twisting a frame's
-  // (r, s) about its own t and then reading the rotation from an
-  // untwisted frame 0 is the same rotation as reading frame-0-to-
-  // untwisted-frame-k first and rotating the RESULT about frame k's own
-  // t afterward - the two are the same unique rigid rotation agreeing on
-  // all three orthonormal axes), just decoupled from the frames array
-  // itself so a nonzero twist_at(0) has somewhere to go.
-  // The section frame's "x" axis at station k: the frame's reference normal turned by the station's twist and by the fixed
-  // angle that takes the frame at station 0 onto `scale_x_axis` (projected into the plane perpendicular to the rail
-  // tangent there; none given: the reference normal itself). "y" is tangent x x.
   double axis_phi = 0.0;
-  if (scale_x_axis) {
-    ON_3dVector ax = *scale_x_axis;
-    ax = ax - frames[0].t * ON_DotProduct(ax, frames[0].t);
-    if (!ax.Unitize()) Fail(caller, "scale_x_axis is zero or parallel to the rail tangent at the start - the section's x axis is undefined");
-    axis_phi = std::atan2(ON_DotProduct(ax, frames[0].s), ON_DotProduct(ax, frames[0].r));
-  }
-  auto axis_r = [&](int k, double twist) {
-    const Frame& fk = frames[static_cast<size_t>(k)];
+  auto axis_r = [&](const Frame& fk, double twist) {
     ON_3dVector r = fk.r;
     const double ang = axis_phi + twist;
     if (ang != 0.0) r.Rotate(ang, fk.t);
     return r;
   };
-  std::vector<ON_NurbsCurve> copies;
-  copies.reserve(static_cast<size_t>(m));
-  for (int k = 0; k < m; ++k) {
-    ON_NurbsCurve ck = section;
-    const Frame& fk = frames[static_cast<size_t>(k)];
-    ON_Xform xf = FrameToFrame(frames[0], fk);
-    const double a = twist_at(fractions[static_cast<size_t>(k)]);
+  // The transform that carries the input section (in the frame `f0` of station 0) to the swept section at arc-length
+  // fraction `fr` whose rail frame is `fk`: the frame-to-frame rigid motion, the twist as its own rotation about the
+  // station's OWN tangent at its OWN origin (the same unique rigid rotation as baking it into the frame), then the scale
+  // about the station's rail point. Used for the stations and, with the reference frame, for the exact section.
+  auto station_xform = [&](const Frame& f0, const Frame& fk, double fr, bool* identity_scale_twist) {
+    ON_Xform xf = FrameToFrame(f0, fk);
+    const double a = twist_at(fr);
     if (a != 0.0) {
       ON_Xform twist_xf;
       twist_xf.Rotation(a, fk.t, fk.origin);
       xf = twist_xf * xf;
     }
-    const double fr = fractions[static_cast<size_t>(k)];
     double sx = scale_at(fr), sy = sx;
     if (axis_scale) {
       sx = scale_x_schedule ? ScheduleAt(*scale_x_schedule, fr) : 1.0;
@@ -4249,23 +4403,270 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       // (uniform: the pre-existing transform, bit for bit)
       if (sx != 1.0) xf = ON_Xform::ScaleTransformation(fk.origin, sx) * xf;
     } else {
-      xf = AxisScaleAbout(fk.origin, fk.t, axis_r(k, a), sx, sy) * xf;
+      xf = AxisScaleAbout(fk.origin, fk.t, axis_r(fk, a), sx, sy) * xf;
     }
-    if (a != 0.0 || sx != 1.0 || sy != 1.0 || k > 0) ck.Transform(xf);
-    copies.push_back(std::move(ck));
-  }
-  MakeCompatible(copies, caller);  // no-op for rigid+scaled copies; keeps one code path
+    if (identity_scale_twist) *identity_scale_twist = (a == 0.0 && sx == 1.0 && sy == 1.0);
+    return xf;
+  };
+  auto road_frame = [&](Frame f) {
+    ON_3dVector r = up - f.t * ON_DotProduct(up, f.t);
+    if (r.LengthSquared() <= 1e-12) {
+      Fail(caller, "roadlike_up is parallel to the rail tangent at a station - road-like alignment is undefined there");
+    }
+    r.Unitize();
+    f.r = r;
+    f.s = ON_CrossProduct(f.t, f.r);
+    return f;
+  };
+
+  Brep::Sweep1Report rep;
+  rep.tolerance = tolerance;
+  RefRmf ref;
+  if (adaptive || measure_only) ref.Build(rail, wrap, 4096, caller);
+  bool caps_prepared = false;
+  std::vector<Frame> frames;
   std::unique_ptr<ON_NurbsSurface> wall;
-  if (m == 2) {
-    wall = RuledBetween(copies[0], copies[1], 0.0, 1.0, caller);
-  } else {
-    // Stations are equally spaced in arc length, so the natural station
-    // parameter is uniform; the chord-length average agrees for a rigid
-    // sweep and is used for consistency with Loft().
-    double period = 1.0;
-    const std::vector<double> params_v = SkinParameters(copies, wrap, &period, caller);
-    wall = SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller);
+  std::vector<double> params_v;
+  double period = 1.0;
+  std::vector<int> corner_idx;
+  double best_dev = std::numeric_limits<double>::infinity();
+  int best_stations = 0;
+  double best_where = 0.0;
+
+  // Bisect the given intervals (priority, interval index), worst first, as far as max_stations allows. Returns how many
+  // stations were added.
+  auto bisect = [&](std::vector<std::pair<double, int>> want) {
+    std::sort(want.begin(), want.end(), [](const std::pair<double, int>& x, const std::pair<double, int>& y) { return x.first > y.first; });
+    const int cur = static_cast<int>(fractions.size());
+    const int room = max_stations - cur;
+    std::vector<double> add;
+    for (const auto& w : want) {
+      if (static_cast<int>(add.size()) >= room) break;
+      const size_t k = static_cast<size_t>(w.second);
+      const double f0 = fractions[k], f1 = static_cast<int>(k) + 1 < cur ? fractions[k + 1] : 1.0;
+      if (f1 - f0 < 1e-7) continue;
+      add.push_back(0.5 * (f0 + f1));
+    }
+    if (add.empty()) return 0;
+    fractions.insert(fractions.end(), add.begin(), add.end());
+    std::sort(fractions.begin(), fractions.end());
+    params.resize(fractions.size());
+    for (size_t k = 0; k < fractions.size(); ++k) params[k] = table.ParamAtFraction(fractions[k]);
+    return static_cast<int>(add.size());
+  };
+  auto finish_report = [&]() {
+    if (report) *report = rep;
+  };
+
+  for (;;) {
+    const int m = static_cast<int>(fractions.size());
+    if (adaptive) {
+      // (1) the consecutive-station limits, (2) at least 4 stations between two C0 corners (the skin degree).
+      const std::vector<char> bad = step_bad(fractions);
+      std::vector<std::pair<double, int>> want;
+      for (size_t k = 0; k < bad.size(); ++k) {
+        if (bad[k]) want.push_back({1e9 + (static_cast<int>(k) + 1 < m ? fractions[k + 1] : 1.0) - fractions[k], static_cast<int>(k)});
+      }
+      corner_idx.clear();
+      if (!wrap) {
+        for (const double cf : corner_fractions) {
+          int hit = -1;
+          for (int i = 1; i + 1 < m; ++i) {
+            if (std::fabs(fractions[static_cast<size_t>(i)] - cf) < 1e-8) hit = i;
+          }
+          if (hit < 0) Internal(caller, "a schedule corner is not a station");
+          if (corner_idx.empty() || hit > corner_idx.back()) corner_idx.push_back(hit);
+        }
+        std::vector<int> cuts{0};
+        cuts.insert(cuts.end(), corner_idx.begin(), corner_idx.end());
+        cuts.push_back(m - 1);
+        for (size_t p = 0; p + 1 < cuts.size(); ++p) {
+          if (cuts[p + 1] - cuts[p] + 1 >= 4) continue;
+          int widest = cuts[p];
+          for (int i = cuts[p]; i < cuts[p + 1]; ++i) {
+            if (fractions[static_cast<size_t>(i) + 1] - fractions[static_cast<size_t>(i)] > fractions[static_cast<size_t>(widest) + 1] - fractions[static_cast<size_t>(widest)]) widest = i;
+          }
+          want.push_back({2e9, widest});
+        }
+      }
+      if (!want.empty() && bisect(want) == 0) {
+        Fail(caller, "cannot place the stations the skin needs (at most " + std::to_string(max_stations) + " stations; " + std::to_string(m) +
+                         " used) - raise max_stations or use a gentler schedule");
+      }
+      if (!want.empty()) continue;
+    }
+
+    // ---- build at the current stations --------------------------------------------------------------------------
+    frames = RmfFrames(rail, params, wrap, caller, adaptive && wrap ? &fractions : nullptr);
+    if (roadlike_up) {
+      // Road-like alignment: replace RMF's own transported reference
+      // direction at every station with `up` projected perpendicular to
+      // the tangent there, independent of every other station - see
+      // brep.h's own doc comment for why this needs no holonomy fix-up on
+      // a closed rail the way RMF itself does above.
+      for (int k = 0; k < m; ++k) frames[static_cast<size_t>(k)] = road_frame(frames[static_cast<size_t>(k)]);
+    }
+    if (!caps_prepared) {
+      caps_prepared = true;
+      if (want_caps) {
+        ON_Plane plane;
+        if (!section.IsPlanar(&plane, 1e-8 * CurveScale(section))) Fail(caller, "cap requested but the section is not planar");
+        if (std::fabs(ON_DotProduct(plane.zaxis, frames[0].t)) <= 1e-9) {
+          Fail(caller, "the section's plane contains the rail tangent at the start - the sweep is flat there");
+        }
+        ON_Plane about_t(plane.origin, frames[0].t);
+        if (SignedAreaAbout(section, about_t) < 0.0) ReverseKeepDomain(section);
+      }
+    }
+    // The section frame's "x" axis at station k: the frame's reference normal turned by the station's twist and by the fixed
+    // angle that takes the frame at station 0 onto `scale_x_axis` (projected into the plane perpendicular to the rail
+    // tangent there; none given: the reference normal itself). "y" is tangent x x.
+    if (scale_x_axis) {
+      ON_3dVector ax = *scale_x_axis;
+      ax = ax - frames[0].t * ON_DotProduct(ax, frames[0].t);
+      if (!ax.Unitize()) Fail(caller, "scale_x_axis is zero or parallel to the rail tangent at the start - the section's x axis is undefined");
+      axis_phi = std::atan2(ON_DotProduct(ax, frames[0].s), ON_DotProduct(ax, frames[0].r));
+    }
+    std::vector<ON_NurbsCurve> copies;
+    copies.reserve(static_cast<size_t>(m));
+    for (int k = 0; k < m; ++k) {
+      ON_NurbsCurve ck = section;
+      bool identity = false;
+      const ON_Xform xf = station_xform(frames[0], frames[static_cast<size_t>(k)], fractions[static_cast<size_t>(k)], &identity);
+      if (!identity || k > 0) ck.Transform(xf);
+      copies.push_back(std::move(ck));
+    }
+    MakeCompatible(copies, caller);  // no-op for rigid+scaled copies; keeps one code path
+    if (m == 2) {
+      wall = RuledBetween(copies[0], copies[1], 0.0, 1.0, caller);
+    } else {
+      // Stations are equally spaced in arc length, so the natural station
+      // parameter is uniform; the chord-length average agrees for a rigid
+      // sweep and is used for consistency with Loft().
+      params_v = SkinParameters(copies, wrap, &period, caller);
+      wall = corner_idx.empty() ? SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller)
+                                : SkinSectionsC0(copies, corner_idx, 3, params_v, caller);
+    }
+    ++rep.rounds;
+    rep.stations = m;
+    if (rep.rounds == 1) rep.stations_initial = m;
+    rep.corner_stations = static_cast<int>(corner_idx.size());
+    if (!adaptive && !measure_only) break;
+
+    // ---- measure the wall against the exact swept section ----------------------------------------------------------
+    constexpr int kU = 48;  // points of every cross-section
+    const ON_Interval du = wall->Domain(0);
+    const ON_Interval dv = wall->Domain(1);
+    const ON_Interval ds = section.Domain();
+    std::vector<ON_3dPoint> base_pts(kU);
+    std::vector<double> us(kU);
+    for (int j = 0; j < kU; ++j) {
+      base_pts[static_cast<size_t>(j)] = section.PointAt(ds.ParameterAt(static_cast<double>(j) / (kU - 1)));
+      us[static_cast<size_t>(j)] = du.ParameterAt(static_cast<double>(j) / (kU - 1));
+    }
+    const Frame ref0 = roadlike_up ? road_frame(ref.At(params[0], 0.0)) : ref.At(params[0], 0.0);
+    // v range of interval k (station k to k + 1; the last interval of a closed skin runs to the period)
+    const int nint = wrap ? m : m - 1;
+    auto v_of_station = [&](int k) { return m == 2 ? dv.ParameterAt(k == 0 ? 0.0 : 1.0) : (k < m ? params_v[static_cast<size_t>(k)] : (wrap ? period : 1.0)); };
+    auto f_of_station = [&](int k) { return k < m ? fractions[static_cast<size_t>(k)] : 1.0; };
+    std::vector<double> ierr(static_cast<size_t>(nint), 0.0);
+    double max_station = 0.0, max_between = 0.0, max_break = 0.0, worst_f = 0.0, worst_d = -1.0;
+    rep.samples = 0;
+    // Distance of the exact section at fraction f (rail parameter t) to the wall within v in [va, vb], worst over u.
+    auto section_error = [&](double f, double t, double va, double vb) {
+      Frame fk = ref.At(t, f);
+      if (roadlike_up) fk = road_frame(fk);
+      const ON_Xform xf = station_xform(ref0, fk, f, nullptr);
+      double worst = 0.0;
+      for (int j = 0; j < kU; ++j) {
+        worst = std::max(worst, WallDistanceAlongV(*wall, us[static_cast<size_t>(j)], xf * base_pts[static_cast<size_t>(j)], va, vb));
+      }
+      rep.samples += kU;
+      return worst;
+    };
+    auto note = [&](int k, double d, double f) {
+      ierr[static_cast<size_t>(k)] = std::max(ierr[static_cast<size_t>(k)], d);
+      if (d > worst_d) {
+        worst_d = d;
+        worst_f = f;
+      }
+    };
+    auto is_break_station = [&](int k) {
+      for (const double b : breakpoint_fractions) {
+        if (std::fabs(fractions[static_cast<size_t>(k)] - b) < 1e-8) return true;
+      }
+      return false;
+    };
+    for (int k = 0; k < m; ++k) {
+      // at the station: the best of the two neighbouring intervals' ranges (an upper bound of the distance to the wall)
+      double d = std::numeric_limits<double>::infinity();
+      const int prev = k > 0 ? k - 1 : (wrap ? m - 1 : -1);
+      const int next = k < nint ? k : -1;
+      if (prev >= 0) d = std::min(d, section_error(fractions[static_cast<size_t>(k)], params[static_cast<size_t>(k)], v_of_station(prev), v_of_station(prev + 1)));
+      if (next >= 0) d = std::min(d, section_error(fractions[static_cast<size_t>(k)], params[static_cast<size_t>(k)], v_of_station(next), v_of_station(next + 1)));
+      if (prev >= 0) note(prev, d, fractions[static_cast<size_t>(k)]);
+      if (next >= 0) note(next, d, fractions[static_cast<size_t>(k)]);
+      max_station = std::max(max_station, d);
+      if (is_break_station(k)) max_break = std::max(max_break, d);
+    }
+    for (int k = 0; k < nint; ++k) {
+      const double f0 = f_of_station(k), f1 = f_of_station(k + 1), va = v_of_station(k), vb = v_of_station(k + 1);
+      for (const double s : {0.25, 0.5, 0.75}) {
+        const double f = f0 + s * (f1 - f0);
+        const double d = section_error(f, table.ParamAtFraction(f), va, vb);
+        note(k, d, f);
+        max_between = std::max(max_between, d);
+      }
+    }
+    for (const double b : breakpoint_fractions) {
+      int i = -1;
+      for (int k = 0; k < m; ++k) {
+        if (std::fabs(fractions[static_cast<size_t>(k)] - b) < 1e-8) i = k;
+      }
+      if (i < 0) continue;  // (dropped as a near-duplicate of a neighbouring station)
+      if (i > 0) {
+        const double f = fractions[static_cast<size_t>(i)] - 0.02 * (fractions[static_cast<size_t>(i)] - fractions[static_cast<size_t>(i) - 1]);
+        const double d = section_error(f, table.ParamAtFraction(f), v_of_station(i - 1), v_of_station(i));
+        note(i - 1, d, f);
+        max_break = std::max(max_break, d);
+      }
+      if (i + 1 < m || wrap) {
+        const double f1 = f_of_station(i + 1);
+        const double f = fractions[static_cast<size_t>(i)] + 0.02 * (f1 - fractions[static_cast<size_t>(i)]);
+        const double d = section_error(f, table.ParamAtFraction(f), v_of_station(i), v_of_station(i + 1));
+        note(i, d, f);
+        max_break = std::max(max_break, d);
+      }
+    }
+    rep.max_station_deviation = max_station;
+    rep.max_between_station_deviation = max_between;
+    rep.max_breakpoint_deviation = max_break;
+    rep.max_deviation = std::max(std::max(max_station, max_between), max_break);
+    rep.worst_fraction = worst_f;
+    if (rep.max_deviation < best_dev) {
+      best_dev = rep.max_deviation;
+      best_stations = m;
+      best_where = worst_f;
+    }
+    if (!adaptive) break;  // measure-only
+    rep.met = rep.max_deviation <= tolerance;
+    if (rep.met) break;
+    std::vector<std::pair<double, int>> want;
+    for (int k = 0; k < nint; ++k) {
+      if (ierr[static_cast<size_t>(k)] > tolerance) want.push_back({ierr[static_cast<size_t>(k)], k});
+    }
+    if (bisect(want) == 0) {
+      finish_report();
+      char buf[512];
+      std::snprintf(buf, sizeof(buf),
+                    "the swept surface cannot be brought within the tolerance %.3g with at most %d stations: the best measured deviation from the exact "
+                    "swept section is %.3g at %d stations (worst near rail fraction %.4f; the last build, %d stations, measured %.3g) - "
+                    "raise max_stations or the tolerance; no surface is returned because it would not be verified",
+                    tolerance, max_stations, best_dev, best_stations, best_where, m, rep.max_deviation);
+      Fail(caller, buf);
+    }
   }
+  finish_report();
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
