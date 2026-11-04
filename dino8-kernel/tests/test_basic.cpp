@@ -66908,6 +66908,31 @@ void TestFilletConvexEdgesMergesTangentChainSplitEdge() {
         "a three-segment collinear chain also merges down to one fillet, matching the single-edge reference");
 }
 
+// FilletConvexEdgesRadii on the same split-edge fixture: the two collinear halves of ONE straight run (they meet at a
+// point where only they are filleted) merge into one constant-radius fillet when their radii agree, and are refused,
+// naming the reason, when they differ (a step in radius along one edge is not a constant-radius fillet).
+void TestFilletConvexEdgesRadiiRefusesARadiusStepAlongOneStraightRun() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgesRadii;
+  using dino8::kernel::Point3d;
+  const Point3d p000(0, 0, 0), p100(1, 0, 0), p010(0, 1, 0), p110(1, 1, 0);
+  const Point3d p001(0, 0, 1), p101(1, 0, 1), p011(0, 1, 1), p111(1, 1, 1);
+  const Point3d pmid(0.5, 0, 1);
+  const std::vector<Brep::PlanarFace> split_faces = {
+      ChamferTestPlanarFace({p000, p010, p110, p100}),        ChamferTestPlanarFace({p001, pmid, p101, p111, p011}),
+      ChamferTestPlanarFace({p000, p100, p101, pmid, p001}),  ChamferTestPlanarFace({p011, p111, p110, p010}),
+      ChamferTestPlanarFace({p000, p001, p011, p010}),        ChamferTestPlanarFace({p100, p110, p111, p101}),
+  };
+  const Brep split = Brep::FromPlanarFaces(split_faces);
+  std::string why_same, why_step;
+  try { (void)FilletConvexEdgesRadii(split, {{p001, pmid, 0.3}, {pmid, p101, 0.3}}); } catch (const std::exception& e) { why_same = e.what(); }
+  Check(why_same.empty(), ("equal radii on the two halves merge into one fillet: " + why_same).c_str());
+  try { (void)FilletConvexEdgesRadii(split, {{p001, pmid, 0.2}, {pmid, p101, 0.3}}); } catch (const std::exception& e) { why_step = e.what(); }
+  Check(why_step.find("different radii") != std::string::npos && why_step.find("constant-radius") != std::string::npos &&
+            why_step.find("FilletConvexEdgeLaw") != std::string::npos,
+        ("a 0.2 / 0.3 step along one straight run is refused naming why: " + why_step).c_str());
+}
+
 void TestFilletConvexEdgesRejectsUnsupportedConfigurations() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConvexEdges;
@@ -99259,7 +99284,8 @@ void TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRe
     const Brep a = FilletConvexEdges(box, corner, 2.0);
     const Brep b = FilletConvexEdgesRadii(box, {{corner[0].first, corner[0].second, 2.0}, {corner[1].first, corner[1].second, 2.0}, {corner[2].first, corner[2].second, 2.0}});
     Check(closed_solid(b) && b.MixedFaces().spherical.size() == 1, "[per-edge radii: equal radii at a corner] still the exact spherical corner");
-    Check(std::fabs(removed_of(a) - removed_of(b)) < 1e-9, "[per-edge radii: equal radii at a corner] same volume as FilletConvexEdges");
+    Check(a.FaceCount() == b.FaceCount() && std::fabs(a.TessellateToClosedMesh(24, 24).Volume() - b.TessellateToClosedMesh(24, 24).Volume()) < 1e-9,
+          "[per-edge radii: equal radii at a corner] same face count and volume as FilletConvexEdges");
   }
   // different radii at one trihedral corner: refused, naming why
   for (const std::vector<double>& r : {std::vector<double>{1.0, 2.0, 3.0}, std::vector<double>{2.0, 2.0, 2.5}}) {
@@ -105138,6 +105164,7 @@ int main() {
   RunTest("TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds", TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds);
   RunTest("TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge", TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge);
   RunTest("TestFilletConvexEdgesMergesTangentChainSplitEdge", TestFilletConvexEdgesMergesTangentChainSplitEdge);
+  RunTest("TestFilletConvexEdgesRadiiRefusesARadiusStepAlongOneStraightRun", TestFilletConvexEdgesRadiiRefusesARadiusStepAlongOneStraightRun);
   RunTest("TestFilletConvexEdgesRejectsUnsupportedConfigurations", TestFilletConvexEdgesRejectsUnsupportedConfigurations);
   RunTest("TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed", TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed);
   RunTest("TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope", TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope);
