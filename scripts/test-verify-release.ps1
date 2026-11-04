@@ -23,12 +23,14 @@ $script:checks = 0
 
 function Get-Hash256([string]$p) { (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() }
 
+# The fixture's two files are named .zip on purpose: verify-release.ps1 asks Windows to validate any .exe's Authenticode
+# signature, which needs a real PE file; this test is about checksums and signature bundles, not Authenticode.
 function New-Release([string]$Dir) {
   if (Test-Path -LiteralPath $Dir) { Remove-Item -Recurse -Force -LiteralPath $Dir }
   New-Item -ItemType Directory -Path $Dir | Out-Null
   $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
   $sums = @()
-  foreach ($spec in @(@('Dino8Setup-0.0.0-test.exe', 20000), @('Dino8-0.0.0-test-win64.zip', 30000))) {
+  foreach ($spec in @(@('Dino8Setup-0.0.0-test.zip', 20000), @('Dino8-0.0.0-test-win64.zip', 30000))) {
     $b = New-Object byte[] ([int]$spec[1])
     $rng.GetBytes($b)
     $p = Join-Path $Dir $spec[0]
@@ -61,7 +63,7 @@ function Expect-Fail([string]$Label, [string]$Text, [string[]]$VerifyArgs) {
 
 try {
   $rel = Join-Path $work 'rel'
-  $exe = Join-Path $rel 'Dino8Setup-0.0.0-test.exe'
+  $exe = Join-Path $rel 'Dino8Setup-0.0.0-test.zip'
   $zip = Join-Path $rel 'Dino8-0.0.0-test-win64.zip'
 
   Write-Host '== positive control (must PASS)'
@@ -83,14 +85,14 @@ try {
   $bad = '0' * 64
   New-Release $rel
   Get-ChildItem -LiteralPath $rel -Filter '*.sha256' | Remove-Item -Force
-  $lines = Get-Content -LiteralPath (Join-Path $rel 'SHA256SUMS') | ForEach-Object { if ($_ -match 'Dino8Setup') { "$bad  Dino8Setup-0.0.0-test.exe" } else { $_ } }
+  $lines = Get-Content -LiteralPath (Join-Path $rel 'SHA256SUMS') | ForEach-Object { if ($_ -match 'Dino8Setup') { "$bad  Dino8Setup-0.0.0-test.zip" } else { $_ } }
   $lines | Set-Content -LiteralPath (Join-Path $rel 'SHA256SUMS') -Encoding ascii
   Expect-Fail 'wrong entry in SHA256SUMS only' 'MISMATCH vs SHA256SUMS' @('-SkipCosign', $exe)
 
   New-Release $rel
   Remove-Item -Force -LiteralPath (Join-Path $rel 'SHA256SUMS')
-  "$bad  Dino8Setup-0.0.0-test.exe" | Set-Content -LiteralPath "$exe.sha256" -Encoding ascii
-  Expect-Fail 'wrong entry in <file>.sha256 only' 'MISMATCH vs Dino8Setup-0.0.0-test.exe.sha256' @('-SkipCosign', $exe)
+  "$bad  Dino8Setup-0.0.0-test.zip" | Set-Content -LiteralPath "$exe.sha256" -Encoding ascii
+  Expect-Fail 'wrong entry in <file>.sha256 only' 'MISMATCH vs Dino8Setup-0.0.0-test.zip.sha256' @('-SkipCosign', $exe)
 
   New-Release $rel
   Get-ChildItem -LiteralPath $rel -Filter '*.sha256' | Remove-Item -Force
@@ -105,7 +107,17 @@ try {
 
   Write-Host '== fails closed on the signature (checksums are intact here)'
   New-Release $rel
-  Expect-Fail 'no .sigstore.json bundle (no -SkipCosign)' '' @($rel)
+  if (Get-Command cosign -ErrorAction SilentlyContinue) {
+    Expect-Fail 'no .sigstore.json bundle (no -SkipCosign)' 'no signature bundle' @($rel)
+  } else {
+    # Without cosign the verifier fails closed for a different reason ('cosign: not installed'); that is not the missing-bundle branch,
+    # so it is not counted as a check of it (scripts/test-verify-release.sh covers the bundle branch on Linux with cosign installed).
+    Write-Host '  SKIP  missing-bundle case: cosign is not installed on this runner'
+    $script:checks++
+    $r = Invoke-Verify @($rel)
+    if ($r.Code -eq 1 -and $r.Output.Contains('cosign: not installed')) { Write-Host '  PASS  without cosign the verifier fails closed (exit 1, says cosign is not installed)' }
+    else { Write-Host "  FAIL  without cosign the verifier did not fail closed (exit $($r.Code))"; Write-Host $r.Output; $script:failures++ }
+  }
 } finally {
   Remove-Item -Recurse -Force -LiteralPath $work -ErrorAction SilentlyContinue
 }
