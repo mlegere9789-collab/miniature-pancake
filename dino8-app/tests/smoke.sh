@@ -13076,18 +13076,8 @@ unx_len 14 '= 393\.70[0-9]* Inches' "step_10_m_into_inch_document_becomes_393.70
 unx_len 15 '= 10 Inches' "iges_inch_file_into_inch_document_is_untouched_10_in"
 unx_len 16 '= 1 Millimeters' "app_survived_the_truncated_files_and_a_fresh_document_is_millimetres"
 
-# >>> sections/*.sh sourced here
-# Section files in tests/sections/ (see README_sections.md) are sourced, in sorted (C-locale) order, into THIS shell, so
-# they see every helper and variable above (BIN, HERE, TMP, TMPW, HEREW, OUT, fail, check, near, ...) and set `fail=1`
-# on a failure like any inline section. New sections go in their own file there instead of being appended to this file.
-if [ -d "$HERE/sections" ]; then
-  while IFS= read -r _sec_file; do
-    [ -f "$_sec_file" ] && . "$_sec_file"
-  done < <(printf '%s\n' "$HERE"/sections/*.sh | LC_ALL=C sort | grep -v '[*]')
-fi
-
 # ---------------------------------------------------------------------------
-# Body sectioning (kernel: Feature operations): Section / Contour of a B-rep take the EXACT route
+# BSEC_: Body sectioning (kernel: Feature operations): Section / Contour of a B-rep take the EXACT route
 # (kernel::SectionBrepByPlaneJoined: the plane is intersected with every face's own surface and the pieces are joined
 # into one NURBS curve per physical contour); a mesh object still slices its mesh (see bsec_script.txt for the cases).
 # Everything is MEASURED from the app's own output and compared with a closed form: the sphere cap circle
@@ -13490,5 +13480,15 @@ hgb_vol fresh_mesh 1 874.34 "fresh process: the mesh-fallback document opens as 
 hgb_vol fresh_mesh 2 874.34 "fresh process: moved back, the sealed B-rep is rebuilt"
 hgb_has fresh_mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
 rm -f "$HGB_DIR"/*.3dm 2>/dev/null || true
+
+# >>> sections/*.sh sourced here
+# Section files in tests/sections/ (see README_sections.md) are sourced, in sorted (C-locale) order, into THIS shell, so
+# they see every helper and variable above (BIN, HERE, TMP, TMPW, HEREW, OUT, fail, check, near, ...) and set `fail=1`
+# on a failure like any inline section. New sections go in their own file there instead of being appended to this file.
+if [ -d "$HERE/sections" ]; then
+  while IFS= read -r _sec_file; do
+    [ -f "$_sec_file" ] && . "$_sec_file"
+  done < <(printf '%s\n' "$HERE"/sections/*.sh | LC_ALL=C sort | grep -v '[*]')
+fi
 
 exit $fail
