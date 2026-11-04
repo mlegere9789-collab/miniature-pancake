@@ -2189,7 +2189,15 @@ class NurbsSurface {
   // already applies: IsPlanar()/IsSphere()/IsCylinder()/IsCone()/
   // IsTorus()'s own `ON_ZERO_TOLERANCE` default is far too tight for
   // anything but a hand-built exact primitive.
-  Result OffsetAnalytic(double distance, NurbsSurface& out, double tolerance = -1.0) const;
+  //
+  // On Result::Failed, `refusal_reason` (optional) says why, and
+  // `offset_degenerate` (optional) is true when the cause is the GEOMETRY of
+  // the offset - the offset radius would reach zero or below, a cone would
+  // fold through its axis or straddles its apex, a torus would become a
+  // self-intersecting spindle - as opposed to this closed-form construction
+  // merely not being completable for this parametrization.
+  Result OffsetAnalytic(double distance, NurbsSurface& out, double tolerance = -1.0,
+                        std::string* refusal_reason = nullptr, bool* offset_degenerate = nullptr) const;
 
   // The general, explicitly-approximate offset OffsetAnalytic()'s own doc
   // comment above promises for every surface that isn't one of its five
@@ -2447,14 +2455,23 @@ class NurbsSurface {
   //    primitive form does not share), the tolerance-controlled
   //    OffsetRefit() below is used instead (`info->exact = false`),
   //    never a silently mis-parametrized "exact" result.
-  //    If OffsetAnalytic() refuses a recognised analytic surface - the
+  //    The preferred exact construction maps the input's OWN control net
+  //    (a surface of revolution's offset is the revolution of its
+  //    profile's offset, an affine map of the profile control points),
+  //    so the input's seam position, partial extent - including a patch
+  //    that straddles any construction frame's angle zero - sense, domain,
+  //    knots and weights are kept. OffsetAnalytic()'s canonical form
+  //    (re-seamed so a patch never straddles its frame's angle zero) is
+  //    the second choice.
+  //    If neither exact construction applies to the given parametrization,
+  //    the tolerance-controlled OffsetRefit() is used and reported as a
+  //    fit with its measured deviation (`info->exact = false`) - never as
+  //    exact. Only when the offset itself is not a regular surface - the
   //    offset radius would reach zero or below, a torus would become a
-  //    self-intersecting spindle, a cone patch straddles its apex, or a
-  //    partial patch straddles a circle parametrization's seam - this
-  //    returns Result::Failed with that stated in `refusal_reason`; it
-  //    does NOT fall through to the fit, because a fit of a surface
-  //    whose true offset folds through its own axis would be a
-  //    degraded body.
+  //    self-intersecting spindle, a cone would fold through its axis or
+  //    straddles its apex - does this return Result::Failed, with that
+  //    stated in `refusal_reason`, because no construction can represent
+  //    it.
   //  - Any other surface (freeform, rational or not) goes to
   //    OffsetRefit(): the fit error is controlled by `tolerance` and is
   //    measured against the exact parallel-surface locus

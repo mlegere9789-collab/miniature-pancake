@@ -96230,6 +96230,459 @@ void TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched() {
 }  // namespace offset_unified_tests
 
 // ---------------------------------------------------------------------------
+// Offset parity: torus and plane through the unified Offset() entry point in
+// every presentation (transposed, reversed, re-domained, partial, straddling
+// the construction frame's angle-zero seam, +/- distance, composition), each
+// measured against a CLOSED FORM that does not use the kernel's own offset
+// code (tube distance, plane height), plus negative controls that prove the
+// checks can fail. Partial sphere/cylinder/cone patches that straddle the
+// recogniser's angle-zero seam are required to take the exact path too.
+// ---------------------------------------------------------------------------
+namespace offset_parity_tests {
+
+using dino8::kernel::Interval;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+using dino8::kernel::Vector3d;
+using offset_unified_tests::Lcg;
+using offset_unified_tests::OffsetVariant;
+using offset_unified_tests::OffsetVariantsOf;
+using offset_unified_tests::OffsetWorstAgainstLocus;
+
+// A torus form with its major seam (u zero) rotated by `major_rot` and its
+// tube seam (v zero) rotated by `minor_phase` - the parametrizations an
+// importer or a previous Trim can hand over. Built here directly from
+// ON_RevSurface so it shares no code with the kernel's offset.
+NurbsSurface PhasedTorus(const ON_Plane& plane, double R, double a, double major_rot, double minor_phase) {
+  ON_Plane pl = plane;
+  pl.Rotate(major_rot, plane.zaxis, plane.origin);
+  const ON_Torus torus(pl, R, a);
+  ON_RevSurface rev;
+  torus.RevSurfaceForm(&rev);
+  ON_Circle profile = torus.MinorCircleRadians(0.0);
+  profile.Rotate(minor_phase, profile.plane.zaxis, profile.plane.origin);
+  delete rev.m_curve;
+  rev.m_curve = new ON_ArcCurve(profile);
+  ON_NurbsSurface ns;
+  rev.GetNurbForm(ns);
+  NurbsSurface s;
+  s.raw() = ns;
+  return s;
+}
+
+struct TorusRef {
+  Point3d c;
+  Vector3d axis;
+  double R;
+  // closed-form distance of a point from the tube centre circle
+  double Tube(const Point3d& p) const {
+    const Vector3d r = p - c;
+    const double h = ON_DotProduct(r, axis);
+    const Vector3d perp = r - h * axis;
+    return std::hypot(perp.Length() - R, h);
+  }
+  // +1 if moving along `n` at `p` moves away from the tube centre circle, else -1 (closed form).
+  double OutwardSign(const Point3d& p, const Vector3d& n) const {
+    const Vector3d r = p - c;
+    const double h = ON_DotProduct(r, axis);
+    Vector3d perp = r - h * axis;
+    perp.Unitize();
+    const Point3d centre = c + R * perp;
+    return ON_DotProduct(n, p - centre) >= 0.0 ? 1.0 : -1.0;
+  }
+};
+
+TorusRef RefFor(const ON_Plane& pl, double R) {
+  Vector3d ax = pl.zaxis;
+  ax.Unitize();
+  return TorusRef{pl.origin, ax, R};
+}
+
+// Whether an offset of `base` by d keeps the tube radius in (0, R): the same
+// closed-form criterion the refusals are checked against.
+bool TorusOffsetFeasible(const NurbsSurface& base, const TorusRef& ref, double a, double d) {
+  const Interval du = base.Domain(0), dv = base.Domain(1);
+  const double um = 0.5 * (du.min + du.max), vm = 0.5 * (dv.min + dv.max);
+  const double new_a = a + ref.OutwardSign(base.PointAt(um, vm), base.NormalAt(um, vm)) * d;
+  return new_a > 1e-6 && new_a < ref.R - 1e-6;
+}
+
+// Offsets `base` by d through Offset(), then checks: exact path, result ==
+// base + d*N_base pointwise (random interior (u,v) of the INPUT's domain),
+// and every sampled result point at the closed-form tube radius a + s*d.
+bool CheckTorusOffset(const NurbsSurface& base, const TorusRef& ref, double a, double d, const std::string& nm,
+                      double& closed_form, double& locus) {
+  NurbsSurface out;
+  NurbsSurface::OffsetInfo info;
+  const Result r = base.Offset(d, out, -1.0, &info);
+  Check(r == Result::Ok, (nm + ": offset succeeds").c_str());
+  if (r != Result::Ok) {
+    std::printf("  %s refused: %s\n", nm.c_str(), info.refusal_reason.c_str());
+    return false;
+  }
+  Check(info.exact && info.achieved_deviation == 0.0, (nm + ": exact path, not a fit").c_str());
+  Check(out.raw().IsValid(), (nm + ": result valid").c_str());
+  const Interval bu = base.Domain(0), bv = base.Domain(1), ou = out.Domain(0), ov = out.Domain(1);
+  Check(std::fabs(ou.min - bu.min) < 1e-9 && std::fabs(ou.max - bu.max) < 1e-9 && std::fabs(ov.min - bv.min) < 1e-9 &&
+            std::fabs(ov.max - bv.max) < 1e-9,
+        (nm + ": result is on the input's domain").c_str());
+  Lcg rng;
+  closed_form = 0.0;
+  for (int k = 0; k < 600; ++k) {
+    const double u = bu.min + (bu.max - bu.min) * (0.004 + 0.992 * rng.Next());
+    const double v = bv.min + (bv.max - bv.min) * (0.004 + 0.992 * rng.Next());
+    const Point3d p = base.PointAt(u, v);
+    const double s = ref.OutwardSign(p, base.NormalAt(u, v));
+    closed_form = std::max(closed_form, std::fabs(ref.Tube(out.PointAt(u, v)) - (a + s * d)));
+  }
+  locus = OffsetWorstAgainstLocus(base, out, d, 1500);
+  Check(closed_form < 1e-9, (nm + ": 600 points at the closed-form tube radius a + sign*d to 1e-9").c_str());
+  Check(locus < 1e-9, (nm + ": 1500 points on base + d*N_base to 1e-9").c_str());
+  return true;
+}
+
+double CompositionError(const NurbsSurface& base, double d1, double d2) {
+  NurbsSurface once, twice, direct;
+  if (base.Offset(d1, once, -1.0, nullptr) != Result::Ok || once.Offset(d2, twice, -1.0, nullptr) != Result::Ok ||
+      base.Offset(d1 + d2, direct, -1.0, nullptr) != Result::Ok) {
+    return std::numeric_limits<double>::infinity();
+  }
+  Lcg rng;
+  const Interval bu = base.Domain(0), bv = base.Domain(1);
+  double worst = 0.0;
+  for (int k = 0; k < 400; ++k) {
+    const double u = bu.min + (bu.max - bu.min) * (0.01 + 0.98 * rng.Next());
+    const double v = bv.min + (bv.max - bv.min) * (0.01 + 0.98 * rng.Next());
+    worst = std::max(worst, twice.PointAt(u, v).DistanceTo(direct.PointAt(u, v)));
+  }
+  return worst;
+}
+
+const ON_Plane kTorusPlane(ON_3dPoint(1.0, -2.0, 3.0), ON_3dVector(0.2, -0.3, 0.9));
+
+void TestTorusEveryPresentationBothSignsAndComposition() {
+  const double R = 5.0, a = 1.5;
+  const TorusRef ref = RefFor(kTorusPlane, R);
+  struct Fix { NurbsSurface s; const char* name; };
+  std::vector<Fix> fixtures;
+  fixtures.push_back({PhasedTorus(kTorusPlane, R, a, 0.0, 0.0), "torus std seams"});
+  fixtures.push_back({PhasedTorus(kTorusPlane, R, a, 1.1, 0.0), "torus u seam rotated 1.1"});
+  fixtures.push_back({PhasedTorus(kTorusPlane, R, a, 0.0, 2.3), "torus v seam rotated 2.3"});
+  fixtures.push_back({PhasedTorus(kTorusPlane, R, a, -2.7, -0.8), "torus both seams rotated"});
+  double worst_cf = 0.0, worst_locus = 0.0, worst_comp = 0.0;
+  int offsets = 0, refused_ok = 0;
+  const NurbsSurface sentinel = NurbsSurface::FromControlGrid(
+      {Point3d(7, 7, 7), Point3d(8, 7, 7), Point3d(7, 8, 7), Point3d(8, 8, 7)}, 2, 2, 1, 1);
+  for (const Fix& f : fixtures) {
+    for (const OffsetVariant& v : OffsetVariantsOf(f.s, f.name)) {
+      for (double d : {0.5, -0.5, 1.2, -1.0, 3.4, -1.4}) {
+        const std::string nm = v.name + " d=" + std::to_string(d);
+        if (TorusOffsetFeasible(v.s, ref, a, d)) {
+          double cf = 0.0, lo = 0.0;
+          if (CheckTorusOffset(v.s, ref, a, d, nm, cf, lo)) {
+            worst_cf = std::max(worst_cf, cf);
+            worst_locus = std::max(worst_locus, lo);
+            ++offsets;
+          }
+        } else {
+          NurbsSurface out = sentinel;
+          NurbsSurface::OffsetInfo info;
+          Check(v.s.Offset(d, out, -1.0, &info) == Result::Failed && !info.refusal_reason.empty() && out.CVCountU() == 2,
+                (nm + ": tube would collapse or become a spindle: refused with a reason, out untouched").c_str());
+          ++refused_ok;
+        }
+      }
+      const double comp = CompositionError(v.s, 0.4, -0.9);
+      worst_comp = std::max(worst_comp, comp);
+      Check(comp < 1e-9, (v.name + ": Offset(Offset(s,0.4),-0.9) == Offset(s,-0.5) to 1e-9").c_str());
+    }
+  }
+  std::printf("  torus full presentations: %d exact offsets (+%d correct refusals), worst closed-form error %g, worst pointwise error %g, worst composition error %g\n",
+              offsets, refused_ok, worst_cf, worst_locus, worst_comp);
+}
+
+// Partial and seam-straddling torus patches: the patch window slides around
+// BOTH angle origins, so some windows necessarily cross whatever angle zero
+// the recogniser's own fitted frame uses.
+void TestTorusPartialAndSeamStraddlingPatches() {
+  const double R = 5.0, a = 1.5;
+  const TorusRef ref = RefFor(kTorusPlane, R);
+  const double two_pi = 2.0 * ON_PI;
+  int offsets = 0, patches = 0;
+  double worst_cf = 0.0, worst_locus = 0.0, worst_comp = 0.0;
+  for (int k = 0; k < 12; ++k) {
+    const double rot = two_pi * k / 12.0;
+    // mode 0: u window slides; mode 1: v window slides; mode 2: both.
+    for (int mode = 0; mode < 3; ++mode) {
+      NurbsSurface s = PhasedTorus(kTorusPlane, R, a, mode != 1 ? rot : 0.0, mode != 0 ? rot : 0.0);
+      const Interval du = s.Domain(0), dv = s.Domain(1);
+      // Windows in domain units (arc length): ~1.3 rad of the major circle, ~1.4 rad of the tube.
+      const double u0 = du.min + 0.37 * (du.max - du.min);
+      const double v0 = dv.min + 0.21 * (dv.max - dv.min);
+      if (s.Trim(0, u0, u0 + 1.3 * R) != Result::Ok || s.Trim(1, v0, v0 + 1.4 * a) != Result::Ok) {
+        Check(false, "fixture: torus patch trim");
+        continue;
+      }
+      ++patches;
+      char tag[96];
+      std::snprintf(tag, sizeof tag, "torus patch rot=%.3f mode=%d", rot, mode);
+      for (const OffsetVariant& v : OffsetVariantsOf(s, tag)) {
+        if (v.name.find("u reversed") != std::string::npos && v.name.find("transposed") == std::string::npos) continue;
+        for (double d : {0.45, -0.7}) {
+          double cf = 0.0, lo = 0.0;
+          if (CheckTorusOffset(v.s, ref, a, d, v.name + " d=" + std::to_string(d), cf, lo)) {
+            worst_cf = std::max(worst_cf, cf);
+            worst_locus = std::max(worst_locus, lo);
+            ++offsets;
+          }
+        }
+        const double comp = CompositionError(v.s, 0.3, 0.2);
+        worst_comp = std::max(worst_comp, comp);
+        Check(comp < 1e-9, (v.name + ": composition 0.3 then 0.2 == 0.5 to 1e-9").c_str());
+      }
+    }
+  }
+  std::printf("  torus patches: %d patches, %d offsets all exact; worst closed-form %g, pointwise %g, composition %g\n", patches,
+              offsets, worst_cf, worst_locus, worst_comp);
+}
+
+void TestTorusNegativeControls() {
+  const double R = 5.0, a = 1.5;
+  const TorusRef ref = RefFor(kTorusPlane, R);
+  const NurbsSurface s = PhasedTorus(kTorusPlane, R, a, 0.4, 0.9);
+  const NurbsSurface sentinel = NurbsSurface::FromControlGrid(
+      {Point3d(7, 7, 7), Point3d(8, 7, 7), Point3d(7, 8, 7), Point3d(8, 8, 7)}, 2, 2, 1, 1);
+  // Refusals: tube collapse and spindle in both orientations (one of +d/-d is each); boundaries avoided.
+  int refused = 0, allowed = 0;
+  for (double d : {1.4, -1.4, 1.6, -1.6, 2.0, -2.0, 3.4, 3.6, 5.0, -5.0}) {
+    NurbsSurface out = sentinel;
+    NurbsSurface::OffsetInfo info;
+    const bool must_refuse = !TorusOffsetFeasible(s, ref, a, d);
+    const Result r = s.Offset(d, out, -1.0, &info);
+    Check((r == Result::Failed) == must_refuse,
+          ("torus d=" + std::to_string(d) + ": refused exactly when the tube would collapse (a'<=0) or become a spindle (a'>=R)").c_str());
+    if (r == Result::Failed) {
+      Check(!info.refusal_reason.empty() && out.CVCountU() == 2 && out.CVCountV() == 2,
+            ("torus d=" + std::to_string(d) + ": refusal carries a reason and leaves out untouched").c_str());
+      ++refused;
+    } else {
+      Check(info.exact, ("torus d=" + std::to_string(d) + ": the allowed offset is exact").c_str());
+      ++allowed;
+    }
+  }
+  std::printf("  torus refusal control: %d refused, %d allowed, each matching the closed-form criterion\n", refused, allowed);
+  Check(refused >= 5 && allowed >= 3, "control: the distance list exercises both refusals and successes");
+  // The check can fail: against the WRONG sign, the same correct result is off by 2|d|.
+  {
+    NurbsSurface out;
+    Check(s.Offset(0.5, out, -1.0, nullptr) == Result::Ok, "control: torus +0.5 offsets");
+    const Interval du = s.Domain(0), dv = s.Domain(1);
+    double min_wrong = 1e300;
+    Lcg rng;
+    for (int k = 0; k < 200; ++k) {
+      const double u = du.min + (du.max - du.min) * (0.01 + 0.98 * rng.Next());
+      const double v = dv.min + (dv.max - dv.min) * (0.01 + 0.98 * rng.Next());
+      const double sg = ref.OutwardSign(s.PointAt(u, v), s.NormalAt(u, v));
+      min_wrong = std::min(min_wrong, std::fabs(ref.Tube(out.PointAt(u, v)) - (a - sg * 0.5)));
+    }
+    std::printf("  negative control: closed-form check against the wrong sign has MIN error %g (correct check sees 2|d| = 1)\n", min_wrong);
+    Check(min_wrong > 0.999, "control: the tube-radius check against the opposite sign is off by 2|d| everywhere (it would reject a sign bug)");
+  }
+  // A torus with one control point moved is no torus: it must NOT be reported exact.
+  {
+    ON_NurbsSurface raw = s.raw();
+    ON_4dPoint cv;
+    raw.GetCV(3, 2, cv);
+    cv.x += 0.02 * cv.w;
+    cv.z += 0.02 * cv.w;
+    raw.SetCV(3, 2, cv);
+    NurbsSurface bent;
+    bent.raw() = raw;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    const Result r = bent.Offset(0.3, out, 1e-3, &info);
+    std::printf("  perturbed torus: result=%d exact=%d achieved_deviation=%g cv=%dx%d reason=%s\n", r == Result::Ok ? 1 : 0,
+                info.exact ? 1 : 0, info.achieved_deviation, out.CVCountU(), out.CVCountV(), info.refusal_reason.c_str());
+    // Never exact; either a fit whose measured deviation is within the tolerance, or an honest refusal that
+    // leaves `out` alone (the fit ceiling can legitimately be reached at a tight tolerance: measured below).
+    Check(!(r == Result::Ok && info.exact), "control: a perturbed torus is never reported exact");
+    if (r == Result::Ok) {
+      Check(info.achieved_deviation <= 1e-3 && info.achieved_deviation > 0.0, "control: the fit's measured deviation is positive and within 1e-3");
+    } else {
+      Check(!info.refusal_reason.empty() && out.CVCountU() == 0, "control: a refusal carries a reason and leaves out untouched");
+    }
+  }
+}
+
+// ---- plane ----
+
+// P(i,j) = O + x_i*U + y_j*V over an unequally spaced net; weights make it a rational planar patch.
+NurbsSurface PlanePatch(const ON_3dPoint& O, const ON_3dVector& U, const ON_3dVector& V, bool rational) {
+  ON_NurbsSurface ns(3, rational, 3, 4, 4, 5);
+  ns.MakeClampedUniformKnotVector(0, 1.0);
+  ns.MakeClampedUniformKnotVector(1, 1.0);
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 5; ++j) {
+      const double x = 1.0 * i + 0.1 * i * i, y = 0.3 * j * j + 0.4 * j;
+      const double w = rational ? 1.0 + 0.3 * i + 0.2 * j * (i % 2 + 1) : 1.0;
+      const ON_3dPoint p = O + x * U + y * V;
+      ns.SetCV(i, j, ON_4dPoint(w * p.x, w * p.y, w * p.z, w));
+    }
+  }
+  NurbsSurface s;
+  s.raw() = ns;
+  return s;
+}
+
+bool CheckPlaneOffset(const NurbsSurface& base, const ON_3dPoint& O, const ON_3dVector& n0, double d, const std::string& nm,
+                      double& plane_err, double& locus) {
+  NurbsSurface out;
+  NurbsSurface::OffsetInfo info;
+  const Result r = base.Offset(d, out, -1.0, &info);
+  Check(r == Result::Ok, (nm + ": offset succeeds").c_str());
+  if (r != Result::Ok) {
+    std::printf("  %s refused: %s\n", nm.c_str(), info.refusal_reason.c_str());
+    return false;
+  }
+  Check(info.exact && info.achieved_deviation == 0.0, (nm + ": exact path").c_str());
+  Check(out.raw().IsValid(), (nm + ": valid").c_str());
+  const Interval bu = base.Domain(0), bv = base.Domain(1), ou = out.Domain(0), ov = out.Domain(1);
+  Check(std::fabs(ou.min - bu.min) < 1e-9 && std::fabs(ou.max - bu.max) < 1e-9 && std::fabs(ov.min - bv.min) < 1e-9 &&
+            std::fabs(ov.max - bv.max) < 1e-9,
+        (nm + ": on the input's domain").c_str());
+  Lcg rng;
+  plane_err = 0.0;
+  for (int k = 0; k < 600; ++k) {
+    const double u = bu.min + (bu.max - bu.min) * (0.004 + 0.992 * rng.Next());
+    const double v = bv.min + (bv.max - bv.min) * (0.004 + 0.992 * rng.Next());
+    // closed form: signed height over the fixed plane, on the side the INPUT's own normal points to
+    const double side = ON_DotProduct(base.NormalAt(u, v), n0) >= 0.0 ? 1.0 : -1.0;
+    const double h = ON_DotProduct(out.PointAt(u, v) - O, n0);
+    plane_err = std::max(plane_err, std::fabs(h - side * d));
+  }
+  locus = OffsetWorstAgainstLocus(base, out, d, 1500);
+  Check(plane_err < 1e-9, (nm + ": 600 points at signed height side*d over the plane to 1e-9").c_str());
+  Check(locus < 1e-9, (nm + ": 1500 points on base + d*N_base to 1e-9").c_str());
+  return true;
+}
+
+void TestPlaneEveryPresentationBothSignsPartialAndComposition() {
+  const ON_3dPoint O(0.5, -1.0, 2.0);
+  const ON_3dVector U(1.0, 0.2, -0.1), V(-0.3, 1.1, 0.4);
+  ON_3dVector n0 = ON_CrossProduct(U, V);
+  n0.Unitize();
+  double worst_pl = 0.0, worst_locus = 0.0, worst_comp = 0.0;
+  int offsets = 0;
+  for (bool rational : {false, true}) {
+    for (int partial = 0; partial < 3; ++partial) {
+      NurbsSurface s = PlanePatch(O, U, V, rational);
+      if (partial == 1) {
+        s.Trim(0, 0.2, 0.7);
+        s.Trim(1, 0.35, 0.9);
+      } else if (partial == 2) {
+        s.Trim(0, 0.55, 1.0);
+      }
+      const std::string label = std::string(rational ? "rational plane" : "plane") +
+                                (partial == 0 ? " full" : (partial == 1 ? " trimmed uv" : " trimmed u"));
+      Check(s.raw().IsValid() && s.IsPlanar(1e-9), (label + ": fixture valid and planar").c_str());
+      for (const OffsetVariant& v : OffsetVariantsOf(s, label.c_str())) {
+        for (double d : {0.75, -0.75, 40.0, -1e-3}) {  // a plane never folds: any distance is allowed
+          double pe = 0.0, lo = 0.0;
+          if (CheckPlaneOffset(v.s, O, n0, d, v.name + " d=" + std::to_string(d), pe, lo)) {
+            worst_pl = std::max(worst_pl, pe);
+            worst_locus = std::max(worst_locus, lo);
+            ++offsets;
+          }
+        }
+        const double comp = CompositionError(v.s, 0.6, -2.1);
+        worst_comp = std::max(worst_comp, comp);
+        Check(comp < 1e-9, (v.name + ": Offset(Offset(s,0.6),-2.1) == Offset(s,-1.5) to 1e-9").c_str());
+      }
+    }
+  }
+  std::printf("  plane presentations: %d offsets, worst plane-height error %g, pointwise %g, composition %g\n", offsets, worst_pl,
+              worst_locus, worst_comp);
+  // Negative controls: +d and -d are different surfaces 2|d| apart; a lifted control point is not a plane.
+  {
+    const NurbsSurface s = PlanePatch(O, U, V, false);
+    NurbsSurface p, m;
+    Check(s.Offset(0.8, p, -1.0, nullptr) == Result::Ok && s.Offset(-0.8, m, -1.0, nullptr) == Result::Ok, "control: plane +/-0.8");
+    const double gap = p.PointAt(0.4, 0.6).DistanceTo(m.PointAt(0.4, 0.6));
+    Check(std::fabs(gap - 1.6) < 1e-9, "control: +d and -d results are 2|d| apart (sign is not ignored)");
+    ON_NurbsSurface raw = s.raw();
+    ON_4dPoint cv;
+    raw.GetCV(2, 2, cv);
+    cv.x += 0.02 * n0.x;
+    cv.y += 0.02 * n0.y;
+    cv.z += 0.02 * n0.z;
+    raw.SetCV(2, 2, cv);
+    NurbsSurface bent;
+    bent.raw() = raw;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(bent.Offset(0.1, out, 1e-3, &info) == Result::Ok && !info.exact && info.achieved_deviation <= 1e-3,
+          "control: a plane with one control point lifted 0.02 is not exact; it is a fit within 1e-3");
+  }
+}
+
+// ---- gap (1): partial sphere / cylinder / cone patches around the construction frame's angle zero ----
+
+void TestPartialSphereCylinderConeSeamStraddlingAreExact() {
+  const ON_Plane pl(ON_3dPoint(0.7, -0.4, 1.1), ON_3dVector(0.25, 0.1, 1.0));
+  const double two_pi = 2.0 * ON_PI;
+  double worst = 0.0;
+  int cases = 0;
+  for (int k = 0; k < 16; ++k) {
+    const double rot = two_pi * k / 16.0;
+    ON_Plane r = pl;
+    r.Rotate(rot, pl.zaxis, pl.origin);
+    for (int family = 0; family < 3; ++family) {
+      ON_NurbsSurface raw;
+      if (family == 0) {
+        // ON_Sphere's NURBS form is always built on the world frame: tilt it onto `pl`, then rotate its longitude zero by `rot`.
+        ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(raw);
+        ON_Xform to_pl;
+        to_pl.Rotation(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)),
+                       ON_Plane(pl.origin, pl.xaxis, pl.yaxis));
+        ON_Xform spin;
+        spin.Rotation(rot, pl.zaxis, pl.origin);
+        raw.Transform(spin * to_pl);
+      } else if (family == 1) {
+        ON_Cylinder(ON_Circle(r, 2.5), 4.0).GetNurbForm(raw);
+      } else {
+        ON_Cone(r, 4.0, 2.0).GetNurbForm(raw);
+      }
+      NurbsSurface s;
+      s.raw() = raw;
+      const Interval du = s.Domain(0), dv = s.Domain(1);
+      const double u0 = du.min + 0.31 * (du.max - du.min);
+      s.Trim(0, u0, u0 + 0.22 * (du.max - du.min));  // ~1.4 rad
+      if (family == 0) s.Trim(1, dv.min + 0.25 * (dv.max - dv.min), dv.min + 0.7 * (dv.max - dv.min));
+      else if (family == 2) s.Trim(1, dv.min + 0.35 * (dv.max - dv.min), dv.min + 0.9 * (dv.max - dv.min));
+      const char* fam = family == 0 ? "sphere" : (family == 1 ? "cylinder" : "cone");
+      for (const OffsetVariant& v : OffsetVariantsOf(s, (std::string(fam) + " patch rot " + std::to_string(k)).c_str())) {
+        if (v.name.find("u reversed") != std::string::npos && v.name.find("transposed") == std::string::npos) continue;
+        for (double d : {0.35, -0.4}) {
+          NurbsSurface out;
+          NurbsSurface::OffsetInfo info;
+          const Result res = v.s.Offset(d, out, -1.0, &info);
+          Check(res == Result::Ok && info.exact, (v.name + " d=" + std::to_string(d) + ": exact (no refusal, no fit)").c_str());
+          if (res != Result::Ok) { std::printf("  %s refused: %s\n", v.name.c_str(), info.refusal_reason.c_str()); continue; }
+          const double w = OffsetWorstAgainstLocus(v.s, out, d, 800);
+          worst = std::max(worst, w);
+          ++cases;
+          Check(w < 1e-9, (v.name + " d=" + std::to_string(d) + ": 800 points on base + d*N_base to 1e-9").c_str());
+        }
+      }
+    }
+  }
+  std::printf("  sphere/cylinder/cone patches sliding around the frame seam: %d exact offsets, worst pointwise error %g\n", cases, worst);
+}
+
+}  // namespace offset_parity_tests
+
+// ---------------------------------------------------------------------------
 // Boolean operations: sealed general-boolean results (BooleanCombineGeneralSealed,
 // OpenSewnKeyholes, Brep::VolumeOfSealedSolid). Every number is measured
 // against a closed form: the exact B-rep volume/area of the sealed body, the
@@ -99059,6 +99512,15 @@ int main() {
           offset_unified_tests::TestArcOffsetByTiltedPlaneMeetsToleranceAgainstClosedForm);
   RunTest("offset_unified_tests::TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched",
           offset_unified_tests::TestExplicitPlaneCurveOffsetRefusalsCarryReasonsAndLeaveOutUntouched);
+  RunTest("offset_parity_tests::TestTorusEveryPresentationBothSignsAndComposition",
+          offset_parity_tests::TestTorusEveryPresentationBothSignsAndComposition);
+  RunTest("offset_parity_tests::TestTorusPartialAndSeamStraddlingPatches",
+          offset_parity_tests::TestTorusPartialAndSeamStraddlingPatches);
+  RunTest("offset_parity_tests::TestTorusNegativeControls", offset_parity_tests::TestTorusNegativeControls);
+  RunTest("offset_parity_tests::TestPlaneEveryPresentationBothSignsPartialAndComposition",
+          offset_parity_tests::TestPlaneEveryPresentationBothSignsPartialAndComposition);
+  RunTest("offset_parity_tests::TestPartialSphereCylinderConeSeamStraddlingAreExact",
+          offset_parity_tests::TestPartialSphereCylinderConeSeamStraddlingAreExact);
 
   RunTest("sealed_boolean_tests::TestSealedBoxCylinderThroughHoleHasRealInnerLoopsAndExactVolume",
           sealed_boolean_tests::TestSealedBoxCylinderThroughHoleHasRealInnerLoopsAndExactVolume);

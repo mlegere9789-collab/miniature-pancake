@@ -1251,6 +1251,172 @@ bool AlignOffsetToBase(const NurbsSurface& base, double d, NurbsSurface& cand, d
   return worst <= tol;
 }
 
+
+// Largest distance from `cand(u,v)` to base(u,v) + d*N_base(u,v) on a dense
+// half-cell grid of BASE's domain (8 per control point, 65..201 per
+// direction): the number reported as the closed-form path's deviation.
+// Infinity if an evaluation throws.
+double MeasureOffsetDeviation(const NurbsSurface& base, double d, const NurbsSurface& cand) {
+  const Interval du = base.Domain(0);
+  const Interval dv = base.Domain(1);
+  const int nu = std::clamp(8 * std::max(base.CVCountU(), cand.CVCountU()), 65, 201);
+  const int nv = std::clamp(8 * std::max(base.CVCountV(), cand.CVCountV()), 65, 201);
+  double worst = 0.0;
+  try {
+    for (int i = 0; i < nu; ++i) {
+      const double u = du.min + (du.max - du.min) * (i + 0.5) / nu;
+      for (int j = 0; j < nv; ++j) {
+        const double v = dv.min + (dv.max - dv.min) * (j + 0.5) / nv;
+        worst = std::max(worst, cand.PointAt(u, v).DistanceTo(base.PointAt(u, v) + d * base.NormalAt(u, v)));
+      }
+    }
+  } catch (const std::runtime_error&) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return worst;
+}
+
+// The exact offset of a sphere / cylinder / cone / torus built DIRECTLY on
+// the input's own control net, so it keeps the input's parametrization
+// whatever it is - seam position, partial extent (including a patch that
+// straddles any construction frame's angle zero), per-direction sense,
+// domain, knots, weights - with no frame to choose and no seam to cut.
+//
+// Why a control-net map is exact: a surface of revolution is
+// P_ij = O + h_ij*A + rho_j*q_i (axis point O, direction A; the profile
+// control points (rho_j, h_j) and the revolved circle's control vectors q_i,
+// |q_0| = 1, share the weights w_i*w_j). Its offset along the surface normal
+// is the revolution of the PROFILE's offset curve, in the same
+// parametrization: a straight profile (cone, cylinder) translates by d*m in
+// the meridian plane, a circular profile (torus tube) scales about the tube
+// centre, and a sphere (any parametrization) is a concentric scale. Every one
+// of those is an affine map of the profile control points, which a rational
+// B-spline commutes with. The sign of d is the input's own normal (read at
+// the middle of the domain), so a reversed or transposed input is handled
+// without a case analysis.
+//
+// Returns false when the input is not of this control-net form, when it
+// touches the axis (a cone apex or sphere pole row, where the parallel
+// surface is not regular in this parametrization), or when the offset would
+// reach zero radius; the caller then uses the other constructions.
+bool ControlNetOffset(const NurbsSurface& work, double d, double tol, ON_NurbsSurface& result) {
+  const ON_NurbsSurface& src = work.raw();
+  const Interval du = work.Domain(0);
+  const Interval dv = work.Domain(1);
+  const double umid = 0.5 * (du.min + du.max), vmid = 0.5 * (dv.min + dv.max);
+  const ON_3dPoint p = work.PointAt(umid, vmid);
+  ON_3dVector n = work.NormalAt(umid, vmid);
+  if (!n.Unitize()) return false;
+  const int nu = src.CVCount(0), nv = src.CVCount(1);
+  std::vector<ON_4dPoint> cv(static_cast<size_t>(nu) * nv);
+  auto at = [&](int i, int j) -> ON_4dPoint& { return cv[static_cast<size_t>(i) * nv + j]; };
+  for (int i = 0; i < nu; ++i)
+    for (int j = 0; j < nv; ++j) {
+      if (!src.GetCV(i, j, at(i, j)) || !(at(i, j).w != 0.0)) return false;
+    }
+  auto euclid = [&](int i, int j) {
+    const ON_4dPoint& c = at(i, j);
+    return ON_3dPoint(c.x / c.w, c.y / c.w, c.z / c.w);
+  };
+  std::vector<ON_3dPoint> moved(cv.size());
+  auto put = [&](int i, int j, const ON_3dPoint& q) { moved[static_cast<size_t>(i) * nv + j] = q; };
+  const double cv_tol = 0.5 * tol;
+
+  ON_Sphere sph;
+  ON_Cylinder cyl;
+  ON_Cone cone;
+  ON_Torus tor;
+  if (src.IsSphere(&sph, tol)) {
+    const ON_3dPoint c = sph.Center();
+    ON_3dVector rad = p - c;
+    if (!rad.Unitize()) return false;
+    const double radius = sph.radius + (ON_DotProduct(n, rad) >= 0.0 ? 1.0 : -1.0) * d;
+    if (!(radius > 0.0)) return false;
+    const double k = radius / sph.radius;
+    for (int i = 0; i < nu; ++i)
+      for (int j = 0; j < nv; ++j) put(i, j, c + k * (euclid(i, j) - c));
+  } else if (src.IsCylinder(&cyl, tol)) {
+    const ON_3dPoint o = cyl.circle.plane.origin;
+    ON_3dVector a = cyl.circle.plane.zaxis;
+    if (!a.Unitize()) return false;
+    ON_3dVector rad = (p - o) - ON_DotProduct(p - o, a) * a;
+    if (!rad.Unitize()) return false;
+    const double r = cyl.circle.radius;
+    const double radius = r + (ON_DotProduct(n, rad) >= 0.0 ? 1.0 : -1.0) * d;
+    if (!(radius > 0.0)) return false;
+    const double k = radius / r;
+    for (int i = 0; i < nu; ++i)
+      for (int j = 0; j < nv; ++j) {
+        const ON_3dVector rel = euclid(i, j) - o;
+        const double h = ON_DotProduct(rel, a);
+        put(i, j, o + h * a + k * (rel - h * a));
+      }
+  } else {
+    const bool is_cone = src.IsCone(&cone, tol);
+    if (!is_cone && !src.IsTorus(&tor, tol)) return false;
+    const ON_3dPoint o = is_cone ? cone.ApexPoint() : tor.plane.origin;
+    ON_3dVector a = is_cone ? cone.Axis() : tor.plane.zaxis;
+    if (!a.Unitize()) return false;
+    // Rank-1 factorisation perp_ij = rho_j * q_i about the axis, gauge |q_i0| = 1
+    // taken at the profile column with the largest radius.
+    auto perp_of = [&](int i, int j) {
+      const ON_3dVector rel = euclid(i, j) - o;
+      return rel - ON_DotProduct(rel, a) * a;
+    };
+    int jref = 0;
+    double best = -1.0;
+    for (int j = 0; j < nv; ++j) {
+      const double len = perp_of(0, j).Length();
+      if (len > best) { best = len; jref = j; }
+    }
+    if (!(best > 1e-9)) return false;
+    std::vector<double> rho(static_cast<size_t>(nv));
+    std::vector<ON_3dVector> q(static_cast<size_t>(nu));
+    for (int j = 0; j < nv; ++j) rho[static_cast<size_t>(j)] = perp_of(0, j).Length();
+    for (int i = 0; i < nu; ++i) q[static_cast<size_t>(i)] = perp_of(i, jref) / rho[static_cast<size_t>(jref)];
+    double min_rho = 1e300;
+    for (int i = 0; i < nu; ++i)
+      for (int j = 0; j < nv; ++j) {
+        min_rho = std::min(min_rho, rho[static_cast<size_t>(j)]);
+        if ((perp_of(i, j) - rho[static_cast<size_t>(j)] * q[static_cast<size_t>(i)]).Length() > cv_tol) return false;
+      }
+    if (!(min_rho > 1e-9)) return false;  // profile touches the axis
+    ON_3dVector rad = (p - o) - ON_DotProduct(p - o, a) * a;
+    if (!rad.Unitize()) return false;
+    if (is_cone) {
+      const double m_rho = ON_DotProduct(n, rad), m_h = ON_DotProduct(n, a);
+      for (int j = 0; j < nv; ++j)
+        if (!(rho[static_cast<size_t>(j)] + d * m_rho > 1e-9)) return false;
+      for (int i = 0; i < nu; ++i)
+        for (int j = 0; j < nv; ++j) {
+          const double h = ON_DotProduct(euclid(i, j) - o, a);
+          put(i, j, o + (h + d * m_h) * a + (rho[static_cast<size_t>(j)] + d * m_rho) * q[static_cast<size_t>(i)]);
+        }
+    } else {
+      const ON_3dPoint tube_centre = o + tor.major_radius * rad;
+      ON_3dVector out_dir = p - tube_centre;
+      if (!out_dir.Unitize()) return false;
+      const double minor = tor.minor_radius + (ON_DotProduct(n, out_dir) >= 0.0 ? 1.0 : -1.0) * d;
+      if (!(minor > 0.0) || !(minor < tor.major_radius)) return false;
+      const double k = minor / tor.minor_radius;
+      for (int i = 0; i < nu; ++i)
+        for (int j = 0; j < nv; ++j) {
+          const double h = ON_DotProduct(euclid(i, j) - o, a);
+          const double rj = tor.major_radius + k * (rho[static_cast<size_t>(j)] - tor.major_radius);
+          put(i, j, o + (k * h) * a + rj * q[static_cast<size_t>(i)]);
+        }
+    }
+  }
+
+  result = src;
+  for (int i = 0; i < nu; ++i)
+    for (int j = 0; j < nv; ++j) {
+      const double w = at(i, j).w;
+      const ON_3dPoint& qq = moved[static_cast<size_t>(i) * nv + j];
+      if (!result.SetCV(i, j, ON_4dPoint(w * qq.x, w * qq.y, w * qq.z, w))) return false;
+    }
+  return result.IsValid();
+}
 }  // namespace
 
 Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance, OffsetInfo* info) const {
@@ -1278,6 +1444,8 @@ Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance
                         surface_.IsCylinder(nullptr, tol) || surface_.IsCone(nullptr, tol) ||
                         surface_.IsTorus(nullptr, tol);
   bool analytic_built_but_unusable = false;
+  bool analytic_degenerate = false;
+  std::string analytic_reason;
   if (analytic) {
     // IsSphere/IsCylinder/IsCone/IsTorus accept either isoparametric order,
     // but OffsetAnalytic() builds the primitive's own canonical form (u
@@ -1295,7 +1463,32 @@ Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance
       // Transposing flips the normal (N = Su x Sv), so "along the input's
       // normal" is along the transposed work copy's negated normal.
       const double work_distance = attempt == 1 ? -distance : distance;
-      if (work.OffsetAnalytic(work_distance, candidate, tol) != Result::Ok) continue;
+      std::string reason;
+      bool degenerate = false;
+      const Result built = work.OffsetAnalytic(work_distance, candidate, tol, &reason, &degenerate);
+      if (built != Result::Ok && degenerate) {
+        analytic_degenerate = true;
+        analytic_reason = reason;
+        continue;
+      }
+      const double noise = 1e-11 * (bbox.Diagonal().Length() + std::fabs(distance));
+      // Preferred: the exact map of the input's own control net, which keeps
+      // the input's parametrization however it was built (seam, partial
+      // extent, sense, domain). Checked, never assumed.
+      {
+        NurbsSurface net;
+        if (ControlNetOffset(work, work_distance, tol, net.raw())) {
+          const double measured = MeasureOffsetDeviation(work, work_distance, net);
+          if (measured <= tol) {
+            if (attempt == 1) net.Transpose();
+            out.surface_ = net.surface_;
+            report.exact = measured <= noise;
+            report.achieved_deviation = report.exact ? 0.0 : measured;
+            return Result::Ok;
+          }
+        }
+      }
+      if (built != Result::Ok) continue;
       analytic_built_but_unusable = true;
       double measured = 0.0;
       if (!AlignOffsetToBase(work, work_distance, candidate, tol, measured)) continue;
@@ -1304,25 +1497,27 @@ Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance
       // Numerical noise of a rational closed form is not a deviation;
       // anything above it is the measured gap between the input and the
       // primitive it was recognised as, and is reported, not hidden.
-      const double noise = 1e-11 * (bbox.Diagonal().Length() + std::fabs(distance));
       report.exact = measured <= noise;
       report.achieved_deviation = report.exact ? 0.0 : measured;
       return Result::Ok;
     }
-    if (!analytic_built_but_unusable) {
-      report.refusal_reason =
-          "recognised plane/sphere/cylinder/cone/torus: the exact offset was refused (offset radius would "
-          "reach zero or below, a torus would become a self-intersecting spindle, a cone patch straddles its "
-          "apex, or a partial patch straddles a circle parametrization seam); no fitted substitute is returned "
-          "for an analytic surface whose true offset folds through its own axis";
+    if (analytic_degenerate && !analytic_built_but_unusable) {
+      // The offset itself is not a regular surface (radius reaching zero or
+      // below, a spindle torus, a cone folding through its axis or straddling
+      // its apex): that is a fact about the geometry, so no fitted
+      // substitute is returned for it.
+      report.refusal_reason = "recognised plane/sphere/cylinder/cone/torus: the exact offset is refused (" +
+                              analytic_reason + "); no fitted substitute is returned for an analytic surface whose true "
+                              "offset folds through its own axis or collapses";
       return Result::Failed;
     }
-    // The closed form was built but could not be matched to this surface's
-    // own parametrization (one the canonical primitive form does not
-    // share): fall through to the tolerance-controlled refit, which keeps
-    // the input's parametrization and orientation by construction and
-    // refuses a fold through the surface's own axis via its curvature
-    // guard.
+    // Otherwise the exact construction either could not be completed for
+    // this parametrization or could not be matched to it: the offset is a
+    // well-formed surface, so the tolerance-controlled refit - which keeps
+    // the input's parametrization and orientation by construction, measures
+    // its own deviation against base + d*N_base, and refuses a fold through
+    // the surface's own axis via its curvature guard - is the fallback. It is
+    // never reported as exact.
   }
 
   double deviation = 0.0;

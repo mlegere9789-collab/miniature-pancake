@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -3100,11 +3101,118 @@ double OffsetNormalSign(const Vector3d& normal, const Vector3d& true_outward) {
 
 }  // namespace
 
-Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double tolerance) const {
+namespace {
+
+// Rotates `pl` about its own z axis so that a point lying at angle `delta`
+// (counter-clockwise from pl.xaxis) in the OLD frame lies at angle 0 in the
+// new one. Handedness and origin are preserved.
+ON_Plane RotatedAboutZ(const ON_Plane& pl, double delta) {
+  const double c = std::cos(delta), s = std::sin(delta);
+  const ON_3dVector x = c * pl.xaxis + s * pl.yaxis;
+  const ON_3dVector y = -s * pl.xaxis + c * pl.yaxis;
+  return ON_Plane(pl.origin, x, y);
+}
+
+// Angle (radians, UNWRAPPED, counter-clockwise about frame.zaxis, measured
+// from frame.xaxis) of the points `at(f)`, f = 0..1, sampled densely enough
+// that successive angles differ by less than pi. Returns the angle at f = 0
+// and at f = 1 as one continuous branch, so a sweep that crosses the frame's
+// own angle-zero seam is NOT split into two pieces. `monotone` is false when
+// the sampled angle reverses direction (the curve is not a simple arc).
+bool UnwrappedAngleSweep(const std::function<Point3d(double)>& at, const ON_Plane& frame, double& a_first,
+                         double& a_last, bool* monotone = nullptr) {
+  constexpr int kSamples = 32;
+  double prev = 0.0, acc = 0.0;
+  int sign = 0;
+  bool mono = true;
+  for (int i = 0; i <= kSamples; ++i) {
+    const Vector3d r = at(static_cast<double>(i) / kSamples) - frame.origin;
+    const double x = ON_DotProduct(r, frame.xaxis), y = ON_DotProduct(r, frame.yaxis);
+    if (!(std::hypot(x, y) > 0.0)) return false;  // on the axis: no angle
+    const double a = std::atan2(y, x);
+    if (i == 0) {
+      a_first = acc = a;
+    } else {
+      double d = a - prev;
+      while (d > ON_PI) d -= 2.0 * ON_PI;
+      while (d < -ON_PI) d += 2.0 * ON_PI;
+      const int sd = d > 1e-12 ? 1 : (d < -1e-12 ? -1 : 0);
+      if (sd != 0) {
+        if (sign != 0 && sd != sign) mono = false;
+        sign = sd;
+      }
+      acc += d;
+    }
+    prev = a;
+  }
+  a_last = acc;
+  if (monotone != nullptr) *monotone = mono;
+  return true;
+}
+
+// A partial circular patch spanning angles [a0, a1] (unwrapped, from
+// UnwrappedAngleSweep) about `frame0`. A NURBS circle's raw parameter runs
+// 0..2pi from its frame's xaxis, so a patch that crosses that xaxis cannot
+// be cut out of it as ONE sub-range. The frame is therefore ROTATED about
+// its axis until the patch's angular centre sits at angle pi - the farthest
+// point from the seam - and the patch becomes [pi - span/2, pi + span/2],
+// strictly inside [0, 2pi] however it was positioned relative to the
+// original frame. `raw0`/`raw1` are the matching raw NURBS-circle parameters
+// (unit circle; the caller scales for arc-length-parametrized forms).
+// False for a degenerate or full-turn span.
+bool SeamFreeArcTrim(const ON_Plane& frame0, double a0, double a1, ON_Plane& frame, double& raw0, double& raw1,
+                      double* rotation = nullptr) {
+  const double lo = std::min(a0, a1), hi = std::max(a0, a1);
+  const double span = hi - lo;
+  if (!(span > 1e-9) || !(span < 2.0 * ON_PI - 1e-9)) return false;
+  const double delta = 0.5 * (lo + hi) - ON_PI;
+  if (rotation != nullptr) *rotation = delta;
+  frame = RotatedAboutZ(frame0, delta);
+  const ON_Circle ref(frame, 1.0);
+  return ref.GetNurbFormParameterFromRadian(ON_PI - 0.5 * span, &raw0) &&
+         ref.GetNurbFormParameterFromRadian(ON_PI + 0.5 * span, &raw1) && raw1 > raw0;
+}
+
+// ON_Torus::GetNurbForm() with the tube profile's angle zero (the v seam)
+// rotated by `minor_phase` radians about the profile circle's own axis, so a
+// partial patch that straddles the standard outer-equator seam, or a full
+// torus whose own v seam sits elsewhere, is reproduced on its own
+// parametrization. minor_phase == 0 is exactly GetNurbForm().
+bool TorusNurbFormWithMinorPhase(const ON_Torus& torus, double minor_phase, ON_NurbsSurface& ns) {
+  ON_RevSurface rev;
+  if (torus.RevSurfaceForm(&rev) == nullptr) return false;
+  ON_Circle profile = torus.MinorCircleRadians(0.0);
+  profile.plane = RotatedAboutZ(profile.plane, minor_phase);
+  ON_ArcCurve* arc = new ON_ArcCurve(profile);
+  delete rev.m_curve;
+  rev.m_curve = arc;
+  return rev.GetNurbForm(ns) != 0;
+}
+
+}  // namespace
+
+Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double tolerance,
+                                    std::string* refusal_reason, bool* offset_degenerate) const {
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::OffsetAnalytic: distance must be finite");
   }
+  if (refusal_reason != nullptr) refusal_reason->clear();
+  if (offset_degenerate != nullptr) *offset_degenerate = false;
+  // The offset itself does not exist as a regular surface (it would fold
+  // through its own axis / collapse / self-intersect): a statement about the
+  // GEOMETRY, which no other construction can overturn.
+  const auto degenerate = [&](const char* why) {
+    if (refusal_reason != nullptr) *refusal_reason = why;
+    if (offset_degenerate != nullptr) *offset_degenerate = true;
+    return Result::Failed;
+  };
+  // This closed-form construction could not be completed for this
+  // parametrization, although the offset itself is a well-formed surface.
+  const auto cannot_build = [&](const char* why) {
+    if (refusal_reason != nullptr) *refusal_reason = why;
+    return Result::Failed;
+  };
   if (distance == 0.0) {
     out.surface_ = surface_;
     return Result::Ok;
@@ -3157,7 +3265,7 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       if (!radial.Unitize()) return Result::Failed;
       const double sign = OffsetNormalSign(n, radial);
       const double new_radius = sphere.radius + sign * distance;
-      if (!(new_radius > 0.0)) return Result::Failed;
+      if (!(new_radius > 0.0)) return degenerate("sphere offset radius reaches zero or below");
       ON_Sphere new_sphere(sphere.Center(), new_radius);
 
       // Preserve a partial patch's own extent in both directions, the same
@@ -3227,7 +3335,7 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
           yaxis = ON_CrossProduct(axis, xaxis);
           new_sphere.plane = ON_Plane(sphere.Center(), xaxis, yaxis);
         } else if (trim_u || trim_v) {
-          return Result::Failed;  // degenerate (vmid at a pole, or a too-thin u-span)
+          return cannot_build("sphere patch: no reference frame (mid-latitude at a pole, or a too-thin u-span)");
         } else {
           new_sphere.plane = sphere.plane;
         }
@@ -3376,71 +3484,51 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       const Point3d axis_point = cyl.circle.plane.origin +
           ON_DotProduct(p - cyl.circle.plane.origin, cyl.circle.plane.zaxis) * cyl.circle.plane.zaxis;
       Vector3d radial = p - axis_point;
-      if (!radial.Unitize()) return Result::Failed;
+      if (!radial.Unitize()) return cannot_build("cylinder: sample point on the axis");
       const double sign = OffsetNormalSign(n, radial);
       const double new_radius = cyl.circle.radius + sign * distance;
-      if (!(new_radius > 0.0)) return Result::Failed;
-      // A FULL (closed-in-u) cylinder: put the NURBS form's seam (angle
-      // zero) on this surface's own u-start, so Offset() can return the
-      // result on the input's own parametrization. (A partial patch keeps
-      // the fitted frame: its angles are measured against it below, and
-      // moving angle zero onto its first edge would put that edge on the
-      // wrap.)
+      if (!(new_radius > 0.0)) return degenerate("cylinder offset radius reaches zero or below");
+      // The NURBS form's angle zero (its seam) is placed explicitly:
+      //  - FULL (closed-in-u) cylinder: on this surface's own u-start, so
+      //    Offset() can return the result on the input's parametrization.
+      //  - PARTIAL patch: opposite the patch's angular centre
+      //    (SeamFreeArcTrim), so the patch is a contiguous sub-range of the
+      //    [0, 2pi] parameter however it sits relative to IsCylinder()'s
+      //    arbitrary fitted frame - including a patch that straddles that
+      //    frame's own angle zero.
       ON_Plane cyl_plane = cyl.circle.plane;
-      if (surface_.IsClosed(0)) {
+      double raw0 = 0.0, raw1 = 0.0;
+      const bool trim_u = !surface_.IsClosed(0);
+      if (!trim_u) {
         const Point3d p_seam = PointAt(du.min, vmid);
         const Vector3d rel_seam = p_seam - cyl.circle.plane.origin;
         Vector3d x_seam = rel_seam - ON_DotProduct(rel_seam, cyl.circle.plane.zaxis) * cyl.circle.plane.zaxis;
         if (x_seam.Unitize()) {
           cyl_plane = ON_Plane(cyl.circle.plane.origin, x_seam, ON_CrossProduct(cyl.circle.plane.zaxis, x_seam));
         }
+      } else {
+        double a_first, a_last;
+        if (!UnwrappedAngleSweep([&](double f) { return PointAt(du.min + f * (du.max - du.min), vmid); },
+                                 cyl.circle.plane, a_first, a_last) ||
+            !SeamFreeArcTrim(cyl.circle.plane, a_first, a_last, cyl_plane, raw0, raw1)) {
+          return cannot_build("cylinder patch: angular extent could not be determined");
+        }
       }
       ON_Cylinder new_cyl(ON_Circle(cyl_plane, new_radius));
       new_cyl.height[0] = cyl.height[0];
       new_cyl.height[1] = cyl.height[1];
       ON_NurbsSurface ns;
-      if (new_cyl.GetNurbForm(ns) == 0) return Result::Failed;
+      if (new_cyl.GetNurbForm(ns) == 0) return cannot_build("cylinder: NURBS form could not be built");
 
       // GetNurbForm() always builds a FULL 360-degree cylinder - a real
       // partial patch (e.g. a quarter-cylinder fillet face) would
       // otherwise silently balloon into a closed tube. `ON_Circle`'s own
       // NURBS parameter is NOT linear in angle within a knot span (it's
       // a rational-quadratic reparametrization; only the 0/pi/2/pi/3pi/2
-      // knot VALUES coincide with true radians), so the fix isn't "trim
-      // to `du` directly" - it's converting this patch's own true
-      // angular span (measured geometrically, via `ClosestPointTo`,
-      // independent of either cylinder's radius since both share the
-      // same `circle.plane`) through `GetNurbFormParameterFromRadian()`,
-      // the OpenNURBS conversion built for exactly this problem.
-      if (!surface_.IsClosed(0)) {
-        const Point3d p_umin = PointAt(du.min, vmid);
-        const Point3d p_umax = PointAt(du.max, vmid);
-        const Point3d p_umid = PointAt(0.5 * (du.min + du.max), vmid);
-        double angle_umin, angle_umax, angle_umid;
-        if (cyl.circle.ClosestPointTo(p_umin, &angle_umin) &&
-            cyl.circle.ClosestPointTo(p_umax, &angle_umax) &&
-            cyl.circle.ClosestPointTo(p_umid, &angle_umid)) {
-          double nurb_umin, nurb_umax, nurb_umid;
-          if (new_cyl.circle.GetNurbFormParameterFromRadian(angle_umin, &nurb_umin) &&
-              new_cyl.circle.GetNurbFormParameterFromRadian(angle_umax, &nurb_umax) &&
-              new_cyl.circle.GetNurbFormParameterFromRadian(angle_umid, &nurb_umid)) {
-            const double t0 = std::min(nurb_umin, nurb_umax);
-            const double t1 = std::max(nurb_umin, nurb_umax);
-            // A patch spanning the seam (its true angular midpoint lying
-            // OUTSIDE the [t0, t1] its own two ends bound) can't be
-            // represented as one contiguous sub-range of a [0, 2*pi]
-            // domain this way - refuse rather than silently trimming to
-            // the wrong (long way around) arc.
-            if (t1 > t0 + 1e-9 && nurb_umid >= t0 - 1e-9 && nurb_umid <= t1 + 1e-9) {
-              out.surface_ = ns;
-              return out.Trim(0, t0, t1) == Result::Ok ? Result::Ok : Result::Failed;
-            }
-          }
-        }
-        return Result::Failed;
-      }
-
+      // knot VALUES coincide with true radians), hence the
+      // radian -> raw-parameter conversion inside SeamFreeArcTrim.
       out.surface_ = ns;
+      if (trim_u && out.Trim(0, raw0, raw1) != Result::Ok) return cannot_build("cylinder patch: trim failed");
       return Result::Ok;
     }
   }
@@ -3475,12 +3563,26 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
         const Point3d p_b = PointAt(umid, dv.max);
         const double r_a = (p_a - apex - ON_DotProduct(p_a - apex, axis) * axis).Length();
         const double r_b = (p_b - apex - ON_DotProduct(p_b - apex, axis) * axis).Length();
-        if (-signed_distance >= std::min(r_a, r_b)) return Result::Failed;
+        if (-signed_distance >= std::min(r_a, r_b)) {
+          return degenerate("cone offset would fold through its own axis (inward distance reaches the smallest radius)");
+        }
       }
 
       const double apex_shift = -signed_distance / sin_alpha;
       ON_Plane new_plane = cone.plane;
-      if (surface_.IsClosed(0)) {
+      double raw0 = 0.0, raw1 = 0.0;
+      const bool trim_u = !surface_.IsClosed(0);
+      if (trim_u) {
+        // Partial patch: seam opposite the patch's angular centre, so the
+        // patch is one contiguous sub-range of [0, 2pi] even when it
+        // straddles IsCone()'s arbitrary fitted angle zero.
+        double a_first, a_last;
+        if (!UnwrappedAngleSweep([&](double f) { return PointAt(du.min + f * (du.max - du.min), vmid); },
+                                 cone.plane, a_first, a_last) ||
+            !SeamFreeArcTrim(cone.plane, a_first, a_last, new_plane, raw0, raw1)) {
+          return cannot_build("cone patch: angular extent could not be determined");
+        }
+      } else {
         // Full cone: seam (angle zero) on this surface's own u-start, so
         // Offset() can return the result on the input's parametrization.
         // (Partial patches keep the fitted frame for the angle
@@ -3531,11 +3633,11 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       const double h_hi = ON_DotProduct(PointAt(umid, dv.max) - apex, axis);
       const double t_lo = h_lo + c_shift;
       const double t_hi = h_hi + c_shift;
-      if (!(std::abs(t_hi - t_lo) > 1e-9)) return Result::Failed;  // degenerate zero-height patch
+      if (!(std::abs(t_hi - t_lo) > 1e-9)) return cannot_build("cone patch: zero height");
       // A single ON_Cone::GetNurbForm() patch always runs from height
       // parameter 0 (the apex) to one single other value - it can't
       // represent a patch straddling the apex on both sides at once.
-      if (t_lo * t_hi < 0.0) return Result::Failed;
+      if (t_lo * t_hi < 0.0) return degenerate("cone patch straddles its apex: the offset is singular there");
 
       const double build_height =
           (std::abs(t_lo) >= std::abs(t_hi) ? t_lo : t_hi) * (1.0 + 1e-6);
@@ -3558,40 +3660,10 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       if (new_cone.GetNurbForm(ns) == 0) return Result::Failed;
       out.surface_ = ns;
 
-      // Angular (u) extent, the same technique the cylinder branch above
-      // uses. `new_plane` is `cone.plane` with ONLY its origin translated
-      // along the shared `axis` (zaxis) - so a circle built in either
-      // plane has the exact same orientation, and translating a plane's
-      // origin along its own zaxis cannot change any point's projected
-      // angle around that axis (the projection is onto the xaxis/yaxis,
-      // both perpendicular to zaxis) - meaning ONE reference circle, of
-      // any convenient radius, correctly measures/converts angles for
-      // both the old and new cone.
-      const ON_Circle angle_ref(cone.plane, 1.0);
-      if (!surface_.IsClosed(0)) {
-        const Point3d p_umin = PointAt(du.min, vmid);
-        const Point3d p_umax = PointAt(du.max, vmid);
-        const Point3d p_umid = PointAt(0.5 * (du.min + du.max), vmid);
-        double angle_umin, angle_umax, angle_umid;
-        if (!angle_ref.ClosestPointTo(p_umin, &angle_umin) ||
-            !angle_ref.ClosestPointTo(p_umax, &angle_umax) ||
-            !angle_ref.ClosestPointTo(p_umid, &angle_umid)) {
-          return Result::Failed;
-        }
-        double nurb_umin, nurb_umax, nurb_umid;
-        if (!angle_ref.GetNurbFormParameterFromRadian(angle_umin, &nurb_umin) ||
-            !angle_ref.GetNurbFormParameterFromRadian(angle_umax, &nurb_umax) ||
-            !angle_ref.GetNurbFormParameterFromRadian(angle_umid, &nurb_umid)) {
-          return Result::Failed;
-        }
-        const double t0 = std::min(nurb_umin, nurb_umax);
-        const double t1 = std::max(nurb_umin, nurb_umax);
-        // Same seam-straddling refusal the cylinder branch above uses.
-        if (!(t1 > t0 + 1e-9 && nurb_umid >= t0 - 1e-9 && nurb_umid <= t1 + 1e-9)) {
-          return Result::Failed;
-        }
-        if (out.Trim(0, t0, t1) != Result::Ok) return Result::Failed;
-      }
+      // Angular (u) extent: `new_plane` is `cone.plane` rotated about, and
+      // translated along, the shared axis, so the angles of the original
+      // patch convert through SeamFreeArcTrim exactly.
+      if (trim_u && out.Trim(0, raw0, raw1) != Result::Ok) return cannot_build("cone patch: trim failed");
 
       if (out.Trim(1, std::min(t_lo, t_hi), std::max(t_lo, t_hi)) != Result::Ok) {
         return Result::Failed;
@@ -3610,89 +3682,51 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       torus.ClosestPointTo(p, &major_angle, &minor_angle);
       const Point3d tube_center = torus.MinorCircleRadians(major_angle).Center();
       Vector3d radial = p - tube_center;
-      if (!radial.Unitize()) return Result::Failed;
+      if (!radial.Unitize()) return cannot_build("torus: sample point on the tube centre circle");
       const Vector3d n = NormalAt(umid, vmid);
       const double sign = OffsetNormalSign(n, radial);
       const double new_minor = torus.minor_radius + sign * distance;
-      if (!(new_minor > 0.0)) return Result::Failed;             // tube collapses through its own center circle
-      if (new_minor >= torus.major_radius) return Result::Failed;  // self-intersecting spindle torus
-      ON_Torus new_torus(torus.plane, torus.major_radius, new_minor);
-      ON_NurbsSurface ns;
-      if (new_torus.GetNurbForm(ns) == 0) return Result::Failed;
-      out.surface_ = ns;
+      if (!(new_minor > 0.0)) return degenerate("torus tube radius reaches zero or below");
+      if (new_minor >= torus.major_radius) return degenerate("torus offset would be a self-intersecting spindle torus");
 
-      // Preserve a partial patch's own extent in both directions - the
-      // same "GetNurbForm() always builds the FULL primitive" defect the
-      // sphere/cylinder/cone branches above already fix for their own
-      // domain(s). A genuinely different (and more surprising) wrinkle
-      // here, confirmed by reading the OpenNURBS source and by a direct
-      // PointAt() cross-check, not assumed: `ON_Torus::GetNurbForm()` is
-      // the only one of the four analytic families that builds via the
-      // generic `ON_RevSurface::TensorProduct` path, and BOTH the
-      // revolution-direction arc (`ON_RevSurface::GetNurbForm`'s own
-      // `a.SetDomain(m_t)`, `m_t == [0, 2*pi*MajorRadius()]`) and the
-      // tube profile's `ON_ArcCurve` (whose constructor sets its own
-      // domain to `[0, circle.Length()] == [0, 2*pi*minor_radius]`, not
-      // `[0, 2*pi]`) rescale the usual raw rational-quadratic circle
-      // parameter into ARC-LENGTH units - confirmed directly against
-      // `GetNurbForm()`'s own output domain (`[0, 2*pi*major_radius] x
-      // [0, 2*pi*minor_radius]`, not `[0,2*pi] x [0,2*pi]`). So
-      // converting a true angle to this surface's own domain value needs
-      // the usual `GetNurbFormParameterFromRadian()` conversion the
-      // sphere/cylinder/cone branches above already use, PLUS one extra
-      // multiply by the relevant radius: u = P(major_angle) *
-      // major_radius, v = P(minor_angle) * new_minor - the OFFSET tube
-      // radius, not the original, since unlike major_radius the tube
-      // radius genuinely changes under this offset and it's `new_torus`'s
-      // own `GetNurbForm()` this trim has to match.
+      // `ON_Torus::GetNurbForm()` is the only one of the four analytic
+      // families that builds via the generic `ON_RevSurface` path, and both
+      // its revolution arc and its tube profile `ON_ArcCurve` rescale the
+      // raw rational-quadratic circle parameter into ARC-LENGTH units
+      // (domain [0, 2*pi*major_radius] x [0, 2*pi*minor_radius], confirmed
+      // against its own output), so a true angle becomes a domain value via
+      // GetNurbFormParameterFromRadian() times the relevant radius:
+      // u = P(major_angle) * major_radius, v = P(minor_angle) * new_minor
+      // (the OFFSET tube radius, which unlike major_radius really changes).
       //
-      // A second, genuinely separate discovery made verifying this:
-      // `ON_Torus::ClosestPointTo()`'s own `minor_angle` output (already
-      // computed, harmlessly unused, just above for the offset-sign
-      // point) is WRONG whenever `plane.origin` isn't the world origin -
-      // its internal minor-angle arithmetic subtracts
-      // `major_radius*raxis` (a bare direction vector) from the absolute
-      // `test_point` without first subtracting `plane.origin`, silently
-      // assuming the torus is centered at the world origin. Confirmed by
-      // direct comparison against an independently-derived true minor
-      // angle: exact zero error on a world-centered torus (where the bug
-      // is invisible - the missing term is zero), over 0.17 radians of
-      // spurious drift on an off-origin one, across two points that share
-      // the exact same true minor angle. A real OpenNURBS bug, not
-      // something to patch in a vendored dependency, so - like the
-      // cylinder branch above already works around its own
-      // `circle.plane.ClosestPointTo` bug - `minor_angle` is measured
-      // here via `MinorCircleRadians(major_angle)`'s OWN `ClosestPointTo`
-      // (the tube cross-section circle's own, general, independently
-      // verified-exact code path) rather than ever trusting
-      // `ON_Torus::ClosestPointTo()`'s own `minor_angle` output.
-      // NOTE: these spans are in this surface's own domain UNITS, which -
-      // per the arc-length rescale explained above - are radius-scaled,
-      // not raw radians like the sphere/cylinder/cone branches compare
-      // against directly. Comparing against a bare `2*pi` here would
-      // wrongly call almost any genuinely partial patch "full" (or vice
-      // versa) for any radius other than 1.
+      // `ON_Torus::ClosestPointTo()`'s own `minor_angle` output is WRONG
+      // whenever `plane.origin` is not the world origin (it subtracts
+      // `major_radius*raxis` from the absolute test point without first
+      // subtracting `plane.origin`), so every minor angle here is measured
+      // in the tube cross-section circle's own frame (MinorCircleRadians()),
+      // never taken from that output.
+      //
+      // Both angle origins (the u seam at the major frame's xaxis, the v
+      // seam at the outer equator) are placed explicitly:
+      //  - closed direction: on this surface's own start, so the result is
+      //    returned on the input's parametrization;
+      //  - partial direction: opposite the patch's angular centre
+      //    (SeamFreeArcTrim), so the patch is a contiguous sub-range of the
+      //    full period even when it straddles the fitted frame's own zero.
       const bool trim_u = !surface_.IsClosed(0);
       const bool trim_v = !surface_.IsClosed(1);
 
+      // The ordinary (u = major, v = minor) convention is verified, not
+      // assumed: `IsTorus()`'s fallback fit can return a TRANSPOSED torus
+      // (major and minor swapped) with no flag. For a PARTIAL patch of
+      // such a surface the trims below would be meaningless, so it is
+      // refused here (Offset() retries the transpose).
       if (trim_u || trim_v) {
-        const ON_Circle angle_ref(torus.plane, 1.0);
         auto unwrap_near = [](double angle, double reference) {
           while (angle - reference > ON_PI) angle -= 2.0 * ON_PI;
           while (angle - reference < -ON_PI) angle += 2.0 * ON_PI;
           return angle;
         };
-
-        // Defensive check: the whole trim below assumes the ordinary
-        // (u=major, v=minor) convention every torus this codebase
-        // actually builds (`ON_Torus::GetNurbForm` itself, `Brep::Torus`,
-        // `Mesh::Torus`) uses - but `IsTorus()`'s own fallback fit (like
-        // `IsSphere()`'s own, above) can silently return a TRANSPOSED
-        // torus (major/minor swapped) for a surface built the other way
-        // around, with no flag distinguishing the two. Verified directly
-        // here (moving along u should change major_angle, not
-        // minor_angle) rather than trusted; a transposed surface is
-        // refused rather than mishandled.
         const double du_span = du.max - du.min;
         const Point3d q_a = PointAt(du.min + du_span / 3.0, vmid);
         const Point3d q_b = PointAt(du.min + 2.0 * du_span / 3.0, vmid);
@@ -3702,75 +3736,65 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
         double min_a, min_b;
         if (!torus.MinorCircleRadians(maj_a).ClosestPointTo(q_a, &min_a) ||
             !torus.MinorCircleRadians(maj_b).ClosestPointTo(q_b, &min_b)) {
-          return Result::Failed;
+          return cannot_build("torus patch: angles could not be measured");
         }
         const double d_major = std::abs(unwrap_near(maj_b, maj_a) - maj_a);
         const double d_minor = std::abs(unwrap_near(min_b, min_a) - min_a);
-        if (!(d_major > d_minor)) return Result::Failed;
+        if (!(d_major > d_minor)) return cannot_build("torus patch: transposed (v-major) parametrization");
+      }
 
-        if (trim_u) {
-          const Point3d p_umin = PointAt(du.min, vmid);
-          const Point3d p_umax = PointAt(du.max, vmid);
-          const Point3d p_umid = PointAt(umid, vmid);
-          double angle_umin, angle_umax, angle_umid, unused;
-          torus.ClosestPointTo(p_umin, &angle_umin, &unused);
-          torus.ClosestPointTo(p_umax, &angle_umax, &unused);
-          torus.ClosestPointTo(p_umid, &angle_umid, &unused);
-          double nurb_umin, nurb_umax, nurb_umid;
-          if (!angle_ref.GetNurbFormParameterFromRadian(angle_umin, &nurb_umin) ||
-              !angle_ref.GetNurbFormParameterFromRadian(angle_umax, &nurb_umax) ||
-              !angle_ref.GetNurbFormParameterFromRadian(angle_umid, &nurb_umid)) {
-            return Result::Failed;
-          }
-          nurb_umin = unwrap_near(nurb_umin, nurb_umid);
-          nurb_umax = unwrap_near(nurb_umax, nurb_umid);
-          const double t0 = std::max(0.0, std::min(nurb_umin, nurb_umax));
-          const double t1 = std::min(2.0 * ON_PI, std::max(nurb_umin, nurb_umax));
-          if (!(t1 > t0 + 1e-9 && nurb_umid >= t0 - 1e-9 && nurb_umid <= t1 + 1e-9)) {
-            return Result::Failed;
-          }
-          if (out.Trim(0, t0 * torus.major_radius, t1 * torus.major_radius) != Result::Ok) {
-            return Result::Failed;
-          }
+      // --- major (u) frame ---
+      ON_Plane major_plane = torus.plane;
+      double raw_u0 = 0.0, raw_u1 = 0.0;
+      if (trim_u) {
+        double a_first, a_last;
+        if (!UnwrappedAngleSweep([&](double f) { return PointAt(du.min + f * (du.max - du.min), vmid); },
+                                 torus.plane, a_first, a_last) ||
+            !SeamFreeArcTrim(torus.plane, a_first, a_last, major_plane, raw_u0, raw_u1)) {
+          return cannot_build("torus patch: major-angle extent could not be determined");
         }
+      } else {
+        const Vector3d r = PointAt(du.min, vmid) - torus.plane.origin;
+        const double x = ON_DotProduct(r, torus.plane.xaxis), y = ON_DotProduct(r, torus.plane.yaxis);
+        if (std::hypot(x, y) > 0.0) major_plane = RotatedAboutZ(torus.plane, std::atan2(y, x));
+      }
 
+      // --- minor (v) frame, measured on the tube cross-section at umid ---
+      double major_umid, unused2;
+      torus.ClosestPointTo(PointAt(umid, vmid), &major_umid, &unused2);
+      const ON_Circle minor_ref = torus.MinorCircleRadians(major_umid);
+      double minor_phase = 0.0, raw_v0 = 0.0, raw_v1 = 0.0;
+      {
+        double a_first, a_last;
+        if (!UnwrappedAngleSweep([&](double f) { return PointAt(umid, dv.min + f * (dv.max - dv.min)); },
+                                 minor_ref.plane, a_first, a_last)) {
+          return cannot_build("torus: minor-angle extent could not be determined");
+        }
+        ON_Plane unused_frame;
         if (trim_v) {
-          double major_umid, unused2;
-          torus.ClosestPointTo(PointAt(umid, vmid), &major_umid, &unused2);
-          const ON_Circle minor_ref = torus.MinorCircleRadians(major_umid);
-          const Point3d p_vmin = PointAt(umid, dv.min);
-          const Point3d p_vmax = PointAt(umid, dv.max);
-          const Point3d p_vmid = PointAt(umid, vmid);
-          double minor_vmin, minor_vmax, minor_vmid;
-          if (!minor_ref.ClosestPointTo(p_vmin, &minor_vmin) ||
-              !minor_ref.ClosestPointTo(p_vmax, &minor_vmax) ||
-              !minor_ref.ClosestPointTo(p_vmid, &minor_vmid)) {
-            return Result::Failed;
+          if (!SeamFreeArcTrim(minor_ref.plane, a_first, a_last, unused_frame, raw_v0, raw_v1, &minor_phase)) {
+            return cannot_build("torus patch: minor-angle extent could not be determined");
           }
-          double nurb_vmin, nurb_vmax, nurb_vmid;
-          if (!angle_ref.GetNurbFormParameterFromRadian(minor_vmin, &nurb_vmin) ||
-              !angle_ref.GetNurbFormParameterFromRadian(minor_vmax, &nurb_vmax) ||
-              !angle_ref.GetNurbFormParameterFromRadian(minor_vmid, &nurb_vmid)) {
-            return Result::Failed;
-          }
-          nurb_vmin = unwrap_near(nurb_vmin, nurb_vmid);
-          nurb_vmax = unwrap_near(nurb_vmax, nurb_vmid);
-          const double s0 = std::max(0.0, std::min(nurb_vmin, nurb_vmax));
-          const double s1 = std::min(2.0 * ON_PI, std::max(nurb_vmin, nurb_vmax));
-          if (!(s1 > s0 + 1e-9 && nurb_vmid >= s0 - 1e-9 && nurb_vmid <= s1 + 1e-9)) {
-            return Result::Failed;
-          }
-          if (out.Trim(1, s0 * new_minor, s1 * new_minor) != Result::Ok) {
-            return Result::Failed;
-          }
+        } else {
+          minor_phase = a_first;
         }
       }
 
+      const ON_Torus new_torus(major_plane, torus.major_radius, new_minor);
+      ON_NurbsSurface ns;
+      if (!TorusNurbFormWithMinorPhase(new_torus, minor_phase, ns)) return cannot_build("torus: NURBS form could not be built");
+      out.surface_ = ns;
+      if (trim_u && out.Trim(0, raw_u0 * torus.major_radius, raw_u1 * torus.major_radius) != Result::Ok) {
+        return cannot_build("torus patch: u trim failed");
+      }
+      if (trim_v && out.Trim(1, raw_v0 * new_minor, raw_v1 * new_minor) != Result::Ok) {
+        return cannot_build("torus patch: v trim failed");
+      }
       return Result::Ok;
     }
   }
 
-  return Result::Failed;
+  return cannot_build("not a plane, sphere, cylinder, cone or torus");
 }
 
 namespace {
