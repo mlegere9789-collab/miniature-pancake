@@ -2685,13 +2685,18 @@ class VertexWelder {
     // 39062.5 cells, 7.6328125, 8.9140625: the stations of a sampled fillet radius law) sits ON the rounding boundary,
     // where a one-ulp difference between two derivations of the same point picks different cells, leaving a duplicate
     // vertex that keeps the shared edge unpaired (an open shell). So a point whose own cell is empty also checks the 26
-    // neighbouring cells for a live point within the weld distance itself.
+    // neighbouring cells for a live point that is the SAME point to floating-point noise. That radius is deliberately
+    // not the weld distance: two genuinely distinct vertices closer than the weld distance but in different cells
+    // (a micro-edge of length 8e-7) have always stayed distinct here and callers rely on it.
+    const double same_point = std::min(kBrepWeldTolerance,
+                                       1e-9 + 64.0 * std::numeric_limits<double>::epsilon() *
+                                                  std::max({std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)}));
     for (long long dx = -1; dx <= 1; ++dx)
       for (long long dy = -1; dy <= 1; ++dy)
         for (long long dz = -1; dz <= 1; ++dz) {
           if (dx == 0 && dy == 0 && dz == 0) continue;
           const auto nb = index_of_.find(WeldKey{key.x + dx, key.y + dy, key.z + dz});
-          if (nb != index_of_.end() && points_[nb->second].DistanceTo(p) <= kBrepWeldTolerance) return nb->second;
+          if (nb != index_of_.end() && points_[nb->second].DistanceTo(p) <= same_point) return nb->second;
         }
     const int id = static_cast<int>(points_.size());
     points_.push_back(p);
