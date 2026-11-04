@@ -13263,4 +13263,172 @@ SOT_LEN="$({ grep -o "Total length = [0-9.e+-]*" <<<"$SOT_OUT" || true; } | awk 
 sot_len() { sed -n "${1}p" <<<"$SOT_LEN"; }
 # SOT_PLACEHOLDER_CHECKS
 
+# ---------------------------------------------------------------------------
+# HGB_: construction History for the GENERAL (curved) and SEALED Boolean engine (hgb_script.txt, hgb_save_script.txt,
+# hgb_reopen_script.txt). With History On, BooleanUnion/BooleanDifference/BooleanIntersection of a box and a cylinder
+# (or sphere) take TryGeneralBrepBoolean + SealGeneralBooleanResult, HIDE the operands as the result's recorded
+# sources, and rebuild the sealed result when a source moves / scales / is changed (no UpdateHistory call anywhere).
+# Every number is a measured Volume (display mesh of the rebuilt B-rep) read against a closed form worked out here, not
+# against a previous run: box 10^3, cylinder r = 2 along z through the middle:
+#   through hole 1000 - 4 pi 10 = 874.34    blind (cylinder z 5..25) 1000 - 4 pi 5 = 937.17    Scale 1.5 (r 3): 1000 - 9 pi 10 = 717.26
+#   union 1000 + 4 pi 10 = 1125.66   (cylinder moved up 10: 1000 + 4 pi 15 = 1188.50; Scale 1.5: 1000 + 9 pi 20 = 1565.49)
+#   intersection 4 pi 10 = 125.66    (moved up 10: 4 pi 5 = 62.83; Scale 1.5: 9 pi 10 = 282.74)
+# Also: the declined rebuild (a hole 100000 away from the origin: the result becomes the mesh boolean, the reason is
+# printed, Undo / moving back give the sealed B-rep again), a deleted source (old geometry kept, reason printed), History
+# Off (nothing recorded, operands consumed), Save / New / Open with remapped ids and hidden operands, a fresh process.
+# ---------------------------------------------------------------------------
+HGB_DIR="$TMPW/hgb"
+mkdir -p "$HGB_DIR"
+sed "s|@TMP@|$HGB_DIR|g" "$HERE/hgb_save_script.txt" > "$HGB_DIR/hgb_save_script.txt"
+sed "s|@TMP@|$HGB_DIR|g" "$HERE/hgb_reopen_script.txt" > "$HGB_DIR/hgb_reopen_script.txt"
+hgb_run() {  # hgb_run <script>: one app launch, output on stdout
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 900 "$BIN" --smoke 60 --script "$1" 2>&1
+  else
+    timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$1" 2>&1
+  fi
+}
+HGB_OUT="$(hgb_run "$HERE/hgb_script.txt")" || { echo "$HGB_OUT"; echo "FAIL: HGB_ script exited non-zero"; exit 1; }
+HGB_S="$(hgb_run "$HGB_DIR/hgb_save_script.txt")" || { echo "$HGB_S"; echo "FAIL: HGB_ save script exited non-zero"; exit 1; }
+HGB_R="$(hgb_run "$HGB_DIR/hgb_reopen_script.txt")" || { echo "$HGB_R"; echo "FAIL: HGB_ reopen script exited non-zero"; exit 1; }
+for hgb_o in "$HGB_OUT" "$HGB_S" "$HGB_R"; do
+  grep -q "^smoke:" <<<"$hgb_o" || { echo "$hgb_o"; echo "FAIL: HGB_ script produced no smoke line"; fail=1; }
+done
+HGB_ALL="$HGB_OUT"$'\n'"$HGB_S"$'\n'"$HGB_R"
+# hgb_block NAME: the output between HGBBEGIN_NAME and the next marker
+hgb_block() { awk -v name="$1" '$0 ~ ("Unknown command: HGBBEGIN_" name "$") { on = 1; next } on && /Unknown command: HGBBEGIN_|Unknown command: HGBEND/ { exit } on { print }' <<<"$HGB_ALL"; }
+# hgb_has NAME REGEX DESC: the block contains REGEX (grep -E)
+hgb_has() { local blk; blk="$(hgb_block "$1")"; if grep -qE -- "$2" <<<"$blk"; then echo "ok   HGB_$1: $3"; else echo "FAIL HGB_$1: $3"; echo "     expected: $2"; { grep -E "^history: (Boolean|History|Object|  [0-9]|Volume|!|Showed|EditHistory)" <<<"$blk" || true; } | head -12 | sed 's/^/     actual:   /'; fail=1; fi; }
+# hgb_cnt NAME REGEX N DESC: REGEX matches exactly N lines of the block
+hgb_cnt() { local blk n; blk="$(hgb_block "$1")"; n="$(grep -cE -- "$2" <<<"$blk" || true)"; if [ "$n" = "$3" ]; then echo "ok   HGB_$1: $4 ($n)"; else echo "FAIL HGB_$1: $4 (found $n, expected $3)"; echo "     pattern: $2"; fail=1; fi; }
+# hgb_vol NAME N EXPECT DESC: the N-th "Volume = X" of the block is within 0.4 percent of the closed form EXPECT
+hgb_vol() {
+  local v; v="$({ grep -oE '^history: Volume = [-0-9.e+]+' <<<"$(hgb_block "$1")" || true; } | sed -n "${2}p" | sed 's/^history: Volume = //')"
+  if [ -n "$v" ] && awk -v v="$v" -v e="$3" 'BEGIN { d = v - e; if (d < 0) d = -d; exit !(d <= 0.004 * e) }'; then echo "ok   HGB_$1: $4 (measured $v, closed form $3 +/- 0.4%)"; else echo "FAIL HGB_$1: $4 (measured '${v:-none}', closed form $3 +/- 0.4%)"; fail=1; fi
+}
+HGBSEAL="sealed: valid B-rep with real inner loops, exact volume"
+# --- diff: through-hole difference; the cylinder tool moved out of the box and back; Undo / Redo single steps
+hgb_has diff "^history: Showed 2 object\(s\)$" "both operands were HIDDEN by the Boolean (Show brings back exactly the 2 recorded sources)"
+hgb_has diff "^history:   object 3: BooleanDifference <- 1,2  \[operation=difference\]$" "History lists the result with its two sources"
+hgb_vol diff 1 874.34 "live sealed result"
+hgb_vol diff 2 1000 "cylinder moved 20 out of the box: the result is the plain box"
+hgb_has diff "^history: History rebuild of a boolean: exact B-rep boolean \(no tessellation, general engine\), 6 face\(s\), $HGBSEAL 1000 " "...rebuilt by the general engine as a SEALED 6-face box, exact volume 1000"
+hgb_vol diff 3 874.34 "Undo (one step: cylinder move AND rebuild) gives the sealed through hole again"
+hgb_vol diff 4 1000 "Redo gives the plain box again"
+hgb_vol diff 5 874.34 "cylinder moved back: the sealed through hole is rebuilt"
+hgb_cnt diff "^history: History: source object\(s\) 2 changed - 1 dependent\(s\) re-evaluated \(3\)$" 2 "exactly two automatic rebuilds (the two Moves); Undo, Redo and Show triggered none"
+hgb_cnt diff "^history: Object 3: valid$" 4 "Check: valid B-rep at every checked stage (live, plain box, Undo, rebuilt)"
+hgb_cnt diff "^history:   7 faces, [0-9]* edges, closed solid$" 2 "...the 7-face through-hole solid is a closed solid (live, rebuilt back)"
+hgb_cnt diff "^history:   6 faces, 24 edges, closed solid$" 1 "...and the plain box is a closed 6-face solid"
+hgb_cnt diff "^history: History rebuild of a boolean: .*$HGBSEAL" 2 "both rebuilds (plain box, through hole back) print the SEALED line: valid B-rep with real inner loops, kernel divergence-theorem volume"
+# --- blind hole: the cylinder moved up 10 (z 5..25)
+hgb_vol blind 1 937.17 "cylinder moved up 10: a BLIND hole 5 deep, 1000 - 4 pi 5"
+hgb_has blind "^history: History rebuild of a boolean: exact B-rep boolean \(no tessellation, general engine\), 8 face\(s\), $HGBSEAL 937" "...rebuilt sealed with 8 faces (through hole 7 + the hole's floor), exact volume 937"
+hgb_has blind "^history:   8 faces, [0-9]* edges, closed solid$" "...a closed 8-face solid"
+hgb_vol blind 2 874.34 "Undo restores the sealed through hole"
+hgb_vol blind 3 937.17 "Redo restores the blind hole"
+hgb_cnt blind "^history: Object 3: valid$" 2 "Check: valid B-rep (rebuilt blind hole, Undo)"
+# --- Scale of the cylinder tool 1.5 about (5,5,5) (r = 3, z -10..20)
+hgb_vol scale 1 717.26 "cylinder scaled 1.5: through hole 1000 - 9 pi 10"
+hgb_has scale "^history: History rebuild of a boolean: exact B-rep boolean \(no tessellation, general engine\), 7 face\(s\), $HGBSEAL 717" "...rebuilt sealed, exact volume 717"
+hgb_vol scale 2 874.34 "Undo restores the r = 2 hole"
+hgb_vol scale 3 717.26 "Redo restores the r = 3 hole"
+hgb_cnt scale "^history: Object 3: valid$" 2 "Check: valid B-rep (rebuilt, Undo)"
+# --- ModifyRadius of the source circle and EditHistory, through a 2-deep chain circle -> Extrude -> Boolean
+hgb_vol radius 1 874.34 "circle r 2 -> Extrude 20 -> BooleanDifference with a box: sealed through hole"
+hgb_has radius "^  object 4: BooleanDifference <- 3,2  \[operation=difference\]$" "History lists the boolean with the box and the extrusion as sources"
+hgb_has radius "^history: History: source object\(s\) 1 changed - 2 dependent\(s\) re-evaluated \(2,4\)$" "ModifyRadius of the circle re-evaluates the extrusion AND the boolean (chain)"
+hgb_vol radius 2 717.26 "ModifyRadius 3: through hole 1000 - 9 pi 10"
+hgb_vol radius 3 874.34 "Undo (one step for the whole chain) restores r 2"
+hgb_vol radius 4 717.26 "Redo restores r 3"
+hgb_has radius "^history: EditHistory: object 2 \(Extrude\): distance 20 -> 12\.$" "EditHistory of the extrusion distance 20 -> 12 ..."
+hgb_has radius "^  dependents re-evaluated: 4$" "...re-evaluates the boolean built on it"
+hgb_vol radius 5 802.08 "...blind hole 7 deep, r 3: 1000 - 9 pi 7"
+hgb_has radius "^history: EditHistory: object 4 \(BooleanDifference\): operation difference -> union\.$" "EditHistory of the boolean itself: difference -> union ..."
+hgb_vol radius 6 1141.37 "...union with the r 3 extrusion (z -5..7): 1000 + 9 pi 5"
+hgb_vol radius 7 802.08 "Undo of the EditHistory restores the difference"
+hgb_cnt radius "^history: Object 4: valid$" 6 "Check: valid B-rep at all six checked stages"
+hgb_cnt radius "^history: History rebuild of a boolean: .*$HGBSEAL" 3 "ModifyRadius, EditHistory distance and EditHistory operation each rebuilt a SEALED result"
+# --- Union: box + piercing cylinder
+hgb_vol union 1 1125.66 "live sealed union 1000 + 4 pi 10"
+hgb_vol union 2 1188.50 "cylinder moved up 10: 1000 + 4 pi 15"
+hgb_vol union 3 1125.66 "Undo restores the piercing union"
+hgb_vol union 4 1565.49 "cylinder scaled 1.5: 1000 + 9 pi 20"
+hgb_cnt union "^history: Object 3: valid$" 4 "Check: valid B-rep at every stage"
+hgb_cnt union "^history: History rebuild of a boolean: .*$HGBSEAL" 2 "both rebuilds sealed"
+# --- Intersection: box ^ piercing cylinder
+hgb_vol intersect 1 125.66 "live sealed intersection 4 pi 10"
+hgb_vol intersect 2 62.83 "cylinder moved up 10 (z 5..25): 4 pi 5"
+hgb_vol intersect 3 282.74 "cylinder scaled 1.5 (r 3, z -10..20): 9 pi 10"
+hgb_has intersect "^history: ! History: source object\(s\) 2 changed - 0 dependent\(s\) re-evaluated, 1 kept as they were: object 3 - the boolean of the operands' current shapes is empty$" "cylinder moved 50 out of the box: the intersection is empty, the old geometry is kept and the reason is printed"
+hgb_vol intersect 4 125.66 "...and the kept result still measures 4 pi 10"
+hgb_cnt intersect "^history: History rebuild of a boolean: .*$HGBSEAL" 2 "both non-empty rebuilds sealed"
+# --- Declined rebuild: the whole model 100000 away from the origin
+hgb_vol fallback 1 874.34 "engine declines the far model: the result is the MESH boolean (mesh volume 874.9)"
+hgb_has fallback "^history: History rebuild of a boolean: exact B-rep boolean declined \(the engine's result has gaps between faces that sewing could not close, so it is not a closed solid\); using the mesh boolean, so the result is a mesh$" "...and the reason is printed"
+hgb_has fallback "^history: Object 3 \(mesh\) layer Default$" "...List shows the object is a mesh now"
+hgb_vol fallback 2 874.34 "Undo restores the sealed B-rep"
+hgb_has fallback "^history: Object 3 \(polysurface\) layer Default$" "...which List shows as a polysurface again"
+hgb_vol fallback 3 874.34 "Redo gives the mesh result again"
+hgb_vol fallback 4 874.34 "everything moved back: the sealed B-rep is rebuilt (the object follows the engine, mesh -> B-rep)"
+hgb_has fallback "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face solid"
+hgb_cnt fallback "^history: Object 3: valid$" 2 "Check: valid B-rep after Undo and after moving back"
+# --- Deleted source
+hgb_has deleted "^history: ! History: source object\(s\) 2 changed - 0 dependent\(s\) re-evaluated, 1 kept as they were: object 3 - source object 2 no longer exists$" "deleting the cylinder keeps the result and prints the reason"
+hgb_vol deleted 1 874.34 "...the kept result still measures the through hole"
+hgb_vol deleted 2 874.34 "Undo brings the cylinder back (result unchanged)"
+hgb_vol deleted 3 1000 "...and moving it out rebuilds the box again (history follows after the Undo)"
+hgb_cnt deleted "^history: Object 3: valid$" 2 "Check: valid B-rep (kept result, rebuilt box)"
+# --- History Off
+hgb_has off "^history: History recording: off\. 0 object\(s\) with live construction history" "History Off: nothing is recorded"
+hgb_has off "^history: Showed 0 object\(s\)$" "...and the operands were consumed, not hidden"
+hgb_vol off 1 874.34 "...the sealed result itself is the same through hole"
+hgb_has off "^history: Object 3: valid$" "...Check valid"
+# --- Chain: two holes cut one after the other, both recorded
+hgb_vol chain 1 803.65 "box - cylinder A - cylinder B: 1000 - 4 pi 10 - 2.25 pi 10"
+hgb_has chain "re-evaluated from the recorded original operands" "...the second Boolean re-evaluates the base from its original operands (GeneralRecipe)"
+hgb_has chain "^  object 5: BooleanDifference <- 4,3  \[operation=difference\]$" "History lists the second boolean with the first result and cylinder B"
+hgb_has chain "^history: Showed 4 object\(s\)$" "both Booleans hid their operands (box, A, B and the first result)"
+hgb_vol chain 2 839.00 "cylinder B up 10 (blind): 1000 - 4 pi 10 - 2.25 pi 5"
+hgb_has chain "^history: History: source object\(s\) 3 changed - 1 dependent\(s\) re-evaluated \(5\)$" "...only the second boolean depends on B"
+hgb_vol chain 3 929.31 "cylinder A moved out: 1000 - 2.25 pi 10"
+hgb_has chain "^history: History: source object\(s\) 2 changed - 2 dependent\(s\) re-evaluated \(4,5\)$" "...A feeds both booleans: the chain is rebuilt in dependency order (4, then 5)"
+hgb_cnt chain "^history: Object 5: valid$" 3 "Check: valid B-rep at all three stages"
+# --- Sphere: the engine declines one position (mesh) and seals another
+hgb_vol sphere 1 1056.55 "box + sphere centred on the top face: 1000 + 2/3 pi 27 (sealed)"
+hgb_vol sphere 2 1104.72 "sphere moved up 2 (a cap of height 1 inside the box): 1000 + 4/3 pi 27 - pi (9 - 1)/3"
+hgb_has sphere "^history: History rebuild of a boolean: exact B-rep boolean declined" "...the General engine declined that position, so the rebuild is the mesh boolean with the reason printed"
+hgb_vol sphere 3 1007.07 "sphere scaled 0.5 about its centre (r 1.5): 1000 + 2/3 pi 3.375"
+hgb_cnt sphere "^history: History rebuild of a boolean: .*$HGBSEAL" 1 "...and that rebuild is sealed again"
+# --- Save / New / Open (same process): remapped ids, operands still hidden
+hgb_has save "^history:   object 4: BooleanDifference <- 2,3  \[operation=difference\]$" "before Save the saved ids are NOT 1,2,3 (a throw-away box was deleted first): result 4 <- 2,3"
+hgb_has save "^history:   object 3: BooleanDifference <- 1,2  \[operation=difference\]$" "after New + Open the same record is back with REMAPPED ids (result 3 <- 1,2)"
+hgb_has save "^history: Showed 2 object\(s\)$" "the two operands came back HIDDEN from the .3dm (before: Save wrote every hidden object as visible)"
+hgb_vol save 1 874.34 "before Save"
+hgb_vol save 2 874.34 "after Open, before any edit"
+hgb_vol save 3 937.17 "after Open, cylinder moved up 10: the blind hole is rebuilt with no UpdateHistory"
+hgb_vol save 4 874.34 "Undo restores the through hole"
+hgb_vol save 5 1000 "cylinder moved out of the box"
+hgb_cnt save "^history: History: source object\(s\) 2 changed - 1 dependent\(s\) re-evaluated \(3\)$" 2 "two automatic rebuilds after Open"
+hgb_cnt save "^history: Object 3: valid$" 4 "Check: valid B-rep after Open and after each rebuild"
+# --- the mesh-fallback result is saved with its record and rebuilt to a sealed B-rep after Open
+hgb_vol mesh 1 874.34 "the far model saved as a MESH result (mesh volume 874.9)"
+hgb_vol mesh 2 874.34 "after Open: still the mesh result"
+hgb_has mesh "^history: Object 3 \(mesh\) layer Default$" "...List: a mesh"
+hgb_vol mesh 3 874.34 "after Open, everything moved back: the sealed through hole is rebuilt from the record"
+hgb_has mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
+hgb_has mesh "^history: Object 3: valid$" "...Check valid"
+# --- a brand-new process opens the saved document
+hgb_has fresh "^history:   object 3: BooleanDifference <- 1,2  \[operation=difference\]$" "fresh process: the record was read from the .3dm"
+hgb_has fresh "^history: Showed 2 object\(s\)$" "fresh process: the operands are hidden"
+hgb_vol fresh 1 874.34 "fresh process: volume before any edit"
+hgb_vol fresh 2 717.26 "fresh process: cylinder scaled 1.5: rebuilt (through hole 1000 - 9 pi 10)"
+hgb_vol fresh 3 874.34 "fresh process: Undo"
+hgb_vol fresh 4 1000 "fresh process: the BOX moved 8 in x away from the cylinder: the result is the plain box"
+hgb_cnt fresh "^history: Object 3: valid$" 4 "Check: valid B-rep at every stage"
+hgb_vol fresh_mesh 1 874.34 "fresh process: the mesh-fallback document opens as a mesh (874.9)"
+hgb_vol fresh_mesh 2 874.34 "fresh process: moved back, the sealed B-rep is rebuilt"
+hgb_has fresh_mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
+rm -f "$HGB_DIR"/*.3dm 2>/dev/null || true
+
 exit $fail

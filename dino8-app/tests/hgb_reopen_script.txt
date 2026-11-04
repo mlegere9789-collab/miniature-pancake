@@ -29,7 +29,7 @@ SelNone
 SelID 1
 Move
 0,0,0
-3,0,0
+8,0,0
 SelNone
 SelID 3
 Check
