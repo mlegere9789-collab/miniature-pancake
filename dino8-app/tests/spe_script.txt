@@ -11,8 +11,7 @@
 SetActiveViewport Top
 
 # --- 1: shared straight edge, off-centre
-SelAll
-Hide
+New
 Box 0,0,0 10,10,0 10
 SplitEdge
 2.5,0,0
@@ -22,64 +21,59 @@ Volume
 Area
 
 # --- 2: shared curved arc (cylinder / plane), 30 degrees along the quarter arc from (8,10) to (10,8)
-SelAll
-Hide
-Box 100,0,0 110,10,0 10
+New
+Box 0,0,0 10,10,0 10
 FilletEdge
 Radius=2
-110,10,5
+10,10,5
 Enter
 SplitEdge
-109.7320508,9,10
+9.7320508,9,10
 SelAll
 Check
 Volume
 Area
 
 # --- 3: naked edge of an open box
-SelAll
-Hide
-Box 200,0,0 210,10,0 10
+New
+Box 0,0,0 10,10,0 10
 DeleteFaces
-205,5,10
+5,5,10
 Enter
 SplitEdge
-205,0,10
+5,0,10
 SelAll
 Check
 
 # --- 4: the fillet arc cut twice
-SelAll
-Hide
-Box 300,0,0 310,10,0 10
+New
+Box 0,0,0 10,10,0 10
 FilletEdge
 Radius=2
-310,10,5
+10,10,5
 Enter
 SplitEdge
-309.7320508,9,10
+9.7320508,9,10
 SplitEdge
-309.9,8.5,10
+9.9,8.5,10
 SelAll
 Check
 Volume
 
 # --- 5: closed rim of a cylinder
-SelAll
-Hide
-Cylinder 400,0,0 5 15
+New
+Cylinder 0,0,0 5 15
 SplitEdge
-405,0,15
+0,5,15
 SelAll
 Check
 Volume
 
 # --- 6: a pick on a vertex
-SelAll
-Hide
-Box 500,0,0 510,10,0 10
+New
+Box 0,0,0 10,10,0 10
 SplitEdge
-500,0,0
+0,0,0
 SelAll
 Check
 Volume
