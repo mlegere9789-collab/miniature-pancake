@@ -263,7 +263,7 @@ Angle=90
 10
 FilletEdge
 Radius=1
-13,10,0
+10,13,0
 Enter
 SelAll
 List
@@ -284,7 +284,7 @@ FilletEdge
 Radius=1
 16,10,10
 Radius=0.5
-13,10,0
+10,13,0
 Enter
 SelAll
 List
@@ -342,7 +342,7 @@ CounterboreDepth=3
 10
 FilletEdge
 Radius=1
-15,10,7
+10,15,7
 Enter
 SelAll
 List
@@ -380,7 +380,7 @@ CounterboreDepth=3
 10
 FilletEdge
 Radius=1
-13,10,0
+10,13,0
 Enter
 SelAll
 List
@@ -401,7 +401,7 @@ FilletEdge
 Radius=1
 15,10,10
 Radius=0.5
-13,10,0
+10,13,0
 Enter
 SelAll
 List
@@ -441,7 +441,7 @@ CounterboreDepth=3
 ChamferEdge
 Radius=1
 Distance2=0.5
-15,10,7
+10,15,7
 Enter
 SelAll
 List
