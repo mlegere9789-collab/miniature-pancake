@@ -1281,6 +1281,12 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(leader3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(leader3dm_write_check PRIVATE dino8_kernel)
 
+  # Real-ON_DimLinear .3dm write checker (tests/dimlinear3dm_write_check.cpp, sections/63_dimwr.sh): reads a file Dino 8
+  # itself wrote straight through OpenNURBS and reports every ON_DimLinear plus the count of loose baked curves.
+  add_executable(dimlinear3dm_write_check tests/dimlinear3dm_write_check.cpp)
+  target_include_directories(dimlinear3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dimlinear3dm_write_check PRIVATE dino8_kernel)
+
   # Real-ON_InstanceRef .3dm fixture generator (see
   # tests/instanceref3dm_fixture_gen.cpp and smoke.sh's Load3dm
   # ON_InstanceRef-import section): Dino 8's own blocks never round-trip

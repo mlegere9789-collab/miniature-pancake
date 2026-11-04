@@ -2144,6 +2144,57 @@ ON_Leader* BuildOnLeaderForGroup(const Document& doc, ONX_Model& model, std::map
   return leader;
 }
 
+// Builds a real ON_DimLinear for a Dino8 "DimLinear"/"DimAligned" annotation group, so Save3dm can write one genuine
+// linear dimension instead of the baked extension-line/dimension-line/arrow/glyph curves it otherwise falls through to - the
+// write-side inverse of Load3dm's own ON_DimLinear branch (which rebuilds exactly this tag set from the file's three
+// plane-local points). `o` is any member of the group: every member carries DimAligned/DimHorizontal/DimOffset (the fixed
+// layout a hand-picked third point reduces to), DimPlaneOrigin/X/Y and DimP0/DimP1 (the two measured points), the same tags
+// FileExchange.cpp's DxfLinearDimLayoutOf reads. An aligned dimension keeps its dimension-line point p0 + n * offset with n =
+// plane.zaxis x (p1 - p0), the very expression the reader inverts; a rotated one is written as the infinite dimension line at
+// plane coordinate `offset` along the plane's x (horizontal) or y (vertical) axis. Returns nullptr on any missing or malformed
+// tag, or two coincident points, and the caller then keeps the pre-existing baked export for the group.
+ON_DimLinear* BuildOnDimLinearForGroup(const Document& doc, ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache,
+                                       const SceneObject& o) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *aligned_s = get("DimAligned"), *horiz_s = get("DimHorizontal"), *offset_s = get("DimOffset");
+  const std::string *org_s = get("DimPlaneOrigin"), *ax_s = get("DimPlaneX"), *ay_s = get("DimPlaneY");
+  const std::string *p0_s = get("DimP0"), *p1_s = get("DimP1");
+  if (!aligned_s || !horiz_s || !offset_s || !org_s || !ax_s || !ay_s || !p0_s || !p1_s) return nullptr;
+  double ox, oy, oz, xx, xy, xz, yx, yy, yz, ax, ay, az, bx, by, bz;
+  if (!ParsePointTagLocal(*org_s, ox, oy, oz) || !ParsePointTagLocal(*ax_s, xx, xy, xz) || !ParsePointTagLocal(*ay_s, yx, yy, yz) ||
+      !ParsePointTagLocal(*p0_s, ax, ay, az) || !ParsePointTagLocal(*p1_s, bx, by, bz))
+    return nullptr;
+  const ON_Plane plane(ON_3dPoint(ox, oy, oz), ON_3dVector(xx, xy, xz), ON_3dVector(yx, yy, yz));
+  const ON_3dPoint p0(ax, ay, az), p1(bx, by, bz);
+  if (p0.DistanceTo(p1) < 1e-9) return nullptr;
+  const bool aligned = *aligned_s == "1", horizontal = *horiz_s == "1";
+  const double offset = std::atof(offset_s->c_str());
+
+  double height = doc.CurrentAnnotationStyle().text_height;
+  for (const SceneObject& m : doc.Objects()) {
+    if (m.group_id != o.group_id || !m.user_text.count("Glyph")) continue;
+    auto h = m.user_text.find("TextHeight");
+    if (h != m.user_text.end()) height = std::atof(h->second.c_str());
+    break;
+  }
+  if (height <= 0) height = std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+  const ON_UUID dimstyle_id = FindOrAddTextDimStyleId(model, dimstyle_cache, height);
+  if (ON_UuidIsNil(dimstyle_id)) return nullptr;
+
+  ON_DimLinear* dim = nullptr;
+  if (aligned) {
+    ON_3dVector n = ON_CrossProduct(plane.zaxis, p1 - p0);
+    if (!n.Unitize()) return nullptr;
+    dim = ON_DimLinear::CreateAligned(p0, p1, p0 + n * offset, plane.zaxis, dimstyle_id, nullptr);
+  } else {
+    const ON_Line line = horizontal ? ON_Line(plane.PointAt(0.0, offset), plane.PointAt(1.0, offset))
+                                    : ON_Line(plane.PointAt(offset, 0.0), plane.PointAt(offset, 1.0));
+    dim = ON_DimLinear::CreateRotated(p0, p1, line, plane.zaxis, dimstyle_id, nullptr);
+  }
+  if (dim) dim->SetDimensionStyleId(dimstyle_id);
+  return dim;
+}
+
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
@@ -2397,6 +2448,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   // rather than keeping a second one, since both builders key it the exact
   // same way (NumberTagLocal(height)).
   std::set<int> leader_groups_written;
+  std::set<int> dimlinear_groups_written;
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
@@ -2502,6 +2554,22 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         // A malformed/missing tag (shouldn't happen for a group this app
         // itself created) falls through to this glyph's own baked curve
         // export below, same tolerance as the hatch branch above.
+      }
+    }
+    {
+      // A DimLinear/DimAligned group writes as one genuine ON_DimLinear instead of its baked extension-line, dimension-line,
+      // arrow and glyph curves (every member of the group is caught here, so none of them also falls through to the baked
+      // export below once the real dimension is written) - see BuildOnDimLinearForGroup. A group whose tags are malformed
+      // (none of this app's own are) keeps the baked export.
+      auto ann_tag = o.user_text.find("Annotation");
+      if (o.group_id >= 0 && ann_tag != o.user_text.end() && (ann_tag->second == "DimLinear" || ann_tag->second == "DimAligned")) {
+        if (dimlinear_groups_written.count(o.group_id)) continue;
+        if (ON_DimLinear* dim = BuildOnDimLinearForGroup(doc, model, text_dimstyle_cache, o)) {
+          model.AddModelGeometryComponent(dim, &attr);
+          dimlinear_groups_written.insert(o.group_id);
+          ++written;
+          continue;
+        }
       }
     }
     {
