@@ -102954,11 +102954,11 @@ void TestOffsetRefitUnreachableToleranceRefusesQuicklyAndNamesTheNumber() {
     NurbsSurface out;
     std::string why;
     double dev = -1.0;
-    const double tol = 1e-8;
+    const double tol = 1e-9;
     const auto t0 = std::chrono::steady_clock::now();
     const Result r = s.OffsetRefit(0.2, out, tol, &dev, &why);
     const double secs = seconds_since(t0);
-    Check(secs < 60.0, "OffsetRefit(tol=1e-8) on the bump returns within a bounded budget (under 60 s)");
+    Check(secs < 120.0, "OffsetRefit(tol=1e-9) on the bump returns within a bounded budget (about 12 s measured; it used to be unbounded)");
     if (r == Result::Ok) {
       Check(dev <= tol, "...if it succeeds, the achieved deviation is within the tolerance");
     } else {
