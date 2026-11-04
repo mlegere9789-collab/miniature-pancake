@@ -4806,7 +4806,8 @@ class Brep {
   // width as their recorded tolerance); the gate measures Check() kinds,
   // validity and volume, not an exact geometric deviation. Never throws on
   // a Brep it cannot heal (it reports instead).
-  HealReport HealChecked(const HealOptions& options = HealOptions()) ;
+  HealReport HealChecked(const HealOptions& options);
+  HealReport HealChecked();
 
   // Deletes face `face_index` outright (ON_Brep::DeleteFace, freeing its
   // own edges) - the general-purpose counterpart RemoveDegenerateFaces()/

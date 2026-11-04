@@ -10699,6 +10699,8 @@ int Brep::RemoveSliverFaces(double max_width) {
   return RemoveThinFaces(max_width, max_width, /*slivers_too=*/true);
 }
 
+Brep::HealReport Brep::HealChecked() { return HealChecked(HealOptions()); }
+
 Brep::HealReport Brep::HealChecked(const HealOptions& options) {
   HealReport rep;
   const double gap = std::max(options.gap_tolerance, 0.0);
