@@ -13742,9 +13742,9 @@ spe_has "$SPE_2" ": valid" "SPE_2: the filleted box with a split arc is still a 
 spe_num "$SPE_2" "Volume" 991.40 991.43 "SPE_2: volume stays 1000 - r^2 (1 - pi/4) h = 991.4159"
 spe_num "$SPE_2" "Area" 589.65 589.75 "SPE_2: area stays 600 - 40 + pi/2 r h - 2 r^2 (1 - pi/4) = 589.6991"
 SPE_2V="$({ grep -o "new vertex [-0-9.e+]*,[-0-9.e+]*,[-0-9.e+]*" <<<"$SPE_2" || true; } | head -1 | sed 's/new vertex //')"
-if [ -n "$SPE_2V" ] && awk -v v="$SPE_2V" 'BEGIN { split(v, a, ","); dx = a[1] - 108; dy = a[2] - 8; r = sqrt(dx * dx + dy * dy); th = atan2(dy, dx) * 180 / 3.14159265358979;
+if [ -n "$SPE_2V" ] && awk -v v="$SPE_2V" 'BEGIN { split(v, a, ","); dx = a[1] - 8; dy = a[2] - 8; r = sqrt(dx * dx + dy * dy); th = atan2(dy, dx) * 180 / 3.14159265358979;
      exit !(r > 1.995 && r < 2.005 && th > 29.5 && th < 30.5 && a[3] > 9.999 && a[3] < 10.001) }'; then
-  spe_ok "SPE_2_vertex: the new vertex ($SPE_2V) lies on the fillet circle r = 2 about (108,8) at 30 degrees on the top plane z = 10"
+  spe_ok "SPE_2_vertex: the new vertex ($SPE_2V) lies on the fillet circle r = 2 about (8,8) at 30 degrees on the top plane z = 10"
 else
   spe_bad "SPE_2_vertex: new vertex '$SPE_2V' is not on the r = 2 circle at 30 degrees"
 fi
