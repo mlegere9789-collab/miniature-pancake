@@ -2407,8 +2407,12 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       attr.SetColorSource(ON::color_from_object);
       attr.m_color = ToOnColor(o.color);
     }
-    attr.SetVisible(o.visible);
+    // openNURBS keeps visibility IN the object mode (SetVisible(false) stores hidden_object), so the lock/normal
+    // mode is set first and SetVisible after it: the other order let SetMode(normal_object) silently un-hide every
+    // hidden object on Save (a hidden History operand or ToSubD source came back visible after Open). A hidden
+    // locked object saves as hidden (one mode value, as in Rhino).
     attr.SetMode(o.locked ? ON::locked_object : ON::normal_object);
+    attr.SetVisible(o.visible);
     if (o.linetype != "ByLayer" && linetype_index(o.linetype) >= 0) {
       attr.SetLinetypeSource(ON::linetype_from_object);
       attr.m_linetype_index = linetype_index(o.linetype);
