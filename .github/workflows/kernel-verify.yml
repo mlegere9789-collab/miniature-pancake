@@ -37,11 +37,14 @@ jobs:
         run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
         run: cmake --build dino8-kernel/build --target dino8_kernel_tests dino8_continuity2_tests
+      - name: Build optional extra test targets (only if the branch defines them)
+        run: cmake --build dino8-kernel/build --target dino8_surface_fillet_extra || true
       - name: Package the test binaries
         run: |
           mkdir -p bundle
           cp dino8-kernel/build/tests/dino8_kernel_tests bundle/
           cp dino8-kernel/build/tests/dino8_continuity2_tests bundle/ || true
+          cp dino8-kernel/build/tests/dino8_surface_fillet_extra bundle/ || true
       - uses: actions/upload-artifact@v4
         with:
           name: kernel-test-binaries
@@ -73,6 +76,7 @@ jobs:
           echo "shard ${{ matrix.k }}/12 exit=$rc ok=$(grep -c '^ok' ../shard.log) FAILED=$(grep -c '^FAILED' ../shard.err)"
           grep '^FAILED' ../shard.err | sort | uniq -c | head -50 || true
           if [ "${{ matrix.k }}" = "0" ]; then ../bundle/dino8_continuity2_tests 2>&1 | tail -3 || true; fi
+          if [ "${{ matrix.k }}" = "1" ] && [ -x ../bundle/dino8_surface_fillet_extra ]; then (../bundle/dino8_surface_fillet_extra > ../fillet_extra.log 2>&1; echo "surface_fillet_extra exit=$? ok=$(grep -c '^ok' ../fillet_extra.log) FAILED=$(grep -c '^FAILED' ../fillet_extra.log)"; grep -E '^\[probe|^FAILED' ../fillet_extra.log | head -40) || true; fi
           exit $rc
       - uses: actions/upload-artifact@v4
         if: always()
@@ -152,9 +156,10 @@ jobs:
         shell: bash
         timeout-minutes: 120
         run: |
-          chmod +x appbin/dino8-app/build/Dino8 2>/dev/null || chmod +x appbin/Dino8
-          BIN=$(ls appbin/dino8-app/build/Dino8 appbin/Dino8 2>/dev/null | head -1)
-          JSON=$(ls appbin/section_groups.json | head -1)
+          find appbin -type f | head
+          BIN=$(find appbin -type f -name Dino8 | head -1)
+          JSON=$(find appbin -type f -name section_groups.json | head -1)
+          chmod +x "$BIN"
           NAMES=$(python3 -c "import json;print(' '.join(json.load(open('$JSON'))[${{ matrix.g }}]))")
           echo "group ${{ matrix.g }}: $NAMES"
           set +e
