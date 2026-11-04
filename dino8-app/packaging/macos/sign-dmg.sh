@@ -63,6 +63,15 @@ sign() {
   [ -d "$app" ] || { echo "Dino8.app not found inside $dmg" >&2; ls -la "$stage" >&2; exit 1; }
   main="$app/Contents/MacOS/Dino8"
 
+  # The build copies the data files next to the executable (Contents/MacOS/data, for running from the build tree) and the
+  # install step ALSO puts them in Contents/Resources/data. codesign treats everything under Contents/MacOS as code and refuses
+  # the unsigned data files there ("code object is not signed at all ... hatchpatterns.pat"). The app looks in exe_dir/data first
+  # and then in ../Resources/data (Application.cpp), so the bundle's own copy is the one that matters: drop the duplicate.
+  if [ -d "$app/Contents/Resources/data" ] && [ -d "$app/Contents/MacOS/data" ]; then
+    echo "removing the duplicate Contents/MacOS/data (the same files are in Contents/Resources/data)"
+    rm -rf "$app/Contents/MacOS/data"
+  fi
+
   # Nested code first (anything Mach-O that is not the main executable).
   while IFS= read -r f; do
     [ "$f" = "$main" ] && continue
