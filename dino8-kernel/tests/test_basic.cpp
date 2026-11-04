@@ -97504,6 +97504,319 @@ void TestSurfaceFilletRefusesWithReasonsNeverAPatch() {
 
 }  // namespace surface_fillet_tests
 
+// ---- topology_shell_tests: Brep::ClassifyShells (inner-void / region concept) and
+// ---- Brep::LiveLoopCount / LiveTrimCount / HasFullTopology.
+namespace topology_shell_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::ShellConvexPlanar;
+
+struct Lcg {
+  unsigned long long s;
+  explicit Lcg(unsigned long long seed) : s(seed) {}
+  double Next() {  // uniform in [0, 1)
+    s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+    return static_cast<double>((s >> 11) & ((1ULL << 53) - 1)) / static_cast<double>(1ULL << 53);
+  }
+  double Range(double a, double b) { return a + (b - a) * Next(); }
+};
+
+bool Near(double a, double b, double tol = 1e-6) { return std::fabs(a - b) <= tol * std::max(1.0, std::fabs(b)); }
+
+bool Contains(const std::vector<std::string>& v, const char* needle) {
+  for (const std::string& s : v) {
+    if (s.find(needle) != std::string::npos) return true;
+  }
+  return false;
+}
+
+// The shells' face lists must partition [0, FaceCount()) exactly (independent invariant).
+bool FacesPartition(const Brep::ShellClassification& c, int face_count) {
+  std::vector<int> seen(static_cast<size_t>(face_count), 0);
+  for (const Brep::ShellInfo& s : c.shells) {
+    for (int f : s.faces) {
+      if (f < 0 || f >= face_count) return false;
+      ++seen[static_cast<size_t>(f)];
+    }
+  }
+  for (int n : seen) {
+    if (n != 1) return false;
+  }
+  return true;
+}
+
+void TestClassifyShellsHollowBoxIsOuterBoundaryPlusVoid() {
+  const Brep box = Brep::BoxWelded(0, 0, 0, 10, 10, 10);
+  const Brep hollow = ShellConvexPlanar(box, {}, 1.0);
+  const Brep::ShellClassification c = hollow.ClassifyShells();
+  Check(c.shells.size() == 2, "hollow box classifies as exactly two shells");
+  Check(FacesPartition(c, hollow.FaceCount()), "hollow box: the shells' face lists partition every face exactly once");
+  Check(c.consistent && c.problems.empty(), "hollow box: nesting is consistent, no problems");
+  if (c.shells.size() != 2) return;
+  int outer = -1, cav = -1;
+  for (int i = 0; i < 2; ++i) {
+    if (c.shells[static_cast<size_t>(i)].role == Brep::ShellInfo::Role::OuterBoundary) outer = i;
+    if (c.shells[static_cast<size_t>(i)].role == Brep::ShellInfo::Role::Void) cav = i;
+  }
+  Check(outer >= 0 && cav >= 0 && outer != cav, "hollow box: one OuterBoundary shell and one Void shell");
+  if (outer < 0 || cav < 0) return;
+  const Brep::ShellInfo& o = c.shells[static_cast<size_t>(outer)];
+  const Brep::ShellInfo& v = c.shells[static_cast<size_t>(cav)];
+  Check(Near(o.signed_volume, 1000.0), "hollow box: outer shell signed volume is +10^3 (closed form)");
+  Check(Near(v.signed_volume, -512.0), "hollow box: cavity shell signed volume is -8^3 (closed form)");
+  Check(o.closed && v.closed && o.has_topology && v.has_topology, "hollow box: both shells closed with real topology");
+  // Independent oracle: Euler-Poincare V - E + F - R = 2 - 2*genus; each shell is a topological sphere.
+  Check(o.vertex_count == 8 && o.edge_count == 12 && o.face_count == 6 && o.euler_poincare == 2 && o.genus == 0,
+        "hollow box: outer shell V=8 E=12 F=6, Euler-Poincare 2, genus 0");
+  Check(v.vertex_count == 8 && v.edge_count == 12 && v.face_count == 6 && v.euler_poincare == 2 && v.genus == 0,
+        "hollow box: cavity shell V=8 E=12 F=6, Euler-Poincare 2, genus 0");
+  Check(o.parent == -1 && o.depth == 0 && v.parent == outer && v.depth == 1, "hollow box: cavity nests directly in the outer shell");
+  Check(c.regions.size() == 1 && c.regions[0].outer_shell == outer && c.regions[0].void_shells.size() == 1 &&
+            c.regions[0].void_shells[0] == cav,
+        "hollow box: one material region owning the cavity");
+  Check(c.regions.size() == 1 && Near(c.regions[0].volume, 488.0), "hollow box: region volume 1000 - 512 = 488");
+  // Cross-check against the pre-existing, independent split + volume path.
+  const std::vector<Brep> pieces = hollow.SplitDisjointPieces();
+  double piece_sum = 0.0;
+  for (const Brep& p : pieces) piece_sum += p.Volume();
+  Check(pieces.size() == 2 && Near(piece_sum, 488.0), "hollow box: SplitDisjointPieces() volumes sum to the same 488");
+  Check(Near(hollow.Volume(), 488.0), "hollow box: whole-Brep Volume() equals the region volume");
+}
+
+void TestClassifyShellsIslandInsideCavityIsANewRegion() {
+  const Brep hollow = ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {}, 1.0);
+  const Brep island = Brep::BoxWelded(3, 3, 3, 5, 5, 5);
+  const Brep far_box = Brep::BoxWelded(20, 0, 0, 22, 2, 2);
+  const Brep body = Brep::Compound({hollow, island, far_box});
+  const Brep::ShellClassification c = body.ClassifyShells();
+  Check(c.shells.size() == 4 && FacesPartition(c, body.FaceCount()), "island body: four shells partitioning every face");
+  Check(c.consistent && c.problems.empty(), "island body: consistent");
+  Check(c.regions.size() == 3, "island body: three material regions (hollow block, island in its cavity, far box)");
+  int voids = 0, outers = 0, max_depth = 0;
+  for (const Brep::ShellInfo& s : c.shells) {
+    if (s.role == Brep::ShellInfo::Role::Void) ++voids;
+    if (s.role == Brep::ShellInfo::Role::OuterBoundary) ++outers;
+    max_depth = std::max(max_depth, s.depth);
+  }
+  Check(voids == 1 && outers == 3 && max_depth == 2, "island body: 1 Void, 3 OuterBoundary, island at depth 2");
+  double total = 0.0;
+  for (const Brep::MaterialRegion& r : c.regions) total += r.volume;
+  Check(Near(total, 488.0 + 8.0 + 8.0), "island body: region volumes 488 + 8 + 8 (closed form)");
+  Check(Near(body.Volume(), total), "island body: whole-Brep Volume() equals the sum of region volumes");
+  // The island is inside the Void, the far box is outside everything.
+  for (const Brep::ShellInfo& s : c.shells) {
+    if (s.role == Brep::ShellInfo::Role::OuterBoundary && Near(s.signed_volume, 8.0)) {
+      const bool is_far = s.depth == 0;
+      const bool is_island = s.depth == 2 && s.parent >= 0 &&
+                             c.shells[static_cast<size_t>(s.parent)].role == Brep::ShellInfo::Role::Void;
+      Check(is_far || is_island, "island body: each 8-volume box is either free (depth 0) or inside the Void (depth 2)");
+    }
+  }
+}
+
+void TestClassifyShellsRefusalsAndInconsistencyAreReportedNotGuessed() {
+  const Brep hollow = ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {}, 1.0);
+  // Negative control 1: a solid inside another solid (overlap), not inside a cavity.
+  {
+    const Brep overlap = Brep::Compound({Brep::BoxWelded(0, 0, 0, 10, 10, 10), Brep::BoxWelded(3, 3, 3, 5, 5, 5)});
+    const Brep::ShellClassification c = overlap.ClassifyShells();
+    Check(!c.consistent && Contains(c.problems, "nested directly inside OuterBoundary"),
+          "overlapping solids: flagged inconsistent with the stated reason");
+  }
+  // Negative control 2: a cavity wall with nothing around it.
+  {
+    const std::vector<Brep> pieces = hollow.SplitDisjointPieces();
+    for (const Brep& p : pieces) {
+      if (p.Volume() < 0.0) {
+        const Brep::ShellClassification c = p.ClassifyShells();
+        Check(c.shells.size() == 1 && c.shells[0].role == Brep::ShellInfo::Role::Void && !c.consistent &&
+                  Contains(c.problems, "no outer boundary encloses it") && c.regions.empty(),
+              "lone cavity wall: Void, inconsistent (no enclosing outer boundary), no region invented");
+      }
+    }
+  }
+  // Negative control 3: an open sheet bounds nothing.
+  {
+    const Brep open_shell = ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {1}, 1.0);
+    const Brep::ShellClassification c = open_shell.ClassifyShells();
+    bool saw_open = false;
+    for (const Brep::ShellInfo& s : c.shells) {
+      if (!s.closed) saw_open = (s.role == Brep::ShellInfo::Role::OpenSheet && s.region == -1);
+    }
+    Check(saw_open || c.shells.empty(), "open shelled box: its not-closed shell is an OpenSheet with no region");
+    Check(c.regions.empty(), "open shelled box: no material region is claimed for an open shell");
+  }
+  // Negative control 4: a topology-less multi-face Brep that is not a Compound is refused, with a reason.
+  {
+    bool threw = false;
+    std::string why;
+    try {
+      (void)Brep::Box(0, 0, 0, 1, 1, 1).ClassifyShells();
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      why = e.what();
+    }
+    Check(threw && why.find("no real ON_Brep loop/trim/edge topology") != std::string::npos,
+          "topology-less Box(): ClassifyShells() throws invalid_argument naming the missing topology");
+  }
+  // An empty Brep classifies to nothing; a Compound of surface-only Box() lumps still classifies (mesh closure path).
+  Check(Brep().ClassifyShells().shells.empty(), "empty Brep: no shells, no regions");
+  {
+    const Brep two = Brep::Compound({Brep::Box(0, 0, 0, 1, 1, 1), Brep::Box(5, 5, 5, 7, 7, 7)});
+    const Brep::ShellClassification c = two.ClassifyShells();
+    Check(c.shells.size() == 2 && c.regions.size() == 2 && c.consistent && !c.shells[0].has_topology &&
+              Near(c.regions[0].volume + c.regions[1].volume, 9.0),
+          "Compound of two surface-only Box() lumps: two regions, volumes 1 + 8, no topology claimed");
+  }
+}
+
+// Randomized nested bodies: a chain of levels, each a hollow block (outer + cavity) whose
+// successor sits (randomly offset, random size) inside its cavity; the last level may be solid.
+void TestClassifyShellsRandomizedNestedBodiesMatchConstruction() {
+  Lcg rng(0xD1A0C0FFEEULL);
+  int trials = 0, ok_all = 0;
+  for (int t = 0; t < 40; ++t) {
+    const int levels = 1 + static_cast<int>(rng.Next() * 4.0);  // 1..4
+    std::vector<Brep> parts;
+    std::vector<double> expected_region_volume;
+    double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
+    for (int a = 0; a < 3; ++a) {
+      lo[a] = rng.Range(-50, 50);
+      hi[a] = lo[a] + rng.Range(30, 60);
+    }
+    bool build_ok = true;
+    for (int lv = 0; lv < levels; ++lv) {
+      const double wall = rng.Range(0.5, 2.0);
+      const bool last = lv == levels - 1;
+      const bool hollow = !last || rng.Next() < 0.5;
+      const double vol_outer = (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
+      double rv = vol_outer;
+      Brep solid = Brep::BoxWelded(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+      if (hollow) {
+        parts.push_back(ShellConvexPlanar(solid, {}, wall));
+        rv = vol_outer - (hi[0] - lo[0] - 2 * wall) * (hi[1] - lo[1] - 2 * wall) * (hi[2] - lo[2] - 2 * wall);
+        // next level lives strictly inside the cavity, randomly placed and sized
+        double nlo[3], nhi[3];
+        for (int a = 0; a < 3; ++a) {
+          const double clo = lo[a] + wall, chi = hi[a] - wall;
+          const double span = chi - clo;
+          const double len = span * rng.Range(0.3, 0.7);
+          nlo[a] = clo + (span - len) * rng.Range(0.15, 0.85);
+          nhi[a] = nlo[a] + len;
+        }
+        for (int a = 0; a < 3; ++a) {
+          lo[a] = nlo[a];
+          hi[a] = nhi[a];
+        }
+      } else {
+        parts.push_back(solid);
+      }
+      expected_region_volume.push_back(rv);
+      if (!hollow) break;
+    }
+    if (!build_ok) continue;
+    ++trials;
+    const Brep body = Brep::Compound(parts);
+    const Brep::ShellClassification c = body.ClassifyShells();
+    bool ok = c.consistent && FacesPartition(c, body.FaceCount()) && c.regions.size() == expected_region_volume.size();
+    // regions sorted by depth: outer shell depth must be 2*level
+    std::vector<double> got(expected_region_volume.size(), -1.0);
+    for (const Brep::MaterialRegion& r : c.regions) {
+      const int depth = c.shells[static_cast<size_t>(r.outer_shell)].depth;
+      if (depth % 2 != 0 || depth / 2 >= static_cast<int>(got.size())) {
+        ok = false;
+        continue;
+      }
+      got[static_cast<size_t>(depth / 2)] = r.volume;
+    }
+    for (size_t i = 0; ok && i < got.size(); ++i) ok = Near(got[i], expected_region_volume[i], 1e-6);
+    for (const Brep::ShellInfo& s : c.shells) {
+      if (s.closed && s.has_topology && (s.euler_poincare != 2 || s.genus != 0)) ok = false;  // all are spheres
+      if (s.role == Brep::ShellInfo::Role::Void && !(s.depth % 2 == 1)) ok = false;
+      if (s.role == Brep::ShellInfo::Role::OuterBoundary && !(s.depth % 2 == 0)) ok = false;
+    }
+    if (ok) ++ok_all;
+    else std::fprintf(stderr, "randomized nested trial %d (levels=%d) disagreed with construction\n", t, levels);
+  }
+  Check(trials >= 30 && ok_all == trials,
+        "randomized nested hollow bodies: region count, per-region volume, depth parity, Euler-Poincare and face partition all match construction in every trial");
+}
+
+void TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep bar = Brep::Box(4, 4, -1, 6, 6, 11);
+  Brep drilled;
+  bool built = true;
+  try {
+    drilled = BooleanCombineGeneral(box, bar, BooleanOp::Difference);
+  } catch (const std::exception&) {
+    built = false;
+  }
+  Check(built, "through-hole box: BooleanCombineGeneral Difference builds");
+  if (!built) return;
+  const Brep::ShellClassification c = drilled.ClassifyShells();
+  Check(c.shells.size() == 1 && c.shells[0].closed && c.shells[0].has_topology,
+        "through-hole box: one closed shell with real topology");
+  if (c.shells.size() != 1) return;
+  const Brep::ShellInfo& s = c.shells[0];
+  std::fprintf(stderr, "through-hole: V=%d E=%d F=%d R=%d chi=%d genus=%d vol=%f\n", s.vertex_count, s.edge_count,
+               s.face_count, s.inner_loop_count, s.euler_poincare, s.genus, s.signed_volume);
+  Check(s.inner_loop_count >= 2, "through-hole box: top and bottom faces carry inner loops (rings)");
+  Check(s.euler_poincare == 0 && s.genus == 1, "through-hole box: V - E + F - R = 0, genus 1 (a torus)");
+  Check(Near(s.signed_volume, 1000.0 - 40.0, 1e-4), "through-hole box: volume 1000 - 2*2*10 = 960");
+}
+
+void TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency() {
+  Check(!Brep().HasFullTopology(), "empty Brep: HasFullTopology() false");
+  Check(!Brep::Box(0, 0, 0, 1, 1, 1).HasFullTopology(), "surface-only Box(): HasFullTopology() false (reports its 0 loops honestly)");
+  Check(Brep::Box(0, 0, 0, 1, 1, 1).LiveLoopCount() == 0 && Brep::Box(0, 0, 0, 1, 1, 1).LiveTrimCount() == 0,
+        "surface-only Box(): LiveLoopCount/LiveTrimCount are 0");
+  Lcg rng(0xBEEF1234ULL);
+  int trials = 0, good = 0;
+  for (int t = 0; t < 60; ++t) {
+    const double x = rng.Range(-20, 20), y = rng.Range(-20, 20), z = rng.Range(-20, 20);
+    Brep b = Brep::BoxWelded(x, y, z, x + rng.Range(1, 9), y + rng.Range(1, 9), z + rng.Range(1, 9));
+    ++trials;
+    bool ok = b.HasFullTopology() && b.LiveLoopCount() == 6 && b.LiveTrimCount() == 24 && b.LiveFaceCount() == 6;
+    // Euler V - E + F = 2 and the adjacency invariant: every edge has exactly two incident faces,
+    // every vertex exactly three edges, and sum of edge-face incidences = 2E = trims.
+    ok = ok && (b.LiveVertexCount() - b.LiveEdgeCount() + b.LiveFaceCount() == 2);
+    int incidences = 0;
+    for (int e = 0; ok && e < b.EdgeCount(); ++e) {
+      const std::vector<int> fs = b.FacesOfEdge(e);
+      incidences += static_cast<int>(fs.size());
+      if (fs.size() != 2) ok = false;
+    }
+    ok = ok && incidences == b.LiveTrimCount();
+    for (int v = 0; ok && v < b.VertexCount(); ++v) ok = b.EdgesOfVertex(v).size() == 3;
+    // Raw-delete a random subset of faces (no Compact) and recount independently.
+    std::vector<int> kill;
+    for (int f = 0; f < 6; ++f) {
+      if (rng.Next() < 0.4) kill.push_back(f);
+    }
+    for (int f : kill) b.raw().DeleteFace(b.raw().m_F[f], true);
+    int expect_loops = 0, expect_trims = 0, expect_faces = 0;
+    for (int f = 0; f < b.raw().m_F.Count(); ++f) {
+      if (b.raw().m_F[f].m_face_index < 0) continue;
+      ++expect_faces;
+      for (int li : b.LoopsOfFace(f)) {
+        ++expect_loops;
+        expect_trims += static_cast<int>(b.TrimsOfLoop(li).size());
+      }
+    }
+    ok = ok && b.LiveFaceCount() == expect_faces && b.LiveLoopCount() == expect_loops && b.LiveTrimCount() == expect_trims;
+    ok = ok && expect_faces == 6 - static_cast<int>(kill.size());
+    if (kill.size() == 6) ok = ok && !b.HasFullTopology();  // no live face at all
+    if (ok) ++good;
+    else std::fprintf(stderr, "live-count trial %d failed (killed %zu faces)\n", t, kill.size());
+  }
+  Check(good == trials, "60 randomized BoxWelded bodies: Euler 2, edge->2 faces, vertex->3 edges, live loop/trim counts equal an independent per-face recount, also after raw deletions");
+}
+
+}  // namespace topology_shell_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -99094,6 +99407,18 @@ int main() {
   RunTest("surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces", surface_fillet_tests::TestSurfaceFilletConvexEdgeOfTwoCurvedSurfaces);
   RunTest("surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError", surface_fillet_tests::TestSurfaceFilletToleranceControlsIntervalsAndMeasuredError);
   RunTest("surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch", surface_fillet_tests::TestSurfaceFilletRefusesWithReasonsNeverAPatch);
+  RunTest("topology_shell_tests::TestClassifyShellsHollowBoxIsOuterBoundaryPlusVoid",
+          topology_shell_tests::TestClassifyShellsHollowBoxIsOuterBoundaryPlusVoid);
+  RunTest("topology_shell_tests::TestClassifyShellsIslandInsideCavityIsANewRegion",
+          topology_shell_tests::TestClassifyShellsIslandInsideCavityIsANewRegion);
+  RunTest("topology_shell_tests::TestClassifyShellsRefusalsAndInconsistencyAreReportedNotGuessed",
+          topology_shell_tests::TestClassifyShellsRefusalsAndInconsistencyAreReportedNotGuessed);
+  RunTest("topology_shell_tests::TestClassifyShellsRandomizedNestedBodiesMatchConstruction",
+          topology_shell_tests::TestClassifyShellsRandomizedNestedBodiesMatchConstruction);
+  RunTest("topology_shell_tests::TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare",
+          topology_shell_tests::TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare);
+  RunTest("topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency",
+          topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {
