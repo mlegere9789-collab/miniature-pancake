@@ -102099,6 +102099,363 @@ void TestBrepShrinkSurfacesTolerance() {
 
 }  // namespace surfops_tolerance_tests
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Local / direct-edit: SplitEdge. Brep::SplitNakedEdgeAt now splits an edge with ANY number (>= 1) of trims - naked,
+// shared and genuinely non-manifold (the spine of a fan of pages) - exactly (ON_Curve::Split of the 3D edge and of each
+// trim's own 2D curve at the point's own projection on THAT trim's face, never a shared normalized parameter fraction).
+// Every number is measured against an oracle independent of Check(): trim endpoints evaluated through each face's own
+// surface against the edge's endpoints, loop closure gaps, vector areas of planar pages, closed-form arc lengths.
+// ---------------------------------------------------------------------------------------------------------------------
+namespace local_edit_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+
+// Largest gap, over every trim of every loop of `raw`, between (a) the trim's two 2D ends evaluated through its own
+// face's surface and its edge's two 3D ends (bRev3d aware) and (b) one trim's end and the next trim's start in the same
+// loop (the loop closes). Independent of ON_Brep::IsValid() / Brep::Check().
+double SplitMaxTrimGap(const ON_Brep& raw) {
+  double gap = 0.0;
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_Surface* sf = raw.m_F[fi].SurfaceOf();
+    for (int li = 0; li < raw.m_F[fi].LoopCount(); ++li) {
+      const ON_BrepLoop* lp = raw.m_F[fi].Loop(li);
+      const int n = lp ? lp->TrimCount() : 0;
+      for (int k = 0; k < n; ++k) {
+        const ON_BrepTrim* t = lp->Trim(k);
+        const ON_BrepTrim* nx = lp->Trim((k + 1) % n);
+        const ON_BrepEdge* te = t ? t->Edge() : nullptr;
+        const ON_Curve* tc = t ? t->TrimCurveOf() : nullptr;
+        const ON_Curve* nc = nx ? nx->TrimCurveOf() : nullptr;
+        if (!sf || !te || !tc || !nc) { gap = 1e9; continue; }
+        const ON_2dPoint a = tc->PointAtStart(), b = tc->PointAtEnd(), c = nc->PointAtStart();
+        const ON_3dPoint pa = sf->PointAt(a.x, a.y), pb = sf->PointAt(b.x, b.y), pc = sf->PointAt(c.x, c.y);
+        const ON_3dPoint ea = t->m_bRev3d ? te->PointAtEnd() : te->PointAtStart();
+        const ON_3dPoint eb = t->m_bRev3d ? te->PointAtStart() : te->PointAtEnd();
+        gap = std::max({gap, pa.DistanceTo(ea), pb.DistanceTo(eb), pb.DistanceTo(pc)});
+      }
+    }
+  }
+  return gap;
+}
+
+// |vector area| of face `fi`'s outer loop, walking every trim's 2D curve through the face's surface at `samples` points
+// per trim: exact for a planar face with straight trims, within O(1/samples^2) for a planar face with an arc trim.
+double SplitLoopVectorArea(const ON_Brep& raw, int fi, int samples) {
+  const ON_Surface* sf = raw.m_F[fi].SurfaceOf();
+  const ON_BrepLoop* lp = raw.m_F[fi].OuterLoop();
+  ON_3dVector sum(0, 0, 0);
+  bool have_prev = false;
+  ON_3dPoint prev(0, 0, 0), first(0, 0, 0);
+  for (int k = 0; lp && sf && k < lp->TrimCount(); ++k) {
+    const ON_Curve* tc = lp->Trim(k)->TrimCurveOf();
+    if (!tc) return -1.0;
+    const ON_Interval d = tc->Domain();
+    for (int s = 0; s <= samples; ++s) {
+      const ON_2dPoint uv = tc->PointAt(d.ParameterAt((double)s / samples));
+      const ON_3dPoint p = sf->PointAt(uv.x, uv.y);
+      if (!have_prev) first = p;
+      else sum += ON_CrossProduct(ON_3dVector(prev), ON_3dVector(p));
+      have_prev = true;
+      prev = p;
+    }
+  }
+  if (have_prev) sum += ON_CrossProduct(ON_3dVector(prev), ON_3dVector(first));
+  return 0.5 * sum.Length();
+}
+
+double SplitEdgeLength(const ON_Brep& raw, int ei) {
+  double len = 0.0;
+  raw.m_E[ei].GetLength(&len);
+  return len;
+}
+
+int SplitFindSpine(const ON_Brep& raw) {
+  for (int ei = 0; ei < raw.m_E.Count(); ++ei)
+    if (raw.m_E[ei].m_edge_index >= 0 && raw.m_E[ei].TrimCount() >= 3) return ei;
+  return -1;
+}
+
+// A fan of `pages` unit-square pages hinged on the spine (0,0,0)-(0,0,1) (NonManifoldFanPages, above), split on the
+// spine at (0,0,z).
+void RunFanSplit(int pages, double z) {
+  Brep fan = Brep::FromMixedFacesNonManifold(NonManifoldFanPages(pages));
+  const ON_Brep& raw = fan.raw();
+  const int spine = SplitFindSpine(raw);
+  Check(spine >= 0 && raw.m_E[spine].TrimCount() == pages, "setup: the fan has one spine edge carrying one trim per page");
+  const bool valid_before = raw.IsValid();
+  const int v0 = raw.m_V.Count(), e0 = raw.m_E.Count();
+  const int nm_before = fan.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge);
+  Check(nm_before == 1, "setup: Check() reports exactly one NonManifoldEdge (the spine) before the split");
+  std::vector<int> trims_before;
+  for (int fi = 0; fi < fan.FaceCount(); ++fi) trims_before.push_back(raw.m_F[fi].OuterLoop()->TrimCount());
+  // the pick is 1e-8 OFF the spine: the new vertex must land exactly ON it
+  const Result r = fan.SplitNakedEdgeAt(spine, Point3d(1e-8, 0.0, z), 1e-6);
+  Check(r == Result::Ok, "SplitNakedEdgeAt() splits a non-manifold edge (Result::Ok, was Result::Failed for 3+ trims)");
+  Check(fan.FaceCount() == pages, "...every page survives");
+  Check(raw.m_V.Count() == v0 + 1 && raw.m_E.Count() == e0 + 1,
+        "...exactly one new vertex and one new edge (the spine became two), nothing else created or lost");
+  bool every_page_gained = true;
+  for (int fi = 0; fi < fan.FaceCount(); ++fi) every_page_gained &= raw.m_F[fi].OuterLoop()->TrimCount() == trims_before[fi] + 1;
+  Check(every_page_gained, "...EVERY page (not just the first two) gained exactly one trim (quad to pentagon)");
+  int halves = 0, at_new = 0;
+  double len_sum = 0.0, len_lo = 1e9;
+  for (int ei = 0; ei < raw.m_E.Count(); ++ei) {
+    if (raw.m_E[ei].m_edge_index < 0 || raw.m_E[ei].TrimCount() < 3) continue;
+    ++halves;
+    len_sum += SplitEdgeLength(raw, ei);
+    len_lo = std::min(len_lo, SplitEdgeLength(raw, ei));
+    if (raw.m_E[ei].PointAtStart().DistanceTo(ON_3dPoint(0, 0, z)) < 1e-12 ||
+        raw.m_E[ei].PointAtEnd().DistanceTo(ON_3dPoint(0, 0, z)) < 1e-12)
+      ++at_new;
+    Check(raw.m_E[ei].TrimCount() == pages, "...each spine half still carries one trim per page");
+  }
+  Check(halves == 2 && at_new == 2, "...exactly two non-manifold halves, both ending at the new vertex (0,0,z) to 1e-12");
+  Check(std::fabs(len_sum - 1.0) < 1e-9 && std::fabs(len_lo - std::min(z, 1.0 - z)) < 1e-9,
+        "...the two halves have the closed-form lengths z and 1 - z (sum 1) to 1e-9: the spine is partitioned, not refit");
+  Check(raw.IsValid() == valid_before, "...ON_Brep::IsValid() is unchanged by the split (same verdict as before)");
+  Check(SplitMaxTrimGap(raw) < 1e-9, "...every trim on every page reproduces its edge's ends through ITS OWN page surface "
+                                       "and every page loop closes, to 1e-9 (independent of Check())");
+  const Brep::CheckReport rep = fan.Check();
+  Check(rep.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 2 && rep.Count(Brep::CheckIssue::Kind::LoopGap) == 0 &&
+            rep.Count(Brep::CheckIssue::Kind::InvalidTrim) == 0,
+        "...Check() now names exactly 2 NonManifoldEdge (the two halves) and no LoopGap / InvalidTrim");
+  double worst_area = 0.0;
+  for (int fi = 0; fi < fan.FaceCount(); ++fi)
+    worst_area = std::max(worst_area, std::fabs(SplitLoopVectorArea(raw, fi, 4) - 1.0));
+  Check(worst_area < 1e-9, "...every page's loop still has the unit square's vector area 1.0 to 1e-9 (no self-crossing loop)");
+}
+
+void TestSplitEdgeNonManifoldFanSpineSplitsOnEveryPage() {
+  RunFanSplit(3, 0.5);
+  RunFanSplit(3, 0.3);
+  RunFanSplit(4, 0.7);
+  RunFanSplit(5, 0.25);
+}
+
+// a second split of one half of an already split non-manifold spine, then of a page's own outer side: the generalization
+// composes (no stale index survives the Compact of the first split).
+void TestSplitEdgeNonManifoldSplitTwiceComposes() {
+  Brep fan = Brep::FromMixedFacesNonManifold(NonManifoldFanPages(3));
+  Check(fan.SplitNakedEdgeAt(SplitFindSpine(fan.raw()), Point3d(0, 0, 0.5)) == Result::Ok, "first spine split");
+  const int half = SplitFindSpine(fan.raw());
+  Check(half >= 0, "a non-manifold half exists");
+  const ON_BrepEdge& he = fan.raw().m_E[half];
+  const ON_3dPoint q = he.PointAt(he.Domain().ParameterAt(0.5));
+  Check(fan.SplitNakedEdgeAt(half, Point3d(q.x, q.y, q.z), 1e-9) == Result::Ok, "second split of a spine half");
+  int third = 0;
+  for (int ei = 0; ei < fan.raw().m_E.Count(); ++ei) third += fan.raw().m_E[ei].m_edge_index >= 0 && fan.raw().m_E[ei].TrimCount() == 3;
+  Check(third == 3, "the spine is now three non-manifold pieces");
+  Check(fan.raw().m_V.Count() == 10 && fan.raw().m_E.Count() == 12, "two splits add exactly two vertices (8 to 10) and two edges (10 to 12)");
+  Check(SplitMaxTrimGap(fan.raw()) < 1e-9, "all loops still close to 1e-9");
+  for (int fi = 0; fi < 3; ++fi)
+    Check(fan.raw().m_F[fi].OuterLoop()->TrimCount() == 6 && std::fabs(SplitLoopVectorArea(fan.raw(), fi, 4) - 1.0) < 1e-9,
+          "each page has 6 trims and its unit area after two spine splits");
+  // an ordinary naked page side (1 trim) of the same non-manifold body still splits
+  int naked = -1;
+  for (int ei = 0; ei < fan.raw().m_E.Count(); ++ei)
+    if (fan.raw().m_E[ei].m_edge_index >= 0 && fan.raw().m_E[ei].TrimCount() == 1) { naked = ei; break; }
+  Check(naked >= 0, "a naked page side exists");
+  if (naked < 0) return;
+  const ON_3dPoint np = fan.raw().m_E[naked].PointAt(fan.raw().m_E[naked].Domain().ParameterAt(0.5));
+  Check(fan.SplitNakedEdgeAt(naked, Point3d(np.x, np.y, np.z)) == Result::Ok, "a naked page side of the fan splits too");
+  Check(SplitMaxTrimGap(fan.raw()) < 1e-9, "...and every loop still closes");
+}
+
+// negative controls: each refusal says no, throws or leaves the body's counts unchanged
+void TestSplitEdgeRefusalsLeaveTheBodyUntouched() {
+  Brep fan = Brep::FromMixedFacesNonManifold(NonManifoldFanPages(3));
+  const int spine = SplitFindSpine(fan.raw());
+  const int v0 = fan.raw().m_V.Count(), e0 = fan.raw().m_E.Count();
+  Check(fan.SplitNakedEdgeAt(spine, Point3d(0.5, 0.5, 0.5)) == Result::Failed, "a point 0.7 away from the spine is refused");
+  Check(fan.SplitNakedEdgeAt(spine, Point3d(0, 0, 0)) == Result::Failed &&
+            fan.SplitNakedEdgeAt(spine, Point3d(0, 0, 1)) == Result::Failed,
+        "a point on either end vertex of the spine is refused (no zero-length edge)");
+  Check(fan.SplitNakedEdgeAt(spine, Point3d(0, 0, 1e-9), 1e-6) == Result::Failed, "a point 1e-9 from the spine's start is refused");
+  Check(fan.raw().m_V.Count() == v0 && fan.raw().m_E.Count() == e0, "...no refusal changed the vertex or edge count");
+  bool threw = false;
+  try { fan.SplitNakedEdgeAt(fan.raw().m_E.Count() + 5, Point3d(0, 0, 0.5)); } catch (const std::out_of_range&) { threw = true; }
+  Check(threw, "an out-of-range edge index throws std::out_of_range");
+  // a trimless wire edge has no face to update
+  const dino8::kernel::NurbsCurve line =
+      dino8::kernel::NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(2, 0, 0)}, /*degree=*/1);
+  Brep wire = Brep::WireBody({line});
+  Check(wire.IsWireBody() && wire.raw().m_E.Count() == 1 && wire.raw().m_E[0].TrimCount() == 0,
+        "setup: a wire body with one trimless edge");
+  Check(wire.SplitNakedEdgeAt(0, Point3d(1, 0, 0)) == Result::Failed, "a trimless wire edge is refused");
+  // a closed rim is still refused
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(Point3d(0, 0, 0), dino8::kernel::Vector3d(0, 0, 1));
+  Brep::CylindricalFace cf;
+  cf.frame = frame;
+  cf.radius = 1.0;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = 2.0;
+  Brep cyl = Brep::FromMixedFaces({}, {cf});
+  int closed = -1;
+  for (int i = 0; i < cyl.raw().m_E.Count(); ++i)
+    if (cyl.raw().m_E[i].TrimCount() == 1 && cyl.raw().m_E[i].IsClosed()) closed = i;
+  Check(closed >= 0 && cyl.SplitNakedEdgeAt(closed, Point3d(1, 0, 0)) == Result::Failed, "a CLOSED rim edge is refused");
+}
+
+// Straight shared edges of a closed solid at several parameters, including a pick that is NOT the midpoint and an edge
+// whose two trims run in opposite directions: the solid stays a valid closed solid, its volume is EXACTLY 1.
+void TestSplitEdgeSharedEdgesKeepAValidSolidWithExactVolume() {
+  for (int edge = 0; edge < 12; edge += 5) {
+    for (double f : {0.15, 0.5, 0.83}) {
+      Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+      const ON_BrepEdge& e = box.raw().m_E[edge];
+      const ON_3dPoint p = e.PointAt(e.Domain().ParameterAt(f));
+      Check(box.SplitNakedEdgeAt(edge, Point3d(p.x, p.y, p.z)) == Result::Ok, "a shared box edge splits at an off-centre point");
+      bool oriented = false, boundary = true;
+      Check(box.raw().IsValid() && box.raw().IsManifold(&oriented, &boundary) && oriented && !boundary && box.raw().IsSolid(),
+            "...the box is still a valid, oriented, closed solid");
+      Check(SplitMaxTrimGap(box.raw()) < 1e-9, "...every loop closes to 1e-9 on both faces");
+      Check(std::fabs(box.TessellateToClosedMesh().Volume() - 1.0) < 1e-9, "...volume is exactly the unit cube's 1.0");
+    }
+  }
+}
+
+// The shared arc between a cylinder wall and a flat cap: two DIFFERENT surfaces whose local parameterizations bear no
+// proportional relation to the arc's own. The split point is chosen at a closed-form ANGLE (0.3 of the sweep), not at a
+// parameter fraction, so a split that reused one normalized fraction on all three curves would land somewhere else.
+struct ArcFixture {
+  Brep brep;
+  int shared_edge = -1, wall_face = -1, cap_face = -1;
+  double radius = 2.0, height = 3.0, sweep = 1.3, cut_v = 1.5;
+};
+
+ArcFixture BuildArcFixture(double radius, double sweep_angle) {
+  ArcFixture fx;
+  fx.radius = radius;
+  fx.sweep = sweep_angle;
+  const double height = fx.height, cut_v = fx.cut_v;
+  ON_Arc arc(ON_3dPoint(0, 0, 0), radius, sweep_angle);
+  ON_NurbsCurve arc_curve;
+  arc.GetNurbForm(arc_curve);
+  ON_NurbsCurve arc_curve_top = arc_curve;
+  arc_curve_top.Translate(ON_3dVector(0, 0, height));
+  auto* wall_srf = new ON_NurbsSurface();
+  wall_srf->CreateRuledSurface(arc_curve, arc_curve_top);
+  ON_Brep& raw = fx.brep.raw();
+  const int wall_si = raw.AddSurface(wall_srf);
+  const ON_Interval u_dom = wall_srf->Domain(0), v_dom = wall_srf->Domain(1);
+  const double u0 = u_dom.Min(), u1 = u_dom.Max();
+  const double v_lo = v_dom.Min() + v_dom.Length() * (cut_v / height);
+  const double v_hi = v_dom.Max();
+  const Point3d arc_start = wall_srf->PointAt(u0, v_lo), arc_end = wall_srf->PointAt(u1, v_lo), center(0, 0, cut_v);
+  const int v_start = raw.NewVertex(arc_start, 0.0).m_vertex_index;
+  const int v_end = raw.NewVertex(arc_end, 0.0).m_vertex_index;
+  const int v_center = raw.NewVertex(center, 0.0).m_vertex_index;
+  ON_Curve* shared_iso = wall_srf->IsoCurve(0, v_lo);
+  ON_NurbsCurve shared_nurbs;
+  shared_iso->GetNurbForm(shared_nurbs);
+  const int shared_c3i = raw.AddEdgeCurve(shared_iso);
+  fx.shared_edge = raw.NewEdge(raw.m_V[v_start], raw.m_V[v_end], shared_c3i).m_edge_index;
+  raw.m_E[fx.shared_edge].m_tolerance = 0.0;
+  auto make_edge = [&](int va, const Point3d& pa, int vb, const Point3d& pb) -> int {
+    const int c3i = raw.AddEdgeCurve(new ON_LineCurve(pa, pb));
+    const int ei = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i).m_edge_index;
+    raw.m_E[ei].m_tolerance = 0.0;
+    return ei;
+  };
+  const Point3d top_start = wall_srf->PointAt(u0, v_hi), top_end = wall_srf->PointAt(u1, v_hi);
+  const int v_top_start = raw.NewVertex(top_start, 0.0).m_vertex_index;
+  const int v_top_end = raw.NewVertex(top_end, 0.0).m_vertex_index;
+  const int e_left = make_edge(v_start, arc_start, v_top_start, top_start);
+  const int e_top = make_edge(v_top_start, top_start, v_top_end, top_end);
+  const int e_right = make_edge(v_end, arc_end, v_top_end, top_end);
+  fx.wall_face = raw.NewFace(wall_si).m_face_index;
+  {
+    const int li = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[fx.wall_face]).m_loop_index;
+    auto add = [&](int ei, bool rev, double ua, double va, double ub, double vb) {
+      const int c2i = raw.AddTrimCurve(new ON_LineCurve(ON_2dPoint(ua, va), ON_2dPoint(ub, vb)));
+      ON_BrepTrim& t = raw.NewTrim(raw.m_E[ei], rev, raw.m_L[li], c2i);
+      t.m_tolerance[0] = t.m_tolerance[1] = 0.0;
+    };
+    add(fx.shared_edge, false, u0, v_lo, u1, v_lo);
+    add(e_right, false, u1, v_lo, u1, v_hi);
+    add(e_top, true, u1, v_hi, u0, v_hi);
+    add(e_left, true, u0, v_hi, u0, v_lo);
+  }
+  auto* cap_srf = new ON_PlaneSurface(ON_Plane(ON_3dPoint(0, 0, cut_v), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)));
+  cap_srf->SetExtents(0, ON_Interval(-0.5, radius + 0.5), true);
+  cap_srf->SetExtents(1, ON_Interval(-0.5, radius + 0.5), true);
+  const int cap_si = raw.AddSurface(cap_srf);
+  ON_NurbsCurve shared_2d = shared_nurbs;
+  shared_2d.ChangeDimension(2);
+  const int edge_end_center = make_edge(v_end, arc_end, v_center, center);
+  const int edge_center_start = make_edge(v_center, center, v_start, arc_start);
+  fx.cap_face = raw.NewFace(cap_si).m_face_index;
+  {
+    const int li = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[fx.cap_face]).m_loop_index;
+    const int c0 = raw.AddTrimCurve(new ON_NurbsCurve(shared_2d));
+    ON_BrepTrim& t0 = raw.NewTrim(raw.m_E[fx.shared_edge], false, raw.m_L[li], c0);
+    t0.m_tolerance[0] = t0.m_tolerance[1] = 0.0;
+    const int c1 = raw.AddTrimCurve(new ON_LineCurve(ON_2dPoint(arc_end.x, arc_end.y), ON_2dPoint(0, 0)));
+    ON_BrepTrim& t1 = raw.NewTrim(raw.m_E[edge_end_center], false, raw.m_L[li], c1);
+    t1.m_tolerance[0] = t1.m_tolerance[1] = 0.0;
+    const int c2 = raw.AddTrimCurve(new ON_LineCurve(ON_2dPoint(0, 0), ON_2dPoint(arc_start.x, arc_start.y)));
+    ON_BrepTrim& t2 = raw.NewTrim(raw.m_E[edge_center_start], false, raw.m_L[li], c2);
+    t2.m_tolerance[0] = t2.m_tolerance[1] = 0.0;
+  }
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i)
+    if (raw.m_E[i].m_edge_index >= 0 && !(raw.m_E[i].m_tolerance >= 0.0)) raw.m_E[i].m_tolerance = 0.0;
+  return fx;
+}
+
+void TestSplitEdgeCurvedSharedArcAtClosedFormAngle() {
+  for (double frac : {0.3, 0.77}) {
+    ArcFixture fx = BuildArcFixture(2.0, 1.3);
+    ON_Brep& raw = fx.brep.raw();
+    Check(raw.IsValid() && raw.m_E[fx.shared_edge].TrimCount() == 2 && !raw.m_E[fx.shared_edge].IsLinear(1e-6),
+          "setup: a valid body whose shared edge is a genuinely curved 2-trim arc between a cylinder and a plane");
+    const double theta = frac * fx.sweep;
+    const ON_3dPoint target(fx.radius * std::cos(theta), fx.radius * std::sin(theta), fx.cut_v);
+    // the edge's own parameter fraction at that angle: the fixture is a genuinely NON-proportional case (a rational arc)
+    ON_NurbsCurve enc;
+    raw.m_E[fx.shared_edge].GetNurbForm(enc);
+    double t_at = 0.0;
+    enc.GetClosestPoint(target, &t_at);
+    const double param_fraction = enc.Domain().NormalizedParameterAt(t_at);
+    Check(std::fabs(param_fraction - frac) > 1e-3,
+          "setup: the edge's normalized parameter at the target angle differs from the angle fraction by more than 1e-3, "
+          "so a split reusing one normalized fraction on the edge and on both trims would miss the target");
+    const int wall_before = raw.m_F[fx.wall_face].OuterLoop()->TrimCount();
+    const int cap_before = raw.m_F[fx.cap_face].OuterLoop()->TrimCount();
+    const double cap_area_before = SplitLoopVectorArea(raw, fx.cap_face, 400);
+    Check(std::fabs(cap_area_before - 0.5 * fx.radius * fx.radius * fx.sweep) < 5e-5,
+          "setup: the cap's measured area equals the closed-form sector area r^2*sweep/2");
+    Check(fx.brep.SplitNakedEdgeAt(fx.shared_edge, Point3d(target.x, target.y, target.z), 1e-6) == Result::Ok,
+          "SplitNakedEdgeAt() splits the curved shared arc at a point given by closed-form angle");
+    Check(raw.IsValid() && raw.m_F[fx.wall_face].OuterLoop()->TrimCount() == wall_before + 1 &&
+              raw.m_F[fx.cap_face].OuterLoop()->TrimCount() == cap_before + 1,
+          "...still valid; BOTH the cylinder wall and the flat cap gained exactly one trim");
+    int nv = -1;
+    for (int vi = 0; vi < raw.m_V.Count(); ++vi)
+      if (raw.m_V[vi].point.DistanceTo(target) < 1e-9) nv = vi;
+    Check(nv >= 0, "...a vertex sits at the closed-form point (r cos t, r sin t, z) within 1e-9");
+    std::vector<double> arc_lengths;
+    for (int ei = 0; ei < raw.m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = raw.m_E[ei];
+      if (e.m_edge_index < 0 || e.TrimCount() != 2 || e.IsLinear(1e-6)) continue;
+      arc_lengths.push_back(SplitEdgeLength(raw, ei));
+    }
+    std::sort(arc_lengths.begin(), arc_lengths.end());
+    const double want_a = fx.radius * std::min(theta, fx.sweep - theta), want_b = fx.radius * std::max(theta, fx.sweep - theta);
+    Check(arc_lengths.size() == 2 && std::fabs(arc_lengths[0] - want_a) < 1e-6 && std::fabs(arc_lengths[1] - want_b) < 1e-6,
+          "...the two arc pieces have the closed-form lengths r*theta and r*(sweep - theta) to 1e-6");
+    Check(SplitMaxTrimGap(raw) < 1e-6, "...every trim of both faces, evaluated through ITS OWN surface, meets its edge's "
+                                         "ends and the next trim to 1e-6 (the old fraction rule leaves a gap here)");
+    Check(std::fabs(SplitLoopVectorArea(raw, fx.cap_face, 400) - cap_area_before) < 5e-5,
+          "...the cap's area is unchanged by the split to 5e-5 (no self-crossing loop)");
+  }
+}
+
+}  // namespace local_edit_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -103791,6 +104148,12 @@ int main() {
 
   RunTest("offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary",
           offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary);
+
+  RunTest("local_edit_tests::TestSplitEdgeNonManifoldFanSpineSplitsOnEveryPage", local_edit_tests::TestSplitEdgeNonManifoldFanSpineSplitsOnEveryPage);
+  RunTest("local_edit_tests::TestSplitEdgeNonManifoldSplitTwiceComposes", local_edit_tests::TestSplitEdgeNonManifoldSplitTwiceComposes);
+  RunTest("local_edit_tests::TestSplitEdgeRefusalsLeaveTheBodyUntouched", local_edit_tests::TestSplitEdgeRefusalsLeaveTheBodyUntouched);
+  RunTest("local_edit_tests::TestSplitEdgeSharedEdgesKeepAValidSolidWithExactVolume", local_edit_tests::TestSplitEdgeSharedEdgesKeepAValidSolidWithExactVolume);
+  RunTest("local_edit_tests::TestSplitEdgeCurvedSharedArcAtClosedFormAngle", local_edit_tests::TestSplitEdgeCurvedSharedArcAtClosedFormAngle);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;

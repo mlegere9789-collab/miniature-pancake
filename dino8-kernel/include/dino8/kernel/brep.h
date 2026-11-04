@@ -5800,9 +5800,11 @@ class Brep {
   //
   // Returns Result::Failed - not a thrown exception, the same "can't,
   // but that's not a bug" contract UnjoinEdge()/RemoveNakedMicroEdge()
-  // already have - if `edge_index` refers to a non-manifold edge
-  // (TrimCount() > 2; naked and plain-shared are the only two supported
-  // trim counts), if the edge IsClosed() (its own two endpoints are the
+  // already have - if `edge_index` refers to a trimless (wire) edge
+  // (naked, plain-shared AND non-manifold N-trim edges are all supported:
+  // every trim is split against its own face's surface and spliced into
+  // its own loop, so a fan of pages sharing one spine is split on ALL of
+  // its pages at once), if the edge IsClosed() (its own two endpoints are the
   // same vertex - splitting that sensibly needs dedicated handling this
   // method doesn't attempt, genuinely out of scope here rather than
   // guessed at), if `point` does not land within `tolerance` of the

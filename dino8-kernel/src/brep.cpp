@@ -12777,11 +12777,15 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
                                 std::to_string(edge_index) + " refers to a deleted edge");
   }
   const int trim_count = edge.TrimCount();
-  // Naked (1 trim) or a plain, simple SHARED edge (exactly 2 trims, one
-  // per side - the ordinary two-manifold-edge case): a non-manifold edge
-  // (3+ trims) is still out of scope. See this method's own doc comment
-  // for how the 2-trim case generalizes the original naked-only one.
-  if (trim_count != 1 && trim_count != 2) return Result::Failed;
+  // Naked (1 trim), plain SHARED (2 trims, one per side) or a genuinely
+  // NON-MANIFOLD edge (3+ trims, e.g. the spine of a fan of pages): every
+  // step below already runs once PER TRIM against that trim's own face,
+  // surface and loop (nothing in it assumes at most two), so the count is
+  // only required to be non-zero. A trimless (wire) edge has no face to
+  // update - the caller's own business, refused. See this method's own doc
+  // comment for how the 2-trim case generalizes the original naked-only
+  // one and the N-trim case generalizes that.
+  if (trim_count < 1) return Result::Failed;
   const double tol = std::max(tolerance, 0.0);
   // 2026-10-12: the "LINEAR edges only" restriction this comment used to
   // describe is stale, not a live limit - re-verified by direct testing,
