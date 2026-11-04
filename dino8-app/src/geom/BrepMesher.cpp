@@ -457,6 +457,34 @@ EdgeSamples SampleEdge(const ON_BrepEdge& edge, double tol, double min_samples, 
   return s;
 }
 
+// Uniform sampling for BrepMeshOptions::unify_edge_spacing: the count depends only on the edge's
+// own geometry (polyline length over `spacing`) and is the same whichever direction or face the
+// edge is walked from, and the parameters are equally spaced fractions of its domain, so two
+// independently built copies of one physical edge produce the same points.
+EdgeSamples SampleEdgeUniform(const ON_BrepEdge& edge, double tol, double spacing) {
+  EdgeSamples s;
+  const ON_Interval d = edge.Domain();
+  ON_BoundingBox ebox;
+  int n = 2;
+  if (!(edge.GetBoundingBox(ebox) && ebox.Diagonal().Length() < tol * 0.5)) {
+    double len = 0;
+    ON_3dPoint prev = edge.PointAt(d.Min());
+    for (int i = 1; i <= 64; ++i) {
+      const ON_3dPoint q = edge.PointAt(d.ParameterAt(static_cast<double>(i) / 64.0));
+      len += prev.DistanceTo(q);
+      prev = q;
+    }
+    const double pieces = spacing > 0 ? std::floor(len / spacing + 0.5) : 0.0;
+    n = static_cast<int>(std::clamp(pieces, 16.0, 512.0)) + 1;
+  }
+  for (int i = 0; i < n; ++i) {
+    const double t = d.ParameterAt(static_cast<double>(i) / (n - 1));
+    s.t.push_back(t);
+    s.pts.push_back(edge.PointAt(t));
+  }
+  return s;
+}
+
 struct FaceVertex {
   Vec2 uv;
   Point3d p;
@@ -544,6 +572,12 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
 
   // Pass 2: edges, sampled at the finest neighbouring face's target size.
   std::vector<EdgeSamples> edges(static_cast<size_t>(brep.m_E.Count()));
+  double unified_spacing = 0;
+  if (options.unify_edge_spacing) {
+    for (const FaceInfo& fi : infos) {
+      if (fi.valid) unified_spacing = unified_spacing > 0 ? std::min(unified_spacing, fi.h3) : fi.h3;
+    }
+  }
   for (int ei = 0; ei < brep.m_E.Count(); ++ei) {
     const ON_BrepEdge& e = brep.m_E[ei];
     if (e.m_edge_index < 0 || !e.EdgeCurveOf()) continue;
@@ -556,7 +590,8 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
       const double h = infos[static_cast<size_t>(f)].h3;
       spacing = spacing > 0 ? std::min(spacing, h) : h;
     }
-    edges[static_cast<size_t>(ei)] = SampleEdge(e, tol, options.min_edge_samples, spacing);
+    edges[static_cast<size_t>(ei)] = options.unify_edge_spacing ? SampleEdgeUniform(e, tol, unified_spacing)
+                                                                : SampleEdge(e, tol, options.min_edge_samples, spacing);
   }
 
   // Pass 3: faces.
@@ -897,6 +932,21 @@ kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options)
       finer.chord_tolerance *= 0.25;
       finer.max_triangles_per_face = options.max_triangles_per_face * 2;
       m = MeshBrepClosedOnce(brep, finer);
+    }
+  }
+  // A brep whose faces share no edge at all (every edge has a single trim: Brep::Thicken(), which
+  // builds each cap and wall on its own) cannot be solid-checked, and its independently sampled
+  // coincident edges leave T-junctions: re-mesh with every edge sampled uniformly. This can only turn a
+  // not-closed outcome into a closed one, and only runs for a multi-face brep with no shared edge
+  // (a genuinely open sewn shell has shared edges and is never re-meshed).
+  if (!m.IsClosedManifold() && !options.unify_edge_spacing && brep.m_F.Count() >= 4 && brep.m_E.Count() > 0) {
+    bool none_shared = true;
+    for (int ei = 0; ei < brep.m_E.Count() && none_shared; ++ei) none_shared = brep.m_E[ei].m_ti.Count() <= 1;
+    if (none_shared) {
+      BrepMeshOptions uniform = options;
+      uniform.unify_edge_spacing = true;
+      kernel::Mesh um = MeshBrepClosedOnce(brep, uniform);
+      if (um.IsClosedManifold()) return um;
     }
   }
   // Last resort for a topologically closed brep (IsSolid) whose faces still do
