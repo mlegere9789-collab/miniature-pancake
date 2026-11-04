@@ -1,0 +1,75 @@
+name: Kernel verify
+on:
+  push:
+    branches: ['kverify/**']
+permissions:
+  contents: read
+env:
+  BUILD_TYPE: Release
+jobs:
+  thk:
+    name: App THK and KWR sections
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils libgl1-mesa-dri libglu1-mesa libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-app-ccache-${{ github.sha }}
+          restore-keys: kverify-app-ccache-
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build dino8-app/build --target Dino8
+      - name: Run sections
+        run: |
+          set +e
+          bash dino8-app/tests/run_sections.sh -b "$PWD/dino8-app/build/Dino8" -t 3000 THK KWR > group.log 2>&1
+          echo "exit=$? ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
+          grep -E '^(FAIL|=====|run_sections)' group.log | cut -c1-250
+          grep -A3 '^FAIL' group.log | head -60
+      - name: Diagnose mesh
+        run: |
+          set +e
+          cat > diag.txt <<'DIAG'
+          SetActiveViewport Top
+          New
+          Point 0,0,0
+          Point 1,0,0
+          Point 2,0,0
+          Point 3,0,0
+          Point 0,1,0
+          Point 1,1,0
+          Point 2,1,0
+          Point 3,1,0
+          Point 0,2,0
+          Point 1,2,0
+          Point 2,2,3
+          Point 3,2,0
+          Point 0,3,0
+          Point 1,3,0
+          Point 2,3,0
+          Point 3,3,0
+          SelPt
+          SrfControlPtGrid
+          4
+          SelNone
+          SelPt
+          Delete
+          SelNone
+          SelAll
+          SelAll
+          Thicken
+          SelAll
+          Volume
+          SelAll
+          What
+          DIAG
+          sudo apt-get install -y xvfb >/dev/null 2>&1
+          DINO8_MESH_DEBUG=1 xvfb-run -a -s "-screen 0 1600x900x24" dino8-app/build/Dino8 --smoke 60 --script diag.txt > diag.out 2>&1
+          grep -E "^\[mesh\] face [0-9]+: |^history: (Volume|Thicken|  Bounding)" diag.out | cut -c1-220
