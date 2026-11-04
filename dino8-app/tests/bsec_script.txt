@@ -1,6 +1,14 @@
 # Body sectioning QC (kernel: Feature operations): Section / Contour of a B-rep take the EXACT route
-# (kernel::SectionBrepByPlaneJoined, one joined NURBS curve per contour), a mesh object still slices its mesh.
-# --- sphere r=10, plane x=6: a circle of radius sqrt(100-36)=8, circumference 50.2655
+# (kernel::SectionBrepByPlaneJoined, one joined NURBS curve per contour); a mesh object still slices its mesh.
+# Cases (each Section is its own "Command: Section" block in the output, in this order):
+#  1 sphere r=10, plane x=6: a circle of radius sqrt(100-36)=8, circumference 50.2655, one exact curve
+#  2 box [0,20]x[0,20]x[0,10], plane y=7: a 20 x 10 rectangle, perimeter 60, ONE stitched exact curve
+#  3 negative control: a plane that misses the sphere entirely invents no curve (0 curves)
+#  4 a MESH box, same plane y=7: still a mesh slice (perimeter 60), reported as a mesh slice, not as exact
+#  5 Contour of the B-rep sphere every 5 along Z (-10..10): the exact route, 3 circles (the two pole planes only touch)
+SetActiveViewport Top
+
+# --- 1
 Sphere 0,0,0 10
 SelAll
 Section
@@ -8,11 +16,10 @@ Section
 6,20,0
 SelLast
 Length
-SelLast
-List
 SelAll
 Hide
-# --- box [0,20]x[0,20]x[0,10], plane y=7: a 20 x 10 rectangle, perimeter 60, ONE stitched contour
+
+# --- 2
 Box 0,0,0 20,20,0 10
 SelAll
 Section
@@ -20,11 +27,10 @@ Section
 30,7,0
 SelLast
 Length
-SelLast
-List
 SelAll
 Hide
-# --- negative control: a plane that misses the sphere entirely invents no curve
+
+# --- 3
 Sphere 0,0,0 10
 SelAll
 Section
@@ -32,15 +38,19 @@ Section
 50,20,0
 SelAll
 Hide
-# --- a MESH sphere is still sliced as a mesh (no exact B-rep route for it)
-MeshSphere 0,0,0 10
+
+# --- 4
+MeshBox 0,0,0 20,20,0 10
 SelAll
 Section
-6,-20,0
-6,20,0
+-5,7,0
+30,7,0
+SelLast
+Length
 SelAll
 Hide
-# --- Contour of a B-rep sphere every 5 along Z goes through the exact route too
+
+# --- 5
 Sphere 0,0,0 10
 SelAll
 Contour
