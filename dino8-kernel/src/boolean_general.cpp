@@ -8232,7 +8232,89 @@ bool FindSlit(const ON_Brep& b, int li, int& pi, int& pj) {
   return false;
 }
 
+// Polyline length of a (typically tiny) edge: 24 chords of its 3D curve.
+double SampledEdgeLength(const ON_BrepEdge& e) {
+  const ON_Interval d = e.Domain();
+  ON_3dPoint p = e.PointAt(d.Min());
+  double len = 0.0;
+  for (int i = 1; i <= 24; ++i) {
+    const ON_3dPoint q = e.PointAt(d.ParameterAt(i / 24.0));
+    len += p.DistanceTo(q);
+    p = q;
+  }
+  return len;
+}
+
 }  // namespace
+
+int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
+  ON_Brep& b = brep.raw();
+  if (!(tolerance > 0)) return 0;
+  // Only when EVERY naked edge is a sliver: a longer gap means the body is genuinely open and nothing is changed.
+  std::vector<int> slivers;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = b.m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+    if (!(SampledEdgeLength(e) < tolerance)) return 0;
+    slivers.push_back(i);
+  }
+  int collapsed = 0;
+  std::vector<int> touched_vertices, touched_edges;
+  for (const int ei : slivers) {
+    ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+    const int ti = e.m_ti[0];
+    if (ti < 0 || ti >= b.m_T.Count()) continue;
+    ON_BrepTrim& t = b.m_T[ti];
+    if (t.m_li < 0 || t.m_li >= b.m_L.Count() || t.m_type == ON_BrepTrim::seam) continue;
+    const ON_BrepLoop& L = b.m_L[t.m_li];
+    const int n = L.TrimCount();
+    if (n < 3) continue;
+    int k = -1;
+    for (int j = 0; j < n; ++j) {
+      if (L.m_ti[j] == ti) k = j;
+    }
+    if (k < 0) continue;
+    const int prev_ti = L.m_ti[(k + n - 1) % n], next_ti = L.m_ti[(k + 1) % n];
+    if (prev_ti == next_ti || prev_ti == ti || next_ti == ti) continue;
+    ON_Curve* pc = const_cast<ON_Curve*>(b.m_T[prev_ti].TrimCurveOf());
+    ON_Curve* nc = const_cast<ON_Curve*>(b.m_T[next_ti].TrimCurveOf());
+    if (!pc || !nc) continue;
+    const ON_3dPoint p_end = pc->PointAtEnd(), n_start = nc->PointAtStart();
+    // The two neighbours must really be only a sliver apart ON THE SURFACE (not e.g. across a periodic seam).
+    if (const ON_Surface* srf = b.m_F[L.m_fi].SurfaceOf()) {
+      if (srf->PointAt(p_end.x, p_end.y).DistanceTo(srf->PointAt(n_start.x, n_start.y)) > 3.0 * tolerance) continue;
+    }
+    const ON_3dPoint mid = 0.5 * (p_end + n_start);
+    if (!pc->SetEndPoint(mid)) continue;
+    if (!nc->SetStartPoint(mid)) {
+      pc->SetEndPoint(p_end);
+      continue;
+    }
+    const int va = e.m_vi[0], vb = e.m_vi[1];
+    const int prev_ei = b.m_T[prev_ti].m_ei, next_ei = b.m_T[next_ti].m_ei;
+    b.DeleteTrim(t, true);  // the trim and (it being the edge's only trim) the edge
+    if (va >= 0 && vb >= 0 && va != vb) b.CombineCoincidentVertices(b.m_V[va], b.m_V[vb]);
+    touched_vertices.push_back(va >= 0 ? va : vb);
+    touched_edges.push_back(prev_ei);
+    touched_edges.push_back(next_ei);
+    ++collapsed;
+  }
+  if (collapsed > 0) {
+    for (const int vi : touched_vertices) {
+      if (vi >= 0 && vi < b.m_V.Count() && b.m_V[vi].m_vertex_index >= 0) b.SetVertexTolerance(b.m_V[vi], false);
+    }
+    for (const int ei : touched_edges) {
+      if (ei >= 0 && ei < b.m_E.Count() && b.m_E[ei].m_edge_index >= 0) b.SetEdgeTolerance(b.m_E[ei], false);
+    }
+    b.Compact();
+    b.SetTrimIsoFlags();
+    b.SetTrimTypeFlags();
+    b.SetTrimTolerances();
+    b.SetTrimBoundingBoxes();
+  }
+  return collapsed;
+}
 
 int OpenSewnKeyholes(Brep& brep) {
   ON_Brep& b = brep.raw();
@@ -8451,6 +8533,8 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
           c.SewTJunctions(tol);
           c.JoinNakedEdges(tol);
         }
+        // What the weld cannot pair is a naked edge shorter than the tolerance with no partner: collapse it.
+        if (!c.raw().IsSolid() && CollapseSliverNakedEdges(c, tol) > 0) c.JoinNakedEdges(tol);
       }
       if (!c.raw().IsSolid()) {
         int unpaired = 0;
