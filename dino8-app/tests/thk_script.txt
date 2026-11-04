@@ -1,0 +1,196 @@
+# THK: Thicken (Brep::Thicken wired as the app's Thicken command) - the result is a MEASURABLE solid.
+# Before: the thickened body's faces share no edge, so each face sampled its coincident edges on its own spacing (a thin
+# wall at its thickness, the 10-unit cap at 2 points) and the display mesh had T-junctions: Volume read 0 ("not closed")
+# for a flat sheet and for a freeform one. Fixtures: a flat 10 x 10 plane, and the 4x4 bicubic Bezier bump (control
+# point (2,2) raised to z = 3; area 9.8261). Closed forms: flat 10*10*t; bump V(t) = int_0^t int_S det(...) by an
+# independent numeric integral of the offset map (t = 0.1 -> 1.00137, t = 0.2 -> 2.04024, symmetric 0.2 -> 1.96522).
+# Every case starts from `New` and is bracketed by an unknown-command marker (THKBEGIN_<name>).
+SetActiveViewport Top
+New
+THKBEGIN_plane_one
+Plane 0,0,0 10,10,0
+SelNone
+Thicken
+Thickness=0.5
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_plane_sym
+Plane 0,0,0 10,10,0
+SelNone
+Thicken
+Thickness=0.5
+Symmetric=Yes
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_bump_sheet
+Point 0,0,0
+Point 1,0,0
+Point 2,0,0
+Point 3,0,0
+Point 0,1,0
+Point 1,1,0
+Point 2,1,0
+Point 3,1,0
+Point 0,2,0
+Point 1,2,0
+Point 2,2,3
+Point 3,2,0
+Point 0,3,0
+Point 1,3,0
+Point 2,3,0
+Point 3,3,0
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelNone
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_bump_t01
+Point 0,0,0
+Point 1,0,0
+Point 2,0,0
+Point 3,0,0
+Point 0,1,0
+Point 1,1,0
+Point 2,1,0
+Point 3,1,0
+Point 0,2,0
+Point 1,2,0
+Point 2,2,3
+Point 3,2,0
+Point 0,3,0
+Point 1,3,0
+Point 2,3,0
+Point 3,3,0
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelNone
+SelAll
+Thicken
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_bump_t02
+Point 0,0,0
+Point 1,0,0
+Point 2,0,0
+Point 3,0,0
+Point 0,1,0
+Point 1,1,0
+Point 2,1,0
+Point 3,1,0
+Point 0,2,0
+Point 1,2,0
+Point 2,2,3
+Point 3,2,0
+Point 0,3,0
+Point 1,3,0
+Point 2,3,0
+Point 3,3,0
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelNone
+SelNone
+Thicken
+Thickness=0.2
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_bump_sym
+Point 0,0,0
+Point 1,0,0
+Point 2,0,0
+Point 3,0,0
+Point 0,1,0
+Point 1,1,0
+Point 2,1,0
+Point 3,1,0
+Point 0,2,0
+Point 1,2,0
+Point 2,2,3
+Point 3,2,0
+Point 0,3,0
+Point 1,3,0
+Point 2,3,0
+Point 3,3,0
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelNone
+SelNone
+Thicken
+Thickness=0.2
+Symmetric=Yes
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
+New
+THKBEGIN_bump_fold
+Point 0,0,0
+Point 1,0,0
+Point 2,0,0
+Point 3,0,0
+Point 0,1,0
+Point 1,1,0
+Point 2,1,0
+Point 3,1,0
+Point 0,2,0
+Point 1,2,0
+Point 2,2,3
+Point 3,2,0
+Point 0,3,0
+Point 1,3,0
+Point 2,3,0
+Point 3,3,0
+SelPt
+SrfControlPtGrid
+4
+SelNone
+SelPt
+Delete
+SelNone
+SelNone
+Thicken
+Thickness=5
+SelAll
+Enter
+SelAll
+Volume
+SelAll
+What
