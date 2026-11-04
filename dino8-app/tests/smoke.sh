@@ -10409,7 +10409,8 @@ s1s_dists "$S1S_C" 4 "S1S_C_passthrough"
 s1s_bbox "$S1S_C" "-1.6 -1.4 -2.05 -1.9 -0.01 0.01 3.9 4.4 1.9 2.05 9.99 10.01" "S1S_C_bbox: box spans the curved sweep (x from the first circle's -1.5 to about 4.15 past the last circle's x = 3 + 1, y +-2 from the middle circle, z = 0..10)"
 # (D) a plane the rail never reaches; (E) a closed rail: reason printed, old sampled sweep still builds
 if grep -q "Sweep1: the exact multi-section sweep was not used (dino8::kernel::Brep::Sweep1Sections: the rail never crosses the plane of section 2" <<<"$S1S_D" && grep -q "Sweep1: 2 section(s) along 2 rail stations" <<<"$S1S_D"; then s1s_ok "S1S_D_refusal: a section plane the rail never reaches is refused with that reason and the old sampled sweep builds"; else s1s_bad "S1S_D_refusal: refusal text or fallback line missing"; fi
-if grep -q "Sweep1: the exact multi-section sweep was not used (dino8::kernel::Brep::Sweep1Sections: a closed rail is not supported" <<<"$S1S_E" && grep -q "Sweep1: 2 section(s) along " <<<"$S1S_E"; then s1s_ok "S1S_E_refusal: a closed rail is refused with that reason and the old sampled sweep builds"; else s1s_bad "S1S_E_refusal: refusal text or fallback line missing"; fi
+# (E) was "a closed rail is not supported": closed rails are now a cyclic kernel sweep, so this case (two circles lying IN the rail's own plane, on a circle rail) is refused for the reason that applies - the section plane contains the rail tangent - and the old sampled sweep still builds
+if grep -q "Sweep1: the exact multi-section sweep was not used (dino8::kernel::Brep::Sweep1Sections: the plane of section 1 contains (or is within 3 degrees of) the rail tangent where it crosses - the sweep is flat there); using the sampled approximation" <<<"$S1S_E" && grep -q "Sweep1: 2 section(s) along [0-9]* rail stations, closed" <<<"$S1S_E"; then s1s_ok "S1S_E_refusal: sections lying in the closed rail's own plane (their plane contains the rail tangent) are refused with that reason and the old sampled sweep builds"; else s1s_bad "S1S_E_refusal: refusal text or fallback line missing"; fi
 S1S_N="$(grep -c "exact kernel multi-section sweep" <<<"$S1S" || true)"
 if [ "$S1S_N" = "3" ]; then s1s_ok "S1S_count: exactly the three well-formed multi-section sweeps reached the kernel"; else s1s_bad "S1S_count: $S1S_N multi-section sweeps reached the kernel, expected 3"; fi
 
@@ -11054,9 +11055,11 @@ s2c_acc "$S2C_F" 1e-3 "S2C_F_accuracy: sections reproduced below 1e-12 and the w
 s2c_bbox "$S2C_F" "-0.01 0.01 -0.01 0.01 -0.01 0.01 103.9 104.1 3.9 4.1 3.9 4.1" "S2C_F_bbox: box is the rails' extent x 0..104, y 0..4, z 0..4"
 s2c_dists "$S2C_F" 2 "S2C_F_passthrough"
 # (G) rails with a tangent jump: more stations cannot follow it, the miss is reported at 512 stations and the old fit builds
-if grep -q "Sweep2: the exact multi-section sweep was not used (the wall edges are [0-9.e-]* from the rails at 512 stations (tolerance 0.001)); using the scaled-frame fit" <<<"$S2C_G" && grep -q "Sweep2: 2 section(s) along " <<<"$S2C_G"; then s2c_ok "S2C_G_miss: a tangent jump in the rails is a reported miss at 512 stations (not an exact sweep) and the old fit builds"; else s2c_bad "S2C_G_miss: miss reason or fallback line missing"; fi
+# was "(G) rails with a tangent jump: reported miss at 512 stations": the kernel now puts a station pair exactly at each paired corner, so this case is an EXACT sweep at the first rung of the ladder, wall edges within 1e-12 of the rails
+if grep -q "Sweep2: exact kernel multi-section sweep (2 sections, [0-9]* rail stations)" <<<"$S2C_G"; then s2c_ok "S2C_G_kernel: rails with a tangent jump (polyline corner) reach the kernel and are an exact sweep"; else s2c_bad "S2C_G_kernel: expected the exact sweep for polyline rails"; fi
+s2c_acc "$S2C_G" 1e-9 "S2C_G_accuracy: sections reproduced and the wall edges within 1e-9 of the polyline rails (corner stations placed exactly at the rails' corners; before: 0.0108 off at 512 stations)"
 S2C_N="$(grep -c "exact kernel multi-section sweep" <<<"$S2C" || true)"
-if [ "$S2C_N" = "5" ]; then s2c_ok "S2C_count: exactly the five well-formed sweeps reached the kernel"; else s2c_bad "S2C_count: $S2C_N multi-section sweeps reached the kernel, expected 5"; fi
+if [ "$S2C_N" = "6" ]; then s2c_ok "S2C_count: exactly the six well-formed sweeps reached the kernel"; else s2c_bad "S2C_count: $S2C_N multi-section sweeps reached the kernel, expected 6"; fi
 
 # TS3: ToNURBS of the cone's SubD (tosubd3_script.txt). The radius-4 cone's
 # SubD used to be the 64-segment cage (960 faces): ToNURBS reported "closed
