@@ -1,0 +1,346 @@
+# AutoLISP-style dialect, second pass (src/script/Lisp.cpp, commands/cmd_lisp.cpp):
+# dotted pairs, entity access (entget / entmod / entdel / entnext, selection sets with ssget
+# filter lists, ssadd / ssdel), typed input (getint / getreal / getpoint / getstring / getkword /
+# initget), and the vl-* subset. Run by sections/61_lsp2.sh, which recomputes every expected
+# value in bash / awk. Object ids are the deterministic 1-based counter.
+
+# ---------------------------------------------------------------- dotted pairs
+(cons 1 2)
+(car (cons 1 2))
+(cdr (cons 1 2))
+(cons 1 '(2 3))
+(cdr '(1 . 2))
+'(a . (b c))
+(assoc 'k '((j . 4) (k . 5)))
+(cdr (assoc 'k '((j . 4) (k . 5))))
+(equal (cons 1 2) '(1 . 2))
+(equal (cons 1 2) '(1 2))
+'(a . b c)
+'(1 . )
+
+# ------------------------------------------- five real entities to look at
+SetActiveViewport Top
+(command "Line" "0,0,0" "10,0,0" "")
+NewLayer Walls
+SetLayer Walls
+(command "Circle" "5,5,0" 3)
+(command "Arc" "0,0,0" "4,0,0" "0,4,0")
+SetLayer Default
+(command "Point" "7,8,9")
+(command "Line" "1,1,0" "4,5,0" "")
+@expect_objects 5
+
+# ---------------------------------------------------------------- entget
+(mapcar '(lambda (e) (cdr (assoc 0 (entget e)))) (list 1 2 3 4 5))
+(cdr (assoc -1 (entget 2)))
+(cdr (assoc 8 (entget 1)))
+(cdr (assoc 8 (entget 2)))
+(cdr (assoc 8 (entget 3)))
+(cdr (assoc 10 (entget 1)))
+(cdr (assoc 11 (entget 1)))
+(cdr (assoc 10 (entget 5)))
+(cdr (assoc 11 (entget 5)))
+(cdr (assoc 10 (entget 2)))
+(cdr (assoc 40 (entget 2)))
+(cdr (assoc 10 (entget 3)))
+(cdr (assoc 40 (entget 3)))
+(cdr (assoc 50 (entget 3)))
+(cdr (assoc 51 (entget 3)))
+(cdr (assoc 10 (entget 4)))
+(assoc 62 (entget 1))
+(assoc 50 (entget 2))
+(entget 99)
+(entget 0)
+(entget (entlast))
+
+# ---------------------------------------------------------------- entnext, entlast
+(entnext)
+(entnext 1)
+(entnext 4)
+(entnext 5)
+(entnext 99)
+(entlast)
+
+# ---------------------------------------------------------------- ssget with filter lists
+(sslength (ssget "X"))
+(sslength (ssget "X" '((0 . "LINE"))))
+(sslength (ssget "X" '((0 . "CIRCLE"))))
+(sslength (ssget "X" '((0 . "LINE,CIRCLE"))))
+(sslength (ssget "X" '((0 . "~LINE"))))
+(sslength (ssget "X" '((0 . "L?NE"))))
+(sslength (ssget "X" '((0 . "*"))))
+(sslength (ssget "X" '((0 . "line"))))
+(sslength (ssget "X" '((8 . "Walls"))))
+(sslength (ssget "X" '((8 . "W*"))))
+(sslength (ssget "X" '((8 . "Default"))))
+(sslength (ssget "X" '((0 . "ARC") (8 . "Walls"))))
+(sslength (ssget "X" '((0 . "LINE") (8 . "Walls"))))
+(sslength (ssget "X" '((10 5.0 5.0 0.0))))
+(sslength (ssget "X" '((40 . 3.0))))
+(sslength (ssget "X" '((62 . 256))))
+(sslength (ssget "X" nil))
+(ssget "X" '((0 . "TEXT")))
+(ssget "X" '((8 . "NoSuchLayer")))
+(ssget "X" '((62 . 1)))
+(ssget "X" '((10 99.0 0.0 0.0)))
+(ssname (ssget "X" '((0 . "ARC"))) 0)
+(ssname (ssget "X" '((0 . "LINE"))) 1)
+(ssname (ssget "X" '((0 . "LINE"))) 2)
+(type (ssget "X"))
+(type (list 1))
+(sslength (ssget "_L"))
+(ssname (ssget "_L") 0)
+(ssget "X" '((-4 . "<OR")))
+(ssget "X" '(5))
+(ssget "X" 5)
+(ssget "W")
+(ssget "X" '((0 . "LINE")) 5)
+
+# ---------------------------------------------------------------- ssadd / ssdel / ssmemb
+(setq s (ssadd))
+(sslength s)
+(null s)
+(ssadd 1 s)
+(ssadd 2 s)
+(sslength s)
+(ssadd 2 s)
+(sslength s)
+(ssmemb 2 s)
+(ssmemb 5 s)
+(ssdel 1 s)
+(sslength s)
+(ssdel 1 s)
+(sslength s)
+(ssadd 99 s)
+(sslength s)
+(setq t2 (ssadd 3))
+(sslength t2)
+(sslength s)
+(ssadd 'x s)
+(ssadd 1 '(1 2))
+(ssdel 1 5)
+
+# ---------------------------------------------------------------- entmod: layer, color, geometry
+(setq e1 (entget 1))
+(not (null (entmod (subst (cons 8 "Walls") (assoc 8 e1) e1))))
+(cdr (assoc 8 (entget 1)))
+(setq e1 (entget 1))
+(not (null (entmod (subst (list 11 20.0 0.0 0.0) (assoc 11 e1) e1))))
+(cdr (assoc 11 (entget 1)))
+(command "SelNone")
+(command "SelID" 1)
+Length
+(setq e2 (entget 2))
+(not (null (entmod (subst (cons 40 4.0) (assoc 40 e2) e2))))
+(cdr (assoc 40 (entget 2)))
+(command "SelNone")
+(command "SelID" 2)
+Length
+(setq e2 (entget 2))
+(not (null (entmod (subst (list 10 6.0 7.0 0.0) (assoc 10 e2) e2))))
+(cdr (assoc 10 (entget 2)))
+(setq e3 (entget 3))
+(not (null (entmod (subst (cons 51 (/ (* 3 pi) 4)) (assoc 51 e3) e3))))
+(command "SelNone")
+(command "SelID" 3)
+Length
+(setq e5 (entget 5))
+(not (null (entmod (append e5 (list (cons 62 1))))))
+(cdr (assoc 62 (entget 5)))
+(sslength (ssget "X" '((62 . 1))))
+(sslength (ssget "X" '((62 . 256))))
+(ssname (ssget "X" '((62 . 1))) 0)
+(setq e5 (entget 5))
+(not (null (entmod (subst (cons 62 256) (assoc 62 e5) e5))))
+(assoc 62 (entget 5))
+(setq e4 (entget 4))
+(not (null (entmod (subst (list 10 1.0 2.0 3.0) (assoc 10 e4) e4))))
+(cdr (assoc 10 (entget 4)))
+(not (null (entmod (entget 1))))
+
+# ---------------------------------------------------------------- entmod refusals (nothing changes)
+(setq e1 (entget 1))
+(entmod (subst (cons 8 "NoSuchLayer") (assoc 8 e1) e1))
+(cdr (assoc 8 (entget 1)))
+(entmod (subst (cons 0 "CIRCLE") (assoc 0 e1) e1))
+(cdr (assoc 0 (entget 1)))
+(setq e2 (entget 2))
+(entmod (subst (cons 40 -2.0) (assoc 40 e2) e2))
+(cdr (assoc 40 (entget 2)))
+(entmod (append e2 (list (cons 62 300))))
+(entmod (append e2 (list (cons 62 0))))
+(entmod (list (cons 0 "LINE") (cons 8 "Walls")))
+(entmod (list (cons -1 99) (cons 8 "Walls")))
+(entmod (subst (cons 5 "FF") (assoc 5 e1) e1))
+(entmod 5)
+(entmod '(5))
+(entmod '((-1 . 1) (10 a b)))
+(entmod nil)
+
+# ---------------------------------------------------------------- entdel, undo
+(entdel 4)
+(entget 4)
+(entdel 4)
+(sslength (ssget "X"))
+(ssget "X" '((0 . "POINT")))
+@expect_objects 4
+Undo
+(sslength (ssget "X"))
+(ssget "X" '((0 . "POINT")))
+(entdel 99)
+(entdel 'a)
+(entdel)
+
+# ---------------------------------------------------------------- typed input
+(setq n (getint "Count: ")) 5
+(list n)
+(setq n (getint "Whole: ")) 5.5
+(list n)
+(setq n (getint "Retry: ")) abc 7
+(list n)
+(setq n 99)
+(setq n (getint "Nothing: ")) Enter
+(list n)
+(setq n 99)
+(setq n (getint "Empty queue: "))
+(list n)
+(progn (initget 1) (setq n (getint "Needed: "))) Enter 9
+(list n)
+(progn (initget 6) (setq n (getint "Positive: "))) 0 -3 4
+(list n)
+(progn (initget 6) (setq n (getint "Positive: "))) 0 -3
+(setq r (getreal "Real: ")) 2.5
+(setq r (getreal "Real: ")) 3
+(setq r (getreal "Real: ")) 1e2
+(setq r (getreal "Real: ")) 2.5x
+(setq p (getpoint "Point: ")) 1,2,3
+(setq p (getpoint "Point: ")) 1,2
+(setq p (getpoint "Point: ")) 1,x
+(setq p (getpoint "Point: ")) 1,2,3,4
+(setq p (getpoint "Point: ")) 7
+(setq p (getpoint '(0 0 0) "From: ")) 4,5,6
+(setq s (getstring "Name: ")) widget
+(setq s (getstring T "Name: ")) "my part"
+(setq s (getstring "Name: ")) Enter
+(setq k (progn (initget "Yes No") (getkword "Ok? "))) y
+(setq k (progn (initget "Yes No") (getkword "Ok? "))) NO
+(setq k (progn (initget "Yes No") (getkword "Ok? "))) maybe n
+(setq k (progn (initget "Yes No") (getkword "Ok? "))) maybe
+(setq k (progn (initget "Width Height") (getkword "Which? "))) wi
+(setq k (progn (initget "Width Height") (getkword "Which? "))) w
+(setq k (progn (initget "Width Height") (getkword "Which? "))) height
+(setq k (getkword "No initget: ")) yes
+(setq k (progn (initget 1 "Yes No") (getkword "Ok? "))) Enter no
+(setq k (progn (initget "Yes No") (getint "Number or keyword: "))) no
+(setq k (progn (initget "Yes No") (getint "Number or keyword: "))) 6
+(setq d (getdist "Distance: ")) 4
+(setq d (getdist "Distance: ")) far
+(progn (setq n (getint "Cancel: ")) (setq after-cancel 1)) Cancel
+(list after-cancel)
+(getint 5)
+(getint "a" "b")
+(getstring 1 2 3)
+(initget "a" 1 2)
+(initget 'x)
+(command "Point" (getpoint "At: ")) 5,6,7
+(entlast)
+(cdr (assoc 10 (entget (entlast))))
+(defun c:cube () (setq w (getreal "Side: ")) (if w (command "Box" "20,0,0" (list (+ 20 w) w 0) w)))
+cube 3
+(command "SelNone")
+(command "SelID" (entlast))
+Volume
+cube
+@expect_objects 7
+cube abc
+@expect_objects 7
+cube Enter
+@expect_objects 7
+cube 2
+(command "SelNone")
+(command "SelID" (entlast))
+Volume
+@expect_objects 8
+(list w)
+
+# ---------------------------------------------------------------- the vl-* subset
+(vl-load-com)
+(vl-list->string '(72 101 108 108 111))
+(vl-list->string nil)
+(vl-list->string '(72 0))
+(vl-list->string '(72 300))
+(vl-list->string '(72 "a"))
+(vl-list->string 5)
+(vl-string->list "AB")
+(vl-string->list "")
+(chr 65)
+(ascii "A")
+(ascii "")
+(chr 0)
+(chr 300)
+(vl-string-search "lo" "hello")
+(vl-string-search "l" "hello")
+(vl-string-search "l" "hello" 3)
+(vl-string-search "l" "hello" 4)
+(vl-string-search "z" "hello")
+(vl-string-search "hello" "hello")
+(vl-string-search "" "hello")
+(vl-string-search "lo" "hello" 99)
+(vl-string-search 1 "hello")
+(vl-string-search "l" "hello" -1)
+(vl-string-subst "J" "H" "Hello Hello")
+(vl-string-subst "J" "H" "Hello Hello" 1)
+(vl-string-subst "J" "Z" "Hello")
+(vl-string-subst "" "l" "hello")
+(vl-string-subst "-" "ll" "hello")
+(vl-position 3 '(1 2 3 4))
+(vl-position 9 '(1 2 3 4))
+(vl-position "b" '("a" "b"))
+(vl-position 2 '(1 2 2))
+(vl-position 1 nil)
+(vl-position '(1 2) '((0) (1 2)))
+(vl-remove 2 '(1 2 3 2))
+(vl-remove 9 '(1 2))
+(vl-remove 1 nil)
+(vl-sort '(5 3 9 1 3) '<)
+(vl-sort '(5 3 9 1 3) '>)
+(vl-sort '("pear" "apple" "fig") '<)
+(vl-sort '(2.5 -1 3) '<)
+(vl-sort nil '<)
+(vl-sort '(7) '<)
+(vl-sort '(3 1 2) '(lambda (a b) (> a b)))
+(vl-sort '((2 . "x") (1 . "y") (3 . "z")) (function (lambda (a b) (< (car a) (car b)))))
+(vl-sort '(3 1 2) 5)
+(vl-sort 5 '<)
+(vl-sort '(1 2))
+(vl-some 'minusp '(1 -2 3))
+(vl-some 'minusp '(1 2 3))
+(vl-some '(lambda (x) (if (> x 1) (* x 10))) '(1 2 3))
+(vl-some '< '(1 5) '(2 4))
+(vl-some 'minusp nil)
+(vl-every 'numberp '(1 2.0 3))
+(vl-every 'numberp '(1 "a"))
+(vl-every '< '(1 2 3) '(2 3 4))
+(vl-every '< '(1 2 3) '(2 3 3))
+(vl-every 'numberp nil)
+(vl-remove-if 'minusp '(1 -1 2 -2))
+(vl-remove-if-not 'minusp '(1 -1 2 -2))
+(vl-member-if 'minusp '(1 -1 2))
+(vl-member-if 'minusp '(1 2))
+(vl-string-trim " " "  hi  ")
+(vl-string-left-trim " " "  hi  ")
+(vl-string-right-trim " " "  hi  ")
+(vl-string-trim "ab" "abchiba")
+(vl-string-trim " " "   ")
+(vl-princ-to-string "a b")
+(vl-prin1-to-string "a b")
+(vl-prin1-to-string '(1 "x" 2.5))
+(vl-princ-to-string 12)
+(vl-string-position 108 "hello")
+(vl-string-position 108 "hello" 3)
+(vl-string-position 108 "hello" 0 T)
+(vl-string-position 122 "hello")
+(subst 'x 'b '(a b c b))
+(vl-position)
+(vl-remove 1)
+(vl-some 'minusp)

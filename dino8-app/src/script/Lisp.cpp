@@ -25,6 +25,19 @@ Value MakeList(List l) {
   Value v; v.t = Value::T::List; v.l = std::make_shared<List>(std::move(l)); return v;
 }
 Value Bool(bool b) { return b ? True() : Nil(); }
+Value Pair(Value a, Value b) {
+  Value v = MakeList({std::move(a), std::move(b)});
+  v.dotted = true;
+  return v;
+}
+// A selection set: always a (possibly empty) list object, so ssadd can fill it in place.
+Value MakeSet(List l) {
+  Value v;
+  v.t = Value::T::List;
+  v.l = std::make_shared<List>(std::move(l));
+  v.pickset = true;
+  return v;
+}
 
 bool IsList(const Value& v) { return v.t == Value::T::List; }
 bool IsNil(const Value& v) { return v.t == Value::T::Nil; }
@@ -79,7 +92,7 @@ bool Equal(const Value& a, const Value& b, double fuzz = 0) {
     case Value::T::Nil: case Value::T::True: return true;
     case Value::T::Str: case Value::T::Sym: case Value::T::Subr: return a.s == b.s;
     case Value::T::List: {
-      if (a.l->size() != b.l->size()) return false;
+      if (a.dotted != b.dotted || a.l->size() != b.l->size()) return false;
       for (size_t k = 0; k < a.l->size(); ++k) if (!Equal((*a.l)[k], (*b.l)[k], fuzz)) return false;
       return true;
     }
@@ -124,7 +137,18 @@ struct Parser {
         SkipSpace();
         if (pos >= src.size()) Fail("malformed list: missing close parenthesis");
         if (src[pos] == ')') { ++pos; break; }
-        items.push_back(ParseOne());
+        Value item = ParseOne();
+        if (item.t == Value::T::Sym && item.s == "." && items.size() == 1) {
+          // (a . b): a dotted pair; (a . (b c)) is the list (a b c) and (a . nil) is (a)
+          Value tail = ParseOne();
+          SkipSpace();
+          if (pos >= src.size() || src[pos] != ')') Fail("malformed dotted pair: one value must follow the dot");
+          ++pos;
+          if (IsList(tail) && !tail.dotted) { List l{items[0]}; for (const Value& v : *tail.l) l.push_back(v); return MakeList(std::move(l)); }
+          if (IsNil(tail)) return MakeList({items[0]});
+          return Pair(items[0], tail);
+        }
+        items.push_back(std::move(item));
       }
       return MakeList(std::move(items));
     }
@@ -172,6 +196,158 @@ struct Parser {
     return Sym(low);
   }
 };
+
+// ---- entity / input helpers ---------------------------------------------------
+long long NeedEname(const char* fn, const Value& v) {
+  if (v.t != Value::T::Int) Fail(std::string("bad argument type: ename: ") + Interp::Format(v, true) + " in " + fn);
+  return v.i;
+}
+
+Value DxfToValue(const DxfItem& d) {
+  switch (d.k) {
+    case DxfItem::K::Str: return Pair(Int(d.code), Str(d.s));
+    case DxfItem::K::Real: return Pair(Int(d.code), Real(d.x));
+    case DxfItem::K::Int: return Pair(Int(d.code), Int(d.i));
+    case DxfItem::K::Point: return MakeList({Int(d.code), Real(d.x), Real(d.y), Real(d.z)});
+  }
+  return Nil();
+}
+
+// An association list (as (entget ...) returns it) back into groups.
+std::vector<DxfItem> ValueToDxf(const Value& alist) {
+  std::vector<DxfItem> out;
+  for (const Value& e : NeedList("entmod", alist)) {
+    if (!IsList(e) || e.l->size() < 2 || (*e.l)[0].t != Value::T::Int) Fail("bad association list: every entry must be (code . value) or (code x y z)");
+    DxfItem d;
+    d.code = static_cast<int>((*e.l)[0].i);
+    const Value& v = (*e.l)[1];
+    if (e.dotted || e.l->size() == 2) {
+      if (v.t == Value::T::Str) { d.k = DxfItem::K::Str; d.s = v.s; }
+      else if (v.t == Value::T::Int) { d.k = DxfItem::K::Int; d.i = v.i; d.x = static_cast<double>(v.i); }
+      else if (v.t == Value::T::Real) { d.k = DxfItem::K::Real; d.x = v.r; }
+      else Fail("bad association list: group " + std::to_string(d.code) + " has an unsupported value");
+    } else {
+      if (e.l->size() != 3 && e.l->size() != 4) Fail("bad association list: a point group needs 2 or 3 coordinates");
+      d.k = DxfItem::K::Point;
+      for (size_t k = 1; k < e.l->size(); ++k) {
+        if (!IsNum((*e.l)[k])) Fail("bad association list: point coordinates must be numbers");
+        (k == 1 ? d.x : k == 2 ? d.y : d.z) = D((*e.l)[k]);
+      }
+    }
+    out.push_back(std::move(d));
+  }
+  return out;
+}
+
+// Case-insensitive wildcard match: * any run, ? one character.
+bool WildOne(const std::string& p, size_t pi, const std::string& s, size_t si) {
+  while (pi < p.size()) {
+    if (p[pi] == '*') {
+      while (pi < p.size() && p[pi] == '*') ++pi;
+      if (pi == p.size()) return true;
+      for (size_t k = si; k <= s.size(); ++k) if (WildOne(p, pi, s, k)) return true;
+      return false;
+    }
+    if (si >= s.size()) return false;
+    if (p[pi] != '?' && std::tolower(static_cast<unsigned char>(p[pi])) != std::tolower(static_cast<unsigned char>(s[si]))) return false;
+    ++pi; ++si;
+  }
+  return si == s.size();
+}
+// "LINE,CIRCLE" alternatives; a leading ~ negates the whole pattern.
+bool WildMatch(std::string pattern, const std::string& s) {
+  bool neg = false;
+  if (!pattern.empty() && pattern[0] == '~') { neg = true; pattern.erase(0, 1); }
+  bool hit = false;
+  size_t from = 0;
+  for (;;) {
+    const size_t c = pattern.find(',', from);
+    const std::string alt = pattern.substr(from, c == std::string::npos ? std::string::npos : c - from);
+    if (WildOne(alt, 0, s, 0)) { hit = true; break; }
+    if (c == std::string::npos) break;
+    from = c + 1;
+  }
+  return neg ? !hit : hit;
+}
+
+// Does the entity (as an association list) satisfy every pair of the filter list?
+bool EntMatches(const List& ent, const List& filter) {
+  for (const Value& f : filter) {
+    if (!IsList(f) || f.l->empty() || (*f.l)[0].t != Value::T::Int) Fail("bad ssget filter: every entry must be (code . value)");
+    const long long code = (*f.l)[0].i;
+    if (code == -4) Fail("ssget filter operators (-4 . \"<OR\") are not supported; every pair must hold");
+    bool any = false;
+    bool saw = false;
+    for (const Value& e : ent) {
+      if (!IsList(e) || e.l->empty() || (*e.l)[0].t != Value::T::Int || (*e.l)[0].i != code) continue;
+      saw = true;
+      if (f.dotted || f.l->size() == 2) {
+        const Value& want = (*f.l)[1];
+        const Value& have = (*e.l)[1];
+        if (want.t == Value::T::Str && have.t == Value::T::Str) any = any || WildMatch(want.s, have.s);
+        else if (IsNum(want) && IsNum(have)) any = any || std::fabs(D(want) - D(have)) <= 1e-9;
+      } else if (f.l->size() == e.l->size()) {
+        bool same = true;
+        for (size_t k = 1; k < f.l->size(); ++k) same = same && IsNum((*f.l)[k]) && IsNum((*e.l)[k]) && std::fabs(D((*f.l)[k]) - D((*e.l)[k])) <= 1e-9;
+        any = any || same;
+      }
+    }
+    // A BYLAYER entity carries no group 62; the filter value 256 (BYLAYER) selects it.
+    if (!saw && code == 62 && f.l->size() == 2 && IsNum((*f.l)[1]) && D((*f.l)[1]) == 256) any = true;
+    if (!any) return false;
+  }
+  return true;
+}
+
+// ---- typed input (getint, getreal, ...) -------------------------------------
+bool IsEnterTok(const std::string& s) { return s.empty() || Lower(s) == "enter" || s == "_Enter"; }
+bool IsCancelTok(const std::string& s) { const std::string l = Lower(s); return l == "cancel" || l == "_cancel" || l == "!cancel"; }
+
+// initget keyword definitions: "Yes No"; the leading capitals of a keyword are its shortest abbreviation.
+std::optional<std::string> MatchKeyword(const std::string& defs, const std::string& input) {
+  if (input.empty()) return std::nullopt;
+  size_t i = 0;
+  while (i < defs.size()) {
+    while (i < defs.size() && (std::isspace(static_cast<unsigned char>(defs[i])) || defs[i] == ',')) ++i;
+    size_t j = i;
+    while (j < defs.size() && !std::isspace(static_cast<unsigned char>(defs[j])) && defs[j] != ',') ++j;
+    const std::string kw = defs.substr(i, j - i);
+    i = j;
+    if (kw.empty() || kw[0] == '_') continue;
+    size_t req = 0;
+    while (req < kw.size() && std::isupper(static_cast<unsigned char>(kw[req]))) ++req;
+    if (req == 0) req = kw.size();
+    if (input.size() >= req && input.size() <= kw.size() && Lower(kw).compare(0, input.size(), Lower(input)) == 0) return kw;
+  }
+  return std::nullopt;
+}
+
+bool ParseWholeInt(const std::string& s, long long& out) {
+  if (s.empty()) return false;
+  char* end = nullptr;
+  out = std::strtoll(s.c_str(), &end, 10);
+  return end && *end == 0;
+}
+bool ParseWholeReal(const std::string& s, double& out) {
+  if (s.empty()) return false;
+  char* end = nullptr;
+  out = std::strtod(s.c_str(), &end);
+  return end && *end == 0 && end != s.c_str() && std::isfinite(out);
+}
+bool ParsePointText(const std::string& s, double p[3]) {
+  p[0] = p[1] = p[2] = 0;
+  size_t from = 0;
+  int n = 0;
+  for (;;) {
+    const size_t c = s.find(',', from);
+    if (n >= 3) return false;
+    if (!ParseWholeReal(s.substr(from, c == std::string::npos ? std::string::npos : c - from), p[n])) return false;
+    ++n;
+    if (c == std::string::npos) break;
+    from = c + 1;
+  }
+  return n >= 2;
+}
 
 using BuiltinFn = std::function<Value(Interp&, List&)>;
 
@@ -246,9 +422,90 @@ struct Builtins {
       const List& l = NeedList(name, cur);
       if (l.empty()) return Nil();
       if (*it == 'a') cur = l[0];
+      else if (cur.dotted) cur = l[1];   // (cdr '(a . b)) is b
       else cur = MakeList(List(l.begin() + 1, l.end()));
     }
     return cur;
+  }
+
+  static Value TrimBoth(const char* name, List& a, bool left, bool right) {
+    NeedArgs(name, a, 2, 2);
+    const std::string& chars = NeedStr(name, a[0]);
+    const std::string& s = NeedStr(name, a[1]);
+    size_t b = 0, e = s.size();
+    if (left) while (b < e && chars.find(s[b]) != std::string::npos) ++b;
+    if (right) while (e > b && chars.find(s[e - 1]) != std::string::npos) --e;
+    return Str(s.substr(b, e - b));
+  }
+
+  static Value SomeEvery(Interp& in, const char* name, List& a, bool some) {
+    if (a.size() < 2) Fail(std::string("too few arguments to ") + name);
+    size_t n = SIZE_MAX;
+    for (size_t k = 1; k < a.size(); ++k) n = std::min(n, NeedList(name, a[k]).size());
+    for (size_t i = 0; i < n; ++i) {
+      List args;
+      for (size_t k = 1; k < a.size(); ++k) args.push_back(Items(a[k])[i]);
+      Value r = in.Apply(a[0], args);
+      if (some && Truthy(r)) return r;
+      if (!some && !Truthy(r)) return Nil();
+    }
+    return some ? Nil() : True();
+  }
+
+  // getint / getreal / getdist / getpoint / getkword / getstring: the prompt is printed, then the next
+  // queued typed input is read (there is no blocking prompt: with nothing queued the result is nil).
+  // initget bits: 1 no null input, 2 no zero, 4 no negative. Enter gives nil (getstring: ""), Cancel
+  // aborts the program with "Function cancelled", input that does not parse is reported and the next
+  // queued input is tried.
+  static Value GetTyped(Interp& in, const char* name, List& a, char kind) {
+    size_t at = 0;
+    bool cr = false;
+    if (kind == 's' && !a.empty() && a[0].t != Value::T::Str) { cr = Truthy(a[0]); at = 1; }   // (getstring [cr] [msg])
+    if ((kind == 'p' || kind == 'd') && !a.empty() && IsList(a[0])) at = 1;                    // (getpoint [base] [msg])
+    if (a.size() > at + 1) Fail(std::string("too many arguments to ") + name);
+    std::string msg;
+    if (a.size() == at + 1) msg = NeedStr(name, a[at]);
+    (void)cr;
+    const int bits = in.init_bits_;
+    const std::string kws = in.init_kw_;
+    in.init_bits_ = 0;
+    in.init_kw_.clear();
+    if (kind == 'k' && kws.empty()) { in.Emit("getkword: call initget with the keywords first\n"); return Nil(); }
+    if (!msg.empty()) in.Emit(msg + "\n");
+    for (;;) {
+      std::optional<std::string> tok = in.host.next_input ? in.host.next_input() : std::nullopt;
+      if (!tok) return Nil();
+      const std::string& s = *tok;
+      if (IsCancelTok(s)) Fail("Function cancelled");
+      if (IsEnterTok(s)) {
+        if (bits & 1) { in.Emit("Requires a value.\n"); continue; }
+        return kind == 's' ? Str("") : Nil();
+      }
+      if (kind != 's') {
+        if (std::optional<std::string> kw = MatchKeyword(kws, s)) return Str(*kw);
+        if (kind == 'k') { in.Emit("Invalid option keyword.\n"); continue; }
+      }
+      long long iv = 0;
+      double rv = 0, pv[3] = {0, 0, 0};
+      switch (kind) {
+        case 's': return Str(s);
+        case 'i':
+          if (!ParseWholeInt(s, iv)) { in.Emit("Requires an integer value.\n"); continue; }
+          if ((bits & 2) && iv == 0) { in.Emit("Value must be nonzero.\n"); continue; }
+          if ((bits & 4) && iv < 0) { in.Emit("Value must be positive.\n"); continue; }
+          return Int(iv);
+        case 'r': case 'd':
+          if (!ParseWholeReal(s, rv)) { in.Emit(kind == 'r' ? "Requires numeric value.\n" : "Requires numeric distance or two points.\n"); continue; }
+          if ((bits & 2) && rv == 0) { in.Emit("Value must be nonzero.\n"); continue; }
+          if ((bits & 4) && rv < 0) { in.Emit("Value must be positive.\n"); continue; }
+          return Real(rv);
+        case 'p':
+          if (!ParsePointText(s, pv)) { in.Emit("Point or option keyword required.\n"); continue; }
+          return MakeList({Real(pv[0]), Real(pv[1]), Real(pv[2])});
+        default: break;
+      }
+      return Nil();
+    }
   }
 
   static std::map<std::string, BuiltinFn> Make() {
@@ -326,7 +583,7 @@ struct Builtins {
         case Value::T::Int: return Sym("int");
         case Value::T::Real: return Sym("real");
         case Value::T::Str: return Sym("str");
-        case Value::T::List: return Sym("list");
+        case Value::T::List: return Sym(a[0].pickset ? "pickset" : "list");
         default: return Sym("subr");
       }
     };
@@ -334,7 +591,8 @@ struct Builtins {
     t["list"] = [](Interp&, List& a) { return MakeList(a); };
     t["cons"] = [](Interp&, List& a) {
       NeedArgs("cons", a, 2, 2);
-      if (!IsList(a[1]) && !IsNil(a[1])) Fail("dotted pairs are not supported: the second argument of cons must be a list");
+      if (!IsList(a[1]) && !IsNil(a[1])) return Pair(a[0], a[1]);   // (cons 'a 5) is the dotted pair (a . 5)
+      if (a[1].dotted) Fail("cons onto a dotted pair is not supported");
       List l{a[0]}; for (const Value& v : Items(a[1])) l.push_back(v); return MakeList(l);
     };
     t["car"] = [](Interp&, List& a) { return Cxr("car", "a", a); };
@@ -482,21 +740,254 @@ struct Builtins {
       return id ? Int(*id) : Nil();
     };
     t["ssget"] = [](Interp& in, List& a) {
-      NeedArgs("ssget", a, 0, 1);
-      if (a.size() != 1 || a[0].t != Value::T::Str || Upper(a[0].s) != "X") Fail("only (ssget \"X\") is supported");
+      // (ssget "X" [filter]) every entity that passes the filter; (ssget "_L") the last entity.
+      static const char* kOnly = "only (ssget \"X\") is supported";
+      if (a.empty() || a.size() > 2 || a[0].t != Value::T::Str) Fail(kOnly);
+      const std::string mode = Upper(a[0].s);
+      if (mode == "_L" && a.size() == 1) {
+        if (!in.host.last_entity) return Nil();
+        std::optional<long long> id = in.host.last_entity();
+        return id ? MakeSet({Int(*id)}) : Nil();
+      }
+      if (mode != "X") Fail(kOnly);
       if (!in.host.all_entities) return Nil();
+      const bool filtered = a.size() == 2 && !IsNil(a[1]);
+      if (filtered) NeedList("ssget", a[1]);
+      if (filtered && !in.host.ent_get) Fail("entity access is not available here");
       List ids;
-      for (long long id : in.host.all_entities()) ids.push_back(Int(id));
-      return MakeList(ids);
+      for (long long id : in.host.all_entities()) {
+        if (filtered) {
+          std::vector<DxfItem> items;
+          if (!in.host.ent_get(id, items)) continue;
+          List ent;
+          for (const DxfItem& d : items) ent.push_back(DxfToValue(d));
+          if (!EntMatches(ent, Items(a[1]))) continue;
+        }
+        ids.push_back(Int(id));
+      }
+      return ids.empty() ? Nil() : MakeSet(ids);
     };
     t["sslength"] = [](Interp&, List& a) { NeedArgs("sslength", a, 1, 1); return Int(static_cast<long long>(NeedList("sslength", a[0]).size())); };
-    t["ssname"] = t["nth"];
     t["ssname"] = [](Interp&, List& a) {
       NeedArgs("ssname", a, 2, 2);
       const List& l = NeedList("ssname", a[0]);
       if (a[1].t != Value::T::Int || a[1].i < 0) Fail("bad argument type: index in ssname");
       return static_cast<size_t>(a[1].i) < l.size() ? l[static_cast<size_t>(a[1].i)] : Nil();
     };
+    // (ssadd) a new empty set; (ssadd e) a set holding e; (ssadd e ss) adds e to ss IN PLACE and returns ss.
+    t["ssadd"] = [](Interp& in, List& a) {
+      NeedArgs("ssadd", a, 0, 2);
+      if (a.empty()) return MakeSet({});
+      const long long id = NeedEname("ssadd", a[0]);
+      if (in.host.ent_get) { std::vector<DxfItem> tmp; if (!in.host.ent_get(id, tmp)) return Nil(); }   // no such entity
+      if (a.size() == 1) return MakeSet({Int(id)});
+      if (a[1].t != Value::T::List || !a[1].pickset) Fail("bad argument type: pickp: " + Interp::Format(a[1], true) + " in ssadd");
+      for (const Value& v : *a[1].l) if (v.t == Value::T::Int && v.i == id) return a[1];   // already a member
+      a[1].l->push_back(Int(id));
+      return a[1];
+    };
+    // (ssdel e ss) removes e from ss in place; nil when e was not in ss.
+    t["ssdel"] = [](Interp&, List& a) {
+      NeedArgs("ssdel", a, 2, 2);
+      const long long id = NeedEname("ssdel", a[0]);
+      if (a[1].t != Value::T::List || !a[1].pickset) Fail("bad argument type: pickp: " + Interp::Format(a[1], true) + " in ssdel");
+      List& l = *a[1].l;
+      for (size_t k = 0; k < l.size(); ++k) if (l[k].t == Value::T::Int && l[k].i == id) { l.erase(l.begin() + static_cast<long>(k)); return a[1]; }
+      return Nil();
+    };
+    t["ssmemb"] = [](Interp&, List& a) {
+      NeedArgs("ssmemb", a, 2, 2);
+      const long long id = NeedEname("ssmemb", a[0]);
+      for (const Value& v : NeedList("ssmemb", a[1])) if (v.t == Value::T::Int && v.i == id) return a[0];
+      return Nil();
+    };
+    // entity access
+    t["entget"] = [](Interp& in, List& a) {
+      NeedArgs("entget", a, 1, 2);
+      const long long id = NeedEname("entget", a[0]);
+      std::vector<DxfItem> items;
+      if (!in.host.ent_get || !in.host.ent_get(id, items)) return Nil();
+      List out;
+      for (const DxfItem& d : items) out.push_back(DxfToValue(d));
+      return MakeList(out);
+    };
+    t["entnext"] = [](Interp& in, List& a) {
+      NeedArgs("entnext", a, 0, 1);
+      if (!in.host.ent_next) return Nil();
+      std::optional<long long> after;
+      if (a.size() == 1) after = NeedEname("entnext", a[0]);
+      std::optional<long long> n = in.host.ent_next(after);
+      return n ? Int(*n) : Nil();
+    };
+    t["entdel"] = [](Interp& in, List& a) {
+      NeedArgs("entdel", a, 1, 1);
+      const long long id = NeedEname("entdel", a[0]);
+      return in.host.ent_del && in.host.ent_del(id) ? Int(id) : Nil();
+    };
+    // (entmod alist): applies the changed groups; returns alist, or nil when the entity or a change is refused.
+    t["entmod"] = [](Interp& in, List& a) {
+      NeedArgs("entmod", a, 1, 1);
+      const std::vector<DxfItem> items = ValueToDxf(a[0]);
+      long long id = 0;
+      bool have = false;
+      for (const DxfItem& d : items) if (d.code == -1 && d.k == DxfItem::K::Int) { id = d.i; have = true; }
+      if (!have) Fail("entmod needs the (-1 . ename) group of the entity to change");
+      if (!in.host.ent_mod) return Nil();
+      const std::string why = in.host.ent_mod(id, items);
+      if (!why.empty()) { in.Emit("entmod: " + why + "\n"); return Nil(); }
+      return a[0];
+    };
+    // typed input: initget then getint / getreal / getpoint / getstring / getkword
+    t["initget"] = [](Interp& in, List& a) {
+      NeedArgs("initget", a, 0, 2);
+      long long bits = 0;
+      std::string kw;
+      for (const Value& v : a) {
+        if (v.t == Value::T::Int) bits = v.i;
+        else if (v.t == Value::T::Str) kw = v.s;
+        else if (!IsNil(v)) Fail("bad argument type in initget: " + Interp::Format(v, true));
+      }
+      in.init_bits_ = static_cast<int>(bits);
+      in.init_kw_ = kw;
+      return Nil();
+    };
+    t["getint"] = [](Interp& in, List& a) { return GetTyped(in, "getint", a, 'i'); };
+    t["getreal"] = [](Interp& in, List& a) { return GetTyped(in, "getreal", a, 'r'); };
+    t["getdist"] = [](Interp& in, List& a) { return GetTyped(in, "getdist", a, 'd'); };
+    t["getpoint"] = [](Interp& in, List& a) { return GetTyped(in, "getpoint", a, 'p'); };
+    t["getkword"] = [](Interp& in, List& a) { return GetTyped(in, "getkword", a, 'k'); };
+    t["getstring"] = [](Interp& in, List& a) { return GetTyped(in, "getstring", a, 's'); };
+    // strings and characters
+    t["chr"] = [](Interp&, List& a) {
+      NeedArgs("chr", a, 1, 1);
+      if (a[0].t != Value::T::Int || a[0].i < 1 || a[0].i > 255) Fail("bad argument type: character code 1..255 in chr");
+      return Str(std::string(1, static_cast<char>(a[0].i)));
+    };
+    t["ascii"] = [](Interp&, List& a) {
+      NeedArgs("ascii", a, 1, 1);
+      const std::string& s = NeedStr("ascii", a[0]);
+      return Int(s.empty() ? 0 : static_cast<unsigned char>(s[0]));
+    };
+    t["subst"] = [](Interp&, List& a) {
+      NeedArgs("subst", a, 3, 3);
+      List l = NeedList("subst", a[2]);
+      for (Value& v : l) if (Equal(v, a[1])) v = a[0];
+      return MakeList(l);
+    };
+    // the vl-* subset
+    t["vl-load-com"] = [](Interp&, List&) { return True(); };
+    t["vl-list->string"] = [](Interp&, List& a) {
+      NeedArgs("vl-list->string", a, 1, 1);
+      std::string s;
+      for (const Value& v : NeedList("vl-list->string", a[0])) {
+        if (v.t != Value::T::Int || v.i < 1 || v.i > 255) Fail("bad argument type: character code 1..255 in vl-list->string");
+        s += static_cast<char>(v.i);
+      }
+      return Str(s);
+    };
+    t["vl-string->list"] = [](Interp&, List& a) {
+      NeedArgs("vl-string->list", a, 1, 1);
+      List l;
+      for (unsigned char c : NeedStr("vl-string->list", a[0])) l.push_back(Int(c));
+      return MakeList(l);
+    };
+    t["vl-string-search"] = [](Interp&, List& a) {
+      NeedArgs("vl-string-search", a, 2, 3);
+      const std::string& pat = NeedStr("vl-string-search", a[0]);
+      const std::string& s = NeedStr("vl-string-search", a[1]);
+      long long from = 0;
+      if (a.size() == 3) { if (a[2].t != Value::T::Int || a[2].i < 0) Fail("bad argument type: start in vl-string-search"); from = a[2].i; }
+      if (static_cast<size_t>(from) > s.size()) return Nil();
+      const size_t at = s.find(pat, static_cast<size_t>(from));
+      return at == std::string::npos ? Nil() : Int(static_cast<long long>(at));
+    };
+    t["vl-string-subst"] = [](Interp&, List& a) {
+      NeedArgs("vl-string-subst", a, 3, 4);
+      const std::string& rep = NeedStr("vl-string-subst", a[0]);
+      const std::string& pat = NeedStr("vl-string-subst", a[1]);
+      std::string s = NeedStr("vl-string-subst", a[2]);
+      long long from = 0;
+      if (a.size() == 4) { if (a[3].t != Value::T::Int || a[3].i < 0) Fail("bad argument type: start in vl-string-subst"); from = a[3].i; }
+      if (pat.empty() || static_cast<size_t>(from) > s.size()) return Str(s);
+      const size_t at = s.find(pat, static_cast<size_t>(from));
+      if (at != std::string::npos) s.replace(at, pat.size(), rep);
+      return Str(s);
+    };
+    t["vl-string-position"] = [](Interp&, List& a) {
+      NeedArgs("vl-string-position", a, 2, 4);
+      if (a[0].t != Value::T::Int || a[0].i < 0 || a[0].i > 255) Fail("bad argument type: character code in vl-string-position");
+      const std::string& s = NeedStr("vl-string-position", a[1]);
+      long long from = 0;
+      if (a.size() >= 3 && !IsNil(a[2])) { if (a[2].t != Value::T::Int || a[2].i < 0) Fail("bad argument type: start in vl-string-position"); from = a[2].i; }
+      const bool last = a.size() == 4 && Truthy(a[3]);
+      const char ch = static_cast<char>(a[0].i);
+      if (last) {
+        for (long long k = static_cast<long long>(s.size()) - 1; k >= from; --k) if (s[static_cast<size_t>(k)] == ch) return Int(k);
+        return Nil();
+      }
+      const size_t at = static_cast<size_t>(from) <= s.size() ? s.find(ch, static_cast<size_t>(from)) : std::string::npos;
+      return at == std::string::npos ? Nil() : Int(static_cast<long long>(at));
+    };
+    t["vl-string-trim"] = [](Interp&, List& a) { return TrimBoth("vl-string-trim", a, true, true); };
+    t["vl-string-left-trim"] = [](Interp&, List& a) { return TrimBoth("vl-string-left-trim", a, true, false); };
+    t["vl-string-right-trim"] = [](Interp&, List& a) { return TrimBoth("vl-string-right-trim", a, false, true); };
+    t["vl-princ-to-string"] = [](Interp&, List& a) { NeedArgs("vl-princ-to-string", a, 1, 1); return Str(Interp::Format(a[0], false)); };
+    t["vl-prin1-to-string"] = [](Interp&, List& a) { NeedArgs("vl-prin1-to-string", a, 1, 1); return Str(Interp::Format(a[0], true)); };
+    t["vl-position"] = [](Interp&, List& a) {
+      NeedArgs("vl-position", a, 2, 2);
+      const List& l = NeedList("vl-position", a[1]);
+      for (size_t k = 0; k < l.size(); ++k) if (Equal(a[0], l[k])) return Int(static_cast<long long>(k));
+      return Nil();
+    };
+    t["vl-remove"] = [](Interp&, List& a) {
+      NeedArgs("vl-remove", a, 2, 2);
+      List out;
+      for (const Value& v : NeedList("vl-remove", a[1])) if (!Equal(a[0], v)) out.push_back(v);
+      return MakeList(out);
+    };
+    t["vl-remove-if"] = [](Interp& in, List& a) {
+      NeedArgs("vl-remove-if", a, 2, 2);
+      List out;
+      const List src = NeedList("vl-remove-if", a[1]);
+      for (const Value& v : src) if (!Truthy(in.Apply(a[0], {v}))) out.push_back(v);
+      return MakeList(out);
+    };
+    t["vl-remove-if-not"] = [](Interp& in, List& a) {
+      NeedArgs("vl-remove-if-not", a, 2, 2);
+      List out;
+      const List src = NeedList("vl-remove-if-not", a[1]);
+      for (const Value& v : src) if (Truthy(in.Apply(a[0], {v}))) out.push_back(v);
+      return MakeList(out);
+    };
+    t["vl-member-if"] = [](Interp& in, List& a) {
+      NeedArgs("vl-member-if", a, 2, 2);
+      const List src = NeedList("vl-member-if", a[1]);
+      for (size_t k = 0; k < src.size(); ++k) if (Truthy(in.Apply(a[0], {src[k]}))) return MakeList(List(src.begin() + static_cast<long>(k), src.end()));
+      return Nil();
+    };
+    // (vl-sort list less-p): stable merge sort driven only by (less-p b a), so a sloppy predicate cannot crash it.
+    t["vl-sort"] = [](Interp& in, List& a) {
+      NeedArgs("vl-sort", a, 2, 2);
+      List cur = NeedList("vl-sort", a[0]);
+      const size_t n = cur.size();
+      for (size_t w = 1; w < n; w *= 2) {
+        List next;
+        for (size_t lo = 0; lo < n; lo += 2 * w) {
+          const size_t mid = std::min(lo + w, n), hi = std::min(lo + 2 * w, n);
+          size_t i = lo, j = mid;
+          while (i < mid && j < hi) {
+            if (Truthy(in.Apply(a[1], {cur[j], cur[i]}))) next.push_back(cur[j++]); else next.push_back(cur[i++]);
+          }
+          while (i < mid) next.push_back(cur[i++]);
+          while (j < hi) next.push_back(cur[j++]);
+        }
+        cur = std::move(next);
+      }
+      return MakeList(cur);
+    };
+    // (vl-some pred list ...) the first non-nil result; (vl-every pred list ...) T when every result is non-nil.
+    t["vl-some"] = [](Interp& in, List& a) { return SomeEvery(in, "vl-some", a, true); };
+    t["vl-every"] = [](Interp& in, List& a) { return SomeEvery(in, "vl-every", a, false); };
     return t;
   }
 };
@@ -511,6 +1002,27 @@ List Interp::ParseAll(const std::string& text) {
   List out;
   while (!p.AtEnd()) out.push_back(p.ParseOne());
   return out;
+}
+
+void Interp::SplitInput(const std::string& text, std::string& forms, std::string& rest) {
+  forms = text;
+  rest.clear();
+  Parser p(text);
+  p.SkipSpace();
+  if (p.pos >= text.size() || text[p.pos] != '(') return;
+  size_t end = 0;
+  try {
+    for (;;) {
+      p.SkipSpace();
+      if (p.pos >= text.size() || text[p.pos] != '(') break;   // typed input starts at the first non-list
+      p.ParseOne();
+      end = p.pos;
+    }
+  } catch (const LispError&) {
+    return;   // never balances: the evaluator reports the syntax error
+  }
+  forms = text.substr(0, end);
+  rest = text.substr(end);
 }
 
 void Interp::Emit(const std::string& text) {
@@ -730,6 +1242,8 @@ std::string Interp::Format(const Value& v, bool quote_strings) {
     }
     case Value::T::Sym: return Upper(v.s);
     case Value::T::List: {
+      if (v.pickset) return "<Selection set: " + std::to_string(v.l->size()) + ">";
+      if (v.dotted) return "(" + Format((*v.l)[0], quote_strings) + " . " + Format((*v.l)[1], quote_strings) + ")";
       std::string o = "(";
       for (size_t k = 0; k < v.l->size(); ++k) { if (k) o += " "; o += Format((*v.l)[k], quote_strings); }
       return o + ")";
