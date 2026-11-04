@@ -1386,18 +1386,20 @@ class FitSrfCommand : public Command {
     options = {{"Tolerance", FormatNumber(tol_), {}, true, false}, {"MaxPoints", std::to_string(max_pts_), {}, true, false}};
     WantNumber("Fit tolerance (Enter to accept " + FormatNumber(tol_) + ")", tol_);
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Tolerance") {
       const double t = std::atof(v.c_str());
-      if (t > 0) { tol_ = t; options[0].value = FormatNumber(tol_); }
+      if (std::isfinite(t) && t > 0) { tol_ = t; options[0].value = FormatNumber(tol_); }
+      else ctx.Warn("FitSrf: Tolerance must be a positive number, '" + v + "' ignored (Tolerance stays " + FormatNumber(tol_) + ")");
     } else if (n == "MaxPoints") {
       const int m = std::atoi(v.c_str());
       if (m >= 4 && m <= 120) { max_pts_ = m; options[1].value = std::to_string(max_pts_); }
+      else ctx.Warn("FitSrf: MaxPoints must be a whole number from 4 to 120, '" + v + "' ignored (MaxPoints stays " + std::to_string(max_pts_) + ")");
     }
     WantNumber("Fit tolerance (Enter to accept " + FormatNumber(tol_) + ")", tol_);
   }
   void OnNumber(CommandContext& ctx, double v) override {
-    if (!(v > 0)) { ctx.Warn("FitSrf: Tolerance must be positive"); return; }
+    if (!(v > 0) || !std::isfinite(v)) { ctx.Warn("FitSrf: Tolerance must be a positive number"); return; }
     tol_ = v;
     Run(ctx);
   }
