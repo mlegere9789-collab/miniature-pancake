@@ -103321,7 +103321,7 @@ void TestArrayAlongCurveHugeCountsAndHugeUp() {
   const auto huge = dino8::kernel::ArrayStationsAlongCurve(path, 7, dino8::kernel::CurveArrayOrientation::Frame, Vector3d(0, 0, 1e300));
   bool same = unit.size() == 7 && huge.size() == 7;
   for (size_t i = 0; same && i < unit.size(); ++i) {
-    same = unit[i].frame.zaxis.DistanceTo(huge[i].frame.zaxis) < 1e-12 && unit[i].frame.yaxis.DistanceTo(huge[i].frame.yaxis) < 1e-12;
+    same = (unit[i].frame.zaxis - huge[i].frame.zaxis).Length() < 1e-12 && (unit[i].frame.yaxis - huge[i].frame.yaxis).Length() < 1e-12;
   }
   Check(same, "an `up` of (0, 0, 1e300) gives the same frames as (0, 0, 1) (a finite direction is normalized, not refused)");
   const auto ok = dino8::kernel::ArrayAlongCurve(body, path, 10000, dino8::kernel::CurveArrayOrientation::None);
@@ -103336,7 +103336,21 @@ void TestLoftMatchedScaledHappyPath() {
   for (int j = 0; j < 4; ++j)
     for (int i = 0; i < 4; ++i) g.push_back(Point3d(i, -3 + j, 0.02 * i * j));
   const NurbsSurface adj = NurbsSurface::FromControlGrid(g, 4, 4, 3, 3);
-  const NurbsCurve edge = adj.IsoCurve(0, adj.raw().Domain(1).Max());  // u varies, v = max (y = 0)
+  // the isoparametric edge whose middle lies at (x, y) = (1.5, 0): fixed parameter `fixed_dir` at its min or max
+  int fixed_dir = -1;
+  bool at_min = false;
+  for (int d = 0; d < 2; ++d)
+    for (int mn = 0; mn < 2; ++mn) {
+      const double f = mn ? adj.raw().Domain(d).Min() : adj.raw().Domain(d).Max();
+      const ON_3dPoint p = d == 0 ? adj.raw().PointAt(f, adj.raw().Domain(1).Mid()) : adj.raw().PointAt(adj.raw().Domain(0).Mid(), f);
+      if (std::fabs(p.x - 1.5) < 1e-9 && std::fabs(p.y) < 1e-9) {
+        fixed_dir = d;
+        at_min = (mn != 0);
+      }
+    }
+  Check(fixed_dir >= 0, "fixture: the adjacent surface has the isoparametric edge y = 0");
+  if (fixed_dir < 0) return;
+  const NurbsCurve edge = adj.IsoCurve(1 - fixed_dir, at_min ? adj.raw().Domain(fixed_dir).Min() : adj.raw().Domain(fixed_dir).Max());
   auto moved = [&](double dy, double dz) {
     NurbsCurve c = edge;
     for (int k = 0; k < c.ControlPointCount(); ++k) {
@@ -103348,8 +103362,8 @@ void TestLoftMatchedScaledHappyPath() {
   const std::vector<NurbsCurve> sections = {edge, moved(1.5, 0.1), moved(3.0, 0.15), moved(4.5, 0.15)};
   NurbsSurface::LoftEndMatch m;
   m.surface = &adj;
-  m.fixed_direction = 1;
-  m.at_min = false;
+  m.fixed_direction = fixed_dir;
+  m.at_min = at_min;
   m.continuity = dino8::kernel::MatchContinuity::Tangent;
   NurbsSurface out;
   NurbsSurface::LoftMatchReport rep;
@@ -103367,11 +103381,13 @@ void TestLoftMatchedScaledHappyPath() {
   for (int i = 0; i <= 20; ++i) {
     const double f = i / 20.0;
     const Point3d lp = out.raw().PointAt(ou.ParameterAt(f), ov.Min());
-    const Point3d ap = adj.raw().PointAt(au.ParameterAt(f), av.Max());
+    const double fixed_val = at_min ? adj.raw().Domain(fixed_dir).Min() : adj.raw().Domain(fixed_dir).Max();
+    const double au_p = fixed_dir == 0 ? fixed_val : au.ParameterAt(f), av_p = fixed_dir == 1 ? fixed_val : av.ParameterAt(f);
+    const Point3d ap = adj.raw().PointAt(au_p, av_p);
     gap = std::max(gap, lp.DistanceTo(ap));
     ON_3dPoint p; ON_3dVector du, dv, ad_u, ad_v;
     out.raw().Ev1Der(ou.ParameterAt(f), ov.Min(), p, du, dv);
-    adj.raw().Ev1Der(au.ParameterAt(f), av.Max(), p, ad_u, ad_v);
+    adj.raw().Ev1Der(au_p, av_p, p, ad_u, ad_v);
     ON_3dVector n1 = ON_CrossProduct(du, dv), n2 = ON_CrossProduct(ad_u, ad_v);
     if (n1.Unitize() && n2.Unitize()) worst_angle = std::max(worst_angle, std::acos(std::min(1.0, std::fabs(n1 * n2))));
   }
