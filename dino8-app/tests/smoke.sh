@@ -12565,7 +12565,6 @@ else
 fi
 if [ "$(sps_box 2)" != "$(sps_box 1)" ]; then sps_ok "SPS_H_sensitive: the moved wall's box differs from the original one (the comparison can fail)"; else sps_bad "SPS_H_sensitive: the box did not change when the section moved"; fi
 
-<<<<<<< HEAD
 # FSR_: FilletSurfaces - the kernel's tolerance-bounded rolling-ball blend PATCH between two surfaces (fsr_script.txt; kernel:
 # FilletSurfaces, pinned by surface_fillet_tests in dino8-kernel/tests/test_basic.cpp). The command is named FilletSurfaces
 # because FilletSrf already exists (the older offset+SSX construction, still pinned by H3R_). The patch is a NEW surface object;
@@ -13077,6 +13076,91 @@ unx_len 14 '= 393\.70[0-9]* Inches' "step_10_m_into_inch_document_becomes_393.70
 unx_len 15 '= 10 Inches' "iges_inch_file_into_inch_document_is_untouched_10_in"
 unx_len 16 '= 1 Millimeters' "app_survived_the_truncated_files_and_a_fresh_document_is_millimetres"
 
+# ---------------------------------------------------------------------------
+# CSK_: exact countersunk / counterbored holes in a plate (CountersinkHole, CounterboreHole) and exact rim fillet / chamfer of
+# those holes (csk_script.txt; dino8-app/src/commands/profiled_hole.h). Plate 20 x 20 x 10 (V0 = 4000), hole picked at (10,10,10),
+# diameter 6. Volumes are read from the display mesh and printed with 4 significant digits (1.0 steps at this size), so each
+# window is the independently computed closed form +- 1.5: small blends (under 1.5) cannot be told from "nothing happened" by
+# volume alone, which is why the message / Check pins carry those cases.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  CSK_OUT="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/csk_script.txt" 2>&1)" || { echo "$CSK_OUT"; echo "FAIL: csk script exited non-zero"; exit 1; }
+else
+  CSK_OUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/csk_script.txt" 2>&1)" || { echo "$CSK_OUT"; echo "FAIL: csk script exited non-zero"; exit 1; }
+fi
+cskblock() { awk -v name="$1" '$0 ~ ("Unknown command: CSKBEGIN_" name "$") { on = 1; next } on && /Unknown command: CSKBEGIN_/ { exit } on { print }' <<<"$CSK_OUT"; }
+cskcheck() { local blk; blk="$(cskblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   $3"; else echo "FAIL $3"; echo "     expected: $2"; grep -E "^history: (Countersink|Counterbore|FilletEdge|ChamferEdge|Object|  [0-9]|Volume|!)" <<<"$blk" | head -8 | sed 's/^/     actual:   /' || true; fail=1; fi; }
+cskvol() {
+  local blk v; blk="$(cskblock "$1")"
+  v="$(grep -E "^history: Volume = " <<<"$blk" | tail -1 | sed -E 's/^history: Volume = ([0-9.eE+-]+).*/\1/' || true)"
+  if [ -n "$v" ] && awk -v v="$v" -v e="$2" 'BEGIN { exit !(v >= e - 1.5 && v <= e + 1.5) }'; then echo "ok   $3 (Volume $v, closed form $2 +- 1.5)"; else echo "FAIL $3 (Volume '${v:-none}', closed form $2)"; fail=1; fi
+}
+cskcheck sink "closed solid" "CSK_sink: exact hole feature is a closed solid"
+cskcheck sink "Object 1: valid" "CSK_sink: passes the app Check"
+cskvol sink 3604.1593 "CSK_sink: volume against the closed form"
+cskcheck sink120 "closed solid" "CSK_sink120: exact hole feature is a closed solid"
+cskcheck sink120 "Object 1: valid" "CSK_sink120: passes the app Check"
+cskvol sink120 3690.6543 "CSK_sink120: volume against the closed form"
+cskcheck sink_blind "closed solid" "CSK_sink_blind: exact hole feature is a closed solid"
+cskcheck sink_blind "Object 1: valid" "CSK_sink_blind: passes the app Check"
+cskvol sink_blind 3717.2567 "CSK_sink_blind: volume against the closed form"
+cskcheck bore "closed solid" "CSK_bore: exact hole feature is a closed solid"
+cskcheck bore "Object 1: valid" "CSK_bore: passes the app Check"
+cskvol bore 3566.4602 "CSK_bore: volume against the closed form"
+cskcheck bore_blind "closed solid" "CSK_bore_blind: exact hole feature is a closed solid"
+cskcheck bore_blind "Object 1: valid" "CSK_bore_blind: passes the app Check"
+cskvol bore_blind 3651.2832 "CSK_bore_blind: volume against the closed form"
+cskcheck sF_top "Object 1: valid" "CSK_sF_top: rim blend result passes Check"
+cskcheck sF_top "closed solid" "CSK_sF_top: rim blend result is a closed solid"
+cskvol sF_top 3603.3449 "CSK_sF_top: volume against the independent closed form"
+cskcheck sF_junc "Object 1: valid" "CSK_sF_junc: rim blend result passes Check"
+cskcheck sF_junc "closed solid" "CSK_sF_junc: rim blend result is a closed solid"
+cskvol sF_junc 3603.7457 "CSK_sF_junc: volume against the independent closed form"
+cskcheck sF_bot "Object 1: valid" "CSK_sF_bot: rim blend result passes Check"
+cskcheck sF_bot "closed solid" "CSK_sF_bot: rim blend result is a closed solid"
+cskvol sF_bot 3599.8130 "CSK_sF_bot: volume against the independent closed form"
+cskcheck sF_two "Object 1: valid" "CSK_sF_two: rim blend result passes Check"
+cskcheck sF_two "closed solid" "CSK_sF_two: rim blend result is a closed solid"
+cskvol sF_two 3602.2959 "CSK_sF_two: volume against the independent closed form"
+cskcheck sC_top "Object 1: valid" "CSK_sC_top: rim blend result passes Check"
+cskcheck sC_top "closed solid" "CSK_sC_top: rim blend result is a closed solid"
+cskvol sC_top 3597.5717 "CSK_sC_top: volume against the independent closed form"
+cskcheck bF_top "Object 1: valid" "CSK_bF_top: rim blend result passes Check"
+cskcheck bF_top "closed solid" "CSK_bF_top: rim blend result is a closed solid"
+cskvol bF_top 3559.4171 "CSK_bF_top: volume against the independent closed form"
+cskcheck bF_corner "Object 1: valid" "CSK_bF_corner: rim blend result passes Check"
+cskcheck bF_corner "closed solid" "CSK_bF_corner: rim blend result is a closed solid"
+cskvol bF_corner 3572.9009 "CSK_bF_corner: volume against the independent closed form"
+cskcheck bF_floor "Object 1: valid" "CSK_bF_floor: rim blend result passes Check"
+cskcheck bF_floor "closed solid" "CSK_bF_floor: rim blend result is a closed solid"
+cskvol bF_floor 3562.1139 "CSK_bF_floor: volume against the independent closed form"
+cskcheck bF_bot "Object 1: valid" "CSK_bF_bot: rim blend result passes Check"
+cskcheck bF_bot "closed solid" "CSK_bF_bot: rim blend result is a closed solid"
+cskvol bF_bot 3562.1139 "CSK_bF_bot: volume against the independent closed form"
+cskcheck bF_two "Object 1: valid" "CSK_bF_two: rim blend result passes Check"
+cskcheck bF_two "closed solid" "CSK_bF_two: rim blend result is a closed solid"
+cskvol bF_two 3558.3682 "CSK_bF_two: volume against the independent closed form"
+cskcheck bC_top "Object 1: valid" "CSK_bC_top: rim blend result passes Check"
+cskcheck bC_top "closed solid" "CSK_bC_top: rim blend result is a closed solid"
+cskvol bC_top 3549.7051 "CSK_bC_top: volume against the independent closed form"
+cskcheck bC_corner "Object 1: valid" "CSK_bC_corner: rim blend result passes Check"
+cskcheck bC_corner "closed solid" "CSK_bC_corner: rim blend result is a closed solid"
+cskvol bC_corner 3574.0524 "CSK_bC_corner: volume against the independent closed form"
+cskcheck r_wide "refused" "CSK_r_wide: refusal carries a reason"
+cskcheck r_deep "refused" "CSK_r_deep: refusal carries a reason"
+cskcheck r_cone "refused" "CSK_r_cone: refusal carries a reason"
+cskcheck r_bore_wide "refused" "CSK_r_bore_wide: refusal carries a reason"
+cskcheck r_bore_deep "refused" "CSK_r_bore_deep: refusal carries a reason"
+cskcheck r_mesh "refused" "CSK_r_mesh: refusal carries a reason"
+cskcheck r_curved "refused" "CSK_r_curved: refusal carries a reason"
+cskcheck bR_big "refused" "CSK_bR_big: refusal carries a reason"
+cskcheck bR_big "does not fit" "CSK_bR_big: a fillet larger than the wall piece is refused (does not fit)"
+cskcheck c_round "Volume = " "CSK_c_round: negative control, RoundHole still works"
+cskcheck two "Object 1: valid" "CSK_two: second hole next to a first stays valid"
+if grep -q "gl_error=0" <<<"$CSK_OUT"; then echo "ok   csk script ran without OpenGL errors"; else echo "FAIL csk script OpenGL errors"; fail=1; fi
+
+
+
 # >>> sections/*.sh sourced here
 # Section files in tests/sections/ (see README_sections.md) are sourced, in sorted (C-locale) order, into THIS shell, so
 # they see every helper and variable above (BIN, HERE, TMP, TMPW, HEREW, OUT, fail, check, near, ...) and set `fail=1`
@@ -13432,91 +13516,4 @@ hgb_vol fresh_mesh 2 874.34 "fresh process: moved back, the sealed B-rep is rebu
 hgb_has fresh_mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
 rm -f "$HGB_DIR"/*.3dm 2>/dev/null || true
 
-=======
-
-# ---------------------------------------------------------------------------
-# CSK_: exact countersunk / counterbored holes in a plate (CountersinkHole, CounterboreHole) and exact rim fillet / chamfer of
-# those holes (csk_script.txt; dino8-app/src/commands/profiled_hole.h). Plate 20 x 20 x 10 (V0 = 4000), hole picked at (10,10,10),
-# diameter 6. Volumes are read from the display mesh and printed with 4 significant digits (1.0 steps at this size), so each
-# window is the independently computed closed form +- 1.5: small blends (under 1.5) cannot be told from "nothing happened" by
-# volume alone, which is why the message / Check pins carry those cases.
-# ---------------------------------------------------------------------------
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  CSK_OUT="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/csk_script.txt" 2>&1)" || { echo "$CSK_OUT"; echo "FAIL: csk script exited non-zero"; exit 1; }
-else
-  CSK_OUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/csk_script.txt" 2>&1)" || { echo "$CSK_OUT"; echo "FAIL: csk script exited non-zero"; exit 1; }
-fi
-cskblock() { awk -v name="$1" '$0 ~ ("Unknown command: CSKBEGIN_" name "$") { on = 1; next } on && /Unknown command: CSKBEGIN_/ { exit } on { print }' <<<"$CSK_OUT"; }
-cskcheck() { local blk; blk="$(cskblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   $3"; else echo "FAIL $3"; echo "     expected: $2"; grep -E "^history: (Countersink|Counterbore|FilletEdge|ChamferEdge|Object|  [0-9]|Volume|!)" <<<"$blk" | head -8 | sed 's/^/     actual:   /' || true; fail=1; fi; }
-cskvol() {
-  local blk v; blk="$(cskblock "$1")"
-  v="$(grep -E "^history: Volume = " <<<"$blk" | tail -1 | sed -E 's/^history: Volume = ([0-9.eE+-]+).*/\1/' || true)"
-  if [ -n "$v" ] && awk -v v="$v" -v e="$2" 'BEGIN { exit !(v >= e - 1.5 && v <= e + 1.5) }'; then echo "ok   $3 (Volume $v, closed form $2 +- 1.5)"; else echo "FAIL $3 (Volume '${v:-none}', closed form $2)"; fail=1; fi
-}
-cskcheck sink "closed solid" "CSK_sink: exact hole feature is a closed solid"
-cskcheck sink "Object 1: valid" "CSK_sink: passes the app Check"
-cskvol sink 3604.1593 "CSK_sink: volume against the closed form"
-cskcheck sink120 "closed solid" "CSK_sink120: exact hole feature is a closed solid"
-cskcheck sink120 "Object 1: valid" "CSK_sink120: passes the app Check"
-cskvol sink120 3690.6543 "CSK_sink120: volume against the closed form"
-cskcheck sink_blind "closed solid" "CSK_sink_blind: exact hole feature is a closed solid"
-cskcheck sink_blind "Object 1: valid" "CSK_sink_blind: passes the app Check"
-cskvol sink_blind 3717.2567 "CSK_sink_blind: volume against the closed form"
-cskcheck bore "closed solid" "CSK_bore: exact hole feature is a closed solid"
-cskcheck bore "Object 1: valid" "CSK_bore: passes the app Check"
-cskvol bore 3566.4602 "CSK_bore: volume against the closed form"
-cskcheck bore_blind "closed solid" "CSK_bore_blind: exact hole feature is a closed solid"
-cskcheck bore_blind "Object 1: valid" "CSK_bore_blind: passes the app Check"
-cskvol bore_blind 3651.2832 "CSK_bore_blind: volume against the closed form"
-cskcheck sF_top "Object 1: valid" "CSK_sF_top: rim blend result passes Check"
-cskcheck sF_top "closed solid" "CSK_sF_top: rim blend result is a closed solid"
-cskvol sF_top 3603.3449 "CSK_sF_top: volume against the independent closed form"
-cskcheck sF_junc "Object 1: valid" "CSK_sF_junc: rim blend result passes Check"
-cskcheck sF_junc "closed solid" "CSK_sF_junc: rim blend result is a closed solid"
-cskvol sF_junc 3603.7457 "CSK_sF_junc: volume against the independent closed form"
-cskcheck sF_bot "Object 1: valid" "CSK_sF_bot: rim blend result passes Check"
-cskcheck sF_bot "closed solid" "CSK_sF_bot: rim blend result is a closed solid"
-cskvol sF_bot 3599.8130 "CSK_sF_bot: volume against the independent closed form"
-cskcheck sF_two "Object 1: valid" "CSK_sF_two: rim blend result passes Check"
-cskcheck sF_two "closed solid" "CSK_sF_two: rim blend result is a closed solid"
-cskvol sF_two 3602.2959 "CSK_sF_two: volume against the independent closed form"
-cskcheck sC_top "Object 1: valid" "CSK_sC_top: rim blend result passes Check"
-cskcheck sC_top "closed solid" "CSK_sC_top: rim blend result is a closed solid"
-cskvol sC_top 3597.5717 "CSK_sC_top: volume against the independent closed form"
-cskcheck bF_top "Object 1: valid" "CSK_bF_top: rim blend result passes Check"
-cskcheck bF_top "closed solid" "CSK_bF_top: rim blend result is a closed solid"
-cskvol bF_top 3559.4171 "CSK_bF_top: volume against the independent closed form"
-cskcheck bF_corner "Object 1: valid" "CSK_bF_corner: rim blend result passes Check"
-cskcheck bF_corner "closed solid" "CSK_bF_corner: rim blend result is a closed solid"
-cskvol bF_corner 3572.9009 "CSK_bF_corner: volume against the independent closed form"
-cskcheck bF_floor "Object 1: valid" "CSK_bF_floor: rim blend result passes Check"
-cskcheck bF_floor "closed solid" "CSK_bF_floor: rim blend result is a closed solid"
-cskvol bF_floor 3562.1139 "CSK_bF_floor: volume against the independent closed form"
-cskcheck bF_bot "Object 1: valid" "CSK_bF_bot: rim blend result passes Check"
-cskcheck bF_bot "closed solid" "CSK_bF_bot: rim blend result is a closed solid"
-cskvol bF_bot 3562.1139 "CSK_bF_bot: volume against the independent closed form"
-cskcheck bF_two "Object 1: valid" "CSK_bF_two: rim blend result passes Check"
-cskcheck bF_two "closed solid" "CSK_bF_two: rim blend result is a closed solid"
-cskvol bF_two 3558.3682 "CSK_bF_two: volume against the independent closed form"
-cskcheck bC_top "Object 1: valid" "CSK_bC_top: rim blend result passes Check"
-cskcheck bC_top "closed solid" "CSK_bC_top: rim blend result is a closed solid"
-cskvol bC_top 3549.7051 "CSK_bC_top: volume against the independent closed form"
-cskcheck bC_corner "Object 1: valid" "CSK_bC_corner: rim blend result passes Check"
-cskcheck bC_corner "closed solid" "CSK_bC_corner: rim blend result is a closed solid"
-cskvol bC_corner 3574.0524 "CSK_bC_corner: volume against the independent closed form"
-cskcheck r_wide "refused" "CSK_r_wide: refusal carries a reason"
-cskcheck r_deep "refused" "CSK_r_deep: refusal carries a reason"
-cskcheck r_cone "refused" "CSK_r_cone: refusal carries a reason"
-cskcheck r_bore_wide "refused" "CSK_r_bore_wide: refusal carries a reason"
-cskcheck r_bore_deep "refused" "CSK_r_bore_deep: refusal carries a reason"
-cskcheck r_mesh "refused" "CSK_r_mesh: refusal carries a reason"
-cskcheck r_curved "refused" "CSK_r_curved: refusal carries a reason"
-cskcheck bR_big "refused" "CSK_bR_big: refusal carries a reason"
-cskcheck bR_big "does not fit" "CSK_bR_big: a fillet larger than the wall piece is refused (does not fit)"
-cskcheck c_round "Volume = " "CSK_c_round: negative control, RoundHole still works"
-cskcheck two "Object 1: valid" "CSK_two: second hole next to a first stays valid"
-if grep -q "gl_error=0" <<<"$CSK_OUT"; then echo "ok   csk script ran without OpenGL errors"; else echo "FAIL csk script OpenGL errors"; fail=1; fi
-
-
->>>>>>> a266fabc (WIP: CSK_ smoke section (windows from independent closed forms; not yet run))
 exit $fail
