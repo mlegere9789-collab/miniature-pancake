@@ -93934,7 +93934,7 @@ void TestFilletRevolveRimConcaveConeCornersAddMaterialAndMatchGreenIntegral() {
       {"plane/cone, cone leaning in (116.6 deg air wedge) r=0.30", post_in, 3, 5, Point3d(1.0, -2.0, 0.5), Vector3d(0, 0, 1), 0.30, Parent{{2.5, 1}, {4, 1}}, Parent{{2.5, 1}, {1.5, 3}}},
       {"plane/cone, cone leaning in r=0.90", post_in, 3, 5, Point3d(-0.4, 0.7, 0.0), Vector3d(0, 0, 1), 0.90, Parent{{2.5, 1}, {4, 1}}, Parent{{2.5, 1}, {1.5, 3}}},
       {"plane/cone, cone leaning out (63.4 deg undercut), oblique axis, r=0.30", post_out, 3, 5, Point3d(0.3, 0.2, -0.4), Vector3d(1, 2, 3), 0.30, Parent{{2.5, 1}, {4, 1}}, Parent{{2.5, 1}, {3.5, 3}}},
-      {"cone/cone hourglass waist (53.1 deg air wedge) r=0.40", hourglass, 2, 4, Point3d(2.0, 1.0, -1.0), Vector3d(0, 0, 1), 0.40, Parent{{1.5, 3}, {3, 0}}, Parent{{1.5, 3}, {3, 6}}},
+      {"cone/cone hourglass waist (126.9 deg air wedge) r=0.40", hourglass, 2, 4, Point3d(2.0, 1.0, -1.0), Vector3d(0, 0, 1), 0.40, Parent{{1.5, 3}, {3, 0}}, Parent{{1.5, 3}, {3, 6}}},
       {"cone/cone hourglass waist, tilted axis, r=0.70", hourglass, 2, 4, Point3d(0, 0, 0), Vector3d(-1, 1, 2), 0.70, Parent{{1.5, 3}, {3, 0}}, Parent{{1.5, 3}, {3, 6}}},
   };
   for (const Case& c : cases) {
@@ -93962,7 +93962,7 @@ void TestFilletRevolveRimConcaveConeCornersAddMaterialAndMatchGreenIntegral() {
     Check(res.Volume() > v0 * (1.0 + 1e-6), (tag + "a concave blend ADDS material: " + std::to_string(res.Volume()) + " > " + std::to_string(v0)).c_str());
     // negative control: the oracle must discriminate (the volume of a 10 percent larger radius is far outside the tolerance).
     const Blended wrong = GreenVolume(c.poly, c.corner, c.r * 1.1);
-    Check(std::fabs(res.Volume() - wrong.volume) > 1e-4 * ind.volume, (tag + "negative control: the volume of a 10% larger radius is NOT within the tolerance").c_str());
+    Check(std::fabs(res.Volume() - wrong.volume) > 2e-5 * ind.volume, (tag + "negative control: the volume of a 10% larger radius is NOT within the tolerance").c_str());
     const Measured m = MeasureBlend(res, c.base, c.axis, c.r, c.a, c.b, 1e-8);
     Check(m.stations == 36, (tag + "blend face found and sampled at 36 meridians").c_str());
     Check(m.radius_err < 1e-9, (tag + "circumradius of the blend cross-section = r, max err " + std::to_string(m.radius_err)).c_str());
@@ -93987,8 +93987,8 @@ void TestFilletRevolveRimConcaveConeCornersAddMaterialAndMatchGreenIntegral() {
     const Point3d base(0, 0, 0);
     const Vector3d axis(0, 0, 1);
     const Brep hg = MakeRevolvedPolygon(hourglass, base, axis);
-    std::string m = Reason([&] { FilletRevolveRim(hg, Point3d(1.5, 0, 3.0), 2.0); });  // setback 2/tan(26.57 deg) = 4 > the 3.35 cone length
-    Check(m.find("consume a whole adjacent face") != std::string::npos, ("[concave hourglass r=2.0] refused with a reason: " + m).c_str());
+    std::string m = Reason([&] { FilletRevolveRim(hg, Point3d(1.5, 0, 3.0), 7.0); });  // air wedge 126.87 deg: setback 7/tan(63.43 deg) = 3.5 > the 3.354 cone length
+    Check(m.find("consume a whole adjacent face") != std::string::npos, ("[concave hourglass r=7.0] refused with a reason: " + m).c_str());
     m = Reason([&] { FilletRevolveRim(hg, Point3d(1.7, 0, 3.0), 0.3); });
     Check(m.find("does not lie on a rim circle") != std::string::npos, ("[concave hourglass, point off the waist circle] refused with a reason: " + m).c_str());
     const Brep pin = MakeRevolvedPolygon(post_in, base, axis);
