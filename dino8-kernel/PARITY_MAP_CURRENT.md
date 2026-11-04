@@ -48,8 +48,10 @@ As of commit `ab20e4ce` (last full re-score); Mass properties row updated at `e6
 | Scripting/automation | 1.0 | 15 | 13 | 2 | 0 | 93.3% |
 | File I/O | 1.0 | 17 | 11 | 4 | 2 | 76.5% |
 | SubD app-toolset | 0.75 | 24 | 20 | 3 | 1 | 89.6% |
-| UI/UX | 1.0 | 19 | 14 | 4 | 1 | 84.2% |
-| Ecosystem | 0.5 | 16 | 7 | 6 | 3 | 62.5% |
+| UI/UX | 1.0 | 20 | 14 | 5 | 1 | 82.5% |
+| Ecosystem | 0.5 | 16 | 7 | 7 | 2 | 65.6% |
+
+**Row moves 2026-11-03 (Ecosystem 7/6/3 -> 7/7/2, 62.5% -> 65.6%: Touch-first companion app `[missing]` -> `[partial]`; UI/UX 14/4/1 -> 14/5/1 over 19 -> 20 items, 84.2% -> 82.5%: the single bullet "Video tutorials / community forum" is SPLIT into "Video tutorials" `[partial]` and "Community forum" `[missing]`, an honest re-count that adds an item and lowers that category's percentage; App headline 86.56% -> 86.55%, displayed 86.5% (truncated, the conservative reading)).** Both moves passed an independent skeptic and an adversarial refuter, who required the wording limits now in `PARITY_MAP.md` (touch: only emulated touch in headless Chromium, plain HTTP, no real device; tutorials: silent, unpublished, shallow content checks, Linux only). Evidence: CI run on `5e5392b0` green on Linux/macOS/Windows/Windows-ARM - `dino8_touch_api` (102 checks), `TCH_touch` (84 checks), `TUTV_count` (10 of 10 videos recorded and ffprobed) and the uploaded `Dino8-tutorial-videos` artifact. **Code-signed / notarized installers stays `[missing]`:** the signing code path now runs in CI with a throwaway certificate and ad-hoc signing and tamper tests pass, but no published installer is signed by a trusted authority.
 
 **Row move 2026-11-03 (File I/O 11/3/3 -> 11/4/2, 73.5% -> 76.5%; App headline 86.19% -> 86.56%, displayed 86.5% (truncated, the conservative reading)).** The bullet "ACIS (.sat/.sab) import/export" moves `[missing]` -> `[partial]` (same evidence and same residuals as the kernel row above: `FileSat.cpp` wiring for Open/Import/Save As/Export Selected, `SATF_` smoke section, CI green on all four platforms at `31bd1877`; .sat TEXT only, never read from a real ACIS product, `.sab` not implemented). Parasolid and JT stay `[missing]`.
 
