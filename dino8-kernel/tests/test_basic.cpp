@@ -102428,8 +102428,12 @@ void TestRefusalsCarryTheirReasons() {
   Check(Refuses([&] { ShellPolylineExtrusion(Closed(kL), Vector3d(0, 0, 0), u, 0.5, 0.5); }, "non-zero"), "zero direction refused");
   Check(Refuses([&] { ShellPolylineExtrusion(shell_closed_tests::MakeCircleCurve(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0), up, u, 0.5, 0.0); }, "polyline"),
         "a circular profile is refused as non-polyline (no silent approximation)");
-  Check(Refuses([&] { ShellPolylineExtrusion(Closed({{0, 0}, {4, 4}, {4, 0}, {0, 4}}), up, std::vector<double>(4, 0.2), 0.5, 0.5); }, "self-crossing"),
-        "a bow-tie profile is refused as self-crossing");
+  // (The symmetric bow-tie (0,0),(4,4),(4,0),(0,4) has two lobes of opposite sign whose signed areas cancel to exactly 0,
+  // so it is rightly refused as enclosing no area before simplicity is even asked; the lopsided one has net area -2.)
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed({{0, 0}, {4, 4}, {4, 0}, {0, 3}}), up, std::vector<double>(4, 0.2), 0.5, 0.5); }, "self-crossing"),
+        "a lopsided bow-tie profile (net signed area -2, edges 0 and 2 cross at x = 12/7) is refused as self-crossing");
+  Check(Refuses([&] { ShellPolylineExtrusion(Closed({{0, 0}, {4, 4}, {4, 0}, {0, 4}}), up, std::vector<double>(4, 0.2), 0.5, 0.5); }, "no area"),
+        "the symmetric bow-tie (signed area exactly 0) is refused as enclosing no area");
   Check(Refuses([&] { ShellPolylineExtrusion(Closed({{0, 0}, {3, 0}, {6, 0}, {6, 4}, {0, 4}}), up, {0.5, 0.8, 0.5, 0.5, 0.5}, 0.5, 0.5); }, "collinear"),
         "collinear adjacent walls of different thickness (no unique corner) refused");
   // ...while the same collinear split with EQUAL thickness is accepted and equals the unsplit box.

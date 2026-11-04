@@ -2488,7 +2488,13 @@ Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
       // wall pinch: samples along this cavity edge keep their distance from every KEPT wall
       for (int k = 0; k <= 8; ++k) {
         const Point2d s(ci.x + (cj.x - ci.x) * k / 8.0, ci.y + (cj.y - ci.y) * k / 8.0);
-        if (!inside_p(s) && seg_dist(s, a, b) > slack) throw bad("the cavity leaves the profile");
+        // A cavity edge next to a removed wall ends ON the profile boundary (the removed wall's own edge), where the
+        // even-odd test is arbitrary: a point within `slack` of ANY profile edge is on the boundary, not outside it.
+        if (!inside_p(s)) {
+          bool on_boundary = false;
+          for (size_t j = 0; j < n && !on_boundary; ++j) on_boundary = seg_dist(s, P2[j], P2[(j + 1) % n]) <= slack;
+          if (!on_boundary) throw bad("the cavity leaves the profile");
+        }
         for (size_t j = 0; j < n; ++j) {
           if (!(d[j] > 0.0)) continue;
           if (seg_dist(s, P2[j], P2[(j + 1) % n]) < std::min(d[i], d[j]) - slack) {
