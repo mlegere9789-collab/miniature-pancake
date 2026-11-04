@@ -796,6 +796,7 @@ void Document::BeginChange(const std::string& label) {
   pending_.fast_path_before.clear();
   pending_.user_text = user_text_;
   pending_.history = history_records_;
+  pending_.saved_redo = std::move(redo_);
   redo_.clear();
 }
 
@@ -822,6 +823,7 @@ void Document::BeginChangeForObjects(const std::string& label, const std::vector
   }
   pending_.user_text = user_text_;
   pending_.history = history_records_;
+  pending_.saved_redo = std::move(redo_);
   redo_.clear();
 }
 
@@ -837,8 +839,18 @@ bool Document::JoinPendingChange(const std::vector<ObjectId>& ids) {
   return true;
 }
 
+bool Document::AbandonChange() {
+  if (!pending_.active) return false;
+  if (next_id_ != pending_.next_id || next_group_id_ != pending_.next_group_id || next_light_id_ != pending_.next_light_id) return false;
+  if (!pending_.fast_path && objects_.size() != pending_.objects.size()) return false;
+  redo_ = std::move(pending_.saved_redo);
+  pending_ = PendingChange{};
+  return true;
+}
+
 void Document::FinalizePending() {
   if (!pending_.active) return;
+  pending_.saved_redo.clear();
   StateDelta d;
   d.label = pending_.label;
   d.object_only = pending_.fast_path;

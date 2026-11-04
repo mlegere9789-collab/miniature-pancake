@@ -488,6 +488,7 @@ void ShrinkTrimmed(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       ++nothing;
     }
   }
+  if (n == 0) ctx.Doc().AbandonChange();  // nothing shrunk: no empty undo step
   ctx.Print("ShrinkTrimmedSrf: " + std::to_string(n) + " polysurface(s) shrunk" +
             (n > 0 ? " (" + std::to_string(faces) + " face surface(s) cut down to their trims, largest face-boundary shift " + FormatNumber(worst_shift) +
                          " within tolerance " + FormatNumber(tol) + ")"
@@ -1436,6 +1437,7 @@ class FitSrfCommand : public Command {
         ctx.Warn(std::string("FitSrf: ") + e.what());
       }
     }
+    if (fitted == 0) ctx.Doc().AbandonChange();  // every surface refused: no empty undo step
     ctx.Print("FitSrf: " + std::to_string(fitted) + " surface(s) fitted" + (refused > 0 ? "; " + std::to_string(refused) + " left unchanged" : ""));
     Finish();
   }

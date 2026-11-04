@@ -875,6 +875,7 @@ class RemoveMultiKnotCommand : public Command {
                  FormatNumber(tol_) + " (raise Tolerance to accept the shape change)");
       }
     }
+    if (cleaned == 0) ctx.Doc().AbandonChange();  // nothing changed: no empty undo step
     ctx.Print("RemoveMultiKnot: " + std::to_string(cleaned) + " object(s) cleaned" +
               (cleaned > 0 ? " (" + std::to_string(copies) + " knot copy(ies) removed, guaranteed shape change at most " + FormatNumber(worst) +
                                  ", within Tolerance " + FormatNumber(tol_) + ")"
@@ -1399,6 +1400,7 @@ class ContourCommand : public Command {
       made += SliceObjects(ctx, ids_, pl, "Contour", "Contour", &exact);
       ++planes;
     }
+    if (made == 0) ctx.Doc().AbandonChange();  // nothing cut: no empty undo step, Redo stays available
     ctx.Print("Contour: " + std::to_string(made) + " curve(s) from " + std::to_string(planes) + " plane(s)" +
               (exact > 0 ? " (" + std::to_string(exact) + " exact B-rep section curve(s), the rest mesh slices)" : " (mesh slices)"));
     Finish();
@@ -1425,6 +1427,7 @@ class SectionCommand : public Command {
     ctx.Doc().BeginChange("Section");
     int exact = 0;
     int made = SliceObjects(ctx, ids_, ON_Plane(*a_, n), "Section", "Section", &exact);
+    if (made == 0) ctx.Doc().AbandonChange();  // nothing cut: no empty undo step, Redo stays available
     ctx.Print("Section: " + std::to_string(made) + " curve(s)" +
               (exact > 0 ? " (" + std::to_string(exact) + " exact B-rep section curve(s), the rest mesh slices)" : " (mesh slices)"));
     Finish();
