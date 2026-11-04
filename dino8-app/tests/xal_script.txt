@@ -1,0 +1,120 @@
+# ExtrudeCrvAlongCrv Solid option (tests/smoke.sh section XAL_): the kernel's exact Brep::ExtrudeAlongCurve (translational sum
+# surface, profile never rotates; rational profiles/paths exact; closed path + open profile = periodic sheet; refusals carry
+# their reason and build nothing). Cases, in order (smoke.sh cuts the output at each "Command: ExtrudeCrvAlongCrv"):
+#  1 circle r=2 (XY) along a line z=0..5, Solid=Yes: the cylinder, volume pi 4 5 = 62.8319
+#  2 circle r=1 (XY) along a quarter-circle ARC (rational) in XZ, centre origin, radius 3: volume pi * (net z = 3) = 9.42478
+#  3 open profile (a vertical line z=0..3) round a closed circle path r=2, Solid=Yes: periodic sheet, area 2 pi 2 3 = 37.6991
+#  4 closed circle profile round a closed circle path, Solid=Yes: refused (zero net volume), nothing built
+#  5 circle profile (XY) along a path inside its own plane, Solid=Yes: refused (flat), nothing built
+#  6 control, no Solid option: unchanged ON_SumSurface surface, no kernel message
+SetActiveViewport Top
+
+# --- 1
+Circle 0,0,0 2
+SelLast
+SetObjectName XALprof1
+Line 0,0,0 0,0,5
+SelLast
+SetObjectName XALpath1
+SelNone
+SelName XALprof1
+ExtrudeCrvAlongCrv Solid=Yes
+SelName XALpath1
+Enter
+SelLast
+Volume
+Check
+BoundingBox
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- 2
+Circle 0,0,0 1
+SelLast
+SetObjectName XALprof2
+Arc 0,0,0 3,0,0 0,0,3
+SelLast
+SetObjectName XALpath2
+SelNone
+SelName XALprof2
+ExtrudeCrvAlongCrv Solid=Yes
+SelName XALpath2
+Enter
+SelLast
+Volume
+Check
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 3
+Line 0,0,0 0,0,3
+SelLast
+SetObjectName XALprof3
+Circle 0,0,0 2
+SelLast
+SetObjectName XALpath3
+SelNone
+SelName XALprof3
+ExtrudeCrvAlongCrv Solid=Yes
+SelName XALpath3
+Enter
+SelLast
+Area
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 4
+Circle 0,0,0 1
+SelLast
+SetObjectName XALprof4
+Circle 0,0,0 2
+SelLast
+SetObjectName XALpath4
+SelNone
+SelName XALprof4
+ExtrudeCrvAlongCrv Solid=Yes
+SelName XALpath4
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- 5
+Circle 0,0,0 1
+SelLast
+SetObjectName XALprof5
+Line 0,0,0 5,0,0
+SelLast
+SetObjectName XALpath5
+SelNone
+SelName XALprof5
+ExtrudeCrvAlongCrv Solid=Yes
+SelName XALpath5
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- 6
+Line 0,0,0 10,0,0
+SelLast
+SetObjectName XALprof6
+Line 0,0,0 0,5,0
+SelLast
+SetObjectName XALpath6
+SelNone
+SelName XALprof6
+ExtrudeCrvAlongCrv
+SelName XALpath6
+Enter
+SelLast
+Area
+SelAll
+Delete
+@expect_objects 0

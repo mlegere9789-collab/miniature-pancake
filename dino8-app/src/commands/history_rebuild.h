@@ -226,7 +226,10 @@ std::optional<SceneObject> RebuildBoolean(CommandContext& ctx, const HistoryInpu
 std::optional<SceneObject> RebuildExtrudeSrf(CommandContext& ctx, const SceneObject& src, const HistoryRecord& rec);
 
 // ExtrudeCrvAlongCrv (cmd_surface.cpp): exact translational sum surface of
-// the profile along the path. Reads no num parameters.
+// the profile along the path. Reads num: solid (1/0, default 0). With solid=1
+// the kernel's Brep::ExtrudeAlongCurve builds the capped B-rep solid of a
+// closed planar profile (rational profiles/paths are exact); a kernel refusal
+// is reported with its reason and nothing is substituted.
 std::optional<SceneObject> RebuildExtrudeAlongCrv(CommandContext& ctx, const kernel::NurbsCurve& profile,
                                                    const kernel::NurbsCurve& path, const HistoryRecord& rec);
 

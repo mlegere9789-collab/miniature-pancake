@@ -2510,7 +2510,10 @@ class ShellCommand : public Command {
 
 class ExtrudeAlongCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select curves to extrude"); }
+  void Begin(CommandContext&) override {
+    options = {{"Solid", "No", {"Yes", "No"}, false, true}};
+    WantObjects("Select curves to extrude");
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (profiles_.empty()) {
       profiles_ = CurvesOf(ctx, ids);
@@ -2527,18 +2530,25 @@ class ExtrudeAlongCommand : public Command {
     for (ObjectId id : ids) if (CurveOf(ctx, id)) { path_id = id; break; }
     ctx.Doc().BeginChange("ExtrudeCrvAlongCrv");
     int made = 0;
+    HistoryRecord rec;
+    rec.command = "ExtrudeCrvAlongCrv";
+    rec.num = {{"solid", solid_ ? 1.0 : 0.0}};
     for (size_t i = 0; i < profiles_.size(); ++i) {
-      std::optional<SceneObject> built = RebuildExtrudeAlongCrv(ctx, profiles_[i], path[0], HistoryRecord{});
+      std::optional<SceneObject> built = RebuildExtrudeAlongCrv(ctx, profiles_[i], path[0], rec);
       if (!built) continue;
       const ObjectId new_id = ctx.Doc().Add(std::move(*built));
-      RecordHistoryIfEnabled(ctx, new_id, "ExtrudeCrvAlongCrv", {profile_ids_[i], path_id}, {});
+      RecordHistoryIfEnabled(ctx, new_id, "ExtrudeCrvAlongCrv", {profile_ids_[i], path_id}, rec.num);
       ++made;
     }
-    ctx.Print("ExtrudeCrvAlongCrv: " + std::to_string(made) + " surface(s)");
+    ctx.Print("ExtrudeCrvAlongCrv: " + std::to_string(made) + (solid_ ? " solid(s)" : " surface(s)"));
     Finish();
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Solid") { solid_ = (v == "Yes"); options[0].value = solid_ ? "Yes" : "No"; }
   }
   std::vector<kernel::NurbsCurve> profiles_;
   std::vector<ObjectId> profile_ids_;  // history sources, in lockstep with profiles_
+  bool solid_ = false;
 };
 
 class ExtrudeTaperedCommand : public Command {
@@ -3743,7 +3753,28 @@ std::optional<SceneObject> RebuildShell(CommandContext& ctx, const SceneObject& 
 }
 
 // ExtrudeCrvAlongCrv's construction: exact translational sum surface.
-std::optional<SceneObject> RebuildExtrudeAlongCrv(CommandContext&, const kernel::NurbsCurve& profile, const kernel::NurbsCurve& path, const HistoryRecord&) {
+std::optional<SceneObject> RebuildExtrudeAlongCrv(CommandContext& ctx, const kernel::NurbsCurve& profile, const kernel::NurbsCurve& path, const HistoryRecord& rec) {
+  const auto solid_it = rec.num.find("solid");
+  if (solid_it != rec.num.end() && solid_it->second != 0.0) {
+    // Solid=Yes: the kernel's exact sum surface plus two planar caps. A
+    // refusal (open or non-planar profile, path displacement in the
+    // profile plane, ...) is reported with the kernel's reason and NO
+    // surface is substituted for the solid that was asked for.
+    try {
+      const kernel::Brep b = kernel::Brep::ExtrudeAlongCurve(profile, path, /*cap=*/true);
+      char buf[160];
+      if (b.raw().IsSolid()) {
+        std::snprintf(buf, sizeof(buf), "ExtrudeCrvAlongCrv: exact kernel sum surface + 2 planar caps, closed solid, exact volume %.9g", b.Volume());
+      } else {
+        std::snprintf(buf, sizeof(buf), "ExtrudeCrvAlongCrv: exact kernel sum surface, open sheet (no caps: the profile is open), area %.9g", b.Area());
+      }
+      ctx.Print(buf);
+      return SceneObject::MakeBrep(b);
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("ExtrudeCrvAlongCrv Solid=Yes: ") + ex.what());
+      return std::nullopt;
+    }
+  }
   ON_SumSurface ss;
   kernel::NurbsSurface k;
   if (ss.Create(profile.raw(), path.raw()) && SurfaceFromON(ss, k)) return SceneObject::MakeSurface(k);

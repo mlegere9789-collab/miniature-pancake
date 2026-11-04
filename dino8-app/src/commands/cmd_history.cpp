@@ -313,6 +313,8 @@ void RegisterBuiltinParams() {
       NumberParam("apexy", "apex point Y", "any", [](const HistoryRecord& r) { return NumOf(r, "ay"); }, [](HistoryRecord& r, double d) { r.num["ay"] = d; return std::string(); }),
       NumberParam("apexz", "apex point Z", "any", [](const HistoryRecord& r) { return NumOf(r, "az"); }, [](HistoryRecord& r, double d) { r.num["az"] = d; return std::string(); }),
       YesNoParam("solid", "cap the base into a solid cone", "solid", true)});
+  SetParams("ExtrudeCrvAlongCrv", {
+      YesNoParam("solid", "cap a closed planar profile into a solid (kernel Brep::ExtrudeAlongCurve)", "solid", false)});
   SetParams("ExtrudeCrvTapered", {
       NumberParam("distance", "extrusion distance along the recorded direction", "non-zero; negative flips the direction",
                   [](const HistoryRecord& r) { return VecOf(r, "dx", "dy", "dz").Length(); },

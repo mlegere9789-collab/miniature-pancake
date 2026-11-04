@@ -390,15 +390,18 @@ class Brep {
   // path(v_min), NOT Sweep1() (which rotation-minimally transports the
   // section's own frame along a rail): `profile` never rotates here, it
   // is carried by pure translation, so at every station it stays parallel
-  // to its own original plane. Both `profile` and `path` must be
-  // non-rational NURBS curves (any degree, any knot vector) - the
-  // construction is exact because a non-rational B-spline basis is a
-  // partition of unity (see SumSurface() in sweep.cpp for the identity);
-  // a rational curve's basis does not sum to 1 pointwise, so the same
-  // additive control-net trick is not exact for one and is refused
-  // (std::invalid_argument) rather than silently approximated. `path`
-  // must also be an open curve: a closed path has no well-defined net
-  // start/end displacement to cap against.
+  // to its own original plane. `profile` and `path` may each be rational
+  // or not (any degree, any knot vector): the construction is exact for
+  // every clamped NURBS pair - control points P_ij = A_i + Q_j - Q_0 with
+  // weights w_i W_j give a surface whose denominator factors as a(u) b(v)
+  // and which reduces to profile(u) + path(v) - Q_0 (identity derived at
+  // SumSurface() in sweep.cpp); the wall is rational iff either curve is,
+  // so a true circle swept along a line is the exact analytic cylinder.
+  // A CLOSED `path` is accepted for an OPEN `profile` (a periodic sheet,
+  // e.g. a line carried round a circle = the exact cylinder wall; one face,
+  // closed in the path direction, no caps, not a solid). A closed profile
+  // on a closed path returns to its start - zero net volume, the wall
+  // folds through itself - and is refused with that reason.
   //
   // With `cap` and a closed, planar `profile` whose plane is not parallel
   // to the path's own NET displacement (path's end minus its start), two
@@ -413,8 +416,8 @@ class Brep {
   // A closed profile is reversed first if needed so the result faces
   // outward, matching Extrude()'s own convention; an open profile gives
   // one open face with no caps regardless of `cap`. Throws
-  // std::invalid_argument for a rational profile or path, a closed path,
-  // a zero-length net path displacement, or a cap request on a closed
+  // std::invalid_argument for a closed profile on a closed path, a
+  // zero-length net path displacement of an open path, or a cap request on a closed
   // non-planar profile or one whose plane contains the path's net
   // displacement (the extrusion would be flat).
   //
@@ -944,9 +947,20 @@ class Brep {
   // (periodic-loop) sections - throws for either. A tangent-constrained
   // loft is never capped (only closed-curve sections take caps, and
   // those are refused above).
+  //
+  // `spacing` picks the loft-direction station parameters v_k the sections
+  // are interpolated at (Rhino's Loft "Uniform" vs normal style): Chord
+  // (default) uses the averaged control-point chord lengths above; Uniform
+  // puts them at exactly k / (N - 1) (k / N closed) irrespective of the
+  // geometry, so unequally spaced sections are still reproduced at equal
+  // parameter steps; Centripetal uses square-root chord lengths. Every
+  // choice interpolates every section exactly (at its own v_k) - only the
+  // parametrization, hence the shape BETWEEN sections, changes. A degree-1
+  // loft has the same geometry under all three.
+  enum class LoftSpacing { Chord, Uniform, Centripetal };
   static Brep Loft(const std::vector<NurbsCurve>& sections, int degree = 3, bool closed = false,
                    bool cap = true, const NurbsCurve* start_tangent = nullptr,
-                   const NurbsCurve* end_tangent = nullptr);
+                   const NurbsCurve* end_tangent = nullptr, LoftSpacing spacing = LoftSpacing::Chord);
 
   // PARITY_MAP.md's offsetshell "Offset-derived constructions (Ribbon,
   // RibbonOffset, Fin, Slab)" gap: every one of those is currently
