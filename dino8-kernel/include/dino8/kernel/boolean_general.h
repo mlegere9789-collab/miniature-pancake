@@ -1968,4 +1968,12 @@ struct SealedGeneralBoolean {
 // Exceptions of BooleanCombineGeneral() itself propagate unchanged.
 SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001);
 
+// The sealing half of BooleanCombineGeneralSealed() on its own: seals a raw
+// engine result `raw` (from BooleanCombineGeneral / BooleanCombineGeneralNAry)
+// exactly as described above. volume_a / volume_b are the operands' exact
+// volumes for the bounds check (NaN skips the check - use that for an N-ary
+// group, whose folded operand volume is not known). Refuses with
+// std::runtime_error like BooleanCombineGeneralSealed().
+SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, double volume_a, double volume_b);
+
 }  // namespace dino8::kernel

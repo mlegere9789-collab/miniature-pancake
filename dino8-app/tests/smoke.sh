@@ -3895,8 +3895,8 @@ bgecheck() { if echo "$BG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL 
 # engine does not return a closed solid for a box pierced by a cylinder. RunBoolean now accepts a General-engine
 # result only when it is a closed solid, so the union and difference fall through to the mesh path, whose volumes
 # are the true ones (box 1000 +/- the cylinder's 10-long, r=2 part, pi*4*10 = 125.66: union 1125, difference 874.9).
-bgecheck ", sewn into a closed solid (tolerance 0.02449), volume 1125 (mesh cross-check 1125)" "a box unioned with a piercing, record-less cylinder: the General engine's result is sewn into a closed solid and accepted only because its volume agrees with the mesh boolean (1000 + 125.7); an open shell would now be refused by RunBoolean's closed-solid gate"
-bgecheck ", sewn into a closed solid (tolerance 0.01855), volume 874.8 (mesh cross-check 874.9)" "the same box minus the piercing cylinder likewise: closed, volume 1000 - 125.7"
+bgecheck ", sealed: valid B-rep with real inner loops, exact volume 1125 (kernel divergence theorem), 2 keyhole(s) opened (sewn at tolerance 0.02449), volume 1125 (mesh cross-check 1125)" "a box unioned with a piercing, record-less cylinder: the General engine's result is sewn into a closed solid and accepted only because its volume agrees with the mesh boolean (1000 + 125.7); an open shell would now be refused by RunBoolean's closed-solid gate"
+bgecheck ", sealed: valid B-rep with real inner loops, exact volume 874.5 (kernel divergence theorem), 2 keyhole(s) opened (sewn at tolerance 0.01855), volume 874.8 (mesh cross-check 874.9)" "the same box minus the piercing cylinder likewise: closed, volume 1000 - 125.7"
 bgecheck "BooleanIntersection: exact B-rep boolean (no tessellation, general engine), 3 face(s)" "the box intersected with the piercing cylinder also took the General-engine exact path"
 if echo "$BG" | grep -q "! No object with id"; then echo "FAIL boolean-general-engine script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-general-engine script's SelID bookkeeping matched every object the app actually created"; fi
 echo "$BG" | grep -E "^(ok|FAIL)"
@@ -8964,35 +8964,35 @@ sxvol() {
   if [ -n "$v" ] && awk -v v="$v" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 (Volume $v in [$2, $3])"; else echo "FAIL $4 (Volume '${v:-none}' not in [$2, $3])"; fail=1; fi
 }
 # --- Booleans of curved solids: exact, sewn closed, volume = closed form
-sxcheck B_box_minus_cyl "BooleanDifference: exact B-rep boolean (no tessellation, general engine), 7 face(s), sewn into a closed solid" "box minus a through-hole cylinder is the General engine's result sewn into a closed solid (before: an 'open' polysurface that Volume refused)"
+sxcheck B_box_minus_cyl "BooleanDifference: exact B-rep boolean (no tessellation, general engine), 7 face(s), sealed: valid B-rep with real inner loops" "box minus a through-hole cylinder is the General engine's result sewn into a closed solid (before: an 'open' polysurface that Volume refused)"
 sxcheck B_box_minus_cyl "(polysurface)" "...and stays a polysurface (not a mesh)"
 sxcheck B_box_minus_cyl "faces, [0-9]* edges, closed solid" "...List reports it as a closed solid (before: 188 edges, open)"
 sxvol B_box_minus_cyl 873.5 875.5 "box minus a through-hole cylinder: Volume = 1000 - pi*2^2*10 = 874.34 (before: 'Object 3 is not closed', Volume 0)"
 sxcheck B_box_minus_cyl "mesh cross-check" "...every accepted exact result prints its independent mesh-boolean cross-check volume"
 sxcheck B_box_minus_cyl "Area = " "...and Area works on it"
-sxcheck B_box_minus_blind "8 face(s), sewn into a closed solid" "blind hole: exact, closed"
+sxcheck B_box_minus_blind "8 face(s), sealed: valid B-rep with real inner loops" "blind hole: exact, closed"
 sxvol B_box_minus_blind 936.2 938.2 "blind hole Volume = 1000 - pi*4*5 = 937.17"
-sxcheck B_box_plus_boss "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 8 face(s), sewn into a closed solid" "boss: exact, closed"
+sxcheck B_box_plus_boss "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 8 face(s), sealed: valid B-rep with real inner loops" "boss: exact, closed"
 sxvol B_box_plus_boss 1139.5 1143 "cylindrical boss Volume = 1000 + pi*9*5 = 1141.37"
-sxcheck B_tube "4 face(s), sewn into a closed solid" "tube (cylinder minus coaxial cylinder): exact, closed"
+sxcheck B_tube "4 face(s), sealed: valid B-rep with real inner loops" "tube (cylinder minus coaxial cylinder): exact, closed"
 sxvol B_tube 656 662 "tube Volume = pi*(25-4)*10 = 659.73"
-sxcheck B_cyl_stack "5 face(s), sewn into a closed solid" "stacked cylinders union: exact, closed"
+sxcheck B_cyl_stack "5 face(s), sealed: valid B-rep with real inner loops" "stacked cylinders union: exact, closed"
 sxvol B_cyl_stack 343 347.5 "stacked cylinders Volume = pi*9*10 + pi*4*5 = 345.58"
-sxcheck B_cyl_minus_sphere "4 face(s), sewn into a closed solid" "cylinder minus a dome-cutting sphere: exact, closed"
+sxcheck B_cyl_minus_sphere "4 face(s), sealed: valid B-rep with real inner loops" "cylinder minus a dome-cutting sphere: exact, closed"
 sxvol B_cyl_minus_sphere 649 653.5 "dome cut Volume = 250*pi - 2/3*pi*64 = 651.36"
-sxcheck B_two_holes_at_once "8 face(s), sewn into a closed solid" "two holes cut in one Boolean (cutters selected together): exact, closed"
+sxcheck B_two_holes_at_once "8 face(s), sealed: valid B-rep with real inner loops" "two holes cut in one Boolean (cutters selected together): exact, closed"
 sxvol B_two_holes_at_once 857.5 860.5 "two holes Volume = 1000 - 2*pi*1.5^2*10 = 858.62"
 sxcheck B_scale_small "closed solid" "the same hole at 1/10 size is still exact and closed"
 sxvol B_scale_small 0.870 0.880 "1/10-size hole Volume = 1 - pi*0.04*1 = 0.8743"
 # --- Declined with a reason; the result is a closed mesh (never an open polysurface)
-sxcheck B_sphere_plus_box "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sewn into a closed solid" "box + sphere is now an exact B-rep (before: declined 'the sewn result does not tessellate to a closed mesh' because the display mesh's keyhole-corridor gaps were only closeable by a weld that also fused the sphere's pole fan; the mesher now re-welds only boundary vertices)"
+sxcheck B_sphere_plus_box "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sealed: valid B-rep with real inner loops" "box + sphere is now an exact B-rep (before: declined 'the sewn result does not tessellate to a closed mesh' because the display mesh's keyhole-corridor gaps were only closeable by a weld that also fused the sphere's pole fan; the mesher now re-welds only boundary vertices)"
 sxcheck B_sphere_plus_box "(polysurface)" "...and the result is a polysurface, not a mesh"
 sxvol B_sphere_plus_box 1130 1136 "box + sphere exact result is a closed solid with Volume = 1000 + 2/3*pi*64 = 1134.04"
 sxcheck B_cyl_offaxis "exact B-rep boolean declined (dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more fragment loops" "off-axis cylinder union: the engine's own refusal is printed as the reason"
 sxcheck B_chain "re-evaluated from the recorded original operands (the base and 2 tool(s) in one pass" "a second SEQUENTIAL hole is now exact (before: declined 'gaps between faces that sewing could not close'): re-evaluated as base minus both cutters in one pass"
 sxcheck B_chain "(polysurface)" "...and the result is a polysurface, not a mesh"
 sxvol B_chain 857 861 "...and its Volume is 1000 - 2*pi*1.5^2*10 = 858.62"
-sxcheck B_scale_large "7 face(s), sewn into a closed solid" "100x-size hole is now exact and closed (before: declined 'exact B-rep boolean declined' because the uniform re-weld could not close the display mesh; the boundary-only re-weld does)"
+sxcheck B_scale_large "7 face(s), sealed: valid B-rep with real inner loops" "100x-size hole is now exact and closed (before: declined 'exact B-rep boolean declined' because the uniform re-weld could not close the display mesh; the boundary-only re-weld does)"
 sxvol B_scale_large 870000000 879000000 "100x-size hole Volume = 1e9 - pi*200^2*1000 = 874336294"
 sxcheck B_far_from_origin "exact B-rep boolean declined" "a hole 100000 units from the origin: declined with a reason"
 sxcheck B_meshalias "MeshBooleanDifference: [0-9]* faces, volume" "old behaviour stays reachable: MeshBooleanDifference always returns the mesh"
@@ -10443,7 +10443,7 @@ b2s_num() {
   if [ -n "$v" ] && awk -v v="$v" -v lo="$3" -v hi="$4" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   b2s_$1: $5 ($2 $v in [$3, $4])"; else echo "FAIL b2s_$1: $5 ($2 '${v:-none}' not in [$3, $4])"; fail=1; fi
 }
 # --- second sequential hole: exact, re-evaluated from the recorded operands
-b2s_check chain2 "exact B-rep boolean (no tessellation, general engine), 7 face(s), sewn into a closed solid" "first hole is exact and closed"
+b2s_check chain2 "exact B-rep boolean (no tessellation, general engine), 7 face(s), sealed: valid B-rep with real inner loops" "first hole is exact and closed"
 b2s_check chain2 "exact B-rep boolean (no tessellation, general engine), 8 face(s), re-evaluated from the recorded original operands (the base and 2 tool(s) in one pass" "second sequential hole is exact (before: declined, mesh)"
 b2s_check chain2 "(polysurface)" "...result is a polysurface, not a mesh"
 b2s_check chain2 "8 faces, [0-9]* edges, closed solid" "...8 faces (6 box + 2 hole walls), closed solid"
@@ -10458,7 +10458,7 @@ b2s_check moved "exact B-rep boolean declined (the engine's result has gaps betw
 b2s_check moved "(mesh)" "...and the fallback is a mesh"
 b2s_num moved Volume 855.5 861.7 "...whose volume is still 1000 - 2*pi*1.5^2*10 = 858.62"
 # --- box + sphere
-b2s_check box_sphere "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sewn into a closed solid" "box + sphere is exact (before: declined, mesh)"
+b2s_check box_sphere "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sealed: valid B-rep with real inner loops" "box + sphere is exact (before: declined, mesh)"
 b2s_check box_sphere "7 faces, [0-9]* edges, closed solid" "...7 faces (5 box + box top with the circle removed + hemisphere), closed solid"
 b2s_num box_sphere Volume 1130 1136 "box + upper hemisphere: 1000 + 2/3*pi*64 = 1134.04"
 b2s_num box_sphere Area 646 655 "area = 600 - pi*16 + 2*pi*16 = 650.27"
@@ -10466,7 +10466,7 @@ b2s_check box_sphere_shell "Shell: thickness 0.5, closed, volume" "a Shell takes
 b2s_check box_sphere_sphere "re-evaluated from the recorded original operands" "box + sphere, then + a second sphere: exact"
 b2s_check box_sphere_sphere "8 faces, [0-9]* edges, closed solid" "...8 faces, closed solid"
 b2s_num box_sphere_sphere Volume 1264 1272 "1000 + 2*(2/3*pi*64) = 1268.08"
-b2s_check box_two_spheres "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 8 face(s), sewn into a closed solid" "box + two spheres in one Boolean is exact (the left-to-right fold fails; the retry unites the spheres first)"
+b2s_check box_two_spheres "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 8 face(s), sealed: valid B-rep with real inner loops" "box + two spheres in one Boolean is exact (the left-to-right fold fails; the retry unites the spheres first)"
 b2s_num box_two_spheres Volume 1264 1272 "1000 + 2*(2/3*pi*64) = 1268.08"
 # --- still declined, honestly: a different operation on the box + sphere result
 b2s_check sphere_then_hole "BooleanDifference: exact B-rep boolean declined (the engine's result has gaps between faces that sewing could not close" "a hole drilled in the box + sphere result (Difference after a Union) is declined WITH the reason"
@@ -11892,5 +11892,90 @@ kwrcheck F_tc_big "exact kernel cap-rim fillet not used (dino8::kernel::FilletCa
 kwrcheck F_cyl "cylinder rim(s) of object 1 replaced with an exact fillet (top radius 1; exact quarter-torus patch" "KWR_F_cyl: control, the plain cylinder fillet is still the app's own exact torus"
 kwrnot F_cyl "kernel torus" "KWR_F_cyl: ...not the kernel cap-rim path"
 kwrnum F_cyl Volume 1 1555.0 1573.7 "KWR_F_cyl: Pappus Volume = 1570.80 - 6.44 = 1564.36"
+
+# SBL_: sealed exact Booleans (sbl_script.txt, sbl_script_fb.txt). The exact general-Boolean path now tries
+# kernel::SealGeneralBooleanResult (BooleanCombineGeneralSealed's sewing half) FIRST: a result that seals is
+# ON_Brep::IsValid + IsSolid with REAL inner loops (no keyhole slits) and carries an exact divergence-theorem
+# volume checked against the operands' bounds; Check is asserted valid on these results for the first time. A
+# refusal falls back to the previous sewing path unchanged (the far-from-origin case below, and the sealed-off
+# control run). Every volume/area is read against a closed form; display Volume comes from the closed display mesh.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SBL_OUT="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/sbl_script.txt" 2>&1)" || { echo "$SBL_OUT"; echo "FAIL: SBL_ script exited non-zero"; exit 1; }
+  SBL_FB="$(DINO8_NO_SEALED_BOOLEAN=1 timeout 900 "$BIN" --smoke 60 --script "$HERE/sbl_script_fb.txt" 2>&1)" || { echo "$SBL_FB"; echo "FAIL: SBL_ fallback script exited non-zero"; exit 1; }
+else
+  SBL_OUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/sbl_script.txt" 2>&1)" || { echo "$SBL_OUT"; echo "FAIL: SBL_ script exited non-zero"; exit 1; }
+  SBL_FB="$(DINO8_NO_SEALED_BOOLEAN=1 timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/sbl_script_fb.txt" 2>&1)" || { echo "$SBL_FB"; echo "FAIL: SBL_ fallback script exited non-zero"; exit 1; }
+fi
+sblblock() { awk -v name="$1" '$0 ~ ("Unknown command: SBLBEGIN_" name "$") { on = 1; next } on && /Unknown command: SBLBEGIN_|Unknown command: SBLEND/ { exit } on { print }' <<<"${2:-$SBL_OUT}"; }
+# sblcheck NAME PATTERN DESC [OUTPUT]: the case's block must contain PATTERN (a grep regex)
+sblcheck() { local blk; blk="$(sblblock "$1" "${4:-$SBL_OUT}")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   SBL_$1: $3"; else echo "FAIL SBL_$1: $3"; echo "     expected: $2"; { grep -E "^history: (Boolean|Shell|Object|  [0-9]|Volume|Area|!)" <<<"$blk" || true; } | head -8 | sed 's/^/     actual:   /'; fail=1; fi; }
+# sblnot NAME PATTERN DESC: the case's block must NOT contain PATTERN
+sblnot() { local blk; blk="$(sblblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "FAIL SBL_$1: $3"; fail=1; else echo "ok   SBL_$1: $3"; fi; }
+# sblnum NAME REGEX MIN MAX DESC: the first number following REGEX (a grep -oE regex ending right before the number) in the block lies in [MIN, MAX]
+sblnum() {
+  local blk v; blk="$(sblblock "$1")"
+  v="$({ grep -oE -- "$2[-0-9.eE+]+" <<<"$blk" || true; } | head -1 | sed -E "s/^$2//")"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$3" -v hi="$4" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   SBL_$1: $5 (measured $v in [$3, $4])"; else echo "FAIL SBL_$1: $5 (measured '${v:-none}' not in [$3, $4])"; fail=1; fi
+}
+SBL_SEAL="sealed: valid B-rep with real inner loops, exact volume"
+# --- box 10^3 minus a through-hole cylinder r2: V = 874.34, A = 700.53; two keyholes (one per end face) opened into real inner loops
+sblcheck cut_through "7 face(s), $SBL_SEAL" "box minus a through-hole cylinder takes the SEALED path (7 faces)"
+sblcheck cut_through "2 keyhole(s) opened" "...both end faces' keyhole slits were opened into real inner loops"
+sblcheck cut_through "^history: Object 3: valid$" "...Check reports the Boolean result a VALID B-rep (before: ON_Brep.m_T[..].m_type = seam but m_iso is not N/E/W/S_iso)"
+sblcheck cut_through "7 faces, [0-9]* edges, closed solid" "...List reports a closed solid"
+sblnum cut_through "exact volume " 873.7 875.0 "exact kernel volume = 1000 - pi*2^2*10 = 874.34"
+sblnum cut_through "^history: Volume = " 872.5 876.5 "display Volume (closed display mesh) = 874.34"
+sblnum cut_through "^history: Area = " 698 703 "Area = 600 - 2*pi*4 + 2*pi*2*10 = 700.53"
+sblcheck cut_through "mesh cross-check" "...the independent mesh-boolean cross-check still ran"
+# --- union with a piercing cylinder: 10 faces, 1000 + pi*4*10 = 1125.66
+sblcheck union_pierce "10 face(s), $SBL_SEAL" "box + piercing cylinder: sealed, 10 faces"
+sblcheck union_pierce "2 keyhole(s) opened" "...2 keyholes opened"
+sblcheck union_pierce "^history: Object 3: valid$" "...Check valid"
+sblnum union_pierce "exact volume " 1123.5 1127.5 "exact volume = 1000 + pi*4*10 = 1125.66"
+sblnum union_pierce "^history: Volume = " 1122 1128 "display Volume = 1125.66"
+# --- intersection with the piercing cylinder: 3 faces, no keyhole, pi*4*10 = 125.66
+sblcheck intersect_pierce "3 face(s), $SBL_SEAL" "box ^ piercing cylinder: sealed, 3 faces"
+sblcheck intersect_pierce "0 keyhole(s) opened" "...no keyhole to open"
+sblcheck intersect_pierce "^history: Object 3: valid$" "...Check valid"
+sblnum intersect_pierce "exact volume " 124.6 126.6 "exact volume = pi*4*10 = 125.66"
+# --- blind hole (1 keyhole, the open end) and boss
+sblcheck blind "8 face(s), $SBL_SEAL" "blind hole: sealed, 8 faces"
+sblcheck blind "1 keyhole(s) opened" "...1 keyhole opened (the open end only)"
+sblcheck blind "^history: Object 3: valid$" "...Check valid"
+sblnum blind "exact volume " 936.2 938.2 "exact volume = 1000 - pi*4*5 = 937.17"
+sblcheck boss "8 face(s), $SBL_SEAL" "boss: sealed, 8 faces"
+sblcheck boss "^history: Object 3: valid$" "...Check valid"
+sblnum boss "exact volume " 1139.8 1142.9 "exact volume = 1000 + pi*9*5 = 1141.37"
+sblnum boss "^history: Volume = " 1139 1144 "display Volume = 1141.37"
+# --- cylinder-only solids: the cylinder wall is ONE untrimmed analytic face (integrated on its whole domain)
+sblcheck tube "4 face(s), $SBL_SEAL" "tube (cylinder minus coaxial cylinder): sealed, 4 faces"
+sblcheck tube "^history: Object 3: valid$" "...Check valid"
+sblnum tube "exact volume " 653 666 "exact volume = pi*(25-4)*10 = 659.73 (polyline edges: <1% quadrature error)"
+sblnum tube "^history: Volume = " 655 664 "display Volume = 659.73"
+sblcheck stack "5 face(s), $SBL_SEAL" "stacked cylinders: sealed, 5 faces"
+sblcheck stack "^history: Object 3: valid$" "...Check valid"
+sblnum stack "exact volume " 323.5 329.5 "exact volume = pi*9*8 + pi*4*8 = 326.73"
+# --- two holes in one Boolean, and a second hole cut in the result of the first
+sblcheck two_holes "8 face(s), $SBL_SEAL" "two holes in ONE Boolean: sealed, 8 faces"
+sblcheck two_holes "4 keyhole(s) opened" "...4 keyholes opened (2 per end face)"
+sblcheck two_holes "^history: Object 4: valid$" "...Check valid"
+sblnum two_holes "exact volume " 857 860.5 "exact volume = 1000 - 2*pi*2.25*10 = 858.62"
+sblnum two_holes "^history: Volume = " 856.5 861 "display Volume = 858.62"
+sblcheck sequential "7 face(s), $SBL_SEAL" "sequential Booleans: the first hole is sealed"
+sblcheck sequential "re-evaluated from the recorded original operands.*$SBL_SEAL" "...the second hole is re-evaluated from the recorded operands (GeneralRecipe) and sealed"
+sblcheck sequential "^history: Object 5: valid$" "...Check valid on the second result"
+sblnum sequential "^history: Volume = " 856.5 861 "display Volume = 858.62"
+# --- the exact Shell reads the sealed result's end faces (real inner loops) as a plate with a through-hole
+sblcheck shell "$SBL_SEAL" "shell case: the base Boolean is sealed"
+sblcheck shell "Shell: thickness 0.5, closed, exact B-rep, volume" "Shell of the sealed result is still the EXACT prism-with-hole path"
+sblnum shell "Shell: thickness 0.5, closed, exact B-rep, volume " 320 324 "shell volume = 874.34 - (729 - pi*2.5^2*9) = 322.0"
+# --- declined case: unchanged previous behaviour (mesh boolean, with the reason)
+sblcheck far_decline "exact B-rep boolean declined (the engine's result has gaps between faces" "a hole 100000 units from the origin still declines with the engine's reason"
+sblnot far_decline "$SBL_SEAL" "...and nothing claims a sealed result"
+sblnum far_decline "^history: Volume = " 873 877 "...and the mesh result has Volume 874.9"
+# --- control: sealed path switched off -> the previous sewn keyhole-slit result, bit for bit the old message
+sblcheck fb_cut_through "7 face(s), sewn into a closed solid (tolerance 0.01855), volume 874.8" "DINO8_NO_SEALED_BOOLEAN=1 gives the previous sewn result" "$SBL_FB"
+sblcheck fb_cut_through "INVALID - ON_Brep.m_T" "...which is the keyhole-slit structure Check rejects (why the sealed path exists)" "$SBL_FB"
+sblcheck fb_cut_through "closed solid" "...yet a closed solid" "$SBL_FB"
 
 exit $fail

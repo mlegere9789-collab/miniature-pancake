@@ -119,6 +119,9 @@ struct GeneralBooleanResult {
   kernel::Brep brep;
   double volume = 0;          // |volume| of the closed display tessellation
   double heal_tolerance = 0;  // 0 when the engine's result was already a solid
+  bool sealed = false;        // sealed by the kernel: IsValid + IsSolid, real inner loops (see run() below)
+  double sealed_volume = 0;   // its exact divergence-theorem volume
+  int keyholes_opened = 0;    // keyhole slits opened into real inner loops
   int recorded_tools = 0;     // > 0: evaluated from the recorded original operands (see GeneralRecipe), this many tools
 };
 
@@ -166,7 +169,11 @@ void RememberGeneralRecipe(const kernel::Brep& result, GeneralRecipe recipe) {
 // A General result is NOT accepted as the engine hands it back (the earlier
 // version of this function did, and every curved Boolean came out as an
 // "open" polysurface that Volume refused and Shell/Fillet/the next Boolean
-// rejected): it is (1) sewn into a closed solid (HealGeneralBooleanResult),
+// rejected): it is (0) sealed by the kernel when possible (SealGeneralBooleanResult: IsValid + IsSolid, keyhole slits
+// opened into REAL inner loops, exact volume - see run() below; later readers of a Boolean result's structure
+// (cmd_fillet.cpp ClassifyHolePlateRim, prism_solid.h RecognizeHole) read the exact faces and their adjacency, never
+// the cap loop, so they accept both this structure and the keyhole-slit one of the fallback), otherwise
+// (1) sewn into a closed solid (HealGeneralBooleanResult),
 // then (2) required to tessellate to a closed manifold mesh (so Volume, Shell,
 // export and the next Boolean can use it). Anything that cannot be made
 // closed is declined with the reason in `why`, and the caller falls through to
@@ -200,7 +207,49 @@ std::optional<GeneralBooleanResult> TryGeneralBrepBoolean(CommandContext& ctx, c
       return std::nullopt;
     }
     if (res.brep.raw().m_F.Count() == 0) return res;  // an empty result is reported as such by the caller
-    if (!HealGeneralBooleanResult(res.brep, res.heal_tolerance)) {
+    // First choice: SEAL the result (kernel SealGeneralBooleanResult, the half of BooleanCombineGeneralSealed that
+    // follows the engine) - sewn, ON_Brep::IsValid, IsSolid, every keyhole opened into a real inner loop, and an
+    // exact (divergence-theorem) volume checked against the operands' bounds. A refusal falls back to the plain
+    // sewing below, exactly as before, so every case that worked still works (its keyhole-slit structure intact).
+    bool sealed = false;
+    if (!std::getenv("DINO8_NO_SEALED_BOOLEAN")) {
+      try {
+        double va = std::nan(""), vb = std::nan("");
+        if (first.size() == 1 && second.size() == 1) {  // the engine's pairwise case: operand volume bounds
+          auto operand_volume = [](const kernel::Brep& o) {
+            try {
+              return std::fabs(o.Volume());  // exact, when every face is NURBS
+            } catch (const std::exception&) {
+              ON_BoundingBox ob;
+              o.raw().GetBoundingBox(ob);
+              BrepMeshOptions mo;
+              mo.chord_tolerance = std::clamp(ob.Diagonal().Length() * 5e-4, 1e-5, 1.0);
+              return std::fabs(MeshBrepClosed(o.raw(), mo).Volume());  // the display mesh, within its chord tolerance
+            }
+          };
+          try {
+            va = operand_volume(first[0]);
+            vb = operand_volume(second[0]);
+          } catch (const std::exception&) {
+            va = vb = std::nan("");
+          }
+        }
+        kernel::SealedGeneralBoolean sb = kernel::SealGeneralBooleanResult(res.brep, second.empty() ? kernel::BooleanOp::Union : op, va, vb);
+        if (std::getenv("DINO8_SEALED_DEBUG")) std::fprintf(stderr, "[sealed boolean] faces=%d keyholes=%d vol=%g\n", sb.brep.raw().m_F.Count(), sb.keyholes_opened, sb.volume);
+        if (sb.brep.raw().m_F.Count() > 0) {
+          res.brep = std::move(sb.brep);
+          res.heal_tolerance = sb.sew_tolerance;
+          res.sealed = true;
+          res.sealed_volume = sb.volume;
+          res.keyholes_opened = sb.keyholes_opened;
+          sealed = true;
+        }
+      } catch (const std::exception& ex) {
+        sealed = false;
+        if (std::getenv("DINO8_SEALED_DEBUG")) std::fprintf(stderr, "[sealed boolean declined] %s\n", ex.what());
+      }
+    }
+    if (!sealed && !HealGeneralBooleanResult(res.brep, res.heal_tolerance)) {
       fail = "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
       return std::nullopt;
     }
@@ -519,7 +568,10 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
         } else {
           general_note = std::string(g->recorded_tools > 0 ? ", re-evaluated from the recorded original operands (the base and " + std::to_string(g->recorded_tools) +
                                                                   " tool(s) in one pass, because the first operand is the unchanged result of an earlier exact boolean)" : "") +
-                         std::string(g->heal_tolerance > 0 ? ", sewn into a closed solid (tolerance " + FormatNumber(g->heal_tolerance) + ")" : "") +
+                         std::string(g->sealed ? ", sealed: valid B-rep with real inner loops, exact volume " + FormatNumber(g->sealed_volume) +
+                                                     " (kernel divergence theorem), " + std::to_string(g->keyholes_opened) + " keyhole(s) opened" +
+                                                     (g->heal_tolerance > 0 ? " (sewn at tolerance " + FormatNumber(g->heal_tolerance) + ")" : "")
+                                                   : std::string(g->heal_tolerance > 0 ? ", sewn into a closed solid (tolerance " + FormatNumber(g->heal_tolerance) + ")" : "")) +
                          ", volume " + FormatNumber(g->volume) + (ref ? " (mesh cross-check " + FormatNumber(*ref) + ")" : "");
         }
       }

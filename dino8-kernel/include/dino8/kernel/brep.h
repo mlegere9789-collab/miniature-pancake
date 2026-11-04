@@ -5877,7 +5877,7 @@ class Brep {
 
  private:
   // Shared body of Volume() / VolumeOfSealedSolid(): the integration only.
-  double VolumeImpl() const;
+  double VolumeImpl(bool allow_analytic = false) const;
 
   // Shared body of FromMixedFaces()/FromMixedFacesNonManifold(): the
   // only difference is whether a third trim on one welded edge throws

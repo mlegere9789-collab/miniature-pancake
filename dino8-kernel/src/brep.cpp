@@ -1309,15 +1309,19 @@ double Brep::VolumeOfSealedSolid() const {
       g_trimmed_face_max_depth = kTrimmedFaceIntegralMaxDepth;
     }
   } knobs;
-  return VolumeImpl();
+  return VolumeImpl(true);
 }
 
-double Brep::VolumeImpl() const {
+double Brep::VolumeImpl(bool allow_analytic) const {
   double total = 0.0;
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     const ON_BrepFace& face = brep_.m_F[i];
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
-    if (!s) {
+    // VolumeOfSealedSolid() also integrates a TRIMMED face on an analytic surface (ON_PlaneSurface, ON_RevSurface -
+    // what the application's primitives carry): the divergence integrand only needs Ev1Der, and the trim polygon
+    // is in the surface's own parameters. Volume() keeps its NURBS-only contract.
+    const ON_Surface* sf = face.SurfaceOf();
+    if (!s && !(allow_analytic && sf)) {
       throw std::runtime_error("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
                                 " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
     }
@@ -1325,18 +1329,44 @@ double Brep::VolumeImpl() const {
     // analysis fan, whose whole domain IS the cap - see SweepCapAnalysisFan().
     ON_NurbsSurface cap_fan;
     const bool is_cap = SweepCapAnalysisFan(i, cap_fan);
-    if (is_cap) s = &cap_fan;
+    if (is_cap) {
+      s = &cap_fan;
+      sf = &cap_fan;
+    }
     const double sign = face.m_bRev ? -1.0 : 1.0;
     const auto integrand = [&](double u, double v) {
       ON_3dPoint p;
       ON_3dVector su, sv;
-      if (!s->Ev1Der(u, v, p, su, sv)) {
+      if (!sf->Ev1Der(u, v, p, su, sv)) {
         throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " + std::to_string(i));
       }
       const ON_3dVector n = ON_CrossProduct(su, sv);
       return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
     };
     if (is_cap || FaceCoversWholeDomain(i)) {
+      if (!s) {
+        // An analytic surface (cylinder wall, sphere, cone, torus) over its whole, smooth domain: composite
+        // 5x5 Gauss-Legendre over an 8 x 8 grid of cells (the integrand is analytic, so this converges
+        // geometrically).
+        const ON_Interval du = sf->Domain(0), dv = sf->Domain(1);
+        constexpr int kCells = 8;
+        double face_total = 0.0;
+        for (int cu = 0; cu < kCells; ++cu) {
+          const double ua = du.ParameterAt(static_cast<double>(cu) / kCells), ub = du.ParameterAt(static_cast<double>(cu + 1) / kCells);
+          for (int cv = 0; cv < kCells; ++cv) {
+            const double va = dv.ParameterAt(static_cast<double>(cv) / kCells), vb = dv.ParameterAt(static_cast<double>(cv + 1) / kCells);
+            const double u_mid = 0.5 * (ua + ub), u_half = 0.5 * (ub - ua), v_mid = 0.5 * (va + vb), v_half = 0.5 * (vb - va);
+            for (int gi = 0; gi < kMassPropsGaussPoints; ++gi) {
+              for (int gj = 0; gj < kMassPropsGaussPoints; ++gj) {
+                face_total += kMassPropsGaussWeights[gi] * kMassPropsGaussWeights[gj] * u_half * v_half *
+                              integrand(u_mid + u_half * kMassPropsGaussNodes[gi], v_mid + v_half * kMassPropsGaussNodes[gj]);
+              }
+            }
+          }
+        }
+        total += sign * face_total;
+        continue;
+      }
       total += sign * IntegrateOverNurbsSurface(*s, integrand);
       continue;
     }

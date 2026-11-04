@@ -8131,8 +8131,19 @@ int OpenSewnKeyholes(Brep& brep) {
 }
 
 SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
+  double va = std::nan(""), vb = std::nan("");
+  try {
+    va = a.Volume();
+    vb = b.Volume();
+  } catch (const std::exception&) {
+    va = vb = std::nan("");
+  }
+  return SealGeneralBooleanResult(BooleanCombineGeneral(a, b, op, tolerance), op, va, vb);
+}
+
+SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, double volume_a, double volume_b) {
   SealedGeneralBoolean out;
-  Brep r = BooleanCombineGeneral(a, b, op, tolerance);
+  Brep r = raw;
   if (r.raw().m_F.Count() == 0) {
     out.brep = std::move(r);
     return out;
@@ -8178,13 +8189,7 @@ SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, B
         continue;
       }
       if (op == BooleanOp::Union || op == BooleanOp::Intersection || op == BooleanOp::Difference) {
-        double va = std::nan(""), vb = std::nan("");
-        try {
-          va = a.Volume();
-          vb = b.Volume();
-        } catch (const std::exception&) {
-          va = vb = std::nan("");
-        }
+        double va = volume_a, vb = volume_b;
         if (std::isfinite(va) && std::isfinite(vb)) {
           const double slack = 0.01 * (std::fabs(va) + std::fabs(vb));
           va = std::fabs(va);
