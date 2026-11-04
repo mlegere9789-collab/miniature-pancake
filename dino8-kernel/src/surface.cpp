@@ -3199,10 +3199,20 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       // exactly that plane; its normal is the polar axis, and the first of
       // the 3 (at the true u=du.min, this surface's own longitude-zero)
       // fixes the equatorial xaxis.
-      const bool trim_u = du.max - du.min < 2.0 * ON_PI - 1e-9;
-      const bool trim_v = dv.max - dv.min < ON_PI - 1e-9;
+      // Full vs partial is decided GEOMETRICALLY (closed in u; both v ends
+      // collapsed to the poles), not from the domain's numeric span: a
+      // full sphere re-domained to [5,6] must not read as a 1-radian patch.
+      const bool trim_u = !surface_.IsClosed(0);
+      const bool trim_v = !(surface_.IsSingular(0) && surface_.IsSingular(2));
       Vector3d axis, xaxis, yaxis;
-      if (trim_u || trim_v) {
+      {
+        // The frame is derived for a FULL sphere too (not only for a
+        // trimmed one): Offset() hands the result back on the INPUT's own
+        // parametrization, so the seam (longitude zero) and the sense of
+        // rotation must be this surface's own, not `sphere.plane`'s
+        // arbitrary fit. Only a trimmed patch REQUIRES the frame, though;
+        // a full sphere whose three samples cannot fix one falls back to
+        // `sphere.plane` as before.
         const double du_span = du.max - du.min;
         const Point3d q_a = PointAt(du.min, vmid);
         const Point3d q_b = PointAt(du.min + du_span / 3.0, vmid);
@@ -3213,11 +3223,14 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
           xaxis = (q_a - sphere.Center()) - ON_DotProduct(q_a - sphere.Center(), axis) * axis;
           have_frame = xaxis.Unitize();
         }
-        if (!have_frame) return Result::Failed;  // degenerate (vmid at a pole, or a too-thin u-span)
-        yaxis = ON_CrossProduct(axis, xaxis);
-        new_sphere.plane = ON_Plane(sphere.Center(), xaxis, yaxis);
-      } else {
-        new_sphere.plane = sphere.plane;
+        if (have_frame) {
+          yaxis = ON_CrossProduct(axis, xaxis);
+          new_sphere.plane = ON_Plane(sphere.Center(), xaxis, yaxis);
+        } else if (trim_u || trim_v) {
+          return Result::Failed;  // degenerate (vmid at a pole, or a too-thin u-span)
+        } else {
+          new_sphere.plane = sphere.plane;
+        }
       }
 
       ON_NurbsSurface ns;
@@ -3367,7 +3380,22 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       const double sign = OffsetNormalSign(n, radial);
       const double new_radius = cyl.circle.radius + sign * distance;
       if (!(new_radius > 0.0)) return Result::Failed;
-      ON_Cylinder new_cyl(ON_Circle(cyl.circle.plane, new_radius));
+      // A FULL (closed-in-u) cylinder: put the NURBS form's seam (angle
+      // zero) on this surface's own u-start, so Offset() can return the
+      // result on the input's own parametrization. (A partial patch keeps
+      // the fitted frame: its angles are measured against it below, and
+      // moving angle zero onto its first edge would put that edge on the
+      // wrap.)
+      ON_Plane cyl_plane = cyl.circle.plane;
+      if (surface_.IsClosed(0)) {
+        const Point3d p_seam = PointAt(du.min, vmid);
+        const Vector3d rel_seam = p_seam - cyl.circle.plane.origin;
+        Vector3d x_seam = rel_seam - ON_DotProduct(rel_seam, cyl.circle.plane.zaxis) * cyl.circle.plane.zaxis;
+        if (x_seam.Unitize()) {
+          cyl_plane = ON_Plane(cyl.circle.plane.origin, x_seam, ON_CrossProduct(cyl.circle.plane.zaxis, x_seam));
+        }
+      }
+      ON_Cylinder new_cyl(ON_Circle(cyl_plane, new_radius));
       new_cyl.height[0] = cyl.height[0];
       new_cyl.height[1] = cyl.height[1];
       ON_NurbsSurface ns;
@@ -3384,7 +3412,7 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       // independent of either cylinder's radius since both share the
       // same `circle.plane`) through `GetNurbFormParameterFromRadian()`,
       // the OpenNURBS conversion built for exactly this problem.
-      if (du.max - du.min < 2.0 * ON_PI - 1e-9) {
+      if (!surface_.IsClosed(0)) {
         const Point3d p_umin = PointAt(du.min, vmid);
         const Point3d p_umax = PointAt(du.max, vmid);
         const Point3d p_umid = PointAt(0.5 * (du.min + du.max), vmid);
@@ -3452,6 +3480,17 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
 
       const double apex_shift = -signed_distance / sin_alpha;
       ON_Plane new_plane = cone.plane;
+      if (surface_.IsClosed(0)) {
+        // Full cone: seam (angle zero) on this surface's own u-start, so
+        // Offset() can return the result on the input's parametrization.
+        // (Partial patches keep the fitted frame for the angle
+        // conversions below.)
+        const Vector3d rel_seam = PointAt(du.min, vmid) - apex;
+        Vector3d x_seam = rel_seam - ON_DotProduct(rel_seam, axis) * axis;
+        if (x_seam.Unitize()) {
+          new_plane = ON_Plane(cone.plane.origin, x_seam, ON_CrossProduct(cone.plane.zaxis, x_seam));
+        }
+      }
       new_plane.origin = apex + apex_shift * axis;
       new_plane.UpdateEquation();
       const Point3d apex_new = new_plane.origin;
@@ -3529,7 +3568,7 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       // any convenient radius, correctly measures/converts angles for
       // both the old and new cone.
       const ON_Circle angle_ref(cone.plane, 1.0);
-      if (du.max - du.min < 2.0 * ON_PI - 1e-9) {
+      if (!surface_.IsClosed(0)) {
         const Point3d p_umin = PointAt(du.min, vmid);
         const Point3d p_umax = PointAt(du.max, vmid);
         const Point3d p_umid = PointAt(0.5 * (du.min + du.max), vmid);
@@ -3633,8 +3672,8 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       // against directly. Comparing against a bare `2*pi` here would
       // wrongly call almost any genuinely partial patch "full" (or vice
       // versa) for any radius other than 1.
-      const bool trim_u = du.max - du.min < 2.0 * ON_PI * torus.major_radius - 1e-9;
-      const bool trim_v = dv.max - dv.min < 2.0 * ON_PI * torus.minor_radius - 1e-9;
+      const bool trim_u = !surface_.IsClosed(0);
+      const bool trim_v = !surface_.IsClosed(1);
 
       if (trim_u || trim_v) {
         const ON_Circle angle_ref(torus.plane, 1.0);

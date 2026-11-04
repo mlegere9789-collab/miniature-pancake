@@ -1039,6 +1039,67 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   }
 }
 
+namespace {
+
+// Brings `cand` - an exact analytic offset built on the primitive's own
+// canonical parametrization - onto `base`'s parametrization: `base`'s
+// domain in both directions, with each direction reversed if that makes
+// cand(u,v) == base(u,v) + d * N_base(u,v). Returns true only when, on an
+// interior probe grid, the worst distance from cand(u,v) to that locus is
+// at most `tol` (otherwise `cand` is not a faithful offset of `base` at the
+// same parameters - wrong frame, transposed roles, or a parametrization the
+// primitive form does not share - and the caller must not call it exact).
+bool AlignOffsetToBase(const NurbsSurface& base, double d, NurbsSurface& cand, double tol) {
+  const Interval du = base.Domain(0);
+  const Interval dv = base.Domain(1);
+  if (cand.SetDomain(0, du.min, du.max) == Result::Failed) return false;
+  if (cand.SetDomain(1, dv.min, dv.max) == Result::Failed) return false;
+
+  constexpr int kN = 7;
+  std::vector<Point3d> target;
+  std::vector<double> us, vs;
+  for (int i = 0; i < kN; ++i) {
+    us.push_back(du.min + (du.max - du.min) * (0.06 + 0.88 * i / (kN - 1.0) + 0.003 * i));
+    vs.push_back(dv.min + (dv.max - dv.min) * (0.06 + 0.88 * i / (kN - 1.0) + 0.002 * (kN - i)));
+  }
+  for (double u : us)
+    for (double v : vs) target.push_back(base.PointAt(u, v) + d * base.NormalAt(u, v));
+
+  auto deviation = [&](const NurbsSurface& s, bool ru, bool rv) {
+    double worst = 0.0;
+    size_t k = 0;
+    for (double u : us) {
+      for (double v : vs) {
+        const double uu = ru ? du.min + du.max - u : u;
+        const double vv = rv ? dv.min + dv.max - v : v;
+        worst = std::max(worst, s.PointAt(uu, vv).DistanceTo(target[k++]));
+      }
+    }
+    return worst;
+  };
+
+  double best = std::numeric_limits<double>::infinity();
+  bool best_ru = false, best_rv = false;
+  for (int m = 0; m < 4; ++m) {
+    const bool ru = (m & 1) != 0, rv = (m & 2) != 0;
+    const double w = deviation(cand, ru, rv);
+    if (w < best) { best = w; best_ru = ru; best_rv = rv; }
+  }
+  if (!(best <= tol)) return false;
+  // Reverse() negates the domain ([a,b] -> [-b,-a]); put it back on the
+  // base's (a linear remap, so the reversed sense is kept).
+  if (best_ru) {
+    if (cand.Reverse(0) != Result::Ok || cand.SetDomain(0, du.min, du.max) == Result::Failed) return false;
+  }
+  if (best_rv) {
+    if (cand.Reverse(1) != Result::Ok || cand.SetDomain(1, dv.min, dv.max) == Result::Failed) return false;
+  }
+  // Re-measured on the surface actually returned (not assumed).
+  return deviation(cand, false, false) <= tol;
+}
+
+}  // namespace
+
 Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance, OffsetInfo* info) const {
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::Offset: distance must be finite");
@@ -1063,19 +1124,46 @@ Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance
   const bool analytic = surface_.IsPlanar(nullptr, tol) || surface_.IsSphere(nullptr, tol) ||
                         surface_.IsCylinder(nullptr, tol) || surface_.IsCone(nullptr, tol) ||
                         surface_.IsTorus(nullptr, tol);
+  bool analytic_built_but_unusable = false;
   if (analytic) {
-    NurbsSurface exact_out;
-    if (OffsetAnalytic(distance, exact_out, tol) == Result::Ok) {
-      out.surface_ = exact_out.surface_;
+    // IsSphere/IsCylinder/IsCone/IsTorus accept either isoparametric order,
+    // but OffsetAnalytic() builds the primitive's own canonical form (u
+    // around, v along the axis / latitude) with that form's own u/v
+    // direction and domain. So the construction is tried on the surface as
+    // given and on its transpose, and each candidate is brought onto the
+    // INPUT's parametrization (domain, per-direction sense) and CHECKED
+    // pointwise against base(u,v) + d*N_base(u,v). Only a candidate that
+    // passes is returned as exact; the sign of `distance` therefore always
+    // means "along the INPUT's own normal".
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      NurbsSurface work = *this;
+      if (attempt == 1) work.Transpose();
+      NurbsSurface candidate;
+      // Transposing flips the normal (N = Su x Sv), so "along the input's
+      // normal" is along the transposed work copy's negated normal.
+      const double work_distance = attempt == 1 ? -distance : distance;
+      if (work.OffsetAnalytic(work_distance, candidate, tol) != Result::Ok) continue;
+      analytic_built_but_unusable = true;
+      if (!AlignOffsetToBase(work, work_distance, candidate, tol)) continue;
+      if (attempt == 1) candidate.Transpose();
+      out.surface_ = candidate.surface_;
       report.exact = true;
       return Result::Ok;
     }
-    report.refusal_reason =
-        "recognised plane/sphere/cylinder/cone/torus: the exact offset was refused (offset radius would "
-        "reach zero or below, a torus would become a self-intersecting spindle, a cone patch straddles its "
-        "apex, or a partial patch straddles a circle parametrization seam); no fitted substitute is returned "
-        "for an analytic surface whose true offset folds through its own axis";
-    return Result::Failed;
+    if (!analytic_built_but_unusable) {
+      report.refusal_reason =
+          "recognised plane/sphere/cylinder/cone/torus: the exact offset was refused (offset radius would "
+          "reach zero or below, a torus would become a self-intersecting spindle, a cone patch straddles its "
+          "apex, or a partial patch straddles a circle parametrization seam); no fitted substitute is returned "
+          "for an analytic surface whose true offset folds through its own axis";
+      return Result::Failed;
+    }
+    // The closed form was built but could not be matched to this surface's
+    // own parametrization (one the canonical primitive form does not
+    // share): fall through to the tolerance-controlled refit, which keeps
+    // the input's parametrization and orientation by construction and
+    // refuses a fold through the surface's own axis via its curvature
+    // guard.
   }
 
   double deviation = 0.0;

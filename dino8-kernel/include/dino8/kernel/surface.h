@@ -2241,8 +2241,10 @@ class NurbsSurface {
   struct OffsetInfo {
     // True: `out` is the exact closed-form offset (OffsetAnalytic():
     // plane/sphere/cylinder/cone/torus, rational form reproduced
-    // exactly, partial-patch extent kept). False: `out` is a
-    // non-rational tolerance-bounded fit (OffsetRefit()).
+    // exactly, partial-patch extent kept), AND it is on this surface's own
+    // parametrization: out(u,v) == this(u,v) + distance * NormalAt(u,v)
+    // on this surface's own domain, with its u/v roles and directions.
+    // False: `out` is a non-rational tolerance-bounded fit (OffsetRefit()).
     bool exact = false;
     // Worst measured distance from `out` to the true offset locus
     // (0.0 when `exact`; the OffsetRefit() verification-grid maximum
@@ -2262,6 +2264,20 @@ class NurbsSurface {
   //  - A surface recognised (within `tolerance`) as a plane, sphere,
   //    cylinder, cone or torus goes to OffsetAnalytic(): exact, the
   //    rational analytic form reproduced exactly (`info->exact = true`).
+  //    The result honours the INPUT's parametrization, not the
+  //    primitive's canonical one: the sign of `distance` is along the
+  //    input's own NormalAt (an inward-pointing sphere shrinks for
+  //    distance > 0, and offsets compose), the result is on the input's
+  //    domain and u/v roles (a transposed sphere/cylinder/cone/torus is
+  //    handled), and each direction is reversed as needed. This is
+  //    enforced, not assumed: the canonical construction is tried on the
+  //    surface and on its transpose and accepted only when it matches
+  //    this(u,v) + distance*NormalAt(u,v) on a probe grid to within
+  //    `tolerance`. If the closed form is built but cannot be matched to
+  //    the input's parametrization (a parametrization the canonical
+  //    primitive form does not share), the tolerance-controlled
+  //    OffsetRefit() below is used instead (`info->exact = false`),
+  //    never a silently mis-parametrized "exact" result.
   //    If OffsetAnalytic() refuses a recognised analytic surface - the
   //    offset radius would reach zero or below, a torus would become a
   //    self-intersecting spindle, a cone patch straddles its apex, or a

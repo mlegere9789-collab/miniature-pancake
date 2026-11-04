@@ -93934,6 +93934,216 @@ void TestOffsetRefusalsCarryAReasonAndNeverReturnADegradedBody() {
   }
 }
 
+// ---- exact analytic offset honours the INPUT's parametrization ----
+
+// The surface, plus transposed / reversed / re-domained variants of it, each a
+// legitimate presentation of the same primitive that IsSphere/IsCylinder/
+// IsCone recognise.
+struct OffsetVariant { NurbsSurface s; std::string name; };
+
+std::vector<OffsetVariant> OffsetVariantsOf(const NurbsSurface& base, const char* label) {
+  std::vector<OffsetVariant> out;
+  auto add = [&](const char* tag, auto&& edit) {
+    NurbsSurface s = base;
+    edit(s);
+    out.push_back({s, std::string(label) + " " + tag});
+  };
+  add("as built", [](NurbsSurface&) {});
+  add("transposed", [](NurbsSurface& s) { s.Transpose(); });
+  add("u reversed", [](NurbsSurface& s) { s.Reverse(0); });
+  add("v reversed", [](NurbsSurface& s) { s.Reverse(1); });
+  add("transposed + u reversed", [](NurbsSurface& s) { s.Transpose(); s.Reverse(0); });
+  add("domain [-3,7]x[2,9]", [](NurbsSurface& s) { s.SetDomain(0, -3.0, 7.0); s.SetDomain(1, 2.0, 9.0); });
+  add("transposed + v reversed + domain", [](NurbsSurface& s) {
+    s.Transpose();
+    s.Reverse(1);
+    s.SetDomain(0, -1.5, 4.0);
+    s.SetDomain(1, 10.0, 12.0);
+  });
+  add("both reversed + domain", [](NurbsSurface& s) {
+    s.Reverse(0);
+    s.Reverse(1);
+    s.SetDomain(0, 5.0, 6.0);
+    s.SetDomain(1, -8.0, -2.0);
+  });
+  return out;
+}
+
+// result(u,v) == base(u,v) + d * N_base(u,v) at `n` random (u,v) of the BASE's
+// own domain: the sign of d means "along the input's normal", the domain and
+// u/v roles are the input's.
+double OffsetWorstAgainstLocus(const NurbsSurface& base, const NurbsSurface& out, double d, int n) {
+  Lcg rng;
+  const Interval du = base.Domain(0), dv = base.Domain(1);
+  double worst = 0.0;
+  for (int k = 0; k < n; ++k) {
+    const double u = du.min + (du.max - du.min) * (0.004 + 0.992 * rng.Next());
+    const double v = dv.min + (dv.max - dv.min) * (0.004 + 0.992 * rng.Next());
+    worst = std::max(worst, out.PointAt(u, v).DistanceTo(base.PointAt(u, v) + d * base.NormalAt(u, v)));
+  }
+  return worst;
+}
+
+// `exact_required`: the full primitives (whose parametrization the canonical form reproduces) must take
+// the exact path to 1e-9. A trimmed patch may legitimately be on a rational parametrization the canonical
+// form does not share; then Offset() must fall to the tolerance-controlled refit (never a mis-parametrized
+// "exact" result), so the same pointwise check applies with the stated tolerance instead of 1e-9.
+void CheckOffsetFamilyHonoursInput(const NurbsSurface& base, const char* label, const std::vector<double>& distances,
+                                   bool exact_required = true) {
+  double family_worst = 0.0;
+  int tried = 0;
+  for (const OffsetVariant& v : OffsetVariantsOf(base, label)) {
+    // A trimmed patch is checked on three representative presentations only: each is a
+    // tolerance-controlled refit (slow), and the full primitives above cover every variant.
+    if (!exact_required && v.name.find("as built") == std::string::npos && v.name.find("transposed + v reversed + domain") == std::string::npos &&
+        v.name.find("both reversed + domain") == std::string::npos)
+      continue;
+    Check(v.s.raw().IsValid(), (v.name + ": fixture valid").c_str());
+    for (double d : distances) {
+      NurbsSurface out;
+      NurbsSurface::OffsetInfo info;
+      const Result r = v.s.Offset(d, out, -1.0, &info);
+      const std::string nm = v.name + " d=" + std::to_string(d);
+      Check(r == Result::Ok, (nm + ": offset succeeds").c_str());
+      if (r != Result::Ok) { std::printf("  reason: %s\n", info.refusal_reason.c_str()); continue; }
+      if (exact_required) {
+        Check(info.exact && info.achieved_deviation == 0.0, (nm + ": exact path (not a fit)").c_str());
+        Check(out.raw().IsValid() && out.IsRational(), (nm + ": valid rational result").c_str());
+      } else {
+        Check(out.raw().IsValid() && (info.exact || info.achieved_deviation <= info.tolerance_used), (nm + ": valid; exact or fit within tol").c_str());
+      }
+      const double bound = (info.exact ? 1e-9 : info.tolerance_used);
+      const Interval ou = out.Domain(0), ov = out.Domain(1), bu = v.s.Domain(0), bv = v.s.Domain(1);
+      Check(std::fabs(ou.min - bu.min) < 1e-9 && std::fabs(ou.max - bu.max) < 1e-9 && std::fabs(ov.min - bv.min) < 1e-9 &&
+                std::fabs(ov.max - bv.max) < 1e-9,
+            (nm + ": result domain is the input's").c_str());
+      const double worst = OffsetWorstAgainstLocus(v.s, out, d, 2000);
+      family_worst = std::max(family_worst, worst);
+      ++tried;
+      if (!(worst < 1e-9)) std::printf("  %s worst %g\n", nm.c_str(), worst);
+      Check(worst < bound, (nm + ": 2000 random (u,v): result == input + d*input_normal (1e-9 exact / stated tol for a fit)").c_str());
+      // Composition: offsetting the offset by 0.1 equals offsetting the input by d+0.1.
+      NurbsSurface twice, direct;
+      if (exact_required && v.s.Offset(d + 0.1, direct, -1.0, nullptr) == Result::Ok && out.Offset(0.1, twice, -1.0, nullptr) == Result::Ok) {
+        double comp = 0.0;
+        Lcg rng;
+        for (int k = 0; k < 300; ++k) {
+          const double u = bu.min + (bu.max - bu.min) * (0.01 + 0.98 * rng.Next());
+          const double w = bv.min + (bv.max - bv.min) * (0.01 + 0.98 * rng.Next());
+          comp = std::max(comp, twice.PointAt(u, w).DistanceTo(direct.PointAt(u, w)));
+        }
+        Check(comp < (info.exact ? 1e-9 : 4.0 * info.tolerance_used), (nm + ": Offset(Offset(s,d),0.1) == Offset(s,d+0.1) at the same (u,v)").c_str());
+      }
+    }
+  }
+  std::printf("  %s: %d offsets, worst locus error over all variants %g\n", label, tried, family_worst);
+}
+
+void TestOffsetExactPathHonoursInputOrientationDomainAndRoles() {
+  // Full sphere (centre (1,-2,3), r=4).
+  {
+    ON_NurbsSurface raw;
+    ON_Sphere(ON_3dPoint(1, -2, 3), 4.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    CheckOffsetFamilyHonoursInput(s, "sphere", {0.7, -1.1});
+  }
+  // Tilted full cylinder wall.
+  {
+    const ON_Plane pl(ON_3dPoint(1, -1, 0.5), ON_3dVector(0.3, 0.2, 0.9));
+    ON_NurbsSurface raw;
+    ON_Cylinder(ON_Circle(pl, 2.0), 6.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    CheckOffsetFamilyHonoursInput(s, "cylinder", {0.5, -0.8});
+  }
+  // Truncated full cone (v trimmed away from the apex).
+  {
+    const ON_Plane pl(ON_3dPoint(0.5, 0.5, 0), ON_3dVector(0.1, -0.2, 1.0));
+    ON_NurbsSurface raw;
+    ON_Cone(pl, 4.0, 2.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    const Interval dv = s.Domain(1);
+    s.Trim(1, dv.min + 0.35 * (dv.max - dv.min), dv.max);
+    CheckOffsetFamilyHonoursInput(s, "cone frustum", {0.4, -0.3});
+  }
+  // Partial patches: a cylinder strip and a lat/long sphere patch.
+  {
+    const ON_Plane pl(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+    ON_NurbsSurface raw;
+    ON_Cylinder(ON_Circle(pl, 3.0), 5.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    s.Trim(0, 0.8, 0.8 + 1.7);
+    CheckOffsetFamilyHonoursInput(s, "cylinder patch", {-0.9}, false);
+  }
+  {
+    ON_NurbsSurface raw;
+    ON_Sphere(ON_3dPoint(0, 0, 0), 3.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    s.Trim(0, 0.7, 2.2);
+    s.Trim(1, -0.6, 0.9);
+    CheckOffsetFamilyHonoursInput(s, "sphere patch", {-0.8}, false);
+  }
+}
+
+// The specific wrong results the transposed / inward-normal inputs used to get.
+void TestOffsetTransposedAnalyticIsNeitherWrongNorRefused() {
+  {
+    ON_NurbsSurface raw;
+    ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    s.Transpose();  // flips the normal inward, so d=-1 GROWS the sphere to radius 3
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(s.Offset(-1.0, out, -1.0, &info) == Result::Ok && info.exact, "transposed full sphere: offset succeeds exactly");
+    double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+    for (int i = 0; i <= 80; ++i) {
+      for (int j = 0; j <= 80; ++j) {
+        const Point3d q = out.PointAt(out.Domain(0).min + (out.Domain(0).max - out.Domain(0).min) * i / 80.0,
+                                      out.Domain(1).min + (out.Domain(1).max - out.Domain(1).min) * j / 80.0);
+        const double c[3] = {q.x, q.y, q.z};
+        for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], c[k]); hi[k] = std::max(hi[k], c[k]); }
+      }
+    }
+    Check(hi[0] - lo[0] > 5.9 && hi[1] - lo[1] > 5.9 && hi[2] - lo[2] > 5.9,
+          "transposed full sphere: result spans the full offset sphere (diameter 6 along every axis), not a hemisphere");
+    Check(OffsetWorstAgainstLocus(s, out, -1.0, 2000) < 1e-9, "transposed full sphere: 2000 random points on base + d*normal to 1e-9");
+  }
+  {
+    const ON_Plane pl(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+    ON_NurbsSurface raw;
+    ON_Cylinder(ON_Circle(pl, 2.0), 5.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    s.Transpose();
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(s.Offset(0.01, out, -1.0, &info) == Result::Ok && info.exact, "transposed full cylinder wall: offset is no longer refused");
+    Check(OffsetWorstAgainstLocus(s, out, 0.01, 2000) < 1e-9, "transposed full cylinder: 2000 random points on base + d*normal to 1e-9");
+  }
+  {
+    // A reversed sphere's normal points inward, so +1 SHRINKS it, and a second +1 shrinks it
+    // again (it used to flip back outward).
+    ON_NurbsSurface raw;
+    ON_Sphere(ON_3dPoint(0, 0, 0), 5.0).GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    s.Reverse(1);
+    const Interval du = s.Domain(0), dv = s.Domain(1);
+    const double um = 0.5 * (du.min + du.max), vm = 0.5 * (dv.min + dv.max);
+    Check(ON_DotProduct(s.NormalAt(um, vm), s.PointAt(um, vm) - Point3d(0, 0, 0)) < 0.0, "fixture: reversed sphere's normal points inward");
+    NurbsSurface a, b;
+    Check(s.Offset(1.0, a, -1.0, nullptr) == Result::Ok && a.Offset(1.0, b, -1.0, nullptr) == Result::Ok, "reversed sphere: offset twice succeeds");
+    Check(std::fabs(b.PointAt(um, vm).DistanceTo(Point3d(0, 0, 0)) - 3.0) < 1e-9,
+          "reversed sphere: two +1 offsets give radius 3 (they compose), not radius 5");
+    Check(OffsetWorstAgainstLocus(s, a, 1.0, 2000) < 1e-9, "reversed sphere: result(u,v) is input(u,v) + d*N to 1e-9");
+  }
+}
+
 // ---- explicit-plane curve offset: circle cases ----
 
 NurbsCurve CircleCurve(const ON_3dPoint& centre, double r) {
@@ -95557,6 +95767,10 @@ int main() {
           offset_unified_tests::TestOffsetAnalyticFamiliesAreExactAndRational);
   RunTest("offset_unified_tests::TestOffsetRefusalsCarryAReasonAndNeverReturnADegradedBody",
           offset_unified_tests::TestOffsetRefusalsCarryAReasonAndNeverReturnADegradedBody);
+  RunTest("offset_unified_tests::TestOffsetExactPathHonoursInputOrientationDomainAndRoles",
+          offset_unified_tests::TestOffsetExactPathHonoursInputOrientationDomainAndRoles);
+  RunTest("offset_unified_tests::TestOffsetTransposedAnalyticIsNeitherWrongNorRefused",
+          offset_unified_tests::TestOffsetTransposedAnalyticIsNeitherWrongNorRefused);
   RunTest("offset_unified_tests::TestCircleOffsetByParallelPlaneIsExactConcentricCircle",
           offset_unified_tests::TestCircleOffsetByParallelPlaneIsExactConcentricCircle);
   RunTest("offset_unified_tests::TestCircleOffsetByTiltedPlaneIsNotACircleAndMeetsToleranceAgainstClosedForm",
