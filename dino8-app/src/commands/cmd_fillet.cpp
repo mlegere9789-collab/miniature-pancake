@@ -275,14 +275,37 @@ bool TryCapRimFillet(const ON_Brep& solid, Point3d point_on_rim, double radius, 
 // be an INSIDE corner, which adds material), a flanged ring, a cone-capped rim. They are tried only AFTER the capped
 // cylinder / frustum wrappers above (and the app's own cylinder / hole classifiers) declined, so every solid those
 // accept is built exactly as before. The kernel refuses everything it cannot read back (non-coaxial or non-analytic
-// face, void, second shell, an already-blended solid, a point on no rim, tangent faces, a setback consuming a face, a
-// chamfer without exactly one planar face) with a stated reason, handed back in `err` with `out` untouched.
+// face, void, second shell, a point on no rim, the tangent seam of an earlier blend, a setback consuming a face, a
+// chamfer without exactly one planar face) with a stated reason, handed back in `err` with `out` untouched. A solid
+// that already carries the kernel's torus blends / bevel cones from an earlier run is read back and blended again.
 // ---------------------------------------------------------------------------
 bool TryRevolveRimFillet(const ON_Brep& solid, Point3d point_on_rim, double radius, ON_Brep& out, std::string& err) {
   try {
     kernel::Brep kb;
     kb.raw() = solid;
     return AcceptCapRimResult(kernel::FilletRevolveRim(kb, point_on_rim, radius), out, err);
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
+// SEVERAL rims of one solid of revolution in one exact rebuild (kernel::FilletRevolveRims): every rim keeps its own
+// radius, the kernel takes each setback from the original profile corner (so the order of the picks does not matter),
+// refuses overlapping setbacks naming both rims, and accepts a solid that already carries torus blend faces / bevel
+// cones from earlier runs.
+bool TryRevolveRimsFillet(const ON_Brep& solid, const std::vector<std::pair<Point3d, double>>& rims, ON_Brep& out, std::string& err) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    std::vector<kernel::RevolveRimFillet> kr;
+    for (const auto& r : rims) {
+      kernel::RevolveRimFillet f;
+      f.point_on_rim = r.first;
+      f.radius = r.second;
+      kr.push_back(f);
+    }
+    return AcceptCapRimResult(kernel::FilletRevolveRims(kb, kr), out, err);
   } catch (const std::exception& ex) {
     err = ex.what();
     return false;
@@ -3232,9 +3255,18 @@ class FilletEdgeCommand : public Command {
         return;
       }
     } else if (b && rims.front().rev) {
-      // One rim of a polygonal solid of revolution through the kernel (FilletRevolveRim); see Run().
+      // One or several rims of a polygonal solid of revolution through the kernel (FilletRevolveRim / FilletRevolveRims, one
+      // exact rebuild, each rim with its own radius); see Run().
       ON_Brep out;
-      if (TryRevolveRimFillet(*b, rims.front().start, rims.front().radius, out, why)) {
+      bool built = false;
+      if (rims.size() == 1) {
+        built = TryRevolveRimFillet(*b, rims.front().start, rims.front().radius, out, why);
+      } else {
+        std::vector<std::pair<Point3d, double>> kr;
+        for (const PendingRim& r : rims) kr.emplace_back(r.start, r.radius);
+        built = TryRevolveRimsFillet(*b, kr, out, why);
+      }
+      if (built) {
         ctx.Doc().BeginChange(label);
         if (SceneObject* orig = ctx.Doc().Find(id)) {
           orig->kind = ObjectKind::Brep;
@@ -3243,8 +3275,15 @@ class FilletEdgeCommand : public Command {
           orig->surface.reset();
           orig->InvalidateDisplay();
         }
-        ctx.Print(label + ": rim of solid-of-revolution object " + std::to_string(id) + " replaced with an exact fillet (radius " + FormatNumber(rims.front().radius) +
-                   "; exact kernel torus patch tangent to both faces at the rim, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        if (rims.size() == 1) {
+          ctx.Print(label + ": rim of solid-of-revolution object " + std::to_string(id) + " replaced with an exact fillet (radius " + FormatNumber(rims.front().radius) +
+                     "; exact kernel torus patch tangent to both faces at the rim, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        } else {
+          std::string radii;
+          for (size_t i = 0; i < rims.size(); ++i) radii += (i ? ", " : "") + FormatNumber(rims[i].radius);
+          ctx.Print(label + ": " + std::to_string(rims.size()) + " rims of solid-of-revolution object " + std::to_string(id) + " replaced with an exact fillet (radii " + radii +
+                     "; exact kernel torus patches tangent to both faces at each rim, " + std::to_string(out.m_F.Count()) + " faces, closed solid)");
+        }
         return;
       }
     } else if (b && rims.front().tee) {
@@ -3647,14 +3686,16 @@ class FilletEdgeCommand : public Command {
         }
         ctx.Print(label + ": exact kernel cap-rim fillet not used (" + cap_why + ")");
       }
-      // Last exact resort, only after every path above declined: the kernel's FilletRevolveRim - ONE rim of a polygonal
-      // solid of revolution (a countersunk / counterbored hole plate, a stepped shaft's inside corner, a cone-capped
-      // rim). Dry run now so a refusal is known before anything is staged. A rim built by a Boolean is a chain of
-      // polyline edges rather than one closed circle, so the pick is not required to be a closed edge: the kernel
-      // decides from the point (a refusal is printed with its reason for a closed rim circle, and stays silent for an
-      // ordinary open edge, which the planar paths below then handle exactly as before). The kernel blends one rim
-      // per solid per run (its result carries a torus, which it does not re-read), so a second revolve rim in the
-      // same run is refused with that explanation instead of being silently approximated.
+      // Last exact resort, only after every path above declined: the kernel's FilletRevolveRim / FilletRevolveRims - rims
+      // of a polygonal solid of revolution (a countersunk / counterbored hole plate, a stepped shaft's steps, a flanged
+      // ring, a cone-capped rim), also on a solid that already carries torus blends / bevel cones from an earlier run.
+      // Dry run now so a refusal is known before anything is staged. A rim built by a Boolean is a chain of polyline
+      // edges rather than one closed circle, so the pick is not required to be a closed edge: the kernel decides from
+      // the point (a refusal is printed with its reason for a closed rim circle, and stays silent for an ordinary open
+      // edge, which the planar paths below then handle exactly as before). SEVERAL rims picked on the same solid in one
+      // run are staged and applied together at Enter in ONE exact kernel rebuild, each with the radius current at its
+      // pick; a pick that cannot be blended together with the rims already staged (overlapping setbacks, the same rim
+      // twice...) is refused with the kernel's reason and the staged rims stay staged.
       {
         ON_Brep rev_probe;
         std::string rev_why;
@@ -3663,9 +3704,21 @@ class FilletEdgeCommand : public Command {
             ctx.Warn(label + ": an edge on a different object is already staged in this FilletEdge run; press Enter to apply it first, then run FilletEdge again for this object");
             return;
           }
-          if (!pending_rims_.empty()) {
-            ctx.Warn(label + ": a rim of this solid of revolution is already staged in this FilletEdge run; the exact kernel revolve-rim fillet blends one rim per run - press Enter to apply it, then run FilletEdge again for the next rim");
+          if (!pending_rims_.empty() && !pending_rims_.front().rev) {
+            ctx.Warn(label + ": a different kind of rim of this object is already staged in this FilletEdge run; press Enter to apply it first, then run FilletEdge again for this rim");
             return;
+          }
+          if (!pending_rims_.empty()) {
+            std::vector<std::pair<Point3d, double>> trial;
+            for (const PendingRim& pr : pending_rims_) trial.emplace_back(pr.start, pr.radius);
+            trial.emplace_back(edge.PointAtStart(), radius_);
+            ON_Brep together;
+            std::string together_why;
+            if (!TryRevolveRimsFillet(*b, trial, together, together_why)) {
+              ctx.Warn(label + ": this rim cannot be blended together with the " + std::to_string(pending_rims_.size()) + " rim(s) of this solid of revolution already staged (" + together_why +
+                        "); the staged rim(s) stay staged - press Enter to apply them, then run FilletEdge again for this rim");
+              return;
+            }
           }
           pending_rim_id_ = pick.id;
           PendingRim pr{edge.PointAtStart(), false, radius_};
