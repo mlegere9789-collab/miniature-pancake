@@ -1,0 +1,82 @@
+# History for the GENERAL (curved) and SEALED Boolean engine (see the "HGB_" section at the end of smoke.sh).
+#
+# With History On, BooleanUnion/BooleanDifference/BooleanIntersection of a box and a cylinder take the General
+# engine (TryGeneralBrepBoolean + SealGeneralBooleanResult), hide the operands as the result's recorded sources and
+# rebuild the sealed result when a source moves, scales or is changed (no UpdateHistory call anywhere). Every case
+# starts from `New` (operands 1 and 2, result 3) and is bracketed by an unknown-command marker HGBBEGIN_<name> that
+# smoke.sh slices the output on. The claims are measured numbers against closed forms:
+#   box 10^3, cylinder r = 2:  through hole 1000 - 4 pi 10 = 874.34, blind (5 deep) 1000 - 4 pi 5 = 937.17
+SetActiveViewport Top
+
+# ---------------------------------------------------------------- probe: can a hidden operand be picked?
+New
+History On
+HGBBEGIN_probe
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelNone
+SelID 3
+Check
+Volume
+History
+SelNone
+SelID 2
+Volume
+SelNone
+SelAll
+Volume
+List
+HGBEND
+
+# ---------------------------------------------------------------- diff: Move out / back, Undo / Redo single steps
+New
+History On
+HGBBEGIN_diff
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelNone
+SelID 3
+Check
+Volume
+History
+Show
+SelNone
+SelID 2
+Move
+0,0,0
+20,0,0
+SelNone
+SelID 3
+Check
+Volume
+List
+Undo
+SelNone
+SelID 3
+Check
+Volume
+Redo
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+-20,0,0
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND
