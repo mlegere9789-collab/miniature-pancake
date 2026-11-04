@@ -2316,11 +2316,17 @@ Brep ChamferCylinderRim(const Brep& solid, Point3d point_on_rim, double distance
 // literally shared edge, ON_Brep::IsValid() and IsSolid() both true.
 //
 // `solid` must be a plain capped cylinder or cone frustum: one wall and two
-// planar end caps perpendicular to its axis, nothing else (an ON_BrepCylinder /
-// ON_BrepCone style 3-face solid for either, or - for a cylinder only - the
-// dense-polygon / four-wedge disc caps of FromMixedFaces; the output's caps are
-// always true circle-trimmed planes). A cone whose apex lies on or between the
-// caps is not a frustum and is refused.
+// planar end caps perpendicular to its axis, nothing else (a 3-face ON_Brep
+// cylinder or frustum, or - for a cylinder only - the dense-polygon disc caps of
+// FromMixedFaces; the output's caps are always true circle-trimmed planes). A
+// cone whose apex lies on or between the caps is not a frustum and is refused
+// (a full ON_BrepCone is a 2-face brep and is refused as not a capped frustum).
+// A FromMixedFaces cylinder is accepted only if it is provably a plain capped
+// cylinder: exactly one planar face per end plane, each lying wholly in that
+// plane with no inner loop and covering at least 99.5% of the wall's disc; a
+// through-hole or slot (planar walls spanning both ends), an annular cap or a
+// coarse polygon cap is refused with a reason, never rebuilt as a disc-capped
+// solid.
 //
 // `FilletCapRim` fillets the one rim through `point_on_rim` (on a rim circle
 // within tolerance). `FilletCapRims` takes a radius per axial end -

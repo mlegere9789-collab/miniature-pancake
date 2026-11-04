@@ -7235,6 +7235,26 @@ bool ClassifyCappedRevolve(const Brep& solid, CappedRevolvePlan& plan, std::stri
         plan.R0 = plan.R1 = cyl.circle.radius;
         plan.u = cyl.circle.plane.xaxis;
       }
+      // Trust the wall only if it really IS the fitted solid of revolution between the two caps: OpenNURBS' recogniser
+      // reads a revolved line that crosses the axis as a single cone (unsigned radii), which would be silently rebuilt
+      // as a frustum that is not the input. Every sampled wall point must sit at the model radius for its axial height.
+      {
+        const ON_Surface* ws = b.m_F[wall].SurfaceOf();
+        const ON_Interval du = ws->Domain(0), dv = ws->Domain(1);
+        const double rtol = std::max(tol, 1e-6 * std::max(plan.R0, plan.R1));
+        for (int i = 0; i <= 8; ++i) {
+          for (int j = 0; j <= 8; ++j) {
+            const ON_3dPoint p = ws->PointAt(du.ParameterAt(i / 8.0), dv.ParameterAt(j / 8.0));
+            const ON_3dVector d = p - plan.c0;
+            const double h = d * plan.ax;
+            const double rho = (d - h * plan.ax).Length();
+            if (h < -rtol || h > plan.H + rtol || std::fabs(rho - (plan.R0 + (plan.R1 - plan.R0) * h / plan.H)) > rtol) {
+              why = "the wall is not the straight revolved profile between the two caps (e.g. a revolved line crossing the axis)";
+              return false;
+            }
+          }
+        }
+      }
       return true;
     }
   }
@@ -7253,14 +7273,53 @@ bool ClassifyCappedRevolve(const Brep& solid, CappedRevolvePlan& plan, std::stri
     return false;
   }
   const double mtol = tolerance::kDistance * std::max({1.0, w.radius, w.length});
+  // MixedFaces() hands back only each planar face's OUTER loop, so a hole in a cap would be invisible below: read
+  // the real loop topology off the ON_Brep instead. Any inner loop (an annular cap, a hole through the wall) means
+  // this is not a plain capped cylinder.
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_BrepFace& face = b.m_F[fi];
+    if (face.m_face_index < 0) continue;
+    for (int li = 0; li < face.m_li.Count(); ++li) {
+      const int loop_index = face.m_li[li];
+      if (loop_index >= 0 && loop_index < b.m_L.Count() && b.m_L[loop_index].m_type == ON_BrepLoop::inner) {
+        why = "a face has an inner loop (a hole: annular or holed cap, or a hole through the wall) - not a plain capped cylinder";
+        return false;
+      }
+    }
+  }
+  // Every planar face must be ONE flat end cap: all its vertices in a single end plane (a face spanning both ends
+  // is the wall of a through-hole or slot), at most one cap per end, and each cap must cover the wall's disc
+  // (a polygon inscribed in the circle of radius R: the n=400 / n=1000 fixtures cover > 0.9999 of it, a coarse
+  // n=16 polygon only 0.974 - rebuilding that as a true disc would silently change the part).
+  constexpr double kMinCapCoverage = 0.995;
+  const double disc_area = ON_PI * w.radius * w.radius;
   bool low = false, high = false;
   for (const Brep::PlanarFace& f : mf.planar) {
+    if (f.loop.size() < 3) { why = "a planar face has a degenerate loop"; return false; }
+    bool face_low = false, face_high = false;
     for (const Point3d& p : f.loop) {
       const Vector3d d = p - w.frame.origin;
       const double h = d * w.frame.zaxis;
       if (std::fabs(h) > mtol && std::fabs(h - w.length) > mtol) { why = "a planar face is not a flat end cap of the cylinder"; return false; }
       if ((d - h * w.frame.zaxis).Length() > w.radius + mtol) { why = "a planar cap extends beyond the cylinder wall"; return false; }
-      (std::fabs(h) <= mtol ? low : high) = true;
+      (std::fabs(h) <= mtol ? face_low : face_high) = true;
+    }
+    if (face_low && face_high) { why = "a planar face spans both end planes (e.g. the wall of a through-hole) - not a flat end cap"; return false; }
+    bool& end_seen = face_low ? low : high;
+    if (end_seen) { why = "more than one planar face in one end plane - not a single flat end cap"; return false; }
+    end_seen = true;
+  }
+  // Coverage second (after the structural checks above, so a through-hole is reported as the hole walls it has).
+  for (const Brep::PlanarFace& f : mf.planar) {
+    ON_3dVector twice_area(0.0, 0.0, 0.0);
+    for (size_t i = 0; i < f.loop.size(); ++i) {
+      const ON_3dVector p = f.loop[i] - f.loop[0];  // relative to a loop vertex: no cancellation far from the origin
+      const ON_3dVector q = f.loop[(i + 1) % f.loop.size()] - f.loop[0];
+      twice_area += ON_CrossProduct(p, q);
+    }
+    if (0.5 * std::fabs(twice_area * w.frame.zaxis) < kMinCapCoverage * disc_area) {
+      why = "an end cap does not cover the cylinder's full disc (a coarse polygon or a partial cap) - not a plain capped cylinder";
+      return false;
     }
   }
   if (!low || !high) { why = "the cylinder lacks a flat cap at one end"; return false; }

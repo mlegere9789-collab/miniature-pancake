@@ -92609,7 +92609,7 @@ void TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons() {
 
   const Brep cyl = MakeCappedCylinder(Point3d(0, 0, 0), Vector3d(0, 0, 1), R, L);
   auto reason = [&](const std::function<void()>& f) -> std::string {
-    try { f(); } catch (const std::invalid_argument& e) { return e.what(); }
+    try { f(); } catch (const std::exception& e) { return e.what(); }
     return "";
   };
   const Point3d top(R, 0, L);
@@ -92636,16 +92636,109 @@ void TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons() {
   const Brep fr = MakeFrustum(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.5, 4.0);
   m = reason([&] { FilletCapRims(fr, 0.0, 3.0); });
   Check(m.find("consume the whole cap") != std::string::npos, ("an obtuse high rim with t >= cap radius is refused: " + m).c_str());
-  // The cone's apex between the caps is not a frustum.
-  m = reason([&] {
-    ON_Cone cone(ON_Plane(ON_3dPoint(0, 0, 3), ON_3dVector(0, 0, -1)), 3.0, 1.0);  // apex above, base at z = 0
-    ON_Brep* b = ON_BrepCone(cone, true);
-    Brep k;
-    k.raw() = *b;
-    delete b;
-    FilletCapRims(k, 0.2, 0.0);
-  });
-  Check(!m.empty(), ("a full cone (apex on a cap) is refused with a reason: " + m).c_str());
+  // A full cone (apex at z = 0, base cap at z = 3). ON_BrepCone builds only TWO faces (the cone wall and the base cap;
+  // an apex end is a singular edge and is not capped), so it never reaches the 3-face branch and its
+  // "apex between or on the caps" refusal: it takes the MixedFaces route and is refused as a conical wall. That generic
+  // refusal is pinned here exactly; the 3-face apex branch is pinned by the double-cone fixture below.
+  {
+    ON_Cone cone(ON_Plane(ON_3dPoint(0, 0, 3), ON_3dVector(0, 0, -1)), 3.0, 1.0);
+    ON_Brep* cb = ON_BrepCone(cone, true);
+    Brep full_cone;
+    full_cone.raw() = *cb;
+    delete cb;
+    Check(full_cone.raw().m_F.Count() == 2, "fixture: ON_BrepCone is a 2-face brep (cone wall + base cap), not the 3-face path");
+    m = reason([&] { FilletCapRims(full_cone, 0.2, 0.0); });
+    Check(m.find("not a plain capped cylinder or cone frustum") != std::string::npos,
+          ("a full cone (2 faces, apex uncapped) is refused by the generic route: " + m).c_str());
+  }
+}
+
+// ClassifyCappedRevolve's MixedFaces route must prove the solid IS a plain capped cylinder, never rebuild a different
+// part: a through-hole (planar hole walls spanning both end planes, annular caps) and a coarse polygon cap (does not
+// cover the disc) are refused with a reason, and the apex-between-the-caps cone (a genuine 3-face solid) is refused
+// with the frustum-specific reason.
+void TestFilletCapRimRefusesSolidsThatAreNotPlainCappedCylinders() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  auto reason = [&](const std::function<void()>& f) -> std::string {
+    try { f(); } catch (const std::exception& e) { return e.what(); }
+    return "";
+  };
+  const double R = 2.0, L = 5.0;
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  Brep::CylindricalFace cf;
+  cf.frame = frame;
+  cf.radius = R;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = L;
+  const Point3d rim_top = frame.origin + L * frame.zaxis + R * frame.xaxis;
+  auto cylinder_n = [&](int n) {
+    return Brep::FromMixedFaces({DiskCapForGeneralBooleanTest(frame, 0.0, R, true, n), DiskCapForGeneralBooleanTest(frame, L, R, false, n)}, {cf});
+  };
+
+  // The accepted fixtures (n = 400 and n = 1000, as used elsewhere in this namespace) stay accepted.
+  for (int n : {400, 1000}) {
+    const std::string m = reason([&] { FilletCapRim(cylinder_n(n), rim_top, 0.3); });
+    Check(m.empty(), ("[n=" + std::to_string(n) + " polygon-capped cylinder] still accepted: " + m).c_str());
+  }
+
+  // A coarse n = 16 polygon cap covers only ~97.4% of the disc: rebuilding it as a true disc would change the part.
+  {
+    const Brep coarse = cylinder_n(16);
+    const std::string m = reason([&] { FilletCapRim(coarse, rim_top, 0.3); });
+    Check(m.find("does not cover the cylinder's full disc") != std::string::npos,
+          ("[n=16 polygon-capped cylinder] refused, never rebuilt as a disc-capped solid: " + m).c_str());
+    const std::string m2 = reason([&] { FilletCapRims(coarse, 0.3, 0.3); });
+    Check(m2.find("does not cover the cylinder's full disc") != std::string::npos, ("[n=16, both rims] refused: " + m2).c_str());
+    const std::string m3 = reason([&] { dino8::kernel::ChamferCapRim(coarse, rim_top, 0.3, 0.3); });
+    Check(m3.find("does not cover the cylinder's full disc") != std::string::npos, ("[n=16, chamfer] refused: " + m3).c_str());
+  }
+
+  // A cylinder with a square through-hole along its axis: annular caps + four planar hole walls.
+  {
+    const Brep box = Brep::Box(-0.5, -0.5, -1.0, 0.5, 0.5, L + 1.0);
+    const Brep holed = BooleanCombineGeneral(cylinder_n(128), box, BooleanOp::Difference);
+    // The boolean engine returns the holed caps as ONE keyhole loop each (no ON inner loop), the four hole walls as
+    // planar faces running from the bottom plane to the top plane (their loops carry vertices at intermediate heights,
+    // so the per-vertex "not a flat end cap" test fires before the dedicated "spans both end planes" test, which guards
+    // walls whose only vertices are at the two ends).
+    Check(holed.raw().IsValid() && holed.raw().m_F.Count() == 7, "fixture: cylinder with a square through-hole (2 caps + wall + 4 hole walls)");
+    const std::string m = reason([&] { FilletCapRim(holed, rim_top, 0.3); });
+    Check(m.find("not a flat end cap") != std::string::npos,
+          ("[cylinder with a square through-hole] FilletCapRim refused (hole walls are not end caps), never rebuilt hole-free: " + m).c_str());
+    const std::string m2 = reason([&] { FilletCapRims(holed, 0.3, 0.3); });
+    Check(m2.find("not a flat end cap") != std::string::npos, ("[through-hole, both rims] refused: " + m2).c_str());
+    const Brep tiny = BooleanCombineGeneral(cylinder_n(128), Brep::Box(-0.05, -0.05, -1.0, 0.05, 0.05, L + 1.0), BooleanOp::Difference);
+    const std::string m3 = reason([&] { FilletCapRim(tiny, rim_top, 0.3); });
+    Check(m3.find("not a flat end cap") != std::string::npos,
+          ("[0.1 x 0.1 through-hole: a hole too small for any area test] refused too: " + m3).c_str());
+  }
+
+  // A genuine 3-face solid (cone wall + two planar caps, IsSolid) whose wall is a revolved line CROSSING the axis, so
+  // the true double-cone apex lies between the caps. cone recognition (ON_RevSurface::IsConical) works on
+  // unsigned radii and reports a bogus single cone with the apex beyond the larger cap; the 3-face branch's explicit
+  // "apex between or on the caps" refusal (s0 * s1 <= 0) therefore cannot be reached through any OpenNURBS-recognised
+  // wall (ON_BrepCone is a 2-face brep: an apex end is a singular edge and is never capped, so it never gets here
+  // either - see TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons). The surface-vs-model check is what
+  // refuses this fixture; before it existed FilletCapRims rebuilt it as a frustum that is not the input.
+  {
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = new ON_LineCurve(ON_3dPoint(2, 0, 0), ON_3dPoint(-1, 0, 3));
+    rev->m_axis = ON_Line(ON_3dPoint(0, 0, 0), ON_3dPoint(0, 0, 1));
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    ON_Brep* cb = ON_BrepRevSurface(rev, true, true);
+    Brep crossing;
+    crossing.raw() = *cb;
+    delete cb;
+    ON_Cone fitted;
+    Check(crossing.raw().m_F.Count() == 3 && crossing.raw().IsSolid() && crossing.raw().m_F[0].SurfaceOf()->IsCone(&fitted, 1e-6),
+          "fixture: 3-face solid whose wall OpenNURBS reads as a single cone although the profile crosses the axis");
+    const std::string m = reason([&] { FilletCapRims(crossing, 0.2, 0.0); });
+    Check(m.find("not the straight revolved profile") != std::string::npos,
+          ("[revolved line crossing the axis] refused, not rebuilt as a bogus frustum: " + m).c_str());
+  }
 }
 
 // Removed volume of one flat bevel by Pappus on the profile triangle (rim corner K, cap point C, wall point W):
@@ -92758,7 +92851,7 @@ void TestChamferCapRimUnequalDistancesAndAngleMatchPappus() {
   // Refusals with reasons.
   const Brep cyl = MakeCappedCylinder(Point3d(0, 0, 0), axis, 2.0, 5.0);
   auto reason = [&](const std::function<void()>& f) -> std::string {
-    try { f(); } catch (const std::invalid_argument& e) { return e.what(); }
+    try { f(); } catch (const std::exception& e) { return e.what(); }
     return "";
   };
   const Point3d top(2.0, 0, 5.0);
@@ -95426,6 +95519,8 @@ int main() {
           fillet_cap_rim_tests::TestFilletCapRimFrustumMatchesIndependentProfileIntegral);
   RunTest("fillet_cap_rim_tests::TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons",
           fillet_cap_rim_tests::TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons);
+  RunTest("fillet_cap_rim_tests::TestFilletCapRimRefusesSolidsThatAreNotPlainCappedCylinders",
+          fillet_cap_rim_tests::TestFilletCapRimRefusesSolidsThatAreNotPlainCappedCylinders);
   RunTest("fillet_cap_rim_tests::TestChamferCapRimUnequalDistancesAndAngleMatchPappus",
           fillet_cap_rim_tests::TestChamferCapRimUnequalDistancesAndAngleMatchPappus);
   RunTest("fillet_cap_rim_tests::TestChamferCapRimMatchesChamferCylinderRimOnDensePolygonCylinder",
