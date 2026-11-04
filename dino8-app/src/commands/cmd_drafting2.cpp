@@ -1738,6 +1738,53 @@ bool AddBitmapHatch(CommandContext& ctx, const kernel::NurbsCurve& boundary, Obj
   return true;
 }
 
+// --- Associative hatch ---------------------------------------------------------------------------------------------------
+// A hatch made by the Hatch command (solid or library pattern; not Bitmap, not a DXF/3dm import with islands) remembers its
+// boundary curve (HatchBoundary, always) and, for associativity, the state of that boundary when the hatch was built:
+// HatchAssocFp (a fingerprint of the boundary's shape and position), HatchAssocCenter (the hatch group's own bounding-box
+// centre) and the exact pattern scale/rotation. DoUpdateHatches (per frame, via Application.cpp, and the UpdateHatches
+// command) rebuilds a hatch whose boundary has changed since, provided the hatch itself still sits where it was built.
+std::string HatchBoundaryFingerprint(const kernel::NurbsCurve& c) {
+  const kernel::Interval d = c.Domain();
+  std::string fp = c.IsClosed() ? "c" : "o";
+  constexpr int kSamples = 24;
+  for (int i = 0; i <= kSamples; ++i) fp += "|" + PointTag(c.PointAt(d.min + (d.max - d.min) * i / kSamples));
+  return fp;
+}
+
+bool HatchGroupCenter(Document& doc, const std::vector<ObjectId>& members, Point3d& center, double& size) {
+  kernel::BoundingBox bb;
+  if (!doc.BoundingBoxOf(members, bb)) return false;
+  center = (bb.min + bb.max) / 2.0;
+  size = bb.min.DistanceTo(bb.max);
+  return true;
+}
+
+std::string ExactNumber(double v) {
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%.17g", v);
+  return buf;
+}
+
+// Tags the objects Add()ed since `first_new` (a position in Document::Objects()) as an associative hatch of `boundary`.
+void TagAssociativeHatch(CommandContext& ctx, size_t first_new, const kernel::NurbsCurve& boundary, double scale, double rotation) {
+  Document& doc = ctx.Doc();
+  std::vector<ObjectId> members;
+  for (size_t i = first_new; i < doc.Objects().size(); ++i) members.push_back(doc.Objects()[i].id);
+  Point3d center;
+  double size = 0;
+  if (members.empty() || !HatchGroupCenter(doc, members, center, size)) return;
+  const std::string fp = HatchBoundaryFingerprint(boundary), c = PointTag(center);
+  for (ObjectId id : members) {
+    if (SceneObject* o = doc.Find(id)) {
+      o->user_text["HatchAssocFp"] = fp;
+      o->user_text["HatchAssocCenter"] = c;
+      o->user_text["HatchAssocScale"] = ExactNumber(scale);
+      o->user_text["HatchAssocRotation"] = ExactNumber(rotation);
+    }
+  }
+}
+
 class LibraryHatchCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -1771,13 +1818,15 @@ class LibraryHatchCommand : public Command {
     const bool solid = ToLower(pattern_name_) == "solid";
     const HatchPattern* pat = (bitmap || solid) ? nullptr : HatchLibrary::Instance().Find(pattern_name_);
     for (const Boundary& b : curves) {
-      if (solid) { if (AddSolidHatch(ctx, b.curve, b.id, b.layer, has_color_ ? &color_ : nullptr)) ++made; continue; }
+      const size_t first_new = ctx.Doc().Objects().size();
+      if (solid) { if (AddSolidHatch(ctx, b.curve, b.id, b.layer, has_color_ ? &color_ : nullptr)) { TagAssociativeHatch(ctx, first_new, b.curve, scale_, rotation_); ++made; } continue; }
       if (bitmap) { if (AddBitmapHatch(ctx, b.curve, b.id, b.layer, image_)) ++made; continue; }
       if (!pat) continue;
       bool truncated = false;
       if (!drafting::BuildPatternHatch(ctx.Doc(), *pat, b.curve, b.id, b.layer, ctx.Settings().absolute_tolerance, scale_,
                                         rotation_, ctx.Settings().hatch_base, has_color_ ? &color_ : nullptr, &truncated))
         continue;
+      TagAssociativeHatch(ctx, first_new, b.curve, scale_, rotation_);
       ++made;
       if (truncated) ctx.Warn("Hatch: pattern density was truncated for one boundary");
     }
@@ -2150,6 +2199,68 @@ void DoUpdateMultiLeaders(CommandContext& ctx, bool quiet) {
   Say("UpdateMultiLeaders: " + std::to_string(updated) + " multi-leader(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
 }
 
+void DoUpdateHatches(CommandContext& ctx, bool quiet) {
+  auto Say = [&](const std::string& t) { if (!quiet) ctx.Print(t); };
+  Document& doc = ctx.Doc();
+  std::vector<int> groups;
+  for (const SceneObject& o : doc.Objects())
+    if (o.group_id >= 0 && o.user_text.count("HatchAssocFp") && o.user_text.count("HatchBoundary") &&
+        std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+      groups.push_back(o.group_id);
+  if (groups.empty()) { Say("UpdateHatches: no associative hatches in this document"); return; }
+  bool began = false;
+  int rebuilt = 0, adopted = 0;
+  for (int g : groups) {
+    const std::vector<ObjectId> members = doc.GroupMembers(g);
+    if (members.empty()) continue;
+    const SceneObject* first = doc.Find(members.front());
+    if (!first) continue;
+    const auto tag = [&](const char* k) { auto it = first->user_text.find(k); return it == first->user_text.end() ? std::string() : it->second; };
+    const ObjectId boundary_id = static_cast<ObjectId>(std::strtoull(tag("HatchBoundary").c_str(), nullptr, 10));
+    const SceneObject* boundary = boundary_id ? doc.Find(boundary_id) : nullptr;
+    // A deleted or no longer closed boundary leaves the hatch exactly as it is (AutoCAD likewise just drops the association).
+    if (!boundary || boundary->kind != ObjectKind::Curve || !boundary->curve || !boundary->curve->IsClosed()) continue;
+    const kernel::NurbsCurve bc = *boundary->curve;
+    const std::string fp = HatchBoundaryFingerprint(bc);
+    const std::string old_fp = tag("HatchAssocFp");
+    if (fp == old_fp) continue;
+    const std::string pattern_name = tag("Hatch");
+    const double scale = std::atof(tag("HatchAssocScale").c_str()), rotation = std::atof(tag("HatchAssocRotation").c_str());
+    const int layer = first->layer_index;
+    Color color;
+    const bool has_color = !first->color_by_layer;
+    if (has_color) color = first->color;
+    const std::string old_center = tag("HatchAssocCenter");
+    Point3d center, was;
+    double size = 0;
+    if (!HatchGroupCenter(doc, members, center, size) || !ParsePointTag(old_center, was)) continue;
+    if (!quiet && !began) { doc.BeginChange("UpdateHatches"); began = true; }
+    // The hatch itself was moved along with (or independently of) its boundary: it is already where the user wants it, so
+    // only record the boundary's new state instead of rebuilding it onto the boundary's new place.
+    if (center.DistanceTo(was) > 1e-6 * (1.0 + size)) {
+      for (ObjectId id : members) if (SceneObject* o = doc.Find(id)) { o->user_text["HatchAssocFp"] = fp; o->user_text["HatchAssocCenter"] = PointTag(center); }
+      ++adopted;
+      continue;
+    }
+    const bool solid = ToLower(pattern_name) == "solid";
+    const HatchPattern* pat = solid ? nullptr : HatchLibrary::Instance().Find(pattern_name);
+    if (!solid && (!pat || scale <= 0)) continue;
+    const size_t first_new = doc.Objects().size();
+    const bool built = solid ? drafting::BuildSolidHatch(doc, bc, boundary_id, layer, ctx.Settings().absolute_tolerance, has_color ? &color : nullptr)
+                             : drafting::BuildPatternHatch(doc, *pat, bc, boundary_id, layer, ctx.Settings().absolute_tolerance, scale, rotation,
+                                                           ctx.Settings().hatch_base, has_color ? &color : nullptr);
+    if (!built) {
+      // The new boundary cannot be hatched (no longer planar, or the pattern fills nothing): keep the old hatch and stop retrying.
+      for (ObjectId id : members) if (SceneObject* o = doc.Find(id)) o->user_text["HatchAssocFp"] = fp;
+      continue;
+    }
+    TagAssociativeHatch(ctx, first_new, bc, scale, rotation);
+    for (ObjectId id : members) doc.Remove(id);
+    ++rebuilt;
+  }
+  Say("UpdateHatches: " + std::to_string(rebuilt) + " hatch(es) rebuilt" + (adopted ? ", " + std::to_string(adopted) + " moved with their boundary and kept" : ""));
+}
+
 }  // namespace
 
 // External linkage for Application.cpp's per-frame hook - see
@@ -2159,6 +2270,7 @@ void UpdateAssociativeTitleBlockQuiet(CommandContext& ctx) { DoUpdateTitleBlock(
 void UpdateAssociativePanelScheduleQuiet(CommandContext& ctx) { DoUpdatePanelSchedule(ctx, /*quiet=*/true); }
 void UpdateAssociativeGdtSymbolsQuiet(CommandContext& ctx) { DoUpdateGdtSymbols(ctx, /*quiet=*/true); }
 void UpdateAssociativeMultiLeadersQuiet(CommandContext& ctx) { DoUpdateMultiLeaders(ctx, /*quiet=*/true); }
+void UpdateAssociativeHatchesQuiet(CommandContext& ctx) { DoUpdateHatches(ctx, /*quiet=*/true); }
 
 void RegisterDrafting2Commands(CommandEngine& e) {
   // Hatch itself draws from the real data/hatchpatterns.pat library (AutoCAD
@@ -2204,6 +2316,8 @@ void RegisterDrafting2Commands(CommandEngine& e) {
       "Re-evaluates every FeatureControlFrame/DatumFeature/SurfaceFinish/WeldSymbol's feature-point anchor and rebuilds it from the current position, replacing the old baked geometry in place - the associative counterpart to those four commands' static bake, following the same explicit-recompute shape as UpdateMultiLeaders/UpdateDimensions/UpdateSectionViews/UpdateBillOfMaterials rather than an automatic hook on every document edit.");
   Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Implemented,
       "Draws several arrows converging on one landing with the shared text; the text is still baked glyph geometry, not something double-click-editable in place the way TextProperties edits a live text field, but each arrow whose point sits exactly on a real object (same FindPointAnchor coincidence rule as Leader - annotate_common.h) is associative: UpdateMultiLeaders re-evaluates that object's current position and redraws just that arrow, keeping the shared landing point and text fixed. An arrow point that isn't on any object stays a static baked arrow, same as before this change.");
+  Reg(e, "UpdateHatches", Immediate([](CommandContext& ctx) { DoUpdateHatches(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
+      "Associative hatch: a hatch made by the Hatch command (Solid or a library pattern) remembers its boundary curve and rebuilds itself to fill the boundary's CURRENT shape and position when that curve is moved, scaled or reshaped - UpdateHatches does it on demand and Application.cpp's per-frame associative-annotation hook does it automatically after every edit. A hatch that was itself moved (alone or together with its boundary) is left where it is and just re-synchronised to the boundary's new state; a deleted or no longer closed boundary leaves the hatch untouched. Not covered: Bitmap hatches, hatches with islands/holes and hatches imported from DXF/DWG/3dm, which stay static, and HatchScale's older 4-pattern rebuild.");
   Reg(e, "UpdateMultiLeaders", Immediate([](CommandContext& ctx) { DoUpdateMultiLeaders(ctx, /*quiet=*/false); }), CommandStatus::Implemented,
       "Re-evaluates every MultiLeader's per-arrow anchors and rebuilds the arrows/landing/text from their current positions, replacing the old baked geometry in place - the associative counterpart to MultiLeader's static bake, following the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateSectionViews/UpdateBillOfMaterials below rather than an automatic hook on every document edit.");
   Reg(e, "DimTolerance", Make<DimToleranceCommand>(), CommandStatus::Implemented,

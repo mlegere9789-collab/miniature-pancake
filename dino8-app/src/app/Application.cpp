@@ -93,6 +93,7 @@ void UpdateAssociativeTitleBlockQuiet(CommandContext&);     // cmd_drafting2.cpp
 void UpdateAssociativePanelScheduleQuiet(CommandContext&);  // cmd_drafting2.cpp
 void UpdateAssociativeGdtSymbolsQuiet(CommandContext&);     // cmd_drafting2.cpp
 void UpdateAssociativeMultiLeadersQuiet(CommandContext&);   // cmd_drafting2.cpp
+void UpdateAssociativeHatchesQuiet(CommandContext&);        // cmd_drafting2.cpp
 void RegisterSelect2Commands(CommandEngine&);
 void RegisterStateCommands(CommandEngine&);
 void RegisterViewToolsCommands(CommandEngine&);
@@ -1251,6 +1252,7 @@ void UpdateAssociativeAnnotations(Application& app) {
   UpdateAssociativePanelScheduleQuiet(ctx);
   UpdateAssociativeGdtSymbolsQuiet(ctx);
   UpdateAssociativeMultiLeadersQuiet(ctx);
+  UpdateAssociativeHatchesQuiet(ctx);
   last_revision = doc.Revision();
   last_signature = DocumentGeometrySignature(doc);
 }
