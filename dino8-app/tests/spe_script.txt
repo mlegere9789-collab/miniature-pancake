@@ -1,0 +1,85 @@
+# SplitEdge through the kernel's Brep::SplitNakedEdgeAt (tests/smoke.sh section SPE_). The smoke section cuts the output
+# apart per case at each "Command: SplitEdge" line (cases, in order); every case follows its SplitEdge with Check
+# (ON_Brep validity), Volume and Area, which smoke.sh compares with closed forms.
+#  1 closed box (every edge shared, 2 trims), cut at an OFF-centre point of an edge: valid, volume 1000, area 600
+#  2 box with a r=2 fillet on a vertical edge; the shared fillet/top-plane ARC (a curved 2-trim edge between a cylinder and
+#    a plane) is cut at 30 degrees of its sweep: new vertex on the circle (r=2 about (8,8)), valid, volume 991.4159, area 589.6991
+#  3 open box (top face deleted): a NAKED rim edge (1 trim) is cut: valid
+#  4 the same fillet arc cut TWICE (the second cut on the half the first one left): still valid, same volume
+#  5 negative control, a closed circular rim of a cylinder: refused as closed, nothing changed (volume pi r^2 h = 1178.097)
+#  6 negative control, a pick that lands on an end vertex of an edge: refused, nothing changed (box volume 1000)
+SetActiveViewport Top
+
+# --- 1: shared straight edge, off-centre
+SelAll
+Hide
+Box 0,0,0 10,10,0 10
+SplitEdge
+2.5,0,0
+SelAll
+Check
+Volume
+Area
+
+# --- 2: shared curved arc (cylinder / plane), 30 degrees along the quarter arc from (8,10) to (10,8)
+SelAll
+Hide
+Box 100,0,0 110,10,0 10
+FilletEdge
+Radius=2
+110,10,5
+Enter
+SplitEdge
+109.7320508,9,10
+SelAll
+Check
+Volume
+Area
+
+# --- 3: naked edge of an open box
+SelAll
+Hide
+Box 200,0,0 210,10,0 10
+DeleteFaces
+205,5,10
+Enter
+SplitEdge
+205,0,10
+SelAll
+Check
+
+# --- 4: the fillet arc cut twice
+SelAll
+Hide
+Box 300,0,0 310,10,0 10
+FilletEdge
+Radius=2
+310,10,5
+Enter
+SplitEdge
+309.7320508,9,10
+SplitEdge
+309.9,8.5,10
+SelAll
+Check
+Volume
+
+# --- 5: closed rim of a cylinder
+SelAll
+Hide
+Cylinder 400,0,0 5 15
+SplitEdge
+405,0,15
+SelAll
+Check
+Volume
+
+# --- 6: a pick on a vertex
+SelAll
+Hide
+Box 500,0,0 510,10,0 10
+SplitEdge
+500,0,0
+SelAll
+Check
+Volume
