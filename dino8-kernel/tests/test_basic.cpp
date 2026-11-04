@@ -99890,16 +99890,36 @@ void TestClassifyShellsRefusalsAndInconsistencyAreReportedNotGuessed() {
       }
     }
   }
-  // Negative control 3: an open sheet bounds nothing.
+  // Negative control 3: a genuinely open sheet bounds nothing. (Premise correction: ShellConvexPlanar(box, {i}, t)
+  // is NOT an open sheet - it adds a rim around the removed face and returns a CLOSED cup, classified below as a
+  // positive control. An open shell has to be built open: a box with one face left out.)
   {
-    const Brep open_shell = ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {1}, 1.0);
-    const Brep::ShellClassification c = open_shell.ClassifyShells();
-    bool saw_open = false;
-    for (const Brep::ShellInfo& s : c.shells) {
-      if (!s.closed) saw_open = (s.role == Brep::ShellInfo::Role::OpenSheet && s.region == -1);
+    std::vector<Brep::PlanarFace> pf = Brep::BoxWelded(0, 0, 0, 10, 10, 10).PlanarFaces();
+    pf.erase(pf.begin() + 1);
+    const Brep open_box = Brep::FromPlanarFaces(pf);
+    const Brep::ShellClassification c = open_box.ClassifyShells();
+    Check(c.shells.size() == 1 && !c.shells[0].closed && c.shells[0].has_topology &&
+              c.shells[0].role == Brep::ShellInfo::Role::OpenSheet && c.shells[0].region == -1 &&
+              c.shells[0].naked_edge_count == 4,
+          "five-face open box: its single not-closed shell (4 naked rim edges) is an OpenSheet with no region");
+    Check(c.regions.empty(), "five-face open box: no material region is claimed for an open shell");
+  }
+  // Positive counterpart: shelling with a removed face yields a closed, genus-0 cup whose single region is
+  // 10^3 - 8*8*9 (the removed face's plane is not offset, so the cavity is 8 x 8 x 9). 5 outer + 5 inner + 4 rim
+  // faces = 14; V = 8 outer + 8 inner = 16; sphere => E = V + F - 2 = 28.
+  {
+    const Brep cup = ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {1}, 1.0);
+    const Brep::ShellClassification c = cup.ClassifyShells();
+    Check(c.shells.size() == 1 && c.shells[0].closed && c.shells[0].role == Brep::ShellInfo::Role::OuterBoundary &&
+              c.consistent,
+          "shelled box with one face removed: ONE closed OuterBoundary shell (the rim closes the opening)");
+    if (c.shells.size() == 1) {
+      const Brep::ShellInfo& sh = c.shells[0];
+      Check(sh.face_count == 14 && sh.vertex_count == 16 && sh.edge_count == 28 && sh.euler_poincare == 2 && sh.genus == 0,
+            "shelled box with one face removed: F=14 V=16 E=28, Euler-Poincare 2, genus 0");
+      Check(c.regions.size() == 1 && Near(c.regions[0].volume, 1000.0 - 8.0 * 8.0 * 9.0),
+            "shelled box with one face removed: one region of volume 1000 - 576 = 424");
     }
-    Check(saw_open || c.shells.empty(), "open shelled box: its not-closed shell is an OpenSheet with no region");
-    Check(c.regions.empty(), "open shelled box: no material region is claimed for an open shell");
   }
   // Negative control 4: a topology-less multi-face Brep that is not a Compound is refused, with a reason.
   {
@@ -99927,9 +99947,16 @@ void TestClassifyShellsRefusalsAndInconsistencyAreReportedNotGuessed() {
 
 // Randomized nested bodies: a chain of levels, each a hollow block (outer + cavity) whose
 // successor sits (randomly offset, random size) inside its cavity; the last level may be solid.
+//
+// Feasibility: ShellConvexPlanar(box, {}, t) needs t < inradius = (smallest box span) / 2 or it throws
+// std::invalid_argument ("wall_thickness[i] is too large for that face"). The generator therefore clamps each
+// wall to 30% of that level's smallest span and ends the chain (solid core) once a level is too thin to shell
+// usefully. ShellConvexPlanar's exception is NOT swallowed: a rejection is counted, reported with its message,
+// and the test fails if there is even one, because every generated wall is feasible by construction. A
+// separate negative control proves the kernel does reject an infeasible wall.
 void TestClassifyShellsRandomizedNestedBodiesMatchConstruction() {
   Lcg rng(0xD1A0C0FFEEULL);
-  int trials = 0, ok_all = 0;
+  int trials = 0, ok_all = 0, rejected = 0, hollow_levels = 0;
   for (int t = 0; t < 40; ++t) {
     const int levels = 1 + static_cast<int>(rng.Next() * 4.0);  // 1..4
     std::vector<Brep> parts;
@@ -99941,14 +99968,25 @@ void TestClassifyShellsRandomizedNestedBodiesMatchConstruction() {
     }
     bool build_ok = true;
     for (int lv = 0; lv < levels; ++lv) {
-      const double wall = rng.Range(0.5, 2.0);
-      const bool last = lv == levels - 1;
+      const double min_span = std::min({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]});
+      const double wall = std::min(rng.Range(0.5, 2.0), 0.3 * min_span);  // < inradius = 0.5 * min_span
+      const bool too_thin_to_nest = min_span < 6.0;                        // cavity would be < 2.4 across
+      const bool last = lv == levels - 1 || too_thin_to_nest;
       const bool hollow = !last || rng.Next() < 0.5;
       const double vol_outer = (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
       double rv = vol_outer;
       Brep solid = Brep::BoxWelded(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
       if (hollow) {
-        parts.push_back(ShellConvexPlanar(solid, {}, wall));
+        try {
+          parts.push_back(ShellConvexPlanar(solid, {}, wall));
+        } catch (const std::invalid_argument& e) {
+          ++rejected;
+          std::fprintf(stderr, "randomized nested trial %d level %d: ShellConvexPlanar rejected wall %g on min span %g: %s\n",
+                       t, lv, wall, min_span, e.what());
+          build_ok = false;
+          break;
+        }
+        ++hollow_levels;
         rv = vol_outer - (hi[0] - lo[0] - 2 * wall) * (hi[1] - lo[1] - 2 * wall) * (hi[2] - lo[2] - 2 * wall);
         // next level lives strictly inside the cavity, randomly placed and sized
         double nlo[3], nhi[3];
@@ -99967,7 +100005,7 @@ void TestClassifyShellsRandomizedNestedBodiesMatchConstruction() {
         parts.push_back(solid);
       }
       expected_region_volume.push_back(rv);
-      if (!hollow) break;
+      if (!hollow || last) break;
     }
     if (!build_ok) continue;
     ++trials;
@@ -99993,34 +100031,153 @@ void TestClassifyShellsRandomizedNestedBodiesMatchConstruction() {
     if (ok) ++ok_all;
     else std::fprintf(stderr, "randomized nested trial %d (levels=%d) disagreed with construction\n", t, levels);
   }
+  std::fprintf(stderr, "randomized nested: trials=%d ok=%d rejected_by_kernel=%d hollow_levels=%d\n", trials, ok_all,
+               rejected, hollow_levels);
+  Check(rejected == 0, "randomized nested hollow bodies: ShellConvexPlanar accepted every inradius-respecting wall (no rejection)");
   Check(trials >= 30 && ok_all == trials,
         "randomized nested hollow bodies: region count, per-region volume, depth parity, Euler-Poincare and face partition all match construction in every trial");
+  // Negative control: a wall at/over the inradius really is refused by the kernel (so the clamp above is not vacuous).
+  {
+    bool threw = false;
+    try {
+      (void)ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {}, 5.5);  // inradius is 5
+    } catch (const std::invalid_argument& e) {
+      threw = std::string(e.what()).find("too large") != std::string::npos;
+    }
+    Check(threw, "ShellConvexPlanar refuses a wall thickness beyond the inradius with 'too large' (infeasible input is rejected, not shelled)");
+  }
 }
 
-void TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare() {
+// A square-frame solid (genus 1: a 10 x 10 x 10 block with a 2 x 2 square hole straight through) assembled
+// from 16 planar faces (4 trapezoids on top, 4 on the bottom, 4 outer walls, 4 hole walls) through
+// FromPlanarFaces(), which gives real welded loop/trim/edge topology. Every face is a simple disk, so there are
+// no inner loops: the Euler-Poincare number is plain V - E + F and the oracle is counted by hand:
+// V = 16 (8 per level), E = 8 + 8 (top/bottom rings) + 4 + 4 (spokes) + 8 (verticals) = 32, F = 16 => 0 => genus 1.
+Brep MakeFrameSolid(double outer, double hole_lo, double hole_hi, double height) {
+  using dino8::kernel::Point3d;
+  const Point3d o[4] = {Point3d(0, 0, 0), Point3d(outer, 0, 0), Point3d(outer, outer, 0), Point3d(0, outer, 0)};
+  const Point3d in[4] = {Point3d(hole_lo, hole_lo, 0), Point3d(hole_hi, hole_lo, 0), Point3d(hole_hi, hole_hi, 0),
+                         Point3d(hole_lo, hole_hi, 0)};
+  auto at = [&](Point3d p, double z) { return Point3d(p.x, p.y, z); };
+  auto make = [](std::vector<Point3d> loop) {
+    // Newell normal of the loop, CCW seen from outside
+    dino8::kernel::Vector3d n(0, 0, 0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& a = loop[i];
+      const Point3d& b = loop[(i + 1) % loop.size()];
+      n.x += (a.y - b.y) * (a.z + b.z);
+      n.y += (a.z - b.z) * (a.x + b.x);
+      n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    n.Unitize();
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(loop[0], n);
+    f.loop = std::move(loop);
+    return f;
+  };
+  std::vector<Brep::PlanarFace> faces;
+  for (int i = 0; i < 4; ++i) {
+    const int j = (i + 1) % 4;
+    faces.push_back(make({at(o[i], height), at(o[j], height), at(in[j], height), at(in[i], height)}));  // top, +z
+    faces.push_back(make({at(in[i], 0), at(in[j], 0), at(o[j], 0), at(o[i], 0)}));                      // bottom, -z
+    faces.push_back(make({at(o[i], 0), at(o[j], 0), at(o[j], height), at(o[i], height)}));              // outer wall
+    faces.push_back(make({at(in[i], 0), at(in[i], height), at(in[j], height), at(in[j], 0)}));          // hole wall
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+void TestClassifyShellsGenusOfFrameSolidAndRealInnerLoops() {
+  const Brep frame = MakeFrameSolid(10.0, 4.0, 6.0, 10.0);
+  const Brep::ShellClassification c = frame.ClassifyShells();
+  Check(c.shells.size() == 1 && c.shells[0].closed && c.shells[0].has_topology,
+        "frame solid (planar-face torus block): one closed shell with real topology");
+  if (c.shells.size() != 1) return;
+  const Brep::ShellInfo& s = c.shells[0];
+  Check(s.role == Brep::ShellInfo::Role::OuterBoundary && c.consistent && c.regions.size() == 1,
+        "frame solid: an OuterBoundary shell, consistent, exactly one region");
+  Check(s.vertex_count == 16 && s.edge_count == 32 && s.face_count == 16 && s.inner_loop_count == 0,
+        "frame solid: V=16 E=32 F=16, no inner loops (each face is a disk)");
+  Check(s.euler_poincare == 0 && s.genus == 1, "frame solid: V - E + F - R = 0, genus 1 (a torus)");
+  Check(Near(s.signed_volume, 1000.0 - 2.0 * 2.0 * 10.0, 1e-6), "frame solid: volume 1000 - 2*2*10 = 960");
+  // Negative control: drop one face (a hole in the surface) - the same body must stop reporting closed/genus.
+  {
+    std::vector<Brep::PlanarFace> faces = frame.PlanarFaces();
+    faces.pop_back();
+    const Brep::ShellClassification c2 = Brep::FromPlanarFaces(faces).ClassifyShells();
+    Check(c2.shells.size() == 1 && !c2.shells[0].closed && c2.shells[0].genus == -1 && c2.regions.empty(),
+          "frame solid minus one face: open, no genus, no region (the oracle can fail)");
+  }
+}
+
+// R in V - E + F - R: a face with a REAL ON_BrepLoop::inner hole (TrimmedPlanarFaceWelded with a hole loop).
+// One face, outer square (4 V, 4 E) + hole square (4 V, 4 E): V=8, E=8, F=1, R=1 => chi 0 (an annulus).
+void TestClassifyShellsCountsRealInnerLoops() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(0, 10, 0), Point3d(10, 0, 0), Point3d(10, 10, 0)};
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> outer = {Point2d(0.15, 0.15), Point2d(0.85, 0.15), Point2d(0.85, 0.85), Point2d(0.15, 0.85)};
+  const std::vector<Point2d> hole = {Point2d(0.4, 0.4), Point2d(0.6, 0.4), Point2d(0.6, 0.6), Point2d(0.4, 0.6)};
+  const Brep holed = Brep::TrimmedPlanarFaceWelded(surface, outer, {hole});
+  const Brep::ShellClassification c = holed.ClassifyShells();
+  Check(c.shells.size() == 1 && c.shells[0].has_topology, "holed face: one shell with real topology");
+  if (c.shells.size() != 1) return;
+  const Brep::ShellInfo& s = c.shells[0];
+  Check(s.vertex_count == 8 && s.edge_count == 8 && s.face_count == 1 && s.inner_loop_count == 1,
+        "holed face: V=8 E=8 F=1 and exactly ONE inner loop (ring) counted");
+  Check(s.euler_poincare == 0, "holed face: V - E + F - R = 8 - 8 + 1 - 1 = 0 (annulus)");
+  Check(!s.closed && s.role == Brep::ShellInfo::Role::OpenSheet && s.genus == -1,
+        "holed face: an open sheet (naked boundaries), genus not applicable");
+  // Control: the same face without its hole has R = 0 and chi = 4 - 4 + 1 = 1 (a disk).
+  const Brep::ShellClassification d = Brep::TrimmedPlanarFaceWelded(surface, outer).ClassifyShells();
+  Check(d.shells.size() == 1 && d.shells[0].inner_loop_count == 0 && d.shells[0].euler_poincare == 1,
+        "un-holed control: R = 0 and chi = 1 (a disk) - the ring count is what moved");
+}
+
+// Premise record (measured on the integrated tree by the remote verification run 41915497272; the probe is since removed):
+//  - BooleanCombineGeneral(Box, Box, Difference) with the surface-only Brep::Box() operands has real loops/trims (10 faces,
+//    932 trims) but welds nothing across faces: V=464 E=476 with 20 naked edges, one not-closed shell, no region.
+//  - With BoxWelded operands the 10-face result splits into TWO shells: the 6 outer-box faces (V=20 E=24, closed, volume
+//    1000) and the 4 hole-wall faces (V=100 E=104, 96 naked edges, an open sheet). The engine's dense-polyline trim edges
+//    on the hole walls are not shared with the cap faces' keyhole-bridged outer loops (boolean_general.cpp deliberately
+//    folds holes into the outer loop, so there is NO ON_BrepLoop::inner and R = 0 by design).
+//  - MakeHole(through) is also unwelded (7 faces, 69 naked edges).
+// So the original premise (a boolean through-hole box is ONE closed shell with inner-loop rings, chi 0, volume 960) is
+// wrong for this engine, not a ClassifyShells defect: the classifier reports the unwelded topology as it is. A genuine
+// genus-1 body with welded topology is built by MakeFrameSolid() (TestClassifyShellsGenusOfFrameSolidAndRealInnerLoops),
+// and real inner loops are exercised by TestClassifyShellsCountsRealInnerLoops. This test pins the honesty contract:
+// the classifier must NOT call the engine's unwelded through-hole result a sealed torus.
+void TestClassifyShellsDoesNotCallUnweldedBooleanThroughHoleASealedTorus() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
-  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
-  const Brep bar = Brep::Box(4, 4, -1, 6, 6, 11);
   Brep drilled;
   bool built = true;
   try {
-    drilled = BooleanCombineGeneral(box, bar, BooleanOp::Difference);
+    drilled = BooleanCombineGeneral(Brep::BoxWelded(0, 0, 0, 10, 10, 10), Brep::BoxWelded(4, 4, -1, 6, 6, 11), BooleanOp::Difference);
   } catch (const std::exception&) {
     built = false;
   }
   Check(built, "through-hole box: BooleanCombineGeneral Difference builds");
   if (!built) return;
   const Brep::ShellClassification c = drilled.ClassifyShells();
-  Check(c.shells.size() == 1 && c.shells[0].closed && c.shells[0].has_topology,
-        "through-hole box: one closed shell with real topology");
-  if (c.shells.size() != 1) return;
-  const Brep::ShellInfo& s = c.shells[0];
-  std::fprintf(stderr, "through-hole: V=%d E=%d F=%d R=%d chi=%d genus=%d vol=%f\n", s.vertex_count, s.edge_count,
-               s.face_count, s.inner_loop_count, s.euler_poincare, s.genus, s.signed_volume);
-  Check(s.inner_loop_count >= 2, "through-hole box: top and bottom faces carry inner loops (rings)");
-  Check(s.euler_poincare == 0 && s.genus == 1, "through-hole box: V - E + F - R = 0, genus 1 (a torus)");
-  Check(Near(s.signed_volume, 1000.0 - 40.0, 1e-4), "through-hole box: volume 1000 - 2*2*10 = 960");
+  int naked_total = 0, closed_shells = 0, genus1 = 0, inner_loops = 0;
+  for (const Brep::ShellInfo& s : c.shells) {
+    naked_total += s.naked_edge_count;
+    inner_loops += s.inner_loop_count;
+    if (s.closed) {
+      ++closed_shells;
+      // a shell reported closed must have no naked / non-manifold edge, by its own counts
+      Check(s.naked_edge_count == 0 && s.non_manifold_edge_count == 0,
+            "through-hole box: a shell reported closed has no naked and no non-manifold edge");
+    }
+    if (s.genus == 1) ++genus1;
+  }
+  std::fprintf(stderr, "through-hole (boolean, welded operands): shells=%zu closed=%d naked=%d inner_loops=%d regions=%zu\n", c.shells.size(),
+               closed_shells, naked_total, inner_loops, c.regions.size());
+  Check(inner_loops == 0, "through-hole box: the engine keyhole-bridges holes into the outer loop, so no inner loop (R = 0) is reported");
+  Check(naked_total > 0 && genus1 == 0,
+        "through-hole box: the unwelded boolean result is reported with naked edges and NOT as a genus-1 sealed torus");
 }
 
 void TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency() {
@@ -100069,6 +100226,7 @@ void TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency() {
   }
   Check(good == trials, "60 randomized BoxWelded bodies: Euler 2, edge->2 faces, vertex->3 edges, live loop/trim counts equal an independent per-face recount, also after raw deletions");
 }
+
 
 }  // namespace topology_shell_tests
 
@@ -103762,8 +103920,12 @@ int main() {
           topology_shell_tests::TestClassifyShellsRefusalsAndInconsistencyAreReportedNotGuessed);
   RunTest("topology_shell_tests::TestClassifyShellsRandomizedNestedBodiesMatchConstruction",
           topology_shell_tests::TestClassifyShellsRandomizedNestedBodiesMatchConstruction);
-  RunTest("topology_shell_tests::TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare",
-          topology_shell_tests::TestClassifyShellsGenusOfThroughHoleBoxFromEulerPoincare);
+  RunTest("topology_shell_tests::TestClassifyShellsGenusOfFrameSolidAndRealInnerLoops",
+          topology_shell_tests::TestClassifyShellsGenusOfFrameSolidAndRealInnerLoops);
+  RunTest("topology_shell_tests::TestClassifyShellsCountsRealInnerLoops",
+          topology_shell_tests::TestClassifyShellsCountsRealInnerLoops);
+  RunTest("topology_shell_tests::TestClassifyShellsDoesNotCallUnweldedBooleanThroughHoleASealedTorus",
+          topology_shell_tests::TestClassifyShellsDoesNotCallUnweldedBooleanThroughHoleASealedTorus);
   RunTest("topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency",
           topology_shell_tests::TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency);
   RunTest("offset_remainder_tests::TestOffsetInPlaneNonCoplanarPolylineExactMitre",
