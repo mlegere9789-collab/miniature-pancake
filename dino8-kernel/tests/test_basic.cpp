@@ -93277,6 +93277,435 @@ void TestSweep1TwistOnAClosedRailIsAllowedForWholeTurns() {
 
 }  // namespace sweep_closure_tests
 
+// Offsetting & shelling: unified untrimmed-surface offset (exact for analytic
+// surfaces, tolerance-bounded and measured for freeform) and the exact
+// parallel-plane circle case of the explicit-plane curve offset.
+// ---------------------------------------------------------------------------
+namespace offset_unified_tests {
+
+using dino8::kernel::Interval;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+using dino8::kernel::Vector3d;
+
+struct Lcg {
+  unsigned s = 987654321u;
+  double Next() {
+    s = s * 1664525u + 1013904223u;
+    return (s >> 8) / static_cast<double>(1 << 24);
+  }
+};
+
+NurbsSurface BumpSurface() {
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  return NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+}
+
+NurbsSurface WavySurface() {
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 5; ++j) grid.push_back(Point3d(1.5 * i, 1.5 * j, 0.6 * std::sin(1.3 * i) * std::cos(0.9 * j)));
+  return NurbsSurface::FromControlGrid(grid, 6, 5, 3, 3);
+}
+
+// A bi-quadratic RATIONAL patch with unequal weights and a raised centre:
+// not a plane, sphere, cylinder, cone or torus.
+NurbsSurface RationalFreeformPatch() {
+  ON_NurbsSurface ns(3, true, 3, 3, 3, 3);
+  ns.MakeClampedUniformKnotVector(0, 1.0);
+  ns.MakeClampedUniformKnotVector(1, 1.0);
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      const double w = 1.0 + 0.35 * i + 0.2 * j * (i + 1);
+      const double z = (i == 1 && j == 1) ? 1.2 : 0.15 * i;
+      ns.SetCV(i, j, ON_4dPoint(w * 2.0 * i, w * 2.0 * j, w * z, w));
+    }
+  }
+  NurbsSurface s;
+  s.raw() = ns;
+  return s;
+}
+
+// Worst distance from `out` to the exact parallel-surface locus
+// base(u,v) + d * N_base(u,v) over `n` random parameter pairs (an
+// independent sampling, not the fit's own grids), and worst
+// | dist(out point, base surface) - |d| | over the first `n_base` of them.
+void MeasureAgainstExactLocus(const NurbsSurface& base, const NurbsSurface& out, double d, int n, int n_base,
+                              double& worst_locus, double& worst_base) {
+  Lcg rng;
+  const Interval du = base.Domain(0);
+  const Interval dv = base.Domain(1);
+  worst_locus = 0.0;
+  worst_base = 0.0;
+  for (int k = 0; k < n; ++k) {
+    const double fu = 0.002 + 0.996 * rng.Next();
+    const double fv = 0.002 + 0.996 * rng.Next();
+    const double u = du.min + (du.max - du.min) * fu;
+    const double v = dv.min + (dv.max - dv.min) * fv;
+    const Point3d expected = base.PointAt(u, v) + d * base.NormalAt(u, v);
+    worst_locus = std::max(worst_locus, expected.DistanceTo(out.PointAt(u, v)));
+    if (k < n_base) {
+      const Point3d q = out.PointAt(u, v);
+      const Point3d c = base.ClosestPoint(q, 60, 60);
+      worst_base = std::max(worst_base, std::fabs(q.DistanceTo(c) - std::fabs(d)));
+    }
+  }
+}
+
+void TestOffsetFreeformBumpHonoursStatedToleranceAgainstExactLocus() {
+  const NurbsSurface s = BumpSurface();
+  const double d = 0.2;
+  int previous_cv = 0;
+  int first_cv = 0;
+  for (double tol : {1e-3, 1e-4, 1e-5}) {
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(s.Offset(d, out, tol, &info) == Result::Ok, "Offset(bump, +0.2): freeform surface succeeds");
+    Check(!info.exact, "Offset(bump): a freeform result is reported as a fit, not as exact");
+    Check(info.tolerance_used == tol && info.refusal_reason.empty(), "Offset(bump): stated tolerance echoed, no refusal reason");
+    Check(info.achieved_deviation <= tol, "Offset(bump): internally measured deviation is within the stated tolerance");
+    Check(out.raw().IsValid(), "Offset(bump): result passes ON_NurbsSurface::IsValid");
+    double worst_locus = 0.0, worst_base = 0.0;
+    MeasureAgainstExactLocus(s, out, d, 3000, 120, worst_locus, worst_base);
+    std::printf("  bump tol=%g cv=%dx%d internal=%g random-locus=%g dist-to-base-err=%g\n", tol, out.CVCountU(),
+                out.CVCountV(), info.achieved_deviation, worst_locus, worst_base);
+    Check(worst_locus <= tol, "Offset(bump): 3000 independent random points all within tol of base + d*normal");
+    Check(worst_base <= tol, "Offset(bump): 120 offset points are at distance |d| from the BASE surface to within tol");
+    const int cv = out.CVCountU() * out.CVCountV();
+    if (previous_cv == 0) first_cv = cv;
+    Check(cv >= previous_cv, "Offset(bump): a tighter tolerance never uses fewer control points");
+    previous_cv = cv;
+    if (tol == 1e-5) Check(cv > first_cv, "Offset(bump): 1e-5 needs strictly more control points than 1e-3 (tolerance really drives the fit)");
+  }
+}
+
+void TestOffsetWavyAndRationalFreeformBothSignsWithinTolerance() {
+  const NurbsSurface wavy = WavySurface();
+  const NurbsSurface rat = RationalFreeformPatch();
+  Check(rat.IsRational() && !rat.IsPlanar(1e-6) && !rat.IsSphere(1e-3) && !rat.IsCylinder(1e-3) && !rat.IsCone(1e-3) && !rat.IsTorus(1e-3),
+        "rational freeform fixture is rational and not recognised as any analytic primitive");
+  struct Case { const NurbsSurface* s; double d; const char* name; };
+  const Case cases[] = {{&wavy, 0.12, "wavy +0.12"}, {&wavy, -0.12, "wavy -0.12"}, {&rat, 0.1, "rational +0.1"}, {&rat, -0.1, "rational -0.1"}};
+  const double tol = 1e-4;
+  for (const Case& c : cases) {
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    const Result r = c.s->Offset(c.d, out, tol, &info);
+    Check(r == Result::Ok, (std::string("Offset ") + c.name + ": succeeds").c_str());
+    if (r != Result::Ok) { std::printf("  reason: %s\n", info.refusal_reason.c_str()); continue; }
+    double worst_locus = 0.0, worst_base = 0.0;
+    MeasureAgainstExactLocus(*c.s, out, c.d, 2500, 100, worst_locus, worst_base);
+    std::printf("  %s cv=%dx%d internal=%g random-locus=%g dist-to-base-err=%g\n", c.name, out.CVCountU(), out.CVCountV(),
+                info.achieved_deviation, worst_locus, worst_base);
+    Check(!info.exact && info.achieved_deviation <= tol && out.raw().IsValid(), (std::string("Offset ") + c.name + ": fit, within tol, valid").c_str());
+    Check(worst_locus <= tol, (std::string("Offset ") + c.name + ": independent random points within tol of the exact locus").c_str());
+    Check(worst_base <= tol, (std::string("Offset ") + c.name + ": offset points sit at |d| from the base surface within tol").c_str());
+  }
+}
+
+void TestOffsetAnalyticFamiliesAreExactAndRational() {
+  Lcg rng;
+  // Sphere, centre (1,2,3), r=5: radial distance of every sampled offset point.
+  {
+    const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+    ON_NurbsSurface raw;
+    sphere.GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    for (double d : {1.5, -2.0}) {
+      NurbsSurface out;
+      NurbsSurface::OffsetInfo info;
+      Check(s.Offset(d, out, -1.0, &info) == Result::Ok && info.exact && info.achieved_deviation == 0.0, "Offset(sphere): exact, not a fit");
+      Check(out.IsRational() && out.raw().IsValid(), "Offset(sphere): the rational analytic form is reproduced (rational, valid)");
+      // Sign convention: +d moves along NormalAt; resolve it independently.
+      const Interval du = s.Domain(0), dv = s.Domain(1);
+      const double um = 0.5 * (du.min + du.max), vm = 0.5 * (dv.min + dv.max);
+      Vector3d rad = s.PointAt(um, vm) - Point3d(1, 2, 3);
+      rad.Unitize();
+      const double sgn = ON_DotProduct(s.NormalAt(um, vm), rad) >= 0 ? 1.0 : -1.0;
+      const double expected_r = 5.0 + sgn * d;
+      double worst = 0.0;
+      const Interval ou = out.Domain(0), ov = out.Domain(1);
+      for (int k = 0; k < 2000; ++k) {
+        const Point3d p = out.PointAt(ou.min + (ou.max - ou.min) * rng.Next(), ov.min + (ov.max - ov.min) * rng.Next());
+        worst = std::max(worst, std::fabs(p.DistanceTo(Point3d(1, 2, 3)) - expected_r));
+      }
+      std::printf("  sphere d=%g radius %g worst radial error %g\n", d, expected_r, worst);
+      Check(worst < 1e-9, "Offset(sphere): 2000 random points at the exact closed-form radius to 1e-9");
+    }
+  }
+  // Cylinder r=2 about a tilted axis: distance to the axis line.
+  {
+    const ON_Plane base_plane(ON_3dPoint(1, -1, 0.5), ON_3dVector(0.3, 0.2, 0.9));
+    const ON_Circle circle(base_plane, 2.0);
+    const ON_Cylinder cyl(circle, 6.0);
+    ON_NurbsSurface raw;
+    cyl.GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(s.Offset(0.5, out, -1.0, &info) == Result::Ok && info.exact, "Offset(cylinder): exact");
+    Check(out.IsRational() && out.raw().IsValid(), "Offset(cylinder): rational and valid");
+    ON_3dVector axis = base_plane.zaxis;
+    axis.Unitize();
+    const Interval du = s.Domain(0), dv = s.Domain(1);
+    const double um = 0.5 * (du.min + du.max), vm = 0.5 * (dv.min + dv.max);
+    Vector3d rel = s.PointAt(um, vm) - base_plane.origin;
+    Vector3d perp = rel - ON_DotProduct(rel, axis) * axis;
+    perp.Unitize();
+    const double sgn = ON_DotProduct(s.NormalAt(um, vm), perp) >= 0 ? 1.0 : -1.0;
+    const double expected_r = 2.0 + sgn * 0.5;
+    double worst = 0.0;
+    const Interval ou = out.Domain(0), ov = out.Domain(1);
+    for (int k = 0; k < 2000; ++k) {
+      const Point3d p = out.PointAt(ou.min + (ou.max - ou.min) * rng.Next(), ov.min + (ov.max - ov.min) * rng.Next());
+      Vector3d r = p - base_plane.origin;
+      const Vector3d radial = r - ON_DotProduct(r, axis) * axis;
+      worst = std::max(worst, std::fabs(radial.Length() - expected_r));
+    }
+    std::printf("  cylinder radius %g worst axis-distance error %g\n", expected_r, worst);
+    Check(worst < 1e-9, "Offset(cylinder): every sampled point at the exact closed-form axis distance to 1e-9");
+  }
+  // Torus R=5, a=1.5 about z: tube distance.
+  {
+    const ON_Torus torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0, 1.5);
+    ON_NurbsSurface raw;
+    torus.GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(s.Offset(0.5, out, -1.0, &info) == Result::Ok && info.exact, "Offset(torus): exact");
+    Check(out.IsRational() && out.raw().IsValid(), "Offset(torus): rational and valid");
+    auto tube = [](const Point3d& p) { return std::hypot(std::hypot(p.x, p.y) - 5.0, p.z); };
+    const Interval du = s.Domain(0), dv = s.Domain(1);
+    const double um = 0.3 * (du.max - du.min) + du.min, vm = 0.2 * (dv.max - dv.min) + dv.min;
+    const Point3d p0 = s.PointAt(um, vm);
+    const Vector3d n0 = s.NormalAt(um, vm);
+    const double sgn = (tube(p0 + 1e-3 * n0) > tube(p0)) ? 1.0 : -1.0;
+    const double expected_a = 1.5 + sgn * 0.5;
+    double worst = 0.0;
+    const Interval ou = out.Domain(0), ov = out.Domain(1);
+    for (int k = 0; k < 2000; ++k) {
+      const Point3d p = out.PointAt(ou.min + (ou.max - ou.min) * rng.Next(), ov.min + (ov.max - ov.min) * rng.Next());
+      worst = std::max(worst, std::fabs(tube(p) - expected_a));
+    }
+    std::printf("  torus tube radius %g worst error %g\n", expected_a, worst);
+    Check(worst < 1e-9, "Offset(torus): every sampled point at the exact closed-form tube radius to 1e-9");
+  }
+  // Plane: exact translation along the normal.
+  {
+    std::vector<Point3d> grid;
+    for (int i = 0; i < 4; ++i)
+      for (int j = 0; j < 3; ++j) grid.push_back(Point3d(i, j, 0.0));
+    const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 3, 3, 2);
+    NurbsSurface out;
+    NurbsSurface::OffsetInfo info;
+    Check(s.Offset(2.0, out, 1e-6, &info) == Result::Ok && info.exact && info.achieved_deviation == 0.0, "Offset(plane): exact");
+    const Interval du = s.Domain(0), dv = s.Domain(1);
+    double worst = 0.0;
+    for (int k = 0; k < 500; ++k) {
+      const double u = du.min + (du.max - du.min) * rng.Next(), v = dv.min + (dv.max - dv.min) * rng.Next();
+      worst = std::max(worst, out.PointAt(u, v).DistanceTo(s.PointAt(u, v) + 2.0 * s.NormalAt(u, v)));
+    }
+    Check(worst < 1e-12, "Offset(plane): translation by exactly 2 along the normal to 1e-12");
+  }
+}
+
+void TestOffsetRefusalsCarryAReasonAndNeverReturnADegradedBody() {
+  auto sentinel = []() {
+    std::vector<Point3d> g;
+    for (int i = 0; i < 2; ++i)
+      for (int j = 0; j < 2; ++j) g.push_back(Point3d(100 + i, 100 + j, 7.0));
+    return NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
+  };
+  auto untouched = [&](const NurbsSurface& out) {
+    return out.PointAt(0.5, 0.5).DistanceTo(sentinel().PointAt(0.5, 0.5)) < 1e-12;
+  };
+  {
+    const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 5.0);
+    ON_NurbsSurface raw;
+    sphere.GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    for (double d : {-5.0, -6.5}) {
+      NurbsSurface out = sentinel();
+      NurbsSurface::OffsetInfo info;
+      Check(s.Offset(d, out, -1.0, &info) == Result::Failed, "Offset(sphere r=5, d<=-5): refused");
+      Check(!info.refusal_reason.empty() && untouched(out), "Offset(sphere): refusal states a reason and leaves out untouched");
+    }
+  }
+  {
+    const ON_Torus torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0, 2.0);
+    ON_NurbsSurface raw;
+    torus.GetNurbForm(raw);
+    NurbsSurface s;
+    s.raw() = raw;
+    bool refused_some = false;
+    for (double d : {3.0, -3.0}) {
+      NurbsSurface out = sentinel();
+      NurbsSurface::OffsetInfo info;
+      const Result r = s.Offset(d, out, -1.0, &info);
+      if (r == Result::Failed) {
+        refused_some = true;
+        Check(!info.refusal_reason.empty() && untouched(out), "Offset(torus spindle / non-positive tube): refusal has a reason, out untouched");
+      }
+    }
+    Check(refused_some, "Offset(torus R=5 a=2, |d|=3): at least the spindle/non-positive-tube direction is refused");
+  }
+  {
+    const NurbsSurface bump = BumpSurface();
+    NurbsSurface out = sentinel();
+    NurbsSurface::OffsetInfo info;
+    Check(bump.Offset(1.0, out, -1.0, &info) == Result::Failed, "Offset(bump, +1.0): beyond the local radius of curvature, refused");
+    Check(!info.refusal_reason.empty() && untouched(out), "Offset(bump): refusal states a reason and leaves out untouched");
+  }
+  {
+    const NurbsSurface bump = BumpSurface();
+    NurbsSurface out;
+    bool threw = false;
+    try { bump.Offset(std::numeric_limits<double>::infinity(), out); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw, "Offset(+inf) throws std::invalid_argument");
+    threw = false;
+    try { bump.Offset(std::numeric_limits<double>::quiet_NaN(), out); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw, "Offset(NaN) throws std::invalid_argument");
+    NurbsSurface::OffsetInfo info;
+    Check(bump.Offset(0.0, out, 1e-4, &info) == Result::Ok && info.exact && out.PointAt(0.3, 0.4).DistanceTo(bump.PointAt(0.3, 0.4)) < 1e-12,
+          "Offset(0.0) is an exact copy");
+  }
+}
+
+// ---- explicit-plane curve offset: circle cases ----
+
+NurbsCurve CircleCurve(const ON_3dPoint& centre, double r) {
+  ON_Circle circ(ON_Plane(centre, ON_3dVector(0, 0, 1)), r);
+  ON_NurbsCurve raw;
+  circ.GetNurbForm(raw);
+  NurbsCurve c;
+  c.raw() = raw;
+  return c;
+}
+
+void TestCircleOffsetByParallelPlaneIsExactConcentricCircle() {
+  const ON_3dPoint centre(1, 2, 3);
+  const NurbsCurve c = CircleCurve(centre, 5.0);
+  struct Case { ON_3dVector n; double d; double expected; };
+  const Case cases[] = {{ON_3dVector(0, 0, 1), 0.7, 5.7}, {ON_3dVector(0, 0, 1), -0.7, 4.3},
+                        {ON_3dVector(0, 0, -1), 0.7, 4.3}, {ON_3dVector(0, 0, -1), -0.7, 5.7}};
+  for (const Case& cs : cases) {
+    NurbsCurve out;
+    Check(c.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), cs.n), cs.d, out, 1e-6) == Result::Ok,
+          "circle offset by a parallel plane (either normal sign): succeeds");
+    double worst = 0.0;
+    const Interval dom = out.Domain();
+    for (int i = 0; i <= 400; ++i) {
+      const Point3d p = out.PointAt(dom.min + (dom.max - dom.min) * i / 400.0);
+      worst = std::max(worst, std::fabs(p.DistanceTo(Point3d(1, 2, 3)) - cs.expected));
+      worst = std::max(worst, std::fabs(p.z - 3.0));
+    }
+    std::printf("  circle d=%g n.z=%g expected radius %g worst %g cv=%d\n", cs.d, cs.n.z, cs.expected, worst, out.ControlPointCount());
+    Check(worst < 1e-9, "circle offset by a parallel plane: every sample at the closed-form radius and in the circle's plane to 1e-9");
+    Check(out.IsRational() && out.ControlPointCount() == 9, "circle offset by a parallel plane: exact 9-CV rational circle, not a refit");
+  }
+  // Same result as the single-plane overload.
+  {
+    NurbsCurve a, b;
+    Check(c.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 0.7, a, 1e-6) == Result::Ok && c.OffsetInPlane(0.7, b, 1e-6) == Result::Ok,
+          "both overloads succeed on the circle");
+    double worst = 0.0;
+    for (int i = 0; i <= 100; ++i) {
+      const double t = a.Domain().min + (a.Domain().max - a.Domain().min) * i / 100.0;
+      worst = std::max(worst, a.PointAt(t).DistanceTo(b.PointAt(t)));
+    }
+    Check(worst < 1e-9, "explicit parallel plane and the single-plane overload give the identical circle");
+  }
+  // Partial arc keeps its angular extent; refusal when the radius reaches zero.
+  {
+    const ON_Arc arc(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 4.0), ON_Interval(0.3, 0.3 + 100.0 * ON_PI / 180.0));
+    ON_NurbsCurve raw;
+    arc.GetNurbForm(raw);
+    NurbsCurve ac;
+    ac.raw() = raw;
+    NurbsCurve out;
+    Check(ac.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0, out, 1e-6) == Result::Ok, "arc offset by a parallel plane succeeds");
+    const Point3d s0 = out.PointAt(out.Domain().min), s1 = out.PointAt(out.Domain().max);
+    Check(std::fabs(std::atan2(s0.y, s0.x) - 0.3) < 1e-9 && std::fabs(s0.DistanceTo(Point3d(0, 0, 0)) - 5.0) < 1e-9,
+          "arc offset: start point at the original start angle, radius 5");
+    Check(std::fabs(std::atan2(s1.y, s1.x) - (0.3 + 100.0 * ON_PI / 180.0)) < 1e-9 && std::fabs(s1.DistanceTo(Point3d(0, 0, 0)) - 5.0) < 1e-9,
+          "arc offset: end point at the original end angle (100 degree extent kept), radius 5");
+    NurbsCurve untouched = CircleCurve(ON_3dPoint(9, 9, 9), 1.0);
+    Check(ac.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), -4.0, untouched, 1e-6) == Result::Failed &&
+              untouched.PointAt(untouched.Domain().min).DistanceTo(Point3d(10, 9, 9)) < 1e-9,
+          "arc offset reaching radius zero is refused and leaves out unchanged");
+  }
+}
+
+void TestCircleOffsetByTiltedPlaneIsNotACircleAndMeetsToleranceAgainstClosedForm() {
+  const double r = 5.0, d = 0.7;
+  const ON_Circle circ(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), r);
+  ON_NurbsCurve raw;
+  circ.GetNurbForm(raw);
+  NurbsCurve c;
+  c.raw() = raw;
+  const ON_3dVector n(0.6, 0.0, 0.8);
+  auto locus = [&](double theta) {
+    const ON_3dPoint p = circ.PointAt(theta);
+    ON_3dVector tangent = circ.TangentAt(theta);
+    ON_3dVector dir = ON_CrossProduct(tangent, n);
+    dir.Unitize();
+    return Point3d(p + d * dir);
+  };
+  // Closed-form proof the locus is not a circle: two "diameters" of the
+  // locus differ (sqrt((2r + 1.6d)^2 + (1.2d)^2) vs 2r + 2d), so no circle - hence no exact
+  // rational quadratic - can represent it.
+  const double diam_a = locus(0.0).DistanceTo(locus(ON_PI));
+  const double diam_b = locus(0.5 * ON_PI).DistanceTo(locus(1.5 * ON_PI));
+  const double diam_a_closed = std::sqrt((2 * r + 1.6 * d) * (2 * r + 1.6 * d) + (1.2 * d) * (1.2 * d));
+  Check(std::fabs(diam_a - diam_a_closed) < 1e-9 && std::fabs(diam_b - (2 * r + 2.0 * d)) < 1e-9 && std::fabs(diam_a - diam_b) > 0.2,
+        "tilted-plane circle offset: exact locus has unequal perpendicular diameters (sqrt((2r+1.6d)^2+(1.2d)^2)=11.150 vs 2r+2d=11.4), so it is not a circle");
+  for (double tol : {1e-4, 1e-6}) {
+    NurbsCurve out;
+    Check(c.OffsetInPlane(ON_Plane(ON_3dPoint(0, 0, 0), n), d, out, tol) == Result::Ok, "tilted-plane circle offset succeeds");
+    double worst = 0.0;
+    for (int i = 0; i <= 1500; ++i) {
+      const Point3d e = locus(2.0 * ON_PI * i / 1500.0);
+      worst = std::max(worst, out.ClosestPoint(e, 2000).DistanceTo(e));
+    }
+    std::printf("  tilted circle tol=%g cv=%d worst distance exact-locus-to-result %g\n", tol, out.ControlPointCount(), worst);
+    Check(worst <= tol, "tilted-plane circle offset: 1501 exact closed-form locus points all within the stated tolerance of the result");
+    const Point3d q0 = locus(0.0), q1 = locus(0.5 * ON_PI), q2 = locus(ON_PI), q3 = locus(1.5 * ON_PI);
+    Check(out.ClosestPoint(q0, 2000).DistanceTo(q0) <= tol && out.ClosestPoint(q1, 2000).DistanceTo(q1) <= tol &&
+              out.ClosestPoint(q2, 2000).DistanceTo(q2) <= tol && out.ClosestPoint(q3, 2000).DistanceTo(q3) <= tol,
+          "tilted-plane circle offset: the result passes through all four diameter-defining locus points within tol");
+  }
+  // Non-planar cubic, plane z: the same measured-deviation standard.
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(1, 1, 1), Point3d(2, -1, 2), Point3d(3, 2, -1)};
+  const NurbsCurve nc = NurbsCurve::FromControlPoints(cps, 3);
+  const ON_Plane zplane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  for (double tol : {1e-3, 1e-5}) {
+    NurbsCurve out;
+    Check(nc.OffsetInPlane(zplane, 0.2, out, tol) == Result::Ok, "non-planar cubic offset succeeds");
+    double worst = 0.0;
+    const Interval dom = nc.Domain();
+    for (int i = 0; i <= 1500; ++i) {
+      const double t = dom.min + (dom.max - dom.min) * i / 1500.0;
+      Vector3d dir = ON_CrossProduct(nc.TangentAt(t), zplane.zaxis);
+      dir.Unitize();
+      const Point3d e = nc.PointAt(t) + 0.2 * dir;
+      worst = std::max(worst, out.ClosestPoint(e, 2000).DistanceTo(e));
+    }
+    std::printf("  nonplanar cubic tol=%g cv=%d worst %g\n", tol, out.ControlPointCount(), worst);
+    Check(worst <= tol, "non-planar cubic explicit-plane offset: 1501 exact locus points within the stated tolerance");
+  }
+}
+
+}  // namespace offset_unified_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -94755,6 +95184,19 @@ int main() {
           sweep_closure_tests::TestSweep1SectionsClosedRailNonPlanarRingIsAValidSolid);
   RunTest("sweep_closure_tests::TestSweep1TwistOnAClosedRailIsAllowedForWholeTurns",
           sweep_closure_tests::TestSweep1TwistOnAClosedRailIsAllowedForWholeTurns);
+
+  RunTest("offset_unified_tests::TestOffsetFreeformBumpHonoursStatedToleranceAgainstExactLocus",
+          offset_unified_tests::TestOffsetFreeformBumpHonoursStatedToleranceAgainstExactLocus);
+  RunTest("offset_unified_tests::TestOffsetWavyAndRationalFreeformBothSignsWithinTolerance",
+          offset_unified_tests::TestOffsetWavyAndRationalFreeformBothSignsWithinTolerance);
+  RunTest("offset_unified_tests::TestOffsetAnalyticFamiliesAreExactAndRational",
+          offset_unified_tests::TestOffsetAnalyticFamiliesAreExactAndRational);
+  RunTest("offset_unified_tests::TestOffsetRefusalsCarryAReasonAndNeverReturnADegradedBody",
+          offset_unified_tests::TestOffsetRefusalsCarryAReasonAndNeverReturnADegradedBody);
+  RunTest("offset_unified_tests::TestCircleOffsetByParallelPlaneIsExactConcentricCircle",
+          offset_unified_tests::TestCircleOffsetByParallelPlaneIsExactConcentricCircle);
+  RunTest("offset_unified_tests::TestCircleOffsetByTiltedPlaneIsNotACircleAndMeetsToleranceAgainstClosedForm",
+          offset_unified_tests::TestCircleOffsetByTiltedPlaneIsNotACircleAndMeetsToleranceAgainstClosedForm);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

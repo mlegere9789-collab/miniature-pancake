@@ -2222,7 +2222,66 @@ class NurbsSurface {
   // to this method's own sample-grid ceiling - a freeform surface whose
   // true offset needs more control points than that sample density can
   // resolve - never silently hands back an out-of-tolerance fit.
-  Result OffsetRefit(double distance, NurbsSurface& out, double tolerance = -1.0) const;
+  //
+  // `achieved_deviation` (optional, default null): if non-null and the
+  // call returns Result::Ok, receives the worst-case distance, measured
+  // on the independent half-step-offset verification grid described
+  // above, between the returned surface and the TRUE offset locus
+  // `PointAt(u, v) + distance * NormalAt(u, v)` (always <= the
+  // `tolerance` actually used; 0.0 for the `distance == 0.0` copy).
+  // This is a measurement against the exact parallel-surface definition
+  // (true surface normal at every sample), not against
+  // OffsetApproximate()'s first-order per-control-point translation,
+  // which this method never uses as a fit target.
+  Result OffsetRefit(double distance, NurbsSurface& out, double tolerance = -1.0,
+                     double* achieved_deviation = nullptr) const;
+
+  // What Offset() did, so a caller can tell an exact construction from a
+  // tolerance-bounded fit and read the reason for a refusal.
+  struct OffsetInfo {
+    // True: `out` is the exact closed-form offset (OffsetAnalytic():
+    // plane/sphere/cylinder/cone/torus, rational form reproduced
+    // exactly, partial-patch extent kept). False: `out` is a
+    // non-rational tolerance-bounded fit (OffsetRefit()).
+    bool exact = false;
+    // Worst measured distance from `out` to the true offset locus
+    // (0.0 when `exact`; the OffsetRefit() verification-grid maximum
+    // otherwise, always <= the tolerance used).
+    double achieved_deviation = 0.0;
+    // The tolerance actually applied (the requested one, or the
+    // size-based default when the request was <= 0).
+    double tolerance_used = 0.0;
+    // Empty on success. On Result::Failed: why the offset was refused
+    // and `out` left unchanged.
+    std::string refusal_reason;
+  };
+
+  // The general untrimmed-surface offset entry point: picks the exact
+  // construction when one exists and a tolerance-controlled fit
+  // otherwise, never a silent approximation.
+  //  - A surface recognised (within `tolerance`) as a plane, sphere,
+  //    cylinder, cone or torus goes to OffsetAnalytic(): exact, the
+  //    rational analytic form reproduced exactly (`info->exact = true`).
+  //    If OffsetAnalytic() refuses a recognised analytic surface - the
+  //    offset radius would reach zero or below, a torus would become a
+  //    self-intersecting spindle, a cone patch straddles its apex, or a
+  //    partial patch straddles a circle parametrization's seam - this
+  //    returns Result::Failed with that stated in `refusal_reason`; it
+  //    does NOT fall through to the fit, because a fit of a surface
+  //    whose true offset folds through its own axis would be a
+  //    degraded body.
+  //  - Any other surface (freeform, rational or not) goes to
+  //    OffsetRefit(): the fit error is controlled by `tolerance` and is
+  //    measured against the exact parallel-surface locus
+  //    (`info->achieved_deviation <= info->tolerance_used`); the fold-
+  //    through-curvature guard refuses an infeasible distance, and a
+  //    surface whose offset needs more control points than the sample-
+  //    grid ceiling resolves is refused rather than returned out of
+  //    tolerance.
+  // `distance == 0.0` returns an exact copy. Throws
+  // std::invalid_argument if `distance` is not finite. `tolerance <= 0`
+  // selects tolerance::DistanceForSize() of the bounding-box diagonal.
+  Result Offset(double distance, NurbsSurface& out, double tolerance = -1.0, OffsetInfo* info = nullptr) const;
 
   // Writes this surface as a single real ISO-10303-21 (STEP) physical file
   // holding one `B_SPLINE_SURFACE_WITH_KNOTS` entity (wrapped in the complex

@@ -881,12 +881,13 @@ Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) 
   return already_bezier ? Result::NoOpAlreadySatisfied : Result::Ok;
 }
 
-Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tolerance) const {
+Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tolerance, double* achieved_deviation) const {
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::OffsetRefit: distance must be finite");
   }
   if (distance == 0.0) {
     out.surface_ = surface_;
+    if (achieved_deviation != nullptr) *achieved_deviation = 0.0;
     return Result::Ok;
   }
 
@@ -1027,6 +1028,7 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
       }
       if (worst <= tol) {
         out.surface_ = result;
+        if (achieved_deviation != nullptr) *achieved_deviation = worst;
         return Result::Ok;
       }
     }
@@ -1035,6 +1037,58 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
     cv_u = std::min(cv_u * 2, max_cv_u);
     cv_v = std::min(cv_v * 2, max_cv_v);
   }
+}
+
+Result NurbsSurface::Offset(double distance, NurbsSurface& out, double tolerance, OffsetInfo* info) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::Offset: distance must be finite");
+  }
+  OffsetInfo local;
+  OffsetInfo& report = info != nullptr ? *info : local;
+  report = OffsetInfo{};
+
+  ON_BoundingBox bbox;
+  surface_.GetBoundingBox(bbox, false);
+  const double tol = tolerance > 0.0 ? tolerance : dino8::kernel::tolerance::DistanceForSize(bbox.Diagonal().Length());
+  report.tolerance_used = tol;
+
+  if (distance == 0.0) {
+    out.surface_ = surface_;
+    report.exact = true;
+    return Result::Ok;
+  }
+
+  // The same five families OffsetAnalytic() constructs exactly, recognised
+  // with the same tolerance it will use.
+  const bool analytic = surface_.IsPlanar(nullptr, tol) || surface_.IsSphere(nullptr, tol) ||
+                        surface_.IsCylinder(nullptr, tol) || surface_.IsCone(nullptr, tol) ||
+                        surface_.IsTorus(nullptr, tol);
+  if (analytic) {
+    NurbsSurface exact_out;
+    if (OffsetAnalytic(distance, exact_out, tol) == Result::Ok) {
+      out.surface_ = exact_out.surface_;
+      report.exact = true;
+      return Result::Ok;
+    }
+    report.refusal_reason =
+        "recognised plane/sphere/cylinder/cone/torus: the exact offset was refused (offset radius would "
+        "reach zero or below, a torus would become a self-intersecting spindle, a cone patch straddles its "
+        "apex, or a partial patch straddles a circle parametrization seam); no fitted substitute is returned "
+        "for an analytic surface whose true offset folds through its own axis";
+    return Result::Failed;
+  }
+
+  double deviation = 0.0;
+  if (OffsetRefit(distance, out, tol, &deviation) == Result::Ok) {
+    report.exact = false;
+    report.achieved_deviation = deviation;
+    return Result::Ok;
+  }
+  report.refusal_reason =
+      "freeform offset refused: either |distance| reaches the local radius of curvature (the true offset "
+      "locus folds through itself), or the offset needs more control points than the sample-grid ceiling can "
+      "resolve at the requested tolerance";
+  return Result::Failed;
 }
 
 namespace {

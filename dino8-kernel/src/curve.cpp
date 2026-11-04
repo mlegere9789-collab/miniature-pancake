@@ -3071,6 +3071,38 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
     }
   }
 
+  // --- Circular arc / full circle, offset by a plane PARALLEL to its own --
+  // The one foreign-plane case where the offset of a circle stays a
+  // circle: `TangentAt(t) x plane.zaxis` with `plane.zaxis` parallel or
+  // anti-parallel to the arc's own axis is the in-plane radial direction
+  // (unit length at every t), so the locus is a concentric arc of radius
+  // `radius +/- distance` with the same angular extent - the identical
+  // exact construction the single-plane overload uses. Any other plane
+  // normal makes `|TangentAt x zaxis|` vary with t, so the locus is not a
+  // circle (and not a rational quadratic) and falls to the sampled fit.
+  {
+    ON_Arc arc;
+    if (curve_.IsArc(nullptr, &arc, tol)) {
+      const double alignment = std::abs(ON_DotProduct(arc.plane.zaxis, plane.zaxis));
+      if (alignment >= 1.0 - 1e-12) {
+        const Interval arc_dom = Domain();
+        const double arc_mid = 0.5 * (arc_dom.min + arc_dom.max);
+        Vector3d offset_dir = ON_CrossProduct(TangentAt(arc_mid), plane.zaxis);
+        Vector3d radial = PointAt(arc_mid) - arc.Center();
+        if (!offset_dir.Unitize() || !radial.Unitize()) return Result::Failed;
+        const double sign = OffsetSignAlong(offset_dir, radial);
+        const double new_radius = arc.radius + sign * distance;
+        if (!(new_radius > 0.0)) return Result::Failed;
+        const ON_Circle new_circle(arc.plane, new_radius);
+        const ON_Arc new_arc(new_circle, arc.DomainRadians());
+        ON_NurbsCurve nc;
+        if (new_arc.GetNurbForm(nc) == 0) return Result::Failed;
+        out.curve_ = nc;
+        return Result::Ok;
+      }
+    }
+  }
+
   // --- Everything else, planar-in-its-own-plane or genuinely 3D --------
   // No `IsPlanar()` precondition here - the whole point of this overload
   // is offsetting along a caller-chosen plane's normal even when this

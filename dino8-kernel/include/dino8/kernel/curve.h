@@ -1900,16 +1900,27 @@ class NurbsCurve {
   //    exact miter formula only lands on both adjacent offset lines when
   //    every edge is perpendicular to `plane.zaxis`, which a foreign
   //    plane doesn't guarantee.
-  //  - Every other curve (including a circular arc, and including a
-  //    genuinely non-planar curve) falls to the same sampled,
-  //    tolerance-driven `FitLeastSquares()` refit the other overload's
-  //    "general planar curve" case uses, with `plane.zaxis` in place of
-  //    this curve's own fitted `zaxis` at every sample, and the same
-  //    curvature fold guard (`CurvatureAt(t)` against `distance`) at
-  //    each sample. An arc is not special-cased exactly here: offsetting
-  //    a circle along a foreign plane's normal is not itself a circle
-  //    in general, so it takes the same approximate path as any other
-  //    curve.
+  //  - A circular arc or full circle whose axis is PARALLEL (or
+  //    anti-parallel) to `plane.zaxis` offsets exactly: `TangentAt(t) x
+  //    plane.zaxis` is then the unit in-plane radial direction at every
+  //    t, so the locus is the concentric arc of radius `radius +/-
+  //    distance` with the same angular extent (rational, the same
+  //    construction as the single-plane overload; refused with
+  //    `Result::Failed` if that radius would reach zero or below).
+  //  - Every other curve (including a circular arc offset by a plane that
+  //    is NOT parallel to its own, and including a genuinely non-planar
+  //    curve) falls to the same sampled, tolerance-driven
+  //    `FitLeastSquares()` refit the other overload's "general planar
+  //    curve" case uses, with `plane.zaxis` in place of this curve's own
+  //    fitted `zaxis` at every sample, and the same curvature fold guard
+  //    (`CurvatureAt(t)` against `distance`) at each sample. For a
+  //    non-parallel plane the exact locus of a circle is provably not a
+  //    circle (the offset direction `T x n` has length `sqrt(nz^2 +
+  //    (nx cos t + ny sin t)^2)`, which varies with t, so the unit-
+  //    normalised locus is not a constant-radius curve and is not a
+  //    rational quadratic): no exact circular result exists, and the
+  //    refit's `tolerance` bounds the measured distance from the exact
+  //    locus.
   //
   // Returns `Result::Failed`, `out` left unchanged, if `TangentAt(t) x
   // plane.zaxis` is degenerate (zero) at any sample - the curve's own
