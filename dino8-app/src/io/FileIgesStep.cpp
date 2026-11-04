@@ -330,7 +330,7 @@ bool IsAffinePatch(const ON_NurbsSurface& s, ON_3dPoint& origin, ON_3dVector& du
 
 // Closest-point samples (u, v) along a 3D curve, continuous across seams
 // within the curve (a jump of more than half a period is a wrap, undone).
-void SamplePcurve(const ON_NurbsSurface& s, const ON_NurbsCurve& c3, double tol, std::vector<ON_2dPoint>& pts) {
+void SamplePcurve(const ON_NurbsSurface& s, const ON_NurbsCurve& c3, double tol, std::vector<ON_2dPoint>& pts, const UV* start_seed = nullptr) {
   const int spans = std::max(1, c3.SpanCount());
   int n = std::clamp(spans * std::max(2, c3.Degree()) * 6, 12, 256);
   if (c3.Degree() == 1 && c3.SpanCount() == 1) n = 4;
@@ -343,7 +343,10 @@ void SamplePcurve(const ON_NurbsSurface& s, const ON_NurbsCurve& c3, double tol,
   const bool closed_u = s.IsClosed(0), closed_v = s.IsClosed(1);
   for (int i = 0; i <= n; ++i) {
     const ON_3dPoint p = c3.PointAt(dom.ParameterAt(static_cast<double>(i) / n));
-    UV uv = ClosestUV(s, p, have_prev ? &prev : nullptr, tol);
+    // The first point of a loop segment starts where the previous segment ended: seed with that (the grid seed alone
+    // landed on the far side of the seam / the wrong grid cell on a 2e5-long cylinder).
+    const UV* seed = have_prev ? &prev : start_seed;
+    UV uv = ClosestUV(s, p, seed, tol);
     if (have_prev) {
       if (closed_u) uv.u -= std::round((uv.u - prev.u) / du.Length()) * du.Length();
       if (closed_v) uv.v -= std::round((uv.v - prev.v) / dv.Length()) * dv.Length();
@@ -445,7 +448,12 @@ bool ProjectLoopToSurface(const ON_NurbsSurface& s, std::vector<LoopSeg>& segs, 
   const ON_Interval dd[2] = {s.Domain(0), s.Domain(1)};
   const bool closed[2] = {s.IsClosed(0), s.IsClosed(1)};
   std::vector<std::vector<ON_2dPoint>> all(segs.size());
-  for (size_t k = 0; k < segs.size(); ++k) SamplePcurve(s, segs[k].c3, tol, all[k]);
+  for (size_t k = 0; k < segs.size(); ++k) {
+    UV seed;
+    const bool have_seed = k > 0 && !all[k - 1].empty();
+    if (have_seed) { seed.u = all[k - 1].back().x; seed.v = all[k - 1].back().y; }
+    SamplePcurve(s, segs[k].c3, tol, all[k], have_seed ? &seed : nullptr);
+  }
   for (int c = 0; c < 2; ++c) {
     if (!closed[c]) continue;
     const double period = dd[c].Length();
