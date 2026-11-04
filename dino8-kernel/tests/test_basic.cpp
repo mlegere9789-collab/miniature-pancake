@@ -102396,8 +102396,12 @@ Brep DiagBox(double x0, double y0, double z0, double x1, double y1, double z1, d
 
 bool Has(const std::string& s, const char* needle) { return s.find(needle) != std::string::npos; }
 
-// Measured top height (bounding-box max z) of a body.
-double TopZ(const Brep& b) { return b.raw().BoundingBox().m_max.z; }
+// Measured top height (largest vertex z) of a body.
+double TopZ(const Brep& b) {
+  double z = -1e300;
+  for (int i = 0; i < b.raw().m_V.Count(); ++i) z = std::max(z, b.raw().m_V[i].point.z);
+  return z;
+}
 
 // --- gap-healing -------------------------------------------------------------
 
