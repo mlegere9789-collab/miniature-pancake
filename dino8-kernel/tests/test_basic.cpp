@@ -106389,6 +106389,9 @@ std::string ReasonOf(const std::function<void()>& f) {
   return "";
 }
 
+// Volume of the tessellated closed B-rep at a tight adaptive chord tolerance (the way the single-edge fillet tests measure it).
+double MeshVolume(const Brep& b) { return b.TessellateToClosedMeshAdaptive(1e-7).Volume(); }
+
 // The cylinder blend faces of `b` with their radius and axis direction.
 struct Cyl { double radius; ON_3dVector axis; };
 std::vector<Cyl> CylinderFaces(const Brep& b) {
@@ -106408,7 +106411,7 @@ void TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox() {
   const Brep one = FilletConvexEdge(box, Point3d(0, 0, 0), Point3d(0, 0, L), r1);
   Check(one.raw().IsValid() && one.raw().IsSolid() && one.FaceCount() == 7, "[chain] first blend: valid closed solid with 7 faces");
   const double v1 = L * L * L - L * r1 * r1 * a;
-  Check(std::fabs(one.Volume() - v1) < 1e-6 * v1, ("[chain] first blend volume " + std::to_string(one.Volume()) + " vs closed form " + std::to_string(v1)).c_str());
+  Check(std::fabs(MeshVolume(one) - v1) < 1e-6 * v1, ("[chain] first blend volume " + std::to_string(MeshVolume(one)) + " vs closed form " + std::to_string(v1)).c_str());
 
   Brep two;
   const std::string why = ReasonOf([&] { two = FilletConvexEdge(one, Point3d(0, L, L), Point3d(L, L, L), r2); });
@@ -106416,13 +106419,13 @@ void TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox() {
   if (!why.empty()) return;
   Check(two.raw().IsValid() && two.raw().IsSolid() && two.FaceCount() == 8, "[chain] chained blend: valid closed solid with 8 faces (box 6 + 2 blends)");
   const double v2 = L * L * L - L * r1 * r1 * a - L * r2 * r2 * a;
-  Check(std::fabs(two.Volume() - v2) < 1e-6 * v2,
-        ("[chain] chained volume " + std::to_string(two.Volume()) + " vs closed form " + std::to_string(v2)).c_str());
+  Check(std::fabs(MeshVolume(two) - v2) < 1e-6 * v2,
+        ("[chain] chained volume " + std::to_string(MeshVolume(two)) + " vs closed form " + std::to_string(v2)).c_str());
   Check(two.TessellateToClosedMesh(48, 12).IsClosedManifold(), "[chain] the chained result tessellates to a closed manifold mesh");
   // The result is the same body as filleting both edges in one FilletConvexEdges call only if the radii agree; with different radii
   // compare against the OTHER order (second edge first): the two orders must give the same volume.
   const Brep other = FilletConvexEdge(FilletConvexEdge(box, Point3d(0, L, L), Point3d(L, L, L), r2), Point3d(0, 0, 0), Point3d(0, 0, L), r1);
-  Check(std::fabs(other.Volume() - two.Volume()) < 1e-6 * v2 && other.FaceCount() == two.FaceCount(),
+  Check(std::fabs(MeshVolume(other) - MeshVolume(two)) < 1e-6 * v2 && other.FaceCount() == two.FaceCount(),
         "[chain] fillet order does not matter: edge A then B equals edge B then A (volume and face count)");
   // Both blends are exact cylinders: radius r1 along z, radius r2 along x.
   const std::vector<Cyl> cyl = CylinderFaces(two);
@@ -106434,7 +106437,7 @@ void TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox() {
   Check(cyl.size() == 2 && n1 == 1 && n2 == 1, "[chain] two exact cylinders: radius 1.0 along z and radius 1.5 along x");
   // Negative control: the oracle discriminates (the volume of the wrong second radius is NOT within tolerance).
   const double wrong = L * L * L - L * r1 * r1 * a - L * (1.1 * r2) * (1.1 * r2) * a;
-  Check(std::fabs(two.Volume() - wrong) > 1e-4 * v2, "[chain] negative control: a 10% larger second radius would NOT match the volume");
+  Check(std::fabs(MeshVolume(two) - wrong) > 1e-4 * v2, "[chain] negative control: a 10% larger second radius would NOT match the volume");
 }
 
 void TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend() {
