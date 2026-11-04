@@ -2911,6 +2911,26 @@ std::vector<int> ShellFaces(const StepModel& m, int shell_id) {
   return {};
 }
 
+// Debug (DINO8_STEP_DEBUG): why a trimmed face was rejected - the brep's own IsValid text, then each loop segment's
+// 3D and parameter-space end points, one line each, all on stderr.
+void StepDebugFace(int face_id, int fi, ON_Brep& test, const ON_NurbsSurface& srf, const std::vector<std::vector<LoopSeg>>& loops) {
+  ON_wString txt;
+  ON_TextLog tl(txt);
+  const bool ok = test.IsValid(&tl);
+  ON_String u8(txt);
+  std::string t = u8.Length() ? std::string(static_cast<const char*>(u8)) : std::string();
+  for (char& ch : t) if (ch == '\n' || ch == '\r') ch = '|';
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  std::fprintf(stderr, "STEPDBG f%06d fi=%d valid=%d loops=%zu srf deg %d,%d cv %d,%d closed %d,%d dom u[%g,%g] v[%g,%g] why: %.700s\n", face_id, fi, (int)ok, loops.size(), srf.Degree(0), srf.Degree(1),
+               srf.CVCount(0), srf.CVCount(1), (int)srf.IsClosed(0), (int)srf.IsClosed(1), du.Min(), du.Max(), dv.Min(), dv.Max(), t.c_str());
+  for (size_t li = 0; li < loops.size(); ++li)
+    for (size_t k = 0; k < loops[li].size(); ++k) {
+      const LoopSeg& g = loops[li][k];
+      const ON_3dPoint a3 = g.c3.PointAtStart(), b3 = g.c3.PointAtEnd(), a2 = g.c2.PointAtStart(), b2 = g.c2.PointAtEnd();
+      std::fprintf(stderr, "STEPDBG f%06d L%zu s%02zu 3d (%.5g,%.5g,%.5g)->(%.5g,%.5g,%.5g) uv (%.6g,%.6g)->(%.6g,%.6g)\n", face_id, li, k, a3.x, a3.y, a3.z, b3.x, b3.y, b3.z, a2.x, a2.y, b2.x, b2.y);
+    }
+}
+
 bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImportStats& stats) {
   const StepEntity* e = m.Get(face_id);
   const StepPart* fp = e ? e->Find("ADVANCED_FACE") : nullptr;
@@ -2956,11 +2976,7 @@ bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImp
   // handler above.
   if (fi >= 0) test.SetTrimIsoFlags();
   if (fi < 0 || !test.IsValid()) {
-    if (std::getenv("DINO8_STEP_DEBUG")) {
-      ON_TextLog tl;
-      std::fprintf(stderr, "STEPDBG face #%d fi=%d loops=%zu segs0=%zu srf deg %d,%d cv %d,%d closed %d,%d\n", face_id, fi, loops.size(), loops.empty() ? 0 : loops[0].size(), srf.Degree(0), srf.Degree(1), srf.CVCount(0), srf.CVCount(1), (int)srf.IsClosed(0), (int)srf.IsClosed(1));
-      std::fprintf(stderr, "STEPDBG valid=%d\n", (int)test.IsValid(&tl));
-    }
+    if (std::getenv("DINO8_STEP_DEBUG")) StepDebugFace(face_id, fi, test, srf, loops);
     ON_Brep fresh;
     fresh.NewFace(srf);
     brep.Append(fresh);

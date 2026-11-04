@@ -12745,14 +12745,18 @@ RTA_N="$(cat "$TMPW/rtaparts/count")"
 RTA_OUT=""
 for ((rta_i = 1; rta_i <= RTA_N; rta_i++)); do
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    RTA_PART="$(timeout 900 "$BIN" --smoke 60 --script "$TMPW/rtaparts/p$rta_i.txt" 2>&1)" || { echo "$RTA_PART"; echo "FAIL: RTA_ script part $rta_i exited non-zero"; exit 1; }
+    RTA_PART="$(DINO8_STEP_DEBUG=1 timeout 900 "$BIN" --smoke 60 --script "$TMPW/rtaparts/p$rta_i.txt" 2>&1)" || { echo "$RTA_PART"; echo "FAIL: RTA_ script part $rta_i exited non-zero"; exit 1; }
   else
-    RTA_PART="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/rtaparts/p$rta_i.txt" 2>&1)" || { echo "$RTA_PART"; echo "FAIL: RTA_ script part $rta_i exited non-zero"; exit 1; }
+    RTA_PART="$(DINO8_STEP_DEBUG=1 timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/rtaparts/p$rta_i.txt" 2>&1)" || { echo "$RTA_PART"; echo "FAIL: RTA_ script part $rta_i exited non-zero"; exit 1; }
   fi
   RTA_OUT+="$RTA_PART"$'
 '
 done
 rtablock() { awk -v name="$1" '$0 ~ ("Unknown command: RTAB_" name "$") { on = 1; next } on && /Unknown command: RTAB_/ { exit } on { print }' <<<"$RTA_OUT"; }
+# TEMPORARY (STEPDBG): debug lines of selected imports as FAIL lines so the CI summary shows them. Remove before finishing.
+for rta_dbg in satcyl_xstp sblcut_xstp rvr_xstp sblcut_xigs; do
+  rtablock "$rta_dbg" | { grep -E 'STEPDBG|IGESDBG' || true; } | head -14 | sed -E "s/^/FAIL STEPDBG_$rta_dbg /"
+done
 # rtasig BLOCK: "n nvalid nbad nclosed vol area x0 y0 z0 x1 y1 z1" (missing numbers print as -)
 rtasig() {
   local blk="$1" n nv nb nc vol area bb
