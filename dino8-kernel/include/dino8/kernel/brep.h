@@ -1706,6 +1706,21 @@ class Brep {
   // m_bRev flags. Pure rotations/translations and positive-determinant
   // scales are untouched by this.
   //
+  // Non-uniform scale and shear (a general affine map, IsRigid() == 0):
+  // NURBS surfaces are affine-invariant, so every face follows exactly -
+  // planes stay planes, a rational sphere becomes an exact ellipsoid, a
+  // cylinder scaled differently in x/y an exact elliptic cylinder
+  // (verified by evaluating the transformed surfaces against the closed-
+  // form quadric equations) - and Volume() becomes exactly det * the
+  // original. Per-face analytic records are kept where the image is still
+  // analytic: a planar face is re-extracted as an exact PlanarFace, a
+  // cylinder scaled equally in x/y (about its axis) is re-extracted as a
+  // CylindricalFace with the scaled radius, and a face whose image is no
+  // longer a circular quadric (an elliptic cylinder, an ellipsoid) makes
+  // MixedFaces() refuse with a reason rather than mislabel it.
+  // A singular xform (determinant zero relative to its axis lengths - it
+  // would flatten the body) is refused outright.
+  //
   // Throws std::invalid_argument if `xform` is not a valid transform
   // (`ON_Xform::IsValid()` is false - a NaN/unset coefficient - or the
   // underlying `ON_Brep::Transform()` returns false) - the same failure

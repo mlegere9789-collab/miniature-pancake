@@ -789,6 +789,12 @@ class Mesh {
   // Rotation(angle_radians, axis, center) member sets a rotation - rather
   // than this class adding narrower Translate()/Rotate()/Scale() wrappers
   // around the same thing.
+  //
+  // Under a handedness-reversing `xform` (mirror, or an odd number of
+  // negative scale factors; `Determinant() < 0`) the face windings are
+  // reversed so the result is not inside-out: a mirrored closed box keeps
+  // Volume() > 0 and outward winding normals (measured before: -1000 for
+  // the 10-cube), the mesh counterpart of Brep::Transform()'s m_bRev fix-up.
   Mesh Transform(const ON_Xform& xform) const;
 
   // Writes this mesh as a plain-text Wavefront .obj file (`v x y z`
