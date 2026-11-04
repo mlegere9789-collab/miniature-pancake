@@ -11,6 +11,7 @@
 // the app plugs in through LispHost.
 #pragma once
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -30,11 +31,11 @@ struct Func {
 };
 
 struct Value {
-  enum class T { Nil, True, Int, Real, Str, Sym, List, Subr, Lambda };
+  enum class T { Nil, True, Int, Real, Str, Sym, List, Subr, Lambda, Error };
   T t = T::Nil;
   long long i = 0;
   double r = 0;
-  std::string s;                 // string text, symbol name (lowercase), subr name
+  std::string s;                 // string text, symbol name (lowercase), subr name, error message (Error)
   std::shared_ptr<List> l;       // list elements
   std::shared_ptr<Func> f;       // lambda
   bool dotted = false;           // a List of exactly two elements printed and taken apart as a dotted pair (a . b)
@@ -72,8 +73,15 @@ struct LispHost {
   std::function<std::string(long long id, const std::vector<DxfItem>& items)> ent_mod;  // "" ok, else the reason it was refused
   std::function<bool(long long id)> ent_del;
   std::function<std::optional<long long>(std::optional<long long> after)> ent_next;  // nullopt after: the first entity
-  // The next queued typed input for getint / getreal / getpoint / getstring / getkword (nullopt: none left).
-  std::function<std::optional<std::string>()> next_input;
+  // The next typed input for getint / getreal / getpoint / getstring / getkword (nullopt: none to give).
+  // `prompt` and `kind` (i r d p k s) tell an interactive host what to ask for; it may block until the
+  // user answers, and throws LispError("Function cancelled") when the user cancels.
+  std::function<std::optional<std::string>(const std::string& prompt, char kind)> next_input;
+  // (entmake alist): creates the entity; "" when done, otherwise why nothing was made. The new entity is (entlast).
+  std::function<std::string(const std::vector<DxfItem>& items)> ent_make;
+  std::function<bool(long long id)> ent_upd;                       // (entupd e): redraw; false: no such entity
+  // The entity as polylines in the XY plane (a point is a one-vertex polyline), for windowed (ssget "W" ...).
+  std::function<bool(long long id, std::vector<std::vector<std::array<double, 2>>>& out)> ent_outline;
 };
 
 class Interp {
@@ -107,10 +115,12 @@ class Interp {
  private:
   friend struct Builtins;
   Value EvalList(const Value& form);
+  Value HandleTopError(const LispError& e);
   Value CallUser(const Func& f, List args);
   void Emit(const std::string& text);
 
   std::map<std::string, Value> globals_;
+  bool in_error_handler_ = false;
   int init_bits_ = 0;             // (initget bits "Keyword ...") applies to the next get* call only
   std::string init_kw_;
   std::string out_buf_;

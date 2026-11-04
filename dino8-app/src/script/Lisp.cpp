@@ -171,6 +171,12 @@ struct Parser {
             case 't': out += '\t'; break;
             case 'e': out += '\x1b'; break;
             case 'r': out += '\r'; break;
+            case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': {   // \nnn: a character by its octal code
+              int code = e - '0';
+              for (int k = 0; k < 2 && pos < src.size() && src[pos] >= '0' && src[pos] <= '7'; ++k) code = code * 8 + (src[pos++] - '0');
+              out += static_cast<char>(code);
+              break;
+            }
             default: out += e; break;
           }
         } else {
@@ -188,8 +194,9 @@ struct Parser {
     char* end = nullptr;
     const long long iv = std::strtoll(tok.c_str(), &end, 10);
     if (end && *end == 0) return Int(iv);
+    const bool numeric_chars = tok.find_first_not_of("0123456789+-.eE") == std::string::npos;   // no hex, inf or nan
     const double dv = std::strtod(tok.c_str(), &end);
-    if (end && *end == 0 && (std::isdigit(static_cast<unsigned char>(tok.back())) || tok.back() == '.')) return Real(dv);
+    if (numeric_chars && end && *end == 0 && (std::isdigit(static_cast<unsigned char>(tok.back())) || tok.back() == '.')) return Real(dv);
     const std::string low = Lower(tok);
     if (low == "nil") return Nil();
     if (low == "t") return True();
@@ -214,9 +221,9 @@ Value DxfToValue(const DxfItem& d) {
 }
 
 // An association list (as (entget ...) returns it) back into groups.
-std::vector<DxfItem> ValueToDxf(const Value& alist) {
+std::vector<DxfItem> ValueToDxf(const char* fn, const Value& alist) {
   std::vector<DxfItem> out;
-  for (const Value& e : NeedList("entmod", alist)) {
+  for (const Value& e : NeedList(fn, alist)) {
     if (!IsList(e) || e.l->size() < 2 || (*e.l)[0].t != Value::T::Int) Fail("bad association list: every entry must be (code . value) or (code x y z)");
     DxfItem d;
     d.code = static_cast<int>((*e.l)[0].i);
@@ -270,33 +277,172 @@ bool WildMatch(std::string pattern, const std::string& s) {
   return neg ? !hit : hit;
 }
 
-// Does the entity (as an association list) satisfy every pair of the filter list?
-bool EntMatches(const List& ent, const List& filter) {
-  for (const Value& f : filter) {
-    if (!IsList(f) || f.l->empty() || (*f.l)[0].t != Value::T::Int) Fail("bad ssget filter: every entry must be (code . value)");
-    const long long code = (*f.l)[0].i;
-    if (code == -4) Fail("ssget filter operators (-4 . \"<OR\") are not supported; every pair must hold");
-    bool any = false;
-    bool saw = false;
-    for (const Value& e : ent) {
-      if (!IsList(e) || e.l->empty() || (*e.l)[0].t != Value::T::Int || (*e.l)[0].i != code) continue;
-      saw = true;
-      if (f.dotted || f.l->size() == 2) {
-        const Value& want = (*f.l)[1];
-        const Value& have = (*e.l)[1];
-        if (want.t == Value::T::Str && have.t == Value::T::Str) any = any || WildMatch(want.s, have.s);
-        else if (IsNum(want) && IsNum(have)) any = any || std::fabs(D(want) - D(have)) <= 1e-9;
-      } else if (f.l->size() == e.l->size()) {
-        bool same = true;
-        for (size_t k = 1; k < f.l->size(); ++k) same = same && IsNum((*f.l)[k]) && IsNum((*e.l)[k]) && std::fabs(D((*f.l)[k]) - D((*e.l)[k])) <= 1e-9;
-        any = any || same;
-      }
-    }
-    // A BYLAYER entity carries no group 62; the filter value 256 (BYLAYER) selects it.
-    if (!saw && code == 62 && f.l->size() == 2 && IsNum((*f.l)[1]) && D((*f.l)[1]) == 256) any = true;
-    if (!any) return false;
+// ---- ssget filters with -4 operators, windowed selection ------------------------------
+bool RelOk(const std::string& op, const Value& have, const Value& want) {
+  if (op == "*") return true;
+  if (have.t == Value::T::Str && want.t == Value::T::Str) {
+    if (op == "=") return WildMatch(want.s, have.s);
+    if (op == "/=") return !WildMatch(want.s, have.s);
+    Fail("ssget filter: the relational operator \"" + op + "\" compares numbers, not strings");
   }
+  if (IsNum(have) && IsNum(want)) {
+    const double a = D(have), b = D(want), eps = 1e-9;
+    if (op == "=") return std::fabs(a - b) <= eps;
+    if (op == "/=") return std::fabs(a - b) > eps;
+    if (op == "<") return a < b - eps;
+    if (op == ">") return a > b + eps;
+    if (op == "<=") return a <= b + eps;
+    if (op == ">=") return a >= b - eps;
+    Fail("ssget filter: unknown relational operator \"" + op + "\"");
+  }
+  return false;
+}
+
+// One (code . value) or (code x y z) filter entry against the entity, under relational operator `op`
+// ("=", "/=", "<", ">", "<=", ">=", "*", or for a point three of them joined by commas).
+bool PairOk(const List& ent, const Value& f, const std::string& op) {
+  if (!IsList(f) || f.l->empty() || (*f.l)[0].t != Value::T::Int) Fail("bad ssget filter: every entry must be (code . value)");
+  const long long code = (*f.l)[0].i;
+  const bool scalar = f.dotted || f.l->size() == 2;
+  std::vector<std::string> ops;
+  {
+    size_t from = 0;
+    for (;;) {
+      const size_t c = op.find(',', from);
+      ops.push_back(op.substr(from, c == std::string::npos ? std::string::npos : c - from));
+      if (c == std::string::npos) break;
+      from = c + 1;
+    }
+  }
+  if (scalar && ops.size() != 1) Fail("ssget filter: a comma operator \"" + op + "\" needs a point group");
+  if (!scalar && ops.size() != 1 && ops.size() != f.l->size() - 1) Fail("ssget filter: the operator \"" + op + "\" needs one part per coordinate");
+  bool saw = false;
+  for (const Value& e : ent) {
+    if (!IsList(e) || e.l->empty() || (*e.l)[0].t != Value::T::Int || (*e.l)[0].i != code) continue;
+    saw = true;
+    if (scalar) {
+      if (RelOk(ops[0], (*e.l)[1], (*f.l)[1])) return true;
+    } else {
+      if (e.l->size() < f.l->size()) continue;
+      bool all = true;
+      for (size_t k = 1; k < f.l->size() && all; ++k) all = RelOk(ops.size() == 1 ? ops[0] : ops[k - 1], (*e.l)[k], (*f.l)[k]);
+      if (all) return true;
+    }
+  }
+  // A BYLAYER entity carries no group 62; it counts as 256 (BYLAYER).
+  if (!saw && code == 62 && scalar) return RelOk(ops[0], Int(256), (*f.l)[1]);
+  return false;
+}
+
+bool EvalItem(const List& ent, const List& f, size_t& i);
+
+// Evaluates the items from i up to the closing token `closer` (consumed), or to the end when `closer` is empty.
+std::vector<bool> EvalItems(const List& ent, const List& f, size_t& i, const std::string& closer) {
+  std::vector<bool> r;
+  while (i < f.size()) {
+    const Value& e = f[i];
+    if (!closer.empty() && IsList(e) && e.l->size() == 2 && (*e.l)[0].t == Value::T::Int && (*e.l)[0].i == -4 &&
+        (*e.l)[1].t == Value::T::Str && Upper((*e.l)[1].s) == closer) {
+      ++i;
+      return r;
+    }
+    r.push_back(EvalItem(ent, f, i));
+  }
+  if (!closer.empty()) Fail("ssget filter: the group is not closed (missing " + closer + ")");
+  return r;
+}
+
+bool EvalItem(const List& ent, const List& f, size_t& i) {
+  const Value& e = f[i];
+  if (!IsList(e) || e.l->empty() || (*e.l)[0].t != Value::T::Int) Fail("bad ssget filter: every entry must be (code . value)");
+  if ((*e.l)[0].i != -4) { ++i; return PairOk(ent, e, "="); }
+  if (e.l->size() != 2 || (*e.l)[1].t != Value::T::Str) Fail("bad ssget filter: (-4 . \"operator\") needs a string");
+  const std::string op = Upper((*e.l)[1].s);
+  ++i;
+  if (op == "<AND" || op == "<OR" || op == "<XOR" || op == "<NOT") {
+    const std::string closer = op.substr(1) + ">";
+    const std::vector<bool> r = EvalItems(ent, f, i, closer);
+    size_t n = 0;
+    for (bool b : r) n += b ? 1 : 0;
+    if (op == "<AND") return n == r.size();
+    if (op == "<OR") return n > 0;
+    if (op == "<XOR") return n % 2 == 1;
+    return n != r.size() || r.empty();   // <NOT: true unless every operand holds (an empty group is true)
+  }
+  if (op == "AND>" || op == "OR>" || op == "XOR>" || op == "NOT>") Fail("ssget filter: " + op + " without its opening " + "<" + op.substr(0, op.size() - 1));
+  if (i >= f.size()) Fail("ssget filter: the operator \"" + op + "\" needs a group after it");
+  if (IsList(f[i]) && !f[i].l->empty() && (*f[i].l)[0].t == Value::T::Int && (*f[i].l)[0].i == -4) Fail("ssget filter: the operator \"" + op + "\" needs a group after it, not another operator");
+  const Value& g = f[i];
+  ++i;
+  return PairOk(ent, g, op);
+}
+
+bool EntMatches(const List& ent, const List& filter) {
+  size_t i = 0;
+  const std::vector<bool> r = EvalItems(ent, filter, i, "");
+  for (bool b : r) if (!b) return false;
   return true;
+}
+
+using P2 = std::array<double, 2>;
+using Outline = std::vector<std::vector<P2>>;
+
+double Orient(P2 a, P2 b, P2 c) { return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]); }
+bool OnSeg(P2 a, P2 b, P2 p) {
+  const double eps = 1e-9;
+  return std::fabs(Orient(a, b, p)) <= eps * (1 + std::fabs(b[0] - a[0]) + std::fabs(b[1] - a[1])) &&
+         p[0] >= std::min(a[0], b[0]) - eps && p[0] <= std::max(a[0], b[0]) + eps &&
+         p[1] >= std::min(a[1], b[1]) - eps && p[1] <= std::max(a[1], b[1]) + eps;
+}
+// Segments ab and cd share a point (touching counts).
+bool SegTouch(P2 a, P2 b, P2 c, P2 d) {
+  const double o1 = Orient(a, b, c), o2 = Orient(a, b, d), o3 = Orient(c, d, a), o4 = Orient(c, d, b);
+  if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0))) return true;
+  return OnSeg(a, b, c) || OnSeg(a, b, d) || OnSeg(c, d, a) || OnSeg(c, d, b);
+}
+// Segments cross at a point interior to both (no touching, no sharing an end).
+bool SegCrossStrict(P2 a, P2 b, P2 c, P2 d) {
+  const double o1 = Orient(a, b, c), o2 = Orient(a, b, d), o3 = Orient(c, d, a), o4 = Orient(c, d, b);
+  return ((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0));
+}
+// Inside or on the boundary of the closed polygon.
+bool InPoly(const std::vector<P2>& poly, P2 p) {
+  bool in = false;
+  const size_t n = poly.size();
+  for (size_t i = 0, j = n - 1; i < n; j = i++) {
+    if (OnSeg(poly[j], poly[i], p)) return true;
+    if ((poly[i][1] > p[1]) != (poly[j][1] > p[1]) &&
+        p[0] < (poly[j][0] - poly[i][0]) * (p[1] - poly[i][1]) / (poly[j][1] - poly[i][1]) + poly[i][0])
+      in = !in;
+  }
+  return in;
+}
+
+// mode 'W': every part of the entity inside the polygon; 'C': some part inside or crossing; 'F': crosses the open polyline.
+bool OutlineSelected(const Outline& out, const std::vector<P2>& poly, char mode) {
+  const size_t n = poly.size();
+  const size_t edges = mode == 'F' ? n - 1 : n;
+  auto edge = [&](size_t k) { return std::make_pair(poly[k], poly[(k + 1) % n]); };
+  if (mode == 'W') {
+    for (const auto& pl : out) {
+      for (const P2& p : pl) if (!InPoly(poly, p)) return false;
+      for (size_t s = 0; s + 1 < pl.size(); ++s)
+        for (size_t k = 0; k < edges; ++k) { auto e = edge(k); if (SegCrossStrict(pl[s], pl[s + 1], e.first, e.second)) return false; }
+    }
+    return !out.empty();
+  }
+  for (const auto& pl : out) {
+    if (mode == 'C') for (const P2& p : pl) if (InPoly(poly, p)) return true;
+    for (size_t s = 0; s + 1 < pl.size(); ++s)
+      for (size_t k = 0; k < edges; ++k) { auto e = edge(k); if (SegTouch(pl[s], pl[s + 1], e.first, e.second)) return true; }
+  }
+  return false;
+}
+
+P2 NeedPt2(const char* fn, const Value& v) {
+  const List& l = NeedList(fn, v);
+  if (l.size() < 2 || !IsNum(l[0]) || !IsNum(l[1])) Fail(std::string("bad point in ") + fn + ": a list of two or three numbers is needed");
+  return {D(l[0]), D(l[1])};
 }
 
 // ---- typed input (getint, getreal, ...) -------------------------------------
@@ -473,7 +619,7 @@ struct Builtins {
     if (kind == 'k' && kws.empty()) { in.Emit("getkword: call initget with the keywords first\n"); return Nil(); }
     if (!msg.empty()) in.Emit(msg + "\n");
     for (;;) {
-      std::optional<std::string> tok = in.host.next_input ? in.host.next_input() : std::nullopt;
+      std::optional<std::string> tok = in.host.next_input ? in.host.next_input(msg, kind) : std::nullopt;
       if (!tok) return Nil();
       const std::string& s = *tok;
       if (IsCancelTok(s)) Fail("Function cancelled");
@@ -584,6 +730,7 @@ struct Builtins {
         case Value::T::Real: return Sym("real");
         case Value::T::Str: return Sym("str");
         case Value::T::List: return Sym(a[0].pickset ? "pickset" : "list");
+        case Value::T::Error: return Sym("vl-catch-all-apply-error");
         default: return Sym("subr");
       }
     };
@@ -600,6 +747,7 @@ struct Builtins {
     t["cadr"] = [](Interp&, List& a) { return Cxr("cadr", "ad", a); };
     t["cddr"] = [](Interp&, List& a) { return Cxr("cddr", "dd", a); };
     t["caddr"] = [](Interp&, List& a) { return Cxr("caddr", "add", a); };
+    t["cadddr"] = [](Interp&, List& a) { return Cxr("cadddr", "addd", a); };
     t["caar"] = [](Interp&, List& a) { return Cxr("caar", "aa", a); };
     t["append"] = [](Interp&, List& a) { List l; for (const Value& v : a) for (const Value& x : NeedList("append", v)) l.push_back(x); return MakeList(l); };
     t["reverse"] = [](Interp&, List& a) { NeedArgs("reverse", a, 1, 1); List l = NeedList("reverse", a[0]); std::reverse(l.begin(), l.end()); return MakeList(l); };
@@ -703,7 +851,15 @@ struct Builtins {
       NeedArgs("load", a, 1, 2);
       const std::string& path = NeedStr("load", a[0]);
       std::string text;
-      if (!in.host.read_file || !in.host.read_file(path, text)) Fail("can't open file: " + path);
+      bool found = in.host.read_file && in.host.read_file(path, text);
+      if (!found && in.host.read_file && path.find('.') == std::string::npos) found = in.host.read_file(path + ".lsp", text);   // (load "tools")
+      if (!found) {
+        if (a.size() == 2) return a[1];   // (load "f" onfailure)
+        Fail("can't open file: " + path);
+      }
+      if (a.size() == 2) {
+        try { return in.EvalText(text); } catch (const LispError&) { return a[1]; }
+      }
       return in.EvalText(text);
     };
     // the drawing
@@ -740,28 +896,56 @@ struct Builtins {
       return id ? Int(*id) : Nil();
     };
     t["ssget"] = [](Interp& in, List& a) {
-      // (ssget "X" [filter]) every entity that passes the filter; (ssget "_L") the last entity.
-      static const char* kOnly = "only (ssget \"X\") is supported";
-      if (a.empty() || a.size() > 2 || a[0].t != Value::T::Str) Fail(kOnly);
-      const std::string mode = Upper(a[0].s);
-      if (mode == "_L" && a.size() == 1) {
+      // (ssget "X" [filter])  (ssget "_L")  (ssget "W"|"C" p1 p2 [filter])  (ssget "WP"|"CP"|"F" points [filter])
+      static const char* kUsage = "ssget: the modes are \"X\" [filter], \"_L\", \"W\"/\"C\" p1 p2 [filter], \"WP\"/\"CP\"/\"F\" points [filter]";
+      if (a.empty() || a[0].t != Value::T::Str) Fail(kUsage);
+      std::string mode = Upper(a[0].s);
+      if (!mode.empty() && mode[0] == '_') mode.erase(0, 1);
+      Value filter = Nil();
+      std::vector<P2> poly;
+      char wmode = 0;
+      if (mode == "X") {
+        if (a.size() > 2) Fail("ssget \"X\" takes at most a filter list");
+        if (a.size() == 2) filter = a[1];
+      } else if (mode == "L") {
+        if (a.size() != 1) Fail("ssget \"_L\" takes no further arguments");
         if (!in.host.last_entity) return Nil();
         std::optional<long long> id = in.host.last_entity();
         return id ? MakeSet({Int(*id)}) : Nil();
+      } else if (mode == "W" || mode == "C") {
+        if (a.size() < 3 || a.size() > 4) Fail("ssget \"" + mode + "\" needs two corner points: (ssget \"" + mode + "\" p1 p2 [filter])");
+        const P2 p1 = NeedPt2("ssget", a[1]), p2 = NeedPt2("ssget", a[2]);
+        const double x0 = std::min(p1[0], p2[0]), x1 = std::max(p1[0], p2[0]), y0 = std::min(p1[1], p2[1]), y1 = std::max(p1[1], p2[1]);
+        if (x0 == x1 || y0 == y1) Fail("ssget \"" + mode + "\": the two corners must span an area");
+        poly = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
+        wmode = mode[0];
+        if (a.size() == 4) filter = a[3];
+      } else if (mode == "WP" || mode == "CP" || mode == "F") {
+        if (a.size() < 2 || a.size() > 3) Fail("ssget \"" + mode + "\" needs a list of points: (ssget \"" + mode + "\" points [filter])");
+        for (const Value& pt : NeedList("ssget", a[1])) poly.push_back(NeedPt2("ssget", pt));
+        if (poly.size() < (mode == "F" ? 2u : 3u)) Fail("ssget \"" + mode + "\" needs at least " + (mode == "F" ? "two" : "three") + " points");
+        wmode = mode == "WP" ? 'W' : mode == "CP" ? 'C' : 'F';
+        if (a.size() == 3) filter = a[2];
+      } else {
+        Fail(kUsage);
       }
-      if (mode != "X") Fail(kOnly);
       if (!in.host.all_entities) return Nil();
-      const bool filtered = a.size() == 2 && !IsNil(a[1]);
-      if (filtered) NeedList("ssget", a[1]);
+      const bool filtered = !IsNil(filter);
+      if (filtered) NeedList("ssget", filter);
       if (filtered && !in.host.ent_get) Fail("entity access is not available here");
+      if (wmode && !in.host.ent_outline) Fail("windowed selection is not available here");
       List ids;
       for (long long id : in.host.all_entities()) {
+        if (wmode) {
+          Outline out;
+          if (!in.host.ent_outline(id, out) || !OutlineSelected(out, poly, wmode)) continue;
+        }
         if (filtered) {
           std::vector<DxfItem> items;
           if (!in.host.ent_get(id, items)) continue;
           List ent;
           for (const DxfItem& d : items) ent.push_back(DxfToValue(d));
-          if (!EntMatches(ent, Items(a[1]))) continue;
+          if (!EntMatches(ent, Items(filter))) continue;
         }
         ids.push_back(Int(id));
       }
@@ -827,7 +1011,7 @@ struct Builtins {
     // (entmod alist): applies the changed groups; returns alist, or nil when the entity or a change is refused.
     t["entmod"] = [](Interp& in, List& a) {
       NeedArgs("entmod", a, 1, 1);
-      const std::vector<DxfItem> items = ValueToDxf(a[0]);
+      const std::vector<DxfItem> items = ValueToDxf("entmod", a[0]);
       long long id = 0;
       bool have = false;
       for (const DxfItem& d : items) if (d.code == -1 && d.k == DxfItem::K::Int) { id = d.i; have = true; }
@@ -873,6 +1057,53 @@ struct Builtins {
       List l = NeedList("subst", a[2]);
       for (Value& v : l) if (Equal(v, a[1])) v = a[0];
       return MakeList(l);
+    };
+    t["entmake"] = [](Interp& in, List& a) {
+      NeedArgs("entmake", a, 1, 1);
+      const std::vector<DxfItem> items = ValueToDxf("entmake", a[0]);
+      if (!in.host.ent_make) return Nil();
+      const std::string why = in.host.ent_make(items);
+      if (!why.empty()) { in.Emit("entmake: " + why + "\n"); return Nil(); }
+      return a[0];
+    };
+    t["entupd"] = [](Interp& in, List& a) {
+      NeedArgs("entupd", a, 1, 1);
+      const long long id = NeedEname("entupd", a[0]);
+      return in.host.ent_upd && in.host.ent_upd(id) ? Int(id) : Nil();
+    };
+    // errors: (error "msg") stops the program; *error* and vl-catch-all-apply handle it
+    t["error"] = [](Interp&, List& a) { NeedArgs("error", a, 1, 1); Fail(NeedStr("error", a[0])); return Nil(); };
+    t["vl-catch-all-apply"] = [](Interp& in, List& a) {
+      NeedArgs("vl-catch-all-apply", a, 2, 2);
+      const List args = NeedList("vl-catch-all-apply", a[1]);
+      try {
+        return in.Apply(a[0], args);
+      } catch (const LispError& e) {
+        Value v;
+        v.t = Value::T::Error;
+        v.s = e.what();
+        return v;
+      }
+    };
+    t["vl-catch-all-error-p"] = [](Interp&, List& a) { NeedArgs("vl-catch-all-error-p", a, 1, 1); return Bool(a[0].t == Value::T::Error); };
+    t["vl-catch-all-error-message"] = [](Interp&, List& a) {
+      NeedArgs("vl-catch-all-error-message", a, 1, 1);
+      if (a[0].t != Value::T::Error) Fail("bad argument type: vl-catch-all-apply-error: " + Interp::Format(a[0], true) + " in vl-catch-all-error-message");
+      return Str(a[0].s);
+    };
+    t["boundp"] = [](Interp& in, List& a) {
+      NeedArgs("boundp", a, 1, 1);
+      if (a[0].t != Value::T::Sym) Fail("bad argument type: symbolp: " + Interp::Format(a[0], true) + " in boundp");
+      auto it = in.Globals().find(a[0].s);
+      return Bool(it != in.Globals().end() && !IsNil(it->second));
+    };
+    t["angle"] = [](Interp&, List& a) {
+      NeedArgs("angle", a, 2, 2);
+      const List& p = NeedList("angle", a[0]); const List& q = NeedList("angle", a[1]);
+      if (p.size() < 2 || q.size() < 2) Fail("bad point argument");
+      double r = std::atan2(NeedNum("angle", q[1]) - NeedNum("angle", p[1]), NeedNum("angle", q[0]) - NeedNum("angle", p[0]));
+      if (r < 0) r += 2 * 3.14159265358979323846;
+      return Real(r);
     };
     // the vl-* subset
     t["vl-load-com"] = [](Interp&, List&) { return True(); };
@@ -1045,12 +1276,32 @@ void Interp::FlushOutput() {
   }
 }
 
-Value Interp::EvalText(const std::string& text) {
+// An error reaching the top level: when the user defined (defun *error* (msg) ...) it is called with the
+// message and the program stops there quietly, as in AutoLISP; otherwise the error goes on to the host.
+Value Interp::HandleTopError(const LispError& e) {
+  auto it = globals_.find("*error*");
+  if (in_error_handler_ || it == globals_.end() || it->second.t != Value::T::Lambda) throw e;
+  struct Guard { bool& f; ~Guard() { f = false; } } guard{in_error_handler_};
+  in_error_handler_ = true;
+  steps_ = 0;
+  const Value fn = it->second;
+  Apply(fn, {Str(e.what())});
+  return Nil();
+}
+
+Value Interp::EvalText(const std::string& text_in) {
+  std::string text = text_in;
+  if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);   // a UTF-8 byte order mark
   List forms = ParseAll(text);   // a syntax error anywhere runs nothing
   const bool top = depth_ == 0;
   if (top) steps_ = 0;
   Value last = Nil();
-  for (const Value& f : forms) last = Eval(f);
+  try {
+    for (const Value& f : forms) last = Eval(f);
+  } catch (const LispError& e) {
+    if (!top) throw;
+    return HandleTopError(e);
+  }
   return last;
 }
 
@@ -1062,8 +1313,14 @@ bool Interp::IsDefined(const std::string& name) const {
 Value Interp::CallNamed(const std::string& name) {
   auto it = globals_.find(Lower(name));
   if (it == globals_.end() || it->second.t != Value::T::Lambda) Fail("no function definition: " + Upper(name));
-  if (depth_ == 0) steps_ = 0;
-  return Apply(it->second, {});
+  const bool top = depth_ == 0;
+  if (top) steps_ = 0;
+  try {
+    return Apply(it->second, {});
+  } catch (const LispError& e) {
+    if (!top) throw;
+    return HandleTopError(e);
+  }
 }
 
 Value Interp::Eval(const Value& v) {
@@ -1253,6 +1510,7 @@ std::string Interp::Format(const Value& v, bool quote_strings) {
     }
     case Value::T::Subr: return "#<SUBR @" + v.s + ">";
     case Value::T::Lambda: return "#<USUBR>";
+    case Value::T::Error: return "#<%catch-all-apply-error%>";
   }
   return "";
 }
