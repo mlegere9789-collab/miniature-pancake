@@ -1938,16 +1938,16 @@ Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8,
 // a copy.
 int OpenSewnKeyholes(Brep& brep);
 
-// Collapses naked edges that are SHORTER than `tolerance` (sampled polyline length). After SewTJunctions +
+// Collapses naked edges that are SHORTER than 3 * `tolerance` (sampled polyline length). After SewTJunctions +
 // JoinNakedEdges, the parallel-axis cylinder Booleans and a cylinder pierced by a box keep one to a few such
 // slivers (0.0004 .. 0.0126 long on r = 1 bodies) with no partner for the weld to pair them with; the body is
 // then "not a closed solid" although it is closed to within the sew tolerance. For each sliver the trim is
 // deleted with its edge, its two vertices are merged (ON_Brep::CombineCoincidentVertices; a sliver whose ends
 // were already welded into one vertex just disappears), and the 2D ends of the two neighbouring trims are
 // snapped to their midpoint (as OpenSewnKeyholes() snaps the ends next to a slit); the merged vertex and the two
-// neighbour edges record the resulting gap as their tolerance. Does nothing (returns 0) unless EVERY naked edge
-// of the brep is shorter than `tolerance` - a longer gap is a genuine opening and is never papered over - and
-// skips a sliver whose neighbours are more than 3 * tolerance apart on the surface. Returns the number collapsed.
+// neighbour edges record the resulting gap as their tolerance. Longer naked edges are never touched (they stay naked,
+// so a genuine opening is still refused as not solid), and a sliver whose neighbours are more than 3 * tolerance
+// apart on the surface is skipped. Returns the number collapsed.
 int CollapseSliverNakedEdges(Brep& brep, double tolerance);
 
 // A sealed general-boolean result: `brep` is IsSolid() AND IsValid(), with
