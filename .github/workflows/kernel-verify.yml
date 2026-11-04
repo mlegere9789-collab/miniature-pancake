@@ -133,7 +133,9 @@ jobs:
               m = re.match(r'\s+(\S+)\s+(\d+)\s+(\d+)\s*$', line)
               if m: items.append((m.group(1), int(m.group(3)) - int(m.group(2)) + 1))
               else:
-                  m = re.match(r'\s+(\S+)\s*(.*)$', line)
+                  # section FILES (tests/sections/NN_name.sh) are listed as "  NAME /path/to/file.sh": schedule them too
+                  m = re.match(r'\s+(\S+)\s+(\S+\.sh)\s*$', line)
+                  if m: items.append((m.group(1), 150))
           items.sort(key=lambda t: -t[1])
           G = 12
           groups = [[] for _ in range(G)]; load = [0] * G
@@ -177,7 +179,7 @@ jobs:
         shell: bash
         timeout-minutes: 120
         run: |
-          find appbin -type f | head
+          find appbin -type f | head || true
           BIN=$(find appbin -type f -name Dino8 | head -1)
           JSON=$(find appbin -type f -name section_groups.json | head -1)
           chmod +x "$BIN"
