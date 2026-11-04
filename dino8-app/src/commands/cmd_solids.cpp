@@ -2519,7 +2519,35 @@ int JoinNakedEdgesHashed(ON_Brep& b, double tol) {
     // removes them and re-indexes.
     b.Compact();
     OrientBrepFaces(b);
-    b.SetTolerancesBoxesAndFlags();
+    // This openNURBS build's ON_Brep::SetEdgeTolerance only ever stores ON_UNSET_VALUE (the real implementation is an
+    // override of the full SDK), so SetTolerancesBoxesAndFlags() with its default bLazy = false left EVERY edge at
+    // -1.2e308 and Check (ON_Brep::IsValid) reported "brep.m_E[0] edge is not valid. edge.m_tolerance=-1.23432e+308"
+    // (measured on the cylinder's ToNURBS polysurface after the Compact fix). Each edge tolerance is therefore MEASURED:
+    // the largest distance of the surface points under the edge's trims (at 5 parameters) from the edge curve.
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      ON_BrepEdge& e = b.m_E[i];
+      if (e.m_edge_index < 0) continue;
+      double tol_e = 0.0;
+      for (int k = 0; k < e.m_ti.Count(); ++k) {
+        const int ti = e.m_ti[k];
+        if (ti < 0 || ti >= b.m_T.Count()) continue;
+        const ON_BrepTrim& tr = b.m_T[ti];
+        if (tr.m_li < 0 || tr.m_li >= b.m_L.Count()) continue;
+        const int fi = b.m_L[tr.m_li].m_fi;
+        if (fi < 0 || fi >= b.m_F.Count()) continue;
+        const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+        if (srf == nullptr || tr.TrimCurveOf() == nullptr) continue;
+        for (int j = 0; j <= 4; ++j) {
+          const ON_3dPoint uv = tr.PointAt(tr.Domain().ParameterAt(j / 4.0));
+          const ON_3dPoint sp = srf->PointAt(uv.x, uv.y);
+          double t = e.Domain().Min();
+          if (e.GetClosestPoint(sp, &t)) tol_e = std::max(tol_e, sp.DistanceTo(e.PointAt(t)));
+        }
+      }
+      e.m_tolerance = tol_e <= ON_ZERO_TOLERANCE ? 0.0 : 1.001 * tol_e;
+    }
+    b.SetVertexTolerances(false);
+    b.SetTolerancesBoxesAndFlags(false, false, false, true, true, true, true, true);
   }
   return joined;
 }
