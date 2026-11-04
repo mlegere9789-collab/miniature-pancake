@@ -99067,6 +99067,65 @@ void TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation() {
   Check(ok_why.empty(), ("[smooth 3 -> 9.5 on a 10-wide box] still builds a valid solid: " + ok_why).c_str());
 }
 
+// PER-EDGE RADII (FilletConvexEdgesRadii). Independent edges of one solid may carry different constant radii in a single
+// call; each removes exactly r^2 (1 - pi/4) L when its ends are flush with perpendicular faces (the same closed form the
+// single-edge tests use, summed, since non-interacting fillets share no geometry), and the result is a valid closed solid.
+// A trihedral corner whose three edge fillets have different radii is NOT a sphere (the three cylinder axes are skew) and
+// is refused with a reason that says so, never mis-built; the equal-radius corner is still the exact sphere.
+void TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRefused() {
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::FilletConvexEdgesRadii;
+  using dino8::kernel::RadiusEdgeSpec;
+  const double L = 10.0, k = 1.0 - ON_PI / 4.0;
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  auto removed_of = [&](const Brep& f) { return 1000.0 - f.TessellateToClosedMeshAdaptive(1e-6).Volume(); };
+  auto closed_solid = [&](const Brep& f) {
+    bool oriented = false, has_boundary = true;
+    return f.raw().IsValid() && f.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary && f.raw().IsSolid();
+  };
+  struct Case { const char* name; std::vector<RadiusEdgeSpec> edges; double want; };
+  const std::vector<Case> cases = {
+      {"two opposite vertical edges, radii 1 and 2",
+       {{Point3d(10, 10, 0), Point3d(10, 10, 10), 1.0}, {Point3d(0, 0, 0), Point3d(0, 0, 10), 2.0}},
+       (1.0 + 4.0) * k * L},
+      {"two vertical edges sharing the x = 10 face, radii 2 and 3",
+       {{Point3d(10, 10, 0), Point3d(10, 10, 10), 2.0}, {Point3d(10, 0, 0), Point3d(10, 0, 10), 3.0}},
+       (4.0 + 9.0) * k * L},
+  };
+  for (const Case& c : cases) {
+    const std::string tag = std::string("[per-edge radii: ") + c.name + "] ";
+    std::string why;
+    Brep f;
+    try { f = FilletConvexEdgesRadii(box, c.edges); } catch (const std::exception& e) { why = e.what(); }
+    Check(why.empty(), (tag + "builds: " + why).c_str());
+    if (!why.empty()) continue;
+    Check(closed_solid(f), (tag + "valid oriented closed 2-manifold solid").c_str());
+    const double removed = removed_of(f);
+    std::printf("%s removed %.6f closed form %.6f rel diff %.3e\n", tag.c_str(), removed, c.want, std::fabs(removed - c.want) / c.want);
+    Check(std::fabs(removed - c.want) < 1e-3 * c.want, (tag + "removed volume equals sum r^2 (1 - pi/4) L within 0.1%").c_str());
+    Check(f.MixedFaces().cylindrical.size() == c.edges.size(), (tag + "one cylinder per edge").c_str());
+  }
+  // all-equal radii through the per-edge entry point == FilletConvexEdges (a trihedral corner stays the exact sphere)
+  {
+    const std::vector<std::pair<Point3d, Point3d>> corner = {{Point3d(10, 10, 10), Point3d(0, 10, 10)}, {Point3d(10, 10, 10), Point3d(10, 0, 10)}, {Point3d(10, 10, 10), Point3d(10, 10, 0)}};
+    const Brep a = FilletConvexEdges(box, corner, 2.0);
+    const Brep b = FilletConvexEdgesRadii(box, {{corner[0].first, corner[0].second, 2.0}, {corner[1].first, corner[1].second, 2.0}, {corner[2].first, corner[2].second, 2.0}});
+    Check(closed_solid(b) && b.MixedFaces().spherical.size() == 1, "[per-edge radii: equal radii at a corner] still the exact spherical corner");
+    Check(std::fabs(removed_of(a) - removed_of(b)) < 1e-9, "[per-edge radii: equal radii at a corner] same volume as FilletConvexEdges");
+  }
+  // different radii at one trihedral corner: refused, naming why
+  for (const std::vector<double>& r : {std::vector<double>{1.0, 2.0, 3.0}, std::vector<double>{2.0, 2.0, 2.5}}) {
+    const std::string tag = "[per-edge radii: corner radii " + std::to_string(r[0]).substr(0, 3) + " / " + std::to_string(r[1]).substr(0, 3) + " / " + std::to_string(r[2]).substr(0, 3) + "] ";
+    const std::string why = Why([&] {
+      (void)FilletConvexEdgesRadii(box, {{Point3d(10, 10, 10), Point3d(0, 10, 10), r[0]}, {Point3d(10, 10, 10), Point3d(10, 0, 10), r[1]}, {Point3d(10, 10, 10), Point3d(10, 10, 0), r[2]}});
+    });
+    Check(Has(why.c_str(), "different radii") && Has(why.c_str(), "not a sphere") && Has(why.c_str(), "setback vertex blend"),
+          (tag + "is refused saying the corner is not a sphere and needs a setback blend: " + why).c_str());
+  }
+  // non-positive radius
+  Check(!Why([&] { (void)FilletConvexEdgesRadii(box, {{Point3d(10, 10, 0), Point3d(10, 10, 10), 0.0}}); }).empty(), "[per-edge radii: radius 0] is refused");
+}
+
 }  // namespace blend_law_tests
 
 // ---------------------------------------------------------------------------
@@ -104889,6 +104948,7 @@ int main() {
   RunTest("blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls", blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls);
   RunTest("blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody", blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody);
   RunTest("blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation", blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation);
+  RunTest("blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRefused", blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRefused);
   RunTest("blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin", blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin);
 
   RunTest("units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions", units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions);

@@ -1535,6 +1535,31 @@ Brep FilletConcaveEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>
 // faces, and variable radii remain out of scope for this function.
 Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
+// One edge of a per-edge-radius multi-edge fillet: the edge's two endpoints (either order) and its own constant ball
+// radius.
+struct RadiusEdgeSpec {
+  Point3d p0, p1;
+  double radius = 0.0;
+};
+
+// FilletConvexEdges with ONE CONSTANT RADIUS PER EDGE: independent edges of the same solid may now carry different radii
+// in a single call (FilletConvexEdges is exactly this with every radius equal, and delegates here). Everything in
+// FilletConvexEdges' own doc comment holds per edge - the m == 1 end conditions (flush, perpendicular third face
+// notched, oblique third face crossed) use that edge's own radius, and the equal-radius trihedral sphere corner is
+// unchanged.
+//
+// THE NEW REFUSALS, each naming its reason:
+//   * the three filleted edges of a trihedral corner have DIFFERENT radii: the three cylinders' axes (each at distance
+//     r_k from its own two planes) are skew, no ball is tangent to all three, so the corner is not a sphere; it needs a
+//     setback vertex blend (a patch bounded by three non-great-circle curves, G1 to all three cylinders), which is
+//     not built. Throws std::invalid_argument ("... have different radii (a, b and c): a corner between fillets of
+//     unequal radii is not a sphere ... needs a setback vertex blend, which is not built").
+//   * two collinear edges that are one straight run (they meet where only those two are filleted) were given
+//     different radii: a step in radius along one edge is not a constant-radius fillet (use FilletConvexEdgeTapered /
+//     FilletConvexEdgeLaw for a radius that changes along an edge).
+// Radii that never meet at a vertex (or meet only at an m == 1 end) are fine and need no relation between them.
+Brep FilletConvexEdgesRadii(const Brep& solid, const std::vector<RadiusEdgeSpec>& edges);
+
 // MULTI-EDGE concave-edge fillet - FilletConcaveEdge's own counterpart to
 // FilletConvexEdges, letting several INDEPENDENT concave edges of the
 // same solid be filleted in one call (chaining single FilletConcaveEdge

@@ -4235,6 +4235,9 @@ struct MultiEdge {
   int idx_i = -1, idx_j = -1;
   Vector3d e, n_i, n_j, bis, m_i, m_j, frame_y;
   double L = 0.0, cosb = 0.0, sweep = 0.0, theta = 0.0;
+  // This edge's own (constant) fillet radius. FilletConvexEdges gives every edge the same one; the per-edge form
+  // (FilletConvexEdgesRadii) lets independent edges differ. Unused by the concave multi-edge function.
+  double radius = 0.0;
   // Set-backs along e from p0 (t_start) and toward p1 (t_end); the
   // cylinder spans [t_start, t_end], initially the whole edge.
   double t_start = 0.0, t_end = 0.0;
@@ -4250,9 +4253,14 @@ struct MultiEdge {
 struct ChainSeg {
   Point3d p0, p1;
   int idx_i = -1, idx_j = -1;
+  double radius = 0.0;  // the per-edge radius (FilletConvexEdgesRadii); 0 when the caller has none
 };
 
-ChainSeg ReverseSeg(const ChainSeg& s) { return ChainSeg{s.p1, s.p0, s.idx_j, s.idx_i}; }
+ChainSeg ReverseSeg(const ChainSeg& s) {
+  ChainSeg r{s.p1, s.p0, s.idx_j, s.idx_i};
+  r.radius = s.radius;
+  return r;
+}
 
 // If segA and segB (each tried in both of its two directions) concatenate
 // into one longer straight run - i.e. one ends exactly where the other
@@ -4332,10 +4340,11 @@ bool TryConcatChainSegs(const ChainSeg& segA, const ChainSeg& segB, double tol, 
 // the same check the un-merged path used to run inline.
 std::vector<ChainSeg> MergeTangentEdgeChains(const std::vector<Brep::PlanarFace>& faces,
                                               const std::vector<std::pair<Point3d, Point3d>>& edges, double tol,
-                                              const char* who) {
+                                              const char* who, const std::vector<double>* radii = nullptr) {
   std::vector<ChainSeg> segs;
   segs.reserve(edges.size());
-  for (const std::pair<Point3d, Point3d>& ed : edges) {
+  for (size_t ei = 0; ei < edges.size(); ++ei) {
+    const std::pair<Point3d, Point3d>& ed = edges[ei];
     for (const ChainSeg& other : segs) {
       if ((PointsEqual(other.p0, ed.first, tol) && PointsEqual(other.p1, ed.second, tol)) ||
           (PointsEqual(other.p0, ed.second, tol) && PointsEqual(other.p1, ed.first, tol))) {
@@ -4346,6 +4355,7 @@ std::vector<ChainSeg> MergeTangentEdgeChains(const std::vector<Brep::PlanarFace>
     s.p0 = ed.first;
     s.p1 = ed.second;
     FindEdgeFaces(faces, s.p0, s.p1, tol, who, s.idx_i, s.idx_j);
+    if (radii != nullptr) s.radius = (*radii)[ei];
     segs.push_back(s);
   }
   auto incident_count = [&](const Point3d& p) {
@@ -4363,6 +4373,17 @@ std::vector<ChainSeg> MergeTangentEdgeChains(const std::vector<Brep::PlanarFace>
         Point3d joint;
         if (!TryConcatChainSegs(segs[a], segs[b], tol, combined, joint)) continue;
         if (incident_count(joint) != 2) continue;
+        if (radii != nullptr && std::fabs(segs[a].radius - segs[b].radius) > 1e-12 * std::max(segs[a].radius, segs[b].radius)) {
+          char buf[400];
+          std::snprintf(buf, sizeof buf,
+                        "dino8::kernel::%s: two collinear edges that meet at a point where only these two are filleted were "
+                        "given different radii (%.6g and %.6g) - a step in radius along one straight run is not a "
+                        "constant-radius fillet; use FilletConvexEdgeTapered / FilletConvexEdgeLaw for a radius that "
+                        "changes along an edge",
+                        who, segs[a].radius, segs[b].radius);
+          throw std::invalid_argument(buf);
+        }
+        combined.radius = segs[a].radius;
         std::vector<ChainSeg> next;
         next.reserve(segs.size() - 1);
         for (size_t k = 0; k < segs.size(); ++k) {
@@ -4387,6 +4408,26 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   if (edges.empty()) {
     throw std::invalid_argument("dino8::kernel::FilletConvexEdges: at least one edge is required");
   }
+  std::vector<RadiusEdgeSpec> specs;
+  specs.reserve(edges.size());
+  for (const std::pair<Point3d, Point3d>& e : edges) specs.push_back({e.first, e.second, radius});
+  return FilletConvexEdgesRadii(solid, specs);
+}
+
+Brep FilletConvexEdgesRadii(const Brep& solid, const std::vector<RadiusEdgeSpec>& specs) {
+  if (specs.empty()) {
+    throw std::invalid_argument("dino8::kernel::FilletConvexEdges: at least one edge is required");
+  }
+  std::vector<std::pair<Point3d, Point3d>> edges;
+  std::vector<double> radii_in;
+  edges.reserve(specs.size());
+  for (const RadiusEdgeSpec& sp : specs) {
+    if (!(sp.radius > 0.0) || !std::isfinite(sp.radius)) {
+      throw std::invalid_argument("dino8::kernel::FilletConvexEdges: radius must be positive");
+    }
+    edges.emplace_back(sp.p0, sp.p1);
+    radii_in.push_back(sp.radius);
+  }
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
 
@@ -4395,11 +4436,13 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   // intermediate vertex that only splits one genuinely straight run into
   // several caller-supplied entries, so the m==1/m==3 vertex logic below
   // never sees a spurious m==2 "corner" there.)
-  const std::vector<ChainSeg> chained = MergeTangentEdgeChains(faces, edges, tol, "FilletConvexEdges");
+  const std::vector<ChainSeg> chained = MergeTangentEdgeChains(faces, edges, tol, "FilletConvexEdges", &radii_in);
   std::vector<MultiEdge> me;
   me.reserve(chained.size());
   for (const ChainSeg& ed : chained) {
+    const double radius = ed.radius;  // this edge's own radius (shadows nothing: the all-edges `radius` is gone)
     MultiEdge m;
+    m.radius = radius;
     m.p0 = ed.p0;
     m.p1 = ed.p1;
     m.idx_i = ed.idx_i;
@@ -4520,6 +4563,27 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
             "not touch that corner - inconsistent topology");
       }
     }
+    // A sphere corner needs ONE radius: the three edge fillets' ball centres are the points at distance r_k from
+    // their own two planes, and only for equal radii do the three axes meet in a point C that is at distance r from
+    // all three planes (so that one sphere is tangent to all three cylinders along great circles). With different
+    // radii the three cylinders' axes are skew, no sphere is tangent to all three, and the corner needs a setback
+    // blend (a patch bounded by three non-great-circle curves), which this function does not build.
+    const double radius = me[static_cast<size_t>(v.uses[0].first)].radius;
+    for (const std::pair<int, int>& u : v.uses) {
+      const double rk = me[static_cast<size_t>(u.first)].radius;
+      if (std::fabs(rk - radius) > 1e-12 * std::max(rk, radius)) {
+        char buf[600];
+        std::snprintf(buf, sizeof buf,
+                      "dino8::kernel::FilletConvexEdges: the three filleted edges meeting at the corner (%.6g, %.6g, %.6g) "
+                      "have different radii (%.6g, %.6g and %.6g): a corner between fillets of unequal radii is not a "
+                      "sphere - the three cylinders' axes are skew, so no ball is tangent to all of them - and needs a "
+                      "setback vertex blend, which is not built; give the three edges one radius, or fillet them with "
+                      "radii that do not meet at a vertex",
+                      v.p.x, v.p.y, v.p.z, me[static_cast<size_t>(v.uses[0].first)].radius,
+                      me[static_cast<size_t>(v.uses[1].first)].radius, me[static_cast<size_t>(v.uses[2].first)].radius);
+        throw std::invalid_argument(buf);
+      }
+    }
     const Vector3d na = faces[static_cast<size_t>(touching[0])].plane.zaxis;
     const Vector3d nb = faces[static_cast<size_t>(touching[1])].plane.zaxis;
     const Vector3d nc = faces[static_cast<size_t>(touching[2])].plane.zaxis;
@@ -4577,7 +4641,7 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
       // p0, along -e from p1.
       const double t = (u.second == 0) ? t_along_e : -t_along_e;
       const Vector3d perp = d - t_along_e * ed.e;
-      const Vector3d expected_perp = -ed.bis * (radius / ed.cosb);
+      const Vector3d expected_perp = -ed.bis * (ed.radius / ed.cosb);
       if (t <= tol || (perp - expected_perp).Length() > 1e3 * tol) {
         throw std::runtime_error("dino8::kernel::FilletConvexEdges: the corner ball center does not lie on an incident fillet's axis - please report this as a bug");
       }
@@ -4627,6 +4691,7 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 
   // --- re-trim every face by every filleted edge it carries ---
   for (const MultiEdge& ed : me) {
+    const double radius = ed.radius;
     const double offset = radius / ed.cosb;
     const Point3d contact_i0 = ed.p0 - ed.bis * offset + ed.n_i * radius;
     const Point3d contact_j1 = ed.p1 - ed.bis * offset + ed.n_j * radius;
@@ -4663,6 +4728,7 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   for (size_t k = 0; k < me.size(); ++k) {
     MultiEdge& ed = me[k];
     if (ed.sphere_at_p0 && ed.sphere_at_p1) continue;
+    const double radius = ed.radius;
     const ON_Plane& plane_i = faces[static_cast<size_t>(ed.idx_i)].plane;
     const ON_Plane& plane_j = faces[static_cast<size_t>(ed.idx_j)].plane;
     // D_i/D_j: contact_i(V)-V and contact_j(V)-V at ANY point V on the
@@ -4695,6 +4761,7 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   std::vector<Brep::CylindricalFace> cyls;
   cyls.reserve(me.size());
   for (const MultiEdge& ed : me) {
+    const double radius = ed.radius;
     Brep::CylindricalFace cf;
     const Point3d axis_p0 = ed.p0 - ed.bis * (radius / ed.cosb);
     cf.frame.origin = axis_p0 + ed.t_start * ed.e;
@@ -4709,6 +4776,7 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   }
   for (size_t k = 0; k < me.size(); ++k) {
     const MultiEdge& ed = me[k];
+    const double radius = ed.radius;
     const ON_Plane& plane_i = faces[static_cast<size_t>(ed.idx_i)].plane;
     const ON_Plane& plane_j = faces[static_cast<size_t>(ed.idx_j)].plane;
     const Point3d axis_p0 = ed.p0 - ed.bis * (radius / ed.cosb);
