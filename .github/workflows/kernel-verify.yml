@@ -118,7 +118,7 @@ jobs:
       - name: Configure
         run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
-        run: cmake --build dino8-app/build --target Dino8
+        run: cmake --build dino8-app/build   # all targets: smoke.sh sections use helper binaries (text3dm, hatch3dm, mesh_fixture_gen, ...)
       - name: Plan the section groups
         run: |
           python3 - <<'PY'
@@ -142,7 +142,11 @@ jobs:
         with:
           name: app-binary
           path: |
-            dino8-app/build/Dino8
+            dino8-app/build/
+            !dino8-app/build/**/*.o
+            !dino8-app/build/**/*.a
+            !dino8-app/build/CMakeFiles/**
+            !dino8-app/build/_deps/**
             section_groups.json
           retention-days: 3
 
