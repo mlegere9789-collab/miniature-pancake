@@ -1742,6 +1742,26 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
     if (owner >= 0) frags[static_cast<size_t>(owner)].holes.push_back(c);
     Fragment interior;
     interior.outer = c;
+    // The island's own boundary must run in the SAME rotational sense in (u, v) as the face's own boundary loop: the
+    // chain's direction is whatever the surface-surface tracer happened to walk it in (it starts wherever the curve was
+    // first found, e.g. at a point on the other operand's seam or at a domain's centre), and a wrongly wound island
+    // becomes a face whose trims run the SAME way along every edge it shares with its neighbour - an edge-consistent
+    // but un-oriented body that ON_Brep::IsSolid() rejects (measured: box x cylinder with the cylinder axis 1.0 off the
+    // box centre, Intersection - the bottom cap's loop was clockwise, the top cap's anticlockwise).
+    if (c.size() >= 3 && boundary.size() >= 3) {
+      const auto signed_area = [](const std::vector<UVPt>& loop) {
+        double a2 = 0.0;
+        for (size_t i = 0; i < loop.size(); ++i) {
+          const Point2d& p = loop[i].uv;
+          const Point2d& q = loop[(i + 1) % loop.size()].uv;
+          a2 += p.x * q.y - q.x * p.y;
+        }
+        return a2;
+      };
+      const double chain_area = signed_area(interior.outer);
+      const double boundary_area = signed_area(boundary);
+      if (chain_area * boundary_area < 0.0) std::reverse(interior.outer.begin(), interior.outer.end());
+    }
     frags.push_back(std::move(interior));
   }
   return frags;
@@ -8130,6 +8150,101 @@ int OpenSewnKeyholes(Brep& brep) {
   return opened;
 }
 
+namespace {
+
+// What is actually wrong with a result that sewing could not close: measured on the best sewn attempt, so that the refusal
+// names its cause (which edges are unpaired, how long, where, whether they run along a periodic-surface seam, whether they
+// are sliver-short - the signature of a tangent or grazing contact between the operands - or whether every edge is paired
+// but the faces are not consistently oriented) instead of the generic "gaps between faces".
+struct UnpairedEdgeStats {
+  int naked = 0;       // edges with exactly one trim
+  int nonmanifold = 0; // edges with three or more trims
+  int on_seam = 0;     // naked edges whose single trim runs along the closed direction's domain boundary of a periodic face
+  int slivers = 0;     // naked edges shorter than 0.1% of the body's diagonal
+  double total = 0, longest = 0, shortest = std::numeric_limits<double>::infinity();
+  ON_BoundingBox box;
+  bool oriented_manifold = false;  // ON_Brep::IsManifold(): every edge two trims AND consistently oriented
+};
+
+UnpairedEdgeStats MeasureUnpairedEdges(const ON_Brep& src, double diag) {
+  UnpairedEdgeStats s;
+  ON_Brep b(src);
+  b.SetTrimIsoFlags();
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = b.m_E[i];
+    if (e.m_edge_index < 0) continue;
+    const int nt = e.TrimCount();
+    if (nt >= 3) ++s.nonmanifold;
+    if (nt != 1) continue;
+    ++s.naked;
+    double len = 0.0;
+    if (const ON_Curve* ec = e.EdgeCurveOf()) {
+      const ON_Interval d = ec->Domain();
+      ON_3dPoint prev = ec->PointAt(d[0]);
+      s.box.Set(prev, s.box.IsValid());
+      for (int k = 1; k <= 32; ++k) {
+        const ON_3dPoint q = ec->PointAt(d.ParameterAt(k / 32.0));
+        len += prev.DistanceTo(q);
+        s.box.Set(q, true);
+        prev = q;
+      }
+    }
+    s.total += len;
+    s.longest = std::max(s.longest, len);
+    s.shortest = std::min(s.shortest, len);
+    if (len < 1e-3 * diag) ++s.slivers;
+    const ON_BrepTrim& t = b.m_T[e.m_ti[0]];
+    const ON_BrepFace* f = t.Face();
+    const ON_Surface* surf = f ? f->SurfaceOf() : nullptr;
+    if (surf) {
+      const bool u_side = t.m_iso == ON_Surface::W_iso || t.m_iso == ON_Surface::E_iso;
+      const bool v_side = t.m_iso == ON_Surface::S_iso || t.m_iso == ON_Surface::N_iso;
+      if ((u_side && surf->IsClosed(0)) || (v_side && surf->IsClosed(1))) ++s.on_seam;
+    }
+  }
+  bool oriented = false, has_boundary = false;
+  s.oriented_manifold = b.IsManifold(&oriented, &has_boundary) && oriented;
+  return s;
+}
+
+std::string DescribeUnpairedEdges(const UnpairedEdgeStats& s, double diag) {
+  char buf[640];
+  if (s.naked == 0 && s.nonmanifold == 0) {
+    return "every edge of the engine's result is shared by exactly two faces but the faces are not consistently oriented "
+           "(ON_Brep::IsSolid() is false), so it is not a closed solid";
+  }
+  std::string out = "the engine's result is not a closed solid after sewing at up to 1% of its diagonal: ";
+  if (s.naked > 0) {
+    std::snprintf(buf, sizeof buf,
+                  "%d unpaired edge(s) of total length %.4g (longest %.4g, shortest %.3g) within x[%.4g, %.4g] y[%.4g, %.4g] z[%.4g, %.4g]",
+                  s.naked, s.total, s.longest, s.shortest, s.box.m_min.x, s.box.m_max.x, s.box.m_min.y, s.box.m_max.y,
+                  s.box.m_min.z, s.box.m_max.z);
+    out += buf;
+    if (s.on_seam > 0) {
+      std::snprintf(buf, sizeof buf,
+                    "; %d of them run along a periodic-surface seam (the intersection curve passes through the seam and the "
+                    "two sides of the seam were split at different places)",
+                    s.on_seam);
+      out += buf;
+    }
+    if (s.slivers > 0) {
+      std::snprintf(buf, sizeof buf,
+                    "; %d are shorter than 0.1%% of the body's diagonal %.4g, the signature of a tangent or grazing contact "
+                    "between the operands (a degenerate intersection curve), not of an ordinary gap",
+                    s.slivers, diag);
+      out += buf;
+    }
+  }
+  if (s.nonmanifold > 0) {
+    std::snprintf(buf, sizeof buf, "%s%d edge(s) are shared by three or more faces (a non-manifold result)",
+                  s.naked > 0 ? "; " : "", s.nonmanifold);
+    out += buf;
+  }
+  return out;
+}
+
+}  // namespace
+
 SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   double va = std::nan(""), vb = std::nan("");
   try {
@@ -8156,6 +8271,8 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
   }
   std::string reason = "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
   bool sealed = false;
+  Brep best_attempt;
+  int best_unpaired = std::numeric_limits<int>::max();
   for (const double fraction : {0.0, 2e-4, 1e-3, 3e-3, 1e-2}) {
     Brep c = r;
     const double tol = fraction * diag;
@@ -8166,7 +8283,17 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
           c.JoinNakedEdges(tol);
         }
       }
-      if (!c.raw().IsSolid()) continue;
+      if (!c.raw().IsSolid()) {
+        int unpaired = 0;
+        for (int ei = 0; ei < c.raw().m_E.Count(); ++ei) {
+          if (c.raw().m_E[ei].m_edge_index >= 0 && c.raw().m_E[ei].TrimCount() != 2) ++unpaired;
+        }
+        if (unpaired < best_unpaired || best_attempt.raw().m_F.Count() == 0) {
+          best_unpaired = unpaired;
+          best_attempt = c;
+        }
+        continue;
+      }
       const int opened = OpenSewnKeyholes(c);
       ON_wString wlog;
       ON_TextLog log(wlog);
@@ -8219,6 +8346,13 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
       break;
     } catch (const std::exception& e) {
       reason = std::string("sewing the engine's result failed: ") + e.what();
+    }
+  }
+  if (!sealed && best_attempt.raw().m_F.Count() > 0 && reason.find("has gaps between faces") != std::string::npos) {
+    try {
+      reason = DescribeUnpairedEdges(MeasureUnpairedEdges(best_attempt.raw(), diag), diag);
+    } catch (const std::exception&) {
+      // keep the generic reason
     }
   }
   if (!sealed) throw std::runtime_error("BooleanCombineGeneralSealed: " + reason);
