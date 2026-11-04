@@ -2070,7 +2070,9 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
     double last_dev = -1.0;
     Point3d last_worst(0, 0, 0);
     int last_rings = 0;
-    for (int k : {2, 3, 4, 5, 6, 8}) {
+    // k = 10, 12, 14 serve a profile that bends hard near one end (a teardrop's rounded top: measured 0.001332 off at k = 8,
+    // 25 rings, worst point 0.9 from the top pole); the ring cap kMaxRings still bounds the cage.
+    for (int k : {2, 3, 4, 5, 6, 8, 10, 12, 14}) {
       fr = rings_for((ncv - 1) * k + 1);
       if (fr.size() < 6) continue;
       if (fr.size() > static_cast<size_t>(kMaxRings)) break;
