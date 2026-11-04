@@ -98684,6 +98684,8 @@ double UncoveredVolume(const std::vector<FilletRadiusStation>& st, double L, int
   const int np = static_cast<int>(std::lround(L / dxp));
   for (int k = 0; k <= np; ++k) rp.push_back(Pl(st, k * L / np));
   const double hp = L / np;
+  double win = 0.5;  // a ball of radius r covers |dx| < r, so the probe window must reach the largest radius
+  for (double r : rp) win = std::max(win, r);
   double total = 0.0;
   for (int ix = 0; ix < nx; ++ix) {
     const double x = (ix + 0.5) * L / nx;
@@ -98692,8 +98694,8 @@ double UncoveredVolume(const std::vector<FilletRadiusStation>& st, double L, int
     for (int iu = 0; iu < nu; ++iu) {
       const double u = (iu + 0.5) * rx / nu;
       std::vector<std::pair<double, double>> iv;
-      const int kmin = std::max(0, static_cast<int>(std::floor((x - 0.5) / hp)));
-      const int kmax = std::min(np, static_cast<int>(std::ceil((x + 0.5) / hp)));
+      const int kmin = std::max(0, static_cast<int>(std::floor((x - win) / hp)));
+      const int kmax = std::min(np, static_cast<int>(std::ceil((x + win) / hp)));
       for (int k = kmin; k <= kmax; ++k) {
         const double r = rp[k], dx = x - k * hp;
         const double s2 = r * r - dx * dx - (u - r) * (u - r);
@@ -98927,6 +98929,78 @@ void TestLawRefusalsStateTheirReason() {
   Check(!m.empty(), "a segment that is not a whole edge of the solid is refused");
   m = Why([&] { FilletConcaveEdgeLaw(box, p0, p1, Smooth, 1e-3); });
   Check(!m.empty(), "the concave law on a convex edge is refused");
+}
+
+// A 10-wide box edge filleted with every genuinely non-linear law (radii 1 -> 3) must build a valid solid whose removed
+// volume matches the independent union-of-balls integral - and must do so wherever the box sits, not only near the
+// origin. Regression: the multi-segment sampled-law path was refused by Brep::FromMixedFaces ("a ConicalFace's own cap
+// notch point does not lie on the cone's own real surface") for a box at x = 1.5e6 (the app's far-from-origin fixture).
+struct NonLinearLaw { const char* name; std::function<double(double)> f; };
+std::vector<NonLinearLaw> NonLinearLaws() {
+  return {
+      {"sqrt", [](double s) { return 1.0 + 2.0 * std::sqrt(s); }},
+      {"quadratic", [](double s) { return 1.0 + 2.0 * s * s; }},
+      {"smooth", [](double s) { return 1.0 + 2.0 * (3 * s * s - 2 * s * s * s); }},
+      {"3-sample", [](double s) { return s <= 0.3 ? 1.0 + 0.5 * (s / 0.3) : 1.5 + 1.5 * ((s - 0.3) / 0.7); }},
+  };
+}
+
+void TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls() {
+  const double L = 10.0, tol = 0.015;  // the radius tolerance the app passes
+  for (const NonLinearLaw& law : NonLinearLaws()) {
+    const std::string tag = std::string("[10-wide box, ") + law.name + "] ";
+    const auto st = SampleFilletRadiusLaw(L, law.f, tol);
+    // near the origin, edge along x: the volume cross-check (the mesh volume is float32, so it is only meaningful here)
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    std::string why;
+    Brep f;
+    try { f = FilletConvexEdgeLaw(box, Point3d(0, 0, 10), Point3d(10, 0, 10), law.f, tol); } catch (const std::exception& e) { why = e.what(); }
+    Check(why.empty(), (tag + "builds near the origin: " + why).c_str());
+    if (!why.empty()) continue;
+    bool oriented = false, has_boundary = true;
+    Check(f.raw().IsValid(), (tag + "ON_Brep::IsValid()").c_str());
+    Check(f.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary && f.raw().IsSolid(),
+          (tag + "oriented closed 2-manifold solid").c_str());
+    Check(f.MixedFaces().conical.size() == st.size() - 1, (tag + "one conical face per sampled segment").c_str());
+    const double removed = 1000.0 - f.TessellateToClosedMeshAdaptive(1e-6).Volume();
+    const double oracle = UncoveredVolume(st, L, 160, 240);
+    std::printf("10-wide box %s: %zu stations, removed %.6f, union-of-balls oracle %.6f, rel diff %.3e\n", law.name,
+                st.size(), removed, oracle, std::fabs(removed - oracle) / oracle);
+    Check(std::fabs(removed - oracle) < 5e-3 * oracle,
+          (tag + "removed volume matches the independent union-of-balls integral within 0.5%").c_str());
+  }
+}
+
+// The same vertical box edge at several distances from the origin (the app's fixture is x = 1.5e6): the fillet must
+// build, be a valid closed solid, and carry the same cone geometry as the identical box at the origin.
+void TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin() {
+  const double tol = 0.015;
+  for (const NonLinearLaw& law : NonLinearLaws()) {
+    const Brep ref_box = Brep::Box(0, 0, 0, 10, 10, 10);
+    const Brep ref = FilletConvexEdgeLaw(ref_box, Point3d(10, 10, 0), Point3d(10, 10, 10), law.f, tol);
+    const Brep::MixedFacesResult ref_mf = ref.MixedFaces();
+    for (double x0 : {1.0e4, 1.5e6, -1.5e6}) {
+      const std::string tag = std::string("[box at x=") + std::to_string(static_cast<long long>(x0)) + ", " + law.name + "] ";
+      const Brep box = Brep::Box(x0, 0, 0, x0 + 10, 10, 10);
+      std::string why;
+      Brep f;
+      try { f = FilletConvexEdgeLaw(box, Point3d(x0 + 10, 10, 0), Point3d(x0 + 10, 10, 10), law.f, tol); } catch (const std::exception& e) { why = e.what(); }
+      Check(why.empty(), (tag + "the non-linear law fillet builds: " + why).c_str());
+      if (!why.empty()) continue;
+      bool oriented = false, has_boundary = true;
+      Check(f.raw().IsValid() && f.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary && f.raw().IsSolid(),
+            (tag + "valid oriented closed 2-manifold solid").c_str());
+      const Brep::MixedFacesResult mf = f.MixedFaces();
+      bool same = mf.conical.size() == ref_mf.conical.size();
+      for (size_t k = 0; same && k < mf.conical.size(); ++k) {
+        const Brep::ConicalFace& a = mf.conical[k];
+        const Brep::ConicalFace& b = ref_mf.conical[k];
+        same = std::fabs(a.radius0 - b.radius0) < 1e-6 && std::fabs(a.radius1 - b.radius1) < 1e-6 &&
+               std::fabs(a.length - b.length) < 1e-6 && std::fabs(a.angle - b.angle) < 1e-6;
+      }
+      Check(same, (tag + "the same conical segments (radii, length, sweep) as the box at the origin").c_str());
+    }
+  }
 }
 
 }  // namespace blend_law_tests
@@ -103886,6 +103960,8 @@ int main() {
   RunTest("blend_law_tests::TestConvexLawCreaseShrinksWithToleranceAndLinearLawMatchesTaper", blend_law_tests::TestConvexLawCreaseShrinksWithToleranceAndLinearLawMatchesTaper);
   RunTest("blend_law_tests::TestConcaveLawFilletTangencyAndAddedVolume", blend_law_tests::TestConcaveLawFilletTangencyAndAddedVolume);
   RunTest("blend_law_tests::TestLawRefusalsStateTheirReason", blend_law_tests::TestLawRefusalsStateTheirReason);
+  RunTest("blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls", blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls);
+  RunTest("blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin", blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin);
 
   RunTest("units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions", units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions);
   RunTest("units_exchange_tests::TestIgesWritesAndReadsEveryUnitDeclaration", units_exchange_tests::TestIgesWritesAndReadsEveryUnitDeclaration);
