@@ -97,14 +97,67 @@ bool CurveFromON(const ON_Curve& c, kernel::NurbsCurve& out) {
   return true;
 }
 
-// Millimetres per document unit, so a forced print scale is meaningful.
-double MillimetresPerUnit(const Document& doc) {
-  const std::string& u = doc.Settings().unit_system;
+// Millimetres per document unit, so a forced print scale is meaningful (and
+// so a DXF's $INSUNITS can be converted to the document's unit). Covers every
+// unit the document can be set to; "None" (unitless) counts as millimetres.
+double MillimetresPerUnitName(const std::string& u) {
   if (u == "Inches") return 25.4;
   if (u == "Feet") return 304.8;
   if (u == "Centimeters") return 10.0;
   if (u == "Meters") return 1000.0;
+  if (u == "Kilometers") return 1e6;
+  if (u == "Microns") return 1e-3;
+  if (u == "Mils") return 0.0254;
+  if (u == "Microinches") return 25.4e-6;
+  if (u == "Miles") return 1609344.0;
   return 1.0;
+}
+
+double MillimetresPerUnit(const Document& doc) { return MillimetresPerUnitName(doc.Settings().unit_system); }
+
+// AutoCAD $INSUNITS (DXF reference, HEADER variables) for a document unit;
+// 0 = unitless for "None".
+int DxfInsunitsCode(const std::string& u) {
+  if (u == "Inches") return 1;
+  if (u == "Feet") return 2;
+  if (u == "Miles") return 3;
+  if (u == "Millimeters") return 4;
+  if (u == "Centimeters") return 5;
+  if (u == "Meters") return 6;
+  if (u == "Kilometers") return 7;
+  if (u == "Microinches") return 8;
+  if (u == "Mils") return 9;
+  if (u == "Microns") return 13;
+  if (u == "None") return 0;
+  return 4;
+}
+
+// Metres per $INSUNITS value, 0.0 for 0 (unitless) or a code outside the
+// documented 1..20 range (no conversion is made for those).
+double DxfInsunitsMetres(int code) {
+  switch (code) {
+    case 1: return 0.0254;
+    case 2: return 0.3048;
+    case 3: return 1609.344;
+    case 4: return 0.001;
+    case 5: return 0.01;
+    case 6: return 1.0;
+    case 7: return 1000.0;
+    case 8: return 2.54e-8;
+    case 9: return 2.54e-5;
+    case 10: return 0.9144;
+    case 11: return 1e-10;
+    case 12: return 1e-9;
+    case 13: return 1e-6;
+    case 14: return 0.1;
+    case 15: return 10.0;
+    case 16: return 100.0;
+    case 17: return 1e9;
+    case 18: return 1.495978707e11;
+    case 19: return 9.4607304725808e15;
+    case 20: return 3.0856775814913673e16;
+    default: return 0.0;
+  }
 }
 
 // ---- AutoCAD colour index (ACI) palette ------------------------------------
@@ -1079,9 +1132,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   w.G(9, "$ACADVER"); w.G(1, scheme.acadver);
   w.G(9, "$INSUNITS");
   {
-    const std::string& u = doc.Settings().unit_system;
-    int units = 4;  // millimetres
-    if (u == "Inches") units = 1; else if (u == "Feet") units = 2; else if (u == "Centimeters") units = 5; else if (u == "Meters") units = 6;
+    const int units = DxfInsunitsCode(doc.Settings().unit_system);
     w.G(70, units);
   }
   w.G(9, "$HANDSEED"); w.G(5, "FFFF");
@@ -2787,6 +2838,19 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   DxfImportStats stats;
   DxfImporter importer(doc, stats);
 
+  // $INSUNITS (HEADER): the unit the file's coordinates are in. Converted to
+  // the document's unit after the entities are read (see the end of this
+  // function); 0 / absent / outside 1..20 means unitless: no conversion.
+  int file_insunits = 0;
+  for (size_t i = 0; i + 1 < groups.size(); ++i) {
+    if (groups[i].code == 9 && Upper(groups[i].value) == "$INSUNITS" && groups[i + 1].code == 70) {
+      file_insunits = std::atoi(groups[i + 1].value.c_str());
+      break;
+    }
+  }
+  const size_t first_new_object = doc.Objects().size();
+  const size_t first_new_block = doc.Blocks().size();
+
   // Split into sections, then each section into entities (records) at
   // every group-0 boundary.
   std::string section;
@@ -2887,6 +2951,34 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   }
   importer.FlushFaces();
 
+  // Unit conversion, about the world origin: every object (and every block
+  // definition) this import added. Dimension / text / hatch parameter tags
+  // that hold plain numbers (DimP0, TextHeight, ...) are not rescaled, only
+  // the geometry is.
+  std::string unit_note;
+  {
+    const double file_m = DxfInsunitsMetres(file_insunits);
+    const std::string& doc_unit = doc.Settings().unit_system;
+    if (file_m > 0.0 && doc_unit != "None") {
+      const double factor = file_m * 1000.0 / MillimetresPerUnitName(doc_unit);
+      if (std::fabs(factor - 1.0) > 1e-12 && std::isfinite(factor) && factor > 0.0) {
+        const ON_Xform xf = ON_Xform::DiagonalTransformation(factor);
+        auto& objs = doc.Objects();
+        for (size_t i = first_new_object; i < objs.size(); ++i) objs[i].Transform(xf);
+        auto& blks = doc.Blocks();
+        for (size_t i = first_new_block; i < blks.size(); ++i) {
+          for (SceneObject& bo : blks[i].objects) bo.Transform(xf);
+          const kernel::Point3d b = xf * blks[i].base;
+          blks[i].base = b;
+        }
+        doc.Touch();
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%.10g", factor);
+        unit_note = "; units INSUNITS=" + std::to_string(file_insunits) + " -> document " + doc_unit + ", scaled x" + buf;
+      }
+    }
+  }
+
   std::ostringstream ss;
   ss << "DXF: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
      << (stats.points == 1 ? "" : "s") << ", " << stats.meshes << " mesh" << (stats.meshes == 1 ? "" : "es");
@@ -2895,6 +2987,7 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
+  ss << unit_note;
   summary = ss.str();
   if (stats.curves + stats.points + stats.meshes + stats.hatches + stats.dimensions == 0) {
     if (entities.empty()) summary = "No entities found in " + path;
