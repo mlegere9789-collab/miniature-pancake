@@ -1936,6 +1936,27 @@ Brep Brep::ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, 
     if (std::fabs(ON_DotProduct(plane.zaxis, net_unit)) <= 1e-9) {
       Fail(caller, "the path's net displacement lies in the profile's plane - the extrusion is flat");
     }
+    // The two caps and the volume (area x net displacement along the profile normal, Cavalieri) describe a real
+    // solid only while the path never doubles back along that normal: a path that rises, falls below an earlier
+    // level and rises again sweeps the profile through itself, and the wall plus caps would be a self-overlapping
+    // body reported as valid. Sampled (400 stations, a fold narrower than 1/400 of the path can slip through).
+    {
+      const ON_Interval dom = path_c.Domain();
+      const double tol = 1e-9 * CurveScale(path_c);
+      const double sign = ON_DotProduct(plane.zaxis, path_end - path_start) > 0.0 ? 1.0 : -1.0;
+      double prev = 0.0;
+      const int stations = 400;
+      for (int i = 1; i <= stations; ++i) {
+        const ON_3dPoint q = path_c.PointAt(dom.ParameterAt(static_cast<double>(i) / stations));
+        const double h = sign * ON_DotProduct(plane.zaxis, q - path_start);
+        if (h < prev - tol) {
+          Fail(caller, "the path doubles back along the profile's normal - the capped body would overlap itself "
+                       "(the swept volume is no longer area x net displacement); sweep uncapped, or split the "
+                       "path at its turning points");
+        }
+        prev = h;
+      }
+    }
     ON_Plane about_net(plane.origin, net_unit);
     if (SignedAreaAbout(c, about_net) < 0.0) ReverseKeepDomain(c);
   }

@@ -413,6 +413,12 @@ class Brep {
   // net displacement along the profile's own normal, not on the path's
   // in-plane wander - the same "regardless of shear" fact
   // ExtrudeToBoundary()'s own oblique-direction case already relies on).
+  // With caps requested the path must also never double back along the
+  // profile's normal (its height along that normal, sampled at 400 stations,
+  // must be non-decreasing towards the net displacement): otherwise the
+  // swept body overlaps itself and area x net displacement is not its volume,
+  // so it is refused with "the path doubles back" (uncapped sweeps are fine).
+  //
   // A closed profile is reversed first if needed so the result faces
   // outward, matching Extrude()'s own convention; an open profile gives
   // one open face with no caps regardless of `cap`. Throws

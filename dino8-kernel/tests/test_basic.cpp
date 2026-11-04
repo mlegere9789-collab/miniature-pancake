@@ -103825,6 +103825,27 @@ void TestExtrudeAlongCurveClosedPathMakesAPeriodicSheet() {
   Check(sheet.raw().IsManifold(&oriented, &has_boundary) && has_boundary, "manifold with boundary (the two rod-end circles)");
 }
 
+void TestExtrudeAlongCurveRefusesToCapAPathThatDoublesBack() {
+  // Cubic Bezier path with z control values 0, 5, -2, 3: net displacement +3 but z'(1/2) = 3 (5/4 - 14/4 + 5/4) = -3 < 0,
+  // so the path rises, falls back and rises again. Area x net z (= 6 x 3) would be reported for a body that overlaps
+  // itself, so the capped sweep is refused with that reason; uncapped it is an ordinary wall.
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const NurbsCurve folding = NurbsCurve::FromControlPoints({P(0, 0, 0), P(1, 0, 5), P(2, 0, -2), P(3, 0, 3)}, 3);
+  Check(ThrowsWith([&] { Brep::ExtrudeAlongCurve(rect, folding); }, "doubles back"),
+        "a path whose height along the profile normal rises, falls and rises is refused when capped, with that reason");
+  const Brep wall = Brep::ExtrudeAlongCurve(rect, folding, false);
+  Check(wall.FaceCount() == 1 && wall.raw().IsValid(), "...but sweeps uncapped into one valid face");
+  Check(WallVsSumOfCurves(wall, rect, folding) < 1e-12, "...and that wall still equals profile(u) + path(v) - path(v_min) to 1e-12");
+  // Control: the same end points with a monotone cubic (z control 0, 1, 2, 3) is accepted and Cavalieri holds.
+  const NurbsCurve rising = NurbsCurve::FromControlPoints({P(0, 0, 0), P(1, 0, 1), P(2, 0, 2), P(3, 0, 3)}, 3);
+  const Brep ok = Brep::ExtrudeAlongCurve(rect, rising);
+  CheckSolidTopology(ok, 3, "monotone cubic path with the same end points");
+  Check(std::fabs(ok.Volume() - 6.0 * 3.0) <= 1e-6 * 18.0, "...its analytic volume is area 6 x net z 3 = 18");
+  // A path that only reverses ALONG THE PROFILE PLANE (x wanders back, z monotone) is still accepted.
+  const NurbsCurve wander = NurbsCurve::FromControlPoints({P(0, 0, 0), P(4, 0, 1), P(-3, 0, 2), P(1, 0, 3)}, 3);
+  Check(!ThrowsWith([&] { Brep::ExtrudeAlongCurve(rect, wander); }, "doubles back"), "x wander with monotone z is not mistaken for a fold");
+}
+
 void TestExtrudeAlongCurveNegativeControlsReasons() {
   const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
   const NurbsCurve ring = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 2.0);
@@ -106029,6 +106050,8 @@ int main() {
           extrude_along_tests::TestExtrudeAlongCurveRationalProfileOnCubicPath);
   RunTest("extrude_along_tests::TestExtrudeAlongCurveClosedPathMakesAPeriodicSheet",
           extrude_along_tests::TestExtrudeAlongCurveClosedPathMakesAPeriodicSheet);
+  RunTest("extrude_along_tests::TestExtrudeAlongCurveRefusesToCapAPathThatDoublesBack",
+          extrude_along_tests::TestExtrudeAlongCurveRefusesToCapAPathThatDoublesBack);
   RunTest("extrude_along_tests::TestExtrudeAlongCurveNegativeControlsReasons",
           extrude_along_tests::TestExtrudeAlongCurveNegativeControlsReasons);
   RunTest("loft_spacing_tests::TestLoftSpacingStylesFollowTheirClosedForms", loft_spacing_tests::TestLoftSpacingStylesFollowTheirClosedForms);
