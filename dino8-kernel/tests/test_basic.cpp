@@ -68059,12 +68059,12 @@ void TestLoftTangentConstrainedEndsMatchExactly() {
                                                     Polyline({P(0, 0, 1), P(1, 0, 1), P(1, 1, 1), P(0, 0, 1)}),
                                                     Polyline({P(0, 0, 2), P(1, 0, 2), P(1, 1, 2), P(0, 0, 2)})};
   Check(Throws([&] { Brep::Loft(closed_sections, 2, /*closed=*/false, /*cap=*/false, &start_tangent, nullptr); }),
-        "tangent constraints are refused for closed-curve (periodic-loop) sections");
+        "an OPEN tangent curve for closed-curve sections is refused (closed sections now take closed tangent curves: tests/extra/loft_rational_tangent.cpp)");
   const std::vector<NurbsCurve> rational_sections = {Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.0, 0.0, M_PI / 2),
                                                       Arc(P(0, 0, 1), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.5, 0.0, M_PI / 2),
                                                       Arc(P(0, 0, 2), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.0, 0.0, M_PI / 2)};
   Check(Throws([&] { Brep::Loft(rational_sections, 2, /*closed=*/false, /*cap=*/false, &start_tangent, nullptr); }),
-        "tangent constraints are refused for a rational (open arc) section");
+        "a varying non-rational tangent curve against a rational (open arc) section is refused (its weights cannot match; matching-weight tangents are accepted: tests/extra/loft_rational_tangent.cpp)");
 }
 
 void TestSweep1AndPipe() {

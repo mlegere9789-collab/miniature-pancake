@@ -623,11 +623,13 @@ std::unique_ptr<ON_NurbsSurface> SkinSectionsTangent(const std::vector<ON_NurbsC
     a(row, 1) = static_cast<double>(q);
     const double span0 = U[static_cast<size_t>(q + 1)];  // - U[0], and U[0] == 0
     for (int i = 0; i < n; ++i) {
-      const ON_3dVector d = start_dirs[static_cast<size_t>(i)] * span0;
+      // Homogeneous channels: H_i = w_i P_i, so H_i'(0) = w_i P_i'(0) + w_i'(0) P_i with w_i'(0) = 0 pinned below
+      // (weight channel). For a non-rational section w_i = 1 and this is the plain Euclidean derivative.
+      const ON_3dVector d = start_dirs[static_cast<size_t>(i)] * (span0 * HomogeneousCV(sections.front(), i).w);
       rhs[static_cast<size_t>(i)][0][static_cast<size_t>(row)] = d.x;
       rhs[static_cast<size_t>(i)][1][static_cast<size_t>(row)] = d.y;
       rhs[static_cast<size_t>(i)][2][static_cast<size_t>(row)] = d.z;
-      rhs[static_cast<size_t>(i)][3][static_cast<size_t>(row)] = 0.0;  // non-rational: weight channel stays 1 throughout
+      rhs[static_cast<size_t>(i)][3][static_cast<size_t>(row)] = 0.0;  // w_i'(0) = 0: the weight channel is flat at this end
     }
     ++row;
   }
@@ -636,7 +638,7 @@ std::unique_ptr<ON_NurbsSurface> SkinSectionsTangent(const std::vector<ON_NurbsC
     a(row, n_ctrl - 2) = -static_cast<double>(q);
     const double span1 = 1.0 - U[static_cast<size_t>(n_ctrl - 1)];  // U[n_ctrl + q - 1] - U[n_ctrl - 1], and U[n_ctrl + q - 1] == 1
     for (int i = 0; i < n; ++i) {
-      const ON_3dVector d = end_dirs[static_cast<size_t>(i)] * span1;
+      const ON_3dVector d = end_dirs[static_cast<size_t>(i)] * (span1 * HomogeneousCV(sections.back(), i).w);
       rhs[static_cast<size_t>(i)][0][static_cast<size_t>(row)] = d.x;
       rhs[static_cast<size_t>(i)][1][static_cast<size_t>(row)] = d.y;
       rhs[static_cast<size_t>(i)][2][static_cast<size_t>(row)] = d.z;
@@ -3714,6 +3716,47 @@ Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
+// Per-control-column v-derivative vectors d_i for a tangent curve `t` constraining the end section `sec` (both already
+// compatible: same degree, knots and control-point count). The wall is S(u, v) = sum_i N_i(u) H_i(v) / sum_i N_i(u) w_i(v)
+// with H_i = w_i P_i; pinning w_i'(end) = 0 and H_i'(end) = w_i d_i gives
+//   dS/dv(u, end) = sum_i N_i(u) w_i d_i / sum_i N_i(u) w_i,
+// i.e. exactly the RATIONAL curve with the end section's own weights and control points d_i. That equals `t` as a function
+// when (a) t's weights are a common multiple of sec's (then d_i = t's Euclidean control points), or (b) t is the constant
+// field (every Euclidean control point equal; then any weights do). Anything else is not representable by this
+// construction, and is refused rather than approximated. For a non-rational section and tangent curve (all weights 1) this
+// reduces to the plain control-point reading.
+std::vector<ON_3dVector> TangentDirections(const ON_NurbsCurve& t, const ON_NurbsCurve& sec, const char* which,
+                                           const char* caller) {
+  const bool sections_closed = sec.IsClosed();
+  const int n = sec.CVCount();
+  if (t.CVCount() != n) Internal(caller, "tangent curve and section differ in control-point count after conditioning");
+  std::vector<ON_3dVector> d(static_cast<size_t>(n));
+  double scale = 0.0;
+  for (int i = 0; i < n; ++i) {
+    const ON_3dPoint p = EuclideanCV(t, i);
+    d[static_cast<size_t>(i)] = ON_3dVector(p.x, p.y, p.z);
+    scale = std::max(scale, d[static_cast<size_t>(i)].Length());
+  }
+  bool constant = true;
+  for (int i = 1; i < n && constant; ++i) constant = (d[static_cast<size_t>(i)] - d[0]).Length() <= 1e-12 * (1.0 + scale);
+  // A varying field must close up exactly when the sections do (a constant field has no closure to speak of).
+  if (!constant && t.IsClosed() != sections_closed) {
+    Fail(caller, std::string(which) + " tangent curve must be a closed curve exactly when the sections are closed curves");
+  }
+  const double r0 = HomogeneousCV(t, 0).w / HomogeneousCV(sec, 0).w;
+  bool proportional = r0 > 0.0;
+  for (int i = 1; i < n && proportional; ++i) {
+    const double ri = HomogeneousCV(t, i).w / HomogeneousCV(sec, i).w;
+    proportional = std::fabs(ri - r0) <= 1e-9 * std::fabs(r0);
+  }
+  if (!proportional && !constant) {
+    Fail(caller, std::string("the ") + which + " tangent curve cannot be matched exactly: the section is rational, so the "
+                 "wall's end derivative is the rational curve with the SECTION's weights and the tangent curve's control "
+                 "points as vectors; give the tangent curve the section's weights (or a constant vector field)");
+  }
+  return d;
+}
+
 Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool closed, bool cap,
                 const NurbsCurve* start_tangent, const NurbsCurve* end_tangent, LoftSpacing spacing_style) {
   const char* caller = "Loft";
@@ -3726,9 +3769,6 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   const bool want_tangent = start_tangent != nullptr || end_tangent != nullptr;
   if (want_tangent) {
     if (closed) Fail(caller, "start_tangent/end_tangent are not supported for a closed (periodic) loft - it has no ends");
-    if (sections_in.front().raw().IsClosed()) {
-      Fail(caller, "start_tangent/end_tangent are not supported for closed-curve (periodic-loop) sections");
-    }
     if (q < 2) Fail(caller, "start_tangent/end_tangent need degree >= 2 and at least 3 sections");
   }
   std::vector<ON_NurbsCurve> sections;
@@ -3737,11 +3777,6 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   std::vector<ON_NurbsCurve> compat = sections;
   if (start_tangent) compat.push_back(start_tangent->raw());
   if (end_tangent) compat.push_back(end_tangent->raw());
-  if (want_tangent) {
-    for (const ON_NurbsCurve& c : compat) {
-      if (c.IsRational()) Fail(caller, "start_tangent/end_tangent do not support rational sections or tangent curves");
-    }
-  }
   MakeCompatible(compat, caller);
   for (int i = 0; i < N; ++i) sections[static_cast<size_t>(i)] = compat[static_cast<size_t>(i)];
   size_t next_compat = static_cast<size_t>(N);
@@ -3752,6 +3787,7 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   for (const ON_NurbsCurve& s : sections) {
     if (s.IsClosed() != first_closed) Fail(caller, "sections must be all closed or all open");
   }
+
   const bool want_caps = cap && first_closed && !closed;
   if (first_closed) {
     // Outward wall: the first section must run counterclockwise about the
@@ -3769,6 +3805,9 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
       if (ON_DotProduct(inward, plane.zaxis) < 0.0) plane.Flip();
       if (SignedAreaAbout(c0, plane) < 0.0) {
         for (ON_NurbsCurve& s : sections) ReverseKeepDomain(s);
+        // The tangent curves are fields over the same u parameter: reverse them with the sections.
+        if (start_tangent) ReverseKeepDomain(start_tangent_compat);
+        if (end_tangent) ReverseKeepDomain(end_tangent_compat);
       }
     }
   }
@@ -3776,20 +3815,9 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   if (want_tangent) {
     const int n = sections.front().CVCount();
     std::vector<ON_3dVector> start_dirs, end_dirs;
-    if (start_tangent) {
-      start_dirs.resize(static_cast<size_t>(n));
-      for (int i = 0; i < n; ++i) {
-        const ON_3dPoint p = EuclideanCV(start_tangent_compat, i);
-        start_dirs[static_cast<size_t>(i)] = ON_3dVector(p.x, p.y, p.z);
-      }
-    }
-    if (end_tangent) {
-      end_dirs.resize(static_cast<size_t>(n));
-      for (int i = 0; i < n; ++i) {
-        const ON_3dPoint p = EuclideanCV(end_tangent_compat, i);
-        end_dirs[static_cast<size_t>(i)] = ON_3dVector(p.x, p.y, p.z);
-      }
-    }
+    (void)n;
+    if (start_tangent) start_dirs = TangentDirections(start_tangent_compat, sections.front(), "start", caller);
+    if (end_tangent) end_dirs = TangentDirections(end_tangent_compat, sections.back(), "end", caller);
     double period = 1.0;
     const std::vector<double> params = SkinParameters(sections, false, &period, caller, spacing);
     wall = SkinSectionsTangent(sections, q, params, start_dirs, end_dirs, caller);

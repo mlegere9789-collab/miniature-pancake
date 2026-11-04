@@ -949,10 +949,23 @@ class Brep {
   // to the desired tangent length/direction. Requires `degree >= 2`
   // and at least 3 sections (throws otherwise: there is no spare
   // control point to dedicate to the derivative below that), and is
-  // not supported for `closed` (periodic, no ends) or for closed-curve
-  // (periodic-loop) sections - throws for either. A tangent-constrained
-  // loft is never capped (only closed-curve sections take caps, and
-  // those are refused above).
+  // not supported for `closed` (periodic, no ends) - throws.
+  //
+  // RATIONAL sections (circles, ellipses, arcs) and CLOSED-curve sections
+  // are supported, exactly: with the weight derivative pinned to 0 at the
+  // constrained end and the homogeneous derivative set to w_i d_i, the
+  // wall's end derivative is dS/dv(u, end) = sum N_i w_i d_i / sum N_i w_i,
+  // the rational curve with the END SECTION's weights and the tangent
+  // curve's control points d_i. That is the tangent curve itself when its
+  // weights are a common multiple of the section's (build it as a copy of
+  // the section with the control points replaced by the vectors, e.g. the
+  // field (a x, a y, b) = a * section point + b e_z), or when it is a
+  // constant vector field (all control points equal; any weights). Any other
+  // tangent curve cannot be represented by this construction and is refused
+  // with that reason - never approximated. For closed sections the tangent
+  // curves must be closed too (and are reversed together with the sections
+  // when the first section runs clockwise about the loft direction); with
+  // `cap` the closed planar ends are capped as without tangents.
   //
   // `spacing` picks the loft-direction station parameters v_k the sections
   // are interpolated at (Rhino's Loft "Uniform" vs normal style): Chord
