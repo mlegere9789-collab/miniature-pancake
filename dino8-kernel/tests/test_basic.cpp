@@ -92314,6 +92314,499 @@ void TestSweep2SectionsRailDirectionIsNotGuessed() {
 
 }  // namespace sweep2_sections_cyclic_tests
 
+// ---------------------------------------------------------------------------
+// FilletCapRim / FilletCapRims (fillet.h): exact torus-patch fillet on the rim of a plain
+// capped cylinder or cone frustum. Every number is checked against a value derived
+// independently of the library's own tangent-length formula: the ball centre is found by
+// solving "r from the cap plane, r from the wall line" directly, the volume by Green's
+// theorem V = pi * closed-integral rho^2 dz over the filleted profile, and (for the
+// cylinder) against the Pappus closed form. The result is read back through
+// ON_Surface::IsTorus / IsCylinder / IsCone, not trusted from the construction.
+// ---------------------------------------------------------------------------
+namespace fillet_cap_rim_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::FilletCapRim;
+using dino8::kernel::FilletCapRims;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+Brep MakeCappedCylinder(Point3d base, Vector3d axis, double R, double L) {
+  axis.Unitize();
+  const ON_Cylinder cyl(ON_Circle(ON_Plane(base, axis), R), L);
+  ON_Brep* b = ON_BrepCylinder(cyl, true, true);
+  Brep k;
+  k.raw() = *b;
+  delete b;
+  return k;
+}
+
+// A cone frustum: a revolved straight profile segment (R0 at the base, R1 at height H) plus two planar caps.
+Brep MakeFrustum(Point3d base, Vector3d axis, double R0, double R1, double H) {
+  axis.Unitize();
+  const ON_Plane pl(base, axis);
+  ON_RevSurface* rev = new ON_RevSurface();
+  rev->m_curve = new ON_LineCurve(base + R0 * pl.xaxis, base + R1 * pl.xaxis + H * axis);
+  rev->m_axis = ON_Line(base, base + axis);
+  rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+  rev->m_t = rev->m_angle;
+  rev->m_bTransposed = false;
+  ON_Brep* b = ON_BrepRevSurface(rev, false, false);
+  Brep k;
+  k.raw() = *b;
+  delete b;
+  k.JoinNakedEdges(1e-6);
+  k.CapPlanarHoles(1e-6);
+  k.UnifyNormals();
+  return k;
+}
+
+// Independent profile description of the filleted solid in the (rho, z) half plane, counter-clockwise.
+// Blend radii rl (low rim) and rh (high rim), 0 = sharp. Ball centres are solved from the two distance
+// conditions (no tangent-length formula). Returns pi * closed-integral rho^2 dz (Green's theorem) and, via
+// out params, the ball centres' rho (the cap-tangent circle radii) and the tangent points on the wall.
+struct Profile {
+  double volume = 0;
+  double cap_rho_low = 0, cap_rho_high = 0;      // radius of the flat cap after the blend (= ball centre rho)
+  double wall_low_z = 0, wall_high_z = 0;       // axial extent of the straight wall
+};
+
+Profile IntegrateProfile(double R0, double R1, double H, double rl, double rh) {
+  const double wl = std::hypot(R1 - R0, H);
+  const double wx = (R1 - R0) / wl, wz = H / wl;
+  const double nx = -wz, nz = wx;  // wall normal pointing towards the axis side
+  Profile p;
+  p.cap_rho_low = R0;
+  p.cap_rho_high = R1;
+  p.wall_low_z = 0;
+  p.wall_high_z = H;
+  // Ball centres: (cx, cz) with cz = r (low) or H - r (high) and (c - P) . n = r for P on the wall line.
+  auto centre = [&](double cz, double r) {
+    // (cx - R0) * nx + cz * nz = r  ->  cx = R0 + (r - cz * nz) / nx
+    return R0 + (r - cz * nz) / nx;
+  };
+  double cxl = R0, czl = 0, cxh = R1, czh = H;
+  if (rl > 0) { czl = rl; cxl = centre(czl, rl); }
+  if (rh > 0) { czh = H - rh; cxh = centre(czh, rh); }
+  // wall tangent points: c - r * n
+  double twl_x = R0, twl_z = 0, twh_x = R1, twh_z = H;
+  if (rl > 0) { twl_x = cxl - rl * nx; twl_z = czl - rl * nz; p.cap_rho_low = cxl; p.wall_low_z = twl_z; }
+  if (rh > 0) { twh_x = cxh - rh * nx; twh_z = czh - rh * nz; p.cap_rho_high = cxh; p.wall_high_z = twh_z; }
+  // Counter-clockwise: (0,0) -> (cap_low,0) -> [low arc] -> wall -> [high arc] -> (cap_high,H) -> (0,H) -> (0,0).
+  // Segments with dz = 0 or on the axis (rho = 0) contribute nothing.
+  double integral = 0;
+  auto line = [&](double x0, double z0, double x1, double z1) {
+    // rho linear in z: integral of rho^2 dz = (z1 - z0) * (x0^2 + x0 x1 + x1^2) / 3
+    integral += (z1 - z0) * (x0 * x0 + x0 * x1 + x1 * x1) / 3.0;
+  };
+  auto arc = [&](double cx, double cz, double r, double a0, double a1) {
+    const int N = 200000;
+    for (int i = 0; i < N; ++i) {
+      const double a = a0 + (a1 - a0) * (i + 0.5) / N;
+      const double x = cx + r * std::cos(a);
+      const double dz = r * std::cos(a) * (a1 - a0) / N;
+      integral += x * x * dz;
+    }
+  };
+  if (rl > 0) {
+    // arc from (cxl, 0) [angle -pi/2] to the wall tangent point [angle of (tw - c)]
+    const double a1 = std::atan2(twl_z - czl, twl_x - cxl);
+    arc(cxl, czl, rl, -ON_PI / 2, a1);
+  }
+  line(twl_x, twl_z, twh_x, twh_z);
+  if (rh > 0) {
+    const double a0 = std::atan2(twh_z - czh, twh_x - cxh);
+    arc(cxh, czh, rh, a0, ON_PI / 2);
+  }
+  line(p.cap_rho_high, H, 0, H);
+  p.volume = ON_PI * integral;
+  return p;
+}
+
+// All torus faces of a result, with their parameters.
+std::vector<ON_Torus> TorusFaces(const Brep& b, double tol) {
+  std::vector<ON_Torus> out;
+  for (int f = 0; f < b.raw().m_F.Count(); ++f) {
+    ON_Torus t;
+    if (b.raw().m_F[f].SurfaceOf()->IsTorus(&t, tol)) out.push_back(t);
+  }
+  return out;
+}
+
+// G1 across every interior edge: the face normals on the two sides of each edge agree (to a tolerance) at its midpoint
+// whenever the edge joins a torus patch to the wall or to a cap.
+double MaxNormalJump(const Brep& b, bool* any) {
+  double worst = 0;
+  *any = false;
+  const ON_Brep& br = b.raw();
+  for (int e = 0; e < br.m_E.Count(); ++e) {
+    const ON_BrepEdge& ed = br.m_E[e];
+    if (ed.TrimCount() != 2) continue;
+    const ON_BrepFace& f0 = br.m_F[br.m_T[ed.m_ti[0]].FaceIndexOf()];
+    const ON_BrepFace& f1 = br.m_F[br.m_T[ed.m_ti[1]].FaceIndexOf()];
+    if (!f0.SurfaceOf()->IsTorus(nullptr, 1e-8) && !f1.SurfaceOf()->IsTorus(nullptr, 1e-8)) continue;  // a sharp rim is not G1
+    const ON_3dPoint Pe = ed.PointAt(ed.Domain().ParameterAt(0.37));
+    ON_3dVector n[2];
+    const ON_BrepFace* fs[2] = {&f0, &f1};
+    bool ok = true;
+    for (int k = 0; k < 2 && ok; ++k) {
+      // The face-surface point of this face's own trim nearest the edge point (a fine scan of the trim's 2D curve).
+      const ON_BrepTrim& tr = br.m_T[ed.m_ti[k]];
+      const ON_Interval td = tr.Domain();
+      double u = 0, v = 0, best = 1e300;
+      auto dist_at = [&](double s) {
+        const ON_3dPoint uv = tr.PointAt(s);
+        return fs[k]->SurfaceOf()->PointAt(uv.x, uv.y).DistanceTo(Pe);
+      };
+      int bi = 0;
+      for (int i = 0; i <= 400; ++i) {
+        const double dd = dist_at(td.ParameterAt(i / 400.0));
+        if (dd < best) { best = dd; bi = i; }
+      }
+      double lo = td.ParameterAt(std::max(0, bi - 1) / 400.0), hi = td.ParameterAt(std::min(400, bi + 1) / 400.0);
+      for (int it = 0; it < 80; ++it) {  // ternary refinement of the unimodal local distance
+        const double m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+        if (dist_at(m1) < dist_at(m2)) hi = m2; else lo = m1;
+      }
+      const ON_3dPoint uvb = tr.PointAt(0.5 * (lo + hi));
+      u = uvb.x;
+      v = uvb.y;
+      best = dist_at(0.5 * (lo + hi));
+      if (best > 1e-7) { ok = false; break; }
+      ON_3dPoint P;
+      ON_3dVector du, dv, nn;
+      if (!fs[k]->SurfaceOf()->Ev1Der(u, v, P, du, dv)) { ok = false; break; }
+      nn = ON_CrossProduct(du, dv);
+      if (!nn.Unitize()) { ok = false; break; }
+      if (fs[k]->m_bRev) nn = -nn;
+      n[k] = nn;
+    }
+    if (!ok) continue;
+    *any = true;
+    worst = std::max(worst, (n[0] - n[1]).Length());
+  }
+  return worst;
+}
+
+void CheckClosedValidSolid(const Brep& res, int faces, const std::string& tag, bool g1 = true) {
+  Check(res.raw().IsValid(), (tag + "ON_Brep::IsValid").c_str());
+  Check(res.raw().IsSolid(), (tag + "closed solid (IsSolid)").c_str());
+  Check(res.raw().m_F.Count() == faces, (tag + "face count " + std::to_string(faces)).c_str());
+  Check(res.TessellateToClosedMesh(48, 12).IsClosedManifold(), (tag + "tessellates to a closed manifold mesh").c_str());
+  if (!g1) return;
+  bool any = false;
+  const double jump = MaxNormalJump(res, &any);
+  Check(any && jump < 1e-6, (tag + "G1 across all blend seams: max normal jump " + std::to_string(jump)).c_str());
+}
+
+void TestFilletCapRimCylinderMatchesPappusAndTorusParameters() {
+  const double R = 2.0, L = 5.0;
+  const Point3d base(1.0, -2.0, 0.5);
+  const Vector3d axis(0, 0, 1);
+  const Brep cyl = MakeCappedCylinder(base, axis, R, L);
+  const double sharp_volume = ON_PI * R * R * L;
+
+  // Pappus: removed = 2 pi [ r^2 (R - r/2) - (pi r^2/4)(R - r) - r^3/3 ] per filleted rim.
+  auto removed = [&](double r) {
+    return 2.0 * ON_PI * (r * r * (R - r / 2) - (ON_PI * r * r / 4) * (R - r) - r * r * r / 3);
+  };
+  struct C { const char* name; double rl, rh; };
+  const C cases[] = {{"top rim r=0.5", 0, 0.5}, {"bottom rim r=0.8", 0.8, 0}, {"both rims r=0.4/0.7", 0.4, 0.7}};
+  for (const C& c : cases) {
+    const std::string tag = std::string("[cylinder ") + c.name + "] ";
+    const Brep res = (c.rl == 0 || c.rh == 0)
+                         ? FilletCapRim(cyl, base + R * Vector3d(std::cos(2.1), std::sin(2.1), 0) + (c.rh > 0 ? L : 0.0) * axis,
+                                        std::max(c.rl, c.rh))
+                         : FilletCapRims(cyl, c.rl, c.rh);
+    const int nb = (c.rl > 0) + (c.rh > 0);
+    CheckClosedValidSolid(res, 3 + nb, tag);
+    const double exact = sharp_volume - (c.rl > 0 ? removed(c.rl) : 0) - (c.rh > 0 ? removed(c.rh) : 0);
+    const Profile pr = IntegrateProfile(R, R, L, c.rl, c.rh);
+    Check(std::fabs(pr.volume - exact) < 1e-6, (tag + "the independent Green's-theorem profile integral reproduces the Pappus closed form (calibration)").c_str());
+    const double vol = res.Volume();
+    Check(std::fabs(vol - exact) < 5e-6 * exact,
+          (tag + "Volume() " + std::to_string(vol) + " vs closed form " + std::to_string(exact)).c_str());
+    const double mvol = res.TessellateToClosedMesh(96, 24).Volume();
+    Check(std::fabs(mvol - exact) < 2e-3 * exact, (tag + "tessellated closed-mesh volume " + std::to_string(mvol) + " agrees to 0.2%").c_str());
+    const std::vector<ON_Torus> tori = TorusFaces(res, 1e-8);
+    Check(static_cast<int>(tori.size()) == nb, (tag + "exactly one torus face per blended rim, read back through ON_Surface::IsTorus").c_str());
+    for (const ON_Torus& t : tori) {
+      const double r = t.minor_radius;
+      Check(std::fabs(t.major_radius - (R - r)) < 1e-9 && (std::fabs(r - c.rl) < 1e-9 || std::fabs(r - c.rh) < 1e-9),
+            (tag + "torus major radius R - r = " + std::to_string(R - r) + ", minor radius r = " + std::to_string(r)).c_str());
+    }
+    // The flat cap is the disc of radius R - r: the end face's bounding box extent in x.
+    ON_BoundingBox bb;
+    res.raw().GetBoundingBox(bb);
+    Check(std::fabs(bb.Max().z - bb.Min().z - L) < 1e-9 && std::fabs(bb.Max().x - bb.Min().x - 2 * R) < 1e-7,
+          (tag + "overall extent unchanged (height L, diameter 2R)").c_str());
+  }
+}
+
+void TestFilletCapRimFrustumMatchesIndependentProfileIntegral() {
+  const double R0 = 3.0, R1 = 1.5, H = 4.0;
+  const Point3d base(0.0, 0.0, 0.0);
+  const Brep fr = MakeFrustum(base, Vector3d(0, 0, 1), R0, R1, H);
+  Check(fr.raw().IsValid() && fr.raw().IsSolid() && fr.raw().m_F.Count() == 3, "frustum fixture: valid closed 3-face solid");
+  const Profile sharp = IntegrateProfile(R0, R1, H, 0, 0);
+  Check(std::fabs(sharp.volume - ON_PI * H / 3.0 * (R0 * R0 + R0 * R1 + R1 * R1)) < 1e-9,
+        "calibration: the profile integral gives the frustum volume pi H/3 (R0^2 + R0 R1 + R1^2) when sharp");
+  struct C { const char* name; double rl, rh; };
+  const C cases[] = {{"acute low rim r=0.6", 0.6, 0}, {"obtuse high rim r=0.5", 0, 0.5}, {"both rims r=0.5/0.4", 0.5, 0.4}};
+  for (const C& c : cases) {
+    const std::string tag = std::string("[frustum ") + c.name + "] ";
+    const Brep res = FilletCapRims(fr, c.rl, c.rh);
+    const int nb = (c.rl > 0) + (c.rh > 0);
+    CheckClosedValidSolid(res, 3 + nb, tag);
+    const Profile pr = IntegrateProfile(R0, R1, H, c.rl, c.rh);
+    const double vol = res.Volume();
+    Check(std::fabs(vol - pr.volume) < 5e-6 * pr.volume,
+          (tag + "Volume() " + std::to_string(vol) + " vs independent profile integral " + std::to_string(pr.volume)).c_str());
+    const double mvol = res.TessellateToClosedMesh(96, 24).Volume();
+    Check(std::fabs(mvol - pr.volume) < 3e-3 * pr.volume, (tag + "tessellated closed-mesh volume " + std::to_string(mvol)).c_str());
+    const std::vector<ON_Torus> tori = TorusFaces(res, 1e-8);
+    Check(static_cast<int>(tori.size()) == nb, (tag + "one torus face per blended rim").c_str());
+    // Each torus: minor radius = the requested r, major radius = the independently solved ball-centre rho.
+    for (const ON_Torus& t : tori) {
+      const bool is_low = std::fabs(t.minor_radius - c.rl) < 1e-9 && c.rl > 0;
+      const double want_major = is_low ? pr.cap_rho_low : pr.cap_rho_high;
+      Check(std::fabs(t.major_radius - want_major) < 1e-9,
+            (tag + "torus major radius " + std::to_string(t.major_radius) + " = independently solved ball-centre rho " +
+             std::to_string(want_major)).c_str());
+    }
+    // The wall is still an exact cone through the two tangent circles.
+    ON_Cone cone;
+    bool found = false;
+    for (int f = 0; f < res.raw().m_F.Count(); ++f)
+      if (res.raw().m_F[f].SurfaceOf()->IsCone(&cone, 1e-8)) found = true;
+    Check(found, (tag + "the wall is still read back as an exact cone (IsCone)").c_str());
+  }
+}
+
+void TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons() {
+  using dino8::kernel::Brep;
+  const double R = 2.0, L = 5.0;
+  const int n = 400;
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(1, 1, 1));
+  Brep::CylindricalFace cf;
+  cf.frame = frame;
+  cf.radius = R;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = L;
+  const Brep poly = Brep::FromMixedFaces(
+      {DiskCapForGeneralBooleanTest(frame, 0.0, R, true, n), DiskCapForGeneralBooleanTest(frame, L, R, false, n)}, {cf});
+  const Point3d rim = frame.origin + L * frame.zaxis + R * (std::cos(0.7) * frame.xaxis + std::sin(0.7) * frame.yaxis);
+  const Brep res = FilletCapRim(poly, rim, 0.5);
+  CheckClosedValidSolid(res, 4, "[MixedFaces dense-polygon cylinder, oblique axis] ");
+  const double r = 0.5;
+  const double exact = ON_PI * R * R * L - 2.0 * ON_PI * (r * r * (R - r / 2) - (ON_PI * r * r / 4) * (R - r) - r * r * r / 3);
+  Check(std::fabs(res.Volume() - exact) < 5e-6 * exact,
+        ("[MixedFaces cylinder] result is the EXACT circle-capped fillet, volume " + std::to_string(res.Volume()) + " vs " + std::to_string(exact)).c_str());
+
+  const Brep cyl = MakeCappedCylinder(Point3d(0, 0, 0), Vector3d(0, 0, 1), R, L);
+  auto reason = [&](const std::function<void()>& f) -> std::string {
+    try { f(); } catch (const std::invalid_argument& e) { return e.what(); }
+    return "";
+  };
+  const Point3d top(R, 0, L);
+  std::string m;
+  m = reason([&] { FilletCapRim(cyl, top, 2.0); });
+  Check(m.find("consume the whole cap") != std::string::npos, ("radius = R is refused with a reason: " + m).c_str());
+  m = reason([&] { FilletCapRims(cyl, 2.6, 2.6); });
+  Check(!m.empty(), ("radii beyond the cap/wall are refused with a reason: " + m).c_str());
+  m = reason([&] { FilletCapRims(Brep::Box(0, 0, 0, 1, 1, 1), 0.1, 0.1); });
+  Check(m.find("not a plain capped cylinder") != std::string::npos, ("a box is refused with a reason: " + m).c_str());
+  m = reason([&] { FilletCapRims(MakeCappedCylinder(Point3d(0, 0, 0), Vector3d(0, 0, 1), 2.0, 1.0), 0.6, 0.6); });
+  Check(m.find("consume the whole wall") != std::string::npos, ("blends that eat the wall are refused with a reason: " + m).c_str());
+  m = reason([&] { FilletCapRim(cyl, Point3d(R, 0, L / 2), 0.3); });
+  Check(m.find("rim circle") != std::string::npos, ("a point on the wall but not on a rim is refused with a reason: " + m).c_str());
+  m = reason([&] { FilletCapRim(cyl, Point3d(1.0, 0, L), 0.3); });
+  Check(m.find("rim circle") != std::string::npos, ("a point on the cap interior is refused with a reason: " + m).c_str());
+  m = reason([&] { FilletCapRims(cyl, 0.0, 0.0); });
+  Check(!m.empty(), ("two zero radii are refused: " + m).c_str());
+  m = reason([&] { FilletCapRim(cyl, top, std::nan("")); });
+  Check(!m.empty(), ("a NaN radius is refused: " + m).c_str());
+  m = reason([&] { FilletCapRim(cyl, top, -0.2); });
+  Check(!m.empty(), ("a negative radius is refused: " + m).c_str());
+  // A frustum whose acute rim cannot take a radius that large (t >= cap radius) is refused, never degraded.
+  const Brep fr = MakeFrustum(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.5, 4.0);
+  m = reason([&] { FilletCapRims(fr, 0.0, 3.0); });
+  Check(m.find("consume the whole cap") != std::string::npos, ("an obtuse high rim with t >= cap radius is refused: " + m).c_str());
+  // The cone's apex between the caps is not a frustum.
+  m = reason([&] {
+    ON_Cone cone(ON_Plane(ON_3dPoint(0, 0, 3), ON_3dVector(0, 0, -1)), 3.0, 1.0);  // apex above, base at z = 0
+    ON_Brep* b = ON_BrepCone(cone, true);
+    Brep k;
+    k.raw() = *b;
+    delete b;
+    FilletCapRims(k, 0.2, 0.0);
+  });
+  Check(!m.empty(), ("a full cone (apex on a cap) is refused with a reason: " + m).c_str());
+}
+
+// Removed volume of one flat bevel by Pappus on the profile triangle (rim corner K, cap point C, wall point W):
+// V = 2 pi * (mean rho of the three vertices) * (dc * dw * sin(theta) / 2). `theta` is the rim's interior profile angle.
+double BevelRemoved(double rho_k, double dc, double dw, double theta, double wall_rho_dir /* d(rho) per unit slant, away from K */) {
+  const double rho_c = rho_k - dc;
+  const double rho_w = rho_k + dw * wall_rho_dir;
+  return 2.0 * ON_PI * ((rho_k + rho_c + rho_w) / 3.0) * (0.5 * dc * dw * std::sin(theta));
+}
+
+int CountCones(const Brep& b, std::vector<ON_Cone>* out) {
+  int n = 0;
+  for (int f = 0; f < b.raw().m_F.Count(); ++f) {
+    ON_Cone c;
+    if (b.raw().m_F[f].SurfaceOf()->IsCone(&c, 1e-8)) {
+      ++n;
+      if (out) out->push_back(c);
+    }
+  }
+  return n;
+}
+
+void TestChamferCapRimUnequalDistancesAndAngleMatchPappus() {
+  using dino8::kernel::ChamferCapRim;
+  using dino8::kernel::ChamferCapRimAngle;
+  using dino8::kernel::ChamferCapRims;
+  const Vector3d axis(0, 0, 1);
+  {
+    const double R = 2.0, L = 5.0;
+    const Point3d base(-1.0, 3.0, 2.0);
+    const Brep cyl = MakeCappedCylinder(base, axis, R, L);
+    const double sharp = ON_PI * R * R * L;
+    struct C { const char* name; double wl, cl, wh, ch; };
+    const C cases[] = {{"top rim dw=0.6 dc=0.4", 0, 0, 0.6, 0.4},
+                       {"bottom rim dw=0.4 dc=0.6 (swapped)", 0.4, 0.6, 0, 0},
+                       {"both rims 0.5/0.7 and 1.1/0.3", 0.5, 0.7, 1.1, 0.3}};
+    for (const C& c : cases) {
+      const std::string tag = std::string("[chamfer cylinder ") + c.name + "] ";
+      const Brep res = ChamferCapRims(cyl, c.wl, c.cl, c.wh, c.ch);
+      const int nb = (c.wl > 0) + (c.wh > 0);
+      CheckClosedValidSolid(res, 3 + nb, tag + "(no G1 expected) ", false);
+      double exact = sharp;
+      if (c.wl > 0) exact -= BevelRemoved(R, c.cl, c.wl, ON_PI / 2, 0.0);
+      if (c.wh > 0) exact -= BevelRemoved(R, c.ch, c.wh, ON_PI / 2, 0.0);
+      // Independent cylinder closed form: pi dc dw (R - dc/3) per bevel.
+      double exact2 = sharp;
+      if (c.wl > 0) exact2 -= ON_PI * c.cl * c.wl * (R - c.cl / 3.0);
+      if (c.wh > 0) exact2 -= ON_PI * c.ch * c.wh * (R - c.ch / 3.0);
+      Check(std::fabs(exact - exact2) < 1e-9, (tag + "calibration: Pappus triangle form equals pi dc dw (R - dc/3)").c_str());
+      const double vol = res.Volume();
+      Check(std::fabs(vol - exact) < 5e-6 * exact, (tag + "Volume() " + std::to_string(vol) + " vs closed form " + std::to_string(exact)).c_str());
+      std::vector<ON_Cone> cones;
+      Check(CountCones(res, &cones) == nb, (tag + "exactly one cone (the bevel) per chamfered rim; the wall stays a cylinder").c_str());
+      for (const ON_Cone& k : cones) {
+        const double ratio = std::fabs(k.radius / k.height);  // tan(half angle) = dc / dw
+        const bool ok = (c.wl > 0 && std::fabs(ratio - c.cl / c.wl) < 1e-9) || (c.wh > 0 && std::fabs(ratio - c.ch / c.wh) < 1e-9);
+        Check(ok, (tag + "bevel cone slope dc/dw = " + std::to_string(ratio)).c_str());
+      }
+      ON_BoundingBox bb;
+      res.raw().GetBoundingBox(bb);
+      Check(std::fabs(bb.Max().z - bb.Min().z - L) < 1e-9, (tag + "overall height unchanged").c_str());
+    }
+    // distance + angle on the cylinder: 45 degrees is the symmetric chamfer; 30 degrees follows tan.
+    const Point3d top(base.x + R, base.y, base.z + L);
+    const Brep a45 = ChamferCapRimAngle(cyl, top, 0.5, ON_PI / 4);
+    Check(std::fabs(a45.Volume() - (sharp - ON_PI * 0.5 * 0.5 * (R - 0.5 / 3.0))) < 5e-6 * sharp,
+          "[angle 45] cylinder rim distance 0.5 + angle 45 deg equals the symmetric 0.5/0.5 chamfer");
+    const Brep a30 = ChamferCapRimAngle(cyl, top, 0.8, ON_PI / 6);
+    const double dw30 = 0.8 * std::tan(ON_PI / 6);
+    Check(std::fabs(a30.Volume() - (sharp - ON_PI * 0.8 * dw30 * (R - 0.8 / 3.0))) < 5e-6 * sharp,
+          "[angle 30] cylinder rim dc=0.8 + 30 deg gives dw = dc tan(30 deg) and the matching removed volume");
+  }
+  {
+    // Frustum R0=3 (low) -> R1=1.5 (high), H=4: slant 4.272; acute low rim, obtuse high rim.
+    const double R0 = 3.0, R1 = 1.5, H = 4.0;
+    const Brep fr = MakeFrustum(Point3d(0, 0, 0), axis, R0, R1, H);
+    const double wl = std::hypot(R1 - R0, H), wx = (R1 - R0) / wl;
+    const double th_lo = std::acos(-wx), th_hi = std::acos(wx);
+    const double sharp = ON_PI * H / 3.0 * (R0 * R0 + R0 * R1 + R1 * R1);
+    struct C { const char* name; double wl, cl, wh, ch; };
+    const C cases[] = {{"acute low rim dw=0.9 dc=0.5", 0.9, 0.5, 0, 0},
+                       {"obtuse high rim dw=0.7 dc=0.4", 0, 0, 0.7, 0.4},
+                       {"both rims", 0.6, 0.8, 1.2, 0.5}};
+    for (const C& c : cases) {
+      const std::string tag = std::string("[chamfer frustum ") + c.name + "] ";
+      const Brep res = ChamferCapRims(fr, c.wl, c.cl, c.wh, c.ch);
+      const int nb = (c.wl > 0) + (c.wh > 0);
+      CheckClosedValidSolid(res, 3 + nb, tag + "(no G1 expected) ", false);
+      double exact = sharp;
+      if (c.wl > 0) exact -= BevelRemoved(R0, c.cl, c.wl, th_lo, wx);
+      if (c.wh > 0) exact -= BevelRemoved(R1, c.ch, c.wh, th_hi, -wx);
+      const double vol = res.Volume();
+      Check(std::fabs(vol - exact) < 5e-6 * exact, (tag + "Volume() " + std::to_string(vol) + " vs Pappus " + std::to_string(exact)).c_str());
+      Check(CountCones(res, nullptr) == nb + 1, (tag + "the wall is still a cone, plus one bevel cone per chamfered rim").c_str());
+    }
+    // distance + angle on the acute low rim, the wall distance solved independently by intersecting the bevel ray with the wall.
+    const double dc = 0.6, alpha = ON_PI / 5;
+    // bevel ray from C = (R0 - dc, 0) at angle alpha above the cap; wall: (R0,0) + s * (wx, wz)
+    const double wz = H / wl;
+    // R0 - dc + t cos(alpha) = R0 + s wx ;  t sin(alpha) = s wz   ->   s = dc sin(alpha) / (wz cos(alpha) - wx sin(alpha))... derived by elimination
+    const double s = dc * std::sin(alpha) / (wz * std::cos(alpha) - wx * std::sin(alpha));
+    const Point3d low_rim(R0, 0, 0);
+    const Brep ang = ChamferCapRimAngle(fr, low_rim, dc, alpha);
+    const Brep dist = ChamferCapRim(fr, low_rim, s, dc);
+    Check(std::fabs(ang.Volume() - dist.Volume()) < 1e-9 * sharp,
+          ("[angle on frustum] distance+angle equals the distance pair with the independently intersected wall distance " + std::to_string(s)).c_str());
+    const double exact = sharp - BevelRemoved(R0, dc, s, th_lo, wx);
+    Check(std::fabs(ang.Volume() - exact) < 5e-6 * sharp, "[angle on frustum] volume matches Pappus");
+  }
+  // Refusals with reasons.
+  const Brep cyl = MakeCappedCylinder(Point3d(0, 0, 0), axis, 2.0, 5.0);
+  auto reason = [&](const std::function<void()>& f) -> std::string {
+    try { f(); } catch (const std::invalid_argument& e) { return e.what(); }
+    return "";
+  };
+  const Point3d top(2.0, 0, 5.0);
+  std::string m = reason([&] { ChamferCapRim(cyl, top, 0.5, 2.0); });
+  Check(m.find("consume the whole cap") != std::string::npos, ("chamfer across the whole cap is refused: " + m).c_str());
+  m = reason([&] { ChamferCapRims(cyl, 3.0, 0.5, 2.5, 0.5); });
+  Check(m.find("consume the whole wall") != std::string::npos, ("chamfers longer than the wall are refused: " + m).c_str());
+  m = reason([&] { ChamferCapRimAngle(cyl, top, 0.5, 1.7); });
+  Check(m.find("never meets the wall") != std::string::npos, ("an angle that never reaches the wall is refused: " + m).c_str());
+  m = reason([&] { ChamferCapRim(cyl, Point3d(2.0, 0, 2.5), 0.5, 0.5); });
+  Check(m.find("rim circle") != std::string::npos, ("a point not on a rim is refused: " + m).c_str());
+  m = reason([&] { ChamferCapRims(cyl, 0.5, 0.0, 0.0, 0.0); });
+  Check(!m.empty(), ("a half-specified bevel is refused: " + m).c_str());
+  m = reason([&] { ChamferCapRim(Brep::Box(0, 0, 0, 1, 1, 1), top, 0.1, 0.1); });
+  Check(m.find("not a plain capped") != std::string::npos, ("a box is refused: " + m).c_str());
+}
+
+// The same bevel on the boolean pipeline's own dense-polygon-capped cylinder (FromMixedFaces, oblique axis): the existing
+// ChamferCylinderRim keeps those polygon caps, ChamferCapRim returns true circle-trimmed planes, and both bevel the same
+// cone: the removed volume (exact circle caps) is the closed form the existing function's own test quotes.
+void TestChamferCapRimMatchesChamferCylinderRimOnDensePolygonCylinder() {
+  using dino8::kernel::ChamferCapRim;
+  using dino8::kernel::ChamferCylinderRim;
+  const double R = 2.0, L = 5.0, dw = 0.6, dc = 0.4;
+  const int n = 1000;
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(1, 2, 2));
+  Brep::CylindricalFace cf;
+  cf.frame = frame;
+  cf.radius = R;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = L;
+  const Brep poly = Brep::FromMixedFaces(
+      {DiskCapForGeneralBooleanTest(frame, 0.0, R, true, n), DiskCapForGeneralBooleanTest(frame, L, R, false, n)}, {cf});
+  const Point3d rim = frame.origin + L * frame.zaxis + R * (std::cos(1.1) * frame.xaxis + std::sin(1.1) * frame.yaxis);
+  const Brep mine = ChamferCapRim(poly, rim, dw, dc);
+  CheckClosedValidSolid(mine, 4, "[ChamferCapRim on dense-polygon cylinder] ", false);
+  const double exact = ON_PI * R * R * L - ON_PI * dc * dw * (R - dc / 3.0);
+  Check(std::fabs(mine.Volume() - exact) < 5e-6 * exact,
+        ("[ChamferCapRim on dense-polygon cylinder] exact circle-capped volume " + std::to_string(mine.Volume()) + " vs closed form " +
+         std::to_string(exact)).c_str());
+  // The existing function bevels the same cone: its removed volume (polygon fixture measured against its own un-chamfered
+  // twin, so the polygon term cancels to the cone ring) agrees with ours.
+  const Brep theirs = ChamferCylinderRim(poly, rim, dw, dc);
+  const double removed_theirs = poly.TessellateToClosedMeshNonUniformAdaptive(1e-8).Volume() -
+                                theirs.TessellateToClosedMeshNonUniformAdaptive(1e-8).Volume();
+  Check(std::fabs(removed_theirs - ON_PI * dc * dw * (R - dc / 3.0)) < 2e-3,
+        ("[ChamferCylinderRim] removes " + std::to_string(removed_theirs) + ", the same ring ChamferCapRim removes (" +
+         std::to_string(ON_PI * dc * dw * (R - dc / 3.0)) + ")").c_str());
+}
+
+}  // namespace fillet_cap_rim_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -93767,6 +94260,16 @@ int main() {
           sweep2_sections_cyclic_tests::TestSweep2SectionsStationLadderOnTightBendAndCorner);
   RunTest("sweep2_sections_cyclic_tests::TestSweep2SectionsRailDirectionIsNotGuessed",
           sweep2_sections_cyclic_tests::TestSweep2SectionsRailDirectionIsNotGuessed);
+  RunTest("fillet_cap_rim_tests::TestFilletCapRimCylinderMatchesPappusAndTorusParameters",
+          fillet_cap_rim_tests::TestFilletCapRimCylinderMatchesPappusAndTorusParameters);
+  RunTest("fillet_cap_rim_tests::TestFilletCapRimFrustumMatchesIndependentProfileIntegral",
+          fillet_cap_rim_tests::TestFilletCapRimFrustumMatchesIndependentProfileIntegral);
+  RunTest("fillet_cap_rim_tests::TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons",
+          fillet_cap_rim_tests::TestFilletCapRimAcceptsDensePolygonCylinderAndRefusesWithReasons);
+  RunTest("fillet_cap_rim_tests::TestChamferCapRimUnequalDistancesAndAngleMatchPappus",
+          fillet_cap_rim_tests::TestChamferCapRimUnequalDistancesAndAngleMatchPappus);
+  RunTest("fillet_cap_rim_tests::TestChamferCapRimMatchesChamferCylinderRimOnDensePolygonCylinder",
+          fillet_cap_rim_tests::TestChamferCapRimMatchesChamferCylinderRimOnDensePolygonCylinder);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

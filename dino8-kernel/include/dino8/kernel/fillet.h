@@ -2294,4 +2294,64 @@ Brep FilletConcaveEdgesByDistanceBetweenRails(const Brep& solid, const std::vect
 // no better and no worse than the input's own rim was.
 Brep ChamferCylinderRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap);
 
+
+// --- FilletCapRim / FilletCapRims -------------------------------------------
+//
+// Exact constant-radius fillet on a rim of a plain capped cylinder or capped
+// cone frustum: the first kernel fillet whose two adjacent faces are NOT both
+// planar (the planar-only FilletConvexEdge family rejects the curved wall via
+// PlanarFaces()). Between a flat cap and a coaxial cylinder / cone the rolling
+// ball of radius r keeps a fixed distance r from the cap plane and r from the
+// wall's generatrix, so its centre circle is coaxial and its envelope is an
+// exact torus patch (a circular arc of the profile swept all the way round),
+// tangent to the cap along a circle of radius (rim radius - t) and to the wall
+// along the circle at distance t from the rim, where t = r / tan(theta/2) and
+// theta is the profile's interior angle at the rim (theta = 90 degrees for a
+// cylinder, so t = r; acute / obtuse for the two rims of a frustum). The
+// result is assembled from exact pieces only - the wall (cylinder or cone, an
+// ON_RevSurface of a straight profile segment, shortened to the tangent
+// circles), one ON_RevSurface of an exact rational arc per filleted rim, and
+// the flat caps (re-trimmed to the smaller circle where filleted) - and sewn
+// into a closed solid: 4 faces for one rim, 5 for both, every seam a
+// literally shared edge, ON_Brep::IsValid() and IsSolid() both true.
+//
+// `solid` must be a plain capped cylinder or cone frustum: one wall and two
+// planar end caps perpendicular to its axis, nothing else (an ON_BrepCylinder /
+// ON_BrepCone style 3-face solid for either, or - for a cylinder only - the
+// dense-polygon / four-wedge disc caps of FromMixedFaces; the output's caps are
+// always true circle-trimmed planes). A cone whose apex lies on or between the
+// caps is not a frustum and is refused.
+//
+// `FilletCapRim` fillets the one rim through `point_on_rim` (on a rim circle
+// within tolerance). `FilletCapRims` takes a radius per axial end -
+// `radius_low` at the end with the smaller coordinate along the wall's own axis,
+// `radius_high` at the other - where 0 leaves that end sharp (at least one
+// must be positive); both rims are blended in one call.
+//
+// Refusals (std::invalid_argument, the message names the reason; no degraded
+// body is ever returned): a non-positive or non-finite radius; a blend whose
+// tangent length t is not strictly less than its cap radius (it would consume
+// the cap); tangent lengths whose sum is not strictly less than the wall length
+// (the blends would consume the wall); a solid that is not a plain capped
+// cylinder / frustum; a picked point on neither rim circle.
+Brep FilletCapRim(const Brep& solid, Point3d point_on_rim, double radius);
+Brep FilletCapRims(const Brep& solid, double radius_low, double radius_high);
+
+// The flat-bevel (chamfer) sibling on the same solids, and the first kernel chamfer whose wall is not planar AND not
+// restricted to a cylinder (ChamferCylinderRim only knows a cylinder): the bevel is an exact cone frustum
+// (ON_RevSurface of a straight profile segment) between the circle at `distance_cap` in from the rim across the cap
+// and the circle at `distance_wall` back from the rim along the wall (measured along the wall's generatrix, which for a
+// cone frustum is the slant, not the axial, direction). Both rims of a frustum are supported, acute and obtuse alike.
+// `ChamferCapRims` takes both distances per axial end (wall_low/cap_low at the end with the smaller axial coordinate,
+// wall_high/cap_high at the other; a pair of 0 leaves that end sharp, at least one rim must be chamfered).
+// `ChamferCapRim` bevels the one rim through `point_on_rim`. `ChamferCapRimAngle` is the distance + angle form
+// (AutoCAD CHAMFER Angle method): `distance_cap` across the cap and `angle` (radians, strictly inside (0, pi))
+// between the bevel and the cap plane, the wall distance following from the law of sines in the profile triangle
+// (corner, cap point, wall point) with the rim's own interior profile angle. Same solid classes, same closed 4/5-face
+// result and same refusals as FilletCapRim (a bevel that would consume a cap or the whole wall, an angle that never
+// reaches the wall, a point on neither rim, a non-capped-revolve solid), each with a reason.
+Brep ChamferCapRims(const Brep& solid, double wall_low, double cap_low, double wall_high, double cap_high);
+Brep ChamferCapRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap);
+Brep ChamferCapRimAngle(const Brep& solid, Point3d point_on_rim, double distance_cap, double angle);
+
 }  // namespace dino8::kernel

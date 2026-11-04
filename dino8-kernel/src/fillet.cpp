@@ -7173,4 +7173,295 @@ Brep ChamferCylinderRim(const Brep& solid, Point3d point_on_rim, double distance
   return Brep::FromMixedFaces(planar, cylindrical, conical, mf.spherical);
 }
 
+// --- FilletCapRim / FilletCapRims -------------------------------------------
+// See fillet.h for the contract. The result is a solid of revolution assembled from exact pieces: every
+// face is an ON_RevSurface of an exact line or rational arc, so the wall stays a true cylinder / cone and
+// every blend an exact torus patch.
+namespace {
+
+struct CappedRevolvePlan {
+  ON_3dPoint c0;      // centre of the low cap
+  ON_3dVector ax;     // unit axis, low -> high
+  ON_3dVector u;      // a unit direction perpendicular to ax
+  double R0 = 0, R1 = 0, H = 0;  // cap radii (low, high), axial length
+};
+
+// Recognise a plain capped cylinder or cone frustum: either a 3-face ON_Brep (analytic wall + two planar caps
+// perpendicular to its axis) or, for a cylinder, through MixedFaces() (one full-sweep outward wall record + planar
+// disc pieces in the two end planes).
+bool ClassifyCappedRevolve(const Brep& solid, CappedRevolvePlan& plan, std::string& why) {
+  const ON_Brep& b = solid.raw();
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double tol = std::max(1e-9, bb.Diagonal().Length() * 1e-7);
+  if (b.m_F.Count() == 3 && b.IsSolid()) {
+    int wall = -1;
+    ON_Cylinder cyl;
+    ON_Cone cone;
+    bool is_cone = false;
+    std::vector<ON_Plane> caps;
+    bool ok = true;
+    for (int f = 0; f < 3 && ok; ++f) {
+      const ON_Surface* surf = b.m_F[f].SurfaceOf();
+      ON_Plane pl;
+      if (!surf) ok = false;
+      else if (surf->IsPlanar(&pl, tol)) caps.push_back(pl);
+      else if (wall < 0 && surf->IsCylinder(&cyl, tol)) wall = f;
+      else if (wall < 0 && surf->IsCone(&cone, tol)) { wall = f; is_cone = true; }
+      else ok = false;
+    }
+    if (ok && wall >= 0 && caps.size() == 2) {
+      ON_3dVector ax = is_cone ? cone.Axis() : cyl.Axis();
+      if (!ax.Unitize()) { why = "degenerate wall axis"; return false; }
+      const ON_3dPoint ref = is_cone ? cone.ApexPoint() : cyl.circle.plane.origin;
+      double s[2];
+      for (size_t k = 0; k < 2; ++k) {
+        if (std::fabs(caps[k].zaxis * ax) < 1.0 - 1e-9) { why = "a cap is not perpendicular to the wall's axis"; return false; }
+        s[k] = (caps[k].origin - ref) * ax;
+      }
+      const double s0 = std::min(s[0], s[1]), s1 = std::max(s[0], s[1]);
+      if (!(s1 - s0 > tol)) { why = "degenerate height"; return false; }
+      plan.c0 = ref + s0 * ax;
+      plan.ax = ax;
+      plan.H = s1 - s0;
+      if (is_cone) {
+        if (!(cone.radius > 0.0) || cone.height == 0.0) { why = "degenerate cone"; return false; }
+        if (s0 * s1 <= 0.0) { why = "the cone's apex lies between or on the caps (not a frustum)"; return false; }
+        const double slope = std::fabs(cone.radius / cone.height);  // radius per unit of axial distance from the apex
+        plan.R0 = std::fabs(s0) * slope;
+        plan.R1 = std::fabs(s1) * slope;
+        plan.u = cone.plane.xaxis;
+      } else {
+        plan.R0 = plan.R1 = cyl.circle.radius;
+        plan.u = cyl.circle.plane.xaxis;
+      }
+      return true;
+    }
+  }
+  const Brep::MixedFacesResult mf = solid.MixedFaces();
+  if (mf.cylindrical.size() != 1 || !mf.conical.empty() || !mf.spherical.empty() || mf.planar.size() < 2) {
+    why = "not a plain capped cylinder or cone frustum (needs exactly one cylindrical or conical wall and planar end caps, nothing else)";
+    return false;
+  }
+  const Brep::CylindricalFace& w = mf.cylindrical[0];
+  if (std::fabs(w.angle - 2.0 * ON_PI) > tolerance::kZeroVector || !w.outward) {
+    why = "the cylindrical wall is not a full-sweep outward-facing wall";
+    return false;
+  }
+  if (!w.cap0_notch_points.empty() || !w.cap1_notch_points.empty()) {
+    why = "the wall carries a cap notch (an oblique cut) - the rim is not a flat circle";
+    return false;
+  }
+  const double mtol = tolerance::kDistance * std::max({1.0, w.radius, w.length});
+  bool low = false, high = false;
+  for (const Brep::PlanarFace& f : mf.planar) {
+    for (const Point3d& p : f.loop) {
+      const Vector3d d = p - w.frame.origin;
+      const double h = d * w.frame.zaxis;
+      if (std::fabs(h) > mtol && std::fabs(h - w.length) > mtol) { why = "a planar face is not a flat end cap of the cylinder"; return false; }
+      if ((d - h * w.frame.zaxis).Length() > w.radius + mtol) { why = "a planar cap extends beyond the cylinder wall"; return false; }
+      (std::fabs(h) <= mtol ? low : high) = true;
+    }
+  }
+  if (!low || !high) { why = "the cylinder lacks a flat cap at one end"; return false; }
+  plan.c0 = w.frame.origin;
+  plan.ax = w.frame.zaxis;
+  plan.u = w.frame.xaxis;
+  plan.R0 = plan.R1 = w.radius;
+  plan.H = w.length;
+  return true;
+}
+
+}  // namespace
+
+namespace {
+
+// One rim's blend: a fillet (radius > 0) or a flat bevel (d_wall, d_cap > 0: setbacks along the wall and across the cap).
+struct RimSpec {
+  double radius = 0, d_wall = 0, d_cap = 0;
+  bool Active() const { return radius > 0.0 || (d_wall > 0.0 && d_cap > 0.0); }
+};
+
+// Assembles the filleted / chamfered solid of revolution. Both rims are described in the profile half-plane (rho, z):
+// the cap setback `tc` (along the cap, towards the axis) and the wall setback `tw` (along the wall, away from the rim).
+// A fillet has tc == tw == r / tan(theta/2) and an exact arc between the two setback points; a chamfer a straight line.
+Brep BuildCapRims(const Brep& solid, const RimSpec& lo, const RimSpec& hi, const std::string& who) {
+  CappedRevolvePlan g;
+  std::string why;
+  if (!ClassifyCappedRevolve(solid, g, why)) throw std::invalid_argument(who + why);
+
+  const double wl = std::hypot(g.R1 - g.R0, g.H);
+  const double wx = (g.R1 - g.R0) / wl, wz = g.H / wl;  // unit wall direction, low -> high
+  // Interior angle at each rim between the cap (towards the axis) and the wall (towards the other rim).
+  const double theta_lo = std::acos(std::max(-1.0, std::min(1.0, -wx)));  // between (-1,0) and w
+  const double theta_hi = std::acos(std::max(-1.0, std::min(1.0, wx)));   // between (-1,0) and -w
+  auto setbacks = [&](const RimSpec& s, double theta, double& tc, double& tw) {
+    if (!s.Active()) { tc = tw = 0.0; return; }
+    if (s.radius > 0.0) tc = tw = s.radius / std::tan(0.5 * theta);  // tangent length of a circular blend
+    else { tc = s.d_cap; tw = s.d_wall; }
+  };
+  double tc_lo, tw_lo, tc_hi, tw_hi;
+  setbacks(lo, theta_lo, tc_lo, tw_lo);
+  setbacks(hi, theta_hi, tc_hi, tw_hi);
+  if (!(tc_lo < g.R0) || !(tc_hi < g.R1)) {
+    throw std::invalid_argument(who + "a blend would consume the whole cap (its setback " + std::to_string(std::max(tc_lo, tc_hi)) +
+                                " across the cap is not strictly less than the cap radius)");
+  }
+  if (!(tw_lo + tw_hi < wl)) {
+    throw std::invalid_argument(who + "the blends together consume the whole wall (setbacks " + std::to_string(tw_lo) + " + " +
+                                std::to_string(tw_hi) + " must be strictly less than the wall length " + std::to_string(wl) + ")");
+  }
+  auto P = [&](double rho, double z) { return g.c0 + rho * g.u + z * g.ax; };
+  auto revolve = [&](ON_Curve* crv) -> ON_Brep* {
+    ON_RevSurface* rev = new ON_RevSurface();
+    rev->m_curve = crv;
+    rev->m_axis = ON_Line(g.c0, g.c0 + g.ax);
+    rev->m_angle = ON_Interval(0.0, 2.0 * ON_PI);
+    rev->m_t = rev->m_angle;
+    rev->m_bTransposed = false;
+    return ON_BrepRevSurface(rev, false, false);
+  };
+  ON_Brep all;
+  auto append = [&](ON_Brep* p, const char* what) {
+    if (!p) throw std::invalid_argument(who + "could not build the " + what);
+    // Every face this kernel builds is backed by an exact rational ON_NurbsSurface (Volume(), Area(), tessellation and
+    // the booleans all require it): swap the ON_RevSurface for its exact NURBS form, same parameter domain.
+    for (int f = 0; f < p->m_F.Count(); ++f) {
+      ON_NurbsSurface* ns = p->m_F[f].SurfaceOf()->NurbsSurface();
+      if (!ns) { delete p; throw std::invalid_argument(who + "could not convert the " + what + " to its exact NURBS form"); }
+      const int si = p->m_F[f].m_si;
+      delete p->m_S[si];
+      p->m_S[si] = ns;
+    }
+    all.Append(*p);
+    delete p;
+  };
+  // Wall between its two setback points.
+  append(revolve(new ON_LineCurve(P(g.R0 + tw_lo * wx, tw_lo * wz), P(g.R1 - tw_hi * wx, g.H - tw_hi * wz))), "wall");
+  auto blend = [&](bool high, const RimSpec& s, double tc, double tw) {
+    if (!s.Active()) return;
+    const double rho_rim = high ? g.R1 : g.R0, z_rim = high ? g.H : 0.0;
+    const double wxs = high ? -wx : wx, wzs = high ? -wz : wz;  // wall direction pointing away from this rim
+    const double cap_rho = rho_rim - tc, cap_z = z_rim;
+    const double wall_rho = rho_rim + tw * wxs, wall_z = z_rim + tw * wzs;
+    if (s.radius > 0.0) {
+      const double r = s.radius;
+      const double cen_rho = cap_rho, cen_z = cap_z + (high ? -1.0 : 1.0) * r;  // ball centre: r inside from the cap tangent point
+      double mx = rho_rim - cen_rho, mz = z_rim - cen_z;                         // arc midpoint: centre -> rim corner
+      const double ml = std::hypot(mx, mz);
+      mx /= ml;
+      mz /= ml;
+      const ON_Arc arc(P(cap_rho, cap_z), P(cen_rho + r * mx, cen_z + r * mz), P(wall_rho, wall_z));
+      append(revolve(new ON_ArcCurve(arc)), high ? "high-end torus patch" : "low-end torus patch");
+    } else {
+      append(revolve(new ON_LineCurve(P(cap_rho, cap_z), P(wall_rho, wall_z))), high ? "high-end bevel" : "low-end bevel");
+    }
+  };
+  blend(false, lo, tc_lo, tw_lo);
+  blend(true, hi, tc_hi, tw_hi);
+
+  Brep out;
+  out.raw() = all;
+  const double jt = 1e-6 * std::max(1.0, std::max(g.R0, g.R1));
+  try {
+    out.JoinNakedEdges(jt);
+    // The flat caps (the original discs, or the smaller discs a blend leaves): cap every planar circular hole.
+    out.CapPlanarHoles(jt);
+    out.UnifyNormals();
+  } catch (const std::exception& ex) {
+    throw std::invalid_argument(who + "assembly failed: " + ex.what());
+  }
+  const int want_faces = 3 + (lo.Active() ? 1 : 0) + (hi.Active() ? 1 : 0);
+  if (!out.raw().IsSolid() || !out.raw().IsValid() || out.raw().m_F.Count() != want_faces) {
+    throw std::invalid_argument(who + "the assembled pieces did not form a valid closed solid");
+  }
+  return out;
+}
+
+// Which rim (low / high) the point lies on; throws with a reason when neither.
+bool CapRimIsHigh(const Brep& solid, Point3d point_on_rim, const std::string& who) {
+  CappedRevolvePlan g;
+  std::string why;
+  if (!ClassifyCappedRevolve(solid, g, why)) throw std::invalid_argument(who + why);
+  const double tol = tolerance::kDistance * std::max({1.0, g.R0, g.R1, g.H});
+  const Vector3d d = point_on_rim - g.c0;
+  const double h = d * g.ax;
+  const double rad = (d - h * g.ax).Length();
+  const bool at_low = std::fabs(h) <= tol && std::fabs(rad - g.R0) <= tol;
+  const bool at_high = std::fabs(h - g.H) <= tol && std::fabs(rad - g.R1) <= tol;
+  if (!at_low && !at_high) throw std::invalid_argument(who + "`point_on_rim` does not lie on either rim circle of the solid");
+  return at_high;
+}
+
+}  // namespace
+
+Brep FilletCapRims(const Brep& solid, double radius_low, double radius_high) {
+  const std::string who = "dino8::kernel::FilletCapRims: ";
+  if (!std::isfinite(radius_low) || !std::isfinite(radius_high) || radius_low < 0.0 || radius_high < 0.0 ||
+      !(radius_low > 0.0 || radius_high > 0.0)) {
+    throw std::invalid_argument(who + "radii must be finite, non-negative, and at least one strictly positive");
+  }
+  RimSpec lo, hi;
+  lo.radius = radius_low;
+  hi.radius = radius_high;
+  return BuildCapRims(solid, lo, hi, who);
+}
+
+Brep FilletCapRim(const Brep& solid, Point3d point_on_rim, double radius) {
+  const std::string who = "dino8::kernel::FilletCapRim: ";
+  if (!std::isfinite(radius) || !(radius > 0.0)) throw std::invalid_argument(who + "radius must be finite and strictly positive");
+  RimSpec s, none;
+  s.radius = radius;
+  return CapRimIsHigh(solid, point_on_rim, who) ? BuildCapRims(solid, none, s, who) : BuildCapRims(solid, s, none, who);
+}
+
+Brep ChamferCapRims(const Brep& solid, double wall_low, double cap_low, double wall_high, double cap_high) {
+  const std::string who = "dino8::kernel::ChamferCapRims: ";
+  auto good = [](double a, double b) {
+    return std::isfinite(a) && std::isfinite(b) && ((a == 0.0 && b == 0.0) || (a > 0.0 && b > 0.0));
+  };
+  if (!good(wall_low, cap_low) || !good(wall_high, cap_high) || (wall_low == 0.0 && wall_high == 0.0)) {
+    throw std::invalid_argument(who + "each rim needs both distances strictly positive (or both 0 to leave it sharp), and at least one rim must be chamfered");
+  }
+  RimSpec lo, hi;
+  lo.d_wall = wall_low;
+  lo.d_cap = cap_low;
+  hi.d_wall = wall_high;
+  hi.d_cap = cap_high;
+  return BuildCapRims(solid, lo, hi, who);
+}
+
+Brep ChamferCapRim(const Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap) {
+  const std::string who = "dino8::kernel::ChamferCapRim: ";
+  if (!std::isfinite(distance_wall) || !std::isfinite(distance_cap) || !(distance_wall > 0.0) || !(distance_cap > 0.0)) {
+    throw std::invalid_argument(who + "distance_wall and distance_cap must both be finite and strictly positive");
+  }
+  RimSpec s, none;
+  s.d_wall = distance_wall;
+  s.d_cap = distance_cap;
+  return CapRimIsHigh(solid, point_on_rim, who) ? BuildCapRims(solid, none, s, who) : BuildCapRims(solid, s, none, who);
+}
+
+Brep ChamferCapRimAngle(const Brep& solid, Point3d point_on_rim, double distance_cap, double angle) {
+  const std::string who = "dino8::kernel::ChamferCapRimAngle: ";
+  if (!std::isfinite(distance_cap) || !(distance_cap > 0.0) || !std::isfinite(angle) || !(angle > 0.0) || !(angle < ON_PI)) {
+    throw std::invalid_argument(who + "distance_cap must be strictly positive and angle strictly inside (0, pi)");
+  }
+  CappedRevolvePlan g;
+  std::string why;
+  if (!ClassifyCappedRevolve(solid, g, why)) throw std::invalid_argument(who + why);
+  const bool high = CapRimIsHigh(solid, point_on_rim, who);
+  const double wl = std::hypot(g.R1 - g.R0, g.H);
+  const double wx = (g.R1 - g.R0) / wl;
+  const double theta = std::acos(std::max(-1.0, std::min(1.0, high ? wx : -wx)));  // interior profile angle at this rim
+  // Triangle (rim corner, cap point, wall point): side distance_cap on the cap, interior angle theta at the corner, bevel
+  // angle `angle` at the cap point; law of sines gives the wall side. Needs angle + theta < pi (the bevel must reach the wall).
+  if (!(angle + theta < ON_PI - 1e-12)) {
+    throw std::invalid_argument(who + "the bevel angle " + std::to_string(angle) + " measured from the cap never meets the wall at this rim (angle + rim angle " +
+                                std::to_string(theta) + " must be less than pi)");
+  }
+  const double dw = distance_cap * std::sin(angle) / std::sin(theta + angle);
+  return ChamferCapRim(solid, point_on_rim, dw, distance_cap);
+}
+
 }  // namespace dino8::kernel
