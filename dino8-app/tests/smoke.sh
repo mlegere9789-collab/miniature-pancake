@@ -12302,8 +12302,8 @@ cntnum loft_g0 "$LOFTM" "tangent angle " 4e-5 9e-5 "CNT_loft_g0: G0 leaves the t
 # refusals carry the kernel's reason and build nothing
 cntcheck loft_g2_flat "refused by the kernel .*MatchEdge refused (non-clamped surface, adjacent surface of too low a degree, or a self-check failure); nothing was built" "CNT_loft_g2_flat: G2 against a degree-1 plane is refused WITH the kernel's reason"
 cntobjs loft_g2_flat 4 "CNT_loft_g2_flat: nothing was built"
-cntcheck loft_incompat "matching the adjacent surface moves section 2 by 0.0185" "CNT_loft_incompat: sections that do not leave the plane tangentially: refused, section 2 would move 0.0185 > 0.001"
-cntnum loft_incompat "^history: ! Loft: " "moves section 2 by " 0.017 0.020 "CNT_loft_incompat: ...the stated section move"
+cntcheck loft_incompat "matching the adjacent surface moves section 2 by 0.0463" "CNT_loft_incompat: a straight ramp z = 0.5 x does not leave the plane tangentially: refused, section 2 would move 0.0463 > 0.001"
+cntnum loft_incompat "^history: ! Loft: " "moves section 2 by " 0.044 0.049 "CNT_loft_incompat: ...the stated section move"
 cntobjs loft_incompat 4 "CNT_loft_incompat: nothing was built"
 cntcheck loft_off "start section lies up to 5.000000 from the adjacent surface, more than the tolerance 0.001000: position (G0) continuity is not met" "CNT_loft_off: a section 5 off the picked edge: G0 not met, refused with the measured gap"
 cntobjs loft_off 4 "CNT_loft_off: nothing was built"
