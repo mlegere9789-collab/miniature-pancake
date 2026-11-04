@@ -592,6 +592,8 @@ Value Interp::CallUser(const Func& f, List args) {
 
 Value Interp::Apply(const Value& fn, List args) {
   if (fn.t == Value::T::Lambda) return CallUser(*fn.f, std::move(args));
+  // '(lambda (x) ...) arrives quoted as a plain list: AutoLISP accepts it as a function.
+  if (IsList(fn) && !fn.l->empty() && (*fn.l)[0].t == Value::T::Sym && (*fn.l)[0].s == "lambda") return Apply(Eval(fn), std::move(args));
   if (fn.t == Value::T::Sym || fn.t == Value::T::Subr) {
     auto it = globals_.find(fn.s);
     if (it != globals_.end() && it->second.t == Value::T::Lambda) return CallUser(*it->second.f, std::move(args));
