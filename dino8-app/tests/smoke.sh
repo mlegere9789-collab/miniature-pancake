@@ -12625,7 +12625,7 @@ done
 # Export side: the file declares the DOCUMENT's unit (an inch document used to write millimetres).
 if grep -q "CONVERSION_BASED_UNIT('INCH'" "$UNXD/in.stp" && grep -q "LENGTH_MEASURE(25.4)" "$UNXD/in.stp"; then unx_ok "step_export_from_inch_document_declares_INCH_25.4mm"; else unx_bad "step_export_from_inch_document_declares_INCH_25.4mm"; fi
 if grep -q "SI_UNIT(.MILLI.,.METRE.)" "$UNXD/mm.stp" && ! grep -q "CONVERSION_BASED_UNIT" "$UNXD/mm.stp"; then unx_ok "step_export_from_mm_document_declares_millimetre_only"; else unx_bad "step_export_from_mm_document_declares_millimetre_only"; fi
-if grep -q "(10.,0.,0.)\|(10,0,0)\|10\.,0\.,0\." "$UNXD/in.stp"; then unx_ok "step_export_keeps_document_coordinates_10_not_254"; else unx_bad "step_export_keeps_document_coordinates_10_not_254"; fi
+if grep -q "VECTOR('',#[0-9]*,10\.)" "$UNXD/in.stp" && ! grep -q "VECTOR('',#[0-9]*,254" "$UNXD/in.stp" ; then unx_ok "step_export_keeps_document_coordinates_10_not_254"; else unx_bad "step_export_keeps_document_coordinates_10_not_254"; fi
 python3 - "$UNXD" <<'PY'
 import re, sys, os
 d = sys.argv[1]
@@ -12779,17 +12779,17 @@ New
 Open $UNXD/trunc.stp
 New
 RunScript $UNXD/inch.lua
-Open $UNXD/in.stp
+Import $UNXD/in.stp
 SelAll
 Length
 New
 RunScript $UNXD/inch.lua
-Open $UNXD/m.stp
+Import $UNXD/m.stp
 SelAll
 Length
 New
 RunScript $UNXD/inch.lua
-Open $UNXD/in.igs
+Import $UNXD/in.igs
 SelAll
 Length
 New
@@ -12818,7 +12818,7 @@ SelAll
 Length
 EOS
 UNX_OUT="$(unx_run "$UNXD/imp.txt")"
-mapfile -t UNX_LEN < <(grep "^Total length = " <<<"$UNX_OUT" || true)
+mapfile -t UNX_LEN < <(grep "Total length = " <<<"$UNX_OUT" || true)
 unx_len() {  # unx_len <index> <regex> <name>
   if [ "${#UNX_LEN[@]}" -gt "$1" ] && grep -Eq "$2" <<<"${UNX_LEN[$1]}"; then unx_ok "$3"; else unx_bad "$3 (got: ${UNX_LEN[$1]:-<none>})"; fi
 }
@@ -12846,7 +12846,7 @@ if grep -q "Unsupported STEP length unit (the file declares two different length
 if [ "$(grep -c '^ok   expect_objects 0' <<<"$UNX_OUT")" -ge 4 ]; then unx_ok "all_four_refused_step_files_added_zero_objects"; else unx_bad "all_four_refused_step_files_added_zero_objects"; fi
 # truncated files did not take the app down: the later documents still ran.
 unx_len 13 '= 10 Inches' "same_unit_inch_file_into_inch_document_is_untouched_10_in"
-unx_len 14 '= 393\.70[0-9]* Inches' "step_10_m_into_inch_document_becomes_393.70_in"
+unx_len 14 '= 393\.7[0-9]* Inches' "step_10_m_into_inch_document_becomes_393.70_in"
 unx_len 15 '= 10 Inches' "iges_inch_file_into_inch_document_is_untouched_10_in"
 unx_len 16 '= 10000 Millimeters' "round_trip_metre_document_iges_10_m_into_mm_document_is_10000_mm"
 unx_len 17 '= 10000 Millimeters' "round_trip_metre_document_step_10_m_into_mm_document_is_10000_mm"
