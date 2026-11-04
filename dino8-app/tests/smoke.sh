@@ -12364,4 +12364,88 @@ cntcheck rep_same "that is the first edge again; click a different edge" "CNT_re
 cntnum rep_same "$REPM" "position gap " 2.99 3.01 "CNT_rep_same: ...and the next pick measures (gap 3)"
 if grep -q "gl_error=0" <<<"$CNTO"; then echo "ok   CNT script ran without OpenGL errors"; else echo "FAIL CNT script ran without OpenGL errors"; fail=1; fi
 
+# ---------------------------------------------------------------------------
+# TS5_: ToSubD of a revolve of a CURVED profile (tosubd5_script.txt). A vase or a
+# bottle (a spline profile revolved about an axis) used to get the straight-wall
+# ladder of at most 12 evenly spaced rings (3840 and 2688 faces, measured 0.0108 and
+# 0.0255 off the surface: unverified), and an egg (the profile meets the axis at both
+# ends: one wall face, two poles) went through the dense grid tessellation (18240
+# faces). Now the rings follow the profile (ring count from its NURBS control points:
+# (control points - 1) x k, equally spaced in profile arc length and clustered toward
+# the ends), the cage is interpolated onto the wall, and the Catmull-Clark limit
+# surface is MEASURED against the exact wall (the reference's chord sag included); a
+# cage is used only when verified within the document tolerance, else the reason is
+# printed and the existing path runs (the 7-point zig-zag profile: 0.17 off at 37
+# rings, so it still takes the old 3840-face cage, unverified, with the reason).
+# Eight solids in script order: vase, bottle, egg, zig-zag (fallback), then the
+# negative controls Cylinder, Cone, Torus and an extruded L, whose cages the TS2_ and
+# TS4_ sections pin and which must be untouched. Ranges rather than exact numbers
+# (deviations depend on the platform's float evaluation); the measured values on the
+# reference run are in each description.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  TS5="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/tosubd5_script.txt" 2>&1)" || { echo "$TS5"; echo "FAIL: tosubd5 script exited non-zero"; exit 1; }
+else
+  TS5="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/tosubd5_script.txt" 2>&1)" || { echo "$TS5"; echo "FAIL: tosubd5 script exited non-zero"; exit 1; }
+fi
+ts5check() { if grep -q -- "$1" <<<"$TS5"; then echo "ok   $2"; else echo "FAIL $2"; near "$TS5" "$1"; fail=1; fi; }
+# in range: ts5range VALUE LO HI DESC
+ts5range() { if [ -n "$1" ] && awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $4 ($1 in [$2, $3])"; else echo "FAIL $4 ('${1:-none}' not in [$2, $3])"; fail=1; fi; }
+mapfile -t TS5_TOSUBD < <(grep -F "history: ToSubD: created" <<<"$TS5" || true)
+mapfile -t TS5_LIST < <(grep -E "^history:   [0-9]+ faces, [0-9]+ edges, [0-9]+ vertices, [0-9]+ creases" <<<"$TS5" || true)
+mapfile -t TS5_VOL < <(grep -o "Volume = [0-9.e+-]*" <<<"$TS5" | awk '{print $3}' || true)
+if [ "${#TS5_TOSUBD[@]}" -eq 8 ] && [ "${#TS5_LIST[@]}" -eq 8 ] && [ "${#TS5_VOL[@]}" -eq 4 ]; then
+  echo "ok   tosubd5 script printed 8 ToSubD lines, 8 SubD List lines and 4 volumes"
+  ts5dev() { sed -E 's/.*worst measured deviation ([0-9.]+)\).*/\1/' <<<"${TS5_TOSUBD[$1]}"; }
+  ts5faces() { sed -E 's/^history: +([0-9]+) faces, .*/\1/' <<<"${TS5_LIST[$1]}"; }
+  ts5vef() { sed -E 's/^history: +([0-9]+) faces, ([0-9]+) edges, ([0-9]+) vertices.*/\3 \2 \1/' <<<"${TS5_LIST[$1]}"; }
+  ts5name=("vase" "bottle (pole + flat cap)" "egg (two poles)")
+  # measured on the reference run: faces 768 / 1120 / 480 (before: 3840 unverified / 2688 unverified / 18240 dense); deviation 0.000496 / 0.000828 / 0.000841
+  ts5flo=(600 900 350)
+  ts5fhi=(950 1400 650)
+  ts5dlo=(0.0002 0.0004 0.0004)
+  ts5dhi=(0.0008 0.001 0.001)
+  for i in 0 1 2; do
+    if grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000, worst measured deviation 0\.0[0-9]*)" <<<"${TS5_TOSUBD[$i]}" && grep -qF -- "curved-profile revolve cage (profile of " <<<"${TS5_TOSUBD[$i]}" && ! grep -qF -- "analytic revolved-solid cage" <<<"${TS5_TOSUBD[$i]}"; then
+      echo "ok   ToSubD of the ${ts5name[$i]} is VERIFIED and reports the curved-profile revolve cage"
+    else
+      echo "FAIL ToSubD of the ${ts5name[$i]} is not verified or does not report the curved-profile revolve cage: ${TS5_TOSUBD[$i]}"; fail=1
+    fi
+    ts5range "$(ts5dev "$i")" "${ts5dlo[$i]}" "${ts5dhi[$i]}" "...measured limit-surface deviation of the ${ts5name[$i]} (tolerance 0.001, reference chord sag included)"
+    ts5range "$(ts5faces "$i")" "${ts5flo[$i]}" "${ts5fhi[$i]}" "...cage face count of the ${ts5name[$i]} (before: 3840 / 2688 / 18240)"
+    read -r ts5v ts5e ts5f <<<"$(ts5vef "$i")"
+    if [ "$((ts5v - ts5e + ts5f))" -eq 2 ]; then echo "ok   ...Euler characteristic of the ${ts5name[$i]} SubD is 2 ($ts5v - $ts5e + $ts5f): one closed sphere-topology surface"; else echo "FAIL Euler characteristic of the ${ts5name[$i]} SubD is $((ts5v - ts5e + ts5f)), expected 2"; fail=1; fi
+  done
+  ts5range "$(grep -o 'x [0-9]* segments around' <<<"${TS5_TOSUBD[0]}" | awk '{print $2}' || true)" 32 128 "...vase segments around come from the 32/40/48/64/96/128 ladder"
+  ts5range "$(grep -o '[0-9]* rings (control-point' <<<"${TS5_TOSUBD[0]}" | awk '{print $1}' || true)" 13 31 "...vase ring count is a multiple of its 3 control-point spans plus 1 (19 on the reference run)"
+  # Volumes: Brep, then the control net after 0, 1, 2 SubDivide rounds. Reference run: 441.5 / 445.2 / 442.7 / 442.1.
+  ts5range "${TS5_VOL[0]}" 440 443 "vase Brep Volume (display tessellation)"
+  ts5range "${TS5_VOL[3]}" 440.5 443.5 "vase SubD control-net Volume after two SubDivide rounds matches the Brep Volume"
+  if awk -v a="${TS5_VOL[0]}" -v b="${TS5_VOL[3]}" 'BEGIN { r = b / a; exit !(r > 0.995 && r < 1.005) }'; then echo "ok   vase SubD Volume is within 0.5% of the Brep Volume (${TS5_VOL[3]} vs ${TS5_VOL[0]})"; else echo "FAIL vase SubD Volume differs from the Brep Volume by more than 0.5% (${TS5_VOL[3]} vs ${TS5_VOL[0]})"; fail=1; fi
+  # Fallback: the zig-zag profile is refused WITH the measured reason and keeps the existing path.
+  if grep -qE "curved-profile revolve cage refused \(deviation [0-9.]+ at 37 rings x 128 segments exceeds the tolerance 0\.001000\), using the existing path" <<<"${TS5_TOSUBD[3]}" && grep -qF -- "analytic revolved-solid cage (128 segments around x 12 along the wall" <<<"${TS5_TOSUBD[3]}" && ! grep -qF -- "curved-profile revolve cage (profile of " <<<"${TS5_TOSUBD[3]}"; then
+    echo "ok   fallback: the zig-zag profile is refused with the stated reason and takes the existing path"
+    ts5range "$(sed -E 's/.*refused \(deviation ([0-9.]+) at .*/\1/' <<<"${TS5_TOSUBD[3]}")" 0.01 1 "...the refusing deviation (reference run 0.1729, far above the 0.001 tolerance)"
+  else
+    echo "FAIL fallback: the zig-zag profile line is not the refusal + existing path: ${TS5_TOSUBD[3]}"; fail=1
+  fi
+  ts5range "$(ts5faces 3)" 3000 4500 "...the fallback cage is the unchanged existing 3840-face one"
+  # Negative controls: the existing cages are untouched (their windows are the TS2_ / TS4_ ones).
+  ts5nc() { # index, description, marker, face lo, face hi
+    if grep -qF -- "$3" <<<"${TS5_TOSUBD[$1]}" && ! grep -qF -- "curved-profile revolve cage" <<<"${TS5_TOSUBD[$1]}" && grep -q "(1 of 1 limit-surface-fidelity verified within tolerance 0.001000" <<<"${TS5_TOSUBD[$1]}"; then
+      echo "ok   negative control: $2 keeps its existing cage and never reports the curved-profile path"
+    else
+      echo "FAIL negative control: $2 changed: ${TS5_TOSUBD[$1]}"; fail=1
+    fi
+    ts5range "$(ts5faces "$1")" "$4" "$5" "...cage face count of $2 (reference run: unchanged)"
+  }
+  ts5nc 4 "the Cylinder" "analytic revolved-solid cage (32 segments around x 5 along the wall" 340 360
+  ts5nc 5 "the Cone" "analytic revolved-solid cage (40 segments around x 6 along the wall" 370 390
+  ts5nc 6 "the Torus" "analytic torus cage (48 x 16 quad grid" 760 776
+  ts5nc 7 "the extruded L prism" "analytic right-prism cage (profile of 6 segment(s)" 24 28
+else
+  echo "FAIL tosubd5 script printed ${#TS5_TOSUBD[@]} ToSubD / ${#TS5_LIST[@]} List / ${#TS5_VOL[@]} Volume lines (expected 8 / 8 / 4)"; fail=1
+fi
+ts5check "gl_error=0" "tosubd5 script ran without OpenGL errors"
+
 exit $fail

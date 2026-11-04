@@ -6,6 +6,7 @@
 #include "commands/section_fit.h"
 
 #include <array>
+#include <cstdio>
 #include <map>
 #include <unordered_map>
 
@@ -1397,9 +1398,18 @@ struct RevolvedCage {
   std::vector<std::pair<ON_3dPoint, ON_3dPoint>> apex_spokes;  // edges into a collapsed end row's apex (float-rounded positions)
 };
 
-std::optional<RevolvedCage> BuildRevolvedCage(const ON_Brep& b, int n_around, int n_along, bool fan_caps) {
+// Options of the curved-profile revolve cage (RevolveCurvedCageForBrep); the default leaves BuildRevolvedCage's
+// behaviour for the straight-profile walls (Cylinder, Cone, TCone) exactly as it was.
+struct RevolvedCageOpts {
+  const std::vector<double>* along_fracs = nullptr;  // ring positions as fractions of the profile domain (first 0, last 1), replacing the uniform n_along ladder
+  bool curved = false;  // accept a capless wall closed by two poles (a sphere) and leave a pole whose profile meets the axis square (a dome) un-creased
+};
+
+std::optional<RevolvedCage> BuildRevolvedCage(const ON_Brep& b, int n_around, int n_along, bool fan_caps, const RevolvedCageOpts& opts = RevolvedCageOpts()) {
+  if (opts.along_fracs != nullptr) n_along = static_cast<int>(opts.along_fracs->size()) - 1;
   if (n_around < 8 || (!fan_caps && (n_around % 8) != 0) || n_along < 1) return std::nullopt;
-  if (b.m_F.Count() < 2 || b.m_F.Count() > 3) return std::nullopt;
+  if (b.m_F.Count() < (opts.curved ? 1 : 2) || b.m_F.Count() > 3) return std::nullopt;
+  const auto frac_at = [&](int j) { return opts.along_fracs != nullptr ? (*opts.along_fracs)[static_cast<size_t>(j)] : static_cast<double>(j) / n_along; };
   const ON_BoundingBox bbox = b.BoundingBox();
   const double scale = std::max(bbox.Diagonal().Length(), 1e-9);
   const double ptol = 1e-6 * scale;
@@ -1434,7 +1444,7 @@ std::optional<RevolvedCage> BuildRevolvedCage(const ON_Brep& b, int n_around, in
   std::vector<std::vector<int>> row(static_cast<size_t>(M) + 1);
   std::vector<char> degenerate(static_cast<size_t>(M) + 1, 0);
   for (int j = 0; j <= M; ++j) {
-    const double to = dov.ParameterAt(static_cast<double>(j) / M);
+    const double to = dov.ParameterAt(frac_at(j));
     std::vector<ON_3dPoint> ring(static_cast<size_t>(N));
     for (int i = 0; i < N; ++i) ring[static_cast<size_t>(i)] = eval(dc.ParameterAt(static_cast<double>(i) / N), to);
     bool all_same = true;
@@ -1470,7 +1480,7 @@ std::optional<RevolvedCage> BuildRevolvedCage(const ON_Brep& b, int n_around, in
         const ON_3dPoint& p11 = pos[static_cast<size_t>(at(j + 1, i1))];
         const ON_3dPoint& p01 = pos[static_cast<size_t>(at(j + 1, i))];
         const ON_3dPoint avg((p00.x + p10.x + p11.x + p01.x) * 0.25, (p00.y + p10.y + p11.y + p01.y) * 0.25, (p00.z + p10.z + p11.z + p01.z) * 0.25);
-        const ON_3dPoint mid = eval(dc.ParameterAt((i + 0.5) / N), dov.ParameterAt((j + 0.5) / M));
+        const ON_3dPoint mid = eval(dc.ParameterAt((i + 0.5) / N), dov.ParameterAt(0.5 * (frac_at(j) + frac_at(j + 1))));
         rc.chord_sag = std::max(rc.chord_sag, avg.DistanceTo(mid));
       }
     }
@@ -1543,7 +1553,8 @@ std::optional<RevolvedCage> BuildRevolvedCage(const ON_Brep& b, int n_around, in
     }
     ++rc.caps;
   }
-  if (ends == 0 || rc.caps != ends || rc.caps != static_cast<int>(planar.size())) return std::nullopt;
+  const bool two_poles = opts.curved && ends == 0 && planar.empty() && degenerate[0] && degenerate[static_cast<size_t>(M)];
+  if (!two_poles && (ends == 0 || rc.caps != ends || rc.caps != static_cast<int>(planar.size()))) return std::nullopt;
 
   // Orient outward: the signed volume of the triangulated faces must be positive.
   double sv = 0.0;
@@ -1559,6 +1570,17 @@ std::optional<RevolvedCage> BuildRevolvedCage(const ON_Brep& b, int n_around, in
     if (!degenerate[static_cast<size_t>(e)]) continue;
     const int nj = (e == 0) ? 1 : M - 1;
     const ON_3fPoint apex(pos[static_cast<size_t>(at(e, 0))]);
+    if (opts.curved) {
+      // A pole the profile meets square (a sphere's, a dome's) is a smooth point: no creased spokes. A pole whose profile
+      // runs along the axis (a cone-like tip) stays sharp. The axis direction is pole -> centroid of the first ring.
+      ON_3dPoint cen(0, 0, 0);
+      for (int i = 0; i < N; ++i) { const ON_3dPoint& q = pos[static_cast<size_t>(at(nj, i))]; cen.x += q.x / N; cen.y += q.y / N; cen.z += q.z / N; }
+      ON_3dVector axis = cen - ON_3dPoint(apex);
+      const double tiny = (e == 0) ? 1e-3 : 1.0 - 1e-3;
+      const ON_3dPoint near_pole = eval(dc.ParameterAt(0.0), dov.ParameterAt(tiny));
+      ON_3dVector tang = near_pole - ON_3dPoint(apex);
+      if (axis.Unitize() && tang.Unitize() && std::fabs(ON_DotProduct(axis, tang)) <= 0.1) continue;
+    }
     for (int i = 0; i < N; ++i) rc.apex_spokes.emplace_back(ON_3dPoint(apex), ON_3dPoint(ON_3fPoint(pos[static_cast<size_t>(at(nj, i))])));
   }
   const bool flip = sv < 0.0;
@@ -1595,6 +1617,7 @@ struct AnalyticCageResult {
   int reference_around = 0, reference_along = 0;
   int samples = 0;
   bool verified = false;
+  int profile_cvs = 0, profile_degree = 0, rings = 0, poles = 0, caps = 0;  // curved-profile revolve cage only
 };
 
 // ToSubD for a revolved solid (see BuildRevolvedCage): builds the analytic
@@ -1847,6 +1870,207 @@ std::optional<AnalyticCageResult> TorusCageForBrep(const SceneObject& o, double 
     }
     return best;
   } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Exact-structure cage for a revolve of a CURVED profile (a vase, a bottle, a sphere, a
+// dome / sphere segment: Brep::Revolve of a spline or arc). AnalyticCageForBrep above puts
+// a fixed ladder of at most 12 evenly spaced rings on the wall and keeps whatever it reaches
+// (a vase measured 0.011, a bottle 0.026 off the surface, in 2700-3800 faces), and a sphere
+// (one wall face, two poles, no cap) was refused outright and tessellated into the dense
+// dense cage (a sphere-like egg: 18240 faces). Here the cage follows the PROFILE: the ring count is
+// (profile NURBS control points - 1) x k for a refinement factor k = 2, 3, 4, 5, 6, 8, raised until
+// the measured limit surface is within `tol` (the rings are equally spaced in profile arc length and
+// clustered toward the ends, see rings_for); the
+// segments around are the 32/40/48/64/128 ladder of the straight-profile cage. The cage is
+// interpolated onto the wall (SubD::InterpolateControlNet) and the Catmull-Clark limit
+// surface is MEASURED (every vertex, edge midpoint and face centre of two further
+// subdivision rounds) against the exact wall sampled much finer than the tolerance (its own
+// chord sag added). A pole the profile meets square stays smooth; a flat end is an all-quad
+// O-grid cap on the wall's shared rim ring. The caller uses the cage only when it is
+// verified; otherwise `refused` says why and the unchanged path runs.
+// Phase 1 fixes the ring refinement at the finest ring (128 segments around); phase 2 then
+// takes the fewest segments around that still verify with those rings.
+// nullopt without a reason: not this shape at all (a straight profile - Cylinder, Cone,
+// TCone, handled by AnalyticCageForBrep -, a non-NURBS wall, several curved faces, a torus).
+std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o, double tol, std::string* refused) {
+  if (!o.brep) return std::nullopt;
+  const ON_Brep& b = o.brep->raw();
+  try {
+    if (b.m_F.Count() < 1 || b.m_F.Count() > 3) return std::nullopt;
+    const ON_BoundingBox bb = b.BoundingBox();
+    const double diag = std::max(bb.Diagonal().Length(), 1e-9);
+    int wall = -1;
+    for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+      const ON_Surface* s = b.m_F[fi].SurfaceOf();
+      if (s == nullptr) return std::nullopt;
+      ON_Plane pl;
+      if (s->IsPlanar(&pl, 1e-6 * diag)) continue;
+      if (wall >= 0) return std::nullopt;
+      wall = fi;
+    }
+    if (wall < 0) return std::nullopt;
+    const ON_Surface* ns = b.m_F[wall].SurfaceOf();
+    const bool closed0 = ns->IsClosed(0) != 0, closed1 = ns->IsClosed(1) != 0;
+    if (closed0 == closed1) return std::nullopt;
+    const int cdir = closed0 ? 0 : 1, odir = 1 - cdir;
+    const ON_Interval dc = ns->Domain(cdir), dov = ns->Domain(odir);
+    const auto eval = [&](double tc, double to) {
+      double uv[2];
+      uv[cdir] = tc;
+      uv[odir] = to;
+      return ns->PointAt(uv[0], uv[1]);
+    };
+    // A straight profile (Cylinder, Cone, TCone) is AnalyticCageForBrep's: its rings need no profile fit.
+    {
+      const ON_3dPoint p0 = eval(dc.ParameterAt(0.37), dov.ParameterAt(0.0)), p1 = eval(dc.ParameterAt(0.37), dov.ParameterAt(1.0));
+      const ON_Line chord(p0, p1);
+      double off = 0.0;
+      for (int k = 1; k < 64; ++k) off = std::max(off, chord.DistanceTo(eval(dc.ParameterAt(0.37), dov.ParameterAt(k / 64.0))));
+      if (off <= 1e-7 * diag) return std::nullopt;
+    }
+    // The profile's NURBS description: the wall's control rows along the profile (a NURBS wall) or the generating
+    // curve of a surface of revolution (what the Revolve command builds), whose parameter IS the wall's.
+    const ON_NurbsSurface* wall_nurbs = ON_NurbsSurface::Cast(ns);
+    const ON_RevSurface* wall_rev = ON_RevSurface::Cast(ns);
+    const ON_NurbsCurve* prof = wall_rev != nullptr ? ON_NurbsCurve::Cast(wall_rev->m_curve) : nullptr;
+    if (wall_nurbs == nullptr && prof == nullptr) return std::nullopt;
+    if (prof != nullptr && (std::fabs(prof->Domain()[0] - dov[0]) > 1e-9 * (1.0 + std::fabs(dov[0])) || std::fabs(prof->Domain()[1] - dov[1]) > 1e-9 * (1.0 + std::fabs(dov[1])))) return std::nullopt;
+    const int ncv = prof != nullptr ? prof->CVCount() : wall_nurbs->CVCount(odir);
+    const int degree = prof != nullptr ? prof->Degree() : wall_nurbs->Degree(odir);
+    if (ncv < 3) return std::nullopt;
+    const auto refuse = [&](const std::string& why) -> std::optional<AnalyticCageResult> {
+      if (refused != nullptr) *refused = "curved-profile revolve cage refused (" + why + "), using the existing path";
+      return std::nullopt;
+    };
+    // Ring count: one ring per profile control point span, times a refinement factor k (below). Catmull-Clark treats
+    // the rings as uniformly spaced, so any jump in the spacing costs accuracy (a ring set at the control points'
+    // Greville abscissae, graded by halving toward the ends, measured 0.0029 against 0.0024 for plain uniform
+    // refinement); a SMOOTH spacing keeps the fourth-order accuracy. The rings are therefore equally spaced in
+    // arc length of the profile, then clustered toward each flat (creased) end by the smooth map
+    // u = t - b sin(2 pi t)/(2 pi) (b = 0.75: end spacing 0.25, middle 1.75 of the uniform one): Catmull-Clark's crease end condition leaves an
+    // error that grows with the square of the spacing next to the crease (measured on a vase, uniform rings:
+    // 0.045, 0.019, 0.010, 0.0044, 0.0024 for spacings 1.5, 1.0, 0.75, 0.5, 0.375); a pole's valence-N fan has the same
+    // kind of error in the first ring (measured on a flat-bottomed bottle: 0.0029 at the pole with unclustered rings).
+    constexpr int kTable = 4096;
+    std::vector<double> arc(static_cast<size_t>(kTable) + 1, 0.0);
+    {
+      ON_3dPoint prev = eval(dc.ParameterAt(0.37), dov.ParameterAt(0.0));
+      for (int i = 1; i <= kTable; ++i) {
+        const ON_3dPoint q = eval(dc.ParameterAt(0.37), dov.ParameterAt(static_cast<double>(i) / kTable));
+        arc[static_cast<size_t>(i)] = arc[static_cast<size_t>(i) - 1] + q.DistanceTo(prev);
+        prev = q;
+      }
+      if (!(arc.back() > 0.0)) return std::nullopt;
+    }
+    const auto frac_of_arc = [&](double u) {  // u in [0,1] of the profile's arc length -> fraction of its parameter domain
+      const double target = u * arc.back();
+      const size_t hi = static_cast<size_t>(std::lower_bound(arc.begin(), arc.end(), target) - arc.begin());
+      if (hi == 0) return 0.0;
+      if (hi > static_cast<size_t>(kTable)) return 1.0;
+      const double a = arc[hi - 1], c = arc[hi];
+      return (static_cast<double>(hi - 1) + (c > a ? (target - a) / (c - a) : 0.0)) / kTable;
+    };
+    constexpr double kCluster = 0.75;
+    const auto rings_for = [&](int n) {
+      std::vector<double> r(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i) {
+        const double t = static_cast<double>(i) / (n - 1);
+        const double u = t - kCluster * std::sin(2.0 * 3.14159265358979 * t) / (2.0 * 3.14159265358979);
+        r[static_cast<size_t>(i)] = i == 0 ? 0.0 : i == n - 1 ? 1.0 : frac_of_arc(u);
+      }
+      return r;
+    };
+    // Reference: the exact wall sampled so its chord sag is well under the tolerance (the sag is added to every deviation).
+    const double R = std::max(0.5 * diag, 1e-6);
+    int nref = static_cast<int>(std::ceil(3.14159265 * std::sqrt(5.0 * R / std::max(tol, 1e-12))));
+    nref = std::min(1024, std::max(256, (nref + 7) / 8 * 8));
+    std::optional<RevolvedCage> ref;
+    int mref = 128;
+    for (;; mref *= 2) {
+      RevolvedCageOpts ropts;
+      ropts.curved = true;
+      ref = BuildRevolvedCage(b, nref, mref, true, ropts);
+      if (!ref) return std::nullopt;  // not a wall + planar caps / two poles
+      if (ref->chord_sag <= tol / 6.0 || mref >= 512) break;
+    }
+    const kernel::MeshClosestPointIndex ref_index(ref->mesh);
+    const auto measure = [&](int around, const std::vector<double>& fr) -> std::optional<AnalyticCageResult> {
+      RevolvedCageOpts opts;
+      opts.along_fracs = &fr;
+      opts.curved = true;
+      const std::optional<RevolvedCage> cage = BuildRevolvedCage(b, around, 0, false, opts);
+      if (!cage) return std::nullopt;
+      AnalyticCageResult cur;
+      kernel::SubD sd = kernel::SubD::FromControlMesh(cage->mesh);
+      cur.crease_edges = sd.SetCreasesByDihedral(kFidelityCreaseAngleDeg);
+      for (const auto& sp : cage->apex_spokes) if (sd.SetCrease(sp.first, sp.second, true, 1e-5 * diag)) ++cur.crease_edges;
+      kernel::SubDInterpolationReport frep;
+      const kernel::BoundingBox cbb = cage->mesh.GetBoundingBox();
+      const double extent = (cbb.max - cbb.min).Length();
+      cur.subd = sd.InterpolateControlNet(std::max(tol * 0.05, 2e-7 * std::max(extent, 1.0)), 150, &frep);
+      cur.fit_iterations = frep.iterations;
+      cur.fit_residual = frep.final_max_residual;
+      kernel::SubD probe = cur.subd;
+      probe.Subdivide(2);
+      const std::vector<kernel::SubDLimitPoint> lps = probe.LimitPoints();
+      if (lps.empty()) return std::nullopt;
+      const size_t step = std::max<size_t>(1, lps.size() / 20000);
+      double dev = 0.0;
+      for (size_t i = 0; i < lps.size(); i += step) {
+        const Point3d& q = lps[i].limit_point;
+        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        ++cur.samples;
+      }
+      cur.reference_sag = ref->chord_sag;
+      cur.reference_around = nref;
+      cur.reference_along = mref;
+      cur.deviation = dev + ref->chord_sag;
+      cur.verified = cur.deviation <= tol;
+      cur.cage_faces = cage->mesh.FaceCount();
+      cur.cage_around = around;
+      cur.rings = static_cast<int>(fr.size());
+      cur.cage_along = cur.rings - 1;
+      cur.profile_cvs = ncv;
+      cur.profile_degree = degree;
+      cur.caps = cage->caps;
+      cur.poles = cage->apex_spokes.empty() ? 0 : 1;
+      return cur;
+    };
+    constexpr int kMaxRings = 48;
+    constexpr int kMaxFaces = 4000;
+    std::optional<AnalyticCageResult> fine;
+    std::vector<double> fr;
+    double last_dev = -1.0;
+    int last_rings = 0;
+    for (int k : {2, 3, 4, 5, 6, 8}) {
+      fr = rings_for((ncv - 1) * k + 1);
+      if (fr.size() < 6) continue;
+      if (fr.size() > static_cast<size_t>(kMaxRings)) break;
+      const std::optional<AnalyticCageResult> cur = measure(128, fr);
+      if (!cur) return refuse("the wall could not be caged: not a plain revolved wall with flat caps or poles");
+      last_dev = cur->deviation;
+      last_rings = static_cast<int>(fr.size());
+      if (cur->verified) { fine = cur; break; }
+    }
+    if (!fine) {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "deviation %.6f at %d rings x 128 segments exceeds the tolerance %.6f", last_dev, last_rings, tol);
+      return refuse(buf);
+    }
+    std::optional<AnalyticCageResult> best = fine;
+    for (int around : {32, 40, 48, 64, 96}) {
+      const std::optional<AnalyticCageResult> cur = measure(around, fr);
+      if (cur && cur->verified) { best = cur; break; }
+    }
+    if (best->cage_faces > kMaxFaces) {
+      return refuse("the cage would need " + std::to_string(best->cage_faces) + " faces, more than the " + std::to_string(kMaxFaces) + " allowed");
+    }
+    return best;
+  } catch (const std::exception& e) {
+    if (refused != nullptr) *refused = std::string("curved-profile revolve cage refused (") + e.what() + "), using the existing path";
     return std::nullopt;
   }
 }
@@ -2347,6 +2571,10 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   int pri_runs = 0, pri_cols = 0, pri_rows = 0, pri_corners = 0, pri_segments = 0, pri_arcs = 0, pri_creases = 0, pri_fit_iterations = 0, pri_samples = 0;
   double pri_fit_residual = 0.0, pri_ref_sag = 0.0;
   std::string pri_refused;  // why the right-prism cage was refused (the object then took the dense path)
+  int cur_runs = 0, cur_cvs = 0, cur_degree = 0, cur_rings = 0, cur_around = 0, cur_caps = 0, cur_poles = 0, cur_faces = 0, cur_fit_iterations = 0, cur_samples = 0, cur_creases = 0;
+  int cur_ref_around = 0, cur_ref_along = 0;
+  double cur_fit_residual = 0.0, cur_ref_sag = 0.0;
+  std::string cur_refused;  // why the curved-profile revolve cage was refused (the object then took the existing path)
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -2418,6 +2646,28 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         pri_fit_residual = std::max(pri_fit_residual, pri->fit_residual);
         pri_samples += pri->samples;
         pri_ref_sag = std::max(pri_ref_sag, pri->reference_sag);
+      } else if (const std::optional<AnalyticCageResult> crv = RevolveCurvedCageForBrep(*o, tol, &cur_refused); crv && crv->verified) {
+        // A revolve of a curved profile (a vase, a bottle, a sphere, a dome): rings follow the profile's control
+        // polygon, see RevolveCurvedCageForBrep; verified only.
+        n = SceneObject::MakeSubD(crv->subd);
+        ++fidelity_checked;
+        ++fidelity_verified;
+        fidelity_worst = std::max(fidelity_worst, crv->deviation);
+        ++cur_runs;
+        cur_cvs = crv->profile_cvs;
+        cur_degree = crv->profile_degree;
+        cur_rings = crv->rings;
+        cur_around = crv->cage_around;
+        cur_caps = crv->caps;
+        cur_poles = crv->poles;
+        cur_faces = crv->cage_faces;
+        cur_creases += crv->crease_edges;
+        cur_fit_iterations = std::max(cur_fit_iterations, crv->fit_iterations);
+        cur_fit_residual = std::max(cur_fit_residual, crv->fit_residual);
+        cur_samples += crv->samples;
+        cur_ref_around = crv->reference_around;
+        cur_ref_along = crv->reference_along;
+        cur_ref_sag = std::max(cur_ref_sag, crv->reference_sag);
       } else if (const std::optional<AnalyticCageResult> rev = AnalyticCageForBrep(*o, tol)) {
         // A revolved solid (Cylinder, Cone, TCone...): the cage is built from
         // the Brep's own wall parametrisation and shared rim ring, see
@@ -2510,6 +2760,16 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              std::to_string(pri_samples) + " exact limit-surface points against the exact prism (ruled wall strip + exact cap planes), reference chord sag " +
              std::to_string(pri_ref_sag) + " included in the deviation";
     }
+    if (cur_runs > 0) {
+      msg += "; curved-profile revolve cage (profile of " + std::to_string(cur_cvs) + " control point(s), degree " + std::to_string(cur_degree) + ": " +
+             std::to_string(cur_rings) + " rings (control-point spans x a refinement factor, equally spaced in profile arc length, clustered toward the ends) x " + std::to_string(cur_around) +
+             " segments around, " + std::to_string(cur_caps) + " flat O-grid cap(s), " + (cur_poles > 0 ? "sharp pole tip" : "no sharp pole tip") + ", " +
+             std::to_string(cur_faces) + " cage faces), cage interpolated onto the Brep surface (" + std::to_string(cur_fit_iterations) +
+             " iteration(s), residual " + std::to_string(cur_fit_residual) + "), " + std::to_string(cur_creases) +
+             " feature edge(s) creased; deviation measured at " + std::to_string(cur_samples) + " exact limit-surface points against the exact surface sampled " +
+             std::to_string(cur_ref_around) + " x " + std::to_string(cur_ref_along) + ", reference chord sag " + std::to_string(cur_ref_sag) + " included in the deviation";
+    }
+    if (!cur_refused.empty()) msg += "; " + cur_refused;
     if (!pri_refused.empty()) msg += "; " + pri_refused;
     if (exact_runs > 0) {
       msg += "; exact Brep-face cage (no tessellation), " + std::to_string(exact_creases_total) +
