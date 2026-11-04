@@ -2528,6 +2528,10 @@ int JoinNakedEdgesHashed(ON_Brep& b, double tol) {
       ON_BrepEdge& e = b.m_E[i];
       if (e.m_edge_index < 0) continue;
       double tol_e = 0.0;
+      // The edge curve as 129 points (this openNURBS build has no curve closest-point query); the distance to this polyline
+      // exceeds the distance to the curve by less than its chord sag, which is far below the 1e-6 join tolerance here.
+      std::vector<ON_3dPoint> ep(129);
+      for (size_t j = 0; j < ep.size(); ++j) ep[j] = e.PointAt(e.Domain().ParameterAt(static_cast<double>(j) / 128.0));
       for (int k = 0; k < e.m_ti.Count(); ++k) {
         const int ti = e.m_ti[k];
         if (ti < 0 || ti >= b.m_T.Count()) continue;
@@ -2540,11 +2544,9 @@ int JoinNakedEdgesHashed(ON_Brep& b, double tol) {
         for (int j = 0; j <= 4; ++j) {
           const ON_3dPoint uv = tr.PointAt(tr.Domain().ParameterAt(j / 4.0));
           const ON_3dPoint sp = srf->PointAt(uv.x, uv.y);
-          const ON_Curve* ec = e.EdgeCurveOf();
-          if (ec == nullptr) continue;
-          const ON_Interval sub = e.ProxyCurveDomain();
-          double t = sub.Min();
-          if (ec->GetClosestPoint(sp, &t, 0.0, &sub)) tol_e = std::max(tol_e, sp.DistanceTo(ec->PointAt(t)));
+          double dmin = 1e300;
+          for (const ON_3dPoint& q : ep) dmin = std::min(dmin, sp.DistanceTo(q));
+          tol_e = std::max(tol_e, dmin);
         }
       }
       e.m_tolerance = tol_e <= ON_ZERO_TOLERANCE ? 0.0 : 1.001 * tol_e;
