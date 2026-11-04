@@ -791,6 +791,101 @@ class MakeUniformCrvCommand : public Command {
   double tol_ = 1e-3;
 };
 
+// RemoveMultiKnot: lowers every interior multiple knot of the selected curves
+// and standalone surfaces (both directions) as far as Tolerance (default: the
+// document's absolute tolerance) allows, through kernel::NurbsCurve::
+// RemoveMultiKnots / NurbsSurface::RemoveMultiKnots. Each removed knot copy is
+// a Piegl & Tiller A5.8 removal with its own rigorous bound and the bounds are
+// summed against ONE shared Tolerance budget, so the reported deviation is a
+// guaranteed upper bound on how far the object moved. An object whose multiple
+// knots cannot be removed within Tolerance is left unchanged and says so
+// (replaces the old Greville-resample RemoveKnotApprox loop, which shipped an
+// unmeasured shape change).
+class RemoveMultiKnotCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    tol_ = std::max(ctx.Settings().absolute_tolerance, 1e-12);
+    WantObjects("Select curves or surfaces to remove multiple knots from");
+  }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"Tolerance", FormatNumber(tol_), {}, true, false}};
+    WantNumber("Largest shape change allowed (Enter to accept " + FormatNumber(tol_) + ")", tol_);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Tolerance") return;
+    const double t = std::atof(v.c_str());
+    if (t > 0) { tol_ = t; options[0].value = FormatNumber(tol_); }
+    WantNumber("Largest shape change allowed (Enter to accept " + FormatNumber(tol_) + ")", tol_);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!(v > 0)) { ctx.Warn("RemoveMultiKnot: Tolerance must be positive"); return; }
+    tol_ = v;
+    Run(ctx);
+  }
+  void OnEnter(CommandContext& ctx) override { Run(ctx); }
+
+ private:
+  void Run(CommandContext& ctx) {
+    ctx.Doc().BeginChange("RemoveMultiKnot");
+    int cleaned = 0, none = 0, refused = 0, copies = 0;
+    double worst = 0;
+    for (const CurveCopy& c : CopyCurves(ctx, ids_)) {
+      kernel::NurbsCurve k = c.curve;
+      const int before = k.KnotCount();
+      double dev = 0;
+      const kernel::Result r = k.RemoveMultiKnots(tol_, &dev);
+      if (r == kernel::Result::Ok) {
+        ReplaceCurve(ctx, c.id, k);
+        ++cleaned;
+        copies += before - k.KnotCount();
+        worst = std::max(worst, dev);
+      } else if (r == kernel::Result::NoOpAlreadySatisfied) {
+        ++none;
+      } else {
+        ++refused;
+        ctx.Warn("RemoveMultiKnot: curve " + std::to_string(c.id) + " left unchanged - no multiple knot can be removed within Tolerance " +
+                 FormatNumber(tol_) + " (raise Tolerance to accept the shape change)");
+      }
+    }
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
+      kernel::NurbsSurface s = *o->surface;
+      bool changed = false, any_multi = false;
+      double spent = 0;
+      for (int dir = 0; dir < 2; ++dir) {
+        const int before = s.KnotCount(dir);
+        double dev = 0;
+        const kernel::Result r = s.RemoveMultiKnots(dir, std::max(tol_ - spent, 1e-300), &dev);
+        if (r == kernel::Result::Ok) { changed = true; any_multi = true; spent += dev; copies += before - s.KnotCount(dir); }
+        else if (r == kernel::Result::Failed) any_multi = true;
+      }
+      if (changed) {
+        *o->surface = s;
+        o->InvalidateDisplay();
+        ++cleaned;
+        worst = std::max(worst, spent);
+      } else if (!any_multi) {
+        ++none;
+      } else {
+        ++refused;
+        ctx.Warn("RemoveMultiKnot: surface " + std::to_string(id) + " left unchanged - no multiple knot can be removed within Tolerance " +
+                 FormatNumber(tol_) + " (raise Tolerance to accept the shape change)");
+      }
+    }
+    ctx.Print("RemoveMultiKnot: " + std::to_string(cleaned) + " object(s) cleaned" +
+              (cleaned > 0 ? " (" + std::to_string(copies) + " knot copy(ies) removed, guaranteed shape change at most " + FormatNumber(worst) +
+                                 ", within Tolerance " + FormatNumber(tol_) + ")"
+                           : "") +
+              (none > 0 ? "; " + std::to_string(none) + " had no multiple knot" : "") +
+              (refused > 0 ? "; " + std::to_string(refused) + " left unchanged (shape change above Tolerance)" : ""));
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  double tol_ = 1e-3;
+};
+
 class DomainCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select curves or surfaces to view or set the domain"); }
@@ -3062,21 +3157,7 @@ void RegisterCurves2Commands(CommandEngine& e) {
   Reg(e, "InsertEditPoint", Make<KnotEditCommand>(KnotEditCommand::Op::InsertEditPoint));
   Reg(e, "RemoveKnot", Make<KnotEditCommand>(KnotEditCommand::Op::RemoveKnot));
   Reg(e, "RemoveControlPoint", Make<KnotEditCommand>(KnotEditCommand::Op::RemoveCP));
-  Reg(e, "RemoveMultiKnot", OnSelection("Select curves to remove multiple knots from", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("RemoveMultiKnot");
-        int n = 0;
-        for (const CurveCopy& c : CopyCurves(ctx, ids)) {
-          ON_NurbsCurve nc = c.curve.raw();
-          bool changed = false;
-          for (int i = nc.Degree(); i < nc.KnotCount() - nc.Degree(); ) {
-            int mult = nc.KnotMultiplicity(i);
-            if (mult > 1 && RemoveKnotApprox(nc, i)) { changed = true; continue; }
-            i += std::max(1, mult);
-          }
-          if (changed) { kernel::NurbsCurve k; k.raw() = nc; ReplaceCurve(ctx, c.id, k); ++n; }
-        }
-        ctx.Print("RemoveMultiKnot: " + std::to_string(n) + " curve(s) cleaned");
-      }));
+  Reg(e, "RemoveMultiKnot", Make<RemoveMultiKnotCommand>());
   Reg(e, "ExtractControlPolygon", OnSelection("Select curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("ExtractControlPolygon");
         int n = 0;

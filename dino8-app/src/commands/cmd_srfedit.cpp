@@ -464,13 +464,36 @@ void ExtractWireframe(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 
 void ShrinkTrimmed(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Doc().BeginChange("ShrinkTrimmedSrf");
-  int n = 0;
+  // The kernel's Brep::ShrinkSurfaces measures the face boundary before and
+  // after (every trim sampled, 3D point compared), checks the shrunk domain
+  // still contains every trim and the Brep is still valid, and restores the
+  // Brep untouched when the shift exceeds the document tolerance.
+  const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-12);
+  int n = 0, faces = 0, refused = 0, nothing = 0;
+  double worst_shift = 0;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
-    if (o->brep->raw().ShrinkSurfaces()) { o->InvalidateDisplay(); ++n; }
+    kernel::Brep::ShrinkSurfacesReport rep;
+    const kernel::Result r = o->brep->ShrinkSurfaces(tol, &rep);
+    if (r == kernel::Result::Ok) {
+      o->InvalidateDisplay();
+      ++n;
+      faces += rep.faces_shrunk;
+      worst_shift = std::max(worst_shift, rep.max_trim_shift);
+    } else if (r == kernel::Result::Failed) {
+      ++refused;
+      ctx.Warn("ShrinkTrimmedSrf: polysurface " + std::to_string(id) + " left unchanged - " + rep.reason);
+    } else {
+      ++nothing;
+    }
   }
-  ctx.Print("ShrinkTrimmedSrf: " + std::to_string(n) + " polysurface(s) shrunk");
+  ctx.Print("ShrinkTrimmedSrf: " + std::to_string(n) + " polysurface(s) shrunk" +
+            (n > 0 ? " (" + std::to_string(faces) + " face surface(s) cut down to their trims, largest face-boundary shift " + FormatNumber(worst_shift) +
+                         " within tolerance " + FormatNumber(tol) + ")"
+                   : "") +
+            (nothing > 0 ? "; " + std::to_string(nothing) + " had no surface larger than its trims" : "") +
+            (refused > 0 ? "; " + std::to_string(refused) + " refused" : ""));
 }
 
 void CreateUVCrv(CommandContext& ctx, const std::vector<ObjectId>& ids) {
@@ -1360,6 +1383,79 @@ void MakeUniformUV(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 // point count and degree fixed while only the chosen direction refits to
 // the typed count at degree 3, matching the real command's own documented
 // scope (one direction at a time, not both).
+// FitSrf: replaces each selected standalone surface with the smallest
+// least-squares control net (same degrees as the surface) whose deviation from
+// it stays within Tolerance, through kernel::NurbsSurface::FitToTolerance. The
+// deviation is measured at identical (u, v) on dense grids (a sampled lower
+// bound, stated as such). A surface no net of at most MaxPoints per direction
+// can fit within Tolerance is left unchanged and the best deviation reported.
+class FitSrfCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    tol_ = std::max(ctx.Settings().absolute_tolerance, 1e-12);
+    WantObjects("Select surfaces to fit");
+  }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"Tolerance", FormatNumber(tol_), {}, true, false}, {"MaxPoints", std::to_string(max_pts_), {}, true, false}};
+    WantNumber("Fit tolerance (Enter to accept " + FormatNumber(tol_) + ")", tol_);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Tolerance") {
+      const double t = std::atof(v.c_str());
+      if (t > 0) { tol_ = t; options[0].value = FormatNumber(tol_); }
+    } else if (n == "MaxPoints") {
+      const int m = std::atoi(v.c_str());
+      if (m >= 4 && m <= 120) { max_pts_ = m; options[1].value = std::to_string(max_pts_); }
+    }
+    WantNumber("Fit tolerance (Enter to accept " + FormatNumber(tol_) + ")", tol_);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!(v > 0)) { ctx.Warn("FitSrf: Tolerance must be positive"); return; }
+    tol_ = v;
+    Run(ctx);
+  }
+  void OnEnter(CommandContext& ctx) override { Run(ctx); }
+
+ private:
+  void Run(CommandContext& ctx) {
+    ctx.Doc().BeginChange("FitSrf");
+    int fitted = 0, refused = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
+      const int du = std::max(1, o->surface->DegreeU()), dv = std::max(1, o->surface->DegreeV());
+      const int was_u = o->surface->CVCountU(), was_v = o->surface->CVCountV();
+      kernel::NurbsSurface out;
+      double dev = 0;
+      int uc = 0, vc = 0;
+      try {
+        const kernel::Result r = o->surface->FitToTolerance(tol_, du, dv, std::max(max_pts_, std::max(du, dv) + 1), out, &dev, &uc, &vc);
+        if (r == kernel::Result::Ok) {
+          *o->surface = out;
+          o->InvalidateDisplay();
+          ++fitted;
+          ctx.Print("FitSrf: surface " + std::to_string(id) + " fitted with a " + std::to_string(uc) + " x " + std::to_string(vc) +
+                    " control net (was " + std::to_string(was_u) + " x " + std::to_string(was_v) + "), measured deviation " + FormatNumber(dev) +
+                    " within Tolerance " + FormatNumber(tol_));
+        } else {
+          ++refused;
+          ctx.Warn("FitSrf: surface " + std::to_string(id) + " left unchanged - no net of at most " + std::to_string(max_pts_) +
+                   " points per direction stays within Tolerance " + FormatNumber(tol_) + " (best deviation " + FormatNumber(dev) + ")");
+        }
+      } catch (const std::invalid_argument& e) {
+        ++refused;
+        ctx.Warn(std::string("FitSrf: ") + e.what());
+      }
+    }
+    ctx.Print("FitSrf: " + std::to_string(fitted) + " surface(s) fitted" + (refused > 0 ? "; " + std::to_string(refused) + " left unchanged" : ""));
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  double tol_ = 1e-3;
+  int max_pts_ = 40;
+};
+
 class RebuildUVCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select surfaces to rebuild in U or V"); }
@@ -3489,7 +3585,7 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "Real falloff-weighted control-point move: every CV within Radius of the picked point is dragged with a cosine falloff.");
   Reg(e, "FoldFace", Make<FoldFaceCommand>());
   Reg(e, "SetPlanar", OnSelection("Select curves or points to flatten onto the construction plane", SetPlanar));
-  Reg(e, "FitSrf", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Rebuild"); }));
+  Reg(e, "FitSrf", Make<FitSrfCommand>());
   Reg(e, "SetSurfaceTangent", Make<SetSurfaceTangentCommand>(), CommandStatus::Implemented,
       "Real tangent-row rotation against the target surface's normal (the tangency-only half of MatchSrf's own technique), edge position left unchanged.");
   Reg(e, "SrfSeam", Make<SrfSeamCommand>(), CommandStatus::Implemented,
