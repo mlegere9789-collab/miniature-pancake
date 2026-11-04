@@ -1,5 +1,6 @@
 // Surface, solid, mesh and SubD creation commands.
 #include "commands/cmd_common.h"
+#include "commands/continuity_request.h"
 #include "commands/history_rebuild.h"
 #include "commands/prism_solid.h"
 #include "commands/section_fit.h"
@@ -1032,10 +1033,10 @@ void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool
 // command's remaining typed tokens (Loose/Tight aren't offered - see Loft()
 // above). A later token of the same option wins.
 struct LoftTokens { bool straight = false; bool cap = true; };
-LoftTokens TakeLoftTokens(CommandContext& ctx) {
+LoftTokens ParseLoftTokens(const std::vector<std::string>& tokens) {
   LoftTokens out;
-  while (auto t = ctx.Engine().TakePendingInput()) {
-    std::string s = *t;
+  for (const std::string& t : tokens) {
+    std::string s = t;
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (s == "style=straight") out.straight = true;
     else if (s == "style=normal") out.straight = false;
@@ -1043,6 +1044,62 @@ LoftTokens TakeLoftTokens(CommandContext& ctx) {
     else if (s == "cap=no" || s == "cap=n") out.cap = false;
   }
   return out;
+}
+
+// Loft with G0 / G1 / G2 continuity to an adjacent surface edge (Continuity= option, continuity_request.h): the kernel's
+// NurbsSurface::LoftMatched on the aligned sections. The end that is matched is the one whose section lies nearer the
+// adjacent surface (the first section for a tie). The result is the uncapped wall surface; it is MEASURED along the edge
+// by the kernel and printed, and a refusal prints the kernel's reason and builds nothing.
+void LoftContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge, bool straight) {
+  std::vector<const kernel::NurbsCurve*> curves;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (o && o->kind == ObjectKind::Curve && o->curve) curves.push_back(o->curve.get());
+  }
+  const std::string head = std::string("Loft: ") + req.Name() + " continuity to " + edge.Describe();
+  if (curves.size() < 2) { ctx.Warn("Loft: select at least two curves; nothing was built"); return; }
+  AlignedSections al = AlignLoftSections(curves);
+  if (!al.refusal.empty()) { ctx.Warn(head + " refused: " + al.refusal + "; nothing was built"); return; }
+  auto worst_to_adjacent = [&](const kernel::NurbsCurve& c) {
+    double w = 0.0;
+    const kernel::Interval d = c.Domain();
+    for (int k = 0; k <= 8; ++k) {
+      const Point3d q = c.PointAt(d.min + (d.max - d.min) * k / 8.0);
+      w = std::max(w, edge.surface.ClosestPoint(q, 40, 40).DistanceTo(q));
+    }
+    return w;
+  };
+  const double d_first = worst_to_adjacent(al.curves.front()), d_last = worst_to_adjacent(al.curves.back());
+  const bool at_start = d_first <= d_last;
+  const int degree = straight ? 1 : std::min(3, static_cast<int>(curves.size()) - 1);
+  kernel::NurbsSurface::LoftEndMatch m;
+  m.surface = &edge.surface;
+  m.fixed_direction = edge.fixed_direction;
+  m.at_min = edge.at_min;
+  m.continuity = req.continuity;
+  const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  kernel::NurbsSurface out;
+  kernel::NurbsSurface::LoftMatchReport rep;
+  kernel::Result r = kernel::Result::Failed;
+  try {
+    r = kernel::NurbsSurface::LoftMatched(al.curves, degree, at_start ? &m : nullptr, at_start ? nullptr : &m, tol, out, rep, req.angle_tol, req.curv_tol);
+  } catch (const std::exception& e) {
+    rep.reason = e.what();
+  }
+  const char* which = at_start ? "first" : "last";
+  if (r != kernel::Result::Ok) {
+    ctx.Warn(head + " refused by the kernel (matched end: the " + which + " section, " + Sig3(at_start ? d_first : d_last) + " from the adjacent surface): " +
+             (rep.reason.empty() ? std::string("no reason given") : rep.reason) + "; nothing was built");
+    return;
+  }
+  const kernel::NurbsSurface::EdgeContinuityMeasure& m_end = at_start ? rep.start : rep.end;
+  ctx.Doc().BeginChange("Loft");
+  ctx.Doc().Add(SceneObject::MakeSurface(out));
+  ctx.Print(head + ": kernel LoftMatched through " + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + " in the loft direction), the " + which +
+            " section made identical to the edge and the next rows rewritten by MatchEdge as " + ContinuityWhat(req.continuity) + " continuity; " +
+            ContinuityMeasuredNote(req, m_end) + "; worst distance of any section's samples from the finished surface " + Sig3(rep.section_deviation_max) +
+            " (document tolerance " + FormatNumber(tol) + (al.reversed ? ", " + std::to_string(al.reversed) + " curve(s) reversed first" : std::string()) + "); uncapped surface");
+  NoHistoryNote(ctx, "Loft", req);
 }
 
 struct SubDFidelityResult {
@@ -2566,7 +2623,13 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "ExtrudeSrf", Make<ExtrudeCommand>(ExtrudeCommand::Kind::Surface));
   Reg(e, "ExtrudeCrvToPoint", Make<ExtrudeCommand>(ExtrudeCommand::Kind::ToPoint));
   Reg(e, "Revolve", Make<RevolveCommand>());
-  Reg(e, "Loft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { const LoftTokens t = TakeLoftTokens(ctx); Loft(ctx, ids, false, t.straight, t.cap); }, 2), CommandStatus::Implemented, "Calls the kernel's exact interpolating Brep::Loft: every selected curve lies exactly on the result (measured and printed), Normal is cubic in the loft direction and Style=Straight is linear (sharp at every section). Curves are first made consistent - open curves reversed to run the same way, closed curves reversed to circulate the same way and re-seamed to the point nearest the previous curve's start; a mix of open and closed curves is refused with the reason. Closed planar curves are capped into a polysurface solid (Cap=Yes, the default; Cap=No leaves the periodic surface). Loose/Tight aren't distinguishable here and aren't offered. If the kernel refuses a loft, the older control-point fit is used and the reason printed.");
+  Reg(e, "Loft", []() -> std::unique_ptr<Command> {
+    return std::make_unique<ContinuityPickCommand>("Loft", "Select curves to loft in order", 2,
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<std::string>& extra) { const LoftTokens t = ParseLoftTokens(extra); Loft(ctx, ids, false, t.straight, t.cap); },
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge, const std::vector<std::string>& extra) {
+          LoftContinuity(ctx, ids, req, edge, ParseLoftTokens(extra).straight);
+        });
+  }, CommandStatus::Implemented, "Calls the kernel's exact interpolating Brep::Loft: every selected curve lies exactly on the result (measured and printed), Normal is cubic in the loft direction and Style=Straight is linear (sharp at every section). Curves are first made consistent - open curves reversed to run the same way, closed curves reversed to circulate the same way and re-seamed to the point nearest the previous curve's start; a mix of open and closed curves is refused with the reason. Closed planar curves are capped into a polysurface solid (Cap=Yes, the default; Cap=No leaves the periodic surface). Loose/Tight aren't distinguishable here and aren't offered. If the kernel refuses a loft, the older control-point fit is used and the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's NurbsSurface::LoftMatched: the first or last section (whichever lies nearer that surface) is made identical to the edge and the next rows are rewritten by MatchEdge; the finished uncapped surface is MEASURED along the edge (position gap, tangent angle, cross-edge and Gaussian curvature difference) and every section's deviation from it is printed, and the request is refused with the kernel's reason (G0 not met, a closed section, a loft folding back over the adjacent surface, a degree too low, a measured angle / curvature above tolerance) building nothing. A continuity result is not recorded in History (the reason is printed).");
   Reg(e, "SubDLoft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, true); }, 2));
   Reg(e, "PlanarSrf", OnSelection("Select planar closed curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("PlanarSrf");

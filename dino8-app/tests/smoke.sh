@@ -12240,4 +12240,128 @@ ptfnum ctl_box 142.5 142.9 "PTF_ctl_box: Volume = 144 - (1 - pi/4)*6 = 142.712"
 ptfcheck ctl_box "Object 1: valid" "PTF_ctl_box: Check valid"
 if grep -q "gl_error=0" <<<"$PTFO"; then echo "ok   PTF script ran without OpenGL errors"; else echo "FAIL PTF script ran without OpenGL errors"; fail=1; fi
 
+# ---------------------------------------------------------------------------
+# CNT_: G0 / G1 / G2 edge continuity on Loft, Patch and NetworkSrf (Continuity= / AngleTol= / CurvTol= options and a click
+# on an adjacent surface edge) and the MeasureEdgeContinuity report (cnt_script.txt; kernel: NurbsSurface::LoftMatched,
+# FitPatch / FitCurveNetwork with edges, MeasureEdgeContinuity). Every angle / gap / curvature checked here is a number the
+# app printed from the kernel's MEASUREMENT of the finished surface against the flat adjacent plane (z = 0, x <= 0), and each
+# window below is where the value was measured (+ margin) on this build, not a derived bound:
+#   Loft  fixture (sections z = 0.004 x^2): plain 6.37e-05 rad, Tangency 0 rad, section deviation 1.59e-04 (limit 1e-3)
+#   Patch fixture (edge line + 2 points at z = 0.5, x = 10): plain 0.05 rad (z = 0.05 x), Tangency 1.2e-12 rad
+#   Network fixture (curves with zero slope at the edge): the exact Coons patch is ALREADY G1 (0 rad) - a negative control
+#     that the option does not claim an improvement the data do not allow; the fitted result measures 5.9e-08 rad.
+# Not verified here: Curvature (G2) on a curved adjacent surface from the app (the flat plane here is degree 1, so G2 is the
+# refusal case); the kernel's own G2 numbers are pinned by edge_continuity_tests in dino8-kernel/tests/test_basic.cpp.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  CNTO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/cnt_script.txt" 2>&1)" || { echo "$CNTO"; echo "FAIL: cnt script exited non-zero"; exit 1; }
+else
+  CNTO="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/cnt_script.txt" 2>&1)" || { echo "$CNTO"; echo "FAIL: cnt script exited non-zero"; exit 1; }
+fi
+cntblock() { awk -v name="$1" '$0 ~ ("Unknown command: CNTBEGIN_" name "$") { on = 1; next } on && /Unknown command: CNTBEGIN_/ { exit } on { print }' <<<"$CNTO"; }
+cntcheck() { local blk; blk="$(cntblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   $3"; else echo "FAIL $3"; echo "     expected: $2"; grep -E "^history: (Loft|Patch|NetworkSrf|MeasureEdgeContinuity|!)" <<<"$blk" | head -6 | cut -c1-400 | sed 's/^/     actual:   /' || true; fail=1; fi; }
+cntnot() { local blk; blk="$(cntblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
+# cntval NAME LINE_REGEX PREFIX: the number right after PREFIX in the last line of the case matching LINE_REGEX (empty if none)
+cntval() { local blk; blk="$(cntblock "$1")"; grep -E "$2" <<<"$blk" | tail -1 | sed -nE "s/.*$3([0-9.eE+-]+).*/\1/p" || true; }
+# cntnum NAME LINE_REGEX PREFIX MIN MAX DESC
+cntnum() {
+  local v; v="$(cntval "$1" "$2" "$3")"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$4" -v hi="$5" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $6 ($3$v in [$4, $5])"; else echo "FAIL $6 ('$3${v:-none}' not in [$4, $5])"; fail=1; fi
+}
+# cntratio NAME_A LINE_A NAME_B LINE_B PREFIX FACTOR DESC: value in case A is below (value in case B) / FACTOR
+cntratio() {
+  local a b; a="$(cntval "$1" "$2" "$5")"; b="$(cntval "$3" "$4" "$5")"
+  if [ -n "$a" ] && [ -n "$b" ] && awk -v a="$a" -v b="$b" -v f="$6" 'BEGIN { exit !(a < b / f) }'; then echo "ok   $7 (${5}${a} vs without the option ${b}, factor > $6)"; else echo "FAIL $7 ('${a:-none}' vs '${b:-none}', need factor > $6)"; fail=1; fi
+}
+cntobjs() {
+  local n; n="$(cntblock "$1" | grep -cE "^history: Object [0-9]+ \(" || true)"
+  if [ "$n" = "$2" ]; then echo "ok   $3 ($n object(s))"; else echo "FAIL $3 ('$n' object(s), expected $2)"; fail=1; fi
+}
+LOFTM="^history: Loft: G[012] continuity .*MEASURED"
+PATCHM="^history: Patch: G[012] continuity .*MEASURED"
+NETM="^history: NetworkSrf: G[012] continuity .*MEASURED"
+REPM="^history: MeasureEdgeContinuity: object .*MEASURED"
+# --- Loft: measured against the same loft without the option
+cntcheck loft_plain "exact interpolating kernel loft through 3 curves" "CNT_loft_plain: no option -> the pinned plain loft message"
+cntnot loft_plain "Loft: G[012] continuity" "CNT_loft_plain: ...and no continuity machinery runs"
+cntnum loft_plain "$REPM" "tangent angle " 4e-5 9e-5 "CNT_loft_plain: MeasureEdgeContinuity measures the plain loft's tangent angle against the plane (6.37e-05 rad)"
+cntcheck loft_plain "G1 (and angle <= 8.73e-06 rad) NOT met" "CNT_loft_plain: AngleTol=0.0005 deg (8.73e-06 rad) -> the plain loft is NOT G1"
+cntcheck loft_plain "continuity achieved: G0" "CNT_loft_plain: ...it is G0 only"
+cntobjs loft_plain 5 "CNT_loft_plain: plane + 3 sections + 1 loft"
+cntcheck loft_g1 "Loft: G1 continuity to object 1, V=max edge: kernel LoftMatched through 3 curves (degree 2 in the loft direction), the first section made identical to the edge" "CNT_loft_g1: Continuity=Tangency picks the plane's edge and calls LoftMatched"
+cntnum loft_g1 "$LOFTM" "tangent angle " 0 1e-6 "CNT_loft_g1: the loft's own MEASURED tangent angle is ~0 (printed 0 rad)"
+cntnum loft_g1 "$REPM" "tangent angle " 0 1e-6 "CNT_loft_g1: MeasureEdgeContinuity run separately agrees (0 rad)"
+cntratio loft_g1 "$REPM" loft_plain "$REPM" "tangent angle " 1000 "CNT_loft_g1: ... versus 6.37e-05 rad for the same loft without the option"
+cntnum loft_g1 "$REPM" "position gap " 0 1e-6 "CNT_loft_g1: measured position gap"
+cntnum loft_g1 "$LOFTM" "from the finished surface " 0 1e-3 "CNT_loft_g1: worst section deviation within the document tolerance 0.001 (printed 1.59e-04)"
+cntnum loft_g1 "$LOFTM" "cross-edge curvature difference " 0.007 0.009 "CNT_loft_g1: G1 leaves the cross-edge curvature difference where the data put it (printed 0.00797; plain 0.00796)"
+cntcheck loft_g1 "G1 (and angle <= 8.73e-06 rad) met" "CNT_loft_g1: ...so the report says G1 met at the tolerance the plain loft failed"
+cntobjs loft_g1 5 "CNT_loft_g1: one new surface"
+cntcheck loft_g0 "(position only: the tangent angle and curvature above are reported, not constrained)" "CNT_loft_g0: Continuity=Position says it constrains position only"
+cntnum loft_g0 "$LOFTM" "tangent angle " 4e-5 9e-5 "CNT_loft_g0: G0 leaves the tangent angle where the plain loft has it (6.37e-05 rad)"
+# refusals carry the kernel's reason and build nothing
+cntcheck loft_g2_flat "refused by the kernel .*MatchEdge refused (non-clamped surface, adjacent surface of too low a degree, or a self-check failure); nothing was built" "CNT_loft_g2_flat: G2 against a degree-1 plane is refused WITH the kernel's reason"
+cntobjs loft_g2_flat 4 "CNT_loft_g2_flat: nothing was built"
+cntcheck loft_incompat "matching the adjacent surface moves section 2 by 0.0185" "CNT_loft_incompat: sections that do not leave the plane tangentially: refused, section 2 would move 0.0185 > 0.001"
+cntnum loft_incompat "^history: ! Loft: " "moves section 2 by " 0.017 0.020 "CNT_loft_incompat: ...the stated section move"
+cntobjs loft_incompat 4 "CNT_loft_incompat: nothing was built"
+cntcheck loft_off "start section lies up to 5.000000 from the adjacent surface, more than the tolerance 0.001000: position (G0) continuity is not met" "CNT_loft_off: a section 5 off the picked edge: G0 not met, refused with the measured gap"
+cntobjs loft_off 4 "CNT_loft_off: nothing was built"
+cntcheck loft_nopick "no adjacent surface edge was picked, so nothing was built (G1 was requested)" "CNT_loft_nopick: Enter instead of an edge: nothing built, said so"
+cntobjs loft_nopick 4 "CNT_loft_nopick: nothing was built"
+cntcheck loft_badvalue "Continuity must be None, Position (G0), Tangency (G1) or Curvature (G2), not 'Bogus'" "CNT_loft_badvalue: a bad Continuity value is refused with its reason"
+cntcheck loft_badvalue "exact interpolating kernel loft through 3 curves" "CNT_loft_badvalue: ...and the plain loft runs unchanged"
+cntobjs loft_badvalue 5 "CNT_loft_badvalue: the plain loft was built"
+cntcheck loft_tol "angle tolerance 1.75e-06 rad" "CNT_loft_tol: AngleTol=0.0001 degrees is carried as 1.75e-06 rad"
+# History: a continuity result is not recorded, the reason is printed; the plain loft's recording path is untouched
+cntcheck loft_hist "Loft: no history recorded - a G1 rebuild would need the adjacent surface edge as a recorded input" "CNT_loft_hist: History On + Continuity: recording refused, reason printed"
+cntcheck loft_hist "exact interpolating kernel loft through 3 curves" "CNT_loft_hist: ...a plain loft in the same History On document still builds"
+cntnot loft_hist_plain "no history recorded" "CNT_loft_hist_plain: History On + plain Loft prints no refusal"
+cntcheck loft_hist_plain "exact interpolating kernel loft through 3 curves" "CNT_loft_hist_plain: ...and builds as before"
+# --- Patch
+cntcheck patch_plain "Patch: least-squares plane through 1 curve(s) and 2 point(s)" "CNT_patch_plain: no option -> the pinned plain Patch message"
+cntnum patch_plain "$REPM" "tangent angle " 0.049 0.051 "CNT_patch_plain: the plain fit is the tilted plane z = 0.05 x: MEASURED 0.05 rad to the flat plane"
+cntcheck patch_plain "continuity achieved: G0" "CNT_patch_plain: ...G0 only"
+cntcheck patch_g1 "Patch: G1 continuity to object 1, V=max edge: selected curve 1 lies on the edge" "CNT_patch_g1: Continuity=Tangency picks the edge, finds the curve on it"
+cntnum patch_g1 "$PATCHM" "tangent angle " 0 1e-6 "CNT_patch_g1: the patch's own MEASURED tangent angle (printed 1.22e-12 rad)"
+cntnum patch_g1 "$REPM" "tangent angle " 0 1e-6 "CNT_patch_g1: MeasureEdgeContinuity run separately agrees"
+cntratio patch_g1 "$REPM" patch_plain "$REPM" "tangent angle " 100000 "CNT_patch_g1: ... > 1e5 times smaller than the 0.05 rad of the same patch without the option"
+cntnum patch_g1 "$PATCHM" "worst data deviation " 0 1e-3 "CNT_patch_g1: the fit still meets the document tolerance (printed 1.12e-08 vs 0.001)"
+cntnum patch_g1 "$REPM" "position gap " 0 1e-3 "CNT_patch_g1: measured position gap within the document tolerance"
+cntcheck patch_g1 "G1 (and angle <= 0.001 rad) met" "CNT_patch_g1: the report says G1 met"
+cntobjs patch_g1 5 "CNT_patch_g1: plane + curve + 2 points + 1 patch"
+cntcheck patch_g0 "(position only: the tangent angle and curvature above are reported, not constrained)" "CNT_patch_g0: Continuity=Position says it constrains position only"
+cntnum patch_g0 "$PATCHM" "tangent angle " 0.049 0.051 "CNT_patch_g0: G0 leaves the 0.05 rad tilt"
+cntcheck patch_g2_flat "curvature continuity requested but the adjacent surface is degree 1 (it has no curvature to continue); nothing was built" "CNT_patch_g2_flat: G2 against a degree-1 plane refused WITH the kernel's reason"
+cntobjs patch_g2_flat 4 "CNT_patch_g2_flat: nothing was built"
+cntcheck patch_off "the boundary samples lie up to 4.242641 from the adjacent surface, more than the tolerance 0.001000: position (G0) continuity is not met" "CNT_patch_off: the only curve is off the picked edge: refused with the measured distance"
+cntobjs patch_off 4 "CNT_patch_off: nothing was built"
+cntcheck patch_tol "angle tolerance 1.75e-06 rad" "CNT_patch_tol: AngleTol=0.0001 degrees is carried as 1.75e-06 rad"
+cntcheck patch_hist "Patch: no history recorded - a G1 rebuild would need the adjacent surface edge as a recorded input" "CNT_patch_hist: History On + Continuity: recording refused, reason printed"
+# --- NetworkSrf
+cntcheck net_plain "exact Coons patch through 4 curves" "CNT_net_plain: no option -> the pinned exact Coons message"
+cntnum net_plain "$REPM" "tangent angle " 0 1e-6 "CNT_net_plain: the exact Coons patch is ALREADY G1 here (0 rad): the option has no improvement to claim"
+cntnum net_plain "$REPM" "cross-edge curvature difference " 0.011 0.013 "CNT_net_plain: its measured cross-edge curvature difference (0.012)"
+cntcheck net_g1 "NetworkSrf: G1 continuity to object 1, V=max edge: input curve 1 lies on the edge" "CNT_net_g1: Continuity=Tangency picks the edge, finds the input curve on it"
+cntnum net_g1 "$NETM" "tangent angle " 0 1e-5 "CNT_net_g1: the network's own MEASURED tangent angle (printed 5.94e-08 rad)"
+cntnum net_g1 "$REPM" "tangent angle " 0 1e-5 "CNT_net_g1: MeasureEdgeContinuity run separately agrees (printed 6.15e-08 rad)"
+cntnum net_g1 "$NETM" "position gap " 0 1e-3 "CNT_net_g1: measured position gap within the document tolerance (printed 4.02e-06)"
+cntnum net_g1 "$NETM" "worst " 0 1e-3 "CNT_net_g1: every input curve is still within the document tolerance of the surface (worst printed 2.11e-05)"
+cntcheck net_g1 "continuity achieved: G1" "CNT_net_g1: the report says G1 (G2 not met: cross-edge curvature difference 0.012 > 0.01)"
+cntnot net_g1 "no history recorded" "CNT_net_g1: History Off -> no history message"
+cntobjs net_g1 6 "CNT_net_g1: plane + 4 curves + 1 surface"
+cntcheck net_g2_flat "curvature continuity requested but the adjacent surface is degree 1 (it has no curvature to continue); nothing was built" "CNT_net_g2_flat: G2 against a degree-1 plane refused WITH the kernel's reason"
+cntcheck net_incompat "with the requested edge continuity the fit misses its data by 0.005773, more than the tolerance 0.001000; nothing was built" "CNT_net_incompat: curves that cannot leave the plane tangentially: refused, the fit would miss them by 0.00577"
+cntobjs net_incompat 5 "CNT_net_incompat: nothing was built (plane + 4 curves)"
+cntcheck net_three "needs 4 or more curves crossing in two directions; 3 curve(s) selected" "CNT_net_three: 3 curves have no continuity option, refused with that reason"
+cntobjs net_three 4 "CNT_net_three: nothing was built"
+# --- MeasureEdgeContinuity alone
+cntnum rep_gap "$REPM" "position gap " 2.99 3.01 "CNT_rep_gap: a loft edge 3 above the plane: measured gap 3"
+cntcheck rep_gap "G0 (gap <= 0.001) NOT met" "CNT_rep_gap: G0 NOT met"
+cntcheck rep_gap "continuity achieved: none (the edges do not meet within the tolerance)" "CNT_rep_gap: continuity achieved: none"
+cntcheck rep_same "AngleTol must be a positive number (degrees), not '-1'" "CNT_rep_same: a bad AngleTol is refused with its reason"
+cntcheck rep_same "that is the first edge again; click a different edge" "CNT_rep_same: the same edge twice is refused and re-prompts"
+cntnum rep_same "$REPM" "position gap " 2.99 3.01 "CNT_rep_same: ...and the next pick measures (gap 3)"
+if grep -q "gl_error=0" <<<"$CNTO"; then echo "ok   CNT script ran without OpenGL errors"; else echo "FAIL CNT script ran without OpenGL errors"; fail=1; fi
+
 exit $fail

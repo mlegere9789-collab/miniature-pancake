@@ -18,6 +18,7 @@
 #include <utility>
 
 #include "commands/cmd_common.h"
+#include "commands/continuity_request.h"
 #include "commands/history_rebuild.h"
 #include "commands/revolved_solid.h"
 #include "commands/prism_solid.h"
@@ -1338,6 +1339,121 @@ void Patch(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   std::vector<Point3d> grid = {fit.PointAt(u0, v0), fit.PointAt(u0, v1), fit.PointAt(u1, v0), fit.PointAt(u1, v1)};
   ctx.Doc().Add(SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1)));
   ctx.Print("Patch: least-squares plane through " + std::to_string(ncrv) + " curve(s) and " + std::to_string(npts) + " point(s)");
+}
+
+// ---------------------------------------------------------------------------
+// Continuity (G0 / G1 / G2) to an adjacent surface edge: NetworkSrf and Patch
+// (Loft's is in cmd_solids.cpp). Options and the edge pick: continuity_request.h.
+// ---------------------------------------------------------------------------
+
+// Index of the curve that lies best on `adj` (smallest worst distance of its samples to the surface), with that worst
+// distance. The user picked a surface EDGE; the curve that runs along it is the one whose boundary is to continue it.
+int CurveLyingOn(const std::vector<kernel::NurbsCurve>& curves, const kernel::NurbsSurface& adj, double& worst_out) {
+  int best = 0;
+  double best_worst = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < curves.size(); ++i) {
+    double worst = 0.0;
+    for (const Point3d& p : SampleCurve(curves[i], 17, curves[i].IsClosed())) worst = std::max(worst, adj.ClosestPoint(p, 40, 40).DistanceTo(p));
+    if (worst < best_worst) { best_worst = worst; best = static_cast<int>(i); }
+  }
+  worst_out = best_worst;
+  return best;
+}
+
+void NetworkSrfContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge) {
+  std::vector<kernel::NurbsCurve> curves;
+  for (ObjectId id : ids) if (std::optional<kernel::NurbsCurve> c = CurveOf(ctx, id)) curves.push_back(*c);
+  const std::string head = std::string("NetworkSrf: ") + req.Name() + " continuity to " + edge.Describe();
+  if (curves.size() < 4) {
+    ctx.Warn(head + " refused: continuity is built by the kernel's curve-network fit (FitCurveNetwork), which needs 4 or more curves crossing in two directions; " +
+             std::to_string(curves.size()) + " curve(s) selected (a 2-curve ruled surface or a 3/4-curve boundary loop has no continuity option); nothing was built");
+    return;
+  }
+  const double net_tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  double lying = 0.0;
+  const int idx = CurveLyingOn(curves, edge.surface, lying);
+  kernel::NurbsSurface::NetworkEdgeContinuity ne;
+  ne.curve_index = idx;
+  ne.adjacent = &edge.surface;
+  ne.continuity = req.continuity;
+  ne.angle_tolerance = req.angle_tol;
+  ne.curvature_tolerance = req.curv_tol;
+  kernel::NurbsSurface net;
+  kernel::NurbsSurface::CurveNetworkReport rep;
+  kernel::Result nr = kernel::Result::Failed;
+  try {
+    nr = kernel::NurbsSurface::FitCurveNetwork(curves, net_tol, net, rep, {ne});
+  } catch (const std::exception& e) {
+    rep.reason = e.what();
+  }
+  if (nr != kernel::Result::Ok || rep.edge_continuity.empty()) {
+    ctx.Warn(head + " refused by the kernel (curve " + std::to_string(idx + 1) + " is the input curve nearest that edge, worst distance " + Sig3(lying) + "): " +
+             (rep.reason.empty() ? std::string("no reason given") : rep.reason) + "; nothing was built");
+    return;
+  }
+  ctx.Doc().BeginChange("NetworkSrf");
+  ctx.Doc().Add(SceneObject::MakeSurface(net));
+  std::string per;
+  for (size_t i = 0; i < rep.curve_deviation.size(); ++i) per += (i ? ", " : "") + Sig3(rep.curve_deviation[i]);
+  ctx.Print(head + ": input curve " + std::to_string(idx + 1) + " lies on the edge (worst distance " + Sig3(lying) + "); curve network of " + std::to_string(rep.u_curves) +
+            " x " + std::to_string(rep.v_curves) + " curves fitted with the edge's " + ContinuityWhat(req.continuity) +
+            " as a weighted constraint (" + std::to_string(rep.net_u) + " x " + std::to_string(rep.net_v) + " net, approximate least squares, untrimmed). " +
+            ContinuityMeasuredNote(req, rep.edge_continuity[0]) + ". Distance of each input curve from the surface: " + per + " (worst " + Sig3(rep.max_deviation) +
+            ", document tolerance " + FormatNumber(net_tol) + ")");
+  NoHistoryNote(ctx, "NetworkSrf", req);
+}
+
+void PatchContinuity(CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge) {
+  Row point_objects;
+  std::vector<kernel::NurbsCurve> curves;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    if (o->kind == ObjectKind::Point) point_objects.push_back(o->point);
+    else if (o->kind == ObjectKind::Curve && o->curve) curves.push_back(*o->curve);
+  }
+  const std::string head = std::string("Patch: ") + req.Name() + " continuity to " + edge.Describe();
+  if (curves.empty()) {
+    ctx.Warn(head + " refused: select at least one curve lying on the adjacent surface edge (the boundary that continues it); nothing was built");
+    return;
+  }
+  const double patch_tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+  double lying = 0.0;
+  const int idx = CurveLyingOn(curves, edge.surface, lying);
+  kernel::NurbsSurface::FitEdgeContinuity fe;
+  fe.points = SampleCurve(curves[static_cast<size_t>(idx)], 33, curves[static_cast<size_t>(idx)].IsClosed());
+  fe.adjacent = &edge.surface;
+  fe.continuity = req.continuity;
+  fe.angle_tolerance = req.angle_tol;
+  fe.curvature_tolerance = req.curv_tol;
+  Row boundary;
+  for (size_t i = 0; i < curves.size(); ++i) {
+    if (static_cast<int>(i) == idx) continue;
+    const Row smp = SampleCurve(curves[i], 96, curves[i].IsClosed());
+    boundary.insert(boundary.end(), smp.begin(), smp.end());
+  }
+  kernel::NurbsSurface patch;
+  kernel::NurbsSurface::PatchFitReport rep;
+  kernel::Result fr = kernel::Result::Failed;
+  try {
+    fr = kernel::NurbsSurface::FitPatch(boundary, point_objects, patch_tol, patch, &rep, 16, {fe});
+  } catch (const std::exception& e) {
+    rep.reason = e.what();
+  }
+  if (fr != kernel::Result::Ok || rep.edge_continuity.empty()) {
+    ctx.Warn(head + " refused by the kernel (curve " + std::to_string(idx + 1) + " is the selected curve nearest that edge, worst distance " + Sig3(lying) + "): " +
+             (rep.reason.empty() ? std::string("the kernel could not fit a surface to this data (fewer than three points, collinear data, or a singular solve)") : rep.reason) +
+             "; nothing was built");
+    return;
+  }
+  ctx.Doc().BeginChange("Patch");
+  ctx.Doc().Add(SceneObject::MakeSurface(patch));
+  ctx.Print(head + ": selected curve " + std::to_string(idx + 1) + " lies on the edge (worst distance " + Sig3(lying) + "); kernel least-squares NURBS surface through " +
+            std::to_string(curves.size()) + " curve(s) and " + std::to_string(point_objects.size()) + " point(s) with the edge's " + ContinuityWhat(req.continuity) +
+            " as a weighted constraint (" + std::to_string(rep.u_count) + " x " + std::to_string(rep.v_count) + " net, worst data deviation " + Sig3(rep.max_deviation) +
+            " vs tolerance " + FormatNumber(patch_tol) + (rep.met_tolerance ? ": met" : ": NOT met") + "; untrimmed, spanning the data's extent). " +
+            ContinuityMeasuredNote(req, rep.edge_continuity[0]));
+  NoHistoryNote(ctx, "Patch", req);
 }
 
 // ---------------------------------------------------------------------------
@@ -3507,11 +3623,176 @@ std::optional<SceneObject> RebuildNetworkSrfLoop(CommandContext& ctx, const std:
   return built;
 }
 
+// ---------------------------------------------------------------------------
+// continuity_request.h: option parsing, the adjacent-edge pick, and the
+// MeasureEdgeContinuity command.
+// ---------------------------------------------------------------------------
+
+std::string Sig3(double v) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.3g", v);
+  return buf;
+}
+
+std::string FormatEdgeMeasure(const kernel::NurbsSurface::EdgeContinuityMeasure& m) {
+  return "position gap " + Sig3(m.max_position_gap) + ", tangent angle " + Sig3(m.max_tangent_angle) + " rad (" + Sig3(m.max_tangent_angle * 180.0 / ON_PI) +
+         " deg), cross-edge curvature difference " + Sig3(m.max_cross_curvature_diff) + ", Gaussian curvature difference " + Sig3(m.max_gaussian_diff);
+}
+
+bool ParseContinuityToken(const std::string& token, ContinuityRequest& r, std::string& err) {
+  const size_t eq = token.find('=');
+  if (eq == std::string::npos) return false;
+  std::string name = token.substr(0, eq), value = token.substr(eq + 1);
+  for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  std::string lv = value;
+  for (char& c : lv) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (name == "continuity") {
+    if (lv == "none") r.requested = false;
+    else if (lv == "position" || lv == "g0") { r.requested = true; r.continuity = kernel::MatchContinuity::Position; }
+    else if (lv == "tangency" || lv == "tangent" || lv == "g1") { r.requested = true; r.continuity = kernel::MatchContinuity::Tangent; }
+    else if (lv == "curvature" || lv == "g2") { r.requested = true; r.continuity = kernel::MatchContinuity::Curvature; }
+    else err = "Continuity must be None, Position (G0), Tangency (G1) or Curvature (G2), not '" + value + "'";
+    return true;
+  }
+  if (name == "angletol" || name == "curvtol") {
+    double d = 0.0;
+    if (!ParseNumber(value, d) || !(d > 0.0) || !std::isfinite(d)) {
+      err = std::string(name == "angletol" ? "AngleTol" : "CurvTol") + " must be a positive number (" + (name == "angletol" ? "degrees" : "1/length") + "), not '" + value + "'";
+    } else if (name == "angletol") {
+      r.angle_tol = d * ON_PI / 180.0;
+    } else {
+      r.curv_tol = d;
+    }
+    return true;
+  }
+  return false;
+}
+
+std::optional<AdjacentEdge> PickAdjacentEdge(CommandContext& ctx, Point3d p, const std::vector<ObjectId>& exclude, std::string& why) {
+  std::optional<AdjacentEdge> best;
+  double best_face_d = std::numeric_limits<double>::max();
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (std::find(exclude.begin(), exclude.end(), o.id) != exclude.end()) continue;
+    if (!ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+    std::vector<kernel::NurbsSurface> faces;
+    if (o.kind == ObjectKind::Surface && o.surface) {
+      faces.push_back(*o.surface);
+    } else if (o.kind == ObjectKind::Brep && o.brep) {
+      const ON_Brep& b = o.brep->raw();
+      for (int f = 0; f < b.m_F.Count(); ++f) {
+        kernel::NurbsSurface ks;
+        const ON_Surface* s = b.m_F[f].SurfaceOf();
+        if (s && SurfaceFromON(*s, ks)) faces.push_back(std::move(ks)); else faces.emplace_back();
+      }
+    }
+    for (size_t f = 0; f < faces.size(); ++f) {
+      if (!faces[f].raw().IsValid()) continue;
+      const double d = faces[f].ClosestPoint(p, 40, 40).DistanceTo(p);
+      if (d < best_face_d) {
+        best_face_d = d;
+        AdjacentEdge e;
+        e.id = o.id;
+        e.face = (o.kind == ObjectKind::Brep) ? static_cast<int>(f) : 0;
+        e.surface = faces[f];
+        best = std::move(e);
+      }
+    }
+  }
+  if (!best) { why = "no visible surface or polysurface to take an edge from"; return std::nullopt; }
+  // Nearest of the four isoparametric edges of that surface (65 samples each).
+  const ON_NurbsSurface& s = best->surface.raw();
+  double best_edge_d = std::numeric_limits<double>::max();
+  for (int dir = 0; dir < 2; ++dir) {
+    for (int mn = 0; mn < 2; ++mn) {
+      const ON_Interval fixed = s.Domain(dir), run = s.Domain(1 - dir);
+      const double fv = mn ? fixed.Min() : fixed.Max();
+      for (int k = 0; k <= 64; ++k) {
+        const double t = run.Min() + run.Length() * k / 64.0;
+        const ON_3dPoint q = dir == 0 ? s.PointAt(fv, t) : s.PointAt(t, fv);
+        const double d = q.DistanceTo(p);
+        if (d < best_edge_d) { best_edge_d = d; best->fixed_direction = dir; best->at_min = (mn != 0); }
+      }
+    }
+  }
+  best->pick_distance = best_edge_d;
+  return best;
+}
+
+namespace {
+
+// MeasureEdgeContinuity: pick two surface edges; report the measured G0/G1/G2 between them.
+class MeasureEdgeContinuityCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"AngleTol", Sig3(req_.angle_tol * 180.0 / ON_PI), {}, true, false}, {"CurvTol", Sig3(req_.curv_tol), {}, true, false}};
+    WantPoint("Click the first surface edge (the surface to measure)");
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    std::string err;
+    ParseContinuityToken(n + "=" + v, req_, err);
+    if (!err.empty()) { ctx.Warn("MeasureEdgeContinuity: " + err); return; }
+    options[0].value = Sig3(req_.angle_tol * 180.0 / ON_PI);
+    options[1].value = Sig3(req_.curv_tol);
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    std::string why;
+    std::optional<AdjacentEdge> e = PickAdjacentEdge(ctx, p, {}, why);
+    if (!e) { ctx.Warn("MeasureEdgeContinuity: " + why); return; }
+    if (!first_) {
+      first_ = std::move(e);
+      ctx.Print("MeasureEdgeContinuity: first edge = " + first_->Describe());
+      WantPoint("Click the second surface edge (the edge to measure along)");
+      return;
+    }
+    if (e->id == first_->id && e->face == first_->face && e->fixed_direction == first_->fixed_direction && e->at_min == first_->at_min) {
+      ctx.Warn("MeasureEdgeContinuity: that is the first edge again; click a different edge");
+      return;
+    }
+    Run(ctx, *first_, *e);
+    Finish();
+  }
+
+ private:
+  void Run(CommandContext& ctx, const AdjacentEdge& a, const AdjacentEdge& b) {
+    kernel::NurbsSurface::EdgeContinuityMeasure m;
+    kernel::Result r = kernel::Result::Failed;
+    try {
+      r = a.surface.MeasureEdgeContinuity(b.surface, b.fixed_direction, b.at_min, 97, m);
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("MeasureEdgeContinuity: ") + ex.what());
+      return;
+    }
+    if (r != kernel::Result::Ok) { ctx.Warn("MeasureEdgeContinuity: the kernel could not evaluate one of the two surfaces at a probe"); return; }
+    const double tol = ctx.Settings().absolute_tolerance > 0 ? ctx.Settings().absolute_tolerance : 0.001;
+    const bool g0 = m.max_position_gap <= tol;
+    const bool g1 = g0 && m.max_tangent_angle <= req_.angle_tol;
+    const bool g2 = g1 && m.max_cross_curvature_diff <= req_.curv_tol;
+    ctx.Print("MeasureEdgeContinuity: " + a.Describe() + " against " + b.Describe() + ", MEASURED at " + std::to_string(m.samples) +
+              " probes evenly along the second edge (each against the first surface's own closest point): " + FormatEdgeMeasure(m));
+    ctx.Print("MeasureEdgeContinuity: G0 (gap <= " + FormatNumber(tol) + ") " + (g0 ? "met" : "NOT met") + "; G1 (and angle <= " + Sig3(req_.angle_tol) + " rad) " +
+              (g1 ? "met" : "NOT met") + "; G2 (and cross-edge curvature difference <= " + Sig3(req_.curv_tol) + ") " + (g2 ? "met" : "NOT met") +
+              "; continuity achieved: " + (g2 ? "G2" : g1 ? "G1" : g0 ? "G0" : "none (the edges do not meet within the tolerance)"));
+  }
+  ContinuityRequest req_;
+  std::optional<AdjacentEdge> first_;
+};
+
+}  // namespace
+
 void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Sweep1", Make<Sweep1Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep1 (rotation-minimizing-frame transport and skin; still an uncapped surface, periodic when the rail is closed, same as before) and records History (History On) for UpdateHistory to rebuild against the rail/section's current shape; two or more cross sections call the kernel's exact Brep::Sweep1Sections (each section anchored on the rail - a closed planar one where the rail crosses its plane - decoded in its rotation-minimizing frame, blended between neighbours and skinned through the stations: every section reproduced exactly, the wall measured against the exact blended sections between stations and held to the document tolerance, retried at up to 256 stations; an uncapped surface; closed cross sections must already share a seam and direction, the kernel refuses seams more than 60 degrees apart; with History On it records {rail, section 1, section 2, ...} and rebuilds when the rail or a section is edited, a rebuild the kernel refuses keeping the old wall with the reason printed); it falls back, with the reason printed, to the old sampled approximation (24 samples per section, fitted to a degree-3 surface) when the kernel refuses (closed rail, a section plane the rail never crosses or contains, two sections at one station, mismatched seams) or misses the document tolerance. Cap=Yes (default No) turns the sweep of a closed planar cross section into a closed B-rep solid with the kernel's own capping (two planar end caps; the section may sit anywhere along the rail and several cross sections are capped too; recorded for History); an open or non-planar section, or a fallback construction, keeps the uncapped surface and prints why. A closed rail that is an exact planar circle is built as the section revolved once about the rail's axis (Brep::Revolve: an exact rational surface, e.g. a true torus, measured against the revolved section and printed), and with Cap=Yes as a closed one-face solid; any other closed rail keeps the kernel's periodic skin.");
   Reg(e, "Sweep2", Make<Sweep2Command>(), CommandStatus::Implemented, "A single cross section calls the kernel's exact Brep::Sweep2 (two-rail frame transport and skin; still an uncapped surface, same as before) and records History (History On) for UpdateHistory to rebuild against the rails/section's current shape. Two or more cross sections call the kernel's Brep::Sweep2Sections (each section decoded in its own station's two-rail frame, blended between neighbours and skinned through the stations: every section reproduced, wall edges within the document tolerance of the rails when the sections touch them, measured and printed; closed cross sections must already share a seam and direction, the kernel does not align them; with History On it records {rail 1, rail 2, section 1, section 2, ...} and rebuilds when a rail or a section is edited, a rebuild the kernel refuses keeping the old wall with the reason printed); it falls back, with the reason printed, to the old approximated two-rail-scaled sweep fitted to a degree-3 surface when the kernel refuses (crossing section anchors, rails that touch at an interior station, a section where the rails touch) or misses the document tolerance; two closed rails give a cyclic sweep whose wall is closed round the ring (seam at the first section, sections ordered round both rails), and rails meeting at an end give a wall pinched to a point there. Cap=Yes (default No) caps a closed planar cross section's sweep into a closed B-rep solid (single section, or the multi-section wall) with the kernel's own capping; anything that cannot be capped keeps the surface and prints why.");
-  Reg(e, "NetworkSrf", OnSelection("Select curves in network (2, 3 or 4)", NetworkSrf, 2), CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface. Five or more curves that close into a loop within the document tolerance are chained (any order or direction), joined into one loop and trimmed out of the kernel's least-squares NurbsSurface::FitPatch surface as one B-rep face (approximate, not an interpolating Coons patch: the worst deviation from the curves and the trimmed edge's deviation are printed and a miss of the tolerance is flagged); a set that does not close, or whose loop folds over its best-fit plane, prints why and uses the first 4 curves as before. Four or more curves that CROSS in their interiors form a curve network: the kernel (NurbsSurface::FitCurveNetwork) sorts them into two directions by where they meet, requires every curve to meet every curve of the other direction within the document tolerance, fits one NURBS surface (cubic where the net allows) through the curves and the meetings, and prints the measured distance of EVERY input curve from it (approximate least-squares fit over the curves' bounding rectangle, untrimmed); a network that misses the tolerance, whose curves do not all meet, or whose order is not a regular grid prints why and the older behaviour runs.");
-  Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. With History On the non-planar result records every selected curve and point (in selection order) and the fit (and trim) is re-run when one is edited; a rebuild that no longer applies (the data became flat, a source deleted, the fit failing) keeps the old patch with the reason printed.");
+  Reg(e, "NetworkSrf", []() -> std::unique_ptr<Command> {
+    return std::make_unique<ContinuityPickCommand>("NetworkSrf", "Select curves in network (2, 3 or 4)", 2,
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<std::string>&) { NetworkSrf(ctx, ids); },
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge, const std::vector<std::string>&) { NetworkSrfContinuity(ctx, ids, req, edge); });
+  }, CommandStatus::Implemented, "Two curves give an exact ruled surface. Three or four curves that close into a loop within the document tolerance call the kernel's exact Coons patch (CoonsPatchTriangular / CoonsPatch: all boundaries reproduced exactly, corners within tolerance closed first, any order or direction, measured boundary deviation printed); a set that does not close, or that the kernel refuses, prints why and falls back to the old bilinear Coons patch fitted as a degree-3 surface. Five or more curves that close into a loop within the document tolerance are chained (any order or direction), joined into one loop and trimmed out of the kernel's least-squares NurbsSurface::FitPatch surface as one B-rep face (approximate, not an interpolating Coons patch: the worst deviation from the curves and the trimmed edge's deviation are printed and a miss of the tolerance is flagged); a set that does not close, or whose loop folds over its best-fit plane, prints why and uses the first 4 curves as before. Four or more curves that CROSS in their interiors form a curve network: the kernel (NurbsSurface::FitCurveNetwork) sorts them into two directions by where they meet, requires every curve to meet every curve of the other direction within the document tolerance, fits one NURBS surface (cubic where the net allows) through the curves and the meetings, and prints the measured distance of EVERY input curve from it (approximate least-squares fit over the curves' bounding rectangle, untrimmed); a network that misses the tolerance, whose curves do not all meet, or whose order is not a regular grid prints why and the older behaviour runs. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and, for a curve network of four or more curves, calls the kernel's continuity-aware FitCurveNetwork: the input curve lying on that edge is fitted with the adjacent surface's tangent plane (and second fundamental form) as a heavily weighted constraint, the finished surface is MEASURED along the edge (position gap, tangent angle, cross-edge and Gaussian curvature difference) and printed, and the request is refused with the kernel's reason when G0 is not met, the adjacent plane is too steep, or the measured angle / curvature / curve deviation exceeds the tolerance. A 2-curve or loop selection has no continuity option (refused with that reason). A continuity result is not recorded in History (the reason is printed).");
+  Reg(e, "Patch", []() -> std::unique_ptr<Command> {
+    return std::make_unique<ContinuityPickCommand>("Patch", "Select curves and points to fit a surface through", 1,
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<std::string>&) { Patch(ctx, ids); },
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge, const std::vector<std::string>&) { PatchContinuity(ctx, ids, req, edge); });
+  }, CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. With History On the non-planar result records every selected curve and point (in selection order) and the fit (and trim) is re-run when one is edited; a rebuild that no longer applies (the data became flat, a source deleted, the fit failing) keeps the old patch with the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's continuity-aware FitPatch: the selected curve lying on that edge supplies ordered edge samples whose adjacent tangent plane (and second fundamental form) enter the least-squares fit as heavily weighted constraints; the finished UNTRIMMED surface is MEASURED between the samples (position gap, tangent angle, cross-edge and Gaussian curvature difference) and printed, and the request is refused with the kernel's reason (G0 not met, adjacent plane too steep, measured angle / curvature above tolerance, data deviation above the document tolerance). A continuity result is not recorded in History (the reason is printed).");
+  Reg(e, "MeasureEdgeContinuity", Make<MeasureEdgeContinuityCommand>(), CommandStatus::Implemented, "Click two surface (or polysurface face) edges; prints the MEASURED position gap, tangent-plane angle, cross-edge normal curvature difference and Gaussian curvature difference at 97 probes evenly spaced along the second edge, each against the first surface's own closest point (kernel NurbsSurface::MeasureEdgeContinuity), then which of G0 (gap within the document tolerance), G1 (and angle within AngleTol, degrees, default 0.0573 = 0.001 rad) and G2 (and curvature difference within CurvTol, default 0.01 per length) are met. Pure measurement: nothing is modified. The edge is the nearest isoparametric edge of the face's underlying surface, so a trimmed face's trim edge is not measured.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
   Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");

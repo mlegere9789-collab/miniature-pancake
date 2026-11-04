@@ -1,0 +1,389 @@
+# G0 / G1 / G2 continuity options of Loft, Patch and NetworkSrf, and the MeasureEdgeContinuity report (see the "CNT_"
+# section at the end of smoke.sh). Every case starts from `New` and is bracketed by a marker line ("CNTBEGIN_<name>",
+# an unknown command) that smoke.sh uses to slice this script's output into per-case blocks.
+#
+# Adjacent surface everywhere: Plane -10,0,0 0,10,0 (flat z = 0, degree 1 x 1; its x = 0 edge is the edge to continue; a
+# click at -1,5,0 picks that edge). Every continuity angle / curvature below is MEASURED by the kernel
+# (NurbsSurface::MeasureEdgeContinuity, evaluating both surfaces at probe points on the edge) - never inferred.
+#
+# Loft fixture L: sections z = 0.004 x^2 sampled at x = 0 (the edge), 5, 10 (z = 0, 0.1, 0.4): a parabola leaving the plane
+# tangentially, but the loft's own chord-length parameterisation makes the plain interpolating surface leave the edge at
+# 6.4e-5 rad. Patch fixture P: the edge line plus two points at (10, y, 0.5): the plain least-squares fit is the tilted
+# plane z = 0.05 x (0.05 rad to the flat plane). Network fixture N: four Bezier curves, the two crossing the edge have zero
+# slope there (z controls 0, 0, 0.2, 0.5), so the exact Coons patch is already G1 - a negative control for "the option
+# changes nothing when the data already agree".
+
+SetActiveViewport Top
+
+# ===== Loft ================================================================================================================
+New
+CNTBEGIN_loft_plain
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft
+SelLast
+MeasureEdgeContinuity
+AngleTol=0.0005
+2,5,0.01
+-1,5,0
+SelAll
+List
+
+New
+CNTBEGIN_loft_g1
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft Continuity=Tangency
+-1,5,0
+SelNone
+SelLast
+MeasureEdgeContinuity
+AngleTol=0.0005
+2,5,0.01
+-1,5,0
+SelAll
+List
+
+New
+CNTBEGIN_loft_g0
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft Continuity=Position
+-1,5,0
+SelNone
+SelLast
+MeasureEdgeContinuity
+AngleTol=0.0005
+2,5,0.01
+-1,5,0
+
+New
+CNTBEGIN_loft_g2_flat
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft Continuity=Curvature
+-1,5,0
+SelAll
+List
+
+# sections that do not continue the plane tangentially (z = 0.02 x^2): the kernel refuses with its reason, nothing is built
+New
+CNTBEGIN_loft_incompat
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.5 5,10,0.5
+Line 10,0,2 10,10,2
+SelNone
+SelCrv
+Loft Continuity=Tangency
+-1,5,0
+SelAll
+List
+
+# the first section is nowhere near the picked surface edge (G0 not met)
+New
+CNTBEGIN_loft_off
+Plane -10,0,0 0,10,0
+Line 0,0,5 0,10,5
+Line 5,0,5.1 5,10,5.1
+Line 10,0,5.4 10,10,5.4
+SelNone
+SelCrv
+Loft Continuity=Tangency
+-1,5,0
+SelAll
+List
+
+# Enter instead of an edge pick: nothing is built
+New
+CNTBEGIN_loft_nopick
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft Continuity=Tangency
+Enter
+SelAll
+List
+
+# a bad option value is refused with its reason and the plain loft runs unchanged
+New
+CNTBEGIN_loft_badvalue
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft Continuity=Bogus
+SelAll
+List
+
+# AngleTol is parsed in degrees and printed back in radians (0.0001 deg = 1.75e-06 rad)
+New
+CNTBEGIN_loft_tol
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft Continuity=Tangency AngleTol=0.0001
+-1,5,0
+
+# History On: a continuity result is not recorded (the reason is printed); the plain loft still is
+New
+CNTBEGIN_loft_hist
+History On
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft Continuity=Tangency
+-1,5,0
+SelNone
+SelCrv
+Loft
+History Off
+
+New
+CNTBEGIN_loft_hist_plain
+History On
+Line 0,0,0 0,10,0
+Line 5,0,0.1 5,10,0.1
+Line 10,0,0.4 10,10,0.4
+SelNone
+SelCrv
+Loft
+History Off
+
+# ===== Patch ===============================================================================================================
+New
+CNTBEGIN_patch_plain
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Point 10,2,0.5
+Point 10,8,0.5
+SelNone
+SelCrv
+SelPt
+Patch
+SelLast
+MeasureEdgeContinuity
+2,5,0.1
+-1,5,0
+
+New
+CNTBEGIN_patch_g1
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Point 10,2,0.5
+Point 10,8,0.5
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Tangency
+-1,5,0
+SelNone
+SelLast
+MeasureEdgeContinuity
+2,5,0.1
+-1,5,0
+SelAll
+List
+
+New
+CNTBEGIN_patch_g0
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Point 10,2,0.5
+Point 10,8,0.5
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Position
+-1,5,0
+SelNone
+SelLast
+MeasureEdgeContinuity
+2,5,0.1
+-1,5,0
+
+New
+CNTBEGIN_patch_g2_flat
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Point 10,2,0.5
+Point 10,8,0.5
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Curvature
+-1,5,0
+SelAll
+List
+
+# the only curve is 3 units off the picked edge: G0 is not met, so G1 is meaningless - refused with the measured distance
+New
+CNTBEGIN_patch_off
+Plane -10,0,0 0,10,0
+Line 3,0,3 3,10,3
+Point 10,2,0.5
+Point 10,8,0.5
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Tangency
+-1,5,0
+SelAll
+List
+
+New
+CNTBEGIN_patch_tol
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Point 10,2,0.5
+Point 10,8,0.5
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Tangency AngleTol=0.0001
+-1,5,0
+
+New
+CNTBEGIN_patch_hist
+History On
+Plane -10,0,0 0,10,0
+Line 0,0,0 0,10,0
+Point 10,2,0.5
+Point 10,8,0.5
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Tangency
+-1,5,0
+History Off
+
+# ===== NetworkSrf ==========================================================================================================
+New
+CNTBEGIN_net_plain
+Plane -10,0,0 0,10,0
+Curve 0,0,0 0,3.333333,0 0,6.666667,0 0,10,0 Enter
+Curve 10,0,0.5 10,3.333333,0.5 10,6.666667,0.5 10,10,0.5 Enter
+Curve 0,0,0 3.333333,0,0 6.666667,0,0.2 10,0,0.5 Enter
+Curve 0,10,0 3.333333,10,0 6.666667,10,0.2 10,10,0.5 Enter
+SelNone
+SelCrv
+NetworkSrf
+SelLast
+MeasureEdgeContinuity
+2,5,0.05
+-1,5,0
+
+New
+CNTBEGIN_net_g1
+Plane -10,0,0 0,10,0
+Curve 0,0,0 0,3.333333,0 0,6.666667,0 0,10,0 Enter
+Curve 10,0,0.5 10,3.333333,0.5 10,6.666667,0.5 10,10,0.5 Enter
+Curve 0,0,0 3.333333,0,0 6.666667,0,0.2 10,0,0.5 Enter
+Curve 0,10,0 3.333333,10,0 6.666667,10,0.2 10,10,0.5 Enter
+SelNone
+SelCrv
+NetworkSrf Continuity=Tangency
+-1,5,0
+SelNone
+SelLast
+MeasureEdgeContinuity
+2,5,0.05
+-1,5,0
+SelAll
+List
+
+New
+CNTBEGIN_net_g2_flat
+Plane -10,0,0 0,10,0
+Curve 0,0,0 0,3.333333,0 0,6.666667,0 0,10,0 Enter
+Curve 10,0,0.5 10,3.333333,0.5 10,6.666667,0.5 10,10,0.5 Enter
+Curve 0,0,0 3.333333,0,0 6.666667,0,0.2 10,0,0.5 Enter
+Curve 0,10,0 3.333333,10,0 6.666667,10,0.2 10,10,0.5 Enter
+SelNone
+SelCrv
+NetworkSrf Continuity=Curvature
+-1,5,0
+
+# curves that cannot stay on a surface leaving the plane tangentially (the two x-direction curves are straight to z = 0.5)
+New
+CNTBEGIN_net_incompat
+Plane -10,0,0 0,10,0
+Curve 0,0,0 0,3.333333,0 0,6.666667,0 0,10,0 Enter
+Curve 10,0,0.5 10,3.333333,0.5 10,6.666667,0.5 10,10,0.5 Enter
+Curve 0,0,0 3.333333,0,0.2 6.666667,0,0.4 10,0,0.5 Enter
+Curve 0,10,0 3.333333,10,0.2 6.666667,10,0.4 10,10,0.5 Enter
+SelNone
+SelCrv
+NetworkSrf Continuity=Tangency
+-1,5,0
+SelAll
+List
+
+New
+CNTBEGIN_net_three
+Plane -10,0,0 0,10,0
+Curve 0,0,0 0,3.333333,0 0,6.666667,0 0,10,0 Enter
+Curve 10,0,0.5 10,3.333333,0.5 10,6.666667,0.5 10,10,0.5 Enter
+Curve 0,0,0 3.333333,0,0 6.666667,0,0.2 10,0,0.5 Enter
+SelNone
+SelCrv
+NetworkSrf Continuity=Tangency
+-1,5,0
+SelAll
+List
+
+# ===== MeasureEdgeContinuity alone =========================================================================================
+# a plane and a ruled loft whose x = 0 edge is 3 above it in z: G0 is not met
+New
+CNTBEGIN_rep_gap
+Plane -10,0,0 0,10,0
+Line 0,0,3 0,10,3
+Line 10,0,3 10,10,3
+SelNone
+SelCrv
+Loft
+MeasureEdgeContinuity
+1,5,3
+-1,5,0
+
+# the same edge twice is refused and re-prompts; a bad option value is refused
+New
+CNTBEGIN_rep_same
+Plane -10,0,0 0,10,0
+Line 0,0,3 0,10,3
+Line 10,0,3 10,10,3
+SelNone
+SelCrv
+Loft
+MeasureEdgeContinuity
+AngleTol=-1
+-1,5,0
+-1,5,0
+1,5,3
