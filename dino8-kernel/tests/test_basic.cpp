@@ -99867,7 +99867,12 @@ void TestBodySectionRefusesMissesAndInvalidPlanes() {
         "a plane 40 above the cylinder gives no contour (negative control: it does not invent curves)");
   Check(SectionBrepByPlaneJoined(rod.raw(), ON_Plane(ON_3dPoint(30.0, 0, 5.0), ON_3dVector(1, 0, 0)), SectionOpt()).empty(),
         "a plane beside the cylinder (x=30) gives no contour");
-  Check(SectionBrepByPlaneJoined(rod.raw(), ON_Plane(), SectionOpt()).empty(), "an invalid (default) plane gives no contour");
+  ON_Plane bad_plane(ON_3dPoint(0, 0, 5.0), ON_3dVector(0, 0, 1));
+  bad_plane.xaxis = ON_3dVector(0, 0, 0);  // a degenerate frame: IsValid() is false
+  Check(!bad_plane.IsValid(), "the degenerate plane really is invalid (the control is not vacuous)");
+  Check(SectionBrepByPlaneJoined(rod.raw(), bad_plane, SectionOpt()).empty(), "an invalid plane gives no contour");
+  Check(!SectionBrepByPlaneJoined(rod.raw(), ON_Plane(ON_3dPoint(0, 0, 5.0), ON_3dVector(0, 0, 1)), SectionOpt()).empty(),
+        "...while the same call with a valid plane at z=5 does return a contour (the refusals above are not a broken function)");
   const ON_Brep none;
   Check(SectionBrepByPlaneJoined(none, ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), SectionOpt()).empty(), "an empty B-rep gives no contour");
 }

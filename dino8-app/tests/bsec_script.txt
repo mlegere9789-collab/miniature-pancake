@@ -1,0 +1,49 @@
+# Body sectioning QC (kernel: Feature operations): Section / Contour of a B-rep take the EXACT route
+# (kernel::SectionBrepByPlaneJoined, one joined NURBS curve per contour), a mesh object still slices its mesh.
+# --- sphere r=10, plane x=6: a circle of radius sqrt(100-36)=8, circumference 50.2655
+Sphere 0,0,0 10
+SelAll
+Section
+6,-20,0
+6,20,0
+SelLast
+Length
+SelLast
+List
+SelAll
+Hide
+# --- box [0,20]x[0,20]x[0,10], plane y=7: a 20 x 10 rectangle, perimeter 60, ONE stitched contour
+Box 0,0,0 20,20,0 10
+SelAll
+Section
+-5,7,0
+30,7,0
+SelLast
+Length
+SelLast
+List
+SelAll
+Hide
+# --- negative control: a plane that misses the sphere entirely invents no curve
+Sphere 0,0,0 10
+SelAll
+Section
+50,-20,0
+50,20,0
+SelAll
+Hide
+# --- a MESH sphere is still sliced as a mesh (no exact B-rep route for it)
+MeshSphere 0,0,0 10
+SelAll
+Section
+6,-20,0
+6,20,0
+SelAll
+Hide
+# --- Contour of a B-rep sphere every 5 along Z goes through the exact route too
+Sphere 0,0,0 10
+SelAll
+Contour
+0,0,-10
+0,0,10
+5
