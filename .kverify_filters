@@ -1,1 +1,4 @@
 ClosedMeshDeviationTracksTolerance
+sweep_adaptive
+extra::Sealed
+OffsetInPlaneClosedPolygon
