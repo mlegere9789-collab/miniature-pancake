@@ -99576,10 +99576,15 @@ void TestSubDFitToleranceIsWatertightAndTighterToleranceNeedsMoreLevels() {
   SubD cube = SubD::FromControlMesh(SubDParityBoxMesh(0, 0, 0, 10, 10, 10));
   SubDFitReport loose, tight;
   const std::vector<SubDNurbsPatch> a = cube.ToNurbsPatchesToTolerance(0.5, &loose);
-  const std::vector<SubDNurbsPatch> b = cube.ToNurbsPatchesToTolerance(0.05, &tight);
+  // The deviation falls faster than 4x per level on this cage, so a fixed 10x tighter tolerance can be met at the same level.
+  // The tight tolerance is therefore set to HALF of the deviation the loose result actually achieved: it cannot be met at that level.
+  const double tight_tol = 0.5 * loose.max_deviation;
+  const std::vector<SubDNurbsPatch> b = cube.ToNurbsPatchesToTolerance(tight_tol, &tight);
+  std::printf("  [info] cube fit: loose tol 0.5 -> level %d deviation %.6g; tight tol %.6g -> level %d deviation %.6g\n", loose.levels_used,
+              loose.max_deviation, tight_tol, tight.levels_used, tight.max_deviation);
   Check(loose.converged && tight.converged, "both tolerances converge on the cube cage");
-  Check(tight.levels_used > loose.levels_used, "a 10x tighter tolerance uses strictly more subdivision levels");
-  Check(tight.max_deviation <= 0.05 && loose.max_deviation <= 0.5, "each reported deviation is within its own tolerance");
+  Check(tight_tol > 0 && tight.levels_used > loose.levels_used, "a tolerance below the loose result's achieved deviation uses strictly more subdivision levels");
+  Check(tight.max_deviation <= tight_tol && loose.max_deviation <= 0.5, "each reported deviation is within its own tolerance");
   Check(FitTestSeamViolations(a) == 0, "loose result: every patch boundary curve is shared by exactly one other patch (closed, watertight)");
   Check(FitTestSeamViolations(b) == 0, "tight result: every patch boundary curve is shared by exactly one other patch (closed, watertight)");
   Check(static_cast<int>(a.size()) == cube.FaceCount() * (1 << (2 * loose.levels_used)), "patch count = 6 * 4^levels (no hidden extra faces)");
