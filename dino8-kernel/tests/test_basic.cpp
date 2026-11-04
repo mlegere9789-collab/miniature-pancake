@@ -93911,6 +93911,92 @@ void TestRevolveRimRefusesWithReasons() {
   Check(m.find("exactly one planar face") != std::string::npos, ("[chamfer on the cone/cylinder rim] refused with a reason: " + m).c_str());
 }
 
+
+// Concave (inside) corners that involve a CONE: plane/cone with the cone leaning inward (obtuse air wedge), plane/cone with the
+// cone leaning outward over the plane (acute air wedge, an undercut), and cone/cone (the waist of an hourglass). Each fillet ADDS
+// material; the volume is checked against Green's theorem on an independently solved profile, the ball geometry is measured off
+// the returned B-rep, and negative controls prove the oracle discriminates and that over-large radii are refused with a reason.
+void TestFilletRevolveRimConcaveConeCornersAddMaterialAndMatchGreenIntegral() {
+  struct Case {
+    const char* name;
+    std::vector<RZ> poly;
+    int corner;                 // index of the concave profile corner
+    int faces_sharp;            // face count of the sharp solid
+    Point3d base;
+    Vector3d axis;
+    double r;
+    Parent a, b;                // the two profile lines at the corner
+  };
+  const std::vector<RZ> post_in = {{0, 0}, {4, 0}, {4, 1}, {2.5, 1}, {1.5, 3}, {0, 3}};    // post tapering inward from the plate top
+  const std::vector<RZ> post_out = {{0, 0}, {4, 0}, {4, 1}, {2.5, 1}, {3.5, 3}, {0, 3}};   // post widening upward (undercut)
+  const std::vector<RZ> hourglass = {{0, 0}, {3, 0}, {1.5, 3}, {3, 6}, {0, 6}};            // cone/cone waist at (1.5, 3)
+  const Case cases[] = {
+      {"plane/cone, cone leaning in (116.6 deg air wedge) r=0.30", post_in, 3, 5, Point3d(1.0, -2.0, 0.5), Vector3d(0, 0, 1), 0.30, Parent{{2.5, 1}, {4, 1}}, Parent{{2.5, 1}, {1.5, 3}}},
+      {"plane/cone, cone leaning in r=0.90", post_in, 3, 5, Point3d(-0.4, 0.7, 0.0), Vector3d(0, 0, 1), 0.90, Parent{{2.5, 1}, {4, 1}}, Parent{{2.5, 1}, {1.5, 3}}},
+      {"plane/cone, cone leaning out (63.4 deg undercut), oblique axis, r=0.30", post_out, 3, 5, Point3d(0.3, 0.2, -0.4), Vector3d(1, 2, 3), 0.30, Parent{{2.5, 1}, {4, 1}}, Parent{{2.5, 1}, {3.5, 3}}},
+      {"cone/cone hourglass waist (53.1 deg air wedge) r=0.40", hourglass, 2, 4, Point3d(2.0, 1.0, -1.0), Vector3d(0, 0, 1), 0.40, Parent{{1.5, 3}, {3, 0}}, Parent{{1.5, 3}, {3, 6}}},
+      {"cone/cone hourglass waist, tilted axis, r=0.70", hourglass, 2, 4, Point3d(0, 0, 0), Vector3d(-1, 1, 2), 0.70, Parent{{1.5, 3}, {3, 0}}, Parent{{1.5, 3}, {3, 6}}},
+  };
+  for (const Case& c : cases) {
+    const std::string tag = std::string("[concave ") + c.name + "] ";
+    Vector3d ax = c.axis;
+    ax.Unitize();
+    const ON_Plane pl(c.base, ax);
+    const RZ corner = c.poly[(size_t)c.corner];
+    const double phi = 0.9 + 0.37 * c.corner;
+    const Point3d rim = c.base + corner.rho * (std::cos(phi) * pl.xaxis + std::sin(phi) * pl.yaxis) + corner.z * ax;
+    const Brep sharp = MakeRevolvedPolygon(c.poly, c.base, c.axis);
+    const double v0 = GreenVolume(c.poly, -1, 0).volume;
+    Check(sharp.raw().IsSolid() && sharp.raw().IsValid() && sharp.raw().m_F.Count() == c.faces_sharp && std::fabs(sharp.Volume() - v0) < 1e-6 * v0,
+          (tag + "fixture: valid closed solid, volume " + std::to_string(sharp.Volume()) + " vs independent Green integral " + std::to_string(v0)).c_str());
+    Brep res;
+    const std::string why = Reason([&] { res = FilletRevolveRim(sharp, rim, c.r); });
+    Check(why.empty(), (tag + "FilletRevolveRim accepts the concave cone corner" + (why.empty() ? "" : ": " + why)).c_str());
+    if (!why.empty()) continue;
+    fillet_cap_rim_tests::CheckClosedValidSolid(res, c.faces_sharp + 1, tag);
+    const Brep::CheckReport rep = res.Check();
+    Check(rep.is_closed && rep.is_oriented && rep.topology_valid, (tag + "Brep::Check(): closed, oriented, topology valid; issues=" + std::to_string(rep.issues.size())).c_str());
+    const Blended ind = GreenVolume(c.poly, c.corner, c.r);
+    Check(std::fabs(res.Volume() - ind.volume) < 1e-6 * ind.volume,
+          (tag + "volume " + std::to_string(res.Volume()) + " vs independent Green integral " + std::to_string(ind.volume)).c_str());
+    Check(res.Volume() > v0 * (1.0 + 1e-6), (tag + "a concave blend ADDS material: " + std::to_string(res.Volume()) + " > " + std::to_string(v0)).c_str());
+    // negative control: the oracle must discriminate (the volume of a 10 percent larger radius is far outside the tolerance).
+    const Blended wrong = GreenVolume(c.poly, c.corner, c.r * 1.1);
+    Check(std::fabs(res.Volume() - wrong.volume) > 1e-4 * ind.volume, (tag + "negative control: the volume of a 10% larger radius is NOT within the tolerance").c_str());
+    const Measured m = MeasureBlend(res, c.base, c.axis, c.r, c.a, c.b, 1e-8);
+    Check(m.stations == 36, (tag + "blend face found and sampled at 36 meridians").c_str());
+    Check(m.radius_err < 1e-9, (tag + "circumradius of the blend cross-section = r, max err " + std::to_string(m.radius_err)).c_str());
+    Check(m.centre_err < 1e-9, (tag + "ball centre is exactly r from BOTH parent faces, max err " + std::to_string(m.centre_err)).c_str());
+    Check(m.tangent_err < 1e-9, (tag + "the two end curves lie on the two parent faces, max dist " + std::to_string(m.tangent_err)).c_str());
+    Check(m.normal_err < 1e-7, (tag + "surface normal equals the parent face normal at both ends (G1), max angle " + std::to_string(m.normal_err)).c_str());
+    Check(m.axial_err < 1e-9, (tag + "every cross-section lies in one meridian plane, max off-plane " + std::to_string(m.axial_err)).c_str());
+    bool found = false;
+    for (int f = 0; f < res.raw().m_F.Count(); ++f) {
+      ON_Torus tor;
+      if (res.raw().m_F[f].SurfaceOf()->IsTorus(&tor, 1e-8)) {
+        found = true;
+        Check(std::fabs(tor.minor_radius - c.r) < 1e-9 && std::fabs(tor.major_radius - ind.centre.rho) < 1e-9,
+              (tag + "ON_Torus read back: minor " + std::to_string(tor.minor_radius) + ", major " + std::to_string(tor.major_radius) + " vs solved centre rho " +
+               std::to_string(ind.centre.rho)).c_str());
+      }
+    }
+    Check(found, (tag + "the blend is an exact torus (IsTorus)").c_str());
+  }
+  // Refusals with reasons on the same concave cone corners.
+  {
+    const Point3d base(0, 0, 0);
+    const Vector3d axis(0, 0, 1);
+    const Brep hg = MakeRevolvedPolygon(hourglass, base, axis);
+    std::string m = Reason([&] { FilletRevolveRim(hg, Point3d(1.5, 0, 3.0), 2.0); });  // setback 2/tan(26.57 deg) = 4 > the 3.35 cone length
+    Check(m.find("consume a whole adjacent face") != std::string::npos, ("[concave hourglass r=2.0] refused with a reason: " + m).c_str());
+    m = Reason([&] { FilletRevolveRim(hg, Point3d(1.7, 0, 3.0), 0.3); });
+    Check(m.find("does not lie on a rim circle") != std::string::npos, ("[concave hourglass, point off the waist circle] refused with a reason: " + m).c_str());
+    const Brep pin = MakeRevolvedPolygon(post_in, base, axis);
+    m = Reason([&] { FilletRevolveRim(pin, Point3d(2.5, 0, 1.0), 4.0); });
+    Check(m.find("consume a whole adjacent face") != std::string::npos, ("[concave plane/cone r=4] refused with a reason: " + m).c_str());
+  }
+}
+
 }  // namespace revolve_rim_tests
 
 // ---------------------------------------------------------------------------
@@ -103590,6 +103676,8 @@ int main() {
           revolve_rim_tests::TestChamferRevolveRimCountersinkBevelMatchesGreenIntegral);
   RunTest("revolve_rim_tests::TestRevolveRimRefusesWithReasons",
           revolve_rim_tests::TestRevolveRimRefusesWithReasons);
+  RunTest("revolve_rim_tests::TestFilletRevolveRimConcaveConeCornersAddMaterialAndMatchGreenIntegral",
+          revolve_rim_tests::TestFilletRevolveRimConcaveConeCornersAddMaterialAndMatchGreenIntegral);
   RunTest("revolve_rims_tests::TestRevolveRimsSteppedShaftSequentialBatchAndOrderIndependent",
           revolve_rims_tests::TestRevolveRimsSteppedShaftSequentialBatchAndOrderIndependent);
   RunTest("revolve_rims_tests::TestRevolveRimsRoundedFlangeBothRimsAndInnerRims",
