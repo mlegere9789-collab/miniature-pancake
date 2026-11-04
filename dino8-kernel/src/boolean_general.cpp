@@ -2127,7 +2127,8 @@ std::vector<UVPt> AssembleWithAttachments(const std::vector<UVPt>& outer, const 
   return merged;
 }
 
-bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt>>& holes, const ON_Surface* surface) {
+bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt>>& holes, const ON_Surface* surface,
+                          bool keep_unbridged_holes = false) {
   if (!surface || outer.size() < 4) return false;
   const size_t n = outer.size();
   const double outer_area = SignedAreaUV(outer);
@@ -2147,8 +2148,11 @@ bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt
   // clockwise where the outer is anticlockwise); the intersection chain it came from is wound however the tracer walked it,
   // and a wrongly wound inner loop makes its trims run the same way as the neighbouring face's - an edge-consistent but
   // un-oriented body that ON_Brep::IsSolid() rejects.
+  //
+  // Only done when `keep_unbridged_holes` (the Union caller): the other callers have always received unbridgeable holes
+  // as they came, and changing that moves their (already fragile, see below) sequential-hole results.
   const auto keep_as_inner = [&](std::vector<UVPt>&& hole) {
-    if (hole.size() >= 3 && outer_area != 0.0 && (SignedAreaUV(hole) >= 0.0) == (outer_area >= 0.0)) {
+    if (keep_unbridged_holes && hole.size() >= 3 && outer_area != 0.0 && (SignedAreaUV(hole) >= 0.0) == (outer_area >= 0.0)) {
       std::reverse(hole.begin(), hole.end());
     }
     remaining.push_back(std::move(hole));
@@ -2241,11 +2245,14 @@ bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt
   }
 
   if (attachments.empty()) {
+    if (!keep_unbridged_holes) return false;  // historical behaviour: `holes` is left as the moved-from husks
     // Nothing could be bridged. Every hole above was MOVED into `remaining`, so `holes` now holds empty vectors: hand the
     // holes back, or the caller (which keeps whatever is left in `holes` as ordinary inner loops) silently loses them - the
     // face would then be built without its hole (measured: a branch r=0.5 standing on a cylinder R=1 whose closed
     // intersection loop is self-touching and so cannot be bridged lost the main wall's hole altogether, leaving the
-    // branch wall's cut edge with no partner).
+    // branch wall's cut edge with no partner). Restricted to Union for now: for Difference the same hand-back turns
+    // sequential hole-cuts (ExtrudeProfileWithHoles with two holes, MakeCounterboreHoles) from a silently wrong result
+    // into the "edge is claimed by 3 or more fragment loops" refusal, which those callers' tests do not expect.
     holes = std::move(remaining);
     return false;
   }
@@ -4202,7 +4209,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
         // can't be bridged safely (checked directly, never assumed) stays
         // in kf.holes and is built as an ordinary inner loop below, same
         // as before this fix.
-        if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+        if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface, /*keep_unbridged_holes=*/op == BooleanOp::Union);
         kept.push_back(std::move(kf));
       }
     }
