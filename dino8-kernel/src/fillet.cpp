@@ -8979,7 +8979,32 @@ SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, doubl
     return refuse(std::string("the surface/surface intersection failed: ") + e.what());
   }
   if (curves.empty()) return refuse("the surfaces do not intersect (parallel, separated, or only touching): there is no edge to blend");
-  if (curves.size() > 1) return refuse("the surfaces meet along " + std::to_string(curves.size()) + " intersection curves; blend one edge at a time (pass surfaces that meet along one curve)");
+  if (curves.size() > 1) {
+    // The intersector may hand ONE connected curve back in pieces (a periodic parent such as a cylinder wall is cut at its
+    // knot spans and seam: a plane across a radius-3 wall gave 20 pieces). Detect that case so the reason names it.
+    const size_t n = curves.size();
+    std::vector<ON_3dPoint> ends;
+    for (const IntersectionCurve& c : curves)
+      if (c.points.size() >= 2) { ends.emplace_back(c.points.front().x, c.points.front().y, c.points.front().z); ends.emplace_back(c.points.back().x, c.points.back().y, c.points.back().z); }
+    bool chained = ends.size() == 2 * n;
+    if (chained) {
+      double scale = 1.0;
+      for (const ON_3dPoint& e : ends) scale = std::max(scale, e.MaximumCoordinate());
+      std::vector<size_t> parent(n);
+      for (size_t i = 0; i < n; ++i) parent[i] = i;
+      std::function<size_t(size_t)> find = [&](size_t i) { return parent[i] == i ? i : parent[i] = find(parent[i]); };
+      std::vector<int> degree(ends.size(), 0);
+      for (size_t i = 0; i < ends.size(); ++i)
+        for (size_t j = i + 1; j < ends.size(); ++j)
+          if (ends[i].DistanceTo(ends[j]) < 1e-6 * scale) { parent[find(i / 2)] = find(j / 2); ++degree[i]; ++degree[j]; }
+      for (size_t i = 0; i < n; ++i) if (find(i) != find(0)) chained = false;
+      for (int d : degree) if (d > 1) chained = false;
+    }
+    if (chained)
+      return refuse("the intersection of the two surfaces is ONE connected curve that the intersector returned in " + std::to_string(n) +
+                    " end-to-end pieces (a periodic parent such as a cylinder or cone wall is cut at its knot spans / seam); chaining the pieces into one edge is not implemented here, so nothing was blended");
+    return refuse("the surfaces meet along " + std::to_string(n) + " separate intersection curves; blend one edge at a time (pass surfaces that meet along one curve)");
+  }
   const IntersectionCurve& ic = curves[0];
   if (ic.points.size() < 4 || !ic.curve.IsValid()) return refuse("the intersection curve is degenerate");
   const bool closed = ic.closed;

@@ -539,6 +539,8 @@ void TestSurfaceFilletRefusalBranchesAndStubOddity() {
         o.side_b = sb;
         const SurfaceFillet f = FilletSurfaces(wall, fl, 0.3, 1e-4, o);
         std::printf("[%s] sides(%d,%d): %s\n", tag, sa, sb, f.status == Result::Ok ? "OK" : f.reason.c_str());
+        if (zf == 1.0) Check(f.status == Result::Failed && f.reason.find("ONE connected curve") != std::string::npos && f.blend.raw().IsValid() == false, "short wall stub through a plane: refused with the accurate reason (one curve returned in end-to-end pieces)");
+        else Check(f.status == Result::Failed && f.reason.find("do not intersect") != std::string::npos, "wall stub whose edge lies in the plane: refused as touching only");
       }
   }
   // (b) Tangent / back to back: two planes crossing at 0.3 degrees.
