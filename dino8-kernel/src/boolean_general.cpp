@@ -8164,6 +8164,8 @@ struct UnpairedEdgeStats {
   double total = 0, longest = 0, shortest = std::numeric_limits<double>::infinity();
   ON_BoundingBox box;
   bool oriented_manifold = false;  // ON_Brep::IsManifold(): every edge two trims AND consistently oriented
+  int same_direction = 0;          // two-trim edges whose trims run the same way round the solid (an orientation clash)
+  int same_face = 0;               // ... of which both trims belong to ONE face (a hole welded to its own outer boundary)
 };
 
 UnpairedEdgeStats MeasureUnpairedEdges(const ON_Brep& src, double diag) {
@@ -8175,6 +8177,16 @@ UnpairedEdgeStats MeasureUnpairedEdges(const ON_Brep& src, double diag) {
     if (e.m_edge_index < 0) continue;
     const int nt = e.TrimCount();
     if (nt >= 3) ++s.nonmanifold;
+    if (nt == 2) {
+      const ON_BrepTrim& t0 = b.m_T[e.m_ti[0]];
+      const ON_BrepTrim& t1 = b.m_T[e.m_ti[1]];
+      const ON_BrepFace* f0 = t0.Face();
+      const ON_BrepFace* f1 = t1.Face();
+      if (f0 && f1 && (t0.m_bRev3d != f0->m_bRev) == (t1.m_bRev3d != f1->m_bRev)) {
+        ++s.same_direction;
+        if (f0 == f1) ++s.same_face;
+      }
+    }
     if (nt != 1) continue;
     ++s.naked;
     double len = 0.0;
@@ -8210,8 +8222,21 @@ UnpairedEdgeStats MeasureUnpairedEdges(const ON_Brep& src, double diag) {
 std::string DescribeUnpairedEdges(const UnpairedEdgeStats& s, double diag) {
   char buf[640];
   if (s.naked == 0 && s.nonmanifold == 0) {
-    return "every edge of the engine's result is shared by exactly two faces but the faces are not consistently oriented "
-           "(ON_Brep::IsSolid() is false), so it is not a closed solid";
+    std::string out =
+        "every edge of the engine's result is shared by exactly two faces but the faces are not consistently oriented "
+        "(ON_Brep::IsSolid() is false), so it is not a closed solid";
+    if (s.same_face > 0) {
+      std::snprintf(buf, sizeof buf,
+                    ": %d edge(s) are used twice in the same direction by one and the same face, i.e. a hole of that face "
+                    "touches its own outer boundary and sewing welded the two loops together - a tangent or grazing contact "
+                    "between the operands, whose result would have a non-manifold vertex",
+                    s.same_face);
+      out += buf;
+    } else if (s.same_direction > 0) {
+      std::snprintf(buf, sizeof buf, ": %d edge(s) are traversed in the same direction by both of their faces", s.same_direction);
+      out += buf;
+    }
+    return out;
   }
   std::string out = "the engine's result is not a closed solid after sewing at up to 1% of its diagonal: ";
   if (s.naked > 0) {
@@ -8229,8 +8254,8 @@ std::string DescribeUnpairedEdges(const UnpairedEdgeStats& s, double diag) {
     }
     if (s.slivers > 0) {
       std::snprintf(buf, sizeof buf,
-                    "; %d are shorter than 0.1%% of the body's diagonal %.4g, the signature of a tangent or grazing contact "
-                    "between the operands (a degenerate intersection curve), not of an ordinary gap",
+                    "; %d are shorter than 0.1%% of the body's diagonal %.4g, slivers such as a degenerate intersection "
+                    "leaves (a tangent or grazing contact, or several surfaces meeting at one vertex), not an ordinary gap",
                     s.slivers, diag);
       out += buf;
     }
