@@ -3059,6 +3059,13 @@ class FilletEdgeCommand : public Command {
       // distance_j; unset defaults to symmetric (distance_j = Radius).
       options.push_back({"Rho", "", {}, true, false});
       options.push_back({"Distance2", "", {}, true, false});
+      // Law: a NON-LINEAR radius law (kernel::FilletConvexEdgeLaw / FilletConcaveEdgeLaw). Either a named shape between the
+      // first and last Radii= handle radii (Law=sqrt|quadratic|smooth) or a list of "t:r" samples (Law=0:1,0.5:1.4,1:3)
+      // interpolated by a monotone cubic (Fritsch-Carlson). The kernel samples the law into a piecewise-linear profile to
+      // LawTol (an absolute radius tolerance; empty = 0.5% of the largest radius) and refuses a non-monotone law, a flat
+      // stretch, a non-positive radius, or a radius that does not fit - its reason is printed verbatim.
+      options.push_back({"Law", "", {}, false, false});
+      options.push_back({"LawTol", "", {}, true, false});
       // RailType (default RollingBall): kernel::FilletConvexEdgeByDistanceFromEdge/
       // ByDistanceBetweenRails (and their concave mirrors) - the SAME
       // circular rolling-ball fillet surface FilletConvexEdge/
@@ -3084,8 +3091,10 @@ class FilletEdgeCommand : public Command {
     WantPoint("Click an edge to " + std::string(mode_ == Mode::Fillet ? "fillet" : mode_ == Mode::Chamfer ? "chamfer" : "blend") + " (Enter when done)");
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
-    if (n == "Radius") { radius_ = std::atof(v.c_str()); radii_.clear(); }
+    if (n == "Radius") { radius_ = std::atof(v.c_str()); radii_.clear(); law_text_.clear(); }
     if (n == "Radii") radii_ = ParseRadiusHandles(v);
+    if (n == "Law") law_text_ = v;
+    if (n == "LawTol") law_tol_ = v.empty() ? 0.0 : std::atof(v.c_str());
     if (n == "Distance2") { distance2_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (distance2_) angle_deg_.reset(); }
     if (n == "Angle") { angle_deg_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (angle_deg_) distance2_.reset(); }
     if (n == "Rho") rho_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str()));
@@ -3608,6 +3617,7 @@ class FilletEdgeCommand : public Command {
     if (!sa || !sb) { ctx.Warn("Could not read the adjacent surfaces"); return; }
     const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
     const std::string label = mode_ == Mode::Fillet ? "FilletEdge" : mode_ == Mode::Chamfer ? "ChamferEdge" : "BlendEdge";
+    if (mode_ == Mode::Fillet && !law_text_.empty()) { RunLaw(ctx, pick, *b, edge, label); return; }
     // Exact fillet of a plain cylinder's rim (an exact quarter torus) - see
     // ClassifyPlainCylinderRim above. Staged like the planar edges so both rims
     // picked in one run become one solid; applied at Enter, failing open to the
@@ -4849,6 +4859,124 @@ class FilletEdgeCommand : public Command {
       return false;
     }
   }
+
+  // --- Law= (non-linear radius law) ---------------------------------------------------------------------------------
+  // Monotone cubic (Fritsch-Carlson / PCHIP) through strictly increasing (x, y) samples; held constant outside [x0, xn].
+  static double MonotoneCubicAt(const std::vector<std::pair<double, double>>& p, double x) {
+    const size_t n = p.size();
+    if (x <= p.front().first) return p.front().second;
+    if (x >= p.back().first) return p.back().second;
+    std::vector<double> h(n - 1), d(n - 1), m(n);
+    for (size_t i = 0; i + 1 < n; ++i) { h[i] = p[i + 1].first - p[i].first; d[i] = (p[i + 1].second - p[i].second) / h[i]; }
+    if (n == 2) { m[0] = m[1] = d[0]; }
+    else {
+      for (size_t i = 1; i + 1 < n; ++i) {
+        if (d[i - 1] * d[i] <= 0.0) m[i] = 0.0;
+        else {
+          const double w1 = 2 * h[i] + h[i - 1], w2 = h[i] + 2 * h[i - 1];
+          m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
+        }
+      }
+      auto end_slope = [](double h0, double h1, double d0, double d1) {
+        double s = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+        if (s * d0 <= 0.0) s = 0.0;
+        else if (d0 * d1 <= 0.0 && std::fabs(s) > 3.0 * std::fabs(d0)) s = 3.0 * d0;
+        return s;
+      };
+      m[0] = end_slope(h[0], h[1], d[0], d[1]);
+      m[n - 1] = end_slope(h[n - 2], h[n - 3], d[n - 2], d[n - 3]);
+    }
+    size_t i = 0;
+    while (i + 2 < n && x > p[i + 1].first) ++i;
+    const double s = (x - p[i].first) / h[i], s2 = s * s, s3 = s2 * s;
+    return (2 * s3 - 3 * s2 + 1) * p[i].second + (s3 - 2 * s2 + s) * h[i] * m[i] + (-2 * s3 + 3 * s2) * p[i + 1].second + (s3 - s2) * h[i] * m[i + 1];
+  }
+
+  // Law text -> radius law r(s), s in [0,1]. Named shapes ride the first/last Radii= handle radii; "t:r,..." samples
+  // are interpolated by MonotoneCubicAt. Only structural problems are refused here (the kernel owns every geometric
+  // refusal, including non-monotone / non-positive laws, and its reason is printed unchanged).
+  bool BuildLaw(std::function<double(double)>& law, std::string& desc, std::string& err) const {
+    if (law_text_.find(':') == std::string::npos) {
+      if (radii_.size() < 2) { err = "Law=" + law_text_ + " needs Radii=t0:r0,t1:r1 to give the radius at each end of the edge (or give Law as t:r samples)"; return false; }
+      const double r0 = radii_.front().second, r1 = radii_.back().second;
+      std::function<double(double)> shape;
+      if (law_text_ == "sqrt") shape = [](double s) { return std::sqrt(s); };
+      else if (law_text_ == "quadratic") shape = [](double s) { return s * s; };
+      else if (law_text_ == "smooth") shape = [](double s) { return s * s * (3.0 - 2.0 * s); };
+      else { err = "Law must be sqrt, quadratic, smooth, or t:r samples such as 0:1,0.5:1.4,1:3 (got \"" + law_text_ + "\")"; return false; }
+      law = [=](double s) { return r0 + (r1 - r0) * shape(s); };
+      desc = "Law=" + law_text_ + " from radius " + FormatNumber(r0) + " to " + FormatNumber(r1);
+      return true;
+    }
+    std::vector<std::pair<double, double>> pts;
+    std::stringstream ss(law_text_);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+      const size_t colon = tok.find(':');
+      char* e1 = nullptr; char* e2 = nullptr;
+      const std::string a = colon == std::string::npos ? std::string() : tok.substr(0, colon), b2 = colon == std::string::npos ? std::string() : tok.substr(colon + 1);
+      const double t = std::strtod(a.c_str(), &e1), r = std::strtod(b2.c_str(), &e2);
+      if (colon == std::string::npos || a.empty() || b2.empty() || *e1 != '\0' || *e2 != '\0') { err = "Law sample \"" + tok + "\" is not t:r"; return false; }
+      if (!(t >= 0.0 && t <= 1.0)) { err = "Law sample \"" + tok + "\" has t outside [0,1]"; return false; }
+      pts.emplace_back(t, r);
+    }
+    std::sort(pts.begin(), pts.end());
+    if (pts.size() < 2) { err = "Law samples need at least two t:r pairs"; return false; }
+    for (size_t i = 0; i + 1 < pts.size(); ++i) if (pts[i + 1].first - pts[i].first < 1e-9) { err = "Law samples must have distinct t values"; return false; }
+    law = [pts](double s) { return MonotoneCubicAt(pts, s); };
+    desc = "Law=" + std::to_string(pts.size()) + " monotone-cubic samples, radius " + FormatNumber(pts.front().second) + " to " + FormatNumber(pts.back().second);
+    return true;
+  }
+
+  // FilletEdge with Law=: kernel::FilletConvexEdgeLaw, then FilletConcaveEdgeLaw. No approximate fallback exists for a
+  // non-linear law, so every refusal is printed with the kernel's own reason and the solid is left untouched.
+  void RunLaw(CommandContext& ctx, const EdgePick& pick, const ON_Brep& b, const ON_BrepEdge& edge, const std::string& label) {
+    if (preview_) { ctx.Warn(label + ": Law= has no Preview form; set Preview=No"); return; }
+    if (rho_.has_value() || rail_type_ != RailType::RollingBall) { ctx.Warn(label + ": Law= cannot be combined with Rho or RailType"); return; }
+    if (!pending_fillet_.empty() || !pending_rims_.empty() || !pending_conic_.empty() || !pending_rail_.empty()) {
+      ctx.Warn(label + ": edges are already staged in this FilletEdge run; press Enter to apply them first, then run FilletEdge again with Law=");
+      return;
+    }
+    std::function<double(double)> law;
+    std::string desc, err;
+    if (!BuildLaw(law, desc, err)) { ctx.Warn(label + ": " + err); return; }
+    double tol = law_tol_;
+    if (!(tol > 0.0)) {
+      double rmax = 0.0;
+      for (int k = 0; k <= 64; ++k) rmax = std::max(rmax, std::fabs(law(k / 64.0)));
+      tol = rmax > 0.0 && std::isfinite(rmax) ? 0.005 * rmax : 1e-3;
+    }
+    kernel::Brep kb;
+    kb.raw() = b;
+    const Point3d p0 = edge.PointAtStart(), p1 = edge.PointAtEnd();
+    std::string convex_err;
+    ON_Brep out;
+    bool convex = true, ok = false;
+    try { out = kernel::FilletConvexEdgeLaw(kb, p0, p1, law, tol).raw(); ok = true; } catch (const std::exception& ex) { convex_err = ex.what(); }
+    if (!ok) {
+      try { out = kernel::FilletConcaveEdgeLaw(kb, p0, p1, law, tol).raw(); ok = true; convex = false; }
+      catch (const std::exception& ex) {
+        ctx.Warn(label + ": the kernel refused the radius law (" + desc + ", tolerance " + FormatNumber(tol) + "): convex attempt: " + convex_err + "; concave attempt: " + ex.what());
+        return;
+      }
+    }
+    size_t segments = 1;
+    try { segments = kernel::SampleFilletRadiusLaw(p0.DistanceTo(p1), law, tol).size() - 1; } catch (const std::exception&) {}
+    ctx.Doc().BeginChange(label);
+    if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
+      orig->kind = ObjectKind::Brep;
+      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+      orig->brep->raw() = out;
+      orig->surface.reset();
+      orig->InvalidateDisplay();
+    }
+    ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) + " replaced with an exact " +
+               (convex ? "convex" : "concave") + " non-linear-law fillet (" + desc + "; sampled into " + std::to_string(segments) +
+               " linear segments within radius tolerance " + FormatNumber(tol) + ")");
+  }
+
+  std::string law_text_;  // Fillet only: Law= text (sqrt|quadratic|smooth or t:r samples); empty = linear Radii=/constant Radius
+  double law_tol_ = 0.0;  // LawTol: absolute radius tolerance for sampling the law; 0 = 0.5% of the largest radius
 
   Mode mode_;
   double radius_ = 2;
