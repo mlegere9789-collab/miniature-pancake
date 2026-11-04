@@ -1021,6 +1021,9 @@ void Interp::SplitInput(const std::string& text, std::string& forms, std::string
   } catch (const LispError&) {
     return;   // never balances: the evaluator reports the syntax error
   }
+  // A stray ")" after the forms is a syntax error for the evaluator to report, not typed input.
+  p.SkipSpace();
+  if (p.pos < text.size() && text[p.pos] == ')') return;
   forms = text.substr(0, end);
   rest = text.substr(end);
 }
