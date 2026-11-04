@@ -91,7 +91,9 @@ def main():
     with open(script, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(tl["run_lines"]) + "\n")
 
-    env = dict(os.environ, XDG_CONFIG_HOME=os.path.join(work, "config"))
+    # DINO8_TUTORIAL_CAPTURE: no "Saved ... .bmp" toast in the captured frames, and a pointer arrow
+    # drawn at the scripted @move/@click position (see main.cpp, tutorial_capture).
+    env = dict(os.environ, XDG_CONFIG_HOME=os.path.join(work, "config"), DINO8_TUTORIAL_CAPTURE="1")
     cmd = [binp, "--smoke", "10", "--script", script]
     if shutil.which("xvfb-run"):
         cmd = ["xvfb-run", "-a", "-s", "-screen 0 1280x720x24"] + cmd

@@ -398,16 +398,8 @@ void RunCullTest(dino8::app::Application& app, int far_count, const std::string&
               std::getenv("DINO8_DISABLE_FRUSTUM_CULL") ? "off" : "on");
 }
 
-// Compares two strings in time independent of where they first differ, so
-// the compute server's --serve-token check (the only gate in front of
-// arbitrary script execution) doesn't leak the token one byte at a time to
-// another local process timing repeated guesses against the loopback port.
-bool ConstantTimeEquals(const std::string& a, const std::string& b) {
-  if (a.size() != b.size()) return false;
-  unsigned char diff = 0;
-  for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
-  return diff == 0;
-}
+// (ConstantTimeEquals / MatchBearerToken - the bearer-token check - live in
+// net/TouchGate.cpp so tests/test_touch_api.cpp can test the real code.)
 
 // Splits a "[NAME:]TOKEN" spec into its name (empty if none) and token -
 // shared by --serve-token's own argv parsing and ParseTokenFile's per-line
@@ -930,6 +922,15 @@ int main(int argc, char** argv) {
     }
   }
   size_t script_cursor = 0;
+  // DINO8_TUTORIAL_CAPTURE=1 (set by tutorials/record.py only): the frames
+  // ScreenCaptureToFile writes are tutorial video frames, so (1) the "Saved
+  // <file>.bmp" toast is not raised (the line still goes to the command
+  // history), and (2) a mouse-pointer arrow is drawn into a captured frame at
+  // the pointer position a script's @move/@click/@drag last set - Xvfb has no
+  // visible cursor and the capture is a framebuffer read, so without this a
+  // clicked-on-screen step shows no pointer. Nothing changes when unset.
+  const bool tutorial_capture = std::getenv("DINO8_TUTORIAL_CAPTURE") != nullptr;
+  bool scripted_pointer = false;
   int wait_frames = 0;
   // How much of app.Engine().History() has already been printed. Printing
   // was previously done in one single batch after the whole script/smoke
@@ -977,9 +978,12 @@ int main(int argc, char** argv) {
         pairing_token = serve_tokens.front().second;
       }
     }
-    if (serve_lan && serve_tokens.empty() && serve_token_file.empty()) {
-      std::fprintf(stderr, "serve: --serve-lan needs --serve-token, --serve-token-file or --serve-touch (refusing to expose an open server to the network)\n");
-      return 1;
+    {
+      const std::string lan_error = dino8::app::ServeLanTokenError(serve_lan, !serve_tokens.empty() || !serve_token_file.empty());
+      if (!lan_error.empty()) {
+        std::fprintf(stderr, "%s\n", lan_error.c_str());
+        return 1;
+      }
     }
     std::string serve_error;
     if (!compute_server.Start(serve_port, serve_error, serve_lan ? "0.0.0.0" : "127.0.0.1")) {
@@ -1078,50 +1082,16 @@ int main(int argc, char** argv) {
           TokenFilePermissionsOk(serve_token_file)) {
         for (auto& entry : ParseTokenFile(serve_token_file)) candidates.push_back(std::move(entry));
       }
-      const auto it = req.headers.find("authorization");
-      bool matched = false;
-      if (it != req.headers.end() && it->second.rfind("Bearer ", 0) == 0) {
-        const std::string presented = it->second.substr(7);
-        for (const auto& [name, token] : candidates) {
-          // A "sha256:HEX" candidate (only meaningful from a
-          // --serve-token-file line - see ParseTokenFile's own comment)
-          // never stores the real bearer secret at all: the file holds
-          // only its SHA-256 digest, the identical dependency-free
-          // util/Sha256.h the plug-in marketplace already hashes a
-          // download against. A leaked token FILE then leaks nothing a
-          // caller could present as the token itself - genuine hashing,
-          // not the "no hashing" this bullet's own prior rounds disclosed
-          // as a remaining gap, distinct from --serve-token itself, which
-          // still has to hold a plaintext value in argv at startup either
-          // way. Hashing `presented` costs nothing an attacker could use
-          // to distinguish a near match from a far one (SHA-256 has no
-          // partial-preimage shortcut), so comparing the two fixed-length
-          // hex digests with the same ConstantTimeEquals stays exactly as
-          // safe as comparing a plaintext candidate directly.
-          const bool is_hash = token.rfind("sha256:", 0) == 0;
-          const bool ok = is_hash ? ConstantTimeEquals(dino8::util::Sha256Hex(presented), token.substr(7))
-                                   : ConstantTimeEquals(presented, token);
-          if (ok) { caller_name = name; matched = true; break; }
-        }
-      }
+      const bool matched = dino8::app::MatchBearerToken(req, candidates, caller_name);
       if (!matched) {
         resp.status = 401;
         resp.body = "Dino 8 compute service: missing or incorrect Authorization: Bearer token\n";
-        if (is_touch_api) {
-          resp.content_type = "application/json";
-          resp.body = "{\"ok\":false,\"error\":\"missing or incorrect pairing token\"}\n";
-          resp.headers["Access-Control-Allow-Origin"] = "*";
-          resp.headers["Cache-Control"] = "no-store";
-        }
+        if (is_touch_api) return dino8::app::TouchUnauthorizedResponse();
         return resp;
       }
     } else if (is_touch_api) {
       // No token configured at all: the touch API never runs open.
-      resp.status = 403;
-      resp.content_type = "application/json";
-      resp.body = "{\"ok\":false,\"error\":\"the touch API needs a pairing token (start with --serve-touch or --serve-token)\"}\n";
-      resp.headers["Access-Control-Allow-Origin"] = "*";
-      return resp;
+      return dino8::app::TouchNoTokenResponse();
     }
     if (is_touch_api) return dino8::app::HandleTouchApi(app, req, path, caller_name);
     // GET /objects: a real, if minimal, structured geometry wire format -
@@ -1716,7 +1686,7 @@ int main(int argc, char** argv) {
         auto expand = [&](std::initializer_list<std::string> lines) {
           script_lines.insert(script_lines.begin() + static_cast<long>(script_cursor), lines.begin(), lines.end());
         };
-        if (cmd == "move") { float x, y; ss >> x >> y; io.AddMousePosEvent(x, y); }
+        if (cmd == "move") { float x, y; ss >> x >> y; io.AddMousePosEvent(x, y); scripted_pointer = true; }
         else if (cmd == "down") { int b = 0; ss >> b; io.AddMouseButtonEvent(b, true); }
         else if (cmd == "up") { int b = 0; ss >> b; io.AddMouseButtonEvent(b, false); }
         else if (cmd == "click") { float x, y; int b = 0; ss >> x >> y >> b; expand({"@move " + std::to_string(x) + " " + std::to_string(y), "@wait 1", "@down " + std::to_string(b), "@wait 1", "@up " + std::to_string(b), "@wait 1"}); }
@@ -1883,6 +1853,18 @@ int main(int argc, char** argv) {
       if (!app.Engine().on_print_line) std::printf("history: %s\n", hist[history_printed].c_str());
     }
 
+    if (tutorial_capture && scripted_pointer && app.WindowCapturePending()) {
+      // Pointer arrow (black outline, white fill, tip at the logical position), drawn last so it sits over every panel.
+      const ImVec2 t = io.MousePos;
+      if (t.x > -1.0e6f && t.y > -1.0e6f) {
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const ImVec2 head[3] = {ImVec2(t.x - 1.0f, t.y - 1.5f), ImVec2(t.x - 1.0f, t.y + 21.0f), ImVec2(t.x + 15.0f, t.y + 14.0f)};
+        dl->AddTriangleFilled(head[0], head[1], head[2], IM_COL32(0, 0, 0, 255));
+        dl->AddTriangleFilled(ImVec2(t.x + 1.0f, t.y + 3.0f), ImVec2(t.x + 1.0f, t.y + 16.5f), ImVec2(t.x + 11.0f, t.y + 12.0f), IM_COL32(255, 255, 255, 255));
+        dl->AddLine(ImVec2(t.x + 5.0f, t.y + 14.0f), ImVec2(t.x + 10.0f, t.y + 24.0f), IM_COL32(0, 0, 0, 255), 5.0f);
+        dl->AddLine(ImVec2(t.x + 5.0f, t.y + 14.0f), ImVec2(t.x + 10.0f, t.y + 24.0f), IM_COL32(255, 255, 255, 255), 2.5f);
+      }
+    }
     ImGui::Render();
     int w, h;
     glfwGetFramebufferSize(window, &w, &h);
@@ -1895,7 +1877,10 @@ int main(int argc, char** argv) {
       std::vector<unsigned char> pixels(static_cast<size_t>(w) * h * 3);
       glPixelStorei(GL_PACK_ALIGNMENT, 1);
       glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
-      if (WriteWindowCaptureBmp(*cap, w, h, pixels)) app.Notify("Saved " + *cap);
+      const bool wrote = WriteWindowCaptureBmp(*cap, w, h, pixels);
+      // A tutorial-capture run must not put its own bookkeeping toast into the next video frames.
+      if (tutorial_capture) app.Engine().Print((wrote ? "Saved " : "Cannot write ") + *cap);
+      else if (wrote) app.Notify("Saved " + *cap);
       else app.Notify("Cannot write " + *cap);
     }
     const bool last_smoke_frame = smoke_frames >= 0 && frame + 1 >= smoke_frames && script_cursor >= script_lines.size();

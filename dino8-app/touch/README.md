@@ -6,7 +6,8 @@ your network, or opens a model on the device by itself. Plain HTML/CSS/JS: no CD
 no external fonts, no trackers, no build step.
 
 Files: `web/` is the app (served by the desktop at `/touch/`), `tests/` holds the
-automated test, the server half lives in `src/net/TouchApi.cpp`.
+automated test, the server half lives in `src/net/TouchApi.cpp` (routes) and
+`src/net/TouchGate.cpp` (auth, blocklist, static files).
 
 ## Start the desktop side
 
@@ -94,9 +95,21 @@ desktop: treat the pairing token like a password.
 
 ## Test
 
-`node tests/touch_gestures.test.js /path/to/Dino8` (needs node, `playwright` with
-Chromium, and `xvfb-run`). `tests/smoke.sh` runs it at its very end (`TCH_` lines) and
-prints a skip line when a prerequisite is missing.
+Two levels, both run in CI (the Linux job of `.github/workflows/dino8-app.yml`):
+
+* `dino8_test_touch_api` (ctest, `tests/test_touch_api.cpp`): the Application-free
+  half of the server side (`src/net/TouchGate.cpp`) without a window or a browser.
+  Bearer-token auth (missing, wrong, prefix, wrong scheme refused; right and
+  `sha256:` file entries accepted), the 401 / 403 answers, the `--serve-lan`
+  token requirement, the script/plug-in command blocklist and the `/touch/`
+  static-file path whitelist (`..`, encoded, backslash, absolute-path, hidden
+  files, other extensions and non-GET methods refused).
+* `node tests/touch_gestures.test.js /path/to/Dino8`: the PWA in headless Chromium
+  against a real headless session. Needs node, the pinned `playwright` package
+  (`npm ci` in this directory installs it from `package-lock.json`),
+  `npx playwright install --with-deps chromium`, and `xvfb-run`. `tests/smoke.sh`
+  runs it (`TCH_` lines). Locally it prints a skip line when a prerequisite is
+  missing; CI sets `DINO8_REQUIRE_TOUCH=1`, which turns that skip into a FAIL.
 
 ## Deferred (round 2 and beyond)
 

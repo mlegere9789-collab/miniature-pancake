@@ -36,17 +36,64 @@ jobs:
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
-          sudo apt-get install -y ninja-build libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils ffmpeg
       - name: Configure
         run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE
       - name: Build
         run: cmake --build dino8-app/build
       - name: Unit tests
         run: cd dino8-app/build && ctest --output-on-failure
+      # Dino 8 Touch's browser test (dino8-app/touch/tests/touch_gestures.test.js)
+      # needs node, the pinned `playwright` package (dino8-app/touch/package.json
+      # + package-lock.json) and a Chromium. Node is the runner image's own
+      # preinstalled one (Playwright 1.63 needs >= 20). Without these steps
+      # smoke.sh's TCH_ block could only skip.
+      - name: Install Dino 8 Touch test dependencies (node, Playwright, Chromium)
+        working-directory: dino8-app/touch
+        run: |
+          node --version
+          node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 20) { console.error("node >= 20 is required for Playwright, found " + process.version); process.exit(1); }'
+          npm ci
+          npx playwright install --with-deps chromium
+          node -e 'require("playwright"); console.log("playwright resolves from dino8-app/touch")'
+      # DINO8_REQUIRE_TOUCH / DINO8_REQUIRE_TUTORIALS turn a skipped TCH_ / TUT_
+      # block into a FAIL in smoke.sh (they only exist here, never locally).
+      # DINO8_TUTORIAL_VIDEO_DIR makes smoke.sh's TUTV_ section record all ten
+      # tutorials there and ffprobe each video (non-zero duration and frames).
       - name: Smoke test (headless)
-        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8
+        shell: bash
+        timeout-minutes: 90
+        env:
+          DINO8_REQUIRE_TOUCH: "1"
+          DINO8_REQUIRE_TUTORIALS: "1"
+          DINO8_TUTORIAL_VIDEO_DIR: ${{ github.workspace }}/tutorial-videos
+        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8 2>&1 | tee smoke.log
+      # Evidence gate: the smoke run above must have actually RUN the touch
+      # browser test and recorded + probed all ten tutorial videos, not skipped.
+      - name: Check that the touch and tutorial checks ran
+        shell: bash
+        run: |
+          grep -E '^ok +TCH_touch: .* passed \([0-9]+ checks' smoke.log
+          if grep -E '^skip (TCH_|TUT_|TUTV_)' smoke.log; then echo "a required check was skipped"; exit 1; fi
+          grep -E '^ok +TUTV_count: all 10 tutorials' smoke.log
+          grep -E '^ok +TUT_selftest' smoke.log
+          test "$(grep -cE '^ok +TUTV_[0-9]{2}-' smoke.log)" -eq 10
+          echo "touch test + tutorial pipeline ran (see smoke.log in the artifact)"
       - name: Package
         run: cd dino8-app/build && cpack
+      # The tutorial videos the smoke run produced: silent, one still per
+      # command with caption files, NOT narrated and NOT published anywhere.
+      # Kept for 14 days so a reviewer can watch them. always(): also
+      # uploaded when a later check failed, to see what was recorded.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Dino8-tutorial-videos
+          path: |
+            tutorial-videos/
+            smoke.log
+          retention-days: 14
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: Dino8-linux

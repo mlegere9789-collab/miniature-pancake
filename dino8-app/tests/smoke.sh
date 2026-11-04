@@ -10232,6 +10232,9 @@ if [ "$(uname -s)" = "Linux" ] && command -v ffmpeg >/dev/null 2>&1 && command -
   TUT_SITE_OUT="$(python3 "$HERE/../tutorials/build_site.py" 2>&1)" || { echo "$TUT_SITE_OUT"; echo "FAIL TUT_site: build_site.py failed"; fail=1; }
   tut_has "$TUT_SITE_OUT" "(10 tutorials)" "TUT_site: index.html built for all 10 tutorials"
   if [ -z "$({ grep -E 'src="https?://|href="https?://|<script' "$HERE/../tutorials/index.html" || true; })" ]; then echo "ok   TUT_site_selfcontained: index.html has no external URLs and no scripts"; else echo "FAIL TUT_site_selfcontained: index.html references an external URL or script"; fail=1; fi
+elif [ "${DINO8_REQUIRE_TUTORIALS:-0}" = "1" ]; then
+  # CI sets DINO8_REQUIRE_TUTORIALS=1: a runner without ffmpeg must not silently stop testing the pipeline.
+  echo "FAIL TUT_: the tutorial pipeline is required (DINO8_REQUIRE_TUTORIALS=1) but was skipped: needs Linux with ffmpeg, ffprobe and python3"; fail=1
 else
   echo "skip TUT_*: tutorial pipeline checks need Linux with ffmpeg, ffprobe and python3 (see docs/TUTORIALS.md)"
 fi
@@ -10296,14 +10299,25 @@ fi
 # network blocked. Skipped with a clear line when node, the playwright
 # package or xvfb-run is missing (it is not a hard dependency of the app).
 TCH_TEST="$HERE/../touch/tests/touch_gestures.test.js"
+# DINO8_REQUIRE_TOUCH=1 (set only by CI) turns every skip below into a FAIL, so a
+# runner that lost node / playwright / xvfb-run cannot silently stop testing the PWA.
+tch_skip() {
+  if [ "${DINO8_REQUIRE_TOUCH:-0}" = "1" ]; then
+    echo "FAIL TCH_touch: Dino 8 Touch PWA test is required (DINO8_REQUIRE_TOUCH=1) but was skipped: $1"
+    fail=1
+  else
+    echo "skip TCH_ Dino 8 Touch PWA test ($1)"
+  fi
+}
 if ! command -v node >/dev/null 2>&1; then
-  echo "skip TCH_ Dino 8 Touch PWA test (node is not installed)"
-elif ! node -e "require('playwright')" >/dev/null 2>&1; then
-  echo "skip TCH_ Dino 8 Touch PWA test (the node 'playwright' package is not installed)"
+  tch_skip "node is not installed"
+elif ! (cd "$HERE/../touch" && node -e "require('playwright')") >/dev/null 2>&1; then
+  # Resolved from touch/ (where CI runs npm ci), the same place the test itself requires it from.
+  tch_skip "the node 'playwright' package is not installed"
 elif ! command -v xvfb-run >/dev/null 2>&1; then
-  echo "skip TCH_ Dino 8 Touch PWA test (xvfb-run is not installed)"
+  tch_skip "xvfb-run is not installed"
 elif [ ! -f "$TCH_TEST" ]; then
-  echo "skip TCH_ Dino 8 Touch PWA test ($TCH_TEST not found)"
+  tch_skip "$TCH_TEST not found"
 else
   TCH_RC=0
   TCH_OUT="$(timeout 900 node "$TCH_TEST" "$BIN" 2>&1)" || TCH_RC=$?
@@ -11729,5 +11743,37 @@ else
   echo "FAIL tosubd4 script printed ${#TS4_TOSUBD[@]} ToSubD / ${#TS4_LIST[@]} List lines (expected 8 / 8)"; fail=1
 fi
 ts4check "gl_error=0" "tosubd4 script ran without OpenGL errors"
+
+# ---------------------------------------------------------------------------
+# TUTV_: record EVERY tutorial to an mp4 and probe each one with ffprobe (non-zero
+# duration and frame count). The TUT_ section above records and deeply verifies only
+# tutorial 04 into a scratch directory that is deleted; this one keeps the videos so
+# CI can upload them as a workflow artifact. Runs only when DINO8_TUTORIAL_VIDEO_DIR
+# names an output directory (CI sets it); otherwise one skip line. The videos are
+# silent stills-per-command renderings with caption files, not narrated and not
+# published anywhere (docs/TUTORIALS.md). Nothing here is committed.
+TUTV_DIR="${DINO8_TUTORIAL_VIDEO_DIR:-}"
+if [ -z "$TUTV_DIR" ]; then
+  echo "skip TUTV_*: set DINO8_TUTORIAL_VIDEO_DIR=DIR to record every tutorial into DIR and probe each video"
+elif [ "$(uname -s)" != "Linux" ] || ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+  echo "FAIL TUTV_: DINO8_TUTORIAL_VIDEO_DIR is set but this needs Linux with ffmpeg, ffprobe and python3"; fail=1
+else
+  mkdir -p "$TUTV_DIR"
+  TUTV_N=0
+  for TUTV_PATH in "$HERE"/../tutorials/[0-9][0-9]-*/; do
+    TUTV_NAME="$(basename "$TUTV_PATH")"
+    TUTV_N=$((TUTV_N + 1))
+    TUTV_REC="$(timeout 900 python3 "$HERE/../tutorials/record.py" --bin "$BIN" --id "$TUTV_NAME" --out "$TUTV_DIR" 2>&1)" || { echo "$TUTV_REC" | tail -20; echo "FAIL TUTV_$TUTV_NAME: recorder exited non-zero"; fail=1; continue; }
+    TUTV_VID="$TUTV_DIR/$TUTV_NAME/$TUTV_NAME.mp4"
+    TUTV_DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$TUTV_VID" 2>/dev/null || true)"
+    TUTV_FR="$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$TUTV_VID" 2>/dev/null || true)"
+    if [ -n "$TUTV_DUR" ] && [ -n "$TUTV_FR" ] && [ "$TUTV_FR" -gt 0 ] 2>/dev/null && python3 -c "import sys; sys.exit(0 if float('$TUTV_DUR') > 0 else 1)" 2>/dev/null; then
+      echo "ok   TUTV_$TUTV_NAME: ffprobe: $TUTV_FR frames, $TUTV_DUR s ($(stat -c %s "$TUTV_VID") bytes)"
+    else
+      echo "FAIL TUTV_$TUTV_NAME: ffprobe found no video, or zero duration / frames (duration '$TUTV_DUR', frames '$TUTV_FR')"; fail=1
+    fi
+  done
+  if [ "$TUTV_N" -eq 10 ]; then echo "ok   TUTV_count: all 10 tutorials were recorded and probed"; else echo "FAIL TUTV_count: expected 10 tutorials, found $TUTV_N"; fail=1; fi
+fi
 
 exit $fail

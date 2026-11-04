@@ -385,6 +385,7 @@ set(DINO8_SOURCES
   src/commands/cmd_sheetset.cpp
   src/net/ComputeServer.cpp
   src/net/TouchApi.cpp
+  src/net/TouchGate.cpp
   src/net/Collab.cpp
   src/net/CollabSession.cpp
   src/commands/cmd_collab.cpp
@@ -993,6 +994,15 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_ssao PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_ssao PRIVATE dino8_kernel)
   add_test(NAME dino8_ssao COMMAND dino8_test_ssao)
+
+  # Dino 8 Touch's Application-free half (src/net/TouchGate.cpp): bearer-token
+  # auth (missing/wrong refused, right accepted, sha256: file entries), the
+  # --serve-lan token requirement, the script/plug-in command blocklist and the
+  # /touch/ static-file path whitelist (traversal refusal). Pure - no window,
+  # Document or socket - so it runs in the CI ctest step on every platform.
+  add_executable(dino8_test_touch_api tests/test_touch_api.cpp src/net/TouchGate.cpp src/util/Sha256.cpp)
+  target_include_directories(dino8_test_touch_api PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_touch_api COMMAND dino8_test_touch_api)
 
   add_executable(dino8_test_compute_server tests/test_compute_server.cpp src/net/ComputeServer.cpp)
   target_include_directories(dino8_test_compute_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

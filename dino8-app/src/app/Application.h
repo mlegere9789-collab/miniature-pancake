@@ -351,6 +351,7 @@ class Application {
   // after compositing, so the command just leaves a request here and main.cpp
   // services it once, right after drawing, then clears it.
   void RequestWindowCapture(const std::string& path) { pending_window_capture_ = path; }
+  bool WindowCapturePending() const { return pending_window_capture_.has_value(); }
   std::optional<std::string> TakeWindowCaptureRequest() { std::optional<std::string> p = pending_window_capture_; pending_window_capture_.reset(); return p; }
   float ui_scale = 1.0f;
   bool gumball_enabled = true;

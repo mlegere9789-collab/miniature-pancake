@@ -93,14 +93,14 @@ Rules that matter:
   `/tmp` (set `--keep` or `--work DIR` on `record.py` to keep the BMPs).
 
 After recording, `build-site.sh` regenerates `index.html`. The smoke suite
-(`tests/smoke.sh`, `TUT_` checks at the end) records one tutorial and checks
+(`tests/smoke.sh`, `TUT_` and `TUTV_` checks) records one tutorial (`TUT_`) and checks
 file size, frame count, duration, resolution, non-blank frames, valid WebVTT
 with increasing cues, and that `index.html` is self-contained.
 
 ## What a human still has to do
 
-Nothing here is published. The repository produces files; it does not host
-anything.
+Nothing here is published. The repository produces files (and CI keeps them as a
+14-day workflow artifact, see above); it does not host anything.
 
 1. **Narration voice-over.** The videos are silent. `out/<id>/<id>.txt` is the
    script with timestamps. A person or an approved text-to-speech voice has to
@@ -120,14 +120,61 @@ anything.
 4. **Community forum.** Not addressed by this pipeline. A forum needs an
    audience, moderation, accounts and ongoing hosting.
 
+## What CI produces (and what it does not)
+
+The Linux job of `.github/workflows/dino8-app.yml` installs ffmpeg, then
+`tests/smoke.sh` runs with `DINO8_REQUIRE_TUTORIALS=1` (a missing ffmpeg is a
+FAIL, not a skip) and `DINO8_TUTORIAL_VIDEO_DIR` set. That makes two blocks run:
+
+* `TUT_`: records tutorial 04 into a scratch directory and verifies it from the
+  files (size, frame count, duration, resolution, non-blank frames, WebVTT).
+* `TUTV_`: records **all ten** tutorials into `tutorial-videos/` and runs
+  `ffprobe` on each mp4, failing unless it has a non-zero duration and frame
+  count. A workflow step then greps the smoke log to prove neither block was
+  skipped.
+
+The workflow uploads `tutorial-videos/` (mp4, vtt, txt, png, json per tutorial)
+plus `smoke.log` as the workflow artifact **Dino8-tutorial-videos**, kept for
+14 days. What that artifact is, honestly:
+
+* **Silent.** No narration, no audio track. The `.txt` is a voice-over script
+  nobody has recorded.
+* **Stills per command.** Each video is the app's state after each command held
+  for a few seconds, 10 fps, 1280x720, with a WebVTT caption file. It is not a
+  screen recording of mouse movement or animation.
+* **Not published.** It is a build artifact on the Actions run page, visible to
+  people with access to the repository for 14 days. No video is committed, no
+  site or video platform hosts it, and there is no community forum.
+* **Unreviewed.** CI proves the videos exist, decode, are not blank and have the
+  expected length. It does not prove they explain anything well.
+
+Until a human has recorded narration, chosen a host and reviewed the videos,
+the "video tutorials / community forum" capability is a working generation
+pipeline with CI evidence, not a published tutorial library.
+
+## Capture quality
+
+* **No "Saved fr/fNNNN.bmp" toasts.** `record.py` sets `DINO8_TUTORIAL_CAPTURE=1`
+  for the app; with it set `src/main.cpp` records the "Saved ..." line in the
+  command history only and does not raise the toast, so the captured frames no
+  longer carry one. Without the variable (every normal run) nothing changes.
+* **Mouse pointer.** With the same variable set, a frame captured after a
+  scripted `@move` / `@click` / `@clickworld` / `@drag` has a pointer arrow
+  drawn at the logical pointer position the script last set (the tip is the
+  position). It is drawn into the frame by the app, because Xvfb has no visible
+  cursor. A tutorial that never moves the pointer shows none. It is a pointer
+  marker at the click position, not an animation of the cursor travelling there.
+
 ## Known limitations
 
-* Every capture shows the app's own "Saved fr/fNNNN.bmp" toasts in the lower
-  right and the capture command in the status bar. Suppressing them needs a
-  small change in `src/main.cpp` (the window-capture path calls `Notify`).
-* The video is stills per command, with no mouse pointer or animation.
+* The capture command is still echoed in the command line / status bar of each
+  frame (the command-history line "Saved fr/fNNNN.bmp" remains in the history
+  panel when it is open).
+* The video is stills per command; there is no animation between them.
 * `MaxViewport` leaves a narrow empty strip beside the maximized viewport in
   the capture; this is how the headless layout currently renders.
 * ffmpeg is required. Without it `record.sh` stops with a clear message and
-  the `TUT_` smoke checks print a `skip` line instead of failing.
-* Verified on Linux with ffmpeg 6.1 only. Windows and macOS were not tried.
+  the `TUT_` smoke checks print a `skip` line instead of failing (CI sets
+  `DINO8_REQUIRE_TUTORIALS=1`, which turns that skip into a FAIL).
+* Verified on Linux only (ffmpeg 6.1 locally; CI uses the Ubuntu 22.04 package).
+  Windows and macOS were not tried.

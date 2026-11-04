@@ -31,29 +31,13 @@
 #include <string>
 
 #include "net/ComputeServer.h"
+#include "net/TouchGate.h"  // gating + static files (Application-free; unit-tested)
 
 namespace dino8::app {
 
 class Application;
 
-// The directory holding the PWA files, or "" if none was found. `override_dir`
-// (the --touch-dir flag) wins when non-empty and existing; otherwise the same
-// install/build-tree candidates the other bundled data files use.
-std::string FindTouchWebRoot(const std::string& exe_dir, const std::string& override_dir);
-
-bool IsTouchPath(const std::string& path);     // "/touch" or "/touch/..."
-bool IsTouchApiPath(const std::string& path);  // "/touch/api/..."
-
-// Serves a static PWA file (GET/HEAD) from `web_root`.
-HttpResponse ServeTouchStatic(const std::string& web_root, const HttpRequest& req, const std::string& path);
-
-// CORS preflight answer for a /touch/api/ route.
-HttpResponse TouchPreflight();
-
 // Handles an already-authenticated /touch/api/ request.
 HttpResponse HandleTouchApi(Application& app, const HttpRequest& req, const std::string& path, const std::string& caller);
-
-// Generates a random pairing token (32 hex chars from the OS entropy source).
-std::string GeneratePairingToken();
 
 }  // namespace dino8::app
