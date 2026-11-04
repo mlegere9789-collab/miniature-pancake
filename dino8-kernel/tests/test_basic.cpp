@@ -97846,6 +97846,206 @@ void TestAdaptiveNegativeControlsCeilingToleranceAndDefaults() {
 
 }  // namespace sweep_adaptive_tests
 
+// ---- NurbsSurface::InterpolateThroughGrid with a chosen degree (grid_interp_degree_tests) ----
+namespace grid_interp_degree_tests {
+
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Result;
+
+// The documented construction, re-derived here independently of the kernel: the average of every row's / column's
+// [0, 1]-normalized chord-length parameters.
+void SharedParams(const std::vector<Point3d>& grid, int nu, int nv, std::vector<double>& up, std::vector<double>& vp) {
+  up.assign(static_cast<size_t>(nu), 0.0);
+  vp.assign(static_cast<size_t>(nv), 0.0);
+  for (int v = 0; v < nv; ++v) {
+    double acc = 0.0;
+    std::vector<double> c = {0.0};
+    for (int u = 1; u < nu; ++u) {
+      acc += grid[static_cast<size_t>(u * nv + v)].DistanceTo(grid[static_cast<size_t>((u - 1) * nv + v)]);
+      c.push_back(acc);
+    }
+    for (int u = 0; u < nu; ++u) up[static_cast<size_t>(u)] += c[static_cast<size_t>(u)] / acc / nv;
+  }
+  for (int u = 0; u < nu; ++u) {
+    double acc = 0.0;
+    std::vector<double> c = {0.0};
+    for (int v = 1; v < nv; ++v) {
+      acc += grid[static_cast<size_t>(u * nv + v)].DistanceTo(grid[static_cast<size_t>(u * nv + v - 1)]);
+      c.push_back(acc);
+    }
+    for (int v = 0; v < nv; ++v) vp[static_cast<size_t>(v)] += c[static_cast<size_t>(v)] / acc / nu;
+  }
+}
+
+std::vector<Point3d> WigglyGrid(int nu, int nv) {
+  std::vector<Point3d> g;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) {
+      g.push_back(Point3d(u * 1.3 + 0.1 * std::sin(2.1 * v), v * 0.9 + 0.15 * std::cos(1.1 * u), std::sin(1.7 * u) * std::cos(1.3 * v) + 0.2 * u * v));
+    }
+  }
+  return g;
+}
+
+void TestChosenDegreeInterpolatesExactlyWithAveragedKnots() {
+  const int nu = 7, nv = 6;
+  const std::vector<Point3d> grid = WigglyGrid(nu, nv);
+  std::vector<double> up, vp;
+  SharedParams(grid, nu, nv, up, vp);
+  const int degs[5][2] = {{1, 1}, {2, 3}, {4, 2}, {5, 4}, {6, 5}};  // (6, 5) = a single Bezier span in each direction
+  for (const auto& d : degs) {
+    NurbsSurface s;
+    const Result r = NurbsSurface::InterpolateThroughGrid(grid, nu, nv, d[0], d[1], s);
+    const std::string tag = "degree (" + std::to_string(d[0]) + ", " + std::to_string(d[1]) + ")";
+    Check(r == Result::Ok, (tag + ": InterpolateThroughGrid with a chosen degree succeeds on a non-planar 7x6 grid").c_str());
+    if (r != Result::Ok) continue;
+    Check(s.DegreeU() == d[0] && s.DegreeV() == d[1] && s.CVCountU() == nu && s.CVCountV() == nv && !s.IsRational(),
+          (tag + ": the surface has exactly the requested degrees, a 7x6 control net, and is non-rational").c_str());
+    double worst = 0.0;
+    for (int u = 0; u < nu; ++u) {
+      for (int v = 0; v < nv; ++v) {
+        worst = std::max(worst, s.PointAt(up[static_cast<size_t>(u)], vp[static_cast<size_t>(v)]).DistanceTo(grid[static_cast<size_t>(u * nv + v)]));
+      }
+    }
+    std::printf("  [grid interp degree] %s: max grid-point miss %.3g\n", tag.c_str(), worst);
+    Check(worst < 1e-9, (tag + ": passes through all 42 grid points (< 1e-9) at the independently recomputed shared parameters").c_str());
+    // the knot vector is Piegl & Tiller's averaging, recomputed here: clamped ends, interior knot j = mean of `degree` parameters
+    const ON_NurbsSurface& raw = s.raw();
+    bool knots_ok = raw.Knot(0, 0) == 0.0 && raw.Knot(0, raw.KnotCount(0) - 1) == 1.0 && raw.Knot(1, 0) == 0.0 && raw.Knot(1, raw.KnotCount(1) - 1) == 1.0;
+    for (int j = 1; j <= nu - d[0] - 1; ++j) {
+      double m = 0.0;
+      for (int i = j; i <= j + d[0] - 1; ++i) m += up[static_cast<size_t>(i)];
+      knots_ok = knots_ok && std::fabs(raw.Knot(0, j + d[0] - 1) - m / d[0]) < 1e-12;
+    }
+    for (int j = 1; j <= nv - d[1] - 1; ++j) {
+      double m = 0.0;
+      for (int i = j; i <= j + d[1] - 1; ++i) m += vp[static_cast<size_t>(i)];
+      knots_ok = knots_ok && std::fabs(raw.Knot(1, j + d[1] - 1) - m / d[1]) < 1e-12;
+    }
+    Check(knots_ok, (tag + ": clamped knot vectors whose interior knots equal the independently averaged parameters (eq. 9.8)").c_str());
+  }
+  // degree 1 is the piecewise-linear interpolant: control points are the grid points
+  NurbsSurface lin;
+  NurbsSurface::InterpolateThroughGrid(grid, nu, nv, 1, 1, lin);
+  double cp_miss = 0.0;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) {
+      ON_3dPoint c;
+      lin.raw().GetCV(u, v, c);
+      cp_miss = std::max(cp_miss, Point3d(c.x, c.y, c.z).DistanceTo(grid[static_cast<size_t>(u * nv + v)]));
+    }
+  }
+  Check(cp_miss < 1e-12, "degree (1, 1): the control net IS the grid (piecewise-linear interpolant)");
+}
+
+void TestChosenDegreeReproducesAnAffineGridExactlyOffTheGrid() {
+  // Uniform affine grid: z = 0.7 x - 0.4 y + 2. Chord parameters are exactly i/(n-1), and any B-spline degree >= 1 reproduces
+  // a function that is linear in the parameters, so the interpolant must equal the plane at EVERY parameter pair.
+  const int nu = 7, nv = 6;
+  const double dx = 0.8, dy = 1.1;
+  auto plane = [](double x, double y) { return 0.7 * x - 0.4 * y + 2.0; };
+  std::vector<Point3d> grid;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) grid.push_back(Point3d(u * dx, v * dy, plane(u * dx, v * dy)));
+  }
+  for (int p = 1; p <= 5; ++p) {
+    const int q = std::max(1, 6 - p);
+    NurbsSurface s;
+    Check(NurbsSurface::InterpolateThroughGrid(grid, nu, nv, p, q, s) == Result::Ok, "affine grid: interpolation succeeds");
+    double worst = 0.0;
+    for (int i = 0; i <= 17; ++i) {
+      for (int j = 0; j <= 13; ++j) {
+        const double u = i / 17.0, v = (j + 0.37 * (j < 13)) / 13.37;
+        const double x = u * (nu - 1) * dx, y = v * (nv - 1) * dy;
+        worst = std::max(worst, s.PointAt(u, v).DistanceTo(Point3d(x, y, plane(x, y))));
+      }
+    }
+    std::printf("  [grid interp affine] degree (%d, %d): max off-grid deviation from the plane %.3g\n", p, q, worst);
+    Check(worst < 1e-10, "affine grid: the interpolant equals the plane (< 1e-10) at 252 parameter pairs for degrees 1..5");
+  }
+  // negative control: bump one interior grid point; the same plane check must now see the surface is NOT the plane,
+  // and the bumped point itself must still be interpolated
+  std::vector<Point3d> bent = grid;
+  bent[static_cast<size_t>(3 * nv + 2)] = Point3d(3 * dx, 2 * dy, plane(3 * dx, 2 * dy) + 0.05);
+  NurbsSurface sb;
+  Check(NurbsSurface::InterpolateThroughGrid(bent, nu, nv, 3, 3, sb) == Result::Ok, "bent grid: interpolation succeeds");
+  double worst_b = 0.0;
+  for (int i = 0; i <= 17; ++i) {
+    for (int j = 0; j <= 13; ++j) {
+      const double u = i / 17.0, v = j / 13.0, x = u * (nu - 1) * dx, y = v * (nv - 1) * dy;
+      worst_b = std::max(worst_b, sb.PointAt(u, v).DistanceTo(Point3d(x, y, plane(x, y))));
+    }
+  }
+  std::vector<double> up, vp;
+  SharedParams(bent, nu, nv, up, vp);
+  const double hit = sb.PointAt(up[3], vp[2]).DistanceTo(bent[static_cast<size_t>(3 * nv + 2)]);
+  Check(worst_b > 1e-2 && hit < 1e-9, "negative control: a 0.05 bump in one grid point makes the plane check fail (> 1e-2) while the bumped point is still hit (< 1e-9)");
+}
+
+void TestChosenDegreeOnACylinderMatchesTheClosedFormSagitta() {
+  // Half cylinder R = 2: 9 points at equal angle steps x 5 equal heights, so every chord is equal and the shared parameters are
+  // exactly uniform. Degree 1 in u is the chord polygon: at a chord midpoint the radial miss is R (1 - cos(dtheta/2)) in closed form.
+  const int nu = 9, nv = 5;
+  const double R = 2.0, dth = ON_PI / (nu - 1);
+  std::vector<Point3d> grid;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) grid.push_back(Point3d(R * std::cos(u * dth), R * std::sin(u * dth), 0.5 * v));
+  }
+  auto radial_miss = [&](const NurbsSurface& s) {
+    double worst = 0.0;
+    for (int i = 0; i <= 8 * 12; ++i) {
+      const double u = i / 96.0;  // includes every chord midpoint (i = 12k + 6) and every grid line
+      for (int j = 0; j <= 6; ++j) {
+        const Point3d p = s.PointAt(u, j / 6.0);
+        worst = std::max(worst, std::fabs(std::hypot(p.x, p.y) - R));
+      }
+    }
+    return worst;
+  };
+  NurbsSurface s1, s3, s5;
+  Check(NurbsSurface::InterpolateThroughGrid(grid, nu, nv, 1, 1, s1) == Result::Ok && NurbsSurface::InterpolateThroughGrid(grid, nu, nv, 3, 3, s3) == Result::Ok &&
+            NurbsSurface::InterpolateThroughGrid(grid, nu, nv, 5, 4, s5) == Result::Ok,
+        "half cylinder: degrees (1,1), (3,3), (5,4) all succeed");
+  const Point3d mid = s1.PointAt(0.5 / 8.0, 0.5);
+  const double mid1 = std::fabs(std::hypot(mid.x, mid.y) - R);
+  const double e1 = radial_miss(s1), e3 = radial_miss(s3), e5 = radial_miss(s5);
+  const double sagitta = R * (1.0 - std::cos(0.5 * dth));
+  std::printf("  [grid interp cylinder] radial miss: degree 1 %.6g (closed-form sagitta %.6g), degree 3 %.3g, degree 5 %.3g\n", e1, sagitta, e3, e5);
+  Check(std::fabs(mid1 - sagitta) < 1e-9, "half cylinder, degree 1: the radial miss at a chord midpoint equals the closed-form sagitta R (1 - cos(dtheta/2)) to 1e-9");
+  Check(std::fabs(e1 - sagitta) < 1e-6, "half cylinder, degree 1: the worst radial miss over the whole surface is that sagitta (chord polygon)");
+  Check(e3 < 0.25 * e1 && e5 < 0.25 * e1, "half cylinder: degree 3 and degree 5 interpolants miss the true cylinder by under a quarter of the chord polygon's sagitta");
+}
+
+void TestChosenDegreeNegativeControls() {
+  const std::vector<Point3d> grid = WigglyGrid(4, 4);
+  NurbsSurface s;
+  auto throws = [&](int du, int dv) {
+    try {
+      NurbsSurface::InterpolateThroughGrid(grid, 4, 4, du, dv, s);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws(0, 3) && throws(3, 0) && throws(4, 3) && throws(3, 4) && throws(-1, 2), "degree 0, negative, or >= the point count in either direction is refused (std::invalid_argument)");
+  Check(!throws(3, 3) && !throws(1, 1), "degree count-1 and degree 1 are accepted");
+  bool bad_size = false;
+  try {
+    NurbsSurface::InterpolateThroughGrid(grid, 4, 3, 2, 2, s);
+  } catch (const std::invalid_argument&) {
+    bad_size = true;
+  }
+  Check(bad_size, "a grid whose size is not u_count * v_count is refused");
+  // two identical consecutive grid rows: repeated parameter, singular collocation system -> Failed, never a bogus surface
+  std::vector<Point3d> dup = grid;
+  for (int v = 0; v < 4; ++v) dup[static_cast<size_t>(1 * 4 + v)] = dup[static_cast<size_t>(0 * 4 + v)];
+  NurbsSurface t;
+  Check(NurbsSurface::InterpolateThroughGrid(dup, 4, 4, 3, 3, t) == Result::Failed, "two coincident consecutive grid lines (repeated parameter) return Result::Failed");
+}
+
+}  // namespace grid_interp_degree_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -99446,6 +99646,14 @@ int main() {
           sweep_adaptive_tests::TestAdaptiveFreeformRailsOpenAndClosedAgainstAFinerBuild);
   RunTest("sweep_adaptive_tests::TestAdaptiveNegativeControlsCeilingToleranceAndDefaults",
           sweep_adaptive_tests::TestAdaptiveNegativeControlsCeilingToleranceAndDefaults);
+  RunTest("grid_interp_degree_tests::TestChosenDegreeInterpolatesExactlyWithAveragedKnots",
+          grid_interp_degree_tests::TestChosenDegreeInterpolatesExactlyWithAveragedKnots);
+  RunTest("grid_interp_degree_tests::TestChosenDegreeReproducesAnAffineGridExactlyOffTheGrid",
+          grid_interp_degree_tests::TestChosenDegreeReproducesAnAffineGridExactlyOffTheGrid);
+  RunTest("grid_interp_degree_tests::TestChosenDegreeOnACylinderMatchesTheClosedFormSagitta",
+          grid_interp_degree_tests::TestChosenDegreeOnACylinderMatchesTheClosedFormSagitta);
+  RunTest("grid_interp_degree_tests::TestChosenDegreeNegativeControls",
+          grid_interp_degree_tests::TestChosenDegreeNegativeControls);
   RunTest("ON::End", ON::End);
 
   if (g_failures > 0) {

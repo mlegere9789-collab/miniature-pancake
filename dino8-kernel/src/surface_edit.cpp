@@ -824,6 +824,199 @@ Result NurbsSurface::InterpolateThroughGrid(const std::vector<Point3d>& grid, in
   return Result::Ok;
 }
 
+namespace {
+namespace grid_interp_detail {
+
+// Piegl & Tiller eq. 9.8: the clamped knot vector of degree p that matches parameters t[0..n-1] (strictly
+// increasing, t[0] = 0, t[n-1] = 1). Returns the STANDARD vector of n + p + 1 knots.
+std::vector<double> AveragedKnots(const std::vector<double>& t, int p) {
+  const int n = static_cast<int>(t.size());
+  std::vector<double> K(static_cast<size_t>(n + p + 1), 0.0);
+  for (int i = n; i <= n + p; ++i) K[static_cast<size_t>(i)] = 1.0;
+  for (int j = 1; j <= n - p - 1; ++j) {
+    double sum = 0.0;
+    for (int i = j; i <= j + p - 1; ++i) sum += t[static_cast<size_t>(i)];
+    K[static_cast<size_t>(j + p)] = sum / p;
+  }
+  return K;
+}
+
+// Non-zero B-spline basis values N_{s-p..s,p}(x) on the standard knot vector K with n basis functions (A2.1 + A2.2).
+// Returns the span index s.
+int BasisAt(const std::vector<double>& K, int n, int p, double x, std::vector<double>& N) {
+  int s = p;
+  while (s < n - 1 && x >= K[static_cast<size_t>(s + 1)]) ++s;
+  N.assign(static_cast<size_t>(p + 1), 0.0);
+  std::vector<double> left(static_cast<size_t>(p + 1), 0.0), right(static_cast<size_t>(p + 1), 0.0);
+  N[0] = 1.0;
+  for (int j = 1; j <= p; ++j) {
+    left[static_cast<size_t>(j)] = x - K[static_cast<size_t>(s + 1 - j)];
+    right[static_cast<size_t>(j)] = K[static_cast<size_t>(s + j)] - x;
+    double saved = 0.0;
+    for (int r = 0; r < j; ++r) {
+      const double denom = right[static_cast<size_t>(r + 1)] + left[static_cast<size_t>(j - r)];
+      const double tmp = denom != 0.0 ? N[static_cast<size_t>(r)] / denom : 0.0;
+      N[static_cast<size_t>(r)] = saved + right[static_cast<size_t>(r + 1)] * tmp;
+      saved = left[static_cast<size_t>(j - r)] * tmp;
+    }
+    N[static_cast<size_t>(j)] = saved;
+  }
+  return s;
+}
+
+// Solves A X = B in place (A: n x n row-major, B: n x m row-major) by Gaussian elimination with partial pivoting.
+// Returns false on a (numerically) singular matrix.
+bool GridInterpSolve(std::vector<double>& A, std::vector<double>& B, int n, int m) {
+  for (int col = 0; col < n; ++col) {
+    int piv = col;
+    double best = std::fabs(A[static_cast<size_t>(col) * n + col]);
+    for (int r = col + 1; r < n; ++r) {
+      const double a = std::fabs(A[static_cast<size_t>(r) * n + col]);
+      if (a > best) {
+        best = a;
+        piv = r;
+      }
+    }
+    if (!(best > 1e-13)) return false;
+    if (piv != col) {
+      for (int c = 0; c < n; ++c) std::swap(A[static_cast<size_t>(piv) * n + c], A[static_cast<size_t>(col) * n + c]);
+      for (int c = 0; c < m; ++c) std::swap(B[static_cast<size_t>(piv) * m + c], B[static_cast<size_t>(col) * m + c]);
+    }
+    const double d = A[static_cast<size_t>(col) * n + col];
+    for (int r = col + 1; r < n; ++r) {
+      const double f = A[static_cast<size_t>(r) * n + col] / d;
+      if (f == 0.0) continue;
+      for (int c = col; c < n; ++c) A[static_cast<size_t>(r) * n + c] -= f * A[static_cast<size_t>(col) * n + c];
+      for (int c = 0; c < m; ++c) B[static_cast<size_t>(r) * m + c] -= f * B[static_cast<size_t>(col) * m + c];
+    }
+  }
+  for (int r = n - 1; r >= 0; --r) {
+    for (int c = 0; c < m; ++c) {
+      double v = B[static_cast<size_t>(r) * m + c];
+      for (int k = r + 1; k < n; ++k) v -= A[static_cast<size_t>(r) * n + k] * B[static_cast<size_t>(k) * m + c];
+      B[static_cast<size_t>(r) * m + c] = v / A[static_cast<size_t>(r) * n + r];
+    }
+  }
+  return true;
+}
+
+// The n x n collocation matrix A[i][j] = N_{j,p}(t_i).
+std::vector<double> CollocationMatrix(const std::vector<double>& K, const std::vector<double>& t, int p) {
+  const int n = static_cast<int>(t.size());
+  std::vector<double> A(static_cast<size_t>(n) * n, 0.0), N;
+  for (int i = 0; i < n; ++i) {
+    const int s = BasisAt(K, n, p, t[static_cast<size_t>(i)], N);
+    for (int r = 0; r <= p; ++r) A[static_cast<size_t>(i) * n + (s - p + r)] = N[static_cast<size_t>(r)];
+  }
+  return A;
+}
+
+}  // namespace grid_interp_detail
+}  // namespace
+
+Result NurbsSurface::InterpolateThroughGrid(const std::vector<Point3d>& grid, int u_count, int v_count, int degree_u,
+                                             int degree_v, NurbsSurface& out) {
+  using namespace grid_interp_detail;
+  if (u_count < 2 || v_count < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InterpolateThroughGrid: u_count and v_count must each be >= 2");
+  }
+  const size_t expected = static_cast<size_t>(u_count) * static_cast<size_t>(v_count);
+  if (grid.size() != expected) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InterpolateThroughGrid: grid must have exactly u_count * v_count = " +
+        std::to_string(expected) + " entries, got " + std::to_string(grid.size()));
+  }
+  if (degree_u < 1 || degree_u > u_count - 1 || degree_v < 1 || degree_v > v_count - 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::InterpolateThroughGrid: degree_u must be in [1, " +
+                                 std::to_string(u_count - 1) + "] and degree_v in [1, " + std::to_string(v_count - 1) +
+                                 "], got " + std::to_string(degree_u) + " and " + std::to_string(degree_v));
+  }
+  auto at = [&](int u, int v) -> ON_3dPoint {
+    return grid[static_cast<size_t>(u) * static_cast<size_t>(v_count) + static_cast<size_t>(v)];
+  };
+
+  // Shared parameters: the average of every row's (column's) [0, 1]-normalized chord-length parameterization.
+  std::vector<double> u_params(static_cast<size_t>(u_count), 0.0), v_params(static_cast<size_t>(v_count), 0.0);
+  for (int v = 0; v < v_count; ++v) {
+    std::vector<ON_3dPoint> row(static_cast<size_t>(u_count));
+    for (int u = 0; u < u_count; ++u) row[static_cast<size_t>(u)] = at(u, v);
+    const std::vector<double> cp = ChordParams(row, /*closed=*/false);
+    const double total = cp.back();
+    if (!(total > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::NurbsSurface::InterpolateThroughGrid: row v=" +
+                                   std::to_string(v) + " is degenerate (every point coincides)");
+    }
+    for (int u = 0; u < u_count; ++u) u_params[static_cast<size_t>(u)] += cp[static_cast<size_t>(u)] / total;
+  }
+  for (double& p : u_params) p /= v_count;
+  for (int u = 0; u < u_count; ++u) {
+    std::vector<ON_3dPoint> col(static_cast<size_t>(v_count));
+    for (int v = 0; v < v_count; ++v) col[static_cast<size_t>(v)] = at(u, v);
+    const std::vector<double> cp = ChordParams(col, /*closed=*/false);
+    const double total = cp.back();
+    if (!(total > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::NurbsSurface::InterpolateThroughGrid: column u=" +
+                                   std::to_string(u) + " is degenerate (every point coincides)");
+    }
+    for (int v = 0; v < v_count; ++v) v_params[static_cast<size_t>(v)] += cp[static_cast<size_t>(v)] / total;
+  }
+  for (double& p : v_params) p /= u_count;
+  // pin the ends exactly and require strictly increasing parameters (a repeated parameter would make the system singular)
+  u_params.front() = v_params.front() = 0.0;
+  u_params.back() = v_params.back() = 1.0;
+  for (int i = 1; i < u_count; ++i) {
+    if (!(u_params[static_cast<size_t>(i)] > u_params[static_cast<size_t>(i) - 1])) return Result::Failed;
+  }
+  for (int i = 1; i < v_count; ++i) {
+    if (!(v_params[static_cast<size_t>(i)] > v_params[static_cast<size_t>(i) - 1])) return Result::Failed;
+  }
+
+  const std::vector<double> KU = AveragedKnots(u_params, degree_u), KV = AveragedKnots(v_params, degree_v);
+
+  // Pass 1 (along U): A_u X = Q, one right-hand-side column per (v, coordinate).
+  const int mu = 3 * v_count;
+  std::vector<double> Au = CollocationMatrix(KU, u_params, degree_u);
+  std::vector<double> X(static_cast<size_t>(u_count) * mu);
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      const ON_3dPoint p = at(u, v);
+      X[static_cast<size_t>(u) * mu + 3 * v + 0] = p.x;
+      X[static_cast<size_t>(u) * mu + 3 * v + 1] = p.y;
+      X[static_cast<size_t>(u) * mu + 3 * v + 2] = p.z;
+    }
+  }
+  if (!GridInterpSolve(Au, X, u_count, mu)) return Result::Failed;
+
+  // Pass 2 (along V): for every U control index j, A_v Y = (X[j][v][c]) over v, one column per (j, coordinate).
+  const int mv = 3 * u_count;
+  std::vector<double> Av = CollocationMatrix(KV, v_params, degree_v);
+  std::vector<double> Y(static_cast<size_t>(v_count) * mv);
+  for (int j = 0; j < u_count; ++j) {
+    for (int v = 0; v < v_count; ++v) {
+      for (int c = 0; c < 3; ++c) {
+        Y[static_cast<size_t>(v) * mv + 3 * j + c] = X[static_cast<size_t>(j) * mu + 3 * v + c];
+      }
+    }
+  }
+  if (!GridInterpSolve(Av, Y, v_count, mv)) return Result::Failed;
+
+  ON_NurbsSurface result;
+  if (!result.Create(3, false, degree_u + 1, degree_v + 1, u_count, v_count)) return Result::Failed;
+  // OpenNURBS stores order + cv_count - 2 knots: the standard vector without its first and last entry.
+  for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, KU[static_cast<size_t>(k) + 1]);
+  for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, KV[static_cast<size_t>(k) + 1]);
+  for (int j = 0; j < u_count; ++j) {
+    for (int k = 0; k < v_count; ++k) {
+      result.SetCV(j, k, ON_3dPoint(Y[static_cast<size_t>(k) * mv + 3 * j + 0], Y[static_cast<size_t>(k) * mv + 3 * j + 1],
+                                    Y[static_cast<size_t>(k) * mv + 3 * j + 2]));
+    }
+  }
+  if (!result.IsValid()) return Result::Failed;
+  out.surface_ = result;
+  return Result::Ok;
+}
+
 Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) const {
   out_patches.clear();
 

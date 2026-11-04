@@ -1879,6 +1879,29 @@ class NurbsSurface {
   static Result InterpolateThroughGrid(const std::vector<Point3d>& grid, int u_count, int v_count,
                                         NurbsSurface& out);
 
+  // The same exact grid interpolation with a CHOSEN degree in each
+  // direction instead of the fixed `min(3, count - 1)`: `degree_u` in
+  // [1, u_count - 1] and `degree_v` in [1, v_count - 1]. Same shared,
+  // averaged, [0, 1]-normalized chord-length parameters as the overload
+  // above; the knot vector in each direction is Piegl & Tiller's
+  // averaging (eq. 9.8: clamped, interior knot j = the mean of `degree`
+  // consecutive parameters), and the two passes each solve the
+  // collocation system N_j(t_i) P_j = Q_i directly (dense Gaussian
+  // elimination with partial pivoting; Schoenberg-Whitney holds for these
+  // knots, so it is nonsingular for strictly increasing parameters). The
+  // result is non-rational, `degree_u` x `degree_v`, with exactly
+  // u_count x v_count control points, domain [0, 1] x [0, 1]. Degree 1 in
+  // a direction gives the piecewise-linear interpolant (control points ==
+  // grid points); `degree == count - 1` gives a single Bezier span.
+  // Throws std::invalid_argument for a count below 2, a size mismatch, a
+  // degenerate row or column, or a degree outside the range above.
+  // Returns Result::Failed if a collocation system is singular (e.g.
+  // consecutive grid lines that coincide) or the surface comes out
+  // invalid. Still open, disclosed: no end-tangent constraints and no
+  // closed (periodic) grids.
+  static Result InterpolateThroughGrid(const std::vector<Point3d>& grid, int u_count, int v_count, int degree_u,
+                                        int degree_v, NurbsSurface& out);
+
   // Splits this surface into an independent tensor-product Bezier patch
   // for every (u-span, v-span) cell of its knot vectors - the surface
   // counterpart of the app's curve-only `ConvertToBeziers` command
