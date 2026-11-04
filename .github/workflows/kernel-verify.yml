@@ -37,11 +37,14 @@ jobs:
         run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
         run: cmake --build dino8-kernel/build --target dino8_kernel_tests dino8_continuity2_tests
+      - name: Build optional extra test targets (only if the branch defines them)
+        run: cmake --build dino8-kernel/build --target dino8_surface_fillet_extra || true
       - name: Package the test binaries
         run: |
           mkdir -p bundle
           cp dino8-kernel/build/tests/dino8_kernel_tests bundle/
           cp dino8-kernel/build/tests/dino8_continuity2_tests bundle/ || true
+          cp dino8-kernel/build/tests/dino8_surface_fillet_extra bundle/ || true
       - uses: actions/upload-artifact@v4
         with:
           name: kernel-test-binaries
@@ -57,6 +60,7 @@ jobs:
       matrix:
         k: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: kernel-test-binaries
@@ -73,6 +77,19 @@ jobs:
           echo "shard ${{ matrix.k }}/12 exit=$rc ok=$(grep -c '^ok' ../shard.log) FAILED=$(grep -c '^FAILED' ../shard.err)"
           grep '^FAILED' ../shard.err | sort | uniq -c | head -50 || true
           if [ "${{ matrix.k }}" = "0" ]; then ../bundle/dino8_continuity2_tests 2>&1 | tail -3 || true; fi
+          if [ "${{ matrix.k }}" = "1" ] && [ -x ../bundle/dino8_surface_fillet_extra ]; then (../bundle/dino8_surface_fillet_extra > ../fillet_extra.log 2>&1; echo "surface_fillet_extra exit=$? ok=$(grep -c '^ok' ../fillet_extra.log) FAILED=$(grep -c '^FAILED' ../fillet_extra.log)"; grep -E '^\[probe|^FAILED' ../fillet_extra.log | head -40) || true; fi
+          cd ..
+          # Per-feature evidence: every non-empty line of .kverify_filters (a file in the repo root of the
+          # verified branch) is run as DINO8_TEST_FILTER=<line> on shard 0 and its ok / FAILED counts printed.
+          if [ "${{ matrix.k }}" = "0" ] && [ -f .kverify_filters ]; then
+            mkdir -p scratch2 && cd scratch2
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              DINO8_TEST_FILTER="$f" timeout 1200 ../bundle/dino8_kernel_tests > ../f.log 2> ../f.err
+              echo "filter $f: exit=$? ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
+            done < ../.kverify_filters
+            cd ..
+          fi
           exit $rc
       - uses: actions/upload-artifact@v4
         if: always()
@@ -101,7 +118,7 @@ jobs:
       - name: Configure
         run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
-        run: cmake --build dino8-app/build --target Dino8
+        run: cmake --build dino8-app/build   # all targets: smoke.sh sections use helper binaries (text3dm, hatch3dm, mesh_fixture_gen, ...)
       - name: Plan the section groups
         run: |
           python3 - <<'PY'
@@ -125,7 +142,11 @@ jobs:
         with:
           name: app-binary
           path: |
-            dino8-app/build/Dino8
+            dino8-app/build/
+            !dino8-app/build/**/*.o
+            !dino8-app/build/**/*.a
+            !dino8-app/build/CMakeFiles/**
+            !dino8-app/build/_deps/**
             section_groups.json
           retention-days: 3
 
@@ -152,9 +173,10 @@ jobs:
         shell: bash
         timeout-minutes: 120
         run: |
-          chmod +x appbin/dino8-app/build/Dino8 2>/dev/null || chmod +x appbin/Dino8
-          BIN=$(ls appbin/dino8-app/build/Dino8 appbin/Dino8 2>/dev/null | head -1)
-          JSON=$(ls appbin/section_groups.json | head -1)
+          find appbin -type f | head
+          BIN=$(find appbin -type f -name Dino8 | head -1)
+          JSON=$(find appbin -type f -name section_groups.json | head -1)
+          chmod +x "$BIN"
           NAMES=$(python3 -c "import json;print(' '.join(json.load(open('$JSON'))[${{ matrix.g }}]))")
           echo "group ${{ matrix.g }}: $NAMES"
           set +e
@@ -163,6 +185,8 @@ jobs:
           set -e
           echo "group ${{ matrix.g }} exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
           grep -E '^FAIL' group.log | sort | uniq -c | head -60 || true
+          echo "---- run_sections summary (tail) ----"
+          tail -n 40 group.log | cut -c1-200 || true
           exit $rc
       - uses: actions/upload-artifact@v4
         if: always()
