@@ -99878,12 +99878,13 @@ void TestBodySectionRefusesMissesAndInvalidPlanes() {
 }
 
 // A TRIMMED solid: a 4x4x4 box with a through hole of radius 0.5 on its centre axis (the trimmed cylinder wall and the
-// top/bottom faces with a circular inner loop). A z=2 plane across it gives the outer square (perimeter 16) AND the hole
-// circle (2*pi*0.5) as two separate closed contours; an x=2 plane through the hole axis cuts the trimmed top/bottom
-// faces and should give two 1.5 x 4 rectangles (perimeter 11 each). ASSERTED: the contour counts and the outer square
-// perimeter. A first run measured the hole circle's length / radius and the x=2 strips' closure / length as NOT matching
-// these closed forms, so those are printed as "body_section diag" lines and NOT claimed: a known gap on Boolean-drilled
-// (trimmed) solids, recorded rather than hidden.
+// top/bottom faces with the hole stitched into their single outer loop by a keyhole bridge). A z=2 plane across it gives
+// the outer square (perimeter 16) AND the hole circle (2*pi*0.5) as two separate closed contours; an x=2 plane through
+// the hole axis cuts the trimmed top/bottom faces and gives two 1.5 x 4 rectangles (perimeter 11 each, 22 in all).
+// Two real defects this pins down (both measured on this fixture): (1) the x=2 plane runs EXACTLY along the keyhole bridge
+// of the top/bottom faces, whose two (u, v) edges are ~1e-4 apart, so the even-odd trim test dropped the bridge-covered
+// y in [0, 1.5] stretch of one face and a strip never closed; (2) the hole circle's closed piece carried a near-duplicate
+// of its start sample, and the interpolating fit through it rang (length 3.36 instead of pi, radius 0.489..0.519).
 void TestBodySectionTrimmedSolidWithThroughHole() {
   const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
   const Brep drilled = dino8::kernel::MakeHole(box, Point3d(2, 2, 4), dino8::kernel::Vector3d(0, 0, -1), 0.5, 0.0, true);
@@ -99892,23 +99893,29 @@ void TestBodySectionTrimmedSolidWithThroughHole() {
     const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(drilled.raw(), ON_Plane(ON_3dPoint(0, 0, 2.0), ON_3dVector(0, 0, 1)), SectionOpt());
     Check(sec.size() == 2, "a z=2 plane across the drilled box gives exactly TWO contours (outer square + hole circle)");
     if (sec.size() == 2) {
-      bool all_closed = sec[0].closed && sec[1].closed;
-      Check(all_closed, "both the outer square and the hole circle are closed contours");
+      Check(sec[0].closed && sec[1].closed, "both the outer square and the hole circle are closed contours");
       const double l0 = sec[0].curve.Length(), l1 = sec[1].curve.Length();
       const double big = std::max(l0, l1), small = std::min(l0, l1);
       Check(std::fabs(big - 16.0) < 1e-3, "the outer contour length equals the square perimeter 16");
-      // KNOWN GAP (measured, not asserted): the hole contour from the trimmed cylinder wall of a Boolean-drilled solid.
+      Check(std::fabs(small - ON_PI) < 1e-3, "the hole contour length equals the circle circumference pi (2*pi*0.5) to 1e-3");
       const NurbsCurve& hole = (l0 < l1) ? sec[0].curve : sec[1].curve;
       double lo, hi;
       SampleRange(hole, 400, [](Point3d p) { return std::hypot(p.x - 2.0, p.y - 2.0); }, lo, hi);
-      std::printf("body_section diag: hole contour length %.6f (circle %.6f), radius range [%.6f, %.6f]\n", small, ON_PI, lo, hi);
+      Check(lo > 0.5 - 1e-3 && hi < 0.5 + 1e-3, "every sampled point of the hole contour sits at radius 0.5 from the hole axis (to 1e-3)");
     }
   }
   {
     const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(drilled.raw(), ON_Plane(ON_3dPoint(2.0, 0, 0), ON_3dVector(1, 0, 0)), SectionOpt());
     Check(sec.size() == 2, "an x=2 plane through the hole axis gives TWO contours (the hole splits the section into two strips)");
-    for (const BrepSectionContour& c : sec)
-      std::printf("body_section diag: x=2 strip length %.6f closed=%d pieces=%d\n", c.curve.Length(), c.closed ? 1 : 0, c.piece_count);
+    double total = 0;
+    bool all_closed = true;
+    for (const BrepSectionContour& c : sec) {
+      all_closed = all_closed && c.closed;
+      total += c.curve.Length(20000);
+      Check(std::fabs(c.curve.Length(20000) - 11.0) < 1e-3, "each x=2 strip is a closed 1.5 x 4 rectangle outline, perimeter 11");
+    }
+    Check(all_closed, "both x=2 strips are closed contours");
+    Check(std::fabs(total - 22.0) < 2e-3, "the two x=2 strips together measure 22");
   }
 }
 

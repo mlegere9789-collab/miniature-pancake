@@ -837,7 +837,41 @@ std::vector<ON_2dPoint> LoopPolygon(const ON_Brep& b, int loop_index, int sample
   return poly;
 }
 
+// Set (RAII, thread-local) only by IntersectBrepByPlane() for the duration of
+// one body-section call; read by FaceContainsUV() below. Off everywhere else,
+// so every other FaceContainsUV() caller (booleans, ray firing, ...) is
+// bit-for-bit unchanged.
+namespace {
+thread_local bool g_keyhole_tolerant_trim_test = false;
+bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v);
+}  // namespace
+
+// A face with a hole built by the general Boolean (a drilled plate's top/
+// bottom face) stores its single outer loop with the hole stitched in through
+// a "keyhole" bridge: out along one edge, round the hole, back along a second
+// edge that is NOT bit-coincident with the first (the two bridge edges are
+// sampled independently, so they sit ~1e-4 apart in (u, v)). That sliver is
+// geometrically nothing - the bridge is a cut line, not part of the face's
+// real boundary - but the even-odd test calls it "outside", so a section
+// plane running exactly along the bridge (a plane through the hole axis!)
+// lost the whole bridge-covered stretch of its curve (measured on a
+// MakeHole()-drilled box: the x=2 section lost the y in [0, 1.5] strip of the
+// bottom face). When the keyhole-tolerant flag is on, a point the exact test
+// rejects is still accepted if the exact test accepts it on BOTH sides along
+// one parameter axis at +-2e-3 of the face's domain: inside a sliver both
+// neighbours are inside, whereas a point just outside the real boundary (or
+// inside a real hole) has at most one inside neighbour.
 bool FaceContainsUV(const ON_BrepFace& f, double u, double v) {
+  if (FaceContainsUVExact(f, u, v)) return true;
+  if (!g_keyhole_tolerant_trim_test || f.m_li.Count() == 0) return false;
+  const double du = 2e-3 * f.Domain(0).Length(), dv = 2e-3 * f.Domain(1).Length();
+  if (!(du > 0) || !(dv > 0)) return false;
+  return (FaceContainsUVExact(f, u - du, v) && FaceContainsUVExact(f, u + du, v)) ||
+         (FaceContainsUVExact(f, u, v - dv) && FaceContainsUVExact(f, u, v + dv));
+}
+
+namespace {
+bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v) {
   const ON_Brep* b = f.Brep();
   if (!b) return true;
   // CLOSED-interval test (ON_Interval::Includes's second argument is
@@ -868,6 +902,7 @@ bool FaceContainsUV(const ON_BrepFace& f, double u, double v) {
   }
   return true;
 }
+}  // namespace
 
 // --- SSX assembly ------------------------------------------------------------------
 
@@ -2175,6 +2210,11 @@ std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const 
   ON_PlaneSurface plane_surface(plane);
   plane_surface.SetExtents(0, ON_Interval(-half, half), true);
   plane_surface.SetExtents(1, ON_Interval(-half, half), true);
+  struct KeyholeTolerantScope {
+    bool prev;
+    KeyholeTolerantScope() : prev(g_keyhole_tolerant_trim_test) { g_keyhole_tolerant_trim_test = true; }
+    ~KeyholeTolerantScope() { g_keyhole_tolerant_trim_test = prev; }
+  } keyhole_scope;
   const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
   const int nf = b.m_F.Count();
   for (int i = 0; i < nf; ++i) {
@@ -2192,11 +2232,56 @@ std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const 
   return out;
 }
 
+namespace {
+// The NURBS curve a section piece contributes. A CLOSED piece that comes out
+// of a trimmed face's SSX can carry a near-duplicate of its own start point
+// (the seam sample sits ~1e-3 from the first sample while every other gap is
+// ~4e-2): an interpolating fit through two such nearly-coincident samples
+// rings, which is what made the hole circle of a MakeHole()-drilled box come
+// back 7% too long with its radius wandering +-0.02 although every sample
+// point was on the r = 0.5 cylinder to 1e-9. Such a piece is re-fitted as a
+// genuinely periodic cubic through its samples with the near-duplicates
+// dropped; every other piece is returned exactly as IntersectFaces() built it.
+ON_NurbsCurve PieceCurve(const IntersectionCurve& ic) {
+  const size_t n = ic.points.size();
+  if (!ic.closed || n < 8) return ic.curve;
+  double len = 0;
+  for (size_t i = 1; i < n; ++i) len += ic.points[i].DistanceTo(ic.points[i - 1]);
+  len += ic.points.back().DistanceTo(ic.points.front());
+  const double min_gap = 0.25 * len / static_cast<double>(n);
+  std::vector<ON_3dPoint> kept;
+  kept.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    if (!kept.empty() && kept.back().DistanceTo(ic.points[i]) < min_gap) continue;
+    kept.push_back(ic.points[i]);
+  }
+  while (kept.size() > 3 && kept.back().DistanceTo(kept.front()) < min_gap) kept.pop_back();
+  if (kept.size() == n || kept.size() < 4) return ic.curve;
+  ON_NurbsCurve fitted = InterpolateCubicPeriodic(kept, ChordParams(kept, true), 3);
+  return fitted.IsValid() ? fitted : ic.curve;
+}
+}  // namespace
+
 std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
   std::vector<BrepSectionContour> out;
   std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, plane, opt);
   if (hits.empty()) return out;
-  const double jtol = std::max(opt.tolerance * 10.0, 1e-6);
+  // Join tolerance. Where a planar face's trimmed boundary is a FACETED hole/
+  // rim (every Boolean result's cut edges are polygons of straight (u, v)
+  // trims, not the exact circle), the face's piece ends on a facet of that
+  // polygon while the curved wall's piece ends on the true curve: measured on
+  // a MakeHole()-drilled 4x4x4 box, the top/bottom pieces end 1.8e-4..1.9e-4
+  // short of the true r = 0.5 wall line (the facet's sagitta), 20x more than
+  // the old `max(10 * tolerance, 1e-6)` and so the strips never closed. The
+  // gap is a property of the trimmed solid's own discretised edges, so the
+  // tolerance also scales with the body: 2e-4 of its bounding-box diagonal.
+  ON_BoundingBox body_box;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_Surface* sf = b.m_F[fi].SurfaceOf();
+    if (sf) body_box.Union(sf->BoundingBox());
+  }
+  const double body_diag = body_box.IsValid() ? body_box.Diagonal().Length() : 0.0;
+  const double jtol = std::max({opt.tolerance * 10.0, 1e-6, 2e-4 * body_diag});
   const size_t n = hits.size();
   std::vector<bool> used(n, false);
   auto usable = [&](size_t i) { return hits[i].curve.curve.IsValid() && hits[i].curve.curve.CVCount() >= 2; };
@@ -2204,7 +2289,7 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
     if (used[i] || !usable(i)) continue;
     used[i] = true;
     BrepSectionContour c;
-    c.curve.raw() = hits[i].curve.curve;
+    c.curve.raw() = PieceCurve(hits[i].curve);
     c.piece_count = 1;
     c.face_indices.push_back(hits[i].face_index);
     if (hits[i].curve.closed || c.curve.raw().PointAtStart().DistanceTo(c.curve.raw().PointAtEnd()) <= jtol) {
@@ -2221,7 +2306,7 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
         for (size_t j = 0; j < n; ++j) {
           if (used[j] || !usable(j)) continue;
           NurbsCurve q;
-          q.raw() = hits[j].curve.curve;
+          q.raw() = PieceCurve(hits[j].curve);
           const double ds = q.raw().PointAtStart().DistanceTo(tail), de = q.raw().PointAtEnd().DistanceTo(tail);
           if (std::min(ds, de) > jtol) continue;
           try {
