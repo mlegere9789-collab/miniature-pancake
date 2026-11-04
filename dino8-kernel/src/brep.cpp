@@ -11021,9 +11021,20 @@ int Brep::RemoveSliverFaces(double max_width) {
 Brep::HealReport Brep::HealChecked() { return HealChecked(HealOptions()); }
 
 Brep::HealReport Brep::HealChecked(const HealOptions& options) {
+  // measured: NaN / inf / negative options were silently accepted (negative clamped to 0, NaN and inf compared as "no limit"
+  // or "no change allowed") and the call reported "already clean"; refuse them with the offending field named.
+  const auto require_finite_nonneg = [](double v, const char* field) {
+    if (!std::isfinite(v) || v < 0.0) {
+      throw std::invalid_argument(std::string("dino8::kernel::Brep::HealChecked: HealOptions::") + field +
+                                  " must be finite and non-negative (got " + std::to_string(v) + ")");
+    }
+  };
+  require_finite_nonneg(options.gap_tolerance, "gap_tolerance");
+  require_finite_nonneg(options.sliver_width, "sliver_width");
+  require_finite_nonneg(options.max_relative_volume_change, "max_relative_volume_change");
   HealReport rep;
-  const double gap = std::max(options.gap_tolerance, 0.0);
-  const double width = std::max(options.sliver_width, 0.0);
+  const double gap = options.gap_tolerance;
+  const double width = options.sliver_width;
   const auto measure = [](const Brep& b, bool* ok, double* volume) {
     *ok = false;
     *volume = 0.0;

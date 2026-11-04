@@ -2445,6 +2445,26 @@ double MeasureDeviationOverValues(const NurbsSurface& surface, const std::vector
 
 }  // namespace
 
+namespace {
+// The adaptive tessellators build an (nu x nv) grid, so the triangle count is the PRODUCT of the two per-direction
+// counts: a doubly curved face (torus / sphere) at chord_tolerance 1e-5 needed > 1e6 triangles and never returned in
+// practice (measured on a filleted cylinder's torus band: 17k triangles at 1e-3, 135k at 1e-4, 532k / 4.5 s at 3e-5,
+// > 20 s at 1e-5 and below), while a singly curved face is capped by the per-curve sample cap. A tolerance that asks for
+// more cells than this is refused with the numbers rather than silently running for minutes or silently coarsening.
+constexpr double kMaxAdaptiveGridCells = 250000.0;
+
+void RefuseOversizedAdaptiveGrid(const char* who, double chord_tolerance, size_t nu, size_t nv) {
+  const double cells = static_cast<double>(nu) * static_cast<double>(nv);
+  if (cells > kMaxAdaptiveGridCells) {
+    throw std::invalid_argument(std::string("dino8::kernel::NurbsSurface::") + who + ": chord_tolerance " +
+                                std::to_string(chord_tolerance) + " needs a " + std::to_string(nu) + " x " + std::to_string(nv) +
+                                " grid (" + std::to_string(static_cast<long long>(cells)) + " cells) on this surface, more than the " +
+                                std::to_string(static_cast<long long>(kMaxAdaptiveGridCells)) +
+                                " this tessellator supports; use a larger chord_tolerance");
+  }
+}
+}  // namespace
+
 Mesh NurbsSurface::TessellateGridAdaptive(
     double chord_tolerance, const std::vector<Point2d>* trim_polygon,
     const std::vector<std::vector<Point2d>>* hole_polygons) const {
@@ -2457,6 +2477,7 @@ Mesh NurbsSurface::TessellateGridNonUniformAdaptive(
     const std::vector<std::vector<Point2d>>* hole_polygons) const {
   const std::vector<double> u_values = SuggestedParameterValues(0, chord_tolerance);
   const std::vector<double> v_values = SuggestedParameterValues(1, chord_tolerance);
+  RefuseOversizedAdaptiveGrid("TessellateGridNonUniformAdaptive", chord_tolerance, u_values.size() - 1, v_values.size() - 1);
   return TessellateGridNonUniform(u_values, v_values, trim_polygon, hole_polygons);
 }
 

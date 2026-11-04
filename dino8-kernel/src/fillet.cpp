@@ -2891,6 +2891,23 @@ Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p
 // fillets build exactly (see fillet.h, FilletConvexEdgeLaw).
 namespace {
 
+// A user-supplied law may throw anything (measured: `throw 42` escaped FilletConvexEdgeLaw as a non-std exception, which
+// no `catch (const std::exception&)` in a caller sees). Every call goes through this wrapper, which turns any exception
+// into a std::invalid_argument naming the radius law.
+std::function<double(double)> GuardRadiusLaw(const char* who, const std::function<double(double)>& law) {
+  if (!law) return law;
+  const std::string w = std::string("dino8::kernel::") + who + ": ";
+  return [w, law](double f) -> double {
+    try {
+      return law(f);
+    } catch (const std::exception& e) {
+      throw std::invalid_argument(w + "the radius law threw at fraction " + std::to_string(f) + ": " + e.what());
+    } catch (...) {
+      throw std::invalid_argument(w + "the radius law threw a non-standard exception at fraction " + std::to_string(f));
+    }
+  };
+}
+
 void ValidateRadiusLaw(const char* who, const std::function<double(double)>& law, double tol, int max_segments) {
   const std::string w = std::string("dino8::kernel::") + who + ": ";
   if (!law) throw std::invalid_argument(w + "the radius law is empty");
@@ -2919,8 +2936,9 @@ void ValidateRadiusLaw(const char* who, const std::function<double(double)>& law
 
 }  // namespace
 
-std::vector<FilletRadiusStation> SampleFilletRadiusLaw(double edge_length, const std::function<double(double)>& law,
+std::vector<FilletRadiusStation> SampleFilletRadiusLaw(double edge_length, const std::function<double(double)>& raw_law,
                                                         double tol, int max_segments) {
+  const std::function<double(double)> law = GuardRadiusLaw("SampleFilletRadiusLaw", raw_law);
   ValidateRadiusLaw("SampleFilletRadiusLaw", law, tol, max_segments);
   if (!(edge_length > 0.0) || !std::isfinite(edge_length)) {
     throw std::invalid_argument("dino8::kernel::SampleFilletRadiusLaw: edge_length must be finite and > 0");
@@ -2958,9 +2976,10 @@ std::vector<FilletRadiusStation> SampleFilletRadiusLaw(double edge_length, const
 }
 
 namespace {
-Brep FilletEdgeLawImpl(bool convex, const Brep& solid, Point3d p0, Point3d p1, const std::function<double(double)>& law,
+Brep FilletEdgeLawImpl(bool convex, const Brep& solid, Point3d p0, Point3d p1, const std::function<double(double)>& raw_law,
                        double tol, int max_segments) {
   const char* who = convex ? "FilletConvexEdgeLaw" : "FilletConcaveEdgeLaw";
+  const std::function<double(double)> law = GuardRadiusLaw(who, raw_law);
   ValidateRadiusLaw(who, law, tol, max_segments);
   const double L = p0.DistanceTo(p1);
   if (!(L > 0.0)) throw std::invalid_argument(std::string("dino8::kernel::") + who + ": coincident edge endpoints");
@@ -2969,7 +2988,7 @@ Brep FilletEdgeLawImpl(bool convex, const Brep& solid, Point3d p0, Point3d p1, c
     const double mid = 0.5 * (r0 + r1);
     return convex ? FilletConvexEdge(solid, p0, p1, mid) : FilletConcaveEdge(solid, p0, p1, mid);
   }
-  std::vector<FilletRadiusStation> st = SampleFilletRadiusLaw(L, law, tol, max_segments);
+  std::vector<FilletRadiusStation> st = SampleFilletRadiusLaw(L, raw_law, tol, max_segments);
   return convex ? FilletConvexEdgeTapered(solid, p0, p1, st) : FilletConcaveEdgeTapered(solid, p0, p1, st);
 }
 }  // namespace
@@ -7758,10 +7777,58 @@ bool ClassifyRevolvedProfile(const Brep& solid, RevolveProfile& prof, std::strin
     FaceInfo fi;
     fi.face_index = f;
     if (!s) { why = "a face has no surface"; return false; }
-    if (s->IsPlanar(&fi.plane, tol)) fi.kind = ProfKind::Plane;
-    else if (s->IsCylinder(&fi.cyl, tol)) fi.kind = ProfKind::Cylinder;
-    else if (s->IsCone(&fi.cone, tol)) fi.kind = ProfKind::Cone;
-    else if (s->IsTorus(&fi.torus, tol)) fi.kind = ProfKind::Torus;  // the exact blend face of an earlier fillet
+    auto try_kinds = [&](const ON_Surface* sf, double t, FaceInfo& o) {
+      if (sf->IsPlanar(&o.plane, t)) o.kind = ProfKind::Plane;
+      else if (sf->IsCylinder(&o.cyl, t)) o.kind = ProfKind::Cylinder;
+      else if (sf->IsCone(&o.cone, t)) o.kind = ProfKind::Cone;
+      else if (sf->IsTorus(&o.torus, t)) o.kind = ProfKind::Torus;  // the exact blend face of an earlier fillet
+      else return false;
+      return true;
+    };
+    bool classified = try_kinds(s, tol, fi);
+    if (!classified && bb.Diagonal().Length() > 1e5) {
+      // OpenNURBS' NURBS-curve arc test (ON_NurbsCurve::IsArc -> ON_Curve::IsArc) rejects a rational circle of radius 1e6
+      // whatever tolerance is passed (measured: IsCylinder false at tolerances 1e-9 ... 1e5 for R = 1e6, true up to
+      // R = 3e5), which made every revolve fillet / chamfer of a body that size fail with "a face is not a plane, cylinder,
+      // cone or torus". The classification is scale invariant, so retry on a copy scaled to a diagonal of 100 and map the
+      // recognised primitive back.
+      const double k = 100.0 / bb.Diagonal().Length();
+      const double inv = 1.0 / k;
+      ON_Surface* sc = s->DuplicateSurface();
+      if (sc && sc->Transform(ON_Xform::DiagonalTransformation(k))) {
+        FaceInfo tmp;
+        if (try_kinds(sc, tol * k, tmp)) {
+          fi.kind = tmp.kind;
+          if (tmp.kind == ProfKind::Plane) {
+            fi.plane = tmp.plane;
+            fi.plane.origin = ON_3dPoint(inv * tmp.plane.origin.x, inv * tmp.plane.origin.y, inv * tmp.plane.origin.z);
+            fi.plane.UpdateEquation();
+          } else if (tmp.kind == ProfKind::Cylinder) {
+            fi.cyl = tmp.cyl;
+            fi.cyl.circle.plane.origin = ON_3dPoint(inv * tmp.cyl.circle.plane.origin.x, inv * tmp.cyl.circle.plane.origin.y, inv * tmp.cyl.circle.plane.origin.z);
+            fi.cyl.circle.plane.UpdateEquation();
+            fi.cyl.circle.radius = inv * tmp.cyl.circle.radius;
+            fi.cyl.height[0] = inv * tmp.cyl.height[0];
+            fi.cyl.height[1] = inv * tmp.cyl.height[1];
+          } else if (tmp.kind == ProfKind::Cone) {
+            fi.cone = tmp.cone;
+            fi.cone.plane.origin = ON_3dPoint(inv * tmp.cone.plane.origin.x, inv * tmp.cone.plane.origin.y, inv * tmp.cone.plane.origin.z);
+            fi.cone.plane.UpdateEquation();
+            fi.cone.radius = inv * tmp.cone.radius;
+            fi.cone.height = inv * tmp.cone.height;
+          } else {
+            fi.torus = tmp.torus;
+            fi.torus.plane.origin = ON_3dPoint(inv * tmp.torus.plane.origin.x, inv * tmp.torus.plane.origin.y, inv * tmp.torus.plane.origin.z);
+            fi.torus.plane.UpdateEquation();
+            fi.torus.major_radius = inv * tmp.torus.major_radius;
+            fi.torus.minor_radius = inv * tmp.torus.minor_radius;
+          }
+          classified = true;
+        }
+      }
+      delete sc;
+    }
+    if (classified) {}
     else { why = "a face is not a plane, cylinder, cone or torus - not a solid of revolution of straight and circular-arc profile pieces"; return false; }
     for (int li = 0; li < face.m_li.Count(); ++li) {
       const ON_BrepLoop& lp = b.m_L[face.m_li[li]];

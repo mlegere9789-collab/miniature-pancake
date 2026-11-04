@@ -3762,6 +3762,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, Su
   constexpr int kSamples = 8;  // (kSamples+1)^2 grid samples per measured patch
   constexpr int kReferenceLevels = 3;
   constexpr long long kReferenceFaceCap = 400000;
+  constexpr long long kMaxMeasuredFaces = 4000;
   SubDFitReport rep;
   rep.tolerance = tolerance;
   rep.samples_per_patch = (kSamples + 1) * (kSamples + 1);
@@ -3779,6 +3780,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, Su
     base_levels = 1;
   }
   double best = std::numeric_limits<double>::infinity();
+  double previous_dev = std::numeric_limits<double>::infinity();
   for (int extra = 0; extra <= max_levels; ++extra) {
     if (extra > 0) {
       if (static_cast<long long>(work.FaceCount()) * 4 > face_budget) {
@@ -3798,6 +3800,16 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, Su
     }
     SubDWatertightReport wrep;
     std::vector<SubDNurbsPatch> patches = work.ToNurbsPatchesWatertight(&wrep);
+    // Measuring costs about 4.5x more per level (measured, unit-scale cube, tolerance 1e-12: 0.08 s at 96 faces, 0.36 s at
+    // 384, 1.8 s at 1536, 7.9 s at 6144 - and the same for a 1e9 cube whose float32 oracle can never certify a small
+    // tolerance), so an unreachable tolerance burned the whole default face budget. Refuse to start a measurement on a
+    // work-heavy level and say so (a cage that is all exact bicubic patches needs no measurement and is not limited).
+    if (wrep.coons_patches > 0 && work.FaceCount() > kMaxMeasuredFaces) {
+      rep.reason = "tolerance " + std::to_string(tolerance) + " not met: the next level has " + std::to_string(work.FaceCount()) +
+                   " faces, above the measurement budget of " + std::to_string(kMaxMeasuredFaces) + " faces; best sampled deviation " +
+                   std::to_string(best);
+      break;
+    }
     int ref_levels = kReferenceLevels;
     long long ref_faces = work.FaceCount();
     for (int i = 0; i < ref_levels; ++i) ref_faces *= 4;
@@ -3835,6 +3847,15 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, Su
       if (report) *report = rep;
       return patches;
     }
+    // Catmull-Clark patch deviation falls about 4x per level; two consecutive levels that do not even halve it mean the
+    // measurement has reached its noise floor, and further (4x more expensive) levels cannot converge.
+    if (extra >= 2 && dev > 0.5 * previous_dev) {
+      rep.reason = "tolerance " + std::to_string(tolerance) + " not met: the sampled deviation stopped improving at level " +
+                   std::to_string(rep.levels_used) + " (" + std::to_string(previous_dev) + " -> " + std::to_string(dev) +
+                   "), i.e. the measurement noise floor";
+      break;
+    }
+    previous_dev = dev;
   }
   if (rep.reason.empty()) {
     rep.reason = "tolerance " + std::to_string(tolerance) + " not met within max_levels " + std::to_string(max_levels) +

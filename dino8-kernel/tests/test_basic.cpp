@@ -103108,6 +103108,119 @@ void TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates() {
   Check(std::fabs(total - 2.0 * (10.0 * std::sqrt(2.0) + 10.0)) < 0.05, "...of length 2*(10*sqrt(2) + 10) = 48.284 (was 68.2)");
 }
 
+// Brep::TessellateToClosedMeshNonUniformAdaptive(1e-6) on a cylinder with one filleted rim: the fillet's torus band is
+// curved both ways, so the (nu x nv) grid grows like 1/tolerance - measured 17408 triangles / 0.19 s at 1e-3, 135168 / 0.7 s
+// at 1e-4, 532480 / 4.5 s at 3e-5 and no return within 20 s at 1e-5 and below (a plain cylinder stays at 16384 triangles).
+void TestAdaptiveTessellationOfDoublyCurvedFaceIsBoundedInTime() {
+  using revolve_rim_tests::MakeRevolvedPolygon;
+  using revolve_rim_tests::RZ;
+  const Brep cyl = MakeRevolvedPolygon({RZ{0, 0}, RZ{10, 0}, RZ{10, 20}, RZ{0, 20}}, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const Brep filleted = dino8::kernel::FilletRevolveRims(cyl, {{Point3d(10 * std::cos(0.3), 10 * std::sin(0.3), 20), 1.0}});
+  const auto t0 = std::chrono::steady_clock::now();
+  Check(ThrowsInvalid([&] { (void)filleted.TessellateToClosedMeshNonUniformAdaptive(1e-6); }, "chord_tolerance"),
+        "adaptive tessellation of a filleted cylinder at 1e-6 is refused with a chord_tolerance message (was a > 20 s run)");
+  Check(SecondsSince(t0) < 10.0, "...and the refusal comes back in under 10 s");
+  const dino8::kernel::Mesh m = filleted.TessellateToClosedMeshNonUniformAdaptive(1e-3);
+  // closed form: pi R^2 H minus the revolved corner region (square minus quarter disc of radius r) = 6270.0045 (r = 1)
+  Check(m.IsClosedManifold() && std::fabs(m.Volume() - 6270.0045) < 2.0,
+        "the same body at 1e-3 still tessellates to a closed mesh with the closed-form volume (6270.0045 within the 1e-3 chord error)");
+}
+
+// HealChecked(options): NaN / inf / negative options were silently accepted (negative clamped to 0, NaN / inf quietly
+// meaning "no limit") and a clean box reported "already clean".
+void TestHealCheckedRefusesNonsenseOptions() {
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (int field = 0; field < 3; ++field) {
+    for (double bad : {nan, inf, -1.0}) {
+      Brep box = Brep::BoxWelded(0, 0, 0, 10, 10, 10);
+      Brep::HealOptions o;
+      if (field == 0) o.gap_tolerance = bad;
+      if (field == 1) o.sliver_width = bad;
+      if (field == 2) o.max_relative_volume_change = bad;
+      const char* name = field == 0 ? "gap_tolerance" : field == 1 ? "sliver_width" : "max_relative_volume_change";
+      Check(ThrowsInvalid([&] { (void)box.HealChecked(o); }, name),
+            "HealChecked refuses a NaN / inf / negative option, naming the field");
+    }
+  }
+  Brep box = Brep::BoxWelded(0, 0, 0, 10, 10, 10);
+  Brep::HealOptions zero;
+  zero.gap_tolerance = 0.0;
+  Check(box.HealChecked(zero).accepted, "HealChecked still accepts a zero gap_tolerance on a clean box");
+}
+
+// FilletConvexEdgeLaw / FilletConcaveEdgeLaw / SampleFilletRadiusLaw: the user's law is called straight from the fillet code,
+// so `throw 42` escaped as a non-std exception no `catch (const std::exception&)` can see.
+void TestFilletRadiusLawThatThrowsIsRefusedWithAReason() {
+  const Brep box = Brep::BoxWelded(0, 0, 0, 10, 10, 10);
+  const Point3d p0(0, 0, 10), p1(10, 0, 10);
+  const std::function<double(double)> throws_int = [](double) -> double { throw 42; };
+  const std::function<double(double)> throws_rt = [](double) -> double { throw std::runtime_error("boom"); };
+  const std::function<double(double)> throws_late = [](double f) -> double {
+    if (f > 0.4) throw 7;
+    return 1.0 + f;
+  };
+  Check(ThrowsInvalid([&] { (void)dino8::kernel::FilletConvexEdgeLaw(box, p0, p1, throws_int, 1e-3); }, "radius law threw a non-standard exception"),
+        "FilletConvexEdgeLaw: a law that throws an int is refused with a reason (was an escaping non-std exception)");
+  Check(ThrowsInvalid([&] { (void)dino8::kernel::FilletConvexEdgeLaw(box, p0, p1, throws_rt, 1e-3); }, "boom"),
+        "FilletConvexEdgeLaw: a law that throws std::runtime_error is refused and its message is kept");
+  Check(ThrowsInvalid([&] { (void)dino8::kernel::FilletConcaveEdgeLaw(box, p0, p1, throws_late, 1e-3); }, "radius law threw"),
+        "FilletConcaveEdgeLaw: a law that throws only part-way along the edge is refused too");
+  Check(ThrowsInvalid([&] { (void)dino8::kernel::SampleFilletRadiusLaw(10.0, throws_int, 1e-3, 64); }, "radius law threw"),
+        "SampleFilletRadiusLaw: same refusal");
+}
+
+// FilletRevolveRims on a cylinder of radius 1e6: OpenNURBS' ON_Surface::IsCylinder rejects the rational-NURBS wall of a
+// 1e6 cylinder at EVERY tolerance (measured 1e-9 ... 1e5; true up to R = 3e5), so the fillet was refused with "a face is
+// not a plane, cylinder, cone or torus". The classification is now retried on a copy scaled to a diagonal of 100.
+void TestRevolveFilletOnVeryLargeCylinder() {
+  using revolve_rim_tests::MakeRevolvedPolygon;
+  using revolve_rim_tests::RZ;
+  for (double R : {3e5, 1e6, 1e7}) {
+    const Brep cyl = MakeRevolvedPolygon({RZ{0, 0}, RZ{R, 0}, RZ{R, 2 * R}, RZ{0, 2 * R}}, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+    Brep r;
+    bool ok = true;
+    try {
+      r = dino8::kernel::FilletRevolveRims(cyl, {{Point3d(R * std::cos(0.3), R * std::sin(0.3), 2 * R), 1e-3 * R}});
+    } catch (const std::exception&) {
+      ok = false;
+    }
+    Check(ok && r.FaceCount() == 4 && r.raw().IsValid() && r.raw().IsSolid(),
+          "FilletRevolveRims of a cylinder of radius 3e5 / 1e6 / 1e7 gives a valid closed 4-face solid (was refused at >= 1e6)");
+  }
+}
+
+// SubD::ToNurbsPatchesToTolerance: an unreachable tolerance used to run every level up to the face budget; measured on a
+// unit-scale cube at 1e-12: 0.08 s at 96 faces, 0.36 s at 384, 1.8 s at 1536, 7.9 s at 6144 (about 4.5x per level), and the
+// same for a 1e9 cube whose float32 distance oracle cannot certify a small tolerance.
+void TestSubDFitToleranceUnreachableToleranceStopsAtTheMeasurementBudget() {
+  const auto cube_mesh = [](double s) {
+    dino8::kernel::Mesh m;
+    ON_Mesh& raw = m.raw();
+    for (int z = 0; z < 2; ++z)
+      for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 2; ++x) raw.m_V.Append(ON_3fPoint(static_cast<float>(x * s), static_cast<float>(y * s), static_cast<float>(z * s)));
+    const int quads[6][4] = {{0, 2, 3, 1}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 4, 6, 2}, {1, 3, 7, 5}, {4, 5, 7, 6}};
+    for (const auto& q : quads) {
+      ON_MeshFace f;
+      for (int i = 0; i < 4; ++i) f.vi[i] = q[i];
+      raw.m_F.Append(f);
+    }
+    return m;
+  };
+  for (double s : {1.0, 1e9}) {
+    const dino8::kernel::SubD cube = dino8::kernel::SubD::FromControlMesh(cube_mesh(s));
+    dino8::kernel::SubDFitReport rep;
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto patches = cube.ToNurbsPatchesToTolerance(s * 1e-12, &rep);
+    const double dt = SecondsSince(t0);
+    Check(patches.empty() && !rep.converged && rep.reason.find("not met") != std::string::npos,
+          "an unreachable SubD fit tolerance (1e-12 of the cube side, side 1 and 1e9) is reported 'not met' with no patches");
+    Check(rep.deviation_per_level.size() <= 5, "...having measured at most levels 0..4 (was 0..5)");
+    Check(dt < 8.0, "...in bounded time (measured ~2.2 s idle for the unit cube; was ~10 s)");
+  }
+}
+
 }  // namespace qc2_tests
 
 int main() {
@@ -104810,6 +104923,11 @@ int main() {
   RunTest("qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance", qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance);
   RunTest("qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs", qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs);
   RunTest("qc2_tests::TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates", qc2_tests::TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates);
+  RunTest("qc2_tests::TestAdaptiveTessellationOfDoublyCurvedFaceIsBoundedInTime", qc2_tests::TestAdaptiveTessellationOfDoublyCurvedFaceIsBoundedInTime);
+  RunTest("qc2_tests::TestHealCheckedRefusesNonsenseOptions", qc2_tests::TestHealCheckedRefusesNonsenseOptions);
+  RunTest("qc2_tests::TestFilletRadiusLawThatThrowsIsRefusedWithAReason", qc2_tests::TestFilletRadiusLawThatThrowsIsRefusedWithAReason);
+  RunTest("qc2_tests::TestRevolveFilletOnVeryLargeCylinder", qc2_tests::TestRevolveFilletOnVeryLargeCylinder);
+  RunTest("qc2_tests::TestSubDFitToleranceUnreachableToleranceStopsAtTheMeasurementBudget", qc2_tests::TestSubDFitToleranceUnreachableToleranceStopsAtTheMeasurementBudget);
 
   RunTest("offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary",
           offset_remainder_tests::TestOffsetAnalyticDirectConeFoldGuardBoundary);
