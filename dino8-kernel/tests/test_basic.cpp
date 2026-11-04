@@ -100210,40 +100210,32 @@ void TestLiveLoopTrimCountsHasFullTopologyAndRandomizedAdjacency() {
 
 // TEMP-PROBE-BEGIN
 static void ProbeBrep(const char* tag, const Brep& b) {
-  std::fprintf(stderr, "PROBE %s: faces=%d fulltopo=%d loops=%d trims=%d V=%d E=%d lumps=%zu\n", tag, b.FaceCount(),
-               b.HasFullTopology() ? 1 : 0, b.LiveLoopCount(), b.LiveTrimCount(), b.LiveVertexCount(), b.LiveEdgeCount(),
-               b.LumpFaceRanges().size());
+  char buf[600];
+  int n = std::snprintf(buf, sizeof buf, "PROBE %s: faces=%d fulltopo=%d loops=%d trims=%d V=%d E=%d lumps=%zu |", tag, b.FaceCount(),
+                        b.HasFullTopology() ? 1 : 0, b.LiveLoopCount(), b.LiveTrimCount(), b.LiveVertexCount(), b.LiveEdgeCount(),
+                        b.LumpFaceRanges().size());
   try {
     const Brep::ShellClassification c = b.ClassifyShells();
-    for (size_t i = 0; i < c.shells.size(); ++i) {
+    for (size_t i = 0; i < c.shells.size() && n < 420; ++i) {
       const Brep::ShellInfo& s = c.shells[i];
-      std::fprintf(stderr,
-                   "PROBE   shell %zu: faces=%zu role=%d closed=%d topo=%d V=%d E=%d F=%d R=%d naked=%d nonman=%d chi=%d genus=%d vol=%f\n",
-                   i, s.faces.size(), static_cast<int>(s.role), s.closed, s.has_topology, s.vertex_count, s.edge_count,
-                   s.face_count, s.inner_loop_count, s.naked_edge_count, s.non_manifold_edge_count, s.euler_poincare,
-                   s.genus, s.signed_volume);
+      n += std::snprintf(buf + n, sizeof buf - n, " sh%zu role=%d closed=%d topo=%d V=%d E=%d F=%d R=%d naked=%d nonman=%d chi=%d g=%d vol=%.3f;", i,
+                         static_cast<int>(s.role), s.closed, s.has_topology, s.vertex_count, s.edge_count, s.face_count,
+                         s.inner_loop_count, s.naked_edge_count, s.non_manifold_edge_count, s.euler_poincare, s.genus, s.signed_volume);
     }
-    std::fprintf(stderr, "PROBE   regions=%zu consistent=%d\n", c.regions.size(), c.consistent ? 1 : 0);
-    for (const std::string& pr : c.problems) std::fprintf(stderr, "PROBE   problem: %s\n", pr.c_str());
+    n += std::snprintf(buf + n, sizeof buf - n, " regions=%zu cons=%d", c.regions.size(), c.consistent ? 1 : 0);
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "PROBE   ClassifyShells threw: %s\n", e.what());
+    n += std::snprintf(buf + n, sizeof buf - n, " Classify threw: %.100s", e.what());
   }
-  try {
-    const Brep::CheckReport r = b.Check();
-    std::fprintf(stderr, "PROBE   Check: issues=%zu naked=%d closed=%d oriented=%d\n", r.issues.size(),
-                 r.Count(Brep::CheckIssue::Kind::NakedEdge), r.is_closed ? 1 : 0, r.is_oriented ? 1 : 0);
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "PROBE   Check threw: %s\n", e.what());
-  }
+  Check(false, buf);
 }
 void TestProbeThroughHoleCandidates() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
-  try { ProbeBrep("Box-Box diff", BooleanCombineGeneral(Brep::Box(0, 0, 0, 10, 10, 10), Brep::Box(4, 4, -1, 6, 6, 11), BooleanOp::Difference)); } catch (const std::exception& e) { std::fprintf(stderr, "PROBE Box-Box threw %s\n", e.what()); }
-  try { ProbeBrep("Welded-Welded diff", BooleanCombineGeneral(Brep::BoxWelded(0, 0, 0, 10, 10, 10), Brep::BoxWelded(4, 4, -1, 6, 6, 11), BooleanOp::Difference)); } catch (const std::exception& e) { std::fprintf(stderr, "PROBE Welded-Welded threw %s\n", e.what()); }
-  try { ProbeBrep("MakeHole through", dino8::kernel::MakeHole(Brep::BoxWelded(0, 0, 0, 10, 10, 10), dino8::kernel::Point3d(5, 5, 10), dino8::kernel::Vector3d(0, 0, -1), 1.0, 0.0, true)); } catch (const std::exception& e) { std::fprintf(stderr, "PROBE MakeHole threw %s\n", e.what()); }
-  try { std::vector<Brep::PlanarFace> pf = Brep::BoxWelded(0, 0, 0, 10, 10, 10).PlanarFaces(); pf.erase(pf.begin() + 1); ProbeBrep("5-face open box", Brep::FromPlanarFaces(pf)); } catch (const std::exception& e) { std::fprintf(stderr, "PROBE open box threw %s\n", e.what()); }
-  try { ProbeBrep("shelled box removed face 1", dino8::kernel::ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {1}, 1.0)); } catch (const std::exception& e) { std::fprintf(stderr, "PROBE shell threw %s\n", e.what()); }
+  try { ProbeBrep("Box-Box diff", BooleanCombineGeneral(Brep::Box(0, 0, 0, 10, 10, 10), Brep::Box(4, 4, -1, 6, 6, 11), BooleanOp::Difference)); } catch (const std::exception& e) { Check(false, (std::string("PROBE Box-Box threw ") + e.what()).substr(0, 200).c_str()); }
+  try { ProbeBrep("Welded-Welded diff", BooleanCombineGeneral(Brep::BoxWelded(0, 0, 0, 10, 10, 10), Brep::BoxWelded(4, 4, -1, 6, 6, 11), BooleanOp::Difference)); } catch (const std::exception& e) { Check(false, (std::string("PROBE Welded-Welded threw ") + e.what()).substr(0, 200).c_str()); }
+  try { ProbeBrep("MakeHole through", dino8::kernel::MakeHole(Brep::BoxWelded(0, 0, 0, 10, 10, 10), dino8::kernel::Point3d(5, 5, 10), dino8::kernel::Vector3d(0, 0, -1), 1.0, 0.0, true)); } catch (const std::exception& e) { Check(false, (std::string("PROBE MakeHole threw ") + e.what()).substr(0, 200).c_str()); }
+  try { std::vector<Brep::PlanarFace> pf = Brep::BoxWelded(0, 0, 0, 10, 10, 10).PlanarFaces(); pf.erase(pf.begin() + 1); ProbeBrep("5-face open box", Brep::FromPlanarFaces(pf)); } catch (const std::exception& e) { Check(false, (std::string("PROBE open box threw ") + e.what()).substr(0, 200).c_str()); }
+  try { ProbeBrep("shelled box removed face 1", dino8::kernel::ShellConvexPlanar(Brep::BoxWelded(0, 0, 0, 10, 10, 10), {1}, 1.0)); } catch (const std::exception& e) { Check(false, (std::string("PROBE shell threw ") + e.what()).substr(0, 200).c_str()); }
 }
 // TEMP-PROBE-END
 
