@@ -347,7 +347,17 @@ void RegisterBuiltinParams() {
   auto style = ChoiceParam("style", "loft style (Normal interpolates smoothly, Straight is a ruled loft)", {"normal", "straight"},
                            [](const HistoryRecord& r) { return std::string(r.straight ? "straight" : "normal"); },
                            [](HistoryRecord& r, const std::string& l) { r.straight = l == "straight"; return std::string(); });
-  SetParams("Loft", {style, YesNoParam("cap", "cap the ends of a loft through closed planar curves", "cap", true)});
+  auto spacing = ChoiceParam("spacing", "loft station spacing (Chord averages control-point chord lengths; Uniform uses equal parameter steps; Centripetal uses square-root chords)", {"chord", "uniform", "centripetal"},
+                             [](const HistoryRecord& r) {
+                               const int c = static_cast<int>(std::lround(NumOf(r, "spacing", 0.0)));
+                               return std::string(c == 1 ? "uniform" : c == 2 ? "centripetal" : "chord");
+                             },
+                             [](HistoryRecord& r, const std::string& l) {
+                               if (l == "chord") r.num.erase("spacing");
+                               else r.num["spacing"] = l == "uniform" ? 1.0 : 2.0;
+                               return std::string();
+                             });
+  SetParams("Loft", {style, YesNoParam("cap", "cap the ends of a loft through closed planar curves", "cap", true), spacing});
   SetParams("SubDLoft", {style});
   SetParams("Pipe", {
       NumberParam("radius", "pipe radius", "> 0", [](const HistoryRecord& r) { return NumOf(r, "radius"); },
