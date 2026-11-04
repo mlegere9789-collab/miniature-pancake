@@ -1164,6 +1164,34 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   surface_.GetBoundingBox(bbox, false);
   const double tol = tolerance > 0.0 ? tolerance : dino8::kernel::tolerance::DistanceForSize(bbox.Diagonal().Length());
 
+  auto sci = [](double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.3g", v);
+    return std::string(buf);
+  };
+  // A tolerance below what double precision can resolve is refused up front,
+  // before any sampling. The fit is measured against PointAt + distance *
+  // NormalAt, and the normal is built from first derivatives, so the "true"
+  // locus itself carries rounding noise of several ulps of the coordinate
+  // magnitude (extent, here: the surface's bounding diagonal plus the offset
+  // distance): no surface, however many control points, can be shown to lie
+  // within 1e-10 x extent of it. Without this floor an unreachable tolerance
+  // (say 1e-12) made SuggestedDivisions() ask for millions of samples per
+  // direction and the call ran for minutes to hours instead of refusing.
+  {
+    const double extent = std::max({bbox.Diagonal().Length(), std::fabs(distance), 1e-300});
+    const double reachable_floor = 1e-10 * extent;
+    if (tol < reachable_floor) {
+      return refuse("tolerance not reachable: the requested tolerance " + sci(tol) +
+                    " is below what double precision can resolve for this surface (the true offset locus itself carries "
+                    "rounding noise of about 1e-10 x the surface extent " + sci(extent) +
+                    " = " + sci(reachable_floor) +
+                    "); ask for a tolerance of at least " + sci(reachable_floor) +
+                    ". Best deviation reached: none, refused before any sampling. No offset is returned rather than "
+                    "an out-of-tolerance fit");
+    }
+  }
+
   const Interval du = Domain(0);
   const Interval dv = Domain(1);
   const double u_range = du.max - du.min;
@@ -1173,9 +1201,19 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   // OffsetApproximate()'s own (surface.cpp), checked once up front: no
   // amount of refitting rescues a distance whose TRUE offset locus
   // already folds through itself.
+  // Hard cap on the sample grid. SuggestedDivisions() scales like
+  // 1 / sqrt(tolerance), so a very tight (but above-the-precision-floor)
+  // tolerance asks for a grid whose guard sweep, truth grid (2x per direction)
+  // and fit cost grow without bound; capped, the fit gets at most
+  // kMaxRefitDivisions + 1 samples per direction (the adaptive loop below may
+  // densify once more up to its own 700 ceiling) and a tolerance the capped
+  // grid cannot resolve is refused after a bounded amount of work, naming the
+  // best deviation actually reached. The control net is never allowed to
+  // exceed its own grid anyway (ncv > samples ends the loop).
+  constexpr int kMaxRefitDivisions = 500;
   const SurfaceDivisions divs = SuggestedDivisions(tol);
-  const int guard_nu = std::max({divs.u, 4 * CVCountU(), 1});
-  const int guard_nv = std::max({divs.v, 4 * CVCountV(), 1});
+  const int guard_nu = std::min(std::max({divs.u, 4 * CVCountU(), 1}), std::max(kMaxRefitDivisions, 4 * CVCountU()));
+  const int guard_nv = std::min(std::max({divs.v, 4 * CVCountV(), 1}), std::max(kMaxRefitDivisions, 4 * CVCountV()));
   const std::string kDegenerateReason =
       "singular surface: the surface normal is undefined or direction-dependent (a collapsed edge whose normal "
       "differs along it, as at a cone apex, a zero-area fold, or a row/column of coincident control points), so "
@@ -1642,9 +1680,10 @@ Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tole
   }
   return refuse("tolerance not reachable: the offset needs more control points than the sample-grid ceiling (" +
                 std::to_string(u_samples) + " x " + std::to_string(v_samples) +
-                ") can resolve at the requested tolerance " + std::to_string(tol) +
+                ") can resolve at the requested tolerance " + sci(tol) +
                 "; the adaptive fit stopped at " + std::to_string(ceiling_u) + " x " + std::to_string(ceiling_v) +
-                " control points with a best deviation of " + std::to_string(best_worst) +
+                " control points with a best deviation of " +
+                (std::isfinite(best_worst) ? sci(best_worst) : std::string("none measured")) +
                 ". No offset is returned rather than an out-of-tolerance fit");
 }
 
