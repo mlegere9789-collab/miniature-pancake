@@ -85,8 +85,12 @@ jobs:
             mkdir -p scratch2 && cd scratch2
             while IFS= read -r f; do
               [ -z "$f" ] && continue
+              set +e
               DINO8_TEST_FILTER="$f" timeout 1200 ../bundle/dino8_kernel_tests > ../f.log 2> ../f.err
-              echo "filter $f: exit=$? ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
+              frc=$?
+              set -e
+              echo "filter $f: exit=$frc ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
+              grep -E '^FAILED|^\[probe|threw|exception' ../f.err ../f.log 2>/dev/null | cut -c1-260 | sort | uniq -c | head -25 || true
             done < ../.kverify_filters
             cd ..
           fi
@@ -173,7 +177,7 @@ jobs:
         shell: bash
         timeout-minutes: 120
         run: |
-          find appbin -type f | head
+          find appbin -type f | head || true
           BIN=$(find appbin -type f -name Dino8 | head -1)
           JSON=$(find appbin -type f -name section_groups.json | head -1)
           chmod +x "$BIN"
