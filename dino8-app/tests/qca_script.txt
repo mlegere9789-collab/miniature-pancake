@@ -135,8 +135,8 @@ List
 New
 QCABEGIN_sab_missing
 Import /nonexistent_qca_dir/qca_missing.sab
-SelAll
-List
+# (no SelAll/List here: List on an EMPTY selection opens its "Select objects to list" prompt, which swallowed the next
+# case's New / marker / Box lines and made QCA_same_twice vacuously fail)
 
 # --- BooleanDifference with the base picked again among the tools (SelID 1 as base, then SelID 1 and 2 as tools) HUNG the
 # application: the engine returned stray faces for solid-minus-itself and their sewing never ended. Last case of the script,
