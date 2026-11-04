@@ -997,4 +997,87 @@ std::vector<PocketFeature> RecognizePockets(const Brep& solid);
 // above.
 Mesh LatticeInfill(const Mesh& solid, double cell_size, double strut_radius, int circle_segments = 12);
 
+// ---------------------------------------------------------------------------
+// Feature patterns of holes (parity-map "kernel: Transformations, patterns,
+// splitting" - "Feature patterns of holes"). A pattern of an EXISTING
+// recognized HoleFeature (RecognizeHoles() above): the hole already in
+// `solid` is instance 0 of the pattern and the functions below drill the
+// remaining instances, every one with `hole`'s own radius/depth/through and
+// axis, in ONE MakeHoles() call (one compound cutter, one Difference - see
+// that function's doc comment in boolean_general.h for why not N chained
+// differences). Placement is rigid and keeps the hole axis, so the pattern
+// is: Linear (instances at origin + k*spacing*direction, k = 0..count-1),
+// Rectangular (count_u x count_v grid), Polar (instances rotated about an
+// axis PARALLEL to the hole axis, a bolt circle).
+//
+// Refusals, each a std::invalid_argument naming its reason, never a
+// degraded body: count < 2 (or a grid of one instance); a non-positive
+// spacing; a direction that is zero or not perpendicular to the hole axis
+// (a pattern on the drilled face, not along the bore); an instance spacing
+// at which two bores would touch or overlap (centre distance <= 2*radius,
+// MakeHoles() is verified for separated tools only); a polar axis that is
+// not parallel to the hole axis, lies on the hole's own axis, or whose
+// total angle is not in (0, 2*pi]; and - checked AFTER drilling by
+// re-running RecognizeHoles() - any instance that did not come out as a
+// complete bore (it ran off the solid's edge, fell outside the solid, or
+// broke into an existing feature): the number of recognized holes must
+// grow by exactly the number of instances requested.
+//
+// Polar `total_angle` == 2*pi spreads `count` instances evenly around the
+// full circle (step 2*pi/count); any smaller angle spans an arc with
+// `count` instances end to end (step total_angle/(count-1)).
+Brep LinearHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction, double spacing, int count);
+Brep RectangularHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction_u, double spacing_u,
+                            int count_u, Vector3d direction_v, double spacing_v, int count_v);
+Brep PolarHolePattern(const Brep& solid, const HoleFeature& hole, Point3d center, Vector3d axis, int count,
+                      double total_angle = 2.0 * ON_PI);
+
+// ---------------------------------------------------------------------------
+// Arrays along a curve / along a curve on a surface (parity-map "Arrays
+// along a curve / on a surface"). One station per copy at ARC-LENGTH-even
+// positions (NurbsCurve::DivideByCount(count - 1)): station 0 is the curve
+// start, station count-1 its end. Each station carries a frame and the
+// rigid xform that carries the START frame onto it - so a body modelled at
+// the curve start keeps its exact pose relative to the moving frame (the
+// ON_Xform::Rotation(frame0, frame_i) convention the app's ArrayCrv uses).
+//
+// Orientation::None translates only (xform_i = translation by P_i - P_0).
+// Orientation::Frame uses the frame x = unit tangent, y = unit(up x
+// tangent), z = x cross y at each station - a frame that stays fixed
+// relative to `up` (not parallel transport: a closed loop returns to its
+// start frame). `up` parallel to the tangent at any station makes the
+// frame undefined and is refused (std::invalid_argument naming the
+// station) rather than silently flipped.
+//
+// The on-surface variant (ArrayAlongCurveOnSurface) builds each frame from
+// the surface instead: origin = the surface point closest to the path
+// point, z = the surface normal there, x = the path tangent projected into
+// the tangent plane, y = z cross x - so the copy follows the surface's own
+// orientation. The path must lie on the surface: a station whose path
+// point is farther than `tolerance` from the surface is refused, as is a
+// tangent parallel to the normal.
+//
+// ArrayAlongCurve / ArrayAlongCurveOnSurface return `count` Breps (copy 0
+// is `body` itself, moved by the identity), each Brep::Transform()ed, so
+// volumes and validity are those of `body`. Throws std::invalid_argument
+// for count < 2, a zero `up`, or a curve of zero length.
+enum class CurveArrayOrientation { None, Frame };
+
+struct CurveArrayStation {
+  double parameter = 0.0;
+  Point3d point;
+  ON_Plane frame;
+  ON_Xform xform;
+};
+
+std::vector<CurveArrayStation> ArrayStationsAlongCurve(const NurbsCurve& path, int count,
+                                                      CurveArrayOrientation orientation,
+                                                      Vector3d up = Vector3d(0, 0, 1));
+std::vector<CurveArrayStation> ArrayStationsAlongCurveOnSurface(const NurbsCurve& path, const NurbsSurface& surface,
+                                                               int count, double tolerance = 1e-3);
+std::vector<Brep> ArrayAlongCurve(const Brep& body, const NurbsCurve& path, int count,
+                                  CurveArrayOrientation orientation, Vector3d up = Vector3d(0, 0, 1));
+std::vector<Brep> ArrayAlongCurveOnSurface(const Brep& body, const NurbsCurve& path, const NurbsSurface& surface,
+                                           int count, double tolerance = 1e-3);
+
 }  // namespace dino8::kernel

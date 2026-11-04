@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -1821,6 +1822,237 @@ Mesh LatticeInfill(const Mesh& solid, double cell_size, double strut_radius, int
   }
 
   return BooleanCombine(lattice, solid, BooleanOp::Intersection);
+}
+
+namespace {
+
+// Shared tail of the three hole patterns: validates the hole, enforces the
+// instance spacing, drills every instance in one MakeHoles() call, then
+// re-runs RecognizeHoles() to prove each instance is a complete bore.
+Brep DrillHolePatternInstances(const Brep& solid, const HoleFeature& hole, const std::vector<Point3d>& instance_centers,
+                               const char* who) {
+  const std::string name = std::string("dino8::kernel::") + who;
+  if (!(hole.radius > 0.0)) throw std::invalid_argument(name + ": hole radius must be positive");
+  if (instance_centers.empty()) throw std::invalid_argument(name + ": no instances requested");
+  double min_gap = std::numeric_limits<double>::infinity();
+  std::vector<Point3d> all = instance_centers;
+  all.push_back(hole.origin);
+  for (size_t i = 0; i < all.size(); ++i) {
+    for (size_t j = i + 1; j < all.size(); ++j) min_gap = std::min(min_gap, all[i].DistanceTo(all[j]));
+  }
+  if (!(min_gap > 2.0 * hole.radius * (1.0 + 1e-9) + 1e-9)) {
+    throw std::invalid_argument(name + ": instance spacing " + std::to_string(min_gap) +
+                                " leaves neighbouring bores touching or overlapping (needs > 2*radius = " +
+                                std::to_string(2.0 * hole.radius) + ")");
+  }
+  const size_t before = RecognizeHoles(solid).size();
+  const Brep drilled = MakeHoles(solid, instance_centers, hole.axis, hole.radius, hole.depth, hole.through);
+  const size_t after = RecognizeHoles(drilled).size();
+  if (after != before + instance_centers.size()) {
+    throw std::invalid_argument(name + ": only " + std::to_string(after - std::min(after, before)) + " of " +
+                                std::to_string(instance_centers.size()) +
+                                " pattern instances came out as complete bores (an instance runs off the solid's "
+                                "edge, lies outside the solid, or breaks into an existing feature)");
+  }
+  return drilled;
+}
+
+Vector3d UnitPerpendicularTo(const Vector3d& dir, const Vector3d& hole_axis, const std::string& name) {
+  Vector3d d = dir;
+  Vector3d a = hole_axis;
+  if (!d.Unitize()) throw std::invalid_argument(name + ": pattern direction must be nonzero");
+  if (!a.Unitize()) throw std::invalid_argument(name + ": hole axis must be nonzero");
+  if (std::fabs(ON_DotProduct(d, a)) > 1e-9) {
+    throw std::invalid_argument(name + ": pattern direction is not perpendicular to the hole axis");
+  }
+  return d;
+}
+
+}  // namespace
+
+Brep LinearHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction, double spacing, int count) {
+  const std::string name = "dino8::kernel::LinearHolePattern";
+  if (count < 2) throw std::invalid_argument(name + ": count must be at least 2 (instance 0 is the existing hole)");
+  if (!(spacing > 0.0)) throw std::invalid_argument(name + ": spacing must be positive");
+  const Vector3d d = UnitPerpendicularTo(direction, hole.axis, name);
+  std::vector<Point3d> centers;
+  for (int k = 1; k < count; ++k) centers.push_back(hole.origin + d * (spacing * k));
+  return DrillHolePatternInstances(solid, hole, centers, "LinearHolePattern");
+}
+
+Brep RectangularHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction_u, double spacing_u,
+                            int count_u, Vector3d direction_v, double spacing_v, int count_v) {
+  const std::string name = "dino8::kernel::RectangularHolePattern";
+  if (count_u < 1 || count_v < 1 || count_u * count_v < 2) {
+    throw std::invalid_argument(name + ": the grid must have at least 2 instances (instance 0 is the existing hole)");
+  }
+  if (!(spacing_u > 0.0) || !(spacing_v > 0.0)) throw std::invalid_argument(name + ": spacings must be positive");
+  const Vector3d du = UnitPerpendicularTo(direction_u, hole.axis, name);
+  const Vector3d dv = UnitPerpendicularTo(direction_v, hole.axis, name);
+  if (ON_CrossProduct(du, dv).Length() < 1e-9) {
+    throw std::invalid_argument(name + ": the two grid directions are parallel");
+  }
+  std::vector<Point3d> centers;
+  for (int i = 0; i < count_u; ++i) {
+    for (int j = 0; j < count_v; ++j) {
+      if (i == 0 && j == 0) continue;
+      centers.push_back(hole.origin + du * (spacing_u * i) + dv * (spacing_v * j));
+    }
+  }
+  return DrillHolePatternInstances(solid, hole, centers, "RectangularHolePattern");
+}
+
+Brep PolarHolePattern(const Brep& solid, const HoleFeature& hole, Point3d center, Vector3d axis, int count,
+                      double total_angle) {
+  const std::string name = "dino8::kernel::PolarHolePattern";
+  if (count < 2) throw std::invalid_argument(name + ": count must be at least 2 (instance 0 is the existing hole)");
+  if (!(total_angle > 0.0) || total_angle > 2.0 * ON_PI * (1.0 + 1e-12)) {
+    throw std::invalid_argument(name + ": total_angle must be in (0, 2*pi]");
+  }
+  Vector3d ax = axis;
+  Vector3d hax = hole.axis;
+  if (!ax.Unitize() || !hax.Unitize()) throw std::invalid_argument(name + ": axis must be nonzero");
+  if (ON_CrossProduct(ax, hax).Length() > 1e-9) {
+    throw std::invalid_argument(name + ": the polar axis is not parallel to the hole axis (MakeHoles() drills every "
+                                       "instance along one shared axis)");
+  }
+  const Vector3d radial = hole.origin - center;
+  const Vector3d off_axis = radial - ax * ON_DotProduct(radial, ax);
+  if (!(off_axis.Length() > 2.0 * hole.radius)) {
+    throw std::invalid_argument(name + ": the hole lies on (or within one diameter of) the polar axis, so the "
+                                       "instances would coincide or overlap");
+  }
+  const bool full = total_angle >= 2.0 * ON_PI * (1.0 - 1e-12);
+  const double step = full ? total_angle / count : total_angle / (count - 1);
+  std::vector<Point3d> centers;
+  for (int k = 1; k < count; ++k) {
+    ON_Xform rot;
+    rot.Rotation(step * k, ax, center);
+    centers.push_back(rot * hole.origin);
+  }
+  return DrillHolePatternInstances(solid, hole, centers, "PolarHolePattern");
+}
+
+namespace {
+
+// xform carrying frame `from` onto frame `to` rigidly (a body modelled
+// relative to `from` keeps its pose relative to `to`).
+ON_Xform FrameToFrame(const ON_Plane& from, const ON_Plane& to) {
+  ON_Xform x;
+  x.Rotation(from, to);
+  return x;
+}
+
+void RequirePathAndCount(const NurbsCurve& path, int count, const std::string& name) {
+  if (count < 2) throw std::invalid_argument(name + ": count must be at least 2");
+  if (!(path.Length() > 0.0)) throw std::invalid_argument(name + ": the path curve has zero length");
+}
+
+}  // namespace
+
+std::vector<CurveArrayStation> ArrayStationsAlongCurve(const NurbsCurve& path, int count,
+                                                      CurveArrayOrientation orientation, Vector3d up) {
+  const std::string name = "dino8::kernel::ArrayStationsAlongCurve";
+  RequirePathAndCount(path, count, name);
+  Vector3d upv = up;
+  if (!upv.Unitize()) throw std::invalid_argument(name + ": up must be nonzero");
+  const std::vector<double> params = path.DivideByCount(count - 1);
+  if (static_cast<int>(params.size()) != count) {
+    throw std::invalid_argument(name + ": the curve could not be divided into the requested number of stations");
+  }
+  std::vector<CurveArrayStation> out;
+  for (int i = 0; i < count; ++i) {
+    CurveArrayStation st;
+    st.parameter = params[static_cast<size_t>(i)];
+    st.point = path.PointAt(st.parameter);
+    Vector3d t = path.TangentAt(st.parameter);
+    ON_Plane f;
+    f.origin = st.point;
+    if (orientation == CurveArrayOrientation::Frame) {
+      Vector3d n = ON_CrossProduct(upv, t);
+      if (!t.Unitize() || !n.Unitize()) {
+        throw std::invalid_argument(name + ": up is parallel to the curve tangent at station " + std::to_string(i) +
+                                    " - the orientation frame is undefined there");
+      }
+      f.xaxis = t;
+      f.yaxis = n;
+      f.zaxis = ON_CrossProduct(t, n);
+    } else {
+      f.xaxis = Vector3d(1, 0, 0);
+      f.yaxis = Vector3d(0, 1, 0);
+      f.zaxis = Vector3d(0, 0, 1);
+    }
+    f.UpdateEquation();
+    st.frame = f;
+    out.push_back(st);
+  }
+  for (CurveArrayStation& st : out) {
+    st.xform = (orientation == CurveArrayOrientation::Frame)
+                   ? FrameToFrame(out.front().frame, st.frame)
+                   : ON_Xform::TranslationTransformation(st.point - out.front().point);
+  }
+  return out;
+}
+
+std::vector<CurveArrayStation> ArrayStationsAlongCurveOnSurface(const NurbsCurve& path, const NurbsSurface& surface,
+                                                               int count, double tolerance) {
+  const std::string name = "dino8::kernel::ArrayStationsAlongCurveOnSurface";
+  RequirePathAndCount(path, count, name);
+  const std::vector<double> params = path.DivideByCount(count - 1);
+  if (static_cast<int>(params.size()) != count) {
+    throw std::invalid_argument(name + ": the curve could not be divided into the requested number of stations");
+  }
+  std::vector<CurveArrayStation> out;
+  for (int i = 0; i < count; ++i) {
+    CurveArrayStation st;
+    st.parameter = params[static_cast<size_t>(i)];
+    st.point = path.PointAt(st.parameter);
+    const Point2d uv = surface.ClosestPointParameter(st.point);
+    const Point3d sp = surface.PointAt(uv.x, uv.y);
+    const double dist = sp.DistanceTo(st.point);
+    if (dist > tolerance) {
+      throw std::invalid_argument(name + ": the path leaves the surface at station " + std::to_string(i) +
+                                  " (distance " + std::to_string(dist) + " > tolerance " + std::to_string(tolerance) +
+                                  ")");
+    }
+    Vector3d nrm = surface.NormalAt(uv.x, uv.y);
+    Vector3d tan = path.TangentAt(st.parameter);
+    if (!nrm.Unitize()) throw std::invalid_argument(name + ": degenerate surface normal at station " + std::to_string(i));
+    tan = tan - nrm * ON_DotProduct(tan, nrm);
+    if (!tan.Unitize()) {
+      throw std::invalid_argument(name + ": the path tangent is parallel to the surface normal at station " +
+                                  std::to_string(i));
+    }
+    ON_Plane f;
+    f.origin = sp;
+    f.xaxis = tan;
+    f.yaxis = ON_CrossProduct(nrm, tan);
+    f.zaxis = nrm;
+    f.UpdateEquation();
+    st.point = sp;
+    st.frame = f;
+    out.push_back(st);
+  }
+  for (CurveArrayStation& st : out) st.xform = FrameToFrame(out.front().frame, st.frame);
+  return out;
+}
+
+std::vector<Brep> ArrayAlongCurve(const Brep& body, const NurbsCurve& path, int count,
+                                  CurveArrayOrientation orientation, Vector3d up) {
+  std::vector<Brep> out;
+  for (const CurveArrayStation& st : ArrayStationsAlongCurve(path, count, orientation, up)) {
+    out.push_back(body.Transform(st.xform));
+  }
+  return out;
+}
+
+std::vector<Brep> ArrayAlongCurveOnSurface(const Brep& body, const NurbsCurve& path, const NurbsSurface& surface,
+                                           int count, double tolerance) {
+  std::vector<Brep> out;
+  for (const CurveArrayStation& st : ArrayStationsAlongCurveOnSurface(path, surface, count, tolerance)) {
+    out.push_back(body.Transform(st.xform));
+  }
+  return out;
 }
 
 }  // namespace dino8::kernel
