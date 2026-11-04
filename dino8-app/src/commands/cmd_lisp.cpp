@@ -382,7 +382,9 @@ void LoadLispAutoload(Application& app) {
 void RegisterLispCommands(CommandEngine& e) {
   Reg(e, "Lisp", Make<LispCommand>(), CommandStatus::Implemented,
       "Evaluates an AutoLISP-style expression: (+ 1 2) typed directly, or Lisp (expr). A subset of AutoLISP: defun (with c:name commands), setq, "
-      "if/cond/while/repeat/foreach, list/string/math functions, (command ...) to run any command, (entlast), (ssget \"X\"), (load \"f.lsp\").");
+      "if/cond/while/repeat/foreach, list/string/math functions, dotted pairs, (command ...) to run any command, entget/entmod/entdel/entnext/entlast, "
+      "(ssget \"X\" '((0 . \"LINE\") (8 . \"Walls\"))) with type/layer/color filters, ssadd/ssdel, getint/getreal/getpoint/getstring/getkword/initget "
+      "(they read the input typed after the expression, e.g. (setq n (getint \"n: \")) 5), a vl-* subset, (load \"f.lsp\").");
   Reg(e, "LoadLisp", Make<LoadLispCommand>(), CommandStatus::Implemented,
       "Evaluates a .lsp file: LoadLisp <file>. RunScript/LoadScript accept .lsp files too. <config dir>/acad.lsp loads at every start-up.");
 }

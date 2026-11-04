@@ -2,9 +2,13 @@
 // command scripting language"). It is a SUBSET of AutoLISP, not Autodesk's
 // interpreter: dynamic scoping with (defun f (args / locals) ...), the usual
 // special forms and list / string / math functions, (command ...) driving the
-// app's command line, (defun c:name () ...) defining a new typed command, and
-// a few drawing queries (entlast, ssget "X", sslength, ssname). It has no
-// dependency on the rest of the app: the app plugs in through LispHost.
+// app's command line, (defun c:name () ...) defining a new typed command, dotted
+// pairs, entity access (entget / entmod / entdel / entnext / entlast, selection
+// sets with ssget "X" filter lists, ssadd / ssdel), typed input (getint, getreal,
+// getpoint, getstring, getkword, initget: they read the input typed after the
+// expression, there is no blocking prompt) and a vl-* subset. Entity names are
+// plain integers (the object ids). It has no dependency on the rest of the app:
+// the app plugs in through LispHost.
 #pragma once
 
 #include <functional>
