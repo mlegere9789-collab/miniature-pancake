@@ -11,9 +11,9 @@ else
 fi
 qc2_case() { awk -v n="QC2BEGIN_$1" 'index($0, "Unknown command: " n) { on = 1; next } on && /Unknown command: QC2BEGIN_/ { exit } on' <<<"$QC2_OUT"; }
 qc2_has() { if grep -qF -- "$2" <<<"$1"; then qc2_ok "$3"; else qc2_bad "$3"; fi; }
-qc2_hasnot() { if grep -qF -- "$2" <<<"$1"; then qc2_bad "$3"; else qc2_ok "$3"; fi; }
+qc2_hasnot() { if [ -z "$1" ] || grep -qF -- "$2" <<<"$1"; then qc2_bad "$3"; else qc2_ok "$3"; fi; }  # an empty case (the script died earlier) must not pass
 QC2_A="$(qc2_case sec_nan_point)"
-qc2_hasnot "$QC2_A" "nan,nan,nan" "QC2_sec_nan_point: a typed nan coordinate is refused, not accepted as a point"
+qc2_hasnot "$QC2_A" "Section line has no length" "QC2_sec_nan_point: a typed nan coordinate is not accepted as the start point (every later point then had 'no length')"
 qc2_has "$QC2_A" "Section: 1 curve(s)" "QC2_sec_nan_point: after the refused nan the next two points still cut the box (1 curve)"
 QC2_B="$(qc2_case sec_inf_point)"
 qc2_has "$QC2_B" "Section: 1 curve(s)" "QC2_sec_inf_point: an inf coordinate is refused; the next two points still cut the box"
