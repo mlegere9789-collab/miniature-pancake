@@ -12830,7 +12830,7 @@ rtahb() { local a b; a="$(rtasig "$(rtablock hb_moved)")"; b="$(rtasig "$(rtablo
 rtahb
 RTA_HS_M="$(rtablock hs_moved)"; RTA_HS_F="$(rtablock hs_fresh)"; RTA_HS_O="$(rtablock hs_orig)"
 RTA_HSM="$(rtasig "$RTA_HS_M")"; RTA_HSF="$(rtasig "$RTA_HS_F")"; RTA_HSO="$(rtasig "$RTA_HS_O")"
-r="$(rtacmp "$RTA_HSM" "$RTA_HSF" 0.005 0.005 0.03 0)"
+r="$(rtacmp "x ${RTA_HSM#* }" "x ${RTA_HSF#* }" 0.005 0.005 0.03 0)"
 if [ "$r" = ok ]; then rta_ok "RTA_hs: History On sweep, saved and reopened, section moved: the rebuilt wall equals the fresh sweep [$RTA_HSM]"; else rta_bad "RTA_hs: rebuilt vs fresh:$r ('$RTA_HSM' vs '$RTA_HSF')"; fi
 if [ "$RTA_HSM" != "$RTA_HSO" ]; then rta_ok "RTA_hs_sensitive: the moved wall differs from the original one (the comparison can fail)"; else rta_bad "RTA_hs_sensitive: nothing moved"; fi
 
