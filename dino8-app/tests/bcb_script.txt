@@ -14,11 +14,14 @@ Delete
 @expect_objects 0
 # Asymmetric request (Distance1=1 fits, Distance2=50 overflows the 5-wide face): the exact path refuses and the message
 # names the real bound instead of only the planar-face diagnostic.
+# The edge is picked at the OTHER short corner (1300420,5): the face numbering follows the edge's trim order, so at
+# (1300520,5) the 5-wide face is face 1 (Distance2=50 then fits the 100-wide face 2 and the chamfer succeeds, volume 950),
+# while at (1300420,5) the 5-wide face is face 2 and Distance2=50 overflows it (measured with the shared app build).
 Box 1300420,0,0 1300520,5,0 2
 ChamferEdge
 Radius=1
 Distance2=50
-1300520,5,1
+1300420,5,1
 Enter
 SelAll
 Volume
