@@ -101334,6 +101334,213 @@ void TestOffsetAnalyticDirectConeFoldGuardBoundary() {
   }
 }
 
+// ---- closed-polygon offset: invalid-loop removal (Sharp) -------------------------------------------------------------
+//
+// An inward offset past a thin spike / an arm width, or an outward offset that closes a notch, makes the raw mitre polygon
+// self-cross. The valid offset is that polygon with its invalid loops cut off. Expected vertex lists are the mitre buffer of
+// the same polygon computed by GEOS 3.14 (shapely 2.2.0, buffer(d, join_style=mitre, mitre_limit=1e6)), an implementation
+// that shares nothing with the kernel; they are hard-coded here with 12 decimals and compared cyclically (any start vertex).
+struct LoopCase {
+  const char* name;
+  std::vector<std::pair<double, double>> v;
+  double d;
+  std::vector<std::pair<double, double>> expect;
+  double expect_area;
+};
+
+std::vector<LoopCase> LoopCases() {
+  return {
+    {"spike, offset keeps the whole spike (no loop)",
+     {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}},
+     -0.9,
+     {{13.100000000000, 0.900000000000}, {13.100000000000, 9.185511194099}, {8.157275069219, 9.679783687177}, {7.752949954285, 15.239254017516}, {7.233082419215, 15.333775387529}, {6.845592817831, 9.327686566073}, {0.900000000000, 9.129500138812}, {0.900000000000, 0.900000000000}},
+     108.275129164255},
+    {"spike swallowed by the inward offset (remnant left at the root)",
+     {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}},
+     -1.5,
+     {{12.500000000000, 1.500000000000}, {12.500000000000, 8.642518656832}, {7.595458448698, 9.132972811962}, {7.510046609643, 10.307385598960}, {7.409321363052, 8.746144276788}, {1.500000000000, 8.549166898020}, {1.500000000000, 1.500000000000}},
+     79.981898284183},
+    {"spike swallowed by the inward offset, deeper",
+     {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}},
+     -1.6,
+     {{12.400000000000, 1.600000000000}, {12.400000000000, 8.552019900621}, {7.528434564605, 9.039176444160}, {7.503276120588, 8.649220561907}, {1.600000000000, 8.452444691221}, {1.600000000000, 1.600000000000}},
+     76.268764368695},
+    {"L polygon inward past its arm width (3-vertex sliver remains)",
+     {{0, 0}, {10, 0}, {10, 3}, {3, 3.2}, {3, 10}, {0, 10}},
+     -1.6,
+     {{2.977147519963, 1.600000000000}, {1.600000000000, 1.639347071999}, {1.600000000000, 1.600000000000}},
+     0.027093361311}
+  };
+}
+
+double PolyAreaAB(const std::vector<std::pair<double, double>>& p) {
+  double s = 0.0;
+  for (size_t i = 0; i < p.size(); ++i) s += p[i].first * p[(i + 1) % p.size()].second - p[(i + 1) % p.size()].first * p[i].second;
+  return 0.5 * s;
+}
+
+double DistAB(double x, double y, const std::vector<std::pair<double, double>>& p) {
+  double best = 1e30;
+  for (size_t i = 0; i < p.size(); ++i) {
+    const auto& a = p[i];
+    const auto& b = p[(i + 1) % p.size()];
+    const double ex = b.first - a.first, ey = b.second - a.second, l2 = ex * ex + ey * ey;
+    const double t = std::max(0.0, std::min(1.0, ((x - a.first) * ex + (y - a.second) * ey) / l2));
+    best = std::min(best, std::hypot(x - a.first - t * ex, y - a.second - t * ey));
+  }
+  return best;
+}
+
+// Largest distance between the cyclic vertex list `got` and `want` over every start offset (same orientation); 1e30 if the
+// counts differ.
+double CyclicMatch(const std::vector<std::pair<double, double>>& got, const std::vector<std::pair<double, double>>& want) {
+  if (got.size() != want.size()) return 1e30;
+  double best = 1e30;
+  for (size_t s = 0; s < got.size(); ++s) {
+    double worst = 0.0;
+    for (size_t i = 0; i < got.size(); ++i) {
+      const auto& g = got[(i + s) % got.size()];
+      worst = std::max(worst, std::hypot(g.first - want[i].first, g.second - want[i].second));
+    }
+    best = std::min(best, worst);
+  }
+  return best;
+}
+
+// Raw (unrepaired) mitre polygon of the polygon `v` at `d` (right of travel positive): what the offset produced before the
+// loop removal, used only as a negative control for the oracles.
+std::vector<std::pair<double, double>> RawMitreAB(const std::vector<std::pair<double, double>>& v, double d) {
+  const size_t n = v.size();
+  std::vector<std::pair<double, double>> nd(n), out(n);
+  for (size_t i = 0; i < n; ++i) {
+    const auto& a = v[i];
+    const auto& b = v[(i + 1) % n];
+    const double ex = b.first - a.first, ey = b.second - a.second, l = std::hypot(ex, ey);
+    nd[i] = {ey / l, -ex / l};
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const auto& n0 = nd[(i + n - 1) % n];
+    const auto& n1 = nd[i];
+    const double k = d / (1.0 + n0.first * n1.first + n0.second * n1.second);
+    out[i] = {v[i].first + k * (n0.first + n1.first), v[i].second + k * (n0.second + n1.second)};
+  }
+  return out;
+}
+
+void TestOffsetInPlaneClosedPolygonInvalidLoopRemoval() {
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane tilted(ON_3dPoint(1.0, -2.0, 0.5), ON_3dVector(0.2, -0.3, 1.0));
+  int repaired = 0;
+  double worst_match = 0.0, worst_sound = 0.0, worst_area = 0.0;
+  for (const LoopCase& c : LoopCases()) {
+    for (int variant = 0; variant < 2; ++variant) {
+      const ON_Plane& pl = variant == 0 ? xy : tilted;
+      const std::string nm = std::string(c.name) + (variant == 0 ? " [plane z=0] d=" : " [tilted plane] d=") + std::to_string(c.d);
+      std::vector<Point3d> pts;
+      for (const auto& ab : c.v) pts.push_back(pl.origin + ab.first * pl.xaxis + ab.second * pl.yaxis);
+      pts.push_back(pts.front());
+      const NurbsCurve poly = NurbsCurve::FromControlPoints(pts, 1);
+      NurbsCurve out;
+      std::string reason;
+      const Result r = poly.OffsetInPlane(pl, c.d, out, -1.0, CurveOffsetCornerStyle::Sharp, &reason);
+      Check(r == Result::Ok, (nm + ": the offset is built (loops removed), not refused as self-intersecting").c_str());
+      if (r != Result::Ok) {
+        std::printf("  %s refused: %s\n", nm.c_str(), reason.c_str());
+        continue;
+      }
+      Check(out.IsClosed(), (nm + ": the result is a closed curve").c_str());
+      std::vector<std::pair<double, double>> got;  // plane coordinates of the distinct vertices
+      for (int i = 0; i + 1 < out.ControlPointCount(); ++i) {
+        const ON_3dVector rel = out.ControlPointAt(i) - pl.origin;
+        got.push_back({ON_DotProduct(rel, pl.xaxis), ON_DotProduct(rel, pl.yaxis)});
+        worst_match = std::max(worst_match, std::fabs(ON_DotProduct(rel, pl.zaxis)));  // stays in the plane
+      }
+      const double match = CyclicMatch(got, c.expect);
+      const double area = PolyAreaAB(got);
+      // independent soundness: 4000 samples on the returned curve are at least |d| from the original polygon
+      double min_dist = 1e30;
+      const Interval dom = out.Domain();
+      for (int k = 0; k < 4000; ++k) {
+        const ON_3dVector rel = out.PointAt(dom.min + (dom.max - dom.min) * k / 4000.0) - pl.origin;
+        min_dist = std::min(min_dist, DistAB(ON_DotProduct(rel, pl.xaxis), ON_DotProduct(rel, pl.yaxis), c.v));
+      }
+      worst_match = std::max(worst_match, match);
+      worst_sound = std::max(worst_sound, std::fabs(c.d) - min_dist);
+      worst_area = std::max(worst_area, std::fabs(area - c.expect_area));
+      std::printf("  %s: %zu vertices (expected %zu), max vertex error vs GEOS %g, area %.9f (GEOS %.9f), min sampled distance to the original %.9f (|d| = %g)\n",
+                  nm.c_str(), got.size(), c.expect.size(), match, area, c.expect_area, min_dist, std::fabs(c.d));
+      Check(match < 1e-8, (nm + ": vertices equal the GEOS mitre buffer to 1e-8 (same count, any start vertex, same orientation)").c_str());
+      Check(std::fabs(area - c.expect_area) < 1e-8, (nm + ": enclosed area equals the GEOS area to 1e-8").c_str());
+      Check(min_dist > std::fabs(c.d) - 1e-8, (nm + ": every sampled point of the result is at least |d| from the original polygon").c_str());
+      if (variant == 0) {
+        ++repaired;
+        // ---- negative controls: the same oracles must reject wrong answers
+        const auto raw = RawMitreAB(c.v, c.d);
+        const bool raw_is_valid_case = CyclicMatch(raw, c.expect) < 1e-8;  // the first case needs no repair at all
+        if (!raw_is_valid_case) {
+          Check(CyclicMatch(raw, c.expect) > 0.05 || std::fabs(PolyAreaAB(raw) - c.expect_area) > 0.005,
+                (nm + ": control - the unrepaired raw mitre polygon is rejected by the GEOS comparison").c_str());
+        }
+        auto bent = c.expect;
+        bent[0].first += 1e-6;
+        Check(CyclicMatch(got, bent) > 5e-7, (nm + ": control - moving one expected vertex by 1e-6 is detected by the comparison").c_str());
+        // the opposite offset direction is a different polygon
+        NurbsCurve other;
+        if (poly.OffsetInPlane(pl, -c.d, other, -1.0, CurveOffsetCornerStyle::Sharp) == Result::Ok) {
+          std::vector<std::pair<double, double>> og;
+          for (int i = 0; i + 1 < other.ControlPointCount(); ++i) {
+            const ON_3dVector rel = other.ControlPointAt(i) - pl.origin;
+            og.push_back({ON_DotProduct(rel, pl.xaxis), ON_DotProduct(rel, pl.yaxis)});
+          }
+          Check(CyclicMatch(og, c.expect) > 0.05, (nm + ": control - the opposite-sign offset is a different polygon").c_str());
+        }
+      }
+    }
+  }
+  std::printf("  closed-polygon loop removal: %d cases x 2 planes; worst vertex error vs GEOS / plane height %g, worst area error %g, worst (|d| - min sampled distance) %g\n",
+              repaired, worst_match, worst_area, worst_sound);
+}
+
+// Offsets the kernel must still refuse (leaving `out` alone): the polygon collapses through itself, the offset splits into
+// several pieces (GEOS returns a MultiPolygon / empty for these), which one closed curve cannot hold, or it is an OUTWARD
+// offset (loop removal is certified for inward offsets only - see RepairClosedOffsetPolygon in curve.cpp).
+void TestOffsetInPlaneClosedPolygonRefusalsStayRefused() {
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  struct R {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double d;
+  };
+  const std::vector<std::pair<double, double>> neck = {{0, 0}, {9, 0.2}, {9.3, 3.5}, {15, 3.7}, {15.2, 0}, {24, 0.1},
+                                                       {24.2, 9}, {15, 9.3}, {14.8, 5.6}, {9.1, 5.4}, {9.2, 9.1}, {0.1, 9}};
+  const std::vector<std::pair<double, double>> quad = {{0, 0}, {10, 0.2}, {10.3, 4}, {0.1, 3.9}};
+  const std::vector<std::pair<double, double>> notch = {{0, 0}, {14, 0}, {14, 10}, {8.2, 10.1}, {8, 5}, {6.1, 5.2}, {6, 10}, {0, 10.3}};
+  const std::vector<R> cases = {{"outward offset that narrows a notch (GEOS: a valid single polygon, but the repair is certified for inward offsets only)", notch, 1.0},
+                                {"outward offset that closes a notch (same limit)", notch, 1.4},
+                                {"dumbbell whose neck is pinched through (offset splits in two pieces, GEOS: MultiPolygon)", neck, -1.2},
+                                {"same dumbbell, deeper", neck, -1.6},
+                                {"quadrilateral inward past its half-width (collapses; GEOS: empty)", quad, -2.2}};
+  for (const R& c : cases) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : c.v) pts.push_back(Point3d(ab.first, ab.second, 0.0));
+    pts.push_back(pts.front());
+    const NurbsCurve poly = NurbsCurve::FromControlPoints(pts, 1);
+    const NurbsCurve sentinel = NurbsCurve::FromControlPoints({Point3d(7, 7, 7), Point3d(8, 7, 7)}, 1);
+    NurbsCurve out = sentinel;
+    Check(poly.OffsetInPlane(xy, c.d, out, -1.0, CurveOffsetCornerStyle::Sharp) == Result::Failed && out.ControlPointCount() == 2,
+          (std::string(c.name) + ": refused, out untouched").c_str());
+  }
+  // the control: the same dumbbell at a smaller inward distance (neck survives) is a valid single polygon and is built
+  {
+    std::vector<Point3d> pts;
+    for (const auto& ab : neck) pts.push_back(Point3d(ab.first, ab.second, 0.0));
+    pts.push_back(pts.front());
+    NurbsCurve out;
+    Check(NurbsCurve::FromControlPoints(pts, 1).OffsetInPlane(xy, -0.9, out) == Result::Ok && out.ControlPointCount() == 13,
+          "control: the same dumbbell inward by 0.9 (neck survives) is built, 12 vertices");
+  }
+}
+
 }  // namespace offset_remainder_tests
 
 // ---------------------------------------------------------------------------
@@ -104389,6 +104596,11 @@ int main() {
           boolean_diag_tests::TestNakedEdgeReportingForOpenOperandsAndResults);
   RunTest("boolean_diag_tests::TestMeshEngineReportsStatusAndOpenEdges",
           boolean_diag_tests::TestMeshEngineReportsStatusAndOpenEdges);
+
+  RunTest("offset_remainder_tests::TestOffsetInPlaneClosedPolygonInvalidLoopRemoval",
+          offset_remainder_tests::TestOffsetInPlaneClosedPolygonInvalidLoopRemoval);
+  RunTest("offset_remainder_tests::TestOffsetInPlaneClosedPolygonRefusalsStayRefused",
+          offset_remainder_tests::TestOffsetInPlaneClosedPolygonRefusalsStayRefused);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
