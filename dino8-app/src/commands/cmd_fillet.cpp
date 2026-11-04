@@ -224,6 +224,91 @@ bool TryConeRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double distan
 }
 
 // ---------------------------------------------------------------------------
+// Kernel cap-rim wrappers (kernel::FilletCapRim(s) / ChamferCapRim / ChamferCapRimAngle, fillet.h): exact blends on
+// a rim of a PLAIN CAPPED CYLINDER or CONE FRUSTUM (acute and obtuse rims alike). The kernel's own classifier refuses
+// every other solid with a reason (a hole plate, a boss, a full apex cone, an annular cap, an already-blended solid,
+// ...) and each wrapper hands that reason back in `err` with `out` untouched, so the caller falls through to its
+// existing path and can print why. A result is accepted only if it is a valid closed solid.
+// ---------------------------------------------------------------------------
+bool AcceptCapRimResult(const kernel::Brep& res, ON_Brep& out, std::string& err) {
+  if (!res.raw().IsValid() || !res.raw().IsSolid()) { err = "the kernel cap-rim result is not a valid closed solid"; return false; }
+  out = res.raw();
+  return true;
+}
+
+bool TryCapRimChamferAngle(const ON_Brep& solid, Point3d point_on_rim, double distance_cap, double angle_rad, ON_Brep& out, std::string& err) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    return AcceptCapRimResult(kernel::ChamferCapRimAngle(kb, point_on_rim, distance_cap, angle_rad), out, err);
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
+bool TryCapRimChamfer(const ON_Brep& solid, Point3d point_on_rim, double distance_wall, double distance_cap, ON_Brep& out, std::string& err) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    return AcceptCapRimResult(kernel::ChamferCapRim(kb, point_on_rim, distance_wall, distance_cap), out, err);
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
+bool TryCapRimFillet(const ON_Brep& solid, Point3d point_on_rim, double radius, ON_Brep& out, std::string& err) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    return AcceptCapRimResult(kernel::FilletCapRim(kb, point_on_rim, radius), out, err);
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
+// True when `p` lies on an edge of `b` (within tol).
+bool PointOnAnyEdge(const ON_Brep& b, Point3d p, double tol) {
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    ON_NurbsCurve nc;
+    if (b.m_E[i].GetNurbForm(nc) <= 0) continue;
+    kernel::NurbsCurve k;
+    k.raw() = nc;
+    if (k.PointAt(k.ClosestPointParameter(p, 200)).DistanceTo(p) <= tol) return true;
+  }
+  return false;
+}
+
+// Both rims of a cap-rim solid in ONE kernel call. `rims` are (a point on the rim, radius); with two, the kernel's
+// low / high assignment (the end with the smaller coordinate along the wall's own axis) is found by probing: filleting
+// only the first rim as the "low" one leaves its sharp circle in place exactly when it was really the high one.
+bool TryCapRimsFillet(const ON_Brep& solid, const std::vector<std::pair<Point3d, double>>& rims, ON_Brep& out, std::string& err) {
+  try {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    if (rims.size() == 1) return AcceptCapRimResult(kernel::FilletCapRim(kb, rims[0].first, rims[0].second), out, err);
+    if (rims.size() != 2) { err = "a cap-rim fillet takes one or two rims"; return false; }
+    ON_BoundingBox bb;
+    solid.GetBoundingBox(bb);
+    const double tol = std::max(1e-6, bb.Diagonal().Length() * 1e-6);
+    bool first_is_low = false;
+    try {
+      first_is_low = !PointOnAnyEdge(kernel::FilletCapRims(kb, rims[0].second, 0.0).raw(), rims[0].first, tol);
+    } catch (const std::exception&) {  // this radius may not fit the other end of a frustum: probe the other assignment
+      first_is_low = PointOnAnyEdge(kernel::FilletCapRims(kb, 0.0, rims[0].second).raw(), rims[0].first, tol);
+    }
+    const double r_low = first_is_low ? rims[0].second : rims[1].second;
+    const double r_high = first_is_low ? rims[1].second : rims[0].second;
+    return AcceptCapRimResult(kernel::FilletCapRims(kb, r_low, r_high), out, err);
+  } catch (const std::exception& ex) {
+    err = ex.what();
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exact fillet of the rim(s) of a PLAIN CAPPED CYLINDER.
 //
 // The kernel has no fillet between a plane and a cylinder (FilletConvexEdge is
@@ -3061,6 +3146,27 @@ class FilletEdgeCommand : public Command {
         }
         return;
       }
+    } else if (b && rims.front().cap) {
+      // Rims of a plain capped cone frustum / cylinder through the kernel (FilletCapRim / FilletCapRims), one solid.
+      std::vector<std::pair<Point3d, double>> kr;
+      for (const PendingRim& r : rims) kr.emplace_back(r.start, r.radius);
+      ON_Brep out;
+      if (TryCapRimsFillet(*b, kr, out, why)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = out;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        std::string radii;
+        for (size_t i = 0; i < rims.size(); ++i) radii += (i ? ", " : "") + FormatNumber(rims[i].radius);
+        ctx.Print(label + ": cap rim(s) of object " + std::to_string(id) + " replaced with an exact fillet (radius " + radii +
+                   "; exact kernel torus patch" + (rims.size() > 1 ? "es" : "") + " tangent to the cap and the wall, " + std::to_string(out.m_F.Count()) +
+                   " faces, closed solid)");
+        return;
+      }
     } else if (b) {
       double rt = 0, rb = 0;
       CylinderRimPlan plan;
@@ -3392,6 +3498,35 @@ class FilletEdgeCommand : public Command {
                      " staged for an exact torus fillet (radius " + FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
         return;
       }
+      // A rim of a plain capped CONE FRUSTUM (or any plain capped cylinder the app's own classifier above declined):
+      // the kernel's exact FilletCapRim (an exact torus patch tangent to the cap and to the cone / cylinder wall).
+      // Tried as a dry run now so a refusal (not a plain capped revolve, radius too large for the cap or the wall)
+      // is known before anything is staged; staged like the cylinder rims so both rims of one solid are blended in
+      // ONE FilletCapRims call at Enter. A refusal falls through to the existing path, with the kernel's reason
+      // printed when the picked edge is a closed rim circle.
+      if (edge.IsClosed()) {
+        ON_Brep cap_probe;
+        std::string cap_why;
+        if (TryCapRimFillet(*b, edge.PointAtStart(), radius_, cap_probe, cap_why)) {
+          if ((!pending_fillet_.empty() && pending_fillet_id_ != pick.id) || (!pending_rims_.empty() && pending_rim_id_ != pick.id)) {
+            ctx.Warn(label + ": an edge on a different object is already staged in this FilletEdge run; press Enter to apply it first, then run FilletEdge again for this object");
+            return;
+          }
+          pending_rim_id_ = pick.id;
+          bool replaced = false;
+          for (PendingRim& pr : pending_rims_)
+            if (pr.cap && pr.start.DistanceTo(edge.PointAtStart()) <= tol) { pr.radius = radius_; replaced = true; }
+          if (!replaced) {
+            PendingRim pr{edge.PointAtStart(), false, radius_};
+            pr.cap = true;
+            pending_rims_.push_back(pr);
+          }
+          ctx.Print(label + ": rim of cylinder / cone-frustum object " + std::to_string(pick.id) + " staged for an exact kernel torus fillet (radius " +
+                     FormatNumber(radius_) + ") - " + std::to_string(pending_rims_.size()) + " staged, Enter to apply");
+          return;
+        }
+        ctx.Print(label + ": exact kernel cap-rim fillet not used (" + cap_why + ")");
+      }
     }
     // Exact planar chamfer, tried FIRST (ahead of the rolling-ball-derived
     // approximate path below): kernel::ChamferConvexEdge/ChamferConcaveEdge
@@ -3424,7 +3559,7 @@ class FilletEdgeCommand : public Command {
         CommitEdgeBlend(ctx, pick.id, *b, exact, label, op, made_, note);
         ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
                    " replaced with an exact chamfer (" + ChamferDistanceDescription() +
-                   (rim_chamfer ? "; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap" : "") + ")" + note);
+                   (rim_chamfer ? rim_note_ : std::string()) + ")" + note);
         return;
       }
       if (asymmetric || angled) {
@@ -4206,6 +4341,7 @@ class FilletEdgeCommand : public Command {
   bool TryExactChamfer(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail, bool* rim_chamfer = nullptr) const {
     kernel::Brep kb;
     kb.raw() = solid;
+    rim_note_ = "; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap";
     const double d_i = radius_;
     const bool use_angle = angle_deg_.has_value();
     const double angle_from_i = use_angle ? (*angle_deg_) * ON_PI / 180.0 : 0.0;
@@ -4230,15 +4366,26 @@ class FilletEdgeCommand : public Command {
     // construction can touch a curved wall). Distance1 is the setback along
     // the wall, Distance2 (default: equal) across the cap; the Distance/Angle
     // mode has no cone construction, so it is not tried.
-    std::string rim_err = "Distance/Angle mode has no cylinder-rim construction";
+    std::string rim_err = "Distance/Angle mode has no app-level cylinder-rim construction (the kernel cap-rim attempt below handles it)";
     if (!use_angle && TryCylinderRimChamfer(solid, p0, d_i, d_j, out, rim_err)) {
       if (rim_chamfer) *rim_chamfer = true;
       return true;
     }
     // Fourth attempt: the rim of a plain capped cone / frustum (a conical bevel, same distance meaning).
-    std::string cone_err = "Distance/Angle mode has no cone-rim construction";
+    std::string cone_err = "Distance/Angle mode has no app-level cone-rim construction (the kernel cap-rim attempt below handles it)";
     if (!use_angle && TryConeRimChamfer(solid, p0, d_i, d_j, out, cone_err)) {
       if (rim_chamfer) *rim_chamfer = true;
+      return true;
+    }
+    // Kernel cap-rim chamfer (kernel::ChamferCapRim / ChamferCapRimAngle): a plain capped cylinder or cone frustum,
+    // acute and obtuse rims alike. It is the only construction for Distance/Angle there (a closed rim circle has no
+    // loop direction to say which side is "face 1", so Distance is measured ACROSS THE CAP and Angle from the cap
+    // plane), and the Distance1/Distance2 fallback when the app's own two builders above decline.
+    std::string cap_err;
+    if (use_angle ? TryCapRimChamferAngle(solid, p0, d_i, angle_from_i, out, cap_err) : TryCapRimChamfer(solid, p0, d_i, d_j, out, cap_err)) {
+      if (rim_chamfer) *rim_chamfer = true;
+      rim_note_ = use_angle ? "; exact kernel cap-rim bevel (cone), distance " + FormatNumber(d_i) + " across the cap, " + FormatNumber(*angle_deg_) + " degrees from the cap plane"
+                            : "; exact kernel cap-rim bevel (cone), distance1 along the wall and distance2 across the cap";
       return true;
     }
     // Fifth attempt: a rim of a cylindrical through-hole in a prism (box minus cylinder): an exact conical bevel
@@ -4261,7 +4408,8 @@ class FilletEdgeCommand : public Command {
         hole_err = "edge not found";
       }
     }
-    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err + "; cone-rim attempt: " + cone_err + "; hole-rim attempt: " + hole_err;
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err + "; cylinder-rim attempt: " + rim_err + "; cone-rim attempt: " + cone_err +
+             "; kernel cap-rim attempt: " + cap_err + "; hole-rim attempt: " + hole_err;
     return false;
   }
 
@@ -4406,7 +4554,8 @@ class FilletEdgeCommand : public Command {
   RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
-  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; };
+  struct PendingRim { Point3d start; bool top; double radius; Point3d end = Point3d(); bool hole = false; bool corner = false; bool cap = false; };
+  mutable std::string rim_note_;  // TryExactChamfer: what the "; exact ..." suffix of a rim-chamfer message says
   std::vector<PendingRim> pending_rims_;  // staged plain-cylinder rim fillets (see Run()/FlushPendingRims)
   ObjectId pending_rim_id_ = kNoObject;
   bool exact_rim_ = true;  // Exact=No skips the exact cylinder-rim torus fillet

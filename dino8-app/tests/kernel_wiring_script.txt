@@ -360,8 +360,10 @@ SelAll
 List
 SelAll
 Delete
-# --- Distance/Angle has no cone construction: still refused with the
-# diagnostic, and the cylinder is untouched.
+# --- Distance/Angle on a plain capped cylinder's rim: once refused with the
+# "has no cylinder-rim construction" diagnostic (cylinder untouched); now an exact
+# kernel::ChamferCapRimAngle bevel (0.6 across the cap at 45 degrees from the cap,
+# so also 0.6 along the wall) - see the KWR_ section at the end of smoke.sh.
 Cylinder 0,0,0 2 5
 ChamferEdge
 Radius=0.6

@@ -3337,9 +3337,10 @@ std::optional<SceneObject> RebuildSweep2Sections(CommandContext& ctx, const std:
 
 // OffsetSrf's construction for ONE object - shared by OffsetSrfCommand and
 // UpdateHistory. Reads num: d (signed distance, FlipAll already applied) and
-// solid (1/0). A surface goes through the kernel's tolerance-driven
-// OffsetRefit (the first-order Greville-normal fit only when that refuses,
-// with a warning), a convex planar solid through OffsetSolidConvexPlanar (exact
+// solid (1/0). A surface goes through the kernel's unified NurbsSurface::Offset
+// (exact analytic for plane/sphere/cylinder/cone/torus, tolerance-controlled
+// refit otherwise; the first-order Greville-normal fit only when a freeform
+// refit refuses, with a warning), a convex planar solid through OffsetSolidConvexPlanar (exact
 // B-rep), anything else through the mesh offset. Layer is the caller's.
 std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObject& o, const HistoryRecord& rec) {
   auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
@@ -3348,26 +3349,46 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
   if (d == 0) return std::nullopt;
   SceneObject n;
   if (o.kind == ObjectKind::Surface && o.surface) {
-    // Prefer the kernel's own tolerance-driven OffsetRefit() (samples
-    // the true offset locus and least-squares refits to within
-    // ctx.Settings().absolute_tolerance) over this file's own
-    // first-order Greville-normal OffsetNurbs() approximation above -
-    // closes PARITY_MAP.md's own "Offset surfaces" bullet's disclosed
-    // "no app command calls [OffsetRefit]" gap. Falls back to the old
-    // approximation, with a disclosed warning, exactly when
-    // OffsetRefit() itself refuses (the fold-through-curvature guard,
-    // or a freeform surface whose true offset needs more control
-    // points than the fit's own sample-grid ceiling can resolve) -
-    // never silently worse, never silently unconverged.
-    kernel::NurbsSurface refit;
-    const bool refit_ok = o.surface->OffsetRefit(d, refit, ctx.Settings().absolute_tolerance) == kernel::Result::Ok;
-    if (!refit_ok) {
-      ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " could not be refit to tolerance " +
-                FormatNumber(ctx.Settings().absolute_tolerance) +
+    // The kernel's unified NurbsSurface::Offset(): the EXACT rational closed form when the surface is a
+    // plane / sphere / cylinder / cone / torus (on the input's own parametrization and orientation), the
+    // tolerance-controlled OffsetRefit() otherwise (non-rational, deviation measured against the true
+    // parallel-surface locus). The command output states which path ran and a deviation measured HERE,
+    // independently of the kernel's own report: the worst distance from the result to S(u,v) + d*N(u,v) on a
+    // 9x9 grid of the input's domain. An analytic surface whose true offset folds through its own axis is
+    // refused (the kernel never substitutes a fit for it); a freeform refusal keeps the old first-order
+    // Greville-normal approximation, with its warning, exactly as before.
+    kernel::NurbsSurface off;
+    kernel::NurbsSurface::OffsetInfo info;
+    const double tol_doc = ctx.Settings().absolute_tolerance;
+    bool offset_ok = false;
+    try {
+      offset_ok = o.surface->Offset(d, off, tol_doc, &info) == kernel::Result::Ok;
+    } catch (const std::exception& ex) {
+      info.refusal_reason = ex.what();
+    }
+    if (offset_ok) {
+      double worst = 0.0;
+      const kernel::Interval du = o.surface->Domain(0), dv = o.surface->Domain(1);
+      for (int i = 0; i <= 8; ++i) {
+        for (int j = 0; j <= 8; ++j) {
+          const double u = du.min + (du.max - du.min) * (0.03 + 0.94 * i / 8.0), v = dv.min + (dv.max - dv.min) * (0.03 + 0.94 * j / 8.0);
+          const Point3d want = o.surface->PointAt(u, v) + d * o.surface->NormalAt(u, v);
+          worst = std::max(worst, off.PointAt(u, v).DistanceTo(want));
+        }
+      }
+      ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - " +
+                 (info.exact ? std::string("exact analytic offset (closed-form rational surface on the input's own parametrization")
+                             : "tolerance-controlled refit (non-rational; kernel-measured deviation " + FormatDeviation(info.achieved_deviation) + " <= tolerance " + FormatNumber(info.tolerance_used)) +
+                 "); measured deviation from the true offset locus " + FormatDeviation(worst));
+    } else if (info.refusal_reason.rfind("recognised plane", 0) == 0) {
+      ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " not offset - " + info.refusal_reason);
+      return std::nullopt;
+    } else {
+      ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " could not be refit to tolerance " + FormatNumber(tol_doc) +
                 " (fold-through-curvature guard, or this surface's own offset needs more control points than "
                 "the fit's own ceiling) - using the first-order Greville-normal approximation instead");
+      off = OffsetNurbs(*o.surface, d);
     }
-    const kernel::NurbsSurface off = refit_ok ? refit : OffsetNurbs(*o.surface, d);
     if (solid_) {
       const int nu = std::max(8, 2 * o.surface->CVCountU()), nv = std::max(8, 2 * o.surface->CVCountV());
       n = SceneObject::MakeMesh(ShellBetween(MeshFromRows(SurfaceRows(*o.surface, nu, nv), false, false), MeshFromRows(SurfaceRows(off, nu, nv), false, false)));

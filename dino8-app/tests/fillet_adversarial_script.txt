@@ -132,9 +132,10 @@ Delete
 # reintroduce. A cylinder's full rim is now the one curved case with an
 # exact two-distance construction (kernel::ChamferCylinderRim, wired in via
 # TryExactChamfer), so Distance2 is honoured there (wall 1 / cap 2); the
-# Distance/Angle mode has no cone construction and keeps the diagnostic
-# (see tests/kernel_wiring_script.txt). Either way exactly one object
-# remains.
+# Distance/Angle mode on a plain cylinder / frustum rim is built by the kernel's
+# ChamferCapRimAngle (see tests/kernel_wiring_script.txt and the KWR_ section
+# of smoke.sh); any other solid keeps the diagnostic. Either way exactly one
+# object remains.
 Cylinder 1300040,0,0 5 20
 ChamferEdge
 Radius=1

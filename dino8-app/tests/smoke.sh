@@ -8731,8 +8731,8 @@ kwcheck "refit through samples; the exact kernel merge refused this pair: the tw
 # Rim chamfers: Volume lines in order = plain cylinder, ChamferEdge top rim
 # 0.6/0.4, swapped 0.4/0.6, bottom rim 0.6/0.4, ChamferSrf 0.5, Distance/Angle refusal.
 KW_VOLS="$(echo "$KW" | grep -o "Volume = [0-9.]* cubic" | awk '{printf "%s ", $3}')"
-if echo "$KW_VOLS" | awk 'function abs(x) { return x < 0 ? -x : x } { exit !(abs($1-62.7)<0.03 && abs($2-61.3)<0.03 && abs($3-61.35)<0.03 && abs($4-61.3)<0.03 && abs($5-61.26)<0.03 && abs($6-62.7)<0.03) }'; then
-  echo "ok   cylinder rim volumes read 62.7 (plain), 61.3 (top 0.6/0.4), 61.35 (swapped 0.4/0.6), 61.3 (bottom rim), 61.26 (ChamferSrf 0.5), 62.7 (Angle refused, untouched)"
+if echo "$KW_VOLS" | awk 'function abs(x) { return x < 0 ? -x : x } { exit !(abs($1-62.7)<0.03 && abs($2-61.3)<0.03 && abs($3-61.35)<0.03 && abs($4-61.3)<0.03 && abs($5-61.26)<0.03 && abs($6-60.75)<0.15) }'; then
+  echo "ok   cylinder rim volumes read 62.7 (plain), 61.3 (top 0.6/0.4), 61.35 (swapped 0.4/0.6), 61.3 (bottom rim), 61.26 (ChamferSrf 0.5), 60.75 (Angle 45 / 0.6: CHANGED PIN, KWR wiring - was 62.7, refused and untouched; Pappus 62.83 - 2*pi*1.8*0.18 = 60.79)"
 else
   echo "FAIL cylinder rim volumes unexpected: $KW_VOLS"; fail=1
 fi
@@ -8746,10 +8746,10 @@ fi
 kwcheck "ChamferEdge: edge .* of object .* replaced with an exact chamfer (distance1 0.6, distance2 0.4; exact cone on the cylinder rim" "ChamferEdge Distance1=0.6 Distance2=0.4 on a cylinder rim reaches kernel::ChamferCylinderRim (wall 0.6 / cap 0.4)"
 kwcheck "ChamferEdge: edge .* of object .* replaced with an exact chamfer (distance1 0.4, distance2 0.6; exact cone on the cylinder rim" "...and the swapped distances are a different, equally exact chamfer"
 kwcheck "ChamferSrf: faces .* and .* of object .* replaced with an exact chamfer (distance 0.5; exact cone on the cylinder rim)" "ChamferSrf on a cylinder's cap and wall now reaches the exact cone instead of the approximate 'contact points off by' ruled surface"
-kwcount "4 faces, 7 edges, closed solid" 3 "every rim chamfer (top, bottom, ChamferSrf) is a true closed 4-face/7-edge solid with exact circular caps, not the kernel's raw 261-edge open polygon shell"
+kwcount "4 faces, 7 edges, closed solid" 4 "every rim chamfer (top, bottom, ChamferSrf, and since the KWR wiring the Distance/Angle bevel: count was 3) is a true closed 4-face/7-edge solid with exact circular caps, not the kernel's raw 261-edge open polygon shell"
 kwcheck "Area = 84.01 square" "the top-rim chamfer's area (84.01) matches the closed form 2*pi*R*(L-dw)+pi*R^2+pi*(R-dc)^2+pi*(2R-dc)*sqrt(dw^2+dc^2) = 84.056 to the display mesh's 0.05"
 kwcheck "ChamferSrf: built between object .* and .*, radius 3" "a ChamferSrf cap setback of 3 on the R=2 cylinder is refused by the kernel and falls through to the approximate surface exactly as before"
-kwcheck "cylinder-rim attempt: Distance/Angle mode has no cylinder-rim construction" "ChamferEdge Angle= on a cylinder rim keeps its clear 'needs the whole object to be planar-faced' diagnostic and leaves the cylinder untouched"
+kwcheck "ChamferEdge: edge .* of object .* replaced with an exact chamfer (distance1 0.6, angle 45 degrees from face 1; exact kernel cap-rim bevel (cone), distance 0.6 across the cap, 45 degrees from the cap plane)" "ChamferEdge Angle= on a cylinder rim is now an exact kernel::ChamferCapRimAngle bevel (CHANGED PIN, KWR wiring: it used to be refused with 'cylinder-rim attempt: Distance/Angle mode has no cylinder-rim construction' and leave the cylinder untouched)"
 # Curve MakeUniform
 kwcheck "! MakeUniform: curve .* left unchanged - uniform knots would move it by up to 0.5, more than Tolerance 0.001" "curve MakeUniform at the default (document) Tolerance refuses a re-knot that would move the curve 0.5 and reports the measured 0.5 - the old call shipped it unmeasured"
 kwcheck "! MakeUniform: curve .* left unchanged - uniform knots would move it by up to 0.5, more than Tolerance 0.4" "...and Tolerance=0.4 still refuses (0.5 > 0.4)"
@@ -8868,7 +8868,7 @@ kwcheck "Area = 147.9 square" "...and the sheet has the exact area 5(sqrt5 + asi
 kwdist "aligned first: 1 curve.s. reversed, 0 seam.s. moved" 1 0 11 0 0.000001 "...and all 11 sampled points of the three lines (both ends and the middle of each) lie on the lofted surface to < 1e-6 (before: the line ends were 0.88 off and the sheet never spanned the lines)"
 kwcheck "Loft: exact interpolating kernel loft through 3 curves (degree 2 in the loft direction); every section reproduced, max deviation [0-9.]*${KWTINY%\$}; aligned first: 1 curve(s) reversed, 2 seam(s) moved; end caps added (Cap=Yes), a closed polysurface" "Loft through three circles, the middle one rotated a quarter turn and reversed and the last one rotated 200 degrees: reverses one curve, moves two seams, caps the ends into a closed polysurface"
 kwcheck "Volume = 433" "...whose volume is the exact 10 pi * 13.8 = 433.5 (before: a mesh of volume 165.6)"
-kwcount "3 faces, 3 edges, closed solid" 4 "the three capped lofts (three circles, the radius-5-to-3 frustum, two squares) are real closed-solid polysurfaces with one planar trimmed face per end (wall + 2 caps, 3 edges: two cap circles/loops and the seam), not meshes; the 4th match is the plain cylinder of the ChamferEdge section, which has the same topology"
+kwcount "3 faces, 3 edges, closed solid" 3 "the three capped lofts (three circles, the radius-5-to-3 frustum, two squares) are real closed-solid polysurfaces with one planar trimmed face per end (wall + 2 caps, 3 edges: two cap circles/loops and the seam), not meshes; CHANGED PIN (KWR wiring): the count was 4 because the 4th match was the cylinder of the ChamferEdge Distance/Angle case, which used to be refused and left as the untouched 3-face cylinder - it now gets the exact kernel bevel (4 faces, 7 edges) and is counted by the rim-chamfer pin above instead"
 kwcheck "! Loft: curve 2 is closed but curve 1 is open - a loft needs all open or all closed curves (an open and a closed curve have no point-for-point correspondence)" "Loft of a line and a circle is refused with the reason printed (and creates nothing: expect_objects 2 above)"
 kwcheck "Loft: exact interpolating kernel loft through 2 curves (degree 1 in the loft direction); every section reproduced, max deviation [0-9.]*${KWTINY%\$}; uncapped (Cap=No)" "Loft Style=Straight Cap=No between two circles is degree 1 in the loft direction and uncapped"
 kwcheck "Area = 25[0-9]" "...a surface with the exact frustum lateral area pi (5+3) sqrt(104) = 256.3"
@@ -11778,5 +11778,119 @@ else
   done
   if [ "$TUTV_N" -eq 10 ]; then echo "ok   TUTV_count: all 10 tutorials were recorded and probed"; else echo "FAIL TUTV_count: expected 10 tutorials, found $TUTV_N"; fail=1; fi
 fi
+
+# ---------------------------------------------------------------------------
+# KWR: kernel capabilities wired into the app (kwr_script.txt).
+#  - OffsetSrf of a SURFACE object now calls NurbsSurface::Offset: the exact rational closed form for a
+#    plane / sphere / cylinder / cone / torus (the old direct OffsetRefit call always returned a non-rational fit),
+#    the tolerance-controlled refit otherwise, and the command output states which path ran and the deviation
+#    measured against S(u,v) + d*N(u,v). An analytic surface whose offset folds through its axis is refused.
+#    UpdateHistory re-runs the same function.
+#  - ChamferEdge Distance/Angle on a plain capped cylinder / cone frustum (used to be refused, "has no
+#    cylinder-rim construction") and FilletEdge on a cone-frustum rim (used to fall to the approximate mesh
+#    fillet) now call kernel::ChamferCapRimAngle / FilletCapRim(s); a solid the kernel classifier refuses falls
+#    through with the printed reason. Convention for the closed rim circle (it has no loop direction, so no
+#    "face 1"): Distance is measured ACROSS THE CAP and Angle from the cap plane.
+# Closed forms (all checked here): cylinder surface area 2*pi*r*h; tapered-cone surface offset area
+# pi*(R0+R1+2cos(phi))*h/cos(phi) with the 10 degree draft; Brep sphere offset volume 4/3*pi*6^3; and, for every
+# chamfer / fillet, Pappus V = V0 - 2*pi*rho*A with A the (r,z) corner region cut away at the rim and rho its centroid
+# radius (chamfer triangle: corner C, cap point at the distance, wall point at distance*sin(a)/sin(theta+a) with
+# theta the rim's interior profile angle; fillet: corner minus the rolling-ball arc segment, tangent length
+# r/tan(theta/2)). Volumes are read from the display mesh (measured 0.05-0.2% low here), so the ranges are
+# +-0.6%; face/edge counts and "closed solid" are topological and exact. Windows tessellates slightly
+# differently, hence ranges everywhere.
+# ---------------------------------------------------------------------------
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  KWRO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/kwr_script.txt" 2>&1)" || { echo "$KWRO"; echo "FAIL: kwr script exited non-zero"; exit 1; }
+else
+  KWRO="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/kwr_script.txt" 2>&1)" || { echo "$KWRO"; echo "FAIL: kwr script exited non-zero"; exit 1; }
+fi
+kwrblock() { awk -v name="$1" '$0 ~ ("Unknown command: KWRBEGIN_" name "$") { on = 1; next } on && /Unknown command: KWRBEGIN_/ { exit } on { print }' <<<"$KWRO"; }
+kwrcheck() { local blk; blk="$(kwrblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "ok   $3"; else echo "FAIL $3"; echo "     expected: $2"; grep -E "^history: (OffsetSrf|ChamferEdge|FilletEdge|!|Object|  [0-9]|Volume|Area)" <<<"$blk" | head -8 | sed 's/^/     actual:   /' || true; fail=1; fi; }
+kwrnot() { local blk; blk="$(kwrblock "$1")"; if grep -q -- "$2" <<<"$blk"; then echo "FAIL $3"; echo "     unexpected: $2"; fail=1; else echo "ok   $3"; fi; }
+# kwrnum NAME LABEL N MIN MAX DESC: the N-th "history: <LABEL> = V" value of the case lies in [MIN, MAX]
+kwrnum() {
+  local blk v; blk="$(kwrblock "$1")"
+  v="$(grep -E "^history: $2 = " <<<"$blk" | sed -n "${3}p" | sed -E 's/^history: [A-Za-z ]+ = ([0-9.eE+-]+).*/\1/' || true)"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$4" -v hi="$5" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   $6 ($2 $v in [$4, $5])"; else echo "FAIL $6 ($2 '${v:-none}' not in [$4, $5])"; fail=1; fi
+}
+# kwrdev NAME N MAX DESC: the N-th printed "measured deviation from the true offset locus X" is below MAX
+kwrdev() {
+  local blk v; blk="$(kwrblock "$1")"
+  v="$(grep -E "measured deviation from the true offset locus " <<<"$blk" | sed -n "${2}p" | sed -E 's/.*true offset locus ([0-9.eE+-]+).*/\1/' || true)"
+  if [ -n "$v" ] && awk -v v="$v" -v hi="$3" 'BEGIN { exit !(v + 0 <= hi) }'; then echo "ok   $4 (measured deviation $v <= $3)"; else echo "FAIL $4 (measured deviation '${v:-none}' not <= $3)"; fail=1; fi
+}
+# kwrbbz NAME ZMIN_LO ZMIN_HI ZMAX_LO ZMAX_HI DESC: the case's "Bounding box min x,y,z max x,y,z" z extents
+kwrbbz() {
+  local blk l zmin zmax; blk="$(kwrblock "$1")"
+  l="$(grep -E "^history: Bounding box min " <<<"$blk" | tail -1 || true)"
+  zmin="$(sed -E 's/.*min [-0-9.e+]+,[-0-9.e+]+,([-0-9.e+]+) max.*/\1/' <<<"$l")"
+  zmax="$(sed -E 's/.*max [-0-9.e+]+,[-0-9.e+]+,([-0-9.e+]+).*/\1/' <<<"$l")"
+  if [ -n "$l" ] && awk -v a="$zmin" -v b="$zmax" -v a0="$2" -v a1="$3" -v b0="$4" -v b1="$5" 'BEGIN { exit !(a >= a0 && a <= a1 && b >= b0 && b <= b1) }'; then echo "ok   $6 (z extent $zmin .. $zmax)"; else echo "FAIL $6 (z extent '$zmin' .. '$zmax' outside [$2,$3] .. [$4,$5])"; fail=1; fi
+}
+# --- OffsetSrf of a cylinder SURFACE: exact analytic, measured
+kwrcheck O_cyl "OffsetSrf: object 2 - exact analytic offset (closed-form rational surface on the input's own parametrization)" "KWR_O_cyl: OffsetSrf of a cylinder surface states the exact analytic path (before: the non-rational OffsetRefit fit, nothing stated)"
+kwrdev O_cyl 1 1e-9 "KWR_O_cyl: +1 offset measured against S + d*N: deviation at rounding level"
+kwrdev O_cyl 2 1e-9 "KWR_O_cyl: -1 offset measured deviation at rounding level"
+kwrnum O_cyl Area 1 199.6 202.5 "KWR_O_cyl: +1 -> radius 4: Area = 2*pi*4*8 = 201.06"
+kwrnum O_cyl Area 2 99.8 101.3 "KWR_O_cyl: -1 -> radius 2: Area = 2*pi*2*8 = 100.53"
+kwrcheck O_cyl "OffsetSrf: object 2 not offset - recognised plane/sphere/cylinder/cone/torus: the exact offset was refused" "KWR_O_cyl: -3 (radius 0) is refused WITH the kernel's reason (before: the first-order fallback built a degraded surface)"
+kwrcheck O_cyl "OffsetSrf: distance -3, 0 object(s)" "KWR_O_cyl: ...and no object is made for the refused distance"
+kwrcheck O_cyl "4 object(s) selected" "KWR_O_cyl: circle, cylinder and the two good offsets remain (4 objects)"
+# --- OffsetSrf of a tapered-cone SURFACE
+kwrcheck O_cone "exact analytic offset (closed-form rational surface on the input's own parametrization)" "KWR_O_cone: the tapered cone surface takes the exact analytic offset"
+kwrdev O_cone 1 1e-9 "KWR_O_cone: measured deviation at rounding level"
+kwrnum O_cone Area 1 216.9 220.0 "KWR_O_cone: offset area pi*(R0+R1+2cos10)*8/cos10 = 218.43"
+kwrbbz O_cone 0.165 0.182 8.165 8.182 "KWR_O_cone: the offset cone is raised by d*sin(10deg) = 0.1736 at both ends (z 0.1736 .. 8.1736)"
+# --- control: Brep sphere stays on the exact B-rep path
+kwrcheck O_sphere "OffsetSrf: distance 1, 1 object(s), 1 exact B-rep" "KWR_O_sphere: the Brep sphere offset is still the exact B-rep"
+kwrnum O_sphere Volume 1 899.4 910.2 "KWR_O_sphere: Volume = 4/3*pi*6^3 = 904.78"
+kwrcheck O_sphere "Object 2: valid" "KWR_O_sphere: Check valid"
+# --- history: UpdateHistory re-runs the same function
+kwrnum O_hist Area 1 199.6 202.5 "KWR_O_hist: before: offset cylinder (r 4, h 8) Area = 201.06"
+kwrnum O_hist Area 2 349.4 354.3 "KWR_O_hist: after Scale 2 of the circle + UpdateHistory: radius 6 + 1, Area = 2*pi*7*8 = 351.86"
+kwrcheck O_hist "UpdateHistory: 2 object(s) re-evaluated" "KWR_O_hist: UpdateHistory rebuilt the extrusion and its offset"
+# --- ChamferEdge Distance/Angle on a plain capped cylinder
+kwrcheck C_cyl45 "exact kernel cap-rim bevel (cone), distance 2 across the cap, 45 degrees from the cap plane" "KWR_C_cyl45: Distance/Angle on the cylinder rim is now an exact kernel bevel (before: refused)"
+kwrcheck C_cyl45 "4 faces, 7 edges, closed solid" "KWR_C_cyl45: 4 faces (wall, cone bevel, two caps), closed solid"
+kwrnum C_cyl45 Volume 1 1507.3 1525.4 "KWR_C_cyl45: Volume = pi*25*20 - 2*pi*(13/3)*2 = 1516.34"
+kwrcheck C_cyl45 "Object 1: valid" "KWR_C_cyl45: Check valid"
+kwrcheck C_cyl30 "30 degrees from the cap plane" "KWR_C_cyl30: bottom rim at 30 degrees"
+kwrnum C_cyl30 Volume 1 1530.1 1548.6 "KWR_C_cyl30: wall distance 2*sin30/sin120 = 1.1547, Volume = 1570.80 - 31.44 = 1539.36"
+kwrcheck C_cyl30 "4 faces, 7 edges, closed solid" "KWR_C_cyl30: 4 faces, closed solid"
+kwrcheck C_cyl30 "Object 1: valid" "KWR_C_cyl30: Check valid"
+# --- cone frustum: obtuse top rim, acute bottom rim
+kwrcheck C_tc_top30 "exact kernel cap-rim bevel (cone), distance 1 across the cap, 30 degrees from the cap plane" "KWR_C_tc_top30: Distance/Angle on the frustum's obtuse top rim is an exact kernel bevel"
+kwrnum C_tc_top30 Volume 1 504.5 510.6 "KWR_C_tc_top30: Pappus Volume = 513.13 - 5.557 = 507.57"
+kwrcheck C_tc_top30 "4 faces, 7 edges, closed solid" "KWR_C_tc_top30: 4 faces, closed solid"
+kwrcheck C_tc_top30 "Object 1: valid" "KWR_C_tc_top30: Check valid"
+kwrcheck C_tc_bot60 "60 degrees from the cap plane" "KWR_C_tc_bot60: Distance/Angle on the frustum's acute bottom rim"
+kwrnum C_tc_bot60 Volume 1 491.6 497.6 "KWR_C_tc_bot60: Pappus Volume = 513.13 - 18.513 = 494.61 (wall distance 1.3119)"
+kwrcheck C_tc_bot60 "4 faces, 7 edges, closed solid" "KWR_C_tc_bot60: 4 faces, closed solid"
+kwrcheck C_tc_bot60 "Object 1: valid" "KWR_C_tc_bot60: Check valid"
+# --- control: Distance1/Distance2 keeps the app's own exact revolved bevel
+kwrcheck C_tc_dist "distance1 1, distance2 2; exact cone on the cylinder rim, distance1 along the wall and distance2 across the cap" "KWR_C_tc_dist: control, Distance1/Distance2 on the frustum is unchanged (app's own exact bevel)"
+kwrnot C_tc_dist "kernel cap-rim" "KWR_C_tc_dist: ...and does not go through the kernel cap-rim path"
+# --- refusals fall through with the reason, solid untouched
+kwrcheck C_cone_refused "kernel cap-rim attempt: dino8::kernel::Brep::MixedFaces" "KWR_C_cone_refused: a full apex cone is refused WITH the kernel classifier's reason and falls through"
+kwrnum C_cone_refused Volume 1 259.0 264.2 "KWR_C_cone_refused: the cone is untouched, Volume = pi*25*10/3 = 261.8"
+kwrcheck C_hole_refused "kernel cap-rim attempt: dino8::kernel::ChamferCapRimAngle: " "KWR_C_hole_refused: a hole plate is refused WITH the kernel classifier's reason (not a plain capped cylinder)"
+kwrnum C_hole_refused Volume 1 115.1 116.4 "KWR_C_hole_refused: the plate is untouched, Volume = 144 - pi*2.25*4 = 115.73"
+# --- FilletEdge on a cone frustum
+kwrcheck F_tc_both "exact kernel torus patches tangent to the cap and the wall, 5 faces, closed solid" "KWR_F_tc_both: both frustum rims in one FilletCapRims call (before: the approximate mesh fillet)"
+kwrcheck F_tc_both "5 faces, 9 edges, closed solid" "KWR_F_tc_both: 5 faces, closed solid"
+kwrnum F_tc_both Volume 1 497.9 503.9 "KWR_F_tc_both: Pappus Volume = 513.13 - 2.390 - 9.837 = 500.90"
+kwrcheck F_tc_both "Object 1: valid" "KWR_F_tc_both: Check valid"
+kwrcheck F_tc_top "exact kernel torus patch tangent to the cap and the wall, 4 faces, closed solid" "KWR_F_tc_top: the obtuse top rim alone"
+kwrnum F_tc_top Volume 1 507.7 513.8 "KWR_F_tc_top: Pappus Volume = 513.13 - 2.390 = 510.74"
+kwrcheck F_tc_top "Object 1: valid" "KWR_F_tc_top: Check valid"
+kwrcheck F_tc_bot "4 faces, 7 edges, closed solid" "KWR_F_tc_bot: the acute bottom rim alone, 4 faces, closed solid"
+kwrnum F_tc_bot Volume 1 500.3 506.3 "KWR_F_tc_bot: Pappus Volume = 513.13 - 9.837 = 503.29"
+kwrcheck F_tc_bot "Object 1: valid" "KWR_F_tc_bot: Check valid"
+kwrcheck F_tc_big "exact kernel cap-rim fillet not used (dino8::kernel::FilletCapRim: a blend would consume the whole cap" "KWR_F_tc_big: a radius that consumes the small cap is refused WITH the kernel's reason and the old path runs"
+# --- control: the plain cylinder keeps the app's own exact torus fillet
+kwrcheck F_cyl "cylinder rim(s) of object 1 replaced with an exact fillet (top radius 1; exact quarter-torus patch" "KWR_F_cyl: control, the plain cylinder fillet is still the app's own exact torus"
+kwrnot F_cyl "kernel torus" "KWR_F_cyl: ...not the kernel cap-rim path"
+kwrnum F_cyl Volume 1 1555.0 1573.7 "KWR_F_cyl: Pappus Volume = 1570.80 - 6.44 = 1564.36"
 
 exit $fail
