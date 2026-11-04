@@ -8095,7 +8095,7 @@ int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
     if (SampledEdgeLength(e) < 3.0 * tolerance) slivers.push_back(i);
   }
   int collapsed = 0;
-  std::vector<int> touched_vertices, touched_edges;
+  std::vector<int> touched_vertices, touched_edges, touched_faces;
   for (const int ei : slivers) {
     ON_BrepEdge& e = b.m_E[ei];
     if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
@@ -8128,6 +8128,7 @@ int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
       continue;
     }
     const int va = e.m_vi[0], vb = e.m_vi[1];
+    touched_faces.push_back(L.m_fi);
     const int prev_ei = b.m_T[prev_ti].m_ei, next_ei = b.m_T[next_ti].m_ei;
     b.DeleteTrim(t, true);  // the trim and (it being the edge's only trim) the edge
     if (va >= 0 && vb >= 0 && va != vb) b.CombineCoincidentVertices(b.m_V[va], b.m_V[vb]);
@@ -8143,6 +8144,14 @@ int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
     }
     for (const int ei : touched_edges) {
       if (ei >= 0 && ei < b.m_E.Count() && b.m_E[ei].m_edge_index >= 0) b.m_E[ei].m_tolerance = ON_UNSET_VALUE;
+    }
+    // Snapping the neighbours' ends can change a loop's 2D direction: re-derive the type of every loop of the touched faces.
+    for (const int fi : touched_faces) {
+      if (fi < 0 || fi >= b.m_F.Count() || b.m_F[fi].m_face_index < 0) continue;
+      for (int k = 0; k < b.m_F[fi].m_li.Count(); ++k) {
+        const int li = b.m_F[fi].m_li[k];
+        if (li >= 0 && li < b.m_L.Count() && b.m_L[li].m_loop_index >= 0) b.m_L[li].m_type = b.ComputeLoopType(b.m_L[li]);
+      }
     }
     b.Compact();
     b.SetTrimIsoFlags();
@@ -8308,8 +8317,10 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
                  (first.empty() ? std::string("IsSolid() failed after opening keyholes") : first);
         {
           char buf[120];
-          std::snprintf(buf, sizeof buf, " [tol %.4g: solid %d valid %d, keyholes opened %d]", tol, c.raw().IsSolid() ? 1 : 0,
-                        c.raw().IsValid() ? 1 : 0, opened);
+          std::snprintf(buf, sizeof buf, " [tol %.4g: solid %d valid %d, keyholes opened %d, face0 loop0 type %d dir %d]", tol,
+                        c.raw().IsSolid() ? 1 : 0, c.raw().IsValid() ? 1 : 0, opened,
+                        c.raw().m_F.Count() && c.raw().m_F[0].m_li.Count() ? static_cast<int>(c.raw().m_L[c.raw().m_F[0].m_li[0]].m_type) : -9,
+                        c.raw().m_F.Count() && c.raw().m_F[0].m_li.Count() ? c.raw().LoopDirection(c.raw().m_L[c.raw().m_F[0].m_li[0]]) : -9);
           naked_diag += buf;
         }
         continue;
