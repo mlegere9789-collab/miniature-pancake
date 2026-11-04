@@ -8250,13 +8250,13 @@ double SampledEdgeLength(const ON_BrepEdge& e) {
 int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
   ON_Brep& b = brep.raw();
   if (!(tolerance > 0)) return 0;
-  // Only when EVERY naked edge is a sliver: a longer gap means the body is genuinely open and nothing is changed.
+  // Every naked edge shorter than 3 * tolerance (the same factor as the neighbour-gap guard below) is a sliver; longer
+  // ones are left for the caller (they stay naked, so a genuinely open body is still refused as not solid).
   std::vector<int> slivers;
   for (int i = 0; i < b.m_E.Count(); ++i) {
     const ON_BrepEdge& e = b.m_E[i];
     if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
-    if (!(SampledEdgeLength(e) < tolerance)) return 0;
-    slivers.push_back(i);
+    if (SampledEdgeLength(e) < 3.0 * tolerance) slivers.push_back(i);
   }
   int collapsed = 0;
   std::vector<int> touched_vertices, touched_edges;
@@ -8602,6 +8602,12 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
         }
         reason = "the sewn result is not a valid ON_Brep: " +
                  (first.empty() ? std::string("IsSolid() failed after opening keyholes") : first);
+        {
+          char buf[120];
+          std::snprintf(buf, sizeof buf, " [tol %.4g: solid %d valid %d, keyholes opened %d]", tol, c.raw().IsSolid() ? 1 : 0,
+                        c.raw().IsValid() ? 1 : 0, opened);
+          naked_diag += buf;
+        }
         continue;
       }
       const double v = c.VolumeOfSealedSolid();
