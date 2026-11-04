@@ -13844,8 +13844,26 @@ Result Brep::ShrinkSurfaces(double tolerance, ShrinkSurfacesReport* report) {
     rep.reason = why;
     return Result::Failed;
   };
-  if (!ok_call) return restore("ON_Brep::ShrinkSurfaces reported failure; Brep restored");
   if (brep_.m_F.Count() != before.m_F.Count()) return restore("shrink changed the face count; Brep restored");
+  if (!ok_call) {
+    // OpenNURBS answers false both for a face it could not shrink and for a
+    // Brep with nothing to shrink (e.g. an untrimmed face). If no face
+    // surface domain moved at all this call changed nothing - report that as
+    // the no-op it is; if some did move, fall through to the measured checks
+    // below, which restore the Brep unless every one of them passes.
+    bool any_moved = false;
+    for (int fi = 0; fi < brep_.m_F.Count() && !any_moved; ++fi) {
+      const ON_Surface* sb = before.m_F[fi].SurfaceOf();
+      const ON_Surface* sa = brep_.m_F[fi].SurfaceOf();
+      if (!sb || !sa) continue;
+      any_moved = sb->Domain(0) != sa->Domain(0) || sb->Domain(1) != sa->Domain(1);
+    }
+    if (!any_moved) {
+      brep_ = before;
+      rep.reason = "no face surface is larger than its trims (nothing to shrink)";
+      return Result::NoOpAlreadySatisfied;
+    }
+  }
 
   for (int fi = 0; fi < brep_.m_F.Count(); ++fi) {
     const ON_Surface* sb = before.m_F[fi].SurfaceOf();
