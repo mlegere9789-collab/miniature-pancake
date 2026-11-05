@@ -1,6 +1,7 @@
 // Editing commands: Delete, Undo/Redo, Group, Hide/Show/Lock, Join,
 // Explode, Rebuild, Reverse, Offset...
 #include "commands/cmd_common.h"
+#include "commands/count_limits.h"
 #include "commands/history_rebuild.h"
 #include "dino8/kernel/curve.h"
 #include "io/File3dm.h"
@@ -158,8 +159,8 @@ class OffsetCommand : public Command {
                {"Corner", "Sharp", {"Sharp", "Round", "Chamfer", "Smooth"}, false, false},
                {"Tolerance", "document", {}, true, false}};
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
-    if (n == "Distance") { double d = std::atof(v.c_str()); if (d > 0) distance_ = d; options[0].value = FormatNumber(distance_); }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    if (n == "Distance") { double d = std::atof(v.c_str()); if (std::isfinite(d) && d > 0 && d <= kMaxOffsetDistance) distance_ = d; else ctx.Warn("Offset: the distance must be a number above 0 and at most " + FormatNumber(kMaxOffsetDistance) + ", '" + v + "' ignored"); options[0].value = FormatNumber(distance_); }
     if (n == "BothSides") { both_ = !both_; options[1].value = both_ ? "Yes" : "No"; }
     if (n == "Corner") {
       corner_style_ = v == "Round" ? kernel::CurveOffsetCornerStyle::Round
@@ -177,7 +178,10 @@ class OffsetCommand : public Command {
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     char* e; double v = std::strtod(t.c_str(), &e);
-    if (e && !*e && v > 0) { distance_ = v; options[0].value = FormatNumber(distance_); ctx.Print("Distance=" + FormatNumber(v) + ". Pick the side."); }
+    if (e && !*e && v > 0) {
+      if (!std::isfinite(v) || v > kMaxOffsetDistance) { ctx.Warn("Offset: the distance must be a number above 0 and at most " + FormatNumber(kMaxOffsetDistance)); return; }
+      distance_ = v; options[0].value = FormatNumber(distance_); ctx.Print("Distance=" + FormatNumber(v) + ". Pick the side.");
+    }
   }
   void OnPoint(CommandContext& ctx, Point3d side) override {
     ctx.ClearPreview();

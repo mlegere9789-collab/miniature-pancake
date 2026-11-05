@@ -314,4 +314,41 @@ Import @TMP@/qc3a_ok.dxf
 Cancel
 New
 
+QC3ABEGIN_array_locked
+Box 0,0,0 10,10,0 10
+SelAll
+Lock
+SelAll
+Array
+2
+1
+1
+5
+Cancel
+Unlock
+SelAll
+Cancel
+New
+
+QC3ABEGIN_offset_huge
+Line 0,0,0 5,0,0
+SelAll
+Offset
+1e308
+1
+0,1,0
+SelAll
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_offsetsrf_huge
+Box 0,0,0 10,10,0 5
+SelAll
+OffsetSrf
+1e300
+2
+Cancel
+New
+
 QC3ABEGIN_end

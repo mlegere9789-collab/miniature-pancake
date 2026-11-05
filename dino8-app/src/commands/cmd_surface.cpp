@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "commands/cmd_common.h"
+#include "commands/count_limits.h"
 #include "commands/continuity_request.h"
 #include "commands/history_rebuild.h"
 #include "commands/revolved_solid.h"
@@ -1922,6 +1923,7 @@ class OffsetSrfCommand : public Command {
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double d) override {
     if (d == 0) { ctx.Warn("Distance must be non-zero"); return; }
+    if (!std::isfinite(d) || std::fabs(d) > kMaxOffsetDistance) { ctx.Warn("OffsetSrf: the distance must be a number between -" + FormatNumber(kMaxOffsetDistance) + " and " + FormatNumber(kMaxOffsetDistance)); return; }
     if (flip_) d = -d;
     ctx.Doc().BeginChange("OffsetSrf");
     int made = 0, exact_made = 0;

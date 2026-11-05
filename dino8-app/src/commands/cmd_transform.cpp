@@ -463,6 +463,7 @@ class ArrayCommand : public Command {
     }
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
+    if (ids_.empty()) return;  // still waiting for objects (all locked or hidden?): a number is not a count yet
     char* e; double v = std::strtod(t.c_str(), &e);
     if (e && !*e) { if (stage_ < 3) OnNumber(ctx, v); else Apply(ctx, Vector3d(v, v, v)); }
   }
@@ -487,6 +488,7 @@ class ArrayCommand : public Command {
             ++made;
           }
         }
+    if (made == 0) ctx.Doc().AbandonChange();  // nothing copied: no empty undo step
     ctx.Print("Array created " + std::to_string(made) + " object(s)");
     ctx.ClearPreview();
     Finish();
@@ -511,7 +513,7 @@ class ArrayLinearCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to array"); }
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantNumber("Number of items", 3); }
-  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnText(CommandContext& ctx, const std::string& t) override { if (ids_.empty()) return; char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double v) override {
     if (!count_) {
       int c = 2;
@@ -584,7 +586,7 @@ class ArrayPolarCommand : public Command {
     }
     Finish();
   }
-  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnText(CommandContext& ctx, const std::string& t) override { if (ids_.empty()) return; char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
   std::vector<ObjectId> ids_;
   Point3d center_;
   std::optional<int> count_;

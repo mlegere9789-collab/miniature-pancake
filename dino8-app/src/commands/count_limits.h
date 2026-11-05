@@ -15,6 +15,9 @@ constexpr double kMaxTurns = 1000;
 constexpr double kMaxExtrudeDistance = 1e8;
 // Largest radius a typed Sphere may have (1e300 passed the old check and made a solid nothing could display).
 constexpr double kMaxPrimitiveRadius = 1e9;
+// Largest typed Offset / OffsetSrf distance (Offset 1e308 put a curve 1e62 away; OffsetSrf 1e300 reported success and
+// built a solid whose bounding box was not finite).
+constexpr double kMaxOffsetDistance = 1e9;
 // Farthest from the origin a Move/Scale/Rotate/... may carry any selected object. The kernel's own answer to
 // Move 1e300 was "xform is singular", and Scale 1e30 simply produced a box 1e31 wide.
 constexpr double kMaxModelCoordinate = 1e12;

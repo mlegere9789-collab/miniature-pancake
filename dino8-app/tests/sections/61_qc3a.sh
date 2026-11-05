@@ -116,3 +116,12 @@ qc3a_has "$A" "1 malformed entity skipped" "QC3A_dxf_no_line_end: a LINE without
 qc3a_has "$A" "0 object(s) selected" "QC3A_dxf_no_line_end: no zero-length line was added"
 A="$(qc3a_case import_once)"
 if [ "$(grep -c 'Imported ' <<<"$A")" = 1 ]; then qc3a_ok "QC3A_import_once: the Imported line is printed once"; else qc3a_bad "QC3A_import_once: the Imported line is printed once (saw $(grep -c 'Imported ' <<<"$A"))"; fi
+A="$(qc3a_case array_locked)"
+qc3a_hasnot "$A" "Array created 0 object(s)" "QC3A_array_locked: with the only object locked, Array waits for objects instead of 'creating 0 objects' from numbers typed too early"
+qc3a_has "$A" "1 object(s) selected" "QC3A_array_locked: after Unlock the box is selectable and untouched (no copies)"
+A="$(qc3a_case offset_huge)"
+qc3a_has "$A" "Offset: the distance must be a number above 0 and at most 1000000000" "QC3A_offset_huge: Offset 1e308 is refused with the limit"
+qc3a_has "$A" "max 5,1,0" "QC3A_offset_huge: distance 1 typed afterwards still offsets (the new line is at y = 1)"
+A="$(qc3a_case offsetsrf_huge)"
+qc3a_has "$A" "OffsetSrf: the distance must be a number between -1000000000 and 1000000000" "QC3A_offsetsrf_huge: OffsetSrf 1e300 is refused with the limit"
+qc3a_has "$A" "OffsetSrf: distance 2, 1 object(s)" "QC3A_offsetsrf_huge: distance 2 typed afterwards still offsets"
