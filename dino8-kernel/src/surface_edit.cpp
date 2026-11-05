@@ -3532,6 +3532,132 @@ Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min,
   return Result::Ok;
 }
 
+Result NurbsSurface::JoinTangent(const NurbsSurface& other, SurfaceJoinTangentReport& report, double tolerance) {
+  report = SurfaceJoinTangentReport();
+  auto fail = [&report](const std::string& why) {
+    report.failure_reason = why;
+    return Result::Failed;
+  };
+  const ON_Interval old_dom[2] = {surface_.Domain(0), surface_.Domain(1)};
+  NurbsSurface m = *this;
+  if (m.Join(other, report.join, tolerance) != Result::Ok) return fail("the exact join failed: " + report.join.failure_reason);
+
+  // Where is the seam? Join grows the domain across the shared edge past this surface's old max (or below its old min).
+  int d = -1;
+  bool at_max = true;
+  for (int dir = 0; dir < 2; ++dir) {
+    const ON_Interval nd = m.surface_.Domain(dir);
+    const double eps = 1e-9 * std::max(1.0, old_dom[dir].Length());
+    if (nd.Max() > old_dom[dir].Max() + eps) { d = dir; at_max = true; }
+    else if (nd.Min() < old_dom[dir].Min() - eps) { d = dir; at_max = false; }
+  }
+  if (d < 0) return fail("could not locate the seam in the joined surface");
+  const double seam = at_max ? old_dom[d].Max() : old_dom[d].Min();
+  report.across_direction = d;
+  report.seam_parameter = seam;
+  if (m.surface_.Degree(d) < 2 && m.ElevateDegree(d, 2) == Result::Failed) return fail("could not raise the across-seam degree to 2");
+  ON_NurbsSurface& s = m.surface_;
+  const int p = s.Degree(d);
+  const int edge_dir = 1 - d;
+
+  // The seam knot: first occurrence f in OpenNURBS' compressed knot vector K (K[j] = textbook u_{j+1}); full multiplicity p puts the interpolated
+  // row at index f, with the previous distinct knot K[f-1] and the next distinct knot K[f+p].
+  const int nk = s.KnotCount(d);
+  const double ktol = 1e-9 * std::max(1.0, old_dom[d].Length());
+  int f = -1, mult = 0;
+  for (int j = 0; j < nk; ++j) {
+    if (std::abs(s.Knot(d, j) - seam) <= ktol) { if (f < 0) f = j; ++mult; }
+  }
+  if (f < 1 || mult != p || f + p >= nk) return fail("the junction knot does not have full multiplicity (the seam is not a C0 corner of the spline)");
+  const int n_across = s.CVCount(d);
+  if (f - 1 < 0 || f + 1 >= n_across) return fail("no control row on one side of the seam");
+  const double span_l = s.Knot(d, f) - s.Knot(d, f - 1), span_r = s.Knot(d, f + p) - s.Knot(d, f);
+  if (!(span_l > 0.0) || !(span_r > 0.0)) return fail("degenerate knot spans next to the seam");
+  const double alpha_l = p / span_l, alpha_r = p / span_r;
+
+  auto get = [&](int row, int col, ON_4dPoint& h) {
+    if (d == 0) s.GetCV(row, col, h); else s.GetCV(col, row, h);
+    if (!s.IsRational()) h.w = 1.0;
+  };
+  auto set = [&](int row, int col, const ON_4dPoint& h) {
+    const int i = d == 0 ? row : col, j = d == 0 ? col : row;
+    if (s.IsRational()) s.SetCV(i, j, h); else s.SetCV(i, j, ON_3dPoint(h.x, h.y, h.z));
+  };
+  auto sub4 = [](const ON_4dPoint& a, const ON_4dPoint& b) { return ON_4dPoint(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w); };
+  auto axpy = [](const ON_4dPoint& a, const ON_4dPoint& dir, double k) { return ON_4dPoint(a.x + k * dir.x, a.y + k * dir.y, a.z + k * dir.z, a.w + k * dir.w); };
+
+  const ON_NurbsSurface before = s;
+  double size = 1.0;
+  {
+    ON_BoundingBox bb;
+    s.GetBoundingBox(bb, false);
+    size = std::max(1.0, bb.Diagonal().Length());
+  }
+  // Seam-side one-sided cross derivatives (left = from below the seam parameter, right = from above) at a seam edge parameter.
+  auto sided = [&](const ON_NurbsSurface& sf, double e, ON_3dVector& left, ON_3dVector& right, ON_3dPoint& pt) {
+    ON_3dPoint pl, pr;
+    ON_3dVector ul, vl, ur, vr;
+    const double u = d == 0 ? seam : e, v = d == 0 ? e : seam;
+    if (!sf.Ev1Der(u, v, pl, ul, vl, 3) || !sf.Ev1Der(u, v, pr, ur, vr, 1)) return false;
+    left = d == 0 ? ul : vl;
+    right = d == 0 ? ur : vr;
+    pt = pl;
+    return true;
+  };
+  const ON_Interval edom = s.Domain(edge_dir);
+  const int kSeamSamples = 65;
+  auto crease = [&](const ON_NurbsSurface& sf, double& worst_deg) {
+    worst_deg = 0.0;
+    for (int k = 0; k < kSeamSamples; ++k) {
+      ON_3dVector l, r;
+      ON_3dPoint pt;
+      if (!sided(sf, edom.ParameterAt(k / (kSeamSamples - 1.0)), l, r, pt)) return false;
+      if (!(l.Length() > 0.0) || !(r.Length() > 0.0)) return false;
+      worst_deg = std::max(worst_deg, ON_3dVector::Angle(l, r) * 180.0 / ON_PI);
+    }
+    return true;
+  };
+  if (!crease(before, report.max_crease_angle_before_degrees)) return fail("the cross derivative vanishes or cannot be evaluated at the seam");
+
+  const int n_cols = s.CVCount(edge_dir);
+  for (int c = 0; c < n_cols; ++c) {
+    ON_4dPoint r_m, r_0, r_p;
+    get(f - 1, c, r_m);
+    get(f, c, r_0);
+    get(f + 1, c, r_p);
+    const ON_4dPoint q_l = sub4(r_0, r_m), q_r = sub4(r_p, r_0);
+    // average of the two one-sided homogeneous cross derivatives: Q = (alpha- (R0 - R-1) + alpha+ (R+1 - R0)) / 2
+    const ON_4dPoint q(0.5 * (alpha_l * q_l.x + alpha_r * q_r.x), 0.5 * (alpha_l * q_l.y + alpha_r * q_r.y), 0.5 * (alpha_l * q_l.z + alpha_r * q_r.z),
+                       0.5 * (alpha_l * q_l.w + alpha_r * q_r.w));
+    const ON_4dPoint n_m = axpy(r_0, q, -1.0 / alpha_l), n_p = axpy(r_0, q, 1.0 / alpha_r);
+    if (s.IsRational() && (!(n_m.w > 0.0) || !(n_p.w > 0.0))) return fail("a rational row next to the seam would get a non-positive weight");
+    set(f - 1, c, n_m);
+    set(f + 1, c, n_p);
+  }
+  if (!s.IsValid()) return fail("the smoothed surface is not valid");
+
+  // Measure: the seam curve must not have moved, the crease must be gone, and the price is the deviation from the plain join.
+  double shift = 0.0;
+  for (int k = 0; k < kSeamSamples; ++k) {
+    const double e = edom.ParameterAt(k / (kSeamSamples - 1.0));
+    const double u = d == 0 ? seam : e, v = d == 0 ? e : seam;
+    shift = std::max(shift, s.PointAt(u, v).DistanceTo(before.PointAt(u, v)));
+  }
+  report.max_seam_shift = shift;
+  double dev = 0.0;
+  for (int i = 0; i <= 16; ++i)
+    for (int j = 0; j <= 16; ++j) {
+      const double u = s.Domain(0).ParameterAt(i / 16.0), v = s.Domain(1).ParameterAt(j / 16.0);
+      dev = std::max(dev, s.PointAt(u, v).DistanceTo(before.PointAt(u, v)));
+    }
+  report.max_deviation = dev;
+  if (!crease(s, report.max_crease_angle_after_degrees)) return fail("the smoothed surface's cross derivative vanishes at the seam");
+  if (!(report.max_crease_angle_after_degrees <= 1e-6)) return fail("the seam is still creased after smoothing (" + std::to_string(report.max_crease_angle_after_degrees) + " degrees)");
+  if (!(shift <= 1e-9 * size)) return fail("the seam curve moved while smoothing (" + std::to_string(shift) + ")");
+  *this = m;
+  return Result::Ok;
+}
+
 Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area,
                                        DevelopableKind* out_kind) const {
   if (u_divisions < 1 || v_divisions < 1) {

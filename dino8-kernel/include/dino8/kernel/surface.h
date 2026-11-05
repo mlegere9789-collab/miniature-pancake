@@ -143,6 +143,23 @@ struct SurfaceJoinReport {
   double max_deviation = 0.0;
 };
 
+// What `NurbsSurface::JoinTangent()` did and measured. `join` is the underlying exact `Join()` report. All the numbers are measured by evaluating
+// the surfaces (one side at a time at the seam), not read off the construction: `max_crease_angle_before_degrees` is the largest angle between the
+// two one-sided cross-seam tangent planes' directions (the angle between the left and right cross derivatives) of the plain exact join over 65 seam
+// samples, `max_crease_angle_after_degrees` the same for the result; `max_deviation` is the largest distance from the smoothed result to the plain join
+// over a 17 x 17 grid (the price of the smoothing: only the two control rows next to the seam move); `max_seam_shift` is how far the seam curve itself
+// moved (0 to round-off). `across_direction` / `seam_parameter` say where the seam is in the result.
+struct SurfaceJoinTangentReport {
+  SurfaceJoinReport join;
+  double max_crease_angle_before_degrees = 0.0;
+  double max_crease_angle_after_degrees = 0.0;
+  double max_deviation = 0.0;
+  double max_seam_shift = 0.0;
+  int across_direction = -1;
+  double seam_parameter = 0.0;
+  std::string failure_reason;
+};
+
 // End conditions for `NurbsSurface::InterpolateThroughGridWithEndConditions()`. Every list is optional: an EMPTY list means
 // "no condition there" (the end is free). All derivatives are with respect to the surface's own [0, 1] x [0, 1] parameters.
 struct GridEndConditions {
@@ -1093,6 +1110,19 @@ class NurbsSurface {
   // (measured gap) or merely cannot be given identical control polygons
   // (a differently-parameterized edge: not exactly splicable).
   Result Join(const NurbsSurface& other, SurfaceJoinReport& report, double tolerance = 1e-6);
+
+  // Join() followed by G1 smoothing of the seam - Rhino's MergeSrf with Smooth: the exact join keeps any kink the two surfaces had (the seam knot has
+  // full multiplicity, C0), and this removes it. After the exact splice (everything `Join()` documents; the result is oriented like this surface) the
+  // across-seam degree is raised to 2 if it was 1, and the two control rows next to the seam are replaced in HOMOGENEOUS coordinates so the cross
+  // derivative is the same on both sides of the seam: with Q- = alpha- (R0 - R-1) and Q+ = alpha+ (R+1 - R0) the one-sided cross derivatives at a seam
+  // column (alpha = p / the knot span on that side), both become (Q- + Q+) / 2. Since the cross derivative of a rational surface at fixed weights is
+  // linear in the homogeneous derivative, the Euclidean cross derivatives at the seam become the average of the two inputs' own, for rational surfaces as
+  // well; the seam curve and every other row are untouched. The result is C1 across the seam (so G1), the other exactly-equal surface is reproduced away
+  // from the two rows' influence, and the deviation caused is measured and reported (`SurfaceJoinTangentReport`). On a join that was already smooth the
+  // averaging changes nothing. Result::Failed (this surface untouched, reason in the report) if Join() fails, if the junction knot is not of full
+  // multiplicity, if a rational neighbour row would get a non-positive weight, or if the measured crease after smoothing is above 1e-6 degrees or the seam
+  // moved by more than 1e-9 of the surface size. Throws what Join() throws (no shared edge, a surface closed across it).
+  Result JoinTangent(const NurbsSurface& other, SurfaceJoinTangentReport& report, double tolerance = 1e-6);
 
   // Splits this surface into one piece per genuinely G1-continuous
   // region - closing PARITY_MAP's own disclosed "Kinky / creased surface

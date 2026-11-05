@@ -187,6 +187,8 @@ D8_EXTRA_TEST(MatchEdgeToCurveFollowingCurvatureSphere) {
     Check(g1.MatchEdgeToCurveFollowing(1, true, arc, host) == Result::Ok, "control: the G1 follow returns Ok");
     const Worst wg1 = MeasureSphere(g1, 1, true);
     Check(wg1.cross > 0.15 && wg1.gauss > 0.02, "control: the G1 follow's normal curvature across the edge is ~0 (error ~0.2) and its Gaussian curvature is not 1/25");
+    // Clean negative, as assertions on the very tolerances the G2 case above passes: the G1 follow must FAIL the G2 oracles.
+    Check(!(wg1.cross < 1e-5) && !(wg1.gauss < 1e-5), "negative: the G1 follow FAILS the 1e-5 normal-curvature and 1e-5 Gaussian-curvature oracles the G2 follow passes");
   }
 
   // --- a rational wall: its own second cross derivative is a rational function (sampled, not read off the rows) ---
