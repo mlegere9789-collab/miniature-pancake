@@ -3570,7 +3570,58 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 
 }  // namespace
 
+// The engine's intersection / classification / sewing tolerances are absolute (0.001 default, Newton refinement of SSX curves,
+// vertex weld 1e-6) while the operands' coordinates are doubles: far from the origin the SAME operands lose digits. Measured on
+// a 10-box minus a through cylinder (closed form 874.336): exact volume 874.337 at offset 0, 874.298 at 1e3, 875.456 at 1e5 and
+// no closed tessellation from ~3e6. Both operands are therefore translated by the (dyadic-rounded) centre of their joint control
+// box, combined near the origin, and the result is translated back.
+static bool GeneralBooleanFrameShift(const Brep& a, const Brep& b, ON_3dVector& shift) {
+  ON_BoundingBox bb;
+  for (const Brep* x : {&a, &b}) {
+    for (int fi = 0; fi < x->raw().m_F.Count(); ++fi) {
+      const ON_Surface* sf = x->raw().m_F[fi].SurfaceOf();
+      if (sf == nullptr) continue;
+      if (const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(sf)) {
+        for (int i = 0; i < ns->CVCount(0); ++i)
+          for (int j = 0; j < ns->CVCount(1); ++j) {
+            ON_3dPoint p;
+            if (ns->GetCV(i, j, p)) bb.Set(p, true);
+          }
+      } else {
+        bb.Union(sf->BoundingBox());
+      }
+    }
+  }
+  if (!bb.IsValid()) return false;
+  const ON_3dPoint c = bb.Center();
+  const double half = 0.5 * bb.Diagonal().Length();
+  const double dist = std::max({std::fabs(c.x), std::fabs(c.y), std::fabs(c.z)});
+  // a body within 4 half-diagonals of the origin is left alone (identical to the previous behaviour, bit for bit)
+  if (!(dist > 4.0 * half) || !(dist > 0.0) || !std::isfinite(dist)) return false;
+  auto quantize = [](double v) {
+    if (v == 0.0) return 0.0;
+    const double q = std::ldexp(1.0, std::ilogb(std::fabs(v)) - 30);  // x - shift is then exact (Sterbenz)
+    return std::round(v / q) * q;
+  };
+  shift = ON_3dVector(quantize(c.x), quantize(c.y), quantize(c.z));
+  return true;
+}
+
+static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                                            bool allow_non_manifold_result);
+
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                            bool allow_non_manifold_result) {
+  ON_3dVector shift;
+  if (!GeneralBooleanFrameShift(a, b, shift)) return BooleanCombineGeneralLocalFrame(a, b, op, tolerance, allow_non_manifold_result);
+  const Brep la = a.Transform(ON_Xform::TranslationTransformation(-shift));
+  const Brep lb = b.Transform(ON_Xform::TranslationTransformation(-shift));
+  const Brep local = BooleanCombineGeneralLocalFrame(la, lb, op, tolerance, allow_non_manifold_result);
+  if (local.raw().m_F.Count() == 0) return local;
+  return local.Transform(ON_Xform::TranslationTransformation(shift));
+}
+
+static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
                             bool allow_non_manifold_result) {
   if (op == BooleanOp::SymmetricDifference) {
     // Still needs the same lump-merge step Union itself has no more of
@@ -8674,7 +8725,22 @@ SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, B
   return SealGeneralBooleanResult(BooleanCombineGeneral(a, b, op, tolerance), op, va, vb);
 }
 
+static SealedGeneralBoolean SealGeneralBooleanResultLocalFrame(const Brep& raw, BooleanOp op, double volume_a, double volume_b);
+
+// Sewing, keyhole opening and the ON_Brep validity checks all use absolute distances; like BooleanCombineGeneral() they run on a
+// copy translated to the body's own centre when it is far from the origin, and the sealed result is translated back.
 SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, double volume_a, double volume_b) {
+  ON_3dVector shift;
+  const Brep empty;
+  if (raw.raw().m_F.Count() == 0 || !GeneralBooleanFrameShift(raw, empty, shift)) {
+    return SealGeneralBooleanResultLocalFrame(raw, op, volume_a, volume_b);
+  }
+  SealedGeneralBoolean out = SealGeneralBooleanResultLocalFrame(raw.Transform(ON_Xform::TranslationTransformation(-shift)), op, volume_a, volume_b);
+  if (out.brep.raw().m_F.Count() > 0) out.brep = out.brep.Transform(ON_Xform::TranslationTransformation(shift));
+  return out;
+}
+
+static SealedGeneralBoolean SealGeneralBooleanResultLocalFrame(const Brep& raw, BooleanOp op, double volume_a, double volume_b) {
   SealedGeneralBoolean out;
   Brep r = raw;
   if (r.raw().m_F.Count() == 0) {
