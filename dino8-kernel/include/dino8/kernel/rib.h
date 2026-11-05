@@ -50,4 +50,19 @@ RibResult MakeRib(const Brep& solid, const std::vector<Point3d>& profile, double
 RibResult MakeRibs(const Brep& solid, const std::vector<std::vector<Point3d>>& profiles, double thickness,
                    bool symmetric = true);
 
+// A rib flush with the body's end face. MakeRib() of a web whose end lies exactly ON a face of the solid is refused by the engine
+// ("an edge is claimed by 3 or more fragment loops": coincident faces). MakeRibFlush() takes a profile that OVERHANGS the end face
+// and trims it back: it fuses the overhanging web (MakeRib), then subtracts the half-space beyond each `planes` entry (a slab built
+// from planar faces) with BooleanCombineGeneralSealed(Difference). Measured: the cutter's face coinciding with the body's end face
+// is handled by that Difference. Each plane is a point on the body's end face and its OUTWARD normal; the solid must lie behind it
+// (checked against every face surface's control points, a safe convex-hull bound, so a curved
+// body whose control net pokes past the plane is refused with std::invalid_argument). added_volume is the final volume minus the solid's. Refusals as for MakeRib, plus a trim that the engine
+// refuses.
+struct RibFlushPlane {
+  Point3d point;
+  Vector3d normal;
+};
+RibResult MakeRibFlush(const Brep& solid, const std::vector<Point3d>& profile, double thickness,
+                       const std::vector<RibFlushPlane>& planes, bool symmetric = true);
+
 }  // namespace dino8::kernel

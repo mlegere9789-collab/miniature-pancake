@@ -11,13 +11,16 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/rib.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "test_registry.h"
 
 namespace {
 
 using dino8::kernel::Brep;
 using dino8::kernel::MakeRib;
+using dino8::kernel::MakeRibFlush;
 using dino8::kernel::MakeRibs;
+using dino8::kernel::RibFlushPlane;
 using dino8::kernel::Point3d;
 using dino8::kernel::RibResult;
 
@@ -220,5 +223,75 @@ D8_EXTRA_TEST(RibOnCylinderWallIsExactOrHonestlyRefused) {
     d8test::Check(Near(r.brep.VolumeOfSealedSolid(), expected, 5e-3), "fin on cylinder: if returned, the volume matches the quadrature closed form");
   } catch (const std::exception& e) {
     d8test::Check(std::string(e.what()).find("MakeRib") != std::string::npos, "fin on cylinder: refusal is a named MakeRib error");
+  }
+}
+
+
+// A rib flush with the plate's end face x = 10. A plain MakeRib with the web ending exactly at x = 10 is refused by the engine
+// (coincident faces); MakeRibFlush takes the web overhanging to x = 11 and trims it back with the plane x = 10.
+D8_EXTRA_TEST(RibFlushWithEndFaceMatchesClosedForm) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  const Point3d o(10, 5, 0);
+  const RibResult r = MakeRibFlush(plate, {P(2, 5, 0.8), P(11, 5, 0.8), P(11, 5, 4), P(2, 5, 4)}, 0.4, {RibFlushPlane{o, dino8::kernel::Vector3d(1, 0, 0)}});
+  ExpectBody(r, 100.0 + 8.0 * 3.0 * 0.4, 1e-6, "flush rib");
+  d8test::Check(Near(r.added_volume, 9.6, 1e-6), "flush rib: added volume is 8 x 3 x 0.4");
+  // plate 240 - footprint 3.2 + flanks 2 x 24 + two end faces 2 x 1.2 + top 3.2
+  d8test::Check(Near(r.brep.Area(), 240.0 - 3.2 + 48.0 + 2.4 + 3.2, 1e-5), "flush rib: surface area 290.4");
+  d8test::Check(dino8::kernel::ContainsPointExact(P(9.9, 5, 2), r.brep.raw()) && !dino8::kernel::ContainsPointExact(P(10.1, 5, 2), r.brep.raw()) &&
+                    dino8::kernel::ContainsPointExact(P(6, 5, 3.9), r.brep.raw()) && !dino8::kernel::ContainsPointExact(P(6, 5.5, 3), r.brep.raw()),
+                "flush rib: point probes inside the web near the end face, past the end face, near its top and beside it");
+  // Plain MakeRib exactly flush is the measured refusal this function exists for.
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, {P(2, 5, 0.8), P(10, 5, 0.8), P(10, 5, 4), P(2, 5, 4)}, 0.4); }, "refused"),
+                "plain MakeRib of a web ending exactly on the end face is refused (the reason MakeRibFlush exists)");
+}
+
+// A rib running the whole length, both ends flush. Measured: the engine's second cut (whether sequential or as one compound cutter)
+// removes the wrong volume (1.37 of 2.56 for the compound), which the removed-volume check catches, so today this is REFUSED; the
+// contract pinned is exact-or-honest, never a degraded body.
+D8_EXTRA_TEST(RibFlushAtBothEndsIsExactOrHonestlyRefused) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  try {
+    const RibResult r = MakeRibFlush(plate, {P(-1, 5, 0.8), P(11, 5, 0.8), P(11, 5, 4), P(-1, 5, 4)}, 0.4,
+                                     {RibFlushPlane{P(10, 5, 0), dino8::kernel::Vector3d(1, 0, 0)}, RibFlushPlane{P(0, 5, 0), dino8::kernel::Vector3d(-1, 0, 0)}});
+    ExpectBody(r, 100.0 + 10.0 * 3.0 * 0.4, 1e-6, "full-length flush rib");
+  } catch (const std::runtime_error& e) {
+    d8test::Check(std::string(e.what()).find("trimming the rib flush was refused") != std::string::npos,
+                  "full-length flush rib: refusal names the flush trim and the measured volume mismatch");
+  }
+}
+
+D8_EXTRA_TEST(RibFlushRefusesPlaneThroughTheSolid) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  bool inv = false;
+  d8test::Check(ThrowsWith([&] { MakeRibFlush(plate, {P(2, 5, 0.8), P(11, 5, 0.8), P(11, 5, 4), P(2, 5, 4)}, 0.4, {RibFlushPlane{P(5, 5, 0), dino8::kernel::Vector3d(1, 0, 0)}}); },
+                           "not behind the solid", &inv) && inv,
+                "a flush plane through the middle of the plate is refused (it would cut the host)");
+  d8test::Check(ThrowsWith([&] { MakeRibFlush(plate, {P(2, 5, 0.8), P(11, 5, 0.8), P(11, 5, 4), P(2, 5, 4)}, 0.4, {}); }, "no flush planes", &inv) && inv,
+                "no planes is an invalid argument");
+}
+
+// A rib standing on the top cap of a cylinder (R = 3, cap z = 6): x in [-2, 2], z 5.5..8, thickness 0.4 centred on y = 0. Before the sealing
+// ladder gained its finer rungs this was refused (4 micro-edges left unpaired). Added = 4 x 2 x 0.4; the engine's exact integral is
+// measured 0.9% below that (3.171), so the bound is 1.5%. y = 1 is still refused (3-loop non-manifold); exact-or-honest.
+D8_EXTRA_TEST(RibOnCylinderCapMatchesClosedForm) {
+  const ON_Circle c(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve nurbs;
+  c.GetNurbForm(nurbs);
+  dino8::kernel::NurbsCurve prof;
+  prof.raw() = nurbs;
+  const Brep cyl = Brep::Extrude(prof, dino8::kernel::Vector3d(0, 0, 6));
+  const RibResult r = MakeRib(cyl, {P(-2, 0, 5.5), P(2, 0, 5.5), P(2, 0, 8), P(-2, 0, 8)}, 0.4);
+  d8test::Check(r.brep.raw().IsValid() && r.brep.raw().IsSolid(), "cap rib: valid closed solid");
+  d8test::Check(Near(r.added_volume, 3.2, 0.015 * 3.2), ("cap rib: added volume " + std::to_string(r.added_volume) + " vs closed form 3.2 (bound 1.5%)").c_str());
+  using dino8::kernel::ContainsPointExact;
+  d8test::Check(ContainsPointExact(P(0, 0, 7), r.brep.raw()) && ContainsPointExact(P(1.9, 0.1, 7.9), r.brep.raw()) &&
+                    !ContainsPointExact(P(2.3, 0, 7), r.brep.raw()) && !ContainsPointExact(P(0, 0.5, 7), r.brep.raw()) &&
+                    !ContainsPointExact(P(0, 0, 8.2), r.brep.raw()),
+                "cap rib: probes inside the web, past its end, beside it and above its top");
+  try {
+    const RibResult off = MakeRib(cyl, {P(-2, 1, 5.5), P(2, 1, 5.5), P(2, 1, 8), P(-2, 1, 8)}, 0.4);
+    d8test::Check(off.brep.raw().IsValid() && off.brep.raw().IsSolid() && Near(off.added_volume, 3.2, 0.015 * 3.2), "off-centre cap rib: if returned, valid with the closed-form volume");
+  } catch (const std::runtime_error& e) {
+    d8test::Check(std::string(e.what()).find("MakeRib: fusing the rib") != std::string::npos, "off-centre cap rib: refusal names MakeRib and the engine's cause");
   }
 }

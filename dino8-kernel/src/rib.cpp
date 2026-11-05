@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string>
 
 #include "dino8/kernel/boolean_general.h"
 
@@ -48,6 +49,11 @@ bool SegmentsTouch(const Seg2& s, const Seg2& t, double eps) {
 
 [[noreturn]] void Refuse(const std::string& why) {
   throw std::runtime_error("dino8::kernel::MakeRib: " + why);
+}
+
+bool Apart(const BoundingBox& a, const BoundingBox& b, double tol) {
+  return a.max.x < b.min.x - tol || a.min.x > b.max.x + tol || a.max.y < b.min.y - tol || a.min.y > b.max.y + tol ||
+         a.max.z < b.min.z - tol || a.min.z > b.max.z + tol;
 }
 
 Point3d Add(const Point3d& p, const Vector3d& d) { return Point3d(p.x + d.x, p.y + d.y, p.z + d.z); }
@@ -259,6 +265,134 @@ RibResult MakeRibs(const Brep& solid, const std::vector<std::vector<Point3d>>& p
 
 RibResult MakeRib(const Brep& solid, const std::vector<Point3d>& profile, double thickness, bool symmetric) {
   return MakeRibs(solid, std::vector<std::vector<Point3d>>{profile}, thickness, symmetric);
+}
+
+RibResult MakeRibFlush(const Brep& solid, const std::vector<Point3d>& profile, double thickness,
+                       const std::vector<RibFlushPlane>& planes, bool symmetric) {
+  if (planes.empty()) Bad("no flush planes given (use MakeRib for a rib that ends inside the body)");
+  const BoundingBox sb = solid.GetTightBoundingBox();
+  const double diag = (sb.max - sb.min).Length();
+  struct Unit {
+    Point3d p;
+    Vector3d n;
+  };
+  std::vector<Unit> cuts;
+  for (size_t i = 0; i < planes.size(); ++i) {
+    Vector3d n = planes[i].normal;
+    if (!n.Unitize()) Bad("flush plane " + std::to_string(i) + " has a zero normal");
+    // The cut removes everything beyond the plane, so the host solid must lie entirely behind it.
+    // Upper bound on how far the solid reaches beyond the plane: every control point of every face surface (the convex-hull
+    // property of a NURBS surface makes this a safe bound; the tight bounding box carries slack, measured 0.16 on a 4.0 extent).
+    double worst = -std::numeric_limits<double>::max();
+    for (int f = 0; f < solid.raw().m_F.Count(); ++f) {
+      const ON_Surface* surf = solid.raw().m_F[f].SurfaceOf();
+      if (!surf) continue;
+      ON_NurbsSurface ns;
+      if (surf->GetNurbForm(ns) == 0) Bad("cannot bound the solid against flush plane " + std::to_string(i) + " (face " + std::to_string(f) + " has no NURBS form)");
+      for (int u = 0; u < ns.CVCount(0); ++u) {
+        for (int v = 0; v < ns.CVCount(1); ++v) {
+          ON_3dPoint cp;
+          ns.GetCV(u, v, cp);
+          worst = std::max(worst, (cp.x - planes[i].point.x) * n.x + (cp.y - planes[i].point.y) * n.y + (cp.z - planes[i].point.z) * n.z);
+        }
+      }
+    }
+    if (worst > 1e-9 * std::max(1.0, diag)) {
+      Bad("flush plane " + std::to_string(i) + " is not behind the solid: a face control point reaches " + std::to_string(worst) +
+          " beyond the plane; a flush plane must be the body's own end face (or lie beyond it)");
+    }
+    cuts.push_back({planes[i].point, n});
+  }
+  RibResult out = MakeRib(solid, profile, thickness, symmetric);
+  double solid_volume = 0;
+  try {
+    solid_volume = solid.raw().IsSolid() ? solid.VolumeOfSealedSolid() : solid.Volume();
+  } catch (const std::exception& e) {
+    Refuse(std::string("could not measure the solid's volume: ") + e.what());
+  }
+  const BoundingBox rb = out.brep.GetTightBoundingBox();
+  const double fused_volume = out.brep.VolumeOfSealedSolid();
+  double web_ext = 0;
+  const Brep web = BuildWeb(profile, thickness, symmetric, &web_ext);  // the clean prism: no face of it lies on the solid's
+
+  // One cutter slab per plane (everything beyond the plane, margin around the fused body's extent). Measured: a cutter made by
+  // Brep::Box() fuses where the same slab built from generic planar faces is refused ("3 or more fragment loops"), so an axis-aligned
+  // plane gets a Box; and a SECOND cut on the already-cut body is refused or wrong, so all planes go in as ONE compound cutter.
+  auto make_cutter = [&](size_t i, double m, double dd) {
+    const Vector3d& n = cuts[i].n;
+    const Point3d o = cuts[i].p;
+    const int axis = std::fabs(n.x) > 1 - 1e-12 ? 0 : std::fabs(n.y) > 1 - 1e-12 ? 1 : std::fabs(n.z) > 1 - 1e-12 ? 2 : -1;
+    if (axis >= 0) {
+      const double sgn = (axis == 0 ? n.x : axis == 1 ? n.y : n.z) > 0 ? 1.0 : -1.0;
+      const double pl = axis == 0 ? o.x : axis == 1 ? o.y : o.z;
+      double a[3] = {rb.min.x - m, rb.min.y - m, rb.min.z - m}, b[3] = {rb.max.x + m, rb.max.y + m, rb.max.z + m};
+      a[axis] = sgn > 0 ? pl : pl - dd;
+      b[axis] = sgn > 0 ? pl + dd : pl;
+      return Brep::Box(a[0], a[1], a[2], b[0], b[1], b[2]);
+    }
+    const Vector3d seed = std::fabs(n.z) < 0.9 ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    Vector3d e1(seed.y * n.z - seed.z * n.y, seed.z * n.x - seed.x * n.z, seed.x * n.y - seed.y * n.x);
+    e1.Unitize();
+    const Vector3d e2(n.y * e1.z - n.z * e1.y, n.z * e1.x - n.x * e1.z, n.x * e1.y - n.y * e1.x);  // e1 x e2 = n
+    double lo1 = 1e300, hi1 = -1e300, lo2 = 1e300, hi2 = -1e300;
+    for (int c = 0; c < 8; ++c) {
+      const Point3d q((c & 1) ? rb.max.x : rb.min.x, (c & 2) ? rb.max.y : rb.min.y, (c & 4) ? rb.max.z : rb.min.z);
+      const double a1 = (q.x - o.x) * e1.x + (q.y - o.y) * e1.y + (q.z - o.z) * e1.z;
+      const double a2 = (q.x - o.x) * e2.x + (q.y - o.y) * e2.y + (q.z - o.z) * e2.z;
+      lo1 = std::min(lo1, a1);
+      hi1 = std::max(hi1, a1);
+      lo2 = std::min(lo2, a2);
+      hi2 = std::max(hi2, a2);
+    }
+    auto at = [&](double a, double b) { return Point3d(o.x + a * e1.x + b * e2.x, o.y + a * e1.y + b * e2.y, o.z + a * e1.z + b * e2.z); };
+    double ext = 0;
+    return BuildWeb({at(lo1 - m, lo2 - m), at(hi1 + m, lo2 - m), at(hi1 + m, hi2 + m), at(lo1 - m, hi2 + m)}, dd, false, &ext);
+  };
+
+  // Measured: the Difference result depends erratically on the cutter's size (a 1-unit margin around a 10-unit plate gives the exact
+  // volume, a 2-unit margin leaves a 0.22 sliver of the web), and the sealing step's volume bounds (1%) do not see it. So the cut is
+  // VERIFIED: the volume it removes must equal the exact volume of web ^ cutter (a second, independent boolean on the bare web, whose
+  // faces do not lie on the host's), and several cutter sizes are tried in turn.
+  std::string last_why = "no cutter size was tried";
+  bool done = false;
+  for (const double margin : {0.07, 0.2, 0.4, 0.03, 0.8}) {
+    for (const double depth : {0.15, 0.5}) {
+      std::vector<Brep> cutters;
+      for (size_t i = 0; i < cuts.size(); ++i) cutters.push_back(make_cutter(i, margin * diag, depth * diag));
+      for (size_t i = 0; i < cutters.size(); ++i) {
+        for (size_t j = i + 1; j < cutters.size(); ++j) {
+          if (!Apart(cutters[i].GetTightBoundingBox(), cutters[j].GetTightBoundingBox(), 0.0)) {
+            Bad("flush planes " + std::to_string(i) + " and " + std::to_string(j) +
+                " give overlapping cutters; only opposite/parallel end faces are supported together");
+          }
+        }
+      }
+      const Brep cutter = cutters.size() == 1 ? cutters[0] : Brep::Compound(cutters);
+      try {
+        const SealedGeneralBoolean cut = BooleanCombineGeneralSealed(out.brep, cutter, BooleanOp::Difference);
+        const SealedGeneralBoolean inter = BooleanCombineGeneralSealed(web, cutter, BooleanOp::Intersection);
+        const double removed = fused_volume - cut.volume;
+        if (std::fabs(removed - inter.volume) > 1e-4 * inter.volume + 1e-9) {
+          last_why = "the cut removed " + std::to_string(removed) + " but web ^ cutter measures " + std::to_string(inter.volume);
+          continue;
+        }
+        out.brep = cut.brep;
+        out.added_volume = cut.volume - solid_volume;
+        done = true;
+      } catch (const std::exception& e) {
+        last_why = e.what();
+      }
+      if (done) break;
+    }
+    if (done) break;
+  }
+  if (!done) {
+    Refuse("trimming the rib flush was refused after trying several cutter sizes (not returning a degraded body): " + last_why);
+  }
+  if (!(out.added_volume > 1e-6 * out.tool_volume)) {
+    Refuse("after the flush trim the rib adds no measurable volume (" + std::to_string(out.added_volume) + ")");
+  }
+  return out;
 }
 
 }  // namespace dino8::kernel
