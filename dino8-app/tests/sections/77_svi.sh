@@ -19,10 +19,11 @@ svilimit() { { grep -oE "limit point \([^)]*\)" <<<"$1" || true; } | head -1 | s
 # svipoint LINE X Y Z TOL DESC: the line's limit point equals (X, Y, Z) within TOL
 svipoint() {
   local got; got="$(svilimit "$1")"
-  if [ -n "$got" ] && awk -v g="$got" -v x="$2" -v y="$3" -v z="$4" -v t="$5" 'BEGIN { split(g, a, " "); dx = a[1] - x; dy = a[2] - y; dz = a[3] - z; exit !(dx * dx + dy * dy + dz * dz <= t * t) }'; then
-    svi_ok "$6 (limit point $got, hand-derived ($2, $3, $4) +-$5)"
+  if [ -n "$got" ] && awk -v g="$got" -v x="$2" -v y="$3" -v z="$4" -v t="$5" 'function pt(w,   l, f) { if (w < 0) w = -w; if (w < 1e-9) return 0; l = log(w) / log(10) + 1e-9; f = int(l); if (l < f) f -= 1; return 0.51 * 10 ^ (f - 3) }
+    BEGIN { split(g, a, " "); ok = 1; w[1] = x; w[2] = y; w[3] = z; for (i = 1; i <= 3; i++) { d = a[i] - w[i]; if (d < 0) d = -d; e = pt(w[i]); if (e < t) e = t; if (d > e) ok = 0 } exit !ok }'; then
+    svi_ok "$6 (limit point $got, hand-derived ($2, $3, $4), per component +-max($5, half a unit of the app's 4th printed significant digit))"
   else
-    svi_bad "$6 (limit point '${got:-none}', hand-derived ($2, $3, $4) +-$5)"; echo "     line: ${1:-none}"
+    svi_bad "$6 (limit point '${got:-none}', hand-derived ($2, $3, $4), per component +-max($5, half a unit of the app's 4th printed significant digit))"; echo "     line: ${1:-none}"
   fi
 }
 svihas() { if grep -qF -- "$2" <<<"$1"; then svi_ok "$3"; else svi_bad "$3"; echo "     expected: $2"; echo "     line: ${1:-none}"; fi; }

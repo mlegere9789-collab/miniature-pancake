@@ -33,15 +33,17 @@ scuexpect() {
 # scupoint LINE "x y z" TOL DESC: the line's limit point equals the point
 scupoint() {
   local got want; got="$({ grep -oE "limit point \([^)]*\)" <<<"$1" || true; } | head -1 | sed -E 's/limit point \(([^,]*), ([^,]*), ([^)]*)\)/\1 \2 \3/')"; want="$2"
-  if [ -n "$got" ] && awk -v g="$got" -v w="$want" -v t="$3" 'BEGIN { split(g, a, " "); split(w, b, " "); dx = a[1] - b[1]; dy = a[2] - b[2]; dz = a[3] - b[3]; exit !(dx * dx + dy * dy + dz * dz <= t * t) }'; then
-    scu_ok "$4 (limit point $got, closed form $want +-$3)"
+  if [ -n "$got" ] && awk -v g="$got" -v w="$want" -v t="$3" 'function pt(w,   l, f) { if (w < 0) w = -w; if (w < 1e-9) return 0; l = log(w) / log(10) + 1e-9; f = int(l); if (l < f) f -= 1; return 0.51 * 10 ^ (f - 3) }
+    BEGIN { split(g, a, " "); split(w, b, " "); ok = 1; for (i = 1; i <= 3; i++) { d = a[i] - b[i]; if (d < 0) d = -d; e = pt(b[i]); if (e < t) e = t; if (d > e) ok = 0 } exit !ok }'; then
+    scu_ok "$4 (limit point $got, closed form $want, per component +-max($3, half a unit of the app's 4th printed significant digit))"
   else
-    scu_bad "$4 (limit point '${got:-none}', closed form $want +-$3)"; echo "     line: ${1:-none}"
+    scu_bad "$4 (limit point '${got:-none}', closed form $want, per component +-max($3, half a unit of the app's 4th printed significant digit))"; echo "     line: ${1:-none}"
   fi
 }
 # scuvertexz LINE: the z of the "vertex (x, y, z)" control point
 scuvertexz() { { grep -oE "vertex \([^)]*\)" <<<"$1" || true; } | head -1 | sed -E 's/vertex \(([^,]*), ([^,]*), ([^)]*)\)/\3/'; }
-scunum() { if [ -n "$1" ] && awk -v v="$1" -v e="$2" -v t="$3" 'BEGIN { d = v - e; if (d < 0) d = -d; exit !(d <= t) }'; then scu_ok "$4 (measured $1, closed form $2 +-$3)"; else scu_bad "$4 (measured '${1:-none}', closed form $2 +-$3)"; fi; }
+scunum() { if [ -n "$1" ] && awk -v v="$1" -v e="$2" -v t="$3" 'function pt(w,   l, f) { if (w < 0) w = -w; if (w < 1e-9) return 0; l = log(w) / log(10) + 1e-9; f = int(l); if (l < f) f -= 1; return 0.51 * 10 ^ (f - 3) }
+    BEGIN { d = v - e; if (d < 0) d = -d; m = pt(e); if (m < t) m = t; exit !(d <= m) }'; then scu_ok "$4 (measured $1, closed form $2, +-max($3, half a unit of the app's 4th printed significant digit))"; else scu_bad "$4 (measured '${1:-none}', closed form $2, +-max($3, half a unit of the app's 4th printed significant digit))"; fi; }
 scuhas() { if grep -qF -- "$2" <<<"$(scublock "$1")"; then scu_ok "$3"; else scu_bad "$3"; echo "     expected: $2"; { grep -E "^history: (SubDSculpt|!)" <<<"$(scublock "$1")" || true; } | head -3 | sed 's/^/     actual:   /'; fi; }
 
 # ---- Constant, radius 11: hand-derived exact limit point (2.5, 2.5, 6.875)
