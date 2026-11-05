@@ -12,12 +12,51 @@ printf '0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n0\n20\n0\n40\n2\n0\nENDSEC\n0\nE
 sed "s|@TMP@|$TMPW|g" "$HERE/qc3a_script.txt" > "$TMPW/qc3a_script.txt"
 qc3a_ok() { echo "ok   $1"; }
 qc3a_bad() { echo "FAIL $1"; fail=1; }
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  QC3A_OUT="$(timeout 300 "$BIN" --smoke 30 --script "$TMPW/qc3a_script.txt" 2>&1)" || { echo "$QC3A_OUT" | tail -20; echo "FAIL QC3A_run: script exited non-zero or timed out (a hang is one of the count bugs)"; fail=1; QC3A_OUT=""; }
-else
-  QC3A_OUT="$(timeout 300 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/qc3a_script.txt" 2>&1)" || { echo "$QC3A_OUT" | tail -20; echo "FAIL QC3A_run: script exited non-zero or timed out (a hang is one of the count bugs)"; fail=1; QC3A_OUT=""; }
-fi
-qc3a_case() { awk -v n="QC3ABEGIN_$1" 'index($0, "Unknown command: " n) { on = 1; next } on && /Unknown command: QC3ABEGIN_/ { exit } on' <<<"$QC3A_OUT"; }
+# Every script case runs in its OWN app process under `timeout` (QC3A_TMO seconds, default 60), at most QC3A_JOBS
+# (default 4) at a time, so a command that hangs or crashes fails only its own checks and does not hide the others.
+# The script is cut at each QC3ABEGIN_<name> marker into qc3a_cases/<name>.txt (each with the same SetActiveViewport
+# Top / New preamble); the output of case <name> is qc3a_cases/<name>.out ("" when the process failed or timed out).
+QC3A_TMO="${QC3A_TMO:-60}"
+QC3A_JOBS="${QC3A_JOBS:-4}"
+QC3A_DIR="$TMPW/qc3a_cases"
+mkdir -p "$QC3A_DIR"
+awk -v d="$QC3A_DIR" '
+  /^QC3ABEGIN_/ { if (out != "") close(out); name = substr($0, 11); out = ""
+                  if (name != "end") { out = d "/" name ".txt"; print "SetActiveViewport Top\nNew" > out; print $0 > out }
+                  next }
+  out != "" { print > out }' "$TMPW/qc3a_script.txt"
+QC3A_PLAIN=0
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then QC3A_PLAIN=1; fi
+qc3a_run_one() {  # $1 = case name; writes $QC3A_DIR/$1.out and $1.rc (own working directory and config dir)
+  local n="$1" w="$QC3A_DIR/run_$1" rc=1 try
+  mkdir -p "$w/cfg"
+  for try in 1 2; do
+    if [ "$QC3A_PLAIN" = 1 ]; then
+      (cd "$w" && XDG_CONFIG_HOME="$w/cfg" timeout "$QC3A_TMO" "$BIN" --smoke 30 --script "$QC3A_DIR/$n.txt" >"$QC3A_DIR/$n.out" 2>&1); rc=$?
+    else
+      (cd "$w" && XDG_CONFIG_HOME="$w/cfg" timeout "$QC3A_TMO" xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$QC3A_DIR/$n.txt" >"$QC3A_DIR/$n.out" 2>&1); rc=$?
+    fi
+    # xvfb-run -a can lose a race for a display number when several start together: retry once if the app never started
+    if [ "$rc" != 0 ] && [ "$rc" != 124 ] && ! grep -q '^smoke:' "$QC3A_DIR/$n.out" 2>/dev/null; then continue; fi
+    break
+  done
+  echo "$rc" >"$QC3A_DIR/$n.rc"
+}
+QC3A_NAMES="$(cd "$QC3A_DIR" && ls ./*.txt | sed 's|^\./||; s|\.txt$||')"
+for n in $QC3A_NAMES; do
+  while [ "$(jobs -rp | wc -l)" -ge "$QC3A_JOBS" ]; do sleep 0.2; done
+  qc3a_run_one "$n" &
+done
+wait
+for n in $QC3A_NAMES; do
+  rc="$(cat "$QC3A_DIR/$n.rc" 2>/dev/null || echo 1)"
+  if [ "$rc" = 124 ]; then
+    echo "FAIL QC3A_${n}_run: the script case did not finish in ${QC3A_TMO} s (a hang)"; fail=1; : >"$QC3A_DIR/$n.out"
+  elif [ "$rc" != 0 ]; then
+    tail -5 "$QC3A_DIR/$n.out" 2>/dev/null; echo "FAIL QC3A_${n}_run: the app exited with status $rc (a crash, or a hang the app's own 30 s smoke watchdog stopped)"; fail=1; : >"$QC3A_DIR/$n.out"
+  fi
+done
+qc3a_case() { [ -f "$QC3A_DIR/$1.out" ] && awk -v n="QC3ABEGIN_$1" 'index($0, "Unknown command: " n) { on = 1; next } on' "$QC3A_DIR/$1.out"; }
 qc3a_has() { if grep -qF -- "$2" <<<"$1"; then qc3a_ok "$3"; else qc3a_bad "$3"; fi; }
 qc3a_hasnot() { if [ -z "$1" ] || grep -qF -- "$2" <<<"$1"; then qc3a_bad "$3"; else qc3a_ok "$3"; fi; }  # an empty case (the script died earlier) must not pass
 A="$(qc3a_case divide_count)"
