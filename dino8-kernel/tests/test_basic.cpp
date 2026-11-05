@@ -106876,6 +106876,93 @@ void TestChainedFilletsTessellateToAClosedMesh() {
 
 }  // namespace fillet_mesh_closure_tests
 
+// A concave (inside-corner) fillet chained with a convex one on the same solid, in either order. L-shaped prism, footprint area 3, height 1:
+// the concave edge at (1,1) gains L r^2 (1 - pi/4), the convex corner edge at (0,0) loses L r^2 (1 - pi/4); both are straight 90-degree
+// edges of length L = 1, so the closed form is exact. The blended solid must also tessellate to a closed oriented mesh with that volume.
+namespace chained_concave_fillet_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::FilletConcaveEdge;
+using dino8::kernel::FilletConvexEdge;
+using dino8::kernel::Point3d;
+
+// L-shaped prism: footprint (0,0) (2,0) (2,1) (1,1) (1,2) (0,2), extruded 0..1 (same construction as the single-edge concave tests).
+Brep LPrism() {
+  const std::vector<Point3d> footprint = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0)};
+  auto make_face = [](const std::vector<Point3d>& loop, ON_3dVector normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+  std::vector<Point3d> top = footprint, bottom = footprint;
+  for (Point3d& p : top) p = Point3d(p.x, p.y, 1.0);
+  std::reverse(bottom.begin(), bottom.end());
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face(bottom, ON_3dVector(0, 0, -1)));
+  faces.push_back(make_face(top, ON_3dVector(0, 0, 1)));
+  const size_t n = footprint.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Point3d& a = footprint[k];
+    const Point3d& b = footprint[(k + 1) % n];
+    ON_3dVector d = b - a;
+    d.Unitize();
+    ON_3dVector nrm = ON_CrossProduct(d, ON_3dVector(0, 0, 1));
+    nrm.Unitize();
+    faces.push_back(make_face({a, b, Point3d(b.x, b.y, 1), Point3d(a.x, a.y, 1)}, nrm));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+std::string ReasonOf(const std::function<void()>& f) {
+  try { f(); } catch (const std::exception& e) { return e.what(); }
+  return "";
+}
+
+void TestConcaveAndConvexFilletsChainInEitherOrder() {
+  const double a = 1.0 - ON_PI / 4.0, rv = 0.2, rc = 0.3;
+  const double exact = 3.0 - rv * rv * a + rc * rc * a;
+  const Brep prism = LPrism();
+  Check(std::fabs(prism.TessellateToClosedMesh(4, 4).Volume() - 3.0) < 1e-6, "[concave chain] fixture: L-prism volume 3");
+  const Point3d cv0(0, 0, 0), cv1(0, 0, 1), cc0(1, 1, 0), cc1(1, 1, 1);
+
+  Brep convex_first, concave_first;
+  std::string why = ReasonOf([&] { convex_first = FilletConcaveEdge(FilletConvexEdge(prism, cv0, cv1, rv), cc0, cc1, rc); });
+  Check(why.empty(), ("[concave chain] convex fillet, then a concave fillet on the blended solid is accepted" + (why.empty() ? "" : ": " + why)).c_str());
+  why = ReasonOf([&] { concave_first = FilletConvexEdge(FilletConcaveEdge(prism, cc0, cc1, rc), cv0, cv1, rv); });
+  Check(why.empty(), ("[concave chain] concave fillet, then a convex fillet on the blended solid is accepted" + (why.empty() ? "" : ": " + why)).c_str());
+  if (!why.empty() || convex_first.FaceCount() == 0 || concave_first.FaceCount() == 0) return;
+  for (const Brep* b : {&convex_first, &concave_first}) {
+    const std::string tag = b == &convex_first ? "[concave chain, convex first] " : "[concave chain, concave first] ";
+    ON_TextLog log;
+    bool oriented = false, has_boundary = true;
+    Check(b->raw().IsValid(&log) && b->raw().IsSolid() && b->raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary && b->FaceCount() == 10,
+          (tag + "valid, closed, oriented solid with 10 faces (6 + 2 retrimmed again + 2 blends)").c_str());
+    const Mesh m = b->TessellateToClosedMeshAdaptive(1e-5);
+    const Mesh::CheckReport r = m.Check();
+    Check(m.IsClosedManifold() && r.naked_edges == 0 && r.orientation_conflicts == 0, (tag + "tessellates to a closed oriented mesh (naked " + std::to_string(r.naked_edges) + ")").c_str());
+    Check(std::fabs(m.Volume() - exact) < 3e-6 * exact, (tag + "volume " + std::to_string(m.Volume()) + " vs closed form " + std::to_string(exact)).c_str());
+  }
+  Check(std::fabs(convex_first.TessellateToClosedMeshAdaptive(1e-5).Volume() - concave_first.TessellateToClosedMeshAdaptive(1e-5).Volume()) < 3e-6 * exact,
+        "[concave chain] order independence: both orders give the same volume");
+  // Negative control: the volume with the two radii swapped is outside the tolerance (the oracle discriminates).
+  const double swapped = 3.0 - rc * rc * a + rv * rv * a;
+  Check(std::fabs(convex_first.TessellateToClosedMeshAdaptive(1e-5).Volume() - swapped) > 1e-3 * exact, "[concave chain] negative control: swapped radii would NOT match");
+}
+
+void TestConcaveChainRefusesEdgesTouchingTheBlend() {
+  const Brep blended = FilletConcaveEdge(LPrism(), Point3d(1, 1, 0), Point3d(1, 1, 1), 0.3);
+  // The bottom edge of wall x = 1 now starts at the blend's tangent point (1, 1.3, 0): a convex fillet there meets the curved face.
+  std::string m = ReasonOf([&] { FilletConvexEdge(blended, Point3d(1, 1.3, 0), Point3d(1, 2, 0), 0.1); });
+  Check(m.find("curved") != std::string::npos, ("[concave chain] a convex fillet whose end meets the blend is refused with a reason: " + m).c_str());
+  // A concave fillet on a solid that has a convex blend touching it: the convex-blended L-prism's concave edge is untouched, so a second
+  // blend of the SAME edge (already filleted) is refused.
+  m = ReasonOf([&] { FilletConcaveEdge(blended, Point3d(1, 1, 0), Point3d(1, 1, 1), 0.1); });
+  Check(!m.empty(), ("[concave chain] filleting the already-filleted concave edge again is refused: " + m).c_str());
+}
+
+}  // namespace chained_concave_fillet_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -108710,6 +108797,8 @@ int main() {
 
   RunTest("fillet_mesh_closure_tests::TestFilletConvexEdgeResultTessellatesToAClosedMesh", fillet_mesh_closure_tests::TestFilletConvexEdgeResultTessellatesToAClosedMesh);
   RunTest("fillet_mesh_closure_tests::TestChainedFilletsTessellateToAClosedMesh", fillet_mesh_closure_tests::TestChainedFilletsTessellateToAClosedMesh);
+  RunTest("chained_concave_fillet_tests::TestConcaveAndConvexFilletsChainInEitherOrder", chained_concave_fillet_tests::TestConcaveAndConvexFilletsChainInEitherOrder);
+  RunTest("chained_concave_fillet_tests::TestConcaveChainRefusesEdgesTouchingTheBlend", chained_concave_fillet_tests::TestConcaveChainRefusesEdgesTouchingTheBlend);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
