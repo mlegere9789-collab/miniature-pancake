@@ -1,0 +1,67 @@
+# SW1S: Sweep1 Style=Roadlike / Up (the kernel's roadlike_up frame) through the app command. Every case starts from New and is
+# bracketed by an unknown-command marker (SW1SBEGIN_<name>). Rail: a one-turn exact-radius-3 helix with pitch such that
+# z = t (axis 0,0,0 -> 0,0,2pi); section: the radial segment (3,0,0)-(5,0,0) at the rail start.
+SetActiveViewport Top
+New
+SW1SBEGIN_road
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+SelNone
+SelID 1
+Sweep1
+Style=Roadlike
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1SBEGIN_free
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1SBEGIN_road_down
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+SelNone
+SelID 1
+Sweep1
+Style=Roadlike
+Up=0,0,-1
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1SBEGIN_bad_up
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+SelNone
+SelID 1
+Sweep1
+Style=Roadlike
+Up=0,0,0
+SelID 2
+Enter
+SelAll
+What
+New
+SW1SBEGIN_two_sections
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+Line 3,0,6.283185307179586 5,0,6.283185307179586
+SelNone
+SelID 1
+Sweep1
+Style=Roadlike
+SelID 2
+SelID 3
+Enter
+SelAll
+What

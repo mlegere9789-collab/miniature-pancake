@@ -582,7 +582,7 @@ class Sweep1Command : public Command {
         ctx.Doc().BeginChange("Sweep1");
         const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
         if (rail_id_ && !profile_ids_.empty()) RecordHistoryIfEnabled(ctx, new_id, "Sweep1", {*rail_id_, profile_ids_.front()}, rec.num);
-        ctx.Print("Sweep1: exact kernel sweep (rotation-minimizing frames)");
+        if (!roadlike_) ctx.Print("Sweep1: exact kernel sweep (rotation-minimizing frames)");
         return;
       }
       if (HasAxisScale(rec) || HasRoadlike(rec)) {
