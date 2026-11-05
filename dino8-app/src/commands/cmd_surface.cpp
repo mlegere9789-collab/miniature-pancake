@@ -2216,6 +2216,72 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
     // Not a convex planar solid. A closed hollow shell of a right prism (extruded L / U, a box with
     // parallel edges rounded by FilletEdge) is still exact: the inner cavity is the same prism with
     // its profile offset inward by t and both caps moved in by t (prism_solid.h).
+    //
+    // With a face removed (a cup, a case with a window) and/or a wall or cap given its own thickness, a
+    // prism whose profile is all straight lines goes to kernel::ShellPolylineExtrusion: every wall and
+    // both caps are matched to the picked face indices below, a removed face is a 0 thickness.
+    if (!removed.empty() || !overrides.empty()) {
+      prism::Prism pr;
+      bool not_prism = true;
+      std::string pw;
+      if (prism::Recognize(b, pr, pw, not_prism)) {
+        bool lines_only = true;
+        for (const prism::Seg& g : pr.prof) lines_only = lines_only && !g.arc;
+        if (!lines_only) { why = "a prism with a round (arc) wall cannot have a face removed or a per-face thickness exactly; only a straight-edged profile can"; return std::nullopt; }
+        const size_t ne = pr.prof.size();
+        const double tolp = diag * 1e-6;
+        // Face index -> 0..ne-1 (a wall, by profile edge), ne (the bottom cap), ne+1 (the top cap).
+        std::map<int, size_t> role;
+        for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+          ON_BoundingBox fb;
+          b.m_F[fi].GetBoundingBox(fb);
+          const ON_3dPoint c = fb.Center();
+          const double h = (c - pr.O) * pr.n;
+          const ON_3dVector rel = c - pr.O;
+          const prism::V2 c2{rel * pr.X, rel * pr.Y};
+          const ON_3dVector ext = fb.Max() - fb.Min();
+          // Flat along the axis => a cap.
+          const double axis_extent = std::fabs(ext.x * pr.n.x) + std::fabs(ext.y * pr.n.y) + std::fabs(ext.z * pr.n.z);
+          if (axis_extent < tolp * 50) {
+            role[fi] = std::fabs(h) < std::fabs(h - pr.H) ? ne : ne + 1;
+            continue;
+          }
+          size_t best = ne;
+          double bd = 1e300;
+          for (size_t k = 0; k < ne; ++k) {
+            const double dk = prism::DistToSeg(pr.prof[k], c2);
+            if (dk < bd) { bd = dk; best = k; }
+          }
+          if (best < ne && bd < tolp * 50) role[fi] = best;
+        }
+        if (static_cast<int>(role.size()) != b.m_F.Count()) { why = "could not match every face of the prism to a wall or a cap"; return std::nullopt; }
+        std::vector<double> walls(ne, t);
+        double bottom = t, top = t;
+        auto set_role = [&](int fi, double v) {
+          const size_t r = role[fi];
+          if (r < ne) walls[r] = v;
+          else if (r == ne) bottom = v;
+          else top = v;
+        };
+        for (const auto& [fi, ft] : overrides) {
+          if (!role.count(fi)) { why = "invalid face index"; return std::nullopt; }
+          set_role(fi, ft);
+        }
+        for (int fi : removed) {
+          if (!role.count(fi)) { why = "invalid face index"; return std::nullopt; }
+          set_role(fi, 0.0);
+        }
+        std::vector<kernel::Point3d> pts;
+        for (const prism::Seg& g : pr.prof) pts.push_back(prism::To3(pr, g.a, 0.0));
+        pts.push_back(pts.front());
+        try {
+          return kernel::ShellPolylineExtrusion(kernel::NurbsCurve::FromControlPoints(pts, 1), pr.H * pr.n, walls, bottom, top);
+        } catch (const std::exception& e2) {
+          why = e2.what();
+          return std::nullopt;
+        }
+      }
+    }
     if (removed.empty() && overrides.empty()) {
       {
         // A prism with one round through-hole (box minus cylinder): the cavity is the same prism with the profile
