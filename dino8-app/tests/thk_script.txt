@@ -198,11 +198,10 @@ What
 # ===== curved sheets: exact cylinder / sphere homothety offsets (closed forms in 75_thk.sh) =====
 New
 THKBEGIN_cyl_pos
-Line 2,0,0 2,0,3
+Circle 0,0,0 2
 SelLast
-Revolve Angle=360
-0,0,0
-0,0,1
+ExtrudeCrv Solid=No
+3
 SelID 1
 Delete
 SelNone
@@ -216,11 +215,10 @@ SelAll
 What
 New
 THKBEGIN_cyl_neg
-Line 2,0,0 2,0,3
+Circle 0,0,0 2
 SelLast
-Revolve Angle=360
-0,0,0
-0,0,1
+ExtrudeCrv Solid=No
+3
 SelID 1
 Delete
 SelNone
@@ -234,11 +232,10 @@ SelAll
 What
 New
 THKBEGIN_cyl_sym
-Line 2,0,0 2,0,3
+Circle 0,0,0 2
 SelLast
-Revolve Angle=360
-0,0,0
-0,0,1
+ExtrudeCrv Solid=No
+3
 SelID 1
 Delete
 SelNone
@@ -253,11 +250,10 @@ SelAll
 What
 New
 THKBEGIN_cylp_pos
-Line 2,0,0 2,0,3
+Arc3Pt 2,0,0 0,-2,0 -1.414213562373095,1.414213562373095,0
 SelLast
-Revolve Angle=270
-0,0,0
-0,0,1
+ExtrudeCrv Solid=No
+3
 SelID 1
 Delete
 SelNone
@@ -271,11 +267,10 @@ SelAll
 What
 New
 THKBEGIN_cylp_neg
-Line 2,0,0 2,0,3
+Arc3Pt 2,0,0 0,-2,0 -1.414213562373095,1.414213562373095,0
 SelLast
-Revolve Angle=270
-0,0,0
-0,0,1
+ExtrudeCrv Solid=No
+3
 SelID 1
 Delete
 SelNone
@@ -289,11 +284,10 @@ SelAll
 What
 New
 THKBEGIN_cylp_sym
-Line 2,0,0 2,0,3
+Arc3Pt 2,0,0 0,-2,0 -1.414213562373095,1.414213562373095,0
 SelLast
-Revolve Angle=270
-0,0,0
-0,0,1
+ExtrudeCrv Solid=No
+3
 SelID 1
 Delete
 SelNone
@@ -308,12 +302,20 @@ SelAll
 What
 New
 THKBEGIN_sph_pos
-Arc 1.5,0,2.598076211353316 2.121320343559643,0,2.121320343559643 2.598076211353316,0,1.5
+Arc3Pt 1.5,0,2.598076211353316 2.598076211353316,0,1.5 2.121320343559643,0,2.121320343559643
 SelLast
 Revolve Angle=360
 0,0,0
 0,0,1
 SelID 1
+Delete
+SelNone
+SelAll
+Explode
+SelNone
+SelID 4
+Delete
+SelID 5
 Delete
 SelNone
 Thicken
@@ -326,12 +328,20 @@ SelAll
 What
 New
 THKBEGIN_sph_neg
-Arc 1.5,0,2.598076211353316 2.121320343559643,0,2.121320343559643 2.598076211353316,0,1.5
+Arc3Pt 1.5,0,2.598076211353316 2.598076211353316,0,1.5 2.121320343559643,0,2.121320343559643
 SelLast
 Revolve Angle=360
 0,0,0
 0,0,1
 SelID 1
+Delete
+SelNone
+SelAll
+Explode
+SelNone
+SelID 4
+Delete
+SelID 5
 Delete
 SelNone
 Thicken
@@ -344,12 +354,20 @@ SelAll
 What
 New
 THKBEGIN_sph_sym
-Arc 1.5,0,2.598076211353316 2.121320343559643,0,2.121320343559643 2.598076211353316,0,1.5
+Arc3Pt 1.5,0,2.598076211353316 2.598076211353316,0,1.5 2.121320343559643,0,2.121320343559643
 SelLast
 Revolve Angle=360
 0,0,0
 0,0,1
 SelID 1
+Delete
+SelNone
+SelAll
+Explode
+SelNone
+SelID 4
+Delete
+SelID 5
 Delete
 SelNone
 Thicken
