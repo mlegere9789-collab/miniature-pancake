@@ -205,9 +205,10 @@ class Brep {
   // asserted here. Each seam edge borders the SAME face twice (two trims,
   // one face). The face keeps OpenNURBS' exact ON_RevSurface (converting it
   // to an ON_NurbsSurface was tried and measured: the seam trims then
-  // disagree with their edges by ~1.6% of the radius), so use
-  // VolumeOfSealedSolid() - which integrates an ON_RevSurface - for the
-  // volume; Volume()/Area() keep their NURBS-only contract and throw here.
+  // disagree with their edges by ~1.6% of the radius).
+  // Volume(), VolumeOfSealedSolid(), Area() and VolumeMassProperties()
+  // integrate an ON_RevSurface face directly (composite Gauss over its own
+  // domain), pinned to closed forms in tests/extra/rev_surface_integrals.cpp.
   // Sphere() and Torus() themselves are unchanged. Same
   // argument rules as the siblings (SphereWelded: radius > 0; TorusWelded:
   // 0 < minor < major, axis non-zero); std::invalid_argument on violation.
@@ -220,6 +221,19 @@ class Brep {
   // the bottom cap, `axis` (need not be unit) points to the top cap at distance
   // `height`. std::invalid_argument for radius <= 0, height <= 0 or a zero axis.
   static Brep CylinderWelded(Point3d base_center, Vector3d axis, double radius, double height);
+
+  // Right circular cone or frustum with genuine topology (ON_BrepRevSurface of
+  // a straight profile line, caps where the profile leaves the axis).
+  // `base_radius` > 0 at `base_center`, `top_radius` >= 0 at `height` along
+  // `axis` (need not be unit; top_radius may exceed base_radius). With
+  // top_radius > 0 it is a frustum: wall + two caps, 2 vertices, 3 edges
+  // (V-E+F = 2). With top_radius == 0 it is a full cone: wall + base cap, the
+  // apex is a vertex whose only trim on the wall is a SINGULAR trim (no edge),
+  // so 2 vertices, 2 edges, 2 faces (V-E+F = 2) - the apex is not a seam
+  // vertex and is reported as what it is, a degenerate point of the surface.
+  // std::invalid_argument for base_radius <= 0, top_radius < 0, height <= 0 or
+  // a zero axis.
+  static Brep ConeWelded(Point3d base_center, Vector3d axis, double base_radius, double top_radius, double height);
 
   // Builds a one-face B-rep whose face is `surface`, trimmed to
   // `trim_loop_uv`: a closed polygon in the surface's own (u, v)
