@@ -1635,6 +1635,7 @@ struct AnalyticCageResult {
   int samples = 0;
   bool verified = false;
   int profile_cvs = 0, profile_degree = 0, rings = 0, poles = 0, caps = 0;  // curved-profile revolve cage only
+  Point3d worst_point{0, 0, 0};  // the limit-surface sample that realised `deviation` (for a refusal message)
 };
 
 // ToSubD for a revolved solid (see BuildRevolvedCage): builds the analytic
@@ -1692,7 +1693,8 @@ std::optional<AnalyticCageResult> AnalyticCageForBrep(const SceneObject& o, doub
       double dev = 0.0;
       for (size_t i = 0; i < lps.size(); i += step) {
         const Point3d& q = lps[i].limit_point;
-        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        const double dq = (ref_index.ClosestPoint(q) - q).Length();
+        if (dq > dev) { dev = dq; cur.worst_point = q; }
         ++cur.samples;
       }
       cur.reference_sag = ref->chord_sag;
@@ -1710,6 +1712,19 @@ std::optional<AnalyticCageResult> AnalyticCageForBrep(const SceneObject& o, doub
   } catch (const std::exception&) {
     return std::nullopt;
   }
+}
+
+// The straight-wall cage (a revolved or extruded solid) is only used when its MEASURED limit-surface deviation is
+// within `tol`; otherwise `refused` states the measurement and the object takes the dense generic path.
+bool RevCageVerifiedOrRefuse(const AnalyticCageResult& r, double tol, std::string* refused) {
+  if (r.verified) return true;
+  if (refused != nullptr) {
+    char buf[240];
+    std::snprintf(buf, sizeof(buf), "straight-wall revolved/extruded cage refused (measured deviation %.6f at %d segments around x %d rings exceeds the tolerance %.6f), using the existing path",
+                  r.deviation, r.cage_around, r.cage_along + 1, tol);
+    *refused = buf;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1871,7 +1886,8 @@ std::optional<AnalyticCageResult> TorusCageForBrep(const SceneObject& o, double 
       double dev = 0.0;
       for (size_t i = 0; i < lps.size(); i += step) {
         const Point3d& q = lps[i].limit_point;
-        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        const double dq = (ref_index.ClosestPoint(q) - q).Length();
+        if (dq > dev) { dev = dq; cur.worst_point = q; }
         ++cur.samples;
       }
       cur.reference_sag = ref->chord_sag;
@@ -1953,6 +1969,9 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
     const ON_NurbsSurface* wall_nurbs = ON_NurbsSurface::Cast(ns);
     const ON_RevSurface* wall_rev = ON_RevSurface::Cast(ns);
     const ON_NurbsCurve* prof = wall_rev != nullptr ? ON_NurbsCurve::Cast(wall_rev->m_curve) : nullptr;
+    // A primitive's own generating curve (the Sphere's ON_ArcCurve) is not a NURBS curve: use its exact NURBS form.
+    ON_NurbsCurve profile_nurbs_form;
+    if (prof == nullptr && wall_rev != nullptr && wall_rev->m_curve != nullptr && wall_rev->m_curve->GetNurbForm(profile_nurbs_form) > 0) prof = &profile_nurbs_form;
     if (wall_nurbs == nullptr && prof == nullptr) return std::nullopt;
     if (prof != nullptr && (std::fabs(prof->Domain()[0] - dov[0]) > 1e-9 * (1.0 + std::fabs(dov[0])) || std::fabs(prof->Domain()[1] - dov[1]) > 1e-9 * (1.0 + std::fabs(dov[1])))) return std::nullopt;
     const int ncv = prof != nullptr ? prof->CVCount() : wall_nurbs->CVCount(odir);
@@ -2038,7 +2057,8 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
       double dev = 0.0;
       for (size_t i = 0; i < lps.size(); i += step) {
         const Point3d& q = lps[i].limit_point;
-        dev = std::max(dev, (ref_index.ClosestPoint(q) - q).Length());
+        const double dq = (ref_index.ClosestPoint(q) - q).Length();
+        if (dq > dev) { dev = dq; cur.worst_point = q; }
         ++cur.samples;
       }
       cur.reference_sag = ref->chord_sag;
@@ -2061,20 +2081,24 @@ std::optional<AnalyticCageResult> RevolveCurvedCageForBrep(const SceneObject& o,
     std::optional<AnalyticCageResult> fine;
     std::vector<double> fr;
     double last_dev = -1.0;
+    Point3d last_worst(0, 0, 0);
     int last_rings = 0;
-    for (int k : {2, 3, 4, 5, 6, 8}) {
+    // k = 10, 12, 14 serve a profile that bends hard near one end (a teardrop's rounded top: measured 0.001332 off at k = 8,
+    // 25 rings, worst point 0.9 from the top pole); the ring cap kMaxRings still bounds the cage.
+    for (int k : {2, 3, 4, 5, 6, 8, 10, 12, 14}) {
       fr = rings_for((ncv - 1) * k + 1);
       if (fr.size() < 6) continue;
       if (fr.size() > static_cast<size_t>(kMaxRings)) break;
       const std::optional<AnalyticCageResult> cur = measure(128, fr);
       if (!cur) return refuse("the wall could not be caged: not a plain revolved wall with flat caps or poles");
       last_dev = cur->deviation;
+      last_worst = cur->worst_point;
       last_rings = static_cast<int>(fr.size());
       if (cur->verified) { fine = cur; break; }
     }
     if (!fine) {
-      char buf[160];
-      std::snprintf(buf, sizeof(buf), "deviation %.6f at %d rings x 128 segments exceeds the tolerance %.6f", last_dev, last_rings, tol);
+      char buf[260];
+      std::snprintf(buf, sizeof(buf), "deviation %.6f at %d rings x 128 segments exceeds the tolerance %.6f, worst limit point (%.3f, %.3f, %.3f)", last_dev, last_rings, tol, last_worst.x, last_worst.y, last_worst.z);
       return refuse(buf);
     }
     std::optional<AnalyticCageResult> best = fine;
@@ -2502,8 +2526,46 @@ int JoinNakedEdgesHashed(ON_Brep& b, double tol) {
         }
   }
   if (joined) {
+    // CombineCoincidentVertices / CombineCoincidentEdges only MARK the merged-away components deleted (index -1) and leave
+    // them in the arrays; Check (ON_Brep::IsValid) then reports "Corrupt ON_BrepVertex.m_vertex_index back pointer" on
+    // the ToNURBS polysurface (measured on the cylinder's: 5632 faces, 0 naked edges, closed solid, yet INVALID). Compact()
+    // removes them and re-indexes.
+    b.Compact();
     OrientBrepFaces(b);
-    b.SetTolerancesBoxesAndFlags();
+    // This openNURBS build's ON_Brep::SetEdgeTolerance only ever stores ON_UNSET_VALUE (the real implementation is an
+    // override of the full SDK), so SetTolerancesBoxesAndFlags() with its default bLazy = false left EVERY edge at
+    // -1.2e308 and Check (ON_Brep::IsValid) reported "brep.m_E[0] edge is not valid. edge.m_tolerance=-1.23432e+308"
+    // (measured on the cylinder's ToNURBS polysurface after the Compact fix). Each edge tolerance is therefore MEASURED:
+    // the largest distance of the surface points under the edge's trims (at 5 parameters) from the edge curve.
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      ON_BrepEdge& e = b.m_E[i];
+      if (e.m_edge_index < 0) continue;
+      double tol_e = 0.0;
+      // The edge curve as 129 points (this openNURBS build has no curve closest-point query); the distance to this polyline
+      // exceeds the distance to the curve by less than its chord sag, which is far below the 1e-6 join tolerance here.
+      std::vector<ON_3dPoint> ep(129);
+      for (size_t j = 0; j < ep.size(); ++j) ep[j] = e.PointAt(e.Domain().ParameterAt(static_cast<double>(j) / 128.0));
+      for (int k = 0; k < e.m_ti.Count(); ++k) {
+        const int ti = e.m_ti[k];
+        if (ti < 0 || ti >= b.m_T.Count()) continue;
+        const ON_BrepTrim& tr = b.m_T[ti];
+        if (tr.m_li < 0 || tr.m_li >= b.m_L.Count()) continue;
+        const int fi = b.m_L[tr.m_li].m_fi;
+        if (fi < 0 || fi >= b.m_F.Count()) continue;
+        const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+        if (srf == nullptr || tr.TrimCurveOf() == nullptr) continue;
+        for (int j = 0; j <= 4; ++j) {
+          const ON_3dPoint uv = tr.PointAt(tr.Domain().ParameterAt(j / 4.0));
+          const ON_3dPoint sp = srf->PointAt(uv.x, uv.y);
+          double dmin = 1e300;
+          for (const ON_3dPoint& q : ep) dmin = std::min(dmin, sp.DistanceTo(q));
+          tol_e = std::max(tol_e, dmin);
+        }
+      }
+      e.m_tolerance = tol_e <= ON_ZERO_TOLERANCE ? 0.0 : 1.001 * tol_e;
+    }
+    b.SetVertexTolerances(false);
+    b.SetTolerancesBoxesAndFlags(false, false, false, true, true, true, true, true);
   }
   return joined;
 }
@@ -2592,6 +2654,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   int cur_ref_around = 0, cur_ref_along = 0;
   double cur_fit_residual = 0.0, cur_ref_sag = 0.0;
   std::string cur_refused;  // why the curved-profile revolve cage was refused (the object then took the existing path)
+  std::string rev_refused;  // why the straight-wall revolved / extruded cage was refused (measured deviation above the tolerance)
   // ToSubD/MeshToSubD (to_subd) tessellate a Brep's real surface at the
   // document's own modeling tolerance (ctx.Settings().absolute_tolerance)
   // rather than surface_display_tolerance - a viewport-quality setting
@@ -2689,7 +2752,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
         cur_ref_around = crv->reference_around;
         cur_ref_along = crv->reference_along;
         cur_ref_sag = std::max(cur_ref_sag, crv->reference_sag);
-      } else if (const std::optional<AnalyticCageResult> rev = AnalyticCageForBrep(*o, tol)) {
+      } else if (const std::optional<AnalyticCageResult> rev = AnalyticCageForBrep(*o, tol); rev && RevCageVerifiedOrRefuse(*rev, tol, &rev_refused)) {
         // A revolved solid (Cylinder, Cone, TCone...): the cage is built from
         // the Brep's own wall parametrisation and shared rim ring, see
         // BuildRevolvedCage above.
@@ -2795,6 +2858,7 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
              std::to_string(cur_ref_around) + " x " + std::to_string(cur_ref_along) + ", reference chord sag " + std::to_string(cur_ref_sag) + " included in the deviation";
     }
     if (!cur_refused.empty()) msg += "; " + cur_refused;
+    if (!rev_refused.empty()) msg += "; " + rev_refused;
     if (!pri_refused.empty()) msg += "; " + pri_refused;
     if (exact_runs > 0) {
       msg += "; exact Brep-face cage (no tessellation), " + std::to_string(exact_creases_total) +
