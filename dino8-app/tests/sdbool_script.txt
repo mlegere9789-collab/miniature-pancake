@@ -1,0 +1,235 @@
+# BooleanUnion / BooleanDifference / BooleanIntersection on two SubDs (the "SDB_" section, tests/sections/82_sdbool.sh).
+#
+# The app's SubD booleans now choose the refinement per operand (kernel SubD::BooleanSubD semantics): an operand that is exactly its cage (a fully
+# creased box) is used at level 0, any other is refined by the Levels option (0 = automatic by face count). The status line reports the rounds used
+# per operand, the seam creases and the result's control-net volume. Fixture: two fully creased SubD boxes, A = [0,10]^3 and B = [5,15]^3, which
+# are exactly the solid boxes (overlap [5,10]^3 = 125): union 1000 + 1000 - 125 = 1875, intersection 125, A - B = 875, B - A = 875. The app's Volume
+# of a SubD reads the control net, which for a fully creased result equals the limit volume.
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+New
+SDBBEGIN_union
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName BoxA
+SelLast
+Crease
+5,0,0
+10,5,0
+5,10,0
+0,5,0
+5,0,10
+10,5,10
+5,10,10
+0,5,10
+0,0,5
+10,0,5
+10,10,5
+0,10,5
+Enter
+SubDBox 5,5,5 15,15,5 10
+SelLast
+SetObjectName BoxB
+SelLast
+Crease
+10,5,5
+15,10,5
+10,15,5
+5,10,5
+10,5,15
+15,10,15
+10,15,15
+5,10,15
+5,5,10
+15,5,10
+15,15,10
+5,15,10
+Enter
+SelNone
+SelName BoxA
+BooleanUnion
+SelName BoxB
+Enter
+SelLast
+Volume
+SubDivide
+SubDivide
+Volume
+
+New
+SDBBEGIN_inter
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName BoxA
+SelLast
+Crease
+5,0,0
+10,5,0
+5,10,0
+0,5,0
+5,0,10
+10,5,10
+5,10,10
+0,5,10
+0,0,5
+10,0,5
+10,10,5
+0,10,5
+Enter
+SubDBox 5,5,5 15,15,5 10
+SelLast
+SetObjectName BoxB
+SelLast
+Crease
+10,5,5
+15,10,5
+10,15,5
+5,10,5
+10,5,15
+15,10,15
+10,15,15
+5,10,15
+5,5,10
+15,5,10
+15,15,10
+5,15,10
+Enter
+SelNone
+SelName BoxA
+BooleanIntersection
+SelName BoxB
+Enter
+SelLast
+Volume
+
+
+New
+SDBBEGIN_diff
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName BoxA
+SelLast
+Crease
+5,0,0
+10,5,0
+5,10,0
+0,5,0
+5,0,10
+10,5,10
+5,10,10
+0,5,10
+0,0,5
+10,0,5
+10,10,5
+0,10,5
+Enter
+SubDBox 5,5,5 15,15,5 10
+SelLast
+SetObjectName BoxB
+SelLast
+Crease
+10,5,5
+15,10,5
+10,15,5
+5,10,5
+10,5,15
+15,10,15
+10,15,15
+5,10,15
+5,5,10
+15,5,10
+15,15,10
+5,15,10
+Enter
+SelNone
+SelName BoxA
+BooleanDifference
+SelName BoxB
+Enter
+SelLast
+Volume
+
+
+New
+SDBBEGIN_ba
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName BoxA
+SelLast
+Crease
+5,0,0
+10,5,0
+5,10,0
+0,5,0
+5,0,10
+10,5,10
+5,10,10
+0,5,10
+0,0,5
+10,0,5
+10,10,5
+0,10,5
+Enter
+SubDBox 5,5,5 15,15,5 10
+SelLast
+SetObjectName BoxB
+SelLast
+Crease
+10,5,5
+15,10,5
+10,15,5
+5,10,5
+10,5,15
+15,10,15
+10,15,15
+5,10,15
+5,5,10
+15,5,10
+15,15,10
+5,15,10
+Enter
+SelNone
+SelName BoxB
+BooleanDifference
+SelName BoxA
+Enter
+SelLast
+Volume
+
+
+New
+SDBBEGIN_smooth_levels
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName BoxA
+SubDBox 5,5,5 15,15,5 10
+SelLast
+SetObjectName BoxB
+SelNone
+SelName BoxA
+BooleanUnion
+Levels=2
+SelName BoxB
+Enter
+SelLast
+Volume
+
+
+New
+SDBBEGIN_smooth_auto
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SetObjectName BoxA
+SubDBox 5,5,5 15,15,5 10
+SelLast
+SetObjectName BoxB
+SelNone
+SelName BoxA
+BooleanUnion
+SelName BoxB
+Enter
+SelLast
+Volume
+

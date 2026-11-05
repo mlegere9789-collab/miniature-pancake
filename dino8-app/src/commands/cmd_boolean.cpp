@@ -423,6 +423,8 @@ struct SubDBooleanTotals {
   int fit_iterations_max = 0;
   double fit_residual_worst = 0.0;
   bool any_promoted = false;
+  int levels_a = 0, levels_b = 0;  // rounds the LAST combine applied to its first / second operand (after any sharpness raise)
+  int exact_operands = 0;          // true-SubD operands that are exactly their cage (level 0, no rounding)
 };
 
 // Catmull-Clark rounds applied to a SubD operand before the mesh Boolean
@@ -436,7 +438,7 @@ int SubDBooleanRefineLevels(const kernel::SubD& s) {
 }
 
 std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
-                                            kernel::BooleanOp op, SubDBooleanTotals* totals = nullptr) {
+                                            kernel::BooleanOp op, SubDBooleanTotals* totals = nullptr, int levels_opt = 0) {
   // Every operand carries the number of refinement rounds the Boolean
   // applies to it: a TRUE SubD is refined (its visible shape is its limit
   // surface, not its control polyhedron), while a Brep/Mesh promoted to a
@@ -444,7 +446,7 @@ std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vecto
   // sharp edges (> 40 degrees) are creased so Catmull-Clark does not
   // round them off. A folded intermediate result is a dense cage whose
   // vertices already lie on the exact shape, also 0 rounds.
-  struct Operand { kernel::SubD sd; int levels; };
+  struct Operand { kernel::SubD sd; int levels; bool exact; };
   bool any_subd = false;
   bool any_promoted = false;
   auto collect = [&](const std::vector<ObjectId>& ids, std::vector<Operand>& out) -> bool {
@@ -452,14 +454,17 @@ std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vecto
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) return false;
       if (o->kind == ObjectKind::SubD && o->subd) {
-        out.push_back({*o->subd, SubDBooleanRefineLevels(*o->subd)});
+        // An operand that is exactly its cage (e.g. a fully creased box) needs no rounds: its limit surface IS the polyhedron, so
+        // the result is exact. Any other operand is refined by the Levels option (0 = automatic, by face count).
+        const bool exact = o->subd->LimitSurfaceIsCage();
+        out.push_back({*o->subd, exact ? 0 : (levels_opt > 0 ? levels_opt : SubDBooleanRefineLevels(*o->subd)), exact});
         any_subd = true;
         continue;
       }
       std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
       if (!m || m->FaceCount() == 0) return false;
       try {
-        out.push_back({kernel::SubD::FromControlMesh(*m), 0});
+        out.push_back({kernel::SubD::FromControlMesh(*m), 0, false});
         any_promoted = true;
       } catch (const std::exception&) {
         return false;
@@ -473,9 +478,10 @@ std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vecto
   if (!any_subd) return std::nullopt;
   SubDBooleanTotals t;
   t.any_promoted = any_promoted;
+  for (const std::vector<Operand>* g : {&g1, &g2}) for (const Operand& op_ : *g) if (op_.exact) ++t.exact_operands;
   auto combine = [&](const Operand& x, const Operand& y, kernel::BooleanOp combine_op) {
     kernel::SubDBooleanReport rep;
-    kernel::SubD r = x.sd.BooleanToSubDCreased(y.sd, combine_op, x.levels, y.levels, any_promoted ? 40.0 : 0.0, 3.0, true, &rep);
+    kernel::SubD r = x.sd.BooleanToSubDCreased(y.sd, combine_op, x.levels, y.levels, any_promoted ? 40.0 : 0.0, 3.0, /*interpolate=*/!(x.exact && y.exact), &rep);
     t.seam_creases += rep.seam_crease_edges;
     t.operand_creases += rep.operand_crease_edges;
     t.sharp_creases += rep.sharp_crease_edges;
@@ -483,7 +489,10 @@ std::optional<kernel::SubD> TrySubDBoolean(CommandContext& ctx, const std::vecto
     t.refine_levels_max = std::max({t.refine_levels_max, x.levels, y.levels});
     t.fit_iterations_max = std::max(t.fit_iterations_max, rep.interpolation.iterations);
     t.fit_residual_worst = std::max(t.fit_residual_worst, rep.interpolation.final_max_residual);
-    return Operand{std::move(r), 0};
+    t.levels_a = rep.levels_this_used;
+    t.levels_b = rep.levels_other_used;
+    const bool result_exact = x.exact && y.exact && r.LimitSurfaceIsCage();
+    return Operand{std::move(r), 0, result_exact};
   };
   auto fold = [&](const std::vector<Operand>& v, kernel::BooleanOp fold_op) {
     Operand result = v[0];
@@ -536,7 +545,7 @@ struct BooleanOutcome {
 // with non-planar walls, which used to be accepted and measured as volume 0),
 // SubD, then the generic mesh path.
 BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
-                              bool two_sets, bool swap_sides, bool try_exact_brep) {
+                              bool two_sets, bool swap_sides, bool try_exact_brep, int subd_levels = 0) {
   BooleanOutcome out;
   std::vector<ObjectId> all = a;
   all.insert(all.end(), b.begin(), b.end());
@@ -598,7 +607,7 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
       return out;
     }
     SubDBooleanTotals sd_totals;
-    if (std::optional<kernel::SubD> result = TrySubDBoolean(ctx, first_ids, second_ids, op, &sd_totals)) {
+    if (std::optional<kernel::SubD> result = TrySubDBoolean(ctx, first_ids, second_ids, op, &sd_totals, subd_levels)) {
       out.ok = true;
       out.first = first_ids;
       out.second = second_ids;
@@ -610,6 +619,14 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
                   " on the cut seam, " + std::to_string(sd_totals.operand_creases) + " along operand creases, " + std::to_string(sd_totals.sharp_creases) +
                   " sharp-angle); cage interpolated onto the Boolean surface (" + std::to_string(sd_totals.fit_iterations_max) +
                   " iteration(s), residual " + std::to_string(sd_totals.fit_residual_worst) + ")";
+        {
+          // the report: rounds used per operand, and the result's control-net volume (the limit volume when the operands were
+          // exact cages, e.g. fully creased boxes)
+          const kernel::Mesh net = result->ToApproximateMesh();
+          out.how += "; rounds used: first " + std::to_string(sd_totals.levels_a) + ", second " + std::to_string(sd_totals.levels_b) + " (" +
+                     std::to_string(sd_totals.exact_operands) + " operand(s) exactly their cage, not refined), " + std::to_string(sd_totals.seam_creases) +
+                     " seam crease(s)" + (net.IsClosedManifold() ? ", control-net volume " + FormatNumber(net.Volume()) : std::string(", control net not a closed solid"));
+        }
       } else {
         out.how = "result is empty";
       }
@@ -658,7 +675,7 @@ BooleanOutcome ComputeBoolean(CommandContext& ctx, const std::vector<ObjectId>& 
 }
 
 void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
-                bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
+                bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false, int subd_levels = 0) {
   // An object picked into BOTH sets (the base picked again as a tool) is the difference/intersection of a solid with itself.
   // The general engine does not return an empty result for it: it hands back stray faces whose sewing never ends, so the
   // command used to hang the application (100% CPU, no message). Refuse it, naming the object, before anything is computed.
@@ -670,7 +687,7 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
       }
     }
   }
-  BooleanOutcome r = ComputeBoolean(ctx, a, b, op, two_sets, swap_sides, try_exact_brep);
+  BooleanOutcome r = ComputeBoolean(ctx, a, b, op, two_sets, swap_sides, try_exact_brep, subd_levels);
   if (!r.declined.empty()) ctx.Print(label + ": " + r.declined);
   if (!r.ok) return;
   ctx.Doc().BeginChange(label);
@@ -707,7 +724,19 @@ class BooleanCommand : public Command {
  public:
   BooleanCommand(kernel::BooleanOp op, const char* label, bool two_sets, bool try_exact_brep = false)
       : op_(op), label_(label), two_sets_(two_sets), try_exact_brep_(try_exact_brep) {}
-  void Begin(CommandContext&) override { WantObjects(two_sets_ ? std::string("Select first set of objects") : "Select objects to " + std::string(label_)); }
+  void Begin(CommandContext&) override {
+    // Levels: Catmull-Clark rounds for a SubD operand that is not exactly its cage (0 = automatic by face count; 1-5); only SubD booleans read it
+    options = {{"Levels", FormatNumber(levels_), {}, true, false}};
+    WantObjects(two_sets_ ? std::string("Select first set of objects") : "Select objects to " + std::string(label_));
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Levels") return;
+    char* end = nullptr;
+    const double x = std::strtod(v.c_str(), &end);
+    if (end == v.c_str()) return;
+    levels_ = static_cast<int>(std::max(0.0, std::min(5.0, std::floor(x + 0.5))));
+    for (OptionSpec& o : options) if (o.name == "Levels") o.value = FormatNumber(levels_);
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (two_sets_ && a_.empty()) {
       a_ = ids;
@@ -716,9 +745,10 @@ class BooleanCommand : public Command {
       accept_preselection = false;
       return;
     }
-    RunBoolean(ctx, a_, ids, op_, two_sets_, label_, /*swap_sides=*/false, try_exact_brep_);
+    RunBoolean(ctx, a_, ids, op_, two_sets_, label_, /*swap_sides=*/false, try_exact_brep_, levels_);
     Finish();
   }
+  int levels_ = 0;
   kernel::BooleanOp op_;
   const char* label_;
   bool two_sets_;
@@ -744,10 +774,19 @@ class Boolean2ObjectsCommand : public Command {
     }
     b_ = ids;
     ready_ = true;
-    options = {{"Result", result_, {"Union", "Intersection", "A-B", "B-A", "SymmetricDifference"}, false, false}};
+    options = {{"Result", result_, {"Union", "Intersection", "A-B", "B-A", "SymmetricDifference"}, false, false},
+               {"Levels", FormatNumber(levels_), {}, true, false}};
     WantEnter("Press Enter to combine (Result=" + result_ + ")");
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Levels") {
+      char* end = nullptr;
+      const double x = std::strtod(v.c_str(), &end);
+      if (end == v.c_str()) return;
+      levels_ = static_cast<int>(std::max(0.0, std::min(5.0, std::floor(x + 0.5))));
+      options[1].value = FormatNumber(levels_);
+      return;
+    }
     if (n != "Result") return;
     result_ = v;
     options[0].value = v;
@@ -772,9 +811,10 @@ class Boolean2ObjectsCommand : public Command {
     else if (result_ == "A-B") op = kernel::BooleanOp::Difference;
     else if (result_ == "B-A") { op = kernel::BooleanOp::Difference; swap = true; }
     else if (result_ == "SymmetricDifference") op = kernel::BooleanOp::SymmetricDifference;
-    RunBoolean(ctx, a_, b_, op, true, "Boolean2Objects", swap, /*try_exact_brep=*/true);
+    RunBoolean(ctx, a_, b_, op, true, "Boolean2Objects", swap, /*try_exact_brep=*/true, levels_);
     Finish();
   }
+  int levels_ = 0;
   std::vector<ObjectId> a_, b_;
   std::string result_ = "Union";
   bool ready_ = false;
