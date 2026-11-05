@@ -2606,6 +2606,156 @@ std::vector<Chain> UnbridgeKeyholes(std::vector<UVPt>& loop, const std::vector<O
   return holes;
 }
 
+// Imprint chains for two faces on the SAME curved surface (see IsSameAnalyticSurface()): every closed boundary loop of
+// `src_face` whose non-seam edges ALL lie in the strict interior of `dst_face` (not within `tol` of any non-seam
+// boundary edge of it) is a curve the other face's boundary draws on `dst_face`, e.g. the circle where one cylinder
+// wall ends in the middle of another coaxial equal-radius wall. The SSX of the two walls reports none of this (it
+// returns spurious loops instead), and the SSX of `src_face`'s cap against `dst_face`'s wall drops the circle because
+// it runs exactly along the cap's own trim. The chains carry `dst_face`'s (u, v) and the points are `src_face`'s own
+// boundary samples (the same ones FaceBoundaryLoop() gives it), so the imprint and the src face's fragments weld.
+// A loop only partly inside is left alone (returns nothing for it).
+std::vector<Chain> CoincidentSurfaceImprints(const ON_Brep& src, int src_face, const ON_Brep& dst, int dst_face, double tol,
+                                             int samples_per_edge = 24) {
+  std::vector<Chain> out;
+  const ON_BrepFace& sf = src.m_F[src_face];
+  const ON_BrepFace& df = dst.m_F[dst_face];
+  const ON_Surface* ss = sf.SurfaceOf();
+  const ON_Surface* ds = df.SurfaceOf();
+  if (!ss || !ds) return out;
+  // dst's non-seam, non-singular boundary edges.
+  std::vector<const ON_BrepEdge*> dst_edges;
+  for (int li = 0; li < df.m_li.Count(); ++li) {
+    const ON_BrepLoop& l = dst.m_L[df.m_li[li]];
+    for (int k = 0; k < l.m_ti.Count(); ++k) {
+      const ON_BrepTrim& t = dst.m_T[l.m_ti[k]];
+      if (t.m_type == ON_BrepTrim::seam || t.m_type == ON_BrepTrim::singular || t.m_ei < 0) continue;
+      dst_edges.push_back(&dst.m_E[t.m_ei]);
+    }
+  }
+  // (u, v) on dst's surface of a point on it: the global closest-point solver first (ClosestPointAllowingDomainBoundary
+  // returned the antipodal point on a periodic wall, measured), the boundary-tolerant one as the fallback.
+  const auto project = [&](const Point3d& p, double& u, double& v) {
+    u = 0.5 * (ds->Domain(0).Min() + ds->Domain(0).Max());
+    v = 0.5 * (ds->Domain(1).Min() + ds->Domain(1).Max());
+    if (SurfaceClosestPointGlobal(*ds, p, u, v) && ds->PointAt(u, v).DistanceTo(p) <= tol) return true;
+    return ClosestPointAllowingDomainBoundary(*ds, p, u, v) && ds->PointAt(u, v).DistanceTo(p) <= tol;
+  };
+  const auto strictly_inside = [&](const Point3d& p) {
+    double u = 0, v = 0;
+    if (!project(p, u, v)) return false;
+    if (!FaceContainsUV(df, u, v)) return false;
+    for (const ON_BrepEdge* e : dst_edges) {
+      // ON_Curve has no closest-point query in this openNURBS build: coarse scan, then ternary search around the best.
+      const ON_Interval ed = e->Domain();
+      constexpr int kScan = 96;
+      double best_t = ed.Min(), best_d = std::numeric_limits<double>::max();
+      for (int i = 0; i <= kScan; ++i) {
+        const double t = ed.ParameterAt(static_cast<double>(i) / kScan);
+        const double dist = e->PointAt(t).DistanceTo(p);
+        if (dist < best_d) { best_d = dist; best_t = t; }
+      }
+      const double step = ed.Length() / kScan;
+      double lo = std::max(ed.Min(), best_t - step), hi = std::min(ed.Max(), best_t + step);
+      for (int it = 0; it < 60; ++it) {
+        const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
+        if (e->PointAt(m1).DistanceTo(p) < e->PointAt(m2).DistanceTo(p)) hi = m2; else lo = m1;
+      }
+      if (e->PointAt(0.5 * (lo + hi)).DistanceTo(p) <= tol) return false;
+    }
+    return true;
+  };
+  for (int li = 0; li < sf.m_li.Count(); ++li) {
+    const ON_BrepLoop& l = src.m_L[sf.m_li[li]];
+    // Runs of consecutive boundary trims whose samples all lie strictly inside `dst_face`. A seam, a singular trim or a
+    // trim with any sample outside ends the run; a run that closes on itself (its last trim ends where its first
+    // starts) is an imprint curve, an open one is left alone.
+    Chain run;
+    Point3d run_end;
+    const auto flush = [&]() {
+      if (run.size() >= 3 && run.front().p.DistanceTo(run_end) <= tol) {
+        Chain closed = run;
+        closed.push_back(closed.front());  // closed-chain convention: repeated endpoint
+        out.push_back(std::move(closed));
+      }
+      run.clear();
+    };
+    for (int k = 0; k < l.m_ti.Count(); ++k) {
+      const ON_BrepTrim& t = src.m_T[l.m_ti[k]];
+      const ON_Curve* c2 = t.TrimCurveOf();
+      if (t.m_type == ON_BrepTrim::seam || t.m_type == ON_BrepTrim::singular || !c2) { flush(); continue; }
+      const ON_Interval d = t.Domain();
+      // Same sampling as FaceBoundaryLoop(): a (u, v)-linear trim that sweeps a periodic direction is a circle in
+      // 3D, so 2 samples are only right when the 3D image is straight too.
+      bool truly_linear = c2->IsLinear();
+      if (truly_linear) {
+        const ON_2dPoint a0 = c2->PointAt(d.Min()), a1 = c2->PointAt(d.Max()), am = c2->PointAt(d.Mid());
+        const Point3d p0 = ss->PointAt(a0.x, a0.y), p1 = ss->PointAt(a1.x, a1.y), pm = ss->PointAt(am.x, am.y);
+        const double chord = p0.DistanceTo(p1);
+        truly_linear = pm.DistanceTo(Point3d(0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y), 0.5 * (p0.z + p1.z))) <= std::max(1e-6, 1e-6 * chord);
+      }
+      const int n = std::max(2, truly_linear ? 2 : samples_per_edge);
+      Chain piece;
+      bool inside = true;
+      for (int i = 0; i < n && inside; ++i) {
+        const ON_2dPoint uv = c2->PointAt(d.ParameterAt(static_cast<double>(i) / n));
+        const Point3d p = ss->PointAt(uv.x, uv.y);
+        if (!strictly_inside(p)) { inside = false; break; }
+        double du = 0, dv = 0;
+        project(p, du, dv);
+        piece.push_back({p, Point2d(du, dv)});
+      }
+      if (!inside) { flush(); continue; }
+      const ON_2dPoint e2 = c2->PointAt(d.Max());
+      run_end = ss->PointAt(e2.x, e2.y);
+      run.insert(run.end(), piece.begin(), piece.end());
+    }
+    flush();
+  }
+  return out;
+}
+
+// The face of the other solid (and the (u, v) on it) a fragment was found to lie ON.
+struct OnFaceHit {
+  int face_index = -1;
+  Point2d uv;
+};
+
+// True when `sa` and `sb` are the SAME infinite analytic surface (cylinder, cone, sphere or torus; a plane pair is
+// handled by the planar coincidence code) to within `tol`, e.g. the walls of two coaxial equal-radius cylinders.
+// Two such surfaces have no proper intersection curve; the marching SSX still "finds" a chain of spurious closed
+// loops over the shared region (measured: 27 of them between two coincident r3 cylinder walls), which fragments
+// both walls into slivers whose shared edges are then claimed by 3+ loops.
+bool IsSameAnalyticSurface(const ON_Surface& sa, const ON_Surface& sb, double tol) {
+  const auto same_axis = [&](const ON_3dPoint& oa, const ON_3dVector& da, const ON_3dPoint& ob, const ON_3dVector& db) {
+    if (da.IsParallelTo(db, 1e-6) == 0) return false;
+    const ON_3dVector w = ob - oa;
+    return ON_CrossProduct(w, da).Length() <= tol * da.Length();
+  };
+  ON_Cylinder ca, cb;
+  if (sa.IsCylinder(&ca, tol)) {
+    return sb.IsCylinder(&cb, tol) && std::fabs(ca.circle.Radius() - cb.circle.Radius()) <= tol &&
+           same_axis(ca.circle.Center(), ca.circle.plane.zaxis, cb.circle.Center(), cb.circle.plane.zaxis);
+  }
+  ON_Sphere pa, pb;
+  if (sa.IsSphere(&pa, tol)) {
+    return sb.IsSphere(&pb, tol) && std::fabs(pa.Radius() - pb.Radius()) <= tol && pa.Center().DistanceTo(pb.Center()) <= tol;
+  }
+  ON_Cone na, nb;
+  if (sa.IsCone(&na, tol)) {
+    if (!sb.IsCone(&nb, tol) || na.ApexPoint().DistanceTo(nb.ApexPoint()) > tol) return false;
+    if (!same_axis(na.ApexPoint(), na.Axis(), nb.ApexPoint(), nb.Axis())) return false;
+    // Same nappe (axes may differ in sign only when the opening direction does too) and same half-angle.
+    return std::fabs(std::fabs(na.AngleInRadians()) - std::fabs(nb.AngleInRadians())) <= 1e-9;
+  }
+  ON_Torus ta, tb;
+  if (sa.IsTorus(&ta, tol)) {
+    return sb.IsTorus(&tb, tol) && std::fabs(ta.major_radius - tb.major_radius) <= tol && std::fabs(ta.minor_radius - tb.minor_radius) <= tol &&
+           same_axis(ta.plane.origin, ta.plane.zaxis, tb.plane.origin, tb.plane.zaxis) &&
+           std::fabs(ON_DotProduct(tb.plane.origin - ta.plane.origin, ta.plane.zaxis)) <= tol;
+  }
+  return false;
+}
+
 // --- classification: ray-cast a 3D point against a whole Brep's own
 // faces using the general CSX (IntersectCurveSurface), generalizing
 // boolean.cpp's own ClassifyPointVsSolid beyond hand-solved formulas. ---
@@ -4073,6 +4223,14 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
       if (exp_a.IsDisjoint(boxes_b[static_cast<size_t>(j)])) continue;
       const ON_BrepFace& fa = ba.m_F[i];
       const ON_BrepFace& fb = bb.m_F[j];
+      // Two faces on the SAME curved surface (coaxial equal-radius cylinder walls, concentric equal spheres, ...)
+      // have no intersection curve: skip the SSX, whose marching otherwise reports spurious closed loops over the
+      // shared region. Their overlap is resolved per fragment (coincident-fragment rule in process() below).
+      if (IsSameAnalyticSurface(*fa.SurfaceOf(), *fb.SurfaceOf(), tol)) {
+        for (Chain& c : CoincidentSurfaceImprints(bb, j, ba, i, tol)) raw_a[static_cast<size_t>(i)].push_back(std::move(c));
+        for (Chain& c : CoincidentSurfaceImprints(ba, i, bb, j, tol)) raw_b[static_cast<size_t>(j)].push_back(std::move(c));
+        continue;
+      }
       std::vector<IntersectionCurve> curves = IntersectFaces(&fa, *fa.SurfaceOf(), &fb, *fb.SurfaceOf(), opt);
       if (!curves.empty() && CurvesAreTangentContactNoise(curves, *fa.SurfaceOf(), *fb.SurfaceOf(), opt)) curves.clear();
       // Geometric coincidence check, run UNCONDITIONALLY rather than only
@@ -4590,7 +4748,23 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
           }
           Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
           bool on_other_boundary = false;
-          Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol, other_index, &on_other_boundary);
+          OnFaceHit boundary_hit;
+          // A fragment lying on the SAME curved surface as a face of the other solid (a stretch of two coaxial
+          // equal-radius walls) is found geometrically: a ray from a point ON a surface reports the t = 0 hit
+          // unreliably. The imprints added in the pair loop split each wall exactly along the other face's
+          // boundary, so the fragment is wholly inside that face's region or wholly outside it.
+          for (int oj = 0; oj < other.m_F.Count() && boundary_hit.face_index < 0; ++oj) {
+            const ON_Surface* os = other.m_F[oj].SurfaceOf();
+            if (!os || !IsSameAnalyticSurface(*ff.surface, *os, tol)) continue;
+            double ou = 0.5 * (os->Domain(0).Min() + os->Domain(0).Max()), ov = 0.5 * (os->Domain(1).Min() + os->Domain(1).Max());
+            if (!SurfaceClosestPointGlobal(*os, p3, ou, ov) || os->PointAt(ou, ov).DistanceTo(p3) > tol) continue;
+            if (!FaceContainsUV(other.m_F[oj], ou, ov)) continue;
+            boundary_hit.face_index = oj;
+            boundary_hit.uv = Point2d(ou, ov);
+            on_other_boundary = true;
+          }
+          const bool found_by_surface = on_other_boundary;
+          Cls cls = found_by_surface ? Cls::Out : ClassifyPointVsBrep(p3, other, ray_length, opt, tol, other_index, &on_other_boundary);
           // A fragment of a planar face lying INSIDE a coplanar planar face of the other solid (two flush end caps that only
           // partly overlap: neither contains the other, so neither the whole-face nor the sub-region override above applies):
           // its representative point sits on the other solid's boundary, a ray-cast there is arbitrary (measured: both
@@ -4598,7 +4772,7 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
           // copies and the lens edge was claimed by three fragment loops). The fragment was cut along the other face's
           // outline, so it is wholly inside or outside it; decide by the two outward normals exactly as the whole-face rule does.
           bool coplanar_overlap = false, coplanar_opposite = false;
-          if (on_other_boundary) {
+          if (on_other_boundary && !found_by_surface) {
             ON_Plane pf;
             if (ff.surface->IsPlanar(&pf, tol)) {
               for (int gi = 0; gi < other.m_F.Count() && !coplanar_overlap; ++gi) {
@@ -4638,7 +4812,7 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
             if (debug)
               std::fprintf(stderr, "  frag: COPLANAR OVERLAP override a_side=%d opposite=%d op=%d -> keep=%d\n", a_side, coplanar_opposite,
                            static_cast<int>(op), keep);
-          } else if (on_other_boundary) {
+          } else if (on_other_boundary && !found_by_surface) {
             // Tangent contact: the representative point (typically the
             // fragment's centroid - e.g. the centre of a box face a sphere
             // rests on) is exactly the touch point, so its ray-cast parity
@@ -4655,7 +4829,41 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
               uv = alt;
               p3 = alt_p3;
               cls = alt_cls;
+              on_other_boundary = false;
               break;
+            }
+          }
+          // The fragment lies on the SAME curved surface as a face of the other solid (the shared stretch of two coaxial
+          // equal-radius cylinder walls): a ray cast from it is arbitrary, so decide from the two outward normals exactly
+          // as the planar coincident-face rule above does. (Two DIFFERENT surfaces that merely touch, e.g. externally
+          // tangent cylinders, are not coincident: they take the tangent-contact path above.)
+          bool coincident_fragment = false;
+          if (found_by_surface) {
+            const ON_BrepFace& of = other.m_F[boundary_hit.face_index];
+            const ON_Surface* os = of.SurfaceOf();
+            if (os) {
+              Vector3d n_this = ff.surface->NormalAt(uv.x, uv.y);
+              if (ff.base_rev) n_this = -n_this;
+              Vector3d n_other = os->NormalAt(boundary_hit.uv.x, boundary_hit.uv.y);
+              if (of.m_bRev) n_other = -n_other;
+              const double dot = ON_DotProduct(n_this, n_other);
+              if (std::fabs(dot) > 0.5) {  // genuinely tangent surfaces (not a crossing)
+                const bool opposite = dot < 0.0;
+                coincident_fragment = true;
+                if (a_side) {
+                  switch (op) {
+                    case BooleanOp::Union:
+                    case BooleanOp::Intersection: keep = !opposite; break;
+                    case BooleanOp::Difference: keep = opposite; break;
+                    default: break;
+                  }
+                } else {
+                  keep = false;
+                }
+                if (debug)
+                  std::fprintf(stderr, "  frag: COINCIDENT with other face %d (curved) a_side=%d opposite=%d op=%d -> keep=%d\n",
+                               boundary_hit.face_index, a_side, opposite, static_cast<int>(op), keep);
+              }
             }
           }
           // The representative point is the mean of the boundary's (u, v) vertices, which sits inside the (u, v) polygon but can land
@@ -4664,7 +4872,7 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
           // Out instead of In, so the footprint stayed and "an edge is claimed by 3 or more fragment loops"). A point that close to
           // the boundary (< 2% of the fragment's thinnest extent) is re-picked from the grid of alternates with the largest 3D
           // clearance, and only adopted when that is at least twice as far from the boundary. Ordinary fragments are untouched.
-          if (!coplanar_overlap) {
+          if (!coplanar_overlap && !coincident_fragment) {
             const double thin = FragmentThinScale(frag);
             const double clear0 = FragmentClearance3D(frag, p3);
             if (thin > 0.0 && clear0 < 0.02 * thin) {
@@ -4691,7 +4899,7 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
             }
           }
           if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
-          if (!coplanar_overlap) switch (op) {
+          if (!coplanar_overlap && !coincident_fragment) switch (op) {
             case BooleanOp::Union:
               keep = (cls == Cls::Out);
               break;

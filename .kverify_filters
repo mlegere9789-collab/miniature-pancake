@@ -61,3 +61,5 @@ thicken_curved_closed_form
 trimmed_offset
 trisquads_collinear_corner
 welded_curved_primitives
+TestSealedCoincidentCurvedWallsAgainstClosedForm
+TestSealedCurvedSolidsAgainstClosedForm

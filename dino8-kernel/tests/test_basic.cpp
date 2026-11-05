@@ -98082,6 +98082,110 @@ void TestSealedAppCylinderVolumesAgainstClosedForm() {
   }
 }
 
+// Two solids whose walls lie on the SAME curved surface (coaxial equal-radius cylinders overlapping in z): the SSX of the
+// two walls has no curve to report (the marching solver returned 162 spurious two-point curves), each wall must be split
+// at the circle where the other one ends, and the shared stretch kept once (Union, Intersection) or cancelled
+// (Difference). Previously every op threw "an edge is claimed by 3 or more fragment loops".
+void TestSealedCoincidentCurvedWallsAgainstClosedForm() {
+  const double pi = ON_PI;
+  struct Case {
+    const char* name;
+    Brep a, b;
+    BooleanOp op;
+    double expect;
+  };
+  const Case cases[] = {
+      {"cylinders r3 h6 and r3 h6 shifted z3 (shared wall z3..6), Union", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 6),
+       SealedAppCylinder(ON_3dPoint(0, 0, 3), 3, 6), BooleanOp::Union, pi * 9 * 9},
+      {"cylinders r3 h6 and r3 h6 shifted z3 (shared wall z3..6), Intersection", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 6),
+       SealedAppCylinder(ON_3dPoint(0, 0, 3), 3, 6), BooleanOp::Intersection, pi * 9 * 3},
+      {"cylinders r3 h6 and r3 h6 shifted z3 (shared wall z3..6), Difference", SealedAppCylinder(ON_3dPoint(0, 0, 0), 3, 6),
+       SealedAppCylinder(ON_3dPoint(0, 0, 3), 3, 6), BooleanOp::Difference, pi * 9 * 3},
+  };
+  for (const Case& c : cases) {
+    try {
+      const SealedGeneralBoolean s = BooleanCombineGeneralSealed(c.a, c.b, c.op);
+      const double rel = (s.volume - c.expect) / c.expect;
+      std::printf("  %s: VolumeOfSealedSolid %.6f, closed form %.6f, relative error %+.3e\n", c.name, s.volume, c.expect, rel);
+      Check(std::fabs(rel) < 1e-4, (std::string(c.name) + ": VolumeOfSealedSolid within 1e-4 relative of the closed form").c_str());
+      Check(s.brep.raw().IsValid() && s.brep.raw().IsSolid(), (std::string(c.name) + ": result is a valid closed solid").c_str());
+    } catch (const std::exception& e) {
+      std::printf("  %s: threw %s\n", c.name, e.what());
+      Check(false, (std::string(c.name) + ": sealed boolean must not throw").c_str());
+    }
+  }
+}
+
+// The application's Sphere / Cone / Torus are raw ON_BrepSphere / ON_BrepCone / ON_BrepTorus. Their sealed Boolean results
+// carry trimmed faces on exact RevSurfaces whose (u, v) polygons are thousands of samples of an iso-line cut curve; the
+// exact volume of such a result must match an independent closed form. (Before the boundary-integral fix a sphere minus a
+// through cylinder came out +27.2% and the matching Intersection -29.5%, with no refusal: the cylinder wall's polygon
+// had 150.80 of area and EarClipTriangulate() covered 75.40 of it.)
+Brep SealedAppFrom(ON_Brep* b) {
+  Brep k;
+  k.raw() = *b;
+  delete b;
+  return k;
+}
+
+void TestSealedCurvedSolidsAgainstClosedForm() {
+  const double pi = ON_PI;
+  struct Case {
+    std::string name;
+    Brep a, b;
+    BooleanOp op;
+    double expect;
+    double tol;
+  };
+  std::vector<Case> cases;
+  const auto sphere = [&](double r) { return SealedAppFrom(ON_BrepSphere(ON_Sphere(ON_3dPoint(0, 0, 0), r))); };
+  // Sphere radius 5 and a coaxial through cylinder radius 3 (z -6..6): the bore is 2*sqrt(25 - 9) = 8 long.
+  const double ring = pi * 8.0 * 8.0 * 8.0 / 6.0;  // sphere minus a bore: pi h^3 / 6, h = bore length inside the sphere
+  const double ball = 4.0 / 3.0 * pi * 125.0;
+  cases.push_back({"sphere r5 minus a through cylinder r3, Difference", sphere(5), SealedAppCylinder(ON_3dPoint(0, 0, -6), 3, 12),
+                   BooleanOp::Difference, ring, 1e-4});
+  cases.push_back({"sphere r5 and a through cylinder r3, Intersection", sphere(5), SealedAppCylinder(ON_3dPoint(0, 0, -6), 3, 12),
+                   BooleanOp::Intersection, ball - ring, 1e-4});
+  // A cone (base radius 4 at z = 0, apex at z = 8) and a cylinder r3, z 1..5: the cylinder is inside the cone up to the height
+  // where the cone's radius 4(1 - z/8) falls to 3 (z = 2); above that the cone is the narrower body.
+  {
+    const auto cone = [&]() {
+      return SealedAppFrom(ON_BrepCone(ON_Cone(ON_Plane(ON_3dPoint(0, 0, 8), ON_3dVector(0, 0, -1)), 8, 4), true));
+    };
+    const double cone_v = pi * 16.0 * 8.0 / 3.0, cyl_v = pi * 9.0 * 4.0;
+    const double r_of_z_integral = pi * 16.0 * (8.0 / 3.0) * (std::pow(1.0 - 2.0 / 8.0, 3) - std::pow(1.0 - 5.0 / 8.0, 3));
+    const double inter = pi * 9.0 * 1.0 + r_of_z_integral;
+    cases.push_back({"cone r4 h8 and cylinder r3 z1..5, Union", cone(), SealedAppCylinder(ON_3dPoint(0, 0, 1), 3, 4), BooleanOp::Union,
+                     cone_v + cyl_v - inter, 1e-4});
+  }
+  // A torus (R 5, r 1.5) and a coaxial cylinder r4, z -2..2 (taller than the tube): the common volume is the integral over the
+  // radius rho in [R - r, 4] of 2 pi rho * 2 sqrt(r^2 - (rho - R)^2), evaluated here by 200000-panel Simpson.
+  {
+    const double R = 5.0, r = 1.5, rc = 4.0;
+    const int n = 200000;
+    const double lo = R - r, hi = rc, h = (hi - lo) / n;
+    const auto f = [&](double rho) { const double t = r * r - (rho - R) * (rho - R); return 2.0 * pi * rho * 2.0 * std::sqrt(t > 0 ? t : 0); };
+    double sum = f(lo) + f(hi);
+    for (int i = 1; i < n; ++i) sum += f(lo + i * h) * (i % 2 ? 4 : 2);
+    const double inter = sum * h / 3.0;
+    const double torus_v = 2.0 * pi * pi * R * r * r, cyl_v = pi * rc * rc * 4.0;
+    const auto torus = [&]() { return SealedAppFrom(ON_BrepTorus(ON_Torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), R, r))); };
+    cases.push_back({"torus R5 r1.5 and coaxial cylinder r4 z-2..2, Union", torus(), SealedAppCylinder(ON_3dPoint(0, 0, -2), 4, 4),
+                     BooleanOp::Union, torus_v + cyl_v - inter, 1e-4});
+  }
+  for (const Case& c : cases) {
+    try {
+      const SealedGeneralBoolean sres = BooleanCombineGeneralSealed(c.a, c.b, c.op);
+      const double rel = (sres.volume - c.expect) / c.expect;
+      std::printf("  %s: VolumeOfSealedSolid %.6f, closed form %.6f, relative error %+.3e\n", c.name.c_str(), sres.volume, c.expect, rel);
+      Check(std::fabs(rel) < c.tol, (c.name + ": VolumeOfSealedSolid matches the closed form").c_str());
+    } catch (const std::exception& e) {
+      std::printf("  %s: threw %s\n", c.name.c_str(), e.what());
+      Check(false, (c.name + ": sealed boolean must not throw").c_str());
+    }
+  }
+}
+
 }  // namespace sealed_boolean_tests
 
 
@@ -109450,6 +109554,10 @@ int main() {
           sealed_boolean_tests::TestVolumeOfSealedSolidPreconditionsAndGenuineSeamsSurvive);
   RunTest("sealed_boolean_tests::TestSealedAppCylinderVolumesAgainstClosedForm",
           sealed_boolean_tests::TestSealedAppCylinderVolumesAgainstClosedForm);
+  RunTest("sealed_boolean_tests::TestSealedCoincidentCurvedWallsAgainstClosedForm",
+          sealed_boolean_tests::TestSealedCoincidentCurvedWallsAgainstClosedForm);
+  RunTest("sealed_boolean_tests::TestSealedCurvedSolidsAgainstClosedForm",
+          sealed_boolean_tests::TestSealedCurvedSolidsAgainstClosedForm);
   RunTest("edge_continuity_tests::TestMeasureEdgeContinuityAgainstClosedForm", edge_continuity_tests::TestMeasureEdgeContinuityAgainstClosedForm);
   RunTest("edge_continuity_tests::TestCurveNetworkG1TangentPlaneAlongSharedEdge", edge_continuity_tests::TestCurveNetworkG1TangentPlaneAlongSharedEdge);
   RunTest("edge_continuity_tests::TestCurveNetworkG2CurvatureAlongSharedEdge", edge_continuity_tests::TestCurveNetworkG2CurvatureAlongSharedEdge);
