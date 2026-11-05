@@ -757,6 +757,22 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
       const ON_Curve* c2 = trim.TrimCurveOf();
       if (!c2) continue;
       const ON_Interval d = trim.Domain();
+      // A polyline trim (the disk caps of Brep::FromMixedFaces(): ONE ON_PolylineCurve through the cap's dense ring of real
+      // vertices) is sampled at ITS OWN VERTICES, not at 24 arbitrary fractions of its domain. The fractions land mid-chord
+      // (a 128-gon sampled at 24 points is a 24-gon whose chords sit up to 0.0086 inside a unit circle), a different outline
+      // from the adjacent wall's exact rim circle: the two faces' rim corners then never coincide within the weld tolerance,
+      // ReconcileFragmentBoundaries finds no shared anchor, and the rim is left as two unpaired runs of 0.26-long chords.
+      // At the vertices the cap boundary is the true one, so the sparser wall rim run can adopt its points verbatim.
+      if (const ON_PolylineCurve* pl = ON_PolylineCurve::Cast(c2)) {
+        const int pn = pl->PointCount();
+        if (pn >= 3) {
+          for (int i = 0; i + 1 < pn; ++i) {
+            const ON_3dPoint q = pl->m_pline[i];
+            out.push_back({s->PointAt(q.x, q.y), ON_2dPoint(q.x, q.y)});
+          }
+          continue;
+        }
+      }
       // c2->IsLinear() only says the trim's own 2D (u, v) path is a
       // straight line - true for every edge of a periodic surface's own
       // full-sweep trim rectangle, including the two that run ALONG the
@@ -3411,8 +3427,9 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
       std::fprintf(stderr, "  FragmentFaces face idx=%d boundary=%zu stitched=%zu closed=%zu open=%zu\n", i,
                    boundary.size(), stitched.size(), closed_chains.size(), open_chains.size());
       for (const Chain& c : open_chains)
-        std::fprintf(stderr, "    open chain: n=%zu front_uv=(%f,%f) back_uv=(%f,%f)\n", c.size(), c.front().uv.x,
-                     c.front().uv.y, c.back().uv.x, c.back().uv.y);
+        std::fprintf(stderr, "    open chain: n=%zu front_uv=(%f,%f) back_uv=(%f,%f) front_p=(%.5f,%.5f,%.5f) back_p=(%.5f,%.5f,%.5f)\n", c.size(),
+                     c.front().uv.x, c.front().uv.y, c.back().uv.x, c.back().uv.y, c.front().p.x, c.front().p.y, c.front().p.z, c.back().p.x,
+                     c.back().p.y, c.back().p.z);
     }
     FaceFrags ff;
     ff.face_index = i;
