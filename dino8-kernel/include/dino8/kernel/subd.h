@@ -43,6 +43,11 @@ struct SubDInterpolationReport {
 struct SubDBooleanReport {
   int result_faces = 0;
   int result_vertices = 0;
+  // The Catmull-Clark rounds actually applied to each operand: the
+  // requested level, raised to ceil(largest semi-sharp edge sharpness) when
+  // that is higher (see BooleanToSubDCreased()).
+  int levels_this_used = 0;
+  int levels_other_used = 0;
   // Edges of the result tagged Crease because they lie on the intersection
   // curve of the two operand surfaces (both end points and the mid point
   // are on BOTH operand surfaces and the two faces meeting there are not
@@ -898,6 +903,13 @@ class SubD {
   //     so the final limit surface (not just the cage) lies on the refined
   //     Boolean mesh; without it the result is smoothed once more and
   //     shrinks slightly.
+  // Semi-sharp operand edges: an edge sharpness s (OpenNURBS, 0 < s <= 4)
+  // only changes the SHAPE once s Catmull-Clark rounds have consumed it, so
+  // an operand carrying one is refined at least ceil(s) rounds even when
+  // `levels_this` / `levels_other` ask for fewer - otherwise its cage corner
+  // would be taken as the surface although the weight rounds it off (a
+  // sharpness-2 cube unioned at levels 0 came back 1.55x too large).
+  // `report->levels_this_used` / `levels_other_used` tell what was applied.
   // `report`, when non-null, receives the counts and the interpolation
   // residuals. Both operands must be closed (BooleanCombine()'s own
   // precondition and std::runtime_error apply). Honest limit: this is

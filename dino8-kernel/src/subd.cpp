@@ -3247,6 +3247,27 @@ SubD SubD::BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this
     for (size_t i = 0; i < verts.size(); ++i) verts[i]->SetControlNetPoint(limits[i], /*bClearNeighborhoodCache=*/true);
     return s;
   };
+  // A semi-sharp edge (OpenNURBS edge sharpness, 0 < s <= 4) is only part of
+  // the SHAPE once Catmull-Clark has consumed it: each round lowers it by 1,
+  // and the polyhedron the Boolean sees is the refined cage's limit points.
+  // Taking such an operand's cage as "the exact shape" (levels 0, or fewer
+  // rounds than its sharpness) silently discards the rounding the weight
+  // asks for - the cube's corner sits at the control point instead of
+  // inside the limit surface - so the Boolean is run on a shape the operand
+  // does not have (measured: a sharpness-2 cube unioned at levels 0 came
+  // back with 1.55x the reference volume). Raise each operand's rounds to
+  // ceil(its largest edge sharpness) when the caller asked for fewer.
+  const auto sharpness_rounds = [](const SubD& s) {
+    double worst = 0.0;
+    ON_SubDEdgeIterator eit = s.subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (!e->IsSmooth()) continue;
+      worst = std::max(worst, std::max(e->EndSharpness(0u), e->EndSharpness(1u)));
+    }
+    return worst > 0.0 ? static_cast<int>(std::ceil(worst - 1e-9)) : 0;
+  };
+  levels_this = std::max(levels_this, std::min(sharpness_rounds(*this), 6));
+  levels_other = std::max(levels_other, std::min(sharpness_rounds(other), 6));
   const SubD a = refine_to_limit(*this, levels_this);
   const SubD b = refine_to_limit(other, levels_other);
   // Triangulated ONCE here (a refined Catmull-Clark quad is slightly
@@ -3284,6 +3305,8 @@ SubD SubD::BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this
   };
 
   SubDBooleanReport rep;
+  rep.levels_this_used = levels_this;
+  rep.levels_other_used = levels_other;
   ON_SimpleArray<ON_SubDComponentPtr> to_crease;
   {
     ON_SubDEdgeIterator eit = sd.subd_.EdgeIterator();
