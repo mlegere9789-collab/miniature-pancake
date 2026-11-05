@@ -451,6 +451,11 @@ Result NurbsSurface::ChangeSeam(int direction, double t) {
   if (!IsClosed(direction)) return Result::Failed;
   const Interval dom = Domain(direction);
   if (!(t >= dom.min && t <= dom.max)) return Result::Failed;
+  // A parameter at (or within 1e-8 of the domain length from) either end of the domain IS the current seam: nothing to move. OpenNURBS' own
+  // ChangeSurfaceSeam REFUSES such a t unless it is exactly an end (measured: a sphere's relative offsets of 1e-12 .. 1e-9 from either end
+  // return false, 1e-8 and above succeed), so a click that lands on the existing seam used to be reported as a failure.
+  const double near_end = 1e-8 * std::max(1.0, dom.max - dom.min);
+  if (t - dom.min <= near_end || dom.max - t <= near_end) return Result::NoOpAlreadySatisfied;
   return surface_.ChangeSurfaceSeam(direction, t) ? Result::Ok : Result::Failed;
 }
 

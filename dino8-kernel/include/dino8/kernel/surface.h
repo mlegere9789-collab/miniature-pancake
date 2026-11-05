@@ -1841,6 +1841,16 @@ class NurbsSurface {
   // isn't closed in `direction`, if `t` doesn't lie in `Domain(direction)`,
   // or if OpenNURBS' own call reports failure. Throws
   // std::invalid_argument if `direction` isn't 0/1.
+  //
+  // `t` equal to either end of the domain, or within 1e-8 * max(1, length)
+  // of one (the existing seam; the two ends are the same place on a closed
+  // direction), returns Result::NoOpAlreadySatisfied and leaves the surface
+  // untouched. OpenNURBS itself refuses such a `t` unless it is exactly an
+  // end, so without this a request at the existing seam failed. After an
+  // Ok the new domain is [t, t + L] (L the old length) and the surface at
+  // parameter u is the old surface at u wrapped into the old domain, so
+  // the old seam parameter `a` is outside the new domain and its copy
+  // `a + L` is the way to move the seam back (tests/extra/surface_change_seam.cpp).
   Result ChangeSeam(int direction, double t);
 
   // The surface-level counterpart to `NurbsCurve::ReparameterizeRational()`
