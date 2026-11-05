@@ -2724,17 +2724,435 @@ Brep ShellOpenExtrusion(const NurbsCurve& profile, Vector3d direction, double th
                                 open_bottom ? 0.0 : thickness, open_top ? 0.0 : thickness);
 }
 
+namespace {
+
+struct RvP2 {
+  double r, z;
+};
+// One meridian edge: a straight line, or a circular arc about (cr, cz) travelled counter-clockwise or clockwise.
+struct RvEdge {
+  bool arc = false;
+  RvP2 c{0.0, 0.0};
+  bool ccw = true;
+};
+// A piece of the shell's meridian section (start, end, and the same arc data).
+struct RvPiece {
+  RvP2 a, b;
+  RvEdge e;
+};
+
+double RvCross(const RvP2& a, const RvP2& b) { return a.r * b.z - a.z * b.r; }
+double RvDist(const RvP2& a, const RvP2& b) { return std::hypot(a.r - b.r, a.z - b.z); }
+
+// Signed angular travel from `a` to `b` around `c`, in the direction `ccw` (positive for ccw, negative for cw), |s| in (0, 2pi].
+double RvSweep(const RvP2& c, const RvP2& a, const RvP2& b, bool ccw) {
+  const double t0 = std::atan2(a.z - c.z, a.r - c.r), t1 = std::atan2(b.z - c.z, b.r - c.r);
+  double s = ccw ? t1 - t0 : t0 - t1;
+  while (s <= 0.0) s += 2.0 * ON_PI;
+  while (s > 2.0 * ON_PI) s -= 2.0 * ON_PI;
+  return ccw ? s : -s;
+}
+
+RvP2 RvArcPoint(const RvP2& c, double rad, double theta) { return RvP2{c.r + rad * std::cos(theta), c.z + rad * std::sin(theta)}; }
+
+// Points along a piece (arcs sampled every <= ~3 degrees), start included, end excluded.
+void RvSample(const RvPiece& p, std::vector<RvP2>& out) {
+  if (!p.e.arc) {
+    out.push_back(p.a);
+    return;
+  }
+  const double rad = RvDist(p.e.c, p.a);
+  const double s = RvSweep(p.e.c, p.a, p.b, p.e.ccw);
+  const double t0 = std::atan2(p.a.z - p.e.c.z, p.a.r - p.e.c.r);
+  const int n = std::max(8, static_cast<int>(std::ceil(std::fabs(s) / 0.05)));
+  for (int k = 0; k < n; ++k) out.push_back(RvArcPoint(p.e.c, rad, t0 + s * k / n));
+}
+
+// Exact distance from `q` to a piece.
+double RvDistToPiece(const RvPiece& p, const RvP2& q) {
+  if (!p.e.arc) {
+    const RvP2 ab{p.b.r - p.a.r, p.b.z - p.a.z};
+    const double l2 = ab.r * ab.r + ab.z * ab.z;
+    double s = l2 > 0 ? ((q.r - p.a.r) * ab.r + (q.z - p.a.z) * ab.z) / l2 : 0.0;
+    s = std::min(1.0, std::max(0.0, s));
+    return RvDist(q, RvP2{p.a.r + s * ab.r, p.a.z + s * ab.z});
+  }
+  const double rad = RvDist(p.e.c, p.a);
+  const double sweep = RvSweep(p.e.c, p.a, p.b, p.e.ccw);
+  const double t0 = std::atan2(p.a.z - p.e.c.z, p.a.r - p.e.c.r);
+  double tq = std::atan2(q.z - p.e.c.z, q.r - p.e.c.r) - t0;
+  double within = p.e.ccw ? tq : -tq;
+  while (within < 0.0) within += 2.0 * ON_PI;
+  while (within >= 2.0 * ON_PI) within -= 2.0 * ON_PI;
+  if (within <= std::fabs(sweep) && RvDist(q, p.e.c) > 0.0) return std::fabs(RvDist(q, p.e.c) - rad);
+  return std::min(RvDist(q, p.a), RvDist(q, p.b));
+}
+
+bool RvPointInPolygon(const std::vector<RvP2>& poly, const RvP2& p) {
+  bool in = false;
+  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+    if ((poly[i].z > p.z) != (poly[j].z > p.z) && p.r < poly[i].r + (p.z - poly[i].z) * (poly[j].r - poly[i].r) / (poly[j].z - poly[i].z)) in = !in;
+  }
+  return in;
+}
+
+// Intersections of a line (point p, unit direction d) with a circle (c, rad); within `eps` of tangency one point.
+std::vector<RvP2> RvLineCircle(const RvP2& p, const RvP2& d, const RvP2& c, double rad, double eps) {
+  const RvP2 w{p.r - c.r, p.z - c.z};
+  const double b = w.r * d.r + w.z * d.z;
+  const double disc = b * b - (w.r * w.r + w.z * w.z - rad * rad);
+  if (disc < 0.0) {
+    if (std::sqrt(-disc) > eps) return {};
+    return {RvP2{p.r - b * d.r, p.z - b * d.z}};
+  }
+  const double s = std::sqrt(disc);
+  if (s < eps) return {RvP2{p.r - b * d.r, p.z - b * d.z}};
+  return {RvP2{p.r + (-b - s) * d.r, p.z + (-b - s) * d.z}, RvP2{p.r + (-b + s) * d.r, p.z + (-b + s) * d.z}};
+}
+
+std::vector<RvP2> RvCircleCircle(const RvP2& c0, double r0, const RvP2& c1, double r1, double eps) {
+  const double d = RvDist(c0, c1);
+  if (d < 1e-12) return {};
+  const double a = (r0 * r0 - r1 * r1 + d * d) / (2.0 * d);
+  const double h2 = r0 * r0 - a * a;
+  const RvP2 u{(c1.r - c0.r) / d, (c1.z - c0.z) / d};
+  const RvP2 m{c0.r + a * u.r, c0.z + a * u.z};
+  if (h2 < 0.0) {
+    if (std::sqrt(-h2) > eps) return {};
+    return {m};
+  }
+  const double h = std::sqrt(h2);
+  if (h < eps) return {m};
+  return {RvP2{m.r - h * u.z, m.z + h * u.r}, RvP2{m.r + h * u.z, m.z - h * u.r}};
+}
+
+// The shared engine of ShellRevolvedProfile() (polyline) and ShellRevolvedArcProfile() (polyline + arcs). `v[i]` is the start of
+// edge i (which ends at v[i+1 mod n]); `ed[i]` its geometry; `th[i]` its thickness. Coordinates are (r, z) about the axis.
+Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vector<double> th, const ON_3dPoint& axis_point,
+                         const ON_3dVector& axis, const ON_3dVector& ex, double flip, double size, double tol, bool all_lines,
+                         const std::string& fn) {
+  const size_t n = v.size();
+  auto piece_of = [&](size_t i) { return RvPiece{v[i], v[(i + 1) % n], ed[i]}; };
+  // Arc sanity: both ends on the circle, travel less than a full turn.
+  for (size_t i = 0; i < n; ++i) {
+    if (!ed[i].arc) continue;
+    const double r0 = RvDist(ed[i].c, v[i]), r1 = RvDist(ed[i].c, v[(i + 1) % n]);
+    if (!(r0 > tol) || std::fabs(r0 - r1) > 1e-6 * std::max(1.0, r0)) {
+      throw std::invalid_argument(fn + "edge " + std::to_string(i) + ": the arc's end points are not on one circle about its centre");
+    }
+    if (RvDist(v[i], v[(i + 1) % n]) <= tol) throw std::invalid_argument(fn + "edge " + std::to_string(i) + ": a full-circle arc is not supported");
+  }
+  // Counter-clockwise (r, z) section: signed area of the sampled boundary.
+  auto sampled = [&]() {
+    std::vector<RvP2> pts;
+    for (size_t i = 0; i < n; ++i) RvSample(piece_of(i), pts);
+    return pts;
+  };
+  {
+    const std::vector<RvP2> pts = sampled();
+    double a2 = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) a2 += RvCross(pts[i], pts[(i + 1) % pts.size()]);
+    if (std::fabs(a2) <= 1e-12 * size * size) throw std::invalid_argument(fn + "profile encloses no area");
+    if (a2 < 0.0) {  // vertex i becomes n-1-i; edge j becomes old edge (n-2-j) reversed
+      std::reverse(v.begin(), v.end());
+      std::vector<RvEdge> ed2(n);
+      std::vector<double> th2(n);
+      for (size_t j = 0; j < n; ++j) {
+        const size_t old = (2 * n - 2 - j) % n;
+        ed2[j] = ed[old];
+        ed2[j].ccw = !ed[old].ccw;
+        th2[j] = th[old];
+      }
+      ed = ed2;
+      th = th2;
+    }
+  }
+  // Simple boundary: no two non-adjacent sampled segments cross.
+  auto cross_free = [&](const std::vector<RvP2>& pts, const std::string& what) {
+    const size_t m = pts.size();
+    const double e = 1e-12 * size * size;
+    for (size_t i = 0; i < m; ++i) {
+      for (size_t j = i + 2; j < m; ++j) {
+        if (i == 0 && j == m - 1) continue;
+        const RvP2 a = pts[i], b = pts[(i + 1) % m], c = pts[j], d = pts[(j + 1) % m];
+        const RvP2 ab{b.r - a.r, b.z - a.z}, ac{c.r - a.r, c.z - a.z}, ad{d.r - a.r, d.z - a.z};
+        const RvP2 cd{d.r - c.r, d.z - c.z}, ca{a.r - c.r, a.z - c.z}, cb{b.r - c.r, b.z - c.z};
+        if (RvCross(ab, ac) * RvCross(ab, ad) < -e && RvCross(cd, ca) * RvCross(cd, cb) < -e) {
+          throw std::invalid_argument(fn + what + " crosses itself");
+        }
+      }
+    }
+  };
+  cross_free(sampled(), "profile");
+  std::vector<bool> on_axis(n, false);
+  for (size_t i = 0; i < n; ++i) on_axis[i] = !ed[i].arc && v[i].r == 0.0 && v[(i + 1) % n].r == 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    if (on_axis[i] && th[i] != 0.0) {
+      throw std::invalid_argument(fn + "edge " + std::to_string(i) + " lies on the axis: it is not a face, its thickness must be 0");
+    }
+  }
+  size_t zeros = 0, runs = 0, removed_faces = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (th[i] == 0.0) {
+      ++zeros;
+      if (th[(i + n - 1) % n] != 0.0) ++runs;
+      if (!on_axis[i]) ++removed_faces;
+    }
+  }
+  if (removed_faces == 0) {
+    throw std::invalid_argument(fn + "at least one face must be removed (thickness 0): a fully closed hollow of a revolved "
+                                     "solid is two lumps, not built here (see ShellClosedSphere/ShellClosedExtrusion)");
+  }
+  if (zeros == n) throw std::invalid_argument(fn + "at least one edge needs a positive thickness");
+  if (runs != 1) {
+    throw std::invalid_argument(fn + "the removed edges (and axis edges) must form ONE contiguous run; found " + std::to_string(runs) +
+                                " separate runs - the material would split into several lumps");
+  }
+  size_t first = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (th[i] == 0.0 && th[(i + n - 1) % n] != 0.0) first = i;
+  }
+  size_t last = first;
+  while (th[(last + 1) % n] == 0.0) last = (last + 1) % n;
+
+  // Geometry of every edge moved to its inside (left of the counter-clockwise travel) by its own thickness.
+  struct Geo {
+    bool arc;
+    RvP2 p, d;  // line: point and unit direction
+    RvP2 c;     // arc: centre
+    double rad;
+  };
+  std::vector<Geo> geo(n);
+  std::vector<RvP2> dir(n);
+  for (size_t i = 0; i < n; ++i) {
+    const RvP2 a = v[i], b = v[(i + 1) % n];
+    if (!ed[i].arc) {
+      RvP2 d{b.r - a.r, b.z - a.z};
+      const double l = std::hypot(d.r, d.z);
+      if (!(l > tol)) throw std::invalid_argument(fn + "profile has a zero-length edge");
+      d.r /= l;
+      d.z /= l;
+      dir[i] = d;
+      geo[i] = Geo{false, RvP2{a.r + th[i] * -d.z, a.z + th[i] * d.r}, d, RvP2{0, 0}, 0.0};
+    } else {
+      const double rad = RvDist(ed[i].c, a);
+      const double moved = ed[i].ccw ? rad - th[i] : rad + th[i];
+      if (!(moved > tol)) {
+        throw std::invalid_argument(fn + "the arc of face " + std::to_string(i) + " has radius " + std::to_string(rad) +
+                                    ": a thickness of " + std::to_string(th[i]) + " collapses it to or through its centre");
+      }
+      geo[i] = Geo{true, RvP2{0, 0}, RvP2{0, 0}, ed[i].c, moved};
+    }
+  }
+  const double eps = 1e-9 * size;
+  // Cavity corner between edge i-1 and edge i: the moved curves' intersection nearest the original vertex.
+  auto corner = [&](size_t i) -> RvP2 {
+    const size_t a = (i + n - 1) % n;
+    const Geo &ga = geo[a], &gb = geo[i];
+    std::vector<RvP2> cand;
+    if (!ga.arc && !gb.arc) {
+      const double den = RvCross(ga.d, gb.d);
+      if (std::fabs(den) < 1e-9) {
+        if (ga.d.r * gb.d.r + ga.d.z * gb.d.z < 0.0) throw std::invalid_argument(fn + "two adjacent faces fold back onto each other");
+        if (std::fabs(th[a] - th[i]) > 1e-12 * size) {
+          throw std::invalid_argument(fn + "collinear adjacent faces of different thickness have no unique cavity corner");
+        }
+        return gb.p;
+      }
+      const RvP2 w{gb.p.r - ga.p.r, gb.p.z - ga.p.z};
+      const double s = RvCross(w, gb.d) / den;
+      return RvP2{ga.p.r + s * ga.d.r, ga.p.z + s * ga.d.z};
+    }
+    if (ga.arc && gb.arc) cand = RvCircleCircle(ga.c, ga.rad, gb.c, gb.rad, eps);
+    else if (ga.arc) cand = RvLineCircle(gb.p, gb.d, ga.c, ga.rad, eps);
+    else cand = RvLineCircle(ga.p, ga.d, gb.c, gb.rad, eps);
+    if (cand.empty()) {
+      throw std::invalid_argument(fn + "the moved curves of faces " + std::to_string(a) + " and " + std::to_string(i) +
+                                  " do not meet - thickness is infeasible");
+    }
+    RvP2 best = cand[0];
+    for (const RvP2& c : cand) {
+      if (RvDist(c, v[i]) < RvDist(best, v[i])) best = c;
+    }
+    return best;
+  };
+  const size_t kept_first = (last + 1) % n;
+  std::vector<size_t> kept;  // kept edge indices in order
+  for (size_t i = kept_first; i != first; i = (i + 1) % n) kept.push_back(i);
+  std::vector<RvP2> cav;  // corner(kept[0]) ... corner(first)
+  for (size_t k = 0; k <= kept.size(); ++k) cav.push_back(corner((kept_first + k) % n));
+  // Cavity edge k (between cav[k] and cav[k+1]) takes kept edge kept[k]'s shape on the moved curve.
+  std::vector<RvPiece> cav_edges;
+  for (size_t k = 0; k < kept.size(); ++k) {
+    RvEdge e = ed[kept[k]];
+    if (e.arc) {
+      const double rad = geo[kept[k]].rad;
+      for (const RvP2& q : {cav[k], cav[k + 1]}) {
+        if (std::fabs(RvDist(e.c, q) - rad) > 1e-6 * std::max(1.0, rad)) throw std::invalid_argument(fn + "internal: a cavity corner is off its arc");
+      }
+      const double s = RvSweep(e.c, cav[k], cav[k + 1], e.ccw);
+      if (!(std::fabs(s) > 1e-9) || std::fabs(s) > 2.0 * ON_PI - 1e-6) {
+        throw std::invalid_argument(fn + "the cavity arc parallel to face " + std::to_string(kept[k]) + " collapsed - thickness is infeasible");
+      }
+    } else {
+      const RvP2 d{cav[k + 1].r - cav[k].r, cav[k + 1].z - cav[k].z};
+      if (d.r * dir[kept[k]].r + d.z * dir[kept[k]].z <= tol) {
+        throw std::invalid_argument(fn + "the cavity edge parallel to face " + std::to_string(kept[k]) + " collapsed or reversed - thickness is infeasible");
+      }
+    }
+    cav_edges.push_back(RvPiece{cav[k], cav[k + 1], e});
+  }
+  // Outer boundary samples for the inside test; exact distances for the wall test.
+  const std::vector<RvP2> outer_pts = sampled();
+  double tmin = 1e300;
+  for (double t : th) {
+    if (t > 0.0) tmin = std::min(tmin, t);
+  }
+  auto dist_to_kept = [&](const RvP2& p) {
+    double best = 1e300;
+    for (size_t i : kept) best = std::min(best, RvDistToPiece(piece_of(i), p));
+    return best;
+  };
+  auto dist_to_removed = [&](const RvP2& p) {
+    double best = 1e300;
+    for (size_t i = first;; i = (i + 1) % n) {
+      best = std::min(best, RvDistToPiece(piece_of(i), p));
+      if (i == last) break;
+    }
+    return best;
+  };
+  const double slack = 4.0 * tol;
+  for (const RvPiece& ce : cav_edges) {
+    std::vector<RvP2> s;
+    RvSample(ce, s);
+    s.push_back(ce.b);
+    // refine lines to 9 samples
+    std::vector<RvP2> probe;
+    if (!ce.e.arc) {
+      for (int k = 0; k <= 8; ++k) probe.push_back(RvP2{ce.a.r + (ce.b.r - ce.a.r) * k / 8.0, ce.a.z + (ce.b.z - ce.a.z) * k / 8.0});
+    } else {
+      probe = s;
+    }
+    for (const RvP2& p : probe) {
+      if (p.r > tol && dist_to_removed(p) > slack && !RvPointInPolygon(outer_pts, p)) {
+        throw std::invalid_argument(fn + "the cavity leaves the profile - thickness is infeasible");
+      }
+      if (dist_to_kept(p) < tmin - slack) {
+        throw std::invalid_argument(fn + "the cavity comes closer than the smallest thickness to a kept face - thickness is infeasible");
+      }
+      if (p.r < -slack) throw std::invalid_argument(fn + "the cavity crosses the axis - thickness is at or beyond the solid's radius there");
+    }
+  }
+  // Rims along the removed faces' own curves: from v[first] to the cavity's last corner, and from its first corner to v[kept_first].
+  RvPiece rim_a{v[first], cav.back(), ed[first]};
+  RvPiece rim_b{cav.front(), v[kept_first], ed[last]};
+  auto rim_ok = [&](const RvPiece& r, size_t edge, bool from_start) {
+    const RvP2 p0 = v[edge], p1 = v[(edge + 1) % n];
+    if (!ed[edge].arc) {
+      const double len = RvDist(p0, p1);
+      const RvP2 d = dir[edge];
+      const double along = from_start ? (r.b.r - p0.r) * d.r + (r.b.z - p0.z) * d.z : (p1.r - r.a.r) * d.r + (p1.z - r.a.z) * d.z;
+      return along > tol && along <= len + tol;
+    }
+    const double total = std::fabs(RvSweep(ed[edge].c, p0, p1, ed[edge].ccw));
+    const double part = from_start ? std::fabs(RvSweep(ed[edge].c, p0, r.b, ed[edge].ccw)) : std::fabs(RvSweep(ed[edge].c, r.a, p1, ed[edge].ccw));
+    return part > 1e-9 && part <= total + 1e-9;
+  };
+  if (!rim_ok(rim_a, first, true)) throw std::invalid_argument(fn + "the rim at the removed face " + std::to_string(first) + " would run outside that face");
+  if (!rim_ok(rim_b, last, false)) throw std::invalid_argument(fn + "the rim at the removed face " + std::to_string(last) + " would run outside that face");
+
+  // Material section, counter-clockwise: outer chain, rim, cavity chain back, rim.
+  std::vector<RvPiece> mat;
+  for (size_t i : kept) mat.push_back(piece_of(i));
+  mat.push_back(rim_a);
+  for (size_t k = cav_edges.size(); k-- > 0;) {
+    RvPiece p = cav_edges[k];
+    std::swap(p.a, p.b);
+    p.e.ccw = !p.e.ccw;
+    mat.push_back(p);
+  }
+  mat.push_back(rim_b);
+  {
+    std::vector<RvPiece> clean;
+    for (const RvPiece& p : mat) {
+      if (RvDist(p.a, p.b) > tol) clean.push_back(p);
+    }
+    mat = clean;
+  }
+  if (mat.size() < 2) throw std::invalid_argument(fn + "the shell cross-section degenerates");
+  std::vector<RvP2> mpts;
+  for (const RvPiece& p : mat) RvSample(p, mpts);
+  if (mpts.size() < 3) throw std::invalid_argument(fn + "the shell cross-section degenerates");
+  double marea2 = 0.0;
+  for (size_t i = 0; i < mpts.size(); ++i) marea2 += RvCross(mpts[i], mpts[(i + 1) % mpts.size()]);
+  if (!(marea2 > 0.0)) throw std::invalid_argument(fn + "the shell cross-section is inverted - thickness is infeasible");
+  cross_free(mpts, "the shell cross-section");
+  // Volume of revolution by Green's theorem: V = pi * closed-integral of r^2 dz (counter-clockwise).
+  double green = 0.0;
+  for (const RvPiece& p : mat) {
+    if (!p.e.arc) {
+      green += (p.a.r * p.a.r + p.a.r * p.b.r + p.b.r * p.b.r) / 3.0 * (p.b.z - p.a.z);
+    } else {
+      const double rad = RvDist(p.e.c, p.a);
+      const double t0 = std::atan2(p.a.z - p.e.c.z, p.a.r - p.e.c.r);
+      const double s = RvSweep(p.e.c, p.a, p.b, p.e.ccw);
+      auto F = [&](double th_) {
+        const double sn = std::sin(th_);
+        return rad * (p.e.c.r * p.e.c.r * sn + 2.0 * p.e.c.r * rad * (th_ / 2.0 + std::sin(2.0 * th_) / 4.0) + rad * rad * (sn - sn * sn * sn / 3.0));
+      };
+      green += F(t0 + s) - F(t0);
+    }
+  }
+  const double expected = ON_PI * green;
+  if (!(expected > 0.0)) throw std::invalid_argument(fn + "the shell has no volume");
+
+  auto to3 = [&](const RvP2& p) { return axis_point + (flip * p.r) * ex + p.z * axis; };
+  NurbsCurve section;
+  if (all_lines) {
+    std::vector<Point3d> pts;
+    for (const RvPiece& p : mat) {
+      const ON_3dPoint q = to3(p.a);
+      pts.emplace_back(q.x, q.y, q.z);
+    }
+    pts.push_back(pts.front());
+    section = NurbsCurve::FromControlPoints(pts, 1);
+  } else {
+    ON_PolyCurve poly;
+    for (const RvPiece& p : mat) {
+      if (!p.e.arc) {
+        poly.Append(new ON_LineCurve(to3(p.a), to3(p.b)));
+      } else {
+        const double rad = RvDist(p.e.c, p.a);
+        const double t0 = std::atan2(p.a.z - p.e.c.z, p.a.r - p.e.c.r);
+        const double s = RvSweep(p.e.c, p.a, p.b, p.e.ccw);
+        poly.Append(new ON_ArcCurve(ON_Arc(to3(p.a), to3(RvArcPoint(p.e.c, rad, t0 + s / 2.0)), to3(p.b))));
+      }
+    }
+    ON_NurbsCurve nc;
+    if (!poly.IsValid() || !poly.GetNurbForm(nc)) throw std::runtime_error(fn + "could not form the section curve");
+    section.raw() = nc;
+  }
+  Brep body = Brep::Revolve(section, Point3d(axis_point.x, axis_point.y, axis_point.z), Vector3d(axis.x, axis.y, axis.z));
+  if (!body.raw().IsValid() || !body.raw().IsSolid()) throw std::runtime_error(fn + "the revolved shell is not a valid closed solid");
+  // Brep::Volume() integrates the NURBS faces numerically (measured 1.8e-6 relative off the exact value on a hemisphere
+  // bowl whose Green integral equals (2/3) pi (R^3 - (R-t)^3) to the last digit), so the gate is 1e-5, not 1e-6.
+  const double volume = body.Volume();
+  if (!(std::fabs(volume - expected) <= 1e-5 * expected)) {
+    throw std::runtime_error(fn + "the revolved shell's exact volume " + std::to_string(volume) + " differs from Green's integral " +
+                             std::to_string(expected));
+  }
+  return body;
+}
+
+}  // namespace
+
 Brep ShellRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
                           const std::vector<double>& edge_thickness) {
   const std::string fn = "dino8::kernel::ShellRevolvedProfile: ";
-  struct P2 {
-    double r, z;
-  };
-  auto cross2 = [](const P2& a, const P2& b) { return a.r * b.z - a.z * b.r; };
   if (!profile.IsClosed()) throw std::invalid_argument(fn + "profile must be a closed polyline");
   if (!(profile.Degree() == 1) || profile.raw().IsRational()) {
     throw std::invalid_argument(fn + "profile must be a closed degree-1 polyline (a cylinder, cone or any mix of "
-                                     "them); arcs (sphere, torus) are not built");
+                                     "them); use ShellRevolvedArcProfile() for circular arcs (sphere caps, tori)");
   }
   ON_3dVector axis(axis_direction.x, axis_direction.y, axis_direction.z);
   if (!std::isfinite(axis.x) || !std::isfinite(axis.y) || !std::isfinite(axis.z) || !axis.Unitize()) {
@@ -2752,260 +3170,95 @@ Brep ShellRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector3
   }
   ON_3dVector ex = ON_CrossProduct(plane.zaxis, axis);
   ex.Unitize();
-  std::vector<P2> v;
+  std::vector<RvP2> v;
   for (int i = 0; i < profile.ControlPointCount(); ++i) {
     const ON_3dVector d = ON_3dPoint(profile.ControlPointAt(i)) - ON_3dPoint(axis_point);
     v.push_back({ON_DotProduct(d, ex), ON_DotProduct(d, axis)});
   }
-  if (v.size() > 1 && std::hypot(v.front().r - v.back().r, v.front().z - v.back().z) <= tol) v.pop_back();
+  if (v.size() > 1 && RvDist(v.front(), v.back()) <= tol) v.pop_back();
   const size_t n = v.size();
   if (n < 3) throw std::invalid_argument(fn + "profile needs at least 3 distinct vertices");
   double rmin = 1e300, rmax = -1e300;
-  for (const P2& p : v) {
+  for (const RvP2& p : v) {
     rmin = std::min(rmin, p.r);
     rmax = std::max(rmax, p.r);
   }
   double flip = 1.0;
   if (rmax <= tol) {  // profile is on the -ex side: mirror it onto +r
     flip = -1.0;
-    for (P2& p : v) p.r = -p.r;
+    for (RvP2& p : v) p.r = -p.r;
     const double lo = -rmax, hi = -rmin;
     rmin = lo;
     rmax = hi;
   }
   if (rmin < -tol) throw std::invalid_argument(fn + "profile must lie on one side of the axis");
-  for (P2& p : v) {
+  for (RvP2& p : v) {
     if (std::fabs(p.r) <= tol) p.r = 0.0;
   }
   if (edge_thickness.size() != n) {
     throw std::invalid_argument(fn + "edge_thickness must have one entry per profile edge (" + std::to_string(n) + ")");
   }
-  std::vector<double> th = edge_thickness;
-  for (double t : th) {
+  for (double t : edge_thickness) {
     if (!std::isfinite(t) || t < 0.0) throw std::invalid_argument(fn + "edge_thickness entries must be finite and >= 0");
   }
-  double area2 = 0.0;
-  for (size_t i = 0; i < n; ++i) area2 += cross2(v[i], v[(i + 1) % n]);
-  if (std::fabs(area2) <= 1e-12 * size * size) throw std::invalid_argument(fn + "profile encloses no area");
-  if (area2 < 0.0) {  // make the (r, z) polygon counter-clockwise; edge i becomes edge n-1-i
-    std::reverse(v.begin(), v.end());
-    std::reverse(th.begin(), th.end());
-    // reversing vertices v0..vn-1 gives vn-1..v0; edge j runs from new[j] to new[j+1] = old edge (n-2-j) reversed
-    std::rotate(th.begin(), th.begin() + 1, th.end());
-  }
-  auto seg_cross = [&](const P2& a, const P2& b, const P2& c, const P2& d) {
-    const P2 ab{b.r - a.r, b.z - a.z}, ac{c.r - a.r, c.z - a.z}, ad{d.r - a.r, d.z - a.z};
-    const P2 cd{d.r - c.r, d.z - c.z}, ca{a.r - c.r, a.z - c.z}, cb{b.r - c.r, b.z - c.z};
-    const double e = 1e-12 * size * size;
-    return cross2(ab, ac) * cross2(ab, ad) < -e && cross2(cd, ca) * cross2(cd, cb) < -e;
-  };
-  for (size_t i = 0; i < n; ++i) {
-    for (size_t j = i + 2; j < n; ++j) {
-      if (i == 0 && j == n - 1) continue;
-      if (seg_cross(v[i], v[(i + 1) % n], v[j], v[(j + 1) % n])) throw std::invalid_argument(fn + "profile polyline crosses itself");
-    }
-  }
-  std::vector<bool> on_axis(n, false);
-  for (size_t i = 0; i < n; ++i) on_axis[i] = v[i].r == 0.0 && v[(i + 1) % n].r == 0.0;
-  for (size_t i = 0; i < n; ++i) {
-    if (on_axis[i] && th[i] != 0.0) {
-      throw std::invalid_argument(fn + "edge " + std::to_string(i) + " lies on the axis: it is not a face, its thickness must be 0");
-    }
-  }
-  // Exactly one cyclic run of zero-thickness edges (axis edges included), at least one positive edge.
-  size_t zeros = 0, runs = 0;
-  for (size_t i = 0; i < n; ++i) {
-    if (th[i] == 0.0) {
-      ++zeros;
-      if (th[(i + n - 1) % n] != 0.0) ++runs;
-    }
-  }
-  size_t removed_faces = 0;
-  for (size_t i = 0; i < n; ++i) {
-    if (th[i] == 0.0 && !on_axis[i]) ++removed_faces;
-  }
-  if (removed_faces == 0) {
-    throw std::invalid_argument(fn + "at least one face must be removed (thickness 0): a fully closed hollow of a revolved "
-                                     "solid is two lumps, not built here (see ShellClosedSphere/ShellClosedExtrusion)");
-  }
-  if (zeros == n) throw std::invalid_argument(fn + "at least one edge needs a positive thickness");
-  if (runs != 1) {
-    throw std::invalid_argument(fn + "the removed edges (and axis edges) must form ONE contiguous run; found " + std::to_string(runs) +
-                                " separate runs - the material would split into several lumps");
-  }
-  size_t first = 0;  // k: first edge of the zero run
-  for (size_t i = 0; i < n; ++i) {
-    if (th[i] == 0.0 && th[(i + n - 1) % n] != 0.0) first = i;
-  }
-  size_t last = first;  // m: last edge of the zero run
-  while (th[(last + 1) % n] == 0.0) last = (last + 1) % n;
+  return ShellRevolvedEngine(v, std::vector<RvEdge>(n), edge_thickness, ON_3dPoint(axis_point), axis, ex, flip, size, tol, true, fn);
+}
 
-  // Edge lines moved to the inside (left of a counter-clockwise edge) by their own thickness.
-  std::vector<P2> dir(n), nrm(n);
+Brep ShellRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
+                             Vector3d radial_direction, const std::vector<double>& edge_thickness) {
+  const std::string fn = "dino8::kernel::ShellRevolvedArcProfile: ";
+  const size_t n = edges.size();
+  if (n < 2) throw std::invalid_argument(fn + "a closed meridian needs at least 2 edges");
+  ON_3dVector axis(axis_direction.x, axis_direction.y, axis_direction.z);
+  ON_3dVector ex(radial_direction.x, radial_direction.y, radial_direction.z);
+  if (!std::isfinite(axis.x) || !std::isfinite(axis.y) || !std::isfinite(axis.z) || !axis.Unitize() || !std::isfinite(ex.x) ||
+      !std::isfinite(ex.y) || !std::isfinite(ex.z) || !ex.Unitize()) {
+    throw std::invalid_argument(fn + "axis_direction and radial_direction must be finite and non-zero");
+  }
+  if (std::fabs(ON_DotProduct(axis, ex)) > 1e-9) throw std::invalid_argument(fn + "radial_direction must be perpendicular to the axis");
+  if (edge_thickness.size() != n) {
+    throw std::invalid_argument(fn + "edge_thickness must have one entry per meridian edge (" + std::to_string(n) + ")");
+  }
+  for (double t : edge_thickness) {
+    if (!std::isfinite(t) || t < 0.0) throw std::invalid_argument(fn + "edge_thickness entries must be finite and >= 0");
+  }
+  std::vector<RvP2> v;
+  std::vector<RvEdge> ed(n);
+  double rmin = 1e300, zlo = 1e300, zhi = -1e300, rmax = -1e300;
   for (size_t i = 0; i < n; ++i) {
-    P2 d{v[(i + 1) % n].r - v[i].r, v[(i + 1) % n].z - v[i].z};
-    const double l = std::hypot(d.r, d.z);
-    if (!(l > tol)) throw std::invalid_argument(fn + "profile has a zero-length edge");
-    d.r /= l;
-    d.z /= l;
-    dir[i] = d;
-    nrm[i] = P2{-d.z, d.r};
+    if (!std::isfinite(edges[i].r) || !std::isfinite(edges[i].z) || !std::isfinite(edges[i].cr) || !std::isfinite(edges[i].cz)) {
+      throw std::invalid_argument(fn + "meridian coordinates must be finite");
+    }
+    v.push_back({edges[i].r, edges[i].z});
+    ed[i].arc = edges[i].arc;
+    ed[i].c = RvP2{edges[i].cr, edges[i].cz};
+    ed[i].ccw = edges[i].counter_clockwise;
+    rmin = std::min(rmin, edges[i].r);
+    rmax = std::max(rmax, edges[i].r);
+    zlo = std::min(zlo, edges[i].z);
+    zhi = std::max(zhi, edges[i].z);
   }
-  auto line_point = [&](size_t i) { return P2{v[i].r + th[i] * nrm[i].r, v[i].z + th[i] * nrm[i].z}; };
-  // Cavity corner between edge i-1 and edge i (intersection of the two moved lines).
-  auto corner = [&](size_t i) {
-    const size_t a = (i + n - 1) % n;
-    const double den = cross2(dir[a], dir[i]);
-    if (std::fabs(den) < 1e-9) {
-      if (dir[a].r * dir[i].r + dir[a].z * dir[i].z < 0.0) throw std::invalid_argument(fn + "two adjacent faces fold back onto each other");
-      if (std::fabs(th[a] - th[i]) > 1e-12 * size) {
-        throw std::invalid_argument(fn + "collinear adjacent faces of different thickness have no unique cavity corner");
-      }
-      return line_point(i);
-    }
-    const P2 pa = line_point(a), pb = line_point(i);
-    const P2 w{pb.r - pa.r, pb.z - pa.z};
-    const double s = cross2(w, dir[i]) / den;
-    return P2{pa.r + s * dir[a].r, pa.z + s * dir[a].z};
-  };
-  // Material cross-section: outer chain over the kept edges, then the cavity chain back.
-  std::vector<P2> mat;
-  const size_t kept_first = (last + 1) % n;
-  for (size_t i = kept_first;; i = (i + 1) % n) {
-    mat.push_back(v[i]);
-    if (i == first) break;
+  const double size = std::hypot(rmax - std::min(0.0, rmin), zhi - zlo);
+  if (!(size > 0.0)) throw std::invalid_argument(fn + "meridian has no extent");
+  const double tol = tolerance::DistanceForSize(size);
+  if (rmin < -tol) throw std::invalid_argument(fn + "profile must lie on one side of the axis (r >= 0)");
+  for (RvP2& p : v) {
+    if (std::fabs(p.r) <= tol) p.r = 0.0;
   }
-  std::vector<P2> cav;  // c_kept_first ... c_first in outer order
-  for (size_t i = kept_first;; i = (i + 1) % n) {
-    cav.push_back(corner(i));
-    if (i == first) break;
-  }
-  for (size_t j = cav.size(); j-- > 0;) mat.push_back(cav[j]);
-  // Verification of the cavity, independent of the corner formulas above.
-  const double tmin = [&] {
-    double m = 1e300;
-    for (double t : th) {
-      if (t > 0.0) m = std::min(m, t);
-    }
-    return m;
-  }();
-  auto inside_outer = [&](const P2& p) {
-    bool in = false;
-    for (size_t i = 0, j = n - 1; i < n; j = i++) {
-      if ((v[i].z > p.z) != (v[j].z > p.z) && p.r < v[i].r + (p.z - v[i].z) * (v[j].r - v[i].r) / (v[j].z - v[i].z)) in = !in;
-    }
-    return in;
-  };
-  auto dist_to_removed = [&](const P2& p) {
-    double best = 1e300;
-    for (size_t i = first;; i = (i + 1) % n) {
-      const P2 a = v[i], b = v[(i + 1) % n];
-      const P2 ab{b.r - a.r, b.z - a.z};
-      const double l2 = ab.r * ab.r + ab.z * ab.z;
-      double s = ((p.r - a.r) * ab.r + (p.z - a.z) * ab.z) / l2;
-      s = std::min(1.0, std::max(0.0, s));
-      best = std::min(best, std::hypot(p.r - (a.r + s * ab.r), p.z - (a.z + s * ab.z)));
-      if (i == last) break;
-    }
-    return best;
-  };
-  auto dist_to_kept = [&](const P2& p) {
-    double best = 1e300;
-    for (size_t i = kept_first;; i = (i + 1) % n) {
-      const P2 a = v[i], b = v[(i + 1) % n];
-      const P2 ab{b.r - a.r, b.z - a.z};
-      const double l2 = ab.r * ab.r + ab.z * ab.z;
-      double s = ((p.r - a.r) * ab.r + (p.z - a.z) * ab.z) / l2;
-      s = std::min(1.0, std::max(0.0, s));
-      best = std::min(best, std::hypot(p.r - (a.r + s * ab.r), p.z - (a.z + s * ab.z)));
-      if (i == (first + n - 1) % n) break;
-    }
-    return best;
-  };
-  const double slack = 4.0 * tol;
-  for (size_t j = 0; j + 1 < cav.size(); ++j) {
-    for (int k = 0; k <= 8; ++k) {
-      const P2 p{cav[j].r + (cav[j + 1].r - cav[j].r) * k / 8.0, cav[j].z + (cav[j + 1].z - cav[j].z) * k / 8.0};
-      if (p.r > tol && dist_to_removed(p) > slack && !inside_outer(p)) throw std::invalid_argument(fn + "the cavity leaves the profile - thickness is infeasible");
-      if (dist_to_kept(p) < tmin - slack) {
-        throw std::invalid_argument(fn + "the cavity comes closer than the smallest thickness to a kept face - thickness is infeasible");
-      }
+  // A circular arc must itself stay on the +r side of the axis.
+  for (size_t i = 0; i < n; ++i) {
+    if (!ed[i].arc) continue;
+    const RvP2 a = v[i], b = v[(i + 1) % n];
+    const double rad = RvDist(ed[i].c, a);
+    RvPiece p{a, b, ed[i]};
+    std::vector<RvP2> s;
+    RvSample(p, s);
+    s.push_back(b);
+    for (const RvP2& q : s) {
+      if (q.r < -tol) throw std::invalid_argument(fn + "an arc crosses the axis; the profile must lie on one side of it (arc radius " + std::to_string(rad) + ")");
     }
   }
-  for (const P2& c : cav) {
-    if (c.r < -slack) throw std::invalid_argument(fn + "the cavity crosses the axis - thickness is at or beyond the solid's radius there");
-  }
-  // Cavity edges must keep their direction (a collapsed or reversed edge means the offset passed through itself).
-  {
-    size_t idx = 0;
-    for (size_t i = kept_first; i != first; i = (i + 1) % n, ++idx) {
-      const P2 d{cav[idx + 1].r - cav[idx].r, cav[idx + 1].z - cav[idx].z};
-      if (d.r * dir[i].r + d.z * dir[i].z <= tol) {
-        throw std::invalid_argument(fn + "the cavity edge parallel to face " + std::to_string(i) + " collapsed or reversed - thickness is infeasible");
-      }
-    }
-  }
-  // Rims along the removed faces' own lines must not run past the removed edges.
-  {
-    const P2 ck = cav.back();
-    const double along = (ck.r - v[first].r) * dir[first].r + (ck.z - v[first].z) * dir[first].z;
-    const double len = std::hypot(v[(first + 1) % n].r - v[first].r, v[(first + 1) % n].z - v[first].z);
-    if (!(along > tol) || along > len + tol) {
-      throw std::invalid_argument(fn + "the rim at the removed face " + std::to_string(first) + " would run outside that face");
-    }
-    const P2 c0 = cav.front();
-    const double back = (v[kept_first].r - c0.r) * dir[last].r + (v[kept_first].z - c0.z) * dir[last].z;
-    const double len2 = std::hypot(v[kept_first].r - v[last].r, v[kept_first].z - v[last].z);
-    if (!(back > tol) || back > len2 + tol) {
-      throw std::invalid_argument(fn + "the rim at the removed face " + std::to_string(last) + " would run outside that face");
-    }
-  }
-  // Drop zero-length steps, then require a simple counter-clockwise polygon.
-  {
-    std::vector<P2> clean;
-    for (const P2& p : mat) {
-      if (clean.empty() || std::hypot(p.r - clean.back().r, p.z - clean.back().z) > tol) clean.push_back(p);
-    }
-    if (clean.size() > 1 && std::hypot(clean.front().r - clean.back().r, clean.front().z - clean.back().z) <= tol) clean.pop_back();
-    mat = clean;
-  }
-  const size_t mn = mat.size();
-  if (mn < 3) throw std::invalid_argument(fn + "the shell cross-section degenerates");
-  double marea2 = 0.0;
-  for (size_t i = 0; i < mn; ++i) marea2 += cross2(mat[i], mat[(i + 1) % mn]);
-  if (!(marea2 > 0.0)) throw std::invalid_argument(fn + "the shell cross-section is inverted - thickness is infeasible");
-  for (size_t i = 0; i < mn; ++i) {
-    for (size_t j = i + 2; j < mn; ++j) {
-      if (i == 0 && j == mn - 1) continue;
-      if (seg_cross(mat[i], mat[(i + 1) % mn], mat[j], mat[(j + 1) % mn])) {
-        throw std::invalid_argument(fn + "the shell cross-section crosses itself - thickness is infeasible");
-      }
-    }
-  }
-  // Volume of revolution of the section by Green's theorem: V = pi * closed-integral of r^2 dz (counter-clockwise).
-  double green = 0.0;
-  for (size_t i = 0; i < mn; ++i) {
-    const P2 a = mat[i], b = mat[(i + 1) % mn];
-    green += (a.r * a.r + a.r * b.r + b.r * b.r) / 3.0 * (b.z - a.z);
-  }
-  const double expected = ON_PI * green;
-  if (!(expected > 0.0)) throw std::invalid_argument(fn + "the shell has no volume");
-
-  std::vector<Point3d> pts;
-  for (const P2& p : mat) {
-    const ON_3dPoint q = ON_3dPoint(axis_point) + (flip * p.r) * ex + p.z * axis;
-    pts.emplace_back(q.x, q.y, q.z);
-  }
-  pts.push_back(pts.front());
-  const NurbsCurve section = NurbsCurve::FromControlPoints(pts, 1);
-  Brep body = Brep::Revolve(section, axis_point, Vector3d(axis.x, axis.y, axis.z));
-  if (!body.raw().IsValid() || !body.raw().IsSolid()) throw std::runtime_error(fn + "the revolved shell is not a valid closed solid");
-  const double volume = body.Volume();
-  if (!(std::fabs(volume - expected) <= 1e-6 * expected)) {
-    throw std::runtime_error(fn + "the revolved shell's exact volume " + std::to_string(volume) + " differs from Green's integral " +
-                             std::to_string(expected));
-  }
-  return body;
+  return ShellRevolvedEngine(v, ed, edge_thickness, ON_3dPoint(axis_point), axis, ex, 1.0, size, tol, false, fn);
 }
 
 Brep OffsetFace(const Brep& solid, int face_index, double distance) {

@@ -1114,6 +1114,39 @@ Brep ShellOpenExtrusion(const NurbsCurve& profile, Vector3d direction, double th
 Brep ShellRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
                           const std::vector<double>& edge_thickness);
 
+// One edge of a closed meridian section for ShellRevolvedArcProfile(): `(r, z)` is the edge's START vertex (radial
+// distance from the axis >= 0, and height along it); the edge ends where the next edge starts (the last edge ends
+// at the first edge's start). A straight line, or - when `arc` - a circular arc about `(cr, cz)` travelled
+// counter-clockwise (or clockwise) seen with r to the right and z up. Both ends must lie on the circle, and the
+// arc must stay on the r >= 0 side of the axis.
+struct MeridianEdge {
+  double r = 0.0, z = 0.0;
+  bool arc = false;
+  double cr = 0.0, cz = 0.0;
+  bool counter_clockwise = true;
+};
+
+// ShellRevolvedProfile() for a meridian that also has circular arcs: sphere caps and bowls (a hemisphere or a dome
+// on a flat base), tori and half-tori, a can with a rounded end, any chain of lines and arcs. `radial_direction`
+// is the unit direction (perpendicular to the axis) that `r` is measured along; `edge_thickness[i]` belongs to
+// `edges[i]` exactly as in ShellRevolvedProfile() (0 removes the face, an edge on the axis must be 0, one contiguous
+// run of zeros).
+//
+// The cavity is the inward offset of every kept edge: a line moves along its normal, an arc keeps its centre and
+// its radius changes by the thickness (radius - t when the section is on the centre's side of the arc, radius + t
+// when the arc is concave towards the material); corners are the intersections of the moved curves (line-line,
+// line-circle, circle-circle, nearest the original vertex; a tangent junction is handled), and a removed arc
+// face's rim runs along that arc's own circle. Verified before anything is returned: the section is a simple
+// counter-clockwise curve (arcs sampled every <= 3 degrees), every sampled cavity point lies inside the profile and no
+// nearer than the smallest thickness to a kept face (exact point-to-arc distance), no arc collapses through its
+// centre, the rims stay inside the removed faces, the revolved Brep is IsValid() and IsSolid(), and its exact
+// Brep::Volume() equals Green's integral pi * (closed integral of r^2 dz) of the section, evaluated in closed form
+// along each arc. Throws std::invalid_argument for the same reasons as ShellRevolvedProfile(), and for an arc whose
+// ends are not on one circle, a full-circle arc, an arc that collapses through its centre (thickness >= radius on
+// the inside), or moved curves that do not meet. Refuses honestly rather than building a body that fails any check.
+Brep ShellRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
+                             Vector3d radial_direction, const std::vector<double>& edge_thickness);
+
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
 // shrinks it), re-extending or re-trimming every OTHER face so the
