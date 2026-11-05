@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # XAL_: ExtrudeCrvAlongCrv Solid option (xal_script.txt) - the kernel's exact Brep::ExtrudeAlongCurve from the app. Every
 # figure is MEASURED from the app's output and compared with a closed form: exact volume (circle along a line = pi r^2 h;
-# a RATIONAL circle along a RATIONAL quarter-circle arc = pi r^2 x net z by Cavalieri), the Volume command's own tessellated
+# a RATIONAL circle along a RATIONAL eighth-circle arc in XZ = pi r^2 x net z = pi 3 sin(45 deg) by Cavalieri), the Volume command's own tessellated
 # figure as an independent cross-check, BoundingBox, the periodic sheet's area 2 pi r h. Negative controls: a closed profile
 # round a closed path and a path inside the profile's own plane are refused WITH the kernel's reason and build nothing; the
 # no-option control still builds the unchanged sum surface and prints no kernel message. Here-strings only.
@@ -41,10 +41,10 @@ xal_num "$XAL_1" "closed solid, exact volume " 62.8318 62.8320 "XAL_1: kernel ex
 xal_num "$XAL_1" "Volume = " 62.5 62.84 "XAL_1: the Volume command's own tessellated figure agrees (cross-check, within 0.5 percent)"
 xal_bbox "$XAL_1" "-2.05 -1.9 -2.05 -1.9 -0.01 0.01 1.9 2.05 1.9 2.05 4.99 5.01" "XAL_1_bbox: box is x,y +-2, z = 0..5"
 # 2: rational circle x rational arc: Cavalieri pi * 1^2 * 3
-xal_has "$XAL_2" "ExtrudeCrvAlongCrv: 1 solid(s)" "XAL_2: a rational circle along a rational quarter-circle arc builds one solid"
-xal_num "$XAL_2" "closed solid, exact volume " 9.42470 9.42485 "XAL_2: kernel exact volume = pi x net z 3 = 9.424778 (rational x rational)"
-xal_num "$XAL_2" "Volume = " 9.30 9.43 "XAL_2: the Volume command's tessellated figure agrees (cross-check)"
-xal_bbox "$XAL_2" "-4.05 -3.9 -1.05 -0.9 -0.05 0.05 0.9 1.05 0.9 1.05 2.95 3.05" "XAL_2_bbox: box x -4..1 (circle swung by the arc's x travel -3..0), y +-1, z 0..3"
+xal_has "$XAL_2" "ExtrudeCrvAlongCrv: 1 solid(s)" "XAL_2: a rational circle along a rational eighth-circle arc builds one solid"
+xal_num "$XAL_2" "closed solid, exact volume " 6.66425 6.66440 "XAL_2: kernel exact volume = pi x net z 3 sin 45 = 6.664325 (rational x rational)"
+xal_num "$XAL_2" "Volume = " 6.55 6.67 "XAL_2: the Volume command's tessellated figure agrees (cross-check)"
+xal_bbox "$XAL_2" "-1.93 -1.83 -1.05 -0.95 -0.05 0.05 0.95 1.05 0.95 1.05 2.07 2.17" "XAL_2_bbox: box x -1.8787..1 (circle swung by the arc's x travel 3 cos 45 - 3 = -0.879), y +-1, z 0..2.1213"
 # 3: open profile round a closed path: periodic sheet
 xal_has "$XAL_3" "open sheet (no caps: the profile is open)" "XAL_3: a vertical line round a closed circle path is reported as an open sheet, not a solid"
 xal_num "$XAL_3" "area " 37.6990 37.6993 "XAL_3: kernel exact area = 2 pi 2 3 = 37.69911 (the cylinder wall)"

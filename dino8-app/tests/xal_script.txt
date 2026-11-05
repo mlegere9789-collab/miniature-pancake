@@ -2,7 +2,12 @@
 # surface, profile never rotates; rational profiles/paths exact; closed path + open profile = periodic sheet; refusals carry
 # their reason and build nothing). Cases, in order (smoke.sh cuts the output at each "Command: ExtrudeCrvAlongCrv"):
 #  1 circle r=2 (XY) along a line z=0..5, Solid=Yes: the cylinder, volume pi 4 5 = 62.8319
-#  2 circle r=1 (XY) along a quarter-circle ARC (rational) in XZ, centre origin, radius 3: volume pi * (net z = 3) = 9.42478
+#  2 circle r=1 (XY) along an EIGHTH-circle ARC (rational) in XZ, centre origin, radius 3, from (3,0,0) to (3 cos 45, 0, 3 sin 45):
+#    volume pi * (net z = 3 sin 45 = 2.12132) = 6.66432. The arc is drawn in the Top viewport as `Arc 0,0,0 3,0,0 3,3,0` (the Arc
+#    command works in the construction plane: the end POINT only gives the end angle, here 45 degrees) and turned into XZ with
+#    Rotate3D about the x axis. (The earlier `Arc 0,0,0 3,0,0 0,0,3` had end angle atan2(0,0) = 0 and so became a FULL circle in the
+#    XY plane: a closed path, refused. A full QUARTER arc in XZ is refused too: its end tangent lies in the profile plane, so the
+#    cap plane is parallel to the sweep - kernel test ExtrudeAlongCurve...RationalPath...)
 #  3 open profile (a vertical line z=0..3) round a closed circle path r=2, Solid=Yes: periodic sheet, area 2 pi 2 3 = 37.6991
 #  4 closed circle profile round a closed circle path, Solid=Yes: refused (zero net volume), nothing built
 #  5 circle profile (XY) along a path inside its own plane, Solid=Yes: refused (flat), nothing built
@@ -34,7 +39,9 @@ Delete
 Circle 0,0,0 1
 SelLast
 SetObjectName XALprof2
-Arc 0,0,0 3,0,0 0,0,3
+Arc 0,0,0 3,0,0 3,3,0
+SelLast
+Rotate3D 0,0,0 1,0,0 90
 SelLast
 SetObjectName XALpath2
 SelNone

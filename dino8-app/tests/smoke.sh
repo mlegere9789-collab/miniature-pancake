@@ -9530,7 +9530,7 @@ haucheck "  after:  bbox 10,150,0 to 12,160,10, volume 200" "BooleanDifference s
 haucheck "  after:  bbox 0,150,0 to 12,160,10, volume 1200" "operation=union: 800 + 400 - 200 = 1200"
 haucheck "  after:  bbox 8,150,0 to 10,160,10, volume 200" "operation=intersection: the 2 x 10 x 10 overlap, volume 200"
 haucheck "  object 30: BooleanDifference <- 28,29  [operation=intersection]" "the History report names each record's parameters: the edited boolean now reads operation=intersection"
-haucheck "  object 24: Loft <- 21,22,23  [style=normal, cap=yes]" "...and the loft's style/cap"
+haucheck "  object 24: Loft <- 21,22,23  [style=normal, cap=yes, spacing=chord]" "...and the loft's style/cap"
 
 
 # Automatic history propagation, part 2 (tests/history_auto2_script.txt): the
