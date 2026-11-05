@@ -6,6 +6,8 @@
 #   Moving B by (-2,0,0) makes B = [3,13] x [5,15] x [5,15]: the overlap is 7 x 5 x 5 = 175, and the rebuilt cage is still exact (rounds 0).
 # Fixture 2: two smooth boxes, BooleanDifference with Levels=2 (rounds first 2, second 2); a Move rebuild must say 2 again (before: the automatic 3);
 #   EditHistory 3 levels=1 rebuilds with 1 round.
+# SubDBox places its base corners on the active CPlane (the z of the typed corners is projected to the CPlane, as for Box), so box B is built at
+# z = 0..10 and then moved up by (0,0,5) to occupy [5,15]^3; typing 5,5,5 15,15,5 gives [5,15]x[5,15]x[0,10], whose overlaps with A are 250 / 1750 / 750.
 # smoke.sh runs this script; there is no @TMP@ substitution here.
 
 SetActiveViewport Top
@@ -30,7 +32,11 @@ Crease
 10,10,5
 0,10,5
 Enter
-SubDBox 5,5,5 15,15,5 10
+SubDBox 5,5,0 15,15,0 10
+SelLast
+Move
+0,0,0
+0,0,5
 SelNone
 SelID 2
 Crease
@@ -68,7 +74,11 @@ New
 History On
 SDHBEGIN_levels
 SubDBox 0,0,0 10,10,0 10
-SubDBox 5,5,5 15,15,5 10
+SubDBox 5,5,0 15,15,0 10
+SelLast
+Move
+0,0,0
+0,0,5
 SelNone
 SelID 1
 BooleanDifference
