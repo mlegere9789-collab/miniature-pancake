@@ -4712,7 +4712,10 @@ double ScheduleSlope(const std::vector<std::pair<double, double>>& s, size_t i, 
 }
 
 // Distance from `p` to the wall along the isoparametric curve v -> wall(u, v), minimised over v in [va, vb]: an 8-interval
-// grid, then a golden-section search round the best grid point (an upper bound of the distance to the surface).
+// grid, then a golden-section search round the best grid point (an upper bound of the distance to the surface). The distance is
+// V-shaped at a minimum that lies on the wall, so the search leaves about speed * width * 0.618^iterations: 26 iterations left
+// 3.8e-9 on a straight rail with 33 stations (a sample off the 8-point grid), which cost extra bisection rounds at tolerance
+// 1e-9; 44 leave about 6e-13.
 double WallDistanceAlongV(const ON_NurbsSurface& wall, double u, const ON_3dPoint& p, double va, double vb) {
   double vs[9], ds[9];
   int bi = 0;
@@ -4726,7 +4729,7 @@ double WallDistanceAlongV(const ON_NurbsSurface& wall, double u, const ON_3dPoin
   double x1 = hi - g * (hi - lo), x2 = lo + g * (hi - lo);
   double d1 = wall.PointAt(u, x1).DistanceTo(p), d2 = wall.PointAt(u, x2).DistanceTo(p);
   double best = std::min(ds[bi], std::min(d1, d2));
-  for (int it = 0; it < 26; ++it) {
+  for (int it = 0; it < 44; ++it) {
     if (d1 < d2) {
       hi = x2;
       x2 = x1;
