@@ -2801,20 +2801,40 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
     // lambda use a non-static constexpr local without an explicit capture.
     static constexpr double kOnGridLineFraction = tolerance::kOnGridLineFraction;
     static constexpr double kNudgeFraction = tolerance::kGridNudgeFraction;
-    auto nudge_onto_grid_line = [](double coord, double origin, double width) {
+    // The nudge is a fraction of a CELL, but the tessellation evaluates the surface at the nudged
+    // trim vertex, so it moves a real vertex by (cell size in space) * fraction. For a cell wider than
+    // a few units that is above the weld tolerance (1e-6): the nudged corner no longer welds to the
+    // copy of the same corner its neighbouring face computes at the exact position, and the closed
+    // mesh stays open. Measured on the flat-faced L prism (0,0) (a,0) (a,a/2) (a/2,a/2) (a/2,a) (0,a),
+    // whose reflex corner is a lattice node whenever the division count is even: 23 of 630 prisms
+    // (a = 10..30, 4..10 divisions) were not closed, all at arm width a/2. The nudge therefore
+    // never moves the vertex in space by more than a fifth of the weld tolerance (which is also below
+    // float resolution at those coordinates), but never less than 1e-7 of a cell: ClipPolygon
+    // discards crossings within 1e-9 of a segment end (parametrically), which that still clears.
+    const Point3d p00 = PointAt(u_domain.Min(), v_domain.Min());
+    const double per_u = u_domain.Length() > 0.0 ? p00.DistanceTo(PointAt(u_domain.Max(), v_domain.Min())) / u_domain.Length() : 0.0;
+    const double per_v = v_domain.Length() > 0.0 ? p00.DistanceTo(PointAt(u_domain.Min(), v_domain.Max())) / v_domain.Length() : 0.0;
+    auto nudge_fraction_for = [&](double space_per_uv, double width) {
+      if (!(space_per_uv > 0.0) || !(width > 0.0)) return kNudgeFraction;  // unknown scale (e.g. a full turn): the policy value
+      const double cap = 0.2 * tolerance::kWeld / (space_per_uv * width);
+      return std::clamp(cap, 1e-7, kNudgeFraction);
+    };
+    const double nudge_fraction_u = nudge_fraction_for(per_u, u_width);
+    const double nudge_fraction_v = nudge_fraction_for(per_v, v_width);
+    auto nudge_onto_grid_line = [&](double coord, double origin, double width, double fraction) {
       if (width == 0.0) {
         return coord;
       }
       const double steps = (coord - origin) / width;
       const double nearest_line = std::round(steps);
       if (std::abs(steps - nearest_line) < kOnGridLineFraction) {
-        return origin + (nearest_line + kNudgeFraction) * width;
+        return origin + (nearest_line + fraction) * width;
       }
       return coord;
     };
     for (Point2d& p : trim_for_clipping) {
-      p.x = nudge_onto_grid_line(p.x, u_domain.Min(), u_width);
-      p.y = nudge_onto_grid_line(p.y, v_domain.Min(), v_width);
+      p.x = nudge_onto_grid_line(p.x, u_domain.Min(), u_width, nudge_fraction_u);
+      p.y = nudge_onto_grid_line(p.y, v_domain.Min(), v_width, nudge_fraction_v);
     }
   }
 
