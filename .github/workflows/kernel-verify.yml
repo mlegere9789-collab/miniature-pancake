@@ -192,6 +192,8 @@ jobs:
           set -e
           echo "group ${{ matrix.g }} exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
           grep -E '^FAIL' group.log | sort | uniq -c | head -60 || true
+          echo "---- FAIL context (the 'near' lines smoke.sh prints under each FAIL) ----"
+          grep -A4 -E '^FAIL' group.log | cut -c1-400 | head -120 || true
           echo "---- run_sections summary (tail) ----"
           tail -n 40 group.log | cut -c1-200 || true
           exit $rc
