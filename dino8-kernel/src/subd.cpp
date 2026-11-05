@@ -1928,6 +1928,114 @@ SubDVertexInfo SubD::VertexInfoAt(const Point3d& p, double point_tolerance) cons
   return info;
 }
 
+namespace {
+
+SubDEdgeChain::Segment SegmentOf(const ON_SubDEdge* e) {
+  const ON_3dPoint a = e->Vertex(0u)->ControlNetPoint();
+  const ON_3dPoint b = e->Vertex(1u)->ControlNetPoint();
+  return {Point3d(a.x, a.y, a.z), Point3d(b.x, b.y, b.z)};
+}
+
+// The edge opposite `e` at the regular interior vertex `v`, or nullptr if `v` is not a regular interior vertex.
+const ON_SubDEdge* OppositeEdgeAtVertex(const ON_SubDVertex* v, const ON_SubDEdge* e) {
+  if (v == nullptr || v->EdgeCount() != 4 || v->FaceCount() != 4) return nullptr;
+  // The vertex's edge array is not guaranteed to be in radial order, so the opposite edge is the one of the other three that
+  // shares no face with `e` (at a regular quad vertex exactly one qualifies).
+  const ON_SubDEdge* found = nullptr;
+  bool has_e = false;
+  for (unsigned int i = 0; i < 4; ++i) {
+    const ON_SubDEdge* x = v->Edge(i);
+    if (x == e) { has_e = true; continue; }
+    if (x == nullptr) return nullptr;
+    bool shares = false;
+    for (unsigned int a = 0; a < e->FaceCount() && !shares; ++a)
+      for (unsigned int b = 0; b < x->FaceCount(); ++b)
+        if (e->Face(a) == x->Face(b)) { shares = true; break; }
+    if (!shares) {
+      if (found != nullptr) return nullptr;
+      found = x;
+    }
+  }
+  return has_e ? found : nullptr;
+}
+
+// Walks from `start` through its end vertex `end_index` (0 or 1), appending edges to `out`; returns true if it came back to `start`.
+bool WalkLoop(const ON_SubDEdge* start, unsigned int end_index, std::vector<const ON_SubDEdge*>* out) {
+  const ON_SubDEdge* cur = start;
+  const ON_SubDVertex* v = start->Vertex(end_index);
+  for (int guard = 0; guard < 1000000; ++guard) {
+    const ON_SubDEdge* next = OppositeEdgeAtVertex(v, cur);
+    if (next == nullptr) return false;
+    if (next == start) return true;
+    out->push_back(next);
+    v = next->OtherEndVertex(v);
+    cur = next;
+  }
+  return false;
+}
+
+// The quad face's edge opposite `e`, or nullptr.
+const ON_SubDEdge* OppositeEdgeInQuad(const ON_SubDFace* f, const ON_SubDEdge* e) {
+  if (f == nullptr || f->EdgeCount() != 4) return nullptr;
+  for (unsigned int i = 0; i < 4; ++i) {
+    if (f->EdgePtr(i).Edge() == e) return f->EdgePtr((i + 2) % 4).Edge();
+  }
+  return nullptr;
+}
+
+// Walks the ring from `start` through its face `face_index`, appending edges to `out`; returns true if it came back to `start`.
+bool WalkRing(const ON_SubDEdge* start, unsigned int face_index, std::vector<const ON_SubDEdge*>* out) {
+  const ON_SubDEdge* cur = start;
+  const ON_SubDFace* f = start->Face(face_index);
+  for (int guard = 0; guard < 1000000; ++guard) {
+    const ON_SubDEdge* next = OppositeEdgeInQuad(f, cur);
+    if (next == nullptr) return false;
+    if (next == start) return true;
+    out->push_back(next);
+    if (next->FaceCount() != 2) return false;
+    f = (next->Face(0u) == f) ? next->Face(1u) : next->Face(0u);
+    cur = next;
+  }
+  return false;
+}
+
+SubDEdgeChain AssembleChain(const ON_SubDEdge* start, const std::vector<const ON_SubDEdge*>& fwd, const std::vector<const ON_SubDEdge*>& back, bool closed) {
+  SubDEdgeChain chain;
+  chain.found = true;
+  chain.closed = closed;
+  for (size_t i = back.size(); i > 0; --i) chain.edges.push_back(SegmentOf(back[i - 1]));
+  chain.edges.push_back(SegmentOf(start));
+  for (const ON_SubDEdge* e : fwd) chain.edges.push_back(SegmentOf(e));
+  return chain;
+}
+
+}  // namespace
+
+SubDEdgeChain SubD::EdgeLoopThrough(const Point3d& p0, const Point3d& p1, double point_tolerance) const {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) return SubDEdgeChain();
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr) return SubDEdgeChain();
+  std::vector<const ON_SubDEdge*> fwd, back;
+  const bool closed = WalkLoop(e, 1u, &fwd);
+  if (!closed) WalkLoop(e, 0u, &back);
+  return AssembleChain(e, fwd, back, closed);
+}
+
+SubDEdgeChain SubD::EdgeRingThrough(const Point3d& p0, const Point3d& p1, double point_tolerance) const {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) return SubDEdgeChain();
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr) return SubDEdgeChain();
+  std::vector<const ON_SubDEdge*> fwd, back;
+  bool closed = false;
+  if (e->FaceCount() >= 1) closed = WalkRing(e, 0u, &fwd);
+  if (!closed && e->FaceCount() >= 2) WalkRing(e, 1u, &back);
+  return AssembleChain(e, fwd, back, closed);
+}
+
 bool SubD::SetVertexCorner(const Point3d& p, bool corner, double point_tolerance) {
   const ON_SubDVertex* v = subd_.FindVertex(&p.x, point_tolerance);
   if (v == nullptr) return false;

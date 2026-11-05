@@ -133,6 +133,20 @@ struct SubDVertexInfo {
   bool limit_valid = false;
 };
 
+// A chain of control-net edges returned by SubD::EdgeLoopThrough() /
+// SubD::EdgeRingThrough(): each entry is one edge as its two end points, in
+// walking order (a loop's entries share consecutive end points; a ring's are
+// the parallel edges of consecutive quads).
+struct SubDEdgeChain {
+  struct Segment {
+    Point3d p0;
+    Point3d p1;
+  };
+  bool found = false;   // false: no edge between the two query points
+  bool closed = false;  // the walk came back to its first edge
+  std::vector<Segment> edges;
+};
+
 // One control-net vertex's exact Catmull-Clark limit-surface point, from
 // SubD::LimitPoints().
 struct SubDLimitPoint {
@@ -1292,6 +1306,25 @@ class SubD {
   // limit rule) by reaching into raw(). `found = false` if no vertex is
   // within the tolerance.
   SubDVertexInfo VertexInfoAt(const Point3d& p, double point_tolerance = 0.0) const;
+
+  // The edge loop through the control-net edge between the vertices found at
+  // `p0` and `p1`: from that edge, at each end vertex the walk continues
+  // straight through to the OPPOSITE edge, and it does so only at a regular
+  // interior vertex (4 edges, 4 faces). It stops at a vertex of any other
+  // valence (a cube corner, a pole, an extraordinary vertex) and at a naked
+  // boundary vertex. The result lists the edges in walking order; `closed`
+  // is true when the walk returned to its start (a belt around a box). On
+  // a non-manifold vertex the walk stops. `found = false` if the points do
+  // not identify an edge.
+  SubDEdgeChain EdgeLoopThrough(const Point3d& p0, const Point3d& p1, double point_tolerance = 0.0) const;
+
+  // The edge ring through the same edge: the strip of quads on both sides
+  // of it. From each of the edge's (up to 2) faces, if that face is a quad,
+  // the walk goes to the face's opposite edge and on through that edge's
+  // other face; it stops at a naked edge or a non-quad face. The listed
+  // edges are mutually "parallel" across the strip; `closed` is true for a
+  // strip that closes up (a quad ring around a box).
+  SubDEdgeChain EdgeRingThrough(const Point3d& p0, const Point3d& p1, double point_tolerance = 0.0) const;
 
   // Pins (`corner = true`) or releases (`corner = false`) the vertex found
   // at `p`. Pinning is allowed on a Crease vertex (exactly two crease /
