@@ -805,6 +805,95 @@ void CreaseAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
   ctx.Print(label + ": " + std::to_string(count) + " edge(s) " + (add ? "creased" : "smoothed") + " on " + std::to_string(objects) + " SubD(s)");
 }
 
+// ---------------------------------------------------------------------------
+// Vertex info / corner pinning (kernel SubD::VertexInfoAt / SetVertexCorner)
+// ---------------------------------------------------------------------------
+struct CtrlVertexPick {
+  size_t target = 0;
+  Point3d control;
+};
+
+// The control-net vertex nearest a pick, over every target, if it lies within a tenth of that SubD's
+// control-point bounding diagonal (a click in empty space must not act on a far-away vertex).
+std::optional<CtrlVertexPick> PickCtrlVertex(CommandContext& ctx, const std::vector<ObjectId>& ids, Point3d p) {
+  std::optional<CtrlVertexPick> best;
+  double best_d = 0.0;
+  for (size_t t = 0; t < ids.size(); ++t) {
+    const SceneObject* o = ctx.Doc().Find(ids[t]);
+    if (!o || o->kind != ObjectKind::SubD || !o->subd) continue;
+    const std::vector<kernel::SubDLimitPoint> pts = o->subd->LimitPoints();
+    if (pts.empty()) continue;
+    Point3d lo = pts[0].control_point, hi = lo;
+    for (const kernel::SubDLimitPoint& lp : pts) {
+      lo = Point3d(std::min(lo.x, lp.control_point.x), std::min(lo.y, lp.control_point.y), std::min(lo.z, lp.control_point.z));
+      hi = Point3d(std::max(hi.x, lp.control_point.x), std::max(hi.y, lp.control_point.y), std::max(hi.z, lp.control_point.z));
+    }
+    const double reach = 0.1 * lo.DistanceTo(hi);
+    for (const kernel::SubDLimitPoint& lp : pts) {
+      const double d = lp.control_point.DistanceTo(p);
+      if (d <= reach && (!best || d < best_d)) { best = CtrlVertexPick{t, lp.control_point}; best_d = d; }
+    }
+  }
+  return best;
+}
+
+std::string P3(const Point3d& p) { return "(" + Num(p.x) + ", " + Num(p.y) + ", " + Num(p.z) + ")"; }
+
+const char* VertexKindName(kernel::SubDVertexKind k) {
+  switch (k) {
+    case kernel::SubDVertexKind::Smooth: return "Smooth";
+    case kernel::SubDVertexKind::Crease: return "Crease";
+    case kernel::SubDVertexKind::Corner: return "Corner";
+    case kernel::SubDVertexKind::Dart: return "Dart";
+  }
+  return "Smooth";
+}
+
+void VertexInfoAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  if (in.picks.empty()) { ctx.Warn("SubDVertexInfo: no vertices picked"); return; }
+  int shown = 0;
+  for (Point3d p : in.picks) {
+    const std::optional<CtrlVertexPick> v = PickCtrlVertex(ctx, ids, p);
+    if (!v) { ctx.Warn("SubDVertexInfo: no SubD vertex near " + P3(p)); continue; }
+    const SceneObject* o = ctx.Doc().Find(ids[v->target]);
+    const kernel::SubDVertexInfo vi = o->subd->VertexInfoAt(v->control, 1e-6 * std::max(1.0, std::fabs(v->control.x) + std::fabs(v->control.y) + std::fabs(v->control.z)));
+    if (!vi.found) { ctx.Warn("SubDVertexInfo: vertex at " + P3(v->control) + " could not be read back"); continue; }
+    std::string msg = "SubDVertexInfo: object " + std::to_string(ids[v->target]) + " vertex " + P3(vi.control_point) + ": " + VertexKindName(vi.kind) +
+                      ", valence " + std::to_string(vi.valence) + ", " + std::to_string(vi.face_count) + " face(s), " +
+                      std::to_string(vi.crease_edge_count) + " crease edge(s), " + std::to_string(vi.semi_sharp_edge_count) + " semi-sharp edge(s)";
+    if (vi.semi_sharp_edge_count > 0) msg += " (max sharpness " + Num(vi.max_semi_sharpness) + ")";
+    msg += vi.limit_valid ? ", limit point " + P3(vi.limit_point) : ", limit point unavailable";
+    ctx.Print(msg);
+    ++shown;
+  }
+  if (shown > 1) ctx.Print("SubDVertexInfo: " + std::to_string(shown) + " vertices");
+}
+
+void CornerAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in, bool pin) {
+  const std::string label = pin ? "SubDCorner" : "SubDRemoveCorner";
+  if (in.picks.empty()) { ctx.Warn(label + ": no vertices picked"); return; }
+  ctx.Doc().BeginChange(label);
+  int changed = 0;
+  for (Point3d p : in.picks) {
+    const std::optional<CtrlVertexPick> v = PickCtrlVertex(ctx, ids, p);
+    if (!v) { ctx.Warn(label + ": no SubD vertex near " + P3(p)); continue; }
+    SceneObject* o = ctx.Doc().Find(ids[v->target]);
+    const double tol = 1e-6 * std::max(1.0, std::fabs(v->control.x) + std::fabs(v->control.y) + std::fabs(v->control.z));
+    if (o->subd->SetVertexCorner(v->control, pin, tol)) {
+      o->InvalidateDisplay();
+      ++changed;
+      const kernel::SubDVertexInfo vi = o->subd->VertexInfoAt(v->control, tol);
+      ctx.Print(label + ": vertex " + P3(v->control) + " is now " + VertexKindName(vi.kind) + (vi.limit_valid ? ", limit point " + P3(vi.limit_point) : std::string()));
+    } else {
+      const kernel::SubDVertexInfo vi = o->subd->VertexInfoAt(v->control, tol);
+      ctx.Warn(label + ": vertex " + P3(v->control) + " (" + VertexKindName(vi.kind) + ", " + std::to_string(vi.crease_edge_count) + " crease edge(s)) cannot be " +
+               (pin ? "pinned: only a vertex with exactly two crease or boundary edges can" : "released: only a pinned vertex with exactly two crease or boundary edges can") +
+               "; nothing changed");
+    }
+  }
+  ctx.Print(label + ": " + std::to_string(changed) + " vertex/vertices " + (pin ? "pinned" : "released"));
+}
+
 void ExtrudeSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
   std::vector<Target> ts = SubDTargets(ctx, ids, "ExtrudeSubD");
   if (ts.empty()) return;
@@ -1550,6 +1639,14 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "Crease", crease(true));
   Reg(e, "SubDCrease", crease(true));
   Reg(e, "RemoveCrease", crease(false));
+  Reg(e, "SubDVertexInfo", SubDTool(kSelectSubD, "Pick vertices to inspect", -1, {}, {}, VertexInfoAction),
+      CommandStatus::Implemented, "Reports how each picked control-net vertex is classified (Smooth, Crease, Corner, Dart), its valence, faces and crease edges, and its exact limit-surface point.");
+  Reg(e, "SubDCorner", SubDTool(kSelectSubD, "Pick crease vertices to pin as corners", -1, {}, {},
+                                [](CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) { CornerAction(ctx, ids, in, true); }),
+      CommandStatus::Implemented, "Pins a vertex on a crease or boundary chain as a sharp corner: its limit point becomes its control point.");
+  Reg(e, "SubDRemoveCorner", SubDTool(kSelectSubD, "Pick pinned corners to release", -1, {}, {},
+                                      [](CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) { CornerAction(ctx, ids, in, false); }),
+      CommandStatus::Implemented, "Releases a pinned corner on a two-crease chain back to an ordinary crease vertex.");
   Reg(e, "SubDExpandEdges", SubDTool(kSelectSubD, "Pick edges to expand", -1, {{"Strip width", 1}}, {}, ExpandEdgesAction),
       CommandStatus::Implemented, "Splits the faces on each side of every picked edge into a strip of the given width; pick a whole edge loop to expand it.");
   Reg(e, "DivideAlongCreases", OnSelection("Select SubDs to divide", DivideAlongCreasesAction));
