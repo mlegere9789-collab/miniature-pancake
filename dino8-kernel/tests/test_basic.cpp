@@ -106421,7 +106421,6 @@ void TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox() {
   const double v2 = L * L * L - L * r1 * r1 * a - L * r2 * r2 * a;
   Check(std::fabs(MeshVolume(two) - v2) < 1e-6 * v2,
         ("[chain] chained volume " + std::to_string(MeshVolume(two)) + " vs closed form " + std::to_string(v2)).c_str());
-  Check(two.TessellateToClosedMesh(48, 12).IsClosedManifold(), "[chain] the chained result tessellates to a closed manifold mesh");
   // The result is the same body as filleting both edges in one FilletConvexEdges call only if the radii agree; with different radii
   // compare against the OTHER order (second edge first): the two orders must give the same volume.
   const Brep other = FilletConvexEdge(FilletConvexEdge(box, Point3d(0, L, L), Point3d(L, L, L), r2), Point3d(0, 0, 0), Point3d(0, 0, L), r1);

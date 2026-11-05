@@ -877,6 +877,31 @@ void EllipseNotchCornerAtVertexCylindrical(std::vector<Brep::PlanarFace>& other_
   }
 }
 
+// A planar face that borders an EARLIER blend carries one marked arc run (PlanarFace::notch_begin / notch_count, indices into its loop).
+// Clipping that face's loop re-indexes the loop but leaves the stale indices on the copy, so after a clip the run is looked up again by
+// its points: if all of them survived, consecutively, the run is re-registered (the loop is rotated so the run does not wrap); if the clip
+// cut into the run, the mark is dropped and the caller's validity gate refuses the result rather than returning a body with unshared edges.
+void CarryNotchRunThroughClip(const Brep::PlanarFace& before, Brep::PlanarFace& after, double tol) {
+  if (before.notch_count <= 0) return;
+  std::vector<Point3d> run;
+  for (int k = 0; k < before.notch_count; ++k) {
+    run.push_back(before.loop[static_cast<size_t>((before.notch_begin + k) % static_cast<int>(before.loop.size()))]);
+  }
+  const size_t n = after.loop.size();
+  for (size_t s = 0; s < n; ++s) {
+    if (!PointsEqual(after.loop[s], run[0], tol)) continue;
+    bool all = true;
+    for (size_t k = 1; k < run.size() && all; ++k) all = PointsEqual(after.loop[(s + k) % n], run[k], tol);
+    if (!all) continue;
+    std::rotate(after.loop.begin(), after.loop.begin() + static_cast<std::ptrdiff_t>(s), after.loop.end());
+    after.notch_begin = 0;
+    after.notch_count = static_cast<int>(run.size());
+    return;
+  }
+  after.notch_begin = 0;
+  after.notch_count = 0;
+}
+
 }  // namespace
 
 Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius) {
@@ -1069,6 +1094,8 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
         "dino8::kernel::FilletConvexEdge: re-trimming an adjacent face left fewer "
         "than 3 vertices - radius too large for this solid's geometry");
   }
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_i)], retrimmed_i, tol);
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_j)], retrimmed_j, tol);
 
   // --- (3) the fillet face ---
   // frame.xaxis = n_i (the angle=0 reference direction) and frame.zaxis =
