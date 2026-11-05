@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -817,6 +818,259 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
     }
   }
   repin_corners(result);
+  return result;
+}
+
+SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bool cap, bool crease_cut,
+                                  double point_tolerance) const {
+  if (!plane_normal.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::SubD::SplitByPlane: plane_normal must be nonzero and finite");
+  }
+  if (!ON_IsValid(plane_offset)) {
+    throw std::invalid_argument("dino8::kernel::SubD::SplitByPlane: plane_offset must be finite");
+  }
+  if (!ON_IsValid(point_tolerance) || point_tolerance < 0.0) {
+    throw std::invalid_argument("dino8::kernel::SubD::SplitByPlane: point_tolerance must be finite and non-negative");
+  }
+
+  using EKey = std::pair<int, int>;
+  const auto key = [](int a, int b) { return a < b ? EKey(a, b) : EKey(b, a); };
+
+  // ---- snapshot the cage by index
+  std::vector<Point3d> V;
+  std::map<unsigned int, int> index_of;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      index_of[v->m_id] = static_cast<int>(V.size());
+      V.push_back(v->ControlNetPoint());
+    }
+  }
+  std::vector<std::vector<int>> faces;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      std::vector<int> loop;
+      for (unsigned int i = 0; i < f->EdgeCount(); ++i) {
+        const ON_SubDVertex* v = f->Vertex(i);
+        if (v == nullptr) throw std::runtime_error("dino8::kernel::SubD::SplitByPlane: a face has a null vertex");
+        loop.push_back(index_of.at(v->m_id));
+      }
+      if (loop.size() >= 3) faces.push_back(std::move(loop));
+    }
+  }
+  std::set<EKey> source_creases;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->IsCrease() && e->FaceCount() == 2 && e->Vertex(0u) != nullptr && e->Vertex(1u) != nullptr) {
+        source_creases.insert(key(index_of.at(e->Vertex(0u)->m_id), index_of.at(e->Vertex(1u)->m_id)));
+      }
+    }
+  }
+  std::vector<int> pins;  // pinned corners (Corner vertex on exactly two crease/boundary edges)
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (v->m_vertex_tag != ON_SubDVertexTag::Corner) continue;
+      int sharp = 0;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+      }
+      if (sharp == 2) pins.push_back(index_of.at(v->m_id));
+    }
+  }
+
+  // ---- signed distances; vertices within the tolerance are ON the plane
+  std::vector<double> d(V.size());
+  for (size_t i = 0; i < V.size(); ++i) {
+    const double sd = plane_normal.x * V[i].x + plane_normal.y * V[i].y + plane_normal.z * V[i].z - plane_offset;
+    d[i] = std::abs(sd) <= point_tolerance ? 0.0 : sd;
+  }
+
+  // a side exists only if some cage vertex lies strictly on it
+  bool strict[2] = {false, false};
+  for (const std::vector<int>& f : faces) {
+    for (int v : f) {
+      if (d[v] > 0.0) strict[0] = true;
+      if (d[v] < 0.0) strict[1] = true;
+    }
+  }
+
+  // ---- one shared new vertex per crossing edge
+  std::map<EKey, int> cut_of;
+  const auto cut_vertex = [&](int a, int b) {
+    const EKey k = key(a, b);
+    const auto it = cut_of.find(k);
+    if (it != cut_of.end()) return it->second;
+    const int lo = k.first, hi = k.second;
+    const double tt = d[lo] / (d[lo] - d[hi]);
+    const Point3d p = V[lo] + tt * (V[hi] - V[lo]);
+    V.push_back(p);
+    d.push_back(0.0);
+    const int idx = static_cast<int>(V.size()) - 1;
+    cut_of[k] = idx;
+    return idx;
+  };
+
+  // ---- clip every face; side 0 = positive, 1 = negative
+  std::vector<std::vector<int>> polys[2];
+  SubDPlaneSplit result;
+  for (const std::vector<int>& f : faces) {
+    const size_t m = f.size();
+    bool all_zero = true, has_pos = false, has_neg = false;
+    for (int v : f) {
+      if (d[v] != 0.0) all_zero = false;
+      if (d[v] > 0.0) has_pos = true;
+      if (d[v] < 0.0) has_neg = true;
+    }
+    if (all_zero) {
+      Vector3d n(0, 0, 0);  // Newell normal of the in-plane face: it goes to the side it faces
+      for (size_t k = 0; k < m; ++k) {
+        const Point3d& a = V[f[k]];
+        const Point3d& b = V[f[(k + 1) % m]];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+      }
+      int side = ON_DotProduct(n, plane_normal) >= 0.0 ? 0 : 1;
+      if (!strict[side]) side = 1 - side;  // the plane only touches this side: the face closes the other one
+      polys[side].push_back(f);
+      continue;
+    }
+    // more than one run of non-negative (or non-positive) corners = the plane enters the face twice or more
+    for (int side = 0; side < 2; ++side) {
+      int runs = 0;
+      for (size_t k = 0; k < m; ++k) {
+        const bool in_k = side == 0 ? d[f[k]] >= 0.0 : d[f[k]] <= 0.0;
+        const bool in_prev = side == 0 ? d[f[(k + m - 1) % m]] >= 0.0 : d[f[(k + m - 1) % m]] <= 0.0;
+        if (in_k && !in_prev) ++runs;
+      }
+      if (runs > 1) throw std::runtime_error("dino8::kernel::SubD::SplitByPlane: a face is crossed by the plane more than twice (non-convex face); split it first");
+    }
+    std::vector<int> piece[2];
+    bool crossed = false;
+    for (size_t k = 0; k < m; ++k) {
+      const int a = f[k], b = f[(k + 1) % m];
+      if (d[a] >= 0.0) piece[0].push_back(a);
+      if (d[a] <= 0.0) piece[1].push_back(a);
+      if (d[a] * d[b] < 0.0) {
+        const int c = cut_vertex(a, b);
+        piece[0].push_back(c);
+        piece[1].push_back(c);
+        crossed = true;
+      }
+    }
+    if (has_pos && piece[0].size() >= 3) polys[0].push_back(piece[0]);
+    if (has_neg && piece[1].size() >= 3) polys[1].push_back(piece[1]);
+    if (crossed && has_pos && has_neg) ++result.split_faces;
+  }
+  result.cut_vertices = static_cast<int>(cut_of.size());
+
+  // ---- crease tags of the pieces (by index pair)
+  std::set<EKey> creases[2];
+  for (const EKey& e : source_creases) {
+    const int a = e.first, b = e.second;
+    if (d[a] * d[b] < 0.0) {
+      const int c = cut_of.at(key(a, b));
+      creases[d[a] > 0.0 ? 0 : 1].insert(key(a, c));
+      creases[d[b] > 0.0 ? 0 : 1].insert(key(b, c));
+    } else {
+      if (d[a] >= 0.0 && d[b] >= 0.0) creases[0].insert(e);
+      if (d[a] <= 0.0 && d[b] <= 0.0) creases[1].insert(e);
+    }
+  }
+
+  // ---- caps: every naked edge of a half that lies in the plane is closed into loops
+  for (int side = 0; side < 2; ++side) {
+    if (!cap) break;
+    std::set<std::pair<int, int>> directed;
+    for (const std::vector<int>& p : polys[side])
+      for (size_t k = 0; k < p.size(); ++k) directed.insert({p[k], p[(k + 1) % p.size()]});
+    std::map<int, std::vector<int>> next;  // reversed naked in-plane edges: tail -> heads
+    for (const auto& e : directed) {
+      if (directed.count({e.second, e.first})) continue;  // interior edge
+      if (d[e.first] != 0.0 || d[e.second] != 0.0) continue;  // naked but not on the plane: stays open
+      next[e.second].push_back(e.first);
+    }
+    std::set<std::pair<int, int>> used;
+    for (auto& kv : next) {
+      for (int head : kv.second) {
+        if (used.count({kv.first, head})) continue;
+        std::vector<int> loop = {kv.first};
+        int cur = kv.first, to = head;
+        bool closed = false;
+        while (true) {
+          used.insert({cur, to});
+          if (to == loop.front()) { closed = true; break; }
+          loop.push_back(to);
+          cur = to;
+          const auto it = next.find(cur);
+          if (it == next.end()) break;
+          int pick = -1;
+          for (int h : it->second) if (!used.count({cur, h})) { pick = h; break; }
+          if (pick < 0) break;
+          to = pick;
+        }
+        if (closed && loop.size() >= 3) {
+          polys[side].push_back(loop);
+          if (crease_cut) for (size_t k = 0; k < loop.size(); ++k) creases[side].insert(key(loop[k], loop[(k + 1) % loop.size()]));
+          if (side == 0) ++result.cap_loops;
+        }
+      }
+    }
+  }
+
+  // ---- build the two SubDs
+  const double weld = std::max(point_tolerance, 1e-9);
+  for (int side = 0; side < 2; ++side) {
+    if (polys[side].empty() || !strict[side]) continue;
+    SubD out;
+    std::map<int, const ON_SubDVertex*> vert;
+    const auto vertex_for = [&](int i) {
+      const auto it = vert.find(i);
+      if (it != vert.end()) return it->second;
+      const ON_SubDVertex* v = out.subd_.FindOrAddVertex(&V[i].x, weld);
+      if (v == nullptr) throw std::runtime_error("dino8::kernel::SubD::SplitByPlane: ON_SubD::FindOrAddVertex failed");
+      vert[i] = v;
+      return v;
+    };
+    for (const std::vector<int>& p : polys[side]) {
+      std::vector<const ON_SubDVertex*> vs(p.size());
+      for (size_t k = 0; k < p.size(); ++k) vs[k] = vertex_for(p[k]);
+      if (out.subd_.FindOrAddFace(ON_SubDEdgeTag::Unset, vs.data(), static_cast<unsigned int>(vs.size())) == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::SplitByPlane: ON_SubD::FindOrAddFace failed for a piece");
+      }
+    }
+    out.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+    ON_SimpleArray<ON_SubDComponentPtr> to_crease;
+    for (const EKey& e : creases[side]) {
+      if (!vert.count(e.first) || !vert.count(e.second)) continue;
+      const ON_SubDEdge* edge = out.subd_.FindEdge(vert.at(e.first), vert.at(e.second)).Edge();
+      if (edge != nullptr && edge->FaceCount() == 2) to_crease.Append(ON_SubDComponentPtr::Create(edge));
+    }
+    if (to_crease.Count() > 0) out.subd_.SetEdgeTags(to_crease, ON_SubDEdgeTag::Crease);
+    bool pinned = false;
+    for (int pin : pins) {
+      if (!vert.count(pin)) continue;
+      const ON_SubDVertex* v = vert.at(pin);
+      if (v->m_vertex_tag != ON_SubDVertexTag::Crease) continue;
+      int sharp = 0;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+      }
+      if (sharp != 2) continue;
+      const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Corner;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) if (v->Edge(i) != nullptr) v->Edge(i)->UnsetSectorCoefficientsForExperts();
+      pinned = true;
+    }
+    if (pinned) out.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+    out.subd_.ClearEvaluationCache();
+    (side == 0 ? result.positive : result.negative) = std::move(out);
+    (side == 0 ? result.has_positive : result.has_negative) = true;
+  }
   return result;
 }
 

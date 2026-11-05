@@ -193,6 +193,8 @@ struct SubDSurfacePoint {
 // opennurbs_subd_eval.cpp - wrapped as LimitPoints() below and verified
 // against the closed-form limit masks. Face-interior exactness comes
 // from ToNurbsPatches() on regular faces only.
+struct SubDPlaneSplit;
+
 class SubD {
  public:
   // Builds a SubD control cage directly from `control_mesh`'s own faces -
@@ -979,6 +981,44 @@ class SubD {
   // point or a bad tolerance.
   SubD SymmetrizeRadial(Point3d axis_point, Vector3d axis_dir, int count,
                         double point_tolerance = 1e-9, double weld_tolerance = 0.0) const;
+
+  // ---------------------------------------------------------------------
+  // Plane cut that stays SubD (the first step of a topological SubD boolean).
+  // ---------------------------------------------------------------------
+  // Splits the CONTROL CAGE by the plane n . p = plane_offset (n is the UNIT plane_normal, so the offset is a distance along it) into the part on
+  // the positive side and the part on the negative side, each a valid SubD:
+  // every cage edge that crosses the plane gets one new vertex (linear
+  // interpolation, shared by both halves and by both faces on the edge), every
+  // face that straddles it is clipped into one polygon per side (n-gons allowed),
+  // and, with `cap`, each closed loop of cut edges is filled by one planar cap
+  // face (an n-gon, wound opposite to the cut edges so the half is right-side
+  // out). With `crease_cut` the cut edges (the cap boundary) are tagged Crease,
+  // so the half keeps a sharp rim exactly where it was cut; crease tags of the
+  // source are carried to the pieces of each split edge, and pinned corners
+  // (SetVertexCorner) stay pinned. Vertices within `point_tolerance` of the
+  // plane count as lying ON it (no new vertex is made for them).
+  //
+  // What this is and is not. The cut is exact on the CAGE. For a cage whose
+  // limit surface IS its cage, i.e. a fully creased one (SetCreasesByDihedral
+  // on a box: every edge a crease, every vertex a corner), the halves' limit
+  // surfaces are exactly the two pieces of the solid, so volumes, areas and the
+  // cross-section are closed forms. For a smooth cage the limit surface of a
+  // half is NOT the limit surface of the original clipped by the plane (the cut
+  // changes the cage, and with it the limit surface near the rim): subdivide the
+  // source first (Subdivide(n)) to bring the two closer, error shrinking about
+  // 4x per round. A true limit-surface cut (exact on smooth cages) and
+  // SubD-to-SubD cuts by another SubD (transversal limit-surface intersection)
+  // are not implemented. Semi-sharp edge weights are not carried to the pieces.
+  //
+  // A face crossed more than twice (a non-convex face the plane enters and
+  // leaves repeatedly) is ambiguous and throws std::runtime_error, as does a
+  // piece the ON_SubD builder rejects; a non-finite or zero plane normal, a
+  // non-finite offset or a bad tolerance throws std::invalid_argument. A face
+  // lying IN the plane goes to the side its own normal points to. If the plane
+  // misses the cage one of the halves is simply absent (has_positive /
+  // has_negative false and that SubD left empty).
+  SubDPlaneSplit SplitByPlane(Vector3d plane_normal, double plane_offset, bool cap = true, bool crease_cut = true,
+                              double point_tolerance = 1e-9) const;
 
   // ---------------------------------------------------------------------
   // SubD -> NURBS, watertight.
@@ -1964,6 +2004,17 @@ class SubD {
 
  private:
   ON_SubD subd_;
+};
+
+// What SubD::SplitByPlane() returns.
+struct SubDPlaneSplit {
+  SubD positive;  // the part with n . p > plane_offset (empty if has_positive is false)
+  SubD negative;  // the part with n . p < plane_offset
+  bool has_positive = false;
+  bool has_negative = false;
+  int cut_vertices = 0;  // new vertices made on crossing edges
+  int split_faces = 0;   // source faces clipped into two pieces
+  int cap_loops = 0;     // cut-edge loops closed by a cap face (per half; both halves get the same count)
 };
 
 }  // namespace dino8::kernel
