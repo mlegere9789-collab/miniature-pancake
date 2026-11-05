@@ -5201,11 +5201,14 @@ Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, cons
   const ON_3dPoint b0 = rail2.PointAtStart(), b1 = rail2.PointAtEnd();
   if (a0.DistanceTo(b1) < a0.DistanceTo(b0)) ReverseKeepDomain(rail2);
 
-  const bool wrap = rail1.IsClosed() && rail2.IsClosed();
-  if (wrap && (ClosedRailHasCorner(rail1) || ClosedRailHasCorner(rail2))) {
-    Fail(caller, "a closed rail has a corner (tangent jump); the periodic skin round a closed ring cannot follow a corner, "
-                 "so the wall edges would leave the rails - make the closed rails tangent continuous");
-  }
+  const bool closed_pair = rail1.IsClosed() && rail2.IsClosed();
+  // Two closed rails with a corner (a polyline ring, a rounded rectangle...) cannot use the periodic skin (it is smooth
+  // round the whole ring and would cut every corner), so they take the OPEN-rail corner machinery instead: the ring is
+  // cut at its seam, the interior corners are paired and get a C0 station pair each, and the first and last stations
+  // (the same physical place) are given ONE shared frame - the average of the four one-sided rail tangents there - so
+  // the wall closes on itself exactly even when the seam is itself a corner.
+  const bool ring_corner = closed_pair && (ClosedRailHasCorner(rail1) || ClosedRailHasCorner(rail2));
+  const bool wrap = closed_pair && !ring_corner;
   const double rail_scale = 1e-9 * (CurveScale(rail1) + CurveScale(rail2));
   const bool straight = !wrap && rail1.IsLinear(rail_scale) && rail2.IsLinear(rail_scale);
   int m = straight ? 2 : std::max(stations, 3);
@@ -5257,10 +5260,28 @@ Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, cons
   }
   if (static_cast<int>(p1.size()) != m || static_cast<int>(p2.size()) != m) Internal(caller, "station count mismatch");
 
-  const std::vector<TwoRailFrame> frames = TwoRailFrames(rail1, rail2, p1, p2, caller);
+  std::vector<TwoRailFrame> frames = TwoRailFrames(rail1, rail2, p1, p2, caller);
+  if (ring_corner) {
+    // First and last station are the same place on both rails: one shared frame (see ring_corner above).
+    ON_3dVector t_seam(0, 0, 0);
+    for (const ON_NurbsCurve* r : {&rail1, &rail2}) {
+      ON_3dVector ts = r->TangentAt(r->Domain().Min()), te = r->TangentAt(r->Domain().Max());
+      if (ts.Unitize()) t_seam += ts;
+      if (te.Unitize()) t_seam += te;
+    }
+    if (!t_seam.Unitize()) Fail(caller, "the seam of the closed rails has no usable tangent");
+    TwoRailFrame& f0 = frames.front();
+    const ON_3dVector z = ON_CrossProduct(f0.x, t_seam);
+    ON_3dVector zu = z;
+    if (!zu.Unitize()) Fail(caller, "a rail's tangent is exactly parallel to the rail-to-rail direction at the seam - the two-rail frame is undefined there");
+    f0.z = zu;
+    f0.y = ON_CrossProduct(zu, f0.x);
+    f0.sweep_dir = t_seam;
+    frames.back() = f0;
+  }
 
   const bool closed_section = section.IsClosed();
-  const bool want_caps = cap && closed_section && !wrap;
+  const bool want_caps = cap && closed_section && !closed_pair;
   if (want_caps) {
     ON_Plane plane;
     if (!section.IsPlanar(&plane, 1e-8 * CurveScale(section))) Fail(caller, "cap requested but the section is not planar");

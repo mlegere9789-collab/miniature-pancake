@@ -94674,11 +94674,19 @@ void TestSweep2CornerOnOneRailOnlyAndClosedRailRefusal() {
   const NurbsCurve sq2 = NurbsCurve::FromControlPoints({Point3d(-8, -8, 0), Point3d(8, -8, 0), Point3d(8, 8, 0), Point3d(-8, 8, 0), Point3d(-8, -8, 0)}, 1);
   const NurbsCurve c0 = Segment2(Point3d(5, 0, 0), Point3d(8, 0, 0)), c1 = Segment2(Point3d(-5, 0, 0), Point3d(-8, 0, 0));
   const std::string why_sections = RefusalText([&] { Brep::Sweep2Sections({c0, c1}, sq1, sq2, 32); });
-  const std::string why_one = RefusalText([&] { Brep::Sweep2(c0, sq1, sq2, 32); });
   std::printf("  [s2 corner] closed square rails: %s\n", why_sections.c_str());
   Check(why_sections.find("corner") != std::string::npos && why_sections.find("closed rail") != std::string::npos,
         "sweep2 sections: closed rails with corners are refused with a reason naming the corner");
-  Check(why_one.find("corner") != std::string::npos && why_one.find("closed rail") != std::string::npos, "sweep2: closed rails with corners are refused with a reason naming the corner");
+  // Brep::Sweep2 (one section) no longer refuses a closed square pair: it takes the open-rail corner path with a shared seam
+  // frame (tests/extra/sweep2_closed_corner.cpp holds the closed-form area / edge / seam oracles); only Sweep2Sections refuses.
+  bool one_section_built = true;
+  try {
+    const Brep square_ring = Brep::Sweep2(c0, sq1, sq2, 32);
+    one_section_built = square_ring.raw().IsValid();
+  } catch (const std::exception&) {
+    one_section_built = false;
+  }
+  Check(one_section_built, "sweep2: closed square rails with corners now build a valid wall (only Sweep2Sections still refuses)");
   // ...while smooth closed rails are unchanged (the circles of the existing cyclic tests still sweep).
   ON_NurbsCurve ring_a, ring_b;
   ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0).GetNurbForm(ring_a);
