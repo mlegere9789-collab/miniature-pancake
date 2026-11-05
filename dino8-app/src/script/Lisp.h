@@ -31,11 +31,11 @@ struct Func {
 };
 
 struct Value {
-  enum class T { Nil, True, Int, Real, Str, Sym, List, Subr, Lambda, Error };
+  enum class T { Nil, True, Int, Real, Str, Sym, List, Subr, Lambda, Error, Vla };
   T t = T::Nil;
-  long long i = 0;
+  long long i = 0;               // integer value, entity name (Vla ent)
   double r = 0;
-  std::string s;                 // string text, symbol name (lowercase), subr name, error message (Error)
+  std::string s;                 // string text, symbol name (lowercase), subr name, error message (Error), VLA object kind (Vla: ent app doc ms)
   std::shared_ptr<List> l;       // list elements
   std::shared_ptr<Func> f;       // lambda
   bool dotted = false;           // a List of exactly two elements printed and taken apart as a dotted pair (a . b)
@@ -82,6 +82,15 @@ struct LispHost {
   std::function<bool(long long id)> ent_upd;                       // (entupd e): redraw; false: no such entity
   // The entity as polylines in the XY plane (a point is a one-vertex polyline), for windowed (ssget "W" ...).
   std::function<bool(long long id, std::vector<std::vector<std::array<double, 2>>>& out)> ent_outline;
+  // System variables: getvar fills `out` (false: unknown name); setvar returns "" or why it was refused.
+  std::function<bool(const std::string& name, DxfItem& out)> getvar;
+  std::function<std::string(const std::string& name, const DxfItem& value)> setvar;
+  // Symbol tables (LAYER, BLOCK): record `index` of `table` as DXF groups and its name (a negative entity name
+  // for entget); 1 = found, 0 = past the end, -1 = no such table.
+  std::function<int(const std::string& table, int index, std::vector<DxfItem>& out, long long& id)> tbl_at;
+  // Curve queries for vlax-curve-*: op is startparam, endparam, pointat t, paramatpoint pt, distatparam t,
+  // pointatdist d, paramatdist d, closestpoint pt, isclosed. "" when done, else why not (not a curve, out of range).
+  std::function<std::string(long long id, const std::string& op, const std::vector<double>& in, std::vector<double>& out)> curve_op;
 };
 
 class Interp {
@@ -121,6 +130,7 @@ class Interp {
 
   std::map<std::string, Value> globals_;
   bool in_error_handler_ = false;
+  std::map<std::string, int> tbl_next_;   // tblnext position per table
   int init_bits_ = 0;             // (initget bits "Keyword ...") applies to the next get* call only
   std::string init_kw_;
   std::string out_buf_;

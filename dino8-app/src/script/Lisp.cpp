@@ -97,6 +97,7 @@ bool Equal(const Value& a, const Value& b, double fuzz = 0) {
       return true;
     }
     case Value::T::Lambda: return a.f == b.f;
+    case Value::T::Vla: return a.s == b.s && a.i == b.i;
     default: return false;
   }
 }
@@ -495,6 +496,373 @@ bool ParsePointText(const std::string& s, double p[3]) {
   return n >= 2;
 }
 
+// ---- system variables, symbol tables, and the VLA object model over the entity model ------------------------------
+Value ItemValue(const DxfItem& d) {
+  switch (d.k) {
+    case DxfItem::K::Str: return Str(d.s);
+    case DxfItem::K::Int: return Int(d.i);
+    case DxfItem::K::Real: return Real(d.x);
+    case DxfItem::K::Point: return MakeList({Real(d.x), Real(d.y), Real(d.z)});
+  }
+  return Nil();
+}
+DxfItem ValueItem(const char* fn, const Value& v) {
+  DxfItem d;
+  if (v.t == Value::T::Str) { d.k = DxfItem::K::Str; d.s = v.s; }
+  else if (v.t == Value::T::Int) { d.k = DxfItem::K::Int; d.i = v.i; d.x = static_cast<double>(v.i); }
+  else if (v.t == Value::T::Real) { d.k = DxfItem::K::Real; d.x = v.r; }
+  else if (IsList(v) && (v.l->size() == 2 || v.l->size() == 3) && IsNum((*v.l)[0]) && IsNum((*v.l)[1]) && (v.l->size() == 2 || IsNum((*v.l)[2]))) {
+    d.k = DxfItem::K::Point; d.x = D((*v.l)[0]); d.y = D((*v.l)[1]); d.z = v.l->size() == 3 ? D((*v.l)[2]) : 0;
+  } else {
+    Fail(std::string("bad argument type in ") + fn + ": a string, an integer, a real or a point is needed");
+  }
+  return d;
+}
+
+using P3 = std::array<double, 3>;
+constexpr double kTwoPi = 6.283185307179586;
+
+Value MakeVla(const char* kind, long long id = 0) { Value v; v.t = Value::T::Vla; v.s = kind; v.i = id; return v; }
+Value Pt3Value(P3 p) { return MakeList({Real(p[0]), Real(p[1]), Real(p[2])}); }
+P3 NeedP3(const char* fn, const Value& v) {
+  if (!IsList(v) || (v.l->size() != 2 && v.l->size() != 3)) Fail(std::string("bad point in ") + fn + ": a list of two or three numbers is needed");
+  P3 p{0, 0, 0};
+  for (size_t k = 0; k < v.l->size(); ++k) { if (!IsNum((*v.l)[k])) Fail(std::string("bad point in ") + fn + ": coordinates must be numbers"); p[k] = D((*v.l)[k]); }
+  return p;
+}
+
+const DxfItem* GroupOf(const std::vector<DxfItem>& g, int code) {
+  for (const DxfItem& d : g) if (d.code == code) return &d;
+  return nullptr;
+}
+P3 GroupPt(const std::vector<DxfItem>& g, int code) { const DxfItem* d = GroupOf(g, code); return d ? P3{d->x, d->y, d->z} : P3{0, 0, 0}; }
+double GroupReal(const std::vector<DxfItem>& g, int code, double def = 0) { const DxfItem* d = GroupOf(g, code); return d ? d->x : def; }
+std::string GroupStr(const std::vector<DxfItem>& g, int code) { const DxfItem* d = GroupOf(g, code); return d ? d->s : ""; }
+std::vector<P3> GroupPts(const std::vector<DxfItem>& g, int code) {
+  std::vector<P3> r;
+  for (const DxfItem& d : g) if (d.code == code && d.k == DxfItem::K::Point) r.push_back({d.x, d.y, d.z});
+  return r;
+}
+
+long long NeedEntId(const char* fn, const Value& v) {
+  if (v.t == Value::T::Int) return v.i;
+  if (v.t == Value::T::Vla && v.s == "ent") return v.i;
+  Fail(std::string("bad argument type: ename or VLA entity: ") + Interp::Format(v, true) + " in " + fn);
+}
+
+std::vector<DxfItem> LoadEnt(Interp& in, long long id) {
+  std::vector<DxfItem> g;
+  if (!in.host.ent_get || !in.host.ent_get(id, g)) Fail("the object has been erased or does not exist");
+  return g;
+}
+
+std::string AcDbName(const std::string& t) {
+  if (t == "LINE") return "AcDbLine";
+  if (t == "CIRCLE") return "AcDbCircle";
+  if (t == "ARC") return "AcDbArc";
+  if (t == "POINT") return "AcDbPoint";
+  if (t == "LWPOLYLINE") return "AcDbPolyline";
+  if (t == "SPLINE") return "AcDbSpline";
+  if (t == "ELLIPSE") return "AcDbEllipse";
+  if (t == "3DSOLID") return "AcDb3dSolid";
+  if (t == "SURFACE") return "AcDbSurface";
+  if (t == "MESH") return "AcDbSubDMesh";
+  return "AcDbEntity";
+}
+std::string IAcadName(const std::string& t) {
+  if (t == "LINE") return "IAcadLine";
+  if (t == "CIRCLE") return "IAcadCircle";
+  if (t == "ARC") return "IAcadArc";
+  if (t == "POINT") return "IAcadPoint";
+  if (t == "LWPOLYLINE") return "IAcadLWPolyline";
+  if (t == "SPLINE") return "IAcadSpline";
+  if (t == "ELLIPSE") return "IAcadEllipse";
+  if (t == "3DSOLID") return "IAcad3DSolid";
+  if (t == "SURFACE") return "IAcadSurface";
+  if (t == "MESH") return "IAcadSubDMesh";
+  return "IAcadEntity";
+}
+
+[[noreturn]] void ReadOnly(const std::string& prop) { Fail("property " + prop + " is read-only"); }
+[[noreturn]] void NoProp(const std::string& type, const std::string& prop) { Fail("the " + IAcadName(type) + " object has no property " + prop); }
+
+std::string Canon(std::string s) { return Lower(std::move(s)); }
+
+Value VlaGetProperty(Interp& in, const Value& obj, const std::string& prop_in) {
+  const std::string prop = Canon(prop_in);
+  if (obj.s == "app") {
+    if (prop == "activedocument") return MakeVla("doc");
+    if (prop == "name") return Str("Dino 8");
+    Fail("the Application object has no property " + prop_in);
+  }
+  if (obj.s == "doc") {
+    if (prop == "modelspace") return MakeVla("ms");
+    if (prop == "application") return MakeVla("app");
+    Fail("the Document object has no property " + prop_in);
+  }
+  if (obj.s == "ms") {
+    if (prop == "count") return Int(in.host.all_entities ? static_cast<long long>(in.host.all_entities().size()) : 0);
+    if (prop == "name") return Str("*Model_Space");
+    Fail("the ModelSpace object has no property " + prop_in);
+  }
+  const std::vector<DxfItem> g = LoadEnt(in, obj.i);
+  const std::string type = GroupStr(g, 0);
+  if (prop == "layer") return Str(GroupStr(g, 8));
+  if (prop == "color") return Int(GroupOf(g, 62) ? GroupOf(g, 62)->i : 256);
+  if (prop == "handle") return Str(GroupStr(g, 5));
+  if (prop == "objectname") return Str(AcDbName(type));
+  if (prop == "objectid") return Int(obj.i);
+  if (type == "LINE") {
+    const P3 a = GroupPt(g, 10), b = GroupPt(g, 11);
+    const double dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    if (prop == "startpoint") return Pt3Value(a);
+    if (prop == "endpoint") return Pt3Value(b);
+    if (prop == "length") return Real(std::sqrt(dx * dx + dy * dy + dz * dz));
+    if (prop == "angle") { double an = std::atan2(dy, dx); if (an < 0) an += kTwoPi; return Real(an); }
+    if (prop == "delta") return Pt3Value({dx, dy, dz});
+  } else if (type == "CIRCLE" || type == "ARC") {
+    const double r = GroupReal(g, 40);
+    if (prop == "center") return Pt3Value(GroupPt(g, 10));
+    if (prop == "radius") return Real(r);
+    if (prop == "diameter") return Real(2 * r);
+    if (prop == "normal") return Pt3Value(GroupPt(g, 210));
+    if (type == "CIRCLE") {
+      if (prop == "circumference") return Real(kTwoPi / 2 * 2 * r);
+      if (prop == "area") return Real(kTwoPi / 2 * r * r);
+    } else {
+      const double a0 = GroupReal(g, 50), a1 = GroupReal(g, 51), c = GroupPt(g, 10)[0], d = GroupPt(g, 10)[1];
+      if (prop == "startangle") return Real(a0);
+      if (prop == "endangle") return Real(a1);
+      if (prop == "totalangle") return Real(a1 - a0);
+      if (prop == "arclength") return Real(r * (a1 - a0));
+      if (prop == "area") return Real(r * r * (a1 - a0) / 2);
+      if (prop == "startpoint") return Pt3Value({c + r * std::cos(a0), d + r * std::sin(a0), GroupPt(g, 10)[2]});
+      if (prop == "endpoint") return Pt3Value({c + r * std::cos(a1), d + r * std::sin(a1), GroupPt(g, 10)[2]});
+    }
+  } else if (type == "POINT") {
+    if (prop == "coordinates") return Pt3Value(GroupPt(g, 10));
+  } else if (type == "LWPOLYLINE") {
+    const std::vector<P3> v = GroupPts(g, 10);
+    const bool closed = GroupOf(g, 70) && GroupOf(g, 70)->i == 1;
+    if (prop == "closed") return Bool(closed);
+    if (prop == "coordinates") { List l; for (const P3& p : v) { l.push_back(Real(p[0])); l.push_back(Real(p[1])); } return MakeList(l); }
+    if (prop == "length") {
+      double s = 0;
+      for (size_t k = 0; k + 1 < v.size(); ++k) s += std::hypot(v[k + 1][0] - v[k][0], v[k + 1][1] - v[k][1]);
+      if (closed && v.size() > 1) s += std::hypot(v.front()[0] - v.back()[0], v.front()[1] - v.back()[1]);
+      return Real(s);
+    }
+    if (prop == "area") {
+      double s = 0;
+      for (size_t k = 0; k < v.size(); ++k) { const P3& a = v[k]; const P3& b = v[(k + 1) % v.size()]; s += a[0] * b[1] - b[0] * a[1]; }
+      return Real(std::fabs(s) / 2);
+    }
+  } else if (type == "ELLIPSE") {
+    const P3 m = GroupPt(g, 11);
+    const double major = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]), ratio = GroupReal(g, 40);
+    if (prop == "center") return Pt3Value(GroupPt(g, 10));
+    if (prop == "majorradius") return Real(major);
+    if (prop == "minorradius") return Real(major * ratio);
+    if (prop == "radiusratio") return Real(ratio);
+    if (prop == "majoraxis") return Pt3Value(m);
+    if (prop == "startangle") return Real(GroupReal(g, 41));
+    if (prop == "endangle") return Real(GroupReal(g, 42, kTwoPi));
+    if (prop == "area") return Real(kTwoPi / 2 * major * major * ratio);
+  } else if (type == "SPLINE") {
+    const std::vector<P3> cv = GroupPts(g, 10);
+    if (prop == "degree") return Int(GroupOf(g, 71) ? GroupOf(g, 71)->i : 0);
+    if (prop == "numberofcontrolpoints") return Int(static_cast<long long>(cv.size()));
+    if (prop == "controlpoints") { List l; for (const P3& p : cv) for (double c : p) l.push_back(Real(c)); return MakeList(l); }
+  }
+  NoProp(type, prop_in);
+}
+
+// Replaces/sets group `code` in a list of groups.
+void SetGroup(std::vector<DxfItem>& g, const DxfItem& d) {
+  for (DxfItem& x : g) if (x.code == d.code) { x = d; return; }
+  g.push_back(d);
+}
+DxfItem GPt(int code, P3 p) { DxfItem d; d.code = code; d.k = DxfItem::K::Point; d.x = p[0]; d.y = p[1]; d.z = p[2]; return d; }
+DxfItem GReal(int code, double v) { DxfItem d; d.code = code; d.k = DxfItem::K::Real; d.x = v; return d; }
+DxfItem GInt(int code, long long v) { DxfItem d; d.code = code; d.k = DxfItem::K::Int; d.i = v; d.x = static_cast<double>(v); return d; }
+DxfItem GStr(int code, const std::string& s) { DxfItem d; d.code = code; d.k = DxfItem::K::Str; d.s = s; return d; }
+
+void ApplyMod(Interp& in, long long id, const std::vector<DxfItem>& g, const char* what) {
+  if (!in.host.ent_mod) Fail("entity access is not available here");
+  const std::string why = in.host.ent_mod(id, g);
+  if (!why.empty()) Fail(std::string(what) + " failed: " + why);
+}
+
+Value VlaPutProperty(Interp& in, const Value& obj, const std::string& prop_in, const Value& val) {
+  const std::string prop = Canon(prop_in);
+  if (obj.s != "ent") Fail("the " + std::string(obj.s == "app" ? "Application" : obj.s == "doc" ? "Document" : "ModelSpace") + " object has no writable property " + prop_in);
+  std::vector<DxfItem> g = LoadEnt(in, obj.i);
+  const std::string type = GroupStr(g, 0);
+  auto num = [&](const char* what) { if (!IsNum(val)) Fail(std::string("bad argument type: numberp: ") + Interp::Format(val, true) + " for " + what); return D(val); };
+  if (prop == "layer") {
+    if (val.t != Value::T::Str) Fail("bad argument type: stringp for Layer");
+    SetGroup(g, GStr(8, val.s));
+  } else if (prop == "color") {
+    if (val.t != Value::T::Int) Fail("bad argument type: integerp for Color");
+    SetGroup(g, GInt(62, val.i));
+  } else if (prop == "objectname" || prop == "handle" || prop == "objectid" || prop == "length" || prop == "area" || prop == "arclength" ||
+             prop == "totalangle" || prop == "circumference" || prop == "angle" || prop == "delta" || prop == "normal") {
+    ReadOnly(prop_in);
+  } else if (type == "LINE" && (prop == "startpoint" || prop == "endpoint")) {
+    SetGroup(g, GPt(prop == "startpoint" ? 10 : 11, NeedP3("Put", val)));
+  } else if ((type == "CIRCLE" || type == "ARC") && prop == "center") {
+    SetGroup(g, GPt(10, NeedP3("Put", val)));
+  } else if ((type == "CIRCLE" || type == "ARC") && (prop == "radius" || prop == "diameter")) {
+    SetGroup(g, GReal(40, prop == "radius" ? num("Radius") : num("Diameter") / 2));
+  } else if (type == "ARC" && (prop == "startangle" || prop == "endangle")) {
+    SetGroup(g, GReal(prop == "startangle" ? 50 : 51, num("angle")));
+  } else if (type == "ARC" && (prop == "startpoint" || prop == "endpoint")) {
+    ReadOnly(prop_in);
+  } else if (type == "POINT" && prop == "coordinates") {
+    SetGroup(g, GPt(10, NeedP3("Put", val)));
+  } else if (type == "LWPOLYLINE" && prop == "closed") {
+    SetGroup(g, GInt(70, Truthy(val) ? 1 : 0));
+  } else if (type == "LWPOLYLINE" && prop == "coordinates") {
+    const List& c = NeedList("Put", val);
+    if (c.size() < 6 || c.size() % 2 != 0) Fail("Coordinates needs a flat list x y x y ... with at least three vertices");
+    double z = 0;
+    const std::vector<P3> old = GroupPts(g, 10);
+    if (!old.empty()) z = old.front()[2];
+    std::vector<DxfItem> out;
+    for (const DxfItem& d : g) if (d.code != 10 && d.code != 90) out.push_back(d);
+    out.push_back(GInt(90, static_cast<long long>(c.size() / 2)));
+    for (size_t k = 0; k < c.size(); k += 2) {
+      if (!IsNum(c[k]) || !IsNum(c[k + 1])) Fail("bad argument type: coordinates must be numbers");
+      out.push_back(GPt(10, {D(c[k]), D(c[k + 1]), z}));
+    }
+    g = out;
+  } else {
+    NoProp(type, prop_in);
+  }
+  ApplyMod(in, obj.i, g, "put-property");
+  return Nil();
+}
+
+// Moves / rotates / scales every point of the entity with `fn`; `angle_shift` adds to an arc's angles, `radius_scale` multiplies radii.
+void TransformEnt(std::vector<DxfItem>& g, const std::string& type, const std::function<P3(P3)>& fn, double angle_shift, double radius_scale) {
+  for (DxfItem& d : g) {
+    if (d.k != DxfItem::K::Point) continue;
+    if (d.code == 10 || (d.code == 11 && type == "LINE")) { const P3 p = fn({d.x, d.y, d.z}); d.x = p[0]; d.y = p[1]; d.z = p[2]; }
+  }
+  for (DxfItem& d : g) {
+    if (d.code == 40 && (type == "CIRCLE" || type == "ARC")) d.x *= radius_scale;
+    if (type == "ARC" && (d.code == 50 || d.code == 51)) d.x += angle_shift;
+  }
+}
+
+Value NewestVla(Interp& in) {
+  std::optional<long long> id = in.host.last_entity ? in.host.last_entity() : std::nullopt;
+  if (!id) Fail("nothing was created");
+  return MakeVla("ent", *id);
+}
+Value MakeInSpace(Interp& in, const std::vector<DxfItem>& items) {
+  if (!in.host.ent_make) Fail("entity access is not available here");
+  const std::string why = in.host.ent_make(items);
+  if (!why.empty()) Fail("method failed: " + why);
+  return NewestVla(in);
+}
+
+Value VlaInvoke(Interp& in, const Value& obj, const std::string& method_in, const List& a) {
+  const std::string m = Canon(method_in);
+  auto need = [&](size_t n) { if (a.size() != n) Fail("wrong number of arguments for method " + method_in + " (" + std::to_string(n) + " needed)"); };
+  if (obj.s == "ms") {
+    if (m == "item") {
+      need(1);
+      if (a[0].t != Value::T::Int || a[0].i < 0) Fail("invalid index");
+      const std::vector<long long> ids = in.host.all_entities ? in.host.all_entities() : std::vector<long long>();
+      if (static_cast<size_t>(a[0].i) >= ids.size()) Fail("invalid index");
+      return MakeVla("ent", ids[static_cast<size_t>(a[0].i)]);
+    }
+    if (m == "addline") { need(2); return MakeInSpace(in, {GStr(0, "LINE"), GPt(10, NeedP3("AddLine", a[0])), GPt(11, NeedP3("AddLine", a[1]))}); }
+    if (m == "addcircle") {
+      need(2);
+      return MakeInSpace(in, {GStr(0, "CIRCLE"), GPt(10, NeedP3("AddCircle", a[0])), GReal(40, NeedNum("AddCircle", a[1]))});
+    }
+    if (m == "addarc") {
+      need(4);
+      return MakeInSpace(in, {GStr(0, "ARC"), GPt(10, NeedP3("AddArc", a[0])), GReal(40, NeedNum("AddArc", a[1])), GReal(50, NeedNum("AddArc", a[2])), GReal(51, NeedNum("AddArc", a[3]))});
+    }
+    if (m == "addpoint") { need(1); return MakeInSpace(in, {GStr(0, "POINT"), GPt(10, NeedP3("AddPoint", a[0]))}); }
+    if (m == "addlightweightpolyline") {
+      need(1);
+      const List& c = NeedList("AddLightWeightPolyline", a[0]);
+      if (c.size() < 6 || c.size() % 2 != 0) Fail("AddLightWeightPolyline needs a flat list x y x y ... with at least three vertices");
+      std::vector<DxfItem> it{GStr(0, "LWPOLYLINE"), GInt(90, static_cast<long long>(c.size() / 2))};
+      for (size_t k = 0; k < c.size(); k += 2) {
+        if (!IsNum(c[k]) || !IsNum(c[k + 1])) Fail("bad argument type: coordinates must be numbers");
+        it.push_back(GPt(10, {D(c[k]), D(c[k + 1]), 0}));
+      }
+      return MakeInSpace(in, it);
+    }
+    if (m == "addellipse") {
+      need(3);
+      return MakeInSpace(in, {GStr(0, "ELLIPSE"), GPt(10, NeedP3("AddEllipse", a[0])), GPt(11, NeedP3("AddEllipse", a[1])), GReal(40, NeedNum("AddEllipse", a[2]))});
+    }
+    Fail("the ModelSpace object has no method " + method_in);
+  }
+  if (obj.s != "ent") Fail("the " + std::string(obj.s == "app" ? "Application" : "Document") + " object has no method " + method_in);
+  if (m == "update") { if (in.host.ent_upd) in.host.ent_upd(obj.i); return Nil(); }
+  if (m == "delete" || m == "erase") {
+    LoadEnt(in, obj.i);
+    if (!in.host.ent_del || !in.host.ent_del(obj.i)) Fail("the object could not be deleted");
+    return Nil();
+  }
+  std::vector<DxfItem> g = LoadEnt(in, obj.i);
+  const std::string type = GroupStr(g, 0);
+  const bool movable = type == "LINE" || type == "CIRCLE" || type == "ARC" || type == "POINT" || type == "LWPOLYLINE";
+  if (m == "copy") {
+    need(0);
+    std::vector<DxfItem> mk;
+    for (const DxfItem& d : g) if (d.code != -1 && d.code != 5) mk.push_back(d);
+    return MakeInSpace(in, mk);
+  }
+  if (m == "move" || m == "rotate" || m == "scaleentity") {
+    if (!movable) Fail("the method " + method_in + " is not supported for " + IAcadName(type));
+    if (m == "move") {
+      need(2);
+      const P3 f = NeedP3("Move", a[0]), t = NeedP3("Move", a[1]);
+      TransformEnt(g, type, [&](P3 p) { return P3{p[0] + t[0] - f[0], p[1] + t[1] - f[1], p[2] + t[2] - f[2]}; }, 0, 1);
+    } else if (m == "rotate") {
+      need(2);
+      const P3 b = NeedP3("Rotate", a[0]);
+      const double ang = NeedNum("Rotate", a[1]), c = std::cos(ang), s = std::sin(ang);
+      TransformEnt(g, type, [&](P3 p) { const double x = p[0] - b[0], y = p[1] - b[1]; return P3{b[0] + c * x - s * y, b[1] + s * x + c * y, p[2]}; }, ang, 1);
+    } else {
+      need(2);
+      const P3 b = NeedP3("ScaleEntity", a[0]);
+      const double f = NeedNum("ScaleEntity", a[1]);
+      if (!(f > 0)) Fail("ScaleEntity needs a positive scale factor");
+      TransformEnt(g, type, [&](P3 p) { return P3{b[0] + f * (p[0] - b[0]), b[1] + f * (p[1] - b[1]), b[2] + f * (p[2] - b[2])}; }, 0, f);
+    }
+    ApplyMod(in, obj.i, g, method_in.c_str());
+    return Nil();
+  }
+  Fail("the " + IAcadName(type) + " object has no method " + method_in);
+}
+
+// vla-get-<prop>, vla-put-<prop>, vla-<method>
+Value VlaDispatch(Interp& in, const std::string& name, const List& args) {
+  if (args.empty() || args[0].t != Value::T::Vla) Fail("bad argument type: VLA-OBJECT in " + Upper(name));
+  if (name.rfind("vla-get-", 0) == 0) { if (args.size() != 1) Fail("too many arguments to " + Upper(name)); return VlaGetProperty(in, args[0], name.substr(8)); }
+  if (name.rfind("vla-put-", 0) == 0) { if (args.size() != 2) Fail(std::string(args.size() < 2 ? "too few" : "too many") + " arguments to " + Upper(name)); return VlaPutProperty(in, args[0], name.substr(8), args[1]); }
+  return VlaInvoke(in, args[0], name.substr(4), List(args.begin() + 1, args.end()));
+}
+
+// vlax-curve-*: the entity or object, an operation, numbers in and out.
+std::vector<double> CurveOp(Interp& in, const char* fn, const Value& e, const char* op, const std::vector<double>& arg) {
+  const long long id = NeedEntId(fn, e);
+  if (!in.host.curve_op) Fail("curve access is not available here");
+  std::vector<double> out;
+  const std::string why = in.host.curve_op(id, op, arg, out);
+  if (!why.empty()) Fail(std::string(fn) + ": " + why);
+  return out;
+}
+
 using BuiltinFn = std::function<Value(Interp&, List&)>;
 
 }  // namespace
@@ -731,6 +1099,7 @@ struct Builtins {
         case Value::T::Str: return Sym("str");
         case Value::T::List: return Sym(a[0].pickset ? "pickset" : "list");
         case Value::T::Error: return Sym("vl-catch-all-apply-error");
+        case Value::T::Vla: return Sym("vla-object");
         default: return Sym("subr");
       }
     };
@@ -965,6 +1334,7 @@ struct Builtins {
       NeedArgs("ssadd", a, 0, 2);
       if (a.empty()) return MakeSet({});
       const long long id = NeedEname("ssadd", a[0]);
+      if (id < 0) return Nil();   // a symbol table record is not a drawing entity
       if (in.host.ent_get) { std::vector<DxfItem> tmp; if (!in.host.ent_get(id, tmp)) return Nil(); }   // no such entity
       if (a.size() == 1) return MakeSet({Int(id)});
       if (a[1].t != Value::T::List || !a[1].pickset) Fail("bad argument type: pickp: " + Interp::Format(a[1], true) + " in ssadd");
@@ -1107,6 +1477,194 @@ struct Builtins {
       if (r < 0) r += 2 * 3.14159265358979323846;
       return Real(r);
     };
+    // system variables and symbol tables
+    t["getvar"] = [](Interp& in, List& a) {
+      NeedArgs("getvar", a, 1, 1);
+      DxfItem d;
+      if (!in.host.getvar || !in.host.getvar(Upper(NeedStr("getvar", a[0])), d)) return Nil();
+      return ItemValue(d);
+    };
+    t["setvar"] = [](Interp& in, List& a) {
+      NeedArgs("setvar", a, 2, 2);
+      const std::string name = Upper(NeedStr("setvar", a[0]));
+      const DxfItem d = ValueItem("setvar", a[1]);
+      if (!in.host.setvar) Fail("system variables are not available here");
+      const std::string why = in.host.setvar(name, d);
+      if (!why.empty()) Fail("setvar " + name + ": " + why);
+      return a[1];
+    };
+    t["tblsearch"] = [](Interp& in, List& a) {
+      NeedArgs("tblsearch", a, 2, 3);
+      const std::string table = Upper(NeedStr("tblsearch", a[0])), want = Lower(NeedStr("tblsearch", a[1]));
+      if (!in.host.tbl_at) Fail("symbol tables are not available here");
+      for (int k = 0;; ++k) {
+        std::vector<DxfItem> items;
+        long long id = 0;
+        const int st = in.host.tbl_at(table, k, items, id);
+        if (st < 0) Fail("symbol table " + table + " is not supported (LAYER, BLOCK)");
+        if (st == 0) return Nil();
+        const DxfItem* nm = GroupOf(items, 2);
+        if (nm && Lower(nm->s) == want) {
+          if (a.size() == 3 && Truthy(a[2])) in.tbl_next_[table] = k + 1;
+          List out;
+          for (const DxfItem& d : items) out.push_back(DxfToValue(d));
+          return MakeList(out);
+        }
+      }
+    };
+    t["tblnext"] = [](Interp& in, List& a) {
+      NeedArgs("tblnext", a, 1, 2);
+      const std::string table = Upper(NeedStr("tblnext", a[0]));
+      if (!in.host.tbl_at) Fail("symbol tables are not available here");
+      if (a.size() == 2 && Truthy(a[1])) in.tbl_next_[table] = 0;
+      const int k = in.tbl_next_[table];
+      std::vector<DxfItem> items;
+      long long id = 0;
+      const int st = in.host.tbl_at(table, k, items, id);
+      if (st < 0) Fail("symbol table " + table + " is not supported (LAYER, BLOCK)");
+      if (st == 0) return Nil();
+      in.tbl_next_[table] = k + 1;
+      List out;
+      for (const DxfItem& d : items) out.push_back(DxfToValue(d));
+      return MakeList(out);
+    };
+    t["tblobjname"] = [](Interp& in, List& a) {
+      NeedArgs("tblobjname", a, 2, 2);
+      const std::string table = Upper(NeedStr("tblobjname", a[0])), want = Lower(NeedStr("tblobjname", a[1]));
+      if (!in.host.tbl_at) Fail("symbol tables are not available here");
+      for (int k = 0;; ++k) {
+        std::vector<DxfItem> items;
+        long long id = 0;
+        const int st = in.host.tbl_at(table, k, items, id);
+        if (st < 0) Fail("symbol table " + table + " is not supported (LAYER, BLOCK)");
+        if (st == 0) return Nil();
+        const DxfItem* nm = GroupOf(items, 2);
+        if (nm && Lower(nm->s) == want) return Int(id);
+      }
+    };
+    // vlax-* / vla-*: an object model over the entity model
+    t["vlax-get-acad-object"] = [](Interp&, List& a) { NeedArgs("vlax-get-acad-object", a, 0, 0); return MakeVla("app"); };
+    t["vlax-ename->vla-object"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-ename->vla-object", a, 1, 1);
+      const long long id = NeedEname("vlax-ename->vla-object", a[0]);
+      if (id <= 0) Fail("bad argument type: a drawing entity name in vlax-ename->vla-object");
+      LoadEnt(in, id);
+      return MakeVla("ent", id);
+    };
+    t["vlax-vla-object->ename"] = [](Interp&, List& a) {
+      NeedArgs("vlax-vla-object->ename", a, 1, 1);
+      if (a[0].t != Value::T::Vla || a[0].s != "ent") Fail("bad argument type: VLA entity object in vlax-vla-object->ename");
+      return Int(a[0].i);
+    };
+    t["vlax-get-property"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-get-property", a, 2, 2);
+      if (a[0].t != Value::T::Vla) Fail("bad argument type: VLA-OBJECT in vlax-get-property");
+      return VlaGetProperty(in, a[0], NeedStr("vlax-get-property", a[1]));
+    };
+    t["vlax-put-property"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-put-property", a, 3, 3);
+      if (a[0].t != Value::T::Vla) Fail("bad argument type: VLA-OBJECT in vlax-put-property");
+      return VlaPutProperty(in, a[0], NeedStr("vlax-put-property", a[1]), a[2]);
+    };
+    t["vlax-invoke-method"] = [](Interp& in, List& a) {
+      if (a.size() < 2) Fail("too few arguments to vlax-invoke-method");
+      if (a[0].t != Value::T::Vla) Fail("bad argument type: VLA-OBJECT in vlax-invoke-method");
+      return VlaInvoke(in, a[0], NeedStr("vlax-invoke-method", a[1]), List(a.begin() + 2, a.end()));
+    };
+    t["vlax-invoke"] = t["vlax-invoke-method"];
+    t["vlax-property-available-p"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-property-available-p", a, 2, 3);
+      if (a[0].t != Value::T::Vla) Fail("bad argument type: VLA-OBJECT in vlax-property-available-p");
+      try { VlaGetProperty(in, a[0], NeedStr("vlax-property-available-p", a[1])); } catch (const LispError& e) {
+        const std::string m = e.what();
+        if (m.find("has no property") != std::string::npos) return Nil();   // not a property of this object
+        throw;
+      }
+      if (a.size() == 3 && Truthy(a[2])) {   // writable too?
+        static const char* kReadOnly[] = {"length", "area", "arclength", "totalangle", "circumference", "angle", "delta", "normal", "objectname", "handle", "objectid",
+                                          "count", "activedocument", "modelspace", "application", "name", "majorradius", "minorradius", "radiusratio", "majoraxis",
+                                          "numberofcontrolpoints", "controlpoints", "degree"};
+        const std::string p = Lower(a[1].s);
+        for (const char* r : kReadOnly) if (p == r) return Nil();
+        if (a[0].s == "ent") {
+          const std::vector<DxfItem> g = LoadEnt(in, a[0].i);
+          const std::string type = GroupStr(g, 0);
+          if ((p == "startpoint" || p == "endpoint") && type == "ARC") return Nil();
+          if ((p == "startangle" || p == "endangle") && type == "ELLIPSE") return Nil();
+          if (type == "ELLIPSE" && p != "layer" && p != "color") return Nil();
+        }
+      }
+      return True();
+    };
+    t["vlax-erased-p"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-erased-p", a, 1, 1);
+      if (a[0].t != Value::T::Vla || a[0].s != "ent") Fail("bad argument type: VLA entity object in vlax-erased-p");
+      std::vector<DxfItem> g;
+      return Bool(!(in.host.ent_get && in.host.ent_get(a[0].i, g)));
+    };
+    t["vlax-release-object"] = [](Interp&, List& a) { NeedArgs("vlax-release-object", a, 1, 1); return Nil(); };
+    t["vlax-3d-point"] = [](Interp&, List& a) {
+      if (a.size() == 1) return Pt3Value(NeedP3("vlax-3d-point", a[0]));
+      NeedArgs("vlax-3d-point", a, 2, 3);
+      return Pt3Value({NeedNum("vlax-3d-point", a[0]), NeedNum("vlax-3d-point", a[1]), a.size() == 3 ? NeedNum("vlax-3d-point", a[2]) : 0.0});
+    };
+    t["vlax-make-variant"] = [](Interp&, List& a) { NeedArgs("vlax-make-variant", a, 1, 2); return a[0]; };
+    t["vlax-variant-value"] = [](Interp&, List& a) { NeedArgs("vlax-variant-value", a, 1, 1); return a[0]; };
+    t["vlax-safearray->list"] = [](Interp&, List& a) { NeedArgs("vlax-safearray->list", a, 1, 1); NeedList("vlax-safearray->list", a[0]); return a[0]; };
+    // vlax-curve-*: the parameter is the NURBS parameter of the stored curve (a circle's is not the angle)
+    t["vlax-curve-getstartparam"] = [](Interp& in, List& a) { NeedArgs("vlax-curve-getStartParam", a, 1, 1); return Real(CurveOp(in, "vlax-curve-getStartParam", a[0], "startparam", {})[0]); };
+    t["vlax-curve-getendparam"] = [](Interp& in, List& a) { NeedArgs("vlax-curve-getEndParam", a, 1, 1); return Real(CurveOp(in, "vlax-curve-getEndParam", a[0], "endparam", {})[0]); };
+    t["vlax-curve-getstartpoint"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getStartPoint", a, 1, 1);
+      const double t0 = CurveOp(in, "vlax-curve-getStartPoint", a[0], "startparam", {})[0];
+      const std::vector<double> o = CurveOp(in, "vlax-curve-getStartPoint", a[0], "pointat", {t0});
+      return Pt3Value({o[0], o[1], o[2]});
+    };
+    t["vlax-curve-getendpoint"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getEndPoint", a, 1, 1);
+      const double t1 = CurveOp(in, "vlax-curve-getEndPoint", a[0], "endparam", {})[0];
+      const std::vector<double> o = CurveOp(in, "vlax-curve-getEndPoint", a[0], "pointat", {t1});
+      return Pt3Value({o[0], o[1], o[2]});
+    };
+    t["vlax-curve-getpointatparam"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getPointAtParam", a, 2, 2);
+      const std::vector<double> o = CurveOp(in, "vlax-curve-getPointAtParam", a[0], "pointat", {NeedNum("vlax-curve-getPointAtParam", a[1])});
+      return Pt3Value({o[0], o[1], o[2]});
+    };
+    t["vlax-curve-getdistatparam"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getDistAtParam", a, 2, 2);
+      return Real(CurveOp(in, "vlax-curve-getDistAtParam", a[0], "distatparam", {NeedNum("vlax-curve-getDistAtParam", a[1])})[0]);
+    };
+    t["vlax-curve-getpointatdist"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getPointAtDist", a, 2, 2);
+      const std::vector<double> o = CurveOp(in, "vlax-curve-getPointAtDist", a[0], "pointatdist", {NeedNum("vlax-curve-getPointAtDist", a[1])});
+      return Pt3Value({o[0], o[1], o[2]});
+    };
+    t["vlax-curve-getparamatdist"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getParamAtDist", a, 2, 2);
+      return Real(CurveOp(in, "vlax-curve-getParamAtDist", a[0], "paramatdist", {NeedNum("vlax-curve-getParamAtDist", a[1])})[0]);
+    };
+    t["vlax-curve-getclosestpointto"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getClosestPointTo", a, 2, 3);
+      const P3 p = NeedP3("vlax-curve-getClosestPointTo", a[1]);
+      const std::vector<double> o = CurveOp(in, "vlax-curve-getClosestPointTo", a[0], "closestpoint", {p[0], p[1], p[2]});
+      return Pt3Value({o[0], o[1], o[2]});
+    };
+    // a point that is on the curve gives its parameter / distance; one that is not gives nil
+    t["vlax-curve-getparamatpoint"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getParamAtPoint", a, 2, 2);
+      const P3 p = NeedP3("vlax-curve-getParamAtPoint", a[1]);
+      const std::vector<double> o = CurveOp(in, "vlax-curve-getParamAtPoint", a[0], "paramatpoint", {p[0], p[1], p[2]});
+      return o[1] > 1e-6 * (1 + std::fabs(p[0]) + std::fabs(p[1])) ? Nil() : Real(o[0]);
+    };
+    t["vlax-curve-getdistatpoint"] = [](Interp& in, List& a) {
+      NeedArgs("vlax-curve-getDistAtPoint", a, 2, 2);
+      const P3 p = NeedP3("vlax-curve-getDistAtPoint", a[1]);
+      const std::vector<double> o = CurveOp(in, "vlax-curve-getDistAtPoint", a[0], "paramatpoint", {p[0], p[1], p[2]});
+      if (o[1] > 1e-6 * (1 + std::fabs(p[0]) + std::fabs(p[1]))) return Nil();
+      return Real(CurveOp(in, "vlax-curve-getDistAtPoint", a[0], "distatparam", {o[0]})[0]);
+    };
+    t["vlax-curve-isclosed"] = [](Interp& in, List& a) { NeedArgs("vlax-curve-isClosed", a, 1, 1); return Bool(CurveOp(in, "vlax-curve-isClosed", a[0], "isclosed", {})[0] != 0); };
     // the vl-* subset
     t["vl-load-com"] = [](Interp&, List&) { return True(); };
     t["vl-list->string"] = [](Interp&, List& a) {
@@ -1373,6 +1931,7 @@ Value Interp::Apply(const Value& fn, List args) {
     if (it != globals_.end() && it->second.t == Value::T::Lambda) return CallUser(*it->second.f, std::move(args));
     auto b = Builtins::Table().find(fn.s);
     if (b != Builtins::Table().end()) return b->second(*this, args);
+    if (fn.s.rfind("vla-", 0) == 0) return VlaDispatch(*this, fn.s, args);
     Fail("no function definition: " + Upper(fn.s));
   }
   Fail("bad function: " + Format(fn, true));
@@ -1451,6 +2010,21 @@ Value Interp::EvalList(const Value& form) {
     for (const Value& e : copy) { globals_[var] = e; for (size_t k = 3; k < items.size(); ++k) r = Eval(items[k]); }
     return r;
   }
+  if (n == "vlax-for") {
+    // (vlax-for sym collection body...): the collection is the ModelSpace
+    if (items.size() < 3 || items[1].t != Value::T::Sym) Fail("vlax-for needs a symbol and a collection");
+    const Value coll = Eval(items[2]);
+    if (coll.t != Value::T::Vla || coll.s != "ms") Fail("vlax-for: only the ModelSpace collection is supported");
+    const std::vector<long long> ids = host.all_entities ? host.all_entities() : std::vector<long long>();
+    const std::string var = items[1].s;
+    auto it = globals_.find(var);
+    const bool had = it != globals_.end();
+    Value old = had ? it->second : Nil();
+    struct R { std::map<std::string, Value>& g; std::string v; bool had; Value old; ~R() { if (had) g[v] = old; else g.erase(v); } } rr{globals_, var, had, old};
+    Value r = Nil();
+    for (long long id : ids) { globals_[var] = MakeVla("ent", id); for (size_t k = 3; k < items.size(); ++k) r = Eval(items[k]); }
+    return r;
+  }
   if (n == "lambda") {
     if (items.size() < 2 || !(IsList(items[1]) || IsNil(items[1]))) Fail("lambda needs a parameter list");
     auto f = std::make_shared<Func>();
@@ -1466,7 +2040,7 @@ Value Interp::EvalList(const Value& form) {
     if (items.size() < 3 || items[1].t != Value::T::Sym) Fail("defun needs a name and a parameter list");
     const std::string name = items[1].s;
     if (Builtins::Table().count(name) || name == "quote" || name == "setq" || name == "if" || name == "progn" || name == "and" || name == "or" ||
-        name == "cond" || name == "while" || name == "repeat" || name == "foreach" || name == "lambda" || name == "defun" || name == "function")
+        name == "cond" || name == "while" || name == "repeat" || name == "foreach" || name == "vlax-for" || name == "lambda" || name == "defun" || name == "function")
       Fail("cannot redefine the built-in function " + Upper(name));
     Value lam = EvalList(MakeList([&] { List l{Sym("lambda")}; for (size_t k = 2; k < items.size(); ++k) l.push_back(items[k]); return l; }()));
     // The host may refuse a c: name (it would replace a built-in command): then nothing is defined.
@@ -1482,6 +2056,7 @@ Value Interp::EvalList(const Value& form) {
   if (b != Builtins::Table().end()) return b->second(*this, args);
   auto g = globals_.find(n);
   if (g != globals_.end() && g->second.t == Value::T::Lambda) return CallUser(*g->second.f, std::move(args));
+  if (n.rfind("vla-", 0) == 0) return VlaDispatch(*this, n, args);
   Fail("no function definition: " + Upper(n));
 }
 
@@ -1513,6 +2088,14 @@ std::string Interp::Format(const Value& v, bool quote_strings) {
     case Value::T::Subr: return "#<SUBR @" + v.s + ">";
     case Value::T::Lambda: return "#<USUBR>";
     case Value::T::Error: return "#<%catch-all-apply-error%>";
+    case Value::T::Vla: {
+      if (v.s == "app") return "#<VLA-OBJECT IAcadApplication 0000000000000001>";
+      if (v.s == "doc") return "#<VLA-OBJECT IAcadDocument 0000000000000002>";
+      if (v.s == "ms") return "#<VLA-OBJECT IAcadModelSpace 0000000000000003>";
+      char b[64];
+      std::snprintf(b, sizeof b, "#<VLA-OBJECT ENTITY %016llx>", static_cast<unsigned long long>(v.i));
+      return b;
+    }
   }
   return "";
 }
