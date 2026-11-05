@@ -14073,6 +14073,304 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
   return Result::Ok;
 }
 
+Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double tolerance) {
+  ON_Brep& b = brep_;
+  if (face_index < 0 || face_index >= b.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::OffsetPlanarFaceAlongNormal: face_index " + std::to_string(face_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_F.Count()) + " face slot(s))");
+  }
+  ON_BrepFace& face = b.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::OffsetPlanarFaceAlongNormal: face_index " +
+                                std::to_string(face_index) + " refers to an already-deleted face");
+  }
+  if (!std::isfinite(distance)) return Result::Failed;
+  if (distance == 0.0) return Result::NoOpAlreadySatisfied;
+  const double tol = std::max(tolerance, 1e-9);
+  if (!face.IsPlanar(nullptr, tol)) return Result::Failed;
+  ON_3dVector n = face.NormalAt(face.Domain(0).Mid(), face.Domain(1).Mid());
+  if (!n.Unitize()) return Result::Failed;
+  const ON_3dVector shift = n * distance;
+
+  // Number of live elements referencing a curve/surface slot: an in-place
+  // edit below is only safe when exactly one element owns it.
+  auto edges_on_c3 = [&](int c3i) {
+    int c = 0;
+    for (int i = 0; i < b.m_E.Count(); ++i) if (b.m_E[i].m_edge_index >= 0 && b.m_E[i].m_c3i == c3i) ++c;
+    return c;
+  };
+  auto trims_on_c2 = [&](int c2i) {
+    int c = 0;
+    for (int i = 0; i < b.m_T.Count(); ++i) if (b.m_T[i].m_trim_index >= 0 && b.m_T[i].m_c2i == c2i) ++c;
+    return c;
+  };
+  auto faces_on_si = [&](int si) {
+    int c = 0;
+    for (int i = 0; i < b.m_F.Count(); ++i) if (b.m_F[i].m_face_index >= 0 && b.m_F[i].m_si == si) ++c;
+    return c;
+  };
+  if (faces_on_si(face.m_si) != 1) return Result::Failed;
+
+  // ---- the moved face's boundary: edges, vertices, neighbours ----------------------------------------------------
+  std::vector<int> loop_trims;       // F's trims on an edge shared with a NEIGHBOUR face
+  // loop_edges: every edge that moves rigidly with F (boundary edges and F's own internal seams); rim_verts: ends of an
+  // edge shared with a neighbour (each needs a vertical edge into the body); top_verts: every vertex that moves.
+  std::set<int> loop_edges, top_verts, rim_verts, neighbour_faces;
+  for (int k = 0; k < face.m_li.Count(); ++k) {
+    const ON_BrepLoop& loop = b.m_L[face.m_li[k]];
+    for (int j = 0; j < loop.m_ti.Count(); ++j) {
+      const int ti = loop.m_ti[j];
+      const ON_BrepTrim& t = b.m_T[ti];
+      if (t.m_type == ON_BrepTrim::singular) {
+        // A collapsed boundary (the centre of a polar-parameterized disk cap): no edge, no neighbour, but its vertex
+        // is a real point of this face and must move with it.
+        if (t.m_vi[0] < 0 || t.m_vi[0] >= b.m_V.Count()) return Result::Failed;
+        top_verts.insert(t.m_vi[0]);
+        continue;
+      }
+      if (t.m_ei < 0) return Result::Failed;
+      const ON_BrepEdge& e = b.m_E[t.m_ei];
+      if (e.TrimCount() != 2 || e.m_vi[0] < 0 || e.m_vi[1] < 0) return Result::Failed;
+      const int other_ti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
+      const int nf = b.m_T[other_ti].FaceIndexOf();
+      if (nf < 0) return Result::Failed;
+      loop_edges.insert(t.m_ei);
+      top_verts.insert(e.m_vi[0]);
+      top_verts.insert(e.m_vi[1]);
+      if (nf == face_index) continue;  // an internal seam of the moved face itself (polar disk): moves with it
+      loop_trims.push_back(ti);
+      rim_verts.insert(e.m_vi[0]);
+      rim_verts.insert(e.m_vi[1]);
+      neighbour_faces.insert(nf);
+    }
+  }
+  if (loop_trims.empty()) return Result::Failed;
+  for (int ei : loop_edges) if (edges_on_c3(b.m_E[ei].m_c3i) != 1) return Result::Failed;
+  // A moving vertex that is not on the rim (a disk's centre) may touch only edges that move with the face.
+  for (int v : top_verts) {
+    if (rim_verts.count(v)) continue;
+    for (int k = 0; k < b.m_V[v].m_ei.Count(); ++k) {
+      const int ei = b.m_V[v].m_ei[k];
+      if (b.m_E[ei].m_edge_index >= 0 && !loop_edges.count(ei)) return Result::Failed;
+    }
+  }
+  const ON_3dPoint plane_point = b.m_V[*top_verts.begin()].point;
+
+  // ---- every neighbour must be a surface of translation along n ---------------------------------------------------
+  struct NeighbourPlan {
+    int dir = 0;                 // parameter direction that runs along n
+    double r_top = 0.0;          // ruling parameter of the moved boundary
+    double delta = 0.0;          // parameter shift that moves the boundary by `shift`
+    bool extend = false;
+    ON_NurbsSurface ext;         // the continued surface (only when extend)
+  };
+  std::map<int, NeighbourPlan> plans;
+  for (int nf : neighbour_faces) {
+    ON_BrepFace& nface = b.m_F[nf];
+    const ON_Surface* srf = nface.SurfaceOf();
+    if (!srf) return Result::Failed;
+    ON_NurbsSurface ns;
+    if (const auto* cast = ON_NurbsSurface::Cast(srf)) ns = *cast;
+    else if (srf->GetNurbForm(ns) <= 0) return Result::Failed;
+    const ON_Interval dom[2] = {ns.Domain(0), ns.Domain(1)};
+    bool ruling_ok[2] = {true, true};
+    double speed[2] = {0.0, 0.0};
+    bool have_speed[2] = {false, false};
+    for (int iu = 0; iu <= 6; ++iu) {
+      for (int iv = 0; iv <= 6; ++iv) {
+        const double u = dom[0].ParameterAt(iu / 6.0), v = dom[1].ParameterAt(iv / 6.0);
+        ON_3dPoint p;
+        ON_3dVector d[2];
+        if (!ns.Ev1Der(u, v, p, d[0], d[1])) return Result::Failed;
+        for (int r = 0; r < 2; ++r) {
+          const ON_3dVector& along = d[r];
+          const ON_3dVector& across = d[1 - r];
+          const double la = along.Length();
+          if (la < 1e-12 || ON_CrossProduct(along, n).Length() > 1e-6 * la ||
+              std::fabs(across * n) > 1e-6 * (across.Length() + 1e-12)) {
+            ruling_ok[r] = false;
+            continue;
+          }
+          const double s = along * n;
+          if (!have_speed[r]) { speed[r] = s; have_speed[r] = true; }
+          else if (std::fabs(s - speed[r]) > 1e-6 * std::max(1.0, std::fabs(speed[r]))) ruling_ok[r] = false;
+        }
+      }
+    }
+    if (ruling_ok[0] == ruling_ok[1]) return Result::Failed;  // neither (not prismatic) or both (degenerate)
+    NeighbourPlan plan;
+    plan.dir = ruling_ok[0] ? 0 : 1;
+    const double s = speed[plan.dir];
+    if (std::fabs(s) < 1e-12 || ns.IsClosed(plan.dir)) return Result::Failed;
+    plan.delta = distance / s;
+    // The moved boundary's ruling parameter: every trim of this neighbour on F's boundary must sit on ONE iso value
+    // and lie in F's plane.
+    bool have_top = false;
+    const ON_Interval rdom = dom[plan.dir];
+    const double scale = std::max(1.0, rdom.Length());
+    for (int ti : loop_trims) {
+      const ON_BrepEdge& e = b.m_E[b.m_T[ti].m_ei];
+      const int other_ti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
+      if (b.m_T[other_ti].FaceIndexOf() != nf) continue;
+      const ON_Curve* c2 = b.m_T[other_ti].TrimCurveOf();
+      if (!c2) return Result::Failed;
+      for (double f : {0.0, 0.5, 1.0}) {
+        const ON_3dPoint q = c2->PointAt(c2->Domain().ParameterAt(f));
+        if (!have_top) { plan.r_top = q[plan.dir]; have_top = true; }
+        else if (std::fabs(q[plan.dir] - plan.r_top) > 1e-6 * scale) return Result::Failed;
+        ON_3dPoint sp;
+        if (!ns.EvPoint(q.x, q.y, sp)) return Result::Failed;
+        if (std::fabs((sp - plane_point) * n) > 1e-4 * std::max(1.0, scale)) return Result::Failed;
+      }
+      if (trims_on_c2(b.m_T[other_ti].m_c2i) != 1) return Result::Failed;
+    }
+    if (!have_top) return Result::Failed;
+    const double new_r = plan.r_top + plan.delta;
+    plan.ext = ns;
+    const double t0 = std::min(rdom.Min(), new_r), t1 = std::max(rdom.Max(), new_r);
+    const double eps = 1e-12 * scale;
+    if (t0 < rdom.Min() - eps || t1 > rdom.Max() + eps) {
+      NurbsSurface ks;
+      ks.raw() = ns;
+      if (ks.ExtendLinear(plan.dir, t0, t1) != Result::Ok) return Result::Failed;
+      plan.ext = ks.raw();
+      plan.extend = true;
+    } else {
+      // A pull: when the moved boundary sat exactly on one end of this neighbour's domain (the face covered its whole
+      // surface), cut the surface at the new boundary so the face still covers its whole domain - the shape a freshly
+      // built shorter body has, which the exact integrators and the tessellator treat as a plain untrimmed patch.
+      const double at = 1e-9 * scale;
+      const bool at_max = std::fabs(plan.r_top - rdom.Max()) <= at, at_min = std::fabs(plan.r_top - rdom.Min()) <= at;
+      if (at_max != at_min && new_r > rdom.Min() + at && new_r < rdom.Max() - at) {
+        ON_NurbsSurface cut = ns;
+        if (cut.Trim(plan.dir, at_max ? ON_Interval(rdom.Min(), new_r) : ON_Interval(new_r, rdom.Max()))) {
+          plan.ext = cut;
+          plan.extend = true;
+        }
+      }
+    }
+    if (plan.extend) {
+      // The new surface must keep the old parameterization on the part both cover (existing trims stay valid).
+      const ON_Interval kdom = plan.ext.Domain(plan.dir);
+      const double lo = std::max(rdom.Min(), kdom.Min()), hi = std::min(rdom.Max(), kdom.Max());
+      if (!(hi > lo)) return Result::Failed;
+      for (int i = 0; i <= 4; ++i) {
+        for (int j = 0; j <= 4; ++j) {
+          const double o = dom[1 - plan.dir].ParameterAt(i / 4.0), r = lo + (hi - lo) * j / 4.0;
+          const double a = plan.dir == 0 ? r : o, c = plan.dir == 0 ? o : r;
+          if (plan.ext.PointAt(a, c).DistanceTo(ns.PointAt(a, c)) > 1e-7 * scale + tol) return Result::Failed;
+        }
+      }
+    }
+    // ... and the new boundary must land exactly `shift` away from the old one, all along it.
+    const int od = 1 - plan.dir;
+    for (int i = 0; i <= 4; ++i) {
+      const double o = dom[od].ParameterAt(i / 4.0);
+      const double ou = plan.dir == 0 ? plan.r_top : o, ov = plan.dir == 0 ? o : plan.r_top;
+      const double nu = plan.dir == 0 ? new_r : o, nv = plan.dir == 0 ? o : new_r;
+      const ON_3dPoint old_pt = ns.PointAt(ou, ov);
+      if (plan.ext.PointAt(nu, nv).DistanceTo(old_pt + shift) > 1e-6 * std::max(1.0, std::fabs(distance)) + tol) {
+        return Result::Failed;
+      }
+    }
+    plans[nf] = std::move(plan);
+  }
+
+  // ---- the vertical edges: straight, shared by two neighbours, running from a moved vertex opposite to n ----------
+  struct Vertical { int edge; int top_vertex; };
+  std::vector<Vertical> verticals;
+  for (int v : rim_verts) {
+    int found = 0;
+    for (int k = 0; k < b.m_V[v].m_ei.Count(); ++k) {
+      const int ei = b.m_V[v].m_ei[k];
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (e.m_edge_index < 0 || loop_edges.count(ei)) continue;
+      if (e.TrimCount() != 2 || e.m_vi[0] == e.m_vi[1]) return Result::Failed;
+      const int w = e.m_vi[0] == v ? e.m_vi[1] : e.m_vi[0];
+      if (top_verts.count(w)) return Result::Failed;
+      for (int q = 0; q < 2; ++q) if (!neighbour_faces.count(b.m_T[e.m_ti[q]].FaceIndexOf())) return Result::Failed;
+      if (!e.IsLinear(tol * 10.0)) return Result::Failed;
+      ON_3dVector dv = b.m_V[v].point - b.m_V[w].point;
+      const double len = dv.Length();
+      if (len <= tol || !dv.Unitize()) return Result::Failed;
+      if (ON_CrossProduct(dv, n).Length() > 1e-6 || dv * n <= 0.0) return Result::Failed;
+      if (distance < 0.0 && len + distance <= 10.0 * tol) return Result::Failed;
+      if (edges_on_c3(e.m_c3i) != 1) return Result::Failed;
+      // Dry-run the end-point edit on duplicates so the commit below cannot fail half-way.
+      const ON_3dPoint old_top = b.m_V[v].point;
+      const ON_Curve* c3 = b.m_C3[e.m_c3i];
+      if (!c3) return Result::Failed;
+      std::unique_ptr<ON_Curve> dup(c3->DuplicateCurve());
+      if (!dup) return Result::Failed;
+      const bool at_start = dup->PointAtStart().DistanceTo(old_top) <= dup->PointAtEnd().DistanceTo(old_top);
+      if (!(at_start ? dup->SetStartPoint(old_top + shift) : dup->SetEndPoint(old_top + shift))) return Result::Failed;
+      for (int q = 0; q < 2; ++q) {
+        const ON_BrepTrim& vt = b.m_T[e.m_ti[q]];
+        if (trims_on_c2(vt.m_c2i) != 1) return Result::Failed;
+        const NeighbourPlan& plan = plans.at(vt.FaceIndexOf());
+        const ON_Curve* c2 = b.m_C2[vt.m_c2i];
+        if (!c2) return Result::Failed;
+        std::unique_ptr<ON_Curve> d2(c2->DuplicateCurve());
+        if (!d2) return Result::Failed;
+        ON_3dPoint pa = d2->PointAtStart(), pb = d2->PointAtEnd();
+        const bool s2 = std::fabs(pa[plan.dir] - plan.r_top) <= std::fabs(pb[plan.dir] - plan.r_top);
+        ON_3dPoint np = s2 ? pa : pb;
+        np[plan.dir] += plan.delta;
+        if (!(s2 ? d2->SetStartPoint(np) : d2->SetEndPoint(np))) return Result::Failed;
+      }
+      verticals.push_back({ei, v});
+      ++found;
+    }
+    if (found == 0) return Result::Failed;
+  }
+
+  // ---- everything validated: commit ------------------------------------------------------------------------------
+  std::map<int, ON_3dPoint> old_top_point;
+  for (int v : top_verts) old_top_point[v] = b.m_V[v].point;
+
+  b.m_S[face.m_si]->Translate(shift);
+  for (int ei : loop_edges) b.m_C3[b.m_E[ei].m_c3i]->Translate(shift);
+  for (int ti : loop_trims) {
+    const ON_BrepEdge& e = b.m_E[b.m_T[ti].m_ei];
+    const int other_ti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
+    const NeighbourPlan& plan = plans.at(b.m_T[other_ti].FaceIndexOf());
+    ON_3dVector sh(0.0, 0.0, 0.0);
+    sh[plan.dir] = plan.delta;
+    b.m_C2[b.m_T[other_ti].m_c2i]->Translate(sh);
+  }
+  for (const Vertical& vt : verticals) {
+    const ON_BrepEdge& e = b.m_E[vt.edge];
+    const ON_3dPoint old_top = old_top_point.at(vt.top_vertex);
+    ON_Curve* c3 = b.m_C3[e.m_c3i];
+    const bool at_start = c3->PointAtStart().DistanceTo(old_top) <= c3->PointAtEnd().DistanceTo(old_top);
+    if (at_start) c3->SetStartPoint(old_top + shift);
+    else c3->SetEndPoint(old_top + shift);
+    for (int q = 0; q < 2; ++q) {
+      const ON_BrepTrim& tr = b.m_T[e.m_ti[q]];
+      const NeighbourPlan& plan = plans.at(tr.FaceIndexOf());
+      ON_Curve* c2 = b.m_C2[tr.m_c2i];
+      ON_3dPoint pa = c2->PointAtStart(), pb = c2->PointAtEnd();
+      const bool s2 = std::fabs(pa[plan.dir] - plan.r_top) <= std::fabs(pb[plan.dir] - plan.r_top);
+      ON_3dPoint np = s2 ? pa : pb;
+      np[plan.dir] += plan.delta;
+      if (s2) c2->SetStartPoint(np);
+      else c2->SetEndPoint(np);
+    }
+  }
+  for (int v : top_verts) b.m_V[v].point = old_top_point.at(v) + shift;
+  for (auto& [nf, plan] : plans) {
+    if (!plan.extend) continue;
+    const int new_si = b.AddSurface(new ON_NurbsSurface(plan.ext));
+    ON_BrepFace& nface = b.m_F[nf];
+    nface.m_si = new_si;
+    nface.SetProxySurface(b.m_S[new_si]);  // the face caches its own proxy surface (see ExtendFaceInPlace())
+  }
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return Result::Ok;
+}
+
 Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {
   Mesh mesh = TessellateToClosedMesh(u_divisions, v_divisions);
   double max_tolerance = 0.0;

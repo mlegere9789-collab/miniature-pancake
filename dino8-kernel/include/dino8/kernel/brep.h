@@ -6113,6 +6113,42 @@ class Brep {
   Result ExtendFaceInPlace(int face_index, int direction, double t0, double t1, bool linear,
                            double tolerance = tolerance::kDistance);
 
+  // Offset (translate along its own outward normal) ONE planar face of a
+  // solid whose neighbours are NOT all planar - the "offset face on a curved
+  // body" case the convex-planar-only OffsetFace()/PushPullFace() in
+  // boolean.h cannot take (both clip PLANES against PLANES; a cylindrical
+  // fillet wall or a round boss wall is not a plane). `distance` > 0 grows
+  // the body outward through that face, < 0 pushes the face into the body.
+  //
+  // The construction is exact, not sampled: the moved face, its boundary
+  // vertices and its boundary edges translate rigidly by distance * n (so
+  // every trim of the moved face stays valid unchanged - a translation along
+  // the plane normal does not change the plane's own (u, v)); every
+  // NEIGHBOUR face must be a surface of translation along that same normal n
+  // (a "prismatic" wall: planar walls containing n and cylinders whose axis is
+  // parallel to n qualify - checked by sampling that its normal is
+  // perpendicular to n and that exactly one parameter direction r runs along
+  // n at a constant speed), so its surface is simply continued along r
+  // (NurbsSurface::ExtendLinear when the new boundary leaves the current
+  // domain), the neighbour's trims on the moved boundary slide by exactly
+  // distance / (dS/dr . n) in r, and each "vertical" edge (the straight edge
+  // joining two adjacent neighbours that runs from a moved vertex into the
+  // body) is lengthened or shortened with the top end of its two trims.
+  //
+  // Returns Result::Ok on success, Result::NoOpAlreadySatisfied for
+  // distance == 0, and Result::Failed - this Brep left completely untouched,
+  // every check runs before the first mutation - for: a non-planar face, a
+  // boundary edge that is not shared by exactly one other face (naked,
+  // non-manifold, a seam of the moved face itself), a degenerate (singular)
+  // trim, a neighbour that is not prismatic along n (a tilted chamfer, a cone,
+  // a sphere: its surface would have to be re-intersected, which this
+  // method does not do), a moved vertex without a straight vertical edge
+  // running opposite to n, an edge/trim/surface curve shared with another
+  // element, or a pull so deep that a vertical edge would vanish.
+  // Throws std::out_of_range / std::invalid_argument for a bad face_index like
+  // ExtendFaceInPlace().
+  Result OffsetPlanarFaceAlongNormal(int face_index, double distance, double tolerance = tolerance::kDistance);
+
   // Caps every planar hole in this Brep's
   // planar face - Rhino's own Cap for the case Check() reports as a
   // closed chain of NakedEdge issues: each chain of naked (single-trim)
