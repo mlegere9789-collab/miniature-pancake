@@ -42,6 +42,7 @@ shell_open_extrusion
 shell_revolved_profile
 subd_boolean_semisharp
 subd_split_plane
+subd_split_plane_refined
 subd_symmetrize_corner
 subd_vertex_info
 sweep2_accuracy
