@@ -106912,6 +106912,30 @@ void TestFitToToleranceBelowThePrecisionFloorFailsFast() {
   Check(near_r != dino8::kernel::Result::Failed && dev <= 1e-12, "the same patch at the origin still fits to 1e-12");
 }
 
+
+// Brep::Sphere / Brep::Torus far from the origin: Volume() threw "not a closed, watertight solid" from offset 1e8 and was 2.4e-5
+// off at 1e7 (measured). Two causes: the 8x8 closed-mesh check runs on float32 vertices, and ON_Brep::GetBoundingBox() returned a
+// box centred at (1e7, 0, 0) for a sphere centred at (1e7, 1e7, 1e7), so a "recentred" copy was still 1e7 away in y and z. The
+// recentring now takes the box from the faces' own control points and rounds the shift to a dyadic grid so the subtraction is
+// exact. Oracles are the closed forms 4/3 pi r^3 and 2 pi^2 R r^2 (the NURBS quadrature itself is good to ~2e-6).
+void TestSphereAndTorusVolumeAtLargeOffsets() {
+  const double sphere_v = 4.0 / 3.0 * ON_PI * 125.0, torus_v = 2.0 * ON_PI * ON_PI * 5.0 * 1.0;
+  for (double off : {0.0, 1e7, 1e8, 1e9}) {
+    const std::string tag = "offset " + std::to_string(static_cast<long long>(off)) + ": ";
+    double vs = -1.0, vt = -1.0;
+    try {
+      vs = Brep::Sphere(Point3d(off, off, off), 5.0).Volume();
+    } catch (const std::exception&) {
+    }
+    try {
+      vt = Brep::Torus(Point3d(off, off, off), dino8::kernel::Vector3d(0, 0, 1), 5.0, 1.0).Volume();
+    } catch (const std::exception&) {
+    }
+    Check(std::fabs(vs - sphere_v) < 1e-5 * sphere_v, (tag + "Volume() of a radius-5 sphere is 4/3 pi r^3 within 1e-5 (got " + std::to_string(vs) + ")").c_str());
+    Check(std::fabs(vt - torus_v) < 1e-5 * torus_v, (tag + "Volume() of the 5/1 torus is 2 pi^2 R r^2 within 1e-5 (got " + std::to_string(vt) + ")").c_str());
+  }
+}
+
 }  // namespace qc4_tests
 
 namespace body_section_untrimmed_face_tests {
@@ -108884,6 +108908,7 @@ int main() {
   RunTest("qc3_tests::TestMassPropertiesOfLargeBoxIsFast", qc3_tests::TestMassPropertiesOfLargeBoxIsFast);
   RunTest("qc4_tests::TestAreaAtLargeOffsetIsFastAndExact", qc4_tests::TestAreaAtLargeOffsetIsFastAndExact);
   RunTest("qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast", qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast);
+  RunTest("qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets", qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets);
   RunTest("qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp", qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp);
   RunTest("qc3_tests::TestLoftMatchedScaledHappyPath", qc3_tests::TestLoftMatchedScaledHappyPath);
   RunTest("extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism", extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism);

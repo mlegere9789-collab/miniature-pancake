@@ -1639,14 +1639,41 @@ namespace {
 // on a copy translated to the bounding-box centre. Returns true and fills `out` only when the body is far (> 4 half
 // diagonals) from the origin.
 bool RecenterIfFarFromOrigin(const Brep& b, Brep& out, ON_3dVector* shift = nullptr) {
+  // The box comes from the faces' own control points (euclidean) rather than ON_Brep::GetBoundingBox(): that call returned a
+  // box centred at (1e7, 0, 0) for Brep::Sphere(Point3d(1e7, 1e7, 1e7), 5) - y and z were off by the whole offset - so the
+  // "recentred" copy was still 1e7 from the origin in two axes.
   ON_BoundingBox bb;
-  if (!b.raw().GetBoundingBox(bb) || !bb.IsValid()) return false;
+  for (int fi = 0; fi < b.raw().m_F.Count(); ++fi) {
+    const ON_Surface* sf = b.raw().m_F[fi].SurfaceOf();
+    if (sf == nullptr) continue;
+    if (const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(sf)) {
+      for (int i = 0; i < ns->CVCount(0); ++i)
+        for (int j = 0; j < ns->CVCount(1); ++j) {
+          ON_3dPoint p;
+          if (ns->GetCV(i, j, p)) bb.Set(p, true);
+        }
+    } else {
+      bb.Union(sf->BoundingBox());
+    }
+  }
+  if (!bb.IsValid()) return false;
   const ON_3dPoint c = bb.Center();
   const double half = 0.5 * bb.Diagonal().Length();
   const double dist = std::max({std::fabs(c.x), std::fabs(c.y), std::fabs(c.z)});
   if (!(dist > 4.0 * half) || !(dist > 0.0) || !std::isfinite(dist)) return false;
-  out = b.Transform(ON_Xform::TranslationTransformation(-c.x, -c.y, -c.z));
-  if (shift) *shift = ON_3dVector(c.x, c.y, c.z);  // moved = world - shift
+  // The shift is rounded to a dyadic grid of 2^-30 of the offset's magnitude: the body lies within [0.75, 1.25] of |c|, so
+  // x - shift is then EXACT in double (Sterbenz), whereas the raw hull centre carries ~1e-8 of noise at 1e8 that shifted a
+  // symmetric body (a sphere's seam and pole control points) by a different rounding per control point and left it open to
+  // the 8x8 weld (measured: Brep::Sphere at 1e8, recentred by the hull centre, welded to a non-closed mesh; recentred by
+  // the exact offset it closed).
+  auto quantize = [](double v) {
+    if (v == 0.0) return 0.0;
+    const double q = std::ldexp(1.0, std::ilogb(std::fabs(v)) - 30);
+    return std::round(v / q) * q;
+  };
+  const double sx = quantize(c.x), sy = quantize(c.y), sz = quantize(c.z);
+  out = b.Transform(ON_Xform::TranslationTransformation(-sx, -sy, -sz));
+  if (shift) *shift = ON_3dVector(sx, sy, sz);  // moved = world - shift
   return true;
 }
 }  // namespace
