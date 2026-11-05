@@ -1333,6 +1333,167 @@ Result NurbsSurface::InterpolateThroughGridWithEndTangentsU(const std::vector<Po
   return InterpolateThroughGridWithEndConditions(grid, u_count, v_count, degree_u, degree_v, ends, out);
 }
 
+namespace {
+namespace grid_interp_detail {
+
+// One direction of a closed-grid interpolation: a PERIODIC B-spline of degree p through `n` distinct points with parameters
+// t[0] = 0 < t[1] < ... < t[n-1] < 1 (period 1). Standard (unclamped) knot vector of n + 2p + 1 entries with
+// Kstd_j = Kx(j - p), where the bi-infinite knot sequence is Kx(j) = t_j (p odd) or (t_{j-1} + t_j) / 2 (p even), extended by
+// Kx(j + n) = Kx(j) + 1. The n + p ON control points wrap: ON index i is unknown (i mod n).
+struct ClosedDirection {
+  int p = 0, n = 0, ncv_on = 0;
+  std::vector<double> K;  // n + 2p + 1 knots
+  std::vector<double> A;  // n x n cyclic collocation matrix
+};
+
+bool BuildClosedDirection(const std::vector<double>& t, int p, ClosedDirection& d) {
+  const int n = static_cast<int>(t.size());
+  if (n < 3 || p < 1 || p > n - 1) return false;
+  d.p = p;
+  d.n = n;
+  d.ncv_on = n + p;
+  auto wrap = [n](int j) {
+    const int m = j % n;
+    return m < 0 ? m + n : m;
+  };
+  auto tt = [&](int j) { return t[static_cast<size_t>(wrap(j))] + static_cast<double>((j - wrap(j)) / n); };
+  auto kx = [&](int j) { return (p % 2 == 1) ? tt(j) : 0.5 * (tt(j - 1) + tt(j)); };
+  d.K.resize(static_cast<size_t>(n + 2 * p + 1));
+  for (int j = 0; j <= n + 2 * p; ++j) d.K[static_cast<size_t>(j)] = kx(j - p);
+  d.A.assign(static_cast<size_t>(n) * n, 0.0);
+  std::vector<double> N;
+  for (int k = 0; k < n; ++k) {
+    const double x = t[static_cast<size_t>(k)];
+    if (!(x >= d.K[static_cast<size_t>(p)] && x < d.K[static_cast<size_t>(n + p)])) return false;
+    const int s = BasisAt(d.K, d.ncv_on, p, x, N);
+    for (int r = 0; r <= p; ++r) d.A[static_cast<size_t>(k) * n + wrap(s - p + r)] += N[static_cast<size_t>(r)];
+  }
+  return true;
+}
+
+}  // namespace grid_interp_detail
+}  // namespace
+
+Result NurbsSurface::InterpolateThroughClosedGrid(const std::vector<Point3d>& grid, int u_count, int v_count, int degree_u,
+                                                   int degree_v, bool closed_u, bool closed_v, NurbsSurface& out) {
+  using namespace grid_interp_detail;
+  const std::string who = "dino8::kernel::NurbsSurface::InterpolateThroughClosedGrid: ";
+  if (u_count < 2 || v_count < 2) throw std::invalid_argument(who + "u_count and v_count must each be >= 2");
+  const size_t expected = static_cast<size_t>(u_count) * static_cast<size_t>(v_count);
+  if (grid.size() != expected) {
+    throw std::invalid_argument(who + "grid must have exactly u_count * v_count = " + std::to_string(expected) + " entries, got " +
+                                 std::to_string(grid.size()));
+  }
+  if ((closed_u && u_count < 3) || (closed_v && v_count < 3)) {
+    throw std::invalid_argument(who + "a closed direction needs at least 3 distinct points (the seam point must not be repeated)");
+  }
+  if (degree_u < 1 || degree_u > u_count - 1 || degree_v < 1 || degree_v > v_count - 1) {
+    throw std::invalid_argument(who + "degree_u must be in [1, " + std::to_string(u_count - 1) + "] and degree_v in [1, " +
+                                 std::to_string(v_count - 1) + "], got " + std::to_string(degree_u) + " and " + std::to_string(degree_v));
+  }
+  auto at = [&](int u, int v) -> ON_3dPoint {
+    return grid[static_cast<size_t>(u) * static_cast<size_t>(v_count) + static_cast<size_t>(v)];
+  };
+  // Cumulative chord parameters of one grid line, normalized by the open length or, when closed, the whole loop length.
+  auto line_params = [&](const std::vector<ON_3dPoint>& pts, bool closed, const char* what, int index, std::vector<double>& acc) {
+    std::vector<double> c(pts.size(), 0.0);
+    for (size_t i = 1; i < pts.size(); ++i) c[i] = c[i - 1] + pts[i].DistanceTo(pts[i - 1]);
+    double total = c.back();
+    if (closed) total += pts.back().DistanceTo(pts.front());
+    if (!(total > 0.0)) {
+      throw std::invalid_argument(who + what + " " + std::to_string(index) + " is degenerate (every point coincides)");
+    }
+    for (size_t i = 0; i < pts.size(); ++i) acc[i] += c[i] / total;
+  };
+  std::vector<double> u_params(static_cast<size_t>(u_count), 0.0), v_params(static_cast<size_t>(v_count), 0.0);
+  for (int v = 0; v < v_count; ++v) {
+    std::vector<ON_3dPoint> row(static_cast<size_t>(u_count));
+    for (int u = 0; u < u_count; ++u) row[static_cast<size_t>(u)] = at(u, v);
+    line_params(row, closed_u, "row v=", v, u_params);
+  }
+  for (double& p : u_params) p /= v_count;
+  for (int u = 0; u < u_count; ++u) {
+    std::vector<ON_3dPoint> col(static_cast<size_t>(v_count));
+    for (int v = 0; v < v_count; ++v) col[static_cast<size_t>(v)] = at(u, v);
+    line_params(col, closed_v, "column u=", u, v_params);
+  }
+  for (double& p : v_params) p /= u_count;
+  u_params.front() = v_params.front() = 0.0;
+  if (!closed_u) u_params.back() = 1.0;
+  if (!closed_v) v_params.back() = 1.0;
+  for (int i = 1; i < u_count; ++i) {
+    if (!(u_params[static_cast<size_t>(i)] > u_params[static_cast<size_t>(i) - 1])) return Result::Failed;
+  }
+  for (int i = 1; i < v_count; ++i) {
+    if (!(v_params[static_cast<size_t>(i)] > v_params[static_cast<size_t>(i) - 1])) return Result::Failed;
+  }
+  if ((closed_u && !(u_params.back() < 1.0)) || (closed_v && !(v_params.back() < 1.0))) return Result::Failed;
+
+  std::vector<double> Ku, Au, Kv, Av;
+  int ncv_u = u_count, ncv_v = v_count;
+  if (closed_u) {
+    ClosedDirection d;
+    if (!BuildClosedDirection(u_params, degree_u, d)) return Result::Failed;
+    Ku = d.K;
+    Au = d.A;
+    ncv_u = d.ncv_on;
+  } else {
+    EndDirection d;
+    if (!BuildEndDirection(u_params, degree_u, false, false, d)) return Result::Failed;
+    Ku = d.K;
+    Au = d.A;
+  }
+  if (closed_v) {
+    ClosedDirection d;
+    if (!BuildClosedDirection(v_params, degree_v, d)) return Result::Failed;
+    Kv = d.K;
+    Av = d.A;
+    ncv_v = d.ncv_on;
+  } else {
+    EndDirection d;
+    if (!BuildEndDirection(v_params, degree_v, false, false, d)) return Result::Failed;
+    Kv = d.K;
+    Av = d.A;
+  }
+
+  // Pass 1 (U): A_u X = Q, one right-hand-side column per (v grid line, coordinate).
+  const int mu = 3 * v_count;
+  std::vector<double> X(static_cast<size_t>(u_count) * mu);
+  for (int u = 0; u < u_count; ++u) {
+    for (int v = 0; v < v_count; ++v) {
+      const ON_3dPoint q = at(u, v);
+      X[static_cast<size_t>(u) * mu + 3 * v + 0] = q.x;
+      X[static_cast<size_t>(u) * mu + 3 * v + 1] = q.y;
+      X[static_cast<size_t>(u) * mu + 3 * v + 2] = q.z;
+    }
+  }
+  if (!GridInterpSolve(Au, X, u_count, mu)) return Result::Failed;
+  // Pass 2 (V): for every U unknown i, A_v Y = X[i][v][.].
+  const int mv = 3 * u_count;
+  std::vector<double> Y(static_cast<size_t>(v_count) * mv);
+  for (int i = 0; i < u_count; ++i) {
+    for (int v = 0; v < v_count; ++v) {
+      for (int c = 0; c < 3; ++c) Y[static_cast<size_t>(v) * mv + 3 * i + c] = X[static_cast<size_t>(i) * mu + 3 * v + c];
+    }
+  }
+  if (!GridInterpSolve(Av, Y, v_count, mv)) return Result::Failed;
+
+  ON_NurbsSurface result;
+  if (!result.Create(3, false, degree_u + 1, degree_v + 1, ncv_u, ncv_v)) return Result::Failed;
+  for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, Ku[static_cast<size_t>(k) + 1]);
+  for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, Kv[static_cast<size_t>(k) + 1]);
+  for (int i = 0; i < ncv_u; ++i) {
+    for (int j = 0; j < ncv_v; ++j) {
+      const int iu = closed_u ? i % u_count : i, jv = closed_v ? j % v_count : j;
+      result.SetCV(i, j, ON_3dPoint(Y[static_cast<size_t>(jv) * mv + 3 * iu + 0], Y[static_cast<size_t>(jv) * mv + 3 * iu + 1],
+                                    Y[static_cast<size_t>(jv) * mv + 3 * iu + 2]));
+    }
+  }
+  if (!result.IsValid()) return Result::Failed;
+  out.surface_ = result;
+  return Result::Ok;
+}
+
 Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) const {
   out_patches.clear();
 

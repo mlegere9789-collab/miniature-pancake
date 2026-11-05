@@ -1993,6 +1993,20 @@ class NurbsSurface {
                                                          int degree_u, int degree_v, const GridEndConditions& ends,
                                                          NurbsSurface& out);
 
+  // Exact interpolation through a grid that is CLOSED in U, in V, or both (a cylinder / torus style grid). A closed
+  // direction lists each point once - the seam point is NOT repeated at the end (so it needs at least 3 points) - and the
+  // result is a PERIODIC B-spline there: `count + degree` control points wrapping `degree` of them, unclamped knots, C^(degree-1)
+  // across the seam, passing through every grid point at the shared parameters. Closed parameters are averaged chord lengths
+  // normalized by the whole loop length (so they lie in [0, 1) with the seam at 0 and the period 1); knots are the data
+  // parameters themselves for odd degree and midpoints of consecutive data parameters for even degree; the collocation system
+  // is the cyclic n x n matrix. The surface domain in a closed direction is [K_p, K_p + 1] (that is [0, 1] for odd degree,
+  // starting slightly below 0 for even degree) and every data parameter lies inside it. An open direction is exactly as in
+  // `InterpolateThroughGrid(..., degree_u, degree_v, ...)`. Degrees in [1, count - 1]. Throws std::invalid_argument for the
+  // other overloads' cases plus a closed direction with fewer than 3 points; Result::Failed for a singular system. Still open,
+  // disclosed: end conditions together with a closed direction.
+  static Result InterpolateThroughClosedGrid(const std::vector<Point3d>& grid, int u_count, int v_count, int degree_u,
+                                              int degree_v, bool closed_u, bool closed_v, NurbsSurface& out);
+
   // Splits this surface into an independent tensor-product Bezier patch
   // for every (u-span, v-span) cell of its knot vectors - the surface
   // counterpart of the app's curve-only `ConvertToBeziers` command

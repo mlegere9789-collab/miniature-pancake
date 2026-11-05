@@ -106132,6 +106132,150 @@ void TestEndConditionsRefusals() {
   Check(throws(0, 1, none) && throws(1, 3, none) && !throws(1, 1, none) && !throws(3, 2, none), "with no conditions the range is the plain [1, count - 1]");
 }
 
+
+// ---- InterpolateThroughClosedGrid: periodic (cylinder / torus style) grids ----
+double SeamGap(const NurbsSurface& s, int dir, double other, int derivs) {
+  // largest difference between the point / first / second derivative at the two ends of a periodic direction
+  const ON_Interval d = s.raw().Domain(dir);
+  double worst = 0.0;
+  ON_3dPoint p0, p1;
+  ON_3dVector a0[5], a1[5];
+  if (dir == 0) {
+    s.raw().Ev2Der(d.Min(), other, p0, a0[0], a0[1], a0[2], a0[3], a0[4]);
+    s.raw().Ev2Der(d.Max(), other, p1, a1[0], a1[1], a1[2], a1[3], a1[4]);
+  } else {
+    s.raw().Ev2Der(other, d.Min(), p0, a0[0], a0[1], a0[2], a0[3], a0[4]);
+    s.raw().Ev2Der(other, d.Max(), p1, a1[0], a1[1], a1[2], a1[3], a1[4]);
+  }
+  worst = (p0 - p1).Length();
+  if (derivs >= 1) worst = std::max(worst, (a0[dir] - a1[dir]).Length());
+  if (derivs >= 2) worst = std::max(worst, (a0[2 + 2 * dir] - a1[2 + 2 * dir]).Length());
+  return worst;
+}
+
+void TestClosedGridCylinderSeamAndClosedFormSagitta() {
+  const int nu = 12, nv = 5;
+  const double R = 2.0, dth = 2.0 * ON_PI / nu;
+  std::vector<Point3d> grid;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) grid.push_back(Point3d(R * std::cos(u * dth), R * std::sin(u * dth), 0.5 * v));
+  }
+  auto radial_miss = [&](const NurbsSurface& s) {
+    const ON_Interval d = s.raw().Domain(0);
+    double worst = 0.0;
+    for (int i = 0; i <= 96; ++i) {
+      for (int j = 0; j <= 6; ++j) {
+        const Point3d p = s.PointAt(d.ParameterAt(i / 96.0), j / 6.0);
+        worst = std::max(worst, std::fabs(std::hypot(p.x, p.y) - R));
+      }
+    }
+    return worst;
+  };
+  const int degs[4][2] = {{1, 1}, {2, 2}, {3, 3}, {5, 3}};
+  double miss[4] = {0, 0, 0, 0};
+  int idx = 0;
+  for (const auto& dd : degs) {
+    const std::string tag = "closed cylinder, degree (" + std::to_string(dd[0]) + ", " + std::to_string(dd[1]) + ")";
+    NurbsSurface s;
+    const Result r = NurbsSurface::InterpolateThroughClosedGrid(grid, nu, nv, dd[0], dd[1], true, false, s);
+    Check(r == Result::Ok, (tag + ": succeeds on a 12 x 5 grid closed in U").c_str());
+    if (r != Result::Ok) {
+      ++idx;
+      continue;
+    }
+    Check(s.DegreeU() == dd[0] && s.DegreeV() == dd[1] && s.CVCountU() == nu + dd[0] && s.CVCountV() == nv && !s.IsRational(),
+          (tag + ": degrees as requested, (count + degree) x count control net with the seam wrapped, non-rational").c_str());
+    // the data parameters are exactly k / 12 and j / 4 (equal chords); every one lies in the surface domain
+    double hit = 0.0;
+    for (int u = 0; u < nu; ++u) {
+      for (int v = 0; v < nv; ++v) hit = std::max(hit, s.PointAt(static_cast<double>(u) / nu, v / 4.0).DistanceTo(grid[static_cast<size_t>(u * nv + v)]));
+    }
+    const double seam = dd[0] >= 3 ? SeamGap(s, 0, 0.37, 1) : SeamGap(s, 0, 0.37, 0);
+    miss[idx] = radial_miss(s);
+    std::printf("  [closed grid cylinder] %s: grid miss %.3g, seam gap %.3g, closed in U %d, radial miss %.6g\n", tag.c_str(), hit, seam, s.raw().IsClosed(0) ? 1 : 0, miss[idx]);
+    Check(hit < 1e-9, (tag + ": passes through all 60 grid points (< 1e-9) at the equal-chord parameters k/12, j/4").c_str());
+    Check(seam < 1e-9 && s.raw().IsClosed(0) && !s.raw().IsClosed(1), (tag + ": the two ends of U meet with equal point (and equal first derivative for degree >= 3), < 1e-9; closed in U, open in V").c_str());
+    ++idx;
+  }
+  const double sagitta = R * (1.0 - std::cos(0.5 * dth));
+  Check(std::fabs(miss[0] - sagitta) < 1e-9, "closed cylinder, degree 1: the worst radial miss is the closed-form chord sagitta R (1 - cos(dtheta/2)) (< 1e-9)");
+  Check(miss[2] < sagitta / 20.0 && miss[3] < miss[2], "closed cylinder: degree 3 misses by under a twentieth of the chord sagitta and degree 5 beats degree 3");
+  // negative control: the OPEN interpolation of the same loop with the seam point repeated is not smooth across the seam
+  std::vector<Point3d> repeated = grid;
+  for (int v = 0; v < nv; ++v) repeated.push_back(grid[static_cast<size_t>(v)]);
+  NurbsSurface open_s;
+  Check(NurbsSurface::InterpolateThroughGrid(repeated, nu + 1, nv, 3, 3, open_s) == Result::Ok, "open interpolation of the repeated-seam loop succeeds");
+  const double open_gap = SeamGap(open_s, 0, 0.37, 1);
+  std::printf("  [closed grid cylinder] open (clamped) interpolation of the same loop: first-derivative gap across the seam %.3g\n", open_gap);
+  Check(open_gap > 1e-4, "negative control: a clamped open interpolation of the loop has a tangent jump across the seam (> 1e-4), so the seam oracle can see a non-smooth seam");
+}
+
+void TestClosedGridTorusBothDirectionsAndRefusals() {
+  const int nu = 12, nv = 8;
+  const double R = 3.0, r = 1.0;
+  std::vector<Point3d> grid;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) {
+      const double th = 2.0 * ON_PI * u / nu, ph = 2.0 * ON_PI * v / nv;
+      grid.push_back(Point3d((R + r * std::cos(ph)) * std::cos(th), (R + r * std::cos(ph)) * std::sin(th), r * std::sin(ph)));
+    }
+  }
+  auto torus_miss = [&](const NurbsSurface& s) {
+    const ON_Interval du = s.raw().Domain(0), dv = s.raw().Domain(1);
+    double worst = 0.0;
+    for (int i = 0; i <= 48; ++i) {
+      for (int j = 0; j <= 48; ++j) {
+        const Point3d p = s.PointAt(du.ParameterAt(i / 48.0), dv.ParameterAt(j / 48.0));
+        worst = std::max(worst, std::fabs(std::hypot(std::hypot(p.x, p.y) - R, p.z) - r));
+      }
+    }
+    return worst;
+  };
+  double m1 = 0.0, m3 = 0.0;
+  for (int deg : {1, 3}) {
+    NurbsSurface s;
+    const std::string tag = "torus closed in U and V, degree (" + std::to_string(deg) + ", " + std::to_string(deg) + ")";
+    const Result res = NurbsSurface::InterpolateThroughClosedGrid(grid, nu, nv, deg, deg, true, true, s);
+    Check(res == Result::Ok, (tag + ": succeeds on a 12 x 8 doubly closed grid").c_str());
+    if (res != Result::Ok) continue;
+    double hit = 0.0;
+    for (int u = 0; u < nu; ++u) {
+      for (int v = 0; v < nv; ++v) hit = std::max(hit, s.PointAt(static_cast<double>(u) / nu, static_cast<double>(v) / nv).DistanceTo(grid[static_cast<size_t>(u * nv + v)]));
+    }
+    double seam = 0.0;
+    for (double o : {0.11, 0.37, 0.83}) seam = std::max({seam, SeamGap(s, 0, o, deg >= 3 ? 1 : 0), SeamGap(s, 1, o, deg >= 3 ? 1 : 0)});
+    const double miss = torus_miss(s);
+    (deg == 1 ? m1 : m3) = miss;
+    std::printf("  [closed grid torus] %s: grid miss %.3g, seam gap %.3g, distance from the true torus %.6g\n", tag.c_str(), hit, seam, miss);
+    Check(hit < 1e-9, (tag + ": passes through all 96 grid points (< 1e-9)").c_str());
+    Check(seam < 1e-9 && s.raw().IsClosed(0) && s.raw().IsClosed(1), (tag + ": both seams close (point, and first derivative for degree 3), < 1e-9; closed in U and V").c_str());
+  }
+  Check(m3 < m1 / 10.0, "torus: the cubic periodic interpolant is more than ten times closer to the true torus (distance from the tube circle) than the degree-1 net");
+  // refusals and the no-closure regression
+  NurbsSurface t;
+  auto throws = [&](const std::vector<Point3d>& g, int nu_, int nv_, int du, int dv, bool cu, bool cv) {
+    try {
+      NurbsSurface::InterpolateThroughClosedGrid(g, nu_, nv_, du, dv, cu, cv, t);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  const std::vector<Point3d> small = WigglyGrid(2, 4);
+  Check(throws(small, 2, 4, 1, 2, true, false), "a closed direction with 2 points is refused (seam point must not be repeated, so >= 3)");
+  Check(throws(grid, nu, nv, 12, 3, true, true) && throws(grid, nu, nv, 0, 3, true, true) && throws(grid, nu, nv, 3, 8, true, true), "degree 0 or >= count is refused");
+  Check(throws(grid, nu, nv + 1, 3, 3, true, true), "a grid whose size is not u_count * v_count is refused");
+  const std::vector<Point3d> wg = WigglyGrid(6, 5);
+  NurbsSurface plain, via;
+  Check(NurbsSurface::InterpolateThroughGrid(wg, 6, 5, 3, 4, plain) == Result::Ok && NurbsSurface::InterpolateThroughClosedGrid(wg, 6, 5, 3, 4, false, false, via) == Result::Ok,
+        "plain and not-closed constructions succeed");
+  double same = 0.0;
+  for (int i = 0; i <= 20; ++i) {
+    for (int j = 0; j <= 20; ++j) same = std::max(same, plain.PointAt(i / 20.0, j / 20.0).DistanceTo(via.PointAt(i / 20.0, j / 20.0)));
+  }
+  Check(same < 1e-10, "closed_u = closed_v = false reproduces the plain chosen-degree interpolation (< 1e-10)");
+}
+
 }  // namespace grid_interp_degree_tests
 
 int main() {
@@ -107947,6 +108091,10 @@ int main() {
           grid_interp_degree_tests::TestEndConditionsOnAHalfCylinderMatchClosedFormAndTheUOnlyConstruction);
   RunTest("grid_interp_degree_tests::TestEndConditionsRefusals",
           grid_interp_degree_tests::TestEndConditionsRefusals);
+  RunTest("grid_interp_degree_tests::TestClosedGridCylinderSeamAndClosedFormSagitta",
+          grid_interp_degree_tests::TestClosedGridCylinderSeamAndClosedFormSagitta);
+  RunTest("grid_interp_degree_tests::TestClosedGridTorusBothDirectionsAndRefusals",
+          grid_interp_degree_tests::TestClosedGridTorusBothDirectionsAndRefusals);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
