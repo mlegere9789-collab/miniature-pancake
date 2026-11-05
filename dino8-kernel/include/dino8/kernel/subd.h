@@ -71,6 +71,7 @@ struct SubDWatertightReport {
   int shared_edges = 0;         // distinct SubD edges whose canonical curve was built once and used by both faces
   int exact_edge_curves = 0;    // edges whose curve is the exact limit curve (both ends ordinary interior, or an ordinary crease chain)
   int hermite_edge_curves = 0;  // edges at an extraordinary vertex / semi-sharp / corner mixes: cubic Hermite from limit data
+  int fitted_patches = 0;       // irregular patches whose 4 interior control points were least-squares fitted to the limit surface (fit_interior)
 };
 
 // What SubD::ToNurbsPatchesToTolerance() measured and decided.
@@ -1108,7 +1109,20 @@ class SubD {
   // Subdivide(1) first otherwise): throws std::runtime_error naming the
   // problem if one is not, or if there are no faces. Not G1 across
   // irregular faces (the Coons patches share position, not tangent plane).
-  std::vector<SubDNurbsPatch> ToNurbsPatchesWatertight(SubDWatertightReport* report = nullptr) const;
+  //
+  // `fit_interior` (default false: the Coons interior, as before): for each
+  // irregular patch keep the 12 boundary control points (they are the
+  // shared edge curves, so the polysurface stays watertight) and replace
+  // the 4 interior control points by the least-squares fit to the limit
+  // surface sampled with EvaluateFace() on a 7 x 7 interior grid (exact
+  // away from an extraordinary vertex, see its doc comment). The Coons
+  // interior is a bilinear blend of the boundary curves and ignores the
+  // interior shape of the limit surface near an extraordinary vertex; the
+  // fit measurably lowers the deviation of irregular patches. Each
+  // EvaluateFace() call works on a copy of the SubD, so the fit is only done
+  // when `FaceCount() * irregular faces` stays within 4,000,000 (otherwise
+  // the Coons interior is kept and `fitted_patches` says how many were fitted).
+  std::vector<SubDNurbsPatch> ToNurbsPatchesWatertight(SubDWatertightReport* report = nullptr, bool fit_interior = false) const;
 
   // Watertight SubD -> NURBS conversion with a MEASURED fit tolerance.
   // Works on a copy (this SubD is untouched): starting from the cage as
@@ -1138,8 +1152,9 @@ class SubD {
   // looser result. Throws std::invalid_argument for a non-finite or
   // non-positive `tolerance`, a negative `max_levels` or a non-positive
   // `face_budget`; std::runtime_error for an empty SubD.
+  // `fit_interior` is forwarded to ToNurbsPatchesWatertight() at every level.
   std::vector<SubDNurbsPatch> ToNurbsPatchesToTolerance(double tolerance, SubDFitReport* report = nullptr,
-                                                        int max_levels = 5, int face_budget = 20000) const;
+                                                        int max_levels = 5, int face_budget = 20000, bool fit_interior = false) const;
 
   int FaceCount() const;
   int VertexCount() const;

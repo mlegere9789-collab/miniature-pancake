@@ -4251,7 +4251,129 @@ void WatertightEdgeCurve(const ON_SubDEdge* e, const ON_SubDVertex* a, ON_3dPoin
 
 }  // namespace
 
-std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport* report) const {
+namespace {
+
+double Bern3(int i, double t) {
+  const double a = 1.0 - t;
+  switch (i) {
+    case 0: return a * a * a;
+    case 1: return 3.0 * a * a * t;
+    case 2: return 3.0 * a * t * t;
+    default: return t * t * t;
+  }
+}
+
+// Least-squares refit of the two inner control points of the (non-exact) edge curve `q` run from `a`, with the end points kept:
+// the cubic is fitted to the limit curve along the edge, sampled with EvaluateFace() on the edge's first face at t = 1/8 .. 7/8.
+// The result depends only on the edge (and the direction it is read in), so both faces sharing it get the same curve.
+// Returns false (q untouched) if the edge has no quad face or the evaluation fails.
+bool FitEdgeCurveToLimit(const SubD& sd, const ON_SubDEdge* e, const ON_SubDVertex* a, ON_3dPoint q[4]) {
+  const ON_SubDFace* f = (e->FaceCount() > 0) ? e->Face(0u) : nullptr;
+  if (f == nullptr || f->EdgeCount() != 4) return false;
+  // Which side of the face is `e`, and does the side's running direction (v0->v1, v1->v2, v3->v2, v0->v3) start at `a`?
+  int side = -1;
+  for (unsigned int k = 0; k < 4; ++k) if (f->Edge(k) == e) side = static_cast<int>(k);
+  if (side < 0) return false;
+  const ON_SubDVertex* run_from[4] = {f->Vertex(0), f->Vertex(1), f->Vertex(3), f->Vertex(0)};
+  const bool forward = (run_from[side] == a);  // sample t (from a) maps to side parameter t, else 1 - t
+  double ata[2][2] = {};
+  double atb[2][3] = {};
+  try {
+    for (int k = 1; k <= 7; ++k) {
+      const double t = k / 8.0;
+      const double p = forward ? t : 1.0 - t;
+      double u = 0.0, v = 0.0;
+      switch (side) {
+        case 0: u = p; v = 0.0; break;
+        case 1: u = 1.0; v = p; break;
+        case 2: u = p; v = 1.0; break;
+        default: u = 0.0; v = p; break;
+      }
+      const SubDSurfacePoint sp = sd.EvaluateFace(f->m_id, u, v);
+      const double w1 = Bern3(1, t), w2 = Bern3(2, t);
+      const ON_3dVector rhs = ON_3dVector(sp.position.x, sp.position.y, sp.position.z) - Bern3(0, t) * ON_3dVector(q[0]) - Bern3(3, t) * ON_3dVector(q[3]);
+      ata[0][0] += w1 * w1; ata[0][1] += w1 * w2; ata[1][0] += w1 * w2; ata[1][1] += w2 * w2;
+      atb[0][0] += w1 * rhs.x; atb[0][1] += w1 * rhs.y; atb[0][2] += w1 * rhs.z;
+      atb[1][0] += w2 * rhs.x; atb[1][1] += w2 * rhs.y; atb[1][2] += w2 * rhs.z;
+    }
+  } catch (const std::exception&) {
+    return false;
+  }
+  const double det = ata[0][0] * ata[1][1] - ata[0][1] * ata[1][0];
+  if (!(std::fabs(det) > 1e-12)) return false;
+  double sol[2][3];
+  for (int j = 0; j < 3; ++j) {
+    sol[0][j] = (atb[0][j] * ata[1][1] - ata[0][1] * atb[1][j]) / det;
+    sol[1][j] = (ata[0][0] * atb[1][j] - atb[0][j] * ata[1][0]) / det;
+    if (!std::isfinite(sol[0][j]) || !std::isfinite(sol[1][j])) return false;
+  }
+  q[1] = ON_3dPoint(sol[0][0], sol[0][1], sol[0][2]);
+  q[2] = ON_3dPoint(sol[1][0], sol[1][1], sol[1][2]);
+  return true;
+}
+
+// Replaces grid[1..2][1..2] by the least-squares fit of the bicubic Bezier patch (boundary rows/columns fixed) to the limit surface of
+// face `f` sampled with EvaluateFace() on a 7 x 7 interior grid. grid[r][c] is row r (v) by column c (u); the patch point is
+// sum B_c(u) B_r(v) grid[r][c], and u runs along Vertex(0)->Vertex(1), v along Vertex(0)->Vertex(3), as in EvaluateFace().
+// Returns false (grid untouched) if the evaluation fails or the 4 x 4 normal matrix is singular.
+bool FitInteriorToLimit(const SubD& sd, const ON_SubDFace* f, ON_3dPoint grid[4][4]) {
+  constexpr int kN = 7;
+  double ata[4][4] = {};
+  double atb[4][3] = {};
+  try {
+    for (int a = 1; a <= kN; ++a) {
+      for (int b = 1; b <= kN; ++b) {
+        const double u = a / (kN + 1.0), v = b / (kN + 1.0);
+        const SubDSurfacePoint sp = sd.EvaluateFace(f->m_id, u, v);
+        double w[4];
+        ON_3dVector rhs(sp.position.x, sp.position.y, sp.position.z);
+        for (int r = 0; r < 4; ++r) {
+          for (int c = 0; c < 4; ++c) {
+            const double wt = Bern3(c, u) * Bern3(r, v);
+            const bool interior = (r == 1 || r == 2) && (c == 1 || c == 2);
+            if (interior) w[(r - 1) * 2 + (c - 1)] = wt;
+            else rhs -= wt * ON_3dVector(grid[r][c]);
+          }
+        }
+        for (int i = 0; i < 4; ++i) {
+          for (int j = 0; j < 4; ++j) ata[i][j] += w[i] * w[j];
+          atb[i][0] += w[i] * rhs.x; atb[i][1] += w[i] * rhs.y; atb[i][2] += w[i] * rhs.z;
+        }
+      }
+    }
+  } catch (const std::exception&) {
+    return false;
+  }
+  // Gauss-Jordan on the 4 x 4 system with 3 right-hand sides.
+  double m[4][7];
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) m[i][j] = ata[i][j];
+    for (int j = 0; j < 3; ++j) m[i][4 + j] = atb[i][j];
+  }
+  for (int col = 0; col < 4; ++col) {
+    int piv = col;
+    for (int r = col + 1; r < 4; ++r) if (std::fabs(m[r][col]) > std::fabs(m[piv][col])) piv = r;
+    if (std::fabs(m[piv][col]) < 1e-12) return false;
+    for (int j = 0; j < 7; ++j) std::swap(m[col][j], m[piv][j]);
+    const double d = m[col][col];
+    for (int j = 0; j < 7; ++j) m[col][j] /= d;
+    for (int r = 0; r < 4; ++r) {
+      if (r == col) continue;
+      const double fct = m[r][col];
+      for (int j = 0; j < 7; ++j) m[r][j] -= fct * m[col][j];
+    }
+  }
+  for (int i = 0; i < 4; ++i) {
+    const double x = m[i][4], y = m[i][5], z = m[i][6];
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+  }
+  for (int i = 0; i < 4; ++i) grid[1 + i / 2][1 + i % 2] = ON_3dPoint(m[i][4], m[i][5], m[i][6]);
+  return true;
+}
+
+}  // namespace
+
+std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport* report, bool fit_interior) const {
   std::vector<const ON_SubDFace*> faces;
   {
     ON_SubDFaceIterator fit = subd_.FaceIterator();
@@ -4267,6 +4389,16 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport*
     throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesWatertight: the SubD has no faces");
   }
   SubDWatertightReport rep;
+  int irregular_faces = 0;
+  if (fit_interior) {
+    for (const ON_SubDFace* f : faces) {
+      for (unsigned int i = 0; i < 4; ++i) {
+        const ON_SubDVertex* fv = f->Vertex(i);
+        if (fv != nullptr && (fv->EdgeCount() != 4 || fv->FaceCount() != 4 || !fv->IsSmooth())) { ++irregular_faces; break; }
+      }
+    }
+  }
+  const bool do_fit = fit_interior && irregular_faces > 0 && static_cast<long long>(faces.size()) * irregular_faces <= 4000000LL;
   std::unordered_set<const ON_SubDEdge*> seen_edges;
   std::vector<SubDNurbsPatch> patches;
   patches.reserve(faces.size());
@@ -4296,6 +4428,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport*
         throw std::runtime_error("dino8::kernel::SubD::ToNurbsPatchesWatertight: face edge order does not match its vertex order");
       }
       WatertightEdgeCurve(e[i], from[i], curve[i], &edge_exact[i]);
+      if (do_fit && !edge_exact[i]) FitEdgeCurveToLimit(*this, e[i], from[i], curve[i]);
       if (seen_edges.insert(e[i]).second) {
         ++rep.shared_edges;
         if (edge_exact[i]) ++rep.exact_edge_curves; else ++rep.hermite_edge_curves;
@@ -4317,6 +4450,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport*
           grid[r][c] = ON_3dPoint(lc.x + ld.x - bl.x, lc.y + ld.y - bl.y, lc.z + ld.z - bl.z);
         }
       }
+      if (do_fit && FitInteriorToLimit(*this, f, grid)) ++rep.fitted_patches;
     }
     std::vector<Point3d> cvs(16);
     for (int u = 0; u < 4; ++u) {
@@ -4439,7 +4573,7 @@ Mesh LimitPointMeshOf(const ON_SubD& s) {
 }  // namespace
 
 std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, SubDFitReport* report, int max_levels,
-                                                            int face_budget) const {
+                                                            int face_budget, bool fit_interior) const {
   if (!std::isfinite(tolerance) || tolerance <= 0.0) {
     throw std::invalid_argument("dino8::kernel::SubD::ToNurbsPatchesToTolerance: tolerance must be finite and positive");
   }
@@ -4492,7 +4626,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, Su
       break;
     }
     SubDWatertightReport wrep;
-    std::vector<SubDNurbsPatch> patches = work.ToNurbsPatchesWatertight(&wrep);
+    std::vector<SubDNurbsPatch> patches = work.ToNurbsPatchesWatertight(&wrep, fit_interior);
     // Measuring costs about 4.5x more per level (measured, unit-scale cube, tolerance 1e-12: 0.08 s at 96 faces, 0.36 s at
     // 384, 1.8 s at 1536, 7.9 s at 6144 - and the same for a 1e9 cube whose float32 oracle can never certify a small
     // tolerance), so an unreachable tolerance burned the whole default face budget. Refuse to start a measurement on a
