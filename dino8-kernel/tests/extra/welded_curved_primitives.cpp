@@ -157,3 +157,63 @@ D8_EXTRA_TEST(CylinderWeldedHasGenuineTopology) {
   Check(Throws([] { Brep::CylinderWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, -1.0); }), "CylinderWelded: negative height refused");
   Check(Throws([] { Brep::CylinderWelded(Point3d(0, 0, 0), Vector3d(0, 0, 0), 1.0, 1.0); }), "CylinderWelded: zero axis refused");
 }
+
+D8_EXTRA_TEST(ConeWeldedFullConeApexIsDegenerateNotSeam) {
+  using d8test::Check;
+  const double r = 2.0, h = 3.0;
+  const Point3d base(1, 2, 3);
+  const Brep c = Brep::ConeWelded(base, Vector3d(0, 0, 1), r, 0.0, h);
+  ON_TextLog log;
+  Check(c.raw().IsValid(&log) && c.raw().IsSolid(), "full cone: IsValid() and IsSolid()");
+  // wall + base cap; apex vertex + base-circle vertex; base circle edge + seam edge (the apex has no edge of its own).
+  Check(c.LiveFaceCount() == 2 && c.LiveVertexCount() == 2 && c.LiveEdgeCount() == 2, "full cone: 2 faces, 2 vertices, 2 edges");
+  Check(EulerCharacteristic(c) == 2, "full cone: V - E + F == 2 (genus 0)");
+  Check(c.Check().IsClean(), "full cone: Check() is clean");
+  int singular = 0;
+  for (int t = 0; t < c.raw().m_T.Count(); ++t) {
+    if (c.raw().m_T[t].m_type != ON_BrepTrim::singular) continue;
+    ++singular;
+    const ON_BrepVertex* v = c.raw().m_T[t].Vertex(0);
+    Check(v != nullptr && std::abs(v->point.x - base.x) < 1e-12 && std::abs(v->point.y - base.y) < 1e-12 &&
+              std::abs(v->point.z - (base.z + h)) < 1e-12,
+          "full cone: the singular trim sits at the apex point");
+  }
+  Check(singular == 1, "full cone: exactly one singular (degenerate) trim, at the apex");
+  Check(c.SplitDisjointPieces().size() == 1, "full cone: one piece");
+  const auto m = c.TessellateToClosedMesh(32, 8);
+  Check(m.IsClosedManifold(), "full cone: tessellation is a closed manifold");
+  Check(m.ContainsPoint(Point3d(1, 2, 3.5)) && m.ContainsPoint(Point3d(1.5, 2, 3.5)) && m.ContainsPoint(Point3d(1, 2, 5.5)),
+        "full cone: interior points are inside (just above the base, near the apex)");
+  // At height z above the base the radius is r (1 - z/h): 1.3 at z = 0.75 (radius 1.5) is inside, 1.5 at z = 2 (radius 0.667) is outside.
+  Check(m.ContainsPoint(Point3d(1 + 1.3, 2, 3.75)) && !m.ContainsPoint(Point3d(1 + 1.5, 2, 5.0)) && !m.ContainsPoint(Point3d(1, 2, 6.2)),
+        "full cone: the radius shrinks linearly to the apex");
+}
+
+D8_EXTRA_TEST(ConeWeldedFrustumTopology) {
+  using d8test::Check;
+  const double r0 = 2.0, r1 = 0.75, h = 3.0;
+  const Brep f = Brep::ConeWelded(Point3d(0, 0, 0), Vector3d(0, 0, 2), r0, r1, h);
+  ON_TextLog log;
+  Check(f.raw().IsValid(&log) && f.raw().IsSolid(), "frustum: IsValid() and IsSolid()");
+  Check(f.LiveFaceCount() == 3 && f.LiveVertexCount() == 2 && f.LiveEdgeCount() == 3, "frustum: 3 faces, 2 vertices, 3 edges");
+  Check(EulerCharacteristic(f) == 2, "frustum: V - E + F == 2");
+  Check(f.Check().IsClean(), "frustum: Check() is clean");
+  int singular = 0;
+  for (int t = 0; t < f.raw().m_T.Count(); ++t) singular += f.raw().m_T[t].m_type == ON_BrepTrim::singular;
+  Check(singular == 0, "frustum: no singular trim (no apex)");
+  const double V = kPi * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
+  Check(std::abs(f.VolumeOfSealedSolid() - V) < 1e-6 * V, "frustum: VolumeOfSealedSolid() == pi h/3 (R0^2 + R0 R1 + R1^2)");
+  const auto m = f.TessellateToClosedMesh(32, 8);
+  Check(m.IsClosedManifold(), "frustum: tessellation is a closed manifold");
+  Check(m.ContainsPoint(Point3d(1.9, 0, 0.05)) && !m.ContainsPoint(Point3d(1.9, 0, 2.5)) && m.ContainsPoint(Point3d(0.7, 0, 2.9)) &&
+            !m.ContainsPoint(Point3d(0, 0, 3.2)),
+        "frustum: wide near the base, narrow near the top, closed by both caps");
+  // An inverted frustum (top wider than base) is the same construction.
+  const Brep inv = Brep::ConeWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), r1, r0, h);
+  Check(inv.raw().IsValid(&log) && inv.raw().IsSolid() && std::abs(inv.VolumeOfSealedSolid() - V) < 1e-6 * V,
+        "inverted frustum: valid, same volume by symmetry");
+  Check(Throws([] { Brep::ConeWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.0, 0.0, 1.0); }), "ConeWelded: zero base radius refused");
+  Check(Throws([] { Brep::ConeWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, -0.1, 1.0); }), "ConeWelded: negative top radius refused");
+  Check(Throws([] { Brep::ConeWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 0.5, 0.0); }), "ConeWelded: zero height refused");
+  Check(Throws([] { Brep::ConeWelded(Point3d(0, 0, 0), Vector3d(0, 0, 0), 1.0, 0.5, 1.0); }), "ConeWelded: zero axis refused");
+}

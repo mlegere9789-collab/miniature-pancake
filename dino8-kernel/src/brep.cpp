@@ -479,6 +479,54 @@ Brep Brep::CylinderWelded(Point3d base_center, Vector3d axis, double radius, dou
   return result;
 }
 
+Brep Brep::ConeWelded(Point3d base_center, Vector3d axis, double base_radius, double top_radius, double height) {
+  if (!(base_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::ConeWelded: base_radius must be positive");
+  }
+  if (!(top_radius >= 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::ConeWelded: top_radius must be >= 0 (0 gives a full cone)");
+  }
+  if (!(height > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::ConeWelded: height must be positive");
+  }
+  ON_3dVector normal = axis;
+  if (!normal.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::Brep::ConeWelded: axis must be non-zero");
+  }
+  const ON_Plane plane(base_center, normal);
+  const ON_3dPoint p0 = base_center + base_radius * plane.xaxis;
+  const ON_3dPoint p1 = base_center + top_radius * plane.xaxis + height * normal;
+  // Same construction ON_Cone::RevSurfaceForm uses for its straight profile.
+  auto* rev = new ON_RevSurface();
+  rev->m_angle.Set(0.0, 2.0 * ON_PI);
+  rev->m_t = rev->m_angle;
+  rev->m_curve = new ON_LineCurve(p0, p1);
+  rev->m_axis.from = base_center;
+  rev->m_axis.to = base_center + normal;
+  rev->m_bTransposed = false;
+  rev->m_bbox = ON_Circle(plane, base_radius).BoundingBox();
+  if (top_radius > 0.0) {
+    rev->m_bbox.Union(ON_Circle(ON_Plane(base_center + height * normal, normal), top_radius).BoundingBox());
+  } else {
+    rev->m_bbox.Union(ON_BoundingBox(p1, p1));
+  }
+  // ON_BrepRevSurface takes ownership on success (and leaves the pointer set on failure).
+  Brep result;
+  if (ON_BrepRevSurface(rev, true, true, &result.brep_) == nullptr) {
+    delete rev;
+    throw std::runtime_error("dino8::kernel::Brep::ConeWelded: ON_BrepRevSurface failed");
+  }
+  for (int i = 0; i < result.brep_.m_F.Count(); ++i) {
+    result.face_trim_loops_.emplace_back();  // untrimmed
+    result.face_exact_clip_.push_back(false);
+    result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();
+    result.face_notch_rows_.emplace_back();
+    result.face_records_.emplace_back();
+  }
+  return result;
+}
+
 Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
                               const std::vector<Point2d>& trim_loop_uv,
                               bool exact_clip,
@@ -1078,6 +1126,26 @@ double IntegrateOverNurbsSurfaceAtResolution(const ON_NurbsSurface& s, Integrand
           total += GaussQuadRect(sua, sub, sva, svb, integrand);
         }
       }
+    }
+  }
+  return total;
+}
+
+// Whole-domain integration of a face surface that is NOT an ON_NurbsSurface (ON_RevSurface from ON_BrepSphere /
+// ON_BrepTorus / ON_BrepCylinder / ON_BrepCone, ON_PlaneSurface, ...): such a surface has no knot spans to split at, so
+// the domain is cut into (8 * subdivisions)^2 equal cells with the same 5x5 Gauss rule per cell. The integrands used
+// here are analytic over the whole domain (the revolved profile is a rational arc, the sweep angle a circle), so this
+// converges geometrically; the tests pin it against closed forms to 1e-9.
+template <typename Integrand>
+double IntegrateOverAnalyticSurface(const ON_Surface& sf, Integrand&& integrand, int subdivisions = 1) {
+  const ON_Interval du = sf.Domain(0), dv = sf.Domain(1);
+  const int cells = 8 * std::max(1, subdivisions);
+  double total = 0.0;
+  for (int cu = 0; cu < cells; ++cu) {
+    const double ua = du.ParameterAt(static_cast<double>(cu) / cells), ub = du.ParameterAt(static_cast<double>(cu + 1) / cells);
+    for (int cv = 0; cv < cells; ++cv) {
+      const double va = dv.ParameterAt(static_cast<double>(cv) / cells), vb = dv.ParameterAt(static_cast<double>(cv + 1) / cells);
+      total += GaussQuadRect(ua, ub, va, vb, integrand);
     }
   }
   return total;
@@ -1722,7 +1790,7 @@ double Brep::Volume() const {
         "TessellateToClosedMeshConforming(8, 8) is a closed manifold) - there is no well-defined "
         "enclosed volume otherwise");
   }
-  return VolumeImpl();
+  return VolumeImpl(true);
 }
 
 double Brep::VolumeOfSealedSolid() const {
@@ -1759,7 +1827,7 @@ double Brep::VolumeImpl(bool allow_analytic) const {
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
     // VolumeOfSealedSolid() also integrates a TRIMMED face on an analytic surface (ON_PlaneSurface, ON_RevSurface -
     // what the application's primitives carry): the divergence integrand only needs Ev1Der, and the trim polygon
-    // is in the surface's own parameters. Volume() keeps its NURBS-only contract.
+    // is in the surface's own parameters. Volume() accepts them too, since its watertightness test is a tessellation.
     const ON_Surface* sf = face.SurfaceOf();
     if (!s && !(allow_analytic && sf)) {
       throw std::runtime_error("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
@@ -1785,26 +1853,7 @@ double Brep::VolumeImpl(bool allow_analytic) const {
     };
     if (is_cap || FaceCoversWholeDomain(i)) {
       if (!s) {
-        // An analytic surface (cylinder wall, sphere, cone, torus) over its whole, smooth domain: composite
-        // 5x5 Gauss-Legendre over an 8 x 8 grid of cells (the integrand is analytic, so this converges
-        // geometrically).
-        const ON_Interval du = sf->Domain(0), dv = sf->Domain(1);
-        constexpr int kCells = 8;
-        double face_total = 0.0;
-        for (int cu = 0; cu < kCells; ++cu) {
-          const double ua = du.ParameterAt(static_cast<double>(cu) / kCells), ub = du.ParameterAt(static_cast<double>(cu + 1) / kCells);
-          for (int cv = 0; cv < kCells; ++cv) {
-            const double va = dv.ParameterAt(static_cast<double>(cv) / kCells), vb = dv.ParameterAt(static_cast<double>(cv + 1) / kCells);
-            const double u_mid = 0.5 * (ua + ub), u_half = 0.5 * (ub - ua), v_mid = 0.5 * (va + vb), v_half = 0.5 * (vb - va);
-            for (int gi = 0; gi < kMassPropsGaussPoints; ++gi) {
-              for (int gj = 0; gj < kMassPropsGaussPoints; ++gj) {
-                face_total += kMassPropsGaussWeights[gi] * kMassPropsGaussWeights[gj] * u_half * v_half *
-                              integrand(u_mid + u_half * kMassPropsGaussNodes[gi], v_mid + v_half * kMassPropsGaussNodes[gj]);
-              }
-            }
-          }
-        }
-        total += sign * face_total;
+        total += sign * IntegrateOverAnalyticSurface(*sf, integrand);
         continue;
       }
       total += sign * IntegrateOverNurbsSurface(*s, integrand);
@@ -1945,23 +1994,26 @@ double Brep::Area() const {
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     const ON_BrepFace& face = brep_.m_F[i];
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
-    if (!s) {
-      throw std::runtime_error("dino8::kernel::Brep::Area: face " + std::to_string(i) +
-                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    const ON_Surface* sf = face.SurfaceOf();  // non-NURBS (ON_RevSurface, ...) faces integrate through `sf`
+    if (!sf) {
+      throw std::runtime_error("dino8::kernel::Brep::Area: face " + std::to_string(i) + " has no surface");
     }
     ON_NurbsSurface cap_fan;  // see SweepCapAnalysisFan()
     const bool is_cap = SweepCapAnalysisFan(i, cap_fan);
-    if (is_cap) s = &cap_fan;
+    if (is_cap) {
+      s = &cap_fan;
+      sf = &cap_fan;
+    }
     const auto integrand = [&](double u, double v) {
       ON_3dPoint p;
       ON_3dVector su, sv;
-      if (!s->Ev1Der(u, v, p, su, sv)) {
+      if (!sf->Ev1Der(u, v, p, su, sv)) {
         throw std::runtime_error("dino8::kernel::Brep::Area: Ev1Der failed on face " + std::to_string(i));
       }
       return ON_CrossProduct(su, sv).Length();
     };
     if (is_cap || FaceCoversWholeDomain(i)) {
-      total += IntegrateOverNurbsSurface(*s, integrand);
+      total += s ? IntegrateOverNurbsSurface(*s, integrand) : IntegrateOverAnalyticSurface(*sf, integrand);
       continue;
     }
     // Trimmed face: still exact (within the quadrature's own tolerance
@@ -2039,18 +2091,21 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
   for (int i = 0; i < brep.m_F.Count(); ++i) {
     const ON_BrepFace& face = brep.m_F[i];
     const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
-    if (!s) {
-      throw std::runtime_error("dino8::kernel::Brep::VolumeMassProperties: face " + std::to_string(i) +
-                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    const ON_Surface* sf = face.SurfaceOf();  // non-NURBS (ON_RevSurface, ...) faces integrate through `sf`
+    if (!sf) {
+      throw std::runtime_error("dino8::kernel::Brep::VolumeMassProperties: face " + std::to_string(i) + " has no surface");
     }
     ON_NurbsSurface cap_fan;  // see Brep::SweepCapAnalysisFan()
     const bool is_cap = self.SweepCapAnalysisFan(i, cap_fan);
-    if (is_cap) s = &cap_fan;
+    if (is_cap) {
+      s = &cap_fan;
+      sf = &cap_fan;
+    }
     const double sign = face.m_bRev ? -1.0 : 1.0;
     const auto integrand = [&](double u, double v) {
       ON_3dPoint p;
       ON_3dVector su, sv;
-      if (!s->Ev1Der(u, v, p, su, sv)) {
+      if (!sf->Ev1Der(u, v, p, su, sv)) {
         throw std::runtime_error("dino8::kernel::Brep::VolumeMassProperties: Ev1Der failed on face " +
                                   std::to_string(i));
       }
@@ -2062,7 +2117,8 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
       // VolumeCertifiedAdaptive() below) is numerically identical to
       // IntegrateOverNurbsSurface() itself - see
       // IntegrateOverNurbsSurfaceAtResolution()'s own doc comment above.
-      total += sign * IntegrateOverNurbsSurfaceAtResolution(*s, integrand, whole_domain_subdivisions);
+      total += sign * (s ? IntegrateOverNurbsSurfaceAtResolution(*s, integrand, whole_domain_subdivisions)
+                         : IntegrateOverAnalyticSurface(*sf, integrand, whole_domain_subdivisions));
       continue;
     }
     if (face.m_li.Count() == 0) {
