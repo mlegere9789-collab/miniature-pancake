@@ -696,16 +696,16 @@ void SceneObject::BuildDisplay(double curve_tolerance, double surface_tolerance)
       std::vector<kernel::Mesh> meshes;
       // The display tolerance is an absolute 0.05..0.1 model units, which is fine up to a few hundred units and
       // hopeless for a Sphere of radius 1e6 (the mesher never returned, and BoundingBox() meshes at 0.1, so even a
-      // SelAll + BoundingBox hung). Above 1e5 units across, never ask for finer than 1e-4 of the object's own size; smaller
+      // SelAll + BoundingBox hung). Above 2e4 units across, never ask for finer than 1e-4 of the object's own size; smaller
       // objects keep their tolerance exactly. cache_.built_surface_tolerance stays the REQUESTED value, so the adaptive
       // display does not see a mismatch and rebuild every frame.
       double mesh_tolerance = surface_tolerance;
       {
         const ON_BoundingBox bb = brep->raw().BoundingBox();
         const double diag = bb.IsValid() ? bb.Diagonal().Length() : 0.0;
-        // Only objects beyond 1e5 units: smaller ones (a R500 sphere is 1700 across) are zoomed into with tolerances far
+        // Only objects beyond 2e4 units across (a sphere of radius 10000 already needs seconds to mesh at 0.1): smaller ones (a R500 sphere is 1700 across) are zoomed into with tolerances far
         // below 1e-4 of their size and must get exactly what the viewport asks for.
-        if (std::isfinite(diag) && diag > 1e5 && diag * 1e-4 > mesh_tolerance) mesh_tolerance = diag * 1e-4;
+        if (std::isfinite(diag) && diag > 2e4 && diag * 1e-4 > mesh_tolerance) mesh_tolerance = diag * 1e-4;
       }
       try {
         BrepMeshOptions opt;
