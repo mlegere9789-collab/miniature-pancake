@@ -75,6 +75,7 @@ add_library(dino8_kernel STATIC
   src/boolean_diagnostics.cpp
   src/features.cpp
   src/rib.cpp
+  src/boss.cpp
   src/fillet.cpp
   src/sweep.cpp
   src/file_io.cpp
