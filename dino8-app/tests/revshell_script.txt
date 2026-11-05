@@ -105,3 +105,14 @@ Enter
 0.5
 SelAll
 List
+# ===================== negative: a cylinder with only its WALL removed (floor and ceiling would be two lumps) =====================
+New
+RVSHBEGIN_cylwall
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+5,0,5
+Enter
+1
+SelAll
+List

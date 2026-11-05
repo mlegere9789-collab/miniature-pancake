@@ -34,3 +34,4 @@ rvshcheck conewall "open (1 face(s) removed), exact B-rep" "RVSH_conewall: a con
 rvshvol conewall 77.5 79.2 "RVSH_conewall: Volume = 78.36 (Pappus-free closed form: outer cone minus the offset cone)"
 rvshcheck closedvary "exact B-rep shell not used (.*at least one face must be removed" "RVSH_closedvary: a per-face thickness with nothing removed is refused WITH the kernel's reason (negative control)"
 rvshcheck thickfloor "exact B-rep shell not used (.*" "RVSH_thickfloor: a floor as thick as the whole cylinder is refused WITH a reason (negative control)"
+rvshcheck cylwall "exact B-rep shell not used (.*separate runs" "RVSH_cylwall: a cylinder with only its wall removed is refused WITH the measured reason (two separate removed runs: the floor and the ceiling would be two lumps)"

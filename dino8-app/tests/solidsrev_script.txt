@@ -164,7 +164,8 @@ SelAll
 List
 Volume
 Check
-# cone with its WALL removed: no exact construction, reason printed (mesh)
+# cone with its WALL removed: exact (kernel::ShellRevolvedProfile) - what is left is the cap's 1-thick slab, a frustum
+# between z=9 (r 4.5) and z=10 (r 5) with the open wall as its slanted underside: pi/3*(4.5^2 + 4.5*5 + 5^2) = 70.95
 New
 SRBEGIN_S_cone_wall
 Cone 0,0,0 5 10
@@ -175,6 +176,8 @@ Enter
 1
 SelAll
 List
+Volume
+Check
 # a wall as thick as the cone: refused with the reason
 New
 SRBEGIN_S_cone_thick
