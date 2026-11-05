@@ -19,6 +19,7 @@
 
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "test_registry.h"
 
 namespace {
@@ -173,6 +174,43 @@ D8_EXTRA_TEST(SealedSliversParallelCylindersFlushDifference) {
   const Brep a = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
   const Brep b = Cylinder(ON_3dPoint(1, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
   CheckSealedOrRefused(Run(a, b, BooleanOp::Difference), "flush parallel cylinders Difference A-B", 4.0 * (ON_PI - LensQuadrature(1.0)), 0.012);
+}
+
+// The disk cap of a Brep::FromMixedFaces() cylinder trims with ONE polyline through its 128 ring vertices. Its trim polygon
+// (what FaceContainsUV() clips intersection curves against) must be that ring, not a 24-sample resampling of it: a 24-gon
+// sits up to 0.0086 inside the unit circle, so a curve crossing the rim was cut 0.003 short of the wall's exact rim point.
+D8_EXTRA_TEST(SealedSliversCapTrimPolygonKeepsEveryRingVertex) {
+  const Brep cyl = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const ON_Brep& b = cyl.raw();
+  int cap_faces = 0;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+    if (!srf || b.m_F[fi].m_li.Count() == 0) continue;
+    const ON_3dPoint c = srf->PointAt(srf->Domain(0).Mid(), srf->Domain(1).Mid());
+    // a cap: centre on the axis, at z = 0 or z = 4
+    if (std::fabs(c.x) > 1e-6 || std::fabs(c.y) > 1e-6 || (std::fabs(c.z) > 1e-6 && std::fabs(c.z - 4.0) > 1e-6)) continue;
+    ++cap_faces;
+    const std::vector<ON_2dPoint> poly = dino8::kernel::LoopPolygon(b, b.m_F[fi].m_li[0]);
+    // The loop also carries the notch (slit) trim, whose samples are interior points; the ring itself must be all 128 vertices.
+    int on_rim = 0;
+    for (const ON_2dPoint& q : poly) {
+      const ON_3dPoint x = srf->PointAt(q.x, q.y);
+      if (std::fabs(std::hypot(x.x, x.y) - 1.0) < 1e-9) ++on_rim;
+    }
+    d8test::Check(on_rim == 128, "cap trim polygon has all 128 ring vertices exactly on the unit rim circle (not 24 resampled chords)");
+  }
+  d8test::Check(cap_faces == 2, "found both disk caps");
+}
+
+// A smaller offset (axes 0.6 apart, z-overlap 3): the same three Booleans, lens area from the closed form.
+D8_EXTRA_TEST(SealedSliversParallelCylindersCloseAxes) {
+  const double d = 0.6;
+  const Brep a = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const Brep b = Cylinder(ON_3dPoint(d, 0, 1), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const double vi = 3.0 * LensClosedForm(d);
+  CheckSealed(Run(a, b, BooleanOp::Union), "close parallel cylinders Union", 8.0 * ON_PI - vi, 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Intersection), "close parallel cylinders Intersection", vi, 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Difference), "close parallel cylinders Difference A-B", 4.0 * ON_PI - vi, 0.012);
 }
 
 // Cylinder (r = 1, axis z, z in [-2, 2]) minus a box that goes THROUGH it: x in [-2, 2] (past both sides of the wall),
