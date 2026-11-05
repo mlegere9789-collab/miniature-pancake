@@ -1629,11 +1629,23 @@ class PipeCommand : public Command {
     // RebuildPipe's own comment below for exactly what it reproduces.
     for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) ids_.push_back(id); }
     if (ids_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
-    options = {{"Radius", FormatNumber(radius_), {}, true, false}, {"Cap", cap_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+    options = {{"Radius", FormatNumber(radius_), {}, true, false}, {"Cap", cap_ ? "Yes" : "No", {"Yes", "No"}, false, true},
+               {"EndRadius", FormatNumber(end_radius_), {}, true, false}, {"InnerRadius", FormatNumber(inner_), {}, true, false}};
     WantNumber("Radius", radius_);
   }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Cap") { cap_ = (v == "Yes"); options[1].value = cap_ ? "Yes" : "No"; }
+    // EndRadius (a tapered pipe: Radius at the rail start, EndRadius at its end - the kernel's Brep::PipeVariable) and InnerRadius (a hollow
+    // pipe of wall Radius - InnerRadius - the kernel's Brep::PipeThickWalled); 0 means "not used", the two cannot be combined.
+    if (n == "EndRadius" || n == "InnerRadius") {
+      double d;
+      if (ParseNumber(v, d) && d >= 0) {
+        (n == "EndRadius" ? end_radius_ : inner_) = d;
+        options[n == "EndRadius" ? 2 : 3].value = FormatNumber(d);
+      } else {
+        ctx.Warn(n + " must be zero (off) or positive");
+      }
+    }
     if (n == "Radius") { double d; if (ParseNumber(v, d) && d > 0) { radius_ = d; options[0].value = FormatNumber(d); default_number = d; } else ctx.Warn("Radius must be positive"); }
   }
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
@@ -1644,6 +1656,8 @@ class PipeCommand : public Command {
     HistoryRecord rec;
     rec.command = "Pipe";
     rec.num = {{"radius", radius_}, {"cap", cap_ ? 1.0 : 0.0}};
+    if (end_radius_ > 0.0) rec.num["endradius"] = end_radius_;
+    if (inner_ > 0.0) rec.num["inner"] = inner_;
     int made = 0, made_brep = 0, made_closed_brep = 0;
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
@@ -1674,6 +1688,8 @@ class PipeCommand : public Command {
   }
   std::vector<ObjectId> ids_;
   double radius_ = 1;
+  double end_radius_ = 0.0;
+  double inner_ = 0.0;
   bool cap_ = true;
 };
 
@@ -3012,12 +3028,36 @@ std::optional<SceneObject> RebuildNetworkSrf2(CommandContext&, const kernel::Nur
 // live command itself used above - anonymous-namespace names have
 // internal linkage but are still visible by ordinary unqualified lookup
 // throughout this translation unit, so this needs no header for them.
-std::optional<SceneObject> RebuildPipe(CommandContext&, const kernel::NurbsCurve& c, const HistoryRecord& rec) {
+std::optional<SceneObject> RebuildPipe(CommandContext& ctx, const kernel::NurbsCurve& c, const HistoryRecord& rec) {
   auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
   const double radius = num("radius");
   if (radius <= 0) return std::nullopt;
   const bool cap = num("cap") != 0.0;
   const bool wrap = c.IsClosed();
+  // EndRadius= (taper) / InnerRadius= (hollow): the kernel's exact PipeVariable / PipeThickWalled. No silent fall-back to the constant-radius
+  // mesh below - a refusal prints the kernel's reason and builds nothing (a different shape would be a wrong answer to the request).
+  const double end_radius = num("endradius"), inner = num("inner");
+  if (end_radius > 0.0 || inner > 0.0) {
+    if (end_radius > 0.0 && inner > 0.0) {
+      ctx.Warn("Pipe: EndRadius= and InnerRadius= cannot be combined (a tapered pipe is solid, a hollow pipe has one radius); nothing was built");
+      return std::nullopt;
+    }
+    try {
+      kernel::Brep b = inner > 0.0 ? kernel::Brep::PipeThickWalled(c, radius, inner, cap, 32)
+                                   : kernel::Brep::PipeVariable(c, {{0.0, radius}, {1.0, end_radius}}, cap, 32, false);
+      char buf[160];
+      if (b.raw().IsSolid()) {
+        std::snprintf(buf, sizeof(buf), "Pipe: exact kernel %s, closed solid, exact volume %.9g", inner > 0.0 ? "hollow (thick-walled) pipe" : "tapered pipe", b.Volume());
+      } else {
+        std::snprintf(buf, sizeof(buf), "Pipe: exact kernel %s, open wall (Cap=No)", inner > 0.0 ? "hollow (thick-walled) pipe" : "tapered pipe");
+      }
+      ctx.Print(buf);
+      return SceneObject::MakeBrep(std::move(b));
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("Pipe: ") + ex.what() + "; nothing was built");
+      return std::nullopt;
+    }
+  }
   // An open, capped rail now calls the kernel's own exact Brep::Pipe first
   // (an exact rational cylinder wall along a straight rail, real flat-disc
   // end caps) instead of unconditionally falling through to this file's
@@ -4160,7 +4200,7 @@ void RegisterSurfaceCommands(CommandEngine& e) {
         [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge, const std::vector<std::string>&) { PatchContinuity(ctx, ids, req, edge); });
   }, CommandStatus::Implemented, "Data within the document tolerance of their own best-fit plane keep the planar patch (an exact plane trimmed by a single closed planar curve, or a least-squares rectangle). Non-planar data call the kernel's least-squares NurbsSurface::FitPatch (boundary samples of the selected curves and the selected points, a bicubic-or-lower net grown until the worst data deviation is within the document tolerance, measured and printed; a surface that misses tolerance is flagged NOT met) and the closed curve enclosing the most area is trimmed out of it by Brep::TrimmedPatchFace, every other closed curve wholly inside it becoming a hole of the same face (overlapping or crossing curves are reported and leave the surface untrimmed); if the kernel refuses or the fit is no better than the flat plane the reason is printed and the planar construction runs. With History On the non-planar result records every selected curve and point (in selection order) and the fit (and trim) is re-run when one is edited; a rebuild that no longer applies (the data became flat, a source deleted, the fit failing) keeps the old patch with the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's continuity-aware FitPatch: the selected curve lying on that edge supplies ordered edge samples whose adjacent tangent plane (and second fundamental form) enter the least-squares fit as heavily weighted constraints; the finished UNTRIMMED surface is MEASURED between the samples (position gap, tangent angle, cross-edge and Gaussian curvature difference) and printed, and the request is refused with the kernel's reason (G0 not met, adjacent plane too steep, measured angle / curvature above tolerance, data deviation above the document tolerance). A continuity result is not recorded in History (the reason is printed).");
   Reg(e, "MeasureEdgeContinuity", Make<MeasureEdgeContinuityCommand>(), CommandStatus::Implemented, "Click two surface (or polysurface face) edges; prints the MEASURED position gap, tangent-plane angle, cross-edge normal curvature difference and Gaussian curvature difference at 97 probes evenly spaced along the second edge, each against the first surface's own closest point (kernel NurbsSurface::MeasureEdgeContinuity), then which of G0 (gap within the document tolerance), G1 (and angle within AngleTol, degrees, default 0.0573 = 0.001 rad) and G2 (and curvature difference within CurvTol, default 0.01 per length) are met. Pure measurement: nothing is modified. The edge is the nearest isoparametric edge of the face's underlying surface, so a trimmed face's trim edge is not measured.");
-  Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
+  Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "EndRadius=<r> tapers the pipe from Radius at the rail start to r at its end (the kernel's exact Brep::PipeVariable: a straight rail gives the exact cone frustum), InnerRadius=<r> makes it hollow (Brep::PipeThickWalled: an annular solid, a straight rail gives pi (R^2 - r^2) L); the two cannot be combined and a kernel refusal builds nothing. Single radius otherwise. Cap=Yes on an open rail calls the kernel's exact Brep::Pipe (real flat-disc end caps, exact rational cylinder wall along a straight rail); a closed rail still gives a closed mesh tube. Cap=No gives a periodic NURBS surface (circle approximated by a cubic). Records History (History On, see cmd_history.cpp) for UpdateHistory to rebuild against the rail curve's current shape.");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: the kernel's unified offset (exact closed form for plane/sphere/cylinder/cone/torus, otherwise a tolerance-controlled refit; when the refit refuses, the first-order Greville-normal approximation with a warning that says so). Tolerance=<value> overrides the document tolerance; Loose=Yes builds the kernel's OffsetApproximate (control points moved along their own normals, same control net, first-order). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
   Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid. With no face clicked to remove/open and no per-face thickness override, a polysurface whose faces are all planar and convex (a box or other simple polyhedron) now calls the kernel's exact ShellConvexPlanar first, giving a real B-rep result (exact volume, no tessellation) instead of a mesh; it fails open to the existing mesh construction (outer minus inward vertex-normal offset) for a curved or non-convex solid, or a thickness beyond that shape's own offset feasibility. Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");
   Reg(e, "ExtrudeCrvAlongCrv", Make<ExtrudeAlongCommand>(), CommandStatus::Implemented, "Exact translational sweep (sum surface); the profile is not rotated along the path.");
