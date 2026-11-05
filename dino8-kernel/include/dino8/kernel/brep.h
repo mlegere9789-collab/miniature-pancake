@@ -541,6 +541,23 @@ class Brep {
   //     wall deviation from the family 6e-6 (was 0.416 with the refit), and
   //     the capped volume equals Steiner's A L - P tan L^2/2 + pi tan^2 L^3/3
   //     to 1e-8 relative (was 0.5 percent low).
+  //   - A profile with a tangent corner BETWEEN CURVED SPANS (an arc and its
+  //     chord, a D shape): NOT supported - the fallback below REFUSES it at
+  //     every draft angle (measured 0.1 to 10 degrees on a radius-2 D shape
+  //     with 90 degree corners, where OffsetInPlane reads the corner as an
+  //     offset-direction flip, and on a 120 degree-arc-and-chord shape with
+  //     60 degree corners, where it cannot reach its tolerance - best
+  //     deviation 0.114 at 0.1 degrees down to 0.048 at 10 degrees), so there
+  //     is no approximate solid and no error bound to quote; the refusal now
+  //     carries OffsetInPlane's own reason and names the tangent corner
+  //     (before, it blamed an over-large draft). The exact solid exists - its
+  //     sections are the inward parallel sets with mitred corners, volume
+  //     V = A L - P tan L^2/2 + c tan^2 L^3/3 with c = T/2 + sum tan(phi_i/2)
+  //     (T the smooth turning, phi_i the exterior corner angles; NOT the
+  //     smooth-curve pi) - but its corner walls are trimmed against each other
+  //     along an intersection curve, which no ruled loft between the profile
+  //     and any top curve can represent. Polylines are the exception (planar
+  //     faces, the exact miter path above).
   //   - Any other planar profile: falls through to OffsetInPlane()'s own
   //     general least-squares branch, with its own documented exactness/
   //     approximation split and its own curvature-based self-intersection

@@ -2328,10 +2328,16 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
     }
     NurbsCurve profile_wrapped;
     profile_wrapped.raw() = c;
-    if (profile_wrapped.OffsetInPlane(offset_distance, top) != Result::Ok) {
+    std::string offset_reason;
+    if (profile_wrapped.OffsetInPlane(offset_distance, top, -1.0, CurveOffsetCornerStyle::Sharp, &offset_reason) != Result::Ok) {
+      // OffsetInPlane's own reason is passed through: the old text blamed an over-large draft for every refusal, including a profile that
+      // merely has a tangent corner between curved spans (an arc and its chord), which the ruled draft construction cannot represent at
+      // any draft angle (measured: refused from 0.1 to 10 degrees).
       Fail(caller,
-           "the draft angle/extrusion height is too large for this profile - the offset curve would "
-           "self-intersect or fold through its own center of curvature");
+           std::string("the offset curve of this profile could not be built (") + offset_reason +
+               "): the draft angle/extrusion height may be too large for it (the offset would self-intersect or fold through its own "
+               "center of curvature), or the profile has a tangent corner between curved spans, whose drafted walls are trimmed against each "
+               "other and cannot be built as one ruled loft");
     }
   }
   ON_NurbsCurve top_raw = top.raw();
