@@ -516,11 +516,25 @@ class FilletChamferCommand : public Command {
     options = {{SizeName(), FormatNumber(size_), {}, true, false}, {"Join", join_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
     WantPoint(std::string("Select first curve to ") + (chamfer_ ? "chamfer" : "fillet") + " (or type the " + SizeName() + ")");
   }
+  // 0 means a sharp corner. nan, inf, negative values and values between 0 and the tolerance used to be taken silently
+  // (inf reached the kernel and came back as "p0/p1 must be distinct from corner"; 1e-300 made a degenerate arc, and
+  // typed numbers went through FormatNumber, which printed 1e-300 as 0), or dropped while echoing the old value.
+  void SetSize(CommandContext& ctx, double d, const std::string& shown) {
+    const double tol = ctx.Settings().absolute_tolerance;
+    if (std::isfinite(d) && d >= 0 && (d == 0 || d >= tol)) {
+      size_ = d;
+      options[0].value = FormatNumber(size_);
+      ctx.Print(std::string(SizeName()) + "=" + FormatNumber(size_));
+    } else {
+      ctx.Warn(std::string(Name()) + ": " + SizeName() + " must be 0 (a sharp corner) or at least the tolerance " + FormatNumber(tol) + ", '" + shown +
+               "' ignored (" + SizeName() + " stays " + FormatNumber(size_) + ")");
+    }
+  }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
-    if (n == SizeName()) { const double d = std::atof(v.c_str()); if (d >= 0) size_ = d; options[0].value = FormatNumber(size_); ctx.Print(std::string(SizeName()) + "=" + FormatNumber(size_)); }
+    if (n == SizeName()) SetSize(ctx, std::atof(v.c_str()), v);
     if (n == "Join") { join_ = (v == "Yes"); options[1].value = join_ ? "Yes" : "No"; }
   }
-  void OnNumber(CommandContext& ctx, double v) override { if (v >= 0) OnOption(ctx, SizeName(), FormatNumber(v)); }
+  void OnNumber(CommandContext& ctx, double v) override { SetSize(ctx, v, FormatNumber(v)); }
   void OnText(CommandContext& ctx, const std::string& t) override {
     char* e = nullptr; const double v = std::strtod(t.c_str(), &e);
     if (e && !*e && e != t.c_str()) OnNumber(ctx, v);

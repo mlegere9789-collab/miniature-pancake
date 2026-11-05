@@ -184,4 +184,30 @@ Cancel
 BoundingBox
 New
 
+QC3ABEGIN_fillet_bad_radius
+Line 0,0,0 5,0,0
+Line 5,0,0 5,5,0
+Fillet
+Radius=inf
+Radius=-1
+Radius=1e-300
+Radius=nan
+Radius=1
+2.5,0,0
+5,2.5,0
+Cancel
+New
+
+QC3ABEGIN_chamfer_bad_distance
+Line 0,0,0 5,0,0
+Line 5,0,0 5,5,0
+Chamfer
+Distance=inf
+Distance=1e-300
+Distance=1
+2.5,0,0
+5,2.5,0
+Cancel
+New
+
 QC3ABEGIN_end
