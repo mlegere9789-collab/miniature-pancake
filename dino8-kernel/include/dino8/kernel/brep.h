@@ -993,6 +993,24 @@ class Brep {
                    const NurbsCurve* end_tangent = nullptr, LoftSpacing spacing = LoftSpacing::Chord,
                    bool align_seams = false);
 
+  // Loft with a prescribed v-derivative at ANY chosen sections, each with a scalar weight (Hermite-type loft: the bulge of
+  // the wall between two sections is set by the tangent weights). `tangents[i]` names a section index, a tangent curve
+  // (read exactly as Loft()'s start_tangent: control points are the per-column dS/dv vectors, same weights rules for
+  // rational/closed sections) and a `weight` that multiplies it: dS/dv(u, v_section) = weight * tangent(u), the
+  // derivative being with respect to the loft parameter v in [0, 1] whose stations are `spacing`'s. The data are N
+  // sections plus one derivative per tangent, so even TWO sections with both tangents (cubic Hermite wall between
+  // them) work; degree is reduced to (N + tangents - 1) when that is smaller, and must be >= 2. Every section is still
+  // reproduced exactly. Closed-curve sections are capped as in Loft() when `cap` is true. Throws
+  // std::invalid_argument for no tangents, a section index out of range or repeated, a non-finite weight, degree < 2,
+  // mixed open/closed sections, and tangent curves that cannot be matched exactly (see Loft()).
+  struct LoftSectionTangent {
+    int section = 0;
+    NurbsCurve tangent;
+    double weight = 1.0;
+  };
+  static Brep LoftWithSectionTangents(const std::vector<NurbsCurve>& sections, const std::vector<LoftSectionTangent>& tangents,
+                                      int degree = 3, bool cap = true, LoftSpacing spacing = LoftSpacing::Chord);
+
   // PARITY_MAP.md's offsetshell "Offset-derived constructions (Ribbon,
   // RibbonOffset, Fin, Slab)" gap: every one of those is currently
   // sample-and-fit, app-only (`dino8-app`'s own `RibbonCommand`,
