@@ -778,7 +778,7 @@ class ExtendSrfCommand : public Command {
   bool linear_ = false;
 };
 
-void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids, bool smooth = false) {
   std::vector<std::pair<ObjectId, ON_NurbsSurface>> srfs;
   SceneObject like;
   for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (auto s = SurfaceOfObject(*o)) { srfs.emplace_back(id, *s); like = *o; } }
@@ -807,10 +807,19 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     kernel::NurbsSurface other;
     other.raw() = b;
     kernel::SurfaceJoinReport report;
+    kernel::SurfaceJoinTangentReport tangent_report;
     bool exact = false;
     try {
-      exact = joined.Join(other, report, std::max(ctx.Settings().absolute_tolerance, 1e-6)) == kernel::Result::Ok;
-      if (!exact) kernel_refusal = report.failure_reason;
+      if (smooth) {
+        // Smooth=Yes: the exact splice followed by G1 smoothing of the seam (kernel::NurbsSurface::JoinTangent): the cross derivative on both
+        // sides becomes the average of the two inputs' own, so a crease disappears at the cost of the two control rows next to the seam.
+        exact = joined.JoinTangent(other, tangent_report, std::max(ctx.Settings().absolute_tolerance, 1e-6)) == kernel::Result::Ok;
+        report = tangent_report.join;
+        if (!exact) kernel_refusal = tangent_report.failure_reason;
+      } else {
+        exact = joined.Join(other, report, std::max(ctx.Settings().absolute_tolerance, 1e-6)) == kernel::Result::Ok;
+        if (!exact) kernel_refusal = report.failure_reason;
+      }
     } catch (const std::exception& e) {
       kernel_refusal = report.failure_reason.empty() ? std::string(e.what()) : report.failure_reason;
     }
@@ -823,6 +832,11 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       ctx.Doc().Add(std::move(n));
       ctx.Print("MergeSrf: merged 2 surfaces into one (exact merge: control nets spliced across the shared edge, " +
                 std::to_string(joined.raw().CVCount(0)) + " x " + std::to_string(joined.raw().CVCount(1)) + " control points, no refit)");
+      if (smooth) {
+        ctx.Print("MergeSrf: seam smoothed to G1 (Smooth=Yes): crease " + FormatNumber(tangent_report.max_crease_angle_before_degrees) +
+                  " degrees before, below 1e-6 degrees after; the two control rows next to the seam moved the surface by at most " +
+                  FormatNumber(tangent_report.max_deviation) + ", the seam curve itself by " + FormatNumber(tangent_report.max_seam_shift));
+      }
       if (!report.steps.empty()) {
         // The pair was not already in splice-ready form: say exactly what the
         // kernel did to bring it there, and how closely the result reproduces both.
@@ -835,6 +849,12 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       }
       return;
     }
+  }
+  if (smooth) {
+    // Smooth=Yes needs the exact merge (it smooths the spliced control net); the sample-and-refit route below cannot promise a tangent seam.
+    ctx.Warn("MergeSrf: Smooth=Yes needs the exact kernel merge, which refused this pair" + (kernel_refusal.empty() ? std::string() : ": " + kernel_refusal) +
+             "; nothing was changed");
+    return;
   }
   // Find the pair of edges that coincide: try a's 4 sides against b's 4 sides.
   auto edge_pts = [](const ON_NurbsSurface& s, int side, int n) {
@@ -887,6 +907,27 @@ void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Print("MergeSrf: merged 2 surfaces into one (refit through samples; the exact kernel merge refused this pair" +
             (kernel_refusal.empty() ? std::string() : ": " + kernel_refusal) + ")");
 }
+
+// MergeSrf with the Smooth option (Smooth=Yes removes the crease at the seam; see MergeSrf above).
+class MergeSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Smooth", "No", {"Yes", "No"}, false, true}};
+    WantObjects("Select two surfaces sharing an edge", 2);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Smooth") return;
+    smooth_ = v == "Yes" ? true : v == "No" ? false : !smooth_;
+    options[0].value = smooth_ ? "Yes" : "No";
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    MergeSrf(ctx, ids, smooth_);
+    Finish();
+  }
+
+ private:
+  bool smooth_ = false;
+};
 
 // ---------------------------------------------------------------------------
 // MoveFace / MoveEdge / MoveUntrimmedFace / MoveUntrimmedEdge: click one or
@@ -3429,7 +3470,7 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "UnrollSrf/Smash/FlattenSrf output, which don't populate that table.");
   Reg(e, "FlattenSrf", OnSelection("Select surfaces to flatten", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Unroll(ctx, ids, "FlattenSrf"); }));
   Reg(e, "ExtendSrf", Make<ExtendSrfCommand>());
-  Reg(e, "MergeSrf", OnSelection("Select two surfaces sharing an edge", MergeSrf, 2));
+  Reg(e, "MergeSrf", Make<MergeSrfCommand>());
   Reg(e, "EdgeSrf", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("NetworkSrf"); }));
   Reg(e, "RailRevolve", Make<RailRevolveCommand>());
   Reg(e, "Fin", Make<FinStagedCommand>());
