@@ -1231,8 +1231,15 @@ class ArraySrfCommand : public Command {
   }
   void OnNumber(CommandContext& ctx, double v) override {
     if (!srf_) return;
-    if (!nu_) { nu_ = std::max(1, static_cast<int>(v)); WantNumber("Number in V direction", 5); return; }
-    int nv = std::max(1, static_cast<int>(v));
+    int c = 1;
+    std::string why;
+    if (!CountInRange(v, 1, kMaxCreatedItems, c, why)) { ctx.Warn("ArraySrf: the number " + why); return; }
+    if (!nu_) { nu_ = c; WantNumber("Number in V direction", 5); return; }
+    if (static_cast<double>(*nu_) * c * static_cast<double>(std::max<size_t>(1, ids_.size())) > kMaxCreatedItems) {
+      ctx.Warn("ArraySrf: " + std::to_string(*nu_) + " x " + std::to_string(c) + " would create more than " + FormatNumber(kMaxCreatedItems) + " objects; give a smaller number");
+      return;
+    }
+    int nv = c;
     kernel::BoundingBox bb;
     ctx.Doc().BoundingBoxOf(ids_, bb);
     Point3d base((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, bb.min.z);
@@ -1488,7 +1495,9 @@ class TweenCurvesCommand : public Command {
     WantNumber("Number of tween curves", 3);
   }
   void OnNumber(CommandContext& ctx, double v) override {
-    int n = std::max(1, static_cast<int>(v));
+    int n = 1;
+    std::string why;
+    if (!CountInRange(v, 1, kMaxCreatedItems, n, why)) { ctx.Warn("Tween: the number of tween curves " + why); return; }
     const kernel::NurbsCurve& a = curves_[0].curve;
     kernel::NurbsCurve b = curves_[1].curve;
     // Orient b like a.
@@ -2427,7 +2436,9 @@ class CSecCommand : public Command {
   }
   void OnNumber(CommandContext& ctx, double v) override {
     if (!rail_) return;
-    const int count = std::max(2, static_cast<int>(v));
+    int count = 2;
+    std::string why;
+    if (!CountInRange(v, 2, kMaxCreatedItems, count, why)) { ctx.Warn("CSec: the number of sections " + why); return; }
     std::vector<double> params = rail_->curve.DivideByCount(count - 1);
     ctx.Doc().BeginChange("CSec");
     int made = 0;

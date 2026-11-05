@@ -154,4 +154,15 @@ SelAll
 Cancel
 New
 
+QC3ABEGIN_arraylinear_count
+Box 0,0,0 1,1,0 1
+SelAll
+ArrayLinear
+100000000
+3
+0,0,0
+5,0,0
+Cancel
+New
+
 QC3ABEGIN_end

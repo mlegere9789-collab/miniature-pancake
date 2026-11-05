@@ -1,5 +1,6 @@
 // Drafting helpers: Hatch, Make2D, and Blocks (definitions + instances).
 #include "commands/cmd_common.h"
+#include "commands/count_limits.h"
 
 #include <algorithm>
 #include <cctype>
@@ -429,8 +430,10 @@ class BlockSetArrayCountCommand : public Command {
     WantNumber("Array count", inst.array_count);
   }
   void OnNumber(CommandContext& ctx, double v) override {
+    int n = 1;
+    std::string why;
+    if (!CountInRange(v, 1, kMaxCreatedItems, n, why)) { ctx.Warn("BlockSetArrayCount: the array count " + why); return; }
     ctx.Doc().BeginChange("BlockSetArrayCount");
-    const int n = std::max(1, static_cast<int>(v));
     if (!SetBlockInstanceArrayCount(ctx.Doc(), group_, n)) ctx.Warn("Could not set array count");
     else ctx.Print("BlockSetArrayCount: instance now has " + std::to_string(n) + " copy(ies)");
     Finish();

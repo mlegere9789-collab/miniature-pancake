@@ -58,3 +58,6 @@ qc3a_has "$A" "Copied 1 object(s)" "QC3A_mirror_same_point: the next point 3,20,
 A="$(qc3a_case explode_noop_undo)"
 qc3a_has "$A" "Exploded into 0 object(s)" "QC3A_explode_noop_undo: exploding a straight line makes nothing"
 qc3a_has "$A" "0 object(s) selected" "QC3A_explode_noop_undo: Undo after it removes the Line (the previous step), not an empty Explode step"
+A="$(qc3a_case arraylinear_count)"
+qc3a_has "$A" "ArrayLinear: the number of items must be a number from 2 to" "QC3A_arraylinear_count: 100000000 items is refused with the allowed range"
+qc3a_has "$A" "ArrayLinear created 2 object(s)" "QC3A_arraylinear_count: 3 items afterwards still arrays (2 copies)"

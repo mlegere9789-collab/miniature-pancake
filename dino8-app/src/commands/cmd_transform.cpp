@@ -488,7 +488,13 @@ class ArrayLinearCommand : public Command {
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantNumber("Number of items", 3); }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double v) override {
-    if (!count_) { count_ = std::max(2, static_cast<int>(v)); WantPoint("Direction start point (spacing between items)"); }
+    if (!count_) {
+      int c = 2;
+      std::string why;
+      if (!CountInRange(v, 2, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, ids_.size())), c, why)) { ctx.Warn("ArrayLinear: the number of items " + why); return; }
+      count_ = c;
+      WantPoint("Direction start point (spacing between items)");
+    }
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
