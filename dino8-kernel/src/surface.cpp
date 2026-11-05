@@ -1496,9 +1496,247 @@ Point3d NurbsSurface::PointAt(double u, double v) const {
   return pt;
 }
 
+namespace {
+
+// The distinct knot values of `s` in direction `dir` inside its domain (the domain ends included): the span boundaries.
+std::vector<double> SpanKnots(const ON_NurbsSurface& s, int dir) {
+  const ON_Interval d = s.Domain(dir);
+  const double tol = 1e-12 * d.Length();
+  std::vector<double> knots{d.Min()};
+  for (int k = 0; k < s.KnotCount(dir); ++k) {
+    const double t = s.Knot(dir, k);
+    if (t > knots.back() + tol && t < d.Max() - tol) knots.push_back(t);
+  }
+  knots.push_back(d.Max());
+  return knots;
+}
+
+// Scan positions in direction `dir`: every span boundary, and each span cut into `per_span` equal parts (domain ends included).
+std::vector<double> SpanSamples(const std::vector<double>& knots, int per_span) {
+  std::vector<double> out;
+  for (size_t k = 0; k + 1 < knots.size(); ++k) {
+    for (int q = 0; q < per_span; ++q) out.push_back(knots[k] + (knots[k + 1] - knots[k]) * static_cast<double>(q) / per_span);
+  }
+  out.push_back(knots.back());
+  return out;
+}
+
+// ClosestPointParameter() for a surface with many spans (see there): a scan of the whole domain at the span boundaries and
+// between them, the best few well-separated local minima of that scan, and a damped Newton solve of
+// d/d(u,v) |S(u,v) - p|^2 = 0 from each, limited to +/- 3 scan cells around its seed (so a seed cannot wander off to another
+// branch of the surface). The scan positions follow the knots, so a graded wall (stations packed close near a schedule breakpoint)
+// is sampled as finely there as it is built. Returns the best solution.
+Point2d DenseNewtonClosestParameter(const ON_NurbsSurface& s, const ON_3dPoint& p, const std::vector<double>& us, const std::vector<double>& vs) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const bool uc = s.IsClosed(0), vc = s.IsClosed(1);
+  const double ulen = du.Length(), vlen = dv.Length();
+  const int nu = static_cast<int>(us.size()) - 1, nv = static_cast<int>(vs.size()) - 1;
+  auto wrap = [](double t, double lo, double len) {
+    if (len <= 0.0) return t;
+    double r = std::fmod(t - lo, len);
+    if (r < 0.0) r += len;
+    return lo + r;
+  };
+  auto wu = [&](double u) { return uc ? wrap(u, du.Min(), ulen) : u; };
+  auto wv = [&](double v) { return vc ? wrap(v, dv.Min(), vlen) : v; };
+  auto d2_at = [&](double u, double v) {
+    ON_3dPoint q;
+    s.EvPoint(wu(u), wv(v), q);
+    return (q - p).LengthSquared();
+  };
+  const size_t row = static_cast<size_t>(nv) + 1;
+  std::vector<double> grid((static_cast<size_t>(nu) + 1) * row);
+  for (int i = 0; i <= nu; ++i) {
+    for (int j = 0; j <= nv; ++j) grid[static_cast<size_t>(i) * row + static_cast<size_t>(j)] = d2_at(us[static_cast<size_t>(i)], vs[static_cast<size_t>(j)]);
+  }
+  // A closed direction repeats its first sample as its last: neighbours wrap past the seam over the n distinct samples.
+  auto neighbour = [](int i, int d, int n, bool closed, int& out) {
+    int k = i + d;
+    if (closed) {
+      if (k < 0) k = n - 1;
+      if (k > n) k = 1;
+    } else if (k < 0 || k > n) {
+      return false;
+    }
+    out = k;
+    return true;
+  };
+  struct Cell {
+    double d2;
+    int i, j;
+  };
+  std::vector<Cell> minima;
+  for (int i = 0; i <= nu; ++i) {
+    for (int j = 0; j <= nv; ++j) {
+      const double d2 = grid[static_cast<size_t>(i) * row + static_cast<size_t>(j)];
+      bool is_min = true;
+      for (int a = -1; a <= 1 && is_min; ++a) {
+        for (int b = -1; b <= 1; ++b) {
+          int ni = 0, nj = 0;
+          if ((a == 0 && b == 0) || !neighbour(i, a, nu, uc, ni) || !neighbour(j, b, nv, vc, nj)) continue;
+          if (grid[static_cast<size_t>(ni) * row + static_cast<size_t>(nj)] < d2) {
+            is_min = false;
+            break;
+          }
+        }
+      }
+      if (is_min) minima.push_back(Cell{d2, i, j});
+    }
+  }
+  std::sort(minima.begin(), minima.end(), [](const Cell& a, const Cell& b) { return a.d2 < b.d2; });
+  constexpr size_t kMaxSeeds = 8;
+  constexpr int kSeparation = 3;  // scan cells, in i or in j
+  auto cyc = [](int a, int b, int n, bool closed) {
+    int d = std::abs(a - b);
+    return closed ? std::min(d, n - d) : d;
+  };
+  std::vector<Cell> seeds;
+  for (const Cell& c : minima) {
+    if (seeds.size() >= kMaxSeeds) break;
+    bool far_enough = true;
+    for (const Cell& t : seeds) {
+      if (cyc(c.i, t.i, nu, uc) < kSeparation && cyc(c.j, t.j, nv, vc) < kSeparation) {
+        far_enough = false;
+        break;
+      }
+    }
+    if (far_enough) seeds.push_back(c);
+  }
+  // The scan position `k` cells from index i (k may reach past a closed direction's seam: the period is added or removed).
+  auto pos = [](const std::vector<double>& v, int i, int k, bool closed, double len) {
+    const int n = static_cast<int>(v.size()) - 1;
+    int idx = i + k;
+    if (closed) {
+      double shift = 0.0;
+      while (idx < 0) {
+        idx += n;
+        shift -= len;
+      }
+      while (idx > n) {
+        idx -= n;
+        shift += len;
+      }
+      return v[static_cast<size_t>(idx)] + shift;
+    }
+    return v[static_cast<size_t>(std::min(std::max(idx, 0), n))];
+  };
+  double best_f = std::numeric_limits<double>::max(), best_u = du.Min(), best_v = dv.Min();
+  for (const Cell& seed : seeds) {
+    const double u0 = us[static_cast<size_t>(seed.i)], v0 = vs[static_cast<size_t>(seed.j)];
+    // The window the solve may move in: +/- 3 scan cells, widened to the parameter distance over which the surface moves by 1.5
+    // times the largest 3D step between the seed and its scan neighbours - the scan cell sizes in u and v need not match in 3D (a
+    // graded wall has very short cells in v where its stations are packed, while a cell in u is long), so the nearest sample in
+    // the finer direction is only known to within that 3D radius, which can be many of its cells.
+    double u_lo = pos(us, seed.i, -3, uc, ulen), u_hi = pos(us, seed.i, 3, uc, ulen);
+    double v_lo = pos(vs, seed.j, -3, vc, vlen), v_hi = pos(vs, seed.j, 3, vc, vlen);
+    {
+      ON_3dPoint q0;
+      ON_3dVector su0, sv0;
+      if (s.Ev1Der(wu(u0), wv(v0), q0, su0, sv0)) {
+        double h = 0.0;
+        for (const int k : {-1, 1}) {
+          ON_3dPoint qa, qb;
+          s.EvPoint(wu(pos(us, seed.i, k, uc, ulen)), wv(v0), qa);
+          s.EvPoint(wu(u0), wv(pos(vs, seed.j, k, vc, vlen)), qb);
+          h = std::max(h, std::max(qa.DistanceTo(q0), qb.DistanceTo(q0)));
+        }
+        const double radius = 1.5 * h;
+        const double lu = su0.Length(), lv = sv0.Length();
+        const double bu = lu > 0.0 ? std::min(radius / lu, 0.5 * ulen) : 0.5 * ulen, bv = lv > 0.0 ? std::min(radius / lv, 0.5 * vlen) : 0.5 * vlen;
+        u_lo = std::min(u_lo, u0 - bu);
+        u_hi = std::max(u_hi, u0 + bu);
+        v_lo = std::min(v_lo, v0 - bv);
+        v_hi = std::max(v_hi, v0 + bv);
+      }
+    }
+    if (!uc) {
+      u_lo = std::max(u_lo, du.Min());
+      u_hi = std::min(u_hi, du.Max());
+    }
+    if (!vc) {
+      v_lo = std::max(v_lo, dv.Min());
+      v_hi = std::min(v_hi, dv.Max());
+    }
+    auto clamp_u = [&](double x) { return std::min(std::max(x, u_lo), u_hi); };
+    auto clamp_v = [&](double x) { return std::min(std::max(x, v_lo), v_hi); };
+    double u = u0, v = v0, f = seed.d2;
+    for (int it = 0; it < 100; ++it) {
+      ON_3dPoint q;
+      ON_3dVector su, sv, suu, suv, svv;
+      if (!s.Ev2Der(wu(u), wv(v), q, su, sv, suu, suv, svv)) break;
+      const ON_3dVector r = q - p;
+      const double gu = r * su, gv = r * sv;
+      double a = su * su + r * suu, b = su * sv + r * suv, c = sv * sv + r * svv;
+      double det = a * c - b * b;
+      if (!(a > 0.0 && c > 0.0 && det > 1e-12 * a * c)) {  // not (numerically) positive definite: Gauss-Newton with damping
+        const double jtj_a = su * su, jtj_c = sv * sv;
+        if (!(jtj_a + jtj_c > 0.0)) break;  // a singular point with both partials zero
+        const double mu = 1e-9 * (jtj_a + jtj_c);
+        a = jtj_a + mu;
+        b = su * sv;
+        c = jtj_c + mu;
+        det = a * c - b * b;
+        if (!(det > 0.0)) break;
+      }
+      const double step_u = -(c * gu - b * gv) / det, step_v = -(a * gv - b * gu) / det;
+      double t = 1.0, nf = f, nu_ = u, nv_ = v;
+      bool improved = false;
+      for (int ls = 0; ls < 40; ++ls) {
+        nu_ = clamp_u(u + t * step_u);
+        nv_ = clamp_v(v + t * step_v);
+        nf = d2_at(nu_, nv_);
+        if (nf < f) {
+          improved = true;
+          break;
+        }
+        t *= 0.5;
+      }
+      if (!improved) break;
+      const double moved = std::max(std::fabs(nu_ - u) / ulen, std::fabs(nv_ - v) / vlen);
+      u = nu_;
+      v = nv_;
+      f = nf;
+      if (moved < 1e-15) break;
+    }
+    if (f < best_f) {
+      best_f = f;
+      best_u = u;
+      best_v = v;
+    }
+  }
+  return Point2d(wu(best_u), wv(best_v));
+}
+
+}  // namespace
+
 Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int v_divisions) const {
   const ON_Interval u_domain = surface_.Domain(0);
   const ON_Interval v_domain = surface_.Domain(1);
+  {
+    // A surface with many spans (a sweep or loft through hundreds of stations, a long multi-span patch) is not resolved by a
+    // 20 x 20 scan of its whole domain: the scan can pick a sample on the wrong branch of a wall that bends back on itself, or
+    // step over a stretch of packed stations, and the narrowing rounds then converge to a point far from the nearest one
+    // (measured: points that lie ON such a wall came back 0.10 to 1.8 away). So when 3 samples per knot span need more than
+    // twice the requested divisions in a direction (up to 13 spans per direction, which the default 20 x 20 grid covers with
+    // 1.5 or more samples per span, is unchanged), scan at the span boundaries and 3 per span instead (the requested number of
+    // divisions at least; at most 400000 cells in all), keep the best 8 separated local minima of that scan and solve each with
+    // Newton. Any other surface takes the unchanged search below.
+    constexpr int kSamplesPerSpan = 3;
+    constexpr long long kMaxCells = 400000;
+    const std::vector<double> uk = SpanKnots(surface_, 0), vk = SpanKnots(surface_, 1);
+    const int u_spans = static_cast<int>(uk.size()) - 1, v_spans = static_cast<int>(vk.size()) - 1;
+    if (kSamplesPerSpan * u_spans > 2 * u_divisions || kSamplesPerSpan * v_spans > 2 * v_divisions) {
+      int per_u = std::max(kSamplesPerSpan, (u_divisions + u_spans - 1) / u_spans);
+      int per_v = std::max(kSamplesPerSpan, (v_divisions + v_spans - 1) / v_spans);
+      // (the span boundaries are always kept: past the cell budget the larger direction gets fewer samples between them)
+      while (per_u > 1 || per_v > 1) {
+        const long long cells = static_cast<long long>(per_u * u_spans + 1) * (per_v * v_spans + 1);
+        if (cells <= kMaxCells) break;
+        if (per_u * u_spans >= per_v * v_spans && per_u > 1) --per_u; else if (per_v > 1) --per_v; else --per_u;
+      }
+      return DenseNewtonClosestParameter(surface_, ON_3dPoint(point.x, point.y, point.z), SpanSamples(uk, per_u), SpanSamples(vk, per_v));
+    }
+  }
   // A closed direction (u=Min() and u=Max() are the SAME physical point,
   // e.g. a sphere/cylinder/cone/revolved surface's own periodic
   // parameter, or a NURBS circle's own domain) needs its search window to

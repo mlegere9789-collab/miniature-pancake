@@ -1254,6 +1254,26 @@ class NurbsSurface {
   // samples through the best point is flat (identical distances to
   // 1e-12 relative) at that level, so the other direction moves off the
   // degenerate edge first.
+  //
+  // MANY-SPAN SURFACES. A 20 x 20 scan of the whole domain does not resolve a
+  // surface with hundreds of knot spans, such as a sweep or loft wall through
+  // hundreds of stations that bends back on itself (measured on the adaptive
+  // Sweep1 walls: points lying ON the wall came back 0.10 to 1.8 away, and a
+  // finer request such as (40, 40) was still 0.24 away). When 3 samples per
+  // knot span need more than twice the requested divisions in either
+  // direction (so a surface of up to 13 spans per direction, which the default
+  // grid covers with 1.5 or more samples per span, keeps the search above
+  // unchanged), this instead scans the whole domain at every knot-span
+  // boundary and 3 times per span (at least the requested divisions, at most
+  // 400000 cells in all), takes the best 8 separated local minima of that scan
+  // and runs a damped Newton solve of the squared-distance gradient from each,
+  // inside a window of +/- 3 scan cells widened to the parameter distance over
+  // which the surface moves by 1.5 times its largest 3D scan step there (the
+  // cells of a graded wall are short where its stations are packed, so the
+  // nearest sample is only known to within that 3D radius). The best solution
+  // wins; a closed direction wraps over its seam. Verified against a dense
+  // brute force on the closed circle-rail, open free-form and closed
+  // free-form Sweep1 walls (tests/extra/surface_closest_point_dense.cpp).
   Point2d ClosestPointParameter(Point3d point, int u_divisions = 20, int v_divisions = 20) const;
 
   // The actual closest point: `PointAt(ClosestPointParameter(point,

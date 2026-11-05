@@ -105106,9 +105106,10 @@ std::string RefusalOf(const std::function<void()>& f) {
 
 // Nearest point of the wall to `p` (the distance is returned). A dense parameter grid (nu x nv; default 32 x clamp(2 * CVCount(1),
 // 64, 400)), then a pattern search (8 neighbours, step halving) from the best three local minima of the grid. This replaces
-// NurbsSurface::ClosestPoint in the comparisons below: that seeds only 20 x 20 parameter cells over the WHOLE wall, and on a wall with
-// hundreds of stations that bends back on itself it returns a point far from the nearest one (measured: 0.10 to 1.8 away from points
-// that lie ON the wall), which made a correct surface look wrong by 0.07 to 1.7 whatever the tolerance.
+// NurbsSurface::ClosestPoint in the comparisons below: that used to seed only 20 x 20 parameter cells over the WHOLE wall, and on a wall
+// with hundreds of stations that bends back on itself it returned a point far from the nearest one (measured: 0.10 to 1.8 away from
+// points that lie ON the wall), which made a correct surface look wrong by 0.07 to 1.7 whatever the tolerance. ClosestPoint is fixed
+// now (extra/surface_closest_point_dense.cpp); this oracle stays as a search that shares no code with the kernel's.
 double NearestOnWall(const ON_NurbsSurface& s, const ON_3dPoint& p, int nu = 32, int nv = 0) {
   const ON_Interval du = s.Domain(0), dv = s.Domain(1);
   if (nv <= 0) nv = std::min(std::max(2 * s.CVCount(1), 64), 400);
@@ -105285,11 +105286,10 @@ void TestAdaptiveStraightRailTwistScheduleWithSlopeChanges() {
   Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, nullptr, &s, nullptr, nullptr, nullptr, 1e-9, 512, &r2);
   std::printf("  [adaptive scale] kinked uniform scale on a straight rail at tol 1e-9: %d stations, %d rounds, max %.3g\n", r2.stations, r2.rounds, r2.max_deviation);
   // Between the stations and at them the skin is exact here (measured 5e-15: each piece of the schedule is linear in the fraction, which a
-  // cubic skin with a C0 corner at the kink reproduces; the skin need not be C2 at the kink). What costs rounds at tolerance 1e-9 is the
-  // measurement's own floor: the samples at 2% either side of the kink are off the 8-point search grid and the golden-section search
-  // along v of a V-shaped distance leaves about 4e-9 there (measured 3.8e-9 at 33 stations; 1e-5 .. 1e-8 are met in the first round),
-  // and bisecting narrows that interval until it falls below the tolerance. So: met within 4 rounds, not "in the first round".
-  Check(r2.met && r2.rounds <= 4 && r2.max_deviation < 1e-9, "adaptive sweep1 (kinked uniform scale, straight rail): affine in the fraction, so the C0 cubic skin is exact - tolerance 1e-9 met (within 4 rounds: the 1e-9 level is the noise floor of the measurement at the kink)");
+  // cubic skin with a C0 corner at the kink reproduces; the skin need not be C2 at the kink). With 26 golden-section iterations the
+  // samples next to the kink (off the 8-point search grid) measured 3.8e-9, so tolerance 1e-9 needed a few bisection rounds; with 44
+  // the measurement floor is about 6e-13 and the first build is accepted.
+  Check(r2.met && r2.rounds == 1 && r2.max_deviation < 1e-9, "adaptive sweep1 (kinked uniform scale, straight rail): affine in the fraction, so the C0 cubic skin is exact - tolerance 1e-9 met in the first round");
 }
 
 // Closed circle rail of radius R in the x-y plane starting at (R, 0, 0) heading +y; section: circle radius 1 centred (R + 0.5, 0, 0.3) in the
