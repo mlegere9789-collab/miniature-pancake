@@ -110,6 +110,29 @@ struct SubDEdgeSharpnessInfo {
   double sharpness_at_p1 = 0.0;
 };
 
+// How a control-net vertex is treated by Catmull-Clark (OpenNURBS vertex tag).
+enum class SubDVertexKind {
+  Smooth,  // interior vertex, no crease edge: the ordinary smooth rule
+  Crease,  // exactly two crease edges (or naked boundary edges): the cubic B-spline boundary/crease rule
+  Corner,  // limit point pinned to the control point (a sheet corner, or 3+ crease edges)
+  Dart,    // exactly one crease edge ending at an otherwise smooth vertex
+};
+
+// What SubD::VertexInfoAt() reads back about one vertex - the vertex-side
+// counterpart of SubDEdgeSharpnessInfo.
+struct SubDVertexInfo {
+  bool found = false;  // false: no vertex within the tolerance of the query point (every other field is then 0)
+  SubDVertexKind kind = SubDVertexKind::Smooth;
+  int valence = 0;                 // incident edges
+  int face_count = 0;              // incident faces
+  int crease_edge_count = 0;       // incident edges tagged Crease or naked (boundary)
+  int semi_sharp_edge_count = 0;   // incident smooth edges whose sharpness at THIS vertex is > 0
+  double max_semi_sharpness = 0.0; // the largest of those sharpness values (0 if none)
+  Point3d control_point;
+  Point3d limit_point;             // exact limit-surface point; meaningful only if limit_valid
+  bool limit_valid = false;
+};
+
 // One control-net vertex's exact Catmull-Clark limit-surface point, from
 // SubD::LimitPoints().
 struct SubDLimitPoint {
@@ -1181,6 +1204,29 @@ class SubD {
   // regardless of internal storage order.
   SubDEdgeSharpnessInfo EdgeSharpnessAt(const Point3d& p0, const Point3d& p1,
                                         double point_tolerance = 0.0) const;
+
+  // Reads back how the control-net vertex found at (or within
+  // `point_tolerance` of) `p` is classified and what is attached to it:
+  // its tag (Smooth / Crease / Corner / Dart), valence and face count, how
+  // many incident edges are creases, how many are semi-sharp at this end
+  // and the largest such sharpness, and its exact limit-surface point.
+  // Before this a caller could set edge creases and sharpness but could
+  // only learn the resulting vertex classification (which decides the
+  // limit rule) by reaching into raw(). `found = false` if no vertex is
+  // within the tolerance.
+  SubDVertexInfo VertexInfoAt(const Point3d& p, double point_tolerance = 0.0) const;
+
+  // Pins (`corner = true`) or releases (`corner = false`) the vertex found
+  // at `p`. Pinning is allowed on a Crease vertex (exactly two crease /
+  // boundary edges): its limit point becomes its control point, so a crease
+  // chain can be given a sharp corner exactly where the chain turns.
+  // Releasing is allowed on a Corner vertex with exactly two crease /
+  // boundary edges (it goes back to Crease). Returns false (nothing
+  // changed) if no vertex is found, the vertex already has the requested
+  // state, or its crease count does not allow the change (a smooth or dart
+  // vertex cannot be pinned; a corner at 3+ crease edges cannot be released
+  // - those are determined by the edges).
+  bool SetVertexCorner(const Point3d& p, bool corner, double point_tolerance = 0.0);
 
   // Retags the interior edge between the control-net vertices found at
   // (or within `point_tolerance` of) `p0` and `p1` as a hard Crease

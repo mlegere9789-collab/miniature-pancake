@@ -1467,6 +1467,63 @@ SubDEdgeSharpnessInfo SubD::EdgeSharpnessAt(const Point3d& p0, const Point3d& p1
   return info;
 }
 
+SubDVertexInfo SubD::VertexInfoAt(const Point3d& p, double point_tolerance) const {
+  SubDVertexInfo info;
+  const ON_SubDVertex* v = subd_.FindVertex(&p.x, point_tolerance);
+  if (v == nullptr) return info;
+  info.found = true;
+  switch (v->m_vertex_tag) {
+    case ON_SubDVertexTag::Crease: info.kind = SubDVertexKind::Crease; break;
+    case ON_SubDVertexTag::Corner: info.kind = SubDVertexKind::Corner; break;
+    case ON_SubDVertexTag::Dart: info.kind = SubDVertexKind::Dart; break;
+    default: info.kind = SubDVertexKind::Smooth; break;
+  }
+  info.valence = static_cast<int>(v->EdgeCount());
+  info.face_count = static_cast<int>(v->FaceCount());
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e == nullptr) continue;
+    if (e->IsCrease() || e->FaceCount() < 2) {
+      ++info.crease_edge_count;
+    } else {
+      const unsigned int end = (e->Vertex(0u) == v) ? 0u : 1u;
+      const double sh = e->EndSharpness(end);
+      if (sh > 0.0) {
+        ++info.semi_sharp_edge_count;
+        info.max_semi_sharpness = std::max(info.max_semi_sharpness, sh);
+      }
+    }
+  }
+  const ON_3dPoint cp = v->ControlNetPoint();
+  info.control_point = Point3d(cp.x, cp.y, cp.z);
+  const ON_3dPoint lp = v->SurfacePoint();
+  if (lp.IsValid()) {
+    info.limit_point = Point3d(lp.x, lp.y, lp.z);
+    info.limit_valid = true;
+  }
+  return info;
+}
+
+bool SubD::SetVertexCorner(const Point3d& p, bool corner, double point_tolerance) {
+  const ON_SubDVertex* v = subd_.FindVertex(&p.x, point_tolerance);
+  if (v == nullptr) return false;
+  int creases = 0;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++creases;
+  }
+  const ON_SubDVertexTag want = corner ? ON_SubDVertexTag::Corner : ON_SubDVertexTag::Crease;
+  const ON_SubDVertexTag from = corner ? ON_SubDVertexTag::Crease : ON_SubDVertexTag::Corner;
+  if (v->m_vertex_tag != from || creases != 2) return false;
+  const_cast<ON_SubDVertex*>(v)->m_vertex_tag = want;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    if (v->Edge(i) != nullptr) v->Edge(i)->UnsetSectorCoefficientsForExperts();
+  }
+  subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  subd_.ClearEvaluationCache();
+  return true;
+}
+
 bool SubD::SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance) {
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
