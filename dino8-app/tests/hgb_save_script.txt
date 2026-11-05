@@ -2,7 +2,7 @@
 # @TMP@ is the test temp dir. Document ON: a throw-away box is built and deleted first so the saved ids are NOT
 # 1,2,3 (box 2, cylinder 3, sealed difference 4); after New + Open in this same process the ids are REMAPPED
 # (box 1, cylinder 2, result 3) and moving the cylinder rebuilds the result with no UpdateHistory. Document MESH:
-# everything is moved 100000 away first, so the rebuild is already the mesh-boolean fallback when it is saved;
+# the cylinder is moved up 5 first (its bottom cap then lies in the box's bottom face, which the exact engine declines), so the rebuild is already the mesh-boolean fallback when it is saved;
 # after reopening, moving it back must give the sealed B-rep again.
 SetActiveViewport Top
 
@@ -73,10 +73,11 @@ BooleanDifference
 SelID 2
 Enter
 Show
-SelAll
+SelNone
+SelID 2
 Move
 0,0,0
-100000,100000,0
+0,0,5
 SelNone
 SelID 3
 Volume
@@ -90,10 +91,11 @@ SelNone
 SelID 3
 Volume
 List
-SelAll
+SelNone
+SelID 2
 Move
 0,0,0
--100000,-100000,0
+0,0,-5
 SelNone
 SelID 3
 Check

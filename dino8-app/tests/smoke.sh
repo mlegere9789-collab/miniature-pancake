@@ -13538,13 +13538,13 @@ hgb_has intersect "^history: ! History: source object\(s\) 2 changed - 0 depende
 hgb_vol intersect 4 125.66 "...and the kept result still measures 4 pi 10"
 hgb_cnt intersect "^history: History rebuild of a boolean: .*$HGBSEAL" 2 "both non-empty rebuilds sealed"
 # --- Declined rebuild: the whole model 100000 away from the origin
-hgb_vol fallback 1 874.34 "engine declines the far model: the result is the MESH boolean (mesh volume 874.9)"
+hgb_vol fallback 1 874.34 "engine declines the coplanar tool (cylinder bottom cap in the box bottom face): the result is the MESH boolean (mesh volume 874.9)"
 hgb_has fallback "^history: History rebuild of a boolean: exact B-rep boolean declined \(the engine's result has gaps between faces that sewing could not close, so it is not a closed solid\); using the mesh boolean, so the result is a mesh$" "...and the reason is printed"
 hgb_has fallback "^history: Object 3 \(mesh\) layer Default$" "...List shows the object is a mesh now"
 hgb_vol fallback 2 874.34 "Undo restores the sealed B-rep"
 hgb_has fallback "^history: Object 3 \(polysurface\) layer Default$" "...which List shows as a polysurface again"
 hgb_vol fallback 3 874.34 "Redo gives the mesh result again"
-hgb_vol fallback 4 874.34 "everything moved back: the sealed B-rep is rebuilt (the object follows the engine, mesh -> B-rep)"
+hgb_vol fallback 4 874.34 "cylinder moved back: the sealed B-rep is rebuilt (the object follows the engine, mesh -> B-rep)"
 hgb_has fallback "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face solid"
 hgb_cnt fallback "^history: Object 3: valid$" 2 "Check: valid B-rep after Undo and after moving back"
 # --- Deleted source
@@ -13586,10 +13586,10 @@ hgb_vol save 5 1000 "cylinder moved out of the box"
 hgb_cnt save "^history: History: source object\(s\) 2 changed - 1 dependent\(s\) re-evaluated \(3\)$" 2 "two automatic rebuilds after Open"
 hgb_cnt save "^history: Object 3: valid$" 4 "Check: valid B-rep after Open and after each rebuild"
 # --- the mesh-fallback result is saved with its record and rebuilt to a sealed B-rep after Open
-hgb_vol mesh 1 874.34 "the far model saved as a MESH result (mesh volume 874.9)"
+hgb_vol mesh 1 874.34 "the coplanar-tool model saved as a MESH result (mesh volume 874.9)"
 hgb_vol mesh 2 874.34 "after Open: still the mesh result"
 hgb_has mesh "^history: Object 3 \(mesh\) layer Default$" "...List: a mesh"
-hgb_vol mesh 3 874.34 "after Open, everything moved back: the sealed through hole is rebuilt from the record"
+hgb_vol mesh 3 874.34 "after Open, cylinder moved back: the sealed through hole is rebuilt from the record"
 hgb_has mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
 hgb_has mesh "^history: Object 3: valid$" "...Check valid"
 # --- a brand-new process opens the saved document

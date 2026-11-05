@@ -44,10 +44,11 @@ SelNone
 SelID 3
 Volume
 List
-SelAll
+SelNone
+SelID 2
 Move
 0,0,0
--100000,-100000,0
+0,0,-5
 SelNone
 SelID 3
 Check

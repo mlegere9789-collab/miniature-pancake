@@ -249,7 +249,7 @@ SelID 3
 Check
 Volume
 HGBEND
-# ---------------------------------------------------------------- fallback: everything moved 100000 away from the origin: the engine declines (gaps between faces), the result becomes the mesh boolean and the reason is printed; Undo -> sealed; moving back -> sealed again
+# ---------------------------------------------------------------- fallback: the cylinder moved up 5 (z 0..20) so its bottom cap lies exactly IN the box's bottom face: the exact engine still declines that coplanar configuration (gaps between faces), the result becomes the mesh boolean and the reason is printed; Undo -> sealed; moving back -> sealed again. (This used to be 'everything moved 100000 away', which the exact engine now seals.)
 New
 History On
 HGBBEGIN_fallback
@@ -261,10 +261,11 @@ BooleanDifference
 SelID 2
 Enter
 Show
-SelAll
+SelNone
+SelID 2
 Move
 0,0,0
-100000,100000,0
+0,0,5
 SelNone
 SelID 3
 Volume
@@ -280,10 +281,11 @@ SelNone
 SelID 3
 Volume
 List
-SelAll
+SelNone
+SelID 2
 Move
 0,0,0
--100000,-100000,0
+0,0,-5
 SelNone
 SelID 3
 Check
