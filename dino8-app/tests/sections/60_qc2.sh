@@ -36,7 +36,7 @@ qc2_has "$QC2_F" "FitSrf: 1 surface(s) fitted" "QC2_fit_bad_opts: Tolerance=0.05
 QC2_G="$(qc2_case offset_nan)"
 qc2_hasnot "$QC2_G" "OffsetSrf: distance nan" "QC2_offset_nan: OffsetSrf with a nan distance builds nothing"
 qc2_has "$QC2_G" "Invalid number: nan" "QC2_offset_nan: a typed nan at a number prompt is refused with a message"
-qc2_has "$QC2_G" "OffsetSrf: distance 2, 1 object(s)" "QC2_offset_nan: the distance 2 typed afterwards still offsets the plane"
+qc2_has "$QC2_G" "OffsetSrf: distance 2, 1 object(s)" "QC2_offset_nan: the distance 2 typed afterwards still offsets the box"
 QC2_H="$(qc2_case undo_noop_section)"
 qc2_has "$QC2_H" "Section: 0 curve(s)" "QC2_undo_noop_section: the missed Section ran"
 qc2_hasnot "$QC2_H" "name 'KeepMe'" "QC2_undo_noop_section: Undo after a missed Section undoes the PREVIOUS command (name gone), not an empty step"

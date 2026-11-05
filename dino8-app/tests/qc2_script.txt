@@ -82,10 +82,8 @@ Enter
 New
 
 QC2BEGIN_offset_nan
-Circle 0,0,0 3
-SelLast
-PlanarSrf
-SelSrf
+Box 0,0,0 20,20,0 10
+SelAll
 OffsetSrf
 nan
 inf
