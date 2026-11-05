@@ -2086,6 +2086,181 @@ Brep Brep::ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, 
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
+// ---------------------------------------------------------------------------
+// Exact draft of a CLOSED, smooth, curved planar profile (not a line/arc, not a polyline).
+//
+// The true drafted wall is S(u, t) = P(u) + t * Delta(u), with Delta(u) = direction + offset_distance * Nout(u): every
+// point moves along `direction` and, in the profile's plane, by offset_distance along its OWN outward normal, so each
+// horizontal section is the exact parallel curve of the profile. A ruled loft between the profile and its offset curve
+// reproduces this EXACTLY when the top curve has the profile's own parametrization AND weights: with control points
+// P_i + delta_i and weights w_i the ruled surface is sum N_i w_i (P_i + t delta_i) / sum N_i w_i = P(u) + t * Delta_fit(u),
+// Delta_fit(u) = sum N_i w_i delta_i / sum N_i w_i. So the top curve is built by fitting the vector field Delta(u) in the
+// profile's own rational basis (least squares on dense samples), inserting knots until a dense check of Delta_fit
+// against the exact Delta(u) is within `tol`. (The generic OffsetInPlane() refit used before approximated the offset as a
+// SET of points with its own parametrization and weights; the ruled interpolation between the two then drifted from the
+// true family by 0.42 on a 3 x 2 ellipse drafted 0.2 rad over 4.)
+//
+// Returns false (the caller falls back to the old approximate offset) for an open profile, a profile with a tangent
+// corner, or when the fit does not reach `tol` within the knot budget; throws (std::invalid_argument) when the offset
+// folds through a centre of curvature (the factor 1 + offset_distance * kappa gets below 2 percent).
+// ---------------------------------------------------------------------------
+bool ExactDraftTopCurve(const ON_NurbsCurve& c_in, const ON_Plane& plane, const ON_3dVector& direction, double offset_distance,
+                        ON_NurbsCurve& top, const char* caller) {
+  if (!c_in.IsClosed()) return false;
+  ON_NurbsCurve c = c_in;
+  const double scale = CurveScale(c);
+  const bool ccw = SignedAreaAbout(c, plane) > 0.0;
+  const ON_3dVector zax = plane.zaxis;
+
+  // Delta(u) and the fold factor at parameter t of curve `cur`.
+  auto delta_at = [&](const ON_NurbsCurve& cur, double t, ON_3dVector& delta, double* fold) -> bool {
+    ON_3dPoint pt;
+    ON_3dVector d1, d2;
+    if (!cur.Ev2Der(t, pt, d1, d2)) return false;
+    const double sp = d1.Length();
+    if (!(sp > 1e-12 * scale)) return false;
+    ON_3dVector n = ON_CrossProduct(d1, zax);
+    n.Unitize();
+    if (!ccw) n = -n;
+    const double kappa = (ccw ? 1.0 : -1.0) * ON_DotProduct(ON_CrossProduct(d1, d2), zax) / (sp * sp * sp);
+    delta = direction + n * offset_distance;
+    if (fold) *fold = 1.0 + offset_distance * kappa;
+    return true;
+  };
+
+  // Corner / fold scan on a dense uniform sample.
+  {
+    const ON_Interval dom = c.Domain();
+    const int samples = 2000;
+    ON_3dVector prev_t(0, 0, 0);
+    double min_fold = 1e300;
+    for (int i = 0; i <= samples; ++i) {
+      ON_3dVector delta;
+      double fold = 0.0;
+      if (!delta_at(c, dom.ParameterAt(static_cast<double>(i) / samples), delta, &fold)) return false;
+      min_fold = std::min(min_fold, fold);
+      ON_3dPoint pt;
+      ON_3dVector d1, d2;
+      c.Ev2Der(dom.ParameterAt(static_cast<double>(i) / samples), pt, d1, d2);
+      d1.Unitize();
+      if (i > 0 && ON_DotProduct(d1, prev_t) < std::cos(0.35)) return false;  // a tangent corner: the normal field jumps
+      prev_t = d1;
+    }
+    if (min_fold < 0.02) {
+      Fail(caller,
+           "the draft angle/extrusion height is too large for this profile - the offset curve would "
+           "self-intersect or fold through its own center of curvature");
+    }
+  }
+
+  const double tol = 1e-6 * scale;
+  const int max_cvs = 1500;
+  for (int iter = 0; iter < 12; ++iter) {
+    const int n = c.CVCount(), p = c.Degree();
+    std::vector<double> U(static_cast<size_t>(c.KnotCount()) + 2);
+    U[0] = c.Knot(0);
+    for (int i = 0; i < c.KnotCount(); ++i) U[static_cast<size_t>(i) + 1] = c.Knot(i);
+    U.back() = c.Knot(c.KnotCount() - 1);
+    std::vector<double> w(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) w[static_cast<size_t>(i)] = HomogeneousCV(c, i).w;
+    // distinct knot spans
+    std::vector<double> ks;
+    for (int i = 0; i < c.KnotCount(); ++i) {
+      if (ks.empty() || c.Knot(i) > ks.back() + 1e-14) ks.push_back(c.Knot(i));
+    }
+    const int spans = static_cast<int>(ks.size()) - 1;
+    if (spans < 1) return false;
+
+    auto rational_basis = [&](double t, int& first, std::vector<double>& R) {
+      const int span = SpanIndex(U, t, p, n);
+      std::vector<double> Nb;
+      BasisFuns(span, t, p, U, Nb);
+      double den = 0.0;
+      for (int r = 0; r <= p; ++r) den += Nb[static_cast<size_t>(r)] * w[static_cast<size_t>(span - p + r)];
+      R.assign(static_cast<size_t>(p) + 1, 0.0);
+      for (int r = 0; r <= p; ++r) R[static_cast<size_t>(r)] = Nb[static_cast<size_t>(r)] * w[static_cast<size_t>(span - p + r)] / den;
+      first = span - p;
+    };
+
+    // Least squares: sum_k (sum_i R_i(t_k) delta_i - Delta(t_k))^2 -> normal equations.
+    std::vector<double> A(static_cast<size_t>(n) * static_cast<size_t>(n), 0.0);
+    std::vector<double> rhs[3];
+    for (auto& v : rhs) v.assign(static_cast<size_t>(n), 0.0);
+    std::vector<double> R;
+    int first = 0;
+    const double fracs[5] = {0.1, 0.3, 0.5, 0.7, 0.9};
+    auto add_sample = [&](double t) -> bool {
+      ON_3dVector delta;
+      if (!delta_at(c, t, delta, nullptr)) return false;
+      rational_basis(t, first, R);
+      for (int a = 0; a <= p; ++a) {
+        const double ra = R[static_cast<size_t>(a)];
+        for (int b2 = 0; b2 <= p; ++b2) A[static_cast<size_t>(first + a) * static_cast<size_t>(n) + static_cast<size_t>(first + b2)] += ra * R[static_cast<size_t>(b2)];
+        rhs[0][static_cast<size_t>(first + a)] += ra * delta.x;
+        rhs[1][static_cast<size_t>(first + a)] += ra * delta.y;
+        rhs[2][static_cast<size_t>(first + a)] += ra * delta.z;
+      }
+      return true;
+    };
+    if (!add_sample(ks.front()) || !add_sample(ks.back())) return false;
+    for (int sp = 0; sp < spans; ++sp)
+      for (double f : fracs)
+        if (!add_sample(ks[static_cast<size_t>(sp)] + f * (ks[static_cast<size_t>(sp) + 1] - ks[static_cast<size_t>(sp)]))) return false;
+    DenseLU lu(A, n);
+    if (!lu.Factor()) return false;
+    for (auto& v : rhs) lu.Solve(v);
+    // closure: the first and last control vectors must coincide exactly
+    for (auto& v : rhs) {
+      const double m = 0.5 * (v[0] + v[static_cast<size_t>(n) - 1]);
+      v[0] = m;
+      v[static_cast<size_t>(n) - 1] = m;
+    }
+
+    // Dense check of the fitted field against the exact one, per span.
+    std::vector<double> span_err(static_cast<size_t>(spans), 0.0);
+    double worst = 0.0;
+    for (int sp = 0; sp < spans; ++sp) {
+      for (int k = 0; k <= 12; ++k) {
+        const double t = ks[static_cast<size_t>(sp)] + (k / 12.0) * (ks[static_cast<size_t>(sp) + 1] - ks[static_cast<size_t>(sp)]);
+        ON_3dVector exact;
+        if (!delta_at(c, t, exact, nullptr)) return false;
+        rational_basis(t, first, R);
+        ON_3dVector fit(0, 0, 0);
+        for (int a = 0; a <= p; ++a) {
+          const size_t idx = static_cast<size_t>(first + a);
+          fit += ON_3dVector(rhs[0][idx], rhs[1][idx], rhs[2][idx]) * R[static_cast<size_t>(a)];
+        }
+        const double e = (fit - exact).Length();
+        span_err[static_cast<size_t>(sp)] = std::max(span_err[static_cast<size_t>(sp)], e);
+        worst = std::max(worst, e);
+      }
+    }
+    if (worst <= tol) {
+      top = c;
+      for (int i = 0; i < n; ++i) {
+        const ON_3dPoint pi = EuclideanCV(c, i);
+        const ON_3dPoint q(pi.x + rhs[0][static_cast<size_t>(i)], pi.y + rhs[1][static_cast<size_t>(i)], pi.z + rhs[2][static_cast<size_t>(i)]);
+        if (c.IsRational()) {
+          const double wi = w[static_cast<size_t>(i)];
+          top.SetCV(i, ON_4dPoint(q.x * wi, q.y * wi, q.z * wi, wi));
+        } else {
+          top.SetCV(i, q);
+        }
+      }
+      return true;
+    }
+    if (c.CVCount() >= max_cvs) return false;
+    bool inserted = false;
+    for (int sp = 0; sp < spans; ++sp) {
+      if (span_err[static_cast<size_t>(sp)] > tol && c.CVCount() < max_cvs) {
+        if (c.InsertKnot(0.5 * (ks[static_cast<size_t>(sp)] + ks[static_cast<size_t>(sp) + 1]), 1)) inserted = true;
+      }
+    }
+    if (!inserted) return false;
+  }
+  return false;
+}
+
 Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap) {
   const char* caller = "ExtrudeTapered";
   const double L = direction.Length();
@@ -2140,6 +2315,13 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
     // for why).
     top.raw() = OffsetConvexPolyline(c, plane, offset_distance, caller);
   } else {
+    // A closed smooth curved profile (an ellipse, a closed B-spline): the exact draft family, see ExactDraftTopCurve().
+    ON_NurbsCurve exact_top;
+    if (!is_line_or_arc && ExactDraftTopCurve(c, plane, direction, offset_distance, exact_top, caller)) {
+      NurbsCurve exact_wrapped;
+      exact_wrapped.raw() = exact_top;  // already translated by `direction`
+      return Loft({profile, exact_wrapped}, 1, /*closed=*/false, cap);
+    }
     NurbsCurve profile_wrapped;
     profile_wrapped.raw() = c;
     if (profile_wrapped.OffsetInPlane(offset_distance, top) != Result::Ok) {

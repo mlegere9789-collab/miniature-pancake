@@ -517,6 +517,24 @@ class Brep {
   //     see detail::ClosestSegmentSegment()). A profile whose offset
   //     fails either check is refused rather than silently risking a
   //     folded wall.
+  //   - A CLOSED smooth curved planar profile that is not a circle or arc
+  //     (an ellipse, a closed B-spline): the wall is the EXACT draft family
+  //     S(u, t) = P(u) + t * direction - t * |direction| * tan(draft) * n(u)
+  //     (n = the profile's outward unit normal), so every horizontal section
+  //     is the exact parallel curve of the profile. The top curve shares the
+  //     profile's parametrization and weights (control points P_i + delta_i,
+  //     weights w_i), the vector field delta fitted in the profile's own
+  //     rational basis with knots inserted until a dense check against the
+  //     exact field is within 1e-6 * (1 + bbox diagonal); the ruled wall
+  //     between the two is then P(u) + t * Delta_fit(u) exactly. A profile
+  //     with a tangent corner (normal jump above 0.35 rad between
+  //     neighbouring samples), an open profile, or a fit that exceeds the
+  //     knot budget (1500 control points) falls through to the next branch;
+  //     a fold through a centre of curvature (1 + offset*curvature < 0.02)
+  //     is refused. Measured on a 3 x 2 ellipse, 4 long, drafted 0.2 rad:
+  //     wall deviation from the family 6e-6 (was 0.416 with the refit), and
+  //     the capped volume equals Steiner's A L - P tan L^2/2 + pi tan^2 L^3/3
+  //     to 1e-8 relative (was 0.5 percent low).
   //   - Any other planar profile: falls through to OffsetInPlane()'s own
   //     general least-squares branch, with its own documented exactness/
   //     approximation split and its own curvature-based self-intersection
