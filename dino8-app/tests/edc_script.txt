@@ -1,0 +1,55 @@
+# ExtrudeCrvTapered on a CURVED closed profile (tests/sections/64_edc.sh, section EDC; checks EDC_): the kernel's Brep::ExtrudeTapered builds the
+# exact draft family for an ellipse (the wall's horizontal sections are the exact parallel curves of the profile).
+# Cases, in order (the section cuts the output at each "Command: ExtrudeCrvTapered"):
+#  1 ellipse 3 x 2, distance 4, draft 11.4591559 degrees (0.2 rad): volume A L - P tan L^2/2 + pi tan^2 L^3/3 = 52.4235
+#    (Steiner's formula for the parallel curves of a smooth convex curve; P the ellipse perimeter 15.8654)
+#  2 the same ellipse flared outward, draft -8.5943669 degrees (-0.15 rad): 96.1117
+#  3 L tan(draft) = 1.5 exceeds the ellipse's smallest radius of curvature 4/3 (draft 20.5560452 degrees): refused with the fold reason, nothing built
+#  4 control: a circle r=2, distance 3, draft atan(0.1) = 5.7105931 degrees: the exact frustum pi (4 + 2*1.7 + 1.7^2) = 32.3257
+SetActiveViewport Top
+
+# --- 1
+New
+Ellipse 0,0,0 3,0,0 0,2,0
+SelLast
+ExtrudeCrvTapered DraftAngle=11.4591559
+4
+SelLast
+Volume
+SelAll
+Delete
+@expect_objects 0
+
+# --- 2
+New
+Ellipse 0,0,0 3,0,0 0,2,0
+SelLast
+ExtrudeCrvTapered DraftAngle=-8.5943669
+4
+SelLast
+Volume
+SelAll
+Delete
+@expect_objects 0
+
+# --- 3
+New
+Ellipse 0,0,0 3,0,0 0,2,0
+SelLast
+ExtrudeCrvTapered DraftAngle=20.5560452
+4
+@expect_objects 1
+SelAll
+Delete
+
+# --- 4
+New
+Circle 0,0,0 2
+SelLast
+ExtrudeCrvTapered DraftAngle=5.7105931
+3
+SelLast
+Volume
+SelAll
+Delete
+@expect_objects 0

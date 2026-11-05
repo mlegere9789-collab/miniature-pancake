@@ -3926,6 +3926,9 @@ std::optional<SceneObject> RebuildExtrudeTapered(CommandContext& ctx, const kern
         BrepMeshOptions opt;
         opt.chord_tolerance = 0.05;
         if (MeshBrepClosed(b.raw(), opt).Volume() < 0) b.raw().Flip();  // outward normals
+        char vbuf[96];
+        std::snprintf(vbuf, sizeof(vbuf), "ExtrudeCrvTapered: closed solid, exact volume %.9g", b.Volume());
+        ctx.Print(vbuf);
       }
       return SceneObject::MakeBrep(b);
     }
