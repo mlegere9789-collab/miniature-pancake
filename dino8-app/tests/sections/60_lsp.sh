@@ -176,7 +176,7 @@ lsp_has "$LSP_A" "(r 0)" 1 "recursion too deep" "LSP_neg: endless recursion is s
 lsp_has "$LSP_A" "(defun car (x) 1)" 1 "cannot redefine the built-in function CAR" "LSP_neg: a built-in cannot be redefined by defun"
 lsp_has "$LSP_A" "(setq car 1)" 1 "cannot redefine the built-in function CAR" "LSP_neg: nor by setq"
 lsp_has "$LSP_A" "bad" 1 "Lisp error in c:bad: divide by zero" "LSP_neg: an error inside a c: command is reported with the command's name"
-lsp_has "$LSP_A" "(ssget \"W\")" 1 "only (ssget \"X\") is supported" "LSP_neg: an unsupported ssget filter is refused, not ignored"
+lsp_has "$LSP_A" "(ssget \"W\")" 1 "needs two corner points" "LSP_neg: a windowed ssget without its corners is refused, not ignored (windows themselves are LSP3_win)"
 lsp_has "$LSP_A" "Lisp" 1 "give an expression" "LSP_neg: Lisp with no expression warns"
 lsp_has "$LSP_A" "LoadLisp" 1 "give a .lsp file" "LSP_neg: LoadLisp with no file warns"
 lsp_has "$LSP_A" "LoadLisp /nonexistent/none.lsp" 1 "cannot open /nonexistent/none.lsp" "LSP_neg: LoadLisp of a missing file"

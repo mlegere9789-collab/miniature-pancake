@@ -136,11 +136,11 @@ lsp2_is "$LSP2" "(type (ssget \"X\"))" 1 "PICKSET" "LSP2_ssget: the result is a 
 lsp2_is "$LSP2" "(type (list 1))" 1 "LIST" "LSP2_ssget_neg: a plain list is not"
 lsp2_is "$LSP2" "(sslength (ssget \"_L\"))" 1 "1" "LSP2_ssget: _L is the last entity"
 lsp2_is "$LSP2" "(ssname (ssget \"_L\") 0)" 1 "5" "LSP2_ssget: and it is entity 5"
-lsp2_err "$LSP2" "(ssget \"X\" '((-4 . \"<OR\")))" 1 "operators" "LSP2_ssget_neg: -4 operators are refused, not ignored"
+lsp2_err "$LSP2" "(ssget \"X\" '((-4 . \"<OR\")))" 1 "the group is not closed" "LSP2_ssget_neg: a -4 group that is never closed is refused, not ignored (the operators themselves are LSP3_op)"
 lsp2_err "$LSP2" "(ssget \"X\" '(5))" 1 "bad ssget filter" "LSP2_ssget_neg: a filter entry that is not a pair"
 lsp2_err "$LSP2" "(ssget \"X\" 5)" 1 "bad argument type: listp" "LSP2_ssget_neg: a filter that is not a list"
-lsp2_err "$LSP2" "(ssget \"W\")" 1 "only (ssget \"X\") is supported" "LSP2_ssget_neg: window selection is still refused"
-lsp2_err "$LSP2" "(ssget \"X\" '((0 . \"LINE\")) 5)" 1 "only (ssget \"X\") is supported" "LSP2_ssget_neg: a third argument is refused"
+lsp2_err "$LSP2" "(ssget \"W\")" 1 "needs two corner points" "LSP2_ssget_neg: window selection without its corners is refused"
+lsp2_err "$LSP2" "(ssget \"X\" '((0 . \"LINE\")) 5)" 1 "takes at most a filter list" "LSP2_ssget_neg: a third argument is refused"
 
 # ---- ssadd / ssdel / ssmemb (selection sets change in place) --------------------------
 lsp2_is "$LSP2" "(setq s (ssadd))" 1 "<Selection set: 0>" "LSP2_ssadd: (ssadd) is an empty set"

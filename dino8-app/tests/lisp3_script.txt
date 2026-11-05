@@ -208,6 +208,7 @@ Length
 (list version-tag)
 (sq-sum '(1 2 3))
 (boundp 'poly-area)
+(boundp 'no-such-name)
 (load "@TMP@/lsp3_tools.lsp")
 (load "@TMP@/lsp3_missing" "not found")
 (load "@TMP@/lsp3_missing")
