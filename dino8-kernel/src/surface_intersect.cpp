@@ -1128,18 +1128,25 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
                                 monotonic_from_i(va, ic.uv_a[i].y, ic.uv_a[j].y) &&
                                 monotonic_from_i(ub, ic.uv_b[i].x, ic.uv_b[j].x) &&
                                 monotonic_from_i(vb, ic.uv_b[i].y, ic.uv_b[j].y);
-      // A FOURTH guard, against OVERSHOOT: a segment's own midpoint seed comes from the cubic fit through the chain so far,
-      // and where the chain is unevenly spaced (a mesh-seeded chain mixes ~7 degree steps with ~1.5 degree steps where the
-      // plane crosses a cell diagonal) that seed can be poor enough for the weakly damped Newton solve to slide along the
-      // curve PAST the segment's far end. The 25% bracket slack above admits a coordinate overshoot of a quarter of the
-      // segment, the monotonic check only looks backwards from `i`, so the point was accepted and the chain then FOLDED
-      // (measured on a R = 10 sphere cut at z = -2: -14.4 deg, -21.6 deg, then an inserted -22.997 deg, then -22.6 ... -21.7
-      // deg walking back; the interpolating cubic through that fold ringed 3.6e-2 off the circle, a 3% longer section).
-      // A genuine point of the segment is never farther from either end than the chord itself (an arc up to about 240
-      // degrees); anything farther is a slide past an end and is refused, like the other guards, keeping the two original
-      // samples.
+      // A FOURTH guard, against OVERSHOOT along the curve: a segment's own midpoint seed comes from the cubic fit through the chain
+      // so far, and where the chain is unevenly spaced (a mesh-seeded chain mixes ~7 degree steps with ~1.5 degree steps where the
+      // plane crosses a cell diagonal) that seed can be poor enough for the weakly damped Newton solve to slide along the curve
+      // PAST the segment's far end. The 25% bracket slack above admits a coordinate overshoot of a quarter of the segment, the
+      // monotonic check only looks backwards from `i`, so the point was accepted and the chain then FOLDED (measured on a R = 10
+      // sphere cut at z = -2: -14.4 deg, -21.6 deg, then an inserted -22.997 deg, then -22.6 ... -21.7 deg walking back; the
+      // interpolating cubic through that fold ringed 3.6e-2 off the circle, a 3% longer section).
+      // The test is the new point's projection onto the segment's own chord: every point of an arc of up to a half turn projects
+      // INSIDE the chord's span, a slide past an end projects beyond it. Only a clearly overshooting point (more than 2% of the
+      // chord beyond either end) is refused, and only for a segment longer than the mesh resolution (a shorter one, the near-
+      // duplicate samples around a seam, keeps the older behaviour exactly), so a refusal keeps the two original samples like
+      // every other guard here and nothing a legitimate midpoint needed is lost.
       const double chord = ic.points[i].DistanceTo(ic.points[j]);
-      const bool within_reach = x.DistanceTo(ic.points[i]) <= chord * 1.05 + opt.tolerance && x.DistanceTo(ic.points[j]) <= chord * 1.05 + opt.tolerance;
+      bool within_reach = true;
+      if (chord >= opt.mesh_tolerance * 4) {
+        const Vector3d cv = ic.points[j] - ic.points[i];
+        const double along = ON_DotProduct(x - ic.points[i], cv) / (chord * chord);
+        within_reach = along >= -0.02 && along <= 1.02;
+      }
       if (bracketed && no_reversal && within_reach && pm.DistanceTo(x) > opt.tolerance && pm.DistanceTo(x) <= local_span &&
           x.DistanceTo(ic.points[i]) > opt.tolerance * 2 && x.DistanceTo(ic.points[j]) > opt.tolerance * 2) {
         np.push_back(x); na.emplace_back(ua, va); nb.emplace_back(ub, vb);
