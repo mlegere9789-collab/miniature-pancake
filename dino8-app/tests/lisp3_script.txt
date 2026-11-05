@@ -1,0 +1,286 @@
+# AutoLISP-style dialect, third pass (src/script/Lisp.cpp, commands/cmd_lisp.cpp): error handling (*error*, error,
+# vl-catch-all-*), entmake / entupd, ssget with -4 operators and windows (W C WP CP F), loading real source files, and
+# interactive prompts (getint & co. park the program until the next typed line). Run by sections/63_lsp3.sh, which
+# recomputes the expected values in bash / awk. @TMP@ is replaced by the section. Object ids are the 1-based counter.
+
+# ----------------------------------------------------------------- vl-catch-all-*
+(vl-catch-all-apply '/ '(7 0))
+(vl-catch-all-error-p (vl-catch-all-apply '/ '(7 0)))
+(vl-catch-all-error-message (vl-catch-all-apply '/ '(7 0)))
+(vl-catch-all-error-p (vl-catch-all-apply '+ '(1 2)))
+(vl-catch-all-apply '+ '(1 2))
+(vl-catch-all-error-message (vl-catch-all-apply 'nosuchfn '(1)))
+(vl-catch-all-error-message (vl-catch-all-apply 'car '(5)))
+(vl-catch-all-error-message (vl-catch-all-apply '(lambda () (error "custom stop")) nil))
+(vl-catch-all-error-message (vl-catch-all-apply 'command '("NoSuchCmdXYZ")))
+(type (vl-catch-all-apply '/ '(7 0)))
+(vl-catch-all-error-p nil)
+(vl-catch-all-error-p "divide by zero")
+(vl-catch-all-error-message 5)
+(vl-catch-all-error-message "text")
+(vl-catch-all-error-p)
+(vl-catch-all-apply '+ 5)
+(vl-catch-all-apply '+)
+(error)
+(error 5)
+
+# ----------------------------------------------------------------- *error*
+(defun *error* (msg) (setq err-seen msg) (princ (strcat "handled: " msg)))
+(progn (/ 1 0) (setq reached T))
+(list err-seen reached)
+(error "my own")
+(list err-seen)
+(defun c:failing () (car 5) (setq reached2 T))
+failing
+(list err-seen reached2)
+(defun *error* (msg) (/ 1 0))
+(error "again")
+(setq *error* nil)
+(error "plain")
+(defun *error* (msg) (setq err-seen msg))
+(progn (setq err-seen nil) (vl-catch-all-apply '/ '(1 0)) err-seen)
+(setq *error* nil)
+
+# ----------------------------------------------------------------- the scene, made with entmake
+NewLayer Walls
+NewLayer Doors
+SetLayer Default
+(entmake '((0 . "LINE") (8 . "Default") (10 0.0 0.0 0.0) (11 10.0 0.0 0.0)))
+(entmake '((0 . "LINE") (8 . "Walls") (62 . 1) (10 0.0 5.0 0.0) (11 10.0 5.0 0.0)))
+(entmake '((0 . "CIRCLE") (8 . "Walls") (10 20.0 20.0 0.0) (40 . 3.0)))
+(entmake (list '(0 . "ARC") '(8 . "Default") '(62 . 3) '(10 0.0 20.0 0.0) '(40 . 4.0) '(50 . 0.0) (cons 51 (/ pi 2))))
+(entmake '((0 . "POINT") (8 . "Default") (10 5.0 2.0 0.0)))
+(entmake '((0 . "LWPOLYLINE") (8 . "Default") (90 . 4) (70 . 1) (10 30.0 0.0 0.0) (10 34.0 0.0 0.0) (10 34.0 4.0 0.0) (10 30.0 4.0 0.0)))
+(entmake '((0 . "LINE") (8 . "Doors") (10 8.0 -2.0 0.0) (11 8.0 12.0 0.0)))
+@expect_objects 7
+
+# ----------------------------------------------------------------- what entmake made (read back with entget and the app)
+(mapcar '(lambda (e) (cdr (assoc 0 (entget e)))) (list 1 2 3 4 5 6 7))
+(mapcar '(lambda (e) (cdr (assoc 8 (entget e)))) (list 1 2 3 4 5 6 7))
+(mapcar '(lambda (e) (cdr (assoc 62 (entget e)))) (list 1 2 3 4 5 6 7))
+(cdr (assoc 11 (entget 1)))
+(cdr (assoc 10 (entget 3)))
+(cdr (assoc 40 (entget 3)))
+(cdr (assoc 40 (entget 4)))
+(cdr (assoc 50 (entget 4)))
+(cdr (assoc 51 (entget 4)))
+(cdr (assoc 10 (entget 5)))
+(cdr (assoc 90 (entget 6)))
+(cdr (assoc 70 (entget 6)))
+(length (vl-remove-if-not '(lambda (g) (= (car g) 10)) (entget 6)))
+(entlast)
+(command "SelNone")
+(command "SelID" 1)
+Length
+(command "SelNone")
+(command "SelID" 3)
+Length
+(command "SelNone")
+(command "SelID" 4)
+Length
+(command "SelNone")
+(command "SelID" 6)
+Length
+
+# ----------------------------------------------------------------- entmake refusals (the object count stays 7)
+(entmake '((8 . "Default") (10 0.0 0.0 0.0)))
+(entmake '((0 . "TEXT") (10 0.0 0.0 0.0)))
+(entmake '((0 . "LINE") (8 . "NoSuchLayer") (10 0.0 0.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "LINE") (62 . 300) (10 0.0 0.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "LINE") (62 . 0) (10 0.0 0.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "LINE") (10 0.0 0.0 0.0)))
+(entmake '((0 . "LINE") (10 1.0 1.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "LINE") (10 0.0 0.0 0.0) (10 2.0 2.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "POINT") (10 0.0 0.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "POINT")))
+(entmake '((0 . "CIRCLE") (10 0.0 0.0 0.0) (40 . -1.0)))
+(entmake '((0 . "CIRCLE") (10 0.0 0.0 0.0)))
+(entmake '((0 . "CIRCLE") (10 0.0 0.0 0.0) (40 . 1.0) (210 0.0 1.0 0.0)))
+(entmake '((0 . "ARC") (10 0.0 0.0 0.0) (40 . 1.0) (50 . 0.0)))
+(entmake '((0 . "ARC") (10 0.0 0.0 0.0) (40 . 1.0) (50 . 2.0) (51 . 1.0)))
+(entmake '((0 . "ARC") (10 0.0 0.0 0.0) (40 . 1.0) (50 . 0.0) (51 . 7.0)))
+(entmake '((0 . "LWPOLYLINE") (10 0.0 0.0 0.0) (10 1.0 0.0 0.0)))
+(entmake '((0 . "LWPOLYLINE") (90 . 5) (10 0.0 0.0 0.0) (10 1.0 0.0 0.0) (10 1.0 1.0 0.0)))
+(entmake '((0 . "LINE") (1 . "text") (10 0.0 0.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "LINE") (40 . 1.0) (10 0.0 0.0 0.0) (11 1.0 1.0 0.0)))
+(entmake '((0 . "LINE") (10 a b c) (11 1.0 1.0 0.0)))
+(entmake nil)
+(entmake 5)
+(entmake)
+@expect_objects 7
+
+# ----------------------------------------------------------------- entupd
+(entupd 1)
+(entupd 7)
+(entupd 9999)
+(entupd 'a)
+(entupd)
+
+# ----------------------------------------------------------------- ssget -4 operators
+(sslength (ssget "X" '((-4 . "<OR") (0 . "LINE") (0 . "CIRCLE") (-4 . "OR>"))))
+(sslength (ssget "X" '((-4 . "<AND") (0 . "LINE") (8 . "Walls") (-4 . "AND>"))))
+(sslength (ssget "X" '((-4 . "<NOT") (0 . "LINE") (-4 . "NOT>"))))
+(sslength (ssget "X" '((-4 . "<XOR") (0 . "LINE") (8 . "Walls") (-4 . "XOR>"))))
+(sslength (ssget "X" '((-4 . "<OR") (-4 . "<AND") (0 . "LINE") (8 . "Walls") (-4 . "AND>") (0 . "CIRCLE") (-4 . "OR>"))))
+(sslength (ssget "X" '((-4 . "<or") (0 . "POINT") (0 . "ARC") (-4 . "or>"))))
+(ssname (ssget "X" '((-4 . ">") (40 . 3.5))) 0)
+(sslength (ssget "X" '((-4 . ">") (40 . 3.5))))
+(sslength (ssget "X" '((-4 . "<=") (40 . 3.0))))
+(sslength (ssget "X" '((-4 . ">=") (40 . 3.0))))
+(sslength (ssget "X" '((-4 . "/=") (40 . 3.0))))
+(sslength (ssget "X" '((-4 . "=") (40 . 4.0))))
+(sslength (ssget "X" '((-4 . "<") (62 . 4))))
+(sslength (ssget "X" '((-4 . ">") (62 . 100))))
+(sslength (ssget "X" '((-4 . ">,>,*") (10 4.0 1.0 0.0))))
+(sslength (ssget "X" '((-4 . "<,<,*") (10 1.0 1.0 0.0))))
+(sslength (ssget "X" '((-4 . "*,=,*") (10 0.0 5.0 0.0))))
+(sslength (ssget "X" '((0 . "LINE") (-4 . ">") (62 . 100) (8 . "Doors"))))
+(sslength (ssget "X" '((-4 . "<NOT") (-4 . "<OR") (0 . "LINE") (0 . "POINT") (-4 . "OR>") (-4 . "NOT>"))))
+(ssget "X" '((-4 . "<OR") (0 . "CIRCLE")))
+(ssget "X" '((-4 . "OR>")))
+(ssget "X" '((-4 . "AND>") (0 . "LINE")))
+(ssget "X" '((-4 . ">")))
+(ssget "X" '((-4 . ">") (-4 . "<OR")))
+(ssget "X" '((-4 . "??") (40 . 1.0)))
+(ssget "X" '((-4 . "<") (0 . "LINE")))
+(ssget "X" '((-4 . ">,>") (10 1.0 2.0 3.0)))
+(ssget "X" '((-4 . ">,>,*") (40 . 1.0)))
+(ssget "X" '((-4 . 5)))
+
+# ----------------------------------------------------------------- windowed selection
+(ssget "W" '(-1 -1) '(11 6))
+(sslength (ssget "W" '(-1 -1) '(11 6)))
+(sslength (ssget "C" '(-1 -1) '(11 6)))
+(sslength (ssget "C" '(9 -5) '(9.5 1)))
+(ssname (ssget "C" '(9 -5) '(9.5 1)) 0)
+(sslength (ssget "W" '(-5 -5) '(40 30)))
+(ssget "C" '(19 19) '(21 21))
+(sslength (ssget "C" '(16 16) '(24 24)))
+(sslength (ssget "W" '(16 16) '(24 24)))
+(ssget "W" '(16 16) '(22 24))
+(sslength (ssget "C" '(16 16) '(22 24)))
+(ssname (ssget "C" '(3.5 19.5) '(4.5 21)) 0)
+(ssget "W" '(3.5 19.5) '(4.5 21))
+(sslength (ssget "C" '(11 6) '(-1 -1)))
+(sslength (ssget "_C" '(-1 -1) '(11 6)))
+(ssget "C" '(100 100) '(110 110))
+(sslength (ssget "WP" '((-1 -1) (12 -1) (-1 7))))
+(sslength (ssget "CP" '((-1 -1) (12 -1) (-1 7))))
+(sslength (ssget "WP" '((-5 -5) (40 -5) (40 30) (-5 30))))
+(sslength (ssget "CP" '((29 -1) (31 -1) (31 1) (29 1))))
+(ssget "WP" '((29 -1) (31 -1) (31 1) (29 1)))
+(sslength (ssget "F" '((0 3) (9 3))))
+(ssname (ssget "F" '((0 3) (9 3))) 0)
+(sslength (ssget "F" '((0 -1) (10 6))))
+(ssget "F" '((50 50) (60 60)))
+(sslength (ssget "C" '(-1 -1) '(11 6) '((0 . "LINE") (8 . "Walls"))))
+(ssname (ssget "C" '(-1 -1) '(11 6) '((0 . "LINE") (8 . "Walls"))) 0)
+(sslength (ssget "W" '(-1 -1) '(11 6) '((-4 . "<NOT") (0 . "POINT") (-4 . "NOT>"))))
+(ssget "W" '(-1 -1) '(11 6) '((0 . "CIRCLE")))
+(ssget "W" '(0 0))
+(ssget "W" '(0 0) '(0 5))
+(ssget "W" '(0 0) '(5 0))
+(ssget "W" 5 '(1 1))
+(ssget "W" '(0) '(1 1))
+(ssget "W" '(a b) '(1 1))
+(ssget "WP" '((0 0) (1 1)))
+(ssget "WP" 5)
+(ssget "CP" '((0 0) (1 1) (a b)))
+(ssget "F" '((0 0)))
+(ssget "Z" '(0 0))
+(ssget "W" '(0 0) '(1 1) '((0 . "LINE")) 5)
+
+# ----------------------------------------------------------------- real source files
+(load "@TMP@/lsp3_tools")
+(poly-area '((0 0) (4 0) (4 3) (0 3)))
+(poly-area '((0 0) (6 0) (0 8)))
+(poly-area '((0.5 0.5) (3.25 0.75) (2.0 4.5) (-1.0 2.0)))
+(fib 15)
+(join '("a" "bc" "d") "-")
+(join nil "-")
+(strlen greeting)
+(substr greeting 1 4)
+(vl-string->list (substr greeting 5 1))
+(vl-string-search "AB" greeting)
+(vl-string-search "semi;colon" greeting)
+(vl-string-search "\"quoted\"" greeting)
+(vl-string-search "back\\slash" greeting)
+(list version-tag)
+(sq-sum '(1 2 3))
+(boundp 'poly-area)
+(load "@TMP@/lsp3_tools.lsp")
+(load "@TMP@/lsp3_missing" "not found")
+(load "@TMP@/lsp3_missing")
+(load "@TMP@/lsp3_broken" "load failed")
+(load "@TMP@/lsp3_broken")
+(list broken-before)
+(load "@TMP@/lsp3_outer")
+(list outer-done inner-done)
+LoadLisp @TMP@/lsp3_tools.lsp
+RunScript @TMP@/lsp3_tools.lsp
+
+# ----------------------------------------------------------------- interactive prompts
+(setq a (getint "First: "))
+7
+(list a)
+(setq b (getreal "Second: "))
+abc
+2.5
+(list b)
+(setq pt (getpoint "Pick: "))
+3,4
+(setq pt (getpoint "Pick: "))
+1,x
+5,6,7
+(setq s (getstring "Name: "))
+hello
+(progn (setq x (getint "Num: ")) (setq y (getint "Num2: ")) (+ x y))
+10
+32
+(progn (setq a (getint "A: ")) (setq b (getint "B: ")) (list a b)) 1
+2
+(progn (initget 1) (setq q (getint "Need: ")))
+Enter
+Enter
+9
+(progn (initget "Yes No") (setq k (getkword "Go? ")))
+maybe
+y
+(progn (initget 6) (setq r (getint "Pos: ")))
+0
+-4
+12
+(setq e0 (getint "Escape: "))
+Enter
+(list e0)
+(command "Point" (getpoint "Where: "))
+5,6,7
+(cdr (assoc 10 (entget (entlast))))
+@expect_objects 8
+ring
+2
+@expect_objects 9
+(command "SelNone")
+(command "SelID" (entlast))
+Length
+ring
+Enter
+@expect_objects 9
+ring 1
+@expect_objects 10
+(command "SelNone")
+(command "SelID" (entlast))
+Length
+(progn (setq w (getint "Cancelled: ")) (setq z 1))
+Cancel
+(list w z)
+(defun *error* (m) (setq cm m))
+(progn (setq w (getint "Cancelled again: ")) (setq z 2))
+Cancel
+(list cm z)
+(setq *error* nil)
+(defun c:inner () (setq iv (getint "Inner: ")))
+(defun c:outer () (command "inner") (list 'after iv))
+(c:outer)
+(progn (command "inner") (list 'innerdone iv))
+(getint "left open: ")

@@ -852,7 +852,9 @@ struct Builtins {
       const std::string& path = NeedStr("load", a[0]);
       std::string text;
       bool found = in.host.read_file && in.host.read_file(path, text);
-      if (!found && in.host.read_file && path.find('.') == std::string::npos) found = in.host.read_file(path + ".lsp", text);   // (load "tools")
+      const size_t slash = path.find_last_of("/\\");
+      const bool has_ext = path.find('.', slash == std::string::npos ? 0 : slash) != std::string::npos;   // a dot in the file name itself
+      if (!found && in.host.read_file && !has_ext) found = in.host.read_file(path + ".lsp", text);   // (load "tools")
       if (!found) {
         if (a.size() == 2) return a[1];   // (load "f" onfailure)
         Fail("can't open file: " + path);

@@ -198,6 +198,7 @@ Undo
 (setq n (getint "Count: ")) 5
 (list n)
 (setq n (getint "Whole: ")) 5.5
+Enter
 (list n)
 (setq n (getint "Retry: ")) abc 7
 (list n)
@@ -206,22 +207,28 @@ Undo
 (list n)
 (setq n 99)
 (setq n (getint "Empty queue: "))
+Enter
 (list n)
 (progn (initget 1) (setq n (getint "Needed: "))) Enter 9
 (list n)
 (progn (initget 6) (setq n (getint "Positive: "))) 0 -3 4
 (list n)
 (progn (initget 6) (setq n (getint "Positive: "))) 0 -3
+Enter
 (list n)
 (setq r (getreal "Real: ")) 2.5
 (setq r (getreal "Real: ")) 3
 (setq r (getreal "Real: ")) 1e2
 (setq r (getreal "Real: ")) 2.5x
+Enter
 (setq p (getpoint "Point: ")) 1,2,3
 (setq p (getpoint "Point: ")) 1,2
 (setq p (getpoint "Point: ")) 1,x
+Enter
 (setq p (getpoint "Point: ")) 1,2,3,4
+Enter
 (setq p (getpoint "Point: ")) 7
+Enter
 (setq p (getpoint '(0 0 0) "From: ")) 4,5,6
 (setq s (getstring "Name: ")) widget
 (setq s (getstring T "Name: ")) "my part"
@@ -230,6 +237,7 @@ Undo
 (setq k (progn (initget "Yes No") (getkword "Ok? "))) NO
 (setq k (progn (initget "Yes No") (getkword "Ok? "))) maybe n
 (setq k (progn (initget "Yes No") (getkword "Ok? "))) maybe
+Enter
 (setq k (progn (initget "Width Height") (getkword "Which? "))) wi
 (setq k (progn (initget "Width Height") (getkword "Which? "))) w
 (setq k (progn (initget "Width Height") (getkword "Which? "))) height
@@ -239,6 +247,7 @@ Undo
 (setq k (progn (initget "Yes No") (getint "Number or keyword: "))) 6
 (setq d (getdist "Distance: ")) 4
 (setq d (getdist "Distance: ")) far
+Enter
 (progn (setq n (getint "Cancel: ")) (setq after-cancel 1)) Cancel
 (list after-cancel)
 (getint 5)
@@ -255,8 +264,10 @@ cube 3
 (command "SelID" (entlast))
 Volume
 cube
+Enter
 @expect_objects 7
 cube abc
+Enter
 @expect_objects 7
 cube Enter
 @expect_objects 7
