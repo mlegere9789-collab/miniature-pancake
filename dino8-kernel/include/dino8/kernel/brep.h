@@ -1269,8 +1269,16 @@ class Brep {
   // is carried through the corner by that one averaged frame (the edges
   // are exact; the interior is that interpolant). The total station count
   // can exceed `stations` (each leg gets at least 4 intervals). CLOSED
-  // rails with a corner are refused (a periodic skin cannot follow a
-  // tangent jump); smooth closed rails are unchanged.
+  // rails with a corner (polygon rings): a periodic skin cannot follow a
+  // tangent jump, so Sweep2() cuts the ring at its seam and uses the
+  // open-rail corner path above (a C0 station pair at every paired
+  // corner); the first and last station, the same place on both rails,
+  // share ONE frame built from the average of the four one-sided rail
+  // tangents there, so the wall closes on itself exactly and its edges
+  // follow the rails (a seam that is itself a corner included). Such a
+  // ring has no caps (a closed section gives an uncapped closed-ring
+  // wall). Sweep2Sections() still refuses closed rails with a corner;
+  // smooth closed rails are unchanged.
   static Brep Sweep2(const NurbsCurve& section, const NurbsCurve& rail1, const NurbsCurve& rail2,
                      int stations = 32, bool cap = true);
 
