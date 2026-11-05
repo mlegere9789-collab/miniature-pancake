@@ -2816,10 +2816,19 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
     } else {
       edge_index = it->second;
       if (brep.m_E[edge_index].m_ti.Count() >= 2 && !allow_non_manifold_result) {
+        char where[420];
+        int len = std::snprintf(where, sizeof where, " [edge (%.4f,%.4f,%.4f)-(%.4f,%.4f,%.4f); result faces already on it:",
+                                brep.m_V[vid_from].point.x, brep.m_V[vid_from].point.y, brep.m_V[vid_from].point.z, brep.m_V[vid_to].point.x,
+                                brep.m_V[vid_to].point.y, brep.m_V[vid_to].point.z);
+        for (int ti_k = 0; ti_k < brep.m_E[edge_index].m_ti.Count() && len > 0 && len < 380; ++ti_k) {
+          const int tj = brep.m_E[edge_index].m_ti[ti_k];
+          len += std::snprintf(where + len, sizeof where - static_cast<size_t>(len), " %d", brep.m_L[brep.m_T[tj].m_li].m_fi);
+        }
+        if (len > 0 && len < 400) std::snprintf(where + len, sizeof where - static_cast<size_t>(len), "; this loop's face %d]", face.m_face_index);
         throw std::runtime_error(
-            "dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or "
-            "more fragment loops (non-manifold result) - out of scope; see "
-            "boolean_general.h's own disclosed limitations");
+            std::string("dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or "
+                        "more fragment loops (non-manifold result) - out of scope; see "
+                        "boolean_general.h's own disclosed limitations") + where);
       }
       // allow_non_manifold_result == true: fall through and add this third
       // (or later) trim to the SAME edge anyway - ON_BrepEdge::m_ti is a
@@ -3343,6 +3352,64 @@ void SnapSharedChainEnds(std::vector<std::vector<Chain>>& raw_a, std::vector<std
   }
 }
 
+// True when every sample of `chain` (and the surface point halfway between each consecutive pair) lies within `tol` of one of
+// the face's own trim curves: the curve runs ALONG the face's boundary. It then divides nothing - it only records that the
+// other solid has a face meeting this one exactly at the rim (a flush end cap against a cylinder wall, say) - and treating it
+// as a cut turned the rim arc into a closed island whose outline doubled the face's own rim edges (measured: a cylinder
+// wall's remainder came out as an outer loop plus a hole sharing the whole rim arc, so the shared edge was claimed by three
+// loops). A chord that merely ends on the boundary fails the midpoint test and is kept.
+bool ChainLiesAlongFaceBoundary(const ON_Brep& brep, int face_index, const std::vector<UVPt>& chain, double tol) {
+  const ON_BrepFace& face = brep.m_F[face_index];
+  const ON_Surface* srf = face.SurfaceOf();
+  if (!srf || face.m_li.Count() == 0 || chain.size() < 2) return false;
+  auto dist_to_trims = [&](const Point3d& p, const Point2d& uv) {
+    double best = 1e300;
+    for (int li = 0; li < face.m_li.Count(); ++li) {
+      const ON_BrepLoop& loop = brep.m_L[face.m_li[li]];
+      for (int k = 0; k < loop.m_ti.Count(); ++k) {
+        const ON_BrepTrim& trim = brep.m_T[loop.m_ti[k]];
+        const ON_Curve* c2 = trim.TrimCurveOf();
+        if (!c2) continue;
+        // Closest point of the 2D trim to `uv`: a 64-sample scan, then a ternary search between the best sample's neighbours.
+        const ON_Interval dom = c2->Domain();
+        const int ns = 64;
+        auto d2 = [&](double t) {
+          const ON_3dPoint q = c2->PointAt(t);
+          return (q.x - uv.x) * (q.x - uv.x) + (q.y - uv.y) * (q.y - uv.y);
+        };
+        int kb = 0;
+        double db = 1e300;
+        for (int j = 0; j <= ns; ++j) {
+          const double dj = d2(dom.ParameterAt(static_cast<double>(j) / ns));
+          if (dj < db) { db = dj; kb = j; }
+        }
+        double lo = dom.ParameterAt(std::max(0, kb - 1) / static_cast<double>(ns)), hi = dom.ParameterAt(std::min(ns, kb + 1) / static_cast<double>(ns));
+        for (int it = 0; it < 40; ++it) {
+          const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
+          if (d2(m1) < d2(m2)) hi = m2; else lo = m1;
+        }
+        const ON_3dPoint q = c2->PointAt(0.5 * (lo + hi));
+        best = std::min(best, srf->PointAt(q.x, q.y).DistanceTo(p));
+      }
+    }
+    return best;
+  };
+  for (size_t k = 0; k < chain.size(); ++k) {
+    if (dist_to_trims(chain[k].p, chain[k].uv) > tol) return false;
+    if (k + 1 < chain.size()) {
+      // A step across a periodic seam has no meaningful uv midpoint: its two ends are already known to be on the boundary.
+      bool wraps = false;
+      for (int dir = 0; dir < 2; ++dir) {
+        if (srf->IsClosed(dir) && std::fabs(chain[k].uv[dir] - chain[k + 1].uv[dir]) > 0.5 * srf->Domain(dir).Length()) wraps = true;
+      }
+      if (wraps) continue;
+      const Point2d mid(0.5 * (chain[k].uv.x + chain[k + 1].uv.x), 0.5 * (chain[k].uv.y + chain[k + 1].uv.y));
+      if (dist_to_trims(srf->PointAt(mid.x, mid.y), mid) > tol) return false;
+    }
+  }
+  return true;
+}
+
 std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw,
                                       double stitch_tol, const IntersectOptions& opt, bool debug) {
   std::vector<FaceFrags> out;
@@ -3350,6 +3417,17 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
     std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
     if (boundary.size() < 3) continue;
     std::vector<Chain> closed_chains;
+    {
+      std::vector<Chain>& mine = raw[static_cast<size_t>(i)];
+      mine.erase(std::remove_if(mine.begin(), mine.end(),
+                                [&](const Chain& c) {
+                                  const bool along = ChainLiesAlongFaceBoundary(brep, i, c, opt.tolerance);
+                                  if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: raw chain n=%zu front_p=(%.4f,%.4f,%.4f) back_p=(%.4f,%.4f,%.4f) along_boundary=%d\n", i, c.size(), c.front().p.x, c.front().p.y, c.front().p.z, c.back().p.x, c.back().p.y, c.back().p.z, along);
+                                  if (along && debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: dropped a chain of %zu pts lying along its own boundary\n", i, c.size());
+                                  return along;
+                                }),
+                 mine.end());
+    }
     const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol);
     const ON_Surface* face_surface = brep.m_F[i].SurfaceOf();
     const bool untrimmed = brep.m_F[i].m_li.Count() == 0;
@@ -4272,7 +4350,51 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
           Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
           bool on_other_boundary = false;
           Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol, other_index, &on_other_boundary);
+          // A fragment of a planar face lying INSIDE a coplanar planar face of the other solid (two flush end caps that only
+          // partly overlap: neither contains the other, so neither the whole-face nor the sub-region override above applies):
+          // its representative point sits on the other solid's boundary, a ray-cast there is arbitrary (measured: both
+          // overlap fragments classified In, so Union dropped the lens from both solids; or both Out, so it kept two
+          // copies and the lens edge was claimed by three fragment loops). The fragment was cut along the other face's
+          // outline, so it is wholly inside or outside it; decide by the two outward normals exactly as the whole-face rule does.
+          bool coplanar_overlap = false, coplanar_opposite = false;
           if (on_other_boundary) {
+            ON_Plane pf;
+            if (ff.surface->IsPlanar(&pf, tol)) {
+              for (int gi = 0; gi < other.m_F.Count() && !coplanar_overlap; ++gi) {
+                const ON_BrepFace& g = other.m_F[gi];
+                const ON_Surface* gs = g.SurfaceOf();
+                ON_Plane pg;
+                if (!gs || !gs->IsPlanar(&pg, tol)) continue;
+                if (pf.zaxis.IsParallelTo(pg.zaxis, 1e-6) == 0 || std::fabs(pg.DistanceTo(p3)) > tol) continue;
+                double gu = 0, gv = 0;
+                if (!ClosestPointAllowingDomainBoundary(*gs, p3, gu, gv) || gs->PointAt(gu, gv).DistanceTo(p3) > tol) continue;
+                if (!FaceContainsUV(g, gu, gv)) continue;
+                const double nf = (ff.base_rev ? -1.0 : 1.0), ng = (g.m_bRev ? -1.0 : 1.0);
+                coplanar_overlap = true;
+                coplanar_opposite = (nf * ng * (pf.zaxis * pg.zaxis)) < 0.0;
+              }
+            }
+          }
+          if (coplanar_overlap) {
+            if (a_side) {
+              switch (op) {
+                case BooleanOp::Union:
+                case BooleanOp::Intersection:
+                  keep = !coplanar_opposite;
+                  break;
+                case BooleanOp::Difference:
+                  keep = coplanar_opposite;
+                  break;
+                default:
+                  break;
+              }
+            } else {
+              keep = false;
+            }
+            if (debug)
+              std::fprintf(stderr, "  frag: COPLANAR OVERLAP override a_side=%d opposite=%d op=%d -> keep=%d\n", a_side, coplanar_opposite,
+                           static_cast<int>(op), keep);
+          } else if (on_other_boundary) {
             // Tangent contact: the representative point (typically the
             // fragment's centroid - e.g. the centre of a box face a sphere
             // rests on) is exactly the touch point, so its ray-cast parity
@@ -4293,7 +4415,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
             }
           }
           if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
-          switch (op) {
+          if (!coplanar_overlap) switch (op) {
             case BooleanOp::Union:
               keep = (cls == Cls::Out);
               break;
@@ -4341,6 +4463,12 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
         // in kf.holes and is built as an ordinary inner loop below, same
         // as before this fix.
         if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+        if (debug) {
+          ON_BoundingBox kb;
+          for (const UVPt& pt : kf.outer) kb.Set(pt.p, true);
+          std::fprintf(stderr, "  KEPT #%zu (%s face %d) outer=%zu bbox (%.4f,%.4f,%.4f)-(%.4f,%.4f,%.4f)\n", kept.size(), a_side ? "A" : "B",
+                       ff.face_index, kf.outer.size(), kb.m_min.x, kb.m_min.y, kb.m_min.z, kb.m_max.x, kb.m_max.y, kb.m_max.z);
+        }
         kept.push_back(std::move(kf));
       }
     }

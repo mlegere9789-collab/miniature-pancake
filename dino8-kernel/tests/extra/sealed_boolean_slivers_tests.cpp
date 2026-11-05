@@ -116,19 +116,6 @@ void CheckSealed(const Outcome& o, const char* label, double expect, double rel,
                                                                                 " == " + std::to_string(expect_faces)).c_str());
 }
 
-// Flush end caps (coplanar overlap) are a different, engine-level limitation (a non-manifold fragment edge, or a cap that
-// the engine does not produce at all): not slivers. Such a case must either seal correctly or refuse in words; it must never
-// return a body that is not a valid closed solid.
-void CheckSealedOrRefused(const Outcome& o, const char* label, double expect, double rel) {
-  const std::string l(label);
-  if (o.sealed) {
-    CheckSealed(o, label, expect, rel);
-    return;
-  }
-  d8test::Check(!o.reason.empty() && (o.reason.find("closed solid") != std::string::npos || o.reason.find("non-manifold") != std::string::npos),
-                (l + ": honest refusal that names the cause").c_str());
-}
-
 }  // namespace
 
 // The lens closed form and the quadrature are the same number (guards the oracle itself).
@@ -157,23 +144,26 @@ D8_EXTRA_TEST(SealedSliversParallelCylindersDifference) {
   CheckSealed(Run(a, b, BooleanOp::Difference), "parallel cylinders (axes 1 apart) Difference A-B", ON_PI * 4.0 - 3.0 * LensQuadrature(1.0), 0.012);
 }
 
-// Same pair with both ends flush (z in [0, 4] for both): the two cap planes coincide.
+// Same pair with both ends flush (z in [0, 4] for both): the two cap planes coincide and the caps overlap only partly (neither
+// disk contains the other). The overlap fragments of the two caps are one physical patch: the engine used to classify both by
+// ray-cast from a point ON the other solid's boundary (both In: Union lost the lens; both Out: three loops claimed one edge),
+// and a curve running ALONG a wall's own rim became a closed island that doubled the rim edges.
 D8_EXTRA_TEST(SealedSliversParallelCylindersFlushUnion) {
   const Brep a = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
   const Brep b = Cylinder(ON_3dPoint(1, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
-  CheckSealedOrRefused(Run(a, b, BooleanOp::Union), "flush parallel cylinders Union", 4.0 * (2.0 * ON_PI - LensQuadrature(1.0)), 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Union), "flush parallel cylinders Union", 4.0 * (2.0 * ON_PI - LensQuadrature(1.0)), 0.012);
 }
 
 D8_EXTRA_TEST(SealedSliversParallelCylindersFlushIntersection) {
   const Brep a = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
   const Brep b = Cylinder(ON_3dPoint(1, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
-  CheckSealedOrRefused(Run(a, b, BooleanOp::Intersection), "flush parallel cylinders Intersection", 4.0 * LensQuadrature(1.0), 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Intersection), "flush parallel cylinders Intersection", 4.0 * LensQuadrature(1.0), 0.012);
 }
 
 D8_EXTRA_TEST(SealedSliversParallelCylindersFlushDifference) {
   const Brep a = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
   const Brep b = Cylinder(ON_3dPoint(1, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
-  CheckSealedOrRefused(Run(a, b, BooleanOp::Difference), "flush parallel cylinders Difference A-B", 4.0 * (ON_PI - LensQuadrature(1.0)), 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Difference), "flush parallel cylinders Difference A-B", 4.0 * (ON_PI - LensQuadrature(1.0)), 0.012);
 }
 
 // The disk cap of a Brep::FromMixedFaces() cylinder trims with ONE polyline through its 128 ring vertices. Its trim polygon
@@ -231,4 +221,26 @@ D8_EXTRA_TEST(SealedSliversCylinderIntersectThroughBox) {
   const Brep box = Brep::Box(-2, -0.5, -0.5, 2, 0.5, 0.5);
   const double tunnel = std::sqrt(3.0) / 2.0 + ON_PI / 3.0;
   CheckSealed(Run(cyl, box, BooleanOp::Intersection), "cylinder intersect a through box", tunnel, 0.012);
+}
+
+// Unequal radii, both ends flush: r = 1 at the origin and r = 0.5 centred 0.9 away (the small disk pokes out of the big one).
+// The lens area is a Simpson quadrature of the overlap chord, independent of the kernel.
+D8_EXTRA_TEST(SealedSliversFlushUnequalRadii) {
+  const Brep a = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const Brep b = Cylinder(ON_3dPoint(0.9, 0, 0), ON_3dVector(0, 0, 1), 0.5, 4.0);
+  const double lens = Simpson([](double x) { return 2.0 * std::sqrt(std::max(0.0, std::min(1.0 - x * x, 0.25 - (x - 0.9) * (x - 0.9)))); }, 0.4, 1.0, 20000);
+  const double va = ON_PI * 4.0, vb = ON_PI * 0.25 * 4.0, vi = 4.0 * lens;
+  CheckSealed(Run(a, b, BooleanOp::Union), "flush unequal-radius cylinders Union", va + vb - vi, 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Intersection), "flush unequal-radius cylinders Intersection", vi, 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Difference), "flush unequal-radius cylinders Difference A-B", va - vi, 0.012);
+}
+
+// Only the bottom caps are flush (B is 3 long, A is 4): the same lens, one coplanar patch.
+D8_EXTRA_TEST(SealedSliversFlushOneEnd) {
+  const Brep a = Cylinder(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 1.0, 4.0);
+  const Brep b = Cylinder(ON_3dPoint(1, 0, 0), ON_3dVector(0, 0, 1), 1.0, 3.0);
+  const double vi = 3.0 * LensClosedForm(1.0);
+  CheckSealed(Run(a, b, BooleanOp::Union), "one-end-flush cylinders Union", ON_PI * 7.0 - vi, 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Intersection), "one-end-flush cylinders Intersection", vi, 0.012);
+  CheckSealed(Run(a, b, BooleanOp::Difference), "one-end-flush cylinders Difference A-B", ON_PI * 4.0 - vi, 0.012);
 }
