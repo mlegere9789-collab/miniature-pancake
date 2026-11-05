@@ -1,11 +1,15 @@
 ClosedMeshDeviationTracksTolerance
 DXFU
 Hairline
+LoftAlignSeams
 LoftRationalTangent
 MicroEdge
 OffsetInPlaneClosedPolygon
 RefusesToCapAPathThatDoublesBack
+RelaxQuadVertices
 Rib
+ShellOpenExtrusion
+TestBoss
 TestFilletRevolveRimConcaveConeCorners
 TestHolePatterns
 TestOffsetRefitUnreachable
@@ -22,6 +26,7 @@ loft_spacing
 qc2_tests
 qc3_tests
 sealed_boolean_tests
+subd_boolean_semisharp
 sweep2_accuracy
+sweep2_closed_corner
 sweep_adaptive
-LoftAlignSeams
