@@ -2087,7 +2087,7 @@ Brep Brep::ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, 
 }
 
 // ---------------------------------------------------------------------------
-// Exact draft of a CLOSED, smooth, curved planar profile (not a line/arc, not a polyline).
+// Exact draft of a smooth curved planar profile, CLOSED or OPEN (not a line/arc, not a polyline).
 //
 // The true drafted wall is S(u, t) = P(u) + t * Delta(u), with Delta(u) = direction + offset_distance * Nout(u): every
 // point moves along `direction` and, in the profile's plane, by offset_distance along its OWN outward normal, so each
@@ -2100,17 +2100,21 @@ Brep Brep::ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, 
 // SET of points with its own parametrization and weights; the ruled interpolation between the two then drifted from the
 // true family by 0.42 on a 3 x 2 ellipse drafted 0.2 rad over 4.)
 //
-// Returns false (the caller falls back to the old approximate offset) for an open profile, a profile with a tangent
-// corner, or when the fit does not reach `tol` within the knot budget; throws (std::invalid_argument) when the offset
+// Returns false (the caller falls back to the old approximate offset) for a profile with a tangent
+// corner (the true wall there is a pair of surfaces TRIMMED against each other along their intersection, which no ruled
+// loft can represent), or when the fit does not reach `tol` within the knot budget; throws (std::invalid_argument) when the offset
 // folds through a centre of curvature (the factor 1 + offset_distance * kappa gets below 2 percent).
 // ---------------------------------------------------------------------------
 bool ExactDraftTopCurve(const ON_NurbsCurve& c_in, const ON_Plane& plane, const ON_3dVector& direction, double offset_distance,
                         ON_NurbsCurve& top, const char* caller) {
-  if (!c_in.IsClosed()) return false;
   ON_NurbsCurve c = c_in;
   const double scale = CurveScale(c);
-  const bool ccw = SignedAreaAbout(c, plane) > 0.0;
-  const ON_3dVector zax = plane.zaxis;
+  const bool closed = c.IsClosed();
+  // Closed: the offset side is the OUTWARD normal of the profile (so a positive draft shrinks it, whatever the sign of the fitted
+  // plane normal or the winding). Open: there is no inside, so the side is T x zaxis with zaxis the plane normal turned to point
+  // along `direction` (the outward side of a counterclockwise closed curve); the offset moves that way by offset_distance.
+  const bool ccw = closed ? SignedAreaAbout(c, plane) > 0.0 : true;
+  const ON_3dVector zax = closed ? plane.zaxis : (ON_DotProduct(plane.zaxis, direction) >= 0.0 ? plane.zaxis : -plane.zaxis);
 
   // Delta(u) and the fold factor at parameter t of curve `cur`.
   auto delta_at = [&](const ON_NurbsCurve& cur, double t, ON_3dVector& delta, double* fold) -> bool {
@@ -2209,8 +2213,8 @@ bool ExactDraftTopCurve(const ON_NurbsCurve& c_in, const ON_Plane& plane, const 
     DenseLU lu(A, n);
     if (!lu.Factor()) return false;
     for (auto& v : rhs) lu.Solve(v);
-    // closure: the first and last control vectors must coincide exactly
-    for (auto& v : rhs) {
+    // closure: the first and last control vectors must coincide exactly (a closed profile only)
+    if (closed) for (auto& v : rhs) {
       const double m = 0.5 * (v[0] + v[static_cast<size_t>(n) - 1]);
       v[0] = m;
       v[static_cast<size_t>(n) - 1] = m;
@@ -2317,7 +2321,7 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
   } else {
     // A closed smooth curved profile (an ellipse, a closed B-spline): the exact draft family, see ExactDraftTopCurve().
     ON_NurbsCurve exact_top;
-    if (!is_line_or_arc && ExactDraftTopCurve(c, plane, direction, offset_distance, exact_top, caller)) {
+    if (!is_line_or_arc && ExactDraftTopCurve(c, plane, direction, offset_distance, exact_top, caller)) {  // closed or open
       NurbsCurve exact_wrapped;
       exact_wrapped.raw() = exact_top;  // already translated by `direction`
       return Loft({profile, exact_wrapped}, 1, /*closed=*/false, cap);

@@ -48,7 +48,7 @@ double EllipsePerimeter(double a, double b) {
 // Largest distance between the face-0 wall and P(u) + t * direction - t * |direction| * tan(alpha) * n(u); also the part of
 // it measured on the base row (t = 0) and the top row (t = 1).
 void WallVsFamily(const Brep& body, const NurbsCurve& prof, double a, double b, const ON_3dVector& direction, double alpha, double* all,
-                  double* base, double* top) {
+                  double* base, double* top, double side = 1.0) {
   const ON_NurbsSurface* wall = ON_NurbsSurface::Cast(body.raw().m_F[0].SurfaceOf());
   *all = *base = *top = 1e9;
   if (!wall) return;
@@ -63,7 +63,7 @@ void WallVsFamily(const Brep& body, const NurbsCurve& prof, double a, double b, 
     for (int j = 0; j <= 16; ++j) {
       const double t = j / 16.0;
       const ON_3dPoint got = wall->PointAt(du.ParameterAt(fu), dv.ParameterAt(t));
-      const ON_3dPoint want = p + direction * t - n * (t * L * std::tan(alpha));
+      const ON_3dPoint want = p + direction * t - n * (side * t * L * std::tan(alpha));
       const double e = got.DistanceTo(want);
       *all = std::max(*all, e);
       if (j == 0) *base = std::max(*base, e);
@@ -139,4 +139,37 @@ D8_EXTRA_TEST(ExtrudeDraftEllipseObliqueAndFoldRefusal) {
                 "negative control: L tan(alpha) = 1.5 exceeds the smallest radius of curvature 4/3 and is refused with the fold reason");
   d8test::Check(!ThrowsWith([&] { Brep::ExtrudeTapered(prof, Vector3d(0, 0, 4.0), ok_alpha, true); }, "fold"),
                 "control: L tan(alpha) = 1.2 stays inside it and builds");
+}
+
+// OPEN smooth curved profile: an elliptical arc (the ellipse 3 x 2 trimmed to 0.2..0.7 of its domain, about 180 degrees). There is no inside,
+// so the offset side is T x zaxis with the plane normal turned along the extrusion direction: for a counterclockwise parametrization that is the
+// ellipse's outward normal (side +1), for the reversed curve the inward one (side -1). Open profiles give a wall only.
+D8_EXTRA_TEST(ExtrudeDraftOpenEllipseArcWallIsTheExactDraftFamily) {
+  const double a = 3.0, b = 2.0, L = 4.0;
+  ON_NurbsCurve n = Ellipse(a, b).raw();
+  const ON_Interval dom = n.Domain();
+  d8test::Check(n.Trim(ON_Interval(dom.ParameterAt(0.2), dom.ParameterAt(0.7))), "fixture: the elliptical arc is trimmed from the NURBS ellipse");
+  d8test::Check(!n.IsClosed(), "fixture: the arc is open");
+  NurbsCurve arc;
+  arc.raw() = n;
+  NurbsCurve rev = arc;
+  rev.raw().Reverse();
+  struct Case {
+    const NurbsCurve* c;
+    double side;
+    const char* tag;
+    double alpha;
+  };
+  const Case cases[] = {{&arc, 1.0, "counterclockwise arc, draft 0.2", 0.2},
+                        {&rev, -1.0, "reversed arc, draft 0.2", 0.2},
+                        {&arc, 1.0, "counterclockwise arc, flared -0.15", -0.15}};
+  for (const Case& cs : cases) {
+    const Brep body = Brep::ExtrudeTapered(*cs.c, Vector3d(0, 0, L), cs.alpha, true);
+    double all, base, top;
+    WallVsFamily(body, *cs.c, a, b, ON_3dVector(0, 0, L), cs.alpha, &all, &base, &top, cs.side);
+    std::printf("open arc %s: wall deviation %.3e\n", cs.tag, all);
+    d8test::Check(body.FaceCount() == 1 && body.raw().IsValid(), (std::string("open ") + cs.tag + ": one wall face, no caps").c_str());
+    d8test::Check(base < 1e-12, (std::string("open ") + cs.tag + ": the base row is the profile itself (1e-12)").c_str());
+    d8test::Check(all < 2e-5, (std::string("open ") + cs.tag + ": the wall equals P(u) + t L e_z -/+ t L tan(alpha) n(u) to 2e-5").c_str());
+  }
 }
