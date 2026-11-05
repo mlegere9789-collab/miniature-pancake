@@ -827,6 +827,17 @@ std::vector<ON_2dPoint> LoopPolygon(const ON_Brep& b, int loop_index, int sample
   for (int k = 0; k < loop.m_ti.Count(); ++k) {
     const ON_BrepTrim& trim = b.m_T[loop.m_ti[k]];
     const ON_Interval d = trim.Domain();
+    // A polyline trim (a Brep::FromMixedFaces() disk cap: one ON_PolylineCurve through the ring's real vertices) IS its
+    // polygon: take its own vertices. Sampling it at `samples_per_trim` fractions of its domain replaced a 128-gon by a
+    // 24-gon whose chords sit up to 0.0086 inside a unit circle, so a curve crossing the cap's rim was clipped 0.003 short of
+    // the point the adjacent wall's exact rim gives, and the two faces' corners never met.
+    if (const ON_PolylineCurve* pl = ON_PolylineCurve::Cast(trim.TrimCurveOf())) {
+      const int pn = pl->PointCount();
+      if (pn >= 3) {
+        for (int i = 0; i + 1 < pn; ++i) poly.emplace_back(pl->m_pline[i].x, pl->m_pline[i].y);
+        continue;
+      }
+    }
     const bool line = trim.m_iso != ON_Surface::not_iso;
     const int ns = line ? 1 : samples_per_trim;
     for (int i = 0; i < ns; ++i) {
