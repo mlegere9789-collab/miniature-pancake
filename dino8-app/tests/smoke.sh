@@ -503,7 +503,7 @@ c2check "FixedLengthCrvEdit: point moved and curve rescaled .* to keep length 30
 c2check "CurveThroughSrfControlPt: 4 curve(s) through the control point rows and columns" "CurveThroughSrfControlPt built curves through the CV grid directly"
 c2check "OffsetMultiple: 3 curve(s) created (3 offsets x 1)" "OffsetMultiple created several offsets in one command"
 c2check "InsertLineIntoCrv: inserted a 5-long line and rejoined" "InsertLineIntoCrv split, inserted, and rejoined automatically"
-c2check "CSec: 1 curve(s) from 5 section(s) along the rail" "CSec sectioned perpendicular to a rail curve"
+c2check "CSec: 3 curve(s) from 5 section(s) along the rail" "CSec sectioned perpendicular to a rail curve: the mid plane plus the two planes that coincide with the box end faces (their outlines; the mesh slice used to return only the mid plane)"
 c2check "ContinueCurve: curve extended with 2 new point(s) and joined" "ContinueCurve extended and auto-joined a curve"
 c2check "EndBulge: end handle scaled by 2" "EndBulge scaled the end tangent handle"
 c2check "InterpCrvOnSrf: curve interpolated through 3 point(s) on the surface" "InterpCrvOnSrf projected points onto the surface before interpolating"

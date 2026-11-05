@@ -556,4 +556,8 @@ List
 # wrong), this is re-counted directly against a real smoke.sh run of the
 # actual merged script, per this file's own established "re-counted
 # directly, not assumed" discipline: the true count is 209.
-@expect_objects 209
+# 209 -> 211 (bisected on GitHub, per-section object counts at 8cc52ce7, 91ee5625, 6d522112, e0f9f90b all 209; at 018b59dc 211): the
+# CSec block above puts planes at x = -5, 0, 5, 10, 15 across a box spanning x 0..10. Since Section/Contour/CSec take the EXACT
+# B-rep route (018b59dc) the two planes that coincide with the box's end faces return those faces' outlines (like Rhino's
+# Contour), so CSec makes 3 curves (x = 0, 5, 10) where the mesh slice made 1; the block adds line + box + 3 = 5 objects, not 3.
+@expect_objects 211
