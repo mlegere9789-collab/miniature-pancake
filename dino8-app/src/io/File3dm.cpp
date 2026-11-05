@@ -2288,6 +2288,91 @@ ON_Centermark* BuildOnCentermarkForGroup(ONX_Model& model, std::map<std::string,
   return cm;
 }
 
+// Shared lookup for the radial/angular builders below: the plane (DimPlaneOrigin/X/Y) of a Dino8 dimension group member.
+bool DimPlaneOfTags(const SceneObject& o, ON_Plane& plane) {
+  auto it_o = o.user_text.find("DimPlaneOrigin"), it_x = o.user_text.find("DimPlaneX"), it_y = o.user_text.find("DimPlaneY");
+  if (it_o == o.user_text.end() || it_x == o.user_text.end() || it_y == o.user_text.end()) return false;
+  double ox, oy, oz, xx, xy, xz, yx, yy, yz;
+  if (!ParsePointTagLocal(it_o->second, ox, oy, oz) || !ParsePointTagLocal(it_x->second, xx, xy, xz) ||
+      !ParsePointTagLocal(it_y->second, yx, yy, yz))
+    return false;
+  plane = ON_Plane(ON_3dPoint(ox, oy, oz), ON_3dVector(xx, xy, xz), ON_3dVector(yx, yy, yz));
+  return plane.IsValid();
+}
+
+// The dimension style id for a dimension group: text height from one of the group's glyph curves, else the current style.
+ON_UUID DimStyleIdForGroup(const Document& doc, ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache, const SceneObject& o) {
+  double height = doc.CurrentAnnotationStyle().text_height;
+  for (const SceneObject& m : doc.Objects()) {
+    if (m.group_id != o.group_id || !m.user_text.count("Glyph")) continue;
+    auto h = m.user_text.find("TextHeight");
+    if (h != m.user_text.end()) height = std::atof(h->second.c_str());
+    break;
+  }
+  if (height <= 0) height = std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+  return FindOrAddTextDimStyleId(model, dimstyle_cache, height);
+}
+
+// A real ON_DimRadial for a Dino8 "DimRadius"/"DimDiameter" group - the write-side inverse of Load3dm's ON_DimRadial branch,
+// which rebuilds exactly this tag set (DimIsDiameter, DimPlane*, DimDir, DimExtra, DimCenter, DimRadiusVal) from the file's
+// center point, point on the arc and dimension-line point: radius point = center + dir * radius, dimension-line point =
+// center + dir * (radius + extra). nullptr (baked export kept) on any missing/malformed tag.
+ON_DimRadial* BuildOnDimRadialForGroup(const Document& doc, ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache,
+                                       const SceneObject& o) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *diam_s = get("DimIsDiameter"), *dir_s = get("DimDir"), *extra_s = get("DimExtra"), *cen_s = get("DimCenter"), *rad_s = get("DimRadiusVal");
+  ON_Plane plane;
+  if (!diam_s || !dir_s || !extra_s || !cen_s || !rad_s || !DimPlaneOfTags(o, plane)) return nullptr;
+  double cx, cy, cz, dx, dy, dz;
+  if (!ParsePointTagLocal(*cen_s, cx, cy, cz) || !ParsePointTagLocal(*dir_s, dx, dy, dz)) return nullptr;
+  ON_3dVector dir(dx, dy, dz);
+  if (!dir.Unitize()) return nullptr;
+  const double radius = std::atof(rad_s->c_str()), extra = std::atof(extra_s->c_str());
+  if (!(radius > 0.0)) return nullptr;
+  const ON_3dPoint center(cx, cy, cz);
+  const ON_UUID dimstyle_id = DimStyleIdForGroup(doc, model, dimstyle_cache, o);
+  if (ON_UuidIsNil(dimstyle_id)) return nullptr;
+  ON_DimRadial* dim = new ON_DimRadial();
+  if (!dim->Create(*diam_s == "1" ? ON::AnnotationType::Diameter : ON::AnnotationType::Radius, dimstyle_id, plane, center,
+                   center + dir * radius, center + dir * (radius + extra))) {
+    delete dim;
+    return nullptr;
+  }
+  return dim;
+}
+
+// A real ON_DimAngular for a Dino8 "DimAngle" group - the inverse of Load3dm's ON_DimAngular branch (vertex = CenterPoint, the
+// two leg points = DefPoint1/DefPoint2; tags DimP0 = vertex, DimP1/DimP2 = the leg points). The dimension-arc point is placed
+// on the angle bisector at the same radius BuildAngleDimensionGeometry draws its arc (0.7 of the shorter leg).
+ON_DimAngular* BuildOnDimAngularForGroup(const Document& doc, ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache,
+                                         const SceneObject& o) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *p0_s = get("DimP0"), *p1_s = get("DimP1"), *p2_s = get("DimP2");
+  ON_Plane plane;
+  if (!p0_s || !p1_s || !p2_s || !DimPlaneOfTags(o, plane)) return nullptr;
+  double vx, vy, vz, ax, ay, az, bx, by, bz;
+  if (!ParsePointTagLocal(*p0_s, vx, vy, vz) || !ParsePointTagLocal(*p1_s, ax, ay, az) || !ParsePointTagLocal(*p2_s, bx, by, bz))
+    return nullptr;
+  const ON_3dPoint vertex(vx, vy, vz), p1(ax, ay, az), p2(bx, by, bz);
+  ON_3dVector va = p1 - vertex, vb = p2 - vertex;
+  const double r = std::min(va.Length(), vb.Length()) * 0.7;
+  if (!(r > 0.0) || !va.Unitize() || !vb.Unitize()) return nullptr;
+  double a0 = std::atan2(ON_DotProduct(va, plane.yaxis), ON_DotProduct(va, plane.xaxis));
+  double a1 = std::atan2(ON_DotProduct(vb, plane.yaxis), ON_DotProduct(vb, plane.xaxis));
+  if (a1 < a0) std::swap(a0, a1);
+  if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+  const double mid = (a0 + a1) / 2;
+  const ON_3dPoint on_arc = vertex + plane.xaxis * (std::cos(mid) * r) + plane.yaxis * (std::sin(mid) * r);
+  const ON_UUID dimstyle_id = DimStyleIdForGroup(doc, model, dimstyle_cache, o);
+  if (ON_UuidIsNil(dimstyle_id)) return nullptr;
+  ON_DimAngular* dim = new ON_DimAngular();
+  if (!dim->Create(dimstyle_id, plane, plane.xaxis, vertex, p1, p2, on_arc)) {
+    delete dim;
+    return nullptr;
+  }
+  return dim;
+}
+
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
@@ -2543,6 +2628,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   std::set<int> leader_groups_written;
   std::set<int> dimlinear_groups_written;
   std::set<int> dimord_groups_written, centermark_groups_written;
+  std::set<int> dimradang_groups_written;
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
@@ -2696,6 +2782,24 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         if (ON_Centermark* cm = BuildOnCentermarkForGroup(model, text_dimstyle_cache, o)) {
           model.AddModelGeometryComponent(cm, &attr);
           centermark_groups_written.insert(o.group_id);
+          ++written;
+          continue;
+        }
+      }
+    }
+    {
+      // DimRadius/DimDiameter write as one real ON_DimRadial and DimAngle as one real ON_DimAngular (see the builders above);
+      // every member of the group is caught here so none falls through to the baked export once the real dimension is written.
+      auto ann_tag = o.user_text.find("Annotation");
+      if (o.group_id >= 0 && ann_tag != o.user_text.end() &&
+          (ann_tag->second == "DimRadius" || ann_tag->second == "DimDiameter" || ann_tag->second == "DimAngle")) {
+        if (dimradang_groups_written.count(o.group_id)) continue;
+        ON_Geometry* dim = nullptr;
+        if (ann_tag->second == "DimAngle") dim = BuildOnDimAngularForGroup(doc, model, text_dimstyle_cache, o);
+        else dim = BuildOnDimRadialForGroup(doc, model, text_dimstyle_cache, o);
+        if (dim) {
+          model.AddModelGeometryComponent(dim, &attr);
+          dimradang_groups_written.insert(o.group_id);
           ++written;
           continue;
         }

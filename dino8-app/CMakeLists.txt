@@ -1292,6 +1292,10 @@ if(DINO8_BUILD_TESTS)
   add_executable(dimordcm3dm_write_check tests/dimordcm3dm_write_check.cpp)
   target_include_directories(dimordcm3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dimordcm3dm_write_check PRIVATE dino8_kernel)
+  # Real-ON_DimRadial / ON_DimAngular .3dm write checker (tests/dimradang3dm_write_check.cpp, sections/64_dimrad.sh).
+  add_executable(dimradang3dm_write_check tests/dimradang3dm_write_check.cpp)
+  target_include_directories(dimradang3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dimradang3dm_write_check PRIVATE dino8_kernel)
 
   # Real-ON_InstanceRef .3dm fixture generator (see
   # tests/instanceref3dm_fixture_gen.cpp and smoke.sh's Load3dm
