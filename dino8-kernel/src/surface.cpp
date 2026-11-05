@@ -1004,8 +1004,22 @@ SurfaceSize NurbsSurface::GetApproximateSize() const {
   return SurfaceSize{width, height};
 }
 
+namespace {
+// Defined with the other crease-aware tessellation helpers further down this file.
+Mesh TessellateUniformCreaseAware(const NurbsSurface& surface, int u_divisions, int v_divisions,
+                                  const std::vector<Point2d>* trim_polygon,
+                                  const std::vector<std::vector<Point2d>>* hole_polygons);
+}  // namespace
+
+// The uniform u_divisions x v_divisions lattice PLUS every genuine crease (a C0 knot with a real tangent break, e.g. the corner
+// station pairs of a Sweep2 between two polygon rings): a lattice that misses a corner cuts it, and the planar region the
+// wall spans then under-reads (the app's Area of a square-ring Sweep2 read 155.75 for a planar annulus of exactly 156, and a
+// different figure for a corner seam than for a mid-side seam). A surface without a crease keeps EXACTLY the old lattice.
 double NurbsSurface::ApproximateArea(int u_divisions, int v_divisions) const {
-  return TessellateGrid(u_divisions, v_divisions).Area();
+  if (u_divisions < 1 || v_divisions < 1) {
+    return TessellateGrid(u_divisions, v_divisions).Area();  // throws its own invalid_argument, as before
+  }
+  return TessellateUniformCreaseAware(*this, u_divisions, v_divisions, nullptr, nullptr).Area();
 }
 
 Result NurbsSurface::Reverse(int direction) {

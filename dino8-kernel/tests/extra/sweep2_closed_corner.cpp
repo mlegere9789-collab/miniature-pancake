@@ -24,6 +24,7 @@
 
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/surface.h"
 #include "test_registry.h"
 
 namespace {
@@ -114,6 +115,19 @@ void RunRings(double outer_z, double expect_area, const char* tag, bool mid_seam
   const double rel = std::fabs(area - expect_area) / expect_area;
   std::printf("  [s2 ring] %s: area %.9f expected %.9f rel %.3g\n", tag, area, expect_area, rel);
   d8test::Check(rel < 1e-6, (std::string(tag) + ": wall area is the closed form " + std::to_string(expect_area) + " to 1e-6").c_str());
+
+  // The app's "Area" of a Surface object is NurbsSurface::ApproximateArea(): a uniform 50 x 50 parameter lattice. The wall has C0
+  // station pairs at the ring's corners (knots of full multiplicity); a lattice that misses them cuts every corner and under-reads
+  // the planar region (measured before the crease-aware fix: 155.8 flat / 186.7 lifted, and different for a corner seam vs a
+  // mid-side seam). Each side is planar, so with the corners in the lattice the mesh area is the closed form to rounding.
+  {
+    dino8::kernel::NurbsSurface ks;
+    ks.raw() = *wall;
+    const double approx = ks.ApproximateArea();
+    const double arel = std::fabs(approx - expect_area) / expect_area;
+    std::printf("  [s2 ring] %s: ApproximateArea() %.9f expected %.9f rel %.3g\n", tag, approx, expect_area, arel);
+    d8test::Check(arel < 1e-9, (std::string(tag) + ": NurbsSurface::ApproximateArea() (the app's Area) is the closed form to 1e-9 - no cut corners").c_str());
+  }
 
   // Wall edges follow the rails exactly: sample u across the section (u = 0 is on rail1, u = 1 on rail2) along all v.
   const ON_Interval du = wall->Domain(0), dv = wall->Domain(1);
