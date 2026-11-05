@@ -877,6 +877,50 @@ void EllipseNotchCornerAtVertexCylindrical(std::vector<Brep::PlanarFace>& other_
   }
 }
 
+// The notch runs of a fillet are dense polylines on circular arcs whose cylinder neighbour is meshed on its own grid, so a mesh of the
+// result cannot close unless the mesher is told that the planar run and the cylinder end are the SAME circle: that is what
+// PlanarFace::ArcRun records for TessellateConforming() (and, through HasConformingSeamData(), for Brep::Volume() and the adaptive
+// closed-mesh tessellators). Each marked run (notch_begin/notch_count and notch_runs) gets one ArcRun, the circle fitted through the
+// run's first, middle and last points and its angles measured in the face's own plane basis.
+void AttachArcRunsForNotchRuns(Brep::PlanarFace& f) {
+  std::vector<std::pair<int, int>> runs;
+  if (f.notch_count > 1) runs.emplace_back(f.notch_begin, f.notch_count);
+  for (const std::pair<int, int>& r : f.notch_runs) {
+    if (r.second > 1) runs.push_back(r);
+  }
+  if (runs.empty()) return;
+  f.arc_runs.clear();
+  const int n = static_cast<int>(f.loop.size());
+  for (const std::pair<int, int>& r : runs) {
+    if (r.first < 0 || r.first + r.second > n) continue;
+    const Point3d& p0 = f.loop[static_cast<size_t>(r.first)];
+    const Point3d& pm = f.loop[static_cast<size_t>(r.first + r.second / 2)];
+    const Point3d& p1 = f.loop[static_cast<size_t>(r.first + r.second - 1)];
+    const Vector3d a = p0 - pm, b = p1 - pm;
+    const Vector3d ab = ON_CrossProduct(a, b);
+    const double ab2 = ab.LengthSquared();
+    if (!(ab2 > 1e-24)) continue;
+    const Vector3d off = (b.LengthSquared() * ON_CrossProduct(ab, a) + a.LengthSquared() * ON_CrossProduct(b, ab)) / (2.0 * ab2);
+    Brep::PlanarFace::ArcRun arc;
+    arc.begin = r.first;
+    arc.count = r.second;
+    arc.center = pm + off;
+    arc.radius = off.Length();
+    arc.plane_xaxis = f.plane.xaxis;
+    arc.plane_yaxis = f.plane.yaxis;
+    auto angle_of = [&](const Point3d& q) {
+      const Vector3d d = q - arc.center;
+      return std::atan2(d * arc.plane_yaxis, d * arc.plane_xaxis);
+    };
+    arc.angle_begin = angle_of(p0);
+    double sweep = angle_of(p1) - arc.angle_begin;
+    while (sweep > ON_PI) sweep -= 2.0 * ON_PI;
+    while (sweep < -ON_PI) sweep += 2.0 * ON_PI;
+    arc.angle_end = arc.angle_begin + sweep;
+    f.arc_runs.push_back(arc);
+  }
+}
+
 // A planar face that borders an EARLIER blend carries one marked arc run (PlanarFace::notch_begin / notch_count, indices into its loop).
 // Clipping that face's loop re-indexes the loop but leaves the stale indices on the copy, so after a clip the run is looked up again by
 // its points: if all of them survived, consecutively, the run is re-registered (the loop is rotated so the run does not wrap); if the clip
@@ -1188,6 +1232,7 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
+  for (Brep::PlanarFace& pf : mixed_planar) AttachArcRunsForNotchRuns(pf);
   if (!has_curved) return Brep::FromMixedFaces(mixed_planar, {fillet_face});
   std::vector<Brep::CylindricalFace> cylinders = std::move(carried.cylindrical);
   cylinders.push_back(std::move(fillet_face));
