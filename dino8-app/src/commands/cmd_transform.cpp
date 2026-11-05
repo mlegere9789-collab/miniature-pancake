@@ -357,6 +357,8 @@ class MirrorCommand : public Command {
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
     if (!a_) { a_ = p; WantPoint("End of mirror plane"); return; }
+    // Two equal points used to fall back silently to the plane's Y axis and mirror about that.
+    if ((p - *a_).Length() <= 1e-12) { ctx.Warn("Mirror: the end of the mirror plane is the same point as its start; pick a different point"); return; }
     Apply(ctx, *a_, p);
   }
   ON_Xform Xform(CommandContext& ctx, Point3d a, Point3d b) {

@@ -11,6 +11,8 @@ namespace dino8::app {
 constexpr double kMaxCreatedItems = 100000;
 // Largest Helix/Spiral turn count (typed Turns, or axis length / Pitch).
 constexpr double kMaxTurns = 1000;
+// Largest distance a typed extrusion may reach. ExtrudeSrf 1e308 on a 10 unit box never returned.
+constexpr double kMaxExtrudeDistance = 1e8;
 
 // True and `out` set when `v` is a finite whole-or-fractional number in [lo, hi]; the fraction is truncated like the
 // old static_cast<int> did. Otherwise `why` receives a message naming the allowed range.

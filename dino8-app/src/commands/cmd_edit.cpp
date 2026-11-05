@@ -784,6 +784,7 @@ void RegisterEditCommands(CommandEngine& e) {
             ctx.Doc().Remove(id);
           }
         }
+        if (made == 0) ctx.Doc().AbandonChange();  // nothing to explode: no empty undo step
         ctx.Print("Exploded into " + std::to_string(made) + " object(s)");
       }));
   Reg(e, "Rebuild", Make<RebuildCommand>());

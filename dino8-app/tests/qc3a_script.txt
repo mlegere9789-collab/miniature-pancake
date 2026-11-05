@@ -117,4 +117,41 @@ Polygon
 Cancel
 New
 
+QC3ABEGIN_extrude_big
+Circle 0,0,0 3
+SelAll
+ExtrudeCrv
+1e308
+SelAll
+Cancel
+New
+
+QC3ABEGIN_extrude_srf_big
+Box 0,0,0 10,10,0 5
+SelAll
+ExtrudeSrf
+1e308
+Cancel
+New
+
+QC3ABEGIN_mirror_same_point
+Box 0,0,0 10,10,0 5
+SelAll
+Mirror
+3,3,0
+3,3,0
+3,20,0
+SelAll
+Cancel
+New
+
+QC3ABEGIN_explode_noop_undo
+Line 0,0,0 5,0,0
+SelAll
+Explode
+Undo
+SelAll
+Cancel
+New
+
 QC3ABEGIN_end

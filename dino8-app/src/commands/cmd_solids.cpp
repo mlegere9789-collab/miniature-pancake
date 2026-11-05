@@ -1,5 +1,6 @@
 // Surface, solid, mesh and SubD creation commands.
 #include "commands/cmd_common.h"
+#include "commands/count_limits.h"
 #include "commands/continuity_request.h"
 #include "dino8/kernel/surface_continuity.h"
 #include "commands/history_rebuild.h"
@@ -920,6 +921,11 @@ class ExtrudeCommand : public Command {
   void OnNumber(CommandContext& ctx, double d) override {
     ctx.ClearPreview();
     if (d == 0) { ctx.Warn("Distance must be non-zero"); Finish(); return; }
+    if (!std::isfinite(d) || std::fabs(d) > kMaxExtrudeDistance) {
+      ctx.Warn("Extrude: the distance must be a number between -" + FormatNumber(kMaxExtrudeDistance) + " and " + FormatNumber(kMaxExtrudeDistance));
+      Finish();
+      return;
+    }
     Vector3d n = ActiveNormal(ctx);
     ctx.Doc().BeginChange("Extrude");
     int made = 0;
