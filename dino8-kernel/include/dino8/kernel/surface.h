@@ -2144,13 +2144,24 @@ class NurbsSurface {
   // `max_tangent_error` is max |S_inward - D| and `max_curvature_error`
   // max |S_crosscross - E| along the edge.
   //
-  // Rational: a rational `target` (an exact arc, say) and/or a rational
-  // surface are supported for Position (the edge row carries the
-  // weights, as in `MatchEdge()`). Tangent/Curvature need a non-rational
-  // surface and target (a prescribed 3D field against a rational row is
-  // a polynomial-product construction this method doesn't do) and
-  // return Result::Failed, surface untouched, otherwise - it fails
-  // closed rather than approximating. Also Result::Failed (untouched) if
+  // Rational: a rational `target` (an exact arc or circle, say) and/or a
+  // rational surface are supported for Position (the edge row carries the
+  // weights, as in `MatchEdge()`). Tangent/Curvature against a rational
+  // `target` are exact too: the Euclidean ribbon C - t D + t^2/2 E has
+  // homogeneous form (X - t W D + t^2/2 W E, W) with the weight row W
+  // shared by all three t-rows, so the numerator rows need the weight
+  // spline times each field - a polynomial product, formed exactly on
+  // the degree-2q basis (q = the shared degree of C, D, E; C's numerator
+  // is degree-elevated to it, so the edge direction of this surface
+  // gains degree and control points) and checked against the pointwise
+  // product before anything is edited. A rational SURFACE is supported
+  // for Tangent/Curvature only when every field the continuity uses is
+  // passed explicitly (`cross_derivative`, and for Curvature
+  // `cross_second_derivative` too): its own pre-edit cross derivative
+  // along the edge is a rational function, not a spline, so the default
+  // (preserved) field can't be read from it and that case returns
+  // Result::Failed, surface untouched, rather than approximating. The
+  // fields themselves stay non-rational. Also Result::Failed (untouched) if
   // this surface isn't clamped in both directions, the target or a
   // field isn't clamped, a field's dimension isn't 3 or its domain
   // isn't the target's, or the shared basis can't be built. Throws

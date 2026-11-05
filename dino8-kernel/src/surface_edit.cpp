@@ -2948,6 +2948,114 @@ Result MatchEdgeWithAcceleration(NurbsSurface& self, int fixed_direction, bool a
   return Result::Ok;
 }
 
+namespace {
+
+// All n degree-p B-spline basis functions at `t` over the textbook knot vector `U` (length n + p + 1, clamped), Piegl &
+// Tiller A2.1 / A2.2. `t` at or past the last knot uses the last non-empty span.
+void BSplineBasisAll(const std::vector<double>& U, int p, int n, double t, std::vector<double>& basis) {
+  basis.assign(static_cast<size_t>(n), 0.0);
+  int span = p;
+  while (span < n - 1 && t >= U[static_cast<size_t>(span) + 1]) ++span;
+  std::vector<double> left(static_cast<size_t>(p) + 1), right(static_cast<size_t>(p) + 1), nl(static_cast<size_t>(p) + 1);
+  nl[0] = 1.0;
+  for (int j = 1; j <= p; ++j) {
+    left[static_cast<size_t>(j)] = t - U[static_cast<size_t>(span + 1 - j)];
+    right[static_cast<size_t>(j)] = U[static_cast<size_t>(span + j)] - t;
+    double saved = 0.0;
+    for (int r = 0; r < j; ++r) {
+      const double temp = nl[static_cast<size_t>(r)] / (right[static_cast<size_t>(r) + 1] + left[static_cast<size_t>(j - r)]);
+      nl[static_cast<size_t>(r)] = saved + right[static_cast<size_t>(r) + 1] * temp;
+      saved = left[static_cast<size_t>(j - r)] * temp;
+    }
+    nl[static_cast<size_t>(j)] = saved;
+  }
+  for (int j = 0; j <= p; ++j) basis[static_cast<size_t>(span - p + j)] = nl[static_cast<size_t>(j)];
+}
+
+// The control points (on `basis_curve`'s own degree and knot vector) of the curve  t -> w(t) * f(t)  where `w` is the 4th
+// (weight) coordinate of the 4D NON-rational homogeneous curve `hom` and `f` is a 3D polynomial curve. The product of a
+// degree-q weight spline and a degree-q field lies exactly in the degree-2q spline space with every interior knot
+// multiplicity raised by q - which is what `basis_curve` (the homogeneous curve degree-elevated by q) has - so
+// collocation at its Greville abscissae recovers it exactly (up to rounding). It is then CHECKED by evaluation at 5 points
+// per span against the pointwise product and refused (false) if it does not reproduce it, so a wrong product can't be
+// shipped silently.
+bool WeightTimesField(const ON_NurbsCurve& hom, const ON_NurbsCurve& f, const ON_NurbsCurve& basis_curve, std::vector<ON_3dPoint>& out) {
+  using Vec = ON_3dVector;
+  const int p = basis_curve.Degree();
+  const int n = basis_curve.CVCount();
+  std::vector<double> U;
+  U.push_back(basis_curve.Knot(0));
+  for (int k = 0; k < basis_curve.KnotCount(); ++k) U.push_back(basis_curve.Knot(k));
+  U.push_back(basis_curve.Knot(basis_curve.KnotCount() - 1));
+  if (static_cast<int>(U.size()) != n + p + 1) return false;
+
+  auto target_at = [&](double t, Vec& v) {
+    double h[4] = {0.0, 0.0, 0.0, 1.0};
+    if (!hom.Evaluate(t, 0, 4, h)) return false;
+    v = Vec(f.PointAt(t)) * h[3];
+    return true;
+  };
+
+  // Collocation system: row i = basis values at the i-th Greville abscissa.
+  std::vector<std::vector<double>> a(static_cast<size_t>(n), std::vector<double>(static_cast<size_t>(n), 0.0));
+  std::vector<Vec> rhs(static_cast<size_t>(n));
+  std::vector<double> basis;
+  for (int i = 0; i < n; ++i) {
+    double g = 0.0;
+    for (int j = 1; j <= p; ++j) g += U[static_cast<size_t>(i + j)];
+    g /= p;
+    g = std::min(std::max(g, basis_curve.Domain().Min()), basis_curve.Domain().Max());
+    BSplineBasisAll(U, p, n, g, basis);
+    a[static_cast<size_t>(i)] = basis;
+    if (!target_at(g, rhs[static_cast<size_t>(i)])) return false;
+  }
+  // Gaussian elimination with partial pivoting, three right-hand sides at once.
+  for (int col = 0; col < n; ++col) {
+    int piv = col;
+    for (int r = col + 1; r < n; ++r)
+      if (std::abs(a[static_cast<size_t>(r)][static_cast<size_t>(col)]) > std::abs(a[static_cast<size_t>(piv)][static_cast<size_t>(col)])) piv = r;
+    if (!(std::abs(a[static_cast<size_t>(piv)][static_cast<size_t>(col)]) > 1e-13)) return false;
+    std::swap(a[static_cast<size_t>(piv)], a[static_cast<size_t>(col)]);
+    std::swap(rhs[static_cast<size_t>(piv)], rhs[static_cast<size_t>(col)]);
+    for (int r = col + 1; r < n; ++r) {
+      const double m = a[static_cast<size_t>(r)][static_cast<size_t>(col)] / a[static_cast<size_t>(col)][static_cast<size_t>(col)];
+      if (m == 0.0) continue;
+      for (int c2 = col; c2 < n; ++c2) a[static_cast<size_t>(r)][static_cast<size_t>(c2)] -= m * a[static_cast<size_t>(col)][static_cast<size_t>(c2)];
+      rhs[static_cast<size_t>(r)] -= rhs[static_cast<size_t>(col)] * m;
+    }
+  }
+  std::vector<Vec> sol(static_cast<size_t>(n));
+  for (int r = n - 1; r >= 0; --r) {
+    Vec v = rhs[static_cast<size_t>(r)];
+    for (int c2 = r + 1; c2 < n; ++c2) v -= sol[static_cast<size_t>(c2)] * a[static_cast<size_t>(r)][static_cast<size_t>(c2)];
+    sol[static_cast<size_t>(r)] = v * (1.0 / a[static_cast<size_t>(r)][static_cast<size_t>(r)]);
+  }
+  out.resize(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) out[static_cast<size_t>(i)] = ON_3dPoint(sol[static_cast<size_t>(i)]);
+
+  // Verify: the product curve against w(t) f(t) between the collocation points.
+  ON_NurbsCurve prod;
+  if (!prod.Create(3, false, basis_curve.Order(), n)) return false;
+  for (int k = 0; k < basis_curve.KnotCount(); ++k) prod.SetKnot(k, basis_curve.Knot(k));
+  for (int i = 0; i < n; ++i) prod.SetCV(i, out[static_cast<size_t>(i)]);
+  double scale = 1.0;
+  for (int i = 0; i < n; ++i) scale = std::max(scale, sol[static_cast<size_t>(i)].Length());
+  const std::vector<double>& K = U;
+  for (int k = p; k < n; ++k) {
+    const double lo = K[static_cast<size_t>(k)], hi = K[static_cast<size_t>(k) + 1];
+    if (!(hi > lo)) continue;
+    for (int s = 1; s <= 5; ++s) {
+      const double t = lo + (hi - lo) * s / 6.0;
+      Vec want;
+      if (!target_at(t, want)) return false;
+      if ((Vec(prod.PointAt(t)) - want).Length() > 1e-9 * scale) return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 Result NurbsSurface::MatchEdgeToCurve(int fixed_direction, bool at_min, const NurbsCurve& target,
                                       MatchContinuity continuity, const NurbsCurve* cross_derivative,
                                       const NurbsCurve* cross_second_derivative, MatchEdgeReport* report) {
@@ -2960,10 +3068,13 @@ Result NurbsSurface::MatchEdgeToCurve(int fixed_direction, bool at_min, const Nu
   if (!s.IsClamped(0, 2) || !s.IsClamped(1, 2)) return Result::Failed;
   ON_NurbsCurve c = target.raw();
   if (c.Dimension() != 3 || c.Order() < 2 || c.CVCount() < c.Order() || !c.IsClamped(2)) return Result::Failed;
-  // A prescribed 3D derivative field against a rational row would need
-  // the field times the weight function as a spline (a polynomial
-  // product) - not done here; fail closed (see the header).
-  if (rows_needed >= 2 && (s.IsRational() || c.IsRational())) return Result::Failed;
+  // A RATIONAL SURFACE's own pre-edit cross derivative along the edge is a
+  // rational function of the edge parameter (not a spline), so the default
+  // (preserved) field can't be read from it: a rational surface needs every
+  // field it uses handed in. (A rational TARGET is handled below by the
+  // weight-times-field product; see the header.)
+  const bool fields_explicit = cross_derivative && (rows_needed < 3 || cross_second_derivative);
+  if (rows_needed >= 2 && s.IsRational() && !fields_explicit) return Result::Failed;
 
   const ON_Interval c_dom = c.Domain();
   const ON_Interval s_edge = s.Domain(edge_dir);
@@ -3054,12 +3165,46 @@ Result NurbsSurface::MatchEdgeToCurve(int fixed_direction, bool at_min, const Nu
   // Position neither derivative row is read; a plain translate keeps the
   // ribbon non-degenerate (homogeneous, so a rational target's weights
   // carry through unchanged).
+  //
+  // A RATIONAL target (an exact arc or circle) with Tangent/Curvature: the
+  // Euclidean ribbon C(e) - t D(e) + t^2/2 E(e) has the homogeneous form
+  // (X(e) - t W(e) D(e) + t^2/2 W(e) E(e), W(e)), with X/W = C, i.e. the
+  // weight row is the SAME in all three t-rows and only the numerator
+  // moves, by the weight spline times the field. W D (and W E) is a
+  // polynomial product, computed exactly on the degree-2q basis (q = the
+  // shared degree of C, D, E) by WeightTimesField() and verified there;
+  // C's own homogeneous numerator is degree-elevated to that basis, so all
+  // three rows live on one basis.
+  ON_NurbsCurve hom_elevated;           // C's homogeneous (x*w, y*w, z*w, w) numerator, degree 2q (rational + G1/G2 only)
+  std::vector<ON_3dPoint> wd, we;       // W*D and W*E control points on hom_elevated's basis
+  const bool rational_fields = rows_needed >= 2 && c.IsRational();
+  if (rational_fields) {
+    const int q = c.Degree();
+    ON_NurbsCurve hom;
+    if (!hom.Create(4, false, c.Order(), c.CVCount())) return Result::Failed;
+    for (int k = 0; k < c.KnotCount(); ++k) hom.SetKnot(k, c.Knot(k));
+    for (int i = 0; i < c.CVCount(); ++i) {
+      ON_4dPoint h4;
+      c.GetCV(i, h4);
+      double* cv = hom.CV(i);
+      cv[0] = h4.x;
+      cv[1] = h4.y;
+      cv[2] = h4.z;
+      cv[3] = h4.w;
+    }
+    hom_elevated = hom;
+    if (!hom_elevated.IncreaseDegree(2 * q)) return Result::Failed;
+    if (!WeightTimesField(hom, d, hom_elevated, wd)) return Result::Failed;
+    if (rows_needed >= 3 && !WeightTimesField(hom, e, hom_elevated, we)) return Result::Failed;
+  }
+  const ON_NurbsCurve& basis = rational_fields ? hom_elevated : c;
+
   NurbsSurface ribbon;
   ON_NurbsSurface& t = ribbon.raw();
-  const int n = c.CVCount();
+  const int n = basis.CVCount();
   const bool rational = c.IsRational();
-  if (!t.Create(3, rational, c.Order(), 3, n, 3)) return Result::Failed;
-  for (int k = 0; k < c.KnotCount(); ++k) t.SetKnot(0, k, c.Knot(k));
+  if (!t.Create(3, rational, basis.Order(), 3, n, 3)) return Result::Failed;
+  for (int k = 0; k < basis.KnotCount(); ++k) t.SetKnot(0, k, basis.Knot(k));
   t.SetKnot(1, 0, 0.0);
   t.SetKnot(1, 1, 0.0);
   t.SetKnot(1, 2, 1.0);
@@ -3069,10 +3214,20 @@ Result NurbsSurface::MatchEdgeToCurve(int fixed_direction, bool at_min, const Nu
   const ON_3dVector offset(0.0, 0.0, std::max(1.0, bb.Diagonal().Length()));
   for (int i = 0; i < n; ++i) {
     ON_4dPoint c4;
-    c.GetCV(i, c4);
-    if (!rational) c4.w = 1.0;
+    if (rational_fields) {
+      const double* cv = hom_elevated.CV(i);
+      c4 = ON_4dPoint(cv[0], cv[1], cv[2], cv[3]);
+    } else {
+      c.GetCV(i, c4);
+      if (!rational) c4.w = 1.0;
+    }
     ON_4dPoint r1, r2;
-    if (rows_needed >= 2) {
+    if (rational_fields) {
+      const ON_3dPoint& di = wd[static_cast<size_t>(i)];
+      const ON_3dPoint ei = rows_needed >= 3 ? we[static_cast<size_t>(i)] : ON_3dPoint(0.0, 0.0, 0.0);
+      r1 = ON_4dPoint(c4.x - 0.5 * di.x, c4.y - 0.5 * di.y, c4.z - 0.5 * di.z, c4.w);
+      r2 = ON_4dPoint(c4.x - di.x + 0.5 * ei.x, c4.y - di.y + 0.5 * ei.y, c4.z - di.z + 0.5 * ei.z, c4.w);
+    } else if (rows_needed >= 2) {
       ON_3dPoint di, ei(0.0, 0.0, 0.0);
       d.GetCV(i, di);
       if (rows_needed >= 3) e.GetCV(i, ei);

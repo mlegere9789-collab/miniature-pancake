@@ -86820,8 +86820,14 @@ void TestSurfaceMatchEdgeToCurveExactRowsPrescribedAndPreserved() {
     const ON_Arc arc(ON_Circle(plane, 1.6), ON_Interval(-1.2, 1.2));
     NurbsCurve arc_curve;
     arc.GetNurbForm(arc_curve.raw());
-    Check(s.MatchEdgeToCurve(1, true, arc_curve, MatchContinuity::Tangent) == Result::Failed && SameSurfaceCVs(s, original),
-          "MatchEdgeToCurve refuses Tangent against a rational target (no polynomial-product construction), surface untouched");
+    {
+      // Tangent against a rational target used to be refused (no polynomial-product construction); it now works through the
+      // weight-times-field product (tests/extra/match_edge_to_curve_rational.cpp measures it). Probe on a COPY so `s` stays
+      // the untouched surface the remaining refusals are checked against.
+      NurbsSurface probe = original;
+      Check(probe.MatchEdgeToCurve(1, true, arc_curve, MatchContinuity::Tangent) == Result::Ok && !SameSurfaceCVs(probe, original),
+            "MatchEdgeToCurve now accepts Tangent against a rational target (weight-times-field product)");
+    }
     NurbsCurve wrong_domain = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(1, 0, 0), Point3d(1, 0, 0)}, 2);
     wrong_domain.raw().SetDomain(target.raw().Domain().Min(), target.raw().Domain().Max() + 1.0);
     Check(s.MatchEdgeToCurve(1, true, target, MatchContinuity::Tangent, &wrong_domain) == Result::Failed && SameSurfaceCVs(s, original),
