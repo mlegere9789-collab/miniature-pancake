@@ -1,0 +1,224 @@
+// Rib / web feature (MakeRib). Every expected number is an independent closed form (areas of the rib polygon, similar
+// triangles, the footprint a web leaves on a plate) - never read back from the code under test. Volumes come from the B-rep's
+// own divergence-theorem integral, areas from the B-rep's trimmed-face area integral.
+#include <algorithm>
+#include <cmath>
+#include <exception>
+#include <functional>
+#include <string>
+#include <vector>
+
+#include "dino8/kernel/brep.h"
+#include "dino8/kernel/curve.h"
+#include "dino8/kernel/rib.h"
+#include "test_registry.h"
+
+namespace {
+
+using dino8::kernel::Brep;
+using dino8::kernel::MakeRib;
+using dino8::kernel::MakeRibs;
+using dino8::kernel::Point3d;
+using dino8::kernel::RibResult;
+
+Point3d P(double x, double y, double z) { return Point3d(x, y, z); }
+
+// A body from a planar polygon swept along `d`, built from true planar faces (the same construction the rib tool uses, written
+// out independently here so the test does not depend on the code under test for its fixtures).
+Brep PolygonPrism(std::vector<Point3d> poly, ON_3dVector d) {
+  ON_3dVector n(0, 0, 0);
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const Point3d& a = poly[i];
+    const Point3d& b = poly[(i + 1) % poly.size()];
+    n.x += (a.y - b.y) * (a.z + b.z);
+    n.y += (a.z - b.z) * (a.x + b.x);
+    n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  n.Unitize();
+  if (n * d < 0) {
+    std::reverse(poly.begin(), poly.end());
+    n = -n;
+  }
+  const size_t N = poly.size();
+  std::vector<Brep::PlanarFace> fs;
+  auto shift = [&](const Point3d& p) { return Point3d(p.x + d.x, p.y + d.y, p.z + d.z); };
+  {
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(ON_3dPoint(poly[0].x, poly[0].y, poly[0].z), -n);
+    for (size_t i = N; i-- > 0;) f.loop.push_back(poly[i]);
+    fs.push_back(f);
+  }
+  {
+    Brep::PlanarFace f;
+    const Point3d p0 = shift(poly[0]);
+    f.plane = ON_Plane(ON_3dPoint(p0.x, p0.y, p0.z), n);
+    for (size_t i = 0; i < N; ++i) f.loop.push_back(shift(poly[i]));
+    fs.push_back(f);
+  }
+  for (size_t i = 0; i < N; ++i) {
+    const Point3d a = poly[i], b = poly[(i + 1) % N];
+    Brep::PlanarFace f;
+    f.loop = {a, b, shift(b), shift(a)};
+    ON_3dVector side = ON_CrossProduct(ON_3dVector(b.x - a.x, b.y - a.y, b.z - a.z), d);
+    side.Unitize();
+    f.plane = ON_Plane(ON_3dPoint(a.x, a.y, a.z), side);
+    fs.push_back(f);
+  }
+  return Brep::FromPlanarFaces(fs);
+}
+
+bool Near(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
+
+void ExpectBody(const RibResult& r, double volume, double tol, const char* what) {
+  const std::string w(what);
+  d8test::Check(r.brep.raw().IsValid(), (w + ": result is a valid ON_Brep").c_str());
+  d8test::Check(r.brep.raw().IsSolid(), (w + ": result is a closed solid").c_str());
+  const double v = r.brep.VolumeOfSealedSolid();
+  d8test::Check(Near(v, volume, tol), (w + ": exact volume " + std::to_string(v) + " matches closed form " + std::to_string(volume)).c_str());
+}
+
+bool ThrowsWith(const std::function<void()>& fn, const std::string& needle, bool* invalid_arg = nullptr) {
+  try {
+    fn();
+  } catch (const std::invalid_argument& e) {
+    if (invalid_arg) *invalid_arg = true;
+    return std::string(e.what()).find(needle) != std::string::npos;
+  } catch (const std::exception& e) {
+    if (invalid_arg) *invalid_arg = false;
+    return std::string(e.what()).find(needle) != std::string::npos;
+  }
+  return false;
+}
+
+}  // namespace
+
+// A rectangular web on a 10 x 10 x 1 plate. Profile in the plane y = 5, thickness 0.4, x 2..8, z 0.8..4: 0.2 sunk into the
+// plate, 3 above it. Fused volume = plate + 6 * 3 * 0.4; area = plate - footprint + two flanks + two ends + top.
+D8_EXTRA_TEST(RibRectangularWebOnPlateMatchesClosedFormVolumeAndArea) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  const RibResult r = MakeRib(plate, {P(2, 5, 0.8), P(8, 5, 0.8), P(8, 5, 4), P(2, 5, 4)}, 0.4);
+  ExpectBody(r, 100.0 + 6.0 * 3.0 * 0.4, 1e-6, "rect rib on plate");
+  d8test::Check(Near(r.tool_volume, 6.0 * 3.2 * 0.4, 1e-9), "rect rib: web volume is width x height x thickness");
+  d8test::Check(Near(r.added_volume, 7.2, 1e-6), "rect rib: added volume is the part above the plate (6 x 3 x 0.4)");
+  const double area = 240.0 - 6.0 * 0.4 + 2.0 * 6.0 * 3.0 + 2.0 * 0.4 * 3.0 + 6.0 * 0.4;
+  d8test::Check(Near(r.brep.Area(), area, 1e-6), "rect rib: surface area matches the closed form 278.4");
+  const auto bb = r.brep.GetTightBoundingBox();
+  // GetTightBoundingBox() of a trimmed B-rep carries a small slack (measured 4.16 for a true 4.0), so only bound it.
+  d8test::Check(bb.max.z >= 4.0 - 1e-9 && bb.max.z < 4.5 && Near(bb.min.z, 0.0, 1e-6) && Near(bb.max.y, 10.0, 1e-6),
+                "rect rib: bounding box reaches the rib's 4.0 (and not meaningfully past it); the plate is untouched elsewhere");
+}
+
+// A triangular web (apex over the middle): the part above the plate is a similar triangle clipped at z = 1.
+D8_EXTRA_TEST(RibTriangularWebAddsSimilarTriangleAboveSurface) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  const RibResult r = MakeRib(plate, {P(2, 5, 0.5), P(5, 5, 4), P(8, 5, 0.5)}, 0.4);
+  // Full triangle: base 6 at z = 0.5, apex at z = 4 (height 3.5). At z = 1 the width is 6 * (4 - 1) / 3.5; the cap above is a
+  // similar triangle of height 3.
+  const double w = 6.0 * 3.0 / 3.5;
+  const double added = 0.4 * 0.5 * w * 3.0;
+  ExpectBody(r, 100.0 + added, 1e-5, "triangular rib");
+  d8test::Check(Near(r.added_volume, added, 1e-5), "triangular rib: added volume is thickness x similar-triangle area");
+}
+
+// The same rib listed in the opposite vertex order is the same web (the sweep follows the Newell normal, symmetric about the
+// plane), and a concave U-shaped (lightened) profile takes its notch out of the added volume.
+D8_EXTRA_TEST(RibVertexOrderAndConcaveProfile) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  const RibResult fwd = MakeRib(plate, {P(2, 5, 0.8), P(8, 5, 0.8), P(8, 5, 4), P(2, 5, 4)}, 0.4);
+  const RibResult rev = MakeRib(plate, {P(2, 5, 4), P(8, 5, 4), P(8, 5, 0.8), P(2, 5, 0.8)}, 0.4);
+  d8test::Check(Near(fwd.brep.VolumeOfSealedSolid(), rev.brep.VolumeOfSealedSolid(), 1e-5) && Near(fwd.brep.Area(), rev.brep.Area(), 1e-4),
+                "reversed vertex order gives the same volume and area");
+  // U profile: 6 x 3.2 block minus a 2 x 1.5 notch cut from the top edge; only the part above z = 1 counts: 6*3 - 2*1.5 = 15.
+  const RibResult u = MakeRib(plate,
+                              {P(2, 5, 0.8), P(8, 5, 0.8), P(8, 5, 4), P(6, 5, 4), P(6, 5, 2.5), P(4, 5, 2.5), P(4, 5, 4), P(2, 5, 4)}, 0.4);
+  ExpectBody(u, 100.0 + 0.4 * 15.0, 1e-6, "U-shaped (concave) rib");
+}
+
+// A corner gusset in the inside corner of an L bracket crosses TWO faces of the body (floor and wall).
+D8_EXTRA_TEST(RibCornerGussetInLBracketMatchesClosedForm) {
+  // L section in xz (floor z 0..1 over x 0..10, wall x 0..1 over z 0..10), 10 long in y: volume 10 * 19 = 190.
+  const Brep ell = PolygonPrism({P(0, 0, 0), P(10, 0, 0), P(10, 0, 1), P(1, 0, 1), P(1, 0, 10), P(0, 0, 10)}, ON_3dVector(0, 10, 0));
+  d8test::Check(Near(ell.Volume(), 190.0, 1e-9), "L bracket fixture volume is 190");
+  // Gusset triangle (0.7,0.7) (6,0.7) (0.7,6) in the plane y = 5: the part outside the L is x >= 1, z >= 1, x + z <= 6.7, a right
+  // triangle with legs 4.7.
+  const RibResult g = MakeRib(ell, {P(0.7, 5, 0.7), P(6, 5, 0.7), P(0.7, 5, 6)}, 0.4);
+  const double added = 0.4 * 0.5 * 4.7 * 4.7;
+  ExpectBody(g, 190.0 + added, 1e-6, "corner gusset");
+  d8test::Check(Near(g.added_volume, added, 1e-6), "corner gusset: added volume is thickness x 4.7^2 / 2");
+}
+
+// Two disjoint ribs fused as one compound tool.
+D8_EXTRA_TEST(RibTwoParallelRibsFuseInOneBoolean) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  const RibResult b = MakeRibs(plate,
+                               {{P(2, 3, 0.8), P(8, 3, 0.8), P(8, 3, 4), P(2, 3, 4)},
+                                {P(2, 7, 0.8), P(8, 7, 0.8), P(8, 7, 4), P(2, 7, 4)}},
+                               0.4);
+  ExpectBody(b, 100.0 + 2.0 * 7.2, 1e-6, "two ribs");
+  d8test::Check(Near(b.tool_volume, 2.0 * 7.68, 1e-9), "two ribs: tool volume is the sum of both webs");
+  bool inv = false;
+  d8test::Check(ThrowsWith([&] {
+                  MakeRibs(plate, {{P(2, 5, 0.8), P(8, 5, 0.8), P(8, 5, 4), P(2, 5, 4)},
+                                   {P(5, 2, 0.8), P(5, 8, 0.8), P(5, 8, 4), P(5, 2, 4)}}, 0.4);
+                }, "overlapping bounding boxes", &inv) && inv,
+                "crossing ribs (a cross) are refused with the measured reason");
+}
+
+D8_EXTRA_TEST(RibRefusesBadArgumentsWithMeasuredReasons) {
+  const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
+  const std::vector<Point3d> ok = {P(2, 5, 0.8), P(8, 5, 0.8), P(8, 5, 4), P(2, 5, 4)};
+  bool inv = false;
+  d8test::Check(ThrowsWith([&] { MakeRib(Brep(), ok, 0.4); }, "no faces", &inv) && inv, "empty solid is an invalid argument");
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, ok, 0.0); }, "thickness", &inv) && inv, "zero thickness is an invalid argument");
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, ok, -1.0); }, "thickness", &inv) && inv, "negative thickness is an invalid argument");
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, {P(0, 0, 0), P(1, 0, 0)}, 0.4); }, "at least 3", &inv) && inv, "two vertices are refused");
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, {P(2, 5, 1), P(4, 5, 1), P(6, 5, 1)}, 0.4); }, "zero area", &inv) && inv,
+                "collinear vertices are refused as zero area");
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, {P(2, 5, 0.8), P(8, 5, 0.8), P(8, 6, 4), P(2, 5, 4)}, 0.4); }, "not planar", &inv) && inv,
+                "a non-planar profile is refused and names the distance");
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, {P(2, 5, 0.8), P(8, 5, 0.8), P(3, 5, 4), P(7, 5, 4)}, 0.4); }, "self-intersects", &inv) && inv,
+                "a bow-tie profile is refused as self-intersecting");
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, {P(2, 5, 0.8), P(8, 5, 0.8), P(8, 5, 4), P(2, 5, 0.8)}, 0.4); }, "repeats a vertex", &inv) && inv,
+                "a repeated vertex is refused");
+  // Disjoint: a rib floating 5 above the plate, and one entirely inside it.
+  d8test::Check(ThrowsWith([&] { MakeRib(plate, {P(2, 5, 6), P(8, 5, 6), P(8, 5, 9), P(2, 5, 9)}, 0.4); }, "bounding box does not meet", &inv) && !inv,
+                "a floating rib is refused (runtime_error) naming the disjoint bounding boxes");
+  bool threw = false;
+  try {
+    MakeRib(plate, {P(2, 5, 0.2), P(8, 5, 0.2), P(8, 5, 0.8), P(2, 5, 0.8)}, 0.4);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  d8test::Check(threw, "a rib buried inside the plate adds nothing and is refused rather than returned");
+}
+
+// A rib on a CURVED face: the web crosses the cylinder wall in two separate curves, which BooleanCombineGeneral's one-crossing
+// scope refuses today. The contract pinned here is "either the exact right solid or an honest refusal", never a degraded body.
+D8_EXTRA_TEST(RibOnCylinderWallIsExactOrHonestlyRefused) {
+  const double R = 3, H = 6, t = 0.4;
+  std::vector<Point3d> circ;
+  const ON_Circle c(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), R);
+  ON_NurbsCurve nurbs;
+  c.GetNurbForm(nurbs);
+  dino8::kernel::NurbsCurve prof;
+  prof.raw() = nurbs;
+  const Brep cyl = Brep::Extrude(prof, dino8::kernel::Vector3d(0, 0, H));
+  // Fin radiating from the wall at +x: x 2.5..5, z 1..5, plane y = 0.
+  double expected = 0;
+  {
+    const int n = 20000;
+    const double a = -t / 2, b = t / 2, h = (b - a) / n;
+    for (int i = 0; i < n; ++i) {
+      const double y = a + (i + 0.5) * h;
+      expected += (5.0 - std::sqrt(R * R - y * y)) * 4.0 * h;
+    }
+    expected += M_PI * R * R * H;
+  }
+  try {
+    const RibResult r = MakeRib(cyl, {P(2.5, 0, 1), P(5, 0, 1), P(5, 0, 5), P(2.5, 0, 5)}, t);
+    d8test::Check(r.brep.raw().IsValid() && r.brep.raw().IsSolid(), "fin on cylinder: if returned, it is a valid closed solid");
+    d8test::Check(Near(r.brep.VolumeOfSealedSolid(), expected, 5e-3), "fin on cylinder: if returned, the volume matches the quadrature closed form");
+  } catch (const std::exception& e) {
+    d8test::Check(std::string(e.what()).find("MakeRib") != std::string::npos, "fin on cylinder: refusal is a named MakeRib error");
+  }
+}
