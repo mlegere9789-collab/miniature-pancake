@@ -3394,6 +3394,24 @@ SubD SubD::BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this
     }
   }
 
+  // Pinned corners of the operands (a Corner vertex on exactly two crease/boundary edges), by position. The Boolean result is a
+  // fresh cage built from a mesh, so its vertices carry no tags of their own; the crease EDGES are re-derived below from the
+  // operand creases, but a pin is a vertex tag and was dropped. A pin is a control-point position that a refined cage keeps
+  // (a corner's limit point is its control point), so it can be looked up by position in the result.
+  std::vector<ON_3dPoint> operand_pins;
+  for (const SubD* s : {&a, &b}) {
+    ON_SubDVertexIterator vit = s->subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (v->m_vertex_tag != ON_SubDVertexTag::Corner) continue;
+      int sharp = 0;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+      }
+      if (sharp == 2) operand_pins.push_back(v->ControlNetPoint());
+    }
+  }
+
   ON_BoundingBox bb = ma.raw().BoundingBox();
   bb.Union(mb.raw().BoundingBox());
   const double diag = bb.IsValid() ? bb.Diagonal().Length() : 1.0;
@@ -3436,6 +3454,28 @@ SubD SubD::BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this
     }
   }
   if (to_crease.Count() > 0) sd.subd_.SetEdgeTags(to_crease, ON_SubDEdgeTag::Crease);
+  {
+    bool repinned = false;
+    for (const ON_3dPoint& pin : operand_pins) {
+      const ON_SubDVertex* v = sd.subd_.FindVertex(&pin.x, eps);
+      if (v == nullptr || v->m_vertex_tag != ON_SubDVertexTag::Crease) continue;
+      int sharp = 0;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+      }
+      if (sharp != 2) continue;
+      const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Corner;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        if (v->Edge(i) != nullptr) v->Edge(i)->UnsetSectorCoefficientsForExperts();
+      }
+      repinned = true;
+    }
+    if (repinned) {
+      sd.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+      sd.subd_.ClearEvaluationCache();
+    }
+  }
   if (interpolate) {
     sd = sd.InterpolateControlNet(std::max(1e-5 * diag, 1e-6), 150, &rep.interpolation);
   }
@@ -3485,6 +3525,22 @@ SubD SubD::SymmetrizeRadial(Point3d axis_point, Vector3d axis_dir, int count, do
       const double s0 = e->EndSharpness(0u), s1 = e->EndSharpness(1u);
       if (!crease && !(s0 > 0.0 || s1 > 0.0)) continue;
       features.push_back({e->Vertex(0u)->ControlNetPoint(), e->Vertex(1u)->ControlNetPoint(), crease, s0, s1});
+    }
+  }
+  // Pinned corners (a Corner vertex on exactly two crease/boundary edges), snapshotted by position: the rotated faces are
+  // created with Unset tags, so without this every rotated image of a pin came back an ordinary Crease vertex (see
+  // Symmetrize(), which has the same snapshot for the mirror image).
+  std::vector<Point3d> pinned_corners;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (v->m_vertex_tag != ON_SubDVertexTag::Corner) continue;
+      int sharp = 0;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+      }
+      if (sharp == 2) pinned_corners.push_back(v->ControlNetPoint());
     }
   }
 
@@ -3556,6 +3612,31 @@ SubD SubD::SymmetrizeRadial(Point3d axis_point, Vector3d axis_dir, int count, do
         const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromInterval(s_end0, s_end1));
       }
     }
+  }
+  // Re-pin the original corners and every rotated image of them.
+  bool repinned = false;
+  for (const Point3d& c : pinned_corners) {
+    for (int k = 0; k < count; ++k) {
+      Point3d q = c;
+      if (k > 0) q.Transform(xforms[static_cast<size_t>(k)]);
+      const ON_SubDVertex* v = result.subd_.FindVertex(&q.x, eff_tol);
+      if (v == nullptr || v->m_vertex_tag != ON_SubDVertexTag::Crease) continue;
+      int sharp = 0;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+      }
+      if (sharp != 2) continue;
+      const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Corner;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        if (v->Edge(i) != nullptr) v->Edge(i)->UnsetSectorCoefficientsForExperts();
+      }
+      repinned = true;
+    }
+  }
+  if (repinned) {
+    result.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+    result.subd_.ClearEvaluationCache();
   }
   return result;
 }

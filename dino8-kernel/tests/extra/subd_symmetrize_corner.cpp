@@ -82,3 +82,73 @@ D8_EXTRA_TEST(SubDSymmetrizeKeepsPinnedCornerWhenAFaceLiesInTheMirrorPlane) {
   d8test::Check(orig.found && orig.kind == SubDVertexKind::Corner && Near(orig.limit_point, 0, 0, 0, 1e-6), "the original pin survives the rebuild: limit (0,0,0)");
   d8test::Check(image.found && image.kind == SubDVertexKind::Corner && Near(image.limit_point, 20, 0, 0, 1e-6), "the image (20,0,0) is a pinned Corner, limit (20,0,0)");
 }
+
+// BooleanToSubDCreased() (the fold Reflect uses for more than one selected SubD, called as BooleanToSubDCreased(other, Union, 0, 0, 0.0, 3.0,
+// false)) rebuilds a fresh cage from the Boolean mesh and re-derives the crease EDGES from the operands, but a pin is a vertex tag and was
+// dropped. Operand A: the pinned cube PinnedCube(true) (origin pinned); operand B: a second cube 20 units away, or overlapping, pinned the same
+// way at its own origin by translation. Pinned corner: limit point == control point.
+D8_EXTRA_TEST(SubDBooleanToSubDCreasedKeepsPinnedCornersOfBothOperands) {
+  const auto cube_at = [](double ox, double oy, double oz, bool pin) {
+    SubD s = SubD::FromControlMesh(SzBox());
+    ON_Xform t = ON_Xform::TranslationTransformation(ON_3dVector(ox, oy, oz));
+    SubD moved = s.Transform(t);
+    moved.SetCrease(Point3d(ox, oy, oz), Point3d(ox + 10, oy, oz), true, 1e-6);
+    moved.SetCrease(Point3d(ox, oy, oz), Point3d(ox, oy + 10, oz), true, 1e-6);
+    if (pin) moved.SetVertexCorner(Point3d(ox, oy, oz), true, 1e-6);
+    return moved;
+  };
+  // disjoint operands, both pinned
+  {
+    const SubD u = cube_at(0, 0, 0, true).BooleanToSubDCreased(cube_at(20, 0, 0, true), dino8::kernel::BooleanOp::Union, 0, 0, 0.0, 3.0, false);
+    const SubDVertexInfo a = u.VertexInfoAt(Point3d(0, 0, 0), 1e-4);
+    const SubDVertexInfo b = u.VertexInfoAt(Point3d(20, 0, 0), 1e-4);
+    d8test::Check(a.found && a.crease_edge_count == 2, "disjoint union: operand A's pinned vertex is on exactly two crease edges");
+    d8test::Check(a.kind == SubDVertexKind::Corner && Near(a.limit_point, 0, 0, 0, 1e-5), "...and stays a pinned Corner, limit (0,0,0)");
+    d8test::Check(b.found && b.kind == SubDVertexKind::Corner && Near(b.limit_point, 20, 0, 0, 1e-5), "operand B's pinned vertex stays a Corner, limit (20,0,0)");
+  }
+  // overlapping operands (B [5,15]^3 is unpinned): A's origin lies outside B and must keep its pin
+  {
+    const SubD u = cube_at(0, 0, 0, true).BooleanToSubDCreased(cube_at(5, 5, 5, false), dino8::kernel::BooleanOp::Union, 0, 0, 0.0, 3.0, false);
+    const SubDVertexInfo a = u.VertexInfoAt(Point3d(0, 0, 0), 1e-4);
+    d8test::Check(a.found && a.kind == SubDVertexKind::Corner && Near(a.limit_point, 0, 0, 0, 1e-5), "overlapping union: A's pinned origin stays a Corner, limit (0,0,0)");
+    const SubDVertexInfo c = u.VertexInfoAt(Point3d(5, 5, 5), 1e-4);
+    d8test::Check(!c.found || c.kind != SubDVertexKind::Corner || c.crease_edge_count != 2, "control: B's unpinned vertex (5,5,5) does not become a two-crease pinned corner");
+  }
+}
+
+// SymmetrizeRadial(): the same loss for the rotated images. Cage: the 2 x 2 quad quadrant [0,2]^2 with its rim vertex (2,1) pulled out to
+// (2.2, 1) and pinned (it sits on the two naked rim edges to (2,0) and (2,2)). Rotated 4 times about z the images are
+// (-1, 2.2), (-2.2, -1), (1, -2.2). Rim crease rule for the unpinned vertex: (a + 4 v + b)/6 with a = (2,0), b = (2,2):
+// ((2 + 8.8 + 2)/6, (0 + 4 + 2)/6) = (2.13333, 1); rotated by 90 degrees (x,y) -> (-y,x): (-1, 2.13333).
+D8_EXTRA_TEST(SubDSymmetrizeRadialKeepsPinnedCornerOnEveryRotatedImage) {
+  const auto build = [](bool pin) {
+    dino8::kernel::Mesh m;
+    ON_Mesh& raw = m.raw();
+    for (int j = 0; j < 3; ++j)
+      for (int i = 0; i < 3; ++i) raw.m_V.Append(ON_3fPoint((i == 2 && j == 1) ? 2.2f : float(i), float(j), 0.0f));
+    for (int j = 0; j < 2; ++j)
+      for (int i = 0; i < 2; ++i) {
+        ON_MeshFace f;
+        f.vi[0] = j * 3 + i; f.vi[1] = j * 3 + i + 1; f.vi[2] = (j + 1) * 3 + i + 1; f.vi[3] = (j + 1) * 3 + i;
+        raw.m_F.Append(f);
+      }
+    SubD s = SubD::FromControlMesh(m);
+    if (pin) s.SetVertexCorner(Point3d(2.2, 1, 0), true, 1e-5);
+    return s;
+  };
+  const SubD src = build(true);
+  d8test::Check(src.VertexInfoAt(Point3d(2.2, 1, 0), 1e-5).kind == SubDVertexKind::Corner, "sanity: the source rim vertex is pinned");
+  const SubD ring = src.SymmetrizeRadial(Point3d(0, 0, 0), Vector3d(0, 0, 1), 4);
+  d8test::Check(ring.FaceCount() == 16, "sanity: 4 quads x 4 copies = 16 faces");
+  const double pts[4][2] = {{2.2, 1}, {-1, 2.2}, {-2.2, -1}, {1, -2.2}};
+  for (int k = 0; k < 4; ++k) {
+    const SubDVertexInfo v = ring.VertexInfoAt(Point3d(pts[k][0], pts[k][1], 0), 1e-4);
+    char what[160];
+    std::snprintf(what, sizeof what, "rotation %d: the image (%g, %g) is a pinned Corner with limit == control point", k, pts[k][0], pts[k][1]);
+    d8test::Check(v.found && v.crease_edge_count == 2 && v.kind == SubDVertexKind::Corner && Near(v.limit_point, pts[k][0], pts[k][1], 0, 1e-5), what);
+  }
+  const SubD plain = build(false).SymmetrizeRadial(Point3d(0, 0, 0), Vector3d(0, 0, 1), 4);
+  const SubDVertexInfo image = plain.VertexInfoAt(Point3d(-1, 2.2, 0), 1e-4);
+  d8test::Check(image.found && image.kind == SubDVertexKind::Crease && Near(image.limit_point, -1, 2.0 + 2.0 / 15.0, 0, 1e-4),
+                "control: unpinned, the 90-degree image is a Crease vertex with limit (-1, 2.13333, 0)");
+}
