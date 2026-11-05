@@ -580,6 +580,52 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
     }
   }
 
+  // Pinned corners (SetVertexCorner(): a Corner-tagged vertex on exactly two
+  // crease/boundary edges - three or more would make it a corner by the
+  // edges alone) are snapshotted by position the same way. The mirrored
+  // faces are created with Unset tags, so without this the pin was kept on
+  // the original half only (and lost altogether when the result is rebuilt
+  // face by face) and its mirror image came back an ordinary Crease vertex.
+  std::vector<Point3d> pinned_corners;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (v->m_vertex_tag != ON_SubDVertexTag::Corner) continue;
+      int sharp = 0;
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+      }
+      if (sharp == 2) pinned_corners.push_back(v->ControlNetPoint());
+    }
+  }
+  const auto repin_corners = [&](SubD& target) {
+    bool changed = false;
+    for (const Point3d& c : pinned_corners) {
+      const double d = signed_distance(c);
+      const Point3d images[2] = {c, std::abs(d) <= point_tolerance ? c : reflect(c, d)};
+      for (int k = 0; k < 2; ++k) {
+        const ON_SubDVertex* v = target.subd_.FindVertex(&images[k].x, effective_weld_tolerance);
+        if (v == nullptr || v->m_vertex_tag != ON_SubDVertexTag::Crease) continue;
+        int sharp = 0;
+        for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+          const ON_SubDEdge* e = v->Edge(i);
+          if (e != nullptr && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+        }
+        if (sharp != 2) continue;
+        const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Corner;
+        for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+          if (v->Edge(i) != nullptr) v->Edge(i)->UnsetSectorCoefficientsForExperts();
+        }
+        changed = true;
+      }
+    }
+    if (changed) {
+      target.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+      target.subd_.ClearEvaluationCache();
+    }
+  };
+
   // A face lying entirely IN the mirror plane (every corner on-plane) is
   // an interior wall once the two halves meet - mirroring a CLOSED solid
   // across a plane that contains one of its faces (a box across its own
@@ -649,6 +695,7 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
       apply_feature(f.p0, f.p1, f);
       apply_feature(on0 ? f.p0 : reflect(f.p0, d0), on1 ? f.p1 : reflect(f.p1, d1), f);
     }
+    repin_corners(out);
     return out;
   }
 
@@ -769,6 +816,7 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
       const_cast<ON_SubDEdge*>(me)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromInterval(s_end0, s_end1));
     }
   }
+  repin_corners(result);
   return result;
 }
 
