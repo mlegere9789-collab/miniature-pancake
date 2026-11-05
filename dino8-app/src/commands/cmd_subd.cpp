@@ -1009,6 +1009,47 @@ void SculptAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
   ctx.Print(msg);
 }
 
+// ---------------------------------------------------------------------------
+// SplitSubD: cut a SubD with a vertical plane into two SubDs (kernel SubD::SplitByPlane)
+// ---------------------------------------------------------------------------
+// The plane contains the line through the two picked points and the construction plane's normal (the same plane Reflect uses); the
+// first part is on the side the cross product (second - first) x normal points to. The cut is exact on the control cage, so for a
+// fully creased SubD it is exact on the surface; a smooth SubD's halves are the cut cages' limit surfaces (see SubD::SplitByPlane).
+void SplitSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  if (in.picks.size() < 2) { ctx.Warn("SplitSubD: pick two points; the cutting plane is vertical through the line between them"); return; }
+  Vector3d n = ON_CrossProduct(in.picks[1] - in.picks[0], ActiveNormal(ctx));
+  if (!n.Unitize()) { ctx.Warn("SplitSubD: the two points must differ and the line between them must not be parallel to the construction-plane normal"); return; }
+  const double offset = ON_DotProduct(n, in.picks[0]);
+  const bool cap = in.Yes("Cap"), crease_cut = in.Yes("CreaseCut"), keep = in.Yes("KeepInput");
+  ctx.Doc().BeginChange("SplitSubD");
+  int cut_objects = 0;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    if (o->kind != ObjectKind::SubD || !o->subd) { ctx.Warn("SplitSubD: object " + std::to_string(id) + " is not a SubD; skipped"); continue; }
+    kernel::SubDPlaneSplit cut;
+    try {
+      cut = o->subd->SplitByPlane(n, offset, cap, crease_cut);
+    } catch (const std::exception& ex) { ctx.Warn("SplitSubD: object " + std::to_string(id) + ": " + ex.what()); continue; }
+    if (!cut.has_positive || !cut.has_negative) { ctx.Warn("SplitSubD: the plane does not cross object " + std::to_string(id) + "; nothing cut"); continue; }
+    const int layer = o->layer_index;
+    const Color color = o->color;
+    const bool by_layer = o->color_by_layer;
+    const std::string name = o->name;
+    if (!keep) ctx.Doc().Remove(id);
+    for (const kernel::SubD* half : {&cut.positive, &cut.negative}) {
+      SceneObject h = SceneObject::MakeSubD(*half);
+      h.layer_index = layer; h.color = color; h.color_by_layer = by_layer; h.name = name;
+      ctx.Doc().Add(std::move(h));
+    }
+    ++cut_objects;
+    ctx.Print("SplitSubD: object " + std::to_string(id) + ": " + std::to_string(cut.positive.FaceCount()) + " face(s) on the positive side, " +
+              std::to_string(cut.negative.FaceCount()) + " on the negative; " + std::to_string(cut.cut_vertices) + " cut vertices, " +
+              std::to_string(cut.split_faces) + " split faces, " + std::to_string(cut.cap_loops) + " cap(s)" + (crease_cut ? ", cut rim creased" : ""));
+  }
+  if (cut_objects) ctx.Print("SplitSubD: " + std::to_string(cut_objects) + " SubD(s) cut");
+}
+
 void ExtrudeSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
   std::vector<Target> ts = SubDTargets(ctx, ids, "ExtrudeSubD");
   if (ts.empty()) return;
@@ -1758,6 +1799,9 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "SubDSculpt", SubDTool(kSelectSubD, "Pick the vertex to drag, then the point to drag it to", 2, {},
                                 {Numeric("Radius", 5), Choice("Falloff", {"Smooth", "Linear", "Constant"})}, SculptAction),
       CommandStatus::Implemented, "Drags one control vertex to a new point; every control point within Radius follows by the chosen falloff (Smooth, Linear or Constant).");
+  Reg(e, "SplitSubD", SubDTool(kSelectSubD, "Pick two points; the cutting plane is vertical through the line between them", 2, {},
+                               {Toggle("Cap", true), Toggle("CreaseCut", true), Toggle("KeepInput", false)}, SplitSubDAction),
+      CommandStatus::Implemented, "Cuts a SubD with a vertical plane into two SubDs: the control cage is clipped, each half is capped and its cut rim creased.");
   Reg(e, "SubDVertexInfo", SubDTool(kSelectSubD, "Pick vertices to inspect", -1, {}, {}, VertexInfoAction),
       CommandStatus::Implemented, "Reports how each picked control-net vertex is classified (Smooth, Crease, Corner, Dart), its valence, faces and crease edges, and its exact limit-surface point.");
   Reg(e, "SubDCorner", SubDTool(kSelectSubD, "Pick crease vertices to pin as corners", -1, {}, {},

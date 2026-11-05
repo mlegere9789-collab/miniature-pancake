@@ -9184,6 +9184,18 @@
   "help": "Toolbar\nMenu\nCurve Tools\nSelect Curves\nCurve\nCurve Edit Tools >\nSubcurve\nHistory enabled\nThe SubCrv command shortens a curve to the new picked endpoints.\nSteps\nSelect a curve.\nPick a new start for the curve.\nThe command-line displays the current length of the curve.\nPick a new end or type a length for the curve.\nCommand-line option\nCopy\nSpecifies whether or not the objects are copied. A plus sign appears at the cursor when copy mode is on. The RememberCopyOptions command determines whether the selected option is used as the default.\nWhen used on surface edges, a copy is always made.\nCopy=Yes works with History .\nDirection\nFree\nMove the cursor to decide the direction.\nLocked\nLocks the direction to the cursor direction.\nTo lock a direction\nStart the sub curve in the desired direction.\nType D , and press Enter .\nMode\nShorten\nRemoves the parts of the curve outside of the start and end points.\nMarkEnds\nPlaces points at the start and end point on the curve, but does not shorten the curve.\nMode=MarkEnds works with History .\nFromMidpoint\nPicks the sub-curve from its middle point.\nSubCrv as input for commands\nUse SubCrv inside a command to select part of a curve for input.\nExample\nStart the ExtrudeCrv command.\nAt the Select curves to Extrude prompt, type subcrv .\nAt the Select curve to temporarily shorten prompt, select the curve that you want to extrude a part of.\nAt the Start of curve prompt, pick the start of the new curve.\nThe order you pick the start and end determines the curve's direction .\nAt the End of curve ... prompt, pick the end of the new curve.\nAt the Select curves to Extrude ... prompt, press Enter .\nContinue with the ExtrudeCrv command.\nSee also\nCreate curves from other objects\nRhinoceros 8 © 2010- 2026 Robert McNeel & Associates. 16-Aug-2026"
  },
  {
+  "name": "SplitSubD",
+  "description": "Cuts a SubD with a vertical plane into two SubDs: the control cage is clipped, each half is capped and its cut rim creased.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [
+   "Cap",
+   "CreaseCut",
+   "KeepInput"
+  ],
+  "help": ""
+ },
+ {
   "name": "SubDBox",
   "description": "Creates a Subdivision box object.",
   "toolbars": "Not on toolbars",

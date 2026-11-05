@@ -1,0 +1,70 @@
+# SplitSubD: cut a SubD with a vertical plane into two SubDs (the "SPL_" section, tests/sections/81_splitsubd.sh).
+#
+# Fixture: the app's SubD box 0,0,0 - 10,10,0 - 10 (the plain 8-vertex cube cage). A FULLY CREASED cube (all 12 edges creased, every
+# vertex a corner) is exactly the solid cube, so cutting it by the plane x = 4 must give boxes of volume 400 (x < 4) and 600 (x > 4),
+# each a closed solid. The plane is picked as the line (4,0,0)-(4,10,0): (second - first) x construction normal = (+x), so the first
+# half is the x > 4 side. The kernel check is SubD::SplitByPlane (dino8-kernel/tests/extra/subd_split_plane.cpp).
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+# fully creased cube cut at x = 4; read the two volumes (the second half is added last, so SelLast reads it first)
+New
+SPLBEGIN_creased
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+10,5,0
+5,10,0
+0,5,0
+5,0,10
+10,5,10
+5,10,10
+0,5,10
+0,0,5
+10,0,5
+10,10,5
+0,10,5
+Enter
+SelLast
+SplitSubD
+4,0,0
+4,10,0
+SelLast
+Volume
+Delete
+SelLast
+Volume
+
+# the same cut with KeepInput=Yes leaves the input and both halves: 3 objects
+New
+SPLBEGIN_keep
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SplitSubD
+KeepInput=Yes
+4,0,0
+4,10,0
+SelAll
+List
+
+# a plane that misses the cube cuts nothing
+New
+SPLBEGIN_miss
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SplitSubD
+20,0,0
+20,10,0
+SelAll
+List
+
+# a solid is not a SubD and is skipped
+New
+SPLBEGIN_notsubd
+Box 0,0,0 10,10,0 10
+SelLast
+SplitSubD
+4,0,0
+4,10,0
