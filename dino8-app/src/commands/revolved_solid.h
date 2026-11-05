@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <string>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -174,6 +176,42 @@ inline std::optional<kernel::Brep> RevolveOutward(const PlainRevolved& pr, const
   if (!k) return std::nullopt;
   if (k->raw().SolidOrientation() < 0) k->raw().Flip();
   return k;
+}
+
+// Shell WITH face removal and/or per-face thickness of a plain revolved solid (cylinder, cone, frustum): the
+// closed (radius, height) profile `prof` about the axis through c0 along ax (radial direction u), with
+// `face[k]` the brep face of edge prof[k] -> prof[k+1] (the closing axis edge has none). Every face gets `t`,
+// `overrides[face]` its own value, and each face in `removed` 0 (opened); then kernel::ShellRevolvedProfile
+// builds it exactly (its cavity / rim / volume checks all run in the kernel). nullopt with the kernel's reason
+// in `why` otherwise - including a face index that is not one of this solid's faces.
+inline std::optional<kernel::Brep> ShellRevolvedMeridian(ON_3dPoint c0, ON_3dVector ax, ON_3dVector u,
+                                                        const std::vector<std::pair<double, double>>& prof, const std::vector<int>& face,
+                                                        const std::vector<int>& removed, const std::map<int, double>& overrides, double t,
+                                                        std::string& why) {
+  auto known = [&](int f) { return std::find(face.begin(), face.end(), f) != face.end(); };
+  for (int f : removed) if (!known(f)) { why = "invalid face index"; return std::nullopt; }
+  for (const auto& kv : overrides) if (!known(kv.first)) { why = "invalid face index"; return std::nullopt; }
+  const size_t n = prof.size();
+  if (n < 3 || face.size() + 1 != n) { why = "the revolved profile is not a closed meridian polyline"; return std::nullopt; }
+  std::vector<double> th(n, 0.0);
+  for (size_t k = 0; k + 1 < n; ++k) {
+    const int f = face[k];
+    if (std::find(removed.begin(), removed.end(), f) != removed.end()) th[k] = 0.0;
+    else { const auto it = overrides.find(f); th[k] = it != overrides.end() ? it->second : t; }
+  }
+  std::vector<kernel::Point3d> pts;
+  for (const auto& rz : prof) {
+    const ON_3dPoint q = c0 + rz.first * u + rz.second * ax;
+    pts.emplace_back(q.x, q.y, q.z);
+  }
+  pts.push_back(pts.front());
+  try {
+    return kernel::ShellRevolvedProfile(kernel::NurbsCurve::FromControlPoints(pts, 1), kernel::Point3d(c0.x, c0.y, c0.z),
+                                        kernel::Vector3d(ax.x, ax.y, ax.z), th);
+  } catch (const std::exception& e) {
+    why = e.what();
+    return std::nullopt;
+  }
 }
 
 }  // namespace dino8::app::revolved

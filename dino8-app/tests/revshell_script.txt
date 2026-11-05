@@ -1,0 +1,107 @@
+# RVSH: exact open / variable-thickness Shell of a plain revolved solid (Cylinder, Cone, TCone) through
+# kernel::ShellRevolvedProfile. A per-face thickness or several removed faces on a revolved solid used to be refused
+# ("no exact construction" / "only one cap ... can be removed exactly"). Every case is bracketed by an RVSHBEGIN_<name>
+# marker; rvshblock in sections/72_rvsh.sh slices the output by it.
+# ===================== cylinder r5 h10: top removed, floor 2 thick, wall 0.5 =====================
+New
+RVSHBEGIN_cylvary
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+2,0,10
+Mode=Thickness
+2,0,0
+2
+Enter
+0.5
+SelAll
+List
+Volume
+Check
+# ===================== cylinder with BOTH caps removed: a tube, wall 1 =====================
+New
+RVSHBEGIN_cyltube
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+2,0,10
+2,0,0
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== cylinder with its wall AND top removed: only the floor plate is left =====================
+New
+RVSHBEGIN_cylplate
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+2,0,10
+5,0,5
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== frustum r5 -> r3, h10: top removed, floor 2, normal wall 0.5 on the cone =====================
+New
+RVSHBEGIN_tconevary
+TCone 0,0,0 5 10 3
+SelAll
+Shell
+0,0,10
+Mode=Thickness
+0,0,0
+2
+Enter
+0.5
+SelAll
+List
+Volume
+Check
+# ===================== cone r5 h10 with its cap removed and the wall 0.5 thick =====================
+New
+RVSHBEGIN_conewall
+Cone 0,0,0 5 10
+SelAll
+Shell
+2,0,10
+Mode=Thickness
+2.5,0,5
+0.5
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== negative: a per-face thickness but nothing removed (a closed hollow is two lumps) =====================
+New
+RVSHBEGIN_closedvary
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+Mode=Thickness
+5,0,5
+0.5
+Enter
+1
+SelAll
+List
+# ===================== negative: a floor as thick as the whole cylinder =====================
+New
+RVSHBEGIN_thickfloor
+Cylinder 0,0,0 5 10
+SelAll
+Shell
+2,0,10
+Mode=Thickness
+2,0,0
+10
+Enter
+0.5
+SelAll
+List

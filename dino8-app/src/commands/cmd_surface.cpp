@@ -2170,6 +2170,21 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
       return std::nullopt;
     }
   }
+  // Per-face thickness and/or several removed faces on a cylinder / cone / frustum: the meridian polyline goes to
+  // kernel::ShellRevolvedProfile (a single removed cap, and a uniform closed hollow, keep the all-faces-exact builds below).
+  if (!overrides.empty() || removed.size() >= 2) {
+    PlainRevolved prr;
+    PlainCylinder pcr;
+    if (RecognizeConeLike(b, prr)) {
+      if (std::optional<kernel::Brep> k = revolved::ShellRevolvedMeridian(prr.c0, prr.ax, prr.u, prr.prof, prr.face, removed, overrides, t, why)) return k;
+      return std::nullopt;
+    }
+    if (b.m_F.Count() == 3 && RecognizePlainCylinder(b, pcr)) {
+      const std::vector<std::pair<double, double>> prof = {{0, 0}, {pcr.R, 0}, {pcr.R, pcr.H}, {0, pcr.H}};
+      if (std::optional<kernel::Brep> k = revolved::ShellRevolvedMeridian(pcr.c0, pcr.ax, pcr.u, prof, {pcr.bottom, pcr.wall, pcr.top}, removed, overrides, t, why)) return k;
+      return std::nullopt;
+    }
+  }
   // A plain capped cylinder: a closed hollow (outer cylinder + a reversed inner
   // cylinder, two shells of one Brep) or, with one CAP removed, an open cup
   // (outer wall + base disc + inner wall + inner floor + flat rim annulus), every
