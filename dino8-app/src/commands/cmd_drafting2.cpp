@@ -1854,8 +1854,58 @@ class LibraryHatchCommand : public Command {
 // hatched together as one region (even-odd, so a drilled hole stays unhatched). A mesh object, and a B-rep whose
 // exact route finds nothing, slice their mesh as before. Every outline curve is tagged SectionRoute =
 // "exact B-rep" / "mesh slice"; `exact_made` (optional) counts the outline curves that came from the exact route.
+//
+// Cut-plane label (`label=A`): the section LINE where the cutting plane meets the drawing plane `plan` (A to B, a straight
+// curve tagged SectionLine), a viewing arrow at each end (shaft of length = the annotation style's arrow size along the
+// cut plane's normal, arrowhead legs 0.4 x that long and +-0.15 x that to the side, tagged SectionArrow), the letter at each
+// arrow tip (text height = the style's, centred, its top one half-height beyond the tip) and the title "SECTION A-A" in the
+// cut plane, centred under the cut outline (its baseline two text heights below the lowest outline point). Everything is
+// stored back in SectionLabel / SectionTraceA / SectionTraceB / SectionPlan* tags so UpdateSectionViews can rebuild it.
+struct SectionLabelSpec {
+  std::string label;
+  Point3d a, b;   // the section line's ends, in the drawing plane
+  ON_Plane plan;  // the drawing plane the letters are written in
+};
+
+void AddSectionLabels(CommandContext& ctx, const ON_Plane& pl, const SectionLabelSpec& ls, const ON_BoundingBox& outline_xy, int layer,
+                      const std::string& style, std::vector<ObjectId>& ids) {
+  const double h = AnnotationTextHeight(ctx), la = AnnotationArrowSize(ctx);
+  const Vector3d v = pl.zaxis;  // viewing direction: the cut plane's normal
+  Vector3d t = ls.b - ls.a;
+  const double len = t.Length();
+  t.Unitize();
+  auto add_curve = [&](kernel::NurbsCurve c, const char* key) {
+    SceneObject o = SceneObject::MakeCurve(std::move(c));
+    o.layer_index = layer;
+    TagAnnotation(o, "SectionView", style);
+    o.user_text[key] = "1";
+    ids.push_back(ctx.Doc().Add(std::move(o)));
+  };
+  if (len > 1e-9) add_curve(PolylineCurve({ls.a, ls.b}), "SectionLine");
+  for (const Point3d& e : {ls.a, ls.b}) {
+    const Point3d tip = e + v * la;
+    add_curve(PolylineCurve({e, tip}), "SectionArrow");
+    add_curve(PolylineCurve({tip - v * (0.4 * la) + t * (0.15 * la), tip, tip - v * (0.4 * la) - t * (0.15 * la)}), "SectionArrow");
+    GlyphSpec g;
+    g.text = ls.label;
+    g.height = h;
+    g.center = true;
+    const Point3d centre = tip + v * (0.5 * h + 0.5 * h);
+    g.plane = ON_Plane(centre - ls.plan.yaxis * (0.5 * h), ls.plan.xaxis, ls.plan.yaxis);
+    for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, {{"Annotation", "SectionView"}, {"Style", style}, {"SectionLetter", ls.label}})) ids.push_back(id);
+  }
+  if (outline_xy.IsValid()) {
+    GlyphSpec g;
+    g.text = "SECTION " + ls.label + "-" + ls.label;
+    g.height = h;
+    g.center = true;
+    g.plane = ON_Plane(pl.PointAt(0.5 * (outline_xy.m_min.x + outline_xy.m_max.x), outline_xy.m_min.y - 2.0 * h), pl.xaxis, pl.yaxis);
+    for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, {{"Annotation", "SectionView"}, {"Style", style}, {"SectionTitle", "1"}})) ids.push_back(id);
+  }
+}
+
 int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string& pattern_name, double scale, const std::string& plane_name,
-                      int* exact_made = nullptr) {
+                      int* exact_made = nullptr, const SectionLabelSpec* label = nullptr) {
   std::vector<ObjectId> ids;
   const HatchPattern* pat = HatchLibrary::Instance().Find(pattern_name.empty() ? "ANSI31" : pattern_name);
   const double tol = ctx.Settings().absolute_tolerance * 10;
@@ -1882,6 +1932,8 @@ int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string
     }
     cuts.push_back(std::move(oc));
   }
+  ON_BoundingBox outline_xy;  // the cut outlines in the cut plane's own (x, y), for the title's position
+  auto grow = [&](const Point3d& p) { outline_xy.Set(ON_3dPoint(ON_DotProduct(p - pl.origin, pl.xaxis), ON_DotProduct(p - pl.origin, pl.yaxis), 0.0), true); };
   auto tag_outline = [&](SceneObject& s, bool exact) {
     s.layer_index = layer;
     TagAnnotation(s, "SectionView", style);
@@ -1893,6 +1945,7 @@ int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string
     if (!oc.exact.empty()) {
       std::vector<drafting::Loop> loops;  // every closed contour of this object: one hatch region, holes left open
       for (kernel::NurbsCurve& c : oc.exact) {
+        if (label) for (int k = 0; k <= 200; ++k) grow(c.raw().PointAt(c.raw().Domain().ParameterAt(k / 200.0)));
         if (c.raw().IsClosed()) loops.push_back(drafting::SampleClosedBoundary(c));
         SceneObject s = SceneObject::MakeCurve(std::move(c));
         tag_outline(s, true);
@@ -1912,6 +1965,7 @@ int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string
     }
     for (std::vector<Point3d> chain : drafting::SliceMeshToChains(oc.mesh->raw(), pl, tol)) {
       if (chain.size() < 2) continue;
+      if (label) for (const Point3d& p : chain) grow(p);
       const bool closed = chain.size() > 2 && chain.front().DistanceTo(chain.back()) <= tol * 10;
       if (closed) chain.back() = chain.front();
       SceneObject s = SceneObject::MakeCurve(PolylineCurve(chain));
@@ -1930,9 +1984,18 @@ int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string
     }
   }
   if (ids.empty()) return 0;
+  if (label && !label->label.empty()) AddSectionLabels(ctx, pl, *label, outline_xy, layer, style, ids);
   const std::string ox = PointTag(pl.origin), tx = PointTag(Point3d(pl.xaxis)), ty = PointTag(Point3d(pl.yaxis));
   for (ObjectId id : ids) {
     if (SceneObject* o = ctx.Doc().Find(id)) {
+      if (label && !label->label.empty()) {
+        o->user_text["SectionLabel"] = label->label;
+        o->user_text["SectionTraceA"] = PointTag(label->a);
+        o->user_text["SectionTraceB"] = PointTag(label->b);
+        o->user_text["SectionPlanOrigin"] = PointTag(label->plan.origin);
+        o->user_text["SectionPlanX"] = PointTag(Point3d(label->plan.xaxis));
+        o->user_text["SectionPlanY"] = PointTag(Point3d(label->plan.yaxis));
+      }
       o->user_text["SectionOrigin"] = ox;
       o->user_text["SectionX"] = tx;
       o->user_text["SectionY"] = ty;
@@ -1956,6 +2019,7 @@ class SectionViewCommand : public Command {
     auto opts = TakeOptionTokens(ctx);
     plane_name_ = OptionOr(opts, "plane", "");
     pattern_ = OptionOr(opts, "hatch", "ANSI31");
+    label_ = OptionOr(opts, "label", "");
     scale_ = std::atof(OptionOr(opts, "scale", "1").c_str());
     if (scale_ <= 0) scale_ = 1;
     if (!plane_name_.empty()) { FromNamedPlane(ctx); return; }
@@ -1967,7 +2031,28 @@ class SectionViewCommand : public Command {
     if (!cp) { ctx.Warn("SectionView: no clipping plane named '" + plane_name_ + "'"); Finish(); return; }
     ctx.Doc().BeginChange("SectionView");
     int exact = 0;
-    const int made = BuildSectionGroup(ctx, ON_Plane(cp->origin, cp->x_axis, cp->y_axis), pattern_, scale_, cp->name, &exact);
+    const ON_Plane cutp(cp->origin, cp->x_axis, cp->y_axis);
+    SectionLabelSpec ls;
+    const SectionLabelSpec* lsp = nullptr;
+    if (!label_.empty()) {
+      // the section line is where the clipping plane meets the active drawing plane
+      const ON_Plane plan = ActivePlane(ctx);
+      Vector3d t = ON_CrossProduct(plan.zaxis, cutp.zaxis);
+      if (t.Length() < 1e-9) {
+        ctx.Warn("SectionView: label skipped - plane '" + cp->name + "' is parallel to the active construction plane, so it has no section line there");
+      } else {
+        t.Unitize();
+        const double half = 0.5 * std::max(cp->width, cp->height);
+        const double d = ON_DotProduct(cutp.origin - plan.origin, plan.zaxis);
+        const Point3d c0 = cutp.origin - plan.zaxis * d;  // the cut plane's origin dropped onto the drawing plane
+        ls.label = label_;
+        ls.a = c0 - t * half;
+        ls.b = c0 + t * half;
+        ls.plan = plan;
+        lsp = &ls;
+      }
+    }
+    const int made = BuildSectionGroup(ctx, cutp, pattern_, scale_, cp->name, &exact, lsp);
     ctx.Print("SectionView: " + std::to_string(made) + " curve(s) from plane '" + cp->name + "'" + SectionViewRoute(exact));
     Finish();
   }
@@ -1982,14 +2067,23 @@ class SectionViewCommand : public Command {
     const ON_Plane cut(pts_[0], dir, base.zaxis);
     ctx.Doc().BeginChange("SectionView");
     int exact = 0;
-    const int made = BuildSectionGroup(ctx, cut, pattern_, scale_, "", &exact);
+    SectionLabelSpec ls;
+    const SectionLabelSpec* lsp = nullptr;
+    if (!label_.empty() && (pts_[1] - pts_[0]).Length() >= 1e-9) {
+      ls.label = label_;
+      ls.a = pts_[0];
+      ls.b = pts_[1];
+      ls.plan = base;
+      lsp = &ls;
+    }
+    const int made = BuildSectionGroup(ctx, cut, pattern_, scale_, "", &exact, lsp);
     ctx.Print("SectionView: " + std::to_string(made) + " curve(s)" + SectionViewRoute(exact));
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override { ctx.ClearPreview(); if (!pts_.empty()) ctx.AddPreviewLine(pts_[0], h); }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   std::vector<Point3d> pts_;
-  std::string plane_name_, pattern_;
+  std::string plane_name_, pattern_, label_;
   double scale_ = 1;
 };
 
@@ -2371,7 +2465,7 @@ void RegisterDrafting2Commands(CommandEngine& e) {
       "Appends the tolerance to the dimension's baked text and rebuilds the glyph (idempotent - re-running replaces the suffix rather than compounding it). Like every Dim* command the geometry is a static bake, not a live object, so nothing here moves on its own. This window closes a related gap for a dimension that is otherwise associative (DimLinear/DimAligned/DimAngle/DimRadius/DimDiameter via UpdateDimensions, cmd_annotate.cpp; DimOrdinate/DimCreaseAngle/DimArea/DimCurveLength/DimVolume via UpdateMeasureDims, cmd_annotate2.cpp): the tolerance suffix used to be silently dropped whenever one of those commands rebuilt the dimension's text from a moved/edited anchor, since the rebuild always started from the fresh measurement alone. It now survives that rebuild - the pre-suffix base text this command tags (DimTolerance.Base) is diffed against the old text to recover the suffix and reapplied to the new measurement (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) - so re-running Update after moving the geometry re-measures and keeps the tolerance, not just re-running DimTolerance itself.");
 
   Reg(e, "SectionView", Make<SectionViewCommand>(), CommandStatus::Implemented,
-      "Slices visible objects with a picked line or a named clipping plane and hatches the closed loops it finds - the cut curves themselves are coplanar so there is nothing to hide among them, but this does not additionally draw the hidden-line-removed wireframe of what lies beyond the cut plane the way Rhino's optional 'visible edges beyond' feature does.");
+      "Slices visible objects with a picked line or a named clipping plane and hatches the closed loops it finds (label=A also draws the section line, a viewing arrow and the letter at each end and the title SECTION A-A) - the cut curves themselves are coplanar so there is nothing to hide among them, but this does not additionally draw the hidden-line-removed wireframe of what lies beyond the cut plane the way Rhino's optional 'visible edges beyond' feature does.");
   Reg(e, "UpdateSectionViews", Immediate([](CommandContext& ctx) {
         std::vector<int> groups;
         for (const SceneObject& o : ctx.Doc().Objects())
@@ -2385,8 +2479,22 @@ void RegisterDrafting2Commands(CommandEngine& e) {
           bool have_plane = false;
           std::string pat_name = "ANSI31", plane_name;
           double scale = 1;
+          SectionLabelSpec ls;
+          bool have_label = false;
           for (const SceneObject& o : ctx.Doc().Objects()) {
             if (o.group_id != g) continue;
+            Point3d po, px, py, ta, tb;
+            if (auto it = o.user_text.find("SectionLabel"); it != o.user_text.end() && o.user_text.count("SectionTraceA") && o.user_text.count("SectionTraceB") &&
+                o.user_text.count("SectionPlanOrigin") && o.user_text.count("SectionPlanX") && o.user_text.count("SectionPlanY") &&
+                ParsePointTag(o.user_text.at("SectionTraceA"), ta) && ParsePointTag(o.user_text.at("SectionTraceB"), tb) &&
+                ParsePointTag(o.user_text.at("SectionPlanOrigin"), po) && ParsePointTag(o.user_text.at("SectionPlanX"), px) &&
+                ParsePointTag(o.user_text.at("SectionPlanY"), py)) {
+              ls.label = it->second;
+              ls.a = ta;
+              ls.b = tb;
+              ls.plan = ON_Plane(po, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+              have_label = true;
+            }
             Point3d org, ax, ay;
             if (o.user_text.count("SectionOrigin") && o.user_text.count("SectionX") && o.user_text.count("SectionY") &&
                 ParsePointTag(o.user_text.at("SectionOrigin"), org) && ParsePointTag(o.user_text.at("SectionX"), ax) && ParsePointTag(o.user_text.at("SectionY"), ay)) {
@@ -2400,7 +2508,7 @@ void RegisterDrafting2Commands(CommandEngine& e) {
           }
           if (!have_plane) continue;
           for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          if (BuildSectionGroup(ctx, pl, pat_name, scale, plane_name, &exact_total) > 0) ++updated;
+          if (BuildSectionGroup(ctx, pl, pat_name, scale, plane_name, &exact_total, have_label ? &ls : nullptr) > 0) ++updated;
         }
         ctx.Print("UpdateSectionViews: " + std::to_string(updated) + " section view(s) regenerated" + SectionViewRoute(exact_total));
       }));

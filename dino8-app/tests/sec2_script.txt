@@ -140,3 +140,70 @@ Length
 SelNone
 SelID 4
 Length
+
+# --- SectionView label=A: the section line, viewing arrows, letters and title (closed forms in 56_sec2.sh).
+# Style text height 2, arrow 3. Box x 0..20, y 0..20, z 0..10 cut by the vertical plane y = 10 along the line (-5,10,0)-(25,10,0):
+# cut plane x-axis = +X, y-axis = +Z, normal (0,-1,0) (the viewing direction); outline = the 20 x 10 rectangle, area 200.
+New
+SEC2BEGIN_label
+AnnotationStyles Name=SecLbl Height=2 Arrow=3 Current=Yes
+Box 0,0,0 20,20,0 10
+SectionView hatch=ANSI31 scale=5 label=A
+-5,10,0
+25,10,0
+SelNone
+SelKey SectionLine
+Length
+BoundingBox
+SelNone
+SelKey SectionArrow
+Length
+BoundingBox
+SelNone
+SelKeyValue SectionLetter A
+BoundingBox
+SelNone
+SelKeyValue SectionTitle 1
+BoundingBox
+SelNone
+SelKeyValue Hatch ANSI31
+Length
+BoundingBox
+
+# negative control: no label option -> no section line, arrows, letters or title
+New
+SEC2BEGIN_nolabel
+AnnotationStyles Name=SecLbl Height=2 Arrow=3 Current=Yes
+Box 0,0,0 20,20,0 10
+SectionView hatch=ANSI31 scale=5
+-5,10,0
+25,10,0
+SelNone
+SelKey SectionLine
+SelKey SectionArrow
+SelKeyValue SectionTitle 1
+
+# UpdateSectionViews rebuilds the labelled view after the box is moved 4 along +X: the section line keeps its
+# ends, the outline moves with the box (hatch then spans x 4..24)
+New
+SEC2BEGIN_label_update
+AnnotationStyles Name=SecLbl Height=2 Arrow=3 Current=Yes
+Box 0,0,0 20,20,0 10
+SectionView hatch=ANSI31 scale=5 label=B
+-5,10,0
+25,10,0
+SelNone
+SelID 1
+Move
+0,0,0
+4,0,0
+UpdateSectionViews
+SelNone
+SelKey SectionLine
+BoundingBox
+SelNone
+SelKeyValue SectionTitle 1
+BoundingBox
+SelNone
+SelKeyValue Hatch ANSI31
+BoundingBox

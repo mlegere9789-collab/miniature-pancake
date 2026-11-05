@@ -63,3 +63,35 @@ sec2_len "$SEC2_HCM" 1 166.367 166.375 "SEC2_12: after moving the sphere up 2 th
 sec2_len "$SEC2_HCM" 2 44.86 44.88 "SEC2_12: ...the z=-5 circle (d=-7) is 2 pi sqrt(51) = 44.866"
 sec2_len "$SEC2_HCM" 3 61.55 61.57 "SEC2_12: ...the z=0 circle (d=-2) is 2 pi sqrt(96) = 61.560"
 sec2_len "$SEC2_HCM" 4 59.93 59.95 "SEC2_12: ...the z=5 circle (d=3) is 2 pi sqrt(91) = 59.938"
+
+# SEC2_13..: SectionView label=A (sec2_script.txt, blocks label / nolabel / label_update). Style text height 2, arrow size 3; the box
+# 0..20 x 0..20 x 0..10 is cut by the vertical plane y = 10 along the picked line (-5,10,0)-(25,10,0). Cut plane: x-axis +X, y-axis +Z,
+# normal (0,-1,0) = the viewing direction. Closed forms: section line length 30, ends (-5,10,0) and (25,10,0); each viewing arrow is a
+# shaft of 3 along the normal plus two head legs of length sqrt(1.2^2 + 0.45^2) = 1.2816 (0.4 and 0.15 of the arrow size), so the arrows
+# total 2 (3 + 2 x 1.2816) = 11.1264 and span x -5.45..25.45, y 7..10; each letter sits below its tip: baseline y = 7 - 1 - 2 = 4, cap
+# height under the text height (top y <= 6); the title is centred under the outline (box centre x = 10) with its baseline two text
+# heights under the outline's lowest point (z = -4, cap height under 2); the ANSI31 hatch at scale 5 has perpendicular spacing
+# 0.125 x 5 = 0.625, so its total length is area / spacing = 200 / 0.625 = 320 (the discrete sum is within 2 percent).
+# sec2_bbv BLOCK N: the six numbers "x0 y0 z0 x1 y1 z1" of the Nth "Bounding box" line in BLOCK.
+sec2_bbv() { { grep -o 'Bounding box min [^ ]* max [^ ]*' <<<"$1" || true; } | sed -n "${2}p" | tr ',' ' ' | awk '{print $4, $5, $6, $8, $9, $10}'; }
+# sec2_bbchk BLOCK N "lo:hi (six, - for no check)" MESSAGE
+sec2_bbchk() {
+  local v
+  v="$(sec2_bbv "$1" "$2")"
+  if [ -n "$v" ] && awk -v v="$v" -v r="$3" 'BEGIN { n = split(v, a, " "); m = split(r, b, " "); if (n != 6 || m != 6) exit 1; for (i = 1; i <= 6; i++) { if (b[i] == "-") continue; split(b[i], c, ":"); if (a[i] + 0 < c[1] + 0 || a[i] + 0 > c[2] + 0) exit 1 } exit 0 }'; then sec2_ok "$4 (bounding box $v)"; else sec2_bad "$4 (bounding box '$v' not in $3)"; fi
+}
+SEC2_LB="$(sec2_blk label)"; SEC2_NL="$(sec2_blk nolabel)"; SEC2_LU="$(sec2_blk label_update)"
+sec2_len "$SEC2_LB" 1 29.999 30.001 "SEC2_13: the section line is 30 long (the picked line (-5,10,0)-(25,10,0))"
+sec2_bbchk "$SEC2_LB" 1 "-5.001:-4.999 9.999:10.001 -0.001:0.001 24.999:25.001 9.999:10.001 -0.001:0.001" "SEC2_13: ...and its ends are exactly the picked points"
+sec2_len "$SEC2_LB" 2 11.12 11.14 "SEC2_14: the two viewing arrows total 2 (3 + 2 sqrt(1.2^2 + 0.45^2)) = 11.1264"
+sec2_bbchk "$SEC2_LB" 2 "-5.451:-5.449 6.999:7.001 -0.001:0.001 25.449:25.451 9.999:10.001 -0.001:0.001" "SEC2_14: ...spanning x -5.45..25.45 and y 7..10 (arrows point along the cut plane's normal, -Y)"
+sec2_bbchk "$SEC2_LB" 3 "-7:-5 3.9:4.1 -0.001:0.001 25:27 5:6.05 -0.001:0.001" "SEC2_15: the letter A sits below each arrow tip: left of -5 and right of 25, baseline y = 4, cap height between 1 and 2"
+sec2_bbchk "$SEC2_LB" 4 "- 9.999:10.001 -4.2:-3.9 - 9.999:10.001 -3.2:-1.9" "SEC2_16: the title SECTION A-A lies in the cut plane (y = 10) with its baseline at z = -4 and cap height under 2"
+if awk -v v="$(sec2_bbv "$SEC2_LB" 4)" 'BEGIN { split(v, a, " "); c = (a[1] + a[4]) / 2; w = a[4] - a[1]; exit !(c >= 9 && c <= 11 && w >= 8 && w <= 24) }'; then sec2_ok "SEC2_16: ...centred under the outline (box centre x = 10) and 8..24 wide"; else sec2_bad "SEC2_16: title not centred under the outline (bbox '$(sec2_bbv "$SEC2_LB" 4)')"; fi
+sec2_len "$SEC2_LB" 3 310 330 "SEC2_17: the ANSI31 hatch (scale 5, spacing 0.625) of the 20 x 10 section totals area / spacing = 200 / 0.625 = 320"
+sec2_bbchk "$SEC2_LB" 5 "-0.001:2 9.999:10.001 -0.001:2 18:20.001 9.999:10.001 8:10.001" "SEC2_17: ...and stays inside the section rectangle x 0..20, z 0..10"
+sec2_has "$SEC2_NL" "0 object(s) with SectionTitle=1 selected" "SEC2_18 (negative control): without label= there is no title"
+if [ "$(grep -c '^history: 0 object(s) selected$' <<<"$SEC2_NL")" = 2 ]; then sec2_ok "SEC2_18: ...no section line and no arrows either"; else sec2_bad "SEC2_18: without label= a section line / arrow object exists"; near "$SEC2_NL" "object(s)"; fi
+sec2_bbchk "$SEC2_LU" 1 "-5.001:-4.999 9.999:10.001 -0.001:0.001 24.999:25.001 9.999:10.001 -0.001:0.001" "SEC2_19: UpdateSectionViews rebuilds the label with the same section line"
+if awk -v v="$(sec2_bbv "$SEC2_LU" 2)" 'BEGIN { split(v, a, " "); c = (a[1] + a[4]) / 2; exit !(c >= 13 && c <= 15) }'; then sec2_ok "SEC2_19: ...and the title follows the box moved +4 in X (centre x = 14)"; else sec2_bad "SEC2_19: title not re-centred after the move (bbox '$(sec2_bbv "$SEC2_LU" 2)')"; fi
+sec2_bbchk "$SEC2_LU" 3 "3.999:6 9.999:10.001 -0.001:2 22:24.001 9.999:10.001 8:10.001" "SEC2_19: ...and the hatch spans the moved section x 4..24"
