@@ -106739,6 +106739,7 @@ void TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox() {
   Check(why.empty(), ("[chain] FilletConvexEdge accepts an edge on an already-blended solid" + (why.empty() ? "" : ": " + why)).c_str());
   if (!why.empty()) return;
   Check(two.raw().IsValid() && two.raw().IsSolid() && two.FaceCount() == 8, "[chain] chained blend: valid closed solid with 8 faces (box 6 + 2 blends)");
+  Check(two.TessellateToClosedMeshConforming(48, 48).IsClosedManifold(), "[chain] the chained result tessellates (conforming) to a closed manifold mesh");
   const double v2 = L * L * L - L * r1 * r1 * a - L * r2 * r2 * a;
   Check(std::fabs(MeshVolume(two) - v2) < 1e-6 * v2,
         ("[chain] chained volume " + std::to_string(MeshVolume(two)) + " vs closed form " + std::to_string(v2)).c_str());
@@ -106809,6 +106810,71 @@ void TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline() {
 }
 
 }  // namespace body_section_untrimmed_face_tests
+
+// A single-edge fillet of a box must tessellate to a CLOSED, consistently oriented mesh whose volume converges to the closed form
+// L^3 - L r^2 (1 - pi/4). The B-rep was always a valid closed solid, but its notched planar faces carried the blend's end arcs as dense
+// polylines with no PlanarFace::ArcRun record, so no tessellator could make them agree with the cylinder's own end row: every mesh had
+// naked edges and Brep::Volume() threw. Independent oracles: the closed form above, Mesh::Check() counts (naked / non-manifold /
+// orientation conflicts), and a wrong-radius volume as the negative control.
+namespace fillet_mesh_closure_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::FilletConvexEdge;
+using dino8::kernel::Mesh;
+using dino8::kernel::Point3d;
+
+void CheckMeshClosed(const Mesh& m, double exact, double rel_tol, const std::string& tag) {
+  const Mesh::CheckReport r = m.Check();
+  Check(m.IsClosedManifold() && r.naked_edges == 0 && r.non_manifold_edges == 0 && r.orientation_conflicts == 0,
+        (tag + "closed oriented manifold: naked " + std::to_string(r.naked_edges) + ", non-manifold " + std::to_string(r.non_manifold_edges) + ", orientation conflicts " +
+         std::to_string(r.orientation_conflicts))
+            .c_str());
+  Check(r.body_count == 1, (tag + "one connected piece").c_str());
+  Check(std::fabs(m.Volume() - exact) < rel_tol * exact, (tag + "volume " + std::to_string(m.Volume()) + " vs closed form " + std::to_string(exact)).c_str());
+}
+
+void TestFilletConvexEdgeResultTessellatesToAClosedMesh() {
+  const double a = 1.0 - ON_PI / 4.0;
+  for (double L : {1.0, 10.0}) {
+    const double r = 0.1 * L;
+    const double exact = L * L * L - L * r * r * a;
+    const std::string sz = "[L=" + std::to_string((int)L) + "] ";
+    const Brep f = FilletConvexEdge(Brep::Box(0, 0, 0, L, L, L), Point3d(0, 0, 0), Point3d(0, 0, L), r);
+    Check(f.raw().IsValid() && f.raw().IsSolid(), (sz + "the filleted box is a valid closed B-rep").c_str());
+    struct C { int n; double tol; };
+    for (const C& c : {C{8, 1e-4}, C{16, 3e-5}, C{48, 5e-6}}) {
+      CheckMeshClosed(f.TessellateToClosedMeshConforming(c.n, c.n), exact, c.tol, sz + "conforming " + std::to_string(c.n) + "x" + std::to_string(c.n) + ": ");
+    }
+    struct A { double chord, tol; };
+    for (const A& c : {A{1e-2, 1e-4}, A{1e-3, 1e-5}, A{1e-5, 2e-6}, A{1e-7, 5e-8}}) {
+      CheckMeshClosed(f.TessellateToClosedMeshAdaptive(c.chord), exact, c.tol, sz + "adaptive chord " + std::to_string(c.chord) + ": ");
+    }
+    // Brep::Volume() used to throw "not a closed, watertight solid" for this body.
+    double v = 0;
+    std::string why;
+    try { v = f.Volume(); } catch (const std::exception& e) { why = e.what(); }
+    Check(why.empty() && std::fabs(v - exact) < 5e-6 * exact, (sz + "Brep::Volume() " + std::to_string(v) + " vs closed form " + std::to_string(exact) + (why.empty() ? "" : " THREW: " + why)).c_str());
+    // Negative control: the volume of a 10% larger radius is outside the tolerance that was just passed.
+    const double wrong = L * L * L - L * (1.1 * r) * (1.1 * r) * a;
+    Check(std::fabs(f.TessellateToClosedMeshAdaptive(1e-5).Volume() - wrong) > 1e-4 * exact, (sz + "negative control: a 10% larger radius would NOT match").c_str());
+  }
+}
+
+void TestChainedFilletsTessellateToAClosedMesh() {
+  const double L = 10.0, r1 = 1.0, r2 = 1.5, a = 1.0 - ON_PI / 4.0;
+  const Brep box = Brep::Box(0, 0, 0, L, L, L);
+  const Brep two = FilletConvexEdge(FilletConvexEdge(box, Point3d(0, 0, 0), Point3d(0, 0, L), r1), Point3d(0, L, L), Point3d(L, L, L), r2);
+  const double exact = L * L * L - L * r1 * r1 * a - L * r2 * r2 * a;
+  CheckMeshClosed(two.TessellateToClosedMeshConforming(48, 48), exact, 5e-6, "[chain] conforming 48x48: ");
+  CheckMeshClosed(two.TessellateToClosedMeshAdaptive(1e-5), exact, 2e-6, "[chain] adaptive chord 1e-5: ");
+  CheckMeshClosed(two.TessellateToClosedMeshAdaptive(1e-7), exact, 5e-8, "[chain] adaptive chord 1e-7: ");
+  double v = 0;
+  std::string why;
+  try { v = two.Volume(); } catch (const std::exception& e) { why = e.what(); }
+  Check(why.empty() && std::fabs(v - exact) < 2e-5 * exact, ("[chain] Brep::Volume() " + std::to_string(v) + " vs closed form " + std::to_string(exact) + (why.empty() ? "" : " THREW: " + why)).c_str());
+}
+
+}  // namespace fillet_mesh_closure_tests
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -108641,6 +108707,9 @@ int main() {
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets);
   RunTest("body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline",
           body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline);
+
+  RunTest("fillet_mesh_closure_tests::TestFilletConvexEdgeResultTessellatesToAClosedMesh", fillet_mesh_closure_tests::TestFilletConvexEdgeResultTessellatesToAClosedMesh);
+  RunTest("fillet_mesh_closure_tests::TestChainedFilletsTessellateToAClosedMesh", fillet_mesh_closure_tests::TestChainedFilletsTessellateToAClosedMesh);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;
