@@ -1821,7 +1821,20 @@ Mesh Mesh::Transform(const ON_Xform& xform) const {
   return result;
 }
 
+namespace {
+// measured: SaveStl() of a mesh with a NaN vertex returned Result::Ok and wrote a file LoadStl() then rejected; every text/binary
+// exporter now refuses non-finite vertices up front (Result::Failed, nothing written).
+bool AllMeshVerticesFinite(const ON_Mesh& m) {
+  for (int i = 0; i < m.m_V.Count(); ++i) {
+    const ON_3fPoint& p = m.m_V[i];
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
+  }
+  return true;
+}
+}  // namespace
+
 Result Mesh::SaveObj(const std::string& path) const {
+  if (!AllMeshVerticesFinite(mesh_)) return Result::Failed;
   std::ofstream out(path);
   if (!out) {
     return Result::Failed;
@@ -2161,6 +2174,7 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
 }
 
 Result Mesh::SaveStl(const std::string& path) const {
+  if (!AllMeshVerticesFinite(mesh_)) return Result::Failed;
   std::ofstream out(path);
   if (!out) {
     return Result::Failed;
@@ -2195,6 +2209,7 @@ Result Mesh::SaveStl(const std::string& path) const {
 }
 
 Result Mesh::SaveStlBinary(const std::string& path) const {
+  if (!AllMeshVerticesFinite(mesh_)) return Result::Failed;
   std::ofstream out(path, std::ios::binary);
   if (!out) {
     return Result::Failed;

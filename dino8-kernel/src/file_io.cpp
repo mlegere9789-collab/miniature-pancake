@@ -1,6 +1,8 @@
 #include "dino8/kernel/file_io.h"
 
 #include <cmath>
+#include <stdexcept>
+#include <string>
 
 namespace dino8::kernel {
 
@@ -247,10 +249,52 @@ int Model::AddMaterial(const std::string& name, Color diffuse_color,
   return managed_material != nullptr ? managed_material->Index() : -1;
 }
 
+namespace {
+// measured: a curve with an inf control point, a brep whose surface carries a NaN control point (raw().IsValid() false) and a
+// mesh with a NaN vertex were all accepted by AddCurve / AddBrep / AddMesh and written by Save() as Result::Ok, producing a .3dm
+// that silently carries non-finite geometry. Refused at the door instead, naming the object kind.
+void RequireFiniteCurve(const ON_NurbsCurve& c, const char* who) {
+  for (int i = 0; i < c.CVCount(); ++i) {
+    ON_3dPoint p;
+    if (!c.GetCV(i, p) || !p.IsValid()) {
+      throw std::invalid_argument(std::string("dino8::kernel::Model::") + who + ": control point " + std::to_string(i) +
+                                  " is not finite (NaN / inf); refusing to store it");
+    }
+  }
+}
+void RequireFiniteBrep(const ON_Brep& b) {
+  for (int f = 0; f < b.m_F.Count(); ++f) {
+    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(b.m_F[f].SurfaceOf());
+    if (ns == nullptr) continue;
+    for (int i = 0; i < ns->CVCount(0); ++i)
+      for (int j = 0; j < ns->CVCount(1); ++j) {
+        ON_3dPoint p;
+        if (!ns->GetCV(i, j, p) || !p.IsValid()) {
+          throw std::invalid_argument("dino8::kernel::Model::AddBrep: face " + std::to_string(f) + " has a non-finite control point (NaN / inf); refusing to store it");
+        }
+      }
+  }
+  for (int v = 0; v < b.m_V.Count(); ++v) {
+    if (!b.m_V[v].point.IsValid()) {
+      throw std::invalid_argument("dino8::kernel::Model::AddBrep: vertex " + std::to_string(v) + " is not finite (NaN / inf); refusing to store it");
+    }
+  }
+}
+void RequireFiniteMesh(const ON_Mesh& m) {
+  for (int i = 0; i < m.m_V.Count(); ++i) {
+    const ON_3fPoint& p = m.m_V[i];
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      throw std::invalid_argument("dino8::kernel::Model::AddMesh: vertex " + std::to_string(i) + " is not finite (NaN / inf); refusing to store it");
+    }
+  }
+}
+}  // namespace
+
 void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer_index,
                       std::optional<Color> render_color, const UserStrings& user_strings,
                       std::optional<int> linetype_index, const std::vector<int>& group_indices,
                       std::optional<int> material_index) {
+  RequireFiniteCurve(curve.raw(), "AddCurve");
   auto* geometry = new ON_NurbsCurve(curve.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
       name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
@@ -261,6 +305,7 @@ void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
                      std::optional<int> material_index) {
+  RequireFiniteBrep(brep.raw());
   auto* geometry = new ON_Brep(brep.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
       name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
@@ -271,6 +316,7 @@ void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
                      std::optional<int> material_index) {
+  RequireFiniteMesh(mesh.raw());
   auto* geometry = new ON_Mesh(mesh.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
       name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);

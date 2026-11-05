@@ -106936,6 +106936,55 @@ void TestSphereAndTorusVolumeAtLargeOffsets() {
   }
 }
 
+
+// Non-finite geometry was accepted by Model::AddCurve / AddBrep / AddMesh and written by Save() / SaveStl() as Result::Ok
+// (measured: an inf control point, a NaN surface control point on a brep whose raw().IsValid() is false, a NaN mesh vertex; the
+// STL it wrote could not be read back). They are refused at the door now and the exporters return Failed without writing.
+void TestNonFiniteGeometryIsNotStoredOrExported() {
+  using dino8::kernel::Model;
+  using dino8::kernel::NurbsCurve;
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  auto refused = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument& e) {
+      return std::string(e.what()).find("not finite") != std::string::npos || std::string(e.what()).find("non-finite") != std::string::npos;
+    } catch (...) {
+    }
+    return false;
+  };
+  Model model;
+  NurbsCurve curve = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0), Point3d(3, 1, 0)}, 3);
+  Brep box = Brep::BoxWelded(0, 0, 0, 10, 10, 10);
+  dino8::kernel::Mesh mesh = dino8::kernel::Mesh::Cylinder(Point3d(0, 0, 0), dino8::kernel::Vector3d(0, 0, 1), 1.0, 2.0, 16, 2);
+  Check(!refused([&] { model.AddCurve(curve); }) && !refused([&] { model.AddBrep(box); }) && !refused([&] { model.AddMesh(mesh); }) && model.ObjectCount() == 3,
+        "control: finite curve, brep and mesh are all accepted");
+  Model bad;
+  NurbsCurve bad_curve = curve;
+  bad_curve.SetControlPointAt(1, Point3d(inf, 0, 0));
+  Brep bad_brep = box;
+  const_cast<ON_NurbsSurface*>(ON_NurbsSurface::Cast(bad_brep.raw().m_F[0].SurfaceOf()))->SetCV(0, 0, ON_3dPoint(nan, 0, 0));
+  dino8::kernel::Mesh bad_mesh = mesh;
+  bad_mesh.raw().m_V[0].x = static_cast<float>(nan);
+  Check(refused([&] { bad.AddCurve(bad_curve); }), "AddCurve refuses a curve with an inf control point");
+  Check(refused([&] { bad.AddBrep(bad_brep); }), "AddBrep refuses a brep whose surface carries a NaN control point");
+  Check(refused([&] { bad.AddMesh(bad_mesh); }), "AddMesh refuses a mesh with a NaN vertex");
+  Check(bad.ObjectCount() == 0, "...and nothing was stored");
+  const std::string base = "qc4_nonfinite_export";
+  for (const char* ext : {".stl", ".bin.stl", ".obj"}) std::remove((base + ext).c_str());
+  const dino8::kernel::Result r_stl = bad_mesh.SaveStl(base + ".stl");
+  const dino8::kernel::Result r_bin = bad_mesh.SaveStlBinary(base + ".bin.stl");
+  const dino8::kernel::Result r_obj = bad_mesh.SaveObj(base + ".obj");
+  Check(r_stl == dino8::kernel::Result::Failed && r_bin == dino8::kernel::Result::Failed && r_obj == dino8::kernel::Result::Failed,
+        "SaveStl / SaveStlBinary / SaveObj of a mesh with a NaN vertex return Failed");
+  bool wrote = false;
+  for (const char* ext : {".stl", ".bin.stl", ".obj"}) wrote = wrote || std::ifstream(base + ext).good();
+  Check(!wrote, "...without writing a file");
+  Check(mesh.SaveStl(base + ".stl") == dino8::kernel::Result::Ok, "control: the finite mesh still saves");
+  std::remove((base + ".stl").c_str());
+}
+
 }  // namespace qc4_tests
 
 namespace body_section_untrimmed_face_tests {
@@ -108909,6 +108958,7 @@ int main() {
   RunTest("qc4_tests::TestAreaAtLargeOffsetIsFastAndExact", qc4_tests::TestAreaAtLargeOffsetIsFastAndExact);
   RunTest("qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast", qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast);
   RunTest("qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets", qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets);
+  RunTest("qc4_tests::TestNonFiniteGeometryIsNotStoredOrExported", qc4_tests::TestNonFiniteGeometryIsNotStoredOrExported);
   RunTest("qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp", qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp);
   RunTest("qc3_tests::TestLoftMatchedScaledHappyPath", qc3_tests::TestLoftMatchedScaledHappyPath);
   RunTest("extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism", extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism);
