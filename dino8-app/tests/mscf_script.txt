@@ -1,7 +1,7 @@
 # MSCF: MatchSrf Follow=Yes - a wall's edge is matched to a latitude arc lying on a host sphere and the wall leaves it in the
-# sphere's tangent plane (see sections/78_mscf.sh). Every case starts from New and is bracketed by MSCFBEGIN_<name> markers; the wall
-# (object 1) is then probed with EvaluateUVPt at normalized (u, v). SrfPt indexes u from corner 1 to corner 4 (up the wall) and v from
-# corner 1 to corner 2 (along x), so the matched bottom edge is u = 0 with v running along it.
+# sphere's tangent plane (G1) or with the sphere's second fundamental form (G2); see sections/78_mscf.sh. Every case starts from New and
+# is bracketed by MSCFBEGIN_<name> markers; the wall (object 1) is then probed with EvaluateUVPt at normalized (u, v). SrfPt indexes u from
+# corner 1 to corner 4 (up the wall) and v from corner 1 to corner 2 (along x), so the matched bottom edge is u = 0 with v running along it.
 SetActiveViewport Top
 New
 MSCFBEGIN_follow
@@ -45,7 +45,64 @@ SelNone
 SelID 1
 EvaluateUVPt Normalized=Yes
 0.02,0.5
+MSCFBEGIN_follow_l2
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0.2,0.5
 MSCFBEGIN_follow_far
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+1,0.5
+New
+MSCFBEGIN_follow2
+SrfPt 1,-2,3 6,-2,3 6,-2,6 1,-2,6
+Sphere 0,0,0 5
+Arc 0,0,3 4,0,3 0,4,3
+SelNone
+MatchSrf
+Continuity=Curvature
+Follow=Yes
+3.5,-2,4.5
+2.828,2.828,3
+2.828,2.828,3
+MSCFBEGIN_follow2_e0
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0,0
+MSCFBEGIN_follow2_e1
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0,0.25
+MSCFBEGIN_follow2_e2
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0,0.5
+MSCFBEGIN_follow2_e3
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0,0.75
+MSCFBEGIN_follow2_e4
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0,1
+MSCFBEGIN_follow2_lift
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0.02,0.5
+MSCFBEGIN_follow2_l2
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0.2,0.5
+MSCFBEGIN_follow2_far
 SelNone
 SelID 1
 EvaluateUVPt Normalized=Yes
@@ -90,6 +147,11 @@ SelNone
 SelID 1
 EvaluateUVPt Normalized=Yes
 0.02,0.5
+MSCFBEGIN_plain_l2
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0.2,0.5
 MSCFBEGIN_plain_far
 SelNone
 SelID 1
@@ -136,6 +198,11 @@ SelNone
 SelID 1
 EvaluateUVPt Normalized=Yes
 0.02,0.5
+MSCFBEGIN_position_l2
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0.2,0.5
 MSCFBEGIN_position_far
 SelNone
 SelID 1
@@ -183,6 +250,11 @@ SelNone
 SelID 1
 EvaluateUVPt Normalized=Yes
 0.02,0.5
+MSCFBEGIN_offhost_l2
+SelNone
+SelID 1
+EvaluateUVPt Normalized=Yes
+0.2,0.5
 MSCFBEGIN_offhost_far
 SelNone
 SelID 1

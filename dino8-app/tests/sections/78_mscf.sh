@@ -11,6 +11,9 @@
 #   * PLAIN (Follow=No, the preserved axial direction): the same probe rises by 0.06 with hypot(x, y) unchanged, i.e. it leaves the sphere
 #     radially: |p| = 5 + 0.02 * 3 * (3/5) = 5.036. This is the negative control that separates a followed match from a preserved one;
 #   * Follow with Continuity=Position, and Follow with a curve 0.3 off the sphere, are refused with a reason and leave the wall untouched.
+#   * FOLLOW2 (Continuity=Curvature): the second fundamental form of the sphere is added, so the departure stays on the sphere to third
+#     order: at u = 0.2 the G1 follow is outside it by |p| - 5 = 0.0226 (straight tangent departure, s^2/(2R) with s = 0.6) while the G2 follow
+#     is within 0.0041 (emulated with the kernel call the command makes: |p| = 5.02258 and 5.00405);
 # The app prints 4 significant digits, so the tolerances are 0.01 on positions and radii and +-0.008 on the 0.02-scale moves; the 1e-6 versions of the
 # tangent-plane and field checks are in the kernel's tests/extra/match_edge_to_curve_following.cpp.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -46,6 +49,11 @@ mscf_has follow "MatchSrf: exact edge match (G1) to the target curve following t
 mscf_chk follow_lift "" 'sqrt(a[1]^2 + a[2]^2 + a[3]^2) > 4.99 && sqrt(a[1]^2 + a[2]^2 + a[3]^2) < 5.01' "MSCF_follow: at u = 0.02 the point is still on the sphere (|p| = 5 to 0.01): the wall leaves in the sphere's tangent plane"
 mscf_chk follow_e2 follow_lift 'sqrt(a[1]^2 + a[2]^2) - sqrt(b[1]^2 + b[2]^2) > 0.028 && sqrt(a[1]^2 + a[2]^2) - sqrt(b[1]^2 + b[2]^2) < 0.045 && b[3] - a[3] > 0.040 && b[3] - a[3] < 0.056' \
   "MSCF_follow: the lifted point moved radially in by 0.036 and up by 0.048 (h (-0.6, 0.8) per unit u, h = 3), the axial direction rotated into the tangent plane"
+mscf_chk follow_l2 "" 'sqrt(a[1]^2 + a[2]^2 + a[3]^2) > 5.015' "MSCF_follow (G1): at u = 0.2 the point has left the sphere by more than 0.015 (|p| = 5.023: the straight G1 departure is outside the curved host, s^2/(2R))"
+mscf_edge follow2
+mscf_has follow2 "MatchSrf: exact edge match (G2) to the target curve following the host surface, max position error 0, max tangent error 0, max curvature error 0" "MSCF_follow2: MatchSrf reports the exact G2 curve match following the host, residuals 0"
+mscf_chk follow2_l2 "" 'sqrt(a[1]^2 + a[2]^2 + a[3]^2) > 4.99 && sqrt(a[1]^2 + a[2]^2 + a[3]^2) < 5.01' "MSCF_follow2 (G2): at u = 0.2 the point is still on the sphere to 0.01 (|p| = 5.004; the G1 follow above leaves it by 0.023): the wall carries the sphere's curvature"
+mscf_chk follow2_e2 follow2_lift 'b[3] - a[3] > 0.038 && b[3] - a[3] < 0.058' "MSCF_follow2: the G2 wall leaves the arc in the same tangent direction (z up by ~0.048 at u = 0.02)"
 mscf_edge plain
 mscf_has plain "MatchSrf: exact edge match (G1) to the target curve, max position error 0" "MSCF_plain: without Follow MatchSrf reports the plain exact curve match"
 mscf_lacks plain "following the host surface" "MSCF_plain: no host is mentioned without Follow"

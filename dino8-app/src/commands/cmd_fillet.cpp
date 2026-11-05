@@ -5351,7 +5351,7 @@ class MatchSrfCommand : public Command {
       // about a host - so a refusal changes nothing and says why.
       std::string why;
       if (!target_curve) why = "Follow needs a target CURVE (it takes the tangent plane from a host surface the curve lies on)";
-      else if (continuity_ != kernel::MatchContinuity::Tangent) why = "Follow needs Continuity=Tangency (G1 to the host; Position has no direction to follow and a host curvature match is not attempted)";
+      else if (continuity_ == kernel::MatchContinuity::Position) why = "Follow needs Continuity=Tangency or Curvature (G1 or G2 to the host; Position has no direction to follow)";
       else if (!host_) why = "no host surface was picked";
       std::optional<ON_NurbsSurface> hs;
       if (why.empty()) {
@@ -5368,7 +5368,7 @@ class MatchSrfCommand : public Command {
         host_ks.raw() = *hs;
         kernel::NurbsSurface trial = ks;
         if (!tnc) why = "the target is not a NURBS curve";
-        else if (trial.MatchEdgeToCurveFollowing(fixed_dir, at_min, kc, host_ks, &follow_report) == kernel::Result::Ok) {
+        else if (trial.MatchEdgeToCurveFollowing(fixed_dir, at_min, kc, host_ks, continuity_, &follow_report) == kernel::Result::Ok) {
           ks = trial;
           followed = true;
           matched_curve = true;
@@ -5467,6 +5467,7 @@ class MatchSrfCommand : public Command {
       if (continuity_ != kernel::MatchContinuity::Position) msg += ", max tangent error " + FormatNumber(curve_report.max_tangent_error);
       if (continuity_ == kernel::MatchContinuity::Curvature) msg += ", max curvature error " + FormatNumber(curve_report.max_curvature_error);
       if (followed) msg += ", host tangent-plane deviation " + FormatNumber(follow_report.max_tangent_plane_deviation) + ", target-to-host gap " + FormatNumber(follow_report.max_host_gap);
+      if (followed && continuity_ == kernel::MatchContinuity::Curvature) msg += ", host normal-curvature error " + FormatNumber(follow_report.max_normal_curvature_error) + ", host Gaussian-curvature error " + FormatNumber(follow_report.max_gaussian_curvature_error);
       ctx.Print(msg);
     } else if (matched_exact) {
       std::string msg = "MatchSrf: exact edge match (" + std::string(continuity_name) + ") to the target surface, max position error " + FormatNumber(exact_report.max_position_error);
@@ -7146,7 +7147,7 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "VariableBlendSrf", Make<VariableBlendSrfCommand>(), CommandStatus::Implemented,
       "A genuine independent blend-tangent variant of BlendSrf (not the rolling-ball fillet VariableFilletSrf uses): the same BuildBlendSurfaceG1/G2 Hermite/quintic blend between two picked surface edges, with the blend's own cross-section width interpolated linearly along the rail from Width= to EndWidth=, the same piecewise-linear-along-the-rail technique FilletTwoSurfacesCommand uses for Radius=/EndRadius=. Continuity=Curvature gets the same real, numerically-verified G2 cross-boundary curvature match as BlendSrf (see tests/test_g2_blend.cpp and tests/test_variable_blend.cpp), independent of the width, which no fixed-cross-section rolling-ball fillet construction can do except at one coincidental radius.");
   Reg(e, "MatchSrf", Make<MatchSrfCommand>(), CommandStatus::Implemented,
-      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal. Against a target surface edge, Position/Tangency/Curvature all try the exact kernel::NurbsSurface::MatchEdge() construction first (real NURBS algebra, not moved-and-hoped-for control points) - Curvature additionally matches the cross-boundary second derivative, real G2, not just G1 (see kernel::NurbsSurface::MatchEdge()'s own doc comment). Against a target CURVE (rational arcs and circles included) the exact kernel::NurbsSurface::MatchEdgeToCurve() construction is tried first: the edge becomes the curve exactly and, for Tangency/Curvature, the surface keeps its own cross-boundary tangent (and curvature) along it. Follow=Yes (with Continuity=Tangency and a target curve lying on a host surface; you then click the host surface as a third pick) makes the edited surface leave the curve in the HOST's tangent plane - its own cross direction rotated into that plane at its own speed (kernel::NurbsSurface::MatchEdgeToCurveFollowing); rational surfaces work, and a curve that is not on the host is refused with nothing changed. Curvature has no approximate fallback when the exact match itself fails (a periodic or unclamped edge/curve, or a target surface whose degree is too low to carry a curvature row) - it fails closed with a diagnostic rather than silently downgrading to G1/G0.");
+      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal. Against a target surface edge, Position/Tangency/Curvature all try the exact kernel::NurbsSurface::MatchEdge() construction first (real NURBS algebra, not moved-and-hoped-for control points) - Curvature additionally matches the cross-boundary second derivative, real G2, not just G1 (see kernel::NurbsSurface::MatchEdge()'s own doc comment). Against a target CURVE (rational arcs and circles included) the exact kernel::NurbsSurface::MatchEdgeToCurve() construction is tried first: the edge becomes the curve exactly and, for Tangency/Curvature, the surface keeps its own cross-boundary tangent (and curvature) along it. Follow=Yes (with Continuity=Tangency or Curvature and a target curve lying on a host surface; you then click the host surface as a third pick) makes the edited surface leave the curve in the HOST's tangent plane - its own cross direction rotated into that plane at its own speed - and, with Curvature, take the HOST's second fundamental form along the curve (G2 to the host) (kernel::NurbsSurface::MatchEdgeToCurveFollowing); rational surfaces work, and a curve that is not on the host is refused with nothing changed. Curvature has no approximate fallback when the exact match itself fails (a periodic or unclamped edge/curve, or a target surface whose degree is too low to carry a curvature row) - it fails closed with a diagnostic rather than silently downgrading to G1/G0.");
   Reg(e, "BlendSrf", Make<BlendSrfCommand>(), CommandStatus::Implemented,
       "Hermite blend between two picked surface edges. Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend matching each surface's own exact directional second derivative at the boundary (Ev2Der), so its curvature vector matches exactly in the cross-boundary direction (see BlendEdge's own help and tests/test_g2_blend.cpp) - not a claim of full surface-wide G2.");
   Reg(e, "ConnectSrf", Make<ConnectSrfCommand>(), CommandStatus::Implemented,
