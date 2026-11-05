@@ -325,6 +325,69 @@ void QuadRemeshAction(CommandContext& ctx, const std::vector<ObjectId>& ids, con
 }
 
 // ---------------------------------------------------------------------------
+// QuadrangulateMesh: triangle mesh -> quad-dominant mesh (or SubD cage), in
+// the kernel's own terms (Mesh::TrisToQuads / TrisToQuadsAligned, then
+// Mesh::RelaxQuadVertices). The earlier placeholder in cmd_boolean.cpp only
+// called ON_Mesh::ConvertTrianglesToQuads with a fixed 2-degree gate and told
+// the user nothing; this one has typed options and prints the measured quad
+// quality (smallest interior angle, aspect ratio) and area of what it made.
+// ---------------------------------------------------------------------------
+void QuadrangulateMeshAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  const double max_dihedral = in.OptNum("MaxDihedral", 20.0);
+  const int iterations = static_cast<int>(std::max(0.0, std::min(10000.0, std::floor(in.OptNum("RelaxIterations", 0) + 0.5))));
+  const double step = in.OptNum("Step", 1.0);
+  const double feature_angle = in.OptNum("FeatureAngle", 30.0);
+  const double square_weight = in.OptNum("SquareWeight", 1.0);
+  const bool snap = in.Yes("SnapToSurface", true);
+  const Vector3d direction(in.OptNum("DirectionX", 0), in.OptNum("DirectionY", 0), in.OptNum("DirectionZ", 0));
+  const bool aligned = direction.x != 0.0 || direction.y != 0.0 || direction.z != 0.0;
+  const bool to_subd = in.Yes("ConvertToSubD");
+  const bool keep_input = in.Yes("KeepInput");
+
+  ctx.Doc().BeginChange("QuadrangulateMesh");
+  int done = 0;
+  for (ObjectId id : ids) {
+    SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    if (o->kind != ObjectKind::Mesh || !o->mesh) { ctx.Warn("QuadrangulateMesh: object " + std::to_string(id) + " is not a mesh; skipped"); continue; }
+    kernel::Mesh result = *o->mesh;
+    int merged = 0;
+    try {
+      merged = aligned ? result.TrisToQuadsAligned(direction, max_dihedral) : result.TrisToQuads(max_dihedral);
+      if (iterations > 0) result.RelaxQuadVertices(iterations, step, snap, feature_angle, square_weight);
+    } catch (const std::exception& ex) { ctx.Warn(std::string("QuadrangulateMesh: ") + ex.what()); continue; }
+    const kernel::MeshQuadQuality q = result.MeasureQuadQuality();
+    if (to_subd) {
+      try {
+        kernel::SubD sd = kernel::SubD::FromControlMesh(result);
+        SceneObject n = SceneObject::MakeSubD(sd);
+        n.layer_index = o->layer_index; n.color = o->color; n.color_by_layer = o->color_by_layer; n.name = o->name;
+        if (!keep_input) ctx.Doc().Remove(id);
+        ctx.Doc().Add(std::move(n));
+      } catch (const std::exception& ex) { ctx.Warn(std::string("QuadrangulateMesh: ConvertToSubD failed: ") + ex.what()); continue; }
+    } else if (keep_input) {
+      SceneObject n = SceneObject::MakeMesh(result);
+      n.layer_index = o->layer_index; n.color = o->color; n.color_by_layer = o->color_by_layer; n.name = o->name;
+      ctx.Doc().Add(std::move(n));
+    } else {
+      *o->mesh = result;
+      o->InvalidateDisplay();
+    }
+    ++done;
+    std::ostringstream msg;
+    msg.setf(std::ios::fixed);
+    msg.precision(3);
+    msg << "QuadrangulateMesh: object " << id << ": " << merged << " triangle pair(s) merged" << (aligned ? " (aligned to the direction)" : "") << ", "
+        << q.quad_count << " quad(s), " << q.triangle_count << " triangle(s), smallest angle " << q.min_angle_deg << " deg, mean smallest angle "
+        << q.mean_min_angle_deg << " deg, worst aspect " << q.max_aspect << ", area " << result.Area();
+    if (iterations > 0) msg << ", relaxed " << iterations << " iteration(s)";
+    if (to_subd) msg << " -> SubD";
+    ctx.Print(msg.str());
+  }
+  if (done) ctx.Print("QuadrangulateMesh: " + std::to_string(done) + " mesh(es) quadrangulated");
+}
+
+// ---------------------------------------------------------------------------
 // ReduceMesh
 // ---------------------------------------------------------------------------
 void ReduceMeshAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
@@ -585,6 +648,12 @@ void RegisterRemeshCommands(CommandEngine& e) {
                  {Numeric("TargetQuadCount", 400), Toggle("AdaptiveSize", true), Toggle("DetectHardEdges", true),
                   Choice("SymmetryAxis", {"None", "X", "Y", "Z"}, 0), Toggle("ConvertToSubD", false), Toggle("DeleteInput", false)},
                  QuadRemeshAction));
+  Reg(e, "QuadrangulateMesh",
+      RemeshTool("Select meshes to quadrangulate",
+                 {Numeric("MaxDihedral", 20), Numeric("RelaxIterations", 0), Numeric("Step", 1.0), Numeric("FeatureAngle", 30),
+                  Numeric("SquareWeight", 1.0), Toggle("SnapToSurface", true), Numeric("DirectionX", 0), Numeric("DirectionY", 0),
+                  Numeric("DirectionZ", 0), Toggle("ConvertToSubD", false), Toggle("KeepInput", false)},
+                 QuadrangulateMeshAction));
   Reg(e, "ReduceMesh",
       RemeshTool("Select meshes to reduce", {Numeric("ReductionPercent", 50), Numeric("TargetFaceCount", 0), Toggle("PreserveBoundary", true)},
                  ReduceMeshAction));
