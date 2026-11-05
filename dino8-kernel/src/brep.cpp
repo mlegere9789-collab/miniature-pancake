@@ -11338,7 +11338,13 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width,
     }
     const ON_BrepEdge& e = b.m_E[t.m_ei];
     const double gap = TrimEdgeGapMeasure(t, e, &where);
-    const double allowed = std::max(tol, e.m_tolerance >= 0.0 ? e.m_tolerance : 0.0);
+    // The tolerance recorded on a healed / sewn edge is the MEASURED max gap, with no margin, so a pure translation of the body
+    // (its coordinates round at ~1 ulp) pushed gap above m_tolerance by 1e-17 and flagged every tolerant edge (measured: a sealed
+    // box-minus-cylinder reported 2 issues at the origin and 60 once moved 1000 along x). Eight ulps of the coordinate magnitude
+    // are allowed on top - 1.8e-10 at 1e5 and 1.8e-6 at 1e9, where the coordinates themselves resolve no better.
+    const double coord = std::max({std::fabs(where.x), std::fabs(where.y), std::fabs(where.z)});
+    const double rounding = 8.0 * std::numeric_limits<double>::epsilon() * coord;
+    const double allowed = std::max(tol, e.m_tolerance >= 0.0 ? e.m_tolerance : 0.0) + rounding;
     if (gap > allowed) add(CheckKind::TrimEdgeGap, ti, t.m_ei, where, gap);
   }
 

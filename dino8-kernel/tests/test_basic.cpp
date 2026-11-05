@@ -107013,6 +107013,83 @@ void TestSealedBooleanFarFromTheOriginIsExact() {
   }
 }
 
+
+// BooleanCombineGeneral / BooleanCombineGeneralSealed work with absolute distances (0.001 tolerance, SSX Newton refinement, weld
+// 1e-6) on double coordinates, so the same operands lost digits far from the origin: the exact volume of a 10-box minus a
+// through cylinder read 874.298 at offset 1e3, 875.456 at 1e5 (closed form 874.336) and from ~3e6 the result no longer closed
+// (measured by the HGB triage). The operands are now combined in a frame translated to their joint centre and the result is
+// translated back. Closed forms: box - cylinder 1000 - pi*4*10, box + cylinder 1000 + pi*4*10, box ^ cylinder pi*4*10.
+void TestSealedBooleanIsTranslationInvariant() {
+  using revolve_rim_tests::MakeRevolvedPolygon;
+  using revolve_rim_tests::RZ;
+  struct Case {
+    dino8::kernel::BooleanOp op;
+    const char* name;
+    double volume;
+    int faces;
+  };
+  const Case cases[] = {{dino8::kernel::BooleanOp::Difference, "difference", 1000.0 - ON_PI * 40.0, 7},
+                        {dino8::kernel::BooleanOp::Union, "union", 1000.0 + ON_PI * 40.0, 10},
+                        {dino8::kernel::BooleanOp::Intersection, "intersection", ON_PI * 40.0, 3}};
+  // The operands are built at the origin and translated (the cylinder's NURBS wall built directly 1e9 away carries 1.7e-7 of
+  // construction noise of its own, which is not what is measured here).
+  const Brep box0 = Brep::BoxWelded(0, 0, 0, 10, 10, 10);
+  const Brep cyl0 = MakeRevolvedPolygon({RZ{0, 0}, RZ{2, 0}, RZ{2, 20}, RZ{0, 20}}, Point3d(5, 5, -5), dino8::kernel::Vector3d(0, 0, 1));
+  for (double off : {0.0, 1e3, 1e5, 1e7, 1e9}) {
+    const ON_Xform move = ON_Xform::TranslationTransformation(off, off, off);
+    const Brep box = box0.Transform(move), cyl = cyl0.Transform(move);
+    for (const Case& c : cases) {
+      const std::string tag = std::string(c.name) + " at offset " + std::to_string(static_cast<long long>(off)) + ": ";
+      bool ok = true;
+      std::string why;
+      dino8::kernel::SealedGeneralBoolean r;
+      try {
+        r = dino8::kernel::BooleanCombineGeneralSealed(box, cyl, c.op);
+      } catch (const std::exception& e) {
+        ok = false;
+        why = e.what();
+      }
+      if (!ok) {
+        // The one honest exception: a union 1e9 from the origin, where the 1.2e-7 rounding of the operands' own control points
+        // breaks the seam flags of the sewn result (the same refusal appears for round-off-perturbed operands AT the origin).
+        // It must be a refusal with the reason, never a wrong body.
+        const bool allowed = off >= 1e9 && c.op == dino8::kernel::BooleanOp::Union && why.find("BooleanCombineGeneralSealed") != std::string::npos;
+        Check(allowed, (tag + "declined with a reason only for the 1e9 union (" + why.substr(0, 90) + ")").c_str());
+        continue;
+      }
+      Check(r.brep.FaceCount() == c.faces && r.brep.raw().IsValid() && r.brep.raw().IsSolid(),
+            (tag + "sealed, valid, solid, " + std::to_string(c.faces) + " faces").c_str());
+      Check(std::fabs(r.volume - c.volume) < 2e-5 * c.volume,
+            (tag + "exact volume within 2e-5 of the closed form " + std::to_string(c.volume) + " (got " + std::to_string(r.volume) + ")").c_str());
+      double lo = 1e300, hi = -1e300;
+      for (int v = 0; v < r.brep.raw().m_V.Count(); ++v) {
+        const double x = r.brep.raw().m_V[v].point.x;
+        lo = std::min(lo, x);
+        hi = std::max(hi, x);
+      }
+      const double slack = 1e-6 * std::max(1.0, off);
+      Check(lo >= off - slack && hi <= off + 10.0 + slack,
+            (tag + "the result sits at the operands' position (vertex x range [" + std::to_string(lo - off) + ", " + std::to_string(hi - off) + "] from the offset)").c_str());
+    }
+  }
+}
+
+// The sealed box-minus-cylinder result, moved along x and checked: edge tolerances are recorded as the measured max gap with no
+// margin, so one ulp of translation round-off made Check() report every tolerant edge (2 issues at the origin, 60 at +1000).
+void TestCheckDoesNotFlagTolerantEdgesAfterATranslation() {
+  using revolve_rim_tests::MakeRevolvedPolygon;
+  using revolve_rim_tests::RZ;
+  const Brep box = Brep::BoxWelded(0, 0, 0, 10, 10, 10);
+  const Brep cyl = MakeRevolvedPolygon({RZ{0, 0}, RZ{2, 0}, RZ{2, 20}, RZ{0, 20}}, Point3d(5, 5, -5), dino8::kernel::Vector3d(0, 0, 1));
+  const dino8::kernel::SealedGeneralBoolean r = dino8::kernel::BooleanCombineGeneralSealed(box, cyl, dino8::kernel::BooleanOp::Difference);
+  const size_t at_origin = r.brep.Check().issues.size();
+  for (double d : {1000.0, 1e5}) {
+    const Brep moved = r.brep.Transform(ON_Xform::TranslationTransformation(d, 0, 0));
+    const size_t n = moved.Check().issues.size();
+    Check(n <= at_origin, ("translated by " + std::to_string(static_cast<long long>(d)) + ": Check() reports no more issues than at the origin (" + std::to_string(n) + " vs " + std::to_string(at_origin) + ")").c_str());
+  }
+}
+
 }  // namespace qc4_tests
 
 namespace body_section_untrimmed_face_tests {
@@ -108988,6 +109065,8 @@ int main() {
   RunTest("qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets", qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets);
   RunTest("qc4_tests::TestNonFiniteGeometryIsNotStoredOrExported", qc4_tests::TestNonFiniteGeometryIsNotStoredOrExported);
   RunTest("qc4_tests::TestSealedBooleanFarFromTheOriginIsExact", qc4_tests::TestSealedBooleanFarFromTheOriginIsExact);
+  RunTest("qc4_tests::TestSealedBooleanIsTranslationInvariant", qc4_tests::TestSealedBooleanIsTranslationInvariant);
+  RunTest("qc4_tests::TestCheckDoesNotFlagTolerantEdgesAfterATranslation", qc4_tests::TestCheckDoesNotFlagTolerantEdgesAfterATranslation);
   RunTest("qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp", qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp);
   RunTest("qc3_tests::TestLoftMatchedScaledHappyPath", qc3_tests::TestLoftMatchedScaledHappyPath);
   RunTest("extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism", extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism);
