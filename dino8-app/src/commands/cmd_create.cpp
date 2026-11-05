@@ -1,5 +1,6 @@
 // Point and curve creation commands.
 #include "commands/cmd_common.h"
+#include "commands/count_limits.h"
 
 namespace dino8::app {
 
@@ -133,6 +134,7 @@ void AddCircle(CommandContext& ctx, const ON_Circle& c, const char* label) {
   ON_ArcCurve ac(c);
   kernel::NurbsCurve k;
   if (CurveFromON(ac, k)) AddCurve(ctx, k, label);
+  else ctx.Warn(std::string(label) + ": a circle of radius " + FormatNumber(c.Radius()) + " cannot be built (the radius is too large or not a valid number)");
 }
 
 void PreviewCircle(CommandContext& ctx, const ON_Circle& c) {
@@ -144,7 +146,7 @@ class CircleCommand : public PointThenDistanceCommand {
   CircleCommand()
       : PointThenDistanceCommand("Center of circle", "Radius",
                                  [](CommandContext& ctx, Point3d c, double r, Point3d) {
-                                   if (r <= 0) return;
+                                   if (!(r > 0)) { ctx.Warn("Circle: the radius must be greater than zero"); return; }
                                    AddCircle(ctx, ON_Circle(ActivePlaneAt(ctx, c), r), "Circle");
                                  }, 10.0) {
     preview_ = [](CommandContext& ctx, Point3d c, double r, Point3d) { if (r > 0) PreviewCircle(ctx, ON_Circle(ActivePlaneAt(ctx, c), r)); };
@@ -192,6 +194,7 @@ class PolygonCommand : public Command {
     ctx.ClearPreview();
     std::vector<Point3d> pts = Build(ctx, p, true);
     if (pts.size() >= 4) AddCurve(ctx, PolylineCurve(pts), star_ ? "PolygonStar" : "Polygon");
+    else ctx.Warn(std::string(star_ ? "PolygonStar" : "Polygon") + ": the corner is on the center, so the polygon has no size");
     Finish();
   }
   std::vector<Point3d> Build(CommandContext& ctx, Point3d p, bool close) {
@@ -252,11 +255,24 @@ class DivideCommand : public Command {
   }
   void OnNumber(CommandContext& ctx, double v) override {
     if (by_length_) {
-      if (!(v > 0)) { ctx.Warn("Divide: segment length must be positive"); return; }
+      if (!std::isfinite(v) || !(v > 0)) { ctx.Warn("Divide: segment length must be a positive number"); return; }
+      // A tiny length on a long curve means billions of points (Divide 1e-9 on a 10 unit line never returned).
+      for (ObjectId id : ids_) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+        const double segs = o->curve->Length(200) / v;
+        if (!(segs <= kMaxCreatedItems)) {
+          ctx.Warn("Divide: a segment length of " + FormatNumber(v) + " would make about " + FormatNumber(std::floor(segs)) +
+                   " points on curve " + std::to_string(id) + " (limit " + FormatNumber(kMaxCreatedItems) + "); give a longer segment length");
+          return;
+        }
+      }
       length_ = v;
     } else {
-      if (v < 1) { ctx.Warn("Divide: number of segments must be at least 1"); return; }
-      count_ = static_cast<int>(v);
+      int c = 0;
+      std::string why;
+      if (!CountInRange(v, 1, kMaxCreatedItems, c, why)) { ctx.Warn("Divide: number of segments " + why); return; }
+      count_ = c;
     }
     ctx.Doc().BeginChange("Divide");
     int n = 0;
@@ -268,6 +284,7 @@ class DivideCommand : public Command {
       for (double t : params) ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(t)));
       ++n;
     }
+    if (n == 0) ctx.Doc().AbandonChange();  // no curve selected: no empty undo step
     ctx.Print("Divide: " + std::to_string(n) + " curve(s) divided");
     Finish();
   }
@@ -289,10 +306,15 @@ class PointGridCommand : public Command {
     WantPoint("First corner of grid");
     options = {{"CountX", std::to_string(count_x_), {}, true, false}, {"CountY", std::to_string(count_y_), {}, true, false}};
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    // 100000 x 100000 points used to be accepted here and then built (the hover preview built them on every mouse move).
     int k = std::atoi(v.c_str());
-    if (n == "CountX" && k >= 2) { count_x_ = k; options[0].value = std::to_string(count_x_); }
-    else if (n == "CountY" && k >= 2) { count_y_ = k; options[1].value = std::to_string(count_y_); }
+    if ((n == "CountX" || n == "CountY") && (k < 2 || k > 1000)) {
+      ctx.Warn("PointGrid: " + n + " must be a whole number from 2 to 1000, '" + v + "' ignored");
+      return;
+    }
+    if (n == "CountX") { count_x_ = k; options[0].value = std::to_string(count_x_); }
+    else if (n == "CountY") { count_y_ = k; options[1].value = std::to_string(count_y_); }
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     pts_.push_back(p);
@@ -335,9 +357,18 @@ class HelixCommand : public Command {
     WantPoint("Start of axis");
     options = {{"Turns", FormatNumber(turns_), {}, true, false}, {"Pitch", "", {}, true, false}};
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
-    if (n == "Turns") { double t = std::atof(v.c_str()); if (t > 0) turns_ = t; options[0].value = FormatNumber(turns_); }
-    if (n == "Pitch") { double p = std::atof(v.c_str()); if (p > 0) pitch_ = p; }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    if (n == "Turns") {
+      double t = std::atof(v.c_str());
+      if (std::isfinite(t) && t > 0 && t <= kMaxTurns) turns_ = t;
+      else ctx.Warn("Helix: Turns must be a number above 0 and at most " + FormatNumber(kMaxTurns) + ", '" + v + "' ignored");
+      options[0].value = FormatNumber(turns_);
+    }
+    if (n == "Pitch") {
+      double p = std::atof(v.c_str());
+      if (std::isfinite(p) && p > 0) pitch_ = p;
+      else ctx.Warn("Helix: Pitch must be a positive number, '" + v + "' ignored");
+    }
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
@@ -374,6 +405,12 @@ class HelixCommand : public Command {
     if (h <= 0 || r1 <= 0) { ctx.Warn("Axis and radius must be non-zero"); Finish(); return; }
     double turns = turns_;
     if (pitch_ > 0) turns = h / pitch_;
+    // Pitch 1e-9 on a 10 unit axis is 1e10 turns; the exact search and the sampled fallback both scale with it.
+    if (!std::isfinite(turns) || turns > kMaxTurns) {
+      ctx.Warn("Helix: this Pitch/Turns makes " + FormatNumber(turns) + " turns (limit " + FormatNumber(kMaxTurns) + "); give a larger Pitch or fewer Turns");
+      Finish();
+      return;
+    }
 
     // Exact construction first: NurbsCurve::Helix() genuinely interpolates
     // the real analytic helix/spiral (tolerance-bounded, since no exact
@@ -507,7 +544,10 @@ void RegisterCreateCommands(CommandEngine& e) {
                                       [](CommandContext& ctx, const std::vector<Point3d>& p) { AddObject(ctx, SceneObject::MakePoint(p[0]), "Point"); }));
   Reg(e, "Points", Make<PointsCommandMany>());
   Reg(e, "Line", Make<PointsCommand>(std::vector<std::string>{"Start of line", "End of line"},
-                                     [](CommandContext& ctx, const std::vector<Point3d>& p) { AddCurve(ctx, PolylineCurve(p), "Line"); },
+                                     [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                       if (p[0].DistanceTo(p[1]) <= 1e-12) { ctx.Warn("Line: the start and end points are the same, no line created"); return; }
+                                       AddCurve(ctx, PolylineCurve(p), "Line");
+                                     },
                                      [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) { ctx.AddPreviewLine(p[0], h); }));
   Reg(e, "Lines", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Lines));
   Reg(e, "Polyline", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Polyline));
@@ -554,7 +594,7 @@ void RegisterCreateCommands(CommandEngine& e) {
                                       ON_Plane pl = ActivePlane(ctx);
                                       pl.SetOrigin(p[0]);
                                       double r = (p[1] - p[0]).Length();
-                                      if (r <= 0) return;
+                                      if (!(r > 0)) { ctx.Warn("Arc: the start of the arc is on its center, so the radius is zero"); return; }
                                       double a0 = std::atan2(ON_DotProduct(p[1] - p[0], pl.yaxis), ON_DotProduct(p[1] - p[0], pl.xaxis));
                                       double a1 = std::atan2(ON_DotProduct(p[2] - p[0], pl.yaxis), ON_DotProduct(p[2] - p[0], pl.xaxis));
                                       if (a1 <= a0) a1 += 2 * ON_PI;
@@ -631,11 +671,11 @@ void RegisterCreateCommands(CommandEngine& e) {
                                           pl.SetOrigin(p[0]);
                                           Vector3d x = p[1] - p[0];
                                           double a = x.Length();
-                                          if (a <= 0) return;
+                                          if (!(a > 0)) { ctx.Warn("Ellipse: the end of the first axis is on the center"); return; }
                                           x.Unitize();
                                           Vector3d y = ON_CrossProduct(pl.zaxis, x);
                                           double b = std::fabs(ON_DotProduct(p[2] - p[0], y));
-                                          if (b <= 0) return;
+                                          if (!(b > 0)) { ctx.Warn("Ellipse: the second axis has no length (the point is on the first axis)"); return; }
                                           ON_Plane epl(p[0], x, y);
                                           ON_Ellipse el(epl, a, b);
                                           ON_NurbsCurve nc;

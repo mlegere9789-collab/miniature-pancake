@@ -2,6 +2,7 @@
 // sub-curves, seams, knot and control-point editing, tweening, fitting,
 // curve arrays, alignment, and planar slicing (Contour/Section/CutPlane).
 #include "commands/cmd_common.h"
+#include "commands/count_limits.h"
 #include "commands/history_rebuild.h"
 #include "dino8/kernel/surface_intersect.h"
 
@@ -1083,7 +1084,9 @@ class ArrayCrvCommand : public Command {
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Orientation") freeform_ = (v != "NoRotation"); }
   void OnNumber(CommandContext& ctx, double v) override {
     if (!path_) return;
-    int count = std::max(2, static_cast<int>(v));
+    int count = 2;
+    std::string why;
+    if (!CountInRange(v, 2, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, ids_.size())), count, why)) { ctx.Warn("ArrayCrv: the number of items " + why); return; }
     kernel::BoundingBox bb;
     ctx.Doc().BoundingBoxOf(ids_, bb);
     Point3d base = path_->curve.PointAt(path_->curve.Domain().min);

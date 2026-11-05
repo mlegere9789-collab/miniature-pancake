@@ -1,5 +1,6 @@
 // Transform commands: Move, Copy, Rotate, Scale, Mirror, Array...
 #include "commands/cmd_common.h"
+#include "commands/count_limits.h"
 
 namespace dino8::app {
 
@@ -412,7 +413,18 @@ class ArrayCommand : public Command {
   void Begin(CommandContext&) override { WantObjects("Select objects to array"); }
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantNumber("Number in X direction", 2); }
   void OnNumber(CommandContext& ctx, double v) override {
-    counts_[stage_] = std::max(1, static_cast<int>(v));
+    // static_cast<int>(1e12) is undefined behaviour and 3000 x 3000 cells is nine million copies: refuse both here,
+    // while the prompt is still open, instead of at the spacing step.
+    int c = 1;
+    std::string why;
+    if (!CountInRange(v, 1, kMaxCreatedItems, c, why)) { ctx.Warn("Array: the number " + why); return; }
+    double cells = c;
+    for (int s = 0; s < stage_; ++s) cells *= counts_[s];
+    if (cells * static_cast<double>(std::max<size_t>(1, ids_.size())) > kMaxCreatedItems) {
+      ctx.Warn("Array: that would create more than " + FormatNumber(kMaxCreatedItems) + " objects; give a smaller number");
+      return;
+    }
+    counts_[stage_] = c;
     ++stage_;
     if (stage_ == 1) WantNumber("Number in Y direction", 2);
     else if (stage_ == 2) WantNumber("Number in Z direction", 1);
@@ -517,7 +529,15 @@ class ArrayPolarCommand : public Command {
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantPoint("Center of polar array"); }
   void OnPoint(CommandContext& ctx, Point3d p) override { center_ = p; WantNumber("Number of items", 6); }
   void OnNumber(CommandContext& ctx, double v) override {
-    if (!count_) { count_ = std::max(2, static_cast<int>(v)); WantNumber("Angle to fill", 360); return; }
+    if (!count_) {
+      int c = 2;
+      std::string why;
+      if (!CountInRange(v, 2, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, ids_.size())), c, why)) { ctx.Warn("ArrayPolar: the number of items " + why); return; }
+      count_ = c;
+      WantNumber("Angle to fill", 360);
+      return;
+    }
+    if (!std::isfinite(v)) { ctx.Warn("ArrayPolar: the angle must be a finite number"); return; }
     double fill = v * ON_PI / 180.0;
     ctx.Doc().BeginChange("ArrayPolar");
     // See ArrayCommand::Apply()'s comment - same fix, same reason.
