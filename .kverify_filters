@@ -1,5 +1,6 @@
 ClosedMeshDeviationTracksTolerance
 DXFU
+ExtrudeDraft
 Hairline
 LoftAlignSeams
 LoftRationalTangent
@@ -13,8 +14,10 @@ Rib
 ShellOpenExtrusion
 SplitByPlane
 TestBoss
+TestChainedFilletsTessellateToAClosedMesh
 TestFilletConvexEdgeChainsOntoAnAlreadyBlendedBox
 TestFilletConvexEdgeOnBlendedSolidRefuses
+TestFilletConvexEdgeResultTessellatesToAClosedMesh
 TestFilletRevolveRimConcaveConeCorners
 TestHolePatterns
 TestOffsetInPlaneClosedPolygonRoundChamfer
@@ -30,8 +33,10 @@ bridge_holes
 counterbore
 extra::Sealed
 extrude_along
+extrude_draft_curved
 extrusion_shell_tests
 grid_interp
+join_tangent
 loft_spacing
 match_edge_to_curve_following
 match_edge_to_curve_rational
@@ -41,6 +46,7 @@ rib_tests
 sealed_boolean_slivers_tests
 sealed_boolean_tests
 shell_open_extrusion
+shell_polyline_app_dims
 shell_revolved_profile
 subd_boolean_semisharp
 subd_edge_loops
@@ -52,5 +58,6 @@ sweep2_accuracy
 sweep2_closed_corner
 sweep_adaptive
 thicken_curved_closed_form
+trimmed_offset
+trisquads_collinear_corner
 welded_curved_primitives
-ExtrudeDraft
