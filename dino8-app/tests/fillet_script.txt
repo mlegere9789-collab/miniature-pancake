@@ -783,9 +783,9 @@ Continuity=Curvature
 2605,0,1
 SelSrf
 List
-# --- MatchSrf: Curvature against a target CURVE (no curvature-match
-# fallback exists for a curve target at all - MatchEdge() only ever
-# matches two SURFACE edges) fails closed the same way.
+# --- MatchSrf: Curvature against a target CURVE: exact through
+# kernel::NurbsSurface::MatchEdgeToCurve (the surface keeps its own S_vv;
+# a flat plane has none, so a straight line target is a clean G2 match).
 SelAll
 Hide
 Plane 2700,0,0 2710,10,0

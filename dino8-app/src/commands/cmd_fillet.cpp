@@ -5255,6 +5255,7 @@ class MatchSrfCommand : public Command {
       if (obj.kind == ObjectKind::Curve && obj.curve) {
         const double t = obj.curve->ClosestPointParameter(target_pick, 200);
         if (obj.curve->PointAt(t).DistanceTo(target_pick) < (target_curve ? target_curve->PointAt(target_curve->Domain().Mid()).DistanceTo(target_pick) : std::numeric_limits<double>::max())) {
+          delete target_curve;
           target_curve = new ON_NurbsCurve(obj.curve->raw());
         }
       }
@@ -5307,6 +5308,34 @@ class MatchSrfCommand : public Command {
         }
       }
     }
+    // Against a target CURVE, try the exact kernel::NurbsSurface::
+    // MatchEdgeToCurve() first: the picked edge becomes the target curve
+    // itself (G0 to rounding, rational targets such as an exact arc or
+    // circle included) and, for Tangency/Curvature, the surface keeps its
+    // OWN cross-boundary tangent (and curvature) field along the edge -
+    // Rhino's "preserve the isocurve direction" - exactly, instead of the
+    // older per-control-point loop below (which only moves boundary
+    // points onto the curve, so a degree-1 edge facing an arc became a
+    // straight chord of it). A curve is not a surface, so there is no
+    // tangent plane to match; the preserved field is the honest choice.
+    // MatchEdgeToCurve() self-checks by evaluation and leaves the surface
+    // untouched on Result::Failed (a periodic/unclamped curve or surface,
+    // or a rational surface whose own cross derivative is not a spline),
+    // in which case Position/Tangency fall through to the loop below.
+    bool matched_curve = false;
+    kernel::MatchEdgeReport curve_report;
+    if (!matched_exact && target_curve) {
+      if (const ON_NurbsCurve* tnc = ON_NurbsCurve::Cast(target_curve)) {
+        kernel::NurbsCurve kc;
+        kc.raw() = *tnc;
+        kernel::NurbsSurface trial = ks;
+        if (trial.MatchEdgeToCurve(fixed_dir, at_min, kc, continuity_, nullptr, nullptr, &curve_report) == kernel::Result::Ok) {
+          ks = trial;
+          matched_curve = true;
+          moved = n_cross;
+        }
+      }
+    }
     // Curvature (G2) has no approximate counterpart in the per-CV loop
     // below - that loop only ever moves the boundary row (Position) and,
     // for Tangency, one more row via a hand-derived step/perpendicular
@@ -5317,15 +5346,18 @@ class MatchSrfCommand : public Command {
     // equivalent, fails closed" posture BlendSrf's own Continuity=G3
     // already uses when its own exact construction can't apply, rather
     // than silently doing something less than what was asked.
-    if (!matched_exact && continuity_ == kernel::MatchContinuity::Curvature) {
-      const std::string why = target_curve ? "a target curve has no curvature-match fallback"
+    if (!matched_exact && !matched_curve && continuity_ == kernel::MatchContinuity::Curvature) {
+      const std::string why = target_curve ? "the exact match to the target curve failed (periodic or unclamped curve or surface, or a rational surface whose own cross derivative is not a spline)"
                                             : "the exact match failed (periodic edge, or the target's degree is too low to carry a curvature row)";
+      const bool curve_target = target_curve != nullptr;
       delete target_curve;
-      ctx.Warn("MatchSrf: Curvature continuity needs an exact edge match against a target SURFACE edge (kernel::NurbsSurface::MatchEdge) - " +
+      // (the surface-target wording is unchanged; smoke.sh asserts it)
+      ctx.Warn(std::string("MatchSrf: Curvature continuity needs an exact edge match against a target ") +
+               (curve_target ? "CURVE (kernel::NurbsSurface::MatchEdgeToCurve)" : "SURFACE edge (kernel::NurbsSurface::MatchEdge)") + " - " +
                why + "; nothing was changed");
       return;
     }
-    if (!matched_exact) {
+    if (!matched_exact && !matched_curve) {
       for (int k = 0; k < n_cross; ++k) {
         ON_3dPoint cv;
         const int i = fixed_dir == 0 ? cv_index_row0 : k;
@@ -5370,7 +5402,12 @@ class MatchSrfCommand : public Command {
       orig->InvalidateDisplay();
     }
     const char* continuity_name = continuity_ == kernel::MatchContinuity::Curvature ? "G2" : continuity_ == kernel::MatchContinuity::Tangent ? "G1" : "G0";
-    if (matched_exact) {
+    if (matched_curve) {
+      std::string msg = "MatchSrf: exact edge match (" + std::string(continuity_name) + ") to the target curve, max position error " + FormatNumber(curve_report.max_position_error);
+      if (continuity_ != kernel::MatchContinuity::Position) msg += ", max tangent error " + FormatNumber(curve_report.max_tangent_error);
+      if (continuity_ == kernel::MatchContinuity::Curvature) msg += ", max curvature error " + FormatNumber(curve_report.max_curvature_error);
+      ctx.Print(msg);
+    } else if (matched_exact) {
       std::string msg = "MatchSrf: exact edge match (" + std::string(continuity_name) + ") to the target surface, max position error " + FormatNumber(exact_report.max_position_error);
       if (continuity_ != kernel::MatchContinuity::Position) msg += ", max tangent error " + FormatNumber(exact_report.max_tangent_error);
       if (continuity_ == kernel::MatchContinuity::Curvature) msg += ", max curvature error " + FormatNumber(exact_report.max_curvature_error);
@@ -7045,7 +7082,7 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "VariableBlendSrf", Make<VariableBlendSrfCommand>(), CommandStatus::Implemented,
       "A genuine independent blend-tangent variant of BlendSrf (not the rolling-ball fillet VariableFilletSrf uses): the same BuildBlendSurfaceG1/G2 Hermite/quintic blend between two picked surface edges, with the blend's own cross-section width interpolated linearly along the rail from Width= to EndWidth=, the same piecewise-linear-along-the-rail technique FilletTwoSurfacesCommand uses for Radius=/EndRadius=. Continuity=Curvature gets the same real, numerically-verified G2 cross-boundary curvature match as BlendSrf (see tests/test_g2_blend.cpp and tests/test_variable_blend.cpp), independent of the width, which no fixed-cross-section rolling-ball fillet construction can do except at one coincidental radius.");
   Reg(e, "MatchSrf", Make<MatchSrfCommand>(), CommandStatus::Implemented,
-      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal. Against a target surface edge, Position/Tangency/Curvature all try the exact kernel::NurbsSurface::MatchEdge() construction first (real NURBS algebra, not moved-and-hoped-for control points) - Curvature additionally matches the cross-boundary second derivative, real G2, not just G1 (see kernel::NurbsSurface::MatchEdge()'s own doc comment). Curvature has no approximate fallback against a target curve or when the exact match itself fails (a periodic edge, or a target whose degree is too low to carry a curvature row) - it fails closed with a diagnostic rather than silently downgrading to G1/G0.");
+      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal. Against a target surface edge, Position/Tangency/Curvature all try the exact kernel::NurbsSurface::MatchEdge() construction first (real NURBS algebra, not moved-and-hoped-for control points) - Curvature additionally matches the cross-boundary second derivative, real G2, not just G1 (see kernel::NurbsSurface::MatchEdge()'s own doc comment). Against a target CURVE (rational arcs and circles included) the exact kernel::NurbsSurface::MatchEdgeToCurve() construction is tried first: the edge becomes the curve exactly and, for Tangency/Curvature, the surface keeps its own cross-boundary tangent (and curvature) along it. Curvature has no approximate fallback when the exact match itself fails (a periodic or unclamped edge/curve, or a target surface whose degree is too low to carry a curvature row) - it fails closed with a diagnostic rather than silently downgrading to G1/G0.");
   Reg(e, "BlendSrf", Make<BlendSrfCommand>(), CommandStatus::Implemented,
       "Hermite blend between two picked surface edges. Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend matching each surface's own exact directional second derivative at the boundary (Ev2Der), so its curvature vector matches exactly in the cross-boundary direction (see BlendEdge's own help and tests/test_g2_blend.cpp) - not a claim of full surface-wide G2.");
   Reg(e, "ConnectSrf", Make<ConnectSrfCommand>(), CommandStatus::Implemented,
