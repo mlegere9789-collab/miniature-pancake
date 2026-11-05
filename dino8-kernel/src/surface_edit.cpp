@@ -3292,9 +3292,15 @@ bool SolveCollocation(std::vector<std::vector<double>> a, std::vector<ON_3dVecto
 
 Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min, const NurbsCurve& target, const NurbsSurface& host,
                                                MatchFollowReport* report) {
+  return MatchEdgeToCurveFollowing(fixed_direction, at_min, target, host, MatchContinuity::Tangent, report);
+}
+
+Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min, const NurbsCurve& target, const NurbsSurface& host,
+                                               MatchContinuity continuity, MatchFollowReport* report) {
   if (fixed_direction != 0 && fixed_direction != 1) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::MatchEdgeToCurveFollowing: direction must be 0 (U) or 1 (V)");
   }
+  const bool curvature = continuity == MatchContinuity::Curvature;
   MatchFollowReport local;
   auto refuse = [&](const std::string& why) {
     local.refusal_reason = why;
@@ -3307,6 +3313,7 @@ Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min,
   if (!s.IsClamped(0, 2) || !s.IsClamped(1, 2)) return refuse("this surface is not clamped in both directions");
   if (c.Dimension() != 3 || c.Order() < 2 || c.CVCount() < c.Order() || !c.IsClamped(2)) return refuse("the target curve is not a clamped 3D NURBS curve");
   if (!host.raw().IsValid()) return refuse("the host surface is not valid");
+  if (continuity == MatchContinuity::Position) return refuse("Position has no cross direction to follow the host with (use Tangent or Curvature)");
 
   const ON_Interval c_dom = c.Domain();
   const ON_Interval s_edge = s.Domain(edge_dir);
@@ -3327,11 +3334,27 @@ Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min,
   }
 
   // Unit host normal at the host point closest to `p`, and the distance to it.
+  Point2d host_uv(0, 0);
   auto host_normal = [&](const ON_3dPoint& p, ON_3dVector& n, double& gap) {
     const Point2d uv = host.ClosestPointParameter(p, 40, 40);
+    host_uv = uv;
     ON_3dPoint hp;
     if (!host.raw().EvNormal(uv.x, uv.y, hp, n) || !n.Unitize()) return false;
     gap = hp.DistanceTo(p);
+    return true;
+  };
+  // The host's II(D, D) = n . (a^2 H_uu + 2 a b H_uv + b^2 H_vv) at the last closest point (`host_uv`), D = a H_u + b H_v; false
+  // when D is not expressible in the tangent basis (a pole or fold).
+  auto host_ii = [&](const ON_3dVector& d, const ON_3dVector& n, double& ii) {
+    ON_3dPoint hp;
+    ON_3dVector hu, hv, huu, huv, hvv;
+    if (!host.raw().Ev2Der(host_uv.x, host_uv.y, hp, hu, hv, huu, huv, hvv)) return false;
+    const double g11 = hu * hu, g12 = hu * hv, g22 = hv * hv;
+    const double det = g11 * g22 - g12 * g12;
+    if (!(det > 1e-12 * g11 * g22) || !(det > 0.0)) return false;
+    const double r1 = d * hu, r2 = d * hv;
+    const double a = (r1 * g22 - r2 * g12) / det, b = (r2 * g11 - r1 * g12) / det;
+    ii = n * (huu * (a * a) + huv * (2.0 * a * b) + hvv * (b * b));
     return true;
   };
   // This surface's own inward cross derivative at the edge parameter `e` of surface `sf`.
@@ -3344,8 +3367,15 @@ Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min,
   };
 
   // The wanted field at target parameter t.
-  bool field_failed_degenerate = false;
-  auto field_at = [&](double t, ON_3dVector& d) {
+  bool field_failed_degenerate = false, field_failed_pole = false;
+  // A surface's second cross derivative at edge parameter `e` (sign-free).
+  auto second_at = [&](const ON_NurbsSurface& sf, double sat, double e) {
+    ON_3dPoint pp;
+    ON_3dVector du, dv, duu, duv, dvv;
+    if (fixed_direction == 0) sf.Ev2Der(sat, e, pp, du, dv, duu, duv, dvv); else sf.Ev2Der(e, sat, pp, du, dv, duu, duv, dvv);
+    return fixed_direction == 0 ? duu : dvv;
+  };
+  auto field_at = [&](double t, ON_3dVector& d, ON_3dVector& ee) {
     const double f = (t - c_dom.Min()) / c_dom.Length();
     const double e = s_edge.ParameterAt(reversed ? 1.0 - f : f);
     ON_3dPoint ep;
@@ -3358,59 +3388,81 @@ Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min,
     ON_3dVector proj = d0 - (d0 * n) * n;
     if (!(len0 > 0.0) || proj.Length() < 1.7e-3 * len0) { field_failed_degenerate = true; return false; }
     d = proj * (len0 / proj.Length());
+    ee = ON_3dVector::ZeroVector;
+    if (curvature) {
+      double ii = 0.0;
+      if (!host_ii(d, n, ii)) { field_failed_pole = true; return false; }
+      const ON_3dVector e0 = second_at(s, at, e);
+      ee = e0 - (e0 * n) * n + n * ii;
+    }
     return true;
   };
 
   // Fit D(t): collocation at the Greville abscissae of a clamped uniform cubic, doubling the control points until it
   // reproduces the sampled field between the nodes.
-  ON_NurbsCurve fit;
+  ON_NurbsCurve fit, fit_e;
   const int p = 3;
-  double dmax = 0.0;
+  double dmax = 0.0, emax = 0.0;
   for (int n_f = 16; n_f <= 128; n_f *= 2) {
     std::vector<double> U(static_cast<size_t>(n_f + p + 1));
     const int spans = n_f - p;
     for (int k = 0; k <= p; ++k) { U[static_cast<size_t>(k)] = c_dom.Min(); U[static_cast<size_t>(n_f + k)] = c_dom.Max(); }
     for (int k = 1; k < spans; ++k) U[static_cast<size_t>(p + k)] = c_dom.ParameterAt(static_cast<double>(k) / spans);
     std::vector<std::vector<double>> a(static_cast<size_t>(n_f));
-    std::vector<ON_3dVector> rhs(static_cast<size_t>(n_f));
+    std::vector<ON_3dVector> rhs(static_cast<size_t>(n_f)), rhs_e(static_cast<size_t>(n_f));
     std::vector<double> basis;
+    dmax = 0.0;
+    emax = 0.0;
     for (int i = 0; i < n_f; ++i) {
       const double g = (U[static_cast<size_t>(i) + 1] + U[static_cast<size_t>(i) + 2] + U[static_cast<size_t>(i) + 3]) / 3.0;
       BSplineBasisAll(U, p, n_f, g, basis);
       a[static_cast<size_t>(i)] = basis;
-      if (!field_at(g, rhs[static_cast<size_t>(i)])) {
+      if (!field_at(g, rhs[static_cast<size_t>(i)], rhs_e[static_cast<size_t>(i)])) {
         return refuse(field_failed_degenerate ? "the surface's own cross direction is within 0.1 degree of the host normal at a sample (no tangent direction to follow)"
+                      : field_failed_pole     ? "the host's tangent basis is degenerate at a sample (a pole or fold), so its second fundamental form is undefined there"
                                               : "the host surface could not be evaluated near the target curve");
       }
       dmax = std::max(dmax, rhs[static_cast<size_t>(i)].Length());
+      emax = std::max(emax, rhs_e[static_cast<size_t>(i)].Length());
     }
-    std::vector<ON_3dVector> sol;
+    std::vector<ON_3dVector> sol, sol_e;
     if (!SolveCollocation(a, rhs, sol)) return refuse("the field fit is singular");
+    if (curvature && !SolveCollocation(a, rhs_e, sol_e)) return refuse("the field fit is singular");
     if (!fit.Create(3, false, p + 1, n_f)) return refuse("could not create the field curve");
     for (int k = 0; k < n_f + p - 1; ++k) fit.SetKnot(k, U[static_cast<size_t>(k) + 1]);
     for (int i = 0; i < n_f; ++i) fit.SetCV(i, ON_3dPoint(sol[static_cast<size_t>(i)]));
-    double err = 0.0;
+    if (curvature) {
+      if (!fit_e.Create(3, false, p + 1, n_f)) return refuse("could not create the field curve");
+      for (int k = 0; k < n_f + p - 1; ++k) fit_e.SetKnot(k, U[static_cast<size_t>(k) + 1]);
+      for (int i = 0; i < n_f; ++i) fit_e.SetCV(i, ON_3dPoint(sol_e[static_cast<size_t>(i)]));
+    }
+    double err = 0.0, err_e = 0.0;
     for (int k = 0; k < spans; ++k) {
       for (int q = 1; q <= 3; ++q) {
         const double t = U[static_cast<size_t>(p + k)] + (U[static_cast<size_t>(p + k) + 1] - U[static_cast<size_t>(p + k)]) * q / 4.0;
-        ON_3dVector want;
-        if (!field_at(t, want)) return refuse("the host surface could not be evaluated near the target curve");
+        ON_3dVector want, want_e;
+        if (!field_at(t, want, want_e)) return refuse("the host surface could not be evaluated near the target curve");
         err = std::max(err, (want - ON_3dVector(fit.PointAt(t))).Length());
+        if (curvature) err_e = std::max(err_e, (want_e - ON_3dVector(fit_e.PointAt(t))).Length());
       }
     }
-    local.field_fit_error = err;
+    local.field_fit_error = std::max(err, err_e);
     local.field_control_points = n_f;
-    if (err <= 1e-7 * std::max(dmax, 1e-300) || n_f == 128) break;
+    // E has the units of D squared over a length: its threshold scales with its own size (or |D|^2 / size when it is ~0).
+    const bool good = err <= 1e-7 * std::max(dmax, 1e-300) && (!curvature || err_e <= 1e-7 * std::max(emax, dmax * dmax / size));
+    if (good || n_f == 128) break;
   }
   if (local.max_host_gap > 1e-3 * size) {
     return refuse("the target curve is not on the host surface (farthest sample " + std::to_string(local.max_host_gap) + " away)");
   }
 
   const ON_NurbsSurface backup = surface_;
-  NurbsCurve field;
+  NurbsCurve field, field_e;
   field.raw() = fit;
+  field_e.raw() = fit_e;
   MatchEdgeReport mr;
-  const Result r = MatchEdgeToCurve(fixed_direction, at_min, target, MatchContinuity::Tangent, &field, nullptr, &mr);
+  const Result r = MatchEdgeToCurve(fixed_direction, at_min, target, curvature ? MatchContinuity::Curvature : MatchContinuity::Tangent, &field,
+                                    curvature ? &field_e : nullptr, &mr);
   if (r != Result::Ok) return refuse("MatchEdgeToCurve refused the construction (periodic or unclamped surface or curve)");
   local.match = mr;
   if (mr.target_edge_reversed != reversed) {
@@ -3421,21 +3473,60 @@ Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min,
   // Measure the edited surface against the host, independent of the fit nodes.
   const double at2 = at_min ? surface_.Domain(fixed_direction).Min() : surface_.Domain(fixed_direction).Max();
   const ON_Interval e2 = surface_.Domain(edge_dir);
-  double worst = 0.0, gap2 = 0.0;
+  double worst = 0.0, gap2 = 0.0, worst_kn = 0.0, worst_k = 0.0, kn_scale = 0.0, k_scale = 0.0;
   for (int k = 0; k <= 128; ++k) {
     ON_3dPoint ep;
-    const ON_3dVector d = inward_at(surface_, at2, e2.ParameterAt(k / 128.0), ep);
+    const double ee = e2.ParameterAt(k / 128.0);
+    const ON_3dVector d = inward_at(surface_, at2, ee, ep);
     ON_3dVector n;
     double gap = 0.0;
     if (!host_normal(ep, n, gap) || !(d.Length() > 0.0)) { surface_ = backup; return refuse("the host could not be evaluated along the edited edge"); }
     gap2 = std::max(gap2, gap);
     worst = std::max(worst, std::abs(d * n) / d.Length());
+    if (curvature) {
+      // Normal curvature in the cross direction, and Gaussian curvature, of the edited surface against the host's at the same point.
+      double ii = 0.0;
+      if (!host_ii(d, n, ii)) { surface_ = backup; return refuse("the host's tangent basis is degenerate along the edited edge"); }
+      const double kh = ii / (d * d);
+      const double ks = (second_at(surface_, at2, ee) * n) / (d * d);
+      worst_kn = std::max(worst_kn, std::abs(ks - kh));
+      kn_scale = std::max(kn_scale, std::abs(kh));
+      auto gauss = [](const ON_NurbsSurface& sf, double uu, double vv, double& kg) {
+        ON_3dPoint pp;
+        ON_3dVector su, sv, suu, suv, svv;
+        if (!sf.Ev2Der(uu, vv, pp, su, sv, suu, suv, svv)) return false;
+        ON_3dVector nn = ON_CrossProduct(su, sv);
+        if (!nn.Unitize()) return false;
+        const double fe = su * su, ff = su * sv, fg = sv * sv, sl = nn * suu, sm = nn * suv, sn = nn * svv;
+        const double den = fe * fg - ff * ff;
+        if (!(den > 0.0)) return false;
+        kg = (sl * sn - sm * sm) / den;
+        return true;
+      };
+      double kgs = 0.0, kgh = 0.0;
+      if (!gauss(surface_, fixed_direction == 0 ? at2 : ee, fixed_direction == 0 ? ee : at2, kgs) || !gauss(host.raw(), host_uv.x, host_uv.y, kgh)) {
+        surface_ = backup;
+        return refuse("the Gaussian curvature could not be evaluated along the edited edge");
+      }
+      worst_k = std::max(worst_k, std::abs(kgs - kgh));
+      k_scale = std::max(k_scale, std::abs(kgh));
+    }
   }
   local.max_tangent_plane_deviation = worst;
   local.max_host_gap = std::max(local.max_host_gap, gap2);
+  local.max_normal_curvature_error = worst_kn;
+  local.max_gaussian_curvature_error = worst_k;
   if (!(worst <= 1e-5)) {
     surface_ = backup;
     return refuse("the edited surface is not tangent to the host along the edge (deviation " + std::to_string(worst) + ")");
+  }
+  if (curvature && !(worst_kn <= 1e-5 * std::max(1.0 / size, kn_scale))) {
+    surface_ = backup;
+    return refuse("the edited surface's normal curvature across the edge differs from the host's (error " + std::to_string(worst_kn) + ")");
+  }
+  if (curvature && !(worst_k <= 1e-4 * std::max(1.0 / (size * size), k_scale))) {
+    surface_ = backup;
+    return refuse("the edited surface's Gaussian curvature along the edge differs from the host's (error " + std::to_string(worst_k) + ")");
   }
   if (report) *report = local;
   return Result::Ok;

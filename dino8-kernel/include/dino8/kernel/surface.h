@@ -105,6 +105,14 @@ struct MatchFollowReport {
   // the sine of the angle between its inward cross derivative and the host's
   // tangent plane (0 = exactly tangent to the host).
   double max_tangent_plane_deviation = 0.0;
+  // Curvature (G2) only, 0 otherwise. Max over the 129 edge samples of
+  // |kappa_S - kappa_H| where kappa is the NORMAL curvature in the cross
+  // direction D (S_cc . n / |D|^2 for the edited surface, II_H(D, D) / |D|^2
+  // for the host), and of |K_S - K_H| for the Gaussian curvature: both
+  // measured from second derivatives of the edited surface and of the host
+  // at the closest host point, not from the fitted fields.
+  double max_normal_curvature_error = 0.0;
+  double max_gaussian_curvature_error = 0.0;
   // Max |fit - sampled field| over the fit's midpoints, and the control points used.
   double field_fit_error = 0.0;
   int field_control_points = 0;
@@ -2229,10 +2237,32 @@ class NurbsSurface {
   // sample (no tangent direction to follow), if the measured deviation
   // exceeds 1e-5, or for any reason `MatchEdgeToCurve()` refuses (a
   // periodic or unclamped surface or target); `refusal_reason` says which.
-  // G1 only: a curvature match to a host would need the host's normal
-  // curvature along the cross direction, which this does not attempt.
+  // This overload is G1 (Tangent). The overload below also offers Curvature.
   Result MatchEdgeToCurveFollowing(int fixed_direction, bool at_min, const NurbsCurve& target, const NurbsSurface& host,
                                    MatchFollowReport* report = nullptr);
+
+  // `continuity` Tangent is the method above; Position is refused (no direction to follow).
+  //
+  // Curvature (G2 to the host along the curve): in addition to D, the second cross derivative is
+  // prescribed so that the edited surface has the HOST'S SECOND FUNDAMENTAL FORM along the edge.
+  // With S_v = D in the host's tangent plane, the normal curvature of the edited surface in the
+  // cross direction is S_vv . n / |D|^2 and the host's is II_H(D, D) / |D|^2, where II_H(D, D) =
+  // n . (a^2 H_uu + 2 a b H_uv + b^2 H_vv) for D = a H_u + b H_v (second derivatives at the closest
+  // host point). The wanted field is E(t) = E0 - (E0 . n) n + II_H(D, D) n, with E0 this surface's
+  // own pre-edit second cross derivative sampled at the paired edge parameter (rational surfaces
+  // fine): the normal component is replaced by the host's, the tangential part is kept. The other
+  // two entries of the second fundamental form are fixed by the edge curve (normal curvature along
+  // the edge, Meusnier) and by the tangent plane's variation along it (the mixed term), so the
+  // tangent planes plus this normal component make the edited surface's principal curvatures and
+  // directions equal the host's along the edge. D and E are fitted together (16 to 128 control
+  // points until both agree with the sampled fields to 1e-7 of their size) and passed to
+  // `MatchEdgeToCurve(..., Curvature, &D, &E)`. After the edit `max_normal_curvature_error` and
+  // `max_gaussian_curvature_error` are MEASURED; the surface is restored bit-identical and the call
+  // fails if the normal-curvature error exceeds 1e-5 * max(1 / size, |kappa_H|) or the Gaussian
+  // one 1e-4 * max(1 / size^2, |K_H|), besides every refusal of the G1 method. At a host pole or
+  // fold (D not expressible in the host's tangent basis) it refuses.
+  Result MatchEdgeToCurveFollowing(int fixed_direction, bool at_min, const NurbsCurve& target, const NurbsSurface& host,
+                                   MatchContinuity continuity, MatchFollowReport* report = nullptr);
 
   // Unrolls a *developable* surface (a plane, a cylinder, or a cone -
   // the only three shapes an ON_NurbsSurface can be per OpenNURBS'
