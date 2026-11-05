@@ -1083,6 +1083,37 @@ enum class ExtrusionOpening { Top, Bottom, Both };
 // closed-form volume) gate.
 Brep ShellOpenExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness, ExtrusionOpening opening);
 
+// Shell WITH face removal of a SOLID OF REVOLUTION (a cylinder, a cone / frustum, or any stack of them) whose
+// meridian section is the closed polyline `profile`, revolved about the axis through `axis_point` along
+// `axis_direction`; the section must lie in a plane containing the axis and on one side of it. This is the curved
+// -body counterpart of ShellPolylineExtrusion() (prisms): a can, a funnel, a bell, a cone cup.
+//
+// `edge_thickness[i]` is the wall thickness of the face swept by profile edge `i` (control point i to i+1; a
+// closing duplicate point is ignored). Thickness is measured NORMAL to the face, so a conical wall keeps the same
+// perpendicular thickness along its slant; it may differ face to face (variable thickness, e.g. a thicker floor).
+// 0 REMOVES the face; a profile edge lying on the axis is not a face and must be 0. Exactly ONE cyclic run of
+// zero entries (axis edges included) is allowed, and at least one entry must be positive.
+//
+// Construction (exact; no mesh, no boolean): the cavity is the meridian polygon with every kept edge moved inward
+// by its own thickness (corner = intersection of the two moved edge lines, a sharp miter; a removed face's own line
+// is never moved), and the shell's meridian section is the outer chain over the kept edges, the rim along each
+// removed face's own line, and the cavity chain back. Brep::Revolve() spins that one section into the solid.
+//
+// Verified before anything is returned (a failure is a refusal, never a degraded body): the section is a simple
+// counter-clockwise polygon; every sampled cavity point lies inside the profile and no nearer to a kept face than
+// the smallest thickness; no cavity edge collapses or reverses; the rims stay inside the removed faces; the
+// revolved Brep is ON_Brep::IsValid() and IsSolid(); and its exact Brep::Volume() equals Green's integral
+// pi * (closed integral of r^2 dz) of the section.
+//
+// Throws std::invalid_argument for: an open, curved (non-degree-1), non-planar or self-crossing profile; an axis
+// outside the profile's plane or a profile straddling it; a wrong-sized, negative or non-finite `edge_thickness`;
+// no removed face (a fully closed hollow is two lumps - use ShellClosedSphere/ShellClosedExtrusion), more than
+// one run of removed faces (the material would split into several lumps), no positive thickness; collinear
+// neighbours of different thickness; and any infeasible thickness (cavity crossing the axis, leaving the profile,
+// pinched thinner than asked, rim running outside its removed face). Arcs (sphere caps, tori) are not built.
+Brep ShellRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
+                          const std::vector<double>& edge_thickness);
+
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
 // shrinks it), re-extending or re-trimming every OTHER face so the
