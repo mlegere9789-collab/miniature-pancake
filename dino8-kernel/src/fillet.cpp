@@ -917,8 +917,67 @@ void AttachArcRunsForNotchRuns(Brep::PlanarFace& f) {
     while (sweep > ON_PI) sweep -= 2.0 * ON_PI;
     while (sweep < -ON_PI) sweep += 2.0 * ON_PI;
     arc.angle_end = arc.angle_begin + sweep;
+    // Only a genuinely circular run is recorded: the corner notches of a TAPERED fillet are ellipses, and a circle fitted through three of
+    // their points would make the conforming mesher cut the wrong curve. Every point of the run must lie on the fitted circle.
+    double worst = 0.0;
+    for (int k = 0; k < r.second; ++k) {
+      worst = std::max(worst, std::fabs((f.loop[static_cast<size_t>(r.first + k)] - arc.center).Length() - arc.radius));
+    }
+    if (worst > 1e-6 * arc.radius) continue;
     f.arc_runs.push_back(arc);
   }
+}
+
+// --- shared by the variable-radius (tapered) fillets: chaining onto a solid that already carries blend faces ---------------------------
+// The curved faces of the input, passed through unchanged; `has_curved` is false for a purely planar solid, which then takes the original
+// PlanarFaces() path and the original FromMixedFaces() call bit for bit.
+struct BlendCarry {
+  Brep::MixedFacesResult carried;
+  bool has_curved = false;
+};
+
+std::vector<Brep::PlanarFace> ReadFacesForEdgeFillet(const Brep& solid, BlendCarry& carry) {
+  try {
+    return solid.PlanarFaces();
+  } catch (const std::invalid_argument&) {
+    carry.carried = solid.MixedFaces();  // throws for a free-form face: refused as before
+    if (carry.carried.cylindrical.empty() && carry.carried.conical.empty() && carry.carried.spherical.empty()) throw;
+    carry.has_curved = true;
+    return carry.carried.planar;
+  }
+}
+
+// Each end of the edge needs its THIRD planar face (a convex or concave corner has three faces); with only the two adjacent planar faces at an
+// end, the third face there is a curved (blended) one, whose corner these routines cannot rebuild.
+void RequireTrihedralEnds(const std::vector<Brep::PlanarFace>& faces, const Point3d& edge_p0, const Point3d& edge_p1, double tol, const char* who) {
+  for (const Point3d* end : {&edge_p0, &edge_p1}) {
+    int planar_at_end = 0;
+    for (const Brep::PlanarFace& pf : faces) {
+      for (const Point3d& v : pf.loop) {
+        if (PointsEqual(v, *end, tol)) { ++planar_at_end; break; }
+      }
+    }
+    if (planar_at_end < 3) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                  ": an end of the edge meets a curved (blended) face of `solid` - on an already-blended solid only an edge whose two ends "
+                                  "both meet planar faces can be filleted");
+    }
+  }
+}
+
+Brep FinishWithCarry(std::vector<Brep::PlanarFace>& planar, std::vector<Brep::CylindricalFace> new_cylinders, std::vector<Brep::ConicalFace> new_cones,
+                     BlendCarry& carry, const char* who) {
+  if (!carry.has_curved) return Brep::FromMixedFaces(planar, new_cylinders, new_cones);
+  std::vector<Brep::CylindricalFace> cylinders = std::move(carry.carried.cylindrical);
+  for (Brep::CylindricalFace& c : new_cylinders) cylinders.push_back(std::move(c));
+  std::vector<Brep::ConicalFace> cones = std::move(carry.carried.conical);
+  for (Brep::ConicalFace& c : new_cones) cones.push_back(std::move(c));
+  Brep out = Brep::FromMixedFaces(planar, cylinders, cones, carry.carried.spherical);
+  if (!out.raw().IsValid() || !out.raw().IsSolid()) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                ": the fillet of an edge on an already-blended solid did not assemble into a valid closed solid - refused");
+  }
+  return out;
 }
 
 // A planar face that borders an EARLIER blend carries one marked arc run (PlanarFace::notch_begin / notch_count, indices into its loop).
@@ -1748,8 +1807,10 @@ Brep BuildTwoStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d ed
         "doc comment)");
   }
 
-  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  BlendCarry carry;
+  const std::vector<Brep::PlanarFace> faces = ReadFacesForEdgeFillet(solid, carry);
   const double tol = RelativeTol(faces);
+  if (carry.has_curved) RequireTrihedralEnds(faces, edge_p0, edge_p1, tol, "FilletConvexEdgeTapered");
 
   // --- locate the two faces sharing (edge_p0, edge_p1) - verbatim from
   // FilletConvexEdge's own step (1) (see its own doc comment).
@@ -1975,11 +2036,13 @@ Brep BuildTwoStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d ed
                               cone_sweep_angle, tol, fillet_face.cap1_notch_points,
                               fillet_face.cap1_notch_tolerance);
 
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_i)], retrimmed_i, tol);
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_j)], retrimmed_j, tol);
   std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
-  return Brep::FromMixedFaces(mixed_planar, {}, {fillet_face});
+  return FinishWithCarry(mixed_planar, {}, {fillet_face}, carry, "FilletConvexEdgeTapered");
 }
 
 // The CONCAVE mirror of BuildTwoStationTaperedFillet just above - see
@@ -2000,8 +2063,10 @@ Brep BuildTwoStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, Poi
         "doc comment)");
   }
 
-  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  BlendCarry carry;
+  const std::vector<Brep::PlanarFace> faces = ReadFacesForEdgeFillet(solid, carry);
   const double tol = RelativeTol(faces);
+  if (carry.has_curved) RequireTrihedralEnds(faces, edge_p0, edge_p1, tol, "FilletConcaveEdgeTapered");
 
   // --- locate the two faces sharing (edge_p0, edge_p1) - verbatim from
   // FilletConcaveEdge's own step (1), keeping k_i (the loop index of
@@ -2220,11 +2285,13 @@ Brep BuildTwoStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, Poi
                               cone_sweep_angle, tol, fillet_face.cap1_notch_points,
                               fillet_face.cap1_notch_tolerance);
 
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_i)], retrimmed_i, tol);
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_j)], retrimmed_j, tol);
   std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
-  return Brep::FromMixedFaces(mixed_planar, {}, {fillet_face});
+  return FinishWithCarry(mixed_planar, {}, {fillet_face}, carry, "FilletConcaveEdgeTapered");
 }
 
 // Replaces the ONE loop edge from `from` to `to` (which must be
@@ -2443,8 +2510,10 @@ void RefuseFoldedConeSegments(const std::vector<Brep::ConicalFace>& cones,
 // cone parameters there.
 Brep BuildMultiStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
                                      const std::vector<FilletRadiusStation>& stations) {
-  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  BlendCarry carry;
+  const std::vector<Brep::PlanarFace> faces = ReadFacesForEdgeFillet(solid, carry);
   const double tol = RelativeTol(faces);
+  if (carry.has_curved) RequireTrihedralEnds(faces, edge_p0, edge_p1, tol, "FilletConvexEdgeTapered");
 
   int idx_i = -1, idx_j = -1;
   for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
@@ -2646,12 +2715,14 @@ Brep BuildMultiStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d 
                               last.tan_half_angle, last.cone_sweep_angle, tol, conical_faces.back().cap1_notch_points,
                               conical_faces.back().cap1_notch_tolerance);
 
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_i)], retrimmed_i, tol);
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_j)], retrimmed_j, tol);
   std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
   RefuseFoldedConeSegments(conical_faces, stations, "FilletConvexEdgeTapered");
-  return Brep::FromMixedFaces(mixed_planar, {}, conical_faces);
+  return FinishWithCarry(mixed_planar, {}, conical_faces, carry, "FilletConvexEdgeTapered");
 }
 
 // CONCAVE mirror of BuildMultiStationTaperedFillet above, exactly the
@@ -2686,8 +2757,10 @@ Brep BuildMultiStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d 
 // already relies on for EllipseNotchCornerAtVertex.
 Brep BuildMultiStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
                                             const std::vector<FilletRadiusStation>& stations) {
-  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  BlendCarry carry;
+  const std::vector<Brep::PlanarFace> faces = ReadFacesForEdgeFillet(solid, carry);
   const double tol = RelativeTol(faces);
+  if (carry.has_curved) RequireTrihedralEnds(faces, edge_p0, edge_p1, tol, "FilletConcaveEdgeTapered");
 
   int idx_i = -1, idx_j = -1;
   size_t k_i_index = 0;
@@ -2922,12 +2995,14 @@ Brep BuildMultiStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, P
                               last.tan_half_angle, last.cone_sweep_angle, tol, conical_faces.back().cap1_notch_points,
                               conical_faces.back().cap1_notch_tolerance);
 
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_i)], retrimmed_i, tol);
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_j)], retrimmed_j, tol);
   std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
   RefuseFoldedConeSegments(conical_faces, stations, "FilletConcaveEdgeTapered");
-  return Brep::FromMixedFaces(mixed_planar, {}, conical_faces);
+  return FinishWithCarry(mixed_planar, {}, conical_faces, carry, "FilletConcaveEdgeTapered");
 }
 
 }  // namespace
