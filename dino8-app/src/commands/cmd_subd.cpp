@@ -987,7 +987,15 @@ void SculptAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
   if (best_t < 0) { ctx.Warn("SubDSculpt: no SubD vertex near " + P3(in.picks[0])); return; }
   Target& tg = ts[static_cast<size_t>(best_t)];
   const Point3d origin = tg.net.v[static_cast<size_t>(best_v)];
-  const Vector3d delta = in.picks[1] - origin;
+  Vector3d delta = in.picks[1] - origin;
+  // Constrain=Normal: only the part of the drag along the picked vertex's own normal (area-weighted face normals of the cage) counts, so the
+  // surface is pushed out or pulled in (inflate / deflate) whatever direction the target point lies in.
+  const bool along_normal = in.Opt("Constrain", "Free") == "Normal";
+  if (along_normal) {
+    const std::vector<Vector3d> normals = tg.net.VertexNormals();
+    const Vector3d nrm = normals[static_cast<size_t>(best_v)];
+    delta = nrm * ON_DotProduct(delta, nrm);
+  }
   std::vector<Point3d> before = tg.net.v;
   int moved = 0;
   for (size_t i = 0; i < tg.net.v.size(); ++i) {
@@ -1001,7 +1009,7 @@ void SculptAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
   const SceneObject* o = ctx.Doc().Find(tg.id);
   const Point3d now = tg.net.v[static_cast<size_t>(best_v)];
   std::string msg = "SubDSculpt: object " + std::to_string(tg.id) + ": " + std::to_string(moved) + " control point(s) within radius " + Num(radius) + " moved by " + falloff +
-                    " falloff, picked vertex " + P3(origin) + " -> " + P3(now);
+                    " falloff" + (along_normal ? " along the vertex normal" : "") + ", picked vertex " + P3(origin) + " -> " + P3(now);
   if (o && o->subd) {
     const kernel::SubDVertexInfo vi = o->subd->VertexInfoAt(now, 1e-6 * std::max(1.0, std::fabs(now.x) + std::fabs(now.y) + std::fabs(now.z)));
     if (vi.found && vi.limit_valid) msg += ", limit point " + P3(vi.limit_point);
@@ -1799,7 +1807,7 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "SubDCrease", crease(true));
   Reg(e, "RemoveCrease", crease(false));
   Reg(e, "SubDSculpt", SubDTool(kSelectSubD, "Pick the vertex to drag, then the point to drag it to", 2, {},
-                                {Numeric("Radius", 5), Choice("Falloff", {"Smooth", "Linear", "Constant"})}, SculptAction),
+                                {Numeric("Radius", 5), Choice("Falloff", {"Smooth", "Linear", "Constant"}), Choice("Constrain", {"Free", "Normal"})}, SculptAction),
       CommandStatus::Implemented, "Drags one control vertex to a new point; every control point within Radius follows by the chosen falloff (Smooth, Linear or Constant).");
   Reg(e, "SplitSubD", SubDTool(kSelectSubD, "Pick two points; the cutting plane is vertical through the line between them", 2, {},
                                {Toggle("Cap", true), Toggle("CreaseCut", true), Toggle("KeepInput", false), Numeric("Refine", 0)}, SplitSubDAction),

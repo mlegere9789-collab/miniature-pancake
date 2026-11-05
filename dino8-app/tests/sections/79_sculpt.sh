@@ -64,3 +64,9 @@ scunum "$(scuvertexz "$(scuinfo single 2)")" 0 0.001 "SCU_single: the edge neigh
 # ---- a miss does nothing
 scuhas miss "no SubD vertex near" "SCU_miss: a first pick far from every vertex is refused"
 scupoint "$(scuinfo miss 1)" "2.5 2.5 2.5" 0.001 "SCU_miss: the cube is untouched (origin limit point still (2.5, 2.5, 2.5))"
+# ---- Constrain=Normal: the drag (-3,0,0) projected on the origin corner's normal (-1,-1,-1)/sqrt 3 is (-1,-1,-1); only that vertex moves (Radius 5).
+# Dragged vertex v = (-1,-1,-1), neighbours unchanged: limit = (9 v + 4 sum(edge neighbours) + sum(face-diagonal vertices)) / 24 per coordinate
+# = (9 (-1) + 4 * 10 + 20) / 24 = 51/24 = 2.125 for x and y, and (9 (-1) + 4 * 10 + 20) / 24 = 2.125 for z as well (each axis sums to 10 over the edge neighbours and 20 over the diagonals).
+scuhas normal "along the vertex normal" "SCU_normal: the drag is constrained to the vertex normal"
+scupoint "$(scuinfo normal 1)" "2.125 2.125 2.125" 0.001 "SCU_normal: the dragged corner's limit point is (2.125, 2.125, 2.125)"
+scunum "$(scuvertexz "$(scuinfo normal 1)")" -1 0.001 "SCU_normal: the control point moved to (-1,-1,-1), not to the free drag target (-3,0,0)"

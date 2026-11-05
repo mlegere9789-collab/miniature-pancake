@@ -85,3 +85,19 @@ SelLast
 SubDVertexInfo
 0,0,0
 Enter
+
+# Constrain=Normal: dragging the origin corner towards (-3,0,0) counts only the part along its vertex normal (-1,-1,-1)/sqrt 3:
+# (-3,0,0) . n = 3/sqrt 3 = sqrt 3, so the vertex moves by n * sqrt 3 = (-1,-1,-1) (a free drag would move it to (-3,0,0)). Radius 5: only that vertex.
+New
+SCUBEGIN_normal
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SubDSculpt
+Radius=5
+Constrain=Normal
+0,0,0
+-3,0,0
+SelLast
+SubDVertexInfo
+-1,-1,-1
+Enter

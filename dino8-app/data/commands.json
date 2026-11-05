@@ -9330,7 +9330,8 @@
   "menu": "",
   "options": [
    "Radius",
-   "Falloff"
+   "Falloff",
+   "Constrain"
   ],
   "help": ""
  },
