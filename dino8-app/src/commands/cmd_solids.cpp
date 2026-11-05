@@ -253,7 +253,7 @@ struct AlignedSections {
   std::string refusal;
 };
 
-AlignedSections AlignLoftSections(const std::vector<const kernel::NurbsCurve*>& in) {
+AlignedSections AlignLoftSections(const std::vector<const kernel::NurbsCurve*>& in, bool align = true) {
   AlignedSections out;
   const bool first_closed = in.front()->IsClosed();
   for (size_t k = 0; k < in.size(); ++k) {
@@ -265,7 +265,7 @@ AlignedSections AlignLoftSections(const std::vector<const kernel::NurbsCurve*>& 
   }
   for (size_t k = 0; k < in.size(); ++k) {
     kernel::NurbsCurve c = *in[k];
-    if (k > 0) {
+    if (k > 0 && align) {
       const kernel::NurbsCurve& prev = out.curves.back();
       const double size = std::max(sectionfit::CurveSize(c), 1e-12);
       if (!first_closed) {
@@ -368,7 +368,10 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
   if (curves.size() < 2) return std::nullopt;
   if (rec.command == "SubDLoft") return LoftControlGridFit(curves, rec);
 
-  AlignedSections al = AlignLoftSections(curves);
+  // SeamAlign=No (rec.num["seamalign"] = 0): the sections are used exactly as given, so a closed section whose start point or
+  // direction differs from its neighbour's twists the wall (the kernel's align_seams = false behaviour); default Yes.
+  const bool seam_align = !rec.num.count("seamalign") || rec.num.at("seamalign") != 0.0;
+  AlignedSections al = AlignLoftSections(curves, seam_align);
   if (!al.refusal.empty()) {
     ctx.Warn("Loft: " + al.refusal);
     return std::nullopt;
@@ -410,6 +413,7 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
     }
     std::string msg = "Loft: exact interpolating kernel loft through " + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + " in the loft direction); every section reproduced, max deviation " +
                       sectionfit::Sci(dev);
+    if (!seam_align) msg += "; SeamAlign=No (sections used exactly as given)";
     if (spacing_code == 1 || spacing_code == 2) msg += std::string("; Spacing=") + (spacing_code == 1 ? "Uniform" : "Centripetal") + " station parameters";
     if (al.reversed || al.reseamed) msg += "; aligned first: " + std::to_string(al.reversed) + " curve(s) reversed, " + std::to_string(al.reseamed) + " seam(s) moved";
     if (closed_sections) msg += capped ? "; end caps added (Cap=Yes), a closed polysurface" : (want_cap ? "" : "; uncapped (Cap=No)");
@@ -1007,6 +1011,49 @@ class RevolveCommand : public Command {
   double angle_deg_ = 360.0, start_angle_deg_ = 0.0;
 };
 
+// Pulls "Style=Straight"/"Style=Normal", "Cap=Yes"/"Cap=No", "Spacing=Chord|Uniform|Centripetal", "SeamAlign=Yes|No",
+// "StartTangent=<curve name>" / "EndTangent=<curve name>" and "StartWeight=<x>" / "EndWeight=<x>" off the command's remaining typed
+// tokens (Loose/Tight aren't offered - see Loft() below). A later token of the same option wins. The tangent curves are
+// document objects found by NAME (SetObjectName); their control points are read as per-column dS/dv vectors (see the
+// kernel's Brep::LoftWithSectionTangents), and the weights multiply them.
+struct LoftTokens {
+  bool straight = false;
+  bool cap = true;
+  int spacing = 0;
+  bool seam_align = true;
+  std::string start_tangent, end_tangent;
+  double start_weight = 1.0, end_weight = 1.0;
+  bool bad_weight = false;
+  bool WantsTangents() const { return !start_tangent.empty() || !end_tangent.empty(); }
+};
+LoftTokens ParseLoftTokens(const std::vector<std::string>& tokens) {
+  LoftTokens out;
+  for (const std::string& t : tokens) {
+    std::string s = t;
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (s == "style=straight") out.straight = true;
+    else if (s == "style=normal") out.straight = false;
+    else if (s == "cap=yes" || s == "cap=y") out.cap = true;
+    else if (s == "cap=no" || s == "cap=n") out.cap = false;
+    else if (s == "spacing=uniform") out.spacing = 1;
+    else if (s == "spacing=centripetal") out.spacing = 2;
+    else if (s == "spacing=chord" || s == "spacing=normal") out.spacing = 0;
+    else if (s == "seamalign=yes" || s == "seamalign=y") out.seam_align = true;
+    else if (s == "seamalign=no" || s == "seamalign=n") out.seam_align = false;
+    else if (s.rfind("starttangent=", 0) == 0) out.start_tangent = t.substr(13);
+    else if (s.rfind("endtangent=", 0) == 0) out.end_tangent = t.substr(11);
+    else if (s.rfind("startweight=", 0) == 0 || s.rfind("endweight=", 0) == 0) {
+      const bool start = s[0] == 's';
+      char* endp = nullptr;
+      const std::string v = t.substr(t.find('=') + 1);
+      const double w = std::strtod(v.c_str(), &endp);
+      if (v.empty() || endp == v.c_str() || *endp != '\0' || !std::isfinite(w)) out.bad_weight = true;
+      else (start ? out.start_weight : out.end_weight) = w;
+    }
+  }
+  return out;
+}
+
 // Loft: surface through the selected curves (in selection order), built by
 // RebuildLoft (above) - the kernel's exact interpolating Brep::Loft after the
 // curves are oriented and seam-aligned. `straight` (Style=Straight) is degree
@@ -1019,7 +1066,7 @@ class RevolveCommand : public Command {
 // like Pipe's Cap and Extrude's Solid) closes the ends of a loft through
 // closed planar curves into a polysurface solid; Cap=No leaves the periodic
 // tube surface.
-void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false, bool cap = true, int spacing = 0) {
+void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false, bool cap = true, int spacing = 0, bool seam_align = true) {
   std::vector<ObjectId> curve_ids;
   std::vector<const kernel::NurbsCurve*> curves;
   for (ObjectId id : ids) {
@@ -1034,6 +1081,7 @@ void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool
   if (!subd) {
     rec.num = {{"cap", cap ? 1.0 : 0.0}};
     if (spacing != 0) rec.num["spacing"] = static_cast<double>(spacing);
+    if (!seam_align) rec.num["seamalign"] = 0.0;
   }
   std::optional<SceneObject> built = RebuildLoft(ctx, curves, rec);
   if (!built) { ctx.Warn("Loft failed"); return; }
@@ -1041,24 +1089,83 @@ void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool
   RecordHistoryIfEnabled(ctx, new_id, rec.command, curve_ids, rec.num, straight);
 }
 
-// Pulls "Style=Straight"/"Style=Normal" and "Cap=Yes"/"Cap=No" off the
-// command's remaining typed tokens (Loose/Tight aren't offered - see Loft()
-// above). A later token of the same option wins.
-struct LoftTokens { bool straight = false; bool cap = true; int spacing = 0; };
-LoftTokens ParseLoftTokens(const std::vector<std::string>& tokens) {
-  LoftTokens out;
-  for (const std::string& t : tokens) {
-    std::string s = t;
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "style=straight") out.straight = true;
-    else if (s == "style=normal") out.straight = false;
-    else if (s == "cap=yes" || s == "cap=y") out.cap = true;
-    else if (s == "cap=no" || s == "cap=n") out.cap = false;
-    else if (s == "spacing=uniform") out.spacing = 1;
-    else if (s == "spacing=centripetal") out.spacing = 2;
-    else if (s == "spacing=chord" || s == "spacing=normal") out.spacing = 0;
+// Loft with a start and/or end TANGENT curve (StartTangent=<name> / EndTangent=<name>, StartWeight= / EndWeight=): the kernel's
+// Brep::LoftWithSectionTangents at the first / last section. The tangent curves are document curves found by name; their
+// control points are the wall's dS/dv vectors there (a copy of a circle section scaled by a and lifted by b is the field
+// (a x, a y, b)), multiplied by the weight. The sections are used exactly as given (SeamAlign does not apply: the tangent
+// curves are fields over the sections' own parametrization). Two sections with both tangents give a cubic Hermite wall. A
+// refusal prints the kernel's reason and builds nothing. Not recorded in History (a rebuild would need the tangent curves as
+// recorded inputs, which the rebuild registry does not hold; said once).
+void LoftWithTangents(CommandContext& ctx, const std::vector<ObjectId>& ids, const LoftTokens& t) {
+  std::vector<const kernel::NurbsCurve*> curves;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (o && o->kind == ObjectKind::Curve && o->curve) curves.push_back(o->curve.get());
   }
-  return out;
+  if (curves.size() < 2) { ctx.Warn("Loft: select at least two curves; nothing was built"); return; }
+  if (t.bad_weight) { ctx.Warn("Loft: StartWeight= / EndWeight= need a finite number; nothing was built"); return; }
+  if (t.straight) { ctx.Warn("Loft: Style=Straight (degree 1) cannot be combined with tangent curves; nothing was built"); return; }
+  auto find_curve = [&](const std::string& name) -> const kernel::NurbsCurve* {
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      if (o.kind == ObjectKind::Curve && o.curve && o.name == name) return o.curve.get();
+    }
+    return nullptr;
+  };
+  std::vector<kernel::Brep::LoftSectionTangent> tans;
+  const int last = static_cast<int>(curves.size()) - 1;
+  for (int end = 0; end < 2; ++end) {
+    const std::string& name = end == 0 ? t.start_tangent : t.end_tangent;
+    if (name.empty()) continue;
+    const kernel::NurbsCurve* c = find_curve(name);
+    if (!c) { ctx.Warn("Loft: no curve object is named '" + name + "' (name it with SetObjectName); nothing was built"); return; }
+    kernel::Brep::LoftSectionTangent lt;
+    lt.section = end == 0 ? 0 : last;
+    lt.tangent = *c;
+    lt.weight = end == 0 ? t.start_weight : t.end_weight;
+    tans.push_back(lt);
+  }
+  AlignedSections as = AlignLoftSections(curves, /*align=*/false);
+  if (!as.refusal.empty()) { ctx.Warn("Loft: " + as.refusal + "; nothing was built"); return; }
+  const bool closed_sections = as.curves.front().IsClosed();
+  const int degree = std::min(3, static_cast<int>(curves.size()) + static_cast<int>(tans.size()) - 1);
+  kernel::Brep b;
+  bool capped = false;
+  std::string cap_note;
+  try {
+    if (closed_sections && t.cap) {
+      try {
+        b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, true, t.spacing == 1 ? kernel::Brep::LoftSpacing::Uniform : t.spacing == 2 ? kernel::Brep::LoftSpacing::Centripetal : kernel::Brep::LoftSpacing::Chord);
+        capped = true;
+      } catch (const std::invalid_argument& ex) {
+        cap_note = std::string(" (caps not made - ") + ex.what() + ")";
+        b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, false, t.spacing == 1 ? kernel::Brep::LoftSpacing::Uniform : t.spacing == 2 ? kernel::Brep::LoftSpacing::Centripetal : kernel::Brep::LoftSpacing::Chord);
+      }
+    } else {
+      b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, false, t.spacing == 1 ? kernel::Brep::LoftSpacing::Uniform : t.spacing == 2 ? kernel::Brep::LoftSpacing::Centripetal : kernel::Brep::LoftSpacing::Chord);
+    }
+  } catch (const std::exception& ex) {
+    ctx.Warn(std::string("Loft: tangent loft refused by the kernel: ") + ex.what() + "; nothing was built");
+    return;
+  }
+  std::optional<kernel::NurbsSurface> wall = LoftWall(b);
+  if (!wall) { ctx.Warn("Loft: the kernel tangent loft has no surface face; nothing was built"); return; }
+  bool agree = true;
+  const double dev = MeasureLoftSections(*wall, as.curves, agree);
+  char buf[160];
+  std::snprintf(buf, sizeof(buf), "%d tangent(s) at the first/last section; every section reproduced, max deviation %.3g", static_cast<int>(tans.size()), dev);
+  std::string msg = std::string("Loft: exact kernel tangent loft through ") + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + "), " + buf;
+  ctx.Doc().BeginChange("Loft");
+  if (capped) {
+    std::snprintf(buf, sizeof(buf), "; end caps added, closed solid, exact volume %.9g", b.Volume());
+    ctx.Print(msg + buf);
+    ctx.Doc().Add(SceneObject::MakeBrep(std::move(b)));
+  } else {
+    ctx.Print(msg + cap_note);
+    ctx.Doc().Add(SceneObject::MakeSurface(*wall));
+  }
+  if (ctx.App().State().history_recording) {
+    ctx.Print("Loft: no history recorded - a tangent loft rebuild would need the tangent curves as recorded inputs, which the history rebuild registry does not hold; run it without StartTangent=/EndTangent= to record it");
+  }
 }
 
 // Loft with G0 / G1 / G2 continuity to an adjacent surface edge (Continuity= option, continuity_request.h): the kernel's
@@ -2974,11 +3081,11 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "Revolve", Make<RevolveCommand>());
   Reg(e, "Loft", []() -> std::unique_ptr<Command> {
     return std::make_unique<ContinuityPickCommand>("Loft", "Select curves to loft in order", 2,
-        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<std::string>& extra) { const LoftTokens t = ParseLoftTokens(extra); Loft(ctx, ids, false, t.straight, t.cap, t.spacing); },
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<std::string>& extra) { const LoftTokens t = ParseLoftTokens(extra); if (t.WantsTangents()) LoftWithTangents(ctx, ids, t); else Loft(ctx, ids, false, t.straight, t.cap, t.spacing, t.seam_align); },
         [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge, const std::vector<std::string>& extra) {
           LoftContinuity(ctx, ids, req, edge, ParseLoftTokens(extra).straight);
         });
-  }, CommandStatus::Implemented, "Calls the kernel's exact interpolating Brep::Loft: every selected curve lies exactly on the result (measured and printed), Normal is cubic in the loft direction and Style=Straight is linear (sharp at every section). Curves are first made consistent - open curves reversed to run the same way, closed curves reversed to circulate the same way and re-seamed to the point nearest the previous curve's start; a mix of open and closed curves is refused with the reason. Closed planar curves are capped into a polysurface solid (Cap=Yes, the default; Cap=No leaves the periodic surface). Loose/Tight aren't distinguishable here and aren't offered. Spacing=Chord|Uniform|Centripetal chooses the loft-direction station parameters (kernel Brep::LoftSpacing: averaged control-point chord lengths by default, equal parameter steps for Uniform, square-root chord lengths for Centripetal); every spacing interpolates every section exactly, only the shape between sections changes. If the kernel refuses a loft, the older control-point fit is used and the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's NurbsSurface::LoftMatched: the first or last section (whichever lies nearer that surface) is made identical to the edge and the next rows are rewritten by MatchEdge; the finished uncapped surface is MEASURED along the edge (position gap, tangent angle, cross-edge and Gaussian curvature difference) and every section's deviation from it is printed, and the request is refused with the kernel's reason (G0 not met, a closed section, a loft folding back over the adjacent surface, a degree too low, a measured angle / curvature above tolerance) building nothing. A continuity result is not recorded in History (the reason is printed).");
+  }, CommandStatus::Implemented, "Calls the kernel's exact interpolating Brep::Loft: every selected curve lies exactly on the result (measured and printed), Normal is cubic in the loft direction and Style=Straight is linear (sharp at every section). Curves are first made consistent - open curves reversed to run the same way, closed curves reversed to circulate the same way and re-seamed to the point nearest the previous curve's start; a mix of open and closed curves is refused with the reason. Closed planar curves are capped into a polysurface solid (Cap=Yes, the default; Cap=No leaves the periodic surface). Loose/Tight aren't distinguishable here and aren't offered. SeamAlign=No uses the sections exactly as given (a closed curve whose start point or direction differs from its neighbour's then twists the wall); the default Yes reverses/re-seams them first. StartTangent=<name> / EndTangent=<name> (curve objects named with SetObjectName; their control points are the wall's dS/dv vectors at the first / last curve, e.g. a copy of a circle section scaled by a and lifted by b is the field (a x, a y, b)) with StartWeight= / EndWeight= (default 1) call the kernel's Hermite-type Brep::LoftWithSectionTangents, exact for rational sections (the tangent curve needs the section's weights, or to be a constant field); two curves with both tangents give a cubic Hermite wall; the sections are used as given, the result is not recorded in History. Spacing=Chord|Uniform|Centripetal chooses the loft-direction station parameters (kernel Brep::LoftSpacing: averaged control-point chord lengths by default, equal parameter steps for Uniform, square-root chord lengths for Centripetal); every spacing interpolates every section exactly, only the shape between sections changes. If the kernel refuses a loft, the older control-point fit is used and the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's NurbsSurface::LoftMatched: the first or last section (whichever lies nearer that surface) is made identical to the edge and the next rows are rewritten by MatchEdge; the finished uncapped surface is MEASURED along the edge (position gap, tangent angle, cross-edge and Gaussian curvature difference) and every section's deviation from it is printed, and the request is refused with the kernel's reason (G0 not met, a closed section, a loft folding back over the adjacent surface, a degree too low, a measured angle / curvature above tolerance) building nothing. A continuity result is not recorded in History (the reason is printed).");
   Reg(e, "SubDLoft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, true); }, 2));
   Reg(e, "PlanarSrf", OnSelection("Select planar closed curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("PlanarSrf");

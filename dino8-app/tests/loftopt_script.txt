@@ -1,0 +1,120 @@
+# Loft options SeamAlign= and StartTangent= / EndTangent= / StartWeight= / EndWeight= (tests/sections/63_loftopt.sh, section LOFTOPT; checks LOP_).
+# Cases, in order (the section cuts the output at each "Command: Loft"):
+#  1 two r=2 circles at z=0 and z=5, the second turned 90 degrees about z (its seam moved): default SeamAlign=Yes realigns it
+#    ("1 seam(s) moved"), the wall is the exact cylinder, area 2 pi 2 5 = 62.832
+#  2 the same with SeamAlign=No: the sections are used as given, the wall is the twisted ruled surface between a circle and the
+#    same circle 90 degrees on: area 52.839 (independent numeric integral of |S_t x S_v|), clearly not the cylinder
+#  3 two r=1 circles at z=0 and z=2 with StartTangent / EndTangent: tangent curves are circles with the SECTION's weights whose
+#    control points are the field (a x, a y, b): start = circle r 0.6 at z=1 (a=0.6, b=1), end = the same circle turned 180 degrees
+#    (a=-0.6, b=1); StartWeight=1.5 EndWeight=0.8. Cubic Hermite barrel, capped: exact volume pi * integral R(v)^2 z'(v) dv = 7.981207
+#    (Simpson on the closed-form Hermite polynomials; the same barrel as the kernel test LoftSectionTangentsTwoCirclesAreAnExactHermiteBarrel)
+#  4 EndTangent naming no curve: refused, nothing built
+#  5 a tangent curve that cannot be matched (an open line against a closed rational circle): refused with the kernel's reason
+#  6 StartWeight=abc: refused
+#  7 control: the same two r=1 circles without tangents: the plain cylinder, volume pi 1 2 = 6.2832
+SetActiveViewport Top
+
+# --- 1
+New
+Circle 0,0,0 2
+Circle 0,0,5 2
+SelLast
+Rotate3D 0,0,0 0,0,1 90
+SelCrv
+Loft Cap=No
+SelLast
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- 2
+New
+Circle 0,0,0 2
+Circle 0,0,5 2
+SelLast
+Rotate3D 0,0,0 0,0,1 90
+SelCrv
+Loft SeamAlign=No Cap=No
+SelLast
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- 3
+New
+Circle 0,0,0 1
+Circle 0,0,2 1
+Circle 0,0,1 0.6
+SelLast
+SetObjectName LOPt0
+Circle 0,0,1 0.6
+SelLast
+Rotate3D 0,0,0 0,0,1 180
+SelLast
+SetObjectName LOPt1
+SelNone
+SelID 1
+SelID 2
+Loft StartTangent=LOPt0 EndTangent=LOPt1 StartWeight=1.5 EndWeight=0.8
+SelLast
+Volume
+Check
+SelAll
+Delete
+@expect_objects 0
+
+# --- 4
+New
+Circle 0,0,0 1
+Circle 0,0,2 1
+SelNone
+SelID 1
+SelID 2
+Loft EndTangent=NoSuchCurve
+@expect_objects 2
+SelAll
+Delete
+
+# --- 5
+New
+Circle 0,0,0 1
+Circle 0,0,2 1
+Line 0,0,1 1,0,1
+SelLast
+SetObjectName LOPbad
+SelNone
+SelID 1
+SelID 2
+Loft StartTangent=LOPbad
+@expect_objects 3
+SelAll
+Delete
+
+# --- 6
+New
+Circle 0,0,0 1
+Circle 0,0,2 1
+Circle 0,0,1 0.6
+SelLast
+SetObjectName LOPt0
+SelNone
+SelID 1
+SelID 2
+Loft StartTangent=LOPt0 StartWeight=abc
+@expect_objects 3
+SelAll
+Delete
+
+# --- 7
+New
+Circle 0,0,0 1
+Circle 0,0,2 1
+SelCrv
+Loft
+SelLast
+Volume
+SelAll
+Delete
+@expect_objects 0
