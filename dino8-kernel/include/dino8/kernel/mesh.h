@@ -115,6 +115,18 @@ struct MeshSpatialCache {
 };
 }  // namespace detail
 
+// Quality of the QUAD faces of a mesh (Mesh::MeasureQuadQuality()). Angles
+// are 3D interior angles between a quad's own edges, in degrees; a perfect
+// square or rectangle is 90 at every corner and aspect 1 (square). With no
+// quad in the mesh every field but triangle_count is 0.
+struct MeshQuadQuality {
+  int quad_count = 0;
+  int triangle_count = 0;
+  double min_angle_deg = 0.0;       // smallest interior angle over all quads
+  double mean_min_angle_deg = 0.0;  // mean over quads of each quad's own smallest angle
+  double max_aspect = 0.0;          // worst quad's longest edge / shortest edge
+};
+
 // Wraps ON_Mesh. OpenNURBS' polygon-mesh representation, produced by
 // tessellating a Brep — this is as far as OpenNURBS' public API goes
 // toward "meshing"; it has no boolean/CSG operations on top of it (see
@@ -2227,6 +2239,45 @@ class Mesh {
   // an error, unlike the NaN case this rejects outright.
   int TrisToQuads(double max_dihedral_deg = 20.0);
 
+  // TrisToQuads() with a flow field: among merges that tie on dihedral
+  // angle AND on how rectangular the quad is (a regular triangle lattice
+  // offers three equally good rhombus orientations at every edge), prefers
+  // the one whose nearer edge follows `flow_direction` projected into the
+  // quad's own plane, so neighbouring quads line up instead of taking an
+  // arbitrary orientation each. A tie-breaker only: dihedral angle and
+  // rectangularity still rank first, every refusal TrisToQuads() has
+  // still applies, and the result for a direction no candidate prefers is
+  // identical to TrisToQuads(). One constant direction, not a computed
+  // curvature or cross field. Throws std::invalid_argument for a
+  // non-finite or zero `flow_direction`, and for a non-finite angle.
+  int TrisToQuadsAligned(Vector3d flow_direction, double max_dihedral_deg = 20.0);
+
+  // Quality of the quad faces (smallest interior angle, aspect ratio).
+  MeshQuadQuality MeasureQuadQuality() const;
+
+  // Vertex relocation for a quad-dominant mesh: `iterations` passes of
+  // tangential Laplacian smoothing, each moving every interior vertex
+  // `step` (0, 1] of the way toward the average of its edge neighbours,
+  // with the component along the vertex normal removed so the surface is
+  // not shrunk. If `snap_to_original`, each moved vertex is then put back
+  // on the nearest point of the mesh as it was before this call, so the
+  // shape is kept (only the vertex distribution changes). Vertices on a
+  // naked or non-manifold edge, and on a crease sharper than
+  // `feature_angle_deg`, are never moved. Triangles are smoothed the same
+  // way as quads (it is edge-neighbour averaging on the whole mesh).
+  // `square_weight` in [0, 1] blends the neighbour average (0: pure
+  // Laplacian) with, for a vertex that belongs to quads, the corner of the
+  // nearest square to each of those quads (1: pure square-ification) -
+  // the Laplacian evens out spacing, the square term squares up corners
+  // that a Laplacian leaves skewed where quads meet triangles.
+  // Returns the number of vertices that were free to move. Not
+  // guaranteed to keep quads convex or non-flipped on a coarse, strongly
+  // curved mesh; MeasureQuadQuality() before and after is the check.
+  // Throws std::invalid_argument for iterations < 0, step outside (0, 1],
+  // a non-finite feature_angle_deg, or square_weight outside [0, 1].
+  int RelaxQuadVertices(int iterations = 10, double step = 0.5, bool snap_to_original = true,
+                        double feature_angle_deg = 30.0, double square_weight = 1.0);
+
   // Moves every vertex by `distance` along its own ComputeVertexNormals()
   // direction (the standard area-weighted, per-triangle-contribution
   // vertex normal that method already computes) - the mesh-level
@@ -2796,6 +2847,7 @@ class Mesh {
                      int major_segments = 48, int minor_segments = 24);
 
  private:
+  int TrisToQuadsImpl(double max_dihedral_deg, const Vector3d* flow);
   friend class Brep;
   friend class NurbsSurface;
   friend class MeshClosestPointIndex;  // needs raw triangle data (mesh_.m_V/m_F) to build its own index - see that class's own doc comment above

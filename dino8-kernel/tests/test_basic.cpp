@@ -26114,6 +26114,268 @@ void TestMeshTrisToQuadsRefusesCollinearCornerQuad() {
   Check(m.FaceCount() == 2 && !m.raw().m_F[0].IsQuad() && !m.raw().m_F[1].IsQuad(), "both triangles untouched");
 }
 
+// ---- quad-remesh quality: vertex relocation and flow-aligned pairing -----
+// Oracles are MEASURED quad quality (Mesh::MeasureQuadQuality(): smallest
+// interior angle, aspect ratio) and exact geometry, never "looks nicer":
+//  * a noisy planar grid has a known ideal answer - the regular unit grid
+//    (the harmonic one for these fixed boundaries), so every vertex has a
+//    closed-form target;
+//  * a sphere has no regular quad tiling, so there the check is the metric
+//    itself (strictly better smallest and mean-smallest angle) plus shape
+//    fidelity (every moved vertex still on the original surface);
+//  * a regular triangle lattice offers three equally good rhombus
+//    orientations at every edge, so the fraction of quads whose edge follows
+//    the requested direction is exactly countable.
+
+namespace ttq_detail {
+
+inline void AddTri(ON_Mesh& r, int a, int b, int c) {
+  ON_MeshFace f;
+  f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = c;
+  r.m_F.Append(f);
+}
+
+// n x n unit cells in z = 0, each split by the same diagonal; every INTERIOR
+// vertex displaced in-plane by up to `amp` (deterministic LCG).
+inline dino8::kernel::Mesh NoisyGrid(int n, double amp, unsigned seed) {
+  dino8::kernel::Mesh m;
+  ON_Mesh& r = m.raw();
+  unsigned rng = seed;
+  auto next = [&rng]() { rng = rng * 1664525u + 1013904223u; return ((rng >> 8) & 0xFFFFu) / 65535.0 * 2.0 - 1.0; };
+  for (int j = 0; j <= n; ++j) {
+    for (int i = 0; i <= n; ++i) {
+      const bool edge = i == 0 || j == 0 || i == n || j == n;
+      const double dx = edge ? 0.0 : amp * next();
+      const double dy = edge ? 0.0 : amp * next();
+      r.m_V.Append(ON_3fPoint(static_cast<float>(i + dx), static_cast<float>(j + dy), 0.0f));
+    }
+  }
+  for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < n; ++i) {
+      const int v00 = j * (n + 1) + i, v10 = v00 + 1, v01 = v00 + n + 1, v11 = v01 + 1;
+      AddTri(r, v00, v10, v11);
+      AddTri(r, v00, v11, v01);
+    }
+  }
+  return m;
+}
+
+// Unit icosphere subdivided `level` times (20 * 4^level triangles).
+inline dino8::kernel::Mesh IcoSphere(int level) {
+  dino8::kernel::Mesh m;
+  ON_Mesh& r = m.raw();
+  const double t = (1.0 + std::sqrt(5.0)) / 2.0;
+  const double c[12][3] = {{-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0}, {0, -1, t}, {0, 1, t},
+                           {0, -1, -t}, {0, 1, -t}, {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1}};
+  std::vector<ON_3dVector> v;
+  for (const auto& a : c) {
+    ON_3dVector u(a[0], a[1], a[2]);
+    u.Unitize();
+    v.push_back(u);
+  }
+  std::vector<std::array<int, 3>> f = {{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
+                                       {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+                                       {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
+                                       {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1}};
+  for (int l = 0; l < level; ++l) {
+    std::map<std::pair<int, int>, int> mid;
+    auto midpoint = [&](int a, int b) {
+      const auto key = std::minmax(a, b);
+      const auto it = mid.find(key);
+      if (it != mid.end()) return it->second;
+      ON_3dVector u = (v[static_cast<size_t>(a)] + v[static_cast<size_t>(b)]) * 0.5;
+      u.Unitize();
+      v.push_back(u);
+      return mid[key] = static_cast<int>(v.size()) - 1;
+    };
+    std::vector<std::array<int, 3>> nf;
+    for (const auto& tri : f) {
+      const int a = midpoint(tri[0], tri[1]), b = midpoint(tri[1], tri[2]), cc = midpoint(tri[2], tri[0]);
+      nf.push_back({tri[0], a, cc});
+      nf.push_back({tri[1], b, a});
+      nf.push_back({tri[2], cc, b});
+      nf.push_back({a, b, cc});
+    }
+    f = nf;
+  }
+  for (const auto& p : v) r.m_V.Append(ON_3fPoint(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)));
+  for (const auto& tri : f) AddTri(r, tri[0], tri[1], tri[2]);
+  return m;
+}
+
+// nu x nv rhombic cells of equilateral triangles (unit edges) in z = 0.
+inline dino8::kernel::Mesh HexLattice(int nu, int nv) {
+  dino8::kernel::Mesh m;
+  ON_Mesh& r = m.raw();
+  const double h = std::sqrt(3.0) / 2.0;
+  for (int j = 0; j <= nv; ++j) {
+    for (int i = 0; i <= nu; ++i) r.m_V.Append(ON_3fPoint(static_cast<float>(i + 0.5 * j), static_cast<float>(j * h), 0.0f));
+  }
+  for (int j = 0; j < nv; ++j) {
+    for (int i = 0; i < nu; ++i) {
+      const int v00 = j * (nu + 1) + i, v10 = v00 + 1, v01 = v00 + nu + 1, v11 = v01 + 1;
+      AddTri(r, v00, v10, v01);
+      AddTri(r, v10, v11, v01);
+    }
+  }
+  return m;
+}
+
+// Fraction of the quads that have an edge within `tol_deg` of direction `angle_deg` (in the z = 0 plane).
+inline double AlignedQuadFraction(const dino8::kernel::Mesh& m, double angle_deg, double tol_deg, int& quads) {
+  const ON_3dVector t(std::cos(angle_deg * ON_PI / 180.0), std::sin(angle_deg * ON_PI / 180.0), 0.0);
+  const ON_Mesh& r = m.raw();
+  int aligned = 0;
+  quads = 0;
+  for (int i = 0; i < r.m_F.Count(); ++i) {
+    const ON_MeshFace& f = r.m_F[i];
+    if (!f.IsQuad()) continue;
+    ++quads;
+    double best = 180.0;
+    for (int k = 0; k < 2; ++k) {
+      ON_3dVector e = ON_3dPoint(r.m_V[f.vi[k + 1]]) - ON_3dPoint(r.m_V[f.vi[k]]);
+      e.Unitize();
+      best = std::min(best, std::acos(std::min(1.0, std::fabs(ON_DotProduct(e, t)))) * 180.0 / ON_PI);
+    }
+    if (best < tol_deg) ++aligned;
+  }
+  return quads > 0 ? static_cast<double>(aligned) / quads : 0.0;
+}
+
+}  // namespace ttq_detail
+
+// Noisy planar grid -> TrisToQuads -> RelaxQuadVertices: the result must be
+// the regular grid. Failing-first measurements (pairing alone, before any
+// relocation): smallest interior angle 66.5 / 66.4 / 60.9 deg and worst
+// aspect 1.64 / 1.72 / 1.93 for n = 6 / 8 / 12; after relocation 90 deg and
+// aspect 1.
+void TestMeshRelaxQuadVerticesRestoresNoisyGridToRegularGrid() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshQuadQuality;
+
+  for (const int n : {6, 8, 12}) {
+    Mesh m = ttq_detail::NoisyGrid(n, 0.18, 99u + static_cast<unsigned>(n));
+    const int merged = m.TrisToQuads();
+    Check(merged == n * n, "noisy grid: every cell still pairs into one quad");
+    const MeshQuadQuality before = m.MeasureQuadQuality();
+    Check(before.quad_count == n * n && before.triangle_count == 0, "noisy grid: all quads, no triangle");
+    Check(before.min_angle_deg < 70.0 && before.max_aspect > 1.5,
+          "sanity: the jitter really left skewed, stretched quads before relocation");
+
+    const int free_vertices = m.RelaxQuadVertices(400, 1.0, true);
+    Check(free_vertices == (n - 1) * (n - 1), "exactly the (n-1)^2 interior vertices are free to move");
+    const MeshQuadQuality after = m.MeasureQuadQuality();
+    Check(after.quad_count == n * n && after.triangle_count == 0, "relocation changes no face");
+    Check(after.min_angle_deg > before.min_angle_deg + 20.0, "smallest interior angle improves by more than 20 degrees");
+    Check(after.min_angle_deg > 89.9, "...to a right angle (>= 89.9)");
+    Check(after.max_aspect < 1.01, "...and the worst aspect ratio to a square (< 1.01)");
+
+    double worst_dev = 0.0, worst_boundary_move = 0.0, worst_z = 0.0;
+    for (int j = 0; j <= n; ++j) {
+      for (int i = 0; i <= n; ++i) {
+        const ON_3fPoint p = m.raw().m_V[j * (n + 1) + i];
+        worst_dev = std::max(worst_dev, std::hypot(static_cast<double>(p.x) - i, static_cast<double>(p.y) - j));
+        worst_z = std::max(worst_z, static_cast<double>(std::fabs(p.z)));
+        if (i == 0 || j == 0 || i == n || j == n) {
+          worst_boundary_move = std::max(worst_boundary_move, std::hypot(static_cast<double>(p.x) - i, static_cast<double>(p.y) - j));
+        }
+      }
+    }
+    Check(worst_dev < 1e-3, "every vertex ends within 1e-3 of its regular-grid position");
+    Check(worst_boundary_move == 0.0, "boundary vertices (naked edges) never move");
+    Check(worst_z == 0.0, "tangential only: nothing leaves the plane");
+  }
+}
+
+// Sphere: no regular tiling exists, so the oracle is the metric (strictly
+// better smallest AND mean-smallest interior angle after relocation) plus
+// fidelity (each moved vertex still on the ORIGINAL surface). Failing-first
+// measurements (icosphere level 1 / 2 / 3, paired, then relaxed): smallest
+// angle 60.0 -> 68.9, 54.7 -> 61.3, 54.5 -> 63.4; mean-smallest 60.0 -> 71.2,
+// 62.9 -> 71.6, 64.8 -> 78.8; worst aspect 1.13 -> 1.39, 1.18 -> 1.41,
+// 1.19 -> 1.48 (it gets WORSE - quads beside the leftover triangles
+// stretch - so the test only bounds it).
+void TestMeshRelaxQuadVerticesImprovesSphereQuadQualityAndStaysOnSurface() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshQuadQuality;
+  using dino8::kernel::Point3d;
+
+  for (const int level : {1, 2, 3}) {
+    const Mesh original = ttq_detail::IcoSphere(level);
+    Mesh m = original;
+    Check(m.TrisToQuads() > 0, "sphere: some triangle pairs merge");
+    const MeshQuadQuality before = m.MeasureQuadQuality();
+    const int faces_before = m.FaceCount();
+    const int free_vertices = m.RelaxQuadVertices(30, 0.5, true);
+    Check(free_vertices > 0 && free_vertices <= m.VertexCount(), "sphere: some vertices are free to move (creases sharper than the feature angle stay pinned)");
+    const MeshQuadQuality after = m.MeasureQuadQuality();
+    Check(m.FaceCount() == faces_before && after.quad_count == before.quad_count && after.triangle_count == before.triangle_count,
+          "relocation changes no face");
+    Check(after.min_angle_deg > before.min_angle_deg + 3.0, "smallest interior angle improves by more than 3 degrees");
+    Check(after.mean_min_angle_deg > before.mean_min_angle_deg + 4.0, "mean smallest interior angle improves by more than 4 degrees");
+    Check(after.max_aspect < 2.0, "worst aspect ratio stays bounded (< 2)");
+
+    double worst_off_surface = 0.0;
+    for (int i = 0; i < m.VertexCount(); ++i) {
+      const Point3d p(m.raw().m_V[i]);
+      worst_off_surface = std::max(worst_off_surface, original.ClosestPoint(p).DistanceTo(p));
+    }
+    Check(worst_off_surface < 1e-5, "every relocated vertex is still on the original surface (< 1e-5)");
+    const double area = m.Area();
+    Check(area > 0.85 * original.Area() && area < 1.05 * original.Area(), "surface area stays within -15% / +5% of the original");
+  }
+}
+
+// Lattice of equilateral triangles: at every edge three rhombus orientations
+// are exactly as good (same dihedral 0, same rectangularity). Asking for a
+// flow direction must make the quads follow it. Failing-first: plain
+// TrisToQuads() on the same 8 x 8 lattice yields 0 / 64 quads with an edge
+// along 120 deg (it always takes the cell-diagonal pairing, whose rhombus
+// edges run at 0 and 60 deg); the aligned run gives 64 / 64 (0 deg),
+// 64 / 64 (60 deg) and 56 / 57 (120 deg, 14 triangles stranded - the
+// aligned pairings at that angle tile less perfectly).
+void TestMeshTrisToQuadsAlignedFollowsRequestedFlowDirection() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  for (const double angle : {0.0, 60.0, 120.0}) {
+    Mesh aligned = ttq_detail::HexLattice(8, 8);
+    const int merged = aligned.TrisToQuadsAligned(Vector3d(std::cos(angle * ON_PI / 180.0), std::sin(angle * ON_PI / 180.0), 0.0));
+    int quads = 0;
+    const double fraction = ttq_detail::AlignedQuadFraction(aligned, angle, 0.5, quads);
+    Check(merged == quads && merged >= 50, "aligned pairing still merges most of the lattice (>= 50 of 64 cells)");
+    Check(fraction >= 0.95, "at least 95% of the aligned quads have an edge within 0.5 degrees of the requested direction");
+    Check(std::fabs(aligned.Area() - Mesh(ttq_detail::HexLattice(8, 8)).Area()) < 1e-6, "total area unchanged");
+  }
+
+  Mesh plain = ttq_detail::HexLattice(8, 8);
+  plain.TrisToQuads();
+  int plain_quads = 0;
+  const double plain_fraction = ttq_detail::AlignedQuadFraction(plain, 120.0, 0.5, plain_quads);
+  Check(plain_quads > 0 && plain_fraction < 0.5, "control: the unaligned pairing does NOT follow 120 degrees (so the aligned result is not a coincidence)");
+}
+
+void TestMeshQuadRelaxAndAlignedPairingRejectBadArguments() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  auto throws = [](const std::function<void()>& fn) {
+    try { fn(); } catch (const std::invalid_argument&) { return true; } catch (...) { return false; }
+    return false;
+  };
+  Mesh m = ttq_detail::NoisyGrid(3, 0.1, 5u);
+  Check(throws([&] { m.RelaxQuadVertices(-1); }), "negative iterations throws");
+  Check(throws([&] { m.RelaxQuadVertices(1, 0.0); }), "step 0 throws");
+  Check(throws([&] { m.RelaxQuadVertices(1, 1.5); }), "step > 1 throws");
+  Check(throws([&] { m.RelaxQuadVertices(1, 0.5, true, std::nan("")); }), "NaN feature angle throws");
+  Check(throws([&] { m.RelaxQuadVertices(1, 0.5, true, 30.0, 1.5); }), "square_weight > 1 throws");
+  Check(throws([&] { m.TrisToQuadsAligned(Vector3d(0, 0, 0)); }), "zero flow direction throws");
+  Check(throws([&] { m.TrisToQuadsAligned(Vector3d(std::nan(""), 0, 0)); }), "NaN flow direction throws");
+  Check(m.RelaxQuadVertices(0) == 0, "zero iterations is a no-op returning 0");
+  Mesh empty;
+  Check(empty.RelaxQuadVertices(5) == 0 && empty.MeasureQuadQuality().quad_count == 0, "empty mesh: nothing to do");
+}
+
 void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
   using dino8::kernel::Point3d;
 
@@ -106725,6 +106987,10 @@ int main() {
   RunTest("TestMeshTrisToQuadsRefusesCoincidentApexes", TestMeshTrisToQuadsRefusesCoincidentApexes);
   RunTest("TestMeshTrisToQuadsFindsEveryCellSquareOfAFlatGridRegardlessOfDiagonalOrOrder", TestMeshTrisToQuadsFindsEveryCellSquareOfAFlatGridRegardlessOfDiagonalOrOrder);
   RunTest("TestMeshTrisToQuadsRefusesCollinearCornerQuad", TestMeshTrisToQuadsRefusesCollinearCornerQuad);
+  RunTest("TestMeshRelaxQuadVerticesRestoresNoisyGridToRegularGrid", TestMeshRelaxQuadVerticesRestoresNoisyGridToRegularGrid);
+  RunTest("TestMeshRelaxQuadVerticesImprovesSphereQuadQualityAndStaysOnSurface", TestMeshRelaxQuadVerticesImprovesSphereQuadQualityAndStaysOnSurface);
+  RunTest("TestMeshTrisToQuadsAlignedFollowsRequestedFlowDirection", TestMeshTrisToQuadsAlignedFollowsRequestedFlowDirection);
+  RunTest("TestMeshQuadRelaxAndAlignedPairingRejectBadArguments", TestMeshQuadRelaxAndAlignedPairingRejectBadArguments);
   RunTest("TestMeshOffsetMovesVerticesAlongExactVertexNormal", TestMeshOffsetMovesVerticesAlongExactVertexNormal);
   RunTest("TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector", TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector);
   RunTest("TestMeshThickenBuildsExactUnitCubeFromFlatSquare", TestMeshThickenBuildsExactUnitCubeFromFlatSquare);

@@ -7452,7 +7452,17 @@ int Mesh::UnifyNormals() {
   return flipped;
 }
 
-int Mesh::TrisToQuads(double max_dihedral_deg) {
+int Mesh::TrisToQuads(double max_dihedral_deg) { return TrisToQuadsImpl(max_dihedral_deg, nullptr); }
+
+int Mesh::TrisToQuadsAligned(Vector3d flow_direction, double max_dihedral_deg) {
+  if (!ON_IsValid(flow_direction.x) || !ON_IsValid(flow_direction.y) || !ON_IsValid(flow_direction.z) ||
+      !flow_direction.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::Mesh::TrisToQuadsAligned: flow_direction must be finite and non-zero");
+  }
+  return TrisToQuadsImpl(max_dihedral_deg, &flow_direction);
+}
+
+int Mesh::TrisToQuadsImpl(double max_dihedral_deg, const Vector3d* flow) {
   InvalidateSpatialIndex();  // geometry/winding edited in place below
   if (!ON_IsValid(max_dihedral_deg)) {
     throw std::invalid_argument("dino8::kernel::Mesh::TrisToQuads: max_dihedral_deg must be finite");
@@ -7475,6 +7485,8 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
     double score;       // dihedral angle (radians) between the two triangles
     long long band;     // score quantized to kDihedralBand: the primary sort key
     double shape;       // largest |cos(corner angle)| of the merged quad: 0 = a perfect rectangle
+    long long shape_band;  // shape quantized to kShapeBand: the secondary sort key
+    long long align_band;  // angle (quantized to kAlignBand) between the nearer quad edge and the flow field: the tertiary key (0 without a flow)
   };
   std::vector<Candidate> candidates;
   // Two merges whose dihedral angles differ by less than this are "equally
@@ -7483,6 +7495,8 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
   // how rectangular the merged quad is - decides between them instead of
   // an arbitrary float-noise winner.
   constexpr double kDihedralBand = 1e-5;
+  constexpr double kShapeBand = 1e-4;   // |cos| units: a 60deg rhombus corner is 0.5 +- float noise, never a different shape
+  constexpr double kAlignBand = 1e-4;   // radians
   constexpr double kStrictConvexSine = 1e-6;  // sin(turn) at or below this = collinear/reflex corner
   const double max_dihedral_rad = std::max(0.0, max_dihedral_deg) * ON_PI / 180.0;
 
@@ -7546,8 +7560,25 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
     }
     if (!convex) continue;
 
+    double align = 0.0;
+    if (flow != nullptr) {
+      // The flow field projected into the quad's own plane; the quad is
+      // aligned when one of its two edge directions follows it (the other
+      // is then, for a rectangle, perpendicular to it).
+      Vector3d t = *flow - ON_DotProduct(*flow, qn) * qn;
+      if (t.Unitize()) {
+        align = ON_PI;
+        for (int k = 0; k < 2; ++k) {
+          Vector3d e = Point3d(mesh_.m_V[q[k + 1]]) - Point3d(mesh_.m_V[q[k]]);
+          if (!e.Unitize()) continue;
+          align = std::min(align, std::acos(std::min(1.0, std::fabs(ON_DotProduct(e, t)))));
+        }
+      }
+    }
+
     candidates.push_back({fi, fj, q[0], q[1], q[2], q[3], dihedral,
-                          static_cast<long long>(std::floor(dihedral / kDihedralBand)), shape});
+                          static_cast<long long>(std::floor(dihedral / kDihedralBand)), shape,
+                          std::llround(shape / kShapeBand), std::llround(align / kAlignBand)});
   }
 
   // Best first: flattest dihedral band, then the most rectangular quad,
@@ -7555,7 +7586,8 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
   // std::sort's unspecified order among otherwise-equal candidates.
   std::sort(candidates.begin(), candidates.end(), [](const Candidate& x, const Candidate& y) {
     if (x.band != y.band) return x.band < y.band;
-    if (x.shape != y.shape) return x.shape < y.shape;
+    if (x.shape_band != y.shape_band) return x.shape_band < y.shape_band;
+    if (x.align_band != y.align_band) return x.align_band < y.align_band;
     if (x.face_a != y.face_a) return x.face_a < y.face_a;
     return x.face_b < y.face_b;
   });
@@ -7589,6 +7621,176 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
   mesh_.m_N.Destroy();
   mesh_.m_FN.Destroy();
   return merged;
+}
+
+MeshQuadQuality Mesh::MeasureQuadQuality() const {
+  MeshQuadQuality q;
+  double min_angle = 180.0, sum_min_angle = 0.0, max_aspect = 0.0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    if (!f.IsQuad()) {
+      ++q.triangle_count;
+      continue;
+    }
+    ++q.quad_count;
+    double quad_min_angle = 180.0, shortest = std::numeric_limits<double>::max(), longest = 0.0;
+    for (int k = 0; k < 4; ++k) {
+      const Point3d p0(mesh_.m_V[f.vi[(k + 3) % 4]]), p1(mesh_.m_V[f.vi[k]]), p2(mesh_.m_V[f.vi[(k + 1) % 4]]);
+      const Vector3d u = p0 - p1, v = p2 - p1;
+      const double lu = u.Length(), lv = v.Length();
+      shortest = std::min(shortest, lv);
+      longest = std::max(longest, lv);
+      if (!(lu > 0.0) || !(lv > 0.0)) {
+        quad_min_angle = 0.0;
+        continue;
+      }
+      const double c = std::max(-1.0, std::min(1.0, ON_DotProduct(u, v) / (lu * lv)));
+      quad_min_angle = std::min(quad_min_angle, std::acos(c) * 180.0 / ON_PI);
+    }
+    min_angle = std::min(min_angle, quad_min_angle);
+    sum_min_angle += quad_min_angle;
+    max_aspect = std::max(max_aspect, shortest > 0.0 ? longest / shortest : std::numeric_limits<double>::infinity());
+  }
+  if (q.quad_count > 0) {
+    q.min_angle_deg = min_angle;
+    q.mean_min_angle_deg = sum_min_angle / q.quad_count;
+    q.max_aspect = max_aspect;
+  }
+  return q;
+}
+
+int Mesh::RelaxQuadVertices(int iterations, double step, bool snap_to_original, double feature_angle_deg,
+                            double square_weight) {
+  if (iterations < 0) throw std::invalid_argument("dino8::kernel::Mesh::RelaxQuadVertices: iterations must be >= 0");
+  if (!(step > 0.0) || !(step <= 1.0)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::RelaxQuadVertices: step must be in (0, 1]");
+  }
+  if (!ON_IsValid(feature_angle_deg)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::RelaxQuadVertices: feature_angle_deg must be finite");
+  }
+  if (!(square_weight >= 0.0) || !(square_weight <= 1.0)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::RelaxQuadVertices: square_weight must be in [0, 1]");
+  }
+  InvalidateSpatialIndex();  // geometry edited in place below
+  const int nv = mesh_.m_V.Count();
+  const int nf = mesh_.m_F.Count();
+  if (nv == 0 || nf == 0 || iterations == 0) return 0;
+
+  // Face normals (a quad's from its two diagonals) and the faces on each edge.
+  std::vector<Vector3d> face_normal(static_cast<size_t>(nf));
+  std::map<std::pair<int, int>, std::vector<int>> faces_of_edge;
+  for (int i = 0; i < nf; ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    Vector3d n;
+    if (f.IsQuad()) {
+      n = ON_CrossProduct(Point3d(mesh_.m_V[f.vi[2]]) - Point3d(mesh_.m_V[f.vi[0]]),
+                          Point3d(mesh_.m_V[f.vi[3]]) - Point3d(mesh_.m_V[f.vi[1]]));
+    } else {
+      n = ON_CrossProduct(Point3d(mesh_.m_V[f.vi[1]]) - Point3d(mesh_.m_V[f.vi[0]]),
+                          Point3d(mesh_.m_V[f.vi[2]]) - Point3d(mesh_.m_V[f.vi[0]]));
+    }
+    face_normal[static_cast<size_t>(i)] = n;
+    ForEachDirectedEdge(f, [&](int a, int b) { faces_of_edge[std::minmax(a, b)].push_back(i); });
+  }
+
+  // A vertex is pinned if it touches a naked/non-manifold edge, or a
+  // crease sharper than `feature_angle_deg` (so a box corner or a rim
+  // stays put instead of sliding and rounding off).
+  std::vector<char> pinned(static_cast<size_t>(nv), 0);
+  std::vector<std::set<int>> neighbors(static_cast<size_t>(nv));
+  const double cos_feature = std::cos(std::max(0.0, feature_angle_deg) * ON_PI / 180.0);
+  for (const auto& [edge, faces] : faces_of_edge) {
+    neighbors[static_cast<size_t>(edge.first)].insert(edge.second);
+    neighbors[static_cast<size_t>(edge.second)].insert(edge.first);
+    bool pin = faces.size() != 2;
+    if (!pin) {
+      Vector3d na = face_normal[static_cast<size_t>(faces[0])], nb = face_normal[static_cast<size_t>(faces[1])];
+      if (na.Unitize() && nb.Unitize()) pin = ON_DotProduct(na, nb) < cos_feature;
+    }
+    if (pin) pinned[static_cast<size_t>(edge.first)] = pinned[static_cast<size_t>(edge.second)] = 1;
+  }
+
+  // Area-weighted vertex normals (fixed per pass; recomputed each iteration).
+  const Mesh original = *this;  // snap target: the surface being remeshed
+  int movable = 0;
+  for (int v = 0; v < nv; ++v) {
+    if (!pinned[static_cast<size_t>(v)] && !neighbors[static_cast<size_t>(v)].empty()) ++movable;
+  }
+  for (int it = 0; it < iterations; ++it) {
+    std::vector<Vector3d> vnormal(static_cast<size_t>(nv), Vector3d(0, 0, 0));
+    for (int i = 0; i < nf; ++i) {
+      const ON_MeshFace& f = mesh_.m_F[i];
+      const int corners = f.IsQuad() ? 4 : 3;
+      Vector3d n;
+      if (f.IsQuad()) {
+        n = ON_CrossProduct(Point3d(mesh_.m_V[f.vi[2]]) - Point3d(mesh_.m_V[f.vi[0]]),
+                            Point3d(mesh_.m_V[f.vi[3]]) - Point3d(mesh_.m_V[f.vi[1]]));
+      } else {
+        n = ON_CrossProduct(Point3d(mesh_.m_V[f.vi[1]]) - Point3d(mesh_.m_V[f.vi[0]]),
+                            Point3d(mesh_.m_V[f.vi[2]]) - Point3d(mesh_.m_V[f.vi[0]]));
+      }
+      for (int k = 0; k < corners; ++k) vnormal[static_cast<size_t>(f.vi[k])] += n;
+    }
+    // Square projection: for each quad, the nearest square (same centre,
+    // in the quad's plane) gives every corner a target; a vertex averages
+    // the targets of the quads it belongs to.
+    std::vector<Vector3d> square_sum(static_cast<size_t>(nv), Vector3d(0, 0, 0));
+    std::vector<int> square_count(static_cast<size_t>(nv), 0);
+    if (square_weight > 0.0) {
+      for (int i = 0; i < nf; ++i) {
+        const ON_MeshFace& f = mesh_.m_F[i];
+        if (!f.IsQuad()) continue;
+        Point3d c(0, 0, 0);
+        for (int k = 0; k < 4; ++k) c += Point3d(mesh_.m_V[f.vi[k]]);
+        c /= 4.0;
+        Vector3d qn = ON_CrossProduct(Point3d(mesh_.m_V[f.vi[2]]) - Point3d(mesh_.m_V[f.vi[0]]),
+                                      Point3d(mesh_.m_V[f.vi[3]]) - Point3d(mesh_.m_V[f.vi[1]]));
+        if (!qn.Unitize()) continue;
+        Vector3d d[4];
+        for (int k = 0; k < 4; ++k) {
+          d[k] = Point3d(mesh_.m_V[f.vi[k]]) - c;
+          d[k] -= ON_DotProduct(d[k], qn) * qn;
+        }
+        for (int k = 0; k < 4; ++k) {
+          // Bring the other three corners' offsets back onto corner k by the
+          // inverse of the 90-degree turns separating them, then average.
+          const Vector3d t = d[k] + ON_CrossProduct(d[(k + 1) % 4], qn) - d[(k + 2) % 4] + ON_CrossProduct(qn, d[(k + 3) % 4]);
+          const Point3d target = c + 0.25 * t;
+          square_sum[static_cast<size_t>(f.vi[k])] += Vector3d(target.x, target.y, target.z);
+          ++square_count[static_cast<size_t>(f.vi[k])];
+        }
+      }
+    }
+    std::vector<ON_3fPoint> next(static_cast<size_t>(nv));
+    for (int v = 0; v < nv; ++v) next[static_cast<size_t>(v)] = mesh_.m_V[v];
+    for (int v = 0; v < nv; ++v) {
+      const auto& nb = neighbors[static_cast<size_t>(v)];
+      if (pinned[static_cast<size_t>(v)] || nb.empty()) continue;
+      Vector3d n = vnormal[static_cast<size_t>(v)];
+      if (!n.Unitize()) continue;
+      Point3d centroid(0, 0, 0);
+      for (const int w : nb) centroid += Point3d(mesh_.m_V[w]);
+      centroid /= static_cast<double>(nb.size());
+      const int qc = square_count[static_cast<size_t>(v)];
+      if (qc > 0) {
+        const Vector3d sq = square_sum[static_cast<size_t>(v)] / static_cast<double>(qc);
+        centroid = Point3d((1.0 - square_weight) * centroid.x + square_weight * sq.x,
+                           (1.0 - square_weight) * centroid.y + square_weight * sq.y,
+                           (1.0 - square_weight) * centroid.z + square_weight * sq.z);
+      }
+      const Point3d p(mesh_.m_V[v]);
+      Vector3d move = centroid - p;
+      move -= ON_DotProduct(move, n) * n;  // tangential only: never push along the normal
+      Point3d np = p + step * move;
+      if (snap_to_original) np = original.ClosestPoint(np);
+      next[static_cast<size_t>(v)] = ON_3fPoint(np);
+    }
+    for (int v = 0; v < nv; ++v) mesh_.m_V[v] = next[static_cast<size_t>(v)];
+  }
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return movable;
 }
 
 Mesh Mesh::Offset(double distance) const {
