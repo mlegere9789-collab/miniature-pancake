@@ -165,4 +165,23 @@ ArrayLinear
 Cancel
 New
 
+QC3ABEGIN_ungroup_noop_undo
+Box 0,0,0 10,10,0 5
+SelAll
+Ungroup
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_rotate_huge
+Box 0,0,0 10,10,0 5
+SelAll
+Rotate
+0,0,0
+1e300
+Cancel
+BoundingBox
+New
+
 QC3ABEGIN_end

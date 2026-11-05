@@ -618,7 +618,13 @@ void RegisterEditCommands(CommandEngine& e) {
         int g = ctx.Doc().CreateGroup(ids);
         ctx.Print("Group " + std::to_string(g) + " created with " + std::to_string(ids.size()) + " object(s)");
       }, 1));
-  Reg(e, "Ungroup", OnSelection("Select groups to ungroup", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("Ungroup"); ctx.Doc().Ungroup(ids); }));
+  Reg(e, "Ungroup", OnSelection("Select groups to ungroup", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        bool any = false;
+        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->group_id >= 0) { any = true; break; } }
+        if (!any) { ctx.Warn("Ungroup: none of the selected objects is in a group"); return; }  // no empty undo step
+        ctx.Doc().BeginChange("Ungroup");
+        ctx.Doc().Ungroup(ids);
+      }));
   Reg(e, "AddToGroup", OnSelection("Select objects to add to the selected group", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         // FindMany() resolves the whole selection in one O(document size)
         // pass instead of a Find() per id (see CreateGroup()/Ungroup() in

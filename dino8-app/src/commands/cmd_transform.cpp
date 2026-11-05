@@ -147,7 +147,12 @@ class RotateCommand : public Command {
     Apply(ctx, a);
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
-  void OnNumber(CommandContext& ctx, double deg) override { if (center_ && !ref_) Apply(ctx, deg * ON_PI / 180.0); }
+  void OnNumber(CommandContext& ctx, double deg) override {
+    if (!center_ || ref_) return;
+    // sin/cos of 1e300 degrees is rounding noise, not a rotation; 1e6 degrees is 2777 full turns.
+    if (!std::isfinite(deg) || std::fabs(deg) > 1e6) { ctx.Warn("Rotate: the angle must be a number between -1000000 and 1000000 degrees"); return; }
+    Apply(ctx, deg * ON_PI / 180.0);
+  }
   double AngleBetween(CommandContext& ctx, Point3d a, Point3d b) {
     ON_Plane pl = ActivePlane(ctx);
     Vector3d va = a - *center_, vb = b - *center_;
