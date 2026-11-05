@@ -130,16 +130,16 @@ Move
 0,0,2
 UpdateHistory
 SelCrv
-Length
+Length digits=9
 SelNone
 SelID 2
-Length
+Length digits=9
 SelNone
 SelID 3
-Length
+Length digits=9
 SelNone
 SelID 4
-Length
+Length digits=9
 
 # --- SectionView label=A: the section line, viewing arrows, letters and title (closed forms in 56_sec2.sh).
 # Style text height 2, arrow 3. Box x 0..20, y 0..20, z 0..10 cut by the vertical plane y = 10 along the line (-5,10,0)-(25,10,0):

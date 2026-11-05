@@ -1140,9 +1140,13 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
       // chord beyond either end) is refused, and only for a segment longer than the mesh resolution (a shorter one, the near-
       // duplicate samples around a seam, keeps the older behaviour exactly), so a refusal keeps the two original samples like
       // every other guard here and nothing a legitimate midpoint needed is lost.
+      // Opt-in (IntersectOptions::refuse_overshoot, set by IntersectBrepByPlane()): measured on a sealed Boolean (a box minus two
+      // r = 1.5 cylinders) the same guard refuses ten 1.02 .. 1.16 x chord slides that the Boolean path had always accepted and
+      // whose trims it was tuned against (the result then failed to tessellate: self-intersecting trim), while the sphere fold it
+      // exists for lands at 1.19 x chord - the two are not separable by distance, so the Boolean engine keeps the old behaviour.
       const double chord = ic.points[i].DistanceTo(ic.points[j]);
       bool within_reach = true;
-      if (chord >= opt.mesh_tolerance * 4) {
+      if (opt.refuse_overshoot && chord >= opt.mesh_tolerance * 4) {
         const Vector3d cv = ic.points[j] - ic.points[i];
         const double along = ON_DotProduct(x - ic.points[i], cv) / (chord * chord);
         within_reach = along >= -0.02 && along <= 1.02;
@@ -2206,7 +2210,9 @@ std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep
   return out;
 }
 
-std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
+std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& caller_opt) {
+  IntersectOptions opt = caller_opt;
+  opt.refuse_overshoot = true;  // a plane section is a visible curve: never let a slid sample fold its chain (FinishCurve)
   std::vector<BrepPlaneIntersection> out;
   // Deliberately NOT b.BoundingBox() - a real bug found while extending
   // this file (see ContourBrep()'s own identical fix, added alongside

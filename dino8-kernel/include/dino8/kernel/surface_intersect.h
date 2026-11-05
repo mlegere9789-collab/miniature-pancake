@@ -46,6 +46,10 @@ struct IntersectOptions {
   double mesh_tolerance = 0.02;   // chord tolerance of the seed meshes
   int max_mesh_divisions = 160;   // per direction
   int min_mesh_divisions = 6;
+  // Refuse a midpoint insertion whose new point slid past either end of its segment (see FinishCurve()). Off by default so the
+  // Boolean pipeline, whose results were tuned against the unguarded chains, is untouched; the plane-section routines
+  // (IntersectBrepByPlane() and so SectionBrepByPlaneJoined()) switch it on, because there a folded chain is a visibly wrong curve.
+  bool refuse_overshoot = false;
 };
 
 // A surface tessellation that remembers the (u, v) of every vertex. `nu`/`nv`

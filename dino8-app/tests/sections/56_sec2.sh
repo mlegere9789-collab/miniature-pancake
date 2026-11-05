@@ -59,10 +59,10 @@ sec2_has "$SEC2_HX" "kept as it was" "SEC2_10: ...and UpdateHistory says why (th
 sec2_has "$SEC2_HC" "Contour: 3 curve(s) from 5 plane(s) (3 exact B-rep section curve(s)" "SEC2_11: History-recorded Contour of the sphere gives 3 exact circles"
 sec2_len "$SEC2_HC" 1 171.6 171.8 "SEC2_11: their total is 2 pi (sqrt(75) + 10 + sqrt(75)) = 171.7"
 # SEC2_12 is the original oracle: sphere R=10 moved up 2 puts the z = -5, 0, 5 planes at d = -7, -2, 3, radii sqrt(51), sqrt(96), sqrt(91).
-sec2_len "$SEC2_HCM" 1 166.367 166.375 "SEC2_12: after moving the sphere up 2 the three rebuilt circles total 2 pi (sqrt(51) + sqrt(96) + sqrt(91)) = 166.3711"
-sec2_len "$SEC2_HCM" 2 44.86 44.88 "SEC2_12: ...the z=-5 circle (d=-7) is 2 pi sqrt(51) = 44.866"
-sec2_len "$SEC2_HCM" 3 61.55 61.57 "SEC2_12: ...the z=0 circle (d=-2) is 2 pi sqrt(96) = 61.560"
-sec2_len "$SEC2_HCM" 4 59.93 59.95 "SEC2_12: ...the z=5 circle (d=3) is 2 pi sqrt(91) = 59.938"
+sec2_len "$SEC2_HCM" 1 166.367 166.375 "SEC2_12: after moving the sphere up 2 the three rebuilt circles total 2 pi (sqrt(51) + sqrt(96) + sqrt(91)) = 166.3711 (Length digits=9: the default 4 digits print 166.4)"
+sec2_len "$SEC2_HCM" 2 44.8699 44.8719 "SEC2_12: ...the z=-5 circle (d=-7) is 2 pi sqrt(51) = 44.8709"
+sec2_len "$SEC2_HCM" 3 61.5614 61.5634 "SEC2_12: ...the z=0 circle (d=-2) is 2 pi sqrt(96) = 61.5624"
+sec2_len "$SEC2_HCM" 4 59.9368 59.9388 "SEC2_12: ...the z=5 circle (d=3) is 2 pi sqrt(91) = 59.9378"
 
 # SEC2_13..: SectionView label=A (sec2_script.txt, blocks label / nolabel / label_update). Style text height 2, arrow size 3; the box
 # 0..20 x 0..20 x 0..10 is cut by the vertical plane y = 10 along the picked line (-5,10,0)-(25,10,0). Cut plane: x-axis +X, y-axis +Z,
