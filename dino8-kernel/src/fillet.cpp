@@ -1326,7 +1326,19 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
     throw std::invalid_argument("dino8::kernel::FilletConcaveEdge: radius must be positive");
   }
 
-  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  // Same reading as FilletConvexEdge: a solid that already carries blend faces elsewhere is read through MixedFaces(), its planar faces are
+  // re-trimmed as always and its curved faces are carried through unchanged.
+  std::vector<Brep::PlanarFace> faces;
+  Brep::MixedFacesResult carried;
+  bool has_curved = false;
+  try {
+    faces = solid.PlanarFaces();
+  } catch (const std::invalid_argument&) {
+    carried = solid.MixedFaces();
+    if (carried.cylindrical.empty() && carried.conical.empty() && carried.spherical.empty()) throw;
+    faces = carried.planar;
+    has_curved = true;
+  }
   const double tol = RelativeTol(faces);
 
   int idx_i = -1, idx_j = -1;
@@ -1372,6 +1384,22 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
   for (size_t f = 0; f < faces.size(); ++f) {
     if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) {
       others.push_back(faces[f]);
+    }
+  }
+
+  if (has_curved) {
+    for (const Point3d* end : {&edge_p0, &edge_p1}) {
+      int planar_at_end = 0;
+      for (const Brep::PlanarFace& pf : faces) {
+        for (const Point3d& v : pf.loop) {
+          if (PointsEqual(v, *end, tol)) { ++planar_at_end; break; }
+        }
+      }
+      if (planar_at_end < 3) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConcaveEdge: an end of the edge meets a curved (blended) face of `solid` - on an already-blended solid only an "
+            "edge whose two ends both meet planar faces can be filleted");
+      }
     }
   }
 
@@ -1477,6 +1505,8 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
         "dino8::kernel::FilletConcaveEdge: re-trimming an adjacent face left fewer than 3 vertices - radius too "
         "large for this solid's geometry");
   }
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_i)], retrimmed_i, tol);
+  CarryNotchRunThroughClip(faces[static_cast<size_t>(idx_j)], retrimmed_j, tol);
 
   const double L = edge_p0.DistanceTo(edge_p1);
 
@@ -1540,7 +1570,16 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
   mixed_planar.push_back(std::move(retrimmed_i));
   mixed_planar.push_back(std::move(retrimmed_j));
 
-  return Brep::FromMixedFaces(mixed_planar, {fillet_face});
+  for (Brep::PlanarFace& pf : mixed_planar) AttachArcRunsForNotchRuns(pf);
+  if (!has_curved) return Brep::FromMixedFaces(mixed_planar, {fillet_face});
+  std::vector<Brep::CylindricalFace> cylinders = std::move(carried.cylindrical);
+  cylinders.push_back(std::move(fillet_face));
+  Brep chained = Brep::FromMixedFaces(mixed_planar, cylinders, carried.conical, carried.spherical);
+  if (!chained.raw().IsValid() || !chained.raw().IsSolid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdge: the fillet of an edge on an already-blended solid did not assemble into a valid closed solid - refused");
+  }
+  return chained;
 }
 
 FilletRadiusLimit MaxFilletRadius(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
