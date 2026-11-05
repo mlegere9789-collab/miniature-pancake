@@ -3260,6 +3260,187 @@ Result NurbsSurface::MatchEdgeToCurve(int fixed_direction, bool at_min, const Nu
   return r;
 }
 
+namespace {
+
+// Solves the square system a x = rhs (three right-hand sides at once, partial pivoting); false if a pivot is tiny.
+bool SolveCollocation(std::vector<std::vector<double>> a, std::vector<ON_3dVector> rhs, std::vector<ON_3dVector>& sol) {
+  const int n = static_cast<int>(a.size());
+  for (int col = 0; col < n; ++col) {
+    int piv = col;
+    for (int r = col + 1; r < n; ++r)
+      if (std::abs(a[static_cast<size_t>(r)][static_cast<size_t>(col)]) > std::abs(a[static_cast<size_t>(piv)][static_cast<size_t>(col)])) piv = r;
+    if (!(std::abs(a[static_cast<size_t>(piv)][static_cast<size_t>(col)]) > 1e-13)) return false;
+    std::swap(a[static_cast<size_t>(piv)], a[static_cast<size_t>(col)]);
+    std::swap(rhs[static_cast<size_t>(piv)], rhs[static_cast<size_t>(col)]);
+    for (int r = col + 1; r < n; ++r) {
+      const double m = a[static_cast<size_t>(r)][static_cast<size_t>(col)] / a[static_cast<size_t>(col)][static_cast<size_t>(col)];
+      if (m == 0.0) continue;
+      for (int c2 = col; c2 < n; ++c2) a[static_cast<size_t>(r)][static_cast<size_t>(c2)] -= m * a[static_cast<size_t>(col)][static_cast<size_t>(c2)];
+      rhs[static_cast<size_t>(r)] -= rhs[static_cast<size_t>(col)] * m;
+    }
+  }
+  sol.assign(static_cast<size_t>(n), ON_3dVector::ZeroVector);
+  for (int r = n - 1; r >= 0; --r) {
+    ON_3dVector v = rhs[static_cast<size_t>(r)];
+    for (int c2 = r + 1; c2 < n; ++c2) v -= sol[static_cast<size_t>(c2)] * a[static_cast<size_t>(r)][static_cast<size_t>(c2)];
+    sol[static_cast<size_t>(r)] = v * (1.0 / a[static_cast<size_t>(r)][static_cast<size_t>(r)]);
+  }
+  return true;
+}
+
+}  // namespace
+
+Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min, const NurbsCurve& target, const NurbsSurface& host,
+                                               MatchFollowReport* report) {
+  if (fixed_direction != 0 && fixed_direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MatchEdgeToCurveFollowing: direction must be 0 (U) or 1 (V)");
+  }
+  MatchFollowReport local;
+  auto refuse = [&](const std::string& why) {
+    local.refusal_reason = why;
+    if (report) *report = local;
+    return Result::Failed;
+  };
+  const ON_NurbsSurface& s = surface_;
+  const ON_NurbsCurve& c = target.raw();
+  const int edge_dir = 1 - fixed_direction;
+  if (!s.IsClamped(0, 2) || !s.IsClamped(1, 2)) return refuse("this surface is not clamped in both directions");
+  if (c.Dimension() != 3 || c.Order() < 2 || c.CVCount() < c.Order() || !c.IsClamped(2)) return refuse("the target curve is not a clamped 3D NURBS curve");
+  if (!host.raw().IsValid()) return refuse("the host surface is not valid");
+
+  const ON_Interval c_dom = c.Domain();
+  const ON_Interval s_edge = s.Domain(edge_dir);
+  const double at = at_min ? s.Domain(fixed_direction).Min() : s.Domain(fixed_direction).Max();
+  auto s_corner = [&](double e) { return fixed_direction == 0 ? s.PointAt(at, e) : s.PointAt(e, at); };
+  // The same corner rule MatchEdgeToCurve() applies; its decision is compared with the one it reports below.
+  const double straight = s_corner(s_edge.Min()).DistanceTo(c.PointAt(c_dom.Min())) + s_corner(s_edge.Max()).DistanceTo(c.PointAt(c_dom.Max()));
+  const double crossed = s_corner(s_edge.Min()).DistanceTo(c.PointAt(c_dom.Max())) + s_corner(s_edge.Max()).DistanceTo(c.PointAt(c_dom.Min()));
+  const bool reversed = crossed < straight;
+
+  double size = 1.0;
+  {
+    ON_BoundingBox bs, bc, bh;
+    s.GetBoundingBox(bs, false);
+    c.GetBoundingBox(bc, false);
+    host.raw().GetBoundingBox(bh, false);
+    size = std::max({1.0, bs.Diagonal().Length(), bc.Diagonal().Length(), bh.Diagonal().Length()});
+  }
+
+  // Unit host normal at the host point closest to `p`, and the distance to it.
+  auto host_normal = [&](const ON_3dPoint& p, ON_3dVector& n, double& gap) {
+    const Point2d uv = host.ClosestPointParameter(p, 40, 40);
+    ON_3dPoint hp;
+    if (!host.raw().EvNormal(uv.x, uv.y, hp, n) || !n.Unitize()) return false;
+    gap = hp.DistanceTo(p);
+    return true;
+  };
+  // This surface's own inward cross derivative at the edge parameter `e` of surface `sf`.
+  auto inward_at = [&](const ON_NurbsSurface& sf, double sat, double e, ON_3dPoint& p) {
+    ON_3dVector du, dv;
+    if (fixed_direction == 0) sf.Ev1Der(sat, e, p, du, dv); else sf.Ev1Der(e, sat, p, du, dv);
+    ON_3dVector d = fixed_direction == 0 ? du : dv;
+    if (!at_min) d = -d;
+    return d;
+  };
+
+  // The wanted field at target parameter t.
+  bool field_failed_degenerate = false;
+  auto field_at = [&](double t, ON_3dVector& d) {
+    const double f = (t - c_dom.Min()) / c_dom.Length();
+    const double e = s_edge.ParameterAt(reversed ? 1.0 - f : f);
+    ON_3dPoint ep;
+    const ON_3dVector d0 = inward_at(s, at, e, ep);
+    ON_3dVector n;
+    double gap = 0.0;
+    if (!host_normal(c.PointAt(t), n, gap)) return false;
+    local.max_host_gap = std::max(local.max_host_gap, gap);
+    const double len0 = d0.Length();
+    ON_3dVector proj = d0 - (d0 * n) * n;
+    if (!(len0 > 0.0) || proj.Length() < 1.7e-3 * len0) { field_failed_degenerate = true; return false; }
+    d = proj * (len0 / proj.Length());
+    return true;
+  };
+
+  // Fit D(t): collocation at the Greville abscissae of a clamped uniform cubic, doubling the control points until it
+  // reproduces the sampled field between the nodes.
+  ON_NurbsCurve fit;
+  const int p = 3;
+  double dmax = 0.0;
+  for (int n_f = 16; n_f <= 128; n_f *= 2) {
+    std::vector<double> U(static_cast<size_t>(n_f + p + 1));
+    const int spans = n_f - p;
+    for (int k = 0; k <= p; ++k) { U[static_cast<size_t>(k)] = c_dom.Min(); U[static_cast<size_t>(n_f + k)] = c_dom.Max(); }
+    for (int k = 1; k < spans; ++k) U[static_cast<size_t>(p + k)] = c_dom.ParameterAt(static_cast<double>(k) / spans);
+    std::vector<std::vector<double>> a(static_cast<size_t>(n_f));
+    std::vector<ON_3dVector> rhs(static_cast<size_t>(n_f));
+    std::vector<double> basis;
+    for (int i = 0; i < n_f; ++i) {
+      const double g = (U[static_cast<size_t>(i) + 1] + U[static_cast<size_t>(i) + 2] + U[static_cast<size_t>(i) + 3]) / 3.0;
+      BSplineBasisAll(U, p, n_f, g, basis);
+      a[static_cast<size_t>(i)] = basis;
+      if (!field_at(g, rhs[static_cast<size_t>(i)])) {
+        return refuse(field_failed_degenerate ? "the surface's own cross direction is within 0.1 degree of the host normal at a sample (no tangent direction to follow)"
+                                              : "the host surface could not be evaluated near the target curve");
+      }
+      dmax = std::max(dmax, rhs[static_cast<size_t>(i)].Length());
+    }
+    std::vector<ON_3dVector> sol;
+    if (!SolveCollocation(a, rhs, sol)) return refuse("the field fit is singular");
+    if (!fit.Create(3, false, p + 1, n_f)) return refuse("could not create the field curve");
+    for (int k = 0; k < n_f + p - 1; ++k) fit.SetKnot(k, U[static_cast<size_t>(k) + 1]);
+    for (int i = 0; i < n_f; ++i) fit.SetCV(i, ON_3dPoint(sol[static_cast<size_t>(i)]));
+    double err = 0.0;
+    for (int k = 0; k < spans; ++k) {
+      for (int q = 1; q <= 3; ++q) {
+        const double t = U[static_cast<size_t>(p + k)] + (U[static_cast<size_t>(p + k) + 1] - U[static_cast<size_t>(p + k)]) * q / 4.0;
+        ON_3dVector want;
+        if (!field_at(t, want)) return refuse("the host surface could not be evaluated near the target curve");
+        err = std::max(err, (want - ON_3dVector(fit.PointAt(t))).Length());
+      }
+    }
+    local.field_fit_error = err;
+    local.field_control_points = n_f;
+    if (err <= 1e-7 * std::max(dmax, 1e-300) || n_f == 128) break;
+  }
+  if (local.max_host_gap > 1e-3 * size) {
+    return refuse("the target curve is not on the host surface (farthest sample " + std::to_string(local.max_host_gap) + " away)");
+  }
+
+  const ON_NurbsSurface backup = surface_;
+  NurbsCurve field;
+  field.raw() = fit;
+  MatchEdgeReport mr;
+  const Result r = MatchEdgeToCurve(fixed_direction, at_min, target, MatchContinuity::Tangent, &field, nullptr, &mr);
+  if (r != Result::Ok) return refuse("MatchEdgeToCurve refused the construction (periodic or unclamped surface or curve)");
+  local.match = mr;
+  if (mr.target_edge_reversed != reversed) {
+    surface_ = backup;
+    return refuse("internal pairing check failed (the target orientation differs from the one the field was sampled for)");
+  }
+
+  // Measure the edited surface against the host, independent of the fit nodes.
+  const double at2 = at_min ? surface_.Domain(fixed_direction).Min() : surface_.Domain(fixed_direction).Max();
+  const ON_Interval e2 = surface_.Domain(edge_dir);
+  double worst = 0.0, gap2 = 0.0;
+  for (int k = 0; k <= 128; ++k) {
+    ON_3dPoint ep;
+    const ON_3dVector d = inward_at(surface_, at2, e2.ParameterAt(k / 128.0), ep);
+    ON_3dVector n;
+    double gap = 0.0;
+    if (!host_normal(ep, n, gap) || !(d.Length() > 0.0)) { surface_ = backup; return refuse("the host could not be evaluated along the edited edge"); }
+    gap2 = std::max(gap2, gap);
+    worst = std::max(worst, std::abs(d * n) / d.Length());
+  }
+  local.max_tangent_plane_deviation = worst;
+  local.max_host_gap = std::max(local.max_host_gap, gap2);
+  if (!(worst <= 1e-5)) {
+    surface_ = backup;
+    return refuse("the edited surface is not tangent to the host along the edge (deviation " + std::to_string(worst) + ")");
+  }
+  if (report) *report = local;
+  return Result::Ok;
+}
+
 Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area,
                                        DevelopableKind* out_kind) const {
   if (u_divisions < 1 || v_divisions < 1) {

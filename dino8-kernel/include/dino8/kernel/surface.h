@@ -94,6 +94,24 @@ struct MatchEdgeReport {
   bool target_edge_reversed = false;
 };
 
+// What NurbsSurface::MatchEdgeToCurveFollowing() measured after its edit.
+struct MatchFollowReport {
+  // The report of the underlying MatchEdgeToCurve() call (position and tangent
+  // residuals against the fitted field, orientation decision).
+  MatchEdgeReport match;
+  // Max distance from the target curve to the host surface over the samples.
+  double max_host_gap = 0.0;
+  // Max over 129 edge samples of |inward . n| / |inward| for the EDITED surface:
+  // the sine of the angle between its inward cross derivative and the host's
+  // tangent plane (0 = exactly tangent to the host).
+  double max_tangent_plane_deviation = 0.0;
+  // Max |fit - sampled field| over the fit's midpoints, and the control points used.
+  double field_fit_error = 0.0;
+  int field_control_points = 0;
+  // Set whenever the call returns Result::Failed.
+  std::string refusal_reason;
+};
+
 // Which analytic developable primitive NurbsSurface::UnrollDevelopable()
 // matched, written to its optional out_kind - useful for a caller (e.g.
 // an app command) that wants to report which case applied, or confirm
@@ -2171,6 +2189,50 @@ class NurbsSurface {
   Result MatchEdgeToCurve(int fixed_direction, bool at_min, const NurbsCurve& target, MatchContinuity continuity,
                           const NurbsCurve* cross_derivative = nullptr,
                           const NurbsCurve* cross_second_derivative = nullptr, MatchEdgeReport* report = nullptr);
+
+  // MatchSrf against a target CURVE that lies on a HOST surface, with the
+  // edited surface leaving the curve IN THE HOST'S TANGENT PLANE (G1 to
+  // the host along the curve) - Rhino's "match to curve, following a
+  // surface". `MatchEdgeToCurve()` alone can only keep this surface's own
+  // cross-boundary direction (which is generally not tangent to anything
+  // in particular) or take a field from the caller; this builds that
+  // field from the host:
+  //
+  //  * for the target parameter t paired with edge parameter e (the same
+  //    corner rule `MatchEdgeToCurve()` uses to decide whether the curve
+  //    runs against the edge), D0(t) is this surface's own pre-edit
+  //    inward cross derivative at e, evaluated directly - so a RATIONAL
+  //    surface works too (its own derivative is a rational function, not
+  //    a spline, which is why the default preserved field of
+  //    `MatchEdgeToCurve()` refuses it; here it is only sampled);
+  //  * n(t) is the host's unit normal at the host point closest to
+  //    target(t); the wanted field is D(t) = |D0| * unit(D0 - (D0.n) n):
+  //    the surface's own cross direction rotated into the host tangent
+  //    plane, its speed kept (so the edited surface keeps its
+  //    parameterization speed, as `MatchEdge()` documents for its scale);
+  //  * D(t) is then fitted over the target's own domain by collocation at
+  //    the Greville abscissae of a clamped uniform cubic (control points
+  //    doubled from 16 up to 128 until the fit agrees with the sampled
+  //    field to 1e-7 of its size (the floor set by the host closest-point search, ~1e-8) at the midpoints), and handed to
+  //    `MatchEdgeToCurve()` as an explicit field, so every exact-row
+  //    guarantee, the far-edge protection and the evaluate-after-edit
+  //    self-check of that method apply verbatim.
+  //
+  // After the edit the result is MEASURED, not inferred: along 129 edge
+  // samples, the sine of the angle between the edited surface's inward
+  // derivative and the host tangent plane
+  // (`max_tangent_plane_deviation`), and the distance of the target from
+  // the host (`max_host_gap`). Result::Failed, this surface restored
+  // bit-identical, if the target is farther from the host than 1e-3 of
+  // the larger of the two bounding-box diagonals (it must lie on the
+  // host), if D0 is within ~0.1 degree of the host normal at some
+  // sample (no tangent direction to follow), if the measured deviation
+  // exceeds 1e-5, or for any reason `MatchEdgeToCurve()` refuses (a
+  // periodic or unclamped surface or target); `refusal_reason` says which.
+  // G1 only: a curvature match to a host would need the host's normal
+  // curvature along the cross direction, which this does not attempt.
+  Result MatchEdgeToCurveFollowing(int fixed_direction, bool at_min, const NurbsCurve& target, const NurbsSurface& host,
+                                   MatchFollowReport* report = nullptr);
 
   // Unrolls a *developable* surface (a plane, a cylinder, or a cone -
   // the only three shapes an ON_NurbsSurface can be per OpenNURBS'
