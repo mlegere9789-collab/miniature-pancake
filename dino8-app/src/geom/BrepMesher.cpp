@@ -938,10 +938,21 @@ kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options)
   // builds each cap and wall on its own) cannot be solid-checked, and its independently sampled
   // coincident edges leave T-junctions: re-mesh with every edge sampled uniformly. This can only turn a
   // not-closed outcome into a closed one, and only runs for a multi-face brep with no shared edge
-  // (a genuinely open sewn shell has shared edges and is never re-meshed).
+  // (a genuinely open sewn shell has shared edges and is never re-meshed; a face's own seam edge does not count as shared).
   if (!m.IsClosedManifold() && !options.unify_edge_spacing && brep.m_F.Count() >= 4 && brep.m_E.Count() > 0) {
     bool none_shared = true;
-    for (int ei = 0; ei < brep.m_E.Count() && none_shared; ++ei) none_shared = brep.m_E[ei].m_ti.Count() <= 1;
+    for (int ei = 0; ei < brep.m_E.Count() && none_shared; ++ei) {
+      const ON_BrepEdge& e = brep.m_E[ei];
+      // A SEAM edge of a face closed in a direction (a thickened cylinder wall, a full revolve) has two trims, both on the
+      // SAME face: it is still shared with no OTHER face, so it does not count as shared here.
+      bool all_one_face = true;
+      for (int k = 1; k < e.m_ti.Count() && all_one_face; ++k) {
+        const ON_BrepTrim& t0 = brep.m_T[e.m_ti[0]];
+        const ON_BrepTrim& tk = brep.m_T[e.m_ti[k]];
+        all_one_face = t0.Face() != nullptr && tk.Face() != nullptr && t0.Face()->m_face_index == tk.Face()->m_face_index;
+      }
+      none_shared = e.m_ti.Count() <= 1 || all_one_face;
+    }
     if (none_shared) {
       BrepMeshOptions uniform = options;
       uniform.unify_edge_spacing = true;
