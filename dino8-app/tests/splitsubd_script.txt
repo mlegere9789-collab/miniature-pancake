@@ -68,3 +68,59 @@ SelLast
 SplitSubD
 4,0,0
 4,10,0
+
+# A SMOOTH cube cut at its mid-plane x = 5, a symmetry plane of its limit surface: each half must have exactly half the uncut volume.
+# The app's Volume of a SubD reads the control net of its CURRENT level (a 10-cube cage reads 1000, the limit is about 327.9), so every
+# object is brought to the same total level 5 first: the uncut cube is SubDivide'd 5 times; a half cut after Refine=3 gets 2 more; a half
+# cut with Refine=0 gets 5. Volumes, in order: the uncut cube, then the two halves. Kernel measurement (same procedure): the half volume
+# is 51.8 / 5.15 / 0.64 / 0.077 % off for Refine 0 / 1 / 2 / 3 (SubD::SplitByPlaneRefined).
+New
+SPLBEGIN_smooth_refined
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SubDivide
+SubDivide
+SubDivide
+SubDivide
+SubDivide
+Volume
+New
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SplitSubD
+Refine=3
+5,0,0
+5,10,0
+SelLast
+SubDivide
+SubDivide
+Volume
+Delete
+SelLast
+SubDivide
+SubDivide
+Volume
+
+New
+SPLBEGIN_smooth_cage
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SubDivide
+SubDivide
+SubDivide
+SubDivide
+SubDivide
+Volume
+New
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SplitSubD
+5,0,0
+5,10,0
+SelLast
+SubDivide
+SubDivide
+SubDivide
+SubDivide
+SubDivide
+Volume

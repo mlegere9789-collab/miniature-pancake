@@ -9185,13 +9185,14 @@
  },
  {
   "name": "SplitSubD",
-  "description": "Cuts a SubD with a vertical plane into two SubDs: the control cage is clipped, each half is capped and its cut rim creased.",
+  "description": "Cuts a SubD with a vertical plane into two SubDs: the control cage is clipped, each half is capped and its cut rim creased; Refine subdivides the cage first so a smooth SubD's halves follow its surface more closely.",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [
    "Cap",
    "CreaseCut",
-   "KeepInput"
+   "KeepInput",
+   "Refine"
   ],
   "help": ""
  },

@@ -1021,6 +1021,7 @@ void SplitSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, cons
   if (!n.Unitize()) { ctx.Warn("SplitSubD: the two points must differ and the line between them must not be parallel to the construction-plane normal"); return; }
   const double offset = ON_DotProduct(n, in.picks[0]);
   const bool cap = in.Yes("Cap"), crease_cut = in.Yes("CreaseCut"), keep = in.Yes("KeepInput");
+  const int refine = static_cast<int>(std::max(0.0, std::min(5.0, std::floor(in.OptNum("Refine", 0) + 0.5))));
   ctx.Doc().BeginChange("SplitSubD");
   int cut_objects = 0;
   for (ObjectId id : ids) {
@@ -1029,7 +1030,7 @@ void SplitSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, cons
     if (o->kind != ObjectKind::SubD || !o->subd) { ctx.Warn("SplitSubD: object " + std::to_string(id) + " is not a SubD; skipped"); continue; }
     kernel::SubDPlaneSplit cut;
     try {
-      cut = o->subd->SplitByPlane(n, offset, cap, crease_cut);
+      cut = o->subd->SplitByPlaneRefined(n, offset, refine, cap, crease_cut);
     } catch (const std::exception& ex) { ctx.Warn("SplitSubD: object " + std::to_string(id) + ": " + ex.what()); continue; }
     if (!cut.has_positive || !cut.has_negative) { ctx.Warn("SplitSubD: the plane does not cross object " + std::to_string(id) + "; nothing cut"); continue; }
     const int layer = o->layer_index;
@@ -1045,7 +1046,8 @@ void SplitSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, cons
     ++cut_objects;
     ctx.Print("SplitSubD: object " + std::to_string(id) + ": " + std::to_string(cut.positive.FaceCount()) + " face(s) on the positive side, " +
               std::to_string(cut.negative.FaceCount()) + " on the negative; " + std::to_string(cut.cut_vertices) + " cut vertices, " +
-              std::to_string(cut.split_faces) + " split faces, " + std::to_string(cut.cap_loops) + " cap(s)" + (crease_cut ? ", cut rim creased" : ""));
+              std::to_string(cut.split_faces) + " split faces, " + std::to_string(cut.cap_loops) + " cap(s)" + (crease_cut ? ", cut rim creased" : "") +
+              (refine > 0 ? ", refined " + std::to_string(refine) + " level(s) before the cut" : ""));
   }
   if (cut_objects) ctx.Print("SplitSubD: " + std::to_string(cut_objects) + " SubD(s) cut");
 }
@@ -1800,8 +1802,8 @@ void RegisterSubDCommands(CommandEngine& e) {
                                 {Numeric("Radius", 5), Choice("Falloff", {"Smooth", "Linear", "Constant"})}, SculptAction),
       CommandStatus::Implemented, "Drags one control vertex to a new point; every control point within Radius follows by the chosen falloff (Smooth, Linear or Constant).");
   Reg(e, "SplitSubD", SubDTool(kSelectSubD, "Pick two points; the cutting plane is vertical through the line between them", 2, {},
-                               {Toggle("Cap", true), Toggle("CreaseCut", true), Toggle("KeepInput", false)}, SplitSubDAction),
-      CommandStatus::Implemented, "Cuts a SubD with a vertical plane into two SubDs: the control cage is clipped, each half is capped and its cut rim creased.");
+                               {Toggle("Cap", true), Toggle("CreaseCut", true), Toggle("KeepInput", false), Numeric("Refine", 0)}, SplitSubDAction),
+      CommandStatus::Implemented, "Cuts a SubD with a vertical plane into two SubDs: the control cage is clipped, each half is capped and its cut rim creased; Refine subdivides the cage first so a smooth SubD's halves follow its surface more closely.");
   Reg(e, "SubDVertexInfo", SubDTool(kSelectSubD, "Pick vertices to inspect", -1, {}, {}, VertexInfoAction),
       CommandStatus::Implemented, "Reports how each picked control-net vertex is classified (Smooth, Crease, Corner, Dart), its valence, faces and crease edges, and its exact limit-surface point.");
   Reg(e, "SubDCorner", SubDTool(kSelectSubD, "Pick crease vertices to pin as corners", -1, {}, {},

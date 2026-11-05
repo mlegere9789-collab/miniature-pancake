@@ -29,3 +29,24 @@ splhas miss "does not cross object" "SPL_miss: a plane that misses the cube cuts
 N="$(grep -cE "^history: Object [0-9]+ \(" <<<"$(splblock miss)" || true)"
 if [ "$N" = "1" ]; then spl_ok "SPL_miss: the cube is untouched (1 object)"; else spl_bad "SPL_miss: expected 1 object, List shows '$N'"; fi
 splhas notsubd "is not a SubD; skipped" "SPL_notsubd: a solid is skipped with a warning"
+# ---- smooth cube at its symmetry mid-plane: each half is exactly half the uncut limit volume (the oracle needs no formula for V)
+# The app's Volume of a SubD reads the control net of its current level, so the script refines everything to the same total level 5 first (uncut cube:
+# 5 x SubDivide; a half cut after Refine=3: 2 more; a Refine=0 half: 5). Kernel measurement with the same procedure (control-net volumes, V = 327.895):
+# the half volume is 51.77 / 5.15 / 0.643 / 0.077 % off half of V for Refine 0 / 1 / 2 / 3, so the check is 1 % for Refine=3 and 20 % or more for Refine=0.
+splhas smooth_refined "refined 3 level(s) before the cut" "SPL_smooth_refined: Refine=3 is reported"
+SV="$(splvol smooth_refined 1)"
+for N in 2 3; do
+  H="$(splvol smooth_refined $N)"
+  if [ -n "$SV" ] && [ -n "$H" ] && awk -v v="$SV" -v h="$H" 'BEGIN { d = h - v / 2; if (d < 0) d = -d; exit !(d <= 0.01 * v / 2) }'; then
+    spl_ok "SPL_smooth_refined: half $((N - 1)) has half the uncut volume within 1 % (V = $SV, half = $H)"
+  else
+    spl_bad "SPL_smooth_refined: half $((N - 1)) volume '${H:-none}' is not within 1 % of half the uncut volume ('${SV:-none}' / 2)"
+  fi
+done
+CV="$(splvol smooth_cage 1)"
+CH="$(splvol smooth_cage 2)"
+if [ -n "$CV" ] && [ -n "$CH" ] && awk -v v="$CV" -v h="$CH" 'BEGIN { d = h - v / 2; if (d < 0) d = -d; exit !(d >= 0.2 * v / 2) }'; then
+  spl_ok "SPL_smooth_cage (negative control): the cage-level cut (Refine=0) is more than 20 % off half the volume (V = $CV, half = $CH)"
+else
+  spl_bad "SPL_smooth_cage (negative control): expected a cage-level half to be 20 % or more off half the volume (V = '${CV:-none}', half = '${CH:-none}')"
+fi
