@@ -4,6 +4,7 @@ Hairline
 LoftAlignSeams
 LoftRationalTangent
 LoftSectionTangents
+MakeCounterboreHole
 MicroEdge
 OffsetInPlaneClosedPolygon
 RefusesToCapAPathThatDoublesBack
@@ -26,6 +27,7 @@ TestSurfaceInterpolateThroughGrid
 TrisToQuads
 boss_tests
 bridge_holes
+counterbore
 extra::Sealed
 extrude_along
 extrusion_shell_tests
@@ -41,6 +43,7 @@ sealed_boolean_tests
 shell_open_extrusion
 shell_revolved_profile
 subd_boolean_semisharp
+subd_edge_loops
 subd_split_plane
 subd_split_plane_refined
 subd_symmetrize_corner
