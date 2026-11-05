@@ -1,14 +1,14 @@
 # MSCV: MatchSrf against a target CURVE is the kernel's exact NurbsSurface::MatchEdgeToCurve (mscv_script.txt).
 # Before: the curve-target path moved each boundary control point onto the curve (and, for Tangency, nudged the next row), so a
 # degree-1 wall edge facing an arc became a straight CHORD of it and Curvature was refused outright. Fixture: a vertical wall
-# (SrfPt (1,-2,0) (6,-2,0) (6,-2,3) (1,-2,3), cross derivative (0,0,3)) matched to the rational quarter arc centre (0,0,0),
+# (SrfPt (1,-2,0) (6,-2,0) (6,-2,3) (1,-2,3), cross derivative (0,0,3); SrfPt indexes u from corner 1 to corner 4, i.e. up the wall, so the matched bottom edge is u = 0 and v runs along it) matched to the rational quarter arc centre (0,0,0),
 # radius 5, from (5,0,0) to (0,5,0), at Continuity Position (G0), Tangency (G1) and Curvature (G2). Expectations are closed
 # forms of the geometry, never the app's own printout of what it built:
-#   * every probe of the matched edge (v = 0, five u values) lies on the circle x^2 + y^2 = 25 in the plane z = 0; the old chord
+#   * every probe of the matched edge (u = 0, five v values) lies on the circle x^2 + y^2 = 25 in the plane z = 0; the old chord
 #     would put its midpoint at radius 5 cos(45 deg) = 3.536, so a 0.01 tolerance on the radius separates the two by 1.4;
 #   * the two probed ends of the edge are the arc's ends (5,0,0) and (0,5,0), in either order;
-#   * the far edge (v = 1) never moves: (3.5,-2,3) at u = 0.5 (a corner-to-corner straight line in the original wall);
-#   * the wall keeps its own cross derivative (0,0,3) along the edge (preserved field), so at v = 0.002 the point has risen by
+#   * the far edge (u = 1) never moves: (3.5,-2,3) at v = 0.5 (a corner-to-corner straight line in the original wall);
+#   * the wall keeps its own cross derivative (0,0,3) along the edge (preserved field), so at u = 0.002 the point has risen by
 #     exactly 3 * 0.002 = 0.006 in z while x, y have not moved (they move only at second order, ~1e-4): the surface leaves the arc
 #     axially, i.e. it is a cylinder wall there (radial normal).
 # The app prints coordinates with 4 significant digits, so every tolerance is 0.01 (radius, positions) or 0.0005 (the z lift);
@@ -53,7 +53,7 @@ for c in g0 g1 g2; do
   mscv_has $c "MatchSrf: exact edge match ($g) to the target curve, max position error 0" "MSCV_$c: MatchSrf reports the kernel's exact curve match at $g, residual 0 (not the per-CV fallback)"
   for i in 0 1 2 3 4; do mscv_circle ${c}_e$i "MSCV_$c: edge probe $i of 5 lies on the circle of radius 5 about the origin in the plane z = 0"; done
   mscv_ends $c
-  mscv_near ${c}_far 3.5 -2 3 "MSCV_$c: the far edge never moved (u = 0.5, v = 1 is still (3.5,-2,3))"
+  mscv_near ${c}_far 3.5 -2 3 "MSCV_$c: the far edge never moved (u = 1, v = 0.5 is still (3.5,-2,3))"
 done
 mscv_has g1 "max tangent error 0" "MSCV_g1: the G1 match reports a zero tangent residual"
 mscv_has g2 "max curvature error 0" "MSCV_g2: the G2 match reports a zero curvature residual"

@@ -1,7 +1,8 @@
 # MSCV: MatchSrf against a target CURVE is the kernel's exact NurbsSurface::MatchEdgeToCurve (see sections/77_mscv.sh).
 # A vertical wall (SrfPt) 2 units in front of a quarter arc (radius 5, rational) is matched to the arc at G0, G1 and G2;
 # each case starts from New and is bracketed by unknown-command markers (MSCVBEGIN_<name>); the wall is then probed with
-# EvaluateUVPt at normalized parameters (one marker per probe).
+# EvaluateUVPt at normalized parameters (one marker per probe). SrfPt's net is indexed so that u runs from the first corner to
+# the FOURTH (here up the wall, z) and v from the first to the SECOND (along x): the matched bottom edge is u = 0 and v runs along it.
 SetActiveViewport Top
 New
 MSCVBEGIN_g0
@@ -17,27 +18,27 @@ EvaluateUVPt Normalized=Yes
 MSCVBEGIN_g0_e1
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.25,0
+0,0.25
 MSCVBEGIN_g0_e2
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,0
+0,0.5
 MSCVBEGIN_g0_e3
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.75,0
+0,0.75
 MSCVBEGIN_g0_e4
 SelSrf
 EvaluateUVPt Normalized=Yes
-1,0
+0,1
 MSCVBEGIN_g0_lift
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,0.002
+0.002,0.5
 MSCVBEGIN_g0_far
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,1
+1,0.5
 New
 MSCVBEGIN_g1
 Arc 0,0,0 5,0,0 0,5,0
@@ -53,27 +54,27 @@ EvaluateUVPt Normalized=Yes
 MSCVBEGIN_g1_e1
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.25,0
+0,0.25
 MSCVBEGIN_g1_e2
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,0
+0,0.5
 MSCVBEGIN_g1_e3
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.75,0
+0,0.75
 MSCVBEGIN_g1_e4
 SelSrf
 EvaluateUVPt Normalized=Yes
-1,0
+0,1
 MSCVBEGIN_g1_lift
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,0.002
+0.002,0.5
 MSCVBEGIN_g1_far
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,1
+1,0.5
 New
 MSCVBEGIN_g2
 Arc 0,0,0 5,0,0 0,5,0
@@ -89,25 +90,25 @@ EvaluateUVPt Normalized=Yes
 MSCVBEGIN_g2_e1
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.25,0
+0,0.25
 MSCVBEGIN_g2_e2
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,0
+0,0.5
 MSCVBEGIN_g2_e3
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.75,0
+0,0.75
 MSCVBEGIN_g2_e4
 SelSrf
 EvaluateUVPt Normalized=Yes
-1,0
+0,1
 MSCVBEGIN_g2_lift
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,0.002
+0.002,0.5
 MSCVBEGIN_g2_far
 SelSrf
 EvaluateUVPt Normalized=Yes
-0.5,1
+1,0.5
 New
