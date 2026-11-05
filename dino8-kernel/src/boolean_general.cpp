@@ -8692,7 +8692,11 @@ SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, dou
   Brep best_attempt;
   int best_unpaired = std::numeric_limits<int>::max();
   std::string naked_diag;  // per sew tolerance: the naked edges left after sewing (count, length, ends), for the refusal text
-  for (const double fraction : {0.0, 2e-4, 1e-3, 3e-3, 1e-2}) {
+  // The two finest rungs (0.003%, 0.01%) exist because a coarse first rung chain-merges the micro-edges a keyholed
+  // face leaves where its corridor lands on a hole boundary (a round boss on a sphere whose footprint is clear of the
+  // seam: edges of 0.002-0.005 collapse into a closed edge at 0.02% of the diagonal and the result is an invalid
+  // ON_Brep), while 0.003% / 0.01% close the true ~1e-4 gaps without touching them.
+  for (const double fraction : {0.0, 3e-5, 1e-4, 2e-4, 1e-3, 3e-3, 1e-2}) {
     Brep c = r;
     const double tol = fraction * diag;
     try {

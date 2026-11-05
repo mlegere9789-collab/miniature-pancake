@@ -26,13 +26,21 @@ namespace dino8::kernel {
 //
 // The fusion is BooleanCombineGeneralSealed(solid, tool, Union): the result is
 // ON_Brep::IsValid() and IsSolid(), or the call throws. Measured scope: round
-// and rectangular bosses on a cylinder wall, a round and a rectangular boss on a
-// sphere along the pole axis, and a round boss on a sphere along (1,0,1), fuse
-// with the volume of the closed form / quadrature (the engine's polyline edge
-// approximation leaves the added part of a small round boss up to 0.7% high;
-// that bound, not exactness, is what the tests pin). Measured refusals, passed
-// through with the engine's cause: a round boss on a sphere along (1,2,2),
-// (0,1,1) and (-1,0,1) (the sewn result has an invalid seam trim).
+// and rectangular bosses on a cylinder wall and on a sphere (pole axis), round
+// bosses on a sphere along every tilted axis tried except (-1,-2,2), a round
+// boss on a torus's outer equator, and round and rectangular bosses on a cone.
+// The engine's polyline approximation of the intersection edge leaves the added
+// volume of a small round boss up to 0.7% (sphere) / 1.1% (torus) high; those
+// bounds, not exactness, are what the tests pin. CONE: the body is right (point
+// membership of a grid agrees with the construction everywhere outside a 0.03
+// band) but the REPORTED added volume of the cone cases was measured 6% high
+// (round) and 9% low (rectangle), the divergence-theorem integral of the
+// apex-singular trimmed cone face; do not trust added_volume for a cone host.
+// A rectangular boss on a torus is refused (3-loop non-manifold), and a round
+// boss on a sphere along (-1,-2,2) is refused (seam trim without an iso flag),
+// even after the profile's seam is moved by 1/4, 1/2 and 3/4 of its domain, which
+// is the retry a refused CURVE profile gets (a round boss on a sphere along
+// (-1,2,2) needed it). Refusals pass the engine's cause through.
 //
 // Throws std::invalid_argument for a solid with no faces, a non-positive or
 // non-finite height, a zero direction, an open or non-planar profile, a

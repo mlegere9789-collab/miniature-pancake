@@ -1969,7 +1969,7 @@ struct SealedGeneralBoolean {
 
 // Runs BooleanCombineGeneral() and seals its result: (when the raw result is
 // not already a solid) SewTJunctions + JoinNakedEdges at an escalating
-// tolerance (0.02%, 0.1%, 0.3%, 1% of the bounding-box diagonal; the first that
+// tolerance (0.003%, 0.01%, 0.02%, 0.1%, 0.3%, 1% of the bounding-box diagonal; the first that
 // yields IsSolid() wins), then OpenSewnKeyholes(), then requires
 // ON_Brep::IsValid() and IsSolid(). An empty result (a Difference that removes
 // everything, a disjoint Intersection) is returned as is. Anything else that
