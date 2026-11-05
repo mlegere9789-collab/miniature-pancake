@@ -1198,7 +1198,11 @@ class Brep {
   // approximately near it (two fractions closer than 1e-9 collapse to one
   // station, as `PipeVariable()` does). A schedule of exactly the two
   // endpoints {(0, .), (1, .)} on a straight rail keeps the exact
-  // 2-station ruled-wall path (identical to the plain scalar case); any
+  // 2-station ruled-wall path (identical to the plain scalar case) - for a
+  // SCALE schedule and for a CONSTANT twist schedule; a twist RAMP is a
+  // rotation, not linear in its angle, so it takes the ordinary station
+  // grid (as does a plain nonzero twist_total on a straight rail: the
+  // 2-station wall would be a flat bowtie cutting the helicoid); any
   // other schedule uses the same station-count skin interpolant this
   // method already uses for a curved rail, so it is only approximately
   // piecewise-linear BETWEEN breakpoints, tighter as `stations` grows -

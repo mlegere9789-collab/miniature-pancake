@@ -74,14 +74,48 @@ D8_EXTRA_TEST(Sweep1TwistStraightRailAdaptiveIsTheHelicoid) {
   }
 }
 
-D8_EXTRA_TEST(Sweep1TwistStraightRailDefaultShortcutIsNotTheHelicoid) {
+// The DEFAULT call (non-adaptive, 32 stations) used to take the 2-station "exact extrusion" shortcut on a straight rail even with a
+// twist: the flat bowtie between the untwisted and the fully twisted section, area 6 for the 180 degree case below against the
+// helicoid's 17.56 - exact for the two end sections only. A rotation is not linear in its angle, so the shortcut is valid only
+// while every section is a linear function of the position along the rail (a scale ramp, no twist). Now a nonzero twist, or a
+// twist ramp given as a schedule, takes the ordinary station grid.
+D8_EXTRA_TEST(Sweep1TwistStraightRailDefaultIsTheHelicoid) {
   const NurbsCurve rail = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 6)}, 1);
   const NurbsCurve section = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(3, 0, 0)}, 1);
-  const Brep b = Brep::Sweep1(section, rail, 32, false, kPi);
-  const double area = WallArea(b);
   const double exact = Helicoid(6.0, kPi, 1.0, 3.0);
-  std::printf("  [sweep1 twist] default (2-station) wall area %.6f, helicoid %.6f\n", area, exact);
-  d8test::Check(std::fabs(area - exact) > 0.1 * exact, "negative control: the default 2-station ruled shortcut with a 180 degree twist is NOT the helicoid (documented limit)");
+  const Brep plain = Brep::Sweep1(section, rail, 32, false, kPi);
+  const double area = WallArea(plain);
+  std::printf("  [sweep1 twist] default wall area %.6f, helicoid %.6f, rel %.3g\n", area, exact, std::fabs(area - exact) / exact);
+  d8test::Check(std::fabs(area - exact) < 2e-3 * exact, "default Sweep1 with a 180 degree twist on a straight rail: the wall is the helicoid to 2e-3 (was the area-6 bowtie)");
+  const std::vector<std::pair<double, double>> ramp = {{0.0, 0.0}, {1.0, kPi}};
+  const Brep scheduled = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &ramp);
+  const double sarea = WallArea(scheduled);
+  {
+    const ON_NurbsSurface* a = ON_NurbsSurface::Cast(plain.raw().m_S[0]);
+    const ON_NurbsSurface* b = ON_NurbsSurface::Cast(scheduled.raw().m_S[0]);
+    d8test::Check(a != nullptr && b != nullptr && a->CVCount(1) == b->CVCount(1) && a->CVCount(1) > 2,
+                  "the plain twist_total and the equivalent ramp schedule build the same (more than 2) station count");
+  }
+  d8test::Check(std::fabs(sarea - exact) < 2e-3 * exact, "a twist_schedule {(0,0),(1,pi)} on a straight rail: also the helicoid (the trivial two-point schedule no longer collapses to 2 stations)");
+  const std::vector<std::pair<double, double>> constant = {{0.0, kPi / 2}, {1.0, kPi / 2}};
+  const Brep rigid = Brep::Sweep1(section, rail, 32, false, 0.0, 1.0, nullptr, &constant);
+  const ON_NurbsSurface* rw = ON_NurbsSurface::Cast(rigid.raw().m_S[0]);
+  d8test::Check(rw != nullptr && rw->CVCount(1) == 2 && std::fabs(WallArea(rigid) - 12.0) < 1e-6,
+                "a CONSTANT twist schedule is a rigid rotation: still the exact 2-station ruled wall, the 2 x 6 rectangle (area 12)");
   const Brep zero = Brep::Sweep1(section, rail, 32, false, 0.0);
   d8test::Check(std::fabs(WallArea(zero) - 12.0) < 1e-6, "zero twist: the wall is the 2 x 6 rectangle, area 12");
+  const Brep scaled = Brep::Sweep1(section, rail, 32, false, 0.0, 2.0);
+  const ON_NurbsSurface* sw = ON_NurbsSurface::Cast(scaled.raw().m_S[0]);
+  d8test::Check(sw != nullptr && sw->CVCount(1) == 2, "a uniform scale ramp keeps the exact 2-station shortcut (a scaled segment is linear in the position)");
+  // a twisted SQUARE prism: congruent cross-sections, so volume = area x length (Cavalieri) = 1 x 10; lateral area = 4 H int_{-1/2}^{1/2} sqrt(1 + k^2 y^2) dy
+  const NurbsCurve rail10 = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 10)}, 1);
+  const NurbsCurve square = NurbsCurve::FromControlPoints({Point3d(-0.5, -0.5, 0), Point3d(0.5, -0.5, 0), Point3d(0.5, 0.5, 0), Point3d(-0.5, 0.5, 0), Point3d(-0.5, -0.5, 0)}, 1);
+  const Brep prism = Brep::Sweep1(square, rail10, 32, true, kPi / 2);
+  const double k = (kPi / 2) / 10.0;
+  const double side = (0.5 * std::sqrt(1.0 + k * k * 0.25) + std::asinh(k * 0.5) / (2.0 * k)) * 2.0 / 2.0;  // int_{-1/2}^{1/2} sqrt(1+k^2 y^2) dy
+  std::printf("  [sweep1 twist] twisted square prism volume %.6f (10), side integral %.6f\n", prism.Volume(), side);
+  d8test::Check(std::fabs(prism.Volume() - 10.0) < 1e-3 * 10.0, "twisted square prism (90 degrees over 10): capped volume is area x length = 10 (Cavalieri) to 1e-3");
+  const Brep prism_wall = Brep::Sweep1(square, rail10, 32, false, kPi / 2);
+  const ON_NurbsSurface* pw = ON_NurbsSurface::Cast(prism_wall.raw().m_S[0]);
+  d8test::Check(pw != nullptr && pw->CVCount(1) > 2, "...and its wall is no longer the 2-station ruled shortcut");
 }

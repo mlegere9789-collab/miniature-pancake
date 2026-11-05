@@ -68689,7 +68689,14 @@ void TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail() {
   const Brep swept = Brep::Sweep1(square, rail, 32, /*cap=*/true, twist);
   CheckSolidTopology(swept, 3, "twisted square sweep along a straight rail");
   const NurbsSurface wall = FaceSurface(swept, 0);
-  Check(wall.DegreeV() == 1 && wall.CVCountV() == 2, "straight rail still takes the exact 2-station ruled shortcut with twist");
+  // CORRECTED (was: "straight rail still takes the exact 2-station ruled shortcut with twist"). A rotation is not linear in its
+  // angle, so two stations join the untwisted and the fully twisted section by a flat bowtie that cuts the helicoid-like wall: for
+  // a radial segment 1..3 twisted 180 degrees over a rail of length 6 that wall has area 6 where the helicoid's closed form
+  // 6/(2k)*[k*rho*sqrt(1+k^2*rho^2)+asinh(k*rho)] from rho 1 to 3 (k = pi/6) is 17.5619 (tests/extra/sweep1_twist_straight_rail.cpp).
+  // The twisted square prism here has congruent cross-sections, so its capped volume is area x length = 1 x 10 (Cavalieri); the
+  // 2-station shortcut read 6.667.
+  Check(wall.CVCountV() > 2, "straight rail with a twist takes the ordinary station grid, not the 2-station ruled shortcut (a rotation is not linear in its angle)");
+  Check(std::fabs(swept.Volume() - 10.0) < 1e-2, "twisted square prism: capped volume is area x length = 10 (Cavalieri); the 2-station bowtie read 6.667");
 
   const ON_Interval du = wall.raw().Domain(0);
   const ON_Interval dv = wall.raw().Domain(1);
@@ -68875,7 +68882,7 @@ void TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations()
 
   // A trivial two-point schedule spanning the whole rail describes the
   // IDENTICAL twist as the plain scalar - both must build a bit-identical
-  // wall, the same exact 2-station ruled shortcut on a straight rail.
+  // wall (the same station grid on a straight rail; see the corrected check below).
   {
     const double twist = M_PI / 2;
     const std::vector<TP> schedule = {{0.0, 0.0}, {1.0, twist}};
@@ -68883,7 +68890,10 @@ void TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations()
     const Brep plain = Brep::Sweep1(square, rail, 32, true, twist);
     CheckSolidTopology(scheduled, 3, "twist-scheduled square sweep (trivial 2-point schedule)");
     const NurbsSurface wa = FaceSurface(scheduled, 0), wb = FaceSurface(plain, 0);
-    Check(wa.DegreeV() == 1 && wa.CVCountV() == 2, "a trivial 2-point twist_schedule keeps the exact 2-station ruled shortcut");
+    // CORRECTED (was: "a trivial 2-point twist_schedule keeps the exact 2-station ruled shortcut"): a twist RAMP is not a ruled wall (see
+    // TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail); only a constant twist schedule is a rigid rotation. The plain
+    // twist and the trivial schedule describe the same twist, so they build the same station grid.
+    Check(wa.CVCountV() > 2 && wa.CVCountV() == wb.CVCountV(), "a twist ramp schedule {(0,0),(1,twist)} takes the same station grid as the plain twist_total, not the 2-station shortcut");
     double worst = 0.0;
     const ON_Interval dua = wa.raw().Domain(0), dub = wb.raw().Domain(0);
     for (int i = 0; i <= 8; ++i) {

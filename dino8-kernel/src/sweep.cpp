@@ -4801,7 +4801,12 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     // schedule branch's arc-length-fraction reconstruction below, which
     // assumes a non-wrapping, non-repeating station list) is what
     // RmfFrames()'s own wrap holonomy correction requires.
-    const int m_ = straight ? 2 : std::max(stations, 3);
+    // The 2-station ruled shortcut is exact only while every section is a LINEAR function of the position along the rail: a uniform
+    // scale ramp is (point = origin + s(f) * local, linear in f), a twist is not (a rotation is not linear in its angle: two
+    // stations join the untwisted and the fully twisted section by a flat bowtie that cuts the helicoid - area 6 for a 180 degree
+    // twist of a radial segment of length 2 over a rail of length 6, where the helicoid's is 17.56). So a nonzero twist takes the
+    // ordinary station grid.
+    const int m_ = (straight && twist_total == 0.0) ? 2 : std::max(stations, 3);
     params = rail_in.DivideByCount(wrap ? m_ : m_ - 1);
     if (wrap) params.pop_back();
     if (static_cast<int>(params.size()) != m_) Internal(caller, "station count mismatch");
@@ -4820,7 +4825,9 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     auto is_trivial_two_point = [](const std::vector<std::pair<double, double>>* s) {
       return !s || (s->size() == 2 && (*s)[0].first == 0.0 && (*s)[1].first == 1.0);
     };
-    if (straight && is_trivial_two_point(twist_schedule) && is_trivial_two_point(scale_schedule) &&
+    // (a twist schedule collapses only when it is constant: {(0, a), (1, a)} is a rigid rotation by a, still a ruled wall; a ramp is not)
+    const bool twist_is_constant = !twist_schedule || (twist_schedule->size() == 2 && (*twist_schedule)[0].second == (*twist_schedule)[1].second);
+    if (straight && twist_is_constant && is_trivial_two_point(twist_schedule) && is_trivial_two_point(scale_schedule) &&
         is_trivial_two_point(scale_x_schedule) && is_trivial_two_point(scale_y_schedule)) {
       fractions = {0.0, 1.0};
       params = {rail.Domain().Min(), rail.Domain().Max()};
