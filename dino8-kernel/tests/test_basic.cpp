@@ -105931,6 +105931,207 @@ void TestEndTangentsRefusals() {
   Check(!throws(2, 1, ok4, ok4) && !throws(4, 3, ok4, ok4), "degree_u = 2 and degree_u = u_count are accepted");
 }
 
+
+// ---- InterpolateThroughGridWithEndConditions: one-sided tangents, V tangents, twist vectors ----
+using dino8::kernel::GridEndConditions;
+Vector3d Tan(double a, double b, double c) { return Vector3d(a, b, c); }
+
+void TestEndConditionsOneSidedAndVTangentsAndTwistAreHit() {
+  const int nu = 6, nv = 5;
+  const std::vector<Point3d> grid = WigglyGrid(nu, nv);
+  std::vector<double> up, vp;
+  SharedParams(grid, nu, nv, up, vp);
+  std::vector<Vector3d> us, ue, vs, ve;
+  for (int j = 0; j < nv; ++j) {
+    us.push_back(Tan(0.3 + 0.1 * j, 1.0 - 0.2 * j, 0.5 + 0.05 * j));
+    ue.push_back(Tan(-0.4, 0.7 + 0.1 * j, -0.2 - 0.03 * j));
+  }
+  for (int i = 0; i < nu; ++i) {
+    vs.push_back(Tan(0.2 - 0.05 * i, 0.9 + 0.1 * i, 0.4 - 0.1 * i));
+    ve.push_back(Tan(0.1 + 0.04 * i, 1.1 - 0.07 * i, -0.3 + 0.06 * i));
+  }
+  const bool flags[6][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}, {1, 0, 0, 1}, {1, 1, 1, 1}};
+  for (const auto& f : flags) {
+    GridEndConditions ends;
+    if (f[0]) ends.u_start = us;
+    if (f[1]) ends.u_end = ue;
+    if (f[2]) ends.v_start = vs;
+    if (f[3]) ends.v_end = ve;
+    ends.twist_u0_v0 = Tan(0.2, -0.1, 0.3);
+    ends.twist_u1_v0 = Tan(-0.3, 0.25, 0.1);
+    ends.twist_u0_v1 = Tan(0.05, 0.4, -0.2);
+    ends.twist_u1_v1 = Tan(0.15, -0.35, 0.45);
+    const int du = (f[0] || f[1]) ? 3 : 3, dv = 3;
+    const std::string tag = "end conditions u_start/u_end/v_start/v_end = " + std::to_string(f[0]) + std::to_string(f[1]) + std::to_string(f[2]) + std::to_string(f[3]);
+    NurbsSurface s;
+    const Result r = NurbsSurface::InterpolateThroughGridWithEndConditions(grid, nu, nv, du, dv, ends, s);
+    Check(r == Result::Ok, (tag + ": succeeds on a non-planar 6x5 grid").c_str());
+    if (r != Result::Ok) continue;
+    Check(s.CVCountU() == nu + f[0] + f[1] && s.CVCountV() == nv + f[2] + f[3] && s.DegreeU() == du && s.DegreeV() == dv && !s.IsRational(),
+          (tag + ": control net is (u_count + u conditions) x (v_count + v conditions), requested degrees, non-rational").c_str());
+    double miss = 0.0;
+    for (int u = 0; u < nu; ++u) {
+      for (int v = 0; v < nv; ++v) {
+        miss = std::max(miss, s.PointAt(up[static_cast<size_t>(u)], vp[static_cast<size_t>(v)]).DistanceTo(grid[static_cast<size_t>(u * nv + v)]));
+      }
+    }
+    // tangents, measured by OpenNURBS Ev1Der (independent of the solver's derivative rows)
+    double tmiss = 0.0;
+    ON_3dPoint pt;
+    ON_3dVector ds, dt;
+    for (int j = 0; j < nv; ++j) {
+      if (f[0]) {
+        s.raw().Ev1Der(0.0, vp[static_cast<size_t>(j)], pt, ds, dt);
+        tmiss = std::max(tmiss, (ds - us[static_cast<size_t>(j)]).Length());
+      }
+      if (f[1]) {
+        s.raw().Ev1Der(1.0, vp[static_cast<size_t>(j)], pt, ds, dt);
+        tmiss = std::max(tmiss, (ds - ue[static_cast<size_t>(j)]).Length());
+      }
+    }
+    for (int i = 0; i < nu; ++i) {
+      if (f[2]) {
+        s.raw().Ev1Der(up[static_cast<size_t>(i)], 0.0, pt, ds, dt);
+        tmiss = std::max(tmiss, (dt - vs[static_cast<size_t>(i)]).Length());
+      }
+      if (f[3]) {
+        s.raw().Ev1Der(up[static_cast<size_t>(i)], 1.0, pt, ds, dt);
+        tmiss = std::max(tmiss, (dt - ve[static_cast<size_t>(i)]).Length());
+      }
+    }
+    // twists at the corners that have both a u and a v condition, measured by Ev2Der's mixed partial
+    double wmiss = 0.0;
+    int corners = 0;
+    ON_3dVector dss, dst, dtt;
+    const bool cu[2] = {f[0] != 0, f[1] != 0}, cv[2] = {f[2] != 0, f[3] != 0};
+    const Vector3d tw[2][2] = {{ends.twist_u0_v0, ends.twist_u0_v1}, {ends.twist_u1_v0, ends.twist_u1_v1}};
+    for (int a = 0; a < 2; ++a) {
+      for (int b = 0; b < 2; ++b) {
+        if (!cu[a] || !cv[b]) continue;
+        ++corners;
+        s.raw().Ev2Der(static_cast<double>(a), static_cast<double>(b), pt, ds, dt, dss, dst, dtt);
+        wmiss = std::max(wmiss, (dst - tw[a][b]).Length());
+      }
+    }
+    std::printf("  [grid interp end conditions] %s: grid miss %.3g, tangent miss %.3g, twist miss %.3g over %d corners\n", tag.c_str(), miss, tmiss, wmiss, corners);
+    Check(miss < 1e-9, (tag + ": still passes through all 30 grid points (< 1e-9)").c_str());
+    Check(tmiss < 1e-8, (tag + ": every stated edge tangent is reproduced (< 1e-8, OpenNURBS Ev1Der)").c_str());
+    Check(wmiss < 1e-7, (tag + ": every corner with both a u and a v condition has the stated twist (< 1e-7, OpenNURBS Ev2Der)").c_str());
+  }
+  // default twist is zero
+  GridEndConditions z;
+  z.u_start = us;
+  z.u_end = ue;
+  z.v_start = vs;
+  z.v_end = ve;
+  NurbsSurface sz;
+  Check(NurbsSurface::InterpolateThroughGridWithEndConditions(grid, nu, nv, 3, 3, z, sz) == Result::Ok, "end conditions with no stated twist succeed");
+  double zt = 0.0;
+  ON_3dPoint pt;
+  ON_3dVector ds, dt, dss, dst, dtt;
+  for (int a = 0; a < 2; ++a) {
+    for (int b = 0; b < 2; ++b) {
+      sz.raw().Ev2Der(static_cast<double>(a), static_cast<double>(b), pt, ds, dt, dss, dst, dtt);
+      zt = std::max(zt, dst.Length());
+    }
+  }
+  Check(zt < 1e-7, "a corner with both a u and a v tangent and no stated twist has twist zero (< 1e-7)");
+}
+
+void TestEndConditionsOnAHalfCylinderMatchClosedFormAndTheUOnlyConstruction() {
+  // Half cylinder R = 2, height 2: S(u, v) = (R cos(pi u), R sin(pi u), 2 v) in the (exactly uniform) grid parameters.
+  const int nu = 9, nv = 5;
+  const double R = 2.0, dth = ON_PI / (nu - 1);
+  std::vector<Point3d> grid;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) grid.push_back(Point3d(R * std::cos(u * dth), R * std::sin(u * dth), 0.5 * v));
+  }
+  const std::vector<Vector3d> u0(nv, Tan(0.0, R * ON_PI, 0.0)), u1(nv, Tan(0.0, -R * ON_PI, 0.0));
+  const std::vector<Vector3d> vgood(nu, Tan(0.0, 0.0, 2.0)), vbad(nu, Tan(0.0, 0.0, -2.0));
+  NurbsSurface uonly, all4, wrong;
+  GridEndConditions g;
+  g.u_start = u0;
+  g.u_end = u1;
+  g.v_start = vgood;
+  g.v_end = vgood;  // twist: the closed-form mixed partial of this cylinder is zero, the default
+  GridEndConditions b = g;
+  b.v_start = vbad;
+  b.v_end = vbad;
+  Check(NurbsSurface::InterpolateThroughGridWithEndTangentsU(grid, nu, nv, 3, 3, u0, u1, uonly) == Result::Ok &&
+            NurbsSurface::InterpolateThroughGridWithEndConditions(grid, nu, nv, 3, 3, g, all4) == Result::Ok &&
+            NurbsSurface::InterpolateThroughGridWithEndConditions(grid, nu, nv, 3, 3, b, wrong) == Result::Ok,
+        "half cylinder: U-only, all-four-edges and wrong-V-tangent constructions all succeed");
+  // the data is affine in v and the stated V tangents match, so the V direction is reproduced exactly: the all-four surface equals the
+  // U-only surface (identical U knots and conditions) at every parameter pair, and z is exactly 2 v
+  double diff = 0.0, zerr = 0.0, zerr_bad = 0.0;
+  for (int i = 0; i <= 30; ++i) {
+    for (int j = 0; j <= 30; ++j) {
+      const double u = i / 30.0, v = j / 30.0;
+      diff = std::max(diff, all4.PointAt(u, v).DistanceTo(uonly.PointAt(u, v)));
+      zerr = std::max(zerr, std::fabs(all4.PointAt(u, v).z - 2.0 * v));
+      zerr_bad = std::max(zerr_bad, std::fabs(wrong.PointAt(u, v).z - 2.0 * v));
+    }
+  }
+  ON_3dPoint pt;
+  ON_3dVector ds, dt, dss, dst, dtt;
+  double tw = 0.0;
+  for (int a = 0; a < 2; ++a) {
+    for (int c = 0; c < 2; ++c) {
+      all4.raw().Ev2Der(static_cast<double>(a), static_cast<double>(c), pt, ds, dt, dss, dst, dtt);
+      tw = std::max(tw, dst.Length());
+    }
+  }
+  std::printf("  [grid interp end conditions] half cylinder: |all-four - U-only| %.3g, z error %.3g, corner twist %.3g; wrong V tangent z error %.3g\n", diff, zerr, tw, zerr_bad);
+  Check(diff < 1e-9 && zerr < 1e-10, "half cylinder: with the closed-form V tangents (0, 0, 2) the all-four-edges surface equals the U-only surface (< 1e-9) and z = 2 v exactly (< 1e-10)");
+  Check(tw < 1e-8, "half cylinder: the corner twists of the all-four-edges surface equal the closed-form value 0 (< 1e-8)");
+  Check(zerr_bad > 0.05, "negative control: wrong-sign V tangents (0, 0, -2) are honoured and visibly bend z away from 2 v (> 0.05), so the oracle sees a wrong tangent");
+  // regression oracle: with no end conditions this is the plain chosen-degree interpolation
+  NurbsSurface plain, viaEnds;
+  const std::vector<Point3d> wg = WigglyGrid(6, 5);
+  Check(NurbsSurface::InterpolateThroughGrid(wg, 6, 5, 3, 4, plain) == Result::Ok &&
+            NurbsSurface::InterpolateThroughGridWithEndConditions(wg, 6, 5, 3, 4, GridEndConditions(), viaEnds) == Result::Ok,
+        "plain and empty-end-conditions constructions succeed");
+  double same = 0.0;
+  for (int i = 0; i <= 20; ++i) {
+    for (int j = 0; j <= 20; ++j) same = std::max(same, plain.PointAt(i / 20.0, j / 20.0).DistanceTo(viaEnds.PointAt(i / 20.0, j / 20.0)));
+  }
+  Check(same < 1e-10 && viaEnds.CVCountU() == 6 && viaEnds.CVCountV() == 5, "no end conditions: the general construction reproduces the plain chosen-degree interpolation (< 1e-10)");
+}
+
+void TestEndConditionsRefusals() {
+  const std::vector<Point3d> grid = WigglyGrid(4, 3);  // u_count 4, v_count 3
+  NurbsSurface s;
+  auto throws = [&](int du, int dv, const GridEndConditions& e) {
+    try {
+      NurbsSurface::InterpolateThroughGridWithEndConditions(grid, 4, 3, du, dv, e, s);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  GridEndConditions ok;
+  ok.u_start.assign(3, Tan(1, 0, 0));  // one per v line
+  ok.v_end.assign(4, Tan(0, 1, 0));    // one per u line
+  Check(!throws(3, 2, ok), "u_start of v_count vectors and v_end of u_count vectors with degrees (3, 2) are accepted");
+  GridEndConditions swapped;
+  swapped.u_start.assign(4, Tan(1, 0, 0));  // wrong: u lists need v_count
+  Check(throws(3, 2, swapped), "a u list with u_count (not v_count) vectors is refused");
+  GridEndConditions swapped_v;
+  swapped_v.v_start.assign(3, Tan(1, 0, 0));  // wrong: v lists need u_count
+  Check(throws(3, 2, swapped_v), "a v list with v_count (not u_count) vectors is refused");
+  GridEndConditions nan_t = ok;
+  nan_t.v_end[1] = Tan(std::nan(""), 0, 0);
+  Check(throws(3, 2, nan_t), "a non-finite tangent is refused");
+  GridEndConditions nan_w = ok;
+  nan_w.twist_u1_v1 = Tan(0, std::nan(""), 0);
+  Check(throws(3, 2, nan_w), "a non-finite twist is refused");
+  // degree ranges: u has one condition (start) -> [2, 4]; v has one (end) -> [2, 3]
+  Check(throws(1, 2, ok) && throws(5, 2, ok) && throws(3, 1, ok) && throws(3, 4, ok), "degree_u outside [2, 4] or degree_v outside [2, 3] is refused when each direction has one condition");
+  Check(!throws(4, 3, ok) && !throws(2, 2, ok), "the extreme legal degrees (4, 3) and (2, 2) are accepted");
+  GridEndConditions none;
+  Check(throws(0, 1, none) && throws(1, 3, none) && !throws(1, 1, none) && !throws(3, 2, none), "with no conditions the range is the plain [1, count - 1]");
+}
+
 }  // namespace grid_interp_degree_tests
 
 int main() {
@@ -107740,6 +107941,12 @@ int main() {
           grid_interp_degree_tests::TestEndTangentsOnACylinderMatchTheClosedFormAndBeatTheUnconstrainedFit);
   RunTest("grid_interp_degree_tests::TestEndTangentsRefusals",
           grid_interp_degree_tests::TestEndTangentsRefusals);
+  RunTest("grid_interp_degree_tests::TestEndConditionsOneSidedAndVTangentsAndTwistAreHit",
+          grid_interp_degree_tests::TestEndConditionsOneSidedAndVTangentsAndTwistAreHit);
+  RunTest("grid_interp_degree_tests::TestEndConditionsOnAHalfCylinderMatchClosedFormAndTheUOnlyConstruction",
+          grid_interp_degree_tests::TestEndConditionsOnAHalfCylinderMatchClosedFormAndTheUOnlyConstruction);
+  RunTest("grid_interp_degree_tests::TestEndConditionsRefusals",
+          grid_interp_degree_tests::TestEndConditionsRefusals);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;

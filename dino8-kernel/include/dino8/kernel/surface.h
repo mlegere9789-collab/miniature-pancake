@@ -117,6 +117,21 @@ struct SurfaceJoinReport {
   double max_deviation = 0.0;
 };
 
+// End conditions for `NurbsSurface::InterpolateThroughGridWithEndConditions()`. Every list is optional: an EMPTY list means
+// "no condition there" (the end is free). All derivatives are with respect to the surface's own [0, 1] x [0, 1] parameters.
+struct GridEndConditions {
+  std::vector<Vector3d> u_start;  // dS/du at u = 0, one per v grid line (size v_count), or empty
+  std::vector<Vector3d> u_end;    // dS/du at u = 1, one per v grid line (size v_count), or empty
+  std::vector<Vector3d> v_start;  // dS/dv at v = 0, one per u grid line (size u_count), or empty
+  std::vector<Vector3d> v_end;    // dS/dv at v = 1, one per u grid line (size u_count), or empty
+  // Twist vectors d2S/du dv at the four corners. A corner uses its twist only when BOTH a u condition and a v condition
+  // exist at it (u_start/u_end for its u side and v_start/v_end for its v side); otherwise it is ignored. Default: zero.
+  Vector3d twist_u0_v0 = Vector3d(0.0, 0.0, 0.0);
+  Vector3d twist_u1_v0 = Vector3d(0.0, 0.0, 0.0);
+  Vector3d twist_u0_v1 = Vector3d(0.0, 0.0, 0.0);
+  Vector3d twist_u1_v1 = Vector3d(0.0, 0.0, 0.0);
+};
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -1961,6 +1976,22 @@ class NurbsSurface {
                                                         int degree_u, int degree_v,
                                                         const std::vector<Vector3d>& start_tangents,
                                                         const std::vector<Vector3d>& end_tangents, NurbsSurface& out);
+
+  // The general form of the two overloads above: exact grid interpolation with any subset of the four edge-tangent lists
+  // (U start/end, V start/end, each at one end only if you like) and the corner twist vectors (see `GridEndConditions`).
+  // Each direction with `s` start and `e` end conditions has u_count + s + e (resp. v_count + s + e) control points; the
+  // surface passes through every grid point at the shared averaged-chord-length parameters and has exactly the stated
+  // dS/du, dS/dv at the stated ends on every grid line and the stated twist at every corner where both a u and a v
+  // condition exist (a corner with both and no stated twist gets twist zero). Piegl & Tiller end-derivative collocation in
+  // each direction: P = A_u^-1 D A_v^-T, where a derivative row of A is [-a, a] on the first (last) two control points
+  // with a = degree / first interior knot (degree / (1 - last interior knot)). Interior knots: means of `degree`
+  // consecutive parameters starting at t_{j-1} when a start condition exists, t_j otherwise. Degree per direction: in
+  // [2, count + s + e] when that direction has any derivative condition, [1, count - 1] when it has none. Throws
+  // std::invalid_argument for the overloads' cases plus a list of the wrong size, a non-finite vector, or a degree out of
+  // range; Result::Failed for a singular system. Still open, disclosed: closed (periodic) grids, higher derivatives.
+  static Result InterpolateThroughGridWithEndConditions(const std::vector<Point3d>& grid, int u_count, int v_count,
+                                                         int degree_u, int degree_v, const GridEndConditions& ends,
+                                                         NurbsSurface& out);
 
   // Splits this surface into an independent tensor-product Bezier patch
   // for every (u-span, v-span) cell of its knot vectors - the surface

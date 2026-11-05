@@ -1117,55 +1117,122 @@ Result NurbsSurface::InterpolateThroughGrid(const std::vector<Point3d>& grid, in
   return Result::Ok;
 }
 
-Result NurbsSurface::InterpolateThroughGridWithEndTangentsU(const std::vector<Point3d>& grid, int u_count, int v_count,
-                                                             int degree_u, int degree_v,
-                                                             const std::vector<Vector3d>& start_tangents,
-                                                             const std::vector<Vector3d>& end_tangents, NurbsSurface& out) {
-  using namespace grid_interp_detail;
-  if (u_count < 2 || v_count < 2) {
-    throw std::invalid_argument(
-        "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: u_count and v_count must each be >= 2");
+namespace {
+namespace grid_interp_detail {
+
+// One direction of the tensor-product end-condition system: the knot vector, the condition rows and the control count.
+struct EndDirection {
+  int p = 0;
+  int ncv = 0;
+  bool has_start = false, has_end = false;
+  std::vector<double> K;       // standard clamped knot vector, ncv + p + 1 entries
+  std::vector<double> A;       // ncv x ncv row-major condition matrix
+  std::vector<int> kind;       // per condition row: 0 = point (index in `point`), 1 = start derivative, 2 = end derivative
+  std::vector<int> point;      // per condition row: the grid index for a point row, otherwise -1
+};
+
+// params: strictly increasing, params.front() = 0, params.back() = 1. Returns false when the degree does not fit.
+bool BuildEndDirection(const std::vector<double>& t, int p, bool has_start, bool has_end, EndDirection& d) {
+  const int count = static_cast<int>(t.size());
+  const int n = count - 1;
+  const int s = has_start ? 1 : 0, e = has_end ? 1 : 0;
+  d.p = p;
+  d.has_start = has_start;
+  d.has_end = has_end;
+  d.ncv = count + s + e;
+  if (p < 1 || p > d.ncv - 1) return false;
+  d.K.assign(static_cast<size_t>(d.ncv + p + 1), 0.0);
+  for (int i = d.ncv; i <= d.ncv + p; ++i) d.K[static_cast<size_t>(i)] = 1.0;
+  for (int j = 1; j <= d.ncv - p - 1; ++j) {
+    double sum = 0.0;
+    for (int i = j - s; i <= j - s + p - 1; ++i) sum += t[static_cast<size_t>(i)];
+    d.K[static_cast<size_t>(j + p)] = sum / p;
   }
+  d.A.assign(static_cast<size_t>(d.ncv) * d.ncv, 0.0);
+  d.kind.clear();
+  d.point.clear();
+  std::vector<double> N;
+  auto point_row = [&](int i) {
+    const int row = static_cast<int>(d.kind.size());
+    const int span = BasisAt(d.K, d.ncv, p, t[static_cast<size_t>(i)], N);
+    for (int r = 0; r <= p; ++r) d.A[static_cast<size_t>(row) * d.ncv + (span - p + r)] = N[static_cast<size_t>(r)];
+    d.kind.push_back(0);
+    d.point.push_back(i);
+  };
+  point_row(0);
+  if (has_start) {
+    const int row = static_cast<int>(d.kind.size());
+    const double a = p / d.K[static_cast<size_t>(p + 1)];
+    d.A[static_cast<size_t>(row) * d.ncv + 0] = -a;
+    d.A[static_cast<size_t>(row) * d.ncv + 1] = a;
+    d.kind.push_back(1);
+    d.point.push_back(-1);
+  }
+  for (int i = 1; i <= n - 1; ++i) point_row(i);
+  if (has_end) {
+    const int row = static_cast<int>(d.kind.size());
+    const double a = p / (1.0 - d.K[static_cast<size_t>(d.ncv - 1)]);
+    d.A[static_cast<size_t>(row) * d.ncv + (d.ncv - 2)] = -a;
+    d.A[static_cast<size_t>(row) * d.ncv + (d.ncv - 1)] = a;
+    d.kind.push_back(2);
+    d.point.push_back(-1);
+  }
+  point_row(n);
+  return static_cast<int>(d.kind.size()) == d.ncv;
+}
+
+}  // namespace grid_interp_detail
+}  // namespace
+
+Result NurbsSurface::InterpolateThroughGridWithEndConditions(const std::vector<Point3d>& grid, int u_count, int v_count,
+                                                              int degree_u, int degree_v, const GridEndConditions& ends,
+                                                              NurbsSurface& out) {
+  using namespace grid_interp_detail;
+  const std::string who = "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndConditions: ";
+  if (u_count < 2 || v_count < 2) throw std::invalid_argument(who + "u_count and v_count must each be >= 2");
   const size_t expected = static_cast<size_t>(u_count) * static_cast<size_t>(v_count);
   if (grid.size() != expected) {
-    throw std::invalid_argument(
-        "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: grid must have exactly u_count * v_count = " +
-        std::to_string(expected) + " entries, got " + std::to_string(grid.size()));
+    throw std::invalid_argument(who + "grid must have exactly u_count * v_count = " + std::to_string(expected) +
+                                 " entries, got " + std::to_string(grid.size()));
   }
-  if (start_tangents.size() != static_cast<size_t>(v_count) || end_tangents.size() != static_cast<size_t>(v_count)) {
-    throw std::invalid_argument(
-        "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: start_tangents and end_tangents need one "
-        "vector per v grid line (" + std::to_string(v_count) + ")");
+  auto check_list = [&](const std::vector<Vector3d>& list, int expected_size, const char* name) {
+    if (!list.empty() && list.size() != static_cast<size_t>(expected_size)) {
+      throw std::invalid_argument(who + name + " must be empty or have " + std::to_string(expected_size) + " vectors, got " +
+                                   std::to_string(list.size()));
+    }
+    for (const Vector3d& d : list) {
+      if (!ON_IsValid(d.x) || !ON_IsValid(d.y) || !ON_IsValid(d.z)) {
+        throw std::invalid_argument(who + name + " holds a non-finite vector");
+      }
+    }
+  };
+  check_list(ends.u_start, v_count, "u_start");
+  check_list(ends.u_end, v_count, "u_end");
+  check_list(ends.v_start, u_count, "v_start");
+  check_list(ends.v_end, u_count, "v_end");
+  for (const Vector3d* tw : {&ends.twist_u0_v0, &ends.twist_u1_v0, &ends.twist_u0_v1, &ends.twist_u1_v1}) {
+    if (!ON_IsValid(tw->x) || !ON_IsValid(tw->y) || !ON_IsValid(tw->z)) throw std::invalid_argument(who + "a twist vector is not finite");
   }
-  if (degree_u < 2 || degree_u > u_count || degree_v < 1 || degree_v > v_count - 1) {
-    throw std::invalid_argument(
-        "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: degree_u must be in [2, " +
-        std::to_string(u_count) + "] and degree_v in [1, " + std::to_string(v_count - 1) + "], got " +
-        std::to_string(degree_u) + " and " + std::to_string(degree_v));
+  const bool us = !ends.u_start.empty(), ue = !ends.u_end.empty(), vs = !ends.v_start.empty(), ve = !ends.v_end.empty();
+  const int min_du = (us || ue) ? 2 : 1, min_dv = (vs || ve) ? 2 : 1;
+  const int max_du = u_count - 1 + (us ? 1 : 0) + (ue ? 1 : 0), max_dv = v_count - 1 + (vs ? 1 : 0) + (ve ? 1 : 0);
+  if (degree_u < min_du || degree_u > max_du || degree_v < min_dv || degree_v > max_dv) {
+    throw std::invalid_argument(who + "degree_u must be in [" + std::to_string(min_du) + ", " + std::to_string(max_du) +
+                                 "] and degree_v in [" + std::to_string(min_dv) + ", " + std::to_string(max_dv) + "], got " +
+                                 std::to_string(degree_u) + " and " + std::to_string(degree_v));
   }
   auto at = [&](int u, int v) -> ON_3dPoint {
     return grid[static_cast<size_t>(u) * static_cast<size_t>(v_count) + static_cast<size_t>(v)];
   };
-  for (const std::vector<Vector3d>* list : {&start_tangents, &end_tangents}) {
-    for (const Vector3d& d : *list) {
-      if (!ON_IsValid(d.x) || !ON_IsValid(d.y) || !ON_IsValid(d.z)) {
-        throw std::invalid_argument(
-            "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: a tangent is not finite");
-      }
-    }
-  }
 
-  // Shared parameters, exactly as in the overload above.
+  // Shared parameters: averaged [0, 1]-normalized chord lengths, as in the overloads above.
   std::vector<double> u_params(static_cast<size_t>(u_count), 0.0), v_params(static_cast<size_t>(v_count), 0.0);
   for (int v = 0; v < v_count; ++v) {
     std::vector<ON_3dPoint> row(static_cast<size_t>(u_count));
     for (int u = 0; u < u_count; ++u) row[static_cast<size_t>(u)] = at(u, v);
     const std::vector<double> cp = ChordParams(row, /*closed=*/false);
     const double total = cp.back();
-    if (!(total > 0.0)) {
-      throw std::invalid_argument("dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: row v=" +
-                                   std::to_string(v) + " is degenerate (every point coincides)");
-    }
+    if (!(total > 0.0)) throw std::invalid_argument(who + "row v=" + std::to_string(v) + " is degenerate (every point coincides)");
     for (int u = 0; u < u_count; ++u) u_params[static_cast<size_t>(u)] += cp[static_cast<size_t>(u)] / total;
   }
   for (double& p : u_params) p /= v_count;
@@ -1174,10 +1241,7 @@ Result NurbsSurface::InterpolateThroughGridWithEndTangentsU(const std::vector<Po
     for (int v = 0; v < v_count; ++v) col[static_cast<size_t>(v)] = at(u, v);
     const std::vector<double> cp = ChordParams(col, /*closed=*/false);
     const double total = cp.back();
-    if (!(total > 0.0)) {
-      throw std::invalid_argument("dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: column u=" +
-                                   std::to_string(u) + " is degenerate (every point coincides)");
-    }
+    if (!(total > 0.0)) throw std::invalid_argument(who + "column u=" + std::to_string(u) + " is degenerate (every point coincides)");
     for (int v = 0; v < v_count; ++v) v_params[static_cast<size_t>(v)] += cp[static_cast<size_t>(v)] / total;
   }
   for (double& p : v_params) p /= u_count;
@@ -1190,81 +1254,83 @@ Result NurbsSurface::InterpolateThroughGridWithEndTangentsU(const std::vector<Po
     if (!(v_params[static_cast<size_t>(i)] > v_params[static_cast<size_t>(i) - 1])) return Result::Failed;
   }
 
-  // U direction: u_count points + 2 end-derivative conditions -> ncv = u_count + 2 control points. Knots: clamped, with
-  // ncv - p - 1 interior knots, interior knot j (1-based) = the mean of the p consecutive parameters t_{j-1} .. t_{j+p-2}.
-  const int n = u_count - 1;
-  const int p = degree_u;
-  const int ncv = u_count + 2;
-  std::vector<double> KU(static_cast<size_t>(ncv + p + 1), 0.0);
-  for (int i = ncv; i <= ncv + p; ++i) KU[static_cast<size_t>(i)] = 1.0;
-  for (int j = 1; j <= ncv - p - 1; ++j) {
-    double sum = 0.0;
-    for (int i = j - 1; i <= j + p - 2; ++i) sum += u_params[static_cast<size_t>(i)];
-    KU[static_cast<size_t>(j + p)] = sum / p;
-  }
-  const double a0 = p / KU[static_cast<size_t>(p + 1)];         // S'(0)  = a0 (P1 - P0)
-  const double a1 = p / (1.0 - KU[static_cast<size_t>(ncv - 1)]);  // S'(1)  = a1 (P_last - P_{last-1})
+  EndDirection DU, DV;
+  if (!BuildEndDirection(u_params, degree_u, us, ue, DU) || !BuildEndDirection(v_params, degree_v, vs, ve, DV)) return Result::Failed;
 
-  // Rows: point 0, derivative at 0, points 1..n-1, derivative at 1, point n (n + 3 = ncv equations).
-  const int mu = 3 * v_count;
-  std::vector<double> Au(static_cast<size_t>(ncv) * ncv, 0.0), X(static_cast<size_t>(ncv) * mu, 0.0), N;
-  auto set_point_row = [&](int row, int i) {
-    const int s = BasisAt(KU, ncv, p, u_params[static_cast<size_t>(i)], N);
-    for (int r = 0; r <= p; ++r) Au[static_cast<size_t>(row) * ncv + (s - p + r)] = N[static_cast<size_t>(r)];
-    for (int v = 0; v < v_count; ++v) {
-      const ON_3dPoint q = at(i, v);
-      X[static_cast<size_t>(row) * mu + 3 * v + 0] = q.x;
-      X[static_cast<size_t>(row) * mu + 3 * v + 1] = q.y;
-      X[static_cast<size_t>(row) * mu + 3 * v + 2] = q.z;
+  // The data matrix D (DU.ncv x DV.ncv of 3-vectors): the value each (u condition, v condition) pair must take.
+  auto cell = [&](int ru, int cv) -> ON_3dVector {
+    const int ku = DU.kind[static_cast<size_t>(ru)], kv = DV.kind[static_cast<size_t>(cv)];
+    if (ku == 0 && kv == 0) return ON_3dVector(at(DU.point[static_cast<size_t>(ru)], DV.point[static_cast<size_t>(cv)]));
+    if (ku != 0 && kv == 0) {
+      const int j = DV.point[static_cast<size_t>(cv)];
+      return ku == 1 ? ends.u_start[static_cast<size_t>(j)] : ends.u_end[static_cast<size_t>(j)];
     }
+    if (ku == 0 && kv != 0) {
+      const int i = DU.point[static_cast<size_t>(ru)];
+      return kv == 1 ? ends.v_start[static_cast<size_t>(i)] : ends.v_end[static_cast<size_t>(i)];
+    }
+    if (ku == 1) return kv == 1 ? ends.twist_u0_v0 : ends.twist_u0_v1;
+    return kv == 1 ? ends.twist_u1_v0 : ends.twist_u1_v1;
   };
-  set_point_row(0, 0);
-  Au[static_cast<size_t>(1) * ncv + 0] = -a0;
-  Au[static_cast<size_t>(1) * ncv + 1] = a0;
-  for (int v = 0; v < v_count; ++v) {
-    X[static_cast<size_t>(1) * mu + 3 * v + 0] = start_tangents[static_cast<size_t>(v)].x;
-    X[static_cast<size_t>(1) * mu + 3 * v + 1] = start_tangents[static_cast<size_t>(v)].y;
-    X[static_cast<size_t>(1) * mu + 3 * v + 2] = start_tangents[static_cast<size_t>(v)].z;
-  }
-  for (int i = 1; i <= n - 1; ++i) set_point_row(i + 1, i);
-  Au[static_cast<size_t>(n + 1) * ncv + (ncv - 2)] = -a1;
-  Au[static_cast<size_t>(n + 1) * ncv + (ncv - 1)] = a1;
-  for (int v = 0; v < v_count; ++v) {
-    X[static_cast<size_t>(n + 1) * mu + 3 * v + 0] = end_tangents[static_cast<size_t>(v)].x;
-    X[static_cast<size_t>(n + 1) * mu + 3 * v + 1] = end_tangents[static_cast<size_t>(v)].y;
-    X[static_cast<size_t>(n + 1) * mu + 3 * v + 2] = end_tangents[static_cast<size_t>(v)].z;
-  }
-  set_point_row(n + 2, n);
-  if (!GridInterpSolve(Au, X, ncv, mu)) return Result::Failed;
 
-  // V direction: every one of the ncv control rows is interpolated along v at the shared v parameters. The tangent
-  // constraint is linear in those rows, so it survives: S_u(0, v_j) = a0 (Y1(v_j) - Y0(v_j)) = a0 (X1 - X0)_j.
-  const std::vector<double> KV = AveragedKnots(v_params, degree_v);
-  const int mv = 3 * ncv;
-  std::vector<double> Av = CollocationMatrix(KV, v_params, degree_v);
-  std::vector<double> Y(static_cast<size_t>(v_count) * mv);
-  for (int j = 0; j < ncv; ++j) {
-    for (int v = 0; v < v_count; ++v) {
-      for (int c = 0; c < 3; ++c) {
-        Y[static_cast<size_t>(v) * mv + 3 * j + c] = X[static_cast<size_t>(j) * mu + 3 * v + c];
-      }
+  // Pass 1 (U): A_u X = D, one right-hand-side column per (v condition, coordinate).
+  const int mu = 3 * DV.ncv;
+  std::vector<double> Au = DU.A, X(static_cast<size_t>(DU.ncv) * mu);
+  for (int r = 0; r < DU.ncv; ++r) {
+    for (int c = 0; c < DV.ncv; ++c) {
+      const ON_3dVector q = cell(r, c);
+      X[static_cast<size_t>(r) * mu + 3 * c + 0] = q.x;
+      X[static_cast<size_t>(r) * mu + 3 * c + 1] = q.y;
+      X[static_cast<size_t>(r) * mu + 3 * c + 2] = q.z;
     }
   }
-  if (!GridInterpSolve(Av, Y, v_count, mv)) return Result::Failed;
+  if (!GridInterpSolve(Au, X, DU.ncv, mu)) return Result::Failed;
+
+  // Pass 2 (V): for every U control row i, A_v Y = X[i][.]; Y[j][(i, c)] is control point (i, j).
+  const int mv = 3 * DU.ncv;
+  std::vector<double> Av = DV.A, Y(static_cast<size_t>(DV.ncv) * mv);
+  for (int i = 0; i < DU.ncv; ++i) {
+    for (int c = 0; c < DV.ncv; ++c) {
+      for (int k = 0; k < 3; ++k) Y[static_cast<size_t>(c) * mv + 3 * i + k] = X[static_cast<size_t>(i) * mu + 3 * c + k];
+    }
+  }
+  if (!GridInterpSolve(Av, Y, DV.ncv, mv)) return Result::Failed;
 
   ON_NurbsSurface result;
-  if (!result.Create(3, false, p + 1, degree_v + 1, ncv, v_count)) return Result::Failed;
-  for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, KU[static_cast<size_t>(k) + 1]);
-  for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, KV[static_cast<size_t>(k) + 1]);
-  for (int j = 0; j < ncv; ++j) {
-    for (int k = 0; k < v_count; ++k) {
-      result.SetCV(j, k, ON_3dPoint(Y[static_cast<size_t>(k) * mv + 3 * j + 0], Y[static_cast<size_t>(k) * mv + 3 * j + 1],
-                                    Y[static_cast<size_t>(k) * mv + 3 * j + 2]));
+  if (!result.Create(3, false, degree_u + 1, degree_v + 1, DU.ncv, DV.ncv)) return Result::Failed;
+  for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, DU.K[static_cast<size_t>(k) + 1]);
+  for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, DV.K[static_cast<size_t>(k) + 1]);
+  for (int i = 0; i < DU.ncv; ++i) {
+    for (int j = 0; j < DV.ncv; ++j) {
+      result.SetCV(i, j, ON_3dPoint(Y[static_cast<size_t>(j) * mv + 3 * i + 0], Y[static_cast<size_t>(j) * mv + 3 * i + 1],
+                                    Y[static_cast<size_t>(j) * mv + 3 * i + 2]));
     }
   }
   if (!result.IsValid()) return Result::Failed;
   out.surface_ = result;
   return Result::Ok;
+}
+
+Result NurbsSurface::InterpolateThroughGridWithEndTangentsU(const std::vector<Point3d>& grid, int u_count, int v_count,
+                                                             int degree_u, int degree_v,
+                                                             const std::vector<Vector3d>& start_tangents,
+                                                             const std::vector<Vector3d>& end_tangents, NurbsSurface& out) {
+  // Kept contract: both U ends are required (one vector per v grid line) and degree_u is limited to [2, u_count].
+  if (start_tangents.size() != static_cast<size_t>(v_count) || end_tangents.size() != static_cast<size_t>(v_count)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: start_tangents and end_tangents need one "
+        "vector per v grid line (" + std::to_string(v_count) + ")");
+  }
+  if (degree_u < 2 || degree_u > u_count || degree_v < 1 || degree_v > v_count - 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InterpolateThroughGridWithEndTangentsU: degree_u must be in [2, " +
+        std::to_string(u_count) + "] and degree_v in [1, " + std::to_string(v_count - 1) + "], got " +
+        std::to_string(degree_u) + " and " + std::to_string(degree_v));
+  }
+  GridEndConditions ends;
+  ends.u_start = start_tangents;
+  ends.u_end = end_tangents;
+  return InterpolateThroughGridWithEndConditions(grid, u_count, v_count, degree_u, degree_v, ends, out);
 }
 
 Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) const {
