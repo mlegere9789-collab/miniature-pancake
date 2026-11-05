@@ -1,0 +1,45 @@
+# Boss / Rib through the exact kernel route (the "BRX_" section, tests/sections/82_bossrib_exact.sh).
+#
+# BossRibCommand used to build every Boss/Rib as a mesh loft and fuse it with a MESH boolean. It now calls kernel::MakeBoss /
+# kernel::MakeRib first (exact B-rep fusion of the swept footprint / web onto the base solid) and falls back to the mesh construction
+# only when the kernel refuses, printing why. Expected values are closed forms of the fixture, independent of the app's printout:
+#   plane boss : box 10 x 10 x 10 (volume 1000) + a r = 2 circle on its top face raised 5      -> 1000 + pi 2^2 5 = 1062.83
+#   plane rib  : box 10 x 10 x 10 + a straight 6-long spine on its top face, height 2, thickness 1 (default) -> 1000 + 6 x 2 x 1 = 1012
+#   fallback   : a curved (arc) rib spine is not a straight line, so the kernel declines and the mesh construction runs
+
+SetActiveViewport Top
+
+New
+BRXBEGIN_boss
+Box 0,0,0 10,10,0 10
+Circle 5,5,10 2
+SelLast
+Boss
+SelPolysrf
+Enter
+5
+SelLast
+Volume
+
+New
+BRXBEGIN_rib
+Box 0,0,0 10,10,0 10
+Line 5,2,10 5,8,10
+SelLast
+Rib
+SelPolysrf
+Enter
+2
+SelLast
+Volume
+
+New
+BRXBEGIN_ribarc
+Box 0,0,0 10,10,0 10
+Arc 3,5,10 5,7,10 7,5,10
+SelLast
+Rib
+SelPolysrf
+Enter
+2
+BRXBEGIN_end

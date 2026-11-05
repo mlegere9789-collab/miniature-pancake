@@ -6,6 +6,8 @@
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
 #include "dino8/kernel/boolean_general.h"
+#include "dino8/kernel/boss.h"
+#include "dino8/kernel/rib.h"
 #include "doc/SubObjectEdit.h"
 #include "drafting/SectionView.h"
 #include "geom/SurfaceIntersect.h"
@@ -2390,7 +2392,71 @@ class BossRibCommand : public Command {
     nrm = srf_->NormalAt(u, v);
     return true;
   }
+  // The exact kernel route (kernel::MakeBoss / kernel::MakeRib): a boss is the closed planar footprint swept along the base's normal
+  // and fused; a rib is a rectangular web over a STRAIGHT spine. The profile plane is sunk below the base surface by a growing
+  // amount until the kernel accepts it (it must lie inside the material over the whole footprint). Returns true when the kernel
+  // produced the result (the base object is replaced by the fused B-rep); on any kernel refusal returns false with the first
+  // refusal text in kernel_note_, and the legacy mesh construction below runs.
+  bool TryKernelRoute(CommandContext& ctx, double h) {
+    if (!brep_ || solid_id_ == kNoObject || !(h > 0.0)) return false;
+    const kernel::Interval d = curve_->Domain();
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-6);
+    // Outward base normal at the curve's centroid projection.
+    Point3d centroid(0, 0, 0);
+    constexpr int kSamples = 32;
+    for (int i = 0; i < kSamples; ++i) {
+      const Point3d q = curve_->PointAt(d.min + (d.max - d.min) * i / kSamples);
+      centroid = Point3d(centroid.x + q.x, centroid.y + q.y, centroid.z + q.z);
+    }
+    centroid = Point3d(centroid.x / kSamples, centroid.y / kSamples, centroid.z / kSamples);
+    Point3d on;
+    Vector3d nrm;
+    if (!ProjectToBase(centroid, on, nrm) || !nrm.Unitize()) { kernel_note_ = "could not find the base normal"; return false; }
+    kernel::Brep kb;
+    kb.raw() = *brep_;
+    std::string first_why;
+    for (const double frac : {0.05, 0.1, 0.2, 0.4}) {
+      const double sink = std::max(frac * h, 5.0 * tol);
+      try {
+        kernel::Brep fused;
+        double added = 0;
+        if (!rib_) {
+          if (!curve_->IsClosed()) { kernel_note_ = "the footprint curve is not closed"; return false; }
+          kernel::NurbsCurve moved = *curve_;
+          moved.raw().Translate(ON_3dVector(-nrm.x * sink, -nrm.y * sink, -nrm.z * sink));
+          kernel::BossResult r = kernel::MakeBoss(kb, moved, nrm, h + sink);
+          fused = std::move(r.brep);
+          added = r.added_volume;
+        } else {
+          if (!curve_->IsLinear(1e-4 * std::max(1.0, curve_->PointAt(d.min).DistanceTo(curve_->PointAt(d.max))))) {
+            kernel_note_ = "the rib spine is not a straight line";
+            return false;
+          }
+          const Point3d a = curve_->PointAt(d.min), b = curve_->PointAt(d.max);
+          const Vector3d down(-nrm.x * sink, -nrm.y * sink, -nrm.z * sink), up(nrm.x * h, nrm.y * h, nrm.z * h);
+          kernel::RibResult r = kernel::MakeRib(kb, {a + down, b + down, b + up, a + up}, thickness_);
+          fused = std::move(r.brep);
+          added = r.added_volume;
+        }
+        ctx.Doc().BeginChange(rib_ ? "Rib" : "Boss");
+        SceneObject like;
+        if (const SceneObject* bo = ctx.Doc().Find(solid_id_)) like = *bo;
+        ObjectId nid = AddObject(ctx, SceneObject::MakeBrep(fused), rib_ ? "Rib" : "Boss");
+        if (SceneObject* n2 = ctx.Doc().Find(nid)) n2->layer_index = like.layer_index;
+        ctx.Doc().Remove(solid_id_);
+        ctx.Print(std::string(rib_ ? "Rib" : "Boss") + ": exact kernel route (" + (rib_ ? "MakeRib" : "MakeBoss") + "), " +
+                  std::to_string(fused.raw().m_F.Count()) + " face(s), closed B-rep solid, volume added " + FormatNumber(added) + ", sunk " + FormatNumber(sink) +
+                  " into the base");
+        return true;
+      } catch (const std::exception& e) {
+        if (first_why.empty()) first_why = e.what();
+      }
+    }
+    kernel_note_ = first_why;
+    return false;
+  }
   void OnNumber(CommandContext& ctx, double h) override {
+    if (TryKernelRoute(ctx, h)) { Finish(); return; }
     const int n = rib_ ? 64 : 48;
     const kernel::Interval d = curve_->Domain();
     const bool closed = curve_->IsClosed();
@@ -2436,7 +2502,8 @@ class BossRibCommand : public Command {
     if (SceneObject* n2 = ctx.Doc().Find(nid)) n2->layer_index = like.layer_index;
     if (united) ctx.Doc().Remove(solid_id_);
     ctx.Print(std::string(rib_ ? "Rib" : "Boss") + ": " + (rib_ ? "tapered wall" : "protrusion") + " of height " + FormatNumber(h) + " built following the base's local surface normal at " + std::to_string(n) +
-              " points along the curve" + (united ? "; unioned with the base solid" : "; base could not be meshed/unioned, result left standalone"));
+              " points along the curve" + (united ? "; unioned with the base solid" : "; base could not be meshed/unioned, result left standalone") +
+              (kernel_note_.empty() ? std::string() : "; the exact kernel route declined (" + kernel_note_.substr(0, 160) + "), so this is the mesh construction"));
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; const double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
@@ -2447,6 +2514,7 @@ class BossRibCommand : public Command {
   std::optional<ON_NurbsSurface> srf_;
   std::optional<ON_Brep> brep_;
   ObjectId solid_id_ = kNoObject;
+  std::string kernel_note_;
 };
 
 // ---------------------------------------------------------------------------

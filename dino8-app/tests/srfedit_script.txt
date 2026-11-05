@@ -343,7 +343,7 @@ Enter
 SelID 89
 Enter
 # --- Boss: a closed circle footprint on a box's top face, extruded upward
-# following the (flat) surface normal and unioned with the box (curve
+# following the (flat) surface normal and fused with the box by the exact kernel route (MakeBoss; the result is a B-rep, so SelLast) (curve
 # created last so SelLast picks it; SelPolysrf then re-picks the box alone)
 SelAll
 Hide
@@ -354,7 +354,7 @@ Boss
 SelPolysrf
 Enter
 5
-SelMesh
+SelLast
 Volume
 # --- Rib: an open spine on the box's top face, a thin wall tapering to zero
 # at both ends, unioned with the box
@@ -367,7 +367,7 @@ Rib
 SelPolysrf
 Enter
 2
-SelMesh
+SelLast
 Volume
 # --- FilletSrfToRail: rolling-ball arcs sampled along a rail running down a
 # box corner (two perpendicular planes). SrfPt's 4 corners must be given
