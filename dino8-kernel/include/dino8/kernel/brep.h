@@ -517,8 +517,8 @@ class Brep {
   //     see detail::ClosestSegmentSegment()). A profile whose offset
   //     fails either check is refused rather than silently risking a
   //     folded wall.
-  //   - A CLOSED smooth curved planar profile that is not a circle or arc
-  //     (an ellipse, a closed B-spline): the wall is the EXACT draft family
+  //   - A smooth curved planar profile, CLOSED or OPEN, that is not a circle
+  //     or arc (an ellipse, a B-spline): the wall is the EXACT draft family
   //     S(u, t) = P(u) + t * direction - t * |direction| * tan(draft) * n(u)
   //     (n = the profile's outward unit normal), so every horizontal section
   //     is the exact parallel curve of the profile. The top curve shares the
@@ -528,8 +528,14 @@ class Brep {
   //     exact field is within 1e-6 * (1 + bbox diagonal); the ruled wall
   //     between the two is then P(u) + t * Delta_fit(u) exactly. A profile
   //     with a tangent corner (normal jump above 0.35 rad between
-  //     neighbouring samples), an open profile, or a fit that exceeds the
-  //     knot budget (1500 control points) falls through to the next branch;
+  //     neighbouring samples; there the true wall is two surfaces trimmed
+  //     against each other along their intersection, which no ruled loft can
+  //     represent) or a fit that exceeds the knot budget (1500 control
+  //     points) falls through to the next branch. An OPEN profile has no
+  //     inside: its offset side is T x zaxis, zaxis being the plane normal
+  //     turned along `direction` (the outward side of a counterclockwise
+  //     closed curve), so a counterclockwise arc drafts like the closed curve
+  //     and the reversed arc drafts to the other side;
   //     a fold through a centre of curvature (1 + offset*curvature < 0.02)
   //     is refused. Measured on a 3 x 2 ellipse, 4 long, drafted 0.2 rad:
   //     wall deviation from the family 6e-6 (was 0.416 with the refit), and

@@ -6,6 +6,8 @@
 #  2 the same ellipse flared outward, draft -8.5943669 degrees (-0.15 rad): 96.1117
 #  3 L tan(draft) = 1.5 exceeds the ellipse's smallest radius of curvature 4/3 (draft 20.5560452 degrees): refused with the fold reason, nothing built
 #  4 control: a circle r=2, distance 3, draft atan(0.1) = 5.7105931 degrees: the exact frustum pi (4 + 2*1.7 + 1.7^2) = 32.3257
+#  5 History On, the case-1 solid recorded with the ellipse as its source (object 1 -> 2): built 52.42, then the SOURCE scaled by 1.5
+#    about the origin (ellipse 4.5 x 3; the recorded direction and draft stay): the solid follows, Steiner volume 133.807
 SetActiveViewport Top
 
 # --- 1
@@ -53,3 +55,24 @@ Volume
 SelAll
 Delete
 @expect_objects 0
+
+# --- 5
+New
+History On
+Ellipse 0,0,0 3,0,0 0,2,0
+SelLast
+ExtrudeCrvTapered DraftAngle=11.4591559
+4
+SelNone
+SelID 2
+Volume
+History
+SelNone
+SelID 1
+Scale 0,0,0 1.5
+SelNone
+SelID 2
+Volume
+SelAll
+Delete
+History Off

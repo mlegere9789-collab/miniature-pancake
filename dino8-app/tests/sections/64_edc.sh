@@ -17,12 +17,18 @@ if grep -q "^FAIL" <<<"$EDC_OUT"; then edc_bad "EDC_script: an @expect line of t
 edc_case() { awk -v n="$1" '/Command: ExtrudeCrvTapered( |$)/ { c++ } c == n' <<<"$EDC_OUT"; }
 edc_in() { awk -v v="${1:-}" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v != "" && v + 0 >= lo && v + 0 <= hi) }'; }
 edc_has() { if grep -qF -- "$2" <<<"$1"; then edc_ok "$3"; else edc_bad "$3"; near "$1" "$2"; fi; }
+# the n-th occurrence of "<prefix><number>" in $1 must lie in [lo, hi]
+edc_nth() {
+  local v
+  v="$({ grep -oE -- "$2[0-9.e+-]+" <<<"$1" || true; } | sed -n "${3}p" | grep -oE '[-0-9.e+]+$' || true)"
+  if edc_in "$v" "$4" "$5"; then edc_ok "$6 ($v in $4..$5)"; else edc_bad "$6 ('$v' not in $4..$5)"; fi
+}
 edc_num() {
   local v
   v="$({ grep -oE -- "$2[0-9.e+-]+" <<<"$1" || true; } | head -1 | grep -oE '[-0-9.e+]+$' || true)"
   if edc_in "$v" "$3" "$4"; then edc_ok "$5 ($v in $3..$4)"; else edc_bad "$5 ('$v' not in $3..$4)"; fi
 }
-EDC_1="$(edc_case 1)"; EDC_2="$(edc_case 2)"; EDC_3="$(edc_case 3)"; EDC_4="$(edc_case 4)"
+EDC_1="$(edc_case 1)"; EDC_2="$(edc_case 2)"; EDC_3="$(edc_case 3)"; EDC_4="$(edc_case 4)"; EDC_5="$(edc_case 5)"
 edc_has "$EDC_1" "1 object(s)" "EDC_1: the drafted ellipse is built"
 edc_num "$EDC_1" "exact volume " 52.4230 52.4240 "EDC_1: kernel exact volume = A L - P tan L^2/2 + pi tan^2 L^3/3 = 52.42352 (Steiner; the old refit read 52.168)"
 edc_num "$EDC_1" "Volume = " 52.0 52.6 "EDC_1: the tessellated Volume command agrees to 0.8 percent (cross-check)"
@@ -30,3 +36,7 @@ edc_num "$EDC_2" "exact volume " 96.1112 96.1122 "EDC_2: flared outward (-0.15 r
 edc_has "$EDC_3" "fold" "EDC_3: a draft beyond the smallest radius of curvature is refused with the fold reason"
 edc_has "$EDC_3" "0 object(s)" "EDC_3: ...and nothing is built"
 edc_num "$EDC_4" "exact volume " 32.3250 32.3265 "EDC_4_control: the circle (exact conic path) is the exact frustum pi (4 + 3.4 + 2.89) = 32.32566"
+# History replay: the drafted ellipse records the ellipse as its source; scaling the source rebuilds the solid
+edc_has "$EDC_5" "ExtrudeCrvTapered <- 1" "EDC_5: the History record lists the ellipse (object 1) as the source of the solid"
+edc_nth "$EDC_5" "Volume = " 1 52.0 52.6 "EDC_5a: built with History On, the drafted ellipse's volume is 52.42 (Steiner)"
+edc_nth "$EDC_5" "Volume = " 2 132.4 135.2 "EDC_5b: the source scaled by 1.5 (ellipse 4.5 x 3), the solid rebuilt: Steiner volume 133.807"
