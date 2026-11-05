@@ -102625,6 +102625,99 @@ void TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets() {
   }
 }
 
+// One-sided Sharp offset of an OPEN polyline: the raw mitre offset used to be returned as is. Where a turn is tighter than the
+// offset distance, or the offset runs closer than |d| to another part of the polyline, that was silently wrong (about 1.5% of
+// random open polylines against GEOS). Loop removal + a soundness and completeness certificate now repair what is single-piece
+// and refuse the rest. Oracle: GEOS offset_curve (shapely 2.2.0 / GEOS 3.14, join_style=mitre, mitre_limit=1e6), vertex lists
+// hard-coded to 12 decimals.
+void TestOffsetInPlaneOpenPolylineLoopRemovalAndRefusals() {
+  struct OpenCase {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double d;
+    std::vector<std::pair<double, double>> expect;
+    double geos_length;
+  };
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane tilted(ON_3dPoint(1.0, -2.0, 0.5), ON_3dVector(0.2, -0.3, 1.0));
+  const auto raw_length = [](const std::vector<std::pair<double, double>>& v, double d) {
+    const size_t n = v.size();
+    std::vector<std::pair<double, double>> nd(n - 1), r(n);
+    for (size_t i = 0; i + 1 < n; ++i) {
+      const double ex = v[i + 1].first - v[i].first, ey = v[i + 1].second - v[i].second, l = std::hypot(ex, ey);
+      nd[i] = {ey / l, -ex / l};
+    }
+    r[0] = {v[0].first + d * nd[0].first, v[0].second + d * nd[0].second};
+    for (size_t i = 1; i + 1 < n; ++i) {
+      const double k = d / (1.0 + nd[i - 1].first * nd[i].first + nd[i - 1].second * nd[i].second);
+      r[i] = {v[i].first + k * (nd[i - 1].first + nd[i].first), v[i].second + k * (nd[i - 1].second + nd[i].second)};
+    }
+    r[n - 1] = {v[n - 1].first + d * nd[n - 2].first, v[n - 1].second + d * nd[n - 2].second};
+    double len = 0.0;
+    for (size_t i = 0; i + 1 < n; ++i) len += std::hypot(r[i + 1].first - r[i].first, r[i + 1].second - r[i].second);
+    return len;
+  };
+  const std::vector<OpenCase> good = {
+      {"clean polyline, no loop", {{0.0, 0.0}, {5.0, 1.0}, {9.0, 5.0}, {12.0, 4.0}}, 1.5, {{0.294174202707, -1.470871013536}, {5.739518111852, -0.381802231707}, {9.405136135107, 3.283815791547}, {11.525658350975, 2.576975052924}}, 12.972376370200},
+      {"hairpin loop removed (a)", {{0.0, 0.0}, {1.6, 2.5}, {3.2, 4.4}, {3.2, 7.1}, {0.9, 6.6}, {-6.2, 6.3}}, -1.7, {{-1.431861381125, 0.916391283920}, {0.228054818940, 3.510010346521}, {1.469367460667, 4.984069108571}, {1.118054301907, 4.907696682754}, {-6.128233050438, 4.601515527021}}, 12.618684788052},
+      {"hairpin loop removed (b)", {{0.0, 0.0}, {4.1, -3.9}, {3.2, -7.2}, {-3.8, -3.6}}, 2.3, {{-1.585191661794, -1.666483541886}, {-0.472388212328, -2.725003896257}, {-2.748099570972, -1.554638054668}}, 4.094864354737},
+      {"hairpin loop removed (c)", {{0.0, 0.0}, {5.0, -4.0}, {2.7, -5.9}, {1.2, -4.3}, {-4.4, -8.2}}, 2.0, {{-1.249390095109, -1.561737618886}, {0.091713433591, -2.634620441846}, {-5.542987507519, -6.558787168690}}, 8.583959017579},
+  };
+  const std::vector<OpenCase> refused = {
+      {"offset splits into several pieces (a)", {{0.0, 0.0}, {-6.7, 0.9}, {-5.9, 4.6}, {0.5, 2.9}, {2.6, -2.5}}, 1.3, {}, 12.985259126},  // GEOS MultiLineString, length 12.985259; raw mitre length 16.100969
+      {"offset splits into several pieces (b)", {{0.0, 0.0}, {2.8, 5.5}, {4.4, 8.0}, {2.6, 13.1}, {-1.9, 12.2}, {-0.6, 6.3}}, -1.7, {}, 16.981106639},  // GEOS MultiLineString, length 16.981107; raw mitre length 17.270138
+      {"simple raw offset runs inside the forbidden zone (a)", {{0.0, 0.0}, {-6.4, -4.2}, {-10.3, -6.4}, {-16.0, -2.5}, {-14.7, -0.8}}, 2.4, {}, 13.394019971},  // GEOS LineString, length 13.394020; raw mitre length 13.749800
+      {"simple raw offset runs inside the forbidden zone (b)", {{0.0, 0.0}, {0.2, 2.5}, {6.1, 7.4}, {5.1, 9.8}, {0.8, 7.6}}, -2.3, {}, 6.230570300},  // GEOS LineString, length 6.230570; raw mitre length 14.346672
+  };
+  for (const OpenCase& c : good) {
+    for (int variant = 0; variant < 2; ++variant) {
+      const ON_Plane& pl = variant == 0 ? xy : tilted;
+      std::vector<Point3d> pts;
+      for (const auto& ab : c.v) pts.push_back(pl.origin + ab.first * pl.xaxis + ab.second * pl.yaxis);
+      const NurbsCurve poly = NurbsCurve::FromControlPoints(pts, 1);
+      NurbsCurve out;
+      const std::string nm = std::string(c.name) + (variant == 0 ? " [plane z=0] d=" : " [tilted plane] d=") + std::to_string(c.d);
+      const Result r = poly.OffsetInPlane(pl, c.d, out);
+      Check(r == Result::Ok, (nm + ": built").c_str());
+      if (r != Result::Ok) continue;
+      std::vector<std::pair<double, double>> got;
+      double height = 0.0;
+      for (int i = 0; i < out.ControlPointCount(); ++i) {
+        const ON_3dVector rel = out.ControlPointAt(i) - pl.origin;
+        got.push_back({ON_DotProduct(rel, pl.xaxis), ON_DotProduct(rel, pl.yaxis)});
+        height = std::max(height, std::fabs(ON_DotProduct(rel, pl.zaxis)));
+      }
+      double worst = got.size() == c.expect.size() ? 0.0 : 1e30;
+      for (size_t i = 0; i < got.size() && i < c.expect.size(); ++i)
+        worst = std::max(worst, std::hypot(got[i].first - c.expect[i].first, got[i].second - c.expect[i].second));
+      std::printf("  %s: %zu vertices (GEOS %zu), max vertex error %g, plane height %g\n", nm.c_str(), got.size(), c.expect.size(), worst, height);
+      Check(worst < 1e-8, (nm + ": vertices equal the GEOS offset_curve (same count, order and direction) to 1e-8").c_str());
+      Check(height < 1e-9, (nm + ": the result stays in the plane").c_str());
+      if (variant == 0) {
+        auto bent = c.expect;
+        bent[1].first += 1e-6;
+        double w2 = 0.0;
+        for (size_t i = 0; i < got.size() && i < bent.size(); ++i) w2 = std::max(w2, std::hypot(got[i].first - bent[i].first, got[i].second - bent[i].second));
+        Check(w2 > 5e-7, (nm + ": control - a vertex moved by 1e-6 is detected by the comparison").c_str());
+        if (std::string(c.name).find("loop removed") != std::string::npos)
+          Check(std::fabs(raw_length(c.v, c.d) - c.geos_length) > 0.001,
+                (nm + ": control - the unrepaired raw mitre offset has a different length than GEOS's, so the oracle can tell them apart").c_str());
+      }
+    }
+  }
+  for (const OpenCase& c : refused) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : c.v) pts.push_back(Point3d(ab.first, ab.second, 0.0));
+    const NurbsCurve poly = NurbsCurve::FromControlPoints(pts, 1);
+    const NurbsCurve sentinel = NurbsCurve::FromControlPoints({Point3d(7, 7, 7), Point3d(8, 7, 7)}, 1);
+    NurbsCurve out = sentinel;
+    const std::string nm = std::string(c.name) + " d=" + std::to_string(c.d);
+    std::printf("  %s: raw mitre length %.6f, GEOS length %.6f\n", nm.c_str(), raw_length(c.v, c.d), c.geos_length);
+    Check(std::fabs(raw_length(c.v, c.d) - c.geos_length) > 0.001, (nm + ": control - the raw mitre offset's length differs from GEOS's").c_str());
+    Check(poly.OffsetInPlane(xy, c.d, out) == Result::Failed && out.ControlPointCount() == 2, (nm + ": refused, out untouched").c_str());
+  }
+}
+
 }  // namespace offset_remainder_tests
 
 // ---------------------------------------------------------------------------
@@ -109250,6 +109343,8 @@ int main() {
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonUnsoundSimpleInwardOffsetIsRefused);
   RunTest("offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets",
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets);
+  RunTest("offset_remainder_tests::TestOffsetInPlaneOpenPolylineLoopRemovalAndRefusals",
+          offset_remainder_tests::TestOffsetInPlaneOpenPolylineLoopRemovalAndRefusals);
   RunTest("body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline",
           body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline);
 
