@@ -1,4 +1,4 @@
-// Brep::SphereWelded() / Brep::TorusWelded(): curved primitives with genuine B-rep topology.
+// Brep::SphereWelded() / TorusWelded() / CylinderWelded(): curved primitives with genuine B-rep topology.
 //
 // Brep::Sphere()/Torus() are one bare surface-only face (no vertices/edges/loops/trims, ON_Brep::IsValid() false).
 // The "Welded" siblings carry real topology, so the topological invariants of the solid can be checked against
@@ -114,4 +114,46 @@ D8_EXTRA_TEST(TorusWeldedHasGenuineTopology) {
   Check(Throws([] { Brep::TorusWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 0.0); }), "TorusWelded: zero minor radius refused");
   Check(Throws([] { Brep::TorusWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0); }), "TorusWelded: major == minor refused");
   Check(Throws([] { Brep::TorusWelded(Point3d(0, 0, 0), Vector3d(0, 0, 0), 3.0, 1.0); }), "TorusWelded: zero axis refused");
+}
+
+D8_EXTRA_TEST(CylinderWeldedHasGenuineTopology) {
+  using d8test::Check;
+  const double r = 1.5, h = 4.0;
+  const Point3d base(1, -2, 0.5);
+  const Brep c = Brep::CylinderWelded(base, Vector3d(0, 3, 3), r, h);  // axis along (0,1,1), not unit
+  ON_TextLog log;
+  Check(c.raw().IsValid(&log) && c.raw().IsSolid(), "CylinderWelded: IsValid() and IsSolid()");
+  // wall + 2 caps; one vertex on each cap circle; 2 circle edges + 1 seam edge.
+  Check(c.LiveFaceCount() == 3 && c.LiveVertexCount() == 2 && c.LiveEdgeCount() == 3, "CylinderWelded: 3 faces, 2 vertices, 3 edges");
+  Check(EulerCharacteristic(c) == 2, "CylinderWelded: V - E + F == 2 (genus 0)");
+  Check(c.Check().IsClean(), "CylinderWelded: Check() is clean");
+  int two_face_edges = 0, self_edges = 0;
+  for (int e = 0; e < c.raw().m_E.Count(); ++e) {
+    Check(c.raw().m_E[e].m_ti.Count() == 2, "CylinderWelded: every edge has exactly 2 trims");
+    const size_t nf = c.FacesOfEdge(e).size();
+    two_face_edges += nf == 2;
+    self_edges += nf == 1;
+  }
+  Check(two_face_edges == 2 && self_edges == 1, "CylinderWelded: two cap circles border wall+cap, the seam borders the wall twice");
+  Check(c.SplitDisjointPieces().size() == 1, "CylinderWelded: one piece");
+
+  const double exact = kPi * r * r * h;
+  // The two trimmed cap discs are integrated with VolumeOfSealedSolid()'s own 1e-6 trimmed-face tolerance; the
+  // measured error here is ~5e-8 relative (the sphere and torus have no trimmed faces and agree to 1e-9).
+  Check(std::abs(c.VolumeOfSealedSolid() - exact) < 1e-6 * exact, "CylinderWelded: VolumeOfSealedSolid() == pi r^2 h to 1e-6");
+
+  const auto m = c.TessellateToClosedMesh(32, 8);
+  Check(m.IsClosedManifold(), "CylinderWelded: tessellation is a closed manifold");
+  const double s2 = std::sqrt(2.0);
+  const auto at = [&](double along, double across) {  // along the axis (0,1,1)/sqrt2, across along x
+    return Point3d(base.x + across, base.y + along / s2, base.z + along / s2);
+  };
+  Check(m.ContainsPoint(at(0.5 * h, 0.0)) && m.ContainsPoint(at(0.1 * h, 0.8 * r)) && m.ContainsPoint(at(0.9 * h, -0.8 * r)),
+        "CylinderWelded: interior points are inside");
+  Check(!m.ContainsPoint(at(-0.1 * h, 0.0)) && !m.ContainsPoint(at(1.1 * h, 0.0)) && !m.ContainsPoint(at(0.5 * h, 1.2 * r)),
+        "CylinderWelded: points past either cap or outside the wall are outside");
+
+  Check(Throws([] { Brep::CylinderWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.0, 1.0); }), "CylinderWelded: zero radius refused");
+  Check(Throws([] { Brep::CylinderWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, -1.0); }), "CylinderWelded: negative height refused");
+  Check(Throws([] { Brep::CylinderWelded(Point3d(0, 0, 0), Vector3d(0, 0, 0), 1.0, 1.0); }), "CylinderWelded: zero axis refused");
 }

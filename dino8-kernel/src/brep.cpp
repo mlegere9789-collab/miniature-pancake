@@ -452,6 +452,33 @@ Brep Brep::TorusWelded(Point3d center, Vector3d axis, double major_radius, doubl
   return result;
 }
 
+Brep Brep::CylinderWelded(Point3d base_center, Vector3d axis, double radius, double height) {
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::CylinderWelded: radius must be positive");
+  }
+  if (!(height > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::CylinderWelded: height must be positive");
+  }
+  ON_3dVector normal = axis;
+  if (!normal.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::Brep::CylinderWelded: axis must be non-zero");
+  }
+  Brep result;
+  ON_Cylinder cylinder(ON_Circle(ON_Plane(base_center, normal), radius), height);
+  if (ON_BrepCylinder(cylinder, true, true, &result.brep_) == nullptr || result.brep_.m_F.Count() != 3) {
+    throw std::runtime_error("dino8::kernel::Brep::CylinderWelded: ON_BrepCylinder failed");
+  }
+  for (int i = 0; i < result.brep_.m_F.Count(); ++i) {
+    result.face_trim_loops_.emplace_back();  // untrimmed
+    result.face_exact_clip_.push_back(false);
+    result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();
+    result.face_notch_rows_.emplace_back();
+    result.face_records_.emplace_back();
+  }
+  return result;
+}
+
 Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
                               const std::vector<Point2d>& trim_loop_uv,
                               bool exact_clip,

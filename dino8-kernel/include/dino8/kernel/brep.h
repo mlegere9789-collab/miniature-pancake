@@ -214,6 +214,13 @@ class Brep {
   static Brep SphereWelded(Point3d center, double radius);
   static Brep TorusWelded(Point3d center, Vector3d axis, double major_radius, double minor_radius);
 
+  // The capped right circular cylinder with genuine topology (same convention
+  // and same ON_RevSurface/ON_PlaneSurface faces as SphereWelded()): wall plus
+  // two planar caps, built by ON_BrepCylinder. `base_center` is the centre of
+  // the bottom cap, `axis` (need not be unit) points to the top cap at distance
+  // `height`. std::invalid_argument for radius <= 0, height <= 0 or a zero axis.
+  static Brep CylinderWelded(Point3d base_center, Vector3d axis, double radius, double height);
+
   // Builds a one-face B-rep whose face is `surface`, trimmed to
   // `trim_loop_uv`: a closed polygon in the surface's own (u, v)
   // parameter space. This is real (if simplified) B-rep trimming - the
