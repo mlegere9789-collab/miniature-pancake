@@ -3,6 +3,7 @@ DXFU
 Hairline
 LoftAlignSeams
 LoftRationalTangent
+LoftSectionTangents
 MicroEdge
 OffsetInPlaneClosedPolygon
 RefusesToCapAPathThatDoublesBack
@@ -15,6 +16,7 @@ TestHolePatterns
 TestOffsetRefitUnreachable
 TestSealedAppCylinderVolumesAgainstClosedForm
 TestSplitEdge
+TestSurfaceInterpolate
 TestSurfaceInterpolateThroughGrid
 TrisToQuads
 bridge_holes
@@ -23,10 +25,14 @@ extrude_along
 extrusion_shell_tests
 grid_interp
 loft_spacing
+match_edge_to_curve_rational
 qc2_tests
 qc3_tests
 sealed_boolean_tests
+shell_open_extrusion
+shell_revolved_profile
 subd_boolean_semisharp
+subd_vertex_info
 sweep2_accuracy
 sweep2_closed_corner
 sweep_adaptive
