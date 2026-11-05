@@ -709,8 +709,9 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
     const ObjectId new_id = ctx.Doc().Add(std::move(*r.object));
     if (keep_operands) {
       const double opcode = op == kernel::BooleanOp::Union ? 0 : op == kernel::BooleanOp::Difference ? 1 : op == kernel::BooleanOp::Intersection ? 2 : 3;
+      // "levels" is the Levels option the user typed (0 = automatic); a rebuild replays the boolean with it
       RecordHistoryIfEnabled(ctx, new_id, label, consumed,
-                             {{"op", opcode}, {"first", two_sets ? static_cast<double>(r.first.size()) : 0.0}});
+                             {{"op", opcode}, {"first", two_sets ? static_cast<double>(r.first.size()) : 0.0}, {"levels", static_cast<double>(subd_levels)}});
     }
   }
   ctx.Print(label + ": " + r.how);
@@ -1615,7 +1616,8 @@ std::optional<SceneObject> RebuildBoolean(CommandContext& ctx, const HistoryInpu
     first_ids.assign(ids.begin(), ids.begin() + static_cast<long>(first));
     second_ids.assign(ids.begin() + static_cast<long>(first), ids.end());
   }
-  BooleanOutcome r = ComputeBoolean(ctx, first_ids, second_ids, op, !second_ids.empty(), /*swap_sides=*/false, /*try_exact_brep=*/true);
+  const int levels = static_cast<int>(std::max(0.0, std::min(5.0, std::floor(num("levels") + 0.5))));  // the recorded Levels option (0 = automatic)
+  BooleanOutcome r = ComputeBoolean(ctx, first_ids, second_ids, op, !second_ids.empty(), /*swap_sides=*/false, /*try_exact_brep=*/true, levels);
   if (!r.declined.empty()) ctx.Print("History rebuild of a boolean: " + r.declined);
   if (!r.ok) { why = "the operands' current shapes cannot be combined (not closed solids, or every boolean engine refused them)"; return std::nullopt; }
   if (!r.object) { why = "the boolean of the operands' current shapes is empty"; return std::nullopt; }

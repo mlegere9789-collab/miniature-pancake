@@ -297,6 +297,13 @@ std::vector<HistoryParam> BooleanParams() {
         r.sources = s;
         return "";
       }));
+  ps.push_back(NumberParam("levels", "Catmull-Clark rounds applied to a SubD operand that is not exactly its cage (SubD booleans only)", "0 = automatic by face count, or 1 to 5",
+                           [](const HistoryRecord& r) { return NumOf(r, "levels"); },
+                           [](HistoryRecord& r, double d) -> std::string {
+                             if (d < 0.0 || d > 5.0 || d != std::floor(d)) return "levels must be a whole number from 0 (automatic) to 5";
+                             r.num["levels"] = d;
+                             return "";
+                           }));
   return ps;
 }
 
