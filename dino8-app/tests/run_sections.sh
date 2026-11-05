@@ -131,8 +131,11 @@ assemble() {
   for e in "$@"; do
     IFS='|' read -r n kind a b <<<"$e"
     echo "" >> "$out"
+    # wall time of every section on stdout ("section_time NAME 12s"), so the CI planner can weight by measured seconds
+    echo "__sec_t0=\$SECONDS" >> "$out"
     if [ "$kind" = smoke ]; then sed -n "${a},${b}p" "$SMOKE" >> "$out"
     else echo ". \"$a\"" >> "$out"; fi
+    echo "echo \"section_time $n \$((SECONDS - __sec_t0))s\"" >> "$out"
   done
   printf '\nexit $fail\n' >> "$out"
 }
