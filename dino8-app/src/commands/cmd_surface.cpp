@@ -451,6 +451,9 @@ bool HasAxisScale(const HistoryRecord& rec) { return rec.num.count("sx0") || rec
 // frame ("Freeform") does. History records it as num up_x up_y up_z (absent = Freeform).
 bool HasRoadlike(const HistoryRecord& rec) { return rec.num.count("up_z") != 0; }
 
+// Twist (degrees, total, linear in arc length along the rail): the kernel's twist_total on the exact single-section sweep.
+bool HasTwist(const HistoryRecord& rec) { return rec.num.count("twist_deg") != 0; }
+
 bool ParseUpVector(const std::string& text, double& x, double& y, double& z) {
   std::string t = text;
   for (char& c : t) {
@@ -474,7 +477,8 @@ class Sweep1Command : public Command {
  public:
   void Begin(CommandContext&) override {
     options = {{"Cap", "No", {"Yes", "No"}, false, true}, {"ScaleX", "1,1", {}, false, false}, {"ScaleY", "1,1", {}, false, false},
-               {"Style", "Freeform", {"Freeform", "Roadlike"}, false, true}, {"Up", "0,0,1", {}, false, false}};
+               {"Style", "Freeform", {"Freeform", "Roadlike", "Top", "Front", "Right"}, false, true}, {"Up", "0,0,1", {}, false, false},
+               {"Twist", "0", {}, false, false}};
     WantObjects("Select rail");
   }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
@@ -491,7 +495,8 @@ class Sweep1Command : public Command {
       closed_ = rail_->IsClosed();
       options = {{"Closed", closed_ ? "Yes" : "No", {"Yes", "No"}, false, true}, {"Cap", cap_ ? "Yes" : "No", {"Yes", "No"}, false, true},
                  {"ScaleX", ScalePairText(sx_[0], sx_[1]), {}, false, false}, {"ScaleY", ScalePairText(sy_[0], sy_[1]), {}, false, false},
-                 {"Style", roadlike_ ? "Roadlike" : "Freeform", {"Freeform", "Roadlike"}, false, true}, {"Up", UpText(), {}, false, false}};
+                 {"Style", style_text_, {"Freeform", "Roadlike", "Top", "Front", "Right"}, false, true}, {"Up", UpText(), {}, false, false},
+                 {"Twist", FormatNumber(twist_deg_), {}, false, false}};
       WantObjects("Select cross section curves");
       accept_preselection = false;
       return;
@@ -509,7 +514,32 @@ class Sweep1Command : public Command {
     for (OptionSpec& o : options) {
       if (o.name == "Closed" && n == "Closed") { closed_ = (v == "Yes"); o.value = closed_ ? "Yes" : "No"; }
       if (o.name == "Cap" && n == "Cap") { cap_ = (v == "Yes"); o.value = cap_ ? "Yes" : "No"; }
-      if (o.name == "Style" && n == "Style") { roadlike_ = (v == "Roadlike"); o.value = roadlike_ ? "Roadlike" : "Freeform"; }
+      if (o.name == "Style" && n == "Style") {
+        // Rhino's Roadlike keeps the section level against a view direction: Top = world Z, Front = world Y, Right = world X
+        // (Roadlike itself keeps whatever Up says, world Z by default). Freeform is the rotation-minimizing frame.
+        roadlike_ = (v == "Roadlike" || v == "Top" || v == "Front" || v == "Right");
+        style_text_ = roadlike_ ? v : "Freeform";
+        o.value = style_text_;
+        if (v == "Top") { up_[0] = 0; up_[1] = 0; up_[2] = 1; }
+        if (v == "Front") { up_[0] = 0; up_[1] = 1; up_[2] = 0; }
+        if (v == "Right") { up_[0] = 1; up_[1] = 0; up_[2] = 0; }
+        up_refusal_.clear();
+        for (OptionSpec& other : options) {
+          if (other.name == "Up") other.value = UpText();
+        }
+      }
+      if (o.name == "Twist" && n == "Twist") {
+        char* e = nullptr;
+        const double d = std::strtod(v.c_str(), &e);
+        if (!v.empty() && *e == 0 && std::isfinite(d)) {
+          twist_deg_ = d;
+          o.value = FormatNumber(d);
+          twist_refusal_.clear();
+        } else {
+          twist_refusal_ = "Twist must be a finite number of degrees, got '" + v + "'";
+          ctx.Warn("Sweep1: " + twist_refusal_);
+        }
+      }
       if (o.name == "Up" && n == "Up") {
         double x = 0, y = 0, z = 1;
         if (ParseUpVector(v, x, y, z)) {
@@ -543,6 +573,7 @@ class Sweep1Command : public Command {
   std::string UpText() const { return FormatNumber(up_[0]) + "," + FormatNumber(up_[1]) + "," + FormatNumber(up_[2]); }
   void RecordAxisScale(HistoryRecord& rec) const {
     if (roadlike_) { rec.num["up_x"] = up_[0]; rec.num["up_y"] = up_[1]; rec.num["up_z"] = up_[2]; }
+    if (twist_deg_ != 0.0) rec.num["twist_deg"] = twist_deg_;
     if (sx_[0] != 1.0 || sx_[1] != 1.0) { rec.num["sx0"] = sx_[0]; rec.num["sx1"] = sx_[1]; }
     if (sy_[0] != 1.0 || sy_[1] != 1.0) { rec.num["sy0"] = sy_[0]; rec.num["sy1"] = sy_[1]; }
   }
@@ -557,9 +588,13 @@ class Sweep1Command : public Command {
       ctx.Print("Sweep1: no surface created - " + up_refusal_);
       return;
     }
-    if (roadlike_ && profiles.size() != 1) {
-      // Not silently dropped: only the exact single-section kernel sweep carries the Roadlike frame.
-      ctx.Print("Sweep1: no surface created - Style=Roadlike is only applied to a single cross-section (the kernel's exact sweep); the multi-section blend uses rotation-minimizing frames");
+    if (!twist_refusal_.empty()) {
+      ctx.Print("Sweep1: no surface created - " + twist_refusal_);
+      return;
+    }
+    if ((roadlike_ || twist_deg_ != 0.0) && profiles.size() != 1) {
+      // Not silently dropped: only the exact single-section kernel sweep carries the Roadlike frame and the Twist.
+      ctx.Print("Sweep1: no surface created - Style=Roadlike (Top/Front/Right) and Twist are only applied to a single cross-section (the kernel's exact sweep); the multi-section blend uses rotation-minimizing frames");
       return;
     }
     // The undo step opens only when something is added (below): a refused scaled sweep builds nothing, and an EMPTY step
@@ -583,11 +618,11 @@ class Sweep1Command : public Command {
         ctx.Doc().BeginChange("Sweep1");
         const ObjectId new_id = ctx.Doc().Add(std::move(*exact));
         if (rail_id_ && !profile_ids_.empty()) RecordHistoryIfEnabled(ctx, new_id, "Sweep1", {*rail_id_, profile_ids_.front()}, rec.num);
-        if (!roadlike_) ctx.Print("Sweep1: exact kernel sweep (rotation-minimizing frames)");
+        if (!roadlike_ && twist_deg_ == 0.0) ctx.Print("Sweep1: exact kernel sweep (rotation-minimizing frames)");
         return;
       }
-      if (HasAxisScale(rec) || HasRoadlike(rec)) {
-        ctx.Print("Sweep1: no surface created - the per-axis scale (ScaleX / ScaleY) and Style=Roadlike are only applied by the exact kernel sweep, and are not silently dropped for the sampled approximation");
+      if (HasAxisScale(rec) || HasRoadlike(rec) || HasTwist(rec)) {
+        ctx.Print("Sweep1: no surface created - the per-axis scale (ScaleX / ScaleY), Style=Roadlike and Twist are only applied by the exact kernel sweep, and are not silently dropped for the sampled approximation");
         return;
       }
     }
@@ -677,7 +712,10 @@ class Sweep1Command : public Command {
   std::vector<ObjectId> profile_ids_;
   bool closed_ = false;
   bool cap_ = false;
-  bool roadlike_ = false;                   // Style=Roadlike
+  bool roadlike_ = false;                   // Style=Roadlike / Top / Front / Right
+  std::string style_text_ = "Freeform";
+  double twist_deg_ = 0.0;                  // Twist: total twist about the rail, degrees, linear in arc length
+  std::string twist_refusal_;
   double up_[3] = {0.0, 0.0, 1.0};          // Up: the world direction the Roadlike section is kept level against
   std::string up_refusal_;
   double sx_[2] = {1.0, 1.0};  // ScaleX: scale along the section's X axis at the rail start / end
@@ -3546,7 +3584,7 @@ std::optional<SceneObject> RebuildSweep1Scaled(CommandContext& ctx, const kernel
     kernel::Vector3d up_vec(0.0, 0.0, 1.0);
     if (HasRoadlike(rec)) up_vec = kernel::Vector3d(rec.num.at("up_x"), rec.num.at("up_y"), rec.num.at("up_z"));
     const kernel::Vector3d* up_ptr = HasRoadlike(rec) ? &up_vec : nullptr;
-    std::optional<kernel::NurbsSurface> wall = SweptWall(kernel::Brep::Sweep1(section, rail, /*stations=*/32, /*cap=*/false, 0.0, 1.0, up_ptr, nullptr, nullptr, sc.xp, sc.yp, sc.xp || sc.yp ? &sc.axis : nullptr));
+    std::optional<kernel::NurbsSurface> wall = SweptWall(kernel::Brep::Sweep1(section, rail, /*stations=*/32, /*cap=*/false, HasTwist(rec) ? rec.num.at("twist_deg") * 3.14159265358979323846 / 180.0 : 0.0, 1.0, up_ptr, nullptr, nullptr, sc.xp, sc.yp, sc.xp || sc.yp ? &sc.axis : nullptr, HasTwist(rec) ? 1e-4 * std::max(sectionfit::CurveSize(rail), sectionfit::CurveSize(section)) : 0.0));
     if (!wall) {
       ctx.Print("Sweep1: per-axis scale refused - the kernel sweep returned no surface");
       return std::nullopt;
@@ -3554,7 +3592,10 @@ std::optional<SceneObject> RebuildSweep1Scaled(CommandContext& ctx, const kernel
     std::string what;
     if (sc.xp) what += "x " + ScalePairText(rec.num.at("sx0"), rec.num.at("sx1"));
     if (sc.yp) what += std::string(what.empty() ? "" : ", ") + "y " + ScalePairText(rec.num.at("sy0"), rec.num.at("sy1"));
-    if (up_ptr) {
+    if (HasTwist(rec)) what += std::string(what.empty() ? "" : ", ") + "twist " + FormatNumber(rec.num.at("twist_deg")) + " degrees";
+    if (!up_ptr && HasTwist(rec) && !sc.xp && !sc.yp) {
+      ctx.Print("Sweep1: exact kernel sweep with Twist (" + what + " about the rail, linear in arc length, from the rotation-minimizing frames)");
+    } else if (up_ptr) {
       ctx.Print("Sweep1: exact kernel sweep, Style=Roadlike (section kept level against Up=" + FormatNumber(up_vec.x) + "," + FormatNumber(up_vec.y) + "," +
                 FormatNumber(up_vec.z) + " at every station, no banking with the rail's torsion)" + (what.empty() ? "" : "; per-axis scale " + what));
     } else {
@@ -3570,7 +3611,7 @@ std::optional<SceneObject> RebuildSweep1Scaled(CommandContext& ctx, const kernel
 
 std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail, const HistoryRecord& rec) {
-  if (HasAxisScale(rec) || HasRoadlike(rec)) return RebuildSweep1Scaled(ctx, section, rail, rec);
+  if (HasAxisScale(rec) || HasRoadlike(rec) || HasTwist(rec)) return RebuildSweep1Scaled(ctx, section, rail, rec);
   try {
     AnchoredSweep r = AnchoredSweep1(section, rail);
     if (!r.surface) {
