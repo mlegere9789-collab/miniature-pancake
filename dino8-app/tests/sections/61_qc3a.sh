@@ -4,12 +4,18 @@
 # Helix Pitch=1e-9 / Turns=1e9 asked the exact-interpolation search for billions of turns; Circle radius 0 / 1e308,
 # Polygon with the corner on the center and a Line of zero length finished silently (the Line made a zero-length curve);
 # Divide with nothing to divide left an empty undo step.
+# DXF fixtures with a CIRCLE / ARC that has no radius (group 40), a LINE that has no end point, and one good CIRCLE.
+printf '0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_norad.dxf"
+printf '0\nSECTION\n2\nENTITIES\n0\nARC\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_noarc.dxf"
+printf '0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_noline.dxf"
+printf '0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n0\n20\n0\n40\n2\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_ok.dxf"
+sed "s|@TMP@|$TMPW|g" "$HERE/qc3a_script.txt" > "$TMPW/qc3a_script.txt"
 qc3a_ok() { echo "ok   $1"; }
 qc3a_bad() { echo "FAIL $1"; fail=1; }
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  QC3A_OUT="$(timeout 300 "$BIN" --smoke 30 --script "$HERE/qc3a_script.txt" 2>&1)" || { echo "$QC3A_OUT" | tail -20; echo "FAIL QC3A_run: script exited non-zero or timed out (a hang is one of the count bugs)"; fail=1; QC3A_OUT=""; }
+  QC3A_OUT="$(timeout 300 "$BIN" --smoke 30 --script "$TMPW/qc3a_script.txt" 2>&1)" || { echo "$QC3A_OUT" | tail -20; echo "FAIL QC3A_run: script exited non-zero or timed out (a hang is one of the count bugs)"; fail=1; QC3A_OUT=""; }
 else
-  QC3A_OUT="$(timeout 300 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$HERE/qc3a_script.txt" 2>&1)" || { echo "$QC3A_OUT" | tail -20; echo "FAIL QC3A_run: script exited non-zero or timed out (a hang is one of the count bugs)"; fail=1; QC3A_OUT=""; }
+  QC3A_OUT="$(timeout 300 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/qc3a_script.txt" 2>&1)" || { echo "$QC3A_OUT" | tail -20; echo "FAIL QC3A_run: script exited non-zero or timed out (a hang is one of the count bugs)"; fail=1; QC3A_OUT=""; }
 fi
 qc3a_case() { awk -v n="QC3ABEGIN_$1" 'index($0, "Unknown command: " n) { on = 1; next } on && /Unknown command: QC3ABEGIN_/ { exit } on' <<<"$QC3A_OUT"; }
 qc3a_has() { if grep -qF -- "$2" <<<"$1"; then qc3a_ok "$3"; else qc3a_bad "$3"; fi; }
@@ -77,3 +83,36 @@ qc3a_has "$A" "Fillet: Radius=1, arc added" "QC3A_fillet_bad_radius: Radius=1 af
 A="$(qc3a_case chamfer_bad_distance)"
 qc3a_has "$A" "Chamfer: Distance must be 0 (a sharp corner) or at least the tolerance" "QC3A_chamfer_bad_distance: inf / 1e-300 distance are refused with a message"
 qc3a_has "$A" "Chamfer: Distance=1, chamfer line added" "QC3A_chamfer_bad_distance: Distance=1 afterwards still chamfers the corner"
+A="$(qc3a_case join_zero_length)"
+qc3a_has "$A" "has zero length and was left out" "QC3A_join_zero_length: a zero-length polyline is not joined"
+qc3a_hasnot "$A" "Joined 2 curves" "QC3A_join_zero_length: no 3-point curve is made from it and the line"
+A="$(qc3a_case join_noop_undo)"
+qc3a_has "$A" "Curve ends do not meet" "QC3A_join_noop_undo: two lines that do not meet are not joined"
+qc3a_has "$A" "1 object(s) selected" "QC3A_join_noop_undo: Undo after it removes the second Line (the previous step), not an empty Join step"
+A="$(qc3a_case extend_behind_undo)"
+qc3a_has "$A" "Extend: nothing was extended" "QC3A_extend_behind_undo: a point behind the end says why nothing was extended"
+qc3a_has "$A" "0 object(s) selected" "QC3A_extend_behind_undo: Undo after it removes the Line (the previous step), not an empty Extend step"
+A="$(qc3a_case extend_closed)"
+qc3a_has "$A" "closed curves cannot be extended" "QC3A_extend_closed: Extend on a circle says why nothing was extended"
+A="$(qc3a_case extend_far)"
+qc3a_has "$A" "Extend: the point is more than 1e12 units from the origin" "QC3A_extend_far: a target 1e300 away is refused"
+A="$(qc3a_case sphere_huge)"
+qc3a_has "$A" "Sphere: the radius must be at most 1000000000" "QC3A_sphere_huge: radius 1e300 is refused with the limit"
+A="$(qc3a_case sphere_big_bbox)"
+qc3a_has "$A" "Bounding box min" "QC3A_sphere_big_bbox: a sphere of radius 1e6 can be measured (the display mesher used to hang on it)"
+A="$(qc3a_case scale_overflow)"
+qc3a_has "$A" "Scale: the result would lie more than 1000000000000 units from the origin (overflow)" "QC3A_scale_overflow: Scale 1e30 says overflow"
+qc3a_has "$A" "Bounding box min 0,0,0 max 10,10,5" "QC3A_scale_overflow: the box was not scaled"
+A="$(qc3a_case move_overflow)"
+qc3a_has "$A" "Move: the result would lie more than 1000000000000 units from the origin (overflow)" "QC3A_move_overflow: Move 1e300 says overflow, not 'xform is singular'"
+qc3a_hasnot "$A" "singular" "QC3A_move_overflow: the kernel's 'singular' wording is gone"
+A="$(qc3a_case dxf_no_radius)"
+qc3a_has "$A" "1 malformed entity skipped" "QC3A_dxf_no_radius: a CIRCLE without a radius is reported as malformed"
+qc3a_has "$A" "0 object(s) selected" "QC3A_dxf_no_radius: no radius-1 circle was invented"
+A="$(qc3a_case dxf_no_arc_radius)"
+qc3a_has "$A" "1 malformed entity skipped" "QC3A_dxf_no_arc_radius: an ARC without a radius is reported as malformed"
+A="$(qc3a_case dxf_no_line_end)"
+qc3a_has "$A" "1 malformed entity skipped" "QC3A_dxf_no_line_end: a LINE without an end point is reported as malformed"
+qc3a_has "$A" "0 object(s) selected" "QC3A_dxf_no_line_end: no zero-length line was added"
+A="$(qc3a_case import_once)"
+if [ "$(grep -c 'Imported ' <<<"$A")" = 1 ]; then qc3a_ok "QC3A_import_once: the Imported line is printed once"; else qc3a_bad "QC3A_import_once: the Imported line is printed once (saw $(grep -c 'Imported ' <<<"$A"))"; fi

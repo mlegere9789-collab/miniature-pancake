@@ -1778,6 +1778,7 @@ double ImportDimTextHeight(Document& doc) {
 
 struct DxfImportStats {
   int curves = 0, points = 0, meshes = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0, blocks_flattened = 0;
+  int malformed = 0;  // CIRCLE/ARC without a positive radius, LINE without a length: refused, not defaulted
 };
 
 class DxfImporter {
@@ -1856,7 +1857,11 @@ class DxfImporter {
     ++stats_.curves;
   }
 
-  void Line(const DxfEntity& e) { AddCurve(ON_LineCurve(e.P(10), e.P(11)), e); }
+  void Line(const DxfEntity& e) {
+    if (!e.Has(11) && !e.Has(21) && !e.Has(31)) { ++stats_.malformed; return; }  // no end point: used to be a zero-length line
+    if (e.P(10).DistanceTo(e.P(11)) <= 1e-12) { ++stats_.malformed; return; }
+    AddCurve(ON_LineCurve(e.P(10), e.P(11)), e);
+  }
 
   void Point(const DxfEntity& e) {
     SceneObject o = SceneObject::MakePoint(e.P(10));
@@ -1927,7 +1932,8 @@ class DxfImporter {
   void Circle(const DxfEntity& e) {
     const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
     const Point3d center = OcsToWorld(ocs, e.P(10));
-    ON_Circle c(ON_Plane(center, ocs.xaxis, ocs.yaxis), e.D(40, 1.0));
+    if (!e.Has(40) || !(e.D(40) > 0)) { ++stats_.malformed; return; }  // no radius used to become radius 1
+    ON_Circle c(ON_Plane(center, ocs.xaxis, ocs.yaxis), e.D(40));
     AddCurve(ON_ArcCurve(c), e);
   }
 
@@ -1937,7 +1943,8 @@ class DxfImporter {
     double a0 = e.D(50, 0.0) * ON_PI / 180.0;
     double a1 = e.D(51, 360.0) * ON_PI / 180.0;
     while (a1 <= a0 + 1e-12) a1 += 2.0 * ON_PI;
-    ON_Circle c(ON_Plane(center, ocs.xaxis, ocs.yaxis), e.D(40, 1.0));
+    if (!e.Has(40) || !(e.D(40) > 0)) { ++stats_.malformed; return; }  // no radius used to become radius 1
+    ON_Circle c(ON_Plane(center, ocs.xaxis, ocs.yaxis), e.D(40));
     ON_Arc arc(c, ON_Interval(a0, a1));
     AddCurve(ON_ArcCurve(arc), e);
   }
@@ -2987,6 +2994,7 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
+  if (stats.malformed) ss << "; " << stats.malformed << " malformed entit" << (stats.malformed == 1 ? "y" : "ies") << " skipped (a CIRCLE or ARC without a positive radius, or a LINE without a length)";
   ss << unit_note;
   summary = ss.str();
   if (stats.curves + stats.points + stats.meshes + stats.hatches + stats.dimensions == 0) {

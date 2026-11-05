@@ -210,4 +210,108 @@ Distance=1
 Cancel
 New
 
+QC3ABEGIN_join_zero_length
+Polyline 0,0,0 0,0,0
+Enter
+Line 0,0,0 5,0,0
+SelAll
+Join
+Cancel
+New
+
+QC3ABEGIN_join_noop_undo
+Line 0,0,0 5,0,0
+Line 50,0,0 55,0,0
+SelAll
+Join
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_extend_behind_undo
+Line 0,0,0 5,0,0
+SelAll
+Extend
+2,0,0
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_extend_closed
+Circle 0,0,0 3
+SelAll
+Extend
+Enter
+Cancel
+New
+
+QC3ABEGIN_extend_far
+Line 0,0,0 5,0,0
+SelAll
+Extend
+1e300,0,0
+Cancel
+New
+
+QC3ABEGIN_sphere_huge
+Sphere
+0,0,0
+1e300
+Cancel
+New
+
+QC3ABEGIN_sphere_big_bbox
+Sphere
+0,0,0
+1e6
+SelAll
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_scale_overflow
+Box 0,0,0 10,10,0 5
+SelAll
+Scale
+0,0,0
+1e30
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_move_overflow
+Box 0,0,0 10,10,0 5
+SelAll
+Move
+0,0,0
+1e300,0,0
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_dxf_no_radius
+Import @TMP@/qc3a_norad.dxf
+SelAll
+Cancel
+New
+
+QC3ABEGIN_dxf_no_arc_radius
+Import @TMP@/qc3a_noarc.dxf
+SelAll
+Cancel
+New
+
+QC3ABEGIN_dxf_no_line_end
+Import @TMP@/qc3a_noline.dxf
+SelAll
+Cancel
+New
+
+QC3ABEGIN_import_once
+Import @TMP@/qc3a_ok.dxf
+Cancel
+New
+
 QC3ABEGIN_end

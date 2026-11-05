@@ -632,7 +632,11 @@ class BoxCommand : public Command {
 CommandFactory SphereLike(const char* label, std::function<void(CommandContext&, Point3d, double)> build) {
   return [=]() -> std::unique_ptr<Command> {
     auto c = std::make_unique<PointThenDistanceCommand>("Center of sphere", "Radius",
-                                                        [=](CommandContext& ctx, Point3d c, double r, Point3d) { if (r > 0) build(ctx, c, r); else ctx.Warn(std::string(label) + ": radius must be positive"); }, 10.0);
+                                                        [=](CommandContext& ctx, Point3d c, double r, Point3d) {
+                                                          if (!(r > 0)) ctx.Warn(std::string(label) + ": radius must be positive");
+                                                          else if (r > kMaxPrimitiveRadius) ctx.Warn(std::string(label) + ": the radius must be at most " + FormatNumber(kMaxPrimitiveRadius) + " (a larger sphere cannot be meshed or displayed)");
+                                                          else build(ctx, c, r);
+                                                        }, 10.0);
     c->preview_ = [](CommandContext& ctx, Point3d c, double r, Point3d) {
       for (int axis = 0; axis < 3; ++axis) {
         ON_Plane pl(c, axis == 0 ? ON_zaxis : axis == 1 ? ON_xaxis : ON_yaxis);

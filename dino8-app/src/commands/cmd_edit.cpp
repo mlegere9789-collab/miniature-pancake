@@ -331,6 +331,10 @@ class ExtendCommand : public Command {
     WantPoint("Point to extend towards (Enter for 10% of the domain at both ends)");
   }
   void OnPoint(CommandContext& ctx, Point3d target) override {
+    if (!std::isfinite(target.DistanceTo(Point3d(0, 0, 0))) || target.DistanceTo(Point3d(0, 0, 0)) > 1e12) {
+      ctx.Warn("Extend: the point is more than 1e12 units from the origin; pick a nearer point");
+      return;
+    }
     ctx.Doc().BeginChange("Extend");
     int done = 0;
     for (ObjectId id : ids_) {
@@ -352,6 +356,10 @@ class ExtendCommand : public Command {
       const kernel::Result r = near_start ? o->curve->Extend(d.min - param_delta, d.max) : o->curve->Extend(d.min, d.max + param_delta);
       if (r != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
     }
+    if (done == 0) {
+      ctx.Doc().AbandonChange();  // no empty undo step
+      ctx.Warn("Extend: nothing was extended - the picked point must lie beyond the end of the curve nearest to it, along its end tangent, and the curve must be open");
+    }
     ctx.Print("Extend: " + std::to_string(done) + " curve(s) extended towards the picked point");
     Finish();
   }
@@ -365,6 +373,10 @@ class ExtendCommand : public Command {
       const double len = d.max - d.min;
       const kernel::Result r = o->curve->Extend(d.min - len * 0.1, d.max + len * 0.1);
       if (r != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+    }
+    if (done == 0) {
+      ctx.Doc().AbandonChange();  // no empty undo step
+      ctx.Warn("Extend: nothing was extended - closed curves cannot be extended, and some open curves cannot be extended at their ends");
     }
     ctx.Print("Extend: " + std::to_string(done) + " curve(s) extended by 10% of their domain at both ends");
     Finish();
@@ -682,11 +694,17 @@ void RegisterEditCommands(CommandEngine& e) {
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o) continue;
-          if (o->kind == ObjectKind::Curve) curves.push_back(*o);
+          if (o->kind == ObjectKind::Curve) {
+            // A zero-length curve (both ends on one point) used to chain into the result as a 3-point curve with a
+            // repeated point; it is not a curve to join.
+            if (o->curve->Length(50) <= ctx.Settings().absolute_tolerance) { ctx.Warn("Join: curve " + std::to_string(id) + " has zero length and was left out"); continue; }
+            curves.push_back(*o);
+          }
           else if (o->kind == ObjectKind::Brep || o->kind == ObjectKind::Surface) breps.push_back(*o);
           else if (o->kind == ObjectKind::Mesh) meshes.push_back(*o);
         }
         ctx.Doc().BeginChange("Join");
+        bool joined_any = false;
         if (curves.size() >= 2) {
           ON_PolyCurve pc;
           std::vector<const SceneObject*> remaining;
@@ -719,6 +737,7 @@ void RegisterEditCommands(CommandEngine& e) {
               for (ObjectId jid : joined_ids) ctx.Doc().Remove(jid);
               ctx.Doc().Add(std::move(n));
               ctx.Print("Joined " + std::to_string(pc.Count()) + " curves into one");
+              joined_any = true;
             }
           } else ctx.Warn("Curve ends do not meet");
         }
@@ -735,6 +754,7 @@ void RegisterEditCommands(CommandEngine& e) {
           for (const SceneObject& o : breps) ctx.Doc().Remove(o.id);
           ctx.Doc().Add(std::move(n));
           ctx.Print("Joined " + std::to_string(breps.size()) + " surfaces into one polysurface");
+          joined_any = true;
         }
         if (meshes.size() >= 2) {
           std::vector<kernel::Mesh> ms;
@@ -744,7 +764,9 @@ void RegisterEditCommands(CommandEngine& e) {
           for (const SceneObject& o : meshes) ctx.Doc().Remove(o.id);
           ctx.Doc().Add(std::move(n));
           ctx.Print("Joined " + std::to_string(meshes.size()) + " meshes");
+          joined_any = true;
         }
+        if (!joined_any) ctx.Doc().AbandonChange();  // nothing joined: no empty undo step
       }, 2));
   Reg(e, "Explode", OnSelection("Select objects to explode", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Explode");

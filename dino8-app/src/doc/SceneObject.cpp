@@ -694,19 +694,30 @@ void SceneObject::BuildDisplay(double curve_tolerance, double surface_tolerance)
     }
     case ObjectKind::Brep: {
       std::vector<kernel::Mesh> meshes;
+      // The display tolerance is an absolute 0.05..0.1 model units, which is fine up to a few hundred units and
+      // hopeless for a Sphere of radius 1e6 (the mesher never returned, and BoundingBox() meshes at 0.1, so even a
+      // SelAll + BoundingBox hung). Never ask for finer than 1e-4 of the object's own size; sizes under ~1000 units
+      // keep their tolerance exactly. cache_.built_surface_tolerance stays the REQUESTED value, so the adaptive
+      // display does not see a mismatch and rebuild every frame.
+      double mesh_tolerance = surface_tolerance;
+      {
+        const ON_BoundingBox bb = brep->raw().BoundingBox();
+        const double diag = bb.IsValid() ? bb.Diagonal().Length() : 0.0;
+        if (std::isfinite(diag) && diag * 1e-4 > mesh_tolerance) mesh_tolerance = diag * 1e-4;
+      }
       try {
         BrepMeshOptions opt;
-        opt.chord_tolerance = surface_tolerance;
+        opt.chord_tolerance = mesh_tolerance;
         opt.max_triangles_per_face = display_face_cap_;
         const int nf = brep->raw().m_F.Count();
         if (display_fine_faces_.size() == static_cast<size_t>(nf) && nf > 0) {
           // Region build: visible (fine) faces at the requested tolerance and the
           // per-object budget split over them; the rest at the coarse base level.
-          opt.face_chord_tolerance.assign(static_cast<size_t>(nf), std::max(display_coarse_tol_, surface_tolerance));
+          opt.face_chord_tolerance.assign(static_cast<size_t>(nf), std::max(display_coarse_tol_, mesh_tolerance));
           opt.face_max_triangles.assign(static_cast<size_t>(nf), 3000);  // off-screen faces: a small fixed cap
           for (int f = 0; f < nf; ++f)
             if (display_fine_faces_[static_cast<size_t>(f)]) {
-              opt.face_chord_tolerance[static_cast<size_t>(f)] = surface_tolerance;
+              opt.face_chord_tolerance[static_cast<size_t>(f)] = mesh_tolerance;
               opt.face_max_triangles[static_cast<size_t>(f)] = display_face_cap_;
             }
         }
@@ -720,7 +731,7 @@ void SceneObject::BuildDisplay(double curve_tolerance, double surface_tolerance)
         cache_.triangle_face.resize(cache_.triangles.size() / 18, static_cast<int>(fi));
         (void)before;
       }
-      AppendBrepEdges(*brep, surface_tolerance, cache_.lines, cache_.edges, cache_.naked_edges);
+      AppendBrepEdges(*brep, mesh_tolerance, cache_.lines, cache_.edges, cache_.naked_edges);
       if (show_control_points) {
         // SolidPtOn: the brep vertices are the grips.
         const ON_Brep& raw = brep->raw();

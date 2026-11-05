@@ -26,6 +26,26 @@ std::vector<SceneObject> ResolveObjects(CommandContext& ctx, const std::vector<O
 }
 
 void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label) {
+  // Overflow guard: carry the selection's bounding box through the transform first. A Move of 1e300 or a Scale of 1e30
+  // used to reach the kernel (which answered "xform is singular" for the first and silently built a 1e31 wide box for
+  // the second) or produce coordinates no later command can use. Nothing has been changed yet, so no undo step either.
+  {
+    kernel::BoundingBox bb;
+    if (ctx.Doc().BoundingBoxOf(ids, bb)) {
+      bool ok = xf.IsValid();
+      for (int c = 0; ok && c < 8; ++c) {
+        ON_3dPoint p((c & 1) ? bb.max.x : bb.min.x, (c & 2) ? bb.max.y : bb.min.y, (c & 4) ? bb.max.z : bb.min.z);
+        p.Transform(xf);
+        ok = std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) && std::fabs(p.x) <= kMaxModelCoordinate &&
+             std::fabs(p.y) <= kMaxModelCoordinate && std::fabs(p.z) <= kMaxModelCoordinate;
+      }
+      if (!ok) {
+        ctx.Warn(label + ": the result would lie more than " + FormatNumber(kMaxModelCoordinate) +
+                 " units from the origin (overflow); use a smaller distance or factor");
+        return;
+      }
+    }
+  }
   // Move/Rotate/Scale/Mirror/Orient/Nudge/ProjectToCPlane (copy=false): the
   // full set of ids about to be Transform()-ed in place is known upfront
   // and nothing else about the document changes, so this qualifies for

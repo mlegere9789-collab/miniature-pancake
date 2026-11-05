@@ -212,7 +212,7 @@ void RegisterFileCommands(CommandEngine& e) {
       }), CommandStatus::Implemented, "Saves a normal .3dm you can open as a starting point.");
   Reg(e, "Import", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
-        if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ImportFile(*p, err)) ctx.Warn(err); else ctx.Print("Imported " + *p); return; }
+        if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ImportFile(*p, err)) ctx.Warn(err); return; }  // ImportFile itself notifies Imported <path>
         app.ShowFileDialog("Import", kModelExts, false, [&app](const std::string& path) { std::string err; if (!app.ImportFile(path, err)) app.Notify(err); });
       }));
   Reg(e, "Export", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
