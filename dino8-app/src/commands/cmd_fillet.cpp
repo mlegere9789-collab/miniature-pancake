@@ -5213,10 +5213,15 @@ class FilletEdgeCommand : public Command {
 class MatchSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override {
-    options = {{"Continuity", "Position", {"Position", "Tangency", "Curvature"}, false, false}};
+    options = {{"Continuity", "Position", {"Position", "Tangency", "Curvature"}, false, false}, {"Follow", "No", {"Yes", "No"}, false, true}};
     WantPoint("Click the surface edge to move (near the edge to match)");
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Follow") {
+      follow_ = v == "Yes" ? true : v == "No" ? false : !follow_;
+      options[1].value = follow_ ? "Yes" : "No";
+      return;
+    }
     if (n != "Continuity") return;
     continuity_ = v == "Curvature" ? kernel::MatchContinuity::Curvature : v == "Tangency" ? kernel::MatchContinuity::Tangent : kernel::MatchContinuity::Position;
   }
@@ -5226,6 +5231,20 @@ class MatchSrfCommand : public Command {
       if (!pick) { ctx.Warn("No surface near that point"); return; }
       first_ = *pick;
       WantPoint("Click the target curve or surface edge");
+      return;
+    }
+    // Follow=Yes: the target curve lies on a host surface the edited surface should leave tangentially; ask for it.
+    if (follow_ && !host_ && !target_pick_) {
+      target_pick_ = p;
+      WantPoint("Click the host surface the target curve lies on (the surface to follow)");
+      return;
+    }
+    if (follow_ && target_pick_) {
+      auto pick = PickFace(ctx, p);
+      if (!pick) { ctx.Warn("No host surface near that point"); return; }
+      host_ = *pick;
+      Run(ctx, *target_pick_);
+      Finish();
       return;
     }
     Run(ctx, p);
@@ -5324,7 +5343,48 @@ class MatchSrfCommand : public Command {
     // in which case Position/Tangency fall through to the loop below.
     bool matched_curve = false;
     kernel::MatchEdgeReport curve_report;
-    if (!matched_exact && target_curve) {
+    kernel::MatchFollowReport follow_report;
+    bool followed = false;
+    if (follow_) {
+      // Follow=Yes: match the curve while leaving it in the host surface's tangent plane
+      // (kernel::NurbsSurface::MatchEdgeToCurveFollowing). There is no approximate fallback - the per-CV loop knows nothing
+      // about a host - so a refusal changes nothing and says why.
+      std::string why;
+      if (!target_curve) why = "Follow needs a target CURVE (it takes the tangent plane from a host surface the curve lies on)";
+      else if (continuity_ != kernel::MatchContinuity::Tangent) why = "Follow needs Continuity=Tangency (G1 to the host; Position has no direction to follow and a host curvature match is not attempted)";
+      else if (!host_) why = "no host surface was picked";
+      std::optional<ON_NurbsSurface> hs;
+      if (why.empty()) {
+        const SceneObject* ho = ctx.Doc().Find(host_->id);
+        hs = ho ? SurfaceOfObject(*ho, host_->face) : std::nullopt;
+        if (!hs) why = "could not read the host surface";
+        else if (host_->id == first_->id && host_->face == first_->face) why = "the host surface must differ from the surface being matched";
+      }
+      if (why.empty()) {
+        const ON_NurbsCurve* tnc = ON_NurbsCurve::Cast(target_curve);
+        kernel::NurbsCurve kc;
+        kernel::NurbsSurface host_ks;
+        if (tnc) kc.raw() = *tnc;
+        host_ks.raw() = *hs;
+        kernel::NurbsSurface trial = ks;
+        if (!tnc) why = "the target is not a NURBS curve";
+        else if (trial.MatchEdgeToCurveFollowing(fixed_dir, at_min, kc, host_ks, &follow_report) == kernel::Result::Ok) {
+          ks = trial;
+          followed = true;
+          matched_curve = true;
+          curve_report = follow_report.match;
+          moved = n_cross;
+        } else {
+          why = follow_report.refusal_reason.empty() ? "the kernel refused" : follow_report.refusal_reason;
+        }
+      }
+      if (!followed) {
+        delete target_curve;
+        ctx.Warn("MatchSrf: Follow could not be applied - " + why + "; nothing was changed");
+        return;
+      }
+    }
+    if (!matched_exact && !matched_curve && target_curve) {
       if (const ON_NurbsCurve* tnc = ON_NurbsCurve::Cast(target_curve)) {
         kernel::NurbsCurve kc;
         kc.raw() = *tnc;
@@ -5403,9 +5463,10 @@ class MatchSrfCommand : public Command {
     }
     const char* continuity_name = continuity_ == kernel::MatchContinuity::Curvature ? "G2" : continuity_ == kernel::MatchContinuity::Tangent ? "G1" : "G0";
     if (matched_curve) {
-      std::string msg = "MatchSrf: exact edge match (" + std::string(continuity_name) + ") to the target curve, max position error " + FormatNumber(curve_report.max_position_error);
+      std::string msg = "MatchSrf: exact edge match (" + std::string(continuity_name) + ") to the target curve" + (followed ? " following the host surface" : "") + ", max position error " + FormatNumber(curve_report.max_position_error);
       if (continuity_ != kernel::MatchContinuity::Position) msg += ", max tangent error " + FormatNumber(curve_report.max_tangent_error);
       if (continuity_ == kernel::MatchContinuity::Curvature) msg += ", max curvature error " + FormatNumber(curve_report.max_curvature_error);
+      if (followed) msg += ", host tangent-plane deviation " + FormatNumber(follow_report.max_tangent_plane_deviation) + ", target-to-host gap " + FormatNumber(follow_report.max_host_gap);
       ctx.Print(msg);
     } else if (matched_exact) {
       std::string msg = "MatchSrf: exact edge match (" + std::string(continuity_name) + ") to the target surface, max position error " + FormatNumber(exact_report.max_position_error);
@@ -5420,6 +5481,9 @@ class MatchSrfCommand : public Command {
 
  private:
   std::optional<FacePick> first_;
+  std::optional<FacePick> host_;          // Follow=Yes: the surface whose tangent plane the edited surface leaves in
+  std::optional<Point3d> target_pick_;    // Follow=Yes: the target pick, kept while the host is asked for
+  bool follow_ = false;
   kernel::MatchContinuity continuity_ = kernel::MatchContinuity::Position;
 };
 
@@ -7082,7 +7146,7 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "VariableBlendSrf", Make<VariableBlendSrfCommand>(), CommandStatus::Implemented,
       "A genuine independent blend-tangent variant of BlendSrf (not the rolling-ball fillet VariableFilletSrf uses): the same BuildBlendSurfaceG1/G2 Hermite/quintic blend between two picked surface edges, with the blend's own cross-section width interpolated linearly along the rail from Width= to EndWidth=, the same piecewise-linear-along-the-rail technique FilletTwoSurfacesCommand uses for Radius=/EndRadius=. Continuity=Curvature gets the same real, numerically-verified G2 cross-boundary curvature match as BlendSrf (see tests/test_g2_blend.cpp and tests/test_variable_blend.cpp), independent of the width, which no fixed-cross-section rolling-ball fillet construction can do except at one coincidental radius.");
   Reg(e, "MatchSrf", Make<MatchSrfCommand>(), CommandStatus::Implemented,
-      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal. Against a target surface edge, Position/Tangency/Curvature all try the exact kernel::NurbsSurface::MatchEdge() construction first (real NURBS algebra, not moved-and-hoped-for control points) - Curvature additionally matches the cross-boundary second derivative, real G2, not just G1 (see kernel::NurbsSurface::MatchEdge()'s own doc comment). Against a target CURVE (rational arcs and circles included) the exact kernel::NurbsSurface::MatchEdgeToCurve() construction is tried first: the edge becomes the curve exactly and, for Tangency/Curvature, the surface keeps its own cross-boundary tangent (and curvature) along it. Curvature has no approximate fallback when the exact match itself fails (a periodic or unclamped edge/curve, or a target surface whose degree is too low to carry a curvature row) - it fails closed with a diagnostic rather than silently downgrading to G1/G0.");
+      "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal. Against a target surface edge, Position/Tangency/Curvature all try the exact kernel::NurbsSurface::MatchEdge() construction first (real NURBS algebra, not moved-and-hoped-for control points) - Curvature additionally matches the cross-boundary second derivative, real G2, not just G1 (see kernel::NurbsSurface::MatchEdge()'s own doc comment). Against a target CURVE (rational arcs and circles included) the exact kernel::NurbsSurface::MatchEdgeToCurve() construction is tried first: the edge becomes the curve exactly and, for Tangency/Curvature, the surface keeps its own cross-boundary tangent (and curvature) along it. Follow=Yes (with Continuity=Tangency and a target curve lying on a host surface; you then click the host surface as a third pick) makes the edited surface leave the curve in the HOST's tangent plane - its own cross direction rotated into that plane at its own speed (kernel::NurbsSurface::MatchEdgeToCurveFollowing); rational surfaces work, and a curve that is not on the host is refused with nothing changed. Curvature has no approximate fallback when the exact match itself fails (a periodic or unclamped edge/curve, or a target surface whose degree is too low to carry a curvature row) - it fails closed with a diagnostic rather than silently downgrading to G1/G0.");
   Reg(e, "BlendSrf", Make<BlendSrfCommand>(), CommandStatus::Implemented,
       "Hermite blend between two picked surface edges. Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend matching each surface's own exact directional second derivative at the boundary (Ev2Der), so its curvature vector matches exactly in the cross-boundary direction (see BlendEdge's own help and tests/test_g2_blend.cpp) - not a claim of full surface-wide G2.");
   Reg(e, "ConnectSrf", Make<ConnectSrfCommand>(), CommandStatus::Implemented,
