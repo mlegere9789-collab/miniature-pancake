@@ -1008,7 +1008,8 @@ class SubD {
   // source first (Subdivide(n)) to bring the two closer, error shrinking about
   // 4x per round. A true limit-surface cut (exact on smooth cages) and
   // SubD-to-SubD cuts by another SubD (transversal limit-surface intersection)
-  // are not implemented. Semi-sharp edge weights are not carried to the pieces.
+  // are not implemented. Semi-sharp edge weights ARE carried: a cut edge's two pieces keep the end values and share the
+  // linearly interpolated weight at the new vertex.
   //
   // A face crossed more than twice (a non-convex face the plane enters and
   // leaves repeatedly) is ambiguous and throws std::runtime_error, as does a
@@ -1019,6 +1020,15 @@ class SubD {
   // has_negative false and that SubD left empty).
   SubDPlaneSplit SplitByPlane(Vector3d plane_normal, double plane_offset, bool cap = true, bool crease_cut = true,
                               double point_tolerance = 1e-9) const;
+
+  // SplitByPlane() on this SubD refined `levels` times first (Subdivide(levels), `levels` in [0, 5]; a global
+  // refinement - ON_SubD has no conforming local one - so the cage grows 4^levels). Catmull-Clark refinement keeps
+  // the limit surface, creases, corners and semi-sharp weights, but the cut then happens on a cage whose points are
+  // closer to that surface, so the halves' limit surfaces approach the original clipped by the plane. Measured
+  // deviation per level: see tests/extra/subd_split_plane_refined.cpp (the original is a smooth cube cage, the plane its
+  // mid-plane, so each half must have exactly half the limit volume). Still not an exact limit-surface cut.
+  SubDPlaneSplit SplitByPlaneRefined(Vector3d plane_normal, double plane_offset, int levels, bool cap = true,
+                                     bool crease_cut = true, double point_tolerance = 1e-9) const;
 
   // ---------------------------------------------------------------------
   // SubD -> NURBS, watertight.

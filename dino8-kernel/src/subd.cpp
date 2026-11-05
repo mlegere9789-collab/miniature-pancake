@@ -881,6 +881,18 @@ SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bo
       if (sharp == 2) pins.push_back(index_of.at(v->m_id));
     }
   }
+  // Semi-sharp edges: (vertex a, vertex b, sharpness at a's end, sharpness at b's end).
+  struct SharpEdge { int a, b; double sa, sb; };
+  std::vector<SharpEdge> semi_sharp;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->IsCrease() || e->FaceCount() != 2 || e->Vertex(0u) == nullptr || e->Vertex(1u) == nullptr) continue;
+      const double s0 = e->EndSharpness(0u), s1 = e->EndSharpness(1u);
+      if (!(s0 > 0.0 || s1 > 0.0)) continue;
+      semi_sharp.push_back({index_of.at(e->Vertex(0u)->m_id), index_of.at(e->Vertex(1u)->m_id), s0, s1});
+    }
+  }
 
   // ---- signed distances; vertices within the tolerance are ON the plane
   std::vector<double> d(V.size());
@@ -982,6 +994,22 @@ SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bo
     }
   }
 
+  // ---- semi-sharp weights of the pieces: an edge cut at fraction t from a keeps a's end value and gets the linearly interpolated
+  // value s_a + t (s_b - s_a) at the new vertex, so both pieces together carry exactly the original weight profile
+  std::vector<SharpEdge> sharp_pieces[2];
+  for (const SharpEdge& e : semi_sharp) {
+    if (d[e.a] * d[e.b] < 0.0) {
+      const double tt = d[e.a] / (d[e.a] - d[e.b]);
+      const double sc = e.sa + tt * (e.sb - e.sa);
+      const int c = cut_of.at(key(e.a, e.b));
+      sharp_pieces[d[e.a] > 0.0 ? 0 : 1].push_back({e.a, c, e.sa, sc});
+      sharp_pieces[d[e.b] > 0.0 ? 0 : 1].push_back({c, e.b, sc, e.sb});
+    } else {
+      if (d[e.a] >= 0.0 && d[e.b] >= 0.0) sharp_pieces[0].push_back(e);
+      if (d[e.a] <= 0.0 && d[e.b] <= 0.0) sharp_pieces[1].push_back(e);
+    }
+  }
+
   // ---- caps: every naked edge of a half that lies in the plane is closed into loops
   for (int side = 0; side < 2; ++side) {
     if (!cap) break;
@@ -1051,6 +1079,14 @@ SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bo
       if (edge != nullptr && edge->FaceCount() == 2) to_crease.Append(ON_SubDComponentPtr::Create(edge));
     }
     if (to_crease.Count() > 0) out.subd_.SetEdgeTags(to_crease, ON_SubDEdgeTag::Crease);
+    for (const SharpEdge& se : sharp_pieces[side]) {
+      if (!vert.count(se.a) || !vert.count(se.b)) continue;
+      const ON_SubDEdge* edge = out.subd_.FindEdge(vert.at(se.a), vert.at(se.b)).Edge();
+      if (edge == nullptr || edge->FaceCount() != 2 || !edge->IsSmooth()) continue;
+      const bool a_is_end0 = (edge->Vertex(0u) == vert.at(se.a));
+      const_cast<ON_SubDEdge*>(edge)->SetSharpnessForExperts(
+          ON_SubDEdgeSharpness::FromInterval(a_is_end0 ? se.sa : se.sb, a_is_end0 ? se.sb : se.sa));
+    }
     bool pinned = false;
     for (int pin : pins) {
       if (!vert.count(pin)) continue;
@@ -1072,6 +1108,16 @@ SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bo
     (side == 0 ? result.has_positive : result.has_negative) = true;
   }
   return result;
+}
+
+SubDPlaneSplit SubD::SplitByPlaneRefined(Vector3d plane_normal, double plane_offset, int levels, bool cap, bool crease_cut,
+                                         double point_tolerance) const {
+  if (levels < 0 || levels > 5) {
+    throw std::invalid_argument("dino8::kernel::SubD::SplitByPlaneRefined: levels must be in [0, 5]");
+  }
+  SubD refined = *this;
+  if (levels > 0) refined.Subdivide(levels);
+  return refined.SplitByPlane(plane_normal, plane_offset, cap, crease_cut, point_tolerance);
 }
 
 int SubD::FaceCount() const { return static_cast<int>(subd_.FaceCount()); }
