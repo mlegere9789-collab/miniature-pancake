@@ -124,12 +124,13 @@ D8_EXTRA_TEST(BossTiltedRoundOnSphereMatchesQuadrature) {
 // pi r^2 (d + h) - (2 pi / 3)(R^3 - (R^2 - r^2)^(3/2)) = 4.2427 for r = 1, base 3.8 from the centre, height 2.5.
 // Before the sealing ladder gained its two finest rungs, axes (1,2,2), (0,1,1) and (-1,0,1) were REFUSED ("seam trim"): a keyholed
 // sphere face leaves micro-edges (0.002-0.005) where the corridor lands on the hole boundary, and the 0.02%-of-diagonal rung
-// chain-merged them into a closed edge. (-1,2,2) needed the profile seam moved a quarter turn. (-1,-2,2) is still refused.
+// chain-merged them into a closed edge. (-1,2,2) needed the profile seam moved a quarter turn, (-1,-2,2) a later seam position (0.1 worked in a manual run)
+// of the domain (the extruded wall's seam always crosses the intersection curve once and leaves a zero-length edge there).
 D8_EXTRA_TEST(BossTiltedAxesOnSphereAllMatchTheRotationSymmetricClosedForm) {
   const double R = 5, r = 1.0;
   const Brep sphere = Brep::Sphere(P(0, 0, 0), R);
   const double expect = ON_PI * r * r * 6.3 - (2.0 * ON_PI / 3.0) * (R * R * R - std::pow(R * R - r * r, 1.5));
-  const double axes[][3] = {{1, 2, 2}, {0, 1, 1}, {-1, 0, 1}, {-1, 2, 2}, {1, -2, 2}};
+  const double axes[][3] = {{1, 2, 2}, {0, 1, 1}, {-1, 0, 1}, {-1, 2, 2}, {1, -2, 2}, {-1, -2, 2}};
   for (const auto& a : axes) {
     ON_3dVector n(a[0], a[1], a[2]);
     n.Unitize();
@@ -142,23 +143,6 @@ D8_EXTRA_TEST(BossTiltedAxesOnSphereAllMatchTheRotationSymmetricClosedForm) {
     } catch (const std::exception& e) {
       d8test::Check(false, (label + "was refused: " + e.what()).c_str());
     }
-  }
-}
-
-// The one tilt still refused: the sewn result carries a seam trim without an iso flag. Exact-or-honest, never degraded.
-D8_EXTRA_TEST(BossTiltedAxisStillRefusedIsHonest) {
-  const double R = 5, r = 1.0;
-  const Brep sphere = Brep::Sphere(P(0, 0, 0), R);
-  ON_3dVector n(-1, -2, 2);
-  n.Unitize();
-  const ON_3dPoint c = ON_3dPoint(0, 0, 0) + 3.8 * n;
-  try {
-    const BossResult b = MakeBoss(sphere, CircleCurve(c, n, r), Vector3d(n.x, n.y, n.z), 2.5);
-    d8test::Check(b.brep.raw().IsValid() && b.brep.raw().IsSolid() && Near(b.added_volume, 4.2427, 0.03), "axis (-1,-2,2): if returned, a valid solid with the closed-form volume");
-  } catch (const std::runtime_error& e) {
-    d8test::Check(std::string(e.what()).find("MakeBoss: fusing the boss onto the solid was refused") != std::string::npos &&
-                      std::string(e.what()).find("profile seam moved") != std::string::npos,
-                  "axis (-1,-2,2): refusal names MakeBoss, the engine's cause and the seam retries");
   }
 }
 

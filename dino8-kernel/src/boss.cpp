@@ -196,10 +196,11 @@ BossResult MakeBoss(const Brep& solid, const NurbsCurve& profile, Vector3d direc
   }
   // The extruded wall has a seam where the profile curve starts. Measured: when that seam line lands on the host's intersection
   // in an unlucky place (round boss on a sphere along (-1,-2,2)) the engine leaves a degenerate edge and the fusion is refused,
-  // while the same boss with the profile's seam moved a quarter turn fuses. So a refused fusion is retried with the seam
-  // moved by 1/4, 1/2 and 3/4 of the domain; the FIRST refusal is the one reported if none works.
+  // while the same boss with the profile's seam moved a quarter turn fuses (the wall seam always crosses the intersection
+  // curve once and leaves a zero-length edge there; whether sealing copes depends on where). So a refused fusion is retried with the
+  // seam moved to 7 other positions (1/4, 1/2, 3/4, 0.1, 0.9, 0.37, 0.63 of the domain); the FIRST refusal is reported if none works.
   std::string first_refusal;
-  for (const double frac : {0.0, 0.25, 0.5, 0.75}) {
+  for (const double frac : {0.0, 0.25, 0.5, 0.75, 0.1, 0.9, 0.37, 0.63}) {
     ON_NurbsCurve moved = c;
     if (frac > 0.0 && !moved.ChangeClosedCurveSeam(dom.ParameterAt(frac))) continue;
     NurbsCurve shifted;
@@ -213,7 +214,7 @@ BossResult MakeBoss(const Brep& solid, const NurbsCurve& profile, Vector3d direc
       if (first_refusal.empty()) first_refusal = e.what();
     }
   }
-  throw std::runtime_error(first_refusal + " [also refused with the profile seam moved by 1/4, 1/2 and 3/4 of the domain]");
+  throw std::runtime_error(first_refusal + " [also refused with the profile seam moved to 7 other positions of the domain]");
 }
 
 }  // namespace dino8::kernel

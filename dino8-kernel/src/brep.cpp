@@ -1467,6 +1467,120 @@ std::vector<Point2d> TrimmedFaceUVPolygon(const ON_Brep& b, const ON_BrepFace& f
   return merged;
 }
 
+// Drops vertices that lie within `eps` of the chord from the last kept vertex to the next one: a trim sampled at 24-360 points per
+// piece (every trim of a loop gets the loop's largest sample count) is mostly collinear for a polyline trim, and each vertex costs
+// a full nested quadrature below.
+std::vector<Point2d> PruneCollinearRing(const std::vector<Point2d>& r, double eps) {
+  if (r.size() < 4) return r;
+  std::vector<Point2d> kept;
+  kept.push_back(r[0]);
+  for (size_t i = 1; i < r.size(); ++i) {
+    const Point2d& a = kept.back();
+    const Point2d& b = r[i];
+    const Point2d& c = r[(i + 1) % r.size()];
+    const double dx = c.x - a.x, dy = c.y - a.y, len = std::hypot(dx, dy);
+    const double dist = len > 0.0 ? std::fabs((b.x - a.x) * dy - (b.y - a.y) * dx) / len : std::hypot(b.x - a.x, b.y - a.y);
+    if (i + 1 < r.size() && dist < eps) continue;
+    kept.push_back(b);
+  }
+  return kept;
+}
+
+// Quadrature breakpoints of a surface direction: the distinct knots of a NURBS surface (the integrand is only piecewise smooth,
+// with kinks at the knots, and a Gauss cell that straddles one converges algebraically: measured 8e-5 relative error on a cylinder
+// wall with 16 uniform cells), each span cut into 3; an analytic surface gets `fallback` uniform cells.
+std::vector<double> GreenBreakpoints(const ON_Surface* sf, int dir, int fallback) {
+  std::vector<double> knots;
+  if (const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(sf)) knots = MassPropsSpanBreakpoints(*ns, dir);
+  const ON_Interval dom = sf->Domain(dir);
+  std::vector<double> out;
+  if (knots.size() < 2) {
+    for (int i = 0; i <= fallback; ++i) out.push_back(dom.ParameterAt(static_cast<double>(i) / fallback));
+    return out;
+  }
+  for (size_t i = 0; i + 1 < knots.size(); ++i) {
+    for (int k = 0; k < 3; ++k) out.push_back(knots[i] + (knots[i + 1] - knots[i]) * k / 3.0);
+  }
+  out.push_back(knots.back());
+  return out;
+}
+
+// Integral of f(u, v) over the region bounded by `outer` minus `holes` (closed polygons in the (u, v) plane, any vertex order), by
+// Green's theorem: the integral equals the boundary integral of F(u, v) dv, F(u, v) = integral_{u_ref}^{u} f(s, v) ds, evaluated by
+// Gauss quadrature on pieces of the boundary segments and on the cells `ub` (breakpoints in u; `vb` in v) that F is built from.
+// It needs only the boundary, so it has no triangulation to lose area on: the ear clipper drops whole slivers when the outer ring is
+// a dense, nearly collinear polyline (a hole that crosses a periodic surface's seam makes the outer loop carry the hole's polyline
+// as a notch), which is where a cone with a round boss on its seam was measured 5.9% high. Orientation-independent: each ring is
+// signed by its own shoelace area, the outer counted positive, a hole negative.
+template <typename Integrand>
+double IntegrateRegionByGreen(const std::vector<Point2d>& outer, const std::vector<std::vector<Point2d>>& holes, const std::vector<double>& ub,
+                              const std::vector<double>& vb, Integrand&& f) {
+  const double u_ref = ub.front();
+  const double u_cell = (ub.back() - ub.front()) / static_cast<double>(ub.size() - 1);
+  const double v_cell = (vb.back() - vb.front()) / static_cast<double>(vb.size() - 1);
+  // F(u, v): composite Gauss over the cells of `ub` below u, plus the partial cell containing u.
+  const auto F_of = [&](double u, double v) {
+    double acc = 0.0;
+    const auto add = [&](double s0, double s1) {
+      const double sm = 0.5 * (s0 + s1), sh = 0.5 * (s1 - s0);
+      for (int gj = 0; gj < kMassPropsGaussPoints; ++gj) acc += kMassPropsGaussWeights[gj] * sh * f(sm + sh * kMassPropsGaussNodes[gj], v);
+    };
+    if (u >= u_ref) {
+      for (size_t i = 0; i + 1 < ub.size() && ub[i] < u; ++i) add(ub[i], std::min(ub[i + 1], u));
+    } else {
+      // u below the domain start (a polygon vertex slightly outside): integrate backwards.
+      add(u, u_ref);
+      acc = -acc;
+    }
+    return acc;
+  };
+  const auto ring_integral = [&](const std::vector<Point2d>& ring_in) {
+    const std::vector<Point2d> ring = PruneCollinearRing(ring_in, 1e-9 * (u_cell + v_cell));
+    double signed_area = 0.0;
+    double total = 0.0;
+    const size_t n = ring.size();
+    for (size_t i = 0; i < n; ++i) {
+      const Point2d& a = ring[i];
+      const Point2d& b = ring[(i + 1) % n];
+      signed_area += 0.5 * (a.x * b.y - b.x * a.y);
+      const double dv = b.y - a.y, du = b.x - a.x;
+      if (dv == 0.0) continue;
+      // Split the segment where it crosses a breakpoint of u or v (F has kinks there), then into pieces short in u and in v.
+      std::vector<double> ts = {0.0, 1.0};
+      if (du != 0.0) {
+        for (double x : ub) { const double t = (x - a.x) / du; if (t > 0.0 && t < 1.0) ts.push_back(t); }
+      }
+      for (double y : vb) { const double t = (y - a.y) / dv; if (t > 0.0 && t < 1.0) ts.push_back(t); }
+      std::sort(ts.begin(), ts.end());
+      for (size_t q = 0; q + 1 < ts.size(); ++q) {
+        const double ta = ts[q], tb = ts[q + 1];
+        if (!(tb > ta)) continue;
+        const int pieces = std::max({1, static_cast<int>(std::ceil(std::fabs(du) * (tb - ta) / u_cell)), static_cast<int>(std::ceil(std::fabs(dv) * (tb - ta) / v_cell))});
+        for (int k = 0; k < pieces; ++k) {
+          const double t0 = ta + (tb - ta) * k / pieces, t1 = ta + (tb - ta) * (k + 1) / pieces;
+          const double tm = 0.5 * (t0 + t1), th = 0.5 * (t1 - t0);
+          for (int gi = 0; gi < kMassPropsGaussPoints; ++gi) {
+            const double t = tm + th * kMassPropsGaussNodes[gi];
+            total += kMassPropsGaussWeights[gi] * th * dv * F_of(a.x + t * du, a.y + t * dv);
+          }
+        }
+      }
+    }
+    return std::make_pair(total, signed_area);
+  };
+  double result = 0.0;
+  {
+    const auto r = ring_integral(outer);
+    result += r.second >= 0.0 ? r.first : -r.first;
+  }
+  for (const std::vector<Point2d>& hole : holes) {
+    if (hole.size() < 3) continue;
+    const auto r = ring_integral(hole);
+    result -= r.second >= 0.0 ? r.first : -r.first;
+  }
+  return result;
+}
+
 }  // namespace
 
 // True iff face `i` covers its ENTIRE underlying surface parameter
@@ -1678,6 +1792,12 @@ double Brep::VolumeImpl(bool allow_analytic) const {
                                                               g_trimmed_face_max_depth);
       }
     };
+    if (g_trimmed_face_follow_neighbor_curves && sf && !sf->IsPlanar(nullptr, 1e-9)) {
+      // VolumeOfSealedSolid() on a curved trimmed face: Green's theorem on the boundary rings (no ear clipping, see
+      // IntegrateRegionByGreen()).
+      total += sign * IntegrateRegionByGreen(polygon, hole_polygons, GreenBreakpoints(sf, 0, 48), GreenBreakpoints(sf, 1, 96), integrand);
+      continue;
+    }
     integrate_polygon(polygon, 1.0);
     for (const std::vector<Point2d>& hole : hole_polygons) {
       if (hole.size() >= 3) integrate_polygon(hole, -1.0);
