@@ -1729,7 +1729,19 @@ class SrfSeamCommand : public Command {
     double u = 0, v = 0;
     if (!SurfaceClosestPointGlobal(s, p, u, v)) { ctx.Warn("SrfSeam: could not locate that point on the surface"); return; }
     const double t = dir == 0 ? u : v;
-    if (!s.ChangeSurfaceSeam(dir, t)) { ctx.Warn("SrfSeam: ChangeSurfaceSeam failed"); return; }
+    // Through the kernel wrapper (kernel::NurbsSurface::ChangeSeam), which reports a click on the EXISTING seam as already satisfied instead of
+    // passing on OpenNURBS' refusal of a parameter a hair from the domain end.
+    {
+      kernel::NurbsSurface ks;
+      ks.raw() = s;
+      const kernel::Result r = ks.ChangeSeam(dir, t);
+      if (r == kernel::Result::NoOpAlreadySatisfied) {
+        ctx.Print("SrfSeam: the seam is already at " + std::string(dir == 0 ? "u" : "v") + "=" + FormatNumber(t) + "; nothing changed");
+        return;
+      }
+      if (r != kernel::Result::Ok) { ctx.Warn("SrfSeam: ChangeSurfaceSeam failed"); return; }
+      s = ks.raw();
+    }
     ctx.Doc().BeginChange("SrfSeam");
     if (SceneObject* orig = ctx.Doc().Find(pick_->id)) { orig->surface->raw() = s; orig->InvalidateDisplay(); }
     ctx.Print("SrfSeam: seam moved to " + std::string(dir == 0 ? "u" : "v") + "=" + FormatNumber(t));
