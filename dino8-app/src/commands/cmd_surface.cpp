@@ -445,10 +445,35 @@ std::string ScalePairText(double a, double b) { return FormatNumber(a) + "," + F
 
 bool HasAxisScale(const HistoryRecord& rec) { return rec.num.count("sx0") || rec.num.count("sy0"); }
 
+// Style=Roadlike (Rhino's "Roadlike" / "Top" Sweep1 style, AutoCAD SWEEP Alignment=Roadlike): the section is kept level against a
+// fixed world direction `Up` (default world Z) instead of banking with the rail's torsion the way the default rotation-minimizing
+// frame ("Freeform") does. History records it as num up_x up_y up_z (absent = Freeform).
+bool HasRoadlike(const HistoryRecord& rec) { return rec.num.count("up_z") != 0; }
+
+bool ParseUpVector(const std::string& text, double& x, double& y, double& z) {
+  std::string t = text;
+  for (char& c : t) {
+    if (c == ';' || c == ' ') c = ',';
+  }
+  double v[3];
+  size_t pos = 0;
+  for (int i = 0; i < 3; ++i) {
+    const size_t comma = t.find(',', pos);
+    const std::string part = t.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+    char* e = nullptr;
+    v[i] = std::strtod(part.c_str(), &e);
+    if (part.empty() || *e != 0 || !std::isfinite(v[i])) return false;
+    if (comma == std::string::npos) { if (i != 2) return false; pos = t.size(); } else pos = comma + 1;
+  }
+  x = v[0]; y = v[1]; z = v[2];
+  return std::sqrt(x * x + y * y + z * z) > 1e-12;
+}
+
 class Sweep1Command : public Command {
  public:
   void Begin(CommandContext&) override {
-    options = {{"Cap", "No", {"Yes", "No"}, false, true}, {"ScaleX", "1,1", {}, false, false}, {"ScaleY", "1,1", {}, false, false}};
+    options = {{"Cap", "No", {"Yes", "No"}, false, true}, {"ScaleX", "1,1", {}, false, false}, {"ScaleY", "1,1", {}, false, false},
+               {"Style", "Freeform", {"Freeform", "Roadlike"}, false, true}, {"Up", "0,0,1", {}, false, false}};
     WantObjects("Select rail");
   }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
@@ -464,7 +489,8 @@ class Sweep1Command : public Command {
       DeselectAll(ctx, ids);
       closed_ = rail_->IsClosed();
       options = {{"Closed", closed_ ? "Yes" : "No", {"Yes", "No"}, false, true}, {"Cap", cap_ ? "Yes" : "No", {"Yes", "No"}, false, true},
-                 {"ScaleX", ScalePairText(sx_[0], sx_[1]), {}, false, false}, {"ScaleY", ScalePairText(sy_[0], sy_[1]), {}, false, false}};
+                 {"ScaleX", ScalePairText(sx_[0], sx_[1]), {}, false, false}, {"ScaleY", ScalePairText(sy_[0], sy_[1]), {}, false, false},
+                 {"Style", roadlike_ ? "Roadlike" : "Freeform", {"Freeform", "Roadlike"}, false, true}, {"Up", UpText(), {}, false, false}};
       WantObjects("Select cross section curves");
       accept_preselection = false;
       return;
@@ -482,6 +508,18 @@ class Sweep1Command : public Command {
     for (OptionSpec& o : options) {
       if (o.name == "Closed" && n == "Closed") { closed_ = (v == "Yes"); o.value = closed_ ? "Yes" : "No"; }
       if (o.name == "Cap" && n == "Cap") { cap_ = (v == "Yes"); o.value = cap_ ? "Yes" : "No"; }
+      if (o.name == "Style" && n == "Style") { roadlike_ = (v == "Roadlike"); o.value = roadlike_ ? "Roadlike" : "Freeform"; }
+      if (o.name == "Up" && n == "Up") {
+        double x = 0, y = 0, z = 1;
+        if (ParseUpVector(v, x, y, z)) {
+          up_[0] = x; up_[1] = y; up_[2] = z;
+          o.value = UpText();
+          up_refusal_.clear();
+        } else {
+          up_refusal_ = "Up must be 'x,y,z' - three finite numbers, not the zero vector, got '" + v + "'";
+          ctx.Warn("Sweep1: " + up_refusal_);
+        }
+      }
       if (o.name == n && (n == "ScaleX" || n == "ScaleY")) {
         double a = 1.0, b = 1.0;
         if (ParseScalePair(v, a, b)) {
@@ -501,7 +539,9 @@ class Sweep1Command : public Command {
     }
   }
   // The per-axis scale pairs as History numbers (an axis left at 1,1 records nothing, so a plain sweep records exactly what it did before).
+  std::string UpText() const { return FormatNumber(up_[0]) + "," + FormatNumber(up_[1]) + "," + FormatNumber(up_[2]); }
   void RecordAxisScale(HistoryRecord& rec) const {
+    if (roadlike_) { rec.num["up_x"] = up_[0]; rec.num["up_y"] = up_[1]; rec.num["up_z"] = up_[2]; }
     if (sx_[0] != 1.0 || sx_[1] != 1.0) { rec.num["sx0"] = sx_[0]; rec.num["sx1"] = sx_[1]; }
     if (sy_[0] != 1.0 || sy_[1] != 1.0) { rec.num["sy0"] = sy_[0]; rec.num["sy1"] = sy_[1]; }
   }
@@ -510,6 +550,15 @@ class Sweep1Command : public Command {
     for (const std::string& refusal : scale_refusal_) {
       if (refusal.empty()) continue;
       ctx.Print("Sweep1: no surface created - " + refusal);
+      return;
+    }
+    if (roadlike_ && !up_refusal_.empty()) {
+      ctx.Print("Sweep1: no surface created - " + up_refusal_);
+      return;
+    }
+    if (roadlike_ && profiles.size() != 1) {
+      // Not silently dropped: only the exact single-section kernel sweep carries the Roadlike frame.
+      ctx.Print("Sweep1: no surface created - Style=Roadlike is only applied to a single cross-section (the kernel's exact sweep); the multi-section blend uses rotation-minimizing frames");
       return;
     }
     // The undo step opens only when something is added (below): a refused scaled sweep builds nothing, and an EMPTY step
@@ -536,8 +585,8 @@ class Sweep1Command : public Command {
         ctx.Print("Sweep1: exact kernel sweep (rotation-minimizing frames)");
         return;
       }
-      if (HasAxisScale(rec)) {
-        ctx.Print("Sweep1: no surface created - the per-axis scale (ScaleX / ScaleY) is only applied by the exact kernel sweep, and it is not silently dropped for the sampled approximation");
+      if (HasAxisScale(rec) || HasRoadlike(rec)) {
+        ctx.Print("Sweep1: no surface created - the per-axis scale (ScaleX / ScaleY) and Style=Roadlike are only applied by the exact kernel sweep, and are not silently dropped for the sampled approximation");
         return;
       }
     }
@@ -627,6 +676,9 @@ class Sweep1Command : public Command {
   std::vector<ObjectId> profile_ids_;
   bool closed_ = false;
   bool cap_ = false;
+  bool roadlike_ = false;                   // Style=Roadlike
+  double up_[3] = {0.0, 0.0, 1.0};          // Up: the world direction the Roadlike section is kept level against
+  std::string up_refusal_;
   double sx_[2] = {1.0, 1.0};  // ScaleX: scale along the section's X axis at the rail start / end
   double sy_[2] = {1.0, 1.0};  // ScaleY
   std::string scale_refusal_[2];  // [0] ScaleX, [1] ScaleY: set by a refused value of that axis; Build then creates nothing until it is replaced by a valid one
@@ -3494,7 +3546,10 @@ std::optional<SceneObject> RebuildSweep1Scaled(CommandContext& ctx, const kernel
     }
     AxisScaleSchedules sc;
     ReadAxisScale(rec, rail, sc);
-    std::optional<kernel::NurbsSurface> wall = SweptWall(kernel::Brep::Sweep1(section, rail, /*stations=*/32, /*cap=*/false, 0.0, 1.0, nullptr, nullptr, nullptr, sc.xp, sc.yp, &sc.axis));
+    kernel::Vector3d up_vec(0.0, 0.0, 1.0);
+    if (HasRoadlike(rec)) up_vec = kernel::Vector3d(rec.num.at("up_x"), rec.num.at("up_y"), rec.num.at("up_z"));
+    const kernel::Vector3d* up_ptr = HasRoadlike(rec) ? &up_vec : nullptr;
+    std::optional<kernel::NurbsSurface> wall = SweptWall(kernel::Brep::Sweep1(section, rail, /*stations=*/32, /*cap=*/false, 0.0, 1.0, up_ptr, nullptr, nullptr, sc.xp, sc.yp, sc.xp || sc.yp ? &sc.axis : nullptr));
     if (!wall) {
       ctx.Print("Sweep1: per-axis scale refused - the kernel sweep returned no surface");
       return std::nullopt;
@@ -3502,8 +3557,13 @@ std::optional<SceneObject> RebuildSweep1Scaled(CommandContext& ctx, const kernel
     std::string what;
     if (sc.xp) what += "x " + ScalePairText(rec.num.at("sx0"), rec.num.at("sx1"));
     if (sc.yp) what += std::string(what.empty() ? "" : ", ") + "y " + ScalePairText(rec.num.at("sy0"), rec.num.at("sy1"));
-    ctx.Print("Sweep1: exact kernel sweep with a per-axis scale along the rail (" + what + "; x axis = " +
-              (sc.axis.y == 1.0 ? "world Y" : "world X") + " in the section plane at the rail start, y perpendicular to it)");
+    if (up_ptr) {
+      ctx.Print("Sweep1: exact kernel sweep, Style=Roadlike (section kept level against Up=" + FormatNumber(up_vec.x) + "," + FormatNumber(up_vec.y) + "," +
+                FormatNumber(up_vec.z) + " at every station, no banking with the rail's torsion)" + (what.empty() ? "" : "; per-axis scale " + what));
+    } else {
+      ctx.Print("Sweep1: exact kernel sweep with a per-axis scale along the rail (" + what + "; x axis = " +
+                (sc.axis.y == 1.0 ? "world Y" : "world X") + " in the section plane at the rail start, y perpendicular to it)");
+    }
     return CapOrKeepWall(ctx, "Sweep1", *wall, CapRequested(rec));
   } catch (const std::exception& ex) {
     ctx.Print(std::string("Sweep1: per-axis scale refused - the kernel refused (") + ex.what() + ")");
@@ -3513,7 +3573,7 @@ std::optional<SceneObject> RebuildSweep1Scaled(CommandContext& ctx, const kernel
 
 std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::NurbsCurve& section,
                                           const kernel::NurbsCurve& rail, const HistoryRecord& rec) {
-  if (HasAxisScale(rec)) return RebuildSweep1Scaled(ctx, section, rail, rec);
+  if (HasAxisScale(rec) || HasRoadlike(rec)) return RebuildSweep1Scaled(ctx, section, rail, rec);
   try {
     AnchoredSweep r = AnchoredSweep1(section, rail);
     if (!r.surface) {
