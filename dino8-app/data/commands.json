@@ -9200,6 +9200,14 @@
   "help": ""
  },
  {
+  "name": "SubDCorner",
+  "description": "Pins a vertex on a crease or boundary chain as a sharp corner: its limit point becomes its control point.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
   "name": "SubDCrease",
   "description": "Adds weight-blended soft crease edges to SubDs.",
   "toolbars": "New in V8, SubD Tools",
@@ -9287,6 +9295,14 @@
   "help": ""
  },
  {
+  "name": "SubDRemoveCorner",
+  "description": "Releases a pinned corner on a two-crease chain back to an ordinary crease vertex.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
   "name": "SubDRevolve",
   "description": "Creates a SubD by revolving a profile curve around an axis.",
   "toolbars": "Not on toolbars",
@@ -9357,6 +9373,14 @@
  {
   "name": "SubDUnfriend",
   "description": "Makes the constrained control points of a SubD friendly curve editable.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
+  "name": "SubDVertexInfo",
+  "description": "Reports how each picked control-net vertex is classified (Smooth, Crease, Corner, Dart), its valence, faces and crease edges, and its exact limit-surface point.",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],

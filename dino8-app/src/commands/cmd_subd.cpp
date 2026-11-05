@@ -50,6 +50,10 @@ struct Net {
   std::vector<Point3d> v;
   std::vector<Poly> f;
   std::set<EKey> crease;  // interior edges tagged as creases
+  // Vertices pinned as corners (SubDCorner) that the edge tags alone would NOT make a corner: a vertex with exactly two
+  // crease/boundary edges whose tag is Corner. Without this the Unpack -> edit -> Pack round trip of every net command
+  // (Crease, ExtrudeSubD, Inset, Bridge, ...) silently turned a pinned corner back into an ordinary Crease vertex.
+  std::set<int> corner;
 
   Vector3d FaceNormal(const Poly& p) const {
     // Newell's method: robust for non-planar n-gons.
@@ -124,8 +128,11 @@ struct Net {
       for (int& i : p) { if (remap[i] < 0) { remap[i] = static_cast<int>(nv.size()); nv.push_back(v[i]); } i = remap[i]; }
     std::set<EKey> nc;
     for (const EKey& k : crease) if (remap[k.first] >= 0 && remap[k.second] >= 0) nc.insert(Key(remap[k.first], remap[k.second]));
+    std::set<int> ncorner;
+    for (int c : corner) if (c >= 0 && c < static_cast<int>(remap.size()) && remap[c] >= 0) ncorner.insert(remap[c]);
     v = nv;
     crease = nc;
+    corner = ncorner;
   }
   // Keeps only creases that still name an existing edge.
   void PruneCreases() {
@@ -133,6 +140,13 @@ struct Net {
     std::set<EKey> nc;
     for (const EKey& k : crease) if (em.count(k)) nc.insert(k);
     crease = nc;
+    std::map<int, int> sharp_edges;  // vertex -> incident crease or boundary edges
+    for (const auto& kv : em) {
+      if (kv.second.size() == 1 || crease.count(kv.first)) { ++sharp_edges[kv.first.first]; ++sharp_edges[kv.first.second]; }
+    }
+    std::set<int> keep;
+    for (int c : corner) if (sharp_edges.count(c) && sharp_edges[c] == 2) keep.insert(c);
+    corner = keep;
   }
   int Add(Point3d p) { v.push_back(p); return static_cast<int>(v.size()) - 1; }
 };
@@ -161,6 +175,18 @@ Net Unpack(const ON_SubD& s) {
     if (!e->IsCrease() || e->FaceCount() < 2 || !e->Vertex(0) || !e->Vertex(1)) continue;
     auto a = idx.find(e->Vertex(0)->m_id), b = idx.find(e->Vertex(1)->m_id);
     if (a != idx.end() && b != idx.end()) n.crease.insert(Key(a->second, b->second));
+  }
+  // A Corner vertex on exactly two crease/boundary edges is a deliberate pin (three or more would be a corner anyway).
+  vit = s.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v; v = vit.NextVertex()) {
+    if (v->m_vertex_tag != ON_SubDVertexTag::Corner) continue;
+    int sharp = 0;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+    }
+    auto it = idx.find(v->m_id);
+    if (sharp == 2 && it != idx.end()) n.corner.insert(it->second);
   }
   return n;
 }
@@ -192,6 +218,22 @@ bool Pack(const Net& n, ON_SubD& out) {
   }
   if (faces == 0) return false;
   out.UpdateAllTagsAndSectorCoefficients(true);
+  bool pinned = false;
+  for (int ci : n.corner) {
+    if (ci < 0 || ci >= static_cast<int>(vs.size()) || !vs[ci]) continue;
+    ON_SubDVertex* v = vs[ci];
+    if (v->m_vertex_tag != ON_SubDVertexTag::Crease) continue;
+    int sharp = 0;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e && (e->IsCrease() || e->FaceCount() < 2)) ++sharp;
+    }
+    if (sharp != 2) continue;
+    v->m_vertex_tag = ON_SubDVertexTag::Corner;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) if (v->Edge(i)) v->Edge(i)->UnsetSectorCoefficientsForExperts();
+    pinned = true;
+  }
+  if (pinned) out.UpdateAllTagsAndSectorCoefficients(true);
   return true;
 }
 
@@ -537,6 +579,7 @@ int ExtrudeFaces(Net& n, std::set<int> S, double d) {
   std::set<EKey> nc = n.crease;
   for (const EKey& k : n.crease) if (dup.count(k.first) && dup.count(k.second)) nc.insert(Key(dup[k.first], dup[k.second]));
   n.crease = nc;
+  for (int c : std::set<int>(n.corner)) if (dup.count(c)) n.corner.insert(dup[c]);
   return sides;
 }
 
@@ -617,6 +660,7 @@ void OffsetNet(Net& n, double d, bool solid) {
   std::set<EKey> nc = n.crease;
   for (const EKey& k : n.crease) nc.insert(Key(k.first + base, k.second + base));
   n.crease = nc;
+  for (int c : std::set<int>(n.corner)) n.corner.insert(c + base);
 }
 
 // Naked-edge loops, each as an ordered vertex ring oriented so a face built
@@ -728,6 +772,8 @@ void MergeVertices(Net& n, int to, int from) {
   std::set<EKey> nc;
   for (const EKey& k : n.crease) { const int x = k.first == from ? to : k.first, y = k.second == from ? to : k.second; if (x != y) nc.insert(Key(x, y)); }
   n.crease = nc;
+  n.corner.erase(from);
+  n.corner.erase(to);  // the merged vertex sits at a new place; a pin on either input no longer describes it
 }
 
 // Welds coincident vertices; returns how many were merged.
@@ -745,6 +791,9 @@ int WeldVertices(Net& n, double tol) {
   std::set<EKey> nc;
   for (const EKey& k : n.crease) if (remap[k.first] != remap[k.second]) nc.insert(Key(remap[k.first], remap[k.second]));
   n.crease = nc;
+  std::set<int> wc;
+  for (int c : n.corner) if (c >= 0 && c < static_cast<int>(remap.size())) wc.insert(remap[c]);
+  n.corner = wc;
   return merged;
 }
 
@@ -948,6 +997,7 @@ void BridgeAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
     face2 = static_cast<int>(t1.net.f.size()) + f2->face;
     for (const Poly& p : t2.net.f) { Poly q; for (int i : p) q.push_back(i + base); t1.net.f.push_back(q); }
     for (const EKey& k : t2.net.crease) t1.net.crease.insert(Key(k.first + base, k.second + base));
+    for (int c : t2.net.corner) t1.net.corner.insert(c + base);
     removed = t2.id;
   }
   std::string why;

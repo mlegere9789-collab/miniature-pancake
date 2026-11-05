@@ -56,3 +56,11 @@ svihas "$(sviblock refused)" "0 vertex/vertices pinned" "SVI_refused: nothing wa
 L="$(sviinfo refused 1)"
 svihas "$L" "Smooth, valence 3" "SVI_refused: the refused vertex is still Smooth"
 svipoint "$L" 7.5 7.5 7.5 0.001 "SVI_refused: ...with its unchanged limit point"
+# ---- a pinned corner survives later net-rebuilding commands
+# Crease, RemoveCrease, ExtrudeSubD and Inset all rebuild the SubD from a vertex/face/crease net (Unpack -> edit -> Pack). Before the
+# net carried pinned corners the rebuild re-derived every vertex tag from the edges alone, so the pin turned back into an ordinary
+# Crease vertex (limit point (1.6667, 1.6667, 0) instead of the control point). Measured on the same Unpack/Pack code in isolation:
+# kind Corner -> Crease before the change, Corner -> Corner after.
+L="$(sviinfo survives 1)"
+svihas "$L" "Corner, valence 3, 3 face(s), 2 crease edge(s)" "SVI_survives: still a Corner after Crease, RemoveCrease, ExtrudeSubD and Inset rebuilt the SubD"
+svipoint "$L" 0 0 0 0.001 "SVI_survives: ...with its limit point still the control point"

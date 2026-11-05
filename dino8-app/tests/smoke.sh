@@ -139,7 +139,7 @@ h2r_has() { if grep -qF -- "$2" <<<"$1"; then echo "ok   $3"; else echo "FAIL $3
 h2r_count() { local n; n="$(grep -cF -- "$2" <<<"$1" || true)"; if [ "$n" = "$3" ]; then echo "ok   $4"; else echo "FAIL $4 (found $n, expected $3)"; near "$1" "$2"; fail=1; fi; }
 h2r_countre() { local n; n="$(grep -cE -- "$2" <<<"$1" || true)"; if [ "$n" = "$3" ]; then echo "ok   $4"; else echo "FAIL $4 (found $n, expected $3)"; near "$1" "$2"; fail=1; fi; }
 check() { if echo "$OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$OUT" "$1"; fail=1; fi; }
-check "1059 commands loaded" "catalog has all 1059 commands (1055 plus SubDRevolve/SubDMultiPipe plus the Lisp and LoadLisp entries)"
+check "1062 commands loaded" "catalog has all 1062 commands (1055 plus SubDRevolve/SubDMultiPipe plus the Lisp and LoadLisp entries plus SubDVertexInfo/SubDCorner/SubDRemoveCorner)"
 check "BooleanDifference:" "boolean difference ran"
 check "Volume = " "volume measured"
 check "Extruded 1 object" "extrusion created a solid"
