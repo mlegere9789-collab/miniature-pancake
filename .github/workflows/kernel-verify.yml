@@ -183,6 +183,7 @@ jobs:
           BIN=$(find appbin -type f -name Dino8 | head -1)
           JSON=$(find appbin -type f -name section_groups.json | head -1)
           chmod +x "$BIN"
+          chmod +x "$(dirname "$BIN")"/* 2>/dev/null || true   # artifact upload drops the exec bit of the helper binaries (fixture generators) next to Dino8
           NAMES=$(python3 -c "import json;print(' '.join(json.load(open('$JSON'))[${{ matrix.g }}]))")
           echo "group ${{ matrix.g }}: $NAMES"
           set +e
