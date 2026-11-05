@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -86,6 +87,26 @@ Result OffsetTrimmedFace(const Brep& sheet, double distance, Brep& out, double t
     const double scale = std::max(1.0, std::max(std::fabs(a.max), std::fabs(a.min)));
     if (std::fabs(a.min - b.min) > 1e-9 * scale || std::fabs(a.max - b.max) > 1e-9 * scale) {
       return refuse("the offset surface does not keep the input's (u, v) domain, so the trims cannot be carried over");
+    }
+  }
+
+  // A plane offsets by a rigid translation of itself. Detected from the two surfaces (not from the type), so a
+  // recognised-plane NURBS and a freeform patch that happens to be flat both qualify: every edge is then translated as it
+  // is - an exact circle stays an exact circle - instead of being re-fitted.
+  bool translation_ok = false;
+  ON_3dVector translation(0, 0, 0);
+  {
+    const Interval du = base.Domain(0), dv = base.Domain(1);
+    auto at = [&](double fu, double fv) { return std::make_pair(du.min + (du.max - du.min) * fu, dv.min + (dv.max - dv.min) * fv); };
+    const auto c = at(0.5, 0.5);
+    translation = off.PointAt(c.first, c.second) - base.PointAt(c.first, c.second);
+    translation_ok = translation.Length() > 0.0;
+    const double scale = std::max(1.0, translation.Length());
+    for (int i = 0; i < 5 && translation_ok; ++i) {
+      for (int j = 0; j < 5 && translation_ok; ++j) {
+        const auto q = at(0.1 + 0.2 * i, 0.1 + 0.2 * j);
+        translation_ok = (off.PointAt(q.first, q.second) - base.PointAt(q.first, q.second) - translation).Length() <= 1e-9 * scale;
+      }
     }
   }
 
@@ -163,6 +184,33 @@ Result OffsetTrimmedFace(const Brep& sheet, double distance, Brep& out, double t
       const ON_3dVector t0 = trim.TangentAt(trim.Domain().ParameterAt(0.0));
       const ON_3dVector t1 = trim.TangentAt(trim.Domain().ParameterAt(1.0));
       periodic = a.DistanceTo(z) <= 1e-9 * std::max(1.0, a.MaximumCoordinate()) && ON_DotProduct(t0, t1) > 1.0 - 1e-9;
+    }
+
+    // Rigid translation: the edge as it is, moved. Measured against the offset surface along the trim like any fit; a
+    // misoriented or sub-domain proxy would show as a deviation and fall through to the fit below.
+    if (translation_ok) {
+      std::unique_ptr<ON_Curve> moved(edge.DuplicateCurve());
+      if (moved && moved->SetDomain(ed.Min(), ed.Max()) && moved->Translate(translation)) {
+        double dev = 0.0, locus = 0.0;
+        const int m = 512;
+        for (int k = 0; k < m; ++k) {
+          const double f = (k + 0.5) / m;
+          const ON_3dPoint uv = uv_at(f);
+          const ON_3dPoint q = moved->PointAt(ed.ParameterAt(f));
+          dev = std::max(dev, q.DistanceTo(new_surface->PointAt(uv.x, uv.y)));
+          locus = std::max(locus, q.DistanceTo(locus_at(uv.x, uv.y)));
+        }
+        if (dev <= tol) {
+          const int c3i = b.AddEdgeCurve(moved.release());
+          if (!edge.ChangeEdgeCurve(c3i)) return refuse("ON_BrepEdge::ChangeEdgeCurve failed for edge " + std::to_string(ei));
+          edge.m_tolerance = dev;
+          rep.max_edge_deviation = std::max(rep.max_edge_deviation, dev);
+          rep.max_edge_locus_deviation = std::max(rep.max_edge_locus_deviation, locus);
+          ++rep.edges_rebuilt;
+          ++rep.edges_translated;
+          continue;
+        }
+      }
     }
 
     EdgeFit fit;

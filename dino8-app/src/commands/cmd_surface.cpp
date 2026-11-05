@@ -26,6 +26,7 @@
 #include "commands/revolved_solid.h"
 #include "commands/prism_solid.h"
 #include "commands/section_fit.h"
+#include "dino8/kernel/trimmed_offset.h"
 
 namespace dino8::app {
 
@@ -3902,6 +3903,32 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
     // kernel's reason; Exact=No keeps the mesh path.
     const auto ex_it = rec.num.find("exact");
     const bool exact_ = ex_it == rec.num.end() || ex_it->second != 0.0;
+    // ONE trimmed face (PlanarSrf, Patch, NetworkSrf with five or more curves, a trimmed surface): the kernel's
+    // OffsetTrimmedFace offsets its surface, keeps its trims and rebuilds its boundary edges on the offset surface. It
+    // stays a trimmed face (a B-rep), where the mesh path below would have returned a mesh. Solid=Yes (a thickened
+    // wall) keeps the mesh path. Positive distance is along the face's outward normal.
+    if (exact_ && !solid_ && o.kind == ObjectKind::Brep && o.brep && o.brep->raw().m_F.Count() == 1 && !o.brep->raw().IsSolid()) {
+      const double tol_user = num("tol");
+      const double tol_face = tol_user > 0 ? tol_user : ctx.Settings().absolute_tolerance;
+      kernel::Brep built;
+      kernel::TrimmedOffsetReport rep;
+      kernel::Result r = kernel::Result::Failed;
+      try {
+        r = kernel::OffsetTrimmedFace(*o.brep, d, built, tol_face, &rep);
+      } catch (const std::exception& ex) {
+        rep.refusal_reason = ex.what();
+      }
+      if (r == kernel::Result::Ok) {
+        ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - trimmed face offset by the kernel (OffsetTrimmedFace): surface " +
+                   (rep.surface_exact ? std::string("exact analytic offset")
+                                      : "tolerance-controlled refit (deviation " + FormatDeviation(rep.surface_deviation) + " <= tolerance " + FormatNumber(rep.tolerance_used) + ")") +
+                   "; " + std::to_string(rep.edges_rebuilt) + " boundary edge(s) rebuilt on the offset surface (" + std::to_string(rep.edges_translated) +
+                   " translated exactly), worst edge deviation from the offset surface " + FormatDeviation(rep.max_edge_deviation) +
+                   ", from the exact locus S + d*N " + FormatDeviation(rep.max_edge_locus_deviation) + "; trims kept, still one trimmed face");
+        return SceneObject::MakeBrep(std::move(built));
+      }
+      ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - trimmed face offset not used (" + rep.refusal_reason + "); using the mesh offset");
+    }
     if (exact_ && o.kind == ObjectKind::Brep && o.brep) {
       std::string why;
       if (std::optional<kernel::Brep> ex = TryExactOffsetSolid(*o.brep, d, solid_, why)) return SceneObject::MakeBrep(*ex);

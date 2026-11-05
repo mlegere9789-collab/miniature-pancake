@@ -343,3 +343,89 @@ D8_EXTRA_TEST(TrimmedOffsetRefusalsStateTheirReasonAndLeaveOutputUntouched) {
   const std::string label3 = "a square boundary stored as ONE edge (4 corners) is refused naming the tangent break: " + rep3.refusal_reason;
   Check(r3 == Result::Failed && rep3.refusal_reason.find("tangent break") != std::string::npos, label3.c_str());
 }
+
+D8_EXTRA_TEST(TrimmedOffsetOfATrimmedPlaneKeepsItsCircleExact) {
+  // PlanarSrf's object: ON_BrepTrimmedPlane of a circle. The plane offsets by a translation, so the edge must stay the EXACT circle
+  // (radius 5 to 1e-12, centre moved by d n), not a cubic fitted through samples.
+  ON_Plane plane(ON_3dPoint(1, 2, 0), ON_3dVector(0, 0, 1));
+  ON_NurbsCurve circle;
+  ON_Circle(plane, 5.0).GetNurbForm(circle);
+  ON_Brep* raw = ON_BrepTrimmedPlane(plane, circle);
+  Check(raw != nullptr, "fixture: a trimmed plane bounded by a circle");
+  if (!raw) return;
+  Brep disc;
+  disc.raw() = *raw;
+  delete raw;
+  Brep out;
+  TrimmedOffsetReport rep;
+  const Result r = OffsetTrimmedFace(disc, 2.0, out, -1.0, &rep);
+  const std::string label = "trimmed plane: offset succeeds (reason: " + rep.refusal_reason + ")";
+  Check(r == Result::Ok, label.c_str());
+  if (r != Result::Ok) return;
+  Check(rep.surface_exact && rep.edges_rebuilt == 1 && rep.edges_translated == 1, "trimmed plane: exact surface, its one edge translated (not fitted)");
+  const ON_Brep& ob = out.raw();
+  Check(ob.IsValid() && ob.m_E.Count() == 1, "trimmed plane: valid, one edge");
+  double worst_radius = 0.0, worst_height = 0.0;
+  const ON_BrepEdge& e = ob.m_E[0];
+  for (int k = 0; k < 200; ++k) {
+    const ON_3dPoint q = e.PointAt(e.Domain().ParameterAt((k + 0.31) / 200.0));
+    worst_radius = std::max(worst_radius, std::fabs(std::hypot(q.x - 1.0, q.y - 2.0) - 5.0));
+    worst_height = std::max(worst_height, std::fabs(q.z - 2.0));
+  }
+  const std::string label2 = "trimmed plane: every edge point is at radius 5 about (1, 2) and height 2 to 1e-12 (radius " + std::to_string(worst_radius) +
+                             ", height " + std::to_string(worst_height) + ")";
+  Check(worst_radius < 1e-12 && worst_height < 1e-12, label2.c_str());
+  // The unchanged 2D trim still bounds the disc: shoelace over the trim sampled densely.
+  const ON_BrepTrim& t = ob.m_T[0];
+  double a2 = 0.0;
+  for (int k = 0; k < 4000; ++k) {
+    const ON_3dPoint p = t.PointAt(t.Domain().ParameterAt(k / 4000.0)), q = t.PointAt(t.Domain().ParameterAt((k + 1) / 4000.0));
+    a2 += p.x * q.y - q.x * p.y;
+  }
+  Check(std::fabs(std::fabs(0.5 * a2) - ON_PI * 25.0) < 1e-3, "trimmed plane: the unchanged trim still bounds a disc of area 25 pi");
+}
+
+D8_EXTRA_TEST(TrimmedOffsetOfAFlatPatchWithAHoleIsAnExactTranslation) {
+  // The app's Patch of two concentric flat rings (r = 5 and r = 2, z = 0) is a freeform-typed trimmed face whose fitted surface is
+  // flat: its offset by d is the translation by d n, so every edge point must equal the original edge point + (0, 0, +-d) to
+  // 1e-9, and both loops must survive.
+  auto ring = [](double r, int n) {
+    std::vector<ON_3dPoint> cvs;
+    for (int k = 0; k < n; ++k) cvs.push_back(ON_3dPoint(r * std::cos(2.0 * ON_PI * k / n), r * std::sin(2.0 * ON_PI * k / n), 0.0));
+    cvs.push_back(cvs.front());
+    return NurbsCurve::FromControlPoints(cvs, 3);
+  };
+  const NurbsCurve outer = ring(5.0, 24), hole = ring(2.0, 12);
+  std::vector<ON_3dPoint> boundary;
+  for (const NurbsCurve* c : {&outer, &hole})
+    for (int k = 0; k < 96; ++k) boundary.push_back(c->PointAt(c->Domain().min + (c->Domain().max - c->Domain().min) * k / 96.0));
+  NurbsSurface s;
+  NurbsSurface::PatchFitReport fit;
+  if (NurbsSurface::FitPatch(boundary, {}, 1e-4, s, &fit) != Result::Ok) { Check(false, "fixture: FitPatch of two flat rings"); return; }
+  const Brep face = Brep::TrimmedPatchFace(s, fit, outer, {hole});
+  Check(face.raw().IsValid() && face.raw().m_L.Count() == 2, "fixture: a flat patch trimmed by an outer ring and a hole ring (two loops)");
+  for (double d : {1.5, -1.5}) {
+    Brep out;
+    TrimmedOffsetReport rep;
+    const Result r = OffsetTrimmedFace(face, d, out, 1e-4, &rep);
+    const std::string label = "flat patch d=" + std::to_string(d) + ": offset succeeds (reason: " + rep.refusal_reason + ")";
+    Check(r == Result::Ok, label.c_str());
+    if (r != Result::Ok) continue;
+    Check(out.raw().IsValid() && out.raw().m_L.Count() == 2 && out.raw().m_E.Count() == 2, "...valid, both loops and both edges kept");
+    double worst_xy = 0.0, worst_z = 0.0, zsign = 0.0;
+    for (int ei = 0; ei < 2; ++ei) {
+      const ON_BrepEdge& e0 = face.raw().m_E[ei];
+      const ON_BrepEdge& e1 = out.raw().m_E[ei];
+      for (int k = 0; k < 100; ++k) {
+        const double f = (k + 0.37) / 100.0;
+        const ON_3dPoint p = e0.PointAt(e0.Domain().ParameterAt(f)), q = e1.PointAt(e1.Domain().ParameterAt(f));
+        worst_xy = std::max(worst_xy, std::hypot(p.x - q.x, p.y - q.y));
+        worst_z = std::max(worst_z, std::fabs(std::fabs(q.z) - 1.5));
+        zsign = q.z;
+      }
+    }
+    Check(worst_xy < 1e-9 && worst_z < 1e-9, "...every edge point is the original one moved by exactly 1.5 along z (xy unchanged)");
+    Check(rep.surface_exact || rep.surface_deviation <= 1e-4, "...the surface is exact or within the tolerance");
+    (void)zsign;
+  }
+}

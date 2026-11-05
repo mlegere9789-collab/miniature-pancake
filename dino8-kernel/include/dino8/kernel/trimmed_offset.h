@@ -32,6 +32,8 @@ struct TrimmedOffsetReport {
   // (<= surface_deviation + max_edge_deviation, up to evaluation noise).
   double max_edge_locus_deviation = 0.0;
   int edges_rebuilt = 0;
+  // How many of those were the original edge curve translated exactly (a plane offsets by a translation) rather than fitted.
+  int edges_translated = 0;
   int vertices_moved = 0;
   // Empty on success; on Result::Failed the reason (the output is untouched).
   std::string refusal_reason;
@@ -54,7 +56,11 @@ struct TrimmedOffsetReport {
 //  * Boundary: each edge's 3D curve is rebuilt as a cubic through points of
 //    the offset surface taken along that edge's own 2D trim (doubling the
 //    point count until the measured deviation is within the tolerance); each
-//    vertex moves to the offset surface at its trim end. Edge tolerances are
+//    vertex moves to the offset surface at its trim end. When the offset is a
+//    rigid translation of the surface (a plane, or a flat patch) each edge is
+//    instead the ORIGINAL curve translated (an exact circle stays an exact
+//    circle; `edges_translated` counts them), checked by the same measurement
+//    and falling back to the fit if it disagrees. Edge tolerances are
 //    the measured deviations. A face with only polygon side-table trims (a
 //    TrimmedPlanarFace()) has no edges: its polygons live in (u, v) and are
 //    carried over verbatim.
