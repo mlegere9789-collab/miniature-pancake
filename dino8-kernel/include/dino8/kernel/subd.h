@@ -1039,6 +1039,12 @@ class SubD {
   // and whatever BooleanToSubDCreased() throws (an operand whose approximate mesh is not a closed manifold).
   SubD BooleanSubD(const SubD& other, BooleanOp op, int levels = 3, SubDBooleanReport* report = nullptr) const;
 
+  // True when the limit surface IS the cage polyhedron, so no refinement is needed to see the shape: every face planar, every
+  // edge a crease/boundary or a flat seam between coplanar faces, and every vertex on exactly two sharp edges a pinned Corner or
+  // on a straight crease (no bend for the B-spline crease rule to round; no Dart). A creased box and the results of Booleans of
+  // creased boxes qualify; any smooth cage does not. This is what BooleanSubD() uses to pick level 0 for an operand.
+  bool LimitSurfaceIsCage() const;
+
   SubDPlaneSplit SplitByPlane(Vector3d plane_normal, double plane_offset, bool cap = true, bool crease_cut = true,
                               double point_tolerance = 1e-9) const;
 

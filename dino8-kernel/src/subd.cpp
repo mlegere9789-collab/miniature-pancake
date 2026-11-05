@@ -1112,14 +1112,17 @@ SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bo
 
 namespace {
 
-// True when the SubD's limit surface IS its cage: every edge a crease or a boundary edge, every face planar.
-bool LimitSurfaceIsCage(const ON_SubD& sd) {
+// True when the SubD's limit surface IS its cage (the polyhedron the control net describes):
+//  * every face is planar;
+//  * every edge is a crease or a boundary edge, or a smooth edge between two COPLANAR faces (the flat seam a Boolean leaves
+//    inside a face it split);
+//  * every vertex on exactly two sharp (crease/boundary) edges is a pinned Corner or has those two edges collinear (the
+//    cubic B-spline rule rounds a bend), and no vertex has exactly one (a Dart rounds too).
+// A box after SetCreasesByDihedral() and the result of a Boolean of two such boxes qualify; a smooth cage never does.
+bool LimitSurfaceIsCageImpl(const ON_SubD& sd) {
   ON_BoundingBox bb = sd.BoundingBox();
   const double scale = bb.IsValid() ? std::max(bb.Diagonal().Length(), 1.0) : 1.0;
-  ON_SubDEdgeIterator eit = sd.EdgeIterator();
-  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
-    if (e->FaceCount() >= 2 && !e->IsCrease()) return false;
-  }
+  std::map<unsigned int, ON_3dVector> normal_of;
   ON_SubDFaceIterator fit = sd.FaceIterator();
   for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
     const unsigned int n = f->EdgeCount();
@@ -1142,18 +1145,44 @@ bool LimitSurfaceIsCage(const ON_SubD& sd) {
     for (unsigned int i = 1; i < n; ++i) {
       if (std::abs(ON_DotProduct(normal, pts[i] - pts[0])) > 1e-9 * scale) return false;
     }
+    normal_of[f->m_id] = normal;
+  }
+  ON_SubDEdgeIterator eit = sd.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    if (e->FaceCount() < 2 || e->IsCrease()) continue;
+    if (e->FaceCount() != 2 || e->Face(0) == nullptr || e->Face(1) == nullptr) return false;
+    if (ON_DotProduct(normal_of.at(e->Face(0)->m_id), normal_of.at(e->Face(1)->m_id)) < 1.0 - 1e-9) return false;
+  }
+  ON_SubDVertexIterator vit = sd.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    std::vector<ON_3dVector> sharp;
+    for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e == nullptr) continue;
+      if (e->IsCrease() || e->FaceCount() < 2) {
+        ON_3dVector d = e->OtherEndVertex(v)->ControlNetPoint() - v->ControlNetPoint();
+        if (!d.Unitize()) return false;
+        sharp.push_back(d);
+      }
+    }
+    if (sharp.size() == 1) return false;
+    if (sharp.size() == 2 && v->m_vertex_tag != ON_SubDVertexTag::Corner) {
+      if (ON_CrossProduct(sharp[0], sharp[1]).Length() > 1e-9) return false;  // a bend: the crease rule would round it
+    }
   }
   return true;
 }
 
 }  // namespace
 
+bool SubD::LimitSurfaceIsCage() const { return LimitSurfaceIsCageImpl(subd_); }
+
 SubD SubD::BooleanSubD(const SubD& other, BooleanOp op, int levels, SubDBooleanReport* report) const {
   if (levels < 0 || levels > 5) {
     throw std::invalid_argument("dino8::kernel::SubD::BooleanSubD: levels must be in [0, 5]");
   }
-  const int la = LimitSurfaceIsCage(subd_) ? 0 : levels;
-  const int lb = LimitSurfaceIsCage(other.subd_) ? 0 : levels;
+  const int la = LimitSurfaceIsCage() ? 0 : levels;
+  const int lb = other.LimitSurfaceIsCage() ? 0 : levels;
   return BooleanToSubDCreased(other, op, la, lb, /*sharp_angle_deg=*/0.0, /*quad_dihedral_deg=*/3.0, /*interpolate=*/la > 0 || lb > 0, report);
 }
 

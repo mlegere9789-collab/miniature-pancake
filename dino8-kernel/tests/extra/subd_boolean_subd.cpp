@@ -145,6 +145,25 @@ D8_EXTRA_TEST(SubDBooleanSubDTwoSmoothCubesSatisfyInclusionExclusion) {
   d8test::Check(std::abs(vd - (va - vi)) / va < 0.01, "vol(A-B) == vol(A) - vol(A&B) within 1 % of V");
 }
 
+D8_EXTRA_TEST(SubDLimitSurfaceIsCageRecognisesExactCages) {
+  const SubD creased = BsSolid(0, 0, 0, 10, 10, 10, true);
+  d8test::Check(creased.LimitSurfaceIsCage(), "a fully creased box is exactly its cage");
+  d8test::Check(!BsSolid(0, 0, 0, 10, 10, 10, false).LimitSurfaceIsCage(), "a smooth box is not (its limit surface is the rounded blob)");
+  SubD seven = BsSolid(0, 0, 0, 10, 10, 10, false);
+  seven.SetCrease(Point3d(0, 0, 0), Point3d(10, 0, 0), true, 1e-6);
+  d8test::Check(!seven.LimitSurfaceIsCage(), "a box with only one creased edge is not");
+  SubD eleven = creased;
+  d8test::Check(eleven.SetCrease(Point3d(0, 0, 0), Point3d(10, 0, 0), false, 1e-6) && !eleven.LimitSurfaceIsCage(), "a fully creased box with one edge made smooth again is not");
+  const SubD b = BsSolid(5, 5, 5, 10, 10, 10, true);
+  const BooleanOp ops[3] = {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference};
+  for (BooleanOp op : ops) {
+    const SubD r = creased.BooleanSubD(b, op);
+    d8test::Check(r.LimitSurfaceIsCage(), "the result of a Boolean of two creased boxes is exactly its cage again (flat seams between coplanar faces allowed)");
+  }
+  d8test::Check(!BsSolid(0, 0, 0, 10, 10, 10, false).BooleanSubD(BsSolid(5, -5, -5, 10, 20, 20, true), BooleanOp::Intersection, 2).LimitSurfaceIsCage(),
+                "control: a smooth cube cut by a box is a refined, interpolated cage that is not exactly its limit surface");
+}
+
 D8_EXTRA_TEST(SubDBooleanSubDRejectsBadLevels) {
   const SubD a = BsSolid(0, 0, 0, 10, 10, 10, true);
   bool threw_low = false, threw_high = false;
