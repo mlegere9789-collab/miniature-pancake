@@ -136,6 +136,15 @@ jobs:
                   # section FILES (tests/sections/NN_name.sh) are listed as "  NAME /path/to/file.sh": schedule them too
                   m = re.match(r'\s+(\S+)\s+(\S+\.sh)\s*$', line)
                   if m: items.append((m.group(1), 150))
+          # weight by measured seconds when dino8-app/tests/section_weights.txt lists the section (NAME SECONDS); else 60 s
+          weights = {}
+          try:
+              for wl in open('dino8-app/tests/section_weights.txt'):
+                  wm = re.match(r'\s*([A-Za-z0-9_]+)\s+(\d+)\s*$', wl)
+                  if wm: weights[wm.group(1)] = int(wm.group(2))
+          except OSError:
+              pass
+          if weights: items = [(n, weights.get(n, 60)) for n, _ in items]
           items.sort(key=lambda t: -t[1])
           G = 12
           groups = [[] for _ in range(G)]; load = [0] * G
