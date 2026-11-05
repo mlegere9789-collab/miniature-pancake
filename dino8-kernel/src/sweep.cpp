@@ -3791,8 +3791,58 @@ std::vector<ON_3dVector> TangentDirections(const ON_NurbsCurve& t, const ON_Nurb
   return d;
 }
 
+// Newell vector of the closed curve sampled at 64 points: its direction is the loop's circulation axis, its length twice
+// the enclosed (projected) area.
+ON_3dVector LoopCirculation(const ON_NurbsCurve& c) {
+  const ON_Interval d = c.Domain();
+  const int n = 64;
+  ON_3dVector sum(0, 0, 0);
+  ON_3dPoint prev = c.PointAt(d.ParameterAt(0.0));
+  for (int i = 1; i <= n; ++i) {
+    const ON_3dPoint q = c.PointAt(d.ParameterAt(static_cast<double>(i) / n));
+    sum += ON_CrossProduct(ON_3dVector(prev), ON_3dVector(q));
+    prev = q;
+  }
+  return sum;
+}
+
+// Loft seam alignment for CLOSED sections (Loft's `align_seams`): section k is reversed when it circulates against
+// section k-1 (negative dot product of their circulation vectors), then re-seamed so that its start is the point of
+// the curve nearest to the START of section k-1 (the nearest point is snapped to a knot when within 1e-8 of one, so a
+// polygon's vertex stays a vertex). Applied in order, so every section follows the already-aligned one before it.
+// Open sections are left alone.
+void AlignClosedSections(std::vector<ON_NurbsCurve>& sections, const char* caller) {
+  if (sections.empty() || !sections.front().IsClosed()) return;
+  for (size_t k = 1; k < sections.size(); ++k) {
+    ON_NurbsCurve& c = sections[k];
+    if (!c.IsClosed()) continue;  // a mix of open and closed sections is refused by the caller
+    const ON_NurbsCurve& prev = sections[k - 1];
+    const double scale = CurveScale(c);
+    const ON_3dVector np = LoopCirculation(prev), nc = LoopCirculation(c);
+    const double tiny = 1e-12 * scale * scale;
+    if (np.Length() > tiny && nc.Length() > tiny && ON_DotProduct(np, nc) < 0.0) {
+      if (!c.Reverse()) Fail(caller, "align_seams: could not reverse a section that circulates against the previous one");
+    }
+    NurbsCurve probe;
+    probe.raw() = c;
+    double t = probe.ClosestPointParameter(prev.PointAtStart(), 400);
+    for (int i = 0; i < c.KnotCount(); ++i) {
+      if (std::fabs(c.Knot(i) - t) <= 1e-8 * (1.0 + std::fabs(t))) {
+        t = c.Knot(i);
+        break;
+      }
+    }
+    if (c.PointAt(t).DistanceTo(c.PointAtStart()) > 1e-9 * scale) {
+      if (!c.ChangeClosedCurveSeam(t)) {
+        Fail(caller, "align_seams: could not move a closed section's seam to the point nearest the previous section's start");
+      }
+    }
+  }
+}
+
 Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool closed, bool cap,
-                const NurbsCurve* start_tangent, const NurbsCurve* end_tangent, LoftSpacing spacing_style) {
+                const NurbsCurve* start_tangent, const NurbsCurve* end_tangent, LoftSpacing spacing_style,
+                bool align_seams) {
   const char* caller = "Loft";
   const int spacing = spacing_style == LoftSpacing::Uniform ? 1 : spacing_style == LoftSpacing::Centripetal ? 2 : 0;
   const int N = static_cast<int>(sections_in.size());
@@ -3808,6 +3858,13 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   std::vector<ON_NurbsCurve> sections;
   sections.reserve(static_cast<size_t>(N));
   for (const NurbsCurve& s : sections_in) sections.push_back(s.raw());
+  if (align_seams) {
+    if (want_tangent) {
+      Fail(caller, "align_seams cannot be combined with start_tangent/end_tangent: the tangent curves are fields over the "
+                   "sections' own parametrization, which alignment changes");
+    }
+    AlignClosedSections(sections, caller);
+  }
   std::vector<ON_NurbsCurve> compat = sections;
   if (start_tangent) compat.push_back(start_tangent->raw());
   if (end_tangent) compat.push_back(end_tangent->raw());

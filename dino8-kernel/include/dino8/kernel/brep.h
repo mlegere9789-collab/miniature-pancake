@@ -976,10 +976,22 @@ class Brep {
   // choice interpolates every section exactly (at its own v_k) - only the
   // parametrization, hence the shape BETWEEN sections, changes. A degree-1
   // loft has the same geometry under all three.
+  //
+  // `align_seams` (default false: sections are used exactly as given, so a
+  // closed section whose start point or running direction does not
+  // correspond to its neighbour's twists or pinches the wall) aligns CLOSED
+  // sections in order, each to the already-aligned one before it: a section
+  // that circulates against its predecessor (negative dot product of their
+  // Newell circulation vectors) is reversed, then its seam is moved to the
+  // point of the curve nearest the predecessor's START (snapped to a knot
+  // within 1e-8, so a polygon corner stays a corner). Open sections are left
+  // untouched. Not combinable with start_tangent/end_tangent (those are
+  // fields over the sections' own parametrization): throws.
   enum class LoftSpacing { Chord, Uniform, Centripetal };
   static Brep Loft(const std::vector<NurbsCurve>& sections, int degree = 3, bool closed = false,
                    bool cap = true, const NurbsCurve* start_tangent = nullptr,
-                   const NurbsCurve* end_tangent = nullptr, LoftSpacing spacing = LoftSpacing::Chord);
+                   const NurbsCurve* end_tangent = nullptr, LoftSpacing spacing = LoftSpacing::Chord,
+                   bool align_seams = false);
 
   // PARITY_MAP.md's offsetshell "Offset-derived constructions (Ribbon,
   // RibbonOffset, Fin, Slab)" gap: every one of those is currently

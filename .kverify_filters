@@ -24,3 +24,4 @@ qc3_tests
 sealed_boolean_tests
 sweep2_accuracy
 sweep_adaptive
+LoftAlignSeams
