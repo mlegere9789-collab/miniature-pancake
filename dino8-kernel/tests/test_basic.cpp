@@ -105555,6 +105555,112 @@ void TestChosenDegreeNegativeControls() {
   Check(NurbsSurface::InterpolateThroughGrid(dup, 4, 4, 3, 3, t) == Result::Failed, "two coincident consecutive grid lines (repeated parameter) return Result::Failed");
 }
 
+
+// ---- end tangents in U (InterpolateThroughGridWithEndTangentsU) ----
+using dino8::kernel::Vector3d;
+
+void TestEndTangentsAreHitExactlyAndGridStillInterpolated() {
+  const int nu = 6, nv = 5;
+  const std::vector<Point3d> grid = WigglyGrid(nu, nv);
+  std::vector<double> up, vp;
+  SharedParams(grid, nu, nv, up, vp);
+  std::vector<Vector3d> t0, t1;
+  for (int j = 0; j < nv; ++j) {
+    t0.push_back(Vector3d(0.3 + 0.1 * j, 1.0 - 0.2 * j, 0.5 + 0.05 * j));
+    t1.push_back(Vector3d(-0.4, 0.7 + 0.1 * j, -0.2 - 0.03 * j));
+  }
+  const int degs[4][2] = {{2, 2}, {3, 3}, {4, 3}, {6, 4}};  // (6, 4): a single Bezier span in U
+  for (const auto& d : degs) {
+    const std::string tag = "end tangents, degree (" + std::to_string(d[0]) + ", " + std::to_string(d[1]) + ")";
+    NurbsSurface s;
+    const Result r = NurbsSurface::InterpolateThroughGridWithEndTangentsU(grid, nu, nv, d[0], d[1], t0, t1, s);
+    Check(r == Result::Ok, (tag + ": succeeds on a non-planar 6x5 grid").c_str());
+    if (r != Result::Ok) continue;
+    Check(s.DegreeU() == d[0] && s.DegreeV() == d[1] && s.CVCountU() == nu + 2 && s.CVCountV() == nv && !s.IsRational(),
+          (tag + ": requested degrees, (u_count + 2) x v_count control net, non-rational").c_str());
+    double miss = 0.0;
+    for (int u = 0; u < nu; ++u) {
+      for (int v = 0; v < nv; ++v) {
+        miss = std::max(miss, s.PointAt(up[static_cast<size_t>(u)], vp[static_cast<size_t>(v)]).DistanceTo(grid[static_cast<size_t>(u * nv + v)]));
+      }
+    }
+    // independent derivative evaluation through OpenNURBS (not through the solver's own end-row algebra)
+    double tmiss = 0.0;
+    for (int v = 0; v < nv; ++v) {
+      ON_3dPoint pt;
+      ON_3dVector ds, dt;
+      s.raw().Ev1Der(0.0, vp[static_cast<size_t>(v)], pt, ds, dt);
+      tmiss = std::max(tmiss, (ds - ON_3dVector(t0[static_cast<size_t>(v)].x, t0[static_cast<size_t>(v)].y, t0[static_cast<size_t>(v)].z)).Length());
+      s.raw().Ev1Der(1.0, vp[static_cast<size_t>(v)], pt, ds, dt);
+      tmiss = std::max(tmiss, (ds - ON_3dVector(t1[static_cast<size_t>(v)].x, t1[static_cast<size_t>(v)].y, t1[static_cast<size_t>(v)].z)).Length());
+    }
+    std::printf("  [grid interp tangents] %s: grid-point miss %.3g, end-tangent miss %.3g\n", tag.c_str(), miss, tmiss);
+    Check(miss < 1e-9, (tag + ": still passes through all 30 grid points (< 1e-9)").c_str());
+    Check(tmiss < 1e-8, (tag + ": dS/du at u = 0 and u = 1 equals the prescribed vector on all 5 v grid lines (< 1e-8, OpenNURBS Ev1Der)").c_str());
+  }
+}
+
+void TestEndTangentsOnACylinderMatchTheClosedFormAndBeatTheUnconstrainedFit() {
+  // Half cylinder R = 2, S(u, v) = (R cos(pi u), R sin(pi u), 0.5 * 4 v) in the uniform parameter the equal-chord grid gives:
+  // dS/du = (-R pi sin, R pi cos, 0): (0, R pi, 0) at u = 0 and (0, -R pi, 0) at u = 1, the same on every v grid line.
+  const int nu = 9, nv = 5;
+  const double R = 2.0, dth = ON_PI / (nu - 1);
+  std::vector<Point3d> grid;
+  for (int u = 0; u < nu; ++u) {
+    for (int v = 0; v < nv; ++v) grid.push_back(Point3d(R * std::cos(u * dth), R * std::sin(u * dth), 0.5 * v));
+  }
+  const std::vector<Vector3d> good0(nv, Vector3d(0.0, R * ON_PI, 0.0)), good1(nv, Vector3d(0.0, -R * ON_PI, 0.0));
+  const std::vector<Vector3d> bad0(nv, Vector3d(0.0, -R * ON_PI, 0.0));  // wrong sign at the start
+  auto radial_miss = [&](const NurbsSurface& s) {
+    double worst = 0.0;
+    for (int i = 0; i <= 96; ++i) {
+      for (int j = 0; j <= 6; ++j) {
+        const Point3d p = s.PointAt(i / 96.0, j / 6.0);
+        worst = std::max(worst, std::fabs(std::hypot(p.x, p.y) - R));
+      }
+    }
+    return worst;
+  };
+  NurbsSurface free3, con3, con4, wrong3;
+  Check(NurbsSurface::InterpolateThroughGrid(grid, nu, nv, 3, 3, free3) == Result::Ok &&
+            NurbsSurface::InterpolateThroughGridWithEndTangentsU(grid, nu, nv, 3, 3, good0, good1, con3) == Result::Ok &&
+            NurbsSurface::InterpolateThroughGridWithEndTangentsU(grid, nu, nv, 4, 3, good0, good1, con4) == Result::Ok &&
+            NurbsSurface::InterpolateThroughGridWithEndTangentsU(grid, nu, nv, 3, 3, bad0, good1, wrong3) == Result::Ok,
+        "half cylinder: free, constrained (3,3), constrained (4,3) and wrong-sign-constrained fits all succeed");
+  const double e_free = radial_miss(free3), e_con3 = radial_miss(con3), e_con4 = radial_miss(con4), e_wrong = radial_miss(wrong3);
+  std::printf("  [grid interp tangents] half cylinder radial miss: free cubic %.3g, cubic with true end tangents %.3g, quartic %.3g, wrong-sign start tangent %.3g\n", e_free, e_con3, e_con4, e_wrong);
+  ON_3dPoint pt;
+  ON_3dVector ds, dt;
+  con3.raw().Ev1Der(0.0, 0.5, pt, ds, dt);
+  const double d0 = (ds - ON_3dVector(0.0, R * ON_PI, 0.0)).Length();
+  con3.raw().Ev1Der(1.0, 0.5, pt, ds, dt);
+  const double d1 = (ds - ON_3dVector(0.0, -R * ON_PI, 0.0)).Length();
+  Check(d0 < 1e-8 && d1 < 1e-8, "half cylinder: the constrained surface's dS/du at both ends equals the closed-form (0, +-R pi, 0) (< 1e-8)");
+  Check(e_con3 < e_free && e_con4 < e_free, "half cylinder: supplying the true end tangents lowers the radial miss below the unconstrained cubic's");
+  Check(e_wrong > e_free, "negative control: a wrong-sign start tangent is honoured but makes the radial miss WORSE than the unconstrained fit, so the oracle sees a wrong tangent");
+}
+
+void TestEndTangentsRefusals() {
+  const std::vector<Point3d> grid = WigglyGrid(4, 4);
+  const std::vector<Vector3d> ok4(4, Vector3d(1.0, 0.0, 0.0)), ok3(3, Vector3d(1.0, 0.0, 0.0));
+  std::vector<Vector3d> nan4 = ok4;
+  nan4[2] = Vector3d(std::nan(""), 0.0, 0.0);
+  NurbsSurface s;
+  auto throws = [&](int du, int dv, const std::vector<Vector3d>& a, const std::vector<Vector3d>& b, int nu = 4) {
+    try {
+      NurbsSurface::InterpolateThroughGridWithEndTangentsU(grid, nu, 4, du, dv, a, b, s);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws(3, 3, ok3, ok4) && throws(3, 3, ok4, ok3), "a tangent list whose size is not v_count is refused");
+  Check(throws(3, 3, nan4, ok4) && throws(3, 3, ok4, nan4), "a non-finite tangent is refused");
+  Check(throws(1, 3, ok4, ok4) && throws(5, 3, ok4, ok4) && throws(3, 0, ok4, ok4) && throws(3, 4, ok4, ok4), "degree_u outside [2, u_count] or degree_v outside [1, v_count - 1] is refused");
+  Check(throws(3, 3, ok4, ok4, 3), "a grid whose size is not u_count * v_count is refused");
+  Check(!throws(2, 1, ok4, ok4) && !throws(4, 3, ok4, ok4), "degree_u = 2 and degree_u = u_count are accepted");
+}
+
 }  // namespace grid_interp_degree_tests
 
 int main() {
@@ -107354,6 +107460,12 @@ int main() {
           grid_interp_degree_tests::TestChosenDegreeOnACylinderMatchesTheClosedFormSagitta);
   RunTest("grid_interp_degree_tests::TestChosenDegreeNegativeControls",
           grid_interp_degree_tests::TestChosenDegreeNegativeControls);
+  RunTest("grid_interp_degree_tests::TestEndTangentsAreHitExactlyAndGridStillInterpolated",
+          grid_interp_degree_tests::TestEndTangentsAreHitExactlyAndGridStillInterpolated);
+  RunTest("grid_interp_degree_tests::TestEndTangentsOnACylinderMatchTheClosedFormAndBeatTheUnconstrainedFit",
+          grid_interp_degree_tests::TestEndTangentsOnACylinderMatchTheClosedFormAndBeatTheUnconstrainedFit);
+  RunTest("grid_interp_degree_tests::TestEndTangentsRefusals",
+          grid_interp_degree_tests::TestEndTangentsRefusals);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;

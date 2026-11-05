@@ -1944,6 +1944,24 @@ class NurbsSurface {
   static Result InterpolateThroughGrid(const std::vector<Point3d>& grid, int u_count, int v_count, int degree_u,
                                         int degree_v, NurbsSurface& out);
 
+  // The same grid interpolation with PRESCRIBED END TANGENTS in U: `start_tangents[j]` is the partial derivative
+  // dS/du the surface must have at u = 0 on the j-th v grid line (at v = v_params[j]), `end_tangents[j]` the same at
+  // u = 1; both are with respect to the surface's own [0, 1] parameter (not arc length), so a tangent of length L
+  // chord-lengths-per-unit-parameter is `L * unit direction`. This is Piegl & Tiller's end-derivative curve
+  // interpolation (u_count points plus two derivative conditions gives u_count + 2 control points in U) applied to
+  // every v grid line, followed by the unconstrained V pass; the constraint is linear in the control rows, so it
+  // survives the V pass exactly. Result: `degree_u` x `degree_v` (degree_u in [2, u_count], degree_v in [1, v_count - 1]),
+  // non-rational, (u_count + 2) x v_count control points, domain [0, 1] x [0, 1], passes through every grid point at the
+  // shared averaged-chord-length parameters and has the stated dS/du at both U ends on every v grid line. Interior U
+  // knots are the means of `degree_u` consecutive parameters (starting at t_{j-1}); the V knots are as in the overload
+  // above. Throws std::invalid_argument for the same cases as that overload plus a tangent list whose size is not
+  // v_count, a non-finite tangent, or a degree outside the ranges above; Result::Failed for a singular system. Still
+  // open, disclosed: V end tangents, tangents at a single end only, twist vectors, closed grids.
+  static Result InterpolateThroughGridWithEndTangentsU(const std::vector<Point3d>& grid, int u_count, int v_count,
+                                                        int degree_u, int degree_v,
+                                                        const std::vector<Vector3d>& start_tangents,
+                                                        const std::vector<Vector3d>& end_tangents, NurbsSurface& out);
+
   // Splits this surface into an independent tensor-product Bezier patch
   // for every (u-span, v-span) cell of its knot vectors - the surface
   // counterpart of the app's curve-only `ConvertToBeziers` command
