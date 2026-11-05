@@ -197,6 +197,23 @@ class Brep {
   // rather than silently building an invalid surface), or a zero `axis`.
   static Brep Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius);
 
+  // Genuine-topology siblings of Sphere() and Torus() (the "Welded"
+  // convention BoxWelded() already set): the same solids, but built through
+  // OpenNURBS' own ON_BrepSphere / ON_BrepTorus so the result carries real
+  // vertices, edges, loops and trims instead of one bare surface-only face.
+  // The exact element counts are measured and pinned by the tests, not
+  // asserted here. Each seam edge borders the SAME face twice (two trims,
+  // one face). The face keeps OpenNURBS' exact ON_RevSurface (converting it
+  // to an ON_NurbsSurface was tried and measured: the seam trims then
+  // disagree with their edges by ~1.6% of the radius), so use
+  // VolumeOfSealedSolid() - which integrates an ON_RevSurface - for the
+  // volume; Volume()/Area() keep their NURBS-only contract and throw here.
+  // Sphere() and Torus() themselves are unchanged. Same
+  // argument rules as the siblings (SphereWelded: radius > 0; TorusWelded:
+  // 0 < minor < major, axis non-zero); std::invalid_argument on violation.
+  static Brep SphereWelded(Point3d center, double radius);
+  static Brep TorusWelded(Point3d center, Vector3d axis, double major_radius, double minor_radius);
+
   // Builds a one-face B-rep whose face is `surface`, trimmed to
   // `trim_loop_uv`: a closed polygon in the surface's own (u, v)
   // parameter space. This is real (if simplified) B-rep trimming - the

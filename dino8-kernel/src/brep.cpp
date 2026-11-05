@@ -408,6 +408,50 @@ Brep Brep::Torus(Point3d center, Vector3d axis, double major_radius, double mino
   return result;
 }
 
+Brep Brep::SphereWelded(Point3d center, double radius) {
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::SphereWelded: radius must be positive");
+  }
+  Brep result;
+  ON_Sphere sphere(center, radius);
+  if (ON_BrepSphere(sphere, &result.brep_) == nullptr || result.brep_.m_F.Count() != 1) {
+    throw std::runtime_error("dino8::kernel::Brep::SphereWelded: ON_BrepSphere failed");
+  }
+  result.face_trim_loops_.emplace_back();  // untrimmed
+  result.face_exact_clip_.push_back(false);
+  result.face_hole_loops_.emplace_back();
+  result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
+  return result;
+}
+
+Brep Brep::TorusWelded(Point3d center, Vector3d axis, double major_radius, double minor_radius) {
+  if (!(minor_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::TorusWelded: minor_radius must be positive");
+  }
+  if (!(major_radius > minor_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::TorusWelded: major_radius must be strictly greater than minor_radius");
+  }
+  ON_3dVector normal = axis;
+  if (!normal.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::Brep::TorusWelded: axis must be non-zero");
+  }
+  Brep result;
+  ON_Torus torus(ON_Plane(center, normal), major_radius, minor_radius);
+  if (ON_BrepTorus(torus, &result.brep_) == nullptr || result.brep_.m_F.Count() != 1) {
+    throw std::runtime_error("dino8::kernel::Brep::TorusWelded: ON_BrepTorus failed");
+  }
+  result.face_trim_loops_.emplace_back();  // untrimmed
+  result.face_exact_clip_.push_back(false);
+  result.face_hole_loops_.emplace_back();
+  result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
+  return result;
+}
+
 Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
                               const std::vector<Point2d>& trim_loop_uv,
                               bool exact_clip,
