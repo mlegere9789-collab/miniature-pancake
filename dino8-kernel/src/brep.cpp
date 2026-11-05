@@ -1858,6 +1858,12 @@ bool Brep::IsWatertightForIntegration() const {
     if (RecenterIfFarFromOrigin(*this, moved)) return moved.IsWatertightForIntegration();
   }
   if (TessellateToClosedMesh(8, 8).IsClosedManifold()) return true;
+  // The coarse (8, 8) weld is a heuristic for "the faces close up", not a property of the solid: the flat-faced L prism
+  // (0,0) (20,0) (20,10) (10,10) (10,20) (0,20) x 8 high, built by FromPlanarFaces, leaves 100 open edges at (8, 8) and is
+  // closed at (24, 24) (measured) - a perfectly closed solid whose exact integral is well defined was refused, which broke
+  // every kernel shell of it (ShellPolylineExtrusion verifies its own volume). A finer weld is the same evidence; a
+  // genuinely open shell fails it too, so it is only tried when the coarse one failed.
+  if (TessellateToClosedMesh(24, 24).IsClosedManifold()) return true;
   return HasConformingSeamData() && TessellateToClosedMeshConforming(8, 8).IsClosedManifold();
 }
 
