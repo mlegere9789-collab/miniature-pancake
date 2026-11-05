@@ -1110,6 +1110,53 @@ SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bo
   return result;
 }
 
+namespace {
+
+// True when the SubD's limit surface IS its cage: every edge a crease or a boundary edge, every face planar.
+bool LimitSurfaceIsCage(const ON_SubD& sd) {
+  ON_BoundingBox bb = sd.BoundingBox();
+  const double scale = bb.IsValid() ? std::max(bb.Diagonal().Length(), 1.0) : 1.0;
+  ON_SubDEdgeIterator eit = sd.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    if (e->FaceCount() >= 2 && !e->IsCrease()) return false;
+  }
+  ON_SubDFaceIterator fit = sd.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    const unsigned int n = f->EdgeCount();
+    if (n < 3) return false;
+    std::vector<ON_3dPoint> pts;
+    for (unsigned int i = 0; i < n; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (v == nullptr) return false;
+      pts.push_back(v->ControlNetPoint());
+    }
+    ON_3dVector normal(0, 0, 0);  // Newell
+    for (unsigned int i = 0; i < n; ++i) {
+      const ON_3dPoint& a = pts[i];
+      const ON_3dPoint& b = pts[(i + 1) % n];
+      normal.x += (a.y - b.y) * (a.z + b.z);
+      normal.y += (a.z - b.z) * (a.x + b.x);
+      normal.z += (a.x - b.x) * (a.y + b.y);
+    }
+    if (!normal.Unitize()) return false;
+    for (unsigned int i = 1; i < n; ++i) {
+      if (std::abs(ON_DotProduct(normal, pts[i] - pts[0])) > 1e-9 * scale) return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+SubD SubD::BooleanSubD(const SubD& other, BooleanOp op, int levels, SubDBooleanReport* report) const {
+  if (levels < 0 || levels > 5) {
+    throw std::invalid_argument("dino8::kernel::SubD::BooleanSubD: levels must be in [0, 5]");
+  }
+  const int la = LimitSurfaceIsCage(subd_) ? 0 : levels;
+  const int lb = LimitSurfaceIsCage(other.subd_) ? 0 : levels;
+  return BooleanToSubDCreased(other, op, la, lb, /*sharp_angle_deg=*/0.0, /*quad_dihedral_deg=*/3.0, /*interpolate=*/la > 0 || lb > 0, report);
+}
+
 SubDPlaneSplit SubD::SplitByPlaneRefined(Vector3d plane_normal, double plane_offset, int levels, bool cap, bool crease_cut,
                                          double point_tolerance) const {
   if (levels < 0 || levels > 5) {
