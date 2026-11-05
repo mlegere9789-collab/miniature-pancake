@@ -2636,6 +2636,94 @@ Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
   return result;
 }
 
+Brep ShellOpenExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness, ExtrusionOpening opening) {
+  const std::string fn = "dino8::kernel::ShellOpenExtrusion: ";
+  if (!std::isfinite(thickness) || !(thickness > 0.0)) {
+    throw std::invalid_argument(fn + "thickness must be finite and positive");
+  }
+  if (!std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z)) {
+    throw std::invalid_argument(fn + "direction must be finite");
+  }
+  const double height = direction.Length();
+  if (!(height > 0.0)) throw std::invalid_argument(fn + "direction must be non-zero");
+  const bool open_top = opening != ExtrusionOpening::Bottom;
+  const bool open_bottom = opening != ExtrusionOpening::Top;
+  const bool tube = open_top && open_bottom;
+  // A cup keeps one cap as its floor: that floor is `thickness` thick and the cavity above it must have a
+  // positive depth. A tube has no floor, so the height does not constrain the wall.
+  if (!tube && !(thickness < height * (1.0 - 1e-9))) {
+    throw std::invalid_argument(fn + "thickness must be strictly less than the extrusion height - otherwise the floor "
+                                     "fills the whole prism and no cavity is left");
+  }
+  if (!profile.IsClosed()) throw std::invalid_argument(fn + "profile must be a closed curve");
+
+  const BoundingBox bbox = profile.GetTightBoundingBox();
+  const double size = std::sqrt((bbox.max.x - bbox.min.x) * (bbox.max.x - bbox.min.x) +
+                                (bbox.max.y - bbox.min.y) * (bbox.max.y - bbox.min.y) +
+                                (bbox.max.z - bbox.min.z) * (bbox.max.z - bbox.min.z));
+  const double tol = tolerance::DistanceForSize(size);
+  ON_Plane plane;
+  if (!profile.raw().IsPlanar(&plane, tol)) throw std::invalid_argument(fn + "profile must be planar");
+  Vector3d dhat = direction;
+  dhat.Unitize();
+  if (std::fabs(ON_DotProduct(dhat, plane.zaxis)) < 1.0 - 1e-9) {
+    throw std::invalid_argument(fn + "direction must be perpendicular to the profile's plane - an oblique prism's "
+                                     "wall is not a constant normal distance from its outer skin, so a uniform "
+                                     "wall thickness is not defined for it");
+  }
+
+  // ---- Circle profile: a cup or a tube is a body of revolution about the circle's own axis -------------------
+  ON_Arc fitted_arc;
+  if (profile.raw().IsArc(nullptr, &fitted_arc, tol) && fitted_arc.IsCircle()) {
+    const ON_Circle circle(fitted_arc);
+    const double radius = circle.Radius();
+    if (!(thickness < radius - 2.0 * tol)) {
+      throw std::invalid_argument(fn + "thickness must be strictly less than the circle's radius - the inner wall "
+                                       "would collapse onto or through the axis");
+    }
+    const double r_in = radius - thickness;
+    auto pt = [&](double r, double z) {
+      return circle.Center() + r * circle.Plane().xaxis + z * ON_3dVector(dhat.x, dhat.y, dhat.z);
+    };
+    std::vector<Point3d> section;
+    double expected = 0.0;
+    if (tube) {
+      section = {pt(r_in, 0.0), pt(radius, 0.0), pt(radius, height), pt(r_in, height), pt(r_in, 0.0)};
+      expected = ON_PI * height * (radius * radius - r_in * r_in);
+    } else if (open_top) {
+      section = {pt(0.0, 0.0), pt(radius, 0.0), pt(radius, height), pt(r_in, height), pt(r_in, thickness), pt(0.0, thickness), pt(0.0, 0.0)};
+      expected = ON_PI * (radius * radius * height - r_in * r_in * (height - thickness));
+    } else {
+      section = {pt(0.0, height), pt(radius, height), pt(radius, 0.0), pt(r_in, 0.0), pt(r_in, height - thickness), pt(0.0, height - thickness), pt(0.0, height)};
+      expected = ON_PI * (radius * radius * height - r_in * r_in * (height - thickness));
+    }
+    const NurbsCurve section_curve = NurbsCurve::FromControlPoints(section, 1);
+    Brep body = Brep::Revolve(section_curve, circle.Center(), dhat);
+    // Measured gate, independent of the construction: an exact solid whose exact volume is the closed form.
+    if (!body.raw().IsValid() || !body.raw().IsSolid()) {
+      throw std::runtime_error(fn + "the revolved shell is not a valid closed solid");
+    }
+    const double volume = body.Volume();
+    if (!(std::fabs(volume - expected) <= 1e-6 * expected)) {
+      throw std::runtime_error(fn + "the revolved shell's exact volume " + std::to_string(volume) +
+                               " differs from the closed form " + std::to_string(expected));
+    }
+    return body;
+  }
+
+  // ---- Polyline profile: delegated to ShellPolylineExtrusion() (exact planar faces, any simple polygon) -------
+  const bool is_polyline = profile.Degree() == 1 && !profile.raw().IsRational();
+  if (!is_polyline) {
+    throw std::invalid_argument(fn + "only a polyline or a circle profile is supported: the open rim of any other "
+                                     "curved profile would need the inward offset curve parameter-matched to the "
+                                     "outer one, which is not built; use ShellClosedExtrusion() for a closed shell");
+  }
+  size_t edges = static_cast<size_t>(profile.ControlPointCount());
+  if (edges > 1 && profile.ControlPointAt(0).DistanceTo(profile.ControlPointAt(profile.ControlPointCount() - 1)) <= tol) --edges;
+  return ShellPolylineExtrusion(profile, direction, std::vector<double>(edges, thickness),
+                                open_bottom ? 0.0 : thickness, open_top ? 0.0 : thickness);
+}
+
 Brep OffsetFace(const Brep& solid, int face_index, double distance) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());

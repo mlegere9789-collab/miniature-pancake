@@ -1053,6 +1053,36 @@ Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
                             const std::vector<double>& wall_thickness,
                             double bottom_thickness, double top_thickness);
 
+// Which end cap(s) of an extruded prism ShellOpenExtrusion() removes. "Top" is the cap at `profile + direction`,
+// "Bottom" the cap on the profile itself.
+enum class ExtrusionOpening { Top, Bottom, Both };
+
+// Shell WITH face removal of a right prism whose cross-section is a closed planar `profile`: the prism is hollowed
+// to a uniform wall `thickness` and the named end cap(s) are removed, leaving an open cup (one cap removed: the
+// other cap becomes a floor of the same thickness) or an open tube (both removed). The cup/can/pipe-section case
+// of "shell with removed faces" for a CURVED body, which ShellConvexPlanar() (convex planar solids only) cannot
+// see; the closed (no opening) counterpart is ShellClosedExtrusion() above.
+//
+// Two profile families are built, both as ONE valid, closed (IsSolid()) Brep with no mesh or boolean step:
+//  - A closed POLYLINE (any simple polygon, convex or not): delegated to ShellPolylineExtrusion() with every wall
+//    at `thickness`, the removed cap(s) at 0 and the kept cap (the floor) at `thickness`; all its verification and
+//    refusals apply (a thickness beyond a narrow arm's half-width is refused, not built).
+//  - A full CIRCLE: a body of revolution about the circle's own axis, built as Brep::Revolve() of the cup/tube
+//    cross-section (one rational surface of revolution, so the result is ONE face and an exact cylinder pair,
+//    not a face per cylinder/annulus). Its exact Brep::Volume() is checked against the closed form
+//    pi*(R^2*H - (R-t)^2*(H-t)) (cup) / pi*H*(R^2 - (R-t)^2) (tube) before it is returned.
+//
+// Any other profile (ellipse, freeform) is REFUSED: its open rim would need the inward offset curve
+// parameter-matched to the outer one, which is not built (use ShellClosedExtrusion() for the closed shell).
+//
+// Throws std::invalid_argument for: a non-finite or non-positive `thickness`; a zero or non-finite `direction`;
+// for a cup, `thickness >= |direction|` (no cavity depth left; a tube is not limited by height); an open or
+// non-planar profile; a `direction` not perpendicular to the profile's plane; a circle with `thickness >=
+// radius`; a polyline whose inward offset collapses, inverts or self-intersects; an unsupported curved profile.
+// Throws std::runtime_error if the assembled body fails its own validity/closed-solid (and, for a circle,
+// closed-form volume) gate.
+Brep ShellOpenExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness, ExtrusionOpening opening);
+
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
 // shrinks it), re-extending or re-trimming every OTHER face so the
