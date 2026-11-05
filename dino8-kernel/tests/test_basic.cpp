@@ -106776,6 +106776,40 @@ void TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend() {
 
 }  // namespace chained_edge_fillet_tests
 
+namespace body_section_untrimmed_face_tests {
+
+// A plane lying in a face of an UNTRIMMED primitive box (Brep::Box: the face is its surface rectangle, it has no loops) must
+// return that face's boundary once, exactly, on either side of the body. Measured before the change on the 2x3x4 box: the plane
+// z = 0 came back as one 196-control-point cubic loop 10.0102 long (corners rounded), the plane z = 4 as that loop PLUS the exact
+// four-wall loop (two contours), and x = 2 likewise two, while the trimmed boxes of the app already gave one exact degree-1 loop.
+void TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepSectionContour;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::SectionBrepByPlaneJoined;
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+  IntersectOptions opt;
+  opt.tolerance = 1e-5;
+  opt.mesh_tolerance = 0.02;
+  struct Case { ON_3dPoint o; ON_3dVector n; double perimeter; const char* name; };
+  const Case cases[] = {{ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), 10.0, "bottom face plane z = 0"},
+                        {ON_3dPoint(0, 0, 4), ON_3dVector(0, 0, 1), 10.0, "top face plane z = 4"},
+                        {ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), 14.0, "side face plane x = 0"},
+                        {ON_3dPoint(2, 0, 0), ON_3dVector(1, 0, 0), 14.0, "side face plane x = 2"}};
+  for (const Case& c : cases) {
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(box.raw(), ON_Plane(c.o, c.n), opt);
+    const std::string tag = c.name;
+    Check(sec.size() == 1, (tag + ": exactly one contour (no duplicate of the same boundary)").c_str());
+    if (sec.size() != 1) continue;
+    Check(sec[0].closed, (tag + ": closed").c_str());
+    // independent oracle: the rectangle's perimeter from the box dimensions; a polyline of straight sides sums exactly
+    Check(std::fabs(sec[0].curve.Length() - c.perimeter) < 1e-9, (tag + ": length equals the face perimeter to 1e-9 (the traced cubic was 10.0102)").c_str());
+    Check(sec[0].curve.Degree() == 1, (tag + ": an exact degree-1 outline, not a fitted cubic").c_str());
+  }
+}
+
+}  // namespace body_section_untrimmed_face_tests
+
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   RunTest("ON::Begin", ON::Begin);
@@ -108605,6 +108639,8 @@ int main() {
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonUnsoundSimpleInwardOffsetIsRefused);
   RunTest("offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets",
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets);
+  RunTest("body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline",
+          body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline);
   RunTest("ON::End", ON::End);
 
   if (d8test::ListMode()) return 0;

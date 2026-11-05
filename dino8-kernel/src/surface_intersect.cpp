@@ -2398,6 +2398,26 @@ std::vector<BrepPlaneIntersection> CoincidentFaceLoops(const ON_Brep& b, const O
     // every loop of the face must be rebuildable from its edges, or the face is left to the general route
     std::vector<std::vector<ON_3dPoint>> face_loops;
     bool ok = true;
+    if (f.LoopCount() == 0) {
+      // An untrimmed face (a primitive Brep::Box wall: the face IS its surface rectangle) has no loops to rebuild: its boundary is
+      // the four domain-edge iso-curves. They are taken as the exact rectangle when each side is a straight segment (a mid-point
+      // test); a curved or bent boundary is left to the general route.
+      const ON_Interval du = s->Domain(0), dv = s->Domain(1);
+      const ON_3dPoint c00 = s->PointAt(du.Min(), dv.Min()), c10 = s->PointAt(du.Max(), dv.Min());
+      const ON_3dPoint c11 = s->PointAt(du.Max(), dv.Max()), c01 = s->PointAt(du.Min(), dv.Max());
+      auto straight = [&](double u0, double v0, double u1, double v1, const ON_3dPoint& a, const ON_3dPoint& c) {
+        for (const double t : {0.25, 0.5, 0.75}) {
+          const ON_3dPoint m = s->PointAt(u0 + (u1 - u0) * t, v0 + (v1 - v0) * t);
+          const ON_3dPoint l(a.x + (c.x - a.x) * t, a.y + (c.y - a.y) * t, a.z + (c.z - a.z) * t);
+          if (m.DistanceTo(l) > jtol) return false;
+        }
+        return true;
+      };
+      if (straight(du.Min(), dv.Min(), du.Max(), dv.Min(), c00, c10) && straight(du.Max(), dv.Min(), du.Max(), dv.Max(), c10, c11) &&
+          straight(du.Max(), dv.Max(), du.Min(), dv.Max(), c11, c01) && straight(du.Min(), dv.Max(), du.Min(), dv.Min(), c01, c00)) {
+        face_loops.push_back({c00, c10, c11, c01});
+      }
+    }
     for (int li = 0; li < f.LoopCount() && ok; ++li) {
       const ON_BrepLoop* loop = f.Loop(li);
       if (!loop) { ok = false; break; }
