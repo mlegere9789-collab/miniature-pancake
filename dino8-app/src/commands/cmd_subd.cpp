@@ -943,6 +943,72 @@ void CornerAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
   ctx.Print(label + ": " + std::to_string(changed) + " vertex/vertices " + (pin ? "pinned" : "released"));
 }
 
+// ---------------------------------------------------------------------------
+// SubDSculpt: drag one control vertex and let its neighbours follow with a falloff
+// ---------------------------------------------------------------------------
+// Every control point within Radius (3D distance, measured from the ORIGINAL position of the picked vertex) moves by
+// weight * (target - picked), with t = distance / Radius in [0, 1]:
+//   Constant  w = 1
+//   Linear    w = 1 - t
+//   Smooth    w = s^2 (3 - 2 s), s = 1 - t   (smoothstep: zero slope at the picked vertex and at the rim)
+// Points beyond the radius do not move. The picked vertex (t = 0) always moves by the full drag vector.
+double SculptWeight(const std::string& falloff, double t) {
+  if (t >= 1.0) return falloff == "Constant" && t == 1.0 ? 1.0 : 0.0;
+  if (falloff == "Constant") return 1.0;
+  const double s = 1.0 - t;
+  if (falloff == "Linear") return s;
+  return s * s * (3.0 - 2.0 * s);
+}
+
+void SculptAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  if (in.picks.size() < 2) { ctx.Warn("SubDSculpt: pick the vertex to drag, then the point to drag it to"); return; }
+  const double radius = in.OptNum("Radius", 5.0);
+  const std::string falloff = in.Opt("Falloff", "Smooth");
+  if (!(radius > 0.0)) { ctx.Warn("SubDSculpt: Radius must be positive"); return; }
+  std::vector<Target> ts = SubDTargets(ctx, ids, "SubDSculpt");
+  if (ts.empty()) return;
+  // the control vertex nearest the first pick, within a tenth of that SubD's control-point bounding diagonal
+  int best_t = -1, best_v = -1;
+  double best_d = 0.0;
+  for (size_t t = 0; t < ts.size(); ++t) {
+    const Net& n = ts[t].net;
+    if (n.v.empty()) continue;
+    Point3d lo = n.v[0], hi = n.v[0];
+    for (const Point3d& p : n.v) {
+      lo = Point3d(std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z));
+      hi = Point3d(std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z));
+    }
+    const double reach = 0.1 * lo.DistanceTo(hi);
+    for (size_t i = 0; i < n.v.size(); ++i) {
+      const double d = n.v[i].DistanceTo(in.picks[0]);
+      if (d <= reach && (best_t < 0 || d < best_d)) { best_t = static_cast<int>(t); best_v = static_cast<int>(i); best_d = d; }
+    }
+  }
+  if (best_t < 0) { ctx.Warn("SubDSculpt: no SubD vertex near " + P3(in.picks[0])); return; }
+  Target& tg = ts[static_cast<size_t>(best_t)];
+  const Point3d origin = tg.net.v[static_cast<size_t>(best_v)];
+  const Vector3d delta = in.picks[1] - origin;
+  std::vector<Point3d> before = tg.net.v;
+  int moved = 0;
+  for (size_t i = 0; i < tg.net.v.size(); ++i) {
+    const double w = SculptWeight(falloff, before[i].DistanceTo(origin) / radius);
+    if (w <= 0.0) continue;
+    tg.net.v[i] = before[i] + w * delta;
+    ++moved;
+  }
+  ctx.Doc().BeginChange("SubDSculpt");
+  if (!CommitNet(ctx, tg.id, tg.net, "SubDSculpt")) return;
+  const SceneObject* o = ctx.Doc().Find(tg.id);
+  const Point3d now = tg.net.v[static_cast<size_t>(best_v)];
+  std::string msg = "SubDSculpt: object " + std::to_string(tg.id) + ": " + std::to_string(moved) + " control point(s) within radius " + Num(radius) + " moved by " + falloff +
+                    " falloff, picked vertex " + P3(origin) + " -> " + P3(now);
+  if (o && o->subd) {
+    const kernel::SubDVertexInfo vi = o->subd->VertexInfoAt(now, 1e-6 * std::max(1.0, std::fabs(now.x) + std::fabs(now.y) + std::fabs(now.z)));
+    if (vi.found && vi.limit_valid) msg += ", limit point " + P3(vi.limit_point);
+  }
+  ctx.Print(msg);
+}
+
 void ExtrudeSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
   std::vector<Target> ts = SubDTargets(ctx, ids, "ExtrudeSubD");
   if (ts.empty()) return;
@@ -1689,6 +1755,9 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "Crease", crease(true));
   Reg(e, "SubDCrease", crease(true));
   Reg(e, "RemoveCrease", crease(false));
+  Reg(e, "SubDSculpt", SubDTool(kSelectSubD, "Pick the vertex to drag, then the point to drag it to", 2, {},
+                                {Numeric("Radius", 5), Choice("Falloff", {"Smooth", "Linear", "Constant"})}, SculptAction),
+      CommandStatus::Implemented, "Drags one control vertex to a new point; every control point within Radius follows by the chosen falloff (Smooth, Linear or Constant).");
   Reg(e, "SubDVertexInfo", SubDTool(kSelectSubD, "Pick vertices to inspect", -1, {}, {}, VertexInfoAction),
       CommandStatus::Implemented, "Reports how each picked control-net vertex is classified (Smooth, Crease, Corner, Dart), its valence, faces and crease edges, and its exact limit-surface point.");
   Reg(e, "SubDCorner", SubDTool(kSelectSubD, "Pick crease vertices to pin as corners", -1, {}, {},

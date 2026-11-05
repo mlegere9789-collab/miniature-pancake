@@ -9311,6 +9311,17 @@
   "help": ""
  },
  {
+  "name": "SubDSculpt",
+  "description": "Drags one SubD control vertex to a new point; every control point within Radius follows by the chosen falloff (Smooth, Linear or Constant).",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [
+   "Radius",
+   "Falloff"
+  ],
+  "help": ""
+ },
+ {
   "name": "SubDSphere",
   "description": "Creates a subdivision sphere object.",
   "toolbars": "SubD Tools, SubD Sidebar",
