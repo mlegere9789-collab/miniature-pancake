@@ -28,11 +28,15 @@ loft_spacing
 match_edge_to_curve_rational
 qc2_tests
 qc3_tests
+sealed_boolean_slivers_tests
 sealed_boolean_tests
 shell_open_extrusion
 shell_revolved_profile
 subd_boolean_semisharp
+subd_symmetrize_corner
 subd_vertex_info
 sweep2_accuracy
 sweep2_closed_corner
 sweep_adaptive
+thicken_curved_closed_form
+welded_curved_primitives
