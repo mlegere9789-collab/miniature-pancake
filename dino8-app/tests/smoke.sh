@@ -9013,7 +9013,11 @@ sxcheck B_chain "(polysurface)" "...and the result is a polysurface, not a mesh"
 sxvol B_chain 857 861 "...and its Volume is 1000 - 2*pi*1.5^2*10 = 858.62"
 sxcheck B_scale_large "7 face(s), sealed: valid B-rep with real inner loops" "100x-size hole is now exact and closed (before: declined 'exact B-rep boolean declined' because the uniform re-weld could not close the display mesh; the boundary-only re-weld does)"
 sxvol B_scale_large 870000000 879000000 "100x-size hole Volume = 1e9 - pi*200^2*1000 = 874336294"
-sxcheck B_far_from_origin "exact B-rep boolean declined" "a hole 100000 units from the origin: declined with a reason"
+# a hole 100000 units from the origin used to DECLINE: its exact volume was integrated about the world origin (p . n terms ~1e5 times the
+# volume), came out 874.34 -> 836.01 (4.4% low, measured in the kernel at offset 1e5) and the engine's result was refused. Brep::Volume /
+# VolumeOfSealedSolid now integrate a copy recentred on the body, so the far hole is exact, sealed and valid like the one at the origin.
+sxcheck B_far_from_origin "7 face(s), sealed: valid B-rep with real inner loops" "a hole 100000 units from the origin is exact and sealed (before the recentred integration: declined with a reason)"
+sxvol B_far_from_origin 872 877 "...Volume = 1000 - pi*2^2*10 = 874.34 (display mesh at 1e5 coordinates is float32, so the range is wider than at the origin)"
 sxcheck B_meshalias "MeshBooleanDifference: [0-9]* faces, volume" "old behaviour stays reachable: MeshBooleanDifference always returns the mesh"
 sxcheck B_then_shell "Shell: thickness 0.5, closed, [A-Za-z, -]*volume" "Shell of the sewn Boolean result now works (before: 'Object 3 is not a closed solid; skipped'; exact B-rep since HSO_, so the 'exact B-rep, ' words are optional here)"
 sxcheck B_then_shell "Shell: thickness 0.5, closed, exact B-rep, volume" "...and that shell is now an exact B-rep (prism-with-hole construction, HSO_; before: 'exact B-rep shell not used (' with the reason, a mesh)"
@@ -11992,10 +11996,12 @@ sblnum sequential "^history: Volume = " 856.5 861 "display Volume = 858.62"
 sblcheck shell "$SBL_SEAL" "shell case: the base Boolean is sealed"
 sblcheck shell "Shell: thickness 0.5, closed, exact B-rep, volume" "Shell of the sealed result is still the EXACT prism-with-hole path"
 sblnum shell "Shell: thickness 0.5, closed, exact B-rep, volume " 320 324 "shell volume = 874.34 - (729 - pi*2.5^2*9) = 322.0"
-# --- declined case: unchanged previous behaviour (mesh boolean, with the reason)
-sblcheck far_decline "exact B-rep boolean declined (the engine's result has gaps between faces" "a hole 100000 units from the origin still declines with the engine's reason"
-sblnot far_decline "$SBL_SEAL" "...and nothing claims a sealed result"
-sblnum far_decline "^history: Volume = " 873 877 "...and the mesh result has Volume 874.9"
+# --- far from the origin: sealed (it used to decline, see above)
+sblcheck far_sealed "7 face(s), $SBL_SEAL" "a hole 100000 units from the origin takes the SEALED path (before the recentred integration its exact volume came out 836.01, 4.4% low, and it declined)"
+sblcheck far_sealed "2 keyhole(s) opened" "...both end faces' keyhole slits opened into real inner loops"
+sblcheck far_sealed "^history: Object 3: valid$" "...Check valid"
+sblnum far_sealed "exact volume " 873.7 875.0 "exact kernel volume = 1000 - pi*2^2*10 = 874.34 (measured in the kernel at offset 1e5: 874.3368)"
+sblnum far_sealed "^history: Volume = " 872 877 "...and the display Volume is 874.34 (float32 display mesh at 1e5 coordinates, hence the wider range)"
 # --- control: sealed path switched off -> the previous sewn keyhole-slit result, bit for bit the old message
 sblcheck fb_cut_through "7 face(s), sewn into a closed solid (tolerance 0.01855), volume 874.8" "DINO8_NO_SEALED_BOOLEAN=1 gives the previous sewn result" "$SBL_FB"
 sblcheck fb_cut_through "INVALID - ON_Brep.m_T" "...which is the keyhole-slit structure Check rejects (why the sealed path exists)" "$SBL_FB"

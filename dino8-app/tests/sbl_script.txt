@@ -150,9 +150,9 @@ Enter
 SelAll
 List
 Volume
-# a hole 100000 units from the origin still declines to the mesh boolean (old behaviour, unchanged)
+# a hole 100000 units from the origin: sealed like the one at the origin (it used to decline to the mesh boolean)
 New
-SBLBEGIN_far_decline
+SBLBEGIN_far_sealed
 Box 100000,100000,0 100010,100010,0 10
 Cylinder 100005,100005,-5 2 20
 SelNone

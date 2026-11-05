@@ -106985,6 +106985,34 @@ void TestNonFiniteGeometryIsNotStoredOrExported() {
   std::remove((base + ".stl").c_str());
 }
 
+
+// The app's "a hole 100000 units from the origin declines" smoke checks (SBL_far_decline, SX B_far_from_origin) pinned a precision
+// defect: the sealed general Boolean of a 10-box minus a through cylinder, 1e5 from the origin, integrated its exact volume about
+// the world origin and got 836.01 instead of 874.34 (4.4% low, measured). With the recentred integration it is sealed, valid and
+// exact. Oracle: 1000 - pi * 2^2 * 10 (the polyline cut edges give ~1e-6 relative at the origin as well).
+void TestSealedBooleanFarFromTheOriginIsExact() {
+  using revolve_rim_tests::MakeRevolvedPolygon;
+  using revolve_rim_tests::RZ;
+  const double exact = 1000.0 - ON_PI * 4.0 * 10.0;
+  for (double off : {0.0, 1e5}) {
+    const std::string tag = "offset " + std::to_string(static_cast<long long>(off)) + ": ";
+    const Brep box = Brep::BoxWelded(off, off, 0, off + 10, off + 10, 10);
+    const Brep cyl = MakeRevolvedPolygon({RZ{0, 0}, RZ{2, 0}, RZ{2, 20}, RZ{0, 20}}, Point3d(off + 5, off + 5, -5), dino8::kernel::Vector3d(0, 0, 1));
+    bool sealed = true;
+    dino8::kernel::SealedGeneralBoolean r;
+    try {
+      r = dino8::kernel::BooleanCombineGeneralSealed(box, cyl, dino8::kernel::BooleanOp::Difference);
+    } catch (const std::exception&) {
+      sealed = false;
+    }
+    Check(sealed && r.brep.FaceCount() == 7 && r.keyholes_opened == 2 && r.brep.raw().IsValid() && r.brep.raw().IsSolid(),
+          (tag + "box minus a through cylinder is sealed: 7 faces, 2 keyholes opened, IsValid and IsSolid").c_str());
+    if (!sealed) continue;
+    Check(std::fabs(r.volume - exact) < 1e-4 * exact && std::fabs(r.brep.VolumeOfSealedSolid() - exact) < 1e-4 * exact,
+          (tag + "exact volume is 1000 - pi*4*10 = 874.336 within 1e-4 relative (got " + std::to_string(r.volume) + ")").c_str());
+  }
+}
+
 }  // namespace qc4_tests
 
 namespace body_section_untrimmed_face_tests {
@@ -108959,6 +108987,7 @@ int main() {
   RunTest("qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast", qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast);
   RunTest("qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets", qc4_tests::TestSphereAndTorusVolumeAtLargeOffsets);
   RunTest("qc4_tests::TestNonFiniteGeometryIsNotStoredOrExported", qc4_tests::TestNonFiniteGeometryIsNotStoredOrExported);
+  RunTest("qc4_tests::TestSealedBooleanFarFromTheOriginIsExact", qc4_tests::TestSealedBooleanFarFromTheOriginIsExact);
   RunTest("qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp", qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp);
   RunTest("qc3_tests::TestLoftMatchedScaledHappyPath", qc3_tests::TestLoftMatchedScaledHappyPath);
   RunTest("extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism", extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism);
