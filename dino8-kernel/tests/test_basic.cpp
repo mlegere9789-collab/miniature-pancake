@@ -106882,6 +106882,7 @@ void TestChainedFilletsTessellateToAClosedMesh() {
 namespace chained_concave_fillet_tests {
 
 using dino8::kernel::Brep;
+using dino8::kernel::Mesh;
 using dino8::kernel::FilletConcaveEdge;
 using dino8::kernel::FilletConvexEdge;
 using dino8::kernel::Point3d;
