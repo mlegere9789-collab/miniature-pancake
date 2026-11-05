@@ -102718,6 +102718,158 @@ void TestOffsetInPlaneOpenPolylineLoopRemovalAndRefusals() {
   }
 }
 
+double DistOpenAB(double x, double y, const std::vector<std::pair<double, double>>& p) {
+  double best = 1e30;
+  for (size_t i = 0; i + 1 < p.size(); ++i) {
+    const auto& a = p[i];
+    const auto& b = p[i + 1];
+    const double ex = b.first - a.first, ey = b.second - a.second, l2 = ex * ex + ey * ey;
+    const double t = std::max(0.0, std::min(1.0, ((x - a.first) * ex + (y - a.second) * ey) / l2));
+    best = std::min(best, std::hypot(x - a.first - t * ex, y - a.second - t * ey));
+  }
+  return best;
+}
+
+// Round / Chamfer validity beyond the inward closed case: OUTWARD closed polygons, and OPEN polylines (one-sided offset).
+// Fixed-seed GEOS oracles (shapely 2.2.0 / GEOS 3.14; polygons: buffer round quad_segs=512 / bevel; open: offset_curve round
+// quad_segs=512 / bevel). The fixtures were drawn with fixed seeds (101..104) from random polygons / polylines with 1-decimal
+// coordinates; "ok" ones agree with GEOS and pass the exact validity criterion, "bad" ones differ from GEOS (the raw assembled
+// result is larger/smaller by more than 0.01) and must be refused. Round: no point of a valid offset is closer than |d| to the
+// original (and a closed outward one stays outside the polygon); Chamfer: the assembled polyline must be simple.
+void TestOffsetInPlaneRoundChamferOutwardClosedAndOpenValidity() {
+  struct FillCase {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double d;
+    double geos;  // GEOS area (closed) or length (open)
+  };
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto build = [](const std::vector<std::pair<double, double>>& v, bool closed) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : v) pts.push_back(Point3d(ab.first, ab.second, 0.0));
+    if (closed) pts.push_back(pts.front());
+    return NurbsCurve::FromControlPoints(pts, 1);
+  };
+  const NurbsCurve sentinel = NurbsCurve::FromControlPoints({Point3d(7, 7, 7), Point3d(8, 7, 7)}, 1);
+  const std::vector<FillCase> open_round_ok = {
+      {"open_round_ok", {{0.0, 0.0}, {4.6, 2.6}, {6.9, 2.6}, {12.5, 2.7}, {12.8, 7.6}, {9.5, 9.9}}, 0.5, 23.119840996},
+      {"open_round_ok", {{0.0, 0.0}, {3.6, 3.8}, {10.0, 1.8}, {12.2, -4.6}}, 0.8, 16.899856662},
+      {"open_round_ok", {{0.0, 0.0}, {-1.9, 5.6}, {-4.7, 8.4}, {-7.9, 6.7}, {-8.1, 3.3}}, -1.2, 13.219412565},
+  };
+  const std::vector<FillCase> open_round_bad = {
+      {"open_round_bad", {{0.0, 0.0}, {0.6, -2.0}, {-1.4, -2.8}, {-8.9, -1.3}}, 2.1, 6.584561672},
+      {"open_round_bad", {{0.0, 0.0}, {4.6, -1.6}, {4.4, -4.3}, {-1.2, -3.3}, {-7.8, -7.7}, {-12.4, -14.2}}, 2.0, 17.503777252},
+      {"open_round_bad", {{0.0, 0.0}, {-3.4, -4.0}, {-5.3, -3.2}, {-6.4, 2.9}, {-7.4, 6.5}, {-8.7, 8.6}}, 2.0, 14.722380535},
+  };
+// bad raw sizes: [7.5825, 26.01, 16.3445] geos: [6.5846, 17.5038, 14.7224]
+  const std::vector<FillCase> open_chamfer_ok = {
+      {"open_chamfer_ok", {{0.0, 0.0}, {-4.4, -3.0}, {-5.6, -5.9}, {-9.8, -7.8}}, -1.9, 13.337848688},
+      {"open_chamfer_ok", {{0.0, 0.0}, {-5.0, -5.3}, {-4.6, -9.5}, {-6.7, -11.3}, {-5.3, -17.3}, {-2.6, -21.1}}, -1.9, 22.066136323},
+      {"open_chamfer_ok", {{0.0, 0.0}, {1.3, 5.6}, {-0.0, 8.8}, {3.5, 10.7}, {5.5, 15.4}, {3.3, 19.4}}, 0.6, 23.067639214},
+  };
+  const std::vector<FillCase> open_chamfer_bad = {
+      {"open_chamfer_bad", {{0.0, 0.0}, {-6.7, 3.9}, {-10.0, 4.2}, {-9.9, 8.2}, {-2.5, 7.8}}, 2.3, 9.749001156},
+      {"open_chamfer_bad", {{0.0, 0.0}, {-2.6, 0.8}, {-5.0, 5.5}, {-7.0, 6.0}, {-11.6, -0.3}, {-17.0, 3.2}}, -2.4, 23.478164588},
+      {"open_chamfer_bad", {{0.0, 0.0}, {3.2, 1.2}, {3.7, -0.9}, {4.0, -4.2}}, 2.1, 3.762187546},
+  };
+// bad raw sizes: [15.4715, 25.3398, 4.5725] geos: [9.749, 23.4782, 3.7622]
+  const std::vector<FillCase> closed_round_out_ok = {
+      {"closed_round_out_ok", {{-3.4, 1.6}, {-2.3, -1.5}, {0.1, -6.1}, {3.1, -5.5}, {4.0, -4.8}}, 2.1, 80.282654201},
+      {"closed_round_out_ok", {{5.8, 1.9}, {-1.7, 2.0}, {-2.9, -6.1}, {4.3, -4.1}}, 1.0, 83.022935916},
+      {"closed_round_out_ok", {{0.9, 3.5}, {-1.1, 3.6}, {-4.3, 2.9}, {0.5, -7.2}}, 0.4, 39.929940462},
+  };
+  const std::vector<FillCase> closed_round_out_bad = {
+      {"closed_round_out_bad", {{2.1, 3.7}, {1.2, 3.2}, {0.3, 7.2}, {-3.5, -7.2}}, 1.8, 84.763848600},
+      {"closed_round_out_bad", {{3.5, 1.6}, {2.7, 1.2}, {1.8, 4.6}, {1.4, 8.2}, {-8.3, -1.3}, {0.3, -5.9}}, 1.8, 158.005094942},
+      {"closed_round_out_bad", {{-2.1, 3.1}, {-2.8, -6.6}, {-1.3, -7.1}, {-1.9, -2.6}, {2.9, -8.0}, {4.1, -5.7}}, 2.2, 118.156490201},
+  };
+// bad raw sizes: [84.5399, 157.7992, 117.444] geos: [84.7638, 158.0051, 118.1565]
+  const std::vector<FillCase> closed_chamfer_out_ok = {
+      {"closed_chamfer_out_ok", {{1.1, 8.4}, {-1.0, 2.9}, {-1.0, -2.9}, {5.0, -3.3}}, 2.0, 106.304664257},
+      {"closed_chamfer_out_ok", {{7.6, 1.2}, {-4.2, 4.8}, {-8.0, -1.5}, {-2.8, -1.4}, {-2.3, -6.2}}, 0.8, 110.050832910},
+      {"closed_chamfer_out_ok", {{3.0, 1.5}, {2.8, 2.2}, {5.8, 2.3}, {2.0, 5.7}, {-3.3, 1.9}, {-2.1, 1.9}}, 0.4, 26.720130336},
+  };
+  const std::vector<FillCase> closed_chamfer_out_bad = {
+      {"closed_chamfer_out_bad", {{7.6, 1.4}, {5.9, 4.1}, {3.4, 5.1}, {1.6, 4.7}, {3.3, 7.6}, {-5.4, 3.5}}, 2.3, 106.602675321},
+      {"closed_chamfer_out_bad", {{-3.1, 4.2}, {-5.9, 3.0}, {5.3, -3.9}, {2.2, -1.6}, {8.0, -1.4}}, 3.0, 138.242924772},
+      {"closed_chamfer_out_bad", {{4.7, 4.0}, {3.9, 2.0}, {-0.5, 2.7}, {3.9, -6.3}, {5.1, -2.2}, {3.5, -4.3}}, 2.6, 93.077040507},
+  };
+// bad raw sizes: [104.7676, 129.6652, 79.3277] geos: [106.6027, 138.2429, 93.077]
+  int n_ok = 0, n_bad = 0;
+  const auto run_ok = [&](const std::vector<FillCase>& cases, bool closed, CurveOffsetCornerStyle style, const char* label) {
+    int idx = 0;
+    for (const FillCase& c : cases) {
+      const std::string nm = std::string(label) + " #" + std::to_string(idx++) + " d=" + std::to_string(c.d);
+      NurbsCurve out;
+      const Result r = build(c.v, closed).OffsetInPlane(xy, c.d, out, -1.0, style);
+      Check(r == Result::Ok, (nm + ": a valid offset is built").c_str());
+      if (r != Result::Ok) continue;
+      ++n_ok;
+      if (!closed) {
+        // NurbsCurve::Length() is a coarse numeric estimate (it reads 16.896088 for a degree-1 curve whose segments sum to
+        // 16.899857, 2e-4 low), so the oracle measures the length itself: 200000 samples summed as chords.
+        double len = 0.0;
+        {
+          const Interval dom = out.Domain();
+          Point3d prev = out.PointAt(dom.min);
+          for (int k = 1; k <= 200000; ++k) {
+            const Point3d q = out.PointAt(dom.min + (dom.max - dom.min) * k / 200000.0);
+            len += prev.DistanceTo(q);
+            prev = q;
+          }
+        }
+        std::printf("  %s: sampled length %.6f (GEOS %.6f)\n", nm.c_str(), len, c.geos);
+        Check(std::fabs(len - c.geos) < 1e-4 * (1.0 + c.geos), (nm + ": length (200000-chord sum) equals the GEOS offset_curve's to 1e-4 relative").c_str());
+        if (style == CurveOffsetCornerStyle::Round) {
+          double min_dist = 1e30;
+          const Interval dom = out.Domain();
+          for (int k = 0; k <= 8000; ++k) {
+            const Point3d q = out.PointAt(dom.min + (dom.max - dom.min) * k / 8000.0);
+            min_dist = std::min(min_dist, DistOpenAB(q.x, q.y, c.v));
+          }
+          Check(min_dist > std::fabs(c.d) - 1e-7, (nm + ": every sampled point is at least |d| from the polyline").c_str());
+        }
+      } else if (style == CurveOffsetCornerStyle::Round) {
+        std::vector<std::pair<double, double>> samp;
+        double min_dist = 1e30;
+        const Interval dom = out.Domain();
+        for (int k = 0; k < 40000; ++k) {
+          const Point3d q = out.PointAt(dom.min + (dom.max - dom.min) * k / 40000.0);
+          samp.push_back({q.x, q.y});
+          if (k % 10 == 0) min_dist = std::min(min_dist, DistAB(q.x, q.y, c.v));
+        }
+        std::printf("  %s: area %.6f (GEOS %.6f), min sampled distance %.9f\n", nm.c_str(), PolyAreaAB(samp), c.geos, min_dist);
+        Check(std::fabs(PolyAreaAB(samp) - c.geos) < 1e-4 * (1.0 + c.geos), (nm + ": area equals the GEOS round buffer's to 1e-4 relative").c_str());
+        Check(min_dist > c.d - 1e-7, (nm + ": every sampled point is at least d from the polygon").c_str());
+      } else {
+        std::vector<std::pair<double, double>> got;
+        for (int i = 0; i + 1 < out.ControlPointCount(); ++i) got.push_back({out.ControlPointAt(i).x, out.ControlPointAt(i).y});
+        std::printf("  %s: area %.9f (GEOS %.9f)\n", nm.c_str(), PolyAreaAB(got), c.geos);
+        Check(std::fabs(PolyAreaAB(got) - c.geos) < 1e-7 * (1.0 + c.geos), (nm + ": area equals the GEOS bevel buffer's to 1e-7 relative").c_str());
+      }
+    }
+  };
+  const auto run_bad = [&](const std::vector<FillCase>& cases, bool closed, CurveOffsetCornerStyle style, const char* label) {
+    int idx = 0;
+    for (const FillCase& c : cases) {
+      const std::string nm = std::string(label) + " #" + std::to_string(idx++) + " d=" + std::to_string(c.d);
+      NurbsCurve out = sentinel;
+      ++n_bad;
+      Check(build(c.v, closed).OffsetInPlane(xy, c.d, out, -1.0, style) == Result::Failed && out.ControlPointCount() == 2,
+            (nm + ": refused (the assembled offset differs from GEOS's: it is invalid), out untouched").c_str());
+    }
+  };
+  run_ok(open_round_ok, false, CurveOffsetCornerStyle::Round, "open Round");
+  run_bad(open_round_bad, false, CurveOffsetCornerStyle::Round, "open Round");
+  run_ok(open_chamfer_ok, false, CurveOffsetCornerStyle::Chamfer, "open Chamfer");
+  run_bad(open_chamfer_bad, false, CurveOffsetCornerStyle::Chamfer, "open Chamfer");
+  run_ok(closed_round_out_ok, true, CurveOffsetCornerStyle::Round, "closed outward Round");
+  run_bad(closed_round_out_bad, true, CurveOffsetCornerStyle::Round, "closed outward Round");
+  run_ok(closed_chamfer_out_ok, true, CurveOffsetCornerStyle::Chamfer, "closed outward Chamfer");
+  run_bad(closed_chamfer_out_bad, true, CurveOffsetCornerStyle::Chamfer, "closed outward Chamfer");
+  std::printf("  Round/Chamfer outward + open validity: %d valid offsets built, %d invalid ones refused\n", n_ok, n_bad);
+}
+
 }  // namespace offset_remainder_tests
 
 // ---------------------------------------------------------------------------
@@ -109345,6 +109497,8 @@ int main() {
           offset_remainder_tests::TestOffsetInPlaneClosedPolygonRoundChamferInwardRefusesInvalidOffsets);
   RunTest("offset_remainder_tests::TestOffsetInPlaneOpenPolylineLoopRemovalAndRefusals",
           offset_remainder_tests::TestOffsetInPlaneOpenPolylineLoopRemovalAndRefusals);
+  RunTest("offset_remainder_tests::TestOffsetInPlaneRoundChamferOutwardClosedAndOpenValidity",
+          offset_remainder_tests::TestOffsetInPlaneRoundChamferOutwardClosedAndOpenValidity);
   RunTest("body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline",
           body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline);
 

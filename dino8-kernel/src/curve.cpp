@@ -679,12 +679,12 @@ bool RepairClosedOffsetPolygon(const std::vector<Point3d>& orig, std::vector<Poi
 // a coplanar polygon this refuses the two failures that can be told apart exactly (loop REMOVAL is not attempted for these
 // corner styles - only the Sharp case repairs):
 //  * Chamfer (a polyline): the assembled polygon must be simple and keep the original's winding;
-//  * Round, INWARD: every point of a Round offset is exactly |distance| from the original polygon (an arc about a vertex, a
+//  * Round (inward AND outward): every point of a Round offset is exactly |distance| from the original polygon (an arc about a vertex, a
 //    line parallel to an edge, or an intersection of two such lines), so a point of the assembled curve closer than that,
 //    or outside the polygon, proves the offset cut into the forbidden zone. 4000+ samples of the curve are tested
 //    (fuzzed against GEOS round buffers: sound samples <=> the assembled polygon equals the GEOS offset, 67 of 67; every
 //    unsound one differed, 12 of 12).
-// Returns false = refuse. Non-coplanar polygons and outward Round offsets are returned as before.
+// Returns false = refuse. Non-coplanar polygons are returned as before.
 bool ValidateClosedFillOffset(const std::vector<Point3d>& orig, const NurbsCurve& assembled, const Vector3d& normal,
                               double distance, CurveOffsetCornerStyle style, bool coplanar) {
   if (!coplanar) return true;
@@ -699,7 +699,8 @@ bool ValidateClosedFillOffset(const std::vector<Point3d>& orig, const NurbsCurve
     for (int i = 0; i + 1 < pline.Count(); ++i) poly.push_back(pline[i]);
     return IsOffsetPolygonSimple(poly, normal) && ProjectedArea(poly, pl) * sign0 > 0.0;
   }
-  if (style != CurveOffsetCornerStyle::Round || !(distance * sign0 < 0.0)) return true;
+  if (style != CurveOffsetCornerStyle::Round) return true;
+  const bool inward = distance * sign0 < 0.0;  // inward: the curve must stay inside the polygon; outward: outside it
   std::vector<double> OA(orig.size()), OB(orig.size());
   for (size_t i = 0; i < orig.size(); ++i) pl.Of(orig[i], OA[i], OB[i]);
   const double need = std::fabs(distance) - 1e-7 * (1.0 + std::fabs(distance));
@@ -716,11 +717,48 @@ bool ValidateClosedFillOffset(const std::vector<Point3d>& orig, const NurbsCurve
       if ((OB[e] > qb) != (OB[e1] > qb) && OA[e] + (qb - OB[e]) * (OA[e1] - OA[e]) / (OB[e1] - OB[e]) > qa) in = !in;
       best = std::min(best, DistPointSegment2(qa, qb, OA[e], OB[e], OA[e1], OB[e1]));
     }
-    if (!in || best < need) return false;
+    if (in != inward || best < need) return false;
   }
   return true;
 }
 
+
+// Open-polyline Round / Chamfer offsets (one-sided) are assembled corner by corner like the closed ones, with no validity
+// check. For a coplanar polyline: Round must stay at least |distance| from the polyline everywhere (a valid Round offset is a
+// level set of the distance - fuzzed against GEOS offset_curve round: every one of 5843+5867 agreeing offsets is sound, every
+// differing one unsound but 1); Chamfer must be a simple polyline (no two non-adjacent edges cross). Loop removal is not
+// done for these styles - they are refused. Returns false = refuse.
+bool ValidateOpenFillOffset(const std::vector<Point3d>& orig, const NurbsCurve& assembled, const Vector3d& normal, double distance,
+                            CurveOffsetCornerStyle style, bool coplanar) {
+  if (!coplanar) return true;
+  const PlaneXY pl(orig[0], normal);
+  if (style == CurveOffsetCornerStyle::Chamfer) {
+    ON_SimpleArray<ON_3dPoint> pline;
+    if (!assembled.raw().IsPolyline(&pline) || pline.Count() < 4) return true;
+    std::vector<double> A(static_cast<size_t>(pline.Count())), B(A.size());
+    for (int i = 0; i < pline.Count(); ++i) pl.Of(pline[i], A[static_cast<size_t>(i)], B[static_cast<size_t>(i)]);
+    for (size_t i = 0; i + 1 < A.size(); ++i)
+      for (size_t j = i + 2; j + 1 < A.size(); ++j) {
+        double t;
+        if (ProperCrossing(A[i], B[i], A[i + 1], B[i + 1], A[j], B[j], A[j + 1], B[j + 1], t)) return false;
+      }
+    return true;
+  }
+  if (style != CurveOffsetCornerStyle::Round) return true;
+  std::vector<double> OA(orig.size()), OB(orig.size());
+  for (size_t i = 0; i < orig.size(); ++i) pl.Of(orig[i], OA[i], OB[i]);
+  const double need = std::fabs(distance) - 1e-7 * (1.0 + std::fabs(distance));
+  const Interval dom = assembled.Domain();
+  const int samples = std::max(4000, 400 * static_cast<int>(orig.size()));
+  for (int k = 0; k <= samples; ++k) {
+    const Point3d q = assembled.PointAt(dom.min + (dom.max - dom.min) * k / samples);
+    double qa, qb;
+    pl.Of(q, qa, qb);
+    for (size_t e = 0; e + 1 < orig.size(); ++e)
+      if (DistPointSegment2(qa, qb, OA[e], OB[e], OA[e + 1], OB[e + 1]) < need) return false;
+  }
+  return true;
+}
 
 // ---- open polyline (Sharp): loop removal + certificate ----------------------------------------------------------------
 //
@@ -1007,6 +1045,10 @@ bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& norma
     }
   }
 
+  if (!closed && !ValidateOpenFillOffset(v, assembled, normal, distance, corner_style, coplanar_in_plane)) {
+    result = Result::Failed;
+    return true;
+  }
   if (closed && !ValidateClosedFillOffset(v, assembled, normal, distance, corner_style, coplanar_in_plane)) {
     result = Result::Failed;
     return true;
