@@ -1,0 +1,205 @@
+# SelSubDEdges Type=... / SelSubDVertices Type=... Valence=... (the "SDS_" section, tests/sections/84_sdsel.sh).
+#
+# Select a SubD's control-net edges / vertices by type. Each case prints the number of matching elements on its first line
+# ("SelSubDEdges: N crease edge(s) on 1 SubD(s)"); the section compares it with counts derived by hand from the fixture's topology.
+# Fixtures: the app's SubD box 0,0,0 - 10,10,0 - 10 (the 8-vertex, 12-edge, 6-face cube cage), the same cube with the two edges
+# that meet at the origin creased (Crease at 5,0,0 and 0,5,0) and then that origin pinned as a corner, and the app's SubDPlane
+# 0,0,0 - 20,20,0 (a 4 x 4 grid of cells, each split into two triangles).
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+# ---- plain cube: every vertex is Smooth with valence 3, every edge is Smooth
+New
+SDSBEGIN_cube
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SelSubDVertices
+Enter
+SelLast
+SelSubDVertices
+Type=Smooth
+Enter
+SelLast
+SelSubDVertices
+Type=Crease
+Enter
+SelLast
+SelSubDVertices
+Type=Corner
+Enter
+SelLast
+SelSubDVertices
+Type=Dart
+Enter
+SelLast
+SelSubDVertices
+Valence=3
+Enter
+SelLast
+SelSubDVertices
+Valence=4
+Enter
+SelLast
+SelSubDEdges
+Type=All
+Enter
+SelLast
+SelSubDEdges
+Type=Smooth
+Enter
+SelLast
+SelSubDEdges
+Type=Crease
+Enter
+SelLast
+SelSubDEdges
+Type=Boundary
+Enter
+SelLast
+SelSubDEdges
+Type=Soft
+Enter
+
+# ---- the two edges meeting at the origin creased: the origin has two crease edges (Crease), their far ends one each (Dart)
+New
+SDSBEGIN_creased
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+0,5,0
+Enter
+SelLast
+SelSubDEdges
+Type=Crease
+Enter
+SelLast
+SelSubDEdges
+Type=Smooth
+Enter
+SelLast
+SelSubDEdges
+Type=All
+Enter
+SelLast
+SelSubDVertices
+Type=Crease
+Enter
+SelLast
+SelSubDVertices
+Type=Dart
+Enter
+SelLast
+SelSubDVertices
+Type=Smooth
+Enter
+SelLast
+SelSubDVertices
+Type=Corner
+Enter
+
+# ---- the origin pinned as a corner: it leaves Crease and becomes the one Corner; the crease edges stay
+New
+SDSBEGIN_corner
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+0,5,0
+Enter
+SelLast
+SubDCorner
+0,0,0
+Enter
+SelLast
+SelSubDVertices
+Type=Corner
+Enter
+SelLast
+SelSubDVertices
+Type=Crease
+Enter
+SelLast
+SelSubDVertices
+Type=Dart
+Enter
+SelLast
+SelSubDVertices
+Type=Smooth
+Enter
+SelLast
+SelSubDEdges
+Type=Crease
+Enter
+
+# ---- an open triangulated grid: 25 vertices (16 on the boundary), 56 edges (16 boundary), 32 triangles
+New
+SDSBEGIN_plane
+SubDPlane 0,0,0 20,20,0
+SelLast
+SelSubDVertices
+Enter
+SelLast
+SelSubDVertices
+Type=Crease
+Enter
+SelLast
+SelSubDVertices
+Type=Smooth
+Enter
+SelLast
+SelSubDVertices
+Valence=2
+Enter
+SelLast
+SelSubDVertices
+Valence=3
+Enter
+SelLast
+SelSubDVertices
+Valence=4
+Enter
+SelLast
+SelSubDVertices
+Valence=6
+Enter
+SelLast
+SelSubDEdges
+Type=All
+Enter
+SelLast
+SelSubDEdges
+Type=Boundary
+Enter
+SelLast
+SelSubDEdges
+Type=Crease
+Enter
+SelLast
+SelSubDEdges
+Type=Smooth
+Enter
+
+# ---- two SubDs selected: the counts add up
+New
+SDSBEGIN_two
+SubDBox 0,0,0 10,10,0 10
+SubDBox 20,0,0 30,10,0 10
+SelSubD
+SelSubDVertices
+Enter
+SelSubD
+SelSubDEdges
+Type=All
+Enter
+
+# ---- nothing selected, then a non-SubD selected: refused
+New
+SDSBEGIN_refused
+SelSubDVertices
+Enter
+Box 0,0,0 10,10,0 10
+SelLast
+SelSubDEdges
+Enter

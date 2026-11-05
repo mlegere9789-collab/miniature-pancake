@@ -101,6 +101,17 @@ std::vector<SubObjectRef> NakedEdgeVertices(const SceneObject& o);
 std::vector<SubObjectRef> NonManifoldEdges(const SceneObject& o);
 // SubD crease edges as control-net edges.
 std::vector<SubObjectRef> SubDCreaseEdges(const SceneObject& o);
+
+// Selecting a SubD's control-net edges / vertices by type.
+//   Edges:    Crease   = tagged Crease (a naked boundary edge is tagged Crease by ON_SubD too, so Boundary is a subset of Crease),
+//             Boundary = fewer than two faces, Soft = smooth-tagged with a sharpness > 0 at either end (semi-sharp),
+//             Smooth   = smooth-tagged, two or more faces, sharpness 0 at both ends, All = every control-net edge.
+//   Vertices: the ON_SubD vertex tag (Smooth, Crease = exactly two crease/boundary edges, Corner, Dart = exactly one crease edge)
+//             or All; `valence` (incident edges) restricts the result when > 0.
+enum class SubDEdgeType { Crease, Boundary, Soft, Smooth, All };
+enum class SubDVertexType { Smooth, Crease, Corner, Dart, All };
+std::vector<SubObjectRef> SubDEdgesOfType(const SceneObject& o, SubDEdgeType type);
+std::vector<SubObjectRef> SubDVerticesOfType(const SceneObject& o, SubDVertexType type, int valence = 0);
 // Faces of the topology mesh adjacent to a vertex / edge.
 std::vector<int> FacesOfEdge(const ON_Mesh& m, int a, int b);
 

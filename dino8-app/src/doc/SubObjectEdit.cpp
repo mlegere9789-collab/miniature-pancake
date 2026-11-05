@@ -912,7 +912,7 @@ std::vector<SubObjectRef> NakedEdgeVertices(const SceneObject& o) {
   return out;
 }
 
-std::vector<SubObjectRef> SubDCreaseEdges(const SceneObject& o) {
+std::vector<SubObjectRef> SubDEdgesOfType(const SceneObject& o, SubDEdgeType type) {
   std::vector<SubObjectRef> out;
   kernel::Mesh net;
   if (!SubDNet(o, net)) return out;
@@ -923,9 +923,46 @@ std::vector<SubObjectRef> SubDCreaseEdges(const SceneObject& o) {
   };
   ON_SubDEdgeIterator eit = o.subd->raw().EdgeIterator();
   for (const ON_SubDEdge* e = eit.FirstEdge(); e; e = eit.NextEdge()) {
-    if (!e->IsCrease() || !e->Vertex(0) || !e->Vertex(1)) continue;
+    if (!e->Vertex(0) || !e->Vertex(1)) continue;
+    const bool crease = e->IsCrease();
+    const bool boundary = e->FaceCount() < 2;
+    const bool soft = !crease && (e->EndSharpness(0u) > 0.0 || e->EndSharpness(1u) > 0.0);
+    bool match = false;
+    switch (type) {
+      case SubDEdgeType::Crease: match = crease; break;
+      case SubDEdgeType::Boundary: match = boundary; break;
+      case SubDEdgeType::Soft: match = soft; break;
+      case SubDEdgeType::Smooth: match = !crease && !boundary && !soft; break;
+      case SubDEdgeType::All: match = true; break;
+    }
+    if (!match) continue;
     const int a = index_of(e->Vertex(0)->ControlNetPoint()), b = index_of(e->Vertex(1)->ControlNetPoint());
     if (a >= 0 && b >= 0) out.push_back(SubObjectRef::MeshEdge(o.id, a, b));
+  }
+  return out;
+}
+
+std::vector<SubObjectRef> SubDCreaseEdges(const SceneObject& o) { return SubDEdgesOfType(o, SubDEdgeType::Crease); }
+
+std::vector<SubObjectRef> SubDVerticesOfType(const SceneObject& o, SubDVertexType type, int valence) {
+  std::vector<SubObjectRef> out;
+  kernel::Mesh net;
+  if (!SubDNet(o, net)) return out;
+  const ON_Mesh& m = net.raw();
+  for (int i = 0; i < m.VertexCount(); ++i) {
+    const Point3d p = MeshVertex(m, i);
+    const kernel::SubDVertexInfo vi = o.subd->VertexInfoAt(p, 1e-5 * std::max(1.0, std::fabs(p.x) + std::fabs(p.y) + std::fabs(p.z)));
+    if (!vi.found) continue;
+    if (valence > 0 && vi.valence != valence) continue;
+    bool match = false;
+    switch (type) {
+      case SubDVertexType::Smooth: match = vi.kind == kernel::SubDVertexKind::Smooth; break;
+      case SubDVertexType::Crease: match = vi.kind == kernel::SubDVertexKind::Crease; break;
+      case SubDVertexType::Corner: match = vi.kind == kernel::SubDVertexKind::Corner; break;
+      case SubDVertexType::Dart: match = vi.kind == kernel::SubDVertexKind::Dart; break;
+      case SubDVertexType::All: match = true; break;
+    }
+    if (match) out.push_back(SubObjectRef::Vertex(o.id, i));
   }
   return out;
 }

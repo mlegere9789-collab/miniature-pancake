@@ -3,7 +3,9 @@
 // matching, sub-object selection filters, group naming.
 #include "commands/cmd_common.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <map>
 #include <set>
 
@@ -109,6 +111,43 @@ class PickSubObjectCommand : public Command {
   std::string prompt_;
   NearestFn nearest_;
   Apply apply_;
+};
+
+// SelSubDEdges / SelSubDVertices: select the SubD(s), set the options (Type, Valence) and press Enter; the matching control-net
+// edges / vertices of every selected SubD are added to the sub-object selection (a pick is ignored; Enter runs the selection).
+class SelSubDByTypeCommand : public Command {
+ public:
+  using Values = std::map<std::string, std::string>;
+  using Action = std::function<void(CommandContext&, const std::vector<ObjectId>&, const Values&)>;
+  SelSubDByTypeCommand(std::vector<OptionSpec> opts, Action action) : opts_(std::move(opts)), action_(std::move(action)) {
+    for (const OptionSpec& o : opts_) values_[Lower(o.name)] = o.value;
+  }
+  void Begin(CommandContext&) override { options = opts_; WantObjects("Select SubDs", 1); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantPoint("Set Type / Valence, then press Enter to select");
+    options = opts_;
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (want == Want::Objects) { ctx.Warn("Select SubDs first"); Finish(); return; }
+    action_(ctx, ids_, values_);
+    Finish();
+  }
+  void OnOption(CommandContext&, const std::string& name, const std::string& value) override {
+    for (OptionSpec& o : options) {
+      if (o.name != name || value.empty()) continue;
+      if (o.numeric) { char* end = nullptr; const double v = std::strtod(value.c_str(), &end); if (end != value.c_str()) o.value = FormatNumber(v); }
+      else for (const std::string& c : o.choices) if (Lower(c) == Lower(value)) o.value = c;
+      values_[Lower(o.name)] = o.value;
+    }
+    opts_ = options;
+  }
+
+ private:
+  std::vector<OptionSpec> opts_;
+  Action action_;
+  std::vector<ObjectId> ids_;
+  Values values_;
 };
 
 // SoftEditSrf / SoftEditCrv: click a control point, give a falloff radius
@@ -814,17 +853,48 @@ void RegisterSelect2Commands(CommandEngine& e) {
         if (objs == 0) ctx.Warn("Select meshes or SubDs first");
         else ReportSub(ctx, "SelMeshEdges", added);
       }), CommandStatus::Implemented, "Selects every edge of the selected meshes / SubDs.");
-  Reg(e, "SelSubDEdges", Immediate([](CommandContext& ctx) {
-        size_t added = 0;
-        int objs = 0;
-        for (const SceneObject& o : ctx.Doc().Objects()) {
-          if (!o.selected || o.kind != ObjectKind::SubD) continue;
-          ++objs;
-          for (const SubObjectRef& r : SubDCreaseEdges(o)) { if (!Sub(ctx).Contains(r)) ++added; Sub(ctx).Add(r); }
-        }
-        if (objs == 0) ctx.Warn("Select SubDs first");
-        else ReportSub(ctx, "SelSubDEdges", added);
-      }), CommandStatus::Implemented, "Selects the crease edges of the selected SubDs as sub-objects.");
+  Reg(e, "SelSubDEdges", [] {
+        return std::make_unique<SelSubDByTypeCommand>(
+            std::vector<OptionSpec>{{"Type", "Crease", {"Crease", "Boundary", "Soft", "Smooth", "All"}, false, false}},
+            [](CommandContext& ctx, const std::vector<ObjectId>& ids, const SelSubDByTypeCommand::Values& v) {
+              const std::string t = Lower(v.at("type"));
+              const SubDEdgeType type = t == "boundary" ? SubDEdgeType::Boundary : t == "soft" ? SubDEdgeType::Soft : t == "smooth" ? SubDEdgeType::Smooth
+                                        : t == "all" ? SubDEdgeType::All : SubDEdgeType::Crease;
+              size_t added = 0, matched = 0;
+              int objs = 0;
+              for (ObjectId id : ids) {
+                const SceneObject* o = ctx.Doc().Find(id);
+                if (!o || o->kind != ObjectKind::SubD) continue;
+                ++objs;
+                for (const SubObjectRef& r : SubDEdgesOfType(*o, type)) { ++matched; if (!Sub(ctx).Contains(r)) ++added; Sub(ctx).Add(r); }
+              }
+              if (objs == 0) { ctx.Warn("Select SubDs first"); return; }
+              ctx.Print("SelSubDEdges: " + std::to_string(matched) + " " + Lower(v.at("type")) + " edge(s) on " + std::to_string(objs) + " SubD(s)");
+              ReportSub(ctx, "SelSubDEdges", added);
+            });
+      }, CommandStatus::Implemented, "Selects the control-net edges of the selected SubDs of one type (Type=Crease, Boundary, Soft, Smooth or All) as sub-objects.");
+  Reg(e, "SelSubDVertices", [] {
+        return std::make_unique<SelSubDByTypeCommand>(
+            std::vector<OptionSpec>{{"Type", "All", {"All", "Smooth", "Crease", "Corner", "Dart"}, false, false}, {"Valence", "0", {}, true, false}},
+            [](CommandContext& ctx, const std::vector<ObjectId>& ids, const SelSubDByTypeCommand::Values& v) {
+              const std::string t = Lower(v.at("type"));
+              const SubDVertexType type = t == "smooth" ? SubDVertexType::Smooth : t == "crease" ? SubDVertexType::Crease : t == "corner" ? SubDVertexType::Corner
+                                          : t == "dart" ? SubDVertexType::Dart : SubDVertexType::All;
+              const int valence = std::max(0, static_cast<int>(std::strtod(v.at("valence").c_str(), nullptr)));
+              size_t added = 0, matched = 0;
+              int objs = 0;
+              for (ObjectId id : ids) {
+                const SceneObject* o = ctx.Doc().Find(id);
+                if (!o || o->kind != ObjectKind::SubD) continue;
+                ++objs;
+                for (const SubObjectRef& r : SubDVerticesOfType(*o, type, valence)) { ++matched; if (!Sub(ctx).Contains(r)) ++added; Sub(ctx).Add(r); }
+              }
+              if (objs == 0) { ctx.Warn("Select SubDs first"); return; }
+              ctx.Print("SelSubDVertices: " + std::to_string(matched) + " " + Lower(v.at("type")) + " vertex/vertices" + (valence > 0 ? " of valence " + std::to_string(valence) : std::string()) +
+                        " on " + std::to_string(objs) + " SubD(s)");
+              ReportSub(ctx, "SelSubDVertices", added);
+            });
+      }, CommandStatus::Implemented, "Selects the control-net vertices of the selected SubDs by type (Type=All, Smooth, Crease, Corner or Dart) and, with Valence=N, only those with N incident edges.");
   Reg(e, "SelMeshPart", Make<PickSubObjectCommand>(
         "Click on a mesh or SubD to select the connected part",
         [](CommandContext& ctx, Point3d p) -> std::optional<SubObjectRef> {

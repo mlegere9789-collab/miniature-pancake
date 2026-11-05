@@ -8071,7 +8071,9 @@
   "description": "Selects different types of edges on selected SubDs.",
   "toolbars": "Edge Tools, New in V8, Select SubD, SubD Tools",
   "menu": "",
-  "options": [],
+  "options": [
+   "Type"
+  ],
   "help": ""
  },
  {
@@ -8080,6 +8082,17 @@
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],
+  "help": ""
+ },
+ {
+  "name": "SelSubDVertices",
+  "description": "Selects the control-net vertices of the selected SubDs by type (Smooth, Crease, Corner, Dart) and, with Valence=N, only those with N incident edges.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [
+   "Type",
+   "Valence"
+  ],
   "help": ""
  },
  {
