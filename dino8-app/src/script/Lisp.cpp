@@ -736,6 +736,8 @@ Value VlaPutProperty(Interp& in, const Value& obj, const std::string& prop_in, c
       out.push_back(GPt(10, {D(c[k]), D(c[k + 1]), z}));
     }
     g = out;
+  } else if (type == "ELLIPSE" || type == "SPLINE") {
+    Fail("the " + IAcadName(type) + " object's " + prop_in + " cannot be changed (only Layer and Color)");
   } else {
     NoProp(type, prop_in);
   }
