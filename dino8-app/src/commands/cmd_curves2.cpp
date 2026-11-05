@@ -4,6 +4,7 @@
 #include "commands/cmd_common.h"
 #include "commands/count_limits.h"
 #include "commands/history_rebuild.h"
+#include "commands/section_exact.h"
 #include "dino8/kernel/surface_intersect.h"
 
 #include <algorithm>
@@ -392,17 +393,7 @@ std::vector<SceneObject> SlicePieces(CommandContext& ctx, const SceneObject& o, 
     return out;
   }
   if (o.kind == ObjectKind::Brep && o.brep) {
-    try {
-      kernel::IntersectOptions opt;
-      opt.tolerance = 1e-5;
-      opt.mesh_tolerance = 0.02;
-      for (kernel::BrepSectionContour& c : kernel::SectionBrepByPlaneJoined(o.brep->raw(), plane, opt)) {
-        if (c.curve.Length() <= tol) continue;  // a grazing touch, not a contour
-        out.push_back(SceneObject::MakeCurve(std::move(c.curve)));
-      }
-    } catch (const std::exception&) {
-      out.clear();
-    }
+    for (kernel::NurbsCurve& c : ExactBrepSectionCurves(o, plane, tol)) out.push_back(SceneObject::MakeCurve(std::move(c)));
     if (!out.empty()) {
       if (exact) *exact = true;
       return out;

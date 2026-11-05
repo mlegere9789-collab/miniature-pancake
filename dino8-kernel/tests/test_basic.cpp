@@ -12,6 +12,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <random>
 #include <set>
 #include <sstream>
@@ -101168,6 +101169,170 @@ void TestBodySectionTrimmedSolidWithThroughHole() {
   }
 }
 
+// ---- SectionBrepByPlaneJoined: curve QUALITY sweeps (independent closed-form oracles, measured by dense sampling) ----------
+// Polyline length of the curve by dense sampling (not NurbsCurve::Length(), which is the code under test's neighbour).
+double SampledLength(const NurbsCurve& c, int n) {
+  const auto d = c.Domain();
+  double len = 0;
+  Point3d prev = c.PointAt(d.min);
+  for (int i = 1; i <= n; ++i) {
+    const Point3d p = c.PointAt(d.min + (d.max - d.min) * i / n);
+    len += prev.DistanceTo(p);
+    prev = p;
+  }
+  return len;
+}
+
+// The sphere the app's Sphere command makes is an ON_BrepSphere (a revolved rational NURBS with a seam and two poles), not
+// kernel::Brep::Sphere. Cut by z = c.z + d for d = -9 .. 9 every 0.25 the section must be ONE closed curve that is the circle
+// of radius sqrt(R^2 - d^2) about the axis, in the plane, with the circumference 2 pi sqrt(R^2 - d^2). Measured before the fix:
+// d = -2, 0.5, 2, 7.5 (and the same d for other centres / tolerances) came back 2.4 .. 3.9 percent too long with the radius off
+// by up to 0.1, because the intersector's midpoint insertion let one sample slide past the end of its segment and the cubic
+// through the folded chain rang; all other d were accurate to 2e-6.
+void TestBodySectionSphereSweepEveryQuarterUnitIsTheCapCircle() {
+  struct Cfg {
+    double cz, tol, mesh;
+    const char* name;
+  };
+  const Cfg cfgs[] = {{0.0, 1e-5, 0.02, "centre z=0, app tolerances (1e-5, 0.02)"},
+                      {2.0, 1e-5, 0.02, "centre z=2 (the sphere moved up 2), app tolerances"},
+                      {0.0, 1e-6, 0.05, "centre z=0, test tolerances (1e-6, 0.05)"},
+                      {-3.1, 1e-6, 0.01, "centre z=-3.1, fine mesh (1e-6, 0.01)"}};
+  const double R = 10.0;
+  for (const Cfg& cfg : cfgs) {
+    std::unique_ptr<ON_Brep> sph(ON_BrepSphere(ON_Sphere(ON_3dPoint(0, 0, cfg.cz), R)));
+    IntersectOptions opt;
+    opt.tolerance = cfg.tol;
+    opt.mesh_tolerance = cfg.mesh;
+    double worst_len = 0, worst_r = 0, worst_z = 0, at_len = 0, at_r = 0;
+    int bad_count = 0, n_cases = 0;
+    for (int k = -36; k <= 36; ++k) {
+      const double d = 0.25 * k;
+      const ON_Plane plane(ON_3dPoint(0, 0, cfg.cz + d), ON_3dVector(0, 0, 1));
+      const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(*sph, plane, opt);
+      ++n_cases;
+      if (sec.size() != 1 || !sec[0].closed) {
+        ++bad_count;
+        continue;
+      }
+      const double want = std::sqrt(R * R - d * d);
+      const NurbsCurve& c = sec[0].curve;
+      const double rel = std::fabs(SampledLength(c, 20000) - 2.0 * ON_PI * want) / (2.0 * ON_PI * want);
+      double rlo, rhi, zlo, zhi;
+      SampleRange(c, 2000, [](Point3d p) { return std::hypot(p.x, p.y); }, rlo, rhi);
+      SampleRange(c, 2000, [](Point3d p) { return p.z; }, zlo, zhi);
+      const double rdev = std::max(rhi - want, want - rlo);
+      const double zdev = std::max(zhi - (cfg.cz + d), (cfg.cz + d) - zlo);
+      if (rel > worst_len) { worst_len = rel; at_len = d; }
+      if (rdev > worst_r) { worst_r = rdev; at_r = d; }
+      worst_z = std::max(worst_z, zdev);
+    }
+    char msg[256];
+    std::snprintf(msg, sizeof msg, "sphere sweep, %s: all %d planes give exactly ONE closed contour", cfg.name, n_cases);
+    Check(bad_count == 0, msg);
+    std::snprintf(msg, sizeof msg, "sphere sweep, %s: every circumference is within 1e-4 relative of 2 pi sqrt(R^2-d^2) (worst %.2e at d=%g)", cfg.name, worst_len, at_len);
+    Check(worst_len < 1e-4, msg);
+    std::snprintf(msg, sizeof msg, "sphere sweep, %s: every sampled point is within 2e-3 of the circle radius sqrt(R^2-d^2) (worst %.2e at d=%g)", cfg.name, worst_r, at_r);
+    Check(worst_r < 2e-3, msg);
+    std::snprintf(msg, sizeof msg, "sphere sweep, %s: every sampled point lies in the section plane to 1e-4 (worst %.2e)", cfg.name, worst_z);
+    Check(worst_z < 1e-4, msg);
+  }
+}
+
+// A section plane that COINCIDES with a planar face must give that face's own boundary: for a box face the rectangle itself,
+// as an exact closed polyline, once. Measured before the fix (10 x 20 x 10 box, plane x = 0): one 195-control-point cubic up to
+// 0.0266 off the rectangle, 60.067 long instead of 60; plane x = 10: the same rectangle twice over (120.07 long), because the four
+// neighbouring walls also meet that plane along the same edges.
+void TestBodySectionPlaneOnBoxFaceIsExactlyTheFaceBoundary() {
+  const double X = 10, Y = 20, Z = 10;
+  const ON_3dPoint c[8] = {ON_3dPoint(0, 0, 0), ON_3dPoint(X, 0, 0), ON_3dPoint(X, Y, 0), ON_3dPoint(0, Y, 0),
+                           ON_3dPoint(0, 0, Z), ON_3dPoint(X, 0, Z), ON_3dPoint(X, Y, Z), ON_3dPoint(0, Y, Z)};
+  std::unique_ptr<ON_Brep> box(ON_BrepBox(c));
+  struct Face {
+    const char* name;
+    ON_3dPoint origin;
+    ON_3dVector normal;
+    ON_3dPoint rect[4];
+    double perimeter;
+  };
+  const Face faces[] = {
+      {"x=0 end face", ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), {ON_3dPoint(0, 0, 0), ON_3dPoint(0, Y, 0), ON_3dPoint(0, Y, Z), ON_3dPoint(0, 0, Z)}, 2 * (Y + Z)},
+      {"x=10 end face", ON_3dPoint(X, 0, 0), ON_3dVector(1, 0, 0), {ON_3dPoint(X, 0, 0), ON_3dPoint(X, Y, 0), ON_3dPoint(X, Y, Z), ON_3dPoint(X, 0, Z)}, 2 * (Y + Z)},
+      {"y=0 side face", ON_3dPoint(0, 0, 0), ON_3dVector(0, 1, 0), {ON_3dPoint(0, 0, 0), ON_3dPoint(X, 0, 0), ON_3dPoint(X, 0, Z), ON_3dPoint(0, 0, Z)}, 2 * (X + Z)},
+      {"y=20 side face", ON_3dPoint(0, Y, 0), ON_3dVector(0, 1, 0), {ON_3dPoint(0, Y, 0), ON_3dPoint(X, Y, 0), ON_3dPoint(X, Y, Z), ON_3dPoint(0, Y, Z)}, 2 * (X + Z)},
+      {"z=0 bottom face", ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1), {ON_3dPoint(0, 0, 0), ON_3dPoint(X, 0, 0), ON_3dPoint(X, Y, 0), ON_3dPoint(0, Y, 0)}, 2 * (X + Y)},
+      {"z=10 top face", ON_3dPoint(0, 0, Z), ON_3dVector(0, 0, 1), {ON_3dPoint(0, 0, Z), ON_3dPoint(X, 0, Z), ON_3dPoint(X, Y, Z), ON_3dPoint(0, Y, Z)}, 2 * (X + Y)}};
+  for (const Face& f : faces) {
+    IntersectOptions opt;
+    opt.tolerance = 1e-5;
+    opt.mesh_tolerance = 0.02;
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(*box, ON_Plane(f.origin, f.normal), opt);
+    char msg[256];
+    std::snprintf(msg, sizeof msg, "box %s: the plane in the face gives exactly ONE closed contour (no duplicate of the rectangle)", f.name);
+    Check(sec.size() == 1 && sec[0].closed, msg);
+    if (sec.size() != 1) continue;
+    const NurbsCurve& cv = sec[0].curve;
+    double worst = 0;
+    for (int i = 0; i <= 4000; ++i) {
+      const auto d = cv.Domain();
+      const Point3d p = cv.PointAt(d.min + (d.max - d.min) * i / 4000);
+      double best = 1e300;
+      for (int k = 0; k < 4; ++k) {
+        const ON_3dPoint& a = f.rect[k];
+        const ON_3dPoint& b = f.rect[(k + 1) % 4];
+        const ON_3dVector ab = b - a;
+        const double t = std::max(0.0, std::min(1.0, ON_DotProduct(p - a, ab) / ON_DotProduct(ab, ab)));
+        best = std::min(best, p.DistanceTo(a + ab * t));
+      }
+      worst = std::max(worst, best);
+    }
+    std::snprintf(msg, sizeof msg, "box %s: every point of the contour is on the face boundary to 1e-9 (worst %.2e)", f.name, worst);
+    Check(worst < 1e-9, msg);
+    std::snprintf(msg, sizeof msg, "box %s: the contour is %g long (the face perimeter) to 1e-9 (got %.12g)", f.name, f.perimeter, SampledLength(cv, 40000));
+    Check(std::fabs(SampledLength(cv, 40000) - f.perimeter) < 1e-9, msg);
+    int corners_hit = 0;
+    for (int k = 0; k < 4; ++k) {
+      double nearest = 1e300;
+      for (int i = 0; i < cv.ControlPointCount(); ++i) nearest = std::min(nearest, cv.ControlPointAt(i).DistanceTo(f.rect[k]));
+      if (nearest < 1e-9) ++corners_hit;
+    }
+    std::snprintf(msg, sizeof msg, "box %s: the contour keeps all four sharp corners as control points (a degree-1 polyline, not a fitted cubic)", f.name);
+    Check(corners_hit == 4 && cv.Degree() == 1, msg);
+  }
+  // control: a plane in the middle of the box is unchanged (still the rectangle, within the section tolerance)
+  {
+    IntersectOptions opt;
+    opt.tolerance = 1e-5;
+    opt.mesh_tolerance = 0.02;
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(*box, ON_Plane(ON_3dPoint(5, 0, 0), ON_3dVector(1, 0, 0)), opt);
+    Check(sec.size() == 1 && sec[0].closed && std::fabs(SampledLength(sec[0].curve, 40000) - 60.0) < 1e-3,
+          "control: the mid plane x=5 still gives one closed rectangle of perimeter 60");
+  }
+}
+
+// A drilled box's top face has the hole stitched into its single outer loop by a keyhole bridge; a plane in that face must give the
+// outer square AND the hole circle as two separate closed contours, with the bridge (an edge walked twice) in neither.
+void TestBodySectionPlaneOnDrilledBoxFaceDropsTheKeyholeBridge() {
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep drilled = dino8::kernel::MakeHole(box, Point3d(2, 2, 4), dino8::kernel::Vector3d(0, 0, -1), 0.5, 0.0, true);
+  for (const double z : {4.0, 0.0}) {
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(drilled.raw(), ON_Plane(ON_3dPoint(0, 0, z), ON_3dVector(0, 0, 1)), SectionOpt());
+    char msg[200];
+    std::snprintf(msg, sizeof msg, "drilled box, plane in the %s face: TWO closed contours (outer square + hole circle)", z > 1 ? "top" : "bottom");
+    Check(sec.size() == 2 && sec[0].closed && sec[1].closed, msg);
+    if (sec.size() != 2) continue;
+    const double l0 = SampledLength(sec[0].curve, 40000), l1 = SampledLength(sec[1].curve, 40000);
+    const double big = std::max(l0, l1), small = std::min(l0, l1);
+    // The drilled box is a faceted B-rep: its top/bottom faces carry the hole as a 36-gon (circumference 3.1376, 0.12 percent
+    // under pi) and the keyhole bridge leaves a ~2e-4 notch in the outer square (perimeter 15.9996), so the oracles are the
+    // circle / square to the facet size, not to 1e-9.
+    std::snprintf(msg, sizeof msg, "drilled box z=%g: the outer contour is the square, perimeter 16 to 1e-3 (got %.9g), the bridge not in it", z, big);
+    Check(std::fabs(big - 16.0) < 1e-3, msg);
+    std::snprintf(msg, sizeof msg, "drilled box z=%g: the hole contour is the circle r=0.5, circumference pi to 0.2 percent (got %.9g)", z, small);
+    Check(std::fabs(small - ON_PI) < 2e-3 * ON_PI && small > 3.0, msg);
+  }
+}
+
 }  // namespace body_section_tests
 
 // ---------------------------------------------------------------------------
@@ -106620,6 +106785,9 @@ int main() {
   RunTest("body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse", body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse);
   RunTest("body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes", body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes);
   RunTest("body_section_tests::TestBodySectionTrimmedSolidWithThroughHole", body_section_tests::TestBodySectionTrimmedSolidWithThroughHole);
+  RunTest("body_section_tests::TestBodySectionSphereSweepEveryQuarterUnitIsTheCapCircle", body_section_tests::TestBodySectionSphereSweepEveryQuarterUnitIsTheCapCircle);
+  RunTest("body_section_tests::TestBodySectionPlaneOnBoxFaceIsExactlyTheFaceBoundary", body_section_tests::TestBodySectionPlaneOnBoxFaceIsExactlyTheFaceBoundary);
+  RunTest("body_section_tests::TestBodySectionPlaneOnDrilledBoxFaceDropsTheKeyholeBridge", body_section_tests::TestBodySectionPlaneOnDrilledBoxFaceDropsTheKeyholeBridge);
 
   RunTest("TestCurveDegreeElevation", TestCurveDegreeElevation);
   RunTest("TestCurveFromControlPointsRejectsDegenerateInput", TestCurveFromControlPointsRejectsDegenerateInput);

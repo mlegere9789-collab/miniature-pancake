@@ -1128,7 +1128,19 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
                                 monotonic_from_i(va, ic.uv_a[i].y, ic.uv_a[j].y) &&
                                 monotonic_from_i(ub, ic.uv_b[i].x, ic.uv_b[j].x) &&
                                 monotonic_from_i(vb, ic.uv_b[i].y, ic.uv_b[j].y);
-      if (bracketed && no_reversal && pm.DistanceTo(x) > opt.tolerance && pm.DistanceTo(x) <= local_span &&
+      // A FOURTH guard, against OVERSHOOT: a segment's own midpoint seed comes from the cubic fit through the chain so far,
+      // and where the chain is unevenly spaced (a mesh-seeded chain mixes ~7 degree steps with ~1.5 degree steps where the
+      // plane crosses a cell diagonal) that seed can be poor enough for the weakly damped Newton solve to slide along the
+      // curve PAST the segment's far end. The 25% bracket slack above admits a coordinate overshoot of a quarter of the
+      // segment, the monotonic check only looks backwards from `i`, so the point was accepted and the chain then FOLDED
+      // (measured on a R = 10 sphere cut at z = -2: -14.4 deg, -21.6 deg, then an inserted -22.997 deg, then -22.6 ... -21.7
+      // deg walking back; the interpolating cubic through that fold ringed 3.6e-2 off the circle, a 3% longer section).
+      // A genuine point of the segment is never farther from either end than the chord itself (an arc up to about 240
+      // degrees); anything farther is a slide past an end and is refused, like the other guards, keeping the two original
+      // samples.
+      const double chord = ic.points[i].DistanceTo(ic.points[j]);
+      const bool within_reach = x.DistanceTo(ic.points[i]) <= chord * 1.05 + opt.tolerance && x.DistanceTo(ic.points[j]) <= chord * 1.05 + opt.tolerance;
+      if (bracketed && no_reversal && within_reach && pm.DistanceTo(x) > opt.tolerance && pm.DistanceTo(x) <= local_span &&
           x.DistanceTo(ic.points[i]) > opt.tolerance * 2 && x.DistanceTo(ic.points[j]) > opt.tolerance * 2) {
         np.push_back(x); na.emplace_back(ua, va); nb.emplace_back(ub, vb);
         inserted = true;
@@ -2255,6 +2267,7 @@ namespace {
 // dropped; every other piece is returned exactly as IntersectFaces() built it.
 ON_NurbsCurve PieceCurve(const IntersectionCurve& ic) {
   const size_t n = ic.points.size();
+  if (ic.curve.Degree() == 1) return ic.curve;  // an exact polyline (CoincidentFaceLoops()): never refit through a smooth cubic
   if (!ic.closed || n < 8) return ic.curve;
   double len = 0;
   for (size_t i = 1; i < n; ++i) len += ic.points[i].DistanceTo(ic.points[i - 1]);
@@ -2271,11 +2284,218 @@ ON_NurbsCurve PieceCurve(const IntersectionCurve& ic) {
   ON_NurbsCurve fitted = InterpolateCubicPeriodic(kept, ChordParams(kept, true), 3);
   return fitted.IsValid() ? fitted : ic.curve;
 }
+
+// The vertices of an edge's 3D curve, in its own direction. A straight or polyline edge contributes exactly its own vertices
+// (so a box edge stays a straight line); any other edge is sampled finely enough that the chord sagitta is far below the
+// section tolerance.
+std::vector<ON_3dPoint> EdgePolylinePoints(const ON_Curve& c, double mesh_tolerance) {
+  std::vector<ON_3dPoint> pts;
+  if (const ON_PolylineCurve* pl = ON_PolylineCurve::Cast(&c)) {
+    for (int i = 0; i < pl->PointCount(); ++i) pts.push_back(pl->m_pline[i]);
+    return pts;
+  }
+  if (const ON_LineCurve* ln = ON_LineCurve::Cast(&c)) {
+    pts.push_back(ln->m_line.from);
+    pts.push_back(ln->m_line.to);
+    return pts;
+  }
+  if (const ON_NurbsCurve* nc = ON_NurbsCurve::Cast(&c)) {
+    if (nc->Degree() == 1 && !nc->IsRational()) {
+      for (int i = 0; i < nc->CVCount(); ++i) {
+        ON_3dPoint p;
+        nc->GetCV(i, p);
+        pts.push_back(p);
+      }
+      return pts;
+    }
+  }
+  const ON_Interval d = c.Domain();
+  double len = 0;
+  {
+    ON_3dPoint prev = c.PointAt(d.Min());
+    for (int i = 1; i <= 64; ++i) {
+      const ON_3dPoint p = c.PointAt(d.ParameterAt(i / 64.0));
+      len += prev.DistanceTo(p);
+      prev = p;
+    }
+  }
+  const int ns = static_cast<int>(Clamp(std::ceil(len / std::max(0.5 * mesh_tolerance, 1e-4)), 24.0, 400.0));
+  for (int i = 0; i <= ns; ++i) pts.push_back(c.PointAt(d.ParameterAt(static_cast<double>(i) / ns)));
+  return pts;
+}
+
+// Distance from `p` to the closed polygon `poly`.
+double DistanceToPolygon(const ON_3dPoint& p, const std::vector<ON_3dPoint>& poly) {
+  double best = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < poly.size(); ++i) {
+    const ON_3dPoint& a = poly[i];
+    const ON_3dPoint& b = poly[(i + 1) % poly.size()];
+    const ON_3dVector ab = b - a;
+    const double ll = ON_DotProduct(ab, ab);
+    double t = ll > 0 ? ON_DotProduct(p - a, ab) / ll : 0.0;
+    t = std::max(0.0, std::min(1.0, t));
+    best = std::min(best, p.DistanceTo(a + ab * t));
+  }
+  return best;
+}
+
+// A Boolean result stitches a hole into a planar face's single outer loop by a KEYHOLE BRIDGE: two edges that run side by side,
+// opposite ways, from the outer boundary to the hole (in a MakeHole()-drilled box the two sit ~1e-4 apart as separate edges, so no
+// edge is shared). The bridge is not part of the section. Finds such a pair of antiparallel, coincident segments in the closed
+// polygon `poly` and splits it into the outer boundary and the hole (recursively, for several holes); a polygon with no bridge
+// comes back unchanged.
+void SplitKeyholeBridges(std::vector<ON_3dPoint> poly, double tol, std::vector<std::vector<ON_3dPoint>>& out, int depth = 0) {
+  const size_t n = poly.size();
+  if (depth < 64 && n >= 6 && n <= 20000) {
+    for (size_t i = 0; i < n; ++i) {
+      const ON_3dPoint& a = poly[i];
+      const ON_3dPoint& b = poly[(i + 1) % n];
+      if (a.DistanceTo(b) <= 4.0 * tol) continue;  // a bridge is a real stretch, not a sliver
+      for (size_t j = i + 2; j < n; ++j) {
+        if ((j + 1) % n == i) continue;
+        const ON_3dPoint& b2 = poly[j];
+        const ON_3dPoint& a2 = poly[(j + 1) % n];
+        if (a.DistanceTo(a2) > tol || b.DistanceTo(b2) > tol) continue;
+        std::vector<ON_3dPoint> outer, inner;
+        for (size_t k = (j + 1) % n;; k = (k + 1) % n) {  // a2 ... a
+          outer.push_back(poly[k]);
+          if (k == i) break;
+        }
+        for (size_t k = i + 1; k <= j; ++k) inner.push_back(poly[k]);  // b ... b2
+        SplitKeyholeBridges(std::move(outer), tol, out, depth + 1);
+        SplitKeyholeBridges(std::move(inner), tol, out, depth + 1);
+        return;
+      }
+    }
+  }
+  if (n >= 3) out.push_back(std::move(poly));
+}
+
+// A section plane that COINCIDES with a planar face (the end face of a box cut at x = 0) has no crossing curve with that face;
+// the surface-vs-plane intersector reports the overlap as the (untrimmed) surface rectangle's four sides, fitted through one
+// smooth cubic - which rounds every corner (measured: a 195-control-point curve up to 0.027 off the 20 x 10 end-face
+// rectangle, 60.067 long instead of 60) and, because the neighbouring walls also meet the plane along those same edges, came
+// back twice. The true section of the body with that plane is the face's own boundary: this returns each trimmed loop of every
+// such face as an exact closed degree-1 curve (straight edges stay straight lines). `loops` receives the polygons so that the
+// pieces the neighbouring faces contribute along the same boundary can be recognised as duplicates; `faces` the faces handled.
+std::vector<BrepPlaneIntersection> CoincidentFaceLoops(const ON_Brep& b, const ON_Plane& plane, double jtol, const IntersectOptions& opt,
+                                                        std::vector<std::vector<ON_3dPoint>>& loops, std::vector<int>& faces) {
+  std::vector<BrepPlaneIntersection> out;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = b.m_F[fi];
+    const ON_Surface* s = f.SurfaceOf();
+    if (!s) continue;
+    ON_Plane fp;
+    if (!s->IsPlanar(&fp, jtol)) continue;
+    if (std::fabs(plane.DistanceTo(fp.origin)) > jtol || std::fabs(ON_DotProduct(plane.zaxis, fp.zaxis)) < 1.0 - 1e-9) continue;
+    // every loop of the face must be rebuildable from its edges, or the face is left to the general route
+    std::vector<std::vector<ON_3dPoint>> face_loops;
+    bool ok = true;
+    for (int li = 0; li < f.LoopCount() && ok; ++li) {
+      const ON_BrepLoop* loop = f.Loop(li);
+      if (!loop) { ok = false; break; }
+      const int nt = loop->m_ti.Count();
+      // A keyhole bridge (how a Boolean result stitches a hole into the face's single outer loop) is an edge walked twice by the
+      // same loop, once each way: it is not part of the section, and removing it leaves the outer boundary and the hole as
+      // separate closed chains.
+      std::vector<char> skip(static_cast<size_t>(nt), 0);
+      for (int k = 0; k < nt; ++k) {
+        const ON_BrepTrim& tk = b.m_T[loop->m_ti[k]];
+        if (tk.m_ei < 0) { skip[static_cast<size_t>(k)] = 1; continue; }  // a singular trim has no edge
+        for (int k2 = 0; k2 < nt; ++k2) {
+          if (k2 != k && b.m_T[loop->m_ti[k2]].m_ei == tk.m_ei) skip[static_cast<size_t>(k)] = 1;
+        }
+      }
+      int first = 0;  // start just after a skipped trim so that no chain wraps around the loop's own start
+      for (int k = 0; k < nt; ++k) if (skip[static_cast<size_t>(k)]) { first = (k + 1) % nt; break; }
+      std::vector<ON_3dPoint> poly;
+      ON_3dPoint last_end;
+      auto flush = [&]() {
+        if (poly.empty()) return;
+        if (poly.size() < 3 || last_end.DistanceTo(poly.front()) > jtol) ok = false;  // each chain must close on itself
+        else face_loops.push_back(std::move(poly));
+        poly.clear();
+      };
+      for (int q = 0; q < nt && ok; ++q) {
+        const int k = (first + q) % nt;
+        if (skip[static_cast<size_t>(k)]) { flush(); continue; }
+        const ON_BrepTrim& trim = b.m_T[loop->m_ti[k]];
+        const ON_BrepEdge* e = trim.Edge();
+        const ON_Curve* ec = e ? e->EdgeCurveOf() : nullptr;
+        if (!ec) { ok = false; break; }
+        std::vector<ON_3dPoint> ep = EdgePolylinePoints(*ec, opt.mesh_tolerance);
+        if (ep.size() < 2) { ok = false; break; }
+        if (trim.m_bRev3d) std::reverse(ep.begin(), ep.end());
+        if (!poly.empty() && last_end.DistanceTo(ep.front()) > jtol) { ok = false; break; }  // the chain must be continuous
+        for (size_t i = 0; i + 1 < ep.size(); ++i) poly.push_back(ep[i]);  // the next edge supplies this one's last vertex
+        last_end = ep.back();
+      }
+      if (ok) flush();
+    }
+    if (!ok || face_loops.empty()) continue;
+    {
+      std::vector<std::vector<ON_3dPoint>> split;
+      for (std::vector<ON_3dPoint>& poly : face_loops) SplitKeyholeBridges(std::move(poly), jtol, split);
+      face_loops = std::move(split);
+    }
+    for (std::vector<ON_3dPoint>& poly : face_loops) {
+      ON_3dPointArray closed_pts;
+      for (const ON_3dPoint& p : poly) closed_pts.Append(p);
+      closed_pts.Append(poly.front());
+      ON_PolylineCurve pl(closed_pts);
+      BrepPlaneIntersection h;
+      h.face_index = fi;
+      h.curve.closed = true;
+      for (const ON_3dPoint& p : poly) h.curve.points.push_back(p);
+      if (!pl.IsValid() || !pl.GetNurbForm(h.curve.curve) || !h.curve.curve.IsValid()) continue;
+      out.push_back(std::move(h));
+      loops.push_back(std::move(poly));
+    }
+    faces.push_back(fi);
+  }
+  return out;
+}
 }  // namespace
 
 std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
   std::vector<BrepSectionContour> out;
   std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, plane, opt);
+  {
+    // Planar faces lying IN the section plane contribute their exact boundary loops (see CoincidentFaceLoops()); the generic
+    // pieces of those faces, and the pieces any other face runs along the same boundary, are the duplicates / fits they replace.
+    double diag = 0;
+    {
+      ON_BoundingBox bb;
+      for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+        const ON_Surface* sf = b.m_F[fi].SurfaceOf();
+        if (sf) bb.Union(sf->BoundingBox());
+      }
+      diag = bb.IsValid() ? bb.Diagonal().Length() : 0.0;
+    }
+    const double ctol = std::max({opt.tolerance * 10.0, 1e-6, 2e-4 * diag});
+    std::vector<std::vector<ON_3dPoint>> loops;
+    std::vector<int> faces;
+    std::vector<BrepPlaneIntersection> exact = CoincidentFaceLoops(b, plane, ctol, opt, loops, faces);
+    if (!exact.empty()) {
+      std::vector<BrepPlaneIntersection> kept;
+      for (BrepPlaneIntersection& h : hits) {
+        if (std::find(faces.begin(), faces.end(), h.face_index) != faces.end()) continue;
+        bool on_boundary = h.curve.curve.IsValid();
+        if (on_boundary) {
+          const ON_Interval d = h.curve.curve.Domain();
+          for (int i = 0; i <= 8 && on_boundary; ++i) {
+            const ON_3dPoint p = h.curve.curve.PointAt(d.ParameterAt(i / 8.0));
+            bool near_loop = false;
+            for (const std::vector<ON_3dPoint>& poly : loops) near_loop = near_loop || DistanceToPolygon(p, poly) <= ctol;
+            on_boundary = near_loop;
+          }
+        }
+        if (!on_boundary) kept.push_back(std::move(h));
+      }
+      hits = std::move(kept);
+      for (BrepPlaneIntersection& h : exact) hits.push_back(std::move(h));
+    }
+  }
   if (hits.empty()) return out;
   // Join tolerance. Where a planar face's trimmed boundary is a FACETED hole/
   // rim (every Boolean result's cut edges are polygons of straight (u, v)
