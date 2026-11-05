@@ -105523,6 +105523,73 @@ void TestBoxVolumeShellsAndHealAtLargeOffsets() {
   }
 }
 
+// VolumeMassProperties of the same box: the centroidal moments are integrated about the origin and then reduced by the
+// parallel-axis theorem, so at 1e9 every digit is lost to cancellation (the origin moments are ~1e18 times larger than the
+// centroidal ones). The body is now measured on a recentred copy and mapped back.
+void TestMassPropertiesAtLargeOffsets() {
+  for (double off : {0.0, 1e5, 1e7, 1e9}) {
+    const std::string tag = "mass properties of a 10-box at offset " + std::to_string(static_cast<long long>(off)) + ": ";
+    Brep box;
+    try {
+      box = Brep::BoxWelded(off, off, off, off + 10, off + 10, off + 10);
+    } catch (const std::exception& e) {
+      Check(false, (tag + "fixture builds (" + e.what() + ")").c_str());
+      continue;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    dino8::kernel::MassProperties mp;
+    bool ok = true;
+    try {
+      mp = box.VolumeMassProperties();
+    } catch (const std::exception&) {
+      ok = false;
+    }
+    Check(ok, (tag + "does not throw").c_str());
+    if (!ok) continue;
+    const double ixx_exact = 1000.0 * (100.0 + 100.0) / 12.0;  // centroidal: V (a^2 + a^2) / 12
+    const double c = off + 5.0;
+    Check(std::fabs(mp.volume - 1000.0) < 1e-6 * 1000.0, (tag + "volume 1000 within 1e-6 relative (got " + std::to_string(mp.volume) + ")").c_str());
+    Check(std::fabs(mp.centroid.x - c) < 1e-5 && std::fabs(mp.centroid.y - c) < 1e-5 && std::fabs(mp.centroid.z - c) < 1e-5,
+          (tag + "centroid at offset + 5 within 1e-5 (got " + std::to_string(mp.centroid.x - c) + " off in x)").c_str());
+    Check(std::fabs(mp.ixx - ixx_exact) < 1e-6 * ixx_exact && std::fabs(mp.iyy - ixx_exact) < 1e-6 * ixx_exact &&
+              std::fabs(mp.izz - ixx_exact) < 1e-6 * ixx_exact,
+          (tag + "centroidal ixx = iyy = izz = 16666.67 within 1e-6 relative (got " + std::to_string(mp.ixx) + ")").c_str());
+    Check(std::fabs(mp.ixy) < 1e-6 * ixx_exact && std::fabs(mp.iyz) < 1e-6 * ixx_exact && std::fabs(mp.ixz) < 1e-6 * ixx_exact,
+          (tag + "centroidal products of inertia vanish").c_str());
+    Check(std::fabs(mp.principal_moments[0] - ixx_exact) < 1e-6 * ixx_exact && std::fabs(mp.radii_of_gyration[0] - std::sqrt(ixx_exact / 1000.0)) < 1e-6,
+          (tag + "principal moments / radii of gyration of a cube").c_str());
+    // the world-origin moments follow from the exact parallel-axis theorem on the exact centroid
+    const double ixx_origin = ixx_exact + 1000.0 * (2.0 * c * c), ixy_origin = 1000.0 * c * c;
+    Check(std::fabs(mp.ixx_origin - ixx_origin) < 1e-9 * ixx_origin && std::fabs(mp.ixy_origin - ixy_origin) < 1e-9 * ixy_origin,
+          (tag + "origin moments equal the parallel-axis values within 1e-9 relative").c_str());
+    Check(Secs(t0) < 5.0, (tag + "in bounded time (< 5 s)").c_str());
+  }
+}
+
+// VolumeMassProperties of a plain box took ~16 s at side 10 and never returned at side 1e3 / 1e6 (measured). The adaptive
+// triangle integrator was given abs_tol = tolerance * |coarse_t| / sum|coarse|, which is exactly 0 for a triangle on which
+// the integrand vanishes (a face lying in x = 0 for a x^2 y n_x moment), so round-off alone (|refined - coarse| ~ 1e-20 > 0)
+// refined it to the full depth: 4^10 evaluations. Half of each triangle's budget is now an even share.
+void TestMassPropertiesOfLargeBoxIsFast() {
+  for (double side : {10.0, 1e3, 1e6}) {
+    const std::string tag = "mass properties of a box of side " + std::to_string(static_cast<long long>(side)) + ": ";
+    const Brep box = Brep::BoxWelded(0, 0, 0, side, side, side);
+    const auto t0 = std::chrono::steady_clock::now();
+    dino8::kernel::MassProperties mp;
+    bool ok = true;
+    try {
+      mp = box.VolumeMassProperties();
+    } catch (const std::exception&) {
+      ok = false;
+    }
+    Check(ok && Secs(t0) < 5.0, (tag + "returns in under 5 s (took " + std::to_string(Secs(t0)) + " s)").c_str());
+    if (!ok) continue;
+    const double v = side * side * side, ixx = v * 2.0 * side * side / 12.0;
+    Check(std::fabs(mp.volume - v) < 1e-9 * v && std::fabs(mp.ixx - ixx) < 1e-9 * ixx && std::fabs(mp.centroid.x - side / 2) < 1e-9 * side,
+          (tag + "volume, centroid and centroidal ixx within 1e-9 relative").c_str());
+  }
+}
+
 // ArrayAlongCurve: count 100000 never returned (one Brep copy per station), INT_MAX threw std::bad_alloc. `up` of
 // magnitude 1e300 is a legitimate direction (it is normalized before use) and must give the same stations as a unit up.
 void TestArrayAlongCurveHugeCountsAndHugeUp() {
@@ -106803,6 +106870,49 @@ void TestFilletConvexEdgeOnBlendedSolidRefusesEdgesTouchingTheBlend() {
 }
 
 }  // namespace chained_edge_fillet_tests
+// ---- qc4_tests: sweep of hang / precision defects found by probing features at offsets and scales.
+namespace qc4_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Point3d;
+
+// Brep::Area() of a 10-box at offset 1e9 took 5.2 s (measured) for the same reason Volume() did: the trimmed-face integrator
+// refines coordinate round-off. Area is translation invariant, so it is computed on the recentred copy.
+void TestAreaAtLargeOffsetIsFastAndExact() {
+  for (double off : {0.0, 1e7, 1e9}) {
+    const Brep box = Brep::BoxWelded(off, off, off, off + 10, off + 10, off + 10);
+    const auto t0 = std::chrono::steady_clock::now();
+    const double a = box.Area();
+    const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    Check(std::fabs(a - 600.0) < 1e-9 * 600.0 && dt < 1.0,
+          ("Area() of a 10-box at offset " + std::to_string(static_cast<long long>(off)) + " is 600 within 1e-9 relative in under 1 s (got " +
+           std::to_string(a) + " in " + std::to_string(dt) + " s)").c_str());
+  }
+}
+
+
+// NurbsSurface::FitToTolerance with a tolerance below the double-precision floor of the coordinates (1e-12 on a 1e-9-sized
+// patch 1e9 from the origin) climbed to max_control_points and failed after 7 s (measured). It now fails at once with the
+// floor as the reported deviation, while the same patch at the origin still fits to 1e-12.
+void TestFitToToleranceBelowThePrecisionFloorFailsFast() {
+  const auto grid = [](double scale, double off) {
+    std::vector<Point3d> g;
+    for (int j = 0; j < 8; ++j)
+      for (int i = 0; i < 8; ++i) g.push_back(Point3d(off + scale * i, off + scale * j, off + scale * 0.3 * std::sin(0.7 * i) * std::cos(0.5 * j)));
+    return dino8::kernel::NurbsSurface::FromControlGrid(g, 8, 8, 3, 3);
+  };
+  dino8::kernel::NurbsSurface out;
+  double dev = -1.0;
+  auto t0 = std::chrono::steady_clock::now();
+  const dino8::kernel::Result far_r = grid(1e-9, 1e9).FitToTolerance(1e-12, 3, 3, 40, out, &dev);
+  const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  Check(far_r == dino8::kernel::Result::Failed && dt < 1.0 && dev >= 1e-6,
+        ("a 1e-12 fit of a 1e-9 patch at offset 1e9 fails at once (" + std::to_string(dt) + " s) reporting the precision floor " + std::to_string(dev) + " as the deviation").c_str());
+  const dino8::kernel::Result near_r = grid(1e-9, 0.0).FitToTolerance(1e-12, 3, 3, 40, out, &dev);
+  Check(near_r != dino8::kernel::Result::Failed && dev <= 1e-12, "the same patch at the origin still fits to 1e-12");
+}
+
+}  // namespace qc4_tests
 
 namespace body_section_untrimmed_face_tests {
 
@@ -108770,6 +108880,10 @@ int main() {
   RunTest("sweep2_accuracy_tests::TestSweep2CurvedRailsAnnularSectorVolume", sweep2_accuracy_tests::TestSweep2CurvedRailsAnnularSectorVolume);
   RunTest("sweep2_accuracy_tests::TestSweep2ParallelTangentRefusedWithReason", sweep2_accuracy_tests::TestSweep2ParallelTangentRefusedWithReason);
   RunTest("qc3_tests::TestBoxVolumeShellsAndHealAtLargeOffsets", qc3_tests::TestBoxVolumeShellsAndHealAtLargeOffsets);
+  RunTest("qc3_tests::TestMassPropertiesAtLargeOffsets", qc3_tests::TestMassPropertiesAtLargeOffsets);
+  RunTest("qc3_tests::TestMassPropertiesOfLargeBoxIsFast", qc3_tests::TestMassPropertiesOfLargeBoxIsFast);
+  RunTest("qc4_tests::TestAreaAtLargeOffsetIsFastAndExact", qc4_tests::TestAreaAtLargeOffsetIsFastAndExact);
+  RunTest("qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast", qc4_tests::TestFitToToleranceBelowThePrecisionFloorFailsFast);
   RunTest("qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp", qc3_tests::TestArrayAlongCurveHugeCountsAndHugeUp);
   RunTest("qc3_tests::TestLoftMatchedScaledHappyPath", qc3_tests::TestLoftMatchedScaledHappyPath);
   RunTest("extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism", extrusion_shell_tests::TestVariableThicknessShellOfNonConvexPrism);

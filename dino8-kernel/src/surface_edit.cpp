@@ -650,6 +650,25 @@ Result NurbsSurface::FitToTolerance(double tolerance, int u_degree, int v_degree
     // dereferenced it (measured: SIGSEGV on a default NurbsSurface).
     throw std::invalid_argument("dino8::kernel::NurbsSurface::FitToTolerance: the surface is empty or invalid");
   }
+  {
+    // A tolerance below the double-precision floor of the coordinates cannot be certified: the sampled deviation of the best
+    // possible fit is itself ~3e-15 x the largest coordinate (measured 2.6e-6 at 1e9, 2.8e-6 for a 1e-4-sized patch there), so
+    // such a request used to climb to max_control_points and fail after 6-7 s. Failed at once, with that floor as the
+    // reported deviation.
+    double max_coord = 0.0;
+    for (int i = 0; i < surface_.CVCount(0); ++i) {
+      for (int j = 0; j < surface_.CVCount(1); ++j) {
+        ON_3dPoint p;
+        surface_.GetCV(i, j, p);
+        max_coord = std::max({max_coord, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+      }
+    }
+    const double floor = 1e-14 * max_coord;
+    if (tolerance < floor) {
+      if (out_max_deviation) *out_max_deviation = floor;
+      return Result::Failed;
+    }
+  }
   auto attempt = [&](int uc, int vc, NurbsSurface& cand, double& dev) {
     double rebuild_dev = 0.0;
     const int us = std::max(64, 2 * uc), vs = std::max(64, 2 * vc);

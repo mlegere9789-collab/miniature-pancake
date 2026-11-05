@@ -1109,6 +1109,21 @@ double TriangleQuad7(const Point2d& a, const Point2d& b, const Point2d& c, Integ
   return area * sum;
 }
 
+// Su x Sv of an axis-aligned plane evaluates the components that are mathematically 0 as round-off (measured: n = (-9.8e-15,
+// 0, 121) for the z = const face of a box, a relative 8e-17). The divergence integrands multiply that noise by x^3-sized
+// factors, so on a face where the true moment integrand is 0 the adaptive triangle rule saw an integrand of pure noise that
+// no tolerance relative to the (equally tiny) integral can ever converge on, and refined it to the full depth - minutes for a
+// box of side 100. A component below 1e-13 of the largest is set to 0 (a surface tilted by 1e-13 rad changes a moment by
+// less than its own round-off).
+inline ON_3dVector CleanCrossProductNoise(ON_3dVector n) {
+  const double m = std::max({std::fabs(n.x), std::fabs(n.y), std::fabs(n.z)});
+  const double floor = 1e-13 * m;
+  if (std::fabs(n.x) <= floor) n.x = 0.0;
+  if (std::fabs(n.y) <= floor) n.y = 0.0;
+  if (std::fabs(n.z) <= floor) n.z = 0.0;
+  return n;
+}
+
 constexpr double kTrimmedFaceIntegralRelTol = 1e-9;
 constexpr int kTrimmedFaceIntegralMaxDepth = 10;
 
@@ -1623,7 +1638,7 @@ namespace {
 // 15 s and volume 1114.57 at 1e9). Closedness, volume and nesting are translation invariant, so those decisions are made
 // on a copy translated to the bounding-box centre. Returns true and fills `out` only when the body is far (> 4 half
 // diagonals) from the origin.
-bool RecenterIfFarFromOrigin(const Brep& b, Brep& out) {
+bool RecenterIfFarFromOrigin(const Brep& b, Brep& out, ON_3dVector* shift = nullptr) {
   ON_BoundingBox bb;
   if (!b.raw().GetBoundingBox(bb) || !bb.IsValid()) return false;
   const ON_3dPoint c = bb.Center();
@@ -1631,6 +1646,7 @@ bool RecenterIfFarFromOrigin(const Brep& b, Brep& out) {
   const double dist = std::max({std::fabs(c.x), std::fabs(c.y), std::fabs(c.z)});
   if (!(dist > 4.0 * half) || !(dist > 0.0) || !std::isfinite(dist)) return false;
   out = b.Transform(ON_Xform::TranslationTransformation(-c.x, -c.y, -c.z));
+  if (shift) *shift = ON_3dVector(c.x, c.y, c.z);  // moved = world - shift
   return true;
 }
 }  // namespace
@@ -1720,7 +1736,7 @@ double Brep::VolumeImpl(bool allow_analytic) const {
       if (!sf->Ev1Der(u, v, p, su, sv)) {
         throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " + std::to_string(i));
       }
-      const ON_3dVector n = ON_CrossProduct(su, sv);
+      const ON_3dVector n = CleanCrossProductNoise(ON_CrossProduct(su, sv));
       return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
     };
     if (is_cap || FaceCoversWholeDomain(i)) {
@@ -1786,7 +1802,11 @@ double Brep::VolumeImpl(bool allow_analytic) const {
       }
       const double tol_total = std::max(1e-12, g_trimmed_face_rel_tol * coarse_total);
       for (size_t t = 0; t < tris.size(); ++t) {
-        const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
+        // Half the tolerance budget is split by |coarse| and half evenly: a triangle whose coarse integral is ~0 (an integrand
+        // that vanishes there) used to get abs_tol = 0, so the adaptive rule refined it to the full depth on round-off alone
+        // (4^10 evaluations; measured: 16 s for VolumeMassProperties() of a 10-box, a hang at side 1e3)
+        const double share = coarse_total > 0.0 ? 0.5 * std::fabs(coarse[t]) / coarse_total + 0.5 / static_cast<double>(tris.size())
+                                                : 1.0 / static_cast<double>(tris.size());
         total += loop_sign * sign * IntegrateTriangleAdaptive(poly[static_cast<size_t>(tris[t][0])], poly[static_cast<size_t>(tris[t][1])],
                                                               poly[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
                                                               g_trimmed_face_max_depth);
@@ -1807,6 +1827,12 @@ double Brep::VolumeImpl(bool allow_analytic) const {
 }
 
 double Brep::Area() const {
+  {
+    // area is translation invariant; the trimmed-face integrator refines coordinate round-off far from the origin
+    // (measured: 5.2 s for a 10-box at 1e9, milliseconds recentred)
+    Brep moved;
+    if (RecenterIfFarFromOrigin(*this, moved)) return moved.Area();
+  }
   double total = 0.0;
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     const ON_BrepFace& face = brep_.m_F[i];
@@ -1865,7 +1891,11 @@ double Brep::Area() const {
     }
     const double tol_total = std::max(1e-12, kTrimmedFaceIntegralRelTol * coarse_total);
     for (size_t t = 0; t < tris.size(); ++t) {
-      const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
+      // Half the tolerance budget is split by |coarse| and half evenly: a triangle whose coarse integral is ~0 (an integrand that
+      // vanishes there) used to get abs_tol = 0, so the adaptive rule refined it to the full depth on round-off alone (4^10
+      // evaluations; measured: 16 s for VolumeMassProperties() of a 10-box, a hang at side 1e3)
+      const double share = coarse_total > 0.0 ? 0.5 * std::fabs(coarse[t]) / coarse_total + 0.5 / static_cast<double>(tris.size())
+                                              : 1.0 / static_cast<double>(tris.size());
       total += IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
                                           polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
                                           kTrimmedFaceIntegralMaxDepth);
@@ -1916,7 +1946,7 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
         throw std::runtime_error("dino8::kernel::Brep::VolumeMassProperties: Ev1Der failed on face " +
                                   std::to_string(i));
       }
-      const ON_3dVector n = ON_CrossProduct(su, sv);
+      const ON_3dVector n = CleanCrossProductNoise(ON_CrossProduct(su, sv));
       return moment_integrand(p, n);
     };
     if (is_cap || self.FaceCoversWholeDomain(i)) {
@@ -1951,7 +1981,11 @@ double BrepDivergenceSum(const Brep& self, MomentIntegrand&& moment_integrand, i
     }
     const double tol_total = std::max(1e-12, kTrimmedFaceIntegralRelTol * coarse_total);
     for (size_t t = 0; t < tris.size(); ++t) {
-      const double share = coarse_total > 0.0 ? std::fabs(coarse[t]) / coarse_total : 1.0 / static_cast<double>(tris.size());
+      // Half the tolerance budget is split by |coarse| and half evenly: a triangle whose coarse integral is ~0 (an integrand that
+      // vanishes there) used to get abs_tol = 0, so the adaptive rule refined it to the full depth on round-off alone (4^10
+      // evaluations; measured: 16 s for VolumeMassProperties() of a 10-box, a hang at side 1e3)
+      const double share = coarse_total > 0.0 ? 0.5 * std::fabs(coarse[t]) / coarse_total + 0.5 / static_cast<double>(tris.size())
+                                              : 1.0 / static_cast<double>(tris.size());
       total += sign * IntegrateTriangleAdaptive(polygon[static_cast<size_t>(tris[t][0])], polygon[static_cast<size_t>(tris[t][1])],
                                                  polygon[static_cast<size_t>(tris[t][2])], integrand, tol_total * share,
                                                  kTrimmedFaceIntegralMaxDepth);
@@ -1990,6 +2024,26 @@ bool Brep::IsWatertightForIntegration() const {
 }
 
 MassProperties Brep::VolumeMassProperties() const {
+  {
+    // Integrating x^3-type terms about the origin of a body 1e9 away loses every digit of the centroidal moments
+    // (the origin moments are ~1e18 times larger). Compute on the recentred copy and map back: volume, the centroidal
+    // tensor and the principal data are translation invariant; the centroid shifts; the WORLD-origin moments are
+    // rebuilt with the parallel-axis theorem from the world centroid.
+    Brep moved;
+    ON_3dVector shift;
+    if (RecenterIfFarFromOrigin(*this, moved, &shift)) {
+      MassProperties mp = moved.VolumeMassProperties();
+      mp.centroid = Point3d(mp.centroid.x + shift.x, mp.centroid.y + shift.y, mp.centroid.z + shift.z);
+      const double cx = mp.centroid.x, cy = mp.centroid.y, cz = mp.centroid.z, v = mp.volume;
+      mp.ixx_origin = mp.ixx + v * (cy * cy + cz * cz);
+      mp.iyy_origin = mp.iyy + v * (cz * cz + cx * cx);
+      mp.izz_origin = mp.izz + v * (cx * cx + cy * cy);
+      mp.ixy_origin = mp.ixy + v * cx * cy;
+      mp.iyz_origin = mp.iyz + v * cy * cz;
+      mp.ixz_origin = mp.ixz + v * cz * cx;
+      return mp;
+    }
+  }
   // Same precondition Volume() itself already requires - see its own
   // doc comment above for exactly why raw().IsSolid() is the wrong
   // check here.
