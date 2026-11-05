@@ -1961,7 +1961,15 @@ class OffsetSrfCommand : public Command {
 // for cmd_srfedit.cpp's copy.
 // ---------------------------------------------------------------------------
 
-struct ShellFacePick { ObjectId id = kNoObject; int face = -1; double dist = 0; };
+struct ShellFacePick { ObjectId id = kNoObject; int face = -1; double dist = 0; Point3d at; };
+
+// The points the user clicked on the faces picked for removal / their own thickness (face index -> clicks). A solid
+// whose wall is ONE face spanning several profile edges (ExtrudeCrv of a polyline makes a single sum-surface wall, not one
+// face per edge) needs them: a click on that wall means the profile edge nearest the click.
+struct ShellPickPoints {
+  const std::map<int, std::vector<Point3d>>* removed = nullptr;
+  const std::map<int, std::vector<std::pair<Point3d, double>>>* overridden = nullptr;
+};
 
 std::optional<ShellFacePick> PickShellFace(CommandContext& ctx, Point3d p, const std::vector<ObjectId>& allowed) {
   std::optional<ShellFacePick> best;
@@ -1974,7 +1982,7 @@ std::optional<ShellFacePick> PickShellFace(CommandContext& ctx, Point3d p, const
     for (size_t f = 0; f < faces.size(); ++f) {
       if (faces[f].FaceCount() == 0) continue;
       const double d = faces[f].ClosestPoint(p).DistanceTo(p);
-      if (!best || d < best->dist) best = ShellFacePick{id, static_cast<int>(f), d};
+      if (!best || d < best->dist) best = ShellFacePick{id, static_cast<int>(f), d, p};
     }
   }
   return best;
@@ -2132,7 +2140,8 @@ std::optional<kernel::Mesh> BuildShell(const ON_Brep& brep, const std::vector<in
 // `removed` / `overrides` are brep face indices as returned by PickShellFace.
 // ---------------------------------------------------------------------------
 std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vector<int>& removed,
-                                           const std::map<int, double>& overrides, double t, std::string& why) {
+                                           const std::map<int, double>& overrides, double t, std::string& why,
+                                           const ShellPickPoints* picks = nullptr) {
   if (o.kind != ObjectKind::Brep || !o.brep) { why = "the object is not a polysurface"; return std::nullopt; }
   const ON_Brep& b = o.brep->raw();
   if (!b.IsSolid()) { why = "the polysurface is not a closed solid"; return std::nullopt; }
@@ -2280,49 +2289,13 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
         bool lines_only = true;
         for (const prism::Seg& g : pr.prof) lines_only = lines_only && !g.arc;
         if (!lines_only) { why = "a prism with a round (arc) wall cannot have a face removed or a per-face thickness exactly; only a straight-edged profile can"; return std::nullopt; }
-        const size_t ne = pr.prof.size();
-        const double tolp = diag * 1e-6;
-        // Face index -> 0..ne-1 (a wall, by profile edge), ne (the bottom cap), ne+1 (the top cap).
-        std::map<int, size_t> role;
-        for (int fi = 0; fi < b.m_F.Count(); ++fi) {
-          ON_BoundingBox fb;
-          b.m_F[fi].GetBoundingBox(fb);
-          const ON_3dPoint c = fb.Center();
-          const double h = (c - pr.O) * pr.n;
-          const ON_3dVector rel = c - pr.O;
-          const prism::V2 c2{rel * pr.X, rel * pr.Y};
-          const ON_3dVector ext = fb.Max() - fb.Min();
-          // Flat along the axis => a cap.
-          const double axis_extent = std::fabs(ext.x * pr.n.x) + std::fabs(ext.y * pr.n.y) + std::fabs(ext.z * pr.n.z);
-          if (axis_extent < tolp * 50) {
-            role[fi] = std::fabs(h) < std::fabs(h - pr.H) ? ne : ne + 1;
-            continue;
-          }
-          size_t best = ne;
-          double bd = 1e300;
-          for (size_t k = 0; k < ne; ++k) {
-            const double dk = prism::DistToSeg(pr.prof[k], c2);
-            if (dk < bd) { bd = dk; best = k; }
-          }
-          if (best < ne && bd < tolp * 50) role[fi] = best;
+        prism::ShellSpec spec;
+        if (!prism::ShellSpecFromPicks(b, pr, t, removed, overrides, picks ? picks->removed : nullptr,
+                                       picks ? picks->overridden : nullptr, spec, why)) {
+          return std::nullopt;
         }
-        if (static_cast<int>(role.size()) != b.m_F.Count()) { why = "could not match every face of the prism to a wall or a cap"; return std::nullopt; }
-        std::vector<double> walls(ne, t);
-        double bottom = t, top = t;
-        auto set_role = [&](int fi, double v) {
-          const size_t r = role[fi];
-          if (r < ne) walls[r] = v;
-          else if (r == ne) bottom = v;
-          else top = v;
-        };
-        for (const auto& [fi, ft] : overrides) {
-          if (!role.count(fi)) { why = "invalid face index"; return std::nullopt; }
-          set_role(fi, ft);
-        }
-        for (int fi : removed) {
-          if (!role.count(fi)) { why = "invalid face index"; return std::nullopt; }
-          set_role(fi, 0.0);
-        }
+        const std::vector<double>& walls = spec.walls;
+        const double bottom = spec.bottom, top = spec.top;
         std::vector<kernel::Point3d> pts;
         for (const prism::Seg& g : pr.prof) pts.push_back(prism::To3(pr, g.a, 0.0));
         pts.push_back(pts.front());
@@ -2422,6 +2395,7 @@ class ShellCommand : public Command {
         return;
       }
       picked.push_back(pick->face);
+      removed_points_[pick->id][pick->face].push_back(pick->at);
       ctx.Print("Shell: face " + std::to_string(pick->face) + " on object " + std::to_string(pick->id) + " marked to open (" +
                  std::to_string(picked.size()) + " on this solid); click more faces or press Enter");
       return;
@@ -2453,6 +2427,7 @@ class ShellCommand : public Command {
     if (phase_ == Phase::OverrideValue) {
       if (t <= 0) { ctx.Warn("Thickness must be positive"); return; }
       face_thickness_[pending_override_->id][pending_override_->face] = t;
+      override_points_[pending_override_->id][pending_override_->face].push_back({pending_override_->at, t});
       ctx.Print("Shell: face " + std::to_string(pending_override_->face) + " on object " + std::to_string(pending_override_->id) +
                  " set to thickness " + FormatNumber(t) + "; click more faces or press Enter for the default Thickness");
       pending_override_.reset();
@@ -2501,8 +2476,11 @@ class ShellCommand : public Command {
         static const std::vector<int> kNoRemoveExact;
         static const std::map<int, double> kNoOverridesExact;
         std::string why;
+        ShellPickPoints picks;
+        if (const auto rp = removed_points_.find(id); rp != removed_points_.end()) picks.removed = &rp->second;
+        if (const auto op = override_points_.find(id); op != override_points_.end()) picks.overridden = &op->second;
         std::optional<kernel::Brep> ex = TryExactShell(*o, has_remove ? rem_it->second : kNoRemoveExact,
-                                                        has_overrides ? fth_it->second : kNoOverridesExact, t, why);
+                                                        has_overrides ? fth_it->second : kNoOverridesExact, t, why, &picks);
         if (ex) {
           exact_results.push_back({id, *ex});
           exact_notes_.push_back({has_remove ? rem_it->second.size() : size_t(0), has_overrides ? fth_it->second.size() : size_t(0)});
@@ -2616,6 +2594,8 @@ class ShellCommand : public Command {
   bool exact_ = true;  // Exact=No keeps the mesh constructions only
   std::map<ObjectId, std::vector<int>> open_faces_;
   std::map<ObjectId, std::map<int, double>> face_thickness_;
+  std::map<ObjectId, std::map<int, std::vector<Point3d>>> removed_points_;
+  std::map<ObjectId, std::map<int, std::vector<std::pair<Point3d, double>>>> override_points_;
   std::optional<ShellFacePick> pending_override_;
   Phase phase_ = Phase::Picking;
   bool override_mode_ = false;

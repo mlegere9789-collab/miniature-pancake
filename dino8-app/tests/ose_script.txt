@@ -2,6 +2,10 @@
 # 8 high) through kernel::ShellPolylineExtrusion. Before this, a prism shell with a clicked (removed) face or a
 # per-face thickness fell to the mesh construction ("exact B-rep shell not used"). Every case is bracketed by an
 # OSEBEGIN_<name> marker; oseblock in smoke.sh slices the output by it.
+# NOTE (measured with ON_BrepExtrudeFace on a degree-1 NURBS curve, which is what ExtrudeCrv extrudes): the extruded L has
+# THREE faces - bottom, top and ONE non-planar wall over all six profile edges - not one face per edge. A click on
+# that wall therefore means the profile edge nearest the click (prism_solid.h ShellSpecFromPicks): (10,0,4) is the
+# y=0 edge, (15,10,4) the y=10 edge that ends at the reflex corner.
 # ===================== cup: top face removed =====================
 New
 OSEBEGIN_cup

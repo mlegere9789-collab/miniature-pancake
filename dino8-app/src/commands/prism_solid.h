@@ -610,4 +610,114 @@ inline std::optional<kernel::Brep> OffsetHoleSolid(const HolePrism& hp, double d
   return k;
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Shell with removed faces / per-face thickness of a STRAIGHT-EDGED prism (kernel::ShellPolylineExtrusion's input).
+// The wall thickness is per PROFILE EDGE (walls[k] for edge k of pr.prof, in profile order) plus a bottom and a top
+// cap thickness; 0 removes that wall / cap. The solid's faces are not one per profile edge: an extrusion of a polyline
+// CURVE has one wall face over all the edges (measured with ON_BrepExtrudeFace on a degree-1 NURBS curve of the 6-edge
+// L: 3 faces, the wall one non-planar), a solid built from separate segments or by a Boolean has one face per edge. So
+// every wall face is matched to the profile edges whose mid-height midpoint lies on it (a measured distance to the
+// face's own display mesh), and a picked face that carries several edges applies to the edge nearest each CLICK
+// (`removed_clicks` / `override_clicks`, face index -> clicks); without clicks (a re-run of a recorded command) it applies
+// to every edge it carries.
+struct ShellSpec {
+  std::vector<double> walls;
+  double bottom = 0, top = 0;
+};
+
+inline bool ShellSpecFromPicks(const ON_Brep& b, const Prism& pr, double t, const std::vector<int>& removed,
+                               const std::map<int, double>& overrides,
+                               const std::map<int, std::vector<ON_3dPoint>>* removed_clicks,
+                               const std::map<int, std::vector<std::pair<ON_3dPoint, double>>>* override_clicks,
+                               ShellSpec& out, std::string& why) {
+  for (const Seg& g : pr.prof) {
+    if (g.arc) { why = "a prism with a round (arc) wall cannot have a face removed or a per-face thickness exactly; only a straight-edged profile can"; return false; }
+  }
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double diag = std::max(1e-9, bb.Diagonal().Length());
+  const size_t ne = pr.prof.size();
+  const double tolp = diag * 1e-6;
+  std::map<int, size_t> cap_role;                 // face -> ne (bottom) or ne + 1 (top)
+  std::map<int, std::vector<size_t>> wall_edges;  // wall face -> the profile edges it carries
+  BrepMeshOptions face_opt;
+  face_opt.chord_tolerance = 0.05;
+  const std::vector<kernel::Mesh> face_meshes = MeshBrepFaces(b, face_opt);
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    ON_BoundingBox fb;
+    b.m_F[fi].GetBoundingBox(fb);
+    const ON_3dPoint c = fb.Center();
+    const double h = (c - pr.O) * pr.n;
+    const ON_3dVector ext = fb.Max() - fb.Min();
+    // Flat along the axis => a cap.
+    const double axis_extent = std::fabs(ext.x * pr.n.x) + std::fabs(ext.y * pr.n.y) + std::fabs(ext.z * pr.n.z);
+    if (axis_extent < tolp * 50) {
+      cap_role[fi] = std::fabs(h) < std::fabs(h - pr.H) ? ne : ne + 1;
+      continue;
+    }
+    if (static_cast<size_t>(fi) >= face_meshes.size() || face_meshes[static_cast<size_t>(fi)].FaceCount() == 0) {
+      why = "face " + std::to_string(fi) + " of the prism has no display mesh to place the profile edges on";
+      return false;
+    }
+    ON_BoundingBox grown = fb;
+    grown.m_min -= ON_3dVector(tolp * 50, tolp * 50, tolp * 50);
+    grown.m_max += ON_3dVector(tolp * 50, tolp * 50, tolp * 50);
+    for (size_t k = 0; k < ne; ++k) {
+      const ON_3dPoint m = To3(pr, V2{0.5 * (pr.prof[k].a.x + pr.prof[k].b.x), 0.5 * (pr.prof[k].a.y + pr.prof[k].b.y)}, 0.5 * pr.H);
+      if (!grown.IsPointIn(m)) continue;
+      if (face_meshes[static_cast<size_t>(fi)].ClosestPoint(m).DistanceTo(m) < diag * 1e-5) wall_edges[fi].push_back(k);
+    }
+  }
+  std::vector<int> owners(ne, 0);
+  for (const auto& [fi, ks] : wall_edges) for (size_t k : ks) ++owners[k];
+  for (size_t k = 0; k < ne; ++k) {
+    if (owners[k] != 1) { why = "could not match profile edge " + std::to_string(k) + " of the prism to exactly one wall face"; return false; }
+  }
+  if (static_cast<int>(cap_role.size() + wall_edges.size()) != b.m_F.Count()) { why = "could not match every face of the prism to a wall or a cap"; return false; }
+  out.walls.assign(ne, t);
+  out.bottom = out.top = t;
+  auto apply = [&](int fi, double v, const std::vector<ON_3dPoint>& clicks) -> bool {
+    if (const auto cr = cap_role.find(fi); cr != cap_role.end()) {
+      (cr->second == ne ? out.bottom : out.top) = v;
+      return true;
+    }
+    const auto we = wall_edges.find(fi);
+    if (we == wall_edges.end()) return false;
+    if (we->second.size() == 1 || clicks.empty()) {
+      for (size_t k : we->second) out.walls[k] = v;
+      return true;
+    }
+    for (const ON_3dPoint& q : clicks) {
+      const ON_3dVector rel = q - pr.O;
+      const V2 q2{rel * pr.X, rel * pr.Y};
+      size_t best = we->second.front();
+      double bd = 1e300;
+      for (size_t k : we->second) {
+        const double dk = DistToSeg(pr.prof[k], q2);
+        if (dk < bd) { bd = dk; best = k; }
+      }
+      out.walls[best] = v;
+    }
+    return true;
+  };
+  for (const auto& [fi, ft] : overrides) {
+    std::vector<std::pair<ON_3dPoint, double>> clicked;
+    if (override_clicks) if (const auto it = override_clicks->find(fi); it != override_clicks->end()) clicked = it->second;
+    bool done = false;
+    if (!clicked.empty()) {
+      for (const auto& [q, qv] : clicked) done = apply(fi, qv, {q}) || done;
+    } else {
+      done = apply(fi, ft, {});
+    }
+    if (!done) { why = "invalid face index"; return false; }
+  }
+  for (int fi : removed) {
+    std::vector<ON_3dPoint> clicks;
+    if (removed_clicks) if (const auto it = removed_clicks->find(fi); it != removed_clicks->end()) clicks = it->second;
+    if (!apply(fi, 0.0, clicks)) { why = "invalid face index"; return false; }
+  }
+  return true;
+}
+
 }  // namespace dino8::app::prism
