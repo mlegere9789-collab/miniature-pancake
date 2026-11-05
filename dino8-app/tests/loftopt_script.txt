@@ -12,6 +12,11 @@
 #  5 a tangent curve that cannot be matched (an open line against a closed rational circle): refused with the kernel's reason
 #  6 StartWeight=abc: refused
 #  7 control: the same two r=1 circles without tangents: the plain cylinder, volume pi 1 2 = 6.2832
+#  8 History On, the case-3 barrel recorded with its tangent curves as sources: (a) built 7.981, (b) section 2 moved +1 in z
+#    (z1 = 3): the wall rebuilds, volume 12.0546 (Simpson on the Hermite formulas with z1 = 3), (c) then the START TANGENT
+#    curve moved +1 in z (b0 = 2): volume 11.9718
+#  9 History On, SeamAlign=No recorded: the 90-degree-turned circle pair, area 52.84; section 2 moved +1 in x, the rebuild keeps
+#    SeamAlign=No: area 53.30 (numeric integral; the aligned loft of the same moved circles would be 63.46)
 SetActiveViewport Top
 
 # --- 1
@@ -118,3 +123,68 @@ Volume
 SelAll
 Delete
 @expect_objects 0
+
+# --- 8
+New
+History On
+Circle 0,0,0 1
+Circle 0,0,2 1
+Circle 0,0,1 0.6
+SelLast
+SetObjectName LOPh0
+Circle 0,0,1 0.6
+SelLast
+Rotate3D 0,0,0 0,0,1 180
+SelLast
+SetObjectName LOPh1
+SelNone
+SelID 1
+SelID 2
+Loft StartTangent=LOPh0 EndTangent=LOPh1 StartWeight=1.5 EndWeight=0.8
+SelNone
+SelID 5
+Volume
+History
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,1
+SelNone
+SelID 5
+Volume
+SelNone
+SelID 3
+Move
+0,0,0
+0,0,1
+SelNone
+SelID 5
+Volume
+SelAll
+Delete
+History Off
+
+# --- 9
+New
+History On
+Circle 0,0,0 2
+Circle 0,0,5 2
+SelLast
+Rotate3D 0,0,0 0,0,1 90
+SelCrv
+Loft SeamAlign=No Cap=No
+SelNone
+SelID 3
+Area
+SelNone
+SelID 2
+Move
+0,0,0
+1,0,0
+SelNone
+SelID 3
+Area
+SelAll
+Delete
+History Off

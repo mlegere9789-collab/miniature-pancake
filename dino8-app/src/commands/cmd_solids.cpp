@@ -355,6 +355,74 @@ std::optional<SceneObject> LoftControlGridFit(const std::vector<const kernel::Nu
 
 }  // namespace
 
+// The tangent-constrained Loft (see LoftWithTangents): `start` / `end` are the tangent curves (null = none) at the first / last
+// section; reads rec.num cap (1/0, default 1), spacing (0/1/2), startweight / endweight (default 1). The sections are used exactly as
+// given. nullopt with `why` set when the sections mix open and closed curves or the kernel refuses; otherwise a capped solid (closed
+// planar sections with cap) or the wall surface, with the exact volume printed for a solid.
+std::optional<SceneObject> RebuildLoftTangents(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& curves,
+                                               const kernel::NurbsCurve* start, const kernel::NurbsCurve* end, const HistoryRecord& rec,
+                                               std::string& why) {
+  AlignedSections as = AlignLoftSections(curves, /*align=*/false);
+  if (!as.refusal.empty()) { why = as.refusal; return std::nullopt; }
+  const bool want_cap = rec.num.count("cap") ? rec.num.at("cap") != 0.0 : true;
+  const int spacing_code = rec.num.count("spacing") ? static_cast<int>(std::lround(rec.num.at("spacing"))) : 0;
+  const kernel::Brep::LoftSpacing spacing = spacing_code == 1   ? kernel::Brep::LoftSpacing::Uniform
+                                            : spacing_code == 2 ? kernel::Brep::LoftSpacing::Centripetal
+                                                                : kernel::Brep::LoftSpacing::Chord;
+  std::vector<kernel::Brep::LoftSectionTangent> tans;
+  const int last = static_cast<int>(curves.size()) - 1;
+  if (start) {
+    kernel::Brep::LoftSectionTangent lt;
+    lt.section = 0;
+    lt.tangent = *start;
+    lt.weight = rec.num.count("startweight") ? rec.num.at("startweight") : 1.0;
+    tans.push_back(lt);
+  }
+  if (end) {
+    kernel::Brep::LoftSectionTangent lt;
+    lt.section = last;
+    lt.tangent = *end;
+    lt.weight = rec.num.count("endweight") ? rec.num.at("endweight") : 1.0;
+    tans.push_back(lt);
+  }
+  if (tans.empty()) { why = "no tangent curve was given"; return std::nullopt; }
+  const bool closed_sections = as.curves.front().IsClosed();
+  const int degree = std::min(3, static_cast<int>(curves.size()) + static_cast<int>(tans.size()) - 1);
+  kernel::Brep b;
+  bool capped = false;
+  std::string cap_note;
+  try {
+    if (closed_sections && want_cap) {
+      try {
+        b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, true, spacing);
+        capped = true;
+      } catch (const std::invalid_argument& ex) {
+        cap_note = std::string(" (caps not made - ") + ex.what() + ")";
+        b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, false, spacing);
+      }
+    } else {
+      b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, false, spacing);
+    }
+  } catch (const std::exception& ex) {
+    why = ex.what();
+    return std::nullopt;
+  }
+  std::optional<kernel::NurbsSurface> wall = LoftWall(b);
+  if (!wall) { why = "the kernel tangent loft has no surface face"; return std::nullopt; }
+  bool agree = true;
+  const double dev = MeasureLoftSections(*wall, as.curves, agree);
+  char buf[160];
+  std::snprintf(buf, sizeof(buf), "%d tangent(s) at the first/last section; every section reproduced, max deviation %.3g", static_cast<int>(tans.size()), dev);
+  const std::string msg = std::string("Loft: exact kernel tangent loft through ") + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + "), " + buf;
+  if (capped) {
+    std::snprintf(buf, sizeof(buf), "; end caps added, closed solid, exact volume %.9g", b.Volume());
+    ctx.Print(msg + buf);
+    return SceneObject::MakeBrep(std::move(b));
+  }
+  ctx.Print(msg + cap_note);
+  return SceneObject::MakeSurface(*wall);
+}
+
 // Loft/SubDLoft's construction - shared the same way as RebuildExtrude
 // above. `rec.command == "SubDLoft"` selects the SubD/mesh output kind;
 // `rec.straight` is Style=Straight; `rec.num["cap"]` is Cap=Yes/No (1/0;
@@ -367,6 +435,25 @@ std::optional<SceneObject> LoftControlGridFit(const std::vector<const kernel::Nu
 std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& curves, const HistoryRecord& rec) {
   if (curves.size() < 2) return std::nullopt;
   if (rec.command == "SubDLoft") return LoftControlGridFit(curves, rec);
+
+  // A recorded tangent loft: the sources are the sections followed by the start and then the end tangent curve (rec.num "tangents").
+  const int tflags = rec.num.count("tangents") ? static_cast<int>(std::lround(rec.num.at("tangents"))) : 0;
+  if (tflags != 0) {
+    const size_t k = static_cast<size_t>((tflags & 1) + ((tflags >> 1) & 1));
+    if (curves.size() < 2 + k) {
+      ctx.Warn("Loft: the record names " + std::to_string(k) + " tangent curve(s) but has only " + std::to_string(curves.size()) + " source curves");
+      return std::nullopt;
+    }
+    const size_t n_sections = curves.size() - k;
+    const std::vector<const kernel::NurbsCurve*> sections(curves.begin(), curves.begin() + static_cast<std::ptrdiff_t>(n_sections));
+    size_t next = n_sections;
+    const kernel::NurbsCurve* start = (tflags & 1) ? curves[next++] : nullptr;
+    const kernel::NurbsCurve* end = (tflags & 2) ? curves[next++] : nullptr;
+    std::string why;
+    std::optional<SceneObject> built = RebuildLoftTangents(ctx, sections, start, end, rec, why);
+    if (!built) ctx.Warn("Loft: tangent loft refused by the kernel: " + why);
+    return built;
+  }
 
   // SeamAlign=No (rec.num["seamalign"] = 0): the sections are used exactly as given, so a closed section whose start point or
   // direction differs from its neighbour's twists the wall (the kernel's align_seams = false behaviour); default Yes.
@@ -1090,82 +1177,54 @@ void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool
 }
 
 // Loft with a start and/or end TANGENT curve (StartTangent=<name> / EndTangent=<name>, StartWeight= / EndWeight=): the kernel's
-// Brep::LoftWithSectionTangents at the first / last section. The tangent curves are document curves found by name; their
-// control points are the wall's dS/dv vectors there (a copy of a circle section scaled by a and lifted by b is the field
-// (a x, a y, b)), multiplied by the weight. The sections are used exactly as given (SeamAlign does not apply: the tangent
-// curves are fields over the sections' own parametrization). Two sections with both tangents give a cubic Hermite wall. A
-// refusal prints the kernel's reason and builds nothing. Not recorded in History (a rebuild would need the tangent curves as
-// recorded inputs, which the rebuild registry does not hold; said once).
+// Brep::LoftWithSectionTangents at the first / last section, built by RebuildLoftTangents (above). The tangent curves are document
+// curves found by name; their control points are the wall's dS/dv vectors there (a copy of a circle section scaled by a and lifted
+// by b is the field (a x, a y, b)), multiplied by the weight. The sections are used exactly as given (SeamAlign does not apply: the
+// tangent curves are fields over the sections' own parametrization). Two sections with both tangents give a cubic Hermite wall. A
+// refusal prints the kernel's reason and builds nothing. With History On it is RECORDED: the sources are the section curves
+// followed by the start and then the end tangent curve (rec.num "tangents" = 1 start, 2 end, 3 both; "startweight" / "endweight"),
+// so moving a section OR a tangent curve rebuilds the wall (RebuildLoft splits the source list the same way).
 void LoftWithTangents(CommandContext& ctx, const std::vector<ObjectId>& ids, const LoftTokens& t) {
+  std::vector<ObjectId> section_ids;
   std::vector<const kernel::NurbsCurve*> curves;
   for (ObjectId id : ids) {
     const SceneObject* o = ctx.Doc().Find(id);
-    if (o && o->kind == ObjectKind::Curve && o->curve) curves.push_back(o->curve.get());
+    if (o && o->kind == ObjectKind::Curve && o->curve) { section_ids.push_back(id); curves.push_back(o->curve.get()); }
   }
   if (curves.size() < 2) { ctx.Warn("Loft: select at least two curves; nothing was built"); return; }
   if (t.bad_weight) { ctx.Warn("Loft: StartWeight= / EndWeight= need a finite number; nothing was built"); return; }
   if (t.straight) { ctx.Warn("Loft: Style=Straight (degree 1) cannot be combined with tangent curves; nothing was built"); return; }
-  auto find_curve = [&](const std::string& name) -> const kernel::NurbsCurve* {
+  auto find_curve = [&](const std::string& name) -> const SceneObject* {
     for (const SceneObject& o : ctx.Doc().Objects()) {
-      if (o.kind == ObjectKind::Curve && o.curve && o.name == name) return o.curve.get();
+      if (o.kind == ObjectKind::Curve && o.curve && o.name == name) return &o;
     }
     return nullptr;
   };
-  std::vector<kernel::Brep::LoftSectionTangent> tans;
-  const int last = static_cast<int>(curves.size()) - 1;
-  for (int end = 0; end < 2; ++end) {
-    const std::string& name = end == 0 ? t.start_tangent : t.end_tangent;
-    if (name.empty()) continue;
-    const kernel::NurbsCurve* c = find_curve(name);
-    if (!c) { ctx.Warn("Loft: no curve object is named '" + name + "' (name it with SetObjectName); nothing was built"); return; }
-    kernel::Brep::LoftSectionTangent lt;
-    lt.section = end == 0 ? 0 : last;
-    lt.tangent = *c;
-    lt.weight = end == 0 ? t.start_weight : t.end_weight;
-    tans.push_back(lt);
+  const SceneObject* start_obj = nullptr;
+  const SceneObject* end_obj = nullptr;
+  if (!t.start_tangent.empty()) {
+    start_obj = find_curve(t.start_tangent);
+    if (!start_obj) { ctx.Warn("Loft: no curve object is named '" + t.start_tangent + "' (name it with SetObjectName); nothing was built"); return; }
   }
-  AlignedSections as = AlignLoftSections(curves, /*align=*/false);
-  if (!as.refusal.empty()) { ctx.Warn("Loft: " + as.refusal + "; nothing was built"); return; }
-  const bool closed_sections = as.curves.front().IsClosed();
-  const int degree = std::min(3, static_cast<int>(curves.size()) + static_cast<int>(tans.size()) - 1);
-  kernel::Brep b;
-  bool capped = false;
-  std::string cap_note;
-  try {
-    if (closed_sections && t.cap) {
-      try {
-        b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, true, t.spacing == 1 ? kernel::Brep::LoftSpacing::Uniform : t.spacing == 2 ? kernel::Brep::LoftSpacing::Centripetal : kernel::Brep::LoftSpacing::Chord);
-        capped = true;
-      } catch (const std::invalid_argument& ex) {
-        cap_note = std::string(" (caps not made - ") + ex.what() + ")";
-        b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, false, t.spacing == 1 ? kernel::Brep::LoftSpacing::Uniform : t.spacing == 2 ? kernel::Brep::LoftSpacing::Centripetal : kernel::Brep::LoftSpacing::Chord);
-      }
-    } else {
-      b = kernel::Brep::LoftWithSectionTangents(as.curves, tans, degree, false, t.spacing == 1 ? kernel::Brep::LoftSpacing::Uniform : t.spacing == 2 ? kernel::Brep::LoftSpacing::Centripetal : kernel::Brep::LoftSpacing::Chord);
-    }
-  } catch (const std::exception& ex) {
-    ctx.Warn(std::string("Loft: tangent loft refused by the kernel: ") + ex.what() + "; nothing was built");
-    return;
+  if (!t.end_tangent.empty()) {
+    end_obj = find_curve(t.end_tangent);
+    if (!end_obj) { ctx.Warn("Loft: no curve object is named '" + t.end_tangent + "' (name it with SetObjectName); nothing was built"); return; }
   }
-  std::optional<kernel::NurbsSurface> wall = LoftWall(b);
-  if (!wall) { ctx.Warn("Loft: the kernel tangent loft has no surface face; nothing was built"); return; }
-  bool agree = true;
-  const double dev = MeasureLoftSections(*wall, as.curves, agree);
-  char buf[160];
-  std::snprintf(buf, sizeof(buf), "%d tangent(s) at the first/last section; every section reproduced, max deviation %.3g", static_cast<int>(tans.size()), dev);
-  std::string msg = std::string("Loft: exact kernel tangent loft through ") + std::to_string(curves.size()) + " curves (degree " + std::to_string(degree) + "), " + buf;
+  HistoryRecord rec;
+  rec.command = "Loft";
+  rec.num = {{"cap", t.cap ? 1.0 : 0.0}, {"tangents", (start_obj ? 1.0 : 0.0) + (end_obj ? 2.0 : 0.0)},
+             {"startweight", t.start_weight}, {"endweight", t.end_weight}};
+  if (t.spacing != 0) rec.num["spacing"] = static_cast<double>(t.spacing);
+  std::string why;
+  std::optional<SceneObject> built = RebuildLoftTangents(ctx, curves, start_obj ? start_obj->curve.get() : nullptr,
+                                                         end_obj ? end_obj->curve.get() : nullptr, rec, why);
+  if (!built) { ctx.Warn("Loft: tangent loft refused by the kernel: " + why + "; nothing was built"); return; }
   ctx.Doc().BeginChange("Loft");
-  if (capped) {
-    std::snprintf(buf, sizeof(buf), "; end caps added, closed solid, exact volume %.9g", b.Volume());
-    ctx.Print(msg + buf);
-    ctx.Doc().Add(SceneObject::MakeBrep(std::move(b)));
-  } else {
-    ctx.Print(msg + cap_note);
-    ctx.Doc().Add(SceneObject::MakeSurface(*wall));
-  }
-  if (ctx.App().State().history_recording) {
-    ctx.Print("Loft: no history recorded - a tangent loft rebuild would need the tangent curves as recorded inputs, which the history rebuild registry does not hold; run it without StartTangent=/EndTangent= to record it");
-  }
+  const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+  std::vector<ObjectId> sources = section_ids;
+  if (start_obj) sources.push_back(start_obj->id);
+  if (end_obj) sources.push_back(end_obj->id);
+  RecordHistoryIfEnabled(ctx, new_id, "Loft", sources, rec.num, false);
 }
 
 // Loft with G0 / G1 / G2 continuity to an adjacent surface edge (Continuity= option, continuity_request.h): the kernel's
