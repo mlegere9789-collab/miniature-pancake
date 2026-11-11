@@ -165,9 +165,90 @@ BossResult Fuse(const Brep& solid, const Brep& tool, const std::vector<Point3d>&
   return out;
 }
 
+PocketResult Cut(const Brep& solid, const Brep& tool, const std::vector<Point3d>& entry_samples, const std::vector<Point3d>& floor_samples) {
+  PocketResult out;
+  try {
+    out.tool_volume = tool.Volume();
+  } catch (const std::exception& e) {
+    Refuse(std::string("could not measure the pocket tool volume: ") + e.what());
+  }
+  if (!(out.tool_volume > 0.0)) Refuse("the swept pocket tool has non-positive volume (inverted tool)");
+  const BoundingBox sb = solid.GetTightBoundingBox();
+  const BoundingBox tb = tool.GetTightBoundingBox();
+  if (Apart(sb, tb, 1e-9 * std::max(1.0, (sb.max - sb.min).Length()))) {
+    Refuse("the pocket's bounding box does not meet the solid's, so it cannot cut into it");
+  }
+  // The entry plane must be clear of the material over the whole footprint, the floor buried in it.
+  for (const Point3d& p : entry_samples) {
+    if (ContainsPointExact(p, solid.raw())) {
+      Refuse("the pocket entry is not outside the solid: the entry point (" + std::to_string(p.x) + ", " + std::to_string(p.y) + ", " +
+             std::to_string(p.z) + ") is inside it; lift the profile plane above the host face over the whole footprint");
+    }
+  }
+  for (const Point3d& p : floor_samples) {
+    if (!ContainsPointExact(p, solid.raw())) {
+      Refuse("the pocket floor is not inside the solid: the floor point (" + std::to_string(p.x) + ", " + std::to_string(p.y) + ", " +
+             std::to_string(p.z) + ") is outside it; the depth does not reach the material over the whole footprint");
+    }
+  }
+  double solid_volume = 0;
+  bool have_solid_volume = true;
+  try {
+    solid_volume = solid.raw().IsSolid() ? solid.VolumeOfSealedSolid() : solid.Volume();
+  } catch (const std::exception&) {
+    have_solid_volume = false;
+  }
+  SealedGeneralBoolean sealed;
+  {
+    std::string first_why;
+    bool done = false;
+    const auto attempt = [&](const Brep& host) {
+      try {
+        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Difference);
+        done = true;
+      } catch (const std::exception& e) {
+        if (first_why.empty()) first_why = e.what();
+      }
+    };
+    attempt(solid);
+    size_t variants = 0;
+    if (!done) {
+      const std::vector<Brep> alt = detail::ReseamedHostVariants(solid);
+      variants = alt.size();
+      for (const Brep& h : alt) {
+        attempt(h);
+        if (done) break;
+      }
+    }
+    if (!done) {
+      Refuse("cutting the pocket was refused (not returning a degraded body): " + first_why +
+             (variants ? " [also refused with the host's seam moved to " + std::to_string(variants) + " other positions]" : std::string()));
+    }
+  }
+  if (have_solid_volume) {
+    out.removed_volume = solid_volume - sealed.volume;
+  } else {
+    try {
+      out.removed_volume = BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection).volume;
+    } catch (const std::exception& e) {
+      Refuse(std::string("the solid has no measurable volume and tool ^ solid could not be measured either: ") + e.what());
+    }
+  }
+  if (!(out.removed_volume > 1e-6 * out.tool_volume)) {
+    Refuse("the pocket removes no measurable volume (removed " + std::to_string(out.removed_volume) + " of a " + std::to_string(out.tool_volume) +
+           " tool): the tool does not reach the material");
+  }
+  if (out.removed_volume > out.tool_volume * 1.01) {
+    Refuse("the cut removed " + std::to_string(out.removed_volume) + ", more than the pocket tool's whole volume " + std::to_string(out.tool_volume) +
+           ", which is impossible");
+  }
+  out.brep = std::move(sealed.brep);
+  return out;
+}
+
 void CheckCommon(const Brep& solid, Vector3d& direction, double height) {
   if (solid.raw().m_F.Count() == 0) Bad("solid has no faces");
-  if (!(height > 0.0) || !std::isfinite(height)) Bad("height must be a positive finite number");
+  if (!(height > 0.0) || !std::isfinite(height)) Bad("height (depth) must be a positive finite number");
   if (!direction.Unitize()) Bad("direction must be non-zero");
 }
 
@@ -246,6 +327,83 @@ BossResult MakeBoss(const Brep& solid, const NurbsCurve& profile, Vector3d direc
       return Fuse(solid, tool, samples);
     } catch (const std::runtime_error& e) {
       if (std::string(e.what()).find("fusing the boss onto the solid was refused") == std::string::npos) throw;
+      if (first_refusal.empty()) first_refusal = e.what();
+    }
+  }
+  throw std::runtime_error(first_refusal + " [also refused with the profile seam moved to 7 other positions of the domain]");
+}
+
+PocketResult MakePocket(const Brep& solid, const std::vector<Point3d>& ring, Vector3d direction, double depth) {
+  CheckCommon(solid, direction, depth);
+  const size_t n = ring.size();
+  if (n < 3) Bad("polygon profile needs at least 3 vertices (got " + std::to_string(n) + ")");
+  double ta = 0, ext = 0;
+  const Vector3d nrm = NewellNormal(ring, &ta, &ext);
+  if (!(ext > 0) || !(ta > 1e-9 * ext * ext)) Bad("polygon profile has (near) zero area");
+  for (size_t i = 0; i < n; ++i) {
+    const double dist = (ring[i].x - ring[0].x) * nrm.x + (ring[i].y - ring[0].y) * nrm.y + (ring[i].z - ring[0].z) * nrm.z;
+    if (std::fabs(dist) > 1e-6 * ext) Bad("polygon profile is not planar (vertex " + std::to_string(i) + ")");
+  }
+  if (std::fabs(nrm.x * direction.x + nrm.y * direction.y + nrm.z * direction.z) < 1e-3) Bad("direction lies in the profile plane (|sin| < 1e-3)");
+  const Vector3d sweep = direction * depth;
+  std::vector<Point3d> entry, floor_pts;
+  for (size_t i = 0; i < n; ++i) {
+    const Point3d& a = ring[i];
+    const Point3d& b = ring[(i + 1) % n];
+    const Point3d mid(0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z));
+    entry.push_back(a);
+    entry.push_back(mid);
+    floor_pts.push_back(Add(a, sweep));
+    floor_pts.push_back(Add(mid, sweep));
+  }
+  const Brep tool = PlanarPrism(ring, sweep);
+  if (!tool.raw().IsValid() || !tool.raw().IsSolid()) Refuse("internal: the swept polygon pocket tool is not a valid closed solid");
+  return Cut(solid, tool, entry, floor_pts);
+}
+
+PocketResult MakePocket(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth) {
+  CheckCommon(solid, direction, depth);
+  const ON_NurbsCurve& c = profile.raw();
+  if (!c.IsClosed()) Bad("profile must be a closed curve");
+  ON_Plane plane;
+  const ON_BoundingBox cbb = c.BoundingBox();
+  if (!c.IsPlanar(&plane, 1e-6 * std::max(1.0, cbb.Diagonal().Length()))) Bad("profile curve is not planar");
+  const ON_3dVector pn = plane.zaxis;
+  if (std::fabs(pn.x * direction.x + pn.y * direction.y + pn.z * direction.z) < 1e-3) Bad("direction lies in the profile plane (|sin| < 1e-3)");
+  if (c.Degree() == 1) {
+    std::vector<Point3d> ring;
+    for (int i = 0; i < c.CVCount(); ++i) {
+      ON_3dPoint p;
+      c.GetCV(i, p);
+      ring.push_back(Point3d(p.x, p.y, p.z));
+    }
+    if (ring.size() > 1 && std::hypot(std::hypot(ring.front().x - ring.back().x, ring.front().y - ring.back().y), ring.front().z - ring.back().z) < 1e-9) {
+      ring.pop_back();
+    }
+    return MakePocket(solid, ring, direction, depth);
+  }
+  const Vector3d sweep = direction * depth;
+  std::vector<Point3d> entry, floor_pts;
+  const ON_Interval dom = c.Domain();
+  for (int i = 0; i < 32; ++i) {
+    const ON_3dPoint p = c.PointAt(dom.ParameterAt(i / 32.0));
+    entry.push_back(Point3d(p.x, p.y, p.z));
+    floor_pts.push_back(Add(Point3d(p.x, p.y, p.z), sweep));
+  }
+  // Same seam retry as MakeBoss: a refused cut is retried with the profile's seam moved (the wall's seam crosses the intersection
+  // curve once and leaves a zero-length edge there; whether sealing copes depends on where).
+  std::string first_refusal;
+  for (const double frac : {0.0, 0.25, 0.5, 0.75, 0.1, 0.9, 0.37, 0.63}) {
+    ON_NurbsCurve moved = c;
+    if (frac > 0.0 && !moved.ChangeClosedCurveSeam(dom.ParameterAt(frac))) continue;
+    NurbsCurve shifted;
+    shifted.raw() = moved;
+    const Brep tool = Brep::Extrude(shifted, sweep, true);
+    if (!tool.raw().IsValid()) Refuse("internal: the extruded pocket tool is not a valid ON_Brep");
+    try {
+      return Cut(solid, tool, entry, floor_pts);
+    } catch (const std::runtime_error& e) {
+      if (std::string(e.what()).find("cutting the pocket was refused") == std::string::npos) throw;
       if (first_refusal.empty()) first_refusal = e.what();
     }
   }

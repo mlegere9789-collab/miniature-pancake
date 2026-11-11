@@ -60,4 +60,23 @@ struct BossResult {
 BossResult MakeBoss(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double height);
 BossResult MakeBoss(const Brep& solid, const std::vector<Point3d>& profile_ring, Vector3d direction, double height);
 
+// Pocket following a curved face (the cut counterpart of MakeBoss; parity-map "Wrap/emboss onto curved faces" - EmbossProfile only
+// handled a profile against a planar or unconformed surface). A closed planar `profile` is swept `depth` along `direction` (which
+// points INTO the material, MakeHole()'s convention) and subtracted from `solid`. The profile plane is the pocket's ENTRY and must lie
+// OUTSIDE the material over the whole footprint (the caller lifts it above the curved face); the floor is the entry plane moved `depth`
+// along `direction` and must lie INSIDE it, so the pocket has a flat floor and walls that end exactly on the curved face. Both are
+// checked by sampling the outline with ContainsPointExact; the first sample on the wrong side is named by its coordinates.
+//
+// The cut is BooleanCombineGeneralSealed(solid, tool, Difference): the result is ON_Brep::IsValid() and IsSolid(), or the call throws.
+// Same profile kinds, argument checks, refusal style, curve-seam retries and sphere/torus host re-seaming as MakeBoss. A host with no
+// volume of its own is accepted: removed_volume is then the exact volume of tool ^ host.
+struct PocketResult {
+  Brep brep;
+  double tool_volume = 0;     // exact volume of the swept pocket tool (entry to floor)
+  double removed_volume = 0;  // host volume - result volume (the part of the tool inside the host)
+};
+
+PocketResult MakePocket(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth);
+PocketResult MakePocket(const Brep& solid, const std::vector<Point3d>& profile_ring, Vector3d direction, double depth);
+
 }  // namespace dino8::kernel
