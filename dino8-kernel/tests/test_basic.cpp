@@ -103373,6 +103373,79 @@ void TestThickenPolylineExtrusionFoldedSheet() {
   std::printf("  ThickenPolylineExtrusion: %d thickened folded sheets built (%zu fixtures x 2 frames)\n", built, strips.size());
 }
 
+// ---- body offset of a DRAFTED (tapered) prism over a polygon (OffsetTaperedPrism) -----------------------------------------------
+//
+// A wall leaning inward by `a` moved by d along its own normal moves horizontally by d / cos(a); with the caps moved by d the offset
+// body spans z in [-d, h + d] and its section at height z is the profile offset (mitre) by d / cos(a) - z tan(a). Oracle, none of
+// it the kernel's: the volume is the integral of those section areas, evaluated from GEOS 3.14 mitre buffer areas (shapely 2.2.0)
+// by Simpson's rule - exact here because the section area is a degree-2 polynomial in z (3-point and 9-point rules agree to 1e-7
+// when the literals were generated). `unoffset` is the same integral for d = 0 (the control: the result must NOT be that).
+void TestOffsetTaperedPrismBodyOffsetAgainstGeosSectionIntegral() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetTaperedPrism;
+  struct TaperCase {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double h, draft_deg, d, volume, unoffset;
+  };
+  const std::vector<TaperCase> cases = {
+      {"box 6x4, draft 10 deg, grown", {{0, 0}, {6, 0}, {6, 4}, {0, 4}}, 5.0, 10.0, 0.5, 154.373470525, 81.100122177},
+      {"box 6x4, draft 10 deg, shrunk", {{0, 0}, {6, 0}, {6, 4}, {0, 4}}, 5.0, 10.0, -0.5, 35.176187977, 81.100122177},
+      {"box 6x4, flared (draft -7 deg), grown", {{0, 0}, {6, 0}, {6, 4}, {0, 4}}, 5.0, -7.0, 0.4, 234.230462488, 153.208814958},
+      {"L prism, draft 8 deg, grown", {{0, 0}, {10, 0}, {10, 3}, {3, 3}, {3, 10}, {0, 10}}, 4.0, 8.0, 0.6, 335.881741865, 160.712413533},
+      {"L prism, draft 8 deg, shrunk", {{0, 0}, {10, 0}, {10, 3}, {3, 3}, {3, 10}, {0, 10}}, 4.0, 8.0, -0.4, 81.740418806, 160.712413533},
+      {"irregular pentagon, draft 5 deg, grown", {{0, 0}, {9, 1}, {11, 6}, {5, 9}, {-1, 5}}, 6.0, 5.0, 0.7, 655.432258875, 387.340558969},
+      {"irregular pentagon, draft 5 deg, shrunk", {{0, 0}, {9, 1}, {11, 6}, {5, 9}, {-1, 5}}, 6.0, 5.0, -0.7, 203.278058958, 387.340558969},
+  };
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane tilted(ON_3dPoint(1.0, -2.0, 0.5), ON_3dVector(0.2, -0.3, 1.0));
+  const auto closed_curve = [](const std::vector<std::pair<double, double>>& v, const ON_Plane& pl) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : v) pts.push_back(pl.origin + ab.first * pl.xaxis + ab.second * pl.yaxis);
+    pts.push_back(pts.front());
+    return NurbsCurve::FromControlPoints(pts, 1);
+  };
+  int built = 0;
+  for (const TaperCase& c : cases) {
+    for (int variant = 0; variant < 2; ++variant) {
+      const ON_Plane& pl = variant == 0 ? xy : tilted;
+      const std::string nm = std::string(c.name) + (variant == 0 ? " [plane z=0]" : " [tilted plane]") + " d=" + std::to_string(c.d);
+      Brep b;
+      bool threw = false;
+      try {
+        b = OffsetTaperedPrism(closed_curve(c.v, pl), pl.zaxis * c.h, c.draft_deg * ON_PI / 180.0, c.d);
+      } catch (const std::exception& e) {
+        threw = true;
+        std::printf("  %s threw: %s\n", nm.c_str(), e.what());
+      }
+      Check(!threw, (nm + ": the offset tapered prism is built").c_str());
+      if (threw) continue;
+      ++built;
+      std::printf("  %s: volume %.9f (GEOS section integral %.9f; un-offset %.9f)\n", nm.c_str(), b.Volume(), c.volume, c.unoffset);
+      Check(b.raw().IsValid() && b.raw().IsSolid(), (nm + ": valid closed solid").c_str());
+      Check(std::fabs(b.Volume() - c.volume) < 1e-5 * (1.0 + c.volume), (nm + ": volume equals the GEOS section-area integral to 1e-5 relative").c_str());
+      if (variant == 0) Check(std::fabs(b.Volume() - c.unoffset) > 0.5, (nm + ": control - the volume differs from the un-offset tapered prism's").c_str());
+    }
+  }
+  const auto refuse = [&](const char* what, const NurbsCurve& prof, Vector3d dir, double a, double d) {
+    bool threw = false;
+    try {
+      (void)OffsetTaperedPrism(prof, dir, a, d);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, (std::string("refused (std::invalid_argument): ") + what).c_str());
+  };
+  const std::vector<std::pair<double, double>> box = {{0, 0}, {6, 0}, {6, 4}, {0, 4}};
+  refuse("an inward offset that consumes the whole height", closed_curve(box, xy), Vector3d(0, 0, 1.0), 0.1, -0.6);
+  refuse("an oblique direction", closed_curve(box, xy), Vector3d(1, 0, 3), 0.1, 0.3);
+  refuse("a draft angle of 90 degrees", closed_curve(box, xy), Vector3d(0, 0, 3), 0.5 * ON_PI, 0.3);
+  refuse("a non-finite distance", closed_curve(box, xy), Vector3d(0, 0, 3), 0.1, std::nan(""));
+  std::vector<Point3d> open_pts = {Point3d(0, 0, 0), Point3d(6, 0, 0), Point3d(6, 4, 0), Point3d(0, 4, 0)};
+  refuse("an open profile", NurbsCurve::FromControlPoints(open_pts, 1), Vector3d(0, 0, 3), 0.1, 0.3);
+  std::printf("  OffsetTaperedPrism: %d offset tapered prisms built (%zu fixtures x 2 frames)\n", built, cases.size());
+}
+
 }  // namespace offset_remainder_tests
 
 // ---------------------------------------------------------------------------
@@ -109831,6 +109904,8 @@ int main() {
           offset_remainder_tests::TestOffsetPolylineExtrusionConcavePrismBodyOffset);
   RunTest("offset_remainder_tests::TestThickenPolylineExtrusionFoldedSheet",
           offset_remainder_tests::TestThickenPolylineExtrusionFoldedSheet);
+  RunTest("offset_remainder_tests::TestOffsetTaperedPrismBodyOffsetAgainstGeosSectionIntegral",
+          offset_remainder_tests::TestOffsetTaperedPrismBodyOffsetAgainstGeosSectionIntegral);
   RunTest("body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline",
           body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline);
 
