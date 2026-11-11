@@ -183,6 +183,169 @@ bool ResolveFace(const ON_Brep& brep, int face_index,
   return true;
 }
 
+// ---- Tessellation-only: a face with inner loops through the exact-clip path ----
+//
+// A face with inner loops used to fall back to whole-cell in/out clipping (TessellateGrid with polygon + holes): every cell that
+// straddles the outer boundary or a hole boundary is kept or dropped as a whole, so such a face's mesh never meets its neighbours'
+// (measured: a slab with two counterbores tessellated to volume 390.09 against an exact 396.607, and not closed, all of it in the
+// top face). The exact-clip path takes ONE simple polygon, so the Tessellate* bodies call SlitHolesForTessellation() on the
+// resolved face: it slits every hole into the outer loop. It is deliberately NOT part of ResolveFace(): PlanarFaces(),
+// MixedFaces() and MergeCoplanarFaces() read the same resolved face and need its outer loop and its holes as they are.
+
+// Near-linear self-intersection test with the same predicate as detail::IsSimplePolygon (no two non-adjacent edges cross
+// properly): the edges are swept in order of their smallest x, so only edges whose x ranges overlap are tested, and a bounding-box
+// reject comes before the orientation tests. A face with 25 holes (1500+ vertices) is tessellated several times per volume query,
+// and the O(n^2) test costs a million segment tests per pass.
+bool IsSimpleSweep(const std::vector<Point2d>& poly) {
+  const size_t n = poly.size();
+  if (n < 3) return false;
+  struct EdgeBox {
+    double x0, x1, y0, y1;
+    size_t i;
+  };
+  std::vector<EdgeBox> es;
+  es.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a = poly[i];
+    const Point2d& b = poly[(i + 1) % n];
+    es.push_back({std::min(a.x, b.x), std::max(a.x, b.x), std::min(a.y, b.y), std::max(a.y, b.y), i});
+  }
+  std::sort(es.begin(), es.end(), [](const EdgeBox& p, const EdgeBox& q) { return p.x0 < q.x0; });
+  for (size_t a = 0; a < n; ++a) {
+    for (size_t b = a + 1; b < n && es[b].x0 <= es[a].x1; ++b) {
+      if (es[b].y0 > es[a].y1 || es[b].y1 < es[a].y0) continue;
+      const size_t i = es[a].i, j = es[b].i;
+      const size_t d = i > j ? i - j : j - i;
+      if (d == 1 || d == n - 1) continue;  // adjacent edges share a vertex
+      if (dino8::kernel::detail::SegmentsProperlyIntersect(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) return false;
+    }
+  }
+  return true;
+}
+
+// Removes the fold-back samples ("overshoots") of a closed (u, v) polygon, judged in 3D like the source despike of the general
+// boolean (DespikeIndices in boolean_general.cpp): a vertex after which the path steps back along the step that arrived at it
+// (a turn of more than ~154 degrees), by less than a quarter of that step and by no more than 1% of the polygon's 3D size. A
+// legitimate acute corner has a next edge as long as its own, or an opening wider than that, and is kept. Returns true if a
+// vertex was removed. Tessellation-only: the B-rep's own trims are left as they are.
+bool RemoveFoldBackSpikes(const ON_NurbsSurface& srf, std::vector<Point2d>& poly) {
+  if (poly.size() < 5) return false;
+  std::vector<ON_3dPoint> pts;
+  pts.reserve(poly.size());
+  ON_BoundingBox box;
+  for (const Point2d& p : poly) {
+    pts.push_back(srf.PointAt(p.x, p.y));
+    box.Set(pts.back(), true);
+  }
+  const double max_back = 1e-2 * (box.IsValid() ? box.Diagonal().Length() : 0.0);
+  bool any = false;
+  for (int pass = 0; pass < 8 && poly.size() >= 5; ++pass) {
+    bool removed = false;
+    const size_t n = poly.size();
+    for (size_t k = 0; k < n; ++k) {
+      const ON_3dPoint& p = pts[(k + n - 1) % n];
+      const ON_3dPoint& c = pts[k];
+      const ON_3dPoint& q = pts[(k + 1) % n];
+      const ON_3dVector arrive = c - p, leave = q - c;
+      const double la = arrive.Length(), ll = leave.Length();
+      if (la > 0.0 && ll > 0.0 && ll < 0.25 * la && ll <= max_back && ON_DotProduct(arrive, leave) < -0.9 * la * ll) {
+        poly.erase(poly.begin() + static_cast<long>(k));
+        pts.erase(pts.begin() + static_cast<long>(k));
+        removed = true;
+        any = true;
+        break;
+      }
+    }
+    if (!removed) break;
+  }
+  return any;
+}
+
+// One polygon for `outer` with each hole slit into it (the exact-clip tessellation takes a single simple polygon). Every hole is
+// attached at its nearest outer vertex, chosen against the pristine outer so two holes never entangle, walked in the sense
+// opposite to the outer, and returned along a parallel edge offset by `sign` times a small fraction of the bridge length. The
+// notch must close again under the mesh weld (tolerance::kWeld, 1e-6 in 3D, which also welds a slit's two sides together), so
+// its 3D width is held to about 3e-7: a fraction of 1e-7 of the bridge (the notch fraction of the integrators' keyhole in
+// TrimmedFaceUVPolygon), smaller still for a long bridge. A zero-width slit defeats the simplicity test; the caller tries both signs.
+std::vector<Point2d> SlitHolesIntoOuter(const std::vector<Point2d>& outer, std::vector<std::vector<Point2d>> holes,
+                                         const ON_NurbsSurface& srf, double sign) {
+  const double outer_area = dino8::kernel::detail::SignedArea(outer);
+  struct Attach {
+    size_t outer_index;
+    std::vector<Point2d> insert;
+  };
+  std::vector<Attach> attachments;
+  for (std::vector<Point2d>& hole : holes) {
+    if (hole.size() < 3) continue;
+    if ((dino8::kernel::detail::SignedArea(hole) > 0.0) == (outer_area > 0.0)) std::reverse(hole.begin(), hole.end());
+    size_t best_outer = 0, best_hole = 0;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    for (size_t oi = 0; oi < outer.size(); ++oi) {
+      for (size_t hi = 0; hi < hole.size(); ++hi) {
+        const double dx = outer[oi].x - hole[hi].x, dy = outer[oi].y - hole[hi].y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+          best_d2 = d2;
+          best_outer = oi;
+          best_hole = hi;
+        }
+      }
+    }
+    const Point2d& ea = outer[best_outer];
+    const Point2d& eh = hole[best_hole];
+    const double bx = eh.x - ea.x, by = eh.y - ea.y, len = std::hypot(bx, by);
+    const double len3 = srf.PointAt(ea.x, ea.y).DistanceTo(srf.PointAt(eh.x, eh.y));
+    const double fraction = std::max(1e-12, std::min(1e-7, 3e-7 / std::max(len3, 1e-12)));
+    const double off = sign * (len > 1e-300 ? len : 1.0) * fraction;
+    const double px = len > 1e-300 ? by / len * off : off, py = len > 1e-300 ? -bx / len * off : 0.0;
+    Attach att;
+    att.outer_index = best_outer;
+    for (size_t k = 0; k < hole.size(); ++k) att.insert.push_back(hole[(best_hole + k) % hole.size()]);
+    att.insert.emplace_back(eh.x + px, eh.y + py);
+    att.insert.emplace_back(ea.x + px, ea.y + py);
+    attachments.push_back(std::move(att));
+  }
+  std::vector<Point2d> merged;
+  for (size_t i = 0; i < outer.size(); ++i) {
+    merged.push_back(outer[i]);
+    for (const Attach& att : attachments) {
+      if (att.outer_index == i) merged.insert(merged.end(), att.insert.begin(), att.insert.end());
+    }
+  }
+  return merged;
+}
+
+// Turns a resolved face that has holes into an exact-clip face whose one outer polygon has every hole slit into it, when that
+// polygon is simple; any other face (no holes, or no simple slit polygon) is left exactly as ResolveFace() returned it, so the old
+// whole-cell path keeps handling it. Both perpendicular signs of the notch are tried. Only when the polygon is not simple as
+// sampled are the fold-back overshoots of the surface-surface tracer removed (3D criterion, see RemoveFoldBackSpikes) and the slit
+// tried once more, so a legitimate shape is never altered by the despike.
+void SlitHolesForTessellation(FaceGeometry& fg) {
+  if (fg.holes.empty() || fg.outer.size() < 3) return;
+  const auto try_slit = [&](const std::vector<Point2d>& outer, const std::vector<std::vector<Point2d>>& holes,
+                            std::vector<Point2d>& merged) {
+    for (const double sign : {1.0, -1.0}) {
+      std::vector<Point2d> m = SlitHolesIntoOuter(outer, holes, fg.surface, sign);
+      if (m.size() >= 3 && IsSimpleSweep(m)) {
+        merged = std::move(m);
+        return true;
+      }
+    }
+    return false;
+  };
+  std::vector<Point2d> merged;
+  if (!try_slit(fg.outer, fg.holes, merged)) {
+    std::vector<Point2d> outer = fg.outer;
+    std::vector<std::vector<Point2d>> holes = fg.holes;
+    bool changed = RemoveFoldBackSpikes(fg.surface, outer);
+    for (std::vector<Point2d>& h : holes) changed = RemoveFoldBackSpikes(fg.surface, h) || changed;
+    if (!changed || !try_slit(outer, holes, merged)) return;
+  }
+  fg.outer = std::move(merged);
+  fg.holes.clear();
+  fg.exact_clip = true;
+}
+
 }  // namespace
 
 Brep Brep::FromSurface(const NurbsSurface& surface) {
@@ -5568,6 +5731,7 @@ std::vector<Mesh> Brep::TessellateAdaptive(double chord_tolerance) const {
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     FaceGeometry fg;
     if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    SlitHolesForTessellation(fg);
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
     if (fg.outer.empty()) {
@@ -5593,6 +5757,7 @@ std::vector<Mesh> Brep::TessellateNonUniformAdaptive(double chord_tolerance) con
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     FaceGeometry fg;
     if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    SlitHolesForTessellation(fg);
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
     if (fg.outer.empty()) {
@@ -5616,6 +5781,7 @@ std::vector<Mesh> Brep::TessellateCertifiedAdaptive(double chord_tolerance, int 
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     FaceGeometry fg;
     if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    SlitHolesForTessellation(fg);
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
     if (fg.outer.empty()) {
@@ -5642,6 +5808,7 @@ std::vector<Mesh> Brep::TessellateAdaptiveByAngle(double angle_tolerance) const 
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     FaceGeometry fg;
     if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    SlitHolesForTessellation(fg);
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
     if (fg.outer.empty()) {
@@ -7220,6 +7387,7 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
   for (int i = 0; i < n; ++i) {
     if (!resolved[static_cast<size_t>(i)]) continue;
     FaceGeometry& fg = fgs[static_cast<size_t>(i)];
+    SlitHolesForTessellation(fg);  // after CollectPlainQuadFaces() above, which skips faces that carry holes
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
     const auto plain_it = plain_forces.find(i);
