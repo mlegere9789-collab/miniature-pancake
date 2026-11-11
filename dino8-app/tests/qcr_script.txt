@@ -1,0 +1,318 @@
+# QCR_: hostile-input probes of the commands merged recently (Boss / Rib / Pocket, Offset, the SubD symmetric edits, ArrayCrv /
+# ArraySrf / ArrayCrvOnSrf, MoveFace) and of the CommandEngine rule that options typed after the command name apply before a
+# preselection answers the object prompt (tests/sections/88_qcr.sh cuts the output at each "Unknown command: QCRBEGIN_<name>" line).
+# Every case is run in its own app process; the section prepends SetActiveViewport Top / New to each. Expected values are closed forms
+# of the fixtures (box 10 x 10 x 10 = 1000) written down here, not read from the app's own printout.
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Enter / a typed number at an object prompt of Boss and Rib used to dereference the (still empty) footprint curve and base surface: the
+# app died with a segmentation fault. Nothing is selected, so the command ends (Enter) or ignores the number (the prompt stays).
+QCRBEGIN_boss_enter
+Box 0,0,0 10,10,0 10
+Boss
+Enter
+SelAll
+Volume
+
+QCRBEGIN_rib_number_first
+Box 0,0,0 10,10,0 10
+Rib
+5
+Cancel
+SelAll
+Volume
+
+# a number typed at the "base surface" prompt (the footprint curve is chosen, the base is not) crashed the same way; it is ignored, the
+# prompt stays, and the boss then builds exactly: 1000 + pi 2^2 5 = 1062.83
+QCRBEGIN_boss_number_at_base
+Box 0,0,0 10,10,0 10
+Circle 5,5,10 2
+SelLast
+Boss
+3
+SelPolysrf
+Enter
+5
+SelLast
+Volume
+
+# a height / depth of 0 or below, or beyond 1e8, built a degenerate mesh that REPLACED the exact polysurface (Boss 0 and Boss -3 left a
+# 22 / 24-face mesh, Boss 1e9 a mesh of volume 5e9): refused with the prompt kept; the typed 5 afterwards still builds the exact boss.
+QCRBEGIN_boss_height_bad
+Box 0,0,0 10,10,0 10
+Circle 5,5,10 2
+SelLast
+Boss
+SelPolysrf
+Enter
+0
+-3
+1e9
+5
+SelLast
+Volume
+SelAll
+List
+
+# a height far below the model tolerance never returned (Boss 1e-9 hung the kernel route; Boss 1e-5 reported "volume added 0.01994" on a
+# 16-face result, 150 times the closed form pi 2^2 1e-5 = 1.3e-4): refused with the allowed range, the prompt stays
+QCRBEGIN_boss_tiny
+Box 0,0,0 10,10,0 10
+Circle 5,5,10 2
+SelLast
+Boss
+SelPolysrf
+Enter
+1e-9
+5
+SelLast
+Volume
+
+# Rib Thickness=nan / 0 / -2: the option took atof() of anything (nan left the base unfused and a NaN-volume mesh behind, 0 and -2 fell to
+# the mesh construction and replaced the exact base by a mesh). Refused with the thickness kept at 1: the exact rib adds 6 x 4 x 1 = 24.
+QCRBEGIN_rib_thickness_bad
+Box 0,0,0 10,10,0 10
+Line 2,5,10 8,5,10
+SelLast
+Rib Thickness=nan Thickness=0 Thickness=-2
+SelPolysrf
+Enter
+4
+SelLast
+Volume
+
+# the preselected curve and the option tokens: the engine applies every leading Name=Value that is an option of the command before the
+# selection answers the prompt (last one wins), a token that is not an option stops the scan and is applied later, and with nothing
+# selected the tokens are applied when they arrive. The exact rib adds 6 x 4 x t.
+QCRBEGIN_rib_thickness_presel
+Box 0,0,0 10,10,0 10
+Line 2,5,10 8,5,10
+SelLast
+Rib Thickness=2
+SelPolysrf
+Enter
+4
+SelLast
+Volume
+
+QCRBEGIN_rib_thickness_lastwins
+Box 0,0,0 10,10,0 10
+Line 2,5,10 8,5,10
+SelLast
+Rib Thickness=2 Thickness=3
+SelPolysrf
+Enter
+4
+SelLast
+Volume
+
+QCRBEGIN_rib_thickness_after_nonoption
+Box 0,0,0 10,10,0 10
+Line 2,5,10 8,5,10
+SelLast
+Rib Foo=1 Thickness=3
+SelPolysrf
+Enter
+4
+SelLast
+Volume
+
+QCRBEGIN_rib_thickness_nosel
+Box 0,0,0 10,10,0 10
+Line 2,5,10 8,5,10
+SelNone
+Rib Thickness=2
+SelLast
+Enter
+SelPolysrf
+Enter
+4
+SelLast
+Volume
+
+# Undo after an exact rib restores the plain box exactly (1000), Redo brings the rib back (1024)
+QCRBEGIN_rib_undo_redo
+Box 0,0,0 10,10,0 10
+Line 2,5,10 8,5,10
+SelLast
+Rib
+SelPolysrf
+Enter
+4
+SelLast
+Volume
+Undo
+SelAll
+List
+Redo
+SelLast
+Volume
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Offset: a distance typed before the curves are chosen wrote options[0] of an empty option list (segmentation fault). The offset line of
+# the x axis segment on the side of (5,5,0) at distance 3 is the segment (0,3,0)-(10,3,0).
+QCRBEGIN_offset_number_first
+Line 0,0,0 10,0,0
+Offset
+3
+SelLast
+Enter
+5,5,0
+SelLast
+List
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Undo after a refused command. A command that began its undo step before it knew it would refuse left an EMPTY step behind: the next
+# Undo undid nothing, and the Redo stack was wiped. SubDSculpt of one vertex breaks the mirror symmetry (a real, undoable step); the
+# symmetric move of the vertex that has no partner is refused; the Undo that follows must undo the sculpt (symmetric again).
+QCRBEGIN_subd_refused_undo
+SubDBox 0,0,0 4,2,0 2
+SelLast
+SubDSculpt
+Radius=0.5
+Falloff=Constant
+0,0,0
+-0.3,0.2,0.1
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+SelLast
+SubDMoveSymmetric
+2,0,0
+2,1,0
+-0.3,0.2,0.1
+-0.5,0,0
+Undo
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+
+# SubDRemoveCreaseSymmetric on an edge that is not creased changes nothing; it must neither add an undo step nor clear the Redo stack:
+# crease (2 crease edges), Undo (0), the refused smoothing, Redo (2 again).
+QCRBEGIN_subd_crease_refused_redo
+SubDBox 0,0,0 4,2,0 2
+SelLast
+SubDCreaseSymmetric
+2,0,0
+2,1,0
+0,1,0
+Enter
+SelLast
+What
+Undo
+SelLast
+What
+SelLast
+SubDRemoveCreaseSymmetric
+2,0,0
+2,1,0
+0,1,0
+Enter
+SelLast
+What
+Redo
+SelLast
+What
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# ArrayCrv / ArraySrf: closed forms. A point at (1,1,0) arrayed along the segment (0,0,0)-(10,0,0), 5 items, NoRotation: the copies are
+# the original translated by the path points 0, 2.5, 5, 7.5, 10 - x = 1, 3.5, 6, 8.5, 11 - and one Undo removes them all.
+QCRBEGIN_arraycrv_points
+Point 1,1,0
+Line 0,0,0 10,0,0
+SelPt
+ArrayCrv
+SelCrv
+Enter
+Orientation=NoRotation
+5
+SelAll
+List
+Undo
+SelAll
+List
+
+# hostile counts leave the prompt open and the typed 3 afterwards still arrays: 0 / 1 / -4 / 1e9 are outside 2..100000
+QCRBEGIN_arraycrv_counts
+Point 1,1,0
+Line 0,0,0 10,0,0
+SelPt
+ArrayCrv
+SelCrv
+Enter
+0
+1
+-4
+1e9
+3
+SelAll
+List
+
+# ArraySrf on the plane z = 5 (corners 0,0 - 10,10): a 1 x 1 array puts the unit box's footprint centre on the surface centre, so the
+# copy's volume centroid is (5, 5, 5.5) (the box's own height 0.5 above the surface along its normal +z).
+QCRBEGIN_arraysrf_centroid
+SrfPt 0,0,5 0,10,5 10,10,5 10,0,5
+Box 0,0,0 1,1,0 1
+SelLast
+ArraySrf
+SelSrf
+Enter
+1
+1
+SelLast
+VolumeCentroid
+
+# ArrayCrvOnSrf took the count through an unchecked static_cast<int>: the count must be 2 .. 100000 like ArrayCrv's, and an oversized
+# one is refused before anything is made. The path is the line on the surface; one box copy per item.
+QCRBEGIN_arraycrvonsrf_count
+SrfPt 0,0,0 0,10,0 10,10,0 10,0,0
+Line 1,5,0 9,5,0
+Box 0,0,0 1,1,0 1
+SelLast
+ArrayCrvOnSrf
+SelCrv
+Enter
+SelSrf
+Enter
+200000
+3
+SelAll
+List
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# MoveFace of the top face 5 up (kernel route): 1000 -> 1500; Undo gives 1000 back exactly and Redo 1500.
+QCRBEGIN_moveface_undo_redo
+Box 0,0,0 10,10,0 10
+MoveFace
+5,5,10
+Enter
+0,0,0
+0,0,5
+SelAll
+Volume
+Undo
+SelAll
+Volume
+Redo
+SelAll
+Volume
+
+# Pocket with a depth of 0 or below is refused, the exact base stays (still a 6-face polysurface of volume 1000), the prompt stays and
+# a typed 3 then cuts the exact pocket: 1000 - pi 2^2 3 = 962.30
+QCRBEGIN_pocket_depth_bad
+Box 0,0,0 10,10,0 10
+Circle 5,5,10 2
+SelLast
+Pocket
+SelPolysrf
+Enter
+0
+-3
+3
+SelAll
+Volume
+List
+
+QCRBEGIN_end
