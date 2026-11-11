@@ -1078,6 +1078,20 @@ Brep OffsetPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, doub
 // collapses, splits or crosses the sheet).
 Brep ThickenPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness);
 
+// Body offset (grow `distance` > 0, shrink `distance` < 0) of a DRAFTED (tapered) prism over a closed POLYLINE profile - the
+// result of Brep::ExtrudeTapered(profile, direction, draft_angle) - as the same kind of body: every wall moved by `distance`
+// along its own normal with mitred corners, each cap moved by `distance` along its own normal. A wall leaning inward by
+// `draft_angle` moves HORIZONTALLY by distance / cos(draft_angle), so the offset body's new base section (at height
+// -distance) is the profile offset in plane by distance * (1 / cos(a) + tan(a)) and it is extruded `|direction| +
+// 2*distance` with the same draft. Volume is exactly the integral of the section areas  A(z) = area of the profile offset by
+// distance / cos(a) - z tan(a)  over z in [-distance, |direction| + distance] (a polynomial of degree 2 in z while no
+// vertex collapses). Draft 0 reduces to OffsetPolylineExtrusion().
+//
+// Throws std::invalid_argument for: a non-finite distance/direction, a draft outside (-pi/2, pi/2), a zero direction, an open /
+// curved / non-planar / self-crossing profile, an oblique direction, an inward distance that consumes the height, a new base
+// section that cannot be built exactly, and anything Brep::ExtrudeTapered() itself refuses (a draft that folds the walls).
+Brep OffsetTaperedPrism(const NurbsCurve& profile, Vector3d direction, double draft_angle, double distance);
+
 // Which end cap(s) of an extruded prism ShellOpenExtrusion() removes. "Top" is the cap at `profile + direction`,
 // "Bottom" the cap on the profile itself.
 enum class ExtrusionOpening { Top, Bottom, Both };
