@@ -186,6 +186,7 @@ const char* BooleanFailureReasonName(BooleanFailureReason r) {
     case BooleanFailureReason::OpenOperand: return "OpenOperand";
     case BooleanFailureReason::NonManifoldResult: return "NonManifoldResult";
     case BooleanFailureReason::OpenResult: return "OpenResult";
+    case BooleanFailureReason::InconsistentOrientation: return "InconsistentOrientation";
     case BooleanFailureReason::EngineFailure: return "EngineFailure";
     case BooleanFailureReason::Unclassified: return "Unclassified";
   }
