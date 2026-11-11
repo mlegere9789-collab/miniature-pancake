@@ -3516,6 +3516,50 @@ bool ChainLiesAlongFaceBoundary(const ON_Brep& brep, int face_index, const std::
   return true;
 }
 
+// Distance from `p` to the nearest point of the open polyline `poly`.
+double PointToPolylineDistance(const Point3d& p, const std::vector<UVPt>& poly) {
+  double best = 1e300;
+  for (size_t k = 0; k + 1 < poly.size(); ++k) {
+    const ON_3dVector ab = poly[k + 1].p - poly[k].p;
+    const double len2 = ab.LengthSquared();
+    double t = len2 > 0.0 ? ((p - poly[k].p) * ab) / len2 : 0.0;
+    t = std::max(0.0, std::min(1.0, t));
+    best = std::min(best, p.DistanceTo(poly[k].p + ab * t));
+  }
+  return best;
+}
+
+// How far a closed chain's straight segments can lie from the smooth curve it samples: the largest distance of any vertex from the
+// chord joining its two neighbours (for a circle sampled at chord length L that distance is L^2 / (2 R), four times the sagitta
+// L^2 / (8 R) of one chord - the factor 4 is the margin for uneven sampling: measured, a surface-intersector chain around a circle of
+// radius 2 with one long chord deviated 0.0217 from the circle where the vertex test alone said 0.0047). The chain repeats its
+// closing point; that repeat is not a vertex.
+double ClosedChainSagittaBound(const std::vector<UVPt>& c) {
+  const size_t n = c.size() - 1;
+  if (n < 3) return 0.0;
+  double worst = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const std::vector<UVPt> chord{c[(i + n - 1) % n], c[(i + 1) % n]};
+    worst = std::max(worst, PointToPolylineDistance(c[i].p, chord));
+  }
+  return worst;
+}
+
+// True when two closed chains trace one closed curve: every vertex of each lies within `tol` plus the OTHER chain's sagitta bound of the
+// other's polyline. Two independent intersections can both yield one curve with different sampling (a flush end cap meeting a cylinder
+// wall: the cap-cap rim and the wall-plane section are the same circle, one a 128-gon, the other the surface intersector's own much
+// coarser polyline). Splitting a face along both outlines the same region twice - a doubled hole. Two genuinely different curves a real
+// feature apart (a boss slightly larger than a hole) are further apart than any sagitta, so they are not merged.
+bool ClosedChainsCoincide(const std::vector<UVPt>& a, const std::vector<UVPt>& b, double tol) {
+  if (a.size() < 4 || b.size() < 4) return false;
+  const double ta = tol + ClosedChainSagittaBound(b), tb = tol + ClosedChainSagittaBound(a);
+  for (const UVPt& q : a)
+    if (PointToPolylineDistance(q.p, b) > ta) return false;
+  for (const UVPt& q : b)
+    if (PointToPolylineDistance(q.p, a) > tb) return false;
+  return true;
+}
+
 std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw,
                                       double stitch_tol, const IntersectOptions& opt, bool debug) {
   std::vector<FaceFrags> out;
@@ -3531,7 +3575,19 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
                                   // outline of a hole (a boss footprint) the face already carries as a bridged keyhole: it is the "fresh chain"
                                   // that UnbridgeKeyholes() matches the existing hole against, so subtracting the boss back out can fill it in.
                                   const bool is_closed = c.size() >= 4 && c.front().p.DistanceTo(c.back().p) <= std::max(stitch_tol, 1e-9);
-                                  const bool along = !is_closed && ChainLiesAlongFaceBoundary(brep, i, c, opt.tolerance);
+                                  // A CLOSED chain along the face's trims is either the outline of a hole a prior op folded in as a keyhole corridor (kept: it is
+                                  // what UnbridgeKeyholes() matches, see below) or the face's own whole rim re-found by the other solid's flush
+                                  // end cap (a cylinder wall's rim circle meeting a coplanar cap): that one divides nothing and is dropped like
+                                  // an open rim arc, else it cuts the wall into slivers between the rim polyline and the chain polyline.
+                                  bool rediscovers_keyhole = false;
+                                  if (is_closed && boundary.size() >= 5) {
+                                    ON_BoundingBox cb;
+                                    for (const UVPt& q : c) cb.Set(q.p, true);
+                                    const std::vector<ON_BoundingBox> probe_targets{cb};
+                                    std::vector<UVPt> probe = boundary;
+                                    rediscovers_keyhole = !UnbridgeKeyholes(probe, &probe_targets, stitch_tol).empty();
+                                  }
+                                  const bool along = !(is_closed && rediscovers_keyhole) && ChainLiesAlongFaceBoundary(brep, i, c, opt.tolerance);
                                   if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: raw chain n=%zu front_p=(%.4f,%.4f,%.4f) back_p=(%.4f,%.4f,%.4f) along_boundary=%d\n", i, c.size(), c.front().p.x, c.front().p.y, c.front().p.z, c.back().p.x, c.back().p.y, c.back().p.z, along);
                                   if (along && debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: dropped a chain of %zu pts lying along its own boundary\n", i, c.size());
                                   return along;
@@ -3601,6 +3657,14 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
     // fixture into a degenerate trim polygon, even though the ON_Brep
     // itself stayed IsValid() throughout. Touching only the one hole this
     // op actually needs to resolve avoids both failure modes at once.
+    for (size_t ci = 0; ci < closed_chains.size(); ++ci) {
+      for (size_t cj = closed_chains.size(); cj-- > ci + 1;) {
+        if (!ClosedChainsCoincide(closed_chains[ci], closed_chains[cj], opt.tolerance)) continue;
+        if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: closed chains n=%zu and n=%zu trace one curve; keeping the denser\n", i, closed_chains[ci].size(), closed_chains[cj].size());
+        if (closed_chains[cj].size() > closed_chains[ci].size()) std::swap(closed_chains[ci], closed_chains[cj]);
+        closed_chains.erase(closed_chains.begin() + static_cast<std::ptrdiff_t>(cj));
+      }
+    }
     if (!closed_chains.empty()) {
       std::vector<ON_BoundingBox> targets;
       targets.reserve(closed_chains.size());
