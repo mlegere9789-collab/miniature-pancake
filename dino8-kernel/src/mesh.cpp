@@ -1855,8 +1855,29 @@ Result Mesh::SaveObj(const std::string& path) const {
       out << "vt " << uv.x << ' ' << uv.y << '\n';
     }
   }
+  // Per-face group / material names (set by LoadObj() from `g` / `o` / `usemtl`, or by SetFaceGroupNames() /
+  // SetFaceMaterialNames()) are written back the way OBJ states them: a `g <name>` / `usemtl <name>` line whenever the name
+  // changes from the previous face's, so a face keeps its group and material through SaveObj -> LoadObj. A change to the
+  // empty name is a bare `g` / `usemtl` line (what LoadObj() reads as "no group" / "no material").
+  const bool has_groups = HasFaceGroupNames();
+  const bool has_materials = HasFaceMaterialNames();
+  std::string last_group, last_material;
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
+    if (has_groups) {
+      const std::string group = FaceGroupNameAt(i);
+      if (i == 0 || group != last_group) {
+        out << (group.empty() ? "g" : "g " + group) << '\n';
+        last_group = group;
+      }
+    }
+    if (has_materials) {
+      const std::string material = FaceMaterialNameAt(i);
+      if (i == 0 ? !material.empty() : material != last_material) {
+        out << (material.empty() ? "usemtl" : "usemtl " + material) << '\n';
+      }
+      last_material = material;
+    }
     // OBJ vertex indices are 1-based. Without texture coordinates, "v//vn"
     // form leaves the middle (vt) slot empty, per OBJ's own convention
     // for "no vt"; with them, "v/vt/vn" form references the same vertex
