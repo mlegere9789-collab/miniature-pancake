@@ -103157,6 +103157,110 @@ void TestOffsetInPlaneRoundChamferOutwardClosedAndOpenValidity() {
   std::printf("  Round/Chamfer outward + open validity: %d valid offsets built, %d invalid ones refused\n", n_ok, n_bad);
 }
 
+// ---- body offset of a prism over a CONCAVE polygon (OffsetPolylineExtrusion) -----------------------------------------------
+//
+// Oracles, none of them the kernel's: (a) the closed form of a rectilinear polygon's mitre offset area, A + P*d + (convex corners
+// - reflex corners)*d^2 (valid while no arm collapses), (b) GEOS 3.14 mitre buffers (shapely 2.2.0) of the same polygons for the
+// spike fixture (inward past the spike's width, so the offset needs loop removal), and (c) the box closed form
+// (w+2d)(l+2d)(h+2d). Volume of the offset prism = offset area * (h + 2d).
+void TestOffsetPolylineExtrusionConcavePrismBodyOffset() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetPolylineExtrusion;
+  const auto closed_curve = [](const std::vector<std::pair<double, double>>& v, const ON_Plane& pl, bool reverse) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : v) pts.push_back(pl.origin + ab.first * pl.xaxis + ab.second * pl.yaxis);
+    if (reverse) std::reverse(pts.begin(), pts.end());
+    pts.push_back(pts.front());
+    return NurbsCurve::FromControlPoints(pts, 1);
+  };
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane tilted(ON_3dPoint(1.0, -2.0, 0.5), ON_3dVector(0.2, -0.3, 1.0));
+  struct Fix {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double h, d, offset_area;
+  };
+  const std::vector<std::pair<double, double>> box = {{0, 0}, {6, 0}, {6, 4}, {0, 4}};
+  const std::vector<std::pair<double, double>> L = {{0, 0}, {10, 0}, {10, 3}, {3, 3}, {3, 10}, {0, 10}};
+  const std::vector<std::pair<double, double>> spike = {{0, 0}, {14, 0}, {14, 10}, {9, 10.5}, {8.6, 16}, {6.4, 16.4}, {6, 10.2}, {0, 10}};
+  const auto LA = [](double d) { return 51.0 + 40.0 * d + 4.0 * d * d; };  // 5 convex corners, 1 reflex, perimeter 40
+  const std::vector<Fix> fixes = {
+      {"box 6x4 grown", box, 5.0, 0.5, (6 + 1.0) * (4 + 1.0)},
+      {"box 6x4 shrunk", box, 5.0, -0.5, (6 - 1.0) * (4 - 1.0)},
+      {"L prism grown", L, 4.0, 0.6, LA(0.6)},
+      {"L prism shrunk", L, 4.0, -0.6, LA(-0.6)},
+      {"L prism shrunk deeper (arms keep 0.6)", L, 4.0, -1.2, LA(-1.2)},
+      {"spike prism shrunk, spike intact (GEOS)", spike, 6.0, -0.9, 108.275129164},
+      {"spike prism shrunk past the spike's width, loops removed (GEOS)", spike, 6.0, -1.5, 79.981898284},
+  };
+  int built = 0;
+  for (const Fix& f : fixes) {
+    for (int variant = 0; variant < 3; ++variant) {
+      // 0: plane z=0, counter-clockwise; 1: clockwise (same body); 2: tilted plane with its own normal as the direction
+      const ON_Plane& pl = variant == 2 ? tilted : xy;
+      const std::string nm = std::string(f.name) + (variant == 0 ? " [ccw]" : variant == 1 ? " [cw]" : " [tilted plane]") + " d=" + std::to_string(f.d);
+      const NurbsCurve prof = closed_curve(f.v, pl, variant == 1);
+      const Vector3d dir = pl.zaxis * f.h;
+      Brep b;
+      bool threw = false;
+      try {
+        b = OffsetPolylineExtrusion(prof, dir, f.d);
+      } catch (const std::exception& e) {
+        threw = true;
+        std::printf("  %s threw: %s\n", nm.c_str(), e.what());
+      }
+      Check(!threw, (nm + ": the offset prism is built").c_str());
+      if (threw) continue;
+      ++built;
+      const double expect = f.offset_area * (f.h + 2.0 * f.d);
+      const Brep::CheckReport rep = b.Check(dino8::kernel::tolerance::kDistance, dino8::kernel::tolerance::kEdgeJoin, true);
+      std::printf("  %s: volume %.9f (expected %.9f = offset area %.9f x height %.3f), %zu planar faces\n", nm.c_str(), b.Volume(), expect, f.offset_area, f.h + 2.0 * f.d, b.PlanarFaces().size());
+      Check(b.raw().IsValid() && b.raw().IsSolid() && rep.IsClean() && rep.is_closed && rep.is_oriented, (nm + ": valid closed oriented solid, Check clean").c_str());
+      Check(std::fabs(b.Volume() - expect) < 1e-6 * (1.0 + expect), (nm + ": volume equals offset area x (h + 2d) to 1e-6 relative").c_str());
+      // caps: the bottom cap plane moved by -d along the direction, the top by +d beyond the old top
+      double lo = 1e30, hi = -1e30;
+      int cap_faces = 0;
+      for (const Brep::PlanarFace& pf : b.PlanarFaces()) {
+        if (std::fabs(std::fabs(ON_DotProduct(pf.plane.zaxis, pl.zaxis)) - 1.0) > 1e-9) continue;
+        const double z = ON_DotProduct(pf.loop[0] - pl.origin, pl.zaxis);
+        lo = std::min(lo, z);
+        hi = std::max(hi, z);
+        ++cap_faces;
+      }
+      Check(cap_faces == 2 && std::fabs(lo + f.d) < 1e-9 && std::fabs(hi - (f.h + f.d)) < 1e-9,
+            (nm + ": exactly two cap faces, at height -d and h + d along the direction").c_str());
+      if (variant == 0) {
+        // negative controls: the volume of the UNOFFSET prism, and the wrong height (h + d instead of h + 2d), are rejected
+        const double unoffset = [&] {
+          double a = 0.0;
+          for (size_t i = 0; i < f.v.size(); ++i) a += f.v[i].first * f.v[(i + 1) % f.v.size()].second - f.v[(i + 1) % f.v.size()].first * f.v[i].second;
+          return 0.5 * a * f.h;
+        }();
+        Check(std::fabs(b.Volume() - unoffset) > 0.05, (nm + ": control - the volume differs from the un-offset prism's").c_str());
+        Check(std::fabs(b.Volume() - f.offset_area * (f.h + f.d)) > 0.05, (nm + ": control - the volume differs from offset area x (h + d)").c_str());
+      }
+    }
+  }
+  // refusals
+  const auto refuse = [&](const char* what, const NurbsCurve& prof, Vector3d dir, double d) {
+    bool threw = false;
+    try {
+      (void)OffsetPolylineExtrusion(prof, dir, d);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, (std::string("refused (std::invalid_argument): ") + what).c_str());
+  };
+  const std::vector<std::pair<double, double>> neck = {{0, 0}, {9, 0.2}, {9.3, 3.5}, {15, 3.7}, {15.2, 0}, {24, 0.1}, {24.2, 9}, {15, 9.3}, {14.8, 5.6}, {9.1, 5.4}, {9.2, 9.1}, {0.1, 9}};
+  refuse("a dumbbell whose neck is pinched through by the inward offset (the profile splits in two)", closed_curve(neck, xy, false), Vector3d(0, 0, 4), -1.2);
+  refuse("an inward offset that consumes the whole height", closed_curve(box, xy, false), Vector3d(0, 0, 1.0), -0.6);
+  refuse("an inward offset that collapses the profile", closed_curve(box, xy, false), Vector3d(0, 0, 9.0), -2.2);
+  refuse("an oblique direction", closed_curve(box, xy, false), Vector3d(1, 0, 3), 0.3);
+  std::vector<Point3d> open_pts = {Point3d(0, 0, 0), Point3d(6, 0, 0), Point3d(6, 4, 0), Point3d(0, 4, 0)};
+  refuse("an open profile", NurbsCurve::FromControlPoints(open_pts, 1), Vector3d(0, 0, 3), 0.3);
+  std::printf("  OffsetPolylineExtrusion: %d offset prisms built (%zu fixtures x 3 frames)\n", built, fixes.size());
+}
+
 }  // namespace offset_remainder_tests
 
 // ---------------------------------------------------------------------------
@@ -109792,6 +109896,8 @@ int main() {
           offset_remainder_tests::TestOffsetInPlaneOpenPolylineLoopRemovalAndRefusals);
   RunTest("offset_remainder_tests::TestOffsetInPlaneRoundChamferOutwardClosedAndOpenValidity",
           offset_remainder_tests::TestOffsetInPlaneRoundChamferOutwardClosedAndOpenValidity);
+  RunTest("offset_remainder_tests::TestOffsetPolylineExtrusionConcavePrismBodyOffset",
+          offset_remainder_tests::TestOffsetPolylineExtrusionConcavePrismBodyOffset);
   RunTest("body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline",
           body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline);
 
