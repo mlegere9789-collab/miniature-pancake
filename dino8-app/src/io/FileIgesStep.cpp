@@ -2314,18 +2314,22 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
   int written = 0;
   std::vector<std::string> notes;
   int shape_count = 0;
+  // Every shape item written (its STEP id, the object, and whether it is a body that can carry a surface colour), for the
+  // STYLED_ITEM colours and PRESENTATION_LAYER_ASSIGNMENTs written after the loop.
+  struct StepItem { int id; const SceneObject* object; bool body; };
+  std::vector<StepItem> step_items;
   for (const SceneObject* o : objs) {
     switch (o->kind) {
       case ObjectKind::Point: {
         const int pt = WriteCartesianPoint(w, o->point);
-        w.Add("GEOMETRIC_CURVE_SET", StepStr(o->name.empty() ? "Point" : o->name) + ",(#" + std::to_string(pt) + ")");
+        step_items.push_back({w.Add("GEOMETRIC_CURVE_SET", StepStr(o->name.empty() ? "Point" : o->name) + ",(#" + std::to_string(pt) + ")"), o, false});
         ++written; ++shape_count;
         break;
       }
       case ObjectKind::Curve: {
         if (!o->curve) break;
         const int c = WriteStepCurve(w, o->curve->raw());
-        w.Add("GEOMETRIC_CURVE_SET", StepStr(o->name.empty() ? "Curve" : o->name) + ",(#" + std::to_string(c) + ")");
+        step_items.push_back({w.Add("GEOMETRIC_CURVE_SET", StepStr(o->name.empty() ? "Curve" : o->name) + ",(#" + std::to_string(c) + ")"), o, false});
         ++written; ++shape_count;
         break;
       }
@@ -2341,7 +2345,7 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
         for (size_t i = 0; i < faces.size(); ++i) refs += "#" + std::to_string(faces[i]) + (i + 1 < faces.size() ? "," : "");
         refs += ")";
         const int shell = w.Add("OPEN_SHELL", "''," + refs);
-        w.Add("SHELL_BASED_SURFACE_MODEL", StepStr(o->name.empty() ? "Surface" : o->name) + ",(#" + std::to_string(shell) + ")");
+        step_items.push_back({w.Add("SHELL_BASED_SURFACE_MODEL", StepStr(o->name.empty() ? "Surface" : o->name) + ",(#" + std::to_string(shell) + ")"), o, true});
         ++written; ++shape_count;
         break;
       }
@@ -2363,9 +2367,9 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
         const int shell = w.Add(closed ? "CLOSED_SHELL" : "OPEN_SHELL", "''," + refs);
         if (closed) {
           const int solid = w.Add("MANIFOLD_SOLID_BREP", StepStr(o->name.empty() ? "Solid" : o->name) + ",#" + std::to_string(shell));
-          (void)solid;
+          step_items.push_back({solid, o, true});
         } else {
-          w.Add("SHELL_BASED_SURFACE_MODEL", StepStr(o->name.empty() ? "Surface" : o->name) + ",(#" + std::to_string(shell) + ")");
+          step_items.push_back({w.Add("SHELL_BASED_SURFACE_MODEL", StepStr(o->name.empty() ? "Surface" : o->name) + ",(#" + std::to_string(shell) + ")"), o, true});
         }
         ++written; ++shape_count;
         break;
@@ -2394,10 +2398,41 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
         for (size_t i = 0; i < faces.size(); ++i) refs += "#" + std::to_string(faces[i]) + (i + 1 < faces.size() ? "," : "");
         refs += ")";
         const int shell = w.Add("CLOSED_SHELL", "''," + refs);
-        w.Add("FACETED_BREP", StepStr(o->name.empty() ? "Mesh" : o->name) + ",#" + std::to_string(shell));
+        step_items.push_back({w.Add("FACETED_BREP", StepStr(o->name.empty() ? "Mesh" : o->name) + ",#" + std::to_string(shell)), o, true});
         ++written; ++shape_count;
         break;
       }
+    }
+  }
+  // AP214 presentation: an object with an explicit colour (not "by layer") gets the standard styled-item chain
+  // COLOUR_RGB <- FILL_AREA_STYLE_COLOUR <- FILL_AREA_STYLE <- SURFACE_STYLE_FILL_AREA <- SURFACE_SIDE_STYLE <-
+  // SURFACE_STYLE_USAGE <- PRESENTATION_STYLE_ASSIGNMENT <- STYLED_ITEM(item); every object on a layer other than the
+  // default one is listed by a PRESENTATION_LAYER_ASSIGNMENT named like the layer. (ImportStep reads both back.)
+  {
+    std::map<std::string, std::vector<int>> layer_items;
+    for (const StepItem& it : step_items) {
+      const SceneObject& so = *it.object;
+      if (it.body && !so.color_by_layer) {
+        const int rgb = w.Add("COLOUR_RGB", "''," + Num(so.color.r) + "," + Num(so.color.g) + "," + Num(so.color.b));
+        const int fas_colour = w.Add("FILL_AREA_STYLE_COLOUR", "'',#" + std::to_string(rgb));
+        const int fas = w.Add("FILL_AREA_STYLE", "'',(#" + std::to_string(fas_colour) + ")");
+        const int ssfa = w.Add("SURFACE_STYLE_FILL_AREA", "#" + std::to_string(fas));
+        const int sss = w.Add("SURFACE_SIDE_STYLE", "'',(#" + std::to_string(ssfa) + ")");
+        const int ssu = w.Add("SURFACE_STYLE_USAGE", ".BOTH.,#" + std::to_string(sss));
+        const int psa = w.Add("PRESENTATION_STYLE_ASSIGNMENT", "(#" + std::to_string(ssu) + ")");
+        w.Add("STYLED_ITEM", "'colour',(#" + std::to_string(psa) + "),#" + std::to_string(it.id));
+      }
+      if (!doc.Layers().empty()) {
+        const size_t li = static_cast<size_t>(std::clamp(so.layer_index, 0, static_cast<int>(doc.Layers().size()) - 1));
+        const std::string& layer_name = doc.Layers()[li].name;
+        if (layer_name != "Default") layer_items[layer_name].push_back(it.id);
+      }
+    }
+    for (const auto& [layer_name, ids] : layer_items) {
+      std::string refs = "(";
+      for (size_t i = 0; i < ids.size(); ++i) refs += "#" + std::to_string(ids[i]) + (i + 1 < ids.size() ? "," : "");
+      refs += ")";
+      w.Add("PRESENTATION_LAYER_ASSIGNMENT", StepStr(layer_name) + ",''," + refs);
     }
   }
   w.Write(os, doc.Settings().title.empty() ? std::filesystem::path(path).stem().string() : doc.Settings().title,
