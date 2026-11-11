@@ -5,7 +5,6 @@
 // Silhouette, 3DFace, MakeUniformUV and friends.
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
-#include "dino8/kernel/boolean.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/boss.h"
 #include "dino8/kernel/rib.h"
@@ -220,7 +219,6 @@ class FacePickCommand : public Command {
   void Begin(CommandContext&) override {
     if (op_ == Op::Extract) options = {{"Copy", "No", {"Yes", "No"}, false, true}};
     if (op_ == Op::Isocurve) options = {{"Direction", "U", {"U", "V", "Both"}, false, false}};
-    if (op_ == Op::Delete) options = {{"Heal", "No", {"Yes", "No"}, false, true}};
     WantPoint(Prompt());
   }
   std::string Prompt() const {
@@ -238,41 +236,6 @@ class FacePickCommand : public Command {
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
     if (n == "Copy") copy_ = (v == "Yes");
     if (n == "Direction") dir_ = v;
-    if (n == "Heal") heal_ = (v == "Yes");
-  }
-  // DeleteFaces Heal=Yes: the kernel's exact heal (kernel::DeleteFaceHealConvexPlanar) drops the picked face's plane and regrows every
-  // neighbour until they meet, so a chamfer or a corner cut disappears and the solid stays closed. Returns true and replaces the object's
-  // B-rep when the kernel did it; otherwise false with `note` = the kernel's own message (the object is untouched). Needs a convex
-  // planar-faced solid; the picked face is matched to the kernel's PlanarFaces() entry by its plane before anything is deleted.
-  bool TryExactFaceHeal(CommandContext& ctx, ObjectId id, int fi, std::string& note) {
-    SceneObject* o = ctx.Doc().Find(id);
-    if (!o || o->kind != ObjectKind::Brep || !o->brep) { note = "the object is not a polysurface"; return false; }
-    kernel::Brep kb = *o->brep;
-    const ON_Brep& raw = kb.raw();
-    if (fi < 0 || fi >= raw.m_F.Count() || raw.m_F[fi].m_face_index < 0) { note = "the picked face is not a live face of the polysurface"; return false; }
-    try {
-      const std::vector<kernel::Brep::PlanarFace> planar = kb.PlanarFaces();  // throws, naming the face, if any face is not planar
-      int k = 0;
-      for (int i = 0; i < fi; ++i) if (raw.m_F[i].m_face_index >= 0) ++k;
-      const ON_BrepFace& f = raw.m_F[fi];
-      ON_3dVector n = f.NormalAt(f.Domain(0).Mid(), f.Domain(1).Mid());
-      const ON_3dPoint on_face = f.PointAt(f.Domain(0).Mid(), f.Domain(1).Mid());
-      if (k >= static_cast<int>(planar.size()) || !n.Unitize() || n * planar[static_cast<size_t>(k)].plane.zaxis < 0.999 ||
-          std::fabs(planar[static_cast<size_t>(k)].plane.DistanceTo(on_face)) > 1e-6 * std::max(1.0, on_face.DistanceTo(ON_3dPoint(0, 0, 0)))) {
-        note = "the picked face does not match the kernel's planar face list (this polysurface has faces the planar kernel skips)";
-        return false;
-      }
-      kernel::Brep healed = kernel::DeleteFaceHealConvexPlanar(kb, k);
-      const int faces = healed.FaceCount();
-      *o->brep = std::move(healed);
-      o->InvalidateDisplay();
-      ctx.Print("DeleteFaces: exact kernel heal (DeleteFaceHealConvexPlanar): face " + std::to_string(fi) + " deleted and its neighbours grown until they meet, " +
-                std::to_string(faces) + " face(s), still a closed solid");
-      return true;
-    } catch (const std::exception& e) {
-      note = e.what();
-      return false;
-    }
   }
   void OnEnter(CommandContext&) override { Finish(); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
@@ -304,12 +267,9 @@ class FacePickCommand : public Command {
       }
       case Op::Delete: {
         if (b->m_F.Count() <= 1) { ctx.Doc().Remove(pick->id); ctx.Print("DeleteFaces: object " + std::to_string(pick->id) + " deleted (last face)"); break; }
-        std::string heal_note;
-        if (heal_ && TryExactFaceHeal(ctx, pick->id, fi, heal_note)) break;
         DeleteFaceHealed(*b, fi);
         if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->brep->raw() = *b; orig->InvalidateDisplay(); }
         ctx.Print("DeleteFaces: face " + std::to_string(fi) + " deleted, " + std::to_string(b->m_F.Count()) + " face(s) left");
-        if (!heal_note.empty()) ctx.Print("DeleteFaces: the exact kernel heal declined (" + heal_note.substr(0, 220) + "), so the face was simply deleted and the solid is left open");
         break;
       }
       case Op::Untrim: {
@@ -402,7 +362,6 @@ class FacePickCommand : public Command {
   }
   Op op_;
   bool copy_ = false;
-  bool heal_ = false;
   std::string dir_ = "U";
 };
 
