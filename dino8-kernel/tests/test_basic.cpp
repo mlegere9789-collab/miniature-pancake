@@ -101309,14 +101309,31 @@ void TestBodySectionPlaneOnBoxFaceIsExactlyTheFaceBoundary() {
     std::snprintf(msg, sizeof msg, "box %s: the contour keeps all four sharp corners as control points (a degree-1 polyline, not a fitted cubic)", f.name);
     Check(corners_hit == 4 && cv.Degree() == 1, msg);
   }
-  // control: a plane in the middle of the box is unchanged (still the rectangle, within the section tolerance)
-  {
+  // a plane across the middle of the box (it meets four planar walls, straight-edged): the exact rectangle too, on the plane to
+  // 1e-12 (measured before: a 44-control-point cubic, every point 1e-7 off the plane, corners 1e-8 off the edges)
+  for (const double x : {5.0, 2.5}) {
     IntersectOptions opt;
     opt.tolerance = 1e-5;
     opt.mesh_tolerance = 0.02;
-    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(*box, ON_Plane(ON_3dPoint(5, 0, 0), ON_3dVector(1, 0, 0)), opt);
-    Check(sec.size() == 1 && sec[0].closed && std::fabs(SampledLength(sec[0].curve, 40000) - 60.0) < 1e-3,
-          "control: the mid plane x=5 still gives one closed rectangle of perimeter 60");
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(*box, ON_Plane(ON_3dPoint(x, 0, 0), ON_3dVector(1, 0, 0)), opt);
+    char msg[200];
+    std::snprintf(msg, sizeof msg, "box mid plane x=%g: ONE closed contour", x);
+    Check(sec.size() == 1 && sec[0].closed, msg);
+    if (sec.size() != 1) continue;
+    const NurbsCurve& cv = sec[0].curve;
+    const ON_3dPoint rect[4] = {ON_3dPoint(x, 0, 0), ON_3dPoint(x, Y, 0), ON_3dPoint(x, Y, Z), ON_3dPoint(x, 0, Z)};
+    int corners_hit = 0;
+    double off_plane = 0;
+    for (int k = 0; k < 4; ++k) {
+      double nearest = 1e300;
+      for (int i = 0; i < cv.ControlPointCount(); ++i) nearest = std::min(nearest, cv.ControlPointAt(i).DistanceTo(rect[k]));
+      if (nearest < 1e-9) ++corners_hit;
+    }
+    for (int i = 0; i < cv.ControlPointCount(); ++i) off_plane = std::max(off_plane, std::fabs(cv.ControlPointAt(i).x - x));
+    std::snprintf(msg, sizeof msg, "box mid plane x=%g: the four rectangle corners are control points to 1e-9 and every control point is on the plane to 1e-12 (off %.2e)", x, off_plane);
+    Check(corners_hit == 4 && off_plane < 1e-12 && cv.Degree() == 1, msg);
+    std::snprintf(msg, sizeof msg, "box mid plane x=%g: perimeter 60 to 1e-3", x);
+    Check(std::fabs(SampledLength(cv, 40000) - 60.0) < 1e-3, msg);
   }
 }
 

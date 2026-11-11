@@ -2488,6 +2488,89 @@ std::vector<BrepPlaneIntersection> CoincidentFaceLoops(const ON_Brep& b, const O
   }
   return out;
 }
+// A planar face whose boundary is all straight edges meets a section plane in a STRAIGHT line; the surface-vs-plane intersector
+// returns it as a cubic through Newton-refined samples (1e-7 off the plane, corners 1e-8 off the face edges: a box section printed
+// "-9.849e-08" for x = 0). For such a face the exact answer is analytic: the line where the two planes meet, clipped by an
+// even-odd crossing count against the face's own boundary polygons (a keyhole bridge's two coincident edges cancel). Returns the
+// clipped pieces as exact two-point curves. False (nothing returned) when the face is not planar, parallel to the plane, has a
+// curved edge, or the crossing count is odd - the caller then keeps the generic route for that face.
+bool PlanarFaceSectionLines(const ON_Brep& b, int fi, const ON_Plane& plane, double jtol, std::vector<IntersectionCurve>& out) {
+  const ON_BrepFace& f = b.m_F[fi];
+  const ON_Surface* s = f.SurfaceOf();
+  if (!s) return false;
+  ON_Plane fp;
+  if (!s->IsPlanar(&fp, jtol)) return false;
+  const ON_3dVector n1 = fp.zaxis, n2 = plane.zaxis;
+  ON_3dVector d = ON_CrossProduct(n1, n2);
+  if (d.Length() < 1e-9) return false;  // parallel: no line (a coincident face is CoincidentFaceLoops()'s)
+  d.Unitize();
+  const double c12 = ON_DotProduct(n1, n2), h1 = ON_DotProduct(n1, ON_3dVector(fp.origin)), h2 = ON_DotProduct(n2, ON_3dVector(plane.origin));
+  const ON_3dPoint p0 = ON_3dPoint(((h1 - h2 * c12) * n1 + (h2 - h1 * c12) * n2) / (1.0 - c12 * c12));
+  // the face's boundary polygons (all loops) in the face plane's (x, y)
+  std::vector<std::vector<ON_2dPoint>> polys;
+  for (int li = 0; li < f.LoopCount(); ++li) {
+    const ON_BrepLoop* loop = f.Loop(li);
+    if (!loop) return false;
+    std::vector<ON_2dPoint> poly;
+    for (int k = 0; k < loop->m_ti.Count(); ++k) {
+      const ON_BrepTrim& trim = b.m_T[loop->m_ti[k]];
+      const ON_BrepEdge* e = trim.Edge();
+      const ON_Curve* ec = e ? e->EdgeCurveOf() : nullptr;
+      if (!ec) return false;
+      const bool straight = ON_LineCurve::Cast(ec) || ON_PolylineCurve::Cast(ec) ||
+                            (ON_NurbsCurve::Cast(ec) && ON_NurbsCurve::Cast(ec)->Degree() == 1 && !ON_NurbsCurve::Cast(ec)->IsRational());
+      if (!straight) return false;
+      std::vector<ON_3dPoint> ep = EdgePolylinePoints(*ec, 0.02);
+      if (ep.size() < 2) return false;
+      if (trim.m_bRev3d) std::reverse(ep.begin(), ep.end());
+      for (size_t i = 0; i + 1 < ep.size(); ++i) poly.emplace_back(ON_DotProduct(ep[i] - fp.origin, fp.xaxis), ON_DotProduct(ep[i] - fp.origin, fp.yaxis));
+    }
+    if (poly.size() < 3) return false;
+    polys.push_back(std::move(poly));
+  }
+  if (polys.empty()) return false;
+  const ON_2dPoint q0(ON_DotProduct(p0 - fp.origin, fp.xaxis), ON_DotProduct(p0 - fp.origin, fp.yaxis));
+  const ON_2dVector e2(ON_DotProduct(d, fp.xaxis), ON_DotProduct(d, fp.yaxis));
+  const ON_2dVector m2(-e2.y, e2.x);
+  std::vector<double> ts;
+  for (const std::vector<ON_2dPoint>& poly : polys) {
+    auto side = [&](const ON_2dPoint& q) {
+      const double v = m2.x * (q.x - q0.x) + m2.y * (q.y - q0.y);
+      return std::fabs(v) < 1e-12 ? 0.0 : v;  // half-open below: a vertex on the line counts as the non-negative side
+    };
+    for (size_t i = 0; i < poly.size(); ++i) {
+      const ON_2dPoint& a = poly[i];
+      const ON_2dPoint& c = poly[(i + 1) % poly.size()];
+      const double sa = side(a), sc = side(c);
+      // an edge running along the section line (a plane through a body edge, or along a keyhole bridge) is a degenerate crossing:
+      // leave that face to the generic route
+      if (std::fabs(m2.x * (a.x - q0.x) + m2.y * (a.y - q0.y)) < jtol && std::fabs(m2.x * (c.x - q0.x) + m2.y * (c.y - q0.y)) < jtol &&
+          std::hypot(c.x - a.x, c.y - a.y) > jtol)
+        return false;
+      if ((sa < 0) == (sc < 0)) continue;
+      const double u = sa / (sa - sc);
+      ts.push_back(e2.x * (a.x + (c.x - a.x) * u - q0.x) + e2.y * (a.y + (c.y - a.y) * u - q0.y));
+    }
+  }
+  if (ts.size() % 2 != 0) return false;
+  std::sort(ts.begin(), ts.end());
+  for (size_t i = 0; i + 1 < ts.size(); i += 2) {
+    if (ts[i + 1] - ts[i] <= jtol) continue;  // a sliver (a bridge's gap), not a piece
+    IntersectionCurve ic;
+    const ON_3dPoint a = p0 + d * ts[i], c = p0 + d * ts[i + 1];
+    ic.points = {a, c};
+    ic.closed = false;
+    ON_PolylineCurve pl;
+    pl.m_pline.Append(a);
+    pl.m_pline.Append(c);
+    pl.m_t.Append(0.0);
+    pl.m_t.Append(a.DistanceTo(c));
+    if (!pl.IsValid() || !pl.GetNurbForm(ic.curve) || !ic.curve.IsValid()) return false;
+    out.push_back(std::move(ic));
+  }
+  return true;
+}
+
 }  // namespace
 
 std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
@@ -2527,6 +2610,31 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
       }
       hits = std::move(kept);
       for (BrepPlaneIntersection& h : exact) hits.push_back(std::move(h));
+    }
+    // Straight-edged planar faces cut by the plane: exact lines instead of fitted cubics (see PlanarFaceSectionLines()).
+    std::vector<int> line_faces;
+    std::vector<BrepPlaneIntersection> lines;
+    for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+      if (std::find(faces.begin(), faces.end(), fi) != faces.end()) continue;
+      bool has_hit = false;
+      for (const BrepPlaneIntersection& h : hits) has_hit = has_hit || h.face_index == fi;
+      if (!has_hit) continue;  // the plane does not meet this face at all (the generic route already knew)
+      std::vector<IntersectionCurve> pieces;
+      if (!PlanarFaceSectionLines(b, fi, plane, ctol, pieces)) continue;
+      line_faces.push_back(fi);
+      for (IntersectionCurve& ic : pieces) {
+        BrepPlaneIntersection h;
+        h.face_index = fi;
+        h.curve = std::move(ic);
+        lines.push_back(std::move(h));
+      }
+    }
+    if (!line_faces.empty()) {
+      std::vector<BrepPlaneIntersection> kept;
+      for (BrepPlaneIntersection& h : hits)
+        if (std::find(line_faces.begin(), line_faces.end(), h.face_index) == line_faces.end()) kept.push_back(std::move(h));
+      hits = std::move(kept);
+      for (BrepPlaneIntersection& h : lines) hits.push_back(std::move(h));
     }
   }
   if (hits.empty()) return out;
