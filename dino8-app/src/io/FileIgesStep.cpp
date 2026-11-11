@@ -480,6 +480,47 @@ bool ProjectLoopToSurface(const ON_NurbsSurface& s, std::vector<LoopSeg>& segs, 
   return true;
 }
 
+// Moves the first / last control point of a clamped NURBS curve (its end point) to `p`.
+void MoveCurveEnd(ON_NurbsCurve& c, bool at_start, const ON_3dPoint& p) {
+  const int idx = at_start ? 0 : c.CVCount() - 1;
+  if (c.IsRational()) {
+    ON_4dPoint h;
+    c.GetCV(idx, h);
+    const double w = h.w;
+    c.SetCV(idx, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
+  } else {
+    c.SetCV(idx, p);
+  }
+}
+
+// A loop whose consecutive segments do not quite meet (an exporter's sewn keyholes / tolerance gaps, up to the file's own
+// uncertainty) is not a closed loop to ON_Brep::IsValid, so the whole face used to fall back to untrimmed. Snap each
+// segment end and the next segment's start to their midpoint (3D and parameter space), only for gaps small against the
+// loop's size; larger gaps are left alone (a genuinely open loop stays invalid).
+void HealLoopGaps(std::vector<LoopSeg>& segs, double tol) {
+  const size_t n = segs.size();
+  if (n < 2) return;
+  ON_BoundingBox bb;
+  for (const LoopSeg& sg : segs) bb.Union(sg.c3.BoundingBox());
+  const double max_gap = std::max(50.0 * tol, 3e-3 * bb.Diagonal().Length());
+  for (size_t k = 0; k < n; ++k) {
+    LoopSeg& a = segs[k];
+    LoopSeg& b = segs[(k + 1) % n];
+    const ON_3dPoint ea = a.c3.PointAtEnd(), sb = b.c3.PointAtStart();
+    const double gap = ea.DistanceTo(sb);
+    if (gap <= 0.0 || gap > max_gap) continue;
+    const ON_3dPoint m = 0.5 * (ea + sb);
+    MoveCurveEnd(a.c3, false, m);
+    MoveCurveEnd(b.c3, true, m);
+    const ON_3dPoint ea2 = a.c2.PointAtEnd(), sb2 = b.c2.PointAtStart();
+    if (ea2.DistanceTo(sb2) > 0.0) {
+      const ON_3dPoint m2 = 0.5 * (ea2 + sb2);
+      MoveCurveEnd(a.c2, false, m2);
+      MoveCurveEnd(b.c2, true, m2);
+    }
+  }
+}
+
 // The 3D curve of a 2D pcurve, evaluated through the surface (used when an
 // IGES 142 carries only the parameter-space curve).
 bool LiftToSurface(const ON_NurbsSurface& s, const ON_NurbsCurve& c2, ON_NurbsCurve& c3) {
@@ -1801,6 +1842,7 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
         if (outer_142) have_outer = build_loop(outer_142, true, outer_segs);
         if (have_outer) loops.push_back(std::move(outer_segs));
         for (int b : inner) { std::vector<LoopSeg> segs; if (build_loop(b, false, segs)) loops.push_back(std::move(segs)); }
+        for (std::vector<LoopSeg>& lp : loops) HealLoopGaps(lp, tol);
         ON_Brep* b = new ON_Brep();
         if (!loops.empty()) {
           const int fi = AddTrimmedFace(*b, new ON_NurbsSurface(ns), loops, tol);
@@ -2881,6 +2923,7 @@ bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImp
     }
     // The whole loop at once, so the pcurves stay continuous across a seam.
     if (!segs.empty() && !ProjectLoopToSurface(srf, segs, tol)) segs.clear();
+    HealLoopGaps(segs, tol);
     if (!segs.empty()) loops.push_back(std::move(segs));
   }
   if (loops.empty()) { brep.NewFace(srf); ++stats.faces_untrimmed_fallback; return true; }
