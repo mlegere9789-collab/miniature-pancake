@@ -2897,8 +2897,14 @@ const ON_SubDFace* FindCommonFace(const ON_SubDVertex* vF, const ON_SubDVertex* 
 // `rings - 1` steps) refuses (returns false) rather than try to carry
 // those tags across, and the caller keeps using `src` itself exactly as it
 // did before this helper existed.
+//
+// `allow_tags` (EvaluateFace()'s own fallback for a tagged neighbourhood, which used to clone and refine the WHOLE net per call -
+// cost proportional to the net, so evaluating every boundary/crease face of an N-face SubD was quadratic): the neighbourhood may
+// then hold boundary, crease, dart, corner and semi-sharp state, which is carried into the copy (interior crease tags, per-end
+// sharpness, pinned corners; a naked boundary stays naked by construction). The exactness argument above is unchanged: the copy's
+// own cut boundary only pollutes positions beyond the region the limit surface of the tracked face depends on.
 bool TrimToNeighborhood(const ON_SubD& src, const ON_SubDFace* f, int corner_index, int rings,
-                        ON_SubD& out, const ON_SubDFace*& f_out) {
+                        ON_SubD& out, const ON_SubDFace*& f_out, bool allow_tags = false) {
   if (f == nullptr || rings < 2) return false;
   const ON_SubDVertex* center = f->Vertex(static_cast<unsigned int>(corner_index));
   if (center == nullptr) return false;
@@ -2932,6 +2938,17 @@ bool TrimToNeighborhood(const ON_SubD& src, const ON_SubDFace* f, int corner_ind
   for (const auto& entry : distance) {
     if (entry.second > rings - 1) continue;
     const ON_SubDVertex* v = entry.first;
+    if (allow_tags) {
+      // Manifold, quad-or-better neighbourhood only: every incident edge has 1 or 2 faces.
+      for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+        const ON_SubDEdge* e = v->Edge(i);
+        if (e == nullptr || e->FaceCount() < 1 || e->FaceCount() > 2) return false;
+        // Semi-sharp weights stay on the whole-net path: the recursion's regular-patch test ignores sharpness, so a local copy
+        // would report `exact` for a limit point the weight has moved (measured: 1.5 off with exact = true).
+        if (e->IsSmooth() && (e->EndSharpness(0u) > 0.0 || e->EndSharpness(1u) > 0.0)) return false;
+      }
+      continue;
+    }
     if (!v->IsSmooth() || v->EdgeCount() != v->FaceCount() || v->EdgeCount() < 3) return false;
     for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
       const ON_SubDEdge* e = v->Edge(i);
@@ -2964,16 +2981,62 @@ bool TrimToNeighborhood(const ON_SubD& src, const ON_SubDFace* f, int corner_ind
     if (face == f) mapped_face = nf;
   }
   if (mapped_face == nullptr) return false;
+  if (allow_tags) {
+    for (const ON_SubDFace* face : faces) {
+      for (unsigned int j = 0; j < face->EdgeCount(); ++j) {
+        const ON_SubDEdge* se = face->Edge(j);
+        if (se != nullptr && se->IsSmooth() && (se->EndSharpness(0u) > 0.0 || se->EndSharpness(1u) > 0.0)) return false;
+      }
+    }
+    // Carry interior crease tags and semi-sharp weights across (a boundary edge needs nothing: the copy leaves it naked too).
+    std::unordered_set<const ON_SubDEdge*> done;
+    for (const ON_SubDFace* face : faces) {
+      for (unsigned int j = 0; j < face->EdgeCount(); ++j) {
+        const ON_SubDEdge* se = face->Edge(j);
+        if (se == nullptr || !done.insert(se).second) continue;
+        const ON_SubDVertex* sa = se->Vertex(0u);
+        const ON_SubDVertex* sb = se->Vertex(1u);
+        if (sa == nullptr || sb == nullptr) continue;
+        const auto ia = copied.find(sa);
+        const auto ib = copied.find(sb);
+        if (ia == copied.end() || ib == copied.end()) continue;
+        const ON_SubDEdge* oe = out.FindEdge(ia->second, ib->second).Edge();
+        if (oe == nullptr) continue;
+        if (se->IsCrease() && se->FaceCount() == 2) {
+          const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(oe);
+          out.SetEdgeTags(&cptr, 1, ON_SubDEdgeTag::Crease);
+        } else if (se->IsSmooth() && (se->EndSharpness(0u) > 0.0 || se->EndSharpness(1u) > 0.0) && oe->IsSmooth()) {
+          const bool same_order = (oe->Vertex(0u) == ia->second);
+          const_cast<ON_SubDEdge*>(oe)->SetSharpnessForExperts(
+              ON_SubDEdgeSharpness::FromInterval(same_order ? se->EndSharpness(0u) : se->EndSharpness(1u),
+                                                 same_order ? se->EndSharpness(1u) : se->EndSharpness(0u)));
+        }
+      }
+    }
+  }
   out.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  if (allow_tags) {
+    // Pinned corners are vertex state, not edge state.
+    for (const auto& kv : copied) {
+      if (kv.first->m_vertex_tag == ON_SubDVertexTag::Corner && kv.second->m_vertex_tag != ON_SubDVertexTag::Corner) {
+        const_cast<ON_SubDVertex*>(kv.second)->m_vertex_tag = ON_SubDVertexTag::Corner;
+        for (unsigned int i = 0; i < kv.second->EdgeCount(); ++i) {
+          if (kv.second->Edge(i) != nullptr) kv.second->Edge(i)->UnsetSectorCoefficientsForExperts();
+        }
+      }
+    }
+    out.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  }
 
   // The tracked corner must still be the same corner index of the same
   // vertex in the copy.
   const ON_SubDVertex* mapped_center = copied[center];
   if (mapped_face->EdgeCount() != f->EdgeCount() ||
       mapped_face->Vertex(static_cast<unsigned int>(corner_index)) != mapped_center ||
-      mapped_center->EdgeCount() != center->EdgeCount() || !mapped_center->IsSmooth()) {
+      mapped_center->EdgeCount() != center->EdgeCount()) {
     return false;
   }
+  if (allow_tags ? (mapped_center->m_vertex_tag != center->m_vertex_tag) : !mapped_center->IsSmooth()) return false;
   f_out = mapped_face;
   return true;
 }
@@ -3334,6 +3397,16 @@ SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
       return EvaluateFaceAdaptive(local, f_local, u, v, max_adaptive_levels, /*s_is_trimmed=*/true,
                                   kMaxWholeNetLevels)
           .point;
+    }
+  }
+
+  // A tagged (boundary / crease / semi-sharp / pinned-corner) neighbourhood: a local copy that carries the tags, refined as a
+  // whole net by the recursion (so the same 2^-kMaxWholeNetLevels exactness as before), instead of a clone of the entire SubD.
+  {
+    ON_SubD local;
+    const ON_SubDFace* f_local = nullptr;
+    if (max_adaptive_levels > 0 && TrimToNeighborhood(subd_, f0, corner, kTrimRings, local, f_local, /*allow_tags=*/true)) {
+      return EvaluateFaceAdaptive(local, f_local, u, v, max_adaptive_levels, /*s_is_trimmed=*/false, kMaxWholeNetLevels).point;
     }
   }
 
@@ -4290,6 +4363,7 @@ bool FitEdgeCurveToLimit(const SubD& sd, const ON_SubDEdge* e, const ON_SubDVert
         default: u = 0.0; v = p; break;
       }
       const SubDSurfacePoint sp = sd.EvaluateFace(f->m_id, u, v);
+      if (!sp.exact) return false;  // an approximate sample must not steer the fit: keep the Coons / Hermite curve
       const double w1 = Bern3(1, t), w2 = Bern3(2, t);
       const ON_3dVector rhs = ON_3dVector(sp.position.x, sp.position.y, sp.position.z) - Bern3(0, t) * ON_3dVector(q[0]) - Bern3(3, t) * ON_3dVector(q[3]);
       ata[0][0] += w1 * w1; ata[0][1] += w1 * w2; ata[1][0] += w1 * w2; ata[1][1] += w2 * w2;
@@ -4325,6 +4399,7 @@ bool FitInteriorToLimit(const SubD& sd, const ON_SubDFace* f, ON_3dPoint grid[4]
       for (int b = 1; b <= kN; ++b) {
         const double u = a / (kN + 1.0), v = b / (kN + 1.0);
         const SubDSurfacePoint sp = sd.EvaluateFace(f->m_id, u, v);
+        if (!sp.exact) return false;
         double w[4];
         ON_3dVector rhs(sp.position.x, sp.position.y, sp.position.z);
         for (int r = 0; r < 4; ++r) {
@@ -4398,7 +4473,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport*
       }
     }
   }
-  const bool do_fit = fit_interior && irregular_faces > 0 && static_cast<long long>(faces.size()) * irregular_faces <= 4000000LL;
+  const bool do_fit = fit_interior && irregular_faces > 0;
   std::unordered_set<const ON_SubDEdge*> seen_edges;
   std::vector<SubDNurbsPatch> patches;
   patches.reserve(faces.size());

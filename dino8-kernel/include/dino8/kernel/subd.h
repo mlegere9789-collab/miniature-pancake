@@ -1118,10 +1118,12 @@ class SubD {
   // away from an extraordinary vertex, see its doc comment). The Coons
   // interior is a bilinear blend of the boundary curves and ignores the
   // interior shape of the limit surface near an extraordinary vertex; the
-  // fit measurably lowers the deviation of irregular patches. Each
-  // EvaluateFace() call works on a copy of the SubD, so the fit is only done
-  // when `FaceCount() * irregular faces` stays within 4,000,000 (otherwise
-  // the Coons interior is kept and `fitted_patches` says how many were fitted).
+  // fit measurably lowers the deviation of irregular patches. Cost: about
+  // 10-45 ms per irregular patch, independent of the size of the net (an
+  // EvaluateFace() call copies only a local neighbourhood, tags included).
+  // A patch whose samples EvaluateFace() cannot report as exact (e.g. next to
+  // a semi-sharp edge) keeps its Coons interior; `fitted_patches` counts the
+  // patches that were fitted.
   std::vector<SubDNurbsPatch> ToNurbsPatchesWatertight(SubDWatertightReport* report = nullptr, bool fit_interior = false) const;
 
   // Watertight SubD -> NURBS conversion with a MEASURED fit tolerance.
