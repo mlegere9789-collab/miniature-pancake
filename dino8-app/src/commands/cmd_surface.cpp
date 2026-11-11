@@ -1875,11 +1875,25 @@ std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d
       }
     }
     {
-      // A sphere cap / dome / bowl or a torus segment (one flat face + one curved face): the whole-body offset, exact, through the
-      // meridian (kernel::OffsetRevolvedArcProfile). Solid=Yes (the hollow wall) is two lumps and stays on the existing path.
+      // A sphere cap / dome / bowl / torus segment (flat face + curved face) or any chain of planes, coaxial cylinders, cones and spheres
+      // (a stepped shaft, a capsule): the whole-body offset, exact, through the meridian (kernel::OffsetRevolvedArcProfile). Solid=Yes
+      // (the hollow wall between the original and the offset) is the outer and the reversed inner as two shells, like the cylinder.
+      // The plain capped cylinder keeps its own (all-faces-exact) route below.
+      PlainCylinder pc0;
+      revolved::RevMeridian rm;
       revolved::ArcSolid arcs;
-      if (!solid && revolved::RecognizeArcSolid(b, arcs)) {
-        if (std::optional<kernel::Brep> k = revolved::OffsetArcSolid(arcs, d, why)) return k;
+      bool have = false;
+      if (b.m_F.Count() >= 2 && !(b.m_F.Count() == 3 && RecognizePlainCylinder(b, pc0))) {
+        if (revolved::RecognizeArcSolid(b, arcs)) { rm = revolved::ArcSolidAsMeridian(arcs); have = true; }
+        else have = revolved::RecognizeRevolvedChain(b, rm);
+      }
+      if (have) {
+        std::optional<kernel::Brep> off = revolved::OffsetRevMeridian(rm, d, why);
+        if (!off) return std::nullopt;
+        if (!solid) return off;
+        std::optional<kernel::Brep> h = d > 0 ? HollowSolid(new ON_Brep(off->raw()), new ON_Brep(b)) : HollowSolid(new ON_Brep(b), new ON_Brep(off->raw()));
+        if (h) return h;
+        why = "the hollow revolved solid did not assemble into a valid solid";
         return std::nullopt;
       }
     }
@@ -2290,7 +2304,7 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
   // and one circular arc) goes to kernel::ShellRevolvedArcProfile - per-face thickness, a removed flat face or a removed curved face.
   {
     revolved::ArcSolid arcs;
-    if (revolved::RecognizeArcSolid(b, arcs)) {
+    if ((!removed.empty() || !overrides.empty()) && revolved::RecognizeArcSolid(b, arcs)) {
       if (std::optional<kernel::Brep> k = revolved::ShellArcSolid(arcs, removed, overrides, t, why)) return k;
       return std::nullopt;
     }
@@ -2378,6 +2392,28 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
       return std::nullopt;
     } catch (const std::exception& ex) {
       why = ex.what();
+      return std::nullopt;
+    }
+  }
+  // Any other solid of REVOLUTION (planes, coaxial cylinders, cones, spheres chained into one meridian: a stepped shaft, a capsule, a
+  // funnel) and the uniform CLOSED hollow of a sphere cap / dome: the meridian goes to the kernel. Removed faces / per-face thickness
+  // use kernel::ShellRevolvedArcProfile; a uniform closed hollow is the original (outer shell) plus its inward offset reversed (the
+  // cavity), the same two-shell assembly the sphere / torus / cylinder use.
+  {
+    revolved::RevMeridian rm;
+    revolved::ArcSolid arcs2;
+    bool have = false;
+    if (revolved::RecognizeArcSolid(b, arcs2)) { rm = revolved::ArcSolidAsMeridian(arcs2); have = true; }
+    else have = revolved::RecognizeRevolvedChain(b, rm);
+    if (have) {
+      if (removed.empty() && overrides.empty()) {
+        std::optional<kernel::Brep> inner = revolved::OffsetRevMeridian(rm, -t, why);
+        if (!inner) return std::nullopt;
+        if (std::optional<kernel::Brep> h = HollowSolid(new ON_Brep(b), new ON_Brep(inner->raw()))) return h;
+        why = "the hollow revolved solid did not assemble into a valid solid";
+        return std::nullopt;
+      }
+      if (std::optional<kernel::Brep> k = revolved::ShellRevMeridian(rm, removed, overrides, t, why)) return k;
       return std::nullopt;
     }
   }
