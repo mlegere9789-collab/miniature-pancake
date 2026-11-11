@@ -8,6 +8,8 @@
 #   EditHistory 3 levels=1 rebuilds with 1 round.
 # SubDBox places its base corners on the active CPlane (the z of the typed corners is projected to the CPlane, as for Box), so box B is built at
 # z = 0..10 and then moved up by (0,0,5) to occupy [5,15]^3; typing 5,5,5 15,15,5 gives [5,15]x[5,15]x[0,10], whose overlaps with A are 250 / 1750 / 750.
+# With History On the operands of a recorded boolean are hidden, so the script runs Show before it selects B (SelID 2) to Move it; without that Move
+# finds nothing to move, waits for objects, and swallows the rest of the script (every later command, New included, is fed to it).
 # smoke.sh runs this script; there is no @TMP@ substitution here.
 
 SetActiveViewport Top
@@ -58,6 +60,7 @@ SelID 1
 BooleanIntersection
 SelID 2
 Enter
+Show
 SelNone
 SelID 3
 Volume
@@ -85,6 +88,7 @@ BooleanDifference
 Levels=2
 SelID 2
 Enter
+Show
 SelNone
 SelID 2
 Move

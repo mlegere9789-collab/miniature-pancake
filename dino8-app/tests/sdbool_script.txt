@@ -7,6 +7,8 @@
 # of a SubD reads the control net, which for a fully creased result equals the limit volume.
 # SubDBox places its base corners on the active CPlane (the z of the typed corners is projected to the CPlane, as for Box), so box B is built at
 # z = 0..10 and then moved up by (0,0,5) to occupy [5,15]^3; typing 5,5,5 15,15,5 gives [5,15]x[5,15]x[0,10], whose overlaps with A are 250 / 1750 / 750.
+# BooleanUnion takes ONE set of objects (it unions everything selected; BooleanDifference and BooleanIntersection take two sets), so the union cases
+# type BooleanUnion with nothing preselected, then SelAll (the two boxes are the only objects) and Enter; Levels=2 is typed before the objects.
 # smoke.sh runs this script; there is no @TMP@ substitution here.
 
 SetActiveViewport Top
@@ -54,9 +56,8 @@ Crease
 5,15,10
 Enter
 SelNone
-SelName BoxA
 BooleanUnion
-SelName BoxB
+SelAll
 Enter
 SelLast
 Volume
@@ -230,10 +231,9 @@ Move
 SelLast
 SetObjectName BoxB
 SelNone
-SelName BoxA
 BooleanUnion
 Levels=2
-SelName BoxB
+SelAll
 Enter
 SelLast
 Volume
@@ -252,9 +252,8 @@ Move
 SelLast
 SetObjectName BoxB
 SelNone
-SelName BoxA
 BooleanUnion
-SelName BoxB
+SelAll
 Enter
 SelLast
 Volume
