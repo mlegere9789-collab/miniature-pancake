@@ -2975,12 +2975,62 @@ int EdgeIndexByEndpoints(const ON_Brep& b, Point3d p0, Point3d p1, double tol) {
   return -1;
 }
 
+// A radius law the history can record and replay: kind 1 = sqrt, 2 = quadratic, 3 = smooth (smoothstep) between r0 and r1 along the
+// edge, 4 = monotone cubic through `samples` (t, r); `tol` is the absolute radius tolerance the kernel samples it to.
+struct FilletLawSpec {
+  int kind = 0;
+  double r0 = 0, r1 = 0, tol = 0;
+  std::vector<std::pair<double, double>> samples;
+};
+
+// Monotone cubic (Fritsch-Carlson / PCHIP) through strictly increasing (x, y) samples; held constant outside [x0, xn].
+inline double FilletMonotoneCubicAt(const std::vector<std::pair<double, double>>& p, double x) {
+  const size_t n = p.size();
+  if (x <= p.front().first) return p.front().second;
+  if (x >= p.back().first) return p.back().second;
+  std::vector<double> h(n - 1), d(n - 1), m(n);
+  for (size_t i = 0; i + 1 < n; ++i) { h[i] = p[i + 1].first - p[i].first; d[i] = (p[i + 1].second - p[i].second) / h[i]; }
+  if (n == 2) { m[0] = m[1] = d[0]; }
+  else {
+    for (size_t i = 1; i + 1 < n; ++i) {
+      if (d[i - 1] * d[i] <= 0.0) m[i] = 0.0;
+      else {
+        const double w1 = 2 * h[i] + h[i - 1], w2 = h[i] + 2 * h[i - 1];
+        m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
+      }
+    }
+    auto end_slope = [](double h0, double h1, double d0, double d1) {
+      double s = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+      if (s * d0 <= 0.0) s = 0.0;
+      else if (d0 * d1 <= 0.0 && std::fabs(s) > 3.0 * std::fabs(d0)) s = 3.0 * d0;
+      return s;
+    };
+    m[0] = end_slope(h[0], h[1], d[0], d[1]);
+    m[n - 1] = end_slope(h[n - 2], h[n - 3], d[n - 2], d[n - 3]);
+  }
+  size_t i = 0;
+  while (i + 2 < n && x > p[i + 1].first) ++i;
+  const double s = (x - p[i].first) / h[i], s2 = s * s, s3 = s2 * s;
+  return (2 * s3 - 3 * s2 + 1) * p[i].second + (s3 - 2 * s2 + s) * h[i] * m[i] + (-2 * s3 + 3 * s2) * p[i + 1].second + (s3 - s2) * h[i] * m[i + 1];
+}
+
+std::function<double(double)> FilletLawFn(const FilletLawSpec& sp) {
+  if (sp.kind == 4) {
+    const std::vector<std::pair<double, double>> pts = sp.samples;
+    return [pts](double s) { return FilletMonotoneCubicAt(pts, s); };
+  }
+  const double r0 = sp.r0, r1 = sp.r1;
+  const int k = sp.kind;
+  return [=](double s) { return r0 + (r1 - r0) * (k == 1 ? std::sqrt(s) : k == 2 ? s * s : s * s * (3.0 - 2.0 * s)); };
+}
+
 // What a successful exact FilletEdge/ChamferEdge hands to CommitEdgeBlend.
 struct EdgeBlendOp {
   bool chamfer = false;
   double d1 = 0;                  // radius (fillet) / distance1 (chamfer)
   std::optional<double> d2;       // chamfer distance2 (unset = symmetric)
   bool recordable = true;         // false: this build is not what the rebuild reproduces (angle chamfer)
+  std::optional<FilletLawSpec> law;  // a Law= fillet: the record also carries the law so the rebuild replays it
   std::vector<std::pair<Point3d, Point3d>> edges;  // endpoints on the PRE-edit solid
 };
 
@@ -3051,6 +3101,17 @@ ObjectId CommitEdgeBlend(CommandContext& ctx, ObjectId id, const ON_Brep& before
     rec.num["r"] = op.d1;
     rec.num["d2"] = op.d2.value_or(op.d1);
     rec.num["sym"] = op.d2.has_value() ? 0.0 : 1.0;
+    if (op.law) {
+      rec.num["law"] = op.law->kind;
+      rec.num["law_tol"] = op.law->tol;
+      rec.num["law_r0"] = op.law->r0;
+      rec.num["law_r1"] = op.law->r1;
+      rec.num["law_n"] = static_cast<double>(op.law->samples.size());
+      for (size_t i = 0; i < op.law->samples.size(); ++i) {
+        rec.num["law_t" + std::to_string(i)] = op.law->samples[i].first;
+        rec.num["law_v" + std::to_string(i)] = op.law->samples[i].second;
+      }
+    }
     ctx.Doc().SetHistoryRecord(new_id, std::move(rec));
     made.insert(new_id);
     note = "; History is On: the original solid " + std::to_string(id) + " is kept hidden as the source and the result is object " + std::to_string(new_id) +
@@ -5018,50 +5079,20 @@ class FilletEdgeCommand : public Command {
   }
 
   // --- Law= (non-linear radius law) ---------------------------------------------------------------------------------
-  // Monotone cubic (Fritsch-Carlson / PCHIP) through strictly increasing (x, y) samples; held constant outside [x0, xn].
-  static double MonotoneCubicAt(const std::vector<std::pair<double, double>>& p, double x) {
-    const size_t n = p.size();
-    if (x <= p.front().first) return p.front().second;
-    if (x >= p.back().first) return p.back().second;
-    std::vector<double> h(n - 1), d(n - 1), m(n);
-    for (size_t i = 0; i + 1 < n; ++i) { h[i] = p[i + 1].first - p[i].first; d[i] = (p[i + 1].second - p[i].second) / h[i]; }
-    if (n == 2) { m[0] = m[1] = d[0]; }
-    else {
-      for (size_t i = 1; i + 1 < n; ++i) {
-        if (d[i - 1] * d[i] <= 0.0) m[i] = 0.0;
-        else {
-          const double w1 = 2 * h[i] + h[i - 1], w2 = h[i] + 2 * h[i - 1];
-          m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]);
-        }
-      }
-      auto end_slope = [](double h0, double h1, double d0, double d1) {
-        double s = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
-        if (s * d0 <= 0.0) s = 0.0;
-        else if (d0 * d1 <= 0.0 && std::fabs(s) > 3.0 * std::fabs(d0)) s = 3.0 * d0;
-        return s;
-      };
-      m[0] = end_slope(h[0], h[1], d[0], d[1]);
-      m[n - 1] = end_slope(h[n - 2], h[n - 3], d[n - 2], d[n - 3]);
-    }
-    size_t i = 0;
-    while (i + 2 < n && x > p[i + 1].first) ++i;
-    const double s = (x - p[i].first) / h[i], s2 = s * s, s3 = s2 * s;
-    return (2 * s3 - 3 * s2 + 1) * p[i].second + (s3 - 2 * s2 + s) * h[i] * m[i] + (-2 * s3 + 3 * s2) * p[i + 1].second + (s3 - s2) * h[i] * m[i + 1];
-  }
-
   // Law text -> radius law r(s), s in [0,1]. Named shapes ride the first/last Radii= handle radii; "t:r,..." samples
   // are interpolated by MonotoneCubicAt. Only structural problems are refused here (the kernel owns every geometric
   // refusal, including non-monotone / non-positive laws, and its reason is printed unchanged).
-  bool BuildLaw(std::function<double(double)>& law, std::string& desc, std::string& err) const {
+  bool BuildLaw(FilletLawSpec& spec, std::function<double(double)>& law, std::string& desc, std::string& err) const {
     if (law_text_.find(':') == std::string::npos) {
       if (radii_.size() < 2) { err = "Law=" + law_text_ + " needs Radii=t0:r0,t1:r1 to give the radius at each end of the edge (or give Law as t:r samples)"; return false; }
       const double r0 = radii_.front().second, r1 = radii_.back().second;
-      std::function<double(double)> shape;
-      if (law_text_ == "sqrt") shape = [](double s) { return std::sqrt(s); };
-      else if (law_text_ == "quadratic") shape = [](double s) { return s * s; };
-      else if (law_text_ == "smooth") shape = [](double s) { return s * s * (3.0 - 2.0 * s); };
+      if (law_text_ == "sqrt") spec.kind = 1;
+      else if (law_text_ == "quadratic") spec.kind = 2;
+      else if (law_text_ == "smooth") spec.kind = 3;
       else { err = "Law must be sqrt, quadratic, smooth, or t:r samples such as 0:1,0.5:1.4,1:3 (got \"" + law_text_ + "\")"; return false; }
-      law = [=](double s) { return r0 + (r1 - r0) * shape(s); };
+      spec.r0 = r0;
+      spec.r1 = r1;
+      law = FilletLawFn(spec);
       desc = "Law=" + law_text_ + " from radius " + FormatNumber(r0) + " to " + FormatNumber(r1);
       return true;
     }
@@ -5080,7 +5111,9 @@ class FilletEdgeCommand : public Command {
     std::sort(pts.begin(), pts.end());
     if (pts.size() < 2) { err = "Law samples need at least two t:r pairs"; return false; }
     for (size_t i = 0; i + 1 < pts.size(); ++i) if (pts[i + 1].first - pts[i].first < 1e-9) { err = "Law samples must have distinct t values"; return false; }
-    law = [pts](double s) { return MonotoneCubicAt(pts, s); };
+    spec.kind = 4;
+    spec.samples = pts;
+    law = FilletLawFn(spec);
     desc = "Law=" + std::to_string(pts.size()) + " monotone-cubic samples, radius " + FormatNumber(pts.front().second) + " to " + FormatNumber(pts.back().second);
     return true;
   }
@@ -5095,8 +5128,9 @@ class FilletEdgeCommand : public Command {
       return;
     }
     std::function<double(double)> law;
+    FilletLawSpec spec;
     std::string desc, err;
-    if (!BuildLaw(law, desc, err)) { ctx.Warn(label + ": " + err); return; }
+    if (!BuildLaw(spec, law, desc, err)) { ctx.Warn(label + ": " + err); return; }
     double tol = law_tol_;
     if (!(tol > 0.0)) {
       double rmax = 0.0;
@@ -5125,17 +5159,20 @@ class FilletEdgeCommand : public Command {
     }
     size_t segments = 1;
     try { segments = kernel::SampleFilletRadiusLaw(p0.DistanceTo(p1), law, tol).size() - 1; } catch (const std::exception&) {}
-    ctx.Doc().BeginChange(label);
-    if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
-      orig->kind = ObjectKind::Brep;
-      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
-      orig->brep->raw() = out;
-      orig->surface.reset();
-      orig->InvalidateDisplay();
-    }
+    // Same commit path as the constant-radius exact fillet: with History On the source is kept hidden and the result records the
+    // law, so it follows edits of the source; with History Off the solid is replaced in place as before.
+    spec.tol = tol;
+    EdgeBlendOp op;
+    op.chamfer = false;
+    op.d1 = law(0.0);
+    op.law = spec;
+    op.edges.emplace_back(p0, p1);
+    std::set<ObjectId> made;
+    std::string note;
+    CommitEdgeBlend(ctx, pick.id, b, out, label, op, made, note);
     ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) + " replaced with an exact " +
                (convex ? "convex" : "concave") + " non-linear-law fillet (" + desc + "; sampled into " + std::to_string(segments) +
-               " linear segments within radius tolerance " + FormatNumber(tol) + ")");
+               " linear segments within radius tolerance " + FormatNumber(tol) + ")" + note);
   }
 
   std::string law_text_;  // Fillet only: Law= text (sqrt|quadratic|smooth or t:r samples); empty = linear Radii=/constant Radius
@@ -6838,6 +6875,17 @@ std::optional<SceneObject> RebuildEdgeBlend(CommandContext& ctx, const HistoryIn
   const double d2 = sym ? r : num("d2", r);
   const int n = static_cast<int>(num("n")), groups = static_cast<int>(num("groups", 1));
   if (!(r > 0) || n < 1) { why = "the record holds no usable distance or edge list"; return std::nullopt; }
+  std::optional<FilletLawSpec> law_spec;  // a Law= fillet replays the recorded radius law instead of a constant radius
+  if (num("law") != 0.0) {
+    FilletLawSpec sp;
+    sp.kind = static_cast<int>(num("law"));
+    sp.r0 = num("law_r0");
+    sp.r1 = num("law_r1");
+    sp.tol = num("law_tol");
+    const int ns = static_cast<int>(num("law_n"));
+    for (int i = 0; i < ns; ++i) sp.samples.emplace_back(num("law_t" + std::to_string(i)), num("law_v" + std::to_string(i)));
+    law_spec = sp;
+  }
   ON_Brep cur = src.brep->raw();
   for (int g = 0; g < groups; ++g) {
     std::vector<std::pair<Point3d, Point3d>> es;
@@ -6861,7 +6909,12 @@ std::optional<SceneObject> RebuildEdgeBlend(CommandContext& ctx, const HistoryIn
     kernel::Brep out;
     auto attempt = [&](bool convex, std::string& err) {
       try {
-        if (fillet) {
+        if (fillet && law_spec) {
+          if (es.size() != 1) throw std::invalid_argument("a radius-law fillet records exactly one edge per step");
+          const std::function<double(double)> law = FilletLawFn(*law_spec);
+          out = convex ? kernel::FilletConvexEdgeLaw(kb, es[0].first, es[0].second, law, law_spec->tol)
+                       : kernel::FilletConcaveEdgeLaw(kb, es[0].first, es[0].second, law, law_spec->tol);
+        } else if (fillet) {
           out = convex ? kernel::FilletConvexEdges(kb, es, r) : kernel::FilletConcaveEdges(kb, es, r);
         } else {
           kernel::Brep b = kb;
