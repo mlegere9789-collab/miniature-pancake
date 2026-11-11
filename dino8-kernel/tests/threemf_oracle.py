@@ -5,6 +5,10 @@
   threemf_oracle.py hex OUT.3mf          write it and print it as a C array body (what is pasted into the test)
   threemf_oracle.py dump FILE.3mf        read any 3MF with zipfile + ElementTree and print what it holds (unit, objects, build)
   threemf_oracle.py check FILE.3mf EXPECT.json   dump + compare against an expected structure (exit 1 on any difference)
+  threemf_oracle.py mesh FILE.3mf        one line "key=value ..." summarising the build: unit, parts, vertices, triangles, bounding
+                                         box, signed volume (divergence theorem over the triangles), whether every directed edge
+                                         is matched by its reverse (closed, consistently oriented), the ZIP method of the model part
+  threemf_oracle.py inchbox OUT.3mf      write a deflate-compressed 1 x 2 x 3 INCH box (8 vertices, 12 outward triangles)
 
 The fixture is a tetrahedron object, an assembly of two components of it (one rotated 90 degrees about z and moved, one mirrored
 in x), and two build items, one scaled by 2 and lifted: it exercises units, components, row-vector transforms, a mirror (winding
@@ -77,6 +81,49 @@ def dump(path):
     return {'entries': names, 'methods': methods, 'model_part': target, 'unit': model.get('unit'), 'objects': objects, 'build': build}
 
 
+INCH_V = [(0, 0, 0), (1, 0, 0), (1, 2, 0), (0, 2, 0), (0, 0, 3), (1, 0, 3), (1, 2, 3), (0, 2, 3)]
+INCH_T = [(0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4), (3, 7, 6), (3, 6, 2), (0, 4, 7), (0, 7, 3), (1, 2, 6), (1, 6, 5)]
+
+
+def write_inchbox(path):
+    v = ''.join('<vertex x="%s" y="%s" z="%s"/>' % p for p in INCH_V)
+    t = ''.join('<triangle v1="%d" v2="%d" v3="%d"/>' % p for p in INCH_T)
+    model = ('<?xml version="1.0" encoding="UTF-8"?><model unit="inch" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+             '<resources><object id="1" name="inchbox" type="model"><mesh><vertices>' + v + '</vertices><triangles>' + t +
+             '</triangles></mesh></object></resources><build><item objectid="1"/></build></model>')
+    rels = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('_rels/.rels', rels)
+        z.writestr('3D/3dmodel.model', model)
+
+
+def mesh_summary(path):
+    d = dump(path)
+    verts, tris = 0, 0
+    vol = 0.0
+    lo, hi = [1e300] * 3, [-1e300] * 3
+    edges = {}
+    for item in d['build']:
+        o = d['objects'][item[0]]
+        pts = o['verts']
+        verts += len(pts)
+        for p in pts:
+            for k in range(3):
+                lo[k] = min(lo[k], p[k]); hi[k] = max(hi[k], p[k])
+        for a, b, c in o['tris']:
+            tris += 1
+            pa, pb, pc = pts[a], pts[b], pts[c]
+            vol += (pa[0] * (pb[1] * pc[2] - pb[2] * pc[1]) - pa[1] * (pb[0] * pc[2] - pb[2] * pc[0]) + pa[2] * (pb[0] * pc[1] - pb[1] * pc[0])) / 6.0
+            key = [tuple(round(x + 0.0, 5) for x in p) for p in (pa, pb, pc)]  # by position, so split vertices still match
+            for e in ((key[0], key[1]), (key[1], key[2]), (key[2], key[0])):
+                edges[(item[0], e)] = edges.get((item[0], e), 0) + 1
+    closed = all(edges.get((oid, (b, a)), 0) == n for (oid, (a, b)), n in edges.items())
+    return ('unit=%s parts=%d vertices=%d triangles=%d bbox=%.6g,%.6g,%.6g,%.6g,%.6g,%.6g volume=%.9g closed=%d method=%d' %
+            (d['unit'], len(d['build']), verts, tris, lo[0] + 0.0, lo[1] + 0.0, lo[2] + 0.0, hi[0] + 0.0, hi[1] + 0.0, hi[2] + 0.0, vol, 1 if closed else 0,
+             d['methods'][d['model_part']]))
+
+
 def main(argv):
     cmd = argv[1]
     if cmd in ('fixture', 'hex'):
@@ -85,6 +132,10 @@ def main(argv):
             data = open(argv[2], 'rb').read()
             print(len(data))
             print(', '.join('0x%02x' % b for b in data))
+    elif cmd == 'mesh':
+        print(mesh_summary(argv[2]))
+    elif cmd == 'inchbox':
+        write_inchbox(argv[2])
     elif cmd == 'dump':
         print(json.dumps(dump(argv[2]), indent=1, sort_keys=True))
     elif cmd == 'check':
