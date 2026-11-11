@@ -3864,6 +3864,24 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
       if (li < 0 || li >= brep.m_L.Count() || brep.m_L[li].m_type != ON_BrepLoop::inner) continue;
       std::vector<UVPt> old_hole = FaceBoundaryLoop(brep, i, 24, slot);
       if (old_hole.size() < 3) continue;
+      // This op's own fresh closed chain may re-derive that same hole (a boss subtracted or unioned back over its own footprint:
+      // the fresh chain already covers the region, see the UnbridgeKeyholes() call above for the keyhole form of the same
+      // duplicate). Keeping both holed the region twice (measured: HSO_BOSS_seq_c came out with 11 faces / 21 edges instead of
+      // 10 / 19). Same match as the keyhole case: the 3D bounding boxes agree within the stitch tolerance.
+      {
+        ON_BoundingBox old_box;
+        for (const UVPt& p : old_hole) old_box.Set(p.p, true);
+        bool duplicated = false;
+        for (const Chain& fresh : closed_chains) {
+          ON_BoundingBox fresh_box;
+          for (const UVPt& p : fresh) fresh_box.Set(p.p, true);
+          if (old_box.m_min.DistanceTo(fresh_box.m_min) <= stitch_tol && old_box.m_max.DistanceTo(fresh_box.m_max) <= stitch_tol) {
+            duplicated = true;
+            break;
+          }
+        }
+        if (duplicated) continue;
+      }
       const Point2d probe = old_hole.front().uv;
       for (Fragment& fr : ff.frags) {
         if (PointInPolygon(ToPoly(fr.outer), probe)) {
