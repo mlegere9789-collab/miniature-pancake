@@ -5964,6 +5964,14 @@
   "help": "Toolbar\nMenu\nTools\nNot on menus.\nThe PlugInManager command opens Plug-ins Options to manage plug-ins.\nSee also\nMigratePlugins\nSearches for 3rd-party plug-ins installed for previous versions of Rhino to load in the current version of Rhino if they are compatible.\nPackageManager\nAssists in the discovery, installation, and management of Rhino and Grasshopper plug-ins.\nMigratePlugins\nToolbar\nMenu\nNot on toolbars.\nNot on menus.\nThe MigratePlugins command searches for 3rd-party plug-ins installed for previous versions of Rhino to load in the current version of Rhino if they are compatible.\nRhinoceros 8 © 2010- 2026 Robert McNeel & Associates. 16-Aug-2026"
  },
  {
+  "name": "Pocket",
+  "description": "Cut a closed footprint curve into a solid along the surface normal to a depth: a flat floor and walls that end exactly on the (curved) face, built by the exact kernel route with a mesh boolean only as a fallback.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
   "name": "Point",
   "description": "Draw a single point object.",
   "toolbars": "Main, Main2, Point",

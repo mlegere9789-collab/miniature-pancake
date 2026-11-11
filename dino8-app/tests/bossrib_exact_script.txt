@@ -6,6 +6,10 @@
 #   plane boss : box 10 x 10 x 10 (volume 1000) + a r = 2 circle on its top face raised 5      -> 1000 + pi 2^2 5 = 1062.83
 #   plane rib  : box 10 x 10 x 10 + a straight 6-long spine on its top face, height 2, thickness 1 (default) -> 1000 + 6 x 2 x 1 = 1012
 #   fallback   : a curved (arc) rib spine is not a straight line, so the kernel declines and the mesh construction runs
+#   plane pocket : the same box, a r = 2 circle on its top face cut 3 deep                -> 1000 - pi 2^2 3 = 962.30
+#   sphere pocket: a ball of radius 5 (523.60), a r = 1.5 circle at its pole cut 1 deep (floor z = 4)
+#                  -> 523.60 - [(2 pi / 3)(5^3 - (5^2 - 1.5^2)^(3/2)) - 4 pi 1.5^2] = 523.60 - 6.261 = 517.34
+#   pocket fallback: an OPEN (arc) footprint is refused by the kernel, the mesh boolean runs and the message names the reason
 
 SetActiveViewport Top
 
@@ -39,6 +43,39 @@ Box 0,0,0 10,10,0 10
 Arc 3,5,10 5,7,10 7,5,10
 SelLast
 Rib
+SelPolysrf
+Enter
+2
+New
+BRXBEGIN_pocket
+Box 0,0,0 10,10,0 10
+Circle 5,5,10 2
+SelLast
+Pocket
+SelPolysrf
+Enter
+3
+SelLast
+Volume
+
+New
+BRXBEGIN_pocketsph
+Sphere 0,0,0 5
+Circle 0,0,5 1.5
+SelLast
+Pocket
+SelPolysrf
+Enter
+1
+SelLast
+Volume
+
+New
+BRXBEGIN_pocketarc
+Box 0,0,0 10,10,0 10
+Arc 3,5,10 5,7,10 7,5,10
+SelLast
+Pocket
 SelPolysrf
 Enter
 2

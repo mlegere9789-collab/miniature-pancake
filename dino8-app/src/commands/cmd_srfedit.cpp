@@ -2518,17 +2518,18 @@ kernel::Mesh LoftRingsCapped(const std::vector<std::vector<Point3d>>& rings) {
 
 class BossRibCommand : public Command {
  public:
-  explicit BossRibCommand(bool rib) : rib_(rib) {}
+  explicit BossRibCommand(bool rib, bool pocket = false) : rib_(rib), pocket_(pocket) {}
+  std::string Name() const { return pocket_ ? "Pocket" : (rib_ ? "Rib" : "Boss"); }
   void Begin(CommandContext&) override {
     if (rib_) options = {{"Thickness", FormatNumber(thickness_), {}, true, false}};
-    WantObjects(rib_ ? "Select the rib's spine curve" : "Select the closed footprint curve");
+    WantObjects(rib_ ? "Select the rib's spine curve" : (pocket_ ? "Select the closed footprint curve of the pocket" : "Select the closed footprint curve"));
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Thickness") thickness_ = std::atof(v.c_str()); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (!curve_) {
       for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve) { curve_ = *o->curve; break; }
       for (ObjectId id : ids) ctx.Doc().Select(id, false);
-      if (!curve_) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": select a curve"); Finish(); return; }
+      if (!curve_) { ctx.Warn(Name() + ": select a curve"); Finish(); return; }
       accept_preselection = false;
       WantObjects("Select the base surface or solid to follow");
       return;
@@ -2542,8 +2543,8 @@ class BossRibCommand : public Command {
       if (o->kind == ObjectKind::Brep) { if (std::optional<ON_Brep> b = BrepOfObject(*o)) { brep_ = *b; solid_id_ = id; break; } }
       else if (std::optional<ON_NurbsSurface> s = SurfaceOfObject(*o)) { srf_ = *s; solid_id_ = id; break; }
     }
-    if (!srf_ && !brep_) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": select a surface or polysurface to follow"); Finish(); return; }
-    WantNumber(rib_ ? "Rib height" : "Boss height", 5);
+    if (!srf_ && !brep_) { ctx.Warn(Name() + ": select a surface or polysurface to follow"); Finish(); return; }
+    WantNumber(rib_ ? "Rib height" : (pocket_ ? "Pocket depth" : "Boss height"), 5);
   }
   bool ProjectToBase(Point3d q, Point3d& on, Vector3d& nrm) {
     if (brep_) {
@@ -2592,7 +2593,15 @@ class BossRibCommand : public Command {
       try {
         kernel::Brep fused;
         double added = 0;
-        if (!rib_) {
+        if (pocket_) {
+          // The footprint lies ON the base surface: lift it above (outside) by `sink`, sweep inward by depth + lift.
+          if (!curve_->IsClosed()) { kernel_note_ = "the footprint curve is not closed"; return false; }
+          kernel::NurbsCurve moved = *curve_;
+          moved.raw().Translate(ON_3dVector(nrm.x * sink, nrm.y * sink, nrm.z * sink));
+          kernel::PocketResult r = kernel::MakePocket(kb, moved, Vector3d(-nrm.x, -nrm.y, -nrm.z), h + sink);
+          fused = std::move(r.brep);
+          added = r.removed_volume;
+        } else if (!rib_) {
           if (!curve_->IsClosed()) { kernel_note_ = "the footprint curve is not closed"; return false; }
           kernel::NurbsCurve moved = *curve_;
           moved.raw().Translate(ON_3dVector(-nrm.x * sink, -nrm.y * sink, -nrm.z * sink));
@@ -2610,15 +2619,20 @@ class BossRibCommand : public Command {
           fused = std::move(r.brep);
           added = r.added_volume;
         }
-        ctx.Doc().BeginChange(rib_ ? "Rib" : "Boss");
+        ctx.Doc().BeginChange(Name());
         SceneObject like;
         if (const SceneObject* bo = ctx.Doc().Find(solid_id_)) like = *bo;
-        ObjectId nid = AddObject(ctx, SceneObject::MakeBrep(fused), rib_ ? "Rib" : "Boss");
+        ObjectId nid = AddObject(ctx, SceneObject::MakeBrep(fused), Name());
         if (SceneObject* n2 = ctx.Doc().Find(nid)) n2->layer_index = like.layer_index;
         ctx.Doc().Remove(solid_id_);
-        ctx.Print(std::string(rib_ ? "Rib" : "Boss") + ": exact kernel route (" + (rib_ ? "MakeRib" : "MakeBoss") + "), " +
-                  std::to_string(fused.raw().m_F.Count()) + " face(s), closed B-rep solid, volume added " + FormatNumber(added) + ", sunk " + FormatNumber(sink) +
-                  " into the base");
+        if (pocket_) {
+          ctx.Print("Pocket: exact kernel route (MakePocket), " + std::to_string(fused.raw().m_F.Count()) + " face(s), closed B-rep solid, volume removed " +
+                    FormatNumber(added) + ", entry lifted " + FormatNumber(sink) + " above the base");
+        } else {
+          ctx.Print(Name() + ": exact kernel route (" + (rib_ ? "MakeRib" : "MakeBoss") + "), " +
+                    std::to_string(fused.raw().m_F.Count()) + " face(s), closed B-rep solid, volume added " + FormatNumber(added) + ", sunk " + FormatNumber(sink) +
+                    " into the base");
+        }
         return true;
       } catch (const std::exception& e) {
         if (first_why.empty()) first_why = e.what();
@@ -2641,7 +2655,7 @@ class BossRibCommand : public Command {
       const Point3d q = curve_->PointAt(t);
       Point3d on;
       Vector3d nrm;
-      if (!ProjectToBase(q, on, nrm)) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": could not project the curve onto the surface"); Finish(); return; }
+      if (!ProjectToBase(q, on, nrm)) { ctx.Warn(Name() + ": could not project the curve onto the surface"); Finish(); return; }
       if (!nrm.Unitize()) nrm = Vector3d(0, 0, 1);
       if (rib_) {
         const double taper = std::sin(ON_PI * frac);
@@ -2651,14 +2665,19 @@ class BossRibCommand : public Command {
         const double w = thickness_ * 0.5 * taper, hh = h * taper;
         rings.push_back({on - side * w, on + side * w, on + side * w + nrm * hh, on - side * w + nrm * hh});
       } else {
-        bottom.push_back(on - nrm * eps);
-        top.push_back(on + nrm * h);
+        if (pocket_) {
+          bottom.push_back(on - nrm * h);
+          top.push_back(on + nrm * eps);
+        } else {
+          bottom.push_back(on - nrm * eps);
+          top.push_back(on + nrm * h);
+        }
       }
     }
     if (!rib_) rings = {bottom, top};
     kernel::Mesh solid;
-    try { solid = LoftRingsCapped(rings); } catch (const std::exception& e) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": could not build the solid (" + e.what() + ")"); Finish(); return; }
-    ctx.Doc().BeginChange(rib_ ? "Rib" : "Boss");
+    try { solid = LoftRingsCapped(rings); } catch (const std::exception& e) { ctx.Warn(Name() + ": could not build the solid (" + e.what() + ")"); Finish(); return; }
+    ctx.Doc().BeginChange(Name());
     kernel::Mesh result = solid;
     bool united = false;
     SceneObject like;
@@ -2666,21 +2685,29 @@ class BossRibCommand : public Command {
       if (const SceneObject* bo = ctx.Doc().Find(solid_id_)) {
         like = *bo;
         if (std::optional<kernel::Mesh> base_mesh = MeshOf(*bo, 0.05)) {
-          try { result = kernel::BooleanCombine(*base_mesh, solid, kernel::BooleanOp::Union); united = true; } catch (const std::exception&) {}
+          try { result = kernel::BooleanCombine(*base_mesh, solid, pocket_ ? kernel::BooleanOp::Difference : kernel::BooleanOp::Union); united = true; } catch (const std::exception&) {}
         }
       }
     }
-    ObjectId nid = AddObject(ctx, SceneObject::MakeMesh(result), rib_ ? "Rib" : "Boss");
+    if (pocket_ && !united) {
+      // A pocket that could not be cut must not leave the cutter tool behind as a "result": report and change nothing.
+      ctx.Warn("Pocket: neither the exact kernel route nor the mesh boolean could cut the pocket" +
+               (kernel_note_.empty() ? std::string() : " (kernel: " + kernel_note_.substr(0, 160) + ")") + "; nothing was changed");
+      Finish();
+      return;
+    }
+    ObjectId nid = AddObject(ctx, SceneObject::MakeMesh(result), Name());
     if (SceneObject* n2 = ctx.Doc().Find(nid)) n2->layer_index = like.layer_index;
     if (united) ctx.Doc().Remove(solid_id_);
-    ctx.Print(std::string(rib_ ? "Rib" : "Boss") + ": " + (rib_ ? "tapered wall" : "protrusion") + " of height " + FormatNumber(h) + " built following the base's local surface normal at " + std::to_string(n) +
-              " points along the curve" + (united ? "; unioned with the base solid" : "; base could not be meshed/unioned, result left standalone") +
+    ctx.Print(Name() + ": " + (rib_ ? "tapered wall" : (pocket_ ? "recess" : "protrusion")) + " of " + (pocket_ ? "depth " : "height ") + FormatNumber(h) + " built following the base's local surface normal at " + std::to_string(n) +
+              " points along the curve" + (united ? (pocket_ ? "; subtracted from the base solid" : "; unioned with the base solid") : "; base could not be meshed/unioned, result left standalone") +
               (kernel_note_.empty() ? std::string() : "; the exact kernel route declined (" + kernel_note_.substr(0, 160) + "), so this is the mesh construction"));
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; const double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
   void OnEnter(CommandContext& ctx) override { OnNumber(ctx, 5); }
   bool rib_;
+  bool pocket_;
   double thickness_ = 1.0;
   std::optional<kernel::NurbsCurve> curve_;
   std::optional<ON_NurbsSurface> srf_;
@@ -3938,6 +3965,8 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "Real damped Gauss-Newton solve (the fillet family's own NewtonSolve) for a sphere centre/radius equidistant from all three picked surfaces, seeded from the pick points.");
   Reg(e, "Boss", Make<BossRibCommand>(false), CommandStatus::Implemented,
       "Real solid: a closed footprint curve extruded along each sample point's own local surface normal (so it follows the surface's curvature), fan-capped and boolean-unioned with the base solid.");
+  Reg(e, "Pocket", Make<BossRibCommand>(false, true), CommandStatus::Implemented,
+      "Exact pocket (kernel MakePocket): a closed footprint curve on a base solid cut inward by a depth, flat floor, walls ending exactly on the curved face (cylinder, sphere, torus ...). Falls back to a mesh boolean only when the kernel refuses, saying why.");
   Reg(e, "Rib", Make<BossRibCommand>(true), CommandStatus::Implemented,
       "Real thin wall (Thickness x Height) following the base surface's local normal along the spine curve, tapering to zero at both ends, boolean-unioned with the base solid.");
   // Slide used to be registered here as a Planned/Partial stub ("use
