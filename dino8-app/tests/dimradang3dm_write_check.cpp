@@ -13,6 +13,12 @@
 #include <cmath>
 #include <cstdio>
 
+// Printed coordinates are snapped to 0 below 1e-9 (the file stores plane-local floats, so an exact 0 comes back as ~1e-15).
+static ON_3dPoint Snap(ON_3dPoint p) {
+  auto z = [](double v) { return std::fabs(v) < 1e-9 ? 0.0 : v; };
+  return ON_3dPoint(z(p.x), z(p.y), z(p.z));
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: %s <file.3dm>\n", argv[0]);
@@ -39,7 +45,7 @@ int main(int argc, char** argv) {
       ++radial;
       const ON_Plane& pl = d->Plane();
       const ON_2dPoint c2 = d->CenterPoint(), r2 = d->RadiusPoint(), l2 = d->DimlinePoint();
-      const ON_3dPoint cp = pl.PointAt(c2.x, c2.y), rp = pl.PointAt(r2.x, r2.y), lp = pl.PointAt(l2.x, l2.y);
+      const ON_3dPoint cp = Snap(pl.PointAt(c2.x, c2.y)), rp = Snap(pl.PointAt(r2.x, r2.y)), lp = Snap(pl.PointAt(l2.x, l2.y));
       const double rad = std::sqrt((rp.x - cp.x) * (rp.x - cp.x) + (rp.y - cp.y) * (rp.y - cp.y) + (rp.z - cp.z) * (rp.z - cp.z));
       std::printf("dimradial %d: type=%s center=(%.6g,%.6g,%.6g) radiuspt=(%.6g,%.6g,%.6g) dimline=(%.6g,%.6g,%.6g) radius=%.6g\n", radial,
                   d->Type() == ON::AnnotationType::Diameter ? "Diameter" : "Radius", cp.x, cp.y, cp.z, rp.x, rp.y, rp.z, lp.x, lp.y, lp.z, rad);
@@ -48,7 +54,7 @@ int main(int argc, char** argv) {
       ++angular;
       const ON_Plane& pl = d->Plane();
       const ON_2dPoint v2 = d->CenterPoint(), a2 = d->DefPoint1(), b2 = d->DefPoint2();
-      const ON_3dPoint v = pl.PointAt(v2.x, v2.y), a = pl.PointAt(a2.x, a2.y), b = pl.PointAt(b2.x, b2.y);
+      const ON_3dPoint v = Snap(pl.PointAt(v2.x, v2.y)), a = Snap(pl.PointAt(a2.x, a2.y)), b = Snap(pl.PointAt(b2.x, b2.y));
       const double ux = a.x - v.x, uy = a.y - v.y, uz = a.z - v.z, wx = b.x - v.x, wy = b.y - v.y, wz = b.z - v.z;
       const double dot = ux * wx + uy * wy + uz * wz;
       const double lu = std::sqrt(ux * ux + uy * uy + uz * uz), lw = std::sqrt(wx * wx + wy * wy + wz * wz);
