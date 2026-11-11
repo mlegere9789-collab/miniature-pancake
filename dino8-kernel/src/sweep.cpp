@@ -2539,12 +2539,15 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
   return result;
 }
 
-Brep Brep::ExtrudeFaceWelded(const Brep& body, int face_index, Vector3d direction, bool cap) {
-  const char* caller = "ExtrudeFaceWelded";
-  // ExtrudeFace() does every validation (and builds the trimmed planar case with real topology already).
-  const Brep plain = ExtrudeFace(body, face_index, direction, cap);
-  if (plain.raw().IsValid()) return plain;
+namespace {
 
+// Rebuilds a surface-only body (faces made with the bare NewFace(surface_index) overload: no vertices, edges or loops) as a
+// welded B-rep: every face again as a COMPLETE face (NewFace(const ON_Surface&): its own corner vertices, four boundary edges and
+// an outer loop), then the coincident boundary edges welded by Brep::JoinNakedEdges(), which also unifies the face normals and, for
+// a closed shell, makes it outward. The isocurves of the rebuilt faces are built from the same control points on both sides of a
+// shared edge, so a tolerance far below the model scale welds them and nothing else. `closed`: the caller expects a closed shell;
+// the weld is then refused unless the result is IsValid() and IsSolid().
+Brep WeldSurfaceOnlyBody(const Brep& plain, int expected_faces, bool closed, const char* caller) {
   const ON_Brep& src = plain.raw();
   Brep result;
   ON_Brep& brep = result.raw();
@@ -2552,29 +2555,39 @@ Brep Brep::ExtrudeFaceWelded(const Brep& body, int face_index, Vector3d directio
   for (int fi = 0; fi < src.m_F.Count(); ++fi) {
     if (src.m_F[fi].m_face_index < 0) continue;
     const ON_Surface* s = src.m_F[fi].SurfaceOf();
-    if (s == nullptr) Internal(caller, "a face of the surface-only extrusion has no surface");
-    // NewFace(const ON_Surface&) makes a COMPLETE face: its own corner vertices, four boundary edges and a four-trim outer loop.
+    if (s == nullptr) Internal(caller, "a face of the surface-only body has no surface");
     if (brep.NewFace(*s) == nullptr) Internal(caller, "ON_Brep::NewFace refused a face surface");
     ++rebuilt;
   }
-  if (rebuilt != (cap ? 6 : 4)) Internal(caller, "the surface-only extrusion has an unexpected face count");
-
-  // Coincident boundary edges (cap rim == wall edge, wall edge == wall edge) are exact copies of one another: the isocurves of
-  // the translated surface and of the ruled walls are built from the same control points, so a tolerance far below the model
-  // scale welds them and nothing else.
+  if (rebuilt != expected_faces) Internal(caller, "the surface-only body has an unexpected face count");
   ON_BoundingBox bb;
   brep.GetBoundingBox(bb);
-  const double weld = 1e-6 * std::max(bb.Diagonal().Length(), 1.0);
-  result.JoinNakedEdges(weld);
-  if (cap) {
+  result.JoinNakedEdges(1e-6 * std::max(bb.Diagonal().Length(), 1.0));
+  if (closed) {
     if (!brep.IsValid() || !brep.IsSolid()) {
-      Fail(caller, "the six rebuilt faces did not weld into a closed solid (IsValid/IsSolid false); use ExtrudeFace() for the "
-                   "surface-only result");
+      Fail(caller, "the rebuilt faces did not weld into a closed solid (IsValid/IsSolid false); the surface-only result is the "
+                   "un-suffixed function's");
     }
     const Mesh check = result.TessellateToClosedMesh(16, 16);
     if (check.Volume() < 0.0) brep.Flip();
   }
   return result;
+}
+
+}  // namespace
+
+Brep Brep::ExtrudeFaceWelded(const Brep& body, int face_index, Vector3d direction, bool cap) {
+  // ExtrudeFace() does every validation (and builds the trimmed planar case with real topology already).
+  const Brep plain = ExtrudeFace(body, face_index, direction, cap);
+  if (plain.raw().IsValid()) return plain;
+  return WeldSurfaceOnlyBody(plain, cap ? 6 : 4, cap, "ExtrudeFaceWelded");
+}
+
+Brep Brep::ThickenWelded(const Brep& sheet, double thickness, bool symmetric) {
+  // Thicken() does every validation. Its result is surface-only: 2 caps + 4 walls for an open sheet, 4 faces for a sheet closed
+  // in one direction (flat annuli for a cylinder wall).
+  const Brep plain = Thicken(sheet, thickness, symmetric);
+  return WeldSurfaceOnlyBody(plain, plain.FaceCount(), /*closed=*/true, "ThickenWelded");
 }
 
 namespace {

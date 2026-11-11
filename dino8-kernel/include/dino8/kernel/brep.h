@@ -784,6 +784,14 @@ class Brep {
   // `thickness` must be finite and non-zero in every case.
   static Brep Thicken(const Brep& sheet, double thickness, bool symmetric = false);
 
+  // ThickenWelded: the genuine-topology sibling of Thicken() (same arguments, same refusals - it calls Thicken() first - same
+  // geometry), built by rebuilding Thicken()'s surface-only faces as complete faces and welding them with JoinNakedEdges() (see
+  // ExtrudeFaceWelded()). An open sheet gives the hexahedral solid 8 vertices / 12 edges / 6 faces (Euler characteristic 2), every
+  // edge shared by exactly two faces, IsValid() and IsSolid() true. Throws std::invalid_argument rather than returning a
+  // half-welded body when the faces do not close into a valid solid (e.g. a sheet closed in one direction, whose annular walls
+  // wrap through a seam this weld may not close - the Thicken() result is then the only form).
+  static Brep ThickenWelded(const Brep& sheet, double thickness, bool symmetric = false);
+
   // ExtrudeToPoint: `profile` coned to a single apex point (Rhino/AutoCAD
   // ExtrudeCrvToPoint / ExtrudeSrfToPoint, "kernel ConeToApex") - a genuine
   // B-rep cone, not the mesh-only `Mesh::ConeToApex` or `Loft()`'s own
