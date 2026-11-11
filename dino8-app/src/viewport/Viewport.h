@@ -296,7 +296,7 @@ class Viewport {
   Ray PixelRay(double px, double py) const;
 
   // Writes the last rendered frame of this viewport as a 24-bit BMP.
-  bool CaptureToFile(const std::string& path, std::string& error) const;
+  bool CaptureToFile(const std::string& path, std::string& error, int dpi = 0) const;
 
   // Reads back the last rendered frame's pixels (bottom-up rows - GL's own
   // glReadPixels order, the same layout CaptureToFile's BMP writer already
