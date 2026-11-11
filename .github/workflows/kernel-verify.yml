@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          if ! timeout 20 getent hosts azure.archive.ubuntu.com >/dev/null 2>&1; then
+            printf '%s\n' 'http://mirrors.edge.kernel.org/ubuntu/	priority:1' 'http://us.archive.ubuntu.com/ubuntu/	priority:2' 'http://archive.ubuntu.com/ubuntu/	priority:3' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           for try in 1 2; do
             if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y ninja-build ccache; then break; fi
             echo "apt attempt $try failed"
@@ -117,6 +120,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          if ! timeout 20 getent hosts azure.archive.ubuntu.com >/dev/null 2>&1; then
+            printf '%s\n' 'http://mirrors.edge.kernel.org/ubuntu/	priority:1' 'http://us.archive.ubuntu.com/ubuntu/	priority:2' 'http://archive.ubuntu.com/ubuntu/	priority:3' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           for try in 1 2; do
             if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y ninja-build ccache libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils; then break; fi
             echo "apt attempt $try failed"
@@ -179,6 +185,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          if ! timeout 20 getent hosts azure.archive.ubuntu.com >/dev/null 2>&1; then
+            printf '%s\n' 'http://mirrors.edge.kernel.org/ubuntu/	priority:1' 'http://us.archive.ubuntu.com/ubuntu/	priority:2' 'http://archive.ubuntu.com/ubuntu/	priority:3' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           for try in 1 2; do
             if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y xvfb mesa-utils libgl1-mesa-dri libglu1-mesa libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0; then break; fi
             echo "apt attempt $try failed"
