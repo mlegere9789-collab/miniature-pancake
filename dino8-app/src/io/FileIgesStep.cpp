@@ -2708,6 +2708,7 @@ class StepModel {
   bool HasColour(int item_id) { return item_colour_.count(item_id) != 0; }
 
   std::map<int, Color> item_colour_;  // STYLED_ITEM's target -> resolved colour
+  std::map<int, std::string> item_layer_;  // PRESENTATION_LAYER_ASSIGNMENT item -> layer name
 
  private:
   // Recursion cap shared by Curve()/BuildCurve(); see Curve()'s comment.
@@ -3332,7 +3333,10 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
     std::set<int> seen;
     Color found;
     bool have = false;
-    for (int depth = 0; depth < 6 && !have && !frontier.empty(); ++depth) {
+    // STYLED_ITEM -> PRESENTATION_STYLE_ASSIGNMENT -> SURFACE_STYLE_USAGE -> SURFACE_SIDE_STYLE -> SURFACE_STYLE_FILL_AREA ->
+    // FILL_AREA_STYLE -> FILL_AREA_STYLE_COLOUR -> COLOUR_RGB is 7 hops from the assignment: the old bound of 6 never reached
+    // the colour of the standard chain.
+    for (int depth = 0; depth < 12 && !have && !frontier.empty(); ++depth) {
       std::vector<int> next;
       for (int fid : frontier) {
         if (!seen.insert(fid).second) continue;
@@ -3346,6 +3350,15 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
       frontier = next;
     }
     if (have) model.item_colour_[item] = found;
+  }
+
+  // Layers: PRESENTATION_LAYER_ASSIGNMENT(name, description, (assigned items)) names the layer of every item it lists.
+  for (const auto& [id, e] : model.entities) {
+    const StepPart* lp = e.Find("PRESENTATION_LAYER_ASSIGNMENT");
+    if (!lp || lp->args.size() < 3) continue;
+    const std::string layer_name = StepString(lp->args[0]);
+    if (layer_name.empty()) continue;
+    for (int item : StepRefList(lp->args[2])) model.item_layer_[item] = layer_name;
   }
 
   // The file's declared length unit, converted to the document's unit after
@@ -3371,6 +3384,16 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
   };
   auto add_layer_default = [&]() { return -1; };
   (void)add_layer_default;
+  // The presentation of an imported item: its STYLED_ITEM colour and the layer a PRESENTATION_LAYER_ASSIGNMENT put it on.
+  auto apply_style = [&](int item, SceneObject& o) {
+    if (model.HasColour(item)) { o.color_by_layer = false; o.color = model.ColourOfItem(item); }
+    const auto layer = model.item_layer_.find(item);
+    if (layer != model.item_layer_.end()) {
+      int idx = doc.FindLayer(layer->second);
+      if (idx < 0) { idx = doc.AddLayer(layer->second); ++stats.layers; }
+      o.layer_index = idx;
+    }
+  };
 
   // Track ids consumed as members of a shell/curve-set so their own
   // top-level entities aren't also read standalone.
@@ -3420,7 +3443,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
       k.raw() = brep;
       SceneObject o = SceneObject::MakeBrep(k);
       o.name = name_of(e, "MANIFOLD_SOLID_BREP");
-      if (model.HasColour(id)) { o.color_by_layer = false; o.color = model.ColourOfItem(id); }
+      apply_style(id, o);
       doc.Add(std::move(o));
       ++stats.breps;
     } else if (e.Find("SHELL_BASED_SURFACE_MODEL")) {
@@ -3437,7 +3460,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
         k.raw() = brep;
         SceneObject o = SceneObject::MakeBrep(k);
         o.name = name_of(e, "SHELL_BASED_SURFACE_MODEL");
-        if (model.HasColour(id)) { o.color_by_layer = false; o.color = model.ColourOfItem(id); }
+        apply_style(id, o);
         doc.Add(std::move(o));
         ++stats.breps;
       }
@@ -3448,7 +3471,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
       if (BuildMeshFromFacetedBrep(model, StepRef(p->args[1]), mesh)) {
         SceneObject o = SceneObject::MakeMesh(mesh);
         o.name = name_of(e, "FACETED_BREP");
-        if (model.HasColour(id)) { o.color_by_layer = false; o.color = model.ColourOfItem(id); }
+        apply_style(id, o);
         doc.Add(std::move(o));
         ++stats.meshes;
       }
@@ -3460,6 +3483,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
         if (re->Find("CARTESIAN_POINT")) {
           SceneObject o = SceneObject::MakePoint(model.Point(r));
           o.name = name_of(e, "GEOMETRIC_CURVE_SET");
+          apply_style(id, o);
           doc.Add(std::move(o));
           ++stats.points;
         } else {
@@ -3469,6 +3493,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
             k.raw() = nc;
             SceneObject o = SceneObject::MakeCurve(k);
             o.name = name_of(e, "GEOMETRIC_CURVE_SET");
+            apply_style(id, o);
             doc.Add(std::move(o));
             ++stats.curves;
           } else {
@@ -3503,7 +3528,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
         k.raw() = brep;
         SceneObject o = SceneObject::MakeBrep(k);
         o.name = name_of(*e, "MANIFOLD_SOLID_BREP");
-        if (model.HasColour(item_id)) { o.color_by_layer = false; o.color = model.ColourOfItem(item_id); }
+        apply_style(item_id, o);
         o.Transform(inst.xform);
         doc.Add(std::move(o));
         ++stats.breps; ++stats.assembly_parts;
@@ -3520,7 +3545,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
           k.raw() = brep;
           SceneObject o = SceneObject::MakeBrep(k);
           o.name = name_of(*e, "SHELL_BASED_SURFACE_MODEL");
-          if (model.HasColour(item_id)) { o.color_by_layer = false; o.color = model.ColourOfItem(item_id); }
+          apply_style(item_id, o);
           o.Transform(inst.xform);
           doc.Add(std::move(o));
           ++stats.breps; ++stats.assembly_parts;
@@ -3531,7 +3556,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
         if (BuildMeshFromFacetedBrep(model, StepRef(p->args[1]), mesh)) {
           SceneObject o = SceneObject::MakeMesh(mesh);
           o.name = name_of(*e, "FACETED_BREP");
-          if (model.HasColour(item_id)) { o.color_by_layer = false; o.color = model.ColourOfItem(item_id); }
+          apply_style(item_id, o);
           o.Transform(inst.xform);
           doc.Add(std::move(o));
           ++stats.meshes; ++stats.assembly_parts;
@@ -3544,6 +3569,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
           if (re->Find("CARTESIAN_POINT")) {
             SceneObject o = SceneObject::MakePoint(model.Point(r));
             o.name = name_of(*e, "GEOMETRIC_CURVE_SET");
+            apply_style(item_id, o);
             o.Transform(inst.xform);
             doc.Add(std::move(o));
             ++stats.points; ++stats.assembly_parts;
@@ -3554,6 +3580,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
               k.raw() = nc;
               SceneObject o = SceneObject::MakeCurve(k);
               o.name = name_of(*e, "GEOMETRIC_CURVE_SET");
+              apply_style(item_id, o);
               o.Transform(inst.xform);
               doc.Add(std::move(o));
               ++stats.curves; ++stats.assembly_parts;
