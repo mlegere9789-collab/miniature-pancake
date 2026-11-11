@@ -919,7 +919,7 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   Document fresh;
   bool ok = false;
   if (ext == ".3dm") ok = Load3dm(fresh, path, error);
-  else if (ext == ".obj" || ext == ".stl") {
+  else if (ext == ".obj" || ext == ".stl" || ext == ".3mf") {
     ok = ImportMeshFile(fresh, path, error);
   } else if (ext == ".ply") {
     ok = ImportPly(fresh, path, error);
@@ -1027,7 +1027,7 @@ bool Application::SaveDocument(const std::string& path, std::string& error, int 
       SaveNamedSnapshotsSidecar(p);
       Notify("Saved " + p);
     }
-  } else if (ext == ".obj" || ext == ".stl") {
+  } else if (ext == ".obj" || ext == ".stl" || ext == ".3mf") {
     ok = ExportMeshFile(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
   } else if (ext == ".ply") {
@@ -1081,7 +1081,7 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
         doc_.Add(o);
       }
     }
-  } else if (ext == ".obj" || ext == ".stl") {
+  } else if (ext == ".obj" || ext == ".stl" || ext == ".3mf") {
     ok = ImportMeshFile(doc_, path, error);
   } else if (ext == ".ply") {
     ok = ImportPly(doc_, path, error);
