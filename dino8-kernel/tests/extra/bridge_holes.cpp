@@ -8,6 +8,7 @@
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/mesh.h"
 #include "test_registry.h"
 
 namespace {
@@ -73,4 +74,20 @@ D8_EXTRA_TEST(BridgeHolesExtrudeTwoHolesIsOnePassFiveFaces) {
   d8test::Check(solid.raw().IsValid(), "ExtrudeProfileWithHoles two holes: IsValid");
   d8test::Check(solid.raw().m_F.Count() == 5, "ExtrudeProfileWithHoles two holes: outer wall + two caps + one wall per hole = 5 faces");
   d8test::Check(NakedEdges(solid) < 100, "ExtrudeProfileWithHoles two holes: far fewer than the thousands of unpaired edges of the sequential cut");
+}
+
+// Two SEQUENTIAL single counterbore cuts (the second re-fragments the top face that already carries the first hole as an inner
+// loop). FaceBoundaryLoop only read a face's first loop, so the first hole vanished from the top face and its wall lost its
+// partner (60 unpaired edges), and every straight-chord trim of the walls was resampled with 24 new surface points (2,080-trim
+// loops, 1,440 unpaired edges). V = 400 - 2 (pi 0.3^2 2 + pi 0.6^2 1).
+D8_EXTRA_TEST(BridgeHolesSequentialCounterboresKeepTheFirstHole) {
+  const Brep slab = Brep::Box(0, 0, 0, 10, 10, 4);
+  const Brep once = MakeCounterboreHole(slab, Point3d(2, 2, 4), Vector3d(0, 0, -1), 0.3, 3.0, false, 0.6, 1.0);
+  const Brep twice = MakeCounterboreHole(once, Point3d(8, 8, 4), Vector3d(0, 0, -1), 0.3, 3.0, false, 0.6, 1.0);
+  d8test::Check(NakedEdges(twice) == 0, "two sequential counterbores: every edge is shared by exactly two faces");
+  d8test::Check(twice.raw().IsValid() && twice.raw().IsSolid(), "two sequential counterbores: IsValid and IsSolid");
+  if (!(twice.raw().IsValid() && twice.raw().IsSolid())) return;
+  const double expect = 400.0 - 2.0 * (ON_PI * 0.09 * 2.0 + ON_PI * 0.36 * 1.0);
+  d8test::Check(std::fabs(twice.VolumeOfSealedSolid() - expect) < 0.05,
+                "two sequential counterbores: exact B-rep volume matches the closed form to 0.05");
 }
