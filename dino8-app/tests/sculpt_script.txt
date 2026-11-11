@@ -101,3 +101,39 @@ SelLast
 SubDVertexInfo
 -1,-1,-1
 Enter
+
+# SubDSculptStroke: the origin is dragged (0,0,0) -> (4,0,0) -> (8,0,0) with Constant falloff, Radius 12, the brush centred on where the vertex is NOW.
+# Step 1 (centre (0,0,0)): the origin and its 3 edge neighbours (distance 10) move +4 in x. Step 2 (centre (4,0,0)): those four again (distance 10) and two
+# more, (10,10,0) and (10,0,10), now at distance sqrt(36 + 100) = 11.66 < 12 (the other two stay: 14.7 and 15.4), so 6 distinct control points move.
+# A single drag (0,0,0) -> (8,0,0) with the same Radius moves only the first four (the strokeless control case below).
+New
+SCUBEGIN_stroke
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SubDSculptStroke
+Radius=12
+Falloff=Constant
+0,0,0
+4,0,0
+8,0,0
+Enter
+SelLast
+SubDVertexInfo
+8,0,0
+14,10,0
+Enter
+
+New
+SCUBEGIN_strokecontrol
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SubDSculpt
+Radius=12
+Falloff=Constant
+0,0,0
+8,0,0
+SelLast
+SubDVertexInfo
+8,0,0
+10,10,0
+Enter
