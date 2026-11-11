@@ -103261,6 +103261,118 @@ void TestOffsetPolylineExtrusionConcavePrismBodyOffset() {
   std::printf("  OffsetPolylineExtrusion: %d offset prisms built (%zu fixtures x 3 frames)\n", built, fixes.size());
 }
 
+// ---- thicken a MULTI-FACE (folded, extruded) planar sheet (ThickenPolylineExtrusion) --------------------------------------------
+//
+// Brep::Thicken() takes a single-face sheet only. Here the sheet is an OPEN polyline extruded along `direction` (a folded plate,
+// V roof, zig-zag, channel). Oracles: (a) the closed form of the strip between a polyline and its mitre offset, a sum of trapezoids
+// of height t: area = t * sum (l_i + q_i) / 2 with q_i = l_i + t*tan(turn/2) at each end that has a neighbour (signed turn, left
+// positive; derived and computed from atan2 of the segment directions, sharing nothing with the kernel), and (b) the area of the
+// polygon  profile + reversed GEOS offset_curve(mitre)  (shapely 2.2.0 / GEOS 3.14). The two agree to 1e-9 on every fixture
+// (asserted when the literals were generated). Volume = area * |direction|.
+void TestThickenPolylineExtrusionFoldedSheet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ThickenPolylineExtrusion;
+  struct StripCase {
+    const char* name;
+    std::vector<std::pair<double, double>> v;
+    double t, geos_area, closed_area;
+  };
+  const std::vector<StripCase> strips = {
+      {"single flat segment", {{0, 0}, {6, 0}}, 0.5, 3.000000000000, 3.000000000000},
+      {"V roof", {{0, 0}, {4, 3}, {8, 0}}, 0.4, 3.880000000000, 3.880000000000},
+      {"V roof, other side", {{0, 0}, {4, 3}, {8, 0}}, -0.4, 4.120000000000, 4.120000000000},
+      {"zig-zag", {{0, 0}, {3, 2}, {6, 0}, {9, 2}, {12, 0}}, 0.3, 4.266661530557, 4.266661530557},
+      {"zig-zag, other side", {{0, 0}, {3, 2}, {6, 0}, {9, 2}, {12, 0}}, -0.3, 4.386661530557, 4.386661530557},
+      {"U channel, inside", {{0, 3}, {0, 0}, {4, 0}, {4, 3}}, -0.5, 4.500000000000, 4.500000000000},
+      {"U channel, outside", {{0, 3}, {0, 0}, {4, 0}, {4, 3}}, 0.5, 5.500000000000, 5.500000000000},
+      {"irregular fold chain", {{0, 0}, {5, 1}, {7, 4}, {2, 5}}, 0.6, 8.968831032980, 8.968831032980},
+      {"irregular fold chain, other side", {{0, 0}, {5, 1}, {7, 4}, {2, 5}}, -0.6, 7.595477330200, 7.595477330200},
+  };
+  const ON_Plane xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Plane tilted(ON_3dPoint(1.0, -2.0, 0.5), ON_3dVector(0.2, -0.3, 1.0));
+  const double L = 5.0;
+  int built = 0;
+  for (const StripCase& c : strips) {
+    for (int variant = 0; variant < 2; ++variant) {
+      const ON_Plane& pl = variant == 0 ? xy : tilted;
+      const std::string nm = std::string(c.name) + (variant == 0 ? " [plane z=0]" : " [tilted plane]") + " t=" + std::to_string(c.t);
+      std::vector<Point3d> pts;
+      for (const auto& ab : c.v) pts.push_back(pl.origin + ab.first * pl.xaxis + ab.second * pl.yaxis);
+      Brep b;
+      bool threw = false;
+      try {
+        b = ThickenPolylineExtrusion(NurbsCurve::FromControlPoints(pts, 1), pl.zaxis * L, c.t);
+      } catch (const std::exception& e) {
+        threw = true;
+        std::printf("  %s threw: %s\n", nm.c_str(), e.what());
+      }
+      Check(!threw, (nm + ": the thickened sheet is built").c_str());
+      if (threw) continue;
+      ++built;
+      const double expect = c.geos_area * L;
+      const Brep::CheckReport rep = b.Check(dino8::kernel::tolerance::kDistance, dino8::kernel::tolerance::kEdgeJoin, true);
+      std::printf("  %s: volume %.9f (GEOS strip %.9f x %g = %.9f; closed form %.9f), %zu planar faces\n", nm.c_str(), b.Volume(), c.geos_area, L, expect, c.closed_area * L, b.PlanarFaces().size());
+      Check(b.raw().IsValid() && b.raw().IsSolid() && rep.IsClean() && rep.is_closed && rep.is_oriented, (nm + ": valid closed oriented solid, Check clean").c_str());
+      Check(std::fabs(b.Volume() - expect) < 1e-6 * (1.0 + expect), (nm + ": volume equals the GEOS strip area x length to 1e-6 relative").c_str());
+      Check(std::fabs(b.Volume() - c.closed_area * L) < 1e-6 * (1.0 + expect), (nm + ": volume equals the trapezoid closed form x length to 1e-6 relative").c_str());
+      Check(b.PlanarFaces().size() == 2 + 2 * c.v.size(), (nm + ": 2 end caps + one wall per sheet segment + one per offset segment + 2 end walls").c_str());
+      // every sheet segment survives exactly as a wall: some planar face contains both of its end points and is parallel to the direction
+      int kept = 0;
+      for (size_t i = 0; i + 1 < pts.size(); ++i) {
+        for (const Brep::PlanarFace& pf : b.PlanarFaces()) {
+          if (std::fabs(ON_DotProduct(pf.plane.zaxis, pl.zaxis)) > 1e-9) continue;
+          const double d0 = ON_DotProduct(pts[i] - pf.plane.origin, pf.plane.zaxis), d1 = ON_DotProduct(pts[i + 1] - pf.plane.origin, pf.plane.zaxis);
+          if (std::fabs(d0) < 1e-9 && std::fabs(d1) < 1e-9) {
+            ++kept;
+            break;
+          }
+        }
+      }
+      Check(kept == static_cast<int>(pts.size()) - 1, (nm + ": every sheet segment is kept exactly as a wall of the solid").c_str());
+      if (variant == 0 && c.v.size() > 2) {
+        // negative controls: the un-mitred estimate t * (sheet length) * L, and a plain translate (no fold correction), are rejected
+        double len = 0.0;
+        for (size_t i = 0; i + 1 < c.v.size(); ++i) len += std::hypot(c.v[i + 1].first - c.v[i].first, c.v[i + 1].second - c.v[i].second);
+        Check(std::fabs(b.Volume() - std::fabs(c.t) * len * L) > 1e-3, (nm + ": control - the volume differs from the un-mitred |t| * length * L").c_str());
+      }
+    }
+  }
+  // refusals
+  const auto refuse = [&](const char* what, const NurbsCurve& prof, Vector3d dir, double t) {
+    bool threw = false;
+    try {
+      (void)ThickenPolylineExtrusion(prof, dir, t);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, (std::string("refused (std::invalid_argument): ") + what).c_str());
+  };
+  const auto curve = [](const std::vector<std::pair<double, double>>& v, double z) {
+    std::vector<Point3d> pts;
+    for (const auto& ab : v) pts.push_back(Point3d(ab.first, ab.second, z));
+    return NurbsCurve::FromControlPoints(pts, 1);
+  };
+  // each V segment is 5 long and the peak turns by 73.74 degrees, so the offset segments are 5 - t*tan(36.87 deg) = 5 - 0.75 t long:
+  // t = 6 still gives 0.5 (a valid, very thick roof - asserted below), t = 7 gives -0.25 (the offset segments invert)
+  refuse("a thickness that inverts the V roof's offset segments (t = 7 > 5/0.75)", curve({{0, 0}, {4, 3}, {8, 0}}, 0.0), Vector3d(0, 0, 5), 7.0);
+  {
+    bool ok6 = true;
+    Brep thick;
+    try {
+      thick = ThickenPolylineExtrusion(curve({{0, 0}, {4, 3}, {8, 0}}, 0.0), Vector3d(0, 0, 5), 6.0);
+    } catch (const std::exception&) {
+      ok6 = false;
+    }
+    // trapezoid closed form: t * ((5 + 0.5) / 2 * 2) = 6 * 5.5 = 33, volume 165
+    Check(ok6 && std::fabs(thick.Volume() - 165.0) < 1e-6, "control: t = 6 (offset segments 0.5 long) is still built, volume 6 * 5.5 * 5 = 165");
+  }
+  refuse("zero thickness", curve({{0, 0}, {4, 3}, {8, 0}}, 0.0), Vector3d(0, 0, 5), 0.0);
+  refuse("a closed profile", curve({{0, 0}, {4, 0}, {4, 3}, {0, 3}, {0, 0}}, 0.0), Vector3d(0, 0, 5), 0.3);
+  refuse("an oblique direction", curve({{0, 0}, {4, 3}, {8, 0}}, 0.0), Vector3d(1, 0, 5), 0.3);
+  refuse("a zero direction", curve({{0, 0}, {4, 3}, {8, 0}}, 0.0), Vector3d(0, 0, 0), 0.3);
+  std::printf("  ThickenPolylineExtrusion: %d thickened folded sheets built (%zu fixtures x 2 frames)\n", built, strips.size());
+}
+
 }  // namespace offset_remainder_tests
 
 // ---------------------------------------------------------------------------
@@ -109898,6 +110010,8 @@ int main() {
           offset_remainder_tests::TestOffsetInPlaneRoundChamferOutwardClosedAndOpenValidity);
   RunTest("offset_remainder_tests::TestOffsetPolylineExtrusionConcavePrismBodyOffset",
           offset_remainder_tests::TestOffsetPolylineExtrusionConcavePrismBodyOffset);
+  RunTest("offset_remainder_tests::TestThickenPolylineExtrusionFoldedSheet",
+          offset_remainder_tests::TestThickenPolylineExtrusionFoldedSheet);
   RunTest("body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline",
           body_section_untrimmed_face_tests::TestUntrimmedBoxPlaneInAFaceGivesOneExactOutline);
 
