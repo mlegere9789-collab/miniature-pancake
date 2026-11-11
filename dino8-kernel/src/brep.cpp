@@ -817,6 +817,14 @@ Brep::CylindricalFace TransformCylindricalFaceRecord(const ON_Xform& xform, cons
   return out;
 }
 
+Brep::ConicalFace TransformConicalFaceRecord(const ON_Xform& xform, const Brep::ConicalFace& face) {
+  Brep::ConicalFace out = face;
+  out.frame.Transform(xform);
+  for (size_t i = 0; i < out.cap0_notch_points.size(); ++i) out.cap0_notch_points[i] = xform * face.cap0_notch_points[i];
+  for (size_t i = 0; i < out.cap1_notch_points.size(); ++i) out.cap1_notch_points[i] = xform * face.cap1_notch_points[i];
+  return out;
+}
+
 Brep::SphericalFace TransformSphericalFaceRecord(const ON_Xform& xform, const Brep::SphericalFace& face) {
   Brep::SphericalFace out = face;
   out.frame.Transform(xform);
@@ -912,6 +920,9 @@ Brep Brep::Transform(const ON_Xform& xform) const {
           break;
         case FaceRecord::kSpherical:
           rec.sph = TransformSphericalFaceRecord(xform, rec.sph);
+          break;
+        case FaceRecord::kConical:
+          rec.cone = TransformConicalFaceRecord(xform, rec.cone);
           break;
       }
     }
@@ -2918,6 +2929,29 @@ bool CylindricalRecordMatchesFace(const Brep::CylindricalFace& rec, const FaceGe
   return std::fabs(h) <= tol && std::fabs(radial - rec.radius) <= tol;
 }
 
+// A conical face's surface is ON_Cone(frame, height, radius).GetNurbForm() built exactly as FromMixedFaces() builds it (the end with the larger
+// height-from-apex gives the cone's own height/radius), so the record is rebuilt into that surface and a grid of parameter samples must land on
+// the face's own surface: a record that no longer describes the face (a transformed raw() ON_Brep) fails here and takes the geometric extraction.
+bool ConicalRecordMatchesFace(const Brep::ConicalFace& rec, const FaceGeometry& fg, bool face_rev) {
+  if (rec.outward == face_rev || !(rec.length > 0.0)) return false;
+  const double tan_half_angle = (rec.radius1 - rec.radius0) / rec.length;
+  if (std::fabs(tan_half_angle) < 1e-300) return false;
+  const double v0 = rec.radius0 / tan_half_angle, v1 = rec.radius1 / tan_half_angle;
+  const bool use_v1_as_height = std::fabs(v1) >= std::fabs(v0);
+  const ON_Cone cone(rec.frame, use_v1_as_height ? v1 : v0, use_v1_as_height ? rec.radius1 : rec.radius0);
+  ON_NurbsSurface rebuilt;
+  if (cone.GetNurbForm(rebuilt) == 0) return false;
+  const ON_Interval du = fg.surface.Domain(0), dv = fg.surface.Domain(1);
+  const double tol = 1e-6 * RecordScale(rec.frame.origin, fg.surface.PointAt(du.Mid(), dv.Mid()), fg.surface.PointAt(du.ParameterAt(0.25), dv.ParameterAt(0.75)));
+  for (double a : {0.0, 0.3, 0.6, 1.0}) {
+    for (double b : {0.2, 0.5, 0.8}) {
+      const double u = du.ParameterAt(a), v = dv.ParameterAt(b);
+      if (fg.surface.PointAt(u, v).DistanceTo(rebuilt.PointAt(u, v)) > tol) return false;
+    }
+  }
+  return true;
+}
+
 // The three points a SphericalFace record pins down on its own surface:
 // the (angle 0, lat0) corner, the (angle, lat0) corner and the north pole
 // direction - enough to fix center, radius and frame orientation.
@@ -3074,6 +3108,10 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
       }
       if (rec.kind == FaceRecord::kSpherical && SphericalRecordMatchesFace(rec.sph, fg, brep_.m_F[i].m_bRev)) {
         result.spherical.push_back(rec.sph);
+        continue;
+      }
+      if (rec.kind == FaceRecord::kConical && ConicalRecordMatchesFace(rec.cone, fg, brep_.m_F[i].m_bRev)) {
+        result.conical.push_back(rec.cone);
         continue;
       }
     }
@@ -4498,10 +4536,12 @@ Brep Brep::FromMixedFacesImpl(const std::vector<Brep::PlanarFace>& faces,
     result.face_hole_loops_.emplace_back();
     result.face_arc_runs_.emplace_back();  // meaningless for a non-planar face
     result.face_notch_rows_.emplace_back();  // a cone never reaches the cylinder strip mesher
-    // Deliberately NO verbatim record for a cone: MixedFaces() keeps the
-    // geometric extraction (notches come back empty) by documented
-    // contract - see that method's own doc comment in brep.h.
+    // The verbatim record (as for a cylinder): MixedFaces() returns it, notch rows and all, while it still matches the face's surface.
+    // Without it a tapered fillet's cone came back from the geometric extraction with its corner-notch curves empty and its radii only
+    // approximate, so rebuilding a tapered-filleted solid unchanged already moved its volume.
     result.face_records_.emplace_back();
+    result.face_records_.back().kind = FaceRecord::kConical;
+    result.face_records_.back().cone = cf;
 
     FaceTopology t;
     t.trim_uv = trim;

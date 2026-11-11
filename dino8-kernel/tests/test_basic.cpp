@@ -46683,6 +46683,12 @@ void TestFilletConvexEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormul
     const std::vector<Point3d> wall_j_loop = {axis0, axis1, rail_j1, rail_j0};
 
     Brep::ConicalFace cf_copy = cf;
+    // MixedFaces() now returns the cone with its corner-notch rows (the verbatim record); this self-contained test solid has flat caps, so the
+    // frustum is built from the cone without them.
+    cf_copy.cap0_notch_points.clear();
+    cf_copy.cap1_notch_points.clear();
+    cf_copy.cap0_notch_tolerance = 0.0;
+    cf_copy.cap1_notch_tolerance = 0.0;
     const Brep test_solid = Brep::FromMixedFaces(
         {make_face(v0cap_loop), make_face(v1cap_loop), make_face(wall_i_loop), make_face(wall_j_loop)}, {},
         {cf_copy});
@@ -74331,6 +74337,12 @@ void TestFilletConcaveEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormu
     const std::vector<Point3d> wall_j_loop = {axis0, rail_j0, rail_j1, axis1};
 
     Brep::ConicalFace cf_copy = cf;
+    // MixedFaces() now returns the cone with its corner-notch rows (the verbatim record); this self-contained test solid has flat caps, so the
+    // frustum is built from the cone without them.
+    cf_copy.cap0_notch_points.clear();
+    cf_copy.cap1_notch_points.clear();
+    cf_copy.cap0_notch_tolerance = 0.0;
+    cf_copy.cap1_notch_tolerance = 0.0;
     const Brep test_solid = Brep::FromMixedFaces(
         {make_face(v0cap_loop), make_face(v1cap_loop), make_face(wall_i_loop), make_face(wall_j_loop)}, {}, {cf_copy});
     measured_volume_sum += std::fabs(test_solid.TessellateToClosedMeshAdaptive(1e-8).Volume());

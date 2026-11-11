@@ -6578,11 +6578,12 @@ class Brep {
   // in place of the geometric extraction after checking it still matches
   // the face's own surface.
   struct FaceRecord {
-    enum Kind { kNone = 0, kPlanar, kCylindrical, kSpherical };
+    enum Kind { kNone = 0, kPlanar, kCylindrical, kSpherical, kConical };
     Kind kind = kNone;
     PlanarFace planar;
     CylindricalFace cyl;
     SphericalFace sph;
+    ConicalFace cone;
   };
   std::vector<FaceRecord> face_records_;
   // Set only by Compound(): the [begin, end) face-index range of each
