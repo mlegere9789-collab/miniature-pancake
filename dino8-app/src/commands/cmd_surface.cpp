@@ -26,6 +26,7 @@
 #include "commands/revolved_solid.h"
 #include "commands/prism_solid.h"
 #include "commands/section_fit.h"
+#include "dino8/kernel/offset_solid.h"
 #include "dino8/kernel/trimmed_offset.h"
 
 namespace dino8::app {
@@ -1810,9 +1811,13 @@ std::optional<kernel::Brep> HollowSolid(ON_Brep* outer, ON_Brep* inner) {
 //       thickness |d| (outer = offset solid for d > 0, the original for d < 0);
 //     * whole sphere / torus: kernel::ShellClosedSphere / ShellClosedTorus;
 //     * a plain capped cylinder: the offset and original cylinders as two shells (HollowSolid).
+//   Any other solid bounded only by planar faces, convex or not (a notched block, a stepped or L-shaped body that is not a right
+//   prism): kernel::OffsetSolidPlanar - every vertex moved to the common point of its faces' offset planes, with a measured
+//   concurrency check, an edge-reversal / face-crossing check and a global self-intersection check; its measured numbers come back
+//   in `note` when given. Solid=Yes is the hollow wall between the two (HollowSolid), as for the prism.
 // nullopt (with the kernel's reason in `why`) for everything else - the caller
 // then keeps the mesh offset and prints the reason.
-std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d, bool solid, std::string& why) {
+std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d, bool solid, std::string& why, std::string* note = nullptr) {
   const ON_Brep& b = kb.raw();
   if (!b.IsSolid()) { why = "the polysurface is not a closed solid"; return std::nullopt; }
   ON_BoundingBox bb;
@@ -1947,6 +1952,25 @@ std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d
       // Not convex-planar: a right prism (L extrusion, rounded box) is still exact.
       std::string pw;
       if (std::optional<kernel::Brep> k = try_prism(pw)) return k;
+      // Any other planar-faced solid: the kernel's per-vertex plane-intersection offset (measured refusals, global overlap check).
+      {
+        kernel::Brep k;
+        kernel::PlanarSolidOffsetReport rep;
+        if (kernel::OffsetSolidPlanar(kb, d, k, &rep) == kernel::Result::Ok) {
+          if (note) {
+            *note = "planar-faced solid offset by the kernel (OffsetSolidPlanar): " + std::to_string(rep.faces) + " faces, " + std::to_string(rep.vertices) +
+                    " vertices, " + std::to_string(rep.vertices_over_three_faces) + " with more than three faces (worst offset-plane residual " + FormatDeviation(rep.max_plane_residual) +
+                    "), shortest edge kept " + FormatNumber(rep.min_edge_length_ratio) + " of its length, volume " + FormatNumber(rep.volume_before) + " -> " +
+                    FormatNumber(rep.volume_after) + ", " + std::to_string(rep.self_intersections) + " self-intersections";
+          }
+          if (!solid) return k;
+          std::optional<kernel::Brep> h = d > 0 ? HollowSolid(new ON_Brep(k.raw()), new ON_Brep(b)) : HollowSolid(new ON_Brep(b), new ON_Brep(k.raw()));
+          if (!h) pw = "the hollow planar solid did not assemble into a valid solid";
+          else return h;
+        } else if (rep.refusal_reason.rfind("a face is not planar", 0) != 0) {
+          pw = rep.refusal_reason;
+        }
+      }
       why = pw.empty() || pw.rfind("not a right prism", 0) == 0 ? std::string(ex.what()) : pw;
       return std::nullopt;
     }
@@ -3960,7 +3984,11 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
     }
     if (exact_ && o.kind == ObjectKind::Brep && o.brep) {
       std::string why;
-      if (std::optional<kernel::Brep> ex = TryExactOffsetSolid(*o.brep, d, solid_, why)) return SceneObject::MakeBrep(*ex);
+      std::string note;
+      if (std::optional<kernel::Brep> ex = TryExactOffsetSolid(*o.brep, d, solid_, why, &note)) {
+        if (!note.empty()) ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - " + note);
+        return SceneObject::MakeBrep(*ex);
+      }
       if (!why.empty() && o.brep->raw().IsSolid())
         ctx.Print("OffsetSrf: object " + std::to_string(o.id) + " - exact B-rep offset not used (" + why + "); using the mesh offset");
     }
