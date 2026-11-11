@@ -6698,9 +6698,12 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
   return AssembleSweptBody(wall.release(), cap && !cyclic, cap && !cyclic, false, false, caller);
 }
 
-Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, bool round_caps) {
+Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, bool round_caps, double tolerance, int max_stations,
+                Sweep1Report* report) {
   const char* caller = "Pipe";
   if (!(radius > 0.0)) Fail(caller, "radius must be positive");
+  if (!(tolerance >= 0.0) || !std::isfinite(tolerance)) Fail(caller, "tolerance must be a finite number >= 0");
+  if (tolerance > 0.0 && round_caps) Fail(caller, "tolerance is not available with round_caps (the dome caps are built outside Sweep1)");
   const ON_NurbsCurve& r = rail.raw();
   if (!r.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
   ON_3dVector t0 = r.TangentAt(r.Domain().Min());
@@ -6711,6 +6714,9 @@ Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, b
   if (circle.GetNurbForm(nurbs_circle) == 0) Internal(caller, "ON_Circle::GetNurbForm failed");
   NurbsCurve section;
   section.raw() = nurbs_circle;
+  if (tolerance > 0.0) {
+    return Sweep1(section, rail, stations, cap, 0.0, 1.0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, tolerance, max_stations, report);
+  }
   if (!round_caps) return Sweep1(section, rail, stations, cap);
 
   // Round-cap path: builds the wall directly (rather than delegating to
@@ -6751,9 +6757,11 @@ Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, b
 }
 
 Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<double, double>>& radius_points,
-                        bool cap, int stations, bool round_caps) {
+                        bool cap, int stations, bool round_caps, double tolerance, int max_stations, Sweep1Report* report) {
   const char* caller = "PipeVariable";
   if (stations < 2) Fail(caller, "stations must be at least 2");
+  if (!(tolerance >= 0.0) || !std::isfinite(tolerance)) Fail(caller, "tolerance must be a finite number >= 0");
+  if (tolerance > 0.0 && round_caps) Fail(caller, "tolerance is not available with round_caps (the dome caps are built outside Sweep1)");
   if (radius_points.size() < 2) Fail(caller, "at least 2 radius points are required");
   for (size_t i = 0; i < radius_points.size(); ++i) {
     const double t = radius_points[i].first, r = radius_points[i].second;
@@ -6777,6 +6785,23 @@ Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<d
 
   const double total_length = rail_in.Length();
   if (!(total_length > 0.0)) Fail(caller, "the rail has zero length");
+
+  if (tolerance > 0.0) {
+    // Adaptive mode: Sweep1's, with the circle of the first radius as the section and radius / first radius as the scale
+    // schedule (the same piecewise-linear, flat-outside convention as radius_at below; a closed rail needs the schedule to
+    // return to its start, which the equal end radii checked above give).
+    ON_3dVector t0 = rail.TangentAt(rail.Domain().Min());
+    if (!t0.Unitize()) Fail(caller, "the rail has a zero tangent at its start");
+    const double r_first = radius_points.front().second;
+    ON_NurbsCurve nurbs_circle;
+    if (ON_Circle(ON_Plane(rail.PointAtStart(), t0), r_first).GetNurbForm(nurbs_circle) == 0) Internal(caller, "ON_Circle::GetNurbForm failed");
+    NurbsCurve section;
+    section.raw() = nurbs_circle;
+    std::vector<std::pair<double, double>> schedule;
+    schedule.reserve(radius_points.size());
+    for (const auto& rp : radius_points) schedule.push_back({rp.first, rp.second / r_first});
+    return Sweep1(section, rail_in, stations, cap && !wrap, 0.0, 1.0, nullptr, nullptr, &schedule, nullptr, nullptr, nullptr, tolerance, max_stations, report);
+  }
 
   // Exact case: exactly 2 radius points spanning the whole rail (t = 0 and
   // t = 1) on a STRAIGHT rail is the exact rational cone frustum wall -
