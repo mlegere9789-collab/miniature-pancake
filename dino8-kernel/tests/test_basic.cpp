@@ -99651,7 +99651,7 @@ void TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation() {
 // single-edge tests use, summed, since non-interacting fillets share no geometry), and the result is a valid closed solid.
 // A trihedral corner whose three edge fillets have different radii is NOT a sphere (the three cylinder axes are skew) and
 // is refused with a reason that says so, never mis-built; the equal-radius corner is still the exact sphere.
-void TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRefused() {
+void TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndEqualRadiusCornerStaysASphere() {
   using dino8::kernel::FilletConvexEdges;
   using dino8::kernel::FilletConvexEdgesRadii;
   using dino8::kernel::RadiusEdgeSpec;
@@ -99693,17 +99693,129 @@ void TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRe
     Check(a.FaceCount() == b.FaceCount() && std::fabs(a.TessellateToClosedMesh(24, 24).Volume() - b.TessellateToClosedMesh(24, 24).Volume()) < 1e-9,
           "[per-edge radii: equal radii at a corner] same face count and volume as FilletConvexEdges");
   }
-  // different radii at one trihedral corner: refused, naming why
-  for (const std::vector<double>& r : {std::vector<double>{1.0, 2.0, 3.0}, std::vector<double>{2.0, 2.0, 2.5}}) {
-    const std::string tag = "[per-edge radii: corner radii " + std::to_string(r[0]).substr(0, 3) + " / " + std::to_string(r[1]).substr(0, 3) + " / " + std::to_string(r[2]).substr(0, 3) + "] ";
-    const std::string why = Why([&] {
-      (void)FilletConvexEdgesRadii(box, {{Point3d(10, 10, 10), Point3d(0, 10, 10), r[0]}, {Point3d(10, 10, 10), Point3d(10, 0, 10), r[1]}, {Point3d(10, 10, 10), Point3d(10, 10, 0), r[2]}});
-    });
-    Check(Has(why.c_str(), "different radii") && Has(why.c_str(), "not a sphere") && Has(why.c_str(), "setback vertex blend"),
-          (tag + "is refused saying the corner is not a sphere and needs a setback blend: " + why).c_str());
-  }
   // non-positive radius
   Check(!Why([&] { (void)FilletConvexEdgesRadii(box, {{Point3d(10, 10, 0), Point3d(10, 10, 10), 0.0}}); }).empty(), "[per-edge radii: radius 0] is refused");
+}
+
+// SETBACK VERTEX BLEND: a trihedral corner whose three edge fillets have DIFFERENT radii. The three cylinders' axes are
+// skew, so no sphere is tangent to all of them; each cylinder is cut back along a smooth curve and the corner is closed by
+// a free-form patch that is G1 to all three cylinders along those curves. Oracles, all independent of the construction:
+//  * the result is a valid oriented closed 2-manifold solid;
+//  * G1, by sampling: points on the patch's three boundary curves are taken from the returned B-rep itself; each is
+//    matched to the nearest of the three cylinders (axis line + radius known from the box and the radii) and must lie on it
+//    (G0) with the patch normal parallel to the cylinder's radial normal (G1);
+//  * volume, by two independently integrated closed-form sets: the solid lies between the opening of the box by the largest
+//    ball (every ball of radius rmax inside the box) and the intersection of the three single-edge fillets.
+double CornerRemovedBounds(double rx, double ry, double rz, bool upper_set, int n) {
+  // Corner at p = (0,0,0): p = distance from the three faces. Edge along x sits at p_y = p_z = 0, etc. Cube of side 10.
+  const double L = 10.0, h = L / n;
+  const double rmax = std::max({rx, ry, rz});
+  auto removed_edge = [](double a, double b, double r) {
+    return a < r && b < r && (a - r) * (a - r) + (b - r) * (b - r) > r * r;
+  };
+  double removed = 0.0;
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j)
+      for (int k = 0; k < n; ++k) {
+        const double px = (i + 0.5) * h, py = (j + 0.5) * h, pz = (k + 0.5) * h;
+        bool rem;
+        if (upper_set) {  // removed by any single-edge fillet (the union of the three cuts)
+          rem = removed_edge(py, pz, rx) || removed_edge(px, pz, ry) || removed_edge(px, py, rz);
+        } else {  // not in the opening by the largest ball: distance to the quadrant [rmax,inf)^3 exceeds rmax
+          const double dx = std::max(0.0, rmax - px), dy = std::max(0.0, rmax - py), dz = std::max(0.0, rmax - pz);
+          rem = dx * dx + dy * dy + dz * dz > rmax * rmax;
+        }
+        if (rem) removed += h * h * h;
+      }
+  return removed;
+}
+
+void TestSetbackVertexBlendOfThreeUnequalRadiiIsG1ToTheCylindersAndBoundedByBalls() {
+  using dino8::kernel::FilletConvexEdgesRadii;
+  using dino8::kernel::RadiusEdgeSpec;
+  using dino8::kernel::Vector3d;
+  struct Case { double rx, ry, rz; };
+  for (const Case& c : {Case{1.0, 2.0, 3.0}, Case{2.5, 1.5, 1.0}, Case{1.0, 1.0, 2.5}}) {
+    char name[96];
+    std::snprintf(name, sizeof name, "[setback corner radii %.1f / %.1f / %.1f] ", c.rx, c.ry, c.rz);
+    const std::string tag = name;
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    std::string why;
+    Brep f;
+    try {
+      f = FilletConvexEdgesRadii(box, {{Point3d(10, 10, 10), Point3d(0, 10, 10), c.rx},
+                                       {Point3d(10, 10, 10), Point3d(10, 0, 10), c.ry},
+                                       {Point3d(10, 10, 10), Point3d(10, 10, 0), c.rz}});
+    } catch (const std::exception& e) { why = e.what(); }
+    Check(why.empty(), (tag + "builds: " + why).c_str());
+    if (!why.empty()) continue;
+    bool oriented = false, has_boundary = true;
+    Check(f.raw().IsValid() && f.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary && f.raw().IsSolid(),
+          (tag + "valid oriented closed 2-manifold solid").c_str());
+    Check(f.raw().m_F.Count() == 6 + 3 + 1, (tag + "6 planar + 3 cylindrical + 1 free-form corner patch").c_str());
+
+    // the free-form patch: the one face that is neither planar nor a cylinder
+    const ON_Surface* patch = nullptr;
+    for (int i = 0; i < f.raw().m_F.Count(); ++i) {
+      const ON_Surface* srf = f.raw().m_F[i].SurfaceOf();
+      if (srf != nullptr && !srf->IsPlanar(nullptr, 1e-9) && !srf->IsCylinder(nullptr, 1e-7)) patch = srf;
+    }
+    Check(patch != nullptr, (tag + "a free-form corner patch exists").c_str());
+    if (patch == nullptr) continue;
+    // cylinders from the geometry: axis line (point, direction) and radius, in world coordinates (corner at (10,10,10))
+    struct Cyl { Point3d a; Vector3d d; double r; };
+    const Cyl cyls[3] = {{Point3d(0, 10 - c.rx, 10 - c.rx), Vector3d(1, 0, 0), c.rx},
+                         {Point3d(10 - c.ry, 0, 10 - c.ry), Vector3d(0, 1, 0), c.ry},
+                         {Point3d(10 - c.rz, 10 - c.rz, 0), Vector3d(0, 0, 1), c.rz}};
+    const ON_Interval du = patch->Domain(0), dv = patch->Domain(1);
+    double max_gap = 0.0, max_angle = 0.0;
+    int sampled = 0;
+    for (int bd = 0; bd < 3; ++bd) {
+      for (int m = 2; m <= 98; ++m) {
+        const double w = m / 100.0;
+        double u, v;
+        if (bd == 0) { u = du.ParameterAt(w); v = dv.Min(); }
+        else if (bd == 1) { u = du.Max(); v = dv.ParameterAt(w * 0.9); }
+        else { u = du.Min(); v = dv.ParameterAt(w * 0.9); }
+        const Point3d pt = patch->PointAt(u, v);
+        ON_3dVector n = patch->NormalAt(u, v);
+        if (!n.Unitize()) continue;
+        int best = 0;
+        double best_gap = 1e300;
+        Vector3d best_radial;
+        for (int q = 0; q < 3; ++q) {
+          const Vector3d ap = pt - cyls[q].a;
+          const Vector3d radial = ap - (ap * cyls[q].d) * cyls[q].d;
+          const double gap = std::fabs(radial.Length() - cyls[q].r);
+          if (gap < best_gap) { best_gap = gap; best = q; best_radial = radial; }
+        }
+        (void)best;
+        max_gap = std::max(max_gap, best_gap);
+        best_radial.Unitize();
+        max_angle = std::max(max_angle, std::acos(std::min(1.0, std::fabs(n * best_radial))));
+        ++sampled;
+      }
+    }
+    std::printf("%sG1 sampling: %d boundary points, max distance to the nearest cylinder %.3e, max normal angle %.3e rad\n",
+                tag.c_str(), sampled, max_gap, max_angle);
+    Check(sampled > 250 && max_gap < 1e-4, (tag + "every boundary sample lies on one of the three cylinders (G0, < 1e-4)").c_str());
+    Check(max_angle < 1e-3, (tag + "the patch normal equals the cylinder normal along all three boundaries (G1, < 1e-3 rad)").c_str());
+
+    const double removed = 1000.0 - f.TessellateToClosedMeshAdaptive(1e-4).Volume();
+    const double lo = CornerRemovedBounds(c.rx, c.ry, c.rz, true, 200);   // at least what the three single-edge cuts remove
+    const double hi = CornerRemovedBounds(c.rx, c.ry, c.rz, false, 200);  // at most what the largest ball leaves
+    std::printf("%sremoved volume %.4f, bounds [%.4f (union of the three single-edge cuts), %.4f (not in the opening by the largest ball)]\n",
+                tag.c_str(), removed, lo, hi);
+    Check(removed > lo - 0.05 && removed < hi + 0.05, (tag + "the removed volume lies between the two independently integrated bounds").c_str());
+  }
+  // beyond what the construction supports: refused, naming the measured reason
+  const std::string why = Why([&] {
+    (void)FilletConvexEdgesRadii(Brep::Box(0, 0, 0, 10, 10, 10), {{Point3d(10, 10, 10), Point3d(0, 10, 10), 0.5},
+                                                                  {Point3d(10, 10, 10), Point3d(10, 0, 10), 0.5},
+                                                                  {Point3d(10, 10, 10), Point3d(10, 10, 0), 6.0}});
+  });
+  Check(Has(why.c_str(), "setback") && Has(why.c_str(), "fold"),
+        ("[setback corner radii 0.5 / 0.5 / 6] is refused: the patch would fold over itself: " + why).c_str());
 }
 
 }  // namespace blend_law_tests
@@ -109302,7 +109414,8 @@ int main() {
   RunTest("blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls", blend_law_tests::TestNonLinearLawOnTenWideBoxEdgeBuildsValidSolidMatchingUnionOfBalls);
   RunTest("blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody", blend_law_tests::TestSteepStartLawIsRefusedNamingItsSlopeInsteadOfReturningAnUntessellatableBody);
   RunTest("blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation", blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation);
-  RunTest("blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRefused", blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndAMixedRadiusCornerIsRefused);
+  RunTest("blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndEqualRadiusCornerStaysASphere", blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndEqualRadiusCornerStaysASphere);
+  RunTest("blend_law_tests::TestSetbackVertexBlendOfThreeUnequalRadiiIsG1ToTheCylindersAndBoundedByBalls", blend_law_tests::TestSetbackVertexBlendOfThreeUnequalRadiiIsG1ToTheCylindersAndBoundedByBalls);
   RunTest("blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin", blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin);
 
   RunTest("units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions", units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions);
