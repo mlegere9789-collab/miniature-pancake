@@ -852,8 +852,10 @@ class CylinderCommand : public Command {
         break;
       }
       case Kind::Cone: {
+        // ON_Cone's plane origin is the APEX and its axis points from the apex to the base; the first pick is the BASE centre
+        // (as for the mesh and SubD cones and the preview), so the apex is `h` along the pick's axis and the cone axis reversed.
         ON_Cone cone;
-        cone.Create(pl, h, radius_);
+        cone.Create(ON_Plane(base_ + axis * h, -axis), h, radius_);
         AddBrep(ctx, ON_BrepCone(cone, true), "Cone");
         break;
       }

@@ -4,7 +4,7 @@
 # Every case starts from `New` and is bracketed by an unknown-command marker ("KWRBEGIN_<name>") that smoke.sh
 # uses to slice the output into per-case blocks. Closed forms (Pappus: V = 2*pi*rho*A for the (r,z) corner
 # region cut away at a rim) are in smoke.sh next to each range.
-# NB the app's Cone puts its APEX at the clicked base point and the flat cap at z = height; TCone 0,0,0 5 10 3 is
+# NB the app's Cone has its flat base cap at the clicked base point (z = 0) and its apex at z = height; TCone 0,0,0 5 10 3 is
 # the frustum r5 (z=0) -> r3 (z=10).
 SetActiveViewport Top
 
@@ -157,7 +157,7 @@ Cone 0,0,0 5 10
 ChamferEdge
 Radius=1
 Angle=45
-0,5,10
+0,5,0
 Enter
 SelAll
 List

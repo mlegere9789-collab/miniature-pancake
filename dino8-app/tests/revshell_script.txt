@@ -68,7 +68,7 @@ RVSHBEGIN_conewall
 Cone 0,0,0 5 10
 SelAll
 Shell
-2,0,10
+2,0,0
 Mode=Thickness
 2.5,0,5
 0.5

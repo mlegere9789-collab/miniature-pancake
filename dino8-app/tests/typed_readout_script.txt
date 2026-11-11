@@ -1,5 +1,6 @@
 # TYPED_: What names each object's analytic kind (kernel Classify): a curve as Line / Circle / Arc / Ellipse / Polyline, a B-rep's
 # faces as Plane / Sphere / Cylinder / Cone / Torus, with the closed-form parameters the object was made from.
+# The Cone is "base 60,60,0, radius 3, height 6": base centre at the pick, apex 6 above it (volume centroid 1.5 = h/4 above the base).
 Line 0,0,0 3,4,0
 SelLast
 What
@@ -25,6 +26,7 @@ What
 Cone 60,60,0 3 6
 SelLast
 What
+VolumeCentroid
 Torus 0,80,0 6 1.5
 SelLast
 What
