@@ -2563,7 +2563,7 @@ bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements, boo
     std::istringstream stream(line);
     std::string tag;
     stream >> tag;
-    if (tag == "comment" || tag.empty()) {
+    if (tag == "comment" || tag == "obj_info" || tag.empty()) {  // obj_info: a free-form header line, like a comment
       continue;
     }
     if (tag == "end_header") {
