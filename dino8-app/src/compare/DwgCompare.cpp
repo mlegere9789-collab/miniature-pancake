@@ -227,7 +227,7 @@ bool LoadCompareSource(Document& out, const std::string& path, std::string& erro
   if (ext == ".dxf") return ImportDxf(out, path, error);
   if (ext == ".dwg") return ImportDwg(out, path, error);
   if (ext == ".ply") return ImportPly(out, path, error);
-  if (ext == ".obj" || ext == ".stl") return ImportMeshFile(out, path, error);
+  if (ext == ".obj" || ext == ".stl" || ext == ".3mf") return ImportMeshFile(out, path, error);
   if (ext == ".igs" || ext == ".iges") return ImportIges(out, path, error);
   if (ext == ".stp" || ext == ".step") return ImportStep(out, path, error);
   if (ext == ".sat" || ext == ".sab") return ImportSat(out, path, error);

@@ -1,11 +1,13 @@
 #include "io/File3dm.h"
 
 #include "geom/BrepMesher.h"
+#include "dino8/kernel/threemf.h"
 
 #include <opennurbs.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -3446,11 +3448,92 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
   return true;
 }
 
+// ---- 3MF (kernel threemf.h: deflate/stored ZIP package, units, objects, components, build-item transforms) ----
+
+// 3MF core unit name for a document unit system, or nullptr when 3MF has no such unit (the file then says millimeter and the
+// coordinates are written as they are).
+const char* ThreeMfUnitFor(const std::string& doc_unit) {
+  if (doc_unit == "Millimeters") return "millimeter";
+  if (doc_unit == "Centimeters") return "centimeter";
+  if (doc_unit == "Meters") return "meter";
+  if (doc_unit == "Inches") return "inch";
+  if (doc_unit == "Feet") return "foot";
+  return nullptr;
+}
+
+// Millimetres per document unit (1 for a unit 3MF has no name for: coordinates are then taken as they are).
+double DocUnitMillimeters(const std::string& doc_unit) {
+  const char* u = ThreeMfUnitFor(doc_unit);
+  return u ? kernel::ThreeMfUnitToMillimeters(u) : 1.0;
+}
+
+bool ExportThreeMfFile(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::ThreeMfModel model;
+  const char* unit = ThreeMfUnitFor(doc.Settings().unit_system);
+  model.unit = unit ? unit : "millimeter";
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    kernel::Mesh m;
+    if (o.kind == ObjectKind::Mesh && o.mesh) {
+      m = *o.mesh;
+    } else if (o.kind == ObjectKind::Brep && o.brep) {
+      BrepMeshOptions opt; opt.chord_tolerance = 0.01; m = MeshBrepClosed(o.brep->raw(), opt);
+    } else if (o.kind == ObjectKind::Surface && o.surface) {
+      m = o.surface->TessellateGridAdaptive(0.01);
+    } else if (o.kind == ObjectKind::SubD && o.subd) {
+      m = o.subd->ToApproximateMesh();
+    } else {
+      continue;
+    }
+    if (m.VertexCount() == 0 || m.FaceCount() == 0) continue;
+    model.parts.push_back(kernel::ThreeMfPart{o.name, std::move(m)});
+  }
+  if (model.parts.empty()) {
+    error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";
+    return false;
+  }
+  if (kernel::SaveThreeMf(path, model) != kernel::Result::Ok) {
+    error = "Could not write " + path;
+    return false;
+  }
+  return true;
+}
+
+bool ImportThreeMfFile(Document& doc, const std::string& path, std::string& error) {
+  kernel::ThreeMfModel model;
+  if (kernel::LoadThreeMf(path, model) != kernel::Result::Ok) {
+    error = "Could not read a 3MF model from " + path;
+    return false;
+  }
+  // The file's coordinates are in model.unit; bring them into the document's unit when 3MF names it.
+  const double factor = kernel::ThreeMfUnitToMillimeters(model.unit) / DocUnitMillimeters(doc.Settings().unit_system);
+  const bool scale = std::fabs(factor - 1.0) > 1e-12;
+  const std::string stem = std::filesystem::path(path).stem().string();
+  int imported = 0;
+  for (size_t i = 0; i < model.parts.size(); ++i) {
+    kernel::Mesh mesh = scale ? model.parts[i].mesh.Transform(ON_Xform::DiagonalTransformation(factor, factor, factor)) : model.parts[i].mesh;
+    if (mesh.FaceCount() == 0) continue;
+    mesh.raw().ComputeVertexNormals();
+    SceneObject o = SceneObject::MakeMesh(mesh);
+    o.name = !model.parts[i].name.empty() ? model.parts[i].name : (model.parts.size() == 1 ? stem : stem + "_" + std::to_string(i + 1));
+    doc.Add(std::move(o));
+    ++imported;
+  }
+  if (imported == 0) {
+    error = "No geometry found in " + path;
+    return false;
+  }
+  error = "3MF: " + std::to_string(imported) + " part(s), file unit " + model.unit + (scale ? ", scaled to the document unit " + doc.Settings().unit_system : std::string());
+  return true;
+}
+
 }  // namespace
 
 bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) {
   const std::string ext = LowerExt(path);
   if (ext == ".obj") return ImportObjMulti(doc, path, error);
+  if (ext == ".3mf") return ImportThreeMfFile(doc, path, error);
   if (ext != ".stl") {
     error = "Unsupported mesh format: " + ext;
     return false;
@@ -3480,6 +3563,7 @@ bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) 
 bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   const std::string ext = LowerExt(path);
   if (ext == ".obj") return ExportObjMulti(doc, path, selected_only, error);
+  if (ext == ".3mf") return ExportThreeMfFile(doc, path, selected_only, error);
   if (ext != ".stl") {
     error = "Unsupported export format: " + ext;
     return false;
