@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # VCF_: ViewCaptureToFile writes PNG and records DPI (vcf_script.txt), checked by an independent parser (image_check.py: struct + zlib
-# for the PNG chunks / BMP header, Pillow for decoding). Before: BMP only, resolution unknown, "x.png" became "x.png.bmp".
+# for the PNG chunks / BMP header and its own pixel decoders; standard library only, the runner has no Pillow). Before: BMP only, resolution unknown, "x.png" became "x.png.bmp".
 #   PNG   : signature, every chunk CRC, IHDR 8-bit RGB, one IDAT inflating to H x (1 + 3 W), no pHYs without Dpi
 #   Dpi   : PNG pHYs = round(dpi / 0.0254) = 11811 (300), BMP biX/YPelsPerMeter = 3780 (96)
 #   same  : the PNG and the BMP of one static frame decode to the same pixels
