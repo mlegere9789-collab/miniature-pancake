@@ -1,16 +1,18 @@
 # ---------------------------------------------------------------------------
 # LCL_: Loft Closed=Yes (lcl_script.txt) - the kernel's closed Brep::Loft (a periodic interpolation from the last curve back to the
-# first) from the app. Eight unit circles in the eight radial planes of a ring of radius 5 sample a torus; their seams already
-# correspond (rotated copies of one circle), so every loft runs with SeamAlign=No: the default re-seam to the nearest point of the
-# previous curve twists the correspondence round the ring (measured: the closed cubic loft then read 185.1, not 197.4, and its mesh
-# had vertices 1.2 off the tube). Oracles computed outside the program: the closed cubic loft is within about 0.3 percent of the torus
+# first) from the app. Eight unit circles in the eight radial planes of a ring of radius 5 sample a torus; they are rotated copies of
+# one circle, so their seams already correspond. The closed cases run with the DEFAULT options: the closed loft re-seams each curve
+# to the start point that minimizes the point-for-point twist against the previous one (the old nearest-point rule twisted the
+# correspondence round a ring: the closed cubic loft read 185.1, not 197.4, the closed straight one 166.3, not 185.1, and the mesh had
+# vertices 1.2 off the tube). Oracles computed outside the program: the closed cubic loft is within about 0.3 percent of the torus
 # area 4 pi^2 R r = 197.392; the closed Straight loft is 8 equal ruled strips, 23.1386 each by a midpoint rule over the unit circle
-# (400 x 40 cells), 185.109 in all. The same circles lofted WITHOUT Closed keep 7 of the 8 gaps and, being closed planar curves, get
-# two end caps (2 pi = 6.283 in all): 7/8 x 197.392 + 6.283 = 179.02; the History edit of the straight loft to Closed=No is 7 strips
-# + the two caps = 161.97 + 6.283 = 168.25. The app's Area is the tessellated figure; every window allows 1.5 percent or more.
+# (400 x 40 cells), 185.109 in all; SeamAlign=No (sections as given) must give the same figures. The same circles lofted WITHOUT Closed
+# (SeamAlign=No: the open default re-seam is not changed here) keep 7 of the 8 gaps and, being closed planar curves, get two end caps
+# (2 pi = 6.283 in all): 7/8 x 197.392 + 6.283 = 179.02; the History edit of the straight loft to Closed=No is 7 strips + the two
+# caps = 161.97 + 6.283 = 168.25. The app's Area is the tessellated figure; every window allows 1.5 percent or more.
 # Two curves cannot be lofted on back to the first: refused with the reason, nothing built. Here-strings only.
-# NOT checked here: Closed=Yes on OPEN curves, the default SeamAlign=Yes on a ring (its twist is a known limit, stated in the
-# command help), the Continuity= / tangent combinations (refused with a message).
+# NOT checked here: Closed=Yes on OPEN curves, sections whose seams are far from corresponding, the Continuity= / tangent
+# combinations (refused with a message).
 # ---------------------------------------------------------------------------
 lcl_ok() { echo "ok   $1"; }
 lcl_bad() { echo "FAIL $1"; fail=1; }
@@ -29,7 +31,7 @@ lcl_area() {
   v="$({ grep -oE -- "Area = [0-9.e+-]+" <<<"$1" || true; } | sed -n "${2}p" | grep -oE '[-0-9.e+]+$' || true)"
   if lcl_in "$v" "$3" "$4"; then lcl_ok "$5 (Area $v in $3..$4)"; else lcl_bad "$5 (Area '${v:-none}' not in $3..$4)"; fi
 }
-LCL_C="$(lcl_block closed)"; LCL_O="$(lcl_block open)"; LCL_S="$(lcl_block straight)"; LCL_U="$(lcl_block uniform)"; LCL_2="$(lcl_block two)"; LCL_H="$(lcl_block history)"
+LCL_C="$(lcl_block closed)"; LCL_O="$(lcl_block open)"; LCL_S="$(lcl_block straight)"; LCL_U="$(lcl_block uniform)"; LCL_A="$(lcl_block noalign)"; LCL_2="$(lcl_block two)"; LCL_H="$(lcl_block history)"
 if grep -q "^FAIL" <<<"$LCL_OUT"; then lcl_bad "LCL_script: an @expect line of the script failed"; else lcl_ok "LCL_script: ran"; fi
 # --- closed cubic loft
 lcl_has "$LCL_C" "exact interpolating kernel loft through 8 curves (degree 3 in the loft direction); every section reproduced" "LCL_closed: the exact kernel loft through the eight circles"
@@ -48,6 +50,11 @@ lcl_area "$LCL_S" 1 182.3 187.9 "LCL_straight: eight ruled strips = 185.109 (mid
 lcl_has "$LCL_U" "Spacing=Uniform station parameters" "LCL_uniform: the spacing is named"
 lcl_has "$LCL_U" "Closed=Yes: lofted on" "LCL_uniform: closed"
 lcl_area "$LCL_U" 1 194.4 200.4 "LCL_uniform: area = torus 197.392 (by the symmetry of the eight sections uniform and chord stations coincide)"
+# --- control: SeamAlign=No on the same ring gives the same torus (the sections are used exactly as given)
+lcl_area "$LCL_A" 1 194.4 200.4 "LCL_noalign: SeamAlign=No = torus 197.392, the figure the default must reproduce"
+lcl_hasnot "$LCL_A" "seam(s) moved" "LCL_noalign: ...no seam moved"
+lcl_hasnot "$LCL_C" "does not meet the first" "LCL_closed: the default's last seam meets the first (no twist note)"
+lcl_hasnot "$LCL_S" "does not meet the first" "LCL_straight: ...no twist note either"
 # --- refusal with two curves
 lcl_has "$LCL_2" "Closed=Yes needs at least 3 curves" "LCL_two: two curves are refused WITH the reason"
 lcl_has "$LCL_2" "2 selected; nothing was built" "LCL_two: ...naming the count"
