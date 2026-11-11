@@ -3362,14 +3362,43 @@ bool ChainLiesAlongFaceBoundary(const ON_Brep& brep, int face_index, const std::
   const ON_BrepFace& face = brep.m_F[face_index];
   const ON_Surface* srf = face.SurfaceOf();
   if (!srf || face.m_li.Count() == 0 || chain.size() < 2) return false;
+  // The trims once, each with its 2D box. A face that earlier Booleans left with thousands of trims (bridged keyholes) is not a
+  // rim-arc candidate and would make this scan (65 + 40 curve evaluations per trim per sample) dominate the whole Boolean.
+  struct TrimBox {
+    const ON_Curve* c2;
+    ON_BoundingBox box;
+  };
+  std::vector<TrimBox> trims;
+  for (int li = 0; li < face.m_li.Count(); ++li) {
+    const ON_BrepLoop& loop = brep.m_L[face.m_li[li]];
+    for (int k = 0; k < loop.m_ti.Count(); ++k) {
+      const ON_Curve* c2 = brep.m_T[loop.m_ti[k]].TrimCurveOf();
+      if (!c2) continue;
+      TrimBox tb{c2, ON_BoundingBox()};
+      c2->GetBoundingBox(tb.box);
+      trims.push_back(tb);
+    }
+  }
+  if (trims.size() > 64) return false;
+  // How far a 3D distance of `tol` can be in (u, v): tol over the surface's smallest first derivative here, widened 4x.
+  double margin_uv = 1e300;
+  {
+    const Point2d c = chain[chain.size() / 2].uv;
+    const double hu = 1e-6 * std::max(1.0, srf->Domain(0).Length()), hv = 1e-6 * std::max(1.0, srf->Domain(1).Length());
+    const double su = srf->PointAt(c.x + hu, c.y).DistanceTo(srf->PointAt(c.x - hu, c.y)) / (2 * hu);
+    const double sv = srf->PointAt(c.x, c.y + hv).DistanceTo(srf->PointAt(c.x, c.y - hv)) / (2 * hv);
+    const double smin = std::min(su, sv);
+    if (smin > 1e-9) margin_uv = 4.0 * tol / smin;
+  }
   auto dist_to_trims = [&](const Point3d& p, const Point2d& uv) {
     double best = 1e300;
-    for (int li = 0; li < face.m_li.Count(); ++li) {
-      const ON_BrepLoop& loop = brep.m_L[face.m_li[li]];
-      for (int k = 0; k < loop.m_ti.Count(); ++k) {
-        const ON_BrepTrim& trim = brep.m_T[loop.m_ti[k]];
-        const ON_Curve* c2 = trim.TrimCurveOf();
-        if (!c2) continue;
+    for (const TrimBox& tb : trims) {
+      {
+        const ON_Curve* c2 = tb.c2;
+        if (tb.box.IsValid() && margin_uv < 1e200 &&
+            (uv.x < tb.box.m_min.x - margin_uv || uv.x > tb.box.m_max.x + margin_uv || uv.y < tb.box.m_min.y - margin_uv ||
+             uv.y > tb.box.m_max.y + margin_uv))
+          continue;
         // Closest point of the 2D trim to `uv`: a 64-sample scan, then a ternary search between the best sample's neighbours.
         const ON_Interval dom = c2->Domain();
         const int ns = 64;
@@ -3421,7 +3450,11 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
       std::vector<Chain>& mine = raw[static_cast<size_t>(i)];
       mine.erase(std::remove_if(mine.begin(), mine.end(),
                                 [&](const Chain& c) {
-                                  const bool along = ChainLiesAlongFaceBoundary(brep, i, c, opt.tolerance);
+                                  // Only an OPEN chain can be a rim arc. A chain that closes on itself and runs along the face's own trims is the
+                                  // outline of a hole (a boss footprint) the face already carries as a bridged keyhole: it is the "fresh chain"
+                                  // that UnbridgeKeyholes() matches the existing hole against, so subtracting the boss back out can fill it in.
+                                  const bool is_closed = c.size() >= 4 && c.front().p.DistanceTo(c.back().p) <= std::max(stitch_tol, 1e-9);
+                                  const bool along = !is_closed && ChainLiesAlongFaceBoundary(brep, i, c, opt.tolerance);
                                   if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: raw chain n=%zu front_p=(%.4f,%.4f,%.4f) back_p=(%.4f,%.4f,%.4f) along_boundary=%d\n", i, c.size(), c.front().p.x, c.front().p.y, c.front().p.z, c.back().p.x, c.back().p.y, c.back().p.z, along);
                                   if (along && debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: dropped a chain of %zu pts lying along its own boundary\n", i, c.size());
                                   return along;
