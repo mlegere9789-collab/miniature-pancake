@@ -5,7 +5,7 @@
 #   vc.bmp      : the plain BMP                 vc.png    : the PNG of the same static frame (same pixels)
 #   vc300.png   : Dpi=300 -> pHYs 11811         vc96.bmp  : Dpi=96 -> biXPelsPerMeter 3780
 #   vc_noext    : no extension -> vc_noext.bmp (unchanged behaviour)
-# smoke.sh checks the files with image_check.py (struct + zlib chunk/header parsing and Pillow), independent of the writer.
+# smoke.sh checks the files with image_check.py (struct + zlib chunk/header parsing and its own decoders, standard library only), independent of the writer.
 SetActiveViewport Top
 New
 Rectangle 0,0,0 20,20,0
