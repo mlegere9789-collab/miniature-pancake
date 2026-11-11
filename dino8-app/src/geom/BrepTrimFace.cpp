@@ -50,15 +50,19 @@ int AddTrimmedFace(ON_Brep& brep, ON_NurbsSurface* srf, const std::vector<std::v
       }
       ON_BrepTrim* trim = nullptr;
       if (reuse >= 0) {
+        // The second trim of a seam edge: NewTrim has just typed BOTH trims of the edge as seam. Forcing this one back to
+        // boundary (as the new-edge branch below must) left the pair half seam / half boundary, which ON_Brep::IsValid
+        // rejects ("its other trim is not in the loop") - every face of a cylinder, revolve or periodic sweep with a seam.
         trim = &brep.NewTrim(brep.m_E[reuse], rev, brep.m_L[li], c2i);
+        trim->m_tolerance[0] = trim->m_tolerance[1] = 0.0;
       } else {
         const int c3i = brep.AddEdgeCurve(new ON_NurbsCurve(seg.c3));
         ON_BrepEdge& e = brep.NewEdge(brep.m_V[v0], brep.m_V[v1], c3i);
         e.m_tolerance = tol;
         trim = &brep.NewTrim(e, false, brep.m_L[li], c2i);
+        trim->m_tolerance[0] = trim->m_tolerance[1] = 0.0;
+        trim->m_type = ON_BrepTrim::boundary;
       }
-      trim->m_tolerance[0] = trim->m_tolerance[1] = 0.0;
-      trim->m_type = ON_BrepTrim::boundary;
     }
   }
   return fi;
