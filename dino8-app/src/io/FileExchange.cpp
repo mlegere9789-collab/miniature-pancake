@@ -4,6 +4,7 @@
 #include "io/AciPalette.h"
 #include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
+#include "geom/BrepMesher.h"
 #include "geom/TextOutline.h"
 #include "util/ThreadPool.h"
 #include "viewport/Viewport.h"
@@ -4183,19 +4184,15 @@ bool ExportPly(const Document& doc, const std::string& path, bool selected_only,
     } else if (o.kind == ObjectKind::SubD && o.subd) {
       results[i] = o.subd->ToApproximateMesh();
     } else if (o.kind == ObjectKind::Brep && o.brep) {
-      // Use the display tessellation (already a closed render mesh).
-      o.EnsureDisplay(0.01, 0.05);
-      const std::vector<float>& t = o.Display().triangles;
-      kernel::Mesh m;
-      ON_Mesh& raw = m.raw();
-      for (size_t k2 = 0; k2 + 17 < t.size(); k2 += 18) {
-        const int base = raw.VertexCount();
-        for (int k = 0; k < 3; ++k) raw.m_V.Append(ON_3fPoint(t[k2 + k * 6], t[k2 + k * 6 + 1], t[k2 + k * 6 + 2]));
-        ON_MeshFace f; f.vi[0] = base; f.vi[1] = base + 1; f.vi[2] = base + 2; f.vi[3] = base + 2;
-        raw.m_F.Append(f);
-      }
-      raw.CombineIdenticalVertices(true, true);
-      if (raw.FaceCount() > 0) results[i] = m;
+      // The same export-grade mesh the STL and OBJ exports write (MeshBrepClosed, chord tolerance 0.01: one welded,
+      // edge-consistent mesh). This used to be the viewport's display tessellation, meshed at the DISPLAY tolerance 0.05:
+      // the filleted pipe tee came back from a .ply with Volume 83.44 and Area 118.45 against the exact 84.97 / 119.5
+      // (1.8 percent low; the same solid through .stl / .obj reads 84.81, 0.19 percent low), and with two float-rounding
+      // duplicate seam vertices (8 naked edges until the import weld).
+      BrepMeshOptions opt;
+      opt.chord_tolerance = 0.01;
+      kernel::Mesh m = MeshBrepClosed(o.brep->raw(), opt);
+      if (m.FaceCount() > 0) results[i] = std::move(m);
     }
   });
   std::vector<kernel::Mesh> owned;
