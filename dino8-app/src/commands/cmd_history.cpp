@@ -453,6 +453,7 @@ void RegisterBuiltinParams() {
                   [](const HistoryRecord& r) { return NumOf(r, "r"); },
                   [](HistoryRecord& r, double d) -> std::string {
                     if (!(d > 0.0)) return "radius must be positive";
+                    if (r.num.count("law")) return "this fillet follows a radius law (Law=), not a constant radius; run FilletEdge again with the radius you want";
                     r.num["r"] = d;
                     return "";
                   })});
@@ -468,8 +469,17 @@ void RegisterBuiltinParams() {
                   [](const HistoryRecord& r) { return NumOf(r, "sym", 1.0) != 0.0 ? NumOf(r, "r") : NumOf(r, "d2"); },
                   [](HistoryRecord& r, double d) -> std::string {
                     if (!(d > 0.0)) return "distance2 must be positive";
+                    if (NumOf(r, "angle") > 0.0) return "this chamfer is defined by an angle (Distance/Angle mode); set angle instead of distance2";
                     r.num["d2"] = d;
                     r.num["sym"] = 0.0;
+                    return "";
+                  }),
+      NumberParam("angle", "angle in degrees between face 1 and the chamfer (Distance/Angle chamfers only)", "0 < angle < 180",
+                  [](const HistoryRecord& r) { return NumOf(r, "angle"); },
+                  [](HistoryRecord& r, double d) -> std::string {
+                    if (NumOf(r, "angle") <= 0.0) return "this chamfer is defined by two distances, not an angle";
+                    if (!(d > 0.0 && d < 180.0)) return "angle must be between 0 and 180 degrees";
+                    r.num["angle"] = d;
                     return "";
                   })});
   SetParams("FilletSurfaces", {

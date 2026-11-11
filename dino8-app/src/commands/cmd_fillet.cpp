@@ -3031,6 +3031,7 @@ struct EdgeBlendOp {
   std::optional<double> d2;       // chamfer distance2 (unset = symmetric)
   bool recordable = true;         // false: this build is not what the rebuild reproduces (angle chamfer)
   std::optional<FilletLawSpec> law;  // a Law= fillet: the record also carries the law so the rebuild replays it
+  std::optional<double> angle_deg;   // a ChamferEdge Distance/Angle chamfer: the record carries the angle (degrees from face 1) so the rebuild replays it
   std::vector<std::pair<Point3d, Point3d>> edges;  // endpoints on the PRE-edit solid
 };
 
@@ -3101,6 +3102,7 @@ ObjectId CommitEdgeBlend(CommandContext& ctx, ObjectId id, const ON_Brep& before
     rec.num["r"] = op.d1;
     rec.num["d2"] = op.d2.value_or(op.d1);
     rec.num["sym"] = op.d2.has_value() ? 0.0 : 1.0;
+    if (op.angle_deg) rec.num["angle"] = *op.angle_deg;
     if (op.law) {
       rec.num["law"] = op.law->kind;
       rec.num["law_tol"] = op.law->tol;
@@ -4030,7 +4032,10 @@ class FilletEdgeCommand : public Command {
         op.chamfer = true;
         op.d1 = radius_;
         if (distance2_ && std::fabs(*distance2_ - radius_) > 1e-9) op.d2 = *distance2_;
-        op.recordable = !angled && !rim_chamfer;  // the angle and cylinder/cone-rim chamfers are not what the rebuild re-runs
+        // A planar Distance/Angle chamfer is recorded with its angle and replayed through ChamferConvexEdgeAngle/
+        // ChamferConcaveEdgeAngle; the cylinder/cone-rim chamfers (and every cap-rim bevel) are not what the rebuild re-runs.
+        op.recordable = !rim_chamfer;
+        if (angled) op.angle_deg = angle_deg_;
         op.edges.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
         std::string note;
         CommitEdgeBlend(ctx, pick.id, *b, exact, label, op, made_, note);
@@ -6918,7 +6923,11 @@ std::optional<SceneObject> RebuildEdgeBlend(CommandContext& ctx, const HistoryIn
           out = convex ? kernel::FilletConvexEdges(kb, es, r) : kernel::FilletConcaveEdges(kb, es, r);
         } else {
           kernel::Brep b = kb;
-          for (const auto& e : es) b = convex ? kernel::ChamferConvexEdge(b, e.first, e.second, r, d2) : kernel::ChamferConcaveEdge(b, e.first, e.second, r, d2);
+          const double angle_rad = num("angle") * ON_PI / 180.0;  // > 0: a Distance/Angle chamfer replays the recorded angle
+          for (const auto& e : es) {
+            if (angle_rad > 0.0) b = convex ? kernel::ChamferConvexEdgeAngle(b, e.first, e.second, r, angle_rad) : kernel::ChamferConcaveEdgeAngle(b, e.first, e.second, r, angle_rad);
+            else b = convex ? kernel::ChamferConvexEdge(b, e.first, e.second, r, d2) : kernel::ChamferConcaveEdge(b, e.first, e.second, r, d2);
+          }
           out = b;
         }
         return true;
