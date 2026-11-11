@@ -2871,6 +2871,46 @@ bool ClampedEquivalent(ON_NurbsSurface& x) {
   return worst <= 1e-9 * size;
 }
 
+// The curve counterpart of ClampedEquivalent(): the clamped (non-periodic) curve of the same shape, sliver removed (see there), measured against the input at
+// interior parameters. False when that fails; `x` is then unspecified.
+bool ClampedCurveEquivalent(ON_NurbsCurve& x) {
+  if (x.IsClamped(2)) return true;
+  const ON_NurbsCurve input = x;
+  ON_BoundingBox box;
+  input.GetBoundingBox(box);
+  const double size = std::max(1e-9, box.Diagonal().Length());
+  if (!x.ClampEnd(2)) return false;
+  const int p = x.Degree();
+  const int knot_count = x.KnotCount();
+  const double end = x.Domain().Max();
+  const double span = end - x.Domain().Min();
+  int run = 0;
+  while (run < knot_count && x.Knot(knot_count - 1 - run) == end) ++run;
+  int sliver = 0;
+  while (run + sliver < knot_count && x.Knot(knot_count - 1 - run - sliver) != end && end - x.Knot(knot_count - 1 - run - sliver) < 1e-9 * span) ++sliver;
+  if (sliver > 0) {
+    if (run != p || sliver > p - 1) return false;
+    const int new_cv = x.CVCount() - sliver;
+    if (new_cv < p + 1) return false;
+    ON_NurbsCurve y;
+    if (!y.Create(3, x.IsRational(), x.Order(), new_cv)) return false;
+    for (int k = 0; k < y.KnotCount(); ++k) y.SetKnot(k, k < y.KnotCount() - p ? x.Knot(k) : end);
+    for (int i = 0; i < new_cv; ++i) {
+      ON_4dPoint cvp;
+      x.GetCV(i, cvp);
+      y.SetCV(i, cvp);
+    }
+    x = y;
+  }
+  if (!x.IsClamped(2)) return false;
+  double worst = 0.0;
+  for (int i = 1; i < 200; ++i) {
+    const double t = input.Domain().ParameterAt(i / 200.0);
+    worst = std::max(worst, input.PointAt(t).DistanceTo(x.PointAt(t)));
+  }
+  return worst <= 1e-9 * size;
+}
+
 }  // namespace
 
 // MatchEdge() with the second reparameterization derivative (see surface_continuity.h). `self` is the surface edited.
@@ -3159,6 +3199,24 @@ Result NurbsSurface::MatchEdgeToCurve(int fixed_direction, bool at_min, const Nu
   }
   const int rows_needed = continuity == MatchContinuity::Position ? 1 : continuity == MatchContinuity::Tangent ? 2 : 3;
   const int edge_dir = 1 - fixed_direction;
+  // A periodic (or otherwise unclamped) surface, target curve or prescribed field is the same shape as its clamped equivalent, which the algebra below
+  // needs: run on clamped copies (ClampedEquivalent / ClampedCurveEquivalent) and take the result back. The surface comes back clamped, same shape.
+  {
+    const bool fields_unclamped = (cross_derivative && !cross_derivative->raw().IsClamped(2)) || (cross_second_derivative && !cross_second_derivative->raw().IsClamped(2));
+    if (!surface_.IsClamped(0, 2) || !surface_.IsClamped(1, 2) || !target.raw().IsClamped(2) || fields_unclamped) {
+      NurbsSurface sc;
+      sc.surface_ = surface_;
+      NurbsCurve tc = target, dc, ec;
+      if (!ClampedEquivalent(sc.surface_) || !ClampedCurveEquivalent(tc.raw())) return Result::Failed;
+      const NurbsCurve* dp = cross_derivative;
+      const NurbsCurve* ep = cross_second_derivative;
+      if (dp && !dp->raw().IsClamped(2)) { dc = *dp; if (!ClampedCurveEquivalent(dc.raw())) return Result::Failed; dp = &dc; }
+      if (ep && !ep->raw().IsClamped(2)) { ec = *ep; if (!ClampedCurveEquivalent(ec.raw())) return Result::Failed; ep = &ec; }
+      const Result rc = sc.MatchEdgeToCurve(fixed_direction, at_min, tc, continuity, dp, ep, report);
+      if (rc == Result::Ok) surface_ = sc.surface_;
+      return rc;
+    }
+  }
   const ON_NurbsSurface& s = surface_;
   if (!s.IsClamped(0, 2) || !s.IsClamped(1, 2)) return Result::Failed;
   ON_NurbsCurve c = target.raw();
@@ -3402,6 +3460,19 @@ Result NurbsSurface::MatchEdgeToCurveFollowing(int fixed_direction, bool at_min,
     if (report) *report = local;
     return Result::Failed;
   };
+  // Periodic / unclamped surface, target curve or host: run on clamped equivalents (see MatchEdgeToCurve()) and take the surface back, clamped.
+  if (!surface_.IsClamped(0, 2) || !surface_.IsClamped(1, 2) || !target.raw().IsClamped(2) || !host.raw().IsClamped(0, 2) || !host.raw().IsClamped(1, 2)) {
+    NurbsSurface sc, hc;
+    sc.surface_ = surface_;
+    hc.surface_ = host.raw();
+    NurbsCurve tc = target;
+    if (!ClampedEquivalent(sc.surface_)) return refuse("this surface could not be converted to its clamped equivalent");
+    if (!ClampedCurveEquivalent(tc.raw())) return refuse("the target curve could not be converted to its clamped equivalent");
+    if (!ClampedEquivalent(hc.surface_)) return refuse("the host surface could not be converted to its clamped equivalent");
+    const Result rc = sc.MatchEdgeToCurveFollowing(fixed_direction, at_min, tc, hc, continuity, report);
+    if (rc == Result::Ok) surface_ = sc.surface_;
+    return rc;
+  }
   const ON_NurbsSurface& s = surface_;
   const ON_NurbsCurve& c = target.raw();
   const int edge_dir = 1 - fixed_direction;
