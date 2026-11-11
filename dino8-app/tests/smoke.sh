@@ -13974,7 +13974,8 @@ if grep -q '^FAIL' <<<"$EXO_RES"; then fail=1; fi
 
 # STX_: the structure of an exported STEP solid, read by an independent parser (tests/stx_check.py): one MANIFOLD_SOLID_BREP over one
 # CLOSED_SHELL, the closed-form face counts / radii / vertex box, and a CLOSED shell in the STEP sense - every EDGE_CURVE shared by
-# exactly two ORIENTED_EDGEs (the exporter used to write every face's edges and vertices again, so no edge was shared).
+# exactly two ORIENTED_EDGEs (the exporter used to write every face's edges and vertices again, so no edge was shared), and the
+# AP214 presentation of a named, red object on layer Walls: the solid's name, STYLED_ITEM -> COLOUR_RGB (1,0,0), PRESENTATION_LAYER_ASSIGNMENT.
 STXD="$TMPW/stx"
 mkdir -p "$STXD"
 cat > "$STXD/gen.txt" <<EOS
@@ -13992,6 +13993,15 @@ New
 Cylinder 0,0,0 3 10
 SelAll
 Export $STXD/cyl.stp
+New
+NewLayer Walls
+Box 0,0,0 10,10,0 10
+SelAll
+SetRenderColor 255,0,0
+SelAll
+SetObjectName Slab
+SelAll
+Export $STXD/styled.stp
 EOS
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   STX_OUT="$(timeout 900 "$BIN" --smoke 120 --script "$STXD/gen.txt" 2>&1)" || { echo "$STX_OUT"; echo "FAIL: STX_ script exited non-zero"; exit 1; }
