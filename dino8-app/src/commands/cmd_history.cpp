@@ -365,7 +365,8 @@ void RegisterBuiltinParams() {
                                return std::string();
                              });
   SetParams("Loft", {style, YesNoParam("cap", "cap the ends of a loft through closed planar curves", "cap", true), spacing,
-                     YesNoParam("seamalign", "reverse / re-seam closed curves to follow the previous one", "seamalign", true)});
+                     YesNoParam("seamalign", "reverse / re-seam closed curves to follow the previous one", "seamalign", true),
+                     YesNoParam("closed", "loft on from the last curve back to the first (a closed surface with no ends)", "closed", false)});
   SetParams("SubDLoft", {style});
   SetParams("Pipe", {
       NumberParam("radius", "pipe radius", "> 0", [](const HistoryRecord& r) { return NumOf(r, "radius"); },

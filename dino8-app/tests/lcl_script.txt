@@ -1,0 +1,174 @@
+# Loft Closed=Yes (tests/sections/63_lcl.sh, section LCL_): the kernel's closed Brep::Loft from the app.
+# Eight unit circles (radius r = 1) in the eight radial planes of a ring of radius R = 5 (the plane through the world Z axis at
+# 0, 45, ... 315 degrees, centre at distance 5 from the axis). Lofted on from the last circle back to the first they sample a
+# torus; areas are read with the app's Area (a tessellated figure: the windows below allow the tessellation and the spline).
+#   closed cubic    ~ torus area 4 pi^2 R r = 197.392 (the periodic cubic through the 8 sections is within about 1 percent of it)
+#   open (control)  7 of the 8 gaps = 7/8 of that, 172.7
+#   closed Straight (degree 1, exact ruled strips between neighbouring circles): 8 equal strips, each the integral over the unit
+#                   circle of |dS/dtheta x dS/dt| of S = (1-t) P_i + t P_(i+1), computed outside the program by a midpoint rule
+#                   (400 x 40 cells): 23.1386 per strip, 185.109 in all
+#   History: the same closed loft edited to Style=Straight gives 185.109; edited on to Closed=No the open straight loft keeps 7 of
+#                   the 8 strips, 161.97
+# Every case starts from `New` and is bracketed by a marker line ("LCLBEGIN_<name>", an unknown command).
+# SeamAlign=No everywhere: the circles are rotated copies of one circle, so their seams already correspond (the default re-seam to the
+# nearest point of the previous curve would twist the correspondence round the ring and the last curve would not meet the first).
+SetActiveViewport Top
+
+# closed cubic loft through the eight circles
+New
+LCLBEGIN_closed
+CPlane Front
+Circle 5,0,0 1
+CPlane World
+SelID 1
+Rotate Copy=Yes 0,0,0 45
+SelID 1
+Rotate Copy=Yes 0,0,0 90
+SelID 1
+Rotate Copy=Yes 0,0,0 135
+SelID 1
+Rotate Copy=Yes 0,0,0 180
+SelID 1
+Rotate Copy=Yes 0,0,0 225
+SelID 1
+Rotate Copy=Yes 0,0,0 270
+SelID 1
+Rotate Copy=Yes 0,0,0 315
+SelNone
+SelCrv
+Loft Closed=Yes SeamAlign=No
+SelLast
+List
+Area
+
+# control: the same circles without Closed
+New
+LCLBEGIN_open
+CPlane Front
+Circle 5,0,0 1
+CPlane World
+SelID 1
+Rotate Copy=Yes 0,0,0 45
+SelID 1
+Rotate Copy=Yes 0,0,0 90
+SelID 1
+Rotate Copy=Yes 0,0,0 135
+SelID 1
+Rotate Copy=Yes 0,0,0 180
+SelID 1
+Rotate Copy=Yes 0,0,0 225
+SelID 1
+Rotate Copy=Yes 0,0,0 270
+SelID 1
+Rotate Copy=Yes 0,0,0 315
+SelNone
+SelCrv
+Loft SeamAlign=No
+SelLast
+List
+Area
+
+# closed straight (ruled) loft
+New
+LCLBEGIN_straight
+CPlane Front
+Circle 5,0,0 1
+CPlane World
+SelID 1
+Rotate Copy=Yes 0,0,0 45
+SelID 1
+Rotate Copy=Yes 0,0,0 90
+SelID 1
+Rotate Copy=Yes 0,0,0 135
+SelID 1
+Rotate Copy=Yes 0,0,0 180
+SelID 1
+Rotate Copy=Yes 0,0,0 225
+SelID 1
+Rotate Copy=Yes 0,0,0 270
+SelID 1
+Rotate Copy=Yes 0,0,0 315
+SelNone
+SelCrv
+Loft Closed=Yes SeamAlign=No Style=Straight
+SelLast
+List
+Area
+
+# closed loft with Spacing=Uniform (stations k/8)
+New
+LCLBEGIN_uniform
+CPlane Front
+Circle 5,0,0 1
+CPlane World
+SelID 1
+Rotate Copy=Yes 0,0,0 45
+SelID 1
+Rotate Copy=Yes 0,0,0 90
+SelID 1
+Rotate Copy=Yes 0,0,0 135
+SelID 1
+Rotate Copy=Yes 0,0,0 180
+SelID 1
+Rotate Copy=Yes 0,0,0 225
+SelID 1
+Rotate Copy=Yes 0,0,0 270
+SelID 1
+Rotate Copy=Yes 0,0,0 315
+SelNone
+SelCrv
+Loft Closed=Yes SeamAlign=No Spacing=Uniform
+SelLast
+List
+Area
+
+# refusal: two curves cannot be lofted on back to the first
+New
+LCLBEGIN_two
+CPlane Front
+Circle 5,0,0 1
+CPlane World
+SelID 1
+Rotate Copy=Yes 0,0,0 45
+SelNone
+SelCrv
+Loft Closed=Yes
+SelAll
+List
+
+# History: edit the recorded closed loft to straight, then to open
+New
+LCLBEGIN_history
+CPlane Front
+Circle 5,0,0 1
+CPlane World
+SelID 1
+Rotate Copy=Yes 0,0,0 45
+SelID 1
+Rotate Copy=Yes 0,0,0 90
+SelID 1
+Rotate Copy=Yes 0,0,0 135
+SelID 1
+Rotate Copy=Yes 0,0,0 180
+SelID 1
+Rotate Copy=Yes 0,0,0 225
+SelID 1
+Rotate Copy=Yes 0,0,0 270
+SelID 1
+Rotate Copy=Yes 0,0,0 315
+SelNone
+SelCrv
+SelNone
+SelCrv
+History On
+Loft Closed=Yes SeamAlign=No
+SelLast
+Area
+EditHistory 9 style=straight
+SelID 9
+Area
+EditHistory 9 closed=no
+SelID 9
+Area
+History Off
+

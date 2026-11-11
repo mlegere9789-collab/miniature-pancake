@@ -299,16 +299,21 @@ std::optional<kernel::NurbsSurface> LoftWall(const kernel::Brep& b) {
 // Largest deviation of any section from the isocurve of `wall` at that
 // section's own station. The station (v) is read off the surface by closest
 // point from several points of the section and must agree between them.
-double MeasureLoftSections(const kernel::NurbsSurface& wall, const std::vector<kernel::NurbsCurve>& sections, bool& stations_agree) {
+double MeasureLoftSections(const kernel::NurbsSurface& wall, const std::vector<kernel::NurbsCurve>& sections, bool& stations_agree, bool periodic = false) {
   stations_agree = true;
   double worst = 0.0;
   for (const kernel::NurbsCurve& s : sections) {
     const std::vector<Point3d> probes = sectionfit::SamplePoints(s, 5);
     std::vector<double> vs;
-    for (const Point3d& p : probes) vs.push_back(wall.ClosestPointParameter(p).y);
+    const kernel::Interval dv = wall.Domain(1);
+    for (const Point3d& p : probes) {
+      double pv = wall.ClosestPointParameter(p).y;
+      // A closed (periodic) loft: the first section is at both ends of the v domain, so a probe may land on either.
+      if (periodic && pv > dv.max - 1e-6 * (dv.max - dv.min)) pv = dv.min;
+      vs.push_back(pv);
+    }
     std::sort(vs.begin(), vs.end());
     const double v = vs[vs.size() / 2];
-    const kernel::Interval dv = wall.Domain(1);
     if (vs.back() - vs.front() > 1e-6 * (dv.max - dv.min)) stations_agree = false;
     worst = std::max(worst, sectionfit::CurveDeviation(s, wall.IsoCurve(0, std::min(std::max(v, dv.min), dv.max))));
   }
@@ -473,11 +478,20 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
                                                                 : kernel::Brep::LoftSpacing::Chord;
   const bool closed_sections = al.curves.front().IsClosed();
   const int degree = rec.straight ? 1 : std::min(3, static_cast<int>(curves.size()) - 1);
+  // Closed=Yes (rec.num["closed"] = 1): the loft runs on from the last curve back to the first (kernel Brep::Loft closed=true,
+  // periodic interpolation, no ends and so no caps). It needs at least degree + 1 curves, and three in any case.
+  const bool want_closed = rec.num.count("closed") && rec.num.at("closed") != 0.0;
+  if (want_closed && static_cast<int>(curves.size()) < std::max(degree + 1, 3)) {
+    ctx.Warn("Loft: Closed=Yes needs at least " + std::to_string(std::max(degree + 1, 3)) + " curves (it lofts from the last curve back to the first), " + std::to_string(curves.size()) + " selected; nothing was built");
+    return std::nullopt;
+  }
   try {
     kernel::Brep b;
     bool capped = false;
     std::string cap_note;
-    if (closed_sections && want_cap) {
+    if (want_closed) {
+      b = kernel::Brep::Loft(al.curves, degree, /*closed=*/true, /*cap=*/false, nullptr, nullptr, spacing);
+    } else if (closed_sections && want_cap) {
       try {
         b = kernel::Brep::Loft(al.curves, degree, /*closed=*/false, /*cap=*/true, nullptr, nullptr, spacing);
         capped = true;
@@ -491,7 +505,8 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
     std::optional<kernel::NurbsSurface> wall = LoftWall(b);
     if (!wall) throw std::runtime_error("the kernel loft has no surface face");
     bool agree = true;
-    const double dev = MeasureLoftSections(*wall, al.curves, agree);
+    const double dev = MeasureLoftSections(*wall, al.curves, agree, want_closed);
+    if (want_closed && !wall->raw().IsClosed(1)) throw std::runtime_error("the closed loft's surface is not closed in the loft direction");
     double biggest = 0.0;
     for (const kernel::NurbsCurve& s : al.curves) biggest = std::max(biggest, sectionfit::CurveSize(s));
     const double limit = 1e-6 * std::max(biggest, 1e-9);
@@ -504,7 +519,8 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
     if (!seam_align) msg += "; SeamAlign=No (sections used exactly as given)";
     if (spacing_code == 1 || spacing_code == 2) msg += std::string("; Spacing=") + (spacing_code == 1 ? "Uniform" : "Centripetal") + " station parameters";
     if (al.reversed || al.reseamed) msg += "; aligned first: " + std::to_string(al.reversed) + " curve(s) reversed, " + std::to_string(al.reseamed) + " seam(s) moved";
-    if (closed_sections) msg += capped ? "; end caps added (Cap=Yes), a closed polysurface" : (want_cap ? "" : "; uncapped (Cap=No)");
+    if (want_closed) msg += "; Closed=Yes: lofted on from the last curve back to the first (periodic in the loft direction, closed surface, no ends and no caps)";
+    else if (closed_sections) msg += capped ? "; end caps added (Cap=Yes), a closed polysurface" : (want_cap ? "" : "; uncapped (Cap=No)");
     ctx.Print(msg + cap_note);
     if (capped) {
       SceneObject solid = SceneObject::MakeBrep(std::move(b));
@@ -1118,6 +1134,7 @@ struct LoftTokens {
   bool cap = true;
   int spacing = 0;
   bool seam_align = true;
+  bool closed = false;
   std::string start_tangent, end_tangent;
   double start_weight = 1.0, end_weight = 1.0;
   bool bad_weight = false;
@@ -1132,6 +1149,8 @@ LoftTokens ParseLoftTokens(const std::vector<std::string>& tokens) {
     else if (s == "style=normal") out.straight = false;
     else if (s == "cap=yes" || s == "cap=y") out.cap = true;
     else if (s == "cap=no" || s == "cap=n") out.cap = false;
+    else if (s == "closed=yes" || s == "closed=y") out.closed = true;
+    else if (s == "closed=no" || s == "closed=n") out.closed = false;
     else if (s == "spacing=uniform") out.spacing = 1;
     else if (s == "spacing=centripetal") out.spacing = 2;
     else if (s == "spacing=chord" || s == "spacing=normal") out.spacing = 0;
@@ -1163,7 +1182,7 @@ LoftTokens ParseLoftTokens(const std::vector<std::string>& tokens) {
 // like Pipe's Cap and Extrude's Solid) closes the ends of a loft through
 // closed planar curves into a polysurface solid; Cap=No leaves the periodic
 // tube surface.
-void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false, bool cap = true, int spacing = 0, bool seam_align = true) {
+void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false, bool cap = true, int spacing = 0, bool seam_align = true, bool closed = false) {
   std::vector<ObjectId> curve_ids;
   std::vector<const kernel::NurbsCurve*> curves;
   for (ObjectId id : ids) {
@@ -1179,6 +1198,7 @@ void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool
     rec.num = {{"cap", cap ? 1.0 : 0.0}};
     if (spacing != 0) rec.num["spacing"] = static_cast<double>(spacing);
     if (!seam_align) rec.num["seamalign"] = 0.0;
+    if (closed) rec.num["closed"] = 1.0;
   }
   std::optional<SceneObject> built = RebuildLoft(ctx, curves, rec);
   if (!built) { ctx.Warn("Loft failed"); return; }
@@ -3364,11 +3384,12 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "Revolve", Make<RevolveCommand>());
   Reg(e, "Loft", []() -> std::unique_ptr<Command> {
     return std::make_unique<ContinuityPickCommand>("Loft", "Select curves to loft in order", 2,
-        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<std::string>& extra) { const LoftTokens t = ParseLoftTokens(extra); if (t.WantsTangents()) LoftWithTangents(ctx, ids, t); else Loft(ctx, ids, false, t.straight, t.cap, t.spacing, t.seam_align); },
+        [](CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<std::string>& extra) { const LoftTokens t = ParseLoftTokens(extra); if (t.closed && t.WantsTangents()) ctx.Warn("Loft: Closed=Yes cannot be combined with StartTangent= / EndTangent= (a closed loft has no ends to pin); nothing was built"); else if (t.WantsTangents()) LoftWithTangents(ctx, ids, t); else Loft(ctx, ids, false, t.straight, t.cap, t.spacing, t.seam_align, t.closed); },
         [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ContinuityRequest& req, const AdjacentEdge& edge, const std::vector<std::string>& extra) {
+          if (ParseLoftTokens(extra).closed) { ctx.Warn("Loft: Closed=Yes cannot be combined with Continuity= (a closed loft has no end to match to an adjacent surface); nothing was built"); return; }
           LoftContinuity(ctx, ids, req, edge, ParseLoftTokens(extra).straight);
         });
-  }, CommandStatus::Implemented, "Calls the kernel's exact interpolating Brep::Loft: every selected curve lies exactly on the result (measured and printed), Normal is cubic in the loft direction and Style=Straight is linear (sharp at every section). Curves are first made consistent - open curves reversed to run the same way, closed curves reversed to circulate the same way and re-seamed to the point nearest the previous curve's start; a mix of open and closed curves is refused with the reason. Closed planar curves are capped into a polysurface solid (Cap=Yes, the default; Cap=No leaves the periodic surface). Loose/Tight aren't distinguishable here and aren't offered. SeamAlign=No uses the sections exactly as given (a closed curve whose start point or direction differs from its neighbour's then twists the wall); the default Yes reverses/re-seams them first. StartTangent=<name> / EndTangent=<name> (curve objects named with SetObjectName; their control points are the wall's dS/dv vectors at the first / last curve, e.g. a copy of a circle section scaled by a and lifted by b is the field (a x, a y, b)) with StartWeight= / EndWeight= (default 1) call the kernel's Hermite-type Brep::LoftWithSectionTangents, exact for rational sections (the tangent curve needs the section's weights, or to be a constant field); two curves with both tangents give a cubic Hermite wall; the sections are used as given, the result is not recorded in History. Spacing=Chord|Uniform|Centripetal chooses the loft-direction station parameters (kernel Brep::LoftSpacing: averaged control-point chord lengths by default, equal parameter steps for Uniform, square-root chord lengths for Centripetal); every spacing interpolates every section exactly, only the shape between sections changes. If the kernel refuses a loft, the older control-point fit is used and the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's NurbsSurface::LoftMatched: the first or last section (whichever lies nearer that surface) is made identical to the edge and the next rows are rewritten by MatchEdge; the finished uncapped surface is MEASURED along the edge (position gap, tangent angle, cross-edge and Gaussian curvature difference) and every section's deviation from it is printed, and the request is refused with the kernel's reason (G0 not met, a closed section, a loft folding back over the adjacent surface, a degree too low, a measured angle / curvature above tolerance) building nothing. A continuity result is not recorded in History (the reason is printed).");
+  }, CommandStatus::Implemented, "Calls the kernel's exact interpolating Brep::Loft: every selected curve lies exactly on the result (measured and printed), Normal is cubic in the loft direction and Style=Straight is linear (sharp at every section). Curves are first made consistent - open curves reversed to run the same way, closed curves reversed to circulate the same way and re-seamed to the point nearest the previous curve's start; a mix of open and closed curves is refused with the reason. Closed planar curves are capped into a polysurface solid (Cap=Yes, the default; Cap=No leaves the periodic surface). Closed=Yes lofts on from the last curve back to the first (kernel Brep::Loft closed=true: a periodic interpolation through every curve, a closed surface with no ends and no caps; at least three curves, refused with the reason otherwise; recorded in History and editable with EditHistory closed=yes|no; give it curves whose seams already correspond all the way round and SeamAlign=No - the default re-seam moves each curve's start to the nearest point of the previous one, which does not make the last curve's seam meet the first's). Loose/Tight aren't distinguishable here and aren't offered. SeamAlign=No uses the sections exactly as given (a closed curve whose start point or direction differs from its neighbour's then twists the wall); the default Yes reverses/re-seams them first. StartTangent=<name> / EndTangent=<name> (curve objects named with SetObjectName; their control points are the wall's dS/dv vectors at the first / last curve, e.g. a copy of a circle section scaled by a and lifted by b is the field (a x, a y, b)) with StartWeight= / EndWeight= (default 1) call the kernel's Hermite-type Brep::LoftWithSectionTangents, exact for rational sections (the tangent curve needs the section's weights, or to be a constant field); two curves with both tangents give a cubic Hermite wall; the sections are used as given, the result is not recorded in History. Spacing=Chord|Uniform|Centripetal chooses the loft-direction station parameters (kernel Brep::LoftSpacing: averaged control-point chord lengths by default, equal parameter steps for Uniform, square-root chord lengths for Centripetal); every spacing interpolates every section exactly, only the shape between sections changes. If the kernel refuses a loft, the older control-point fit is used and the reason printed. Continuity=Position|Tangency|Curvature (G0/G1/G2, with AngleTol= in degrees and CurvTol= in 1/length; none given = everything above unchanged) asks for a click near an edge of an existing surface and calls the kernel's NurbsSurface::LoftMatched: the first or last section (whichever lies nearer that surface) is made identical to the edge and the next rows are rewritten by MatchEdge; the finished uncapped surface is MEASURED along the edge (position gap, tangent angle, cross-edge and Gaussian curvature difference) and every section's deviation from it is printed, and the request is refused with the kernel's reason (G0 not met, a closed section, a loft folding back over the adjacent surface, a degree too low, a measured angle / curvature above tolerance) building nothing. A continuity result is not recorded in History (the reason is printed).");
   Reg(e, "SubDLoft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, true); }, 2));
   Reg(e, "PlanarSrf", OnSelection("Select planar closed curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("PlanarSrf");
