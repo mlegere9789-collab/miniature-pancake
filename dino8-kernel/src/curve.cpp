@@ -1851,6 +1851,99 @@ double RemoveKnotOnceRow(int p, const std::vector<double>& u_full, std::vector<O
   return distance;
 }
 
+// Knot removal on a PERIODIC curve (`ON_NurbsCurve::IsPeriodic()`): n = CVCount() - degree unique control points on
+// the cyclic knot sequence U(j + n) = U(j) + period. Removing the simple knot at ON index `knot_index` removes it and
+// all of its periodic images, so the result is again periodic with n - 1 unique control points. A5.8 is run on a local
+// window of the unwrapped sequence (control points C(r - p - 1 .. r), knots U(r - p - 1 .. r + p + 1)); only the p
+// control points r - p .. r - 1 change, so the new cyclic list is the p - 1 window results followed by the old points
+// r + 1 .. (cyclically), and the new knot array is the n - 1 knots of the domain period, extended periodically. The
+// knot must be simple and strictly inside the domain; more than `degree` unique control points must remain.
+Result RemovePeriodicKnot(ON_NurbsCurve& curve, int knot_index, double tolerance, double* out_max_deviation) {
+  const int p = curve.Degree();
+  const int cv_count = curve.CVCount();
+  const int n = cv_count - p;  // unique control points
+  const bool rational = curve.IsRational();
+  const int knot_count = curve.KnotCount();
+  if (n - 1 <= p) return Result::Failed;
+  // Textbook array U[0 .. n + 2p]: ON's Knot(k) is U[k + 1]; U[0] and U[n + 2p] follow from the periodicity.
+  std::vector<double> U(static_cast<size_t>(n + 2 * p + 1));
+  for (int k = 0; k < knot_count; ++k) U[static_cast<size_t>(k + 1)] = curve.Knot(k);
+  const double period = U[static_cast<size_t>(n + p)] - U[static_cast<size_t>(p)];
+  if (!(period > 0.0)) return Result::Failed;
+  U[0] = U[static_cast<size_t>(n)] - period;
+  U[static_cast<size_t>(n + 2 * p)] = U[static_cast<size_t>(2 * p)] + period;
+  auto Uw = [&](int j) {  // unwrapped knot
+    int q = (j - p) / n;
+    if ((j - p) % n != 0 && (j - p) < 0) --q;
+    return U[static_cast<size_t>(j - q * n)] + q * period;
+  };
+  const int r = knot_index + 1;
+  if (r <= p || r >= n + p) return Result::Failed;  // not strictly inside one period
+  if (U[static_cast<size_t>(r)] == U[static_cast<size_t>(r - 1)] || U[static_cast<size_t>(r)] == U[static_cast<size_t>(r + 1)]) {
+    return Result::Failed;  // only a simple periodic knot is removed here
+  }
+
+  std::vector<ON_4dPoint> C(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    ON_4dPoint cv;
+    curve.GetCV(i, cv);
+    if (!rational) cv.w = 1.0;
+    C[static_cast<size_t>(i)] = cv;
+  }
+  auto Cw = [&](int i) { return C[static_cast<size_t>(((i % n) + n) % n)]; };
+
+  // Local window: local index k <-> unwrapped index b + k, b = r - p - 1; the removed knot is local index p + 1.
+  const int b = r - p - 1, r_loc = p + 1;
+  std::vector<double> u_loc(static_cast<size_t>(2 * p + 3));
+  for (int k = 0; k < 2 * p + 3; ++k) u_loc[static_cast<size_t>(k)] = Uw(b + k);
+  std::vector<ON_4dPoint> pw_loc;
+  for (int k = 0; k < p + 3; ++k) pw_loc.push_back(Cw(b + k));
+  const double max_distance = RemoveKnotOnceRow(p, u_loc, pw_loc, r_loc, 1);
+
+  double bound = max_distance;
+  if (rational) {
+    double w_min = std::numeric_limits<double>::infinity(), p_max = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const ON_4dPoint& cv = C[static_cast<size_t>(i)];
+      w_min = std::min(w_min, cv.w);
+      p_max = std::max(p_max, std::sqrt(cv.x * cv.x + cv.y * cv.y + cv.z * cv.z) / cv.w);
+    }
+    if (!(w_min > 0.0)) return Result::Failed;
+    bound = max_distance * (1.0 + p_max) / w_min;
+  }
+  if (out_max_deviation) *out_max_deviation = bound;
+  if (!(bound <= tolerance)) return Result::Failed;
+
+  // New cyclic control list, anchored at unwrapped new index r - p: the window results, then the old points shifted by one.
+  const int new_unique = n - 1, new_cv = new_unique + p;
+  std::vector<ON_4dPoint> cyc(static_cast<size_t>(new_unique));
+  for (int k = 0; k < p - 1; ++k) cyc[static_cast<size_t>(k)] = pw_loc[static_cast<size_t>(1 + k)];
+  for (int k = p - 1; k < new_unique; ++k) cyc[static_cast<size_t>(k)] = Cw(r - p + k + 1);
+  // New knots: the n - 1 knots of the domain period without the removed one, extended periodically with the same period.
+  std::vector<double> K;
+  for (int i = 0; i < n; ++i) {
+    if (p + i != r) K.push_back(U[static_cast<size_t>(p + i)]);
+  }
+  std::vector<double> nu(static_cast<size_t>(n + 2 * p));
+  for (int j = 0; j < n + 2 * p; ++j) {
+    int q = (j - p) / new_unique;
+    if ((j - p) % new_unique != 0 && (j - p) < 0) --q;
+    nu[static_cast<size_t>(j)] = K[static_cast<size_t>(j - p - q * new_unique)] + q * period;
+  }
+  ON_NurbsCurve out;
+  if (!out.Create(3, rational, p + 1, new_cv)) return Result::Failed;
+  for (int k = 0; k < out.KnotCount(); ++k) out.SetKnot(k, nu[static_cast<size_t>(k + 1)]);
+  for (int i = 0; i < new_cv; ++i) {
+    const int idx = (((i - (r - p)) % new_unique) + new_unique) % new_unique;
+    const ON_4dPoint& cv = cyc[static_cast<size_t>(idx)];
+    if (rational) out.SetCV(i, cv);
+    else out.SetCV(i, ON_3dPoint(cv.x, cv.y, cv.z));
+  }
+  if (!out.IsValid() || !out.IsPeriodic()) return Result::Failed;
+  curve = out;
+  return Result::Ok;
+}
+
 }  // namespace
 
 Result NurbsCurve::RemoveKnotAt(int knot_index, double tolerance, double* out_max_deviation) {
@@ -1866,7 +1959,11 @@ Result NurbsCurve::RemoveKnotAt(int knot_index, double tolerance, double* out_ma
         "strictly inside the curve's own domain");
   }
   if (out_max_deviation) *out_max_deviation = std::numeric_limits<double>::infinity();
-  if (!curve_.IsClamped(2)) return Result::Failed;
+  if (!curve_.IsClamped(2)) {
+    // A periodic curve is handled on its cyclic knot sequence; any other unclamped curve is still refused.
+    if (curve_.IsPeriodic()) return RemovePeriodicKnot(curve_, knot_index, tolerance, out_max_deviation);
+    return Result::Failed;
+  }
 
   const int p = curve_.Degree();
   const int cv_count = curve_.CVCount();
