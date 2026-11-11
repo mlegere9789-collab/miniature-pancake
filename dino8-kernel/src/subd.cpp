@@ -2036,6 +2036,171 @@ SubDEdgeChain SubD::EdgeRingThrough(const Point3d& p0, const Point3d& p1, double
   return AssembleChain(e, fwd, back, closed);
 }
 
+namespace {
+
+struct MirrorPlane {
+  ON_3dVector n;
+  double d;
+  ON_3dPoint Reflect(const ON_3dPoint& p) const {
+    const double dist = ON_DotProduct(n, ON_3dVector(p)) - d;
+    return p - 2.0 * dist * n;
+  }
+  double Signed(const ON_3dPoint& p) const { return ON_DotProduct(n, ON_3dVector(p)) - d; }
+};
+
+MirrorPlane MakeMirrorPlane(Vector3d normal, double offset, double tol, const char* who) {
+  if (!std::isfinite(offset) || !std::isfinite(tol) || tol < 0.0) {
+    throw std::invalid_argument(std::string("dino8::kernel::SubD::") + who + ": plane offset and tolerance must be finite and the tolerance non-negative");
+  }
+  ON_3dVector n(normal.x, normal.y, normal.z);
+  if (!n.Unitize()) throw std::invalid_argument(std::string("dino8::kernel::SubD::") + who + ": plane_normal must be nonzero");
+  return {n, offset};
+}
+
+}  // namespace
+
+SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
+  const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "CheckSymmetry");
+  SubDSymmetryReport rep;
+  std::vector<const ON_SubDVertex*> verts;
+  ON_SubDVertexIterator vit = subd_.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) verts.push_back(v);
+  rep.vertices = static_cast<int>(verts.size());
+  if (verts.empty()) { rep.symmetric = true; return rep; }
+  // spatial hash on cells of size cell = max(4 tol, tiny)
+  ON_BoundingBox bb;
+  for (const ON_SubDVertex* v : verts) bb.Set(v->ControlNetPoint(), true);
+  const double diag = std::max(bb.Diagonal().Length(), 1e-12);
+  const double cell = std::max(4.0 * point_tolerance, diag * 1e-6);
+  const auto key = [&](const ON_3dPoint& p) {
+    return std::make_tuple(static_cast<long long>(std::floor(p.x / cell)), static_cast<long long>(std::floor(p.y / cell)),
+                           static_cast<long long>(std::floor(p.z / cell)));
+  };
+  std::map<std::tuple<long long, long long, long long>, std::vector<const ON_SubDVertex*>> grid;
+  for (const ON_SubDVertex* v : verts) grid[key(v->ControlNetPoint())].push_back(v);
+  const auto find_near = [&](const ON_3dPoint& q, double* dist_out) -> const ON_SubDVertex* {
+    const auto k = key(q);
+    const ON_SubDVertex* best = nullptr;
+    double bd = 1e300;
+    for (long long dx = -1; dx <= 1; ++dx)
+      for (long long dy = -1; dy <= 1; ++dy)
+        for (long long dz = -1; dz <= 1; ++dz) {
+          const auto it = grid.find(std::make_tuple(std::get<0>(k) + dx, std::get<1>(k) + dy, std::get<2>(k) + dz));
+          if (it == grid.end()) continue;
+          for (const ON_SubDVertex* c : it->second) {
+            const double dd = q.DistanceTo(c->ControlNetPoint());
+            if (dd < bd) { bd = dd; best = c; }
+          }
+        }
+    if (dist_out != nullptr) *dist_out = bd;
+    return (best != nullptr && bd <= point_tolerance) ? best : nullptr;
+  };
+  std::unordered_map<const ON_SubDVertex*, const ON_SubDVertex*> partner;
+  for (const ON_SubDVertex* v : verts) {
+    const ON_3dPoint p = v->ControlNetPoint();
+    if (std::fabs(pl.Signed(p)) <= point_tolerance) { ++rep.on_plane; partner[v] = v; continue; }
+    double dist = 0.0;
+    const ON_SubDVertex* m = find_near(pl.Reflect(p), &dist);
+    if (m == nullptr) { ++rep.unpaired; continue; }
+    ++rep.paired;
+    partner[v] = m;
+    rep.worst_pair_distance = std::max(rep.worst_pair_distance, dist);
+  }
+  // edge tags and semi-sharp weights
+  ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    if (e->Vertex(0u) == nullptr || e->Vertex(1u) == nullptr) continue;
+    const auto a = partner.find(e->Vertex(0u));
+    const auto b = partner.find(e->Vertex(1u));
+    if (a == partner.end() || b == partner.end()) continue;
+    const ON_SubDEdge* me = subd_.FindEdge(a->second, b->second).Edge();
+    if (me == nullptr || me == e || me < e) continue;  // each mirror pair is judged once, from its lower-addressed edge
+    const bool tag_differs = (e->IsCrease() != me->IsCrease());
+    // weight at the end of `e` next to vertex i against the weight at the mirror edge's end next to the partner vertex
+    bool weight_differs = false;
+    for (unsigned int i = 0; i < 2 && !weight_differs; ++i) {
+      const ON_SubDVertex* pv = partner[e->Vertex(i)];
+      const unsigned int mi = (me->Vertex(0u) == pv) ? 0u : 1u;
+      if (e->IsSmooth() && me->IsSmooth() && std::fabs(e->EndSharpness(i) - me->EndSharpness(mi)) > 1e-9) weight_differs = true;
+    }
+    if (tag_differs || weight_differs) ++rep.crease_mismatch;
+  }
+  rep.symmetric = (rep.unpaired == 0 && rep.crease_mismatch == 0);
+  return rep;
+}
+
+bool SubD::MoveVertexSymmetric(const Point3d& from, const Point3d& to, Vector3d plane_normal, double plane_offset, double point_tolerance) {
+  const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "MoveVertexSymmetric");
+  if (!from.IsValid() || !to.IsValid()) return false;
+  const ON_SubDVertex* v = subd_.FindVertex(&from.x, point_tolerance);
+  if (v == nullptr) return false;
+  const ON_3dPoint vp = v->ControlNetPoint();
+  const ON_SubDVertex* mirror = v;
+  ON_3dPoint target(to.x, to.y, to.z);
+  const bool on_plane = std::fabs(pl.Signed(vp)) <= point_tolerance;
+  if (on_plane) {
+    target = target - pl.Signed(target) * pl.n;  // constrained to the plane
+  } else {
+    const ON_3dPoint r = pl.Reflect(vp);
+    mirror = subd_.FindVertex(&r.x, point_tolerance);
+    if (mirror == nullptr || mirror == v) return false;
+  }
+  ON_SubDVertex* mv = const_cast<ON_SubDVertex*>(v);
+  if (!mv->SetControlNetPoint(target, /*bClearNeighborhoodCache=*/true)) return false;
+  if (mirror != v) {
+    ON_SubDVertex* mm = const_cast<ON_SubDVertex*>(mirror);
+    const ON_3dPoint mt = pl.Reflect(target);
+    if (!mm->SetControlNetPoint(mt, /*bClearNeighborhoodCache=*/true)) return false;
+  }
+  subd_.ClearEvaluationCache();
+  return true;
+}
+
+namespace {
+
+// The mirror edge of the edge joining the vertices found at p0 / p1 (its own mirror when both ends are on the plane or swap).
+bool MirrorEdgeEnds(const SubD&, const ON_SubD& sd, const MirrorPlane& pl, const Point3d& p0, const Point3d& p1, double tol, Point3d* m0, Point3d* m1) {
+  const ON_SubDVertex* v0 = sd.FindVertex(&p0.x, tol);
+  const ON_SubDVertex* v1 = sd.FindVertex(&p1.x, tol);
+  if (v0 == nullptr || v1 == nullptr) return false;
+  const ON_3dPoint r0 = std::fabs(pl.Signed(v0->ControlNetPoint())) <= tol ? v0->ControlNetPoint() : pl.Reflect(v0->ControlNetPoint());
+  const ON_3dPoint r1 = std::fabs(pl.Signed(v1->ControlNetPoint())) <= tol ? v1->ControlNetPoint() : pl.Reflect(v1->ControlNetPoint());
+  const ON_SubDVertex* u0 = sd.FindVertex(&r0.x, tol);
+  const ON_SubDVertex* u1 = sd.FindVertex(&r1.x, tol);
+  if (u0 == nullptr || u1 == nullptr) return false;
+  const ON_3dPoint a = u0->ControlNetPoint(), b = u1->ControlNetPoint();
+  *m0 = Point3d(a.x, a.y, a.z);
+  *m1 = Point3d(b.x, b.y, b.z);
+  return true;
+}
+
+}  // namespace
+
+bool SubD::SetCreaseSymmetric(const Point3d& p0, const Point3d& p1, bool crease, Vector3d plane_normal, double plane_offset, double point_tolerance) {
+  const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "SetCreaseSymmetric");
+  Point3d m0, m1;
+  if (!MirrorEdgeEnds(*this, subd_, pl, p0, p1, point_tolerance, &m0, &m1)) return false;
+  const ON_SubDEdge* e = subd_.FindEdge(subd_.FindVertex(&p0.x, point_tolerance), subd_.FindVertex(&p1.x, point_tolerance)).Edge();
+  const ON_SubDEdge* me = subd_.FindEdge(subd_.FindVertex(&m0.x, point_tolerance), subd_.FindVertex(&m1.x, point_tolerance)).Edge();
+  if (e == nullptr || me == nullptr) return false;
+  const bool a = SetCrease(p0, p1, crease, point_tolerance);
+  const bool b = (me != e) ? SetCrease(m0, m1, crease, point_tolerance) : false;
+  return a || b;
+}
+
+bool SubD::SetEdgeSharpnessSymmetric(const Point3d& p0, const Point3d& p1, double sharpness, Vector3d plane_normal, double plane_offset, double point_tolerance) {
+  const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "SetEdgeSharpnessSymmetric");
+  Point3d m0, m1;
+  if (!MirrorEdgeEnds(*this, subd_, pl, p0, p1, point_tolerance, &m0, &m1)) return false;
+  const ON_SubDEdge* e = subd_.FindEdge(subd_.FindVertex(&p0.x, point_tolerance), subd_.FindVertex(&p1.x, point_tolerance)).Edge();
+  const ON_SubDEdge* me = subd_.FindEdge(subd_.FindVertex(&m0.x, point_tolerance), subd_.FindVertex(&m1.x, point_tolerance)).Edge();
+  if (e == nullptr || me == nullptr) return false;
+  if (!e->IsSmooth() || !me->IsSmooth() || !(sharpness >= 0.0) || sharpness > ON_SubDEdgeSharpness::MaximumValue) return false;  // nothing changed
+  const bool a = SetEdgeSharpness(p0, p1, sharpness, point_tolerance);
+  const bool b = (me != e) ? SetEdgeSharpness(m0, m1, sharpness, point_tolerance) : false;
+  return a || b;
+}
+
 bool SubD::SetVertexCorner(const Point3d& p, bool corner, double point_tolerance) {
   const ON_SubDVertex* v = subd_.FindVertex(&p.x, point_tolerance);
   if (v == nullptr) return false;

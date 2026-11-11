@@ -148,6 +148,17 @@ struct SubDEdgeChain {
   std::vector<Segment> edges;
 };
 
+// What SubD::CheckSymmetry() found about mirror symmetry of the control cage across a plane.
+struct SubDSymmetryReport {
+  int vertices = 0;
+  int on_plane = 0;           // vertices lying on the plane (their own mirror image)
+  int paired = 0;             // off-plane vertices whose mirror image is a vertex of the cage
+  int unpaired = 0;           // off-plane vertices without a mirror partner within the tolerance
+  double worst_pair_distance = 0.0;  // largest distance between a vertex's mirror image and its partner (0 if no vertex is paired)
+  int crease_mismatch = 0;    // edges whose mirror edge exists but differs in crease tag or semi-sharp weight
+  bool symmetric = false;     // unpaired == 0 && crease_mismatch == 0
+};
+
 // One control-net vertex's exact Catmull-Clark limit-surface point, from
 // SubD::LimitPoints().
 struct SubDLimitPoint {
@@ -1323,6 +1334,26 @@ class SubD {
   // limit rule) by reaching into raw(). `found = false` if no vertex is
   // within the tolerance.
   SubDVertexInfo VertexInfoAt(const Point3d& p, double point_tolerance = 0.0) const;
+
+  // Mirror symmetry of the control cage across the plane { x : plane_normal . x = plane_offset } (same convention as Symmetrize()):
+  // every off-plane vertex needs a vertex at its reflection (within `point_tolerance`), and every crease / semi-sharp edge needs a
+  // mirror edge with the same tag and weights. See SubDSymmetryReport. Throws std::invalid_argument for a zero normal or a
+  // negative / non-finite tolerance.
+  SubDSymmetryReport CheckSymmetry(Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-6) const;
+
+  // Live symmetric editing, one step at a time: moves the control vertex found at `from` to `to` and its mirror partner to the
+  // reflection of `to`, so a symmetric cage (e.g. a Symmetrize() result) stays symmetric after the edit. A vertex on the plane is its
+  // own partner and is constrained to the plane (`to` is projected onto it). Returns false and changes nothing if no vertex is
+  // found at `from`, or an off-plane vertex has no partner within `point_tolerance`, or `to` is not finite. A vertex that is
+  // moved across the plane swaps sides with its partner. Throws std::invalid_argument as CheckSymmetry() does.
+  bool MoveVertexSymmetric(const Point3d& from, const Point3d& to, Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-6);
+
+  // Symmetric counterparts of SetCrease() / SetEdgeSharpness(): apply the change to the edge between `p0` and `p1` and to its mirror
+  // edge (one change for an edge that is its own mirror). Return true if at least one of the two edges changed; false (nothing
+  // changed) if either edge is missing, the sharpness is invalid or an edge is not smooth, or both already had the requested state.
+  // Applying it to an edge whose mirror differs therefore also repairs the asymmetry.
+  bool SetCreaseSymmetric(const Point3d& p0, const Point3d& p1, bool crease, Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-6);
+  bool SetEdgeSharpnessSymmetric(const Point3d& p0, const Point3d& p1, double sharpness, Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-6);
 
   // The edge loop through the control-net edge between the vertices found at
   // `p0` and `p1`: from that edge, at each end vertex the walk continues
