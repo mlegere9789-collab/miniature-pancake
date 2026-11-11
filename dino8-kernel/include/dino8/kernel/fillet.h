@@ -285,6 +285,15 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
 // that does not meet a face perpendicular to its edge (the result would not close). Only purely planar solids are accepted.
 Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double radius_a, double radius_b);
 
+// Two edges that meet at ONE trihedral right-angle corner, each given a 45-degree chamfer (`distance_a` on edge (vertex, end_a), `distance_b` on edge
+// (vertex, end_b)), the third edge staying sharp. The result is `solid` minus the union of the two chamfer prisms, in either argument order; with L_A, L_B the
+// edge lengths it removes distance_a^2/2 L_A + distance_b^2/2 L_B - overlap, overlap = dA dB m - (dA + dB) m^2/2 + m^3/3, m = min(dA, dB). Face count: the
+// original plus two. ChamferConvexEdge called twice refuses the smaller chamfer first (its end would meet two faces: 'the chamfer overruns a third face'); this
+// does the larger one first and chamfers the other edge from the vertex the first chamfer left. Refusals (std::invalid_argument naming the reason): non-positive
+// or non-finite distances, a vertex that is not a trihedral corner, faces that are not mutually perpendicular, and anything ChamferConvexEdge itself refuses
+// (the two points not both edges at the vertex, a distance beyond a face).
+Brep ChamferConvexEdgePair(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double distance_a, double distance_b);
+
 // The largest radius FilletConvexEdge/FilletConcaveEdge could build for
 // this exact edge before their own "radius is too large to fit" check
 // rejects it - the SAME closed-form bound those two functions already

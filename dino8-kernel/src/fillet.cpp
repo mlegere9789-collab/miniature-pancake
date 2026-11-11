@@ -1804,6 +1804,41 @@ Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a,
   return out;
 }
 
+// --- ChamferConvexEdgePair ------------------------------------------------------------------------------------------------------------
+// Two edges A = (vertex, end_a) and B = (vertex, end_b) meeting at a trihedral RIGHT-ANGLE corner, each given a 45-degree chamfer (one distance per edge),
+// the third edge staying sharp. ChamferConvexEdge alone cannot take the smaller chamfer first: the larger one's end would meet two faces (the first
+// chamfer's oblique face and the side face). So the larger chamfer goes first, and the second edge - whose near end the first chamfer moved by its
+// distance along that edge - is chamfered from its new end. The result is `solid` minus the union of the two chamfer prisms, in either argument order.
+Brep ChamferConvexEdgePair(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double distance_a, double distance_b) {
+  const std::string who = "dino8::kernel::ChamferConvexEdgePair: ";
+  if (!std::isfinite(distance_a) || !std::isfinite(distance_b) || !(distance_a > 0.0) || !(distance_b > 0.0)) {
+    throw std::invalid_argument(who + "both distances must be finite and strictly positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  std::vector<Vector3d> normals;
+  for (const Brep::PlanarFace& f : faces) {
+    bool touches = false;
+    for (const Point3d& p : f.loop) touches = touches || PointsEqual(p, vertex, tol);
+    if (touches) normals.push_back(f.plane.zaxis);
+  }
+  if (normals.size() != 3) {
+    throw std::invalid_argument(who + "`vertex` must be a trihedral corner (exactly three faces meet there, found " + std::to_string(normals.size()) + ")");
+  }
+  if (std::fabs(normals[0] * normals[1]) > 1e-6 || std::fabs(normals[0] * normals[2]) > 1e-6 || std::fabs(normals[1] * normals[2]) > 1e-6) {
+    throw std::invalid_argument(who + "the three faces at `vertex` are not mutually perpendicular - only a right-angle corner is built");
+  }
+  Vector3d ua = end_a - vertex, ub = end_b - vertex;
+  if (!ua.Unitize() || !ub.Unitize()) throw std::invalid_argument(who + "an edge is degenerate");
+  const bool a_first = distance_a >= distance_b;
+  const Point3d& end_first = a_first ? end_a : end_b;
+  const Point3d& end_second = a_first ? end_b : end_a;
+  const Vector3d& u_second = a_first ? ub : ua;
+  const double d_first = a_first ? distance_a : distance_b, d_second = a_first ? distance_b : distance_a;
+  const Brep one = ChamferConvexEdge(solid, vertex, end_first, d_first, d_first);
+  return ChamferConvexEdge(one, vertex + d_first * u_second, end_second, d_second, d_second);
+}
+
 FilletRadiusLimit MaxFilletRadius(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
