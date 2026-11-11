@@ -66147,13 +66147,8 @@ void TestSurfaceMatchEdgeToRationalSphereAndRefusals() {
     torus.GetNurbForm(per);
   }
   periodic.raw() = per;
-  NurbsSurface again = flat_before;
-  if (!periodic.raw().IsClamped(0, 2) || !periodic.raw().IsClamped(1, 2)) {
-    Check(again.MatchEdge(1, true, periodic, 1, true, MatchContinuity::Position) == Result::Failed,
-          "MatchEdge refuses an unclamped (periodic) target direction");
-  } else {
-    Check(true, "MatchEdge periodic-refusal check skipped: ON_Torus::GetNurbForm is clamped in this OpenNURBS build");
-  }
+  // (This was a refusal check for an unclamped/periodic target direction - dead in this OpenNURBS build, where ON_Torus::GetNurbForm is clamped. MatchEdge
+  // now matches through the clamped equivalent of a periodic surface or target: tests/extra/match_edge_periodic.cpp.)
 }
 
 // ---------------------------------------------------------------------------

@@ -2804,6 +2804,75 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
   return MatchEdgeWithAcceleration(*this, fixed_direction, at_min, target, target_fixed_direction, target_at_min, continuity, report, cross_scale, 0.0);
 }
 
+namespace {
+
+// Rewrites `x` as the clamped (non-periodic) surface of the same shape in every direction that is not already clamped, or returns false leaving `x`
+// unspecified (the caller restores its own backup). A periodic spline is the same shape as its clamped closed form, and the end-derivative row algebra
+// of the matching functions needs clamped knot vectors.
+//
+// ON_NurbsSurface::ClampEnd() does the exact knot insertion at the domain ends. A surface made periodic by NurbsCurve::MakePeriodicExact() carries
+// one more thing: that function spreads the last p knots (the ex-clamped end's full-multiplicity run) apart by a relative 1e-13 of the period because
+// OpenNURBS' rational evaluator cannot evaluate a zero-width span at the domain end, so its clamped form ends in a SLIVER - knots a hair before the domain
+// end and one dead control point per sliver knot (a basis function supported on a 1e-13 span) - which the row algebra cannot use. The sliver knots are
+// snapped onto the domain end and the dead trailing control points dropped; the result is then MEASURED against the input at interior parameters
+// (the periodic input cannot be evaluated at its own domain end) and refused if it differs by more than 1e-9 of the surface's size.
+bool ClampedEquivalent(ON_NurbsSurface& x) {
+  if (x.IsClamped(0, 2) && x.IsClamped(1, 2)) return true;
+  const ON_NurbsSurface input = x;
+  ON_BoundingBox box;
+  input.GetBoundingBox(box);
+  const double size = std::max(1e-9, box.Diagonal().Length());
+  for (int d = 0; d < 2; ++d) {
+    if (x.IsClamped(d, 2)) continue;
+    if (!x.ClampEnd(d, 2)) return false;
+    const int p = x.Degree(d);
+    const int knot_count = x.KnotCount(d);
+    const double end = x.Domain(d).Max();
+    const double span = end - x.Domain(d).Min();
+    // Count the sliver knots: stored knots within 1e-9 of the period of the domain end but not on it, which must directly precede the end run of p.
+    int run = 0;
+    while (run < knot_count && x.Knot(d, knot_count - 1 - run) == end) ++run;
+    int sliver = 0;
+    while (run + sliver < knot_count && x.Knot(d, knot_count - 1 - run - sliver) != end && end - x.Knot(d, knot_count - 1 - run - sliver) < 1e-9 * span) ++sliver;
+    if (sliver == 0) continue;
+    if (run != p || sliver > p - 1) return false;
+    const int old_cv = x.CVCount(d);
+    const int new_cv = old_cv - sliver;
+    if (new_cv < p + 1) return false;
+    ON_NurbsSurface y;
+    const int cu = d == 0 ? new_cv : x.CVCount(0), cv = d == 1 ? new_cv : x.CVCount(1);
+    if (!y.Create(3, x.IsRational(), x.Order(0), x.Order(1), cu, cv)) return false;
+    for (int dd = 0; dd < 2; ++dd) {
+      const int kc = y.KnotCount(dd);
+      for (int k = 0; k < kc; ++k) {
+        // the surviving knots are the old ones with the `sliver` snapped ones dropped from the end run's front
+        const bool trimmed = dd == d;
+        const double value = trimmed ? (k < kc - p ? x.Knot(dd, k) : end) : x.Knot(dd, k);
+        y.SetKnot(dd, k, value);
+      }
+    }
+    for (int i = 0; i < y.CVCount(0); ++i) {
+      for (int j = 0; j < y.CVCount(1); ++j) {
+        ON_4dPoint cvp;
+        x.GetCV(i, j, cvp);
+        y.SetCV(i, j, cvp);
+      }
+    }
+    x = y;
+  }
+  if (!x.IsClamped(0, 2) || !x.IsClamped(1, 2)) return false;
+  double worst = 0.0;
+  for (int i = 1; i < 20; ++i) {
+    for (int j = 1; j < 20; ++j) {
+      const double u = input.Domain(0).ParameterAt(i / 20.0), v = input.Domain(1).ParameterAt(j / 20.0);
+      worst = std::max(worst, input.PointAt(u, v).DistanceTo(x.PointAt(u, v)));
+    }
+  }
+  return worst <= 1e-9 * size;
+}
+
+}  // namespace
+
 // MatchEdge() with the second reparameterization derivative (see surface_continuity.h). `self` is the surface edited.
 Result MatchEdgeWithAcceleration(NurbsSurface& self, int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
                                  bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report, double cross_scale,
@@ -2814,15 +2883,15 @@ Result MatchEdgeWithAcceleration(NurbsSurface& self, int fixed_direction, bool a
   const int rows_needed = continuity == MatchContinuity::Position ? 1 : continuity == MatchContinuity::Tangent ? 2 : 3;
   const int edge_dir = 1 - fixed_direction;
   const int t_edge_dir = 1 - target_fixed_direction;
-  if (!self.raw().IsClamped(0, 2) || !self.raw().IsClamped(1, 2)) return Result::Failed;
-  if (!target.raw().IsClamped(t_edge_dir, 2) || !target.raw().IsClamped(target_fixed_direction, 2)) return Result::Failed;
 
   const ON_NurbsSurface backup = self.raw();
   ON_NurbsSurface& s = self.raw();
   ON_NurbsSurface t = target.raw();
+  // A periodic surface (or target) is matched through its clamped closed equivalent, so the edited surface comes back clamped (same shape).
+  if (!ClampedEquivalent(s) || !ClampedEquivalent(t)) { self.raw() = backup; return Result::Failed; }
   // A target whose degree across the edge is below the continuity's row count (a bilinear or ruled target for G2) is not refused: degree elevation is
   // exact, so the elevated copy IS the target, and its second cross derivative there is just the target's own (zero for a degree-1 direction).
-  if (t.Degree(target_fixed_direction) < rows_needed - 1 && !t.IncreaseDegree(target_fixed_direction, rows_needed - 1)) return Result::Failed;
+  if (t.Degree(target_fixed_direction) < rows_needed - 1 && !t.IncreaseDegree(target_fixed_direction, rows_needed - 1)) { self.raw() = backup; return Result::Failed; }
 
   // Normalize both to "edge at the cross direction's min" so one set of
   // end-derivative formulas applies; Reverse() is shape-preserving.
