@@ -844,6 +844,17 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   // several ON_InstanceRef placements is converted to a BlockDefinition
   // only once.
   std::map<ON_UUID, std::string, bool (*)(const ON_UUID&, const ON_UUID&)> idef_block_name(UuidLess);
+  // Blocks Dino 8 wrote itself (names listed in Dino8.BlocksMeta) are restored from that metadata and their tagged member objects
+  // after the loop; an ON_InstanceRef to one of them is therefore collected here and placed once the definition exists.
+  std::set<std::string> dino_block_names;
+  {
+    ON_wString meta;
+    if (model.GetDocumentUserString(L"Dino8.BlocksMeta", meta)) {
+      for (const auto& kv : DecodeBlocksMeta(FromWide(meta))) dino_block_names.insert(kv.first);
+    }
+  }
+  struct PendingBlockRef { std::string name; ON_Xform xform; int layer_idx; };
+  std::vector<PendingBlockRef> pending_block_refs;
 
   int skipped = 0;
   int corrupt_meshes = 0;  // see the ON_Mesh branch below
@@ -865,7 +876,12 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     // defined duplicated that block's geometry into plain, ungrouped
     // objects on top of the (also previously unhandled - see the
     // ON_InstanceRef branch below) instance placements themselves.
-    if (attr && attr->Mode() == ON::idef_object) continue;
+    if (attr && attr->Mode() == ON::idef_object) {
+      ON_wString dino_def_of;
+      // A member of a block definition that Dino 8 itself wrote (see Save3dm: static blocks are real ON_InstanceDefinitions whose
+      // members keep their Dino8.BlockDefOf tag) is collected into Document::Blocks() further down, so it must get past this skip.
+      if (!attr->GetUserString(L"Dino8.BlockDefOf", dino_def_of)) continue;
+    }
     SceneObject obj;
     bool made = false;
     int file_group_id = -1;
@@ -1352,6 +1368,22 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       // live Block/Insert commands, so it is just as selectable
       // (SelBlockInstance), explodable (ExplodeBlock) and re-insertable.
       std::string name;
+      if (!dino_block_names.empty()) {
+        const ON_ModelComponentReference own_ref =
+            model.ComponentFromId(ON_ModelComponent::Type::InstanceDefinition, iref->m_instance_definition_uuid);
+        if (const ON_InstanceDefinition* own_idef = ON_InstanceDefinition::Cast(own_ref.ModelComponent())) {
+          const std::string own_name = FromWide(own_idef->Name());
+          if (dino_block_names.count(own_name)) {
+            int own_layer = -1;
+            if (attr) {
+              auto lm = layer_map.find(attr->m_layer_index);
+              if (lm != layer_map.end()) own_layer = lm->second;
+            }
+            pending_block_refs.push_back({own_name, iref->m_xform, own_layer});
+            continue;
+          }
+        }
+      }
       auto cached = idef_block_name.find(iref->m_instance_definition_uuid);
       if (cached != idef_block_name.end()) {
         name = cached->second;
@@ -1610,6 +1642,29 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     }
     for (ObjectId id : to_remove) doc.Remove(id);
     for (auto& [name, b] : by_name) doc.Blocks().push_back(std::move(b));
+  }
+  // Placements of Dino-written blocks (ON_InstanceRefs collected above): the same group of tagged copies a live Insert makes, the
+  // definition's objects moved by the reference's transform; BlockInsert is where the definition's base point lands.
+  for (const PendingBlockRef& pr : pending_block_refs) {
+    const BlockDefinition* def = doc.FindBlock(pr.name);
+    if (!def || def->objects.empty()) { ++skipped; continue; }
+    const kernel::Point3d insert = pr.xform * def->base;
+    char insert_tag[160];
+    std::snprintf(insert_tag, sizeof(insert_tag), "%.10g,%.10g,%.10g", insert.x, insert.y, insert.z);
+    std::vector<ObjectId> ids;
+    for (const SceneObject& member : def->objects) {
+      SceneObject copy = member;
+      copy.id = kNoObject;
+      copy.selected = false;
+      copy.group_id = -1;
+      copy.Transform(pr.xform);
+      if (pr.layer_idx >= 0) copy.layer_index = pr.layer_idx;
+      copy.user_text["Block"] = pr.name;
+      copy.user_text["BlockInsert"] = insert_tag;
+      ids.push_back(doc.Add(std::move(copy)));
+    }
+    for (size_t i = 1; i < ids.size(); ++i) doc.SetProvenance(ids[i], ids[0], ProvenanceKind::BlockInstanceMember);
+    doc.CreateGroup(ids, pr.name);
   }
   // Cage-editing captive originals (see CageBindingMeta/CageBinding above
   // and the comment on CageBinding in doc/Document.h): the hidden geometry
@@ -2401,6 +2456,59 @@ ON_DimAngular* BuildOnDimAngularForGroup(const Document& doc, ONX_Model& model, 
   return dim;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------
+// Block instances as real ON_InstanceDefinition / ON_InstanceRef.
+//
+// A Dino8 block definition is a flat list of objects (BlockDefinition::objects, in definition coordinates, with a base point);
+// an instance is a group of copies of those objects translated by (insert - base) and tagged Block = <name>, BlockInsert =
+// <insert>. Only a STATIC definition (no visibility states, lookup table, array spacing or Dino8.* member tags, which are all
+// dynamic-block machinery with no OpenNURBS counterpart) is written as a real ON_InstanceDefinition, and only an instance that is
+// still EXACTLY the definition translated (same objects in the same order, same attributes and user text, same geometry to
+// 1e-6 of its size, all on one layer) is written as one ON_InstanceRef; an instance that was edited, rotated or scaled afterwards
+// keeps the baked export (its objects as loose geometry), so nothing is ever lost or changed by writing a reference.
+bool BlockDefinitionIsStatic(const BlockDefinition& def) {
+  if (def.objects.empty() || !def.states.empty() || !def.lookup_keys.empty() || def.array_spacing != 0.0) return false;
+  for (const SceneObject& m : def.objects) {
+    for (const auto& kv : m.user_text) if (kv.first.rfind("Dino8.", 0) == 0) return false;
+  }
+  return true;
+}
+
+// True when the group `group_id` is a pristine instance of `def`; fills `xf` with the translation that places the definition.
+bool PristineBlockInstance(const Document& doc, const BlockDefinition& def, int group_id, ON_Xform& xf) {
+  std::vector<const SceneObject*> members;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    auto b = o.user_text.find("Block");
+    if (b == o.user_text.end() || b->second != def.name) return false;  // a foreign member: not a plain instance
+    members.push_back(&o);
+  }
+  if (members.size() != def.objects.size()) return false;
+  auto ins = members[0]->user_text.find("BlockInsert");
+  double ix, iy, iz;
+  if (ins == members[0]->user_text.end() || !ParsePointTagLocal(ins->second, ix, iy, iz)) return false;
+  const ON_3dVector t = ON_3dPoint(ix, iy, iz) - ON_3dPoint(def.base.x, def.base.y, def.base.z);
+  for (size_t i = 0; i < members.size(); ++i) {
+    const SceneObject& m = *members[i];
+    const SceneObject& d = def.objects[i];
+    if (m.kind != d.kind || m.layer_index != members[0]->layer_index) return false;
+    if (m.name != d.name || m.visible != d.visible || m.locked != d.locked || m.color_by_layer != d.color_by_layer ||
+        m.material_name != d.material_name || m.linetype != d.linetype || m.mapping != d.mapping)
+      return false;
+    if (!m.color_by_layer && !(m.color.r == d.color.r && m.color.g == d.color.g && m.color.b == d.color.b)) return false;
+    std::map<std::string, std::string> mt = m.user_text;
+    mt.erase("Block");
+    mt.erase("BlockInsert");
+    if (mt != d.user_text) return false;
+    const kernel::BoundingBox mb = m.BoundingBox(), db = d.BoundingBox();
+    const double tol = 1e-6 * std::max(1.0, (db.max - db.min).Length());
+    const kernel::Point3d dmin(db.min.x + t.x, db.min.y + t.y, db.min.z + t.z), dmax(db.max.x + t.x, db.max.y + t.y, db.max.z + t.z);
+    if ((mb.min - dmin).Length() > tol || (mb.max - dmax).Length() > tol) return false;
+  }
+  xf = ON_Xform::TranslationTransformation(t);
+  return true;
+}
+
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
@@ -2678,6 +2786,27 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   std::set<int> dimlinear_groups_written;
   std::set<int> dimord_groups_written, centermark_groups_written;
   std::set<int> dimradang_groups_written;
+  // Static block definitions become real ON_InstanceDefinitions (see PristineBlockInstance above). Their member objects are written
+  // further down, as before, but now carry the ids reserved here and ON::idef_object mode (so a plain reader does not show them as
+  // loose geometry, and Load3dm still collects them through their Dino8.BlockDefOf tag).
+  std::map<std::string, ON_UUID> idef_ids;
+  std::map<std::string, std::vector<ON_UUID>> idef_member_ids;
+  for (const BlockDefinition& def : doc.Blocks()) {
+    if (def.name.empty() || !BlockDefinitionIsStatic(def)) continue;
+    std::vector<ON_UUID> ids(def.objects.size());
+    ON_SimpleArray<ON_UUID> id_list;
+    for (ON_UUID& u : ids) { ON_CreateUuid(u); id_list.Append(u); }
+    ON_InstanceDefinition idef;
+    idef.SetName(ON_wString(def.name.c_str()));
+    idef.SetDescription(ON_wString(def.description.c_str()));
+    idef.SetInstanceGeometryIdList(id_list);
+    const ON_ModelComponentReference ref = model.AddModelComponent(idef, true);
+    const ON_InstanceDefinition* added = ON_InstanceDefinition::Cast(ref.ModelComponent());
+    if (!added) continue;
+    idef_ids[def.name] = added->Id();
+    idef_member_ids[def.name] = std::move(ids);
+  }
+  std::map<int, bool> block_group_pristine;  // group id -> its instance is written as one ON_InstanceRef
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
@@ -2896,6 +3025,31 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         // too, same as before this branch existed.
       }
     }
+    {
+      // A pristine instance of a static block writes as ONE ON_InstanceRef (the definition's id and the placing translation) instead
+      // of its baked member objects: the first member of the group writes the reference, the others are skipped. An instance that
+      // is not pristine (edited, rotated, scaled, ungrouped, or of a dynamic block) keeps the baked export below.
+      auto blk = o.user_text.find("Block");
+      if (o.group_id >= 0 && blk != o.user_text.end() && idef_ids.count(blk->second)) {
+        auto cached = block_group_pristine.find(o.group_id);
+        if (cached == block_group_pristine.end()) {
+          ON_Xform xf;
+          const BlockDefinition* def = doc.FindBlock(blk->second);
+          const bool ok = def && PristineBlockInstance(doc, *def, o.group_id, xf);
+          cached = block_group_pristine.emplace(o.group_id, ok).first;
+          if (ok) {
+            ON_InstanceRef* iref = new ON_InstanceRef();
+            iref->m_instance_definition_uuid = idef_ids[blk->second];
+            iref->m_xform = xf;
+            model.AddModelGeometryComponent(iref, &attr);
+            ++written;
+            continue;
+          }
+        } else if (cached->second) {
+          continue;  // a later member of a group whose reference was already written
+        }
+      }
+    }
     ON_Geometry* g = nullptr;
     switch (o.kind) {
       case ObjectKind::Point: g = new ON_Point(o.point); break;
@@ -2919,7 +3073,13 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     for (size_t bi = 0; bi < def.objects.size(); ++bi) {
       const SceneObject& o = def.objects[bi];
       ON_3dmObjectAttributes attr;
-      ON_CreateUuid(attr.m_uuid);
+      auto reserved = idef_member_ids.find(def.name);
+      if (reserved != idef_member_ids.end() && bi < reserved->second.size()) {
+        attr.m_uuid = reserved->second[bi];  // the id the ON_InstanceDefinition lists for this member
+        attr.SetMode(ON::idef_object);       // part of the definition, not a loose object of the model
+      } else {
+        ON_CreateUuid(attr.m_uuid);
+      }
       attr.SetName(ON_wString(o.name.c_str()), true);
       attr.SetVisible(o.visible);
       for (const auto& [k, v] : o.user_text) attr.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
