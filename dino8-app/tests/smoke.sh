@@ -12862,7 +12862,8 @@ rtafmt() {
 # files); only the multi-object spsscale case stays recorded for them (several objects merge into one mesh); a STEP re-import of an ACIS-imported
 # box is reported invalid; the hidden-operand vase compares against a .3dm that lost the Hide state until the File3dm fix was built;
 # IGES: tens to hundreds of loose trimmed faces instead of one solid; G1 surfaces: STEP re-imports two objects invalid, SAT/SAB lose objects.
-RTA_KNOWN=" sblcut:stp sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntpatch:stp cntnet:stp spsscale:stl spsscale:ply spsscale:obj vase:obj vase:stp satimp:stp sabimp:stp satcyl:stp "
+# sblcut:stp (Box minus a piercing cylinder, STEP export and import) is NOT listed here: the imported brep must be one valid closed solid with the 3dm Volume / Area / box (the bore wall used to fail IsValid with "Distance from end of ON_Brep.m_T[..] to 3d edge", its pcurve collapsed at the seam).
+RTA_KNOWN=" sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntpatch:stp cntnet:stp spsscale:stl spsscale:ply spsscale:obj vase:obj vase:stp satimp:stp sabimp:stp satcyl:stp "
 for c in sblcut sblunion sbltwo rvr ptf cntloft cntpatch cntnet spsscale vase; do
   rtaundo $c
   rtaround $c pre redo "Undo then Redo returns the state exactly"
