@@ -99836,6 +99836,59 @@ void TestSetbackVertexBlendOfThreeUnequalRadiiIsG1ToTheCylindersAndBoundedByBall
         ("[setback corner radii 0.5 / 0.5 / 6] is refused: the patch would fold over itself: " + why).c_str());
 }
 
+// END FACE OBLIQUE TO THE EDGE. The N-station (variable-radius / law) fillet notches a third face at each end of the edge with
+// the true cone cap, which is built for an end face PERPENDICULAR to the edge. On a 10 x 10 prism whose top face is tilted
+// (z = 10 + tilt x) the filleted vertical edge meets an oblique end face; measured before this refusal existed: for tilt -0.2
+// and -0.05 FilletConvexEdgeLaw built an OPEN shell (ON_Brep::IsSolid() false, boundary edges present, no exception), and for
+// tilt +0.2 / +0.05 it refused with the misleading "radius too large" (the radius was fine). It must now refuse every oblique
+// end with a reason that names the end face, while the perpendicular end still builds a closed solid.
+void TestLawFilletRefusesAnObliqueEndFaceNamingIt() {
+  auto face = [](std::vector<Point3d> loop) {
+    ON_3dVector n(0, 0, 0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d &a = loop[i], &b = loop[(i + 1) % loop.size()];
+      n.x += (a.y - b.y) * (a.z + b.z);
+      n.y += (a.z - b.z) * (a.x + b.x);
+      n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    n.Unitize();
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], n);
+    return f;
+  };
+  auto prism = [&](double tilt) {
+    const Point3d b0(0, 0, 0), b1(10, 0, 0), b2(10, 10, 0), b3(0, 10, 0);
+    const Point3d t0(0, 0, 10), t1(10, 0, 10 + 10 * tilt), t2(10, 10, 10 + 10 * tilt), t3(0, 10, 10);
+    return Brep::FromPlanarFaces({face({b3, b2, b1, b0}), face({t0, t1, t2, t3}), face({b0, b1, t1, t0}), face({b1, b2, t2, t1}),
+                                  face({b2, b3, t3, t2}), face({b3, b0, t0, t3})});
+  };
+  const auto law = [](double s) { return 1.0 + 2.0 * s * s; };
+  for (double tilt : {-0.2, -0.05, 0.05, 0.2}) {
+    char name[64];
+    std::snprintf(name, sizeof name, "[law fillet, top face tilted %+.2f] ", tilt);
+    const std::string tag = name;
+    const Brep pr = prism(tilt);
+    const double top = 10.0 + 10.0 * tilt;
+    bool built_open = false;
+    const std::string why = Why([&] {
+      const Brep f = FilletConvexEdgeLaw(pr, Point3d(10, 10, 0), Point3d(10, 10, top), law, 0.015);
+      bool oriented = false, has_boundary = true;
+      f.raw().IsManifold(&oriented, &has_boundary);
+      if (!(f.raw().IsValid() && !has_boundary && f.raw().IsSolid())) built_open = true;
+    });
+    Check(!built_open, (tag + "never returns a body that is not a closed valid solid").c_str());
+    Check(Has(why.c_str(), "end face") && Has(why.c_str(), "oblique"), (tag + "is refused naming the oblique end face: " + why).c_str());
+  }
+  // the perpendicular end (tilt 0) is unchanged
+  std::string ok_why = Why([&] {
+    const Brep f = FilletConvexEdgeLaw(prism(0.0), Point3d(10, 10, 0), Point3d(10, 10, 10), law, 0.015);
+    bool oriented = false, has_boundary = true;
+    if (!(f.raw().IsValid() && f.raw().IsManifold(&oriented, &has_boundary) && !has_boundary && f.raw().IsSolid())) throw std::runtime_error("not a closed solid");
+  });
+  Check(ok_why.empty(), ("[law fillet, perpendicular top face] still builds a closed solid: " + ok_why).c_str());
+}
+
 }  // namespace blend_law_tests
 
 // ---------------------------------------------------------------------------
@@ -109434,6 +109487,7 @@ int main() {
   RunTest("blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation", blend_law_tests::TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation);
   RunTest("blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndEqualRadiusCornerStaysASphere", blend_law_tests::TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndEqualRadiusCornerStaysASphere);
   RunTest("blend_law_tests::TestSetbackVertexBlendOfThreeUnequalRadiiIsG1ToTheCylindersAndBoundedByBalls", blend_law_tests::TestSetbackVertexBlendOfThreeUnequalRadiiIsG1ToTheCylindersAndBoundedByBalls);
+  RunTest("blend_law_tests::TestLawFilletRefusesAnObliqueEndFaceNamingIt", blend_law_tests::TestLawFilletRefusesAnObliqueEndFaceNamingIt);
   RunTest("blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin", blend_law_tests::TestNonLinearLawBuildsAtLargeCoordinatesWithTheSameConesAsNearTheOrigin);
 
   RunTest("units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions", units_exchange_tests::TestUnitScaleFactorsMatchPublishedDefinitions);
