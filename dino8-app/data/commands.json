@@ -9243,7 +9243,7 @@
  },
  {
   "name": "SubDCreaseSymmetric",
-  "description": "Creases each picked edge and its mirror edge across a vertical mirror plane (two picks), and repairs a one-sided crease.",
+  "description": "Creases each picked edge and its mirror edge across a vertical mirror plane (two picks), or with Mode=Radial its rotated image edges about an axis, and repairs a one-sided crease.",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],
@@ -9314,7 +9314,7 @@
  },
  {
   "name": "SubDMoveSymmetric",
-  "description": "Moves one control vertex and its mirror partner so a symmetric SubD cage stays symmetric; a vertex on the plane is constrained to it, a vertex without a partner is refused.",
+  "description": "Moves one control vertex and its mirror partner (Mode=Radial: its rotated images) so a symmetric SubD cage stays symmetric; a vertex on the plane or axis is constrained to it, a vertex without a partner is refused.",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],
@@ -9346,7 +9346,7 @@
  },
  {
   "name": "SubDRemoveCreaseSymmetric",
-  "description": "Smooths each picked creased edge and its mirror edge across a vertical mirror plane (two picks).",
+  "description": "Smooths each picked creased edge and its mirror edge across a vertical mirror plane (two picks), or with Mode=Radial its rotated image edges about an axis.",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],
@@ -9418,7 +9418,7 @@
  },
  {
   "name": "SubDSymmetryCheck",
-  "description": "Reports whether a SubD control cage is mirror symmetric across a vertical plane (two picks): vertices on the plane, paired and unpaired vertices, the worst pair distance and crease / sharpness mismatches.",
+  "description": "Reports whether a SubD control cage is mirror symmetric across a vertical plane (two picks), or with Mode=Radial N-fold rotationally symmetric about an axis (Count=N): vertices on the plane or axis, paired and unpaired vertices, the worst pair distance and crease / sharpness mismatches.",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],

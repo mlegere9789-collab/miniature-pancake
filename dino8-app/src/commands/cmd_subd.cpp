@@ -944,36 +944,79 @@ void CornerAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
 }
 
 // ---------------------------------------------------------------------------
-// Live symmetric editing (kernel SubD::CheckSymmetry / MoveVertexSymmetric / SetCreaseSymmetric)
+// Live symmetric editing (kernel SubD::CheckSymmetry / MoveVertexSymmetric / SetCreaseSymmetric and their Radial counterparts)
 // ---------------------------------------------------------------------------
-// The mirror plane is the vertical plane through the line between the first two picks (same convention as SplitSubD).
-bool MirrorPlaneFromPicks(CommandContext& ctx, const Input& in, const std::string& label, Vector3d* n_out, double* offset_out) {
-  if (in.picks.size() < 2) { ctx.Warn(label + ": pick two points first; the mirror plane is vertical through the line between them"); return false; }
-  Vector3d n = ON_CrossProduct(in.picks[1] - in.picks[0], ActiveNormal(ctx));
-  if (!n.Unitize()) { ctx.Warn(label + ": the two plane points must differ and the line between them must not be parallel to the construction-plane normal"); return false; }
-  *n_out = n;
-  *offset_out = ON_DotProduct(n, in.picks[0]);
+// Mode=Mirror (default): the mirror plane is the vertical plane through the line between the first two picks (same convention as SplitSubD).
+// Mode=Radial with Count=N: the symmetry axis runs from the first pick to the second (same convention as Symmetry Mode=Radial); the cage has
+// N-fold rotational symmetry about it.
+struct SymFrame {
+  bool radial = false;
+  Vector3d n;          // mirror plane normal
+  double offset = 0;   // mirror plane offset
+  Point3d axis_point;  // radial axis
+  Vector3d axis;
+  int count = 4;
+
+  kernel::SubDSymmetryReport Check(const kernel::SubD& s, double tol) const {
+    return radial ? s.CheckRadialSymmetry(axis_point, axis, count, tol) : s.CheckSymmetry(n, offset, tol);
+  }
+  bool Move(kernel::SubD& s, const Point3d& from, const Point3d& to, double tol) const {
+    return radial ? s.MoveVertexRadial(from, to, axis_point, axis, count, tol) : s.MoveVertexSymmetric(from, to, n, offset, tol);
+  }
+  bool Crease(kernel::SubD& s, const Point3d& a, const Point3d& b, bool add, double tol) const {
+    return radial ? s.SetCreaseRadial(a, b, add, axis_point, axis, count, tol) : s.SetCreaseSymmetric(a, b, add, n, offset, tol);
+  }
+  const char* Where() const { return radial ? "axis" : "plane"; }
+  const char* Partner() const { return radial ? "rotated image" : "mirror partner"; }
+  std::string Describe() const {
+    return radial ? "about the axis through " + P3(axis_point) + ", " + std::to_string(count) + "-fold"
+                  : "across the plane through " + P3(axis_point);
+  }
+};
+
+bool SymFrameFromPicks(CommandContext& ctx, const Input& in, const std::string& label, SymFrame* out) {
+  const bool radial = Lower(in.Opt("Mode", "Mirror")) == "radial";
+  if (in.picks.size() < 2) {
+    ctx.Warn(label + (radial ? ": pick two points first; the symmetry axis runs from the first to the second"
+                             : ": pick two points first; the mirror plane is vertical through the line between them"));
+    return false;
+  }
+  SymFrame f;
+  f.radial = radial;
+  f.axis_point = in.picks[0];
+  if (radial) {
+    f.axis = in.picks[1] - in.picks[0];
+    if (!f.axis.Unitize()) { ctx.Warn(label + ": the two axis points must differ"); return false; }
+    const double c = std::floor(in.OptNum("Count", 4) + 0.5);
+    if (!(c >= 2 && c <= 360)) { ctx.Warn(label + ": Count must be between 2 and 360"); return false; }
+    f.count = static_cast<int>(c);
+  } else {
+    Vector3d n = ON_CrossProduct(in.picks[1] - in.picks[0], ActiveNormal(ctx));
+    if (!n.Unitize()) { ctx.Warn(label + ": the two plane points must differ and the line between them must not be parallel to the construction-plane normal"); return false; }
+    f.n = n;
+    f.offset = ON_DotProduct(n, in.picks[0]);
+  }
+  *out = f;
   return true;
 }
 
-std::string SymmetryReportLine(const kernel::SubDSymmetryReport& r) {
+std::string SymmetryReportLine(const kernel::SubDSymmetryReport& r, const SymFrame& f) {
   return std::string(r.symmetric ? "symmetric" : "NOT symmetric") + ", " + std::to_string(r.vertices) + " vertices (" + std::to_string(r.on_plane) +
-         " on the plane, " + std::to_string(r.paired) + " paired, " + std::to_string(r.unpaired) + " unpaired), worst pair distance " +
+         " on the " + f.Where() + ", " + std::to_string(r.paired) + " paired, " + std::to_string(r.unpaired) + " unpaired), worst pair distance " +
          Num(r.worst_pair_distance) + ", " + std::to_string(r.crease_mismatch) + " crease/sharpness mismatch(es)";
 }
 
 void SymmetryCheckAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
-  Vector3d n;
-  double offset = 0;
-  if (!MirrorPlaneFromPicks(ctx, in, "SubDSymmetryCheck", &n, &offset)) return;
+  SymFrame f;
+  if (!SymFrameFromPicks(ctx, in, "SubDSymmetryCheck", &f)) return;
   const double tol = in.OptNum("Tolerance", ctx.Settings().absolute_tolerance);
   int checked = 0;
   for (ObjectId id : ids) {
     const SceneObject* o = ctx.Doc().Find(id);
     if (!o || o->kind != ObjectKind::SubD || !o->subd) continue;
     try {
-      const kernel::SubDSymmetryReport r = o->subd->CheckSymmetry(n, offset, tol);
-      ctx.Print("SubDSymmetryCheck: object " + std::to_string(id) + " across the plane through " + P3(in.picks[0]) + ": " + SymmetryReportLine(r));
+      const kernel::SubDSymmetryReport r = f.Check(*o->subd, tol);
+      ctx.Print("SubDSymmetryCheck: object " + std::to_string(id) + " " + f.Describe() + ": " + SymmetryReportLine(r, f));
       ++checked;
     } catch (const std::exception& ex) { ctx.Warn(std::string("SubDSymmetryCheck: ") + ex.what()); }
   }
@@ -981,10 +1024,9 @@ void SymmetryCheckAction(CommandContext& ctx, const std::vector<ObjectId>& ids, 
 }
 
 void MoveSymmetricAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
-  Vector3d n;
-  double offset = 0;
-  if (!MirrorPlaneFromPicks(ctx, in, "SubDMoveSymmetric", &n, &offset)) return;
-  if (in.picks.size() < 4) { ctx.Warn("SubDMoveSymmetric: after the two plane points pick the vertex to move and the point to move it to"); return; }
+  SymFrame f;
+  if (!SymFrameFromPicks(ctx, in, "SubDMoveSymmetric", &f)) return;
+  if (in.picks.size() < 4) { ctx.Warn("SubDMoveSymmetric: after the two " + std::string(f.radial ? "axis" : "plane") + " points pick the vertex to move and the point to move it to"); return; }
   const double tol = in.OptNum("Tolerance", ctx.Settings().absolute_tolerance);
   const std::optional<CtrlVertexPick> v = PickCtrlVertex(ctx, ids, in.picks[2]);
   if (!v) { ctx.Warn("SubDMoveSymmetric: no SubD vertex near " + P3(in.picks[2])); return; }
@@ -992,31 +1034,38 @@ void MoveSymmetricAction(CommandContext& ctx, const std::vector<ObjectId>& ids, 
   ctx.Doc().BeginChange("SubDMoveSymmetric");
   const Point3d dest = in.picks[3];
   bool moved = false;
-  try { moved = o->subd->MoveVertexSymmetric(v->control, dest, n, offset, tol); } catch (const std::exception& ex) { ctx.Warn(std::string("SubDMoveSymmetric: ") + ex.what()); return; }
+  try { moved = f.Move(*o->subd, v->control, dest, tol); } catch (const std::exception& ex) { ctx.Warn(std::string("SubDMoveSymmetric: ") + ex.what()); return; }
   if (!moved) {
-    ctx.Warn("SubDMoveSymmetric: the vertex at " + P3(v->control) + " has no mirror partner within the tolerance " + Num(tol) + " across this plane; nothing moved");
+    ctx.Warn("SubDMoveSymmetric: the vertex at " + P3(v->control) + " has no " + f.Partner() + " within the tolerance " + Num(tol) + " about this " + f.Where() + "; nothing moved");
     return;
   }
   o->InvalidateDisplay();
-  const double side = ON_DotProduct(n, v->control) - offset;
   std::string msg = "SubDMoveSymmetric: vertex " + P3(v->control) + " moved to ";
-  if (std::fabs(side) <= tol) {
-    const Point3d landed = dest - n * (ON_DotProduct(n, dest) - offset);
+  if (f.radial) {
+    const Vector3d d0 = v->control - f.axis_point;
+    const double on_axis = (d0 - ON_DotProduct(d0, f.axis) * f.axis).Length();
+    if (on_axis <= tol) {
+      const Point3d landed = f.axis_point + f.axis * ON_DotProduct(dest - f.axis_point, f.axis);
+      msg += P3(landed) + " (an on-axis vertex stays on the axis)";
+    } else {
+      msg += P3(dest) + "; its " + std::to_string(f.count - 1) + " rotated image(s) moved with it";
+    }
+  } else if (std::fabs(ON_DotProduct(f.n, v->control) - f.offset) <= tol) {
+    const Point3d landed = dest - f.n * (ON_DotProduct(f.n, dest) - f.offset);
     msg += P3(landed) + " (an on-plane vertex stays on the plane)";
   } else {
-    const Point3d mirrored = dest - n * (2.0 * (ON_DotProduct(n, dest) - offset));
+    const Point3d mirrored = dest - f.n * (2.0 * (ON_DotProduct(f.n, dest) - f.offset));
     msg += P3(dest) + "; its mirror partner moved to " + P3(mirrored);
   }
-  const kernel::SubDSymmetryReport r = o->subd->CheckSymmetry(n, offset, tol);
+  const kernel::SubDSymmetryReport r = f.Check(*o->subd, tol);
   ctx.Print(msg + "; the cage is " + (r.symmetric ? "still symmetric" : "NOT symmetric") + " (" + std::to_string(r.unpaired) + " unpaired vertices)");
 }
 
 void CreaseSymmetricAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in, bool add) {
   const std::string label = add ? "SubDCreaseSymmetric" : "SubDRemoveCreaseSymmetric";
-  Vector3d n;
-  double offset = 0;
-  if (!MirrorPlaneFromPicks(ctx, in, label, &n, &offset)) return;
-  if (in.picks.size() < 3) { ctx.Warn(label + ": after the two plane points pick the edges (Enter ends)"); return; }
+  SymFrame f;
+  if (!SymFrameFromPicks(ctx, in, label, &f)) return;
+  if (in.picks.size() < 3) { ctx.Warn(label + ": after the two " + std::string(f.radial ? "axis" : "plane") + " points pick the edges (Enter ends)"); return; }
   const double tol = in.OptNum("Tolerance", ctx.Settings().absolute_tolerance);
   std::vector<Target> ts = SubDTargets(ctx, ids, label);
   if (ts.empty()) return;
@@ -1030,18 +1079,18 @@ void CreaseSymmetricAction(CommandContext& ctx, const std::vector<ObjectId>& ids
     if (!o || !o->subd) continue;
     const Point3d pa = ts[e->target].net.v[e->a], pb = ts[e->target].net.v[e->b];
     try {
-      if (o->subd->SetCreaseSymmetric(pa, pb, add, n, offset, tol)) { ++changed; touched.insert(ts[e->target].id); }
-      else ctx.Warn(label + ": the edge near " + P3(in.picks[i]) + " or its mirror edge is missing, or both already have that state; nothing changed");
+      if (f.Crease(*o->subd, pa, pb, add, tol)) { ++changed; touched.insert(ts[e->target].id); }
+      else ctx.Warn(label + ": the edge near " + P3(in.picks[i]) + " or its " + (f.radial ? "rotated image" : "mirror") + " edge is missing, or all already have that state; nothing changed");
     } catch (const std::exception& ex) { ctx.Warn(label + ": " + ex.what()); }
   }
   for (ObjectId id : touched) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
     o->InvalidateDisplay();
-    const kernel::SubDSymmetryReport r = o->subd->CheckSymmetry(n, offset, tol);
-    ctx.Print(label + ": object " + std::to_string(id) + " " + SymmetryReportLine(r));
+    const kernel::SubDSymmetryReport r = f.Check(*o->subd, tol);
+    ctx.Print(label + ": object " + std::to_string(id) + " " + SymmetryReportLine(r, f));
   }
-  ctx.Print(label + ": " + std::to_string(changed) + " pick(s) changed an edge and its mirror edge (" + (add ? "creased" : "smoothed") + ")");
+  ctx.Print(label + ": " + std::to_string(changed) + " pick(s) changed an edge and its " + (f.radial ? "rotated image edges" : "mirror edge") + " (" + (add ? "creased" : "smoothed") + ")");
 }
 
 // ---------------------------------------------------------------------------
@@ -1921,16 +1970,16 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "SubDRemoveCorner", SubDTool(kSelectSubD, "Pick pinned corners to release", -1, {}, {},
                                       [](CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) { CornerAction(ctx, ids, in, false); }),
       CommandStatus::Implemented, "Releases a pinned corner on a two-crease chain back to an ordinary crease vertex.");
-  Reg(e, "SubDSymmetryCheck", SubDTool(kSelectSubD, "Pick two points; the mirror plane is vertical through the line between them", 2, {}, {Numeric("Tolerance", 0.001)}, SymmetryCheckAction),
-      CommandStatus::Implemented, "Reports whether the control cage is mirror symmetric across the plane: vertices on the plane, paired and unpaired vertices, the worst pair distance and crease / sharpness mismatches.");
-  Reg(e, "SubDMoveSymmetric", SubDTool(kSelectSubD, "Pick two points for the mirror plane, then the vertex to move and the point to move it to", 4, {}, {Numeric("Tolerance", 0.001)}, MoveSymmetricAction),
-      CommandStatus::Implemented, "Moves one control vertex and its mirror partner so a symmetric cage stays symmetric; a vertex on the plane is constrained to it, a vertex without a partner is refused.");
-  Reg(e, "SubDCreaseSymmetric", SubDTool(kSelectSubD, "Pick two points for the mirror plane, then the edges to crease (Enter ends)", -1, {}, {Numeric("Tolerance", 0.001)},
+  Reg(e, "SubDSymmetryCheck", SubDTool(kSelectSubD, "Pick two points; Mirror: the mirror plane is vertical through the line between them; Radial: the axis runs from the first to the second", 2, {}, {Choice("Mode", {"Mirror", "Radial"}), Numeric("Count", 4), Numeric("Tolerance", 0.001)}, SymmetryCheckAction),
+      CommandStatus::Implemented, "Reports whether the control cage is mirror symmetric across the plane (Mode=Mirror) or N-fold rotationally symmetric about the axis (Mode=Radial, Count=N): vertices on the plane or axis, paired and unpaired vertices, the worst pair distance and crease / sharpness mismatches.");
+  Reg(e, "SubDMoveSymmetric", SubDTool(kSelectSubD, "Pick two points (mirror plane, or radial axis), then the vertex to move and the point to move it to", 4, {}, {Choice("Mode", {"Mirror", "Radial"}), Numeric("Count", 4), Numeric("Tolerance", 0.001)}, MoveSymmetricAction),
+      CommandStatus::Implemented, "Moves one control vertex and its mirror partner (Mode=Radial: its rotated images) so a symmetric cage stays symmetric; a vertex on the plane or axis is constrained to it, a vertex without a partner is refused.");
+  Reg(e, "SubDCreaseSymmetric", SubDTool(kSelectSubD, "Pick two points (mirror plane, or radial axis), then the edges to crease (Enter ends)", -1, {}, {Choice("Mode", {"Mirror", "Radial"}), Numeric("Count", 4), Numeric("Tolerance", 0.001)},
                                           [](CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) { CreaseSymmetricAction(ctx, ids, in, true); }),
-      CommandStatus::Implemented, "Creases each picked edge and its mirror edge across the plane (also repairs a one-sided crease).");
-  Reg(e, "SubDRemoveCreaseSymmetric", SubDTool(kSelectSubD, "Pick two points for the mirror plane, then the creased edges to smooth (Enter ends)", -1, {}, {Numeric("Tolerance", 0.001)},
+      CommandStatus::Implemented, "Creases each picked edge and its mirror edge across the plane (Mode=Radial: its rotated image edges about the axis); also repairs a one-sided crease.");
+  Reg(e, "SubDRemoveCreaseSymmetric", SubDTool(kSelectSubD, "Pick two points (mirror plane, or radial axis), then the creased edges to smooth (Enter ends)", -1, {}, {Choice("Mode", {"Mirror", "Radial"}), Numeric("Count", 4), Numeric("Tolerance", 0.001)},
                                                 [](CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) { CreaseSymmetricAction(ctx, ids, in, false); }),
-      CommandStatus::Implemented, "Smooths each picked creased edge and its mirror edge across the plane.");
+      CommandStatus::Implemented, "Smooths each picked creased edge and its mirror edge across the plane (Mode=Radial: its rotated image edges about the axis).");
   Reg(e, "SubDExpandEdges", SubDTool(kSelectSubD, "Pick edges to expand", -1, {{"Strip width", 1}}, {}, ExpandEdgesAction),
       CommandStatus::Implemented, "Splits the faces on each side of every picked edge into a strip of the given width; pick a whole edge loop to expand it.");
   Reg(e, "DivideAlongCreases", OnSelection("Select SubDs to divide", DivideAlongCreasesAction));
