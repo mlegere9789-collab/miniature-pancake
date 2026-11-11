@@ -294,6 +294,18 @@ Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a,
 // (the two points not both edges at the vertex, a distance beyond a face).
 Brep ChamferConvexEdgePair(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double distance_a, double distance_b);
 
+// UNEQUAL-DISTANCE and DISTANCE+ANGLE forms of the same right-angle-corner pair. The two edges share exactly one face; each chamfer gives its setback on that
+// SHARED face and its setback on the edge's OTHER face (`shared_*`, `other_*`), or the shared-face setback and the angle (radians, in (0, pi/2)) between the
+// shared face and the chamfer plane, so other = shared * tan(angle). In the corner frame (x along edge B, w along edge A, y along the sharp edge C) the
+// chamfers remove the prisms x/s_A + y/o_A <= 1 and w/s_B + y/o_B <= 1, so
+//   V = V_solid - s_A o_A/2 L_A - s_B o_B/2 L_B + s_A s_B (m - m^2 (1/o_A + 1/o_B)/2 + m^3/(3 o_A o_B)),  m = min(o_A, o_B).
+// Either argument order works: the chamfer with the larger `other` setback is done first (the second one's end then meets the first one's oblique face
+// inside its edge, never beyond it). Face count: the original plus two. Refusals (std::invalid_argument with a reason): non-positive or non-finite
+// distances, an angle outside (0, pi/2), a vertex that is not a trihedral right-angle corner, two points that are not the far ends of two edges at the
+// vertex, and anything ChamferConvexEdge refuses (a setback beyond its face).
+Brep ChamferConvexEdgePairLegs(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double shared_a, double other_a, double shared_b, double other_b);
+Brep ChamferConvexEdgePairAngle(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double shared_a, double angle_a, double shared_b, double angle_b);
+
 // The largest radius FilletConvexEdge/FilletConcaveEdge could build for
 // this exact edge before their own "radius is too large to fit" check
 // rejects it - the SAME closed-form bound those two functions already

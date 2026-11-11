@@ -1804,39 +1804,111 @@ Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a,
   return out;
 }
 
-// --- ChamferConvexEdgePair ------------------------------------------------------------------------------------------------------------
-// Two edges A = (vertex, end_a) and B = (vertex, end_b) meeting at a trihedral RIGHT-ANGLE corner, each given a 45-degree chamfer (one distance per edge),
-// the third edge staying sharp. ChamferConvexEdge alone cannot take the smaller chamfer first: the larger one's end would meet two faces (the first
-// chamfer's oblique face and the side face). So the larger chamfer goes first, and the second edge - whose near end the first chamfer moved by its
-// distance along that edge - is chamfered from its new end. The result is `solid` minus the union of the two chamfer prisms, in either argument order.
+// --- ChamferConvexEdgePair / Legs / Angle ---------------------------------------------------------------------------------------------
+// Two edges A = (vertex, end_a) and B = (vertex, end_b) meeting at a trihedral RIGHT-ANGLE corner, the third edge staying sharp. A and B share exactly one
+// face (the one containing vertex, end_a and end_b); each chamfer is given by its setback on that shared face and its setback on the edge's other face.
+// With C the sharp edge direction these are: A removes the prism x/s_A + y/o_A <= 1, B the prism w/s_B + y/o_B <= 1 (x along B, w along A, y along C), so the
+// second chamfer's end meets the first chamfer's oblique face at Q_i = (shared leg) and Q_j = (other leg), the latter on the first chamfer's edge with the
+// edge-C side only while o_second <= o_first. Hence the chamfer with the LARGER setback on its other face goes first, and the second edge - whose near end the
+// first chamfer moved by its shared-face setback along that edge - is chamfered from its new end. The result is `solid` minus the union of the two prisms,
+// in either argument order.
+namespace {
+
+bool LoopWalksEdge(const Brep::PlanarFace& f, const Point3d& p0, const Point3d& p1, double tol) {
+  const size_t n = f.loop.size();
+  for (size_t k = 0; k < n; ++k) {
+    if (PointsEqual(f.loop[k], p0, tol) && PointsEqual(f.loop[(k + 1) % n], p1, tol)) return true;
+  }
+  return false;
+}
+
+// ChamferConvexEdge with the setback on the face lying in the given plane called `shared` and the other face's called `other` (the primitive's own
+// distance_i belongs to the face that walks p0 -> p1, which is found here).
+Brep ChamferWithSharedLeg(const Brep& solid, Point3d p0, Point3d p1, const Point3d& plane_origin, const Vector3d& plane_normal, double shared, double other,
+                          const std::string& who) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  for (const Brep::PlanarFace& f : faces) {
+    if (!LoopWalksEdge(f, p0, p1, tol)) continue;
+    const bool is_shared = std::fabs(f.plane.zaxis * plane_normal) > 1.0 - 1e-9 && std::fabs((f.plane.origin - plane_origin) * plane_normal) <= tol;
+    return is_shared ? ChamferConvexEdge(solid, p0, p1, shared, other) : ChamferConvexEdge(solid, p0, p1, other, shared);
+  }
+  throw std::invalid_argument(who + "the edge to chamfer is not a boundary edge of any face of the solid");
+}
+
+Brep ChamferPairCore(const std::string& who, const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double shared_a, double other_a, double shared_b,
+                     double other_b) {
+  for (double d : {shared_a, other_a, shared_b, other_b}) {
+    if (!std::isfinite(d) || !(d > 0.0)) throw std::invalid_argument(who + "every chamfer distance must be finite and strictly positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  std::vector<const Brep::PlanarFace*> at_vertex;
+  for (const Brep::PlanarFace& f : faces) {
+    bool touches = false;
+    for (const Point3d& p : f.loop) touches = touches || PointsEqual(p, vertex, tol);
+    if (touches) at_vertex.push_back(&f);
+  }
+  if (at_vertex.size() != 3) {
+    throw std::invalid_argument(who + "`vertex` must be a trihedral corner (exactly three faces meet there, found " + std::to_string(at_vertex.size()) + ")");
+  }
+  for (int i = 0; i < 3; ++i) {
+    for (int j = i + 1; j < 3; ++j) {
+      if (std::fabs(at_vertex[i]->plane.zaxis * at_vertex[j]->plane.zaxis) > 1e-6) {
+        throw std::invalid_argument(who + "the three faces at `vertex` are not mutually perpendicular - only a right-angle corner is built");
+      }
+    }
+  }
+  Vector3d ua = end_a - vertex, ub = end_b - vertex;
+  if (!ua.Unitize() || !ub.Unitize()) throw std::invalid_argument(who + "an edge is degenerate");
+  const Brep::PlanarFace* shared = nullptr;
+  int count = 0;
+  for (const Brep::PlanarFace* f : at_vertex) {
+    const bool has_a = std::fabs((end_a - f->plane.origin) * f->plane.zaxis) <= tol;
+    const bool has_b = std::fabs((end_b - f->plane.origin) * f->plane.zaxis) <= tol;
+    if (has_a && has_b) {
+      shared = f;
+      ++count;
+    }
+  }
+  if (count != 1) {
+    throw std::invalid_argument(who + "`end_a` and `end_b` must be the far ends of two different edges at `vertex` (they share exactly one face)");
+  }
+  const Point3d origin = shared->plane.origin;
+  const Vector3d normal = shared->plane.zaxis;
+  const bool a_first = other_a >= other_b;
+  const Point3d& end_first = a_first ? end_a : end_b;
+  const Point3d& end_second = a_first ? end_b : end_a;
+  const Vector3d& u_second = a_first ? ub : ua;
+  const double s_first = a_first ? shared_a : shared_b, o_first = a_first ? other_a : other_b;
+  const double s_second = a_first ? shared_b : shared_a, o_second = a_first ? other_b : other_a;
+  const Brep one = ChamferWithSharedLeg(solid, vertex, end_first, origin, normal, s_first, o_first, who);
+  return ChamferWithSharedLeg(one, vertex + s_first * u_second, end_second, origin, normal, s_second, o_second, who);
+}
+
+}  // namespace
+
 Brep ChamferConvexEdgePair(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double distance_a, double distance_b) {
   const std::string who = "dino8::kernel::ChamferConvexEdgePair: ";
   if (!std::isfinite(distance_a) || !std::isfinite(distance_b) || !(distance_a > 0.0) || !(distance_b > 0.0)) {
     throw std::invalid_argument(who + "both distances must be finite and strictly positive");
   }
-  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
-  const double tol = RelativeTol(faces);
-  std::vector<Vector3d> normals;
-  for (const Brep::PlanarFace& f : faces) {
-    bool touches = false;
-    for (const Point3d& p : f.loop) touches = touches || PointsEqual(p, vertex, tol);
-    if (touches) normals.push_back(f.plane.zaxis);
+  return ChamferPairCore(who, solid, vertex, end_a, end_b, distance_a, distance_a, distance_b, distance_b);
+}
+
+Brep ChamferConvexEdgePairLegs(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double shared_a, double other_a, double shared_b, double other_b) {
+  return ChamferPairCore("dino8::kernel::ChamferConvexEdgePairLegs: ", solid, vertex, end_a, end_b, shared_a, other_a, shared_b, other_b);
+}
+
+Brep ChamferConvexEdgePairAngle(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double shared_a, double angle_a, double shared_b, double angle_b) {
+  const std::string who = "dino8::kernel::ChamferConvexEdgePairAngle: ";
+  const double half_pi = 1.5707963267948966;
+  for (double a : {angle_a, angle_b}) {
+    if (!std::isfinite(a) || !(a > 0.0) || !(a < half_pi)) {
+      throw std::invalid_argument(who + "each angle must lie strictly between 0 and pi/2 (the chamfer plane must reach the edge's other face)");
+    }
   }
-  if (normals.size() != 3) {
-    throw std::invalid_argument(who + "`vertex` must be a trihedral corner (exactly three faces meet there, found " + std::to_string(normals.size()) + ")");
-  }
-  if (std::fabs(normals[0] * normals[1]) > 1e-6 || std::fabs(normals[0] * normals[2]) > 1e-6 || std::fabs(normals[1] * normals[2]) > 1e-6) {
-    throw std::invalid_argument(who + "the three faces at `vertex` are not mutually perpendicular - only a right-angle corner is built");
-  }
-  Vector3d ua = end_a - vertex, ub = end_b - vertex;
-  if (!ua.Unitize() || !ub.Unitize()) throw std::invalid_argument(who + "an edge is degenerate");
-  const bool a_first = distance_a >= distance_b;
-  const Point3d& end_first = a_first ? end_a : end_b;
-  const Point3d& end_second = a_first ? end_b : end_a;
-  const Vector3d& u_second = a_first ? ub : ua;
-  const double d_first = a_first ? distance_a : distance_b, d_second = a_first ? distance_b : distance_a;
-  const Brep one = ChamferConvexEdge(solid, vertex, end_first, d_first, d_first);
-  return ChamferConvexEdge(one, vertex + d_first * u_second, end_second, d_second, d_second);
+  return ChamferPairCore(who, solid, vertex, end_a, end_b, shared_a, shared_a * std::tan(angle_a), shared_b, shared_b * std::tan(angle_b));
 }
 
 FilletRadiusLimit MaxFilletRadius(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
