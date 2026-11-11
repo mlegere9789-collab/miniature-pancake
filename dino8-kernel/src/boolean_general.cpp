@@ -3795,9 +3795,32 @@ bool ClosedChainsCoincide(const std::vector<UVPt>& a, const std::vector<UVPt>& b
   return true;
 }
 
+// How many vertices of the closed chain `c` (its repeated closing point excluded) coincide with a vertex of a boundary polyline of the
+// OTHER solid (`other_vertices`, welded at kWeldTol).
+int ChainVerticesSharedWith(const Chain& c, const std::unordered_set<WeldKey, WeldKeyHash>& other_vertices) {
+  int shared = 0;
+  const size_t count = c.size() > 1 ? c.size() - 1 : c.size();
+  for (size_t k = 0; k < count; ++k) {
+    const WeldKey key{std::llround(c[k].p.x / kWeldTol), std::llround(c[k].p.y / kWeldTol), std::llround(c[k].p.z / kWeldTol)};
+    if (other_vertices.count(key)) ++shared;
+  }
+  return shared;
+}
+
+// `other`, when given, is the OTHER solid: of two closed chains that trace one curve the one sharing more vertices with that solid's own
+// face boundaries is kept (ties: the denser). The other solid's face keeps its boundary as FaceBoundaryLoop() samples it; a hole that
+// reuses exactly those points closes against it vertex for vertex, where any other sampling of the same circle leaves a gap that only a
+// weld tolerance larger than the polylines' sagitta can close (measured: a 10-box with an r = 2 through cylinder needed 3e-3 of the
+// diagonal, at which the keyhole corridor is welded shut and most wall-seam placements are refused as inconsistently oriented).
 std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw,
-                                      double stitch_tol, const IntersectOptions& opt, bool debug) {
+                                      double stitch_tol, const IntersectOptions& opt, bool debug, const ON_Brep* other = nullptr) {
   std::vector<FaceFrags> out;
+  std::unordered_set<WeldKey, WeldKeyHash> other_vertices;
+  if (other) {
+    for (int j = 0; j < other->m_F.Count(); ++j)
+      for (const UVPt& q : FaceBoundaryLoop(*other, j))
+        other_vertices.insert(WeldKey{std::llround(q.p.x / kWeldTol), std::llround(q.p.y / kWeldTol), std::llround(q.p.z / kWeldTol)});
+  }
   for (int i = 0; i < n; ++i) {
     std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
     if (boundary.size() < 3) continue;
@@ -3896,7 +3919,9 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
       for (size_t cj = closed_chains.size(); cj-- > ci + 1;) {
         if (!ClosedChainsCoincide(closed_chains[ci], closed_chains[cj], opt.tolerance)) continue;
         if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: closed chains n=%zu and n=%zu trace one curve; keeping the denser\n", i, closed_chains[ci].size(), closed_chains[cj].size());
-        if (closed_chains[cj].size() > closed_chains[ci].size()) std::swap(closed_chains[ci], closed_chains[cj]);
+        const int shared_i = other ? ChainVerticesSharedWith(closed_chains[ci], other_vertices) : 0;
+        const int shared_j = other ? ChainVerticesSharedWith(closed_chains[cj], other_vertices) : 0;
+        if (shared_j > shared_i || (shared_j == shared_i && closed_chains[cj].size() > closed_chains[ci].size())) std::swap(closed_chains[ci], closed_chains[cj]);
         closed_chains.erase(closed_chains.begin() + static_cast<std::ptrdiff_t>(cj));
       }
     }
@@ -4638,8 +4663,8 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
   // Fragment every face of both operands (FragmentFaces() - shared with
   // ImprintFaces() below, see its own doc comment).
   SnapSharedChainEnds(raw_a, raw_b, opt.tolerance);
-  std::vector<FaceFrags> frags_a = FragmentFaces(ba, na, raw_a, stitch_tol, opt, debug);
-  std::vector<FaceFrags> frags_b = FragmentFaces(bb, nb, raw_b, stitch_tol, opt, debug);
+  std::vector<FaceFrags> frags_a = FragmentFaces(ba, na, raw_a, stitch_tol, opt, debug, &bb);
+  std::vector<FaceFrags> frags_b = FragmentFaces(bb, nb, raw_b, stitch_tol, opt, debug, &ba);
 
   // Classify + keep, per operation.
   std::vector<KeptFace> kept;
