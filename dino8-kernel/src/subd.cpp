@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -2059,8 +2060,13 @@ MirrorPlane MakeMirrorPlane(Vector3d normal, double offset, double tol, const ch
 
 }  // namespace
 
-SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
-  const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "CheckSymmetry");
+namespace {
+
+// Shared by the mirror and the radial symmetry check: `image` maps a control point to its image under the symmetry step (a reflection,
+// or one rotation step), `fixed` says whether a point is its own image (on the plane / on the axis). `involution` is true for a
+// reflection, where each mirror pair is judged once; for a rotation step every edge is compared with its image.
+SubDSymmetryReport CheckSymmetryImpl(const ON_SubD& subd_, const std::function<ON_3dPoint(const ON_3dPoint&)>& image,
+                                     const std::function<bool(const ON_3dPoint&)>& fixed, double point_tolerance, bool involution) {
   SubDSymmetryReport rep;
   std::vector<const ON_SubDVertex*> verts;
   ON_SubDVertexIterator vit = subd_.VertexIterator();
@@ -2098,9 +2104,9 @@ SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offse
   std::unordered_map<const ON_SubDVertex*, const ON_SubDVertex*> partner;
   for (const ON_SubDVertex* v : verts) {
     const ON_3dPoint p = v->ControlNetPoint();
-    if (std::fabs(pl.Signed(p)) <= point_tolerance) { ++rep.on_plane; partner[v] = v; continue; }
+    if (fixed(p)) { ++rep.on_plane; partner[v] = v; continue; }
     double dist = 0.0;
-    const ON_SubDVertex* m = find_near(pl.Reflect(p), &dist);
+    const ON_SubDVertex* m = find_near(image(p), &dist);
     if (m == nullptr) { ++rep.unpaired; continue; }
     ++rep.paired;
     partner[v] = m;
@@ -2114,7 +2120,7 @@ SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offse
     const auto b = partner.find(e->Vertex(1u));
     if (a == partner.end() || b == partner.end()) continue;
     const ON_SubDEdge* me = subd_.FindEdge(a->second, b->second).Edge();
-    if (me == nullptr || me == e || me < e) continue;  // each mirror pair is judged once, from its lower-addressed edge
+    if (me == nullptr || me == e || (involution && me < e)) continue;  // each mirror pair is judged once, from its lower-addressed edge
     const bool tag_differs = (e->IsCrease() != me->IsCrease());
     // weight at the end of `e` next to vertex i against the weight at the mirror edge's end next to the partner vertex
     bool weight_differs = false;
@@ -2127,6 +2133,15 @@ SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offse
   }
   rep.symmetric = (rep.unpaired == 0 && rep.crease_mismatch == 0);
   return rep;
+}
+
+}  // namespace
+
+SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
+  const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "CheckSymmetry");
+  return CheckSymmetryImpl(
+      subd_, [&](const ON_3dPoint& p) { return pl.Reflect(p); },
+      [&](const ON_3dPoint& p) { return std::fabs(pl.Signed(p)) <= point_tolerance; }, point_tolerance, true);
 }
 
 bool SubD::MoveVertexSymmetric(const Point3d& from, const Point3d& to, Vector3d plane_normal, double plane_offset, double point_tolerance) {
@@ -2199,6 +2214,122 @@ bool SubD::SetEdgeSharpnessSymmetric(const Point3d& p0, const Point3d& p1, doubl
   const bool a = SetEdgeSharpness(p0, p1, sharpness, point_tolerance);
   const bool b = (me != e) ? SetEdgeSharpness(m0, m1, sharpness, point_tolerance) : false;
   return a || b;
+}
+
+namespace {
+
+// N-fold rotation group about an axis: Rot(p, k) is p rotated 360 k / count degrees.
+struct RotationGroup {
+  ON_3dPoint origin;
+  ON_3dVector axis;
+  int count;
+  std::vector<ON_Xform> steps;  // steps[k] = rotation by 360 k / count degrees, k = 0..count-1
+  double AxisDistance(const ON_3dPoint& p) const {
+    const ON_3dVector d = p - origin;
+    return (d - ON_DotProduct(d, axis) * axis).Length();
+  }
+  ON_3dPoint Project(const ON_3dPoint& p) const { return origin + ON_DotProduct(p - origin, axis) * axis; }
+  ON_3dPoint Rot(const ON_3dPoint& p, int k) const { return steps[static_cast<size_t>(k)] * p; }
+};
+
+RotationGroup MakeRotationGroup(Point3d axis_point, Vector3d axis_dir, int count, double tol, const char* who) {
+  const std::string name = std::string("dino8::kernel::SubD::") + who;
+  if (!axis_point.IsValid() || !std::isfinite(tol) || tol < 0.0) throw std::invalid_argument(name + ": axis point and tolerance must be finite and the tolerance non-negative");
+  if (count < 2) throw std::invalid_argument(name + ": count must be at least 2");
+  ON_3dVector a(axis_dir.x, axis_dir.y, axis_dir.z);
+  if (!a.Unitize()) throw std::invalid_argument(name + ": axis_dir must be nonzero");
+  RotationGroup g{ON_3dPoint(axis_point.x, axis_point.y, axis_point.z), a, count, {}};
+  for (int k = 0; k < count; ++k) {
+    ON_Xform x;
+    x.Rotation(2.0 * ON_PI * static_cast<double>(k) / static_cast<double>(count), g.axis, g.origin);
+    g.steps.push_back(x);
+  }
+  return g;
+}
+
+// The distinct edges of the orbit of the edge joining the vertices found at p0 / p1; empty if any image vertex or edge is missing.
+bool RadialEdgeOrbit(const ON_SubD& sd, const RotationGroup& g, const Point3d& p0, const Point3d& p1, double tol, std::vector<const ON_SubDEdge*>* out) {
+  const ON_SubDVertex* v0 = sd.FindVertex(&p0.x, tol);
+  const ON_SubDVertex* v1 = sd.FindVertex(&p1.x, tol);
+  if (v0 == nullptr || v1 == nullptr) return false;
+  const ON_3dPoint a = v0->ControlNetPoint(), b = v1->ControlNetPoint();
+  for (int k = 0; k < g.count; ++k) {
+    const ON_3dPoint ra = g.AxisDistance(a) <= tol ? a : g.Rot(a, k);
+    const ON_3dPoint rb = g.AxisDistance(b) <= tol ? b : g.Rot(b, k);
+    const ON_SubDVertex* u0 = sd.FindVertex(&ra.x, tol);
+    const ON_SubDVertex* u1 = sd.FindVertex(&rb.x, tol);
+    if (u0 == nullptr || u1 == nullptr) return false;
+    const ON_SubDEdge* e = sd.FindEdge(u0, u1).Edge();
+    if (e == nullptr) return false;
+    if (std::find(out->begin(), out->end(), e) == out->end()) out->push_back(e);
+  }
+  return true;
+}
+
+Point3d EdgeEnd(const ON_SubDEdge* e, unsigned int i) {
+  const ON_3dPoint p = e->Vertex(i)->ControlNetPoint();
+  return Point3d(p.x, p.y, p.z);
+}
+
+}  // namespace
+
+SubDSymmetryReport SubD::CheckRadialSymmetry(Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) const {
+  const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "CheckRadialSymmetry");
+  return CheckSymmetryImpl(
+      subd_, [&](const ON_3dPoint& p) { return g.Rot(p, 1); }, [&](const ON_3dPoint& p) { return g.AxisDistance(p) <= point_tolerance; },
+      point_tolerance, false);
+}
+
+bool SubD::MoveVertexRadial(const Point3d& from, const Point3d& to, Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) {
+  const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "MoveVertexRadial");
+  if (!from.IsValid() || !to.IsValid()) return false;
+  const ON_SubDVertex* v = subd_.FindVertex(&from.x, point_tolerance);
+  if (v == nullptr) return false;
+  const ON_3dPoint vp = v->ControlNetPoint();
+  ON_3dPoint target(to.x, to.y, to.z);
+  std::vector<const ON_SubDVertex*> orbit{v};
+  if (g.AxisDistance(vp) <= point_tolerance) {
+    target = g.Project(target);  // an on-axis vertex stays on the axis
+  } else {
+    for (int k = 1; k < count; ++k) {
+      const ON_3dPoint r = g.Rot(vp, k);
+      const ON_SubDVertex* u = subd_.FindVertex(&r.x, point_tolerance);
+      if (u == nullptr || std::find(orbit.begin(), orbit.end(), u) != orbit.end()) return false;
+      orbit.push_back(u);
+    }
+  }
+  for (size_t k = 0; k < orbit.size(); ++k) {
+    if (!const_cast<ON_SubDVertex*>(orbit[k])->SetControlNetPoint(k == 0 ? target : g.Rot(target, static_cast<int>(k)), /*bClearNeighborhoodCache=*/true)) return false;
+  }
+  subd_.ClearEvaluationCache();
+  return true;
+}
+
+bool SubD::SetCreaseRadial(const Point3d& p0, const Point3d& p1, bool crease, Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) {
+  const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "SetCreaseRadial");
+  std::vector<const ON_SubDEdge*> orbit;
+  if (!RadialEdgeOrbit(subd_, g, p0, p1, point_tolerance, &orbit)) return false;
+  // collect the endpoints first: SetCrease() may reorder nothing, but this keeps the loop independent of edge pointers
+  std::vector<std::pair<Point3d, Point3d>> ends;
+  for (const ON_SubDEdge* e : orbit) ends.emplace_back(EdgeEnd(e, 0u), EdgeEnd(e, 1u));
+  bool any = false;
+  for (const auto& pr : ends) any = SetCrease(pr.first, pr.second, crease, point_tolerance) || any;
+  return any;
+}
+
+bool SubD::SetEdgeSharpnessRadial(const Point3d& p0, const Point3d& p1, double sharpness, Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) {
+  const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "SetEdgeSharpnessRadial");
+  std::vector<const ON_SubDEdge*> orbit;
+  if (!RadialEdgeOrbit(subd_, g, p0, p1, point_tolerance, &orbit)) return false;
+  if (!(sharpness >= 0.0) || sharpness > ON_SubDEdgeSharpness::MaximumValue) return false;
+  std::vector<std::pair<Point3d, Point3d>> ends;
+  for (const ON_SubDEdge* e : orbit) {
+    if (!e->IsSmooth()) return false;  // nothing changed
+    ends.emplace_back(EdgeEnd(e, 0u), EdgeEnd(e, 1u));
+  }
+  bool any = false;
+  for (const auto& pr : ends) any = SetEdgeSharpness(pr.first, pr.second, sharpness, point_tolerance) || any;
+  return any;
 }
 
 bool SubD::SetVertexCorner(const Point3d& p, bool corner, double point_tolerance) {
