@@ -410,6 +410,13 @@ class SceneObject {
   // Human-readable summary used by What/List/Properties.
   std::string Describe() const;
 
+  // The typed readout What prints under Describe(): the analytic kind the kernel recovers from the object's NURBS data
+  // (curve: Line / Arc / Circle / Ellipse / Polyline / free-form; surface: Plane / Sphere / Cylinder / Cone / Torus /
+  // free-form; B-rep: how many faces of each kind plus one line per curved analytic face), one "  Type: ..." /
+  // "  Face types: ..." / "  Face N: ..." line each, empty for other kinds. Not part of Describe() because the
+  // Properties panel calls that every frame and a B-rep's face fits are not free.
+  std::string DescribeType() const;
+
  private:
   mutable DisplayCache cache_;
   // The level that is NOT current: the fixed level while the viewport's is installed in cache_

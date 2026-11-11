@@ -311,7 +311,7 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         if (ON_Brep* br = ON_BrepBox(corners)) { kernel::Brep k; k.raw() = *br; delete br; ctx.Doc().Add(SceneObject::MakeBrep(k)); }
       }));
   Reg(e, "What", OnSelection("Select objects to describe", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) { std::istringstream in(o->Describe()); std::string line; while (std::getline(in, line)) ctx.Print(line); }
+        for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) { const std::string type_lines = o->DescribeType(); std::istringstream in(o->Describe() + (type_lines.empty() ? std::string() : "\n" + type_lines)); std::string line; while (std::getline(in, line)) ctx.Print(line); }
         ctx.App().Panels().command_history = true;
       }));
   Reg(e, "List", OnSelection("Select objects to list", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
