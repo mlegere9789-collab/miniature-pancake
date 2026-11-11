@@ -1147,6 +1147,24 @@ struct MeridianEdge {
 Brep ShellRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
                              Vector3d radial_direction, const std::vector<double>& edge_thickness);
 
+// Whole-BODY offset (the PARITY_MAP "Body offset" gap that OffsetSolidConvexPlanar covers only for convex planar solids, and
+// the mesh-level OffsetSolid for the rest) of a SOLID OF REVOLUTION: every face of the closed meridian polyline `profile`
+// (same input rules as ShellRevolvedProfile: planar, containing the axis, on one side of it) moves along its own outward normal by
+// `distance` (positive grows the body, negative shrinks it), sharp corners by extend-and-intersect exactly as
+// OffsetSolidConvexPlanar does for planes; an edge lying on the axis is not a face and stays. The result is Brep::Revolve() of
+// the moved meridian: exact cylinders, cones, planes. Verified before returning: the moved chain stays on the right side of the
+// original boundary at least |distance| away (exact distances), the new section is a simple counter-clockwise curve, the revolved
+// Brep is IsValid() and IsSolid() and its Brep::Volume() equals Green's integral of the new section.
+// Throws std::invalid_argument for a non-finite or zero `distance`, the input errors of ShellRevolvedProfile(), and an infeasible
+// distance: an inward offset that collapses an edge or crosses the axis, an outward one whose moved curves cross.
+Brep OffsetRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double distance);
+
+// OffsetRevolvedProfile() for a meridian with circular arcs (MeridianEdge; sphere caps, domes, tori and torus segments, rounded
+// cans): an arc keeps its centre and its radius changes by `distance` (grows when the body grows on the arc's centre side, shrinks
+// otherwise); a ring section with no edge on the axis is supported too (a torus segment, a washer).
+Brep OffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
+                              Vector3d radial_direction, double distance);
+
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
 // shrinks it), re-extending or re-trimming every OTHER face so the
