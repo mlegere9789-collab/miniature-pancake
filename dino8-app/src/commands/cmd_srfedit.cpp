@@ -45,6 +45,24 @@ void DeleteFaceHealed(ON_Brep& b, int face_index) {
   b = k.raw();
 }
 
+// Index of raw B-rep face `fi` in the kernel's PlanarFaces() list (the live-face order), checked by comparing the face's plane with the list
+// entry's before anything is edited. False with `note` when the polysurface has faces the planar kernel skips or the planes disagree.
+bool MatchPlanarFaceIndex(const kernel::Brep& kb, int fi, const std::vector<kernel::Brep::PlanarFace>& planar, int& k, std::string& note) {
+  const ON_Brep& raw = kb.raw();
+  if (fi < 0 || fi >= raw.m_F.Count() || raw.m_F[fi].m_face_index < 0) { note = "the picked face is not a live face of the polysurface"; return false; }
+  k = 0;
+  for (int i = 0; i < fi; ++i) if (raw.m_F[i].m_face_index >= 0) ++k;
+  const ON_BrepFace& f = raw.m_F[fi];
+  ON_3dVector n = f.NormalAt(f.Domain(0).Mid(), f.Domain(1).Mid());
+  const ON_3dPoint on_face = f.PointAt(f.Domain(0).Mid(), f.Domain(1).Mid());
+  if (k >= static_cast<int>(planar.size()) || !n.Unitize() || n * planar[static_cast<size_t>(k)].plane.zaxis < 0.999 ||
+      std::fabs(planar[static_cast<size_t>(k)].plane.DistanceTo(on_face)) > 1e-6 * std::max(1.0, on_face.DistanceTo(ON_3dPoint(0, 0, 0)))) {
+    note = "the picked face does not match the kernel's planar face list (this polysurface has faces the planar kernel skips)";
+    return false;
+  }
+  return true;
+}
+
 // The surface behind an object: a Surface object, or a single brep face.
 std::optional<ON_NurbsSurface> SurfaceOfObject(const SceneObject& o, int face = 0) {
   if (o.kind == ObjectKind::Surface && o.surface) return o.surface->raw();
@@ -267,20 +285,10 @@ class FacePickCommand : public Command {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o || o->kind != ObjectKind::Brep || !o->brep) { note = "the object is not a polysurface"; return false; }
     kernel::Brep kb = *o->brep;
-    const ON_Brep& raw = kb.raw();
-    if (fi < 0 || fi >= raw.m_F.Count() || raw.m_F[fi].m_face_index < 0) { note = "the picked face is not a live face of the polysurface"; return false; }
     try {
       const std::vector<kernel::Brep::PlanarFace> planar = kb.PlanarFaces();  // throws, naming the face, if any face is not planar
       int k = 0;
-      for (int i = 0; i < fi; ++i) if (raw.m_F[i].m_face_index >= 0) ++k;
-      const ON_BrepFace& f = raw.m_F[fi];
-      ON_3dVector n = f.NormalAt(f.Domain(0).Mid(), f.Domain(1).Mid());
-      const ON_3dPoint on_face = f.PointAt(f.Domain(0).Mid(), f.Domain(1).Mid());
-      if (k >= static_cast<int>(planar.size()) || !n.Unitize() || n * planar[static_cast<size_t>(k)].plane.zaxis < 0.999 ||
-          std::fabs(planar[static_cast<size_t>(k)].plane.DistanceTo(on_face)) > 1e-6 * std::max(1.0, on_face.DistanceTo(ON_3dPoint(0, 0, 0)))) {
-        note = "the picked face does not match the kernel's planar face list (this polysurface has faces the planar kernel skips)";
-        return false;
-      }
+      if (!MatchPlanarFaceIndex(kb, fi, planar, k, note)) return false;
       kernel::Brep healed = kernel::DeleteFaceHealConvexPlanar(kb, k);
       const int faces = healed.FaceCount();
       *o->brep = std::move(healed);
@@ -1200,6 +1208,11 @@ class FoldFaceCommand : public Command {
     if (!hinge_ || !face_) return;
     SceneObject* o = ctx.Doc().Find(hinge_->id);
     if (!o || o->kind != ObjectKind::Brep || !o->brep) { Finish(); return; }
+    // The exact route first: the kernel folds a face of a convex planar solid about one of its OWN edges (FoldFaceConvexPlanar). Only when
+    // it declines (it says why) does the approximate rigid fold below run.
+    std::string kernel_note;
+    ctx.Doc().BeginChange("FoldFace");
+    if (TryExactFold(ctx, *o, hinge_->edge, *face_, deg, kernel_note)) { Finish(); return; }
     ON_Brep& b = o->brep->raw();
     if (hinge_->edge < 0 || hinge_->edge >= b.m_E.Count()) { Finish(); return; }
     const ON_BrepEdge& ed = b.m_E[hinge_->edge];
@@ -1208,11 +1221,46 @@ class FoldFaceCommand : public Command {
     if (!axis.Unitize()) { ctx.Warn("FoldFace: degenerate hinge edge"); Finish(); return; }
     ON_Xform xf;
     xf.Rotation(deg * ON_PI / 180.0, axis, p0);
-    ctx.Doc().BeginChange("FoldFace");
     bool ok = MoveBrepFaces(b, {*face_}, xf);
     if (ok) { o->InvalidateDisplay(); ctx.Print("FoldFace: face " + std::to_string(*face_) + " folded " + FormatNumber(deg) + " degree(s) about the picked edge"); }
     else ctx.Warn("FoldFace: could not fold that face");
+    if (!kernel_note.empty()) ctx.Print("FoldFace: the exact kernel route declined (" + kernel_note.substr(0, 220) + "), so this is the approximate rigid fold");
     Finish();
+  }
+  // The exact route (kernel::FoldFaceConvexPlanar): rotates face `fi`'s plane about its own hinge edge `edge_index` by `deg` degrees (right-hand rule
+  // about the picked edge's direction) and re-trims every other face. Returns true and replaces the object's B-rep when the kernel did it;
+  // otherwise false with `note` (the kernel's own message, or why the pick is not a fold the kernel can do); the object is untouched.
+  bool TryExactFold(CommandContext& ctx, SceneObject& o, int edge_index, int fi, double deg, std::string& note) {
+    kernel::Brep kb = *o.brep;
+    const ON_Brep& raw = kb.raw();
+    if (edge_index < 0 || edge_index >= raw.m_E.Count() || raw.m_E[edge_index].m_edge_index < 0) { note = "the hinge edge is not a live edge of the polysurface"; return false; }
+    const ON_BrepEdge& ed = raw.m_E[edge_index];
+    const ON_3dPoint a = ed.PointAtStart(), b = ed.PointAtEnd();
+    try {
+      const std::vector<kernel::Brep::PlanarFace> planar = kb.PlanarFaces();  // throws, naming the face, if any face is not planar
+      int k = 0;
+      if (!MatchPlanarFaceIndex(kb, fi, planar, k, note)) return false;
+      const std::vector<Point3d>& loop = planar[static_cast<size_t>(k)].loop;
+      const double tol = 1e-5 * std::max(1.0, a.DistanceTo(b));
+      int hinge = -1;
+      double sign = 1.0;
+      for (size_t i = 0; i < loop.size() && hinge < 0; ++i) {
+        const ON_3dPoint p = loop[i], q = loop[(i + 1) % loop.size()];
+        if (p.DistanceTo(a) <= tol && q.DistanceTo(b) <= tol) { hinge = static_cast<int>(i); sign = 1.0; }
+        else if (p.DistanceTo(b) <= tol && q.DistanceTo(a) <= tol) { hinge = static_cast<int>(i); sign = -1.0; }  // loop runs against the picked edge
+      }
+      if (hinge < 0) { note = "the hinge edge is not an edge of the picked face (the kernel folds a face about one of its own edges)"; return false; }
+      kernel::Brep folded = kernel::FoldFaceConvexPlanar(kb, k, hinge, sign * deg * ON_PI / 180.0);
+      const int faces = folded.FaceCount();
+      *o.brep = std::move(folded);
+      o.InvalidateDisplay();
+      ctx.Print("FoldFace: exact kernel fold (FoldFaceConvexPlanar): face " + std::to_string(fi) + " rotated " + FormatNumber(deg) +
+                " degree(s) about the picked edge, the neighbours re-trimmed, " + std::to_string(faces) + " face(s), still a closed solid");
+      return true;
+    } catch (const std::exception& e) {
+      note = e.what();
+      return false;
+    }
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e2; double v2 = std::strtod(t.c_str(), &e2); if (e2 != t.c_str() && *e2 == 0) OnNumber(ctx, v2); }
   void OnEnter(CommandContext& ctx) override { if (face_) OnNumber(ctx, 90); }

@@ -1,0 +1,78 @@
+# FoldFace through the exact kernel fold (the "FLD_" section, tests/sections/85_foldface_exact.sh).
+#
+# FoldFaceCommand used to rotate the picked face rigidly with the approximate MoveBrepFaces. It now calls kernel::FoldFaceConvexPlanar first
+# (the face's plane is rotated about one of ITS OWN edges and every other face is re-trimmed against it, so the solid stays closed) and falls
+# back to the approximate rigid fold only when the kernel declines, printing the kernel's reason. Expected values are closed forms of a
+# 10 x 10 x 10 cube whose top face is folded about its front edge (y = 0, z = 10) by theta: the top plane becomes z = 10 + y tan(theta), so
+#   V = 1000 + 500 tan(theta),  S = 100 (bottom) + 100 (front) + 10 (10 + 10 t) (back) + 2 x 10 (10 + 5 t) (sides) + 100 / cos(theta) (top), t = tan(theta)
+#   typed +30 degrees : V = 1288.675, S = 730.940   (the picked top-front edge runs +x, so a positive angle lifts the far side)
+#   typed -30 degrees : V =  711.325, S = 500.000
+#   typed +60 degrees : V = 1000 + 500 tan 60 = 1866.025 (still valid: the plane rises)
+#   typed -60 degrees : the plane meets the bottom edge at |tan| = 1, so the back wall would vanish: the kernel refuses, says why, the
+#                       approximate rigid fold runs
+#   a hinge that is not an edge of the picked face, and a cylinder's cap (the wall is not planar), are refused the same way
+
+SetActiveViewport Top
+
+New
+FLDBEGIN_p30
+Box 0,0,0 10,10,0 10
+FoldFace
+5,0,10
+5,5,10
+30
+SelAll
+Volume
+Area
+
+New
+FLDBEGIN_m30
+Box 0,0,0 10,10,0 10
+FoldFace
+5,0,10
+5,5,10
+-30
+SelAll
+Volume
+Area
+
+New
+FLDBEGIN_p60
+Box 0,0,0 10,10,0 10
+FoldFace
+5,0,10
+5,5,10
+60
+SelAll
+Volume
+
+New
+FLDBEGIN_m60
+Box 0,0,0 10,10,0 10
+FoldFace
+5,0,10
+5,5,10
+-60
+SelAll
+Volume
+
+New
+FLDBEGIN_notedge
+Box 0,0,0 10,10,0 10
+FoldFace
+5,0,0
+5,5,10
+30
+
+New
+FLDBEGIN_cyl
+Circle 0,0,0 3
+SelLast
+ExtrudeCrv
+8
+SelLast
+FoldFace
+3,0,8
+1,1,8
+20
+FLDBEGIN_end
