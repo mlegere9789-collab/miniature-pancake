@@ -1917,6 +1917,28 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
 
   std::string line;
   while (std::getline(in, line)) {
+    // A CRLF file leaves a '\r' at the end of the line (the stream is not binary, but a Windows file read on another
+    // platform still carries it); the OBJ backslash continuation (a line ending in '\' goes on with the next line, the
+    // spec's way of writing a long `f` / `v` line) is joined into ONE logical line; and a '#' that starts a token (the
+    // line's first character, or after a space / tab) begins a comment running to the end of the line, also after data.
+    auto strip_cr = [](std::string& text) {
+      if (!text.empty() && text.back() == '\r') text.pop_back();
+    };
+    strip_cr(line);
+    while (!line.empty() && line.back() == '\\') {
+      line.pop_back();
+      std::string continuation;
+      if (!std::getline(in, continuation)) break;
+      strip_cr(continuation);
+      line += ' ';
+      line += continuation;
+    }
+    for (size_t pos = 0; pos < line.size(); ++pos) {
+      if (line[pos] == '#' && (pos == 0 || line[pos - 1] == ' ' || line[pos - 1] == '\t')) {
+        line.resize(pos);
+        break;
+      }
+    }
     std::istringstream stream(line);
     std::string tag;
     stream >> tag;
@@ -1944,9 +1966,13 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
       }
       positions.push_back(ON_3fPoint(x, y, z));
     } else if (tag == "vt") {
-      double u, v;
-      if (!(stream >> u >> v)) {
+      // `vt u [v] [w]`: v defaults to 0 when omitted (a 1D texture coordinate); a third component (w) is not kept.
+      double u, v = 0.0;
+      if (!(stream >> u)) {
         return Result::Failed;
+      }
+      if (!(stream >> v)) {
+        v = 0.0;
       }
       texture_coords.push_back(Point2d(u, v));
     } else if (tag == "f") {
@@ -2797,53 +2823,64 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
       }
     } else if (element.name == "face") {
       found_face = true;
-      if (element.properties.size() != 1 || !element.properties[0].is_list) {
-        return Result::Failed;  // this kernel only reads the ordinary "one index list" face shape
+      // The vertex-index list is the element's FIRST list property (whatever its name); every other property of the face
+      // element (a per-face colour, a quality value, a second list) is read at its own declared width and ignored, so the
+      // stream stays aligned - PLY face elements commonly carry such extras after or before the index list.
+      int list_property_index = -1;
+      for (size_t pi = 0; pi < element.properties.size(); ++pi) {
+        if (element.properties[pi].is_list) {
+          list_property_index = static_cast<int>(pi);
+          break;
+        }
       }
-      const PlyProperty& list_property = element.properties[0];
+      if (list_property_index < 0) {
+        return Result::Failed;  // no vertex-index list at all
+      }
       for (int row = 0; row < element.count; ++row) {
-        int corner_count = 0;
-        int indices[4] = {0, 0, 0, 0};
+        std::vector<int> indices;
+        std::istringstream stream;
         if (!is_binary) {
           std::string line;
           if (!std::getline(in, line)) {
             return Result::Failed;
           }
-          std::istringstream stream(line);
-          if (!(stream >> corner_count) || corner_count < 3 || corner_count > 4) {
-            return Result::Failed;
-          }
-          for (int i = 0; i < corner_count; ++i) {
-            if (!(stream >> indices[i]) || indices[i] < 0 || indices[i] >= raw.m_V.Count()) {
+          stream.str(line);
+        }
+        for (size_t pi = 0; pi < element.properties.size(); ++pi) {
+          const PlyProperty& property = element.properties[pi];
+          const bool is_index_list = static_cast<int>(pi) == list_property_index;
+          if (!property.is_list) {
+            double ignored;
+            if (is_binary ? !ReadPlyBinaryScalar(in, property.type, is_big_endian, ignored) : !(stream >> ignored)) {
               return Result::Failed;
             }
+            continue;
           }
-        } else {
           double count_value;
-          if (!ReadPlyBinaryScalar(in, list_property.count_type, is_big_endian, count_value)) {
+          if (is_binary ? !ReadPlyBinaryScalar(in, property.count_type, is_big_endian, count_value) : !(stream >> count_value)) {
             return Result::Failed;
           }
-          corner_count = static_cast<int>(count_value);
-          if (corner_count < 3 || corner_count > 4) {
+          const int corner_count = static_cast<int>(count_value);
+          if (corner_count < 0 || (is_index_list && corner_count < 3)) {
             return Result::Failed;
           }
           for (int i = 0; i < corner_count; ++i) {
-            double index_value;
-            if (!ReadPlyBinaryScalar(in, list_property.value_type, is_big_endian, index_value)) {
+            double value;
+            if (is_binary ? !ReadPlyBinaryScalar(in, property.value_type, is_big_endian, value) : !(stream >> value)) {
               return Result::Failed;
             }
-            indices[i] = static_cast<int>(index_value);
-            if (indices[i] < 0 || indices[i] >= raw.m_V.Count()) {
-              return Result::Failed;
+            if (is_index_list) {
+              const int index = static_cast<int>(value);
+              if (value != static_cast<double>(index) || index < 0 || index >= raw.m_V.Count()) {
+                return Result::Failed;
+              }
+              indices.push_back(index);
             }
           }
         }
-        ON_MeshFace face;
-        face.vi[0] = indices[0];
-        face.vi[1] = indices[1];
-        face.vi[2] = indices[2];
-        face.vi[3] = (corner_count == 4) ? indices[3] : indices[2];
-        raw.m_F.Append(face);
+        // 3 or 4 corners stay one native triangle / quad; a longer polygon is triangulated (ear clipping), the same
+        // accommodation LoadObj() / LoadOff() make for their n-gons.
+        AppendPolygonFace(raw, indices);
       }
     } else if (!is_binary) {
       // An element type this kernel doesn't read (e.g. a color-only
@@ -2960,6 +2997,44 @@ bool ParseOffDouble(const std::string& token, double& value) {
   return true;
 }
 
+// An OFF face line may end with a colour after its indices ("3 0 1 2 255 0 0", or "4 0 1 2 3 0.5 0.25 0.75 1.0"): 3 or 4
+// numbers, integers 0-255 or floats 0-1. Called right after a face's last index: looks at the rest of THAT line. Nothing (or only a
+// comment) left: nothing to do. Tokens that read as the start of another FACE on the same line (a count >= 3 followed by that
+// many valid vertex indices - a file with several faces per line, which this tokenised reader has always accepted) are
+// left in the stream. Otherwise exactly 3 or 4 numbers are taken as the face colour and discarded (a Mesh has no per-face
+// colour slot in this format's terms); anything else is malformed.
+bool SkipOffFaceColor(std::istream& in, int vertex_count) {
+  const std::streampos start = in.tellg();
+  std::string rest;
+  std::getline(in, rest);
+  const size_t hash = rest.find('#');
+  if (hash != std::string::npos) rest.resize(hash);
+  std::istringstream line_stream(rest);
+  std::vector<std::string> tokens;
+  std::string tok;
+  while (line_stream >> tok) tokens.push_back(tok);
+  if (tokens.empty()) return true;
+  int count = 0;
+  if (ParseOffInt(tokens[0], count) && count >= 3 && tokens.size() >= static_cast<size_t>(count) + 1) {
+    bool another_face = true;
+    for (int c = 1; c <= count && another_face; ++c) {
+      int index = 0;
+      another_face = ParseOffInt(tokens[static_cast<size_t>(c)], index) && index >= 0 && index < vertex_count;
+    }
+    if (another_face) {
+      in.clear();
+      in.seekg(start);
+      return true;
+    }
+  }
+  if (tokens.size() != 3 && tokens.size() != 4) return false;
+  for (const std::string& t : tokens) {
+    double value = 0;
+    if (!ParseOffDouble(t, value)) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 Result Mesh::SaveOff(const std::string& path) const {
@@ -3071,6 +3146,7 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
       indices[static_cast<size_t>(c)] = idx;
     }
     AppendPolygonFace(raw, indices);
+    if (!SkipOffFaceColor(in, vertex_count)) return Result::Failed;
   }
 
   if (is_coff && !colors.empty()) {
