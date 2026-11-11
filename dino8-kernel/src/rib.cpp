@@ -379,44 +379,52 @@ RibResult MakeRibFlush(const Brep& solid, const std::vector<Point3d>& profile, d
   };
 
   // Measured: the Difference result depends erratically on the cutter's size (a 1-unit margin around a 10-unit plate gives the exact
-  // volume, a 2-unit margin leaves a 0.22 sliver of the web), and the sealing step's volume bounds (1%) do not see it. So the cut is
+  // volume, a 2-unit margin leaves a 0.22 sliver of the web), and the sealing step's volume bounds (1%) do not see it. So every cut is
   // VERIFIED: the volume it removes must equal the exact volume of web ^ cutter (a second, independent boolean on the bare web, whose
-  // faces do not lie on the host's), and several cutter sizes are tried in turn.
-  std::string last_why = "no cutter size was tried";
-  bool done = false;
-  for (const double margin : {0.07, 0.2, 0.4, 0.03, 0.8}) {
-    for (const double depth : {0.15, 0.5}) {
-      std::vector<Brep> cutters;
-      for (size_t i = 0; i < cuts.size(); ++i) cutters.push_back(make_cutter(i, margin * diag, depth * diag));
-      for (size_t i = 0; i < cutters.size(); ++i) {
-        for (size_t j = i + 1; j < cutters.size(); ++j) {
-          if (!Apart(cutters[i].GetTightBoundingBox(), cutters[j].GetTightBoundingBox(), 0.0)) {
-            Bad("flush planes " + std::to_string(i) + " and " + std::to_string(j) +
-                " give overlapping cutters; only opposite/parallel end faces are supported together");
-          }
+  // faces do not lie on the host's), and several cutter sizes are tried in turn. The planes are cut ONE AT A TIME (a compound cutter of
+  // two opposite slabs was measured to remove the wrong volume, 1.369 of 2.56, where the two sequential cuts are exact), so their cutters
+  // must not overlap (the verification of each cut assumes it).
+  {
+    std::vector<Brep> first_cutters;
+    for (size_t i = 0; i < cuts.size(); ++i) first_cutters.push_back(make_cutter(i, 0.07 * diag, 0.15 * diag));
+    for (size_t i = 0; i < first_cutters.size(); ++i) {
+      for (size_t j = i + 1; j < first_cutters.size(); ++j) {
+        if (!Apart(first_cutters[i].GetTightBoundingBox(), first_cutters[j].GetTightBoundingBox(), 0.0)) {
+          Bad("flush planes " + std::to_string(i) + " and " + std::to_string(j) +
+              " give overlapping cutters; only opposite/parallel end faces are supported together");
         }
       }
-      const Brep cutter = cutters.size() == 1 ? cutters[0] : Brep::Compound(cutters);
-      try {
-        const SealedGeneralBoolean cut = BooleanCombineGeneralSealed(out.brep, cutter, BooleanOp::Difference);
-        const SealedGeneralBoolean inter = BooleanCombineGeneralSealed(web, cutter, BooleanOp::Intersection);
-        const double removed = fused_volume - cut.volume;
-        if (std::fabs(removed - inter.volume) > 1e-4 * inter.volume + 1e-9) {
-          last_why = "the cut removed " + std::to_string(removed) + " but web ^ cutter measures " + std::to_string(inter.volume);
-          continue;
+    }
+  }
+  double current_volume = fused_volume;
+  for (size_t i = 0; i < cuts.size(); ++i) {
+    std::string last_why = "no cutter size was tried";
+    bool done = false;
+    for (const double margin : {0.07, 0.2, 0.4, 0.03, 0.8}) {
+      for (const double depth : {0.15, 0.5}) {
+        const Brep cutter = make_cutter(i, margin * diag, depth * diag);
+        try {
+          const SealedGeneralBoolean cut = BooleanCombineGeneralSealed(out.brep, cutter, BooleanOp::Difference);
+          const SealedGeneralBoolean inter = BooleanCombineGeneralSealed(web, cutter, BooleanOp::Intersection);
+          const double removed = current_volume - cut.volume;
+          if (std::fabs(removed - inter.volume) > 1e-4 * inter.volume + 1e-9) {
+            last_why = "the cut removed " + std::to_string(removed) + " but web ^ cutter measures " + std::to_string(inter.volume);
+            continue;
+          }
+          out.brep = cut.brep;
+          current_volume = cut.volume;
+          out.added_volume = cut.volume - solid_volume;
+          done = true;
+        } catch (const std::exception& e) {
+          last_why = e.what();
         }
-        out.brep = cut.brep;
-        out.added_volume = cut.volume - solid_volume;
-        done = true;
-      } catch (const std::exception& e) {
-        last_why = e.what();
+        if (done) break;
       }
       if (done) break;
     }
-    if (done) break;
-  }
-  if (!done) {
-    Refuse("trimming the rib flush was refused after trying several cutter sizes (not returning a degraded body): " + last_why);
+    if (!done) {
+      Refuse("trimming the rib flush at plane " + std::to_string(i) + " was refused after trying several cutter sizes (not returning a degraded body): " + last_why);
+    }
   }
   if (!(out.added_volume > 1e-6 * out.tool_volume)) {
     Refuse("after the flush trim the rib adds no measurable volume (" + std::to_string(out.added_volume) + ")");

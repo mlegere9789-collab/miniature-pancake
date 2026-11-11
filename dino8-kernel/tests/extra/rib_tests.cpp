@@ -245,21 +245,28 @@ D8_EXTRA_TEST(RibFlushWithEndFaceMatchesClosedForm) {
                 "plain MakeRib of a web ending exactly on the end face is refused (the reason MakeRibFlush exists)");
 }
 
-// A rib running the whole length, both ends flush. Measured on the tip engine (single cuts at either end are exact, 109.6): the two cuts
-// together are wrong however they are issued - sequentially (right then left: 113.111 for 112; left then right: 111.444), as one compound
-// cutter (113.111), or as one U-shaped cutter solid (113.191) - and the sealing step's 1% volume bounds do not see it; the removed-volume
-// check does (1.369 removed of 2.56). The fragment dump shows both web ends crossing the host's end faces (the sunk part, z 0.8..1) so each
-// end face carries a coplanar partial overlap with the cutter's face; with two of them the reconciliation leaves unresolved anchor pairs.
-// Today this is REFUSED; the contract pinned is exact-or-honest, never a degraded body.
-D8_EXTRA_TEST(RibFlushAtBothEndsIsExactOrHonestlyRefused) {
+// A rib running the whole length, both ends flush. Single cuts at either end were always exact (109.6); the two cuts together gave 113.111
+// for 112 however they were issued (sequential, one compound cutter, one U-shaped cutter solid) and the sealing step's 1% bounds did not see
+// it. Root cause (DINO8_BOOL_DEBUG + per-face areas): the cut bodies' faces were geometrically right (a ray-cast membership grid of 6600
+// points agrees everywhere) but the web's flank faces kept a zero-width SPIKE along each cut plane (down x = 10 from z = 1 to the sunk
+// depth 0.8 and straight back), and the area of a face with such a spike was 29.333 / 28.583 for 30 (EarClipTriangulate loses area on it),
+// so every area / volume / tessellation of the body was wrong: Area() 300.317 for 302.4, volume 113.111 for 112. Fixed by cutting exact
+// retraces out of the fragment loops (RemoveBacktrackSpikes). Expected: plate 100 + web above the plate 10 x 3 x 0.4 = 12 -> 112, area
+// 240 - 4 (footprint) + 60 (flanks) + 4 (top) + 2 x 1.2 (end faces) = 302.4.
+D8_EXTRA_TEST(RibFlushAtBothEndsMatchesClosedForm) {
   const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
   try {
     const RibResult r = MakeRibFlush(plate, {P(-1, 5, 0.8), P(11, 5, 0.8), P(11, 5, 4), P(-1, 5, 4)}, 0.4,
                                      {RibFlushPlane{P(10, 5, 0), dino8::kernel::Vector3d(1, 0, 0)}, RibFlushPlane{P(0, 5, 0), dino8::kernel::Vector3d(-1, 0, 0)}});
     ExpectBody(r, 100.0 + 10.0 * 3.0 * 0.4, 1e-6, "full-length flush rib");
-  } catch (const std::runtime_error& e) {
-    d8test::Check(std::string(e.what()).find("trimming the rib flush was refused") != std::string::npos,
-                  "full-length flush rib: refusal names the flush trim and the measured volume mismatch");
+    d8test::Check(Near(r.added_volume, 12.0, 1e-6), "full-length flush rib: added volume is 10 x 3 x 0.4");
+    d8test::Check(Near(r.brep.Area(), 302.4, 1e-4), ("full-length flush rib: surface area " + std::to_string(r.brep.Area()) + " vs closed form 302.4").c_str());
+    using dino8::kernel::ContainsPointExact;
+    d8test::Check(ContainsPointExact(P(0.2, 5, 2), r.brep.raw()) && ContainsPointExact(P(9.8, 5, 2), r.brep.raw()) && !ContainsPointExact(P(-0.3, 5, 2), r.brep.raw()) &&
+                      !ContainsPointExact(P(10.3, 5, 2), r.brep.raw()) && !ContainsPointExact(P(5, 5.6, 2), r.brep.raw()),
+                  "full-length flush rib: probes at both flush ends, past both ends and beside the web");
+  } catch (const std::exception& e) {
+    d8test::Check(false, (std::string("full-length flush rib was refused: ") + e.what()).c_str());
   }
 }
 
@@ -275,7 +282,7 @@ D8_EXTRA_TEST(RibFlushRefusesPlaneThroughTheSolid) {
 
 // A rib standing on the top cap of a cylinder (R = 3, cap z = 6): x in [-2, 2], z 5.5..8, thickness 0.4 centred on y = 0. Before the sealing
 // ladder gained its finer rungs this was refused (4 micro-edges left unpaired). Added = 4 x 2 x 0.4; the engine's exact integral is
-// measured 0.9% below that (3.171), so the bound is 1.5%.
+// measured 0.9% below that (3.171) until the planar fan cap's area was taken from its 3D trims (now 3.198), so the bound is 0.5%.
 D8_EXTRA_TEST(RibOnCylinderCapMatchesClosedForm) {
   const ON_Circle c(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
   ON_NurbsCurve nurbs;
@@ -285,7 +292,7 @@ D8_EXTRA_TEST(RibOnCylinderCapMatchesClosedForm) {
   const Brep cyl = Brep::Extrude(prof, dino8::kernel::Vector3d(0, 0, 6));
   const RibResult r = MakeRib(cyl, {P(-2, 0, 5.5), P(2, 0, 5.5), P(2, 0, 8), P(-2, 0, 8)}, 0.4);
   d8test::Check(r.brep.raw().IsValid() && r.brep.raw().IsSolid(), "cap rib: valid closed solid");
-  d8test::Check(Near(r.added_volume, 3.2, 0.015 * 3.2), ("cap rib: added volume " + std::to_string(r.added_volume) + " vs closed form 3.2 (bound 1.5%)").c_str());
+  d8test::Check(Near(r.added_volume, 3.2, 0.005 * 3.2), ("cap rib: added volume " + std::to_string(r.added_volume) + " vs closed form 3.2 (bound 0.5%)").c_str());
   using dino8::kernel::ContainsPointExact;
   d8test::Check(ContainsPointExact(P(0, 0, 7), r.brep.raw()) && ContainsPointExact(P(1.9, 0.1, 7.9), r.brep.raw()) &&
                     !ContainsPointExact(P(2.3, 0, 7), r.brep.raw()) && !ContainsPointExact(P(0, 0.5, 7), r.brep.raw()) &&
@@ -299,7 +306,7 @@ D8_EXTRA_TEST(RibOnCylinderCapMatchesClosedForm) {
     try {
       const RibResult off = MakeRib(cyl, {P(-2, y, 5.5), P(2, y, 5.5), P(2, y, 8), P(-2, y, 8)}, 0.4);
       d8test::Check(off.brep.raw().IsValid() && off.brep.raw().IsSolid(), (label + "valid closed solid").c_str());
-      d8test::Check(Near(off.added_volume, 3.2, 0.015 * 3.2), (label + "added volume " + std::to_string(off.added_volume) + " vs closed form 3.2 (bound 1.5%)").c_str());
+      d8test::Check(Near(off.added_volume, 3.2, 0.005 * 3.2), (label + "added volume " + std::to_string(off.added_volume) + " vs closed form 3.2 (bound 0.5%)").c_str());
       d8test::Check(ContainsPointExact(P(0, y, 7), off.brep.raw()) && !ContainsPointExact(P(0, y + 0.5, 7), off.brep.raw()) &&
                         !ContainsPointExact(P(2.3, y, 7), off.brep.raw()) && !ContainsPointExact(P(0, y, 8.2), off.brep.raw()),
                     (label + "probes inside the web, beside it, past its end and above its top").c_str());

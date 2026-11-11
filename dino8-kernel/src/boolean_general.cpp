@@ -2926,6 +2926,80 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
   }
 }
 
+// Removes zero-area SPIKES from a closed fragment loop: wherever the boundary runs out along a line and comes straight back over the
+// same stretch (p ... tip ... p'), the overlapped part encloses nothing and is cut away; exact repeats of a point are dropped too.
+// Measured on a rib flush at both ends (fuse a web that overhangs both end faces, then cut each end back): after the first cut the web's
+// flank face kept a spike along the cut plane (down x = 10 from z = 1 to the sunk depth 0.8 and straight back up, 0.2 long, zero width),
+// and the second cut left the same at x = 0. The faces stay geometrically right (a ray-cast membership grid agrees everywhere) but
+// EarClipTriangulate, which every area / volume / tessellation of the face goes through, loses area on a polygon with such a spike:
+// Area() 300.317 for 302.400 (the flanks 29.333 and 28.583 for 30), and the sealed body's volume 113.111 for 112.
+// Only an EXACT retrace is removed (collinear within 1e-9 and reversing), so the deliberate in-and-out corridor of a keyhole bridge,
+// whose two sides are offset by a small perpendicular, is untouched.
+void RemoveBacktrackSpikes(std::vector<UVPt>& loop) {
+  if (loop.size() < 4) return;
+  double lo[3] = {loop[0].p.x, loop[0].p.y, loop[0].p.z}, hi[3] = {lo[0], lo[1], lo[2]};
+  double ulo = loop[0].uv.x, uhi = ulo, vlo = loop[0].uv.y, vhi = vlo;
+  for (const UVPt& q : loop) {
+    const double c[3] = {q.p.x, q.p.y, q.p.z};
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], c[k]);
+      hi[k] = std::max(hi[k], c[k]);
+    }
+    ulo = std::min(ulo, q.uv.x);
+    uhi = std::max(uhi, q.uv.x);
+    vlo = std::min(vlo, q.uv.y);
+    vhi = std::max(vhi, q.uv.y);
+  }
+  const double diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+  const double tol = 1e-9 * std::max(diag, 1.0);
+  const double tol_uv = 1e-9 * std::max({uhi - ulo, vhi - vlo, 1e-12});
+  const auto sub = [](const Point3d& a, const Point3d& b) { return Vector3d(a.x - b.x, a.y - b.y, a.z - b.z); };
+  // Two loop points are the same point only when BOTH their 3D positions and their (u, v) coincide: a pole or apex edge of a revolved
+  // surface has one 3D point and a run of distinct (u, v), and that run is the loop's real boundary in parameter space.
+  const auto same = [&](const UVPt& a, const UVPt& b) {
+    return sub(a.p, b.p).Length() <= tol && std::fabs(a.uv.x - b.uv.x) <= tol_uv && std::fabs(a.uv.y - b.uv.y) <= tol_uv;
+  };
+  // q retraces the segment a -> b when it continues from b straight back toward a over the same line in 3D AND in (u, v).
+  const auto retraces = [&](const UVPt& a, const UVPt& b, const UVPt& q, double* lab_out, double* lbq_out) {
+    const Vector3d ab = sub(b.p, a.p), bq = sub(q.p, b.p);
+    const double lab = ab.Length(), lbq = bq.Length();
+    if (lab <= tol || lbq <= tol) return false;
+    if (ON_CrossProduct(ab, bq).Length() > 1e-9 * lab * lbq || ab * bq >= 0.0) return false;
+    const double ux = b.uv.x - a.uv.x, uy = b.uv.y - a.uv.y, vx = q.uv.x - b.uv.x, vy = q.uv.y - b.uv.y;
+    const double lu = std::hypot(ux, uy), lv = std::hypot(vx, vy);
+    if (lu <= tol_uv || lv <= tol_uv) return false;
+    if (std::fabs(ux * vy - uy * vx) > 1e-9 * lu * lv || ux * vx + uy * vy >= 0.0) return false;
+    *lab_out = lab;
+    *lbq_out = lbq;
+    return true;
+  };
+  const auto run = [&](const std::vector<UVPt>& in) {
+    std::vector<UVPt> st;
+    st.reserve(in.size());
+    for (const UVPt& q : in) {
+      bool skip = false;
+      while (st.size() >= 2) {
+        double lab = 0, lbq = 0;
+        if (!retraces(st[st.size() - 2], st.back(), q, &lab, &lbq)) break;
+        st.pop_back();  // q runs back over the last segment: its tip is the end of a spike
+        if (lbq <= lab + tol && same(st.back(), q)) {
+          skip = true;
+          break;
+        }
+      }
+      if (!skip && !st.empty() && same(st.back(), q)) skip = true;
+      if (!skip) st.push_back(q);
+    }
+    return st;
+  };
+  std::vector<UVPt> a = run(loop);
+  if (a.size() >= 4) {  // a spike straddling the loop's start: run again from the middle
+    std::rotate(a.begin(), a.begin() + static_cast<long>(a.size() / 2), a.end());
+    a = run(a);
+  }
+  if (a.size() >= 3 && a.size() < loop.size()) loop = std::move(a);
+}
+
 // --- weld an untouched face's own boundary into its freshly-cut
 // neighbor's shared identity scope --------------------------------------
 //
@@ -2995,6 +3069,10 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
 // tessellation time exactly as it already does for a chain-cut edge.
 void ReconcileFragmentBoundaries(std::vector<KeptFace>& kept) {
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+  for (KeptFace& kf : kept) {
+    RemoveBacktrackSpikes(kf.outer);
+    for (std::vector<UVPt>& h : kf.holes) RemoveBacktrackSpikes(h);
+  }
   struct LoopInfo {
     int kf_index;
     std::vector<UVPt>* pts;
