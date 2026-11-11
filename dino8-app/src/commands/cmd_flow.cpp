@@ -220,6 +220,61 @@ void RegisterFlowCommands(CommandEngine& e) {
         ctx.App().Panels().plugin_manager = true;
       }));
 
+  // PackageList / PackageInstall / PackageRemove: scriptable counterparts of the Package Manager panel. An installed package
+  // (<config>/packages/<name>) exposes each of its .lua / .dflow scripts as a command, re-registered at every start-up.
+  Reg(e, "PackageList", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        auto& mgr = plugins::Manager::Get();
+        if (toks.empty()) {
+          const auto pkgs = mgr.InstalledPackages();
+          ctx.Print("PackageList: " + std::to_string(pkgs.size()) + " installed package(s)");
+          for (const auto& p : pkgs) {
+            std::string cmds;
+            for (const auto& c : p.commands) cmds += (cmds.empty() ? "" : ", ") + c.first;
+            ctx.Print("  " + p.name + " " + p.version + " - " + (cmds.empty() ? "no script commands" : "commands: " + cmds));
+          }
+          return;
+        }
+        std::vector<plugins::PackageInfo> found;
+        plugins::PackageInfo one;
+        if (mgr.ReadPackageManifest(toks[0], one)) found.push_back(one); else found = mgr.ScanPackages(toks[0]);
+        ctx.Print("PackageList: " + std::to_string(found.size()) + " package(s) in " + toks[0]);
+        for (const auto& p : found) ctx.Print("  " + p.name + " " + p.version + (p.installed ? " [installed]" : " [not installed]"));
+      }), CommandStatus::Implemented, "PackageList lists the installed packages and the commands their scripts provide; PackageList <folder> lists the packages found in a folder (or the one package in it) and whether each is installed.");
+  Reg(e, "PackageInstall", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) { ctx.Warn("PackageInstall: usage PackageInstall <folder> [package name]"); return; }
+        auto& mgr = plugins::Manager::Get();
+        std::vector<plugins::PackageInfo> cands;
+        plugins::PackageInfo one;
+        if (mgr.ReadPackageManifest(toks[0], one)) cands.push_back(one); else cands = mgr.ScanPackages(toks[0]);
+        if (toks.size() > 1) cands.erase(std::remove_if(cands.begin(), cands.end(), [&](const plugins::PackageInfo& p) { return p.name != toks[1]; }), cands.end());
+        if (cands.empty()) { ctx.Warn("PackageInstall: no package" + (toks.size() > 1 ? " named '" + toks[1] + "'" : std::string()) + " (a folder with manifest.json) found in " + toks[0]); return; }
+        int ok = 0;
+        for (const auto& p : cands) {
+          std::string error;
+          if (mgr.InstallPackage(ctx.App(), p, error)) {
+            size_t n = 0;
+            for (const auto& ip : mgr.InstalledPackages()) if (ip.name == p.name) n = ip.commands.size();
+            ctx.Print("PackageInstall: installed " + p.name + " " + p.version + " (" + std::to_string(n) + " script command(s))");
+            ++ok;
+          } else {
+            ctx.Warn("PackageInstall: " + fs::path(p.folder).filename().string() + ": " + error);
+          }
+        }
+        ctx.Print("PackageInstall: installed " + std::to_string(ok) + " package(s)");
+      }), CommandStatus::Implemented, "Installs a package (a folder with manifest.json plus a plug-in library, .lua scripts or .dflow graphs), or every package in a folder, into the per-user packages folder. Its scripts become commands, also after a restart.");
+  Reg(e, "PackageRemove", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) { ctx.Warn("PackageRemove: usage PackageRemove <package name> (see PackageList)"); return; }
+        std::string error;
+        if (plugins::Manager::Get().RemovePackage(toks[0], error)) ctx.Print("PackageRemove: removed " + toks[0] + " (its commands stop working now and are gone after a restart)");
+        else ctx.Warn("PackageRemove: " + error);
+      }), CommandStatus::Implemented, "Deletes an installed package. A library it installed into the plug-ins folder stays (remove it with PlugInDisable / by hand).");
+
   Reg(e, "GrasshopperLoadOneByOne", Immediate([](CommandContext& ctx) {
         auto& mgr = plugins::Manager::Get();
         mgr.load_one_by_one = !mgr.load_one_by_one;
