@@ -26,8 +26,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
-          sudo apt-get update
-          sudo apt-get install -y ninja-build ccache
+          for try in 1 2 3 4 5; do
+            if sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y ninja-build ccache; then break; fi
+            echo "apt attempt $try failed; retrying"; sleep 20
+            [ "$try" = 5 ] && exit 1
+          done
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -112,8 +115,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
-          sudo apt-get update
-          sudo apt-get install -y ninja-build ccache libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils
+          for try in 1 2 3 4 5; do
+            if sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y ninja-build ccache libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils; then break; fi
+            echo "apt attempt $try failed; retrying"; sleep 20
+            [ "$try" = 5 ] && exit 1
+          done
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -169,8 +175,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
-          sudo apt-get update
-          sudo apt-get install -y xvfb mesa-utils libgl1-mesa-dri libglu1-mesa libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0
+          for try in 1 2 3 4 5; do
+            if sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y xvfb mesa-utils libgl1-mesa-dri libglu1-mesa libxrandr2 libxinerama1 libxcursor1 libxi6 libxkbcommon0; then break; fi
+            echo "apt attempt $try failed; retrying"; sleep 20
+            [ "$try" = 5 ] && exit 1
+          done
       - uses: actions/download-artifact@v4
         with:
           name: app-binary
