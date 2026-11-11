@@ -1288,6 +1288,12 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(group3dm_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(group3dm_check PRIVATE dino8_kernel)
 
+  # Named-view .3dm author/reader (tests/view3dm_check.cpp, sections/90_nvw.sh): writes a Rhino-style file with a parallel and a
+  # perspective named view for Load3dm, and dumps the frustum height / 35 mm lens of the named views of a file Dino 8 wrote.
+  add_executable(view3dm_check tests/view3dm_check.cpp)
+  target_include_directories(view3dm_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(view3dm_check PRIVATE dino8_kernel)
+
   # Real-ON_DimLinear .3dm write checker (tests/dimlinear3dm_write_check.cpp, sections/63_dimwr.sh): reads a file Dino 8
   # itself wrote straight through OpenNURBS and reports every ON_DimLinear plus the count of loose baked curves.
   add_executable(dimlinear3dm_write_check tests/dimlinear3dm_write_check.cpp)
