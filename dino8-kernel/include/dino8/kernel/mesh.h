@@ -1040,12 +1040,15 @@ class Mesh {
   // (alpha has nowhere to live without colors - see SetVertexAlpha()'s
   // own doc comment) is still read as an ordinary ignored extra
   // property, same as any other name this kernel doesn't recognize; and
-  // a `face` element with exactly one list property
-  // (whatever its declared name - `vertex_indices`/`vertex_index` are
-  // both common) giving each face's 0-based vertex indices, 3 or 4 per
-  // face (this kernel's `ON_MeshFace` holds a triangle or quad only, same
-  // limit LoadObj() already has for `.obj`'s `f` lines - a 5+-gon face is
-  // rejected, not silently fan-triangulated). Any other element name
+  // a `face` element whose FIRST list property (whatever its declared
+  // name - `vertex_indices`/`vertex_index` are both common) gives each
+  // face's 0-based vertex indices; any other property of the face element
+  // (a per-face `red`/`green`/`blue`, a `quality` scalar, a second list) is
+  // read at its own declared width and ignored. 3 or 4 indices become one
+  // native `ON_MeshFace` triangle or quad; a longer polygon (PLY allows any
+  // list length) is triangulated by ear clipping, the same accommodation
+  // LoadObj() / LoadOff() make for their n-gons (fewer than 3 is rejected).
+  // Any other element name
   // (e.g. a color-only `edge` element) has its data skipped, not
   // rejected - in the binary format, skipped at that element's own
   // declared property widths (so the stream stays correctly aligned for
@@ -1060,8 +1063,8 @@ class Mesh {
   // `ply`/`format ascii ...`/`format binary_little_endian ...`/
   // `format binary_big_endian ...`, the
   // vertex element is missing `x`/`y`/`z`, the face element's list
-  // property is missing or isn't a list, a face has fewer than 3 or more
-  // than 4 indices, a face index is out of range, a property declares a
+  // property is missing, a face has fewer than 3
+  // indices, a face index is out of range, a property declares a
   // scalar type this kernel doesn't recognize (e.g. `int64`/`uint64` -
   // out of scope), or any header/data line or binary record fails to
   // parse (a truncated file included).
@@ -1128,6 +1131,10 @@ class Mesh {
   // `<n> i0 i1 ... i(n-1)` with 0-based indices into the vertex list just
   // read. A face with fewer than 3 corners, or any index outside
   // `[0, vertex_count)`, fails the whole load (Result::Failed). A face
+  // line may end with a per-face colour (3 or 4 numbers after the indices:
+  // `3 0 1 2 255 0 0`, `4 0 1 2 3 0.5 0.25 0.75 1.0`), which is read and
+  // discarded (nothing here stores a face colour); tokens on the same line
+  // that read as another complete face are kept as that face instead. A face
   // with exactly 3 or 4 corners becomes one native `ON_MeshFace` triangle
   // or quad; a genuine n-gon (5+ corners - OFF, unlike `.obj`, has no
   // native quad-only ceiling on what a real exporter can emit) is
