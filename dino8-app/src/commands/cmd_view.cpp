@@ -1,5 +1,12 @@
 // View, viewport, display-mode and CPlane commands.
 #include "commands/cmd_common.h"
+#include "render/PngWrite.h"
+
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <optional>
+#include <vector>
 
 namespace dino8::app {
 
@@ -380,17 +387,41 @@ void RegisterViewCommands(CommandEngine& e) {
         ctx.Warn("No planar object found");
       }));
   Reg(e, "ViewportProperties", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; }));
+  // ViewCaptureToFile [path] [Dpi=<n>]: the active viewport's pixels as a 24-bit BMP, or as a zlib-compressed 8-bit RGB PNG when the
+  // path ends in .png (any other extension gets .bmp appended, as before). Dpi=<n> records the physical resolution (BMP
+  // biX/YPelsPerMeter, PNG pHYs, both round(n / 0.0254) pixels per metre); without it the resolution is left unknown.
   Reg(e, "ViewCaptureToFile", Immediate([](CommandContext& ctx) {
         Viewport* vp = ctx.ActiveViewport();
         if (!vp) return;
-        auto save = [vp, &ctx](const std::string& path) {
+        int dpi = 0;
+        std::optional<std::string> given;
+        while (auto t = ctx.Engine().TakePendingInput()) {
+          if (ToLower(*t).rfind("dpi=", 0) == 0) dpi = std::clamp(std::atoi(t->c_str() + 4), 0, 100000);
+          else if (!given) given = *t;
+        }
+        auto save = [vp, &ctx, dpi](const std::string& path) {
           std::string p = path;
-          if (p.size() < 4 || ToLower(p.substr(p.size() - 4)) != ".bmp") p += ".bmp";
+          const std::string ext = p.size() >= 4 ? ToLower(p.substr(p.size() - 4)) : std::string();
+          if (ext != ".bmp" && ext != ".png") p += ".bmp";
           std::string err;
-          if (vp->CaptureToFile(p, err)) ctx.App().Notify("Saved " + p); else ctx.App().Notify(err);
+          bool ok = false;
+          if (ToLower(p.substr(p.size() - 4)) == ".png") {
+            int w = 0, h = 0;
+            std::vector<unsigned char> rgb;
+            if (vp->CapturePixelsRGB(rgb, w, h, err)) {
+              // glReadPixels rows are bottom-up; PNG stores them top-down.
+              std::vector<unsigned char> top_down(rgb.size());
+              const size_t row = static_cast<size_t>(w) * 3;
+              for (int y = 0; y < h; ++y) std::memcpy(&top_down[static_cast<size_t>(y) * row], &rgb[static_cast<size_t>(h - 1 - y) * row], row);
+              ok = WritePngRgb(p, w, h, top_down, dpi, err);
+            }
+          } else {
+            ok = vp->CaptureToFile(p, err, dpi);
+          }
+          if (ok) ctx.App().Notify("Saved " + p); else ctx.App().Notify(err);
         };
-        if (auto p = ctx.Engine().TakePendingInput()) { save(*p); return; }
-        ctx.App().ShowFileDialog("Save viewport image", {".bmp"}, true, save);
+        if (given) { save(*given); return; }
+        ctx.App().ShowFileDialog("Save viewport image", {".bmp", ".png"}, true, save);
       }));
   Reg(e, "ScreenCaptureToFile", Immediate([](CommandContext& ctx) {
         auto save = [&ctx](const std::string& path) {
