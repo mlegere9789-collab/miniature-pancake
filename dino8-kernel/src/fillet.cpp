@@ -6753,6 +6753,205 @@ Brep RemoveSphericalVertexBlend(const Brep::MixedFacesResult& mf, int sphere_bes
 
 }  // namespace
 
+// --- RemoveBlend on the equal-radius MITRED pair (the exact inverse of FilletConvexEdgePairMitre) -------------------------------------------
+// Two quarter-cylinders whose notch rows are the same point set are the mitred pair of one right-angle corner. Their records give everything: the radius,
+// both axes (hence the corner vertex V = O + r (n_AB + n_X + n_Y), O the axes' intersection) and the far end of each edge. Removing the picked blend X is
+// then (1) extend the three corner faces back to the sharp corner (the cut chains on the tangent lines are replaced by the extension of the boundary edges
+// that end on them), (2) collapse each far-end quarter-circle notch run to its corner vertex, (3) rebuild the sharp solid, (4) fillet the other edge again with
+// FilletConvexEdge: the surviving blend is exactly the single fillet of that edge, now running its whole length.
+namespace {
+
+bool FindMitrePartner(const Brep::MixedFacesResult& mf, int c, double tol, int& partner, int& cap_c, int& cap_p) {
+  const Brep::CylindricalFace& A = mf.cylindrical[static_cast<size_t>(c)];
+  for (int capc = 0; capc < 2; ++capc) {
+    const std::vector<Point3d>& ra = capc == 0 ? A.cap0_notch_points : A.cap1_notch_points;
+    if (ra.size() < 3) continue;
+    for (size_t j = 0; j < mf.cylindrical.size(); ++j) {
+      if (static_cast<int>(j) == c) continue;
+      const Brep::CylindricalFace& B = mf.cylindrical[j];
+      // Only the equal-radius perpendicular QUARTER-cylinders of FilletConvexEdgePairMitre qualify; any other pair that shares a notch row (a pipe tee's
+      // cylinders, say) keeps the behaviour it always had.
+      if (std::fabs(B.radius - A.radius) > 1e-9 * A.radius || std::fabs(A.angle - 0.5 * ON_PI) > 1e-9 || std::fabs(B.angle - 0.5 * ON_PI) > 1e-9 ||
+          std::fabs(A.frame.zaxis * B.frame.zaxis) > 1e-9) {
+        continue;
+      }
+      for (int capp = 0; capp < 2; ++capp) {
+        const std::vector<Point3d>& rb = capp == 0 ? B.cap0_notch_points : B.cap1_notch_points;
+        if (rb.size() != ra.size()) continue;
+        bool same = true, reversed = true;
+        for (size_t k = 0; k < ra.size(); ++k) {
+          same = same && ra[k].DistanceTo(rb[k]) <= tol;
+          reversed = reversed && ra[k].DistanceTo(rb[rb.size() - 1 - k]) <= tol;
+        }
+        if (same || reversed) {
+          partner = static_cast<int>(j);
+          cap_c = capc;
+          cap_p = capp;
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// The point where the line through a and b meets the line origin + t dir (both lie in one plane).
+bool MeetLines(const Point3d& a, const Point3d& b, const Point3d& origin, const Vector3d& dir, Point3d& out) {
+  const Vector3d d = b - a;
+  const Vector3d c = ON_CrossProduct(d, dir);
+  const double c2 = c.LengthSquared();
+  if (!(c2 > 1e-18)) return false;
+  const double s = (ON_CrossProduct(origin - a, dir) * c) / c2;
+  out = a + s * d;
+  return true;
+}
+
+Brep RemoveMitredBlend(const Brep::MixedFacesResult& mf, int picked, int partner, int cap_x, int cap_y, const std::vector<Brep::PlanarFace>& faces, double tol) {
+  const std::string who = "dino8::kernel::RemoveBlend: ";
+  const Brep::CylindricalFace& X = mf.cylindrical[static_cast<size_t>(picked)];
+  const Brep::CylindricalFace& Y = mf.cylindrical[static_cast<size_t>(partner)];
+  const double r = X.radius;
+  const double half_pi = 0.5 * ON_PI;
+  if (std::fabs(Y.radius - r) > 1e-9 * r || std::fabs(X.angle - half_pi) > 1e-9 || std::fabs(Y.angle - half_pi) > 1e-9 || std::fabs(X.frame.zaxis * Y.frame.zaxis) > 1e-9) {
+    throw std::invalid_argument(who + "the two cylinders that meet on a shared notch row are not the equal-radius perpendicular quarter-cylinders of a mitred corner - not supported");
+  }
+  struct Side {
+    Vector3d e, n1, n2;
+    Point3d far_axis;
+    double len = 0;
+  };
+  auto side = [&](const Brep::CylindricalFace& c, int mitre_cap) {
+    Side s;
+    s.e = mitre_cap == 1 ? c.frame.zaxis : -c.frame.zaxis;  // far end -> mitre end
+    s.far_axis = mitre_cap == 1 ? Point3d(c.frame.origin) : Point3d(c.frame.origin + c.length * c.frame.zaxis);
+    s.n1 = c.frame.xaxis;
+    s.n2 = c.frame.yaxis;
+    s.len = c.length;
+    return s;
+  };
+  const Side sx = side(X, cap_x), sy = side(Y, cap_y);
+  Vector3d nAB, nX, nY;
+  bool shared = false;
+  for (int i = 0; i < 2 && !shared; ++i) {
+    for (int j = 0; j < 2 && !shared; ++j) {
+      const Vector3d& u = i == 0 ? sx.n1 : sx.n2;
+      const Vector3d& w = j == 0 ? sy.n1 : sy.n2;
+      if ((u - w).Length() < 1e-6) {
+        nAB = u;
+        nX = i == 0 ? sx.n2 : sx.n1;
+        nY = j == 0 ? sy.n2 : sy.n1;
+        shared = true;
+      }
+    }
+  }
+  if (!shared) throw std::invalid_argument(who + "the two mitred cylinders do not share the normal of one face - not the corner of a mitred pair");
+  const Vector3d dX = X.frame.zaxis, dY = Y.frame.zaxis;
+  const Point3d pX = X.frame.origin, pY = Y.frame.origin;
+  const Point3d O = pX + ((pY - pX) * dX) * dX;
+  const Vector3d off = O - pY;
+  const double scale = std::max({1.0, r, X.length, Y.length});
+  if ((off - (off * dY) * dY).Length() > 1e-6 * scale) throw std::invalid_argument(who + "the two mitred cylinders' axes do not intersect");
+  const Point3d V = O + r * (nAB + nX + nY);
+  const Vector3d uX = -sx.e, uY = -sy.e, uC = -nAB;  // from V along the two filleted edges and along the sharp third edge
+  const Point3d end_x = V + sx.len * uX, end_y = V + sy.len * uY;
+  if (end_x.DistanceTo(sx.far_axis + r * (nAB + nX)) > 1e-6 * scale || end_y.DistanceTo(sy.far_axis + r * (nAB + nY)) > 1e-6 * scale) {
+    throw std::invalid_argument(who + "the mitred cylinders do not reach their far edge ends consistently - not supported");
+  }
+  const double tolc = std::max(tol * 100.0, 1e-7 * scale);
+  auto near_point = [&](const Point3d& a, const Point3d& b) { return a.DistanceTo(b) <= tolc; };
+
+  std::vector<Brep::PlanarFace> planar = faces;
+  std::vector<bool> done(planar.size(), false);
+  // (1a) the face holding both edges: its two cut chains meet at K = V + r uX + r uY
+  {
+    const Point3d K = V + r * uX + r * uY;
+    bool ok = false;
+    for (size_t f = 0; f < planar.size() && !ok; ++f) {
+      if ((planar[f].plane.zaxis - nAB).Length() > 1e-6 || std::fabs(planar[f].plane.DistanceTo(V)) > tolc) continue;
+      std::vector<Point3d>& loop = planar[f].loop;
+      const size_t n = loop.size();
+      for (size_t k = 0; k < n && !ok; ++k) {
+        if (!near_point(loop[k], K)) continue;
+        const size_t i1 = (k + n - 1) % n, i2 = (k + 1) % n, o1 = (k + n - 2) % n, o2 = (k + 2) % n;
+        auto edge_dir = [&](const Point3d& c, Vector3d& dir) {
+          if (std::fabs((c - V) * uY - r) <= tolc) { dir = sx.e; return true; }  // on the cut along edge X
+          if (std::fabs((c - V) * uX - r) <= tolc) { dir = sy.e; return true; }  // on the cut along edge Y
+          return false;
+        };
+        Vector3d d1, d2;
+        Point3d p1, p2;
+        if (!edge_dir(loop[i1], d1) || !edge_dir(loop[i2], d2) || !MeetLines(loop[o1], loop[i1], V, d1, p1) || !MeetLines(loop[i2], loop[o2], V, d2, p2)) continue;
+        loop[i1] = p1;
+        loop[k] = V;
+        loop[i2] = p2;
+        planar[f].arc_runs.clear();
+        done[f] = ok = true;
+      }
+    }
+    if (!ok) throw std::invalid_argument(who + "the face holding both mitred edges is not in the expected cut shape - not supported");
+  }
+  // (1b) the two faces that each lose one strip along the sharp edge C's side
+  auto restore_single = [&](const Vector3d& n, const Vector3d& edge_dir) {
+    for (size_t f = 0; f < planar.size(); ++f) {
+      if (done[f] || (planar[f].plane.zaxis - n).Length() > 1e-6 || std::fabs(planar[f].plane.DistanceTo(V)) > tolc) continue;
+      std::vector<Point3d>& loop = planar[f].loop;
+      const size_t m = loop.size();
+      for (size_t k = 0; k < m; ++k) {
+        const Point3d& p = loop[k];
+        const Point3d& q = loop[(k + 1) % m];
+        if (std::fabs((p - V) * uC - r) > tolc || std::fabs((q - V) * uC - r) > tolc) continue;
+        Point3d p2, q2;
+        if (!MeetLines(loop[(k + m - 1) % m], p, V, edge_dir, p2) || !MeetLines(q, loop[(k + 2) % m], V, edge_dir, q2)) continue;
+        loop[k] = p2;
+        loop[(k + 1) % m] = q2;
+        planar[f].arc_runs.clear();
+        done[f] = true;
+        return true;
+      }
+    }
+    return false;
+  };
+  if (!restore_single(nX, sx.e) || !restore_single(nY, sy.e)) throw std::invalid_argument(who + "a corner face of the mitred pair is not in the expected cut shape - not supported");
+  // (2) the quarter-circle notch of each far end collapses to its corner vertex
+  auto collapse_far = [&](const Side& s, const Point3d& corner) {
+    const Point3d t1 = s.far_axis + r * s.n1, t2 = s.far_axis + r * s.n2;
+    for (size_t f = 0; f < planar.size(); ++f) {
+      Brep::PlanarFace& pf = planar[f];
+      if (done[f] || pf.notch_count < 3 || !pf.notch_runs.empty()) continue;
+      const int b = pf.notch_begin, c = pf.notch_count;
+      if (b < 0 || static_cast<size_t>(b + c) > pf.loop.size()) continue;
+      const Point3d& first = pf.loop[static_cast<size_t>(b)];
+      const Point3d& last = pf.loop[static_cast<size_t>(b + c - 1)];
+      if (!((near_point(first, t1) && near_point(last, t2)) || (near_point(first, t2) && near_point(last, t1)))) continue;
+      std::vector<Point3d> loop(pf.loop.begin(), pf.loop.begin() + b);
+      loop.push_back(corner);
+      loop.insert(loop.end(), pf.loop.begin() + b + c, pf.loop.end());
+      pf.loop = loop;
+      pf.notch_begin = 0;
+      pf.notch_count = 0;
+      pf.arc_runs.clear();
+      done[f] = true;
+      return true;
+    }
+    return false;
+  };
+  if (!collapse_far(sx, end_x) || !collapse_far(sy, end_y)) throw std::invalid_argument(who + "a far-end quarter-circle notch of the mitred pair was not found - not supported");
+
+  // (3) the sharp solid, carrying every other blend unchanged
+  std::vector<Brep::CylindricalFace> carried;
+  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
+    if (static_cast<int>(c) != picked && static_cast<int>(c) != partner) carried.push_back(mf.cylindrical[c]);
+  }
+  Brep sharp = Brep::FromMixedFaces(planar, carried, mf.conical, mf.spherical);
+  if (!sharp.raw().IsValid() || !sharp.raw().IsSolid()) {
+    throw std::invalid_argument(who + "restoring the sharp corner of the mitred pair did not give a valid closed solid - refused");
+  }
+  // (4) the surviving edge keeps its own fillet
+  return FilletConvexEdge(sharp, V, end_y, r);
+}
+
+}  // namespace
+
 Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
   const Brep::MixedFacesResult mf = solid.MixedFaces();
   if (mf.cylindrical.empty() && mf.conical.empty() && mf.spherical.empty()) {
@@ -6858,6 +7057,11 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
     return RemoveSphericalVertexBlend(mf, best_sph, faces, tol);
   }
   if (cyl_ok && (!cone_ok || best_cyl_d <= best_cone_d)) {
+    // Half of an equal-radius mitred pair (FilletConvexEdgePairMitre): its end is a notch row shared with the other cylinder, not a planar corner notch.
+    int partner = -1, cap_picked = 0, cap_partner = 0;
+    if (FindMitrePartner(mf, best_cyl, std::max(tol, 1e-9), partner, cap_picked, cap_partner)) {
+      return RemoveMitredBlend(mf, best_cyl, partner, cap_picked, cap_partner, faces, tol);
+    }
     return RemoveCylindricalBlend(mf, best_cyl, faces, tol);
   }
   return RemoveConicalBlend(mf, best_cone, faces, tol);
