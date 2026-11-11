@@ -63,6 +63,7 @@ endif()
 add_library(dino8_kernel STATIC
   src/curve.cpp
   src/curve_interpolate.cpp
+  src/curve_classify.cpp
   src/iges.cpp
   src/acis_sat.cpp
   src/step_curve.cpp
