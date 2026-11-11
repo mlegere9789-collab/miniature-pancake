@@ -1480,6 +1480,90 @@ std::string SceneObject::Describe() const {
   return out.str();
 }
 
+namespace {
+
+std::string TypeNum(double v) {
+  char buf[48];
+  std::snprintf(buf, sizeof buf, "%.8g", std::fabs(v) < 5e-13 ? 0.0 : v);
+  return buf;
+}
+std::string TypePt(const ON_3dPoint& p) { return "(" + TypeNum(p.x) + ", " + TypeNum(p.y) + ", " + TypeNum(p.z) + ")"; }
+std::string TypeVec(const ON_3dVector& v) { return "(" + TypeNum(v.x) + ", " + TypeNum(v.y) + ", " + TypeNum(v.z) + ")"; }
+
+std::string TypeOfCurve(const kernel::CurveClassification& k) {
+  switch (k.kind) {
+    case kernel::CurveKind::Line: return "Line, from " + TypePt(k.line.from) + " to " + TypePt(k.line.to) + ", length " + TypeNum(k.line.Length());
+    case kernel::CurveKind::Arc:
+      return "Arc, center " + TypePt(k.arc.Center()) + ", radius " + TypeNum(k.arc.Radius()) + ", angle " + TypeNum(k.arc.AngleDegrees()) + " degrees, normal " + TypeVec(k.arc.Plane().zaxis);
+    case kernel::CurveKind::Circle: return "Circle, center " + TypePt(k.arc.Center()) + ", radius " + TypeNum(k.arc.Radius()) + ", normal " + TypeVec(k.arc.Plane().zaxis);
+    case kernel::CurveKind::Ellipse:
+      return "Ellipse, center " + TypePt(k.ellipse.plane.origin) + ", radii " + TypeNum(std::max(k.ellipse.radius[0], k.ellipse.radius[1])) + " x " +
+             TypeNum(std::min(k.ellipse.radius[0], k.ellipse.radius[1])) + ", normal " + TypeVec(k.ellipse.plane.zaxis);
+    case kernel::CurveKind::Polyline: return "Polyline, " + std::to_string(k.vertices.size()) + " vertices";
+    case kernel::CurveKind::General: break;
+  }
+  return "Free-form curve";
+}
+
+const char* TypeSurfaceKindName(kernel::SurfaceKind k) {
+  switch (k) {
+    case kernel::SurfaceKind::Plane: return "Plane";
+    case kernel::SurfaceKind::Sphere: return "Sphere";
+    case kernel::SurfaceKind::Cylinder: return "Cylinder";
+    case kernel::SurfaceKind::Cone: return "Cone";
+    case kernel::SurfaceKind::Torus: return "Torus";
+    case kernel::SurfaceKind::General: break;
+  }
+  return "Free-form";
+}
+
+std::string TypeOfSurface(const kernel::SurfaceClassification& k) {
+  switch (k.kind) {
+    case kernel::SurfaceKind::Plane: return "Plane, normal " + TypeVec(k.plane.zaxis);
+    case kernel::SurfaceKind::Sphere: return "Sphere, center " + TypePt(k.sphere.plane.origin) + ", radius " + TypeNum(k.sphere.radius);
+    case kernel::SurfaceKind::Cylinder:
+      return "Cylinder, radius " + TypeNum(k.cylinder.circle.radius) + ", axis " + TypeVec(k.cylinder.circle.plane.zaxis) + " through " + TypePt(k.cylinder.circle.plane.origin);
+    case kernel::SurfaceKind::Cone:
+      return "Cone, apex " + TypePt(k.cone.plane.origin) + ", axis " + TypeVec(k.cone.plane.zaxis) + ", half angle " +
+             TypeNum(std::atan(std::fabs(k.cone.radius / k.cone.height)) * 180.0 / ON_PI) + " degrees";
+    case kernel::SurfaceKind::Torus:
+      return "Torus, center " + TypePt(k.torus.plane.origin) + ", axis " + TypeVec(k.torus.plane.zaxis) + ", major radius " + TypeNum(k.torus.major_radius) +
+             ", minor radius " + TypeNum(k.torus.minor_radius);
+    case kernel::SurfaceKind::General: break;
+  }
+  return "Free-form surface";
+}
+
+}  // namespace
+
+std::string SceneObject::DescribeType() const {
+  std::ostringstream out;
+  if (kind == ObjectKind::Curve && curve) {
+    out << "  Type: " << TypeOfCurve(curve->Classify(1e-6));
+  } else if (kind == ObjectKind::Surface && surface) {
+    out << "  Type: " << TypeOfSurface(surface->Classify(1e-6));
+  } else if (kind == ObjectKind::Brep && brep) {
+    const std::vector<kernel::Brep::FaceSurfaceRecord> recs = brep->ClassifyFaces(1e-6);
+    const kernel::SurfaceKind order[] = {kernel::SurfaceKind::Plane, kernel::SurfaceKind::Sphere, kernel::SurfaceKind::Cylinder,
+                                         kernel::SurfaceKind::Cone, kernel::SurfaceKind::Torus, kernel::SurfaceKind::General};
+    out << "  Face types:";
+    bool first = true;
+    for (kernel::SurfaceKind k : order) {
+      int n = 0;
+      for (const auto& r : recs) n += r.surface.kind == k ? 1 : 0;
+      if (n > 0) { out << (first ? " " : ", ") << TypeSurfaceKindName(k) << " x" << n; first = false; }
+    }
+    if (first) out << " none";
+    int shown = 0;
+    for (const auto& r : recs) {
+      if (r.surface.kind == kernel::SurfaceKind::Plane || r.surface.kind == kernel::SurfaceKind::General) continue;
+      if (++shown > 24) { out << "\n  ... more curved analytic faces not listed"; break; }
+      out << "\n  Face " << r.face_index << ": " << TypeOfSurface(r.surface);
+    }
+  }
+  return out.str();
+}
+
 void FlipObject(SceneObject& o) {
   if (o.kind == ObjectKind::Curve && o.curve) o.curve->Reverse();
   else if (o.kind == ObjectKind::Surface && o.surface) o.surface->Reverse(0);
