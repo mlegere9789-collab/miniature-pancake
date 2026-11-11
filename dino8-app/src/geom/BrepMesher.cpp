@@ -504,9 +504,11 @@ struct FaceInfo {
   int nu = 1, nv = 1;
 };
 
-FaceInfo AnalyseFace(const ON_BrepFace& face, const BrepMeshOptions& options, double tol) {
+FaceInfo AnalyseFace(const ON_Brep& brep, const ON_BrepFace& face, const BrepMeshOptions& options, double tol) {
   FaceInfo fi;
-  const ON_Surface* srf = face.SurfaceOf();
+  // The stored surface, read through the Brep we were given: ON_BrepFace::SurfaceOf() goes through the face's own m_brep back-pointer, which a
+  // copied or moved Brep can leave pointing elsewhere.
+  const ON_Surface* srf = (face.m_si >= 0 && face.m_si < brep.m_S.Count()) ? brep.m_S[face.m_si] : nullptr;
   if (!srf) return fi;
   const ON_NurbsSurface* nsp = ON_NurbsSurface::Cast(srf);
   if (nsp) fi.ns = *nsp; else if (srf->GetNurbForm(fi.ns) <= 0) return fi;
@@ -548,6 +550,49 @@ FaceInfo AnalyseFace(const ON_BrepFace& face, const BrepMeshOptions& options, do
   return fi;
 }
 
+// A face with no trim loops at all is its whole surface (what the kernel's Box/Sphere/Torus/FromSurface build): there is no boundary to triangulate
+// against, so it is meshed as a (u, v) grid over the surface's domain. The grid is sized from the same curvature-aware target triangle size
+// (FaceInfo::h3) as a trimmed face. Seams (a closed direction) and poles come out as duplicate / coincident vertices that MergeAndWeld() fuses
+// by position; the zero-area triangle a pole would leave is not emitted.
+static kernel::Mesh MeshWholeSurfaceFace(const FaceInfo& info, bool reversed) {
+  kernel::Mesh mesh;
+  ON_Mesh& m = mesh.raw();
+  const ON_NurbsSurface& ns = info.ns;
+  // A planar face keeps the curvature-based counts (1 x 1 for a flat quad): the h3-based refinement below would give a 4 x 3 face and a 4 x 2 face of
+  // the same box different counts along their shared 4-edge, and the welded box would not close. (Loop-less faces that share an edge are the kernel
+  // Box's, all planar; a curved loop-less face is a body of its own.)
+  const bool planar = ns.IsPlanar(nullptr, 1e-9 * std::max(info.Lu, info.Lv));
+  const int nu = std::max(1, planar ? info.nu : std::max(info.nu, static_cast<int>(std::ceil(info.Lu / info.h3))));
+  const int nv = std::max(1, planar ? info.nv : std::max(info.nv, static_cast<int>(std::ceil(info.Lv / info.h3))));
+  std::vector<Point3d> grid(static_cast<size_t>(nu + 1) * static_cast<size_t>(nv + 1));
+  for (int i = 0; i <= nu; ++i) {
+    for (int j = 0; j <= nv; ++j) {
+      grid[static_cast<size_t>(i) * static_cast<size_t>(nv + 1) + static_cast<size_t>(j)] =
+          ns.PointAt(info.ndu.ParameterAt(static_cast<double>(i) / nu), info.ndv.ParameterAt(static_cast<double>(j) / nv));
+    }
+  }
+  for (size_t k = 0; k < grid.size(); ++k) m.SetVertex(static_cast<int>(k), grid[k]);
+  const double eps = 1e-9 * std::max(info.Lu, info.Lv);
+  auto vid = [&](int i, int j) { return i * (nv + 1) + j; };
+  auto add = [&](int a, int b, int c) {
+    const Point3d& pa = grid[static_cast<size_t>(a)];
+    const Point3d& pb = grid[static_cast<size_t>(b)];
+    const Point3d& pc = grid[static_cast<size_t>(c)];
+    if (pa.DistanceTo(pb) <= eps || pb.DistanceTo(pc) <= eps || pc.DistanceTo(pa) <= eps) return;  // collapsed at a pole
+    if (reversed) std::swap(b, c);
+    m.SetTriangle(m.FaceCount(), a, b, c);
+  };
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      add(vid(i, j), vid(i + 1, j), vid(i + 1, j + 1));
+      add(vid(i, j), vid(i + 1, j + 1), vid(i, j + 1));
+    }
+  }
+  m.ComputeFaceNormals();
+  m.ComputeVertexNormals();
+  return mesh;
+}
+
 std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptions& options) {
   std::vector<kernel::Mesh> result;
   const double tol = std::max(1e-6, options.chord_tolerance);
@@ -566,7 +611,7 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
     if (brep.m_F[fi].m_face_index >= 0) {
       BrepMeshOptions fo = options;
       fo.max_triangles_per_face = face_cap(fi);
-      infos[static_cast<size_t>(fi)] = AnalyseFace(brep.m_F[fi], fo, face_tol(fi));
+      infos[static_cast<size_t>(fi)] = AnalyseFace(brep, brep.m_F[fi], fo, face_tol(fi));
     }
   }
 
@@ -599,6 +644,7 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
     const ON_BrepFace& face = brep.m_F[fi];
     const FaceInfo& info = infos[static_cast<size_t>(fi)];
     if (face.m_face_index < 0 || !info.valid) continue;
+    if (face.m_li.Count() == 0) { result.push_back(MeshWholeSurfaceFace(info, face.m_bRev)); continue; }
     const ON_NurbsSurface& ns = info.ns;
     kernel::NurbsSurface ksrf;
     ksrf.raw() = ns;

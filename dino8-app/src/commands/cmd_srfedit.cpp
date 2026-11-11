@@ -116,24 +116,6 @@ int NearestFace(const ON_Brep& b, Point3d p, double* dist_out = nullptr) {
   BrepMeshOptions opt;
   opt.chord_tolerance = 0.05;
   std::vector<kernel::Mesh> faces = MeshBrepFaces(b, opt);
-  // The loop-driven face mesher emits nothing for a face with no trim loops (the kernel's Sphere/Torus/Box/FromSurface faces, which are their whole
-  // surface), so its result is shorter than the face list and no longer lines up with it: tessellate such a face's surface directly so it can be picked.
-  bool any_loopless = false;
-  for (int i = 0; i < b.m_F.Count(); ++i) any_loopless = any_loopless || b.m_F[i].m_li.Count() == 0;
-  if (any_loopless) {
-    const bool aligned = static_cast<int>(faces.size()) == b.m_F.Count();
-    if (!aligned) faces.assign(static_cast<size_t>(b.m_F.Count()), kernel::Mesh());
-    for (int i = 0; i < b.m_F.Count(); ++i) {
-      if (b.m_F[i].m_li.Count() != 0 || (aligned && faces[static_cast<size_t>(i)].FaceCount() > 0)) continue;
-      const int si = b.m_F[i].m_si;
-      ON_NurbsSurface ns;
-      if (si >= 0 && si < b.m_S.Count() && b.m_S[si] && b.m_S[si]->GetNurbForm(ns) != 0) {
-        kernel::NurbsSurface ks;
-        ks.raw() = ns;
-        faces[static_cast<size_t>(i)] = ks.TessellateGridAdaptive(0.05);
-      }
-    }
-  }
   int best = -1;
   double bd = std::numeric_limits<double>::max();
   for (size_t i = 0; i < faces.size() && static_cast<int>(i) < b.m_F.Count(); ++i) {

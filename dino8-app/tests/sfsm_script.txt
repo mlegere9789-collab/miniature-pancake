@@ -4,10 +4,22 @@
 # trim loops; SrfSeam refuses those with the kernel's reason. Each probe is bracketed by an SFSMBEGIN_<name> marker.
 New
 GrasshopperPlayer @SFSMFILE@ Bake=Yes
+SFSMBEGIN_area0
+SelAll
+Area
+SFSMBEGIN_vol0
+SelAll
+Volume
 SFSMBEGIN_move
 SrfSeam
 5,0,0
 0,5,0
+SFSMBEGIN_area1
+SelAll
+Area
+SFSMBEGIN_vol1
+SelAll
+Volume
 SFSMBEGIN_again
 SrfSeam
 5,0,0
@@ -16,6 +28,12 @@ SFSMBEGIN_move2
 SrfSeam
 5,0,0
 -5,0,0
+SFSMBEGIN_area2
+SelAll
+Area
+SFSMBEGIN_vol2
+SelAll
+Volume
 SFSMBEGIN_undo
 Undo
 SFSMBEGIN_undo_again
@@ -31,4 +49,13 @@ SrfSeam
 SFSMBEGIN_loops_area
 SelAll
 Area
+SFSMBEGIN_box
+New
+GrasshopperPlayer @SFSMBOXFILE@ Bake=Yes
+SFSMBEGIN_box_area
+SelAll
+Area
+SFSMBEGIN_box_vol
+SelAll
+Volume
 SFSMBEGIN_end
