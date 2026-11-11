@@ -1590,15 +1590,42 @@ struct RadiusEdgeSpec {
 // notched, oblique third face crossed) use that edge's own radius, and the equal-radius trihedral sphere corner is
 // unchanged.
 //
-// THE NEW REFUSALS, each naming its reason:
-//   * the three filleted edges of a trihedral corner have DIFFERENT radii: the three cylinders' axes (each at distance
-//     r_k from its own two planes) are skew, no ball is tangent to all three, so the corner is not a sphere; it needs a
-//     setback vertex blend (a patch bounded by three non-great-circle curves, G1 to all three cylinders), which is
-//     not built. Throws std::invalid_argument ("... have different radii (a, b and c): a corner between fillets of
-//     unequal radii is not a sphere ... needs a setback vertex blend, which is not built").
-//   * two collinear edges that are one straight run (they meet where only those two are filleted) were given
-//     different radii: a step in radius along one edge is not a constant-radius fillet (use FilletConvexEdgeTapered /
-//     FilletConvexEdgeLaw for a radius that changes along an edge).
+// TRIHEDRAL CORNER WITH DIFFERENT RADII - the SETBACK VERTEX BLEND. The three cylinders' axes (each at distance r_k from
+// its own two planes) are skew, so no ball is tangent to all three and the corner is not a sphere. For a corner of three
+// MUTUALLY PERPENDICULAR faces (local coordinates p = distances from the three planes, edge k along axis k with radius r_k)
+// it is closed like this:
+//   * Each cylinder k is cut back along the curve C_k on its own surface from its contact with plane a = k+1 (P_a, where it
+//     is tangent to that plane at axial position p_k = r_b, b = k+2, the other filleted edge lying in that plane) to its
+//     contact with plane b (P_b, p_k = r_a), with the axial position blending by a smoothstep of the cylinder angle (zero
+//     slope at both ends, so the rails and the curve leave P_a / P_b along the planes' own directions). The three corner
+//     points P_0, P_1, P_2 are exactly the corners of the three planar faces after their contact-line trims (so the planar
+//     faces meet the patch in a point, as the sphere's pole does). The cut-back caps are dense polylines on the cylinders
+//     (CylindricalFace::cap0/cap1_notch_points, sag recorded as the edge tolerance).
+//   * The corner patch is ONE cubic NURBS surface on a degree-(3,3), 14 x 14 control net, a quad with its top edge collapsed
+//     to the corner P_0 (so a 3-sided patch). Its boundary rows are cubic B-spline fits of C_0, C_1, C_2 with the analytic
+//     end tangents; the control row next to each boundary lies on the cylinder's own RULING direction, so the cross-boundary
+//     derivative is a multiple of the ruling and the tangent plane along the whole boundary is spanned by the curve tangent
+//     and the ruling - exactly the cylinder's tangent plane: G1 BY CONSTRUCTION, up to the boundary fit error. The ribbon
+//     magnitudes agree at the corners (so the net is twist-compatible there, with no Gregory correction needed); the
+//     interior points minimise the sum of squared second differences (a dense linear solve), and the fan around the
+//     collapsed corner is a quarter arc in P_0's tangent plane.
+//   * The patch is accepted only if it is regular: 41 x 41 samples all have a consistently oriented, non-vanishing normal
+//     and every control point lies in the octant. The first of 3 cyclic labellings x 6 ribbon scales that passes is used.
+//     Measured: every radius triple in [1, 3.5]^3 (512 of 512, ratios up to 3.5) builds; ratios of 4 and more are built only
+//     where the check passes (274 of 343 triples in {0.5..6}^3) and are otherwise refused ("... would fold over itself").
+//   * The patch is its own one-face lump, joined to the cut-back caps by Brep::JoinNakedEdges(5e-4); the result is a valid
+//     oriented closed 2-manifold solid (IsSolid()), with the join gap (~3e-6) recorded as tolerant-edge tolerance.
+// MEASURED (10-wide box, corner radii 1/2/3, 2.5/1.5/1, 1/1/2.5): G1 sampled on the returned B-rep's own three boundary
+// curves against the cylinders' analytic radial normals: max normal angle 2.4e-5 rad, max distance to the nearest cylinder
+// 3e-6; removed volume 29.15 / 20.10 / 17.34 between the independently integrated bounds [28.25, 53.50] / [19.29, 37.53] /
+// [16.91, 37.53] (the union of the three single-edge cuts; everything outside the opening by the largest ball).
+// LIMITS, stated plainly: faces must be mutually perpendicular (otherwise std::invalid_argument naming that); the volume is
+// bounded, not matched to a closed form (a setback blend is a design choice, not a unique surface); the mesh of the result is
+// NOT watertight across the tolerant cut-back seams (Mesh::IsClosedManifold() is false, so the app's Volume command reports
+// "not closed", although the B-rep is closed and the signed-tetrahedron volume converges); the adaptive tessellator creates
+// ~650k triangles at chord 0.005 for this corner and does not terminate at chord 1e-4.
+// OTHER REFUSAL: two collinear edges that are one straight run (they meet where only those two are filleted) given different
+// radii - a step in radius along one edge is not a constant-radius fillet (use FilletConvexEdgeTapered / FilletConvexEdgeLaw).
 // Radii that never meet at a vertex (or meet only at an m == 1 end) are fine and need no relation between them.
 Brep FilletConvexEdgesRadii(const Brep& solid, const std::vector<RadiusEdgeSpec>& edges);
 

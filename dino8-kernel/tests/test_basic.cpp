@@ -99649,8 +99649,8 @@ void TestLawRadiusPastTheFaceWidthIsRefusedNamingTheStation() {
 // PER-EDGE RADII (FilletConvexEdgesRadii). Independent edges of one solid may carry different constant radii in a single
 // call; each removes exactly r^2 (1 - pi/4) L when its ends are flush with perpendicular faces (the same closed form the
 // single-edge tests use, summed, since non-interacting fillets share no geometry), and the result is a valid closed solid.
-// A trihedral corner whose three edge fillets have different radii is NOT a sphere (the three cylinder axes are skew) and
-// is refused with a reason that says so, never mis-built; the equal-radius corner is still the exact sphere.
+// A trihedral corner whose three edge fillets have different radii is NOT a sphere (the three cylinder axes are skew); it is
+// closed by the setback vertex blend (next test); the equal-radius corner is still the exact sphere.
 void TestPerEdgeRadiiIndependentEdgesMatchTheClosedFormAndEqualRadiusCornerStaysASphere() {
   using dino8::kernel::FilletConvexEdges;
   using dino8::kernel::FilletConvexEdgesRadii;
@@ -99801,12 +99801,30 @@ void TestSetbackVertexBlendOfThreeUnequalRadiiIsG1ToTheCylindersAndBoundedByBall
     Check(sampled > 250 && max_gap < 1e-4, (tag + "every boundary sample lies on one of the three cylinders (G0, < 1e-4)").c_str());
     Check(max_angle < 1e-3, (tag + "the patch normal equals the cylinder normal along all three boundaries (G1, < 1e-3 rad)").c_str());
 
-    const double removed = 1000.0 - f.TessellateToClosedMeshAdaptive(1e-4).Volume();
+    // Fixed-resolution mesh: the adaptive mesher at chord 1e-4 grows without bound on the collapsed-edge corner patch
+    // (measured: 650k triangles at 0.005 and unbounded memory at 1e-4), and the mesh is not watertight across the tolerant
+    // cut-back seams (the B-rep itself is closed) - the volume is a sum of signed tetrahedra and converges regardless
+    // (16: 31.36, 32: 29.60, 64: 29.15 removed for radii 1/2/3).
+    const double removed = 1000.0 - f.TessellateToClosedMesh(64, 64).Volume();
     const double lo = CornerRemovedBounds(c.rx, c.ry, c.rz, true, 200);   // at least what the three single-edge cuts remove
     const double hi = CornerRemovedBounds(c.rx, c.ry, c.rz, false, 200);  // at most what the largest ball leaves
     std::printf("%sremoved volume %.4f, bounds [%.4f (union of the three single-edge cuts), %.4f (not in the opening by the largest ball)]\n",
                 tag.c_str(), removed, lo, hi);
-    Check(removed > lo - 0.05 && removed < hi + 0.05, (tag + "the removed volume lies between the two independently integrated bounds").c_str());
+    Check(removed > lo - 0.1 && removed < hi + 0.1, (tag + "the removed volume lies between the two independently integrated bounds").c_str());
+  }
+  // the same corner with every edge listed from its FAR end (the corner vertex is then the p1 end of each edge): the identical
+  // body (the cut-back caps are attached to the other end of each cylinder)
+  {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    const Brep fwd = FilletConvexEdgesRadii(box, {{Point3d(10, 10, 10), Point3d(0, 10, 10), 1.0}, {Point3d(10, 10, 10), Point3d(10, 0, 10), 2.0}, {Point3d(10, 10, 10), Point3d(10, 10, 0), 3.0}});
+    const Brep rev = FilletConvexEdgesRadii(box, {{Point3d(0, 10, 10), Point3d(10, 10, 10), 1.0}, {Point3d(10, 0, 10), Point3d(10, 10, 10), 2.0}, {Point3d(10, 10, 0), Point3d(10, 10, 10), 3.0}});
+    bool oriented = false, has_boundary = true;
+    Check(rev.raw().IsValid() && rev.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary && rev.raw().IsSolid(),
+          "[setback corner, edges listed from the far end] valid oriented closed 2-manifold solid");
+    const double v1 = fwd.TessellateToClosedMesh(48, 48).Volume(), v2 = rev.TessellateToClosedMesh(48, 48).Volume();
+    // the two listings build the same B-rep geometry; their meshes differ only through the cylinder frames' tessellation
+    // seams (measured 1.5e-5 at 48 x 48, 9e-6 at 64 x 64 - the mesh is not watertight across the tolerant cut-back seams)
+    Check(std::fabs(v1 - v2) < 1e-3, "[setback corner, edges listed from the far end] same volume as the forward listing (within 1e-3)");
   }
   // beyond what the construction supports: refused, naming the measured reason
   const std::string why = Why([&] {

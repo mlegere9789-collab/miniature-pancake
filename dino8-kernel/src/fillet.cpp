@@ -4759,6 +4759,10 @@ struct MultiEdge {
   // Vertex-blend bookkeeping: which of the two endpoints got a spherical
   // corner (so the m == 1 notch is skipped there).
   bool sphere_at_p0 = false, sphere_at_p1 = false;
+  // Setback vertex blend (unequal radii): the cylinder's cut-back cap at that end, as points on the cylinder ordered by
+  // increasing angle (see CylindricalFace::cap0_notch_points), and the recorded polyline-vs-curve tolerance.
+  std::vector<Point3d> cap0_pts, cap1_pts;
+  double cap0_tol = 0.0, cap1_tol = 0.0;
 };
 
 // One "directed edge, plus the two faces it borders" record, the raw
@@ -4914,6 +4918,404 @@ std::vector<ChainSeg> MergeTangentEdgeChains(const std::vector<Brep::PlanarFace>
   return segs;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// SETBACK VERTEX BLEND for a trihedral corner of three mutually perpendicular faces whose three edge fillets have
+// different radii. See FilletConvexEdgesRadii's doc comment (fillet.h) for the construction; the free-form patch is built
+// in the corner's LOCAL coordinates p = (p0, p1, p2) = distances from the three face planes (corner at the origin,
+// material in p >= 0; edge k runs along local axis k and its cylinder has radius r[k]).
+// ---------------------------------------------------------------------------------------------------------------------
+// Setback vertex-blend patch for a trihedral corner of three mutually perpendicular faces whose three edge fillets
+// have (possibly) different radii. LOCAL coordinates p = (p1, p2, p3) = distances from the three face planes
+// (the corner at the origin, material in p >= 0); edge k runs along axis k and its fillet cylinder has radius r[k].
+struct SbVec { double v[3]; };
+inline SbVec SbMake(double a, double b, double c) { SbVec r; r.v[0] = a; r.v[1] = b; r.v[2] = c; return r; }
+
+// Smooth profile 0 -> 1 with zero slope at both ends.
+inline double SbSmooth(double t) { return t * t * (3.0 - 2.0 * t); }
+inline double SbSmoothD(double t) { return 6.0 * t * (1.0 - t); }
+
+// Boundary curve C_k(s), s in [0,1] (phi = s*pi/2): on cylinder k, from the contact with plane a = k+1 (point P_a) to the
+// contact with plane b = k+2 (point P_b). Axis index k, a, b are 0-based here.
+inline SbVec SbCurve(const double r[3], int k, double s, SbVec* d_ds = nullptr) {
+  const int a = (k + 1) % 3, b = (k + 2) % 3;
+  const double phi = s * 1.5707963267948966;
+  const double h_a = r[b], h_b = r[a];  // p_k at P_a, at P_b
+  SbVec p;
+  p.v[a] = r[k] * (1.0 - std::cos(phi));
+  p.v[b] = r[k] * (1.0 - std::sin(phi));
+  p.v[k] = h_a + (h_b - h_a) * SbSmooth(s);
+  if (d_ds) {
+    d_ds->v[a] = r[k] * std::sin(phi) * 1.5707963267948966;
+    d_ds->v[b] = -r[k] * std::cos(phi) * 1.5707963267948966;
+    d_ds->v[k] = (h_b - h_a) * SbSmoothD(s);
+  }
+  return p;
+}
+
+// Clamped uniform cubic B-spline basis (N control points, knots 0,0,0,0, uniform interior, 1,1,1,1).
+struct SbBasis {
+  int n;
+  std::vector<double> knots;
+  explicit SbBasis(int n_) : n(n_) {
+    knots.assign(static_cast<size_t>(n + 4), 0.0);
+    for (int i = 0; i < n + 4; ++i) {
+      if (i < 4) knots[static_cast<size_t>(i)] = 0.0;
+      else if (i >= n) knots[static_cast<size_t>(i)] = 1.0;
+      else knots[static_cast<size_t>(i)] = static_cast<double>(i - 3) / static_cast<double>(n - 3);
+    }
+  }
+  // values of the 4 non-zero basis functions at s and the index of the first; d = derivative order 0 or 1
+  int Eval(double s, int d, double out[4]) const {
+    int span = 3;
+    while (span < n - 1 && s >= knots[static_cast<size_t>(span + 1)]) ++span;
+    double N[4][4] = {};
+    N[0][0] = 1.0;  // degree-0 basis in slot 0
+    double left[4], right[4];
+    double ndu[4][4];
+    ndu[0][0] = 1.0;
+    for (int j = 1; j <= 3; ++j) {
+      left[j] = s - knots[static_cast<size_t>(span + 1 - j)];
+      right[j] = knots[static_cast<size_t>(span + j)] - s;
+      double saved = 0.0;
+      for (int r = 0; r < j; ++r) {
+        ndu[j][r] = right[r + 1] + left[j - r];
+        const double temp = ndu[r][j - 1] / ndu[j][r];
+        ndu[r][j] = saved + right[r + 1] * temp;
+        saved = left[j - r] * temp;
+      }
+      ndu[j][j] = saved;
+    }
+    if (d == 0) {
+      for (int j = 0; j <= 3; ++j) out[j] = ndu[j][3];
+    } else {
+      // first derivative of the degree-3 basis: 3 * (N_{i,2}/(t_{i+3}-t_i) - N_{i+1,2}/(t_{i+4}-t_{i+1}))
+      double lower[3] = {0, 0, 0};
+      // degree-2 values at s for the span (reuse ndu column 2)
+      for (int j = 0; j <= 2; ++j) lower[j] = ndu[j][2];
+      for (int j = 0; j <= 3; ++j) {
+        const int i = span - 3 + j;
+        double v = 0.0;
+        if (j - 1 >= 0 && j - 1 <= 2) {
+          const double den = knots[static_cast<size_t>(i + 3)] - knots[static_cast<size_t>(i)];
+          if (den > 0) v += 3.0 * lower[j - 1] / den;
+        }
+        if (j <= 2) {
+          const double den = knots[static_cast<size_t>(i + 4)] - knots[static_cast<size_t>(i + 1)];
+          if (den > 0) v -= 3.0 * lower[j] / den;
+        }
+        out[j] = v;
+      }
+    }
+    (void)N;
+    return span - 3;
+  }
+};
+
+// dense Gaussian elimination, A is n x n (row-major), b has `rhs` columns (row-major n x rhs); returns false if singular
+inline bool SbSolve(std::vector<double>& A, std::vector<double>& b, int n, int rhs) {
+  for (int c = 0; c < n; ++c) {
+    int piv = c;
+    for (int r = c + 1; r < n; ++r)
+      if (std::fabs(A[static_cast<size_t>(r * n + c)]) > std::fabs(A[static_cast<size_t>(piv * n + c)])) piv = r;
+    if (std::fabs(A[static_cast<size_t>(piv * n + c)]) < 1e-14) return false;
+    if (piv != c) {
+      for (int k = 0; k < n; ++k) std::swap(A[static_cast<size_t>(piv * n + k)], A[static_cast<size_t>(c * n + k)]);
+      for (int k = 0; k < rhs; ++k) std::swap(b[static_cast<size_t>(piv * rhs + k)], b[static_cast<size_t>(c * rhs + k)]);
+    }
+    for (int r = c + 1; r < n; ++r) {
+      const double f = A[static_cast<size_t>(r * n + c)] / A[static_cast<size_t>(c * n + c)];
+      if (f == 0.0) continue;
+      for (int k = c; k < n; ++k) A[static_cast<size_t>(r * n + k)] -= f * A[static_cast<size_t>(c * n + k)];
+      for (int k = 0; k < rhs; ++k) b[static_cast<size_t>(r * rhs + k)] -= f * b[static_cast<size_t>(c * rhs + k)];
+    }
+  }
+  for (int c = n - 1; c >= 0; --c) {
+    for (int k = 0; k < rhs; ++k) {
+      double v = b[static_cast<size_t>(c * rhs + k)];
+      for (int j = c + 1; j < n; ++j) v -= A[static_cast<size_t>(c * n + j)] * b[static_cast<size_t>(j * rhs + k)];
+      b[static_cast<size_t>(c * rhs + k)] = v / A[static_cast<size_t>(c * n + c)];
+    }
+  }
+  return true;
+}
+
+// N control points of a cubic B-spline that passes through C at N-2 uniform parameters (both ends included) and has the
+// analytic end tangents. `rev` fits the reversed curve (s -> 1-s).
+inline std::vector<SbVec> SbFitCurve(const double r[3], int k, bool rev, int N) {
+  SbBasis bas(N);
+  std::vector<double> A(static_cast<size_t>(N * N), 0.0), B(static_cast<size_t>(N * 3), 0.0);
+  int row = 0;
+  auto put_row = [&](double s, int d, const SbVec& rhs) {
+    double v[4];
+    const int first = bas.Eval(s, d, v);
+    for (int j = 0; j < 4; ++j) A[static_cast<size_t>(row * N + first + j)] = v[j];
+    for (int c = 0; c < 3; ++c) B[static_cast<size_t>(row * 3 + c)] = rhs.v[c];
+    ++row;
+  };
+  auto curve_at = [&](double s, SbVec* d) {
+    const double sc = rev ? 1.0 - s : s;
+    SbVec dd;
+    SbVec p = SbCurve(r, k, sc, &dd);
+    if (rev) for (int c = 0; c < 3; ++c) dd.v[c] = -dd.v[c];
+    if (d) *d = dd;
+    return p;
+  };
+  SbVec d0, d1;
+  put_row(0.0, 0, curve_at(0.0, &d0));
+  put_row(0.0, 1, d0);
+  for (int m = 1; m <= N - 4; ++m) put_row(static_cast<double>(m) / static_cast<double>(N - 3), 0, curve_at(static_cast<double>(m) / static_cast<double>(N - 3), nullptr));
+  put_row(1.0, 1, [&] { curve_at(1.0, &d1); return d1; }());
+  put_row(1.0, 0, curve_at(1.0, nullptr));
+  std::vector<SbVec> out(static_cast<size_t>(N));
+  if (!SbSolve(A, B, N, 3)) return {};
+  for (int i = 0; i < N; ++i)
+    for (int c = 0; c < 3; ++c) out[static_cast<size_t>(i)].v[c] = B[static_cast<size_t>(i * 3 + c)];
+  return out;
+}
+
+// The patch control grid Q[i][j] (i along s, j along t), N x N, in local coordinates.
+// bottom t=0: C_0 (P_1 -> P_2 in 0-based = plane indices 1->2), right s=1: C_1, left s=0: C_2 reversed, top t=1 collapsed at P_0.
+inline bool SbBuildGrid(const double r[3], int N, std::vector<SbVec>& grid, double kappa = 1.0) {
+  // 0-based: curve k goes from P_{k+1} to P_{k+2}. bottom = curve 0 (P1 -> P2), right = curve 1 (P2 -> P0), left = curve 2
+  // reversed (P1 -> P0). The collapsed top is P0.
+  const std::vector<SbVec> Bc = SbFitCurve(r, 0, false, N), Rc = SbFitCurve(r, 1, false, N), Lc = SbFitCurve(r, 2, true, N);
+  if (Bc.empty() || Rc.empty() || Lc.empty()) return false;
+  grid.assign(static_cast<size_t>(N * N), SbMake(0, 0, 0));
+  auto Q = [&](int i, int j) -> SbVec& { return grid[static_cast<size_t>(i * N + j)]; };
+  auto sub = [](const SbVec& a, const SbVec& b) { return SbMake(a.v[0] - b.v[0], a.v[1] - b.v[1], a.v[2] - b.v[2]); };
+  auto len = [](const SbVec& a) { return std::sqrt(a.v[0] * a.v[0] + a.v[1] * a.v[1] + a.v[2] * a.v[2]); };
+  const SbVec P0 = SbCurve(r, 1, 1.0), P1 = SbCurve(r, 2, 1.0), P2 = SbCurve(r, 0, 1.0);
+  (void)P1; (void)P2;
+  for (int i = 0; i < N; ++i) Q(i, 0) = Bc[static_cast<size_t>(i)];
+  for (int j = 0; j < N; ++j) { Q(0, j) = Lc[static_cast<size_t>(j)]; Q(N - 1, j) = Rc[static_cast<size_t>(j)]; }
+  for (int i = 0; i < N; ++i) Q(i, N - 1) = P0;
+  auto unit = [](int axis, double sgn) { SbVec e = SbMake(0, 0, 0); e.v[axis] = sgn; return e; };
+  // spacings of the fitted boundary curves at the corners
+  const double mL = len(sub(Q(0, 1), Q(0, 0)));          // left curve at P1: tangent along -e_0
+  const double mR = len(sub(Q(N - 1, 1), Q(N - 1, 0)));  // right curve at P2: along -e_0
+  const double mB0 = len(sub(Q(1, 0), Q(0, 0)));         // bottom at P1: along -e_2
+  const double mB1 = len(sub(Q(N - 1, 0), Q(N - 2, 0))); // bottom at P2: along +e_1 (arrives)
+  // bottom ribbon (ruling -e_0): rows j = 1
+  for (int i = 1; i <= N - 2; ++i) {
+    double h;
+    if (i <= 1) h = mL;
+    else if (i >= N - 2) h = mR;
+    else h = kappa * (mL + (mR - mL) * static_cast<double>(i - 1) / static_cast<double>(N - 3));
+    const SbVec e = unit(0, -1.0);
+    for (int c = 0; c < 3; ++c) Q(i, 1).v[c] = Q(i, 0).v[c] + h * e.v[c];
+  }
+  // left ribbon (ruling -e_2): column i = 1, j = 2..N-2 (j = 1 is the corner consistent with the bottom ribbon)
+  for (int j = 2; j <= N - 2; ++j) {
+    const double h = kappa * mB0 * static_cast<double>(N - 1 - j) / static_cast<double>(N - 2);
+    const SbVec e = unit(2, -1.0);
+    for (int c = 0; c < 3; ++c) Q(1, j).v[c] = Q(0, j).v[c] + h * e.v[c];
+  }
+  // right ribbon (ruling -e_1): column i = N-2
+  for (int j = 2; j <= N - 2; ++j) {
+    const double h = kappa * mB1 * static_cast<double>(N - 1 - j) / static_cast<double>(N - 2);
+    const SbVec e = unit(1, -1.0);
+    for (int c = 0; c < 3; ++c) Q(N - 2, j).v[c] = Q(N - 1, j).v[c] + h * e.v[c];
+  }
+  // the fan around the collapsed vertex P0: row N-2 between the two ribbon points is a quarter arc in P0's tangent plane
+  {
+    const SbVec la = sub(Q(0, N - 1), Q(0, N - 2)), ra = sub(Q(N - 1, N - 1), Q(N - 1, N - 2));
+    for (int i = 2; i <= N - 3; ++i) {
+      const double th = 1.5707963267948966 * static_cast<double>(i) / static_cast<double>(N - 1);
+      for (int c = 0; c < 3; ++c) Q(i, N - 2).v[c] = P0.v[c] - std::cos(th) * la.v[c] - std::sin(th) * ra.v[c];
+    }
+  }
+  // fairness: minimise the sum of squared second differences over the free interior points
+  std::vector<int> idx(static_cast<size_t>(N * N), -1);
+  int nf = 0;
+  for (int i = 2; i <= N - 3; ++i)
+    for (int j = 2; j <= N - 3; ++j) idx[static_cast<size_t>(i * N + j)] = nf++;
+  if (nf == 0) return true;
+  std::vector<double> A(static_cast<size_t>(nf * nf), 0.0), b(static_cast<size_t>(nf * 3), 0.0);
+  auto add_stencil = [&](int i0, int j0, int i1, int j1, int i2, int j2) {
+    const int ii[3] = {i0, i1, i2}, jj[3] = {j0, j1, j2};
+    const double w[3] = {1.0, -2.0, 1.0};
+    for (int a = 0; a < 3; ++a) {
+      const int fa = idx[static_cast<size_t>(ii[a] * N + jj[a])];
+      if (fa < 0) continue;
+      for (int c = 0; c < 3; ++c) {
+        double rhs = 0.0;
+        for (int bb = 0; bb < 3; ++bb) {
+          const int fb = idx[static_cast<size_t>(ii[bb] * N + jj[bb])];
+          if (fb >= 0) {
+            if (c == 0) A[static_cast<size_t>(fa * nf + fb)] += w[a] * w[bb];
+          } else {
+            rhs -= w[a] * w[bb] * Q(ii[bb], jj[bb]).v[c];
+          }
+        }
+        b[static_cast<size_t>(fa * 3 + c)] += rhs;
+      }
+    }
+  };
+  for (int i = 0; i < N; ++i)
+    for (int j = 0; j < N; ++j) {
+      if (i + 2 < N) add_stencil(i, j, i + 1, j, i + 2, j);
+      if (j + 2 < N) add_stencil(i, j, i, j + 1, i, j + 2);
+    }
+  if (!SbSolve(A, b, nf, 3)) return false;
+  for (int i = 2; i <= N - 3; ++i)
+    for (int j = 2; j <= N - 3; ++j)
+      for (int c = 0; c < 3; ++c) Q(i, j).v[c] = b[static_cast<size_t>(idx[static_cast<size_t>(i * N + j)] * 3 + c)];
+  return true;
+}
+
+// evaluate the patch at (s,t) with first derivatives
+inline SbVec SbEval(const std::vector<SbVec>& Q, int N, double s, double t, SbVec* Ds, SbVec* Dt) {
+  SbBasis bas(N);
+  double bs[4], bt[4], dbs[4], dbt[4];
+  const int fs = bas.Eval(s, 0, bs), ft = bas.Eval(t, 0, bt);
+  bas.Eval(s, 1, dbs); bas.Eval(t, 1, dbt);
+  SbVec p = SbMake(0, 0, 0), ds = SbMake(0, 0, 0), dt = SbMake(0, 0, 0);
+  for (int a = 0; a < 4; ++a)
+    for (int b = 0; b < 4; ++b) {
+      const SbVec& q = Q[static_cast<size_t>((fs + a) * N + ft + b)];
+      for (int c = 0; c < 3; ++c) {
+        p.v[c] += bs[a] * bt[b] * q.v[c];
+        ds.v[c] += dbs[a] * bt[b] * q.v[c];
+        dt.v[c] += bs[a] * dbt[b] * q.v[c];
+      }
+    }
+  if (Ds) *Ds = ds;
+  if (Dt) *Dt = dt;
+  return p;
+}
+
+// true iff the patch is a regular (no fold) surface inside the octant: consistent normal orientation on a 41x41 sample
+// grid (the collapsed edge excluded to t <= 0.995), no near-zero normal, and every control point has p >= -1e-9.
+inline bool SbValidate(const std::vector<SbVec>& Q, int N, double* min_normal = nullptr) {
+  double minn = 1e300;
+  int pos = 0, neg = 0;
+  for (const SbVec& q : Q)
+    for (int c = 0; c < 3; ++c)
+      if (q.v[c] < -1e-9) return false;
+  for (int i = 0; i <= 40; ++i)
+    for (int j = 0; j <= 40; ++j) {
+      SbVec Ds, Dt;
+      SbEval(Q, N, i / 40.0, j / 40.0 * 0.995, &Ds, &Dt);
+      const SbVec n = SbMake(Ds.v[1] * Dt.v[2] - Ds.v[2] * Dt.v[1], Ds.v[2] * Dt.v[0] - Ds.v[0] * Dt.v[2], Ds.v[0] * Dt.v[1] - Ds.v[1] * Dt.v[0]);
+      const double ln = std::sqrt(n.v[0] * n.v[0] + n.v[1] * n.v[1] + n.v[2] * n.v[2]);
+      minn = std::min(minn, ln);
+      if (-(n.v[0] + n.v[1] + n.v[2]) > 0) ++pos; else ++neg;
+    }
+  if (min_normal) *min_normal = minn;
+  return (pos == 0 || neg == 0) && minn > 1e-3;
+}
+
+// Build with the first (cyclic rotation, kappa) that gives a regular patch. `rot`: the patch is built for the radii rotated by
+// rot (r'[i] = r[(i+rot)%3]); the returned grid is rotated back so that coordinate c of the result is the original axis c.
+inline bool SbBuildBest(const double r[3], int N, std::vector<SbVec>& out, int* used_rot = nullptr, double* used_kappa = nullptr) {
+  static const double kappas[] = {1.0, 0.8, 1.2, 0.6, 1.5, 0.45};
+  for (int rot = 0; rot < 3; ++rot)
+    for (double kappa : kappas) {
+      const double rr[3] = {r[rot % 3], r[(rot + 1) % 3], r[(rot + 2) % 3]};
+      std::vector<SbVec> g;
+      if (!SbBuildGrid(rr, N, g, kappa)) continue;
+      if (!SbValidate(g, N)) continue;
+      out.resize(g.size());
+      for (size_t q = 0; q < g.size(); ++q)
+        for (int c = 0; c < 3; ++c) out[q].v[(c + rot) % 3] = g[q].v[c];  // local axis c of the rotated problem is original axis (c+rot)%3
+      if (used_rot) *used_rot = rot;
+      if (used_kappa) *used_kappa = kappa;
+      return true;
+    }
+  return false;
+}
+
+// Builds the corner patch for the three edges in `uses` (all incident to vertex V) and fills each edge's cut-back cap
+// (points on its own cylinder, ordered by increasing cylinder angle) and set-back. Returns the free-form patch surface.
+NurbsSurface BuildSetbackCorner(const Point3d& V, const std::vector<std::pair<int, int>>& uses, std::vector<MultiEdge>& me,
+                                const std::vector<Brep::PlanarFace>& faces, const std::vector<int>& touching, double tol) {
+  const char* who = "dino8::kernel::FilletConvexEdges: ";
+  Vector3d n[3];
+  for (int a = 0; a < 3; ++a) n[a] = faces[static_cast<size_t>(touching[static_cast<size_t>(a)])].plane.zaxis;
+  for (int a = 0; a < 3; ++a)
+    for (int b = a + 1; b < 3; ++b)
+      if (std::fabs(n[a] * n[b]) > 1e-9) {
+        throw std::invalid_argument(
+            std::string(who) + "the three filleted edges at a corner have different radii, and the setback vertex blend that "
+            "closes such a corner is built for three mutually perpendicular faces only (this corner's faces are not): "
+            "give the three edges one radius (a spherical corner needs one face perpendicular to the other two)");
+      }
+  Vector3d u[3];
+  for (int a = 0; a < 3; ++a) u[a] = -n[a];  // inward
+  // the edge on each local axis: the one whose two faces are the other two touching faces
+  int edge_of_axis[3] = {-1, -1, -1};
+  int end_of_axis[3] = {0, 0, 0};
+  double r[3] = {0, 0, 0};
+  for (const std::pair<int, int>& use : uses) {
+    const MultiEdge& ed = me[static_cast<size_t>(use.first)];
+    for (int k = 0; k < 3; ++k)
+      if (ed.idx_i != touching[static_cast<size_t>(k)] && ed.idx_j != touching[static_cast<size_t>(k)]) {
+        edge_of_axis[k] = use.first;
+        end_of_axis[k] = use.second;
+        r[k] = ed.radius;
+      }
+  }
+  for (int k = 0; k < 3; ++k)
+    if (edge_of_axis[k] < 0) throw std::runtime_error(std::string(who) + "setback corner: could not match the edges to the corner's axes - please report this as a bug");
+
+  const int N = 14;
+  std::vector<SbVec> local;
+  if (!SbBuildBest(r, N, local)) {
+    char buf[700];
+    std::snprintf(buf, sizeof buf,
+                  "dino8::kernel::FilletConvexEdges: the three filleted edges meeting at the corner (%.6g, %.6g, %.6g) have "
+                  "radii %.6g, %.6g and %.6g, and the setback vertex blend patch for that ratio (largest/smallest = %.3g) "
+                  "would fold over itself: the patch is verified regular for radius ratios up to 3.5 and refused where it "
+                  "is not - give the edges closer radii (or one radius for an exact spherical corner)",
+                  V.x, V.y, V.z, r[0], r[1], r[2], std::max({r[0], r[1], r[2]}) / std::min({r[0], r[1], r[2]}));
+    throw std::invalid_argument(buf);
+  }
+  auto to_world = [&](const double p[3]) { return V + p[0] * u[0] + p[1] * u[1] + p[2] * u[2]; };
+  std::vector<Point3d> grid;
+  grid.reserve(local.size());
+  for (const SbVec& q : local) grid.push_back(to_world(q.v));
+  const NurbsSurface patch = NurbsSurface::FromControlGrid(grid, N, N, 3, 3);
+
+  // Each edge's cut-back cap: the boundary curve on its own cylinder, sampled densely; first point = angle 0.
+  const int M = 321;
+  for (int k = 0; k < 3; ++k) {
+    MultiEdge& ed = me[static_cast<size_t>(edge_of_axis[k])];
+    const int end = end_of_axis[k];
+    const int a = (k + 1) % 3, b = (k + 2) % 3;
+    const bool i_is_a = ed.idx_i == touching[static_cast<size_t>(a)];
+    const double h_a = r[b], h_b = r[a];  // axial coordinate (from the vertex) at the contacts with plane a and plane b
+    const Point3d axis_p0 = ed.p0 - ed.bis * (ed.radius / ed.cosb);
+    auto cap_point = [&](double w) {  // w in [0,1] along the cylinder angle (0 = contact with face idx_i)
+      const double sloc = i_is_a ? w : 1.0 - w;
+      const double pk = h_a + (h_b - h_a) * SbSmooth(sloc);
+      const double t = end == 0 ? pk : ed.L - pk;
+      const double phi = w * ed.sweep;
+      return axis_p0 + t * ed.e + ed.radius * (std::cos(phi) * ed.n_i + std::sin(phi) * ed.frame_y);
+    };
+    std::vector<Point3d> pts;
+    pts.reserve(static_cast<size_t>(M));
+    for (int m = 0; m < M; ++m) pts.push_back(cap_point(static_cast<double>(m) / static_cast<double>(M - 1)));
+    double sag = 0.0;
+    for (int m = 0; m + 1 < M; ++m) {
+      const Point3d mid = cap_point((static_cast<double>(m) + 0.5) / static_cast<double>(M - 1));
+      sag = std::max(sag, mid.DistanceTo(0.5 * (pts[static_cast<size_t>(m)] + pts[static_cast<size_t>(m) + 1])));
+    }
+    const double first_t = (pts.front() - axis_p0) * ed.e;
+    if (end == 0) {
+      ed.t_start = first_t;
+      ed.sphere_at_p0 = true;
+      ed.cap0_pts = pts;
+      ed.cap0_tol = sag * 1.5 + tol;
+    } else {
+      ed.t_end = first_t;
+      ed.sphere_at_p1 = true;
+      ed.cap1_pts = pts;
+      ed.cap1_tol = sag * 1.5 + tol;
+    }
+  }
+  return patch;
+}
+
 }  // namespace
 
 Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius) {
@@ -5043,6 +5445,7 @@ Brep FilletConvexEdgesRadii(const Brep& solid, const std::vector<RadiusEdgeSpec>
   // the corner spheres.
   std::vector<Brep::PlanarFace> work = faces;
   std::vector<Brep::SphericalFace> spheres;
+  std::vector<NurbsSurface> setback_patches;  // free-form corner patches (unequal-radius trihedral corners)
 
   auto faces_touching = [&](const Point3d& p) {
     std::vector<int> out;
@@ -5078,26 +5481,21 @@ Brep FilletConvexEdgesRadii(const Brep& solid, const std::vector<RadiusEdgeSpec>
             "not touch that corner - inconsistent topology");
       }
     }
-    // A sphere corner needs ONE radius: the three edge fillets' ball centres are the points at distance r_k from
-    // their own two planes, and only for equal radii do the three axes meet in a point C that is at distance r from
-    // all three planes (so that one sphere is tangent to all three cylinders along great circles). With different
-    // radii the three cylinders' axes are skew, no sphere is tangent to all three, and the corner needs a setback
-    // blend (a patch bounded by three non-great-circle curves), which this function does not build.
+    // A sphere corner needs ONE radius: the three edge fillets' ball centres are the points at distance r_k from their own
+    // two planes, and only for equal radii do the three axes meet in a point C that is at distance r from all three planes
+    // (so that one sphere is tangent to all three cylinders along great circles). With different radii the three
+    // cylinders' axes are skew and no ball is tangent to all of them: the corner is closed by the setback vertex blend
+    // (BuildSetbackCorner): each cylinder is cut back along a smooth curve and a free-form patch, G1 to all three, fills
+    // the corner.
     const double radius = me[static_cast<size_t>(v.uses[0].first)].radius;
+    bool equal_radii = true;
     for (const std::pair<int, int>& u : v.uses) {
       const double rk = me[static_cast<size_t>(u.first)].radius;
-      if (std::fabs(rk - radius) > 1e-12 * std::max(rk, radius)) {
-        char buf[600];
-        std::snprintf(buf, sizeof buf,
-                      "dino8::kernel::FilletConvexEdges: the three filleted edges meeting at the corner (%.6g, %.6g, %.6g) "
-                      "have different radii (%.6g, %.6g and %.6g): a corner between fillets of unequal radii is not a "
-                      "sphere - the three cylinders' axes are skew, so no ball is tangent to all of them - and needs a "
-                      "setback vertex blend, which is not built; give the three edges one radius, or fillet them with "
-                      "radii that do not meet at a vertex",
-                      v.p.x, v.p.y, v.p.z, me[static_cast<size_t>(v.uses[0].first)].radius,
-                      me[static_cast<size_t>(v.uses[1].first)].radius, me[static_cast<size_t>(v.uses[2].first)].radius);
-        throw std::invalid_argument(buf);
-      }
+      if (std::fabs(rk - radius) > 1e-12 * std::max(rk, radius)) equal_radii = false;
+    }
+    if (!equal_radii) {
+      setback_patches.push_back(BuildSetbackCorner(v.p, v.uses, me, faces, touching, tol));
+      continue;
     }
     const Vector3d na = faces[static_cast<size_t>(touching[0])].plane.zaxis;
     const Vector3d nb = faces[static_cast<size_t>(touching[1])].plane.zaxis;
@@ -5287,6 +5685,14 @@ Brep FilletConvexEdgesRadii(const Brep& solid, const std::vector<RadiusEdgeSpec>
     cf.radius = radius;
     cf.angle = ed.sweep;
     cf.length = ed.t_end - ed.t_start;
+    if (!ed.cap0_pts.empty()) {
+      cf.cap0_notch_points = ed.cap0_pts;
+      cf.cap0_notch_tolerance = ed.cap0_tol;
+    }
+    if (!ed.cap1_pts.empty()) {
+      cf.cap1_notch_points = ed.cap1_pts;
+      cf.cap1_notch_tolerance = ed.cap1_tol;
+    }
     cyls.push_back(cf);
   }
   for (size_t k = 0; k < me.size(); ++k) {
@@ -5326,7 +5732,22 @@ Brep FilletConvexEdgesRadii(const Brep& solid, const std::vector<RadiusEdgeSpec>
     for (size_t o = 0; o < others.size(); ++o) work[others_idx[o]] = std::move(others[o]);
   }
 
-  return Brep::FromMixedFaces(work, cyls, {}, spheres);
+  Brep main = Brep::FromMixedFaces(work, cyls, {}, spheres);
+  if (setback_patches.empty()) return main;
+  // Setback corners: each corner patch is its own one-face lump; JoinNakedEdges welds its three boundary curves to the
+  // three cut-back cylinder caps (the caps are dense polylines on the cylinders, the patch edges exact spline curves, so the
+  // join is tolerant and records the measured gap on the shared edge).
+  std::vector<Brep> lumps;
+  lumps.push_back(std::move(main));
+  for (const NurbsSurface& patch : setback_patches) lumps.push_back(Brep::FromSurface(patch));
+  Brep out = Brep::Compound(lumps);
+  const int joined = out.JoinNakedEdges(5e-4);
+  if (joined != 3 * static_cast<int>(setback_patches.size())) {
+    throw std::runtime_error("dino8::kernel::FilletConvexEdges: a setback vertex blend patch did not join its three cylinder caps (" +
+                             std::to_string(joined) + " of " + std::to_string(3 * setback_patches.size()) +
+                             " edges joined) - please report this as a bug");
+  }
+  return out;
 }
 
 // MULTI-EDGE concave-edge fillet - FilletConcaveEdge's own counterpart to
