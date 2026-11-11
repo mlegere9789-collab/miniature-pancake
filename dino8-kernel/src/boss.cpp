@@ -85,7 +85,7 @@ bool Apart(const BoundingBox& a, const BoundingBox& b, double tol) {
 BossResult Fuse(const Brep& solid, const Brep& tool, const std::vector<Point3d>& base_samples) {
   BossResult out;
   try {
-    out.tool_volume = tool.Volume();
+    out.tool_volume = tool.raw().IsSolid() ? tool.VolumeOfSealedSolid() : tool.Volume();
   } catch (const std::exception& e) {
     Refuse(std::string("could not measure the boss volume: ") + e.what());
   }
@@ -168,7 +168,7 @@ BossResult Fuse(const Brep& solid, const Brep& tool, const std::vector<Point3d>&
 PocketResult Cut(const Brep& solid, const Brep& tool, const std::vector<Point3d>& entry_samples, const std::vector<Point3d>& floor_samples) {
   PocketResult out;
   try {
-    out.tool_volume = tool.Volume();
+    out.tool_volume = tool.raw().IsSolid() ? tool.VolumeOfSealedSolid() : tool.Volume();
   } catch (const std::exception& e) {
     Refuse(std::string("could not measure the pocket tool volume: ") + e.what());
   }
@@ -405,6 +405,201 @@ PocketResult MakePocket(const Brep& solid, const NurbsCurve& profile, Vector3d d
     } catch (const std::runtime_error& e) {
       if (std::string(e.what()).find("cutting the pocket was refused") == std::string::npos) throw;
       if (first_refusal.empty()) first_refusal = e.what();
+    }
+  }
+  throw std::runtime_error(first_refusal + " [also refused with the profile seam moved to 7 other positions of the domain]");
+}
+
+namespace {
+
+// Dense samples of a closed curve (its CVs and edge midpoints when it is a polygon, 32 parameter samples otherwise), for the
+// embedding checks of the base / entry and floor.
+std::vector<Point3d> OutlineSamples(const ON_NurbsCurve& c) {
+  std::vector<Point3d> out;
+  if (c.Degree() == 1) {
+    std::vector<Point3d> ring;
+    for (int i = 0; i < c.CVCount(); ++i) {
+      ON_3dPoint p;
+      c.GetCV(i, p);
+      ring.push_back(Point3d(p.x, p.y, p.z));
+    }
+    if (ring.size() > 1 && std::hypot(std::hypot(ring.front().x - ring.back().x, ring.front().y - ring.back().y), ring.front().z - ring.back().z) < 1e-9) {
+      ring.pop_back();
+    }
+    for (size_t i = 0; i < ring.size(); ++i) {
+      const Point3d& a = ring[i];
+      const Point3d& b = ring[(i + 1) % ring.size()];
+      out.push_back(a);
+      out.push_back(Point3d(0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z)));
+    }
+    return out;
+  }
+  const ON_Interval dom = c.Domain();
+  for (int i = 0; i < 32; ++i) {
+    const ON_3dPoint p = c.PointAt(dom.ParameterAt(i / 32.0));
+    out.push_back(Point3d(p.x, p.y, p.z));
+  }
+  return out;
+}
+
+// Even-odd point-in-polygon in the plane's own (x, y) coordinates.
+bool InsidePolygon2d(const ON_Plane& plane, const std::vector<Point3d>& poly, const Point3d& q) {
+  const auto uv = [&](const Point3d& p) {
+    const ON_3dVector d(p.x - plane.origin.x, p.y - plane.origin.y, p.z - plane.origin.z);
+    return std::make_pair(d * plane.xaxis, d * plane.yaxis);
+  };
+  const auto pq = uv(q);
+  bool in = false;
+  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+    const auto a = uv(poly[i]);
+    const auto b = uv(poly[j]);
+    if ((a.second > pq.second) != (b.second > pq.second) && pq.first < (b.first - a.first) * (pq.second - a.second) / (b.second - a.second) + a.first) in = !in;
+  }
+  return in;
+}
+
+// The ring-shaped tool: the outer profile's prism with each hole's prism (run `margin` past both ends, so no cap is coincident)
+// subtracted by the SEALED boolean, so the tool is a valid closed solid (ExtrudeProfileWithHoles' unsealed result was measured to be
+// an invalid ON_Brep for circles and not watertight for rectangles). Polygons are swept as true planar faces, curves via Extrude.
+Brep SweptCurve(const ON_NurbsCurve& c, Vector3d sweep) {
+  if (c.Degree() == 1) {
+    std::vector<Point3d> ring;
+    for (int i = 0; i < c.CVCount(); ++i) {
+      ON_3dPoint p;
+      c.GetCV(i, p);
+      ring.push_back(Point3d(p.x, p.y, p.z));
+    }
+    if (ring.size() > 1 && std::hypot(std::hypot(ring.front().x - ring.back().x, ring.front().y - ring.back().y), ring.front().z - ring.back().z) < 1e-9) {
+      ring.pop_back();
+    }
+    return PlanarPrism(ring, sweep);
+  }
+  NurbsCurve k;
+  k.raw() = c;
+  return Brep::Extrude(k, sweep, true);
+}
+
+Brep RingTool(const ON_NurbsCurve& outer, const std::vector<NurbsCurve>& holes, Vector3d sweep, double margin) {
+  Brep tool = SweptCurve(outer, sweep);
+  if (!tool.raw().IsValid()) Refuse("internal: the outer prism of the ring tool is not a valid ON_Brep");
+  Vector3d unit = sweep;
+  const double len = sweep.Length();
+  unit.Unitize();
+  for (const NurbsCurve& h : holes) {
+    ON_NurbsCurve moved = h.raw();
+    moved.Translate(ON_3dVector(-unit.x * margin, -unit.y * margin, -unit.z * margin));
+    const Brep hole_tool = SweptCurve(moved, unit * (len + 2.0 * margin));
+    if (!hole_tool.raw().IsValid()) Refuse("internal: a hole prism of the ring tool is not a valid ON_Brep");
+    try {
+      tool = BooleanCombineGeneralSealed(tool, hole_tool, BooleanOp::Difference).brep;
+    } catch (const std::exception& e) {
+      Refuse(std::string("could not cut a hole out of the ring tool: ") + e.what());
+    }
+  }
+  return tool;
+}
+
+}  // namespace
+
+EmbossResult EmbossOnCurvedFace(const Brep& solid, const NurbsCurve& outer, const std::vector<NurbsCurve>& holes, Vector3d direction,
+                                double depth, EmbossMode mode) {
+  CheckCommon(solid, direction, depth);
+  const bool deboss = (mode == EmbossMode::Deboss);
+  EmbossResult out;
+  if (holes.empty()) {
+    if (deboss) {
+      PocketResult r = MakePocket(solid, outer, direction, depth);
+      out.brep = std::move(r.brep);
+      out.tool_volume = r.tool_volume;
+      out.volume_change = -r.removed_volume;
+    } else {
+      BossResult r = MakeBoss(solid, outer, direction * -1.0, depth);
+      out.brep = std::move(r.brep);
+      out.tool_volume = r.tool_volume;
+      out.volume_change = r.added_volume;
+    }
+    return out;
+  }
+
+  const ON_NurbsCurve& c = outer.raw();
+  if (!c.IsClosed()) Bad("profile must be a closed curve");
+  ON_Plane plane;
+  const ON_BoundingBox cbb = c.BoundingBox();
+  const double scale = std::max(1.0, cbb.Diagonal().Length());
+  if (!c.IsPlanar(&plane, 1e-6 * scale)) Bad("profile curve is not planar");
+  if (std::fabs(plane.zaxis * ON_3dVector(direction.x, direction.y, direction.z)) < 1e-3) Bad("direction lies in the profile plane (|sin| < 1e-3)");
+  const std::vector<Point3d> outer_pts = OutlineSamples(c);
+  // Densify the outer outline for the containment test of the holes (a polygon's CVs alone would do; a curve needs more than 32).
+  std::vector<Point3d> outer_poly;
+  {
+    const ON_Interval dom = c.Domain();
+    if (c.Degree() == 1) {
+      for (int i = 0; i + 1 < c.CVCount(); ++i) {
+        ON_3dPoint p;
+        c.GetCV(i, p);
+        outer_poly.push_back(Point3d(p.x, p.y, p.z));
+      }
+    } else {
+      for (int i = 0; i < 256; ++i) {
+        const ON_3dPoint p = c.PointAt(dom.ParameterAt(i / 256.0));
+        outer_poly.push_back(Point3d(p.x, p.y, p.z));
+      }
+    }
+  }
+  std::vector<Point3d> all_samples = outer_pts;
+  std::vector<ON_BoundingBox> hole_boxes;
+  for (size_t h = 0; h < holes.size(); ++h) {
+    const ON_NurbsCurve& hc = holes[h].raw();
+    const std::string tag = "hole " + std::to_string(h) + " ";
+    if (!hc.IsClosed()) Bad(tag + "must be a closed curve");
+    ON_Plane hp;
+    if (!hc.IsPlanar(&hp, 1e-6 * scale)) Bad(tag + "is not planar");
+    const std::vector<Point3d> hs = OutlineSamples(hc);
+    for (const Point3d& p : hs) {
+      const double dist = (p.x - plane.origin.x) * plane.zaxis.x + (p.y - plane.origin.y) * plane.zaxis.y + (p.z - plane.origin.z) * plane.zaxis.z;
+      if (std::fabs(dist) > 1e-6 * scale) Bad(tag + "is not in the plane of the outer profile");
+      if (!InsidePolygon2d(plane, outer_poly, p)) Bad(tag + "is not inside the outer profile");
+      all_samples.push_back(p);
+    }
+    hole_boxes.push_back(hc.BoundingBox());
+  }
+  for (size_t i = 0; i < hole_boxes.size(); ++i) {
+    for (size_t j = i + 1; j < hole_boxes.size(); ++j) {
+      const ON_BoundingBox& a = hole_boxes[i];
+      const ON_BoundingBox& b = hole_boxes[j];
+      const bool apart = a.m_max.x < b.m_min.x || a.m_min.x > b.m_max.x || a.m_max.y < b.m_min.y || a.m_min.y > b.m_max.y || a.m_max.z < b.m_min.z || a.m_min.z > b.m_max.z;
+      if (!apart) Bad("holes " + std::to_string(i) + " and " + std::to_string(j) + " overlap");
+    }
+  }
+
+  const Vector3d sweep = (deboss ? direction : direction * -1.0) * depth;
+  std::vector<Point3d> floor_pts;
+  for (const Point3d& p : all_samples) floor_pts.push_back(Add(p, sweep));
+  const ON_Interval dom = c.Domain();
+  std::string first_refusal;
+  for (const double frac : {0.0, 0.25, 0.5, 0.75, 0.1, 0.9, 0.37, 0.63}) {
+    ON_NurbsCurve moved = c;
+    if (frac > 0.0 && !moved.ChangeClosedCurveSeam(dom.ParameterAt(frac))) continue;
+    const BoundingBox sbb = solid.GetTightBoundingBox();
+    const Brep tool = RingTool(moved, holes, sweep, 1e-3 * std::max(1.0, (sbb.max - sbb.min).Length()));
+    if (!tool.raw().IsValid()) Refuse("internal: the ring-shaped tool is not a valid ON_Brep");
+    try {
+      if (deboss) {
+        PocketResult r = Cut(solid, tool, all_samples, floor_pts);
+        out.brep = std::move(r.brep);
+        out.tool_volume = r.tool_volume;
+        out.volume_change = -r.removed_volume;
+      } else {
+        BossResult r = Fuse(solid, tool, all_samples);
+        out.brep = std::move(r.brep);
+        out.tool_volume = r.tool_volume;
+        out.volume_change = r.added_volume;
+      }
+      return out;
+    } catch (const std::runtime_error& e) {
+      const std::string w = e.what();
+      if (w.find("was refused") == std::string::npos) throw;
+      if (first_refusal.empty()) first_refusal = w;
     }
   }
   throw std::runtime_error(first_refusal + " [also refused with the profile seam moved to 7 other positions of the domain]");

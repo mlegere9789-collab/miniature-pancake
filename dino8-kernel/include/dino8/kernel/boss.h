@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 
@@ -78,5 +79,32 @@ struct PocketResult {
 
 PocketResult MakePocket(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth);
 PocketResult MakePocket(const Brep& solid, const std::vector<Point3d>& profile_ring, Vector3d direction, double depth);
+
+// Emboss / deboss a closed planar profile (optionally with HOLES / islands) onto a CURVED face (parity-map "Feature operations" -
+// "Emboss/deboss": EmbossProfile()/EmbossProfileWithHoles() place their tool against a PLANAR surface, with the profile's own plane
+// standing for the surface and only a 1e-3-diagonal margin of overlap; on a sphere or cylinder wall that plane touches the surface in
+// a point or a line, so there is nothing to fuse onto or cut into). This one keeps EmbossProfile()'s sign convention - `direction`
+// points INTO the material - and takes the profile plane as a REFERENCE plane, exactly as MakeBoss()/MakePocket() do:
+//  - EmbossMode::Emboss: the profile plane is the raised feature's BASE and must lie inside the material over the whole footprint;
+//    the feature grows `depth` against `direction` (outward), its walls ending exactly ON the curved face (MakeBoss).
+//  - EmbossMode::Deboss: the profile plane is the engraving's ENTRY and must lie outside the material; the floor is `depth` along
+//    `direction` and must lie inside it (MakePocket).
+// `holes` are closed planar curves in the same plane as `outer`, each inside it and disjoint from the others (a lettering counter,
+// an island): they stay FLUSH with the host's own curved face - in an emboss no material is added inside a hole, in a deboss no
+// material is removed inside one. The tool is one solid ExtrudeProfileWithHoles() (the ring-shaped prism), fused with / cut from the
+// host by the same sealed boolean MakeBoss()/MakePocket() use, so the result is ON_Brep::IsValid() and IsSolid(), or the call throws
+// the engine's own cause (never a degraded body). Same checks, seam retries and sphere/torus host re-seaming as MakeBoss(); `holes`
+// empty simply forwards to MakeBoss()/MakePocket().
+//
+// Throws std::invalid_argument for the MakeBoss() argument errors, a hole that is open, not planar, not coplanar with `outer`, not
+// inside `outer`, or overlapping another hole; std::runtime_error naming the measured cause otherwise.
+struct EmbossResult {
+  Brep brep;
+  double tool_volume = 0;    // exact volume of the swept ring/profile tool (reference plane to top/floor)
+  double volume_change = 0;  // result volume - host volume: positive for an emboss, negative for a deboss
+};
+
+EmbossResult EmbossOnCurvedFace(const Brep& solid, const NurbsCurve& outer, const std::vector<NurbsCurve>& holes, Vector3d direction,
+                                double depth, EmbossMode mode);
 
 }  // namespace dino8::kernel
