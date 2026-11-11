@@ -2051,4 +2051,11 @@ SealedGeneralBoolean BooleanCombineGeneralSealed(const Brep& a, const Brep& b, B
 // std::runtime_error like BooleanCombineGeneralSealed().
 SealedGeneralBoolean SealGeneralBooleanResult(const Brep& raw, BooleanOp op, double volume_a, double volume_b);
 
+namespace detail {
+// Test entry point for the zero-area spike removal every fragment loop goes through before its edges are welded (the engine's own
+// RemoveBacktrackSpikes): a closed loop given as parallel arrays of 3D points and (u, v), edited in place. A boundary that runs out
+// along a line and comes back over the same stretch (within 1e-7 of the loop's size perpendicular to it) loses the overlapped part.
+void RemoveBacktrackSpikesForTest(std::vector<Point3d>& points, std::vector<Point2d>& uv);
+}  // namespace detail
+
 }  // namespace dino8::kernel
