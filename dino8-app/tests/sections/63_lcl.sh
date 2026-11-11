@@ -1,13 +1,14 @@
 # ---------------------------------------------------------------------------
 # LCL_: Loft Closed=Yes (lcl_script.txt) - the kernel's closed Brep::Loft (a periodic interpolation from the last curve back to the
 # first) from the app. Eight unit circles in the eight radial planes of a ring of radius 5 sample a torus; they are rotated copies of
-# one circle, so their seams already correspond. The closed cases run with the DEFAULT options: the closed loft re-seams each curve
+# one circle, so their seams already correspond. Every case runs with the DEFAULT options: a loft of closed curves re-seams each curve
 # to the start point that minimizes the point-for-point twist against the previous one (the old nearest-point rule twisted the
 # correspondence round a ring: the closed cubic loft read 185.1, not 197.4, the closed straight one 166.3, not 185.1, and the mesh had
 # vertices 1.2 off the tube). Oracles computed outside the program: the closed cubic loft is within about 0.3 percent of the torus
 # area 4 pi^2 R r = 197.392; the closed Straight loft is 8 equal ruled strips, 23.1386 each by a midpoint rule over the unit circle
 # (400 x 40 cells), 185.109 in all; SeamAlign=No (sections as given) must give the same figures. The same circles lofted WITHOUT Closed
-# (SeamAlign=No: the open default re-seam is not changed here) keep 7 of the 8 gaps and, being closed planar curves, get two end caps
+# (default options: the open loft re-seams by the same minimum-twist rule; before, the open ring loft read 172 and the History open
+# edit of the straight loft 158.1, a twist) keep 7 of the 8 gaps and, being closed planar curves, get two end caps
 # (2 pi = 6.283 in all): 7/8 x 197.392 + 6.283 = 179.02; the History edit of the straight loft to Closed=No is 7 strips + the two
 # caps = 161.97 + 6.283 = 168.25. The app's Area is the tessellated figure; every window allows 1.5 percent or more.
 # Two curves cannot be lofted on back to the first: refused with the reason, nothing built. Here-strings only.
