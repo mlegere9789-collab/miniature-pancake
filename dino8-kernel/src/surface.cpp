@@ -2605,7 +2605,8 @@ std::vector<Point2d> ExtractSubLoop(const std::vector<Point2d>& poly, size_t fro
 // than one pinch point since each recursive call re-checks its own,
 // smaller polygon.
 Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
-                                               const std::vector<Point2d>& trim_polygon_in) const {
+                                               const std::vector<Point2d>& trim_polygon_in,
+                                               double pinch_tolerance) const {
   if (u_divisions < 1 || v_divisions < 1) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: u_divisions "
@@ -2622,9 +2623,13 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   // Tolerance chosen from direct measurement (the Steinmetz pinch-point gap,
   // ~1.5e-7) with real headroom, while staying far below this codebase's
   // typical dense-polyline edge length (~1e-2 to 1e-1 in these fixtures).
-  constexpr double kPinchTolerance = 1e-6;
+  // `pinch_tolerance` (default 1e-6, every existing caller) is the (u, v) distance under which two non-adjacent vertices count as
+  // one pinch point. A caller that hands in ONE polygon with its holes slit into it on purpose (Brep::Tessellate's keyhole polygon:
+  // two parallel sides of the slit a few 1e-7 apart) passes 0: welding the sides of the slit would split the polygon into the
+  // outer lobe and the hole lobe, and tessellate the hole's interior.
+  const double kPinchTolerance = pinch_tolerance;
   std::vector<Point2d> trim_polygon = trim_polygon_in;
-  WeldNearDuplicateNonAdjacentVertices(trim_polygon, kPinchTolerance);
+  if (kPinchTolerance > 0.0) WeldNearDuplicateNonAdjacentVertices(trim_polygon, kPinchTolerance);
   if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
     std::fprintf(stderr, "  TessellateGridClippedExact CALL: n=%zu\n", trim_polygon.size());
   }
@@ -2649,7 +2654,7 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   }
 
   size_t touch_i = 0, touch_j = 0;
-  if (FindRepeatedNonAdjacentVertex(trim_polygon, kPinchTolerance, touch_i, touch_j)) {
+  if (kPinchTolerance > 0.0 && FindRepeatedNonAdjacentVertex(trim_polygon, kPinchTolerance, touch_i, touch_j)) {
     if (std::getenv("DINO8_BOOL_DEBUG")) {
       std::fprintf(stderr, "  TessellateGridClippedExact: self-touching trim_polygon n=%zu, splitting at i=%zu j=%zu\n",
                    trim_polygon.size(), touch_i, touch_j);
@@ -2946,9 +2951,10 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
 }
 
 Mesh NurbsSurface::TessellateGridClippedExactAdaptive(double chord_tolerance,
-                                                        const std::vector<Point2d>& trim_polygon) const {
+                                                        const std::vector<Point2d>& trim_polygon,
+                                                        double pinch_tolerance) const {
   const SurfaceDivisions divisions = SuggestedDivisions(chord_tolerance);
-  return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon);
+  return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon, pinch_tolerance);
 }
 
 Mesh NurbsSurface::TessellateGridAdaptiveByAngle(
@@ -2967,9 +2973,9 @@ Mesh NurbsSurface::TessellateGridNonUniformAdaptiveByAngle(
 }
 
 Mesh NurbsSurface::TessellateGridClippedExactAdaptiveByAngle(
-    double angle_tolerance, const std::vector<Point2d>& trim_polygon) const {
+    double angle_tolerance, const std::vector<Point2d>& trim_polygon, double pinch_tolerance) const {
   const SurfaceDivisions divisions = SuggestedDivisionsByAngle(angle_tolerance);
-  return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon);
+  return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon, pinch_tolerance);
 }
 
 double NurbsSurface::MeasureGridTessellationDeviation(int u_divisions, int v_divisions,
@@ -3080,7 +3086,7 @@ double NurbsSurface::MeasureMeshTessellationDeviation(const Mesh& mesh, int samp
 
 Mesh NurbsSurface::TessellateGridClippedExactCertifiedAdaptive(
     double chord_tolerance, const std::vector<Point2d>& trim_polygon, int max_refinements,
-    double* out_achieved_deviation) const {
+    double* out_achieved_deviation, double pinch_tolerance) const {
   if (!(chord_tolerance > 0.0)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::TessellateGridClippedExactCertifiedAdaptive: "
@@ -3094,7 +3100,7 @@ Mesh NurbsSurface::TessellateGridClippedExactCertifiedAdaptive(
 
   SurfaceDivisions div = SuggestedDivisions(chord_tolerance);
   for (int attempt = 0; attempt <= max_refinements; ++attempt) {
-    Mesh candidate = TessellateGridClippedExact(div.u, div.v, trim_polygon);
+    Mesh candidate = TessellateGridClippedExact(div.u, div.v, trim_polygon, pinch_tolerance);
     const double deviation = MeasureMeshTessellationDeviation(candidate);
     if (deviation <= chord_tolerance) {
       if (out_achieved_deviation) *out_achieved_deviation = deviation;
