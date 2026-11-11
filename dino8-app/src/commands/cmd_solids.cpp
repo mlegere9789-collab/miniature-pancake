@@ -2765,16 +2765,73 @@ struct WatertightNurbsResult {
   bool is_manifold = false;
   double max_deviation = 0.0;
   int samples = 0;
+  // FitInterior=Yes only: the same refinement level converted twice (default Coons interior and the least-squares fitted one) and both
+  // measured against the SAME independent reference - a mesh of the exact limit points of the cage refined 2 more rounds.
+  bool fit_requested = false;
+  double limit_dev_fit = 0.0, limit_dev_default = 0.0;
+  int limit_samples = 0;
 };
 
-WatertightNurbsResult ConvertSubDWatertight(const kernel::SubD& subd) {
+// Mesh of `s`'s control-net faces with every vertex moved to its exact Catmull-Clark limit point (a polyhedral stand-in for the limit
+// surface; its own sag shrinks 4x per refinement round). Vertices are matched to LimitPoints() by their float control position.
+kernel::Mesh LimitPointMeshOfSubD(const kernel::SubD& s) {
+  const kernel::Mesh net = s.ToApproximateMesh();
+  std::map<std::tuple<float, float, float>, Point3d> lim;
+  for (const kernel::SubDLimitPoint& lp : s.LimitPoints()) {
+    lim[std::make_tuple(static_cast<float>(lp.control_point.x), static_cast<float>(lp.control_point.y), static_cast<float>(lp.control_point.z))] = lp.limit_point;
+  }
+  kernel::Mesh out;
+  ON_Mesh& m = out.raw();
+  const ON_Mesh& n = net.raw();
+  for (int i = 0; i < n.m_V.Count(); ++i) {
+    const auto it = lim.find(std::make_tuple(n.m_V[i].x, n.m_V[i].y, n.m_V[i].z));
+    m.m_V.Append(it == lim.end() ? n.m_V[i] : ON_3fPoint(it->second));
+  }
+  for (int i = 0; i < n.m_F.Count(); ++i) m.m_F.Append(n.m_F[i]);
+  return out;
+}
+
+// Worst distance of 5 x 5 samples per patch from `ref` (patches strided to at most ~4000).
+double WorstDistanceToMesh(const std::vector<kernel::SubDNurbsPatch>& patches, const kernel::Mesh& ref, int* samples) {
+  double worst = 0.0;
+  const size_t stride = std::max<size_t>(1, patches.size() / 4000);
+  for (size_t i = 0; i < patches.size(); i += stride) {
+    for (int a = 0; a <= 4; ++a) {
+      for (int c = 0; c <= 4; ++c) {
+        const Point3d q = patches[i].surface.PointAt(a / 4.0, c / 4.0);
+        worst = std::max(worst, (ref.ClosestPoint(q) - q).Length());
+        if (samples != nullptr) ++*samples;
+      }
+    }
+  }
+  return worst;
+}
+
+WatertightNurbsResult ConvertSubDWatertight(const kernel::SubD& subd, bool fit_interior = false, int levels_override = 0) {
   WatertightNurbsResult r;
   kernel::SubD refined = subd;
   int faces = refined.FaceCount();
-  while (r.levels < 3 && faces > 0 && faces * 4 <= 6000) { faces *= 4; ++r.levels; }
-  if (r.levels == 0) r.levels = 1;  // always at least one round, to guarantee quad faces
+  if (levels_override > 0) {
+    r.levels = std::min(levels_override, 4);
+  } else {
+    while (r.levels < 3 && faces > 0 && faces * 4 <= 6000) { faces *= 4; ++r.levels; }
+    if (r.levels == 0) r.levels = 1;  // always at least one round, to guarantee quad faces
+  }
   refined.Subdivide(r.levels);
-  std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatchesWatertight(&r.report);
+  std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatchesWatertight(&r.report, fit_interior);
+  if (fit_interior) {
+    r.fit_requested = true;
+    try {
+      kernel::SubD fine = refined;
+      if (fine.FaceCount() * 16 <= 120000) {
+        fine.Subdivide(2);
+        const kernel::Mesh ref = LimitPointMeshOfSubD(fine);
+        r.limit_dev_fit = WorstDistanceToMesh(patches, ref, &r.limit_samples);
+        const std::vector<kernel::SubDNurbsPatch> plain = refined.ToNurbsPatchesWatertight(nullptr, false);
+        r.limit_dev_default = WorstDistanceToMesh(plain, ref, nullptr);
+      }
+    } catch (const std::exception&) {}
+  }
   for (kernel::SubDNurbsPatch& p : patches) {
     ON_Brep tmp;
     ON_NurbsSurface* srf = new ON_NurbsSurface(p.surface.raw());
@@ -3045,6 +3102,163 @@ void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   ctx.Print(msg);
 }
 
+
+// ToNURBS: SubDs convert through the watertight kernel path (adaptive path as fallback), meshes convert exactly.
+// `fit_interior` (typed option FitInterior=Yes, default No) fits the irregular patches to the limit surface; `levels_override` (typed
+// option Levels, 0 = automatic) fixes the number of Catmull-Clark rounds applied first.
+void ToNurbsRun(CommandContext& ctx, const std::vector<ObjectId>& ids, bool fit_interior, int levels_override) {
+        ctx.Doc().BeginChange("ToNURBS");
+        int made = 0, exact_patches = 0, approx_patches = 0;
+        for (ObjectId id : ids) {
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (!o) continue;
+          if (o->kind == ObjectKind::SubD) {
+            // Real Catmull-Clark limit-surface conversion (kernel::SubD::
+            // ToNurbsPatchesAdaptive(), see its own doc comment for the
+            // math): every face whose 4 corners are ordinary interior
+            // vertices gets its mathematically exact bicubic Bezier patch;
+            // every face touching an extraordinary vertex, crease, or
+            // boundary has no such closed form, so ToNurbsPatchesAdaptive()
+            // recursively splits just that irregular region (not the whole
+            // mesh) into progressively smaller exact regular patches plus
+            // one still-approximated flat patch at its core - the same
+            // local technique EvaluateFace() uses for a single (u, v)
+            // query, applied to every (u, v) of the face at once. First
+            // subdivide (Catmull-Clark refinement, real and non-stub - see
+            // the class comment on kernel::SubD) a few rounds so (a)
+            // triangle/n-gon input becomes quad-only, and (b) the
+            // irregular patches shrink to a tight tolerance before the
+            // adaptive split further narrows them - each round (whole-mesh
+            // or adaptive) roughly quarters the remaining irregular
+            // region's maximum deviation from the true limit surface (see
+            // ToNurbsPatches()'s doc comment).
+            // Watertight path first (see ConvertSubDWatertight above): every
+            // SubD edge has one canonical boundary curve shared by both
+            // faces, so a closed SubD converts to a closed polysurface. The
+            // adaptive converter below stays as the fallback when the
+            // watertight one throws (e.g. a non-quad face it cannot handle).
+            bool watertight_done = false;
+            try {
+              const int src_faces = o->subd->FaceCount();
+              WatertightNurbsResult wr = ConvertSubDWatertight(*o->subd, fit_interior, levels_override);
+              kernel::Brep k; k.raw() = wr.brep;
+              ctx.Doc().Add(SceneObject::MakeBrep(k));
+              ++made;
+              exact_patches += wr.report.exact_patches;
+              approx_patches += wr.report.coons_patches;
+              watertight_done = true;
+              ctx.Print("ToNURBS: watertight conversion of a " + std::to_string(src_faces) + "-face SubD (" + std::to_string(wr.levels) +
+                         " Catmull-Clark refinement round(s) first): " + std::to_string(wr.report.patches) + " bicubic patches (" +
+                         std::to_string(wr.report.exact_patches) + " exact limit patches, " + std::to_string(wr.report.coons_patches) +
+                         " Coons patches on the shared edge curves; " + std::to_string(wr.report.exact_edge_curves) + " exact + " +
+                         std::to_string(wr.report.hermite_edge_curves) + " Hermite edge curves), joined " + std::to_string(wr.joined) +
+                         " edge pair(s) at 1e-6, " + std::to_string(wr.naked_edges) + " naked edge(s) left, " +
+                         (wr.is_solid ? "closed solid: yes" : "closed solid: no") + (wr.is_manifold ? ", manifold" : ", non-manifold") +
+                         "; max distance of " + std::to_string(wr.samples) + " patch samples from the Subdivide(+2) limit reference " +
+                         std::to_string(wr.max_deviation));
+              if (wr.fit_requested) {
+                ctx.Print("ToNURBS FitInterior=Yes: " + std::to_string(wr.report.fitted_patches) + " of " + std::to_string(wr.report.coons_patches) +
+                           " irregular patch(es) fitted to the limit surface (edge curves and interior control points, corners and shared boundaries unchanged); worst distance of " +
+                           std::to_string(wr.limit_samples) + " patch samples from the limit-point reference of the cage refined 2 more rounds: fitted " +
+                           FormatNumber(wr.limit_dev_fit) + ", default Coons interior " + FormatNumber(wr.limit_dev_default));
+              }
+            } catch (const std::exception&) {
+              watertight_done = false;
+            }
+            if (!watertight_done) {
+            kernel::SubD refined = *o->subd;
+            // Cap subdivision rounds (and hence patch count) much lower than
+            // the old dense-mesh path's cap: each patch here is a real NURBS
+            // surface, not a mesh triangle, and JoinNakedEdges (below) is
+            // O(edge_count^2), so a handful of rounds is both plenty to
+            // shrink irregular patches to a tight tolerance (see
+            // ToNurbsPatches()'s doc comment) and keeps patch/edge counts
+            // practical.
+            int faces = refined.FaceCount(), levels = 0;
+            while (levels < 2 && faces > 0 && faces * 4 <= 4000) { faces *= 4; ++levels; }
+            if (levels == 0) levels = 1;  // always at least one round, to guarantee quad faces
+            // Beyond that whole-mesh pre-refinement, spend a further couple
+            // of ADAPTIVE levels narrowing only the faces that are still
+            // irregular after it - cheap, since (unlike Subdivide() above)
+            // this never touches an already-regular face, only recursing
+            // into each irregular face's own shrinking approximated corner
+            // (see ToNurbsPatchesAdaptive()'s own doc comment for the exact
+            // growth shape). This is the "newer kernel adaptive converter"
+            // PARITY_MAP.md's app_subd_mesh category previously flagged as
+            // not wired into this command.
+            const int kAdaptiveLevels = 2;
+            try {
+              refined.Subdivide(levels);
+              std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatchesAdaptive(kAdaptiveLevels);
+              if (!patches.empty()) {
+                ON_Brep combined;
+                for (kernel::SubDNurbsPatch& p : patches) {
+                  ON_Brep tmp;
+                  ON_NurbsSurface* srf = new ON_NurbsSurface(p.surface.raw());
+                  tmp.Create(srf);
+                  combined.Append(tmp);
+                  if (p.exact) ++exact_patches; else ++approx_patches;
+                }
+                JoinNakedEdges(combined, ctx.Settings().absolute_tolerance * 10);
+                kernel::Brep k; k.raw() = combined;
+                ctx.Doc().Add(SceneObject::MakeBrep(k));
+                ++made;
+              }
+            } catch (...) {
+              // Fall back to the old dense-facetted-mesh approximation
+              // only if the real conversion itself throws (e.g. a
+              // pathological/non-manifold SubD) - not the normal path.
+              try {
+                kernel::SubD dense = *o->subd;
+                dense.Subdivide(levels > 0 ? levels : 1);
+                if (ON_Brep* b = ON_BrepFromMesh(dense.ToApproximateMesh().raw().Topology())) {
+                  ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+                  ++made;
+                }
+              } catch (...) {}
+            }
+            }  // !watertight_done
+          } else if (o->kind == ObjectKind::Mesh) {
+            ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology());
+            if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
+          }
+        }
+        std::string msg = "Converted " + std::to_string(made) + " object(s)";
+        if (exact_patches || approx_patches) {
+          msg += " (" + std::to_string(exact_patches) + " exact, " + std::to_string(approx_patches) +
+                 " approximated near extraordinary vertices/creases/boundaries)";
+        }
+        ctx.Print(msg);
+}
+
+class ToNurbsCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"FitInterior", "No", {"Yes", "No"}, false, true}, {"Levels", "0", {}, true, false}};
+    WantObjects("Select SubDs or meshes to convert");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "FitInterior") {
+      std::string lv = v;
+      for (char& c : lv) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      fit_ = (lv == "yes");
+      options[0].value = fit_ ? "Yes" : "No";
+    } else if (n == "Levels") {
+      char* e = nullptr;
+      const double d = std::strtod(v.c_str(), &e);
+      if (e && !*e && d >= 0.0 && d <= 4.0) { levels_ = static_cast<int>(d); options[1].value = std::to_string(levels_); }
+    }
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    ToNurbsRun(ctx, ids, fit_, levels_);
+    Finish();
+  }
+
+ private:
+  bool fit_ = false;
+  int levels_ = 0;
+};
+
 }  // namespace
 
 // Cap's per-object construction, shared by the live command and UpdateHistory
@@ -3182,124 +3396,7 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "Mesh", OnSelection("Select surfaces, polysurfaces or SubDs to mesh", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MeshFromSelection(ctx, ids, "Mesh", false); }));
   Reg(e, "ToSubD", OnSelection("Select meshes or polysurfaces to convert", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MeshFromSelection(ctx, ids, "ToSubD", true); }));
   Reg(e, "MeshToSubD", OnSelection("Select meshes to convert", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MeshFromSelection(ctx, ids, "MeshToSubD", true); }));
-  Reg(e, "ToNURBS", OnSelection("Select SubDs or meshes to convert", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("ToNURBS");
-        int made = 0, exact_patches = 0, approx_patches = 0;
-        for (ObjectId id : ids) {
-          const SceneObject* o = ctx.Doc().Find(id);
-          if (!o) continue;
-          if (o->kind == ObjectKind::SubD) {
-            // Real Catmull-Clark limit-surface conversion (kernel::SubD::
-            // ToNurbsPatchesAdaptive(), see its own doc comment for the
-            // math): every face whose 4 corners are ordinary interior
-            // vertices gets its mathematically exact bicubic Bezier patch;
-            // every face touching an extraordinary vertex, crease, or
-            // boundary has no such closed form, so ToNurbsPatchesAdaptive()
-            // recursively splits just that irregular region (not the whole
-            // mesh) into progressively smaller exact regular patches plus
-            // one still-approximated flat patch at its core - the same
-            // local technique EvaluateFace() uses for a single (u, v)
-            // query, applied to every (u, v) of the face at once. First
-            // subdivide (Catmull-Clark refinement, real and non-stub - see
-            // the class comment on kernel::SubD) a few rounds so (a)
-            // triangle/n-gon input becomes quad-only, and (b) the
-            // irregular patches shrink to a tight tolerance before the
-            // adaptive split further narrows them - each round (whole-mesh
-            // or adaptive) roughly quarters the remaining irregular
-            // region's maximum deviation from the true limit surface (see
-            // ToNurbsPatches()'s doc comment).
-            // Watertight path first (see ConvertSubDWatertight above): every
-            // SubD edge has one canonical boundary curve shared by both
-            // faces, so a closed SubD converts to a closed polysurface. The
-            // adaptive converter below stays as the fallback when the
-            // watertight one throws (e.g. a non-quad face it cannot handle).
-            bool watertight_done = false;
-            try {
-              const int src_faces = o->subd->FaceCount();
-              WatertightNurbsResult wr = ConvertSubDWatertight(*o->subd);
-              kernel::Brep k; k.raw() = wr.brep;
-              ctx.Doc().Add(SceneObject::MakeBrep(k));
-              ++made;
-              exact_patches += wr.report.exact_patches;
-              approx_patches += wr.report.coons_patches;
-              watertight_done = true;
-              ctx.Print("ToNURBS: watertight conversion of a " + std::to_string(src_faces) + "-face SubD (" + std::to_string(wr.levels) +
-                         " Catmull-Clark refinement round(s) first): " + std::to_string(wr.report.patches) + " bicubic patches (" +
-                         std::to_string(wr.report.exact_patches) + " exact limit patches, " + std::to_string(wr.report.coons_patches) +
-                         " Coons patches on the shared edge curves; " + std::to_string(wr.report.exact_edge_curves) + " exact + " +
-                         std::to_string(wr.report.hermite_edge_curves) + " Hermite edge curves), joined " + std::to_string(wr.joined) +
-                         " edge pair(s) at 1e-6, " + std::to_string(wr.naked_edges) + " naked edge(s) left, " +
-                         (wr.is_solid ? "closed solid: yes" : "closed solid: no") + (wr.is_manifold ? ", manifold" : ", non-manifold") +
-                         "; max distance of " + std::to_string(wr.samples) + " patch samples from the Subdivide(+2) limit reference " +
-                         std::to_string(wr.max_deviation));
-            } catch (const std::exception&) {
-              watertight_done = false;
-            }
-            if (!watertight_done) {
-            kernel::SubD refined = *o->subd;
-            // Cap subdivision rounds (and hence patch count) much lower than
-            // the old dense-mesh path's cap: each patch here is a real NURBS
-            // surface, not a mesh triangle, and JoinNakedEdges (below) is
-            // O(edge_count^2), so a handful of rounds is both plenty to
-            // shrink irregular patches to a tight tolerance (see
-            // ToNurbsPatches()'s doc comment) and keeps patch/edge counts
-            // practical.
-            int faces = refined.FaceCount(), levels = 0;
-            while (levels < 2 && faces > 0 && faces * 4 <= 4000) { faces *= 4; ++levels; }
-            if (levels == 0) levels = 1;  // always at least one round, to guarantee quad faces
-            // Beyond that whole-mesh pre-refinement, spend a further couple
-            // of ADAPTIVE levels narrowing only the faces that are still
-            // irregular after it - cheap, since (unlike Subdivide() above)
-            // this never touches an already-regular face, only recursing
-            // into each irregular face's own shrinking approximated corner
-            // (see ToNurbsPatchesAdaptive()'s own doc comment for the exact
-            // growth shape). This is the "newer kernel adaptive converter"
-            // PARITY_MAP.md's app_subd_mesh category previously flagged as
-            // not wired into this command.
-            const int kAdaptiveLevels = 2;
-            try {
-              refined.Subdivide(levels);
-              std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatchesAdaptive(kAdaptiveLevels);
-              if (!patches.empty()) {
-                ON_Brep combined;
-                for (kernel::SubDNurbsPatch& p : patches) {
-                  ON_Brep tmp;
-                  ON_NurbsSurface* srf = new ON_NurbsSurface(p.surface.raw());
-                  tmp.Create(srf);
-                  combined.Append(tmp);
-                  if (p.exact) ++exact_patches; else ++approx_patches;
-                }
-                JoinNakedEdges(combined, ctx.Settings().absolute_tolerance * 10);
-                kernel::Brep k; k.raw() = combined;
-                ctx.Doc().Add(SceneObject::MakeBrep(k));
-                ++made;
-              }
-            } catch (...) {
-              // Fall back to the old dense-facetted-mesh approximation
-              // only if the real conversion itself throws (e.g. a
-              // pathological/non-manifold SubD) - not the normal path.
-              try {
-                kernel::SubD dense = *o->subd;
-                dense.Subdivide(levels > 0 ? levels : 1);
-                if (ON_Brep* b = ON_BrepFromMesh(dense.ToApproximateMesh().raw().Topology())) {
-                  ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
-                  ++made;
-                }
-              } catch (...) {}
-            }
-            }  // !watertight_done
-          } else if (o->kind == ObjectKind::Mesh) {
-            ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology());
-            if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
-          }
-        }
-        std::string msg = "Converted " + std::to_string(made) + " object(s)";
-        if (exact_patches || approx_patches) {
-          msg += " (" + std::to_string(exact_patches) + " exact, " + std::to_string(approx_patches) +
-                 " approximated near extraordinary vertices/creases/boundaries)";
-        }
-        ctx.Print(msg);
-      }), CommandStatus::Implemented,
+  Reg(e, "ToNURBS", Make<ToNurbsCommand>(), CommandStatus::Implemented,
       "SubD input: converts to a real multi-patch NURBS Brep via Catmull-Clark limit-surface evaluation "
       "(kernel::SubD::ToNurbsPatchesAdaptive) - every face whose 4 corners are ordinary interior "
       "(valence-4) vertices becomes the mathematically exact bicubic Bezier patch (the well-known, "
@@ -3313,7 +3410,10 @@ void RegisterSolidCommands(CommandEngine& e) {
       "corner patches stay unjoined at their approximate edges rather than being silently forced to look "
       "exact, and the adaptive split itself can introduce further naked T-junction edges where a split "
       "patch neighbors an unsplit regular one. The status line reports how many patches of each kind were "
-      "produced. Mesh input converts exactly (unchanged).");
+      "produced. Mesh input converts exactly (unchanged). Options: FitInterior=Yes (default No) fits the irregular "
+      "patches' edge curves and interior control points to the limit surface by least squares (corners and shared "
+      "boundaries unchanged, so the polysurface stays watertight) and prints the measured deviation of both interiors "
+      "and the fitted patch count; Levels=N (0 = automatic) fixes the number of Catmull-Clark rounds applied first.");
   Reg(e, "MeshToNURB", OnSelection("Select meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("MeshToNURB");
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) if (ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology())) ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); }
