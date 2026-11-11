@@ -751,6 +751,14 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
   const ON_Surface* s = face.SurfaceOf();
   std::vector<UVPt> out;
   if (face.m_li.Count() > 0) {
+    // Sag budget of a trim sampled as ONE straight chord: 1e-6 of the face's own size (plus the absolute 1e-6 floor below). A trim
+    // that is only a few hundredths of a degree of a circle is straight to that budget, whatever its length relative to its own
+    // chord. Without this, every Boolean resampled every curved edge of a face it walked at 24 points, so the micro-edges of one
+    // operation's result were 24 points each in the next one's loops (192 -> 586 -> 2764 -> 27664 points on the fourth hole of a
+    // hole pattern), and the O(n^2) keyhole scan over such a loop never finished.
+    ON_BoundingBox face_box;
+    face.GetBoundingBox(face_box);
+    const double sag_budget = face_box.IsValid() ? 1e-6 * face_box.Diagonal().Length() : 0.0;
     const ON_BrepLoop& loop = brep.m_L[face.m_li[0]];
     for (int k = 0; k < loop.m_ti.Count(); ++k) {
       const ON_BrepTrim& trim = brep.m_T[loop.m_ti[k]];
@@ -797,7 +805,7 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
         const Point3d p0 = s->PointAt(uv0.x, uv0.y), p1 = s->PointAt(uv1.x, uv1.y), pm = s->PointAt(uvm.x, uvm.y);
         const double chord = p0.DistanceTo(p1);
         const Point3d mid_of_chord = Point3d(0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y), 0.5 * (p0.z + p1.z));
-        truly_linear = pm.DistanceTo(mid_of_chord) <= std::max(1e-6, 1e-6 * chord);
+        truly_linear = pm.DistanceTo(mid_of_chord) <= std::max({1e-6, 1e-6 * chord, sag_budget});
       }
       const int n = std::max(2, truly_linear ? 2 : samples_per_edge);
       for (int i = 0; i < n; ++i) {
@@ -2472,8 +2480,36 @@ std::vector<Chain> UnbridgeKeyholes(std::vector<UVPt>& loop, const std::vector<O
     constexpr size_t kMinHoleInteriorPoints = 8;
     size_t best_p1 = 0, best_p2 = 0;
     size_t best_span = std::numeric_limits<size_t>::max();
+    // The pair search used to test every (p1, p2) - O(n^2) per pass - and a loop that earlier operations had refined to tens of
+    // thousands of points (each Boolean resamples every curved edge of a face it walks) made one pass cost minutes (a slab drilled
+    // with a hole pattern: 27664 points on the fourth hole). Only points within `tol` of loop[p1] can pair with it, so bucket
+    // the points in a grid of cell size `tol` and look at the 27 cells around loop[p1]. Candidates are visited in ascending p2,
+    // exactly the order of the full scan, so the winning pair (smallest span, earliest on a tie) is unchanged.
+    std::unordered_map<WeldKey, std::vector<uint32_t>, WeldKeyHash> grid;
+    grid.reserve(n * 2);
+    auto cell_of = [&](const Point3d& q) {
+      return WeldKey{static_cast<long long>(std::floor(q.x / tol)), static_cast<long long>(std::floor(q.y / tol)),
+                     static_cast<long long>(std::floor(q.z / tol))};
+    };
+    for (size_t k = 0; k < n; ++k) grid[cell_of(loop[k].p)].push_back(static_cast<uint32_t>(k));
+    std::vector<uint32_t> candidates;
     for (size_t p1 = 0; p1 < n; ++p1) {
-      for (size_t p2 = p1 + 3; p2 < n; ++p2) {
+      candidates.clear();
+      const WeldKey c1 = cell_of(loop[p1].p);
+      for (long long dx = -1; dx <= 1; ++dx) {
+        for (long long dy = -1; dy <= 1; ++dy) {
+          for (long long dz = -1; dz <= 1; ++dz) {
+            const auto it = grid.find(WeldKey{c1.x + dx, c1.y + dy, c1.z + dz});
+            if (it == grid.end()) continue;
+            for (const uint32_t k : it->second) {
+              if (k >= p1 + 3) candidates.push_back(k);
+            }
+          }
+        }
+      }
+      std::sort(candidates.begin(), candidates.end());
+      for (const uint32_t p2u : candidates) {
+        const size_t p2 = p2u;
         if (p2 - p1 - 1 < kMinHoleInteriorPoints) continue;
         if (loop[p1].p.DistanceTo(loop[p2].p) > tol) continue;
         if (loop[p1 + 1].p.DistanceTo(loop[p2 - 1].p) > tol) continue;
@@ -4261,6 +4297,8 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
   std::vector<KeptFace> kept;
   auto process = [&](std::vector<FaceFrags>& frags, const ON_Brep& other, bool a_side,
                      const detail::BrepFaceBoxIndex* other_index) {
+    std::vector<signed char> other_planar(static_cast<size_t>(other.m_F.Count()), -1);  // -1 unknown, 0 not planar, 1 planar
+    std::vector<ON_Plane> other_plane(static_cast<size_t>(other.m_F.Count()));
     for (FaceFrags& ff : frags) {
       if (debug) std::fprintf(stderr, "face(%s) idx=%d frags=%zu\n", a_side ? "A" : "B", ff.face_index, ff.frags.size());
       const std::vector<CoincidentInfo>& coincident_here =
@@ -4447,8 +4485,11 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
               for (int gi = 0; gi < other.m_F.Count() && !coplanar_overlap; ++gi) {
                 const ON_BrepFace& g = other.m_F[gi];
                 const ON_Surface* gs = g.SurfaceOf();
-                ON_Plane pg;
-                if (!gs || !gs->IsPlanar(&pg, tol)) continue;
+                // IsPlanar() samples the surface: ask once per face of `other` per Boolean, not once per fragment.
+                signed char& planar = other_planar[static_cast<size_t>(gi)];
+                if (planar < 0) planar = (gs && gs->IsPlanar(&other_plane[static_cast<size_t>(gi)], tol)) ? 1 : 0;
+                if (!planar) continue;
+                const ON_Plane& pg = other_plane[static_cast<size_t>(gi)];
                 if (pf.zaxis.IsParallelTo(pg.zaxis, 1e-6) == 0 || std::fabs(pg.DistanceTo(p3)) > tol) continue;
                 double gu = 0, gv = 0;
                 if (!ClosestPointAllowingDomainBoundary(*gs, p3, gu, gv) || gs->PointAt(gu, gv).DistanceTo(p3) > tol) continue;
