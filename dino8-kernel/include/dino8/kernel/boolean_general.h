@@ -27,7 +27,10 @@
 // that cross EACH OTHER on the same face are not.
 #pragma once
 
+#include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
@@ -1949,6 +1952,66 @@ int OpenSewnKeyholes(Brep& brep);
 // so a genuine opening is still refused as not solid), and a sliver whose neighbours are more than 3 * tolerance
 // apart on the surface is skipped. Returns the number collapsed.
 int CollapseSliverNakedEdges(Brep& brep, double tolerance);
+
+// The structured account of the one edge BooleanCombineGeneral's reassembly refused to build because a third fragment loop claimed it
+// (a non-manifold result - see the "edge is claimed by 3 or more fragment loops" refusal). Before this the same facts existed only as
+// text appended to the message.
+struct BooleanNonManifoldEdge {
+  Point3d from;                     // the edge's two end points (result vertices, world coordinates)
+  Point3d to;
+  std::vector<int> faces_on_edge;   // result-face indices whose loops already use it
+  int offending_face = -1;          // result-face index of the loop that would have been the next user
+};
+
+// Thrown by BooleanCombineGeneral's reassembly (BuildLoop) in place of a plain std::runtime_error: still a std::runtime_error with the
+// identical what() text, so every existing catch is unaffected, but a caller can read reason() (always NonManifoldResult), the
+// refusing function and the edge without parsing the message.
+class BooleanReassemblyError : public std::runtime_error {
+ public:
+  BooleanReassemblyError(std::string function_name, const std::string& message, BooleanNonManifoldEdge edge)
+      : std::runtime_error(message), function_name_(std::move(function_name)), edge_(std::move(edge)) {}
+  BooleanFailureReason reason() const { return BooleanFailureReason::NonManifoldResult; }
+  const std::string& function_name() const { return function_name_; }
+  const BooleanNonManifoldEdge& edge() const { return edge_; }
+
+ private:
+  std::string function_name_;
+  BooleanNonManifoldEdge edge_;
+};
+
+// What BooleanCombineGeneralSealed measured on the best sewn attempt it could not turn into a closed solid.
+struct BooleanSealReport {
+  int naked_edges = 0;          // edges with exactly one trim
+  int nonmanifold_edges = 0;    // edges with three or more trims
+  int naked_on_seam = 0;        // naked edges running along a periodic surface's seam
+  int naked_slivers = 0;        // naked edges shorter than 0.1% of the body's diagonal
+  double naked_total_length = 0.0;
+  double naked_longest = 0.0;
+  int same_direction_edges = 0; // two-trim edges traversed the same way by both faces (an orientation clash)
+  int same_face_edges = 0;      // ... of which both trims belong to one face (a hole welded to its own outer boundary)
+  bool oriented_manifold = false;
+};
+
+// Thrown by BooleanCombineGeneralSealed / SealGeneralBooleanResult when the engine's result could not be sewn into a closed solid,
+// in place of a plain std::runtime_error (same base class, identical what() text). reason() is OpenResult (naked edges remain),
+// NonManifoldResult (an edge with three or more faces) or InconsistentOrientation (every edge has two faces, the orientation clashes);
+// attempt() is the best sewn attempt, for inspection. Refusals of another kind (a non-positive exact volume, a volume outside the
+// operands' bounds, a sewing exception) stay plain std::runtime_error.
+class BooleanSealError : public std::runtime_error {
+ public:
+  BooleanSealError(BooleanFailureReason reason, std::string function_name, const std::string& message, BooleanSealReport report, Brep attempt)
+      : std::runtime_error(message), reason_(reason), function_name_(std::move(function_name)), report_(report), attempt_(std::move(attempt)) {}
+  BooleanFailureReason reason() const { return reason_; }
+  const std::string& function_name() const { return function_name_; }
+  const BooleanSealReport& report() const { return report_; }
+  const Brep& attempt() const { return attempt_; }
+
+ private:
+  BooleanFailureReason reason_;
+  std::string function_name_;
+  BooleanSealReport report_;
+  Brep attempt_;
+};
 
 // A sealed general-boolean result: `brep` is IsSolid() AND IsValid(), with
 // every keyhole opened into a real inner loop (see OpenSewnKeyholes()).
