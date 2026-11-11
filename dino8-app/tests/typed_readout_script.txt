@@ -1,0 +1,30 @@
+# TYPED_: What names each object's analytic kind (kernel Classify): a curve as Line / Circle / Arc / Ellipse / Polyline, a B-rep's
+# faces as Plane / Sphere / Cylinder / Cone / Torus, with the closed-form parameters the object was made from.
+Line 0,0,0 3,4,0
+SelLast
+What
+Circle 10,0,0 5
+SelLast
+What
+Arc 20,0,0 25,0,0 20,5,0
+SelLast
+What
+Polyline 0,20,0 10,20,0 10,30,0 0,30,0 0,20,0
+Enter
+SelLast
+What
+Ellipse 0,40,0 6,40,0 0,43,0
+SelLast
+What
+Sphere 0,60,0 3
+SelLast
+What
+Cylinder 30,60,0 2 10
+SelLast
+What
+Cone 60,60,0 3 6
+SelLast
+What
+Torus 0,80,0 6 1.5
+SelLast
+What
