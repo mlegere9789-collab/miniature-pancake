@@ -84,6 +84,7 @@ add_library(dino8_kernel STATIC
   src/subd.cpp
   src/convex_hull.cpp
   src/point_cloud.cpp
+  src/las.cpp
   src/sheet_metal.cpp
   src/trimmed_offset.cpp
   src/offset_solid.cpp
