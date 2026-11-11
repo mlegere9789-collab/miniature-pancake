@@ -1,0 +1,23 @@
+# DXF linetypes, write side (the "DXLT_" section, tests/sections/93_dxlt.sh). ExportDxf wrote every layer as "Continuous", no LTYPE table and
+# no entity linetype, so a dashed or centre-line drawing came out of DXF as solid lines (the .3dm and SVG/PDF exports already carried
+# linetypes). Now the LTYPE table holds ByBlock / ByLayer / Continuous and every document linetype with a pattern (dash +, gap -), each layer
+# names its linetype (group 6) and an object with its own linetype writes group 6 too.
+#   layer Walls : linetype Hidden (2,2); a line on it is ByLayer          -> the layer record says Hidden, the line has no group 6
+#   layer Default: Continuous; a line set to the custom linetype Cut 6,1.5,0.5,1.5 -> group 6 = Cut
+#   a plain line on Default -> no group 6
+# smoke.sh checks the file with dxf_check.py (a stdlib DXF group-code parser), independent of the writer.
+SetActiveViewport Top
+New
+SetCustomLinetype Cut 6,1.5,0.5,1.5
+NewLayer Walls
+SetLayer Walls
+SetLayerLinetype Name=Hidden
+Line 0,0,0 10,0,0
+SetLayer Default
+Line 0,5,0 10,5,0
+SelLast
+SetLinetype Cut
+SelNone
+Line 0,10,0 10,10,0
+SelAll
+Export @TMP@/lt_export.dxf

@@ -290,14 +290,19 @@ class DxfWriter {
     if (owner_handle) G(330, *owner_handle);
     G(100, "AcDbEntity");
     G(8, layer);
+    if (!linetype_.empty()) G(6, linetype_);  // the object's own linetype; empty = BYLAYER (the default, nothing written)
     if (color) {
       G(62, ColorToAci(*color));
       G(420, ColorToTrueColor(*color));
     }
   }
 
+  // The linetype name (a name the LTYPE table defines) BeginEntity writes as group 6 on every entity until changed; "" writes none.
+  void SetLinetype(std::string name) { linetype_ = std::move(name); }
+
  private:
   std::ostream& os_;
+  std::string linetype_;
   // DXF handles are hex strings with no fixed width; 64-bit (not `long`,
   // which is 32-bit on Windows) so the counter's range does not depend on
   // the platform.
@@ -1127,6 +1132,27 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     if (def && def->states.empty() && !def->objects.empty()) block_names_to_write.insert(bt->second);
   }
 
+  // Linetypes (Document::Linetypes: a name and a dash,gap,dash,gap pattern in model units). DXF names every linetype in an LTYPE table
+  // (ByBlock, ByLayer and Continuous are always there), a pattern is a list of element lengths (group 49: positive = dash, negative = gap,
+  // 0 = dot) with their total in group 40. A linetype the document names but DXF cannot carry (an empty pattern) is Continuous.
+  std::map<std::string, std::string> dxf_linetype;  // document linetype name -> DXF name; only linetypes with a pattern
+  {
+    std::set<std::string> taken = {"BYBLOCK", "BYLAYER", "CONTINUOUS"};
+    for (const Linetype& lt : doc.Linetypes()) {
+      if (lt.pattern.empty() || lt.name == "Continuous" || lt.name == "ByLayer") continue;
+      std::string n = DxfLayerName(lt.name);
+      std::string unique = n;
+      for (int k = 2; taken.count(Upper(unique)); ++k) unique = n + "_" + std::to_string(k);
+      taken.insert(Upper(unique));
+      dxf_linetype[lt.name] = unique;
+    }
+  }
+  auto dxf_linetype_of = [&](const std::string& doc_name) -> std::string {
+    if (doc_name.empty() || doc_name == "ByLayer") return std::string();
+    auto it = dxf_linetype.find(doc_name);
+    return it != dxf_linetype.end() ? it->second : std::string("Continuous");
+  };
+
   // HEADER
   const AcadScheme& scheme = EffectiveAcadScheme(doc);
   w.G(0, "SECTION"); w.G(2, "HEADER");
@@ -1153,6 +1179,34 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // or the 330 tags (it finds blocks by the BLOCKS section's own structure
   // instead), so neither one changes anything it reads.
   w.G(0, "SECTION"); w.G(2, "TABLES");
+  {
+    const std::string ltype_ctrl = w.Handle();
+    w.G(0, "TABLE"); w.G(2, "LTYPE"); w.G(5, ltype_ctrl); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+    w.G(70, static_cast<int>(3 + dxf_linetype.size()));
+    for (const char* reserved : {"ByBlock", "ByLayer", "Continuous"}) {
+      w.G(0, "LTYPE"); w.G(5, w.Handle()); w.G(330, ltype_ctrl);
+      w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbLinetypeTableRecord");
+      w.G(2, std::string(reserved)); w.G(70, 0);
+      w.G(3, std::string(reserved) == "Continuous" ? "Solid line" : std::string(reserved));  // never an empty value line (LibreDWG's DXF reader reads the next line as the value)
+      w.G(72, 65); w.G(73, 0); w.G(40, 0.0);
+    }
+    for (const Linetype& lt : doc.Linetypes()) {
+      auto it = dxf_linetype.find(lt.name);
+      if (it == dxf_linetype.end()) continue;
+      std::vector<double> elements;  // dash (+), gap (-), dash, gap ...: the document's even entries are dashes, its odd ones gaps
+      for (size_t i = 0; i < lt.pattern.size(); ++i) elements.push_back(i % 2 == 0 ? std::fabs(lt.pattern[i]) : -std::fabs(lt.pattern[i]));
+      if (elements.size() % 2 == 1) elements.push_back(-std::fabs(lt.pattern.back()));  // a trailing dash needs its gap before the pattern repeats
+      double total = 0.0;
+      for (double e : elements) total += std::fabs(e);
+      w.G(0, "LTYPE"); w.G(5, w.Handle()); w.G(330, ltype_ctrl);
+      w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbLinetypeTableRecord");
+      w.G(2, it->second); w.G(70, 0);
+      w.G(3, lt.name);
+      w.G(72, 65); w.G(73, static_cast<int>(elements.size())); w.G(40, total);
+      for (double e : elements) { w.G(49, e); w.G(74, 0); }
+    }
+    w.G(0, "ENDTAB");
+  }
   w.G(0, "TABLE"); w.G(2, "LAYER"); w.G(5, "2"); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
   w.G(70, static_cast<int>(layer_names.size()));
   for (size_t i = 0; i < layer_names.size(); ++i) {
@@ -1164,7 +1218,10 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     const int aci = L ? ColorToAci(L->color) : 7;
     w.G(62, L && !L->visible ? -aci : aci);
     if (L) w.G(420, ColorToTrueColor(L->color));
-    w.G(6, "Continuous");
+    {
+      const std::string lt = L ? dxf_linetype_of(L->linetype) : std::string();
+      w.G(6, lt.empty() ? std::string("Continuous") : lt);
+    }
   }
   w.G(0, "ENDTAB");
   std::map<std::string, std::string> block_record_handles;
@@ -1205,7 +1262,9 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
       for (const SceneObject& mo : def->objects) {
         const size_t li = static_cast<size_t>(std::clamp(mo.layer_index, 0, static_cast<int>(layer_names.size()) - 1));
         const Color* mcolor = mo.color_by_layer ? nullptr : &mo.color;
+        w.SetLinetype(dxf_linetype_of(mo.linetype));
         WriteDxfBlockMember(w, mo, layer_names[li], mcolor, owner);
+        w.SetLinetype(std::string());
       }
       w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
     }
@@ -1241,6 +1300,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // convention as pattern_hatch_groups_written just above.
   std::set<int> dimension_groups_written;
   for (const SceneObject* o : objs) {
+    w.SetLinetype(dxf_linetype_of(o->linetype));
     {
       auto bt = o->user_text.find("Block");
       if (bt != o->user_text.end() && block_names_to_write.count(bt->second)) {
@@ -1780,6 +1840,7 @@ double ImportDimTextHeight(Document& doc) {
 struct DxfImportStats {
   int curves = 0, points = 0, meshes = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0, blocks_flattened = 0;
   int malformed = 0;  // CIRCLE/ARC without a positive radius, LINE without a length: refused, not defaulted
+  int linetypes = 0;  // linetypes defined from the file's LTYPE table
 };
 
 class DxfImporter {
@@ -1814,11 +1875,65 @@ class DxfImporter {
     return idx;
   }
 
+  // LTYPE table record -> a document linetype. Pattern elements (group 49) are dash (+), gap (-) or dot (0); consecutive elements of one
+  // kind add up, a dot becomes a short dash, and the pattern always starts with a dash. Complex linetypes (shapes / text, group 74
+  // other than 0) and empty patterns are not defined: layers and objects using them stay Continuous. A name the document already has
+  // with the SAME pattern is reused; with a different pattern the file's pattern gets "<name>_2" (then _3 ...) instead of overwriting the
+  // document's own linetype that existing objects use.
+  void DefineLinetype(const DxfEntity& e) {
+    const std::string name = Trim(e.S(2));
+    const std::string up = Upper(name);
+    if (name.empty() || up == "BYBLOCK" || up == "BYLAYER" || up == "CONTINUOUS") return;
+    for (const DxfGroup& g : e.groups) if (g.code == 74 && std::atoi(g.value.c_str()) != 0) return;
+    const std::vector<double> elements = e.All(49);
+    if (elements.empty()) return;
+    double smallest = 0.0;
+    for (double v : elements) if (std::fabs(v) > 1e-9 && (smallest == 0.0 || std::fabs(v) < smallest)) smallest = std::fabs(v);
+    if (smallest == 0.0) return;
+    std::vector<double> pattern;
+    bool expect_dash = true;
+    for (double v : elements) {
+      const bool is_gap = v < -1e-9;
+      const double len = is_gap ? -v : (v > 1e-9 ? v : 0.1 * smallest);  // a dot (0) becomes a dash a tenth of the smallest element
+      if (is_gap == expect_dash) {
+        if (is_gap && pattern.empty()) continue;  // a leading gap: drop it, the pattern starts with a dash
+        pattern.push_back(len);
+        expect_dash = !expect_dash;
+      } else if (!pattern.empty()) {
+        pattern.back() += len;  // two dashes or two gaps in a row are one
+      }
+    }
+    if (pattern.size() % 2 == 1) pattern.push_back(pattern.back());  // a trailing dash gets an equal gap
+    if (pattern.size() < 2) return;
+    std::string final_name = name;
+    for (int k = 2;; ++k) {
+      const Linetype* ex = doc_.FindLinetype(final_name);
+      if (!ex) { doc_.SetLinetype(final_name, pattern); ++stats_.linetypes; break; }
+      bool same = ex->pattern.size() == pattern.size();
+      for (size_t i = 0; same && i < pattern.size(); ++i) same = std::fabs(ex->pattern[i] - pattern[i]) < 1e-6;
+      if (same) break;
+      final_name = name + "_" + std::to_string(k);
+    }
+    linetype_map_[up] = final_name;
+  }
+
+  // The document linetype for a DXF linetype name (group 6), or "" when the file's name is ByLayer / ByBlock / unknown.
+  std::string LinetypeFor(const std::string& raw) const {
+    const std::string up = Upper(Trim(raw));
+    if (up == "CONTINUOUS") return "Continuous";
+    const auto it = linetype_map_.find(up);
+    return it != linetype_map_.end() ? it->second : std::string();
+  }
+
   void DefineLayer(const DxfEntity& e) {
     const std::string name = Trim(e.S(2));
     if (name.empty()) return;
     const int idx = LayerFor(name);
     Layer& L = doc_.Layers()[static_cast<size_t>(idx)];
+    if (e.Has(6)) {
+      const std::string lt = LinetypeFor(e.S(6));
+      if (!lt.empty()) L.linetype = lt;
+    }
     if (e.Has(420)) L.color = TrueColorToColor(std::strtoll(e.S(420).c_str(), nullptr, 10));
     else if (e.Has(62)) {
       const int aci = std::abs(e.I(62));
@@ -1833,6 +1948,10 @@ class DxfImporter {
 
   void ApplyAttributes(SceneObject& o, const DxfEntity& e) {
     o.layer_index = LayerFor(e.S(8, "0"));
+    if (e.Has(6)) {
+      const std::string lt = LinetypeFor(e.S(6));
+      if (!lt.empty()) o.linetype = lt;  // ByLayer / ByBlock / an undefined name leave the object ByLayer
+    }
     if (e.Has(420)) {
       o.color_by_layer = false;
       o.color = TrueColorToColor(std::strtoll(e.S(420).c_str(), nullptr, 10));
@@ -2808,6 +2927,7 @@ class DxfImporter {
   Document& doc_;
   DxfImportStats& stats_;
   std::map<std::string, int> layer_map_;
+  std::map<std::string, std::string> linetype_map_;  // upper-cased DXF linetype name -> document linetype name (LTYPE table)
   std::map<int, ON_Mesh> faces_;
   const std::map<std::string, DxfBlockDef>* blocks_ = nullptr;
   const std::map<std::string, const DxfEntity*>* handles_ = nullptr;
@@ -2884,7 +3004,7 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
       } else if (section == "BLOCKS") {
         block_records.push_back(DxfEntity{v, {}});
         current = &block_records.back();
-      } else if (section == "TABLES" && v == "LAYER") {
+      } else if (section == "TABLES" && (v == "LAYER" || v == "LTYPE")) {
         table_records.push_back(DxfEntity{v, {}});
         current = &table_records.back();
       } else {
@@ -2895,7 +3015,9 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
     if (current) current->groups.push_back(g);
   }
 
-  for (const DxfEntity& rec : table_records) importer.DefineLayer(rec);
+  // Linetypes first (a layer record refers to them by name), then layers.
+  for (const DxfEntity& rec : table_records) if (rec.type == "LTYPE") importer.DefineLinetype(rec);
+  for (const DxfEntity& rec : table_records) if (rec.type == "LAYER") importer.DefineLayer(rec);
 
   // BLOCKS: group each BLOCK...ENDBLK run by the BLOCK record's own name
   // (group 2) and base point (group 10/20/30), the same POLYLINE+VERTEX
