@@ -923,6 +923,46 @@ Vector3d ChainEndTangent(const Chain& c) {
   return len > 1e-12 ? v / len : v;
 }
 
+// The indices of `pts` that remain after removing single-sample "overshoots": a point after which the curve steps BACK (against
+// the step that arrived at it) by no more than `max_back` and less than half that arriving step. They come out of the surface-
+// surface tracer where two pieces of one curve meet (measured: a circle of 60 samples with one sample 0.0034 ahead of the next, a
+// 0.036 step arriving and a 0.0034 step back). Left in, the polygon of the closed loop crosses itself, which defeats slitting
+// the hole into its face's outline (BridgeHolesIntoOuter: every candidate attachment is a non-simple polygon). Decided from the
+// 3D points alone and applied once per curve, before its two faces' chains are built, so both faces drop the same samples.
+// `is_protected(p)` marks samples that sit on a B-rep vertex of either input (a seam or corner vertex): the faces' own trims end
+// there, so dropping that sample leaves one face's chain without the vertex its neighbour's trim still has and the edge goes
+// naked (measured: a single counterbore on a plain box). When the overshoot sample is protected the step-back sample is dropped
+// instead; when both are protected neither is.
+template <class Protected>
+std::vector<size_t> DespikeIndices(const std::vector<Point3d>& pts, bool closed, double max_back, const Protected& is_protected) {
+  std::vector<size_t> keep(pts.size());
+  for (size_t i = 0; i < pts.size(); ++i) keep[i] = i;
+  for (int pass = 0; pass < 8; ++pass) {
+    bool removed = false;
+    const size_t n = keep.size();
+    if (n < 5) break;
+    for (size_t pos = 0; pos < n && !removed; ++pos) {
+      if (!closed && (pos == 0 || pos + 1 >= n)) continue;
+      const size_t ip = keep[(pos + n - 1) % n], ic = keep[pos], in = keep[(pos + 1) % n];
+      const Vector3d arrive = pts[ic] - pts[ip], leave = pts[in] - pts[ic];
+      const double la = arrive.Length(), ll = leave.Length();
+      if (la > 0.0 && ll > 0.0 && ll <= max_back && ll < 0.5 * la && ON_DotProduct(arrive, leave) < -0.5 * la * ll) {
+        size_t drop = pos;
+        if (is_protected(pts[ic])) {
+          // Drop the step-back sample instead; never an open curve's last sample, never a protected one.
+          const size_t next_pos = (pos + 1) % n;
+          if (is_protected(pts[in]) || (!closed && next_pos + 1 >= n)) continue;
+          drop = next_pos;
+        }
+        keep.erase(keep.begin() + static_cast<long>(drop));
+        removed = true;
+      }
+    }
+    if (!removed) break;
+  }
+  return keep;
+}
+
 std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
   const double tol2 = tol * tol;
   bool changed = true;
@@ -4223,12 +4263,23 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
           }
         }
       }
+      // A sample on a B-rep vertex of either input is never dropped by the despike below (see DespikeIndices()).
+      const auto on_input_vertex = [&](const Point3d& p) {
+        const double tol2 = opt.tolerance * opt.tolerance;
+        for (const ON_Brep* br : {&ba, &bb})
+          for (int vi = 0; vi < br->m_V.Count(); ++vi) {
+            const ON_3dPoint& q = br->m_V[vi].point;
+            const double dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
+            if (dx * dx + dy * dy + dz * dz <= tol2) return true;
+          }
+        return false;
+      };
       for (const IntersectionCurve& ic : curves) {
         if (ic.points.size() < 2) continue;
         Chain ca, cb;
         ca.reserve(ic.points.size() + 1);
         cb.reserve(ic.points.size() + 1);
-        for (size_t k = 0; k < ic.points.size(); ++k) {
+        for (const size_t k : DespikeIndices(ic.points, ic.closed, 10.0 * opt.tolerance, on_input_vertex)) {
           ca.push_back({ic.points[k], ic.uv_a[k]});
           cb.push_back({ic.points[k], ic.uv_b[k]});
         }
