@@ -392,7 +392,7 @@ std::vector<SceneObject> SlicePieces(CommandContext& ctx, const SceneObject& o, 
     for (const Point3d& p : CurvePlaneHits(*o.curve, plane)) out.push_back(SceneObject::MakePoint(p));
     return out;
   }
-  if (o.kind == ObjectKind::Brep && o.brep) {
+  if ((o.kind == ObjectKind::Brep && o.brep) || (o.kind == ObjectKind::Surface && o.surface)) {
     for (kernel::NurbsCurve& c : ExactBrepSectionCurves(o, plane, tol)) out.push_back(SceneObject::MakeCurve(std::move(c)));
     if (!out.empty()) {
       if (exact) *exact = true;
