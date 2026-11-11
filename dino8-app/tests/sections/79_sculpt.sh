@@ -70,3 +70,15 @@ scupoint "$(scuinfo miss 1)" "2.5 2.5 2.5" 0.001 "SCU_miss: the cube is untouche
 scuhas normal "along the vertex normal" "SCU_normal: the drag is constrained to the vertex normal"
 scupoint "$(scuinfo normal 1)" "2.125 2.125 2.125" 0.001 "SCU_normal: the dragged corner's limit point is (2.125, 2.125, 2.125)"
 scunum "$(scuvertexz "$(scuinfo normal 1)")" -1 0.001 "SCU_normal: the control point moved to (-1,-1,-1), not to the free drag target (-3,0,0)"
+# ---- SubDSculptStroke (0,0,0) -> (4,0,0) -> (8,0,0), Constant falloff, Radius 12 (hand-derived in sculpt_script.txt): 2 steps, 6 distinct control points move.
+# Final control points: origin (8,0,0); edge neighbours (10,0,0) -> (18,0,0), (0,10,0) -> (8,10,0), (0,0,10) -> (8,0,10) (each moved +8 in x: both steps);
+# face-diagonal vertices (10,10,0) -> (14,10,0), (10,0,10) -> (14,0,10) (step 2 only), (0,10,10) unchanged.
+# Limit point of the origin (valence 3): (9 v + 4 sum(edge neighbours) + sum(face diagonals)) / 24 with v = (8,0,0), sum(edge) = (34,10,10), sum(diag) = (28,20,20):
+#   ((72 + 136 + 28), (0 + 40 + 20), (0 + 40 + 20)) / 24 = (236, 60, 60) / 24 = (9.8333, 2.5, 2.5)
+# The single drag of the same length (control case) moves only the 4 within radius of the start: the diagonals stay, sum(diag) = (20,20,20): (228, 60, 60) / 24 = (9.5, 2.5, 2.5).
+scuvertexx() { { grep -oE "vertex \([^)]*\)" <<<"$1" || true; } | head -1 | sed -E 's/vertex \(([^,]*), ([^,]*), ([^)]*)\)/\1/'; }
+scuhas stroke "2 step(s), 6 distinct control point(s) moved within radius 12 by Constant falloff" "SCU_stroke: two steps, 6 distinct control points moved (4 in step 1, 2 more picked up in step 2)"
+scupoint "$(scuinfo stroke 1)" "9.8333 2.5 2.5" 0.001 "SCU_stroke: the dragged vertex's limit point is (236/24, 2.5, 2.5)"
+scunum "$(scuvertexx "$(scuinfo stroke 2)")" 14 0.001 "SCU_stroke: the face-diagonal vertex (10,10,0) was picked up by the second step and is now at x = 14"
+scupoint "$(scuinfo strokecontrol 1)" "9.5 2.5 2.5" 0.001 "SCU_strokecontrol: a single drag of the same length gives the limit point (228/24, 2.5, 2.5), not the stroke's"
+scunum "$(scuvertexx "$(scuinfo strokecontrol 2)")" 10 0.001 "SCU_strokecontrol: the single drag leaves the face-diagonal vertex (10,10,0) where it was"

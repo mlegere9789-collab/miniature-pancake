@@ -1112,14 +1112,8 @@ double SculptWeight(const std::string& falloff, double t) {
   return s * s * (3.0 - 2.0 * s);
 }
 
-void SculptAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
-  if (in.picks.size() < 2) { ctx.Warn("SubDSculpt: pick the vertex to drag, then the point to drag it to"); return; }
-  const double radius = in.OptNum("Radius", 5.0);
-  const std::string falloff = in.Opt("Falloff", "Smooth");
-  if (!(radius > 0.0)) { ctx.Warn("SubDSculpt: Radius must be positive"); return; }
-  std::vector<Target> ts = SubDTargets(ctx, ids, "SubDSculpt");
-  if (ts.empty()) return;
-  // the control vertex nearest the first pick, within a tenth of that SubD's control-point bounding diagonal
+// The control vertex nearest `pick`, within a tenth of that SubD's control-point bounding diagonal: (target index, vertex index) or (-1, -1).
+std::pair<int, int> NearestSculptVertex(const std::vector<Target>& ts, Point3d pick) {
   int best_t = -1, best_v = -1;
   double best_d = 0.0;
   for (size_t t = 0; t < ts.size(); ++t) {
@@ -1132,36 +1126,91 @@ void SculptAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const I
     }
     const double reach = 0.1 * lo.DistanceTo(hi);
     for (size_t i = 0; i < n.v.size(); ++i) {
-      const double d = n.v[i].DistanceTo(in.picks[0]);
+      const double d = n.v[i].DistanceTo(pick);
       if (d <= reach && (best_t < 0 || d < best_d)) { best_t = static_cast<int>(t); best_v = static_cast<int>(i); best_d = d; }
     }
   }
+  return {best_t, best_v};
+}
+
+// One drag step: every control point within `radius` of the dragged vertex's CURRENT position (positions measured before the step) moves by
+// weight * (target - that position); with `along_normal` only the part of the drag along the vertex's own normal (area-weighted face normals of
+// the cage) counts. Returns the indices of the control points that moved.
+std::vector<int> SculptStep(Net& net, int vertex, Point3d target, double radius, const std::string& falloff, bool along_normal) {
+  const Point3d origin = net.v[static_cast<size_t>(vertex)];
+  Vector3d delta = target - origin;
+  if (along_normal) {
+    const std::vector<Vector3d> normals = net.VertexNormals();
+    const Vector3d nrm = normals[static_cast<size_t>(vertex)];
+    delta = nrm * ON_DotProduct(delta, nrm);
+  }
+  const std::vector<Point3d> before = net.v;
+  std::vector<int> moved;
+  for (size_t i = 0; i < net.v.size(); ++i) {
+    const double w = SculptWeight(falloff, before[i].DistanceTo(origin) / radius);
+    if (w <= 0.0) continue;
+    net.v[i] = before[i] + w * delta;
+    moved.push_back(static_cast<int>(i));
+  }
+  return moved;
+}
+
+void SculptAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  if (in.picks.size() < 2) { ctx.Warn("SubDSculpt: pick the vertex to drag, then the point to drag it to"); return; }
+  const double radius = in.OptNum("Radius", 5.0);
+  const std::string falloff = in.Opt("Falloff", "Smooth");
+  if (!(radius > 0.0)) { ctx.Warn("SubDSculpt: Radius must be positive"); return; }
+  std::vector<Target> ts = SubDTargets(ctx, ids, "SubDSculpt");
+  if (ts.empty()) return;
+  const auto [best_t, best_v] = NearestSculptVertex(ts, in.picks[0]);
   if (best_t < 0) { ctx.Warn("SubDSculpt: no SubD vertex near " + P3(in.picks[0])); return; }
   Target& tg = ts[static_cast<size_t>(best_t)];
   const Point3d origin = tg.net.v[static_cast<size_t>(best_v)];
-  Vector3d delta = in.picks[1] - origin;
-  // Constrain=Normal: only the part of the drag along the picked vertex's own normal (area-weighted face normals of the cage) counts, so the
-  // surface is pushed out or pulled in (inflate / deflate) whatever direction the target point lies in.
+  // Constrain=Normal: only the part of the drag along the picked vertex's own normal counts, so the surface is pushed out or pulled in
+  // (inflate / deflate) whatever direction the target point lies in.
   const bool along_normal = in.Opt("Constrain", "Free") == "Normal";
-  if (along_normal) {
-    const std::vector<Vector3d> normals = tg.net.VertexNormals();
-    const Vector3d nrm = normals[static_cast<size_t>(best_v)];
-    delta = nrm * ON_DotProduct(delta, nrm);
-  }
-  std::vector<Point3d> before = tg.net.v;
-  int moved = 0;
-  for (size_t i = 0; i < tg.net.v.size(); ++i) {
-    const double w = SculptWeight(falloff, before[i].DistanceTo(origin) / radius);
-    if (w <= 0.0) continue;
-    tg.net.v[i] = before[i] + w * delta;
-    ++moved;
-  }
+  const int moved = static_cast<int>(SculptStep(tg.net, best_v, in.picks[1], radius, falloff, along_normal).size());
   ctx.Doc().BeginChange("SubDSculpt");
   if (!CommitNet(ctx, tg.id, tg.net, "SubDSculpt")) return;
   const SceneObject* o = ctx.Doc().Find(tg.id);
   const Point3d now = tg.net.v[static_cast<size_t>(best_v)];
   std::string msg = "SubDSculpt: object " + std::to_string(tg.id) + ": " + std::to_string(moved) + " control point(s) within radius " + Num(radius) + " moved by " + falloff +
                     " falloff" + (along_normal ? " along the vertex normal" : "") + ", picked vertex " + P3(origin) + " -> " + P3(now);
+  if (o && o->subd) {
+    const kernel::SubDVertexInfo vi = o->subd->VertexInfoAt(now, 1e-6 * std::max(1.0, std::fabs(now.x) + std::fabs(now.y) + std::fabs(now.z)));
+    if (vi.found && vi.limit_valid) msg += ", limit point " + P3(vi.limit_point);
+  }
+  ctx.Print(msg);
+}
+
+// SubDSculptStroke: a brush stroke. The first pick selects the vertex; every further pick is one drag step: the vertex is dragged to that point
+// with the falloff, centred on where the vertex is NOW (so the brush travels with it and picks up the control points it comes near, which a
+// single long drag would not), Enter ends the stroke. The picked vertex ends exactly on the last pick (Free) and the whole stroke is one undo step.
+void SculptStrokeAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
+  if (in.picks.size() < 2) { ctx.Warn("SubDSculptStroke: pick the vertex to drag, then the stroke points"); return; }
+  const double radius = in.OptNum("Radius", 5.0);
+  const std::string falloff = in.Opt("Falloff", "Smooth");
+  if (!(radius > 0.0)) { ctx.Warn("SubDSculptStroke: Radius must be positive"); return; }
+  std::vector<Target> ts = SubDTargets(ctx, ids, "SubDSculptStroke");
+  if (ts.empty()) return;
+  const auto [best_t, best_v] = NearestSculptVertex(ts, in.picks[0]);
+  if (best_t < 0) { ctx.Warn("SubDSculptStroke: no SubD vertex near " + P3(in.picks[0])); return; }
+  Target& tg = ts[static_cast<size_t>(best_t)];
+  const Point3d origin = tg.net.v[static_cast<size_t>(best_v)];
+  const bool along_normal = in.Opt("Constrain", "Free") == "Normal";
+  std::set<int> touched;
+  size_t steps = 0;
+  for (size_t k = 1; k < in.picks.size(); ++k) {
+    for (int i : SculptStep(tg.net, best_v, in.picks[k], radius, falloff, along_normal)) touched.insert(i);
+    ++steps;
+  }
+  ctx.Doc().BeginChange("SubDSculptStroke");
+  if (!CommitNet(ctx, tg.id, tg.net, "SubDSculptStroke")) return;
+  const SceneObject* o = ctx.Doc().Find(tg.id);
+  const Point3d now = tg.net.v[static_cast<size_t>(best_v)];
+  std::string msg = "SubDSculptStroke: object " + std::to_string(tg.id) + ": " + std::to_string(steps) + " step(s), " + std::to_string(touched.size()) +
+                    " distinct control point(s) moved within radius " + Num(radius) + " by " + falloff + " falloff" + (along_normal ? " along the vertex normal" : "") +
+                    ", picked vertex " + P3(origin) + " -> " + P3(now);
   if (o && o->subd) {
     const kernel::SubDVertexInfo vi = o->subd->VertexInfoAt(now, 1e-6 * std::max(1.0, std::fabs(now.x) + std::fabs(now.y) + std::fabs(now.z)));
     if (vi.found && vi.limit_valid) msg += ", limit point " + P3(vi.limit_point);
@@ -1961,6 +2010,9 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "SubDSculpt", SubDTool(kSelectSubD, "Pick the vertex to drag, then the point to drag it to", 2, {},
                                 {Numeric("Radius", 5), Choice("Falloff", {"Smooth", "Linear", "Constant"}), Choice("Constrain", {"Free", "Normal"})}, SculptAction),
       CommandStatus::Implemented, "Drags one control vertex to a new point; every control point within Radius follows by the chosen falloff (Smooth, Linear or Constant).");
+  Reg(e, "SubDSculptStroke", SubDTool(kSelectSubD, "Pick the vertex to drag, then the stroke points (Enter when done)", -1, {},
+                                      {Numeric("Radius", 5), Choice("Falloff", {"Smooth", "Linear", "Constant"}), Choice("Constrain", {"Free", "Normal"})}, SculptStrokeAction),
+      CommandStatus::Implemented, "A brush stroke: the first pick selects a control vertex, each further pick drags it there with the falloff centred on where it is now, so the brush picks up the control points it travels past; Enter ends the stroke.");
   Reg(e, "SplitSubD", SubDTool(kSelectSubD, "Pick two points; the cutting plane is vertical through the line between them", 2, {},
                                {Toggle("Cap", true), Toggle("CreaseCut", true), Toggle("KeepInput", false), Numeric("Refine", 0)}, SplitSubDAction),
       CommandStatus::Implemented, "Cuts a SubD with a vertical plane into two SubDs: the control cage is clipped, each half is capped and its cut rim creased; Refine subdivides the cage first so a smooth SubD's halves follow its surface more closely.");
