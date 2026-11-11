@@ -4014,6 +4014,26 @@ ChamferDistanceLimit MaxChamferDistance(const Brep& solid, Point3d edge_p0, Poin
   return result;
 }
 
+double MaxChamferDistanceForAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double angle_from_i) {
+  const ChamferDistanceLimit extents = MaxChamferDistance(solid, edge_p0, edge_p1);
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  int idx_i = -1, idx_j = -1;
+  FindEdgeFaces(faces, edge_p0, edge_p1, tol, "MaxChamferDistanceForAngle", idx_i, idx_j);
+  const double dot_ij = std::max(-1.0, std::min(1.0, faces[static_cast<size_t>(idx_i)].plane.zaxis * faces[static_cast<size_t>(idx_j)].plane.zaxis));
+  const double theta = ON_PI - std::acos(dot_ij);
+  if (!(theta > 1e-9) || !(theta < ON_PI - 1e-9)) {
+    throw std::invalid_argument("dino8::kernel::MaxChamferDistanceForAngle: edge is not a convex dihedral edge - see ChamferConvexEdgeAngle");
+  }
+  if (!(angle_from_i > 1e-9) || !(angle_from_i < ON_PI - theta - 1e-9)) {
+    throw std::invalid_argument(
+        "dino8::kernel::MaxChamferDistanceForAngle: angle_from_i must lie strictly between 0 and pi - theta (the edge's exterior angle) for the chamfer plane "
+        "to reach face j");
+  }
+  // distance_j = distance_i sin(alpha) / sin(theta + alpha) must stay inside face j's extent, and distance_i inside face i's.
+  return std::min(extents.max_distance_i, extents.max_distance_j * std::sin(theta + angle_from_i) / std::sin(angle_from_i));
+}
+
 // MULTI-EDGE generalization of ChamferConvexEdge - fillet.h's own doc
 // comment spells out the v1 scope this closes vs. leaves open. Each
 // edge's own per-edge geometry (m_i/m_j/theta/extents/rails) is

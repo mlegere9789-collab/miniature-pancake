@@ -1019,6 +1019,15 @@ struct ChamferDistanceLimit {
 };
 ChamferDistanceLimit MaxChamferDistance(const Brep& solid, Point3d edge_p0, Point3d edge_p1);
 
+// The DISTANCE + ANGLE form's bound: the largest distance_i ChamferConvexEdgeAngle can fit on this edge at `angle_from_i` (radians), i.e. the setback
+// before either face's own extent is reached. distance_j follows from the law of sines in the chamfer's cross-section, distance_j = distance_i sin(alpha) /
+// sin(theta + alpha) (theta = the interior dihedral angle), so
+//   limit = min(extent_i, extent_j sin(theta + alpha) / sin(alpha)),
+// with extent_i/extent_j the two values MaxChamferDistance reports. Same exclusive-bound and third-face disclosures as MaxChamferDistance. Throws
+// std::invalid_argument for MaxChamferDistance's structural reasons, a non-convex dihedral, and an angle outside (0, pi - theta) (the same refusal
+// ChamferConvexEdgeAngle gives, naming the angle).
+double MaxChamferDistanceForAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double angle_from_i);
+
 // MULTI-EDGE generalization of ChamferConvexEdge, closing a real gap this
 // file itself otherwise had: unlike the fillet side (FilletConvexEdges,
 // FilletConvexEdgesConic), no multi-edge chamfer batch existed anywhere
