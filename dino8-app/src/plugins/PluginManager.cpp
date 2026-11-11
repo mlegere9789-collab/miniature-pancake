@@ -76,7 +76,17 @@ struct PluginCommandFn {
   Dino8CommandFn fn;
   void* user_data;
   std::string name;
+  std::string owner;  // path of the plug-in that registered it ("" when registered outside any load)
 };
+
+// False once PlugInDisable has switched the plug-in at `owner_path` off (LoadedPlugin::enabled). The library stays
+// mapped - a registered command/node holds a pointer into it, so it can only be gated, not unloaded - but nothing
+// of it runs until PlugInEnable. A plug-in not (yet) in the manager's list counts as enabled.
+bool OwnerEnabled(const std::string& owner_path) {
+  if (owner_path.empty()) return true;
+  for (const LoadedPlugin& p : Manager::Get().Plugins()) if (p.path == owner_path) return p.enabled;
+  return true;
+}
 
 // A command line command backed by a plug-in's callback: it takes whatever
 // tokens were already queued on the command line as argv and runs
@@ -85,6 +95,12 @@ class PluginCommand : public app::Command {
  public:
   explicit PluginCommand(PluginCommandFn spec) : spec_(std::move(spec)) {}
   void Begin(CommandContext& ctx) override {
+    if (!OwnerEnabled(spec_.owner)) {
+      ctx.Engine().PendingInputs().clear();
+      ctx.Warn(spec_.name + ": its plug-in is disabled (PlugInEnable re-enables it)");
+      Finish();
+      return;
+    }
     std::vector<std::string> argv_storage;
     argv_storage.push_back(spec_.name);
     while (auto tok = ctx.Engine().TakePendingInput()) argv_storage.push_back(*tok);
@@ -128,7 +144,7 @@ int ApiRegisterCommand(const char* name, const char* help, Dino8CommandFn fn, vo
     return 1;
   }
   g_plugin_owned_commands.insert(key);
-  PluginCommandFn spec{fn, user_data, name};
+  PluginCommandFn spec{fn, user_data, name, g_loading ? g_loading->path : std::string()};
   app::CommandFactory factory = [spec]() -> std::unique_ptr<app::Command> { return std::make_unique<PluginCommand>(spec); };
   g_app->Engine().Register(name, factory, app::CommandStatus::Implemented, help ? help : "");
   if (g_loading) g_loading->commands.emplace_back(name);
@@ -407,7 +423,9 @@ int ApiRegisterFlowNode(const char* name, const char* category, const char* desc
     def.outputs.push_back(p);
   }
   const int in_count = input_count, out_count = output_count;
-  def.eval = [evaluator, user_data, in_count, out_count](flow::EvalContext& c) {
+  const std::string owner = g_loading ? g_loading->path : std::string();
+  def.eval = [evaluator, user_data, in_count, out_count, owner](flow::EvalContext& c) {
+    if (!OwnerEnabled(owner)) { c.Fail("its plug-in is disabled (PlugInEnable re-enables it)"); return; }
     std::vector<Dino8FlowValue> in(static_cast<size_t>(std::max(1, in_count)));
     for (int i = 0; i < in_count; ++i) in[static_cast<size_t>(i)] = ToFlowValue(c.In(i));
     std::vector<Dino8FlowValue> out(static_cast<size_t>(std::max(1, out_count)));

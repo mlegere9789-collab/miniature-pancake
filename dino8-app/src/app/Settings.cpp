@@ -8,6 +8,7 @@
 
 #include "app/Application.h"
 #include "app/MacroLibrary.h"
+#include "plugins/PluginManager.h"
 #include "util/json_mini.h"
 
 namespace dino8::app {
@@ -177,6 +178,23 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   app.curve_display_tolerance = Num(root["curve_display_tolerance"], app.curve_display_tolerance);
   app.surface_display_tolerance = Num(root["surface_display_tolerance"], app.surface_display_tolerance);
   app.adaptive_tessellation = Bool(root["adaptive_tessellation"], app.adaptive_tessellation);
+  // Plug-in manager settings (plugins/PluginManager.h): extra plug-in search folders (GrasshopperFolders), the
+  // load-one-by-one flag and the ignored/disabled library file names (GrasshopperIgnorePlugin, PlugInDisable).
+  // Each list is replaced wholesale when its key is present, so a removed entry stays removed. Read before
+  // Manager::ScanDefaultFolders runs at startup (Application::Init), so they take effect on the very next launch.
+  const json::Value& pl = root["plugins"];
+  if (pl.IsObject()) {
+    plugins::Manager& mgr = plugins::Manager::Get();
+    if (pl["folders"].IsArray()) {
+      mgr.extra_folders.clear();
+      for (size_t i = 0; i < pl["folders"].Size(); ++i) if (pl["folders"][i].IsString()) mgr.extra_folders.push_back(pl["folders"][i].AsString());
+    }
+    if (pl["ignored"].IsArray()) {
+      mgr.ignored_plugins.clear();
+      for (size_t i = 0; i < pl["ignored"].Size(); ++i) if (pl["ignored"][i].IsString()) mgr.ignored_plugins.push_back(pl["ignored"][i].AsString());
+    }
+    mgr.load_one_by_one = Bool(pl["load_one_by_one"], mgr.load_one_by_one);
+  }
   return true;
 }
 
@@ -224,6 +242,14 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   out << "  \"curve_display_tolerance\": " << a.curve_display_tolerance << ",\n";
   out << "  \"surface_display_tolerance\": " << a.surface_display_tolerance << ",\n";
   out << "  \"adaptive_tessellation\": " << (a.adaptive_tessellation ? "true" : "false") << ",\n";
+  {
+    const plugins::Manager& mgr = plugins::Manager::Get();
+    out << "  \"plugins\": {\"folders\": [";
+    for (size_t i = 0; i < mgr.extra_folders.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(mgr.extra_folders[i]) << "\"";
+    out << "], \"ignored\": [";
+    for (size_t i = 0; i < mgr.ignored_plugins.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(mgr.ignored_plugins[i]) << "\"";
+    out << "], \"load_one_by_one\": " << (mgr.load_one_by_one ? "true" : "false") << "},\n";
+  }
   out << "  \"recent_files\": [";
   for (size_t i = 0; i < a.RecentFiles().size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.RecentFiles()[i]) << "\"";
   out << "],\n";

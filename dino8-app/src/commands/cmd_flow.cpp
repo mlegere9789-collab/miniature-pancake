@@ -1,5 +1,6 @@
 // Dino Flow (Grasshopper-class node editor) and plug-in system commands.
 // Registered last so it can freely reference every other subsystem.
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
@@ -31,6 +32,85 @@ bool OptionValue(const std::vector<std::string>& toks, const std::string& key, s
   for (const std::string& t : toks) {
     if (t.size() > prefix.size() && LowerStr(t.substr(0, prefix.size())) == prefix) { out = t.substr(prefix.size()); return true; }
   }
+  return false;
+}
+
+// ---- plug-in enable / disable --------------------------------------------------------------------------------
+// "Disabled" is the manager's ignored_plugins list (which settings.json persists, Settings.cpp "plugins"), plus,
+// for a plug-in already loaded this session, LoadedPlugin::enabled = false so its commands and flow nodes stop
+// running at once (its library stays mapped: registered callbacks point into it).
+bool PluginMatches(const std::string& want, const plugins::LoadedPlugin& p) {
+  const std::string w = LowerStr(want);
+  const fs::path fp(p.path);
+  return LowerStr(p.name) == w || LowerStr(fp.filename().string()) == w || LowerStr(fp.stem().string()) == w;
+}
+
+bool IgnoredEntryMatches(const std::string& want, const std::string& entry) {
+  const std::string w = LowerStr(want);
+  return LowerStr(entry) == w || LowerStr(fs::path(entry).stem().string()) == w;
+}
+
+void DisablePlugin(CommandContext& ctx, const std::string& want) {
+  auto& mgr = plugins::Manager::Get();
+  std::string fname = want;
+  std::string shown = want;
+  bool loaded = false;
+  for (const plugins::LoadedPlugin& p : mgr.Plugins()) {
+    if (!PluginMatches(want, p)) continue;
+    fname = fs::path(p.path).filename().string();
+    shown = p.name;
+    mgr.SetEnabled(p.path, false);
+    loaded = true;
+  }
+  if (!loaded) {  // not loaded: resolve a bare stem ("hello_dino") to the real library file name the loader compares
+    std::vector<std::string> folders = {ConfigDirectory() + "/plugins", ctx.App().ExeDir() + "/plugins"};
+    for (const std::string& f : mgr.extra_folders) folders.push_back(f);
+    for (const std::string& folder : folders) {
+      std::error_code ec;
+      if (!fs::is_directory(folder, ec)) continue;
+      for (const auto& entry : fs::directory_iterator(folder, ec))
+        if (entry.is_regular_file() && IgnoredEntryMatches(want, entry.path().filename().string())) fname = entry.path().filename().string();
+    }
+  }
+  if (std::find(mgr.ignored_plugins.begin(), mgr.ignored_plugins.end(), fname) == mgr.ignored_plugins.end()) mgr.ignored_plugins.push_back(fname);
+  ctx.Print("PlugInDisable: " + shown + " disabled (" + fname + " will not load in later sessions either; PlugInEnable re-enables it)");
+}
+
+bool EnablePlugin(CommandContext& ctx, const std::string& want, const char* who) {
+  auto& mgr = plugins::Manager::Get();
+  bool found = false;
+  auto& ig = mgr.ignored_plugins;
+  for (const plugins::LoadedPlugin& p : mgr.Plugins()) {
+    if (!PluginMatches(want, p)) continue;
+    const std::string fname = fs::path(p.path).filename().string();
+    ig.erase(std::remove(ig.begin(), ig.end(), fname), ig.end());
+    mgr.SetEnabled(p.path, true);
+    ctx.Print(std::string(who) + ": " + p.name + " enabled");
+    found = true;
+  }
+  if (found) return true;
+  // Not loaded this session (it was disabled or ignored at startup): forget the ignore entry, then load it from
+  // wherever a plug-in folder holds a library of that name.
+  std::vector<std::string> names;
+  for (const std::string& e : ig) if (IgnoredEntryMatches(want, e)) names.push_back(e);
+  ig.erase(std::remove_if(ig.begin(), ig.end(), [&](const std::string& e) { return IgnoredEntryMatches(want, e); }), ig.end());
+  std::vector<std::string> folders = {ConfigDirectory() + "/plugins", ctx.App().ExeDir() + "/plugins"};
+  for (const std::string& f : mgr.extra_folders) folders.push_back(f);
+  for (const std::string& folder : folders) {
+    std::error_code ec;
+    if (!fs::is_directory(folder, ec)) continue;
+    for (const auto& entry : fs::directory_iterator(folder, ec)) {
+      if (!entry.is_regular_file()) continue;
+      const std::string fn = entry.path().filename().string();
+      if (!IgnoredEntryMatches(want, fn)) continue;
+      std::string error;
+      if (mgr.LoadFile(ctx.App(), entry.path().string(), error)) { ctx.Print(std::string(who) + ": loaded " + fn); return true; }
+      ctx.Warn(std::string(who) + ": " + fn + " failed to load: " + error);
+      return false;
+    }
+  }
+  if (!names.empty()) { ctx.Print(std::string(who) + ": " + want + " is no longer ignored (no library of that name is in a plug-in folder right now)"); return true; }
+  ctx.Warn(std::string(who) + ": no plug-in named '" + want + "' is loaded, ignored or in a plug-in folder");
   return false;
 }
 
@@ -111,9 +191,21 @@ void RegisterFlowCommands(CommandEngine& e) {
         while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
         auto& mgr = plugins::Manager::Get();
         if (!toks.empty() && LowerStr(toks[0]) == "add" && toks.size() > 1) {
+          if (std::find(mgr.extra_folders.begin(), mgr.extra_folders.end(), toks[1]) != mgr.extra_folders.end()) {
+            ctx.Print("GrasshopperFolders: " + toks[1] + " is already in the list");
+            return;
+          }
           mgr.extra_folders.push_back(toks[1]);
           mgr.LoadFolder(ctx.App(), toks[1]);
           ctx.Print("GrasshopperFolders: added " + toks[1]);
+          return;
+        }
+        if (!toks.empty() && LowerStr(toks[0]) == "remove" && toks.size() > 1) {
+          auto& fl = mgr.extra_folders;
+          const size_t before = fl.size();
+          fl.erase(std::remove(fl.begin(), fl.end(), toks[1]), fl.end());
+          ctx.Print(fl.size() < before ? "GrasshopperFolders: removed " + toks[1] + " (plug-ins already loaded from it stay loaded until restart)"
+                                       : "GrasshopperFolders: " + toks[1] + " is not in the list");
           return;
         }
         ctx.Print("GrasshopperFolders: " + std::to_string(mgr.extra_folders.size()) + " extra folder(s) (plus <config>/plugins and the app's plugins/ folder)");
@@ -124,7 +216,7 @@ void RegisterFlowCommands(CommandEngine& e) {
         const auto& list = plugins::Manager::Get().Plugins();
         ctx.Print("GrasshopperPluginList: " + std::to_string(list.size()) + " plug-in(s) found");
         for (const plugins::LoadedPlugin& p : list)
-          ctx.Print("  " + p.name + " " + p.version + " - " + (p.loaded_ok ? std::to_string(p.commands.size()) + " command(s), " + std::to_string(p.flow_nodes.size()) + " node(s)" : "failed: " + p.error));
+          ctx.Print("  " + p.name + " " + p.version + " - " + (p.loaded_ok ? std::to_string(p.commands.size()) + " command(s), " + std::to_string(p.flow_nodes.size()) + " node(s)" : "failed: " + p.error) + (p.enabled ? "" : " [disabled]"));
         ctx.App().Panels().plugin_manager = true;
       }));
 
@@ -138,10 +230,34 @@ void RegisterFlowCommands(CommandEngine& e) {
         std::vector<std::string> toks;
         while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
         auto& mgr = plugins::Manager::Get();
-        if (toks.empty()) { ctx.Print("GrasshopperIgnorePlugin: " + std::to_string(mgr.ignored_plugins.size()) + " plug-in(s) ignored"); return; }
+        if (toks.empty()) {
+          ctx.Print("GrasshopperIgnorePlugin: " + std::to_string(mgr.ignored_plugins.size()) + " plug-in(s) ignored");
+          for (const std::string& f : mgr.ignored_plugins) ctx.Print("  " + f);
+          return;
+        }
+        if (LowerStr(toks[0]) == "remove" && toks.size() > 1) { EnablePlugin(ctx, toks[1], "GrasshopperIgnorePlugin"); return; }
+        if (std::find(mgr.ignored_plugins.begin(), mgr.ignored_plugins.end(), toks[0]) != mgr.ignored_plugins.end()) {
+          ctx.Print("GrasshopperIgnorePlugin: " + toks[0] + " is already ignored");
+          return;
+        }
         mgr.ignored_plugins.push_back(toks[0]);
         ctx.Print("GrasshopperIgnorePlugin: will not load " + toks[0]);
       }));
+
+  // PlugInDisable / PlugInEnable <plug-in name or library file name>: switch a plug-in off or on. Disabling stops
+  // its commands and flow nodes at once and keeps it from loading in later sessions (persisted in settings.json).
+  Reg(e, "PlugInDisable", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) { ctx.Warn("PlugInDisable: give a plug-in name or library file name (see GrasshopperPluginList)"); return; }
+        DisablePlugin(ctx, toks[0]);
+      }), CommandStatus::Implemented, "Disables a plug-in by name or library file name: its commands and flow nodes stop running immediately and it is not loaded in later sessions.");
+  Reg(e, "PlugInEnable", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) { ctx.Warn("PlugInEnable: give a plug-in name or library file name (see GrasshopperPluginList)"); return; }
+        EnablePlugin(ctx, toks[0], "PlugInEnable");
+      }), CommandStatus::Implemented, "Re-enables a plug-in disabled by PlugInDisable (or listed by GrasshopperIgnorePlugin), loading it if it was skipped at startup.");
 
   Reg(e, "GrasshopperDeveloperSettings", Immediate([](CommandContext& ctx) {
         ctx.App().ShowHelpFor("GrasshopperDeveloperSettings");

@@ -148,12 +148,32 @@ void ToggleOrReportMacroRecording(CommandContext& ctx) {
 class HelpCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
+    // "Help Circle" names its command: the typed name wins over "the last command" (it used to be dropped
+    // whenever any command had run before, so the panel showed the previous command's help instead).
+    if (!ctx.Engine().PendingInputs().empty()) { WantText("Command name for help"); return; }
     const std::vector<std::string>& recent = ctx.Engine().RecentCommands();
-    if (recent.size() > 1) { ctx.App().ShowHelpFor(recent[1]); Finish(); return; }
+    if (recent.size() > 1) { Say(ctx, recent[1]); Finish(); return; }
     WantText("Command name for help");
   }
-  void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().ShowHelpFor(t); Finish(); }
+  void OnText(CommandContext& ctx, const std::string& t) override { Say(ctx, t); Finish(); }
   void OnEnter(CommandContext& ctx) override { ctx.App().Panels().help = true; Finish(); }
+
+ private:
+  // Opens the Help panel on the command AND prints its one-line description (in the active UI language, via
+  // LocalizedCommandDescription: a translated cmddesc.* string where one exists, else the English catalog text)
+  // and its command-line options to the command history, so help is reachable from scripts, the command line
+  // and screen readers, not only through the panel.
+  static void Say(CommandContext& ctx, const std::string& name) {
+    const CommandInfo* info = ctx.App().Catalog().Find(name);
+    if (!info) { ctx.Warn("Help: unknown command '" + name + "'"); return; }
+    ctx.App().ShowHelpFor(info->name);
+    ctx.Print("Help: " + info->name + " - " + LocalizedCommandDescription(*info));
+    if (!info->options.empty()) {
+      std::string opts;
+      for (const std::string& o : info->options) opts += (opts.empty() ? "" : ", ") + o;
+      ctx.Print("Help: " + info->name + " options - " + opts);
+    }
+  }
 };
 
 CommandFactory Toggle(std::function<bool&(CommandContext&)> get, const char* label) {
