@@ -5,6 +5,7 @@
 // Silhouette, 3DFace, MakeUniformUV and friends.
 #include "commands/cmd_common.h"
 #include "commands/history_rebuild.h"
+#include "dino8/kernel/brep_seam.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/boss.h"
 #include "dino8/kernel/rib.h"
@@ -96,6 +97,24 @@ int NearestFace(const ON_Brep& b, Point3d p, double* dist_out = nullptr) {
   BrepMeshOptions opt;
   opt.chord_tolerance = 0.05;
   std::vector<kernel::Mesh> faces = MeshBrepFaces(b, opt);
+  // The loop-driven face mesher emits nothing for a face with no trim loops (the kernel's Sphere/Torus/Box/FromSurface faces, which are their whole
+  // surface), so its result is shorter than the face list and no longer lines up with it: tessellate such a face's surface directly so it can be picked.
+  bool any_loopless = false;
+  for (int i = 0; i < b.m_F.Count(); ++i) any_loopless = any_loopless || b.m_F[i].m_li.Count() == 0;
+  if (any_loopless) {
+    const bool aligned = static_cast<int>(faces.size()) == b.m_F.Count();
+    if (!aligned) faces.assign(static_cast<size_t>(b.m_F.Count()), kernel::Mesh());
+    for (int i = 0; i < b.m_F.Count(); ++i) {
+      if (b.m_F[i].m_li.Count() != 0 || (aligned && faces[static_cast<size_t>(i)].FaceCount() > 0)) continue;
+      const int si = b.m_F[i].m_si;
+      ON_NurbsSurface ns;
+      if (si >= 0 && si < b.m_S.Count() && b.m_S[si] && b.m_S[si]->GetNurbForm(ns) != 0) {
+        kernel::NurbsSurface ks;
+        ks.raw() = ns;
+        faces[static_cast<size_t>(i)] = ks.TessellateGridAdaptive(0.05);
+      }
+    }
+  }
   int best = -1;
   double bd = std::numeric_limits<double>::max();
   for (size_t i = 0; i < faces.size() && static_cast<int>(i) < b.m_F.Count(); ++i) {
@@ -1757,11 +1776,23 @@ class SrfSeamCommand : public Command {
   }
   void Run(CommandContext& ctx, Point3d p) {
     const SceneObject* o = ctx.Doc().Find(pick_->id);
-    if (!o || o->kind != ObjectKind::Surface || !o->surface) {
-      ctx.Warn("SrfSeam: only a standalone closed surface object is supported (not a face of a polysurface, whose trim/edge parameterisation would also need rebuilding across the new seam)");
+    // A standalone surface object, or a face of a polysurface that is its whole surface (kernel::ChangeFaceSeam: Sphere/Torus/Box/FromSurface style
+    // faces have no trim loops, so the new seam needs no trim or edge rebuilding); a face with real loops is refused with the kernel's reason.
+    const bool is_brep_face = o && o->kind == ObjectKind::Brep && o->brep;
+    if (!o || (!is_brep_face && (o->kind != ObjectKind::Surface || !o->surface))) {
+      ctx.Warn("SrfSeam: pick a closed surface object, or a face of a polysurface");
       return;
     }
-    ON_NurbsSurface s = o->surface->raw();
+    ON_NurbsSurface s;
+    if (is_brep_face) {
+      // The face's own surface, un-reversed (SurfaceOfObject() flips a reversed face, which would put the clicked parameter in a mirrored domain
+      // that ChangeFaceSeam, working on the stored surface, does not use).
+      const ON_Brep& ob = o->brep->raw();
+      const int fsi = pick_->face >= 0 && pick_->face < ob.m_F.Count() ? ob.m_F[pick_->face].m_si : -1;
+      if (fsi < 0 || fsi >= ob.m_S.Count() || !ob.m_S[fsi] || ob.m_S[fsi]->GetNurbForm(s) == 0) { ctx.Warn("SrfSeam: could not read that face's surface"); return; }
+    } else {
+      s = o->surface->raw();
+    }
     int dir = -1;
     if (s.IsClosed(0)) dir = 0;
     else if (s.IsClosed(1)) dir = 1;
@@ -1769,6 +1800,20 @@ class SrfSeamCommand : public Command {
     double u = 0, v = 0;
     if (!SurfaceClosestPointGlobal(s, p, u, v)) { ctx.Warn("SrfSeam: could not locate that point on the surface"); return; }
     const double t = dir == 0 ? u : v;
+    if (is_brep_face) {
+      kernel::Brep trial = *o->brep;
+      std::string why;
+      const kernel::Result r = kernel::ChangeFaceSeam(trial, pick_->face, dir, t, &why);
+      if (r == kernel::Result::NoOpAlreadySatisfied) {
+        ctx.Print("SrfSeam: the seam is already at " + std::string(dir == 0 ? "u" : "v") + "=" + FormatNumber(t) + "; nothing changed");
+        return;
+      }
+      if (r != kernel::Result::Ok) { ctx.Warn("SrfSeam: " + (why.empty() ? std::string("the face's seam could not be moved") : why) + "; nothing was changed"); return; }
+      ctx.Doc().BeginChange("SrfSeam");
+      if (SceneObject* orig = ctx.Doc().Find(pick_->id)) { *orig->brep = trial; orig->InvalidateDisplay(); }
+      ctx.Print("SrfSeam: seam of face " + std::to_string(pick_->face) + " moved to " + std::string(dir == 0 ? "u" : "v") + "=" + FormatNumber(t));
+      return;
+    }
     // Through the kernel wrapper (kernel::NurbsSurface::ChangeSeam), which reports a click on the EXISTING seam as already satisfied instead of
     // passing on OpenNURBS' refusal of a parameter a hair from the domain end.
     {
@@ -3752,7 +3797,7 @@ void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "SetSurfaceTangent", Make<SetSurfaceTangentCommand>(), CommandStatus::Implemented,
       "Real tangent-row rotation against the target surface's normal (the tangency-only half of MatchSrf's own technique), edge position left unchanged.");
   Reg(e, "SrfSeam", Make<SrfSeamCommand>(), CommandStatus::Implemented,
-      "Real ON_NurbsSurface::ChangeSurfaceSeam knot-vector rotation, for a standalone closed surface object (not yet a face inside a polysurface, whose trims would also need re-deriving across the new seam).");
+      "Real knot-vector rotation of a closed surface (kernel::NurbsSurface::ChangeSeam): a standalone closed surface object, or a face of a polysurface that is its whole surface (Sphere/Torus/Box style faces, kernel::ChangeFaceSeam). A face with real trim loops (welded solids, boolean results) is refused with a reason, since its trims and edges would also need re-seaming.");
   Reg(e, "FilletSrfCrv", Make<FilletSrfCrvCommand>(), CommandStatus::Implemented,
       "Real rolling-ball fillet between a surface and an independent curve: the surface side is tangent by construction (ball centre placed exactly radius r along the surface normal), and the curve side is solved per station (2-unknown Newton over the surface (u,v), at the station's own fixed curve parameter t) for the sphere to be genuinely tangent to the curve's own tangent line there - not just a closest-point touch.");
   Reg(e, "FilletSrfToRail", Make<FilletSrfToRailCommand>(), CommandStatus::Implemented,
