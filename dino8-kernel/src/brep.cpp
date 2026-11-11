@@ -273,8 +273,15 @@ bool RemoveFoldBackSpikes(const ON_NurbsSurface& srf, std::vector<Point2d>& poly
 // notch must close again under the mesh weld (tolerance::kWeld, 1e-6 in 3D, which also welds a slit's two sides together), so
 // its 3D width is held to about 3e-7: a fraction of 1e-7 of the bridge (the notch fraction of the integrators' keyhole in
 // TrimmedFaceUVPolygon), smaller still for a long bridge. A zero-width slit defeats the simplicity test; the caller tries both signs.
+//
+// The bridge is NOT a straight segment: it bends once, at a point `kink_sign` * 3.7% of its length off its midpoint. A straight
+// bridge from a face corner to a hole corner of a regular fixture runs exactly through grid vertices of the tessellation lattice
+// (measured: the diagonal from (0.15, 0.15) to (0.4, 0.4) of a 10 x 10 face passes the lattice vertices (0.25, 0.25), (0.2, 0.2),
+// (0.3, 0.3) ... for 4, 8, 10 and 16 divisions), and NurbsSurface::TessellateGridClippedExact's concave clip counts the cells
+// around such a vertex more than once (measured: area 136 to 148 instead of 45 for four of six division counts; the bent
+// bridge gave 44.999998 at all six).
 std::vector<Point2d> SlitHolesIntoOuter(const std::vector<Point2d>& outer, std::vector<std::vector<Point2d>> holes,
-                                         const ON_NurbsSurface& srf, double sign) {
+                                         const ON_NurbsSurface& srf, double sign, double kink_sign) {
   const double outer_area = dino8::kernel::detail::SignedArea(outer);
   struct Attach {
     size_t outer_index;
@@ -304,10 +311,15 @@ std::vector<Point2d> SlitHolesIntoOuter(const std::vector<Point2d>& outer, std::
     const double fraction = std::max(1e-12, std::min(1e-7, 3e-7 / std::max(len3, 1e-12)));
     const double off = sign * (len > 1e-300 ? len : 1.0) * fraction;
     const double px = len > 1e-300 ? by / len * off : off, py = len > 1e-300 ? -bx / len * off : 0.0;
+    const double kx = len > 1e-300 ? by / len * kink_sign * 0.037 * len : 0.0;
+    const double ky = len > 1e-300 ? -bx / len * kink_sign * 0.037 * len : 0.0;
+    const Point2d bend(0.5 * (ea.x + eh.x) + kx, 0.5 * (ea.y + eh.y) + ky);
     Attach att;
     att.outer_index = best_outer;
+    att.insert.push_back(bend);
     for (size_t k = 0; k < hole.size(); ++k) att.insert.push_back(hole[(best_hole + k) % hole.size()]);
     att.insert.emplace_back(eh.x + px, eh.y + py);
+    att.insert.emplace_back(bend.x + px, bend.y + py);
     att.insert.emplace_back(ea.x + px, ea.y + py);
     attachments.push_back(std::move(att));
   }
@@ -323,18 +335,20 @@ std::vector<Point2d> SlitHolesIntoOuter(const std::vector<Point2d>& outer, std::
 
 // Turns a resolved face that has holes into an exact-clip face whose one outer polygon has every hole slit into it, when that
 // polygon is simple; any other face (no holes, or no simple slit polygon) is left exactly as ResolveFace() returned it, so the old
-// whole-cell path keeps handling it. Both perpendicular signs of the notch are tried. Only when the polygon is not simple as
+// whole-cell path keeps handling it. Both perpendicular signs of the notch and both sides of the bridge's bend are tried. Only when the polygon is not simple as
 // sampled are the fold-back overshoots of the surface-surface tracer removed (3D criterion, see RemoveFoldBackSpikes) and the slit
 // tried once more, so a legitimate shape is never altered by the despike.
 void SlitHolesForTessellation(FaceGeometry& fg) {
   if (!fg.holes_from_loops || fg.holes.empty() || fg.outer.size() < 3) return;
   const auto try_slit = [&](const std::vector<Point2d>& outer, const std::vector<std::vector<Point2d>>& holes,
                             std::vector<Point2d>& merged) {
-    for (const double sign : {1.0, -1.0}) {
-      std::vector<Point2d> m = SlitHolesIntoOuter(outer, holes, fg.surface, sign);
-      if (m.size() >= 3 && IsSimpleSweep(m)) {
-        merged = std::move(m);
-        return true;
+    for (const double kink_sign : {1.0, -1.0}) {
+      for (const double sign : {1.0, -1.0}) {
+        std::vector<Point2d> m = SlitHolesIntoOuter(outer, holes, fg.surface, sign, kink_sign);
+        if (m.size() >= 3 && IsSimpleSweep(m)) {
+          merged = std::move(m);
+          return true;
+        }
       }
     }
     return false;
