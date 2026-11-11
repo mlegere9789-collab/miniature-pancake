@@ -5118,6 +5118,8 @@ class FilletEdgeCommand : public Command {
     for (size_t i = 0; i + 1 < pts.size(); ++i) if (pts[i + 1].first - pts[i].first < 1e-9) { err = "Law samples must have distinct t values"; return false; }
     spec.kind = 4;
     spec.samples = pts;
+    spec.r0 = pts.front().second;  // only read for display (ListHistory); the law itself is the samples
+    spec.r1 = pts.back().second;
     law = FilletLawFn(spec);
     desc = "Law=" + std::to_string(pts.size()) + " monotone-cubic samples, radius " + FormatNumber(pts.front().second) + " to " + FormatNumber(pts.back().second);
     return true;

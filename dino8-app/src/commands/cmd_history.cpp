@@ -525,6 +525,14 @@ std::string ParamsText(const HistoryRecord& rec) {
   std::string s;
   if (rb) for (const HistoryParam& p : rb->params) {
     if (p.name == "swap") continue;  // an action, always reads back "no"
+    if (rec.command == "ChamferEdge" && p.name == "angle" && !rec.num.count("angle")) continue;  // only a Distance/Angle chamfer has one
+    if (rec.command == "ChamferEdge" && p.name == "distance2" && rec.num.count("angle")) continue;  // an angle chamfer's second distance follows from the angle
+    if (rec.command == "FilletEdge" && p.name == "radius" && rec.num.count("law")) {  // a radius-law fillet has no single radius
+      static const char* const kLawNames[] = {"?", "sqrt", "quadratic", "smooth", "samples"};
+      const int k = static_cast<int>(rec.num.at("law"));
+      s += (s.empty() ? "" : ", ") + std::string("law=") + kLawNames[k >= 1 && k <= 4 ? k : 0] + " " + FormatNumber(NumOf(rec, "law_r0")) + " -> " + FormatNumber(NumOf(rec, "law_r1"));
+      continue;
+    }
     s += (s.empty() ? "" : ", ") + p.name + "=" + p.get(rec);
   }
   return s;

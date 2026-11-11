@@ -204,7 +204,7 @@ Show
 SelNone
 SelID 2
 Volume
-# A Rho fillet and an angle chamfer are not what the rebuild re-runs: nothing is recorded.
+# A Rho fillet is not what the rebuild re-runs: nothing is recorded. A distance/angle chamfer is recorded with its angle.
 New
 History On
 Box 0,0,0 10,10,0 10

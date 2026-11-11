@@ -10593,8 +10593,9 @@ h2r_has "$H2R_E" "no longer exists on the edited source: no edge has that direct
 h2r_has "$H2R_E" "UpdateHistory: object 2 (FilletEdge) kept as it was: edge 1 of 1:" "H2R_refuse: UpdateHistory keeps the old result and names the edge"
 h2r_sh "$H2R_E" 17 991.4 0.3 "H2R_refuse: the old result keeps its volume (not the chamfered source's 955)"
 h2r_has "$H2R_E" "staged for an exact conic fillet (rho 0.6" "H2R_rho control: a Rho fillet takes its own exact conic path"
-h2r_has "$H2R_E" "not recorded in history (this chamfer mode (distance and angle) is not one the rebuild reproduces)" "H2R_angle control: a distance/angle chamfer says it is not recorded"
-h2r_count "$H2R_E" "History recording: on. 0 object(s) with live construction history" 2 "H2R_rho/angle control: after the Rho fillet and after the angle chamfer nothing is recorded"
+h2r_has "$H2R_E" "ChamferEdge: edge 10 of object 1 replaced with an exact chamfer (distance1 3, angle 30 degrees from face 1); History is On: the original solid 1 is kept hidden as the source and the result is object 2" "H2R_angle: a distance/angle chamfer is recorded with its angle (the CHANG section measures the replay)"
+h2r_has "$H2R_E" "object 2: ChamferEdge <- 1  [distance=3, angle=30]" "H2R_angle: the record names the source, the distance and the angle"
+h2r_count "$H2R_E" "History recording: on. 0 object(s) with live construction history" 1 "H2R_rho control: after the Rho fillet nothing is recorded"
 
 # --- Cap (h2r_cap_script.txt)
 # Bounding boxes: 1 capped box 2 source scaled 2x 3 source rotated 90 deg, saved, reopened, moved +4 Z 4 fresh control 5 History Off moved
