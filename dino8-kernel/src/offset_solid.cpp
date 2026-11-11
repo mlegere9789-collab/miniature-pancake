@@ -93,6 +93,49 @@ bool SegmentsCross2D(double ax, double ay, double bx, double by, double cx, doub
   return ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
 }
 
+
+// The measured reason a solid is not planar-faced: how many faces are curved and what the first one is (type and its measured
+// parameters), so the refusal says what would have to be handled rather than just "not planar".
+std::string DescribeNonPlanar(const ON_Brep& b, const char* planar_faces_message) {
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double tol = 1e-6 * std::max(bb.Diagonal().Length(), 1e-9);
+  int curved = 0, first = -1;
+  std::string what;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_Surface* surf = b.m_F[fi].SurfaceOf();
+    if (surf == nullptr) continue;
+    ON_Plane pl;
+    if (surf->IsPlanar(&pl, tol)) continue;
+    ++curved;
+    if (first >= 0) continue;
+    first = fi;
+    ON_Cylinder cyl;
+    ON_Sphere sph;
+    ON_Cone cone;
+    ON_Torus tor;
+    if (surf->IsCylinder(&cyl, tol)) {
+      what = "a cylinder of radius " + Num(cyl.circle.Radius()) + " about the axis through " + Pt(cyl.circle.Center()) + " along (" + Num(cyl.Axis().x) + ", " +
+             Num(cyl.Axis().y) + ", " + Num(cyl.Axis().z) + ")";
+    } else if (surf->IsSphere(&sph, tol)) {
+      what = "a sphere of radius " + Num(sph.Radius()) + " about " + Pt(sph.Center());
+    } else if (surf->IsCone(&cone, tol)) {
+      what = "a cone";
+    } else if (surf->IsTorus(&tor, tol)) {
+      what = "a torus (major radius " + Num(tor.major_radius) + ", minor radius " + Num(tor.minor_radius) + ")";
+    } else {
+      what = "a freeform surface";
+    }
+  }
+  if (first < 0) {
+    return std::string("a face is not planar or cannot be read as a planar polygon (Brep::PlanarFaces: ") + planar_faces_message +
+           "); only planar-faced solids are offset here";
+  }
+  return "a face is not planar: " + std::to_string(curved) + " of " + std::to_string(b.m_F.Count()) + " faces are curved; the first, face " + std::to_string(first) +
+         ", is " + what + ". Only planar-faced solids are offset here: a curved face's offset is exact only where its planar neighbours meet it in "
+         "circles or lines that the OffsetSrf constructions for a capped cylinder, a coaxial revolved profile or a right prism over a profile with arcs "
+         "already build, and the general case needs trimmed-face reconstruction that is not implemented";
+}
 }  // namespace
 
 Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSolidOffsetReport* report) {
@@ -108,8 +151,7 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
   try {
     faces = solid.PlanarFaces();
   } catch (const std::exception& e) {
-    return refuse(std::string("a face is not planar or cannot be read as a planar polygon (Brep::PlanarFaces: ") + e.what() +
-                  "); only planar-faced solids are offset here");
+    return refuse(DescribeNonPlanar(solid.raw(), e.what()));
   }
   const int nf = static_cast<int>(faces.size());
   R.faces = nf;

@@ -341,3 +341,60 @@ D8_EXTRA_TEST(OffsetSolidPlanarRefusesAFaceThatCrossesItselfWithoutAnyEdgeRevers
     Check(out.raw().m_F.Count() == 6, "output untouched");
   }
 }
+
+namespace {
+std::vector<Loop> BoxLoops(double x0, double y0, double z0, double x1, double y1, double z1) {
+  const Point3d a(x0, y0, z0), b(x1, y0, z0), c(x1, y1, z0), d(x0, y1, z0), e(x0, y0, z1), f(x1, y0, z1), g(x1, y1, z1), h(x0, y1, z1);
+  return {{a, d, c, b}, {e, f, g, h}, {a, b, f, e}, {b, c, g, f}, {c, d, h, g}, {d, a, e, h}};
+}
+}  // namespace
+
+D8_EXTRA_TEST(OffsetSolidPlanarRefusesTwoBodiesGrowingIntoEachOtherOnAClosedTessellation) {
+  // Two separate 2-unit cubes 1 apart in ONE B-rep. Each is a closed solid, every edge grows, no face polygon crosses itself, and the
+  // tessellation of the result is a closed manifold (two components) - yet at d = 0.6 the grown cubes overlap by 0.2. Only the global
+  // crossing search sees it, and it does so on a closed mesh (the path the C-ring slit, whose overlap is coplanar and leaves the mesh
+  // open, does not reach).
+  std::vector<Loop> loops = BoxLoops(0, 0, 0, 2, 2, 2);
+  const std::vector<Loop> second = BoxLoops(3, 0, 0, 5, 2, 2);
+  loops.insert(loops.end(), second.begin(), second.end());
+  const Brep two = MakeSolid(loops);
+  Check(RelErr(PolyVolume(two.PlanarFaces()), 16.0) < 1e-12, "fixture: two 2-cubes, total volume 16");
+  {
+    Brep out;
+    PlanarSolidOffsetReport rep;
+    const Result r = dino8::kernel::OffsetSolidPlanar(two, 0.4, out, &rep);
+    Check(r == Result::Ok, ("two cubes d=0.4: gap 0.2 left, accepted (" + rep.refusal_reason + ")").c_str());
+    if (r == Result::Ok) {
+      Check(RelErr(PolyVolume(out.PlanarFaces()), 2.0 * std::pow(2.8, 3.0)) < 1e-12 && rep.self_intersections == 0, "two cubes d=0.4: volume 2 * 2.8^3 and no crossing");
+    }
+  }
+  for (double d : {0.6, 1.0}) {
+    Brep out = Brep::Box(0, 0, 0, 1, 1, 1);
+    PlanarSolidOffsetReport rep;
+    const Result r = dino8::kernel::OffsetSolidPlanar(two, d, out, &rep);
+    Check(r == Result::Failed, ("two cubes d=" + S(d) + ": the grown cubes overlap, refused").c_str());
+    Check(rep.min_edge_length_ratio > 1.0, ("two cubes d=" + S(d) + ": every edge grew (ratio " + S(rep.min_edge_length_ratio) + ")").c_str());
+    Check(rep.self_intersections > 0 && rep.refusal_reason.find("self-intersects") != std::string::npos &&
+              rep.refusal_reason.find("does not close") == std::string::npos && rep.refusal_reason.find("inconclusive") == std::string::npos,
+          ("two cubes d=" + S(d) + ": refused for " + std::to_string(rep.self_intersections) + " crossing triangle pairs on a CLOSED tessellation: " + rep.refusal_reason).c_str());
+    Check(out.raw().m_F.Count() == 6, "output untouched");
+  }
+}
+
+D8_EXTRA_TEST(OffsetSolidPlanarCurvedFaceRefusalNamesTheFaceAndItsMeasuredGeometry) {
+  {
+    Brep out;
+    PlanarSolidOffsetReport rep;
+    const Brep cyl = Brep::CylinderWelded(Point3d(1, 2, 0), ON_3dVector(0, 0, 1), 3.0, 6.0);
+    Check(dino8::kernel::OffsetSolidPlanar(cyl, 0.5, out, &rep) == Result::Failed, "a capped cylinder: refused");
+    Check(rep.refusal_reason.rfind("a face is not planar", 0) == 0 && rep.refusal_reason.find("a cylinder of radius 3") != std::string::npos &&
+              rep.refusal_reason.find("(1, 2, 0)") != std::string::npos && rep.refusal_reason.find("along (0, 0, 1)") != std::string::npos,
+          ("...naming the cylinder's measured radius, axis point and direction: " + rep.refusal_reason).c_str());
+  }
+  {
+    Brep out;
+    PlanarSolidOffsetReport rep;
+    Check(dino8::kernel::OffsetSolidPlanar(Brep::Sphere(Point3d(0, 0, 0), 2.5), 0.5, out, &rep) == Result::Failed, "a sphere: refused");
+    Check(rep.refusal_reason.find("a sphere of radius 2.5") != std::string::npos, ("...naming the sphere's radius: " + rep.refusal_reason).c_str());
+  }
+}
