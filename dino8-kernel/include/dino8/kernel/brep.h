@@ -6146,8 +6146,10 @@ class Brep {
   // running opposite to n, an edge/trim/surface curve shared with another
   // element, or a pull so deep that a vertical edge would vanish.
   // Throws std::out_of_range / std::invalid_argument for a bad face_index like
-  // ExtendFaceInPlace().
-  Result OffsetPlanarFaceAlongNormal(int face_index, double distance, double tolerance = tolerance::kDistance);
+  // ExtendFaceInPlace(). When `reason` is non-null it is cleared, and set to a one-sentence
+  // cause when the result is Result::Failed (the check that refused).
+  Result OffsetPlanarFaceAlongNormal(int face_index, double distance, double tolerance = tolerance::kDistance,
+                                    std::string* reason = nullptr);
 
   // Caps every planar hole in this Brep's
   // planar face - Rhino's own Cap for the case Check() reports as a

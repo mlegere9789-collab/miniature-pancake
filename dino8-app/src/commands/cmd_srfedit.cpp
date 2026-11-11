@@ -993,12 +993,50 @@ class MovePartsCommand : public Command {
     for (auto& kv : parts_) {
       SceneObject* o = ctx.Doc().Find(kv.first);
       if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
+      // MoveFace of ONE planar face along its own normal is an offset of that face: the kernel does it exactly (the face, its edges
+      // and corners translate; every neighbour - planar or cylindrical - is continued or cut and re-trimmed; see
+      // Brep::OffsetPlanarFaceAlongNormal). Only when the kernel declines (it names why) does the approximate rigid move below run.
+      std::string kernel_note;
+      if (is_face_ && !require_untrimmed_ && kv.second.size() == 1) {
+        if (TryExactFaceOffset(ctx, *o, kv.second[0], p - *base_, kernel_note)) { ++n; continue; }
+      }
       bool ok = is_face_ ? MoveBrepFaces(o->brep->raw(), kv.second, xf) : MoveBrepEdges(o->brep->raw(), kv.second, xf);
       if (ok) { o->InvalidateDisplay(); ++n; }
+      if (!kernel_note.empty()) ctx.Print(Label() + ": the exact kernel route declined (" + kernel_note.substr(0, 200) + "), so this is the approximate rigid face move");
     }
     ctx.Print(Label() + ": " + std::to_string(n) + " object(s) updated");
     ctx.ClearPreview();
     Finish();
+  }
+  // The exact route (kernel::Brep::OffsetPlanarFaceAlongNormal) for moving the single planar face `face` of `o` by `delta`. Returns true
+  // and replaces the object's B-rep when the kernel did it; otherwise returns false with `note` saying why not (the object is
+  // untouched: the kernel validates everything before it changes anything). An empty note means there was nothing to say (no move).
+  bool TryExactFaceOffset(CommandContext& ctx, SceneObject& o, int face, const Vector3d& delta, std::string& note) {
+    kernel::Brep kb = *o.brep;
+    const ON_Brep& raw = kb.raw();
+    if (face < 0 || face >= raw.m_F.Count() || raw.m_F[face].m_face_index < 0) { note = "the picked face is not a live face of the polysurface"; return false; }
+    const ON_BrepFace& f = raw.m_F[face];
+    ON_3dVector n = f.NormalAt(f.Domain(0).Mid(), f.Domain(1).Mid());
+    if (!n.Unitize()) { note = "the face has no usable normal"; return false; }
+    const double dist = delta.x * n.x + delta.y * n.y + delta.z * n.z;
+    const double len = delta.Length();
+    if (len < 1e-12) return false;
+    const ON_3dVector side(delta.x - n.x * dist, delta.y - n.y * dist, delta.z - n.z * dist);
+    if (side.Length() > 1e-6 * std::max(1.0, len)) { note = "the move is not along the face normal, so it is not an offset of the face"; return false; }
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-6);
+    std::string why;
+    kernel::Result r = kernel::Result::Failed;
+    try {
+      r = kb.OffsetPlanarFaceAlongNormal(face, dist, tol, &why);
+    } catch (const std::exception& e) {
+      why = e.what();
+    }
+    if (r != kernel::Result::Ok) { note = why.empty() ? std::string("the kernel could not offset that face") : why; return false; }
+    *o.brep = std::move(kb);
+    o.InvalidateDisplay();
+    ctx.Print(Label() + ": exact kernel route (OffsetPlanarFaceAlongNormal): face " + std::to_string(face) + " offset by " + FormatNumber(dist) +
+              " along its outward normal, " + std::to_string(o.brep->FaceCount()) + " face(s), neighbours continued or cut and re-trimmed");
+    return true;
   }
   void OnHover(CommandContext& ctx, Point3d h) override { if (!picking_ && base_) { ctx.ClearPreview(); ctx.AddPreviewLine(*base_, h); } }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }

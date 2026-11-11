@@ -16,6 +16,7 @@
 
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
 #include "test_registry.h"
 
@@ -225,26 +226,54 @@ D8_EXTRA_TEST(OffsetPlanarFaceCylinderCaps) {
 
 // Negative controls: every refusal leaves the body EXACTLY as it was, and the contract's throws/no-op hold.
 D8_EXTRA_TEST(OffsetPlanarFaceRefusalsLeaveTheBodyUntouched) {
+  const char* kTilted = "not a surface of translation along the face normal";
+  auto names = [](const std::string& why, const char* part) { return why.find(part) != std::string::npos; };
   {
     // A drafted (tapered) cylinder: the cap's neighbour is a cone, NOT a surface of translation along z.
     Brep b = Brep::ExtrudeTapered(CircleProfile(3.0), dino8::kernel::Vector3d(0, 0, 8), 5.0 * kPi / 180.0, true);
     const int top = PlanarFaceAt(b, ON_3dVector(0, 0, 1), 8.0);
     d8test::Check(top >= 0, "fixture: the drafted cylinder keeps a planar top cap");
     const double v = b.Volume(), a = b.Area();
-    d8test::Check(b.OffsetPlanarFaceAlongNormal(top, 1.0) == Result::Failed, "refusal: a conical (tilted) neighbour is refused");
+    std::string why;
+    d8test::Check(b.OffsetPlanarFaceAlongNormal(top, 1.0, 1e-6, &why) == Result::Failed, "refusal: a conical (tilted) neighbour is refused");
+    d8test::Check(names(why, kTilted) && names(why, "cone"), ("refusal: ... and names the cause (" + why + ")").c_str());
     d8test::Check(std::fabs(b.Volume() - v) < 1e-12 * v && std::fabs(b.Area() - a) < 1e-12 * a && std::fabs(MaxZ(b) - 8.0) < 1e-9,
                   "refusal: ... and the drafted body is unchanged");
   }
   {
+    // A chamfered top edge: the top face's neighbour is a 45 degree plane. A tilted PLANAR neighbour would need the moved face's own
+    // outline re-derived (the chamfer line slides sideways), which this method does not do: a measured refusal, not a wrong answer.
+    Brep b = dino8::kernel::ChamferConvexEdge(Brep::BoxWelded(0, 0, 0, 10, 10, 10), dino8::kernel::Point3d(0, 10, 10),
+                                              dino8::kernel::Point3d(10, 10, 10), 2.0, 2.0);
+    const int top = PlanarFaceAt(b, ON_3dVector(0, 0, 1), 10.0);
+    d8test::Check(top >= 0, "fixture: the chamfered box keeps a planar top");
+    const double v = b.Volume(), a = b.Area();
+    d8test::Check(std::fabs(v - (1000.0 - 2.0 * 2.0 / 2.0 * 10.0)) < 1e-6, "fixture: the chamfered box has volume 1000 - (2*2/2)*10 = 980");
+    std::string why;
+    d8test::Check(b.OffsetPlanarFaceAlongNormal(top, 1.0, 1e-6, &why) == Result::Failed, "refusal: a chamfer (tilted planar) neighbour is refused");
+    d8test::Check(names(why, kTilted) && names(why, "chamfer"), ("refusal: ... and names the cause (" + why + ")").c_str());
+    d8test::Check(std::fabs(b.Volume() - v) < 1e-12 * v && std::fabs(b.Area() - a) < 1e-12 * a && std::fabs(MaxZ(b) - 10.0) < 1e-9,
+                  "refusal: ... and the chamfered body is unchanged");
+    // The refusal is specific: the x = 0 wall of the same body (every neighbour contains the x direction) IS offset exactly.
+    const int wall = PlanarFaceAt(b, ON_3dVector(-1, 0, 0), 0.0);
+    d8test::Check(wall >= 0 && b.OffsetPlanarFaceAlongNormal(wall, 1.0) == Result::Ok, "control: the x = 0 wall of that chamfered box can be offset");
+    d8test::Check(std::fabs(b.Volume() - (v + 98.0)) < 1e-6, "control: ... gaining exactly one slab of the chamfered cross-section (100 - 2 = 98) times 1");
+  }
+  {
     Brep b = Cylinder(3.0, 8.0);
     const int wall = NonPlanarFace(b);
-    d8test::Check(wall >= 0 && b.OffsetPlanarFaceAlongNormal(wall, 1.0) == Result::Failed, "refusal: a non-planar face is refused");
+    std::string why;
+    d8test::Check(wall >= 0 && b.OffsetPlanarFaceAlongNormal(wall, 1.0, 1e-6, &why) == Result::Failed, "refusal: a non-planar face is refused");
+    d8test::Check(names(why, "not planar"), ("refusal: ... and names the cause (" + why + ")").c_str());
     const int top = PlanarFaceAt(b, ON_3dVector(0, 0, 1), 8.0);
     const double v = b.Volume();
-    d8test::Check(b.OffsetPlanarFaceAlongNormal(top, -8.0) == Result::Failed, "refusal: pulling the cap down to the base (zero height) is refused");
+    const Result deep = b.OffsetPlanarFaceAlongNormal(top, -8.0, 1e-6, &why);
+    d8test::Check(deep == Result::Failed && names(why, "would vanish"),
+                  ("refusal: pulling the cap down to the base (zero height) is refused and says why (" + why + ")").c_str());
     d8test::Check(b.OffsetPlanarFaceAlongNormal(top, -9.0) == Result::Failed, "refusal: pulling the cap through the base is refused");
     d8test::Check(b.OffsetPlanarFaceAlongNormal(top, 0.0) == Result::NoOpAlreadySatisfied, "distance 0 is a no-op");
-    d8test::Check(b.OffsetPlanarFaceAlongNormal(top, std::nan("")) == Result::Failed, "a non-finite distance is refused");
+    const Result nan_result = b.OffsetPlanarFaceAlongNormal(top, std::nan(""), 1e-6, &why);
+    d8test::Check(nan_result == Result::Failed && names(why, "not a finite number"), "a non-finite distance is refused and says why");
     d8test::Check(std::fabs(b.Volume() - v) < 1e-12 * v && std::fabs(MaxZ(b) - 8.0) < 1e-12, "refusals: the cylinder is unchanged");
     bool threw = false;
     try {
@@ -257,6 +286,9 @@ D8_EXTRA_TEST(OffsetPlanarFaceRefusalsLeaveTheBodyUntouched) {
   {
     // A Box() (six independent surfaces, no loops/edges) has no topology to edit: refused, unchanged.
     Brep b = Brep::Box(0, 0, 0, 10, 10, 10);
-    d8test::Check(b.OffsetPlanarFaceAlongNormal(1, 1.0) == Result::Failed, "refusal: a topology-less Box() has no boundary to move");
+    std::string why;
+    const Result box_result = b.OffsetPlanarFaceAlongNormal(1, 1.0, 1e-6, &why);
+    d8test::Check(box_result == Result::Failed && names(why, "Box()"),
+                  ("refusal: a topology-less Box() has no boundary to move, and the reason says so (" + why + ")").c_str());
   }
 }

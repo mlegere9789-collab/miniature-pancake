@@ -14160,7 +14160,7 @@ Result Brep::ExtendFaceInPlace(int face_index, int direction, double t0, double 
   return Result::Ok;
 }
 
-Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double tolerance) {
+Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double tolerance, std::string* reason) {
   ON_Brep& b = brep_;
   if (face_index < 0 || face_index >= b.m_F.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::OffsetPlanarFaceAlongNormal: face_index " + std::to_string(face_index) +
@@ -14171,12 +14171,17 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
     throw std::invalid_argument("dino8::kernel::Brep::OffsetPlanarFaceAlongNormal: face_index " +
                                 std::to_string(face_index) + " refers to an already-deleted face");
   }
-  if (!std::isfinite(distance)) return Result::Failed;
+  if (reason) reason->clear();
+  auto fail = [&](const char* why) {
+    if (reason) *reason = why;
+    return Result::Failed;
+  };
+  if (!std::isfinite(distance)) return fail("the distance is not a finite number");
   if (distance == 0.0) return Result::NoOpAlreadySatisfied;
   const double tol = std::max(tolerance, 1e-9);
-  if (!face.IsPlanar(nullptr, tol)) return Result::Failed;
+  if (!face.IsPlanar(nullptr, tol)) return fail("the face is not planar");
   ON_3dVector n = face.NormalAt(face.Domain(0).Mid(), face.Domain(1).Mid());
-  if (!n.Unitize()) return Result::Failed;
+  if (!n.Unitize()) return fail("the face has no usable normal");
   const ON_3dVector shift = n * distance;
 
   // Number of live elements referencing a curve/surface slot: an in-place
@@ -14196,7 +14201,7 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
     for (int i = 0; i < b.m_F.Count(); ++i) if (b.m_F[i].m_face_index >= 0 && b.m_F[i].m_si == si) ++c;
     return c;
   };
-  if (faces_on_si(face.m_si) != 1) return Result::Failed;
+  if (faces_on_si(face.m_si) != 1) return fail("the face's surface is shared with another face");
 
   // ---- the moved face's boundary: edges, vertices, neighbours ----------------------------------------------------
   std::vector<int> loop_trims;       // F's trims on an edge shared with a NEIGHBOUR face
@@ -14211,16 +14216,16 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
       if (t.m_type == ON_BrepTrim::singular) {
         // A collapsed boundary (the centre of a polar-parameterized disk cap): no edge, no neighbour, but its vertex
         // is a real point of this face and must move with it.
-        if (t.m_vi[0] < 0 || t.m_vi[0] >= b.m_V.Count()) return Result::Failed;
+        if (t.m_vi[0] < 0 || t.m_vi[0] >= b.m_V.Count()) return fail("a polar (singular) trim of the face has no valid vertex");
         top_verts.insert(t.m_vi[0]);
         continue;
       }
-      if (t.m_ei < 0) return Result::Failed;
+      if (t.m_ei < 0) return fail("a boundary trim of the face has no edge (a topology-less face, such as a Box() face)");
       const ON_BrepEdge& e = b.m_E[t.m_ei];
-      if (e.TrimCount() != 2 || e.m_vi[0] < 0 || e.m_vi[1] < 0) return Result::Failed;
+      if (e.TrimCount() != 2 || e.m_vi[0] < 0 || e.m_vi[1] < 0) return fail("a boundary edge of the face is not shared by exactly one other face (naked or non-manifold)");
       const int other_ti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
       const int nf = b.m_T[other_ti].FaceIndexOf();
-      if (nf < 0) return Result::Failed;
+      if (nf < 0) return fail("a boundary edge of the face has an other trim without a face");
       loop_edges.insert(t.m_ei);
       top_verts.insert(e.m_vi[0]);
       top_verts.insert(e.m_vi[1]);
@@ -14231,14 +14236,14 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
       neighbour_faces.insert(nf);
     }
   }
-  if (loop_trims.empty()) return Result::Failed;
-  for (int ei : loop_edges) if (edges_on_c3(b.m_E[ei].m_c3i) != 1) return Result::Failed;
+  if (loop_trims.empty()) return fail("the face has no boundary shared with a neighbour (no loops: a topology-less Box() face)");
+  for (int ei : loop_edges) if (edges_on_c3(b.m_E[ei].m_c3i) != 1) return fail("a boundary edge curve of the face is shared with another edge");
   // A moving vertex that is not on the rim (a disk's centre) may touch only edges that move with the face.
   for (int v : top_verts) {
     if (rim_verts.count(v)) continue;
     for (int k = 0; k < b.m_V[v].m_ei.Count(); ++k) {
       const int ei = b.m_V[v].m_ei[k];
-      if (b.m_E[ei].m_edge_index >= 0 && !loop_edges.count(ei)) return Result::Failed;
+      if (b.m_E[ei].m_edge_index >= 0 && !loop_edges.count(ei)) return fail("the centre or seam vertex of the face touches an edge that does not move with it");
     }
   }
   const ON_3dPoint plane_point = b.m_V[*top_verts.begin()].point;
@@ -14255,10 +14260,10 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
   for (int nf : neighbour_faces) {
     ON_BrepFace& nface = b.m_F[nf];
     const ON_Surface* srf = nface.SurfaceOf();
-    if (!srf) return Result::Failed;
+    if (!srf) return fail("a neighbour face has no surface");
     ON_NurbsSurface ns;
     if (const auto* cast = ON_NurbsSurface::Cast(srf)) ns = *cast;
-    else if (srf->GetNurbForm(ns) <= 0) return Result::Failed;
+    else if (srf->GetNurbForm(ns) <= 0) return fail("a neighbour face's surface has no NURBS form");
     const ON_Interval dom[2] = {ns.Domain(0), ns.Domain(1)};
     bool ruling_ok[2] = {true, true};
     double speed[2] = {0.0, 0.0};
@@ -14268,7 +14273,7 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
         const double u = dom[0].ParameterAt(iu / 6.0), v = dom[1].ParameterAt(iv / 6.0);
         ON_3dPoint p;
         ON_3dVector d[2];
-        if (!ns.Ev1Der(u, v, p, d[0], d[1])) return Result::Failed;
+        if (!ns.Ev1Der(u, v, p, d[0], d[1])) return fail("a neighbour face's surface could not be evaluated");
         for (int r = 0; r < 2; ++r) {
           const ON_3dVector& along = d[r];
           const ON_3dVector& across = d[1 - r];
@@ -14284,11 +14289,11 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
         }
       }
     }
-    if (ruling_ok[0] == ruling_ok[1]) return Result::Failed;  // neither (not prismatic) or both (degenerate)
+    if (ruling_ok[0] == ruling_ok[1]) return fail("a neighbour face is not a surface of translation along the face normal (a cone, a chamfer or another tilted wall)");  // neither (not prismatic) or both (degenerate)
     NeighbourPlan plan;
     plan.dir = ruling_ok[0] ? 0 : 1;
     const double s = speed[plan.dir];
-    if (std::fabs(s) < 1e-12 || ns.IsClosed(plan.dir)) return Result::Failed;
+    if (std::fabs(s) < 1e-12 || ns.IsClosed(plan.dir)) return fail("a neighbour face's surface runs along the normal at zero speed or is closed in that direction");
     plan.delta = distance / s;
     // The moved boundary's ruling parameter: every trim of this neighbour on F's boundary must sit on ONE iso value
     // and lie in F's plane.
@@ -14300,18 +14305,18 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
       const int other_ti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
       if (b.m_T[other_ti].FaceIndexOf() != nf) continue;
       const ON_Curve* c2 = b.m_T[other_ti].TrimCurveOf();
-      if (!c2) return Result::Failed;
+      if (!c2) return fail("a neighbour face's trim on the moved boundary has no 2D curve");
       for (double f : {0.0, 0.5, 1.0}) {
         const ON_3dPoint q = c2->PointAt(c2->Domain().ParameterAt(f));
         if (!have_top) { plan.r_top = q[plan.dir]; have_top = true; }
-        else if (std::fabs(q[plan.dir] - plan.r_top) > 1e-6 * scale) return Result::Failed;
+        else if (std::fabs(q[plan.dir] - plan.r_top) > 1e-6 * scale) return fail("a neighbour face's trim on the moved boundary is not one iso-line of its surface");
         ON_3dPoint sp;
-        if (!ns.EvPoint(q.x, q.y, sp)) return Result::Failed;
-        if (std::fabs((sp - plane_point) * n) > 1e-4 * std::max(1.0, scale)) return Result::Failed;
+        if (!ns.EvPoint(q.x, q.y, sp)) return fail("a neighbour face's trim point could not be evaluated");
+        if (std::fabs((sp - plane_point) * n) > 1e-4 * std::max(1.0, scale)) return fail("a neighbour face's trim on the moved boundary does not lie in the moved face's plane");
       }
-      if (trims_on_c2(b.m_T[other_ti].m_c2i) != 1) return Result::Failed;
+      if (trims_on_c2(b.m_T[other_ti].m_c2i) != 1) return fail("a neighbour face's trim curve is shared with another trim");
     }
-    if (!have_top) return Result::Failed;
+    if (!have_top) return fail("a neighbour face has no trim on the moved boundary");
     const double new_r = plan.r_top + plan.delta;
     plan.ext = ns;
     const double t0 = std::min(rdom.Min(), new_r), t1 = std::max(rdom.Max(), new_r);
@@ -14319,7 +14324,7 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
     if (t0 < rdom.Min() - eps || t1 > rdom.Max() + eps) {
       NurbsSurface ks;
       ks.raw() = ns;
-      if (ks.ExtendLinear(plan.dir, t0, t1) != Result::Ok) return Result::Failed;
+      if (ks.ExtendLinear(plan.dir, t0, t1) != Result::Ok) return fail("a neighbour face's surface could not be continued along the normal");
       plan.ext = ks.raw();
       plan.extend = true;
     } else {
@@ -14340,12 +14345,12 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
       // The new surface must keep the old parameterization on the part both cover (existing trims stay valid).
       const ON_Interval kdom = plan.ext.Domain(plan.dir);
       const double lo = std::max(rdom.Min(), kdom.Min()), hi = std::min(rdom.Max(), kdom.Max());
-      if (!(hi > lo)) return Result::Failed;
+      if (!(hi > lo)) return fail("a neighbour face's new surface does not overlap its old one");
       for (int i = 0; i <= 4; ++i) {
         for (int j = 0; j <= 4; ++j) {
           const double o = dom[1 - plan.dir].ParameterAt(i / 4.0), r = lo + (hi - lo) * j / 4.0;
           const double a = plan.dir == 0 ? r : o, c = plan.dir == 0 ? o : r;
-          if (plan.ext.PointAt(a, c).DistanceTo(ns.PointAt(a, c)) > 1e-7 * scale + tol) return Result::Failed;
+          if (plan.ext.PointAt(a, c).DistanceTo(ns.PointAt(a, c)) > 1e-7 * scale + tol) return fail("a neighbour face's new surface does not keep the old parameterization");
         }
       }
     }
@@ -14357,7 +14362,7 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
       const double nu = plan.dir == 0 ? new_r : o, nv = plan.dir == 0 ? o : new_r;
       const ON_3dPoint old_pt = ns.PointAt(ou, ov);
       if (plan.ext.PointAt(nu, nv).DistanceTo(old_pt + shift) > 1e-6 * std::max(1.0, std::fabs(distance)) + tol) {
-        return Result::Failed;
+        return fail("a neighbour face's continued surface does not land on the moved boundary");
       }
     }
     plans[nf] = std::move(plan);
@@ -14372,43 +14377,43 @@ Result Brep::OffsetPlanarFaceAlongNormal(int face_index, double distance, double
       const int ei = b.m_V[v].m_ei[k];
       const ON_BrepEdge& e = b.m_E[ei];
       if (e.m_edge_index < 0 || loop_edges.count(ei)) continue;
-      if (e.TrimCount() != 2 || e.m_vi[0] == e.m_vi[1]) return Result::Failed;
+      if (e.TrimCount() != 2 || e.m_vi[0] == e.m_vi[1]) return fail("a vertical edge is not shared by exactly two faces or is a closed loop");
       const int w = e.m_vi[0] == v ? e.m_vi[1] : e.m_vi[0];
-      if (top_verts.count(w)) return Result::Failed;
-      for (int q = 0; q < 2; ++q) if (!neighbour_faces.count(b.m_T[e.m_ti[q]].FaceIndexOf())) return Result::Failed;
-      if (!e.IsLinear(tol * 10.0)) return Result::Failed;
+      if (top_verts.count(w)) return fail("a vertical edge joins two moved vertices");
+      for (int q = 0; q < 2; ++q) if (!neighbour_faces.count(b.m_T[e.m_ti[q]].FaceIndexOf())) return fail("a vertical edge borders a face that is not a neighbour of the moved face");
+      if (!e.IsLinear(tol * 10.0)) return fail("a vertical edge is not a straight line");
       ON_3dVector dv = b.m_V[v].point - b.m_V[w].point;
       const double len = dv.Length();
-      if (len <= tol || !dv.Unitize()) return Result::Failed;
-      if (ON_CrossProduct(dv, n).Length() > 1e-6 || dv * n <= 0.0) return Result::Failed;
-      if (distance < 0.0 && len + distance <= 10.0 * tol) return Result::Failed;
-      if (edges_on_c3(e.m_c3i) != 1) return Result::Failed;
+      if (len <= tol || !dv.Unitize()) return fail("a vertical edge has zero length");
+      if (ON_CrossProduct(dv, n).Length() > 1e-6 || dv * n <= 0.0) return fail("a vertical edge is not parallel to the face normal (a tilted wall) or does not run into the body");
+      if (distance < 0.0 && len + distance <= 10.0 * tol) return fail("the pull is at least as deep as a vertical edge is long (the body would vanish)");
+      if (edges_on_c3(e.m_c3i) != 1) return fail("a vertical edge curve is shared with another edge");
       // Dry-run the end-point edit on duplicates so the commit below cannot fail half-way.
       const ON_3dPoint old_top = b.m_V[v].point;
       const ON_Curve* c3 = b.m_C3[e.m_c3i];
-      if (!c3) return Result::Failed;
+      if (!c3) return fail("a vertical edge has no curve");
       std::unique_ptr<ON_Curve> dup(c3->DuplicateCurve());
-      if (!dup) return Result::Failed;
+      if (!dup) return fail("a vertical edge curve could not be duplicated");
       const bool at_start = dup->PointAtStart().DistanceTo(old_top) <= dup->PointAtEnd().DistanceTo(old_top);
-      if (!(at_start ? dup->SetStartPoint(old_top + shift) : dup->SetEndPoint(old_top + shift))) return Result::Failed;
+      if (!(at_start ? dup->SetStartPoint(old_top + shift) : dup->SetEndPoint(old_top + shift))) return fail("a vertical edge curve end could not be moved");
       for (int q = 0; q < 2; ++q) {
         const ON_BrepTrim& vt = b.m_T[e.m_ti[q]];
-        if (trims_on_c2(vt.m_c2i) != 1) return Result::Failed;
+        if (trims_on_c2(vt.m_c2i) != 1) return fail("a vertical edge trim curve is shared with another trim");
         const NeighbourPlan& plan = plans.at(vt.FaceIndexOf());
         const ON_Curve* c2 = b.m_C2[vt.m_c2i];
-        if (!c2) return Result::Failed;
+        if (!c2) return fail("a vertical edge trim has no 2D curve");
         std::unique_ptr<ON_Curve> d2(c2->DuplicateCurve());
-        if (!d2) return Result::Failed;
+        if (!d2) return fail("a vertical edge trim curve could not be duplicated");
         ON_3dPoint pa = d2->PointAtStart(), pb = d2->PointAtEnd();
         const bool s2 = std::fabs(pa[plan.dir] - plan.r_top) <= std::fabs(pb[plan.dir] - plan.r_top);
         ON_3dPoint np = s2 ? pa : pb;
         np[plan.dir] += plan.delta;
-        if (!(s2 ? d2->SetStartPoint(np) : d2->SetEndPoint(np))) return Result::Failed;
+        if (!(s2 ? d2->SetStartPoint(np) : d2->SetEndPoint(np))) return fail("a vertical edge trim curve end could not be moved");
       }
       verticals.push_back({ei, v});
       ++found;
     }
-    if (found == 0) return Result::Failed;
+    if (found == 0) return fail("a moved boundary vertex has no vertical edge into the body");
   }
 
   // ---- everything validated: commit ------------------------------------------------------------------------------
