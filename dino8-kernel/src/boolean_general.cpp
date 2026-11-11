@@ -3085,8 +3085,8 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
 // and the second cut left the same at x = 0. The faces stay geometrically right (a ray-cast membership grid agrees everywhere) but
 // EarClipTriangulate, which every area / volume / tessellation of the face goes through, loses area on a polygon with such a spike:
 // Area() 300.317 for 302.400 (the flanks 29.333 and 28.583 for 30), and the sealed body's volume 113.111 for 112.
-// Only an EXACT retrace is removed (collinear within 1e-9 and reversing), so the deliberate in-and-out corridor of a keyhole bridge,
-// whose two sides are offset by a small perpendicular, is untouched.
+// Only a retrace along one line is removed (within 1e-7 of the loop's size perpendicular to it, and reversing), so the deliberate
+// in-and-out corridor of a keyhole bridge, whose two sides are offset by a small perpendicular, is untouched.
 void RemoveBacktrackSpikes(std::vector<UVPt>& loop) {
   if (loop.size() < 4) return;
   double lo[3] = {loop[0].p.x, loop[0].p.y, loop[0].p.z}, hi[3] = {lo[0], lo[1], lo[2]};
@@ -3105,7 +3105,11 @@ void RemoveBacktrackSpikes(std::vector<UVPt>& loop) {
   const double diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
   const double tol = 1e-9 * std::max(diag, 1.0);
   const double tol_uv = 1e-9 * std::max({uhi - ulo, vhi - vlo, 1e-12});
-  const auto sub = [](const Point3d& a, const Point3d& b) { return Vector3d(a.x - b.x, a.y - b.y, a.z - b.z); };
+  // Perpendicular offset still counted as "the same line": 1e-7 of the loop's size (the keyhole corridor's offset is ~1e-3 of its
+  // bridge length, orders of magnitude wider).
+  const double tol_perp = 1e-7 * std::max(diag, 1.0);
+  const double tol_perp_uv = 1e-7 * std::max({uhi - ulo, vhi - vlo, 1e-12});
+  const auto sub =[](const Point3d& a, const Point3d& b) { return Vector3d(a.x - b.x, a.y - b.y, a.z - b.z); };
   // Two loop points are the same point only when BOTH their 3D positions and their (u, v) coincide: a pole or apex edge of a revolved
   // surface has one 3D point and a run of distinct (u, v), and that run is the loop's real boundary in parameter space.
   const auto same = [&](const UVPt& a, const UVPt& b) {
@@ -3116,11 +3120,15 @@ void RemoveBacktrackSpikes(std::vector<UVPt>& loop) {
     const Vector3d ab = sub(b.p, a.p), bq = sub(q.p, b.p);
     const double lab = ab.Length(), lbq = bq.Length();
     if (lab <= tol || lbq <= tol) return false;
-    if (ON_CrossProduct(ab, bq).Length() > 1e-9 * lab * lbq || ab * bq >= 0.0) return false;
+    // Collinear is judged by the PERPENDICULAR distance of q from the line a-b, not by the angle between the two steps: a run of
+    // 2e-4 steps whose points carry 1e-12 of interpolation noise turns by 5e-9 rad, over the old angle bound of 1e-9, so two
+    // points of a straight run placed out of order (a reconciled run's extra sample landing between earlier vertices) were
+    // never recognised as a retrace and crossed the run's own edges ("trim_polygon must be simple" on a 34113-vertex polygon).
+    if (ON_CrossProduct(ab, bq).Length() > tol_perp * lab || ab * bq >= 0.0) return false;
     const double ux = b.uv.x - a.uv.x, uy = b.uv.y - a.uv.y, vx = q.uv.x - b.uv.x, vy = q.uv.y - b.uv.y;
     const double lu = std::hypot(ux, uy), lv = std::hypot(vx, vy);
     if (lu <= tol_uv || lv <= tol_uv) return false;
-    if (std::fabs(ux * vy - uy * vx) > 1e-9 * lu * lv || ux * vx + uy * vy >= 0.0) return false;
+    if (std::fabs(ux * vy - uy * vx) > tol_perp_uv * lu || ux * vx + uy * vy >= 0.0) return false;
     *lab_out = lab;
     *lbq_out = lbq;
     return true;
@@ -8845,6 +8853,18 @@ bool ContainsPointExact(const Point3d& point, const ON_Brep& brep, double ray_le
 }
 
 namespace detail {
+void RemoveBacktrackSpikesForTest(std::vector<Point3d>& points, std::vector<Point2d>& uv) {
+  if (points.size() != uv.size()) throw std::invalid_argument("RemoveBacktrackSpikesForTest: points and uv differ in length");
+  std::vector<UVPt> loop(points.size());
+  for (size_t i = 0; i < points.size(); ++i) loop[i] = {points[i], uv[i]};
+  RemoveBacktrackSpikes(loop);
+  points.resize(loop.size());
+  uv.resize(loop.size());
+  for (size_t i = 0; i < loop.size(); ++i) {
+    points[i] = loop[i].p;
+    uv[i] = loop[i].uv;
+  }
+}
 bool ContainsPointExactIndexed(const Point3d& point, const ON_Brep& brep, const BrepFaceBoxIndex& index,
                                double ray_length, const IntersectOptions& opt, double tol) {
   if (brep.m_F.Count() == 0) throw std::invalid_argument("ContainsPointExact: brep has no faces");
