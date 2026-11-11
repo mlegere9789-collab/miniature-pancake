@@ -297,10 +297,26 @@ UV ClosestUV(const ON_Surface& s, ON_3dPoint P, const UV* seed, double tol, doub
   UV best;
   double best_d = 1e300;
   if (seed) {
-    UV uv = *seed;
-    double d;
-    if (NewtonUV(s, P, uv, d)) { best = uv; best_d = d; }
-    if (best_d <= tol) { if (dist_out) *dist_out = best_d; return best; }
+    // A seed that sits on the seam of a closed direction (u = 0 or u = period: the same 3D point) is also tried on the
+    // other side of the seam: Newton is clamped to the domain, so from u = 0 it can never step to the u ~ period side
+    // where the walk along a curve is heading (a bottom circle walked clockwise from the seam stalled at the seam).
+    UV cands[3] = {*seed, *seed, *seed};
+    int nc = 1;
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!s.IsClosed(dir)) continue;
+      const ON_Interval dd = s.Domain(dir);
+      double& c = dir == 0 ? cands[nc].u : cands[nc].v;
+      const double x = dir == 0 ? seed->u : seed->v;
+      const double edge = 1e-6 * dd.Length();
+      if (x - dd.Min() < edge) { c = dd.Max(); ++nc; }
+      else if (dd.Max() - x < edge) { c = dd.Min(); ++nc; }
+    }
+    for (int k = 0; k < nc; ++k) {
+      UV uv = cands[k];
+      double d;
+      if (NewtonUV(s, P, uv, d) && d < best_d) { best = uv; best_d = d; }
+      if (best_d <= tol) { if (dist_out) *dist_out = best_d; return best; }
+    }
   }
   UV uv = GridSeed(s, P);
   double d;
