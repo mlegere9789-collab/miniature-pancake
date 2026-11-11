@@ -766,13 +766,9 @@ Continuity=Curvature
 2505,0.3,6
 SelLast
 List
-# --- MatchSrf: Curvature against a target whose own degree is too low to
-# carry a curvature row (two flat, planar faces - the same structural
-# refusal kernel::NurbsSurface::MatchEdge() documents: "the requested
-# continuity exceeds the target's cross degree") fails closed with a
-# diagnostic instead of silently downgrading to G1/G0 or fabricating a
-# curvature match the per-control-point fallback was never built to
-# compute.
+# --- MatchSrf: Curvature against a target whose own degree is below the continuity's row count (two flat, planar faces: degree 1 across the edge).
+# Used to be refused ("the target's degree is too low to carry a curvature row"); the kernel now elevates the target exactly, so the match runs: the plane
+# bends down to continue the box's vertical front face with a zero-curvature (cubic-order) departure - measured in sections/81_msdg.sh.
 SelAll
 Hide
 Box 2600,0,0 2610,10,0 10
