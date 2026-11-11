@@ -2790,7 +2790,7 @@ bool Viewport::CapturePixelsRGB(std::vector<unsigned char>& rgb, int& width, int
   return true;
 }
 
-bool Viewport::CaptureToFile(const std::string& path, std::string& error) const {
+bool Viewport::CaptureToFile(const std::string& path, std::string& error, int dpi) const {
   int w = 0, h = 0;
   std::vector<unsigned char> rgb;
   if (!CapturePixelsRGB(rgb, w, h, error)) return false;
@@ -2804,6 +2804,10 @@ bool Viewport::CaptureToFile(const std::string& path, std::string& error) const 
   auto put16 = [&](int at, unsigned int v) { hdr[at] = static_cast<unsigned char>(v & 0xff); hdr[at + 1] = static_cast<unsigned char>((v >> 8) & 0xff); };
   put32(2, file_size); put32(10, 54); put32(14, 40); put32(18, static_cast<unsigned int>(w)); put32(22, static_cast<unsigned int>(h));
   put16(26, 1); put16(28, 24); put32(34, data_size);
+  if (dpi > 0) {  // biXPelsPerMeter / biYPelsPerMeter: the physical resolution, round(dpi / 0.0254)
+    const unsigned int ppm = static_cast<unsigned int>(std::lround(dpi / 0.0254));
+    put32(38, ppm); put32(42, ppm);
+  }
   std::fwrite(hdr, 1, 54, f);
   std::vector<unsigned char> line(static_cast<size_t>(row), 0);
   for (int y = 0; y < h; ++y) {  // BMP rows are bottom-up, which matches GL
