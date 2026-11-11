@@ -1869,6 +1869,15 @@ std::optional<kernel::Brep> TryExactOffsetSolid(const kernel::Brep& kb, double d
         return std::nullopt;
       }
     }
+    {
+      // A sphere cap / dome / bowl or a torus segment (one flat face + one curved face): the whole-body offset, exact, through the
+      // meridian (kernel::OffsetRevolvedArcProfile). Solid=Yes (the hollow wall) is two lumps and stays on the existing path.
+      revolved::ArcSolid arcs;
+      if (!solid && revolved::RecognizeArcSolid(b, arcs)) {
+        if (std::optional<kernel::Brep> k = revolved::OffsetArcSolid(arcs, d, why)) return k;
+        return std::nullopt;
+      }
+    }
     // A right prism (extruded L / U, a box with parallel edges rounded by FilletEdge): the exact
     // analytic offset of its profile (prism_solid.h). Tried for the three-face wall prisms and,
     // after the convex planar construction declines, for every other shape.

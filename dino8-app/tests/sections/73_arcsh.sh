@@ -7,6 +7,8 @@
 #   dome, spherical wall 0.5                      cap(5, h3) - cap(4.5, h2.5) = 36 pi - 22.917 pi = 41.10
 #   large cap (centre z=+2, height 7), base removed  cap(5, h7) - cap(4, h6) = 130.667 pi - 72 pi    = 184.30
 #   spherical face removed, base slab left        cap(5, h3) - cap(5, h2) = 36 pi - 17.333 pi        = 58.64
+# and the exact whole-body OffsetSrf (Solid=No) of the dome (kernel::OffsetRevolvedArcProfile): +1 -> radius 6 cap cut at z=-1,
+#   cap(6, h5) = 108.333 pi = 340.34;  -0.5 -> radius 4.5 cap cut at z=+0.5, cap(4.5, h2) = 15.333 pi = 48.17
 # ---------------------------------------------------------------------------
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   ARCSHOUT="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/arcshell_script.txt" 2>&1)" || { echo "$ARCSHOUT"; echo "FAIL: arcshell script exited non-zero"; fail=1; ARCSHOUT=""; }
@@ -36,3 +38,10 @@ arcshcheck curvedgone "Shell: thickness 1, open (1 face(s) removed), exact B-rep
 arcshvol curvedgone 57.4 59 "ARCSH_curvedgone: Volume = 36 pi - 17.333 pi = 58.64"
 arcshcheck curvedgone "Object [0-9]*: valid" "ARCSH_curvedgone: ...Check valid"
 arcshcheck closed "exact B-rep shell not used (.*at least one face must be removed" "ARCSH_closed: a per-face thickness with nothing removed is refused WITH the kernel's reason (negative control)"
+arcshcheck offdome "OffsetSrf: distance 1, 1 object(s), 1 exact B-rep" "ARCSH_offdome: OffsetSrf of a dome grown by 1 is an exact whole-body B-rep offset (before: mesh offset)"
+arcshvol offdome 338 341.2 "ARCSH_offdome: Volume = cap(6, h5) = 108.333 pi = 340.34"
+arcshcheck offdome "Object [0-9]*: valid" "ARCSH_offdome: ...Check valid"
+arcshcheck offdomein "OffsetSrf: distance -0.5, 1 object(s), 1 exact B-rep" "ARCSH_offdomein: the dome shrunk by 0.5 is exact"
+arcshvol offdomein 47.4 48.3 "ARCSH_offdomein: Volume = cap(4.5, h2) = 15.333 pi = 48.17"
+arcshcheck offdomein "Object [0-9]*: valid" "ARCSH_offdomein: ...Check valid"
+arcshcheck offcollapse "exact B-rep offset not used (.*collapses it to or through its centre" "ARCSH_offcollapse: shrinking the dome by its own radius is refused WITH the kernel's reason (negative control)"

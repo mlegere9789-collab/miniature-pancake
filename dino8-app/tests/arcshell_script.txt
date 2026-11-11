@@ -119,3 +119,52 @@ Enter
 1
 SelAll
 List
+# ===================== OffsetSrf (Solid=No) of the dome, grown by 1: an exact whole-body offset =====================
+New
+ARCSHBEGIN_offdome
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+# ===================== OffsetSrf of the dome shrunk by 0.5 =====================
+New
+ARCSHBEGIN_offdomein
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelLast
+OffsetSrf
+-0.5
+SelLast
+List
+Volume
+Check
+# ===================== negative: shrinking the dome by its own radius =====================
+New
+ARCSHBEGIN_offcollapse
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelLast
+OffsetSrf
+-5
+SelLast
+List
