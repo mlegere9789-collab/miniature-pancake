@@ -716,6 +716,46 @@ std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal
 std::vector<Brep> SplitBrepByManyPlanes(const Brep& target, Vector3d plane_normal,
                                          const std::vector<double>& plane_offsets, double tolerance = 0.001);
 
+// Split a closed solid by a CURVE projected along a direction (Rhino's
+// "Project, then Split" workflow with an open curve as the cutter; the
+// "Cut / split / trim with curve or surface cutters" half of PARITY_MAP.md's
+// Transformations/patterns/splitting category that SplitFaceByCurve() above
+// does not cover, since that splits ONE FACE of a body while leaving the body
+// itself unsevered). `curve` is swept along +/- `direction` far enough to clear
+// `target` entirely (an infinite-in-effect ruled sheet, built with the existing
+// Brep::Extrude() of an OPEN profile) and the resulting sheet is handed to
+// SplitBySheet() above, which cuts `target` into the two real, exact B-rep
+// pieces on either side, each capped with the part of the sheet inside it.
+// Not a new intersection algorithm: this inherits SplitBySheet()'s own
+// scope and limits wholesale (see its comment).
+//
+// Return convention, fixed here so a caller never has to guess: the sheet's
+// own normal is `tangent x direction` (Brep::Extrude()'s open-profile
+// convention), and `{positive_side, negative_side}` is the piece that normal
+// points into first, the other second - for a straight curve along +x and
+// `direction` = +z the normal is -y, so `positive_side` is the y-smaller half.
+// Either piece is the empty Brep if the curve's projection misses `target`.
+// A raw SplitBySheet() piece is usually not IsSolid() (naked polyline-edge
+// T-junctions) and its mesh volume can be far off, so each non-empty piece is
+// sewn with SealGeneralBooleanResult() into an IsSolid() + IsValid() body whose
+// exact Brep::VolumeOfSealedSolid() is available; a piece that cannot be sealed
+// is returned as the engine made it. Accuracy is that of SplitBySheet()'s
+// dense-polyline cut edges (`tolerance`): measured ~1e-8 relative volume for a
+// planar cut, a few 1e-6 for a circular-arc cut. SplitBySheet() also refuses
+// some sheet placements (a sheet grid line lying in a face plane of `target`),
+// so a refusal is retried with the sheet slid along `direction` before it is
+// reported.
+//
+// For the cut to sever `target`, the curve's projection must leave `target`'s
+// silhouette on both ends (an interior-ending curve is a partial cut - see
+// SplitFaceByCurve()/ImprintClosedCurvesOnFace() for those) and `direction`
+// must not be parallel to the curve everywhere (a degenerate zero-area sheet).
+// Throws std::invalid_argument for a faceless `target`, a non-positive
+// `tolerance`, a zero `direction`, a closed or single-point `curve`, or a
+// curve every one of whose tangents is parallel to `direction`.
+std::pair<Brep, Brep> SplitBrepByProjectedCurve(const Brep& target, const NurbsCurve& curve, Vector3d direction,
+                                                 double tolerance = 0.001);
+
 // A blind or through round hole (Rhino/SolidWorks "Hole" feature), cut
 // straight into `solid` via BooleanCombineGeneral() above - so, unlike the
 // app's `RoundHole`/`MakeHole`/`PlaceHole` (dino8-app/src/commands/
