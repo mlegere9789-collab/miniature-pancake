@@ -1949,6 +1949,12 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     nv.camera.perspective = v.m_vp.IsPerspectiveProjection();
     double l, r, b, t;
     if (v.m_vp.GetFrustum(&l, &r, &b, &t) && !nv.camera.perspective) nv.camera.ortho_height = t - b;
+    // The lens (35 mm-film length) of a perspective view, when the file carries a believable one: a file Dino 8 wrote before the
+    // frustum was saved reads back as ~0 mm, which keeps the default lens instead.
+    if (nv.camera.perspective) {
+      double lens = 0.0;
+      if (v.m_vp.GetCamera35mmLensLength(&lens) && lens >= 5.0 && lens <= 1000.0) nv.camera.lens_mm = lens;
+    }
     doc.NamedViews().push_back(nv);
   }
   // Units / tolerances.
@@ -2714,6 +2720,22 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     v.m_vp.SetCameraDirection(nv.camera.target - nv.camera.eye);
     v.m_vp.SetCameraUp(nv.camera.up);
     v.m_vp.SetTargetPoint(nv.camera.target);
+    // The view's zoom lives in the frustum, which used to be left at OpenNURBS' default: a parallel view reopened with a
+    // 40-unit-tall frustum whatever it was saved at, and a perspective view's lens read back as ~0 mm. Write a 4:3 screen port
+    // and a frustum carrying the saved height (parallel) or the saved 35 mm-film lens length (perspective).
+    {
+      const double dist = (nv.camera.target - nv.camera.eye).Length();
+      const double far_dist = std::max(1.0e4, 10.0 * dist);
+      v.m_vp.SetScreenPort(0, 800, 600, 0, 0, 1);
+      if (!nv.camera.perspective) {
+        const double h = std::max(nv.camera.ortho_height, 1e-6);
+        const double w = h * 4.0 / 3.0;
+        v.m_vp.SetFrustum(-0.5 * w, 0.5 * w, -0.5 * h, 0.5 * h, 0.1, far_dist);
+      } else {
+        v.m_vp.SetFrustum(-0.5, 0.5, -0.375, 0.375, 1.0, far_dist);
+        v.m_vp.SetCamera35mmLensLength(std::clamp(nv.camera.lens_mm, 5.0, 1000.0));
+      }
+    }
     model.m_settings.m_named_views.Append(v);
   }
 
