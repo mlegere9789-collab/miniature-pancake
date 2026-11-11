@@ -2195,6 +2195,99 @@ ON_DimLinear* BuildOnDimLinearForGroup(const Document& doc, ONX_Model& model, st
   return dim;
 }
 
+// The text height of an annotation group: the first glyph member's own TextHeight tag, else the document's current annotation
+// style (a group whose label has no glyph, e.g. a font-less machine), else two grid units.
+double AnnotationGroupTextHeight(const Document& doc, int group_id) {
+  for (const SceneObject& m : doc.Objects()) {
+    if (m.group_id != group_id || !m.user_text.count("Glyph")) continue;
+    auto h = m.user_text.find("TextHeight");
+    if (h != m.user_text.end() && std::atof(h->second.c_str()) > 0) return std::atof(h->second.c_str());
+  }
+  const double st = doc.CurrentAnnotationStyle().text_height;
+  return st > 0 ? st : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+}
+
+// Builds a real ON_DimOrdinate for a Dino8 "DimOrdinate" annotation group, so Save3dm writes one genuine ordinate dimension
+// instead of the baked leader line + glyph curves - the write-side inverse of Load3dm's own ON_DimOrdinate branch, which turns
+// a file's base point / feature point / leader point back into exactly this tag set (DimOrdinateDir, DimPlaneOrigin/X/Y, DimP0 =
+// base, DimP1 = feature). `o` is the group's shape curve (the member carrying DimOrdinateDir). The leader point is where
+// BuildOrdinateDimensionGeometry puts the end of the leader line: the feature point moved 2.5 text heights along the plane's y
+// axis (an X ordinate) or x axis (a Y ordinate). Returns nullptr on any missing or malformed tag, and the caller then keeps the
+// baked export for the group.
+ON_DimOrdinate* BuildOnDimOrdinateForGroup(const Document& doc, ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache,
+                                           const SceneObject& o) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *dir_s = get("DimOrdinateDir"), *org_s = get("DimPlaneOrigin"), *ax_s = get("DimPlaneX"), *ay_s = get("DimPlaneY");
+  const std::string *p0_s = get("DimP0"), *p1_s = get("DimP1");
+  if (!dir_s || !org_s || !ax_s || !ay_s || !p0_s || !p1_s || (*dir_s != "X" && *dir_s != "Y")) return nullptr;
+  double ox, oy, oz, xx, xy, xz, yx, yy, yz, ax, ay, az, bx, by, bz;
+  if (!ParsePointTagLocal(*org_s, ox, oy, oz) || !ParsePointTagLocal(*ax_s, xx, xy, xz) || !ParsePointTagLocal(*ay_s, yx, yy, yz) ||
+      !ParsePointTagLocal(*p0_s, ax, ay, az) || !ParsePointTagLocal(*p1_s, bx, by, bz))
+    return nullptr;
+  const ON_Plane plane(ON_3dPoint(ox, oy, oz), ON_3dVector(xx, xy, xz), ON_3dVector(yx, yy, yz));
+  if (!plane.IsValid()) return nullptr;
+  const ON_3dPoint base(ax, ay, az), feature(bx, by, bz);
+  const bool is_x = *dir_s == "X";
+  const double height = AnnotationGroupTextHeight(doc, o.group_id);
+  const ON_3dPoint leader_pt = feature + (is_x ? plane.yaxis : plane.xaxis) * (height * 2.5);
+  const ON_UUID dimstyle_id = FindOrAddTextDimStyleId(model, dimstyle_cache, height);
+  if (ON_UuidIsNil(dimstyle_id)) return nullptr;
+  ON_DimOrdinate* dim = new ON_DimOrdinate();
+  if (!dim->Create(dimstyle_id, plane, is_x ? ON_DimOrdinate::MeasuredDirection::Xaxis : ON_DimOrdinate::MeasuredDirection::Yaxis, base,
+                   feature, leader_pt, 1.0, 1.0)) {
+    delete dim;
+    return nullptr;
+  }
+  dim->SetDimensionStyleId(dimstyle_id);
+  return dim;
+}
+
+// A dimension style that carries a Centermark's size (its CenterMark field), cached per size like FindOrAddTextDimStyleId: the
+// reader takes the drawn size from this field, not from the marked circle's radius.
+ON_UUID FindOrAddCentermarkDimStyleId(ONX_Model& model, std::map<std::string, ON_UUID>& cache, double size) {
+  const std::string key = "center" + NumberTagLocal(size);
+  auto it = cache.find(key);
+  if (it != cache.end()) return it->second;
+  ON_DimStyle ds;
+  ds.SetName(ON_wString(("Dino8Centermark" + NumberTagLocal(size)).c_str()));
+  ds.SetCenterMark(size);
+  ds.SetCenterMarkStyle(ON_DimStyle::centermark_style::Mark);
+  const ON_ModelComponentReference ref = model.AddModelComponent(ds, true);
+  const ON_DimStyle* added = ON_DimStyle::Cast(ref.ModelComponent());
+  const ON_UUID id = added ? added->Id() : ON_nil_uuid;
+  cache[key] = id;
+  return id;
+}
+
+// Builds a real ON_Centermark for a Dino8 "Centermark" annotation group: the write-side inverse of Load3dm's ON_Centermark branch
+// (CenterCenter / CenterPlaneOrigin/X/Y / CenterSize come back from the file's center point, plane and dimension-style CenterMark
+// field). The marked circle's radius is not stored by Dino8 (a Centermark is a bare "+"), so the object is written with radius 4 x
+// size, the quarter-of-the-radius convention of Auto mode; the drawn size is the style's own CenterMark field. `o` is any member
+// of the group (every member carries the tags).
+ON_Centermark* BuildOnCentermarkForGroup(ONX_Model& model, std::map<std::string, ON_UUID>& dimstyle_cache, const SceneObject& o) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *c_s = get("CenterCenter"), *org_s = get("CenterPlaneOrigin"), *ax_s = get("CenterPlaneX"), *ay_s = get("CenterPlaneY"),
+                    *size_s = get("CenterSize");
+  if (!c_s || !org_s || !ax_s || !ay_s || !size_s) return nullptr;
+  double cx, cy, cz, ox, oy, oz, xx, xy, xz, yx, yy, yz;
+  if (!ParsePointTagLocal(*c_s, cx, cy, cz) || !ParsePointTagLocal(*org_s, ox, oy, oz) || !ParsePointTagLocal(*ax_s, xx, xy, xz) ||
+      !ParsePointTagLocal(*ay_s, yx, yy, yz))
+    return nullptr;
+  const double size = std::atof(size_s->c_str());
+  if (!(size > 0)) return nullptr;
+  const ON_Plane plane(ON_3dPoint(ox, oy, oz), ON_3dVector(xx, xy, xz), ON_3dVector(yx, yy, yz));
+  if (!plane.IsValid()) return nullptr;
+  const ON_UUID dimstyle_id = FindOrAddCentermarkDimStyleId(model, dimstyle_cache, size);
+  if (ON_UuidIsNil(dimstyle_id)) return nullptr;
+  ON_Centermark* cm = new ON_Centermark();
+  if (!cm->Create(dimstyle_id, plane, ON_3dPoint(cx, cy, cz), 4.0 * size)) {
+    delete cm;
+    return nullptr;
+  }
+  cm->SetDimensionStyleId(dimstyle_id);
+  return cm;
+}
+
 bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects, int version) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
@@ -2449,6 +2542,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   // same way (NumberTagLocal(height)).
   std::set<int> leader_groups_written;
   std::set<int> dimlinear_groups_written;
+  std::set<int> dimord_groups_written, centermark_groups_written;
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
@@ -2567,6 +2661,41 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         if (ON_DimLinear* dim = BuildOnDimLinearForGroup(doc, model, text_dimstyle_cache, o)) {
           model.AddModelGeometryComponent(dim, &attr);
           dimlinear_groups_written.insert(o.group_id);
+          ++written;
+          continue;
+        }
+      }
+    }
+    {
+      // A DimOrdinate group writes as one genuine ON_DimOrdinate and a Centermark group as one genuine ON_Centermark instead of
+      // their baked leader line / glyph curves / crossing lines (every member of the group is caught here, so none of them also
+      // falls through to the baked export once the real object is written) - see BuildOnDimOrdinateForGroup and
+      // BuildOnCentermarkForGroup. The ordinate's shape curve (the member that carries DimOrdinateDir) is looked up in the group
+      // so that a glyph member reached first does not fall through and then get written a second time. A group whose tags are
+      // malformed (none of this app's own are) keeps the baked export.
+      auto ann_tag = o.user_text.find("Annotation");
+      if (o.group_id >= 0 && ann_tag != o.user_text.end() && ann_tag->second == "DimOrdinate") {
+        if (dimord_groups_written.count(o.group_id)) continue;
+        const SceneObject* shape = o.user_text.count("DimOrdinateDir") ? &o : nullptr;
+        if (!shape) {
+          for (const SceneObject& m : doc.Objects()) {
+            if (m.group_id == o.group_id && m.user_text.count("DimOrdinateDir")) { shape = &m; break; }
+          }
+        }
+        if (shape) {
+          if (ON_DimOrdinate* dim = BuildOnDimOrdinateForGroup(doc, model, text_dimstyle_cache, *shape)) {
+            model.AddModelGeometryComponent(dim, &attr);
+            dimord_groups_written.insert(o.group_id);
+            ++written;
+            continue;
+          }
+        }
+      }
+      if (o.group_id >= 0 && ann_tag != o.user_text.end() && ann_tag->second == "Centermark") {
+        if (centermark_groups_written.count(o.group_id)) continue;
+        if (ON_Centermark* cm = BuildOnCentermarkForGroup(model, text_dimstyle_cache, o)) {
+          model.AddModelGeometryComponent(cm, &attr);
+          centermark_groups_written.insert(o.group_id);
           ++written;
           continue;
         }
