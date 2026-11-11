@@ -746,7 +746,9 @@ class VertexWelder {
 
 // --- per-face boundary loop (real trim loop if there is one, else the
 // surface's own full parameter domain rectangle for an untrimmed face) --
-std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samples_per_edge = 24) {
+// `loop_slot` selects which of the face's loops to sample (0 = the outer loop; > 0 = a pre-existing inner loop, for which no
+// whole-domain fallback is made - the result may be short and the caller must check).
+std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samples_per_edge = 24, int loop_slot = 0) {
   const ON_BrepFace& face = brep.m_F[face_index];
   const ON_Surface* s = face.SurfaceOf();
   std::vector<UVPt> out;
@@ -759,7 +761,7 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
     ON_BoundingBox face_box;
     face.GetBoundingBox(face_box);
     const double sag_budget = face_box.IsValid() ? 1e-6 * face_box.Diagonal().Length() : 0.0;
-    const ON_BrepLoop& loop = brep.m_L[face.m_li[0]];
+    const ON_BrepLoop& loop = brep.m_L[face.m_li[loop_slot]];
     for (int k = 0; k < loop.m_ti.Count(); ++k) {
       const ON_BrepTrim& trim = brep.m_T[loop.m_ti[k]];
       const ON_Curve* c2 = trim.TrimCurveOf();
@@ -813,7 +815,7 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
         out.push_back({s->PointAt(uv.x, uv.y), uv});
       }
     }
-    if (out.size() >= 3) return out;
+    if (out.size() >= 3 || loop_slot > 0) return out;
     out.clear();
   }
   const ON_Interval du = s->Domain(0), dv = s->Domain(1);
@@ -3948,6 +3950,24 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
     ff.surface = brep.m_F[i].SurfaceOf()->DuplicateSurface();
     ff.base_rev = brep.m_F[i].m_bRev;
     ff.frags = SplitFaceLoop(boundary, closed_chains, open_chains);
+    // A face an earlier boolean left with a real inner loop (a hole the engine could not slit into the outline) carries it in its
+    // second loop, which FaceBoundaryLoop(brep, i) never reads: re-fragmenting the face then dropped the hole outright and the
+    // hole's wall lost its partner (measured: the second of two sequential counterbore cuts left 60 unpaired edges, the whole
+    // first hole). Hand each such loop to the fragment that contains it, as an ordinary hole, with no interior fragment of
+    // its own (the region is not material).
+    for (int slot = 1; slot < brep.m_F[i].m_li.Count(); ++slot) {
+      const int li = brep.m_F[i].m_li[slot];
+      if (li < 0 || li >= brep.m_L.Count() || brep.m_L[li].m_type != ON_BrepLoop::inner) continue;
+      std::vector<UVPt> old_hole = FaceBoundaryLoop(brep, i, 24, slot);
+      if (old_hole.size() < 3) continue;
+      const Point2d probe = old_hole.front().uv;
+      for (Fragment& fr : ff.frags) {
+        if (PointInPolygon(ToPoly(fr.outer), probe)) {
+          fr.holes.push_back(std::move(old_hole));
+          break;
+        }
+      }
+    }
     if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
       for (size_t fi = 0; fi < ff.frags.size(); ++fi) {
         std::fprintf(stderr, "  SplitFaceLoop face_index=%d frag[%zu] outer.size()=%zu holes=%zu",
