@@ -300,8 +300,8 @@ double MinTwistSeamShift(const kernel::NurbsCurve& prev, const kernel::NurbsCurv
   return shift;
 }
 
-// `closed_loft` (Closed=Yes): closed curves are re-seamed by MinTwistSeamShift (the best point-for-point correspondence with the
-// previous curve) instead of the nearest-point rule, and the twist left between the last curve and the first is reported.
+// Closed curves are re-seamed by MinTwistSeamShift (the best point-for-point correspondence with the previous curve). With
+// `closed_loft` (Closed=Yes) the twist left between the last curve and the first is also measured and reported.
 AlignedSections AlignLoftSections(const std::vector<const kernel::NurbsCurve*>& in, bool align = true, bool closed_loft = false) {
   AlignedSections out;
   const bool first_closed = in.front()->IsClosed();
@@ -324,8 +324,7 @@ AlignedSections AlignLoftSections(const std::vector<const kernel::NurbsCurve*>& 
       } else {
         const Vector3d np = LoopNormal(prev), nc = LoopNormal(c);
         if (np.Length() > 1e-12 * size * size && nc.Length() > 1e-12 * size * size && ON_DotProduct(np, nc) < 0.0 && c.Reverse() == kernel::Result::Ok) ++out.reversed;
-        const double t = closed_loft ? sectionfit::SnapToKnot(c, c.Domain().min + (c.Domain().max - c.Domain().min) * MinTwistSeamShift(prev, c))
-                                     : sectionfit::SnapToKnot(c, c.ClosestPointParameter(prev.PointAt(prev.Domain().min), 400));
+        const double t = sectionfit::SnapToKnot(c, c.Domain().min + (c.Domain().max - c.Domain().min) * MinTwistSeamShift(prev, c));
         if (c.PointAt(t).DistanceTo(c.PointAt(c.Domain().min)) > 1e-9 * size && c.ChangeSeam(t) == kernel::Result::Ok) ++out.reseamed;
       }
     }
