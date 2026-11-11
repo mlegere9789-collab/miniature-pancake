@@ -1,0 +1,10 @@
+# crlf and negative indices
+g top
+v 0 0 0
+v 2 0 0
+v 2 3 0
+v 0 3 0
+v 0 0 1
+usemtl red
+f -5 -4 -3 -2
+f -2 -1 -5
