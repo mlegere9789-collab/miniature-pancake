@@ -70,6 +70,7 @@ add_library(dino8_kernel STATIC
   src/surface_intersect.cpp
   src/brep.cpp
   src/mesh.cpp
+  src/mesh_unwrap.cpp
   src/boolean.cpp
   src/boolean_general.cpp
   src/boolean_diagnostics.cpp
