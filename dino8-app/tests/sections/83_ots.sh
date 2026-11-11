@@ -1,5 +1,6 @@
 # OTS: OffsetSrf of ONE TRIMMED face (kernel::OffsetTrimmedFace wired into the app's OffsetSrf), see ots_script.txt for the cases
-# and the closed forms. Before: a one-face B-rep fell to the mesh offset (no trimmed face came back).
+# and the closed forms. (No flat-Patch-with-hole case: the app's Patch of FLAT data with two closed curves adds an untrimmed plane, so
+# there is no such trimmed face to offer; the kernel test extra/trimmed_offset_tests.cpp covers a flat patch with a hole.) Before: a one-face B-rep fell to the mesh offset (no trimmed face came back).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   OTSO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/ots_script.txt" 2>&1)" || { echo "$OTSO"; echo "FAIL: ots script exited non-zero"; fail=1; OTSO=""; }
 else
@@ -51,15 +52,6 @@ otsabs "$(otsbb disc_pos FIRST 3)" 0 1e-9 "OTS_disc_pos: the source disc is at z
 # negative control: Exact=No keeps the mesh offset, so no trimmed-face line and no refusal line
 otslacks disc_exact_no "trimmed face offset by the kernel" "OTS_disc_exact_no: Exact=No does NOT run the kernel trimmed-face offset (negative control)"
 
-# ---- a flat Patch with a hole (rings r = 5 and r = 2): a freeform-typed face whose fitted surface is flat
-otshas flat_hole "trimmed face offset by the kernel (OffsetTrimmedFace): surface exact analytic offset" "OTS_flat_hole: a flat Patch is recognised as a plane and offset exactly"
-otshas flat_hole "(2 translated exactly)" "OTS_flat_hole: BOTH boundary edges (outer ring and hole ring) are translated exactly"
-otsre flat_hole "Object [0-9]*: valid" "OTS_flat_hole: the offset face is a valid B-rep"
-otsrange "$(otsarea flat_hole FIRST)" 65.0 66.9 "OTS_flat_hole: the annulus area is pi (25 - 4) = 65.97 (so the hole is there: a disc would read 78.5)"
-otsabs "$(otsarea flat_hole LAST)" "$(otsarea flat_hole FIRST)" 0.01 "OTS_flat_hole: the offset keeps the hole (same area as the source)"
-otsabs "$(otsbb flat_hole LAST 3)" "$(otsbb flat_hole LAST 6)" 1e-5 "OTS_flat_hole: the offset face is flat"
-otsabs "$(otsbb flat_hole LAST 6 | sed 's/^-//')" 1.5 1e-5 "OTS_flat_hole: it sits |d| = 1.5 from the source plane"
-
 # ---- a freeform saddle Patch with a hole: no closed-form area; the boundary must follow the exact locus S + d N
 otshas saddle "trimmed face offset by the kernel (OffsetTrimmedFace): surface tolerance-controlled refit" "OTS_saddle: a freeform Patch face takes the kernel's tolerance-controlled refit (not exact, said so)"
 otshas saddle "2 boundary edge(s) rebuilt on the offset surface (0 translated exactly)" "OTS_saddle: both boundary edges (outer ring and hole ring) were rebuilt on the offset surface, none merely translated"
@@ -68,6 +60,7 @@ SADDLE_LOCUS="$(otsnum_after saddle 'exact locus S \+ d\*N')"
 otsrange "$SADDLE_LOCUS" 0 0.0025 "OTS_saddle: the rebuilt boundary lies within the tolerance bound (2 x 0.001) of the exact locus S + d N of the ORIGINAL surface"
 otsre saddle "still one trimmed face" "OTS_saddle: the result is still ONE trimmed face (trims kept)"
 
-# ---- a distance past the saddle's radius of curvature: refused with the surface's reason, object left alone
+# ---- a distance past the saddle's radius of curvature: the kernel refuses with the surface's reason, the command falls back to the mesh offset
 otshas saddle_huge "trimmed face offset not used (the surface offset was refused" "OTS_saddle_huge: a 40-unit offset is refused with the surface's own reason (negative control)"
+otshas saddle_huge "; using the mesh offset" "OTS_saddle_huge: ...and the command says it fell back to the mesh offset (the documented behaviour)"
 otslacks saddle_huge "trimmed face offset by the kernel" "OTS_saddle_huge: ...and the kernel offset did not claim success"

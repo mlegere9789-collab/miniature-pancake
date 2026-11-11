@@ -1,14 +1,14 @@
-# OTS: OffsetSrf of ONE TRIMMED face (kernel::OffsetTrimmedFace wired into the app's OffsetSrf) - a PlanarSrf disc, a
-# flat Patch with a hole, and a freeform (saddle) Patch with a hole. Before: a one-face Brep fell to the mesh offset
+# OTS: OffsetSrf of ONE TRIMMED face (kernel::OffsetTrimmedFace wired into the app's OffsetSrf) - a PlanarSrf disc and a
+# freeform (saddle) Patch with a hole. (A FLAT Patch of two rings is not a trimmed face in the app - Patch of flat data with two
+# closed curves adds an untrimmed plane - so the flat-with-hole translation case lives in the kernel test only.) Before: a one-face Brep fell to the mesh offset
 # (a mesh, no trimmed face). Expectations are closed forms, never the app's own printout:
 #   disc r = 5 offset by d:                z = +-d on every point, area 25 pi = 78.54 (the display mesh is a polygon: -0.5 percent)
-#   flat patch, rings r = 5 and r = 2:     z = +-d, area pi (25 - 4) = 65.97 (spline rings: +-1 percent), the hole kept
 # The freeform saddle z = 0.06 (x^2 - y^2) has no closed-form offset area; its case checks that the command ran the kernel path,
 # that the boundary follows the exact parallel locus S + d N to within the tolerance bound (printed by the command, measured
 # against the ORIGINAL surface), and that the result is a valid B-rep that kept both loops. The independent point-by-point
 # oracle for the freeform case lives in the kernel test extra/trimmed_offset_tests.cpp.
 # Negative controls: Exact=No keeps the mesh offset; a distance past the saddle's radius of curvature is refused with the
-# surface's reason and the object is left alone.
+# surface's reason and the command falls back to the mesh offset (it says so).
 # Every case starts from `New` and is bracketed by an unknown-command marker (OTSBEGIN_<name>).
 SetActiveViewport Top
 New
@@ -54,22 +54,6 @@ SelPolysrf
 OffsetSrf
 Exact=No
 2
-New
-OTSBEGIN_flat_hole
-Curve 5.000000,0.000000,0.000000 4.829629,1.294095,0.000000 4.330127,2.500000,0.000000 3.535534,3.535534,0.000000 2.500000,4.330127,0.000000 1.294095,4.829629,0.000000 0.000000,5.000000,0.000000 -1.294095,4.829629,0.000000 -2.500000,4.330127,0.000000 -3.535534,3.535534,0.000000 -4.330127,2.500000,0.000000 -4.829629,1.294095,0.000000 -5.000000,0.000000,0.000000 -4.829629,-1.294095,0.000000 -4.330127,-2.500000,0.000000 -3.535534,-3.535534,0.000000 -2.500000,-4.330127,0.000000 -1.294095,-4.829629,0.000000 -0.000000,-5.000000,0.000000 1.294095,-4.829629,0.000000 2.500000,-4.330127,0.000000 3.535534,-3.535534,0.000000 4.330127,-2.500000,0.000000 4.829629,-1.294095,0.000000 Close
-Curve 2.000000,0.000000,0.000000 1.732051,1.000000,0.000000 1.000000,1.732051,0.000000 0.000000,2.000000,0.000000 -1.000000,1.732051,0.000000 -1.732051,1.000000,0.000000 -2.000000,0.000000,0.000000 -1.732051,-1.000000,0.000000 -1.000000,-1.732051,0.000000 -0.000000,-2.000000,0.000000 1.000000,-1.732051,0.000000 1.732051,-1.000000,0.000000 Close
-SelCrv
-Patch
-SelCrv
-Delete
-SelPolysrf
-Area
-OffsetSrf
-1.5
-SelLast
-Area
-BoundingBox
-Check
 New
 OTSBEGIN_saddle
 Curve 5.000000,0.000000,1.500000 4.829629,1.294095,1.299038 4.330127,2.500000,0.750000 3.535534,3.535534,0.000000 2.500000,4.330127,-0.750000 1.294095,4.829629,-1.299038 0.000000,5.000000,-1.500000 -1.294095,4.829629,-1.299038 -2.500000,4.330127,-0.750000 -3.535534,3.535534,-0.000000 -4.330127,2.500000,0.750000 -4.829629,1.294095,1.299038 -5.000000,0.000000,1.500000 -4.829629,-1.294095,1.299038 -4.330127,-2.500000,0.750000 -3.535534,-3.535534,0.000000 -2.500000,-4.330127,-0.750000 -1.294095,-4.829629,-1.299038 -0.000000,-5.000000,-1.500000 1.294095,-4.829629,-1.299038 2.500000,-4.330127,-0.750000 3.535534,-3.535534,-0.000000 4.330127,-2.500000,0.750000 4.829629,-1.294095,1.299038 Close
