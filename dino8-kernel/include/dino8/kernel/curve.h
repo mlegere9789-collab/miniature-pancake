@@ -1001,6 +1001,13 @@ class NurbsCurve {
   // is. A periodic curve comes back clamped (same as before).
   Result ElevateDegree(int new_degree);
 
+  // EXACT FIRST: a clamped curve that is the degree elevation of a lower-degree curve (an elevated polynomial, rational arc
+  // or spline, or any curve exactly representable at the target degree on its own knots) is reduced exactly, one degree
+  // at a time - Bezier-chain reduction (Piegl & Tiller 5.5) and RemoveMultiKnots to restore the continuity - and comes
+  // back with its original knots and control net; the deviation is MEASURED against this curve at the same parameters
+  // and the result is accepted only within `tolerance` and with no more control points than this curve has. Otherwise
+  // (or for an unclamped curve) the least-squares refit described below runs, unchanged.
+  //
   // Degree REDUCTION - the direction `ElevateDegree()` above does not
   // attempt (per its own doc comment, "never lowers"), closing
   // PARITY_MAP's own disclosed "Change curve degree ... no reduction"
