@@ -1304,6 +1304,13 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dimradang3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dimradang3dm_write_check PRIVATE dino8_kernel)
 
+  # Real-ON_InstanceDefinition / ON_InstanceRef .3dm write checker (tests/blockinst3dm_write_check.cpp, sections/66_blkinst.sh):
+  # reads a file Dino 8 itself wrote straight through OpenNURBS and reports the instance definitions, the references (with their
+  # translation) and the loose geometry that is left.
+  add_executable(blockinst3dm_write_check tests/blockinst3dm_write_check.cpp)
+  target_include_directories(blockinst3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(blockinst3dm_write_check PRIVATE dino8_kernel)
+
   # Real-ON_InstanceRef .3dm fixture generator (see
   # tests/instanceref3dm_fixture_gen.cpp and smoke.sh's Load3dm
   # ON_InstanceRef-import section): Dino 8's own blocks never round-trip
