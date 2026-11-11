@@ -302,6 +302,10 @@ struct BlockDefinition {
 struct Group {
   int id = -1;
   std::string name;
+  // True for a group the user made (the Group command, or a group read from a native .3dm group table): .3dm export writes it
+  // as a real ON_Group, which Rhino shows as a group. The many internal groups (annotation, dimension, hatch, block pieces) stay
+  // false: they only tie baked geometry together and are persisted by the "Dino8.GroupId" user string alone.
+  bool user = false;
 };
 
 // A render material (Rhino's basic material): Blinn-Phong colour and
@@ -921,7 +925,7 @@ class Document {
   const RenderSettings& Render() const { return render_; }
 
   // ---- groups ----------------------------------------------------------
-  int CreateGroup(const std::vector<ObjectId>& ids, const std::string& name = "");
+  int CreateGroup(const std::vector<ObjectId>& ids, const std::string& name = "", bool user = false);
   void Ungroup(const std::vector<ObjectId>& ids);
   const std::vector<Group>& Groups() const { return groups_; }
   std::vector<Group>& Groups() { return groups_; }
