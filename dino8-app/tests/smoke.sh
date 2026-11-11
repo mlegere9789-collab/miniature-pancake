@@ -2414,6 +2414,26 @@ echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
 
+# Two chamfers / two equal fillets picked in one run at a shared right-angle box corner (third edge sharp) are ONE exact kernel corner build, whatever the order
+# and distances (chamfer_corner_script.txt; the closed forms are in its header). Chained, the smaller chamfer first was answered with a wrong 1032 mesh (the
+# approximate fallback), the 45-degree Angle form with a refusal and a 995 box, and the second fillet was silently dropped (991.4).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  CC="$(timeout 900 "$BIN" --smoke 200 --script "$HERE/chamfer_corner_script.txt" 2>&1)" || { echo "$CC"; echo "FAIL: chamfer-corner script exited non-zero"; exit 1; }
+else
+  CC="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/chamfer_corner_script.txt" 2>&1)" || { echo "$CC"; echo "FAIL: chamfer-corner script exited non-zero"; exit 1; }
+fi
+cccount() { local n; n="$(echo "$CC" | grep -c "$1" || true)"; if [ "$n" = "$2" ]; then echo "ok   $3"; else echo "FAIL $3 (found $n, expected $2)"; near "$CC" "$1"; fail=1; fi; }
+cccount "ChamferEdge: edge .* of object .* chamfered together with the previous pick (radius 1) at their shared right-angle corner - one exact kernel corner pair" 1 "the smaller chamfer picked first (1, then 2) is built with the second as one exact corner pair instead of the wrong approximate mesh"
+cccount "chamfered together with the previous pick (distance1 1, angle 45 degrees from face 1) at their shared right-angle corner" 1 "the Distance/Angle form (45 degrees, 1 then 2) builds the same corner pair instead of refusing"
+cccount "Volume = 975.8 cubic" 3 "smaller-first, the 45-degree Angle form and larger-first all give the closed form 1000 - 5 - 20 + 2 - 1.5 + 1/3 = 975.8333 (no approximate 1032 mesh)"
+cccount "exact corner pair with the previous pick: .*too large" 1 "a second distance beyond its face is refused with the kernel's own reason about the corner pair"
+cccount "Volume = 995 cubic" 1 "the refused corner pair leaves the first chamfer exactly (1000 - 1*1/2*10 = 995)"
+cccount "FilletEdge: 2 staged edges of object .* meet at one right-angle corner - replaced with one exact mitred corner pair (radius 2)" 1 "two equal fillets at a corner are one exact mitred pair"
+cccount "Volume = 983.5 cubic" 1 "the fillet pair reads 983.5 = the app's tessellated reading of the exact closed form 1000 - a r^2 (L_A + L_B) + r^3 (5/3 - pi/2) = 983.599 (not the 991.4 one fillet gave when the second was dropped, nor 982.8 without the overlap)"
+echo "$CC" | grep -E "^(ok|FAIL)"
+if echo "$CC" | grep -q "^FAIL"; then fail=1; fi
+cccount "^ok   expect_objects 0" 1 "chamfer-corner script cleaned up to zero objects at the end"
+
 # Extended selection and state commands: SelDupAll, SelShortCrv, SelKeyValue, SelVolumeSphere, Dot, Camera, SetActiveViewport, licence rule (see state_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   ST="$(timeout 900 "$BIN" --smoke 120 --script "$HERE/state_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: state script exited non-zero"; exit 1; }
