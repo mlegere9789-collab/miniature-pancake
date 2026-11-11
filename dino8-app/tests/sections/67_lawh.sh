@@ -28,6 +28,8 @@ lawh_has() {  # lawh_has <what> <text> <fixed string>
 }
 
 cat > "$TMPW/lawh_script.txt" <<'EOS'
+SetActiveViewport Top
+
 History On
 Box 0,0,0 10,10,0 10
 FilletEdge
@@ -42,6 +44,7 @@ Volume
 SelNone
 SelID 2
 BoundingBox
+Show
 SelNone
 SelID 1
 Move
