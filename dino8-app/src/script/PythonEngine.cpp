@@ -379,7 +379,7 @@ struct PyObjectTable {
     if (h <= 0 || radius <= 0) throw std::runtime_error("AddCone: height and radius must be positive");
     Vector3d dir = axis;
     dir.Unitize();
-    ON_Cone cone(ON_Plane(base, dir), h, radius);
+    ON_Cone cone(ON_Plane(base + dir * h, -dir), h, radius);  // ON_Cone: plane origin = apex; `base` is the base centre
     return PyObjId(AddBrepObj(ON_BrepCone(cone, cap), "AddCone"));
   }
 
