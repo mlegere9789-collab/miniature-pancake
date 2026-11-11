@@ -135,13 +135,20 @@ Dino 8 loads every library whose suffix matches the platform (`.so`/`.dll`/`.dyl
 1. `<config>/plugins` - the per-user folder (`~/.config/dino8/plugins` on Linux,
    `%APPDATA%\Dino8\plugins` on Windows, `~/Library/Application Support/Dino8/plugins` on macOS),
 2. `plugins/` next to the executable (the four bundled examples live here),
-3. any folder added for the session with `GrasshopperFolders add <folder>` (not persisted).
+3. any folder added with `GrasshopperFolders add <folder>` (saved in `settings.json`; `GrasshopperFolders remove <folder>` drops it).
 
 `GrasshopperPluginList` shows each plug-in, its version and how many commands and flow nodes
-it registered (or why it failed). `GrasshopperIgnorePlugin <file>` skips one.
-The **Package Manager** panel installs a folder containing `manifest.json`
-(`name`, `version`, `author`, `description`) plus a library/`.lua`/`.dflow` by copying it into
-`<config>/plugins`; `plugin-templates/package_plugin.py` writes exactly that layout.
+it registered (or why it failed). `GrasshopperIgnorePlugin <file>` skips one (saved; `GrasshopperIgnorePlugin remove <file>` undoes it).
+`PlugInDisable <name|file>` / `PlugInEnable <name|file>` switch a plug-in off or on: a disabled plug-in's commands and flow nodes stop at once and it is not loaded in later sessions.
+A **package** is a folder containing `manifest.json` (`name`, `version`, `author`, `description`, optional
+`commands`) plus a library, `.lua` scripts and/or `.dflow` graphs; `plugin-templates/package_plugin.py` writes that layout.
+`PackageInstall <folder> [name]` (or the **Package Manager** panel) copies the package to `<config>/packages/<name>`
+(libraries also go to `<config>/plugins`). Every script it ships becomes a command, at once and at every start-up:
+`"commands": [{"name": "MyTool", "script": "tool.lua"}]` names them, and without that key each `.lua` / `.dflow` file
+becomes a command named after its file. A `.lua` command runs through `RunScript` (extra words feed `rs.Get*` prompts), a
+`.dflow` command through `GrasshopperPlayer` (extra words are its options, e.g. `Bake=Yes`). A command named like a built-in
+is refused, and a package name must be a plain token (letters, digits, `_ - .`), never a path. `PackageList` lists what is
+installed (`PackageList <folder>` what a folder offers) and `PackageRemove <name>` deletes one.
 
 ### The marketplace = a JSON index you host
 

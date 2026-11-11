@@ -486,6 +486,7 @@ void Manager::ScanDefaultFolders(Application& app) {
   LoadFolder(app, app::ConfigDirectory() + "/plugins");
   LoadFolder(app, app.ExeDir() + "/plugins");
   for (const std::string& f : extra_folders) LoadFolder(app, f);
+  RegisterPackageCommands(app);
 }
 
 int Manager::LoadFolder(Application& app, const std::string& folder) {
@@ -579,49 +580,195 @@ bool Manager::Unload(const std::string& path) {
   return false;
 }
 
+namespace {
+
+// Package and command names become directory / command names: only a plain, non-hidden token is accepted, so a manifest
+// can never write outside <config>/packages (no separators, no "..").
+bool PlainToken(const std::string& s, bool allow_dot) {
+  if (s.empty() || s.size() > 64 || s[0] == '.') return false;
+  for (unsigned char c : s) if (!(std::isalnum(c) || c == '_' || c == '-' || (allow_dot && c == '.'))) return false;
+  return true;
+}
+
+bool IsScriptFile(const fs::path& p) { const std::string e = p.extension().string(); return e == ".lua" || e == ".dflow"; }
+
+// Lower-cased names of commands registered by packages: re-registering one is a reinstall, not a collision.
+std::unordered_set<std::string> g_package_commands;
+
+// A command backed by a package script: runs it through RunScript (.lua; extra tokens feed rs.Get* prompts) or
+// GrasshopperPlayer (.dflow; extra tokens are its options, e.g. Bake=Yes).
+class PackageCommand : public app::Command {
+ public:
+  PackageCommand(std::string pkg, std::string name, std::string file) : pkg_(std::move(pkg)), name_(std::move(name)), file_(std::move(file)) {}
+  void Begin(CommandContext& ctx) override {
+    std::error_code ec;
+    if (!fs::exists(file_, ec)) {
+      ctx.Engine().PendingInputs().clear();
+      ctx.Warn(name_ + ": its package '" + pkg_ + "' is not installed any more");
+      Finish();
+      return;
+    }
+    std::string line = fs::path(file_).extension() == ".dflow" ? "GrasshopperPlayer" : "RunScript";
+    line += " \"" + file_ + "\"";
+    while (auto tok = ctx.Engine().TakePendingInput()) line += tok->find(' ') == std::string::npos ? " " + *tok : " \"" + *tok + "\"";
+    ctx.Engine().Execute(line);
+    Finish();
+  }
+
+ private:
+  std::string pkg_, name_, file_;
+};
+
+}  // namespace
+
+std::string Manager::PackagesDirectory() { return app::ConfigDirectory() + "/packages"; }
+
+bool Manager::ReadPackageManifest(const std::string& folder, PackageInfo& pkg) const {
+  const fs::path manifest = fs::path(folder) / "manifest.json";
+  std::error_code ec;
+  if (!fs::exists(manifest, ec)) return false;
+  std::ifstream in(manifest);
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  json::Value root;
+  std::string err;
+  pkg = PackageInfo();
+  pkg.folder = folder;
+  if (json::Parse(ss.str(), root, err) && root.IsObject()) {
+    pkg.name = root["name"].AsString(fs::path(folder).filename().string());
+    pkg.version = root["version"].AsString("1.0.0");
+    pkg.author = root["author"].AsString();
+    pkg.description = root["description"].AsString();
+  } else {
+    pkg.name = fs::path(folder).filename().string();
+  }
+  pkg.installed = PlainToken(pkg.name, true) && fs::exists(fs::path(PackagesDirectory()) / pkg.name / "manifest.json", ec);
+  return true;
+}
+
 std::vector<PackageInfo> Manager::ScanPackages(const std::string& search_folder) const {
   std::vector<PackageInfo> out;
   std::error_code ec;
   if (!fs::exists(search_folder, ec) || !fs::is_directory(search_folder, ec)) return out;
-  for (const auto& entry : fs::directory_iterator(search_folder, ec)) {
-    if (!entry.is_directory()) continue;
-    const fs::path manifest = entry.path() / "manifest.json";
-    if (!fs::exists(manifest, ec)) continue;
-    std::ifstream in(manifest);
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    json::Value root;
-    std::string err;
+  std::vector<std::string> folders;
+  for (const auto& entry : fs::directory_iterator(search_folder, ec)) if (entry.is_directory()) folders.push_back(entry.path().string());
+  std::sort(folders.begin(), folders.end());
+  for (const std::string& f : folders) {
     PackageInfo pkg;
-    pkg.folder = entry.path().string();
-    if (json::Parse(ss.str(), root, err) && root.IsObject()) {
-      pkg.name = root["name"].AsString(entry.path().filename().string());
-      pkg.version = root["version"].AsString("1.0.0");
-      pkg.author = root["author"].AsString();
-      pkg.description = root["description"].AsString();
-    } else {
-      pkg.name = entry.path().filename().string();
-    }
-    out.push_back(pkg);
+    if (ReadPackageManifest(f, pkg)) out.push_back(pkg);
   }
   return out;
 }
 
-bool Manager::InstallPackage(Application& app, const PackageInfo& pkg, std::string& error) {
-  const std::string dest_dir = app::ConfigDirectory() + "/plugins";
+std::vector<InstalledPackage> Manager::InstalledPackages() const {
+  std::vector<InstalledPackage> out;
   std::error_code ec;
-  fs::create_directories(dest_dir, ec);
-  int copied = 0;
-  for (const auto& entry : fs::directory_iterator(pkg.folder, ec)) {
-    if (!entry.is_regular_file()) continue;
-    const std::string ext = entry.path().extension().string();
-    if (ext == kLibExt || ext == ".lua" || ext == ".dflow") {
-      fs::copy_file(entry.path(), fs::path(dest_dir) / entry.path().filename(), fs::copy_options::overwrite_existing, ec);
-      if (!ec) ++copied;
+  const fs::path base = PackagesDirectory();
+  if (!fs::is_directory(base, ec)) return out;
+  std::vector<fs::path> dirs;
+  for (const auto& entry : fs::directory_iterator(base, ec)) if (entry.is_directory()) dirs.push_back(entry.path());
+  std::sort(dirs.begin(), dirs.end());
+  for (const fs::path& dir : dirs) {
+    PackageInfo info;
+    if (!ReadPackageManifest(dir.string(), info)) continue;
+    InstalledPackage ip;
+    ip.folder = dir.string();
+    ip.name = info.name; ip.version = info.version; ip.author = info.author; ip.description = info.description;
+    json::Value root;
+    std::string err;
+    std::ifstream in(dir / "manifest.json");
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const bool parsed = json::Parse(ss.str(), root, err) && root.IsObject();
+    if (parsed && root["commands"].IsArray()) {
+      const json::Value& cmds = root["commands"];
+      for (size_t i = 0; i < cmds.Size(); ++i) {
+        const std::string name = cmds[i]["name"].AsString(), script = cmds[i]["script"].AsString();
+        // the script must be a plain file name that exists inside the package, never a path out of it
+        if (!PlainToken(name, false) || script.empty() || script.find('/') != std::string::npos || script.find('\\') != std::string::npos || script[0] == '.') continue;
+        if (!IsScriptFile(script) || !fs::exists(dir / script, ec)) continue;
+        ip.commands.emplace_back(name, script);
+      }
+    } else {
+      std::vector<std::string> files;
+      for (const auto& entry : fs::directory_iterator(dir, ec)) if (entry.is_regular_file() && IsScriptFile(entry.path())) files.push_back(entry.path().filename().string());
+      std::sort(files.begin(), files.end());
+      for (const std::string& f : files) if (PlainToken(fs::path(f).stem().string(), false)) ip.commands.emplace_back(fs::path(f).stem().string(), f);
+    }
+    out.push_back(std::move(ip));
+  }
+  return out;
+}
+
+int Manager::RegisterPackageCommands(Application& app) {
+  g_app = &app;
+  int registered = 0;
+  for (const InstalledPackage& pkg : InstalledPackages()) {
+    for (const auto& [name, script] : pkg.commands) {
+      const std::string key = ToLowerAscii(name);
+      const app::RegisteredCommand* existing = app.Engine().Find(name);
+      if (existing && existing->factory && existing->status != app::CommandStatus::Planned && !g_package_commands.count(key) &&
+          !g_plugin_owned_commands.count(key)) {
+        app.Engine().Print("Package: refused to register '" + name + "' (package " + pkg.name + ") - a built-in command with that name already exists (" +
+                           app::CommandStatusName(existing->status) + ")");
+        continue;
+      }
+      g_package_commands.insert(key);
+      const std::string file = (fs::path(pkg.folder) / script).string();
+      app::CommandFactory factory = [pname = pkg.name, name, file]() -> std::unique_ptr<app::Command> {
+        return std::make_unique<PackageCommand>(pname, name, file);
+      };
+      app.Engine().Register(name, factory, app::CommandStatus::Implemented, "Runs " + script + " from the installed package " + pkg.name + ".");
+      ++registered;
     }
   }
-  if (copied == 0) { error = "package folder has no plug-in library, .lua script, or .dflow graph to install"; return false; }
-  LoadFolder(app, dest_dir);
+  return registered;
+}
+
+bool Manager::RemovePackage(const std::string& name, std::string& error) {
+  if (!PlainToken(name, true)) { error = "invalid package name '" + name + "'"; return false; }
+  std::error_code ec;
+  const fs::path dir = fs::path(PackagesDirectory()) / name;
+  if (!fs::is_directory(dir, ec)) { error = "no package named '" + name + "' is installed"; return false; }
+  fs::remove_all(dir, ec);
+  if (ec) { error = "could not delete " + dir.string() + ": " + ec.message(); return false; }
+  return true;
+}
+
+bool Manager::InstallPackage(Application& app, const PackageInfo& pkg, std::string& error) {
+  if (!PlainToken(pkg.name, true)) {
+    error = "invalid package name '" + pkg.name + "' (letters, digits, '_', '-' and '.' only, not starting with '.')";
+    return false;
+  }
+  std::error_code ec;
+  std::vector<fs::path> files;
+  int payload = 0;
+  for (const auto& entry : fs::directory_iterator(pkg.folder, ec)) {
+    if (!entry.is_regular_file()) continue;
+    files.push_back(entry.path());
+    const std::string ext = entry.path().extension().string();
+    if (ext == kLibExt || ext == ".lua" || ext == ".dflow") ++payload;
+  }
+  if (payload == 0) { error = "package folder has no plug-in library, .lua script, or .dflow graph to install"; return false; }
+  // The whole package (manifest included) lives in <config>/packages/<name>, replaced wholesale on a reinstall so a file the
+  // new version dropped does not linger. Libraries are also placed in <config>/plugins, where the plug-in loader looks.
+  const fs::path dest = fs::path(PackagesDirectory()) / pkg.name;
+  fs::remove_all(dest, ec);
+  fs::create_directories(dest, ec);
+  if (ec) { error = "could not create " + dest.string() + ": " + ec.message(); return false; }
+  const std::string plugin_dir = app::ConfigDirectory() + "/plugins";
+  bool lib = false;
+  for (const fs::path& f : files) {
+    fs::copy_file(f, dest / f.filename(), fs::copy_options::overwrite_existing, ec);
+    if (ec) { error = "could not copy " + f.filename().string() + ": " + ec.message(); return false; }
+    if (f.extension() == kLibExt) {
+      fs::create_directories(plugin_dir, ec);
+      fs::copy_file(f, fs::path(plugin_dir) / f.filename(), fs::copy_options::overwrite_existing, ec);
+      lib = true;
+    }
+  }
+  if (lib) LoadFolder(app, plugin_dir);
+  RegisterPackageCommands(app);
   return true;
 }
 
