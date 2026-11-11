@@ -13411,7 +13411,48 @@ sot_hasnot() { if grep -qF -- "$2" <<<"$1"; then sot_bad "$3"; near "$1" "$2"; e
 sot_in() { awk -v v="${1:-}" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v != "" && v + 0 >= lo && v + 0 <= hi) }'; }
 SOT_LEN="$({ grep -o "Total length = [0-9.e+-]*" <<<"$SOT_OUT" || true; } | awk '{print $4}')"
 sot_len() { sed -n "${1}p" <<<"$SOT_LEN"; }
-# SOT_PLACEHOLDER_CHECKS
+# --- RMK1: a degree-multiplicity knot added by InsertKink on a smooth cubic is removed exactly (bound 0, curve unchanged)
+sot_has "$SOT_OUT" "Curve 1: kink inserted (8 control points)" "SOT_RMK1: InsertKink raised the cubic to 8 control points"
+sot_has "$SOT_OUT" "RemoveMultiKnot: 1 object(s) cleaned (2 knot copy(ies) removed, guaranteed shape change at most 0, within Tolerance 1e-06)" "SOT_RMK1: Tolerance 1e-6 removes both knot copies with a guaranteed shape change of exactly 0"
+sot_has "$SOT_OUT" "degree 3, 6 control points, non-rational, open" "SOT_RMK1: the cleaned curve is back to the original 6 control points"
+if [ -n "$(sot_len 1)" ] && [ "$(sot_len 1)" = "$(sot_len 2)" ] && [ "$(sot_len 2)" = "$(sot_len 3)" ] && sot_in "$(sot_len 1)" 11.0 11.3; then sot_ok "SOT_RMK1: Length is identical before the kink, after it and after the removal ($(sot_len 1))"; else sot_bad "SOT_RMK1: Length changed across InsertKink/RemoveMultiKnot ($(sot_len 1) $(sot_len 2) $(sot_len 3))"; fi
+# --- RMK2: a genuine C0 corner (polyline 5 + 4 = 9, elevated to degree 3)
+if [ "$(sot_len 4)" = "9" ] && [ "$(sot_len 5)" = "9" ]; then sot_ok "SOT_RMK2: the elevated right-angle polyline measures 5 + 4 = 9"; else sot_bad "SOT_RMK2: polyline Length is not 9 ($(sot_len 4) $(sot_len 5))"; fi
+sot_has "$SOT_OUT" "left unchanged - no multiple knot can be removed within Tolerance 0.001" "SOT_RMK2: Tolerance 0.001 refuses to smooth the corner and says why"
+sot_has "$SOT_OUT" "0 object(s) cleaned; 1 left unchanged (shape change above Tolerance)" "SOT_RMK2: the refused run reports 0 cleaned, 1 left unchanged"
+sot_has "$SOT_OUT" "guaranteed shape change at most 1.067, within Tolerance 100" "SOT_RMK2: Tolerance 100 removes the corner with a reported bound of 1.067"
+if sot_in "$(sot_len 6)" 7.0 8.5 && awk -v a="$(sot_len 6)" 'BEGIN { exit !(a + 0 < 9) }'; then sot_ok "SOT_RMK2: the smoothed curve is shorter than the corner (7.838 < 9)"; else sot_bad "SOT_RMK2: smoothed Length not in (7, 8.5) and below 9 ($(sot_len 6))"; fi
+SOT_CPD="$({ grep -o "Closest point [-0-9.,e]* distance [0-9.e+-]*" <<<"$SOT_OUT" || true; } | awk '{print $NF}' | head -1)"
+if sot_in "$SOT_CPD" 0.5 1.067; then sot_ok "SOT_RMK2: ClosestPt of the old corner (5,0,0) is $SOT_CPD from the new curve: positive and within the reported bound 1.067"; else sot_bad "SOT_RMK2: corner-to-curve distance '$SOT_CPD' not in (0.5, 1.067]"; fi
+# --- FIT1: a lofted bicubic with two knots inserted (5 x 4 -> 7 x 6) is fitted back to its minimal 5 x 4 net
+SOT_AREAS="$({ grep -oE "Area = [0-9.e+-]+" <<<"$SOT_OUT" || true; } | sed 's/Area = //')"
+SOT_VOLS="$({ grep -oE "Volume = [0-9.e+-]+" <<<"$SOT_OUT" || true; } | sed 's/Volume = //')"
+SOT_BOXES="$({ grep -E "^history: Bounding box min " <<<"$SOT_OUT" || true; } | sed 's/^history: //')"
+sot_nth() { sed -n "${2}p" <<<"$1"; }
+sot_has "$SOT_OUT" "Loft: exact interpolating kernel loft through 4 curves (degree 3 in the loft direction)" "SOT_FIT1: the fixture is the exact kernel loft through 4 sections"
+sot_has "$SOT_OUT" "control net (was 5 x 4), measured deviation 0 within Tolerance 0.02" "SOT_FIT1: the minimal 5 x 4 net is kept at Tolerance 0.02 (measured deviation 0)"
+if [ "$(grep -c "InsertKnot: 1 object(s) got a knot at the picked point" <<<"$SOT_OUT")" = 2 ] && [ "$(grep -c "degree 3 x 3, CVs 7 x 6" <<<"$SOT_OUT")" = 1 ]; then sot_ok "SOT_FIT1: two InsertKnot picks raised the net to 7 x 6"; else sot_bad "SOT_FIT1: InsertKnot did not produce exactly one 7 x 6 net"; fi
+sot_has "$SOT_OUT" "fitted with a 5 x 4 control net (was 7 x 6), measured deviation 0 within Tolerance 0.001" "SOT_FIT1: FitSrf Tolerance=0.001 takes the 7 x 6 net back to 5 x 4, measured deviation 0"
+if [ "$(grep -c "degree 3 x 3, CVs 5 x 4" <<<"$SOT_OUT")" = 3 ]; then sot_ok "SOT_FIT1: List shows 5 x 4 before, after the fit and at the end (3 times) and 7 x 6 only in between"; else sot_bad "SOT_FIT1: List 5 x 4 count is $(grep -c "degree 3 x 3, CVs 5 x 4" <<<"$SOT_OUT"), expected 3"; fi
+sot_has "$SOT_OUT" "control net (was 5 x 4), measured deviation 0 within Tolerance 1e-06" "SOT_FIT1: the minimal net also passes Tolerance 1e-6 (measured deviation 0)"
+A1="$(sot_nth "$SOT_AREAS" 1)"; A2="$(sot_nth "$SOT_AREAS" 2)"; A3="$(sot_nth "$SOT_AREAS" 3)"
+if [ -n "$A1" ] && [ "$A1" = "$A2" ] && [ "$A2" = "$A3" ] && sot_in "$A1" 90 100; then sot_ok "SOT_FIT1: Area is $A1 before the knots, with them and after the refit (equal, and between the 10 x 9 projection 90 and 100)"; else sot_bad "SOT_FIT1: Area not constant / out of bounds ($A1 $A2 $A3)"; fi
+B1="$(sot_nth "$SOT_BOXES" 1)"; B2="$(sot_nth "$SOT_BOXES" 2)"
+if [ -n "$B1" ] && [ "$B1" = "$B2" ] && grep -qF "min 0,0,-" <<<"$B1" && grep -qF " max 10,9," <<<"$B1"; then sot_ok "SOT_FIT1: BoundingBox is identical before and after the refit ($B1)"; else sot_bad "SOT_FIT1: BoundingBox differs or is not the 10 x 9 footprint ('$B1' / '$B2')"; fi
+sot_has "$SOT_OUT" "no net of at most 4 points per direction stays within Tolerance 1e-09" "SOT_FIT1: Tolerance 1e-9 with MaxPoints=4 is refused (a cubic needs 4 x 4 and the loft needs more)"
+SOT_BEST="$({ grep -o "best deviation [0-9.e+-]*" <<<"$SOT_OUT" || true; } | head -1 | awk '{print $3}')"
+if sot_in "$SOT_BEST" 0.1 1.0; then sot_ok "SOT_FIT1: the refusal reports the best deviation reached, $SOT_BEST (between 0.1 and 1.0: a 4 x 4 net cannot follow the 4-section loft)"; else sot_bad "SOT_FIT1: best deviation '$SOT_BEST' not in (0.1, 1.0)"; fi
+# --- SHR1: box minus cylinder, ShrinkTrimmedSrf cuts the face surfaces down to their trims; a circle's planar surface has nothing to shrink
+sot_has "$SOT_OUT" "ShrinkTrimmedSrf: 1 polysurface(s) shrunk (1 face surface(s) cut down to their trims, largest face-boundary shift 0 within tolerance 0.001)" "SOT_SHR1: the box-minus-cylinder face surfaces were cut down to their trims, boundary shift 0"
+V1="$(sot_nth "$SOT_VOLS" 1)"; V2="$(sot_nth "$SOT_VOLS" 2)"; SOT_VOL_CF="$(awk 'BEGIN { print 1000 - 40 * atan2(0, -1) }')"
+if [ -n "$V1" ] && [ "$V1" = "$V2" ] && awk -v v="$V1" -v e="$SOT_VOL_CF" 'BEGIN { d = v - e; if (d < 0) d = -d; exit !(d <= 0.005 * e) }'; then sot_ok "SOT_SHR1: Volume is $V1 before and after, the closed form 1000 - 40 pi = $SOT_VOL_CF within 0.5%"; else sot_bad "SOT_SHR1: Volume $V1 / $V2 vs closed form $SOT_VOL_CF"; fi
+S1="$(sot_nth "$SOT_AREAS" 4)"; S2="$(sot_nth "$SOT_AREAS" 5)"; SOT_AREA_CF="$(awk 'BEGIN { print 600 + 32 * atan2(0, -1) }')"
+if [ -n "$S1" ] && [ "$S1" = "$S2" ] && awk -v v="$S1" -v e="$SOT_AREA_CF" 'BEGIN { d = v - e; if (d < 0) d = -d; exit !(d <= 0.003 * e) }'; then sot_ok "SOT_SHR1: Area is $S1 before and after, the closed form 600 + 32 pi = $SOT_AREA_CF within 0.3%"; else sot_bad "SOT_SHR1: Area $S1 / $S2 vs closed form $SOT_AREA_CF"; fi
+sot_has "$SOT_OUT" "Object 3: valid" "SOT_SHR1: Check reports the shrunk polysurface valid"
+sot_has "$SOT_OUT" "ShrinkTrimmedSrf: 0 polysurface(s) shrunk; 1 had no surface larger than its trims" "SOT_SHR1: a circle's planar surface is reported as having no surface larger than its trims"
+C1="$(sot_nth "$SOT_AREAS" 6)"; C2="$(sot_nth "$SOT_AREAS" 7)"; SOT_DISC_CF="$(awk 'BEGIN { print 9 * atan2(0, -1) }')"
+if [ -n "$C1" ] && [ "$C1" = "$C2" ] && awk -v v="$C1" -v e="$SOT_DISC_CF" 'BEGIN { d = v - e; if (d < 0) d = -d; exit !(d <= 0.005 * e) }'; then sot_ok "SOT_SHR1: the disc's Area is $C1 before and after, the closed form 9 pi = $SOT_DISC_CF within 0.5%"; else sot_bad "SOT_SHR1: disc Area $C1 / $C2 vs closed form $SOT_DISC_CF"; fi
+if [ "$(sot_nth "$SOT_BOXES" 3)" = "Bounding box min -3,-3,0 max 3,3,0" ]; then sot_ok "SOT_SHR1: the disc's BoundingBox is exactly -3,-3,0 .. 3,3,0"; else sot_bad "SOT_SHR1: disc BoundingBox is '$(sot_nth "$SOT_BOXES" 3)'"; fi
 
 # ---------------------------------------------------------------------------
 # HGB_: construction History for the GENERAL (curved) and SEALED Boolean engine (hgb_script.txt, hgb_save_script.txt,

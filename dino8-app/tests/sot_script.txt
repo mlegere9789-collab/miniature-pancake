@@ -6,8 +6,12 @@
 #  RMK2 a right-angle polyline elevated to degree 3 (a genuine C0 corner, knot multiplicity 3): Tolerance 0.001 refused,
 #       curve unchanged (Length 9); Tolerance 100 removes it, ClosestPt of the old corner (5,0,0) to the new curve is
 #       positive (the corner really was smoothed) and <= the reported guaranteed bound
-#  FIT1 a lofted surface refit at Tolerance 0.02 and at 1e-6, then an impossible tolerance with MaxPoints=4 (refused)
-#  SHR1 a circle's planar surface: ShrinkTrimmedSrf keeps Area and BoundingBox
+#  FIT1 a lofted bicubic (5 x 4 net, already the smallest net that reproduces it) with two knots inserted (7 x 6): FitSrf at
+#       Tolerance 0.001 takes it back to 5 x 4 with measured deviation 0 and Area / BoundingBox unchanged; the minimal net is kept
+#       at 0.02 and at 1e-6; an impossible tolerance with MaxPoints=4 is refused and reports the best deviation reached
+#  SHR1 box minus cylinder (a sealed B-rep whose faces still carry their full box planes): ShrinkTrimmedSrf cuts the surfaces
+#       down to their trims with Volume (1000 - 40 pi), Area (600 + 32 pi) and Check unchanged; a circle's planar surface has no
+#       surface larger than its trims, so it is reported as such (NoOp) with Area (9 pi) and BoundingBox unchanged
 SetActiveViewport Top
 
 # --- RMK1: exact removal
@@ -69,9 +73,31 @@ Delete
 SelSrf
 List
 SelSrf
+Area
+SelSrf
+BoundingBox
+SelSrf
 FitSrf Tolerance=0.02 Enter
 SelSrf
+InsertKnot
+3.3,4.5,0
+Enter
+SelSrf
+InsertKnot
+6.6,1.5,0
+Enter
+SelSrf
 List
+SelSrf
+Area
+SelSrf
+FitSrf Tolerance=0.001 Enter
+SelSrf
+List
+SelSrf
+Area
+SelSrf
+BoundingBox
 SelSrf
 FitSrf Tolerance=0.000001 Enter
 SelSrf
@@ -82,17 +108,50 @@ SelAll
 Delete
 @expect_objects 0
 
-# --- SHR1: planar surface from a circle
+# --- SHR1: box minus cylinder (a real shrink), then a circle's planar surface (nothing to shrink)
+New
+History On
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 3
+Area
+SelNone
+SelID 3
+ShrinkTrimmedSrf
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 3
+Area
+SelNone
+SelID 3
+Check
+New
+History Off
 Circle 0,0,0 3
 SelLast
 PlanarSrf
-SelSrf
+SelNone
+SelID 2
 Area
-SelSrf
+SelNone
+SelID 2
 BoundingBox
-SelSrf
+SelNone
+SelID 2
 ShrinkTrimmedSrf
-SelSrf
+SelNone
+SelID 2
 Area
 SelAll
 Delete
