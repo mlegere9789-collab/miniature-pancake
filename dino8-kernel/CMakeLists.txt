@@ -72,6 +72,7 @@ add_library(dino8_kernel STATIC
   src/surface_intersect.cpp
   src/brep.cpp
   src/mesh.cpp
+  src/threemf.cpp
   src/mesh_unwrap.cpp
   src/deform.cpp
   src/delaunay.cpp

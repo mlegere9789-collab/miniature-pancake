@@ -1663,55 +1663,16 @@ class Mesh {
   // silently trusted.
   static Result LoadStepAp242(const std::string& path, Mesh& out_mesh);
 
-  // Writes this mesh as a 3MF (`.3mf`, 3D Manufacturing Format, ISO/IEC
-  // 23510) package - the eleventh "other file format" here, and the first
-  // one that is itself a ZIP container rather than a single text/binary
-  // file (`glTF/GLB, 3MF, FBX, and SketchUp SKP all still have zero code
-  // anywhere in the source`, this bullet's own prior disclosure). A real
-  // OPC (Open Packaging Conventions) package: `[Content_Types].xml`
-  // (declares the `.rels`/`.model` parts' content types), `_rels/.rels`
-  // (points at the model part), and `3D/3dmodel.model` (the actual mesh,
-  // in 3MF's own core-spec XML: a `<resources><object><mesh>` holding a
-  // `<vertices>` list of `<vertex x=".." y=".." z=".."/>` elements and a
-  // `<triangles>` list of `<triangle v1=".." v2=".." v3=".."/>` elements,
-  // 0-based into the shared vertex list - unlike STEP/IFC above, 3MF's own
-  // index convention is 0-based, matching this kernel's own
-  // `ON_MeshFace::vi` directly with no off-by-one translation - plus a
-  // `<build><item objectid="1"/></build>` referencing it). `<triangles>`
-  // has no native quad (3MF's core mesh is triangle-only), so a quad face
-  // (`ON_MeshFace::IsQuad()`) is split into its two triangles on write, the
-  // same accommodation `SaveGltf()`/`SaveIfc()` already make for the
-  // identical reason. The ZIP container itself (`WriteZipArchive()`,
-  // mesh.cpp, anonymous namespace) writes every entry "stored" - no
-  // deflate - a legal, spec-compliant ZIP a real archive tool can still
-  // open, just not the smallest possible one; see `WriteZipArchive()`'s own
-  // doc comment for why. Deliberately narrow, the same scope every other
-  // "other file format" writer here already discloses: no materials,
-  // colors, metadata, multiple objects/build items, or any 3MF production
-  // extension - a single untextured triangle mesh is the whole scope.
-  // Returns Result::Failed if the file can't be opened for writing.
+  // Writes this mesh as a single-object 3MF (`.3mf`, ISO/IEC 25422) package (millimetre unit, deflate-compressed ZIP; a quad
+  // face is written as its two triangles). Thin wrapper over dino8::kernel::SaveThreeMf() (threemf.h), which writes several
+  // parts and any core unit. Result::Failed for a mesh with no vertices or no triangles, a non-finite coordinate or an
+  // unwritable path.
   Result Save3mf(const std::string& path) const;
 
-  // Reads a 3MF file written by Save3mf() (or any other reasonably
-  // well-formed 3MF package using the same single-object/single-mesh
-  // structure, as long as its ZIP entries are stored rather than deflate-
-  // compressed - see `ReadZipArchive()`'s own doc comment, mesh.cpp,
-  // anonymous namespace) into `out_mesh`. A deliberately narrow, hand-
-  // rolled scan for exactly the `3D/3dmodel.model` structure Save3mf()
-  // writes - not a general OPC/3MF reader (no relationship resolution, no
-  // multi-object/multi-build-item models, no production extension) - that
-  // reads every self-closing `<vertex .../>` and `<triangle .../>` element
-  // found anywhere in that one part, in document order, the same "scan for
-  // exactly this element shape" approach `LoadX3d()`'s own attribute
-  // extraction already uses. Returns Result::Failed if the file can't be
-  // opened, isn't a valid ZIP archive (or uses deflate compression - out of
-  // this narrow reader's scope), has no `3D/3dmodel.model` entry, that part
-  // has no recognizable `<vertex>`/`<triangle>` elements, a `<vertex>`/
-  // `<triangle>` element is missing one of its required `x`/`y`/`z` or
-  // `v1`/`v2`/`v3` attributes, any attribute fails to parse as a number, or
-  // any triangle index falls outside the vertex list's range - `out_mesh`
-  // is left unspecified in that case, not partially filled and silently
-  // trusted.
+  // Reads a 3MF package into `out_mesh`: every build item of the file, flattened to world space (component and build-item
+  // transforms applied) and merged into one mesh in the file's own unit. Reads deflated and stored ZIP entries, so files written
+  // by slicers and 3D Builder load. Thin wrapper over dino8::kernel::LoadThreeMf() (threemf.h), which keeps the parts apart,
+  // reports the unit and lists exactly what is refused. `out_mesh` is left unchanged on failure.
   static Result Load3mf(const std::string& path, Mesh& out_mesh);
 
   // Writes this mesh as a plain-ASCII Autodesk FBX file (the classic,
