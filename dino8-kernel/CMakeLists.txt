@@ -86,6 +86,7 @@ add_library(dino8_kernel STATIC
   src/point_cloud.cpp
   src/sheet_metal.cpp
   src/trimmed_offset.cpp
+  src/offset_solid.cpp
 )
 
 # windows.h (pulled in by opennurbs.h) defines min/max macros that break
