@@ -1,5 +1,6 @@
 #include "app/Settings.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -8,7 +9,9 @@
 
 #include "app/Application.h"
 #include "app/MacroLibrary.h"
+#include "commands/Command.h"
 #include "plugins/PluginManager.h"
+#include "viewport/Camera.h"
 #include "util/json_mini.h"
 
 namespace dino8::app {
@@ -49,6 +52,14 @@ std::string Escape(const std::string& s) {
 double Num(const json::Value& v, double fallback) {
   if (v.IsString()) return std::atof(v.string.c_str());
   return v.type == json::Value::Type::Number ? v.number : fallback;
+}
+
+// DINO8_ISOLATE_BEHAVIOR_SETTINGS=1 (set once by tests/smoke.sh for the whole suite) keeps the "behavior" group below out of
+// settings.json in both directions: a script that leaves DragStrength 50 or ToolbarLock on cannot leak into the next script that
+// shares the suite's config directory. Unset (every normal run) they persist like any other option.
+bool BehaviorIsolated() {
+  const char* v = std::getenv("DINO8_ISOLATE_BEHAVIOR_SETTINGS");
+  return v && *v && std::string(v) != "0";
 }
 
 bool Bool(const json::Value& v, bool fallback) {
@@ -182,6 +193,30 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   // load-one-by-one flag and the ignored/disabled library file names (GrasshopperIgnorePlugin, PlugInDisable).
   // Each list is replaced wholesale when its key is present, so a removed entry stays removed. Read before
   // Manager::ScanDefaultFolders runs at startup (Application::Init), so they take effect on the very next launch.
+  // Behaviour options the command line sets (DragMode, OrthoAngle, CommandPrompt, ...): each key is optional and keeps the
+  // current value when absent; numbers are clamped exactly as their commands clamp them.
+  const json::Value& bh = root["behavior"];
+  if (bh.IsObject() && !BehaviorIsolated()) {
+    AppState& st = app.State();
+    st.command_prompt = Bool(bh["command_prompt"], st.command_prompt);
+    st.alerter = Bool(bh["alerter"], st.alerter);
+    st.drag_copy = Bool(bh["drag_copy"], st.drag_copy);
+    st.remember_copy_options = Bool(bh["remember_copy_options"], st.remember_copy_options);
+    st.dig_beep = Bool(bh["dig_beep"], st.dig_beep);
+    st.toolbar_lock = Bool(bh["toolbar_lock"], st.toolbar_lock);
+    st.crease_splitting = Bool(bh["crease_splitting"], st.crease_splitting);
+    app.show_viewport_tabs = Bool(bh["viewport_tabs"], app.show_viewport_tabs);
+    st.decimal_comma = Bool(bh["decimal_comma"], st.decimal_comma);
+    SetDecimalComma(st.decimal_comma);
+    if (bh["drag_mode"].IsString()) {
+      const std::string m = bh["drag_mode"].AsString();
+      for (const char* ok : {"CPlane", "World", "UVN", "View", "ControlPolygon"}) if (m == ok) st.drag_mode = m;
+    }
+    st.drag_strength = std::clamp(Num(bh["drag_strength"], st.drag_strength), 1.0, 100.0);
+    st.ortho_angle = std::clamp(Num(bh["ortho_angle"], st.ortho_angle), 1.0, 180.0);
+    app.Snaps().ortho_angle_deg = st.ortho_angle;
+    Camera::zoom_extents_border = std::clamp(Num(bh["zoom_extents_border"], Camera::zoom_extents_border), 1.0, 3.0);
+  }
   const json::Value& pl = root["plugins"];
   if (pl.IsObject()) {
     plugins::Manager& mgr = plugins::Manager::Get();
@@ -242,6 +277,17 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   out << "  \"curve_display_tolerance\": " << a.curve_display_tolerance << ",\n";
   out << "  \"surface_display_tolerance\": " << a.surface_display_tolerance << ",\n";
   out << "  \"adaptive_tessellation\": " << (a.adaptive_tessellation ? "true" : "false") << ",\n";
+  if (!BehaviorIsolated()) {
+    const AppState& st = a.State();
+    auto tf = [](bool v) { return v ? "true" : "false"; };
+    out << "  \"behavior\": {\"command_prompt\": " << tf(st.command_prompt) << ", \"alerter\": " << tf(st.alerter)
+        << ", \"drag_mode\": \"" << Escape(st.drag_mode) << "\", \"drag_strength\": " << st.drag_strength
+        << ", \"drag_copy\": " << tf(st.drag_copy) << ", \"remember_copy_options\": " << tf(st.remember_copy_options)
+        << ", \"ortho_angle\": " << st.ortho_angle << ", \"zoom_extents_border\": " << Camera::zoom_extents_border
+        << ", \"dig_beep\": " << tf(st.dig_beep) << ", \"toolbar_lock\": " << tf(st.toolbar_lock)
+        << ", \"crease_splitting\": " << tf(st.crease_splitting) << ", \"viewport_tabs\": " << tf(a.show_viewport_tabs)
+        << ", \"decimal_comma\": " << tf(st.decimal_comma) << "},\n";
+  }
   {
     const plugins::Manager& mgr = plugins::Manager::Get();
     out << "  \"plugins\": {\"folders\": [";
