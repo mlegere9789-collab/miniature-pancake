@@ -1065,6 +1065,19 @@ Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
 // height, and a profile offset that cannot be built exactly (a collapse, or an offset that splits into several pieces).
 Brep OffsetPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, double distance);
 
+// Thicken a MULTI-FACE planar sheet into a solid: the sheet is the ruled extrusion (along `direction`) of an OPEN polyline
+// `profile` - a folded plate, a V roof, a zig-zag, a channel - one planar face per profile segment, which Brep::Thicken()
+// (single-face sheets only) cannot do. The solid is the prism over the closed polygon  profile + mitred-offset(profile)
+// reversed: every sheet face is kept exactly as one wall, the opposite face of each is its offset by `thickness` with the folds
+// mitred (adjacent offset faces meet along the intersection of their planes), and two flat end walls close the strip. Positive
+// `thickness` is on the RIGHT of travel along the profile seen along +direction. Volume is exactly `area(strip) * |direction|`,
+// with `area(strip) = thickness * sum (l_i + q_i) / 2` over the segments (l_i the sheet segment, q_i its offset segment).
+//
+// Throws std::invalid_argument for: a zero / non-finite thickness or direction, a closed / curved / non-planar profile, a
+// profile not perpendicular to `direction`, a zero-length segment, and a thickness too large for the folds (the mitre offset
+// collapses, splits or crosses the sheet).
+Brep ThickenPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness);
+
 // Which end cap(s) of an extruded prism ShellOpenExtrusion() removes. "Top" is the cap at `profile + direction`,
 // "Bottom" the cap on the profile itself.
 enum class ExtrusionOpening { Top, Bottom, Both };
