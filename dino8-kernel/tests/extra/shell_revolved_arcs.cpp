@@ -192,10 +192,52 @@ D8_EXTRA_TEST(ShellRevolvedArcProfileRefusalsAreHonest) {
   const std::vector<MeridianEdge> can = {L(3, 6), A(3, 0, 0, 0, false), L(0, -3), L(0, 6)};
   Build(can, {0.5, 0.5, 0, 0}, &what, &threw);
   d8test::Check(!threw, "baseline: the rounded-bottom can builds at equal thickness");
-  Build(can, {0.5, 1.0, 0, 0}, &what, &threw);
-  d8test::Check(threw && what.find("do not meet") != std::string::npos,
-                "wall 0.5 / hemisphere 1.0: the moved wall line never reaches the moved circle - refused, naming it");
+  // Wall 0.5 / hemisphere 1.0 on a TANGENT junction: the moved line (r = 2.5) never reaches the moved circle (radius 2), so the
+  // cavity steps along the common normal - covered by ShellRevolvedArcProfileSteppedThickness (it builds; it is not a refusal).
+  // A NON-tangent corner whose moved curves do not meet has no honest step: refused. Dome (radius 5 about the origin) on a wall
+  // r = 3 meeting it at (3, 4) at an angle; wall 0.1 moves the line to r = 2.9, dome 2.5 shrinks the circle to radius 2.5.
+  Build({L(0, 0), L(3, 0), A(3, 4, 0, 0, true), L(0, 5)}, {0, 0.1, 2.5, 0}, &what, &threw);
+  d8test::Check(threw && what.find("not smooth enough") != std::string::npos,
+                "non-tangent corner whose moved curves do not meet: refused, naming the missing smooth junction");
   // Two separate removed runs.
   Build({L(3, 0), A(3, 0, 0, 0, true), L(0, 3), L(3, 0)}, {0, 1, 0, 1}, &what, &threw);
   d8test::Check(threw, "malformed or split input is refused, not built");
+}
+
+D8_EXTRA_TEST(ShellRevolvedArcProfileSteppedThickness) {
+  // Tangent wall/arc junction with a THICKER hemisphere: the cavity steps from radius 2.5 (wall, t=0.5) to radius 2 (hemisphere,
+  // t=1) along the common normal at z = 0, a ledge. Closed form: ring pi (9 - 6.25) * 6 plus hemisphere shell (2/3) pi (27 - 8).
+  const double R = 3, H = 6, tw = 0.5, tb = 1.0;
+  const std::vector<MeridianEdge> e = {L(R, H), A(R, 0, 0, 0, false), L(0, -R), L(0, H)};
+  const double expected = ON_PI * (R * R - (R - tw) * (R - tw)) * H + 2.0 / 3.0 * ON_PI * (R * R * R - (R - tb) * (R - tb) * (R - tb));
+  CheckShell("can with a 0.5 wall and a 1.0 hemispherical bottom (stepped ledge at the tangent junction)", e, {tw, tb, 0, 0}, expected,
+             [&](double x, double y, double z) {
+               const double r = std::hypot(x, y);
+               if (std::fabs(z) < 0.12 || std::fabs(z - H) < 0.12) return -1;
+               if (z > H) return 0;
+               if (z >= 0) return Band(r, R - tw, R, 0.12);
+               return Band(std::sqrt(x * x + y * y + z * z), R - tb, R, 0.12);
+             },
+             7.0);
+  {  // the reverse (thick wall 1.0, thin hemisphere 0.5): the moved wall line (r = 2) DOES meet the moved circle (radius 2.5), at
+     // z = -sqrt(2.5^2 - 2^2) = -1.5, so the 1.0 wall simply continues below the junction (extend-and-intersect corner, no step).
+     // Cavity = cylinder r2 over z in [-1.5, 6] + the radius-2.5 sphere cap below z = -1.5 (depth 1): pi*4*7.5 + pi*1*(7.5-1)/3.
+    const double outer = ON_PI * 9 * 6 + 2.0 / 3.0 * ON_PI * 27;
+    const double cav = ON_PI * 4 * 7.5 + ON_PI * 1.0 * (3 * 2.5 - 1.0) / 3.0;
+    CheckShell("can with a 1.0 wall and a 0.5 hemispherical bottom (extend-and-intersect corner at z = -1.5)", e, {1.0, 0.5, 0, 0}, outer - cav,
+               [&](double x, double y, double z) {
+                 const double r = std::hypot(x, y);
+                 if (std::fabs(z) < 0.12 || std::fabs(z - H) < 0.12 || std::fabs(z + 1.5) < 0.12) return -1;
+                 if (z > H) return 0;
+                 if (z >= 0) return Band(r, 2.0, R, 0.12);
+                 if (z > -1.5) return Band(r, 2.0, std::sqrt(R * R - z * z), 0.12);
+                 return Band(std::sqrt(x * x + y * y + z * z), 2.5, R, 0.12);
+               },
+               7.0);
+  }
+  {  // the thicker hemisphere shell (stepped body) leaves more material than the equal 0.5 one
+    const Brep stepped = Build(e, {tw, tb, 0, 0});
+    const Brep even = Build(e, {tw, tw, 0, 0});
+    d8test::Check(stepped.Volume() > even.Volume(), "the thicker hemisphere shell leaves more material than the equal 0.5 one");
+  }
 }

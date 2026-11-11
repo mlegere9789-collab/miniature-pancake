@@ -2945,8 +2945,36 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
     }
   }
   const double eps = 1e-9 * size;
-  // Cavity corner between edge i-1 and edge i: the moved curves' intersection nearest the original vertex.
-  auto corner = [&](size_t i) -> RvP2 {
+  // Cavity corner between edge i-1 (a) and edge i: the moved curves' intersection nearest the original vertex (candidates
+  // inside an arc's own angular span first). When two moved curves of a SMOOTH (tangent) junction do not meet - different
+  // thicknesses on the two sides of a tangent line/arc or arc/arc junction - the cavity STEPS between them along the common
+  // normal at the original vertex (a ledge, one planar or conical face of the cavity): `step` is then set and end_a / start_b
+  // are the two ends of that ledge. Rim corners (next to a removed face) never step.
+  struct Corner {
+    RvP2 end_a, start_b;
+    bool step = false;
+  };
+  auto tangent_at = [&](size_t e, bool at_end) -> RvP2 {
+    if (!ed[e].arc) return dir[e];
+    const RvP2 p = at_end ? v[(e + 1) % n] : v[e];
+    const RvP2 rv{p.r - ed[e].c.r, p.z - ed[e].c.z};
+    const double l = std::hypot(rv.r, rv.z);
+    RvP2 tg{-rv.z / l, rv.r / l};
+    if (!ed[e].ccw) tg = RvP2{-tg.r, -tg.z};
+    return tg;
+  };
+  auto moved_point = [&](size_t e, const RvP2& p) -> RvP2 {
+    if (!ed[e].arc) return RvP2{p.r + th[e] * -dir[e].z, p.z + th[e] * dir[e].r};
+    const double k = geo[e].rad / RvDist(ed[e].c, p);
+    return RvP2{ed[e].c.r + (p.r - ed[e].c.r) * k, ed[e].c.z + (p.z - ed[e].c.z) * k};
+  };
+  auto in_span = [&](size_t e, const RvP2& q) {
+    if (!ed[e].arc) return true;
+    const double total = std::fabs(RvSweep(ed[e].c, v[e], v[(e + 1) % n], ed[e].ccw));
+    const double part = std::fabs(RvSweep(ed[e].c, v[e], q, ed[e].ccw));
+    return part <= total + 1e-9 || part >= 2.0 * ON_PI - 1e-9;
+  };
+  auto corner = [&](size_t i, bool allow_step) -> Corner {
     const size_t a = (i + n - 1) % n;
     const Geo &ga = geo[a], &gb = geo[i];
     std::vector<RvP2> cand;
@@ -2957,50 +2985,60 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
         if (std::fabs(th[a] - th[i]) > 1e-12 * size) {
           throw std::invalid_argument(fn + "collinear adjacent faces of different thickness have no unique cavity corner");
         }
-        return gb.p;
+        return Corner{gb.p, gb.p, false};
       }
       const RvP2 w{gb.p.r - ga.p.r, gb.p.z - ga.p.z};
-      const double s = RvCross(w, gb.d) / den;
-      return RvP2{ga.p.r + s * ga.d.r, ga.p.z + s * ga.d.z};
+      const double sc = RvCross(w, gb.d) / den;
+      const RvP2 q{ga.p.r + sc * ga.d.r, ga.p.z + sc * ga.d.z};
+      return Corner{q, q, false};
     }
     if (ga.arc && gb.arc) cand = RvCircleCircle(ga.c, ga.rad, gb.c, gb.rad, eps);
     else if (ga.arc) cand = RvLineCircle(gb.p, gb.d, ga.c, ga.rad, eps);
     else cand = RvLineCircle(ga.p, ga.d, gb.c, gb.rad, eps);
     if (cand.empty()) {
+      const RvP2 ta = tangent_at(a, true), tb = tangent_at(i, false);
+      if (allow_step && ta.r * tb.r + ta.z * tb.z > 1.0 - 1e-6) {
+        return Corner{moved_point(a, v[i]), moved_point(i, v[i]), true};
+      }
       throw std::invalid_argument(fn + "the moved curves of faces " + std::to_string(a) + " and " + std::to_string(i) +
-                                  " do not meet - thickness is infeasible");
+                                  " do not meet and the junction is not smooth enough to step the cavity - thickness is infeasible");
     }
     RvP2 best = cand[0];
+    auto score = [&](const RvP2& c) { return RvDist(c, v[i]) + ((in_span(a, c) && in_span(i, c)) ? 0.0 : 1e3 * size); };
     for (const RvP2& c : cand) {
-      if (RvDist(c, v[i]) < RvDist(best, v[i])) best = c;
+      if (score(c) < score(best)) best = c;
     }
-    return best;
+    return Corner{best, best, false};
   };
   const size_t kept_first = (last + 1) % n;
   std::vector<size_t> kept;  // kept edge indices in order
   for (size_t i = kept_first; i != first; i = (i + 1) % n) kept.push_back(i);
-  std::vector<RvP2> cav;  // corner(kept[0]) ... corner(first)
-  for (size_t k = 0; k <= kept.size(); ++k) cav.push_back(corner((kept_first + k) % n));
-  // Cavity edge k (between cav[k] and cav[k+1]) takes kept edge kept[k]'s shape on the moved curve.
+  std::vector<Corner> corners;  // corner(kept[0]) ... corner(first)
+  for (size_t k = 0; k <= kept.size(); ++k) corners.push_back(corner((kept_first + k) % n, k > 0 && k < kept.size()));
+  const RvP2 cav_first = corners.front().start_b, cav_last = corners.back().end_a;
+  // Cavity pieces in order: edge k runs from corners[k].start_b to corners[k+1].end_a on kept edge kept[k]'s moved curve;
+  // a stepped corner adds the ledge between them.
   std::vector<RvPiece> cav_edges;
   for (size_t k = 0; k < kept.size(); ++k) {
     RvEdge e = ed[kept[k]];
+    const RvP2 p0 = corners[k].start_b, p1 = corners[k + 1].end_a;
     if (e.arc) {
       const double rad = geo[kept[k]].rad;
-      for (const RvP2& q : {cav[k], cav[k + 1]}) {
+      for (const RvP2& q : {p0, p1}) {
         if (std::fabs(RvDist(e.c, q) - rad) > 1e-6 * std::max(1.0, rad)) throw std::invalid_argument(fn + "internal: a cavity corner is off its arc");
       }
-      const double s = RvSweep(e.c, cav[k], cav[k + 1], e.ccw);
-      if (!(std::fabs(s) > 1e-9) || std::fabs(s) > 2.0 * ON_PI - 1e-6) {
+      const double sw = RvSweep(e.c, p0, p1, e.ccw);
+      if (!(std::fabs(sw) > 1e-9) || std::fabs(sw) > 2.0 * ON_PI - 1e-6) {
         throw std::invalid_argument(fn + "the cavity arc parallel to face " + std::to_string(kept[k]) + " collapsed - thickness is infeasible");
       }
     } else {
-      const RvP2 d{cav[k + 1].r - cav[k].r, cav[k + 1].z - cav[k].z};
+      const RvP2 d{p1.r - p0.r, p1.z - p0.z};
       if (d.r * dir[kept[k]].r + d.z * dir[kept[k]].z <= tol) {
         throw std::invalid_argument(fn + "the cavity edge parallel to face " + std::to_string(kept[k]) + " collapsed or reversed - thickness is infeasible");
       }
     }
-    cav_edges.push_back(RvPiece{cav[k], cav[k + 1], e});
+    cav_edges.push_back(RvPiece{p0, p1, e});
+    if (k + 1 < kept.size() && corners[k + 1].step) cav_edges.push_back(RvPiece{corners[k + 1].end_a, corners[k + 1].start_b, RvEdge{}});
   }
   // Outer boundary samples for the inside test; exact distances for the wall test.
   const std::vector<RvP2> outer_pts = sampled();
@@ -3044,8 +3082,8 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
     }
   }
   // Rims along the removed faces' own curves: from v[first] to the cavity's last corner, and from its first corner to v[kept_first].
-  RvPiece rim_a{v[first], cav.back(), ed[first]};
-  RvPiece rim_b{cav.front(), v[kept_first], ed[last]};
+  RvPiece rim_a{v[first], cav_last, ed[first]};
+  RvPiece rim_b{cav_first, v[kept_first], ed[last]};
   auto rim_ok = [&](const RvPiece& r, size_t edge, bool from_start) {
     const RvP2 p0 = v[edge], p1 = v[(edge + 1) % n];
     if (!ed[edge].arc) {
