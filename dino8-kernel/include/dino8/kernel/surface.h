@@ -1580,15 +1580,23 @@ class NurbsSurface {
   // division count would otherwise reach `ParameterAt()` and the
   // concave-path grid-width computation as an unguarded `0/0`), fixed
   // here directly rather than left latent.
+  //
+  // `pinch_tolerance` (default 1e-6: unchanged behaviour for every existing caller) is the (u, v) distance under which two
+  // non-adjacent vertices of `trim_polygon` are welded and the polygon split at that pinch into separate lobes. Pass 0 for a
+  // polygon that has holes slit into it ON PURPOSE (Brep::Tessellate's keyhole polygon): its two slit sides are a few 1e-7 apart
+  // and must not be welded, which would tessellate the hole's interior as a lobe of its own. The mesh weld at the end then closes
+  // the slit in space.
   Mesh TessellateGridClippedExact(int u_divisions, int v_divisions,
-                                   const std::vector<Point2d>& trim_polygon) const;
+                                   const std::vector<Point2d>& trim_polygon,
+                                   double pinch_tolerance = 1e-6) const;
 
   // TessellateGridClippedExact(), but picking u_divisions/v_divisions via
   // SuggestedDivisions(chord_tolerance) instead of the caller choosing
   // them by hand - the exact-clip counterpart to
   // TessellateGridAdaptive(), same "one call instead of two" convenience.
   Mesh TessellateGridClippedExactAdaptive(double chord_tolerance,
-                                           const std::vector<Point2d>& trim_polygon) const;
+                                           const std::vector<Point2d>& trim_polygon,
+                                           double pinch_tolerance = 1e-6) const;
 
   // Angle-based counterpart to TessellateGridAdaptive(): picks
   // u_divisions/v_divisions via SuggestedDivisionsByAngle(angle_tolerance)
@@ -1612,7 +1620,8 @@ class NurbsSurface {
   // exact-clip sibling of TessellateGridAdaptiveByAngle(), same "one call
   // instead of two" convenience.
   Mesh TessellateGridClippedExactAdaptiveByAngle(double angle_tolerance,
-                                                  const std::vector<Point2d>& trim_polygon) const;
+                                                  const std::vector<Point2d>& trim_polygon,
+                                                  double pinch_tolerance = 1e-6) const;
 
   // Closes PARITY_MAP's own disclosed "Post-tessellation deviation
   // verification (measuring emitted facets against the true source
@@ -1725,7 +1734,8 @@ class NurbsSurface {
   Mesh TessellateGridClippedExactCertifiedAdaptive(double chord_tolerance,
                                                     const std::vector<Point2d>& trim_polygon,
                                                     int max_refinements = 8,
-                                                    double* out_achieved_deviation = nullptr) const;
+                                                    double* out_achieved_deviation = nullptr,
+                                                    double pinch_tolerance = 1e-6) const;
 
   // The general (possibly-holed, non-uniform) counterpart to
   // TessellateGridClippedExactCertifiedAdaptive() above, covering the
