@@ -2539,6 +2539,44 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
   return result;
 }
 
+Brep Brep::ExtrudeFaceWelded(const Brep& body, int face_index, Vector3d direction, bool cap) {
+  const char* caller = "ExtrudeFaceWelded";
+  // ExtrudeFace() does every validation (and builds the trimmed planar case with real topology already).
+  const Brep plain = ExtrudeFace(body, face_index, direction, cap);
+  if (plain.raw().IsValid()) return plain;
+
+  const ON_Brep& src = plain.raw();
+  Brep result;
+  ON_Brep& brep = result.raw();
+  int rebuilt = 0;
+  for (int fi = 0; fi < src.m_F.Count(); ++fi) {
+    if (src.m_F[fi].m_face_index < 0) continue;
+    const ON_Surface* s = src.m_F[fi].SurfaceOf();
+    if (s == nullptr) Internal(caller, "a face of the surface-only extrusion has no surface");
+    // NewFace(const ON_Surface&) makes a COMPLETE face: its own corner vertices, four boundary edges and a four-trim outer loop.
+    if (brep.NewFace(*s) == nullptr) Internal(caller, "ON_Brep::NewFace refused a face surface");
+    ++rebuilt;
+  }
+  if (rebuilt != (cap ? 6 : 4)) Internal(caller, "the surface-only extrusion has an unexpected face count");
+
+  // Coincident boundary edges (cap rim == wall edge, wall edge == wall edge) are exact copies of one another: the isocurves of
+  // the translated surface and of the ruled walls are built from the same control points, so a tolerance far below the model
+  // scale welds them and nothing else.
+  ON_BoundingBox bb;
+  brep.GetBoundingBox(bb);
+  const double weld = 1e-6 * std::max(bb.Diagonal().Length(), 1.0);
+  result.JoinNakedEdges(weld);
+  if (cap) {
+    if (!brep.IsValid() || !brep.IsSolid()) {
+      Fail(caller, "the six rebuilt faces did not weld into a closed solid (IsValid/IsSolid false); use ExtrudeFace() for the "
+                   "surface-only result");
+    }
+    const Mesh check = result.TessellateToClosedMesh(16, 16);
+    if (check.Volume() < 0.0) brep.Flip();
+  }
+  return result;
+}
+
 namespace {
 
 // Walks `wire_body`'s own edge/vertex graph into one ordered edge-index

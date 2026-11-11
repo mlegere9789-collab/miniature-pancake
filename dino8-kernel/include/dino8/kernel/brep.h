@@ -630,6 +630,19 @@ class Brep {
   // the trimmed and untrimmed cases); and `direction` must be non-zero.
   static Brep ExtrudeFace(const Brep& body, int face_index, Vector3d direction, bool cap = true);
 
+  // ExtrudeFaceWelded: the genuine-topology sibling of ExtrudeFace() (the same "Welded" convention BoxWelded(), the
+  // Sphere/Torus/CylinderWelded() family and TrimmedPlanarFaceWelded() set). Same arguments, same refusals (it calls ExtrudeFace()
+  // first), same geometry; the difference is the B-rep: the untrimmed path of ExtrudeFace() builds its faces with the bare
+  // NewFace(surface_index) overload, so the solid has no vertices, edges or loops and ON_Brep::IsValid() is false. Here every
+  // face is rebuilt as a complete face (its own boundary vertices, edges and trims) and the coincident boundary edges are welded
+  // by JoinNakedEdges(), which also unifies the face normals and makes the closed shell outward. With cap = true the result is a
+  // real closed solid: 8 vertices, 12 edges, 6 faces (Euler characteristic V - E + F = 2), every edge shared by exactly two faces,
+  // IsValid() and IsSolid() true. With cap = false it is the open 4-wall tube (8 vertices, 12 edges, 4 faces, chi = 0; the 8
+  // boundary edges naked). A trimmed planar face already comes out of ExtrudeFace() with real topology (FromPlanarFaces()) and is
+  // returned as is. Every ExtrudeFace() refusal applies unchanged; a weld that does not close (cap = true and the result is not
+  // IsSolid()) throws std::invalid_argument rather than returning a half-welded body.
+  static Brep ExtrudeFaceWelded(const Brep& body, int face_index, Vector3d direction, bool cap = true);
+
   // ExtrudeWireBody: sweep an existing wire body's own edges (WireBody()/
   // AddWireCurves() above, brep.h ~3397/3451) into a new, independent
   // sheet or solid - PARITY_MAP.md's "Wire bodies" item names this
