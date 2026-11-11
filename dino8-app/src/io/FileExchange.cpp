@@ -1,4 +1,5 @@
 #include "io/FileExchange.h"
+#include "io/File3dm.h"
 
 #include "commands/DimGeometry.h"
 #include "io/AciPalette.h"
@@ -44,6 +45,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -4180,7 +4182,7 @@ bool ExportPly(const Document& doc, const std::string& path, bool selected_only,
     if (o.kind == ObjectKind::Mesh && o.mesh) {
       results[i] = *o.mesh;
     } else if (o.kind == ObjectKind::Surface && o.surface) {
-      results[i] = o.surface->TessellateGridAdaptive(0.01);
+      results[i] = o.surface->TessellateGridAdaptive(ActiveMeshExportOptions().chord_tolerance);
     } else if (o.kind == ObjectKind::SubD && o.subd) {
       results[i] = o.subd->ToApproximateMesh();
     } else if (o.kind == ObjectKind::Brep && o.brep) {
@@ -4190,14 +4192,19 @@ bool ExportPly(const Document& doc, const std::string& path, bool selected_only,
       // (1.8 percent low; the same solid through .stl / .obj reads 84.81, 0.19 percent low), and with two float-rounding
       // duplicate seam vertices (8 naked edges until the import weld).
       BrepMeshOptions opt;
-      opt.chord_tolerance = 0.01;
+      opt.chord_tolerance = ActiveMeshExportOptions().chord_tolerance;
       kernel::Mesh m = MeshBrepClosed(o.brep->raw(), opt);
       if (m.FaceCount() > 0) results[i] = std::move(m);
     }
   });
   std::vector<kernel::Mesh> owned;
   owned.reserve(results.size());
-  for (std::optional<kernel::Mesh>& r : results) if (r) owned.push_back(std::move(*r));
+  const MeshExportOptions& options = ActiveMeshExportOptions();
+  for (std::optional<kernel::Mesh>& r : results) {
+    if (!r) continue;
+    if (options.scale != 1.0 && options.scale > 0.0) r->raw().Transform(ON_Xform::DiagonalTransformation(options.scale));
+    owned.push_back(std::move(*r));
+  }
   for (const kernel::Mesh& m : owned) meshes.push_back(&m.raw());
   if (meshes.empty()) {
     error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";
@@ -4212,10 +4219,54 @@ bool ExportPly(const Document& doc, const std::string& path, bool selected_only,
     nf += m->FaceCount();
     if (m->m_N.Count() != m->VertexCount()) normals = false;
   }
-  os << "ply\nformat ascii 1.0\ncomment Exported by Dino 8\n";
+  const bool binary = options.format == MeshExportFormat::Binary || options.format == MeshExportFormat::BinaryBigEndian;
+  const bool big_endian = options.format == MeshExportFormat::BinaryBigEndian;
+  os << "ply\nformat " << (!binary ? "ascii" : (big_endian ? "binary_big_endian" : "binary_little_endian")) << " 1.0\ncomment Exported by Dino 8\n";
   os << "element vertex " << nv << "\nproperty float x\nproperty float y\nproperty float z\n";
   if (normals) os << "property float nx\nproperty float ny\nproperty float nz\n";
   os << "element face " << nf << "\nproperty list uchar int vertex_indices\nend_header\n";
+  if (binary) {
+    // Binary body, the layout the header above declares: float x y z [nx ny nz] per vertex, then per face one uchar corner count
+    // and that many int32 indices, every multi-byte value in the byte order the format line names.
+    auto put32 = [&](std::uint32_t u) {
+      unsigned char b[4] = {static_cast<unsigned char>(u & 255u), static_cast<unsigned char>((u >> 8) & 255u),
+                            static_cast<unsigned char>((u >> 16) & 255u), static_cast<unsigned char>((u >> 24) & 255u)};
+      if (big_endian) std::reverse(b, b + 4);
+      os.write(reinterpret_cast<const char*>(b), 4);
+    };
+    auto put_float = [&](float v) {
+      std::uint32_t u;
+      std::memcpy(&u, &v, 4);
+      put32(u);
+    };
+    for (const ON_Mesh* m : meshes) {
+      for (int i = 0; i < m->VertexCount(); ++i) {
+        const ON_3dPoint p = m->Vertex(i);
+        put_float(static_cast<float>(p.x));
+        put_float(static_cast<float>(p.y));
+        put_float(static_cast<float>(p.z));
+        if (normals) {
+          const ON_3fVector& n = m->m_N[i];
+          put_float(n.x);
+          put_float(n.y);
+          put_float(n.z);
+        }
+      }
+    }
+    int binary_base = 0;
+    for (const ON_Mesh* m : meshes) {
+      for (int i = 0; i < m->FaceCount(); ++i) {
+        const ON_MeshFace& face = m->m_F[i];
+        const int corners = face.IsTriangle() ? 3 : 4;
+        const char count_byte = static_cast<char>(corners);
+        os.write(&count_byte, 1);
+        for (int c = 0; c < corners; ++c) put32(static_cast<std::uint32_t>(binary_base + face.vi[c]));
+      }
+      binary_base += m->VertexCount();
+    }
+    if (!os) { error = "Could not write " + path; return false; }
+    return true;
+  }
   for (const ON_Mesh* m : meshes) {
     for (int i = 0; i < m->VertexCount(); ++i) {
       const ON_3dPoint p = m->Vertex(i);

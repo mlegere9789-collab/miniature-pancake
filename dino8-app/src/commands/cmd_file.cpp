@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -54,14 +56,55 @@ bool ParseDm3dmVersion(CommandContext& ctx, const std::string& label, const std:
 // remaining token as the path - same tolerant "any order, last plain token
 // wins" parsing "Print"'s own Scale=/path tokens already use. Returns
 // nullopt (falling back to a file dialog) when no path token was given.
-std::optional<std::string> TakePathAndVersion(CommandContext& ctx, std::string& scheme_override) {
+std::optional<std::string> TakePathAndVersion(CommandContext& ctx, std::string& scheme_override, MeshExportOptions* mesh = nullptr,
+                                              bool* mesh_options_bad = nullptr) {
   std::optional<std::string> path;
+  double units_factor = 1.0;
   while (auto t = ctx.Engine().TakePendingInput()) {
     std::string lower = *t;
     for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (lower.rfind("version=", 0) == 0) { scheme_override = t->substr(8); continue; }
+    if (mesh) {
+      // Export's mesh-format tokens (.stl / .obj / .ply): Format=Ascii|Binary|BinaryBigEndian, Scale=<factor>,
+      // Units=<mm|cm|m|km|in|ft|mi|um>, Tolerance=<chord tolerance>, PerObject=Yes|No. A bad value warns and sets
+      // *mesh_options_bad so the export is refused rather than written with a silently different setting.
+      auto bad = [&](const std::string& why) { ctx.Warn("Export: " + why); if (mesh_options_bad) *mesh_options_bad = true; };
+      auto number = [&](const std::string& text, double& out) {
+        char* end = nullptr;
+        out = std::strtod(text.c_str(), &end);
+        return end != text.c_str() && *end == '\0' && out > 0.0 && std::isfinite(out);
+      };
+      if (lower.rfind("format=", 0) == 0) {
+        const std::string v = lower.substr(7);
+        if (v == "ascii" || v == "text") mesh->format = MeshExportFormat::Ascii;
+        else if (v == "binary" || v == "binarylittleendian" || v == "binary_little_endian") mesh->format = MeshExportFormat::Binary;
+        else if (v == "binarybigendian" || v == "binary_big_endian") mesh->format = MeshExportFormat::BinaryBigEndian;
+        else bad("Format=" + t->substr(7) + " is not Ascii, Binary or BinaryBigEndian");
+        continue;
+      }
+      if (lower.rfind("scale=", 0) == 0) {
+        if (!number(lower.substr(6), mesh->scale)) bad("Scale=" + t->substr(6) + " is not a positive number");
+        continue;
+      }
+      if (lower.rfind("units=", 0) == 0) {
+        if (!MeshExportUnitFactor(ctx.Doc(), t->substr(6), units_factor)) bad("Units=" + t->substr(6) + " is not a known unit (mm, cm, m, km, in, ft, mi, um)");
+        continue;
+      }
+      if (lower.rfind("tolerance=", 0) == 0) {
+        if (!number(lower.substr(10), mesh->chord_tolerance)) bad("Tolerance=" + t->substr(10) + " is not a positive number");
+        continue;
+      }
+      if (lower.rfind("perobject=", 0) == 0) {
+        const std::string v = lower.substr(10);
+        if (v == "yes" || v == "true" || v == "1") mesh->per_object = true;
+        else if (v == "no" || v == "false" || v == "0") mesh->per_object = false;
+        else bad("PerObject=" + t->substr(10) + " is not Yes or No");
+        continue;
+      }
+    }
     path = *t;
   }
+  if (mesh) mesh->scale *= units_factor;
   return path;
 }
 
@@ -96,6 +139,37 @@ bool ExportDocument(const Document& doc, const std::string& path, std::string& e
   if (ext == ".pts") return ExportPts(doc, path, true, error);
   if (ext == ".las") return ExportLas(doc, path, true, error);
   return ExportMeshFile(doc, path, true, error);
+}
+
+// Export with PerObject=Yes: every selected, visible object that yields a mesh is written to its OWN file,
+// <stem>_<n>_<name>.<ext> next to `path` (n counts the written files from 1; the name is the object's name with every
+// character outside letters, digits, '-' and '_' replaced by '_'). Objects that give no mesh (curves, points) are skipped.
+// Returns the number of files written; the paths are appended to `written`.
+int ExportPerObject(CommandContext& ctx, const std::string& path, std::vector<std::string>& written, std::string& error) {
+  const fs::path p(path);
+  int n = 0;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (!o.selected || !ctx.Doc().IsObjectVisible(o)) continue;
+    Document sub;
+    sub.Layers() = ctx.Doc().Layers();
+    SceneObject copy = o;
+    copy.selected = true;
+    sub.Add(std::move(copy));
+    std::string name = o.name;
+    for (char& c : name) if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') c = '_';
+    const std::string leaf = p.stem().string() + "_" + std::to_string(n + 1) + (name.empty() ? "" : "_" + name) + p.extension().string();
+    const std::string out = (p.parent_path() / leaf).string();
+    std::string e;
+    if (ExportDocument(sub, out, e)) {
+      ++n;
+      written.push_back(out);
+    } else {
+      std::error_code ec;
+      fs::remove(out, ec);
+      error = e;
+    }
+  }
+  return n;
 }
 
 // Free function (not a Command method) so the fire-and-forget file-dialog
@@ -219,7 +293,10 @@ void RegisterFileCommands(CommandEngine& e) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
         std::string scheme_input;
-        if (auto p = TakePathAndVersion(ctx, scheme_input)) {
+        MeshExportOptions mesh_options;
+        bool mesh_options_bad = false;
+        if (auto p = TakePathAndVersion(ctx, scheme_input, &mesh_options, &mesh_options_bad)) {
+          if (mesh_options_bad) return;  // already warned; nothing written
           if (LowerExt(*p) == ".3dm") {
             int dm_version = 0;
             if (!scheme_input.empty() && !ParseDm3dmVersion(ctx, "Export", scheme_input, dm_version)) return;
@@ -235,8 +312,25 @@ void RegisterFileCommands(CommandEngine& e) {
           }
           std::string err;
           bool ok = false;
-          ExportWithSchemeOverride(ctx.Doc(), normalized, [&] { ok = app.ExportSelected(*p, err); });
-          if (!ok) ctx.Warn(err); else ctx.Print("Exported " + *p + (normalized.empty() ? "" : " (Version=" + normalized + ")"));
+          const std::string ext = LowerExt(*p);
+          const bool is_mesh_ext = ext == ".stl" || ext == ".obj" || ext == ".ply";
+          if (mesh_options.per_object && !is_mesh_ext) { ctx.Warn("Export: PerObject=Yes applies to .stl, .obj and .ply files only"); return; }
+          std::vector<std::string> written;
+          {
+            ScopedMeshExportOptions scoped(mesh_options);
+            if (mesh_options.per_object) {
+              ExportWithSchemeOverride(ctx.Doc(), normalized, [&] { ok = ExportPerObject(ctx, *p, written, err) > 0; });
+            } else {
+              ExportWithSchemeOverride(ctx.Doc(), normalized, [&] { ok = app.ExportSelected(*p, err); });
+            }
+          }
+          if (!ok) { ctx.Warn(err.empty() ? "Export: nothing to export" : err); return; }
+          if (mesh_options.per_object) {
+            ctx.Print("Exported " + std::to_string(written.size()) + " files, one per object:");
+            for (const std::string& w : written) ctx.Print("  " + w);
+          } else {
+            ctx.Print("Exported " + *p + (normalized.empty() ? "" : " (Version=" + normalized + ")"));
+          }
           return;
         }
         app.ShowFileDialog("Export selected", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
