@@ -1,0 +1,79 @@
+# ChamferEdge / FilletEdge at a shared right-angle corner: two edges picked in one run that meet at a box corner (third edge sharp) are built together by the
+# exact kernel corner functions (ChamferConvexEdgePairDistances, FilletConvexEdgePairMitre) instead of being chained one by one. Chained, the SMALLER chamfer
+# picked first is refused (the second, larger chamfer's end would meet two faces) and equal fillets are refused outright (a corner of two fillets).
+# Closed forms, 10x10x10 box, L_A = L_B = 10 (a = 1 - pi/4):
+#   chamfer pair, d_A and d_B (legs equal per edge): V = 1000 - d_A^2/2 L_A - d_B^2/2 L_B + d_A d_B m - (d_A + d_B) m^2/2 + m^3/3, m = min(d_A, d_B)
+#     d_A = 1 (vertical edge), d_B = 2 (top edge): 1000 - 5 - 20 + 2 - 1.5 + 1/3 = 975.8333
+#   fillet pair, radius r: V = 1000 - a r^2 (L_A + L_B) + r^3 (5/3 - pi/2); r = 2: 1000 - 17.168 + 0.767 = 983.599 (the app's Volume command reads the display
+#     tessellation of the two quarter-cylinders, about 0.1 lower: 983.5; without the overlap term it would be 982.83, one fillet alone 991.4; the exact
+#     kernel volume is checked to the closed form in dino8-kernel/tests/extra/fillet_pair_mitre.cpp)
+SetActiveViewport Top
+# --- Smaller chamfer FIRST (distance 1 on the vertical edge, then 2 on the top edge): the second pick meets the first chamfer's face at the corner.
+Box 1400000,0,0 1400010,10,0 10
+ChamferEdge
+Radius=1
+1400010,10,5
+Radius=2
+1400004,10,10
+Enter
+SelAll
+Volume
+List
+@expect_objects 1
+SelAll
+Delete
+# --- The same through Distance/Angle (45 degrees: equal legs per edge, so the same closed form 975.8333).
+Box 1400100,0,0 1400110,10,0 10
+ChamferEdge
+Radius=1
+Angle=45
+1400110,10,5
+Radius=2
+1400104,10,10
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- The LARGER chamfer first (2, then 1): the chained exact path already built this; the closed form is the same 975.8333.
+Box 1400200,0,0 1400210,10,0 10
+ChamferEdge
+Radius=2
+1400210,10,5
+Radius=1
+1400204,10,10
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- A second distance that does not fit its face (11 on a 10 box): the corner pair refuses with the kernel's own reason, the chained path cannot either,
+# the object keeps the first chamfer (1000 - 1*1/2*10 = 995).
+Box 1400300,0,0 1400310,10,0 10
+ChamferEdge
+Radius=1
+1400310,10,5
+Radius=11
+1400304,10,10
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- Two equal fillets at a corner (radius 2), third edge sharp: one exact mitred pair.
+Box 1400400,0,0 1400410,10,0 10
+FilletEdge
+Radius=2
+1400410,10,5
+1400405,10,10
+Enter
+SelAll
+Volume
+List
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
