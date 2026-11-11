@@ -1074,7 +1074,19 @@ void FinishSeamCrossing(const ON_Surface& s, int wrap_dir, std::vector<UVPt>& en
   // only ever fires for a sample Newton already snapped bit-exactly to
   // the boundary, never for the ordinary "up to one mesh cell off" case.
   const double exact_eps = 1e-9 * std::max(L, 1.0);
-  auto already_at_seam = [&](double w, double snapped) { return std::fabs(w - snapped) <= exact_eps; };
+  // A sample within kSeamReuseTol (3D) of the seam is reused too, not only a bit-exact one. A sample 2e-7 (u) = 6e-7 (3D) short of the
+  // seam (measured: the plane z = 4 + 0.25 x through a r = 3, h = 8 cylinder whose seam line is at 0 or 180 degrees, so the cut curve
+  // crosses the seam at the mid-height of that line) used to get a synthesized seam vertex beside it; that vertex and the sample then
+  // sat 6e-7 apart - inside kWeldTol, but VertexWelder's grid cells (round(p / kWeldTol)) put them in different cells (x = -5.4e-7 -> -1,
+  // 0 -> 0), so they stayed two vertices joined by a zero-length naked edge and the half was no solid (IsSolid false, chi 1). Reusing the
+  // sample makes the seam vertex the sample itself.
+  constexpr double kSeamReuseTol = 1e-5;
+  auto already_at_seam = [&](const UVPt& sample, double w, double snapped) {
+    if (std::fabs(w - snapped) <= exact_eps) return true;
+    ON_2dPoint on_seam = sample.uv;
+    (wrap_dir == 0 ? on_seam.x : on_seam.y) = snapped;
+    return s.PointAt(on_seam.x, on_seam.y).DistanceTo(s.PointAt(sample.uv.x, sample.uv.y)) <= kSeamReuseTol;
+  };
   // `near_pt`, not `near`: the latter is a legacy Windows SDK macro (see
   // the is_close rename elsewhere in this file for the same MSVC break).
   auto make_seam_point = [&](const UVPt& near_pt, double snapped) {
@@ -1085,8 +1097,8 @@ void FinishSeamCrossing(const ON_Surface& s, int wrap_dir, std::vector<UVPt>& en
   };
   const double front_snap = front_is_lo ? lo : hi;
   const double back_snap = front_is_lo ? hi : lo;
-  const bool front_reused = already_at_seam(w_after, front_snap);
-  const bool back_reused = already_at_seam(w_before, back_snap);
+  const bool front_reused = already_at_seam(starting.front(), w_after, front_snap);
+  const bool back_reused = already_at_seam(ending.back(), w_before, back_snap);
   if (front_reused) {
     // Reuse the existing straddling sample in place: no new vertex. Its
     // own `p` is deliberately left untouched (see this function's own
@@ -6432,6 +6444,22 @@ std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal
   });
 
   auto [outside, inside] = SplitBrepBySolid(target, box, tolerance);
+  // Best-effort sealing of a half that came back as an open shell. Where the cut curve crosses a periodic seam the engine inserts a
+  // seam vertex into the wall's chain that the cutting face's own copy of the chord does not have (a T-junction): the raw half is
+  // ON_Brep::IsValid() but has naked edges, so it is no closed solid (measured: a cylinder r 3, h 8 cut by z = 3 + 0.25 x with its seam
+  // line at 45 degrees: three naked edges, the seam vertex and the two chord pieces beside it, IsSolid false). Sewing
+  // (SealGeneralBooleanResult, the step BooleanCombineGeneralSealed() applies) closes them.
+  // A half that is already a solid is left untouched (sealing would reopen nothing but also change nothing); one that cannot be
+  // sealed is returned as the engine produced it - this never turns a result into a refusal.
+  auto seal = [](Brep& piece, BooleanOp op) {
+    if (piece.raw().m_F.Count() == 0 || piece.raw().IsSolid()) return;
+    try {
+      piece = SealGeneralBooleanResult(piece, op, std::nan(""), std::nan("")).brep;
+    } catch (const std::exception&) {
+    }
+  };
+  seal(inside, BooleanOp::Intersection);
+  seal(outside, BooleanOp::Difference);
   return {std::move(inside), std::move(outside)};
 }
 
