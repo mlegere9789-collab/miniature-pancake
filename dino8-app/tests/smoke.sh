@@ -3911,8 +3911,12 @@ bgecheck() { if echo "$BG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL 
 # engine does not return a closed solid for a box pierced by a cylinder. RunBoolean now accepts a General-engine
 # result only when it is a closed solid, so the union and difference fall through to the mesh path, whose volumes
 # are the true ones (box 1000 +/- the cylinder's 10-long, r=2 part, pi*4*10 = 125.66: union 1125, difference 874.9).
-bgecheck ", sealed: valid B-rep with real inner loops, exact volume 1125 (kernel divergence theorem), 2 keyhole(s) opened (sewn at tolerance 0.02449), volume 1125 (mesh cross-check 1125)" "a box unioned with a piercing, record-less cylinder: the General engine's result is sewn into a closed solid and accepted only because its volume agrees with the mesh boolean (1000 + 125.7); an open shell would now be refused by RunBoolean's closed-solid gate"
-bgecheck ", sealed: valid B-rep with real inner loops, exact volume 874.5 (kernel divergence theorem), 2 keyhole(s) opened (sewn at tolerance 0.01855), volume 874.8 (mesh cross-check 874.9)" "the same box minus the piercing cylinder likewise: closed, volume 1000 - 125.7"
+# The sealed "exact volume" is the kernel's divergence-theorem integral, printed to 4 significant digits. Independent closed forms:
+# union 1000 + pi*2^2*10 = 1125.664 -> "1126"; difference 1000 - 125.664 = 874.336 -> "874.3". These used to read 1125 / 874.5
+# because VolumeOfSealedSolid integrated the planar faces against a polygonal circle (1124.84 / 874.47, short by the circle's
+# chord area); it now follows the cylinder's true edge curve (measured 1125.663 / 874.337, within 3e-4 of the closed forms).
+bgecheck ", sealed: valid B-rep with real inner loops, exact volume 1126 (kernel divergence theorem), 2 keyhole(s) opened (sewn at tolerance 0.02449), volume 1125 (mesh cross-check 1125)" "a box unioned with a piercing, record-less cylinder: the General engine's result is sewn into a closed solid and accepted only because its volume agrees with the mesh boolean (1000 + 125.7); an open shell would now be refused by RunBoolean's closed-solid gate"
+bgecheck ", sealed: valid B-rep with real inner loops, exact volume 874.3 (kernel divergence theorem), 2 keyhole(s) opened (sewn at tolerance 0.01855), volume 874.8 (mesh cross-check 874.9)" "the same box minus the piercing cylinder likewise: closed, volume 1000 - 125.7"
 bgecheck "BooleanIntersection: exact B-rep boolean (no tessellation, general engine), 3 face(s)" "the box intersected with the piercing cylinder also took the General-engine exact path"
 if echo "$BG" | grep -q "! No object with id"; then echo "FAIL boolean-general-engine script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-general-engine script's SelID bookkeeping matched every object the app actually created"; fi
 echo "$BG" | grep -E "^(ok|FAIL)"
