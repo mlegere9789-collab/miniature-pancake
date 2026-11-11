@@ -105,6 +105,8 @@ struct DisplayCache {
   // colours were built from - degrees for DraftAngle, 1/length for Curvature, ramp-inverted for
   // Thickness - so a command can report what was actually measured. Valid iff has_values.
   double values_min = 0, values_max = 0;
+  // Median of the same values (robust against a few noisy rim / pole vertices).
+  double values_median = 0;
   bool has_values = false;
   // Per-vertex colours (r,g,b per triangle vertex, aligned with `triangles`)
   // taken straight from a mesh's own ON_Mesh::m_C array (e.g. set by
