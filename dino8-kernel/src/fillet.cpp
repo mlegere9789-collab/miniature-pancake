@@ -2638,6 +2638,35 @@ double InteriorJoinTolerance(double max_sagittaA, double max_deviationB, const s
   return std::max(max_sagittaA, max_deviationB) * (1.0 + 1e-9) + 1e-12 + noise;
 }
 
+// The N-station (variable-radius / law) fillet closes each end of the edge with the true cone cap against a third face that
+// is PERPENDICULAR to the edge (EllipseNotchCornerAtVertex). A third face at an end whose plane is oblique to the edge
+// needs the cone cut by that plane with the two rails ending at different parameters - not built here. Without this check
+// the construction either builds an OPEN shell (the oblique face is left un-notched; measured: IsSolid() false with boundary
+// edges for a top face tilted -0.2 and -0.05) or refuses with a misleading "radius too large". So: refuse, naming the face.
+void RefuseObliqueEndFaces(const std::vector<Brep::PlanarFace>& faces, int idx_i, int idx_j, const Point3d& edge_p0,
+                           const Point3d& edge_p1, const Vector3d& e, double tol, const char* who) {
+  for (int end = 0; end < 2; ++end) {
+    const Point3d& v = end == 0 ? edge_p0 : edge_p1;
+    for (size_t f = 0; f < faces.size(); ++f) {
+      if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
+      bool touches = false;
+      for (const Point3d& q : faces[f].loop)
+        if (PointsEqual(q, v, tol)) touches = true;
+      if (!touches) continue;
+      const double c = std::fabs(faces[f].plane.zaxis * e);  // 1 = perpendicular to the edge, 0 = contains the edge direction
+      if (c < 1.0 - 1e-9) {
+        char buf[420];
+        std::snprintf(buf, sizeof buf,
+                      "dino8::kernel::%s: the end face at the %s of the edge is oblique to it (its normal makes %.4g degrees with the "
+                      "edge direction); the variable-radius / law fillet closes an end only against an end face perpendicular to "
+                      "the edge - fillet with a constant radius (FilletConvexEdge handles an oblique end), or trim the end square",
+                      who, end == 0 ? "start" : "end", std::acos(std::min(1.0, c)) * 180.0 / ON_PI);
+        throw std::invalid_argument(buf);
+      }
+    }
+  }
+}
+
 // The fillet contact line (rail) on a face must stay on that face: a station whose radius reaches past the face's own
 // far boundary (radius 11 on a 10-wide face) has its contact point OFF the face, and the body assembled from such a
 // rail is a closed, "valid" surface that is not the fillet of anything (and cannot be meshed to a closed volume).
@@ -2818,6 +2847,7 @@ Brep BuildMultiStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d 
   if (!e.Unitize()) {
     throw std::invalid_argument("dino8::kernel::FilletConvexEdgeTapered: edge_p0 and edge_p1 coincide");
   }
+  RefuseObliqueEndFaces(faces, idx_i, idx_j, edge_p0, edge_p1, e, tol, "FilletConvexEdgeTapered");
 
   const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
   const double sweep_angle0 = std::acos(dot_ij);
@@ -3097,6 +3127,7 @@ Brep BuildMultiStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, P
   if (!e.Unitize()) {
     throw std::invalid_argument("dino8::kernel::FilletConcaveEdgeTapered: edge_p0 and edge_p1 coincide");
   }
+  RefuseObliqueEndFaces(faces, idx_i, idx_j, edge_p0, edge_p1, e, tol, "FilletConcaveEdgeTapered");
 
   const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
 
