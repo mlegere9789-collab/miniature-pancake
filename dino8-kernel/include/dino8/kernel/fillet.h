@@ -2564,14 +2564,19 @@ PipeTeeFillet FilletPipeTee(const Brep& tee, double radius, double tolerance = 1
 // (chord length) NOT covered at each end. Contiguity of that range is required.
 //
 // Refusals (status = Failed, `reason` names it, patch left empty): non-positive / non-finite radius or tolerance;
-// no intersection curve (parallel / separated surfaces), more than one intersection curve, a closed one;
+// no intersection curve (parallel / separated surfaces), more than one intersection curve, a closed rim that crosses a parent's
+// periodic seam or whose contact points leave a parent's domain;
 // offsets that do not meet (the centre equations have no solution anywhere along the curve, e.g. the ball does not fit);
 // the radius reaching a local radius of curvature (1/k) of a parent at a contact point (the offset folds); surfaces
 // tangent along the curve (arc angle ~0) or back to back (~pi); an ill-conditioned or jumping centre solve (the centre
 // curve branches or turns); a blend whose normal flips against the rolling-ball direction; a tolerance not reached
 // within max_intervals.
-// NOT done: closed (periodic) intersection curves, several edge branches at once, varying radius, setback / vertex
-// blends, a closed B-rep result.
+// CLOSED rims (a freeform boss meeting a floor): when the one intersection curve is closed, every station of the rim must
+// solve (no ends to shorten), the rows are interpolated by a PERIODIC cubic (knots = the stations, extended periodically;
+// C2 across the seam), the blend / contact curves / centre are periodic in u, `closed` is true, station_s has the first
+// station again at s_start + period, and the trims are zero.
+// NOT done: several edge branches at once, varying radius, setback / vertex
+// blends, a closed B-rep result of two freeform parents (FilletBossOnSlab below does the planar floor + freeform boss case).
 struct SurfaceFilletOptions {
   int side_a = +1;
   int side_b = +1;
@@ -2584,10 +2589,13 @@ struct SurfaceFillet {
   // u: along the edge (cubic, domain [s_start, s_end]), v: across the arc (rational quadratic, 0 at the contact on `a`).
   NurbsSurface blend;
   NurbsCurve contact_a, contact_b, centre;
+  // CLOSED rims only: the contact curves as 2D periodic cubics in the parameter space of `a` and `b` (same parameter as contact_a / contact_b).
+  NurbsCurve trim_a, trim_b;
   // (u,v) of the contact point on `a` / `b` at the N + 1 stations station_s[i] (non-uniform: bisected where the fit needs it).
   std::vector<Point2d> uv_a, uv_b;
   std::vector<double> station_s;
   int intervals = 0;
+  bool closed = false;  // a closed (periodic in u) rim: blend, contact_a, contact_b and centre are periodic cubics
   double s_start = 0, s_end = 0;
   double start_trim = 0, end_trim = 0;
   // Sampled max distance blend vs exact rolling-ball surface: at the stations / over all samples (quarter points included).
@@ -2600,5 +2608,33 @@ struct SurfaceFillet {
 };
 SurfaceFillet FilletSurfaces(const NurbsSurface& a, const NurbsSurface& b, double radius, double tolerance,
                              const SurfaceFilletOptions& options = SurfaceFilletOptions());
+
+// --- FilletBossOnSlab ----------------------------------------------------------
+//
+// A CLOSED solid: a rectangular slab (x0..x1 x y0..y1, top face at z = floor_z, `depth` thick) carrying a freeform boss,
+// the concave edge where the two meet rounded by FilletSurfaces()'s constant-radius rolling-ball blend. `boss` is a
+// NURBS patch that is a graph-like island: it rises above the floor plane in its interior and lies BELOW it all along its
+// parameter boundary (so its intersection with the floor is one closed rim inside its domain), and its footprint plus
+// four ball radii lies inside the slab rectangle. A downward-pointing boss normal is reversed on a copy.
+//
+// Faces (7 + 1): the four slab sides and the bottom (planar, straight edges); the top face with a REAL INNER LOOP -
+// the floor contact curve (its 3D edge is the blend's own periodic contact curve, its 2D trim the same curve in the
+// floor's (x, y) chart); the blend face (periodic in u: bottom = floor contact, top = boss contact, a seam arc used
+// twice); the boss face TRIMMED back to the boss contact curve (one outer loop, the contact curve in the boss's own (u, v)).
+// Every edge tolerance is the MEASURED worst gap between the edge curve and the image of each of its trims on the face's
+// surface (65 samples per trim), reported in `edge_gap`. The result is returned only when ON_Brep::IsValid() and
+// IsSolid() both hold; otherwise status = Failed with the reason (and the validity log) and an empty solid.
+// NOT done: several bosses, a convex boss edge, a non-planar floor, a boss that crosses its own periodic seam.
+struct BossOnSlabFillet {
+  Result status = Result::Failed;
+  std::string reason;
+  Brep solid;
+  SurfaceFillet fillet;  // the blend patch, contact curves, deviation and (u, v) trims the faces are built from
+  int floor_face = -1, blend_face = -1, boss_face = -1;
+  double edge_gap = 0;
+  double radius = 0;
+};
+BossOnSlabFillet FilletBossOnSlab(const NurbsSurface& boss, double floor_z, double x0, double x1, double y0, double y1, double depth, double radius,
+                                  double tolerance);
 
 }  // namespace dino8::kernel
