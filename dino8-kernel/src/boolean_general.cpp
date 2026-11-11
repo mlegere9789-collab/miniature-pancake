@@ -746,7 +746,14 @@ class VertexWelder {
 
 // --- per-face boundary loop (real trim loop if there is one, else the
 // surface's own full parameter domain rectangle for an untrimmed face) --
-std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samples_per_edge = 24) {
+// Bisection switches for the three independent hunks of 9320513e (only one is true per variant branch).
+constexpr bool kBisectDespike = true;
+constexpr bool kBisectChordTrims = false;
+constexpr bool kBisectInnerLoops = false;
+
+// `loop_slot` selects which of the face's loops to sample (0 = the outer loop; > 0 = a pre-existing inner loop, for which no
+// whole-domain fallback is made - the result may be short and the caller must check).
+std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samples_per_edge = 24, int loop_slot = 0) {
   const ON_BrepFace& face = brep.m_F[face_index];
   const ON_Surface* s = face.SurfaceOf();
   std::vector<UVPt> out;
@@ -759,7 +766,7 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
     ON_BoundingBox face_box;
     face.GetBoundingBox(face_box);
     const double sag_budget = face_box.IsValid() ? 1e-6 * face_box.Diagonal().Length() : 0.0;
-    const ON_BrepLoop& loop = brep.m_L[face.m_li[0]];
+    const ON_BrepLoop& loop = brep.m_L[face.m_li[loop_slot]];
     for (int k = 0; k < loop.m_ti.Count(); ++k) {
       const ON_BrepTrim& trim = brep.m_T[loop.m_ti[k]];
       const ON_Curve* c2 = trim.TrimCurveOf();
@@ -807,13 +814,31 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
         const Point3d mid_of_chord = Point3d(0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y), 0.5 * (p0.z + p1.z));
         truly_linear = pm.DistanceTo(mid_of_chord) <= std::max({1e-6, 1e-6 * chord, sag_budget});
       }
-      const int n = std::max(2, truly_linear ? 2 : samples_per_edge);
+      // A trim whose 3D edge is a straight chord (every edge BuildLoop() makes between two consecutive loop samples of an earlier
+      // boolean) is already one sample step of a dense polyline: its (u, v) line bends in 3D (a chord of a curved face), so the
+      // linearity test above fails, and `samples_per_edge` stations on it would add 23 new vertices per chord that lie on the
+      // SURFACE, not on the chord the neighbouring face shares (measured: a second counterbore cut on a slab whose first cut was
+      // done left 1,440 unpaired edges and trim counts of 2,080). Only its start belongs in the boundary. Only a SHORT step of a
+      // dense polyline counts: a straight 3D edge whose trim sweeps a large part of the surface domain (a placeholder line
+      // standing for a whole rim) is not a chord and keeps its stations.
+      bool chord_edge = false;
+      if (!truly_linear && ON_LineCurve::Cast(c2) != nullptr) {
+        if (const ON_BrepEdge* e = trim.Edge()) {
+          const ON_Curve* ec = e->EdgeCurveOf();
+          if (ec && ON_LineCurve::Cast(ec) != nullptr) {
+            const ON_2dPoint q0 = c2->PointAt(d.Min()), q1 = c2->PointAt(d.Max());
+            const ON_Interval du = s->Domain(0), dv = s->Domain(1);
+            chord_edge = std::fabs(q1.x - q0.x) <= 0.2 * du.Length() && std::fabs(q1.y - q0.y) <= 0.2 * dv.Length();
+          }
+        }
+      }
+      const int n = (kBisectChordTrims && chord_edge) ? 1 : std::max(2, truly_linear ? 2 : samples_per_edge);
       for (int i = 0; i < n; ++i) {
         const ON_2dPoint uv = c2->PointAt(d.ParameterAt(static_cast<double>(i) / n));
         out.push_back({s->PointAt(uv.x, uv.y), uv});
       }
     }
-    if (out.size() >= 3) return out;
+    if (out.size() >= 3 || loop_slot > 0) return out;
     out.clear();
   }
   const ON_Interval du = s->Domain(0), dv = s->Domain(1);
@@ -921,6 +946,35 @@ Vector3d ChainEndTangent(const Chain& c) {
   Vector3d v = c[n - 1].p - c[n - 2].p;
   const double len = v.Length();
   return len > 1e-12 ? v / len : v;
+}
+
+// The indices of `pts` that remain after removing single-sample "overshoots": a point after which the curve steps BACK (against
+// the step that arrived at it) by no more than `max_back` and less than half that arriving step. They come out of the surface-
+// surface tracer where two pieces of one curve meet (measured: a circle of 60 samples with one sample 0.0034 ahead of the next, a
+// 0.036 step arriving and a 0.0034 step back). Left in, the polygon of the closed loop crosses itself, which defeats slitting
+// the hole into its face's outline (BridgeHolesIntoOuter: every candidate attachment is a non-simple polygon) - measured: a box
+// with two through holes had both holes slit into one end face and only one into the other. Decided from the 3D points alone and
+// applied once per curve, before its two faces' chains are built, so both faces drop the same samples.
+std::vector<size_t> DespikeIndices(const std::vector<Point3d>& pts, bool closed, double max_back) {
+  std::vector<size_t> keep(pts.size());
+  for (size_t i = 0; i < pts.size(); ++i) keep[i] = i;
+  for (int pass = 0; pass < 8; ++pass) {
+    bool removed = false;
+    const size_t n = keep.size();
+    if (n < 5) break;
+    for (size_t pos = 0; pos < n && !removed; ++pos) {
+      if (!closed && (pos == 0 || pos + 1 >= n)) continue;
+      const size_t ip = keep[(pos + n - 1) % n], ic = keep[pos], in = keep[(pos + 1) % n];
+      const Vector3d arrive = pts[ic] - pts[ip], leave = pts[in] - pts[ic];
+      const double la = arrive.Length(), ll = leave.Length();
+      if (la > 0.0 && ll > 0.0 && ll <= max_back && ll < 0.5 * la && ON_DotProduct(arrive, leave) < -0.5 * la * ll) {
+        keep.erase(keep.begin() + static_cast<long>(pos));
+        removed = true;
+      }
+    }
+    if (!removed) break;
+  }
+  return keep;
 }
 
 std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
@@ -3624,6 +3678,24 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
     ff.surface = brep.m_F[i].SurfaceOf()->DuplicateSurface();
     ff.base_rev = brep.m_F[i].m_bRev;
     ff.frags = SplitFaceLoop(boundary, closed_chains, open_chains);
+    // A face an earlier boolean left with a real inner loop (a hole the engine could not slit into the outline) carries it in its
+    // second loop, which FaceBoundaryLoop(brep, i) never reads: re-fragmenting the face then dropped the hole outright and the
+    // hole's wall lost its partner (measured: the second of two sequential counterbore cuts left 60 unpaired edges, the whole
+    // first hole). Hand each such loop to the fragment that contains it, as an ordinary hole, with no interior fragment of
+    // its own (the region is not material).
+    for (int slot = 1; kBisectInnerLoops && slot < brep.m_F[i].m_li.Count(); ++slot) {
+      const int li = brep.m_F[i].m_li[slot];
+      if (li < 0 || li >= brep.m_L.Count() || brep.m_L[li].m_type != ON_BrepLoop::inner) continue;
+      std::vector<UVPt> old_hole = FaceBoundaryLoop(brep, i, 24, slot);
+      if (old_hole.size() < 3) continue;
+      const Point2d probe = old_hole.front().uv;
+      for (Fragment& fr : ff.frags) {
+        if (PointInPolygon(ToPoly(fr.outer), probe)) {
+          fr.holes.push_back(std::move(old_hole));
+          break;
+        }
+      }
+    }
     if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
       for (size_t fi = 0; fi < ff.frags.size(); ++fi) {
         std::fprintf(stderr, "  SplitFaceLoop face_index=%d frag[%zu] outer.size()=%zu holes=%zu",
@@ -4228,7 +4300,7 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
         Chain ca, cb;
         ca.reserve(ic.points.size() + 1);
         cb.reserve(ic.points.size() + 1);
-        for (size_t k = 0; k < ic.points.size(); ++k) {
+        for (const size_t k : DespikeIndices(ic.points, ic.closed, kBisectDespike ? 10.0 * opt.tolerance : 0.0)) {
           ca.push_back({ic.points[k], ic.uv_a[k]});
           cb.push_back({ic.points[k], ic.uv_b[k]});
         }
