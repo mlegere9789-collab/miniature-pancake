@@ -824,7 +824,11 @@ class Mesh {
   // file_io.h - a deliberately simple, widely-supported format so
   // anything built here can actually be opened and looked at in an
   // ordinary 3D viewer (Blender, MeshLab, etc.), not just verified by its
-  // own numbers. Returns Result::Failed if the file can't be opened for
+  // own numbers. When the mesh carries per-face group / material names
+  // (HasFaceGroupNames() / HasFaceMaterialNames(), e.g. from LoadObj()), a
+  // `g <name>` / `usemtl <name>` line is written before the first face and
+  // again wherever the name changes, so the names survive a SaveObj ->
+  // LoadObj round trip. Returns Result::Failed if the file can't be opened for
   // writing; does not validate the mesh's own geometry (an empty mesh
   // writes a valid, empty .obj).
   Result SaveObj(const std::string& path) const;
