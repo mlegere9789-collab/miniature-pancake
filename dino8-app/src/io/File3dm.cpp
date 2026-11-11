@@ -3335,6 +3335,36 @@ bool ImportObjMulti(Document& doc, const std::string& path, std::string& error) 
   return true;
 }
 
+namespace {
+
+MeshExportOptions& MutableMeshExportOptions() {
+  static MeshExportOptions options;
+  return options;
+}
+
+// Positions multiplied by `scale` about the world origin (document units -> file units).
+void ScaleMeshForExport(kernel::Mesh& mesh, double scale) {
+  if (scale == 1.0 || !(scale > 0.0)) return;
+  mesh.raw().Transform(ON_Xform::DiagonalTransformation(scale));
+}
+
+// Millimetres per unit for a unit name (the document settings' own spelling, or a short form); 0 when unknown.
+double UnitNameMillimetres(std::string name) {
+  for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (name == "mm" || name == "millimeter" || name == "millimeters" || name == "none") return 1.0;
+  if (name == "cm" || name == "centimeter" || name == "centimeters") return 10.0;
+  if (name == "m" || name == "meter" || name == "meters") return 1000.0;
+  if (name == "km" || name == "kilometer" || name == "kilometers") return 1e6;
+  if (name == "in" || name == "inch" || name == "inches") return 25.4;
+  if (name == "ft" || name == "foot" || name == "feet") return 304.8;
+  if (name == "mi" || name == "mile" || name == "miles") return 1609344.0;
+  if (name == "um" || name == "micron" || name == "microns") return 1e-3;
+  if (name == "mil" || name == "mils") return 0.0254;
+  return 0.0;
+}
+
+}  // namespace
+
 bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   struct ExportGroup {
     std::string name;
@@ -3352,14 +3382,15 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
       m = *o.mesh;
     } else if (o.kind == ObjectKind::Brep && o.brep) {
       BrepMeshOptions opt;
-      opt.chord_tolerance = 0.01;
+      opt.chord_tolerance = ActiveMeshExportOptions().chord_tolerance;
       m = MeshBrepClosed(o.brep->raw(), opt);
     } else if (o.kind == ObjectKind::Surface && o.surface) {
-      m = o.surface->TessellateGridAdaptive(0.01);
+      m = o.surface->TessellateGridAdaptive(ActiveMeshExportOptions().chord_tolerance);
     } else if (o.kind == ObjectKind::SubD && o.subd) {
       m = o.subd->ToApproximateMesh();
     }
     if (!m || m->FaceCount() == 0) continue;
+    ScaleMeshForExport(*m, ActiveMeshExportOptions().scale);
     ExportGroup g;
     std::string name = ObjSanitizeName(o.name.empty() ? "Object" : o.name);
     const int n = ++used_names[name];
@@ -3386,6 +3417,7 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
     error = "Could not write " + path;
     return false;
   }
+  out.precision(9);  // the default 6 significant digits rounded coordinates of 1000 and more to 0.01 or worse
   const std::string mtl_name = std::filesystem::path(path).stem().string() + ".mtl";
   const std::string mtl_path = (std::filesystem::path(path).parent_path() / mtl_name).string();
   std::ofstream mtl(mtl_path);
@@ -3448,6 +3480,22 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
 
 }  // namespace
 
+const MeshExportOptions& ActiveMeshExportOptions() { return MutableMeshExportOptions(); }
+
+ScopedMeshExportOptions::ScopedMeshExportOptions(const MeshExportOptions& options) : saved_(MutableMeshExportOptions()) {
+  MutableMeshExportOptions() = options;
+}
+
+ScopedMeshExportOptions::~ScopedMeshExportOptions() { MutableMeshExportOptions() = saved_; }
+
+bool MeshExportUnitFactor(const Document& doc, const std::string& units, double& factor) {
+  const double target = UnitNameMillimetres(units);
+  const double source = UnitNameMillimetres(doc.Settings().unit_system);
+  if (target <= 0.0 || source <= 0.0) return false;
+  factor = source / target;
+  return true;
+}
+
 bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) {
   const std::string ext = LowerExt(path);
   if (ext == ".obj") return ImportObjMulti(doc, path, error);
@@ -3491,9 +3539,9 @@ bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_
     if (o.kind == ObjectKind::Mesh && o.mesh) {
       meshes.push_back(*o.mesh);
     } else if (o.kind == ObjectKind::Brep && o.brep) {
-      BrepMeshOptions opt; opt.chord_tolerance = 0.01; meshes.push_back(MeshBrepClosed(o.brep->raw(), opt));
+      BrepMeshOptions opt; opt.chord_tolerance = ActiveMeshExportOptions().chord_tolerance; meshes.push_back(MeshBrepClosed(o.brep->raw(), opt));
     } else if (o.kind == ObjectKind::Surface && o.surface) {
-      meshes.push_back(o.surface->TessellateGridAdaptive(0.01));
+      meshes.push_back(o.surface->TessellateGridAdaptive(ActiveMeshExportOptions().chord_tolerance));
     } else if (o.kind == ObjectKind::SubD && o.subd) {
       meshes.push_back(o.subd->ToApproximateMesh());
     }
@@ -3502,8 +3550,11 @@ bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_
     error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";
     return false;
   }
+  const MeshExportOptions& options = ActiveMeshExportOptions();
   kernel::Mesh merged = meshes.size() == 1 ? meshes[0] : kernel::Mesh::MergeAndWeld(meshes);
-  if (merged.SaveStlBinary(path) != kernel::Result::Ok) {
+  ScaleMeshForExport(merged, options.scale);
+  const bool ascii = options.format == MeshExportFormat::Ascii;
+  if ((ascii ? merged.SaveStl(path) : merged.SaveStlBinary(path)) != kernel::Result::Ok) {
     error = "Could not write " + path;
     return false;
   }
