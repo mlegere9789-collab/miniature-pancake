@@ -860,8 +860,13 @@ class NurbsCurve {
   // returns Result::Failed. `knot_index` must name a knot strictly
   // inside the curve's own domain (throws std::out_of_range if out of
   // `[0, KnotCount())`, std::invalid_argument if not strictly interior),
-  // and the curve must be clamped (an unclamped/periodic curve's ends
-  // have no single well-defined knot-removal case this handles).
+  // and the curve must be clamped, or PERIODIC (`IsPeriodic()`): on a
+  // periodic curve the knot and all of its periodic images go together
+  // (A5.8 on a window of the unwrapped cyclic knot sequence, the new
+  // cyclic control polygon one point shorter, the result periodic again),
+  // for a SIMPLE knot only, and only while more than `Degree()` unique
+  // control points remain; a repeated periodic knot or any other
+  // unclamped curve returns Result::Failed.
   // `out_max_deviation`, if non-null, always receives the measured
   // deviation bound - even on a refused removal (as positive infinity
   // before any measurement is possible, e.g. an unclamped curve), so a
