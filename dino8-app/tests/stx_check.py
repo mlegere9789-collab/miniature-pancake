@@ -6,6 +6,7 @@
     faces + 1 cylindrical = 7; a plain cylinder: 2 planar caps + 1 cylindrical wall = 3);
   * a closed shell: every EDGE_CURVE is used by exactly two ORIENTED_EDGEs;
   * the faces that must carry a hole (the pierced top and bottom of the box) have an outer FACE_OUTER_BOUND and one inner FACE_BOUND;
+  * names, colour and layer of an exported object (check_styled): STYLED_ITEM -> COLOUR_RGB, PRESENTATION_LAYER_ASSIGNMENT;
   * the vertex points span the closed-form box (0,0,0)-(10,10,10), resp. z 0..10 for the cylinder (its seam vertices have no x/y range);
   * every analytic CYLINDRICAL_SURFACE has the closed-form radius (2, resp. 3).
 
@@ -119,6 +120,45 @@ def check(stem, faces, planes, cylinders, radius, bb, holed_faces):
         report(False, stem + "_vertex_box", "no vertices")
 
 
+def check_styled(stem):
+    """Names, colours and layers of an exported solid (AP214 presentation): the solid keeps its name; a STYLED_ITEM naming it reaches
+    a COLOUR_RGB with the object's own colour through the standard style chain; a PRESENTATION_LAYER_ASSIGNMENT with the layer's name lists it."""
+    path = os.path.join(D, stem + ".stp")
+    if not os.path.exists(path):
+        report(False, stem + "_written", path + " was not written")
+        return
+    ents = parse(path)
+    kinds = {}
+    for k, (t, a) in ents.items():
+        kinds.setdefault(t, []).append(k)
+    solids = [k for k in kinds.get("MANIFOLD_SOLID_BREP", []) if split_top(ents[k][1])[0] == "'Slab'"]
+    report(len(solids) == 1, stem + "_solid_keeps_its_name", "MANIFOLD_SOLID_BREP names %s" % [split_top(ents[k][1])[0] for k in kinds.get("MANIFOLD_SOLID_BREP", [])])
+    if len(solids) != 1:
+        return
+    solid = solids[0]
+    styled = [k for k in kinds.get("STYLED_ITEM", []) if refs(split_top(ents[k][1])[2]) == [solid]]
+    report(len(styled) == 1, stem + "_one_styled_item_names_the_solid", "%d STYLED_ITEM(s) naming #%d" % (len(styled), solid))
+    if styled:
+        seen, todo, rgb = set(), refs(split_top(ents[styled[0]][1])[1]), None
+        while todo:
+            k = todo.pop()
+            if k in seen or k not in ents:
+                continue
+            seen.add(k)
+            t, a = ents[k]
+            if t == "COLOUR_RGB":
+                rgb = numbers(split_top(a)[-3] + "," + split_top(a)[-2] + "," + split_top(a)[-1])[-3:]
+            else:
+                todo += refs(a)
+        chain = {ents[k][0] for k in seen if k in ents}
+        report(rgb is not None and all(abs(x - y) < 1e-6 for x, y in zip(rgb, (1.0, 0.0, 0.0))), stem + "_colour_is_the_objects_red",
+               "COLOUR_RGB %s through %s" % (rgb, sorted(chain)))
+    layers = [k for k in kinds.get("PRESENTATION_LAYER_ASSIGNMENT", []) if split_top(ents[k][1])[0] == "'Walls'"]
+    report(len(layers) == 1 and solid in refs(ents[layers[0]][1]), stem + "_layer_assignment_lists_the_solid_on_layer_Walls",
+           "PRESENTATION_LAYER_ASSIGNMENTs %s" % [split_top(ents[k][1])[0] for k in kinds.get("PRESENTATION_LAYER_ASSIGNMENT", [])])
+
+
 check("cut", 7, None, 1, 2.0, (0, 0, 0, 10, 10, 10), 2)
 check("cyl", 3, 2, 1, 3.0, (None, None, 0, None, None, 10), 0)
+check_styled("styled")
 sys.exit(0)
