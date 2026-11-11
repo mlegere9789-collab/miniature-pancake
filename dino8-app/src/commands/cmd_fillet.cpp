@@ -3030,6 +3030,7 @@ struct EdgeBlendOp {
   double d1 = 0;                  // radius (fillet) / distance1 (chamfer)
   std::optional<double> d2;       // chamfer distance2 (unset = symmetric)
   bool recordable = true;         // false: this build is not what the rebuild reproduces (angle chamfer)
+  std::string why_not;            // with recordable == false: what to say about it (empty: the generic angle-chamfer wording)
   std::optional<FilletLawSpec> law;  // a Law= fillet: the record also carries the law so the rebuild replays it
   std::optional<double> angle_deg;   // a ChamferEdge Distance/Angle chamfer: the record carries the angle (degrees from face 1) so the rebuild replays it
   std::vector<std::pair<Point3d, Point3d>> edges;  // endpoints on the PRE-edit solid
@@ -3055,7 +3056,7 @@ ObjectId CommitEdgeBlend(CommandContext& ctx, ObjectId id, const ON_Brep& before
   const int k0 = extend ? static_cast<int>(ctx.Doc().FindHistoryRecord(id)->num.at("n")) : 0;
   const int group = extend ? static_cast<int>(ctx.Doc().FindHistoryRecord(id)->num.at("groups")) : 0;
   bool sig_ok = want && op.recordable;
-  if (want && !op.recordable) why = "this chamfer mode (distance and angle) is not one the rebuild reproduces";
+  if (want && !op.recordable) why = op.why_not.empty() ? "this chamfer mode (distance and angle) is not one the rebuild reproduces" : op.why_not;
   if (sig_ok) {
     int k = k0;
     for (const auto& e : op.edges) {
@@ -3128,6 +3129,16 @@ ObjectId CommitEdgeBlend(CommandContext& ctx, ObjectId id, const ON_Brep& before
   }
   replace_in_place();
   return id;
+}
+
+// True when `a` and `b` have the same vertices (same count, same points in order, within tol): how a pick knows the solid it sees is still exactly the
+// result the previous ChamferEdge pick of this run left behind (nothing else touched it in between).
+bool SameBrepVertices(const ON_Brep& a, const ON_Brep& b, double tol) {
+  if (a.m_V.Count() != b.m_V.Count() || a.m_E.Count() != b.m_E.Count() || a.m_F.Count() != b.m_F.Count()) return false;
+  for (int i = 0; i < a.m_V.Count(); ++i) {
+    if (a.m_V[i].point.DistanceTo(b.m_V[i].point) > tol) return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -3570,6 +3581,42 @@ class FilletEdgeCommand : public Command {
         } catch (const std::exception&) {
         }
       }
+      // Two staged edges that meet at ONE right-angle corner (the third edge staying sharp) are neither a vertex blend nor a chain, which the batch calls above
+      // do not take: build them as one exact mitred pair of equal-radius fillets (kernel::FilletConvexEdgePairMitre). The kernel's own reason is printed when it
+      // refuses, and the staged edges are then replayed one by one exactly as before.
+      if (!ok && edges.size() == 2) {
+        Point3d V, end_a, end_b;
+        bool shared = false;
+        for (int ka = 0; ka < 2 && !shared; ++ka) {
+          for (int kc = 0; kc < 2 && !shared; ++kc) {
+            const Point3d pa = ka == 0 ? edges[0].first : edges[0].second, pb = kc == 0 ? edges[1].first : edges[1].second;
+            if (pa.DistanceTo(pb) <= tol) {
+              shared = true;
+              V = pa;
+              end_a = ka == 0 ? edges[0].second : edges[0].first;
+              end_b = kc == 0 ? edges[1].second : edges[1].first;
+            }
+          }
+        }
+        if (shared) {
+          try {
+            result = kernel::FilletConvexEdgePairMitre(kb, V, end_a, end_b, radius_, radius_);
+            EdgeBlendOp pop;
+            pop.d1 = radius_;
+            pop.edges = edges;
+            pop.recordable = false;  // the rebuild would replay the batch call, which does not take this corner
+            pop.why_not = "the rebuild replays the multi-edge batch call, which does not take this corner pair";
+            std::string note;
+            CommitEdgeBlend(ctx, id, *b, result.raw(), label, pop, made_, note);
+            ctx.Print(label + ": 2 staged edges of object " + std::to_string(id) + " meet at one right-angle corner - replaced with one exact mitred corner pair (" +
+                       RadiusDescription() + ")" + note);
+            return;
+          } catch (const std::exception& ex) {
+            ctx.Print(label + ": the two staged edges share a corner but the exact mitred corner pair is not available (" + ex.what() +
+                       "); building them one by one");
+          }
+        }
+      }
       if (ok) {
         EdgeBlendOp op;
         op.d1 = radius_;
@@ -3772,6 +3819,53 @@ class FilletEdgeCommand : public Command {
       ctx.Print(label + ": " + std::to_string(edges.size()) + " staged edges of object " + std::to_string(id) +
                  " replaced with an exact multi-edge fillet (RailType=" + rail_name + ", distance " + FormatNumber(radius_) + ")");
     }
+  }
+  // Two ChamferEdge picks in one run that meet at a trihedral right-angle corner (the third edge staying sharp) are one exact corner chamfer, whatever the
+  // order or the two distances: kernel::ChamferConvexEdgePairDistances builds it from the solid BEFORE the first pick with the larger setback first.
+  // Chained pick by pick, the smaller chamfer first leaves the second, larger one ending on two faces, which the single-edge construction refuses (or the
+  // approximate fallback then answers with a wrong mesh). Used only where the chained exact path failed, so every chain it already built (and recorded in the
+  // history) is unchanged. `q0`/`q1` are the picked edge's ends on `current`. Returns 0 when this pick does not follow the previous one at a shared corner
+  // (nothing to report), 1 when `out` holds the pair, -1 when it is such a follow-up but the kernel refused (`why`: its own reason).
+  int TryChamferCornerPair(ObjectId id, const ON_Brep& current, Point3d q0, Point3d q1, double tol, ON_Brep& out, std::string& why, std::string& prev_desc) const {
+    if (!corner_prev_ || corner_prev_->id != id || !SameBrepVertices(corner_prev_->post, current, tol)) return 0;
+    const CornerPrev& prev = *corner_prev_;
+    Vector3d d = q1 - q0;
+    if (!d.Unitize()) return 0;
+    const Point3d ends[2] = {prev.p0, prev.p1};
+    for (int k = 0; k < 2; ++k) {
+      const Point3d V = ends[k], Pe = ends[1 - k];
+      const Vector3d w = V - q0;
+      if ((w - (w * d) * d).Length() > 10.0 * tol) continue;  // the corner must lie on the picked edge's own line
+      const double t0 = (q0 - V) * d, t1 = (q1 - V) * d;
+      // the chamfer moved the picked edge's near end away from the corner, so the edge lies wholly on one side of it
+      if (!((t0 > tol && t1 > tol) || (t0 < -tol && t1 < -tol))) continue;
+      prev_desc = prev.desc;
+      const bool far_is_q1 = t1 > 0.0;  // t1 > t0 always, so with both positive the far end is q1, with both negative it is q0
+      const Point3d F = far_is_q1 ? q1 : q0;
+      double pd_i = radius_, pd_j = distance2_.value_or(radius_);
+      if (angle_deg_) {
+        const double a = *angle_deg_ * ON_PI / 180.0;
+        if (!(a > 1e-9) || !(a < 0.5 * ON_PI - 1e-9)) {
+          why = "the angle must lie strictly between 0 and 90 degrees at a right-angle corner";
+          return -1;
+        }
+        pd_j = pd_i * std::tan(a);  // ChamferConvexEdgeAngle's law of sines at a right-angle edge: distance_j = distance_i sin(a) / sin(90 + a)
+      }
+      // ChamferConvexEdgePairDistances takes each edge's distances for the face that walks vertex -> far end; the picked edge's own (distance_i for the face
+      // walking q0 -> q1) swap when that walk is the other way round, and so do the previous pick's when it was picked end -> vertex.
+      const double b_i = far_is_q1 ? pd_i : pd_j, b_j = far_is_q1 ? pd_j : pd_i;
+      const double a_i = k == 0 ? prev.d_i : prev.d_j, a_j = k == 0 ? prev.d_j : prev.d_i;
+      try {
+        kernel::Brep pre;
+        pre.raw() = prev.pre;
+        out = kernel::ChamferConvexEdgePairDistances(pre, V, Pe, F, a_i, a_j, b_i, b_j).raw();
+        return 1;
+      } catch (const std::exception& ex) {
+        why = ex.what();
+        return -1;
+      }
+    }
+    return 0;
   }
   void Run(CommandContext& ctx, const EdgePick& pick) {
     const SceneObject* o = ctx.Doc().Find(pick.id);
@@ -4038,18 +4132,59 @@ class FilletEdgeCommand : public Command {
         if (angled) op.angle_deg = angle_deg_;
         op.edges.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
         std::string note;
-        CommitEdgeBlend(ctx, pick.id, *b, exact, label, op, made_, note);
+        const ObjectId now_id = CommitEdgeBlend(ctx, pick.id, *b, exact, label, op, made_, note);
         ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
                    " replaced with an exact chamfer (" + ChamferDistanceDescription() +
                    (rim_chamfer ? rim_note_ : std::string()) + ")" + note);
+        if (rim_chamfer) {
+          corner_prev_.reset();
+        } else {
+          CornerPrev cp;
+          cp.id = now_id;
+          cp.pre = *b;
+          cp.post = exact;
+          cp.p0 = edge.PointAtStart();
+          cp.p1 = edge.PointAtEnd();
+          cp.d_i = radius_;
+          cp.d_j = angled ? radius_ * std::tan(*angle_deg_ * ON_PI / 180.0) : distance2_.value_or(radius_);
+          cp.desc = ChamferDistanceDescription();
+          corner_prev_ = cp;
+        }
         return;
+      }
+      // The chained exact path could not do this pick. If it follows the previous pick at a shared right-angle corner, build the pair from the solid before
+      // that pick instead (kernel::ChamferConvexEdgePairDistances); otherwise, or when the kernel refuses, carry on as before with the kernel's own reason.
+      std::string corner_note;
+      {
+        ON_Brep pair_out;
+        std::string pair_why, prev_desc;
+        const int pr = TryChamferCornerPair(pick.id, *b, edge.PointAtStart(), edge.PointAtEnd(), tol, pair_out, pair_why, prev_desc);
+        if (pr == 1) {
+          EdgeBlendOp pop;
+          pop.chamfer = true;
+          pop.d1 = radius_;
+          if (distance2_ && std::fabs(*distance2_ - radius_) > 1e-9) pop.d2 = *distance2_;
+          pop.recordable = false;  // the rebuild would replay the two chamfers one by one, the very chain this replaces
+          pop.why_not = "the corner pair is built from the solid before the first pick, which the rebuild's one-edge-at-a-time replay does not reproduce";
+          if (angled) pop.angle_deg = angle_deg_;
+          pop.edges.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
+          std::string note;
+          CommitEdgeBlend(ctx, pick.id, *b, pair_out, label, pop, made_, note);
+          corner_prev_.reset();
+          ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                     " chamfered together with the previous pick (" + prev_desc + ") at their shared right-angle corner - one exact kernel corner pair (this pick: " +
+                     ChamferDistanceDescription() + ")" + note);
+          return;
+        }
+        if (pr == -1) corner_note = " (exact corner pair with the previous pick: " + pair_why + ")";
       }
       if (asymmetric || angled) {
         ctx.Warn(label + ": an asymmetric Distance1/Distance2 or Distance/Angle chamfer needs the whole object to be planar-faced at this edge (" + detail +
-                  "); use a plain Radius for the approximate rolling-ball-derived chamfer instead" +
+                  ")" + corner_note + "; use a plain Radius for the approximate rolling-ball-derived chamfer instead" +
                   ChamferBoundNote(*b, edge.PointAtStart(), edge.PointAtEnd()));
         return;
       }
+      if (!corner_note.empty()) ctx.Print(label + ": no exact chamfer here" + corner_note + "; trying the approximate path");
       // Symmetric distance, exact path unavailable here (a curved adjacent
       // face, a non-planar third face at an end, etc.) - fall through to
       // the approximate rolling-ball-derived chamfer below exactly as
@@ -5247,6 +5382,17 @@ class FilletEdgeCommand : public Command {
   // underneath it runs instead, exactly as if staging never existed.
   bool flushing_fillet_ = false;
   std::set<ObjectId> made_;  // results of this run that carry a FilletEdge/ChamferEdge history record (later picks extend it)
+  // The previous exact PLANAR chamfer pick of this run, kept so a following pick at the same right-angle corner can be built together with it
+  // (TryChamferCornerPair): the solid BEFORE that pick, the solid it produced, its edge as picked and its two distances (distance_i for the face that walks
+  // p0 -> p1, exactly as ChamferConvexEdge takes them).
+  struct CornerPrev {
+    ObjectId id = kNoObject;
+    ON_Brep pre, post;
+    Point3d p0, p1;
+    double d_i = 0, d_j = 0;
+    std::string desc;
+  };
+  std::optional<CornerPrev> corner_prev_;
 };
 
 // ---------------------------------------------------------------------------
