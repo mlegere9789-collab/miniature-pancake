@@ -463,9 +463,10 @@ std::string Document::LayerFullPath(int index) const {
 // RemoveFromGroup, plus every CreateGroup() call block/annotation/dimension
 // commands make to tag their own generated objects), so this was an
 // O(selection size * document size) bulk operation on every one of them.
-int Document::CreateGroup(const std::vector<ObjectId>& ids, const std::string& name) {
+int Document::CreateGroup(const std::vector<ObjectId>& ids, const std::string& name, bool user) {
   Group g;
   g.id = next_group_id_++;
+  g.user = user;
   g.name = name.empty() ? "Group" + std::to_string(g.id) : name;
   groups_.push_back(g);
   for (SceneObject* o : FindMany(ids)) {

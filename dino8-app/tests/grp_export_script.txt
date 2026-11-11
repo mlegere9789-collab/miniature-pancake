@@ -1,0 +1,24 @@
+# Native .3dm groups, write side (the "GRP_" section, tests/sections/89_grp.sh). Before, Dino 8's Group command only set
+# SceneObject::group_id and Save3dm persisted it as a private "Dino8.GroupId" user string, so Rhino (or any OpenNURBS reader) saw
+# no groups at all. Now a user group is a real ON_Group in the file's group table and its members' attributes join it. Two user
+# groups and one loose point are saved; then a Leader (a Dino8 INTERNAL group of baked pieces) is added and saved to a second file:
+# the internal group must NOT appear in the group table. smoke.sh's section checks both files with group3dm_check (a plain
+# OpenNURBS ONX_Model reader).
+SetActiveViewport Top
+New
+Point 0,0,0
+Point 1,0,0
+SelPt
+Group
+SelNone
+Line 0,5,0 10,5,0
+Line 0,6,0 10,6,0
+SelCrv
+Group
+SelNone
+Point 9,9,9
+SaveAs @TMP@/grp_export.3dm
+Leader 20,20,0 25,30,0 40,30,0
+Enter
+Hi
+SaveAs @TMP@/grp_leader.3dm
