@@ -132,7 +132,13 @@ void RegisterSelectCommands(CommandEngine& e) {
       }));
   Reg(e, "SelSmall", Immediate([](CommandContext& ctx) {
         double lim = ctx.Settings().grid_spacing;
-        if (auto tok = ctx.Engine().TakePendingInput()) { const double v = std::strtod(tok->c_str(), nullptr); if (v > 0) lim = v; }
+        if (auto tok = ctx.Engine().TakePendingInput()) {
+          char* end = nullptr;
+          const double v = std::strtod(tok->c_str(), &end);
+          // "abc", "-5", "nan" and "1x" used to be dropped without a word and the grid size used instead
+          if (end != tok->c_str() && !*end && v > 0) lim = v;
+          else ctx.Warn("SelSmall: '" + *tok + "' is not a size above 0; using " + FormatNumber(lim));
+        }
         ctx.Doc().SelectWhere([&](const SceneObject& o) { kernel::BoundingBox b = o.BoundingBox(); return o.kind != ObjectKind::Point && (b.max - b.min).Length() < lim; });
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " small object(s) selected (bounding box diagonal < " + FormatNumber(lim) + ")");
       }), CommandStatus::Implemented, "Defaults to one grid unit; pass a number to set the size threshold.");
@@ -150,8 +156,14 @@ void RegisterSelectCommands(CommandEngine& e) {
         // "SelID 3 5" selects those ids; bare SelID lists the selection's ids.
         bool any = false;
         while (std::optional<std::string> tok = ctx.Engine().TakePendingInput()) {
+          const bool digits = !tok->empty() && tok->find_first_not_of("0123456789") == std::string::npos && tok->size() <= 18;
+          if (!digits) { ctx.Warn("SelID: '" + *tok + "' is not an object id (a whole number)"); continue; }
           ObjectId id = static_cast<ObjectId>(std::strtoull(tok->c_str(), nullptr, 10));
-          if (ctx.Doc().Find(id)) { ctx.Doc().Select(id, true); any = true; }
+          if (const SceneObject* o = ctx.Doc().Find(id)) {
+            ctx.Doc().Select(id, true);
+            if (o->selected) any = true;
+            else ctx.Warn("SelID: object " + *tok + " is " + (ctx.Doc().IsObjectLocked(*o) ? "locked" : "hidden") + " and cannot be selected");
+          }
           else ctx.Warn("No object with id " + *tok);
         }
         if (!any) for (ObjectId id : ctx.Doc().SelectedIds()) ctx.Print("Object id " + std::to_string(id));
@@ -160,6 +172,8 @@ void RegisterSelectCommands(CommandEngine& e) {
   Reg(e, "SelChain", Immediate([](CommandContext& ctx) {
         std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
         if (sel.empty()) { ctx.Warn("Select a curve first"); return; }
+        { bool any_curve = false; for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && o.kind == ObjectKind::Curve) { any_curve = true; break; }
+          if (!any_curve) { ctx.Warn("SelChain: none of the selected objects is a curve"); return; } }
         bool grew = true;
         const double tol = ctx.Settings().absolute_tolerance * 10;
         while (grew) {
@@ -173,7 +187,8 @@ void RegisterSelectCommands(CommandEngine& e) {
             }
           }
         }
-        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " chained curve(s) selected");
+        { int curves = 0; for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && o.kind == ObjectKind::Curve) ++curves;
+          ctx.Print(std::to_string(curves) + " chained curve(s) selected"); }
       }));
 }
 
