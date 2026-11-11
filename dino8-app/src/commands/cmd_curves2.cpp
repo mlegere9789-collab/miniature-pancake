@@ -5,6 +5,7 @@
 #include "commands/count_limits.h"
 #include "commands/history_rebuild.h"
 #include "commands/section_exact.h"
+#include "dino8/kernel/pattern.h"
 #include "dino8/kernel/surface_intersect.h"
 
 #include <algorithm>
@@ -442,17 +443,6 @@ int SliceObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON
   }
   (void)label;
   return made;
-}
-
-// Frame on a curve at parameter t (tangent + a stable normal).
-ON_Plane FrameAt(const kernel::NurbsCurve& c, double t, const Vector3d& up) {
-  Vector3d tan = c.TangentAt(t);
-  if (!tan.Unitize()) tan = ON_xaxis;
-  Vector3d n = ON_CrossProduct(up, tan);
-  if (!n.Unitize()) { n = ON_CrossProduct(ON_zaxis, tan); if (!n.Unitize()) n = ON_yaxis; }
-  Vector3d b = ON_CrossProduct(tan, n);
-  return ON_Plane(c.PointAt(t), tan, n);
-  (void)b;
 }
 
 // Douglas-Peucker on a polyline.
@@ -1078,23 +1068,19 @@ class ArrayCrvCommand : public Command {
     int count = 2;
     std::string why;
     if (!CountInRange(v, 2, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, ids_.size())), count, why)) { ctx.Warn("ArrayCrv: the number of items " + why); return; }
-    kernel::BoundingBox bb;
-    ctx.Doc().BoundingBoxOf(ids_, bb);
-    Point3d base = path_->curve.PointAt(path_->curve.Domain().min);
-    Vector3d up = ActiveNormal(ctx);
-    ON_Plane f0 = FrameAt(path_->curve, path_->curve.Domain().min, up);
-    std::vector<double> params = path_->curve.DivideByCount(count - 1);
-    if (params.empty()) { Finish(); return; }
+    // The placement maths is the kernel's (pattern.h): arc-length-even stations, frame x = tangent, y = up x tangent, copy i = the map
+    // carrying the start frame onto the frame at station i (a pure translation for NoRotation).
+    std::vector<ON_Xform> maps;
+    try {
+      maps = kernel::ArrayAlongCurveTransforms(path_->curve, count, freeform_, ActiveNormal(ctx));
+    } catch (const std::exception& e) {
+      ctx.Warn(std::string("ArrayCrv: ") + e.what());
+      Finish();
+      return;
+    }
     ctx.Doc().BeginChange("ArrayCrv");
     int made = 0;
-    for (size_t i = 0; i < params.size(); ++i) {
-      ON_Xform xf;
-      if (freeform_) {
-        ON_Plane fi = FrameAt(path_->curve, params[i], up);
-        xf.Rotation(f0, fi);
-      } else {
-        xf = ON_Xform::TranslationTransformation(path_->curve.PointAt(params[i]) - base);
-      }
+    for (const ON_Xform& xf : maps) {
       for (ObjectId id : ids_) {
         const SceneObject* o = ctx.Doc().Find(id);
         if (!o) continue;
@@ -1235,20 +1221,21 @@ class ArraySrfCommand : public Command {
     ctx.Doc().BoundingBoxOf(ids_, bb);
     Point3d base((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, bb.min.z);
     ON_Plane f0(base, ON_xaxis, ON_yaxis);
+    // The placement maths is the kernel's (pattern.h): a (u, v) lattice uniform in the parameter domain (a count of 1 = the middle),
+    // frame origin S(u, v), z = unit(Su x Sv), x = unit Su; copy (i, j) = the map carrying `f0` onto that frame, i-major.
+    kernel::NurbsSurface kernel_srf;
+    kernel_srf.raw() = *srf_;
+    std::vector<ON_Xform> maps;
+    try {
+      maps = kernel::ArrayOnSurfaceTransforms(kernel_srf, *nu_, nv, f0, true);
+    } catch (const std::exception& e) {
+      ctx.Warn(std::string("ArraySrf: ") + e.what());
+      Finish();
+      return;
+    }
     ctx.Doc().BeginChange("ArraySrf");
     int made = 0;
-    for (int i = 0; i < *nu_; ++i)
-      for (int j = 0; j < nv; ++j) {
-        double u = srf_->Domain(0).ParameterAt(*nu_ == 1 ? 0.5 : static_cast<double>(i) / (*nu_ - 1));
-        double w = srf_->Domain(1).ParameterAt(nv == 1 ? 0.5 : static_cast<double>(j) / (nv - 1));
-        ON_3dPoint p; ON_3dVector du, dv;
-        srf_->Ev1Der(u, w, p, du, dv);
-        ON_3dVector n = ON_CrossProduct(du, dv);
-        if (!n.Unitize()) n = ON_zaxis;
-        ON_3dVector x = du; if (!x.Unitize()) x = ON_xaxis;
-        ON_3dVector y = ON_CrossProduct(n, x);
-        ON_Plane fi(p, x, y);
-        ON_Xform xf; xf.Rotation(f0, fi);
+    for (const ON_Xform& xf : maps) {
         for (ObjectId id : ids_) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o) continue;
