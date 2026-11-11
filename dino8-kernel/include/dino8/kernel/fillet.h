@@ -273,6 +273,18 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // filling a 90-degree notch.
 Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
 
+// Two perpendicular edges of a planar solid that meet at ONE trihedral right-angle corner, filleted with the SAME radius while the third edge of that
+// corner stays sharp: `vertex` is the corner, (vertex, end_a) and (vertex, end_b) the two edges. The rounded prisms of the two fillets intersect, so the
+// two quarter-cylinders meet on a planar mitre (equal radii and intersecting axes make their intersection two planar ellipses); each cylinder ends on
+// that plane through a sloped notch row and the two rows share their points, so the edge between the cylinders is a literal shared edge. Face count:
+// the original plus two cylinders. The removed volume is a r^2 (L_A + L_B) - r^3 (5/3 - pi/2) with a = 1 - pi/4 and L_A, L_B the two edge lengths
+// (the two prisms minus their overlap, the integral of (r - sqrt(r^2 - s^2))^2 over [0, r]).
+// Refusals (std::invalid_argument naming the reason, never a degraded body): non-positive / non-finite radii; UNEQUAL radii (the cylinders then meet in a
+// non-planar space curve that is not built); a vertex that is not a trihedral corner; two edges that are not the edges of that corner; faces that are not
+// mutually perpendicular or a corner that is not convex; an edge not longer than the radius; a corner face left with fewer than 3 vertices; and a far end
+// that does not meet a face perpendicular to its edge (the result would not close). Only purely planar solids are accepted.
+Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double radius_a, double radius_b);
+
 // The largest radius FilletConvexEdge/FilletConcaveEdge could build for
 // this exact edge before their own "radius is too large to fit" check
 // rejects it - the SAME closed-form bound those two functions already

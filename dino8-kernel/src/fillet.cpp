@@ -1641,6 +1641,169 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
   return chained;
 }
 
+// --- FilletConvexEdgePairMitre -------------------------------------------------------------------------------------------------------
+// Two perpendicular edges A = (vertex, end_a) and B = (vertex, end_b) of a planar solid meeting at a trihedral RIGHT-ANGLE corner, filleted with the
+// SAME radius r while the third edge C of that corner stays sharp. The result is `solid` minus the union of the two removed rounded prisms: face
+// F_AB (holding A and B) loses the strips of width r along A and along B, F_AC loses the strip along A, F_BC the strip along B, and the two
+// quarter-cylinders (axes meeting at O = vertex - r (n_AB + n_AC + n_BC), outward normals n) meet on the PLANE through O with normal
+// e_A + e_B (e_A = unit(vertex - end_a), e_B = unit(end_b - vertex)): for equal radii and intersecting axes two cylinders meet in two planar ellipses,
+// and this is the one inside the corner. Each cylinder ends on that plane through a sloped notch row; the two rows are the same point set, so the
+// shared edge welds. The far end of each edge meets a face perpendicular to it and gets the ordinary quarter-circle corner notch.
+Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double radius_a, double radius_b) {
+  const std::string who = "dino8::kernel::FilletConvexEdgePairMitre: ";
+  if (!std::isfinite(radius_a) || !std::isfinite(radius_b) || !(radius_a > 0.0) || !(radius_b > 0.0)) {
+    throw std::invalid_argument(who + "both radii must be finite and strictly positive");
+  }
+  if (std::fabs(radius_a - radius_b) > 1e-12 * std::max(radius_a, radius_b)) {
+    throw std::invalid_argument(who + "the radii differ (" + std::to_string(radius_a) + " vs " + std::to_string(radius_b) +
+                                "): two perpendicular cylinders of different radii meet in a space curve that is not planar, and only the equal-radius "
+                                "planar mitre is built here");
+  }
+  const double r = radius_a;
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  auto shares_edge = [&](const Brep::PlanarFace& f, const Point3d& a, const Point3d& b) {
+    const size_t n = f.loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point3d& p = f.loop[k];
+      const Point3d& q = f.loop[(k + 1) % n];
+      if ((PointsEqual(p, a, tol) && PointsEqual(q, b, tol)) || (PointsEqual(p, b, tol) && PointsEqual(q, a, tol))) return true;
+    }
+    return false;
+  };
+  int fab = -1, fac = -1, fbc = -1, at_vertex = 0;
+  for (size_t f = 0; f < faces.size(); ++f) {
+    bool touches = false;
+    for (const Point3d& p : faces[f].loop) touches = touches || PointsEqual(p, vertex, tol);
+    if (!touches) continue;
+    ++at_vertex;
+    const bool has_a = shares_edge(faces[f], vertex, end_a), has_b = shares_edge(faces[f], vertex, end_b);
+    if (has_a && has_b) fab = static_cast<int>(f);
+    else if (has_a) fac = static_cast<int>(f);
+    else if (has_b) fbc = static_cast<int>(f);
+  }
+  if (at_vertex != 3) {
+    throw std::invalid_argument(who + "`vertex` must be a trihedral corner (exactly three faces meet there, found " + std::to_string(at_vertex) + ")");
+  }
+  if (fab < 0 || fac < 0 || fbc < 0) {
+    throw std::invalid_argument(who + "(vertex, end_a) and (vertex, end_b) must be two edges of the solid at `vertex`: one face holds both, one face holds each alone");
+  }
+  const Brep::PlanarFace& face_ab = faces[static_cast<size_t>(fab)];
+  const Brep::PlanarFace& face_ac = faces[static_cast<size_t>(fac)];
+  const Brep::PlanarFace& face_bc = faces[static_cast<size_t>(fbc)];
+  const Vector3d nAB = face_ab.plane.zaxis, nAC = face_ac.plane.zaxis, nBC = face_bc.plane.zaxis;
+  if (std::fabs(nAB * nAC) > 1e-6 || std::fabs(nAB * nBC) > 1e-6 || std::fabs(nAC * nBC) > 1e-6) {
+    throw std::invalid_argument(who + "the three faces at `vertex` are not mutually perpendicular - only a right-angle corner is built");
+  }
+  // convex corner: every vertex of each of the three faces lies on the inner side of the other two planes
+  auto inner_side = [&](const Vector3d& n, const Brep::PlanarFace& f) {
+    for (const Point3d& p : f.loop) {
+      if (n * (p - vertex) > tol) return false;
+    }
+    return true;
+  };
+  if (!inner_side(nAB, face_ac) || !inner_side(nAB, face_bc) || !inner_side(nAC, face_ab) || !inner_side(nAC, face_bc) || !inner_side(nBC, face_ab) ||
+      !inner_side(nBC, face_ac)) {
+    throw std::invalid_argument(who + "the corner at `vertex` is not convex");
+  }
+  Vector3d uB = end_b - vertex, wA = end_a - vertex;
+  const double len_a = wA.Length(), len_b = uB.Length();
+  if (!uB.Unitize() || !wA.Unitize()) throw std::invalid_argument(who + "an edge is degenerate");
+  const Vector3d uC = -nAB;  // direction of the sharp third edge, into the material
+  if ((uB + nAC).Length() > 1e-6 || (wA + nBC).Length() > 1e-6) {
+    throw std::invalid_argument(who + "the two edges are not the edges shared by the three perpendicular faces at `vertex`");
+  }
+  if (!(len_a > r * (1.0 + 1e-9)) || !(len_b > r * (1.0 + 1e-9))) {
+    throw std::invalid_argument(who + "an edge is not longer than the radius - the mitre does not fit");
+  }
+
+  // --- the three corner faces, re-trimmed along the tangent lines of the two cylinders ---
+  auto clip = [&](const Brep::PlanarFace& f, const Point3d& through, const Vector3d& keep_side) {
+    Brep::PlanarFace out = f;
+    out.loop = detail::ClipByHalfspace3d(out.loop, ON_Plane(through, -keep_side), tol);
+    return out;
+  };
+  Brep::PlanarFace r_ab = clip(clip(face_ab, vertex + r * uB, uB), vertex + r * wA, wA);
+  Brep::PlanarFace r_ac = clip(face_ac, vertex + r * uC, uC);
+  Brep::PlanarFace r_bc = clip(face_bc, vertex + r * uC, uC);
+  if (r_ab.loop.size() < 3 || r_ac.loop.size() < 3 || r_bc.loop.size() < 3) {
+    throw std::invalid_argument(who + "re-trimming a corner face left fewer than 3 vertices - radius too large for this solid's geometry");
+  }
+
+  // --- the two cylinders: xaxis = the outward normal of one adjacent face, yaxis = e x xaxis = the outward normal of the other, a quarter-turn sweep ---
+  struct Frame {
+    Vector3d X, Y;
+    ON_Plane plane_x, plane_y;
+  };
+  auto make_cylinder = [&](const Point3d& edge_point, const Vector3d& e, double length, const Vector3d& n1, const Brep::PlanarFace& f1, const Vector3d& n2,
+                            const Brep::PlanarFace& f2, Frame& fr) {
+    Brep::CylindricalFace cf;
+    if ((ON_CrossProduct(e, n1) - n2).Length() < 1e-6) {
+      fr.X = n1; fr.Y = n2; fr.plane_x = f1.plane; fr.plane_y = f2.plane;
+    } else {
+      fr.X = n2; fr.Y = n1; fr.plane_x = f2.plane; fr.plane_y = f1.plane;
+    }
+    cf.frame.origin = edge_point - r * n1 - r * n2;
+    cf.frame.xaxis = fr.X;
+    cf.frame.yaxis = ON_CrossProduct(e, fr.X);
+    cf.frame.zaxis = e;
+    cf.frame.UpdateEquation();
+    cf.radius = r;
+    cf.angle = 0.5 * ON_PI;
+    cf.length = length;
+    cf.outward = true;
+    return cf;
+  };
+  Vector3d e_a = vertex - end_a, e_b = end_b - vertex;
+  e_a.Unitize();
+  e_b.Unitize();
+  Frame fa, fb;
+  Brep::CylindricalFace cyl_a = make_cylinder(end_a, e_a, len_a, nAB, face_ab, nAC, face_ac, fa);
+  Brep::CylindricalFace cyl_b = make_cylinder(vertex, e_b, len_b, nAB, face_ab, nBC, face_bc, fb);
+
+  // --- the mitre rows: the intersection of each cylinder with the plane through O with normal e_a + e_b ---
+  const Point3d O = vertex - r * nAB - r * nAC - r * nBC;
+  Vector3d N = e_a + e_b;
+  if (!N.Unitize()) throw std::invalid_argument(who + "degenerate mitre plane");
+  const int kMitreSamples = 256;
+  for (int s = 0; s <= kMitreSamples; ++s) {
+    const double th = 0.5 * ON_PI * static_cast<double>(s) / kMitreSamples;
+    const Point3d base_a = cyl_a.frame.origin + r * (std::cos(th) * fa.X + std::sin(th) * cyl_a.frame.yaxis);
+    const Point3d base_b = cyl_b.frame.origin + r * (std::cos(th) * fb.X + std::sin(th) * cyl_b.frame.yaxis);
+    const double va = ((O - base_a) * N) / (e_a * N), vb = ((O - base_b) * N) / (e_b * N);
+    cyl_a.cap1_notch_points.push_back(base_a + va * e_a);
+    cyl_b.cap0_notch_points.push_back(base_b + vb * e_b);
+  }
+  for (size_t k = 0; k < cyl_a.cap1_notch_points.size(); ++k) {
+    if (cyl_a.cap1_notch_points[k].DistanceTo(cyl_b.cap0_notch_points[k]) > 1e-9 * std::max(1.0, len_a + len_b)) {
+      throw std::runtime_error(who + "internal error: the two mitre rows do not coincide - please report this as a bug");
+    }
+  }
+  const double sag = r * (1.0 - std::cos(0.25 * ON_PI / kMitreSamples));
+  cyl_a.cap1_notch_tolerance = sag;
+  cyl_b.cap0_notch_tolerance = sag;
+
+  // --- far ends: the ordinary quarter-circle corner notch on the face perpendicular to each edge ---
+  std::vector<Brep::PlanarFace> others;
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != fab && static_cast<int>(f) != fac && static_cast<int>(f) != fbc) others.push_back(faces[f]);
+  }
+  NotchCornerAtVertex(others, end_a, e_a, fa.plane_x, fa.plane_y, cyl_a.frame.origin, fa.X, cyl_a.frame.yaxis, r, 0.5 * ON_PI, tol);
+  NotchCornerAtVertex(others, end_b, e_b, fb.plane_x, fb.plane_y, cyl_b.frame.origin + len_b * e_b, fb.X, cyl_b.frame.yaxis, r, 0.5 * ON_PI, tol);
+
+  std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
+  mixed_planar.push_back(std::move(r_ab));
+  mixed_planar.push_back(std::move(r_ac));
+  mixed_planar.push_back(std::move(r_bc));
+  for (Brep::PlanarFace& pf : mixed_planar) AttachArcRunsForNotchRuns(pf);
+  Brep out = Brep::FromMixedFaces(mixed_planar, {cyl_a, cyl_b});
+  if (!out.raw().IsValid() || !out.raw().IsSolid()) {
+    throw std::invalid_argument(who + "the mitred corner did not assemble into a valid closed solid (each edge's far end must meet a face perpendicular to it) - refused");
+  }
+  return out;
+}
+
 FilletRadiusLimit MaxFilletRadius(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
