@@ -2830,7 +2830,7 @@ std::vector<RvP2> RvCircleCircle(const RvP2& c0, double r0, const RvP2& c1, doub
 // edge i (which ends at v[i+1 mod n]); `ed[i]` its geometry; `th[i]` its thickness. Coordinates are (r, z) about the axis.
 Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vector<double> th, const ON_3dPoint& axis_point,
                          const ON_3dVector& axis, const ON_3dVector& ex, double flip, double size, double tol, bool all_lines,
-                         const std::string& fn, double offset_distance) {
+                         const std::string& fn, double offset_distance, bool dry_run = false) {
   // offset_distance != 0: whole-BODY offset (positive grows) instead of a shell - every non-axis edge moves by that distance, no
   // face is removed and the new meridian is the cavity chain closed along the axis (or a closed ring when no edge is on the axis).
   const bool offset_mode = offset_distance != 0.0;
@@ -3172,6 +3172,7 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
   }
   const double expected = ON_PI * green;
   if (!(expected > 0.0)) throw std::invalid_argument(fn + "the shell has no volume");
+  if (dry_run) return Brep();  // every geometric check has passed; only the revolve itself (and its numerical volume gate) is skipped
 
   auto to3 = [&](const RvP2& p) { return axis_point + (flip * p.r) * ex + p.z * axis; };
   NurbsCurve section;
@@ -3286,7 +3287,7 @@ Brep OffsetRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector
 
 namespace {
 Brep RvArcFront(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction, Vector3d radial_direction,
-                const std::vector<double>& edge_thickness, double offset_distance, const std::string& fn) {
+                const std::vector<double>& edge_thickness, double offset_distance, const std::string& fn, bool dry_run = false) {
   const size_t n = edges.size();
   if (n < 2) throw std::invalid_argument(fn + "a closed meridian needs at least 2 edges");
   ON_3dVector axis(axis_direction.x, axis_direction.y, axis_direction.z);
@@ -3338,7 +3339,7 @@ Brep RvArcFront(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vect
       if (q.r < -tol) throw std::invalid_argument(fn + "an arc crosses the axis; the profile must lie on one side of it (arc radius " + std::to_string(rad) + ")");
     }
   }
-  return ShellRevolvedEngine(v, ed, edge_thickness, ON_3dPoint(axis_point), axis, ex, 1.0, size, tol, false, fn, offset_distance);
+  return ShellRevolvedEngine(v, ed, edge_thickness, ON_3dPoint(axis_point), axis, ex, 1.0, size, tol, false, fn, offset_distance, dry_run);
 }
 }  // namespace
 
@@ -3352,6 +3353,58 @@ Brep OffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d ax
   const std::string fn = "dino8::kernel::OffsetRevolvedArcProfile: ";
   if (!std::isfinite(distance) || distance == 0.0) throw std::invalid_argument(fn + "distance must be finite and non-zero");
   return RvArcFront(edges, axis_point, axis_direction, radial_direction, std::vector<double>(edges.size(), 0.0), distance, fn);
+}
+
+double MaxInwardOffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
+                                         Vector3d radial_direction) {
+  const std::string fn = "dino8::kernel::MaxInwardOffsetRevolvedArcProfile: ";
+  double rmin = 1e300, rmax = -1e300, zlo = 1e300, zhi = -1e300;
+  for (const MeridianEdge& e : edges) {
+    rmin = std::min(rmin, e.r);
+    rmax = std::max(rmax, e.r);
+    zlo = std::min(zlo, e.z);
+    zhi = std::max(zhi, e.z);
+    if (e.arc) {  // an arc can bulge past its end points: include its centre +- radius box (a safe over-estimate of the extent)
+      const double rad = std::hypot(e.r - e.cr, e.z - e.cz);
+      rmin = std::min(rmin, e.cr - rad);
+      rmax = std::max(rmax, e.cr + rad);
+      zlo = std::min(zlo, e.cz - rad);
+      zhi = std::max(zhi, e.cz + rad);
+    }
+  }
+  const double size = std::hypot(rmax - std::min(0.0, rmin), zhi - zlo);
+  if (!(size > 0.0) || !std::isfinite(size)) throw std::invalid_argument(fn + "the meridian has no finite extent");
+  auto feasible = [&](double d) {
+    try {
+      // dry run: every geometric check of the offset, without the revolve and its numerical volume gate (which can refuse a very thin
+      // but geometrically valid body, so it would make the scan non-monotone)
+      RvArcFront(edges, axis_point, axis_direction, radial_direction, std::vector<double>(edges.size(), 0.0), -d, fn, true);
+      return true;
+    } catch (const std::exception&) {
+      return false;
+    }
+  };
+  if (!feasible(1e-6 * size)) {
+    throw std::invalid_argument(fn + "not even a vanishing inward offset is feasible: the meridian itself is not a valid revolved solid");
+  }
+  // Coarse scan for the first infeasible distance (an inward offset only ever gets harder), then bisection inside that bracket.
+  const int steps = 200;
+  double lo = 1e-6 * size, hi = -1.0;
+  for (int k = 1; k <= steps; ++k) {
+    const double d = size * k / steps;
+    if (!feasible(d)) {
+      hi = d;
+      break;
+    }
+    lo = d;
+  }
+  if (hi < 0.0) return size;  // never collapses inside the meridian's own extent
+  for (int it = 0; it < 60 && hi - lo > 1e-10 * size; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    if (feasible(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
 }
 
 Brep OffsetFace(const Brep& solid, int face_index, double distance) {

@@ -1165,6 +1165,17 @@ Brep OffsetRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector
 Brep OffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
                               Vector3d radial_direction, double distance);
 
+// Offset FEASIBILITY of a solid of revolution (the PARITY_MAP "Offset feasibility / degeneracy detection (thickness beyond inradius,
+// collapsed faces ...)" gap, which only had local, sampling-based freeform checks): the LARGEST inward distance `d` for which
+// OffsetRevolvedArcProfile(edges, ..., -d) is GEOMETRICALLY feasible - the revolved solid's own inradius-like collapse distance, measured
+// with the engine's own geometric refusals (collapsed or reversed edge, arc through its centre, cavity crossing the axis; a dry run that
+// stops before the revolve and its numerical volume gate) by a 200-step scan for the
+// first infeasible distance and a bisection to 1e-10 of the meridian's size inside that bracket. Returns the sup of the feasible
+// distances (the first infeasible distance lies within the 1e-10 bracket above it). Throws std::invalid_argument if the meridian
+// itself is not a valid revolved solid (not even a vanishing offset builds) or has no extent.
+double MaxInwardOffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
+                                         Vector3d radial_direction);
+
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
 // shrinks it), re-extending or re-trimming every OTHER face so the
