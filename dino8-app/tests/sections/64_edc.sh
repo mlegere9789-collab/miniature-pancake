@@ -35,7 +35,7 @@ edc_num "$EDC_1" "Volume = " 52.0 52.6 "EDC_1: the tessellated Volume command ag
 edc_num "$EDC_2" "exact volume " 96.1112 96.1122 "EDC_2: flared outward (-0.15 rad): kernel exact volume 96.11171 (the old refit read 96.0958)"
 edc_has "$EDC_3" "fold" "EDC_3: a draft beyond the smallest radius of curvature is refused with the fold reason"
 edc_has "$EDC_3" "0 object(s)" "EDC_3: ...and nothing is built"
-edc_num "$EDC_4" "exact volume " 32.3250 32.3265 "EDC_4_control: the circle (exact conic path) is the exact frustum pi (4 + 3.4 + 2.89) = 32.32566"
+edc_num "$EDC_4" "exact volume " 32.3265 32.3275 "EDC_4_control: the circle (exact conic path) is the exact frustum pi h/3 (R^2 + R r + r^2) = pi (4 + 3.4 + 2.89) = 32.32699 (the range used to be centred on 32.32566, a mis-added constant)"
 # History replay: the drafted ellipse records the ellipse as its source; scaling the source rebuilds the solid
 edc_has "$EDC_5" "ExtrudeCrvTapered <- 1" "EDC_5: the History record lists the ellipse (object 1) as the source of the solid"
 edc_nth "$EDC_5" "Volume = " 1 52.0 52.6 "EDC_5a: built with History On, the drafted ellipse's volume is 52.42 (Steiner)"
