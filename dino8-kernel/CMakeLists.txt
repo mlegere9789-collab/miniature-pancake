@@ -73,6 +73,7 @@ add_library(dino8_kernel STATIC
   src/mesh.cpp
   src/threemf.cpp
   src/mesh_unwrap.cpp
+  src/deform.cpp
   src/boolean.cpp
   src/boolean_general.cpp
   src/boolean_diagnostics.cpp
