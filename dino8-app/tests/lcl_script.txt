@@ -10,9 +10,8 @@
 #   History: the same closed loft edited to Style=Straight gives 185.109; edited on to Closed=No the open straight loft keeps 7 of
 #                   the 8 strips, 161.97
 # Every case starts from `New` and is bracketed by a marker line ("LCLBEGIN_<name>", an unknown command).
-# Closed cases run with the DEFAULT options (SeamAlign=Yes): the circles are rotated copies of one circle, so the minimum-twist re-seam
-# of a closed loft keeps every seam where it is; the control "noalign" runs the same ring with SeamAlign=No. The OPEN controls (the open
-# loft, and the History edit to Closed=No) use SeamAlign=No: the open default still re-seams to the nearest point and twists a ring.
+# Every case runs with the DEFAULT options (SeamAlign=Yes) except the control "noalign": the circles are rotated copies of one circle, so
+# the minimum-twist re-seam keeps every seam where it is (open lofts and closed ones alike).
 SetActiveViewport Top
 
 # closed cubic loft through the eight circles
@@ -64,7 +63,7 @@ SelID 1
 Rotate Copy=Yes 0,0,0 315
 SelNone
 SelCrv
-Loft SeamAlign=No
+Loft
 SelLast
 List
 Area
@@ -189,7 +188,7 @@ SelCrv
 SelNone
 SelCrv
 History On
-Loft Closed=Yes SeamAlign=No
+Loft Closed=Yes
 SelLast
 Area
 EditHistory 9 style=straight
