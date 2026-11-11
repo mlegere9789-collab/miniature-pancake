@@ -10,6 +10,7 @@
 //     |(3, 0, 1.5) x (0, 4, 0)| = sqrt(180) and its thickening by t has volume sqrt(180) t (the offset is along the unit normal).
 #include <cmath>
 #include <stdexcept>
+#include <cstdio>
 #include <vector>
 
 #include "dino8/kernel/brep.h"
@@ -139,4 +140,30 @@ D8_EXTRA_TEST(ThickenWeldedKeepsThickensRefusals) {
   try { Brep::ThickenWelded(sheet, 0.0); } catch (const std::exception&) { zero = true; }
   try { Brep::ThickenWelded(sheet, std::nan("")); } catch (const std::exception&) { nan = true; }
   d8test::Check(zero && nan, "a zero or non-finite thickness is refused");
+}
+
+// A sheet closed in ONE direction (a full cylinder wall, r = 1, h = 2): Thicken() makes 4 faces (inner and outer wall, two flat
+// annuli), the solid tube of volume pi ((r + t)^2 - r^2) h. ThickenWelded() must weld it into a valid genus-1 solid.
+D8_EXTRA_TEST(ThickenWeldedFullCylinderWallIsAValidTube) {
+  const double r = 1.0, h = 2.0, t = 0.25;
+  ON_Plane base(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  ON_Cylinder cyl(ON_Circle(base, r), h);
+  NurbsSurface wall;
+  if (!cyl.GetNurbForm(wall.raw())) { d8test::Check(false, "ON_Cylinder::GetNurbForm built the wall"); return; }
+  const Brep sheet = Brep::FromSurface(wall);
+  Brep tube;
+  try {
+    tube = Brep::ThickenWelded(sheet, t);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "ThickenWelded refused the cylinder wall: %s\n", e.what());
+    d8test::Check(false, "ThickenWelded welds the cylinder wall (it refused)");
+    return;
+  }
+  const Counts c = CountTopology(tube);
+  d8test::Check(tube.raw().IsValid() && tube.raw().IsSolid(), "welded tube: IsValid() and IsSolid()");
+  d8test::Check(c.faces == 4 && c.other_edges == 0 && c.edges_with_one_trim == 0, "welded tube: 4 faces and every edge borders exactly two trims");
+  // A solid torus-like tube has Euler characteristic 0 (genus 1).
+  d8test::Check(c.vertices - c.edges + c.faces == 0, "welded tube: Euler characteristic V - E + F = 0 (genus 1)");
+  const double expect = ON_PI * ((r + t) * (r + t) - r * r) * h;
+  d8test::Check(std::fabs(tube.TessellateToClosedMesh(48, 8).Volume() - expect) / expect < 0.01, "welded tube: volume matches pi ((r+t)^2 - r^2) h within 1%");
 }
