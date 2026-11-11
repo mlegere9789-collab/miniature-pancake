@@ -1856,6 +1856,70 @@ double Brep::VolumeImpl(bool allow_analytic) const {
                                                               g_trimmed_face_max_depth);
       }
     };
+    // A PLANAR face whose surface has a non-affine (u, v) parametrization (a sweep cap's fan: degree 2 and rational in the circle direction):
+    // straight segments in (u, v) are curves in 3D, so integrating the (u, v) polygon is only as good as its chords (measured: a rib's 4 x 0.4
+    // footprint hole in a FAN cap made the fused volume 0.2-0.9% of the added 3.2 low). On a plane the divergence integrand p.n is the
+    // constant p0.n, so the face contributes (p0.n / 3) x area, with the area taken from each loop's true trims: an iso trim is a straight line
+    // in (u, v) (the cap's rim circle at v = 1), densified there and mapped through the surface; any other trim is followed along its 3D
+    // edge curve (the footprint's straight edges are then exact, whatever the parametrization).
+    if (g_trimmed_face_follow_neighbor_curves && sf && sf->IsPlanar(nullptr, 1e-9)) {
+      const ON_NurbsSurface* nsurf = ON_NurbsSurface::Cast(sf);
+      if (nsurf && (nsurf->Order(0) > 2 || nsurf->Order(1) > 2 || nsurf->IsRational())) {
+        ON_3dPoint pc;
+        ON_3dVector su, sv;
+        const ON_Interval du = sf->Domain(0), dv = sf->Domain(1);
+        bool done = false;
+        if (sf->Ev1Der(du.ParameterAt(0.5), dv.ParameterAt(0.5), pc, su, sv)) {
+          ON_3dVector nrm = ON_CrossProduct(su, sv);
+          if (nrm.Unitize()) {
+            double area = 0.0;
+            int outers = 0;
+            bool ok = true;
+            ON_3dPoint p_on_plane = pc;
+            for (int k = 0; k < face.m_li.Count() && ok; ++k) {
+              const int li = face.m_li[k];
+              if (li < 0 || li >= brep_.m_L.Count()) { ok = false; break; }
+              const ON_BrepLoop& loop = brep_.m_L[li];
+              std::vector<ON_3dPoint> pts;
+              for (int ti = 0; ti < loop.m_ti.Count() && ok; ++ti) {
+                const ON_BrepTrim& trim = brep_.m_T[loop.m_ti[ti]];
+                if (trim.m_type == ON_BrepTrim::singular) continue;  // a collapsed side (the fan's apex): no length
+                constexpr int kPieces = 96;
+                if (trim.m_iso != ON_Surface::not_iso) {
+                  const ON_Interval d = trim.Domain();
+                  for (int i = 0; i < kPieces; ++i) {
+                    const ON_3dPoint uv = trim.PointAt(d.ParameterAt(static_cast<double>(i) / kPieces));
+                    pts.push_back(sf->PointAt(uv.x, uv.y));
+                  }
+                } else if (trim.m_ei >= 0 && trim.m_ei < brep_.m_E.Count()) {
+                  const ON_BrepEdge& e = brep_.m_E[trim.m_ei];
+                  const ON_Interval ed = e.Domain();
+                  for (int i = 0; i < kPieces; ++i) {
+                    const double f = static_cast<double>(i) / kPieces;
+                    pts.push_back(e.PointAt(ed.ParameterAt(trim.m_bRev3d ? 1.0 - f : f)));
+                  }
+                } else {
+                  ok = false;
+                }
+              }
+              if (!ok || pts.size() < 3) { ok = ok && pts.empty(); continue; }
+              ON_3dVector vec(0, 0, 0);
+              for (size_t i = 0; i < pts.size(); ++i) {
+                vec += 0.5 * ON_CrossProduct(ON_3dVector(pts[i]), ON_3dVector(pts[(i + 1) % pts.size()]));
+              }
+              const double a_ring = std::fabs(vec * nrm);
+              if (loop.m_type == ON_BrepLoop::outer) { area += a_ring; ++outers; p_on_plane = pts[0]; }
+              else if (loop.m_type == ON_BrepLoop::inner) area -= a_ring;
+            }
+            if (ok && outers == 1 && area > 0.0) {
+              total += sign * (ON_3dVector(p_on_plane) * nrm) / 3.0 * area;
+              done = true;
+            }
+          }
+        }
+        if (done) continue;
+      }
+    }
     if (g_trimmed_face_follow_neighbor_curves && sf && !sf->IsPlanar(nullptr, 1e-9)) {
       // VolumeOfSealedSolid() on a curved trimmed face: Green's theorem on the boundary rings (no ear clipping, see
       // IntegrateRegionByGreen()).
