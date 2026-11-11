@@ -12856,7 +12856,9 @@ rtafmt() {
 # Round trip defects measured by this section and NOT fixed (case:format). They print as "known ..." with the measured
 # difference instead of failing, and become plain "ok" lines the day they are fixed. STEP: the exact-Boolean / revolve-fillet /
 # sweep solids come back as ONE brep with an untrimmed face ("1 face fell back to untrimmed"), invalid, area 1e5 sized, box +-1e5;
-# STL of a solid re-imports with Area right but Volume 0 (open triangle soup, not welded); a STEP re-import of an ACIS-imported
+# the mesh formats (STL, OBJ, PLY) round-trip every solid within the volume/area tolerance now (the STL and PLY imports weld coincident
+# vertices with a true distance test, the PLY export writes the same MeshBrepClosed mesh as STL/OBJ; MSHW_ pins the weld on hand-built
+# files); only the multi-object spsscale case stays recorded for them (several objects merge into one mesh); a STEP re-import of an ACIS-imported
 # box is reported invalid; the hidden-operand vase compares against a .3dm that lost the Hide state until the File3dm fix was built;
 # IGES: tens to hundreds of loose trimmed faces instead of one solid; G1 surfaces: STEP re-imports two objects invalid, SAT/SAB lose objects.
 RTA_KNOWN=" sblcut:stp sblcut:igs sblunion:stp sblunion:igs sbltwo:stp sbltwo:igs rvr:stp rvr:igs ptf:stp ptf:igs spsscale:stp spsscale:igs cntloft:stp cntpatch:stp cntnet:stp spsscale:stl spsscale:ply spsscale:obj vase:obj vase:stp satimp:stp sabimp:stp satcyl:stp "
