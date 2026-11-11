@@ -1,7 +1,8 @@
 # TYPED_: What prints the analytic kind of each object (typed_readout_script.txt). Every expected value is a closed form of the
 # command's own arguments: the 3-4-5 line has length 5; Circle radius 5; the Arc from angle 0 to the point straight above the centre
 # is 90 degrees; the ellipse with semi-axes 6 and 3; the sphere / cylinder / torus carry their radii; the cone of base radius 3 and
-# height 6 has half angle atan(3 / 6) = 26.565051 degrees (the readout names the apex too; the section only pins its x and y, the app builds that cone with the apex at the picked point).
+# height 6 has half angle atan(3 / 6) = 26.565051 degrees, its apex on the axis at height 6 (the base circle is at the picked point, as in Rhino and
+# as the preview and MeshCone / SubDCone show) and its volume centroid at h / 4 = 1.5 above the base (4.5 if the apex were at the pick).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   TYPED_OUT="$(timeout 900 "$BIN" --smoke 30 --script "$HERE/typed_readout_script.txt" 2>&1)" || { echo "$TYPED_OUT" | tail -40; echo "FAIL TYPED_run: script exited non-zero"; fail=1; TYPED_OUT=""; }
 else
@@ -17,7 +18,9 @@ typed_has "Face types: Sphere x1" "TYPED_5: a sphere B-rep is one Sphere face"
 typed_has "Sphere, center (0, 60, 0), radius 3" "TYPED_5: the Sphere face reports its centre and radius"
 typed_has "Cylinder, radius 2" "TYPED_6: the cylinder wall is a Cylinder of radius 2"
 typed_has "Face types: Plane x2, Cylinder x1" "TYPED_6: the capped cylinder is two Plane caps and one Cylinder wall"
-typed_has "Cone, apex (60, 60, " "TYPED_7: the cone's apex is on the axis through 60,60"
+typed_has "Cone, apex (60, 60, 6)" "TYPED_7: the cone's apex is 6 above the picked base centre"
 typed_has "half angle 26.565051 degrees" "TYPED_7: the cone's half angle is atan(3 / 6)"
 typed_has "Torus, center (0, 80, 0)" "TYPED_8: the torus is a Torus at its centre"
 typed_has "major radius 6, minor radius 1.5" "TYPED_8: the torus reports its major and minor radius"
+typed_cz="$({ grep -o 'Centroid [0-9.e+-]*,[0-9.e+-]*,[0-9.e+-]*' <<<"$TYPED_OUT" || true; } | head -1 | awk -F, '{print $3}')"
+if awk -v v="${typed_cz:-}" 'BEGIN { exit !(v != "" && v + 0 >= 1.45 && v + 0 <= 1.55) }'; then echo "ok   TYPED_7: the cone's volume centroid is h/4 = 1.5 above its base (measured $typed_cz)"; else echo "FAIL TYPED_7: the cone's volume centroid z is '${typed_cz:-}', not 1.5 (4.5 would mean the apex is at the picked point)"; fail=1; fi

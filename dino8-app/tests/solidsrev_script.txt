@@ -7,8 +7,8 @@
 # an unknown-command marker line ("SRBEGIN_<name>") that smoke.sh uses to slice
 # the output into per-case blocks. Each case ends with List, Volume and Check on
 # the result so the smoke checks read measured numbers against closed forms.
-# NB the app's Cone puts its APEX at the clicked base point and the flat cap at
-# z = height, so the cap of "Cone 0,0,0 5 10" is clicked at 2,0,10.
+# NB the app's Cone has its flat cap at the clicked base point and its apex at
+# z = height, so the cap of "Cone 0,0,0 5 10" is clicked at 2,0,0.
 SetActiveViewport Top
 
 # ===================== OffsetSrf Solid=Yes on a plain cylinder =====================
@@ -151,13 +151,13 @@ SelAll
 List
 Volume
 Check
-# cone with its flat cap (z=10) removed = an open cone cup: 139.28
+# cone with its flat cap (z=0) removed = an open cone cup: 139.28
 New
 SRBEGIN_S_cone_cap
 Cone 0,0,0 5 10
 SelAll
 Shell
-2,0,10
+2,0,0
 Enter
 1
 SelAll
@@ -165,7 +165,7 @@ List
 Volume
 Check
 # cone with its WALL removed: exact (kernel::ShellRevolvedProfile) - what is left is the cap's 1-thick slab, a frustum
-# between z=9 (r 4.5) and z=10 (r 5) with the open wall as its slanted underside: pi/3*(4.5^2 + 4.5*5 + 5^2) = 70.95
+# between z=1 (r 4.5) and z=0 (r 5) with the open wall as its slanted underside: pi/3*(4.5^2 + 4.5*5 + 5^2) = 70.95
 New
 SRBEGIN_S_cone_wall
 Cone 0,0,0 5 10
@@ -264,14 +264,14 @@ SelAll
 List
 Volume
 Check
-# plain cone r5 h10 (flat cap at z=10), rim chamfered wall 1 / cap 2: 238.28
+# plain cone r5 h10 (flat cap at z=0), rim chamfered wall 1 / cap 2: 238.28
 New
 SRBEGIN_C_cone_rim
 Cone 0,0,0 5 10
 ChamferEdge
 Radius=1
 Distance2=2
-0,5,10
+0,5,0
 Enter
 SelAll
 List
@@ -284,7 +284,7 @@ Cone 0,0,0 5 10
 ChamferEdge
 Radius=1
 Distance2=6
-0,5,10
+0,5,0
 Enter
 SelAll
 List

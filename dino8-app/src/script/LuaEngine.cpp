@@ -425,7 +425,7 @@ int rs_AddCone(lua_State* L) {
   const bool cap = lua_isnoneornil(L, 4) ? true : lua_toboolean(L, 4);
   if (h <= 0 || r <= 0) return luaL_error(L, "AddCone: height and radius must be positive");
   axis.Unitize();
-  ON_Cone cone(ON_Plane(base, axis), h, r);
+  ON_Cone cone(ON_Plane(base + axis * h, -axis), h, r);  // ON_Cone: plane origin = apex; `base` is the base centre
   return PushBrep(L, ON_BrepCone(cone, cap), "AddCone");
 }
 
