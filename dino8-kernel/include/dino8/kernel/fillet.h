@@ -306,6 +306,13 @@ Brep ChamferConvexEdgePair(const Brep& solid, Point3d vertex, Point3d end_a, Poi
 Brep ChamferConvexEdgePairLegs(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double shared_a, double other_a, double shared_b, double other_b);
 Brep ChamferConvexEdgePairAngle(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double shared_a, double angle_a, double shared_b, double angle_b);
 
+// The same pair with each edge's two distances in ChamferConvexEdge's OWN convention, for a caller that already holds (p0, p1, distance_i, distance_j) per
+// edge: `distance_*_i` belongs to the face that walks vertex -> end on its loop (ChamferConvexEdge(solid, vertex, end, distance_i, distance_j) would take the
+// same pair), `distance_*_j` to the other face; the function works out which of the two is the shared-face setback and calls ChamferConvexEdgePairLegs'
+// construction, so the volume, face count, ordering rule and refusals are the same. A caller whose edge runs end -> vertex swaps that edge's two distances.
+Brep ChamferConvexEdgePairDistances(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double distance_a_i, double distance_a_j, double distance_b_i,
+                                    double distance_b_j);
+
 // The largest radius FilletConvexEdge/FilletConcaveEdge could build for
 // this exact edge before their own "radius is too large to fit" check
 // rejects it - the SAME closed-form bound those two functions already

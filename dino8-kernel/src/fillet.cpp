@@ -1911,6 +1911,32 @@ Brep ChamferConvexEdgePairAngle(const Brep& solid, Point3d vertex, Point3d end_a
   return ChamferPairCore(who, solid, vertex, end_a, end_b, shared_a, shared_a * std::tan(angle_a), shared_b, shared_b * std::tan(angle_b));
 }
 
+Brep ChamferConvexEdgePairDistances(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double distance_a_i, double distance_a_j, double distance_b_i,
+                                    double distance_b_j) {
+  const std::string who = "dino8::kernel::ChamferConvexEdgePairDistances: ";
+  for (double d : {distance_a_i, distance_a_j, distance_b_i, distance_b_j}) {
+    if (!std::isfinite(d) || !(d > 0.0)) throw std::invalid_argument(who + "every chamfer distance must be finite and strictly positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  // ChamferConvexEdge's distance_i belongs to the face that walks p0 -> p1 on its loop; here p0 = vertex. That face is the SHARED one of the pair exactly when
+  // its plane also contains the other edge's far end (the shared face holds both edges); otherwise distance_i is the edge's other-face setback.
+  auto to_legs = [&](const Point3d& end, const Point3d& other_end, double d_i, double d_j, double& shared, double& other) {
+    for (const Brep::PlanarFace& f : faces) {
+      if (!LoopWalksEdge(f, vertex, end, tol)) continue;
+      const bool is_shared = std::fabs((other_end - f.plane.origin) * f.plane.zaxis) <= tol;
+      shared = is_shared ? d_i : d_j;
+      other = is_shared ? d_j : d_i;
+      return;
+    }
+    throw std::invalid_argument(who + "`vertex` must be a trihedral corner and each end point the far end of an edge at it (no face of the solid walks `vertex` -> that point)");
+  };
+  double shared_a = 0, other_a = 0, shared_b = 0, other_b = 0;
+  to_legs(end_a, end_b, distance_a_i, distance_a_j, shared_a, other_a);
+  to_legs(end_b, end_a, distance_b_i, distance_b_j, shared_b, other_b);
+  return ChamferPairCore(who, solid, vertex, end_a, end_b, shared_a, other_a, shared_b, other_b);
+}
+
 FilletRadiusLimit MaxFilletRadius(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
