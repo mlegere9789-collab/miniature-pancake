@@ -14002,13 +14002,19 @@ SelAll
 SetObjectName Slab
 SelAll
 Export $STXD/styled.stp
+New
+Import $STXD/styled.stp
+SelAll
+List
+Export $STXD/styled2.stp
 EOS
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   STX_OUT="$(timeout 900 "$BIN" --smoke 120 --script "$STXD/gen.txt" 2>&1)" || { echo "$STX_OUT"; echo "FAIL: STX_ script exited non-zero"; exit 1; }
 else
   STX_OUT="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 120 --script "$STXD/gen.txt" 2>&1)" || { echo "$STX_OUT"; echo "FAIL: STX_ script exited non-zero"; exit 1; }
 fi
-STX_RES="$(python3 "$HERE/stx_check.py" "$STXD" 2>&1)"
+printf '%s\n' "$STX_OUT" > "$STXD/app.out"
+STX_RES="$(python3 "$HERE/stx_check.py" "$STXD" "$STXD/app.out" 2>&1)"
 echo "$STX_RES"
 if grep -q '^FAIL' <<<"$STX_RES"; then fail=1; fi
 
