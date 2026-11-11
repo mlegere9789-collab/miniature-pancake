@@ -1,0 +1,15 @@
+# Native .3dm groups, read side (the "GRP_" section, tests/sections/89_grp.sh). Run as a SEPARATE process after
+# grp_export_script.txt (no Leader is alive here, see leader3dm_export_script.txt's header for why that matters).
+# 1. Dino 8's own file reopens with its two user groups intact: SelGroup selects the 4 grouped objects (2 points + 2 lines), not the
+#    loose point.
+# 2. grp_fixture.3dm was authored through OpenNURBS' own API (group3dm_check fixture), the way Rhino writes groups, with NO
+#    "Dino8.GroupId" strings: groups Alpha {2 points}, Beta {a point, a line} and a point in both (Alpha, then Beta = outermost),
+#    plus one loose point. Before the native group table was read, SelGroup selected 0 objects here; now it selects the 5 grouped
+#    ones, and re-saving writes Alpha / Beta back with the same membership (the nested point keeps its outermost group only).
+Open @TMP@/grp_export.3dm
+SelGroup
+List
+Open @TMP@/grp_fixture.3dm
+SelGroup
+List
+SaveAs @TMP@/grp_resave.3dm

@@ -1281,6 +1281,12 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(leader3dm_write_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(leader3dm_write_check PRIVATE dino8_kernel)
 
+  # Native .3dm group table author/reader (tests/group3dm_check.cpp, sections/89_grp.sh): writes a Rhino-style file with real
+  # ON_Groups for Load3dm's native-group import, and dumps the group table and each object's group list of a file Dino 8 wrote.
+  add_executable(group3dm_check tests/group3dm_check.cpp)
+  target_include_directories(group3dm_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(group3dm_check PRIVATE dino8_kernel)
+
   # Real-ON_DimLinear .3dm write checker (tests/dimlinear3dm_write_check.cpp, sections/63_dimwr.sh): reads a file Dino 8
   # itself wrote straight through OpenNURBS and reports every ON_DimLinear plus the count of loose baked curves.
   add_executable(dimlinear3dm_write_check tests/dimlinear3dm_write_check.cpp)
