@@ -101360,6 +101360,52 @@ void TestBodySectionPlaneOnDrilledBoxFaceDropsTheKeyholeBridge() {
   }
 }
 
+// The section curve lies IN the cutting plane. The face-vs-plane refinement stops at |S1 - S2| < opt.tolerance and used to leave every
+// refined point that far off the plane along its normal (x = 0 through an ON_BrepBox of 10 x 10 x 10 came back at x = -9.848857865e-8 on
+// all four contours, constant, so the application's flat section read "min -9.849e-08,-5,0" for the hand-computed rectangle 0,-5,0..0,5,10).
+// Every control point within the join tolerance of the plane is now moved onto it; the oracle is the plane equation itself.
+void TestBodySectionControlPointsLieExactlyInThePlane() {
+  ON_3dPoint c[8];
+  c[0] = ON_3dPoint(-5, -5, 0); c[1] = ON_3dPoint(5, -5, 0); c[2] = ON_3dPoint(5, 5, 0); c[3] = ON_3dPoint(-5, 5, 0);
+  c[4] = ON_3dPoint(-5, -5, 10); c[5] = ON_3dPoint(5, -5, 10); c[6] = ON_3dPoint(5, 5, 10); c[7] = ON_3dPoint(-5, 5, 10);
+  ON_Brep* box = ON_BrepBox(c);
+  Check(box != nullptr, "an ON_BrepBox of 10 x 10 x 10 is built");
+  if (!box) return;
+  IntersectOptions opt;  // the application's own options (section_exact.h)
+  opt.tolerance = 1e-5;
+  opt.mesh_tolerance = 0.02;
+  struct Case { const char* name; ON_Plane plane; double perimeter; double perimeter_tol; };
+  const double s = std::sqrt(0.5);
+  const Case cases[] = {
+      {"x = 0 (CPlane Right axes)", ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1)), 40.0, 1e-4},
+      {"y = 0", ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 0, 1)), 40.0, 1e-4},
+      {"x = y (through two vertical edges)", ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(s, s, 0), ON_3dVector(0, 0, 1)), 20.0 + 20.0 * std::sqrt(2.0), 2e-2},  // measured 48.2746 vs 48.2843 (a pre-existing 0.02 percent perimeter error of the cubic fit, not the subject here)
+  };
+  char msg[256];
+  for (const Case& k : cases) {
+    const std::vector<BrepSectionContour> sec = SectionBrepByPlaneJoined(*box, k.plane, opt);
+    std::snprintf(msg, sizeof msg, "box, plane %s: one closed contour", k.name);
+    Check(sec.size() == 1 && sec[0].closed, msg);
+    if (sec.size() != 1) continue;
+    double worst = 0.0;
+    const ON_NurbsCurve& nc = sec[0].curve.raw();
+    for (int i = 0; i < nc.CVCount(); ++i) {
+      ON_3dPoint p;
+      nc.GetCV(i, p);
+      worst = std::max(worst, std::fabs(k.plane.DistanceTo(p)));
+    }
+    std::snprintf(msg, sizeof msg, "box, plane %s: every control point is ON the plane (worst distance %.3g, not 1e-7)", k.name, worst);
+    Check(worst < 1e-12, msg);
+    double lo, hi;
+    SampleRange(sec[0].curve, 400, [&](Point3d p) { return k.plane.DistanceTo(p); }, lo, hi);
+    std::snprintf(msg, sizeof msg, "box, plane %s: sampled points of the curve are on the plane too (%.3g .. %.3g)", k.name, lo, hi);
+    Check(lo > -1e-12 && hi < 1e-12, msg);
+    std::snprintf(msg, sizeof msg, "box, plane %s: perimeter %.9g vs closed form %.9g", k.name, sec[0].curve.Length(), k.perimeter);
+    Check(std::fabs(sec[0].curve.Length() - k.perimeter) < k.perimeter_tol, msg);
+  }
+  delete box;
+}
+
 }  // namespace body_section_tests
 
 // ---------------------------------------------------------------------------
@@ -107287,6 +107333,7 @@ int main() {
   RunTest("body_section_tests::TestBodySectionBoxStitchesFourWallsIntoOnePerimeter", body_section_tests::TestBodySectionBoxStitchesFourWallsIntoOnePerimeter);
   RunTest("body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse", body_section_tests::TestBodySectionObliquePlaneThroughCylinderIsEllipse);
   RunTest("body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes", body_section_tests::TestBodySectionRefusesMissesAndInvalidPlanes);
+  RunTest("body_section_tests::TestBodySectionControlPointsLieExactlyInThePlane", body_section_tests::TestBodySectionControlPointsLieExactlyInThePlane);
   RunTest("body_section_tests::TestBodySectionTrimmedSolidWithThroughHole", body_section_tests::TestBodySectionTrimmedSolidWithThroughHole);
   RunTest("body_section_tests::TestBodySectionSphereSweepEveryQuarterUnitIsTheCapCircle", body_section_tests::TestBodySectionSphereSweepEveryQuarterUnitIsTheCapCircle);
   RunTest("body_section_tests::TestBodySectionPlaneOnBoxFaceIsExactlyTheFaceBoundary", body_section_tests::TestBodySectionPlaneOnBoxFaceIsExactlyTheFaceBoundary);

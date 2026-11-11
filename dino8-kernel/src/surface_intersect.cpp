@@ -2740,6 +2740,21 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
     }
     out.push_back(std::move(c));
   }
+  // A section curve lies IN the cutting plane by definition. The surface-surface refinement stops at |S1 - S2| < opt.tolerance, and
+  // for a face meeting a plane that leaves every refined point a little off the plane along its normal (measured: the plane x = 0
+  // through a 10 x 10 x 10 box came back at x = -9.849e-8 on all four contours, so the app's flat section read min
+  // -9.849e-08,-5,0 instead of 0,-5,0). Each control point within the join tolerance of the plane is moved onto it along the
+  // normal; that is an orthogonal (affine) projection, so a rational curve stays the same curve projected, and a closed curve's
+  // shared end points stay equal. A control point farther away than that is not refinement noise and is left alone.
+  for (BrepSectionContour& c : out) {
+    ON_NurbsCurve& nc = c.curve.raw();
+    for (int i = 0; i < nc.CVCount(); ++i) {
+      ON_3dPoint p;
+      if (!nc.GetCV(i, p)) continue;
+      const double d = plane.DistanceTo(p);
+      if (d != 0.0 && std::fabs(d) <= jtol) nc.SetCV(i, p - plane.zaxis * d);
+    }
+  }
   return out;
 }
 
