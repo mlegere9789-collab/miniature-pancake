@@ -55,6 +55,17 @@ done
 opsapprox "$(opsvol notch_out FIRST)" 850 0.002 "OPS_notch_out: the fixture itself is 1000 - 150 = 850 (so the offsets above are measured from the right solid)"
 opsabs "$(opsbb notch_out FIRST 4)" 10 1e-6 "OPS_notch_out: the fixture's bounding box max x = 10"
 
+# ---- Solid=Yes: the hollow wall between the source and the offset (the planar construction's HollowSolid), volume = difference of the two
+for c in notch_hollow_out notch_hollow_in; do
+  if [ $c = notch_hollow_out ]; then D=1; WANT=728; LO=-1; HI=11; else D=-1; WANT=488; LO=0; HI=10; fi
+  opshas $c "planar-faced solid offset by the kernel (OffsetSolidPlanar): 24 faces," "OPS_$c: Solid=Yes takes the kernel's planar-solid offset too"
+  opshas $c "1 object(s), solid, 1 exact B-rep" "OPS_$c: the hollow wall is an exact B-rep, not a mesh"
+  opsre $c "Object [0-9]*: valid" "OPS_$c: the hollow body is a valid B-rep"
+  opsapprox "$(opsvol $c LAST)" "$WANT" 0.002 "OPS_$c: hollow wall volume = V(offset) - V(source) = $WANT for d = $D"
+  opsabs "$(opsbb $c LAST 1)" "$LO" 1e-6 "OPS_$c: bounding box min x is the outer shell's ($LO)"
+  opsabs "$(opsbb $c LAST 6)" "$HI" 1e-6 "OPS_$c: bounding box max z is the outer shell's ($HI)"
+done
+
 # ---- d = -3: the notch ceiling passes the top; refused with the measured edge, mesh offset used
 opshas notch_gone "exact B-rep offset not used (the edge between (5, 10, 6) and (5, 10, 10) reverses under this offset: new length / old length = -0.5" "OPS_notch_gone: a collapsing offset is refused naming the ceiling edge (5,10,6)-(5,10,10) with its closed-form ratio (7 - 9) / 4 = -0.5"
 opshas notch_gone "using the mesh offset" "OPS_notch_gone: ...and the command says it fell back to the mesh offset"
