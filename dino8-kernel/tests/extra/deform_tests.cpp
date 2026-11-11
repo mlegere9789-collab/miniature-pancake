@@ -45,18 +45,6 @@ NurbsSurface SheetXY(double w, double h) {
 // 17 x 17 parameters that are NOT on a power-of-two lattice, so they never coincide with a refinement's own knots or midpoints.
 double Param(int k, int n) { return (k + 0.37) / (n + 0.74); }
 
-double WorstOver(const NurbsSurface& s, const NurbsSurface& src, const PointMap& truth) {
-  double worst = 0.0;
-  for (int i = 0; i < 17; ++i) {
-    for (int j = 0; j < 17; ++j) {
-      const double u = src.Domain(0).min + (src.Domain(0).max - src.Domain(0).min) * Param(i, 17);
-      const double v = src.Domain(1).min + (src.Domain(1).max - src.Domain(1).min) * Param(j, 17);
-      worst = std::max(worst, s.PointAt(u, v).DistanceTo(truth(src.PointAt(u, v))));
-    }
-  }
-  return worst;
-}
-
 }  // namespace
 
 D8_EXTRA_TEST(DeformTwistedSheetMatchesTheRotationByAnAngleLinearInZ) {
