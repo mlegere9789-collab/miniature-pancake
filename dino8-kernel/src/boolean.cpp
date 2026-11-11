@@ -2781,6 +2781,67 @@ Brep ThickenPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, dou
   return PlanarPrismOverPolygon(S, dhat, height, ex, ey, P[0]);
 }
 
+Brep OffsetTaperedPrism(const NurbsCurve& profile, Vector3d direction, double draft_angle, double distance) {
+  const std::string fn = "dino8::kernel::OffsetTaperedPrism: ";
+  auto bad = [&](const std::string& why) { return std::invalid_argument(fn + why); };
+  if (!std::isfinite(distance)) throw bad("distance must be finite");
+  if (!std::isfinite(draft_angle) || !(std::fabs(draft_angle) < 0.5 * ON_PI - 1e-6)) throw bad("draft_angle must be finite and within (-pi/2, pi/2)");
+  if (!std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z)) throw bad("direction must be finite");
+  const double height = direction.Length();
+  if (!(height > 0.0)) throw bad("direction must be non-zero");
+  if (!profile.IsClosed()) throw bad("profile must be a closed curve");
+  if (profile.Degree() != 1 || profile.raw().IsRational()) throw bad("profile must be a polyline (degree 1, non-rational)");
+  std::vector<Point3d> P;
+  for (int i = 0; i < profile.ControlPointCount(); ++i) P.push_back(profile.ControlPointAt(i));
+  const BoundingBox bbox = profile.GetTightBoundingBox();
+  const double size = std::sqrt((bbox.max.x - bbox.min.x) * (bbox.max.x - bbox.min.x) + (bbox.max.y - bbox.min.y) * (bbox.max.y - bbox.min.y) +
+                                (bbox.max.z - bbox.min.z) * (bbox.max.z - bbox.min.z));
+  const double tol = tolerance::DistanceForSize(size);
+  if (P.size() > 1 && P.front().DistanceTo(P.back()) <= tol) P.pop_back();
+  const size_t n = P.size();
+  if (n < 3) throw bad("profile needs at least 3 distinct vertices");
+  ON_Plane fitted;
+  if (!profile.raw().IsPlanar(&fitted, tol)) throw bad("profile must be planar");
+  Vector3d dhat = direction;
+  dhat.Unitize();
+  if (std::fabs(ON_DotProduct(dhat, fitted.zaxis)) < 1.0 - 1e-9) {
+    throw bad("direction must be perpendicular to the profile's plane - an oblique prism has no uniform normal offset");
+  }
+  const double new_height = height + 2.0 * distance;
+  if (!(new_height > tol)) throw bad("the inward offset consumes the prism's whole height (height + 2*distance <= 0)");
+
+  // A wall leaning inward by `draft_angle` (a plane m.x + tan(a) z = c, m the outward horizontal normal) moved by `distance` along
+  // its own unit normal (m cos a, sin a) lands at c + distance / cos a, i.e. at height z the section is the original section
+  // offset by distance / cos a - z tan a (mitred). The offset body therefore spans z in [-distance, height + distance] (the caps
+  // move by `distance` too), and its section at z = -distance - the new base - is the profile offset in plane by
+  // distance * (1 / cos a + tan a). The same draft angle then rebuilds every wall.
+  Vector3d ex = fitted.xaxis;
+  ex = ex - ON_DotProduct(ex, dhat) * dhat;
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(dhat, ex);
+  std::vector<Point2d> P2;
+  for (const Point3d& p : P) P2.push_back(Point2d(ON_DotProduct(p - P[0], ex), ON_DotProduct(p - P[0], ey)));
+  const double area = detail::SignedArea(P2);
+  if (!(std::fabs(area) > tol * tol)) throw bad("profile encloses no area");
+  if (!detail::IsSimplePolygon(P2)) throw bad("profile is self-crossing");
+  std::vector<Point3d> closed = P;
+  closed.push_back(P.front());
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(closed, 1);
+  const double base_shift = distance * (1.0 / std::cos(draft_angle) + std::tan(draft_angle));
+  NurbsCurve base = poly;
+  if (base_shift != 0.0) {
+    std::string reason;
+    const ON_Plane plane(P[0], ex, ey);
+    if (poly.OffsetInPlane(plane, area > 0.0 ? base_shift : -base_shift, base, -1.0, CurveOffsetCornerStyle::Sharp, &reason) != Result::Ok) {
+      throw bad("the new base section's mitre offset is not representable (" +
+                (reason.empty() ? std::string("it self-intersects, collapses or splits into several pieces") : reason) + ")");
+    }
+  }
+  std::vector<Point3d> Q;
+  for (int i = 0; i < base.ControlPointCount(); ++i) Q.push_back(base.ControlPointAt(i) - distance * dhat);
+  return Brep::ExtrudeTapered(NurbsCurve::FromControlPoints(Q, 1), dhat * new_height, draft_angle, true);
+}
+
 Brep ShellOpenExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness, ExtrusionOpening opening) {
   const std::string fn = "dino8::kernel::ShellOpenExtrusion: ";
   if (!std::isfinite(thickness) || !(thickness > 0.0)) {
