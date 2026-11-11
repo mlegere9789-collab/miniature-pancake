@@ -1,0 +1,23 @@
+# Named views in .3dm, read side (the "NVW_" section, tests/sections/90_nvw.sh). Run as a separate process after
+# nvw_export_script.txt.
+# 1. Dino 8's own file: restoring TopV / PerspV must give back the saved parallel height and the 35 mm lens.
+# 2. nv_fixture.3dm was authored through OpenNURBS' own API (view3dm_check fixture), the way Rhino writes named views, with no
+#    Dino8.* strings: RhinoTop is a parallel view with a 60-unit-tall frustum, RhinoPersp a perspective view with a 28 mm lens.
+Open @TMP@/nv_export.3dm
+SetActiveViewport Top
+NamedView Restore TopV
+Camera
+Enter
+SetActiveViewport Perspective
+NamedView Restore PerspV
+Camera
+Enter
+Open @TMP@/nv_fixture.3dm
+SetActiveViewport Top
+NamedView Restore RhinoTop
+Camera
+Enter
+SetActiveViewport Perspective
+NamedView Restore RhinoPersp
+Camera
+Enter
