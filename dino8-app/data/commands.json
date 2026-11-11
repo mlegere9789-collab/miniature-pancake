@@ -9242,6 +9242,14 @@
   "help": ""
  },
  {
+  "name": "SubDCreaseSymmetric",
+  "description": "Creases each picked edge and its mirror edge across a vertical mirror plane (two picks), and repairs a one-sided crease.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
   "name": "SubDCylinder",
   "description": "Creates a Subdivision cylinder object.",
   "toolbars": "Not on toolbars",
@@ -9305,6 +9313,14 @@
   "help": "Toolbar\nMenu\nSubD Tools\nSubD Sidebar\nSubD\nLoft\nHistory enabled\nThe SubDLoft command creates a SubD object through selected curves that define the shape.\nUser's Guide - Working with SubD Objects\nAdjust edge loop position options (Closed curves only)\nFlip\nReverses the curve direction.\nAutomatic\nAttempts to align the edge loop points and directions without intervention.\nNatural\nMoves the edge loop points to the way they were at the beginning of the command.\nSnapToKnots\nYes\nThe edge loop points are always at the knots. You can only move them among the knots.\nNo\nThe edge loop points may leave the knots. You can move them without restriction.\nTo adjust edge loop points\nSelect each edge loop point and move it along the curve to line up all edge loop points.\nUse the Flip option to make all edge loop point arrows point to the same side.\nYour browser does not support the video tag.\nPress Enter to continue.\nOptions\nCorners\nWith open curves as input, creases the vertices at both ends of the first and last shapes.\nCreases\nWith kinked curves as input, creases the edges along the kinks.\nClosed\nWith three or more curves as input, closes the lofting direction.\nNatural shape segments\nThe default segment count of the shapes used to create the SubD.\nAdjust shape segments\nAllows changing the shape segment number of the SubD.\nAdjusted shape segments\nThe segment number along the input curves.\nDivisions between shapes\nThe segment number between adjacent input curves.\nJoin\nWith a SubD edge as the first or last shape, joins the SubD loft to the input SubD.\nJoin does not support recording History.\nSmooth\nThe SubD loft connects to the input SubD with smooth edges, otherwise with creased edges.\nTo create a better SubD loft\nIf all curves are SubD friendly and with the same control point count (left), a simple SubD passing through all curves will be created.\nThe red curve (right) has a different control point count that adds complexity to the SubD. The SubD will not pass through all input curves.\nHidden options\nChain\nSelects connected curve or edge segments as a single curve input. How to... … [full page: docs.mcneel.com/rhino/8/help/en-us/commands/subdloft.htm]"
  },
  {
+  "name": "SubDMoveSymmetric",
+  "description": "Moves one control vertex and its mirror partner so a symmetric SubD cage stays symmetric; a vertex on the plane is constrained to it, a vertex without a partner is refused.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
   "name": "SubDMultiPipe",
   "description": "Creates round SubD pipes along the selected curves.",
   "toolbars": "Not on toolbars",
@@ -9323,6 +9339,14 @@
  {
   "name": "SubDRemoveCorner",
   "description": "Releases a pinned corner on a two-crease chain back to an ordinary crease vertex.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
+  "name": "SubDRemoveCreaseSymmetric",
+  "description": "Smooths each picked creased edge and its mirror edge across a vertical mirror plane (two picks).",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],
@@ -9387,6 +9411,14 @@
  {
   "name": "SubDSweep2",
   "description": "The SubDSweep2 command sweeps a shape curve along two rail curves to create a SubD.",
+  "toolbars": "Not on toolbars",
+  "menu": "",
+  "options": [],
+  "help": ""
+ },
+ {
+  "name": "SubDSymmetryCheck",
+  "description": "Reports whether a SubD control cage is mirror symmetric across a vertical plane (two picks): vertices on the plane, paired and unpaired vertices, the worst pair distance and crease / sharpness mismatches.",
   "toolbars": "Not on toolbars",
   "menu": "",
   "options": [],
