@@ -72,6 +72,7 @@ add_library(dino8_kernel STATIC
   src/brep.cpp
   src/mesh.cpp
   src/mesh_unwrap.cpp
+  src/deform.cpp
   src/boolean.cpp
   src/boolean_general.cpp
   src/boolean_diagnostics.cpp
