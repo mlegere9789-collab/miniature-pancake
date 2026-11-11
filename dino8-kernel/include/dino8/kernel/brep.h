@@ -1582,8 +1582,16 @@ class Brep {
   // the rail's own single end tangent alone, exactly as the flat-cap
   // case already relies on. `PipeVariable()` below now has its own
   // `round_caps` option, each dome sized to that end's own local radius.
+  //
+  // `tolerance` > 0 (absolute, model units) is Sweep1()'s ADAPTIVE MODE for the tube (see Sweep1()): the wall is built at
+  // `stations` stations, measured against the exact tube (the circle carried by the rail's rotation-minimizing frame; its
+  // distance to the wall is minimised over v at every station and at 1/4, 1/2, 3/4 of every interval) and the intervals that
+  // miss the tolerance are bisected until the measured maximum deviation is within it or `max_stations` is reached, in which
+  // case std::invalid_argument is thrown naming the best deviation (no unverified surface is returned). `report`, if given,
+  // is filled in adaptive mode only. Not available with `round_caps` (the domes are built outside Sweep1()). `tolerance` == 0
+  // (the default) is the unchanged station-count construction.
   static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32,
-                   bool round_caps = false);
+                   bool round_caps = false, double tolerance = 0.0, int max_stations = 512, Sweep1Report* report = nullptr);
 
   // PipeVariable: like Pipe(), but the radius varies along the rail per
   // `radius_points` - (t, radius) pairs where `t` is the fraction, in
@@ -1635,8 +1643,15 @@ class Brep {
   // std::invalid_argument for the `radius_points` violations above,
   // `stations` < 2, a degenerate (zero-length or zero-tangent) rail, or
   // `round_caps` with `cap` false or a closed rail.
+  //
+  // `tolerance` > 0 builds the tube as Sweep1()'s adaptive mode with the radius schedule as its scale schedule (the circle of
+  // the first radius scaled by radius / first radius, piecewise linear in the arc-length fraction): the stations are bisected
+  // until the wall is within `tolerance` of the exact tube (the radius at every fraction, not only at the radius points), at
+  // most `max_stations`, else std::invalid_argument; on an open rail the skin has a C0 corner at every slope change of the
+  // radius. `report` is filled in adaptive mode only; `round_caps` is not available with it. `tolerance` == 0 is unchanged.
   static Brep PipeVariable(const NurbsCurve& rail, const std::vector<std::pair<double, double>>& radius_points,
-                           bool cap = true, int stations = 32, bool round_caps = false);
+                           bool cap = true, int stations = 32, bool round_caps = false, double tolerance = 0.0,
+                           int max_stations = 512, Sweep1Report* report = nullptr);
 
   // PipeThickWalled: a genuine hollow tube - the annular solid between
   // an `outer_radius` and `inner_radius` circle swept along `rail` -
