@@ -303,6 +303,7 @@ set(DINO8_SOURCES
   src/render/GlRenderer.cpp
   src/render/SsaoKernel.cpp
   src/render/ImageIO.cpp
+  src/render/PngWrite.cpp
   src/platform/Clipboard.cpp
   src/platform/AccessibilityTree.cpp
   src/platform/Accessibility.cpp

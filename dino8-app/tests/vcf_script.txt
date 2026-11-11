@@ -1,0 +1,18 @@
+# ViewCaptureToFile formats and resolution (the "VCF_" section, tests/sections/92_vcf.sh). Before, the command only wrote a 24-bit BMP with
+# no resolution recorded, and asking for "x.png" silently produced "x.png.bmp" (any extension but .bmp got .bmp appended). Now a path
+# ending in .png writes a real PNG (8-bit RGB, zlib), Dpi=<n> records the physical resolution in either format (PNG pHYs, BMP
+# biX/YPelsPerMeter = round(n / 0.0254)), and any other extension still gets .bmp appended as before.
+#   vc.bmp      : the plain BMP                 vc.png    : the PNG of the same static frame (same pixels)
+#   vc300.png   : Dpi=300 -> pHYs 11811         vc96.bmp  : Dpi=96 -> biXPelsPerMeter 3780
+#   vc_noext    : no extension -> vc_noext.bmp (unchanged behaviour)
+# smoke.sh checks the files with image_check.py (struct + zlib chunk/header parsing and Pillow), independent of the writer.
+SetActiveViewport Top
+New
+Rectangle 0,0,0 20,20,0
+Circle 30,10,0 8
+Top
+ViewCaptureToFile @TMP@/vc.bmp
+ViewCaptureToFile @TMP@/vc.png
+ViewCaptureToFile @TMP@/vc300.png Dpi=300
+ViewCaptureToFile @TMP@/vc96.bmp Dpi=96
+ViewCaptureToFile @TMP@/vc_noext
