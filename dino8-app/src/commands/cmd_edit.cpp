@@ -631,7 +631,7 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "ClearUndo", Immediate([](CommandContext& ctx) { ctx.Doc().ClearUndo(); ctx.Print("Undo history cleared"); }));
   Reg(e, "Group", OnSelection("Select objects to group", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Group");
-        int g = ctx.Doc().CreateGroup(ids);
+        int g = ctx.Doc().CreateGroup(ids, "", /*user=*/true);
         ctx.Print("Group " + std::to_string(g) + " created with " + std::to_string(ids.size()) + " object(s)");
       }, 1));
   Reg(e, "Ungroup", OnSelection("Select groups to ungroup", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {

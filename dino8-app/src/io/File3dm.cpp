@@ -835,6 +835,10 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   std::vector<PendingDetail> pending_details;
   UuidMap object_ids(UuidLess);  // object uuid -> document id (as int)
   std::map<int, std::vector<ObjectId>> restore_groups;  // file group_id -> new object ids (see Document::CreateGroup below)
+  // Native ON_Group membership (the object's outermost group, ON_3dmObjectAttributes::TopGroup): document object id -> file group
+  // index, and the objects of a native group that carry no "Dino8.GroupId" (a group made by Rhino or another tool).
+  std::map<ObjectId, int> native_group_of;
+  std::map<int, std::vector<ObjectId>> native_only_groups;
   // Instance-definition uuid -> the Dino8 block name already built for it
   // this load (see the ON_InstanceRef branch below) - an idef referenced by
   // several ON_InstanceRef placements is converted to a BlockDefinition
@@ -1543,14 +1547,36 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     }
     const ObjectId added = doc.Add(std::move(obj));
     if (attr) object_ids[attr->m_uuid] = static_cast<int>(added);
+    const int native_group = attr && attr->GroupCount() > 0 ? attr->TopGroup() : -1;
+    if (native_group >= 0) native_group_of[added] = native_group;
     if (file_group_id >= 0) restore_groups[file_group_id].push_back(added);
+    else if (native_group >= 0) native_only_groups[native_group].push_back(added);
   }
+  // A native group's name, or "" when the table has no usable entry for `index`.
+  auto native_group_name = [&](int index) -> std::string {
+    const ON_ModelComponentReference ref = model.ComponentFromIndex(ON_ModelComponent::Type::Group, index);
+    const ON_Group* g = ON_Group::FromModelComponentRef(ref, nullptr);
+    return g ? FromWide(g->Name()) : std::string();
+  };
   // Restore real Document::Group() membership (see Save3dm's "Dino8.GroupId"
   // note) via the same CreateGroup() path the Group command itself uses, so
   // group_id values can't collide with anything the document allocates
   // later, and UpdateDimensions' own use of group_id to tie a dimension's
   // baked objects together survives the round trip too.
-  for (auto& [file_gid, ids] : restore_groups) doc.CreateGroup(ids);
+  // A Dino8 group whose members all belong to the same native ON_Group is a user group: it keeps that group's name and stays
+  // exportable as a native group. Any other (an internal annotation / dimension / block group) is restored exactly as before.
+  for (auto& [file_gid, ids] : restore_groups) {
+    int common = -2;
+    for (ObjectId id : ids) {
+      const auto n = native_group_of.find(id);
+      const int idx = n == native_group_of.end() ? -1 : n->second;
+      common = common == -2 ? idx : (common == idx ? common : -1);
+    }
+    if (common >= 0) doc.CreateGroup(ids, native_group_name(common), /*user=*/true);
+    else doc.CreateGroup(ids);
+  }
+  // Groups from a file that never carried "Dino8.GroupId" (Rhino, another tool): one user group per native group.
+  for (auto& [index, ids] : native_only_groups) doc.CreateGroup(ids, native_group_name(index), /*user=*/true);
   // Block definitions: pull the tagged member objects the loop above just
   // added as ordinary geometry back out into Document::Blocks() (see the
   // comment on EncodeBlocksMeta above).
@@ -2591,6 +2617,27 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     model.m_settings.m_named_cplanes.Append(c);
   }
 
+  // The user's own groups (Document::Group::user: the Group command, or groups that came from a native .3dm group table) go
+  // into the file's real ON_Group table and each member's attributes join the group, so Rhino shows them as groups. Internal
+  // groups (annotation / dimension / hatch / block pieces) are not exposed this way: they only tie baked geometry together and
+  // keep persisting through "Dino8.GroupId" below. A group none of whose members is written is skipped.
+  std::map<int, int> group_file_index;  // Document group id -> ON_Group index in the file
+  {
+    std::set<int> groups_in_use;
+    for (const SceneObject& o : doc.Objects()) {
+      if (o.group_id < 0) continue;
+      if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
+      groups_in_use.insert(o.group_id);
+    }
+    for (const Group& g : doc.Groups()) {
+      if (!g.user || !groups_in_use.count(g.id)) continue;
+      ON_Group on_group;
+      on_group.SetName(ON_wString(g.name.c_str()));
+      const ON_ModelComponentReference ref = model.AddModelComponent(on_group, true);
+      if (const ON_Group* stored = ON_Group::FromModelComponentRef(ref, nullptr)) group_file_index[g.id] = stored->Index();
+    }
+  }
+
   int written = 0;
   std::map<ObjectId, ON_UUID> object_uuids;
   // Pre-generate every written object's uuid before writing any attributes,
@@ -2636,6 +2683,10 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     ON_3dmObjectAttributes attr;
     attr.m_uuid = object_uuids[o.id];
     attr.SetName(ON_wString(o.name.c_str()), true);
+    if (o.group_id >= 0) {
+      const auto gi = group_file_index.find(o.group_id);
+      if (gi != group_file_index.end()) attr.AddToGroup(gi->second);
+    }
     attr.m_layer_index = file_layer_index[static_cast<size_t>(std::clamp(o.layer_index, 0, static_cast<int>(doc.Layers().size()) - 1))];
     if (!o.color_by_layer) {
       attr.SetColorSource(ON::color_from_object);
