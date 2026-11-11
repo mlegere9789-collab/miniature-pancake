@@ -217,6 +217,10 @@ Point3d AnalyticSurfacePoint(const SurfaceClassification& surface, double u, dou
 // General; `out` is then unchanged. A cone is the single nappe (v >= 0 in the convention above, for h > 0).
 bool AnalyticClosestPoint(const SurfaceClassification& surface, Point3d p, AnalyticFoot& out);
 
+// The same classification for any OpenNURBS surface (a NURBS, a revolved surface, a plane surface ...), as a B-rep face
+// holds them; `NurbsSurface::Classify()` is this on its own surface. An invalid surface is General.
+SurfaceClassification ClassifySurface(const ON_Surface& surface, double tolerance = 1e-6);
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {

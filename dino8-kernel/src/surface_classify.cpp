@@ -5,13 +5,15 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "dino8/kernel/brep.h"
 #include "dino8/kernel/surface.h"
 
 namespace dino8::kernel {
 
-SurfaceClassification NurbsSurface::Classify(double tolerance) const {
+namespace {
+
+SurfaceClassification ClassifyOnce(const ON_Surface& s, double tolerance) {
   SurfaceClassification out;
-  const ON_NurbsSurface& s = surface_;
   if (!s.IsValid()) return out;
   const double tol = (tolerance > 0.0 && ON_IsValid(tolerance)) ? tolerance : ON_ZERO_TOLERANCE;
 
@@ -47,6 +49,21 @@ SurfaceClassification NurbsSurface::Classify(double tolerance) const {
   }
   return out;
 }
+
+}  // namespace
+
+SurfaceClassification ClassifySurface(const ON_Surface& s, double tolerance) {
+  SurfaceClassification out = ClassifyOnce(s, tolerance);
+  // OpenNURBS' own IsSphere / IsCylinder / ... answer false for some surface classes (a revolved surface, as ON_BrepSphere
+  // and ON_BrepTorus build them); their exact NURBS form is classified instead.
+  if (out.kind == SurfaceKind::General && s.IsValid() && ON_NurbsSurface::Cast(&s) == nullptr) {
+    ON_NurbsSurface nurbs;
+    if (s.GetNurbForm(nurbs) != 0 && nurbs.IsValid()) out = ClassifyOnce(nurbs, tolerance);
+  }
+  return out;
+}
+
+SurfaceClassification NurbsSurface::Classify(double tolerance) const { return ClassifySurface(surface_, tolerance); }
 
 namespace {
 
@@ -180,4 +197,30 @@ bool AnalyticClosestPoint(const SurfaceClassification& c, Point3d p, AnalyticFoo
   return true;
 }
 
+SurfaceClassification Brep::ClassifyFaceSurface(int face_index, double tolerance) const {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::ClassifyFaceSurface: face_index out of range");
+  }
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  if (face.m_face_index < 0) throw std::invalid_argument("dino8::kernel::Brep::ClassifyFaceSurface: the face is deleted");
+  const ON_Surface* surface = face.SurfaceOf();
+  if (!surface) return SurfaceClassification{};
+  return ClassifySurface(*surface, tolerance);
+}
+
+std::vector<Brep::FaceSurfaceRecord> Brep::ClassifyFaces(double tolerance) const {
+  std::vector<FaceSurfaceRecord> out;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    const ON_BrepFace& face = brep_.m_F[i];
+    if (face.m_face_index < 0) continue;
+    FaceSurfaceRecord r;
+    r.face_index = i;
+    r.surface = ClassifyFaceSurface(i, tolerance);
+    r.reversed = face.m_bRev;
+    out.push_back(r);
+  }
+  return out;
+}
+
 }  // namespace dino8::kernel
+

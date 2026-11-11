@@ -1768,6 +1768,24 @@ class Brep {
   // "still include deleted slots until Compact()" gap PARITY_MAP.md's own
   // "Kernel-level topology enumeration API" item names for this class.
   int LiveFaceCount() const;
+
+  // The typed analytic surface behind a face: plane, sphere, cylinder, cone or torus with its closed-form record
+  // (centre / axis / radii / apex ...), or General for a free-form face. It classifies the face's UNDERLYING surface, so
+  // a trimmed face (a cylinder wall cut by a box, a cone slice, half a torus) reports the whole analytic surface it is
+  // part of - the record says nothing about how much of it the face covers (use the face's trims for that). `reversed`
+  // is the face's own orientation flag (ON_BrepFace::m_bRev): when true the face's outward side is opposite to the
+  // surface normal; AnalyticFoot's normal convention (away from the axis / centre) is independent of it. Default
+  // tolerance 1e-6 (see NurbsSurface::Classify()). Throws std::out_of_range for a bad index, std::invalid_argument for a
+  // deleted face - the same contract as FacePersistentId(). Works on every face type, including the revolved surfaces
+  // ON_BrepSphere / ON_BrepTorus build and plane surfaces.
+  SurfaceClassification ClassifyFaceSurface(int face_index, double tolerance = 1e-6) const;
+  struct FaceSurfaceRecord {
+    int face_index = -1;
+    SurfaceClassification surface;
+    bool reversed = false;
+  };
+  // ClassifyFaceSurface() for every LIVE face, in face order.
+  std::vector<FaceSurfaceRecord> ClassifyFaces(double tolerance = 1e-6) const;
   int LiveVertexCount() const;
   int LiveEdgeCount() const;
 
