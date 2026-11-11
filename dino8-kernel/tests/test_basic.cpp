@@ -66128,8 +66128,13 @@ void TestSurfaceMatchEdgeToRationalSphereAndRefusals() {
     std::vector<dino8::kernel::Point3d> g = {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0), dino8::kernel::Point3d(0, 1, 0), dino8::kernel::Point3d(1, 1, 1)};
     ruled = NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
   }
-  Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Curvature) == Result::Failed,
-        "MatchEdge refuses curvature matching to a degree-1 (no curvature) target");
+  {
+    // Was "refuses curvature matching to a degree-1 target": the target is now degree-elevated (exact) and matched; the closed-form curvature
+    // oracle is tests/extra/match_edge_low_degree_target.cpp.
+    NurbsSurface g2 = flat_before;
+    Check(g2.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Curvature) == Result::Ok,
+          "MatchEdge curvature-matches a degree-1 target (elevated exactly to degree 2 first)");
+  }
   Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Tangent) == Result::Ok,
         "MatchEdge tangent-matches to a degree-1 target (its cross derivative exists)");
   bool threw = false;

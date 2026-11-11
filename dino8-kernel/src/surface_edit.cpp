@@ -2816,11 +2816,13 @@ Result MatchEdgeWithAcceleration(NurbsSurface& self, int fixed_direction, bool a
   const int t_edge_dir = 1 - target_fixed_direction;
   if (!self.raw().IsClamped(0, 2) || !self.raw().IsClamped(1, 2)) return Result::Failed;
   if (!target.raw().IsClamped(t_edge_dir, 2) || !target.raw().IsClamped(target_fixed_direction, 2)) return Result::Failed;
-  if (target.raw().Degree(target_fixed_direction) < rows_needed - 1) return Result::Failed;
 
   const ON_NurbsSurface backup = self.raw();
   ON_NurbsSurface& s = self.raw();
   ON_NurbsSurface t = target.raw();
+  // A target whose degree across the edge is below the continuity's row count (a bilinear or ruled target for G2) is not refused: degree elevation is
+  // exact, so the elevated copy IS the target, and its second cross derivative there is just the target's own (zero for a degree-1 direction).
+  if (t.Degree(target_fixed_direction) < rows_needed - 1 && !t.IncreaseDegree(target_fixed_direction, rows_needed - 1)) return Result::Failed;
 
   // Normalize both to "edge at the cross direction's min" so one set of
   // end-derivative formulas applies; Reverse() is shape-preserving.
