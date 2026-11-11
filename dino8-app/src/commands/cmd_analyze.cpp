@@ -179,6 +179,28 @@ CommandFactory AnalysisOn(AnalysisMode mode) {
       o.EnsureAnalysisColors(s);
       msg += "  range " + FormatNumber(o.Display().colors_min) + " (blue) .. " + FormatNumber(o.Display().colors_max) + " (red)";
     }
+    if (mode == AnalysisMode::DraftAngle) {
+      // The measured draft angle of every display vertex (90 - the angle
+      // between its normal and the pull direction, in degrees: +90 faces
+      // along the pull, 0 is a wall parallel to it, -90 faces against it),
+      // so the colours can be checked against numbers, not only by eye.
+      double lo = 0, hi = 0;
+      size_t measured = 0;
+      for (const SceneObject* o : targets) {
+        o->EnsureDisplay(ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
+        o->EnsureAnalysisColors(s);
+        const DisplayCache& dc = o->Display();
+        if (!dc.has_values) continue;
+        lo = measured ? std::min(lo, dc.values_min) : dc.values_min;
+        hi = measured ? std::max(hi, dc.values_max) : dc.values_max;
+        ++measured;
+      }
+      if (measured) {
+        // One decimal, never "-0.0" (a value a hair below zero).
+        auto deg = [](double v) { char b[32]; std::snprintf(b, sizeof b, "%.1f", std::fabs(v) < 0.05 ? 0.0 : v); return std::string(b); };
+        msg += "  measured draft angle " + deg(lo) + " .. " + deg(hi) + " deg";
+      }
+    }
     if (count == 0) ctx.Warn("No surfaces, polysurfaces or meshes to analyze");
     ctx.Print(msg);
     ctx.RequestRedraw();
