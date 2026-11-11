@@ -2,8 +2,7 @@
 // on the top edge along x at y = z = 10), and the equal-radius mitred pair. Closed forms: each straight 90-degree edge removes a L r^2 (a = 1 - pi/4), so
 // removing one blend of the chained pair must leave exactly the other's volume, and removing both must give the sharp box back. Measured, not assumed:
 // the chained solids are read back through MixedFaces(), which carries every blend and its notch runs.
-// The mitred pair is the one case RemoveBlend does not handle: its two cylinders share a mitre edge, so a single removal has nothing to restore the
-// other blend's end against. That limit is pinned here with its measured refusal reason, not hidden.
+// The equal-radius mitred pair (FilletConvexEdgePairMitre) is covered by the second test: removing one of its two blends keeps the other.
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -69,12 +68,53 @@ D8_EXTRA_TEST(RemoveBlendOnChainedFillets) {
   Check(std::fabs((L * L * L - a * L * rB * rB) - (L * L * L - vA)) > 1e-3 * L * L * L * 0.5, "[chained] negative control: swapping the two radii would NOT match");
 }
 
-D8_EXTRA_TEST(RemoveBlendOnTheMitredPairIsRefusedWithItsReason) {
-  const double L = 10.0, r = 1.0;
+D8_EXTRA_TEST(RemoveBlendOnTheMitredPair) {
+  // Removing one blend of the equal-radius mitred pair: the other keeps its own fillet, which now runs the whole edge. Closed form for either survivor:
+  // V_box - a L r^2; removing the survivor too gives the sharp box. Exact inverse of FilletConvexEdgePairMitre.
+  const double L = 10.0, r = 1.0, a = 1.0 - ON_PI / 4.0;
   const Brep box = Brep::Box(0, 0, 0, L, L, L);
   const Brep mitred = dino8::kernel::FilletConvexEdgePairMitre(box, Point3d(0, 0, L), Point3d(0, 0, 0), Point3d(L, 0, L), r, r);
-  const std::string m_a = ReasonOf([&] { dino8::kernel::RemoveBlend(mitred, Point3d(r - r * std::cos(0.8), r - r * std::sin(0.8), 3.0)); });
-  const std::string m_b = ReasonOf([&] { dino8::kernel::RemoveBlend(mitred, Point3d(7.0, r - r * std::sin(0.8), L - r + r * std::cos(0.8))); });
-  Check(m_a.find("marked as notched") != std::string::npos, ("[mitre] removing the vertical blend is refused with a reason (known limit): " + m_a).c_str());
-  Check(m_b.find("marked as notched") != std::string::npos, ("[mitre] removing the top blend is refused with a reason (known limit): " + m_b).c_str());
+  const Point3d on_a(r - r * std::cos(0.8), r - r * std::sin(0.8), 3.0);                  // the vertical blend (axis along z)
+  const Point3d on_b(7.0, r - r * std::sin(0.8), L - r + r * std::cos(0.8));              // the top-edge blend (axis along x)
+  auto axis_of_only_cylinder = [&](const Brep& b, double& radius) {
+    const Brep::MixedFacesResult mf = b.MixedFaces();
+    radius = mf.cylindrical.size() == 1 ? mf.cylindrical[0].radius : -1.0;
+    return mf.cylindrical.size() == 1 ? mf.cylindrical[0].frame.zaxis : ON_3dVector(0, 0, 0);
+  };
+  Brep without_a, without_b;
+  std::string why = ReasonOf([&] { without_a = dino8::kernel::RemoveBlend(mitred, on_a); });
+  Check(why.empty(), ("[mitre removal] RemoveBlend on the vertical blend is accepted" + (why.empty() ? "" : ": " + why)).c_str());
+  if (why.empty()) {
+    CheckSolid(without_a, 7, L * L * L - a * L * r * r, "[mitre removal, vertical removed] ");
+    double rad = 0;
+    const ON_3dVector ax = axis_of_only_cylinder(without_a, rad);
+    Check(std::fabs(rad - r) < 1e-9 && std::fabs(std::fabs(ax.x) - 1.0) < 1e-9, "[mitre removal, vertical removed] one cylinder is left: radius r along x (the top-edge blend)");
+  }
+  why = ReasonOf([&] { without_b = dino8::kernel::RemoveBlend(mitred, on_b); });
+  Check(why.empty(), ("[mitre removal] RemoveBlend on the top-edge blend is accepted" + (why.empty() ? "" : ": " + why)).c_str());
+  if (why.empty()) {
+    CheckSolid(without_b, 7, L * L * L - a * L * r * r, "[mitre removal, top removed] ");
+    double rad = 0;
+    const ON_3dVector ax = axis_of_only_cylinder(without_b, rad);
+    Check(std::fabs(rad - r) < 1e-9 && std::fabs(std::fabs(ax.z) - 1.0) < 1e-9, "[mitre removal, top removed] one cylinder is left: radius r along z (the vertical blend)");
+  }
+  if (without_a.FaceCount() > 0) {
+    Brep sharp;
+    why = ReasonOf([&] { sharp = dino8::kernel::RemoveBlend(without_a, on_b); });
+    Check(why.empty(), ("[mitre removal] removing the survivor too is accepted" + (why.empty() ? "" : ": " + why)).c_str());
+    if (why.empty()) CheckSolid(sharp, 6, L * L * L, "[mitre removal, both removed] the sharp box: ");
+  }
+  // The same on a rotated, translated copy of a box with different edge lengths (8 x 6 x 5, r = 0.7): no dependence on the axis-aligned frame.
+  const double r2 = 0.7;
+  const Brep box2 = Brep::Box(0, 0, 0, 8, 6, 5);
+  ON_Xform rot_xf;
+  rot_xf.Rotation(0.7, ON_3dVector(1, 2, 3), ON_3dPoint(0, 0, 0));
+  const ON_Xform xf = ON_Xform::TranslationTransformation(ON_3dVector(3, -2, 1)) * rot_xf;
+  const Brep rot = dino8::kernel::FilletConvexEdgePairMitre(box2.Transform(xf), xf * Point3d(0, 0, 5), xf * Point3d(0, 0, 0), xf * Point3d(8, 0, 5), r2, r2);
+  Brep rot_without_a;
+  why = ReasonOf([&] { rot_without_a = dino8::kernel::RemoveBlend(rot, xf * Point3d(r2 - r2 * std::cos(0.8), r2 - r2 * std::sin(0.8), 2.0)); });
+  Check(why.empty(), ("[mitre removal rotated] accepted" + (why.empty() ? "" : ": " + why)).c_str());
+  if (why.empty()) CheckSolid(rot_without_a, 7, 240.0 - a * 8.0 * r2 * r2, "[mitre removal rotated, vertical removed] the 8-long top edge keeps its fillet: ");
+  // Negative control: the closed form for the OTHER edge length does not match.
+  Check(std::fabs((240.0 - a * 5.0 * r2 * r2) - (240.0 - a * 8.0 * r2 * r2)) > 1e-4 * 240.0, "[mitre removal rotated] negative control: the other edge's closed form would NOT match");
 }
