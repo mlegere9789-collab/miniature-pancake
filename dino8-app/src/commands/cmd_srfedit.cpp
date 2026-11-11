@@ -1050,9 +1050,14 @@ class MovePartsCommand : public Command {
       if (is_face_ && !require_untrimmed_ && kv.second.size() == 1) {
         if (TryExactFaceOffset(ctx, *o, kv.second[0], p - *base_, kernel_note)) { ++n; continue; }
       }
+      // MoveEdge of ONE edge: the kernel moves both endpoints and re-derives every incident face's plane (MoveEdgeConvexPlanar). Declines
+      // (it says why) when an incident face would stop being planar, a face would flip or vanish, or the solid is not convex planar.
+      if (!is_face_ && !require_untrimmed_ && kv.second.size() == 1) {
+        if (TryExactEdgeMove(ctx, *o, kv.second[0], p - *base_, kernel_note)) { ++n; continue; }
+      }
       bool ok = is_face_ ? MoveBrepFaces(o->brep->raw(), kv.second, xf) : MoveBrepEdges(o->brep->raw(), kv.second, xf);
       if (ok) { o->InvalidateDisplay(); ++n; }
-      if (!kernel_note.empty()) ctx.Print(Label() + ": the exact kernel route declined (" + kernel_note.substr(0, 200) + "), so this is the approximate rigid face move");
+      if (!kernel_note.empty()) ctx.Print(Label() + ": the exact kernel route declined (" + kernel_note.substr(0, 200) + "), so this is the approximate rigid " + (is_face_ ? "face" : "edge") + " move");
     }
     ctx.Print(Label() + ": " + std::to_string(n) + " object(s) updated");
     ctx.ClearPreview();
@@ -1087,6 +1092,30 @@ class MovePartsCommand : public Command {
     ctx.Print(Label() + ": exact kernel route (OffsetPlanarFaceAlongNormal): face " + std::to_string(face) + " offset by " + FormatNumber(dist) +
               " along its outward normal, " + std::to_string(o.brep->FaceCount()) + " face(s), neighbours continued or cut and re-trimmed");
     return true;
+  }
+  // The exact route for MoveEdge (kernel::MoveEdgeConvexPlanar): both endpoints of edge `edge_index` move by `delta`, every face incident to
+  // either is re-planed through its moved corners and the others are re-trimmed. Returns true and replaces the object's B-rep when the
+  // kernel did it; otherwise false with `note` = the kernel's own message (the object is untouched).
+  bool TryExactEdgeMove(CommandContext& ctx, SceneObject& o, int edge_index, const Vector3d& delta, std::string& note) {
+    kernel::Brep kb = *o.brep;
+    const ON_Brep& raw = kb.raw();
+    if (edge_index < 0 || edge_index >= raw.m_E.Count() || raw.m_E[edge_index].m_edge_index < 0) { note = "the picked edge is not a live edge of the polysurface"; return false; }
+    if (delta.Length() < 1e-12) return false;
+    const ON_BrepEdge& ed = raw.m_E[edge_index];
+    const Point3d a = ed.PointAtStart(), b = ed.PointAtEnd();
+    try {
+      kernel::Brep moved = kernel::MoveEdgeConvexPlanar(kb, a, b, a + delta, b + delta);
+      const int faces = moved.FaceCount();
+      *o.brep = std::move(moved);
+      o.InvalidateDisplay();
+      ctx.Print(Label() + ": exact kernel route (MoveEdgeConvexPlanar): edge " + std::to_string(edge_index) + " moved by (" + FormatNumber(delta.x) + ", " +
+                FormatNumber(delta.y) + ", " + FormatNumber(delta.z) + "), the incident faces re-planed and the neighbours re-trimmed, " + std::to_string(faces) +
+                " face(s), still a closed solid");
+      return true;
+    } catch (const std::exception& e) {
+      note = e.what();
+      return false;
+    }
   }
   void OnHover(CommandContext& ctx, Point3d h) override { if (!picking_ && base_) { ctx.ClearPreview(); ctx.AddPreviewLine(*base_, h); } }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
