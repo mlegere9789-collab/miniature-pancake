@@ -747,9 +747,9 @@ class VertexWelder {
 // --- per-face boundary loop (real trim loop if there is one, else the
 // surface's own full parameter domain rectangle for an untrimmed face) --
 // Bisection switches for the three independent hunks of 9320513e (only one is true per variant branch).
-constexpr bool kBisectDespike = true;
+constexpr bool kBisectDespike = false;
 constexpr bool kBisectChordTrims = false;
-constexpr bool kBisectInnerLoops = false;
+constexpr bool kBisectInnerLoops = true;
 
 // `loop_slot` selects which of the face's loops to sample (0 = the outer loop; > 0 = a pre-existing inner loop, for which no
 // whole-domain fallback is made - the result may be short and the caller must check).
