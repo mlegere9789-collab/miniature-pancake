@@ -509,6 +509,14 @@ void CommandEngine::AfterCallback() {
   if (active_->want == Want::Objects && active_->accept_preselection) {
     const std::vector<ObjectId> sel = doc_.SelectedIds();
     if (static_cast<int>(sel.size()) >= active_->min_objects) {
+      // Options typed on the command line ("MergeSrf Smooth=Yes") belong to the object prompt the selection is about to
+      // answer: apply the leading Name=Value tokens first. Otherwise a command whose OnObjects finishes the work (MergeSrf)
+      // ran with its defaults and the option arrived after it had ended (and was dropped). A token that is not an option
+      // of this command stops the scan and stays pending, so later stages still receive it.
+      while (active_ && !pending_inputs_.empty() && pending_inputs_.front().find('=') != std::string::npos &&
+             TryOption(pending_inputs_.front())) {
+        pending_inputs_.pop_front();
+      }
       active_->accept_preselection = false;
       CommandContext ctx(app_, doc_, *this);
       DINO8_GUARD(active_->OnObjects(ctx, sel));
