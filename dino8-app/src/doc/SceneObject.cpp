@@ -1365,6 +1365,7 @@ void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
   if (!wants_colors) {
     cache_.colors.clear();
     cache_.colors_valid = false;
+    cache_.has_values = false;
     return;
   }
   if (cache_.colors_valid && cache_.colors_settings.SameColoring(settings) &&
@@ -1396,6 +1397,12 @@ void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
       values[i] = 90.0 - ang * 180.0 / ON_PI;
     }
     lo = settings.draft_min; hi = settings.draft_max;
+  }
+  cache_.has_values = !values.empty();
+  if (cache_.has_values) {
+    const auto mm = std::minmax_element(values.begin(), values.end());
+    cache_.values_min = *mm.first;
+    cache_.values_max = *mm.second;
   }
   if (hi - lo < 1e-12) {
     const double mid = (hi + lo) * 0.5;

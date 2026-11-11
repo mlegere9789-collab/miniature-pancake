@@ -101,6 +101,11 @@ struct DisplayCache {
   bool colors_valid = false;
   // Value range the colours were normalised over (for the command report).
   double colors_min = 0, colors_max = 0;
+  // Raw (un-normalised) smallest / largest per-vertex analysis value the
+  // colours were built from - degrees for DraftAngle, 1/length for Curvature, ramp-inverted for
+  // Thickness - so a command can report what was actually measured. Valid iff has_values.
+  double values_min = 0, values_max = 0;
+  bool has_values = false;
   // Per-vertex colours (r,g,b per triangle vertex, aligned with `triangles`)
   // taken straight from a mesh's own ON_Mesh::m_C array (e.g. set by
   // ComputeVertexColors); empty when the mesh carries no vertex colours.
