@@ -102,6 +102,33 @@ struct EndContinuityReport {
   double curvature_relative_difference = 0.0;
 };
 
+// The analytic kind of a curve, as recovered from its NURBS data by `NurbsCurve::Classify()`.
+enum class CurveKind {
+  Line,      // a straight segment: `line`
+  Arc,       // part of a circle: `arc` (plane, radius, angle interval)
+  Circle,    // a full circle: `arc` with Angle() == 2 pi
+  Ellipse,   // a full closed ellipse: `ellipse` (plane, two radii), not a circle
+  Polyline,  // degree 1 with 3 or more distinct vertices that are not all on one line: `vertices`
+  General    // none of the above: a free-form curve
+};
+
+// Result of `NurbsCurve::Classify()`: the kind plus the closed-form parameters of that kind (only the member named
+// in `CurveKind` is meaningful).
+struct CurveClassification {
+  CurveKind kind = CurveKind::General;
+  ON_Line line;
+  ON_Arc arc;
+  ON_Ellipse ellipse;
+  std::vector<Point3d> vertices;
+};
+
+// One piece of `NurbsCurve::Segments()`: the parameter interval of the original curve and what that piece is.
+struct CurveSegment {
+  double t0 = 0.0;
+  double t1 = 0.0;
+  CurveClassification shape;
+};
+
 // Wraps ON_NurbsCurve. Deliberately exposes the underlying ON_NurbsCurve
 // (via raw()) rather than re-declaring every accessor OpenNURBS already
 // has — later chunks (booleans, display) need the real object, not a
@@ -1239,6 +1266,21 @@ class NurbsCurve {
   // arc built from the identical circle (false), so this isn't just
   // "IsArc() under a different name".
   bool IsCircle(double tolerance = ON_ZERO_TOLERANCE) const;
+
+  // The typed view of this curve: which analytic curve it is within `tolerance` (the largest distance, in model units,
+  // the NURBS may stray from the analytic curve) and that curve's closed-form parameters, instead of the yes/no of
+  // IsLinear()/IsArc()/IsCircle(). Tested in this order: Line, Circle/Arc (plane, centre, radius, angle interval, in
+  // the direction the curve is traced), full Ellipse (centre, plane, both radii), Polyline (degree 1), else General. A
+  // closed curve is never a Line. Never throws; a curve that is not valid is General.
+  CurveClassification Classify(double tolerance = 1e-9) const;
+
+  // The curve as a composite of typed pieces. A curve that is recognized whole (a line, a circle, an arc, an ellipse)
+  // is one segment over its whole domain even if its knot vector has C0 breaks (the 4-arc NURBS circle); a degree-1
+  // curve gives one Line segment per edge; any other curve is cut at its C0 breaks (interior knots of multiplicity >=
+  // degree) and each piece is classified on its own (a line-arc-line outline gives Line, Arc, Line). Pieces are never
+  // merged across a break, and a smooth free-form piece is one General segment. Intervals are in this curve's own
+  // parameter and tile its domain.
+  std::vector<CurveSegment> Segments(double tolerance = 1e-9) const;
 
   // Reverses the curve's parameterization in place: what was
   // `PointAt(domain.Min())` becomes `PointAt(domain.Max())` and vice
