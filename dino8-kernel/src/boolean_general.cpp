@@ -2051,6 +2051,47 @@ std::vector<Point2d> AlternateRepresentativeUVs(const Fragment& frag, const Poin
   return out;
 }
 
+// 3D distance from `q` to the nearest edge of the fragment's own boundary (the outer loop and every hole, as 3D polylines).
+double FragmentClearance3D(const Fragment& frag, const Point3d& q) {
+  double best = std::numeric_limits<double>::infinity();
+  const auto scan = [&](const std::vector<UVPt>& loop) {
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& a = loop[i].p;
+      const Point3d& b = loop[(i + 1) % loop.size()].p;
+      const double dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+      const double len2 = dx * dx + dy * dy + dz * dz;
+      double t = len2 > 0.0 ? ((q.x - a.x) * dx + (q.y - a.y) * dy + (q.z - a.z) * dz) / len2 : 0.0;
+      t = std::max(0.0, std::min(1.0, t));
+      const double ex = a.x + t * dx - q.x, ey = a.y + t * dy - q.y, ez = a.z + t * dz - q.z;
+      best = std::min(best, std::sqrt(ex * ex + ey * ey + ez * ez));
+    }
+  };
+  scan(frag.outer);
+  for (const auto& h : frag.holes) scan(h);
+  return best;
+}
+
+// The smallest non-degenerate extent of the fragment's 3D boundary box: the width of a thin strip fragment (a rib's footprint on a
+// cap), 0 when the fragment has no measurable extent.
+double FragmentThinScale(const Fragment& frag) {
+  if (frag.outer.empty()) return 0.0;
+  double lo[3] = {frag.outer[0].p.x, frag.outer[0].p.y, frag.outer[0].p.z}, hi[3] = {lo[0], lo[1], lo[2]};
+  for (const UVPt& q : frag.outer) {
+    const double c[3] = {q.p.x, q.p.y, q.p.z};
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], c[k]);
+      hi[k] = std::max(hi[k], c[k]);
+    }
+  }
+  const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+  const double big = std::max({ext[0], ext[1], ext[2]});
+  double thin = std::numeric_limits<double>::infinity();
+  for (int k = 0; k < 3; ++k) {
+    if (ext[k] > 1e-6 * big) thin = std::min(thin, ext[k]);
+  }
+  return std::isfinite(thin) ? thin : 0.0;
+}
+
 // --- keyhole bridging: fold a genuinely interior closed hole loop into
 // its own fragment's outer loop, so the assembled face ends up hole-free
 // -------------------------------------------------------------------
@@ -4537,6 +4578,38 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
               p3 = alt_p3;
               cls = alt_cls;
               break;
+            }
+          }
+          // The representative point is the mean of the boundary's (u, v) vertices, which sits inside the (u, v) polygon but can land
+          // within a chord error of the fragment's own 3D boundary when the parametrization is strongly non-linear over a thin
+          // fragment (measured: a rib's 0.4-wide footprint on a FAN-capped cylinder's cap, point 1.4e-4 from the web wall, classified
+          // Out instead of In, so the footprint stayed and "an edge is claimed by 3 or more fragment loops"). A point that close to
+          // the boundary (< 2% of the fragment's thinnest extent) is re-picked from the grid of alternates with the largest 3D
+          // clearance, and only adopted when that is at least twice as far from the boundary. Ordinary fragments are untouched.
+          if (!coplanar_overlap) {
+            const double thin = FragmentThinScale(frag);
+            const double clear0 = FragmentClearance3D(frag, p3);
+            if (thin > 0.0 && clear0 < 0.02 * thin) {
+              double best_clear = clear0;
+              Point2d best_uv = uv;
+              for (const Point2d& alt : AlternateRepresentativeUVs(frag, uv)) {
+                const double c = FragmentClearance3D(frag, ff.surface->PointAt(alt.x, alt.y));
+                if (c > best_clear) {
+                  best_clear = c;
+                  best_uv = alt;
+                }
+              }
+              if (best_clear >= 2.0 * clear0) {
+                const Point3d alt_p3 = ff.surface->PointAt(best_uv.x, best_uv.y);
+                bool alt_on_boundary = false;
+                const Cls alt_cls = ClassifyPointVsBrep(alt_p3, other, ray_length, opt, tol, other_index, &alt_on_boundary);
+                if (!alt_on_boundary) {
+                  if (debug) std::fprintf(stderr, "  frag: representative %.3g from the fragment boundary (thin scale %.3g); re-picked uv=(%f,%f) clearance %.3g\n", clear0, thin, best_uv.x, best_uv.y, best_clear);
+                  uv = best_uv;
+                  p3 = alt_p3;
+                  cls = alt_cls;
+                }
+              }
             }
           }
           if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
