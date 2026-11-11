@@ -3052,10 +3052,17 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
           len += std::snprintf(where + len, sizeof where - static_cast<size_t>(len), " %d", brep.m_L[brep.m_T[tj].m_li].m_fi);
         }
         if (len > 0 && len < 400) std::snprintf(where + len, sizeof where - static_cast<size_t>(len), "; this loop's face %d]", face.m_face_index);
-        throw std::runtime_error(
+        BooleanNonManifoldEdge info;
+        info.from = brep.m_V[vid_from].point;
+        info.to = brep.m_V[vid_to].point;
+        for (int ti_k = 0; ti_k < brep.m_E[edge_index].m_ti.Count(); ++ti_k) info.faces_on_edge.push_back(brep.m_L[brep.m_T[brep.m_E[edge_index].m_ti[ti_k]].m_li].m_fi);
+        info.offending_face = face.m_face_index;
+        throw BooleanReassemblyError(
+            "BooleanCombineGeneral",
             std::string("dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or "
                         "more fragment loops (non-manifold result) - out of scope; see "
-                        "boolean_general.h's own disclosed limitations") + where);
+                        "boolean_general.h's own disclosed limitations") + where,
+            std::move(info));
       }
       // allow_non_manifold_result == true: fall through and add this third
       // (or later) trim to the SAME edge anyway - ON_BrepEdge::m_ti is a
@@ -9371,12 +9378,32 @@ static SealedGeneralBoolean SealGeneralBooleanResultLocalFrame(const Brep& raw, 
       reason = std::string("sewing the engine's result failed: ") + e.what();
     }
   }
+  bool measured = false;
+  UnpairedEdgeStats measured_stats;
   if (!sealed && best_attempt.raw().m_F.Count() > 0 && reason.find("has gaps between faces") != std::string::npos) {
     try {
-      reason = DescribeUnpairedEdges(MeasureUnpairedEdges(best_attempt.raw(), diag), diag);
+      measured_stats = MeasureUnpairedEdges(best_attempt.raw(), diag);
+      reason = DescribeUnpairedEdges(measured_stats, diag);
+      measured = true;
     } catch (const std::exception&) {
       // keep the generic reason
     }
+  }
+  if (!sealed && measured) {
+    BooleanSealReport rep;
+    rep.naked_edges = measured_stats.naked;
+    rep.nonmanifold_edges = measured_stats.nonmanifold;
+    rep.naked_on_seam = measured_stats.on_seam;
+    rep.naked_slivers = measured_stats.slivers;
+    rep.naked_total_length = measured_stats.total;
+    rep.naked_longest = measured_stats.naked > 0 ? measured_stats.longest : 0.0;
+    rep.same_direction_edges = measured_stats.same_direction;
+    rep.same_face_edges = measured_stats.same_face;
+    rep.oriented_manifold = measured_stats.oriented_manifold;
+    const BooleanFailureReason why = measured_stats.naked > 0              ? BooleanFailureReason::OpenResult
+                                     : measured_stats.nonmanifold > 0      ? BooleanFailureReason::NonManifoldResult
+                                                                           : BooleanFailureReason::InconsistentOrientation;
+    throw BooleanSealError(why, "BooleanCombineGeneralSealed", "BooleanCombineGeneralSealed: " + reason + naked_diag, rep, std::move(best_attempt));
   }
   if (!sealed) throw std::runtime_error("BooleanCombineGeneralSealed: " + reason + naked_diag);
   return out;

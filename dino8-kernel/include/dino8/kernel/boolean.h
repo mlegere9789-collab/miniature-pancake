@@ -129,6 +129,9 @@ enum class BooleanFailureReason {
   OpenResult,
   // The mesh engine (Manifold) reported a non-NoError status.
   EngineFailure,
+  // The sealed general Boolean (BooleanCombineGeneralSealed) sewed the engine's result until every edge is shared by exactly two
+  // faces, but the faces are not consistently oriented, so it is not a closed solid (BooleanSealError carries the counts).
+  InconsistentOrientation,
   // A refusal whose free-text message matched no known pattern; the message
   // is preserved verbatim in the report.
   Unclassified,
