@@ -27,4 +27,30 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
 bool ImportMeshFile(Document& doc, const std::string& path, std::string& error);
 bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_only, std::string& error);
 
+// Options of the mesh export formats (.stl / .obj / .ply), set from the Export command's tokens
+// (Format=Ascii|Binary|BinaryBigEndian, Scale=<factor>, Units=<name>, Tolerance=<chord>, PerObject=Yes) and in effect for the
+// ExportMeshFile / ExportPly calls made while a ScopedMeshExportOptions is alive; every field's default is what these
+// exporters always did (STL binary, PLY ascii, no scaling, chord tolerance 0.01, one file).
+enum class MeshExportFormat { Default, Ascii, Binary, BinaryBigEndian };
+struct MeshExportOptions {
+  MeshExportFormat format = MeshExportFormat::Default;  // STL: Default = Binary; PLY: Default = Ascii; OBJ is always text
+  double scale = 1.0;                                    // positions multiplied by this (document units -> file units)
+  double chord_tolerance = 0.01;                         // tessellation chord tolerance of Breps and Surfaces, in document units
+  bool per_object = false;                               // one file per object (the Export command writes <stem>_<n>_<name>.<ext>)
+};
+const MeshExportOptions& ActiveMeshExportOptions();
+class ScopedMeshExportOptions {
+ public:
+  explicit ScopedMeshExportOptions(const MeshExportOptions& options);
+  ~ScopedMeshExportOptions();
+  ScopedMeshExportOptions(const ScopedMeshExportOptions&) = delete;
+  ScopedMeshExportOptions& operator=(const ScopedMeshExportOptions&) = delete;
+
+ private:
+  MeshExportOptions saved_;
+};
+// Multiplier that converts a length in the document's unit system to `units` ("mm", "cm", "m", "km", "in", "ft", "mi", "um",
+// or the full unit names the document settings use); false when the name is not recognised.
+bool MeshExportUnitFactor(const Document& doc, const std::string& units, double& factor);
+
 }  // namespace dino8::app
