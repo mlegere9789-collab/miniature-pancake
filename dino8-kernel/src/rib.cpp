@@ -8,6 +8,7 @@
 #include <string>
 
 #include "dino8/kernel/boolean_general.h"
+#include "host_reseam.h"
 
 namespace dino8::kernel {
 
@@ -235,22 +236,55 @@ RibResult MakeRibs(const Brep& solid, const std::vector<std::vector<Point3d>>& p
     }
   }
 
+  // A sealed result of an earlier fusion is IsSolid() but its tessellation need not be a closed manifold, so prefer the
+  // divergence-theorem integral for a B-rep that is topologically closed. A solid built from loose faces (Brep::FromMixedFaces:
+  // no shared edges, so IsSolid() is false, and a tessellation that is not a closed manifold) has NO measurable volume; its
+  // volume is then left out and the added volume comes from the exact volume of web ^ solid instead (added = web - web ^ solid).
   double solid_volume = 0;
+  bool have_solid_volume = true;
   try {
-    // A sealed result of an earlier fusion is IsSolid() but its tessellation need not be a closed manifold, so prefer the
-    // divergence-theorem integral for a B-rep that is topologically closed.
     solid_volume = solid.raw().IsSolid() ? solid.VolumeOfSealedSolid() : solid.Volume();
-  } catch (const std::exception& e) {
-    Refuse(std::string("could not measure the solid's volume: ") + e.what());
+  } catch (const std::exception&) {
+    have_solid_volume = false;
   }
 
+  // A refused fusion is retried on copies of a rotationally symmetric host (a single untrimmed sphere / torus) with its seam moved.
   SealedGeneralBoolean sealed;
-  try {
-    sealed = BooleanCombineGeneralSealed(solid, tool, BooleanOp::Union);
-  } catch (const std::exception& e) {
-    Refuse(std::string("fusing the rib onto the solid was refused (not returning a degraded body): ") + e.what());
+  {
+    std::string first_why;
+    bool fused = false;
+    const auto attempt = [&](const Brep& host) {
+      try {
+        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Union);
+        fused = true;
+      } catch (const std::exception& e) {
+        if (first_why.empty()) first_why = e.what();
+      }
+    };
+    attempt(solid);
+    size_t variants = 0;
+    if (!fused) {
+      const std::vector<Brep> alt = detail::ReseamedHostVariants(solid);
+      variants = alt.size();
+      for (const Brep& h : alt) {
+        attempt(h);
+        if (fused) break;
+      }
+    }
+    if (!fused) {
+      Refuse("fusing the rib onto the solid was refused (not returning a degraded body): " + first_why +
+             (variants ? " [also refused with the host's seam moved to " + std::to_string(variants) + " other positions]" : std::string()));
+    }
   }
-  out.added_volume = sealed.volume - solid_volume;
+  if (have_solid_volume) {
+    out.added_volume = sealed.volume - solid_volume;
+  } else {
+    try {
+      out.added_volume = out.tool_volume - BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection).volume;
+    } catch (const std::exception& e) {
+      Refuse(std::string("the solid has no measurable volume and web ^ solid could not be measured either: ") + e.what());
+    }
+  }
   if (!(out.added_volume > 1e-6 * out.tool_volume)) {
     Refuse("the fused body adds no measurable volume (added " + std::to_string(out.added_volume) + " of a " +
            std::to_string(out.tool_volume) + " web): the rib lies inside the solid or only grazes it");
@@ -304,14 +338,9 @@ RibResult MakeRibFlush(const Brep& solid, const std::vector<Point3d>& profile, d
     cuts.push_back({planes[i].point, n});
   }
   RibResult out = MakeRib(solid, profile, thickness, symmetric);
-  double solid_volume = 0;
-  try {
-    solid_volume = solid.raw().IsSolid() ? solid.VolumeOfSealedSolid() : solid.Volume();
-  } catch (const std::exception& e) {
-    Refuse(std::string("could not measure the solid's volume: ") + e.what());
-  }
   const BoundingBox rb = out.brep.GetTightBoundingBox();
   const double fused_volume = out.brep.VolumeOfSealedSolid();
+  const double solid_volume = fused_volume - out.added_volume;  // the host's volume as MakeRib measured it (also when it has none of its own)
   double web_ext = 0;
   const Brep web = BuildWeb(profile, thickness, symmetric, &web_ext);  // the clean prism: no face of it lies on the solid's
 

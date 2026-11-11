@@ -50,6 +50,10 @@ RibResult MakeRib(const Brep& solid, const std::vector<Point3d>& profile, double
 RibResult MakeRibs(const Brep& solid, const std::vector<std::vector<Point3d>>& profiles, double thickness,
                    bool symmetric = true);
 
+// A host with no volume of its own (a loose-face solid from Brep::FromMixedFaces: IsSolid() false, tessellation not a closed manifold)
+// is accepted by MakeRib / MakeRibs: added_volume is then the web's volume minus the exact volume of web ^ host. A fusion the engine
+// refuses is retried on copies of a single untrimmed sphere / torus host rotated about its axis (see src/host_reseam.h).
+//
 // A rib flush with the body's end face. MakeRib() of a web whose end lies exactly ON a face of the solid is refused by the engine
 // ("an edge is claimed by 3 or more fragment loops": coincident faces). MakeRibFlush() takes a profile that OVERHANGS the end face
 // and trims it back: it fuses the overhanging web (MakeRib), then subtracts the half-space beyond each `planes` entry (a slab built

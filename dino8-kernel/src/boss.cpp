@@ -7,6 +7,7 @@
 
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/surface_intersect.h"
+#include "host_reseam.h"
 
 namespace dino8::kernel {
 
@@ -105,19 +106,53 @@ BossResult Fuse(const Brep& solid, const Brep& tool, const std::vector<Point3d>&
     }
   }
 
+  // A solid built from loose faces (Brep::FromMixedFaces) has no measurable volume of its own (see MakeRib): then the added volume
+  // is the boss minus the exact volume of boss ^ solid.
   double solid_volume = 0;
+  bool have_solid_volume = true;
   try {
     solid_volume = solid.raw().IsSolid() ? solid.VolumeOfSealedSolid() : solid.Volume();
-  } catch (const std::exception& e) {
-    Refuse(std::string("could not measure the solid's volume: ") + e.what());
+  } catch (const std::exception&) {
+    have_solid_volume = false;
   }
+  // A refused fusion is retried on copies of a rotationally symmetric host (a single untrimmed sphere / torus) with its seam moved:
+  // the same solid, parametrized differently (see host_reseam.h).
   SealedGeneralBoolean sealed;
-  try {
-    sealed = BooleanCombineGeneralSealed(solid, tool, BooleanOp::Union);
-  } catch (const std::exception& e) {
-    Refuse(std::string("fusing the boss onto the solid was refused (not returning a degraded body): ") + e.what());
+  {
+    std::string first_why;
+    bool fused = false;
+    const auto attempt = [&](const Brep& host) {
+      try {
+        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Union);
+        fused = true;
+      } catch (const std::exception& e) {
+        if (first_why.empty()) first_why = e.what();
+      }
+    };
+    attempt(solid);
+    size_t variants = 0;
+    if (!fused) {
+      const std::vector<Brep> alt = detail::ReseamedHostVariants(solid);
+      variants = alt.size();
+      for (const Brep& h : alt) {
+        attempt(h);
+        if (fused) break;
+      }
+    }
+    if (!fused) {
+      Refuse("fusing the boss onto the solid was refused (not returning a degraded body): " + first_why +
+             (variants ? " [also refused with the host's seam moved to " + std::to_string(variants) + " other positions]" : std::string()));
+    }
   }
-  out.added_volume = sealed.volume - solid_volume;
+  if (have_solid_volume) {
+    out.added_volume = sealed.volume - solid_volume;
+  } else {
+    try {
+      out.added_volume = out.tool_volume - BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection).volume;
+    } catch (const std::exception& e) {
+      Refuse(std::string("the solid has no measurable volume and boss ^ solid could not be measured either: ") + e.what());
+    }
+  }
   if (!(out.added_volume > 1e-6 * out.tool_volume)) {
     Refuse("the fused body adds no measurable volume (added " + std::to_string(out.added_volume) + " of a " +
            std::to_string(out.tool_volume) + " boss): the boss lies inside the solid");

@@ -36,10 +36,13 @@ namespace dino8::kernel {
 // cone face was integrated by ear clipping; VolumeOfSealedSolid() now integrates
 // a curved trimmed face by Green's theorem (see brep.cpp), and the cone cases
 // agree with their quadratures to 0.2%.
-// A rectangular boss on a torus is refused (3-loop non-manifold). A refused CURVE profile is retried with its seam moved to
-// 7 other positions of its domain (1/4, 1/2, 3/4, 0.1, 0.9, 0.37, 0.63): the extruded wall's seam always crosses the
-// intersection curve once and leaves a zero-length edge there, and whether sealing copes depends on where (a round boss on a
-// sphere along (-1,2,2) was fixed by the quarter-turn position; (-1,-2,2) by a later one, 0.1 in a manual run). Refusals pass the engine's cause through.
+// A rectangular boss on a torus fuses at every azimuth, including azimuth 0 where the footprint straddles the seam CORNER of the
+// torus's (u, v) domain (the engine refuses that one position, "3 or more fragment loops"): a refused fusion is retried on copies of
+// a host that is a single untrimmed sphere or torus rotated about its axis (same solid, seam elsewhere; see src/host_reseam.h). A
+// refused CURVE profile is also retried with its seam moved to 7 other positions of its domain (1/4, 1/2, 3/4, 0.1, 0.9, 0.37, 0.63):
+// the extruded wall's seam always crosses the intersection curve once and leaves a zero-length edge there, and whether sealing copes
+// depends on where. A host with no volume of its own (a loose-face solid from Brep::FromMixedFaces) is accepted: added_volume is then
+// the boss minus the exact volume of boss ^ host. Refusals pass the engine's cause through.
 //
 // Throws std::invalid_argument for a solid with no faces, a non-positive or
 // non-finite height, a zero direction, an open or non-planar profile, a

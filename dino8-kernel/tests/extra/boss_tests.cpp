@@ -307,24 +307,38 @@ D8_EXTRA_TEST(BossRoundOnTorusMatchesQuadrature) {
                 "round boss on torus: probes in the column, past its top, beside it and in the tube");
 }
 
-// A rectangular boss on the torus is refused today ("an edge is claimed by 3 or more fragment loops"); exact-or-honest.
-D8_EXTRA_TEST(BossRectangleOnTorusIsExactOrHonestlyRefused) {
+// Rectangular boss on the torus's outer equator at azimuth 0, where the footprint straddles the seam CORNER of the torus's (u, v) domain
+// (u = 0 and v = 0 at once): refused by the engine ("3 or more fragment loops") while every other azimuth (10, 45, 90, ... measured) fuses.
+// A single untrimmed torus is invariant under rotation about its axis, so the fusion is retried on copies with the seam moved. The torus is
+// rotation-symmetric, so every azimuth must give the same added volume: the 2-D quadrature of (6.2 - x_surface) over the footprint.
+D8_EXTRA_TEST(BossRectangleOnTorusSeamCornerMatchesQuadrature) {
   const double R = 4, r = 1.2, xb = 4.6, xt = 6.2, h = 0.4;
   const Brep torus = Brep::Torus(P(0, 0, 0), Vector3d(0, 0, 1), R, r);
-  try {
-    const BossResult b = MakeBoss(torus, std::vector<Point3d>{P(xb, -h, -h), P(xb, h, -h), P(xb, h, h), P(xb, -h, h)}, Vector3d(1, 0, 0), xt - xb);
-    double expect = 0;
-    const int n = 600;
-    for (int i = 0; i < n; ++i)
-      for (int j = 0; j < n; ++j) {
-        const double y = -h + (i + 0.5) * 2 * h / n, z = -h + (j + 0.5) * 2 * h / n;
-        const double s = std::sqrt(r * r - z * z);
-        expect += (xt - std::sqrt((R + s) * (R + s) - y * y)) * (2 * h / n) * (2 * h / n);
-      }
-    d8test::Check(b.brep.raw().IsValid() && b.brep.raw().IsSolid() && Near(b.added_volume, expect, 0.02 * expect),
-                  "rect boss on torus: if returned, a valid solid with the quadrature volume");
-  } catch (const std::runtime_error& e) {
-    d8test::Check(std::string(e.what()).find("MakeBoss: fusing the boss onto the solid was refused") != std::string::npos,
-                  "rect boss on torus: refusal names MakeBoss and carries the engine's cause");
+  double expect = 0;
+  const int n = 800;
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j) {
+      const double y = -h + (i + 0.5) * 2 * h / n, z = -h + (j + 0.5) * 2 * h / n;
+      const double s = std::sqrt(r * r - z * z);
+      expect += (xt - std::sqrt((R + s) * (R + s) - y * y)) * (2 * h / n) * (2 * h / n);
+    }
+  for (const int deg : {0, 45}) {
+    const double a = deg * ON_PI / 180.0;
+    const ON_3dVector ex(std::cos(a), std::sin(a), 0), ey(-std::sin(a), std::cos(a), 0);
+    auto pt = [&](double y, double z) {
+      const ON_3dPoint o = ON_3dPoint(0, 0, 0) + xb * ex + y * ey + ON_3dVector(0, 0, z);
+      return P(o.x, o.y, o.z);
+    };
+    const std::string label = "rect boss on torus at azimuth " + std::to_string(deg) + ": ";
+    try {
+      const BossResult b = MakeBoss(torus, std::vector<Point3d>{pt(-h, -h), pt(h, -h), pt(h, h), pt(-h, h)}, Vector3d(ex.x, ex.y, ex.z), xt - xb);
+      d8test::Check(b.brep.raw().IsValid() && b.brep.raw().IsSolid(), (label + "valid closed solid").c_str());
+      d8test::Check(Near(b.added_volume, expect, 0.002 * expect), (label + "added " + std::to_string(b.added_volume) + " vs quadrature " + std::to_string(expect) + " (bound 0.2%)").c_str());
+      const ON_3dPoint in_boss = ON_3dPoint(0, 0, 0) + 5.9 * ex, past_top = ON_3dPoint(0, 0, 0) + 6.4 * ex, beside = ON_3dPoint(0, 0, 0) + 5.9 * ex + 0.8 * ey;
+      d8test::Check(Inside(b.brep, P(in_boss.x, in_boss.y, in_boss.z)) && !Inside(b.brep, P(past_top.x, past_top.y, past_top.z)) && !Inside(b.brep, P(beside.x, beside.y, beside.z)),
+                    (label + "probes in the column, past its top and beside it").c_str());
+    } catch (const std::exception& e) {
+      d8test::Check(false, (label + "was refused: " + e.what()).c_str());
+    }
   }
 }

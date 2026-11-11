@@ -245,9 +245,12 @@ D8_EXTRA_TEST(RibFlushWithEndFaceMatchesClosedForm) {
                 "plain MakeRib of a web ending exactly on the end face is refused (the reason MakeRibFlush exists)");
 }
 
-// A rib running the whole length, both ends flush. Measured: the engine's second cut (whether sequential or as one compound cutter)
-// removes the wrong volume (1.37 of 2.56 for the compound), which the removed-volume check catches, so today this is REFUSED; the
-// contract pinned is exact-or-honest, never a degraded body.
+// A rib running the whole length, both ends flush. Measured on the tip engine (single cuts at either end are exact, 109.6): the two cuts
+// together are wrong however they are issued - sequentially (right then left: 113.111 for 112; left then right: 111.444), as one compound
+// cutter (113.111), or as one U-shaped cutter solid (113.191) - and the sealing step's 1% volume bounds do not see it; the removed-volume
+// check does (1.369 removed of 2.56). The fragment dump shows both web ends crossing the host's end faces (the sunk part, z 0.8..1) so each
+// end face carries a coplanar partial overlap with the cutter's face; with two of them the reconciliation leaves unresolved anchor pairs.
+// Today this is REFUSED; the contract pinned is exact-or-honest, never a degraded body.
 D8_EXTRA_TEST(RibFlushAtBothEndsIsExactOrHonestlyRefused) {
   const Brep plate = Brep::Box(0, 0, 0, 10, 10, 1);
   try {
@@ -272,7 +275,7 @@ D8_EXTRA_TEST(RibFlushRefusesPlaneThroughTheSolid) {
 
 // A rib standing on the top cap of a cylinder (R = 3, cap z = 6): x in [-2, 2], z 5.5..8, thickness 0.4 centred on y = 0. Before the sealing
 // ladder gained its finer rungs this was refused (4 micro-edges left unpaired). Added = 4 x 2 x 0.4; the engine's exact integral is
-// measured 0.9% below that (3.171), so the bound is 1.5%. y = 1 is still refused (3-loop non-manifold); exact-or-honest.
+// measured 0.9% below that (3.171), so the bound is 1.5%.
 D8_EXTRA_TEST(RibOnCylinderCapMatchesClosedForm) {
   const ON_Circle c(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
   ON_NurbsCurve nurbs;
@@ -288,10 +291,69 @@ D8_EXTRA_TEST(RibOnCylinderCapMatchesClosedForm) {
                     !ContainsPointExact(P(2.3, 0, 7), r.brep.raw()) && !ContainsPointExact(P(0, 0.5, 7), r.brep.raw()) &&
                     !ContainsPointExact(P(0, 0, 8.2), r.brep.raw()),
                 "cap rib: probes inside the web, past its end, beside it and above its top");
-  try {
-    const RibResult off = MakeRib(cyl, {P(-2, 1, 5.5), P(2, 1, 5.5), P(2, 1, 8), P(-2, 1, 8)}, 0.4);
-    d8test::Check(off.brep.raw().IsValid() && off.brep.raw().IsSolid() && Near(off.added_volume, 3.2, 0.015 * 3.2), "off-centre cap rib: if returned, valid with the closed-form volume");
-  } catch (const std::runtime_error& e) {
-    d8test::Check(std::string(e.what()).find("MakeRib: fusing the rib") != std::string::npos, "off-centre cap rib: refusal names MakeRib and the engine's cause");
+  // Off-centre ribs on the same FAN-capped cap. y = 0.5 and y = 1 used to be refused ("3 or more fragment loops"): the footprint
+  // fragment of the cap is a thin strip in the fan's strongly non-linear (u, v), and its representative point (the mean of the boundary's
+  // (u, v) vertices) landed 1.4e-4 from the web wall, so it was classified Out and the footprint stayed on the cap.
+  for (const double y : {0.5, 1.0, -1.0}) {
+    const std::string label = "off-centre cap rib at y = " + std::to_string(y) + ": ";
+    try {
+      const RibResult off = MakeRib(cyl, {P(-2, y, 5.5), P(2, y, 5.5), P(2, y, 8), P(-2, y, 8)}, 0.4);
+      d8test::Check(off.brep.raw().IsValid() && off.brep.raw().IsSolid(), (label + "valid closed solid").c_str());
+      d8test::Check(Near(off.added_volume, 3.2, 0.015 * 3.2), (label + "added volume " + std::to_string(off.added_volume) + " vs closed form 3.2 (bound 1.5%)").c_str());
+      d8test::Check(ContainsPointExact(P(0, y, 7), off.brep.raw()) && !ContainsPointExact(P(0, y + 0.5, 7), off.brep.raw()) &&
+                        !ContainsPointExact(P(2.3, y, 7), off.brep.raw()) && !ContainsPointExact(P(0, y, 8.2), off.brep.raw()),
+                    (label + "probes inside the web, beside it, past its end and above its top").c_str());
+    } catch (const std::exception& e) {
+      d8test::Check(false, (label + "was refused: " + e.what()).c_str());
+    }
+  }
+}
+
+namespace {
+// A cylinder of radius r and length h about +z from loose faces: two 128-gon planar discs and one true cylindrical wall
+// (Brep::FromMixedFaces). It has no shared edges, so IsSolid() is false and its tessellation is not a closed manifold: no Volume().
+Brep LooseFaceCylinder(double r, double h) {
+  Brep::CylindricalFace cf;
+  cf.frame = ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  cf.radius = r;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = h;
+  auto disk = [&](double z, bool flip) {
+    Brep::PlanarFace pf;
+    const ON_3dPoint c(0, 0, z);
+    pf.plane = ON_Plane(c, flip ? ON_3dVector(0, 0, -1) : ON_3dVector(0, 0, 1));
+    const int n = 128;
+    for (int i = 0; i < n; ++i) {
+      const double a = flip ? -2.0 * ON_PI * i / n : 2.0 * ON_PI * i / n;
+      pf.loop.push_back(Point3d(r * std::cos(a), r * std::sin(a), z));
+    }
+    pf.notch_begin = 0;
+    pf.notch_count = static_cast<int>(pf.loop.size());
+    return pf;
+  };
+  return Brep::FromMixedFaces({disk(0.0, true), disk(h, false)}, {cf});
+}
+}  // namespace
+
+// The same cap rib on a host with a PLANAR cap (loose-face cylinder, R = 3, cap z = 6), centred and off-centre: x in [-2, 2], z 5.5..8,
+// thickness 0.4 -> added exactly 4 x 2 x 0.4 = 3.2 (the cap is planar, so there is no sag). Two things used to hide this: MakeRib refused the
+// host because it has no measurable volume ("not a closed, watertight solid"), and the off-centre ribs on the FAN-capped Extrude() cylinder
+// are refused by the engine ("3 or more fragment loops"; y = 0.5 and 1 measured, y = 0, -1, 2 fuse), which a planar-cap host does not share.
+D8_EXTRA_TEST(RibOffCentreOnPlanarDiscCapMatchesClosedForm) {
+  const Brep cyl = LooseFaceCylinder(3.0, 6.0);
+  using dino8::kernel::ContainsPointExact;
+  for (const double y : {0.0, 0.5, 1.0, -1.0}) {
+    const std::string label = "planar-cap rib at y = " + std::to_string(y) + ": ";
+    try {
+      const RibResult r = MakeRib(cyl, {P(-2, y, 5.5), P(2, y, 5.5), P(2, y, 8), P(-2, y, 8)}, 0.4);
+      d8test::Check(r.brep.raw().IsValid() && r.brep.raw().IsSolid(), (label + "valid closed solid").c_str());
+      d8test::Check(Near(r.added_volume, 3.2, 1e-6), (label + "added volume " + std::to_string(r.added_volume) + " vs closed form 3.2").c_str());
+      d8test::Check(ContainsPointExact(P(0, y, 7), r.brep.raw()) && ContainsPointExact(P(1.9, y + 0.1, 7.9), r.brep.raw()) &&
+                        !ContainsPointExact(P(2.3, y, 7), r.brep.raw()) && !ContainsPointExact(P(0, y + 0.5, 7), r.brep.raw()) &&
+                        !ContainsPointExact(P(0, y, 8.2), r.brep.raw()),
+                    (label + "probes inside the web, past its end, beside it and above its top").c_str());
+    } catch (const std::exception& e) {
+      d8test::Check(false, (label + "was refused: " + e.what()).c_str());
+    }
   }
 }
