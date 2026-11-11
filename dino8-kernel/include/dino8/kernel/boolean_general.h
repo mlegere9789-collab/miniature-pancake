@@ -658,6 +658,16 @@ std::vector<Brep> SplitBrepByManySolidsKeepAll(const Brep& target, const std::ve
 // `plane_offset` is measured in the same units as `plane_normal`'s own
 // magnitude - pass a unit vector unless that has been accounted for.
 //
+// A half that comes back from the engine as an open shell (naked edges where
+// the cut curve crosses a periodic seam) is sewn closed (SealGeneralBooleanResult(),
+// the step BooleanCombineGeneralSealed() applies) when that succeeds, so on a
+// cylinder the halves are IsValid() and IsSolid() with Euler characteristic 2
+// and Brep::VolumeOfSealedSolid() works on them; one that cannot be sewn is
+// returned as the engine produced it, never turned into a refusal. Volumes are
+// those of the engine's polyline cut edge: within 1e-4 of the closed form for
+// a plane perpendicular or parallel to a cylinder's axis, ~1.2e-3 for an
+// oblique one (the two halves still add up to the original to 1e-5).
+//
 // Throws std::invalid_argument if `target` has no faces, if `plane_normal`
 // is zero, or if `tolerance` is not positive (the last two as typed
 // `BooleanOperationError`s - `BooleanFailureReason::EmptyOperand`/
