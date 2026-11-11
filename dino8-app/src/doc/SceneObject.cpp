@@ -1403,6 +1403,9 @@ void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
     const auto mm = std::minmax_element(values.begin(), values.end());
     cache_.values_min = *mm.first;
     cache_.values_max = *mm.second;
+    std::vector<double> mid = values;
+    std::nth_element(mid.begin(), mid.begin() + mid.size() / 2, mid.end());
+    cache_.values_median = mid[mid.size() / 2];
   }
   if (hi - lo < 1e-12) {
     const double mid = (hi + lo) * 0.5;

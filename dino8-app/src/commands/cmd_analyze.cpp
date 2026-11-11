@@ -178,6 +178,14 @@ CommandFactory AnalysisOn(AnalysisMode mode) {
       o.EnsureDisplay(ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
       o.EnsureAnalysisColors(s);
       msg += "  range " + FormatNumber(o.Display().colors_min) + " (blue) .. " + FormatNumber(o.Display().colors_max) + " (red)";
+      if (o.Display().has_values) {
+        // The measured per-vertex curvature (the range above is a 5..95 percentile ramp, not a measurement): the
+        // median is robust against the few noisy pole / rim vertices. Gaussian K = k1*k2, Mean H = (k1+k2)/2, so a
+        // sphere of radius r reads 1/r^2 and 1/r, a cylinder 0 and 1/(2r).
+        char buf[48];
+        std::snprintf(buf, sizeof buf, "%.5f", o.Display().values_median);
+        msg += std::string("  measured median ") + buf + " (1/length" + (s.curvature_style == CurvatureStyle::Gaussian ? "^2" : "") + ")";
+      }
     }
     if (mode == AnalysisMode::DraftAngle) {
       // The measured draft angle of every display vertex (90 - the angle
