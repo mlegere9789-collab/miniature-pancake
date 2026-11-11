@@ -214,4 +214,104 @@ inline std::optional<kernel::Brep> ShellRevolvedMeridian(ON_3dPoint c0, ON_3dVec
   }
 }
 
+// A SPHERE CAP / DOME / BOWL or a TORUS SEGMENT recognised from an ON_Brep: exactly two faces, one flat and one a sphere
+// (a ball cut by a plane: a bowl, a hemisphere or a dome) or a torus whose axis is the flat face's normal (a ring cut by a
+// plane perpendicular to its axis). Both are bodies of revolution about the axis through `o` along `ax`, where `o` is the
+// foot of the curved surface's centre on the flat face and `ax` points INTO the solid (opposite the flat face's outward
+// normal). `zc` is the height of the arc's centre above the flat face along `ax` (negative below it); the meridian is the
+// flat chord plus one circular arc (see kernel::ShellRevolvedArcProfile).
+struct ArcSolid {
+  ON_3dPoint o;
+  ON_3dVector ax, ex;
+  bool torus = false;
+  double rho = 0;  // sphere radius, or the torus's minor radius
+  double big = 0;  // torus major radius (distance of the arc centre from the axis)
+  double zc = 0;
+  int flat_face = -1, curved_face = -1;
+};
+
+inline bool RecognizeArcSolid(const ON_Brep& b, ArcSolid& s) {
+  if (!b.IsSolid() || b.m_F.Count() != 2) return false;
+  ON_BoundingBox bb;
+  b.GetBoundingBox(bb);
+  const double tol = std::max(1e-9, bb.Diagonal().Length() * 1e-6);
+  ON_Plane plane;
+  ON_Sphere sph;
+  ON_Torus tor;
+  int flat = -1, curved = -1;
+  bool is_torus = false;
+  for (int f = 0; f < 2; ++f) {
+    const ON_Surface* surf = b.m_F[f].SurfaceOf();
+    if (!surf) return false;
+    if (flat < 0 && surf->IsPlanar(&plane, tol)) flat = f;
+    else if (curved < 0 && surf->IsSphere(&sph, tol)) curved = f;
+    else if (curved < 0 && surf->IsTorus(&tor, tol)) { curved = f; is_torus = true; }
+    else return false;
+  }
+  if (flat < 0 || curved < 0) return false;
+  const ON_Interval du = b.m_F[flat].SurfaceOf()->Domain(0), dv = b.m_F[flat].SurfaceOf()->Domain(1);
+  ON_3dVector n = b.m_F[flat].NormalAt(du.Mid(), dv.Mid());
+  if (!n.Unitize()) return false;
+  if (b.SolidOrientation() < 0) n = -n;  // outward normal of the flat face
+  const ON_3dVector ax = -n;
+  ON_3dPoint centre;
+  if (is_torus) {
+    ON_3dVector ta = tor.plane.zaxis;
+    if (!ta.Unitize() || std::fabs(ta * ax) < 1.0 - 1e-9) return false;  // the torus axis must be the flat face's normal
+    centre = tor.plane.origin;
+    s.rho = tor.minor_radius;
+    s.big = tor.major_radius;
+  } else {
+    centre = sph.Center();
+    s.rho = sph.Radius();
+    s.big = 0;
+  }
+  const ON_3dPoint o = centre - ((centre - plane.origin) * n) * n;  // foot of the centre on the flat face's plane
+  s.o = o;
+  s.ax = ax;
+  s.ex = plane.xaxis;
+  if (!s.ex.Unitize() || std::fabs(s.ex * ax) > 1e-9) return false;
+  s.zc = (centre - o) * ax;
+  s.torus = is_torus;
+  s.flat_face = flat;
+  s.curved_face = curved;
+  if (!(s.rho > tol) || !(std::fabs(s.zc) < s.rho - tol)) return false;  // the plane must actually cut the ball / tube
+  if (is_torus && !(s.big > s.rho + tol)) return false;
+  return true;
+}
+
+// Shell WITH face removal / per-face thickness of a recognised sphere cap or torus segment through
+// kernel::ShellRevolvedArcProfile (the flat face is `flat_face`, the curved one `curved_face`).
+inline std::optional<kernel::Brep> ShellArcSolid(const ArcSolid& s, const std::vector<int>& removed, const std::map<int, double>& overrides,
+                                                 double t, std::string& why) {
+  for (int f : removed) if (f != s.flat_face && f != s.curved_face) { why = "invalid face index"; return std::nullopt; }
+  for (const auto& kv : overrides) if (kv.first != s.flat_face && kv.first != s.curved_face) { why = "invalid face index"; return std::nullopt; }
+  auto thick = [&](int f) {
+    if (std::find(removed.begin(), removed.end(), f) != removed.end()) return 0.0;
+    const auto it = overrides.find(f);
+    return it != overrides.end() ? it->second : t;
+  };
+  const double w = std::sqrt(s.rho * s.rho - s.zc * s.zc);  // half-width of the flat face's cut through the ball / tube
+  std::vector<kernel::MeridianEdge> e;
+  std::vector<double> th;
+  auto line = [](double r, double z) { kernel::MeridianEdge m; m.r = r; m.z = z; return m; };
+  auto arc = [](double r, double z, double cr, double cz) { kernel::MeridianEdge m; m.r = r; m.z = z; m.arc = true; m.cr = cr; m.cz = cz; m.counter_clockwise = true; return m; };
+  if (s.torus) {
+    // chord (R - w, 0) -> (R + w, 0) is the flat face; the arc runs from (R + w, 0) over the tube to (R - w, 0).
+    e = {arc(s.big + w, 0, s.big, s.zc), line(s.big - w, 0)};
+    th = {thick(s.curved_face), thick(s.flat_face)};
+  } else {
+    // flat disc (0, 0) -> (w, 0), the arc up to the apex (0, zc + rho), then the axis back down.
+    e = {line(0, 0), arc(w, 0, 0, s.zc), line(0, s.zc + s.rho)};
+    th = {thick(s.flat_face), thick(s.curved_face), 0.0};
+  }
+  try {
+    return kernel::ShellRevolvedArcProfile(e, kernel::Point3d(s.o.x, s.o.y, s.o.z), kernel::Vector3d(s.ax.x, s.ax.y, s.ax.z),
+                                           kernel::Vector3d(s.ex.x, s.ex.y, s.ex.z), th);
+  } catch (const std::exception& ex) {
+    why = ex.what();
+    return std::nullopt;
+  }
+}
+
 }  // namespace dino8::app::revolved

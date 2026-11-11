@@ -2253,6 +2253,15 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
       }
     }
   }
+  // A sphere cap / dome / bowl or a torus segment (one flat face plus one curved face, both about one axis): the meridian (the flat chord
+  // and one circular arc) goes to kernel::ShellRevolvedArcProfile - per-face thickness, a removed flat face or a removed curved face.
+  {
+    revolved::ArcSolid arcs;
+    if (revolved::RecognizeArcSolid(b, arcs)) {
+      if (std::optional<kernel::Brep> k = revolved::ShellArcSolid(arcs, removed, overrides, t, why)) return k;
+      return std::nullopt;
+    }
+  }
   // A plain capped cylinder: a closed hollow (outer cylinder + a reversed inner
   // cylinder, two shells of one Brep) or, with one CAP removed, an open cup
   // (outer wall + base disc + inner wall + inner floor + flat rim annulus), every
