@@ -35,6 +35,12 @@ if command -v cygpath >/dev/null 2>&1; then HEREW="$(cygpath -m "$HERE")"; else 
 # Isolate settings so persisted toggles (Ortho, snaps, theme) from earlier runs cannot leak into the checks.
 export XDG_CONFIG_HOME="$TMPW/config"
 mkdir -p "$XDG_CONFIG_HOME"
+# The behaviour options (DragMode, DragStrength, OrthoAngle, ToolbarLock, CommandPrompt, DecimalPoint, ...) persist in settings.json
+# in a "behavior" group like any other option. Many scripts below set them and never reset them, and all of them share this one
+# config directory, so a script's leftovers would leak into every later script. This switch keeps that group out of settings.json in
+# both directions for the whole suite (src/app/Settings.cpp); sections that test the persistence itself run their own launches with
+# `env -u DINO8_ISOLATE_BEHAVIOR_SETTINGS` and their own config home (sections/90_behavior_settings.sh).
+export DINO8_ISOLATE_BEHAVIOR_SETTINGS=1
 # Windows (Git-Bash on the CI runner): the app's config directory there is
 # %APPDATA%\Dino8 (app/Settings.h - XDG_CONFIG_HOME is a freedesktop
 # convention the app rightly does not consult on Windows), so the export
