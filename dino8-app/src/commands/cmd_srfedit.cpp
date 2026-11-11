@@ -3685,6 +3685,83 @@ std::optional<SceneObject> RebuildRailRevolve(CommandContext&, const kernel::Nur
   }
 }
 
+// RemoveAllNakedMicroEdges / RemoveAllSharedMicroEdges: every edge shorter than 100x the document tolerance that the kernel can
+// close safely, on local copies first and in ONE undo step. `shared` selects the 2-trim (interior) edges and
+// Brep::RemoveSharedMicroEdge; otherwise the 1-trim (naked) edges and Brep::RemoveNakedMicroEdge.
+void RemoveAllMicroEdges(CommandContext& ctx, const std::vector<ObjectId>& ids, bool shared) {
+  const std::string name = shared ? "RemoveAllSharedMicroEdges" : "RemoveAllNakedMicroEdges";
+  const std::string kind = shared ? "shared" : "naked";
+  const int trim_count = shared ? 2 : 1;
+  const std::string closed_note = shared ? "(the endpoints merged, each of the two faces' own loop re-trimmed to close the gap)"
+                                         : "(endpoints welded, the two loop-adjacent naked edges re-trimmed to close the gap)";
+  const std::string left_note = shared ? "(a face with fewer than four edges in its loop, or an endpoint another edge depends on - outside the safely-automatable case; remove those by hand with EditSrf/PointsOn)"
+                                       : "(shared with a second face, or its own vertex depended on by a third edge - outside the safely-automatable case; remove those by hand with EditSrf/PointsOn)";
+  const double micro_tol = ctx.Settings().absolute_tolerance * 100;
+  int found = 0, removed = 0;
+  // Computed entirely on local copies first (no document mutation)
+  // so a single BeginChange below covers exactly the objects that
+  // actually changed - the same "know the full set before mutating
+  // anything" contract BeginChangeForObjects documents.
+  std::vector<std::pair<ObjectId, kernel::Brep>> fixed;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
+    kernel::Brep b = *o->brep;
+    auto is_micro = [&](const ON_BrepEdge& e2) {
+      if (e2.m_edge_index < 0 || e2.TrimCount() != trim_count) return false;
+      ON_NurbsCurve nc;
+      if (e2.GetNurbForm(nc) <= 0) return false;
+      kernel::NurbsCurve k; k.raw() = nc;
+      return k.Length(20) < micro_tol;
+    };
+    // Census first, once, before any removal - a fixed count of
+    // what this object actually starts with, so a persistently
+    // out-of-scope edge (still there on every later re-scan) is
+    // never counted more than the one time it genuinely exists.
+    {
+      const ON_Brep& raw = b.raw();
+      for (int i = 0; i < raw.m_E.Count(); ++i) if (is_micro(raw.m_E[i])) ++found;
+    }
+    bool any_changed = false;
+    // Each successful removal renumbers edges (Brep::Compact(), see
+    // RemoveNakedMicroEdge's own doc comment), so re-scan from
+    // scratch after every fix rather than trusting stale indices -
+    // this loop only ever counts INTO `removed`, never back into
+    // `found` above.
+    bool progress = true;
+    while (progress) {
+      progress = false;
+      const ON_Brep& raw = b.raw();
+      for (int i = 0; i < raw.m_E.Count(); ++i) {
+        if (!is_micro(raw.m_E[i])) continue;
+        if ((shared ? b.RemoveSharedMicroEdge(i, micro_tol) : b.RemoveNakedMicroEdge(i, micro_tol)) == kernel::Result::Ok) {
+          ++removed;
+          any_changed = true;
+          progress = true;
+          break;  // indices just shifted under Compact() - restart the scan
+        }
+        // Left in place (out of RemoveNakedMicroEdge's own safely-
+        // automatable scope, see its doc comment): keep scanning
+        // past it rather than looping on it forever.
+      }
+    }
+    if (any_changed) fixed.emplace_back(id, std::move(b));
+  }
+  if (found == 0) { ctx.Print(name + ": no " + kind + " edges shorter than " + FormatNumber(micro_tol) + " found"); return; }
+  if (!fixed.empty()) {
+    ctx.Doc().BeginChange(name);
+    for (auto& [id, b] : fixed) {
+      if (SceneObject* o = ctx.Doc().Find(id)) { *o->brep = std::move(b); o->InvalidateDisplay(); }
+    }
+  }
+  const int left = found - removed;
+  if (left == 0) {
+    ctx.Print(name + ": " + std::to_string(removed) + " " + kind + " micro edge(s) removed " + closed_note);
+  } else {
+    ctx.Warn(name + ": " + std::to_string(removed) + " " + kind + " micro edge(s) removed; " + std::to_string(left) + " left in place " + left_note);
+  }
+}
+
 void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "ExtractSrf", Make<FacePickCommand>(FacePickCommand::Op::Extract));
   Reg(e, "DeleteFaces", Make<FacePickCommand>(FacePickCommand::Op::Delete));
@@ -3817,73 +3894,7 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "curve via closest-point projection and replaces the edge's own 3D curve, leaving the rest of the "
       "polysurface intact; throws (reported as a Warn) if the substitute curve doesn't reasonably fit.");
   Reg(e, "RemoveAllNakedMicroEdges", OnSelection("Select polysurfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        const double micro_tol = ctx.Settings().absolute_tolerance * 100;
-        int found = 0, removed = 0;
-        // Computed entirely on local copies first (no document mutation)
-        // so a single BeginChange below covers exactly the objects that
-        // actually changed - the same "know the full set before mutating
-        // anything" contract BeginChangeForObjects documents.
-        std::vector<std::pair<ObjectId, kernel::Brep>> fixed;
-        for (ObjectId id : ids) {
-          const SceneObject* o = ctx.Doc().Find(id);
-          if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
-          kernel::Brep b = *o->brep;
-          auto is_micro = [&](const ON_BrepEdge& e2) {
-            if (e2.m_edge_index < 0 || e2.TrimCount() != 1) return false;
-            ON_NurbsCurve nc;
-            if (e2.GetNurbForm(nc) <= 0) return false;
-            kernel::NurbsCurve k; k.raw() = nc;
-            return k.Length(20) < micro_tol;
-          };
-          // Census first, once, before any removal - a fixed count of
-          // what this object actually starts with, so a persistently
-          // out-of-scope edge (still there on every later re-scan) is
-          // never counted more than the one time it genuinely exists.
-          {
-            const ON_Brep& raw = b.raw();
-            for (int i = 0; i < raw.m_E.Count(); ++i) if (is_micro(raw.m_E[i])) ++found;
-          }
-          bool any_changed = false;
-          // Each successful removal renumbers edges (Brep::Compact(), see
-          // RemoveNakedMicroEdge's own doc comment), so re-scan from
-          // scratch after every fix rather than trusting stale indices -
-          // this loop only ever counts INTO `removed`, never back into
-          // `found` above.
-          bool progress = true;
-          while (progress) {
-            progress = false;
-            const ON_Brep& raw = b.raw();
-            for (int i = 0; i < raw.m_E.Count(); ++i) {
-              if (!is_micro(raw.m_E[i])) continue;
-              if (b.RemoveNakedMicroEdge(i, micro_tol) == kernel::Result::Ok) {
-                ++removed;
-                any_changed = true;
-                progress = true;
-                break;  // indices just shifted under Compact() - restart the scan
-              }
-              // Left in place (out of RemoveNakedMicroEdge's own safely-
-              // automatable scope, see its doc comment): keep scanning
-              // past it rather than looping on it forever.
-            }
-          }
-          if (any_changed) fixed.emplace_back(id, std::move(b));
-        }
-        if (found == 0) { ctx.Print("RemoveAllNakedMicroEdges: no naked edges shorter than " + FormatNumber(micro_tol) + " found"); return; }
-        if (!fixed.empty()) {
-          ctx.Doc().BeginChange("RemoveAllNakedMicroEdges");
-          for (auto& [id, b] : fixed) {
-            if (SceneObject* o = ctx.Doc().Find(id)) { *o->brep = std::move(b); o->InvalidateDisplay(); }
-          }
-        }
-        const int left = found - removed;
-        if (left == 0) {
-          ctx.Print("RemoveAllNakedMicroEdges: " + std::to_string(removed) +
-                    " naked micro edge(s) removed (endpoints welded, the two loop-adjacent naked edges re-trimmed to close the gap)");
-        } else {
-          ctx.Warn("RemoveAllNakedMicroEdges: " + std::to_string(removed) + " naked micro edge(s) removed; " + std::to_string(left) +
-                    " left in place (shared with a second face, or its own vertex depended on by a third edge - outside "
-                    "the safely-automatable case; remove those by hand with EditSrf/PointsOn)");
-        }
+        RemoveAllMicroEdges(ctx, ids, false);
       }), CommandStatus::Implemented,
       "Detects naked edges shorter than 100x the document tolerance and actually removes each one whose two "
       "loop-adjacent edges are ALSO naked and whose own two endpoints touch nothing else in the polysurface "
@@ -3891,6 +3902,14 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "the same ReplaceEdgeCurve() this app already uses elsewhere) - the common 'a bad trim left a hairline "
       "gap' case. A micro edge shared with a second face, or whose vertex a third edge also depends on, is "
       "left in place and reported rather than guessed at.");
+  Reg(e, "RemoveAllSharedMicroEdges", OnSelection("Select polysurfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        RemoveAllMicroEdges(ctx, ids, true);
+      }), CommandStatus::Implemented,
+      "RemoveAllNakedMicroEdges' sibling for the SHARED (2-trim, interior) edges: detects edges shorter than 100x the document "
+      "tolerance that border two different faces and removes each one the kernel can close safely (Brep::RemoveSharedMicroEdge: "
+      "the two endpoints merge, the four loop-adjacent edges are re-trimmed through ReplaceEdgeCurve(); an endpoint another edge "
+      "depends on or a face left with fewer than four edges in its loop is refused). Edges it cannot close are left in place and "
+      "reported. One undo step for the whole selection.");
   Reg(e, "RefitTrim", Make<RefitTrimCommand>(), CommandStatus::Implemented,
       "Real constrained curve fit: kernel::NurbsCurve::FitLeastSquares (a genuine global least-squares B-spline approximation) tried at increasing control-point counts until the fit is within the given tolerance of the original trim's own sampled points, with every fitted control point clamped into the surface's own (u,v) domain rectangle afterward (control points bound the curve, so this provably keeps the whole curve inside the domain) and the tolerance re-verified after clamping.");
   Reg(e, "SplitRefitSurface", Make<SplitRefitSurfaceCommand>(), CommandStatus::Implemented,

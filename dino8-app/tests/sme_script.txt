@@ -1,0 +1,76 @@
+# RemoveAllSharedMicroEdges (tests/sections/64_sme.sh, section SME_): Brep::RemoveSharedMicroEdge from the app.
+# A 10 x 10 x 10 box has 12 edges, each shared by two faces. SplitEdge twice on one vertical edge, 0.01 apart (the document
+# tolerance is 0.001, so the micro limit is 100 x = 0.1), leaves that edge as three pieces: the box then has 14 edges, and the
+# 0.01 piece between the two new vertices is a SHARED micro edge (two trims). The command closes it: 13 edges, the same
+# 6 faces, still a valid closed solid of volume 1000. Cases (each starts at `New` and is bracketed by a marker line):
+#  split   the two splits only (14 edges): the fixture, and the control that RemoveAllNakedMicroEdges leaves it alone
+#  close   RemoveAllSharedMicroEdges on it: one micro edge removed, 13 edges
+#  twice   the command run a second time finds nothing left
+#  none    on a plain box (12 edges): finds none, changes nothing
+#  undo    Undo after closing it restores the 14-edge fixture in ONE step
+SetActiveViewport Top
+
+New
+SMEBEGIN_split
+Box 0,0,0 10,10,0 10
+SplitEdge
+0,0,5
+SplitEdge
+0,0,5.01
+SelAll
+RemoveAllNakedMicroEdges
+SelAll
+List
+Volume
+Check
+
+New
+SMEBEGIN_close
+Box 0,0,0 10,10,0 10
+SplitEdge
+0,0,5
+SplitEdge
+0,0,5.01
+SelAll
+RemoveAllSharedMicroEdges
+SelAll
+List
+Volume
+Check
+
+New
+SMEBEGIN_twice
+Box 0,0,0 10,10,0 10
+SplitEdge
+0,0,5
+SplitEdge
+0,0,5.01
+SelAll
+RemoveAllSharedMicroEdges
+SelAll
+RemoveAllSharedMicroEdges
+
+New
+SMEBEGIN_none
+Box 0,0,0 10,10,0 10
+SelAll
+RemoveAllSharedMicroEdges
+SelAll
+List
+Volume
+Check
+
+New
+SMEBEGIN_undo
+Box 0,0,0 10,10,0 10
+SplitEdge
+0,0,5
+SplitEdge
+0,0,5.01
+SelAll
+RemoveAllSharedMicroEdges
+Undo
+SelAll
+List
+Volume
+Check
