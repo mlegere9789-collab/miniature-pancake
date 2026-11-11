@@ -701,6 +701,10 @@ int FaceNurbsSurface(const ON_BrepFace& face, ON_NurbsSurface& out) {
 struct ExportFace {
   ON_NurbsSurface srf;
   std::vector<std::vector<LoopSeg>> loops;  // first = outer
+  // Parallel to `loops`: for every segment the brep edge index it runs along (-1 for a singular trim) and whether the segment
+  // runs AGAINST that edge's own direction (the trim's reversal with the face flip folded in). STEP shares one EDGE_CURVE
+  // between the two faces on either side of an edge and references it twice with ORIENTED_EDGE .T. / .F.
+  std::vector<std::vector<std::pair<int, bool>>> edge_refs;
 };
 
 bool PrepareExportFace(const ON_Brep& b, const ON_BrepFace& face, double tol, ExportFace& out);
@@ -737,10 +741,12 @@ bool PrepareExportFace(const ON_Brep& b, const ON_BrepFace& face, double tol, Ex
   if (rc == 0) return false;
   const ON_Surface* real = face.SurfaceOf();
   out.loops.clear();
+  out.edge_refs.clear();
   for (int li = 0; li < face.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b.m_L[face.m_li[li]];
     if (loop.m_type != ON_BrepLoop::outer && loop.m_type != ON_BrepLoop::inner) continue;
     std::vector<LoopSeg> segs;
+    std::vector<std::pair<int, bool>> refs_of_loop;
     for (int k = 0; k < loop.m_ti.Count(); ++k) {
       const ON_BrepTrim& t = b.m_T[loop.m_ti[k]];
       LoopSeg seg;
@@ -777,12 +783,22 @@ bool PrepareExportFace(const ON_Brep& b, const ON_BrepFace& face, double tol, Ex
         seg.c2.ChangeDimension(3);
       }
       segs.push_back(std::move(seg));
+      refs_of_loop.emplace_back(t.m_ei, t.m_ei >= 0 && t.m_bRev3d);
     }
     if (segs.empty()) continue;
-    if (loop.m_type == ON_BrepLoop::outer) out.loops.insert(out.loops.begin(), std::move(segs));
-    else out.loops.push_back(std::move(segs));
+    if (loop.m_type == ON_BrepLoop::outer) {
+      out.loops.insert(out.loops.begin(), std::move(segs));
+      out.edge_refs.insert(out.edge_refs.begin(), std::move(refs_of_loop));
+    } else {
+      out.loops.push_back(std::move(segs));
+      out.edge_refs.push_back(std::move(refs_of_loop));
+    }
   }
   if (face.m_bRev) {
+    for (std::vector<std::pair<int, bool>>& refs_of_loop : out.edge_refs) {
+      std::reverse(refs_of_loop.begin(), refs_of_loop.end());
+      for (std::pair<int, bool>& r : refs_of_loop) r.second = !r.second;
+    }
     out.srf.Transpose();
     for (std::vector<LoopSeg>& segs : out.loops) {
       std::reverse(segs.begin(), segs.end());
@@ -2164,12 +2180,15 @@ int WriteStepSurface(StepWriter& w, const ON_NurbsSurface& srf) {
 }
 
 // One edge, shared between the two faces on either side of it (STEP models
-// an oriented edge as a reference to one shared EDGE_CURVE).
-struct StepEdgeKey {
-  int v0, v1;  // vertex STEP ids, order-independent lookup below
+// an oriented edge as a reference to one shared EDGE_CURVE): per brep, the
+// EDGE_CURVE written for each brep edge and the VERTEX_POINT for each brep
+// vertex, so the second face to run along an edge references the first one's.
+struct StepEdgeShare {
+  std::map<int, int> edge_curve;    // brep edge index -> EDGE_CURVE id
+  std::map<int, int> vertex_point;  // brep vertex index -> VERTEX_POINT id
 };
 
-int WriteStepFace(StepWriter& w, const ON_Brep& b, const ON_BrepFace& face, double tol) {
+int WriteStepFace(StepWriter& w, const ON_Brep& b, const ON_BrepFace& face, double tol, StepEdgeShare* share = nullptr) {
   ExportFace f;
   if (!PrepareExportFace(b, face, tol, f)) return -1;
   const int srf_id = WriteStepSurface(w, f.srf);
@@ -2177,7 +2196,39 @@ int WriteStepFace(StepWriter& w, const ON_Brep& b, const ON_BrepFace& face, doub
   for (size_t li = 0; li < f.loops.size(); ++li) {
     const std::vector<LoopSeg>& segs = f.loops[li];
     std::vector<int> oriented;
-    for (const LoopSeg& seg : segs) {
+    for (size_t k = 0; k < segs.size(); ++k) {
+      const LoopSeg& seg = segs[k];
+      const int brep_edge = (li < f.edge_refs.size() && k < f.edge_refs[li].size()) ? f.edge_refs[li][k].first : -1;
+      if (share && brep_edge >= 0 && brep_edge < b.m_E.Count()) {
+        const bool against_edge = f.edge_refs[li][k].second;
+        auto found = share->edge_curve.find(brep_edge);
+        int ec;
+        if (found != share->edge_curve.end()) {
+          ec = found->second;
+        } else {
+          // The EDGE_CURVE runs along the brep edge's own direction, between the edge's own vertices.
+          const ON_BrepEdge& e = b.m_E[brep_edge];
+          ON_NurbsCurve edge_curve;
+          if (e.GetNurbForm(edge_curve) <= 0) {
+            edge_curve = seg.c3;
+            if (against_edge) edge_curve.Reverse();
+          }
+          auto vertex_id = [&](int vi, const ON_3dPoint& p) {
+            auto fv = share->vertex_point.find(vi);
+            if (fv != share->vertex_point.end()) return fv->second;
+            const int id = WriteVertexPoint(w, p);
+            share->vertex_point[vi] = id;
+            return id;
+          };
+          const int v0 = vertex_id(e.m_vi[0], edge_curve.PointAtStart());
+          const int v1 = vertex_id(e.m_vi[1], edge_curve.PointAtEnd());
+          const int c3 = WriteStepCurve(w, edge_curve);
+          ec = w.Add("EDGE_CURVE", "'',#" + std::to_string(v0) + ",#" + std::to_string(v1) + ",#" + std::to_string(c3) + ",.T.");
+          share->edge_curve[brep_edge] = ec;
+        }
+        oriented.push_back(w.Add("ORIENTED_EDGE", "'',*,*,#" + std::to_string(ec) + "," + (against_edge ? ".F." : ".T.")));
+        continue;
+      }
       const ON_3dPoint p0 = seg.c3.PointAtStart(), p1 = seg.c3.PointAtEnd();
       const int v0 = WriteVertexPoint(w, p0), v1 = WriteVertexPoint(w, p1);
       const int c3 = WriteStepCurve(w, seg.c3);
@@ -2283,7 +2334,8 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
         ON_Brep tmp;
         if (!SurfaceAsBrep(*o->surface, tmp)) break;
         std::vector<int> faces;
-        for (int fi = 0; fi < tmp.m_F.Count(); ++fi) { const int f = WriteStepFace(w, tmp, tmp.m_F[fi], tol); if (f >= 0) faces.push_back(f); }
+        StepEdgeShare tmp_share;
+        for (int fi = 0; fi < tmp.m_F.Count(); ++fi) { const int f = WriteStepFace(w, tmp, tmp.m_F[fi], tol, &tmp_share); if (f >= 0) faces.push_back(f); }
         if (faces.empty()) break;
         std::string refs = "(";
         for (size_t i = 0; i < faces.size(); ++i) refs += "#" + std::to_string(faces[i]) + (i + 1 < faces.size() ? "," : "");
@@ -2297,9 +2349,10 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
         if (!o->brep) break;
         const ON_Brep& b = o->brep->raw();
         std::vector<int> faces;
+        StepEdgeShare share;
         for (int fi = 0; fi < b.m_F.Count(); ++fi) {
           if (b.m_F[fi].m_face_index < 0) continue;
-          const int f = WriteStepFace(w, b, b.m_F[fi], tol);
+          const int f = WriteStepFace(w, b, b.m_F[fi], tol, &share);
           if (f >= 0) faces.push_back(f);
         }
         if (faces.empty()) break;
