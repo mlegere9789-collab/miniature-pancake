@@ -2636,6 +2636,41 @@ Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
   return result;
 }
 
+namespace {
+// The right prism of height `height` along `dhat` over the simple polygon `base` (any orientation, no repeated first point):
+// one planar face per wall and per cap (Brep::Extrude() would make ONE swept NURBS wall for the whole loop, which the planar
+// entry points - PlanarFaces(), the booleans - refuse). (ex, ey, dhat) is a right-handed frame at `origin`, used only to
+// orient the polygon counter-clockwise about dhat.
+Brep PlanarPrismOverPolygon(std::vector<Point3d> Q, Vector3d dhat, double height, const Vector3d& ex, const Vector3d& ey, const Point3d& origin) {
+  const auto bad = [](const std::string& why) { return std::invalid_argument("dino8::kernel::PlanarPrismOverPolygon: " + why); };
+  {
+    std::vector<Point2d> Q2;
+    for (const Point3d& q : Q) Q2.push_back(Point2d(ON_DotProduct(q - origin, ex), ON_DotProduct(q - origin, ey)));
+    if (detail::SignedArea(Q2) < 0.0) std::reverse(Q.begin(), Q.end());
+  }
+  const size_t m = Q.size();
+  if (m < 3) throw bad("the polygon degenerated");
+  std::vector<Point3d> T;
+  for (const Point3d& q : Q) T.push_back(q + dhat * height);
+  auto make_face = [](std::vector<Point3d> loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = std::move(loop);
+    f.plane = ON_Plane(f.loop[0], normal);
+    return f;
+  };
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face(std::vector<Point3d>(Q.rbegin(), Q.rend()), -dhat));  // bottom cap, seen from outside (below)
+  faces.push_back(make_face(T, dhat));                                           // top cap
+  for (size_t i = 0; i < m; ++i) {
+    const size_t j = (i + 1) % m;
+    Vector3d fn = ON_CrossProduct(Q[j] - Q[i], T[i] - Q[i]);
+    if (!fn.Unitize()) throw bad("the polygon has a zero-length edge");
+    faces.push_back(make_face({Q[i], Q[j], T[j], T[i]}, fn));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+}  // namespace
+
 Brep OffsetPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, double distance) {
   const std::string fn = "dino8::kernel::OffsetPolylineExtrusion: ";
   auto bad = [&](const std::string& why) { return std::invalid_argument(fn + why); };
@@ -2692,36 +2727,58 @@ Brep OffsetPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, doub
   } else {
     offset = poly;
   }
-  // One planar face per wall and per cap (Brep::Extrude() would make ONE swept NURBS wall for the whole loop, which the planar
-  // entry points - PlanarFaces(), the booleans - refuse): the offset polygon, counter-clockwise about dhat, with the bottom
-  // cap moved by -distance.
   std::vector<Point3d> Q;
-  for (int i = 0; i + 1 < offset.ControlPointCount(); ++i) Q.push_back(offset.ControlPointAt(i) - distance * dhat);
-  {
-    std::vector<Point2d> Q2;
-    for (const Point3d& q : Q) Q2.push_back(Point2d(ON_DotProduct(q - P[0], ex), ON_DotProduct(q - P[0], ey)));
-    if (detail::SignedArea(Q2) < 0.0) std::reverse(Q.begin(), Q.end());
+  for (int i = 0; i + 1 < offset.ControlPointCount(); ++i) Q.push_back(offset.ControlPointAt(i) - distance * dhat);  // the bottom cap moves by -distance
+  return PlanarPrismOverPolygon(Q, dhat, new_height, ex, ey, P[0]);
+}
+
+Brep ThickenPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness) {
+  const std::string fn = "dino8::kernel::ThickenPolylineExtrusion: ";
+  auto bad = [&](const std::string& why) { return std::invalid_argument(fn + why); };
+  if (!std::isfinite(thickness) || thickness == 0.0) throw bad("thickness must be finite and non-zero");
+  if (!std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z)) throw bad("direction must be finite");
+  const double height = direction.Length();
+  if (!(height > 0.0)) throw bad("direction must be non-zero");
+  if (profile.IsClosed()) throw bad("profile must be an OPEN polyline (a closed profile already bounds a solid: use OffsetPolylineExtrusion)");
+  if (profile.Degree() != 1 || profile.raw().IsRational()) throw bad("profile must be a polyline (degree 1, non-rational)");
+  std::vector<Point3d> P;
+  for (int i = 0; i < profile.ControlPointCount(); ++i) P.push_back(profile.ControlPointAt(i));
+  const size_t n = P.size();
+  if (n < 2) throw bad("profile needs at least 2 vertices");
+  const BoundingBox bbox = profile.GetTightBoundingBox();
+  const double size = std::sqrt((bbox.max.x - bbox.min.x) * (bbox.max.x - bbox.min.x) + (bbox.max.y - bbox.min.y) * (bbox.max.y - bbox.min.y) +
+                                (bbox.max.z - bbox.min.z) * (bbox.max.z - bbox.min.z));
+  const double tol = tolerance::DistanceForSize(size);
+  for (size_t i = 0; i + 1 < n; ++i) {
+    if (P[i].DistanceTo(P[i + 1]) <= tol) throw bad("profile has a zero-length segment");
   }
-  const size_t m = Q.size();
-  if (m < 3) throw bad("the offset profile degenerated");
-  std::vector<Point3d> T;
-  for (const Point3d& q : Q) T.push_back(q + dhat * new_height);
-  auto make_face = [](std::vector<Point3d> loop, Vector3d normal) {
-    Brep::PlanarFace f;
-    f.loop = std::move(loop);
-    f.plane = ON_Plane(f.loop[0], normal);
-    return f;
-  };
-  std::vector<Brep::PlanarFace> faces;
-  faces.push_back(make_face(std::vector<Point3d>(Q.rbegin(), Q.rend()), -dhat));  // bottom cap, seen from outside (below)
-  faces.push_back(make_face(T, dhat));                                           // top cap
-  for (size_t i = 0; i < m; ++i) {
-    const size_t j = (i + 1) % m;
-    Vector3d fn = ON_CrossProduct(Q[j] - Q[i], T[i] - Q[i]);
-    if (!fn.Unitize()) throw bad("the offset profile has a zero-length edge");
-    faces.push_back(make_face({Q[i], Q[j], T[j], T[i]}, fn));
+  Vector3d dhat = direction;
+  dhat.Unitize();
+  // every segment must lie in a plane perpendicular to dhat (the sheet is a ruled extrusion of the polyline along dhat)
+  for (size_t i = 0; i < n; ++i) {
+    if (std::fabs(ON_DotProduct(P[i] - P[0], dhat)) > tol) throw bad("the profile must lie in a plane perpendicular to direction (an oblique sheet has no uniform normal thickness)");
   }
-  return Brep::FromPlanarFaces(faces);
+  Vector3d ex = P[1] - P[0];
+  ex = ex - ON_DotProduct(ex, dhat) * dhat;
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(dhat, ex);
+  const ON_Plane plane(P[0], ex, ey);
+
+  // The thickened sheet is the prism over the closed polygon  P forward + offset(P) backward: the sheet's own faces are kept
+  // exactly (one planar wall per segment), the opposite face of each segment is the mitred offset (NurbsCurve::OffsetInPlane,
+  // Sharp, with its open-polyline loop removal), and two flat end walls close the strip. Positive `thickness` is the RIGHT of
+  // travel seen along +direction.
+  NurbsCurve offset;
+  std::string reason;
+  if (NurbsCurve::FromControlPoints(P, 1).OffsetInPlane(plane, thickness, offset, -1.0, CurveOffsetCornerStyle::Sharp, &reason) != Result::Ok) {
+    throw bad("the profile's mitre offset is not representable (" + (reason.empty() ? std::string("a fold is tighter than the thickness") : reason) + ")");
+  }
+  std::vector<Point3d> S = P;
+  for (int i = offset.ControlPointCount() - 1; i >= 0; --i) S.push_back(offset.ControlPointAt(i));
+  std::vector<Point2d> S2;
+  for (const Point3d& q : S) S2.push_back(Point2d(ON_DotProduct(q - P[0], ex), ON_DotProduct(q - P[0], ey)));
+  if (!detail::IsSimplePolygon(S2)) throw bad("the offset crosses the sheet itself: the thickness is too large for its folds");
+  return PlanarPrismOverPolygon(S, dhat, height, ex, ey, P[0]);
 }
 
 Brep ShellOpenExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness, ExtrusionOpening opening) {
