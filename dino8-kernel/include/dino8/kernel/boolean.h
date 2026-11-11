@@ -1053,6 +1053,18 @@ Brep ShellPolylineExtrusion(const NurbsCurve& profile, Vector3d direction,
                             const std::vector<double>& wall_thickness,
                             double bottom_thickness, double top_thickness);
 
+// Body offset (grow `distance` > 0, shrink `distance` < 0) of a RIGHT PRISM over ANY simple closed POLYLINE profile, convex
+// or concave - the concave sibling of OffsetSolidConvexPlanar() (convex solids only). The offset body is the prism over the
+// profile's exact mitre offset (NurbsCurve::OffsetInPlane, Sharp corners, including its invalid-loop removal for an inward
+// offset past a thin feature) with each cap moved by `distance` along its own outward normal: the profile plane moves by
+// -distance and the height becomes |direction| + 2*distance. Volume is exactly `area(offset profile) * (|direction| +
+// 2*distance)`; every face stays planar, corners are sharp (mitred), as with OffsetSolidConvexPlanar().
+//
+// Throws std::invalid_argument for: a non-finite distance/direction, a zero direction, an open / curved / non-planar /
+// self-crossing profile, a direction not perpendicular to the profile's plane, an inward distance that consumes the whole
+// height, and a profile offset that cannot be built exactly (a collapse, or an offset that splits into several pieces).
+Brep OffsetPolylineExtrusion(const NurbsCurve& profile, Vector3d direction, double distance);
+
 // Which end cap(s) of an extruded prism ShellOpenExtrusion() removes. "Top" is the cap at `profile + direction`,
 // "Bottom" the cap on the profile itself.
 enum class ExtrusionOpening { Top, Bottom, Both };
