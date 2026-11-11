@@ -13560,7 +13560,7 @@ hgb_vol intersect 4 125.66 "...and the kept result still measures 4 pi 10"
 hgb_cnt intersect "^history: History rebuild of a boolean: .*$HGBSEAL" 2 "both non-empty rebuilds sealed"
 # --- Declined rebuild: the whole model 100000 away from the origin
 hgb_vol fallback 1 874.34 "engine declines the coplanar tool (cylinder bottom cap in the box bottom face): the result is the MESH boolean (mesh volume 874.9)"
-hgb_has fallback "^history: History rebuild of a boolean: exact B-rep boolean declined \(the engine's result has gaps between faces that sewing could not close, so it is not a closed solid\); using the mesh boolean, so the result is a mesh$" "...and the reason is printed"
+hgb_has fallback "^history: History rebuild of a boolean: exact B-rep boolean declined \(dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more fragment loops \(non-manifold result\).*\); using the mesh boolean, so the result is a mesh$" "...and the engine's own reason is printed (CI full34: this coplanar-cap configuration is now declined with the non-manifold-edge reason, with an edge coordinate in the text, not the old 'gaps between faces' sewing reason)"
 hgb_has fallback "^history: Object 3 \(mesh\) layer Default$" "...List shows the object is a mesh now"
 hgb_vol fallback 2 874.34 "Undo restores the sealed B-rep"
 hgb_has fallback "^history: Object 3 \(polysurface\) layer Default$" "...which List shows as a polysurface again"
