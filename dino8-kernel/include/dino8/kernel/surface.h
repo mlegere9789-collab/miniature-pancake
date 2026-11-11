@@ -175,6 +175,48 @@ struct GridEndConditions {
   Vector3d twist_u1_v1 = Vector3d(0.0, 0.0, 0.0);
 };
 
+// The analytic kind of a surface, as recovered from its NURBS data by `NurbsSurface::Classify()`.
+enum class SurfaceKind { Plane, Sphere, Cylinder, Cone, Torus, General };
+
+// Result of `NurbsSurface::Classify()`: the kind and the closed-form record of that kind (only the member named by
+// `kind` is meaningful). Sphere: `sphere.plane` is the equatorial plane. Cylinder: `cylinder.circle` is a circle
+// of the cylinder, its plane z axis the cylinder axis. Cone: apex = `cone.plane.origin`, axis = `cone.plane.zaxis`, `cone.radius`
+// is the radius at axial distance `cone.height` from the apex. Torus: `torus.plane` holds the centre and axis, `major_radius`
+// the ring and `minor_radius` the tube.
+struct SurfaceClassification {
+  SurfaceKind kind = SurfaceKind::General;
+  ON_Plane plane;
+  ON_Sphere sphere;
+  ON_Cylinder cylinder;
+  ON_Cone cone;
+  ON_Torus torus;
+};
+
+// The foot of a point on a typed (infinite, untrimmed) analytic surface, from `AnalyticClosestPoint()`.
+struct AnalyticFoot {
+  double u = 0.0;
+  double v = 0.0;
+  Point3d point;    // the closest point on the analytic surface
+  Vector3d normal;  // unit normal there, pointing away from the axis / centre (the plane's z axis for a plane)
+  double signed_distance = 0.0;  // distance to `point`, positive on the side `normal` points to
+};
+
+// Closed-form point of an analytic surface at its own parameters (angles in radians). Conventions, with (X, Y, Z) the
+// frame of the record (sphere.plane, cylinder.circle.plane, cone.plane, torus.plane) and o its origin:
+//   Plane:    o + u X + v Y
+//   Sphere:   o + r (cos v (cos u X + sin u Y) + sin v Z)                u any angle, v in [-pi/2, pi/2]
+//   Cylinder: o + r (cos u X + sin u Y) + v Z                            v = distance along the axis
+//   Cone:     apex + v Z + (v r / h) (cos u X + sin u Y)                 v = axial distance from the apex
+//   Torus:    o + (R + r cos v)(cos u X + sin u Y) + r sin v Z           u about the axis, v about the tube
+// Throws std::invalid_argument for SurfaceKind::General.
+Point3d AnalyticSurfacePoint(const SurfaceClassification& surface, double u, double v);
+
+// Closed-form closest point (the inverse of AnalyticSurfacePoint) of `p` on the infinite analytic surface: the foot,
+// its parameters, the outward normal and the signed distance. Returns false when there is no unique foot (p on the
+// sphere centre, the cylinder / cone / torus axis, the cone's apex, the torus ring's centre circle) or the kind is
+// General; `out` is then unchanged. A cone is the single nappe (v >= 0 in the convention above, for h > 0).
+bool AnalyticClosestPoint(const SurfaceClassification& surface, Point3d p, AnalyticFoot& out);
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -936,6 +978,12 @@ class NurbsSurface {
   // family). Verified against the existing sphere, cylinder wall, and
   // cone too (all correctly report false at the same 1e-6 tolerance).
   bool IsTorus(double tolerance = ON_ZERO_TOLERANCE) const;
+
+  // Which analytic surface this is, within `tolerance` (the largest distance the NURBS may stray from it; default 1e-6,
+  // which a rational NURBS torus needs - see IsTorus()), with its closed-form record: plane, sphere, cylinder, cone or
+  // torus, tested in that order, else General. Uses the same OpenNURBS isocurve fits as IsSphere()/IsCylinder()/
+  // IsCone()/IsTorus() but returns the fitted record instead of a bool. Never throws; an invalid surface is General.
+  SurfaceClassification Classify(double tolerance = 1e-6) const;
 
   // An approximate physical width (U direction) and height (V direction)
   // of the surface, measured as a representative isocurve's own true arc
