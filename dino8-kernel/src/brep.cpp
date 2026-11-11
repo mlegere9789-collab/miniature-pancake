@@ -134,6 +134,80 @@ bool FindSweepCapFan(const ON_Brep& brep, int face_index, ON_NurbsSurface& fan) 
   return true;
 }
 
+// Removes single-sample overshoots from a closed (u, v) polygon: a vertex after which the path steps back against the step that
+// arrived at it, by less than a quarter of that step. The surface-surface tracer leaves them where two pieces of one intersection
+// curve meet (measured: the 60-vertex circle where a counterbore meets a slab top has one vertex 0.0034 ahead of the next, a
+// 0.036 step arriving and a 0.0034 step back). The polygon then crosses itself and cannot be slit into its face's outline for the
+// exact-clip tessellation. Tessellation-only: the B-rep's own trims are left as they are.
+void RemoveUvSpikes(std::vector<Point2d>& poly) {
+  for (int pass = 0; pass < 8 && poly.size() >= 5; ++pass) {
+    bool removed = false;
+    const size_t n = poly.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point2d& p = poly[(k + n - 1) % n];
+      const Point2d& c = poly[k];
+      const Point2d& q = poly[(k + 1) % n];
+      const double ax = c.x - p.x, ay = c.y - p.y, lx = q.x - c.x, ly = q.y - c.y;
+      const double la = std::hypot(ax, ay), ll = std::hypot(lx, ly);
+      if (la > 0.0 && ll > 0.0 && ll < 0.25 * la && ax * lx + ay * ly < -0.5 * la * ll) {
+        poly.erase(poly.begin() + static_cast<long>(k));
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) break;
+  }
+}
+
+// One polygon for `outer` with each hole slit into it (the exact-clip tessellation takes a single simple polygon). Every hole is
+// attached at its nearest outer vertex, chosen against the pristine outer so two holes never entangle, walked in the sense
+// opposite to the outer, and returned along a parallel edge offset by `notch` times the bridge length (a zero-width slit defeats
+// the simplicity test; the offset must stay narrow enough for the mesh weld to close it again).
+std::vector<Point2d> SlitHolesIntoOuter(const std::vector<Point2d>& outer, std::vector<std::vector<Point2d>> holes, double notch) {
+  const double outer_area = dino8::kernel::detail::SignedArea(outer);
+  struct Attach {
+    size_t outer_index;
+    std::vector<Point2d> insert;
+  };
+  std::vector<Attach> attachments;
+  for (std::vector<Point2d>& hole : holes) {
+    if (hole.size() < 3) continue;
+    if ((dino8::kernel::detail::SignedArea(hole) > 0.0) == (outer_area > 0.0)) std::reverse(hole.begin(), hole.end());
+    size_t best_outer = 0, best_hole = 0;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    for (size_t oi = 0; oi < outer.size(); ++oi) {
+      for (size_t hi = 0; hi < hole.size(); ++hi) {
+        const double dx = outer[oi].x - hole[hi].x, dy = outer[oi].y - hole[hi].y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 < best_d2) {
+          best_d2 = d2;
+          best_outer = oi;
+          best_hole = hi;
+        }
+      }
+    }
+    const Point2d& ea = outer[best_outer];
+    const Point2d& eh = hole[best_hole];
+    const double bx = eh.x - ea.x, by = eh.y - ea.y, len = std::hypot(bx, by);
+    const double off = (len > 1e-300 ? len : 1.0) * notch;
+    const double px = len > 1e-300 ? by / len * off : off, py = len > 1e-300 ? -bx / len * off : 0.0;
+    Attach att;
+    att.outer_index = best_outer;
+    for (size_t k = 0; k < hole.size(); ++k) att.insert.push_back(hole[(best_hole + k) % hole.size()]);
+    att.insert.emplace_back(eh.x + px, eh.y + py);
+    att.insert.emplace_back(ea.x + px, ea.y + py);
+    attachments.push_back(std::move(att));
+  }
+  std::vector<Point2d> merged;
+  for (size_t i = 0; i < outer.size(); ++i) {
+    merged.push_back(outer[i]);
+    for (const Attach& att : attachments) {
+      if (att.outer_index == i) merged.insert(merged.end(), att.insert.begin(), att.insert.end());
+    }
+  }
+  return merged;
+}
+
 bool ResolveFace(const ON_Brep& brep, int face_index,
                  const std::vector<std::vector<Point2d>>& side_trims,
                  const std::vector<bool>& side_exact,
@@ -180,6 +254,23 @@ bool ResolveFace(const ON_Brep& brep, int face_index,
     out.outer = {Point2d(du.Min(), dv.Min()), Point2d(du.Max(), dv.Min()), Point2d(du.Max(), dv.Max()), Point2d(du.Min(), dv.Max())};
   }
   out.exact_clip = !out.outer.empty() && out.holes.empty();
+  if (!out.holes.empty() && !out.outer.empty()) {
+    // A face with inner loops used to fall back to whole-cell in/out clipping (TessellateGrid with polygon + holes): every cell
+    // that straddles the outer boundary or a hole boundary is kept or dropped as a whole, so such a face's mesh never meets its
+    // neighbours' (measured: a slab with two counterbores tessellated to volume 390.09 against an exact 396.607, and not
+    // closed, all of it in the top face). The exact-clip path takes ONE simple polygon, so slit the holes into the outer loop;
+    // keep the old path when the slit polygon is not simple.
+    std::vector<std::vector<Point2d>> clean_holes = out.holes;
+    for (std::vector<Point2d>& h : clean_holes) RemoveUvSpikes(h);
+    std::vector<Point2d> clean_outer = out.outer;
+    RemoveUvSpikes(clean_outer);
+    std::vector<Point2d> merged = SlitHolesIntoOuter(clean_outer, std::move(clean_holes), 1e-4);
+    if (merged.size() >= 3 && dino8::kernel::detail::IsSimplePolygon(merged)) {
+      out.outer = std::move(merged);
+      out.holes.clear();
+      out.exact_clip = true;
+    }
+  }
   return true;
 }
 
