@@ -529,6 +529,23 @@ void HealLoopGaps(std::vector<LoopSeg>& segs, double tol) {
   }
 }
 
+// A zero-length 3D segment (the exporter's record of a degenerate edge) is a singular trim in the brep, which is only
+// valid along an edge of the surface domain (a pole). On any other surface (the loop of a plane or cylinder face that
+// carries a stray degenerate edge) it makes ON_Brep::IsValid fail, so it is dropped.
+void DropInteriorSingulars(const ON_NurbsSurface& srf, std::vector<LoopSeg>& segs, double tol) {
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const double eu = 1e-6 * (1.0 + du.Length()), ev = 1e-6 * (1.0 + dv.Length());
+  for (size_t k = segs.size(); k-- > 0 && segs.size() > 1;) {
+    const ON_NurbsCurve& c3 = segs[k].c3;
+    const ON_3dPoint p0 = c3.PointAtStart();
+    if (p0.DistanceTo(c3.PointAtEnd()) > tol || p0.DistanceTo(c3.PointAt(c3.Domain().Mid())) > tol) continue;
+    const ON_3dPoint a = segs[k].c2.PointAtStart(), b = segs[k].c2.PointAtEnd();
+    const bool on_edge = (std::fabs(a.x - du.Min()) < eu && std::fabs(b.x - du.Min()) < eu) || (std::fabs(a.x - du.Max()) < eu && std::fabs(b.x - du.Max()) < eu) ||
+                         (std::fabs(a.y - dv.Min()) < ev && std::fabs(b.y - dv.Min()) < ev) || (std::fabs(a.y - dv.Max()) < ev && std::fabs(b.y - dv.Max()) < ev);
+    if (!on_edge) segs.erase(segs.begin() + static_cast<std::ptrdiff_t>(k));
+  }
+}
+
 // The 3D curve of a 2D pcurve, evaluated through the surface (used when an
 // IGES 142 carries only the parameter-space curve).
 bool LiftToSurface(const ON_NurbsSurface& s, const ON_NurbsCurve& c2, ON_NurbsCurve& c3) {
@@ -2931,6 +2948,7 @@ bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImp
     }
     // The whole loop at once, so the pcurves stay continuous across a seam.
     if (!segs.empty() && !ProjectLoopToSurface(srf, segs, tol)) segs.clear();
+    DropInteriorSingulars(srf, segs, tol);
     HealLoopGaps(segs, tol);
     if (!segs.empty()) loops.push_back(std::move(segs));
   }
