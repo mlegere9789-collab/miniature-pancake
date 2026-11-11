@@ -68,6 +68,7 @@ add_library(dino8_kernel STATIC
   src/step_curve.cpp
   src/surface.cpp
   src/surface_edit.cpp
+  src/surface_classify.cpp
   src/brep_seam.cpp
   src/surface_intersect.cpp
   src/brep.cpp
