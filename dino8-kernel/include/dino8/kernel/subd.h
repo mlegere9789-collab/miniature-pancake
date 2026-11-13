@@ -92,6 +92,23 @@ struct SubDFitReport {
   std::string reason;               // empty when converged; otherwise why not
 };
 
+// What SubD::FromNurbsSurfaceToTolerance() measured and decided.
+struct SubDFromNurbsReport {
+  // True iff `max_deviation <= tolerance` at the reported grid (the SubD is
+  // returned only in that case; on false it is empty and `reason` says why).
+  bool converged = false;
+  double tolerance = 0.0;      // the requested tolerance (model units)
+  double max_deviation = 0.0;  // worst sampled distance from a limit-surface sample to the NURBS surface, at the reported grid
+  int divisions = 0;           // the grid (divisions x divisions quad faces) of the reported cage
+  int faces = 0;               // faces of the reported cage
+  int samples_per_face = 0;    // limit-surface samples measured on every face
+  bool fitted = false;         // the cage was moved so that its limit surface interpolates the sampled grid points
+  double fit_residual = 0.0;   // worst distance between a grid point and the limit point of its vertex after the fit
+  std::vector<int> divisions_tried;         // every grid tried, in order
+  std::vector<double> deviation_per_level;  // max_deviation measured at each grid tried
+  std::string reason;                       // empty when converged; otherwise why not
+};
+
 // One edge's current sharpness state, from SubD::EdgeSharpnessAt() - the
 // read-back counterpart the two SetEdgeSharpness() overloads never had
 // (see their own doc comments below): writing a semi-sharp weight has
@@ -321,6 +338,45 @@ class SubD {
   // direction (`ON_IsKnotVectorUniform`), or is periodic in either
   // direction (a cage welded across the seam is out of scope).
   static SubD FromUniformBicubicSurface(const NurbsSurface& surface);
+
+  // FromNurbsSurface() with a MEASURED fidelity: the cage whose Catmull-Clark
+  // LIMIT surface lies within `tolerance` of `surface`, and a report that
+  // says how far it actually is.
+  //
+  // FromNurbsSurface() puts the cage vertices ON the surface, but a
+  // Catmull-Clark limit surface does not pass through its own control net -
+  // it is pulled inside the curvature by about h^2 * kappa / 6 (h the grid
+  // spacing) - and nothing in that method measures the result. Here, for
+  // each grid n = 4, 8, 16, ... (up to `max_divisions`) the cage is built,
+  // its four sheet corners are pinned (SetVertexCorner), and the control
+  // points are moved so that the limit surface INTERPOLATES the sampled
+  // grid points (InterpolateControlNet: afterwards the limit point of every
+  // vertex lies on the surface, on the boundary crease curves too), which
+  // cuts the deviation to about a third of the plain cage's (measured on a torus
+  // patch: 2.6e-2 -> 7.3e-3 at 4x4, 6.8e-3 -> 2.0e-3 at 8x8); the rate stays O(h^2),
+  // set by the sheet's boundary rows, so the grid doubles until the tolerance is met. Then the limit surface is measured: on every face the limit
+  // point at 9 parameters ((.5,.5), the four edge midpoints and the four
+  // (.25|.75, .25|.75) points) is evaluated with EvaluateFace() and its
+  // distance to `surface` is taken (NurbsSurface::ClosestPoint, a distance
+  // to the surface itself, not a parameter difference). The first grid whose
+  // worst measured distance is <= `tolerance` is returned.
+  //
+  // HONEST LIMITS: the figure is a SAMPLED, one-sided distance (limit surface
+  // -> NURBS surface; the interpolation of the grid points is what rules out
+  // a region of the NURBS surface the limit surface does not cover), so it is
+  // a measurement, not a certificate; ClosestPoint is a grid search that
+  // returns a real surface point, so the distance it reports is never below
+  // the true distance. Control points are stored as 32-bit floats, so a
+  // tolerance below about 1e-6 times the surface's size cannot be met. The
+  // whole domain of one untrimmed surface is converted, as in
+  // FromNurbsSurface(); a surface whose grid cells degenerate (a pole) or
+  // that is closed in either direction is not handled (the cage builder
+  // throws). On non-convergence the returned SubD is EMPTY and
+  // `report->reason` states why (the best deviation reached) - never a
+  // silently looser result. Throws std::invalid_argument for a non-finite or
+  // non-positive `tolerance`, an invalid `surface`, or `max_divisions` < 4.
+  static SubD FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double tolerance,
+                                          SubDFromNurbsReport* report = nullptr, int max_divisions = 32);
 
   // Builds a SubD control cage from a whole Brep, one quad per face,
   // faces that share an edge in the Brep sharing that edge (and its
