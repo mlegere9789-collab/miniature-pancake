@@ -1038,6 +1038,14 @@ ChamferDistanceLimit MaxChamferDistance(const Brep& solid, Point3d edge_p0, Poin
 // ChamferConvexEdgeAngle gives, naming the angle).
 double MaxChamferDistanceForAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double angle_from_i);
 
+// MaxChamferDistance's bound ALSO counting the faces that meet the edge's two ends. Where a third face k is oblique to the edge, the rail of distance d
+// pierces plane k at v + d Q1v, Q1v = m - ((m.n_k)/(e.n_k)) e (m the in-plane into-material unit direction of that face, e the edge direction), which stays on
+// k's edge toward the neighbour w (a vertex of k's loop) only while d <= w.w / (Q1v.w); ChamferConvexEdge refuses a larger distance with "the chamfer overruns a
+// third face". Each distance's bound is the smallest of its face extent and these end bounds (they are independent per distance, the two rails pierce separately).
+// For perpendicular end faces the end bound is the neighbouring edge's length and the result equals MaxChamferDistance's for a box. Same structural refusals as
+// MaxChamferDistance.
+ChamferDistanceLimit MaxChamferDistanceWithEnds(const Brep& solid, Point3d edge_p0, Point3d edge_p1);
+
 // MULTI-EDGE generalization of ChamferConvexEdge, closing a real gap this
 // file itself otherwise had: unlike the fillet side (FilletConvexEdges,
 // FilletConvexEdgesConic), no multi-edge chamfer batch existed anywhere
