@@ -250,11 +250,8 @@ impl Scene {
             self.unindex(&s, ix);
             self.sem.remove(ix);
         }
-        if self.geom.remove(ix) {
-            self.mark_dirty(ix);
-        } else if self.spatial.bvh.is_some() {
-            self.mark_dirty(ix);
-        }
+        self.geom.remove(ix);
+        self.mark_dirty(ix);
         self.proc_.remove(ix);
         self.pres.remove(ix);
         for c in self.props.iter_mut() {

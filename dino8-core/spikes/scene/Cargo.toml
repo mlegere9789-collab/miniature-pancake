@@ -6,7 +6,7 @@ description = "Spike A: entity-component-relationship scene store with structura
 publish = false
 
 [lib]
-name = "scene"
+name = "dino8_scene"
 path = "src/lib.rs"
 
 [[bin]]
