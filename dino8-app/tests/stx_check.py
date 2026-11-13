@@ -96,8 +96,26 @@ def check(stem, faces, planes, cylinders, radius, bb, holed_faces):
         e = refs(a[3])[0]
         uses[e] = uses.get(e, 0) + 1
     edges = kinds.get("EDGE_CURVE", [])
-    bad = [e for e in edges if uses.get(e, 0) != 2]
-    report(edges and not bad, stem + "_every_edge_used_exactly_twice", "%d edges, %d not used twice" % (len(edges), len(bad)))
+
+    def curve_kind(e):
+        return ents[refs(split_top(ents[e][1])[3])[0]][0]
+
+    # Straight / spline edges are shared between the two faces along them: each used exactly twice. A CIRCLE edge is written per
+    # face (the faces split a sewn rim at different vertices), so rims are checked by geometry below instead.
+    plain = [e for e in edges if curve_kind(e) != "CIRCLE"]
+    arcs = [e for e in edges if curve_kind(e) == "CIRCLE"]
+    bad = [e for e in plain if uses.get(e, 0) != 2]
+    report(plain and not bad, stem + "_every_non_arc_edge_used_exactly_twice", "%d edges, %d not used twice" % (len(plain), len(bad)))
+    if stem == "cut":
+        rims = {}
+        for e in arcs:
+            circ = ents[refs(split_top(ents[e][1])[3])[0]]
+            ax = refs(split_top(circ[1])[1])[0]
+            cp = refs(ents[ax][1])[0]
+            c = numbers(split_top(ents[cp][1])[-1])[:3]
+            r = numbers(split_top(circ[1])[-1])[-1]
+            rims[(round(c[0], 1), round(c[1], 1), round(c[2], 1), round(r, 1))] = rims.get((round(c[0], 1), round(c[1], 1), round(c[2], 1), round(r, 1)), 0) + uses.get(e, 0)
+        report(len(rims) == 2 and all(v == 2 for v in rims.values()), stem + "_each_rim_circle_is_used_by_exactly_its_two_faces", "rim uses by (cx, cy, cz, r): %s" % rims)
     if stem == "cut":
         # the hole of a pierced box is a circle of radius 2: its edges must be exact CIRCLE curves (>= 2: top and bottom rim), not
         # hundreds of short LINE segments (the sealed Boolean's hole edges are polylines today)
