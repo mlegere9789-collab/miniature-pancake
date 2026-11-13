@@ -3766,6 +3766,80 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance) {
   return OffsetSolidConvexPlanar(solid, std::vector<double>(solid.PlanarFaces().size(), distance));
 }
 
+Brep OffsetRuledSolid(const std::vector<Point3d>& bottom, const std::vector<Point3d>& top, double distance) {
+  const char* const who = "dino8::kernel::OffsetRuledSolid: ";
+  if (!std::isfinite(distance)) throw std::invalid_argument(std::string(who) + "distance must be finite");
+  const size_t n = bottom.size();
+  if (n < 3 || top.size() != n) {
+    throw std::invalid_argument(std::string(who) + "bottom and top need the same number (>= 3) of vertices");
+  }
+  ON_BoundingBox bb;
+  for (const Point3d& p : bottom) bb.Set(p, true);
+  for (const Point3d& p : top) bb.Set(p, true);
+  const double scale = std::max(1e-12, bb.Diagonal().Length());
+  const double ptol = 1e-9 * scale;
+
+  Point3d centroid(0, 0, 0);
+  for (size_t i = 0; i < n; ++i) centroid += bottom[i] + top[i];
+  centroid = centroid / (2.0 * static_cast<double>(n));
+
+  // Planar loop -> outward-facing PlanarFace, or a refusal. Orientation is decided against the body centroid, so input winding
+  // (and which profile is "bottom") does not matter.
+  auto make_face = [&](std::vector<Point3d> loop, const char* what) {
+    Vector3d nrm(0, 0, 0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& a = loop[i];
+      const Point3d& c = loop[(i + 1) % loop.size()];
+      nrm.x += (a.y - c.y) * (a.z + c.z);
+      nrm.y += (a.z - c.z) * (a.x + c.x);
+      nrm.z += (a.x - c.x) * (a.y + c.y);
+    }
+    const double len = nrm.Length();
+    if (len <= ptol * ptol) throw std::invalid_argument(std::string(who) + what + " is degenerate (zero area)");
+    nrm = nrm / len;
+    Point3d fc(0, 0, 0);
+    for (const Point3d& p : loop) fc += p;
+    fc = fc / static_cast<double>(loop.size());
+    for (const Point3d& p : loop) {
+      if (std::fabs((p - fc) * nrm) > ptol) {
+        throw std::invalid_argument(std::string(who) + what + " is not planar: no exact offset");
+      }
+    }
+    if ((fc - centroid) * nrm < 0.0) {
+      std::reverse(loop.begin(), loop.end());
+      nrm = -nrm;
+    }
+    Vector3d xa = loop[1] - loop[0];
+    xa.Unitize();
+    Vector3d ya = ON_CrossProduct(nrm, xa);
+    ya.Unitize();
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(loop[0], xa, ya);
+    f.loop = std::move(loop);
+    return f;
+  };
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face(bottom, "the bottom profile"));
+  faces.push_back(make_face(top, "the top profile"));
+  // the two profile planes must be distinct (a ruled solid needs height): the top's centroid is off the bottom plane
+  {
+    const Brep::PlanarFace& bf = faces[0];
+    Point3d tc(0, 0, 0);
+    for (const Point3d& p : top) tc += p;
+    tc = tc / static_cast<double>(n);
+    if (std::fabs((tc - bf.loop[0]) * bf.plane.zaxis) <= ptol) {
+      throw std::invalid_argument(std::string(who) + "the two profiles lie on one plane (no height)");
+    }
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const size_t j = (i + 1) % n;
+    faces.push_back(make_face({bottom[i], bottom[j], top[j], top[i]}, "a ruled side quad"));
+  }
+  const Brep base = Brep::FromPlanarFaces(faces);
+  return OffsetSolidConvexPlanar(base, distance);
+}
+
 namespace {
 
 // Whether `a` and `b` (two independent PlanarFace polygons, not yet
