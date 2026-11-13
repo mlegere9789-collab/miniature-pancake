@@ -160,12 +160,13 @@ SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_
 }
 
 SubD SubD::FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double tolerance, SubDFromNurbsReport* report,
-                                       int max_divisions) {
+                                       int max_divisions, int start_divisions, bool best_effort) {
   if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
     throw std::invalid_argument("dino8::kernel::SubD::FromNurbsSurfaceToTolerance: tolerance must be positive and finite");
   }
-  if (max_divisions < 4) {
-    throw std::invalid_argument("dino8::kernel::SubD::FromNurbsSurfaceToTolerance: max_divisions must be at least 4");
+  if (start_divisions < 2 || max_divisions < start_divisions) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurfaceToTolerance: start_divisions must be at least 2 and max_divisions at least start_divisions");
   }
   if (!surface.raw().IsValid()) {
     throw std::invalid_argument(
@@ -192,7 +193,8 @@ SubD SubD::FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double toler
   const double pin_tolerance = std::max(1e-5 * extent, 1e-9);
 
   double best_deviation = std::numeric_limits<double>::infinity();
-  for (int n = 4; n <= max_divisions; n *= 2) {
+  SubD last_fitted;
+  for (int n = start_divisions; n <= max_divisions; n *= 2) {
     SubD cage = FromNurbsSurface(surface, n, n);
     for (const Point3d& c : corner_points) (void)cage.SetVertexCorner(c, true, pin_tolerance);
     SubDInterpolationReport fit;
@@ -200,13 +202,24 @@ SubD SubD::FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double toler
 
     double worst = 0.0;
     int faces = 0;
+    int measured = 0;
+    // Measuring costs ~9 exact evaluations and 18 closest-point scans per face: past 256 faces every k-th face is measured (k = ceil(faces / 256)).
+    const int stride = std::max(1, (n * n + 255) / 256);
     ON_SubDFaceIterator fit_it = fitted.subd_.FaceIterator();
     for (const ON_SubDFace* f = fit_it.FirstFace(); f != nullptr; f = fit_it.NextFace()) {
-      ++faces;
+      if (faces++ % stride != 0) continue;
+      ++measured;
       for (int k = 0; k < kSamples; ++k) {
         const SubDSurfacePoint p = fitted.EvaluateFace(f->m_id, su[k], sv[k]);
         const Point3d q(p.position.x, p.position.y, p.position.z);
-        worst = std::max(worst, (q - surface.ClosestPoint(q)).Length());
+        // The closest-point search is a grid scan that can lock onto a wrong place (distances too LARGE, never too small): the smaller
+        // of a coarse and a finer scan wins.
+        double d = std::numeric_limits<double>::infinity();
+        for (int div : {20, 60}) {
+          const Point2d uv = surface.ClosestPointParameter(q, div, div);
+          d = std::min(d, surface.PointAt(uv.x, uv.y).DistanceTo(q));
+        }
+        worst = std::max(worst, d);
       }
     }
     rep.divisions_tried.push_back(n);
@@ -217,16 +230,21 @@ SubD SubD::FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double toler
       rep.max_deviation = worst;
       rep.divisions = n;
       rep.faces = faces;
+      rep.faces_measured = measured;
       rep.fitted = true;
       rep.fit_residual = fit.final_max_residual;
+      rep.fit_iterations = fit.iterations;
       if (report != nullptr) *report = rep;
       return fitted;
     }
+    last_fitted = std::move(fitted);
     rep.max_deviation = worst;
     rep.divisions = n;
     rep.faces = faces;
+    rep.faces_measured = measured;
     rep.fitted = true;
     rep.fit_residual = fit.final_max_residual;
+    rep.fit_iterations = fit.iterations;
   }
   char msg[256];
   std::snprintf(msg, sizeof msg,
@@ -234,6 +252,7 @@ SubD SubD::FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double toler
                 tolerance, max_divisions, best_deviation, 1e-7 * extent);
   rep.reason = msg;
   if (report != nullptr) *report = rep;
+  if (best_effort) return last_fitted;
   return SubD();
 }
 

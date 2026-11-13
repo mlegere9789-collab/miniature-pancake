@@ -101,9 +101,11 @@ struct SubDFromNurbsReport {
   double max_deviation = 0.0;  // worst sampled distance from a limit-surface sample to the NURBS surface, at the reported grid
   int divisions = 0;           // the grid (divisions x divisions quad faces) of the reported cage
   int faces = 0;               // faces of the reported cage
-  int samples_per_face = 0;    // limit-surface samples measured on every face
+  int samples_per_face = 0;    // limit-surface samples measured on every measured face
+  int faces_measured = 0;      // faces measured (all of them up to 256 faces, every k-th beyond)
   bool fitted = false;         // the cage was moved so that its limit surface interpolates the sampled grid points
   double fit_residual = 0.0;   // worst distance between a grid point and the limit point of its vertex after the fit
+  int fit_iterations = 0;      // interpolation iterations of the reported grid
   std::vector<int> divisions_tried;         // every grid tried, in order
   std::vector<double> deviation_per_level;  // max_deviation measured at each grid tried
   std::string reason;                       // empty when converged; otherwise why not
@@ -374,9 +376,15 @@ class SubD {
   // throws). On non-convergence the returned SubD is EMPTY and
   // `report->reason` states why (the best deviation reached) - never a
   // silently looser result. Throws std::invalid_argument for a non-finite or
-  // non-positive `tolerance`, an invalid `surface`, or `max_divisions` < 4.
+  // non-positive `tolerance`, an invalid `surface`, or `max_divisions` < `start_divisions` or `start_divisions` < 2 (the default grids start at 4, so `max_divisions` < 4 throws by default).
+  //
+  // `start_divisions` (>= 2) is the first grid; it doubles up to `max_divisions` (the grids are start, 2 start, 4 start, ...,
+  // each <= max_divisions; `max_divisions` >= `start_divisions` is required, 4 <= max_divisions when start is 4).
+  // With `best_effort` true a grid that misses the tolerance is not discarded: the finest grid tried is returned with
+  // `report->converged == false` and `reason` set (for a caller that reports the achieved deviation rather than refusing).
   static SubD FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double tolerance,
-                                          SubDFromNurbsReport* report = nullptr, int max_divisions = 32);
+                                          SubDFromNurbsReport* report = nullptr, int max_divisions = 32,
+                                          int start_divisions = 4, bool best_effort = false);
 
   // Builds a SubD control cage from a whole Brep, one quad per face,
   // faces that share an edge in the Brep sharing that edge (and its

@@ -1600,14 +1600,13 @@ struct SurfaceCageResult {
 
 constexpr int kSurfaceCageStartDivisions = 6;  // 6, 12, 24, 48 cells per direction
 constexpr int kSurfaceCageRounds = 4;
-constexpr int kSurfaceCageMaxSamples = 500;
 
 // ToSubD's path for a plain (untrimmed) NURBS surface that is open in both directions with four distinct corners. The old path tessellated it
 // into a triangle mesh (an adaptive grid, two triangles for a flat plane) and handed that to the SubD as its cage: every interior vertex was
 // extraordinary, nothing was interpolated and nothing was measured. Here the cage is the surface's own (u, v) grid of quads
 // (divisions + 1)^2 vertices ON the surface, so every interior vertex has valence 4 and the open boundary follows the surface's four edges;
 // InterpolateControlNet drives each cage vertex's limit point onto its surface point, and the limit surface is then MEASURED between the
-// vertices: the limit points of Subdivide(1) (cage vertices, edge midpoints and face centres) against the exact surface (closest point on the
+// vertices: the limit points at 9 parameters of every measured face (all faces up to 256, every k-th beyond) against the exact surface (closest point on the
 // NURBS surface, no tessellation). If the deviation exceeds `tol` the divisions double (bounded); the achieved figure is reported either way.
 // nullopt for a surface this does not cover (closed or periodic in a direction, a collapsed edge such as a pole), which keeps the old path.
 std::optional<SurfaceCageResult> SurfaceCageForSurface(const kernel::NurbsSurface& s, double tol) {
@@ -1617,58 +1616,24 @@ std::optional<SurfaceCageResult> SurfaceCageForSurface(const kernel::NurbsSurfac
     const Point3d c00 = s.PointAt(du.min, dv.min), c10 = s.PointAt(du.max, dv.min), c01 = s.PointAt(du.min, dv.max), c11 = s.PointAt(du.max, dv.max);
     const double scale = std::max({1.0, c00.DistanceTo(c11), c10.DistanceTo(c01)});
     if (c00.DistanceTo(c10) < 1e-9 * scale || c10.DistanceTo(c11) < 1e-9 * scale || c11.DistanceTo(c01) < 1e-9 * scale || c01.DistanceTo(c00) < 1e-9 * scale) return std::nullopt;
-    std::optional<SurfaceCageResult> best;
-    for (int round = 0; round < kSurfaceCageRounds; ++round) {
-      const int n = kSurfaceCageStartDivisions << round;
-      kernel::Mesh cage;
-      ON_Mesh& m = cage.raw();
-      auto vid = [n](int i, int j) { return i * (n + 1) + j; };
-      for (int i = 0; i <= n; ++i)
-        for (int j = 0; j <= n; ++j) {
-          const Point3d p = s.PointAt(du.min + (du.max - du.min) * i / n, dv.min + (dv.max - dv.min) * j / n);
-          m.SetVertex(vid(i, j), ON_3dPoint(p.x, p.y, p.z));
-        }
-      int f = 0;
-      for (int i = 0; i < n; ++i)
-        for (int j = 0; j < n; ++j) m.SetQuad(f++, vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1));
-      m.ComputeFaceNormals();
-      m.ComputeVertexNormals();
-      SurfaceCageResult cur;
-      cur.divisions = n;
-      cur.cage_faces = n * n;
-      cur.rounds = round + 1;
-      kernel::SubD sd = kernel::SubD::FromControlMesh(cage);
-      // The four corners of the sheet are sharp corners of the surface. FromControlMesh tags them as ordinary two-crease vertices, whose
-      // boundary chain would round the corner off and, once interpolated, overshoot it (measured 0.02 outside a 12 x 12 plane); a pinned
-      // Corner keeps the boundary curve of each edge ending exactly at the corner.
-      for (const Point3d& c : {c00, c10, c01, c11}) sd.SetVertexCorner(c, true, 1e-9 * scale);
-      kernel::SubDInterpolationReport frep;
-      const double extent = c00.DistanceTo(c11) + c10.DistanceTo(c01);
-      cur.subd = sd.InterpolateControlNet(std::max(tol * 0.05, 2e-7 * std::max(extent, 1.0)), 150, &frep);
-      cur.fit_iterations = frep.iterations;
-      cur.fit_residual = frep.final_max_residual;
-      kernel::SubD probe = cur.subd;
-      probe.Subdivide(1);
-      const std::vector<kernel::SubDLimitPoint> lps = probe.LimitPoints();
-      if (lps.empty()) break;
-      const size_t step = std::max<size_t>(1, lps.size() / static_cast<size_t>(kSurfaceCageMaxSamples));
-      for (size_t k = 0; k < lps.size(); k += step) {
-        const Point3d& q = lps[k].limit_point;
-        double d = std::numeric_limits<double>::infinity();
-        // The closest-point search is a grid scan that can lock onto a wrong place (reported distances too LARGE, never too small):
-        // a coarse and a finer scan, the smaller distance wins.
-        for (int div : {20, 60}) {
-          const kernel::Point2d uv = s.ClosestPointParameter(q, div, div);
-          d = std::min(d, s.PointAt(uv.x, uv.y).DistanceTo(q));
-        }
-        cur.deviation = std::max(cur.deviation, d);
-        ++cur.samples;
-      }
-      cur.verified = cur.deviation <= tol;
-      best = std::move(cur);
-      if (best->verified) break;
-    }
-    return best;
+    // The cage, its corner pinning, the interpolation and the measurement are the kernel's (SubD::FromNurbsSurfaceToTolerance): grids
+    // 6, 12, 24, 48 while the measured deviation exceeds `tol`; best_effort keeps the finest grid when the tolerance is missed so the
+    // achieved figure is reported either way.
+    kernel::SubDFromNurbsReport rep;
+    kernel::SubD sd = kernel::SubD::FromNurbsSurfaceToTolerance(s, tol, &rep, kSurfaceCageStartDivisions << (kSurfaceCageRounds - 1),
+                                                                kSurfaceCageStartDivisions, true);
+    if (sd.FaceCount() == 0 || rep.divisions_tried.empty()) return std::nullopt;
+    SurfaceCageResult cur;
+    cur.subd = std::move(sd);
+    cur.divisions = rep.divisions;
+    cur.cage_faces = rep.faces;
+    cur.rounds = static_cast<int>(rep.divisions_tried.size());
+    cur.fit_iterations = rep.fit_iterations;
+    cur.fit_residual = rep.fit_residual;
+    cur.deviation = rep.max_deviation;
+    cur.samples = rep.faces_measured * rep.samples_per_face;
+    cur.verified = rep.converged;
+    return cur;
   } catch (const std::exception&) {
     return std::nullopt;
   }
