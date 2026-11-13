@@ -6463,6 +6463,29 @@ std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal
   return {std::move(inside), std::move(outside)};
 }
 
+std::pair<Brep, Brep> SplitBrepByPlaneSealed(const Brep& target, Vector3d plane_normal, double plane_offset, double tolerance) {
+  auto halves = SplitBrepByPlane(target, plane_normal, plane_offset, tolerance);
+  const char* const names[2] = {"side_along_normal", "opposite_side"};
+  Brep* const piece[2] = {&halves.first, &halves.second};
+  for (int k = 0; k < 2; ++k) {
+    const ON_Brep& b = piece[k]->raw();
+    if (b.m_F.Count() == 0) continue;  // the plane misses the solid: an empty side is a result, not a failure
+    if (b.IsSolid() && b.IsValid()) continue;
+    int naked = 0;
+    for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+      if (b.m_E[ei].m_edge_index >= 0 && b.m_E[ei].TrimCount() != 2) ++naked;
+    }
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedGeometry, "SplitBrepByPlaneSealed",
+        std::string("dino8::kernel::SplitBrepByPlaneSealed: the ") + names[k] + " half is not a closed solid (" + std::to_string(naked) +
+            " edge(s) without a partner after sewing, IsValid " + (b.IsValid() ? "true" : "false") +
+            ") - the cut does not close on this body. Measured case: a plane through a cylinder that crosses its planar end caps (the cut "
+            "curve then ends on the cap rims, where the cap polygon and the wall's circle are not the same edge); use SplitBrepByPlane() "
+            "for the open halves, or a plane that stays between the caps");
+  }
+  return halves;
+}
+
 std::vector<Brep> SplitBrepByManyPlanes(const Brep& target, Vector3d plane_normal,
                                          const std::vector<double>& plane_offsets, double tolerance) {
   if (target.raw().m_F.Count() == 0) {
@@ -9229,8 +9252,17 @@ static SealedGeneralBoolean SealGeneralBooleanResultLocalFrame(const Brep& raw, 
     try {
       if (fraction > 0) {
         for (int pass = 0; pass < 3 && !c.raw().IsSolid(); ++pass) {
-          c.SewTJunctions(tol);
-          c.JoinNakedEdges(tol);
+          try {
+            c.SewTJunctions(tol);
+            c.JoinNakedEdges(tol);
+          } catch (const std::exception&) {
+            // JoinNakedEdges() ends in UnifyNormals(), which tessellates every face to decide the shell's side; a face whose cut chain
+            // has a sub-millimetre kink (two SSX samples out of order: measured at u = 0.3589 after 0.3611 on a r = 3 wall) has a trim
+            // polygon that crosses itself and the tessellator refuses it - AFTER the edges were joined. The joins stand: go on if the
+            // body is now a solid; the checks below (IsValid, IsSolid, a positive exact volume) are independent of that tessellation.
+            if (!c.raw().IsSolid()) throw;
+            break;
+          }
         }
         // What the weld cannot pair is a naked edge shorter than the tolerance with no partner: collapse it.
         int collapsed = -1;
