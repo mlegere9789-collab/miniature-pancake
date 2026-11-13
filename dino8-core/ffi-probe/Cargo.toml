@@ -1,0 +1,36 @@
+[package]
+name = "dino8-ffi-probe"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Spike R1: C ABI boundary probe between the Dino 8 C++ application and the Rust core (operation log)"
+publish = false
+
+[lib]
+name = "dino8_ffi_probe"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+
+# loom model checking is compiled only with RUSTFLAGS="--cfg loom"
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+opt-level = 3
+debug = 1
+# catch_unwind at the boundary needs unwinding panics; never switch the staticlib to abort.
+panic = "unwind"
+lto = "thin"
+codegen-units = 1
+
+# This crate is its own workspace root so a future dino8-core/Cargo.toml cannot capture it.
+[workspace]
