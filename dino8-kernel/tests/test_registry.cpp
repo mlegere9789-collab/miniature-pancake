@@ -1,5 +1,7 @@
 #include "test_registry.h"
 
+#include "evidence_jsonl.h"  // DINO8_TEST_JSONL: one JSON line per check and per test (plan 7.5); a no-op when unset
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -51,6 +53,7 @@ void Check(bool condition, const char* what) {
   } else {
     std::printf("ok: %s\n", what);
   }
+  d8ev::Check(condition, what);
 }
 
 bool ListMode() {
@@ -72,6 +75,7 @@ bool ShouldRun(const char* name) {
     std::printf("%s\n", name);
     return false;
   }
+  d8ev::NoteSelected(mine);  // the evidence line of the test that now runs carries its registration index
   return true;
 }
 
@@ -83,17 +87,23 @@ void RunExtras() {
                    [](const auto& a, const auto& b) { return a.first < b.first; });
   for (const auto& t : sorted) {
     if (!ShouldRun(t.first.c_str())) continue;
+    d8ev::TestBegin(t.first.c_str());
     try {
       t.second();
     } catch (const std::exception& e) {
       std::fprintf(stderr, "FAILED: %s threw an uncaught exception instead of completing (%s)\n", t.first.c_str(),
                    e.what());
       ++Failures();
+      d8ev::TestEnd(t.first.c_str(), true, e.what());
+      continue;
     } catch (...) {
       std::fprintf(stderr, "FAILED: %s threw an uncaught non-std::exception instead of completing\n",
                    t.first.c_str());
       ++Failures();
+      d8ev::TestEnd(t.first.c_str(), true, nullptr);
+      continue;
     }
+    d8ev::TestEnd(t.first.c_str(), false);
   }
 }
 
