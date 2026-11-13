@@ -3824,6 +3824,82 @@ Result NurbsSurface::JoinTangent(const NurbsSurface& other, SurfaceJoinTangentRe
   return Result::Ok;
 }
 
+namespace {
+
+// General cylinder (translation surface S = C(s) + t d): see NurbsSurface::UnrollDevelopable(). Detects a direction of degree 1 with two control points
+// whose pairs all differ by one vector d (equal weights per pair), and writes the flat mesh (vertex (i, j) at u_i, v_j; x = arc length of the profile
+// projected perpendicular to d, y = height along d) and its area. False when the surface is not of that form (nothing written).
+bool UnrollGeneralCylinder(const ON_NurbsSurface& s, int nu, int nv, double tol, Mesh& out_flat, double* out_area) {
+  for (int straight = 0; straight < 2; ++straight) {  // the direction the rulings run along
+    const int prof = 1 - straight;
+    if (s.Degree(straight) != 1 || s.CVCount(straight) != 2) continue;
+    // d from the first pair; every pair must agree (homogeneous: equal weights too).
+    ON_3dVector d = ON_3dVector::UnsetVector;
+    bool ok = true;
+    for (int k = 0; k < s.CVCount(prof) && ok; ++k) {
+      ON_4dPoint a, b;
+      if (straight == 1) { s.GetCV(k, 0, a); s.GetCV(k, 1, b); } else { s.GetCV(0, k, a); s.GetCV(1, k, b); }
+      if (std::abs(a.w - b.w) > 1e-12 * std::max(1.0, std::abs(a.w))) { ok = false; break; }
+      const ON_3dVector dk((b.x - a.x) / a.w, (b.y - a.y) / a.w, (b.z - a.z) / a.w);
+      if (k == 0) d = dk;
+      else if ((dk - d).Length() > tol) ok = false;
+    }
+    if (!ok || !(d.Length() > tol)) continue;
+    ON_3dVector dir = d;
+    dir.Unitize();
+
+    const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+    const ON_Interval pdom = prof == 0 ? du : dv;
+    const int np = prof == 0 ? nu : nv;
+    // Cumulative arc length of the perpendicular profile at the grid stations (fine composite 4-point Gauss-Legendre).
+    static const double kGx[4] = {-0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526};
+    static const double kGw[4] = {0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538};
+    const double fixed_param = straight == 1 ? dv.Min() : du.Min();
+    auto speed = [&](double t) {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (prof == 0) s.Ev1Der(t, fixed_param, p, su, sv); else s.Ev1Der(fixed_param, t, p, su, sv);
+      const ON_3dVector c = prof == 0 ? su : sv;
+      const ON_3dVector perp = c - (c * dir) * dir;
+      return perp.Length();
+    };
+    std::vector<double> x(static_cast<size_t>(np) + 1, 0.0);
+    const int sub = 64;
+    for (int i = 1; i <= np; ++i) {
+      const double t0 = pdom.Min() + (pdom.Max() - pdom.Min()) * (i - 1) / np;
+      const double t1 = pdom.Min() + (pdom.Max() - pdom.Min()) * i / np;
+      double acc = 0.0;
+      for (int q = 0; q < sub; ++q) {
+        const double a = t0 + (t1 - t0) * q / sub, b = t0 + (t1 - t0) * (q + 1) / sub;
+        const double mid = 0.5 * (a + b), half = 0.5 * (b - a);
+        for (int g = 0; g < 4; ++g) acc += kGw[g] * half * speed(mid + half * kGx[g]);
+      }
+      x[static_cast<size_t>(i)] = x[static_cast<size_t>(i - 1)] + acc;
+    }
+    ON_Mesh m;
+    for (int i = 0; i <= nu; ++i) {
+      const double u = du.Min() + (du.Max() - du.Min()) * i / nu;
+      for (int j = 0; j <= nv; ++j) {
+        const double v = dv.Min() + (dv.Max() - dv.Min()) * j / nv;
+        const ON_3dPoint p = s.PointAt(u, v);
+        const double fx = x[static_cast<size_t>(prof == 0 ? i : j)];
+        const double fy = (p.x * dir.x + p.y * dir.y + p.z * dir.z);
+        m.SetVertex(i * (nv + 1) + j, ON_3dPoint(fx, fy, 0.0));
+      }
+    }
+    for (int i = 0; i < nu; ++i) {
+      for (int j = 0; j < nv; ++j) m.SetQuad(i * nv + j, i * (nv + 1) + j, (i + 1) * (nv + 1) + j, (i + 1) * (nv + 1) + j + 1, i * (nv + 1) + j + 1);
+    }
+    m.ComputeFaceNormals();
+    out_flat.raw() = m;
+    if (out_area) *out_area = out_flat.Area();
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
 Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area,
                                        DevelopableKind* out_kind) const {
   if (u_divisions < 1 || v_divisions < 1) {
@@ -3852,6 +3928,9 @@ Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& o
     kind = DevelopableKind::Cone;
   } else if (surface_.IsPlanar(&plane, tol)) {
     kind = DevelopableKind::Plane;
+  } else if (UnrollGeneralCylinder(surface_, u_divisions, v_divisions, tol, out_flat, out_area)) {
+    if (out_kind) *out_kind = DevelopableKind::GeneralCylinder;
+    return Result::Ok;
   } else {
     return Result::Failed;
   }
@@ -3899,6 +3978,7 @@ Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& o
           b[static_cast<size_t>(i)][static_cast<size_t>(j)] = pv;
           break;
         }
+        case DevelopableKind::GeneralCylinder: break;  // returned above
       }
     }
   }
@@ -3944,6 +4024,7 @@ Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& o
           fx = angle;
           fy = lin;
           break;
+        case DevelopableKind::GeneralCylinder: break;  // returned above
       }
       m.SetVertex(i * (nv + 1) + j, ON_3dPoint(fx, fy, 0.0));
     }
