@@ -2183,6 +2183,94 @@ int WriteStepSurface(StepWriter& w, const ON_NurbsSurface& srf) {
 // an oriented edge as a reference to one shared EDGE_CURVE): per brep, the
 // EDGE_CURVE written for each brep edge and the VERTEX_POINT for each brep
 // vertex, so the second face to run along an edge references the first one's.
+// A run of consecutive short straight segments of a loop whose vertices all lie on one circle (within 2e-3 of its radius):
+// the sewn rim of a hole the general Boolean cut with a cylinder arrives as hundreds of chords. Per face (no edge is shared
+// with the neighbouring face: the faces split the same rim at different vertices), the run is written as ONE exact arc.
+struct ChordArcRun {
+  size_t first = 0, count = 0;
+  ON_Circle circle;       // runs counter-clockwise about its normal in the loop's direction, x axis through the run's first point
+  double angle = 0.0;     // swept angle from the run's first to its last point (2 pi for a whole closed loop)
+  bool full = false;
+};
+
+bool FitChordRun(const std::vector<ON_3dPoint>& pts, size_t i, size_t j, ON_Circle& out, double& angle) {
+  // chords i..j use vertices pts[i..j+1]
+  const size_t last = j + 1;
+  const ON_3dPoint& p = pts[i];
+  const ON_3dPoint& q = pts[(i + last) / 2];
+  const ON_3dPoint& r = pts[last];
+  ON_Circle three(p, q, r);
+  if (!three.IsValid() || three.Radius() <= 0.0) return false;
+  ON_3dVector normal = ON_CrossProduct(q - p, r - q);
+  if (!normal.Unitize()) return false;
+  const ON_3dPoint c = three.Center();
+  const double rad = three.Radius();
+  const double tol = 2e-3 * rad;
+  double swept = 0.0;
+  ON_3dVector xaxis = p - c;
+  if (!xaxis.Unitize()) return false;
+  const ON_3dVector yaxis = ON_CrossProduct(normal, xaxis);
+  double prev = 0.0;
+  for (size_t k = i; k <= last; ++k) {
+    const ON_3dVector d = pts[k] - c;
+    if (std::fabs(d.Length() - rad) > tol || std::fabs(ON_DotProduct(d, normal)) > tol) return false;
+    double a = std::atan2(ON_DotProduct(d, yaxis), ON_DotProduct(d, xaxis));
+    if (k == i) { prev = 0.0; continue; }
+    double step = a - std::fmod(prev, 2 * ON_PI);
+    while (step <= -ON_PI) step += 2 * ON_PI;
+    while (step > ON_PI) step -= 2 * ON_PI;
+    if (step <= 0.0) return false;  // must keep running counter-clockwise about the normal
+    swept += step;
+    prev += step;
+  }
+  if (swept > 2 * ON_PI + 1e-3) return false;
+  out = ON_Circle(ON_Plane(c, xaxis, yaxis), rad);
+  angle = swept;
+  return out.IsValid();
+}
+
+std::vector<ChordArcRun> FindChordArcRuns(const std::vector<LoopSeg>& segs) {
+  std::vector<ChordArcRun> runs;
+  const size_t n = segs.size();
+  if (n < 12) return runs;
+  std::vector<ON_3dPoint> pts;
+  std::vector<bool> chord(n, false);
+  for (size_t k = 0; k < n; ++k) {
+    pts.push_back(segs[k].c3.PointAtStart());
+    chord[k] = segs[k].c3.Degree() == 1 && segs[k].c3.CVCount() == 2;
+  }
+  pts.push_back(segs[n - 1].c3.PointAtEnd());
+  size_t i = 0;
+  while (i + 12 <= n) {
+    if (!chord[i]) { ++i; continue; }
+    size_t j = i;
+    while (j < n && chord[j]) ++j;           // chords i..j-1
+    if (j - i < 12) { i = j; continue; }
+    ON_Circle best;
+    double best_angle = 0;
+    size_t best_end = 0;
+    for (size_t e = i + 11; e < j; ++e) {
+      ON_Circle c;
+      double a;
+      if (!FitChordRun(pts, i, e, c, a)) break;
+      best = c; best_angle = a; best_end = e;
+    }
+    if (best_end >= i + 11) {
+      ChordArcRun run;
+      run.first = i;
+      run.count = best_end - i + 1;
+      run.circle = best;
+      run.angle = best_angle;
+      run.full = run.count == n && pts[0].DistanceTo(pts[n]) < 1e-6 * (1.0 + best.Radius());
+      runs.push_back(run);
+      i = best_end + 1;
+    } else {
+      ++i;
+    }
+  }
+  return runs;
+}
+
 struct StepEdgeShare {
   std::map<int, int> edge_curve;    // brep edge index -> EDGE_CURVE id
   std::map<int, int> vertex_point;  // brep vertex index -> VERTEX_POINT id
@@ -2196,7 +2284,24 @@ int WriteStepFace(StepWriter& w, const ON_Brep& b, const ON_BrepFace& face, doub
   for (size_t li = 0; li < f.loops.size(); ++li) {
     const std::vector<LoopSeg>& segs = f.loops[li];
     std::vector<int> oriented;
+    const std::vector<ChordArcRun> chord_arcs = FindChordArcRuns(segs);
+    size_t next_arc = 0;
     for (size_t k = 0; k < segs.size(); ++k) {
+      if (next_arc < chord_arcs.size() && chord_arcs[next_arc].first == k) {
+        const ChordArcRun& run = chord_arcs[next_arc++];
+        const ON_3dPoint a0 = segs[k].c3.PointAtStart();
+        const ON_3dPoint a1 = segs[k + run.count - 1].c3.PointAtEnd();
+        ON_NurbsCurve arc_curve;
+        if (run.full) ON_ArcCurve(run.circle).GetNurbForm(arc_curve);
+        else ON_ArcCurve(ON_Arc(run.circle, ON_Interval(0.0, run.angle))).GetNurbForm(arc_curve);
+        const int v0 = WriteVertexPoint(w, a0);
+        const int v1 = run.full ? v0 : WriteVertexPoint(w, a1);
+        const int c3 = WriteStepCurve(w, arc_curve);
+        const int ec = w.Add("EDGE_CURVE", "'',#" + std::to_string(v0) + ",#" + std::to_string(v1) + ",#" + std::to_string(c3) + ",.T.");
+        oriented.push_back(w.Add("ORIENTED_EDGE", "'',*,*,#" + std::to_string(ec) + ",.T."));
+        k += run.count - 1;
+        continue;
+      }
       const LoopSeg& seg = segs[k];
       const int brep_edge = (li < f.edge_refs.size() && k < f.edge_refs[li].size()) ? f.edge_refs[li][k].first : -1;
       if (share && brep_edge >= 0 && brep_edge < b.m_E.Count()) {
