@@ -744,7 +744,13 @@ std::vector<Brep> SplitBrepByManyPlanes(const Brep& target, Vector3d plane_norma
 // planar cut, a few 1e-6 for a circular-arc cut. SplitBySheet() also refuses
 // some sheet placements (a sheet grid line lying in a face plane of `target`),
 // so a refusal is retried with the sheet slid along `direction` before it is
-// reported.
+// reported, and the first placement whose pieces both seal is preferred.
+// Measured scope: planar-faced solids (box, L prism) and a cylinder cut through
+// its axis seal with exact volumes; a cylinder cut OFF its axis and a box with
+// a drilled hole come back valid but NOT sealed (no exact volume - the engine
+// leaves unpaired polyline cut edges). A curve whose projection ends INSIDE the
+// solid (a partial cut) is refused with the engine's typed BooleanOperationError
+// ("a fragment of `solid` could not be classified to a side of `sheet`").
 //
 // For the cut to sever `target`, the curve's projection must leave `target`'s
 // silhouette on both ends (an interior-ending curve is a partial cut - see
