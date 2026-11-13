@@ -101,13 +101,8 @@ def check(stem, faces, planes, cylinders, radius, bb, holed_faces):
     if stem == "cut":
         # the hole of a pierced box is a circle of radius 2: its edges must be exact CIRCLE curves (>= 2: top and bottom rim), not
         # hundreds of short LINE segments (the sealed Boolean's hole edges are polylines today)
-        # KNOWN, NOT FIXED (measured on the exported file: 0 CIRCLE, 352 LINE). The rim loops are chains of 73 / 77 short chords whose
-        # vertices lie up to 1e-3 off the radius-2 circle (the Boolean sewed them at tolerance 0.0185), the plane loops and the
-        # cylinder wall do not even split the rim at the same vertices, and the wall's single loop holds BOTH rims joined by slit
-        # segments - so a fit has to be tolerant (about 2e-3 of the radius), run on partial chains, and cannot share edges between
-        # the faces. It prints "known" instead of FAIL until the exporter (or the Boolean) produces exact rims.
-        ok = n("CIRCLE") >= 2
-        print(("ok   " if ok else "known ") + "STX_" + stem + "_hole_rims_are_exact_circles" + (": " if ok else " (NOT fixed, recorded): ") + "%d CIRCLE, %d LINE entities" % (n("CIRCLE"), n("LINE")))
+        # the sewn rim chords (up to 1e-3 off the radius-2 circle) are written as exact arcs by the exporter's tolerant fit
+        report(n("CIRCLE") >= 2, stem + "_hole_rims_are_exact_circles", "%d CIRCLE, %d LINE entities" % (n("CIRCLE"), n("LINE")))
     report(n("CYLINDRICAL_SURFACE") == cylinders, stem + "_cylindrical_surfaces", "%d (expected %d)" % (n("CYLINDRICAL_SURFACE"), cylinders))
     radii = [numbers(split_top(ents[k][1])[-1])[-1] for k in kinds.get("CYLINDRICAL_SURFACE", [])]
     report(radii and all(abs(r - radius) < 1e-6 for r in radii), stem + "_cylinder_radius", "radii %s (expected %g)" % (radii, radius))
