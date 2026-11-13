@@ -2432,6 +2432,8 @@ cccount "FilletEdge: 2 staged edges of object .* meet at one right-angle corner 
 cccount "Volume = 983.5 cubic" 1 "the fillet pair reads 983.5 = the app's tessellated reading of the exact closed form 1000 - a r^2 (L_A + L_B) + r^3 (5/3 - pi/2) = 983.599 (not the 991.4 one fillet gave when the second was dropped, nor 982.8 without the overlap)"
 echo "$CC" | grep -E "^(ok|FAIL)"
 if echo "$CC" | grep -q "^FAIL"; then fail=1; fi
+cccount "meet at one right-angle corner - replaced with one exact mitred corner pair (radius 1 and radius 2)" 1 "two fillets picked with different radii (1, then 2) at a corner are one exact pair with each pick's own radius"
+cccount "Volume = 989\.[45] cubic" 1 "the unequal pair reads 989.4-989.5 = the tessellated closed form 1000 - a 1^2 10 - a 2^2 10 + 0.2535 = 989.523, not the 983.5 the last radius applied to both gave"
 cccount "^ok   expect_objects 0" 1 "chamfer-corner script cleaned up to zero objects at the end"
 
 # Extended selection and state commands: SelDupAll, SelShortCrv, SelKeyValue, SelVolumeSphere, Dot, Camera, SetActiveViewport, licence rule (see state_script.txt).
