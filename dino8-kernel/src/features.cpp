@@ -1939,6 +1939,7 @@ std::vector<CurveArrayStation> ArrayStationsAlongCurveOnSurface(const NurbsCurve
 
 std::vector<Brep> ArrayAlongCurve(const Brep& body, const NurbsCurve& path, int count,
                                   CurveArrayOrientation orientation, Vector3d up) {
+  if (body.FaceCount() == 0) throw std::invalid_argument("dino8::kernel::ArrayAlongCurve: the body has no faces");
   std::vector<Brep> out;
   for (const CurveArrayStation& st : ArrayStationsAlongCurve(path, count, orientation, up)) {
     out.push_back(body.Transform(st.xform));
