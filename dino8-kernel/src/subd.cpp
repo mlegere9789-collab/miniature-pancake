@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <map>
@@ -156,6 +157,84 @@ SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_
   }
 
   return SubD::FromControlMesh(grid);
+}
+
+SubD SubD::FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double tolerance, SubDFromNurbsReport* report,
+                                       int max_divisions) {
+  if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromNurbsSurfaceToTolerance: tolerance must be positive and finite");
+  }
+  if (max_divisions < 4) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromNurbsSurfaceToTolerance: max_divisions must be at least 4");
+  }
+  if (!surface.raw().IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurfaceToTolerance: surface is not IsValid() (e.g. default-constructed)");
+  }
+  SubDFromNurbsReport rep;
+  rep.tolerance = tolerance;
+  constexpr int kSamples = 9;
+  const double su[kSamples] = {0.5, 0.5, 0.0, 0.5, 1.0, 0.25, 0.75, 0.25, 0.75};
+  const double sv[kSamples] = {0.5, 0.0, 0.5, 1.0, 0.5, 0.25, 0.75, 0.75, 0.25};
+  rep.samples_per_face = kSamples;
+
+  const Interval ud = surface.Domain(0);
+  const Interval vd = surface.Domain(1);
+  const Point3d corner_points[4] = {surface.PointAt(ud.min, vd.min), surface.PointAt(ud.max, vd.min),
+                                    surface.PointAt(ud.max, vd.max), surface.PointAt(ud.min, vd.max)};
+  // Model size, from the surface's own corners and centre: sets the float-storage floor of the cage (about 1e-7 of the size).
+  const Point3d centre = surface.PointAt(0.5 * (ud.min + ud.max), 0.5 * (vd.min + vd.max));
+  double extent = 0.0;
+  for (const Point3d& c : corner_points) extent = std::max(extent, (c - centre).Length());
+  extent = std::max(extent, ON_3dVector(centre).Length());
+  extent = std::max(extent, 1e-3);
+  const double fit_tolerance = std::max(1e-3 * tolerance, 1e-6 * extent);
+  const double pin_tolerance = std::max(1e-5 * extent, 1e-9);
+
+  double best_deviation = std::numeric_limits<double>::infinity();
+  for (int n = 4; n <= max_divisions; n *= 2) {
+    SubD cage = FromNurbsSurface(surface, n, n);
+    for (const Point3d& c : corner_points) (void)cage.SetVertexCorner(c, true, pin_tolerance);
+    SubDInterpolationReport fit;
+    SubD fitted = cage.InterpolateControlNet(fit_tolerance, 400, &fit);
+
+    double worst = 0.0;
+    int faces = 0;
+    ON_SubDFaceIterator fit_it = fitted.subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit_it.FirstFace(); f != nullptr; f = fit_it.NextFace()) {
+      ++faces;
+      for (int k = 0; k < kSamples; ++k) {
+        const SubDSurfacePoint p = fitted.EvaluateFace(f->m_id, su[k], sv[k]);
+        const Point3d q(p.position.x, p.position.y, p.position.z);
+        worst = std::max(worst, (q - surface.ClosestPoint(q)).Length());
+      }
+    }
+    rep.divisions_tried.push_back(n);
+    rep.deviation_per_level.push_back(worst);
+    best_deviation = std::min(best_deviation, worst);
+    if (worst <= tolerance) {
+      rep.converged = true;
+      rep.max_deviation = worst;
+      rep.divisions = n;
+      rep.faces = faces;
+      rep.fitted = true;
+      rep.fit_residual = fit.final_max_residual;
+      if (report != nullptr) *report = rep;
+      return fitted;
+    }
+    rep.max_deviation = worst;
+    rep.divisions = n;
+    rep.faces = faces;
+    rep.fitted = true;
+    rep.fit_residual = fit.final_max_residual;
+  }
+  char msg[256];
+  std::snprintf(msg, sizeof msg,
+                "tolerance %g not reached within %d divisions per direction: the best measured deviation was %g (float storage floor about %g)",
+                tolerance, max_divisions, best_deviation, 1e-7 * extent);
+  rep.reason = msg;
+  if (report != nullptr) *report = rep;
+  return SubD();
 }
 
 SubD SubD::FromUniformBicubicSurface(const NurbsSurface& surface) {
