@@ -1060,6 +1060,7 @@ class MovePartsCommand : public Command {
       if (!kernel_note.empty()) ctx.Print(Label() + ": the exact kernel route declined (" + kernel_note.substr(0, 200) + "), so this is the approximate rigid " + (is_face_ ? "face" : "edge") + " move");
     }
     ctx.Print(Label() + ": " + std::to_string(n) + " object(s) updated");
+    if (n == 0) ctx.Doc().AbandonChange();  // nothing moved: no empty undo step, Redo stays available
     ctx.ClearPreview();
     Finish();
   }
@@ -1225,16 +1226,16 @@ class FoldFaceCommand : public Command {
     ctx.Doc().BeginChange("FoldFace");
     if (TryExactFold(ctx, *o, hinge_->edge, *face_, deg, kernel_note)) { Finish(); return; }
     ON_Brep& b = o->brep->raw();
-    if (hinge_->edge < 0 || hinge_->edge >= b.m_E.Count()) { Finish(); return; }
+    if (hinge_->edge < 0 || hinge_->edge >= b.m_E.Count()) { ctx.Doc().AbandonChange(); Finish(); return; }
     const ON_BrepEdge& ed = b.m_E[hinge_->edge];
     Point3d p0 = ed.PointAtStart(), p1 = ed.PointAtEnd();
     Vector3d axis = p1 - p0;
-    if (!axis.Unitize()) { ctx.Warn("FoldFace: degenerate hinge edge"); Finish(); return; }
+    if (!axis.Unitize()) { ctx.Warn("FoldFace: degenerate hinge edge"); ctx.Doc().AbandonChange(); Finish(); return; }
     ON_Xform xf;
     xf.Rotation(deg * ON_PI / 180.0, axis, p0);
     bool ok = MoveBrepFaces(b, {*face_}, xf);
     if (ok) { o->InvalidateDisplay(); ctx.Print("FoldFace: face " + std::to_string(*face_) + " folded " + FormatNumber(deg) + " degree(s) about the picked edge"); }
-    else ctx.Warn("FoldFace: could not fold that face");
+    else { ctx.Warn("FoldFace: could not fold that face"); ctx.Doc().AbandonChange(); }  // nothing changed: no empty undo step
     if (!kernel_note.empty()) ctx.Print("FoldFace: the exact kernel route declined (" + kernel_note.substr(0, 220) + "), so this is the approximate rigid fold");
     Finish();
   }
@@ -2535,7 +2536,16 @@ class BossRibCommand : public Command {
     if (rib_) options = {{"Thickness", FormatNumber(thickness_), {}, true, false}};
     WantObjects(rib_ ? "Select the rib's spine curve" : (pocket_ ? "Select the closed footprint curve of the pocket" : "Select the closed footprint curve"));
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Thickness") thickness_ = std::atof(v.c_str()); }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    if (n != "Thickness") return;
+    // atof accepted "nan", "0" and negative numbers: the web then had no thickness (the kernel refused it and the mesh fallback built a
+    // zero-width wall that replaced the exact base by a mesh), so the option takes a positive finite number only.
+    char* end = nullptr;
+    const double t = std::strtod(v.c_str(), &end);
+    if (end == v.c_str() || *end != '\0' || !std::isfinite(t) || !(t > 0.0)) { ctx.Warn("Rib: Thickness must be a positive number"); return; }
+    thickness_ = t;
+    for (OptionSpec& o : options) if (o.name == "Thickness") o.value = FormatNumber(t);
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (!curve_) {
       for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve) { curve_ = *o->curve; break; }
@@ -2653,6 +2663,18 @@ class BossRibCommand : public Command {
     return false;
   }
   void OnNumber(CommandContext& ctx, double h) override {
+    // Only the height / depth prompt takes a number: a number typed (or Enter pressed) at either object prompt used to reach here with no
+    // footprint curve or no base surface chosen yet and dereference the empty optionals (a crash).
+    if (want != Want::Number || !curve_ || (!srf_ && !brep_)) return;
+    // A height / depth of 0 or below built a zero-volume or inverted solid that the mesh union then used to replace the exact base by a
+    // mesh (Boss 0 / Boss -3 left a 22-face mesh where the polysurface was), one below the model tolerance either hung the kernel route
+    // (Boss 1e-9) or reported a volume 100 times too big (Boss 1e-5 "added 0.01994", 16 faces), and one beyond 1e8 gave a mesh of the wrong
+    // volume: refuse and stay at the prompt.
+    const double min_h = std::max(ctx.Settings().absolute_tolerance, 1e-6);
+    if (!std::isfinite(h) || h < min_h || h > 1e8) {
+      ctx.Warn(Name() + ": the " + (pocket_ ? "depth" : "height") + " must be a number from the model tolerance " + FormatNumber(min_h) + " to 100000000; nothing was changed");
+      return;
+    }
     if (TryKernelRoute(ctx, h)) { Finish(); return; }
     const int n = rib_ ? 64 : 48;
     const kernel::Interval d = curve_->Domain();
@@ -2704,6 +2726,7 @@ class BossRibCommand : public Command {
       // A pocket that could not be cut must not leave the cutter tool behind as a "result": report and change nothing.
       ctx.Warn("Pocket: neither the exact kernel route nor the mesh boolean could cut the pocket" +
                (kernel_note_.empty() ? std::string() : " (kernel: " + kernel_note_.substr(0, 160) + ")") + "; nothing was changed");
+      ctx.Doc().AbandonChange();  // nothing changed: no empty undo step, Redo stays available
       Finish();
       return;
     }
@@ -2716,7 +2739,11 @@ class BossRibCommand : public Command {
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; const double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
-  void OnEnter(CommandContext& ctx) override { OnNumber(ctx, 5); }
+  void OnEnter(CommandContext& ctx) override {
+    // Enter at an object prompt with nothing selected ends the command; at the height / depth prompt it takes the default.
+    if (want == Want::Number) OnNumber(ctx, 5);
+    else { ctx.Print(Name() + ": nothing was selected; nothing was changed"); Finish(); }
+  }
   bool rib_;
   bool pocket_;
   double thickness_ = 1.0;
