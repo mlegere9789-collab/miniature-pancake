@@ -2830,7 +2830,7 @@ std::vector<RvP2> RvCircleCircle(const RvP2& c0, double r0, const RvP2& c1, doub
 // edge i (which ends at v[i+1 mod n]); `ed[i]` its geometry; `th[i]` its thickness. Coordinates are (r, z) about the axis.
 Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vector<double> th, const ON_3dPoint& axis_point,
                          const ON_3dVector& axis, const ON_3dVector& ex, double flip, double size, double tol, bool all_lines,
-                         const std::string& fn, double offset_distance, bool dry_run = false) {
+                         const std::string& fn, double offset_distance, bool dry_run = false, bool per_edge = false) {
   // offset_distance != 0: whole-BODY offset (positive grows) instead of a shell - every non-axis edge moves by that distance, no
   // face is removed and the new meridian is the cavity chain closed along the axis (or a closed ring when no edge is on the axis).
   const bool offset_mode = offset_distance != 0.0;
@@ -2894,7 +2894,7 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
       throw std::invalid_argument(fn + "edge " + std::to_string(i) + " lies on the axis: it is not a face, its thickness must be 0");
     }
   }
-  if (offset_mode) {
+  if (offset_mode && !per_edge) {
     for (size_t i = 0; i < n; ++i) th[i] = on_axis[i] ? 0.0 : -offset_distance;
   }
   size_t zeros = 0, runs = 0, removed_faces = 0;
@@ -2909,8 +2909,10 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
     throw std::invalid_argument(fn + "at least one face must be removed (thickness 0): a fully closed hollow of a revolved "
                                      "solid is two lumps, not built here (see ShellClosedSphere/ShellClosedExtrusion)");
   }
-  if (zeros == n) throw std::invalid_argument(fn + "at least one edge needs a positive thickness");
-  const bool ring = offset_mode && zeros == 0;
+  // per_edge with every thickness zero is the IDENTITY offset: the original body itself (the outer shell of a closed hollow)
+  const bool identity = offset_mode && per_edge && zeros == n;
+  if (zeros == n && !identity) throw std::invalid_argument(fn + "at least one edge needs a positive thickness");
+  const bool ring = offset_mode && (zeros == 0 || identity);
   if (runs != 1 && !ring) {
     throw std::invalid_argument(fn + "the removed edges (and axis edges) must form ONE contiguous run; found " + std::to_string(runs) +
                                 " separate runs - the material would split into several lumps");
@@ -2920,7 +2922,7 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
     if (th[i] == 0.0 && th[(i + n - 1) % n] != 0.0) first = i;
   }
   size_t last = first;
-  while (th[(last + 1) % n] == 0.0) last = (last + 1) % n;
+  while (!identity && th[(last + 1) % n] == 0.0) last = (last + 1) % n;  // (identity: every thickness is zero - no run to walk)
 
   // Geometry of every edge moved to its inside (left of the counter-clockwise travel) by its own thickness.
   struct Geo {
@@ -3084,14 +3086,14 @@ Brep ShellRevolvedEngine(std::vector<RvP2> v, std::vector<RvEdge> ed, std::vecto
       probe = s;
     }
     for (const RvP2& p : probe) {
-      if (p.r > tol && dist_to_removed(p) > slack) {
+      if (!identity && p.r > tol && dist_to_removed(p) > slack) {
         const bool inside_outer = RvPointInPolygon(outer_pts, p);
         if (offset_mode && offset_distance > 0.0 ? inside_outer : !inside_outer) {
           throw std::invalid_argument(fn + (offset_mode && offset_distance > 0.0 ? "the offset surface re-enters the solid - distance is infeasible"
                                                                                   : "the cavity leaves the profile - thickness is infeasible"));
         }
       }
-      if (dist_to_kept(p) < tmin - slack) {
+      if (!identity && dist_to_kept(p) < tmin - slack) {
         throw std::invalid_argument(fn + "the cavity comes closer than the smallest thickness to a kept face - thickness is infeasible");
       }
       if (p.r < -slack) throw std::invalid_argument(fn + "the cavity crosses the axis - thickness is at or beyond the solid's radius there");
@@ -3287,7 +3289,8 @@ Brep OffsetRevolvedProfile(const NurbsCurve& profile, Point3d axis_point, Vector
 
 namespace {
 Brep RvArcFront(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction, Vector3d radial_direction,
-                const std::vector<double>& edge_thickness, double offset_distance, const std::string& fn, bool dry_run = false) {
+                const std::vector<double>& edge_thickness, double offset_distance, const std::string& fn, bool dry_run = false,
+                bool per_edge = false) {
   const size_t n = edges.size();
   if (n < 2) throw std::invalid_argument(fn + "a closed meridian needs at least 2 edges");
   ON_3dVector axis(axis_direction.x, axis_direction.y, axis_direction.z);
@@ -3339,7 +3342,7 @@ Brep RvArcFront(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vect
       if (q.r < -tol) throw std::invalid_argument(fn + "an arc crosses the axis; the profile must lie on one side of it (arc radius " + std::to_string(rad) + ")");
     }
   }
-  return ShellRevolvedEngine(v, ed, edge_thickness, ON_3dPoint(axis_point), axis, ex, 1.0, size, tol, false, fn, offset_distance, dry_run);
+  return ShellRevolvedEngine(v, ed, edge_thickness, ON_3dPoint(axis_point), axis, ex, 1.0, size, tol, false, fn, offset_distance, dry_run, per_edge);
 }
 }  // namespace
 
@@ -3353,6 +3356,33 @@ Brep OffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d ax
   const std::string fn = "dino8::kernel::OffsetRevolvedArcProfile: ";
   if (!std::isfinite(distance) || distance == 0.0) throw std::invalid_argument(fn + "distance must be finite and non-zero");
   return RvArcFront(edges, axis_point, axis_direction, radial_direction, std::vector<double>(edges.size(), 0.0), distance, fn);
+}
+
+Brep ShellClosedRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
+                                   Vector3d radial_direction, const std::vector<double>& edge_thickness) {
+  const std::string fn = "dino8::kernel::ShellClosedRevolvedArcProfile: ";
+  const size_t n = edges.size();
+  if (edge_thickness.size() != n) {
+    throw std::invalid_argument(fn + "edge_thickness must have one entry per meridian edge (" + std::to_string(n) + ")");
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const MeridianEdge &a = edges[i], &b = edges[(i + 1) % n];
+    const double t = edge_thickness[i];
+    if (!std::isfinite(t) || t < 0.0) throw std::invalid_argument(fn + "edge_thickness entries must be finite and >= 0");
+    const bool on_axis = !a.arc && std::fabs(a.r) <= 1e-12 && std::fabs(b.r) <= 1e-12;
+    if (on_axis && t != 0.0) {
+      throw std::invalid_argument(fn + "edge " + std::to_string(i) + " lies on the axis: it is not a face, its thickness must be 0");
+    }
+    if (!on_axis && !(t > 0.0)) {
+      throw std::invalid_argument(fn + "every face of a closed hollow needs a positive thickness (edge " + std::to_string(i) +
+                                  " has 0); to remove a face use ShellRevolvedArcProfile()");
+    }
+  }
+  // Cavity = the per-face inward offset; outer = the original body (the identity offset). Two closed lumps, the cavity reversed.
+  Brep inner = RvArcFront(edges, axis_point, axis_direction, radial_direction, edge_thickness, -1.0, fn, false, true);
+  Brep outer = RvArcFront(edges, axis_point, axis_direction, radial_direction, std::vector<double>(n, 0.0), -1.0, fn, false, true);
+  inner.raw().Flip();
+  return Brep::Compound({outer, inner});
 }
 
 double MaxInwardOffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
