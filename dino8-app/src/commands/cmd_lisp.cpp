@@ -132,6 +132,7 @@ bool FitEllipse(const kernel::NurbsCurve& c, EllipseFit& f) {
   }
   f.center = pl.origin + pl.xaxis * (mx + cx * s) + pl.yaxis * (my + cy * s);
   f.major = (pl.xaxis * ex + pl.yaxis * ey) * (a * s);
+  if (f.major.x < -1e-12 || (std::fabs(f.major.x) <= 1e-12 && f.major.y < 0)) f.major = -f.major;   // the plane's own axes may be flipped: report the +x / +y end
   f.ratio = b / a;
   f.normal = pl.zaxis;
   return std::fabs(a - b) > 1e-9 * a;
@@ -196,6 +197,17 @@ int TableRecord(const Document& doc, const std::string& table, int index, std::v
   return -1;
 }
 
+// Start and end angle of an arc as DXF reports them: counter-clockwise about +Z from the world X axis (the fitted plane's own x axis
+// need not be the world one, and its normal may point down, which swaps the ends).
+void ArcAngles(const ON_Arc& arc, double& s, double& e) {
+  const ON_3dPoint c = arc.Center();
+  ON_3dPoint p0 = arc.StartPoint(), p1 = arc.EndPoint();
+  if (arc.Plane().Normal().z < -0.999) std::swap(p0, p1);
+  s = std::atan2(p0.y - c.y, p0.x - c.x);
+  if (s < 0) s += 2 * ON_PI;
+  e = s + arc.Angle();
+}
+
 bool GetEntity(const Document& doc, long long id, std::vector<DxfItem>& out) {
   if (id < 0) {
     const bool is_block = id <= -(kBlockIdBase + 1);
@@ -233,10 +245,13 @@ bool GetEntity(const Document& doc, long long id, std::vector<DxfItem>& out) {
     out.push_back(DP(10, arc.Center()));
     out.push_back(DR(40, arc.Radius()));
     if (type == "ARC") {
-      out.push_back(DR(50, arc.Domain().Min()));
-      out.push_back(DR(51, arc.Domain().Max()));
+      double s0, e0;
+      ArcAngles(arc, s0, e0);
+      out.push_back(DR(50, s0));
+      out.push_back(DR(51, e0));
     }
-    const ON_3dVector n = arc.Plane().Normal();
+    ON_3dVector n = arc.Plane().Normal();
+    if (n.z < -0.999) n = ON_3dVector(0, 0, 1);
     out.push_back(DP(210, n.x, n.y, n.z));
   } else if (type == "ELLIPSE") {
     EllipseFit ef;
@@ -339,7 +354,10 @@ std::string ModEntity(Document& doc, long long id, const std::vector<DxfItem>& i
   if (type == "ARC" && (a50 || a51)) {
     ON_Arc a;
     doc.Find(static_cast<ObjectId>(id))->curve->raw().IsArc(nullptr, &a, kEntTol);
-    const double s = a50 ? *a50 : a.Domain().Min(), e = a51 ? *a51 : a.Domain().Max();
+    double s = 0, e = 0;
+    ArcAngles(a, s, e);
+    if (a50) s = *a50;
+    if (a51) e = *a51;
     if (!(e > s) || e - s > 2 * ON_PI + 1e-9) return "groups 50/51: the end angle must be greater than the start angle and the sweep at most 2 pi";
   }
   std::vector<Point3d> poly_pts;
@@ -347,7 +365,7 @@ std::string ModEntity(Document& doc, long long id, const std::vector<DxfItem>& i
   if (type == "LWPOLYLINE" && poly_changed) {
     for (const DxfItem& d : items) if (d.code == 10 && d.k == DxfItem::K::Point) poly_pts.push_back(Point3d(d.x, d.y, d.z));
     if (poly_pts.size() < 3) return "an LWPOLYLINE needs at least three vertices (group 10)";
-    for (const DxfItem& d : items) if (d.code == 90 && d.i != static_cast<long long>(poly_pts.size())) return "group 90 says " + std::to_string(d.i) + " vertices but " + std::to_string(poly_pts.size()) + " were given";
+    // group 90 is the vertex count, derived from the group 10 list: a stale count is ignored
     poly_closed = std::any_of(items.begin(), items.end(), [](const DxfItem& d) { return d.code == 70 && d.i == 1; });
   }
   if (changed.empty()) return "";
@@ -375,9 +393,12 @@ std::string ModEntity(Document& doc, long long id, const std::vector<DxfItem>& i
     ON_Arc arc;
     o->curve->raw().IsArc(nullptr, &arc, kEntTol);
     ON_Plane plane = arc.Plane();
+    double s0 = 0, e0 = 0;
+    ArcAngles(arc, s0, e0);
+    if (std::fabs(plane.Normal().z) > 0.999) plane = ON_Plane(arc.Center(), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));   // world frame: the angles are measured from +X
     if (p10) { plane.origin = *p10; plane.UpdateEquation(); }
     const double r = r40 ? *r40 : arc.Radius();
-    const ON_Interval dom(a50 ? *a50 : arc.Domain().Min(), a51 ? *a51 : arc.Domain().Max());
+    const ON_Interval dom(a50 ? *a50 : s0, a51 ? *a51 : e0);
     ON_Arc na(ON_Circle(plane, r), dom);
     ON_ArcCurve ac(na);
     kernel::NurbsCurve k;
