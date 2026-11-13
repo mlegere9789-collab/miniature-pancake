@@ -3,10 +3,20 @@
 # points 1e-4 apart, joined along that micro edge (document tolerance 0.001, so the micro limit is 100 x = 0.1):
 #   A = (0,0,0) (4,0,0) (2.0001,3,0) (2,3,0)       a triangle of base 4, height 3: area 6
 #   B = (2,3,0) (0,-5,0) (6,-5,0) (2.0001,3,0)     a triangle of base 6, height 8: area 24
-# Joined they are 2 faces / 7 edges (3 naked edges per quad plus the shared 1e-4 edge) and an area of 30. The command merges the two
-# endpoints: 2 faces / 6 edges, each face a triangle, the area still 30 (only the numerical gap closes). Each of the four loop
-# neighbours of the micro edge is a distinct edge, the shape the kernel method is specified for (a split edge of a box is NOT: both
-# faces then share the same neighbour, and the kernel declines it). Cases (each starts at `New`, bracketed by a marker line):
+# Each quad is ONE SrfPt surface (four corner points, so four sides and four edges of its own); Join merges the two coincident 1e-4
+# sides into ONE shared edge. Joined they are 2 faces / 7 edges (3 naked edges per quad plus the shared 1e-4 edge; 4 + 4 - 1 = 7) and an
+# area of 30. The command merges the two endpoints: 2 faces / 6 edges, each face a triangle, the area still 30 (only the numerical gap
+# closes). Each of the four loop neighbours of the micro edge is a distinct edge, the shape the kernel method is specified for (a split
+# edge of a box is NOT: both faces then share the same neighbour, and the kernel declines it).
+# Why not Polyline + PlanarSrf + Join (this script's previous fixture, which never built a polysurface): at the document tolerance
+# PlanarSrf refuses these two polylines ("cross themselves": the two sides next to a 1e-4 segment pass within 0.001 of each other), so
+# Join only saw the two curves ("Curve ends do not meet") and every command ran on curves (Area 0, "no shared edges ... found"). And
+# where PlanarSrf does accept a polyline (a 0.05 segment) it gives the face ONE edge for its whole boundary ("1 faces, 1 edges"; two
+# such faces joined are "2 faces, 2 edges", both naked), so no polyline segment is an edge two faces could share.
+# Edge counts: List prints the polysurface's edge SLOTS, and Join leaves the edge it merged away behind as a deleted slot (List says 8
+# for these 7 edges), so the fixture's 7 edges and 6 naked edges are read from ShowEdges, which skips deleted slots (srfedit_script.txt
+# reads two joined planes the same way). The kernel method compacts, so after the command List's 6 and ShowEdges' 6 agree.
+# Cases (each starts at `New`, bracketed by a marker line):
 #  split   the fixture only, then RemoveAllNakedMicroEdges (the micro edge is shared, the naked command must leave it alone)
 #  close   RemoveAllSharedMicroEdges on it
 #  twice   the command run a second time finds nothing left
@@ -16,45 +26,40 @@ SetActiveViewport Top
 
 New
 SMEBEGIN_split
-Polyline 0,0,0 4,0,0 2.0001,3,0 2,3,0 0,0,0
-Enter
-Polyline 2,3,0 0,-5,0 6,-5,0 2.0001,3,0 2,3,0
-Enter
-SelCrv
-PlanarSrf
+SrfPt 0,0,0 4,0,0 2.0001,3,0 2,3,0
+SrfPt 2,3,0 0,-5,0 6,-5,0 2.0001,3,0
 SelSrf
 Join
 SelPolysrf
 RemoveAllNakedMicroEdges
 SelPolysrf
 List
+SelPolysrf
+ShowEdges
+SelPolysrf
 Area
 
 New
 SMEBEGIN_close
-Polyline 0,0,0 4,0,0 2.0001,3,0 2,3,0 0,0,0
-Enter
-Polyline 2,3,0 0,-5,0 6,-5,0 2.0001,3,0 2,3,0
-Enter
-SelCrv
-PlanarSrf
+SrfPt 0,0,0 4,0,0 2.0001,3,0 2,3,0
+SrfPt 2,3,0 0,-5,0 6,-5,0 2.0001,3,0
 SelSrf
 Join
 SelPolysrf
 RemoveAllSharedMicroEdges
 SelPolysrf
 List
+SelPolysrf
+ShowEdges
+SelPolysrf
 Area
+SelPolysrf
 Check
 
 New
 SMEBEGIN_twice
-Polyline 0,0,0 4,0,0 2.0001,3,0 2,3,0 0,0,0
-Enter
-Polyline 2,3,0 0,-5,0 6,-5,0 2.0001,3,0 2,3,0
-Enter
-SelCrv
-PlanarSrf
+SrfPt 0,0,0 4,0,0 2.0001,3,0 2,3,0
+SrfPt 2,3,0 0,-5,0 6,-5,0 2.0001,3,0
 SelSrf
 Join
 SelPolysrf
@@ -74,12 +79,8 @@ Check
 
 New
 SMEBEGIN_undo
-Polyline 0,0,0 4,0,0 2.0001,3,0 2,3,0 0,0,0
-Enter
-Polyline 2,3,0 0,-5,0 6,-5,0 2.0001,3,0 2,3,0
-Enter
-SelCrv
-PlanarSrf
+SrfPt 0,0,0 4,0,0 2.0001,3,0 2,3,0
+SrfPt 2,3,0 0,-5,0 6,-5,0 2.0001,3,0
 SelSrf
 Join
 SelPolysrf
@@ -87,4 +88,7 @@ RemoveAllSharedMicroEdges
 Undo
 SelPolysrf
 List
+SelPolysrf
+ShowEdges
+SelPolysrf
 Area
