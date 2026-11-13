@@ -62,7 +62,6 @@ impl Schema {
 pub(crate) struct Spatial {
     pub bvh: Option<Arc<Bvh>>,
     pub dirty: Table<()>,
-    pub dirty_list: Arc<Vec<Ix>>,
 }
 
 /// Optional components supplied when an entity is created.
@@ -91,7 +90,7 @@ pub struct Scene {
     pub(crate) class_idx: Sorted<u64>,
     pub(crate) cls_idx: Sorted<u64>,
     pub(crate) next_ix: u32,
-    pub(crate) free: Arc<Vec<Ix>>,
+    pub(crate) free: Sorted<u64>,
     pub(crate) alive: usize,
     pub(crate) spatial: Spatial,
 }
@@ -122,7 +121,7 @@ impl Scene {
             class_idx: Sorted::new(),
             cls_idx: Sorted::new(),
             next_ix: 0,
-            free: Arc::new(Vec::new()),
+            free: Sorted::new(),
             alive: 0,
             spatial: Spatial::default(),
         }
@@ -181,8 +180,9 @@ impl Scene {
     // ---------- create / delete ----------
 
     fn alloc_ix(&mut self) -> Result<Ix, SceneError> {
-        if !self.free.is_empty() {
-            return Ok(Arc::make_mut(&mut self.free).pop().unwrap());
+        if let Some(f) = self.free.iter().next() {
+            self.free.remove(f);
+            return Ok(f as Ix);
         }
         if self.next_ix >= MAX_IX {
             return Err(SceneError::CapacityExceeded);
@@ -260,7 +260,7 @@ impl Scene {
         let id = Uuid(*self.ids.get(ix).unwrap());
         self.ids.remove(ix);
         self.idmap.remove(((id.0 >> 64) as u64, id.0 as u64));
-        Arc::make_mut(&mut self.free).push(ix);
+        self.free.insert(ix as u64);
         self.alive -= 1;
     }
 
@@ -285,9 +285,8 @@ impl Scene {
     }
 
     pub(crate) fn mark_dirty(&mut self, ix: Ix) {
-        if self.spatial.bvh.is_some() && !self.spatial.dirty.contains(ix) {
+        if self.spatial.bvh.is_some() {
             self.spatial.dirty.set(ix, ());
-            Arc::make_mut(&mut self.spatial.dirty_list).push(ix);
         }
     }
 
@@ -481,11 +480,14 @@ impl Scene {
         self.geom.scan(|ix, g| items.push((ix, g.bbox)));
         self.spatial.bvh = Some(Arc::new(Bvh::build(items.into_iter())));
         self.spatial.dirty = Table::new();
-        self.spatial.dirty_list = Arc::new(Vec::new());
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.fwd.len()
     }
 
     pub fn dirty_count(&self) -> usize {
-        self.spatial.dirty_list.len()
+        self.spatial.dirty.len()
     }
 
     pub fn has_spatial_index(&self) -> bool {
@@ -506,6 +508,7 @@ impl Scene {
             ("edges forward", self.fwd.heap_bytes()),
             ("edges reverse", self.rev.heap_bytes()),
             ("constraint payload", self.cons.heap_bytes()),
+            ("free slots", self.free.heap_bytes()),
             ("class index", self.class_idx.heap_bytes()),
             ("classification index", self.cls_idx.heap_bytes()),
             ("bvh", self.spatial.bvh.as_ref().map(|b| b.heap_bytes()).unwrap_or(0)),
@@ -552,7 +555,9 @@ impl Scene {
             return Err(b);
         }
         // free list
-        for &f in self.free.iter() {
+        self.free.check()?;
+        for f in self.free.iter() {
+            let f = f as Ix;
             ensure!(!self.ids.contains(f), "free slot {f} is alive");
             ensure!(f < self.next_ix, "free slot {f} beyond next_ix");
         }
@@ -624,10 +629,6 @@ impl Scene {
             let mut inbvh: HashMap<Ix, Aabb> = HashMap::new();
             for (ix, bb) in b.items() {
                 inbvh.insert(ix, bb);
-            }
-            ensure!(self.spatial.dirty.len() == self.spatial.dirty_list.len(), "dirty accounting");
-            for &ix in self.spatial.dirty_list.iter() {
-                ensure!(self.spatial.dirty.contains(ix), "dirty list entry without bit");
             }
             let mut bad = None;
             self.geom.scan(|ix, g| {

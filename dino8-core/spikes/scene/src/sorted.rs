@@ -1,7 +1,7 @@
 //! Persistent sorted multiset-free ordered set (a two-level B+tree with
 //! `Arc`-shared chunks). Used for the UUID map, edge sets and secondary
 //! indexes. Clone is one `Arc` bump; an insert or remove copies one chunk
-//! (at most 256 items), one group (at most 64 chunk pointers) and the root
+//! (at most 256 items), one group (at most 256 chunk pointers) and the root
 //! vector (one entry per group).
 
 use std::sync::Arc;
@@ -19,9 +19,9 @@ impl Keyed for u64 {
 }
 
 const CHUNK_MAX: usize = 256;
-const GROUP_MAX: usize = 64;
+const GROUP_MAX: usize = 256;
 const BULK_FILL: usize = 192;
-const BULK_GROUP: usize = 48;
+const BULK_GROUP: usize = 192;
 
 struct Group<T: Keyed> {
     firsts: Vec<T::K>,
