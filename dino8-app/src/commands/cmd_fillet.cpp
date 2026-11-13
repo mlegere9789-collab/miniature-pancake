@@ -25,6 +25,7 @@
 #include "commands/profiled_hole.h"
 #include "commands/revolved_solid.h"
 #include "dino8/kernel/boolean_general.h"
+#include "dino8/kernel/brep_seam.h"
 #include "dino8/kernel/fillet.h"
 #include "geom/BlendSurface.h"
 #include "geom/BrepTrimFace.h"
@@ -5501,7 +5502,7 @@ class MatchSrfCommand : public Command {
         // Replace just the picked face's surface (best effort; the trims
         // keep their own uv, valid because we only moved 3D positions of
         // boundary/near-boundary rows which are also the trim's own edge).
-        orig->brep->raw().m_S[orig->brep->raw().m_F[first_->face].m_si] = new ON_NurbsSurface(raw);
+        kernel::ReplaceBrepSurface(orig->brep->raw(), orig->brep->raw().m_F[first_->face].m_si, new ON_NurbsSurface(raw));
       }
       orig->InvalidateDisplay();
     }
