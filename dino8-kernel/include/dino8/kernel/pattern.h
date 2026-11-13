@@ -79,10 +79,14 @@ ON_Xform OrientOnSurfaceTransform(const NurbsSurface& surface, const ON_Plane& f
 Brep OrientBrepOnSurface(const Brep& body, const NurbsSurface& surface, const ON_Plane& from, Point3d near_point);
 
 // FlowPointAlongSurface: where FlowAlongSurface sends `p` when flowing from `base` onto `target`: p is written as (u, v, d) - the (u, v) of
-// its closest point on `base` and its signed distance d along base's normal there - and lands at target(u', v') + d * normal_target(u', v'),
-// (u', v') being the SAME FRACTIONS of target's domain that (u, v) are of base's. The map is parametric, so lengths are preserved where the
-// two parametrizations agree in speed (a developable pair with matching extents: a plane flowed onto a cylinder over its own arc length),
-// and an offset d from the base scales lengths by (r + d) / r on a cylinder of radius r. Throws std::invalid_argument for an invalid surface.
+// its closest point on `base` and its signed distance d along base's normal there - and lands at target(u', v') + d * normal_target(u', v').
+// (u', v') reproduce the point's ARC-LENGTH fractions: its distance along base's u isocurve (v fixed) and v isocurve (u fixed), as fractions
+// of those isocurves' lengths, is the distance along target's isocurves, as fractions of theirs (the two target parameters are coupled and
+// solved by a short fixed-point iteration; an isocurve of zero length, a pole, falls back to the parameter fraction). So lengths along an
+// isocurve are preserved where the two isocurves have the same length - a line over ANY interval of a plane patch whose width is a
+// cylinder's circumference lands on an arc of the same length, knots or not (a rational circle's parameter is not proportional to its arc
+// length between knots, which a parameter-fraction map would inherit) - and an offset d from the base scales lengths by (r + d) / r on a
+// cylinder of radius r. Throws std::invalid_argument for an invalid surface.
 Point3d FlowPointAlongSurface(const NurbsSurface& base, const NurbsSurface& target, Point3d p);
 
 
