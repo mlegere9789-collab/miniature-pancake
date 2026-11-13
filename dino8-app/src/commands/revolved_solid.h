@@ -653,4 +653,35 @@ inline std::optional<kernel::Brep> OffsetRevMeridian(const RevMeridian& m, doubl
   }
 }
 
+// CLOSED hollow with a thickness of its own for every face (nothing removed): kernel::ShellClosedRevolvedArcProfile on the meridian;
+// `overrides` maps a brep face to its own thickness, every other face gets `t`, the closing axis edge 0.
+inline std::optional<kernel::Brep> ShellClosedRevMeridian(const RevMeridian& m, double t, const std::map<int, double>& overrides, std::string& why) {
+  for (const auto& kv : overrides) {
+    if (std::find(m.face.begin(), m.face.end(), kv.first) == m.face.end()) { why = "invalid face index"; return std::nullopt; }
+  }
+  std::vector<double> th(m.edges.size(), 0.0);
+  for (size_t i = 0; i < m.edges.size(); ++i) {
+    if (m.face[i] < 0) continue;
+    const auto it = overrides.find(m.face[i]);
+    th[i] = it != overrides.end() ? it->second : t;
+  }
+  try {
+    return kernel::ShellClosedRevolvedArcProfile(m.edges, kernel::Point3d(m.o.x, m.o.y, m.o.z), kernel::Vector3d(m.ax.x, m.ax.y, m.ax.z),
+                                                 kernel::Vector3d(m.ex.x, m.ex.y, m.ex.z), th);
+  } catch (const std::exception& e) {
+    why = e.what();
+    return std::nullopt;
+  }
+}
+
+// A meridian from a polyline profile (radius, height) pairs - a cylinder or cone / frustum - with `face[k]` for edge k and -1 for the axis edge.
+inline RevMeridian LineMeridian(ON_3dPoint c0, ON_3dVector ax, ON_3dVector u, const std::vector<std::pair<double, double>>& prof, std::vector<int> face) {
+  RevMeridian m;
+  m.o = c0; m.ax = ax; m.ex = u;
+  for (const auto& rz : prof) { kernel::MeridianEdge e; e.r = rz.first; e.z = rz.second; m.edges.push_back(e); }
+  face.push_back(-1);
+  m.face = face;
+  return m;
+}
+
 }  // namespace dino8::app::revolved
