@@ -1447,106 +1447,17 @@ class Mesh {
   // partially filled and silently trusted.
   static Result LoadUsda(const std::string& path, Mesh& out_mesh);
 
-  // Writes this mesh as a single self-contained glTF 2.0 (`.gltf`) file -
-  // the tenth "other file format" here, and the first one whose binary
-  // vertex/index data is embedded as a base64 `data:` URI inside the JSON
-  // itself (glTF's own "embedded buffer" convention, a single valid,
-  // portable `.gltf` file with no companion `.bin`) rather than written as
-  // plain text the way every prior format's numbers are. Unlike every
-  // other format here, glTF's `TRIANGLES` primitive mode has no native
-  // quad or n-gon - so a quad face (`ON_MeshFace::IsQuad()`) is split into
-  // its two triangles on write, the same accommodation `SaveStl()`/
-  // `SaveAmf()` already make for the identical reason. The buffer holds
-  // the position array first (`float` XYZ triples, accessor 0, `VEC3`)
-  // immediately followed by the index array (`unsigned int` scalars,
-  // accessor 1, `SCALAR`) - both already 4-byte-aligned, so no inter-view
-  // padding is needed. `asset`/`buffers`/`bufferViews`/`accessors`/
-  // `meshes`/`nodes`/`scenes`/`scene` are all written (a real, spec-valid
-  // minimal glTF a general-purpose viewer can open), but only the
-  // `POSITION` attribute - no `NORMAL`, `TEXCOORD_0`, materials, or any
-  // node transform - this kernel's `Mesh` has nothing further to source a
-  // full glTF scene from anyway (same reasoning `SaveVrml()`'s own doc
-  // comment gives for its own narrower scope). Returns Result::Failed if
-  // the file can't be opened for writing; does not validate the mesh's
-  // own geometry (an empty mesh writes a structurally valid but empty
-  // buffer/accessor pair).
+  // glTF 2.0 as a single mesh: thin wrappers over dino8::kernel::SaveGltfModel / LoadGltfModel (gltf.h), which write one node per part with
+  // materials and read real files (accessors with strides and any component type, several meshes, node transforms, external .bin, GLB).
+  // SaveGltf writes `.gltf` with an embedded base64 buffer, SaveGlb the binary container; a quad face is written as two triangles, coordinates
+  // are written as they are (no unit or axis conversion; the model API has both). Result::Failed for a mesh with no vertices or no triangles, a
+  // non-finite coordinate or an unwritable path.
   Result SaveGltf(const std::string& path) const;
-
-  // Reads a glTF 2.0 `.gltf` file written by SaveGltf() into `out_mesh`.
-  // This is a deliberately narrow, hand-rolled scan for exactly the
-  // structure SaveGltf() writes - not a general glTF/JSON parser (an
-  // external `.bin` buffer `uri`, sparse accessors, or multi-primitive/
-  // multi-mesh scenes are still not understood at all; the `.glb` binary
-  // container is its own separate pair, LoadGlb() below, not handled
-  // here) -
-  // built on a small brace/bracket-depth JSON object/array scanner
-  // (`FindNextJsonObject`/`FindJsonArrayContent`, mesh.cpp, anonymous
-  // namespace) that does not need to be string-literal-aware, because
-  // the only JSON string value it ever has to skip past (the base64
-  // `data:` URI itself) is guaranteed by the base64 alphabet to contain
-  // none of `{}[]` - a general-purpose glTF file whose *other* string
-  // fields (names, extras) happened to contain one of those characters
-  // could still desync this scanner, a disclosed limitation this narrow
-  // reader accepts for files it itself wrote. It requires the buffer's
-  // own `uri` to start with `data:application/octet-stream;base64,`
-  // (rejecting an external-`.bin` reference outright rather than trying
-  // and failing to open a relative path), decodes that payload, then
-  // reads the FIRST two `bufferViews` entries as the position/index byte
-  // ranges directly - vertex and triangle counts come from those byte
-  // lengths (`byteLength / 12`, a `float` VEC3 or an `unsigned int` triple)
-  // rather than from the `accessors` array's own `count` fields, the same
-  // fixed "bufferView 0 is POSITION, bufferView 1 is indices" assumption
-  // `LoadCollada()` already makes about a single `VERTEX` input at offset
-  // 0, rather than actually resolving `meshes[0].primitives[0].attributes`
-  // /`indices` through `accessors` at all. Every triangle read back is a
-  // genuine triangle (glTF has
-  // no native quad), so no fan-triangulation or quad-merging is attempted
-  // - unlike every text-based format here, a glTF round trip through this
-  // pair does not preserve `ON_MeshFace::IsQuad()` faces as quads. Returns
-  // Result::Failed if the file can't be opened, it has no recognizable
-  // `bufferViews`/`accessors`/buffer `uri`, the `uri` isn't a base64 data
-  // URI, the base64 payload fails to decode, the position bufferView's
-  // byte length isn't an exact multiple of 12 (`float` VEC3), the index
-  // bufferView's byte length isn't an exact multiple of 4 (`unsigned int`
-  // SCALAR) or of 12 (a whole number of triangles), or any index falls
-  // outside the position count's range - `out_mesh` is left unspecified
-  // in that case, not partially filled and silently trusted.
+  // Reads a .gltf or .glb (told apart by the file's own first bytes, so LoadGltf and LoadGlb read either) and merges every instance of every
+  // node in the scene into one mesh in the file's own units and axes. `out_mesh` is left unchanged on failure; see LoadGltfModel for what is
+  // refused.
   static Result LoadGltf(const std::string& path, Mesh& out_mesh);
-
-  // Writes this mesh as a binary glTF 2.0 `.glb` file - the same geometry
-  // SaveGltf() writes (position/index bufferViews, `POSITION`-only
-  // attribute, no normals/UVs/materials - see its own doc comment for that
-  // shared scope), just packaged per the GLB container spec instead of a
-  // JSON text file with a base64 `data:` URI: a 12-byte header (magic
-  // `glTF`, version 2, total byte length), then a JSON chunk (the same
-  // JSON SaveGltf() builds, but its one `buffers` entry has no `uri` -
-  // per spec, a GLB buffer with no `uri` means "this container's own BIN
-  // chunk"), then the BIN chunk holding the raw position/index bytes
-  // directly - no base64 anywhere, and about 1/3 smaller on disk for it.
-  // Both chunks are padded to a 4-byte boundary as the spec requires (JSON
-  // with trailing spaces, BIN with trailing zero bytes); the header's
-  // total length accounts for that padding. Returns Result::Failed if the
-  // file can't be opened for writing.
   Result SaveGlb(const std::string& path) const;
-
-  // Reads a binary glTF 2.0 `.glb` file written by SaveGlb() (or any other
-  // reasonably well-formed single-BIN-chunk GLB file whose JSON matches
-  // the structure LoadGltf() already understands) into `out_mesh`. Checks
-  // the 12-byte header's magic (`glTF`) and version (must be exactly 2),
-  // then walks the chunk list by each chunk's own declared length looking
-  // for the one JSON chunk and the one BIN chunk (an unrecognized chunk
-  // type - a spec-sanctioned extension this reader doesn't understand - is
-  // skipped, not rejected); the JSON is then handed to the same
-  // bufferViews-reading logic LoadGltf() itself uses, sourced from the BIN
-  // chunk's own bytes instead of a decoded base64 payload, so it has the
-  // exact same "position/index bufferView 0 and 1" assumption and quad-
-  // preservation limits already documented there. Returns Result::Failed
-  // if the file can't be opened, is shorter than 12 bytes, has the wrong
-  // magic/version, declares a total length longer than the file actually
-  // is, is missing either chunk, or the shared bufferViews-reading logic
-  // itself fails for any of the reasons LoadGltf() already documents -
-  // `out_mesh` is left unspecified in that case, not partially filled and
-  // silently trusted.
   static Result LoadGlb(const std::string& path, Mesh& out_mesh);
 
   // Writes this mesh as a plain-ASCII IFC4 (Industry Foundation Classes,
