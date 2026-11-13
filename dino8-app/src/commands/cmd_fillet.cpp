@@ -4192,6 +4192,15 @@ class FilletEdgeCommand : public Command {
         }
         if (pr == -1) corner_note = " (exact corner pair with the previous pick: " + pair_why + ")";
       }
+      // A third face at an end (e.g. the face of the previous chamfer) bounds the distances below the face extents: refuse with the kernel's own bound rather
+      // than fall through to the approximate path, which answers such a request with a wrong mesh.
+      if (detail.find("overruns a third face") != std::string::npos) {
+        const std::string bound = ChamferBoundNote(*b, edge.PointAtStart(), edge.PointAtEnd());
+        if (!bound.empty()) {
+          ctx.Warn(label + ": the chamfer overruns a third face at an end of this edge" + corner_note + bound);
+          return;
+        }
+      }
       if (asymmetric || angled) {
         ctx.Warn(label + ": an asymmetric Distance1/Distance2 or Distance/Angle chamfer needs the whole object to be planar-faced at this edge (" + detail +
                   ")" + corner_note + "; use a plain Radius for the approximate rolling-ball-derived chamfer instead" +
@@ -4957,7 +4966,10 @@ class FilletEdgeCommand : public Command {
     try {
       kernel::Brep kb;
       kb.raw() = solid;
-      const kernel::ChamferDistanceLimit lim = kernel::MaxChamferDistance(kb, p0, p1);
+      const kernel::ChamferDistanceLimit faces_only = kernel::MaxChamferDistance(kb, p0, p1);
+      // counts the faces meeting the edge's ends too (an oblique third face, e.g. the face of an earlier chamfer, bounds a distance below its face extent)
+      const kernel::ChamferDistanceLimit lim = kernel::MaxChamferDistanceWithEnds(kb, p0, p1);
+      const bool ends_tighter = lim.max_distance_i < faces_only.max_distance_i - 1e-9 || lim.max_distance_j < faces_only.max_distance_j - 1e-9;
       const double d_j = distance2_.value_or(radius_);
       std::string over;
       if (radius_ > lim.max_distance_i) over += "distance1 " + FormatNumber(radius_) + " exceeds the " + FormatNumber(lim.max_distance_i) + " face 1 supports";
@@ -4966,7 +4978,7 @@ class FilletEdgeCommand : public Command {
         over += "distance2 " + FormatNumber(d_j) + " exceeds the " + FormatNumber(lim.max_distance_j) + " face 2 supports";
       }
       if (over.empty()) return "";
-      return " (the largest distances this edge's own two faces support are " + FormatNumber(lim.max_distance_i) + " and " + FormatNumber(lim.max_distance_j) + ": " + over + ")";
+      return std::string(ends_tighter ? " (the largest distances this edge's two faces and the faces at its ends support are " : " (the largest distances this edge's own two faces support are ") + FormatNumber(lim.max_distance_i) + " and " + FormatNumber(lim.max_distance_j) + ": " + over + ")";
     } catch (const std::exception&) {
       return "";  // not a planar-faced two-face edge: the kernel bound does not apply
     }
