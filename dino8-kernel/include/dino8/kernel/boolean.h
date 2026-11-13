@@ -1364,7 +1364,14 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 // Honest refusals (std::invalid_argument): fewer than 3 vertices or mismatched counts; a non-finite distance; a degenerate profile;
 // a cap or ANY ruled side quad that is not planar within 1e-9 of the body size (e.g. the top twisted against the bottom - a twisted
 // loft has bilinear sides whose offset is not a plane move, so there is no exact answer here); both profiles on one plane; a
-// non-convex body (concave profile); an inward offset that collapses a face (see OffsetSolidConvexPlanar).
+// inward offset that collapses a face (see OffsetSolidConvexPlanar).
+//
+// CONCAVE profiles (reflex corners, e.g. an L or a slotted U) are supported too: the body is not a convex solid, so the offset is
+// done per corner - each vertex is re-solved as the intersection of its own three moved planes (cap + the two side planes), the
+// mitre offset, with the topology kept. Orientation comes from the profile winding, not from a body centroid. Where the topology
+// would have to change it refuses instead: an edge that collapses or reverses (an inward offset past a convex corner pair, an
+// outward offset that shuts a notch: a slot of width w closes at d = w/2) or a moved cap ring that crosses itself. An L profile
+// prism of height H has the closed form V = (H + 2d)(A + P d + (convex - reflex corners) d^2) for 90-degree corners.
 Brep OffsetRuledSolid(const std::vector<Point3d>& bottom, const std::vector<Point3d>& top, double distance);
 
 // The genuine Rhino/SolidWorks "push/pull" (PressPull) direct-edit: unlike

@@ -3779,13 +3779,31 @@ Brep OffsetRuledSolid(const std::vector<Point3d>& bottom, const std::vector<Poin
   const double scale = std::max(1e-12, bb.Diagonal().Length());
   const double ptol = 1e-9 * scale;
 
-  Point3d centroid(0, 0, 0);
-  for (size_t i = 0; i < n; ++i) centroid += bottom[i] + top[i];
-  centroid = centroid / (2.0 * static_cast<double>(n));
+  // pn: the bottom ring's own Newell normal (the ring is counter-clockwise about it), so the outward side of every face is known
+  // from the PROFILE winding rather than from a body centroid (which is wrong for the walls of a concave notch): a cap is outward
+  // away from the other profile, a side over edge e is outward along e x pn.
+  Vector3d pn(0, 0, 0);
+  for (size_t i = 0; i < n; ++i) {
+    const Point3d& a = bottom[i];
+    const Point3d& c = bottom[(i + 1) % n];
+    pn.x += (a.y - c.y) * (a.z + c.z);
+    pn.y += (a.z - c.z) * (a.x + c.x);
+    pn.z += (a.x - c.x) * (a.y + c.y);
+  }
+  if (pn.Length() <= ptol * ptol) throw std::invalid_argument(std::string(who) + "the bottom profile is degenerate (zero area)");
+  pn.Unitize();
+  Point3d bc(0, 0, 0), tc0(0, 0, 0);
+  for (size_t i = 0; i < n; ++i) {
+    bc += bottom[i];
+    tc0 += top[i];
+  }
+  const double lift = ((tc0 - bc) / static_cast<double>(n)) * pn;  // + when top is on the +pn side
+  if (std::fabs(lift) <= ptol) {
+    throw std::invalid_argument(std::string(who) + "the two profiles lie on one plane (no height)");
+  }
 
-  // Planar loop -> outward-facing PlanarFace, or a refusal. Orientation is decided against the body centroid, so input winding
-  // (and which profile is "bottom") does not matter.
-  auto make_face = [&](std::vector<Point3d> loop, const char* what) {
+  // Planar loop -> outward-facing PlanarFace (outward = `hint` side), or a refusal.
+  auto make_face = [&](std::vector<Point3d> loop, const char* what, const Vector3d& hint) {
     Vector3d nrm(0, 0, 0);
     for (size_t i = 0; i < loop.size(); ++i) {
       const Point3d& a = loop[i];
@@ -3805,7 +3823,7 @@ Brep OffsetRuledSolid(const std::vector<Point3d>& bottom, const std::vector<Poin
         throw std::invalid_argument(std::string(who) + what + " is not planar: no exact offset");
       }
     }
-    if ((fc - centroid) * nrm < 0.0) {
+    if (hint * nrm < 0.0) {
       std::reverse(loop.begin(), loop.end());
       nrm = -nrm;
     }
@@ -3820,24 +3838,127 @@ Brep OffsetRuledSolid(const std::vector<Point3d>& bottom, const std::vector<Poin
   };
 
   std::vector<Brep::PlanarFace> faces;
-  faces.push_back(make_face(bottom, "the bottom profile"));
-  faces.push_back(make_face(top, "the top profile"));
-  // the two profile planes must be distinct (a ruled solid needs height): the top's centroid is off the bottom plane
-  {
-    const Brep::PlanarFace& bf = faces[0];
-    Point3d tc(0, 0, 0);
-    for (const Point3d& p : top) tc += p;
-    tc = tc / static_cast<double>(n);
-    if (std::fabs((tc - bf.loop[0]) * bf.plane.zaxis) <= ptol) {
-      throw std::invalid_argument(std::string(who) + "the two profiles lie on one plane (no height)");
-    }
-  }
+  faces.push_back(make_face(bottom, "the bottom profile", lift > 0.0 ? -pn : pn));
+  faces.push_back(make_face(top, "the top profile", lift > 0.0 ? pn : -pn));
   for (size_t i = 0; i < n; ++i) {
     const size_t j = (i + 1) % n;
-    faces.push_back(make_face({bottom[i], bottom[j], top[j], top[i]}, "a ruled side quad"));
+    faces.push_back(make_face({bottom[i], bottom[j], top[j], top[i]}, "a ruled side quad", ON_CrossProduct(bottom[j] - bottom[i], pn)));
   }
   const Brep base = Brep::FromPlanarFaces(faces);
-  return OffsetSolidConvexPlanar(base, distance);
+
+  // Convex profiles: the plane-moving half-space offset (OffsetSolidConvexPlanar). A profile with a reflex corner is not a convex
+  // solid, so there every vertex is instead re-solved as the intersection of its own three moved planes (cap + the two side
+  // planes meeting there) - the mitre offset, topology kept, exact for any n. The edge-flip / self-crossing guards below turn the
+  // cases where the topology would have to change (an edge collapsing past a reflex corner, a notch closing) into refusals.
+  bool concave = false;
+  for (const std::vector<Point3d>* ring : {&bottom, &top}) {
+    Vector3d rn(0, 0, 0);
+    for (size_t i = 0; i < n; ++i) {
+      const Point3d& a = (*ring)[i];
+      const Point3d& c = (*ring)[(i + 1) % n];
+      rn.x += (a.y - c.y) * (a.z + c.z);
+      rn.y += (a.z - c.z) * (a.x + c.x);
+      rn.z += (a.x - c.x) * (a.y + c.y);
+    }
+    rn.Unitize();
+    for (size_t i = 0; i < n; ++i) {
+      const Vector3d e0 = (*ring)[(i + 1) % n] - (*ring)[i];
+      const Vector3d e1 = (*ring)[(i + 2) % n] - (*ring)[(i + 1) % n];
+      if (ON_CrossProduct(e0, e1) * rn < -ptol * scale) concave = true;
+    }
+    // orientation-independent: a CW ring flips every sign, so a CW convex ring would read "concave"; require mixed signs
+    int pos = 0, neg = 0;
+    for (size_t i = 0; i < n; ++i) {
+      const Vector3d e0 = (*ring)[(i + 1) % n] - (*ring)[i];
+      const Vector3d e1 = (*ring)[(i + 2) % n] - (*ring)[(i + 1) % n];
+      const double c = ON_CrossProduct(e0, e1) * rn;
+      if (c > ptol * scale) ++pos;
+      if (c < -ptol * scale) ++neg;
+    }
+    concave = concave && pos > 0 && neg > 0;
+    if (concave) break;
+  }
+  if (!concave) return OffsetSolidConvexPlanar(base, distance);
+
+  std::vector<Point3d> orig(2 * n), moved(2 * n);
+  for (size_t i = 0; i < n; ++i) {
+    orig[i] = bottom[i];
+    orig[n + i] = top[i];
+  }
+  // plane lookup: faces[0] cap of `bottom`, faces[1] cap of `top`, faces[2+i] the side over edge i -> i+1.
+  auto plane_of = [&](size_t f) {
+    const Vector3d nz = faces[f].plane.zaxis;
+    return std::make_pair(nz, nz * (faces[f].plane.origin - Point3d(0, 0, 0)) + distance);
+  };
+  for (size_t ring = 0; ring < 2; ++ring) {
+    for (size_t i = 0; i < n; ++i) {
+      const size_t f[3] = {ring, 2 + (i + n - 1) % n, 2 + i};
+      Vector3d nn[3];
+      double dd[3];
+      for (int k = 0; k < 3; ++k) {
+        const auto pr = plane_of(f[k]);
+        nn[k] = pr.first;
+        dd[k] = pr.second;
+      }
+      const double det = nn[0] * ON_CrossProduct(nn[1], nn[2]);
+      if (std::fabs(det) < 1e-9) {
+        throw std::invalid_argument(std::string(who) + "three meeting planes are (nearly) dependent at a corner: no exact offset");
+      }
+      const Vector3d x = (dd[0] * ON_CrossProduct(nn[1], nn[2]) + dd[1] * ON_CrossProduct(nn[2], nn[0]) +
+                          dd[2] * ON_CrossProduct(nn[0], nn[1])) /
+                         det;
+      moved[ring * n + i] = Point3d(x.x, x.y, x.z);
+    }
+  }
+  // Topology guard 1: every original edge keeps its direction (a collapsed or reversed edge means a face has to vanish).
+  auto edge_ok = [&](size_t a, size_t c) {
+    const Vector3d e0 = orig[c] - orig[a], e1 = moved[c] - moved[a];
+    return e1 * e0 > 1e-9 * e0.Length() * scale;
+  };
+  for (size_t i = 0; i < n; ++i) {
+    const size_t j = (i + 1) % n;
+    if (!edge_ok(i, j) || !edge_ok(n + i, n + j) || !edge_ok(i, n + i)) {
+      throw std::invalid_argument(std::string(who) + "the offset collapses or reverses an edge (past a reflex corner): topology would change");
+    }
+  }
+  // Topology guard 2: both moved cap rings stay simple (a notch closing on itself).
+  for (size_t ring = 0; ring < 2; ++ring) {
+    const Brep::PlanarFace& cf = faces[ring];
+    auto uv = [&](const Point3d& p) {
+      const Vector3d r = p - cf.plane.origin;
+      return std::make_pair(r * cf.plane.xaxis, r * cf.plane.yaxis);
+    };
+    auto cross2 = [](double ax, double ay, double bx, double by) { return ax * by - ay * bx; };
+    for (size_t a = 0; a < n; ++a) {
+      for (size_t c = a + 2; c < n; ++c) {
+        if (a == 0 && c == n - 1) continue;
+        const auto p = uv(moved[ring * n + a]), q = uv(moved[ring * n + (a + 1) % n]);
+        const auto r = uv(moved[ring * n + c]), s = uv(moved[ring * n + (c + 1) % n]);
+        const double d1 = cross2(q.first - p.first, q.second - p.second, r.first - p.first, r.second - p.second);
+        const double d2 = cross2(q.first - p.first, q.second - p.second, s.first - p.first, s.second - p.second);
+        const double d3 = cross2(s.first - r.first, s.second - r.second, p.first - r.first, p.second - r.second);
+        const double d4 = cross2(s.first - r.first, s.second - r.second, q.first - r.first, q.second - r.second);
+        if (d1 * d2 < 0.0 && d3 * d4 < 0.0) {
+          throw std::invalid_argument(std::string(who) + "the offset profile crosses itself (a notch closes): topology would change");
+        }
+      }
+    }
+  }
+  std::vector<Brep::PlanarFace> out;
+  for (size_t f = 0; f < faces.size(); ++f) {
+    Brep::PlanarFace nf;
+    nf.plane = faces[f].plane;
+    nf.plane.origin = nf.plane.origin + distance * nf.plane.zaxis;
+    nf.plane.UpdateEquation();
+    for (const Point3d& p : faces[f].loop) {
+      size_t k = 0;
+      while (k < orig.size() && !(orig[k] == p)) ++k;
+      if (k == orig.size()) throw std::invalid_argument(std::string(who) + "internal: face vertex not found");
+      nf.loop.push_back(moved[k]);
+    }
+    out.push_back(std::move(nf));
+  }
+  return Brep::FromPlanarFaces(out);
 }
 
 namespace {
