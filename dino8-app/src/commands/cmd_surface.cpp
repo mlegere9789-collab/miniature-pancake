@@ -1652,6 +1652,7 @@ class PipeCommand : public Command {
   }
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double r) override {
+    if (ids_.empty()) return;  // a number typed before the rail curves were chosen
     if (r <= 0) { ctx.Warn("Radius must be positive"); return; }
     radius_ = r;
     ctx.Doc().BeginChange("Pipe");
@@ -2024,6 +2025,7 @@ class OffsetSrfCommand : public Command {
   }
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double d) override {
+    if (ids_.empty()) return;  // a number typed before the surfaces were chosen
     if (d == 0) { ctx.Warn("Distance must be non-zero"); return; }
     if (!std::isfinite(d) || std::fabs(d) > kMaxOffsetDistance) { ctx.Warn("OffsetSrf: the distance must be a number between -" + FormatNumber(kMaxOffsetDistance) + " and " + FormatNumber(kMaxOffsetDistance)); return; }
     if (flip_) d = -d;
@@ -2832,6 +2834,7 @@ class ExtrudeTaperedCommand : public Command {
   void OnPoint(CommandContext& ctx, Point3d p) override { OnNumber(ctx, ON_DotProduct(p - center_, ActiveNormal(ctx))); }
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double d) override {
+    if (profiles_.empty()) return;  // a number typed before the profile curves were chosen
     ctx.ClearPreview();
     if (d == 0) { ctx.Warn("Distance must be non-zero"); Finish(); return; }
     const Vector3d n = ActiveNormal(ctx);
