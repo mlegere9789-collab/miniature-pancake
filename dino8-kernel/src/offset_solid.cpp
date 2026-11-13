@@ -164,6 +164,22 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
   const double scale = std::max(bb.Diagonal().Length(), 1e-9);
   const double wtol = 1e-8 * scale;
 
+  // Local frame: everything below (the divergence-theorem volumes, the corner solve, and above all the tessellation whose float
+  // vertices feed the global overlap check) runs on coordinates re-centred near the origin; the result is shifted back at the end.
+  // The shift is the bounding-box centre rounded to a multiple of a power of two 2^-20 of the model size (so it is within a millionth of
+  // the model of the centre, which a fan volume about it needs, and subtracting it is exact).
+  // Without it a solid far from the origin (a 1 x 1 x 1 cube at x = 1e6) is refused as "inward-oriented" or gets a wrong volume, and a
+  // box 1e5 away is refused for spurious self-intersections of its float-precision tessellation.
+  const double quantum = std::ldexp(1.0, std::ilogb(scale) - 20);
+  const ON_3dPoint centre = bb.Center();
+  const Point3d shift(std::round(centre.x / quantum) * quantum, std::round(centre.y / quantum) * quantum, std::round(centre.z / quantum) * quantum);
+  const bool shifted = shift.x != 0.0 || shift.y != 0.0 || shift.z != 0.0;
+  if (shifted) {
+    for (auto& f : faces)
+      for (Point3d& p : f.loop) p = Point3d(p.x - shift.x, p.y - shift.y, p.z - shift.z);
+  }
+  auto PtWorld = [&](const Point3d& p) { return Pt(Point3d(p.x + shift.x, p.y + shift.y, p.z + shift.z)); };
+
   // Weld the loops' points into vertices.
   std::vector<Point3d> V;
   std::vector<std::vector<int>> idx(nf);
@@ -193,7 +209,7 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
   for (const auto& kv : directed) {
     const auto rev = directed.find({kv.first.second, kv.first.first});
     if (kv.second != 1 || rev == directed.end() || rev->second != 1) {
-      if (unpaired++ == 0) first_unpaired = " between " + Pt(V[kv.first.first]) + " and " + Pt(V[kv.first.second]);
+      if (unpaired++ == 0) first_unpaired = " between " + PtWorld(V[kv.first.first]) + " and " + PtWorld(V[kv.first.second]);
     }
   }
   if (unpaired > 0)
@@ -277,7 +293,7 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
   }
   R.max_plane_residual = worst_resid;
   if (worst_resid > tol_conc)
-    return refuse("the offset planes of the " + std::to_string(incident[worst_vertex].size()) + " faces meeting at vertex " + Pt(V[worst_vertex]) +
+    return refuse("the offset planes of the " + std::to_string(incident[worst_vertex].size()) + " faces meeting at vertex " + PtWorld(V[worst_vertex]) +
                   " are not concurrent: worst |n . delta - d| = " + Num(worst_resid) + " (tolerance " + Num(tol_conc) +
                   "); a mitre corner needs the planes to meet in one point");
 
@@ -291,7 +307,7 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
     const Vec w0(V[edges[e].second].x - V[edges[e].first].x, V[edges[e].second].y - V[edges[e].first].y, V[edges[e].second].z - V[edges[e].first].z);
     const Vec w1(W[edges[e].second].x - W[edges[e].first].x, W[edges[e].second].y - W[edges[e].first].y, W[edges[e].second].z - W[edges[e].first].z);
     const double l2 = w0.Length() * w0.Length();
-    if (!(l2 > 0.0)) return refuse("an edge of the input has zero length at " + Pt(V[edges[e].first]));
+    if (!(l2 > 0.0)) return refuse("an edge of the input has zero length at " + PtWorld(V[edges[e].first]));
     const double ratio = ON_DotProduct(w0, w1) / l2;
     if (ratio < min_ratio) {
       min_ratio = ratio;
@@ -301,7 +317,7 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
   R.min_edge_length_ratio = min_ratio;
   if (min_ratio <= 1e-9) {
     const auto& e = edges[min_edge];
-    return refuse("the edge between " + Pt(V[e.first]) + " and " + Pt(V[e.second]) + " " + (min_ratio < 0 ? "reverses" : "collapses") +
+    return refuse("the edge between " + PtWorld(V[e.first]) + " and " + PtWorld(V[e.second]) + " " + (min_ratio < 0 ? "reverses" : "collapses") +
                   " under this offset: new length / old length = " + Num(min_ratio) + " (a wall or gap closes; the topology would have to change)");
   }
 
@@ -378,6 +394,18 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
                   "the offset is refused rather than returned unchecked");
   }
 
+  if (shifted) {
+    // Back to the input's own frame: the same faces, each point moved by the shift.
+    for (int f = 0; f < nf; ++f) {
+      for (Point3d& p : out_faces[f].loop) p = Point3d(p.x + shift.x, p.y + shift.y, p.z + shift.z);
+      out_faces[f].plane = ON_Plane(out_faces[f].loop[0], normal[f]);
+    }
+    try {
+      built = Brep::FromPlanarFaces(out_faces);
+    } catch (const std::exception& e) {
+      return refuse(std::string("the offset faces could not be assembled into a B-rep: ") + e.what());
+    }
+  }
   out = std::move(built);
   return Result::Ok;
 }
