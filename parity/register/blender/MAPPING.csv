@@ -315,14 +315,12 @@ A,collection,objects_add_active,Add Selected to Active Object's Collection,D8-BL
 A,collection,objects_remove,Remove from Collection,D8-BLENDER-COLLECTI-0014,row
 A,collection,objects_remove_active,Remove Selected from Active Collection,D8-BLENDER-COLLECTI-0015,row
 A,collection,objects_remove_all,Remove from All Collections,D8-BLENDER-COLLECTI-0016,row
-A,console,autocomplete,Console Autocomplete,D8-BLENDER-CONSOLE-0001,group_member
 A,console,banner,Console Banner,D8-BLENDER-CONSOLE-0001,group_member
 A,console,clear,Clear All,D8-BLENDER-CONSOLE-0001,group_member
 A,console,clear_line,Clear Line,D8-BLENDER-CONSOLE-0001,group_member
 A,console,copy,Copy to Clipboard,D8-BLENDER-CONSOLE-0001,group_member
 A,console,copy_as_script,Copy to Clipboard (as Script),D8-BLENDER-CONSOLE-0001,group_member
 A,console,delete,Delete,D8-BLENDER-CONSOLE-0001,group_member
-A,console,execute,Console Execute,D8-BLENDER-CONSOLE-0001,group_member
 A,console,history_append,History Append,D8-BLENDER-CONSOLE-0001,group_member
 A,console,history_cycle,History Cycle,D8-BLENDER-CONSOLE-0001,group_member
 A,console,indent,Indent,D8-BLENDER-CONSOLE-0001,group_member
@@ -336,6 +334,8 @@ A,console,select_all,Select All,D8-BLENDER-CONSOLE-0001,group_member
 A,console,select_set,Set Selection,D8-BLENDER-CONSOLE-0001,group_member
 A,console,select_word,Select Word,D8-BLENDER-CONSOLE-0001,group_member
 A,console,unindent,Unindent,D8-BLENDER-CONSOLE-0001,group_member
+A,console,autocomplete,Console Autocomplete,D8-BLENDER-CONSOLE-0002,row
+A,console,execute,Console Execute,D8-BLENDER-CONSOLE-0003,row
 A,constraint,add_target,Add Target,D8-BLENDER-CONSTRAI-0001,row
 A,constraint,apply,Apply Constraint,D8-BLENDER-CONSTRAI-0002,row
 A,constraint,childof_clear_inverse,Clear Inverse,D8-BLENDER-CONSTRAI-0003,row
@@ -1941,10 +1941,6 @@ A,scene,view_layer_remove_aov,Remove AOV,D8-BLENDER-SCENE-0046,row
 A,scene,view_layer_remove_lightgroup,Remove Lightgroup,D8-BLENDER-SCENE-0047,row
 A,scene,view_layer_remove_unused_lightgroups,Remove Unused Lightgroups,D8-BLENDER-SCENE-0048,row
 A,screen,actionzone,Handle Area Action Zones,D8-BLENDER-SCREEN-0001,group_member
-A,screen,animation_cancel,Cancel Animation,D8-BLENDER-SCREEN-0001,group_member
-A,screen,animation_pause,Pause Animation,D8-BLENDER-SCREEN-0001,group_member
-A,screen,animation_play,Play Animation,D8-BLENDER-SCREEN-0001,group_member
-A,screen,animation_step,Animation Step,D8-BLENDER-SCREEN-0001,group_member
 A,screen,area_close,Close Area,D8-BLENDER-SCREEN-0001,group_member
 A,screen,area_dupli,Duplicate Area into New Window,D8-BLENDER-SCREEN-0001,group_member
 A,screen,area_join,Join Area,D8-BLENDER-SCREEN-0001,group_member
@@ -1956,12 +1952,8 @@ A,screen,back_to_previous,Back to Previous Screen,D8-BLENDER-SCREEN-0001,group_m
 A,screen,delete,Delete Screen,D8-BLENDER-SCREEN-0001,group_member
 A,screen,drivers_editor_show,Show Drivers Editor,D8-BLENDER-SCREEN-0001,group_member
 A,screen,edge_merge,Merge Area Edge,D8-BLENDER-SCREEN-0001,group_member
-A,screen,frame_jump,Jump to Endpoint,D8-BLENDER-SCREEN-0001,group_member
-A,screen,frame_offset,Frame Offset,D8-BLENDER-SCREEN-0001,group_member
 A,screen,header_toggle_menus,Expand/Collapse Header Menus,D8-BLENDER-SCREEN-0001,group_member
 A,screen,info_log_show,Show Info Log,D8-BLENDER-SCREEN-0001,group_member
-A,screen,keyframe_jump,Jump to Keyframe,D8-BLENDER-SCREEN-0001,group_member
-A,screen,marker_jump,Jump to Marker,D8-BLENDER-SCREEN-0001,group_member
 A,screen,new,New Screen,D8-BLENDER-SCREEN-0001,group_member
 A,screen,project_settings_show,Open Project Settings...,D8-BLENDER-SCREEN-0001,group_member
 A,screen,quadview_size,Quad View Resize,D8-BLENDER-SCREEN-0001,group_member
@@ -1981,9 +1973,17 @@ A,screen,screenshot_area,Save Screenshot (Editor),D8-BLENDER-SCREEN-0001,group_m
 A,screen,space_context_cycle,Cycle Space Context,D8-BLENDER-SCREEN-0001,group_member
 A,screen,space_type_set_or_cycle,Cycle Space Type Set,D8-BLENDER-SCREEN-0001,group_member
 A,screen,spacedata_cleanup,Clean Up Space Data,D8-BLENDER-SCREEN-0001,group_member
-A,screen,time_jump,Jump Time by Delta,D8-BLENDER-SCREEN-0001,group_member
 A,screen,userpref_show,Open Preferences...,D8-BLENDER-SCREEN-0001,group_member
 A,screen,workspace_cycle,Cycle Workspace,D8-BLENDER-SCREEN-0001,group_member
+A,screen,animation_cancel,Cancel Animation,D8-BLENDER-SCREEN-0002,row
+A,screen,animation_pause,Pause Animation,D8-BLENDER-SCREEN-0003,row
+A,screen,animation_play,Play Animation,D8-BLENDER-SCREEN-0004,row
+A,screen,animation_step,Animation Step,D8-BLENDER-SCREEN-0005,row
+A,screen,frame_jump,Jump to Endpoint,D8-BLENDER-SCREEN-0006,row
+A,screen,frame_offset,Frame Offset,D8-BLENDER-SCREEN-0007,row
+A,screen,keyframe_jump,Jump to Keyframe,D8-BLENDER-SCREEN-0008,row
+A,screen,marker_jump,Jump to Marker,D8-BLENDER-SCREEN-0009,row
+A,screen,time_jump,Jump Time by Delta,D8-BLENDER-SCREEN-0010,row
 A,script,execute_preset,Execute a Python Preset,D8-BLENDER-SCRIPT-0001,row
 A,script,python_file_run,Run Python File,D8-BLENDER-SCRIPT-0002,row
 A,script,reload,Reload Scripts,D8-BLENDER-SCRIPT-0003,row

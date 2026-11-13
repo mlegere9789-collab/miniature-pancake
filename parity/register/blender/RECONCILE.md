@@ -12,10 +12,10 @@ SHA-256 of the appendix text (Appendix A and B region, trailing blanks stripped)
 | Sum of per-module stated counts in headings | 2552 |
 | Operators printed (items parsed) | 2552 |
 | Modules printed | 78 |
-| Individual operator rows | 2341 |
+| Individual operator rows | 2352 |
 | UI-infrastructure group rows | 17 |
-| Operators covered as group members | 211 |
-| Total Appendix A rows | 2358 |
+| Operators covered as group members | 200 |
+| Total Appendix A rows | 2369 |
 | Check: individual rows + group members = printed | PASS |
 | Check: printed = stated | PASS |
 | Check: per-module printed = per-module stated | PASS |
@@ -36,7 +36,7 @@ SHA-256 of the appendix text (Appendix A and B region, trailing blanks stripped)
 | clip | 91 | 91 | 91 | 91 | 0 | 0 |
 | cloth | 1 | 1 | 1 | 1 | 0 | 0 |
 | collection | 16 | 16 | 16 | 16 | 0 | 0 |
-| console | 21 | 21 | 1 | 0 | 1 | 21 |
+| console | 21 | 21 | 3 | 2 | 1 | 19 |
 | constraint | 18 | 18 | 18 | 18 | 0 | 0 |
 | curve | 51 | 51 | 51 | 51 | 0 | 0 |
 | curves | 31 | 31 | 31 | 31 | 0 | 0 |
@@ -82,7 +82,7 @@ SHA-256 of the appendix text (Appendix A and B region, trailing blanks stripped)
 | render | 16 | 16 | 16 | 16 | 0 | 0 |
 | rigidbody | 13 | 13 | 13 | 13 | 0 | 0 |
 | scene | 48 | 48 | 48 | 48 | 0 | 0 |
-| screen | 44 | 44 | 1 | 0 | 1 | 44 |
+| screen | 44 | 44 | 10 | 9 | 1 | 35 |
 | script | 3 | 3 | 3 | 3 | 0 | 0 |
 | sculpt | 39 | 39 | 39 | 39 | 0 | 0 |
 | sculpt_curves | 4 | 4 | 4 | 4 | 0 | 0 |
@@ -108,10 +108,10 @@ SHA-256 of the appendix text (Appendix A and B region, trailing blanks stripped)
 | Row id | Module | Members |
 |---|---|---:|
 | D8-BLENDER-BUTTONS-0001 | buttons | 6 |
-| D8-BLENDER-CONSOLE-0001 | console | 21 |
+| D8-BLENDER-CONSOLE-0001 | console | 19 |
 | D8-BLENDER-GIZMOGRO-0001 | gizmogroup | 2 |
 | D8-BLENDER-INFO-0001 | info | 7 |
-| D8-BLENDER-SCREEN-0001 | screen | 44 |
+| D8-BLENDER-SCREEN-0001 | screen | 35 |
 | D8-BLENDER-SPREADSH-0001 | spreadsheet | 7 |
 | D8-BLENDER-UI-0001 | ui | 41 |
 | D8-BLENDER-UILIST-0001 | uilist | 3 |
@@ -146,13 +146,13 @@ Duplicate modifier names: Anchor Modifier, Armature Modifier, Build Modifier, Ca
 | Quantity | Value |
 |---|---|
 | Items printed in Appendix A and B | 3170 |
-| Register rows generated | 2976 |
+| Register rows generated | 2987 |
 | Alias rows | 6 |
-| Operators folded into group rows | 211 (in 17 group rows) |
+| Operators folded into group rows | 200 (in 17 group rows) |
 | Mapping lines in MAPPING.csv | 3170 |
 | Check: mapping lines = items printed | PASS |
 | Check: rows = printed - group members + group rows | PASS |
-| Target Best / Strong rows | 833 / 2143 |
+| Target Best / Strong rows | 997 / 1990 |
 
 Identity: rows = printed operators - group members + group rows + printed Appendix B items (alias rows are Appendix B printed items that point to a primary row, so they are rows too).
 

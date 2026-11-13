@@ -100,7 +100,8 @@ MODULE_FACTORY = {
     "export_anim": "interop-migration", "export_scene": "interop-migration",
     "import_anim": "interop-migration", "import_curve": "interop-migration",
     "import_scene": "interop-migration", "extensions": "interop-migration",
-    "asset": "interop-migration",
+    # plan section 3 row 8 lists "asset libraries" under rendering, animation, simulation
+    "asset": "render-anim",
     # scripting
     "script": "scripting-api-ai", "text": "scripting-api-ai",
     "text_editor": "scripting-api-ai", "console": "scripting-api-ai",
@@ -115,44 +116,139 @@ MODULE_FACTORY = {
     "collection": "ux-access-i18n", "project": "ux-access-i18n",
 }
 
-# (module, regex on operator name) -> factory; first match wins.
+# (module, regex on operator name) -> factory; first match wins.  Module defaults
+# above apply when no rule matches.  Reviewed in parity/register/blender/REVIEW.md.
+_OBJ_PHYS = r"particle|rigidbody|quick_(smoke|fluid|explode|liquid)|forcefield|effector_add|fluid|softbody|ocean|explode"
+_OBJ_SIM = _OBJ_PHYS + "|simulation"
+_OBJ_COLLECTION = (r"^(collection_(add|link|objects_select|remove|unlink|external_asset_drop|instance_add)|link_to_collection|"
+                   r"move_to_collection|hide_collection|hide_render_clear_all|hide_view_(clear|set)|isolate_type_render)$")
+_OBJ_DIRECT = (r"^(location_clear|rotation_clear|scale_clear|origin_(clear|set)|transform_apply|transforms_to_deltas|align|"
+               r"randomize_transform|paste_transform|copy_(global|relative)_transform|transform_axis_target|transform_to_mouse|"
+               r"visual_transform_apply|visual_geometry_to_objects|parent_.*|vertex_parent_set|duplicate.*|duplicates_make_real|join$|delete$|"
+               r"instance_offset_.*|make_dupli_face|select_(all|by_type|grouped|hierarchy|less|linked|mirror|more|pattern|random|same_collection)|"
+               r"mode_set.*|editmode_toggle|posemode_toggle|add$|add_named|empty_add|transfer_mode)$")
+_NODE_COMPOSITOR = (r"backimage_|cryptomatte|file_output_item|viewer_border|clear_viewer_border|read_viewlayers|render_changed|"
+                    r"new_compositing|new_compositor|duplicate_compositing|node_color_preset")
 OP_FACTORY_OVERRIDE = [
-    ("object", r"particle|rigidbody|quick_(smoke|fluid|explode|liquid)|forcefield|simulation|fluid|softbody|ocean", "simulation"),
+    ("object", _OBJ_SIM, "simulation"),
     ("object", r"geometry_node|node", "flow"),
-    ("object", r"constraint|armature|skin|shape_key|gpencil|grease|shaderfx|lineart|light|camera|bake|material|texture|speaker|track|hair_curves", "render-anim"),
+    ("object", r"override_library|^make_local$|volume_import", "interop-migration"),
+    ("object", _OBJ_COLLECTION, "ux-access-i18n"),
+    ("object", r"^skin_", "mesh-subd-sculpt"),
+    ("object", r"constraint|armature|shape_key|_bind$|paths_|anim_transforms_to_deltas|gpencil|grease|shaderfx|lineart|light|camera|bake|material|texture|speaker|track|hair_curves", "render-anim"),
+    ("object", _OBJ_DIRECT, "direct-modeling"),
+    ("scene", r"gltf", "interop-migration"),
     ("scene", r"freestyle|compositor|view_layer|render|light_cache|gpencil|grease|keying_set|sequencer", "render-anim"),
+    ("view3d", r"^edit_mesh_extrude", "mesh-subd-sculpt"),
+    ("view3d", r"^(snap_|interactive_add|cursor3d)", "direct-modeling"),
+    ("view3d", r"camera|render_border|drop_world|background_image", "render-anim"),
+    ("node", _NODE_COMPOSITOR, "render-anim"),
+    ("node", r"shader_script|test_inlining_shader", "render-anim"),
+    ("node", r"gltf", "interop-migration"),
+    ("collection", r"export|import", "interop-migration"),
     ("wm", r"obj_|ply_|stl_|usd_|alembic|fbx|otio|spz|import|export|append|^link$|lib_|recover|read_|revert|open_mainfile|save_|drop_|blend_strings|collection_export|path_open|id_linked", "interop-migration"),
     ("wm", r"owner_(en|dis)able", "scripting-api-ai"),
     ("wm", r".*", "ux-access-i18n"),
     ("preferences", r"addon|script_directory|autoexec|extension", "scripting-api-ai"),
 ]
 
+# Operators that the module-level group rule would fold into one UI-infrastructure
+# row but that are real user outcomes: (module, regex, factory, area text, best area).
+GROUP_EXTRACT = [
+    ("screen", r"^(animation_(cancel|pause|play|step)|frame_jump|frame_offset|keyframe_jump|marker_jump|time_jump)$",
+     "render-anim", "animation playback and time navigation", "animation"),
+    ("console", r"^(execute|autocomplete)$", "scripting-api-ai", "the Python console", "scripting API"),
+]
+
+
+def op_factory(module, name):
+    for mod, rx, fac in OP_FACTORY_OVERRIDE:
+        if mod == module and re.search(rx, name):
+            return fac
+    return MODULE_FACTORY[module]
+
+
 # --------------------------------------------------------------------------
-# Targets: Best where Blender is class-leading per the report matrix.
+# Targets: Best only where the report's parity matrix (chapter 8) rates Blender
+# as class-leading.  Rule (reviewed, see REVIEW.md):
+#   1. A module (or operator, or Appendix B item) is Best only when it IS the
+#      user-facing tool of one of these matrix capabilities:
+#        polygon/mesh editing, sculpting, path tracing, animation and rigging,
+#        physics simulation, compositing and video, scripting API.
+#      The matrix rows for licence, open data, extension ecosystem and roadmap
+#      transparency are platform rows without a bpy operator; they are not
+#      produced by this generator.  Import/export, extensions and asset
+#      operators therefore stay Strong.
+#   2. Supporting editors and utilities inside a Best module stay Strong:
+#      view/zoom/pan navigation, plain selection primitives (select all, box,
+#      circle, lasso, more, less, linked, click), preset-add helpers, frame
+#      jumps and cursor placement.  They are commodity behavior; the outcome
+#      that is class-leading is the tool, not the selection gesture.
+#   3. Text-editor operators (the Text editor area) are not the scripting API
+#      and stay Strong; so do timeline markers, Grease Pencil drawing (not a
+#      matrix row), UV, paint, brushes, geometry and shader nodes (the matrix
+#      rates Blender Strong for visual programming), modifiers other than
+#      physics and rigging deformers, GP effects and editor containers.
 # --------------------------------------------------------------------------
 BEST_MODULES = {
     "sculpt": "sculpting", "sculpt_curves": "sculpting",
     "mesh": "polygon and mesh editing",
-    "cycles": "path tracing", "render": "path tracing",
+    "cycles": "path tracing",
     "action": "animation", "anim": "animation", "armature": "animation",
     "pose": "animation", "poselib": "animation", "nla": "animation",
-    "graph": "animation", "marker": "animation", "constraint": "animation",
+    "graph": "animation", "constraint": "animation",
     "cloth": "physics", "fluid": "physics", "rigidbody": "physics",
     "particle": "physics", "boid": "physics", "dpaint": "physics",
     "ptcache": "physics",
-    "script": "scripting API", "text": "scripting API",
-    "text_editor": "scripting API",
+    "script": "scripting API",
+    "sequencer": "compositing and video", "clip": "compositing and video",
+    "mask": "compositing and video",
 }
-BEST_KINDS = {"compositor_nodes": "compositing", "constraints": "animation"}
+# (module, regex on operator name, area or None).  First match wins; None forces
+# Strong.  Evaluated after the chrome rule and before BEST_MODULES.
+BEST_OP_RULES = [
+    ("render", r"^render$", "path tracing"),
+    ("render", r".*", None),
+    ("script", r"^execute_preset$", None),
+    ("scene", r"compositor_effect|new_sequencer", "compositing and video"),
+    ("object", _OBJ_PHYS, "physics"),
+    ("object", r"^(constraint_add|constraint_add_with_targets|constraints_clear|constraints_copy|armature_add|"
+               r"shape_key_.*|.*_bind|track_clear|track_set)$", "animation"),
+    ("paint", r"^(mask_|hide_show|visibility_)", "sculpting"),
+    ("view3d", r"^edit_mesh_extrude", "polygon and mesh editing"),
+    ("node", _NODE_COMPOSITOR, "compositing and video"),
+]
+BEST_CHROME = re.compile(
+    r"^(view_.*|.*_view_.*|zoom.*|.*_zoom.*|pan|scroll.*|smoothview|cursor_set|change_frame|frame_jump|"
+    r"select|clickselect|select_(all|box|circle|lasso|leftright|column|more|less|linked|linked_pick)|"
+    r".*preset_add|.*_preset|(dopesheet|graph)_(select.*|view_all|center_current_frame)|hide_view_.*)$")
+# Appendix B: kinds that are Best as a whole, and per-label Best rules.
+BEST_KINDS = {"compositor_nodes": "compositing and video", "constraints": "animation"}
+MODIFIER_PHYSICS = {"Cloth", "Collision", "DynamicPaint", "Explode", "Fluid", "Ocean", "ParticleInstance",
+                    "ParticleSystem", "SoftBody", "Surface"}
+MODIFIER_RIG = {"Armature", "MeshDeform", "SurfaceDeform", "LaplacianDeform", "CorrectiveSmooth"}
+MODIFIER_GP = {"Instance", "Length", "LineArt", "Multiply", "Outline", "Simplify", "Subdivision",
+               "WeightModifierAngle", "WeightModifierProximity"}
 BEST_SUPERIORITY = {
     "sculpting": "Match Blender sculpt feel and performance, then exceed it with exact-kernel snapping, non-destructive history and multi-user editing.",
     "polygon and mesh editing": "Match Blender edit-mode speed and tool depth, then exceed it with exact-kernel precision, reliable non-destructive history and CAD-grade units.",
     "path tracing": "Match Cycles image quality and render time on the golden corpus, then exceed it with deterministic seeds, incremental cloud render and no GPL dependency.",
-    "animation": "Match Blender animation tooling, then exceed it with branching undo, operation-log history and live shared timelines.",
+    "animation": "Match Blender animation and rigging tooling, then exceed it with branching undo, operation-log history and live shared timelines.",
     "physics": "Match Blender simulation stability and bake workflow, then exceed it with a unified XPBD and flow-graph solver and cached partial re-solve.",
-    "compositing": "Match the Blender compositor node set and image results, then exceed it with GPU-resident tiles and graph-level caching.",
+    "compositing and video": "Match the Blender compositor, sequencer and tracking results on the golden corpus, then exceed them with GPU-resident tiles, graph-level caching and shared review timelines.",
     "scripting API": "Match the bpy-class scripting surface, then exceed it with a versioned stable API, sandboxed extensions and an AI-callable command model.",
 }
+
+
+def op_best_area(module, name):
+    """Matrix capability for which this operator is class-leading, or None (Strong)."""
+    if BEST_CHROME.match(name):
+        return None
+    for mod, rx, area in BEST_OP_RULES:
+        if mod == module and re.search(rx, name):
+            return area
+    return BEST_MODULES.get(module)
+
 
 # --------------------------------------------------------------------------
 # Human descriptions of the editing context for statements
@@ -379,6 +475,145 @@ KIND_FACTORY = {"modifiers": "mesh-subd-sculpt", "geometry_nodes": "flow",
                 "editors": "ux-access-i18n"}
 
 
+# --------------------------------------------------------------------------
+# Statements: one user outcome per row.  The verb class comes from the first
+# word of the UI label (falling back to the operator name); each class states
+# what the user sees and can verify afterwards.  The UI label is kept in quotes
+# so the row stays searchable, but it is never the whole statement.
+# --------------------------------------------------------------------------
+VERB_CLASSES = [
+    ("select", {"select", "deselect", "(de)select", "box", "circle", "lasso", "pick", "invert", "mouse"}),
+    ("view", {"view", "zoom", "pan", "orbit", "fly", "walk", "dolly", "center", "navigate", "roll", "frame", "go", "find", "jump"}),
+    ("create", {"add", "new", "create", "insert", "primitive", "append", "draw", "pen"}),
+    ("remove", {"remove", "delete", "clear", "unlink", "dissolve", "erase", "purge", "clean", "cleanup", "free",
+                "unassign", "discard", "unmark", "delete/remove", "detach"}),
+    ("copy", {"duplicate", "copy", "clone", "mirror"}),
+    ("paste", {"paste"}),
+    ("place", {"move", "slide", "snap", "align", "rotate", "scale", "resize", "translate", "transform", "flip",
+               "push", "shrink", "bend", "rip", "swap", "randomize", "offset", "shear", "pull", "trim", "extend"}),
+    ("toggle", {"toggle", "hide", "show", "hide/show", "enable", "disable", "mute", "unmute", "lock", "unlock",
+                "reveal", "isolate", "pin", "expand", "collapse", "cycle", "open/close"}),
+    ("set", {"set", "assign", "change", "switch", "activate", "mark", "rename", "replace", "reset", "restore",
+             "match", "sort", "reorder", "default", "use", "update", "refresh", "group", "ungroup", "edit", "enter/exit",
+             "enter", "exit", "sync", "attach", "fast", "prefetch", "filter"}),
+    ("process", {"extrude", "bevel", "fill", "smooth", "shade", "subdivide", "merge", "join", "separate", "split",
+                 "decimate", "relax", "project", "transfer", "blend", "bake", "solve", "connect", "loop", "knife",
+                 "cut", "inset", "bridge", "weld", "remesh", "rebuild", "fix", "limit", "quantize", "average",
+                 "interpolate", "stash", "bind", "unbind", "track", "detect", "refine", "stabilize", "make", "generate",
+                 "apply", "convert", "calculate", "recalculate", "normalize", "sample", "spin", "bisect", "intersect",
+                 "flatten", "poke", "wireframe", "solidify", "screw", "to", "beautify", "reverse", "quick",
+                 "symmetrize", "corrective", "laplacian", "mesh", "voxel", "quadriflow", "multires", "un-subdivide",
+                 "unsubdivide", "skin", "butterworth", "gaussian", "breakdown", "ease", "euler",
+                 "keys", "samples", "sound", "time", "equalize", "reproject", "trace", "setup"}),
+    ("load", {"open", "load", "import", "install", "download", "link", "drop", "read", "recover", "revert",
+              "browse", "relocate", "reload", "unpack"}),
+    ("store", {"save", "export", "pack", "write", "screenshot", "copy-out"}),
+    ("run", {"run", "execute", "play", "render", "start", "stop", "cancel", "undo", "redo", "repeat",
+             "step", "pause"}),
+]
+NAME_CLASS = [
+    ("select", r"(^|_)select|clickselect"),
+    ("view", r"^view_|_view_|^zoom|^pan"),
+    ("create", r"(^|_)add$|^add_|^new|primitive_|_new$|create"),
+    ("remove", r"delete|remove|clear|_del$|unlink|dissolve"),
+    ("copy", r"duplicate|^copy|_copy|mirror"),
+    ("paste", r"paste"),
+    ("place", r"move|slide|snap|align|rotate|resize|transform"),
+    ("toggle", r"toggle|hide|show|mute|lock"),
+    ("set", r"(^|_)set(_|$)|assign|change|rename|apply|convert|update|refresh"),
+    ("load", r"open|import|install|download|reload|link"),
+    ("store", r"save|export|pack"),
+]
+CLASS_TEXT = {
+    "select": 'Change what is selected in {area} with "{label}"; the new selection is what the next edit command acts on, no data is modified, and one undo step restores the previous selection.',
+    "view": 'Change the view or current position in {area} with "{label}" so the user can inspect the result; only view state or the current frame changes, never model data.',
+    "create": 'Create new content in {area} with "{label}"; the new item exists in the document afterwards with the values Blender 5.3 gives it, is the active or selected item where Blender makes it so, and one undo step removes it.',
+    "remove": 'Remove or clear content in {area} with "{label}"; the targeted data is gone afterwards, unrelated data is untouched, references to it are left valid, and one undo step restores it.',
+    "copy": 'Copy content in {area} with "{label}"; the copy has the same values as its source, the source is unchanged, and one undo step removes the copy.',
+    "paste": 'Paste previously copied content in {area} with "{label}"; the pasted items match what was copied, land where Blender 5.3 puts them, and one undo step removes them.',
+    "place": 'Reposition or reshape the current selection in {area} with "{label}"; the resulting positions or shapes match Blender 5.3 for the same input, only the selected items change, and one undo step restores them.',
+    "toggle": 'Switch visibility, lock, mute or expansion state in {area} with "{label}"; the changed state is visible in the UI and the output, it is saved with the document, and one undo step restores it.',
+    "set": 'Change a setting, assignment or conversion in {area} with "{label}"; the new value is stored in the document, takes effect in dependent results, and one undo step restores the previous value.',
+    "process": 'Run the data operation "{label}" on the current selection in {area}; the resulting data matches Blender 5.3 for the same input, the operation reports a clear error when the input is invalid, and one undo step restores the original.',
+    "load": 'Bring content into the document in {area} with "{label}"; the content is available afterwards with its values intact, missing or broken sources are reported rather than skipped silently, and one undo step reverts the document.',
+    "store": 'Write document content to disk or pack it into the file in {area} with "{label}"; reading it back reproduces the same content, and failures leave the previous file intact.',
+    "run": 'Run the action "{label}" in {area}; the document or playback state ends as Blender 5.3 leaves it for the same input, and the user can cancel or undo it.',
+    "other": 'Use "{label}" in {area}; the document ends in the state Blender 5.3 produces for the same input and one undo step restores the previous state.',
+}
+
+
+def label_words(label, name):
+    base = label if label else humanize(name)
+    return base, re.sub(r"[^a-z/()-]", "", base.split(" ")[0].lower())
+
+
+def verb_class(label, name):
+    first = label_words(label, name)[1]
+    for cls, words in VERB_CLASSES:
+        if first in words:
+            return cls
+    for cls, rx in NAME_CLASS:
+        if re.search(rx, name):
+            return cls
+    return "other"
+
+
+def op_statement(area, label, name, qualifier=None):
+    shown, _first = label_words(label, name)
+    text = CLASS_TEXT[verb_class(label, name)].format(area=area, label=shown)
+    if qualifier:
+        text += " Variant: %s." % qualifier
+    return text
+
+
+KIND_STATEMENT = {
+    "geometry_nodes": 'Add the "{label}" node to a geometry node graph, connect its sockets and get the same output values and geometry as Blender 5.3 for the same inputs; the node saves and reloads with its settings intact.',
+    "shader_nodes": 'Add the "{label}" node to a material or world node graph and get the same shading result as Blender 5.3 for the same inputs; the node saves and reloads with its settings intact.',
+    "compositor_nodes": 'Add the "{label}" node to a compositor node graph and get the same output image as Blender 5.3 within the image comparison tolerance for the same inputs; the node saves and reloads with its settings intact.',
+    "modifiers": 'Add the "{label}" modifier to an object stack, set its parameters and get the same resulting geometry or data as Blender 5.3; reordering, disabling or removing it re-evaluates the result non-destructively.',
+    "constraints": 'Add the "{label}" constraint to an object or bone and get the same resulting transform as Blender 5.3 for the same targets and influence; disabling or removing it restores the unconstrained transform.',
+    "gp_effects": 'Add the "{label}" shader effect to a Grease Pencil object and get the same rendered result as Blender 5.3 for the same settings; removing it restores the original look.',
+    "editors": 'Open the "{label}" editor in a workspace area with the same panels, tools and display options as Blender 5.3; its layout and settings are saved with the workspace.',
+}
+
+
+EDITOR_FACTORY = {
+    "SpaceClipEditor": "render-anim", "SpaceDopeSheetEditor": "render-anim", "SpaceGraphEditor": "render-anim",
+    "SpaceImageEditor": "render-anim", "SpaceNLA": "render-anim", "SpaceSequenceEditor": "render-anim",
+    "SpaceNodeEditor": "flow", "SpaceTextEditor": "scripting-api-ai", "SpaceConsole": "scripting-api-ai",
+    "SpaceFileBrowser": "interop-migration",
+}
+
+
+def display_name(label):
+    """Printed Appendix B label without the generic class word ("Displace Modifier" -> "Displace")."""
+    t = re.sub(r"^Space ", "", label)
+    t = re.sub(r" (Modifier|Constraint|Effect|Space)$", "", t)
+    return t or label
+
+
+def b_class(kind, label):
+    """(factory, best area or None) for an Appendix B item."""
+    c = camel(label)
+    if kind == "modifiers":
+        core = re.sub(r"Modifier$", "", c)
+        if core in MODIFIER_PHYSICS:
+            return "simulation", "physics"
+        if core in MODIFIER_RIG:
+            return "render-anim", "animation"
+        if core.startswith("GreasePencil") or core in MODIFIER_GP:
+            return "render-anim", None
+        if core == "Cache":
+            return "interop-migration", None
+        if core == "Nodes":
+            return "flow", None
+        return "mesh-subd-sculpt", None
+    if kind == "editors":
+        ref = EDITOR_REF.get(label, c)
+        return EDITOR_FACTORY.get(ref, "ux-access-i18n"), None
+    return KIND_FACTORY[kind], BEST_KINDS.get(kind)
+
+
 def make_row(rid, statement, kind, ref, factory, domain, target, best_area=None,
              alias_of=None, notes=None):
     row = OrderedDict()
@@ -423,54 +658,72 @@ def build(ops, bsec):
         code = op_code(module)
         rows = []
         area = AREA[module]
-        best = BEST_MODULES.get(module)
-        target = "Best" if best else "Strong"
         group_members = OrderedDict()   # group key -> [(name,label)]
-        n_rows_ind = 0
+        individual = []                 # (name, label, factory, area text, best area)
         for name, label in d["items"]:
             if module in GROUP_MODULES:
-                group_members.setdefault(module, []).append((name, label))
+                ex = next((e for e in GROUP_EXTRACT if e[0] == module and re.search(e[1], name)), None)
+                if ex is None:
+                    group_members.setdefault(module, []).append((name, label))
+                else:
+                    individual.append((name, label, ex[2], ex[3], ex[4]))
                 continue
             if module == "wm":
                 g = wm_group_of(name)
                 if g:
                     group_members.setdefault(g, []).append((name, label))
                     continue
-            shown = label if label else humanize(name)
+            individual.append((name, label, op_factory(module, name), area, op_best_area(module, name)))
+        label_count = {}
+        for name, label, _f, _a, _b in individual:
+            k = label if label else humanize(name)
+            label_count[k] = label_count.get(k, 0) + 1
+
+        def emit_groups():
+            n_g = 0
+            n_m = 0
+            for gkey, members in group_members.items():
+                rid = next_id(code)
+                if module == "wm":
+                    desc = WM_GROUPS[gkey][1]
+                    ref = "bpy.ops.wm.<%s group>" % gkey
+                    gdomain = "wm"
+                    fac = "ux-access-i18n"
+                else:
+                    desc = GROUP_MODULES[module]
+                    ref = "bpy.ops.%s.*" % module
+                    gdomain = module
+                    fac = MODULE_FACTORY[module]
+                stmt = ("Use %s through shared UI infrastructure (%d operators in bpy.ops.%s): every member "
+                        "behaves as in Blender 5.3 and is covered by common tests instead of one test per "
+                        "operator." % (desc, len(members), module))
+                lst = "; ".join("bpy.ops.%s.%s = %s" % (module, n, l if l else humanize(n)) for n, l in members)
+                notes = "UI-infrastructure group row. Member operators (%d): %s" % (len(members), lst)
+                rows.append(make_row(rid, stmt, "operator", ref, fac, gdomain, "Strong", None, None, notes))
+                for n, l in members:
+                    mapping.append(("A", module, n, l, rid, "group_member"))
+                n_g += 1
+                n_m += len(members)
+            return n_g, n_m
+
+        n_group_rows = n_members = 0
+        if module in GROUP_MODULES:
+            n_group_rows, n_members = emit_groups()
+        for name, label, fac, arealabel, best in individual:
             note = None
             if not label:
                 note = "Blender 5.3 reports an empty UI label for this operator; the statement uses the operator name."
             rid = next_id(code)
-            stmt = 'User can "%s" in %s with the same outcome as Blender 5.3 bpy.ops.%s.%s.' % (
-                shown, area, module, name)
+            shown = label if label else humanize(name)
+            qual = ("operator %s.%s" % (module, name)) if label_count[shown] > 1 else None
+            stmt = op_statement(arealabel, label, name, qual)
+            target = "Best" if best else "Strong"
             rows.append(make_row(rid, stmt, "operator", "bpy.ops.%s.%s" % (module, name),
-                                 op_factory(module, name), module, target, best, None, note))
+                                 fac, module, target, best, None, note))
             mapping.append(("A", module, name, label, rid, "row"))
-            n_rows_ind += 1
-        n_group_rows = 0
-        n_members = 0
-        for gkey, members in group_members.items():
-            rid = next_id(code)
-            if module == "wm":
-                desc = WM_GROUPS[gkey][1]
-                ref = "bpy.ops.wm.<%s group>" % gkey
-                gdomain = "wm"
-                fac = "ux-access-i18n"
-            else:
-                desc = GROUP_MODULES[module]
-                ref = "bpy.ops.%s.*" % module
-                gdomain = module
-                fac = MODULE_FACTORY[module]
-            stmt = ("User gets Blender-equivalent %s through shared UI infrastructure (%d operators in "
-                    "bpy.ops.%s), verified by common tests instead of one test per operator."
-                    % (desc, len(members), module))
-            lst = "; ".join("bpy.ops.%s.%s = %s" % (module, n, l if l else humanize(n)) for n, l in members)
-            notes = "UI-infrastructure group row. Member operators (%d): %s" % (len(members), lst)
-            rows.append(make_row(rid, stmt, "operator", ref, fac, gdomain, "Strong", None, None, notes))
-            for n, l in members:
-                mapping.append(("A", module, n, l, rid, "group_member"))
-            n_group_rows += 1
-            n_members += len(members)
+        n_rows_ind = len(individual)
+        if module not in GROUP_MODULES:
+            n_group_rows, n_members = emit_groups()
         files[module + ".jsonl"] = rows
         stats[module] = {"stated": d["stated"], "printed": len(d["items"]), "rows": len(rows),
                          "individual": n_rows_ind, "group_rows": n_group_rows,
@@ -480,8 +733,6 @@ def build(ops, bsec):
     for kind, d in bsec.items():
         code = KIND_CODE[kind]
         skind, area, noun = KIND_INFO[kind]
-        best = BEST_KINDS.get(kind)
-        target = "Best" if best else "Strong"
         rows = []
         first = {}
         n_alias = 0
@@ -492,23 +743,25 @@ def build(ops, bsec):
                 ref = "bpy.types.%s" % EDITOR_REF.get(label, camel(label))
             else:
                 ref = "%s/%s" % (kind, label)
+            fac, best = b_class(kind, label)
+            target = "Best" if best else "Strong"
             rid = next_id(code)
             if kind == "modifiers" and label in first:
                 prim = first[label]
-                stmt = ('Printed duplicate of the modifier "%s"; counted once as %s and mapped to it, '
-                        'so the unique modifier count is not inflated.' % (label, prim))
-                rows.append(make_row(rid, stmt, skind, ref, KIND_FACTORY[kind], kind, target, best, prim,
-                                     "Alias row: Appendix B prints this modifier name more than once."))
+                stmt = ('Reach the "%s" modifier through its second printed entry as well: the printed name '
+                        'appears twice in Appendix B, so both entries resolve to %s and the unique modifier '
+                        'count is not inflated.' % (label, prim))
+                rows.append(make_row(rid, stmt, skind, ref, fac, kind, target, best, prim,
+                                     "Alias row: Appendix B prints this modifier name more than once. The "
+                                     "second entry may be a distinct class that shares the label (for "
+                                     "example a Grease Pencil variant); decide when binding to bpy.types."))
                 mapping.append(("B", kind, label, label, rid, "alias"))
                 n_alias += 1
                 continue
             first.setdefault(label, rid)
-            if kind == "editors":
-                stmt = 'User can work in the "%s" %s with the same capabilities as Blender 5.3.' % (label, noun)
-            else:
-                stmt = 'User can use the "%s" %s in %s with the same results as Blender 5.3.' % (label, noun, area)
+            stmt = KIND_STATEMENT[kind].format(label=display_name(label))
             note = "Name is the label as printed in Appendix B; ref is derived from it."
-            rows.append(make_row(rid, stmt, skind, ref, KIND_FACTORY[kind], kind, target, best, None, note))
+            rows.append(make_row(rid, stmt, skind, ref, fac, kind, target, best, None, note))
             mapping.append(("B", kind, label, label, rid, "row"))
         files["b_%s.jsonl" % kind] = rows
         stats["B:" + kind] = {"stated": d["stated"], "printed": len(d["items"]),
