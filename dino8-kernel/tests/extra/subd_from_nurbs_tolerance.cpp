@@ -125,6 +125,11 @@ D8_EXTRA_TEST(SubDFromNurbsToleranceReportsNonConvergenceWithAnEmptyCageAndRejec
   const SubD none = SubD::FromNurbsSurfaceToTolerance(torus, 1e-7, &rep, 4);
   d8test::Check(!rep.converged && none.FaceCount() == 0 && !rep.reason.empty() && rep.max_deviation > 1e-7 && rep.divisions_tried.size() == 1,
                 "an unreachable tolerance within the grid budget: not converged, empty SubD, a reason, the deviation reached");
+  SubDFromNurbsReport rb;
+  const SubD best = SubD::FromNurbsSurfaceToTolerance(torus, 1e-9, &rb, 12, 6, true);
+  d8test::Check(!rb.converged && best.FaceCount() == 144 && rb.divisions == 12 && rb.divisions_tried.size() == 2 && rb.divisions_tried[0] == 6 &&
+                    rb.fit_iterations > 0 && !rb.reason.empty() && rb.max_deviation > 1e-9,
+                "start_divisions 6, max 12, best_effort: grids 6 and 12 tried, the finest (144 faces) returned though the tolerance is missed, with fit iterations reported");
   bool t_zero = false, t_nan = false, t_inf = false, t_neg = false, t_div = false, t_surf = false;
   try { (void)SubD::FromNurbsSurfaceToTolerance(torus, 0.0); } catch (const std::invalid_argument&) { t_zero = true; }
   try { (void)SubD::FromNurbsSurfaceToTolerance(torus, std::nan("")); } catch (const std::invalid_argument&) { t_nan = true; }
@@ -157,4 +162,45 @@ D8_EXTRA_TEST(SubDFromNurbsToleranceFlatSheetStaysInThePlaneAndInsideTheRectangl
     if (cx && cy) ++corners;
   }
   d8test::Check(corners == 4, "exactly the 4 sheet corners lie at the sheet's corner points");
+}
+
+// Where the O(h^2) comes from: the Catmull-Clark boundary rule is a natural end condition (no cross-boundary second derivative), which a
+// curved surface does not have, so the faces on the sheet's edge converge at h^2 however the cage is fitted; far from the edge the interpolating
+// limit surface converges at the cubic rate. Measured by the closed-form torus distance on the central faces (face centre's parameter within
+// [0.35, 0.65] of the domain) and on the faces that have a naked edge.
+D8_EXTRA_TEST(SubDFromNurbsToleranceBoundaryRowsConvergeAtH2AndTheCentreFaster) {
+  const NurbsSurface torus = TorusPatch();
+  const dino8::kernel::Interval du = torus.Domain(0), dv = torus.Domain(1);
+  double centre[3] = {0, 0, 0}, edge[3] = {0, 0, 0};
+  int idx = 0;
+  for (int n : {8, 16, 32}) {
+    SubD cage = SubD::FromNurbsSurface(torus, n, n);
+    for (double fu : {0.0, 1.0})
+      for (double fv : {0.0, 1.0}) cage.SetVertexCorner(torus.PointAt(du.min + fu * (du.max - du.min), dv.min + fv * (dv.max - dv.min)), true, 1e-5);
+    const SubD fitted = cage.InterpolateControlNet(1e-7, 600);
+    ON_SubDFaceIterator it = fitted.raw().FaceIterator();
+    for (const ON_SubDFace* f = it.FirstFace(); f != nullptr; f = it.NextFace()) {
+      bool naked = false;
+      for (unsigned k = 0; k < f->EdgeCount(); ++k)
+        if (f->Edge(k) != nullptr && f->Edge(k)->FaceCount() < 2) naked = true;
+      const SubDSurfacePoint c = fitted.EvaluateFace(f->m_id, 0.5, 0.5);
+      const dino8::kernel::Point2d uv = torus.ClosestPointParameter(Point3d(c.position.x, c.position.y, c.position.z), 40, 40);
+      const double fu = (uv.x - du.min) / (du.max - du.min), fv = (uv.y - dv.min) / (dv.max - dv.min);
+      const bool is_centre = fu > 0.35 && fu < 0.65 && fv > 0.35 && fv < 0.65;
+      if (!naked && !is_centre) continue;
+      double w = 0.0;
+      for (double u : {0.25, 0.5, 0.75})
+        for (double v : {0.25, 0.5, 0.75}) {
+          const SubDSurfacePoint p = fitted.EvaluateFace(f->m_id, u, v);
+          w = std::max(w, TorusDistance(Point3d(p.position.x, p.position.y, p.position.z)));
+        }
+      if (naked) edge[idx] = std::max(edge[idx], w); else centre[idx] = std::max(centre[idx], w);
+    }
+    ++idx;
+  }
+  char what[300];
+  std::snprintf(what, sizeof what, "edge faces 8/16/32: %.2e %.2e %.2e (ratios %.1f %.1f); central faces: %.2e %.2e %.2e (ratios %.1f %.1f)", edge[0], edge[1], edge[2],
+                edge[0] / edge[1], edge[1] / edge[2], centre[0], centre[1], centre[2], centre[0] / centre[1], centre[1] / centre[2]);
+  d8test::Check(edge[0] / edge[1] > 3.0 && edge[0] / edge[1] < 5.5 && edge[1] / edge[2] > 3.0 && edge[1] / edge[2] < 5.5, what);
+  d8test::Check(centre[2] < edge[2] / 10.0 && centre[0] / centre[1] > 10.0, "central faces converge at the cubic rate (more than 10x per doubling) and are 10x better than the edge faces at 32x32");
 }
