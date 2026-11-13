@@ -1,0 +1,2 @@
+SECTIONS=SME
+FILTERS=TestHolePatterns;extra::Sealed
