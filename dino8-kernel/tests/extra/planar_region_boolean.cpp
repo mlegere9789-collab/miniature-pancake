@@ -238,7 +238,7 @@ D8_EXTRA_TEST(PlanarRegionBooleanSymmetricDifference) {
                bc = ScanlineArea({ds[1], ds[2]}, Combine::Intersection), abc = ScanlineArea(ds, Combine::Intersection);
   const double want = 3 * kPi * 4 - 2 * (ab + ac + bc) + 4 * abc;
   std::snprintf(buf, sizeof(buf), "three-way xor area %.6f vs a+b+c - 2(ab+ac+bc) + 4abc = %.6f", Sum(x3, pl).area, want);
-  d8test::Check(x3.ok && Near(Sum(x3, pl).area, want, 6e-4), buf);
+  d8test::Check(x3.ok && Near(Sum(x3, pl).area, want, 6e-4), (std::string(buf) + " [" + x3.refusal_reason + "]").c_str());
 }
 
 D8_EXTRA_TEST(PlanarRegionBooleanRegionWithAHoleAgainstACircle) {
