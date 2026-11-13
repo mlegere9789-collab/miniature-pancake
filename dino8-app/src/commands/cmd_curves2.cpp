@@ -1819,6 +1819,7 @@ class ModifyRadiusCommand : public Command {
     WantNumber("New radius", r0);
   }
   void OnNumber(CommandContext& ctx, double r) override {
+    if (curves_.empty()) return;  // a number typed before the arcs were chosen
     if (r <= 0) { ctx.Warn("ModifyRadius: radius must be positive"); return; }
     ctx.Doc().BeginChange("ModifyRadius");
     int n = 0;
