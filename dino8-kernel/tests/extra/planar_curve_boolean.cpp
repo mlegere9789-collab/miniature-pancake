@@ -66,20 +66,30 @@ ON_PolylineCurve Rect(const ON_Plane& pl, double x0, double y0, double x1, doubl
   return ON_PolylineCurve(pts);
 }
 
+// Sample points of a curve: every knot span separately, so a corner of the result (a span boundary where two pieces were joined)
+// is itself a sample - a chord across a corner would lose length proportional to the sampling step.
+std::vector<ON_3dPoint> SamplePoints(const ON_Curve& c, int per_span) {
+  const int spans = c.SpanCount();
+  std::vector<double> sv(spans + 1);
+  c.GetSpanVector(sv.data());
+  std::vector<ON_3dPoint> pts;
+  for (int s = 0; s < spans; ++s)
+    for (int k = 0; k < per_span; ++k) pts.push_back(c.PointAt(sv[s] + (sv[s + 1] - sv[s]) * k / per_span));
+  pts.push_back(c.PointAt(sv[spans]));
+  return pts;
+}
+
 // Signed area (counterclockwise about plane.zaxis = positive) and length of a closed loop by dense sampling.
-void Measure(const ON_Curve& c, const ON_Plane& pl, double& signed_area, double& length, int n = 40000) {
+void Measure(const ON_Curve& c, const ON_Plane& pl, double& signed_area, double& length, int per_span = 10000) {
   signed_area = 0;
   length = 0;
-  const ON_Interval d = c.Domain();
-  ON_3dPoint prev = c.PointAt(d.Min());
-  for (int i = 1; i <= n; ++i) {
-    const ON_3dPoint p = c.PointAt(d.ParameterAt(i / double(n)));
+  const std::vector<ON_3dPoint> pts = SamplePoints(c, per_span);
+  for (size_t i = 1; i < pts.size(); ++i) {
     double u0, v0, u1, v1;
-    pl.ClosestPointTo(prev, &u0, &v0);
-    pl.ClosestPointTo(p, &u1, &v1);
+    pl.ClosestPointTo(pts[i - 1], &u0, &v0);
+    pl.ClosestPointTo(pts[i], &u1, &v1);
     signed_area += 0.5 * (u0 * v1 - u1 * v0);
-    length += prev.DistanceTo(p);
-    prev = p;
+    length += pts[i - 1].DistanceTo(pts[i]);
   }
 }
 
@@ -126,9 +136,8 @@ void CheckLoopsClosedAndOn(const PlanarCurveBooleanResult& r, const ON_Plane& pl
 
 double MinDistToLoops(const PlanarCurveBooleanResult& r, const ON_3dPoint& p) {
   double best = 1e300;
-  for (const ON_NurbsCurve& c : r.loops) {
-    for (int i = 0; i <= 20000; ++i) best = std::min(best, c.PointAt(c.Domain().ParameterAt(i / 20000.0)).DistanceTo(p));
-  }
+  for (const ON_NurbsCurve& c : r.loops)
+    for (const ON_3dPoint& q : SamplePoints(c, 2000)) best = std::min(best, q.DistanceTo(p));
   return best;
 }
 
@@ -292,9 +301,23 @@ D8_EXTRA_TEST(PlanarCurveBooleanRefusesWhatItCannotClassify) {
   d8test::Check(!r.ok && r.loops.empty() && !r.refusal_reason.empty(), "externally tangent circles are refused with a reason");
   r = PlanarCurveBoolean(A, Circle(pl, 1, 0, 2), pl, CurveRegionOp::Union);
   d8test::Check(!r.ok && !r.refusal_reason.empty(), "internally tangent circles are refused with a reason");
+  // A gap far below the tolerance: the boundaries "touch" without a crossing, and no crossing is ever reported for them.
+  r = PlanarCurveBoolean(A, Circle(pl, 5.000005, 0, 2), pl, CurveRegionOp::Union);
+  d8test::Check(!r.ok && r.crossings == 0 && r.refusal_reason.find("touch") != std::string::npos,
+                "circles 5e-6 apart (inside 10 x tolerance) are refused as touching, not united as disjoint");
   // The same circle twice: a whole shared boundary.
   r = PlanarCurveBoolean(A, Circle(pl, 0, 0, 3), pl, CurveRegionOp::Union);
   d8test::Check(!r.ok && !r.refusal_reason.empty(), "coincident circles are refused with a reason");
+  // Squares sharing a whole edge, a partial edge, and one corner.
+  const ON_PolylineCurve sq = Rect(pl, 0, 0, 4, 4);
+  r = PlanarCurveBoolean(sq, Rect(pl, 4, 0, 8, 4), pl, CurveRegionOp::Union);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "squares sharing a whole edge are refused with a reason");
+  r = PlanarCurveBoolean(sq, Rect(pl, 4, 1, 8, 3), pl, CurveRegionOp::Union);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "squares sharing part of an edge are refused with a reason");
+  r = PlanarCurveBoolean(sq, Rect(pl, 2, 0, 6, 4), pl, CurveRegionOp::Intersection);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "overlapping squares with a collinear edge are refused with a reason");
+  r = PlanarCurveBoolean(sq, Rect(pl, 4, 4, 8, 8), pl, CurveRegionOp::Union);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "squares touching at one corner are refused with a reason");
   // Open curve.
   ON_NurbsCurve arc;
   ON_Arc(ON_Circle(pl, 3), ON_Interval(0, 2.0)).GetNurbForm(arc);
@@ -314,4 +337,24 @@ D8_EXTRA_TEST(PlanarCurveBooleanRefusesWhatItCannotClassify) {
   pts.Append(ON_3dPoint(0, 0, 0));
   r = PlanarCurveBoolean(ON_PolylineCurve(pts), Circle(pl, 10, 10, 1), pl, CurveRegionOp::Union);
   d8test::Check(!r.ok && r.refusal_reason.find("self") != std::string::npos, "a self-crossing operand is refused naming the self-crossing");
+}
+
+// A square inscribed in a circle: the boundaries meet at the four corners without crossing. Union (the circle) and intersection (the
+// square) are unambiguous; the circle MINUS the square would be four separate segments that touch at the corners, which the chaining
+// cannot tell apart from one ring plus one hole - refused naming the ambiguity instead of guessed.
+D8_EXTRA_TEST(PlanarCurveBooleanInscribedSquareKeepsTheUnambiguousResults) {
+  const ON_Plane pl = XY();
+  const double R = std::sqrt(2.0);
+  const ON_NurbsCurve C = Circle(pl, 0, 0, R);
+  const ON_PolylineCurve S = Rect(pl, -1, -1, 1, 1);
+  PlanarCurveBooleanResult r = PlanarCurveBoolean(C, S, pl, CurveRegionOp::Union);
+  d8test::Check(r.ok && r.loops.size() == 1 && Near(Sum(r, pl).area, 2 * kPi, 1e-5), "circle U inscribed square = the circle (area 2 pi)");
+  d8test::Check(Near(Sum(r, pl).length, 2 * kPi * R, 1e-4), "...and its boundary is the circle's circumference 2 pi sqrt 2, no square edge in it");
+  r = PlanarCurveBoolean(C, S, pl, CurveRegionOp::Intersection);
+  d8test::Check(r.ok && r.loops.size() == 1 && Near(Sum(r, pl).area, 4.0, 1e-5) && Near(Sum(r, pl).length, 8.0, 1e-6),
+                "circle n inscribed square = the square (area 4, perimeter 8)");
+  r = PlanarCurveBoolean(S, C, pl, CurveRegionOp::Difference);
+  d8test::Check(r.ok && r.loops.empty(), "square - circumscribed circle is empty");
+  r = PlanarCurveBoolean(C, S, pl, CurveRegionOp::Difference);
+  d8test::Check(!r.ok && r.refusal_reason.find("ambiguous") != std::string::npos, "circle - inscribed square is refused naming the ambiguous junction");
 }

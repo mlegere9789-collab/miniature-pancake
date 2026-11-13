@@ -97,6 +97,7 @@ add_library(dino8_kernel STATIC
   src/offset_solid.cpp
   src/pattern.cpp
   src/split_by_curve.cpp
+  src/planar_curve_boolean.cpp
 )
 
 # windows.h (pulled in by opennurbs.h) defines min/max macros that break
