@@ -315,4 +315,113 @@ SelAll
 Volume
 List
 
+# ---------------------------------------------------------------------------------------------------------------------------------
+# The same crash shape in other commands, found by typing a number at the first (object / point) prompt of every registered command:
+# Leader dereferenced pts_[0] of an empty vector, TweenCurves curves_[0] of an empty vector, OffsetMultiple wrote options[0] of an empty
+# option list. Each ignores the number, keeps its prompt and still does its job afterwards.
+QCRBEGIN_leader_text_first
+Leader
+3
+0,0,0
+5,5,0
+Enter
+Hello
+SelAll
+List
+
+QCRBEGIN_tween_number_first
+Line 0,0,0 10,0,0
+Line 0,10,0 10,10,0
+TweenCurves
+3
+SelCrv
+Enter
+3
+SelAll
+List
+
+# OffsetMultiple: the distance typed first is kept (2); Count=1000000000 and Distance=1e300 are refused (Count would build a billion
+# curves, Distance a curve 1e300 away); the 3 offsets x 1 then build on the clicked side.
+QCRBEGIN_offsetmultiple_number_first
+Line 0,0,0 10,0,0
+OffsetMultiple
+2
+SelLast
+Enter
+5,5,0
+SelAll
+List
+
+QCRBEGIN_offsetmultiple_options
+Line 0,0,0 10,0,0
+OffsetMultiple
+SelLast
+Enter
+Count=1000000000
+Distance=1e300
+Distance=1
+5,5,0
+SelAll
+List
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# OffsetSrf of a closed solid inward by more than it is thick. The exact routes decline; the mesh offset then "succeeded": -6 on a 10 cube
+# printed "1 object(s)" and added an inside-out 2 cube (a mesh of volume 8) next to the intact box. Nothing is built; the box stays (1000).
+QCRBEGIN_offsetsrf_collapse
+Box 0,0,0 10,10,0 10
+SelLast
+OffsetSrf
+-6
+SelAll
+Volume
+List
+
+# the refused OffsetSrf leaves no undo step: the Undo that follows undoes the real MoveFace before it (1500 -> 1000)
+QCRBEGIN_offsetsrf_refused_undo
+Box 0,0,0 10,10,0 10
+MoveFace
+5,5,10
+Enter
+0,0,0
+0,0,5
+SelLast
+Volume
+SelLast
+OffsetSrf
+-9
+Undo
+SelAll
+Volume
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# A copy of grouped objects must be a group of its OWN: Copy used to leave the copies in the source's group, so SelGroup on one original
+# selected all 4 objects, and a copied dimension (one group per dimension) was dropped by Save3dm, which writes one dimension per group.
+QCRBEGIN_copy_group
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+SelAll
+Group
+SelAll
+Copy
+0,0,0
+0,100,0
+Enter
+SelNone
+SelID 1
+SelGroup
+
+QCRBEGIN_array_group
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+SelAll
+Group
+SelAll
+ArrayLinear
+3
+0,0,0
+0,50,0
+SelNone
+SelID 1
+SelGroup
+
 QCRBEGIN_end
