@@ -1458,6 +1458,7 @@ class RibbonCommand : public Command {
   void Begin(CommandContext&) override { WantObjects("Select curves to make ribbons from"); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ids_ = ids; for (ObjectId id : ids) ctx.Doc().Select(id, false); WantNumber("Ribbon width", 5); }
   void OnNumber(CommandContext& ctx, double w) override {
+    if (ids_.empty()) return;  // a number typed before the curves were chosen
     Vector3d up = ActiveNormal(ctx);
     ctx.Doc().BeginChange("Ribbon");
     int made = 0;
