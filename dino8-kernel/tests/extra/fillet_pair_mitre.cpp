@@ -129,8 +129,10 @@ D8_EXTRA_TEST(PairMitreRefusalsNameTheirReasons) {
   const double L = 10.0;
   const Brep box = Brep::Box(0, 0, 0, L, L, L);
   const Point3d V(0, 0, L), A(0, 0, 0), B(L, 0, L);
-  std::string m = ReasonOf([&] { FilletConvexEdgePairMitre(box, V, A, B, 1.0, 1.5); });
-  Check(m.find("radii differ") != std::string::npos && m.find("not planar") != std::string::npos, ("[mitre refusal] unequal radii are refused with the measured reason: " + m).c_str());
+  // Unequal radii are built since fillet_pair_unequal.cpp (a space-curve mitre, 9 faces); the body is checked there against its closed form.
+  Brep unequal;
+  std::string m = ReasonOf([&] { unequal = FilletConvexEdgePairMitre(box, V, A, B, 1.0, 1.5); });
+  Check(m.empty() && unequal.FaceCount() == 9, ("[mitre] unequal radii are accepted and give 9 faces" + (m.empty() ? std::string() : ": " + m)).c_str());
   m = ReasonOf([&] { FilletConvexEdgePairMitre(box, Point3d(0, 0, 2.5), A, B, 1.0, 1.0); });
   Check(m.find("trihedral") != std::string::npos, ("[mitre refusal] a point that is not a corner is refused: " + m).c_str());
   m = ReasonOf([&] { FilletConvexEdgePairMitre(box, V, A, Point3d(L, L, L), 1.0, 1.0); });
