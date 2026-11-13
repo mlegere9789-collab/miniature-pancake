@@ -2809,6 +2809,10 @@ Result NurbsCurve::Simplify(double tolerance) {
 
   // Remove every removable interior knot, re-scanning from scratch after
   // each success since RemoveKnotAt() shifts every later index.
+  // ONE shared budget: every removal and the degree reduction each deviate from the curve they were applied to, so the deviation
+  // from the INPUT is at most their sum (triangle inequality). Giving each step the whole `tolerance` let them add up (measured:
+  // a 70-point helix fit simplified at 1e-2 came back 1.12e-2 from its input).
+  double spent = 0.0;
   bool progress = true;
   while (progress) {
     progress = false;
@@ -2816,7 +2820,11 @@ Result NurbsCurve::Simplify(double tolerance) {
     for (int i = 0; i < KnotCount(); ++i) {
       const double u = curve_.Knot(i);
       if (!(u > dom.min && u < dom.max)) continue;
-      if (RemoveKnotAt(i, tolerance) == Result::Ok) {
+      const double left = tolerance - spent;
+      if (!(left > 0.0)) break;
+      double step = 0.0;
+      if (RemoveKnotAt(i, left, &step) == Result::Ok) {
+        spent += step;
         changed = true;
         progress = true;
         break;
@@ -2824,10 +2832,10 @@ Result NurbsCurve::Simplify(double tolerance) {
     }
   }
 
-  // Reduce degree as far as tolerance allows, trying the lowest degree
+  // Reduce degree as far as the REMAINING budget allows, trying the lowest degree
   // first - the maximal simplification, not just the first one found.
-  for (int d = 1; d < Degree(); ++d) {
-    if (ReduceDegree(d, tolerance) == Result::Ok) {
+  for (int d = 1; d < Degree() && tolerance - spent > 0.0; ++d) {
+    if (ReduceDegree(d, tolerance - spent) == Result::Ok) {
       changed = true;
       break;
     }
