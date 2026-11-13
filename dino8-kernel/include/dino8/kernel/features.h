@@ -998,41 +998,6 @@ std::vector<PocketFeature> RecognizePockets(const Brep& solid);
 Mesh LatticeInfill(const Mesh& solid, double cell_size, double strut_radius, int circle_segments = 12);
 
 // ---------------------------------------------------------------------------
-// Feature patterns of holes (parity-map "kernel: Transformations, patterns,
-// splitting" - "Feature patterns of holes"). A pattern of an EXISTING
-// recognized HoleFeature (RecognizeHoles() above): the hole already in
-// `solid` is instance 0 of the pattern and the functions below drill the
-// remaining instances, every one with `hole`'s own radius/depth/through and
-// axis, in ONE MakeHoles() call (one compound cutter, one Difference - see
-// that function's doc comment in boolean_general.h for why not N chained
-// differences). Placement is rigid and keeps the hole axis, so the pattern
-// is: Linear (instances at origin + k*spacing*direction, k = 0..count-1),
-// Rectangular (count_u x count_v grid), Polar (instances rotated about an
-// axis PARALLEL to the hole axis, a bolt circle).
-//
-// Refusals, each a std::invalid_argument naming its reason, never a
-// degraded body: count < 2 (or a grid of one instance); a non-positive
-// spacing; a direction that is zero or not perpendicular to the hole axis
-// (a pattern on the drilled face, not along the bore); an instance spacing
-// at which two bores would touch or overlap (centre distance <= 2*radius,
-// MakeHoles() is verified for separated tools only); a polar axis that is
-// not parallel to the hole axis, lies on the hole's own axis, or whose
-// total angle is not in (0, 2*pi]; and - checked AFTER drilling by
-// re-running RecognizeHoles() - any instance that did not come out as a
-// complete bore (it ran off the solid's edge, fell outside the solid, or
-// broke into an existing feature): the number of recognized holes must
-// grow by exactly the number of instances requested.
-//
-// Polar `total_angle` == 2*pi spreads `count` instances evenly around the
-// full circle (step 2*pi/count); any smaller angle spans an arc with
-// `count` instances end to end (step total_angle/(count-1)).
-Brep LinearHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction, double spacing, int count);
-Brep RectangularHolePattern(const Brep& solid, const HoleFeature& hole, Vector3d direction_u, double spacing_u,
-                            int count_u, Vector3d direction_v, double spacing_v, int count_v);
-Brep PolarHolePattern(const Brep& solid, const HoleFeature& hole, Point3d center, Vector3d axis, int count,
-                      double total_angle = 2.0 * ON_PI);
-
-// ---------------------------------------------------------------------------
 // Arrays along a curve / along a curve on a surface (parity-map "Arrays
 // along a curve / on a surface"). One station per copy at ARC-LENGTH-even
 // positions (NurbsCurve::DivideByCount(count - 1)): station 0 is the curve

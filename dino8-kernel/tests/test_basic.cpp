@@ -103459,139 +103459,6 @@ bool SameXY(const std::vector<std::pair<double, double>>& got, const std::vector
   return true;
 }
 
-void TestHolePatternsLinearRectangularPolarAgainstClosedForms() {
-  using dino8::kernel::LinearHolePattern;
-  using dino8::kernel::MakeHole;
-  using dino8::kernel::PolarHolePattern;
-  using dino8::kernel::RectangularHolePattern;
-  using dino8::kernel::RecognizeHoles;
-  const Vector3d down(0, 0, -1);
-  const double r = 0.5;
-  const double hole_volume = ON_PI * r * r * 4.0;  // through a 4-thick slab
-
-  {  // Linear: 4 holes along +y, spacing 3, in a 4 x 16 x 4 slab (volume 256).
-    const Brep slab = Brep::Box(0, 0, 0, 4, 16, 4);
-    const Brep one = MakeHole(slab, Point3d(2, 2, 4), down, r, 0.0, true);
-    const std::vector<HoleFeature> found = RecognizeHoles(one);
-    Check(found.size() == 1, "linear fixture: the slab has exactly one recognized hole before the pattern");
-    const Brep four = LinearHolePattern(one, found[0], Vector3d(0, 1, 0), 3.0, 4);
-    Check(four.raw().IsValid(), "linear pattern: result raw().IsValid()");
-    Check(SameXY(HoleXY(four, r, true), {{2, 2}, {2, 5}, {2, 8}, {2, 11}}),
-          "linear pattern: RecognizeHoles() finds exactly 4 holes of radius 0.5 at y = 2, 5, 8, 11 (x = 2), axis +-z");
-    const Mesh m = four.TessellateToClosedMesh(32, 128);
-    Check(m.IsClosedManifold(), "linear pattern: tessellation is a closed manifold");
-    Check(std::fabs(m.Volume() - (256.0 - 4.0 * hole_volume)) < 0.5,
-          "linear pattern: volume equals 256 - 4*pi*r^2*4 (closed form) within 0.5");
-    // Independent cross-check: the same result as chaining MakeHole for each instance by hand.
-    const Brep by_hand =
-        MakeHole(MakeHole(MakeHole(one, Point3d(2, 5, 4), down, r, 0.0, true), Point3d(2, 8, 4), down, r, 0.0, true),
-                 Point3d(2, 11, 4), down, r, 0.0, true);
-    Check(std::fabs(by_hand.TessellateToClosedMesh(32, 128).Volume() - m.Volume()) < 0.5,
-          "linear pattern: matches three hand-chained MakeHole() calls within 0.5");
-    // Blind variant keeps depth.
-    const Brep blind1 = MakeHole(slab, Point3d(2, 2, 4), down, r, 2.0, false);
-    const std::vector<HoleFeature> bf = RecognizeHoles(blind1);
-    Check(bf.size() == 1 && !bf[0].through, "blind fixture: one blind hole recognized");
-    const Brep blind3 = LinearHolePattern(blind1, bf[0], Vector3d(0, 1, 0), 4.0, 3);
-    const std::vector<HoleFeature> b3 = RecognizeHoles(blind3);
-    bool all_blind = b3.size() == 3;
-    for (const HoleFeature& h : b3) all_blind = all_blind && !h.through && std::fabs(h.depth - 2.0) < 1e-6;
-    Check(all_blind, "blind linear pattern: 3 blind holes, each depth 2, none through");
-    Check(std::fabs(blind3.TessellateToClosedMesh(32, 128).Volume() - (256.0 - 3.0 * ON_PI * r * r * 2.0)) < 0.5,
-          "blind linear pattern: volume equals 256 - 3*pi*r^2*2 within 0.5");
-  }
-
-  {  // Rectangular: 3 x 2 grid (x spacing 3, y spacing 3) in a 10 x 7 x 4 slab (volume 280).
-    const Brep slab = Brep::Box(0, 0, 0, 10, 7, 4);
-    const Brep one = MakeHole(slab, Point3d(2, 2, 4), down, r, 0.0, true);
-    const Brep six = RectangularHolePattern(one, RecognizeHoles(one)[0], Vector3d(1, 0, 0), 3.0, 3, Vector3d(0, 1, 0), 3.0, 2);
-    Check(SameXY(HoleXY(six, r, true), {{2, 2}, {5, 2}, {8, 2}, {2, 5}, {5, 5}, {8, 5}}),
-          "rectangular pattern: exactly 6 holes at x in {2,5,8} x y in {2,5}");
-    const Mesh m = six.TessellateToClosedMesh(32, 128);
-    Check(m.IsClosedManifold() && std::fabs(m.Volume() - (280.0 - 6.0 * hole_volume)) < 0.5,
-          "rectangular pattern: closed manifold, volume equals 280 - 6*pi*r^2*4 within 0.5");
-    Check(six.raw().IsValid(), "rectangular pattern: raw().IsValid()");
-  }
-
-  {  // Polar: bolt circle of radius 3 about (5,5) in a 10 x 10 x 4 slab (volume 400).
-    const Brep slab = Brep::Box(0, 0, 0, 10, 10, 4);
-    const Brep one = MakeHole(slab, Point3d(8, 5, 4), down, r, 0.0, true);
-    const HoleFeature hf = RecognizeHoles(one)[0];
-    const Brep four = PolarHolePattern(one, hf, Point3d(5, 5, 0), Vector3d(0, 0, 1), 4);
-    Check(SameXY(HoleXY(four, r, true), {{8, 5}, {5, 8}, {2, 5}, {5, 2}}),
-          "polar pattern (full circle, 4): holes at the 4 closed-form bolt-circle positions");
-    const Mesh m = four.TessellateToClosedMesh(32, 128);
-    Check(m.IsClosedManifold() && std::fabs(m.Volume() - (400.0 - 4.0 * hole_volume)) < 0.5,
-          "polar pattern: closed manifold, volume equals 400 - 4*pi*r^2*4 within 0.5");
-    const Brep arc3 = PolarHolePattern(one, hf, Point3d(5, 5, 0), Vector3d(0, 0, 1), 3, ON_PI);
-    Check(SameXY(HoleXY(arc3, r, true), {{8, 5}, {5, 8}, {2, 5}}),
-          "polar pattern (half circle, 3): end-to-end arc, holes at 0, 90 and 180 degrees");
-    // A reversed polar axis sweeps the other way round: the 90-degree step lands on the opposite side.
-    const Brep rev = PolarHolePattern(one, hf, Point3d(5, 5, 0), Vector3d(0, 0, -1), 2, ON_PI / 2.0);
-    Check(SameXY(HoleXY(rev, r, true), {{8, 5}, {5, 2}}),
-          "polar pattern: a -z axis rotates clockwise, so the second hole lands at (5,2), not (5,8)");
-  }
-}
-
-void TestHolePatternRefusalsStateTheirReason() {
-  using dino8::kernel::LinearHolePattern;
-  using dino8::kernel::MakeHole;
-  using dino8::kernel::PolarHolePattern;
-  using dino8::kernel::RectangularHolePattern;
-  using dino8::kernel::RecognizeHoles;
-  const Vector3d down(0, 0, -1);
-  const Brep slab = Brep::Box(0, 0, 0, 4, 16, 4);
-  const Brep one = MakeHole(slab, Point3d(2, 2, 4), down, 0.5, 0.0, true);
-  const HoleFeature hf = RecognizeHoles(one)[0];
-  const Vector3d dy(0, 1, 0);
-  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 3.0, 1); }, "count must be at least 2"),
-        "count 1 is refused: 'count must be at least 2'");
-  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 0.0, 3); }, "spacing must be positive"),
-        "spacing 0 is refused: 'spacing must be positive'");
-  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, Vector3d(0, 0, 1), 3.0, 3); }, "not perpendicular to the hole axis"),
-        "a direction along the hole axis is refused: 'not perpendicular to the hole axis'");
-  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, Vector3d(0, 0, 0), 3.0, 3); }, "must be nonzero"),
-        "a zero direction is refused: 'must be nonzero'");
-  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 1.0, 3); }, "touching or overlapping"),
-        "spacing equal to the diameter (bores touching) is refused: 'touching or overlapping'");
-  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 0.8, 3); }, "touching or overlapping"),
-        "spacing below the diameter (bores overlapping) is refused: 'touching or overlapping'");
-  // Instances off the solid: y = 2, 6.6, 11.2, 15.8 - the last bore (r 0.5) sticks out of the slab end at y = 16.
-  Check(ThrowsContaining([&] { LinearHolePattern(one, hf, dy, 4.6, 4); }, "complete bores"),
-        "an instance whose bore runs off the slab edge is refused after drilling: 'complete bores'");
-  {
-    bool threw = false;
-    std::string msg;
-    try {
-      LinearHolePattern(one, hf, dy, 20.0, 2);  // wholly outside the slab (y = 22)
-    } catch (const std::exception& e) {
-      threw = true;
-      msg = e.what();
-    }
-    Check(threw && msg.find("complete bores") != std::string::npos,
-          "an instance wholly outside the solid is refused with 'complete bores', never a silent no-op");
-  }
-  Check(RecognizeHoles(one).size() == 1, "refusals leave the input solid untouched (still exactly one hole)");
-  Check(ThrowsContaining([&] { RectangularHolePattern(one, hf, dy, 3.0, 2, dy, 3.0, 2); }, "parallel"),
-        "rectangular: two parallel grid directions are refused: 'parallel'");
-  Check(ThrowsContaining([&] { RectangularHolePattern(one, hf, dy, 3.0, 1, Vector3d(1, 0, 0), 3.0, 1); }, "at least 2 instances"),
-        "rectangular: a 1 x 1 grid is refused: 'at least 2 instances'");
-  const Brep sq = Brep::Box(0, 0, 0, 10, 10, 4);
-  const Brep s1 = MakeHole(sq, Point3d(8, 5, 4), down, 0.5, 0.0, true);
-  const HoleFeature sh = RecognizeHoles(s1)[0];
-  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(1, 0, 0), 4); }, "not parallel to the hole axis"),
-        "polar: an axis not parallel to the hole axis is refused: 'not parallel to the hole axis'");
-  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(8, 5, 0), Vector3d(0, 0, 1), 4); }, "on (or within one diameter of)"),
-        "polar: a centre on the hole's own axis is refused: 'on (or within one diameter of)'");
-  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(0, 0, 1), 4, 7.0); }, "total_angle"),
-        "polar: a total angle above 2*pi is refused: 'total_angle'");
-  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(0, 0, 1), 1); }, "count must be at least 2"),
-        "polar: count 1 is refused");
-  // 12 instances on a circle of radius 3: chord = 2*3*sin(pi/12) = 1.55 > 1.0 is fine, 40 instances: 0.47 < 1.0 refused.
-  Check(ThrowsContaining([&] { PolarHolePattern(s1, sh, Point3d(5, 5, 0), Vector3d(0, 0, 1), 40); }, "touching or overlapping"),
-        "polar: 40 instances on a radius-3 circle (chord 0.47 < diameter 1) are refused: 'touching or overlapping'");
-}
-
 // ---- arrays along a curve --------------------------------------------------
 
 NurbsCurve MakeArcPath(double radius, double sweep) {
@@ -105038,51 +104905,6 @@ void TestClassifyShellsRefusesNonsenseVolumeTolerance() {
   }
   const Brep::ShellClassification c = hollow.ClassifyShells(0.0);
   Check(c.shells.size() == 2 && c.regions.size() == 1 && c.consistent, "ClassifyShells(0) is still valid: hollow box = 2 shells, 1 region");
-}
-
-Brep SlabWithOneBlindHole(HoleFeature& hf) {
-  const Brep slab = Brep::Box(0, 0, 0, 40, 40, 4);
-  const Vector3d down(0, 0, -1);
-  const Brep one = dino8::kernel::MakeHole(slab, Point3d(4, 20, 4), down, 0.5, 2.0, false);
-  const std::vector<HoleFeature> found = dino8::kernel::RecognizeHoles(one);
-  hf = found.empty() ? HoleFeature() : found[0];
-  return one;
-}
-
-// LinearHolePattern / PolarHolePattern / RectangularHolePattern: count 100000 (and INT_MAX) never returned (the spacing
-// check is O(n^2) in the instance count and the centre list is allocated first); spacing +inf was reported as
-// "instance spacing 0.000000 leaves neighbouring bores touching"; a web of 1e-7 between bores spun MakeHoles for > 20 s;
-// count_u * count_v overflowed int.
-void TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs() {
-  HoleFeature hf;
-  const Brep one = SlabWithOneBlindHole(hf);
-  Check(hf.radius > 0.0, "fixture: the slab has one recognized blind hole");
-  const Vector3d dx(1, 0, 0);
-  const double inf = std::numeric_limits<double>::infinity();
-  auto t0 = std::chrono::steady_clock::now();
-  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, 1.0, 100000); }, "instances requested"),
-        "LinearHolePattern count 100000 is refused up front (was a > 20 s hang)");
-  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, 1.0, 2147483647); }, "instances requested"),
-        "LinearHolePattern count INT_MAX is refused up front (was a hang / out-of-memory)");
-  Check(ThrowsInvalid([&] { dino8::kernel::PolarHolePattern(one, hf, Point3d(20, 20, 4), Vector3d(0, 0, 1), 100000); },
-                      "instances requested"),
-        "PolarHolePattern count 100000 is refused up front (was a > 20 s hang)");
-  Check(ThrowsInvalid([&] { dino8::kernel::RectangularHolePattern(one, hf, dx, 3.0, 65536, Vector3d(0, 1, 0), 3.0, 65536); },
-                      "instances requested"),
-        "RectangularHolePattern 65536 x 65536 (int product overflowed to 0) is refused with the instance-count message");
-  Check(SecondsSince(t0) < 5.0, "...all four refusals together take < 5 s");
-  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, inf, 3); }, "spacing must be positive"),
-        "LinearHolePattern spacing +inf is refused as a bad spacing (was reported as 'instance spacing 0.000000')");
-  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, hf, dx, 2.0 * hf.radius + 1e-7, 3); }, "touching or overlapping"),
-        "LinearHolePattern with a 1e-7 web between bores is refused (was a > 20 s hang)");
-  HoleFeature bad = hf;
-  bad.radius = inf;
-  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, bad, dx, 3.0, 3); }, "radius must be positive"),
-        "hole radius +inf is refused as a bad radius");
-  bad = hf;
-  bad.origin = Point3d(std::numeric_limits<double>::quiet_NaN(), 20, 4);
-  Check(ThrowsInvalid([&] { dino8::kernel::LinearHolePattern(one, bad, dx, 3.0, 3); }, "must be finite"),
-        "a NaN hole origin is refused as non-finite (was reported as 'instance spacing 0.000000')");
 }
 
 Brep PlanarBox(double x0, double y0, double z0, double x1, double y1, double z1) {
@@ -109653,8 +109475,6 @@ int main() {
   RunTest("transform_pattern_tests::TestNonUniformScaleOfQuadricsStaysExactAndAnalyticWhereItCan", transform_pattern_tests::TestNonUniformScaleOfQuadricsStaysExactAndAnalyticWhereItCan);
   RunTest("transform_pattern_tests::TestAffineTransformRefusals", transform_pattern_tests::TestAffineTransformRefusals);
   RunTest("transform_pattern_tests::TestMirrorKeepsSphericalPatchOrientedAndMeshStaysOutward", transform_pattern_tests::TestMirrorKeepsSphericalPatchOrientedAndMeshStaysOutward);
-  RunTest("transform_pattern_tests::TestHolePatternsLinearRectangularPolarAgainstClosedForms", transform_pattern_tests::TestHolePatternsLinearRectangularPolarAgainstClosedForms);
-  RunTest("transform_pattern_tests::TestHolePatternRefusalsStateTheirReason", transform_pattern_tests::TestHolePatternRefusalsStateTheirReason);
   RunTest("transform_pattern_tests::TestArrayAlongCurveFrameAndTranslateAgainstAnalyticCircle", transform_pattern_tests::TestArrayAlongCurveFrameAndTranslateAgainstAnalyticCircle);
   RunTest("transform_pattern_tests::TestArrayAlongCurveOnSurfaceFollowsSurfaceNormalClosedForm", transform_pattern_tests::TestArrayAlongCurveOnSurfaceFollowsSurfaceNormalClosedForm);
   RunTest("surfops_tolerance_tests::TestCurveRemoveMultiKnotsErrorBoundAndBudget", surfops_tolerance_tests::TestCurveRemoveMultiKnotsErrorBoundAndBudget);
@@ -109664,7 +109484,6 @@ int main() {
   RunTest("surfops_tolerance_tests::TestBrepShrinkSurfacesLargeRawShrink", surfops_tolerance_tests::TestBrepShrinkSurfacesLargeRawShrink);
   RunTest("qc2_tests::TestFitToToleranceRefusesEmptySurfaceAndAbsurdDegrees", qc2_tests::TestFitToToleranceRefusesEmptySurfaceAndAbsurdDegrees);
   RunTest("qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance", qc2_tests::TestClassifyShellsRefusesNonsenseVolumeTolerance);
-  RunTest("qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs", qc2_tests::TestHolePatternsRefuseHugeCountsNonFiniteSpacingAndHairlineWebs);
   RunTest("qc2_tests::TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates", qc2_tests::TestSectionThroughBodyEdgesIsOneClosedContourWithoutDuplicates);
   RunTest("qc2_tests::TestAdaptiveTessellationOfDoublyCurvedFaceIsBoundedInTime", qc2_tests::TestAdaptiveTessellationOfDoublyCurvedFaceIsBoundedInTime);
   RunTest("qc2_tests::TestHealCheckedRefusesNonsenseOptions", qc2_tests::TestHealCheckedRefusesNonsenseOptions);
