@@ -126,3 +126,13 @@ endif()
 if(DINO8_KERNEL_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
+
+# Performance harness for the CI-measurable rows of the Master Plan's Appendix B (tests/bench_budgets.cpp, JSON out; compared
+# against a stored baseline by parity/tools/perf_compare.py). A separate small executable: not part of the default build
+# (EXCLUDE_FROM_ALL), not registered with add_test, no existing target touched. Build it with
+#   cmake --build <dir> --target dino8_bench_budgets
+option(DINO8_KERNEL_BUILD_BENCH "Define the dino8_bench_budgets target" ON)
+if(DINO8_KERNEL_BUILD_BENCH)
+  add_executable(dino8_bench_budgets EXCLUDE_FROM_ALL tests/bench_budgets.cpp)
+  target_link_libraries(dino8_bench_budgets PRIVATE dino8_kernel)
+endif()
