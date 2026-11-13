@@ -65,4 +65,25 @@ std::vector<ON_Xform> ArrayOnSurfaceTransforms(const NurbsSurface& surface, int 
 std::vector<Brep> ArrayBrepOnSurface(const Brep& body, const NurbsSurface& surface, int nu, int nv, const ON_Plane& reference,
                                      bool orient = true);
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Orient on a surface (Rhino OrientOnSrf / Splop) and flow along a surface (Rhino FlowAlongSrf).
+//
+// SurfaceNormalFrameAt: the frame at the surface point CLOSEST to `near_point` - origin S(u, v), z the surface normal (NormalAt's side),
+// x / y a right-handed orthonormal pair in the tangent plane (ON_Plane's own choice for that normal). `uv`, when given, receives the (u, v).
+// OrientOnSurfaceTransform(surface, from, near_point) is the rigid map carrying the frame `from` (the object's base point and the z axis
+// that should end up along the normal) onto that frame: `from.origin` lands on the surface point, `from.zaxis` on the normal, so an object
+// standing on `from` by h along its z has its centroid at distance (r + h) from a sphere's centre. A point that is not on the surface is
+// replaced by its closest point first. Throws std::invalid_argument for an invalid surface.
+ON_Plane SurfaceNormalFrameAt(const NurbsSurface& surface, Point3d near_point, Point2d* uv = nullptr);
+ON_Xform OrientOnSurfaceTransform(const NurbsSurface& surface, const ON_Plane& from, Point3d near_point);
+Brep OrientBrepOnSurface(const Brep& body, const NurbsSurface& surface, const ON_Plane& from, Point3d near_point);
+
+// FlowPointAlongSurface: where FlowAlongSurface sends `p` when flowing from `base` onto `target`: p is written as (u, v, d) - the (u, v) of
+// its closest point on `base` and its signed distance d along base's normal there - and lands at target(u', v') + d * normal_target(u', v'),
+// (u', v') being the SAME FRACTIONS of target's domain that (u, v) are of base's. The map is parametric, so lengths are preserved where the
+// two parametrizations agree in speed (a developable pair with matching extents: a plane flowed onto a cylinder over its own arc length),
+// and an offset d from the base scales lengths by (r + d) / r on a cylinder of radius r. Throws std::invalid_argument for an invalid surface.
+Point3d FlowPointAlongSurface(const NurbsSurface& base, const NurbsSurface& target, Point3d p);
+
+
 }  // namespace dino8::kernel
