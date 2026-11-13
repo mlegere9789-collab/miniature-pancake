@@ -80,9 +80,28 @@ CollabSession& CollabSession::Get() {
   return s;
 }
 
-bool CollabSession::Host(int port, std::string& error) {
+namespace {
+bool CheckOptions(const CollabOptions& o, bool hosting, std::string& error) {
+  if (!o.token.empty() && o.token.size() < kMinCollabTokenLength) {
+    error = "the Token must be at least " + std::to_string(kMinCollabTokenLength) + " characters";
+    return false;
+  }
+  if (hosting && o.lan && o.token.empty()) {
+    error = "Lan=Yes needs a Token (at least " + std::to_string(kMinCollabTokenLength) +
+            " characters): without one the relay would accept any machine that can reach the port";
+    return false;
+  }
+  return true;
+}
+}  // namespace
+
+bool CollabSession::Host(int port, const CollabOptions& options, std::string& error) {
   Leave();
-  if (!server_.Start(port, error)) return false;
+  last_error_.clear();
+  if (!CheckOptions(options, true, error)) return false;
+  server_.SetToken(options.token);
+  client_.SetToken(options.token);
+  if (!server_.Start(port, error, options.lan)) return false;
   if (!client_.Connect("127.0.0.1", server_.Port(), error)) {
     server_.Stop();
     return false;
@@ -97,8 +116,11 @@ bool CollabSession::Host(int port, std::string& error) {
   return true;
 }
 
-bool CollabSession::Join(const std::string& host, int port, std::string& error) {
+bool CollabSession::Join(const std::string& host, int port, const CollabOptions& options, std::string& error) {
   Leave();
+  last_error_.clear();
+  if (!CheckOptions(options, false, error)) return false;
+  client_.SetToken(options.token);
   if (!client_.Connect(host, port, error)) return false;
   hosting_ = false;
   role_ = CollabRole::Joined;
@@ -133,6 +155,7 @@ bool CollabSession::PollAndApply(Document& doc, std::string& error) {
   if (!client_.PollOnce(&frames, poll_error)) {
     error = poll_error;
     Leave();
+    last_error_ = poll_error;  // CollabStatus says why the session ended (a rejected token would otherwise vanish silently)
     return false;
   }
 
