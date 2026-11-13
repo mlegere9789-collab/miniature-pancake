@@ -1,0 +1,59 @@
+# RegionBoolean exact curved path for ALL selected regions (kernel::PlanarRegionBooleanN, a left fold) and symmetric difference.
+# Closed forms / independent numbers (checked by smoke.sh against the object counts and printed lengths):
+#   three discs r=2 on an equilateral triangle of side 3.6: pairwise overlapping but the centroid is 2.078 from each centre, so the union
+#   is one outer loop plus one hole (2 curves); its boundary is the sum of the circle arcs outside the other two discs = 26.874
+#   (angular integration, independent of the kernel);
+#   discs r=3 at (0,0) and r=2 at (4,0), symmetric difference: two crescents whose boundaries together are both full circumferences,
+#   2 pi (3 + 2) = 31.416;
+#   three discs r=2 on a triangle of side 3.0 share a common region: their intersection is one curve.
+SetActiveViewport Top
+Circle 0,0,0 2
+Circle 3.6,0,0 2
+Circle 1.8,3.11769145,0 2
+SelNone
+SelID 1
+SelID 2
+SelID 3
+PlanarUnion
+@expect_objects 5
+SelNone
+SelID 4
+SelID 5
+Length
+SelAll
+Delete
+@expect_objects 0
+
+New
+SetActiveViewport Top
+Circle 0,0,0 3
+Circle 4,0,0 2
+SelNone
+CurveBoolean Operation=SymmetricDifference
+SelID 1
+SelID 2
+Enter
+@expect_objects 4
+SelNone
+SelID 3
+SelID 4
+Length
+SelAll
+Delete
+@expect_objects 0
+
+New
+SetActiveViewport Top
+Circle 0,0,0 2
+Circle 3,0,0 2
+Circle 1.5,2.598076,0 2
+SelNone
+CurveBoolean Operation=Intersection
+SelID 1
+SelID 2
+SelID 3
+Enter
+@expect_objects 4
+SelAll
+Delete
+@expect_objects 0
