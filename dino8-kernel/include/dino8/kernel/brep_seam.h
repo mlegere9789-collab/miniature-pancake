@@ -22,4 +22,10 @@ namespace dino8::kernel {
 // kernel's pseudo-trim side tables. Throws std::invalid_argument for a face index out of range or a direction outside 0/1.
 Result ChangeFaceSeam(Brep& brep, int face_index, int direction, double t, std::string* reason = nullptr);
 
+// Replaces surface slot `surface_index` of `brep` by `fresh` (the Brep takes ownership) and repoints EVERY face that uses the slot. An ON_BrepFace is an
+// ON_SurfaceProxy: it caches its surface pointer and ON_BrepFace::SurfaceOf() returns that cache first, so assigning `brep.m_S[i] = fresh` alone leaves
+// SurfaceOf() - and everything reading through it (Area(), Volume(), the app's SurfaceOfObject) - on the OLD surface. `delete_old` frees the replaced
+// surface (only when nothing else holds it; the app's command sites keep it, as they always did). Cached meshes are dropped.
+void ReplaceBrepSurface(ON_Brep& brep, int surface_index, ON_Surface* fresh, bool delete_old = false);
+
 }  // namespace dino8::kernel
