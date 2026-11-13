@@ -504,6 +504,7 @@ class ObjectsNumberCommand : public Command {
   void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNum(t, v)) OnNumber(ctx, v); else ctx.Warn("Expected a number"); }
   void OnPoint(CommandContext& ctx, Point3d p) override { OnNumber(ctx, p.DistanceTo(BoxCenter(bbox_))); }
   void OnNumber(CommandContext& ctx, double v) override {
+    if (ids_.empty()) return;  // a number typed while the objects are still being chosen: build_ would run on nothing
     if (!allow_zero_ && v == 0) { ctx.Warn("Value must be non-zero"); return; }
     ctx.ClearPreview();
     build_(ctx, ids_, v, opts_);
