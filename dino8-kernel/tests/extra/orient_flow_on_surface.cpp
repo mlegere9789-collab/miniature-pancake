@@ -113,3 +113,39 @@ D8_EXTRA_TEST(FlowLineFromPlaneOntoCylinder) {
     d8test::Check(std::fabs(img.front().z - 2.0) < 1e-9 && std::fabs(img.back().z - 2.0) < 1e-6, (l + ": the line stays at height 2 (v is the height)").c_str());
   }
 }
+
+// Arc-length fractions, not parameter fractions: the rational circle's parameter is not proportional to arc length between its knots, so a
+// line over a NON-knot interval of the patch must still land on an arc of the SAME length. x from 0.07 L to 0.19 L (L = 10 pi = the circumference):
+// length 0.12 L = 3.769911 = 5 * (0.12 * 2 pi); every point x = f L lands at the angle f * 2 pi, and a point lifted by d keeps arc fractions too.
+D8_EXTRA_TEST(FlowPreservesArcLengthBetweenKnots) {
+  const double L = 10.0 * ON_PI;
+  const NurbsSurface base = NurbsSurface::FromControlGrid({Point3d(0, 0, 0), Point3d(0, 4, 0), Point3d(L, 0, 0), Point3d(L, 4, 0)}, 2, 2, 1, 1);
+  ON_NurbsSurface cn;
+  ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0), 4.0);
+  cyl.GetNurbForm(cn);
+  NurbsSurface target;
+  target.raw() = cn;
+  std::vector<ON_3dPoint> img;
+  double worst_angle = 0;
+  for (int i = 0; i <= 2000; ++i) {
+    const double f = 0.07 + 0.12 * i / 2000.0;
+    const Point3d q = dino8::kernel::FlowPointAlongSurface(base, target, Point3d(f * L, 2.0, 0.0));
+    img.emplace_back(q.x, q.y, q.z);
+    double ang = std::atan2(q.y, q.x);
+    if (ang < 0) ang += 2.0 * ON_PI;
+    worst_angle = std::max(worst_angle, std::fabs(ang - f * 2.0 * ON_PI));
+  }
+  const double len = PolylineLength(img);
+  char buf[140];
+  std::snprintf(buf, sizeof buf, "a line over the non-knot span [0.07 L, 0.19 L]: length %.8f, closed form 5 * 0.12 * 2 pi = %.8f", len, 5.0 * 0.12 * 2.0 * ON_PI);
+  d8test::Check(std::fabs(len - 5.0 * 0.12 * 2.0 * ON_PI) < 1e-6, buf);
+  d8test::Check(worst_angle < 1e-6, "every point x = f L lands at the angle f * 2 pi (arc-length fraction f) to 1e-6");
+  // lifted by 1: radius 6 or 4, the same angles, so length = radius * 0.12 * 2 pi
+  std::vector<ON_3dPoint> lifted;
+  for (int i = 0; i <= 2000; ++i) {
+    const Point3d q = dino8::kernel::FlowPointAlongSurface(base, target, Point3d((0.07 + 0.12 * i / 2000.0) * L, 2.0, 1.0));
+    lifted.emplace_back(q.x, q.y, q.z);
+  }
+  const double rad = std::hypot(lifted.front().x, lifted.front().y);
+  d8test::Check(std::fabs(PolylineLength(lifted) - rad * 0.12 * 2.0 * ON_PI) < 1e-6, "the lifted line keeps the angles: length radius * 0.12 * 2 pi to 1e-6");
+}
