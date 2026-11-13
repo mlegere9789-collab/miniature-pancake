@@ -358,3 +358,57 @@ D8_EXTRA_TEST(PlanarCurveBooleanInscribedSquareKeepsTheUnambiguousResults) {
   r = PlanarCurveBoolean(C, S, pl, CurveRegionOp::Difference);
   d8test::Check(!r.ok && r.refusal_reason.find("ambiguous") != std::string::npos, "circle - inscribed square is refused naming the ambiguous junction");
 }
+
+// Guards that the broader refusal tests above also trip are pinned here one at a time, with inputs only that guard can stop.
+D8_EXTRA_TEST(PlanarCurveBooleanCloseCrossingsAreRefusedEvenWhenTransversal) {
+  const ON_Plane pl = XY();
+  // A thin triangle whose apex pokes 1.5e-4 past the top of a circle of radius 3: its two edges cross the circle 5e-5 apart, each at
+  // nearly a right angle (so this is NOT a tangent contact) - the piece of circle between the crossings is too short to classify.
+  ON_3dPointArray pts;
+  pts.Append(ON_3dPoint(-0.5, 0, 0));
+  pts.Append(ON_3dPoint(0.5, 0, 0));
+  pts.Append(ON_3dPoint(0, 3.00015, 0));
+  pts.Append(ON_3dPoint(-0.5, 0, 0));
+  const PlanarCurveBooleanResult r = PlanarCurveBoolean(Circle(pl, 0, 0, 3), ON_PolylineCurve(pts), pl, CurveRegionOp::Union);
+  d8test::Check(!r.ok && r.refusal_reason.find("closer than") != std::string::npos, "two transversal crossings 5e-5 apart are refused naming the closeness");
+  // The same spike poking a clear 0.3 past the circle is an ordinary crossing pair and is accepted.
+  pts.SetCount(0);
+  pts.Append(ON_3dPoint(-0.5, 0, 0));
+  pts.Append(ON_3dPoint(0.5, 0, 0));
+  pts.Append(ON_3dPoint(0, 3.3, 0));
+  pts.Append(ON_3dPoint(-0.5, 0, 0));
+  const PlanarCurveBooleanResult ok = PlanarCurveBoolean(Circle(pl, 0, 0, 3), ON_PolylineCurve(pts), pl, CurveRegionOp::Union);
+  d8test::Check(ok.ok && ok.crossings == 2 && ok.loops.size() == 1, "the same spike poking 0.3 past the circle crosses twice and is accepted");
+}
+
+D8_EXTRA_TEST(PlanarCurveBooleanTangentEdgeOfCircumscribedSquareIsRefused) {
+  const ON_Plane pl = XY();
+  // A circle of radius 3 inside the square [-3, 3]^2: each side touches the circle at its midpoint, edge tangent to the circle.
+  const PlanarCurveBooleanResult r = PlanarCurveBoolean(Circle(pl, 0, 0, 3), Rect(pl, -3, -3, 3, 3), pl, CurveRegionOp::Union);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "a circle inscribed in a square (four tangent touches) is refused with a reason");
+  // The same circle with a square 1e-2 larger is plain nesting.
+  const PlanarCurveBooleanResult nest = PlanarCurveBoolean(Circle(pl, 0, 0, 3), Rect(pl, -3.01, -3.01, 3.01, 3.01), pl, CurveRegionOp::Union);
+  d8test::Check(nest.ok && nest.loops.size() == 1 && Near(Sum(nest, pl).area, 6.02 * 6.02, 1e-5), "a square 0.01 larger just contains the circle");
+}
+
+D8_EXTRA_TEST(PlanarCurveBooleanSharedEdgeSpanIsRefused) {
+  const ON_Plane pl = XY();
+  // Two squares sharing the whole edge x = 4, and a rectangle sharing the middle of it.
+  PlanarCurveBooleanResult r = PlanarCurveBoolean(Rect(pl, 0, 0, 4, 4), Rect(pl, 4, 1, 8, 3), pl, CurveRegionOp::Difference);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "a rectangle sharing the middle of a square's edge is refused (difference)");
+  r = PlanarCurveBoolean(Rect(pl, 0, 0, 4, 4), Rect(pl, 4, 0, 8, 4), pl, CurveRegionOp::Difference);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "squares sharing a whole edge are refused (difference)");
+  r = PlanarCurveBoolean(Rect(pl, 0, 0, 4, 4), Rect(pl, 0, 0, 4, 4), pl, CurveRegionOp::Intersection);
+  d8test::Check(!r.ok && !r.refusal_reason.empty(), "two identical squares are refused (intersection)");
+}
+
+D8_EXTRA_TEST(PlanarCurveBooleanTangentTouchesAmongCrossingsAreRefused) {
+  const ON_Plane pl = XY();
+  // A circle of radius 3 against the rectangle [-3, 3] x [-1, 6]: the two long sides touch the circle at (+-3, 0) (tangent, one
+  // contact each) and the bottom side y = -1 crosses it twice - an even count of hits, so only the tangent test can tell the
+  // touches from crossings.
+  const PlanarCurveBooleanResult r = PlanarCurveBoolean(Circle(pl, 0, 0, 3), Rect(pl, -3, -1, 3, 6), pl, CurveRegionOp::Union);
+  d8test::Check(!r.ok && r.refusal_reason.find("tangent") != std::string::npos, "tangent touches among genuine crossings are refused naming the tangent contact");
+  const PlanarCurveBooleanResult ok = PlanarCurveBoolean(Circle(pl, 0, 0, 3), Rect(pl, -2.9, -1, 2.9, 6), pl, CurveRegionOp::Union);
+  d8test::Check(ok.ok && ok.crossings == 6, "the same rectangle 0.1 narrower crosses the circle six times and is accepted");
+}
