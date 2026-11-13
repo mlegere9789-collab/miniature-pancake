@@ -3947,9 +3947,38 @@ static bool GeneralBooleanFrameShift(const Brep& a, const Brep& b, ON_3dVector& 
 
 static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
                                             bool allow_non_manifold_result);
+static Brep BooleanCombineGeneralFramed(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                                        bool allow_non_manifold_result);
+
+// A one-face body whose only face is a whole-domain periodic / singular surface carrying real topology (SphereWelded(),
+// TorusWelded(): seam and singular trims on an ON_RevSurface) is handed to the engine in the surface-only form it already
+// handles (Sphere()/Torus()): the engine builds that face's own boundary loops from the intersection chains and does not
+// understand a pre-existing seam trim (measured: the sewn result carried a seam trim without an iso flag, and a pole chain
+// reached TessellateGridClippedExact with fewer than 3 points). The geometry is identical (the exact NURBS form of the same
+// surface on the same domain).
+static Brep BareIfWholeSingleFace(const Brep& x) {
+  const ON_Brep& r = x.raw();
+  if (r.m_F.Count() != 1 || r.m_F[0].m_li.Count() == 0 || r.m_F[0].m_bRev) return x;
+  if (!x.FaceCoversWholeDomain(0)) return x;
+  const ON_Surface* sf = r.m_F[0].SurfaceOf();
+  if (sf == nullptr) return x;
+  ON_NurbsSurface* ns = ON_NurbsSurface::Cast(sf) != nullptr ? new ON_NurbsSurface(*ON_NurbsSurface::Cast(sf)) : sf->NurbsSurface(nullptr);
+  if (ns == nullptr) return x;
+  NurbsSurface surface;
+  surface.raw() = *ns;
+  delete ns;
+  return Brep::SurfaceOnly(surface);
+}
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
                             bool allow_non_manifold_result) {
+  const Brep a_bare = BareIfWholeSingleFace(a);
+  const Brep b_bare = BareIfWholeSingleFace(b);
+  return BooleanCombineGeneralFramed(a_bare, b_bare, op, tolerance, allow_non_manifold_result);
+}
+
+static Brep BooleanCombineGeneralFramed(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                                        bool allow_non_manifold_result) {
   ON_3dVector shift;
   if (!GeneralBooleanFrameShift(a, b, shift)) return BooleanCombineGeneralLocalFrame(a, b, op, tolerance, allow_non_manifold_result);
   const Brep la = a.Transform(ON_Xform::TranslationTransformation(-shift));

@@ -108,6 +108,11 @@ class Brep {
   // std::runtime_error if OpenNURBS refuses the surface.
   static Brep FromSurfaceWelded(const NurbsSurface& surface);
 
+  // The surface-only form of a one-face body: one untrimmed face on `surface`, NewFace(int) with no loops (what Sphere() and
+  // Torus() build). BooleanCombineGeneral() reads such a periodic face through its own seam / pole handling, which the
+  // complete topology of SphereWelded()/TorusWelded() (seam and singular trims on a revolved surface) does not go through.
+  static Brep SurfaceOnly(const NurbsSurface& surface);
+
   // Builds a genuine closed solid: an axis-aligned box as six untrimmed
   // bilinear NURBS faces (min corner (x0,y0,z0), max corner (x1,y1,z1)),
   // each oriented so its tessellated triangles face outward. This is what

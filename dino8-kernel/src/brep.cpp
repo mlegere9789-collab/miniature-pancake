@@ -408,6 +408,21 @@ Brep Brep::Torus(Point3d center, Vector3d axis, double major_radius, double mino
   return result;
 }
 
+Brep Brep::SurfaceOnly(const NurbsSurface& surface) {
+  Brep result;
+  ON_Brep& brep = result.brep_;
+  const int surface_index = brep.AddSurface(new ON_NurbsSurface(surface.raw()));
+  brep.NewFace(surface_index);
+  result.face_trim_loops_.emplace_back();  // untrimmed
+  result.face_exact_clip_.push_back(false);
+  result.face_hole_loops_.emplace_back();
+  result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
 Brep Brep::FromSurfaceWelded(const NurbsSurface& surface) {
   Brep result;
   auto* surface_copy = new ON_NurbsSurface(surface.raw());
