@@ -1353,6 +1353,20 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, const std::vector<double>& dista
 // per-face one.
 Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 
+// Whole-body offset of a RULED SOLID: the loft with straight rulings between two closed planar polygons `bottom` and `top`
+// (same vertex count n >= 3; vertex i of one is joined to vertex i of the other, so a frustum, a prism, a sheared prism, an
+// n-gon taper). The solid is assembled with Brep::FromPlanarFaces (two caps + n side quads, normals oriented outward against the
+// body centroid, so input winding and which profile is "bottom" do not matter) and every plane is then moved outward by
+// `distance` (negative = inward) by OffsetSolidConvexPlanar - the same mitered plane-moving offset, so the result is again an
+// (n+2)-face polytope whose volume has an exact closed form (e.g. a square frustum of half-widths 5 -> 3 over height 8 offset by d
+// has cross-section half-width 5 + d sqrt(17/16) - z/4 on z in [-d, 8+d]).
+//
+// Honest refusals (std::invalid_argument): fewer than 3 vertices or mismatched counts; a non-finite distance; a degenerate profile;
+// a cap or ANY ruled side quad that is not planar within 1e-9 of the body size (e.g. the top twisted against the bottom - a twisted
+// loft has bilinear sides whose offset is not a plane move, so there is no exact answer here); both profiles on one plane; a
+// non-convex body (concave profile); an inward offset that collapses a face (see OffsetSolidConvexPlanar).
+Brep OffsetRuledSolid(const std::vector<Point3d>& bottom, const std::vector<Point3d>& top, double distance);
+
 // The genuine Rhino/SolidWorks "push/pull" (PressPull) direct-edit: unlike
 // OffsetFace() above (which always keeps `solid`'s own face count fixed,
 // re-extending/re-trimming every OTHER face in place to reach the moved
