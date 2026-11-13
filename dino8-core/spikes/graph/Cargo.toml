@@ -1,0 +1,37 @@
+[package]
+name = "dino8-graph-spike"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Spike C: incremental derived-data engine (pure queries, revisions, fine-grained invalidation, work-stealing evaluation)"
+publish = false
+
+# Standalone crate: deliberately NOT part of any workspace.
+[workspace]
+
+[lib]
+name = "dino8_graph"
+path = "src/lib.rs"
+
+[[bin]]
+name = "regen_bench"
+path = "src/bin/regen_bench.rs"
+
+[dependencies]
+rayon = "1.10"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "thin"
+codegen-units = 4
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 2
