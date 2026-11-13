@@ -1,0 +1,1280 @@
+Appendix A. Complete Blender 5.3
+Operator Catalog
+Generated directly from the running bpy 5.3.0 API: every operator, grouped by module (bpy.ops.<module>.<name>),
+with its UI label. Total operators and modules are listed in Chapter 7.
+
+
+action (37 operators)
+bake_keys = Bake Keyframes; clean = Clean Keyframes; clickselect = Select Keyframes; copy = Copy Keyframes; delete = Delete Keyframes;
+duplicate = Duplicate Keyframes; duplicate_move = Duplicate; easing_type = Set Keyframe Easing Type; extrapolation_type = Set F-Curve
+Extrapolation; frame_jump = Jump to Keyframes; handle_type = Set Keyframe Handle Type; interpolation_type = Set Keyframe Interpolation;
+keyframe_insert = Insert Keyframes; keyframe_type = Set Keyframe Type; markers_make_local = Convert to Pose Markers; mirror = Mirror Keys; new
+= New Action; paste = Paste Keyframes; previewrange_set = Set Preview Range to Selected; push_down = Push Down Action; select_all = Select All;
+select_box = Box Select; select_by_type = Select by Type; select_circle = Circle Select; select_column = Select All; select_lasso = Lasso
+Select; select_leftright = Select Left/Right; select_less = Select Less; select_linked = Select Linked; select_more = Select More; snap = Snap
+Keys; stash = Stash Action; stash_and_create = Stash Action; unlink = Unlink Action; view_all = Frame All; view_frame = Go to Current Frame;
+view_selected = Frame Selected
+
+
+
+anim (68 operators)
+change_frame = Change Frame; channel_select_keys = Select Channel Keyframes; channel_view_pick = Frame Channel Under Cursor;
+channels_bake = Bake Channels; channels_clean_empty = Remove Empty Animation Data; channels_click = Mouse Click on Channels;
+channels_collapse = Collapse Channels; channels_delete = Delete Channels; channels_editable_toggle = Toggle Channel Editability;
+channels_expand = Expand Channels; channels_fcurves_enable = Revive Disabled F-Curves; channels_group = Group Channels; channels_move =
+Move Channels; channels_rename = Rename Channel; channels_select_all = Select All; channels_select_box = Box Select;
+channels_select_filter = Filter Channels; channels_setting_disable = Disable Channel Setting; channels_setting_enable = Enable Channel
+Setting; channels_setting_toggle = Toggle Channel Setting; channels_ungroup = Ungroup Channels; channels_view_selected = Frame Selected
+Channels; clear_useless_actions = Clear Useless Actions; copy_driver_button = Copy Driver; driver_button_add = Add Driver;
+driver_button_edit = Edit Driver; driver_button_remove = Remove Driver; end_frame_set = Set End Frame; keyframe_clear_button = Clear
+Keyframe (Buttons); keyframe_clear_v3d = Remove Animation; keyframe_clear_vse = Remove Animation; keyframe_delete = Delete Keying-Set
+Keyframe; keyframe_delete_button = Delete Keyframe (Buttons); keyframe_delete_by_name = Delete Keying-Set Keyframe (by name);
+keyframe_delete_v3d = Delete Keyframe; keyframe_delete_vse = Delete Keyframe; keyframe_insert = Insert Keyframe;
+keyframe_insert_button = Insert Keyframe (Buttons); keyframe_insert_by_name = Insert Keyframe (by name); keyframe_insert_menu = Insert
+Keyframe Menu; keying_set_active_set = Set Active Keying Set; keying_set_add = Add Empty Keying Set; keying_set_export = Export Keying Set...;
+keying_set_path_add = Add Empty Keying Set Path; keying_set_path_remove = Remove Active Keying Set Path; keying_set_remove = Remove
+Active Keying Set; keyingset_button_add = Add to Keying Set; keyingset_button_remove = Remove from Keying Set; merge_animation = Merge
+Animation; paste_driver_button = Paste Driver; previewrange_clear = Clear Preview Range; previewrange_set = Set Preview Range;
+replace_action = Replace Action; replace_action_duplicate = Replace with Duplicate Action; replace_action_new = Replace with New Action;
+rotation_mode_convert = Convert Rotation Mode; scene_range_frame = Frame Scene/Preview Range; separate_slots = Separate Slots;
+slot_channels_move_to_new_action = Move Slots to new Action; slot_new_for_id = New Slot; slot_unassign_from_constraint = Unassign Slot;
+slot_unassign_from_id = Unassign Slot; slot_unassign_from_nla_strip = Unassign Slot; start_frame_set = Set Start Frame;
+version_bone_hide_property = Version Bone Hide Property; view_curve_in_graph_editor = View In Graph Editor; world_space_copy = Copy
+World Space Range; world_space_paste = Paste World Space
+
+
+
+armature (49 operators)
+align = Align Bones; assign_to_collection = Assign to Collection; autoside_names = Auto-Name by Axis; bone_primitive_add = Add Bone;
+calculate_roll = Recalculate Roll; click_extrude = Extrude to Cursor; collection_add = Add Bone Collection; collection_assign = Add Selected
+Bones to Collection; collection_create_and_assign = Add Selected Bones to New Collection; collection_deselect = Deselect Bone Collection;
+collection_move = Move Bone Collection; collection_remove = Remove Bone Collection; collection_remove_unused = Remove Unused Bone
+Collections; collection_select = Select Bones of Bone Collection; collection_show_all = Show All; collection_unassign = Remove Selected from
+Bone collections; collection_unassign_named = Remove Bone from Bone Collection; collection_unsolo_all = Un-solo All;
+copy_bone_color_to_selected = Copy Colors to Selected; delete = Delete Selected Bone(s); dissolve = Dissolve Selected Bone(s); duplicate =
+Duplicate Selected Bone(s); duplicate_move = Duplicate; duplicate_rename = Duplicate and Rename; extrude = Extrude; extrude_forked = Extrude
+Forked; extrude_move = Extrude; fill = Fill Between Joints; flip_names = Flip Names; hide = Hide Selected; move_to_collection = Move to Collection;
+parent_clear = Clear Parent; parent_set = Make Parent; reveal = Reveal Hidden; roll_clear = Clear Roll; select_all = (De)select All;
+select_hierarchy = Select Hierarchy; select_less = Select Less; select_linked = Select Linked All; select_linked_pick = Select Linked;
+select_mirror = Select Mirror; select_more = Select More; select_similar = Select Similar; separate = Separate Bones; shortest_path_pick =
+Pick Shortest Path; split = Split; subdivide = Subdivide; switch_direction = Switch Direction; symmetrize = Symmetrize
+
+
+
+
+Compiled 13 Nov 2026                                                   139
+The Design-Software Deep Dive                                                            Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+asset (22 operators)
+asset_download = Download Asset; assets_download = Download Assets; assign_action = Assign Action; browse_containing_blend_file = Open
+File Location; bundle_install = Copy to Asset Library; catalog_delete = Delete Asset Catalog; catalog_new = New Asset Catalog; catalog_redo =
+Redo Catalog Edits; catalog_undo = Undo Catalog Edits; catalog_undo_push = Store undo snapshot for asset catalog edits; catalogs_save = Save Asset
+Catalogs; clear = Clear Asset; clear_single = Clear Single Asset; external_asset_rename = Rename Asset; library_refresh = Refresh Asset
+Library; library_reload_listing = Reload Remote Asset Library Listing; mark = Mark as Asset; mark_single = Mark as Single Asset;
+open_containing_blend_file = Open Blend File; screenshot_preview = Capture Screenshot Preview; tag_add = Add Asset Tag; tag_remove =
+Remove Asset Tag
+
+
+
+boid (8 operators)
+rule_add = Add Boid Rule; rule_del = Remove Boid Rule; rule_move_down = Move Down Boid Rule; rule_move_up = Move Up Boid Rule; state_add =
+Add Boid State; state_del = Remove Boid State; state_move_down = Move Down Boid State; state_move_up = Move Up Boid State
+
+
+
+brush (11 operators)
+asset_activate = Activate Brush Asset; asset_delete = Delete Brush Asset; asset_edit_metadata = Edit Metadata; asset_load_preview = Load
+Preview Image; asset_revert = Revert Brush Asset; asset_save = Save Brush Asset; asset_save_as = Save as Brush Asset; scale_size = Scale
+Sculpt/Paint Brush Size; stencil_control = Stencil Brush Control; stencil_fit_image_aspect = Image Aspect; stencil_reset_transform = Reset
+Transform
+
+
+
+buttons (6 operators)
+clear_filter = Clear Filter; context_menu = Context Menu; directory_browse = Select Directory; file_browse = Select File; start_filter = Filter;
+toggle_pin = Toggle Pin ID
+
+
+
+cachefile (5 operators)
+layer_add = Add layer; layer_move = Move layer; layer_remove = Add layer; open = Open Cache File; reload = Refresh Archive
+
+
+
+camera (2 operators)
+preset_add = Add Camera Preset; safe_areas_preset_add = Add Safe Area Preset
+
+
+
+clip (91 operators)
+add_marker = Add Marker; add_marker_at_click = Add Marker at Click; add_marker_move = Add Marker and Move; add_marker_slide = Add Marker
+and Slide; apply_solution_scale = Apply Solution Scale; average_tracks = Average Tracks; bundles_to_mesh = 3D Markers to Mesh;
+camera_preset_add = Add Camera Preset; change_frame = Change Frame; clean_tracks = Clean Tracks; clear_solution = Clear Solution;
+clear_track_path = Clear Track Path; constraint_to_fcurve = Constraint to F-Curve; copy_tracks = Copy Tracks; create_plane_track = Create
+Plane Track; cursor_set = Set 2D Cursor; delete_marker = Delete Marker; delete_proxy = Delete Proxy; delete_track = Delete Track;
+detect_features = Detect Features; disable_markers = Disable Markers; dopesheet_select_channel = Select Channel; dopesheet_view_all =
+Frame All; filter_tracks = Filter Tracks; frame_jump = Jump to Frame; graph_center_current_frame = Center Current Frame;
+graph_delete_curve = Delete Curve; graph_delete_knot = Delete Knot; graph_disable_markers = Disable Markers; graph_select = Select;
+graph_select_all_markers = (De)select All Markers; graph_select_box = Box Select; graph_view_all = Frame All; hide_tracks = Hide Tracks;
+hide_tracks_clear = Hide Tracks Clear; join_tracks = Join Tracks; keyframe_delete = Delete Keyframe; keyframe_insert = Insert Keyframe;
+lock_selection_toggle = Toggle Lock Selection; lock_tracks = Lock Tracks; mode_set = Set Clip Mode; new_image_from_plane_marker = New
+Image from Plane Marker; open = Open Clip; paste_tracks = Paste Tracks; prefetch = Prefetch Frames; rebuild_proxy = Rebuild Proxy;
+refine_markers = Refine Markers; reload = Reload Clip; select = Select; select_all = (De)select All; select_box = Box Select; select_circle =
+Circle Select; select_grouped = Select Grouped; select_lasso = Lasso Select; set_active_clip = Set Active Clip; set_axis = Set Axis; set_origin =
+Set Origin; set_plane = Set Plane; set_scale = Set Scale; set_scene_frames = Set Scene Frames; set_solution_scale = Set Solution Scale;
+set_solver_keyframe = Set Solver Keyframe; set_viewport_background = Set as Background; setup_tracking_scene = Setup Tracking Scene;
+slide_marker = Slide Marker; slide_plane_marker = Slide Plane Marker; solve_camera = Solve Camera; stabilize_2d_add = Add Stabilization
+Tracks; stabilize_2d_remove = Remove Stabilization Track; stabilize_2d_rotation_add = Add Stabilization Rotation Tracks;
+stabilize_2d_rotation_remove = Remove Stabilization Rotation Track; stabilize_2d_rotation_select = Select Stabilization Rotation Tracks;
+stabilize_2d_select = Select Stabilization Tracks; track_color_preset_add = Add Track Color Preset; track_copy_color = Copy Color;
+track_markers = Track Markers; track_settings_as_default = Track Settings as Default; track_settings_to_track = Copy Track Settings;
+track_to_empty = Link Empty to Track; tracking_object_new = Add Tracking Object; tracking_object_remove = Remove Tracking Object;
+tracking_settings_preset_add = Add Tracking Settings Preset; update_image_from_plane_marker = Update Image from Plane Marker; view_all =
+Frame All; view_center_cursor = Center View to Cursor; view_pan = Pan View; view_selected = Frame Selected; view_zoom = View Zoom;
+view_zoom_in = Zoom In; view_zoom_out = Zoom Out; view_zoom_ratio = View Zoom Ratio
+
+
+
+
+Compiled 13 Nov 2026                                                  140
+The Design-Software Deep Dive                                                             Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+cloth (1 operators)
+preset_add = Add Cloth Preset
+
+
+
+collection (16 operators)
+create = Create New Collection; export_all = Export All; exporter_add = Add Exporter; exporter_export = Export; exporter_move = Move Exporter;
+exporter_remove = Remove Exporter; importer_add = Add Importer; importer_clear = Clear Importer; importer_import = Import;
+importer_make_local = Make Importer Local; importer_reload = Reload Importer; importer_remove = Remove Importer; objects_add_active =
+Add Selected to Active Object's Collection; objects_remove = Remove from Collection; objects_remove_active = Remove Selected from Active Collection;
+objects_remove_all = Remove from All Collections
+
+
+
+console (21 operators)
+autocomplete = Console Autocomplete; banner = Console Banner; clear = Clear All; clear_line = Clear Line; copy = Copy to Clipboard;
+copy_as_script = Copy to Clipboard (as Script); delete = Delete; execute = Console Execute; history_append = History Append; history_cycle =
+History Cycle; indent = Indent; indent_or_autocomplete = Indent or Autocomplete; insert = Insert; language = Console Language; move = Move Cursor;
+paste = Paste from Clipboard; scrollback_append = Scrollback Append; select_all = Select All; select_set = Set Selection; select_word = Select
+Word; unindent = Unindent
+
+
+
+constraint (18 operators)
+add_target = Add Target; apply = Apply Constraint; childof_clear_inverse = Clear Inverse; childof_set_inverse = Set Inverse; copy = Duplicate
+Constraint; copy_to_selected = Copy Constraint To Selected; delete = Delete Constraint; disable_keep_transform = Disable and Keep Transform;
+followpath_path_animate = Auto Animate Path; limitdistance_reset = Reset Distance; move_down = Move Constraint Down; move_to_index =
+Move Constraint to Index; move_up = Move Constraint Up; normalize_target_weights = Normalize Weights; objectsolver_clear_inverse = Clear
+Inverse; objectsolver_set_inverse = Set Inverse; remove_target = Remove Target; stretchto_reset = Reset Original Length
+
+
+
+curve (51 operators)
+cyclic_toggle = Toggle Cyclic; de_select_first = (De)select First; de_select_last = (De)select Last; decimate = Decimate Curve; delete = Delete;
+dissolve_verts = Dissolve Vertices; draw = Draw Curve; duplicate = Duplicate Curve; duplicate_move = Add Duplicate; extrude = Extrude;
+extrude_move = Extrude Curve and Move; handle_type_set = Set Handle Type; hide = Hide Selected; make_segment = Make Segment;
+match_texture_space = Match Texture Space; normals_make_consistent = Recalculate Handles; pen = Curve Pen; primitive_bezier_circle_add
+= Add Bézier Circle; primitive_bezier_curve_add = Add Bézier; primitive_nurbs_circle_add = Add Nurbs Circle; primitive_nurbs_curve_add
+= Add Nurbs Curve; primitive_nurbs_path_add = Add Path; radius_set = Set Curve Radius; reveal = Reveal Hidden; select_all = (De)select All;
+select_less = Select Less; select_linked = Select Linked All; select_linked_pick = Select Linked; select_more = Select More; select_next =
+Select Next; select_nth = Checker Deselect; select_previous = Select Previous; select_random = Select Random; select_row = Select Control Point
+Row; select_similar = Select Similar; separate = Separate; shade_flat = Shade Flat; shade_smooth = Shade Smooth; shortest_path_pick = Pick
+Shortest Path; smooth = Smooth; smooth_radius = Smooth Curve Radius; smooth_tilt = Smooth Curve Tilt; smooth_weight = Smooth Curve Weight;
+spin = Spin; spline_type_set = Set Spline Type; spline_weight_set = Set Goal Weight; split = Split; subdivide = Subdivide; switch_direction =
+Switch Direction; tilt_clear = Clear Tilt; vertex_add = Extrude to Cursor or Add
+
+
+
+curves (31 operators)
+add_bezier = Add Bézier; add_circle = Add Circle; attribute_set = Set Attribute; convert_from_particle_system = Convert Particle System to
+Curves; convert_to_particle_system = Convert Curves to Particle System; curve_type_set = Set Curve Type; cyclic_toggle = Toggle Cyclic;
+delete = Delete; draw = Draw Curves; duplicate = Duplicate; duplicate_move = Duplicate; extrude = Extrude; extrude_move = Extrude Curve and
+Move; handle_type_set = Set Handle Type; pen = Curves Pen; sculptmode_toggle = Curve Sculpt Mode Toggle; select_all = (De)select All;
+select_ends = Select Ends; select_less = Select Less; select_linked = Select Linked; select_linked_pick = Select Linked; select_more = Select
+More; select_random = Select Random; separate = Separate; set_selection_domain = Set Select Mode; snap_curves_to_surface = Snap Curves to
+Surface; split = Split; subdivide = Subdivide; surface_set = Set Curves Surface Object; switch_direction = Switch Direction; tilt_clear = Clear Tilt
+
+
+
+cycles (3 operators)
+denoise_animation = Denoise Animation; merge_images = Merge Images; use_shading_nodes = Use Nodes
+
+
+
+dpaint (5 operators)
+bake = Dynamic Paint Bake; output_toggle = Toggle Output Layer; surface_slot_add = Add Surface Slot; surface_slot_remove = Remove Surface
+Slot; type_toggle = Toggle Type Active
+
+
+
+
+Compiled 13 Nov 2026                                                   141
+The Design-Software Deep Dive                                                            Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+ed (13 operators)
+flush_edits = Flush Edits; lib_id_fake_user_toggle = Toggle Fake User; lib_id_generate_preview = Generate Preview;
+lib_id_generate_preview_from_object = Generate Preview from Object; lib_id_load_custom_preview = Load Custom Preview;
+lib_id_override_editable_toggle = Toggle Library Override Editable; lib_id_remove_preview = Remove Preview; lib_id_unlink = Unlink
+Data-Block; redo = Redo; undo = Undo; undo_history = Undo History; undo_push = Undo Push; undo_redo = Undo and Redo
+
+
+
+export_anim (1 operators)
+bvh = Export BVH
+
+
+
+export_scene (2 operators)
+fbx = Export FBX; gltf = Export glTF 2.0
+
+
+
+extensions (36 operators)
+package_asset_library_disable = Disable asset library extension; package_asset_library_enable = Enable asset library extension;
+package_asset_library_show = Show asset library extension; package_disable = Disable extension; package_install = Install Extension;
+package_install_files = Install from Disk; package_install_marked = Ext Package Install Marked; package_mark_clear = Clear Marked Package;
+package_mark_clear_all = Clear All Marked Packages; package_mark_set = Mark Package; package_mark_set_all = Mark All Packages;
+package_obsolete_marked = Obsolete Marked; package_show_clear = Show Package Clear; package_show_set = Show Package Set;
+package_show_settings = Show Settings; package_theme_disable = Disable theme extension; package_theme_enable = Enable theme extension;
+package_uninstall = Ext Package Uninstall; package_uninstall_marked = Ext Package Uninstall Marked; package_uninstall_system = Uninstall;
+package_upgrade_all = Install Available Updates; repo_enable_from_drop = Enable Repository from Drop; repo_lock_all = Lock All Repositories
+(Testing); repo_refresh_all = Refresh Local; repo_sync = Ext Repo Sync; repo_sync_all = Refresh Remote; repo_unlock = Force Unlock Active
+Repository; repo_unlock_all = Unlock All Repositories (Testing); status_clear = Clear Status; status_clear_errors = Clear Status;
+userpref_allow_online = ; userpref_allow_online_popup = ; userpref_show_for_update = ; userpref_show_online = ;
+userpref_show_package = ; userpref_tags_set = Set Extension Tags
+
+
+
+file (40 operators)
+autopack_toggle = Automatically Pack Resources; bookmark_add = Add Bookmark; bookmark_cleanup = Cleanup Bookmarks; bookmark_delete =
+Delete Bookmark; bookmark_move = Move Bookmark; cancel = Cancel File Operation; delete = Delete Selected Files; directory_new = Create New
+Directory; edit_directory_path = Edit Directory Path; execute = Execute File Window; external_operation = External File Operation; filenum =
+Increment Number in Filename; filepath_drop = File Selector Drop; find_missing_files = Find Missing Files; hidedot = Toggle Hide Dot Files;
+highlight = Highlight File; make_paths_absolute = Make Paths Absolute; make_paths_relative = Make Paths Relative; mouse_execute = Execute
+File; next = Next Folder; pack_all = Pack Resources; pack_libraries = Pack Linked Libraries; parent = Parent Directory; previous = Previous Folder;
+refresh = Refresh File List; rename = Rename File or Directory; report_missing_files = Report Missing Files; reset_recent = Reset Recent; select =
+Select; select_all = (De)select All Files; select_bookmark = Select Directory; select_box = Box Select; select_walk = Walk Select/Deselect File;
+smoothscroll = Smooth Scroll; sort_column_ui_context = Sort from Column; start_filter = Filter; unpack_all = Unpack Resources; unpack_item
+= Unpack Item; unpack_libraries = Unpack Linked Libraries; view_selected = Frame Selected
+
+
+
+fluid (14 operators)
+bake_all = Bake All; bake_data = Bake Data; bake_guides = Bake Guides; bake_mesh = Bake Mesh; bake_noise = Bake Noise; bake_particles =
+Bake Particles; free_all = Free All; free_data = Free Data; free_guides = Free Guides; free_mesh = Free Mesh; free_noise = Free Noise;
+free_particles = Free Particles; pause_bake = Pause Bake; preset_add = Add Fluid Preset
+
+
+
+font (23 operators)
+case_set = Set Case; case_toggle = Toggle Case; change_character = Change Character; change_spacing = Change Spacing; delete = Delete;
+line_break = Line Break; move = Move Cursor; move_select = Move Select; open = Open Font; select_all = Select All; select_word = Select Word;
+selection_set = Set Selection; style_set = Set Style; style_toggle = Toggle Style; text_copy = Copy Text; text_cut = Cut Text; text_insert =
+Insert Text; text_insert_unicode = Insert Unicode; text_paste = Paste Text; text_paste_from_file = Paste File; textbox_add = Add Text Box;
+textbox_remove = Remove Text Box; unlink = Unlink
+
+
+
+geometry (9 operators)
+attribute_add = Add Attribute; attribute_convert = Convert Attribute; attribute_remove = Remove Attribute; color_attribute_add = Add Color
+Attribute; color_attribute_convert = Convert Color Attribute; color_attribute_duplicate = Duplicate Color Attribute; color_attribute_remove =
+Remove Color Attribute; color_attribute_render_set = Set Render Color; geometry_randomization = Set Geometry Randomization
+
+
+
+
+Compiled 13 Nov 2026                                                   142
+The Design-Software Deep Dive                                                             Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+gizmogroup (2 operators)
+gizmo_select = Gizmo Select; gizmo_tweak = Gizmo Tweak
+
+
+
+gpencil (7 operators)
+annotate = Annotation Draw; annotation_active_frame_delete = Delete Active Frame; annotation_add = Annotation Add New; data_unlink =
+Annotation Unlink; layer_annotation_add = Add New Annotation Layer; layer_annotation_move = Move Annotation Layer;
+layer_annotation_remove = Remove Annotation Layer
+
+
+
+graph (67 operators)
+bake_keys = Bake Keyframes; blend_offset = Blend Offset Keyframes; blend_to_default = Blend to Default Value; blend_to_ease = Blend to Ease
+Keyframes; blend_to_neighbor = Blend to Neighbor; breakdown = Breakdown; butterworth_smooth = Butterworth Smooth; clean = Clean Keyframes;
+click_insert = Click-Insert Keyframes; clickselect = Select Keyframes; copy = Copy Keyframes; cursor_set = Set Cursor; decimate = Decimate
+Keyframes; delete = Delete Keyframes; driver_delete_invalid = Delete Invalid Drivers; driver_variables_copy = Copy Driver Variables;
+driver_variables_paste = Paste Driver Variables; duplicate = Duplicate Keyframes; duplicate_move = Duplicate; ease = Ease Keyframes;
+easing_type = Set Keyframe Easing Type; equalize_handles = Equalize Handles; euler_filter = Euler Discontinuity Filter; extrapolation_type =
+Set F-Curve Extrapolation; fmodifier_add = Add F-Curve Modifier; fmodifier_copy = Copy F-Modifiers; fmodifier_delete = Delete F-Curve Modifiers;
+fmodifier_paste = Paste F-Modifiers; frame_jump = Jump to Keyframes; gaussian_smooth = Gaussian Smooth; ghost_curves_clear = Clear Ghost
+Curves; ghost_curves_create = Create Ghost Curves; handle_type = Set Keyframe Handle Type; hide = Hide Curves; interpolation_type = Set
+Keyframe Interpolation; keyframe_insert = Insert Keyframes; keyframe_jump = Jump to Keyframe; keys_to_samples = Keys to Samples; local_view =
+Local View; match_slope = Match Slope; mirror = Mirror Keys; paste = Paste Keyframes; previewrange_set = Set Preview Range to Selected;
+push_pull = Push Pull Keyframes; reveal = Reveal Curves; samples_to_keys = Samples to Keys; scale_average = Scale Average Keyframes;
+scale_from_neighbor = Scale from Neighbor; select_all = Select All; select_box = Box Select; select_circle = Circle Select; select_column =
+Select All; select_key_handles = Select Key / Handles; select_lasso = Lasso Select; select_leftright = Select Left/Right; select_less = Select
+Less; select_linked = Select Linked; select_more = Select More; shear = Shear Keyframes; smooth = Smooth Keys; snap = Snap Keys;
+snap_cursor_value = Snap Cursor Value to Selected; sound_to_samples = Sound to Samples; time_offset = Time Offset Keyframes; view_all =
+Frame All; view_frame = Go to Current Frame; view_selected = Frame Selected
+
+
+
+grease_pencil (124 operators)
+active_frame_delete = Delete Active Frame(s); bake_grease_pencil_animation = Bake Object Transform to Grease Pencil; brush_stroke = Grease
+Pencil Draw; caps_set = Set Curve Caps; clean_loose = Clean Loose Points; convert_curve_type = Convert Curve Type; copy = Copy Strokes;
+cyclical_set = Set Cyclical State; delete = Delete; delete_breakdown = Delete Breakdown Frames; delete_frame = Delete Frame; dissolve =
+Dissolve; duplicate = Duplicate; duplicate_move = Duplicate Strokes; erase_box = Grease Pencil Box Erase; erase_lasso = Grease Pencil Erase Lasso;
+extrude = Extrude Stroke Points; extrude_move = Extrude Stroke Points; fill = Grease Pencil Fill; frame_clean_duplicate = Delete Duplicate Frames;
+frame_duplicate = Duplicate Active Frame(s); insert_blank_frame = Insert Blank Frame; interpolate = Grease Pencil Interpolation;
+interpolate_sequence = Interpolate Sequence; join_fills = Join Fills; join_selection = Join Selection; layer_active = Set Active Layer;
+layer_add = Add New Layer; layer_duplicate = Duplicate Layer; layer_duplicate_object = Duplicate Layer to New Object; layer_group_add = Add
+New Layer Group; layer_group_color_tag = Grease Pencil Group Color Tag; layer_group_remove = Remove Layer Group; layer_hide = Hide
+Layer(s); layer_isolate = Isolate Layers; layer_lock_all = Lock All Layers; layer_mask_add = Add New Mask Layer; layer_mask_remove = Remove
+Mask Layer; layer_mask_reorder = Reorder Grease Pencil Layer Mask; layer_merge = Merge; layer_move = Reorder Layer; layer_remove = Remove
+Layer; layer_reveal = Show All Layers; material_copy_to_object = Copy Materials to Selected Object; material_hide = Hide Materials;
+material_isolate = Isolate Material; material_lock_all = Lock All Materials; material_lock_unselected = Lock Unselected Materials;
+material_lock_unused = Lock Unused Materials; material_reveal = Show All Materials; material_select = Select Material; material_unlock_all
+= Unlock All Materials; move_to_layer = Move to Layer; outline = Outline; paintmode_toggle = Strokes Paint Mode Toggle; paste = Paste Strokes; pen =
+Grease Pencil Pen; primitive_arc = Grease Pencil Arc Shape; primitive_box = Grease Pencil Box Shape; primitive_circle = Grease Pencil Circle
+Shape; primitive_curve = Grease Pencil Curve Shape; primitive_line = Grease Pencil Line Shape; primitive_polyline = Grease Pencil Polyline
+Shape; relative_layer_mask_add = Mask with Layer Above/Below; remove_fill_guides = Remove Fill Guides; reorder = Reorder; reproject =
+Reproject Strokes; reset_uvs = Reset UVs; sculpt_paint = Grease Pencil Sculpt; sculptmode_toggle = Strokes Sculpt Mode Toggle; select_all =
+(De)select All Strokes; select_alternate = Select Alternate; select_by_stroke_type = Select By Stroke Type; select_ends = Select Ends;
+select_fill = Select Fill; select_less = Select Less; select_linked = Select Linked; select_more = Select More; select_random = Select Random;
+select_similar = Select Similar; separate = Separate; separate_fills = Separate Fills; set_active_material = Set Active Material;
+set_corner_type = Set Corner Type; set_curve_resolution = Set Curve Resolution; set_curve_type = Set Curve Type; set_handle_type = Set
+Handle Type; set_material = Set Active Material; set_selection_mode = Select Mode; set_start_point = Set Start Point; set_stroke_type = Set
+Stroke Type; set_uniform_opacity = Set Uniform Opacity; set_uniform_thickness = Set Uniform Thickness; snap_cursor_to_selected = Snap
+Cursor to Selected Points; snap_to_cursor = Snap Selection to Cursor; snap_to_grid = Snap Selection to Grid; stroke_carver = Grease Pencil Carver;
+stroke_material_set = Assign Material; stroke_merge_by_distance = Merge by Distance; stroke_reset_vertex_color = Reset Vertex Color;
+stroke_simplify = Simplify Stroke; stroke_smooth = Smooth Stroke; stroke_split = Split stroke; stroke_subdivide = Subdivide Stroke;
+stroke_subdivide_smooth = Subdivide and Smooth; stroke_switch_direction = Switch Direction; stroke_trim = Grease Pencil Trim;
+texture_gradient = Texture Gradient; trace_image = Trace Image to Grease Pencil; vertex_brush_stroke = Grease Pencil Paint Vertex;
+vertex_color_brightness_contrast = Vertex Paint Brightness/Contrast; vertex_color_hsv = Vertex Paint Hue/Saturation/Value;
+vertex_color_invert = Vertex Paint Invert; vertex_color_levels = Vertex Paint Levels; vertex_color_set = Vertex Paint Set Color;
+vertex_group_normalize = Normalize Vertex Group; vertex_group_normalize_all = Normalize All Vertex Groups; vertex_group_smooth = Smooth
+Vertex Group; vertexmode_toggle = Strokes Vertex Mode Toggle; weight_brush_stroke = Grease Pencil Paint Weight; weight_invert = Invert Weight;
+weight_sample = Weight Paint Sample Weight; weight_toggle_direction = Weight Paint Toggle Direction; weightmode_toggle = Strokes Weight Mode
+Toggle
+
+
+
+
+Compiled 13 Nov 2026                                                   143
+The Design-Software Deep Dive                                                              Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+image (48 operators)
+add_render_slot = Add Render Slot; change_frame = Change Frame; clear_render_border = Clear Render Region; clear_render_slot = Clear
+Render Slot; clipboard_copy = Copy Image; clipboard_paste = Paste Image; convert_to_mesh_plane = Convert Image Empty to Mesh Plane;
+curves_point_set = Set Curves Point; cycle_render_slot = Cycle Render Slot; external_edit = Image Edit Externally; file_browse = Browse Image;
+flip = Flip Image; import_as_mesh_planes = Import Images as Planes; invert = Invert Channels; match_movie_length = Match Movie Length; new =
+New Image; open = Open Image; open_images = Open Images; pack = Pack Image; project_apply = Project Apply; project_edit = Project Edit;
+read_viewlayers = Open Cached Render; reload = Reload Image; remove_render_slot = Remove Render Slot; render_border = Render Region;
+replace = Replace Image; resize = Resize Image; rotate_orthogonal = Rotate Image Orthogonal; sample = Sample Color; sample_line = Sample Line;
+save = Save Image; save_all_modified = Save All Modified; save_as = Save As Image; save_sequence = Save Sequence; tile_add = Add Tile;
+tile_fill = Fill Tile; tile_remove = Remove Tile; unpack = Unpack Image; view_all = Frame All; view_center_cursor = Center View to Cursor;
+view_cursor_center = Cursor To Center View; view_pan = Pan View; view_selected = View Center; view_zoom = Zoom View; view_zoom_border =
+Zoom to Border; view_zoom_in = Zoom In; view_zoom_out = Zoom Out; view_zoom_ratio = View Zoom Ratio
+
+
+
+import_anim (1 operators)
+bvh = Import BVH
+
+
+
+import_curve (1 operators)
+svg = Import SVG as Curves
+
+
+
+import_scene (2 operators)
+fbx = Import FBX; gltf = Import glTF 2.0
+
+
+
+info (7 operators)
+report_copy = Copy Reports to Clipboard; report_delete = Delete Reports; report_replay = Replay Operators; reports_display_update = Update
+Reports Display; select_all = (De)select All; select_box = Box Select; select_pick = Select Report
+
+
+
+lattice (8 operators)
+flip = Flip (Distortion Free); make_regular = Make Regular; select_all = (De)select All; select_less = Select Less; select_mirror = Select Mirror;
+select_more = Select More; select_random = Select Random; select_ungrouped = Select Ungrouped
+
+
+
+marker (11 operators)
+add = Add Time Marker; camera_bind = Bind Camera to Markers; delete = Delete Markers; duplicate = Duplicate Time Marker; make_links_scene =
+Copy Markers to Scene; move = Move Time Marker; rename = Rename Marker; select = Select Time Marker; select_all = (De)select all Markers;
+select_box = Marker Box Select; select_leftright = Select Markers Before/After Current Frame
+
+
+
+mask (40 operators)
+add_feather_vertex = Add Feather Vertex; add_feather_vertex_slide = Add Feather Vertex and Slide; add_vertex = Add Vertex;
+add_vertex_slide = Add Vertex and Slide; copy_splines = Copy Splines; cyclic_toggle = Toggle Cyclic; delete = Delete; duplicate = Duplicate
+Mask; duplicate_move = Add Duplicate; feather_weight_clear = Clear Feather Weight; handle_type_set = Set Handle Type; hide_view_clear =
+Clear Restrict View; hide_view_set = Set Restrict View; layer_move = Move Layer; layer_new = Add Mask Layer; layer_remove = Remove Mask Layer;
+move_to_layer = Move to Layer; new = New Mask; normals_make_consistent = Recalculate Handles; parent_clear = Clear Parent; parent_set =
+Make Parent; paste_splines = Paste Splines; primitive_circle_add = Add Circle; primitive_square_add = Add Square; select = Select;
+select_all = (De)select All; select_box = Box Select; select_circle = Circle Select; select_lasso = Lasso Select; select_less = Select Less;
+select_linked = Select Linked All; select_linked_pick = Select Linked; select_more = Select More; shape_key_clear = Clear Shape Key;
+shape_key_feather_reset = Feather Reset Animation; shape_key_insert = Insert Shape Key; shape_key_rekey = Re-Key Points of Selected Shapes;
+slide_point = Slide Point; slide_spline_curvature = Slide Spline Curvature; switch_direction = Switch Direction
+
+
+
+material (3 operators)
+copy = Copy Material; new = New Material; paste = Paste Material
+
+
+
+
+Compiled 13 Nov 2026                                                    144
+The Design-Software Deep Dive                                                            Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+mball (8 operators)
+delete_metaelems = Delete; duplicate_metaelems = Duplicate Metaball Elements; duplicate_move = Duplicate; hide_metaelems = Hide Selected;
+reveal_metaelems = Reveal Hidden; select_all = (De)select All; select_random_metaelems = Select Random; select_similar = Select Similar
+
+
+
+mesh (171 operators)
+attribute_set = Set Attribute; average_normals = Average Normals; beautify_fill = Beautify Faces; bevel = Bevel; bisect = Bisect;
+blend_from_shape = Blend from Shape; bridge_edge_loops = Bridge Edge Loops; circularize = To Circle; colors_reverse = Reverse Colors;
+colors_rotate = Rotate Colors; convex_hull = Convex Hull; curve_edge_loops_between_selected = Curve Edge Loops Between Selected;
+customdata_custom_splitnormals_add = Add Custom Normals Data; customdata_custom_splitnormals_clear = Clear Custom Normals Data;
+customdata_face_sets_clear = Clear Sculpt Face Sets; customdata_mask_clear = Clear Sculpt Mask Data; customdata_skin_add = Add Skin Data;
+customdata_skin_clear = Clear Skin Data; decimate = Decimate Geometry; delete = Delete; delete_edgeloop = Delete Edge Loop; delete_loose =
+Delete Loose; dissolve_degenerate = Degenerate Dissolve; dissolve_edges = Dissolve Edges; dissolve_faces = Dissolve Faces;
+dissolve_limited = Limited Dissolve; dissolve_mode = Dissolve Selection; dissolve_verts = Dissolve Vertices; dupli_extrude_cursor = Extrude to
+Cursor or Add; duplicate = Duplicate; duplicate_move = Add Duplicate; edge_collapse = Collapse Edges & Faces; edge_face_add = Make Edge/Face;
+edge_rotate = Rotate Selected Edge; edge_split = Edge Split; edgering_select = Edge Ring Select; edges_select_sharp = Select Sharp Edges;
+extrude_context = Extrude Context; extrude_context_move = Extrude Region and Move; extrude_edges_indiv = Extrude Only Edges;
+extrude_edges_move = Extrude Only Edges and Move; extrude_faces_indiv = Extrude Individual Faces; extrude_faces_move = Extrude Individual
+Faces and Move; extrude_manifold = Extrude Manifold; extrude_region = Extrude Region; extrude_region_move = Extrude Region and Move;
+extrude_region_shrink_fatten = Extrude Region and Shrink/Fatten; extrude_repeat = Extrude Repeat; extrude_vertices_move = Extrude Only
+Vertices and Move; extrude_verts_indiv = Extrude Only Vertices; face_make_planar = Make Planar Faces; face_split_by_edges = Weld Edges into
+Faces; faces_select_linked_flat = Select Linked Flat Faces; faces_shade_flat = Shade Flat; faces_shade_smooth = Shade Smooth; fill = Fill;
+fill_grid = Grid Fill; fill_holes = Fill Holes; fit_edge_loops_to_annotation = Fit Edge Loops To Annotation; flatten = Flatten; flip_normals =
+Flip Normals; flip_quad_tessellation = Flip Quad Tessellation; hide = Hide Selected; inset = Inset Faces; intersect = Intersect (Knife);
+intersect_boolean = Intersect (Boolean); knife_project = Knife Project; knife_tool = Knife Topology Tool; loop_select = Loop Select;
+loop_to_region = Select Loop Inner-Region; loopcut = Loop Cut; loopcut_slide = Loop Cut and Slide; mark_freestyle_edge = Mark Freestyle Edge;
+mark_freestyle_face = Mark Freestyle Face; mark_seam = Mark Seam; mark_sharp = Mark Sharp; merge = Merge; merge_normals = Merge Normals;
+mod_weighted_strength = Face Normals Strength; normals_make_consistent = Recalculate Normals; normals_tools = Normals Vector Tools;
+offset_edge_loops = Offset Edge Loop; offset_edge_loops_slide = Offset Edge Slide; point_normals = Point Normals to Target; poke = Poke Faces;
+polybuild_delete_at_cursor = Poly Build Delete at Cursor; polybuild_dissolve_at_cursor = Poly Build Dissolve at Cursor;
+polybuild_extrude_at_cursor_move = Extrude at Cursor Move; polybuild_face_at_cursor = Poly Build Face at Cursor;
+polybuild_face_at_cursor_move = Face at Cursor Move; polybuild_split_at_cursor = Poly Build Split at Cursor;
+polybuild_split_at_cursor_move = Split at Cursor Move; polybuild_transform_at_cursor = Poly Build Transform at Cursor;
+polybuild_transform_at_cursor_move = Transform at Cursor Move; primitive_circle_add = Add Circle; primitive_cone_add = Add Cone;
+primitive_cube_add = Add Cube; primitive_cube_add_gizmo = Add Cube; primitive_cylinder_add = Add Cylinder; primitive_grid_add = Add
+Grid; primitive_ico_sphere_add = Add Ico Sphere; primitive_monkey_add = Add Monkey; primitive_plane_add = Add Plane;
+primitive_quad_sphere_add = Add Quad Sphere; primitive_torus_add = Add Torus; primitive_uv_sphere_add = Add UV Sphere;
+quads_convert_to_tris = Triangulate Faces; region_to_loop = Select Boundary of Selected; relax_edge_loops = Relax Edge Loops;
+remove_doubles = Merge by Distance; reorder_vertices_spatial = Reorder Mesh Spatially; reveal = Reveal Hidden; rip = Rip; rip_edge = Extend
+Vertices; rip_edge_move = Extend Vertices; rip_move = Rip; screw = Screw; select_all = (De)select All; select_axis = Select Axis;
+select_boundary_loop_multi = Multi Select Boundary Loops; select_by_attribute = Select by Attribute; select_by_pole_count = Select By Pole
+Count; select_edge_loop_multi = Multi Select Edge Loops; select_edge_ring_multi = Multi Select Edge Rings; select_face_by_sides = Select
+Faces by Sides; select_interior_faces = Select Interior Faces; select_less = Select Less; select_linked = Select Linked All; select_linked_pick
+= Select Linked; select_loose = Select Loose Geometry; select_mirror = Select Mirror; select_mode = Select Mode; select_more = Select More;
+select_next_item = Select Next Element; select_non_manifold = Select Non-Manifold; select_nth = Checker Deselect; select_prev_item = Select
+Previous Element; select_random = Select Random; select_similar = Select Similar; select_similar_region = Select Similar Regions;
+select_ungrouped = Select Ungrouped; separate = Separate; set_normals_from_faces = Set Normals from Faces; set_sharpness_by_angle = Set
+Sharpness by Angle; shape_propagate_to_all = Shape Propagate; shortest_path_pick = Pick Shortest Path; shortest_path_select = Select
+Shortest Path; smooth_normals = Smooth Normals Vectors; solidify = Solidify; sort_elements = Sort Mesh Elements; space_edge_loops_evenly =
+Space Edge Loops Evenly; spin = Spin; split = Split; split_normals = Split Normals; subdivide = Subdivide; subdivide_edgering = Subdivide
+Edge-Ring; symmetrize = Symmetrize; symmetry_snap = Snap to Symmetry; tris_convert_to_quads = Triangles to Quads; unsubdivide =
+Un-Subdivide; uv_texture_add = Add UV Map; uv_texture_remove = Remove UV Map; uvs_reverse = Reverse UVs; uvs_rotate = Rotate UVs;
+vert_connect = Vertex Connect; vert_connect_concave = Split Concave Faces; vert_connect_nonplanar = Split Non-Planar Faces;
+vert_connect_path = Vertex Connect Path; vertices_smooth = Smooth Vertices; vertices_smooth_laplacian = Laplacian Smooth Vertices;
+wireframe = Wireframe
+
+
+
+nla (39 operators)
+action_pushdown = Push Down Action; action_sync_length = Sync Action Length; action_unlink = Unlink Action; actionclip_add = Add Action
+Strip; apply_scale = Apply Scale; bake = Bake Action; channels_click = Mouse Click on NLA Tracks; clear_scale = Clear Scale; click_select =
+Select; delete = Delete Strips; duplicate = Duplicate Strips; duplicate_linked_move = Duplicate Linked; duplicate_move = Duplicate;
+fmodifier_add = Add F-Modifier; fmodifier_copy = Copy F-Modifiers; fmodifier_paste = Paste F-Modifiers; make_single_user = Make Single User;
+meta_add = Add Meta-Strips; meta_remove = Remove Meta-Strips; move_down = Move Strips Down; move_up = Move Strips Up; mute_toggle = Toggle
+Muting; previewrange_set = Set Preview Range to Selected; select_all = (De)select All; select_box = Box Select; select_leftright = Select
+Left/Right; selected_objects_add = Include Selected Objects; snap = Snap Strips; soundclip_add = Add Sound Clip; split = Split Strips; swap = Swap
+Strips; tracks_add = Add Tracks; tracks_delete = Delete Tracks; transition_add = Add Transition; tweakmode_enter = Enter Tweak Mode;
+tweakmode_exit = Exit Tweak Mode; view_all = Frame All; view_frame = Go to Current Frame; view_selected = Frame Selected
+
+
+
+
+Compiled 13 Nov 2026                                                   145
+The Design-Software Deep Dive                                                         Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+node (189 operators)
+activate_viewer = Activate Viewer Node; add_closure_zone = Add Closure Zone; add_collection = Add Node Collection; add_color = Add Color;
+add_empty_group = Add Empty Group; add_foreach_geometry_element_zone = Add For Each Geometry Element Zone; add_group = Add Node Group;
+add_group_asset = Add Node Group Asset; add_group_input_node = Add Group Input Node; add_image = Add Image as Node; add_import_node =
+Add Import Node; add_mask = Add Mask Node; add_material = Add Material; add_node = Add Node; add_object = Add Node Object; add_repeat_zone
+= Add Repeat Zone; add_reroute = Add Reroute; add_simulation_zone = Add Simulation Zone; add_typed_bundle = Add Typed Bundle; add_zone =
+Add Zone; attach = Attach Nodes; backimage_fit = Background Image Fit; backimage_move = Background Image Move; backimage_sample =
+Backimage Sample; backimage_zoom = Background Image Zoom; bake_node_item_add = Add Item; bake_node_item_move = Move Item;
+bake_node_item_remove = Remove Item; capture_attribute_item_add = Add Item; capture_attribute_item_move = Move Item;
+capture_attribute_item_remove = Remove Item; clear_viewer_border = Clear Viewer Region; clipboard_copy = Copy to Clipboard;
+clipboard_paste = Paste from Clipboard; closure_input_item_add = Add Item; closure_input_item_move = Move Item;
+closure_input_item_remove = Remove Item; closure_output_item_add = Add Item; closure_output_item_move = Move Item;
+closure_output_item_remove = Remove Item; closure_to_list_item_add = Add Item; closure_to_list_item_move = Move Item;
+closure_to_list_item_remove = Remove Item; collapse_hide_unused_toggle = Collapse and Hide Unused Sockets; combine_bundle_item_add
+= Add Item; combine_bundle_item_move = Move Item; combine_bundle_item_remove = Remove Item; combine_list_item_add = Add Item;
+combine_list_item_move = Move Item; combine_list_item_remove = Remove Item; comment_edit = Edit Comment; connect_to_output = Connect
+to Output; cryptomatte_layer_add = Add Cryptomatte Socket; cryptomatte_layer_remove = Remove Cryptomatte Socket; deactivate_viewer =
+Deactivate Viewer Node; default_group_width_set = Set Default Group Node Width; delete = Delete; delete_copy_reconnect = Delete with Copy and
+Reconnect; delete_reconnect = Delete with Reconnect; detach = Detach Nodes; detach_translate_attach = Detach and Move; duplicate =
+Duplicate Nodes; duplicate_compositing_modifier_node_group = New Compositing Node Group; duplicate_compositing_node_group = New
+Compositing Node Group; duplicate_move = Duplicate; duplicate_move_keep_inputs = Duplicate; duplicate_move_linked = Duplicate Linked;
+enum_definition_item_add = Add Item; enum_definition_item_move = Move Item; enum_definition_item_remove = Remove Item;
+evaluate_closure_input_item_add = Add Item; evaluate_closure_input_item_move = Move Item; evaluate_closure_input_item_remove =
+Remove Item; evaluate_closure_output_item_add = Add Item; evaluate_closure_output_item_move = Move Item;
+evaluate_closure_output_item_remove = Remove Item; field_to_grid_item_add = Add Item; field_to_grid_item_move = Move Item;
+field_to_grid_item_remove = Remove Item; field_to_list_item_add = Add Item; field_to_list_item_move = Move Item;
+field_to_list_item_remove = Remove Item; file_output_item_add = Add Item; file_output_item_move = Move Item;
+file_output_item_remove = Remove Item; find_node = Find Node; foreach_geometry_element_zone_generation_item_add = Add Item;
+foreach_geometry_element_zone_generation_item_move = Move Item; foreach_geometry_element_zone_generation_item_remove =
+Remove Item; foreach_geometry_element_zone_input_item_add = Add Item; foreach_geometry_element_zone_input_item_move = Move Item;
+foreach_geometry_element_zone_input_item_remove = Remove Item; foreach_geometry_element_zone_main_item_add = Add Item;
+foreach_geometry_element_zone_main_item_move = Move Item; foreach_geometry_element_zone_main_item_remove = Remove Item;
+format_string_item_add = Add Item; format_string_item_move = Move Item; format_string_item_remove = Remove Item;
+geometry_nodes_viewer_item_add = Add Item; geometry_nodes_viewer_item_move = Move Item; geometry_nodes_viewer_item_remove =
+Remove Item; gltf_settings_node_operator = glTF Material Output; group_edit = Edit Group; group_enter_exit = Enter/Exit Group; group_insert
+= Group Insert; group_make = Make Group; group_separate = Separate; group_ungroup = Ungroup; hide_socket_toggle = Toggle Hidden Node
+Sockets; hide_toggle = Collapse; index_switch_item_add = Add Item; index_switch_item_move = Move Item; index_switch_item_remove =
+Remove Item; insert_offset = Insert Offset; interface_item_duplicate = Duplicate Item; interface_item_make_panel_toggle = Make Panel
+Toggle; interface_item_new = New Item; interface_item_new_panel_toggle = New Panel Toggle; interface_item_remove = Remove Selected
+Items; interface_item_unlink_panel_toggle = Unlink Panel Toggle; join = Join Nodes in Frame; join_named = Join in Named Frame; join_nodes =
+Join Nodes; link = Link Nodes; link_drag_operation_test = Link Drag Operation Test; link_make = Make Links; link_viewer = Link to Viewer Node;
+links_cut = Cut Links; links_detach = Detach Links; links_mute = Mute Links; move_detach_links = Detach; move_detach_links_release =
+Detach; mute_toggle = Toggle Node Mute; new_compositing_node_group = New Compositing Node Group;
+new_compositor_sequencer_node_group = New Compositor Sequencer Node Group; new_geometry_node_group_assign = Assign New Geometry
+Node Group; new_geometry_node_group_tool = New Geometry Node Tool Group; new_geometry_nodes_modifier = New Geometry Node Modifier;
+new_node_tree = New Node Tree; node_color_preset_add = Add Node Color Preset; node_copy_color = Copy Color; options_toggle = Toggle Node
+Options; parent_set = Make Parent; preview_toggle = Toggle Node Preview; rasterize_points_item_add = Add Item;
+rasterize_points_item_move = Move Item; rasterize_points_item_remove = Remove Item; read_viewlayers = Read View Layers;
+render_changed = Render Changed Layer; repeat_zone_item_add = Add Item; repeat_zone_item_move = Move Item; repeat_zone_item_remove =
+Remove Item; resize = Resize Node; sample_attribute_items_item_add = Add Item; sample_attribute_items_item_move = Move Item;
+sample_attribute_items_item_remove = Remove Item; select = Select; select_all = (De)select All; select_box = Box Select; select_circle =
+Circle Select; select_grouped = Select Grouped; select_lasso = Lasso Select; select_link_viewer = Link Viewer; select_linked_from = Select
+Linked From; select_linked_to = Select Linked To; select_same_type_step = Activate Same Type Next/Prev; separate_bundle_item_add = Add
+Item; separate_bundle_item_move = Move Item; separate_bundle_item_remove = Remove Item; shader_script_update = Script Node Update;
+simulation_zone_item_add = Add Item; simulation_zone_item_move = Move Item; simulation_zone_item_remove = Remove Item;
+sockets_sync = Sync Sockets; swap_empty_group = Swap Empty Group; swap_group_asset = Swap Node Group Asset; swap_node = Swap Node;
+swap_typed_bundle = Swap Typed Bundle; swap_zone = Swap Zone; test_inlining_shader_nodes = Test Inlining Shader Nodes; toggle_viewer =
+Toggle Viewer Node; translate_attach = Move and Attach; translate_attach_remove_on_cancel = Move and Attach; tree_path_parent = Parent
+Node Tree; view_all = Frame All; view_selected = Frame Selected; viewer_border = Viewer Region; viewer_shortcut_get = Fast Preview;
+viewer_shortcut_set = Fast Preview
+
+
+
+
+Compiled 13 Nov 2026                                                146
+The Design-Software Deep Dive                                                          Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+object (250 operators)
+add = Add Object; add_modifier_menu = Add Modifier; add_named = Add Object; align = Align Objects; anim_transforms_to_deltas = Animated
+Transforms to Deltas; armature_add = Add Armature; assign_property_defaults = Assign Custom Property Values as Default; bake = Bake;
+bake_image = Bake; camera_add = Add Camera; camera_custom_update = Custom Camera Update; clear_override_library = Clear Library
+Override; collection_add = Add to Collection; collection_external_asset_drop = Add Collection; collection_instance_add = Add Collection
+Instance; collection_link = Link to Collection; collection_objects_select = Select Objects in Collection; collection_remove = Remove Collection;
+collection_unlink = Unlink Collection; constraint_add = Add Constraint; constraint_add_with_targets = Add Constraint (with Targets);
+constraints_clear = Clear Object Constraints; constraints_copy = Copy Constraints to Selected Objects; convert = Convert To;
+copy_global_transform = Copy Global Transform; copy_relative_transform = Copy Relative Transform; correctivesmooth_bind = Corrective
+Smooth Bind; curves_empty_hair_add = Add Empty Curves; curves_random_add = Add Random Curves; data_instance_add = Add Object Data
+Instance; data_transfer = Transfer Mesh Data; datalayout_transfer = Transfer Mesh Data Layout; delete = Delete; delete_fix_to_camera_keys =
+Delete Generated Keys; drop_geometry_nodes = Drop Geometry Node Group on Object; drop_named_material = Drop Named Material on Object;
+duplicate = Duplicate Objects; duplicate_move = Duplicate Objects; duplicate_move_linked = Duplicate Linked; duplicates_make_real = Make
+Instances Real; editmode_toggle = Edit Mode; effector_add = Add Effector; empty_add = Add Empty; empty_image_add = Add Empty Image/Drop
+Image to Empty; explode_refresh = Explode Refresh; fix_to_camera = Fix to Scene Camera; forcefield_toggle = Toggle Force Field;
+geometry_node_bake_delete_single = Delete Geometry Node Bake; geometry_node_bake_pack_single = Pack Geometry Node Bake;
+geometry_node_bake_single = Bake Geometry Node; geometry_node_bake_unpack_single = Unpack Geometry Node Bake;
+geometry_node_tree_copy_assign = New Geometry Node Group; geometry_nodes_input_attribute_toggle = Input Attribute Toggle;
+geometry_nodes_move_to_nodes = Move to Nodes; grease_pencil_add = Add Grease Pencil; grease_pencil_dash_modifier_segment_add = Add
+Segment; grease_pencil_dash_modifier_segment_move = Move Dash Segment; grease_pencil_dash_modifier_segment_remove = Remove
+Dash Segment; grease_pencil_time_modifier_segment_add = Add Segment; grease_pencil_time_modifier_segment_move = Move Segment;
+grease_pencil_time_modifier_segment_remove = Remove Segment; hide_collection = Hide Other Collections; hide_render_clear_all = Clear
+All Restrict Render; hide_view_clear = Show Hidden Objects; hide_view_set = Hide Objects; anchor_add_newob = Anchor to New Object; anchor_add_selob
+= Anchor to Selected Object; anchor_assign = Assign to Anchor; anchor_recenter = Recenter Anchor; anchor_remove = Remove Anchor; anchor_reset = Reset Anchor;
+anchor_select = Select Anchor; instance_offset_from_cursor = Set Offset from Cursor; instance_offset_from_object = Set Offset from Object;
+instance_offset_to_cursor = Set Cursor to Offset; isolate_type_render = Restrict Render Unselected; join = Join; join_shapes = Join as Shapes;
+join_uvs = Transfer UV Maps; laplaciandeform_bind = Laplacian Deform Bind; lattice_add_to_selected = Add Lattice Deformer; light_add = Add
+Light; light_linking_blocker_collection_new = New Light Linking Collection; light_linking_blockers_link = Link Blockers to Emitter;
+light_linking_blockers_select = Select Light Linking Blockers; light_linking_receiver_collection_new = New Light Linking Collection;
+light_linking_receivers_link = Link Receiver Objects to Emitter; light_linking_receivers_select = Select Light Linking Receivers;
+light_linking_unlink_from_collection = Remove From Light Linking Collection; lightprobe_add = Add Light Probe; lightprobe_cache_bake =
+Bake Light Cache; lightprobe_cache_free = Delete Light Cache; lineart_bake_strokes = Bake Line Art; lineart_clear = Clear Baked Line Art;
+link_to_collection = Link to Collection; location_clear = Clear Location; make_dupli_face = Make Instance Face; make_links_data =
+Link/Transfer Data; make_links_scene = Link Objects to Scene; make_local = Make Local; make_override_library = Make Library Override;
+make_single_user = Make Single User; material_slot_add = Add Material Slot; material_slot_assign = Assign Material Slot; material_slot_copy
+= Copy Material to Selected; material_slot_deselect = Deselect Material Slot; material_slot_move = Move Material; material_slot_remove =
+Remove Material Slot; material_slot_remove_all = Remove All Materials; material_slot_remove_unused = Remove Unused Slots;
+material_slot_select = Select Material Slot; meshdeform_bind = Mesh Deform Bind; metaball_add = Add Metaball; mode_set = Set Object Mode;
+mode_set_with_submode = Set Object Mode with Sub-mode; modifier_add = Add Modifier; modifier_add_node_group = Add Modifier;
+modifier_apply = Apply Modifier; modifier_apply_as_shapekey = Apply Modifier as Shape Key; modifier_convert = Convert Particles to Mesh;
+modifier_copy = Copy Modifier; modifier_copy_to_selected = Copy Modifier to Selected; modifier_move_down = Move Down Modifier;
+modifier_move_to_index = Move Active Modifier to Index; modifier_move_up = Move Up Modifier; modifier_remove = Remove Modifier;
+modifier_set_active = Set Active Modifier; modifiers_clear = Clear Object Modifiers; modifiers_copy_to_selected = Copy Modifiers to Selected
+Objects; move_to_collection = Move to Collection; multires_base_apply = Multires Apply Base; multires_external_pack = Multires Pack External;
+multires_external_save = Multires Save External; multires_higher_levels_delete = Delete Higher Levels; multires_rebuild_subdiv = Rebuild
+Lower Subdivisions; multires_reshape = Multires Reshape; multires_subdivide = Multires Subdivide; multires_unsubdivide = Unsubdivide;
+ocean_bake = Bake Ocean; origin_clear = Clear Origin; origin_set = Set Origin; parent_clear = Clear Parent; parent_inverse_apply = Apply
+Parent Inverse; parent_no_inverse_set = Make Parent without Inverse; parent_set = Make Parent; particle_system_add = Add Particle System Slot;
+particle_system_remove = Remove Particle System Slot; paste_transform = Paste Global Transform; paths_calculate = Calculate Object Motion
+Paths; paths_clear = Clear Object Paths; paths_update = Update Object Paths; paths_update_visible = Update All Object Paths;
+pointcloud_random_add = Add Point Cloud; posemode_toggle = Toggle Pose Mode; quadriflow_remesh = QuadriFlow Remesh; quick_explode =
+Quick Explode; quick_fur = Quick Fur; quick_liquid = Quick Liquid; quick_smoke = Quick Smoke; randomize_transform = Randomize Transform;
+reset_override_library = Reset Library Override; rotation_clear = Clear Rotation; scale_clear = Clear Scale; select_all = (De)select All;
+select_by_type = Select by Type; select_camera = Select Camera; select_grouped = Select Grouped; select_hierarchy = Select Hierarchy;
+select_less = Select Less; select_linked = Select Linked; select_mirror = Select Mirror; select_more = Select More; select_pattern = Select
+Pattern; select_random = Select Random; select_same_collection = Select Same Collection; shade_auto_smooth = Shade Auto Smooth;
+shade_flat = Shade Flat; shade_smooth = Shade Smooth; shade_smooth_by_angle = Shade Smooth by Angle; shaderfx_add = Add Effect;
+shaderfx_copy = Copy Effect; shaderfx_move_down = Move Down Effect; shaderfx_move_to_index = Move Effect to Index; shaderfx_move_up =
+Move Up Effect; shaderfx_remove = Remove Grease Pencil Effect; shape_key_add = Add Shape Key; shape_key_apply_to_basis = Apply to Basis Key;
+shape_key_clear = Clear Shape Keys; shape_key_copy = Duplicate Shape Key; shape_key_lock = Change the Lock On Shape Keys;
+shape_key_make_basis = Make Shape Key the Basis Key; shape_key_mirror = Mirror Shape Key; shape_key_move = Move Shape Key;
+shape_key_remove = Remove Shape Key; shape_key_retime = Re-Time Shape Keys; shape_key_transfer = Transfer Shape Key;
+simulation_nodes_cache_bake = Bake Simulation; simulation_nodes_cache_calculate_to_frame = Calculate Simulation to Frame;
+simulation_nodes_cache_delete = Delete Cached Simulation; skin_armature_create = Skin Armature Create; skin_loose_mark_clear = Skin
+Mark/Clear Loose; skin_radii_equalize = Skin Radii Equalize; skin_root_mark = Skin Root Mark; speaker_add = Add Speaker; subdivision_set =
+Subdivision Set; surfacedeform_bind = Surface Deform Bind; text_add = Add Text; track_clear = Clear Track; track_set = Make Track;
+transfer_mode = Transfer Mode; transform_apply = Apply Object Transform; transform_axis_target = Look at Surface; transform_to_mouse =
+Place Object Under Mouse; transforms_to_deltas = Transforms to Deltas; unlink_data = Unlink; update_shapes = Update from Objects;
+vertex_group_add = Add Vertex Group; vertex_group_assign = Assign to Vertex Group; vertex_group_assign_new = Assign to New Group;
+vertex_group_clean = Clean Vertex Group Weights; vertex_group_copy = Duplicate Vertex Group; vertex_group_copy_to_selected = Copy Vertex
+Group to Selected; vertex_group_deselect = Deselect Vertex Group; vertex_group_invert = Invert Vertex Group; vertex_group_levels = Vertex
+Group Levels; vertex_group_limit_total = Limit Number of Weights per Vertex; vertex_group_lock = Change the Lock On Vertex Groups;
+vertex_group_mirror = Mirror Vertex Group; vertex_group_move = Move Vertex Group; vertex_group_normalize = Normalize Vertex Group;
+vertex_group_normalize_all = Normalize All Vertex Groups; vertex_group_quantize = Quantize Vertex Weights; vertex_group_remove = Remove
+Vertex Group; vertex_group_remove_from = Remove from Vertex Group; vertex_group_select = Select Vertex Group; vertex_group_set_active =
+
+
+
+Compiled 13 Nov 2026                                                 147
+The Design-Software Deep Dive                                                               Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+Set Active Vertex Group; vertex_group_smooth = Smooth Vertex Weights; vertex_group_sort = Sort Vertex Groups; vertex_parent_set = Make
+Vertex Parent; vertex_weight_copy = Copy Active; vertex_weight_delete = Delete Weight; vertex_weight_normalize_active_vertex =
+Normalize Active; vertex_weight_paste = Paste Weight to Selected; vertex_weight_set_active = Set Active Group; visual_geometry_to_objects
+= Visual Geometry to Objects; visual_transform_apply = Apply Visual Transform; volume_add = Add Volume; volume_import = Import OpenVDB
+Volume; voxel_remesh = Voxel Remesh; voxel_size_edit = Edit Voxel Size
+
+
+
+outliner (74 operators)
+action_set = Outliner Set Action; animdata_operation = Outliner Animation Data Operation; clear_filter = Clear Filter; collection_color_tag_set
+= Set Color Tag; collection_disable = Disable Collection; collection_disable_render = Disable Collection in Render; collection_drop = Move to
+Collection; collection_duplicate = Duplicate Collection; collection_duplicate_linked = Duplicate Linked Collection; collection_enable = Enable
+Collection; collection_enable_render = Enable Collection in Render; collection_exclude_clear = Enable in View Layer;
+collection_exclude_set = Disable from View Layer; collection_hide = Hide Collection; collection_hide_inside = Hide Inside Collection;
+collection_hierarchy_delete = Delete Hierarchy; collection_holdout_clear = Clear Holdout; collection_holdout_set = Set Holdout;
+collection_indirect_only_clear = Clear Indirect Only; collection_indirect_only_set = Set Indirect Only; collection_instance = Instance
+Collection; collection_isolate = Isolate Collection; collection_link = Link Collection; collection_new = New Collection;
+collection_objects_deselect = Deselect Objects; collection_objects_select = Select Objects; collection_show = Show Collection;
+collection_show_inside = Show Inside Collection; constraint_operation = Outliner Constraint Operation; data_operation = Outliner Data
+Operation; datastack_drop = Data Stack Drop; delete = Delete; drivers_add_selected = Add Drivers for Selected; drivers_delete_selected =
+Delete Drivers for Selected; expanded_toggle = Expand/Collapse All; hide = Hide; highlight_update = Update Highlight; id_copy = Outliner ID Data
+Copy; id_delete = Delete Data-Block; id_linked_relocate = Relocate Linked ID; id_operation = Outliner ID Data Operation; id_paste = Outliner ID
+Data Paste; id_remap = Outliner ID Data Remap; item_activate = Select; item_drag_drop = Drag and Drop; item_openclose = Open/Close;
+item_rename = Rename; keyingset_add_selected = Keying Set Add Selected; keyingset_remove_selected = Keying Set Remove Selected;
+lib_operation = Outliner Library Operation; lib_relocate = Relocate Library; liboverride_operation = Outliner Library Override Operation;
+liboverride_property_remove = Outliner Library Override Property Remove; liboverride_troubleshoot_operation = Outliner Library Override
+Troubleshoot Operation; material_drop = Drop Material on Object; modifier_operation = Outliner Modifier Operation; object_operation = Outliner
+Object Operation; operation = Context Menu; orphans_manage = Manage Unused Data; orphans_purge = Purge All; pack_data = Pack ID Data;
+parent_clear = Drop to Clear Parent (hold Alt to not keep transforms); parent_drop = Drop to Set Parent (hold Alt to not keep transforms); scene_drop =
+Drop Object to Scene; scene_operation = Outliner Scene Operation; scroll_page = Scroll Page; select_all = Toggle Selected; select_box = Box
+Select; select_walk = Walk Select; show_active = Show Active; show_hierarchy = Show Hierarchy; show_one_level = Show/Hide One Level;
+start_filter = Filter; unhide_all = Unhide All
+
+
+
+paint (55 operators)
+add_simple_uvs = Add Simple UVs; add_texture_paint_slot = Add Paint Slot; brush_colors_flip = Swap Colors; face_select_all = (De)select
+All; face_select_hide = Face Select Hide; face_select_less = Select Less; face_select_linked = Select Linked; face_select_linked_pick =
+Select Linked Pick; face_select_loop = Select Loop; face_select_more = Select More; face_vert_reveal = Reveal Faces/Vertices; grab_clone =
+Grab Clone; hide_show = Hide/Show; hide_show_all = Hide/Show All; hide_show_lasso_gesture = Hide/Show Lasso; hide_show_line_gesture =
+Hide/Show Line; hide_show_masked = Hide/Show Masked; hide_show_polyline_gesture = Hide/Show Polyline; image_from_view = Image from View;
+image_paint = Image Paint; mask_box_gesture = Mask Box Gesture; mask_flood_fill = Mask Flood Fill; mask_lasso_gesture = Mask Lasso Gesture;
+mask_line_gesture = Mask Line Gesture; mask_polyline_gesture = Mask Polyline Gesture; project_image = Project Image; sample_color = Sample
+Color; texture_paint_toggle = Texture Paint Mode; vert_select_all = (De)select All; vert_select_hide = Vertex Select Hide; vert_select_less =
+Select Less; vert_select_linked = Select Linked Vertices; vert_select_linked_pick = Select Linked Vertices Pick; vert_select_loop = Select Loop;
+vert_select_more = Select More; vert_select_ungrouped = Select Ungrouped; vertex_color_brightness_contrast = Vertex Paint
+Brightness/Contrast; vertex_color_dirt = Dirty Vertex Colors; vertex_color_from_weight = Vertex Color from Weight; vertex_color_hsv = Vertex
+Paint Hue/Saturation/Value; vertex_color_invert = Vertex Paint Invert; vertex_color_levels = Vertex Paint Levels; vertex_color_set = Set Vertex
+Colors; vertex_color_smooth = Smooth Vertex Colors; vertex_paint = Vertex Paint; vertex_paint_toggle = Vertex Paint Mode;
+visibility_filter = Visibility Filter; visibility_invert = Invert Visibility; weight_from_bones = Weight from Bones; weight_gradient = Weight
+Gradient; weight_paint = Weight Paint; weight_paint_toggle = Weight Paint Mode; weight_sample = Weight Paint Sample Weight;
+weight_sample_group = Weight Paint Sample Group; weight_set = Set Weight
+
+
+
+paintcurve (8 operators)
+add_point = Add New Paint Curve Point; add_point_slide = Add Curve Point and Slide; cursor = Place Cursor; delete_point = Remove Paint Curve
+Point; draw = Draw Curve; new = Add New Paint Curve; select = Select Paint Curve Point; slide = Slide Paint Curve Point
+
+
+
+palette (7 operators)
+color_add = New Palette Color; color_delete = Delete Palette Color; color_move = Move Palette Color; extract_from_image = Extract Palette from
+Image; join = Join Palette Swatches; new = Add New Palette; sort = Sort Palette
+
+
+
+
+Compiled 13 Nov 2026                                                     148
+The Design-Software Deep Dive                                                           Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+particle (37 operators)
+brush_edit = Brush Edit; connect_hair = Connect Hair; copy_particle_systems = Copy Particle Systems; delete = Delete; disconnect_hair =
+Disconnect Hair; duplicate_particle_system = Duplicate Particle System; dupliob_copy = Copy Particle Instance Object; dupliob_move_down = Move
+Down Instance Object; dupliob_move_up = Move Up Instance Object; dupliob_refresh = Refresh Instance Objects; dupliob_remove = Remove Particle
+Instance Object; edited_clear = Clear Edited; hair_dynamics_preset_add = Add Hair Dynamics Preset; hide = Hide Selected; mirror = Mirror; new =
+New Particle Settings; new_target = New Particle Target; particle_edit_toggle = Particle Edit Toggle; particle_system_remove_all = Remove All
+Particle Systems; rekey = Rekey; remove_doubles = Remove Doubles; reveal = Reveal; select_all = (De)select All; select_less = Select Less;
+select_linked = Select Linked All; select_linked_pick = Select Linked; select_more = Select More; select_random = Select Random;
+select_roots = Select Roots; select_tips = Select Tips; shape_cut = Shape Cut; subdivide = Subdivide; target_move_down = Move Down Target;
+target_move_up = Move Up Target; target_remove = Remove Particle Target; unify_length = Unify Length; weight_set = Weight Set
+
+
+
+pointcloud (7 operators)
+attribute_set = Set Attribute; delete = Delete; duplicate = Duplicate; duplicate_move = Duplicate; select_all = (De)select All; select_random =
+Select Random; separate = Separate
+
+
+
+pose (51 operators)
+armature_apply = Apply Pose as Rest Pose; autoside_names = Auto-Name by Axis; blend_to_neighbor = Blend to Neighbor; blend_with_rest =
+Blend Pose with Rest Pose; breakdown = Pose Breakdowner; constraint_add = Add Constraint; constraint_add_with_targets = Add Constraint (with
+Targets); constraints_clear = Clear Pose Constraints; constraints_copy = Copy Constraints to Selected Bones; copy = Copy Pose; flip_names = Flip
+Names; hide = Hide Selected; ik_add = Add IK to Bone; ik_clear = Remove IK; loc_clear = Clear Pose Location; paste = Paste Pose;
+paths_calculate = Calculate Bone Paths; paths_clear = Clear Bone Paths; paths_range_update = Update Range from Scene; paths_update =
+Update Bone Paths; propagate = Propagate Pose; push = Push Pose from Breakdown; quaternions_flip = Flip Quaternions; relax = Relax Pose to
+Breakdown; reveal = Reveal Selected; rot_clear = Clear Pose Rotation; rotation_mode_set = Set Rotation Mode; scale_clear = Clear Pose Scale;
+select_all = (De)select All; select_constraint_target = Select Constraint Target; select_grouped = Select Grouped; select_hierarchy = Select
+Hierarchy; select_linked = Select Connected; select_linked_pick = Select Connected; select_mirror = Select Mirror; select_parent = Select
+Parent Bone; selection_set_add = Create Selection Set; selection_set_add_and_assign = Create and Add Bones to Selection Set;
+selection_set_assign = Add Bones to Selection Set; selection_set_copy = Copy Selection Set(s); selection_set_delete_all = Delete All Sets;
+selection_set_deselect = Deselect Selection Set; selection_set_move = Move Selection Set in List; selection_set_paste = Paste Selection Set(s);
+selection_set_remove = Delete Selection Set; selection_set_remove_bones = Remove Selected Bones from All Sets; selection_set_select =
+Select Selection Set; selection_set_unassign = Remove Bones from Selection Set; transforms_clear = Clear Pose Transforms;
+user_transforms_clear = Clear User Transforms; visual_transform_apply = Apply Visual Transform to Pose
+
+
+
+poselib (9 operators)
+apply_pose_asset = Apply Pose Asset; asset_delete = Delete Pose Asset; asset_modify = Modify Pose Asset; blend_pose_asset = Blend Pose
+Asset; copy_as_asset = Copy Pose as Asset; create_pose_asset = Create Pose Asset...; paste_asset = Paste as New Asset;
+pose_asset_select_bones = Select Bones; restore_previous_action = Restore Previous Action
+
+
+
+preferences (37 operators)
+addon_disable = Disable Add-on; addon_enable = Enable Add-on; addon_expand = ; addon_install = Install Add-on; addon_refresh = Refresh;
+addon_remove = Remove Add-on; addon_show = ; app_template_install = Install Template from File...; asset_library_add = Add Asset Library;
+asset_library_remove = Remove Asset Library; associate_blend = Register File Association; autoexec_path_add = Add Auto-Execution Path;
+autoexec_path_remove = Remove Auto-Execution Path; clear_filter = Clear Filter; copy_prev = Copy Previous Settings; extension_repo_add = Add
+Extension Repository; extension_repo_remove = Remove Extension Repository; extension_url_drop = Drop Extension URL; keyconfig_activate =
+Activate Keyconfig; keyconfig_export = Export Key Configuration...; keyconfig_import = Import Key Configuration...; keyconfig_remove = Remove Key
+Config; keyconfig_test = Test Key Configuration for Conflicts; keyitem_add = Add Key Map Item; keyitem_remove = Remove Key Map Item;
+keyitem_restore = Restore Key Map Item; keymap_restore = Restore Key Map(s); reset_default_theme = Reset to Default Theme;
+script_directory_add = Add Python Script Directory; script_directory_remove = Remove Python Script Directory; start_filter = Filter;
+studiolight_copy_settings = Copy Studio Light Settings; studiolight_install = Install Light; studiolight_new = Save Custom Studio Light;
+studiolight_uninstall = Uninstall Studio Light; theme_install = Install Theme...; unassociate_blend = Remove File Association
+
+
+
+project (11 operators)
+asset_library_add = Add Asset Library; asset_library_remove = Remove Asset Library; close = Close Project; config_save = Save Project Config;
+new = New Project; open = Open Project...; splash_image_clear = Clear Splash Artwork; splash_image_create = Create Splash Artwork; variable_add
+= Add Variable; variable_move = Move Variable; variable_remove = Remove Variable
+
+
+
+ptcache (7 operators)
+add = Add New Cache; bake = Bake Physics; bake_all = Bake All Physics; bake_from_cache = Bake from Cache; free_bake = Delete Physics Bake;
+free_bake_all = Delete All Physics Bakes; remove = Delete Current Cache
+
+
+
+
+Compiled 13 Nov 2026                                                  149
+The Design-Software Deep Dive                                                          Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+render (16 operators)
+clear_texture_cache = Clear Texture Cache; color_management_white_balance_preset_add = Add White Balance Preset;
+cycles_integrator_preset_add = Add Integrator Preset; cycles_performance_preset_add = Add Performance Preset;
+cycles_sampling_preset_add = Add Sampling Preset; cycles_viewport_sampling_preset_add = Add Viewport Sampling Preset;
+eevee_raytracing_preset_add = Add Raytracing Preset; generate_texture_cache = Generate Texture Cache; opengl = Viewport Render;
+play_rendered_anim = Play Rendered Animation; preset_add = Add Render Preset; render = Render; shutter_curve_preset = Shutter Curve Preset;
+swap_dimensions = Swap Dimensions; view_cancel = Cancel Render View; view_show = Show/Hide Render View
+
+
+
+rigidbody (13 operators)
+bake_to_keyframes = Bake to Keyframes; connect = Connect Rigid Bodies; constraint_add = Add Rigid Body Constraint; constraint_remove =
+Remove Rigid Body Constraint; mass_calculate = Calculate Mass; object_add = Add Rigid Body; object_remove = Remove Rigid Body;
+object_settings_copy = Copy Rigid Body Settings; objects_add = Add Rigid Bodies; objects_remove = Remove Rigid Bodies; shape_change =
+Change Collision Shape; world_add = Add Rigid Body World; world_remove = Remove Rigid Body World
+
+
+
+scene (48 operators)
+add_compositor_effect = Add Scene Effect; add_compositor_effect_menu = Add Compositor Effect Menu;
+add_compositor_effect_node_group_asset = Add Scene Effect Node Group Asset; delete = Delete Scene; drop_scene_asset = Drop Scene;
+duplicate_compositor_effect = Duplicate Scene Effect; duplicate_compositor_effect_node_group = Duplicate Scene Effect Node Group;
+freestyle_add_edge_marks_to_keying_set = Add Edge Marks to Keying Set; freestyle_add_face_marks_to_keying_set = Add Face Marks to
+Keying Set; freestyle_alpha_modifier_add = Add Alpha Transparency Modifier; freestyle_color_modifier_add = Add Line Color Modifier;
+freestyle_fill_range_by_selection = Fill Range by Selection; freestyle_geometry_modifier_add = Add Stroke Geometry Modifier;
+freestyle_lineset_add = Add Line Set; freestyle_lineset_copy = Copy Line Set; freestyle_lineset_move = Move Line Set;
+freestyle_lineset_paste = Paste Line Set; freestyle_lineset_remove = Remove Line Set; freestyle_linestyle_new = New Line Style;
+freestyle_modifier_copy = Copy Modifier; freestyle_modifier_move = Move Modifier; freestyle_modifier_remove = Remove Modifier;
+freestyle_module_add = Add Freestyle Module; freestyle_module_move = Move Freestyle Module; freestyle_module_open = Open Style Module
+File; freestyle_module_remove = Remove Freestyle Module; freestyle_stroke_material_create = Create Freestyle Stroke Material;
+freestyle_thickness_modifier_add = Add Line Thickness Modifier; gltf2_action_filter_refresh = Refresh action list;
+gpencil_brush_preset_add = Add Grease Pencil Brush Preset; gpencil_material_preset_add = Add Grease Pencil Material Preset;
+move_compositor_effect_to_index = Move Active Scene Effect to Index; new = New Scene; new_compositor_effect_node_group = New Scene
+Effect Node Group; new_sequencer = New Scene; new_sequencer_scene = New Sequencer Scene; remove_compositor_effect = Remove Scene
+Effect; render_view_add = Add Render View; render_view_remove = Remove Render View; set_active_compositor_effect = Set Active Scene
+Effect; view_layer_add = Add View Layer; view_layer_add_aov = Add AOV; view_layer_add_lightgroup = Add Lightgroup;
+view_layer_add_used_lightgroups = Add Used Lightgroups; view_layer_remove = Remove View Layer; view_layer_remove_aov = Remove AOV;
+view_layer_remove_lightgroup = Remove Lightgroup; view_layer_remove_unused_lightgroups = Remove Unused Lightgroups
+
+
+
+screen (44 operators)
+actionzone = Handle Area Action Zones; animation_cancel = Cancel Animation; animation_pause = Pause Animation; animation_play = Play
+Animation; animation_step = Animation Step; area_close = Close Area; area_dupli = Duplicate Area into New Window; area_join = Join Area;
+area_move = Move Area Edges; area_options = Area Edge Options; area_split = Split Area; area_swap = Swap Areas; back_to_previous = Back to
+Previous Screen; delete = Delete Screen; drivers_editor_show = Show Drivers Editor; edge_merge = Merge Area Edge; frame_jump = Jump to
+Endpoint; frame_offset = Frame Offset; header_toggle_menus = Expand/Collapse Header Menus; info_log_show = Show Info Log; keyframe_jump =
+Jump to Keyframe; marker_jump = Jump to Marker; new = New Screen; project_settings_show = Open Project Settings...; quadview_size = Quad View
+Resize; redo_last = Redo Last; region_blend = Region Alpha; region_context_menu = Region; region_flip = Flip Region; region_quadview =
+Toggle Quad View; region_scale = Scale Region Size; region_toggle = Toggle Region; repeat_history = Repeat History; repeat_last = Repeat Last;
+screen_full_area = Toggle Maximize Area; screen_set = Set Screen; screenshot = Save Screenshot; screenshot_area = Save Screenshot (Editor);
+space_context_cycle = Cycle Space Context; space_type_set_or_cycle = Cycle Space Type Set; spacedata_cleanup = Clean Up Space Data;
+time_jump = Jump Time by Delta; userpref_show = Open Preferences...; workspace_cycle = Cycle Workspace
+
+
+
+script (3 operators)
+execute_preset = Execute a Python Preset; python_file_run = Run Python File; reload = Reload Scripts
+
+
+
+
+Compiled 13 Nov 2026                                                 150
+The Design-Software Deep Dive                                                             Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+sculpt (39 operators)
+brush_stroke = Sculpt; cloth_filter = Filter Cloth; color_filter = Filter Color; detail_flood_fill = Detail Flood Fill; dynamic_topology_toggle
+= Dynamic Topology Toggle; dyntopo_detail_size_edit = Edit Dyntopo Detail Size; expand = Expand; face_set_box_gesture = Face Set Box Gesture;
+face_set_change_visibility = Face Sets Visibility; face_set_edit = Edit Face Set; face_set_extract = Face Set Extract;
+face_set_lasso_gesture = Face Set Lasso Gesture; face_set_line_gesture = Face Set Line Gesture; face_set_polyline_gesture = Face Set
+Lasso Gesture; face_sets_create = Create Face Set; face_sets_init = Init Face Sets; face_sets_randomize_colors = Randomize Face Sets Colors;
+mask_by_color = Mask by Color; mask_filter = Mask Filter; mask_from_boundary = Mask From Boundary; mask_from_cavity = Mask From Cavity;
+mask_init = Init Mask; mesh_filter = Filter Mesh; optimize = Rebuild BVH; paint_mask_extract = Mask Extract; paint_mask_slice = Mask Slice;
+project_line_gesture = Project Line Gesture; sample_detail_size = Sample Detail Size; sculptmode_toggle = Sculpt Mode;
+set_persistent_base = Set Persistent Base; set_pivot_position = Set Pivot Position; symmetrize = Symmetrize; trim_box_gesture = Trim Box
+Gesture; trim_lasso_gesture = Trim Lasso Gesture; trim_line_gesture = Trim Line Gesture; trim_polyline_gesture = Trim Polyline Gesture;
+uv_sculpt_grab = Grab UVs; uv_sculpt_pinch = Pinch UVs; uv_sculpt_relax = Relax UVs
+
+
+
+sculpt_curves (4 operators)
+brush_stroke = Stroke Curves Sculpt; min_distance_edit = Edit Minimum Distance; select_grow = Select Grow; select_random = Select Random
+
+
+
+sequencer (116 operators)
+add_scene_strip_from_scene_asset = Add Scene Asset; add_strip_modifier_menu = Add Modifier; box_blade = Box Blade;
+change_effect_type = Change Effect Type; change_path = Change Data/Files; change_scene = Change Scene; connect = Connect Strips; copy = Copy;
+crossfade_sounds = Crossfade Sounds; cursor_set = Set 2D Cursor; deinterlace_selected_movies = Deinterlace Movies; delete = Delete Strips;
+disconnect = Disconnect Strips; duplicate = Duplicate Strips; duplicate_move = Duplicate Strips; duplicate_move_linked = Duplicate Strips;
+effect_strip_add = Add Effect Strip; enable_proxies = Set Selected Strip Proxies; export_subtitles = Export Subtitles; fades_add = Add Fades;
+fades_clear = Clear Fades; gap_insert = Insert Gaps; gap_remove = Remove Gaps; image_strip_add = Add Image Strip; images_separate =
+Separate Images; lock = Lock Strips; mask_strip_add = Add Mask Strip; meta_make = Make Meta Strip; meta_separate = UnMeta Strip; meta_toggle =
+Toggle Meta Strip; movie_strip_add = Add Movie Strip; movieclip_strip_add = Add MovieClip Strip; mute = Mute Strips; offset_clear = Clear Strip
+Offset; paste = Paste; preview_duplicate_move = Duplicate Strips; preview_duplicate_move_linked = Duplicate Strips; reassign_inputs =
+Reassign Inputs; rebuild_proxy = Rebuild Proxy; refresh_all = Refresh Sequencer; reload = Reload Strips; rename_channel = Rename Channel;
+rendersize = Set Render Size; retiming_add_freeze_frame_slide = Add Freeze Frame And Slide; retiming_add_transition_slide = Add Speed
+Transition And Slide; retiming_freeze_frame_add = Add Freeze Frame; retiming_key_add = Add Retiming Key; retiming_key_delete = Delete
+Retiming Keys; retiming_reset = Reset Retiming; retiming_segment_speed_set = Set Speed; retiming_show = Retime Strips;
+retiming_transition_add = Add Speed Transition; ripple_delete = Ripple Delete Strips; ripple_trim = Ripple Trim Strips; sample = Sample Color;
+scene_frame_range_update = Update Scene Frame Range; scene_strip_add = Add Scene Strip; scene_strip_add_new = Add Strip with a new Scene;
+select = Select; select_all = (De)select All; select_box = Box Select; select_by_type = Select by Type; select_circle = Circle Select;
+select_grouped = Select Grouped; select_handle = Select Handle; select_handles = Select Handles; select_lasso = Lasso Select; select_less =
+Select Less; select_linked = Select Linked; select_linked_pick = Select Pick Linked; select_more = Select More; select_side = Select Side;
+select_side_of_frame = Select Side of Frame; set_range_to_strips = Set Range to Strips; slip = Slip Strips; snap = Snap Strips to the Current Frame;
+sound_strip_add = Add Sound Strip; split = Split Strips; split_multicam = Split Multicam; strip_color_tag_set = Set Color Tag; strip_jump =
+Jump to Strip; strip_modifier_add = Add Strip Modifier; strip_modifier_add_node_group = Add Strip Modifier; strip_modifier_copy = Copy to
+Selected Strips; strip_modifier_duplicate = Duplicate Modifier; strip_modifier_equalizer_redefine = Redefine Equalizer Graphs;
+strip_modifier_move = Move Strip Modifier; strip_modifier_move_to_index = Move Active Strip Modifier to Index; strip_modifier_remove =
+Remove Strip Modifier; strip_modifier_set_active = Set Active Strip Modifier; strip_transform_clear = Clear Strip Transform;
+strip_transform_fit = Strip Transform Set Fit; swap = Swap Strip; swap_data = Sequencer Swap Data; swap_inputs = Swap Inputs;
+text_cursor_move = Move Cursor; text_cursor_set = Set Cursor; text_delete = Delete Text; text_deselect_all = Deselect All; text_edit_copy
+= Copy Text; text_edit_cut = Cut Text; text_edit_mode_toggle = Edit Text; text_edit_paste = Paste Text; text_insert = Insert Text;
+text_line_break = Insert Line Break; text_select_all = Select All; text_strip_add = Add Text Strip; text_strip_style_preset_add = Add Text
+Strip Style Preset; unlock = Unlock Strips; unmute = Unmute Strips; view_all = Frame All; view_all_preview = Frame All; view_frame = Go to Current
+Frame; view_ghost_border = Border Offset View; view_selected = Frame Selected; view_zoom_ratio = Sequencer View Zoom Ratio
+
+
+
+sound (7 operators)
+bake_animation = Update Animation Cache; mixdown = Mixdown; open = Open Sound; open_mono = Open Sound Mono; pack = Pack Sound; unpack =
+Unpack Sound; update_animation_flags = Update Animation
+
+
+
+spreadsheet (7 operators)
+add_row_filter_rule = Add Row Filter; change_spreadsheet_data_source = Change Visible Data Source; fit_column = Fit Column;
+remove_row_filter_rule = Remove Row Filter; reorder_columns = Reorder Columns; resize_column = Resize Column; toggle_pin = Toggle Pin
+
+
+
+surface (6 operators)
+primitive_nurbs_surface_circle_add = Add Surface Circle; primitive_nurbs_surface_curve_add = Add Surface Curve;
+primitive_nurbs_surface_cylinder_add = Add Surface Cylinder; primitive_nurbs_surface_sphere_add = Add Surface Sphere;
+primitive_nurbs_surface_surface_add = Add Surface Patch; primitive_nurbs_surface_torus_add = Add Surface Torus
+
+
+
+
+Compiled 13 Nov 2026                                                   151
+The Design-Software Deep Dive                                                              Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+text (43 operators)
+autocomplete = Text Auto Complete; comment_toggle = Toggle Comments; convert_whitespace = Convert Whitespace; copy = Copy; cursor_set =
+Set Cursor; cut = Cut; delete = Delete; duplicate_line = Duplicate Line; find = Find Next; find_set_selected = Find & Set Selection; indent = Indent;
+indent_or_autocomplete = Indent or Autocomplete; insert = Insert; jump = Jump; jump_to_file_at_point = Jump to File at Point; line_break = Line
+Break; line_number = Line Number; make_internal = Make Internal; move = Move Cursor; move_lines = Move Lines; move_select = Move Select; new =
+New Text; open = Open Text; overwrite_toggle = Toggle Overwrite; paste = Paste; reload = Reload; replace = Replace; replace_set_selected =
+Replace & Set Selection; resolve_conflict = Resolve Conflict; run_script = Run Script; save = Save; save_as = Save As; scroll = Scroll; scroll_bar
+= Scrollbar; select_all = Select All; select_line = Select Line; select_word = Select Word; selection_set = Set Selection; start_find = Find;
+to_3d_object = To 3D Object; unindent = Unindent; unlink = Unlink; update_shader = Shader Update
+
+
+
+text_editor (1 operators)
+preset_add = Add Text Editor Preset
+
+
+
+texture (4 operators)
+new = New Texture; slot_copy = Copy Texture Slot Settings; slot_move = Move Texture Slot; slot_paste = Paste Texture Slot Settings
+
+
+
+transform (27 operators)
+bbone_resize = Scale B-Bone; bend = Bend; create_orientation = Create Orientation; delete_orientation = Delete Orientation;
+edge_bevelweight = Edge Bevel Weight; edge_crease = Edge Crease; edge_slide = Edge Slide; from_gizmo = Transform from Gizmo; mirror = Mirror;
+push_pull = Push/Pull; resize = Resize; rotate = Rotate; rotate_normal = Rotate Normals; select_orientation = Select Orientation; seq_slide =
+Sequence Slide; shear = Shear; shrink_fatten = Shrink/Fatten; skin_resize = Skin Resize; tilt = Tilt; tosphere = To Sphere; trackball = Trackball;
+transform = Transform; translate = Move; vert_crease = Vertex Crease; vert_slide = Vertex Slide; vertex_random = Randomize; vertex_warp =
+Warp
+
+
+
+ui (41 operators)
+assign_default_button = Assign Value as Default; button_execute = Press Button; button_string_clear = Clear Button String;
+copy_as_driver_button = Copy as New Driver; copy_data_path_button = Copy Data Path; copy_driver_to_selected_button = Copy Driver to
+Selected; copy_python_command_button = Copy Python Command; copy_to_selected_button = Copy to Selected; drop_color = Drop Color;
+drop_material = Drop Material in Material slots; drop_name = Drop Name; editsource = Edit Source; eyedropper_bone = Eyedropper Bone;
+eyedropper_color = Eyedropper; eyedropper_colorramp = Eyedropper Colorband; eyedropper_colorramp_point = Eyedropper Colorband (Points);
+eyedropper_depth = Eyedropper Depth; eyedropper_driver = Eyedropper Driver; eyedropper_grease_pencil_color = Grease Pencil Eyedropper;
+eyedropper_id = Eyedropper Data-Block; jump_to_target_button = Jump to Target; list_start_filter = List Filter; override_add_button = Add
+Override; override_idtemplate_clear = Clear Library Override; override_idtemplate_make = Make Library Override; override_idtemplate_reset
+= Reset Library Override; override_remove_button = Remove Override; region_clear_filter = Clear and Hide Filter; region_start_filter = Show
+Filter; reloadtranslation = Reload Translation; reset_default_button = Reset to Default Value; unset_property_button = Unset Property;
+view_drop = View Drop; view_item_delete = Delete; view_item_focus = Focus Active Item; view_item_navigate = View Navigate;
+view_item_page_scroll = Scroll page; view_item_rename = Rename View Item; view_item_select = Select View Item; view_scroll = View Scroll;
+view_start_filter = View Filter
+
+
+
+uilist (3 operators)
+entry_add = Add Entry; entry_move = Move Entry; entry_remove = Remove Selected Entry
+
+
+
+uv (55 operators)
+align = Align; align_rotation = Align Rotation; arrange_islands = Arrange/Align Islands; average_islands_scale = Average Islands Scale; copy =
+Copy UVs; copy_mirrored_faces = Copy Mirrored UV Coords; cube_project = Cube Projection; cursor_set = Set 2D Cursor; custom_region_set =
+Set User Region; cylinder_project = Cylinder Projection; export_layout = Export UV Layout; follow_active_quads = Follow Active Quads; hide =
+Hide Selected; lightmap_pack = Lightmap Pack; mark_seam = Mark Seam; minimize_stretch = Minimize Stretch; move_on_axis = Move on Axis;
+pack_islands = Pack Islands; paste = Paste UVs; pin = Pin; project_from_view = Project from View; randomize_uv_transform = Randomize;
+remove_doubles = Merge UVs by Distance; reset = Reset; reveal = Reveal Hidden; rip = Rip UVs; rip_move = Rip Move UVs; seams_from_islands =
+Seams from Islands; select = Select; select_all = (De)select All; select_box = Box Select; select_by_winding = Select by Winding; select_circle =
+Circle Select; select_edge_ring = Edge Ring Select; select_lasso = Lasso Select UV; select_less = Select Less; select_linked = Select Linked;
+select_linked_pick = Select Linked Pick; select_loop = Loop Select; select_mode = UV Select Mode; select_more = Select More; select_overlap
+= Select Overlap; select_pinned = Selected Pinned; select_similar = Select Similar; select_split = Select Split; select_tile = Select Tile;
+shortest_path_pick = Pick Shortest Path; shortest_path_select = Select Shortest Path; smart_project = Smart UV Project; snap_cursor = Snap
+Cursor; snap_selected = Snap Selection; sphere_project = Sphere Projection; stitch = Stitch; unwrap = Unwrap; weld = Weld
+
+
+
+
+Compiled 13 Nov 2026                                                    152
+The Design-Software Deep Dive                                                            Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+view2d (13 operators)
+edge_pan = View Edge Pan; pan = Pan View; reset = Reset View; scroll_down = Scroll Down; scroll_left = Scroll Left; scroll_right = Scroll Right;
+scroll_up = Scroll Up; scroller_activate = Scroller Activate; smoothview = Smooth View 2D; zoom = Zoom 2D View; zoom_border = Zoom to Border;
+zoom_in = Zoom In; zoom_out = Zoom Out
+
+
+
+view3d (66 operators)
+bone_select_menu = Select Menu; camera_background_image_add = Add Camera Background Image; camera_background_image_remove = Remove
+Camera Background Image; camera_to_view = Align Camera to View; camera_to_view_selected = Camera Fit Frame to Selected;
+clear_render_border = Clear Render Region; clip_border = Clipping Region; copybuffer = Copy Objects; cursor3d = Set 3D Cursor; dolly = Dolly
+View; drop_world = Drop World; edit_mesh_extrude_individual_move = Extrude Individual and Move; edit_mesh_extrude_manifold_normal =
+Extrude Manifold Along Normals; edit_mesh_extrude_move_normal = Extrude and Move on Normals; edit_mesh_extrude_move_shrink_fatten =
+Extrude and Move on Individual Normals; fly = Fly Navigation; interactive_add = Add Primitive Object; localview = Local View;
+localview_remove_from = Remove from Local View; move = Pan View; navigate = View Navigation (Walk/Fly); object_as_camera = Set Active Object as
+Camera; object_mode_pie_or_toggle = Object Mode Menu; pastebuffer = Paste Objects; render_border = Set Render Region; rotate = Rotate
+View; ruler_add = Ruler Add; ruler_remove = Ruler Remove; select = Select; select_box = Box Select; select_circle = Circle Select;
+select_lasso = Lasso Select; select_menu = Select Menu; smoothview = Smooth View; snap_cursor_to_active = Snap Cursor to Active;
+snap_cursor_to_center = Snap Cursor to World Origin; snap_cursor_to_grid = Snap Cursor to Grid; snap_cursor_to_selected = Snap Cursor to
+Selected; snap_selected_to_active = Snap Selection to Active; snap_selected_to_cursor = Snap Selection to Cursor; snap_selected_to_grid =
+Snap Selection to Grid; toggle_matcap_flip = Flip MatCap; toggle_shading = Toggle Shading Type; toggle_xray = Toggle X-Ray;
+transform_gizmo_set = Transform Gizmo Set; view_all = Frame All; view_axis = View Axis; view_camera = View Camera; view_center_camera =
+Frame Camera Bounds; view_center_cursor = Center View to Cursor; view_center_lock = View Lock Center; view_center_pick = Center View to
+Mouse; view_flip = Flip View; view_lock_clear = View Lock Clear; view_lock_to_active = View Lock to Active; view_orbit = View Orbit; view_pan
+= Pan View Direction; view_persportho = View Perspective/Orthographic; view_roll = View Roll; view_roll_set = Set View Roll; view_selected =
+Frame Selected; vr_location_scouting_capture_review = Location Scouting Capture Review; walk = Walk Navigation; zoom = Zoom View;
+zoom_border = Zoom to Border; zoom_camera_1_to_1 = Zoom Camera 1:1
+
+
+
+wm (122 operators)
+alembic_export = Export Alembic; alembic_import = Import Alembic; append = Append; batch_rename = Batch Rename;
+blend_strings_utf8_validate = Validate .blend strings; call_asset_shelf_popover = Call Asset Shelf Popover; call_menu = Call Menu;
+call_menu_pie = Call Pie Menu; call_panel = Call Panel; clear_recent_files = Clear Recent Files List; clear_recent_projects = Clear Recent
+Projects List; collection_export_all = Export All Collections; context_collection_boolean_set = Context Collection Boolean Set;
+context_cycle_array = Context Array Cycle; context_cycle_enum = Context Enum Cycle; context_cycle_int = Context Int Cycle;
+context_menu_enum = Context Enum Menu; context_modal_mouse = Context Modal Mouse; context_pie_enum = Context Enum Pie;
+context_scale_float = Context Scale Float; context_scale_int = Context Scale Int; context_set_boolean = Context Set Boolean;
+context_set_enum = Context Set Enum; context_set_float = Context Set Float; context_set_id = Set Library ID; context_set_int = Context Set;
+context_set_string = Context Set String; context_set_value = Context Set Value; context_toggle = Context Toggle; context_toggle_enum =
+Context Toggle Values; debug_menu = Debug Menu; doc_view = View Documentation; doc_view_manual = View Manual; doc_view_manual_ui_context
+= View Online Manual; drop_blend_file = Handle dropped .blend file; drop_import_file = Drop to Import File; fbx_import = Import FBX;
+grease_pencil_export_pdf = Export to PDF; grease_pencil_export_svg = Export to SVG; grease_pencil_import_svg = Import SVG as Grease
+Pencil; id_linked_relocate = Relocate Linked ID; interface_theme_preset_add = Add Theme; interface_theme_preset_remove = Remove
+Theme; interface_theme_preset_save = Save Theme; keyconfig_preset_add = Add Custom Keymap Configuration; keyconfig_preset_remove =
+Remove Keymap Configuration; lib_reload = Reload Library; lib_relocate = Relocate Library; link = Link; memory_statistics = Memory Statistics;
+obj_export = Export Wavefront OBJ; obj_import = Import Wavefront OBJ; open_mainfile = Open; operator_cheat_sheet = Operator Cheat Sheet;
+operator_defaults = Restore Operator Defaults; operator_pie_enum = Operator Enum Pie; operator_preset_add = Operator Preset;
+operator_presets_cleanup = Clean Up Operator Presets; otio_export = Export OTIO; otio_import = Import OTIO; owner_disable = Disable Add-on;
+owner_enable = Enable Add-on; path_open = ; ply_export = Export PLY; ply_import = Import PLY; previews_batch_clear = Batch-Clear Previews;
+previews_batch_generate = Batch-Generate Previews; previews_clear = Clear Data-Block Previews; previews_ensure = Refresh Data-Block
+Previews; properties_add = Add Property; properties_context_change = ; properties_edit = Edit Property; properties_edit_value = Edit
+Property Value; properties_remove = Remove Property; quit_blender = Quit Blender; radial_control = Radial Control; read_factory_settings =
+Load Factory Settings; read_factory_userpref = Load Factory Preferences; read_history = Reload History File; read_homefile = Reload Start-Up File;
+read_userpref = Load Preferences; recover_auto_save = Recover Auto Save; recover_last_session = Recover Last Session; redraw_timer =
+Redraw Timer; revert_mainfile = Revert; save_as_mainfile = Save As; save_auto_save = Save Autosave; save_homefile = Save Startup File;
+save_mainfile = Save Blender File; save_userpref = Save Preferences; search_menu = Search Menu; search_operator = Search Operator;
+search_single_menu = Search Single Menu; set_stereo_3d = Set Stereo 3D; set_working_color_space = Set Blend File Working Color Space;
+splash = Splash Screen; splash_about = About Blender; spz_import = Import SPZ; stl_export = Export STL; stl_import = Import STL; sysinfo =
+Save System Info...; tool_set_by_brush_type = Set Tool by Brush Type; tool_set_by_id = Set Tool by Name; tool_set_by_id_hold = Set Tool by
+Name (Hold); tool_set_by_index = Set Tool by Index; toolbar = Toolbar; toolbar_fallback_pie = Fallback Tool Pie Menu; toolbar_prompt =
+Toolbar Prompt; url_open = ; url_open_preset = Open Preset Website; usd_export = Export USD; usd_import = Import USD; window_close = Close
+Window; window_fullscreen_toggle = Toggle Window Fullscreen; window_new = New Window; window_new_main = New Main Window;
+xr_navigation_fly = XR Navigation Fly; xr_navigation_grab = XR Navigation Grab; xr_navigation_reset = XR Navigation Reset;
+xr_navigation_swap_hands = XR Navigation Swap Hands; xr_navigation_teleport = XR Navigation Teleport; xr_session_toggle = Toggle VR
+Session
+
+
+
+workspace (8 operators)
+add = Add Workspace; append_activate = Append and Activate Workspace; delete = Delete Workspace; delete_all_others = Delete Other
+Workspaces; duplicate = New Workspace; reorder_to_back = Workspace Reorder to Back; reorder_to_front = Workspace Reorder to Front;
+scene_pin_toggle = Pin Scene to Workspace
+
+
+
+
+Compiled 13 Nov 2026                                                  153
+The Design-Software Deep Dive                                    Appendix A. Complete Blender 5.3 Operator Catalog
+
+
+
+
+world (2 operators)
+convert_volume_to_mesh = Convert Volume; new = New World
+
+
+
+
+Compiled 13 Nov 2026                                       154
+The Design-Software Deep Dive                                                             Appendix B. Blender Modifiers, Nodes, Constraints and Editors
+
+
+
+
+Appendix B. Blender Modifiers, Nodes,
+Constraints and Editors
+Class names and UI labels from bpy 5.3.0.
+
+
+B. Modifiers (83)
+Armature Modifier; Array Modifier; Bevel Modifier; Boolean Modifier; Build Modifier; Cast Modifier; Cloth Modifier; Collision Modifier; Corrective Smooth Modifier;
+Curve Modifier; Data Transfer Modifier; Decimate Modifier; Displace Modifier; Dynamic Paint Modifier; EdgeSplit Modifier; Explode Modifier; Fluid Modifier;
+Armature Modifier; Instance Modifier; Build Modifier; Grease Pencil Color Modifier; Grease Pencil Dash Modifier; Grease Pencil Envelope Modifier; Anchor Modifier;
+Grease Pencil Lattice Modifier; Length Modifier; Line Art Modifier; Grease Pencil Mirror Modifier; Multiply Modifier; Grease Pencil Noise Modifier; Grease Pencil
+Offset Modifier; Grease Pencil Opacity Modifier; Outline Modifier; Shrinkwrap Modifier; Simplify Modifier; Smooth Modifier; Subdivision Modifier; Grease Pencil
+Texture Modifier; Grease Pencil Thickness Modifier; Grease Pencil Time Modifier; Grease Pencil Tint Modifier; Weight Modifier Angle; Weight Modifier Proximity;
+Anchor Modifier; Laplacian Deform Modifier; Laplacian Smooth Modifier; Lattice Modifier; Mask Modifier; Cache Modifier; MeshDeform Modifier; Cache Modifier;
+Mesh to Volume Modifier; Mirror Modifier; Multires Modifier; Nodes Modifier; Normal Edit Modifier; Ocean Modifier; ParticleInstance Modifier; ParticleSystem
+Modifier; Remesh Modifier; Screw Modifier; Shrinkwrap Modifier; SimpleDeform Modifier; Skin Modifier; Smooth Modifier; Soft Body Modifier; Solidify Modifier;
+Subdivision Surface Modifier; SurfaceDeform Modifier; Surface Modifier; Triangulate Modifier; UV Project Modifier; UVWarp Modifier; WeightVG Edit Modifier;
+WeightVG Mix Modifier; WeightVG Proximity Modifier; Volume Displace Modifier; Volume to Mesh Modifier; Warp Modifier; Wave Modifier; WeightedNormal
+Modifier; Weld Modifier; Wireframe Modifier
+
+
+
+B. Geometry nodes (284)
+Accumulate Field; GeometryNodeApplySimulatedData; Domain Size; Attribute Statistic; Bake; Blur Attribute; Bone Info; Bounding Box; Camera Info; Capture
+Attribute; Closure to List; Cluster by Connected; Cluster by Distance; Collection Children; Collection Info; Combine List; Construct Curves; Convex Hull; Corners of
+Edge; Corners of Face; Corners of Vertex; Cube Grid Topology; Arc; Endpoint Selection; Handle Type Selection; Curve Length; Curve of Point; Bézier Segment;
+Curve Circle; Curve Line; Quadrilateral; Quadratic Bézier; Set Handle Type; Spiral; Set Spline Type; Star; Curve to Mesh; Curve to Points; Curves to Grease
+Pencil; Geometry Custom Group; Deform Curves on Surface; Delete Geometry; Distribute Points in Grid; Distribute Points in Volume; Distribute Points on Faces;
+Dual Mesh; Duplicate Elements; Edge Paths to Curves; Edge Paths to Selection; Edges of Corner; Edges of Vertex; Edges to Face Groups; Extrude Mesh; Face of
+Corner; Evaluate at Index; Field Average; Field Min & Max; Evaluate on Domain; Field to Grid; Field to List; Field Variance; Fill Curve; Fillet Curve; Filter List; Flip
+Faces; For Each Geometry Element Input; For Each Geometry Element Output; Geometry Materials; Geometry to Instance; Get Attribute Names; Get Geometry
+Bundle; Get Geometry Component; Get Grid Names; Get Named Grid; Dial Gizmo; Linear Gizmo; Transform Gizmo; Grease Pencil Color; Grease Pencil Draw
+Time; Grease Pencil Fill ID; Grease Pencil Opacity; Grease Pencil Stroke Softness; Grease Pencil Stroke Visibility; Grease Pencil to Curves; Advect Grid; Clip
+Grid; Grid Curl; Deactivate Voxels; Grid Dilate & Erode; Grid Divergence; Grid Gradient; Grid Info; Grid Laplacian; Grid Mean; Grid Median; Prune Grid; Grid Solve
+Poisson; Grid to Mesh; Grid to Points; Grid Topology Boolean; Voxelize Grid; Group; Image Info; Image Texture; Import CSV; Import OBJ; Import PLY; Import SPZ;
+Import STL; Import Text; Import VDB; Index of Nearest; Index Switch; Active Camera; Collection; Curve Handle Positions; Curve Tilt; Is Edge Smooth; Font; ID;
+Image; Index; Instance Bounds; Instance Reference; Instance Rotation; Instance Scale; Material; Material Index; Edge Angle; Edge Neighbors; Edge Vertices;
+Face Area; Is Face Planar; Face Neighbors; Mesh Island; Vertex Neighbors; Named Attribute; Named Layer Selection; Normal; Object; Position; Radius; Scene
+Time; Is Face Smooth; Shortest Edge Paths; Is Spline Cyclic; Spline Resolution; Curve Tangent; Voxel Index; Instance on Points; Instance Transform; Instances to
+Points; Interpolate Curves; Is Viewport; Join Geometry; Get List Item; List Length; Material Selection; Menu Switch; Merge by Distance; Merge Layers; Merge
+Points; Mesh Bevel; Mesh Boolean; Mesh Circle; Cone; Cube; Cylinder; Face Group Boundaries; Grid; Ico Sphere; Mesh Line; Mesh to Curve; Mesh to Density
+Grid; Mesh to Points; Mesh to SDF Grid; Mesh to Volume; UV Sphere; NURBS Order; NURBS Weight; Object Info; Offset Corner in Face; Offset Point in Curve;
+Points; Points of Curve; Set Point Cloud Type; Points to Curves; Points to SDF Grid; Points to Vertices; Points to Volume; Geometry Proximity; Rasterize Points;
+Raycast; Realize Instances; Remove Named Attribute; Rename Attribute; Repeat Input; Repeat Output; Replace Material; Resample Curve; Reverse Curve;
+Rotate Instances; SDF Grid Boolean; SDF Grid Fillet; SDF Grid Laplacian; SDF Grid Mean; SDF Grid Mean Curvature; SDF Grid Median; SDF Grid Offset; Sample
+Curve; Sample Grid; Sample Grid Index; Sample Index; Sample Nearest; Sample Nearest Surface; Sample Sound Frequencies; Sample UV Surface; Scale
+Elements; Scale Instances; Self Object; Separate Components; Separate Geometry; Set Handle Positions; Set Curve Normal; Set Curve Radius; Set Curve Tilt;
+Set Geometry Bundle; Set Geometry Name; Set Grease Pencil Color; Set Grease Pencil Depth; Set Grease Pencil Softness; Set Grid Background; Set Grid
+Transform; Set ID; Set Instance Transform; Set Material; Set Material Index; Set Mesh Normal; Set NURBS Order; Set NURBS Weight; Set Point Radius; Set
+Position; Set Shade Smooth; Set Spline Cyclic; Set Spline Resolution; Simulation Input; Simulation Output; Sort Elements; Sort List; Spline Length; Spline
+Parameter; Split Edges; Split to Instances; Store Named Attribute; Store Named Grid; Join Strings; String to Curves; Subdivide Curve; Subdivide Mesh; Subdivision
+Surface; Switch; Tag Filter; 3D Cursor; Active Element; Face Set; Mouse Position; Selection; Set Face Set; Set Selection; Transfer Attributes; Transform
+Geometry; Translate Instances; Triangulate; Trim Curve; Pack UV Islands; UV Tangent; UV Unwrap; Vertex of Corner; Viewer; Viewport Transform; Volume Cube;
+Volume to Mesh; Warning; XPBD Solver
+
+
+
+B. Shader nodes (106)
+Add Shader; Ambient Occlusion; Attribute; Background; Bevel; Blackbody; Brightness/Contrast; Glossy BSDF; Diffuse BSDF; Glass BSDF; Hair BSDF; Principled
+Hair BSDF; Metallic BSDF; Principled BSDF; Ray Portal BSDF; Refraction BSDF; Sheen BSDF; Toon BSDF; Translucent BSDF; Transparent BSDF; Bump;
+Camera Data; Clamp; Combine Color; Combine XYZ; Shader Custom Group; Displacement; Specular BSDF; Emission; Float Curve; Fresnel; Gamma; Group;
+Curves Info; Holdout; Hue/Saturation/Value; Invert Color; Layer Weight; Light Accumulation; Light Evaluation; Light Falloff; Light Info; Light Iter Internal Input; Light
+Iter Internal Output; Light Path; Map Range; Mapping; Math; Mix; Mix (Legacy); Mix Shader; Geometry; Normal; Normal Map; Object Info; AOV Output; Light
+Output; Line Style Output; Material Output; World Output; Particle Info; Point Info; Color; RGB Curves; RGB to BW; Radial Tiling; Raycast; Script; Separate Color;
+Separate XYZ; Shader to RGB; Shadow Raycast; Squeeze Value (Legacy); Subsurface Scattering; Tangent; Brick Texture; Checker Texture; Texture Coordinate;
+Environment Texture; Gabor Texture; Gradient Texture; IES Texture; Image Texture; Magic Texture; Noise Texture; Sky Texture; Voronoi Texture; Wave Texture;
+White Noise Texture; UV Along Stroke; UV Map; Color Ramp; Value; Vector Curves; Vector Displacement; Vector Math; Vector Rotate; Vector Transform; Color
+Attribute; Volume Absorption; Volume Coefficients; Volume Info; Principled Volume; Volume Scatter; Wavelength; Wireframe
+
+
+
+
+Compiled 13 Nov 2026                                                              155
+The Design-Software Deep Dive                                                           Appendix B. Blender Modifiers, Nodes, Constraints and Editors
+
+
+
+
+B. Compositor nodes (90)
+Alpha Over; Anti-Aliasing; Bilateral Blur; Blank Image; Blur; Bokeh Blur; Bokeh Image; Box Mask; Brightness/Contrast; Channel Key; Chroma Key; Color Balance;
+Color Correction; Color Key; Color Spill; Combine Color; Convert Colorspace; Convert to Display; Convolve; Corner Pin; Crop; Cryptomatte (Legacy); Cryptomatte;
+RGB Curves; Compositor Custom Group; Directional Blur; Defocus; Denoise; Despeckle; Difference Key; Dilate/Erode; Displace; Distance Key; Double Edge
+Mask; Ellipse Mask; Exposure; Filter; Flip; CompositorNodeGamma; Glare; Group; Hue Correct; Hue/Saturation/Value; ID Mask; Image; Image Coordinates;
+Image Info; Inpaint; Invert Color; Keying; Keying Screen; Kuwahara; Lens Distortion; Levels; Luminance Key; Map UV; Mask; Mask To SDF; Movie Clip; Movie
+Distortion; Normal; Normalize; File Output; Pixelate; Plane Track Deform; Posterize; Alpha Convert; Color; RGB to BW; Render Layers; Relative To Pixel; Rotate;
+Scale; Scene Time; Separate Color; Sequencer Strip Info; Set Alpha; Split; Stabilize 2D; String To Image; Switch; Switch View; Time Curve; Tonemap; Track
+Position; Transform; Translate; Vector Blur; Viewer; Depth Combine
+
+
+
+B. Constraints (29)
+Action Constraint; Armature Constraint; Camera Solver Constraint; Child Of Constraint; Clamp To Constraint; Copy Location Constraint; Copy Rotation Constraint;
+Copy Scale Constraint; Copy Transforms Constraint; Damped Track Constraint; Floor Constraint; Follow Path Constraint; Follow Track Constraint; Geometry
+Attribute Constraint; Kinematic Constraint; Limit Distance Constraint; Limit Location Constraint; Limit Rotation Constraint; Limit Size Constraint; Locked Track
+Constraint; Maintain Volume Constraint; Object Solver Constraint; Pivot Constraint; Shrinkwrap Constraint; Spline IK Constraint; Stretch To Constraint; Track To
+Constraint; Transform Cache Constraint; Transformation Constraint
+
+
+
+B. Grease Pencil shader effects (9)
+Gaussian Blur Effect; Colorize Effect; Flip Effect; Glow Effect; Pixelate Effect; Rim Effect; Shadow Effect; Swirl Effect; Wave Deformation Effect
+
+
+
+B. Editor (space) types (17)
+Space Clip Editor; Space Console; Space Dope Sheet Editor; Space File Browser; Space Graph Editor; Space Image Editor; Space Info; Space Nla Editor; Space
+Node Editor; Space Outliner; Space Preferences; Space Project; Properties Space; Space Sequence Editor; Space Spreadsheet; Space Text Editor; 3D View
+Space
+
+
+
+
+Compiled 13 Nov 2026                                                            156
+The Design-Software Deep Dive                                                                                    Appendix C. Glossary
+
+
+
+
