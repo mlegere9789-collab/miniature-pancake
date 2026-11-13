@@ -318,6 +318,63 @@ bool FitRowLeastSquares(const std::vector<ON_3dPoint>& data, const std::vector<d
 
 }  // namespace
 
+namespace {
+
+// Knot removal in a PERIODIC direction: every control row (direction 0) / column (direction 1) is a periodic curve over the
+// surface's own cyclic knot vector, so NurbsCurve::RemoveKnotAt's cyclic A5.8 window runs on each line; the surface bound is
+// the largest line bound and the removal is committed only when every line succeeds within `tolerance`.
+Result RemovePeriodicKnotSurface(ON_NurbsSurface& surf, int direction, int knot_index, double tolerance, double* out_max_deviation) {
+  const int p = surf.Degree(direction);
+  const int n = surf.CVCount(direction), m = surf.CVCount(1 - direction);
+  const bool rational = surf.IsRational();
+  std::vector<NurbsCurve> lines(static_cast<size_t>(m));
+  double worst = 0.0;
+  for (int j = 0; j < m; ++j) {
+    ON_NurbsCurve c;
+    if (!c.Create(3, rational, p + 1, n)) return Result::Failed;
+    for (int k = 0; k < c.KnotCount(); ++k) c.SetKnot(k, surf.Knot(direction, k));
+    for (int i = 0; i < n; ++i) {
+      ON_4dPoint h;
+      if (direction == 0) surf.GetCV(i, j, h);
+      else surf.GetCV(j, i, h);
+      if (rational) c.SetCV(i, h);
+      else c.SetCV(i, ON_3dPoint(h.x, h.y, h.z));
+    }
+    NurbsCurve& line = lines[static_cast<size_t>(j)];
+    line.raw() = c;
+    double dev = 0.0;
+    const Result r = line.RemoveKnotAt(knot_index, std::numeric_limits<double>::infinity(), &dev);
+    if (std::isfinite(dev)) worst = std::max(worst, dev);
+    if (r != Result::Ok) {
+      if (out_max_deviation) *out_max_deviation = std::numeric_limits<double>::infinity();
+      return Result::Failed;
+    }
+  }
+  if (out_max_deviation) *out_max_deviation = worst;
+  if (!(worst <= tolerance)) return Result::Failed;
+  const int n2 = lines[0].raw().CVCount();
+  ON_NurbsSurface out;
+  const bool created = direction == 0 ? out.Create(3, rational, p + 1, surf.Order(1), n2, m) : out.Create(3, rational, surf.Order(0), p + 1, m, n2);
+  if (!created) return Result::Failed;
+  for (int k = 0; k < out.KnotCount(direction); ++k) out.SetKnot(direction, k, lines[0].raw().Knot(k));
+  for (int k = 0; k < out.KnotCount(1 - direction); ++k) out.SetKnot(1 - direction, k, surf.Knot(1 - direction, k));
+  for (int j = 0; j < m; ++j) {
+    for (int i = 0; i < n2; ++i) {
+      ON_4dPoint h;
+      lines[static_cast<size_t>(j)].raw().GetCV(i, h);
+      if (!rational) h.w = 1.0;
+      const int ii = direction == 0 ? i : j, jj = direction == 0 ? j : i;
+      if (rational) out.SetCV(ii, jj, h);
+      else out.SetCV(ii, jj, ON_3dPoint(h.x, h.y, h.z));
+    }
+  }
+  if (!out.IsValid()) return Result::Failed;
+  surf = out;
+  return Result::Ok;
+}
+
+}  // namespace
+
 Result NurbsSurface::RemoveKnotAt(int direction, int knot_index, double tolerance, double* out_max_deviation) {
   if (direction != 0 && direction != 1) {
     throw std::invalid_argument("dino8::kernel::NurbsSurface::RemoveKnotAt: direction must be 0 (U) or 1 (V)");
@@ -333,7 +390,10 @@ Result NurbsSurface::RemoveKnotAt(int direction, int knot_index, double toleranc
         "dino8::kernel::NurbsSurface::RemoveKnotAt: the knot must be strictly inside the domain in that direction");
   }
   if (out_max_deviation) *out_max_deviation = std::numeric_limits<double>::infinity();
-  if (!surface_.IsClamped(direction, 2)) return Result::Failed;
+  if (!surface_.IsClamped(direction, 2)) {
+    if (surface_.IsPeriodic(direction)) return RemovePeriodicKnotSurface(surface_, direction, knot_index, tolerance, out_max_deviation);
+    return Result::Failed;
+  }
 
   const int p = surface_.Degree(direction);
   const int cv_count = surface_.CVCount(direction);
