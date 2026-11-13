@@ -279,8 +279,11 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
 // that plane through a sloped notch row and the two rows share their points, so the edge between the cylinders is a literal shared edge. Face count:
 // the original plus two cylinders. The removed volume is a r^2 (L_A + L_B) - r^3 (5/3 - pi/2) with a = 1 - pi/4 and L_A, L_B the two edge lengths
 // (the two prisms minus their overlap, the integral of (r - sqrt(r^2 - s^2))^2 over [0, r]).
-// Refusals (std::invalid_argument naming the reason, never a degraded body): non-positive / non-finite radii; UNEQUAL radii (the cylinders then meet in a
-// non-planar space curve that is not built); a vertex that is not a trihedral corner; two edges that are not the edges of that corner; faces that are not
+// UNEQUAL radii r_a != r_b are built too: the cylinders then meet in the space curve (f_a(y), y, f_b(y)), f_r(y) = r - sqrt(2 r y - y^2), y in [0, min(r_a, r_b)]
+// (corner frame: x along edge B, w along edge A, y along the sharp edge C). The smaller cylinder ends on it in one notched row; the larger is cut where the
+// smaller's tangent line leaves it - one piece ends on the same row, the other ends flat on the corner face's plane, which gets a circular-arc notch - so the
+// result has 9 faces. Removed volume a r_a^2 L_A + a r_b^2 L_B - overlap, overlap = integral_0^m f_a f_b dy (closed form in tests/extra/fillet_pair_unequal.cpp).
+// Refusals (std::invalid_argument naming the reason, never a degraded body): non-positive / non-finite radii; a vertex that is not a trihedral corner; two edges that are not the edges of that corner; faces that are not
 // mutually perpendicular or a corner that is not convex; an edge not longer than the radius; a corner face left with fewer than 3 vertices; and a far end
 // that does not meet a face perpendicular to its edge (the result would not close). Only purely planar solids are accepted.
 Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a, Point3d end_b, double radius_a, double radius_b);

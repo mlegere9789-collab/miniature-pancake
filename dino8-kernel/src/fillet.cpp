@@ -1641,6 +1641,236 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
   return chained;
 }
 
+// --- FilletConvexEdgePairMitre with UNEQUAL radii --------------------------------------------------------------------------------------
+// Corner frame p(x, y, w) = vertex + x uB + y uC + w wA (uB along edge B, wA along edge A, uC along the sharp edge C into the material). Cylinder A removes the
+// slab x < f_a(y), cylinder B the slab w < f_b(y), f_r(y) = r - sqrt(2 r y - y^2) (0 for y >= r); they meet in the space curve M(y) = p(f_a(y), y, f_b(y)),
+// y in [0, m], m = min(r_a, r_b). The SMALLER cylinder W ends on M in one notched cap row. The LARGER one S is cut at the point P = M(m) where W's tangent line
+// leaves it: S1 (the part between P and the face holding A and B) ends on M with the same row (the same point set, so the edge welds), S2 (the rest) ends
+// flat on the plane through the vertex perpendicular to S, where the corner face loses a circular-arc notch from P to the tangent point Q. S's far end gets
+// the quarter-circle notch as two runs sharing the vertex at P. The caller has validated the corner; returns a closed solid or throws.
+Brep BuildUnequalFilletPair(const std::string& who, const std::vector<Brep::PlanarFace>& faces, int fab, int fac, int fbc, const Point3d& vertex, const Point3d& end_a,
+                            const Point3d& end_b, const Vector3d& uB, const Vector3d& wA, const Vector3d& uC, double len_a, double len_b, double ra, double rb,
+                            double tol) {
+  const Brep::PlanarFace& face_ab = faces[static_cast<size_t>(fab)];
+  const Brep::PlanarFace& face_ac = faces[static_cast<size_t>(fac)];
+  const Brep::PlanarFace& face_bc = faces[static_cast<size_t>(fbc)];
+  const Vector3d nAB = face_ab.plane.zaxis, nAC = face_ac.plane.zaxis, nBC = face_bc.plane.zaxis;
+  const bool big_is_b = rb > ra;
+  const double r_small = std::min(ra, rb), r_big = std::max(ra, rb);
+  auto fcurve = [](double r, double y) { return y >= r ? 0.0 : r - std::sqrt(std::max(0.0, 2.0 * r * y - y * y)); };
+  auto P3 = [&](double x, double y, double w) { return vertex + x * uB + y * uC + w * wA; };
+  auto M = [&](double y) { return P3(fcurve(ra, y), y, fcurve(rb, y)); };
+
+  // --- the three corner faces ---
+  auto clip = [&](const Brep::PlanarFace& f, const Point3d& through, const Vector3d& keep_side) {
+    Brep::PlanarFace out = f;
+    out.loop = detail::ClipByHalfspace3d(out.loop, ON_Plane(through, -keep_side), tol);
+    return out;
+  };
+  Brep::PlanarFace r_ab = clip(clip(face_ab, vertex + ra * uB, uB), vertex + rb * wA, wA);
+  Brep::PlanarFace r_ac = clip(face_ac, vertex + ra * uC, uC);
+  Brep::PlanarFace r_bc = clip(face_bc, vertex + rb * uC, uC);
+  if (r_ab.loop.size() < 3 || r_ac.loop.size() < 3 || r_bc.loop.size() < 3) {
+    throw std::invalid_argument(who + "re-trimming a corner face left fewer than 3 vertices - radius too large for this solid's geometry");
+  }
+
+  // --- the two cylinders (same frame rule as the equal-radius pair) ---
+  struct Frame {
+    Vector3d X, Y;
+    ON_Plane plane_x, plane_y;
+  };
+  auto make_cylinder = [&](const Point3d& edge_point, const Vector3d& e, double length, double R, const Vector3d& n1, const Brep::PlanarFace& f1, const Vector3d& n2,
+                            const Brep::PlanarFace& f2, Frame& fr) {
+    Brep::CylindricalFace cf;
+    if ((ON_CrossProduct(e, n1) - n2).Length() < 1e-6) {
+      fr.X = n1; fr.Y = n2; fr.plane_x = f1.plane; fr.plane_y = f2.plane;
+    } else {
+      fr.X = n2; fr.Y = n1; fr.plane_x = f2.plane; fr.plane_y = f1.plane;
+    }
+    cf.frame.origin = edge_point - R * n1 - R * n2;
+    cf.frame.xaxis = fr.X;
+    cf.frame.yaxis = ON_CrossProduct(e, fr.X);
+    cf.frame.zaxis = e;
+    cf.frame.UpdateEquation();
+    cf.radius = R;
+    cf.angle = 0.5 * ON_PI;
+    cf.length = length;
+    cf.outward = true;
+    return cf;
+  };
+  Vector3d e_a = vertex - end_a, e_b = end_b - vertex;
+  e_a.Unitize();
+  e_b.Unitize();
+  Frame fa, fb;
+  Brep::CylindricalFace cyl_a = make_cylinder(end_a, e_a, len_a, ra, nAB, face_ab, nAC, face_ac, fa);
+  Brep::CylindricalFace cyl_b = make_cylinder(vertex, e_b, len_b, rb, nAB, face_ab, nBC, face_bc, fb);
+  const Point3d far_center_a = cyl_a.frame.origin, far_center_b = cyl_b.frame.origin + len_b * e_b;
+
+  std::vector<Brep::PlanarFace> others;
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != fab && static_cast<int>(f) != fac && static_cast<int>(f) != fbc) others.push_back(faces[f]);
+  }
+
+  // --- the shared mitre row: M at a common y grid (dense where the curve is steepest, at y = 0) ---
+  const int kRow = 256;
+  const double m = r_small;
+  std::vector<Point3d> row;
+  for (int k = 0; k <= kRow; ++k) row.push_back(M(m * (1.0 - std::cos(0.5 * ON_PI * static_cast<double>(k) / kRow))));
+  double sag = 0.0;
+  for (int k = 0; k < kRow; ++k) {
+    const double y0 = m * (1.0 - std::cos(0.5 * ON_PI * static_cast<double>(k) / kRow)), y1 = m * (1.0 - std::cos(0.5 * ON_PI * static_cast<double>(k + 1) / kRow));
+    sag = std::max(sag, M(0.5 * (y0 + y1)).DistanceTo(0.5 * (row[static_cast<size_t>(k)] + row[static_cast<size_t>(k) + 1])));
+  }
+  const double row_tol = 1.5 * sag + 1e-12;
+  auto angle_in = [&](const Brep::CylindricalFace& cf, const Point3d& p) {
+    const Vector3d d = p - cf.frame.origin;
+    double a = std::atan2(d * cf.frame.yaxis, d * cf.frame.xaxis);
+    if (a < -1e-9) a += 2.0 * ON_PI;
+    return std::max(a, 0.0);
+  };
+  auto sorted_row = [&](const Brep::CylindricalFace& cf) {
+    std::vector<Point3d> r = row;
+    if (angle_in(cf, r.front()) > angle_in(cf, r.back())) std::reverse(r.begin(), r.end());
+    return r;
+  };
+  // Gives `cf` the row as its NEAR cap (cap1 for the cylinder walked far -> near, cap0 for near -> far); the flat corner sits at the first point's height.
+  auto set_near_row = [&](Brep::CylindricalFace& cf, bool cap1, double total_length) {
+    const std::vector<Point3d> r = sorted_row(cf);
+    const double h = (r.front() - cf.frame.origin) * cf.frame.zaxis;
+    if (cap1) {
+      cf.length = h;
+      cf.cap1_notch_points = r;
+      cf.cap1_notch_tolerance = row_tol;
+    } else {
+      cf.frame.origin = cf.frame.origin + h * cf.frame.zaxis;
+      cf.length = total_length - h;
+      cf.cap0_notch_points = r;
+      cf.cap0_notch_tolerance = row_tol;
+    }
+  };
+
+  // --- splice a dense arc (points in increasing parameter order) into a face loop at `corner`, optionally as two runs sharing the point `split` ---
+  auto segdist = [](const Point3d& p, const Point3d& a, const Point3d& b) {
+    const Vector3d ab = b - a;
+    const double t = std::max(0.0, std::min(1.0, ((p - a) * ab) / ab.LengthSquared()));
+    return p.DistanceTo(a + t * ab);
+  };
+  auto splice = [&](Brep::PlanarFace& f, const Point3d& corner, std::vector<Point3d> pts, int split) {
+    const size_t n = f.loop.size();
+    size_t k = n;
+    for (size_t i = 0; i < n; ++i) {
+      if (f.loop[i].DistanceTo(corner) <= tol) { k = i; break; }
+    }
+    if (k == n) throw std::invalid_argument(who + "internal: a corner face has no vertex at the notch corner");
+    const Point3d pred = f.loop[(k + n - 1) % n], succ = f.loop[(k + 1) % n];
+    if (segdist(pts.front(), corner, pred) > segdist(pts.front(), corner, succ)) {
+      std::reverse(pts.begin(), pts.end());
+      if (split >= 0) split = static_cast<int>(pts.size()) - 1 - split;
+    }
+    std::vector<Point3d> nl;
+    for (size_t i = 0; i < n; ++i) {
+      if (i == k) nl.insert(nl.end(), pts.begin(), pts.end());
+      else nl.push_back(f.loop[i]);
+    }
+    f.loop = std::move(nl);
+    const int total = static_cast<int>(pts.size());
+    RegisterNotchRun(f, static_cast<int>(k), total);
+    if (split < 0) return;
+    if (f.notch_begin == static_cast<int>(k) && f.notch_count == total) {
+      f.notch_count = split + 1;
+      f.notch_runs.emplace_back(static_cast<int>(k) + split, total - split);
+      return;
+    }
+    for (std::pair<int, int>& r : f.notch_runs) {
+      if (r.first == static_cast<int>(k) && r.second == total) {
+        r.second = split + 1;
+        f.notch_runs.emplace_back(static_cast<int>(k) + split, total - split);
+        return;
+      }
+    }
+    throw std::runtime_error(who + "internal: the notch run to split was not found");
+  };
+
+  // --- cylinders: W whole, S in two pieces ---
+  Brep::CylindricalFace& W = big_is_b ? cyl_a : cyl_b;
+  Brep::CylindricalFace& S = big_is_b ? cyl_b : cyl_a;
+  const bool w_cap1 = big_is_b;  // A is walked far -> near (its near cap is cap1), B near -> far
+  const double w_len = big_is_b ? len_a : len_b;
+  const Point3d P = M(m), Q = P3(0.0, r_big, 0.0);
+  const double th_P = angle_in(S, P), th_Q = angle_in(S, Q);
+  const bool s2_low = th_Q < th_P;  // S2 (the flat-ended part, which holds Q) is the low-angle piece
+  auto make_piece = [&](double a0, double a1) {
+    Brep::CylindricalFace cf = S;
+    const Vector3d X2 = std::cos(a0) * S.frame.xaxis + std::sin(a0) * S.frame.yaxis;
+    cf.frame.xaxis = X2;
+    cf.frame.yaxis = ON_CrossProduct(S.frame.zaxis, X2);
+    cf.frame.UpdateEquation();
+    cf.angle = a1 - a0;
+    return cf;
+  };
+  Brep::CylindricalFace s_lo = make_piece(0.0, th_P), s_hi = make_piece(th_P, 0.5 * ON_PI);
+  Brep::CylindricalFace& s2 = s2_low ? s_lo : s_hi;
+  Brep::CylindricalFace& s1 = s2_low ? s_hi : s_lo;
+  const double s_len = S.length;
+  set_near_row(W, w_cap1, w_len);
+  set_near_row(s1, w_cap1 ? false : true, s_len);  // S is the other edge: B (cap0) when W is A, A (cap1) when W is B
+
+  // --- the corner face notched by S2's flat cap: the circular arc from Q to P on the plane through the vertex perpendicular to S ---
+  {
+    const double th_arc = std::asin((r_big - r_small) / r_big);
+    std::vector<Point3d> arc;
+    const int kArc = 200;
+    for (int s = 0; s <= kArc; ++s) {
+      const double th = th_arc * static_cast<double>(s) / kArc;
+      const double y = r_big - r_big * std::sin(th), other = r_big - r_big * std::cos(th);
+      arc.push_back(big_is_b ? P3(0.0, y, other) : P3(other, y, 0.0));
+    }
+    splice(big_is_b ? r_ac : r_bc, P3(0.0, r_small, 0.0), arc, -1);
+  }
+
+  // --- far ends: W gets the ordinary quarter-circle notch, S the same circle as two runs sharing the vertex at P's angle ---
+  if (big_is_b) {
+    NotchCornerAtVertex(others, end_a, e_a, fa.plane_x, fa.plane_y, far_center_a, fa.X, cyl_a.frame.yaxis, ra, 0.5 * ON_PI, tol);
+  } else {
+    NotchCornerAtVertex(others, end_b, e_b, fb.plane_x, fb.plane_y, far_center_b, fb.X, cyl_b.frame.yaxis, rb, 0.5 * ON_PI, tol);
+  }
+  {
+    const Point3d far_center = big_is_b ? far_center_b : far_center_a;
+    const Point3d end_s = big_is_b ? end_b : end_a;
+    const Vector3d e_s = big_is_b ? e_b : e_a;
+    const Vector3d X = S.frame.xaxis, Y = S.frame.yaxis;
+    std::vector<Point3d> pts;
+    const int n1 = 120, n2 = 120;
+    for (int s = 0; s <= n1; ++s) pts.push_back(far_center + r_big * (std::cos(th_P * s / n1) * X + std::sin(th_P * s / n1) * Y));
+    for (int s = 1; s <= n2; ++s) {
+      const double ph = th_P + (0.5 * ON_PI - th_P) * s / n2;
+      pts.push_back(far_center + r_big * (std::cos(ph) * X + std::sin(ph) * Y));
+    }
+    bool done = false;
+    for (Brep::PlanarFace& f : others) {
+      if (std::fabs(f.plane.zaxis * e_s) < 1.0 - 1e-6) continue;
+      bool has = false;
+      for (const Point3d& p : f.loop) has = has || p.DistanceTo(end_s) <= tol;
+      if (!has) continue;
+      splice(f, end_s, pts, n1);
+      done = true;
+      break;
+    }
+    if (!done) throw std::invalid_argument(who + "the larger edge's far end does not meet a face perpendicular to it - the result would not close");
+  }
+
+  std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
+  mixed_planar.push_back(std::move(r_ab));
+  mixed_planar.push_back(std::move(r_ac));
+  mixed_planar.push_back(std::move(r_bc));
+  for (Brep::PlanarFace& pf : mixed_planar) AttachArcRunsForNotchRuns(pf);
+  Brep out = Brep::FromMixedFaces(mixed_planar, {W, s1, s2});
+  if (!out.raw().IsValid() || !out.raw().IsSolid()) {
+    throw std::invalid_argument(who + "the unequal-radius corner did not assemble into a valid closed solid - refused");
+  }
+  return out;
+}
+
 // --- FilletConvexEdgePairMitre -------------------------------------------------------------------------------------------------------
 // Two perpendicular edges A = (vertex, end_a) and B = (vertex, end_b) of a planar solid meeting at a trihedral RIGHT-ANGLE corner, filleted with the
 // SAME radius r while the third edge C of that corner stays sharp. The result is `solid` minus the union of the two removed rounded prisms: face
@@ -1654,11 +1884,7 @@ Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a,
   if (!std::isfinite(radius_a) || !std::isfinite(radius_b) || !(radius_a > 0.0) || !(radius_b > 0.0)) {
     throw std::invalid_argument(who + "both radii must be finite and strictly positive");
   }
-  if (std::fabs(radius_a - radius_b) > 1e-12 * std::max(radius_a, radius_b)) {
-    throw std::invalid_argument(who + "the radii differ (" + std::to_string(radius_a) + " vs " + std::to_string(radius_b) +
-                                "): two perpendicular cylinders of different radii meet in a space curve that is not planar, and only the equal-radius "
-                                "planar mitre is built here");
-  }
+  const bool unequal = std::fabs(radius_a - radius_b) > 1e-12 * std::max(radius_a, radius_b);
   const double r = radius_a;
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
@@ -1714,9 +1940,12 @@ Brep FilletConvexEdgePairMitre(const Brep& solid, Point3d vertex, Point3d end_a,
   if ((uB + nAC).Length() > 1e-6 || (wA + nBC).Length() > 1e-6) {
     throw std::invalid_argument(who + "the two edges are not the edges shared by the three perpendicular faces at `vertex`");
   }
-  if (!(len_a > r * (1.0 + 1e-9)) || !(len_b > r * (1.0 + 1e-9))) {
+  const double rmax = std::max(radius_a, radius_b);
+  if (!(len_a > rmax * (1.0 + 1e-9)) || !(len_b > rmax * (1.0 + 1e-9))) {
     throw std::invalid_argument(who + "an edge is not longer than the radius - the mitre does not fit");
   }
+
+  if (unequal) return BuildUnequalFilletPair(who, faces, fab, fac, fbc, vertex, end_a, end_b, uB, wA, uC, len_a, len_b, radius_a, radius_b, tol);
 
   // --- the three corner faces, re-trimmed along the tangent lines of the two cylinders ---
   auto clip = [&](const Brep::PlanarFace& f, const Point3d& through, const Vector3d& keep_side) {
