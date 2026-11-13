@@ -2062,7 +2062,7 @@ class SetSurfaceTangentCommand : public Command {
     ctx.Doc().BeginChange("SetSurfaceTangent");
     if (SceneObject* orig = ctx.Doc().Find(first_->id)) {
       if (orig->kind == ObjectKind::Surface && orig->surface) orig->surface->raw() = raw;
-      else if (orig->kind == ObjectKind::Brep && orig->brep) orig->brep->raw().m_S[orig->brep->raw().m_F[first_->face].m_si] = new ON_NurbsSurface(raw);
+      else if (orig->kind == ObjectKind::Brep && orig->brep) kernel::ReplaceBrepSurface(orig->brep->raw(), orig->brep->raw().m_F[first_->face].m_si, new ON_NurbsSurface(raw));
       orig->InvalidateDisplay();
     }
     ctx.Print("SetSurfaceTangent: " + std::to_string(moved) + " boundary tangent-row control point(s) rotated to match the target surface's normal (edge position unchanged)");
@@ -2393,10 +2393,7 @@ class PatchSingleFaceCommand : public Command {
     // leave stale vertex tolerances pointing at freed surface memory.
     if (keep_domain) { patch.SetDomain(0, keep_u.Min(), keep_u.Max()); patch.SetDomain(1, keep_v.Min(), keep_v.Max()); }
     const int patch_si = b.m_F[pick->face].m_si;
-    b.m_S[patch_si] = new ON_NurbsSurface(patch);
-    // The faces cache their surface pointer (ON_SurfaceProxy; ON_BrepFace::SurfaceOf() returns it first): repoint every face using this slot, or the
-    // mesher, Area() and Volume() keep reading the replaced surface.
-    for (int fi = 0; fi < b.m_F.Count(); ++fi) if (b.m_F[fi].m_si == patch_si) b.m_F[fi].SetProxySurface(b.m_S[patch_si]);
+    kernel::ReplaceBrepSurface(b, patch_si, new ON_NurbsSurface(patch));  // repoints the faces' cached surface proxy too
     b.SetTolerancesBoxesAndFlags();
     o->InvalidateDisplay();
     ctx.Print("PatchSingleFace: face " + std::to_string(pick->face) + " of object " + std::to_string(pick->id) + " replaced with a Coons patch through its own boundary edges");
@@ -3301,7 +3298,7 @@ class SoftEditSrfCommand : public Command {
     ctx.Doc().BeginChange("SoftEditSrf");
     if (SceneObject* orig = ctx.Doc().Find(pick_->id)) {
       if (orig->kind == ObjectKind::Surface && orig->surface) orig->surface->raw() = out;
-      else if (orig->kind == ObjectKind::Brep && orig->brep) orig->brep->raw().m_S[orig->brep->raw().m_F[pick_->face].m_si] = new ON_NurbsSurface(out);
+      else if (orig->kind == ObjectKind::Brep && orig->brep) kernel::ReplaceBrepSurface(orig->brep->raw(), orig->brep->raw().m_F[pick_->face].m_si, new ON_NurbsSurface(out));
       orig->InvalidateDisplay();
     }
     ctx.Print("SoftEditSrf: " + std::to_string(moved) + " control point(s) moved with a cosine falloff within radius " + FormatNumber(radius_) + " (max displacement " + FormatNumber(delta.Length()) + ")");
