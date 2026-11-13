@@ -2064,7 +2064,7 @@ class SetSurfaceTangentCommand : public Command {
     ctx.Doc().BeginChange("SetSurfaceTangent");
     if (SceneObject* orig = ctx.Doc().Find(first_->id)) {
       if (orig->kind == ObjectKind::Surface && orig->surface) orig->surface->raw() = raw;
-      else if (orig->kind == ObjectKind::Brep && orig->brep) orig->brep->raw().m_S[orig->brep->raw().m_F[first_->face].m_si] = new ON_NurbsSurface(raw);
+      else if (orig->kind == ObjectKind::Brep && orig->brep) kernel::ReplaceBrepSurface(orig->brep->raw(), orig->brep->raw().m_F[first_->face].m_si, new ON_NurbsSurface(raw));
       orig->InvalidateDisplay();
     }
     ctx.Print("SetSurfaceTangent: " + std::to_string(moved) + " boundary tangent-row control point(s) rotated to match the target surface's normal (edge position unchanged)");
@@ -2413,13 +2413,10 @@ class PatchSingleFaceCommand : public Command {
     int users = 0;
     for (int fi = 0; fi < b.m_F.Count(); ++fi) if (b.m_F[fi].m_si == si) ++users;
     ON_NurbsSurface* fresh = new ON_NurbsSurface(patch);
-    ON_Surface* replaced = nullptr;
-    if (users <= 1) { replaced = b.m_S[si]; b.m_S[si] = fresh; }
-    else b.m_F[pick->face].m_si = b.AddSurface(fresh);
-    // The face caches its surface pointer (ON_SurfaceProxy; ON_BrepFace::SurfaceOf() returns it first): repoint it, or Area(), Volume(), the
-    // tolerances below and everything else that evaluates the face keep reading the replaced surface. Only then is the old surface freed.
-    b.m_F[pick->face].SetProxySurface(fresh);
-    delete replaced;
+    // ReplaceBrepSurface swaps the slot AND repoints the faces' cached surface proxy (ON_SurfaceProxy; ON_BrepFace::SurfaceOf() returns it first), or
+    // Area(), Volume(), the tolerances below and everything else that evaluates the face keep reading the replaced surface; it also frees the old one.
+    if (users <= 1) kernel::ReplaceBrepSurface(b, si, fresh, true);
+    else { b.m_F[pick->face].m_si = b.AddSurface(fresh); b.m_F[pick->face].SetProxySurface(fresh); }
     // This openNURBS build's ON_Brep::SetEdgeTolerance only ever stores ON_UNSET_VALUE (the real one is an override of the full SDK), so the default
     // SetTolerancesBoxesAndFlags() left every edge of the patched polysurface at -1.2e308 and ON_Brep::IsValid() false (measured). The patch is a fit
     // rather than the old surface, so the four edges of this face get their tolerance MEASURED, and the edge recompute is switched off.
@@ -3362,7 +3359,7 @@ class SoftEditSrfCommand : public Command {
     ctx.Doc().BeginChange("SoftEditSrf");
     if (SceneObject* orig = ctx.Doc().Find(pick_->id)) {
       if (orig->kind == ObjectKind::Surface && orig->surface) orig->surface->raw() = out;
-      else if (orig->kind == ObjectKind::Brep && orig->brep) orig->brep->raw().m_S[orig->brep->raw().m_F[pick_->face].m_si] = new ON_NurbsSurface(out);
+      else if (orig->kind == ObjectKind::Brep && orig->brep) kernel::ReplaceBrepSurface(orig->brep->raw(), orig->brep->raw().m_F[pick_->face].m_si, new ON_NurbsSurface(out));
       orig->InvalidateDisplay();
     }
     ctx.Print("SoftEditSrf: " + std::to_string(moved) + " control point(s) moved with a cosine falloff within radius " + FormatNumber(radius_) + " (max displacement " + FormatNumber(delta.Length()) + ")");
