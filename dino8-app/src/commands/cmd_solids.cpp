@@ -573,8 +573,10 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
     if (spacing_code == 1 || spacing_code == 2) msg += std::string("; Spacing=") + (spacing_code == 1 ? "Uniform" : "Centripetal") + " station parameters";
     if (al.reversed || al.reseamed) msg += "; aligned first: " + std::to_string(al.reversed) + " curve(s) reversed, " + std::to_string(al.reseamed) + " seam(s) moved";
     if (want_closed) msg += "; Closed=Yes: lofted on from the last curve back to the first (periodic in the loft direction, closed surface, no ends and no caps)";
-    if (want_closed && al.wrap_twist > 0.02) msg += "; note: the last curve's seam does not meet the first's (a twist of " + sectionfit::Sci(al.wrap_twist) + " of a turn is left round the ring) - give curves whose seams correspond all the way round and SeamAlign=No";
-    else if (closed_sections) msg += capped ? "; end caps added (Cap=Yes), a closed polysurface" : (want_cap ? "" : "; uncapped (Cap=No)");
+    if (want_closed) {
+      if (al.wrap_twist > 0.02) msg += "; note: the last curve's seam does not meet the first's (a twist of " + sectionfit::Sci(al.wrap_twist) + " of a turn is left round the ring) - give curves whose seams correspond all the way round and SeamAlign=No";
+      // a closed loft has no ends: Cap does not apply, so "uncapped (Cap=No)" must not be reported for it
+    } else if (closed_sections) msg += capped ? "; end caps added (Cap=Yes), a closed polysurface" : (want_cap ? "" : "; uncapped (Cap=No)");
     ctx.Print(msg + cap_note);
     if (capped) {
       SceneObject solid = SceneObject::MakeBrep(std::move(b));
@@ -592,6 +594,11 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
     }
     return SceneObject::MakeSurface(*wall);
   } catch (const std::exception& ex) {
+    // The older control-point fit knows nothing of Closed=Yes: it would build an OPEN surface while History still records closed=1.
+    if (want_closed) {
+      ctx.Warn(std::string("Loft: Closed=Yes refused by the kernel loft (") + ex.what() + "); nothing was built");
+      return std::nullopt;
+    }
     ctx.Print(std::string("Loft: exact kernel loft not used (") + ex.what() + "); using the older control-point fit instead");
     return LoftControlGridFit(curves, rec);
   }
