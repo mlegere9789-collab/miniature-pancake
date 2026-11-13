@@ -2434,6 +2434,8 @@ echo "$CC" | grep -E "^(ok|FAIL)"
 if echo "$CC" | grep -q "^FAIL"; then fail=1; fi
 cccount "meet at one right-angle corner - replaced with one exact mitred corner pair (radius 1 and radius 2)" 1 "two fillets picked with different radii (1, then 2) at a corner are one exact pair with each pick's own radius"
 cccount "Volume = 989\.[45] cubic" 1 "the unequal pair reads 989.4-989.5 = the tessellated closed form 1000 - a 1^2 10 - a 2^2 10 + 0.2535 = 989.523, not the 983.5 the last radius applied to both gave"
+cccount "the chamfer overruns a third face at an end of this edge.*faces at its ends support are \(2 and 10\|10 and 2\)" 1 "a distance 4 past the end bound is refused with the kernel's own bound {2, 10} (o_B <= o_A = 2, s_B <= 10) instead of an approximate mesh"
+cccount "Volume = 964.4 cubic" 1 "a distance 1.9 inside the bound builds the exact closed form 1000 - 20 - 18.05 + 2.4668 = 964.417"
 cccount "^ok   expect_objects 0" 1 "chamfer-corner script cleaned up to zero objects at the end"
 
 # Extended selection and state commands: SelDupAll, SelShortCrv, SelKeyValue, SelVolumeSphere, Dot, Camera, SetActiveViewport, licence rule (see state_script.txt).

@@ -93,4 +93,30 @@ List
 @expect_objects 1
 SelAll
 Delete
+# --- A chamfer distance beyond what the faces at the edge's ENDS allow. 10-cube, vertical edge chamfered 2 (equal legs); a LATER ChamferEdge run on the top edge,
+# which now ends on that chamfer's oblique face. The rail on the top face (distance o_B) pierces the chamfer plane x/2 + y/2 = 1 at x = 2 (1 - o_B/2), on the
+# chamfer face's top edge only while o_B <= 2; the rail on the side face pierces it at z = 10 - s_B on a vertical edge of length 10, so s_B <= 10: limits {2, 10}
+# (kernel::MaxChamferDistanceWithEnds, closed form in dino8-kernel/tests/extra/chamfer_distance_limit_ends.cpp). Radius 4 is refused with that bound; the
+# approximate fallback used to answer such a request with a wrong mesh. Radius 1.9 fits: V = 1000 - 2*2/2*10 - 1.9^2/2*10 + overlap(2, 1.9) = 964.417.
+Box 1400600,0,0 1400610,10,0 10
+ChamferEdge
+Radius=2
+1400610,10,5
+Enter
+ChamferEdge
+Radius=4
+1400604,10,10
+Enter
+SelAll
+Volume
+@expect_objects 1
+ChamferEdge
+Radius=1.9
+1400604,10,10
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
 @expect_objects 0
