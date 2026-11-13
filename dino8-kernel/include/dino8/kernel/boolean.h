@@ -1176,6 +1176,19 @@ Brep OffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d ax
 double MaxInwardOffsetRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
                                          Vector3d radial_direction);
 
+// CLOSED hollow (no opening) of a solid of revolution with a thickness of its OWN for every face - the per-face (multi-thickness)
+// shell for curved bodies. `edge_thickness[i]` is the wall thickness of `edges[i]`, > 0 for every real face; an edge on the axis is not a
+// face and must be 0. The result is the two closed lumps of a hollow body in one Brep (Brep::Compound): the original solid, and the
+// per-face inward offset (the cavity: every edge moved in by its own thickness, sharp extend-and-intersect corners, arcs change radius)
+// with its orientation reversed, so Brep::Volume() is volume(original) - volume(cavity). Both lumps come from the same verified
+// engine as ShellRevolvedArcProfile()/OffsetRevolvedArcProfile() (simple section, cavity inside the profile at least the smallest
+// thickness from every face, valid closed solid, volume equal to Green's integral). ShellRevolvedArcProfile() refuses a shell with
+// nothing removed; this is its closed counterpart. Throws std::invalid_argument for a wrong-sized, non-finite or negative thickness
+// vector, a zero thickness on a real face, a thickness on an axis edge, and a thickness set whose cavity collapses (a wall at or
+// beyond the radius, floor + top at or beyond the height, an arc through its centre, corners that do not meet).
+Brep ShellClosedRevolvedArcProfile(const std::vector<MeridianEdge>& edges, Point3d axis_point, Vector3d axis_direction,
+                                   Vector3d radial_direction, const std::vector<double>& edge_thickness);
+
 // Moves ONE face of a convex planar-faced solid along its own outward
 // normal by `distance` (positive grows the solid at that face, negative
 // shrinks it), re-extending or re-trimming every OTHER face so the
