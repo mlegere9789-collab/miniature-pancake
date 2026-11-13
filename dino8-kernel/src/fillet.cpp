@@ -1,4 +1,5 @@
 #include "dino8/kernel/fillet.h"
+#include "dino8/kernel/brep_seam.h"
 
 #include <algorithm>
 #include <array>
@@ -8904,8 +8905,7 @@ Brep BuildCapRims(const Brep& solid, const RimSpec& lo, const RimSpec& hi, const
       ON_NurbsSurface* ns = p->m_F[f].SurfaceOf()->NurbsSurface();
       if (!ns) { delete p; throw std::invalid_argument(who + "could not convert the " + what + " to its exact NURBS form"); }
       const int si = p->m_F[f].m_si;
-      delete p->m_S[si];
-      p->m_S[si] = ns;
+      ReplaceBrepSurface(*p, si, ns, true);
     }
     all.Append(*p);
     delete p;
@@ -9497,8 +9497,7 @@ Brep BuildRevolveRims(const Brep& solid, const std::vector<RevolveRimRequest>& r
       ON_NurbsSurface* ns = p->m_F[f].SurfaceOf()->NurbsSurface();
       if (!ns) { delete p; throw std::invalid_argument(who + "could not convert the " + what + " to its exact NURBS form"); }
       const int si = p->m_F[f].m_si;
-      delete p->m_S[si];
-      p->m_S[si] = ns;
+      ReplaceBrepSurface(*p, si, ns, true);
     }
     all.Append(*p);
     delete p;
