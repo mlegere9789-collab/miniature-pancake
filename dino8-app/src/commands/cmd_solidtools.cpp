@@ -9,6 +9,7 @@
 // runs on closed meshes through the Manifold-backed kernel booleans and the
 // results are mesh objects; each command says so on the command line.
 #include "commands/cmd_common.h"
+#include "dino8/kernel/pattern.h"
 #include "commands/prism_solid.h"
 
 #include <algorithm>
@@ -2046,17 +2047,8 @@ void FlowAlongSrf(CommandContext& ctx, const Input& in) {
   std::optional<kernel::NurbsSurface> base = SurfaceOf(ctx, in.O(1), "FlowAlongSrf", "base surface");
   std::optional<kernel::NurbsSurface> target = SurfaceOf(ctx, in.O(2), "FlowAlongSrf", "target surface");
   if (!base || !target) return;
-  const kernel::Interval bu = base->Domain(0), bv = base->Domain(1), tu = target->Domain(0), tv = target->Domain(1);
   const kernel::NurbsSurface b = *base, t = *target;
-  PointMap fn = [=](Point3d p) {
-    const kernel::Point2d uv = b.ClosestPointParameter(p, 40, 40);
-    const Point3d on = b.PointAt(uv.x, uv.y);
-    Vector3d n = b.NormalAt(uv.x, uv.y);
-    const double d = ON_DotProduct(p - on, n);
-    const double fu = (uv.x - bu.min) / (bu.max - bu.min), fv = (uv.y - bv.min) / (bv.max - bv.min);
-    const double u2 = tu.min + (tu.max - tu.min) * fu, v2 = tv.min + (tv.max - tv.min) * fv;
-    return t.PointAt(u2, v2) + t.NormalAt(u2, v2) * d;
-  };
+  PointMap fn = [=](Point3d p) { return kernel::FlowPointAlongSurface(b, t, p); };  // (u, v, normal offset) of the base re-mapped onto the target
   ctx.Print("FlowAlongSrf: (u, v, normal offset) re-mapped from the base surface to the target surface");
   DeformObjects(ctx, in.O(0), "FlowAlongSrf", fn, in.Yes("Copy"));
 }
@@ -2094,8 +2086,7 @@ void Splop(CommandContext& ctx, const Input& in) {
   if (in.M(2).empty()) { ctx.Warn("Splop: pick points on the surface"); return; }
   std::vector<ON_Plane> targets;
   for (const Point3d& p : in.M(2)) {
-    const kernel::Point2d uv = srf->ClosestPointParameter(p, 40, 40);
-    targets.emplace_back(srf->PointAt(uv.x, uv.y), srf->NormalAt(uv.x, uv.y));
+    targets.push_back(kernel::SurfaceNormalFrameAt(*srf, p));
   }
   PlaceCopies(ctx, in.O(0), ObjectsBaseFrame(ctx, in.O(0), std::nullopt), targets, true, "Splop");
 }
@@ -2106,8 +2097,7 @@ void OrientOnSrf(CommandContext& ctx, const Input& in) {
   if (in.M(3).empty()) { ctx.Warn("OrientOnSrf: pick points on the surface"); return; }
   std::vector<ON_Plane> targets;
   for (const Point3d& p : in.M(3)) {
-    const kernel::Point2d uv = srf->ClosestPointParameter(p, 40, 40);
-    targets.emplace_back(srf->PointAt(uv.x, uv.y), srf->NormalAt(uv.x, uv.y));
+    targets.push_back(kernel::SurfaceNormalFrameAt(*srf, p));
   }
   PlaceCopies(ctx, in.O(0), ObjectsBaseFrame(ctx, in.O(0), in.P(1)), targets, in.Yes("Copy"), "OrientOnSrf");
 }

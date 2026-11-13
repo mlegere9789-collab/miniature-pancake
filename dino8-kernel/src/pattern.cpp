@@ -138,4 +138,33 @@ std::vector<Brep> ArrayBrepOnSurface(const Brep& body, const NurbsSurface& surfa
   return out;
 }
 
+ON_Plane SurfaceNormalFrameAt(const NurbsSurface& surface, Point3d near_point, Point2d* uv) {
+  if (!surface.raw().IsValid()) throw std::invalid_argument("dino8::kernel::SurfaceNormalFrameAt: the surface is not valid");
+  const Point2d p = surface.ClosestPointParameter(near_point, 40, 40);
+  if (uv) *uv = p;
+  return ON_Plane(surface.PointAt(p.x, p.y), surface.NormalAt(p.x, p.y));
+}
+
+ON_Xform OrientOnSurfaceTransform(const NurbsSurface& surface, const ON_Plane& from, Point3d near_point) {
+  ON_Xform xf;
+  xf.Rotation(from, SurfaceNormalFrameAt(surface, near_point));
+  return xf;
+}
+
+Brep OrientBrepOnSurface(const Brep& body, const NurbsSurface& surface, const ON_Plane& from, Point3d near_point) {
+  return body.Transform(OrientOnSurfaceTransform(surface, from, near_point));
+}
+
+Point3d FlowPointAlongSurface(const NurbsSurface& base, const NurbsSurface& target, Point3d p) {
+  if (!base.raw().IsValid() || !target.raw().IsValid()) throw std::invalid_argument("dino8::kernel::FlowPointAlongSurface: a surface is not valid");
+  const Interval bu = base.Domain(0), bv = base.Domain(1), tu = target.Domain(0), tv = target.Domain(1);
+  const Point2d uv = base.ClosestPointParameter(p, 40, 40);
+  const Point3d on = base.PointAt(uv.x, uv.y);
+  const Vector3d n = base.NormalAt(uv.x, uv.y);
+  const double d = ON_DotProduct(p - on, n);
+  const double fu = (uv.x - bu.min) / (bu.max - bu.min), fv = (uv.y - bv.min) / (bv.max - bv.min);
+  const double u2 = tu.min + (tu.max - tu.min) * fu, v2 = tv.min + (tv.max - tv.min) * fv;
+  return target.PointAt(u2, v2) + target.NormalAt(u2, v2) * d;
+}
+
 }  // namespace dino8::kernel
