@@ -1,0 +1,28 @@
+[package]
+name = "dino8-scene-spike"
+version = "0.1.0"
+edition = "2021"
+description = "Spike A: entity-component-relationship scene store with structural-sharing snapshots"
+publish = false
+
+[lib]
+name = "scene"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "thin"
+codegen-units = 4
+
+[profile.bench]
+inherits = "release"
