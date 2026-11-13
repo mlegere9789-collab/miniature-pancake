@@ -21,6 +21,7 @@
 #include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/cap_fan.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
+#include "dino8/kernel/detail/local_frame_mesh.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
@@ -1694,6 +1695,20 @@ bool RecenterIfFarFromOrigin(const Brep& b, Brep& out, ON_3dVector* shift = null
   return true;
 }
 }  // namespace
+
+namespace detail {
+Mesh LocalFrameClosedMesh(const Brep& b, int u_divisions, int v_divisions) {
+  Brep moved;
+  if (RecenterIfFarFromOrigin(b, moved)) {
+    try {
+      return moved.TessellateToClosedMesh(u_divisions, v_divisions);
+    } catch (const std::exception&) {
+      // fall through to the plain tessellation
+    }
+  }
+  return b.TessellateToClosedMesh(u_divisions, v_divisions);
+}
+}  // namespace detail
 
 double Brep::Volume() const {
   {
@@ -11666,7 +11681,7 @@ int Brep::UnifyNormals() {
       if (e.m_edge_index >= 0 && e.m_ti.Count() != 2) closed = false;
     }
   }
-  if (closed && TessellateToClosedMesh(4, 4).Volume() < 0.0) {
+  if (closed && detail::LocalFrameClosedMesh(*this, 4, 4).Volume() < 0.0) {
     for (int fi = 0; fi < b.m_F.Count(); ++fi) {
       if (b.m_F[fi].m_face_index < 0) continue;
       b.FlipFace(b.m_F[fi]);

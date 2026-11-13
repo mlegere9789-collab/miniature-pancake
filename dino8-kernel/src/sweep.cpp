@@ -40,6 +40,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/cap_fan.h"
+#include "dino8/kernel/detail/local_frame_mesh.h"
 #include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
@@ -1671,7 +1672,7 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
   if (brep.IsSolid()) {
     const int du_check = std::max(16, 2 * wall.SpanCount(0));
     const int dv_check = std::max(16, 2 * wall.SpanCount(1));
-    const Mesh m = result.TessellateToClosedMesh(du_check, dv_check);
+    const Mesh m = detail::LocalFrameClosedMesh(result, du_check, dv_check);
     if (m.Volume() < 0.0) brep.Flip();
   }
   return result;
@@ -2386,6 +2387,18 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
          "closed face (e.g. a full cylinder, sphere, or torus patch) needs a variable side-wall count this "
          "scoped version does not attempt");
   }
+  {
+    // A PLANAR face swept along a direction in its own plane sweeps no volume: every wall is flat, the two caps coincide with the
+    // sheet, and the "solid" came back IsValid() and IsSolid() with Volume() throwing (measured for a 3 x 4 flat sheet extruded
+    // along +x). A direction within 1e-9 of the plane is refused like a zero one.
+    ON_Plane sheet_plane;
+    if (near_surf.IsPlanar(&sheet_plane, 1e-8 * std::max(near_surf.BoundingBox().Diagonal().Length(), 1.0)) &&
+        std::fabs(ON_DotProduct(sheet_plane.zaxis, ON_3dVector(direction.x, direction.y, direction.z))) <= 1e-9 * L) {
+      Fail(caller, "direction lies in the plane of the planar face (its component along the face normal is " +
+                       std::to_string(std::fabs(ON_DotProduct(sheet_plane.zaxis, ON_3dVector(direction.x, direction.y, direction.z)))) +
+                       " of an extrusion distance " + std::to_string(L) + "), so the extrusion sweeps no volume");
+    }
+  }
 
   if (!trimmed && !body.FaceCoversWholeDomain(face_index)) {
     // A face trimmed by genuine ON_Brep loop topology only (no pseudo-trim
@@ -2474,7 +2487,7 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
     }
     Brep result = Brep::FromPlanarFaces(pfaces);
     if (result.raw().IsSolid()) {
-      const Mesh check = result.TessellateToClosedMesh(8, 8);
+      const Mesh check = detail::LocalFrameClosedMesh(result, 8, 8);
       if (check.Volume() < 0.0) result.raw().Flip();
     }
     return result;
@@ -2532,7 +2545,7 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
   if (cap && brep.IsSolid()) {
     // Outward-orientation safety net, the same one Thicken()/
     // AssembleSweptBody() themselves use.
-    const Mesh check = result.TessellateToClosedMesh(16, 16);
+    const Mesh check = detail::LocalFrameClosedMesh(result, 16, 16);
     if (check.Volume() < 0.0) brep.Flip();
   }
 
@@ -2568,7 +2581,7 @@ Brep WeldSurfaceOnlyBody(const Brep& plain, int expected_faces, bool closed, con
       Fail(caller, "the rebuilt faces did not weld into a closed solid (IsValid/IsSolid false); the surface-only result is the "
                    "un-suffixed function's");
     }
-    const Mesh check = result.TessellateToClosedMesh(16, 16);
+    const Mesh check = detail::LocalFrameClosedMesh(result, 16, 16);
     if (check.Volume() < 0.0) brep.Flip();
   }
   return result;
@@ -3237,7 +3250,7 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   // surface, and a single whole-body flip is the correct repair since
   // every face above was derived from the SAME assumption (never a
   // per-face-only mistake that a global flip could get wrong).
-  const Mesh check = result.TessellateToClosedMesh(16, 16);
+  const Mesh check = detail::LocalFrameClosedMesh(result, 16, 16);
   if (check.Volume() < 0.0) brep.Flip();
 
   return result;
@@ -3345,7 +3358,7 @@ Brep Brep::ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap) {
   // construction rules above orient it outward already, so a negative
   // tessellated volume here would mean a rule was wrong for this input.
   if (brep.IsSolid()) {
-    const Mesh m = result.TessellateToClosedMesh(16, 16);
+    const Mesh m = detail::LocalFrameClosedMesh(result, 16, 16);
     if (m.Volume() < 0.0) brep.Flip();
   }
   return result;
@@ -3774,7 +3787,7 @@ Brep Brep::AssembleRevolvedWedge(ON_NurbsSurface* wall_raw, Point3d axis_point, 
   // this input, and flipping is the safe repair).
   if (brep.IsSolid()) {
     const int divisions = std::max(16, 2 * std::max(wall.SpanCount(0), wall.SpanCount(1)));
-    const Mesh m = result.TessellateToClosedMesh(divisions, divisions);
+    const Mesh m = detail::LocalFrameClosedMesh(result, divisions, divisions);
     if (m.Volume() < 0.0) brep.Flip();
   }
   return result;
@@ -7000,7 +7013,7 @@ Brep Brep::PipeThickWalled(const NurbsCurve& rail_in, double outer_radius, doubl
   result.AppendUntrimmedFaceSideTables(faces);
 
   if (brep.IsSolid()) {
-    const Mesh check = result.TessellateToClosedMesh(16, 16);
+    const Mesh check = detail::LocalFrameClosedMesh(result, 16, 16);
     if (check.Volume() < 0.0) brep.Flip();
   }
   return result;
