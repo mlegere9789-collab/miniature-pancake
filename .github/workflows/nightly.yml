@@ -1,0 +1,126 @@
+name: Nightly kernel perf and sanitizers
+
+# Master Plan section 9.1/9.2 and Appendix B: the performance budgets (no benchmark may regress more than 3%) and the
+# address / undefined-behaviour sanitizers, run every night on the default branch's kernel.
+#   perf         Release build of dino8_bench_budgets (tests/bench_budgets.cpp), parity/tools/ci_perf.sh: measures every
+#                CI-measurable Appendix B row, compares with parity/perf_baseline.json (perf_compare.py, 3% rule) and reports
+#                the Appendix B gates it misses. Fails on a regression, a missing or an errored metric.
+#   san-build    ASan + UBSan build of dino8_kernel_tests (RelWithDebInfo, -O1, vptr check off)
+#   san-shard    the WHOLE kernel suite in 12 shards under the sanitizers (parity/tools/ci_sanitize.sh shard:K/12)
+# The same jobs, on a throwaway ref for one change, are the kverify-perf.yml template driven by kvperf.sh.
+# Thread sanitizer is not run: the kernel tests are single-threaded and Manifold is built without its parallel backend.
+
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    name: Perf (Release)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          for try in 1 2; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y ninja-build ccache; then break; fi
+            echo "apt attempt $try failed"
+          done
+          command -v ninja >/dev/null || pip install --user ninja || true
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: nightly-perf-ccache-${{ github.sha }}
+          restore-keys: nightly-perf-ccache-
+      - name: Configure
+        run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDINO8_KERNEL_BUILD_EXAMPLES=OFF -DCMAKE_CXX_COMPILER_LAUNCHER="$(command -v ccache || true)"
+      - name: Build the benchmark harness
+        run: cmake --build dino8-kernel/build --target dino8_bench_budgets
+      - name: Measure and compare with the baseline
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set +e
+          bash parity/tools/ci_perf.sh dino8-kernel/build/dino8_bench_budgets "$PWD/perf.json" 9 2>&1 | tee perf.log
+          exit ${PIPESTATUS[0]}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-metrics-${{ github.sha }}
+          path: |
+            perf.json
+            perf.log
+          retention-days: 90
+
+  san-build:
+    name: Build sanitizer test binary
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          for try in 1 2; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y ninja-build ccache; then break; fi
+            echo "apt attempt $try failed"
+          done
+          command -v ninja >/dev/null || pip install --user ninja || true
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: nightly-san-ccache-${{ github.sha }}
+          restore-keys: nightly-san-ccache-
+      - name: Configure
+        run: |
+          SAN="-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer"
+          cmake -S dino8-kernel -B dino8-kernel/build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG" -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG" \
+            -DCMAKE_CXX_FLAGS="$SAN" -DCMAKE_C_FLAGS="$SAN" -DCMAKE_EXE_LINKER_FLAGS="$SAN" \
+            -DDINO8_KERNEL_BUILD_EXAMPLES=OFF -DCMAKE_CXX_COMPILER_LAUNCHER="$(command -v ccache || true)"
+      - name: Build
+        run: cmake --build dino8-kernel/build-san --target dino8_kernel_tests
+      - name: Package
+        run: |
+          mkdir -p bundle
+          cp dino8-kernel/build-san/tests/dino8_kernel_tests bundle/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: san-kernel-tests
+          path: bundle/
+          retention-days: 2
+
+  san-shard:
+    name: Sanitizer shard ${{ matrix.k }} of 12
+    needs: san-build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        k: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: san-kernel-tests
+          path: bundle
+      - name: Run shard under ASan + UBSan
+        shell: bash
+        timeout-minutes: 120
+        run: |
+          chmod +x bundle/dino8_kernel_tests
+          set +e
+          bash parity/tools/ci_sanitize.sh bundle/dino8_kernel_tests "shard:${{ matrix.k }}/12" 2>&1 | tee san.log
+          exit ${PIPESTATUS[0]}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: san-shard-${{ matrix.k }}-log
+          path: san.log
+          retention-days: 14

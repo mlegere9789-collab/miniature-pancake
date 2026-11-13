@@ -1,0 +1,15 @@
+# Named subset of dino8_kernel_tests for the ASan + UBSan job (one DINO8_TEST_FILTER substring per line, '#' starts a comment).
+# Chosen to be fast and to cover the code most exposed to memory errors: the file parsers that read untrusted bytes, the
+# topology/boolean/section machinery that chases indices, and tessellation. The nightly job runs the WHOLE suite instead.
+# A filter must use only [A-Za-z0-9_:.-] (the lite CI control file strips everything else).
+acis_sat_tests::
+LoadStep
+LoadIges
+LoadObj
+body_section_tests::
+sealed_boolean_tests::
+boolean_diag_tests::
+topology_shell_tests::
+TestBooleanCombinePlanar
+TestSplitBrepByPlane
+TestTessellate
