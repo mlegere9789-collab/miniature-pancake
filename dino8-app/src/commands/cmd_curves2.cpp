@@ -1055,6 +1055,19 @@ class KnotEditCommand : public Command {
 // Curve-on-curve arrays and alignment
 // ---------------------------------------------------------------------------
 
+// A copy of grouped objects joined the SOURCE's group: SelGroup on the original selected the copies too, and a copied dimension
+// shared its group with the original, so Save3dm (which writes one real dimension per group) dropped the copy from the file. The
+// copies of each source group are made a group of their own.
+void RegroupCopies(CommandContext& ctx, const std::vector<ObjectId>& made) {
+  std::map<int, std::vector<ObjectId>> by_group;
+  for (ObjectId id : made) {
+    if (const SceneObject* o = ctx.Doc().Find(id)) {
+      if (o->group_id >= 0) by_group[o->group_id].push_back(id);
+    }
+  }
+  for (const auto& entry : by_group) ctx.Doc().CreateGroup(entry.second);
+}
+
 class ArrayCrvCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to array along a curve"); }
@@ -1095,12 +1108,14 @@ class ArrayCrvCommand : public Command {
       } else {
         xf = ON_Xform::TranslationTransformation(path_->curve.PointAt(params[i]) - base);
       }
+      std::vector<ObjectId> step;
       for (ObjectId id : ids_) {
         const SceneObject* o = ctx.Doc().Find(id);
         if (!o) continue;
         SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
-        ctx.Doc().Add(std::move(dup)); ++made;
+        step.push_back(ctx.Doc().Add(std::move(dup))); ++made;
       }
+      RegroupCopies(ctx, step);
     }
     ctx.Print("ArrayCrv: " + std::to_string(made) + " object(s) placed along the curve");
     Finish();
@@ -1151,7 +1166,10 @@ class ArrayCrvOnSrfCommand : public Command {
   }
   void OnNumber(CommandContext& ctx, double v) override {
     if (!path_ || !srf_) return;
-    int count = std::max(2, static_cast<int>(v));
+    // The count came through static_cast<int> unchecked: 1e30 is undefined behaviour and 1e9 asked DivideByCount for a billion parameters.
+    int count = 2;
+    std::string why;
+    if (!CountInRange(v, 2, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, ids_.size())), count, why)) { ctx.Warn("ArrayCrvOnSrf: the number of items " + why); return; }
     std::vector<double> params = path_->curve.DivideByCount(count - 1);
     if (params.empty()) { Finish(); return; }
     auto frame_at = [&](double t) {
@@ -1175,6 +1193,7 @@ class ArrayCrvOnSrfCommand : public Command {
       ON_Plane fi = frame_at(t);
       ON_Xform xf;
       xf.Rotation(f0, fi);
+      std::vector<ObjectId> step;
       for (ObjectId id : ids_) {
         const SceneObject* o = ctx.Doc().Find(id);
         if (!o) continue;
@@ -1182,9 +1201,10 @@ class ArrayCrvOnSrfCommand : public Command {
         dup.id = kNoObject;
         dup.selected = false;
         dup.Transform(xf);
-        ctx.Doc().Add(std::move(dup));
+        step.push_back(ctx.Doc().Add(std::move(dup)));
         ++made;
       }
+      RegroupCopies(ctx, step);
     }
     ctx.Print("ArrayCrvOnSrf: " + std::to_string(made) + " object(s) placed along the curve, oriented to the surface normal");
     Finish();
@@ -1249,12 +1269,14 @@ class ArraySrfCommand : public Command {
         ON_3dVector y = ON_CrossProduct(n, x);
         ON_Plane fi(p, x, y);
         ON_Xform xf; xf.Rotation(f0, fi);
+        std::vector<ObjectId> step;
         for (ObjectId id : ids_) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o) continue;
           SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
-          ctx.Doc().Add(std::move(dup)); ++made;
+          step.push_back(ctx.Doc().Add(std::move(dup))); ++made;
         }
+        RegroupCopies(ctx, step);
       }
     ctx.Print("ArraySrf: " + std::to_string(made) + " object(s) placed on the surface");
     Finish();
@@ -1486,6 +1508,7 @@ class TweenCurvesCommand : public Command {
     WantNumber("Number of tween curves", 3);
   }
   void OnNumber(CommandContext& ctx, double v) override {
+    if (curves_.size() < 2) return;  // a number typed while the two curves are still being chosen
     int n = 1;
     std::string why;
     if (!CountInRange(v, 1, kMaxCreatedItems, n, why)) { ctx.Warn("Tween: the number of tween curves " + why); return; }
@@ -2171,9 +2194,27 @@ class OffsetMultipleCommand : public Command {
     WantPoint("Side to offset (or type a distance)");
     options = {{"Distance", FormatNumber(distance_), {}, true, false}, {"Count", std::to_string(count_), {}, true, false}};
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
-    if (n == "Distance") { double d = std::atof(v.c_str()); if (d > 0) distance_ = d; options[0].value = FormatNumber(distance_); }
-    if (n == "Count") { int c = std::atoi(v.c_str()); if (c > 0) count_ = c; options[1].value = std::to_string(count_); }
+  bool SetDistance(CommandContext& ctx, double d) {
+    if (!std::isfinite(d) || !(d > 0) || d > kMaxOffsetDistance) {
+      ctx.Warn("OffsetMultiple: the distance must be a number above 0 and at most " + FormatNumber(kMaxOffsetDistance));
+      return false;
+    }
+    distance_ = d;
+    if (!options.empty()) options[0].value = FormatNumber(distance_);
+    return true;
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    char* e = nullptr;
+    const double x = std::strtod(v.c_str(), &e);
+    if (e == v.c_str() || *e != '\0') { ctx.Warn("OffsetMultiple: " + n + " needs a number"); return; }
+    if (n == "Distance") SetDistance(ctx, x);
+    if (n == "Count") {
+      int c = 1;
+      std::string why;
+      if (!CountInRange(x, 1, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, curves_.size())), c, why)) { ctx.Warn("OffsetMultiple: Count " + why); return; }
+      count_ = c;
+      if (options.size() > 1) options[1].value = std::to_string(count_);
+    }
   }
   void OnPoint(CommandContext& ctx, Point3d side) override {
     ctx.Doc().BeginChange("OffsetMultiple");
@@ -2199,9 +2240,14 @@ class OffsetMultipleCommand : public Command {
       }
     }
     ctx.Print("OffsetMultiple: " + std::to_string(made) + " curve(s) created (" + std::to_string(count_) + " offsets x " + FormatNumber(distance_) + ")");
+    if (made == 0) ctx.Doc().AbandonChange();  // nothing built: no empty undo step, Redo stays available
     Finish();
   }
-  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e && v > 0) { distance_ = v; options[0].value = FormatNumber(distance_); ctx.Print("Distance=" + FormatNumber(v) + ". Pick the side."); } }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e;
+    const double v = std::strtod(t.c_str(), &e);
+    if (e && !*e && v > 0 && SetDistance(ctx, v)) ctx.Print("Distance=" + FormatNumber(v) + (options.empty() ? ". Select the curves to offset." : ". Pick the side."));
+  }
   std::vector<CurveCopy> curves_;
   double distance_ = 1;
   int count_ = 3;

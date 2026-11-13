@@ -25,6 +25,19 @@ std::vector<SceneObject> ResolveObjects(CommandContext& ctx, const std::vector<O
   return out;
 }
 
+// A copy of grouped objects joined the SOURCE's group: SelGroup on the original selected the copies too, and a copied dimension
+// shared its group with the original, so Save3dm (which writes one real dimension per group) dropped the copy from the file. The
+// copies of each source group are made a group of their own.
+void RegroupCopies(CommandContext& ctx, const std::vector<ObjectId>& made) {
+  std::map<int, std::vector<ObjectId>> by_group;
+  for (ObjectId id : made) {
+    if (const SceneObject* o = ctx.Doc().Find(id)) {
+      if (o->group_id >= 0) by_group[o->group_id].push_back(id);
+    }
+  }
+  for (const auto& entry : by_group) ctx.Doc().CreateGroup(entry.second);
+}
+
 void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label) {
   // Overflow guard: carry the selection's bounding box through the transform first. A Move of 1e300 or a Scale of 1e30
   // used to reach the kernel (which answered "xform is singular" for the first and silently built a 1e31 wide box for
@@ -69,6 +82,7 @@ void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_
       src.Transform(xf);
       made.push_back(ctx.Doc().Add(std::move(src)));  // may reallocate objects_
     }
+    RegroupCopies(ctx, made);
     ctx.Print("Copied " + std::to_string(made.size()) + " object(s)");
   } else {
     ctx.Doc().BeginChangeForObjects(label, ids);
@@ -482,11 +496,13 @@ class ArrayCommand : public Command {
         for (int k = 0; k < counts_[2]; ++k) {
           if (i == 0 && j == 0 && k == 0) continue;
           ON_Xform xf = ON_Xform::TranslationTransformation(Vector3d(spacing.x * i, spacing.y * j, spacing.z * k));
+          std::vector<ObjectId> cell;
           for (const SceneObject& src : sources) {
             SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
-            ctx.Doc().Add(std::move(dup));
+            cell.push_back(ctx.Doc().Add(std::move(dup)));
             ++made;
           }
+          RegroupCopies(ctx, cell);
         }
     if (made == 0) ctx.Doc().AbandonChange();  // nothing copied: no empty undo step
     ctx.Print("Array created " + std::to_string(made) + " object(s)");
@@ -535,11 +551,13 @@ class ArrayLinearCommand : public Command {
     int made = 0;
     for (int i = 1; i < *count_; ++i) {
       ON_Xform xf = ON_Xform::TranslationTransformation(spacing * i);
+      std::vector<ObjectId> step;
       for (const SceneObject& src : sources) {
         SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
-        ctx.Doc().Add(std::move(dup));
+        step.push_back(ctx.Doc().Add(std::move(dup)));
         ++made;
       }
+      RegroupCopies(ctx, step);
     }
     ctx.Print("ArrayLinear created " + std::to_string(made) + " object(s)");
     ctx.ClearPreview();
@@ -582,7 +600,9 @@ class ArrayPolarCommand : public Command {
     for (int i = 1; i < n; ++i) {
       ON_Xform xf;
       xf.Rotation(fill * i / (full ? n : n - 1), ActiveNormal(ctx), center_);
-      for (const SceneObject& src : sources) { SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); ctx.Doc().Add(std::move(dup)); }
+      std::vector<ObjectId> step;
+      for (const SceneObject& src : sources) { SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); step.push_back(ctx.Doc().Add(std::move(dup))); }
+      RegroupCopies(ctx, step);
     }
     Finish();
   }
