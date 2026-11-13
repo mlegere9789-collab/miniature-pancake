@@ -98,6 +98,10 @@ def check(stem, faces, planes, cylinders, radius, bb, holed_faces):
     edges = kinds.get("EDGE_CURVE", [])
     bad = [e for e in edges if uses.get(e, 0) != 2]
     report(edges and not bad, stem + "_every_edge_used_exactly_twice", "%d edges, %d not used twice" % (len(edges), len(bad)))
+    if stem == "cut":
+        # the hole of a pierced box is a circle of radius 2: its edges must be exact CIRCLE curves (>= 2: top and bottom rim), not
+        # hundreds of short LINE segments (the sealed Boolean's hole edges are polylines today)
+        report(n("CIRCLE") >= 2, stem + "_hole_rims_are_exact_circles", "%d CIRCLE, %d LINE entities" % (n("CIRCLE"), n("LINE")))
     report(n("CYLINDRICAL_SURFACE") == cylinders, stem + "_cylindrical_surfaces", "%d (expected %d)" % (n("CYLINDRICAL_SURFACE"), cylinders))
     radii = [numbers(split_top(ents[k][1])[-1])[-1] for k in kinds.get("CYLINDRICAL_SURFACE", [])]
     report(radii and all(abs(r - radius) < 1e-6 for r in radii), stem + "_cylinder_radius", "radii %s (expected %g)" % (radii, radius))
