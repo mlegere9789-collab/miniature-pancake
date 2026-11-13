@@ -28,13 +28,24 @@ namespace {
 // instead of using one fixed epsilon on both a millimeter part and a
 // kilometer-scale one.
 double RelativeTol(const std::vector<Brep::PlanarFace>& faces) {
-  double max_extent = 0.0;
+  // 1e-9 of the solid's own size (the widest side of its bounding box), not of its distance from the origin: a 8 x 6 x 5 box 1e5 away
+  // used to get a tolerance of 1e-4, and a 8e-3 box there a tolerance (1e-4, x100 in RemoveBlend) larger than its own 0.7e-3 fillet radius,
+  // so RemoveBlend of a mitred pair picked the wrong corner vertices and refused ("the face holding both mitred edges is not in the
+  // expected cut shape"). The coordinate round-off of a point that far out (64 ulps of its magnitude) is still covered.
+  double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300}, max_abs = 0.0;
   for (const Brep::PlanarFace& f : faces) {
     for (const Point3d& p : f.loop) {
-      max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+      const double c[3] = {p.x, p.y, p.z};
+      for (int k = 0; k < 3; ++k) {
+        lo[k] = std::min(lo[k], c[k]);
+        hi[k] = std::max(hi[k], c[k]);
+        max_abs = std::max(max_abs, std::fabs(c[k]));
+      }
     }
   }
-  return std::max(1e-9, max_extent * 1e-9);
+  double extent = 0.0;
+  for (int k = 0; k < 3; ++k) extent = std::max(extent, hi[k] - lo[k]);
+  return std::max({1e-9, extent * 1e-9, 64.0 * 2.220446049250313e-16 * max_abs});
 }
 
 bool PointsEqual(const Point3d& a, const Point3d& b, double tol) { return a.DistanceTo(b) <= tol; }
