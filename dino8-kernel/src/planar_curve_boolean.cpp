@@ -115,12 +115,6 @@ std::string Prepare(const ON_Curve& in, const char* name, const ON_Plane& pl, do
   return {};
 }
 
-struct Piece {
-  ON_NurbsCurve curve;
-  ON_3dPoint start, end;
-  bool inside_other = false;
-  int owner = 0;  // 0 = a, 1 = b
-};
 
 // Cut a CCW boundary at the given parameters (in its own domain, at least 2, distinct). Returns the pieces in order, or a reason.
 std::string CutAt(const Boundary& bd, std::vector<double> ts, double tolerance, std::vector<ON_NurbsCurve>& out) {
@@ -156,78 +150,154 @@ std::string CutAt(const Boundary& bd, std::vector<double> ts, double tolerance, 
   return {};
 }
 
-}  // namespace
+// Even-odd membership of a point in a region (a set of loops: outer boundaries and holes).
+bool InRegion(const std::vector<Boundary>& r, const ON_2dPoint& p) {
+  int count = 0;
+  for (const Boundary& b : r)
+    if (Inside(b.poly, p)) ++count;
+  return count % 2 == 1;
+}
 
-PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve& b_in, const ON_Plane& plane, CurveRegionOp op, double tolerance) {
-  if (!(tolerance > 0)) return Refuse("tolerance must be positive");
-  IntersectOptions opt;
-  opt.tolerance = tolerance * 0.1;
-  Boundary A, B;
-  try {
-    if (std::string why = Prepare(a_in, "a", plane, tolerance, opt, A); !why.empty()) return Refuse(why);
-    if (std::string why = Prepare(b_in, "b", plane, tolerance, opt, B); !why.empty()) return Refuse(why);
-  } catch (const std::exception& e) {
-    return Refuse(std::string("preparing the operands failed: ") + e.what());
-  }
-  ON_BoundingBox bb = A.curve.BoundingBox();
-  bb.Union(B.curve.BoundingBox());
-  const double scale = bb.Diagonal().Length();
+double DistToRegion(const std::vector<Boundary>& r, const ON_2dPoint& p) {
+  double best = 1e300;
+  for (const Boundary& b : r) best = std::min(best, DistToPolygon(b.poly, p));
+  return best;
+}
 
-  std::vector<CurveCurveHit> hits;
-  try {
-    hits = IntersectCurves(A.curve, B.curve, opt);
-  } catch (const std::exception& e) {
-    return Refuse(std::string("curve intersection failed: ") + e.what());
+// Prepare every loop of a region, then fix the orientation by nesting depth: a loop inside an even number of the other loops is an outer
+// boundary (counterclockwise), inside an odd number a hole (clockwise). The loops of one region must not cross or touch each other.
+std::string PrepareRegion(const std::vector<ON_NurbsCurve>& loops, const char* name, const ON_Plane& pl, double tolerance, const IntersectOptions& opt,
+                          std::vector<Boundary>& out) {
+  out.clear();
+  out.resize(loops.size());
+  for (size_t k = 0; k < loops.size(); ++k) {
+    const std::string label = loops.size() == 1 ? std::string(name) : std::string(name) + " loop " + std::to_string(k);
+    if (std::string why = Prepare(loops[k], label.c_str(), pl, tolerance, opt, out[k]); !why.empty()) return why;
   }
-  // Merge hits that are the same point (a crossing at a seam is reported at both ends of a closed curve's domain).
-  std::vector<CurveCurveHit> uniq;
-  for (const CurveCurveHit& h : hits) {
-    bool dup = false;
-    for (const CurveCurveHit& u : uniq)
-      if (u.point.DistanceTo(h.point) <= 10 * tolerance) dup = true;
-    if (!dup) uniq.push_back(h);
-  }
-  // Transversality: a tangent contact is not a crossing.
-  for (const CurveCurveHit& h : uniq) {
-    const ON_3dVector ta = A.curve.TangentAt(h.ta), tb = B.curve.TangentAt(h.tb);
-    const double s = ON_CrossProduct(ta, tb).Length();
-    if (s < 1e-3) return Refuse("the boundaries touch tangentially at (" + Num(h.point.x) + ", " + Num(h.point.y) + ", " + Num(h.point.z) + ") without crossing");
-  }
-
-  for (size_t i = 0; i < uniq.size(); ++i)
-    for (size_t j = i + 1; j < uniq.size(); ++j)
-      if (uniq[i].point.DistanceTo(uniq[j].point) < 100 * tolerance)
-        return Refuse("two crossings are closer than 100 x tolerance (" + Num(uniq[i].point.DistanceTo(uniq[j].point)) + "): a piece that short has no reliable side");
-  // Near contact that is not a crossing: sample A against B's polygon; polish each local minimum of the distance profile.
-  {
-    const size_t n = A.poly.size();
-    std::vector<double> d(n);
-    for (size_t i = 0; i < n; ++i) d[i] = DistToPolygon(B.poly, A.poly[i]);
-    const double coarse = 0.01 * scale;
-    for (size_t i = 0; i < n; ++i) {
-      if (!(d[i] < coarse && d[i] <= d[(i + n - 1) % n] && d[i] <= d[(i + 1) % n])) continue;
-      double ta = A.poly_t[i];
-      const ON_3dPoint pa0 = A.curve.PointAt(ta);
-      double tb = CurveClosestParamGlobal(B.curve, pa0, 64);
-      double dist = 1e300;
-      ON_3dPoint pa = pa0, pb = B.curve.PointAt(tb);
-      for (int it = 0; it < 60; ++it) {
-        tb = CurveClosestParam(B.curve, pa, tb);
-        pb = B.curve.PointAt(tb);
-        ta = CurveClosestParam(A.curve, pb, ta);
-        pa = A.curve.PointAt(ta);
-        dist = pa.DistanceTo(pb);
+  // Loops of one region may touch each other at points (the two crescents of a symmetric difference do) but must not cross or nest into
+  // each other while touching: a loop that has a hit with another must have no sample strictly inside that other.
+  for (size_t i = 0; i < out.size(); ++i) {
+    for (size_t j = i + 1; j < out.size(); ++j) {
+      if (IntersectCurves(out[i].curve, out[j].curve, opt).empty()) continue;
+      const double clear = 100 * tolerance;
+      for (int dir = 0; dir < 2; ++dir) {
+        const Boundary& x = dir == 0 ? out[i] : out[j];
+        const Boundary& y = dir == 0 ? out[j] : out[i];
+        for (const ON_2dPoint& q : x.poly)
+          if (DistToPolygon(y.poly, q) > clear && Inside(y.poly, q))
+            return "two loops of region " + std::string(name) + " cross or overlap each other (a region's loops may touch at points but not cross)";
       }
-      if (dist > 10 * tolerance) continue;
-      bool at_hit = false;
-      for (const CurveCurveHit& h : uniq)
-        if (h.point.DistanceTo(pa) < 100 * tolerance) at_hit = true;
-      if (!at_hit) return Refuse("the boundaries touch (or share a span) near (" + Num(pa.x) + ", " + Num(pa.y) + ", " + Num(pa.z) + ") without a transversal crossing");
     }
   }
+  for (size_t i = 0; i < out.size(); ++i) {
+    // Depth from a sample well clear of every other loop (a loop may touch another at its start point).
+    int depth = 0;
+    for (size_t j = 0; j < out.size(); ++j) {
+      if (j == i) continue;
+      const size_t n = out[i].poly.size();
+      size_t best = 0;
+      double bd = -1;
+      for (size_t k = 1; k <= 7; ++k) {
+        const size_t idx = k * n / 8;
+        const double d = DistToPolygon(out[j].poly, out[i].poly[idx]);
+        if (d > bd) { bd = d; best = idx; }
+      }
+      if (Inside(out[j].poly, out[i].poly[best])) ++depth;
+    }
+    if (depth % 2 == 1) {
+      out[i].curve.Reverse();
+      SampleBoundary(out[i], pl, 64, 2048);
+    }
+  }
+  return {};
+}
 
+struct Piece {
+  ON_NurbsCurve curve;
+  ON_3dPoint start, end;
+  bool inside_other = false;
+  bool whole_loop = false;  // an uncut loop (no crossings): kept or dropped as a whole
+  int owner = 0;            // 0 = a, 1 = b
+};
+
+// a OP b for Union / Intersection / Difference on prepared regions.
+PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<Boundary>& B, const ON_Plane& plane, CurveRegionOp op, double tolerance,
+                              const IntersectOptions& opt) {
   PlanarCurveBooleanResult res;
-  res.crossings = static_cast<int>(uniq.size());
+  ON_BoundingBox bb;
+  for (const Boundary& b : A) bb.Union(b.curve.BoundingBox());
+  for (const Boundary& b : B) bb.Union(b.curve.BoundingBox());
+  const double scale = bb.IsValid() ? bb.Diagonal().Length() : 1.0;
+
+  std::vector<std::vector<double>> tsa(A.size()), tsb(B.size());
+  std::vector<CurveCurveHit> all;
+  for (size_t ia = 0; ia < A.size(); ++ia) {
+    for (size_t ib = 0; ib < B.size(); ++ib) {
+      std::vector<CurveCurveHit> hits;
+      try {
+        hits = IntersectCurves(A[ia].curve, B[ib].curve, opt);
+      } catch (const std::exception& e) {
+        return Refuse(std::string("curve intersection failed: ") + e.what());
+      }
+      // Merge hits that are the same point (a crossing at a seam is reported at both ends of a closed curve's domain).
+      std::vector<CurveCurveHit> uniq;
+      for (const CurveCurveHit& h : hits) {
+        bool dup = false;
+        for (const CurveCurveHit& u : uniq)
+          if (u.point.DistanceTo(h.point) <= 10 * tolerance) dup = true;
+        if (!dup) uniq.push_back(h);
+      }
+      // Transversality: a tangent contact is not a crossing.
+      for (const CurveCurveHit& h : uniq) {
+        const ON_3dVector ta = A[ia].curve.TangentAt(h.ta), tb = B[ib].curve.TangentAt(h.tb);
+        const double s = ON_CrossProduct(ta, tb).Length();
+        if (s < 1e-3) return Refuse("the boundaries touch tangentially at (" + Num(h.point.x) + ", " + Num(h.point.y) + ", " + Num(h.point.z) + ") without crossing");
+      }
+      for (size_t i = 0; i < uniq.size(); ++i)
+        for (size_t j = i + 1; j < uniq.size(); ++j)
+          if (uniq[i].point.DistanceTo(uniq[j].point) < 100 * tolerance)
+            return Refuse("two crossings are closer than 100 x tolerance (" + Num(uniq[i].point.DistanceTo(uniq[j].point)) + "): a piece that short has no reliable side");
+      // Near contact that is not a crossing: sample A against B's polygon; polish each local minimum of the distance profile.
+      {
+        const size_t n = A[ia].poly.size();
+        std::vector<double> d(n);
+        for (size_t i = 0; i < n; ++i) d[i] = DistToPolygon(B[ib].poly, A[ia].poly[i]);
+        const double coarse = 0.01 * scale;
+        for (size_t i = 0; i < n; ++i) {
+          if (!(d[i] < coarse && d[i] <= d[(i + n - 1) % n] && d[i] <= d[(i + 1) % n])) continue;
+          double ta = A[ia].poly_t[i];
+          const ON_3dPoint pa0 = A[ia].curve.PointAt(ta);
+          double tb = CurveClosestParamGlobal(B[ib].curve, pa0, 64);
+          double dist = 1e300;
+          ON_3dPoint pa = pa0, pb = B[ib].curve.PointAt(tb);
+          for (int it = 0; it < 60; ++it) {
+            tb = CurveClosestParam(B[ib].curve, pa, tb);
+            pb = B[ib].curve.PointAt(tb);
+            ta = CurveClosestParam(A[ia].curve, pb, ta);
+            pa = A[ia].curve.PointAt(ta);
+            dist = pa.DistanceTo(pb);
+          }
+          if (dist > 10 * tolerance) continue;
+          bool at_hit = false;
+          for (const CurveCurveHit& h : uniq)
+            if (h.point.DistanceTo(pa) < 100 * tolerance) at_hit = true;
+          if (!at_hit) return Refuse("the boundaries touch (or share a span) near (" + Num(pa.x) + ", " + Num(pa.y) + ", " + Num(pa.z) + ") without a transversal crossing");
+        }
+      }
+      if (uniq.size() % 2 != 0) return Refuse("an odd number of crossings (" + std::to_string(uniq.size()) + ") for two closed curves: a crossing was missed or a contact is tangential");
+      for (const CurveCurveHit& h : uniq) {
+        tsa[ia].push_back(h.ta);
+        tsb[ib].push_back(h.tb);
+        all.push_back(h);
+      }
+    }
+  }
+  for (size_t i = 0; i < all.size(); ++i)
+    for (size_t j = i + 1; j < all.size(); ++j)
+      if (all[i].point.DistanceTo(all[j].point) < 100 * tolerance)
+        return Refuse("two crossings are closer than 100 x tolerance (" + Num(all[i].point.DistanceTo(all[j].point)) + "): a piece that short has no reliable side");
+  res.crossings = static_cast<int>(all.size());
+
   auto push_loop = [&](ON_NurbsCurve c) {
     Boundary tmp;
     tmp.curve = c;
@@ -236,67 +306,33 @@ PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve
     res.loops.push_back(std::move(c));
   };
 
-  if (uniq.empty()) {
-    const bool a_in_b = Inside(B.poly, A.poly[0]);
-    const bool b_in_a = Inside(A.poly, B.poly[0]);
-    if (a_in_b && b_in_a) return Refuse("each boundary lies inside the other (inconsistent operands)");
-    switch (op) {
-      case CurveRegionOp::Union:
-        if (a_in_b) push_loop(B.curve);
-        else if (b_in_a) push_loop(A.curve);
-        else { push_loop(A.curve); push_loop(B.curve); }
-        break;
-      case CurveRegionOp::Intersection:
-        if (a_in_b) push_loop(A.curve);
-        else if (b_in_a) push_loop(B.curve);
-        break;
-      case CurveRegionOp::Difference:
-        if (a_in_b) break;
-        push_loop(A.curve);
-        if (b_in_a) {
-          ON_NurbsCurve hole = B.curve;
-          hole.Reverse();
-          push_loop(hole);
-        }
-        break;
-    }
-    res.ok = true;
-    return res;
-  }
-
-  if (uniq.size() % 2 != 0) return Refuse("an odd number of crossings (" + std::to_string(uniq.size()) + ") for two closed curves: a crossing was missed or a contact is tangential");
-
-  std::vector<double> tsa, tsb;
-  for (const CurveCurveHit& h : uniq) {
-    tsa.push_back(h.ta);
-    tsb.push_back(h.tb);
-  }
-  std::vector<ON_NurbsCurve> pa, pb;
-  try {
-    if (std::string why = CutAt(A, tsa, tolerance, pa); !why.empty()) return Refuse("curve a: " + why);
-    if (std::string why = CutAt(B, tsb, tolerance, pb); !why.empty()) return Refuse("curve b: " + why);
-  } catch (const std::exception& e) {
-    return Refuse(std::string("cutting the boundaries failed: ") + e.what());
-  }
-
   std::vector<Piece> pieces;
-  auto classify = [&](std::vector<ON_NurbsCurve>& src, int owner, const Boundary& other) -> std::string {
-    for (ON_NurbsCurve& c : src) {
-      Piece p;
-      p.curve = c;
-      p.owner = owner;
-      p.start = c.PointAtStart();
-      p.end = c.PointAtEnd();
-      const ON_2dPoint mid = InPlane(plane, c.PointAt(c.Domain().ParameterAt(0.5)));
-      const double dist = DistToPolygon(other.poly, mid);
-      if (dist < 10 * tolerance) return "a boundary piece lies on the other boundary (shared span)";
-      p.inside_other = Inside(other.poly, mid);
-      pieces.push_back(std::move(p));
+  auto classify = [&](const std::vector<Boundary>& src, const std::vector<std::vector<double>>& ts, int owner, const std::vector<Boundary>& other) -> std::string {
+    for (size_t k = 0; k < src.size(); ++k) {
+      std::vector<ON_NurbsCurve> cut;
+      const bool whole = ts[k].empty();
+      if (whole) {
+        cut.push_back(src[k].curve);
+      } else if (std::string why = CutAt(src[k], ts[k], tolerance, cut); !why.empty()) {
+        return std::string(owner == 0 ? "region a: " : "region b: ") + why;
+      }
+      for (ON_NurbsCurve& c : cut) {
+        Piece p;
+        p.curve = c;
+        p.owner = owner;
+        p.whole_loop = whole;
+        p.start = c.PointAtStart();
+        p.end = c.PointAtEnd();
+        const ON_2dPoint mid = InPlane(plane, whole ? src[k].curve.PointAt(src[k].poly_t[0]) : c.PointAt(c.Domain().ParameterAt(0.5)));
+        if (DistToRegion(other, mid) < 10 * tolerance) return "a boundary piece lies on the other boundary (shared span)";
+        p.inside_other = InRegion(other, mid);
+        pieces.push_back(std::move(p));
+      }
     }
     return {};
   };
-  if (std::string why = classify(pa, 0, B); !why.empty()) return Refuse(why);
-  if (std::string why = classify(pb, 1, A); !why.empty()) return Refuse(why);
+  if (std::string why = classify(A, tsa, 0, B); !why.empty()) return Refuse(why);
+  if (std::string why = classify(B, tsb, 1, A); !why.empty()) return Refuse(why);
 
   // Which pieces the operation keeps, and whether each runs backwards.
   std::vector<Piece> kept;
@@ -305,7 +341,7 @@ PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve
     switch (op) {
       case CurveRegionOp::Union: keep = !p.inside_other; break;
       case CurveRegionOp::Intersection: keep = p.inside_other; break;
-      case CurveRegionOp::Difference:
+      default:  // Difference (symmetric difference is split into two Differences by the caller)
         if (p.owner == 0) keep = !p.inside_other;
         else { keep = p.inside_other; reverse = true; }
         break;
@@ -315,7 +351,8 @@ PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve
       p.curve.Reverse();
       std::swap(p.start, p.end);
     }
-    kept.push_back(std::move(p));
+    if (p.whole_loop) push_loop(p.curve);
+    else kept.push_back(std::move(p));
   }
 
   // Chain the kept pieces end to end into closed loops.
@@ -361,9 +398,64 @@ PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve
   return res;
 }
 
+IntersectOptions OptionsFor(double tolerance) {
+  IntersectOptions opt;
+  opt.tolerance = tolerance * 0.1;
+  return opt;
+}
+
+}  // namespace
+
+PlanarCurveBooleanResult PlanarRegionBoolean(const PlanarCurveRegion& a, const PlanarCurveRegion& b, const ON_Plane& plane, CurveRegionOp op, double tolerance) {
+  if (!(tolerance > 0)) return Refuse("tolerance must be positive");
+  const IntersectOptions opt = OptionsFor(tolerance);
+  std::vector<Boundary> A, B;
+  try {
+    if (std::string why = PrepareRegion(a.loops, "a", plane, tolerance, opt, A); !why.empty()) return Refuse(why);
+    if (std::string why = PrepareRegion(b.loops, "b", plane, tolerance, opt, B); !why.empty()) return Refuse(why);
+    if (op != CurveRegionOp::SymmetricDifference) return Core(A, B, plane, op, tolerance, opt);
+    PlanarCurveBooleanResult amb = Core(A, B, plane, CurveRegionOp::Difference, tolerance, opt);
+    if (!amb.ok) return amb;
+    const PlanarCurveBooleanResult bma = Core(B, A, plane, CurveRegionOp::Difference, tolerance, opt);
+    if (!bma.ok) return bma;
+    for (size_t i = 0; i < bma.loops.size(); ++i) {
+      amb.loops.push_back(bma.loops[i]);
+      amb.loop_is_hole.push_back(bma.loop_is_hole[i]);
+    }
+    return amb;
+  } catch (const std::exception& e) {
+    return Refuse(std::string("the region boolean failed: ") + e.what());
+  }
+}
+
+PlanarCurveBooleanResult PlanarRegionBooleanN(const std::vector<PlanarCurveRegion>& regions, const ON_Plane& plane, CurveRegionOp op, double tolerance) {
+  if (regions.size() < 2) return Refuse("an N-way boolean needs at least two regions");
+  PlanarCurveRegion acc = regions[0];
+  PlanarCurveBooleanResult last;
+  int crossings = 0;
+  for (size_t i = 1; i < regions.size(); ++i) {
+    last = PlanarRegionBoolean(acc, regions[i], plane, op, tolerance);
+    if (!last.ok) {
+      last.refusal_reason = "step " + std::to_string(i) + " of the fold: " + last.refusal_reason;
+      return last;
+    }
+    crossings += last.crossings;
+    acc = RegionOf(last);
+  }
+  last.crossings = crossings;
+  return last;
+}
+
+PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve& b_in, const ON_Plane& plane, CurveRegionOp op, double tolerance) {
+  PlanarCurveRegion a, b;
+  for (auto [in, region] : {std::pair<const ON_Curve*, PlanarCurveRegion*>{&a_in, &a}, {&b_in, &b}}) {
+    std::unique_ptr<ON_NurbsCurve> nc(in->NurbsCurve());
+    if (!nc || !nc->IsValid()) return Refuse(std::string("curve ") + (region == &a ? "a" : "b") + " has no valid NURBS form");
+    region->loops.push_back(*nc);
+  }
+  return PlanarRegionBoolean(a, b, plane, op, tolerance);
+}
 
 PlanarCurveRegion RegionOf(const PlanarCurveBooleanResult& r) { return PlanarCurveRegion{r.loops}; }
-PlanarCurveBooleanResult PlanarRegionBoolean(const PlanarCurveRegion&, const PlanarCurveRegion&, const ON_Plane&, CurveRegionOp, double) { return Refuse("not implemented"); }
-PlanarCurveBooleanResult PlanarRegionBooleanN(const std::vector<PlanarCurveRegion>&, const ON_Plane&, CurveRegionOp, double) { return Refuse("not implemented"); }
 
 }  // namespace dino8::kernel
