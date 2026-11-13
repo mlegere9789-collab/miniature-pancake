@@ -1363,7 +1363,7 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tol
   // covered by the typed-refusal catalogue; this closes one concrete site
   // of that gap. A negative `tolerance` is untouched - it still means
   // "auto-derive", exactly as before this check existed.
-  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
+  if (!std::isfinite(tolerance) || (tolerance >= 0.0 && !(tolerance > 0.0))) {
     throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombinePlanar",
                                  "dino8::kernel::BooleanCombinePlanar: an explicit non-negative tolerance must be "
                                  "positive (pass a negative value to request the auto-derived default)");
@@ -1894,6 +1894,7 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
+  if (n == 0) throw std::invalid_argument("dino8::kernel::ShellConvexPlanar: the solid has no faces");
 
   if (wall_thickness.size() != static_cast<size_t>(n)) {
     throw std::invalid_argument(
@@ -1919,11 +1920,14 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
     }
     is_removed[static_cast<size_t>(idx)] = true;
   }
+  if (std::count(is_removed.begin(), is_removed.end(), true) == n) {
+    throw std::invalid_argument("dino8::kernel::ShellConvexPlanar: every face is listed in removed_faces - nothing would be left of the shell");
+  }
 
   for (int i = 0; i < n; ++i) {
     if (!is_removed[static_cast<size_t>(i)] &&
         (!std::isfinite(wall_thickness[static_cast<size_t>(i)]) ||
-         !(wall_thickness[static_cast<size_t>(i)] > 0.0))) {
+         !(wall_thickness[static_cast<size_t>(i)] > 1e-6))) {
       throw std::invalid_argument(
           "dino8::kernel::ShellConvexPlanar: wall_thickness[" + std::to_string(i) +
           "] must be finite and positive for a kept face");
@@ -2112,23 +2116,32 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
     }
   }
 
-  return Brep::FromPlanarFaces(result);
+  Brep shell = Brep::FromPlanarFaces(result);
+  // At extreme scale (1e12 cube, 1 thick) the faces no longer meet within tolerance and FromPlanarFaces hands back an invalid Brep: say so.
+  if (!shell.raw().IsValid()) {
+    throw std::invalid_argument("dino8::kernel::ShellConvexPlanar: the shell's faces do not join into a valid B-rep at this size / thickness ratio");
+  }
+  return shell;
 }
 
 Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness) {
   if (!std::isfinite(outer_radius) || !(outer_radius > 0.0)) {
     throw std::invalid_argument("dino8::kernel::ShellClosedSphere: outer_radius must be finite and positive");
   }
-  if (!std::isfinite(thickness) || !(thickness > 0.0) || !(thickness < outer_radius)) {
+  if (!std::isfinite(thickness) || !(thickness > 1e-6) || !(thickness < outer_radius)) {
     throw std::invalid_argument(
-        "dino8::kernel::ShellClosedSphere: thickness must be finite and strictly "
-        "between 0 and outer_radius - otherwise the inner sphere collapses "
+        "dino8::kernel::ShellClosedSphere: thickness must be finite, above the kernel distance tolerance (1e-6) and strictly "
+        "below outer_radius - otherwise the inner sphere collapses "
         "through, or inverts past, the center");
   }
   Brep outer = Brep::Sphere(center, outer_radius);
   Brep inner = Brep::Sphere(center, outer_radius - thickness);
   inner.raw().FlipFace(inner.raw().m_F[0]);
-  return Brep::Compound({outer, inner});
+  Brep shell = Brep::Compound({outer, inner});
+  if (!shell.raw().IsValid()) {  // a 1e12 radius: the two spheres no longer form a valid compound
+    throw std::invalid_argument("dino8::kernel::ShellClosedSphere: the two spheres do not form a valid B-rep at this radius / thickness ratio");
+  }
+  return shell;
 }
 
 Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness) {
@@ -2143,7 +2156,7 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
         "major_radius - otherwise the OUTER torus itself is already a "
         "self-intersecting spindle torus");
   }
-  if (!std::isfinite(thickness) || !(thickness > 0.0) || !(thickness < outer_minor_radius)) {
+  if (!std::isfinite(thickness) || !(thickness > 1e-6) || !(thickness < outer_minor_radius)) {
     throw std::invalid_argument(
         "dino8::kernel::ShellClosedTorus: thickness must be finite and strictly "
         "between 0 and outer_minor_radius - otherwise the inner torus collapses "
@@ -2169,8 +2182,8 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
 
 Brep ShellClosedExtrusion(const NurbsCurve& profile, Vector3d direction, double thickness) {
   const std::string fn = "dino8::kernel::ShellClosedExtrusion: ";
-  if (!std::isfinite(thickness) || !(thickness > 0.0)) {
-    throw std::invalid_argument(fn + "thickness must be finite and positive");
+  if (!std::isfinite(thickness) || !(thickness > 1e-6)) {
+    throw std::invalid_argument(fn + "thickness must be finite and above the kernel distance tolerance (1e-6)");
   }
   if (!std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z)) {
     throw std::invalid_argument(fn + "direction must be finite");
@@ -3654,6 +3667,7 @@ Brep MoveFaceConvexPlanar(const Brep& solid, int face_index, const ON_Xform& xfo
 Brep OffsetSolidConvexPlanar(const Brep& solid, const std::vector<double>& distances) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
+  if (n == 0) throw std::invalid_argument("dino8::kernel::OffsetSolidConvexPlanar: the solid has no faces");
   if (distances.size() != static_cast<size_t>(n)) {
     throw std::invalid_argument(
         "dino8::kernel::OffsetSolidConvexPlanar: distances.size() must equal "
@@ -9888,7 +9902,7 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tole
   // guard it would silently demand exact bit-for-bit coincidence from
   // every distance test below instead of being refused up front the way
   // every other caller-tolerance precondition in this file already is.
-  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
+  if (!std::isfinite(tolerance) || (tolerance >= 0.0 && !(tolerance > 0.0))) {
     throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineMixed",
                                  "dino8::kernel::BooleanCombineMixed: an explicit non-negative tolerance must be "
                                  "positive (pass a negative value to request the auto-derived default)");
