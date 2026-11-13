@@ -3557,9 +3557,16 @@ class FilletEdgeCommand : public Command {
   void FlushPendingFillet(CommandContext& ctx) {
     if (pending_fillet_.empty()) return;
     const std::vector<std::pair<Point3d, Point3d>> edges = std::move(pending_fillet_);
+    std::vector<double> radii = std::move(pending_fillet_radii_);
     const ObjectId id = pending_fillet_id_;
     pending_fillet_.clear();
+    pending_fillet_radii_.clear();
     pending_fillet_id_ = kNoObject;
+    if (radii.size() != edges.size()) radii.assign(edges.size(), radius_);
+    // Edges picked with DIFFERENT radii cannot go through the multi-edge batch calls (one radius for all): only a pair at one corner (below) or the
+    // one-by-one replay, each edge with the radius it was picked with, can build them.
+    bool mixed_radii = false;
+    for (double rr : radii) mixed_radii = mixed_radii || std::fabs(rr - radii.front()) > 1e-9;
     const std::string label = "FilletEdge";
     const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
     const SceneObject* o = ctx.Doc().Find(id);
@@ -3570,11 +3577,13 @@ class FilletEdgeCommand : public Command {
       kernel::Brep result;
       bool ok = false;
       try {
-        result = kernel::FilletConvexEdges(kb, edges, radius_);
-        ok = true;
+        if (!mixed_radii) {
+          result = kernel::FilletConvexEdges(kb, edges, radius_);
+          ok = true;
+        }
       } catch (const std::exception&) {
       }
-      if (!ok) {
+      if (!ok && !mixed_radii) {
         try {
           result = kernel::FilletConcaveEdges(kb, edges, radius_);
           ok = true;
@@ -3600,7 +3609,8 @@ class FilletEdgeCommand : public Command {
         }
         if (shared) {
           try {
-            result = kernel::FilletConvexEdgePairMitre(kb, V, end_a, end_b, radius_, radius_);
+            // end_a belongs to the first staged edge (radius radii[0]), end_b to the second
+            result = kernel::FilletConvexEdgePairMitre(kb, V, end_a, end_b, radii[0], radii[1]);
             EdgeBlendOp pop;
             pop.d1 = radius_;
             pop.edges = edges;
@@ -3609,7 +3619,7 @@ class FilletEdgeCommand : public Command {
             std::string note;
             CommitEdgeBlend(ctx, id, *b, result.raw(), label, pop, made_, note);
             ctx.Print(label + ": 2 staged edges of object " + std::to_string(id) + " meet at one right-angle corner - replaced with one exact mitred corner pair (" +
-                       RadiusDescription() + ")" + note);
+                       (mixed_radii ? "radius " + FormatNumber(radii[0]) + " and radius " + FormatNumber(radii[1]) : RadiusDescription()) + ")" + note);
             return;
           } catch (const std::exception& ex) {
             ctx.Print(label + ": the two staged edges share a corner but the exact mitred corner pair is not available (" + ex.what() +
@@ -3644,7 +3654,10 @@ class FilletEdgeCommand : public Command {
     // now" guarantee a real second click already gave the old, pre-staging
     // sequential behavior this replay reproduces.
     flushing_fillet_ = true;
-    for (const std::pair<Point3d, Point3d>& e : edges) {
+    const double radius_at_flush = radius_;
+    for (size_t ei_staged = 0; ei_staged < edges.size(); ++ei_staged) {
+      const std::pair<Point3d, Point3d>& e = edges[ei_staged];
+      radius_ = mixed_radii ? radii[ei_staged] : radius_at_flush;  // each edge keeps the radius it was picked with when they differ
       const SceneObject* oc = ctx.Doc().Find(id);
       std::optional<ON_Brep> bc = oc ? BrepOfObject(*oc) : std::nullopt;
       if (!bc) continue;
@@ -3655,6 +3668,7 @@ class FilletEdgeCommand : public Command {
       replay.edge = ei;
       Run(ctx, replay);
     }
+    radius_ = radius_at_flush;
     flushing_fillet_ = false;
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
@@ -4309,6 +4323,7 @@ class FilletEdgeCommand : public Command {
         }
         pending_fillet_id_ = pick.id;
         pending_fillet_.emplace_back(edge.PointAtStart(), edge.PointAtEnd());
+        pending_fillet_radii_.push_back(radius_);
         ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
                    " staged for an exact fillet (" + RadiusDescription() + ") - " + std::to_string(pending_fillet_.size()) +
                    " staged, Enter to apply");
@@ -5376,6 +5391,7 @@ class FilletEdgeCommand : public Command {
   // through that unchanged, sequential, independent path instead of
   // refusing outright - see FlushPendingFillet's own comment.
   std::vector<std::pair<Point3d, Point3d>> pending_fillet_;
+  std::vector<double> pending_fillet_radii_;  // the radius current when each staged edge was picked (parallel to pending_fillet_)
   ObjectId pending_fillet_id_ = kNoObject;
   // Set around FlushPendingFillet's own replay loop so the staging check in
   // Run() steps aside and the ordinary TryExactFillet-or-approximate logic
