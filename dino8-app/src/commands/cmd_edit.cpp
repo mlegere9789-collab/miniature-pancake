@@ -180,7 +180,10 @@ class OffsetCommand : public Command {
     char* e; double v = std::strtod(t.c_str(), &e);
     if (e && !*e && v > 0) {
       if (!std::isfinite(v) || v > kMaxOffsetDistance) { ctx.Warn("Offset: the distance must be a number above 0 and at most " + FormatNumber(kMaxOffsetDistance)); return; }
-      distance_ = v; options[0].value = FormatNumber(distance_); ctx.Print("Distance=" + FormatNumber(v) + ". Pick the side.");
+      // `options` is still empty while the curves are being selected ("Offset" then "3"): options[0] was an out-of-range write (a crash).
+      distance_ = v;
+      if (!options.empty()) options[0].value = FormatNumber(distance_);
+      ctx.Print("Distance=" + FormatNumber(v) + (options.empty() ? ". Select the curves to offset." : ". Pick the side."));
     }
   }
   void OnPoint(CommandContext& ctx, Point3d side) override {
