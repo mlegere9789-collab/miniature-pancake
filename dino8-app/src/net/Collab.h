@@ -7,7 +7,14 @@
 //
 // Same honestly-scoped, POSIX-sockets-only shape as net/ComputeServer.h:
 // one small, real building block, not a competing product (no encryption,
-// no auth, no NAT traversal - loopback/LAN use, same as that file). Start()
+// no NAT traversal). Access control: with a token set (SetToken) every
+// connection must pass an HMAC-SHA256 challenge/response before a single
+// frame is relayed to or from it - the token itself never crosses the
+// wire, only HMAC(token, per-connection nonce). That is AUTHENTICATION,
+// not confidentiality: the document snapshots that follow travel in clear
+// text, and a party on the path could read or inject after the handshake.
+// Start() binds loopback unless `lan` is set; the session layer only allows
+// that together with a token. Start()
 // always fails with a clear message on a platform without POSIX sockets
 // (Windows) rather than silently pretending to listen, exactly like
 // ComputeServer::Start / AccessibilityLinux's AT-SPI2 bridge.
@@ -58,6 +65,10 @@ bool TryParseFrame(const std::string& buffer, std::string* payload, size_t* cons
 // TryParseFrame.
 std::string BuildFrame(const std::string& payload);
 
+// Handshake frames (token mode only). Server -> client: "DINO8COLLAB1 CHALLENGE <32 hex nonce>". Client -> server: "DINO8COLLAB1 AUTH
+// <64 hex HMAC-SHA256(token, nonce)>". Server -> client: "DINO8COLLAB1 OK" or "DINO8COLLAB1 DENIED" (then the connection is closed).
+constexpr const char* kCollabHandshakeTag = "DINO8COLLAB1 ";
+
 class CollabServer {
  public:
   CollabServer() = default;
@@ -69,8 +80,22 @@ class CollabServer {
   // ephemeral port - see Port() below). Returns false, with `error` set to
   // a human-readable reason, if the socket/bind/listen calls fail or this
   // build has no POSIX socket support.
-  bool Start(int port, std::string& error);
+  // `lan` binds every interface (0.0.0.0) instead of loopback only.
+  bool Start(int port, std::string& error, bool lan = false);
   void Stop();
+  // A non-empty token makes every connection authenticate (see the top of this file) before it is relayed to or from. Set it before
+  // Start(); an empty token (the default) is the old open relay.
+  void SetToken(const std::string& token) { token_ = token; }
+  bool AuthRequired() const { return !token_.empty(); }
+  // A connection that has not authenticated within this long is dropped (default 10 s).
+  void SetAuthTimeoutMs(int ms) { auth_timeout_ms_ = ms; }
+  bool Lan() const { return lan_; }
+  // "127.0.0.1" or "0.0.0.0" while listening.
+  std::string BoundAddress() const { return listen_fd_ < 0 ? std::string() : (lan_ ? "0.0.0.0" : "127.0.0.1"); }
+  // Connections that completed the handshake (every connection, when no token is set) / that were rejected: wrong or missing token,
+  // a frame sent before authenticating, or a bad handshake.
+  size_t AuthedCount() const;
+  size_t RejectedCount() const { return rejected_; }
   bool IsRunning() const { return listen_fd_ >= 0; }
   int Port() const { return port_; }
   size_t ClientCount() const { return clients_.size(); }
@@ -92,10 +117,17 @@ class CollabServer {
   struct ClientConn {
     int fd = -1;
     std::string inbuf;
+    bool authed = true;
+    std::string nonce;
+    long long accepted_ms = 0;
   };
   int listen_fd_ = -1;
   int port_ = 0;
   std::vector<ClientConn> clients_;
+  std::string token_;
+  bool lan_ = false;
+  int auth_timeout_ms_ = 10000;
+  size_t rejected_ = 0;
 };
 
 class CollabClient {
@@ -113,6 +145,14 @@ class CollabClient {
   void Disconnect();
   bool IsConnected() const { return fd_ >= 0; }
 
+  // With a token set the client answers the host's challenge (inside PollOnce); Send() then holds payloads back until the host has
+  // accepted it, so nothing is ever sent unauthenticated. PollOnce returns false, with the reason, when the host rejects the token,
+  // requires one this client lacks, or (token set) never asks for it within the timeout (default 5 s).
+  void SetToken(const std::string& token) { token_ = token; }
+  // True once the host accepted the token - or right away when no token is set.
+  bool IsAuthenticated() const { return token_.empty() || authed_; }
+  void SetAuthTimeoutMs(int ms) { auth_timeout_ms_ = ms; }
+
   bool Send(const std::string& payload, std::string& error);
 
   // Reads whatever is currently available (non-blocking) and appends every
@@ -124,6 +164,12 @@ class CollabClient {
  private:
   int fd_ = -1;
   std::string inbuf_;
+  std::string token_;
+  bool authed_ = false;
+  bool answered_ = false;
+  long long connected_ms_ = 0;
+  int auth_timeout_ms_ = 5000;
+  std::vector<std::string> held_;
 };
 
 }  // namespace dino8::app

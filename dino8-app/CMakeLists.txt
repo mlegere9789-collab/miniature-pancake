@@ -1031,13 +1031,17 @@ if(DINO8_BUILD_TESTS)
                                     src/doc/Document.cpp src/doc/SceneObject.cpp src/doc/SubObjectEdit.cpp
                                     src/geom/BrepMesher.cpp src/spatial/ObjectGrid.cpp src/io/File3dm.cpp
                                     src/drafting/HatchLibrary.cpp src/geom/TextOutline.cpp src/util/json_mini.cpp
-                                    tests/test_collab_format_number_shim.cpp)
+                                    src/util/Sha256.cpp tests/test_collab_format_number_shim.cpp)
   # geom/TextOutline.cpp (text-as-curves, used by File3dm.cpp's text export
   # path) needs OpenNURBS' own bundled FreeType headers/library - the exact
   # same include dir and target Dino8 itself links a few hundred lines above.
   target_include_directories(dino8_test_collab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${opennurbs_SOURCE_DIR}/freetype263/include)
   target_link_libraries(dino8_test_collab PRIVATE dino8_kernel opennurbs_public_freetype)
   add_test(NAME dino8_collab COMMAND dino8_test_collab)
+  # Token authentication for that relay (HMAC-SHA256 challenge/response, rejection, LAN bind): standalone, Collab.cpp + Sha256.cpp only.
+  add_executable(dino8_test_collab_auth tests/test_collab_auth.cpp src/net/Collab.cpp src/util/Sha256.cpp)
+  target_include_directories(dino8_test_collab_auth PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_collab_auth COMMAND dino8_test_collab_auth)
 
   # A real, small, trained neural network (src/ml/CommandPredictor.h/.cpp) -
   # see PARITY_MAP.md's "Real AI/ML-based modeling assistance"

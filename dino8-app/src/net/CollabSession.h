@@ -39,6 +39,15 @@ namespace dino8::app {
 
 enum class CollabRole { None, Host, Joined };
 
+// Access control for a session (see net/Collab.h): an optional shared token (at least kMinCollabTokenLength characters) and, for a
+// host, whether to listen on every interface instead of loopback only. `lan` without a token is refused: the relay would accept any
+// machine that can reach the port.
+constexpr size_t kMinCollabTokenLength = 8;
+struct CollabOptions {
+  std::string token;
+  bool lan = false;
+};
+
 class CollabSession {
  public:
   CollabSession() = default;
@@ -55,9 +64,11 @@ class CollabSession {
   // this process to it over loopback, so the host participates in the
   // session through the exact same CollabClient code path a Join()ed peer
   // uses - no separate "I'm the host" logic anywhere past this call.
-  bool Host(int port, std::string& error);
-  // Connects to a session already Host()ed elsewhere (host:port).
-  bool Join(const std::string& host, int port, std::string& error);
+  bool Host(int port, std::string& error) { return Host(port, CollabOptions(), error); }
+  bool Host(int port, const CollabOptions& options, std::string& error);
+  // Connects to a session already Host()ed elsewhere (host:port); with a token, authenticates as described in net/Collab.h.
+  bool Join(const std::string& host, int port, std::string& error) { return Join(host, port, CollabOptions(), error); }
+  bool Join(const std::string& host, int port, const CollabOptions& options, std::string& error);
   // Disconnects (and, if hosting, stops the relay) - a no-op if not active.
   void Leave();
 
@@ -70,7 +81,21 @@ class CollabSession {
   // for CollabRole::Host (the relay itself only exists there); 0 otherwise.
   // Subtracts this host's own loopback connection, so it reads as "how many
   // collaborators", not "how many sockets".
-  size_t PeerCount() const { return hosting_ && server_.ClientCount() > 0 ? server_.ClientCount() - 1 : 0; }
+  size_t PeerCount() const {
+    if (!hosting_) return 0;
+    const size_t authed = server_.AuthedCount();
+    const size_t own = client_.IsAuthenticated() ? 1 : 0;  // this host's own loopback connection
+    return authed > own ? authed - own : 0;
+  }
+  // Host only: a token is required / the relay listens on every interface / how many connections were turned away.
+  bool TokenRequired() const { return hosting_ && server_.AuthRequired(); }
+  bool Lan() const { return hosting_ && server_.Lan(); }
+  size_t RejectedCount() const { return hosting_ ? server_.RejectedCount() : 0; }
+  std::string BoundAddress() const { return hosting_ ? server_.BoundAddress() : std::string(); }
+  // Why the last session ended on its own (connection lost, token rejected, ...); empty if it never did, cleared by Host()/Join().
+  const std::string& LastError() const { return last_error_; }
+  // Joined with a token: false until the host has accepted it.
+  bool Authenticated() const { return client_.IsAuthenticated(); }
   // Total snapshots this process has sent/received this session - a simple,
   // directly observable "is this actually doing anything" counter for the
   // CollabStatus command and for tests, independent of PeerCount (which can
@@ -100,6 +125,7 @@ class CollabSession {
   bool has_synced_ = false;
   std::uint64_t sent_count_ = 0;
   std::uint64_t applied_count_ = 0;
+  std::string last_error_;
 };
 
 // Per-frame hook (Application::Frame, alongside UpdateCageCaptives/
