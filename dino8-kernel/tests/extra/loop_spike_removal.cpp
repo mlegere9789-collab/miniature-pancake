@@ -1,7 +1,7 @@
 // A fragment loop whose straight run was merged from two samplings of different density can carry two points placed OUT OF ORDER
-// along the run, a few 1e-8 off it (the 2D crossing predicate only sees offsets above ~1e-9 on steps this short): the boundary goes
+// along the run, a few 1e-6 off it (measured on the 34113-vertex polygon of TestHolePatterns: 0.8e-6 and 2.4e-6 on 2.2e-4 steps): the boundary goes
 // forward along the line, steps back to the first out-of-order point, and crosses its own edges. The spike removal every loop goes
-// through used to judge "the same line" by the ANGLE between steps (1e-9 rad), which an offset of 2e-8 on a 2e-4 step (1e-4 rad)
+// through used to judge "the same line" by the ANGLE between steps (1e-9 rad), which an offset of 2.4e-6 on a 2e-4 step (1e-2 rad)
 // exceeds, so such a loop stayed non-simple and the tessellation refused it ("trim_polygon must be simple"). Oracles are independent:
 // the shoelace area of the intended rectangle and the engine-independent 2D simplicity predicate.
 #include <cmath>
@@ -59,15 +59,15 @@ D8_EXTRA_TEST(LoopSpikeRemovalMergesOutOfOrderPointsOfAStraightRun) {
     d8test::Check(pts.size() == n, "clean loop: no vertex removed");
     d8test::Check(dino8::kernel::detail::IsSimplePolygon(uv), "clean loop: simple");
   }
-  // The defect: two out-of-order points 2e-8 off the run, on opposite sides (their edges cross the run's own edges).
+  // The defect: two out-of-order points 2.4e-6 off the run, on opposite sides (their edges cross the run's own edges).
   {
     std::vector<Point3d> pts;
     std::vector<Point2d> uv;
-    BuildLoop(2e-8, true, pts, uv);
+    BuildLoop(2.4e-6, true, pts, uv);
     d8test::Check(!dino8::kernel::detail::IsSimplePolygon(uv), "fixture: the out-of-order loop really crosses itself");
     dino8::kernel::detail::RemoveBacktrackSpikesForTest(pts, uv);
     d8test::Check(dino8::kernel::detail::IsSimplePolygon(uv), "out-of-order points of a straight run: the loop is simple afterwards");
-    d8test::Check(std::fabs(ShoelaceArea(uv) - 8.0) < 1e-9, "...and still encloses the 4 x 2 rectangle (area 8)");
+    d8test::Check(std::fabs(ShoelaceArea(uv) - 8.0) < 1e-6, "...and still encloses the 4 x 2 rectangle (area 8)");
     bool monotone = true;
     // the bottom run is the leading points whose y is within 1e-9 of 0 (up to the corner at x = 4)
     for (size_t i = 0; i + 1 < uv.size() && std::fabs(uv[i + 1].y) < 1e-9 && uv[i + 1].x > 0.0; ++i) monotone = monotone && uv[i + 1].x > uv[i].x;

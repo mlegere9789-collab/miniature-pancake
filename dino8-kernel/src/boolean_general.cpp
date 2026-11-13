@@ -3092,7 +3092,7 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
 // and the second cut left the same at x = 0. The faces stay geometrically right (a ray-cast membership grid agrees everywhere) but
 // EarClipTriangulate, which every area / volume / tessellation of the face goes through, loses area on a polygon with such a spike:
 // Area() 300.317 for 302.400 (the flanks 29.333 and 28.583 for 30), and the sealed body's volume 113.111 for 112.
-// Only a retrace along one line is removed (within 1e-7 of the loop's size perpendicular to it, and reversing), so the deliberate
+// Only a retrace along one line is removed (within 1e-5 of the loop's size and 5% of the step perpendicular to it, and reversing), so the deliberate
 // in-and-out corridor of a keyhole bridge, whose two sides are offset by a small perpendicular, is untouched.
 void RemoveBacktrackSpikes(std::vector<UVPt>& loop) {
   if (loop.size() < 4) return;
@@ -3112,10 +3112,11 @@ void RemoveBacktrackSpikes(std::vector<UVPt>& loop) {
   const double diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
   const double tol = 1e-9 * std::max(diag, 1.0);
   const double tol_uv = 1e-9 * std::max({uhi - ulo, vhi - vlo, 1e-12});
-  // Perpendicular offset still counted as "the same line": 1e-7 of the loop's size (the keyhole corridor's offset is ~1e-3 of its
-  // bridge length, orders of magnitude wider).
-  const double tol_perp = 1e-7 * std::max(diag, 1.0);
-  const double tol_perp_uv = 1e-7 * std::max({uhi - ulo, vhi - vlo, 1e-12});
+  // Perpendicular offset still counted as "the same line": 1e-5 of the loop's size, and never more than 5% of the shorter of the two
+  // steps (measured: points 0.8e-6 and 2.4e-6 off a run of 2.2e-4 steps). Only a direct reversal is a retrace, so a keyhole corridor
+  // (a hole polygon lies between its two sides) is not affected.
+  const double tol_perp = 1e-5 * std::max(diag, 1.0);
+  const double tol_perp_uv = 1e-5 * std::max({uhi - ulo, vhi - vlo, 1e-12});
   const auto sub =[](const Point3d& a, const Point3d& b) { return Vector3d(a.x - b.x, a.y - b.y, a.z - b.z); };
   // Two loop points are the same point only when BOTH their 3D positions and their (u, v) coincide: a pole or apex edge of a revolved
   // surface has one 3D point and a run of distinct (u, v), and that run is the loop's real boundary in parameter space.
@@ -3131,11 +3132,11 @@ void RemoveBacktrackSpikes(std::vector<UVPt>& loop) {
     // 2e-4 steps whose points carry 1e-12 of interpolation noise turns by 5e-9 rad, over the old angle bound of 1e-9, so two
     // points of a straight run placed out of order (a reconciled run's extra sample landing between earlier vertices) were
     // never recognised as a retrace and crossed the run's own edges ("trim_polygon must be simple" on a 34113-vertex polygon).
-    if (ON_CrossProduct(ab, bq).Length() > tol_perp * lab || ab * bq >= 0.0) return false;
+    if (ON_CrossProduct(ab, bq).Length() > std::min(tol_perp, 0.05 * std::min(lab, lbq)) * lab || ab * bq >= 0.0) return false;
     const double ux = b.uv.x - a.uv.x, uy = b.uv.y - a.uv.y, vx = q.uv.x - b.uv.x, vy = q.uv.y - b.uv.y;
     const double lu = std::hypot(ux, uy), lv = std::hypot(vx, vy);
     if (lu <= tol_uv || lv <= tol_uv) return false;
-    if (std::fabs(ux * vy - uy * vx) > tol_perp_uv * lu || ux * vx + uy * vy >= 0.0) return false;
+    if (std::fabs(ux * vy - uy * vx) > std::min(tol_perp_uv, 0.05 * std::min(lu, lv)) * lu || ux * vx + uy * vy >= 0.0) return false;
     *lab_out = lab;
     *lbq_out = lbq;
     return true;
