@@ -124,7 +124,9 @@ struct MatchFollowReport {
 // matched, written to its optional out_kind - useful for a caller (e.g.
 // an app command) that wants to report which case applied, or confirm
 // it wasn't a coincidental match.
-enum class DevelopableKind { Plane, Cylinder, Cone };
+// GeneralCylinder: a translation surface C(s) + t d (an extrusion of ANY profile curve along a straight line, e.g. a parabola or a spline extruded),
+// which is developable with a closed-form unroll (x = arc length of the profile projected perpendicular to d, y = the height along d).
+enum class DevelopableKind { Plane, Cylinder, Cone, GeneralCylinder };
 
 // What `NurbsSurface::Join()` did to bring the two operands to a common
 // form before splicing them, and how well the merged surface reproduces
@@ -2357,6 +2359,20 @@ class NurbsSurface {
   // receives the flat mesh's own measured area (`Mesh::Area()`), which
   // is therefore an approximation of the true closed-form patch area
   // that improves with `u_divisions`/`v_divisions`, not an exact value.
+  //
+  // After plane, cylinder and cone, a fourth exact case is tried: a GENERAL
+  // CYLINDER - a translation surface S(s, t) = C(s) + t d, i.e. an extrusion
+  // of any profile curve (a parabola, a spline, ...) along a straight line:
+  // one parametric direction has degree 1 with two control points and equal
+  // weights, every control-point pair differing by the same vector d. It is
+  // developable, and unrolls to x = the arc length of the profile projected
+  // perpendicular to d (integrated here to ~1e-12, per grid step), y = the
+  // point's height along d: a parallelogram-sheared strip whose area is the
+  // closed form (perpendicular arc length) * |d|. Flat vertices at the same
+  // profile station share x exactly, so the flat mesh tiles exactly (like the
+  // cylinder, its area is exact for any division count). Reported as
+  // DevelopableKind::GeneralCylinder. A general CONE (apex + arbitrary base
+  // curve) and any other developable remain refused.
   //
   // Throws std::invalid_argument if either division count is < 1.
   Result UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area = nullptr,
