@@ -8,6 +8,7 @@
 //  - the caps and rim sit exactly where the moved planes put them;
 //  - honest refusals: top twisted 20 degrees (side quads not planar), mismatched counts, non-finite distance, a concave
 //    profile, an inward offset that collapses the solid, zero height.
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -133,7 +134,78 @@ D8_EXTRA_TEST(OffsetRuledSolidRefuses) {
   const std::vector<Point3d> L0 = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(4, 2, 0), Point3d(2, 2, 0), Point3d(2, 4, 0), Point3d(0, 4, 0)};
   std::vector<Point3d> L1 = L0;
   for (Point3d& p : L1) p.z = 3.0;
-  d8test::Check(Throws(L0, L1, 0.2), "concave L profile -> refused");
+  d8test::Check(!Throws(L0, L1, 0.2), "concave L profile prism: outward offset now supported");
+  d8test::Check(Throws(L0, L1, -1.2), "concave L prism: inward offset past the 2-wide strip (edge collapses) -> refused");
+  {
+    // U profile with a slot of width 1: an outward offset of 0.6 closes the slot (its floor edge flips) -> refused; 0.4 is fine
+    const std::vector<Point3d> U0 = {Point3d(0, 0, 0), Point3d(5, 0, 0), Point3d(5, 4, 0), Point3d(3, 4, 0), Point3d(3, 1, 0),
+                                     Point3d(2, 1, 0), Point3d(2, 4, 0), Point3d(0, 4, 0)};
+    std::vector<Point3d> U1 = U0;
+    for (Point3d& p : U1) p.z = 3.0;
+    d8test::Check(!Throws(U0, U1, 0.4), "U slot prism: offset 0.4 (slot width 1 still open) builds");
+    d8test::Check(Throws(U0, U1, 0.6), "U slot prism: offset 0.6 closes the slot -> refused");
+  }
   d8test::Check(Throws(b, t, -4.5), "inward offset past the half height (8 + 2d < 0) -> refused");
   d8test::Check(Throws(b, Square(5.0, 0.0), 1.0), "both profiles on the same plane (no height) -> refused");
+}
+
+// Concave L profile, (0,0)(4,0)(4,2)(2,2)(2,4)(0,4), area 12, perimeter 16, 5 convex 90-degree corners and 1 reflex one.
+//  - prism of height H=5: the mitred section area is 12 + 16 d + (5 - 1) d^2 (each convex corner adds d^2, the reflex one removes d^2),
+//    the caps move d, so V = (H + 2 d)(12 + 16 d + 4 d^2);
+//  - frustum scaled by f(z) = 1 - z/12 about the origin over height 6: each side plane m.p = c f(z) moves to m.p = c f(z) + d s_i,
+//    s_i = sqrt(1 + (c_i/12)^2), so the section at z is L f(z) with edge i pushed out by d s_i; its area is rebuilt here by
+//    intersecting the moved edge LINES in 2D (shoelace), then integrated with Simpson over [-d, 6+d] (quadratic in z -> exact).
+D8_EXTRA_TEST(OffsetRuledSolidConcaveL) {
+  const std::vector<Point3d> L0 = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(4, 2, 0), Point3d(2, 2, 0), Point3d(2, 4, 0), Point3d(0, 4, 0)};
+  auto at = [&](double z, double f) {
+    std::vector<Point3d> p = L0;
+    for (Point3d& q : p) q = Point3d(q.x * f, q.y * f, z);
+    return p;
+  };
+  for (double d : {0.0, 0.3, 0.8, -0.4, -0.8}) {
+    const Brep r = OffsetRuledSolid(at(0.0, 1.0), at(5.0, 1.0), d);
+    const double expect = (5.0 + 2.0 * d) * (12.0 + 16.0 * d + 4.0 * d * d);
+    d8test::Check(r.raw().IsSolid() && r.PlanarFaces().size() == 8, "concave L prism offset: 8-face solid");
+    d8test::Check(Rel(r.Volume(), expect) < 1e-9, "concave L prism offset: V = (H+2d)(12 + 16d + 4d^2)");
+  }
+  // frustum oracle: 2D line intersections of the moved edges
+  const double xs[6] = {0, 4, 4, 2, 2, 0}, ys[6] = {0, 0, 2, 2, 4, 4};
+  auto section_area = [&](double z, double d) {
+    const double f = 1.0 - z / 12.0;
+    double a[6], b[6], c[6];  // a x + b y = c, outward normal (a,b)
+    for (int i = 0; i < 6; ++i) {
+      const int j = (i + 1) % 6;
+      double ex = xs[j] - xs[i], ey = ys[j] - ys[i];
+      const double l = std::sqrt(ex * ex + ey * ey);
+      a[i] = ey / l;
+      b[i] = -ex / l;  // outward for a CCW polygon
+      const double ci = a[i] * xs[i] + b[i] * ys[i];
+      const double s = std::sqrt(1.0 + (ci / 12.0) * (ci / 12.0));
+      c[i] = ci * f + d * s;
+    }
+    double px[6], py[6];
+    for (int i = 0; i < 6; ++i) {  // vertex i = edge (i-1) meets edge i
+      const int h = (i + 5) % 6;
+      const double det = a[h] * b[i] - a[i] * b[h];
+      px[i] = (c[h] * b[i] - c[i] * b[h]) / det;
+      py[i] = (a[h] * c[i] - a[i] * c[h]) / det;
+    }
+    double A = 0.0;
+    for (int i = 0; i < 6; ++i) A += px[i] * py[(i + 1) % 6] - px[(i + 1) % 6] * py[i];
+    return 0.5 * A;
+  };
+  for (double d : {0.0, 0.3, 0.8, -0.4, -0.3}) {
+    const Brep r = OffsetRuledSolid(at(0.0, 1.0), at(6.0, 0.5), d);
+    d8test::Check(r.raw().IsSolid(), "concave L frustum offset: IsSolid");
+    d8test::Check(Rel(r.Volume(), Simpson([&](double z) { return section_area(z, d); }, -d, 6.0 + d)) < 1e-9,
+                  "concave L frustum offset: volume = Simpson of the mitred section areas");
+  }
+  // reversed winding, swapped profiles: same body
+  {
+    std::vector<Point3d> rb = at(0.0, 1.0), rt = at(5.0, 1.0);
+    std::reverse(rb.begin(), rb.end());
+    std::reverse(rt.begin(), rt.end());
+    d8test::Check(Rel(OffsetRuledSolid(rb, rt, 0.3).Volume(), OffsetRuledSolid(at(0.0, 1.0), at(5.0, 1.0), 0.3).Volume()) < 1e-12,
+                  "concave L prism: reversed winding gives the same body");
+  }
 }
