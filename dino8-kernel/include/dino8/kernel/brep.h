@@ -6280,6 +6280,9 @@ class Brep {
       // boundary with a genuine dead end), closed with fewer than 3
       // vertices, or encloses no measurable area.
       OpenOrDegenerateChain,
+      // Only ever reported by CapNakedLoops(): a closed four-edge loop (non-planar or with curved edges) whose Coons patch
+      // could not be built, folds over itself, or did not weld onto the rim completely. The Brep is left as it was.
+      FreeformPatchFailed,
     };
     Reason reason = Reason::OpenOrDegenerateChain;
     // The naked edges collected for this chain before it was discarded,
@@ -6297,7 +6300,23 @@ class Brep {
   // cleared, so a caller can accumulate it across several calls.
   int CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped);
 
-  // CapPlanarHoles() followed by the freeform caps for the loops it declines. At this commit it is the planar pass only.
+  // Caps every naked-edge loop this class can close, planar or not: the PARITY_MAP.md "Cap naked loops" row's own named gap
+  // ("actually CAPPING a non-planar hole - not just naming it - needs a real surface fit"), closed for the 4-sided case.
+  //
+  // First the planar pass, CapPlanarHoles(tolerance) repeated until it adds nothing (capping one hole can resolve a junction
+  // that made another chain ambiguous). Then every chain that pass declines for being NonPlanar or CurvedEdge and that is a
+  // CLOSED loop of exactly four naked edges is capped by the exact Coons patch through its four edge curves
+  // (NurbsSurface::CoonsPatch: bottom = the chain's first edge as walked, right = the second, top and left = the third and
+  // fourth reversed; the patch reproduces all four edge curves, so its boundary IS the rim - no fit tolerance). The patch is
+  // appended as one untrimmed face (FromSurface) and welded onto the rim with JoinNakedEdges(tolerance), which also orients it
+  // against its neighbours. A straight skew quad gets the bilinear patch; curved rim edges of any degree are used as they are.
+  //
+  // Refused, never guessed (the hole stays open, the Brep untouched by that chain, and `skipped` - appended to, never cleared,
+  // like the overload above - names the chain): a loop of three, five or more edges that is not planar, a chain that does not
+  // close, and a four-edge loop whose patch the weld does not close completely, whose Coons construction fails (corner gap
+  // above `tolerance`, non-positive blended weight) or whose patch folds over itself (its surface normals, sampled on a 9 x 9
+  // grid, do not all lie in the half-space of the centre normal) - those last three are reported as FreeformPatchFailed, and the
+  // Brep is restored exactly as it was before that attempt. Returns the number of caps added (planar plus freeform).
   int CapNakedLoops(double tolerance = tolerance::kEdgeJoin, std::vector<SkippedCap>* skipped = nullptr);
 
   // A standalone, single-face open shell exactly capping `boundary` (a
