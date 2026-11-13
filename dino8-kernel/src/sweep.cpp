@@ -200,6 +200,16 @@ void CopyKnots(const ON_NurbsCurve& c, ON_NurbsSurface& s, int dir) {
   for (int i = 0; i < c.KnotCount(); ++i) s.SetKnot(dir, i, c.Knot(i));
 }
 
+// A profile / section / rail / radius whose own extent is below the kernel's distance tolerance (1e-6) cannot be resolved by the
+// constructions below: Extrude, Pipe, Loft and Sweep1 of a 1e-12 square returned an INVALID Brep silently. Refused up front.
+void RequireResolvable(const ON_NurbsCurve& c, const char* caller, const char* what) {
+  ON_BoundingBox bb;
+  c.GetBoundingBox(bb);
+  if (bb.IsValid() && !(bb.Diagonal().Length() > tolerance::kDistance)) {
+    Fail(caller, std::string(what) + " is smaller than the kernel distance tolerance (1e-6) and cannot be resolved");
+  }
+}
+
 double CurveScale(const ON_NurbsCurve& c) {
   ON_BoundingBox bb;
   c.GetBoundingBox(bb);
@@ -1987,8 +1997,10 @@ Brep Brep::Extrude(const NurbsCurve& profile, Vector3d direction, bool cap) {
   const char* caller = "Extrude";
   const double L = direction.Length();
   if (!(L > 0.0)) Fail(caller, "direction must be non-zero (its length is the extrusion distance)");
+  if (!(L > tolerance::kDistance)) Fail(caller, "the extrusion distance is smaller than the kernel distance tolerance (1e-6)");
   ON_NurbsCurve c = profile.raw();
   if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
+  RequireResolvable(c, caller, "the profile");
   ClampIfPeriodic(c);
   const bool closed = c.IsClosed();
   const bool want_caps = cap && closed;
@@ -4219,7 +4231,17 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   }
   std::vector<ON_NurbsCurve> sections;
   sections.reserve(static_cast<size_t>(N));
-  for (const NurbsCurve& s : sections_in) sections.push_back(s.raw());
+  ON_BoundingBox all_sections;
+  for (const NurbsCurve& s : sections_in) {
+    sections.push_back(s.raw());
+    ON_BoundingBox bb;
+    s.raw().GetBoundingBox(bb);
+    all_sections.Union(bb);
+  }
+  // (an apex section may be a point, so only the whole set is tested)
+  if (all_sections.IsValid() && !(all_sections.Diagonal().Length() > tolerance::kDistance)) {
+    Fail(caller, "the sections together are smaller than the kernel distance tolerance (1e-6) and cannot be resolved");
+  }
   if (align_seams) {
     if (want_tangent) {
       Fail(caller, "align_seams cannot be combined with start_tangent/end_tangent: the tangent curves are fields over the "
@@ -4762,6 +4784,8 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
   ON_NurbsCurve section = section_in.raw();
   if (!section.IsValid()) Fail(caller, "section is not a valid NURBS curve");
+  RequireResolvable(section, caller, "the section");
+  RequireResolvable(rail, caller, "the rail");
   ClampIfPeriodic(section);
   const bool wrap = rail.IsClosed();
 
@@ -6698,6 +6722,7 @@ Brep Brep::Sweep1Sections(const std::vector<NurbsCurve>& sections_in, const Nurb
 Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, bool round_caps) {
   const char* caller = "Pipe";
   if (!(radius > 0.0)) Fail(caller, "radius must be positive");
+  if (!(radius > tolerance::kDistance)) Fail(caller, "radius is smaller than the kernel distance tolerance (1e-6)");
   const ON_NurbsCurve& r = rail.raw();
   if (!r.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
   ON_3dVector t0 = r.TangentAt(r.Domain().Min());
