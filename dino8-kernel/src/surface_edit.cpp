@@ -15,6 +15,7 @@
 
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/degree_reduce.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/surface_continuity.h"
@@ -802,6 +803,54 @@ Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degre
   return Result::Ok;
 }
 
+namespace {
+
+// One exact-structure degree of reduction in `direction` (0 = U, 1 = V): every control row (direction 0) or column
+// (direction 1) is a curve over the surface's own knot vector in that direction, and the Bezier-chain reduction is linear in
+// the homogeneous control points, so the curve routine applied to each line reduces the whole net consistently. The result
+// has multiplicity degree - 1 at every former knot (the caller removes knots again) and the same domain.
+bool ReduceSurfaceOneDegree(const ON_NurbsSurface& in, int direction, ON_NurbsSurface& out) {
+  const int p = in.Degree(direction);
+  const int n = in.CVCount(direction), m = in.CVCount(1 - direction);
+  const bool rational = in.IsRational();
+  if (p < 2 || !in.IsClamped(direction, 2)) return false;
+  std::vector<ON_NurbsCurve> lines(static_cast<size_t>(m));
+  for (int j = 0; j < m; ++j) {
+    ON_NurbsCurve c;
+    if (!c.Create(3, rational, p + 1, n)) return false;
+    for (int k = 0; k < c.KnotCount(); ++k) c.SetKnot(k, in.Knot(direction, k));
+    for (int i = 0; i < n; ++i) {
+      ON_4dPoint h;
+      if (direction == 0) in.GetCV(i, j, h);
+      else in.GetCV(j, i, h);
+      if (rational) c.SetCV(i, h);
+      else c.SetCV(i, ON_3dPoint(h.x, h.y, h.z));
+    }
+    if (!dino8::kernel::detail::ReduceOneDegreeBezierChain(c, lines[static_cast<size_t>(j)])) return false;
+  }
+  const int n2 = lines[0].CVCount();
+  ON_NurbsSurface r;
+  const bool created = direction == 0 ? r.Create(3, rational, p, in.Order(1), n2, m) : r.Create(3, rational, in.Order(0), p, m, n2);
+  if (!created) return false;
+  for (int k = 0; k < r.KnotCount(direction); ++k) r.SetKnot(direction, k, lines[0].Knot(k));
+  for (int k = 0; k < r.KnotCount(1 - direction); ++k) r.SetKnot(1 - direction, k, in.Knot(1 - direction, k));
+  for (int j = 0; j < m; ++j) {
+    for (int i = 0; i < n2; ++i) {
+      ON_4dPoint h;
+      lines[static_cast<size_t>(j)].GetCV(i, h);
+      if (!rational) h.w = 1.0;
+      const bool ok = direction == 0 ? (rational ? r.SetCV(i, j, h) : r.SetCV(i, j, ON_3dPoint(h.x, h.y, h.z)))
+                                     : (rational ? r.SetCV(j, i, h) : r.SetCV(j, i, ON_3dPoint(h.x, h.y, h.z)));
+      if (!ok) return false;
+    }
+  }
+  if (!r.IsValid()) return false;
+  out = r;
+  return true;
+}
+
+}  // namespace
+
 Result NurbsSurface::ReduceDegree(int direction, int target_degree, double tolerance,
                                    double* out_max_deviation) {
   if (direction != 0 && direction != 1) {
@@ -826,6 +875,41 @@ Result NurbsSurface::ReduceDegree(int direction, int target_degree, double toler
   const int original_u_degree = DegreeU();
   const int original_v_degree = DegreeV();
   const int original_count = direction == 0 ? original_u_count : original_v_count;
+
+  // Exact-structure path first (as NurbsCurve::ReduceDegree): a surface that is the degree elevation of a lower-degree one in
+  // `direction` returns with its original knots and net. One degree at a time, every control line reduced on its Bezier chain,
+  // then RemoveMultiKnots in that direction; accepted only when the deviation MEASURED against this surface at the same
+  // parameters (the domain is preserved) on a 65 x 65 grid is within `tolerance` and the net is no larger than this one's.
+  // Otherwise the refit below runs unchanged.
+  if (surface_.IsClamped(direction, 2)) {
+    NurbsSurface work;
+    work.surface_ = surface_;
+    bool ok = true;
+    for (int d = current_degree; d > target_degree && ok; --d) {
+      ON_NurbsSurface next;
+      if (!ReduceSurfaceOneDegree(work.surface_, direction, next)) {
+        ok = false;
+        break;
+      }
+      work.surface_ = next;
+      work.RemoveMultiKnots(direction, tolerance);  // Failed (nothing removable) is fine: the chain keeps its knots
+    }
+    if (ok && work.surface_.Degree(direction) == target_degree && work.surface_.CVCount(direction) <= original_count) {
+      double worst = 0.0;
+      const ON_Interval du = surface_.Domain(0), dv = surface_.Domain(1);
+      for (int i = 0; i <= 64; ++i) {
+        for (int j = 0; j <= 64; ++j) {
+          const double u = du.ParameterAt(i / 64.0), v = dv.ParameterAt(j / 64.0);
+          worst = std::max(worst, surface_.PointAt(u, v).DistanceTo(work.surface_.PointAt(u, v)));
+        }
+      }
+      if (worst <= tolerance) {
+        surface_ = work.surface_;
+        if (out_max_deviation) *out_max_deviation = worst;
+        return Result::Ok;
+      }
+    }
+  }
 
   std::vector<int> candidate_counts;
   for (int cv = target_degree + 1; cv < original_count; cv *= 2) candidate_counts.push_back(cv);
