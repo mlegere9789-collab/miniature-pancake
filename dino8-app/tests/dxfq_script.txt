@@ -1,0 +1,61 @@
+SetActiveViewport Top
+New
+Line 0,0,0 10,0,0
+NewLayer Walls
+SetLayerLinetype Name=Dashed Layer=Walls
+Line 0,5,0 10,5,0
+SelLast
+SetLinetype Name=Center
+SelNone
+NewLayer Hidden
+Line 0,6,0 10,6,0
+LayerOff Hidden
+NewLayer Locked
+Line 0,7,0 10,7,0
+LayerLock Locked
+SetLayer Default
+Text Height=5 Hello 0,20,0
+CPlane
+0,0,0
+1,1,0
+Enter
+Text Height=2.5 Slant 50,20,0
+CPlane World
+Ellipse 30,0,0 38,0,0 30,3,0
+Ellipse 60,0,0 66,8,0 56.8,2.4,0
+InterpCrv 0,40,0 5,45,0 10,40,0 15,45,0
+Enter
+Curve 0,60,0 5,70,0 10,50,0 15,60,0 20,70,0
+Enter
+DimLinear 100,0,0 140,0,0 100,10,0
+DimAligned 100,20,0 130,60,0 90,40,0
+Circle 200,0,0 5
+SelLast
+DimRadius
+210,0,0
+Circle 200,30,0 4
+SelLast
+DimDiameter
+210,30,0
+DimAngle
+300,0,0
+310,0,0
+300,10,0
+Rectangle 400,0,0 420,10,0
+SelLast
+Hatch Pattern=Solid
+SelNone
+SelAll
+Export @TMP@/q1.dxf
+New
+Rectangle 0,0,0 20,10,0
+SelLast
+Hatch Pattern=ANSI31 Scale=8 Rotation=30
+SelNone
+SelAll
+Export @TMP@/q2_live.dxf
+SelNone
+SelClosedCrv
+Delete
+SelAll
+Export @TMP@/q2_baked.dxf

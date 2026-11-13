@@ -284,6 +284,7 @@ class DxfWriter {
 
   void Point(int base, Point3d p) { G(base, p.x); G(base + 10, p.y); G(base + 20, p.z); }
 
+
   void BeginEntity(const char* type, const std::string& layer, const Color* color, const std::string* owner_handle = nullptr) {
     G(0, std::string(type));
     G(5, Handle());
@@ -390,6 +391,135 @@ void WriteDxfSpline(DxfWriter& w, const ON_NurbsCurve& nc, const std::string& la
   }
 }
 
+// A closed planar curve that lies exactly on one ellipse (not a circle - those are CIRCLEs above) and runs once around it,
+// as the centre, the major-axis vector (centre to the end of the major axis), the ellipse's plane normal and the ratio of
+// minor to major radius a DXF ELLIPSE entity stores. OpenNURBS' own ON_Curve::IsEllipse only ever answers for circles, so
+// this fits the general conic A x^2 + B xy + C y^2 + D x + E y = 1 through 64 samples in the curve's plane (centred and
+// scaled for conditioning), reads centre and axes off it, and then accepts it only if 200 other samples lie on that ellipse
+// to 1e-7 of the radius and their angle around it runs monotonically through exactly 2*pi - so a curve that merely passes
+// near an ellipse (or goes round it twice, or turns back) is never mislabelled and keeps its exact SPLINE.
+struct DxfEllipseSpec {
+  Point3d center;
+  Vector3d major;
+  Vector3d normal;
+  double ratio = 1.0;
+};
+
+bool RecognizeDxfEllipse(const ON_NurbsCurve& nc, DxfEllipseSpec& out) {
+  if (!nc.IsClosed() || nc.Degree() < 2) return false;
+  ON_Plane plane;
+  if (!nc.IsPlanar(&plane, 1e-6)) return false;
+  const ON_Interval dom = nc.Domain();
+  auto local = [&](double t, double& u, double& v) {
+    const ON_3dPoint p = nc.PointAt(t);
+    plane.ClosestPointTo(p, &u, &v);
+  };
+  constexpr int kFit = 64;
+  std::vector<std::pair<double, double>> pts;
+  double mx = 0, my = 0;
+  for (int i = 0; i < kFit; ++i) {
+    double u, v;
+    local(dom.ParameterAt(static_cast<double>(i) / kFit), u, v);
+    pts.push_back({u, v});
+    mx += u;
+    my += v;
+  }
+  mx /= kFit;
+  my /= kFit;
+  double s = 0;
+  for (auto& p : pts) { p.first -= mx; p.second -= my; s += p.first * p.first + p.second * p.second; }
+  s = std::sqrt(s / kFit);
+  if (!(s > 1e-9)) return false;
+  for (auto& p : pts) { p.first /= s; p.second /= s; }
+  // Normal equations of the least-squares fit of [x^2, xy, y^2, x, y] . c = 1.
+  double M[5][6] = {};
+  for (const auto& p : pts) {
+    const double r[5] = {p.first * p.first, p.first * p.second, p.second * p.second, p.first, p.second};
+    for (int i = 0; i < 5; ++i) {
+      for (int j = 0; j < 5; ++j) M[i][j] += r[i] * r[j];
+      M[i][5] += r[i];
+    }
+  }
+  for (int c = 0; c < 5; ++c) {
+    int piv = c;
+    for (int r = c + 1; r < 5; ++r) if (std::fabs(M[r][c]) > std::fabs(M[piv][c])) piv = r;
+    if (std::fabs(M[piv][c]) < 1e-12) return false;
+    if (piv != c) for (int j = 0; j < 6; ++j) std::swap(M[piv][j], M[c][j]);
+    for (int r = 0; r < 5; ++r) {
+      if (r == c) continue;
+      const double f = M[r][c] / M[c][c];
+      for (int j = c; j < 6; ++j) M[r][j] -= f * M[c][j];
+    }
+  }
+  double q[5];
+  for (int i = 0; i < 5; ++i) q[i] = M[i][5] / M[i][i];
+  const double A = q[0], B = q[1], C = q[2], D = q[3], E = q[4];
+  const double det = 4 * A * C - B * B;
+  if (!(A > 0) || !(det > 1e-12)) return false;  // not an ellipse
+  const double cx = (B * E - 2 * C * D) / det, cy = (B * D - 2 * A * E) / det;
+  const double K = 1.0 - (A * cx * cx + B * cx * cy + C * cy * cy + D * cx + E * cy);
+  if (!(K > 1e-12)) return false;
+  const double mean = (A + C) / 2, dif = std::sqrt(((A - C) / 2) * ((A - C) / 2) + (B / 2) * (B / 2));
+  const double lmax = mean + dif, lmin = mean - dif;
+  if (!(lmin > 1e-12)) return false;
+  const double th = 0.5 * std::atan2(B, A - C);  // direction of the larger eigenvalue = the minor axis
+  const double minor_dir[2] = {std::cos(th), std::sin(th)};
+  const double major_dir[2] = {-minor_dir[1], minor_dir[0]};
+  const double a = std::sqrt(K / lmin), b = std::sqrt(K / lmax);  // scaled semi-axes, a >= b
+  if (!(b / a < 1.0 - 1e-6) || !(b / a > 1e-6)) return false;  // a circle, or a sliver
+  // Verification on 200 fresh samples (offset half a fit step so none coincides with a fit sample).
+  constexpr int kCheck = 200;
+  double prev = 0, total = 0;
+  int dir = 0;
+  for (int i = 0; i <= kCheck; ++i) {
+    double u, v;
+    local(dom.ParameterAt((static_cast<double>(i % kCheck) + 0.37) / kCheck), u, v);
+    const double x = (u - mx) / s - cx, y = (v - my) / s - cy;
+    const double xa = (x * major_dir[0] + y * major_dir[1]) / a, yb = (x * minor_dir[0] + y * minor_dir[1]) / b;
+    if (std::fabs(std::sqrt(xa * xa + yb * yb) - 1.0) > 1e-7) return false;
+    const double phi = std::atan2(yb, xa);
+    if (i > 0) {
+      double step = phi - prev;
+      while (step > ON_PI) step -= 2 * ON_PI;
+      while (step < -ON_PI) step += 2 * ON_PI;
+      if (std::fabs(step) < 1e-12) return false;
+      const int sd = step > 0 ? 1 : -1;
+      if (dir != 0 && sd != dir) return false;
+      dir = sd;
+      total += step;
+    }
+    prev = phi;
+  }
+  if (std::fabs(std::fabs(total) - 2 * ON_PI) > 1e-6) return false;
+  const double ox = mx + s * cx, oy = my + s * cy;
+  out.center = plane.PointAt(ox, oy);
+  Vector3d major = (plane.xaxis * major_dir[0] + plane.yaxis * major_dir[1]) * (a * s);
+  // Either end of the major axis describes the same ellipse; take the one on the curve's start side, so the entity starts
+  // (parameter 0) where the curve does when the curve starts on its major axis, as the Ellipse command's do. The (major, minor)
+  // frame above is clockwise about the plane normal, so a curve whose angle there grows runs clockwise about it: its entity
+  // normal is the reversed plane normal (an ELLIPSE always runs counter-clockwise about its own), keeping the direction.
+  if (ON_DotProduct(Vector3d(nc.PointAtStart() - out.center), major) < 0) major = -major;
+  out.major = major;
+  out.normal = dir < 0 ? Vector3d(plane.zaxis) : -Vector3d(plane.zaxis);
+  out.ratio = b / a;
+  return true;
+}
+
+// A full DXF ELLIPSE (group 10 centre, 11 end of the major axis relative to the centre, 210 extrusion normal, 40 minor/major
+// ratio, 41/42 start/end parameter 0..2*pi). The entity is always counter-clockwise about its normal, so the plane normal
+// used here is the same one RecognizeDxfEllipse's fit was done in - the ellipse is the same point set either way.
+void WriteDxfEllipse(DxfWriter& w, const DxfEllipseSpec& e, const std::string& layer, const Color* color,
+                     const std::string* owner_handle) {
+  w.BeginEntity("ELLIPSE", layer, color, owner_handle);
+  w.G(100, "AcDbEllipse");
+  w.Point(10, e.center);
+  w.Point(11, Point3d(e.major.x, e.major.y, e.major.z));
+  w.Point(210, Point3d(e.normal.x, e.normal.y, e.normal.z));
+  w.G(40, e.ratio);
+  w.G(41, 0.0);
+  w.G(42, 2.0 * ON_PI);
+}
+
 void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::string& layer, const Color* color,
                     const std::string* owner_handle = nullptr) {
   const ON_NurbsCurve& nc = curve.raw();
@@ -427,6 +557,13 @@ void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::str
       return;
     }
   }
+  {
+    DxfEllipseSpec ell;
+    if (RecognizeDxfEllipse(nc, ell)) {
+      WriteDxfEllipse(w, ell, layer, color, owner_handle);
+      return;
+    }
+  }
   if (nc.Degree() == 1) {
     std::vector<Point3d> pts;
     for (int i = 0; i < nc.CVCount(); ++i) { ON_3dPoint p; nc.GetCV(i, p); pts.push_back(p); }
@@ -435,10 +572,9 @@ void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::str
     WriteDxfPolyline(w, pts, closed, layer, color, owner_handle);
     return;
   }
-  // Any other freeform curve (including non-circular ellipses - OpenNURBS'
-  // own ON_Curve::IsEllipse() only ever recognizes circles, delegating to
-  // IsArc(), so there is no reliable way to single a true ellipse back out
-  // of its NURBS form here): write the exact NURBS as a SPLINE instead of
+  // Any other freeform curve (a full ellipse already left through
+  // RecognizeDxfEllipse above - OpenNURBS' own ON_Curve::IsEllipse() only
+  // ever recognizes circles): write the exact NURBS as a SPLINE instead of
   // flattening it to a polyline, so export-then-reimport round-trips the
   // real control points/knots/weights rather than a chord approximation.
   if (nc.IsValid() && nc.CVCount() >= 2) {
@@ -510,17 +646,16 @@ void WriteDxfHatchSolid(DxfWriter& w, const std::vector<std::vector<Point3d>>& l
 // like the solid case, plus the named pattern's own real definition lines
 // (group 78 count, then 53/43/44/45/46/79/49 per line) instead of just a
 // name a reader may or may not recognize. `pattern`'s own HatchFamily list
-// (drafting/HatchLibrary.h) is parsed straight out of an AutoCAD .pat file,
-// so its angle/x0/y0/dx/dy/dashes fields are already in exactly the field
-// order and convention a DXF pattern definition line uses - this writes
-// them unscaled/unrotated (53=fam.angle, 43/44=fam.x0/y0, 45/46=fam.dx/dy,
-// 49=each dash length, positive=dash/negative=gap/0=dot, the same
-// convention HatchFamily::dashes already documents) and carries the
-// document's own applied scale/rotation separately as 41/52 - the exact
-// composition this file's own drafting::HatchPatternCurves/ClipFamily
-// (HatchLibrary.cpp) already performs (angle+rotation, x0/y0/dx/dy*scale),
-// so a real AutoCAD/Rhino reader renders the identical fill this app's own
-// viewport does, not an approximation. Was entirely missing before this
+// (drafting/HatchLibrary.h) is parsed straight out of an AutoCAD .pat file
+// (angle/x0/y0/dx/dy/dashes in the .pat file's own frame). A HATCH stores
+// its definition lines already rotated and scaled for direct use - groups
+// 41/52 only record the scale and rotation that were applied - so each line
+// is written composed exactly the way drafting::HatchPatternCurves/ClipFamily
+// (HatchLibrary.cpp) composes it: angle = fam.angle + rotation, base point
+// and dash lengths scaled, the (dx along, dy across) offset scaled and
+// rotated into drawing coordinates (see the loop below). A reader that draws
+// the written lines as they stand therefore gets the fill this app's own
+// viewport shows, not the unrotated, unscaled base pattern. Was entirely missing before this
 // change: a pattern-fill hatch round-tripped out as its own N already-
 // clipped line segments (one LINE per clipped run) with no HATCH entity and
 // no record it was ever one fill.
@@ -549,13 +684,21 @@ void WriteDxfHatchPattern(DxfWriter& w, const drafting::HatchPattern& pattern, c
   w.G(77, 0);  // pattern not double
   w.G(78, static_cast<int>(pattern.families.size()));
   for (const drafting::HatchFamily& fam : pattern.families) {
-    w.G(53, fam.angle);
-    w.G(43, fam.x0);
-    w.G(44, fam.y0);
-    w.G(45, fam.dx);
-    w.G(46, fam.dy);
+    // A HATCH's definition lines are stored ALREADY rotated and scaled for direct use (groups 41/52 only record what was
+    // applied, so an editor can rebuild the base pattern): a reader that draws the lines as written (ezdxf, LibreCAD, ...)
+    // must get the family this app draws. So the line angle is family + rotation, the base point and every length are
+    // scaled, and the offset - which a .pat file gives in the line's own frame (dx along the line, dy across it) - is
+    // rotated into drawing coordinates by that total angle, exactly how AutoCAD itself writes e.g. ANSI31 (45 degrees,
+    // offset -0.0884, 0.0884 per 0.125). drafting::ClipFamily is the app's own composition of the same numbers.
+    const double ang = (fam.angle + rotation) * ON_PI / 180.0;
+    const double ca = std::cos(ang), sa = std::sin(ang);
+    w.G(53, fam.angle + rotation);
+    w.G(43, fam.x0 * scale);
+    w.G(44, fam.y0 * scale);
+    w.G(45, (fam.dx * ca - fam.dy * sa) * scale);
+    w.G(46, (fam.dx * sa + fam.dy * ca) * scale);
     w.G(79, static_cast<int>(fam.dashes.size()));
-    for (double d : fam.dashes) w.G(49, d);
+    for (double d : fam.dashes) w.G(49, d * scale);
   }
   w.G(98, 0);  // no seed points
 }
@@ -647,6 +790,7 @@ bool WriteDxfTextIfPlanarXY(DxfWriter& w, const DxfTextGlyphSpec& g, const std::
   w.G(40, g.height);
   w.G(1, g.text);
   w.G(50, std::atan2(g.plane.xaxis.y, g.plane.xaxis.x) * 180.0 / ON_PI);
+  w.G(7, "Standard");  // the STYLE record ExportDxf's TABLES section defines
   return true;
 }
 
@@ -698,15 +842,17 @@ bool DxfLinearDimLayoutOf(const SceneObject& o, DxfLinearDimLayout& L) {
 // place its own dimension-line endpoints from `L` - not an independent
 // reconstruction, so a reopen through this file's own DxfImporter::Dimension
 // rebuilds a geometrically identical dimension. Scoped like every other
-// narrow writer in this file: no anonymous block (group 2) of pre-rendered
-// geometry - this app's own reader never needed one, rebuilding the
+// narrow writer in this file: the anonymous *D block (group 2, written by
+// ExportDxf) holds the group's own drawn curves for readers that do not
+// regenerate a dimension - this app's own reader ignores it and rebuilds the
 // dimension fresh from these same semantic points instead - and no text
 // override (group 1) or text-midpoint (group 11), since the reader always
 // recomputes the measurement and label placement from 13/14 too. Returns
 // false (nothing written) if the two points coincide once projected onto
 // the fixed dimension line - the same degenerate case
 // BuildLinearDimensionGeometry itself refuses.
-bool WriteDxfLinearDimension(DxfWriter& w, const DxfLinearDimLayout& L, const std::string& layer, const Color* color) {
+bool WriteDxfLinearDimension(DxfWriter& w, const DxfLinearDimLayout& L, const std::string& layer, const Color* color,
+                              const std::string& block = std::string()) {
   Point3d loc;
   double rot = 0.0;
   if (!L.aligned) {
@@ -727,6 +873,7 @@ bool WriteDxfLinearDimension(DxfWriter& w, const DxfLinearDimLayout& L, const st
   }
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
+  if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
   w.Point(10, loc);
   w.G(70, (L.aligned ? 1 : 0) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
   w.G(100, L.aligned ? "AcDbAlignedDimension" : "AcDbRotatedDimension");
@@ -773,16 +920,18 @@ bool DxfRadiusDimLayoutOf(const SceneObject& o, DxfRadiusDimLayout& L) {
 // point BuildRadiusDimensionGeometry's own `on = center + d*radius`
 // computes, so reopening through this file's own DxfImporter::Dimension
 // rebuilds a geometrically identical dimension. Same scope choice as
-// WriteDxfLinearDimension above: no anonymous block (group 2), no text
+// WriteDxfLinearDimension above: the *D block (group 2) is ExportDxf's, no text
 // override (group 1) - the reader always recomputes the measurement and
 // "R "/"D " label from 10/15 too.
-bool WriteDxfRadiusDimension(DxfWriter& w, const DxfRadiusDimLayout& L, const std::string& layer, const Color* color) {
+bool WriteDxfRadiusDimension(DxfWriter& w, const DxfRadiusDimLayout& L, const std::string& layer, const Color* color,
+                              const std::string& block = std::string()) {
   Vector3d d = L.dir;
   if (!d.Unitize()) return false;
   const Point3d on = L.center + d * L.radius;
   const Point3d p10 = L.diameter ? (L.center - d * L.radius) : L.center;
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
+  if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
   w.Point(10, p10);
   w.G(70, (L.diameter ? 3 : 4) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
   w.G(100, L.diameter ? "AcDbDiametricDimension" : "AcDbRadialDimension");
@@ -843,7 +992,8 @@ bool DxfAngleDimLayoutOf(const SceneObject& o, DxfAngleDimLayout& L) {
 // Returns false (nothing written) if the two direction vectors are
 // degenerate or parallel - same failure BuildAngleDimensionGeometry itself
 // refuses (a zero-radius arc).
-bool WriteDxfAngularDimension(DxfWriter& w, const DxfAngleDimLayout& L, const std::string& layer, const Color* color) {
+bool WriteDxfAngularDimension(DxfWriter& w, const DxfAngleDimLayout& L, const std::string& layer, const Color* color,
+                               const std::string& block = std::string()) {
   Vector3d va = L.p1 - L.vertex, vb = L.p2 - L.vertex;
   if (!va.Unitize() || !vb.Unitize()) return false;
   double a0 = std::atan2(ON_DotProduct(va, L.plane.yaxis), ON_DotProduct(va, L.plane.xaxis));
@@ -856,6 +1006,7 @@ bool WriteDxfAngularDimension(DxfWriter& w, const DxfAngleDimLayout& L, const st
   const Point3d def_pt = cp.PointAt(std::cos(mid), std::sin(mid));
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
+  if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
   w.Point(10, def_pt);
   w.G(70, 5 | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
   w.G(100, "AcDb3PointAngularDimension");
@@ -995,13 +1146,15 @@ bool DxfOrdinateDimLayoutOf(const SceneObject& o, DxfOrdinateDimLayout& L) {
 // point - this reader's own type==6 branch never reads group 10 for
 // ordinate at all, so any valid, non-degenerate value there is fine; a
 // real AutoCAD-authored file would use it differently, but that's exactly
-// the kind of group-2/text-override richness this file's own narrow
-// writers already decline to reproduce (see WriteDxfLinearDimension's own
-// comment on the same "minimal, no block/text override" scope).
-bool WriteDxfOrdinateDimension(DxfWriter& w, const DxfOrdinateDimLayout& L, const std::string& layer, const Color* color) {
+// the kind of text-override richness this file's own narrow writers
+// already decline to reproduce (see WriteDxfLinearDimension's own comment on
+// the same "no text override" scope).
+bool WriteDxfOrdinateDimension(DxfWriter& w, const DxfOrdinateDimLayout& L, const std::string& layer, const Color* color,
+                                const std::string& block = std::string()) {
   if (L.base.DistanceTo(Point3d(0, 0, 0)) > 1e-9) return false;
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
+  if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
   w.Point(10, L.feature);
   w.G(70, 6 | (L.dir == 'X' ? 0x80 : 0));
   w.G(100, "AcDbOrdinateDimension");
@@ -1037,6 +1190,35 @@ void WriteDxfBlockMember(DxfWriter& w, const SceneObject& o, const std::string& 
     default:
       break;
   }
+}
+
+// True for the Annotation kinds ExportDxf writes as one real DIMENSION entity (each of which needs its drawn geometry in an
+// anonymous *D block) when this object - any one curve of the dimension's group; every curve carries the same layout tags -
+// has the tags its writer needs. The writers are run once against a throw-away stream so "would be written" is decided by the
+// very code that writes it, including its degenerate-input refusals.
+bool DxfDimensionExportable(const SceneObject& o) {
+  auto ann = o.user_text.find("Annotation");
+  if (ann == o.user_text.end() || o.kind != ObjectKind::Curve || !o.curve) return false;
+  std::ostringstream sink;
+  DxfWriter dry(sink);
+  const std::string layer = "0";
+  if (ann->second == "DimLinear" || ann->second == "DimAligned") {
+    DxfLinearDimLayout L;
+    return DxfLinearDimLayoutOf(o, L) && WriteDxfLinearDimension(dry, L, layer, nullptr);
+  }
+  if (ann->second == "DimRadius" || ann->second == "DimDiameter") {
+    DxfRadiusDimLayout L;
+    return DxfRadiusDimLayoutOf(o, L) && WriteDxfRadiusDimension(dry, L, layer, nullptr);
+  }
+  if (ann->second == "DimAngle") {
+    DxfAngleDimLayout L;
+    return DxfAngleDimLayoutOf(o, L) && WriteDxfAngularDimension(dry, L, layer, nullptr);
+  }
+  if (ann->second == "DimOrdinate") {
+    DxfOrdinateDimLayout L;
+    return DxfOrdinateDimLayoutOf(o, L) && WriteDxfOrdinateDimension(dry, L, layer, nullptr);
+  }
+  return false;
 }
 
 }  // namespace
@@ -1153,6 +1335,29 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     return it != dxf_linetype.end() ? it->second : std::string("Continuous");
   };
 
+  // Dimensions (Annotation = DimLinear/DimAligned/DimRadius/DimDiameter/DimAngle/DimOrdinate) that are written below as one
+  // real DIMENSION entity. A DIMENSION names (group 2) the anonymous block "*D<n>" holding the geometry it draws - dimension
+  // line, extension lines, arrows, text - and a reader that does not regenerate dimensions itself (ezdxf, LibreCAD, DWG
+  // viewers; only AutoCAD/BricsCAD rebuild one without it) shows nothing, or discards the entity as invalid, when that block is
+  // missing. The block holds the group's own baked curves, i.e. exactly what this app draws for the dimension.
+  std::map<int, std::string> dim_block_names;
+  std::vector<std::pair<std::string, std::vector<const SceneObject*>>> dim_blocks;  // in *D number order
+  for (const SceneObject* o : objs) {
+    if (o->group_id < 0 || dim_block_names.count(o->group_id) || !DxfDimensionExportable(*o)) continue;
+    const std::string name = "*D" + std::to_string(dim_blocks.size() + 1);
+    dim_block_names[o->group_id] = name;
+    dim_blocks.push_back({name, {}});
+  }
+  if (!dim_blocks.empty()) {
+    std::map<std::string, size_t> at;
+    for (size_t i = 0; i < dim_blocks.size(); ++i) at[dim_blocks[i].first] = i;
+    for (const SceneObject* o : objs) {
+      auto it = o->group_id < 0 ? dim_block_names.end() : dim_block_names.find(o->group_id);
+      if (it != dim_block_names.end() && o->kind == ObjectKind::Curve && o->curve) dim_blocks[at[it->second]].second.push_back(o);
+    }
+  }
+
+
   // HEADER
   const AcadScheme& scheme = EffectiveAcadScheme(doc);
   w.G(0, "SECTION"); w.G(2, "HEADER");
@@ -1162,6 +1367,8 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     const int units = DxfInsunitsCode(doc.Settings().unit_system);
     w.G(70, units);
   }
+  // The document multiplies every linetype pattern by this for display; the LTYPE records below hold the raw lengths.
+  w.G(9, "$LTSCALE"); w.G(40, doc.Settings().linetype_scale > 0 ? doc.Settings().linetype_scale : 1.0);
   w.G(9, "$HANDSEED"); w.G(5, "FFFF");
   w.G(0, "ENDSEC");
 
@@ -1207,6 +1414,24 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     }
     w.G(0, "ENDTAB");
   }
+  // STYLE: the Standard text style every TEXT entity written here names (group 7).
+  {
+    const std::string ctrl = w.Handle();
+    w.G(0, "TABLE"); w.G(2, "STYLE"); w.G(5, ctrl); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+    w.G(70, 1);
+    w.G(0, "STYLE"); w.G(5, w.Handle()); w.G(330, ctrl);
+    w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbTextStyleTableRecord");
+    w.G(2, "Standard");
+    w.G(70, 0);
+    w.G(40, 0.0);
+    w.G(41, 1.0);
+    w.G(50, 0.0);
+    w.G(71, 0);
+    w.G(42, 2.5);
+    w.G(3, "txt");
+    w.G(4, "");
+    w.G(0, "ENDTAB");
+  }
   w.G(0, "TABLE"); w.G(2, "LAYER"); w.G(5, "2"); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
   w.G(70, static_cast<int>(layer_names.size()));
   for (size_t i = 0; i < layer_names.size(); ++i) {
@@ -1225,17 +1450,19 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   }
   w.G(0, "ENDTAB");
   std::map<std::string, std::string> block_record_handles;
-  if (!block_names_to_write.empty()) {
+  if (!block_names_to_write.empty() || !dim_blocks.empty()) {
     const std::string ctrl_handle = w.Handle();
     w.G(0, "TABLE"); w.G(2, "BLOCK_RECORD"); w.G(5, ctrl_handle); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
-    w.G(70, static_cast<int>(block_names_to_write.size()));
-    for (const std::string& name : block_names_to_write) {
+    w.G(70, static_cast<int>(block_names_to_write.size() + dim_blocks.size()));
+    auto record = [&](const std::string& name) {
       const std::string h = w.Handle();
       block_record_handles[name] = h;
       w.G(0, "BLOCK_RECORD"); w.G(5, h); w.G(330, ctrl_handle);
       w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbBlockTableRecord");
       w.G(2, name);
-    }
+    };
+    for (const std::string& name : block_names_to_write) record(name);
+    for (const auto& db : dim_blocks) record(db.first);
     w.G(0, "ENDTAB");
   }
   w.G(0, "ENDSEC");
@@ -1248,7 +1475,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // WriteDxfBlockMember above. Every entity here (BLOCK, each member,
   // ENDBLK) carries a 330 owner tag back to its own BLOCK_RECORD handle
   // from the TABLES section above - see that section's own comment for why.
-  if (!block_names_to_write.empty()) {
+  if (!block_names_to_write.empty() || !dim_blocks.empty()) {
     w.G(0, "SECTION"); w.G(2, "BLOCKS");
     for (const std::string& name : block_names_to_write) {
       const BlockDefinition* def = doc.FindBlock(name);
@@ -1266,6 +1493,25 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         WriteDxfBlockMember(w, mo, layer_names[li], mcolor, owner);
         w.SetLinetype(std::string());
       }
+      w.SetLinetype(std::string());
+      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
+    }
+    // The anonymous *D blocks of the DIMENSION entities (flag 1 = anonymous), at the origin like AutoCAD's own: members are
+    // the dimension group's curves in world coordinates.
+    for (const auto& db : dim_blocks) {
+      const std::string& owner = block_record_handles.at(db.first);
+      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
+      w.G(2, db.first);
+      w.G(70, 1);
+      w.Point(10, Point3d(0, 0, 0));
+      w.G(3, db.first);
+      for (const SceneObject* mo : db.second) {
+        const size_t li = static_cast<size_t>(std::clamp(mo->layer_index, 0, static_cast<int>(layer_names.size()) - 1));
+        const Color* mcolor = mo->color_by_layer ? nullptr : &mo->color;
+        w.SetLinetype(dxf_linetype_of(mo->linetype));
+        WriteDxfCurve(w, *mo->curve, layer_names[li], mcolor, &owner);
+      }
+      w.SetLinetype(std::string());
       w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
     }
     w.G(0, "ENDSEC");
@@ -1299,6 +1545,10 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // above). Only populated on success, same "harmless independent retry"
   // convention as pattern_hatch_groups_written just above.
   std::set<int> dimension_groups_written;
+  auto dim_block_of = [&](const SceneObject& o) -> std::string {
+    auto it = o.group_id < 0 ? dim_block_names.end() : dim_block_names.find(o.group_id);
+    return it == dim_block_names.end() ? std::string() : it->second;
+  };
   for (const SceneObject* o : objs) {
     w.SetLinetype(dxf_linetype_of(o->linetype));
     {
@@ -1348,7 +1598,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         if (ann != o->user_text.end() && (ann->second == "DimLinear" || ann->second == "DimAligned")) {
           if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
           DxfLinearDimLayout L;
-          if (DxfLinearDimLayoutOf(*o, L) && WriteDxfLinearDimension(w, L, layer, color)) {
+          if (DxfLinearDimLayoutOf(*o, L) && WriteDxfLinearDimension(w, L, layer, color, dim_block_of(*o))) {
             dimension_groups_written.insert(o->group_id);
             ++written;
             break;
@@ -1361,7 +1611,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         if (ann != o->user_text.end() && (ann->second == "DimRadius" || ann->second == "DimDiameter")) {
           if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
           DxfRadiusDimLayout L;
-          if (DxfRadiusDimLayoutOf(*o, L) && WriteDxfRadiusDimension(w, L, layer, color)) {
+          if (DxfRadiusDimLayoutOf(*o, L) && WriteDxfRadiusDimension(w, L, layer, color, dim_block_of(*o))) {
             dimension_groups_written.insert(o->group_id);
             ++written;
             break;
@@ -1371,7 +1621,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         if (ann != o->user_text.end() && ann->second == "DimAngle") {
           if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
           DxfAngleDimLayout L;
-          if (DxfAngleDimLayoutOf(*o, L) && WriteDxfAngularDimension(w, L, layer, color)) {
+          if (DxfAngleDimLayoutOf(*o, L) && WriteDxfAngularDimension(w, L, layer, color, dim_block_of(*o))) {
             dimension_groups_written.insert(o->group_id);
             ++written;
             break;
@@ -1398,7 +1648,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         if (ann != o->user_text.end() && ann->second == "DimOrdinate") {
           if (dimension_groups_written.count(o->group_id)) break;  // this group's DIMENSION entity already written
           DxfOrdinateDimLayout L;
-          if (DxfOrdinateDimLayoutOf(*o, L) && WriteDxfOrdinateDimension(w, L, layer, color)) {
+          if (DxfOrdinateDimLayoutOf(*o, L) && WriteDxfOrdinateDimension(w, L, layer, color, dim_block_of(*o))) {
             dimension_groups_written.insert(o->group_id);
             ++written;
             break;
