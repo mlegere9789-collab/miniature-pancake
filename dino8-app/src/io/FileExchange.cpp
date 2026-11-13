@@ -1895,8 +1895,7 @@ class DxfImporter {
     for (double v : elements) {
       const bool is_gap = v < -1e-9;
       const double len = is_gap ? -v : (v > 1e-9 ? v : 0.1 * smallest);  // a dot (0) becomes a dash a tenth of the smallest element
-      if (is_gap == expect_dash) {
-        if (is_gap && pattern.empty()) continue;  // a leading gap: drop it, the pattern starts with a dash
+      if (is_gap != expect_dash) {  // the kind of element the pattern needs next (a leading gap never matches: it is dropped)
         pattern.push_back(len);
         expect_dash = !expect_dash;
       } else if (!pattern.empty()) {
