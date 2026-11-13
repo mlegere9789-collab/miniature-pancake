@@ -2048,6 +2048,7 @@ class OffsetSrfCommand : public Command {
     }
     ctx.Print("OffsetSrf: distance " + FormatNumber(d) + ", " + std::to_string(made) + " object(s)" + (solid_ ? ", solid" : "") +
                (exact_made ? ", " + std::to_string(exact_made) + " exact B-rep" : std::string()));
+    if (made == 0) ctx.Doc().AbandonChange();  // every object refused: no empty undo step, Redo stays available
     Finish();
   }
   std::vector<ObjectId> ids_;
@@ -3901,6 +3902,23 @@ std::optional<SceneObject> RebuildSweep2Sections(CommandContext& ctx, const std:
 // refit otherwise; the first-order Greville-normal fit only when a freeform
 // refit refuses, with a warning), a convex planar solid through OffsetSolidConvexPlanar (exact
 // B-rep), anything else through the mesh offset. Layer is the caller's.
+// Faces of `off` (an offset of `base`: same vertices, same faces) whose orientation reversed against `base`'s. A closed solid offset by
+// more than it is thick (a 10 cube by -6) has every face turned inside out: the mesh is then a mirror image, not an offset.
+static int CountFlippedOffsetFaces(const kernel::Mesh& base, const kernel::Mesh& off) {
+  const ON_Mesh& a = base.raw();
+  const ON_Mesh& b = off.raw();
+  if (a.FaceCount() != b.FaceCount() || a.VertexCount() != b.VertexCount()) return 0;
+  auto normal = [](const ON_Mesh& m, const ON_MeshFace& f) {
+    const ON_3dPoint p0(m.m_V[f.vi[0]]), p1(m.m_V[f.vi[1]]), p2(m.m_V[f.vi[2]]);
+    return ON_CrossProduct(p1 - p0, p2 - p0);
+  };
+  int flipped = 0;
+  for (int i = 0; i < a.FaceCount(); ++i) {
+    if (ON_DotProduct(normal(a, a.m_F[i]), normal(b, b.m_F[i])) < 0.0) ++flipped;
+  }
+  return flipped;
+}
+
 std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObject& o, const HistoryRecord& rec) {
   auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
   const double d = num("d");
@@ -4033,6 +4051,20 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
     kernel::Mesh base = *m;
     if (base.IsClosedManifold() && base.Volume() < 0) base = base.FlipNormals();
     kernel::Mesh off = OffsetMesh(base, d);
+    if (base.IsClosedManifold()) {
+      // Offsetting a closed solid inward by more than it is thick used to "succeed": OffsetSrf -6 on a 10 cube printed 1 object and left
+      // an inside-out 2 cube (volume 8) as a mesh. Nothing is built when faces turned over.
+      // Two signs of it: single faces that reversed (a thin box offset along one axis only), and the whole body turned inside out (every
+      // face keeps its own orientation, but the signed volume went from positive to negative, as for the cube).
+      const int flipped = CountFlippedOffsetFaces(base, off);
+      const bool inside_out = off.IsClosedManifold() && off.Volume() <= 0.0;
+      if (flipped > 0 || inside_out) {
+        ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " - an offset of " + FormatNumber(d) + " passes through the solid (" +
+                 (inside_out ? std::string("the offset body would be inside out") : std::to_string(flipped) + " of " + std::to_string(base.FaceCount()) + " face(s) would turn inside out") +
+                 "); skipped");
+        return std::nullopt;
+      }
+    }
     if (solid_) {
       if (base.IsClosedManifold()) off = Outward(kernel::Mesh::MergeAndWeld({d > 0 ? base.FlipNormals() : base, d > 0 ? off : off.FlipNormals()}, 1e-9));
       else off = ShellBetween(base, off);
