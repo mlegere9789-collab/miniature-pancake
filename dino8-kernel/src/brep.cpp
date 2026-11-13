@@ -14905,7 +14905,159 @@ int Brep::CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped) {
   return added;
 }
 
-int Brep::CapNakedLoops(double tolerance, std::vector<SkippedCap>* skipped) { return CapPlanarHoles(tolerance, skipped); }
+namespace {
+
+enum class FreeformCapOutcome { NotApplicable, Failed, Built };
+
+// The Coons patch through the closed four-edge naked chain `chain` (edge indices of `b`, in walk order), as a one-face Brep.
+FreeformCapOutcome BuildFreeformCap(const ON_Brep& b, const std::vector<int>& chain, double tol, Brep& out) {
+  if (chain.size() != 4) return FreeformCapOutcome::NotApplicable;
+  // Re-walk the chain exactly as CapPlanarHoles() did: the first edge forward, each next edge entered at the previous head.
+  const int origin = b.m_E[chain[0]].m_vi[0];
+  int head = b.m_E[chain[0]].m_vi[1];
+  std::vector<bool> reversed{false};
+  for (size_t k = 1; k < 4; ++k) {
+    const ON_BrepEdge& e = b.m_E[chain[k]];
+    if (e.m_vi[0] == e.m_vi[1]) return FreeformCapOutcome::NotApplicable;
+    if (e.m_vi[0] == head) {
+      reversed.push_back(false);
+      head = e.m_vi[1];
+    } else if (e.m_vi[1] == head) {
+      reversed.push_back(true);
+      head = e.m_vi[0];
+    } else {
+      return FreeformCapOutcome::NotApplicable;
+    }
+  }
+  if (head != origin || b.m_E[chain[0]].m_vi[0] == b.m_E[chain[0]].m_vi[1]) return FreeformCapOutcome::NotApplicable;
+
+  std::vector<NurbsCurve> walked;
+  for (size_t k = 0; k < 4; ++k) {
+    NurbsCurve c;
+    if (b.m_E[chain[k]].GetNurbForm(c.raw()) <= 0) return FreeformCapOutcome::Failed;
+    if (reversed[k]) c.raw().Reverse();
+    walked.push_back(std::move(c));
+  }
+  NurbsCurve top = walked[2];
+  top.raw().Reverse();
+  NurbsCurve left = walked[3];
+  left.raw().Reverse();
+
+  NurbsSurface patch;
+  if (NurbsSurface::CoonsPatch(walked[0], top, left, walked[1], patch, std::max(tol, 1e-6)) != Result::Ok) {
+    return FreeformCapOutcome::Failed;
+  }
+
+  // Fold guard: every sampled surface normal must lie in the open half-space of the centre normal.
+  const ON_Surface& srf = patch.raw();
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  ON_3dPoint pt;
+  ON_3dVector centre;
+  if (!srf.EvNormal(du.ParameterAt(0.5), dv.ParameterAt(0.5), pt, centre) || !centre.Unitize()) return FreeformCapOutcome::Failed;
+  for (int i = 0; i <= 8; ++i) {
+    for (int j = 0; j <= 8; ++j) {
+      ON_3dVector n;
+      if (!srf.EvNormal(du.ParameterAt(i / 8.0), dv.ParameterAt(j / 8.0), pt, n) || !n.Unitize()) return FreeformCapOutcome::Failed;
+      if (ON_DotProduct(n, centre) <= 0.0) return FreeformCapOutcome::Failed;
+    }
+  }
+  out = Brep::FromSurface(patch);
+  return out.FaceCount() == 1 ? FreeformCapOutcome::Built : FreeformCapOutcome::Failed;
+}
+
+// The chain's endpoints as a sorted point list: a key for "the same hole" that survives the index shifts a weld causes.
+std::vector<ON_3dPoint> ChainKey(const ON_Brep& b, const std::vector<int>& chain) {
+  std::vector<ON_3dPoint> pts;
+  for (const int ei : chain) {
+    for (int k = 0; k < 2; ++k) pts.push_back(b.m_V[b.m_E[ei].m_vi[k]].point);
+  }
+  std::sort(pts.begin(), pts.end(), [](const ON_3dPoint& p, const ON_3dPoint& q) {
+    if (p.x != q.x) return p.x < q.x;
+    if (p.y != q.y) return p.y < q.y;
+    return p.z < q.z;
+  });
+  return pts;
+}
+
+bool SameKey(const std::vector<ON_3dPoint>& a, const std::vector<ON_3dPoint>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].DistanceTo(b[i]) > 1e-9) return false;
+  }
+  return true;
+}
+
+int NakedEdgeCount(const ON_Brep& b) {
+  int n = 0;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) n += (b.m_E[ei].m_edge_index >= 0 && b.m_E[ei].m_ti.Count() == 1) ? 1 : 0;
+  return n;
+}
+
+}  // namespace
+
+int Brep::CapNakedLoops(double tolerance, std::vector<SkippedCap>* skipped) {
+  int total = 0;
+  std::vector<std::vector<ON_3dPoint>> failed_keys;
+  std::vector<SkippedCap> remaining;
+  for (int guard = 0; guard < 256; ++guard) {
+    remaining.clear();
+    const int planar = CapPlanarHoles(tolerance, &remaining);
+    total += planar;
+    // A planar cap re-indexes the edges `remaining` names; ask again so the indices are those of the current Brep.
+    if (planar > 0) continue;
+
+    bool attempted = false;
+    for (const SkippedCap& chain : remaining) {
+      if (chain.reason != SkippedCap::Reason::NonPlanar && chain.reason != SkippedCap::Reason::CurvedEdge) continue;
+      const std::vector<ON_3dPoint> key = ChainKey(brep_, chain.edge_indices);
+      bool known = false;
+      for (const auto& k : failed_keys) known = known || SameKey(k, key);
+      if (known) continue;
+
+      Brep cap;
+      const FreeformCapOutcome outcome = BuildFreeformCap(brep_, chain.edge_indices, tolerance, cap);
+      if (outcome == FreeformCapOutcome::NotApplicable) continue;
+      attempted = true;
+      bool done = false;
+      if (outcome == FreeformCapOutcome::Built) {
+        const Brep backup = *this;
+        const int naked_before = NakedEdgeCount(brep_);
+        ClearFaceSideTables();
+        brep_.Append(cap.brep_);
+        CompactRaw();
+        brep_.SetTolerancesBoxesAndFlags();
+        FixUnsetEdgeTolerances(brep_);
+        JoinNakedEdges(tolerance);
+        // The weld must have consumed the four rim edges and left no naked edge of the patch behind.
+        if (NakedEdgeCount(brep_) == naked_before - 4) {
+          done = true;
+        } else {
+          *this = backup;
+        }
+      }
+      if (done) {
+        ++total;
+      } else {
+        failed_keys.push_back(key);
+      }
+      break;  // the edge indices of every other chain in `remaining` are stale now; ask again
+    }
+    if (!attempted) break;
+  }
+
+  if (skipped) {
+    for (SkippedCap& chain : remaining) {
+      if ((chain.reason == SkippedCap::Reason::NonPlanar || chain.reason == SkippedCap::Reason::CurvedEdge)) {
+        const std::vector<ON_3dPoint> key = ChainKey(brep_, chain.edge_indices);
+        for (const auto& k : failed_keys) {
+          if (SameKey(k, key)) chain.reason = SkippedCap::Reason::FreeformPatchFailed;
+        }
+      }
+      skipped->push_back(std::move(chain));
+    }
+  }
+  return total;
+}
 
 
 Result Brep::ShrinkSurfaces(double tolerance, ShrinkSurfacesReport* report) {
