@@ -127,10 +127,10 @@ qcr_num "$(qcr_vol "$A" 2)" 1000 0.001 "QCR_offsetsrf_refused_undo: after the re
 
 A="$(qcr_case copy_group)"
 qcr_has "$A" "Copied 2 object(s)" "QCR_copy_group: Copy of the 2 grouped boxes made 2 copies"
-qcr_hasnot "$A" "4 object(s) selected" "QCR_copy_group: SelGroup on an original selects its own 2 objects, not the copies as well (4)"
+qcr_has "$A" "2 groups" "QCR_copy_group: the original group and the group of its 2 copies (Audit counts 2 groups, not 1)"
 A="$(qcr_case array_group)"
 qcr_has "$A" "ArrayLinear created 4 object(s)" "QCR_array_group: ArrayLinear 3 of the 2 grouped boxes made 4 copies"
-qcr_hasnot "$A" "6 object(s) selected" "QCR_array_group: SelGroup on an original selects its own 2 objects, not the 4 copies as well (6)"
+qcr_has "$A" "3 groups" "QCR_array_group: the original group plus one group per array step (Audit counts 3 groups, not 1)"
 
 A="$(qcr_case offset_number_first)"
 P0="$(qcr_cv "$A" 0)"; P1="$(qcr_cv "$A" 1)"
