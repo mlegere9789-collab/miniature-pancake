@@ -491,7 +491,7 @@ Brep RingTool(const ON_NurbsCurve& outer, const std::vector<NurbsCurve>& holes, 
     const Brep hole_tool = SweptCurve(moved, unit * (len + 2.0 * margin));
     if (!hole_tool.raw().IsValid()) Refuse("internal: a hole prism of the ring tool is not a valid ON_Brep");
     try {
-      tool = BooleanCombineGeneralSealed(tool, hole_tool, BooleanOp::Difference).brep;
+      tool = BooleanCombineGeneralSealed(tool, hole_tool, BooleanOp::Difference, detail::ScaledBooleanTolerance(tool, hole_tool)).brep;
     } catch (const std::exception& e) {
       Refuse(std::string("could not cut a hole out of the ring tool: ") + e.what());
     }
