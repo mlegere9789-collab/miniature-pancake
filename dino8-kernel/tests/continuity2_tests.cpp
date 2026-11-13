@@ -19,6 +19,9 @@
 #include "dino8/kernel/surface_continuity.h"
 #include "opennurbs.h"
 
+#define D8EV_SUITE "continuity2"
+#include "evidence_jsonl.h"  // DINO8_TEST_JSONL: one JSON line per check and per test (plan 7.5); a no-op when unset
+
 using dino8::kernel::MatchContinuity;
 using dino8::kernel::NurbsCurve;
 using dino8::kernel::NurbsSurface;
@@ -31,6 +34,15 @@ int g_fail = 0, g_pass = 0;
 void Check(bool ok, const std::string& what) {
   if (ok) { ++g_pass; std::printf("ok: %s\n", what.c_str()); }
   else { ++g_fail; std::printf("FAIL: %s\n", what.c_str()); }
+  d8ev::Check(ok, what.c_str());
+}
+
+// Evidence lines (DINO8_TEST_JSONL) are grouped per test function; an exception still ends the process as before.
+template <class F>
+void RunTest(const char* name, F&& body) {
+  d8ev::TestBegin(name);
+  body();
+  d8ev::TestEnd(name, false);
 }
 
 // ---- the closed-form bicubic graph shared with edge_continuity_tests ---------------------------------------------------
@@ -340,12 +352,12 @@ void TestLoftOnBicubic() {
 
 int main() {
   ON::Begin();
-  TestPatchReweighting("patch G1", MatchContinuity::Tangent, [](double x, double y) { return F(x, y) + P1(x, y); }, 0.03, 2e-3, 1e-2);
-  TestPatchReweighting("patch G2", MatchContinuity::Curvature, [](double x, double y) { return F(x, y) + P1(x, y) + P2(x, y); }, 0.05, 2e-3, 2e-2);
-  TestNetworkReweighting("network G1", MatchContinuity::Tangent, [](double x, double y) { return F(x, y) + P1(x, y); }, 0.03, 2e-3, 1e-2);
-  TestNetworkReweighting("network G2", MatchContinuity::Curvature, [](double x, double y) { return F(x, y) + P1(x, y) + P2(x, y); }, 0.05, 2e-3, 2e-2);
-  TestLoftOnCylinderWall();
-  TestLoftOnBicubic();
+  RunTest("TestPatchReweighting[patch G1]", [] { TestPatchReweighting("patch G1", MatchContinuity::Tangent, [](double x, double y) { return F(x, y) + P1(x, y); }, 0.03, 2e-3, 1e-2); });
+  RunTest("TestPatchReweighting[patch G2]", [] { TestPatchReweighting("patch G2", MatchContinuity::Curvature, [](double x, double y) { return F(x, y) + P1(x, y) + P2(x, y); }, 0.05, 2e-3, 2e-2); });
+  RunTest("TestNetworkReweighting[network G1]", [] { TestNetworkReweighting("network G1", MatchContinuity::Tangent, [](double x, double y) { return F(x, y) + P1(x, y); }, 0.03, 2e-3, 1e-2); });
+  RunTest("TestNetworkReweighting[network G2]", [] { TestNetworkReweighting("network G2", MatchContinuity::Curvature, [](double x, double y) { return F(x, y) + P1(x, y) + P2(x, y); }, 0.05, 2e-3, 2e-2); });
+  RunTest("TestLoftOnCylinderWall", [] { TestLoftOnCylinderWall(); });
+  RunTest("TestLoftOnBicubic", [] { TestLoftOnBicubic(); });
   std::printf("%d checks passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

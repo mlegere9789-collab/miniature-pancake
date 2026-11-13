@@ -43,6 +43,7 @@
 #include "dino8/kernel/surface_continuity.h"
 #include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/tolerance.h"
+#include "evidence_jsonl.h"  // DINO8_TEST_JSONL: one JSON line per check and per test (plan 7.5); a no-op when unset
 #include "test_registry.h"  // d8test::ShouldRun (filter / shard / list) + tests/extra/*.cpp self-registration
 #ifdef DINO8_TEST_HAS_APP_MESHER
 // dino8-app's face-by-face brep mesher (what the app's MeshOf() calls) - see
@@ -62,6 +63,7 @@ void Check(bool condition, const char* what) {
   } else {
     std::printf("ok: %s\n", what);
   }
+  d8ev::Check(condition, what);
 }
 
 // 2026-10-12 robustness fix: every Test...() call in main() below now goes
@@ -85,15 +87,21 @@ void RunTest(const char* name, void (*fn)()) {
   // Also honours DINO8_TEST_SHARD=k/n and DINO8_TEST_LIST=1 - see
   // test_registry.h (same filter semantics as before).
   if (!d8test::ShouldRun(name)) return;
+  d8ev::TestBegin(name);
   try {
     fn();
   } catch (const std::exception& e) {
     std::fprintf(stderr, "FAILED: %s threw an uncaught exception instead of completing (%s)\n", name, e.what());
     ++g_failures;
+    d8ev::TestEnd(name, true, e.what());
+    return;
   } catch (...) {
     std::fprintf(stderr, "FAILED: %s threw an uncaught non-std::exception instead of completing\n", name);
     ++g_failures;
+    d8ev::TestEnd(name, true, nullptr);
+    return;
   }
+  d8ev::TestEnd(name, false);
 }
 
 void TestCurveDegreeElevation() {
