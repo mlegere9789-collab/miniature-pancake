@@ -255,7 +255,7 @@ RibResult MakeRibs(const Brep& solid, const std::vector<std::vector<Point3d>>& p
     bool fused = false;
     const auto attempt = [&](const Brep& host) {
       try {
-        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Union);
+        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Union, detail::ScaledBooleanTolerance(host, tool));
         fused = true;
       } catch (const std::exception& e) {
         if (first_why.empty()) first_why = e.what();
@@ -280,7 +280,7 @@ RibResult MakeRibs(const Brep& solid, const std::vector<std::vector<Point3d>>& p
     out.added_volume = sealed.volume - solid_volume;
   } else {
     try {
-      out.added_volume = out.tool_volume - BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection).volume;
+      out.added_volume = out.tool_volume - BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection, detail::ScaledBooleanTolerance(solid, tool)).volume;
     } catch (const std::exception& e) {
       Refuse(std::string("the solid has no measurable volume and web ^ solid could not be measured either: ") + e.what());
     }

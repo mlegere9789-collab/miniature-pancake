@@ -7,6 +7,7 @@
 // by an arbitrary angle is the SAME solid with its seam somewhere else: fusing the tool onto that copy gives the same body.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -58,6 +59,29 @@ inline std::vector<Brep> ReseamedHostVariants(const Brep& host) {
     out.push_back(host.Transform(Rot(2.2, ON_3dVector(0, 1, 0), center)));
   }
   return out;
+}
+
+// The `tolerance` MakeBoss / MakePocket / MakeRib hand to BooleanCombineGeneralSealed(). The engine's default, 0.001, is an ABSOLUTE
+// surface-surface Newton accuracy: right for a model a few units across, but a rib 0.004 thick on a 0.1-unit plate (the 10 x 10 x 1 plate
+// of the rib tests at 1/100 scale) is then within a quarter of the tolerance of its own thickness, and the fused solid comes back
+// 0.43 percent short of the closed form (V = 1.0674e-4 against 1.072e-4) - valid, closed, and wrong - or the sealing is refused. The
+// tolerance is therefore capped at 2.5e-3 of the tool's thinnest side and 1e-4 of the two bodies' joint diagonal; it is exactly the
+// old 0.001 for every model whose tool is at least 0.4 thick and whose joint diagonal is at least 10 (all of the existing tests).
+inline double ScaledBooleanTolerance(const Brep& solid, const Brep& tool) {
+  const BoundingBox sb = solid.GetTightBoundingBox();
+  const BoundingBox tb = tool.GetTightBoundingBox();
+  const double lo[3] = {std::min(sb.min.x, tb.min.x), std::min(sb.min.y, tb.min.y), std::min(sb.min.z, tb.min.z)};
+  const double hi[3] = {std::max(sb.max.x, tb.max.x), std::max(sb.max.y, tb.max.y), std::max(sb.max.z, tb.max.z)};
+  const double diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+  const double ext[3] = {tb.max.x - tb.min.x, tb.max.y - tb.min.y, tb.max.z - tb.min.z};
+  double thin = std::max({ext[0], ext[1], ext[2]});
+  for (double e : ext) {
+    if (e > 1e-6 * thin) thin = std::min(thin, e);
+  }
+  double tol = 1e-3;
+  if (std::isfinite(diag) && diag > 0.0) tol = std::min(tol, 1e-4 * diag);
+  if (std::isfinite(thin) && thin > 0.0) tol = std::min(tol, 2.5e-3 * thin);
+  return std::max(tol, 1e-9 * (std::isfinite(diag) && diag > 0.0 ? diag : 1.0));
 }
 
 }  // namespace dino8::kernel::detail

@@ -123,7 +123,7 @@ BossResult Fuse(const Brep& solid, const Brep& tool, const std::vector<Point3d>&
     bool fused = false;
     const auto attempt = [&](const Brep& host) {
       try {
-        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Union);
+        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Union, detail::ScaledBooleanTolerance(host, tool));
         fused = true;
       } catch (const std::exception& e) {
         if (first_why.empty()) first_why = e.what();
@@ -148,7 +148,7 @@ BossResult Fuse(const Brep& solid, const Brep& tool, const std::vector<Point3d>&
     out.added_volume = sealed.volume - solid_volume;
   } else {
     try {
-      out.added_volume = out.tool_volume - BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection).volume;
+      out.added_volume = out.tool_volume - BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection, detail::ScaledBooleanTolerance(solid, tool)).volume;
     } catch (const std::exception& e) {
       Refuse(std::string("the solid has no measurable volume and boss ^ solid could not be measured either: ") + e.what());
     }
@@ -204,7 +204,7 @@ PocketResult Cut(const Brep& solid, const Brep& tool, const std::vector<Point3d>
     bool done = false;
     const auto attempt = [&](const Brep& host) {
       try {
-        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Difference);
+        sealed = BooleanCombineGeneralSealed(host, tool, BooleanOp::Difference, detail::ScaledBooleanTolerance(host, tool));
         done = true;
       } catch (const std::exception& e) {
         if (first_why.empty()) first_why = e.what();
@@ -229,7 +229,7 @@ PocketResult Cut(const Brep& solid, const Brep& tool, const std::vector<Point3d>
     out.removed_volume = solid_volume - sealed.volume;
   } else {
     try {
-      out.removed_volume = BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection).volume;
+      out.removed_volume = BooleanCombineGeneralSealed(solid, tool, BooleanOp::Intersection, detail::ScaledBooleanTolerance(solid, tool)).volume;
     } catch (const std::exception& e) {
       Refuse(std::string("the solid has no measurable volume and tool ^ solid could not be measured either: ") + e.what());
     }
