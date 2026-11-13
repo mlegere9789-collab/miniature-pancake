@@ -59,7 +59,7 @@ struct RegionRefineOptions {
   double max_edge_length = 0.0;
   // The starting lattice is subdivided until its cells' 3D aspect ratio
   // (longer side / shorter side) is at most this (>= 1).
-  double max_aspect_ratio = 3.0;
+  double max_aspect_ratio = 1.5;
   // Starting lattice divisions per smooth span, per direction (>= 1; a closed
   // direction uses at least 3 in total).
   int min_divisions = 4;
@@ -72,7 +72,7 @@ struct RegionRefineOptions {
   int max_triangles = 0;
   // Interior/edge sample density: each triangle is tested at the lattice
   // points i/k, j/k of its barycentric coordinates (k >= 2).
-  int samples = 4;
+  int samples = 6;
 };
 
 struct RegionRefineReport {
