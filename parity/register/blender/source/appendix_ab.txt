@@ -1274,7 +1274,3 @@ Space
 
 Compiled 13 Nov 2026                                                            156
 The Design-Software Deep Dive                                                                                    Appendix C. Glossary
-
-
-
-

@@ -259,6 +259,8 @@ def load_appendix(path):
         z = next((i for i, l in enumerate(lines) if l.strip() == "Appendix C. Glossary" and i > a), len(lines))
         lines = lines[a:z]
     lines = [_SUBST_RX.sub(_subst, l.rstrip()) for l in lines]
+    while lines and not lines[-1].strip():
+        lines.pop()
     return "\n".join(lines) + "\n", lines
 
 
