@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install lint/format tooling
+        # Pinned to match .pre-commit-config.yaml exactly - an unpinned
+        # install drifts to whatever's newest on the day CI happens to run,
+        # which can disagree with the formatting already in the repo.
+        run: pip install black==25.1.0 isort==6.0.0 flake8==7.1.1
+
+      - name: black --check
+        run: black --target-version py39 --check modules/ orchestrator/
+
+      - name: isort --check
+        run: isort --profile black -l 88 --trailing-comma --multi-line 3 --check modules/ orchestrator/
+
+      - name: flake8
+        run: flake8 --max-line-length 88 --ignore E203,E501,W503,W504 modules/ orchestrator/
+
+      - name: Run module tests
+        run: python -m unittest discover -s modules -p "test_*.py" -v
+
+      - name: Run orchestrator (foundation) tests
+        run: python -m unittest discover -s orchestrator -t . -p "test_*.py" -v
+
+      - name: Orchestrator smoke test (init + doctor)
+        run: |
+          python -m orchestrator init
+          python -m orchestrator doctor

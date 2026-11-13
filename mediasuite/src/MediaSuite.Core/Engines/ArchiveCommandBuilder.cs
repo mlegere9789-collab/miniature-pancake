@@ -28,9 +28,14 @@ public static class ArchiveCommandBuilder
     /// Extracts an archive with its folder structure intact. <c>-y</c> answers every
     /// overwrite prompt automatically — there is nothing interactive to answer it, so
     /// without this flag a name clash would hang the process instead of failing it.
+    /// <c>-sccUTF-8</c> makes 7-Zip itself write its console output (a file name in an
+    /// error message, for instance) as UTF-8 — its Windows build otherwise defaults to the
+    /// system's legacy OEM code page there regardless of how the .NET side decodes it, so
+    /// forcing this is what makes <see cref="ProcessRunner"/>'s own UTF-8 decoding correct
+    /// rather than just consistently applied to the wrong encoding.
     /// </summary>
     public static IReadOnlyList<string> Extract(string archivePath, string outputDirectory) =>
-        new[] { "x", archivePath, $"-o{outputDirectory}", "-y" };
+        new[] { "x", archivePath, $"-o{outputDirectory}", "-y", "-sccUTF-8" };
 
     /// <summary>
     /// Creates a new archive of the given type from the given files.
@@ -52,6 +57,7 @@ public static class ArchiveCommandBuilder
         var arguments = new List<string> { "a", $"-t{archiveType}", outputPath };
         arguments.AddRange(sourcePaths);
         arguments.Add("-y");
+        arguments.Add("-sccUTF-8");
         return arguments;
     }
 }

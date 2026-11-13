@@ -42,6 +42,17 @@ public sealed class JobRowViewModel : ObservableObject, IDisposable
 
     public bool HasError => Job.Status == JobStatus.Failed;
 
+    /// <summary>
+    /// Raw tool output kept for diagnostics — usually the tail of the underlying process's
+    /// stderr, which is often the only place the *real* reason a job failed shows up
+    /// (an FFmpeg option rejected by that build, a tool exiting non-zero with no other
+    /// explanation). <see cref="ErrorMessage"/> is short by design; this is the detail a
+    /// bug report or a support request actually needs.
+    /// </summary>
+    public string? Diagnostics => Job.Result?.Diagnostics;
+
+    public bool HasDiagnostics => !string.IsNullOrWhiteSpace(Diagnostics);
+
     /// <summary>Set when the local output succeeded but the requested Drive upload did not.</summary>
     public string? UploadWarning => Job.Result?.UploadWarning;
 

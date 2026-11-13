@@ -188,6 +188,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public ICommand DismissUpdateBannerCommand { get; }
 
+    /// <summary>
+    /// Routes files the OS handed the app directly — "Open with MediaSuite" from
+    /// Explorer, or a file dragged onto the exe or a shortcut to it — to the Convert
+    /// page. Convert is the obvious default for "I pointed a file at this app and
+    /// expected it to do something": Compress, Tools and Upscale are all one click away
+    /// once the app is open, nothing here is fixed to Convert permanently.
+    /// </summary>
+    public void OpenWithFiles(IReadOnlyList<string> files)
+    {
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        SelectedPage = Convert;
+        Convert.AddFilesCommand.Execute(files);
+    }
+
     private async Task CheckForUpdateAsync()
     {
         // Deliberately no ConfigureAwait(false): this needs to resume on the UI thread

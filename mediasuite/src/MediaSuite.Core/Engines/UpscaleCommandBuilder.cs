@@ -87,4 +87,16 @@ public static class UpscaleCommandBuilder
     /// </remarks>
     public static IReadOnlyList<string> Sharpen(string inputPath, string outputPath) =>
         new[] { inputPath, "-unsharp", "0x1", outputPath };
+
+    /// <summary>
+    /// Runs the face-enhance pass: detects faces in an already-upscaled image and
+    /// restores each one through GFPGAN, in place over the rest of the image.
+    /// </summary>
+    /// <remarks>
+    /// This tool's own <c>-i</c>/<c>-o</c>/<c>-m</c> flags deliberately mirror
+    /// Real-ESRGAN's, the way the rest of this class's command lines do — see
+    /// <c>installer/native/face-enhance/face_enhance.cpp</c> for the tool itself.
+    /// </remarks>
+    public static IReadOnlyList<string> FaceEnhance(string inputPath, string outputPath, string modelsFolder) =>
+        new[] { "-i", inputPath, "-o", outputPath, "-m", modelsFolder };
 }

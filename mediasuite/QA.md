@@ -38,8 +38,9 @@ that is easy to mistake for a bug — check those first.
   confirm the traced result is recognisable.
 - [ ] Resize with "keep aspect" on and off, and with "only shrink" on a file already
   smaller than the target — confirm it is left alone rather than enlarged.
-- [ ] Compress a JPG at Quick, Balanced and Best — confirm the file size actually drops
-  in that order and Best still looks acceptable.
+- [ ] Compress a JPG at Quick, Balanced and Best — confirm the file size actually grows
+  in that order (Quick uses the lowest JPEG quality, Best the highest) and Best still
+  looks noticeably better than Quick.
 
 ## Video and audio module
 
@@ -82,8 +83,9 @@ that is easy to mistake for a bug — check those first.
   count and remaining page order are right.
 - [ ] Crop a PDF and confirm the margins are trimmed uniformly across every page, not
   just the first.
-- [ ] Compress at Quick, Balanced and Best and confirm the file size drops in that order
-  (screen/ebook/prepress Ghostscript presets).
+- [ ] Compress at Quick, Balanced and Best and confirm the file size grows in that order
+  (screen/ebook/prepress Ghostscript presets — Quick is the smallest, most-compressed
+  output, Best the largest and highest-fidelity).
 - [ ] Protect a PDF with a password, then unlock it with the same password, and confirm
   the unlocked copy opens with no password prompt.
 
@@ -121,8 +123,43 @@ that is easy to mistake for a bug — check those first.
   job with sharpen off.
 - [ ] Try the anime model on an anime-style image and the general model on a photo, and
   confirm the difference is noticeable — they should not look interchangeable.
-- [ ] Confirm "face enhance" is not offered anywhere in the UI — it was deliberately not
-  implemented (GFPGAN is not bundled) rather than faked with the general model.
+- [ ] Face enhance: select the Custom preset on a photo with a clear human face, add
+  `faceEnhance=true` in Advanced options, and upscale. Confirm the job completes (CPU-only,
+  so expect it to be noticeably slower than a plain upscale) and the face looks visibly
+  restored/sharper than the same job with `faceEnhance` left off — not just a copy of the
+  general-model output. Confirm a photo with no face in it still completes normally (the
+  pass is designed to pass the image through unchanged when no face is detected, not fail
+  the job). If `tools\gfpgan\face_enhance.exe` is missing on this machine (see Settings →
+  Bundled tools), `faceEnhance=true` should be a silent no-op, not an error — confirm that
+  too if you can test both states.
+
+## Job failure diagnostics
+
+- [ ] Force a real failure (e.g. rename a tool's exe in `tools\` so it can't be found
+  mid-batch, or feed a genuinely corrupt file through a conversion) and confirm the
+  failed row in the queue panel shows a "Copy details" button. Click it, paste the
+  clipboard somewhere, and confirm it contains both the short failure message and the
+  tool's actual stderr/stdout, not just "Failed" or a bare exit code. Confirm a
+  canceled or successful job never shows this button, and that a failure with nothing
+  useful to add (e.g. "tool is not installed") doesn't show it either — there's nothing
+  a "details" button would add over the message already shown.
+
+## Closing while a job is running
+
+- [ ] Start a real conversion job slow enough to still be running a few seconds later
+  (a video convert or an upscale), then close the window (X button, Alt+F4, or the
+  taskbar's own close). Confirm a warning appears naming how many jobs are still running
+  or queued, and that closing without confirming leaves the app open with the job still
+  running untouched. Confirm the window's title bar close button and the dialog's own
+  close (X) both count as "no" — only the explicit "Yes" should let the app actually
+  close.
+- [ ] Confirm the same warning appears for a job still *queued* behind the concurrency
+  limit, not just one actively running.
+- [ ] Choose to close anyway and confirm the running job is actually gone (its process,
+  visible in Task Manager while it ran, ends) rather than continuing in the background
+  after the window disappears.
+- [ ] Close the app with the queue empty, or with only finished (done/failed/canceled)
+  jobs in it, and confirm no warning appears at all.
 
 ## Custom presets
 
@@ -148,9 +185,59 @@ that is easy to mistake for a bug — check those first.
   scope — it should not be able to browse your entire Drive, only what it created plus
   what you explicitly picked through its own folder picker.
 
+## Icon, branding and taskbar
+
+Everything in this section is exactly the kind of thing nothing in this sandbox could
+ever check — it's either purely visual or depends on the real Windows taskbar/shell,
+neither of which CI or a fake process runner can see.
+
+- [ ] Confirm `MediaSuite.exe` shows the real icon (a white two-arrow exchange glyph on
+  an indigo-to-cyan gradient), not a generic default, in: the taskbar while running, the
+  title bar top-left corner, the Start Menu entry, the desktop shortcut (if created), and
+  Explorer's own icon for the exe file itself.
+- [ ] Run `installer\build.ps1` (or grab the CI-built installer) and confirm
+  `MediaSuiteSetup-1.0.0.exe` itself shows the same icon before you even run it, and that
+  the wizard's own pages (welcome, every options page, finished) show the branded panel
+  and small badge instead of Inno Setup's stock blue/white artwork.
+- [ ] Open Settings and confirm the About card at the bottom shows "MediaSuite v1.0.0"
+  and that "View on GitHub" actually opens the real project repo in your browser.
+- [ ] Start a real conversion job (anything slow enough to watch — a video convert or an
+  upscale, not an instant remux) and confirm the taskbar icon itself shows a progress
+  overlay while it runs, not just the in-window progress bar. Pause the job and confirm
+  the taskbar icon switches to a paused-looking state rather than looking stalled. Run
+  two jobs at once and confirm the taskbar progress reflects roughly their average, not
+  just one of them. Let every job finish and confirm the taskbar progress overlay clears
+  back to nothing rather than getting stuck at 100%.
+- [ ] Right-click `MediaSuite.exe` → Properties → Details tab, and confirm the file
+  description, product name, company and version all show something real rather than
+  blank or a generic ".NET application" default.
+- [ ] Right-click a supported file (a JPG or MP4 is enough) → Open with → confirm
+  MediaSuite is offered as a choice, and that picking it launches (or reuses, if already
+  running a second instance) the app with the file already staged on the Convert page.
+  Confirm the file's actual default app is unchanged — MediaSuite must only ever be
+  offered, never take over the double-click action. Drag a file directly onto
+  `MediaSuite.exe` or its Start Menu/desktop shortcut and confirm the same thing happens.
+  Try an unsupported extension (e.g. `.xlsx`) the same way and confirm MediaSuite does
+  not launch at all rather than opening empty.
+- [ ] Close the app, then re-launch it with no file argument at all (Start Menu, desktop
+  shortcut, or `MediaSuite.exe` with no arguments) and confirm it opens to the Convert
+  page with nothing pre-staged — the file-preload path must never leak into a normal
+  launch.
+- [ ] With MediaSuite already open, launch it again from the Start Menu (or run
+  `MediaSuite.exe` a second time) and confirm no second window appears — the existing
+  window should just come to the front. Minimize it first and confirm the second launch
+  restores it rather than leaving it minimized in the background. With it already open,
+  open a supported file via "Open with" or drag one onto the exe and confirm the file
+  lands on the Convert page of the *existing* window (still just one window, one process
+  in Task Manager), not a second instance.
+
 ## Known, deliberate gaps — do not report these as bugs
 
-- **AI upscaler**: no "face enhance" model (needs GFPGAN, not bundled).
+- **AI upscaler face enhance**: CPU-only (GFPGAN-ncnn's own Vulkan support is still an
+  open upstream TODO), and compiled from source at installer build time with no official
+  prebuilt binary to fall back to — `faceEnhance=true` silently does nothing if
+  `tools\gfpgan\face_enhance.exe` isn't present on this machine (see Settings → Bundled
+  tools), rather than failing the job.
 - **Archive**: RAR is extraction-only; creating a RAR archive needs a licensed encoder.
 - **Format catalogue**: spreadsheet and presentation formats (XLSX, PPTX, ODS, ODP,
   etc.), PostScript, and MIDI are not supported — see the doc comment on
