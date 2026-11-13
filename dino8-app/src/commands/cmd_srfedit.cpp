@@ -2357,6 +2357,30 @@ class PatchSingleFaceCommand : public Command {
       edges.push_back(c);
     }
     if (bad) { ctx.Warn("PatchSingleFace: a singular boundary is not supported"); for (ON_Curve* c : edges) delete c; Finish(); return; }
+    // A 4-edge face keeps ITS OWN surface parameterization: the boundary curves are the old surface's own boundary isocurves, so the patch's (u, v)
+    // sides are the old ones and the face's existing trims (which run along the parameter-domain boundary) still land on the matching 3D edges. Taking
+    // them from the loop's trim order instead can rotate or mirror the patch relative to the trims (the open mesh then lost the box's volume).
+    ON_Interval keep_u, keep_v;
+    bool keep_domain = false;
+    if (edges.size() == 4) {
+      const ON_Surface* old_srf = b.m_S[f.m_si];
+      if (old_srf) {
+        keep_u = old_srf->Domain(0);
+        keep_v = old_srf->Domain(1);
+        auto iso = [&](auto at) {
+          ON_PolylineCurve* pl = new ON_PolylineCurve;
+          for (int k = 0; k <= 32; ++k) pl->m_pline.Append(at(k / 32.0));
+          return pl;
+        };
+        for (ON_Curve* c : edges) delete c;
+        edges.clear();
+        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.ParameterAt(t), keep_v.Min()); }));
+        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.Max(), keep_v.ParameterAt(t)); }));
+        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.ParameterAt(1.0 - t), keep_v.Max()); }));
+        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.Min(), keep_v.ParameterAt(1.0 - t)); }));
+        keep_domain = true;
+      }
+    }
     ON_NurbsSurface patch;
     const bool ok = edges.size() == 4 ? BuildCoonsPatch(*edges[0], *edges[1], *edges[2], edges[3], patch)
                                        : BuildCoonsPatch(*edges[0], *edges[1], *edges[2], nullptr, patch);
@@ -2367,7 +2391,12 @@ class PatchSingleFaceCommand : public Command {
     // same technique MatchSrf/SetSurfaceTangent/SoftEditSrf use) rather than
     // adding a new one and compacting - AddSurface()+Compact() was seen to
     // leave stale vertex tolerances pointing at freed surface memory.
-    b.m_S[b.m_F[pick->face].m_si] = new ON_NurbsSurface(patch);
+    if (keep_domain) { patch.SetDomain(0, keep_u.Min(), keep_u.Max()); patch.SetDomain(1, keep_v.Min(), keep_v.Max()); }
+    const int patch_si = b.m_F[pick->face].m_si;
+    b.m_S[patch_si] = new ON_NurbsSurface(patch);
+    // The faces cache their surface pointer (ON_SurfaceProxy; ON_BrepFace::SurfaceOf() returns it first): repoint every face using this slot, or the
+    // mesher, Area() and Volume() keep reading the replaced surface.
+    for (int fi = 0; fi < b.m_F.Count(); ++fi) if (b.m_F[fi].m_si == patch_si) b.m_F[fi].SetProxySurface(b.m_S[patch_si]);
     b.SetTolerancesBoxesAndFlags();
     o->InvalidateDisplay();
     ctx.Print("PatchSingleFace: face " + std::to_string(pick->face) + " of object " + std::to_string(pick->id) + " replaced with a Coons patch through its own boundary edges");
