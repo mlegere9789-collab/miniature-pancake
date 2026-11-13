@@ -36,8 +36,23 @@ namespace dino8::kernel {
 
 enum class CurveRegionOp { Union, Intersection, Difference, SymmetricDifference };
 
+// Why a boolean was refused (machine-readable; `refusal_reason` carries the measured detail).
+enum class CurveBooleanRefusal {
+  None,
+  InvalidOperand,       // not closed, not in the plane, no area, no NURBS form, bad tolerance, fewer than two regions
+  SelfIntersectingOperand,
+  RegionLoopsCross,     // two loops of one region cross or overlap
+  TangentContact,       // the boundaries touch without crossing (tangent circles, a vertex grazing an edge, gap below tolerance)
+  SharedSpan,           // part of one boundary lies on the other
+  CrossingsTooClose,    // two crossings closer than 100 x tolerance
+  OddCrossings,         // an odd number of crossings: a contact was mistaken for, or missed as, a crossing
+  PinchPoint,           // the kept pieces meet at a point where more than one continues: the loops of the result are ambiguous
+  ConstructionFailed,   // cutting, joining or chaining the pieces failed
+};
+
 struct PlanarCurveBooleanResult {
   bool ok = false;
+  CurveBooleanRefusal refusal = CurveBooleanRefusal::None;
   std::string refusal_reason;
   // Closed loops of the result region: `loop_is_hole[i]` is true for a clockwise (hole) boundary.
   std::vector<ON_NurbsCurve> loops;

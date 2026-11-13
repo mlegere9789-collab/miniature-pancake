@@ -88,25 +88,38 @@ double DistToPolygon(const std::vector<ON_2dPoint>& poly, const ON_2dPoint& p) {
   return best;
 }
 
-PlanarCurveBooleanResult Refuse(std::string why) {
+using Kind = CurveBooleanRefusal;
+
+// A helper's refusal: empty means success.
+struct Fail {
+  Kind kind = Kind::None;
+  std::string why;
+  Fail() = default;
+  Fail(Kind k, std::string w) : kind(k), why(std::move(w)) {}
+  bool empty() const { return why.empty(); }
+};
+
+PlanarCurveBooleanResult Refuse(Kind kind, std::string why) {
   PlanarCurveBooleanResult r;
+  r.refusal = kind;
   r.refusal_reason = std::move(why);
   return r;
 }
+PlanarCurveBooleanResult Refuse(const Fail& f) { return Refuse(f.kind, f.why); }
 
 // Prepare one operand: closed, in plane, simple, counterclockwise. Returns an empty string on success, else the refusal.
-std::string Prepare(const ON_Curve& in, const char* name, const ON_Plane& pl, double tolerance, const IntersectOptions& opt, Boundary& out) {
+Fail Prepare(const ON_Curve& in, const char* name, const ON_Plane& pl, double tolerance, const IntersectOptions& opt, Boundary& out) {
   std::string nm = name;
-  if (!in.IsClosed()) return "curve " + nm + " is not closed";
+  if (!in.IsClosed()) return Fail(Kind::InvalidOperand, "curve " + nm + " is not closed");
   std::unique_ptr<ON_NurbsCurve> nc(in.NurbsCurve());
-  if (!nc || !nc->IsValid()) return "curve " + nm + " has no valid NURBS form";
+  if (!nc || !nc->IsValid()) return Fail(Kind::InvalidOperand, "curve " + nm + " has no valid NURBS form");
   out.curve = *nc;
   double worst = 0;
   for (int i = 0; i <= 200; ++i) worst = std::max(worst, std::fabs(pl.DistanceTo(out.curve.PointAt(out.curve.Domain().ParameterAt(i / 200.0)))));
-  if (worst > 10 * tolerance) return "curve " + nm + " does not lie in the plane (worst distance " + Num(worst) + ")";
+  if (worst > 10 * tolerance) return Fail(Kind::InvalidOperand, "curve " + nm + " does not lie in the plane (worst distance " + Num(worst) + ")");
   SampleBoundary(out, pl, 64, 2048);
-  if (!IntersectCurveSelfIntersections(out.curve, opt).empty()) return "curve " + nm + " crosses itself (self-intersection)";
-  if (out.signed_area == 0) return "curve " + nm + " bounds no area";
+  if (!IntersectCurveSelfIntersections(out.curve, opt).empty()) return Fail(Kind::SelfIntersectingOperand, "curve " + nm + " crosses itself (self-intersection)");
+  if (out.signed_area == 0) return Fail(Kind::InvalidOperand, "curve " + nm + " bounds no area");
   if (out.signed_area < 0) {
     out.curve.Reverse();
     out.signed_area = -out.signed_area;
@@ -117,7 +130,7 @@ std::string Prepare(const ON_Curve& in, const char* name, const ON_Plane& pl, do
 
 
 // Cut a CCW boundary at the given parameters (in its own domain, at least 2, distinct). Returns the pieces in order, or a reason.
-std::string CutAt(const Boundary& bd, std::vector<double> ts, double tolerance, std::vector<ON_NurbsCurve>& out) {
+Fail CutAt(const Boundary& bd, std::vector<double> ts, double tolerance, std::vector<ON_NurbsCurve>& out) {
   std::sort(ts.begin(), ts.end());
   NurbsCurve w;
   w.raw() = bd.curve;
@@ -126,7 +139,7 @@ std::string CutAt(const Boundary& bd, std::vector<double> ts, double tolerance, 
   std::vector<ON_3dPoint> pts;
   for (double t : ts) pts.push_back(bd.curve.PointAt(t));
   // Put the seam at the first cut so no piece wraps.
-  if (w.ChangeSeam(ts[0]) == Result::Failed) return "the seam could not be moved to a crossing";
+  if (w.ChangeSeam(ts[0]) == Result::Failed) return Fail(Kind::ConstructionFailed, "the seam could not be moved to a crossing");
   const ON_Interval nd = w.raw().Domain();
   std::vector<double> s(ts.size());
   for (size_t i = 0; i < ts.size(); ++i) {
@@ -135,16 +148,16 @@ std::string CutAt(const Boundary& bd, std::vector<double> ts, double tolerance, 
       // The relocated seam may have shifted the parameterization: fall back to the nearest point of the relocated curve.
       const double t = CurveClosestParamGlobal(w.raw(), pts[i], 512);
       if (w.raw().PointAt(t).DistanceTo(pts[i]) > 10 * tolerance)
-        return "a crossing could not be located on the relocated curve";
+        return Fail(Kind::ConstructionFailed, "a crossing could not be located on the relocated curve");
       s[i] = t;
     }
   }
   s[0] = nd.Min();
   s.push_back(nd.Max());
   for (size_t i = 0; i + 1 < s.size(); ++i) {
-    if (!(s[i + 1] > s[i])) return "two crossings collapse to one parameter";
+    if (!(s[i + 1] > s[i])) return Fail(Kind::ConstructionFailed, "two crossings collapse to one parameter");
     ON_NurbsCurve piece = w.raw();
-    if (!piece.Trim(ON_Interval(s[i], s[i + 1]))) return "a boundary piece could not be trimmed";
+    if (!piece.Trim(ON_Interval(s[i], s[i + 1]))) return Fail(Kind::ConstructionFailed, "a boundary piece could not be trimmed");
     out.push_back(piece);
   }
   return {};
@@ -166,13 +179,13 @@ double DistToRegion(const std::vector<Boundary>& r, const ON_2dPoint& p) {
 
 // Prepare every loop of a region, then fix the orientation by nesting depth: a loop inside an even number of the other loops is an outer
 // boundary (counterclockwise), inside an odd number a hole (clockwise). The loops of one region must not cross or touch each other.
-std::string PrepareRegion(const std::vector<ON_NurbsCurve>& loops, const char* name, const ON_Plane& pl, double tolerance, const IntersectOptions& opt,
+Fail PrepareRegion(const std::vector<ON_NurbsCurve>& loops, const char* name, const ON_Plane& pl, double tolerance, const IntersectOptions& opt,
                           std::vector<Boundary>& out) {
   out.clear();
   out.resize(loops.size());
   for (size_t k = 0; k < loops.size(); ++k) {
     const std::string label = loops.size() == 1 ? std::string(name) : std::string(name) + " loop " + std::to_string(k);
-    if (std::string why = Prepare(loops[k], label.c_str(), pl, tolerance, opt, out[k]); !why.empty()) return why;
+    if (Fail f = Prepare(loops[k], label.c_str(), pl, tolerance, opt, out[k]); !f.empty()) return f;
   }
   // Loops of one region may touch each other at points (the two crescents of a symmetric difference do) but must not cross or nest into
   // each other while touching: a loop that has a hit with another must have no sample strictly inside that other.
@@ -185,7 +198,7 @@ std::string PrepareRegion(const std::vector<ON_NurbsCurve>& loops, const char* n
         const Boundary& y = dir == 0 ? out[j] : out[i];
         for (const ON_2dPoint& q : x.poly)
           if (DistToPolygon(y.poly, q) > clear && Inside(y.poly, q))
-            return "two loops of region " + std::string(name) + " cross or overlap each other (a region's loops may touch at points but not cross)";
+            return Fail(Kind::RegionLoopsCross, "two loops of region " + std::string(name) + " cross or overlap each other (a region's loops may touch at points but not cross)");
       }
     }
   }
@@ -237,7 +250,7 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
       try {
         hits = IntersectCurves(A[ia].curve, B[ib].curve, opt);
       } catch (const std::exception& e) {
-        return Refuse(std::string("curve intersection failed: ") + e.what());
+        return Refuse(Kind::ConstructionFailed, std::string("curve intersection failed: ") + e.what());
       }
       // Merge hits that are the same point (a crossing at a seam is reported at both ends of a closed curve's domain).
       std::vector<CurveCurveHit> uniq;
@@ -251,12 +264,12 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
       for (const CurveCurveHit& h : uniq) {
         const ON_3dVector ta = A[ia].curve.TangentAt(h.ta), tb = B[ib].curve.TangentAt(h.tb);
         const double s = ON_CrossProduct(ta, tb).Length();
-        if (s < 1e-3) return Refuse("the boundaries touch tangentially at (" + Num(h.point.x) + ", " + Num(h.point.y) + ", " + Num(h.point.z) + ") without crossing");
+        if (s < 1e-3) return Refuse(Kind::TangentContact, "the boundaries touch tangentially at (" + Num(h.point.x) + ", " + Num(h.point.y) + ", " + Num(h.point.z) + ") without crossing");
       }
       for (size_t i = 0; i < uniq.size(); ++i)
         for (size_t j = i + 1; j < uniq.size(); ++j)
           if (uniq[i].point.DistanceTo(uniq[j].point) < 100 * tolerance)
-            return Refuse("two crossings are closer than 100 x tolerance (" + Num(uniq[i].point.DistanceTo(uniq[j].point)) + "): a piece that short has no reliable side");
+            return Refuse(Kind::CrossingsTooClose, "two crossings are closer than 100 x tolerance (" + Num(uniq[i].point.DistanceTo(uniq[j].point)) + "): a piece that short has no reliable side");
       // Near contact that is not a crossing: sample A against B's polygon; polish each local minimum of the distance profile.
       {
         const size_t n = A[ia].poly.size();
@@ -281,10 +294,10 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
           bool at_hit = false;
           for (const CurveCurveHit& h : uniq)
             if (h.point.DistanceTo(pa) < 100 * tolerance) at_hit = true;
-          if (!at_hit) return Refuse("the boundaries touch (or share a span) near (" + Num(pa.x) + ", " + Num(pa.y) + ", " + Num(pa.z) + ") without a transversal crossing");
+          if (!at_hit) return Refuse(Kind::TangentContact, "the boundaries touch (or share a span) near (" + Num(pa.x) + ", " + Num(pa.y) + ", " + Num(pa.z) + ") without a transversal crossing");
         }
       }
-      if (uniq.size() % 2 != 0) return Refuse("an odd number of crossings (" + std::to_string(uniq.size()) + ") for two closed curves: a crossing was missed or a contact is tangential");
+      if (uniq.size() % 2 != 0) return Refuse(Kind::OddCrossings, "an odd number of crossings (" + std::to_string(uniq.size()) + ") for two closed curves: a crossing was missed or a contact is tangential");
       for (const CurveCurveHit& h : uniq) {
         tsa[ia].push_back(h.ta);
         tsb[ib].push_back(h.tb);
@@ -295,7 +308,7 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
   for (size_t i = 0; i < all.size(); ++i)
     for (size_t j = i + 1; j < all.size(); ++j)
       if (all[i].point.DistanceTo(all[j].point) < 100 * tolerance)
-        return Refuse("two crossings are closer than 100 x tolerance (" + Num(all[i].point.DistanceTo(all[j].point)) + "): a piece that short has no reliable side");
+        return Refuse(Kind::CrossingsTooClose, "two crossings are closer than 100 x tolerance (" + Num(all[i].point.DistanceTo(all[j].point)) + "): a piece that short has no reliable side");
   res.crossings = static_cast<int>(all.size());
 
   auto push_loop = [&](ON_NurbsCurve c) {
@@ -307,14 +320,14 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
   };
 
   std::vector<Piece> pieces;
-  auto classify = [&](const std::vector<Boundary>& src, const std::vector<std::vector<double>>& ts, int owner, const std::vector<Boundary>& other) -> std::string {
+  auto classify = [&](const std::vector<Boundary>& src, const std::vector<std::vector<double>>& ts, int owner, const std::vector<Boundary>& other) -> Fail {
     for (size_t k = 0; k < src.size(); ++k) {
       std::vector<ON_NurbsCurve> cut;
       const bool whole = ts[k].empty();
       if (whole) {
         cut.push_back(src[k].curve);
-      } else if (std::string why = CutAt(src[k], ts[k], tolerance, cut); !why.empty()) {
-        return std::string(owner == 0 ? "region a: " : "region b: ") + why;
+      } else if (Fail f = CutAt(src[k], ts[k], tolerance, cut); !f.empty()) {
+        return Fail(f.kind, std::string(owner == 0 ? "region a: " : "region b: ") + f.why);
       }
       for (ON_NurbsCurve& c : cut) {
         Piece p;
@@ -324,15 +337,15 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
         p.start = c.PointAtStart();
         p.end = c.PointAtEnd();
         const ON_2dPoint mid = InPlane(plane, whole ? src[k].curve.PointAt(src[k].poly_t[0]) : c.PointAt(c.Domain().ParameterAt(0.5)));
-        if (DistToRegion(other, mid) < 10 * tolerance) return "a boundary piece lies on the other boundary (shared span)";
+        if (DistToRegion(other, mid) < 10 * tolerance) return Fail(Kind::SharedSpan, "a boundary piece lies on the other boundary (shared span)");
         p.inside_other = InRegion(other, mid);
         pieces.push_back(std::move(p));
       }
     }
     return {};
   };
-  if (std::string why = classify(A, tsa, 0, B); !why.empty()) return Refuse(why);
-  if (std::string why = classify(B, tsb, 1, A); !why.empty()) return Refuse(why);
+  if (Fail f = classify(A, tsa, 0, B); !f.empty()) return Refuse(f);
+  if (Fail f = classify(B, tsb, 1, A); !f.empty()) return Refuse(f);
 
   // Which pieces the operation keeps, and whether each runs backwards.
   std::vector<Piece> kept;
@@ -367,7 +380,7 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
     const ON_3dPoint loop_start = kept[first].start;
     int guard = 0;
     while (cur_end.DistanceTo(loop_start) > link) {
-      if (++guard > static_cast<int>(kept.size()) + 1) return Refuse("the kept pieces do not chain into a closed loop");
+      if (++guard > static_cast<int>(kept.size()) + 1) return Refuse(Kind::ConstructionFailed, "the kept pieces do not chain into a closed loop");
       int best = -1, candidates = 0;
       double bd = link;
       for (size_t j = 0; j < kept.size(); ++j) {
@@ -377,16 +390,16 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
         if (d <= bd) { bd = d; best = static_cast<int>(j); }
       }
       if (candidates > 1)
-        return Refuse("more than one kept piece leaves the junction at (" + Num(cur_end.x) + ", " + Num(cur_end.y) + ", " + Num(cur_end.z) +
+        return Refuse(Kind::PinchPoint, "more than one kept piece leaves the junction at (" + Num(cur_end.x) + ", " + Num(cur_end.y) + ", " + Num(cur_end.z) +
                       "): the boundaries touch at a point there, so the result's loops are ambiguous");
-      if (best < 0) return Refuse("the kept pieces do not chain into a closed loop (a piece has no successor)");
+      if (best < 0) return Refuse(Kind::ConstructionFailed, "the kept pieces do not chain into a closed loop (a piece has no successor)");
       used[best] = true;
       NurbsCurve next;
       next.raw() = kept[best].curve;
       try {
-        if (acc.Join(next, link) == Result::Failed) return Refuse("joining two boundary pieces failed");
+        if (acc.Join(next, link) == Result::Failed) return Refuse(Kind::ConstructionFailed, "joining two boundary pieces failed");
       } catch (const std::exception& e) {
-        return Refuse(std::string("joining two boundary pieces failed: ") + e.what());
+        return Refuse(Kind::ConstructionFailed, std::string("joining two boundary pieces failed: ") + e.what());
       }
       cur_end = kept[best].end;
     }
@@ -407,12 +420,12 @@ IntersectOptions OptionsFor(double tolerance) {
 }  // namespace
 
 PlanarCurveBooleanResult PlanarRegionBoolean(const PlanarCurveRegion& a, const PlanarCurveRegion& b, const ON_Plane& plane, CurveRegionOp op, double tolerance) {
-  if (!(tolerance > 0)) return Refuse("tolerance must be positive");
+  if (!(tolerance > 0)) return Refuse(Kind::InvalidOperand, "tolerance must be positive");
   const IntersectOptions opt = OptionsFor(tolerance);
   std::vector<Boundary> A, B;
   try {
-    if (std::string why = PrepareRegion(a.loops, "a", plane, tolerance, opt, A); !why.empty()) return Refuse(why);
-    if (std::string why = PrepareRegion(b.loops, "b", plane, tolerance, opt, B); !why.empty()) return Refuse(why);
+    if (Fail f = PrepareRegion(a.loops, "a", plane, tolerance, opt, A); !f.empty()) return Refuse(f);
+    if (Fail f = PrepareRegion(b.loops, "b", plane, tolerance, opt, B); !f.empty()) return Refuse(f);
     if (op != CurveRegionOp::SymmetricDifference) return Core(A, B, plane, op, tolerance, opt);
     PlanarCurveBooleanResult amb = Core(A, B, plane, CurveRegionOp::Difference, tolerance, opt);
     if (!amb.ok) return amb;
@@ -424,12 +437,12 @@ PlanarCurveBooleanResult PlanarRegionBoolean(const PlanarCurveRegion& a, const P
     }
     return amb;
   } catch (const std::exception& e) {
-    return Refuse(std::string("the region boolean failed: ") + e.what());
+    return Refuse(Kind::ConstructionFailed, std::string("the region boolean failed: ") + e.what());
   }
 }
 
 PlanarCurveBooleanResult PlanarRegionBooleanN(const std::vector<PlanarCurveRegion>& regions, const ON_Plane& plane, CurveRegionOp op, double tolerance) {
-  if (regions.size() < 2) return Refuse("an N-way boolean needs at least two regions");
+  if (regions.size() < 2) return Refuse(Kind::InvalidOperand, "an N-way boolean needs at least two regions");
   PlanarCurveRegion acc = regions[0];
   PlanarCurveBooleanResult last;
   int crossings = 0;
@@ -450,7 +463,7 @@ PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve
   PlanarCurveRegion a, b;
   for (auto [in, region] : {std::pair<const ON_Curve*, PlanarCurveRegion*>{&a_in, &a}, {&b_in, &b}}) {
     std::unique_ptr<ON_NurbsCurve> nc(in->NurbsCurve());
-    if (!nc || !nc->IsValid()) return Refuse(std::string("curve ") + (region == &a ? "a" : "b") + " has no valid NURBS form");
+    if (!nc || !nc->IsValid()) return Refuse(Kind::InvalidOperand, std::string("curve ") + (region == &a ? "a" : "b") + " has no valid NURBS form");
     region->loops.push_back(*nc);
   }
   return PlanarRegionBoolean(a, b, plane, op, tolerance);

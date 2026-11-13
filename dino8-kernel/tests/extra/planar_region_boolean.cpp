@@ -295,3 +295,57 @@ D8_EXTRA_TEST(PlanarRegionBooleanRegionLoopsThatCrossAreRefused) {
   const PlanarCurveBooleanResult r = PlanarRegionBoolean(bad, DiscRegion(pl, {10, 0, 1}), pl, CurveRegionOp::Union);
   d8test::Check(!r.ok && r.refusal_reason.find("loops") != std::string::npos, "a region whose own loops cross is refused naming the loops");
 }
+
+// Touching contacts (pinch points, tangent contacts) are refused with a TYPED reason, never guessed.
+namespace {
+ON_PolylineCurve Poly(const std::vector<std::pair<double, double>>& xy) {
+  ON_3dPointArray p;
+  for (auto& q : xy) p.Append(ON_3dPoint(q.first, q.second, 0));
+  p.Append(ON_3dPoint(xy[0].first, xy[0].second, 0));
+  return ON_PolylineCurve(p);
+}
+PlanarCurveRegion One(const ON_Curve& c) {
+  PlanarCurveRegion r;
+  ON_NurbsCurve n;
+  c.GetNurbForm(n);
+  r.loops.push_back(n);
+  return r;
+}
+}  // namespace
+
+D8_EXTRA_TEST(PlanarRegionBooleanTouchingContactsAreRefusedWithATypedReason) {
+  using dino8::kernel::CurveBooleanRefusal;
+  const ON_Plane pl = XY();
+  auto kind = [&](const PlanarCurveRegion& a, const PlanarCurveRegion& b, CurveRegionOp op) { return PlanarRegionBoolean(a, b, pl, op).refusal; };
+  const PlanarCurveRegion big = DiscRegion(pl, {0, 0, 3});
+  d8test::Check(kind(big, DiscRegion(pl, {5, 0, 2}), CurveRegionOp::Union) == CurveBooleanRefusal::TangentContact, "externally tangent circles: TangentContact");
+  d8test::Check(kind(big, DiscRegion(pl, {1, 0, 2}), CurveRegionOp::Union) == CurveBooleanRefusal::TangentContact, "internally tangent circles: TangentContact");
+  d8test::Check(kind(big, DiscRegion(pl, {5.000005, 0, 2}), CurveRegionOp::Union) == CurveBooleanRefusal::TangentContact, "a gap far below the tolerance: TangentContact");
+  // A square touching another only at a corner: one transversal-looking contact, an odd count.
+  d8test::Check(kind(One(Poly({{0, 0}, {4, 0}, {4, 4}, {0, 4}})), One(Poly({{4, 4}, {8, 4}, {8, 8}, {4, 8}})), CurveRegionOp::Union) == CurveBooleanRefusal::OddCrossings,
+                "squares touching at one corner: OddCrossings");
+  // The pinch point: a circle minus its inscribed square - four segments meeting at the corners.
+  const double R = std::sqrt(2.0);
+  const PlanarCurveRegion circ = DiscRegion(pl, {0, 0, R});
+  const PlanarCurveRegion sq = One(Poly({{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}));
+  d8test::Check(kind(circ, sq, CurveRegionOp::Difference) == CurveBooleanRefusal::PinchPoint, "circle - inscribed square: PinchPoint");
+  d8test::Check(kind(circ, sq, CurveRegionOp::SymmetricDifference) == CurveBooleanRefusal::PinchPoint, "circle xor inscribed square: PinchPoint");
+  d8test::Check(PlanarRegionBoolean(circ, sq, pl, CurveRegionOp::Union).refusal == CurveBooleanRefusal::None, "...while the unambiguous union carries no refusal");
+  // Closeness, operands and regions.
+  d8test::Check(kind(big, One(Poly({{-0.5, 0}, {0.5, 0}, {0, 3.00015}})), CurveRegionOp::Union) == CurveBooleanRefusal::CrossingsTooClose, "crossings 5e-5 apart: CrossingsTooClose");
+  d8test::Check(kind(big, One(Poly({{0, 0}, {2, 2}, {2, 0}, {0, 2}})), CurveRegionOp::Union) == CurveBooleanRefusal::SelfIntersectingOperand, "a figure eight: SelfIntersectingOperand");
+  PlanarCurveRegion open;
+  ON_NurbsCurve arc;
+  ON_Arc(ON_Circle(pl, 3), ON_Interval(0, 2.0)).GetNurbForm(arc);
+  open.loops.push_back(arc);
+  d8test::Check(kind(open, big, CurveRegionOp::Union) == CurveBooleanRefusal::InvalidOperand, "an open curve: InvalidOperand");
+  PlanarCurveRegion bad;
+  bad.loops.push_back(Circle(pl, 0, 0, 3));
+  bad.loops.push_back(Circle(pl, 2, 0, 2));
+  d8test::Check(kind(bad, DiscRegion(pl, {10, 0, 1}), CurveRegionOp::Union) == CurveBooleanRefusal::RegionLoopsCross, "crossing loops of one region: RegionLoopsCross");
+  d8test::Check(PlanarRegionBooleanN({big}, pl, CurveRegionOp::Union).refusal == CurveBooleanRefusal::InvalidOperand, "one region in an N-way call: InvalidOperand");
+  d8test::Check(PlanarRegionBoolean(big, DiscRegion(pl, {4, 0, 2}), pl, CurveRegionOp::Union).refusal == CurveBooleanRefusal::None, "an accepted boolean carries no refusal");
+  // A fold reports the kind of the failing step.
+  const PlanarCurveBooleanResult f = PlanarRegionBooleanN({big, DiscRegion(pl, {4, 0, 2}), DiscRegion(pl, {8, 0, 2})}, pl, CurveRegionOp::Union);
+  d8test::Check(!f.ok && f.refusal == CurveBooleanRefusal::TangentContact && f.refusal_reason.find("step 2") != std::string::npos, "a fold names the failing step and keeps its kind");
+}
