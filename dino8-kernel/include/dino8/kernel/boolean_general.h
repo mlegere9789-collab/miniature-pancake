@@ -679,6 +679,14 @@ std::vector<Brep> SplitBrepByManySolidsKeepAll(const Brep& target, const std::ve
 std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal, double plane_offset,
                                         double tolerance = 0.001);
 
+// SplitBrepByPlane() that hands back CLOSED halves or refuses: the same two pieces, each (when the plane meets the solid at all) required to be
+// ON_Brep::IsValid() and IsSolid() so Brep::VolumeOfSealedSolid() works on them; a half that is not closed after SplitBrepByPlane()'s own
+// sewing throws a typed BooleanOperationError (BooleanFailureReason::UnsupportedGeometry, function name "SplitBrepByPlaneSealed") whose message
+// counts the unpaired edges instead of returning an open shell. A side the plane misses is the empty Brep, as there. Known refusal (measured on a
+// r 3, h 8 cylinder with 128-gon caps): a plane that crosses the planar end caps (z = 4 + 1.5 x, 2 x, 1.4 x ...) - the engine leaves the cap
+// chords and the wall's rim arcs unpaired; planes that stay between the caps are closed (see tests/extra/split_solid_by_plane.cpp).
+std::pair<Brep, Brep> SplitBrepByPlaneSealed(const Brep& target, Vector3d plane_normal, double plane_offset, double tolerance = 0.001);
+
 // Plural sibling of SplitBrepByPlane() above - closes PARITY_MAP.md's own
 // "Keep/split options" bullet's "KeepAll semantics" gap for SEVERAL
 // parallel cutting planes at once (slicing a block into N+1 ordered slabs,

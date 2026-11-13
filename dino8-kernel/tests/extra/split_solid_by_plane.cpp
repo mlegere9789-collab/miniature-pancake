@@ -9,8 +9,9 @@
 //     the cut adds one face; E = V + F - 2),
 //   * each half lies on its own side of the plane.
 // The cylinder cases include the planes that cross the cylinder wall's periodic seam at a point a cut-curve sample sits (almost) exactly
-// on: z = 4 + 0.25 x with the seam at 0 / 180 degrees, z = 3 + 0.25 x at 0 / 45 degrees, z = 4.3 + 0.25 x at 45 degrees. Before the seam
-// handling and the sealing of SplitBrepByPlane's halves, their halves were open shells (IsSolid false, chi 1).
+// on: z = 4 + 0.25 x with the seam at 0 / 180 degrees, z = 3 + 0.25 x at 0 / 45 degrees, z = 4.3 + 0.25 x at 45 degrees, z = 4 + 0.25 x at 45 degrees (the cut chain of that one has a
+// kink - two SSX samples out of order - that makes the tessellation in UnifyNormals() throw after the edges were sewn). Before the seam
+// handling, the sealing of SplitBrepByPlane's halves and the tolerance of that throw, their halves were open shells (IsSolid false, chi 1).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -219,7 +220,7 @@ D8_EXTRA_TEST(SplitSolidByPlaneCylinderObliquePlanesAcrossTheSeam) {
     double z0, slope, rotate_deg;
   };
   const std::vector<Case> cases = {{4.0, 0.5, 0.0},   {4.0, 1.0, 0.0},   {4.0, 0.25, 0.0}, {4.0, 0.25, 180.0}, {3.0, 0.25, 0.0},
-                                   {3.0, 0.25, 45.0}, {4.3, 0.25, 45.0}, {3.0, 0.25, 90.0}, {4.3, 0.25, 0.0}};
+                                   {3.0, 0.25, 45.0}, {4.3, 0.25, 45.0}, {3.0, 0.25, 90.0}, {4.3, 0.25, 0.0}, {4.0, 0.25, 45.0}};
   const double pr2 = ON_PI * kR * kR;
   for (const Case& c : cases) {
     ON_Xform turn;
@@ -262,5 +263,52 @@ D8_EXTRA_TEST(SplitSolidBySheetTiltedPlaneHalves) {
     const double pr2 = ON_PI * kR * kR;
     const double lo = std::min(Vol(a), Vol(b)), hi = std::max(Vol(a), Vol(b));
     d8test::Check(std::fabs(lo - pr2 * 2.5) <= 1e-4 * pr2 * 2.5 && std::fabs(hi - pr2 * 5.5) <= 1e-4 * pr2 * 5.5, "...with volumes pi r^2 * 2.5 and pi r^2 * 5.5 to 1e-4");
+  }
+}
+
+// SplitBrepByPlaneSealed hands back closed halves or refuses with a typed reason. Where the plane stays between the caps it succeeds; the
+// measured refusal is the plane that crosses the planar end caps (z = z0 + s x with z0 +- 3 s outside [0, 8]): the engine leaves the cap chords
+// and the wall's rim arcs unpaired, so the halves are valid but open.
+D8_EXTRA_TEST(SplitSolidByPlaneSealedClosedOrTypedRefusal) {
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOperationError;
+  const Brep cyl = Cylinder(kR, kH);
+  const double pr2 = ON_PI * kR * kR;
+  {
+    Vector3d n(-1.0, 0, 1);  // z = 4 + x: the plane reaches z = 1 and 7, inside the caps
+    n.Unitize();
+    try {
+      const auto [plus, minus] = dino8::kernel::SplitBrepByPlaneSealed(cyl, n, n.z * 4.0);
+      d8test::Check(Closed(plus) && Closed(minus), "SplitBrepByPlaneSealed, z = 4 + x: both halves closed");
+      d8test::Check(std::fabs(Vol(plus) - 0.5 * pr2 * kH) <= 3e-3 * 0.5 * pr2 * kH && std::fabs(Vol(minus) - 0.5 * pr2 * kH) <= 3e-3 * 0.5 * pr2 * kH,
+                    "...each is half of pi r^2 h (3e-3)");
+    } catch (const std::exception& e) {
+      d8test::Check(false, (std::string("SplitBrepByPlaneSealed, z = 4 + x threw: ") + e.what()).c_str());
+    }
+  }
+  {
+    const auto [plus, minus] = dino8::kernel::SplitBrepByPlaneSealed(cyl, Vector3d(1, 0, 0), 20.0);  // misses: one side empty, not a refusal
+    d8test::Check(plus.FaceCount() == 0 && minus.FaceCount() > 0, "SplitBrepByPlaneSealed with a plane that misses: an empty side and the whole body, no refusal");
+  }
+  struct Cross {
+    double z0, slope, rotate_deg;
+  };
+  for (const Cross& c : {Cross{4.0, 1.5, 0.0}, Cross{4.0, 2.0, 0.0}, Cross{3.0, 1.2, 0.0}, Cross{4.0, 1.5, 10.0}, Cross{4.0, 1.4, 0.0}}) {
+    ON_Xform turn;
+    turn.Rotation(c.rotate_deg * ON_PI / 180.0, ON_3dVector(0, 0, 1), ON_3dPoint(0, 0, 0));
+    Vector3d n(-c.slope, 0, 1);
+    n.Unitize();
+    char label[120];
+    std::snprintf(label, sizeof label, "plane z = %.1f + %.1f x through the caps (seam turned %.0f degrees)", c.z0, c.slope, c.rotate_deg);
+    bool typed = false, named = false, said = false;
+    try {
+      (void)dino8::kernel::SplitBrepByPlaneSealed(Cylinder(kR, kH).Transform(turn), n, n.z * c.z0);
+    } catch (const BooleanOperationError& e) {
+      typed = e.reason() == BooleanFailureReason::UnsupportedGeometry;
+      named = e.function_name() == "SplitBrepByPlaneSealed";
+      said = std::string(e.what()).find("is not a closed solid") != std::string::npos && std::string(e.what()).find("end caps") != std::string::npos;
+    } catch (const std::exception&) {
+    }
+    d8test::Check(typed && named && said, (std::string(label) + ": refused with BooleanFailureReason::UnsupportedGeometry naming SplitBrepByPlaneSealed and the open half").c_str());
   }
 }
