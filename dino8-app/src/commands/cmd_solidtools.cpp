@@ -1574,7 +1574,7 @@ std::vector<kernel::NurbsCurve> Outlines(const RegionSet& set, const kernel::Mes
   return out;
 }
 
-enum class RegionOp { Union, Difference, Intersection, Regions };
+enum class RegionOp { Union, Difference, Intersection, Regions, SymmetricDifference };
 
 // This region's own boundary as an exact polygon (no tessellation), when
 // it came from a single already-closed, genuinely piecewise-linear curve
@@ -1625,7 +1625,7 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
   std::vector<kernel::Mesh> results;
   std::string what;
-  if (op != RegionOp::Regions && set->regions.size() >= 2) {
+  if (op != RegionOp::Regions && op != RegionOp::SymmetricDifference && set->regions.size() >= 2) {
     // Exact (non-tessellated) path, now for N>=2 regions (used to be
     // locked to exactly 2) - every region must still be a plain polygon,
     // not a curved closed curve or an assembled open-curve loop. Falls
@@ -1701,17 +1701,28 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
       }
     }
   }
-  if (op != RegionOp::Regions && set->regions.size() == 2 && set->regions[0].source_ids.size() == 1 && set->regions[1].source_ids.size() == 1) {
-    // Curved closed boundaries (circles, arcs, ellipses, splines, or a polyline mixed with one): the exact planar curve boolean
-    // (kernel::PlanarCurveBoolean) keeps arcs as arcs instead of slicing a tessellated slab. The plain two-polygon case above has
-    // already returned. Any refusal (tangent or shared boundary, a crossing too close to another, an ambiguous junction, an operand
-    // that is not a simple closed curve) leaves the existing mesh-slab pipeline below to run, unchanged.
-    const SceneObject* oa = ctx.Doc().Find(set->regions[0].source_ids[0]);
-    const SceneObject* ob = ctx.Doc().Find(set->regions[1].source_ids[0]);
-    if (oa && ob && oa->kind == ObjectKind::Curve && ob->kind == ObjectKind::Curve && oa->curve && ob->curve) {
-      try {
-        const kernel::CurveRegionOp kop = op == RegionOp::Union ? kernel::CurveRegionOp::Union : op == RegionOp::Difference ? kernel::CurveRegionOp::Difference : kernel::CurveRegionOp::Intersection;
-        kernel::PlanarCurveBooleanResult res = kernel::PlanarCurveBoolean(oa->curve->raw(), ob->curve->raw(), set->plane, kop, tol * 0.01);
+  bool every_region_is_one_curve = set->regions.size() >= 2;
+  for (const Region& r : set->regions) every_region_is_one_curve = every_region_is_one_curve && r.source_ids.size() == 1;
+  if (op != RegionOp::Regions && every_region_is_one_curve) {
+    // Curved closed boundaries (circles, arcs, ellipses, splines, or a polyline mixed with one) and symmetric difference: the exact planar
+    // curve boolean (kernel::PlanarRegionBooleanN) keeps arcs as arcs instead of slicing a tessellated slab, for ALL selected regions
+    // (a left fold; Difference is first minus the rest). The plain-polygon union / difference / intersection above has already returned.
+    // Any refusal (tangent or shared boundary, a pinch point where the boundaries touch, a crossing too close to another, an operand that
+    // is not a simple closed curve - see kernel::CurveBooleanRefusal) leaves the existing mesh-slab pipeline below to run, unchanged.
+    try {
+      std::vector<kernel::PlanarCurveRegion> regs;
+      bool usable = true;
+      for (const Region& r : set->regions) {
+        const SceneObject* o = ctx.Doc().Find(r.source_ids[0]);
+        if (!o || o->kind != ObjectKind::Curve || !o->curve) { usable = false; break; }
+        kernel::PlanarCurveRegion pr;
+        pr.loops.push_back(o->curve->raw());
+        regs.push_back(std::move(pr));
+      }
+      if (usable) {
+        const kernel::CurveRegionOp kop = op == RegionOp::Union ? kernel::CurveRegionOp::Union : op == RegionOp::Difference ? kernel::CurveRegionOp::Difference
+                                        : op == RegionOp::SymmetricDifference ? kernel::CurveRegionOp::SymmetricDifference : kernel::CurveRegionOp::Intersection;
+        kernel::PlanarCurveBooleanResult res = kernel::PlanarRegionBooleanN(regs, set->plane, kop, tol * 0.01);
         if (res.ok) {
           ctx.Doc().BeginChange(label);
           const SceneObject* like = ctx.Doc().Find(set->regions[0].id);
@@ -1724,14 +1735,14 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
             ctx.Doc().Add(std::move(n));
           }
           if (delete_input) for (const Region& r : set->regions) for (ObjectId sid : r.source_ids) ctx.Doc().Remove(sid);
-          const std::string what_exact = op == RegionOp::Union ? "Union" : op == RegionOp::Difference ? "Difference" : "Intersection";
-          ctx.Print(label + ": " + what_exact + " of 2 region(s) -> " + std::to_string(res.loops.size()) + " closed curve(s), exact curved boundaries (no tessellation)" +
+          const std::string what_exact = op == RegionOp::Union ? "Union" : op == RegionOp::Difference ? "Difference" : op == RegionOp::SymmetricDifference ? "SymmetricDifference" : "Intersection";
+          ctx.Print(label + ": " + what_exact + " of " + std::to_string(set->regions.size()) + " region(s) -> " + std::to_string(res.loops.size()) + " closed curve(s), exact curved boundaries (no tessellation)" +
                      (delete_input ? ", input deleted" : ""));
           return;
         }
-      } catch (const std::exception&) {
-        // Fall through to the mesh pipeline below, unchanged.
       }
+    } catch (const std::exception&) {
+      // Fall through to the mesh pipeline below, unchanged.
     }
   }
   if (op == RegionOp::Regions) {
@@ -1756,14 +1767,14 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
     what = "regions";
   } else {
     kernel::Mesh r = set->regions[0].slab;
-    const kernel::BooleanOp bop = op == RegionOp::Union ? kernel::BooleanOp::Union : op == RegionOp::Difference ? kernel::BooleanOp::Difference : kernel::BooleanOp::Intersection;
+    const kernel::BooleanOp bop = op == RegionOp::Union ? kernel::BooleanOp::Union : op == RegionOp::Difference ? kernel::BooleanOp::Difference : op == RegionOp::SymmetricDifference ? kernel::BooleanOp::SymmetricDifference : kernel::BooleanOp::Intersection;
     for (size_t i = 1; i < set->regions.size(); ++i) {
       std::optional<kernel::Mesh> c = Combine(ctx, r, set->regions[i].slab, bop, label);
       if (!c) return;
       r = *c;
     }
     if (r.FaceCount() > 0) results.push_back(r);
-    what = op == RegionOp::Union ? "Union" : op == RegionOp::Difference ? "Difference" : "Intersection";
+    what = op == RegionOp::Union ? "Union" : op == RegionOp::Difference ? "Difference" : op == RegionOp::SymmetricDifference ? "SymmetricDifference" : "Intersection";
   }
   ctx.Doc().BeginChange(label);
   int made = 0;
@@ -2771,10 +2782,10 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
       "clash found, adding each one to the document - not just the plain triangle-triangle yes/no this command already gave.");
 
   // ---- planar curve booleans ------------------------------------------------
-  Reg(e, "CurveBoolean", Tool({ObjectsStep("Select closed planar curves", 1)}, {Choice("Operation", "Union", {"Union", "Difference", "Intersection", "Regions"}), Toggle("DeleteInput", false)},
+  Reg(e, "CurveBoolean", Tool({ObjectsStep("Select closed planar curves", 1)}, {Choice("Operation", "Union", {"Union", "Difference", "Intersection", "SymmetricDifference", "Regions"}), Toggle("DeleteInput", false)},
                               Guarded("CurveBoolean", [](CommandContext& ctx, const Input& in) {
                                 const std::string op = Lower(in.Opt("Operation"));
-                                RegionBoolean(ctx, in.O(0), op == "difference" ? RegionOp::Difference : op == "intersection" ? RegionOp::Intersection : op == "regions" ? RegionOp::Regions : RegionOp::Union, in.Yes("DeleteInput"), "CurveBoolean");
+                                RegionBoolean(ctx, in.O(0), op == "difference" ? RegionOp::Difference : op == "intersection" ? RegionOp::Intersection : op == "symmetricdifference" ? RegionOp::SymmetricDifference : op == "regions" ? RegionOp::Regions : RegionOp::Union, in.Yes("DeleteInput"), "CurveBoolean");
                               })));
   Reg(e, "PlanarUnion", Tool({ObjectsStep("Select closed planar curves", 2)}, {Toggle("DeleteInput", false)},
                              Guarded("PlanarUnion", [](CommandContext& ctx, const Input& in) { RegionBoolean(ctx, in.O(0), RegionOp::Union, in.Yes("DeleteInput"), "PlanarUnion"); })));
