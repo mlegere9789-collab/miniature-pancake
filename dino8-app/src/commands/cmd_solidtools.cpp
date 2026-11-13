@@ -10,6 +10,7 @@
 // results are mesh objects; each command says so on the command line.
 #include "commands/cmd_common.h"
 #include "commands/prism_solid.h"
+#include "dino8/kernel/planar_curve_boolean.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1695,6 +1696,39 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
         ctx.Print(label + ": " + what_exact + " of " + std::to_string(set->regions.size()) + " region(s) -> " + std::to_string(made) + " closed curve(s), exact (no tessellation)" +
                    (delete_input ? ", input deleted" : ""));
         return;
+      } catch (const std::exception&) {
+        // Fall through to the mesh pipeline below, unchanged.
+      }
+    }
+  }
+  if (op != RegionOp::Regions && set->regions.size() == 2 && set->regions[0].source_ids.size() == 1 && set->regions[1].source_ids.size() == 1) {
+    // Curved closed boundaries (circles, arcs, ellipses, splines, or a polyline mixed with one): the exact planar curve boolean
+    // (kernel::PlanarCurveBoolean) keeps arcs as arcs instead of slicing a tessellated slab. The plain two-polygon case above has
+    // already returned. Any refusal (tangent or shared boundary, a crossing too close to another, an ambiguous junction, an operand
+    // that is not a simple closed curve) leaves the existing mesh-slab pipeline below to run, unchanged.
+    const SceneObject* oa = ctx.Doc().Find(set->regions[0].source_ids[0]);
+    const SceneObject* ob = ctx.Doc().Find(set->regions[1].source_ids[0]);
+    if (oa && ob && oa->kind == ObjectKind::Curve && ob->kind == ObjectKind::Curve && oa->curve && ob->curve) {
+      try {
+        const kernel::CurveRegionOp kop = op == RegionOp::Union ? kernel::CurveRegionOp::Union : op == RegionOp::Difference ? kernel::CurveRegionOp::Difference : kernel::CurveRegionOp::Intersection;
+        kernel::PlanarCurveBooleanResult res = kernel::PlanarCurveBoolean(oa->curve->raw(), ob->curve->raw(), set->plane, kop, tol * 0.01);
+        if (res.ok) {
+          ctx.Doc().BeginChange(label);
+          const SceneObject* like = ctx.Doc().Find(set->regions[0].id);
+          const int layer = like ? like->layer_index : -1;
+          for (const ON_NurbsCurve& loop : res.loops) {
+            kernel::NurbsCurve nc;
+            nc.raw() = loop;
+            SceneObject n = SceneObject::MakeCurve(nc);
+            n.layer_index = layer;
+            ctx.Doc().Add(std::move(n));
+          }
+          if (delete_input) for (const Region& r : set->regions) for (ObjectId sid : r.source_ids) ctx.Doc().Remove(sid);
+          const std::string what_exact = op == RegionOp::Union ? "Union" : op == RegionOp::Difference ? "Difference" : "Intersection";
+          ctx.Print(label + ": " + what_exact + " of 2 region(s) -> " + std::to_string(res.loops.size()) + " closed curve(s), exact curved boundaries (no tessellation)" +
+                     (delete_input ? ", input deleted" : ""));
+          return;
+        }
       } catch (const std::exception&) {
         // Fall through to the mesh pipeline below, unchanged.
       }

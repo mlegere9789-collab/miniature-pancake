@@ -2245,6 +2245,21 @@ echo "$RBX" | grep -q "^smoke:" || { echo "$RBX"; echo "FAIL: regionboolean-exac
 RBX_EXACT_COUNT=$(echo "$RBX" | grep -c "exact (no tessellation)")
 [ "$RBX_EXACT_COUNT" -ge 4 ] || { echo "$RBX"; echo "FAIL: regionboolean-exact-polygon script took the exact polygon-boolean path $RBX_EXACT_COUNT time(s), expected at least 4 (the original 2-region case plus the N=3 Union/Difference/Intersection cases)"; fail=1; }
 
+# RegionBoolean exact CURVED path (regionboolean_exact_curved_script.txt): a curved closed curve goes through kernel::PlanarCurveBoolean
+# (closed-form lens, caps and ring), the mesh-slab path only on a refusal.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RBC="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/regionboolean_exact_curved_script.txt" 2>&1)" || { echo "$RBC"; echo "FAIL: regionboolean-exact-curved script exited non-zero"; exit 1; }
+else
+  RBC="$(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/regionboolean_exact_curved_script.txt" 2>&1)" || { echo "$RBC"; echo "FAIL: regionboolean-exact-curved script exited non-zero"; exit 1; }
+fi
+echo "$RBC" | grep -E "^(ok|FAIL)"
+if echo "$RBC" | grep -q "^FAIL"; then fail=1; fi
+echo "$RBC" | grep -q "^smoke:" || { echo "$RBC"; echo "FAIL: regionboolean-exact-curved script produced no smoke line"; fail=1; }
+[ "$(echo "$RBC" | grep -c "exact curved boundaries (no tessellation)")" = "4" ] || { echo "$RBC"; echo "FAIL: regionboolean-exact-curved script did not take the exact curved path for all 4 operations"; fail=1; }
+[ "$(echo "$RBC" | grep "Total length = " | sed -n 1p | grep -c "Total length = 25.13")" = "1" ] && echo "ok   two-circle union perimeter = 8 pi" || { echo "FAIL two-circle union perimeter is not 8 pi (25.13)"; fail=1; }
+[ "$(echo "$RBC" | grep "Total length = " | sed -n 2p | grep -c "Total length = 6.28")" = "1" ] && echo "ok   two-circle lens perimeter = 2 pi" || { echo "FAIL two-circle lens perimeter is not 2 pi (6.28)"; fail=1; }
+[ "$(echo "$RBC" | grep "Total length = " | sed -n 3p | grep -c "Total length = 24.87")" = "1" ] && echo "ok   circle minus square = four caps of total length 24.87" || { echo "FAIL circle minus square caps length is not 24.87"; fail=1; }
+
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
 # Intersect (see fillet_script.txt).
