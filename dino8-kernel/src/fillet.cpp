@@ -4320,6 +4320,66 @@ double MaxChamferDistanceForAngle(const Brep& solid, Point3d edge_p0, Point3d ed
   return std::min(extents.max_distance_i, extents.max_distance_j * std::sin(theta + angle_from_i) / std::sin(angle_from_i));
 }
 
+ChamferDistanceLimit MaxChamferDistanceWithEnds(const Brep& solid, Point3d edge_p0, Point3d edge_p1) {
+  ChamferDistanceLimit lim = MaxChamferDistance(solid, edge_p0, edge_p1);
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  int idx_i = -1, idx_j = -1;
+  FindEdgeFaces(faces, edge_p0, edge_p1, tol, "MaxChamferDistanceWithEnds", idx_i, idx_j);
+  const Brep::PlanarFace& face_i = faces[static_cast<size_t>(idx_i)];
+  const Brep::PlanarFace& face_j = faces[static_cast<size_t>(idx_j)];
+  Vector3d e = edge_p1 - edge_p0;
+  if (!e.Unitize()) throw std::invalid_argument("dino8::kernel::MaxChamferDistanceWithEnds: edge_p0 and edge_p1 coincide");
+  auto extent_along = [](const std::vector<Point3d>& loop, const Vector3d& m, const Point3d& ref) {
+    double best = -std::numeric_limits<double>::infinity();
+    for (const Point3d& v : loop) best = std::max(best, m * (v - ref));
+    return best;
+  };
+  Vector3d m_i = ON_CrossProduct(face_i.plane.zaxis, e), m_j = ON_CrossProduct(face_j.plane.zaxis, -e);
+  if (!m_i.Unitize() || !m_j.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MaxChamferDistanceWithEnds: degenerate face/edge geometry (a face normal is parallel to the edge)");
+  }
+  if (extent_along(face_i.loop, m_i, edge_p0) <= tol) m_i = -m_i;
+  if (extent_along(face_j.loop, m_j, edge_p0) <= tol) m_j = -m_j;
+  // A rail of distance d from the edge pierces a third face k at v + d Q1v, Q1v = m - ((m.n_k)/(e.n_k)) e; that stays on k's edge toward the neighbour w
+  // (a vertex of k's loop) only while d (Q1v.w)/(w.w) <= 1.
+  auto bound = [&](const Vector3d& q1v, const Vector3d& w) {
+    const double denom = q1v * w;
+    if (!(denom > 0.0)) return 0.0;
+    const Vector3d off = q1v - (denom / (w * w)) * w;
+    if (off.Length() > 1e-6 * q1v.Length()) return 0.0;
+    return (w * w) / denom;
+  };
+  for (const Point3d& v : {edge_p0, edge_p1}) {
+    for (size_t fk = 0; fk < faces.size(); ++fk) {
+      if (static_cast<int>(fk) == idx_i || static_cast<int>(fk) == idx_j) continue;
+      const std::vector<Point3d>& loop = faces[fk].loop;
+      const size_t n = loop.size();
+      for (size_t k = 0; k < n; ++k) {
+        if (loop[k].DistanceTo(v) > tol) continue;
+        const Point3d& pred = loop[(k + n - 1) % n];
+        const Point3d& succ = loop[(k + 1) % n];
+        const bool pred_on_i = std::fabs(face_i.plane.DistanceTo(pred)) <= tol, pred_on_j = std::fabs(face_j.plane.DistanceTo(pred)) <= tol;
+        const bool succ_on_i = std::fabs(face_i.plane.DistanceTo(succ)) <= tol, succ_on_j = std::fabs(face_j.plane.DistanceTo(succ)) <= tol;
+        bool i_first;
+        if (pred_on_i && succ_on_j && !pred_on_j && !succ_on_i) i_first = true;
+        else if (pred_on_j && succ_on_i && !pred_on_i && !succ_on_j) i_first = false;
+        else break;
+        const Vector3d n_k = faces[fk].plane.zaxis;
+        const double e_dot_n = e * n_k;
+        if (std::fabs(e_dot_n) < 1e-9) {
+          throw std::invalid_argument("dino8::kernel::MaxChamferDistanceWithEnds: a third face at an edge endpoint is parallel to the edge itself");
+        }
+        const Vector3d qi = m_i - ((m_i * n_k) / e_dot_n) * e, qj = m_j - ((m_j * n_k) / e_dot_n) * e;
+        lim.max_distance_i = std::min(lim.max_distance_i, bound(qi, (i_first ? pred : succ) - v));
+        lim.max_distance_j = std::min(lim.max_distance_j, bound(qj, (i_first ? succ : pred) - v));
+        break;
+      }
+    }
+  }
+  return lim;
+}
+
 // MULTI-EDGE generalization of ChamferConvexEdge - fillet.h's own doc
 // comment spells out the v1 scope this closes vs. leaves open. Each
 // edge's own per-edge geometry (m_i/m_j/theta/extents/rails) is
