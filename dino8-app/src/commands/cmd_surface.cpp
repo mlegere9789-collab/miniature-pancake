@@ -2274,6 +2274,32 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
       return std::nullopt;
     }
   }
+  // A per-face thickness with NOTHING removed on a revolved solid (cylinder, cone / frustum, sphere cap, stepped shaft ...): the closed
+  // hollow with its own thickness per face, kernel::ShellClosedRevolvedArcProfile (the original + the per-face cavity reversed).
+  if (removed.empty() && !overrides.empty()) {
+    revolved::RevMeridian rm;
+    bool have = false;
+    PlainRevolved prc;
+    PlainCylinder pcc;
+    revolved::ArcSolid arcc;
+    if (RecognizeConeLike(b, prc)) {
+      std::vector<int> faces = prc.face;
+      rm = revolved::LineMeridian(prc.c0, prc.ax, prc.u, prc.prof, faces);
+      have = true;
+    } else if (b.m_F.Count() == 3 && RecognizePlainCylinder(b, pcc)) {
+      rm = revolved::LineMeridian(pcc.c0, pcc.ax, pcc.u, {{0, 0}, {pcc.R, 0}, {pcc.R, pcc.H}, {0, pcc.H}}, {pcc.bottom, pcc.wall, pcc.top});
+      have = true;
+    } else if (revolved::RecognizeArcSolid(b, arcc)) {
+      rm = revolved::ArcSolidAsMeridian(arcc);
+      have = true;
+    } else {
+      have = revolved::RecognizeRevolvedChain(b, rm);
+    }
+    if (have) {
+      if (std::optional<kernel::Brep> k = revolved::ShellClosedRevMeridian(rm, t, overrides, why)) return k;
+      return std::nullopt;
+    }
+  }
   // Per-face thickness, several removed faces, or a removed WALL on a cylinder / cone / frustum: the meridian polyline goes
   // to kernel::ShellRevolvedProfile (a single removed cap, and a uniform closed hollow, keep the all-faces-exact builds below).
   if (!overrides.empty() || !removed.empty()) {
