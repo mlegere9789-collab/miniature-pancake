@@ -1,0 +1,125 @@
+name: Kverify perf
+
+# Throwaway-ref verification of the performance and sanitizer jobs for ONE change: a push to `kvlite/perf-**` reads `.kvperf`
+# (JOBS=perf san, REPS=5) and runs
+#   perf : Release build of dino8_bench_budgets, parity/tools/ci_perf.sh (JSON metrics + comparison with parity/perf_baseline.json)
+#   san  : ASan + UBSan build of dino8_kernel_tests, the named subset of parity/tools/sanitizer_subset.txt
+# It never publishes anything. The repository's own scheduled variant is .github/workflows/nightly.yml.
+
+on:
+  push:
+    branches: ['kvlite/perf-**']
+
+permissions:
+  contents: read
+
+env:
+  DEPS_APT: ninja-build ccache
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-22.04
+    outputs:
+      perf: ${{ steps.p.outputs.perf }}
+      san: ${{ steps.p.outputs.san }}
+      reps: ${{ steps.p.outputs.reps }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        run: |
+          jobs=$(sed -n 's/^JOBS=//p' .kvperf | head -1 | tr -cd 'a-z ')
+          reps=$(sed -n 's/^REPS=//p' .kvperf | head -1 | tr -cd '0-9')
+          echo "perf=$(case " $jobs " in *" perf "*) echo yes;; esac)" >> "$GITHUB_OUTPUT"
+          echo "san=$(case " $jobs " in *" san "*) echo yes;; esac)" >> "$GITHUB_OUTPUT"
+          echo "reps=${reps:-5}" >> "$GITHUB_OUTPUT"
+          echo "jobs: $jobs reps: ${reps:-5}"
+
+  perf:
+    name: Perf (Release)
+    needs: plan
+    if: needs.plan.outputs.perf == 'yes'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          for try in 1 2; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y $DEPS_APT; then break; fi
+            echo "apt attempt $try failed"
+          done
+          command -v ninja >/dev/null || pip install --user ninja || true
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-perf-ccache-${{ github.sha }}
+          restore-keys: kverify-perf-ccache-
+      - name: Configure
+        run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDINO8_KERNEL_BUILD_EXAMPLES=OFF -DCMAKE_CXX_COMPILER_LAUNCHER="$(command -v ccache || true)"
+      - name: Build the benchmark harness
+        run: cmake --build dino8-kernel/build --target dino8_bench_budgets
+      - name: Measure and compare
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          set +e
+          bash parity/tools/ci_perf.sh dino8-kernel/build/dino8_bench_budgets "$PWD/perf.json" ${{ needs.plan.outputs.reps }} 2>&1 | tee perf.log
+          rc=${PIPESTATUS[0]}
+          echo "perf exit=$rc"
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-metrics
+          path: |
+            perf.json
+            perf.log
+          retention-days: 14
+
+  san:
+    name: Sanitizers (ASan + UBSan, named subset)
+    needs: plan
+    if: needs.plan.outputs.san == 'yes'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          for try in 1 2; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y $DEPS_APT; then break; fi
+            echo "apt attempt $try failed"
+          done
+          command -v ninja >/dev/null || pip install --user ninja || true
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-perf-san-ccache-${{ github.sha }}
+          restore-keys: kverify-perf-san-ccache-
+      - name: Configure (ASan + UBSan at -O1, vptr check off)
+        run: |
+          SAN="-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer"
+          cmake -S dino8-kernel -B dino8-kernel/build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG" -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG" \
+            -DCMAKE_CXX_FLAGS="$SAN" -DCMAKE_C_FLAGS="$SAN" -DCMAKE_EXE_LINKER_FLAGS="$SAN" \
+            -DDINO8_KERNEL_BUILD_EXAMPLES=OFF -DCMAKE_CXX_COMPILER_LAUNCHER="$(command -v ccache || true)"
+      - name: Build
+        run: cmake --build dino8-kernel/build-san --target dino8_kernel_tests
+      - name: Run the named subset
+        shell: bash
+        timeout-minutes: 120
+        run: |
+          set +e
+          bash parity/tools/ci_sanitize.sh dino8-kernel/build-san/tests/dino8_kernel_tests subset 2>&1 | tee san.log
+          rc=${PIPESTATUS[0]}
+          echo "san exit=$rc"
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: san-log
+          path: san.log
+          retention-days: 14
