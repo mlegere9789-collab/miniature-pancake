@@ -395,7 +395,7 @@ Volume
 
 # ---------------------------------------------------------------------------------------------------------------------------------
 # A copy of grouped objects must be a group of its OWN: Copy used to leave the copies in the source's group, so SelGroup on one original
-# selected all 4 objects, and a copied dimension (one group per dimension) was dropped by Save3dm, which writes one dimension per group.
+# made one group of all 4 objects (Audit reports the number of groups), and a copied dimension (one group per dimension) was dropped by Save3dm, which writes one dimension per group.
 QCRBEGIN_copy_group
 Box 0,0,0 10,10,0 10
 Box 20,0,0 30,10,0 10
@@ -406,9 +406,7 @@ Copy
 0,0,0
 0,100,0
 Enter
-SelNone
-SelID 1
-SelGroup
+Audit
 
 QCRBEGIN_array_group
 Box 0,0,0 10,10,0 10
@@ -420,8 +418,6 @@ ArrayLinear
 3
 0,0,0
 0,50,0
-SelNone
-SelID 1
-SelGroup
+Audit
 
 QCRBEGIN_end
