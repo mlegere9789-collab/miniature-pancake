@@ -76,4 +76,21 @@ List
 @expect_objects 1
 SelAll
 Delete
+# --- Two fillets of DIFFERENT radii at a corner (1 on the vertical edge, 2 on the top edge), third edge sharp: the pair is built with each pick's own radius.
+# V = 1000 - a 1^2 10 - a 2^2 10 + overlap(1, 2), overlap = integral_0^1 f_1 f_2 dy, f_r(y) = r - sqrt(2 r y - y^2) = 0.2535 (closed form in
+# dino8-kernel/tests/extra/fillet_pair_unequal.cpp), so 1000 - 2.146 - 8.584 + 0.253 = 989.523 (the tessellated Volume reads 989.4 or 989.5). Staged edges used to
+# all take the LAST radius, which gave the equal-radius r = 2 pair, 983.5.
+Box 1400500,0,0 1400510,10,0 10
+FilletEdge
+Radius=1
+1400510,10,5
+Radius=2
+1400505,10,10
+Enter
+SelAll
+Volume
+List
+@expect_objects 1
+SelAll
+Delete
 @expect_objects 0
