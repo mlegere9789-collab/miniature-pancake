@@ -17,7 +17,13 @@
 //   * a TANGENT contact (the two boundaries touch without crossing: externally or internally tangent circles) or a shared span of
 //     boundary (coincident arcs) is refused - it needs a classification of degenerate pieces this does not attempt;
 //   * a crossing that lands within `tolerance` of another is refused (a piece shorter than the tolerance has no reliable side);
-//   * operands are single loops (no holes), as for PolygonBooleanPlanar().
+//   * the loops of one region must not cross or touch each other (nesting decides outer / hole, by depth parity).
+//
+// Regions with holes, N-way folds and symmetric difference: PlanarRegionBoolean() / PlanarRegionBooleanN() below take a region as a set of
+// loops (outer boundaries and holes, any orientation: the nesting depth decides - even = outer, odd = hole), classify by even-odd
+// containment in the whole other region, and otherwise use the construction above. SymmetricDifference is (a - b) followed by (b - a): the
+// two crescents of two overlapping discs touch only at the crossings and come out as separate loops. The N-way form folds left to right
+// (Union, Intersection, SymmetricDifference are associative; Difference is ((a - b) - c) ...); a refusal at any step is reported with its step.
 #pragma once
 
 #include <string>
@@ -28,7 +34,7 @@
 
 namespace dino8::kernel {
 
-enum class CurveRegionOp { Union, Intersection, Difference };
+enum class CurveRegionOp { Union, Intersection, Difference, SymmetricDifference };
 
 struct PlanarCurveBooleanResult {
   bool ok = false;
@@ -38,6 +44,22 @@ struct PlanarCurveBooleanResult {
   std::vector<bool> loop_is_hole;
   int crossings = 0;  // transversal boundary crossings found (0 for nested or disjoint operands)
 };
+
+// A planar region as a set of closed loops: outer boundaries and holes in any orientation.
+struct PlanarCurveRegion {
+  std::vector<ON_NurbsCurve> loops;
+};
+
+// The region a result describes (its loops, outer counterclockwise, holes clockwise).
+PlanarCurveRegion RegionOf(const PlanarCurveBooleanResult& r);
+
+// a OP b for regions that may carry holes (see above).
+PlanarCurveBooleanResult PlanarRegionBoolean(const PlanarCurveRegion& a, const PlanarCurveRegion& b, const ON_Plane& plane, CurveRegionOp op,
+                                             double tolerance = 1e-6);
+
+// Left fold over `regions` (at least two).
+PlanarCurveBooleanResult PlanarRegionBooleanN(const std::vector<PlanarCurveRegion>& regions, const ON_Plane& plane, CurveRegionOp op,
+                                              double tolerance = 1e-6);
 
 // a OP b, where Difference is a - b. `tolerance` is the gap allowed when chaining pieces and the distance under which two
 // crossings, or a piece and the other boundary, are considered coincident.

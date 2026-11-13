@@ -361,4 +361,9 @@ PlanarCurveBooleanResult PlanarCurveBoolean(const ON_Curve& a_in, const ON_Curve
   return res;
 }
 
+
+PlanarCurveRegion RegionOf(const PlanarCurveBooleanResult& r) { return PlanarCurveRegion{r.loops}; }
+PlanarCurveBooleanResult PlanarRegionBoolean(const PlanarCurveRegion&, const PlanarCurveRegion&, const ON_Plane&, CurveRegionOp, double) { return Refuse("not implemented"); }
+PlanarCurveBooleanResult PlanarRegionBooleanN(const std::vector<PlanarCurveRegion>&, const ON_Plane&, CurveRegionOp, double) { return Refuse("not implemented"); }
+
 }  // namespace dino8::kernel
