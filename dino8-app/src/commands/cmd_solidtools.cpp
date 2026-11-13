@@ -529,16 +529,30 @@ int DeformObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const s
   return done;
 }
 
+// A copy of grouped objects joined the SOURCE's group (SelGroup on the original then selected the copies too, and Save3dm, which writes one
+// dimension per group, dropped a copied dimension). The copies of each source group become a group of their own.
+void RegroupCopies(CommandContext& ctx, const std::vector<ObjectId>& made) {
+  std::map<int, std::vector<ObjectId>> by_group;
+  for (ObjectId id : made) {
+    if (const SceneObject* o = ctx.Doc().Find(id)) {
+      if (o->group_id >= 0) by_group[o->group_id].push_back(id);
+    }
+  }
+  for (const auto& entry : by_group) ctx.Doc().CreateGroup(entry.second);
+}
+
 void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label) {
   ctx.Doc().BeginChange(label);
   int n = 0;
+  std::vector<ObjectId> made_ids;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
-    if (copy) { SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); ctx.Doc().Add(std::move(dup)); }
+    if (copy) { SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); made_ids.push_back(ctx.Doc().Add(std::move(dup))); }
     else o->Transform(xf);
     ++n;
   }
+  RegroupCopies(ctx, made_ids);
   ctx.Print(label + ": " + (copy ? "copied " : "transformed ") + std::to_string(n) + " object(s)");
 }
 
@@ -2069,13 +2083,15 @@ void PlaceCopies(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON
   for (size_t k = 0; k < targets.size(); ++k) {
     ON_Xform xf;
     xf.Rotation(from, targets[k]);
+    std::vector<ObjectId> placed;
     for (ObjectId id : ids) {
       SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
-      if (copy) { SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); ctx.Doc().Add(std::move(dup)); }
+      if (copy) { SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); placed.push_back(ctx.Doc().Add(std::move(dup))); }
       else o->Transform(xf);
       ++made;
     }
+    RegroupCopies(ctx, placed);
     if (!copy) break;
   }
   ctx.Print(label + ": " + (copy ? "placed " + std::to_string(made) + " copy(ies) at " + std::to_string(targets.size()) + " point(s)" : "oriented " + std::to_string(made) + " object(s)"));
@@ -2370,16 +2386,18 @@ void ScalePositions(CommandContext& ctx, const Input& in) {
   const Point3d base = in.P(1);
   ctx.Doc().BeginChange("ScalePositions");
   int n = 0;
+  std::vector<ObjectId> made_ids;
   for (ObjectId id : in.O(0)) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
     const kernel::BoundingBox bb = o->BoundingBox();
     const Point3d c = (bb.min + bb.max) * 0.5;
     const ON_Xform xf = ON_Xform::TranslationTransformation((c - base) * (f - 1));
-    if (in.Yes("Copy")) { SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); ctx.Doc().Add(std::move(dup)); }
+    if (in.Yes("Copy")) { SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); made_ids.push_back(ctx.Doc().Add(std::move(dup))); }
     else o->Transform(xf);
     ++n;
   }
+  RegroupCopies(ctx, made_ids);
   ctx.Print("ScalePositions: distances from " + FormatPoint(base) + " scaled by " + FormatNumber(f) + " for " + std::to_string(n) + " object(s)");
 }
 
