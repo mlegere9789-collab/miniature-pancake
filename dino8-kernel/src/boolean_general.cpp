@@ -6313,6 +6313,22 @@ std::pair<Brep, Brep> SplitBrepBySolid(const Brep& target, const Brep& cutter, d
   // either piece's own answer.
   Brep outside = BooleanCombineGeneral(target, cutter, BooleanOp::Difference, tolerance);
   Brep inside = BooleanCombineGeneral(target, cutter, BooleanOp::Intersection, tolerance);
+  // Best-effort sealing of a piece that came back as an open shell. Where the cut curve crosses a periodic seam the engine inserts a
+  // seam vertex into the wall's chain that the cutting face's own copy of the chord does not have (a T-junction), and a sphere or
+  // cylinder cutter that crosses a face of the target leaves the target's remainder with unpaired edges: the raw piece is
+  // ON_Brep::IsValid() but has naked edges, so it is no closed solid (measured: a cube minus a sphere that crosses its top face, a cube
+  // minus a cylinder through it, a cylinder r 3 cut by z = 3 + 0.25 x with its seam line at 45 degrees). Sewing
+  // (SealGeneralBooleanResult, the step BooleanCombineGeneralSealed() applies) closes them. A piece that is already a solid is left
+  // untouched; one that cannot be sealed is returned as the engine produced it - this never turns a result into a refusal.
+  auto seal = [](Brep& piece, BooleanOp op) {
+    if (piece.raw().m_F.Count() == 0 || piece.raw().IsSolid()) return;
+    try {
+      piece = SealGeneralBooleanResult(piece, op, std::nan(""), std::nan("")).brep;
+    } catch (const std::exception&) {
+    }
+  };
+  seal(outside, BooleanOp::Difference);
+  seal(inside, BooleanOp::Intersection);
   return {std::move(outside), std::move(inside)};
 }
 
@@ -6444,22 +6460,6 @@ std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal
   });
 
   auto [outside, inside] = SplitBrepBySolid(target, box, tolerance);
-  // Best-effort sealing of a half that came back as an open shell. Where the cut curve crosses a periodic seam the engine inserts a
-  // seam vertex into the wall's chain that the cutting face's own copy of the chord does not have (a T-junction): the raw half is
-  // ON_Brep::IsValid() but has naked edges, so it is no closed solid (measured: a cylinder r 3, h 8 cut by z = 3 + 0.25 x with its seam
-  // line at 45 degrees: three naked edges, the seam vertex and the two chord pieces beside it, IsSolid false). Sewing
-  // (SealGeneralBooleanResult, the step BooleanCombineGeneralSealed() applies) closes them.
-  // A half that is already a solid is left untouched (sealing would reopen nothing but also change nothing); one that cannot be
-  // sealed is returned as the engine produced it - this never turns a result into a refusal.
-  auto seal = [](Brep& piece, BooleanOp op) {
-    if (piece.raw().m_F.Count() == 0 || piece.raw().IsSolid()) return;
-    try {
-      piece = SealGeneralBooleanResult(piece, op, std::nan(""), std::nan("")).brep;
-    } catch (const std::exception&) {
-    }
-  };
-  seal(inside, BooleanOp::Intersection);
-  seal(outside, BooleanOp::Difference);
   return {std::move(inside), std::move(outside)};
 }
 
