@@ -16,6 +16,7 @@
 
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/offset_solid.h"
 #include "test_registry.h"
 
 namespace {
@@ -199,6 +200,16 @@ D8_EXTRA_TEST(OffsetRuledSolidConcaveL) {
     d8test::Check(r.raw().IsSolid(), "concave L frustum offset: IsSolid");
     d8test::Check(Rel(r.Volume(), Simpson([&](double z) { return section_area(z, d); }, -d, 6.0 + d)) < 1e-9,
                   "concave L frustum offset: volume = Simpson of the mitred section areas");
+  }
+  // cross-check against the kernel's other planar-solid offset (per-vertex plane intersection, used by the app for any planar solid)
+  for (double d : {0.3, -0.3}) {
+    const Brep base = OffsetRuledSolid(at(0.0, 1.0), at(6.0, 0.5), 0.0);
+    Brep other;
+    const dino8::kernel::Result res = dino8::kernel::OffsetSolidPlanar(base, d, other, nullptr);
+    d8test::Check(res == dino8::kernel::Result::Ok, "OffsetSolidPlanar accepts the concave L frustum");
+    if (res == dino8::kernel::Result::Ok)
+      d8test::Check(Rel(other.Volume(), OffsetRuledSolid(at(0.0, 1.0), at(6.0, 0.5), d).Volume()) < 1e-9,
+                    "OffsetRuledSolid agrees with OffsetSolidPlanar on the concave L frustum");
   }
   // reversed winding, swapped profiles: same body
   {
