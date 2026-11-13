@@ -14905,6 +14905,8 @@ int Brep::CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped) {
   return added;
 }
 
+int Brep::CapNakedLoops(double tolerance, std::vector<SkippedCap>* skipped) { return CapPlanarHoles(tolerance, skipped); }
+
 
 Result Brep::ShrinkSurfaces(double tolerance, ShrinkSurfacesReport* report) {
   if (!ON_IsValid(tolerance) || !(tolerance > 0.0)) {

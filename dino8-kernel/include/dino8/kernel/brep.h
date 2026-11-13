@@ -6292,6 +6292,9 @@ class Brep {
   // cleared, so a caller can accumulate it across several calls.
   int CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped);
 
+  // CapPlanarHoles() followed by the freeform caps for the loops it declines. At this commit it is the planar pass only.
+  int CapNakedLoops(double tolerance = tolerance::kEdgeJoin, std::vector<SkippedCap>* skipped = nullptr);
+
   // A standalone, single-face open shell exactly capping `boundary` (a
   // closed, planar curve) - CapPlanarHoles()'s own genuine-curve cap
   // (see its own doc comment above), factored out here because it needs
