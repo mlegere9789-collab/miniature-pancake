@@ -993,6 +993,7 @@ class ExtrudeCommand : public Command {
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
   void OnNumber(CommandContext& ctx, double d) override {
+    if (ids_.empty()) return;  // a number typed before the objects were chosen: no empty undo step, the prompt stays
     ctx.ClearPreview();
     if (d == 0) { ctx.Warn("Distance must be non-zero"); Finish(); return; }
     if (!std::isfinite(d) || std::fabs(d) > kMaxExtrudeDistance) {
