@@ -1,0 +1,284 @@
+{
+ "schema": "dino8-bench/1",
+ "commit": "68680a6d",
+ "host": {
+  "runner": "GitHub Actions ubuntu-22.04",
+  "cpu": "AMD EPYC 7763 64-Core Processor x4",
+  "kernel": "6.8.0-1070-azure",
+  "build": "Release (-O3 -DNDEBUG), g++ of ubuntu-22.04"
+ },
+ "source": "CI run 43530308020 (kvlite/perf-perfci-235231, tested commit 68680a6d), median of 5 timed runs after one warm-up (fewer for slow cases, see per-metric reps)",
+ "reps": 5,
+ "metrics": [
+  {
+   "metric": "nurbs_boolean_ms",
+   "value": 97.5121,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.04,
+   "reps": 5
+  },
+  {
+   "metric": "planar_boolean_ms",
+   "value": 11.3041,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.019,
+   "reps": 5
+  },
+  {
+   "metric": "nurbs_boolean_ms",
+   "value": 303.5571,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.011,
+   "reps": 5
+  },
+  {
+   "metric": "planar_boolean_ms",
+   "value": 159.1084,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.003,
+   "reps": 5
+  },
+  {
+   "metric": "nurbs_boolean_ms",
+   "value": 778.7056,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.006,
+   "reps": 5
+  },
+  {
+   "metric": "planar_boolean_ms",
+   "value": 4931.7822,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.001,
+   "reps": 3
+  },
+  {
+   "metric": "tessellate_ms",
+   "value": 34.9412,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.325,
+   "reps": 5
+  },
+  {
+   "metric": "mass_properties_ms",
+   "value": 228.6001,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.006,
+   "reps": 5
+  },
+  {
+   "metric": "mesh_mass_properties_ms",
+   "value": 0.7838,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.027,
+   "reps": 5
+  },
+  {
+   "metric": "brep_copy_ms",
+   "value": 0.2115,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.119,
+   "reps": 5
+  },
+  {
+   "metric": "tessellate_ms",
+   "value": 116.0672,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.061,
+   "reps": 5
+  },
+  {
+   "metric": "mass_properties_ms",
+   "value": 1489.6693,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.002,
+   "reps": 5
+  },
+  {
+   "metric": "mesh_mass_properties_ms",
+   "value": 2.3378,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.004,
+   "reps": 5
+  },
+  {
+   "metric": "brep_copy_ms",
+   "value": 0.6446,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.059,
+   "reps": 5
+  },
+  {
+   "metric": "tessellate_ms",
+   "value": 461.4609,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.083,
+   "reps": 5
+  },
+  {
+   "metric": "mass_properties_ms",
+   "value": 14403.4328,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.0,
+   "reps": 1
+  },
+  {
+   "metric": "mesh_mass_properties_ms",
+   "value": 7.8096,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.002,
+   "reps": 5
+  },
+  {
+   "metric": "brep_copy_ms",
+   "value": 2.1846,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.021,
+   "reps": 5
+  },
+  {
+   "metric": "tessellate_ms",
+   "value": 1.3113,
+   "unit": "ms",
+   "dataset": "nurbs_sphere_1face_32x32",
+   "commit": "68680a6d",
+   "spread": 0.006,
+   "reps": 5
+  },
+  {
+   "metric": "tessellate_ms",
+   "value": 29.7479,
+   "unit": "ms",
+   "dataset": "nurbs_sphere_1face_128x128",
+   "commit": "68680a6d",
+   "spread": 0.128,
+   "reps": 5
+  },
+  {
+   "metric": "mass_properties_ms",
+   "value": 0.2328,
+   "unit": "ms",
+   "dataset": "nurbs_sphere_1face",
+   "commit": "68680a6d",
+   "spread": 0.28,
+   "reps": 5
+  },
+  {
+   "metric": "tessellate_ms",
+   "value": 5.5584,
+   "unit": "ms",
+   "dataset": "nurbs_torus_1face_64x64",
+   "commit": "68680a6d",
+   "spread": 0.019,
+   "reps": 5
+  },
+  {
+   "metric": "mass_properties_ms",
+   "value": 0.3323,
+   "unit": "ms",
+   "dataset": "nurbs_torus_1face",
+   "commit": "68680a6d",
+   "spread": 0.173,
+   "reps": 5
+  },
+  {
+   "metric": "section_ms",
+   "value": 33.2922,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.004,
+   "reps": 5
+  },
+  {
+   "metric": "section_20_views_ms",
+   "value": 719.7456,
+   "unit": "ms",
+   "dataset": "prism_faces_100",
+   "commit": "68680a6d",
+   "spread": 0.005,
+   "reps": 5
+  },
+  {
+   "metric": "section_ms",
+   "value": 107.0462,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.011,
+   "reps": 5
+  },
+  {
+   "metric": "section_20_views_ms",
+   "value": 2266.7176,
+   "unit": "ms",
+   "dataset": "prism_faces_300",
+   "commit": "68680a6d",
+   "spread": 0.002,
+   "reps": 5
+  },
+  {
+   "metric": "section_ms",
+   "value": 454.7902,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.011,
+   "reps": 5
+  },
+  {
+   "metric": "section_20_views_ms",
+   "value": 9378.626,
+   "unit": "ms",
+   "dataset": "prism_faces_1000",
+   "commit": "68680a6d",
+   "spread": 0.0,
+   "reps": 1
+  },
+  {
+   "metric": "mesh_boolean_ms",
+   "value": 797.777,
+   "unit": "ms",
+   "dataset": "torus_pair_230400_tris_each",
+   "commit": "68680a6d",
+   "spread": 0.012,
+   "reps": 5
+  }
+ ]
+}
