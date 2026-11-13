@@ -6,6 +6,17 @@
 
 namespace dino8::kernel {
 
+void ReplaceBrepSurface(ON_Brep& b, int si, ON_Surface* fresh, bool delete_old) {
+  if (si < 0 || si >= b.m_S.Count()) throw std::invalid_argument("dino8::kernel::ReplaceBrepSurface: surface index out of range");
+  ON_Surface* old = b.m_S[si];
+  b.m_S[si] = fresh;
+  for (int i = 0; i < b.m_F.Count(); ++i) {
+    if (b.m_F[i].m_si == si) b.m_F[i].SetProxySurface(fresh);
+  }
+  if (delete_old && old != fresh) delete old;
+  b.DestroyMesh(ON::any_mesh);
+}
+
 Result ChangeFaceSeam(Brep& brep, int face_index, int direction, double t, std::string* reason) {
   ON_Brep& b = brep.raw();
   if (face_index < 0 || face_index >= b.m_F.Count()) {
@@ -45,16 +56,11 @@ Result ChangeFaceSeam(Brep& brep, int face_index, int direction, double t, std::
   }
   ON_NurbsSurface* fresh = new ON_NurbsSurface(moved.raw());
   if (users <= 1) {
-    delete b.m_S[face.m_si];
-    b.m_S[face.m_si] = fresh;
+    ReplaceBrepSurface(b, face.m_si, fresh, true);
   } else {
     b.m_S.Append(fresh);
     face.m_si = b.m_S.Count() - 1;
-  }
-  // An ON_BrepFace is an ON_SurfaceProxy: it caches the surface pointer, so replacing the m_S entry is not enough - SurfaceOf() (which Area(),
-  // Volume() and the rest of the kernel read through) would keep returning the deleted surface until the proxy is pointed at the new one.
-  for (int i = 0; i < b.m_F.Count(); ++i) {
-    if (b.m_F[i].m_si == face.m_si) b.m_F[i].SetProxySurface(b.m_S[face.m_si]);
+    face.SetProxySurface(fresh);
   }
   b.DestroyMesh(ON::any_mesh);
   return Result::Ok;
