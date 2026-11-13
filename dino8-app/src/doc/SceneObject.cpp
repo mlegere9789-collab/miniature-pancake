@@ -237,6 +237,91 @@ SceneObject SceneObject::MakePointCloud(const kernel::PointCloud& pc) {
   return o;
 }
 
+namespace {
+
+// An annotation (a dimension, a leader, a text, a centermark) keeps what it measures / where it sits as plain-text tags next to its
+// baked curves (DimP0 / DimP1 / DimP2, DimCenter, DimPlane*, DimDir, LeaderTip / LeaderRest, TextOrigin / TextX / TextY, and the lengths
+// DimOffset, DimExtra, DimRadiusVal, TextHeight, CenterSize). Save3dm / DXF / IFC rebuild the real dimension from those tags, so a
+// dimension that was Moved, Rotated, Scaled or copied by an Array still wrote out at its ORIGINAL place (DimLinear 0,0,0-10,0,0 moved up
+// 100 reopened with DimP0 = 0,0,0 / DimP1 = 10,0,0): only the curves had followed. Carry the tags along for a similarity transform
+// (rotation / translation / uniform scale, no mirror); any other transform leaves them as they were.
+bool ParseTagTriple(const std::string& s, double& x, double& y, double& z) { return std::sscanf(s.c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3; }
+std::string FormatTagTriple(double x, double y, double z) {
+  // a coordinate below 1e-12 is rotation noise (cos 90 degrees = 6e-17), not geometry: write the 0 the model meant
+  const auto clean = [](double v) { return std::fabs(v) < 1e-12 ? 0.0 : v; };
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "%.10g,%.10g,%.10g", clean(x), clean(y), clean(z));
+  return buf;
+}
+
+void TransformAnnotationTags(std::map<std::string, std::string>& tags, const ON_Xform& xf) {
+  if (tags.empty()) return;
+  static const char* const kPoints[] = {"DimP0", "DimP1", "DimP2", "DimCenter", "DimPlaneOrigin", "CenterCenter", "CenterPlaneOrigin", "LeaderTip", "TextOrigin"};
+  static const char* const kVectors[] = {"DimPlaneX", "DimPlaneY", "DimDir", "CenterPlaneX", "CenterPlaneY", "TextX", "TextY"};
+  static const char* const kLengths[] = {"DimOffset", "DimExtra", "DimRadiusVal", "TextHeight", "CenterSize"};
+  bool any = tags.count("LeaderRest") > 0;
+  for (const char* k : kPoints) any = any || tags.count(k) > 0;
+  for (const char* k : kVectors) any = any || tags.count(k) > 0;
+  for (const char* k : kLengths) any = any || tags.count(k) > 0;
+  if (!any) return;
+  // similarity test on the 3 x 3 part: orthogonal columns of one common length, positive determinant, no projective row
+  const ON_3dVector cx(xf.m_xform[0][0], xf.m_xform[1][0], xf.m_xform[2][0]), cy(xf.m_xform[0][1], xf.m_xform[1][1], xf.m_xform[2][1]),
+      cz(xf.m_xform[0][2], xf.m_xform[1][2], xf.m_xform[2][2]);
+  const double sx = cx.Length(), sy = cy.Length(), sz = cz.Length();
+  const double scale = sx;
+  if (!(scale > 1e-12) || !std::isfinite(scale) || std::fabs(sy - scale) > 1e-9 * scale || std::fabs(sz - scale) > 1e-9 * scale) return;
+  if (std::fabs(ON_DotProduct(cx, cy)) > 1e-9 * scale * scale || std::fabs(ON_DotProduct(cx, cz)) > 1e-9 * scale * scale ||
+      std::fabs(ON_DotProduct(cy, cz)) > 1e-9 * scale * scale)
+    return;
+  if (xf.m_xform[3][0] != 0.0 || xf.m_xform[3][1] != 0.0 || xf.m_xform[3][2] != 0.0 || xf.m_xform[3][3] != 1.0) return;
+  if (ON_DotProduct(ON_CrossProduct(cx, cy), cz) <= 0.0) return;
+  auto vec = [&](double x, double y, double z) {
+    return ON_3dVector(xf.m_xform[0][0] * x + xf.m_xform[0][1] * y + xf.m_xform[0][2] * z, xf.m_xform[1][0] * x + xf.m_xform[1][1] * y + xf.m_xform[1][2] * z,
+                       xf.m_xform[2][0] * x + xf.m_xform[2][1] * y + xf.m_xform[2][2] * z);
+  };
+  double x, y, z;
+  for (const char* k : kPoints) {
+    auto it = tags.find(k);
+    if (it == tags.end() || !ParseTagTriple(it->second, x, y, z)) continue;
+    const ON_3dPoint p = xf * ON_3dPoint(x, y, z);
+    it->second = FormatTagTriple(p.x, p.y, p.z);
+  }
+  for (const char* k : kVectors) {
+    auto it = tags.find(k);
+    if (it == tags.end() || !ParseTagTriple(it->second, x, y, z)) continue;
+    ON_3dVector v = vec(x, y, z);
+    v = v * (1.0 / scale);  // the plane axes and directions are unit vectors: a uniform scale must not stretch them
+    it->second = FormatTagTriple(v.x, v.y, v.z);
+  }
+  if (std::fabs(scale - 1.0) > 1e-12) {
+    for (const char* k : kLengths) {
+      auto it = tags.find(k);
+      if (it == tags.end()) continue;
+      char* end = nullptr;
+      const double v = std::strtod(it->second.c_str(), &end);
+      if (end == it->second.c_str()) continue;
+      char buf[48];
+      std::snprintf(buf, sizeof(buf), "%.10g", v * scale);
+      it->second = buf;
+    }
+  }
+  // LeaderRest: ';'-separated offsets of the later leader points from the tip, in world axes (rotated and scaled, not translated)
+  if (auto rest = tags.find("LeaderRest"); rest != tags.end()) {
+    std::string out;
+    std::stringstream ss(rest->second);
+    std::string tok;
+    while (std::getline(ss, tok, ';')) {
+      if (tok.empty() || !ParseTagTriple(tok, x, y, z)) continue;
+      const ON_3dVector v = vec(x, y, z);
+      if (!out.empty()) out += ";";
+      out += FormatTagTriple(v.x, v.y, v.z);
+    }
+    rest->second = out;
+  }
+}
+
+}  // namespace
+
 void SceneObject::Transform(const ON_Xform& xform) {
   switch (kind) {
     case ObjectKind::Point: point = xform * point; break;
@@ -253,6 +338,7 @@ void SceneObject::Transform(const ON_Xform& xform) {
       break;
     case ObjectKind::PointCloud: *point_cloud = point_cloud->Transform(xform); break;
   }
+  TransformAnnotationTags(user_text, xform);
   // Block instances remember their insertion point (see cmd_drafting.cpp).
   auto it = user_text.find("BlockInsert");
   if (it != user_text.end()) {
