@@ -100,6 +100,14 @@ class Brep {
   // Builds a one-face B-rep whose face is exactly `surface` (untrimmed).
   static Brep FromSurface(const NurbsSurface& surface);
 
+  // FromSurface() with complete topology: ON_Brep::Create() welds the corners
+  // and sides of one untrimmed face (4 vertices, 4 edges for an open surface;
+  // a side that closes on itself becomes a seam edge shared by two trims of the
+  // face, a collapsed side becomes a singular trim). IsValid() holds and
+  // Check() reports the naked boundary edges and nothing else. Throws
+  // std::runtime_error if OpenNURBS refuses the surface.
+  static Brep FromSurfaceWelded(const NurbsSurface& surface);
+
   // Builds a genuine closed solid: an axis-aligned box as six untrimmed
   // bilinear NURBS faces (min corner (x0,y0,z0), max corner (x1,y1,z1)),
   // each oriented so its tessellated triangles face outward. This is what
