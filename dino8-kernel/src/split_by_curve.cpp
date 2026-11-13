@@ -30,6 +30,8 @@ Brep SealPiece(Brep piece) {
   return piece;
 }
 
+bool IsSealedOrEmpty(const Brep& b) { return b.FaceCount() == 0 || (b.raw().IsSolid() && b.raw().IsValid()); }
+
 }  // namespace
 
 std::pair<Brep, Brep> SplitBrepByProjectedCurve(const Brep& target, const NurbsCurve& curve, Vector3d direction,
@@ -77,18 +79,28 @@ std::pair<Brep, Brep> SplitBrepByProjectedCurve(const Brep& target, const NurbsC
   // is claimed by 3 or more fragment loops" while the identical cut with the sheet merely slid along `direction` succeeds). The cut does not
   // depend on the sweep's offset, so on a refusal slide the sheet and retry; only if every placement is refused is the first refusal rethrown.
   static const double kOffsets[] = {0.618033988749895, 0.381966011250105, 0.77, 0.23, 0.9, 0.1};
+  // Whether the pieces seal also depends on the placement (the dense-polyline cut edges of the pieces and of the cap pair up differently), so
+  // the first placement whose non-empty pieces BOTH seal wins; if none does, the first unsealed result is returned.
   std::exception_ptr first_error;
+  bool have_fallback = false;
+  std::pair<Brep, Brep> fallback;
   for (const double offset : kOffsets) {
     NurbsCurve shifted = curve;
     shifted.raw().Translate(-offset * half * direction);
     try {
       const Brep sheet = Brep::Extrude(shifted, 2.0 * half * direction, /*cap=*/false);
       std::pair<Brep, Brep> halves = SplitBySheet(target, sheet, tolerance);
-      return {SealPiece(std::move(halves.first)), SealPiece(std::move(halves.second))};
+      std::pair<Brep, Brep> sealed{SealPiece(std::move(halves.first)), SealPiece(std::move(halves.second))};
+      if (IsSealedOrEmpty(sealed.first) && IsSealedOrEmpty(sealed.second)) return sealed;
+      if (!have_fallback) {
+        fallback = std::move(sealed);
+        have_fallback = true;
+      }
     } catch (const std::exception&) {
       if (!first_error) first_error = std::current_exception();
     }
   }
+  if (have_fallback) return fallback;
   std::rethrow_exception(first_error);
 }
 
