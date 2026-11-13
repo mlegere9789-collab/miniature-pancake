@@ -3668,6 +3668,38 @@ PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, co
       while (prev - cur > 0.5 * L) cur += L;
     }
   }
+  // A curve that is closed in 3D but winds once around a periodic direction of the surface (a circle pulled onto a cylinder or a
+  // sphere about its axis) is NOT closed in (u, v): its unwrapped last sample sits a whole period from the first. Treating it as closed
+  // made the closing chord a full period long, so ChordParams() gave the parametrization a second, spurious turn (domain 12.54 for a
+  // 6.28 loop) and the cubic then swung through the middle of the domain over that stretch (measured: a circle r 3 pulled onto a cylinder
+  // r 1 came out 10.70 long, not 2 pi, with points at radius 0.1). Such a curve is fitted closed in 3D (with 3D chord parameters) and OPEN
+  // in (u, v), the pcurve running on to the first sample's image one period further.
+  bool winds = false;
+  ON_3dPoint wrapped_front = pa.front();
+  if (closed) {
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!s.IsClosed(dir)) continue;
+      const double L = s.Domain(dir).Length();
+      if (L <= 0) continue;
+      const double diff = (dir == 0 ? pa.front().x - pa.back().x : pa.front().y - pa.back().y);
+      if (std::fabs(diff) > 0.5 * L) {
+        winds = true;
+        double& w = dir == 0 ? wrapped_front.x : wrapped_front.y;
+        w = (dir == 0 ? pa.back().x : pa.back().y) + (diff - L * std::round(diff / L));
+      }
+    }
+  }
+  if (winds) {
+    out.params = ChordParams(p3, true);
+    std::vector<ON_3dPoint> p3_open = p3;
+    p3_open.push_back(p3.front());
+    const std::vector<double> open_params = ChordParams(p3_open, false);
+    std::vector<ON_3dPoint> pa_open = pa;
+    pa_open.push_back(wrapped_front);
+    out.pcurve = InterpolateCubic(pa_open, open_params, false, 2);
+    out.pulled_curve = InterpolateCubic(p3, out.params, true, 3);
+    return out;
+  }
   out.params = ChordParams(pa, closed);
   out.pcurve = InterpolateCubic(pa, out.params, closed, 2);
   out.pulled_curve = InterpolateCubic(p3, out.params, closed, 3);
