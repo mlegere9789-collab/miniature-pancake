@@ -692,6 +692,9 @@ class LeaderCommand : public Command {
   void OnPoint(CommandContext& ctx, Point3d p) override { pts_.push_back(p); ctx.SetLastPoint(p); WantPoint("Next point. Press Enter for text"); }
   void OnEnter(CommandContext&) override { if (pts_.size() >= 2) WantText("Leader text"); else Finish(); }
   void OnText(CommandContext& ctx, const std::string& t) override {
+    // Text typed while the arrowhead / bend points are still being picked ("Leader" then "3", or text after one point) reached here with
+    // no (or one) point: pts_[0] of an empty vector was a crash. The text belongs to the "Leader text" prompt only.
+    if (want != Want::Text || pts_.size() < 2) return;
     ctx.ClearPreview();
     const ON_Plane pl = ActivePlane(ctx);
     const double h = Height(ctx);
