@@ -36,6 +36,11 @@ public class JsonSettingsStoreTests
             CheckForUpdatesOnLaunch = false,
             TempStorage = TempStorageMode.CustomFolder,
             CustomTempDirectory = temp.Path,
+            WindowLeft = 120,
+            WindowTop = 80,
+            WindowWidth = 1400,
+            WindowHeight = 900,
+            WindowMaximized = true,
         });
 
         var reloaded = new JsonSettingsStore(path).Load();
@@ -46,6 +51,30 @@ public class JsonSettingsStoreTests
         Assert.True(reloaded.PreserveFolderStructure);
         Assert.False(reloaded.CheckForUpdatesOnLaunch);
         Assert.Equal(temp.Path, reloaded.ResolveTempDirectory());
+        Assert.Equal(120, reloaded.WindowLeft);
+        Assert.Equal(80, reloaded.WindowTop);
+        Assert.Equal(1400, reloaded.WindowWidth);
+        Assert.Equal(900, reloaded.WindowHeight);
+        Assert.True(reloaded.WindowMaximized);
+    }
+
+    [Fact]
+    public void A_never_saved_window_position_stays_unset_rather_than_defaulting_to_zero()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Combine("settings.json");
+
+        // Every other field set, window bounds deliberately left alone — the first-launch
+        // case, or an older settings file saved before this existed.
+        new JsonSettingsStore(path).Save(new AppSettings { Theme = ThemeMode.Dark });
+
+        var reloaded = new JsonSettingsStore(path).Load();
+
+        Assert.Null(reloaded.WindowLeft);
+        Assert.Null(reloaded.WindowTop);
+        Assert.Null(reloaded.WindowWidth);
+        Assert.Null(reloaded.WindowHeight);
+        Assert.False(reloaded.WindowMaximized);
     }
 
     [Fact]
@@ -83,6 +112,22 @@ public class JsonSettingsStoreTests
 
         Assert.Equal(1, settings.MaxConcurrentJobs);
         Assert.Equal(ThemeMode.Dark, settings.Theme);
+    }
+
+    [Fact]
+    public void A_window_size_smaller_than_the_window_s_own_minimum_is_dropped_on_load()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Combine("settings.json");
+        // Below MainWindow.xaml's own MinWidth/MinHeight (900x620) — WPF would enforce
+        // that floor at layout time regardless, but a nonsense value should not round-trip
+        // back out to a future save looking like a deliberately-chosen size.
+        File.WriteAllText(path, """{ "WindowWidth": 10, "WindowHeight": 10, "WindowLeft": 50, "WindowTop": 50 }""");
+
+        var settings = new JsonSettingsStore(path).Load();
+
+        Assert.Null(settings.WindowWidth);
+        Assert.Null(settings.WindowHeight);
     }
 
     [Fact]

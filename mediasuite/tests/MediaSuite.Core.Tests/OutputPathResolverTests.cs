@@ -74,6 +74,55 @@ public class OutputPathResolverTests : IDisposable
     }
 
     [Fact]
+    public void Two_jobs_resolving_the_same_name_before_either_writes_its_file_do_not_collide()
+    {
+        // The real scenario this guards against: JobQueueManager runs several jobs from the
+        // same batch concurrently, and each one calls Resolve() itself, right as it starts --
+        // not once up front for the whole batch. Two inputs that would produce the same
+        // output name (e.g. same filename from different subfolders, or two different
+        // extensions converting to the same target extension) can both ask for a name before
+        // either has actually written anything to disk. A plain File.Exists check alone would
+        // hand out the identical path to both -- this simulates exactly that race
+        // deterministically, without needing real threads: call Resolve() twice back to back
+        // for the same candidate name with no file ever created in between.
+        var firstInput = _temp.CreateFile("song.wav");
+        var secondInput = _temp.CreateFile("song.flac");
+        var target = Target(template: "song.{ext}");
+
+        var first = OutputPathResolver.Resolve(firstInput, target);
+        var second = OutputPathResolver.Resolve(secondInput, target);
+
+        Assert.NotEqual(first, second);
+        Assert.Equal("song.png", Path.GetFileName(first));
+        Assert.Equal("song (1).png", Path.GetFileName(second));
+    }
+
+    [Fact]
+    public void A_third_concurrent_resolution_keeps_counting_past_a_reserved_name_too()
+    {
+        var target = Target(template: "song.{ext}");
+
+        var first = OutputPathResolver.Resolve(_temp.CreateFile("a.wav"), target);
+        var second = OutputPathResolver.Resolve(_temp.CreateFile("b.flac"), target);
+        var third = OutputPathResolver.Resolve(_temp.CreateFile("c.ogg"), target);
+
+        Assert.Equal(3, new[] { first, second, third }.Distinct().Count());
+    }
+
+    [Fact]
+    public void Overwrite_lets_two_concurrent_resolutions_share_the_same_path()
+    {
+        // Overwrite is a deliberate "last write wins" choice, unlike the default Rename --
+        // two jobs colliding under it is the user's own call, not something to guard against.
+        var target = Target(template: "song.{ext}", policy: OverwritePolicy.Overwrite);
+
+        var first = OutputPathResolver.Resolve(_temp.CreateFile("a.wav"), target);
+        var second = OutputPathResolver.Resolve(_temp.CreateFile("b.flac"), target);
+
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
     public void Rename_keeps_counting_past_the_first_collision()
     {
         var input = _temp.CreateFile("holiday.jpg");
@@ -165,5 +214,36 @@ public class OutputPathResolverTests : IDisposable
         var name = Path.GetFileName(resolved);
         Assert.All(Path.GetInvalidFileNameChars(), invalid => Assert.DoesNotContain(invalid, name));
         Assert.EndsWith(".png", name, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("con.jpg")]
+    [InlineData("NUL.jpg")]
+    [InlineData("com1.jpg")]
+    [InlineData("LPT3.jpg")]
+    public void A_source_named_after_a_reserved_Windows_device_does_not_produce_a_reserved_output_name(string sourceName)
+    {
+        // CON, NUL, COM1, LPT3 etc. are reserved on Windows regardless of any extension --
+        // "con.png" is exactly as reserved as "con" itself. Real tools writing to a path
+        // ending in one of these either fail outright or get silently redirected to the
+        // actual device instead of a real file.
+        var resolved = OutputPathResolver.Resolve(_temp.CreateFile(sourceName), Target());
+
+        var baseName = Path.GetFileNameWithoutExtension(resolved);
+        Assert.NotEqual(Path.GetFileNameWithoutExtension(sourceName), baseName, StringComparer.OrdinalIgnoreCase);
+        Assert.EndsWith(".png", resolved, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_extensionless_source_kept_at_its_own_format_does_not_end_in_a_trailing_dot()
+    {
+        // With no target Format ("same as input") and a source that itself has no
+        // extension, BuildFileName's "{name}.{ext}" template substitutes an empty {ext},
+        // leaving a literal trailing dot -- which Windows would silently strip at file
+        // creation time, so the resolver must not let one survive its own naming decisions.
+        var resolved = OutputPathResolver.Resolve(_temp.CreateFile("Report"), Target(format: null));
+
+        Assert.False(Path.GetFileName(resolved).EndsWith('.'), $"'{resolved}' ends with a trailing dot");
+        Assert.Equal("Report", Path.GetFileName(resolved));
     }
 }

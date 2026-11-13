@@ -21,4 +21,5 @@ public enum ExternalToolId
     RealEsrgan,
     Rsvg,
     Potrace,
+    GfpganFaceEnhance,
 }

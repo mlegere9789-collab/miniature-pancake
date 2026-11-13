@@ -48,6 +48,20 @@ public sealed class AppSettings
     /// <summary>Optional override for the bundled-tools folder, for a portable install.</summary>
     public string? ToolsDirectory { get; set; }
 
+    /// <summary>
+    /// The main window's last position and size, in WPF device-independent units. Null
+    /// (the default for all four) means "never saved yet" — first launch, or an older
+    /// settings file from before this existed — and the window falls back to its XAML
+    /// default (centered, 1280x820) rather than restoring a partial or zeroed rectangle.
+    /// </summary>
+    public double? WindowLeft { get; set; }
+    public double? WindowTop { get; set; }
+    public double? WindowWidth { get; set; }
+    public double? WindowHeight { get; set; }
+
+    /// <summary>Whether the window was maximized when last closed.</summary>
+    public bool WindowMaximized { get; set; }
+
     private Dictionary<string, string>? _toolPathOverrides;
 
     /// <summary>
@@ -154,6 +168,21 @@ public sealed class AppSettings
         }
 
         MaxConcurrentJobs = Math.Clamp(MaxConcurrentJobs, 1, MaxConcurrencyLimit);
+
+        // A hand-edited or otherwise corrupt file could carry a zero, negative, or
+        // absurdly tiny size that would render as a sliver — the window's own XAML
+        // MinWidth/MinHeight (900x620) enforce a floor at layout time regardless, but
+        // clamping here too means a nonsense value never round-trips back out to a
+        // future save looking like a deliberately-chosen size.
+        if (WindowWidth is < 900)
+        {
+            WindowWidth = null;
+        }
+
+        if (WindowHeight is < 620)
+        {
+            WindowHeight = null;
+        }
 
         if (_customPresets is not null)
         {

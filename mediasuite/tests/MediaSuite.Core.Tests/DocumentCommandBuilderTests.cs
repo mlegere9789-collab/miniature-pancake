@@ -53,6 +53,29 @@ public class DocumentCommandBuilderTests
         Assert.Throws<ArgumentException>(() => DocumentCommandBuilder.PandocFormatFor("epub"));
     }
 
+    [Theory]
+    [InlineData("docx", "docx")]
+    [InlineData("odt", "odt")]
+    [InlineData("rtf", "rtf")]
+    [InlineData("html", "html")]
+    [InlineData("md", "markdown")]
+    public void Pandoc_writer_format_matches_the_reader_format_for_every_markup_format(string extension, string pandocName)
+    {
+        Assert.Equal(pandocName, DocumentCommandBuilder.PandocWriterFormatFor(extension));
+    }
+
+    [Fact]
+    public void Pandoc_writer_format_for_txt_is_plain_prose_not_markdown_syntax()
+    {
+        // Reading .txt as markdown (PandocFormatFor) is a harmless trick that keeps paragraph
+        // breaks intact. Writing .txt as markdown would be a real bug: it would leave literal
+        // "**bold**"/"# Heading" syntax sitting in a file with no markup reader on the other
+        // end. "plain" is pandoc's actual plain-prose writer, with markup stripped rather than
+        // emitted -- confirm the reader and writer names genuinely differ for this one format.
+        Assert.Equal("markdown", DocumentCommandBuilder.PandocFormatFor("txt"));
+        Assert.Equal("plain", DocumentCommandBuilder.PandocWriterFormatFor("txt"));
+    }
+
     [Fact]
     public void Converting_names_the_input_and_output_formats_explicitly_and_writes_standalone()
     {
@@ -63,6 +86,24 @@ public class DocumentCommandBuilderTests
         Assert.Equal("docx", arguments[arguments.IndexOf("-t") + 1]);
         Assert.Equal("notes.docx", arguments[arguments.IndexOf("-o") + 1]);
         Assert.Equal("notes.md", arguments[^1]);
+    }
+
+    [Fact]
+    public void Converting_to_txt_uses_the_plain_writer_not_the_markdown_writer()
+    {
+        var arguments = DocumentCommandBuilder.Convert("report.docx", "report.txt", "docx", "txt").ToList();
+
+        Assert.Equal("docx", arguments[arguments.IndexOf("-f") + 1]);
+        Assert.Equal("plain", arguments[arguments.IndexOf("-t") + 1]);
+    }
+
+    [Fact]
+    public void Converting_from_txt_still_uses_the_markdown_reader()
+    {
+        var arguments = DocumentCommandBuilder.Convert("notes.txt", "notes.docx", "txt", "docx").ToList();
+
+        Assert.Equal("markdown", arguments[arguments.IndexOf("-f") + 1]);
+        Assert.Equal("docx", arguments[arguments.IndexOf("-t") + 1]);
     }
 
     // --- LibreOffice -------------------------------------------------------------------------

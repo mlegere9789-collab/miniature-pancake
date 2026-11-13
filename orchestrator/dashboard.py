@@ -5,8 +5,13 @@ that reads the shared SQLite database and shows:
 
 * a summary strip (total earnings, pending reviews),
 * one card per module (status, last activity, earnings, pending count),
+  with a **Run now** button to trigger that module immediately and a
+  **View log** link to see its recent output,
 * the review queue, with working **Approve** / **Reject** buttons,
-* a recent-activity feed.
+* a recent-activity feed,
+* a **Download CSV** link for the full earnings ledger (bookkeeping/taxes),
+* whether the portable scheduler daemon (``scheduler run``) is actually
+  alive, via its heartbeat.
 
 Run it::
 
@@ -20,13 +25,21 @@ DASHBOARD_PORT in `.env`, or pass --host / --port.
 from __future__ import annotations
 
 import argparse
+import csv
 import html
+import io
 import json
+import subprocess
+import sys
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import database as db
+from . import scheduler
 from .config import config
+from .database import EARNINGS_CSV_FIELDS, REVIEWS_CSV_FIELDS
+from .paths import MODULES, PROJECT_ROOT
 
 _STATE_COLORS = {
     "ok": "#1a7f37",
@@ -41,13 +54,147 @@ def _fmt_money(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def trigger_run(module: str) -> bool:
+    """Launch `python -m modules.<module>.run` in the background.
+
+    Returns False without doing anything for an unrecognized module name —
+    the caller (an HTTP form field) is untrusted input, and `module` ends up
+    in an argv list handed to a real subprocess, so this is the one gate
+    keeping a request from running anything other than one of the five known
+    programs. No shell involved, so there's no interpolation to exploit
+    either way, but the allowlist is the real defense.
+
+    Output is appended to the same `data/logs/<module>.log` file the
+    scheduler's own portable daemon writes to, so a manual run and a
+    scheduled one show up in the same place.
+    """
+    if module not in MODULES:
+        return False
+    log_dir = PROJECT_ROOT / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logfile = log_dir / f"{module}.log"
+    with open(logfile, "a", encoding="utf-8") as fh:
+        fh.write(
+            f"\n===== manual run from dashboard "
+            f"{datetime.now(timezone.utc).isoformat()} =====\n"
+        )
+        fh.flush()
+        subprocess.Popen(
+            [sys.executable, "-m", f"modules.{module}.run"],
+            cwd=str(PROJECT_ROOT),
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+        )
+    return True
+
+
+LOG_TAIL_LINES = 200
+
+
+def tail_log(module: str) -> str | None:
+    """Last LOG_TAIL_LINES lines of data/logs/<module>.log.
+
+    None for an unrecognized module (the caller should 404). Empty string
+    for a known module that hasn't produced a log yet — that's a normal
+    state (never run, or run before logging existed), not an error.
+    """
+    if module not in MODULES:
+        return None
+    logfile = PROJECT_ROOT / "data" / "logs" / f"{module}.log"
+    if not logfile.exists():
+        return ""
+    lines = logfile.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[-LOG_TAIL_LINES:])
+
+
+def render_log_page(module: str) -> str | None:
+    """A minimal page showing that module's recent log output, or None (404)."""
+    text = tail_log(module)
+    if text is None:
+        return None
+    body = text or "No log output yet — this module hasn't been run."
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_esc(MODULES[module])} — log</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
+         background: #f6f8fa; color: #1f2328; }}
+  .wrap {{ max-width: 900px; margin: 0 auto; padding: 24px; }}
+  a {{ color: #0969da; }}
+  h1 {{ font-size: 18px; }}
+  pre {{ background: #0d1117; color: #c9d1d9; padding: 16px; border-radius: 10px;
+         overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+         font-size: 12px; line-height: 1.5; }}
+</style></head><body>
+<div class="wrap">
+  <p><a href="/">&larr; Back to dashboard</a></p>
+  <h1>{_esc(MODULES[module])} — last {LOG_TAIL_LINES} log lines</h1>
+  <pre>{_esc(body)}</pre>
+</div>
+</body></html>"""
+
+
 def _esc(v: object) -> str:
     return html.escape(str(v if v is not None else ""))
+
+
+def render_earnings_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=EARNINGS_CSV_FIELDS)
+    writer.writeheader()
+    for row in db.list_earnings():
+        writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+    return buf.getvalue()
+
+
+def render_reviews_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=REVIEWS_CSV_FIELDS)
+    writer.writeheader()
+    for row in db.list_resolved_reviews():
+        writer.writerow({field: row[field] for field in REVIEWS_CSV_FIELDS})
+    return buf.getvalue()
+
+
+_SCHEDULER_COLORS = {
+    "running": "#1a7f37",
+    "stale": "#9a6700",
+    "never_started": "#57606a",
+}
+
+
+def scheduler_status() -> dict[str, str]:
+    """Summarize the portable daemon's heartbeat for the dashboard.
+
+    cron jobs don't need this (a missed run just doesn't happen), but
+    `scheduler run` is a long-lived process that can die silently — this is
+    the only way short of checking the OS process list to notice.
+    """
+    heartbeat = scheduler.read_heartbeat()
+    if heartbeat is None:
+        return {
+            "state": "never_started",
+            "text": "Portable scheduler (“scheduler run”) has never been started.",
+        }
+    if scheduler.heartbeat_is_stale(heartbeat):
+        return {
+            "state": "stale",
+            "text": f"Portable scheduler looks stopped — last heartbeat "
+            f"{heartbeat.get('beat_at', '?')} (pid {heartbeat.get('pid', '?')}).",
+        }
+    return {
+        "state": "running",
+        "text": f"Portable scheduler is running (last heartbeat "
+        f"{heartbeat.get('beat_at', '?')}, pid {heartbeat.get('pid', '?')}).",
+    }
 
 
 def render_page() -> str:
     overview = db.module_overview()
     reviews = db.pending_reviews()
+    resolved = db.resolved_reviews(limit=10)
     activity = db.recent_activity(limit=30)
     tot = db.totals()
 
@@ -61,7 +208,9 @@ def render_page() -> str:
             if pending
             else ""
         )
-        cards.append(f"""
+        running = m.get("state") == "running"
+        cards.append(
+            f"""
         <div class="card">
           <div class="card-head">
             <h3>{_esc(m['display_name'])}</h3>
@@ -72,7 +221,15 @@ def render_page() -> str:
           <p class="last">{_esc(m.get('last_activity') or 'No activity yet')}</p>
           <p class="ts">{_esc(m.get('last_activity_at') or '')}</p>
           {badge}
-        </div>""")
+          <form method="POST" action="/run" class="run-form">
+            <input type="hidden" name="module" value="{_esc(m['name'])}">
+            <button class="run-btn"{' disabled' if running else ''}>
+              {'Running…' if running else 'Run now'}
+            </button>
+          </form>
+          <a class="log-link" href="/log/{_esc(m['name'])}">View log</a>
+        </div>"""
+        )
 
     if reviews:
         rows = []
@@ -87,7 +244,8 @@ def render_page() -> str:
                     )
                 except (json.JSONDecodeError, TypeError):
                     payload = "<pre>" + _esc(r["payload"]) + "</pre>"
-            rows.append(f"""
+            rows.append(
+                f"""
             <tr>
               <td>{_esc(r['module'])}</td>
               <td><strong>{_esc(r['title'])}</strong><br><span class="muted">{_esc(r['description'])}</span>{payload}</td>
@@ -99,7 +257,8 @@ def render_page() -> str:
                   <button name="decision" value="rejected" class="reject">Reject</button>
                 </form>
               </td>
-            </tr>""")
+            </tr>"""
+            )
         review_html = f"""
         <table class="review">
           <thead><tr><th>Module</th><th>Item</th><th>Flagged</th><th></th></tr></thead>
@@ -108,19 +267,55 @@ def render_page() -> str:
     else:
         review_html = '<p class="empty">Nothing awaiting review. 🎉</p>'
 
+    if resolved:
+        rows = []
+        for r in resolved:
+            decision = r["status"]
+            badge_color = "#1a7f37" if decision == "approved" else "#cf222e"
+            note = (
+                f'<br><span class="muted">{_esc(r["resolution_note"])}</span>'
+                if r.get("resolution_note")
+                else ""
+            )
+            rows.append(
+                f"""
+            <tr>
+              <td>{_esc(r['module'])}</td>
+              <td><strong>{_esc(r['title'])}</strong>{note}</td>
+              <td><span class="state" style="background:{badge_color}">{_esc(decision)}</span></td>
+              <td class="ts">{_esc(r['resolved_at'])}</td>
+            </tr>"""
+            )
+        resolved_html = f"""
+        <table class="review">
+          <thead><tr><th>Module</th><th>Item</th><th>Decision</th><th>Resolved</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>"""
+    else:
+        resolved_html = '<p class="empty">No decisions yet.</p>'
+
     feed = []
     for a in activity:
         lvl = a.get("level") or "info"
-        feed.append(f"""
+        feed.append(
+            f"""
         <li class="lvl-{_esc(lvl)}">
           <span class="ts">{_esc(a['created_at'])}</span>
           <span class="mod">{_esc(a['module'])}</span>
           {_esc(a['message'])}
-        </li>""")
+        </li>"""
+        )
     feed_html = (
         f'<ul class="feed">{"".join(feed)}</ul>'
         if feed
         else '<p class="empty">No activity logged yet.</p>'
+    )
+
+    sched = scheduler_status()
+    scheduler_html = (
+        f'<p class="scheduler-status">'
+        f'<span class="dot" style="background:{_SCHEDULER_COLORS[sched["state"]]}">'
+        f"</span> {_esc(sched['text'])}</p>"
     )
 
     return _TEMPLATE.format(
@@ -128,7 +323,9 @@ def render_page() -> str:
         pending=tot["pending_reviews"],
         cards="".join(cards),
         reviews=review_html,
+        resolved=resolved_html,
         feed=feed_html,
+        scheduler_status=scheduler_html,
     )
 
 
@@ -167,6 +364,10 @@ _TEMPLATE = """<!doctype html>
   .ts {{ color: #8c959f; font-size: 11px; margin: 0; }}
   .pill {{ display: inline-block; margin-top: 10px; font-size: 12px;
            padding: 2px 8px; border-radius: 999px; }}
+  .run-form {{ margin-top: 12px; }}
+  .run-btn {{ width: 100%; background: #24292f; }}
+  .run-btn:disabled {{ background: #8c959f; cursor: default; }}
+  .log-link {{ display: block; text-align: center; margin-top: 8px; font-size: 12px; }}
   table.review {{ width: 100%; border-collapse: collapse; background: #fff;
                   border: 1px solid #d0d7de; border-radius: 10px; overflow: hidden; }}
   table.review th, table.review td {{ text-align: left; padding: 10px 12px;
@@ -187,6 +388,11 @@ _TEMPLATE = """<!doctype html>
   ul.feed li.lvl-error {{ background: #fff0f0; }}
   ul.feed li.lvl-warning {{ background: #fffbea; }}
   .empty {{ color: #57606a; }}
+  p.export {{ margin: -12px 0 24px; font-size: 13px; }}
+  p.export a {{ color: #0969da; }}
+  p.scheduler-status {{ margin: -12px 0 24px; font-size: 13px; color: #57606a; }}
+  p.scheduler-status .dot {{ display: inline-block; width: 8px; height: 8px;
+                             border-radius: 50%; margin-right: 4px; }}
 </style></head><body>
 <header>
   <h1>Income Orchestrator</h1>
@@ -197,12 +403,18 @@ _TEMPLATE = """<!doctype html>
     <div class="box"><b>{total_earnings}</b><span>total earnings (all modules)</span></div>
     <div class="box"><b>{pending}</b><span>items awaiting your review</span></div>
   </div>
+  <p class="export"><a href="/export/earnings.csv">Download full earnings ledger (CSV)</a></p>
+  {scheduler_status}
 
   <h2>Modules</h2>
   <div class="grid">{cards}</div>
 
   <h2>Review queue</h2>
   {reviews}
+
+  <h2>Recently resolved</h2>
+  <p class="export"><a href="/export/reviews.csv">Download full decision log (CSV)</a></p>
+  {resolved}
 
   <h2>Recent activity</h2>
   {feed}
@@ -211,11 +423,19 @@ _TEMPLATE = """<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, body: str, status: int = 200, ctype: str = "text/html") -> None:
+    def _send(
+        self,
+        body: str,
+        status: int = 200,
+        ctype: str = "text/html",
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         payload = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", f"{ctype}; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -223,6 +443,22 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
             self._send(render_page())
+        elif parsed.path == "/export/earnings.csv":
+            self._send(
+                render_earnings_csv(),
+                ctype="text/csv",
+                extra_headers={
+                    "Content-Disposition": 'attachment; filename="earnings.csv"'
+                },
+            )
+        elif parsed.path == "/export/reviews.csv":
+            self._send(
+                render_reviews_csv(),
+                ctype="text/csv",
+                extra_headers={
+                    "Content-Disposition": 'attachment; filename="reviews.csv"'
+                },
+            )
         elif parsed.path == "/api/overview":
             self._send(
                 json.dumps(
@@ -235,22 +471,33 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 ctype="application/json",
             )
+        elif parsed.path.startswith("/log/"):
+            page = render_log_page(parsed.path[len("/log/") :])
+            if page is None:
+                self._send("<h1>404</h1>", status=404)
+            else:
+                self._send(page)
         else:
             self._send("<h1>404</h1>", status=404)
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path != "/review":
+        if parsed.path == "/review":
+            length = int(self.headers.get("Content-Length", 0))
+            form = parse_qs(self.rfile.read(length).decode("utf-8"))
+            try:
+                item_id = int(form.get("id", ["0"])[0])
+                decision = form.get("decision", [""])[0]
+                db.resolve_review_item(item_id, decision)
+            except (ValueError, KeyError):
+                pass
+        elif parsed.path == "/run":
+            length = int(self.headers.get("Content-Length", 0))
+            form = parse_qs(self.rfile.read(length).decode("utf-8"))
+            trigger_run(form.get("module", [""])[0])
+        else:
             self._send("<h1>404</h1>", status=404)
             return
-        length = int(self.headers.get("Content-Length", 0))
-        form = parse_qs(self.rfile.read(length).decode("utf-8"))
-        try:
-            item_id = int(form.get("id", ["0"])[0])
-            decision = form.get("decision", [""])[0]
-            db.resolve_review_item(item_id, decision)
-        except (ValueError, KeyError):
-            pass
         # Redirect back to the dashboard (Post/Redirect/Get).
         self.send_response(303)
         self.send_header("Location", "/")

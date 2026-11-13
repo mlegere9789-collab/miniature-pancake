@@ -41,6 +41,7 @@ public class ModulePageViewModel : PageViewModel
     private GoogleDriveFolder? _selectedDriveFolder;
     private string _newDriveFolderName = string.Empty;
     private string? _driveFolderHint;
+    private bool _isCreatingDriveFolder;
 
     public ModulePageViewModel(
         string title,
@@ -102,7 +103,8 @@ public class ModulePageViewModel : PageViewModel
         SavePresetCommand = new RelayCommand(SavePreset, () => SelectedFeature is not null && NewPresetName.Trim().Length > 0);
         DeletePresetCommand = new RelayCommand(DeletePreset, () => SelectedSavedPreset is not null);
         CreateDriveFolderCommand = new RelayCommand(
-            async () => await CreateDriveFolderAsync(), () => NewDriveFolderName.Trim().Length > 0);
+            async () => await CreateDriveFolderAsync(),
+            () => NewDriveFolderName.Trim().Length > 0 && !_isCreatingDriveFolder);
 
         SelectedFeature = ReadyFeatures.FirstOrDefault();
     }
@@ -511,6 +513,14 @@ public class ModulePageViewModel : PageViewModel
             return;
         }
 
+        // CreateDriveFolderCommand's CanExecute only re-queries on the usual WPF input
+        // events, not automatically the instant NewDriveFolderName changes — and that field
+        // is only cleared on success, after the awaited call below returns. Without this
+        // guard, a double-click on "New folder" fires CreateFolderAsync twice concurrently
+        // and creates two identical folders.
+        _isCreatingDriveFolder = true;
+        CommandManager.InvalidateRequerySuggested();
+
         try
         {
             var id = await _driveClient.CreateFolderAsync(name, null, CancellationToken.None);
@@ -524,6 +534,11 @@ public class ModulePageViewModel : PageViewModel
         catch (Exception ex)
         {
             DriveFolderHint = $"Could not create the folder: {ex.Message}";
+        }
+        finally
+        {
+            _isCreatingDriveFolder = false;
+            CommandManager.InvalidateRequerySuggested();
         }
     }
 
