@@ -1037,6 +1037,7 @@ void MoveSymmetricAction(CommandContext& ctx, const std::vector<ObjectId>& ids, 
   try { moved = f.Move(*o->subd, v->control, dest, tol); } catch (const std::exception& ex) { ctx.Warn(std::string("SubDMoveSymmetric: ") + ex.what()); return; }
   if (!moved) {
     ctx.Warn("SubDMoveSymmetric: the vertex at " + P3(v->control) + " has no " + f.Partner() + " within the tolerance " + Num(tol) + " about this " + f.Where() + "; nothing moved");
+    ctx.Doc().AbandonChange();  // nothing moved: no empty undo step (an Undo would otherwise undo nothing), Redo stays available
     return;
   }
   o->InvalidateDisplay();
@@ -1083,6 +1084,7 @@ void CreaseSymmetricAction(CommandContext& ctx, const std::vector<ObjectId>& ids
       else ctx.Warn(label + ": the edge near " + P3(in.picks[i]) + " or its " + (f.radial ? "rotated image" : "mirror") + " edge is missing, or all already have that state; nothing changed");
     } catch (const std::exception& ex) { ctx.Warn(label + ": " + ex.what()); }
   }
+  if (changed == 0) ctx.Doc().AbandonChange();  // nothing creased or smoothed: no empty undo step, Redo stays available
   for (ObjectId id : touched) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
