@@ -7,6 +7,7 @@
 #   fr / ja / ar : the translated description of a command that has a cmddesc.* key (Circle, Circle, Move)
 #   de + Pipe    : Pipe has no cmddesc.* key, so the English catalog description is shown even under German
 #   en + Circle  : the English catalog description;   its options line is the catalog's options joined with ", "
+#   PackageRemove: registered here but not in the Rhino catalog (commands.json): its registration text is printed
 #   unknown name : a warning naming it;   "Help" alone after `Point 1,1,1` documents Point (the last command)
 # ---------------------------------------------------------------------------
 hlp_ok() { echo "ok   $1"; }
@@ -45,6 +46,8 @@ Help NoSuchCommandXyz
 Point 1,1,1
 HLPBEGIN_last
 Help
+HLPBEGIN_noncat
+Help PackageRemove
 HLPBEGIN_end
 EOS
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -63,6 +66,7 @@ EOS
   hlp_has en "Help: Circle - $HLP_CIRCLE" "HLP_en: under English the catalog description"
   hlp_has en "Help: Circle options - $HLP_COPT" "HLP_en: ... then an options line listing the catalog's command-line options"
   hlp_has unknown "! Help: unknown command 'NoSuchCommandXyz'" "HLP_unknown: an unknown name is reported by name"
+  hlp_has noncat "Help: PackageRemove - Deletes an installed package. A library it installed into the plug-ins folder stays (remove it with PlugInDisable / by hand)." "HLP_noncat: a command that is registered but not in the Rhino catalog is documented from its registration text"
   hlp_has last "Help: Point - $HLP_POINT" "HLP_last: bare 'Help' documents the last command run (Point)"
   hlp_hasnot unknown "Help: Circle" "HLP_unknown: nothing of the previous help leaks into the unknown-command answer"
 fi

@@ -165,7 +165,14 @@ class HelpCommand : public Command {
   // and screen readers, not only through the panel.
   static void Say(CommandContext& ctx, const std::string& name) {
     const CommandInfo* info = ctx.App().Catalog().Find(name);
-    if (!info) { ctx.Warn("Help: unknown command '" + name + "'"); return; }
+    if (!info) {
+      // Not one of the Rhino catalog's commands, but registered by this build (PlugInDisable, PackageInstall, a plug-in's own
+      // command, ...): its registration text is its help.
+      const RegisteredCommand* rc = ctx.Engine().Find(name);
+      if (rc && rc->status != CommandStatus::Planned && !rc->note.empty()) { ctx.Print("Help: " + rc->name + " - " + rc->note); return; }
+      ctx.Warn("Help: unknown command '" + name + "'");
+      return;
+    }
     ctx.App().ShowHelpFor(info->name);
     ctx.Print("Help: " + info->name + " - " + LocalizedCommandDescription(*info));
     if (!info->options.empty()) {
