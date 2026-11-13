@@ -301,9 +301,16 @@ class DxfWriter {
   // The linetype name (a name the LTYPE table defines) BeginEntity writes as group 6 on every entity until changed; "" writes none.
   void SetLinetype(std::string name) { linetype_ = std::move(name); }
 
+  // The text style (STYLE table name) and the dimension style (DIMSTYLE table name) of the annotation being written: TEXT/MTEXT write the
+  // first as group 7, DIMENSION/LEADER the second as group 3.
+  void SetStyles(std::string text_style, std::string dim_style) { text_style_ = std::move(text_style); dim_style_ = std::move(dim_style); }
+  const std::string& TextStyle() const { return text_style_; }
+  const std::string& DimStyle() const { return dim_style_; }
+
  private:
   std::ostream& os_;
   std::string linetype_;
+  std::string text_style_ = "Standard", dim_style_ = "Standard";
   // DXF handles are hex strings with no fixed width; 64-bit (not `long`,
   // which is 32-bit on Windows) so the counter's range does not depend on
   // the platform.
@@ -790,7 +797,57 @@ bool WriteDxfTextIfPlanarXY(DxfWriter& w, const DxfTextGlyphSpec& g, const std::
   w.G(40, g.height);
   w.G(1, g.text);
   w.G(50, std::atan2(g.plane.xaxis.y, g.plane.xaxis.x) * 180.0 / ON_PI);
-  w.G(7, "Standard");  // the STYLE record ExportDxf's TABLES section defines
+  w.G(7, w.TextStyle());  // a STYLE record of ExportDxf's TABLES section
+  return true;
+}
+
+// A multi-line text that came from an MTEXT entity (see DxfImporter::MText: its glyph curves carry the MText* tags and Text, the
+// plain lines joined with '\n') written back as ONE MTEXT: 10 attachment point, 40 height, 41 reference width (only when the entity
+// had one), 71 attachment code, 72 = 1 (left to right), 11 the x axis direction and 50 its angle in degrees, 7 the text style, the
+// text in 250-character chunks (groups 3, then 1 for the last) with a paragraph break \P between lines. World-XY plane only, like the
+// TEXT writer above; any other plane falls through to the glyph curves.
+struct DxfMTextSpec {
+  std::string text;
+  double height = 0, width = 0;
+  int attach = 1;
+  ON_Plane plane;
+};
+
+bool DxfMTextSpecOf(const SceneObject& o, DxfMTextSpec& m) {
+  auto get = [&](const char* k) -> const std::string* { auto it = o.user_text.find(k); return it == o.user_text.end() ? nullptr : &it->second; };
+  const std::string *flag = get("MText"), *t = get("Text"), *h = get("MTextHeight"), *org = get("MTextOrigin"), *x = get("MTextX"), *y = get("MTextY");
+  if (!flag || *flag != "1" || !t || !h || !org || !x || !y) return false;
+  Point3d o3, px, py;
+  if (!ParsePointTagLocal(*org, o3) || !ParsePointTagLocal(*x, px) || !ParsePointTagLocal(*y, py)) return false;
+  m.text = *t;
+  m.height = std::atof(h->c_str());
+  if (const std::string* w = get("MTextWidth")) m.width = std::atof(w->c_str());
+  if (const std::string* a = get("MTextAttach")) m.attach = std::clamp(std::atoi(a->c_str()), 1, 9);
+  m.plane = ON_Plane(o3, Vector3d(px.x, px.y, px.z), Vector3d(py.x, py.y, py.z));
+  return m.height > 0 && !m.text.empty();
+}
+
+bool WriteDxfMText(DxfWriter& w, const DxfMTextSpec& m, const std::string& layer, const Color* color) {
+  if (std::fabs(m.plane.zaxis.x) > 1e-6 || std::fabs(m.plane.zaxis.y) > 1e-6 || m.plane.zaxis.z < 1.0 - 1e-6) return false;
+  std::string enc;
+  for (char c : m.text) {
+    if (c == '\n') enc += "\\P";
+    else if (c == '\\' || c == '{' || c == '}') { enc += '\\'; enc += c; }
+    else enc += c;
+  }
+  w.BeginEntity("MTEXT", layer, color);
+  w.G(100, "AcDbMText");
+  w.Point(10, m.plane.origin);
+  w.G(40, m.height);
+  if (m.width > 0) w.G(41, m.width);
+  w.G(71, m.attach);
+  w.G(72, 1);
+  size_t pos = 0;
+  while (enc.size() - pos > 250) { w.G(3, enc.substr(pos, 250)); pos += 250; }
+  w.G(1, enc.substr(pos));
+  w.G(7, w.TextStyle());
+  w.Point(11, Point3d(m.plane.xaxis.x, m.plane.xaxis.y, m.plane.xaxis.z));
+  w.G(50, std::atan2(m.plane.xaxis.y, m.plane.xaxis.x) * 180.0 / ON_PI);
   return true;
 }
 
@@ -874,6 +931,7 @@ bool WriteDxfLinearDimension(DxfWriter& w, const DxfLinearDimLayout& L, const st
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
   if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
+  w.G(3, w.DimStyle());  // the DIMSTYLE record of the annotation style it was made with
   w.Point(10, loc);
   w.G(70, (L.aligned ? 1 : 0) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
   w.G(100, L.aligned ? "AcDbAlignedDimension" : "AcDbRotatedDimension");
@@ -932,6 +990,7 @@ bool WriteDxfRadiusDimension(DxfWriter& w, const DxfRadiusDimLayout& L, const st
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
   if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
+  w.G(3, w.DimStyle());  // the DIMSTYLE record of the annotation style it was made with
   w.Point(10, p10);
   w.G(70, (L.diameter ? 3 : 4) | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
   w.G(100, L.diameter ? "AcDbDiametricDimension" : "AcDbRadialDimension");
@@ -1007,6 +1066,7 @@ bool WriteDxfAngularDimension(DxfWriter& w, const DxfAngleDimLayout& L, const st
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
   if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
+  w.G(3, w.DimStyle());  // the DIMSTYLE record of the annotation style it was made with
   w.Point(10, def_pt);
   w.G(70, 5 | 32);  // bit 32: always set by a real AutoCAD-authored DIMENSION
   w.G(100, "AcDb3PointAngularDimension");
@@ -1081,7 +1141,7 @@ bool WriteDxfLeader(DxfWriter& w, const DxfLeaderLayout& L, const std::string& l
   if (pts.size() < 2) return false;
   w.BeginEntity("LEADER", layer, color);
   w.G(100, "AcDbLeader");
-  w.G(3, "Standard");
+  w.G(3, w.DimStyle());
   w.G(71, 1);
   w.G(72, 0);
   w.G(73, 3);
@@ -1155,6 +1215,7 @@ bool WriteDxfOrdinateDimension(DxfWriter& w, const DxfOrdinateDimLayout& L, cons
   w.BeginEntity("DIMENSION", layer, color);
   w.G(100, "AcDbDimension");
   if (!block.empty()) w.G(2, block);  // the anonymous *D block holding the dimension's drawn geometry
+  w.G(3, w.DimStyle());  // the DIMSTYLE record of the annotation style it was made with
   w.Point(10, L.feature);
   w.G(70, 6 | (L.dir == 'X' ? 0x80 : 0));
   w.G(100, "AcDbOrdinateDimension");
@@ -1358,6 +1419,29 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   }
 
 
+  // Text/dimension styles: "Standard" always, then one per annotation style of the document (a style that is itself called Standard
+  // fills that record). `style_of` maps an object's "Style" tag (the annotation style it was made with) to the record's name.
+  std::vector<std::pair<std::string, const AnnotationStyle*>> style_recs = {{"Standard", nullptr}};
+  std::map<std::string, std::string> style_dxf;
+  {
+    std::set<std::string> taken = {"STANDARD"};
+    for (const AnnotationStyle& st : doc.AnnotationStyles()) {
+      const std::string n = DxfLayerName(st.name);
+      if (Upper(n) == "STANDARD") { style_recs[0].second = &st; style_dxf[st.name] = "Standard"; continue; }
+      std::string unique = n;
+      for (int k = 2; taken.count(Upper(unique)); ++k) unique = n + "_" + std::to_string(k);
+      taken.insert(Upper(unique));
+      style_dxf[st.name] = unique;
+      style_recs.push_back({unique, &st});
+    }
+  }
+  auto style_of = [&](const SceneObject& o) -> std::string {
+    auto t = o.user_text.find("Style");
+    if (t == o.user_text.end()) return std::string("Standard");
+    auto it = style_dxf.find(t->second);
+    return it == style_dxf.end() ? std::string("Standard") : it->second;
+  };
+
   // HEADER
   const AcadScheme& scheme = EffectiveAcadScheme(doc);
   w.G(0, "SECTION"); w.G(2, "HEADER");
@@ -1414,22 +1498,53 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     }
     w.G(0, "ENDTAB");
   }
-  // STYLE: the Standard text style every TEXT entity written here names (group 7).
+  // STYLE: Standard plus one text style per annotation style (named like it; its font file in group 3, "txt" when the style names none),
+  // which TEXT/MTEXT name in group 7.
   {
     const std::string ctrl = w.Handle();
     w.G(0, "TABLE"); w.G(2, "STYLE"); w.G(5, ctrl); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
-    w.G(70, 1);
-    w.G(0, "STYLE"); w.G(5, w.Handle()); w.G(330, ctrl);
-    w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbTextStyleTableRecord");
-    w.G(2, "Standard");
-    w.G(70, 0);
-    w.G(40, 0.0);
-    w.G(41, 1.0);
-    w.G(50, 0.0);
-    w.G(71, 0);
-    w.G(42, 2.5);
-    w.G(3, "txt");
-    w.G(4, "");
+    w.G(70, static_cast<int>(style_recs.size()));
+    for (const auto& [name, st] : style_recs) {
+      w.G(0, "STYLE"); w.G(5, w.Handle()); w.G(330, ctrl);
+      w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbTextStyleTableRecord");
+      w.G(2, name);
+      w.G(70, 0);
+      w.G(40, 0.0);  // not fixed-height
+      w.G(41, 1.0);
+      w.G(50, 0.0);
+      w.G(71, 0);
+      w.G(42, 2.5);
+      const std::string font = st && !st->font.empty() ? std::filesystem::path(st->font).filename().string() : std::string();
+      w.G(3, font.empty() ? std::string("txt") : font);
+    }
+    w.G(0, "ENDTAB");
+  }
+  // DIMSTYLE: the same annotation styles as dimension styles (text height DIMTXT, arrow size DIMASZ, extension-line gap DIMEXO and
+  // overshoot DIMEXE, text above/centred DIMTAD 1/0, decimals DIMDEC/DIMADEC, the unit suffix as DIMPOST "<> suffix"), which
+  // DIMENSION and LEADER name in group 3.
+  {
+    const std::string ctrl = w.Handle();
+    w.G(0, "TABLE"); w.G(2, "DIMSTYLE"); w.G(5, ctrl); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+    w.G(70, static_cast<int>(style_recs.size()));
+    w.G(100, "AcDbDimStyleTable");
+    w.G(71, static_cast<int>(style_recs.size()));
+    const double default_height = std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+    for (const auto& [name, st] : style_recs) {
+      const double height = st && st->text_height > 0 ? st->text_height : default_height;
+      w.G(0, "DIMSTYLE"); w.G(105, w.Handle()); w.G(330, ctrl);
+      w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbDimStyleTableRecord");
+      w.G(2, name);
+      w.G(70, 0);
+      if (st && !st->unit_suffix.empty()) w.G(3, "<> " + st->unit_suffix);
+      w.G(40, 1.0);
+      w.G(41, st && st->arrow_size > 0 ? st->arrow_size : height);
+      w.G(42, st ? st->ext_offset : 0.0);
+      w.G(44, st ? st->ext_extension : 0.0);
+      w.G(77, st && st->text_placement == "Centered" ? 0 : 1);
+      w.G(140, height);
+      if (st && st->angular_precision >= 0) w.G(179, st->angular_precision);
+      if (st && st->precision >= 0) w.G(271, st->precision);
+    }
     w.G(0, "ENDTAB");
   }
   w.G(0, "TABLE"); w.G(2, "LAYER"); w.G(5, "2"); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
@@ -1526,6 +1641,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // every other object belonging to that same group_id is skipped rather
   // than also writing its own flattened geometry.
   std::set<int> text_groups_written;
+  std::set<int> mtext_groups_written;
   std::set<int> block_groups_written;
   // Groups whose pattern-fill hatch already wrote its one real HATCH entity
   // (TryWriteDxfHatchPatternGroup below) - every other already-clipped line
@@ -1551,6 +1667,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   };
   for (const SceneObject* o : objs) {
     w.SetLinetype(dxf_linetype_of(o->linetype));
+    w.SetStyles(style_of(*o), style_of(*o));
     {
       auto bt = o->user_text.find("Block");
       if (bt != o->user_text.end() && block_names_to_write.count(bt->second)) {
@@ -1593,6 +1710,15 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
           // line's own curve export below, same as before this branch
           // existed (every other line in the group independently makes,
           // and loses, the same attempt).
+        }
+        if (o->group_id >= 0 && o->user_text.count("MText")) {
+          if (mtext_groups_written.count(o->group_id)) break;  // this group's MTEXT already written
+          DxfMTextSpec ms;
+          if (DxfMTextSpecOf(*o, ms) && WriteDxfMText(w, ms, layer, color)) {
+            mtext_groups_written.insert(o->group_id);
+            ++written;
+            break;
+          }
         }
         auto glyph = o->user_text.find("Glyph"), ann = o->user_text.find("Annotation"), align = o->user_text.find("TextAlign");
         if (ann != o->user_text.end() && (ann->second == "DimLinear" || ann->second == "DimAligned")) {
@@ -2285,6 +2411,11 @@ class DxfImporter {
     // stripped) content, not the raw markup - lines rejoined with \n.
     std::string plain_joined;
     for (size_t i = 0; i < lines.size(); ++i) { if (i) plain_joined += "\n"; plain_joined += lines[i]; }
+    // The MText* tags keep what a real MTEXT entity is made of (height, the attachment point's frame, the attachment code and the
+    // reference width), so ExportDxf can write it back as ONE MTEXT instead of its glyph curves; the glyphs are one group. They are
+    // deliberately not the Text*/Glyph tags of the single-line Text command, whose editing code rebuilds one line from them.
+    std::vector<ObjectId> glyph_ids;
+    auto tag3 = [](const Vector3d& v) { return Num(v.x, 12) + "," + Num(v.y, 12) + "," + Num(v.z, 12); };
     for (std::vector<kernel::NurbsCurve>& glyphs : per_line) {
       for (kernel::NurbsCurve& g : glyphs) {
         SceneObject o = SceneObject::MakeCurve(g);
@@ -2292,10 +2423,18 @@ class DxfImporter {
         o.user_text["Annotation"] = "Text";
         o.user_text["Style"] = "Standard";
         o.user_text["Text"] = plain_joined;
-        doc_.Add(std::move(o));
+        o.user_text["MText"] = "1";
+        o.user_text["MTextHeight"] = Num(height, 12);
+        o.user_text["MTextOrigin"] = tag3(Vector3d(base.origin));
+        o.user_text["MTextX"] = tag3(base.xaxis);
+        o.user_text["MTextY"] = tag3(base.yaxis);
+        o.user_text["MTextAttach"] = std::to_string(std::clamp(attachment, 1, 9));
+        o.user_text["MTextWidth"] = Num(e.D(41, 0.0), 12);
+        glyph_ids.push_back(doc_.Add(std::move(o)));
         ++stats_.curves;
       }
     }
+    if (!glyph_ids.empty()) doc_.CreateGroup(glyph_ids, "Text");
   }
 
   void Circle(const DxfEntity& e) {
