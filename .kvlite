@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=TestHolePattern;extra::;Boolean;General;Hole;Intersect;Section;Split;Sealed;Boss;Rib;Counter;Drill;Pocket;Slot;Pattern;Volume;Union;Difference;Subtract;Cut;Trim;Fillet;Chamfer;Mixed;Pipe
