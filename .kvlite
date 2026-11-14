@@ -1,0 +1,2 @@
+SECTIONS=LOFTOPT LCL CURVMEASURE DRAFTCONE DRAFTMEASURE LSP LSP2 LSP3 PIPEV MRM MSHW THK SME EDC
+FILTERS=Adaptive;Pipe;SplitProjectedCurve;SurfaceClosestPoint;AnalyticPrimitive;Volume;Sealed;Cylinder;Cone;Mass
