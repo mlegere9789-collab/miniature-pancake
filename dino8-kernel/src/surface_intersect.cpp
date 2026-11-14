@@ -1022,12 +1022,64 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     ic.pcurve_b = InterpolateCubic(pb, ic.params, ic.closed, 2);
   };
   fit(/*periodic=*/false);
+  // Seeds for the midpoint refinement below. fit() interpolates pcurve_a / pcurve_b in RAW (u, v) numbers, so a chain whose samples
+  // cross a periodic seam carries a jump of one whole period into the cubic. The closed circle where a plane cuts a cylinder wall at
+  // right angles is the canonical case: it runs once round the wall's angle and jumps at the seam. The spline then rings across the
+  // segments on both sides of the jump and hands out midpoint seeds far from the curve (measured on the plane z = 0 cut of an
+  // r = 0.5 wall: the wall-side seed 0.09, 0.035, 0.785, 0.27, 0.83, 0.61 from the true midpoint over six consecutive segments,
+  // the plane-side seed exact). The Newton solve from two seeds that disagree settles on whichever point of the circle the two
+  // charts agree on, up to 4.6 chords away, and the guards below only ask that the new point lie in the segment's (u, v) bracket:
+  // a point was inserted between samples i and j while lying beyond j (1.6 chords along i -> j) or before i, so the chain was no
+  // longer monotone and every later stage inherited an out-of-order pair (the self-crossing fragment loop of a cylinder hole:
+  // "trim_polygon must be simple"). A chain with such a jump therefore takes its seeds from a fit of the UNWRAPPED samples: each
+  // sample moved by whole periods until it continues the previous one, a closed chain with its first sample appended once more.
+  // A chain without a jump keeps the fit above untouched, bit for bit.
+  const auto has_period_jump = [&](size_t i, size_t j) {
+    for (int dir = 0; dir < 2; ++dir) {
+      if (a.IsClosed(dir) && std::fabs(ic.uv_a[i][dir] - ic.uv_a[j][dir]) > 0.5 * a.Domain(dir).Length()) return true;
+      if (b.IsClosed(dir) && std::fabs(ic.uv_b[i][dir] - ic.uv_b[j][dir]) > 0.5 * b.Domain(dir).Length()) return true;
+    }
+    return false;
+  };
+  const auto fit_unwrapped = [&](const ON_Surface& srf, const std::vector<ON_2dPoint>& uv) {
+    std::vector<ON_3dPoint> q;
+    q.reserve(uv.size() + 1);
+    for (const ON_2dPoint& p : uv) q.emplace_back(p.x, p.y, 0.0);
+    if (ic.closed) q.push_back(q.front());
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!srf.IsClosed(dir)) continue;
+      const double period = srf.Domain(dir).Length();
+      for (size_t k = 1; k < q.size(); ++k) {
+        double& cur = q[k][dir];
+        const double prev = q[k - 1][dir];
+        while (cur - prev > 0.5 * period) cur -= period;
+        while (prev - cur > 0.5 * period) cur += period;
+      }
+    }
+    return InterpolateCubic(q, ic.params, /*closed=*/false, 2);
+  };
+  const auto wrap_into_domain = [](const ON_Surface& srf, double& u, double& v) {
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!srf.IsClosed(dir)) continue;
+      const ON_Interval d = srf.Domain(dir);
+      double& x = dir == 0 ? u : v;
+      while (x > d.Max()) x -= d.Length();
+      while (x < d.Min()) x += d.Length();
+    }
+  };
   for (int pass = 0; pass < 3; ++pass) {
     bool inserted = false;
     const size_t n = ic.points.size();
     std::vector<Point3d> np;
     std::vector<ON_2dPoint> na, nb;
     const size_t segs = ic.closed ? n : n - 1;
+    bool wrapped_chain = false;
+    for (size_t i = 0; i < segs && !wrapped_chain; ++i) wrapped_chain = has_period_jump(i, (i + 1) % n);
+    ON_NurbsCurve seed_a, seed_b;
+    if (wrapped_chain) {
+      seed_a = fit_unwrapped(a, ic.uv_a);
+      seed_b = fit_unwrapped(b, ic.uv_b);
+    }
     for (size_t i = 0; i < n; ++i) {
       np.push_back(ic.points[i]); na.push_back(ic.uv_a[i]); nb.push_back(ic.uv_b[i]);
       if (i >= segs) continue;
@@ -1037,8 +1089,13 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
       if (t1 - t0 <= opt.tolerance * 4) continue;
       const double tm = 0.5 * (t0 + t1);
       const Point3d pm = ic.curve.PointAt(tm);
-      ON_3dPoint sa = ic.pcurve_a.PointAt(tm), sb = ic.pcurve_b.PointAt(tm);
+      ON_3dPoint sa = wrapped_chain ? seed_a.PointAt(tm) : ic.pcurve_a.PointAt(tm);
+      ON_3dPoint sb = wrapped_chain ? seed_b.PointAt(tm) : ic.pcurve_b.PointAt(tm);
       double ua = sa.x, va = sa.y, ub = sb.x, vb = sb.y;
+      if (wrapped_chain) {
+        wrap_into_domain(a, ua, va);
+        wrap_into_domain(b, ub, vb);
+      }
       if (!RefineSurfaceSurfacePoint(a, b, ua, va, ub, vb, opt.tolerance)) continue;
       const Point3d x = a.PointAt(ua, va);
       const size_t j = (i + 1) % n;
