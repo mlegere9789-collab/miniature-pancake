@@ -63,3 +63,22 @@ dino8-app/tests/run_sections.sh -j2 -b build/Dino8 KWR HSO FRH widgets
 * NOT verified: a count comparison against a complete `smoke.sh` run. Two attempts to run the whole baseline
   smoke.sh in this sandbox (about 16 minutes each) stopped at the same early spot (the flow-script step, around
   line 3409, before the KWR/HSO/FRH sections are reached), so no full-run counts exist for those sections.
+
+## Evidence lines: `DINO8_SECTION_JSONL`
+
+Master plan section 7.5: one machine-readable line per check. With `DINO8_SECTION_JSONL=<file>` set, `run_sections.sh` pipes every
+job through `tests/evidence_filter.py`, which appends one JSON line per check the moment its `ok` / `FAIL` line goes by (any line
+starting `ok` or `FAIL`: `check()`, every section helper, and the app's own `ok   expect_...` lines smoke.sh passes through), one
+line per section when its `section_time` line goes by, and `run` / `summary` / `job` lines (exit status, seconds):
+
+```
+{"kind":"check","suite":"app","pid":7,"job":0,"test":"SME","section":"SME","name":"SME_close: Check valid","result":"ok","n":8}
+{"kind":"test","suite":"app","pid":7,"job":0,"test":"SME","section":"SME","name":"SME","result":"fail","checks":15,"failed":6,"ms":3000}
+```
+
+The job log is byte for byte the usual one (the section markers the assembled script prints in this mode are removed by the filter), so
+the JSONL counts equal the printed `ok` / `FAIL` counts by construction; `smoke.sh` and the section files need no edit, and a new
+section gets evidence for free. A section that never prints its `section_time` line (the script exited or was killed inside it)
+gets a `test` line with `"incomplete":true` and result `fail`. Without the variable nothing changes. `python3
+parity/tools/evidence_summary.py --log app=group.log --tests <file>` prints the counts per section and checks them against the log.
+Running `smoke.sh` directly (not through `run_sections.sh`) writes no evidence.

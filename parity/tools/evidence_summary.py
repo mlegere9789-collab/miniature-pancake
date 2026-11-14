@@ -213,6 +213,11 @@ def analyse(recs, logs, rep):
                 rep.warn("%s: %d check line(s) %s" % (label, by_test[name][0], what))
             else:
                 rep.error("%s: %d check line(s) %s" % (label, by_test[name][0], what))
+        if suite != "app" and not g["tests"]:
+            r0 = g["run"] or {}
+            rep.warn("%s: the run executed no test at all (filter %r, shard %r): the selection matched nothing" %
+                     (label, r0.get("filter", ""), r0.get("shard", "")))
+            st["empty_runs"] = st.get("empty_runs", 0) + 1
         # completeness
         s = g["summary"]
         if s is None:
@@ -327,10 +332,11 @@ def main(argv):
           "DINO8_SECTION_JSONL, or no test ran)" % ", ".join(a.paths))
     for suite, st in suites.items():
         unit = "sections" if suite == "app" else "tests"
-        p("evidence %s: files=%d runs=%d %s=%d checks=%d ok=%d fail=%d%s%s%s" %
+        p("evidence %s: files=%d runs=%d %s=%d checks=%d ok=%d fail=%d%s%s%s%s" %
           (suite, len(st["files"]), st["runs"], unit, st["tests"], st["checks"], st["ok"], st["fail"],
            " throw=%d" % st["throw"] if suite != "app" else "",
            " incomplete=%d" % st["incomplete"] if st["incomplete"] else "",
+           " EMPTY-RUNS=%d" % st["empty_runs"] if st.get("empty_runs") else "",
            " sha=%s" % ",".join(sorted(x[:12] for x in st["shas"])) if st["shas"] else ""))
         if st["no_check_tests"] and not a.quiet:
             names = st["no_check_tests"]
