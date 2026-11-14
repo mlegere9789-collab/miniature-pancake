@@ -1,0 +1,51 @@
+[package]
+name = "dino8-oplog-spike"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+description = "Dino 8 Spike B: operation log retrofit (DAG log, content-addressed snapshots, CRDT merge, WAL recovery)"
+license = "Apache-2.0"
+
+[lib]
+name = "oplog"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oplog-bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "oplog-crashwriter"
+path = "src/bin/crashwriter.rs"
+
+[[bin]]
+name = "oplog-demo"
+path = "src/bin/demo.rs"
+
+[dependencies]
+blake3 = "1"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+# Standalone crate: no workspace root above or around it.
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[profile.dev]
+debug = 0
+opt-level = 1
+
+[profile.test]
+debug = 0
+opt-level = 1
+
+[profile.release]
+debug = 0
+codegen-units = 4
