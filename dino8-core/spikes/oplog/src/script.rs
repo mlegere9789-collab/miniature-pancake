@@ -53,6 +53,11 @@ impl Script {
         Script { rng: Rng::new(seed), opts, known: Vec::new(), branches: 0, steps: 0 }
     }
 
+    /// Start editing objects that already exist (for example ones received from another session).
+    pub fn adopt(&mut self, ids: impl IntoIterator<Item = ObjectId>) {
+        self.known.extend(ids);
+    }
+
     fn pick(&mut self) -> Option<ObjectId> {
         if self.known.is_empty() {
             None
