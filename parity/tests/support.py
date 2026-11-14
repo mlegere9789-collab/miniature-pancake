@@ -74,3 +74,31 @@ class TempDirCase(unittest.TestCase):
 
     def path(self, *parts):
         return os.path.join(self.tmp, *parts)
+
+
+def write_run(root, run, manifest=None, tasks=None, checks=None, checks_name="checks.jsonl"):
+    """Write one evidence run directory below root.
+
+    manifest: dict for run.json (or None); tasks: {task id: dict with passed/failed/skipped};
+    checks: list of (test, result) pairs or full dicts, written as one JSONL file.
+    """
+    directory = os.path.join(root, str(run))
+    os.makedirs(directory, exist_ok=True)
+    if manifest is not None:
+        with open(os.path.join(directory, "run.json"), "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle)
+    for task, body in (tasks or {}).items():
+        body = dict(body)
+        body.setdefault("task", task)
+        with open(os.path.join(directory, task + ".json"), "w", encoding="utf-8") as handle:
+            json.dump(body, handle)
+    if checks is not None:
+        lines = []
+        for item in checks:
+            if isinstance(item, dict):
+                lines.append(item)
+            else:
+                test, result = item
+                lines.append({"suite": "s", "test": test, "name": test, "result": result, "ms": 1})
+        write_jsonl(os.path.join(directory, checks_name), lines)
+    return directory
