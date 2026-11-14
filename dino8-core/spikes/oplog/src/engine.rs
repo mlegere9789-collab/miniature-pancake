@@ -174,6 +174,7 @@ pub struct Workspace {
     redo_hint: std::collections::HashMap<u32, u32>,
     seed_rng: Rng,
     scratch: Vec<u8>,
+    tear: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -331,6 +332,7 @@ impl Workspace {
             redo_hint: std::collections::HashMap::new(),
             seed_rng: Rng::new(session ^ 0xD1B5_4A32_D192_ED03),
             scratch: Vec::with_capacity(4096),
+            tear: None,
         }
     }
 
@@ -383,6 +385,20 @@ impl Workspace {
         self
     }
 
+    /// Fault injection: the next appended operation frame is cut after `keep` bytes.
+    #[doc(hidden)]
+    pub fn inject_tear(&mut self, keep: usize) {
+        self.tear = Some(keep);
+    }
+
+    /// Fault injection: write every frame in two halves with a pause between them.
+    #[doc(hidden)]
+    pub fn set_slow_write(&mut self, pause: Option<std::time::Duration>) {
+        if let Some(w) = self.wal.as_mut() {
+            w.set_slow_write(pause);
+        }
+    }
+
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -405,6 +421,11 @@ impl Workspace {
 
     pub fn head_depth(&self) -> u32 {
         self.ops[self.head as usize].depth
+    }
+
+    /// Every operation id in log order (parents always precede children).
+    pub fn op_ids(&self) -> Vec<OpId> {
+        self.ops.iter().map(|m| m.id).collect()
     }
 
     pub fn genesis(&self) -> OpId {
@@ -570,6 +591,12 @@ impl Workspace {
         let mut buf = std::mem::take(&mut self.scratch);
         buf.clear();
         let (rec_off, blob_locs) = build_op_frame(&mut buf, local, &rec, blobs);
+        if let (Some(keep), Some(w)) = (self.tear.take(), self.wal.as_mut()) {
+            // fault injection: persist only a prefix of the frame, as a crash would
+            w.append_partial(&buf, keep)?;
+            self.scratch = buf;
+            return Err(Error::Invalid("simulated crash: partial frame written".into()));
+        }
         let result = if let Some(w) = self.wal.as_mut() {
             w.append(&buf).map(|base| {
                 for ((h, _), (o, l)) in blobs.iter().zip(&blob_locs) {
