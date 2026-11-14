@@ -1,0 +1,38 @@
+# Join leaves no dead edge slots and Check accepts the result (tests/sections/89_joinfix.sh, section JOINFIX_).
+# Join merges coincident naked edges with ON_Brep::CombineCoincidentVertices / CombineCoincidentEdges, which only MARK the merged-away
+# vertices and edges deleted. Before the fix the command left them in the arrays: List counted the dead edge slots (8 edges for two
+# joined quads that have 7, 24 for a joined cube that has 12) and Check reported "Corrupt ON_BrepVertex.m_vertex_index back pointer" for
+# every Join result. Closed forms: two quads sharing one side have 4 + 4 - 1 = 7 edges, 6 of them naked; a cube has 12 edges (Euler:
+# 8 vertices - 12 edges + 6 faces = 2).
+# Cases (each starts at `New`, bracketed by a marker line):
+#  quads   two SrfPt quads sharing the side x = 10, joined
+#  cube    a box exploded into its 6 faces and joined back
+SetActiveViewport Top
+
+New
+JNFBEGIN_quads
+SrfPt 0,0,0 10,0,0 10,10,0 0,10,0
+SrfPt 10,0,0 20,0,0 20,10,0 10,10,0
+SelAll
+Join
+SelPolysrf
+List
+SelPolysrf
+ShowEdges
+SelPolysrf
+Check
+
+New
+JNFBEGIN_cube
+Box 0,0,0 10,10,0 10
+SelAll
+Explode
+SelAll
+Join
+SelPolysrf
+List
+SelPolysrf
+ShowEdges
+SelPolysrf
+Check
+JNFEND
