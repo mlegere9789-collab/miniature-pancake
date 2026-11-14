@@ -233,8 +233,8 @@ void test_errors() {
   bad.params_len = D8_MAX_PARAMS_LEN + 1;
   CHECK_EQ(d8_log_append(log.handle(), &bad, &seq, &err), D8_ERR_LIMIT);
   bad = f.rec;
-  bad.params_len = SIZE_MAX / 2 + 7;  // absurd length must not reach memcpy
-  CHECK_EQ(d8_log_append(log.handle(), &bad, &seq, &err), D8_ERR_INVALID_ARG);
+  bad.params_len = SIZE_MAX / 2 + 7;  // absurd length is refused before any slice is formed
+  CHECK_EQ(d8_log_append(log.handle(), &bad, &seq, &err), D8_ERR_LIMIT);
   CHECK_EQ(d8_log_append_batch(log.handle(), &f.rec, 0, nullptr, &err), D8_ERR_INVALID_ARG);
   {
     D8LogHandle tmp{0};

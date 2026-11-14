@@ -13,7 +13,7 @@ pub type D8Status = i32;
 pub const D8_OK: D8Status = 0;
 /// A required pointer argument was NULL.
 pub const D8_ERR_NULL_ARG: D8Status = 1;
-/// An argument was invalid: unknown flag, misaligned pointer, bad UTF-8, or a size over a limit.
+/// An argument was invalid: unknown flag, misaligned pointer, bad UTF-8.
 pub const D8_ERR_INVALID_ARG: D8Status = 2;
 /// The handle is zero, was never issued, or has already been closed.
 pub const D8_ERR_BAD_HANDLE: D8Status = 3;
@@ -31,7 +31,7 @@ pub const D8_ERR_CORRUPT: D8Status = 8;
 pub const D8_ERR_POISONED: D8Status = 9;
 /// A panic was caught at the boundary. It did not unwind into the caller.
 pub const D8_ERR_PANIC: D8Status = 10;
-/// A size limit was exceeded.
+/// A size limit was exceeded: a blob, an id list or a batch is larger than the documented maximum.
 pub const D8_ERR_LIMIT: D8Status = 11;
 /// The log was closed by another caller while this call was in flight.
 pub const D8_ERR_CLOSED: D8Status = 12;

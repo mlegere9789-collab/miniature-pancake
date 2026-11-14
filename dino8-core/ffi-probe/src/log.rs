@@ -28,6 +28,8 @@ pub const D8_KIND_OP: u32 = 0;
 pub const D8_KIND_UNDO: u32 = 1;
 /// Largest parameter blob of one operation. Bulk data travels as content-addressed blobs.
 pub const D8_MAX_PARAMS_LEN: usize = 1 << 20;
+/// Largest number of operations in one batch append.
+pub const D8_MAX_BATCH_OPS: usize = 1 << 20;
 /// Largest number of input ids (and of output ids) of one operation.
 pub const D8_MAX_OBJECT_IDS: usize = 65535;
 
@@ -38,6 +40,7 @@ const SEGMENT_SIZE: usize = 4 << 20;
 const MAX_RECORD_LEN: usize = SEGMENT_SIZE;
 /// Entries per index page.
 const INDEX_PAGE: usize = if cfg!(loom) { 64 } else { 8192 };
+const _: () = assert!(INDEX_PAGE.is_power_of_two());
 
 /// Stable identifier of a scene object (a UUID in the application).
 #[repr(C)]
@@ -293,7 +296,7 @@ impl Inner {
     /// Publishes the record that was just written at `(seg, off)`.
     fn commit_tail(&mut self, seg: usize, off: usize, total: usize, kind: u32, seq: u64) {
         let n = (seq - 1) as usize;
-        if n % INDEX_PAGE == 0 {
+        if n & (INDEX_PAGE - 1) == 0 {
             self.index_pages
                 .push(vec![0u64; INDEX_PAGE].into_boxed_slice());
         }

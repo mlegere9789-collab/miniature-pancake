@@ -20,5 +20,8 @@ pub mod wal;
 pub mod ffi;
 
 pub use ffi::*;
-pub use log::{D8LogInfo, D8ObjectId};
+pub use log::{
+    D8LogInfo, D8ObjectId, D8_KIND_OP, D8_KIND_UNDO, D8_MAX_BATCH_OPS, D8_MAX_OBJECT_IDS,
+    D8_MAX_PARAMS_LEN, D8_OBJECT_ID_LEN,
+};
 pub use status::*;

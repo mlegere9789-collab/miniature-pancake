@@ -16,10 +16,13 @@
 //! modified by another thread while the call runs.
 
 use crate::handle::HandleTable;
-use crate::log::{D8LogInfo, D8ObjectId, Log, OpInput, ReadBuffers};
+use crate::log::{
+    D8LogInfo, D8ObjectId, Log, OpInput, ReadBuffers, D8_MAX_BATCH_OPS, D8_MAX_OBJECT_IDS,
+    D8_MAX_PARAMS_LEN,
+};
 use crate::status::{
     truncate_utf8, BoundaryError, D8Error, D8Status, D8_ABI_VERSION, D8_ERROR_MESSAGE_LEN,
-    D8_ERR_BAD_HANDLE, D8_ERR_BUFFER_TOO_SMALL, D8_ERR_CALLBACK, D8_ERR_INVALID_ARG,
+    D8_ERR_BAD_HANDLE, D8_ERR_BUFFER_TOO_SMALL, D8_ERR_CALLBACK, D8_ERR_INVALID_ARG, D8_ERR_LIMIT,
     D8_ERR_NULL_ARG, D8_ERR_PANIC, D8_OK,
 };
 use crate::wal::SyncMode;
@@ -247,6 +250,12 @@ where
     }
 }
 
+/// True when `len` elements of `T` fit in an allocation (at most `isize::MAX` bytes).
+fn fits_isize<T>(len: usize) -> bool {
+    len.checked_mul(std::mem::size_of::<T>())
+        .is_some_and(|n| n <= isize::MAX as usize)
+}
+
 fn null_arg(name: &str) -> BoundaryError {
     BoundaryError::new(D8_ERR_NULL_ARG, format!("argument `{name}` is NULL"))
 }
@@ -305,13 +314,26 @@ fn arg_out<T>(p: *mut T, name: &str) -> Result<*mut T, BoundaryError> {
     arg_out_opt(p, name)?.ok_or_else(|| null_arg(name))
 }
 
-/// Checked slice over caller memory. A zero length accepts NULL.
+/// Checked slice over caller memory. A zero length accepts NULL. A length over `max_len` is
+/// refused before any slice is formed, so a wrong length from the caller never makes the library
+/// build a reference that is larger than the allowed maximum.
 ///
 /// # Safety
 /// A non-NULL aligned `p` must point to `len` initialized `T` that stay valid and unmodified for `'a`.
-unsafe fn arg_slice<'a, T>(p: *const T, len: usize, name: &str) -> Result<&'a [T], BoundaryError> {
+unsafe fn arg_slice<'a, T>(
+    p: *const T,
+    len: usize,
+    max_len: usize,
+    name: &str,
+) -> Result<&'a [T], BoundaryError> {
     if len == 0 {
         return Ok(&[]);
+    }
+    if len > max_len {
+        return Err(BoundaryError::new(
+            D8_ERR_LIMIT,
+            format!("`{name}` has {len} elements, the limit is {max_len}"),
+        ));
     }
     if p.is_null() {
         return Err(null_arg(name));
@@ -319,10 +341,7 @@ unsafe fn arg_slice<'a, T>(p: *const T, len: usize, name: &str) -> Result<&'a [T
     if !p.is_aligned() {
         return Err(misaligned(name));
     }
-    if len
-        .checked_mul(std::mem::size_of::<T>())
-        .map_or(true, |n| n > isize::MAX as usize)
-    {
+    if !fits_isize::<T>(len) {
         return Err(BoundaryError::new(
             D8_ERR_INVALID_ARG,
             format!("`{name}` length is absurd"),
@@ -350,10 +369,7 @@ unsafe fn arg_slice_mut<'a, T>(
     if !p.is_aligned() {
         return Err(misaligned(name));
     }
-    if len
-        .checked_mul(std::mem::size_of::<T>())
-        .map_or(true, |n| n > isize::MAX as usize)
-    {
+    if !fits_isize::<T>(len) {
         return Err(BoundaryError::new(
             D8_ERR_INVALID_ARG,
             format!("`{name}` length is absurd"),
@@ -374,9 +390,9 @@ unsafe fn op_input<'a>(rec: &'a D8OpRecord) -> Result<OpInput<'a>, BoundaryError
             command_id: rec.command_id,
             tool_version: rec.tool_version,
             random_seed: rec.random_seed,
-            params: arg_slice(rec.params, rec.params_len, "op.params")?,
-            inputs: arg_slice(rec.inputs, rec.n_inputs, "op.inputs")?,
-            outputs: arg_slice(rec.outputs, rec.n_outputs, "op.outputs")?,
+            params: arg_slice(rec.params, rec.params_len, D8_MAX_PARAMS_LEN, "op.params")?,
+            inputs: arg_slice(rec.inputs, rec.n_inputs, D8_MAX_OBJECT_IDS, "op.inputs")?,
+            outputs: arg_slice(rec.outputs, rec.n_outputs, D8_MAX_OBJECT_IDS, "op.outputs")?,
         })
     }
 }
@@ -535,7 +551,7 @@ pub unsafe extern "C" fn d8_log_append_batch(
     unsafe {
         guarded(err, || {
             let log = lookup(h)?;
-            let recs = arg_slice(ops, n, "ops")?;
+            let recs = arg_slice(ops, n, D8_MAX_BATCH_OPS, "ops")?;
             let out_first = arg_out_opt(out_first_seq, "out_first_seq")?;
             let inputs = recs
                 .iter()
