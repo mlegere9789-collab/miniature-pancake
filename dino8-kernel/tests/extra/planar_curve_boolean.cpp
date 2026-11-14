@@ -244,6 +244,23 @@ D8_EXTRA_TEST(PlanarCurveBooleanCircleAndSquareGiveFourCapsAndFourCorners) {
   d8test::Check(Near(tk.area, 16 - inter_area, 1e-5), "square - circle area = 16 - intersection");
 }
 
+// The tolerance decides what counts as coincident, not how exactly a crossing is placed: the circle-minus-square caps keep their closed-form
+// perimeter 12 + 20 acos(0.8) (4 chords of 3, 4 arcs of 2.5 * 2 acos(0.8)) to 1e-6 whatever tolerance is passed. (At 1e-5, the app's value,
+// the crossings used to be placed only to about 3e-6, which moved this total by 3e-6.)
+D8_EXTRA_TEST(PlanarCurveBooleanCrossingsAreNotOnlyAsGoodAsTheTolerance) {
+  const ON_Plane pl = XY();
+  const double r = 2.5, h = 2.0;
+  const double want = 4 * (2 * std::sqrt(r * r - h * h)) + 4 * r * 2 * std::acos(h / r);
+  const ON_NurbsCurve C = Circle(pl, 0, 0, r);
+  const ON_PolylineCurve S = Rect(pl, -2, -2, 2, 2);
+  for (double tol : {1e-4, 3e-5, 1e-5, 1e-6}) {
+    const PlanarCurveBooleanResult caps = PlanarCurveBoolean(C, S, pl, CurveRegionOp::Difference, tol);
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "circle - square at tolerance %g: perimeter %.9f vs closed form %.9f", tol, Sum(caps, pl).length, want);
+    d8test::Check(caps.ok && caps.loops.size() == 4 && Near(Sum(caps, pl).length, want, 1e-6), buf);
+  }
+}
+
 D8_EXTRA_TEST(PlanarCurveBooleanCircleAndEllipseOnOneCentre) {
   const ON_Plane pl = XY();
   const double r = 2, a = 3, b = 1.5;
