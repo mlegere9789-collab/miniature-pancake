@@ -1,0 +1,2 @@
+SECTIONS=BASE SSAO SX SR B2S SO2 SATF FRH HSO KWR SBL PTF CNT FSR RTA QCA SOT HGB TS6 SEC2 QC2 LSPC LCL LOFTOPT ARCSH RVCH MSCV MSCF SDBOOL SDBHIST OPS CSK BOSSRIB_EXACT
+FILTERS=extra::Flush;extra::Typed;FaceTessellation;LoopSpike;extra::Array;extra::Las;extra::Deform;extra::InterpolateCurve;extra::SurfaceClassify;extra::PeriodicKnotRemoval;extra::BrepFaceClassify;extra::CurveClassify;extra::CurveSegments;extra::Delaunay;MatchEdge;OffsetPolylineExtrusion;ThickenPolylineExtrusion;OffsetTaperedPrism;Boolean;Sealed
