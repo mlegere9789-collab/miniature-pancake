@@ -413,7 +413,10 @@ PlanarCurveBooleanResult Core(const std::vector<Boundary>& A, const std::vector<
 
 IntersectOptions OptionsFor(double tolerance) {
   IntersectOptions opt;
-  opt.tolerance = tolerance * 0.1;
+  // Where the boundaries cross is located far tighter than the caller's tolerance: the tolerance decides what counts as coincident
+  // or too close (the refusals), not how exactly a crossing is placed - at 1e-5 the crossings were only good to about 3e-6, which
+  // moved the total boundary length of a circle-minus-square by 3e-6 (the closed form, 12 + 20 acos(0.8), was missed in the 7th digit).
+  opt.tolerance = std::min(tolerance * 0.1, 1e-9);
   return opt;
 }
 
