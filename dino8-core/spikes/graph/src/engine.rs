@@ -1376,7 +1376,7 @@ impl<V: Value> Db<V> {
         }
         let mut ls = Local::default();
         let mut stack: Vec<NodeId> = Vec::new();
-        for &r in roots {
+        for &r in roots.iter().rev() {
             if self.claim_root(r, &mut ls) {
                 stack.push(r);
             }
@@ -1405,7 +1405,7 @@ impl<V: Value> Db<V> {
     fn drive_roots<'s>(&'s self, ev: &'s Eval<'s, V>, scope: &rayon::Scope<'s>, chunk: &[NodeId]) {
         let mut ls = Local::default();
         let mut stack = Vec::new();
-        for &r in chunk {
+        for &r in chunk.iter().rev() {
             if self.claim_root(r, &mut ls) {
                 stack.push(r);
             }
