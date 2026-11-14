@@ -18,6 +18,7 @@
 
 namespace {
 
+using dino8::kernel::GltfMaterial;
 using dino8::kernel::GltfModel;
 using dino8::kernel::GltfPart;
 using dino8::kernel::GltfReadOptions;
@@ -198,7 +199,8 @@ D8_EXTRA_TEST(GltfReaderAppliesNodeHierarchyTransformsMaterialsAndSceneChoice) {
     }
     d8test::Check(ok, "world positions = translate(10,0,0) * rotateY(90) * scale(2) of the tetrahedron (closed form)");
     d8test::Check(std::fabs(p.mesh.Volume() - 8.0 / 6.0) < 1e-5, "volume 8 x 1/6: a rotation keeps the orientation, scale 2 cubes the volume");
-    d8test::Check(p.base_color && std::fabs((*p.base_color)[0] - 0.25f) < 1e-6 && std::fabs((*p.base_color)[1] - 0.5f) < 1e-6 && std::fabs((*p.base_color)[2] - 0.75f) < 1e-6 && (*p.base_color)[3] == 1.0f, "the material's baseColorFactor is read (0.25, 0.5, 0.75, 1)");
+    d8test::Check(p.material && std::fabs(p.material->base_color[0] - 0.25f) < 1e-6 && std::fabs(p.material->base_color[1] - 0.5f) < 1e-6 && std::fabs(p.material->base_color[2] - 0.75f) < 1e-6 && p.material->base_color[3] == 1.0f, "the material's baseColorFactor is read (0.25, 0.5, 0.75, 1)");
+    d8test::Check(p.material && p.material->metallic == 1.0f && p.material->roughness == 1.0f && p.material->alpha_mode == GltfMaterial::AlphaMode::Opaque && !p.material->double_sided, "the unstated material terms take the specification's defaults (metallic 1, roughness 1, OPAQUE, single sided)");
   }
   GltfModel second;
   d8test::Check(Load(Gltf(bin, nodes + materials + "\"scene\": 1, " + body), second) && second.parts.size() == 2, "scene 1 selects the two other nodes");
@@ -211,7 +213,7 @@ D8_EXTRA_TEST(GltfReaderAppliesNodeHierarchyTransformsMaterialsAndSceneChoice) {
   GltfModel noscene;
   std::string nodes_only = nodes;
   nodes_only.erase(nodes_only.find("\"scenes\""));
-  d8test::Check(Load(Gltf(bin, nodes_only + body), noscene) && noscene.parts.size() == 3, "without scenes the unreferenced nodes are the roots: kid (via root), moved, mirror = 3 parts");
+  d8test::Check(Load(Gltf(bin, nodes_only + materials + body), noscene) && noscene.parts.size() == 3, "without scenes the unreferenced nodes are the roots: kid (via root), moved, mirror = 3 parts");
   // Unit and axis options: metres -> millimetres, Y-up -> Z-up.
   GltfModel conv;
   GltfReadOptions opt;
@@ -309,7 +311,12 @@ D8_EXTRA_TEST(GltfWriterOutputIsAValidContainerWithMinMaxAndTheRequestedUnitsAnd
   GltfPart red;
   red.name = "box \"red\"";
   red.mesh = box;
-  red.base_color = std::array<float, 4>{1.0f, 0.0f, 0.25f, 1.0f};
+  GltfMaterial red_mat;
+  red_mat.name = "paint";
+  red_mat.base_color = {1.0f, 0.0f, 0.25f, 1.0f};
+  red_mat.metallic = 0.0f;
+  red_mat.roughness = 0.5f;
+  red.material = red_mat;
   GltfPart plain;
   plain.name = "tet";
   plain.mesh = tet;
@@ -331,6 +338,7 @@ D8_EXTRA_TEST(GltfWriterOutputIsAValidContainerWithMinMaxAndTheRequestedUnitsAnd
   d8test::Check(json.find("\"version\": \"2.0\"") != std::string::npos && json.find("\"uri\"") == std::string::npos, "asset 2.0 and no uri on the GLB's own buffer");
   d8test::Check(json.find("\"name\": \"box \\\"red\\\"\"") != std::string::npos, "the part name is JSON-escaped");
   d8test::Check(json.find("\"baseColorFactor\": [1, 0, 0.25, 1]") != std::string::npos, "the red material is written once with its colour");
+  d8test::Check(json.find("\"metallicFactor\": 0") != std::string::npos && json.find("\"roughnessFactor\": 0.5") != std::string::npos && json.find("\"name\": \"paint\"") != std::string::npos, "the red material carries its metallic 0, roughness 0.5 and name");
   // Independent decode of the first part's positions from the BIN chunk: 8 vertices as float32 (x, z, -y) * 0.001 -> box 0.02 x 0.005 x -0.01.
   const float expect[8][3] = {{0, 0, 0}, {0.02f, 0, 0}, {0.02f, 0, -0.01f}, {0, 0, -0.01f}, {0, 0.005f, 0}, {0.02f, 0.005f, 0}, {0.02f, 0.005f, -0.01f}, {0, 0.005f, -0.01f}};
   bool pos_ok = true;
@@ -344,9 +352,9 @@ D8_EXTRA_TEST(GltfWriterOutputIsAValidContainerWithMinMaxAndTheRequestedUnitsAnd
   d8test::Check(pos_ok, "the first 8 positions in the BIN chunk are the box in metres, Y-up (x, z, -y)");
   d8test::Check(json.find("\"min\": [0, 0, -0.01]") != std::string::npos && json.find("\"max\": [0.02, 0.005, 0]") != std::string::npos, "the position accessor's min / max are the box's extents (0,0,-0.01) .. (0.02,0.005,0)");
   d8test::Check(json.find("\"count\": 36") != std::string::npos && json.find("\"count\": 8,") != std::string::npos, "8 vertices and 36 indices (6 quads = 12 triangles)");
-  // Indices of the first part follow its positions: all below 8.
+  // The first part's BIN layout is 8 positions (96 bytes), 8 normals (96 bytes, the default GltfNormals::Computed), then 36 indices: all below 8.
   bool idx_ok = true;
-  for (int i = 0; i < 36; ++i) { uint32_t v; std::memcpy(&v, f.data() + bin_at + 96 + static_cast<size_t>(i) * 4, 4); idx_ok = idx_ok && v < 8; }
+  for (int i = 0; i < 36; ++i) { uint32_t v; std::memcpy(&v, f.data() + bin_at + 192 + static_cast<size_t>(i) * 4, 4); idx_ok = idx_ok && v < 8; }
   d8test::Check(idx_ok, "all 36 indices of the first part are below its vertex count");
   // Round trip with the inverse options: names, colours, geometry in millimetres and Z-up again.
   GltfModel back;
@@ -356,7 +364,7 @@ D8_EXTRA_TEST(GltfWriterOutputIsAValidContainerWithMinMaxAndTheRequestedUnitsAnd
   d8test::Check(LoadGltfModel(kGlb, back, ro) == Result::Ok && back.parts.size() == 2, "the file reads back as two parts");
   if (back.parts.size() == 2) {
     d8test::Check(back.parts[0].name == "box \"red\"" && back.parts[1].name == "tet", "names round-trip through the escaping");
-    d8test::Check(back.parts[0].base_color && *back.parts[0].base_color == *red.base_color && !back.parts[1].base_color, "the colour round-trips on the red part only");
+    d8test::Check(back.parts[0].material && *back.parts[0].material == red_mat && !back.parts[1].material, "the whole material (name, colour, metallic, roughness) round-trips on the red part only");
     bool same = back.parts[0].mesh.VertexCount() == 8 && back.parts[0].mesh.FaceCount() == 12;
     for (int i = 0; same && i < 8; ++i) same = Near(V(back.parts[0].mesh, i), V(box, i), 1e-4);
     d8test::Check(same, "the box is back in millimetres and Z-up, 12 triangles");
@@ -402,4 +410,71 @@ D8_EXTRA_TEST(GltfMeshEntryPointsStillRoundTripAClosedMeshAndReadTheOtherContain
   d8test::Check(empty.SaveGltf(kGltf) == Result::Failed && empty.SaveGlb(kGlb) == Result::Failed, "an empty mesh is not written");
   std::remove(kGltf);
   std::remove(kGlb);
+}
+
+D8_EXTRA_TEST(GltfWriterNormalsMaterialsAndExternalBinRoundTrip) {
+  Mesh tet;
+  {
+    ON_Mesh& r = tet.raw();
+    for (auto& p : kTetV) r.m_V.Append(ON_3fPoint(p[0], p[1], p[2]));
+    for (int f = 0; f < 4; ++f) { ON_MeshFace face; face.vi[0] = kTetT[f * 3]; face.vi[1] = kTetT[f * 3 + 1]; face.vi[2] = kTetT[f * 3 + 2]; face.vi[3] = face.vi[2]; r.m_F.Append(face); }
+  }
+  GltfMaterial glass;
+  glass.name = "glass";
+  glass.base_color = {0.1f, 0.2f, 0.3f, 0.4f};
+  glass.metallic = 0.25f;
+  glass.roughness = 0.75f;
+  glass.emissive = {0.5f, 0.0f, 1.0f};
+  glass.alpha_mode = GltfMaterial::AlphaMode::Blend;
+  glass.double_sided = true;
+  GltfMaterial cutout = glass;
+  cutout.name = "cutout";
+  cutout.alpha_mode = GltfMaterial::AlphaMode::Mask;
+  cutout.alpha_cutoff = 0.3f;
+  GltfModel model;
+  for (int i = 0; i < 3; ++i) {
+    GltfPart p;
+    p.name = "part" + std::to_string(i);
+    p.mesh = tet;
+    if (i == 0 || i == 2) p.material = glass;  // two parts share one material: it is written once
+    if (i == 1) p.material = cutout;
+    model.parts.push_back(p);
+  }
+  GltfWriteOptions opt;
+  opt.external_bin = true;
+  d8test::Check(SaveGltfModel(kGltf, model, opt) == Result::Ok, ".gltf with an external .bin saves");
+  const std::string json = ReadBytes(kGltf);
+  const std::string bin = ReadBytes("dino8_kernel_gltf_test.bin");
+  d8test::Check(json.find("\"uri\": \"dino8_kernel_gltf_test.bin\"") != std::string::npos && json.find("base64") == std::string::npos, "the buffer is named by a relative uri, not embedded");
+  // Per part: 4 positions + 4 normals (float32 x 3) + 12 uint32 indices = 48 + 48 + 48 bytes; three parts.
+  d8test::Check(bin.size() == 3 * 144, "the .bin holds 3 x (4 positions + 4 normals + 12 indices) = 432 bytes");
+  size_t mats = 0;
+  for (size_t at = json.find("\"pbrMetallicRoughness\""); at != std::string::npos; at = json.find("\"pbrMetallicRoughness\"", at + 1)) ++mats;
+  d8test::Check(mats == 2, "two distinct materials are written (the shared one once)");
+  d8test::Check(json.find("\"alphaMode\": \"BLEND\"") != std::string::npos && json.find("\"alphaMode\": \"MASK\"") != std::string::npos && json.find("\"alphaCutoff\": 0.3") != std::string::npos && json.find("\"doubleSided\": true") != std::string::npos && json.find("\"emissiveFactor\": [0.5, 0, 1]") != std::string::npos, "alphaMode BLEND and MASK with cutoff, doubleSided and emissiveFactor are written");
+  GltfModel back;
+  d8test::Check(LoadGltfModel(kGltf, back) == Result::Ok && back.parts.size() == 3, "reads back as 3 parts through the external .bin");
+  if (back.parts.size() == 3) {
+    d8test::Check(back.parts[0].material && *back.parts[0].material == glass && back.parts[1].material && *back.parts[1].material == cutout && back.parts[2].material && *back.parts[2].material == glass, "every material round-trips exactly");
+    // Normals: the unit-corner tetrahedron's vertex 0 (the origin) touches the three axis-plane faces, whose area-weighted sum of outward
+    // normals (-x, -y, -z each with area 1/2) is (-1, -1, -1)/sqrt(3) after normalisation.
+    const ON_Mesh& r = back.parts[0].mesh.raw();
+    bool nrm = r.m_N.Count() == 4;
+    if (nrm) {
+      const double k = -1.0 / std::sqrt(3.0);
+      nrm = std::fabs(r.m_N[0].x - k) < 1e-5 && std::fabs(r.m_N[0].y - k) < 1e-5 && std::fabs(r.m_N[0].z - k) < 1e-5;
+      for (int i = 0; nrm && i < 4; ++i) nrm = std::fabs(std::sqrt(double(r.m_N[i].x) * r.m_N[i].x + double(r.m_N[i].y) * r.m_N[i].y + double(r.m_N[i].z) * r.m_N[i].z) - 1.0) < 1e-5;
+    }
+    d8test::Check(nrm, "NORMAL is written and read: unit length, and vertex 0 is (-1,-1,-1)/sqrt(3) (closed form)");
+  }
+  GltfWriteOptions none;
+  none.normals = dino8::kernel::GltfNormals::None;
+  GltfModel one;
+  one.parts.push_back(model.parts[0]);
+  d8test::Check(SaveGltfModel(kGlb, one, none) == Result::Ok, "a part saves without normals");
+  GltfModel nb;
+  d8test::Check(LoadGltfModel(kGlb, nb) == Result::Ok && nb.parts.size() == 1 && nb.parts[0].mesh.raw().m_N.Count() == 0, "a file without NORMAL reads back with no normals");
+  std::remove(kGltf);
+  std::remove(kGlb);
+  std::remove("dino8_kernel_gltf_test.bin");
 }
