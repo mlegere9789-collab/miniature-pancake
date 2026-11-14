@@ -104,11 +104,14 @@ def main():
             if isok:
                 m = re.match(rb"ok {3}(.*)$", text, re.S)
                 strict = m is not None
-                name = (m.group(1) if m else text[2:].lstrip(b": ")).decode("utf-8", "replace")
+                if m is None:
+                    m = re.match(rb"ok[: ]+(.*)$", text, re.S)       # `ok: label`, `ok label`; `okay ...` keeps its whole line
             else:
                 m = re.match(rb"FAIL(?::| )(?: )?(.*)$", text, re.S)
                 strict = m is not None
-                name = (m.group(1) if m else text[4:].lstrip(b": ")).decode("utf-8", "replace")
+                if m is None:
+                    m = re.match(rb"FAIL[: ]+(.*)$", text, re.S)
+            name = (m.group(1) if m else text).decode("utf-8", "replace")
             section = cur if cur is not None else "harness"
             n += 1
             t_checks += 1
