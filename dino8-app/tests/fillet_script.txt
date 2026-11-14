@@ -766,13 +766,15 @@ Continuity=Curvature
 2505,0.3,6
 SelLast
 List
-# --- MatchSrf: Curvature against a target whose own degree is too low to
-# carry a curvature row (two flat, planar faces - the same structural
-# refusal kernel::NurbsSurface::MatchEdge() documents: "the requested
-# continuity exceeds the target's cross degree") fails closed with a
-# diagnostic instead of silently downgrading to G1/G0 or fabricating a
-# curvature match the per-control-point fallback was never built to
-# compute.
+# --- MatchSrf: Curvature against a target whose own degree is below a curvature
+# row's (two flat, planar faces: degree 1 across the edge). The kernel used to
+# refuse this ("the requested continuity exceeds the target's cross degree").
+# Degree elevation is exact, so the target raised to degree 2 IS the same plane
+# and its second cross derivative at the edge is its own, zero: the match is
+# well defined and now runs (kernel: MatchEdgeG2ToDegreeOneTarget). The floor
+# leaves the box's front face (y = 0) with the face's own tangent plane and
+# normal curvature 0: the last three rows of its 4 x 2 net lie in the plane y = 0.
+FLBEGIN_matchsrf_g2_flat
 SelAll
 Hide
 Box 2600,0,0 2610,10,0 10
@@ -783,6 +785,7 @@ Continuity=Curvature
 2605,0,1
 SelSrf
 List
+FLEND_matchsrf_g2_flat
 # --- MatchSrf: Curvature against a target CURVE: exact through
 # kernel::NurbsSurface::MatchEdgeToCurve (the surface keeps its own S_vv;
 # a flat plane has none, so a straight line target is a clean G2 match).
