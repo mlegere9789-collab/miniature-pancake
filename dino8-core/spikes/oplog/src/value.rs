@@ -899,7 +899,7 @@ mod tests {
     fn depth_limit() {
         let deep = "[".repeat(100) + &"]".repeat(100);
         assert_eq!(Value::from_json(&deep), Err(CodecError::TooDeep));
-        let mut b = vec![T_LIST, 1].repeat(100);
+        let mut b = [T_LIST, 1].repeat(100);
         b.push(T_NULL);
         assert!(Value::from_bytes(&b).is_err());
     }

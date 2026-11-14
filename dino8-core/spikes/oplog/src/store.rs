@@ -59,6 +59,11 @@ impl Store {
         }
     }
 
+    /// Give an in-memory store a file to read blobs back from (after the log is opened).
+    pub fn attach_file(&mut self, f: Arc<File>) {
+        self.file = Some(f);
+    }
+
     pub fn contains(&self, h: &Hash) -> bool {
         lock(&self.index).contains_key(h)
     }
