@@ -1,0 +1,27 @@
+--- a/opennurbs_revsurface.cpp
++++ b/opennurbs_revsurface.cpp
+@@ -1772,7 +1772,7 @@
+     for ( int ii = i?1:0; ii <= 4; ii++ )
+     {
+       u = 0.25*((4-ii)*s[i] + ii*s[i+1]);
+-      for ( int j = 0; j <= sc1; j++ )
++      for ( int j = 0; j < sc1; j++ )
+       {
+         for ( int jj = j?1:0; jj <= 4; jj++ )
+         {
+--- a/opennurbs_statics.cpp
++++ b/opennurbs_statics.cpp
+@@ -95,10 +95,9 @@
+ 
+ ON__UINT64 ON_NextContentSerialNumber()
+ {
+-  static ON__UINT64 serial_number = 0;
+-  // If it's ever an issue with multiple threads, 
+-  // this value can be made atomic, but that will slow down performance.
+-  return (0 != ++serial_number) ? serial_number : ++serial_number;
++  static std::atomic<ON__UINT64> serial_number(0);
++  const ON__UINT64 sn = ++serial_number;
++  return (0 != sn) ? sn : ++serial_number;
+ }
+ 
+ // All opennurbs static members are initialized here so that initialization happens in a predictable order.
