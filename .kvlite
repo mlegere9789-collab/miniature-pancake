@@ -1,0 +1,2 @@
+SECTIONS=SME SX
+FILTERS=Hairline;MicroEdge
