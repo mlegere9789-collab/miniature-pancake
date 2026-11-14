@@ -4,5 +4,10 @@
 //! See `RESULTS.md` for what was measured and the recommendation.
 
 pub mod crdt;
+pub mod error;
+pub mod hamt;
 pub mod ids;
+pub mod op;
+pub mod store;
 pub mod value;
+pub mod wal;
