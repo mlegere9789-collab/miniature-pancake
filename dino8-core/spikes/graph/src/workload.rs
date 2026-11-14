@@ -7,7 +7,7 @@
 //! * `join(w)`   wall join with the previous, next and the adjoining room's wall (4 geometries)
 //! * `tag(w)`    annotation of every second wall (geometry plus tag style)
 //! * `tile(v,t)` linework of one tile of the plan view of level `v` (joins and tags of the
-//!               walls the spatial index lists for that tile, cut at the view height)
+//!   walls the spatial index lists for that tile, cut at the view height)
 //! * `view(v)`   the plan view (reduction over its tiles)
 //! * schedule    wall quantities by wall type: leaf chunks over `geom` and a reduction tree
 //!

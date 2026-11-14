@@ -385,11 +385,10 @@ fn run_scenario(sc: &Scenario, check_each_round: bool) {
 
 // ---- proptest strategies --------------------------------------------------------------------
 
-fn build_scenario(
-    n_in: usize,
-    raw_ops: Vec<(u8, Vec<u32>, i64)>,
-    raw_rounds: Vec<(Vec<(usize, i64)>, Vec<(usize, u8)>)>,
-) -> Scenario {
+type RawOp = (u8, Vec<u32>, i64);
+type RawRound = (Vec<(usize, i64)>, Vec<(usize, u8)>);
+
+fn build_scenario(n_in: usize, raw_ops: Vec<RawOp>, raw_rounds: Vec<RawRound>) -> Scenario {
     let src = |j: usize, s: u32| -> Src {
         if s % 3 == 0 || j == 0 {
             Src::In(s as usize % n_in)
@@ -491,7 +490,7 @@ impl Lcg {
 
 fn big_scenario(seed: u64, n_in: usize, n_q: usize, rounds: usize) -> Scenario {
     let mut r = Lcg(seed);
-    let raw_ops: Vec<(u8, Vec<u32>, i64)> = (0..n_q)
+    let raw_ops: Vec<RawOp> = (0..n_q)
         .map(|_| {
             let k = 1 + r.below(5);
             ((r.next() % 5) as u8, (0..k).map(|_| r.next() as u32).collect(), 2 + (r.next() % 4) as i64)
