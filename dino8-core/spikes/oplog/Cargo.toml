@@ -41,10 +41,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 [profile.dev]
 debug = 0
 opt-level = 1
+incremental = false
 
 [profile.test]
 debug = 0
 opt-level = 1
+incremental = false
 
 [profile.release]
 debug = 0
