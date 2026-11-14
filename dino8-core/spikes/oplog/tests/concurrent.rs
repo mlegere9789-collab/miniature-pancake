@@ -13,6 +13,9 @@ use oplog::Workspace;
 use std::collections::HashSet;
 use std::sync::{Arc, Barrier, Mutex};
 
+/// `(session, final head, final state hash, conflict count)` reported by each thread.
+type Outcome = (u64, OpId, oplog::ids::Hash, usize);
+
 struct Client {
     ws: Workspace,
     cursor: usize,
@@ -60,7 +63,7 @@ fn six_sessions_editing_shared_objects_converge_to_the_same_state() {
     let shared_ids: Vec<_> = c0.ws.objects().unwrap().into_iter().map(|(id, _)| id).collect();
     assert!(shared_ids.len() >= 15, "{} shared objects", shared_ids.len());
     let barrier = Arc::new(Barrier::new(SESSIONS));
-    let results: Arc<Mutex<Vec<(u64, OpId, oplog::ids::Hash, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let results: Arc<Mutex<Vec<Outcome>>> = Arc::new(Mutex::new(Vec::new()));
     let mut handles = Vec::new();
     let mut c0 = Some(c0);
     for s in 0..SESSIONS {
@@ -181,5 +184,5 @@ fn many_threads_hammering_the_sequencer_keep_it_consistent() {
         cur = *p;
     }
     assert_eq!(len, wins);
-    assert!(log.len() as u64 >= wins + 1);
+    assert!(log.len() as u64 > wins);
 }

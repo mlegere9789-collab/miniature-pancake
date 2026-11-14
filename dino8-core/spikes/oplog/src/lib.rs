@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod crdt;
+pub mod demo;
 pub mod engine;
 pub mod error;
 pub mod exec;
