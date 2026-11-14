@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <fstream>
 #include <functional>
@@ -530,7 +531,14 @@ size_t PeakStackBytes(const std::function<void()>& fn) {
 using Clock = std::chrono::steady_clock;
 double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
 
+long ThreadCpuUs() {  // CPU time of the calling thread: unaffected by other processes sharing the machine
+  timespec ts;
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+  return static_cast<long>(ts.tv_sec) * 1000000L + ts.tv_nsec / 1000;
+}
+
 struct OpStats {
+  std::atomic<long> cpu_us{0};
   std::atomic<long> calls{0};
   std::atomic<long> divergences{0};
   std::atomic<long> threw{0};
@@ -650,7 +658,9 @@ int RunPhase(const char* phase_name, const Options& o, const std::vector<Task>& 
       for (int j = 0; j < K; ++j) {
         const int k = rotate ? (j + tid) % K : j;
         const auto t0 = Clock::now();
+        const long cpu0 = ThreadCpuUs();
         const Sig got = tasks[k].fn(tid);
+        stats[k].cpu_us += ThreadCpuUs() - cpu0;
         const long us = static_cast<long>(Ms(Clock::now() - t0) * 1000.0);
         stats[k].calls++;
         stats[k].total_us += us;
@@ -680,9 +690,10 @@ int RunPhase(const char* phase_name, const Options& o, const std::vector<Task>& 
   std::printf("phase %s finished: %ld iterations per thread in %.1f s wall\n", phase_name, iterations_done.load(), wall);
   for (int k = 0; k < K; ++k) {
     const long c = stats[k].calls.load();
-    std::printf("  %-26s calls=%-5ld avg=%8.1f ms max=%8.1f ms threw=%-4ld divergences=%ld\n", tasks[k].name, c,
-                c ? stats[k].total_us.load() / 1000.0 / c : 0.0, stats[k].max_us.load() / 1000.0,
-                stats[k].threw.load(), stats[k].divergences.load());
+    std::printf("  %-26s calls=%-5ld avg=%8.1f ms (thread cpu %8.1f ms) max=%8.1f ms threw=%-4ld divergences=%ld\n",
+                tasks[k].name, c, c ? stats[k].total_us.load() / 1000.0 / c : 0.0,
+                c ? stats[k].cpu_us.load() / 1000.0 / c : 0.0, stats[k].max_us.load() / 1000.0, stats[k].threw.load(),
+                stats[k].divergences.load());
     total_div += stats[k].divergences.load();
   }
   std::printf("phase %s divergences from the serial reference: %ld\n", phase_name, total_div);
