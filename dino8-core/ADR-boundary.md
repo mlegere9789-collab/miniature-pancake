@@ -43,7 +43,8 @@ The boundary works, is cheap, and its failure modes are known and contained.
 | `scripts/run_probe.sh`, `scripts/tsan.supp` | The same build without CMake, with plain, ASan+UBSan and TSan variants. |
 | `tests/*.rs`, `examples/native_bench.rs` | Rust tests of the C ABI, concurrency, crash recovery, loom models; a no-boundary baseline. |
 
-Probe API (all return a status code and fill an optional caller-owned error record):
+Probe API (every function that can fail returns a status code and fills an optional caller-owned
+error record; the version, status-name and probe helper functions cannot fail and return plain values):
 `d8_log_open`, `d8_log_close`, `d8_log_append`, `d8_log_append_batch`, `d8_log_undo_marker`,
 `d8_log_read`, `d8_log_visit` (callback), `d8_log_len`, `d8_log_info`, `d8_log_sync`,
 `d8_abi_version`, `d8_status_name`; probe-only: `d8_probe_noop`, `d8_probe_nothing`,
@@ -70,9 +71,9 @@ operation it undoes.
    `probe_test.cpp`, same numbers), so an accidental layout change fails the build.
 
 ### 3.2 Status codes and error records
-- Every function returns an `int32_t` status (`D8_OK` = 0). Codes are `#define`d constants, not an
-  enum, so a stale or foreign value cannot create an invalid enum in Rust.
-- Every function takes an optional `D8Error*` (NULL is allowed). It carries the code, a detail value
+- Every function that can fail returns an `int32_t` status (`D8_OK` = 0). Codes are `#define`d
+  constants, not an enum, so a stale or foreign value cannot create an invalid enum in Rust.
+- Every such function takes an optional `D8Error*` (NULL is allowed). It carries the code, a detail value
   (OS error number, offending sequence number, or a callback's return value) and a message of up to
   239 UTF-8 bytes, NUL-terminated, truncated on a character boundary. The success path writes
   only four small fields. No thread-local "last error" exists, so there is nothing to race on.
@@ -122,8 +123,8 @@ operation it undoes.
 
 ### 3.6 C++ exceptions and callbacks (Rust calling C++)
 - Callback function types are declared `extern "C-unwind"` in Rust. A C++ exception that escapes such a
-  callback is then caught by the guard, and the Rust runtime aborts with "Rust cannot catch foreign
-  exceptions" (proven: forked child dies with signal 6). With a plain `extern "C"` callback type the
+  callback is then caught by the guard, and the Rust runtime prints "fatal runtime error: Rust cannot catch foreign
+  exceptions, aborting" and aborts (proven: forked child dies with signal 6). With a plain `extern "C"` callback type the
   same escape was observed to skip the Rust frames entirely and land in an outer C++ handler,
   which is undefined behavior that would leave Rust locks and state half-released (F1).
 - Rule for C++: every function passed to the library is a thin wrapper whose body is
@@ -178,12 +179,13 @@ pays too. The 1,000,000 records occupy 152.6 MiB in memory (160 bytes each) in 3
 | worst single call | 4,049 to 19,011 (median 7,945) |
 | calls over 1 ms, per 1,000,000 | 14 [4 to 38] |
 
-The p99 is the page fault of the first touch of fresh memory (one per 25 appends). The worst calls
+The p99 matches the cost of the page fault on first touch of fresh memory (about 1.5 microseconds per
+4 KiB page in the library-free loop below; one fault per 25 appends). The worst calls
 are not the library: 5,000,000 timed calls of an EMPTY guarded function show the same thing in
 every run (worst call 4,043 to 7,856, median 4,178; over 1 ms: median 13 per run), and so does a
 library-free loop that allocates 64 KiB and touches it (about 0.5 percent of iterations over 1 ms,
-p99.9 about 4.1 ms, measured in a scratch program, not committed). Four milliseconds is the
-scheduler time slice on this oversubscribed VM. The library's own growth paths cost, per occurrence:
+p99.9 about 4.1 ms, measured in a scratch program, not committed). The recurring
+4.03 ms value looks like the scheduler time slice of this oversubscribed VM. The library's own growth paths cost, per occurrence:
 a new 4 MiB segment 5.4 microseconds (median; worst 179), a new 8192-entry index page 36
 microseconds (median). The gate is therefore judged on the mean and p99.9; the worst case on this
 machine is dominated by the host. Re-measure on owner hardware before quoting a worst case. The
@@ -341,8 +343,8 @@ The plan's target "log append under 1 ms" should be read as write-through append
 ## 9. Effort
 
 The plan estimated two to three days for the first working boundary. Actual: this spike was done by
-one agent from launch at 2026-11-13 23:44 UTC to the commit of this document at 2026-11-14 00:21 UTC,
-**37 minutes of wall-clock time**, on a machine that other agents were using at the same time. First
+one agent from launch at 2026-11-13 23:44 UTC to the commit of this document at 2026-11-14 00:26 UTC,
+**42 minutes of wall-clock time**, on a machine that other agents were using at the same time. First
 commit after 7 minutes. That covers the crate, the 17-function ABI, the log with file recovery, the
 C++ program, the CMake + Corrosion build, the sanitizer runs, 39 cargo tests, the loom models, the
 measurements and this document. It does not cover: wiring the boundary into the real app CMake,
@@ -350,7 +352,7 @@ running the app suite, Windows or macOS, human review, or the 1,070-command disp
 three days in the plan are better read as the cost of integrating into the application than of
 proving the boundary: the mechanism itself took well under an hour of machine time.
 
-Commits on `w0-r1`, oldest first (UTC): b385beb9 at 23:51, 1206be09 at 23:58, 8dbecfaf at 00:03, b5c77e0d at 00:05, 497ccd1b at 00:10, 00b1faf1 at 00:10, d16c321a at 00:13, and the commit of this document
+Commits on `w0-r1`, oldest first (UTC): b385beb9 at 23:51, 1206be09 at 23:58, 8dbecfaf at 00:03, b5c77e0d at 00:05, 497ccd1b at 00:10, 00b1faf1 at 00:10, d16c321a at 00:13, c3effe63 at 00:24, and the commit of this document
 
 ## 10. Reproduce
 
