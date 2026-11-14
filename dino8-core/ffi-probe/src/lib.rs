@@ -1,6 +1,7 @@
 //! Spike R1: proves the Rust/C++ boundary of Dino 8 with an operation-log probe.
 //!
-//! Layout: [`status`] (codes and error record), [`log`] (the safe log core), [`handle`]
+//! Layout: [`status`] (codes and error record), [`log`] (the safe log core), [`paged`] (growth without
+//! copying), [`handle`]
 //! (generation-checked handle table), [`wal`] (file backing) and [`ffi`] (the C ABI, the only
 //! module that contains unsafe code). The C header is generated from this crate by cbindgen; see
 //! `scripts/gen_header.sh`.
@@ -10,6 +11,8 @@
 pub mod handle;
 #[forbid(unsafe_code)]
 pub mod log;
+#[forbid(unsafe_code)]
+pub mod paged;
 #[forbid(unsafe_code)]
 pub mod status;
 #[forbid(unsafe_code)]

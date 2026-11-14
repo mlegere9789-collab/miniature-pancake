@@ -9,6 +9,7 @@
 //! `total_len u32 | kind u32 | seq u64 | ref_seq u64 | random_seed u64 | command_id u32 |
 //! tool_version u32 | params_len u32 | n_inputs u16 | n_outputs u16 | params | inputs | outputs`.
 
+use crate::paged::Paged;
 use crate::status::{
     BoundaryError, D8_ERR_CLOSED, D8_ERR_CORRUPT, D8_ERR_FAILED, D8_ERR_INVALID_ARG, D8_ERR_LIMIT,
     D8_ERR_NOTHING_TO_UNDO, D8_ERR_NOT_FOUND, D8_ERR_POISONED,
@@ -38,9 +39,6 @@ pub const D8_MAX_OBJECT_IDS: usize = 65535;
 const SEGMENT_SIZE: usize = 4 << 20;
 /// Largest record, which must fit in one segment.
 const MAX_RECORD_LEN: usize = SEGMENT_SIZE;
-/// Entries per index page.
-const INDEX_PAGE: usize = if cfg!(loom) { 64 } else { 8192 };
-const _: () = assert!(INDEX_PAGE.is_power_of_two());
 
 /// Stable identifier of a scene object (a UUID in the application).
 #[repr(C)]
@@ -137,9 +135,11 @@ pub struct RecordCopy {
 
 struct Inner {
     segments: Vec<Vec<u8>>,
-    index_pages: Vec<Box<[u64]>>,
+    /// Location of record `n + 1` at position `n`: segment in the high 32 bits, offset in the low.
+    index: Paged<u64>,
     count: u64,
-    live: Vec<u64>,
+    /// Sequence numbers of the operations that have not been undone, oldest first.
+    live: Paged<u64>,
     bytes: u64,
     wal: Option<Wal>,
     closed: bool,
@@ -248,9 +248,9 @@ impl Inner {
     fn new() -> Inner {
         Inner {
             segments: Vec::new(),
-            index_pages: Vec::new(),
+            index: Paged::new(),
             count: 0,
-            live: Vec::new(),
+            live: Paged::new(),
             bytes: 0,
             wal: None,
             closed: false,
@@ -295,12 +295,8 @@ impl Inner {
 
     /// Publishes the record that was just written at `(seg, off)`.
     fn commit_tail(&mut self, seg: usize, off: usize, total: usize, kind: u32, seq: u64) {
-        let n = (seq - 1) as usize;
-        if n & (INDEX_PAGE - 1) == 0 {
-            self.index_pages
-                .push(vec![0u64; INDEX_PAGE].into_boxed_slice());
-        }
-        self.index_pages[n / INDEX_PAGE][n % INDEX_PAGE] = ((seg as u64) << 32) | off as u64;
+        debug_assert_eq!(self.index.len() as u64 + 1, seq);
+        self.index.push(((seg as u64) << 32) | off as u64);
         self.count = seq;
         self.bytes += total as u64;
         if kind == D8_KIND_OP {
@@ -314,8 +310,7 @@ impl Inner {
         if seq == 0 || seq > self.count {
             return None;
         }
-        let n = (seq - 1) as usize;
-        let loc = self.index_pages[n / INDEX_PAGE][n % INDEX_PAGE];
+        let loc = self.index.get((seq - 1) as usize)?;
         let seg = &self.segments[(loc >> 32) as usize];
         let off = (loc & 0xFFFF_FFFF) as usize;
         let total = get_u32(seg, off) as usize;
@@ -371,7 +366,7 @@ impl Inner {
         if meta.seq != self.count + 1 || rec.len() > MAX_RECORD_LEN {
             return false;
         }
-        if meta.kind == D8_KIND_UNDO && self.live.last() != Some(&meta.ref_seq) {
+        if meta.kind == D8_KIND_UNDO && self.live.last() != Some(meta.ref_seq) {
             return false;
         }
         let (seg_idx, off) = self.reserve_tail(rec.len());
@@ -451,7 +446,7 @@ impl Log {
     pub fn undo_marker(&self) -> Result<(u64, u64), BoundaryError> {
         let mut g = self.lock()?;
         g.check_writable()?;
-        let Some(&target) = g.live.last() else {
+        let Some(target) = g.live.last() else {
             return Err(BoundaryError::new(
                 D8_ERR_NOTHING_TO_UNDO,
                 "no live operation to undo",
@@ -799,13 +794,18 @@ mod tests {
     }
 
     #[test]
-    fn index_pages_roll_over() {
+    fn index_and_undo_stack_pages_roll_over() {
         let log = Log::open_memory();
-        let n = INDEX_PAGE * 2 + 3;
+        let n = crate::paged::PAGE_LEN * 2 + 3;
         for k in 0..n {
             log.append(&op(k as u32, &[1, 2, 3], &[], &[])).unwrap();
         }
-        for seq in [1, INDEX_PAGE as u64, INDEX_PAGE as u64 + 1, n as u64] {
+        for seq in [
+            1,
+            crate::paged::PAGE_LEN as u64,
+            crate::paged::PAGE_LEN as u64 + 1,
+            n as u64,
+        ] {
             let (m, ..) = read_all(&log, seq);
             assert_eq!(m.seq, seq);
             assert_eq!(u64::from(m.command_id), seq - 1);

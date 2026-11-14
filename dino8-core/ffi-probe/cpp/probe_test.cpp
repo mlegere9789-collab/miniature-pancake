@@ -671,6 +671,7 @@ void test_threads(int nthreads) {
 
 struct Pct {
   double p50 = 0, p90 = 0, p99 = 0, p999 = 0, max = 0;
+  size_t over_100us = 0, over_1ms = 0;
 };
 
 Pct percentiles(std::vector<uint32_t>& ns) {
@@ -686,6 +687,10 @@ Pct percentiles(std::vector<uint32_t>& ns) {
   p.p99 = at(0.99);
   p.p999 = at(0.999);
   p.max = static_cast<double>(*std::max_element(ns.begin(), ns.end())) / 1000.0;
+  for (uint32_t v : ns) {
+    p.over_100us += v > 100000u;
+    p.over_1ms += v > 1000000u;
+  }
   return p;
 }
 
@@ -716,8 +721,8 @@ void report(const char* name, size_t n, double total_ms, const Pct* pct = nullpt
   std::printf("[bench] %-28s n=%-9zu total_ms=%10.2f mean_us=%9.4f", name, n, total_ms,
               total_ms * 1000.0 / static_cast<double>(n));
   if (pct) {
-    std::printf(" p50_us=%.3f p90_us=%.3f p99_us=%.3f p999_us=%.3f max_us=%.3f", pct->p50, pct->p90,
-                pct->p99, pct->p999, pct->max);
+    std::printf(" p50_us=%.3f p90_us=%.3f p99_us=%.3f p999_us=%.3f max_us=%.3f over100us=%zu over1ms=%zu",
+                pct->p50, pct->p90, pct->p99, pct->p999, pct->max, pct->over_100us, pct->over_1ms);
   }
   std::printf("\n");
   std::fflush(stdout);
@@ -750,6 +755,23 @@ void bench_floor(size_t n) {
   report("handle_lookup+len", n, ms);
 }
 
+// Times every call of an empty guarded function. Its tail is the noise floor of this machine
+// (scheduler preemption, interrupts): nothing the library does can be faster or steadier.
+void bench_noise_floor(size_t n) {
+  D8Error err = D8_ERROR_INIT;
+  std::vector<uint32_t> lat(n);
+  auto t0 = Clock::now();
+  for (size_t i = 0; i < n; ++i) {
+    auto a = Clock::now();
+    d8_probe_noop(&err);
+    auto b = Clock::now();
+    lat[i] = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count());
+  }
+  double ms = static_cast<double>(ns_since(t0)) / 1e6;
+  Pct p = percentiles(lat);
+  report("noise_floor(empty call,timed)", n, ms, &p);
+}
+
 // Appends n operations to an in-memory log; timed=true records every call for percentiles.
 BenchResult bench_append(const char* name, size_t n, bool timed) {
   Log log;
@@ -780,7 +802,31 @@ BenchResult bench_append(const char* name, size_t n, bool timed) {
   CHECK_EQ(failures, 0u);
   CHECK_EQ(seq, static_cast<uint64_t>(n));
   res.mean_us = ms * 1000.0 / static_cast<double>(n);
-  if (timed) res.pct = percentiles(lat);
+  if (timed) {
+    // Where do the slow calls sit? Calls at an arena segment boundary would point at the library;
+    // calls scattered at random point at the scheduler of this shared machine.
+    const size_t per_segment = (4u << 20) / 160u;
+    size_t shown = 0;
+    for (size_t i = 0; i < n && shown < 8; ++i) {
+      if (lat[i] > 500000u) {
+        std::printf("[slow]  call #%zu took %.1f us (position in segment: %zu of %zu)\n", i,
+                    lat[i] / 1000.0, i % per_segment, per_segment);
+        ++shown;
+      }
+    }
+    // The two growth paths of the log: a new 4 MiB arena segment and a new 8192-entry index page.
+    auto slow_path = [&](size_t every, const char* what) {
+      std::vector<uint32_t> v;
+      for (size_t i = every; i < n; i += every) v.push_back(lat[i]);
+      if (v.empty()) return;
+      std::sort(v.begin(), v.end());
+      std::printf("[info]  first append of each %s (%zu samples): median %.2f us, max %.2f us\n", what,
+                  v.size(), v[v.size() / 2] / 1000.0, v.back() / 1000.0);
+    };
+    slow_path(per_segment, "4 MiB arena segment");
+    slow_path(8192, "8192-entry index page");
+    res.pct = percentiles(lat);
+  }
   report(name, n, ms, timed ? &res.pct : nullptr);
   D8LogInfo info{};
   d8_log_info(log.handle(), &info, &err);
@@ -976,6 +1022,7 @@ int main(int argc, char** argv) {
     std::printf("[info]  clock call overhead: %.1f ns per Clock::now() (included in the timed percentiles)\n",
                 timer_overhead_ns());
     bench_floor(std::max<size_t>(ops, 1000000) * 5);
+    bench_noise_floor(std::max<size_t>(ops, 1000000) * 5);
     g_append_mem = bench_append("append_mem(mean)", ops, false);
     g_append_mem_timed = bench_append("append_mem(per-call timed)", ops, true);
     bench_batch(ops, 1000);
