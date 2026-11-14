@@ -1,0 +1,421 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-org-03",
+  "corpora": [
+    "organization fixtures: nested layers, blocks with attributes, groups, linked blocks, worksessions"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 25,
+    "with_hint": 25,
+    "without_hint": 15
+  },
+  "deps": [],
+  "domains": [
+    "ORG"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ClearUndo",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Properties",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PropertiesPage",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UndoSelected",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BringForward",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BringToFront",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cancel",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ClearDrawOrder",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConvertDots",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemovePerFaceColors",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SendToBack",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Snapshots",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UpdateClippingDrawings",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "What",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Worksession",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CopyToClipboard",
+        "rows": 1,
+        "score": 0.812,
+        "status": "implemented"
+      },
+      {
+        "name": "CreateUniqueBlock",
+        "rows": 1,
+        "score": 0.799,
+        "status": "implemented"
+      },
+      {
+        "name": "ObjectProperties",
+        "rows": 1,
+        "score": 0.785,
+        "status": "implemented"
+      },
+      {
+        "name": "ClippingDrawings",
+        "rows": 1,
+        "score": 0.744,
+        "status": "implemented"
+      },
+      {
+        "name": "DocumentPropertiesPage",
+        "rows": 1,
+        "score": 0.706,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:292",
+        "rows": 2,
+        "score": 0.75,
+        "symbol": "dino8::kernel::HatchPatternLine"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:1115",
+        "rows": 2,
+        "score": 0.681,
+        "symbol": "dino8::kernel::Model::AddHatchPattern"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:81",
+        "rows": 1,
+        "score": 0.675,
+        "symbol": "dino8::kernel::MassProperties"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:557",
+        "rows": 1,
+        "score": 0.635,
+        "symbol": "dino8::kernel::NurbsCurve::RegionProperties"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:1120",
+        "rows": 1,
+        "score": 0.604,
+        "symbol": "dino8::kernel::Model::HatchPatternCount"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-org-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/ORG.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-ORG-0079": {
+      "commands": [
+        "SendToBack"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0080": {
+      "commands": [
+        "BringForward"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0081": {
+      "commands": [
+        "BringToFront"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0082": {
+      "commands": [
+        "RemovePerFaceColors"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0083": {
+      "commands": [
+        "Snapshots"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0084": {
+      "commands": [
+        "UndoSelected"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0085": {
+      "commands": [
+        "UpdateClippingDrawings",
+        "ClippingDrawings",
+        "EditClippingDrawings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0086": {
+      "commands": [
+        "Worksession"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0087": {
+      "commands": [
+        "Properties",
+        "ObjectProperties",
+        "PropertiesPage"
+      ],
+      "kernel": [
+        "dino8::kernel::MassProperties",
+        "dino8::kernel::NurbsCurve::RegionProperties"
+      ]
+    },
+    "D8-RHINO-ORG-0088": {
+      "commands": [
+        "PropertiesPage",
+        "DocumentPropertiesPage",
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0089": {
+      "commands": [
+        "What"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0090": {
+      "commands": [
+        "ClearDrawOrder"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0091": {
+      "commands": [
+        "ClearUndo"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0092": {
+      "commands": [
+        "Cancel"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0093": {
+      "commands": [
+        "ConvertDots",
+        "Convert"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0096": {
+      "commands": [
+        "Paste"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0097": {
+      "commands": [
+        "CopyToClipboard"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0102": {
+      "commands": [
+        "ShowSelected",
+        "ShowSelectedInDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0107": {
+      "commands": [
+        "ClearUndo"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0108": {
+      "commands": [
+        "UndoSelected"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0110": {
+      "commands": [
+        "SelHatch"
+      ],
+      "kernel": [
+        "dino8::kernel::HatchPatternLine",
+        "dino8::kernel::Model::AddHatchPattern",
+        "dino8::kernel::Model::HatchPatternCount"
+      ]
+    },
+    "D8-RHINO-ORG-0111": {
+      "commands": [
+        "NamedSelections"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0112": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::HatchPatternLine",
+        "dino8::kernel::Model::AddHatchPattern"
+      ]
+    },
+    "D8-RHINO-ORG-0117": {
+      "commands": [
+        "CreateUniqueBlock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0118": {
+      "commands": [
+        "SelectionFilter"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-ORG-0079",
+    "D8-RHINO-ORG-0080",
+    "D8-RHINO-ORG-0081",
+    "D8-RHINO-ORG-0082",
+    "D8-RHINO-ORG-0083",
+    "D8-RHINO-ORG-0084",
+    "D8-RHINO-ORG-0085",
+    "D8-RHINO-ORG-0086",
+    "D8-RHINO-ORG-0087",
+    "D8-RHINO-ORG-0088",
+    "D8-RHINO-ORG-0089",
+    "D8-RHINO-ORG-0090",
+    "D8-RHINO-ORG-0091",
+    "D8-RHINO-ORG-0092",
+    "D8-RHINO-ORG-0093",
+    "D8-RHINO-ORG-0094",
+    "D8-RHINO-ORG-0095",
+    "D8-RHINO-ORG-0096",
+    "D8-RHINO-ORG-0097",
+    "D8-RHINO-ORG-0098",
+    "D8-RHINO-ORG-0099",
+    "D8-RHINO-ORG-0100",
+    "D8-RHINO-ORG-0101",
+    "D8-RHINO-ORG-0102",
+    "D8-RHINO-ORG-0103",
+    "D8-RHINO-ORG-0104",
+    "D8-RHINO-ORG-0105",
+    "D8-RHINO-ORG-0106",
+    "D8-RHINO-ORG-0107",
+    "D8-RHINO-ORG-0108",
+    "D8-RHINO-ORG-0109",
+    "D8-RHINO-ORG-0110",
+    "D8-RHINO-ORG-0111",
+    "D8-RHINO-ORG-0112",
+    "D8-RHINO-ORG-0113",
+    "D8-RHINO-ORG-0114",
+    "D8-RHINO-ORG-0115",
+    "D8-RHINO-ORG-0116",
+    "D8-RHINO-ORG-0117",
+    "D8-RHINO-ORG-0118"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-ORG-0094",
+    "D8-RHINO-ORG-0095",
+    "D8-RHINO-ORG-0098",
+    "D8-RHINO-ORG-0099",
+    "D8-RHINO-ORG-0100",
+    "D8-RHINO-ORG-0101",
+    "D8-RHINO-ORG-0103",
+    "D8-RHINO-ORG-0104",
+    "D8-RHINO-ORG-0105",
+    "D8-RHINO-ORG-0106",
+    "D8-RHINO-ORG-0109",
+    "D8-RHINO-ORG-0113",
+    "D8-RHINO-ORG-0114",
+    "D8-RHINO-ORG-0115",
+    "D8-RHINO-ORG-0116"
+  ],
+  "status": "open",
+  "title": "direct-modeling: ORG (40 rows)",
+  "wave": 1
+}

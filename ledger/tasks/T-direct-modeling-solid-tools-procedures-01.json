@@ -1,0 +1,130 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-solid-tools-procedures-01",
+  "corpora": [
+    "golden/sketchup/solid"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 20,
+    "rows": 20,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 17
+  },
+  "deps": [],
+  "domains": [
+    "solid-tools-procedures"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Trim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Intersect",
+        "rows": 1,
+        "score": 0.637,
+        "status": "implemented"
+      },
+      {
+        "name": "IntersectSelf",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_general.h:545",
+        "rows": 1,
+        "score": 0.631,
+        "symbol": "dino8::kernel::SplitBrepBySolid"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-solid-tools-procedures-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "sketchup"
+  ],
+  "register_files": [
+    "sketchup/solid-tools-procedures.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-SKETCHUP-SOLID-0007": {
+      "commands": [
+        "Trim"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-SOLID-0008": {
+      "commands": [
+        "Intersect",
+        "IntersectSelf"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-SOLID-0010": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SplitBrepBySolid"
+      ]
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-SOLID-0001",
+    "D8-SKETCHUP-SOLID-0002",
+    "D8-SKETCHUP-SOLID-0003",
+    "D8-SKETCHUP-SOLID-0004",
+    "D8-SKETCHUP-SOLID-0005",
+    "D8-SKETCHUP-SOLID-0006",
+    "D8-SKETCHUP-SOLID-0007",
+    "D8-SKETCHUP-SOLID-0008",
+    "D8-SKETCHUP-SOLID-0009",
+    "D8-SKETCHUP-SOLID-0010",
+    "D8-SKETCHUP-SOLID-0011",
+    "D8-SKETCHUP-SOLID-0012",
+    "D8-SKETCHUP-SOLID-0013",
+    "D8-SKETCHUP-SOLID-0014",
+    "D8-SKETCHUP-SOLID-0015",
+    "D8-SKETCHUP-SOLID-0016",
+    "D8-SKETCHUP-SOLID-0017",
+    "D8-SKETCHUP-SOLID-0018",
+    "D8-SKETCHUP-SOLID-0019",
+    "D8-SKETCHUP-SOLID-0020"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-SOLID-0001",
+    "D8-SKETCHUP-SOLID-0002",
+    "D8-SKETCHUP-SOLID-0003",
+    "D8-SKETCHUP-SOLID-0004",
+    "D8-SKETCHUP-SOLID-0005",
+    "D8-SKETCHUP-SOLID-0006",
+    "D8-SKETCHUP-SOLID-0009",
+    "D8-SKETCHUP-SOLID-0011",
+    "D8-SKETCHUP-SOLID-0012",
+    "D8-SKETCHUP-SOLID-0013",
+    "D8-SKETCHUP-SOLID-0014",
+    "D8-SKETCHUP-SOLID-0015",
+    "D8-SKETCHUP-SOLID-0016",
+    "D8-SKETCHUP-SOLID-0017",
+    "D8-SKETCHUP-SOLID-0018",
+    "D8-SKETCHUP-SOLID-0019",
+    "D8-SKETCHUP-SOLID-0020"
+  ],
+  "status": "open",
+  "title": "direct-modeling: solid-tools-procedures (20 rows)",
+  "wave": 1
+}

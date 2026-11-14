@@ -1,0 +1,171 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-pose-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 25,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 6,
+    "with_hint": 6,
+    "without_hint": 19
+  },
+  "deps": [],
+  "domains": [
+    "pose"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Copy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Hide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Paste",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShadeSelected",
+        "rows": 1,
+        "score": 0.654,
+        "status": "implemented"
+      },
+      {
+        "name": "ConstraintsShow",
+        "rows": 2,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "ConstraintsPanel",
+        "rows": 1,
+        "score": 0.602,
+        "status": "implemented"
+      },
+      {
+        "name": "ConstraintSolve",
+        "rows": 1,
+        "score": 0.6,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-pose-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/pose.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-POSE-0006": {
+      "commands": [
+        "ConstraintSolve"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POSE-0008": {
+      "commands": [
+        "ConstraintsShow"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POSE-0009": {
+      "commands": [
+        "ConstraintsShow",
+        "ConstraintsPanel"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POSE-0010": {
+      "commands": [
+        "Copy"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POSE-0012": {
+      "commands": [
+        "Hide",
+        "ShadeSelected"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POSE-0016": {
+      "commands": [
+        "Paste"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-POSE-0001",
+    "D8-BLENDER-POSE-0002",
+    "D8-BLENDER-POSE-0003",
+    "D8-BLENDER-POSE-0004",
+    "D8-BLENDER-POSE-0005",
+    "D8-BLENDER-POSE-0006",
+    "D8-BLENDER-POSE-0007",
+    "D8-BLENDER-POSE-0008",
+    "D8-BLENDER-POSE-0009",
+    "D8-BLENDER-POSE-0010",
+    "D8-BLENDER-POSE-0011",
+    "D8-BLENDER-POSE-0012",
+    "D8-BLENDER-POSE-0013",
+    "D8-BLENDER-POSE-0014",
+    "D8-BLENDER-POSE-0015",
+    "D8-BLENDER-POSE-0016",
+    "D8-BLENDER-POSE-0017",
+    "D8-BLENDER-POSE-0018",
+    "D8-BLENDER-POSE-0019",
+    "D8-BLENDER-POSE-0020",
+    "D8-BLENDER-POSE-0021",
+    "D8-BLENDER-POSE-0022",
+    "D8-BLENDER-POSE-0023",
+    "D8-BLENDER-POSE-0024",
+    "D8-BLENDER-POSE-0025"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-POSE-0001",
+    "D8-BLENDER-POSE-0002",
+    "D8-BLENDER-POSE-0003",
+    "D8-BLENDER-POSE-0004",
+    "D8-BLENDER-POSE-0005",
+    "D8-BLENDER-POSE-0007",
+    "D8-BLENDER-POSE-0011",
+    "D8-BLENDER-POSE-0013",
+    "D8-BLENDER-POSE-0014",
+    "D8-BLENDER-POSE-0015",
+    "D8-BLENDER-POSE-0017",
+    "D8-BLENDER-POSE-0018",
+    "D8-BLENDER-POSE-0019",
+    "D8-BLENDER-POSE-0020",
+    "D8-BLENDER-POSE-0021",
+    "D8-BLENDER-POSE-0022",
+    "D8-BLENDER-POSE-0023",
+    "D8-BLENDER-POSE-0024",
+    "D8-BLENDER-POSE-0025"
+  ],
+  "status": "open",
+  "title": "render-anim: pose (25 rows)",
+  "wave": 2
+}

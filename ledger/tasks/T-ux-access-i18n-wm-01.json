@@ -1,0 +1,150 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-wm-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 28,
+    "rows": 28,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 24
+  },
+  "deps": [],
+  "domains": [
+    "wm"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Properties",
+        "rows": 3,
+        "score": 0.848,
+        "status": "implemented"
+      },
+      {
+        "name": "SystemInfo",
+        "rows": 1,
+        "score": 0.725,
+        "status": "implemented"
+      },
+      {
+        "name": "ObjectProperties",
+        "rows": 1,
+        "score": 0.686,
+        "status": "implemented"
+      },
+      {
+        "name": "PropertiesPage",
+        "rows": 2,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-wm-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/wm.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-WM-0032": {
+      "commands": [
+        "Properties",
+        "ObjectProperties",
+        "PropertiesPage"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0033": {
+      "commands": [
+        "Properties",
+        "PropertiesPage"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0035": {
+      "commands": [
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0055": {
+      "commands": [
+        "SystemInfo"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-WM-0004",
+    "D8-BLENDER-WM-0006",
+    "D8-BLENDER-WM-0007",
+    "D8-BLENDER-WM-0028",
+    "D8-BLENDER-WM-0029",
+    "D8-BLENDER-WM-0030",
+    "D8-BLENDER-WM-0031",
+    "D8-BLENDER-WM-0032",
+    "D8-BLENDER-WM-0033",
+    "D8-BLENDER-WM-0034",
+    "D8-BLENDER-WM-0035",
+    "D8-BLENDER-WM-0036",
+    "D8-BLENDER-WM-0050",
+    "D8-BLENDER-WM-0051",
+    "D8-BLENDER-WM-0055",
+    "D8-BLENDER-WM-0058",
+    "D8-BLENDER-WM-0059",
+    "D8-BLENDER-WM-0060",
+    "D8-BLENDER-WM-0061",
+    "D8-BLENDER-WM-0062",
+    "D8-BLENDER-WM-0063",
+    "D8-BLENDER-WM-0064",
+    "D8-BLENDER-WM-0065",
+    "D8-BLENDER-WM-0066",
+    "D8-BLENDER-WM-0067",
+    "D8-BLENDER-WM-0068",
+    "D8-BLENDER-WM-0069",
+    "D8-BLENDER-WM-0070"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-WM-0004",
+    "D8-BLENDER-WM-0006",
+    "D8-BLENDER-WM-0007",
+    "D8-BLENDER-WM-0028",
+    "D8-BLENDER-WM-0029",
+    "D8-BLENDER-WM-0030",
+    "D8-BLENDER-WM-0031",
+    "D8-BLENDER-WM-0034",
+    "D8-BLENDER-WM-0036",
+    "D8-BLENDER-WM-0050",
+    "D8-BLENDER-WM-0051",
+    "D8-BLENDER-WM-0058",
+    "D8-BLENDER-WM-0059",
+    "D8-BLENDER-WM-0060",
+    "D8-BLENDER-WM-0061",
+    "D8-BLENDER-WM-0062",
+    "D8-BLENDER-WM-0063",
+    "D8-BLENDER-WM-0064",
+    "D8-BLENDER-WM-0065",
+    "D8-BLENDER-WM-0066",
+    "D8-BLENDER-WM-0067",
+    "D8-BLENDER-WM-0068",
+    "D8-BLENDER-WM-0069",
+    "D8-BLENDER-WM-0070"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: wm (28 rows)",
+  "wave": 3
+}

@@ -1,0 +1,149 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-revit-api-01",
+  "corpora": [
+    "golden/revit/api-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 1,
+    "countable": 39,
+    "rows": 39,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 37
+  },
+  "deps": [],
+  "domains": [
+    "revit.api"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Export",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelectionFilter",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-revit-api-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.api.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-API-0016": {
+      "commands": [
+        "SelectionFilter"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-API-0032": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-API-0001",
+    "D8-REVIT-API-0002",
+    "D8-REVIT-API-0003",
+    "D8-REVIT-API-0004",
+    "D8-REVIT-API-0005",
+    "D8-REVIT-API-0006",
+    "D8-REVIT-API-0007",
+    "D8-REVIT-API-0008",
+    "D8-REVIT-API-0009",
+    "D8-REVIT-API-0010",
+    "D8-REVIT-API-0011",
+    "D8-REVIT-API-0012",
+    "D8-REVIT-API-0013",
+    "D8-REVIT-API-0014",
+    "D8-REVIT-API-0015",
+    "D8-REVIT-API-0016",
+    "D8-REVIT-API-0017",
+    "D8-REVIT-API-0018",
+    "D8-REVIT-API-0019",
+    "D8-REVIT-API-0020",
+    "D8-REVIT-API-0021",
+    "D8-REVIT-API-0022",
+    "D8-REVIT-API-0023",
+    "D8-REVIT-API-0024",
+    "D8-REVIT-API-0025",
+    "D8-REVIT-API-0026",
+    "D8-REVIT-API-0027",
+    "D8-REVIT-API-0028",
+    "D8-REVIT-API-0029",
+    "D8-REVIT-API-0030",
+    "D8-REVIT-API-0031",
+    "D8-REVIT-API-0032",
+    "D8-REVIT-API-0033",
+    "D8-REVIT-API-0034",
+    "D8-REVIT-API-0035",
+    "D8-REVIT-API-0036",
+    "D8-REVIT-API-0037",
+    "D8-REVIT-API-0038",
+    "D8-REVIT-API-0039"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-API-0001",
+    "D8-REVIT-API-0002",
+    "D8-REVIT-API-0003",
+    "D8-REVIT-API-0004",
+    "D8-REVIT-API-0005",
+    "D8-REVIT-API-0006",
+    "D8-REVIT-API-0007",
+    "D8-REVIT-API-0008",
+    "D8-REVIT-API-0009",
+    "D8-REVIT-API-0010",
+    "D8-REVIT-API-0011",
+    "D8-REVIT-API-0012",
+    "D8-REVIT-API-0013",
+    "D8-REVIT-API-0014",
+    "D8-REVIT-API-0015",
+    "D8-REVIT-API-0017",
+    "D8-REVIT-API-0018",
+    "D8-REVIT-API-0019",
+    "D8-REVIT-API-0020",
+    "D8-REVIT-API-0021",
+    "D8-REVIT-API-0022",
+    "D8-REVIT-API-0023",
+    "D8-REVIT-API-0024",
+    "D8-REVIT-API-0025",
+    "D8-REVIT-API-0026",
+    "D8-REVIT-API-0027",
+    "D8-REVIT-API-0028",
+    "D8-REVIT-API-0029",
+    "D8-REVIT-API-0030",
+    "D8-REVIT-API-0031",
+    "D8-REVIT-API-0033",
+    "D8-REVIT-API-0034",
+    "D8-REVIT-API-0035",
+    "D8-REVIT-API-0036",
+    "D8-REVIT-API-0037",
+    "D8-REVIT-API-0038",
+    "D8-REVIT-API-0039"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: revit.api (39 rows)",
+  "wave": 3
+}

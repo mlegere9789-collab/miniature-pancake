@@ -1,0 +1,240 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-misc-01",
+  "corpora": [
+    "corpus/gh/corer8/rhino-8-grasshopper-additions",
+    "corpus/gh/gh2/grasshopper-2-differences"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 3,
+    "countable": 22,
+    "rows": 22,
+    "with_existing_hint": 9,
+    "with_hint": 9,
+    "without_hint": 13
+  },
+  "deps": [],
+  "domains": [
+    "corer8",
+    "editors",
+    "geometry",
+    "gh2"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "QuadRemesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetRenderColor",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShrinkWrap",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelRenderColor",
+        "rows": 1,
+        "score": 0.75,
+        "status": "implemented"
+      },
+      {
+        "name": "FillMeshHoles",
+        "rows": 1,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDCrease",
+        "rows": 1,
+        "score": 0.729,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshRepair",
+        "rows": 1,
+        "score": 0.704,
+        "status": "implemented"
+      },
+      {
+        "name": "Thicken",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "ConvertTextToBlockAttribute",
+        "rows": 1,
+        "score": 0.606,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSubD",
+        "rows": 1,
+        "score": 0.602,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2171",
+        "rows": 1,
+        "score": 0.812,
+        "symbol": "dino8::kernel::Mesh::FillSmallHoles"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1582",
+        "rows": 1,
+        "score": 0.767,
+        "symbol": "dino8::kernel::SubD::ExtrudeFace"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2353",
+        "rows": 1,
+        "score": 0.745,
+        "symbol": "dino8::kernel::Mesh::Thicken"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1218",
+        "rows": 1,
+        "score": 0.715,
+        "symbol": "dino8::kernel::SubD::CreaseEdgeCount"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-misc-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender",
+    "grasshopper"
+  ],
+  "register_files": [
+    "blender/editors.jsonl",
+    "blender/geometry.jsonl",
+    "grasshopper/corer8.jsonl",
+    "grasshopper/gh2.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GEOMETRY-0002": {
+      "commands": [
+        "ConvertTextToBlockAttribute"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEOMETRY-0008": {
+      "commands": [
+        "SetRenderColor",
+        "SelRenderColor"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CORER8-0001": {
+      "commands": [
+        "QuadRemesh"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CORER8-0002": {
+      "commands": [
+        "ShrinkWrap"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CORER8-0004": {
+      "commands": [
+        "FillMeshHoles"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::FillSmallHoles"
+      ]
+    },
+    "D8-GH-CORER8-0005": {
+      "commands": [
+        "MeshRepair"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CORER8-0006": {
+      "commands": [
+        "Thicken"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Thicken"
+      ]
+    },
+    "D8-GH-CORER8-0007": {
+      "commands": [
+        "ExtrudeSubD"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::ExtrudeFace"
+      ]
+    },
+    "D8-GH-CORER8-0008": {
+      "commands": [
+        "SubDCrease"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::CreaseEdgeCount"
+      ]
+    }
+  },
+  "rows": [
+    "D8-GH-CORER8-0001",
+    "D8-GH-CORER8-0002",
+    "D8-GH-CORER8-0003",
+    "D8-GH-CORER8-0004",
+    "D8-GH-CORER8-0005",
+    "D8-GH-CORER8-0006",
+    "D8-GH-CORER8-0007",
+    "D8-GH-CORER8-0008",
+    "D8-GH-CORER8-0009",
+    "D8-BLENDER-EDITOR-0009",
+    "D8-BLENDER-GEOMETRY-0001",
+    "D8-BLENDER-GEOMETRY-0002",
+    "D8-BLENDER-GEOMETRY-0003",
+    "D8-BLENDER-GEOMETRY-0004",
+    "D8-BLENDER-GEOMETRY-0005",
+    "D8-BLENDER-GEOMETRY-0006",
+    "D8-BLENDER-GEOMETRY-0007",
+    "D8-BLENDER-GEOMETRY-0008",
+    "D8-BLENDER-GEOMETRY-0009",
+    "D8-GH-GH2-0001",
+    "D8-GH-GH2-0002",
+    "D8-GH-GH2-0003"
+  ],
+  "rows_without_hint": [
+    "D8-GH-CORER8-0003",
+    "D8-GH-CORER8-0009",
+    "D8-BLENDER-EDITOR-0009",
+    "D8-BLENDER-GEOMETRY-0001",
+    "D8-BLENDER-GEOMETRY-0003",
+    "D8-BLENDER-GEOMETRY-0004",
+    "D8-BLENDER-GEOMETRY-0005",
+    "D8-BLENDER-GEOMETRY-0006",
+    "D8-BLENDER-GEOMETRY-0007",
+    "D8-BLENDER-GEOMETRY-0009",
+    "D8-GH-GH2-0001",
+    "D8-GH-GH2-0002",
+    "D8-GH-GH2-0003"
+  ],
+  "status": "open",
+  "title": "flow: corer8, editors, geometry, gh2 (22 rows)",
+  "wave": 1
+}

@@ -1,0 +1,172 @@
+{
+  "alias_rows": [
+    "D8-BLENDER-MODIFIER-0020",
+    "D8-BLENDER-MODIFIER-0044",
+    "D8-BLENDER-MODIFIER-0062",
+    "D8-BLENDER-MODIFIER-0065"
+  ],
+  "branch": "task/T-mesh-subd-sculpt-modifiers-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 4,
+    "best_target": 0,
+    "countable": 17,
+    "rows": 21,
+    "with_existing_hint": 7,
+    "with_hint": 7,
+    "without_hint": 14
+  },
+  "deps": [],
+  "domains": [
+    "modifiers"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Array",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Curve",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShrinkWrap",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Smooth",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SplitEdge",
+        "rows": 1,
+        "score": 0.689,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:143",
+        "rows": 1,
+        "score": 0.809,
+        "symbol": "dino8::kernel::Mesh::Volume"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:158",
+        "rows": 1,
+        "score": 0.675,
+        "symbol": "dino8::kernel::BooleanOp"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-modifiers-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/modifiers.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-MODIFIER-0002": {
+      "commands": [
+        "Array"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MODIFIER-0004": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::BooleanOp"
+      ]
+    },
+    "D8-BLENDER-MODIFIER-0010": {
+      "commands": [
+        "Curve"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MODIFIER-0015": {
+      "commands": [
+        "SplitEdge"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MODIFIER-0034": {
+      "commands": [
+        "ShrinkWrap"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MODIFIER-0036": {
+      "commands": [
+        "Smooth"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MODIFIER-0052": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::Volume"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-MODIFIER-0002",
+    "D8-BLENDER-MODIFIER-0003",
+    "D8-BLENDER-MODIFIER-0004",
+    "D8-BLENDER-MODIFIER-0005",
+    "D8-BLENDER-MODIFIER-0020",
+    "D8-BLENDER-MODIFIER-0006",
+    "D8-BLENDER-MODIFIER-0010",
+    "D8-BLENDER-MODIFIER-0011",
+    "D8-BLENDER-MODIFIER-0012",
+    "D8-BLENDER-MODIFIER-0013",
+    "D8-BLENDER-MODIFIER-0015",
+    "D8-BLENDER-MODIFIER-0024",
+    "D8-BLENDER-MODIFIER-0044",
+    "D8-BLENDER-MODIFIER-0034",
+    "D8-BLENDER-MODIFIER-0062",
+    "D8-BLENDER-MODIFIER-0036",
+    "D8-BLENDER-MODIFIER-0065",
+    "D8-BLENDER-MODIFIER-0046",
+    "D8-BLENDER-MODIFIER-0047",
+    "D8-BLENDER-MODIFIER-0048",
+    "D8-BLENDER-MODIFIER-0052"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-MODIFIER-0003",
+    "D8-BLENDER-MODIFIER-0005",
+    "D8-BLENDER-MODIFIER-0020",
+    "D8-BLENDER-MODIFIER-0006",
+    "D8-BLENDER-MODIFIER-0011",
+    "D8-BLENDER-MODIFIER-0012",
+    "D8-BLENDER-MODIFIER-0013",
+    "D8-BLENDER-MODIFIER-0024",
+    "D8-BLENDER-MODIFIER-0044",
+    "D8-BLENDER-MODIFIER-0062",
+    "D8-BLENDER-MODIFIER-0065",
+    "D8-BLENDER-MODIFIER-0046",
+    "D8-BLENDER-MODIFIER-0047",
+    "D8-BLENDER-MODIFIER-0048"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: modifiers (17 rows)",
+  "wave": 1
+}

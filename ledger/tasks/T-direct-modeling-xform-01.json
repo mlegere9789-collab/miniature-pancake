@@ -1,0 +1,396 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-xform-01",
+  "corpora": [
+    "transform fixtures: mixed curves, surfaces, meshes, SubD, blocks, text and annotations"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 29,
+    "rows": 29,
+    "with_existing_hint": 29,
+    "with_hint": 29,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "XFORM"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ArrayCrvOnSrf",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayHolePolar",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayCrv",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayHole",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayPolar",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArraySrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Align",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Array",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayLinear",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Bend",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cage",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CageEdit",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Copy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CopyHole",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Distribute",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DragCopy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DragMode",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DragStrength",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractOriginalCaptives",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Flow",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/sheet_metal.h:105",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Bend"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/features.h:198",
+        "rows": 1,
+        "score": 0.626,
+        "symbol": "dino8::kernel::CopyHoleFeature"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-xform-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/XFORM.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-XFORM-0001": {
+      "commands": [
+        "Align"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0002": {
+      "commands": [
+        "Array"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0003": {
+      "commands": [
+        "ArrayCrv",
+        "ArrayCrvOnSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0004": {
+      "commands": [
+        "ArrayCrvOnSrf",
+        "ArrayCrv",
+        "ArraySrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0005": {
+      "commands": [
+        "ArrayLinear"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0006": {
+      "commands": [
+        "ArrayPolar",
+        "ArrayHolePolar"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0007": {
+      "commands": [
+        "ArraySrf",
+        "ArrayCrvOnSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0008": {
+      "commands": [
+        "ArrayHole",
+        "ArrayHolePolar"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0009": {
+      "commands": [
+        "ArrayHolePolar",
+        "ArrayHole",
+        "ArrayPolar"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0010": {
+      "commands": [
+        "Bend"
+      ],
+      "kernel": [
+        "dino8::kernel::Bend"
+      ]
+    },
+    "D8-RHINO-XFORM-0011": {
+      "commands": [
+        "Cage"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0012": {
+      "commands": [
+        "CageEdit"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0013": {
+      "commands": [
+        "Copy"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0014": {
+      "commands": [
+        "Distribute"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0015": {
+      "commands": [
+        "DragCopy"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0016": {
+      "commands": [
+        "DragMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0017": {
+      "commands": [
+        "DragStrength"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0018": {
+      "commands": [
+        "ExtractOriginalCaptives"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0019": {
+      "commands": [
+        "CopyHole"
+      ],
+      "kernel": [
+        "dino8::kernel::CopyHoleFeature"
+      ]
+    },
+    "D8-RHINO-XFORM-0020": {
+      "commands": [
+        "Flow"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0021": {
+      "commands": [
+        "Maelstrom"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0022": {
+      "commands": [
+        "Mirror"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0023": {
+      "commands": [
+        "Move"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0024": {
+      "commands": [
+        "MoveTargetToObjects"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0025": {
+      "commands": [
+        "Orient"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0026": {
+      "commands": [
+        "Orient3Pt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0027": {
+      "commands": [
+        "OrientOnCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0028": {
+      "commands": [
+        "OrientOnSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-XFORM-0029": {
+      "commands": [
+        "OrientCameraToSrf"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-XFORM-0001",
+    "D8-RHINO-XFORM-0002",
+    "D8-RHINO-XFORM-0003",
+    "D8-RHINO-XFORM-0004",
+    "D8-RHINO-XFORM-0005",
+    "D8-RHINO-XFORM-0006",
+    "D8-RHINO-XFORM-0007",
+    "D8-RHINO-XFORM-0008",
+    "D8-RHINO-XFORM-0009",
+    "D8-RHINO-XFORM-0010",
+    "D8-RHINO-XFORM-0011",
+    "D8-RHINO-XFORM-0012",
+    "D8-RHINO-XFORM-0013",
+    "D8-RHINO-XFORM-0014",
+    "D8-RHINO-XFORM-0015",
+    "D8-RHINO-XFORM-0016",
+    "D8-RHINO-XFORM-0017",
+    "D8-RHINO-XFORM-0018",
+    "D8-RHINO-XFORM-0019",
+    "D8-RHINO-XFORM-0020",
+    "D8-RHINO-XFORM-0021",
+    "D8-RHINO-XFORM-0022",
+    "D8-RHINO-XFORM-0023",
+    "D8-RHINO-XFORM-0024",
+    "D8-RHINO-XFORM-0025",
+    "D8-RHINO-XFORM-0026",
+    "D8-RHINO-XFORM-0027",
+    "D8-RHINO-XFORM-0028",
+    "D8-RHINO-XFORM-0029"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "direct-modeling: XFORM (29 rows)",
+  "wave": 1
+}

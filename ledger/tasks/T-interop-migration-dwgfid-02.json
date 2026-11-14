@@ -1,0 +1,189 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-dwgfid-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 24,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 5,
+    "with_hint": 5,
+    "without_hint": 35
+  },
+  "deps": [],
+  "domains": [
+    "dwgfid"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Convert",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigitalSign",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Export",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Import",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "New",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConvertDots",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-dwgfid-02",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/dwgfid.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-DWGFID-0049": {
+      "commands": [
+        "Convert",
+        "ConvertDots"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0063": {
+      "commands": [
+        "DigitalSign"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0068": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0071": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0073": {
+      "commands": [
+        "New"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-DWGFID-0041",
+    "D8-AUTOCAD-DWGFID-0042",
+    "D8-AUTOCAD-DWGFID-0043",
+    "D8-AUTOCAD-DWGFID-0044",
+    "D8-AUTOCAD-DWGFID-0045",
+    "D8-AUTOCAD-DWGFID-0046",
+    "D8-AUTOCAD-DWGFID-0047",
+    "D8-AUTOCAD-DWGFID-0048",
+    "D8-AUTOCAD-DWGFID-0049",
+    "D8-AUTOCAD-DWGFID-0050",
+    "D8-AUTOCAD-DWGFID-0051",
+    "D8-AUTOCAD-DWGFID-0052",
+    "D8-AUTOCAD-DWGFID-0053",
+    "D8-AUTOCAD-DWGFID-0054",
+    "D8-AUTOCAD-DWGFID-0055",
+    "D8-AUTOCAD-DWGFID-0056",
+    "D8-AUTOCAD-DWGFID-0057",
+    "D8-AUTOCAD-DWGFID-0058",
+    "D8-AUTOCAD-DWGFID-0059",
+    "D8-AUTOCAD-DWGFID-0060",
+    "D8-AUTOCAD-DWGFID-0061",
+    "D8-AUTOCAD-DWGFID-0062",
+    "D8-AUTOCAD-DWGFID-0063",
+    "D8-AUTOCAD-DWGFID-0064",
+    "D8-AUTOCAD-DWGFID-0065",
+    "D8-AUTOCAD-DWGFID-0066",
+    "D8-AUTOCAD-DWGFID-0067",
+    "D8-AUTOCAD-DWGFID-0068",
+    "D8-AUTOCAD-DWGFID-0069",
+    "D8-AUTOCAD-DWGFID-0070",
+    "D8-AUTOCAD-DWGFID-0071",
+    "D8-AUTOCAD-DWGFID-0072",
+    "D8-AUTOCAD-DWGFID-0073",
+    "D8-AUTOCAD-DWGFID-0074",
+    "D8-AUTOCAD-DWGFID-0075",
+    "D8-AUTOCAD-DWGFID-0076",
+    "D8-AUTOCAD-DWGFID-0077",
+    "D8-AUTOCAD-DWGFID-0078",
+    "D8-AUTOCAD-DWGFID-0079",
+    "D8-AUTOCAD-DWGFID-0080"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-DWGFID-0041",
+    "D8-AUTOCAD-DWGFID-0042",
+    "D8-AUTOCAD-DWGFID-0043",
+    "D8-AUTOCAD-DWGFID-0044",
+    "D8-AUTOCAD-DWGFID-0045",
+    "D8-AUTOCAD-DWGFID-0046",
+    "D8-AUTOCAD-DWGFID-0047",
+    "D8-AUTOCAD-DWGFID-0048",
+    "D8-AUTOCAD-DWGFID-0050",
+    "D8-AUTOCAD-DWGFID-0051",
+    "D8-AUTOCAD-DWGFID-0052",
+    "D8-AUTOCAD-DWGFID-0053",
+    "D8-AUTOCAD-DWGFID-0054",
+    "D8-AUTOCAD-DWGFID-0055",
+    "D8-AUTOCAD-DWGFID-0056",
+    "D8-AUTOCAD-DWGFID-0057",
+    "D8-AUTOCAD-DWGFID-0058",
+    "D8-AUTOCAD-DWGFID-0059",
+    "D8-AUTOCAD-DWGFID-0060",
+    "D8-AUTOCAD-DWGFID-0061",
+    "D8-AUTOCAD-DWGFID-0062",
+    "D8-AUTOCAD-DWGFID-0064",
+    "D8-AUTOCAD-DWGFID-0065",
+    "D8-AUTOCAD-DWGFID-0066",
+    "D8-AUTOCAD-DWGFID-0067",
+    "D8-AUTOCAD-DWGFID-0069",
+    "D8-AUTOCAD-DWGFID-0070",
+    "D8-AUTOCAD-DWGFID-0072",
+    "D8-AUTOCAD-DWGFID-0074",
+    "D8-AUTOCAD-DWGFID-0075",
+    "D8-AUTOCAD-DWGFID-0076",
+    "D8-AUTOCAD-DWGFID-0077",
+    "D8-AUTOCAD-DWGFID-0078",
+    "D8-AUTOCAD-DWGFID-0079",
+    "D8-AUTOCAD-DWGFID-0080"
+  ],
+  "status": "open",
+  "title": "interop-migration: dwgfid (40 rows)",
+  "wave": 1
+}

@@ -1,0 +1,118 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-maths-03",
+  "corpora": [
+    "corpus/gh/maths/maths-util"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 29,
+    "rows": 29,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 28
+  },
+  "deps": [],
+  "domains": [
+    "maths"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "UndoMultiple",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-maths-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/maths.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-MATHS-0091": {
+      "commands": [
+        "UndoMultiple"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-MATHS-0081",
+    "D8-GH-MATHS-0082",
+    "D8-GH-MATHS-0083",
+    "D8-GH-MATHS-0084",
+    "D8-GH-MATHS-0085",
+    "D8-GH-MATHS-0086",
+    "D8-GH-MATHS-0087",
+    "D8-GH-MATHS-0088",
+    "D8-GH-MATHS-0089",
+    "D8-GH-MATHS-0090",
+    "D8-GH-MATHS-0091",
+    "D8-GH-MATHS-0092",
+    "D8-GH-MATHS-0093",
+    "D8-GH-MATHS-0094",
+    "D8-GH-MATHS-0095",
+    "D8-GH-MATHS-0096",
+    "D8-GH-MATHS-0097",
+    "D8-GH-MATHS-0098",
+    "D8-GH-MATHS-0099",
+    "D8-GH-MATHS-0100",
+    "D8-GH-MATHS-0101",
+    "D8-GH-MATHS-0102",
+    "D8-GH-MATHS-0103",
+    "D8-GH-MATHS-0104",
+    "D8-GH-MATHS-0105",
+    "D8-GH-MATHS-0106",
+    "D8-GH-MATHS-0107",
+    "D8-GH-MATHS-0108",
+    "D8-GH-MATHS-0109"
+  ],
+  "rows_without_hint": [
+    "D8-GH-MATHS-0081",
+    "D8-GH-MATHS-0082",
+    "D8-GH-MATHS-0083",
+    "D8-GH-MATHS-0084",
+    "D8-GH-MATHS-0085",
+    "D8-GH-MATHS-0086",
+    "D8-GH-MATHS-0087",
+    "D8-GH-MATHS-0088",
+    "D8-GH-MATHS-0089",
+    "D8-GH-MATHS-0090",
+    "D8-GH-MATHS-0092",
+    "D8-GH-MATHS-0093",
+    "D8-GH-MATHS-0094",
+    "D8-GH-MATHS-0095",
+    "D8-GH-MATHS-0096",
+    "D8-GH-MATHS-0097",
+    "D8-GH-MATHS-0098",
+    "D8-GH-MATHS-0099",
+    "D8-GH-MATHS-0100",
+    "D8-GH-MATHS-0101",
+    "D8-GH-MATHS-0102",
+    "D8-GH-MATHS-0103",
+    "D8-GH-MATHS-0104",
+    "D8-GH-MATHS-0105",
+    "D8-GH-MATHS-0106",
+    "D8-GH-MATHS-0107",
+    "D8-GH-MATHS-0108",
+    "D8-GH-MATHS-0109"
+  ],
+  "status": "open",
+  "title": "flow: maths (29 rows)",
+  "wave": 1
+}

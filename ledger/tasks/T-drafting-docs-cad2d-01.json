@@ -1,0 +1,118 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-drafting-docs-cad2d-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 21,
+    "rows": 21,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 19
+  },
+  "deps": [],
+  "domains": [
+    "cad2d"
+  ],
+  "factory": "drafting-docs",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Detail",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Print",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelDetail",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-drafting-docs-cad2d-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "archicad"
+  ],
+  "register_files": [
+    "archicad/cad2d.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-ARCHICAD-CAD2D-0011": {
+      "commands": [
+        "Print"
+      ],
+      "kernel": []
+    },
+    "D8-ARCHICAD-CAD2D-0012": {
+      "commands": [
+        "Detail",
+        "SelDetail"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-ARCHICAD-CAD2D-0001",
+    "D8-ARCHICAD-CAD2D-0002",
+    "D8-ARCHICAD-CAD2D-0003",
+    "D8-ARCHICAD-CAD2D-0004",
+    "D8-ARCHICAD-CAD2D-0005",
+    "D8-ARCHICAD-CAD2D-0006",
+    "D8-ARCHICAD-CAD2D-0007",
+    "D8-ARCHICAD-CAD2D-0008",
+    "D8-ARCHICAD-CAD2D-0009",
+    "D8-ARCHICAD-CAD2D-0010",
+    "D8-ARCHICAD-CAD2D-0011",
+    "D8-ARCHICAD-CAD2D-0012",
+    "D8-ARCHICAD-CAD2D-0013",
+    "D8-ARCHICAD-CAD2D-0014",
+    "D8-ARCHICAD-CAD2D-0015",
+    "D8-ARCHICAD-CAD2D-0016",
+    "D8-ARCHICAD-CAD2D-0017",
+    "D8-ARCHICAD-CAD2D-0018",
+    "D8-ARCHICAD-CAD2D-0019",
+    "D8-ARCHICAD-CAD2D-0020",
+    "D8-ARCHICAD-CAD2D-0021"
+  ],
+  "rows_without_hint": [
+    "D8-ARCHICAD-CAD2D-0001",
+    "D8-ARCHICAD-CAD2D-0002",
+    "D8-ARCHICAD-CAD2D-0003",
+    "D8-ARCHICAD-CAD2D-0004",
+    "D8-ARCHICAD-CAD2D-0005",
+    "D8-ARCHICAD-CAD2D-0006",
+    "D8-ARCHICAD-CAD2D-0007",
+    "D8-ARCHICAD-CAD2D-0008",
+    "D8-ARCHICAD-CAD2D-0009",
+    "D8-ARCHICAD-CAD2D-0010",
+    "D8-ARCHICAD-CAD2D-0013",
+    "D8-ARCHICAD-CAD2D-0014",
+    "D8-ARCHICAD-CAD2D-0015",
+    "D8-ARCHICAD-CAD2D-0016",
+    "D8-ARCHICAD-CAD2D-0017",
+    "D8-ARCHICAD-CAD2D-0018",
+    "D8-ARCHICAD-CAD2D-0019",
+    "D8-ARCHICAD-CAD2D-0020",
+    "D8-ARCHICAD-CAD2D-0021"
+  ],
+  "status": "open",
+  "title": "drafting-docs: cad2d (21 rows)",
+  "wave": 2
+}

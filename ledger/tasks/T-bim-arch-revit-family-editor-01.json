@@ -1,0 +1,106 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-bim-arch-revit-family-editor-01",
+  "corpora": [
+    "golden/revit/family-corpus"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 23,
+    "rows": 23,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 22
+  },
+  "deps": [],
+  "domains": [
+    "revit.family-editor"
+  ],
+  "factory": "bim-arch",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ClippingPlaneProperties",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-bim-arch-revit-family-editor-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.family-editor.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-FAMED-0013": {
+      "commands": [
+        "ClippingPlaneProperties"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-FAMED-0001",
+    "D8-REVIT-FAMED-0002",
+    "D8-REVIT-FAMED-0003",
+    "D8-REVIT-FAMED-0004",
+    "D8-REVIT-FAMED-0005",
+    "D8-REVIT-FAMED-0006",
+    "D8-REVIT-FAMED-0007",
+    "D8-REVIT-FAMED-0008",
+    "D8-REVIT-FAMED-0009",
+    "D8-REVIT-FAMED-0010",
+    "D8-REVIT-FAMED-0011",
+    "D8-REVIT-FAMED-0012",
+    "D8-REVIT-FAMED-0013",
+    "D8-REVIT-FAMED-0014",
+    "D8-REVIT-FAMED-0015",
+    "D8-REVIT-FAMED-0016",
+    "D8-REVIT-FAMED-0017",
+    "D8-REVIT-FAMED-0018",
+    "D8-REVIT-FAMED-0019",
+    "D8-REVIT-FAMED-0020",
+    "D8-REVIT-FAMED-0021",
+    "D8-REVIT-FAMED-0022",
+    "D8-REVIT-FAMED-0023"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-FAMED-0001",
+    "D8-REVIT-FAMED-0002",
+    "D8-REVIT-FAMED-0003",
+    "D8-REVIT-FAMED-0004",
+    "D8-REVIT-FAMED-0005",
+    "D8-REVIT-FAMED-0006",
+    "D8-REVIT-FAMED-0007",
+    "D8-REVIT-FAMED-0008",
+    "D8-REVIT-FAMED-0009",
+    "D8-REVIT-FAMED-0010",
+    "D8-REVIT-FAMED-0011",
+    "D8-REVIT-FAMED-0012",
+    "D8-REVIT-FAMED-0014",
+    "D8-REVIT-FAMED-0015",
+    "D8-REVIT-FAMED-0016",
+    "D8-REVIT-FAMED-0017",
+    "D8-REVIT-FAMED-0018",
+    "D8-REVIT-FAMED-0019",
+    "D8-REVIT-FAMED-0020",
+    "D8-REVIT-FAMED-0021",
+    "D8-REVIT-FAMED-0022",
+    "D8-REVIT-FAMED-0023"
+  ],
+  "status": "open",
+  "title": "bim-arch: revit.family-editor (23 rows)",
+  "wave": 2
+}

@@ -1,0 +1,121 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-analysis-site-analysis-01",
+  "corpora": [
+    "EnergyPlus EPW format specification; parse public sample files, check 8760 rows and field ranges",
+    "NOAA general solar calculations sample days (published equations); sunrise/sunset times for 5 latitudes incl. polar day",
+    "NREL PVWatts public calculation method on TMY3 sites (published sample outputs)",
+    "NREL Solar Position Algorithm published sample (Reda and Andreas, NREL/TP-560-34302): 2003-10-17 12:30:30 local, 39.742476 N, 105.1786 W; zenith about 50.1116 deg, azimuth about 194.340 deg",
+    "analysis on subset equals full-run values restricted to subset (invariant)",
+    "box buildings with known floors; GFA, footprint, FAR, coverage by hand",
+    "clear-sky normal irradiance (Ineichen-Perez / Meinel) on tilted planes without obstructions; hand-checked daily sums",
+    "edit a building; only affected analyses flagged stale; dependency graph invariant",
+    "every result carries provenance JSON with method id, inputs hash, weather file, solver version (schema check)",
+    "extruded polygon shadow on plane: area closed form from projective mapping",
+    "floor plate divided into units of stated sizes; counts and mix by hand",
+    "hand computation with stated unit rates"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 2,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 24
+  },
+  "deps": [],
+  "domains": [
+    "analysis"
+  ],
+  "factory": "analysis-site",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "List",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-analysis-site-analysis-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "forma"
+  ],
+  "register_files": [
+    "forma/analysis.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-FORMA-ANALYSIS-0040": {
+      "commands": [
+        "List"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-FORMA-ANALYSIS-0024",
+    "D8-FORMA-ANALYSIS-0003",
+    "D8-FORMA-ANALYSIS-0023",
+    "D8-FORMA-ANALYSIS-0001",
+    "D8-FORMA-ANALYSIS-0038",
+    "D8-FORMA-ANALYSIS-0028",
+    "D8-FORMA-ANALYSIS-0022",
+    "D8-FORMA-ANALYSIS-0034",
+    "D8-FORMA-ANALYSIS-0036",
+    "D8-FORMA-ANALYSIS-0004",
+    "D8-FORMA-ANALYSIS-0029",
+    "D8-FORMA-ANALYSIS-0032",
+    "D8-FORMA-ANALYSIS-0031",
+    "D8-FORMA-ANALYSIS-0030",
+    "D8-FORMA-ANALYSIS-0027",
+    "D8-FORMA-ANALYSIS-0041",
+    "D8-FORMA-ANALYSIS-0008",
+    "D8-FORMA-ANALYSIS-0040",
+    "D8-FORMA-ANALYSIS-0037",
+    "D8-FORMA-ANALYSIS-0007",
+    "D8-FORMA-ANALYSIS-0039",
+    "D8-FORMA-ANALYSIS-0005",
+    "D8-FORMA-ANALYSIS-0002",
+    "D8-FORMA-ANALYSIS-0006",
+    "D8-FORMA-ANALYSIS-0033"
+  ],
+  "rows_without_hint": [
+    "D8-FORMA-ANALYSIS-0024",
+    "D8-FORMA-ANALYSIS-0003",
+    "D8-FORMA-ANALYSIS-0023",
+    "D8-FORMA-ANALYSIS-0001",
+    "D8-FORMA-ANALYSIS-0038",
+    "D8-FORMA-ANALYSIS-0028",
+    "D8-FORMA-ANALYSIS-0022",
+    "D8-FORMA-ANALYSIS-0034",
+    "D8-FORMA-ANALYSIS-0036",
+    "D8-FORMA-ANALYSIS-0004",
+    "D8-FORMA-ANALYSIS-0029",
+    "D8-FORMA-ANALYSIS-0032",
+    "D8-FORMA-ANALYSIS-0031",
+    "D8-FORMA-ANALYSIS-0030",
+    "D8-FORMA-ANALYSIS-0027",
+    "D8-FORMA-ANALYSIS-0041",
+    "D8-FORMA-ANALYSIS-0008",
+    "D8-FORMA-ANALYSIS-0037",
+    "D8-FORMA-ANALYSIS-0007",
+    "D8-FORMA-ANALYSIS-0039",
+    "D8-FORMA-ANALYSIS-0005",
+    "D8-FORMA-ANALYSIS-0002",
+    "D8-FORMA-ANALYSIS-0006",
+    "D8-FORMA-ANALYSIS-0033"
+  ],
+  "status": "open",
+  "title": "analysis-site: analysis (25 rows)",
+  "wave": 2
+}

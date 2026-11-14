@@ -1,0 +1,183 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-sets-03",
+  "corpora": [
+    "corpus/gh/sets/sets-text-additions",
+    "corpus/gh/sets/sets-tree",
+    "corpus/gh/sets/sets-tree-additions"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 25,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 6,
+    "with_hint": 6,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "sets"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Merge",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MergeEdge",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "Distance",
+        "rows": 1,
+        "score": 0.64,
+        "status": "implemented"
+      },
+      {
+        "name": "Explode",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:328",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Simplify"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-sets-03",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/sets.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-SETS-0053": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Simplify"
+      ]
+    },
+    "D8-GH-SETS-0056": {
+      "commands": [
+        "Merge",
+        "MergeEdge"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SETS-0085": {
+      "commands": [
+        "Distance"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SETS-0087": {
+      "commands": [
+        "Explode"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SETS-0090": {
+      "commands": [
+        "Merge"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SETS-0091": {
+      "commands": [
+        "Merge"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-SETS-0077",
+    "D8-GH-SETS-0078",
+    "D8-GH-SETS-0079",
+    "D8-GH-SETS-0080",
+    "D8-GH-SETS-0081",
+    "D8-GH-SETS-0082",
+    "D8-GH-SETS-0083",
+    "D8-GH-SETS-0084",
+    "D8-GH-SETS-0085",
+    "D8-GH-SETS-0086",
+    "D8-GH-SETS-0051",
+    "D8-GH-SETS-0052",
+    "D8-GH-SETS-0053",
+    "D8-GH-SETS-0054",
+    "D8-GH-SETS-0055",
+    "D8-GH-SETS-0056",
+    "D8-GH-SETS-0057",
+    "D8-GH-SETS-0058",
+    "D8-GH-SETS-0059",
+    "D8-GH-SETS-0060",
+    "D8-GH-SETS-0061",
+    "D8-GH-SETS-0062",
+    "D8-GH-SETS-0063",
+    "D8-GH-SETS-0064",
+    "D8-GH-SETS-0065",
+    "D8-GH-SETS-0066",
+    "D8-GH-SETS-0067",
+    "D8-GH-SETS-0068",
+    "D8-GH-SETS-0087",
+    "D8-GH-SETS-0088",
+    "D8-GH-SETS-0089",
+    "D8-GH-SETS-0090",
+    "D8-GH-SETS-0091",
+    "D8-GH-SETS-0092",
+    "D8-GH-SETS-0093"
+  ],
+  "rows_without_hint": [
+    "D8-GH-SETS-0077",
+    "D8-GH-SETS-0078",
+    "D8-GH-SETS-0079",
+    "D8-GH-SETS-0080",
+    "D8-GH-SETS-0081",
+    "D8-GH-SETS-0082",
+    "D8-GH-SETS-0083",
+    "D8-GH-SETS-0084",
+    "D8-GH-SETS-0086",
+    "D8-GH-SETS-0051",
+    "D8-GH-SETS-0052",
+    "D8-GH-SETS-0054",
+    "D8-GH-SETS-0055",
+    "D8-GH-SETS-0057",
+    "D8-GH-SETS-0058",
+    "D8-GH-SETS-0059",
+    "D8-GH-SETS-0060",
+    "D8-GH-SETS-0061",
+    "D8-GH-SETS-0062",
+    "D8-GH-SETS-0063",
+    "D8-GH-SETS-0064",
+    "D8-GH-SETS-0065",
+    "D8-GH-SETS-0066",
+    "D8-GH-SETS-0067",
+    "D8-GH-SETS-0068",
+    "D8-GH-SETS-0088",
+    "D8-GH-SETS-0089",
+    "D8-GH-SETS-0092",
+    "D8-GH-SETS-0093"
+  ],
+  "status": "open",
+  "title": "flow: sets (35 rows)",
+  "wave": 1
+}

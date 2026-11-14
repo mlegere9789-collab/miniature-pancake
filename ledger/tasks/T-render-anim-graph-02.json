@@ -1,0 +1,275 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-graph-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 22,
+    "countable": 34,
+    "rows": 34,
+    "with_existing_hint": 13,
+    "with_hint": 13,
+    "without_hint": 21
+  },
+  "deps": [],
+  "domains": [
+    "graph"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Hide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Mirror",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Paste",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Shear",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Smooth",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Snap",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Select",
+        "rows": 3,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewFirstFrame",
+        "rows": 1,
+        "score": 0.687,
+        "status": "implemented"
+      },
+      {
+        "name": "SetSnap",
+        "rows": 1,
+        "score": 0.682,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewFrameNumber",
+        "rows": 1,
+        "score": 0.667,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewLastFrame",
+        "rows": 1,
+        "score": 0.645,
+        "status": "implemented"
+      },
+      {
+        "name": "SelCircle",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "ShowSelected",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:1421",
+        "rows": 1,
+        "score": 0.69,
+        "symbol": "dino8::kernel::PushPullFace"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:1461",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::PushPullFaces"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-graph-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/graph.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GRAPH-0034": {
+      "commands": [
+        "Hide"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0041": {
+      "commands": [
+        "Mirror"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0042": {
+      "commands": [
+        "Paste"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0044": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::PushPullFace",
+        "dino8::kernel::PushPullFaces"
+      ]
+    },
+    "D8-BLENDER-GRAPH-0049": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0050": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0051": {
+      "commands": [
+        "SelCircle"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0052": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0059": {
+      "commands": [
+        "Shear"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0060": {
+      "commands": [
+        "Smooth"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0061": {
+      "commands": [
+        "Snap",
+        "SetSnap"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0066": {
+      "commands": [
+        "ViewFirstFrame",
+        "ViewFrameNumber",
+        "ViewLastFrame"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GRAPH-0067": {
+      "commands": [
+        "ShowSelected"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-GRAPH-0034",
+    "D8-BLENDER-GRAPH-0035",
+    "D8-BLENDER-GRAPH-0036",
+    "D8-BLENDER-GRAPH-0037",
+    "D8-BLENDER-GRAPH-0038",
+    "D8-BLENDER-GRAPH-0039",
+    "D8-BLENDER-GRAPH-0040",
+    "D8-BLENDER-GRAPH-0041",
+    "D8-BLENDER-GRAPH-0042",
+    "D8-BLENDER-GRAPH-0043",
+    "D8-BLENDER-GRAPH-0044",
+    "D8-BLENDER-GRAPH-0045",
+    "D8-BLENDER-GRAPH-0046",
+    "D8-BLENDER-GRAPH-0047",
+    "D8-BLENDER-GRAPH-0048",
+    "D8-BLENDER-GRAPH-0049",
+    "D8-BLENDER-GRAPH-0050",
+    "D8-BLENDER-GRAPH-0051",
+    "D8-BLENDER-GRAPH-0052",
+    "D8-BLENDER-GRAPH-0053",
+    "D8-BLENDER-GRAPH-0054",
+    "D8-BLENDER-GRAPH-0055",
+    "D8-BLENDER-GRAPH-0056",
+    "D8-BLENDER-GRAPH-0057",
+    "D8-BLENDER-GRAPH-0058",
+    "D8-BLENDER-GRAPH-0059",
+    "D8-BLENDER-GRAPH-0060",
+    "D8-BLENDER-GRAPH-0061",
+    "D8-BLENDER-GRAPH-0062",
+    "D8-BLENDER-GRAPH-0063",
+    "D8-BLENDER-GRAPH-0064",
+    "D8-BLENDER-GRAPH-0065",
+    "D8-BLENDER-GRAPH-0066",
+    "D8-BLENDER-GRAPH-0067"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-GRAPH-0035",
+    "D8-BLENDER-GRAPH-0036",
+    "D8-BLENDER-GRAPH-0037",
+    "D8-BLENDER-GRAPH-0038",
+    "D8-BLENDER-GRAPH-0039",
+    "D8-BLENDER-GRAPH-0040",
+    "D8-BLENDER-GRAPH-0043",
+    "D8-BLENDER-GRAPH-0045",
+    "D8-BLENDER-GRAPH-0046",
+    "D8-BLENDER-GRAPH-0047",
+    "D8-BLENDER-GRAPH-0048",
+    "D8-BLENDER-GRAPH-0053",
+    "D8-BLENDER-GRAPH-0054",
+    "D8-BLENDER-GRAPH-0055",
+    "D8-BLENDER-GRAPH-0056",
+    "D8-BLENDER-GRAPH-0057",
+    "D8-BLENDER-GRAPH-0058",
+    "D8-BLENDER-GRAPH-0062",
+    "D8-BLENDER-GRAPH-0063",
+    "D8-BLENDER-GRAPH-0064",
+    "D8-BLENDER-GRAPH-0065"
+  ],
+  "status": "open",
+  "title": "render-anim: graph (34 rows)",
+  "wave": 2
+}

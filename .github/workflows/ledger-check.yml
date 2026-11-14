@@ -109,6 +109,10 @@ jobs:
             echo "percent.json not part of this change"
           fi
 
+      - name: The task queue covers every Register row (ledger/tasks)
+        run: |
+          if [ -f ledger/tasks/index.json ]; then python ledger/tools/gen_tasks.py --validate; fi
+
       - name: Unit tests, parity tools
         run: python -m unittest discover -s parity/tests -t .
 

@@ -1,0 +1,141 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-revit-interop-01",
+  "corpora": [
+    "golden/revit/interop-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 1,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 22
+  },
+  "deps": [],
+  "domains": [
+    "revit.interop"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "PointCloudSection",
+        "rows": 1,
+        "score": 0.631,
+        "status": "implemented"
+      },
+      {
+        "name": "Export",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "ExportRuiFile",
+        "rows": 1,
+        "score": 0.615,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:384",
+        "rows": 1,
+        "score": 0.6,
+        "symbol": "dino8::kernel::PointCloud::raw"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-revit-interop-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.interop.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-INTEROP-0002": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-INTEROP-0004": {
+      "commands": [
+        "ExportRuiFile"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-INTEROP-0013": {
+      "commands": [
+        "PointCloudSection"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud::raw"
+      ]
+    }
+  },
+  "rows": [
+    "D8-REVIT-INTEROP-0001",
+    "D8-REVIT-INTEROP-0002",
+    "D8-REVIT-INTEROP-0003",
+    "D8-REVIT-INTEROP-0004",
+    "D8-REVIT-INTEROP-0005",
+    "D8-REVIT-INTEROP-0006",
+    "D8-REVIT-INTEROP-0007",
+    "D8-REVIT-INTEROP-0008",
+    "D8-REVIT-INTEROP-0009",
+    "D8-REVIT-INTEROP-0010",
+    "D8-REVIT-INTEROP-0011",
+    "D8-REVIT-INTEROP-0012",
+    "D8-REVIT-INTEROP-0013",
+    "D8-REVIT-INTEROP-0014",
+    "D8-REVIT-INTEROP-0015",
+    "D8-REVIT-INTEROP-0016",
+    "D8-REVIT-INTEROP-0017",
+    "D8-REVIT-INTEROP-0018",
+    "D8-REVIT-INTEROP-0019",
+    "D8-REVIT-INTEROP-0020",
+    "D8-REVIT-INTEROP-0021",
+    "D8-REVIT-INTEROP-0022",
+    "D8-REVIT-INTEROP-0023",
+    "D8-REVIT-INTEROP-0024",
+    "D8-REVIT-INTEROP-0025"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-INTEROP-0001",
+    "D8-REVIT-INTEROP-0003",
+    "D8-REVIT-INTEROP-0005",
+    "D8-REVIT-INTEROP-0006",
+    "D8-REVIT-INTEROP-0007",
+    "D8-REVIT-INTEROP-0008",
+    "D8-REVIT-INTEROP-0009",
+    "D8-REVIT-INTEROP-0010",
+    "D8-REVIT-INTEROP-0011",
+    "D8-REVIT-INTEROP-0012",
+    "D8-REVIT-INTEROP-0014",
+    "D8-REVIT-INTEROP-0015",
+    "D8-REVIT-INTEROP-0016",
+    "D8-REVIT-INTEROP-0017",
+    "D8-REVIT-INTEROP-0018",
+    "D8-REVIT-INTEROP-0019",
+    "D8-REVIT-INTEROP-0020",
+    "D8-REVIT-INTEROP-0021",
+    "D8-REVIT-INTEROP-0022",
+    "D8-REVIT-INTEROP-0023",
+    "D8-REVIT-INTEROP-0024",
+    "D8-REVIT-INTEROP-0025"
+  ],
+  "status": "open",
+  "title": "interop-migration: revit.interop (25 rows)",
+  "wave": 1
+}

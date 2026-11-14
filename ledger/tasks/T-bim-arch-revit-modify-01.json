@@ -1,0 +1,148 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-bim-arch-revit-modify-01",
+  "corpora": [
+    "golden/revit/modify-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 33
+  },
+  "deps": [],
+  "domains": [
+    "revit.modify"
+  ],
+  "factory": "bim-arch",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SplitFace",
+        "rows": 1,
+        "score": 0.739,
+        "status": "implemented"
+      },
+      {
+        "name": "ConstraintsShow",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "ConstraintsPanel",
+        "rows": 1,
+        "score": 0.669,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-bim-arch-revit-modify-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.modify.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-MODIFY-0025": {
+      "commands": [
+        "SplitFace"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-MODIFY-0031": {
+      "commands": [
+        "ConstraintsShow",
+        "ConstraintsPanel"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-MODIFY-0001",
+    "D8-REVIT-MODIFY-0002",
+    "D8-REVIT-MODIFY-0003",
+    "D8-REVIT-MODIFY-0004",
+    "D8-REVIT-MODIFY-0005",
+    "D8-REVIT-MODIFY-0006",
+    "D8-REVIT-MODIFY-0007",
+    "D8-REVIT-MODIFY-0008",
+    "D8-REVIT-MODIFY-0009",
+    "D8-REVIT-MODIFY-0010",
+    "D8-REVIT-MODIFY-0011",
+    "D8-REVIT-MODIFY-0012",
+    "D8-REVIT-MODIFY-0013",
+    "D8-REVIT-MODIFY-0014",
+    "D8-REVIT-MODIFY-0015",
+    "D8-REVIT-MODIFY-0016",
+    "D8-REVIT-MODIFY-0017",
+    "D8-REVIT-MODIFY-0018",
+    "D8-REVIT-MODIFY-0019",
+    "D8-REVIT-MODIFY-0020",
+    "D8-REVIT-MODIFY-0021",
+    "D8-REVIT-MODIFY-0022",
+    "D8-REVIT-MODIFY-0023",
+    "D8-REVIT-MODIFY-0024",
+    "D8-REVIT-MODIFY-0025",
+    "D8-REVIT-MODIFY-0026",
+    "D8-REVIT-MODIFY-0027",
+    "D8-REVIT-MODIFY-0028",
+    "D8-REVIT-MODIFY-0029",
+    "D8-REVIT-MODIFY-0030",
+    "D8-REVIT-MODIFY-0031",
+    "D8-REVIT-MODIFY-0032",
+    "D8-REVIT-MODIFY-0033",
+    "D8-REVIT-MODIFY-0034",
+    "D8-REVIT-MODIFY-0035"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-MODIFY-0001",
+    "D8-REVIT-MODIFY-0002",
+    "D8-REVIT-MODIFY-0003",
+    "D8-REVIT-MODIFY-0004",
+    "D8-REVIT-MODIFY-0005",
+    "D8-REVIT-MODIFY-0006",
+    "D8-REVIT-MODIFY-0007",
+    "D8-REVIT-MODIFY-0008",
+    "D8-REVIT-MODIFY-0009",
+    "D8-REVIT-MODIFY-0010",
+    "D8-REVIT-MODIFY-0011",
+    "D8-REVIT-MODIFY-0012",
+    "D8-REVIT-MODIFY-0013",
+    "D8-REVIT-MODIFY-0014",
+    "D8-REVIT-MODIFY-0015",
+    "D8-REVIT-MODIFY-0016",
+    "D8-REVIT-MODIFY-0017",
+    "D8-REVIT-MODIFY-0018",
+    "D8-REVIT-MODIFY-0019",
+    "D8-REVIT-MODIFY-0020",
+    "D8-REVIT-MODIFY-0021",
+    "D8-REVIT-MODIFY-0022",
+    "D8-REVIT-MODIFY-0023",
+    "D8-REVIT-MODIFY-0024",
+    "D8-REVIT-MODIFY-0026",
+    "D8-REVIT-MODIFY-0027",
+    "D8-REVIT-MODIFY-0028",
+    "D8-REVIT-MODIFY-0029",
+    "D8-REVIT-MODIFY-0030",
+    "D8-REVIT-MODIFY-0032",
+    "D8-REVIT-MODIFY-0033",
+    "D8-REVIT-MODIFY-0034",
+    "D8-REVIT-MODIFY-0035"
+  ],
+  "status": "open",
+  "title": "bim-arch: revit.modify (35 rows)",
+  "wave": 2
+}

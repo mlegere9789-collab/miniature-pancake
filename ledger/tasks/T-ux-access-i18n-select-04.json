@@ -1,0 +1,430 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-select-04",
+  "corpora": [
+    "selection fixtures: mixed-object models with layers, blocks, groups, user text and history"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 32,
+    "rows": 32,
+    "with_existing_hint": 32,
+    "with_hint": 32,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "SELECT"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SelectionFilter",
+        "rows": 7,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelectionFilterEdges",
+        "rows": 5,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddNextU",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddNextV",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddPrevU",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddPrevV",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelVolumePipe",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelectionFilterFaces",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "NextU",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "NextV",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PrevU",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PrevV",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelSubD",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelSubDEdges",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelTrimmedSrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelUV",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelUntrimmedSrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelVolumeObject",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelVolumeSphere",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelectionFilterEnable",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-select-04",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SELECT.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SELECT-0094": {
+      "commands": [
+        "SelSelfIntersectingCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0095": {
+      "commands": [
+        "SelShortCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0096": {
+      "commands": [
+        "SelSmall"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0097": {
+      "commands": [
+        "SelSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0098": {
+      "commands": [
+        "SelSubD",
+        "SelSubDEdges",
+        "SelOpenSubD"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0099": {
+      "commands": [
+        "SelSubDEdges",
+        "SelSubD",
+        "SubDExpandEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0100": {
+      "commands": [
+        "SelSubDFriendlyCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0101": {
+      "commands": [
+        "SelText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0102": {
+      "commands": [
+        "SelTrimmedSrf",
+        "SelUntrimmedSrf",
+        "ShrinkTrimmedSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0103": {
+      "commands": [
+        "SelUntrimmedSrf",
+        "SelTrimmedSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0104": {
+      "commands": [
+        "SelU",
+        "SelUV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0105": {
+      "commands": [
+        "SelV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0106": {
+      "commands": [
+        "SelUV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0107": {
+      "commands": [
+        "SelVisible"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0108": {
+      "commands": [
+        "SelVolumeObject",
+        "SelVolumePipe"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0109": {
+      "commands": [
+        "SelVolumePipe",
+        "SelVolumeObject",
+        "SelVolumeSphere"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0110": {
+      "commands": [
+        "SelVolumeSphere",
+        "SelVolumePipe"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0111": {
+      "commands": [
+        "SelectionFilter",
+        "SelectionFilterNone",
+        "SelectionFilterEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0112": {
+      "commands": [
+        "SelectionFilterEnable",
+        "SelectionFilter",
+        "SelectionFilterEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0113": {
+      "commands": [
+        "SelectionFilterEdges",
+        "SelectionFilter",
+        "SelectionFilterFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0114": {
+      "commands": [
+        "SelectionFilterFaces",
+        "SelectionFilter",
+        "SelectionFilterEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0115": {
+      "commands": [
+        "SelectionFilterVertices",
+        "SelectionFilterFaces",
+        "SelectionFilter"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0116": {
+      "commands": [
+        "SelectionFilterNone",
+        "SelectionFilter",
+        "SelectionFilterEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0117": {
+      "commands": [
+        "SelectionFilterToggle",
+        "SelectionFilter",
+        "SelectionFilterEnable"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0118": {
+      "commands": [
+        "AddNextU",
+        "NextU",
+        "AddNextV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0119": {
+      "commands": [
+        "AddNextV",
+        "NextV",
+        "AddNextU"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0120": {
+      "commands": [
+        "AddPrevU",
+        "PrevU",
+        "AddPrevV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0121": {
+      "commands": [
+        "AddPrevV",
+        "PrevV",
+        "AddPrevU"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0122": {
+      "commands": [
+        "NextU",
+        "AddNextU"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0123": {
+      "commands": [
+        "NextV",
+        "AddNextV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0124": {
+      "commands": [
+        "PrevU",
+        "AddPrevU"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0125": {
+      "commands": [
+        "PrevV",
+        "AddPrevV"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SELECT-0094",
+    "D8-RHINO-SELECT-0095",
+    "D8-RHINO-SELECT-0096",
+    "D8-RHINO-SELECT-0097",
+    "D8-RHINO-SELECT-0098",
+    "D8-RHINO-SELECT-0099",
+    "D8-RHINO-SELECT-0100",
+    "D8-RHINO-SELECT-0101",
+    "D8-RHINO-SELECT-0102",
+    "D8-RHINO-SELECT-0103",
+    "D8-RHINO-SELECT-0104",
+    "D8-RHINO-SELECT-0105",
+    "D8-RHINO-SELECT-0106",
+    "D8-RHINO-SELECT-0107",
+    "D8-RHINO-SELECT-0108",
+    "D8-RHINO-SELECT-0109",
+    "D8-RHINO-SELECT-0110",
+    "D8-RHINO-SELECT-0111",
+    "D8-RHINO-SELECT-0112",
+    "D8-RHINO-SELECT-0113",
+    "D8-RHINO-SELECT-0114",
+    "D8-RHINO-SELECT-0115",
+    "D8-RHINO-SELECT-0116",
+    "D8-RHINO-SELECT-0117",
+    "D8-RHINO-SELECT-0118",
+    "D8-RHINO-SELECT-0119",
+    "D8-RHINO-SELECT-0120",
+    "D8-RHINO-SELECT-0121",
+    "D8-RHINO-SELECT-0122",
+    "D8-RHINO-SELECT-0123",
+    "D8-RHINO-SELECT-0124",
+    "D8-RHINO-SELECT-0125"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "ux-access-i18n: SELECT (32 rows)",
+  "wave": 3
+}

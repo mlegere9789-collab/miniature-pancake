@@ -1,0 +1,486 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-kernel-geometry-surf-03",
+  "corpora": [
+    "surface fixtures: planar, ruled, loft, sweep, trimmed, periodic and high-degree NURBS surfaces"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 36,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 34,
+    "with_hint": 34,
+    "without_hint": 2
+  },
+  "deps": [],
+  "domains": [
+    "SURF"
+  ],
+  "factory": "kernel-geometry",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SrfPtGrid",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShrinkTrimmedSrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShrinkTrimmedSrfToEdge",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SrfControlPtGrid",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SrfPt",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UnrollSrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UnrollSrfUV",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Untrim",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UntrimAll",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RebuildEdges",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RebuildUV",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RefitTrim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Reparameterize",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ReplaceEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Revolve",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RevolvedHole",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RotateHole",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RoundHole",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetSurfaceTangent",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Shell",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:4393",
+        "rows": 1,
+        "score": 0.76,
+        "symbol": "dino8::kernel::Brep::ReplaceEdge"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:4657",
+        "rows": 1,
+        "score": 0.709,
+        "symbol": "dino8::kernel::Brep::RefitTrim"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1220",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::SurfaceTangentCurve"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_general.h:309",
+        "rows": 1,
+        "score": 0.648,
+        "symbol": "dino8::kernel::SplitFaceByCurve"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1165",
+        "rows": 1,
+        "score": 0.642,
+        "symbol": "dino8::kernel::SurfaceTangentContact"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_general.h:349",
+        "rows": 1,
+        "score": 0.631,
+        "symbol": "dino8::kernel::SplitFaceByCurves"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:1934",
+        "rows": 1,
+        "score": 0.624,
+        "symbol": "dino8::kernel::NurbsSurface::Rebuild"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:926",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Brep::Revolve"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-kernel-geometry-surf-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SURF.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SURF-0073": {
+      "commands": [
+        "RebuildEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0074": {
+      "commands": [
+        "RebuildUV",
+        "Rebuild"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0075": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::Rebuild"
+      ]
+    },
+    "D8-RHINO-SURF-0076": {
+      "commands": [
+        "RefitTrim"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::RefitTrim"
+      ]
+    },
+    "D8-RHINO-SURF-0077": {
+      "commands": [
+        "ReplaceEdge"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::ReplaceEdge"
+      ]
+    },
+    "D8-RHINO-SURF-0078": {
+      "commands": [
+        "Revolve",
+        "RailRevolve"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Revolve"
+      ]
+    },
+    "D8-RHINO-SURF-0079": {
+      "commands": [
+        "RevolvedHole"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0080": {
+      "commands": [
+        "RoundHole"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0081": {
+      "commands": [
+        "RotateHole"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0082": {
+      "commands": [
+        "Reparameterize"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0083": {
+      "commands": [
+        "SetSurfaceTangent"
+      ],
+      "kernel": [
+        "dino8::kernel::SurfaceTangentCurve",
+        "dino8::kernel::SurfaceTangentContact"
+      ]
+    },
+    "D8-RHINO-SURF-0084": {
+      "commands": [
+        "Shell"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0085": {
+      "commands": [
+        "ShrinkTrimmedSrf",
+        "ShrinkTrimmedSrfToEdge",
+        "SelTrimmedSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0086": {
+      "commands": [
+        "ShrinkTrimmedSrfToEdge",
+        "ShrinkTrimmedSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0087": {
+      "commands": [
+        "Smash"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0088": {
+      "commands": [
+        "Splop"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0089": {
+      "commands": [
+        "SplitFace"
+      ],
+      "kernel": [
+        "dino8::kernel::SplitFaceByCurve",
+        "dino8::kernel::SplitFaceByCurves"
+      ]
+    },
+    "D8-RHINO-SURF-0090": {
+      "commands": [
+        "SplitRefitSurface"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0091": {
+      "commands": [
+        "SquishBack"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0092": {
+      "commands": [
+        "Squish"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0093": {
+      "commands": [
+        "SquishInfo"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0094": {
+      "commands": [
+        "SrfControlPtGrid",
+        "SrfPtGrid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0095": {
+      "commands": [
+        "SrfPt",
+        "SrfPtGrid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0096": {
+      "commands": [
+        "SrfPtGrid",
+        "SrfControlPtGrid",
+        "SrfPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0097": {
+      "commands": [
+        "SrfSeam"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0098": {
+      "commands": [
+        "SoftEditSrf",
+        "SoftEditCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0099": {
+      "commands": [
+        "Sweep1"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0100": {
+      "commands": [
+        "Sweep2"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0102": {
+      "commands": [
+        "TweenSurfaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0104": {
+      "commands": [
+        "UnrollSrf",
+        "UnrollSrfUV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0105": {
+      "commands": [
+        "UnrollSrfUV",
+        "UnrollSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0106": {
+      "commands": [
+        "Untrim",
+        "UntrimAll"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0107": {
+      "commands": [
+        "UntrimAll",
+        "Untrim"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0108": {
+      "commands": [
+        "UntrimBorder"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SURF-0073",
+    "D8-RHINO-SURF-0074",
+    "D8-RHINO-SURF-0075",
+    "D8-RHINO-SURF-0076",
+    "D8-RHINO-SURF-0077",
+    "D8-RHINO-SURF-0078",
+    "D8-RHINO-SURF-0079",
+    "D8-RHINO-SURF-0080",
+    "D8-RHINO-SURF-0081",
+    "D8-RHINO-SURF-0082",
+    "D8-RHINO-SURF-0083",
+    "D8-RHINO-SURF-0084",
+    "D8-RHINO-SURF-0085",
+    "D8-RHINO-SURF-0086",
+    "D8-RHINO-SURF-0087",
+    "D8-RHINO-SURF-0088",
+    "D8-RHINO-SURF-0089",
+    "D8-RHINO-SURF-0090",
+    "D8-RHINO-SURF-0091",
+    "D8-RHINO-SURF-0092",
+    "D8-RHINO-SURF-0093",
+    "D8-RHINO-SURF-0094",
+    "D8-RHINO-SURF-0095",
+    "D8-RHINO-SURF-0096",
+    "D8-RHINO-SURF-0097",
+    "D8-RHINO-SURF-0098",
+    "D8-RHINO-SURF-0099",
+    "D8-RHINO-SURF-0100",
+    "D8-RHINO-SURF-0101",
+    "D8-RHINO-SURF-0102",
+    "D8-RHINO-SURF-0103",
+    "D8-RHINO-SURF-0104",
+    "D8-RHINO-SURF-0105",
+    "D8-RHINO-SURF-0106",
+    "D8-RHINO-SURF-0107",
+    "D8-RHINO-SURF-0108"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-SURF-0101",
+    "D8-RHINO-SURF-0103"
+  ],
+  "status": "open",
+  "title": "kernel-geometry: SURF (36 rows)",
+  "wave": 1
+}

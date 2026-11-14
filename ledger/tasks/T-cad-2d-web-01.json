@@ -1,0 +1,212 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-cad-2d-web-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 30,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 7,
+    "with_hint": 7,
+    "without_hint": 23
+  },
+  "deps": [],
+  "domains": [
+    "web"
+  ],
+  "factory": "cad-2d",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Chamfer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Circle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Copy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CircleD",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferSrf",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "Explode",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferEdge",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Extend",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Fillet",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Mirror",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "SelCircle",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-cad-2d-web-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/web.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-WEB-0009": {
+      "commands": [
+        "Chamfer",
+        "ChamferSrf",
+        "ChamferEdge"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-WEB-0010": {
+      "commands": [
+        "Circle",
+        "CircleD",
+        "SelCircle"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-WEB-0012": {
+      "commands": [
+        "Copy"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-WEB-0015": {
+      "commands": [
+        "Explode"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-WEB-0016": {
+      "commands": [
+        "Extend"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-WEB-0018": {
+      "commands": [
+        "Fillet"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-WEB-0030": {
+      "commands": [
+        "Mirror"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-WEB-0001",
+    "D8-AUTOCAD-WEB-0002",
+    "D8-AUTOCAD-WEB-0003",
+    "D8-AUTOCAD-WEB-0004",
+    "D8-AUTOCAD-WEB-0005",
+    "D8-AUTOCAD-WEB-0006",
+    "D8-AUTOCAD-WEB-0007",
+    "D8-AUTOCAD-WEB-0008",
+    "D8-AUTOCAD-WEB-0009",
+    "D8-AUTOCAD-WEB-0010",
+    "D8-AUTOCAD-WEB-0011",
+    "D8-AUTOCAD-WEB-0012",
+    "D8-AUTOCAD-WEB-0013",
+    "D8-AUTOCAD-WEB-0014",
+    "D8-AUTOCAD-WEB-0015",
+    "D8-AUTOCAD-WEB-0016",
+    "D8-AUTOCAD-WEB-0017",
+    "D8-AUTOCAD-WEB-0018",
+    "D8-AUTOCAD-WEB-0019",
+    "D8-AUTOCAD-WEB-0020",
+    "D8-AUTOCAD-WEB-0021",
+    "D8-AUTOCAD-WEB-0022",
+    "D8-AUTOCAD-WEB-0023",
+    "D8-AUTOCAD-WEB-0024",
+    "D8-AUTOCAD-WEB-0025",
+    "D8-AUTOCAD-WEB-0026",
+    "D8-AUTOCAD-WEB-0027",
+    "D8-AUTOCAD-WEB-0028",
+    "D8-AUTOCAD-WEB-0029",
+    "D8-AUTOCAD-WEB-0030"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-WEB-0001",
+    "D8-AUTOCAD-WEB-0002",
+    "D8-AUTOCAD-WEB-0003",
+    "D8-AUTOCAD-WEB-0004",
+    "D8-AUTOCAD-WEB-0005",
+    "D8-AUTOCAD-WEB-0006",
+    "D8-AUTOCAD-WEB-0007",
+    "D8-AUTOCAD-WEB-0008",
+    "D8-AUTOCAD-WEB-0011",
+    "D8-AUTOCAD-WEB-0013",
+    "D8-AUTOCAD-WEB-0014",
+    "D8-AUTOCAD-WEB-0017",
+    "D8-AUTOCAD-WEB-0019",
+    "D8-AUTOCAD-WEB-0020",
+    "D8-AUTOCAD-WEB-0021",
+    "D8-AUTOCAD-WEB-0022",
+    "D8-AUTOCAD-WEB-0023",
+    "D8-AUTOCAD-WEB-0024",
+    "D8-AUTOCAD-WEB-0025",
+    "D8-AUTOCAD-WEB-0026",
+    "D8-AUTOCAD-WEB-0027",
+    "D8-AUTOCAD-WEB-0028",
+    "D8-AUTOCAD-WEB-0029"
+  ],
+  "status": "open",
+  "title": "cad-2d: web (30 rows)",
+  "wave": 1
+}

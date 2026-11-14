@@ -1,0 +1,376 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-script-02",
+  "corpora": [
+    "script fixtures: command macros, RhinoScript, Python and aliases"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 2,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 23,
+    "with_hint": 23,
+    "without_hint": 15
+  },
+  "deps": [],
+  "domains": [
+    "SCRIPT",
+    "script"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "RunPythonScript",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "EditPythonScript",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Grasshopper",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "EditScript",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperFolders",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperIgnorePlugin",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperPlayer",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperPluginList",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RunScript",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperDeveloperSettings",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperGetSDKDocumentation",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperLoadOneByOne",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "LoadScript",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MacroEditor",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Macros",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MultiPause",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "NoEcho",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Pause",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ReadCommandFile",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Run",
+        "rows": 1,
+        "score": 1.0,
+        "status": "partial"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-script-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender",
+    "rhino"
+  ],
+  "register_files": [
+    "blender/script.jsonl",
+    "rhino/SCRIPT.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-SCRIPT-0002": {
+      "commands": [
+        "RunPythonScript"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0004": {
+      "commands": [
+        "EditPythonScript",
+        "RunPythonScript",
+        "EditScript"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0005": {
+      "commands": [
+        "EditScript",
+        "EditPythonScript"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0006": {
+      "commands": [
+        "GrasshopperDeveloperSettings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0007": {
+      "commands": [
+        "GrasshopperFolders",
+        "Grasshopper"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0008": {
+      "commands": [
+        "GrasshopperGetSDKDocumentation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0009": {
+      "commands": [
+        "GrasshopperIgnorePlugin",
+        "GrasshopperPluginList"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0010": {
+      "commands": [
+        "GrasshopperLoadOneByOne"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0011": {
+      "commands": [
+        "Grasshopper",
+        "GrasshopperPlayer",
+        "GrasshopperFolders"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0012": {
+      "commands": [
+        "GrasshopperPlayer",
+        "Grasshopper"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0013": {
+      "commands": [
+        "GrasshopperPluginList",
+        "GrasshopperIgnorePlugin"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0014": {
+      "commands": [
+        "LoadScript"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0015": {
+      "commands": [
+        "MacroEditor"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0016": {
+      "commands": [
+        "Macros"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0017": {
+      "commands": [
+        "MultiPause"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0018": {
+      "commands": [
+        "NoEcho"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0019": {
+      "commands": [
+        "Pause"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0020": {
+      "commands": [
+        "ReadCommandFile"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0021": {
+      "commands": [
+        "Run"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0022": {
+      "commands": [
+        "RunPythonScript",
+        "EditPythonScript",
+        "RunScript"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0023": {
+      "commands": [
+        "RunScript",
+        "RunPythonScript"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0024": {
+      "commands": [
+        "ScriptEditor",
+        "ScriptEditorRun"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SCRIPT-0026": {
+      "commands": [
+        "Connect"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SCRIPT-0004",
+    "D8-RHINO-SCRIPT-0005",
+    "D8-RHINO-SCRIPT-0006",
+    "D8-RHINO-SCRIPT-0007",
+    "D8-RHINO-SCRIPT-0008",
+    "D8-RHINO-SCRIPT-0009",
+    "D8-RHINO-SCRIPT-0010",
+    "D8-RHINO-SCRIPT-0011",
+    "D8-RHINO-SCRIPT-0012",
+    "D8-RHINO-SCRIPT-0013",
+    "D8-RHINO-SCRIPT-0014",
+    "D8-RHINO-SCRIPT-0015",
+    "D8-RHINO-SCRIPT-0016",
+    "D8-RHINO-SCRIPT-0017",
+    "D8-RHINO-SCRIPT-0018",
+    "D8-RHINO-SCRIPT-0019",
+    "D8-RHINO-SCRIPT-0020",
+    "D8-RHINO-SCRIPT-0021",
+    "D8-RHINO-SCRIPT-0022",
+    "D8-RHINO-SCRIPT-0023",
+    "D8-RHINO-SCRIPT-0024",
+    "D8-RHINO-SCRIPT-0025",
+    "D8-RHINO-SCRIPT-0026",
+    "D8-RHINO-SCRIPT-0027",
+    "D8-RHINO-SCRIPT-0028",
+    "D8-RHINO-SCRIPT-0029",
+    "D8-RHINO-SCRIPT-0030",
+    "D8-RHINO-SCRIPT-0031",
+    "D8-RHINO-SCRIPT-0032",
+    "D8-RHINO-SCRIPT-0033",
+    "D8-RHINO-SCRIPT-0034",
+    "D8-RHINO-SCRIPT-0035",
+    "D8-RHINO-SCRIPT-0036",
+    "D8-RHINO-SCRIPT-0037",
+    "D8-RHINO-SCRIPT-0038",
+    "D8-BLENDER-SCRIPT-0001",
+    "D8-BLENDER-SCRIPT-0002",
+    "D8-BLENDER-SCRIPT-0003"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-SCRIPT-0025",
+    "D8-RHINO-SCRIPT-0027",
+    "D8-RHINO-SCRIPT-0028",
+    "D8-RHINO-SCRIPT-0029",
+    "D8-RHINO-SCRIPT-0030",
+    "D8-RHINO-SCRIPT-0031",
+    "D8-RHINO-SCRIPT-0032",
+    "D8-RHINO-SCRIPT-0033",
+    "D8-RHINO-SCRIPT-0034",
+    "D8-RHINO-SCRIPT-0035",
+    "D8-RHINO-SCRIPT-0036",
+    "D8-RHINO-SCRIPT-0037",
+    "D8-RHINO-SCRIPT-0038",
+    "D8-BLENDER-SCRIPT-0001",
+    "D8-BLENDER-SCRIPT-0003"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: SCRIPT, script (38 rows)",
+  "wave": 3
+}

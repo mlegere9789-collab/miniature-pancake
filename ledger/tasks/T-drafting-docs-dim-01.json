@@ -1,0 +1,196 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-drafting-docs-dim-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 36,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 7,
+    "with_hint": 7,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "dim"
+  ],
+  "factory": "drafting-docs",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "DimAligned",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimDiameter",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimLinear",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimOrdinate",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimRadius",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimTolerance",
+        "rows": 1,
+        "score": 0.683,
+        "status": "implemented"
+      },
+      {
+        "name": "Leader",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-drafting-docs-dim-01",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/dim.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-DIM-0002": {
+      "commands": [
+        "DimLinear"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DIM-0003": {
+      "commands": [
+        "DimAligned"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DIM-0005": {
+      "commands": [
+        "DimRadius"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DIM-0006": {
+      "commands": [
+        "DimDiameter"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DIM-0009": {
+      "commands": [
+        "DimOrdinate"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DIM-0027": {
+      "commands": [
+        "DimTolerance"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DIM-0031": {
+      "commands": [
+        "Leader"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-DIM-0001",
+    "D8-AUTOCAD-DIM-0002",
+    "D8-AUTOCAD-DIM-0003",
+    "D8-AUTOCAD-DIM-0004",
+    "D8-AUTOCAD-DIM-0005",
+    "D8-AUTOCAD-DIM-0006",
+    "D8-AUTOCAD-DIM-0007",
+    "D8-AUTOCAD-DIM-0008",
+    "D8-AUTOCAD-DIM-0009",
+    "D8-AUTOCAD-DIM-0010",
+    "D8-AUTOCAD-DIM-0011",
+    "D8-AUTOCAD-DIM-0012",
+    "D8-AUTOCAD-DIM-0013",
+    "D8-AUTOCAD-DIM-0014",
+    "D8-AUTOCAD-DIM-0015",
+    "D8-AUTOCAD-DIM-0016",
+    "D8-AUTOCAD-DIM-0017",
+    "D8-AUTOCAD-DIM-0018",
+    "D8-AUTOCAD-DIM-0019",
+    "D8-AUTOCAD-DIM-0020",
+    "D8-AUTOCAD-DIM-0021",
+    "D8-AUTOCAD-DIM-0022",
+    "D8-AUTOCAD-DIM-0023",
+    "D8-AUTOCAD-DIM-0024",
+    "D8-AUTOCAD-DIM-0025",
+    "D8-AUTOCAD-DIM-0026",
+    "D8-AUTOCAD-DIM-0027",
+    "D8-AUTOCAD-DIM-0028",
+    "D8-AUTOCAD-DIM-0029",
+    "D8-AUTOCAD-DIM-0030",
+    "D8-AUTOCAD-DIM-0031",
+    "D8-AUTOCAD-DIM-0032",
+    "D8-AUTOCAD-DIM-0033",
+    "D8-AUTOCAD-DIM-0034",
+    "D8-AUTOCAD-DIM-0035",
+    "D8-AUTOCAD-DIM-0036"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-DIM-0001",
+    "D8-AUTOCAD-DIM-0004",
+    "D8-AUTOCAD-DIM-0007",
+    "D8-AUTOCAD-DIM-0008",
+    "D8-AUTOCAD-DIM-0010",
+    "D8-AUTOCAD-DIM-0011",
+    "D8-AUTOCAD-DIM-0012",
+    "D8-AUTOCAD-DIM-0013",
+    "D8-AUTOCAD-DIM-0014",
+    "D8-AUTOCAD-DIM-0015",
+    "D8-AUTOCAD-DIM-0016",
+    "D8-AUTOCAD-DIM-0017",
+    "D8-AUTOCAD-DIM-0018",
+    "D8-AUTOCAD-DIM-0019",
+    "D8-AUTOCAD-DIM-0020",
+    "D8-AUTOCAD-DIM-0021",
+    "D8-AUTOCAD-DIM-0022",
+    "D8-AUTOCAD-DIM-0023",
+    "D8-AUTOCAD-DIM-0024",
+    "D8-AUTOCAD-DIM-0025",
+    "D8-AUTOCAD-DIM-0026",
+    "D8-AUTOCAD-DIM-0028",
+    "D8-AUTOCAD-DIM-0029",
+    "D8-AUTOCAD-DIM-0030",
+    "D8-AUTOCAD-DIM-0032",
+    "D8-AUTOCAD-DIM-0033",
+    "D8-AUTOCAD-DIM-0034",
+    "D8-AUTOCAD-DIM-0035",
+    "D8-AUTOCAD-DIM-0036"
+  ],
+  "status": "open",
+  "title": "drafting-docs: dim (36 rows)",
+  "wave": 2
+}

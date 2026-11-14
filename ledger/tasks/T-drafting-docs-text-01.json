@@ -1,0 +1,134 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-drafting-docs-text-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 37,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 37
+  },
+  "deps": [],
+  "domains": [
+    "text"
+  ],
+  "factory": "drafting-docs",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "DataLinkUpdate",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-drafting-docs-text-01",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/text.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-TEXT-0034": {
+      "commands": [
+        "DataLinkUpdate"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-TEXT-0001",
+    "D8-AUTOCAD-TEXT-0002",
+    "D8-AUTOCAD-TEXT-0003",
+    "D8-AUTOCAD-TEXT-0004",
+    "D8-AUTOCAD-TEXT-0005",
+    "D8-AUTOCAD-TEXT-0006",
+    "D8-AUTOCAD-TEXT-0007",
+    "D8-AUTOCAD-TEXT-0008",
+    "D8-AUTOCAD-TEXT-0009",
+    "D8-AUTOCAD-TEXT-0010",
+    "D8-AUTOCAD-TEXT-0011",
+    "D8-AUTOCAD-TEXT-0012",
+    "D8-AUTOCAD-TEXT-0013",
+    "D8-AUTOCAD-TEXT-0014",
+    "D8-AUTOCAD-TEXT-0015",
+    "D8-AUTOCAD-TEXT-0016",
+    "D8-AUTOCAD-TEXT-0017",
+    "D8-AUTOCAD-TEXT-0018",
+    "D8-AUTOCAD-TEXT-0019",
+    "D8-AUTOCAD-TEXT-0020",
+    "D8-AUTOCAD-TEXT-0021",
+    "D8-AUTOCAD-TEXT-0022",
+    "D8-AUTOCAD-TEXT-0023",
+    "D8-AUTOCAD-TEXT-0024",
+    "D8-AUTOCAD-TEXT-0025",
+    "D8-AUTOCAD-TEXT-0026",
+    "D8-AUTOCAD-TEXT-0027",
+    "D8-AUTOCAD-TEXT-0028",
+    "D8-AUTOCAD-TEXT-0029",
+    "D8-AUTOCAD-TEXT-0030",
+    "D8-AUTOCAD-TEXT-0031",
+    "D8-AUTOCAD-TEXT-0032",
+    "D8-AUTOCAD-TEXT-0033",
+    "D8-AUTOCAD-TEXT-0034",
+    "D8-AUTOCAD-TEXT-0035",
+    "D8-AUTOCAD-TEXT-0036",
+    "D8-AUTOCAD-TEXT-0037",
+    "D8-AUTOCAD-TEXT-0038"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-TEXT-0001",
+    "D8-AUTOCAD-TEXT-0002",
+    "D8-AUTOCAD-TEXT-0003",
+    "D8-AUTOCAD-TEXT-0004",
+    "D8-AUTOCAD-TEXT-0005",
+    "D8-AUTOCAD-TEXT-0006",
+    "D8-AUTOCAD-TEXT-0007",
+    "D8-AUTOCAD-TEXT-0008",
+    "D8-AUTOCAD-TEXT-0009",
+    "D8-AUTOCAD-TEXT-0010",
+    "D8-AUTOCAD-TEXT-0011",
+    "D8-AUTOCAD-TEXT-0012",
+    "D8-AUTOCAD-TEXT-0013",
+    "D8-AUTOCAD-TEXT-0014",
+    "D8-AUTOCAD-TEXT-0015",
+    "D8-AUTOCAD-TEXT-0016",
+    "D8-AUTOCAD-TEXT-0017",
+    "D8-AUTOCAD-TEXT-0018",
+    "D8-AUTOCAD-TEXT-0019",
+    "D8-AUTOCAD-TEXT-0020",
+    "D8-AUTOCAD-TEXT-0021",
+    "D8-AUTOCAD-TEXT-0022",
+    "D8-AUTOCAD-TEXT-0023",
+    "D8-AUTOCAD-TEXT-0024",
+    "D8-AUTOCAD-TEXT-0025",
+    "D8-AUTOCAD-TEXT-0026",
+    "D8-AUTOCAD-TEXT-0027",
+    "D8-AUTOCAD-TEXT-0028",
+    "D8-AUTOCAD-TEXT-0029",
+    "D8-AUTOCAD-TEXT-0030",
+    "D8-AUTOCAD-TEXT-0031",
+    "D8-AUTOCAD-TEXT-0032",
+    "D8-AUTOCAD-TEXT-0033",
+    "D8-AUTOCAD-TEXT-0035",
+    "D8-AUTOCAD-TEXT-0036",
+    "D8-AUTOCAD-TEXT-0037",
+    "D8-AUTOCAD-TEXT-0038"
+  ],
+  "status": "open",
+  "title": "drafting-docs: text (38 rows)",
+  "wave": 2
+}

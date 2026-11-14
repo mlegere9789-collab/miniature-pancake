@@ -1,0 +1,402 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-mesh-02",
+  "corpora": [
+    "corpus/gh/mesh/mesh-util"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 28,
+    "rows": 28,
+    "with_existing_hint": 17,
+    "with_hint": 17,
+    "without_hint": 11
+  },
+  "deps": [],
+  "domains": [
+    "mesh"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "MeshBooleanUnion",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanSplit",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanDifference",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanIntersection",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshSmooth",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshSplit",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshTrim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "TriangulateMesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UnifyMeshNormals",
+        "rows": 1,
+        "score": 0.825,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanIntersection",
+        "rows": 1,
+        "score": 0.8,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanDifference",
+        "rows": 1,
+        "score": 0.789,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanSplit",
+        "rows": 1,
+        "score": 0.75,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanUnion",
+        "rows": 1,
+        "score": 0.75,
+        "status": "implemented"
+      },
+      {
+        "name": "FillMeshHoles",
+        "rows": 1,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "OffsetMesh",
+        "rows": 1,
+        "score": 0.72,
+        "status": "implemented"
+      },
+      {
+        "name": "ReduceMesh",
+        "rows": 1,
+        "score": 0.72,
+        "status": "implemented"
+      },
+      {
+        "name": "QuadrangulateMesh",
+        "rows": 1,
+        "score": 0.631,
+        "status": "implemented"
+      },
+      {
+        "name": "Explode",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Thicken",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2301",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::Offset"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2353",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::Thicken"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2171",
+        "rows": 1,
+        "score": 0.812,
+        "symbol": "dino8::kernel::Mesh::FillSmallHoles"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2182",
+        "rows": 1,
+        "score": 0.781,
+        "symbol": "dino8::kernel::Mesh::UnifyNormals"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:62",
+        "rows": 1,
+        "score": 0.745,
+        "symbol": "dino8::kernel::SurfaceMesh"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:636",
+        "rows": 1,
+        "score": 0.702,
+        "symbol": "dino8::kernel::Mesh::VertexColorAt"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:136",
+        "rows": 1,
+        "score": 0.697,
+        "symbol": "dino8::kernel::Mesh::VertexCount"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:621",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Mesh::SetVertexColors"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:775",
+        "rows": 1,
+        "score": 0.626,
+        "symbol": "dino8::kernel::Mesh::FlipNormals"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_diagnostics.h:99",
+        "rows": 2,
+        "score": 0.624,
+        "symbol": "dino8::kernel::MeshBooleanReport"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:579",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Mesh::SplitUVSeam"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2326",
+        "rows": 1,
+        "score": 0.606,
+        "symbol": "dino8::kernel::Mesh::OffsetDirectional"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-mesh-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/mesh.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-MESH-0036": {
+      "commands": [
+        "Explode"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0037": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::FlipNormals"
+      ]
+    },
+    "D8-GH-MESH-0038": {
+      "commands": [
+        "MeshSmooth"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0039": {
+      "commands": [
+        "ReduceMesh"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0041": {
+      "commands": [
+        "OffsetMesh"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Offset",
+        "dino8::kernel::Mesh::OffsetDirectional"
+      ]
+    },
+    "D8-GH-MESH-0042": {
+      "commands": [
+        "Thicken"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Thicken"
+      ]
+    },
+    "D8-GH-MESH-0043": {
+      "commands": [
+        "MeshSplit"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::SplitUVSeam"
+      ]
+    },
+    "D8-GH-MESH-0044": {
+      "commands": [
+        "MeshTrim"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0045": {
+      "commands": [
+        "MeshBooleanUnion",
+        "BooleanUnion",
+        "MeshBooleanSplit"
+      ],
+      "kernel": [
+        "dino8::kernel::MeshBooleanReport"
+      ]
+    },
+    "D8-GH-MESH-0046": {
+      "commands": [
+        "MeshBooleanDifference",
+        "BooleanDifference"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0047": {
+      "commands": [
+        "MeshBooleanIntersection",
+        "BooleanIntersection",
+        "MeshBooleanUnion"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0048": {
+      "commands": [
+        "MeshBooleanSplit",
+        "BooleanSplit",
+        "MeshBooleanUnion"
+      ],
+      "kernel": [
+        "dino8::kernel::MeshBooleanReport"
+      ]
+    },
+    "D8-GH-MESH-0049": {
+      "commands": [
+        "FillMeshHoles"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::FillSmallHoles"
+      ]
+    },
+    "D8-GH-MESH-0052": {
+      "commands": [
+        "TriangulateMesh",
+        "QuadrangulateMesh"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0054": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SurfaceMesh"
+      ]
+    },
+    "D8-GH-MESH-0059": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::VertexColorAt",
+        "dino8::kernel::Mesh::VertexCount",
+        "dino8::kernel::Mesh::SetVertexColors"
+      ]
+    },
+    "D8-GH-MESH-0060": {
+      "commands": [
+        "UnifyMeshNormals"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::UnifyNormals"
+      ]
+    }
+  },
+  "rows": [
+    "D8-GH-MESH-0033",
+    "D8-GH-MESH-0034",
+    "D8-GH-MESH-0035",
+    "D8-GH-MESH-0036",
+    "D8-GH-MESH-0037",
+    "D8-GH-MESH-0038",
+    "D8-GH-MESH-0039",
+    "D8-GH-MESH-0040",
+    "D8-GH-MESH-0041",
+    "D8-GH-MESH-0042",
+    "D8-GH-MESH-0043",
+    "D8-GH-MESH-0044",
+    "D8-GH-MESH-0045",
+    "D8-GH-MESH-0046",
+    "D8-GH-MESH-0047",
+    "D8-GH-MESH-0048",
+    "D8-GH-MESH-0049",
+    "D8-GH-MESH-0050",
+    "D8-GH-MESH-0051",
+    "D8-GH-MESH-0052",
+    "D8-GH-MESH-0053",
+    "D8-GH-MESH-0054",
+    "D8-GH-MESH-0055",
+    "D8-GH-MESH-0056",
+    "D8-GH-MESH-0057",
+    "D8-GH-MESH-0058",
+    "D8-GH-MESH-0059",
+    "D8-GH-MESH-0060"
+  ],
+  "rows_without_hint": [
+    "D8-GH-MESH-0033",
+    "D8-GH-MESH-0034",
+    "D8-GH-MESH-0035",
+    "D8-GH-MESH-0040",
+    "D8-GH-MESH-0050",
+    "D8-GH-MESH-0051",
+    "D8-GH-MESH-0053",
+    "D8-GH-MESH-0055",
+    "D8-GH-MESH-0056",
+    "D8-GH-MESH-0057",
+    "D8-GH-MESH-0058"
+  ],
+  "status": "open",
+  "title": "flow: mesh (28 rows)",
+  "wave": 1
+}

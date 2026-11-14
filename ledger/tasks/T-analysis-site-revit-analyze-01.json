@@ -1,0 +1,126 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-analysis-site-revit-analyze-01",
+  "corpora": [
+    "golden/revit/analysis-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 33,
+    "rows": 33,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 32
+  },
+  "deps": [],
+  "domains": [
+    "revit.analyze"
+  ],
+  "factory": "analysis-site",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "PanelSchedule",
+        "rows": 1,
+        "score": 0.772,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-analysis-site-revit-analyze-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.analyze.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-ANALYZE-0018": {
+      "commands": [
+        "PanelSchedule"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-ANALYZE-0001",
+    "D8-REVIT-ANALYZE-0002",
+    "D8-REVIT-ANALYZE-0003",
+    "D8-REVIT-ANALYZE-0004",
+    "D8-REVIT-ANALYZE-0005",
+    "D8-REVIT-ANALYZE-0006",
+    "D8-REVIT-ANALYZE-0007",
+    "D8-REVIT-ANALYZE-0008",
+    "D8-REVIT-ANALYZE-0009",
+    "D8-REVIT-ANALYZE-0010",
+    "D8-REVIT-ANALYZE-0011",
+    "D8-REVIT-ANALYZE-0012",
+    "D8-REVIT-ANALYZE-0013",
+    "D8-REVIT-ANALYZE-0014",
+    "D8-REVIT-ANALYZE-0015",
+    "D8-REVIT-ANALYZE-0016",
+    "D8-REVIT-ANALYZE-0017",
+    "D8-REVIT-ANALYZE-0018",
+    "D8-REVIT-ANALYZE-0019",
+    "D8-REVIT-ANALYZE-0020",
+    "D8-REVIT-ANALYZE-0021",
+    "D8-REVIT-ANALYZE-0022",
+    "D8-REVIT-ANALYZE-0023",
+    "D8-REVIT-ANALYZE-0024",
+    "D8-REVIT-ANALYZE-0025",
+    "D8-REVIT-ANALYZE-0026",
+    "D8-REVIT-ANALYZE-0027",
+    "D8-REVIT-ANALYZE-0028",
+    "D8-REVIT-ANALYZE-0029",
+    "D8-REVIT-ANALYZE-0030",
+    "D8-REVIT-ANALYZE-0031",
+    "D8-REVIT-ANALYZE-0032",
+    "D8-REVIT-ANALYZE-0033"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-ANALYZE-0001",
+    "D8-REVIT-ANALYZE-0002",
+    "D8-REVIT-ANALYZE-0003",
+    "D8-REVIT-ANALYZE-0004",
+    "D8-REVIT-ANALYZE-0005",
+    "D8-REVIT-ANALYZE-0006",
+    "D8-REVIT-ANALYZE-0007",
+    "D8-REVIT-ANALYZE-0008",
+    "D8-REVIT-ANALYZE-0009",
+    "D8-REVIT-ANALYZE-0010",
+    "D8-REVIT-ANALYZE-0011",
+    "D8-REVIT-ANALYZE-0012",
+    "D8-REVIT-ANALYZE-0013",
+    "D8-REVIT-ANALYZE-0014",
+    "D8-REVIT-ANALYZE-0015",
+    "D8-REVIT-ANALYZE-0016",
+    "D8-REVIT-ANALYZE-0017",
+    "D8-REVIT-ANALYZE-0019",
+    "D8-REVIT-ANALYZE-0020",
+    "D8-REVIT-ANALYZE-0021",
+    "D8-REVIT-ANALYZE-0022",
+    "D8-REVIT-ANALYZE-0023",
+    "D8-REVIT-ANALYZE-0024",
+    "D8-REVIT-ANALYZE-0025",
+    "D8-REVIT-ANALYZE-0026",
+    "D8-REVIT-ANALYZE-0027",
+    "D8-REVIT-ANALYZE-0028",
+    "D8-REVIT-ANALYZE-0029",
+    "D8-REVIT-ANALYZE-0030",
+    "D8-REVIT-ANALYZE-0031",
+    "D8-REVIT-ANALYZE-0032",
+    "D8-REVIT-ANALYZE-0033"
+  ],
+  "status": "open",
+  "title": "analysis-site: revit.analyze (33 rows)",
+  "wave": 2
+}

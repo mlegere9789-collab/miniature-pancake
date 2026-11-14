@@ -1,0 +1,122 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-view3d-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 21,
+    "rows": 21,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 18
+  },
+  "deps": [],
+  "domains": [
+    "view3d"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Zoom",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetView",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "ShowSelected",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-view3d-02",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/view3d.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-VIEW3D-0060": {
+      "commands": [
+        "SetView"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-VIEW3D-0061": {
+      "commands": [
+        "ShowSelected"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-VIEW3D-0064": {
+      "commands": [
+        "Zoom"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-VIEW3D-0043",
+    "D8-BLENDER-VIEW3D-0044",
+    "D8-BLENDER-VIEW3D-0045",
+    "D8-BLENDER-VIEW3D-0046",
+    "D8-BLENDER-VIEW3D-0047",
+    "D8-BLENDER-VIEW3D-0050",
+    "D8-BLENDER-VIEW3D-0051",
+    "D8-BLENDER-VIEW3D-0052",
+    "D8-BLENDER-VIEW3D-0053",
+    "D8-BLENDER-VIEW3D-0054",
+    "D8-BLENDER-VIEW3D-0055",
+    "D8-BLENDER-VIEW3D-0056",
+    "D8-BLENDER-VIEW3D-0057",
+    "D8-BLENDER-VIEW3D-0058",
+    "D8-BLENDER-VIEW3D-0059",
+    "D8-BLENDER-VIEW3D-0060",
+    "D8-BLENDER-VIEW3D-0061",
+    "D8-BLENDER-VIEW3D-0062",
+    "D8-BLENDER-VIEW3D-0063",
+    "D8-BLENDER-VIEW3D-0064",
+    "D8-BLENDER-VIEW3D-0065"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-VIEW3D-0043",
+    "D8-BLENDER-VIEW3D-0044",
+    "D8-BLENDER-VIEW3D-0045",
+    "D8-BLENDER-VIEW3D-0046",
+    "D8-BLENDER-VIEW3D-0047",
+    "D8-BLENDER-VIEW3D-0050",
+    "D8-BLENDER-VIEW3D-0051",
+    "D8-BLENDER-VIEW3D-0052",
+    "D8-BLENDER-VIEW3D-0053",
+    "D8-BLENDER-VIEW3D-0054",
+    "D8-BLENDER-VIEW3D-0055",
+    "D8-BLENDER-VIEW3D-0056",
+    "D8-BLENDER-VIEW3D-0057",
+    "D8-BLENDER-VIEW3D-0058",
+    "D8-BLENDER-VIEW3D-0059",
+    "D8-BLENDER-VIEW3D-0062",
+    "D8-BLENDER-VIEW3D-0063",
+    "D8-BLENDER-VIEW3D-0065"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: view3d (21 rows)",
+  "wave": 3
+}

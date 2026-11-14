@@ -1,0 +1,162 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-cad-2d-block-03",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 26,
+    "countable": 34,
+    "rows": 34,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 31
+  },
+  "deps": [],
+  "domains": [
+    "block"
+  ],
+  "factory": "cad-2d",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Group",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Ungroup",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UngroupAll",
+        "rows": 1,
+        "score": 0.794,
+        "status": "implemented"
+      },
+      {
+        "name": "BlockEdit",
+        "rows": 1,
+        "score": 0.71,
+        "status": "implemented"
+      },
+      {
+        "name": "AddToGroup",
+        "rows": 1,
+        "score": 0.673,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-cad-2d-block-03",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/block.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-BLOCK-0078": {
+      "commands": [
+        "Group",
+        "AddToGroup"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-BLOCK-0092": {
+      "commands": [
+        "Ungroup",
+        "UngroupAll"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-BLOCK-0100": {
+      "commands": [
+        "BlockEdit"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-BLOCK-0071",
+    "D8-AUTOCAD-BLOCK-0072",
+    "D8-AUTOCAD-BLOCK-0073",
+    "D8-AUTOCAD-BLOCK-0074",
+    "D8-AUTOCAD-BLOCK-0075",
+    "D8-AUTOCAD-BLOCK-0076",
+    "D8-AUTOCAD-BLOCK-0077",
+    "D8-AUTOCAD-BLOCK-0078",
+    "D8-AUTOCAD-BLOCK-0079",
+    "D8-AUTOCAD-BLOCK-0080",
+    "D8-AUTOCAD-BLOCK-0081",
+    "D8-AUTOCAD-BLOCK-0082",
+    "D8-AUTOCAD-BLOCK-0083",
+    "D8-AUTOCAD-BLOCK-0084",
+    "D8-AUTOCAD-BLOCK-0085",
+    "D8-AUTOCAD-BLOCK-0086",
+    "D8-AUTOCAD-BLOCK-0087",
+    "D8-AUTOCAD-BLOCK-0088",
+    "D8-AUTOCAD-BLOCK-0089",
+    "D8-AUTOCAD-BLOCK-0090",
+    "D8-AUTOCAD-BLOCK-0091",
+    "D8-AUTOCAD-BLOCK-0092",
+    "D8-AUTOCAD-BLOCK-0093",
+    "D8-AUTOCAD-BLOCK-0094",
+    "D8-AUTOCAD-BLOCK-0095",
+    "D8-AUTOCAD-BLOCK-0096",
+    "D8-AUTOCAD-BLOCK-0097",
+    "D8-AUTOCAD-BLOCK-0098",
+    "D8-AUTOCAD-BLOCK-0099",
+    "D8-AUTOCAD-BLOCK-0100",
+    "D8-AUTOCAD-BLOCK-0101",
+    "D8-AUTOCAD-BLOCK-0102",
+    "D8-AUTOCAD-BLOCK-0103",
+    "D8-AUTOCAD-BLOCK-0104"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-BLOCK-0071",
+    "D8-AUTOCAD-BLOCK-0072",
+    "D8-AUTOCAD-BLOCK-0073",
+    "D8-AUTOCAD-BLOCK-0074",
+    "D8-AUTOCAD-BLOCK-0075",
+    "D8-AUTOCAD-BLOCK-0076",
+    "D8-AUTOCAD-BLOCK-0077",
+    "D8-AUTOCAD-BLOCK-0079",
+    "D8-AUTOCAD-BLOCK-0080",
+    "D8-AUTOCAD-BLOCK-0081",
+    "D8-AUTOCAD-BLOCK-0082",
+    "D8-AUTOCAD-BLOCK-0083",
+    "D8-AUTOCAD-BLOCK-0084",
+    "D8-AUTOCAD-BLOCK-0085",
+    "D8-AUTOCAD-BLOCK-0086",
+    "D8-AUTOCAD-BLOCK-0087",
+    "D8-AUTOCAD-BLOCK-0088",
+    "D8-AUTOCAD-BLOCK-0089",
+    "D8-AUTOCAD-BLOCK-0090",
+    "D8-AUTOCAD-BLOCK-0091",
+    "D8-AUTOCAD-BLOCK-0093",
+    "D8-AUTOCAD-BLOCK-0094",
+    "D8-AUTOCAD-BLOCK-0095",
+    "D8-AUTOCAD-BLOCK-0096",
+    "D8-AUTOCAD-BLOCK-0097",
+    "D8-AUTOCAD-BLOCK-0098",
+    "D8-AUTOCAD-BLOCK-0099",
+    "D8-AUTOCAD-BLOCK-0101",
+    "D8-AUTOCAD-BLOCK-0102",
+    "D8-AUTOCAD-BLOCK-0103",
+    "D8-AUTOCAD-BLOCK-0104"
+  ],
+  "status": "open",
+  "title": "cad-2d: block (34 rows)",
+  "wave": 1
+}

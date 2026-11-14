@@ -1,0 +1,95 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-inference-engine-01",
+  "corpora": [
+    "golden/sketchup/infer"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 24,
+    "countable": 24,
+    "rows": 24,
+    "with_existing_hint": 0,
+    "with_hint": 0,
+    "without_hint": 24
+  },
+  "deps": [],
+  "domains": [
+    "inference-engine"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-inference-engine-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "sketchup"
+  ],
+  "register_files": [
+    "sketchup/inference-engine.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {},
+  "rows": [
+    "D8-SKETCHUP-INFER-0001",
+    "D8-SKETCHUP-INFER-0002",
+    "D8-SKETCHUP-INFER-0003",
+    "D8-SKETCHUP-INFER-0004",
+    "D8-SKETCHUP-INFER-0005",
+    "D8-SKETCHUP-INFER-0006",
+    "D8-SKETCHUP-INFER-0007",
+    "D8-SKETCHUP-INFER-0008",
+    "D8-SKETCHUP-INFER-0009",
+    "D8-SKETCHUP-INFER-0010",
+    "D8-SKETCHUP-INFER-0011",
+    "D8-SKETCHUP-INFER-0012",
+    "D8-SKETCHUP-INFER-0013",
+    "D8-SKETCHUP-INFER-0014",
+    "D8-SKETCHUP-INFER-0015",
+    "D8-SKETCHUP-INFER-0016",
+    "D8-SKETCHUP-INFER-0017",
+    "D8-SKETCHUP-INFER-0018",
+    "D8-SKETCHUP-INFER-0019",
+    "D8-SKETCHUP-INFER-0020",
+    "D8-SKETCHUP-INFER-0021",
+    "D8-SKETCHUP-INFER-0022",
+    "D8-SKETCHUP-INFER-0023",
+    "D8-SKETCHUP-INFER-0024"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-INFER-0001",
+    "D8-SKETCHUP-INFER-0002",
+    "D8-SKETCHUP-INFER-0003",
+    "D8-SKETCHUP-INFER-0004",
+    "D8-SKETCHUP-INFER-0005",
+    "D8-SKETCHUP-INFER-0006",
+    "D8-SKETCHUP-INFER-0007",
+    "D8-SKETCHUP-INFER-0008",
+    "D8-SKETCHUP-INFER-0009",
+    "D8-SKETCHUP-INFER-0010",
+    "D8-SKETCHUP-INFER-0011",
+    "D8-SKETCHUP-INFER-0012",
+    "D8-SKETCHUP-INFER-0013",
+    "D8-SKETCHUP-INFER-0014",
+    "D8-SKETCHUP-INFER-0015",
+    "D8-SKETCHUP-INFER-0016",
+    "D8-SKETCHUP-INFER-0017",
+    "D8-SKETCHUP-INFER-0018",
+    "D8-SKETCHUP-INFER-0019",
+    "D8-SKETCHUP-INFER-0020",
+    "D8-SKETCHUP-INFER-0021",
+    "D8-SKETCHUP-INFER-0022",
+    "D8-SKETCHUP-INFER-0023",
+    "D8-SKETCHUP-INFER-0024"
+  ],
+  "status": "open",
+  "title": "direct-modeling: inference-engine (24 rows)",
+  "wave": 1
+}

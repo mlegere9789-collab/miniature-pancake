@@ -205,6 +205,28 @@ minus 1, at most two, then the task is split (plan 7.6). The tool builds its obj
 throw-away bare repository and never touches a ref of the repository it runs in.
 `--remote` takes a URL, a path, or a remote name (default `origin`).
 
+## The work queue: `python3 ledger/tools/gen_tasks.py`
+
+Turns the Register into claimable task files `ledger/tasks/<task-id>.json` (`T-<factory>-<domain>-NN`,
+or `T-<factory>-misc-NN` for pooled small domains), plus `ledger/tasks/index.json` (counts per
+factory, per wave from `ledger/waves.json`, per status, one line per task) and
+`ledger/tasks/REPORT.md` (tasks, rows per factory, rows with and without a hint).
+
+* One factory per task; rows grouped by factory x domain and cut into balanced tasks of 20 to 40
+  rows (`--min-rows`, `--max-rows`); small domains are pooled per factory so no task is a stub.
+* An alias row travels with its canonical row (never split); rows that share an acceptance
+  corpus sit next to each other and cuts are moved to a corpus boundary when the size window allows.
+* Each task carries `hints` (existing Dino 8 commands and kernel symbols, from
+  `parity/tools/catalog/map_rows.py`), `row_hints` and `rows_without_hint` (likely to need new
+  features). **Hints are not evidence**; the tool never edits a row and never sets a tier,
+  status or evidence. `points` are provisional (`points_basis` says how); the factory lead sets them.
+* Deterministic and idempotent: a second run writes nothing. A task file whose status is not
+  `open` is frozen (kept as is, its rows left out of the regeneration, its id never reused); stale
+  open files are removed (`--no-prune` keeps them).
+* `--check` writes nothing and exits 1 when the disk differs; `--validate` checks the queue
+  against the Register (every row in exactly one task, aliases with their canonical row, one
+  factory per task, `claims.py` and `watchdog.py` accept the files) and runs in `ledger-check.yml`.
+
 ## Heartbeats and the watchdog
 
 Heartbeats are written with `ledger/tools/heartbeat.py --agent A --what "..." --evidence "..."`

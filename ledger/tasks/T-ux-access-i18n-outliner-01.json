@@ -1,0 +1,143 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-outliner-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 37,
+    "rows": 37,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 35
+  },
+  "deps": [],
+  "domains": [
+    "outliner"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Hide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-outliner-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/outliner.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-OUTLINER-0032": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OUTLINER-0036": {
+      "commands": [
+        "Hide"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-OUTLINER-0001",
+    "D8-BLENDER-OUTLINER-0002",
+    "D8-BLENDER-OUTLINER-0003",
+    "D8-BLENDER-OUTLINER-0004",
+    "D8-BLENDER-OUTLINER-0005",
+    "D8-BLENDER-OUTLINER-0006",
+    "D8-BLENDER-OUTLINER-0007",
+    "D8-BLENDER-OUTLINER-0008",
+    "D8-BLENDER-OUTLINER-0009",
+    "D8-BLENDER-OUTLINER-0010",
+    "D8-BLENDER-OUTLINER-0011",
+    "D8-BLENDER-OUTLINER-0012",
+    "D8-BLENDER-OUTLINER-0013",
+    "D8-BLENDER-OUTLINER-0014",
+    "D8-BLENDER-OUTLINER-0015",
+    "D8-BLENDER-OUTLINER-0016",
+    "D8-BLENDER-OUTLINER-0017",
+    "D8-BLENDER-OUTLINER-0018",
+    "D8-BLENDER-OUTLINER-0019",
+    "D8-BLENDER-OUTLINER-0020",
+    "D8-BLENDER-OUTLINER-0021",
+    "D8-BLENDER-OUTLINER-0022",
+    "D8-BLENDER-OUTLINER-0023",
+    "D8-BLENDER-OUTLINER-0024",
+    "D8-BLENDER-OUTLINER-0025",
+    "D8-BLENDER-OUTLINER-0026",
+    "D8-BLENDER-OUTLINER-0027",
+    "D8-BLENDER-OUTLINER-0028",
+    "D8-BLENDER-OUTLINER-0029",
+    "D8-BLENDER-OUTLINER-0030",
+    "D8-BLENDER-OUTLINER-0031",
+    "D8-BLENDER-OUTLINER-0032",
+    "D8-BLENDER-OUTLINER-0033",
+    "D8-BLENDER-OUTLINER-0034",
+    "D8-BLENDER-OUTLINER-0035",
+    "D8-BLENDER-OUTLINER-0036",
+    "D8-BLENDER-OUTLINER-0037"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-OUTLINER-0001",
+    "D8-BLENDER-OUTLINER-0002",
+    "D8-BLENDER-OUTLINER-0003",
+    "D8-BLENDER-OUTLINER-0004",
+    "D8-BLENDER-OUTLINER-0005",
+    "D8-BLENDER-OUTLINER-0006",
+    "D8-BLENDER-OUTLINER-0007",
+    "D8-BLENDER-OUTLINER-0008",
+    "D8-BLENDER-OUTLINER-0009",
+    "D8-BLENDER-OUTLINER-0010",
+    "D8-BLENDER-OUTLINER-0011",
+    "D8-BLENDER-OUTLINER-0012",
+    "D8-BLENDER-OUTLINER-0013",
+    "D8-BLENDER-OUTLINER-0014",
+    "D8-BLENDER-OUTLINER-0015",
+    "D8-BLENDER-OUTLINER-0016",
+    "D8-BLENDER-OUTLINER-0017",
+    "D8-BLENDER-OUTLINER-0018",
+    "D8-BLENDER-OUTLINER-0019",
+    "D8-BLENDER-OUTLINER-0020",
+    "D8-BLENDER-OUTLINER-0021",
+    "D8-BLENDER-OUTLINER-0022",
+    "D8-BLENDER-OUTLINER-0023",
+    "D8-BLENDER-OUTLINER-0024",
+    "D8-BLENDER-OUTLINER-0025",
+    "D8-BLENDER-OUTLINER-0026",
+    "D8-BLENDER-OUTLINER-0027",
+    "D8-BLENDER-OUTLINER-0028",
+    "D8-BLENDER-OUTLINER-0029",
+    "D8-BLENDER-OUTLINER-0030",
+    "D8-BLENDER-OUTLINER-0031",
+    "D8-BLENDER-OUTLINER-0033",
+    "D8-BLENDER-OUTLINER-0034",
+    "D8-BLENDER-OUTLINER-0035",
+    "D8-BLENDER-OUTLINER-0037"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: outliner (37 rows)",
+  "wave": 3
+}

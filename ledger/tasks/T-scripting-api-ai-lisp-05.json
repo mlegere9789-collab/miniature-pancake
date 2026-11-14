@@ -1,0 +1,154 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-lisp-05",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 38,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 36
+  },
+  "deps": [],
+  "domains": [
+    "lisp"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Distance",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Exit",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:53",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::MeshDistance"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-lisp-05",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/lisp.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-LISP-0151": {
+      "commands": [
+        "Distance"
+      ],
+      "kernel": [
+        "dino8::kernel::MeshDistance"
+      ]
+    },
+    "D8-AUTOCAD-LISP-0166": {
+      "commands": [
+        "Exit"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-LISP-0151",
+    "D8-AUTOCAD-LISP-0152",
+    "D8-AUTOCAD-LISP-0153",
+    "D8-AUTOCAD-LISP-0154",
+    "D8-AUTOCAD-LISP-0155",
+    "D8-AUTOCAD-LISP-0156",
+    "D8-AUTOCAD-LISP-0157",
+    "D8-AUTOCAD-LISP-0158",
+    "D8-AUTOCAD-LISP-0159",
+    "D8-AUTOCAD-LISP-0160",
+    "D8-AUTOCAD-LISP-0161",
+    "D8-AUTOCAD-LISP-0162",
+    "D8-AUTOCAD-LISP-0163",
+    "D8-AUTOCAD-LISP-0164",
+    "D8-AUTOCAD-LISP-0165",
+    "D8-AUTOCAD-LISP-0166",
+    "D8-AUTOCAD-LISP-0167",
+    "D8-AUTOCAD-LISP-0168",
+    "D8-AUTOCAD-LISP-0169",
+    "D8-AUTOCAD-LISP-0170",
+    "D8-AUTOCAD-LISP-0171",
+    "D8-AUTOCAD-LISP-0172",
+    "D8-AUTOCAD-LISP-0173",
+    "D8-AUTOCAD-LISP-0174",
+    "D8-AUTOCAD-LISP-0175",
+    "D8-AUTOCAD-LISP-0176",
+    "D8-AUTOCAD-LISP-0177",
+    "D8-AUTOCAD-LISP-0178",
+    "D8-AUTOCAD-LISP-0179",
+    "D8-AUTOCAD-LISP-0180",
+    "D8-AUTOCAD-LISP-0181",
+    "D8-AUTOCAD-LISP-0182",
+    "D8-AUTOCAD-LISP-0183",
+    "D8-AUTOCAD-LISP-0184",
+    "D8-AUTOCAD-LISP-0185",
+    "D8-AUTOCAD-LISP-0186",
+    "D8-AUTOCAD-LISP-0187",
+    "D8-AUTOCAD-LISP-0188"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-LISP-0152",
+    "D8-AUTOCAD-LISP-0153",
+    "D8-AUTOCAD-LISP-0154",
+    "D8-AUTOCAD-LISP-0155",
+    "D8-AUTOCAD-LISP-0156",
+    "D8-AUTOCAD-LISP-0157",
+    "D8-AUTOCAD-LISP-0158",
+    "D8-AUTOCAD-LISP-0159",
+    "D8-AUTOCAD-LISP-0160",
+    "D8-AUTOCAD-LISP-0161",
+    "D8-AUTOCAD-LISP-0162",
+    "D8-AUTOCAD-LISP-0163",
+    "D8-AUTOCAD-LISP-0164",
+    "D8-AUTOCAD-LISP-0165",
+    "D8-AUTOCAD-LISP-0167",
+    "D8-AUTOCAD-LISP-0168",
+    "D8-AUTOCAD-LISP-0169",
+    "D8-AUTOCAD-LISP-0170",
+    "D8-AUTOCAD-LISP-0171",
+    "D8-AUTOCAD-LISP-0172",
+    "D8-AUTOCAD-LISP-0173",
+    "D8-AUTOCAD-LISP-0174",
+    "D8-AUTOCAD-LISP-0175",
+    "D8-AUTOCAD-LISP-0176",
+    "D8-AUTOCAD-LISP-0177",
+    "D8-AUTOCAD-LISP-0178",
+    "D8-AUTOCAD-LISP-0179",
+    "D8-AUTOCAD-LISP-0180",
+    "D8-AUTOCAD-LISP-0181",
+    "D8-AUTOCAD-LISP-0182",
+    "D8-AUTOCAD-LISP-0183",
+    "D8-AUTOCAD-LISP-0184",
+    "D8-AUTOCAD-LISP-0185",
+    "D8-AUTOCAD-LISP-0186",
+    "D8-AUTOCAD-LISP-0187",
+    "D8-AUTOCAD-LISP-0188"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: lisp (38 rows)",
+  "wave": 3
+}

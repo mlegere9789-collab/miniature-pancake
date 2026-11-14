@@ -1,0 +1,164 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-solid3d-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 31,
+    "countable": 32,
+    "rows": 32,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 28
+  },
+  "deps": [],
+  "domains": [
+    "solid3d"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ChamferEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Mesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshSmooth",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Render",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:134",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-solid3d-02",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/solid3d.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-SOLID3D-0035": {
+      "commands": [
+        "Mesh"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh"
+      ]
+    },
+    "D8-AUTOCAD-SOLID3D-0041": {
+      "commands": [
+        "ChamferEdge"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0045": {
+      "commands": [
+        "Render"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0053": {
+      "commands": [
+        "MeshSmooth"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-SOLID3D-0033",
+    "D8-AUTOCAD-SOLID3D-0034",
+    "D8-AUTOCAD-SOLID3D-0035",
+    "D8-AUTOCAD-SOLID3D-0036",
+    "D8-AUTOCAD-SOLID3D-0037",
+    "D8-AUTOCAD-SOLID3D-0038",
+    "D8-AUTOCAD-SOLID3D-0039",
+    "D8-AUTOCAD-SOLID3D-0040",
+    "D8-AUTOCAD-SOLID3D-0041",
+    "D8-AUTOCAD-SOLID3D-0042",
+    "D8-AUTOCAD-SOLID3D-0043",
+    "D8-AUTOCAD-SOLID3D-0044",
+    "D8-AUTOCAD-SOLID3D-0045",
+    "D8-AUTOCAD-SOLID3D-0046",
+    "D8-AUTOCAD-SOLID3D-0047",
+    "D8-AUTOCAD-SOLID3D-0048",
+    "D8-AUTOCAD-SOLID3D-0049",
+    "D8-AUTOCAD-SOLID3D-0050",
+    "D8-AUTOCAD-SOLID3D-0051",
+    "D8-AUTOCAD-SOLID3D-0052",
+    "D8-AUTOCAD-SOLID3D-0053",
+    "D8-AUTOCAD-SOLID3D-0054",
+    "D8-AUTOCAD-SOLID3D-0055",
+    "D8-AUTOCAD-SOLID3D-0056",
+    "D8-AUTOCAD-SOLID3D-0057",
+    "D8-AUTOCAD-SOLID3D-0058",
+    "D8-AUTOCAD-SOLID3D-0059",
+    "D8-AUTOCAD-SOLID3D-0060",
+    "D8-AUTOCAD-SOLID3D-0061",
+    "D8-AUTOCAD-SOLID3D-0062",
+    "D8-AUTOCAD-SOLID3D-0063",
+    "D8-AUTOCAD-SOLID3D-0064"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-SOLID3D-0033",
+    "D8-AUTOCAD-SOLID3D-0034",
+    "D8-AUTOCAD-SOLID3D-0036",
+    "D8-AUTOCAD-SOLID3D-0037",
+    "D8-AUTOCAD-SOLID3D-0038",
+    "D8-AUTOCAD-SOLID3D-0039",
+    "D8-AUTOCAD-SOLID3D-0040",
+    "D8-AUTOCAD-SOLID3D-0042",
+    "D8-AUTOCAD-SOLID3D-0043",
+    "D8-AUTOCAD-SOLID3D-0044",
+    "D8-AUTOCAD-SOLID3D-0046",
+    "D8-AUTOCAD-SOLID3D-0047",
+    "D8-AUTOCAD-SOLID3D-0048",
+    "D8-AUTOCAD-SOLID3D-0049",
+    "D8-AUTOCAD-SOLID3D-0050",
+    "D8-AUTOCAD-SOLID3D-0051",
+    "D8-AUTOCAD-SOLID3D-0052",
+    "D8-AUTOCAD-SOLID3D-0054",
+    "D8-AUTOCAD-SOLID3D-0055",
+    "D8-AUTOCAD-SOLID3D-0056",
+    "D8-AUTOCAD-SOLID3D-0057",
+    "D8-AUTOCAD-SOLID3D-0058",
+    "D8-AUTOCAD-SOLID3D-0059",
+    "D8-AUTOCAD-SOLID3D-0060",
+    "D8-AUTOCAD-SOLID3D-0061",
+    "D8-AUTOCAD-SOLID3D-0062",
+    "D8-AUTOCAD-SOLID3D-0063",
+    "D8-AUTOCAD-SOLID3D-0064"
+  ],
+  "status": "open",
+  "title": "direct-modeling: solid3d (32 rows)",
+  "wave": 1
+}

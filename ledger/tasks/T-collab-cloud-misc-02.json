@@ -1,0 +1,142 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-collab-cloud-misc-02",
+  "corpora": [
+    "golden/forma/context-sample",
+    "golden/sketchup/collab",
+    "golden/sketchup/ext",
+    "license server scripts",
+    "provider manifest schema validation"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 2,
+    "countable": 27,
+    "rows": 27,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 25
+  },
+  "deps": [],
+  "domains": [
+    "LIC",
+    "collaboration-cloud",
+    "marketplace",
+    "revit.forma-connected",
+    "top-extensions"
+  ],
+  "factory": "collab-cloud",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "CheckInLicense",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CheckOutLicense",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-collab-cloud-misc-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "forma",
+    "revit",
+    "rhino",
+    "sketchup"
+  ],
+  "register_files": [
+    "forma/marketplace.jsonl",
+    "revit/revit.forma-connected.jsonl",
+    "rhino/LIC.jsonl",
+    "sketchup/collaboration-cloud.jsonl",
+    "sketchup/top-extensions.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-LIC-0001": {
+      "commands": [
+        "CheckInLicense",
+        "CheckOutLicense"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LIC-0002": {
+      "commands": [
+        "CheckOutLicense",
+        "CheckInLicense"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-COLLAB-0008",
+    "D8-SKETCHUP-COLLAB-0009",
+    "D8-SKETCHUP-COLLAB-0010",
+    "D8-SKETCHUP-COLLAB-0011",
+    "D8-SKETCHUP-COLLAB-0012",
+    "D8-SKETCHUP-COLLAB-0013",
+    "D8-SKETCHUP-COLLAB-0014",
+    "D8-SKETCHUP-COLLAB-0015",
+    "D8-SKETCHUP-COLLAB-0016",
+    "D8-SKETCHUP-COLLAB-0017",
+    "D8-SKETCHUP-COLLAB-0018",
+    "D8-RHINO-LIC-0001",
+    "D8-RHINO-LIC-0002",
+    "D8-FORMA-MARKET-0004",
+    "D8-REVIT-FORMA-0001",
+    "D8-REVIT-FORMA-0002",
+    "D8-REVIT-FORMA-0003",
+    "D8-REVIT-FORMA-0004",
+    "D8-REVIT-FORMA-0005",
+    "D8-REVIT-FORMA-0006",
+    "D8-REVIT-FORMA-0007",
+    "D8-REVIT-FORMA-0008",
+    "D8-REVIT-FORMA-0009",
+    "D8-REVIT-FORMA-0010",
+    "D8-REVIT-FORMA-0011",
+    "D8-REVIT-FORMA-0012",
+    "D8-SKETCHUP-EXT-0054"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-COLLAB-0008",
+    "D8-SKETCHUP-COLLAB-0009",
+    "D8-SKETCHUP-COLLAB-0010",
+    "D8-SKETCHUP-COLLAB-0011",
+    "D8-SKETCHUP-COLLAB-0012",
+    "D8-SKETCHUP-COLLAB-0013",
+    "D8-SKETCHUP-COLLAB-0014",
+    "D8-SKETCHUP-COLLAB-0015",
+    "D8-SKETCHUP-COLLAB-0016",
+    "D8-SKETCHUP-COLLAB-0017",
+    "D8-SKETCHUP-COLLAB-0018",
+    "D8-FORMA-MARKET-0004",
+    "D8-REVIT-FORMA-0001",
+    "D8-REVIT-FORMA-0002",
+    "D8-REVIT-FORMA-0003",
+    "D8-REVIT-FORMA-0004",
+    "D8-REVIT-FORMA-0005",
+    "D8-REVIT-FORMA-0006",
+    "D8-REVIT-FORMA-0007",
+    "D8-REVIT-FORMA-0008",
+    "D8-REVIT-FORMA-0009",
+    "D8-REVIT-FORMA-0010",
+    "D8-REVIT-FORMA-0011",
+    "D8-REVIT-FORMA-0012",
+    "D8-SKETCHUP-EXT-0054"
+  ],
+  "status": "open",
+  "title": "collab-cloud: LIC, collaboration-cloud, marketplace, revit.forma-connected, ... (27 rows)",
+  "wave": 2
+}

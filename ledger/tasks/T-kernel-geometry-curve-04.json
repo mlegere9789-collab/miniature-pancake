@@ -1,0 +1,416 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-kernel-geometry-curve-04",
+  "corpora": [
+    "curve fixtures: lines, arcs, splines, degree 1-11 NURBS, closed and periodic cases"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 35,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 31,
+    "with_hint": 31,
+    "without_hint": 4
+  },
+  "deps": [],
+  "domains": [
+    "CURVE"
+  ],
+  "factory": "kernel-geometry",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "RemoveKnot",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveMultiKnot",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AlignProfiles",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ChangeDegree",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CloseCrv",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ClosestPt",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Ellipse",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractPt",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "HidePt",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MoveExtractedIsocurve",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Planar",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Point",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PointGrid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Points",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rectangle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveControlPoint",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RevCloud",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Section",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelChain",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShortPath",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:328",
+        "rows": 1,
+        "score": 0.666,
+        "symbol": "dino8::kernel::Simplify"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-kernel-geometry-curve-04",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/CURVE.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-CURVE-0106": {
+      "commands": [
+        "Rectangle"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0107": {
+      "commands": [
+        "RemoveControlPoint",
+        "SelControlPoint",
+        "InsertControlPoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0108": {
+      "commands": [
+        "RemoveKnot",
+        "RemoveMultiKnot"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0109": {
+      "commands": [
+        "RemoveMultiKnot",
+        "RemoveKnot"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0110": {
+      "commands": [
+        "RevCloud"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0111": {
+      "commands": [
+        "SimplifyCrv"
+      ],
+      "kernel": [
+        "dino8::kernel::Simplify"
+      ]
+    },
+    "D8-RHINO-CURVE-0112": {
+      "commands": [
+        "Sketch",
+        "DigSketch"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0114": {
+      "commands": [
+        "Spiral"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0115": {
+      "commands": [
+        "SplitEdge",
+        "SplitMeshEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0116": {
+      "commands": [
+        "SubCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0117": {
+      "commands": [
+        "Section",
+        "DigSection",
+        "SectionView"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0118": {
+      "commands": [
+        "Silhouette"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0119": {
+      "commands": [
+        "SoftEditCrv",
+        "SoftEditSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0120": {
+      "commands": [
+        "Symmetry"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0121": {
+      "commands": [
+        "TweenCurves"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0123": {
+      "commands": [
+        "Weight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0124": {
+      "commands": [
+        "ZoomEnds"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0125": {
+      "commands": [
+        "SelChain"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0127": {
+      "commands": [
+        "ShortPath"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0128": {
+      "commands": [
+        "CloseCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0129": {
+      "commands": [
+        "ChangeDegree"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0130": {
+      "commands": [
+        "ClosestPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0132": {
+      "commands": [
+        "Ellipse"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0133": {
+      "commands": [
+        "ExtractPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0134": {
+      "commands": [
+        "HidePt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0135": {
+      "commands": [
+        "AlignProfiles"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0136": {
+      "commands": [
+        "Planar",
+        "SetPlanar",
+        "PlanarSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0137": {
+      "commands": [
+        "Point"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0138": {
+      "commands": [
+        "Points",
+        "PointsOn",
+        "PointsOff"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0139": {
+      "commands": [
+        "PointGrid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0140": {
+      "commands": [
+        "MoveExtractedIsocurve"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-CURVE-0106",
+    "D8-RHINO-CURVE-0107",
+    "D8-RHINO-CURVE-0108",
+    "D8-RHINO-CURVE-0109",
+    "D8-RHINO-CURVE-0110",
+    "D8-RHINO-CURVE-0111",
+    "D8-RHINO-CURVE-0112",
+    "D8-RHINO-CURVE-0113",
+    "D8-RHINO-CURVE-0114",
+    "D8-RHINO-CURVE-0115",
+    "D8-RHINO-CURVE-0116",
+    "D8-RHINO-CURVE-0117",
+    "D8-RHINO-CURVE-0118",
+    "D8-RHINO-CURVE-0119",
+    "D8-RHINO-CURVE-0120",
+    "D8-RHINO-CURVE-0121",
+    "D8-RHINO-CURVE-0122",
+    "D8-RHINO-CURVE-0123",
+    "D8-RHINO-CURVE-0124",
+    "D8-RHINO-CURVE-0125",
+    "D8-RHINO-CURVE-0126",
+    "D8-RHINO-CURVE-0127",
+    "D8-RHINO-CURVE-0128",
+    "D8-RHINO-CURVE-0129",
+    "D8-RHINO-CURVE-0130",
+    "D8-RHINO-CURVE-0131",
+    "D8-RHINO-CURVE-0132",
+    "D8-RHINO-CURVE-0133",
+    "D8-RHINO-CURVE-0134",
+    "D8-RHINO-CURVE-0135",
+    "D8-RHINO-CURVE-0136",
+    "D8-RHINO-CURVE-0137",
+    "D8-RHINO-CURVE-0138",
+    "D8-RHINO-CURVE-0139",
+    "D8-RHINO-CURVE-0140"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-CURVE-0113",
+    "D8-RHINO-CURVE-0122",
+    "D8-RHINO-CURVE-0126",
+    "D8-RHINO-CURVE-0131"
+  ],
+  "status": "open",
+  "title": "kernel-geometry: CURVE (35 rows)",
+  "wave": 1
+}

@@ -1,0 +1,385 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-subd-01",
+  "corpora": [
+    "SubD fixtures: boxes, sculpted forms, creased edges, n-gon faces, extraordinary vertices"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 23,
+    "countable": 23,
+    "rows": 23,
+    "with_existing_hint": 23,
+    "with_hint": 23,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "SUBD"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Radiate",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RadiateFind",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Bridge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Crease",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSubD",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Fill",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MultiPipe",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OffsetSubD",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PackSubDFaces",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Reflect",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveCrease",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveSymmetry",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetPerFaceColorByFacePack",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDBox",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDCone",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDCrease",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDCylinder",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDDisplayToggle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDEllipsoid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDExpandEdges",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1438",
+        "rows": 1,
+        "score": 0.787,
+        "symbol": "dino8::kernel::SubD::SetCrease"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:462",
+        "rows": 1,
+        "score": 0.73,
+        "symbol": "dino8::kernel::SubD::Subdivide"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:644",
+        "rows": 1,
+        "score": 0.72,
+        "symbol": "dino8::kernel::SubD::Offset"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1620",
+        "rows": 1,
+        "score": 0.692,
+        "symbol": "dino8::kernel::SubD::ExpandFaces"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1218",
+        "rows": 1,
+        "score": 0.614,
+        "symbol": "dino8::kernel::SubD::CreaseEdgeCount"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1582",
+        "rows": 1,
+        "score": 0.602,
+        "symbol": "dino8::kernel::SubD::ExtrudeFace"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-subd-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SUBD.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SUBD-0001": {
+      "commands": [
+        "Crease"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0002": {
+      "commands": [
+        "Bridge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0003": {
+      "commands": [
+        "ExtrudeSubD"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::ExtrudeFace"
+      ]
+    },
+    "D8-RHINO-SUBD-0004": {
+      "commands": [
+        "Fill"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0005": {
+      "commands": [
+        "MultiPipe",
+        "SubDMultiPipe"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0006": {
+      "commands": [
+        "OffsetSubD"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::Offset"
+      ]
+    },
+    "D8-RHINO-SUBD-0007": {
+      "commands": [
+        "PackSubDFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0008": {
+      "commands": [
+        "Radiate",
+        "RadiateFind"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0009": {
+      "commands": [
+        "RadiateFind",
+        "Radiate"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0010": {
+      "commands": [
+        "Reflect"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0011": {
+      "commands": [
+        "RemoveCrease"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0012": {
+      "commands": [
+        "RemoveSymmetry"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0013": {
+      "commands": [
+        "SetPerFaceColorByFacePack"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0014": {
+      "commands": [
+        "SubDBox"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0015": {
+      "commands": [
+        "SubDCone",
+        "SubDTruncatedCone"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0016": {
+      "commands": [
+        "SubDCrease",
+        "SubDCreaseSymmetric"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::SetCrease",
+        "dino8::kernel::SubD::CreaseEdgeCount"
+      ]
+    },
+    "D8-RHINO-SUBD-0017": {
+      "commands": [
+        "SubDCylinder"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0018": {
+      "commands": [
+        "SubDDisplayToggle"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0019": {
+      "commands": [
+        "SubDEllipsoid",
+        "Ellipsoid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0020": {
+      "commands": [
+        "SubDExpandEdges",
+        "SelSubDEdges"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::ExpandFaces"
+      ]
+    },
+    "D8-RHINO-SUBD-0021": {
+      "commands": [
+        "SubDFaceEdgeVertexToggle"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0022": {
+      "commands": [
+        "SubDivide",
+        "Divide"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::Subdivide"
+      ]
+    },
+    "D8-RHINO-SUBD-0023": {
+      "commands": [
+        "SubDLoft"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SUBD-0001",
+    "D8-RHINO-SUBD-0002",
+    "D8-RHINO-SUBD-0003",
+    "D8-RHINO-SUBD-0004",
+    "D8-RHINO-SUBD-0005",
+    "D8-RHINO-SUBD-0006",
+    "D8-RHINO-SUBD-0007",
+    "D8-RHINO-SUBD-0008",
+    "D8-RHINO-SUBD-0009",
+    "D8-RHINO-SUBD-0010",
+    "D8-RHINO-SUBD-0011",
+    "D8-RHINO-SUBD-0012",
+    "D8-RHINO-SUBD-0013",
+    "D8-RHINO-SUBD-0014",
+    "D8-RHINO-SUBD-0015",
+    "D8-RHINO-SUBD-0016",
+    "D8-RHINO-SUBD-0017",
+    "D8-RHINO-SUBD-0018",
+    "D8-RHINO-SUBD-0019",
+    "D8-RHINO-SUBD-0020",
+    "D8-RHINO-SUBD-0021",
+    "D8-RHINO-SUBD-0022",
+    "D8-RHINO-SUBD-0023"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "mesh-subd-sculpt: SUBD (23 rows)",
+  "wave": 1
+}

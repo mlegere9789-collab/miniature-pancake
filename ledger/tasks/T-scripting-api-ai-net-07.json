@@ -1,0 +1,157 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-net-07",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 33,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 37
+  },
+  "deps": [],
+  "domains": [
+    "net"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ViewportProperties",
+        "rows": 1,
+        "score": 0.719,
+        "status": "implemented"
+      },
+      {
+        "name": "Properties",
+        "rows": 1,
+        "score": 0.675,
+        "status": "implemented"
+      },
+      {
+        "name": "TextProperties",
+        "rows": 1,
+        "score": 0.6,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:81",
+        "rows": 1,
+        "score": 0.6,
+        "symbol": "dino8::kernel::MassProperties"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-net-07",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/net.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-NET-0259": {
+      "commands": [
+        "ViewportProperties",
+        "Properties",
+        "TextProperties"
+      ],
+      "kernel": [
+        "dino8::kernel::MassProperties"
+      ]
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-NET-0227",
+    "D8-AUTOCAD-NET-0228",
+    "D8-AUTOCAD-NET-0229",
+    "D8-AUTOCAD-NET-0230",
+    "D8-AUTOCAD-NET-0231",
+    "D8-AUTOCAD-NET-0232",
+    "D8-AUTOCAD-NET-0233",
+    "D8-AUTOCAD-NET-0234",
+    "D8-AUTOCAD-NET-0235",
+    "D8-AUTOCAD-NET-0236",
+    "D8-AUTOCAD-NET-0237",
+    "D8-AUTOCAD-NET-0238",
+    "D8-AUTOCAD-NET-0239",
+    "D8-AUTOCAD-NET-0240",
+    "D8-AUTOCAD-NET-0241",
+    "D8-AUTOCAD-NET-0242",
+    "D8-AUTOCAD-NET-0243",
+    "D8-AUTOCAD-NET-0244",
+    "D8-AUTOCAD-NET-0245",
+    "D8-AUTOCAD-NET-0246",
+    "D8-AUTOCAD-NET-0247",
+    "D8-AUTOCAD-NET-0248",
+    "D8-AUTOCAD-NET-0249",
+    "D8-AUTOCAD-NET-0250",
+    "D8-AUTOCAD-NET-0251",
+    "D8-AUTOCAD-NET-0252",
+    "D8-AUTOCAD-NET-0253",
+    "D8-AUTOCAD-NET-0254",
+    "D8-AUTOCAD-NET-0255",
+    "D8-AUTOCAD-NET-0256",
+    "D8-AUTOCAD-NET-0257",
+    "D8-AUTOCAD-NET-0258",
+    "D8-AUTOCAD-NET-0259",
+    "D8-AUTOCAD-NET-0260",
+    "D8-AUTOCAD-NET-0261",
+    "D8-AUTOCAD-NET-0262",
+    "D8-AUTOCAD-NET-0263",
+    "D8-AUTOCAD-NET-0264"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-NET-0227",
+    "D8-AUTOCAD-NET-0228",
+    "D8-AUTOCAD-NET-0229",
+    "D8-AUTOCAD-NET-0230",
+    "D8-AUTOCAD-NET-0231",
+    "D8-AUTOCAD-NET-0232",
+    "D8-AUTOCAD-NET-0233",
+    "D8-AUTOCAD-NET-0234",
+    "D8-AUTOCAD-NET-0235",
+    "D8-AUTOCAD-NET-0236",
+    "D8-AUTOCAD-NET-0237",
+    "D8-AUTOCAD-NET-0238",
+    "D8-AUTOCAD-NET-0239",
+    "D8-AUTOCAD-NET-0240",
+    "D8-AUTOCAD-NET-0241",
+    "D8-AUTOCAD-NET-0242",
+    "D8-AUTOCAD-NET-0243",
+    "D8-AUTOCAD-NET-0244",
+    "D8-AUTOCAD-NET-0245",
+    "D8-AUTOCAD-NET-0246",
+    "D8-AUTOCAD-NET-0247",
+    "D8-AUTOCAD-NET-0248",
+    "D8-AUTOCAD-NET-0249",
+    "D8-AUTOCAD-NET-0250",
+    "D8-AUTOCAD-NET-0251",
+    "D8-AUTOCAD-NET-0252",
+    "D8-AUTOCAD-NET-0253",
+    "D8-AUTOCAD-NET-0254",
+    "D8-AUTOCAD-NET-0255",
+    "D8-AUTOCAD-NET-0256",
+    "D8-AUTOCAD-NET-0257",
+    "D8-AUTOCAD-NET-0258",
+    "D8-AUTOCAD-NET-0260",
+    "D8-AUTOCAD-NET-0261",
+    "D8-AUTOCAD-NET-0262",
+    "D8-AUTOCAD-NET-0263",
+    "D8-AUTOCAD-NET-0264"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: net (38 rows)",
+  "wave": 3
+}

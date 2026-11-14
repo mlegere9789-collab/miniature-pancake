@@ -1,0 +1,535 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-mesh-02",
+  "corpora": [
+    "mesh fixtures: triangle, quad and n-gon meshes with holes, non-manifold edges, duplicate faces"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 35,
+    "with_hint": 35,
+    "without_hint": 1
+  },
+  "deps": [],
+  "domains": [
+    "MESH"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "MeshBooleanUnion",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanSplit",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshIntersect",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshSelfIntersect",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FlatShade",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MatchMeshEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Mesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanDifference",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanIntersection",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBox",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshCone",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshCylinder",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshEllipsoid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshFromLines",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshOutline",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshPatch",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshPlane",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshPolyline",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshRepair",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshSphere",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:134",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2694",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::Cone"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2672",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::Cylinder"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2846",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::Torus"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:46",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::PointCloud"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:384",
+        "rows": 1,
+        "score": 0.748,
+        "symbol": "dino8::kernel::PointCloud::raw"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:54",
+        "rows": 1,
+        "score": 0.725,
+        "symbol": "dino8::kernel::PointCloud::PointAt"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2301",
+        "rows": 1,
+        "score": 0.72,
+        "symbol": "dino8::kernel::Mesh::Offset"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2684",
+        "rows": 1,
+        "score": 0.645,
+        "symbol": "dino8::kernel::Mesh::ConeToApex"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2003",
+        "rows": 1,
+        "score": 0.628,
+        "symbol": "dino8::kernel::Mesh::FindSelfIntersections"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_diagnostics.h:99",
+        "rows": 2,
+        "score": 0.624,
+        "symbol": "dino8::kernel::MeshBooleanReport"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:579",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Mesh::SplitUVSeam"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-mesh-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/MESH.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-MESH-0037": {
+      "commands": [
+        "MatchMeshEdge",
+        "DupMeshEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0038": {
+      "commands": [
+        "MeshBooleanDifference",
+        "BooleanDifference"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0039": {
+      "commands": [
+        "MeshBooleanIntersection",
+        "BooleanIntersection",
+        "MeshBooleanUnion"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0040": {
+      "commands": [
+        "MeshBooleanSplit",
+        "BooleanSplit",
+        "MeshBooleanUnion"
+      ],
+      "kernel": [
+        "dino8::kernel::MeshBooleanReport"
+      ]
+    },
+    "D8-RHINO-MESH-0041": {
+      "commands": [
+        "MeshBooleanUnion",
+        "BooleanUnion",
+        "MeshBooleanSplit"
+      ],
+      "kernel": [
+        "dino8::kernel::MeshBooleanReport"
+      ]
+    },
+    "D8-RHINO-MESH-0042": {
+      "commands": [
+        "MeshBox"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0043": {
+      "commands": [
+        "MeshCone"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Cone",
+        "dino8::kernel::Mesh::ConeToApex"
+      ]
+    },
+    "D8-RHINO-MESH-0044": {
+      "commands": [
+        "Mesh"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh"
+      ]
+    },
+    "D8-RHINO-MESH-0045": {
+      "commands": [
+        "MeshCylinder",
+        "Cylinder"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Cylinder"
+      ]
+    },
+    "D8-RHINO-MESH-0046": {
+      "commands": [
+        "MeshEllipsoid",
+        "Ellipsoid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0047": {
+      "commands": [
+        "MeshFromLines"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0049": {
+      "commands": [
+        "MeshIntersect",
+        "MeshSelfIntersect",
+        "Intersect"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0050": {
+      "commands": [
+        "MeshOutline"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0051": {
+      "commands": [
+        "MeshPatch"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0052": {
+      "commands": [
+        "MeshPlane"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0053": {
+      "commands": [
+        "MeshPolyline",
+        "PolylineOnMesh",
+        "Polyline"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0054": {
+      "commands": [
+        "MeshRepair"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0055": {
+      "commands": [
+        "MeshSelfIntersect",
+        "MeshIntersect",
+        "IntersectSelf"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::FindSelfIntersections"
+      ]
+    },
+    "D8-RHINO-MESH-0056": {
+      "commands": [
+        "MeshSphere"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0057": {
+      "commands": [
+        "MeshSplit"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::SplitUVSeam"
+      ]
+    },
+    "D8-RHINO-MESH-0058": {
+      "commands": [
+        "MeshToNURB"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0059": {
+      "commands": [
+        "MeshTorus"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Torus"
+      ]
+    },
+    "D8-RHINO-MESH-0060": {
+      "commands": [
+        "MeshTrim"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0061": {
+      "commands": [
+        "MeshTruncatedCone",
+        "TruncatedCone",
+        "SubDTruncatedCone"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0062": {
+      "commands": [
+        "OffsetMesh"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Offset"
+      ]
+    },
+    "D8-RHINO-MESH-0063": {
+      "commands": [
+        "PackTextures",
+        "UnpackTextures",
+        "Textures"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0064": {
+      "commands": [
+        "PatchSingleFace"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0065": {
+      "commands": [
+        "PlanarMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0066": {
+      "commands": [
+        "PointCloud",
+        "ReducePointCloud",
+        "PointCloudContour"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud",
+        "dino8::kernel::PointCloud::raw",
+        "dino8::kernel::PointCloud::PointAt"
+      ]
+    },
+    "D8-RHINO-MESH-0067": {
+      "commands": [
+        "PointDeviation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0068": {
+      "commands": [
+        "FlatShade"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0069": {
+      "commands": [
+        "PolygonCount"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0070": {
+      "commands": [
+        "QuadrangulateMesh",
+        "TriangulateMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0071": {
+      "commands": [
+        "QuadRemesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0072": {
+      "commands": [
+        "ReduceMesh"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-MESH-0037",
+    "D8-RHINO-MESH-0038",
+    "D8-RHINO-MESH-0039",
+    "D8-RHINO-MESH-0040",
+    "D8-RHINO-MESH-0041",
+    "D8-RHINO-MESH-0042",
+    "D8-RHINO-MESH-0043",
+    "D8-RHINO-MESH-0044",
+    "D8-RHINO-MESH-0045",
+    "D8-RHINO-MESH-0046",
+    "D8-RHINO-MESH-0047",
+    "D8-RHINO-MESH-0048",
+    "D8-RHINO-MESH-0049",
+    "D8-RHINO-MESH-0050",
+    "D8-RHINO-MESH-0051",
+    "D8-RHINO-MESH-0052",
+    "D8-RHINO-MESH-0053",
+    "D8-RHINO-MESH-0054",
+    "D8-RHINO-MESH-0055",
+    "D8-RHINO-MESH-0056",
+    "D8-RHINO-MESH-0057",
+    "D8-RHINO-MESH-0058",
+    "D8-RHINO-MESH-0059",
+    "D8-RHINO-MESH-0060",
+    "D8-RHINO-MESH-0061",
+    "D8-RHINO-MESH-0062",
+    "D8-RHINO-MESH-0063",
+    "D8-RHINO-MESH-0064",
+    "D8-RHINO-MESH-0065",
+    "D8-RHINO-MESH-0066",
+    "D8-RHINO-MESH-0067",
+    "D8-RHINO-MESH-0068",
+    "D8-RHINO-MESH-0069",
+    "D8-RHINO-MESH-0070",
+    "D8-RHINO-MESH-0071",
+    "D8-RHINO-MESH-0072"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-MESH-0048"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: MESH (36 rows)",
+  "wave": 1
+}

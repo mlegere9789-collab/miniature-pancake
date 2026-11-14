@@ -1,0 +1,260 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-kernel-geometry-curve-06",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 10,
+    "with_hint": 10,
+    "without_hint": 25
+  },
+  "deps": [],
+  "domains": [
+    "curve"
+  ],
+  "factory": "kernel-geometry",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Smooth",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Spin",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Split",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDivide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Select",
+        "rows": 3,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "Radius",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "FlatShade",
+        "rows": 1,
+        "score": 0.689,
+        "status": "implemented"
+      },
+      {
+        "name": "SelControlPoint",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "SplitByObject",
+        "rows": 1,
+        "score": 0.611,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:109",
+        "rows": 1,
+        "score": 0.848,
+        "symbol": "dino8::kernel::NurbsCurve"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:462",
+        "rows": 1,
+        "score": 0.73,
+        "symbol": "dino8::kernel::SubD::Subdivide"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1280",
+        "rows": 1,
+        "score": 0.634,
+        "symbol": "dino8::kernel::NurbsCurve::Split"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:2214",
+        "rows": 1,
+        "score": 0.631,
+        "symbol": "dino8::kernel::NurbsCurve::raw"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1044",
+        "rows": 1,
+        "score": 0.615,
+        "symbol": "dino8::kernel::NurbsCurve::Fair"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-kernel-geometry-curve-06",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/curve.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-CURVE-0021": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsCurve",
+        "dino8::kernel::NurbsCurve::raw",
+        "dino8::kernel::NurbsCurve::Fair"
+      ]
+    },
+    "D8-BLENDER-CURVE-0023": {
+      "commands": [
+        "Radius"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CURVE-0025": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CURVE-0031": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CURVE-0034": {
+      "commands": [
+        "SelControlPoint",
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CURVE-0037": {
+      "commands": [
+        "FlatShade"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CURVE-0040": {
+      "commands": [
+        "Smooth"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CURVE-0044": {
+      "commands": [
+        "Spin"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CURVE-0047": {
+      "commands": [
+        "Split",
+        "SplitByObject"
+      ],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::Split"
+      ]
+    },
+    "D8-BLENDER-CURVE-0048": {
+      "commands": [
+        "SubDivide"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::Subdivide"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-CURVE-0017",
+    "D8-BLENDER-CURVE-0018",
+    "D8-BLENDER-CURVE-0019",
+    "D8-BLENDER-CURVE-0020",
+    "D8-BLENDER-CURVE-0021",
+    "D8-BLENDER-CURVE-0022",
+    "D8-BLENDER-CURVE-0023",
+    "D8-BLENDER-CURVE-0024",
+    "D8-BLENDER-CURVE-0025",
+    "D8-BLENDER-CURVE-0026",
+    "D8-BLENDER-CURVE-0027",
+    "D8-BLENDER-CURVE-0028",
+    "D8-BLENDER-CURVE-0029",
+    "D8-BLENDER-CURVE-0030",
+    "D8-BLENDER-CURVE-0031",
+    "D8-BLENDER-CURVE-0032",
+    "D8-BLENDER-CURVE-0033",
+    "D8-BLENDER-CURVE-0034",
+    "D8-BLENDER-CURVE-0035",
+    "D8-BLENDER-CURVE-0036",
+    "D8-BLENDER-CURVE-0037",
+    "D8-BLENDER-CURVE-0038",
+    "D8-BLENDER-CURVE-0039",
+    "D8-BLENDER-CURVE-0040",
+    "D8-BLENDER-CURVE-0041",
+    "D8-BLENDER-CURVE-0042",
+    "D8-BLENDER-CURVE-0043",
+    "D8-BLENDER-CURVE-0044",
+    "D8-BLENDER-CURVE-0045",
+    "D8-BLENDER-CURVE-0046",
+    "D8-BLENDER-CURVE-0047",
+    "D8-BLENDER-CURVE-0048",
+    "D8-BLENDER-CURVE-0049",
+    "D8-BLENDER-CURVE-0050",
+    "D8-BLENDER-CURVE-0051"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-CURVE-0017",
+    "D8-BLENDER-CURVE-0018",
+    "D8-BLENDER-CURVE-0019",
+    "D8-BLENDER-CURVE-0020",
+    "D8-BLENDER-CURVE-0022",
+    "D8-BLENDER-CURVE-0024",
+    "D8-BLENDER-CURVE-0026",
+    "D8-BLENDER-CURVE-0027",
+    "D8-BLENDER-CURVE-0028",
+    "D8-BLENDER-CURVE-0029",
+    "D8-BLENDER-CURVE-0030",
+    "D8-BLENDER-CURVE-0032",
+    "D8-BLENDER-CURVE-0033",
+    "D8-BLENDER-CURVE-0035",
+    "D8-BLENDER-CURVE-0036",
+    "D8-BLENDER-CURVE-0038",
+    "D8-BLENDER-CURVE-0039",
+    "D8-BLENDER-CURVE-0041",
+    "D8-BLENDER-CURVE-0042",
+    "D8-BLENDER-CURVE-0043",
+    "D8-BLENDER-CURVE-0045",
+    "D8-BLENDER-CURVE-0046",
+    "D8-BLENDER-CURVE-0049",
+    "D8-BLENDER-CURVE-0050",
+    "D8-BLENDER-CURVE-0051"
+  ],
+  "status": "open",
+  "title": "kernel-geometry: curve (35 rows)",
+  "wave": 1
+}

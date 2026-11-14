@@ -1,0 +1,422 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-select-03",
+  "corpora": [
+    "selection fixtures: mixed-object models with layers, blocks, groups, user text and history"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 31,
+    "rows": 31,
+    "with_existing_hint": 31,
+    "with_hint": 31,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "SELECT"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SelOpenSrf",
+        "rows": 5,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMesh",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelOpenCrv",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelOpenPolysrf",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelLinetype",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMeshEdges",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMeshFacesByArea",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMeshPart",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelOpenMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelPlanarCrv",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelPlanarSrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelPolysrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelLight",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelLine",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMappingWidget",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMaterialName",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMeshFacesByAspectRatio",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMeshFacesByDraftAngle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMeshFacesByEdgeLength",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMirroredBlocks",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-select-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SELECT.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SELECT-0063": {
+      "commands": [
+        "SelLight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0064": {
+      "commands": [
+        "SelLine",
+        "SelLinetype"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0065": {
+      "commands": [
+        "SelLinetype",
+        "Linetype",
+        "SetLinetype"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0066": {
+      "commands": [
+        "SelMappingWidget",
+        "MappingWidget",
+        "MappingWidgetOff"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0067": {
+      "commands": [
+        "SelMaterialName"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0068": {
+      "commands": [
+        "SelMesh",
+        "SelMeshPart",
+        "SelMeshEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0069": {
+      "commands": [
+        "SelMeshEdges",
+        "SelMesh",
+        "ExtractMeshEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0070": {
+      "commands": [
+        "SelMeshFacesByArea",
+        "ExtractMeshFacesByArea",
+        "CollapseMeshFacesByArea"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0071": {
+      "commands": [
+        "SelMeshFacesByAspectRatio",
+        "ExtractMeshFacesByAspectRatio",
+        "CollapseMeshFacesByAspectRatio"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0072": {
+      "commands": [
+        "SelMeshFacesByDraftAngle",
+        "ExtractMeshFacesByDraftAngle",
+        "SelMeshFacesByArea"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0073": {
+      "commands": [
+        "SelMeshFacesByEdgeLength",
+        "ExtractMeshFacesByEdgeLength",
+        "CollapseMeshFacesByEdgeLength"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0074": {
+      "commands": [
+        "SelMeshPart",
+        "SelMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0075": {
+      "commands": [
+        "SelMirroredBlocks"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0076": {
+      "commands": [
+        "SelNakedMeshEdgePt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0077": {
+      "commands": [
+        "SelNamedViewWidget"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0078": {
+      "commands": [
+        "SelName"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0079": {
+      "commands": [
+        "SelNonManifold",
+        "ZoomNonManifold"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0080": {
+      "commands": [
+        "SelObjectsWithHistory"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0081": {
+      "commands": [
+        "SelOpenCrv",
+        "SelOpenSrf",
+        "SelOpenMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0082": {
+      "commands": [
+        "SelOpenMesh",
+        "SelOpenCrv",
+        "SelOpenSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0083": {
+      "commands": [
+        "SelOpenPolysrf",
+        "SelOpenSrf",
+        "SelPolysrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0084": {
+      "commands": [
+        "SelOpenSrf",
+        "SelOpenPolysrf",
+        "SelOpenCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0085": {
+      "commands": [
+        "SelOpenSubD",
+        "SelOpenSrf",
+        "SelSubD"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0086": {
+      "commands": [
+        "SelPicture",
+        "Picture"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0087": {
+      "commands": [
+        "SelPlanarCrv",
+        "SelPlanarSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0088": {
+      "commands": [
+        "SelPlanarSrf",
+        "PlanarSrf",
+        "SelPlanarCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0089": {
+      "commands": [
+        "SelPolyline",
+        "Polyline"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0090": {
+      "commands": [
+        "SelPolysrf",
+        "SelOpenPolysrf",
+        "SelClosedPolysrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0091": {
+      "commands": [
+        "SelPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0092": {
+      "commands": [
+        "SelPtCloud"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0093": {
+      "commands": [
+        "SelRenderColor",
+        "SetRenderColor"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SELECT-0063",
+    "D8-RHINO-SELECT-0064",
+    "D8-RHINO-SELECT-0065",
+    "D8-RHINO-SELECT-0066",
+    "D8-RHINO-SELECT-0067",
+    "D8-RHINO-SELECT-0068",
+    "D8-RHINO-SELECT-0069",
+    "D8-RHINO-SELECT-0070",
+    "D8-RHINO-SELECT-0071",
+    "D8-RHINO-SELECT-0072",
+    "D8-RHINO-SELECT-0073",
+    "D8-RHINO-SELECT-0074",
+    "D8-RHINO-SELECT-0075",
+    "D8-RHINO-SELECT-0076",
+    "D8-RHINO-SELECT-0077",
+    "D8-RHINO-SELECT-0078",
+    "D8-RHINO-SELECT-0079",
+    "D8-RHINO-SELECT-0080",
+    "D8-RHINO-SELECT-0081",
+    "D8-RHINO-SELECT-0082",
+    "D8-RHINO-SELECT-0083",
+    "D8-RHINO-SELECT-0084",
+    "D8-RHINO-SELECT-0085",
+    "D8-RHINO-SELECT-0086",
+    "D8-RHINO-SELECT-0087",
+    "D8-RHINO-SELECT-0088",
+    "D8-RHINO-SELECT-0089",
+    "D8-RHINO-SELECT-0090",
+    "D8-RHINO-SELECT-0091",
+    "D8-RHINO-SELECT-0092",
+    "D8-RHINO-SELECT-0093"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "ux-access-i18n: SELECT (31 rows)",
+  "wave": 3
+}

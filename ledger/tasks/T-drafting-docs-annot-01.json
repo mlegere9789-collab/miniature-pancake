@@ -1,0 +1,360 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-drafting-docs-annot-01",
+  "corpora": [
+    "annotation fixtures: dimensions in multiple units, leaders, hatches, dots, styles with overrides"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 25,
+    "with_hint": 25,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "ANNOT"
+  ],
+  "factory": "drafting-docs",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Arrowhead",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Centermark",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Dim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimAligned",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimAngle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimArea",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimCreaseAngle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimCurveLength",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimDiameter",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimOrdinate",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimRadius",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimRecenterText",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimRotated",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimVolume",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Dot",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DupAnnotationStyle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FindText",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Hatch",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "HatchBase",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "HatchScale",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1542",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::NurbsCurve::Length"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-drafting-docs-annot-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/ANNOT.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-ANNOT-0001": {
+      "commands": [
+        "Arrowhead"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0002": {
+      "commands": [
+        "Centermark"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0003": {
+      "commands": [
+        "Dim"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0004": {
+      "commands": [
+        "DimAligned"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0005": {
+      "commands": [
+        "DimAngle"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0006": {
+      "commands": [
+        "DimArea"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0007": {
+      "commands": [
+        "DimCreaseAngle"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0008": {
+      "commands": [
+        "DimCurveLength"
+      ],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::Length"
+      ]
+    },
+    "D8-RHINO-ANNOT-0009": {
+      "commands": [
+        "DimDiameter",
+        "Diameter"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0010": {
+      "commands": [
+        "DimOrdinate",
+        "SelDimOrdinate"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0011": {
+      "commands": [
+        "DimRadius",
+        "Radius"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0012": {
+      "commands": [
+        "DimRecenterText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0013": {
+      "commands": [
+        "DimRotated"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0014": {
+      "commands": [
+        "DimVolume",
+        "Volume"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0015": {
+      "commands": [
+        "Dot"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0016": {
+      "commands": [
+        "DupAnnotationStyle",
+        "SelAnnotationStyle",
+        "AnnotationStyles"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0017": {
+      "commands": [
+        "FindText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0018": {
+      "commands": [
+        "Hatch"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0019": {
+      "commands": [
+        "HatchBase"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0020": {
+      "commands": [
+        "HatchScale"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0021": {
+      "commands": [
+        "Leader",
+        "SelLeader"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0022": {
+      "commands": [
+        "MatchAnnotation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0023": {
+      "commands": [
+        "ImportAnnotationStyles",
+        "AnnotationStyles"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0024": {
+      "commands": [
+        "Linetypes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ANNOT-0025": {
+      "commands": [
+        "LinetypeDisplay"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-ANNOT-0001",
+    "D8-RHINO-ANNOT-0002",
+    "D8-RHINO-ANNOT-0003",
+    "D8-RHINO-ANNOT-0004",
+    "D8-RHINO-ANNOT-0005",
+    "D8-RHINO-ANNOT-0006",
+    "D8-RHINO-ANNOT-0007",
+    "D8-RHINO-ANNOT-0008",
+    "D8-RHINO-ANNOT-0009",
+    "D8-RHINO-ANNOT-0010",
+    "D8-RHINO-ANNOT-0011",
+    "D8-RHINO-ANNOT-0012",
+    "D8-RHINO-ANNOT-0013",
+    "D8-RHINO-ANNOT-0014",
+    "D8-RHINO-ANNOT-0015",
+    "D8-RHINO-ANNOT-0016",
+    "D8-RHINO-ANNOT-0017",
+    "D8-RHINO-ANNOT-0018",
+    "D8-RHINO-ANNOT-0019",
+    "D8-RHINO-ANNOT-0020",
+    "D8-RHINO-ANNOT-0021",
+    "D8-RHINO-ANNOT-0022",
+    "D8-RHINO-ANNOT-0023",
+    "D8-RHINO-ANNOT-0024",
+    "D8-RHINO-ANNOT-0025"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "drafting-docs: ANNOT (25 rows)",
+  "wave": 2
+}

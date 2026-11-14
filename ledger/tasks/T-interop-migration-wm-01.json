@@ -1,0 +1,262 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-wm-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 16,
+    "with_hint": 16,
+    "without_hint": 24
+  },
+  "deps": [],
+  "domains": [
+    "wm"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Open",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Revert",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SaveAs",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Autosave",
+        "rows": 1,
+        "score": 0.694,
+        "status": "implemented"
+      },
+      {
+        "name": "DataLink",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "Import",
+        "rows": 6,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Export",
+        "rows": 4,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "History",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "RecordHistory",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-wm-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/wm.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-WM-0011": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0018": {
+      "commands": [
+        "DataLink"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0019": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0020": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0021": {
+      "commands": [
+        "Open"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0026": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0027": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0039": {
+      "commands": [
+        "History",
+        "RecordHistory"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0044": {
+      "commands": [
+        "Revert"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0045": {
+      "commands": [
+        "SaveAs"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0046": {
+      "commands": [
+        "Autosave"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0052": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0053": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0054": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0056": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-WM-0057": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-WM-0001",
+    "D8-BLENDER-WM-0002",
+    "D8-BLENDER-WM-0003",
+    "D8-BLENDER-WM-0005",
+    "D8-BLENDER-WM-0008",
+    "D8-BLENDER-WM-0009",
+    "D8-BLENDER-WM-0010",
+    "D8-BLENDER-WM-0011",
+    "D8-BLENDER-WM-0012",
+    "D8-BLENDER-WM-0013",
+    "D8-BLENDER-WM-0014",
+    "D8-BLENDER-WM-0015",
+    "D8-BLENDER-WM-0016",
+    "D8-BLENDER-WM-0017",
+    "D8-BLENDER-WM-0018",
+    "D8-BLENDER-WM-0019",
+    "D8-BLENDER-WM-0020",
+    "D8-BLENDER-WM-0021",
+    "D8-BLENDER-WM-0022",
+    "D8-BLENDER-WM-0023",
+    "D8-BLENDER-WM-0026",
+    "D8-BLENDER-WM-0027",
+    "D8-BLENDER-WM-0037",
+    "D8-BLENDER-WM-0038",
+    "D8-BLENDER-WM-0039",
+    "D8-BLENDER-WM-0040",
+    "D8-BLENDER-WM-0041",
+    "D8-BLENDER-WM-0042",
+    "D8-BLENDER-WM-0043",
+    "D8-BLENDER-WM-0044",
+    "D8-BLENDER-WM-0045",
+    "D8-BLENDER-WM-0046",
+    "D8-BLENDER-WM-0047",
+    "D8-BLENDER-WM-0048",
+    "D8-BLENDER-WM-0049",
+    "D8-BLENDER-WM-0052",
+    "D8-BLENDER-WM-0053",
+    "D8-BLENDER-WM-0054",
+    "D8-BLENDER-WM-0056",
+    "D8-BLENDER-WM-0057"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-WM-0001",
+    "D8-BLENDER-WM-0002",
+    "D8-BLENDER-WM-0003",
+    "D8-BLENDER-WM-0005",
+    "D8-BLENDER-WM-0008",
+    "D8-BLENDER-WM-0009",
+    "D8-BLENDER-WM-0010",
+    "D8-BLENDER-WM-0012",
+    "D8-BLENDER-WM-0013",
+    "D8-BLENDER-WM-0014",
+    "D8-BLENDER-WM-0015",
+    "D8-BLENDER-WM-0016",
+    "D8-BLENDER-WM-0017",
+    "D8-BLENDER-WM-0022",
+    "D8-BLENDER-WM-0023",
+    "D8-BLENDER-WM-0037",
+    "D8-BLENDER-WM-0038",
+    "D8-BLENDER-WM-0040",
+    "D8-BLENDER-WM-0041",
+    "D8-BLENDER-WM-0042",
+    "D8-BLENDER-WM-0043",
+    "D8-BLENDER-WM-0047",
+    "D8-BLENDER-WM-0048",
+    "D8-BLENDER-WM-0049"
+  ],
+  "status": "open",
+  "title": "interop-migration: wm (40 rows)",
+  "wave": 1
+}

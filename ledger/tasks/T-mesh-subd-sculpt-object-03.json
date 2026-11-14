@@ -1,0 +1,129 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-object-03",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 28
+  },
+  "deps": [],
+  "domains": [
+    "object"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Volume",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveFromGroup",
+        "rows": 1,
+        "score": 0.706,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-object-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/object.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-OBJECT-0234": {
+      "commands": [
+        "RemoveFromGroup"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OBJECT-0247": {
+      "commands": [
+        "Volume"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-OBJECT-0217",
+    "D8-BLENDER-OBJECT-0218",
+    "D8-BLENDER-OBJECT-0219",
+    "D8-BLENDER-OBJECT-0220",
+    "D8-BLENDER-OBJECT-0221",
+    "D8-BLENDER-OBJECT-0222",
+    "D8-BLENDER-OBJECT-0223",
+    "D8-BLENDER-OBJECT-0224",
+    "D8-BLENDER-OBJECT-0225",
+    "D8-BLENDER-OBJECT-0226",
+    "D8-BLENDER-OBJECT-0227",
+    "D8-BLENDER-OBJECT-0228",
+    "D8-BLENDER-OBJECT-0229",
+    "D8-BLENDER-OBJECT-0230",
+    "D8-BLENDER-OBJECT-0231",
+    "D8-BLENDER-OBJECT-0232",
+    "D8-BLENDER-OBJECT-0233",
+    "D8-BLENDER-OBJECT-0234",
+    "D8-BLENDER-OBJECT-0235",
+    "D8-BLENDER-OBJECT-0236",
+    "D8-BLENDER-OBJECT-0237",
+    "D8-BLENDER-OBJECT-0238",
+    "D8-BLENDER-OBJECT-0240",
+    "D8-BLENDER-OBJECT-0241",
+    "D8-BLENDER-OBJECT-0242",
+    "D8-BLENDER-OBJECT-0243",
+    "D8-BLENDER-OBJECT-0244",
+    "D8-BLENDER-OBJECT-0247",
+    "D8-BLENDER-OBJECT-0249",
+    "D8-BLENDER-OBJECT-0250"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-OBJECT-0217",
+    "D8-BLENDER-OBJECT-0218",
+    "D8-BLENDER-OBJECT-0219",
+    "D8-BLENDER-OBJECT-0220",
+    "D8-BLENDER-OBJECT-0221",
+    "D8-BLENDER-OBJECT-0222",
+    "D8-BLENDER-OBJECT-0223",
+    "D8-BLENDER-OBJECT-0224",
+    "D8-BLENDER-OBJECT-0225",
+    "D8-BLENDER-OBJECT-0226",
+    "D8-BLENDER-OBJECT-0227",
+    "D8-BLENDER-OBJECT-0228",
+    "D8-BLENDER-OBJECT-0229",
+    "D8-BLENDER-OBJECT-0230",
+    "D8-BLENDER-OBJECT-0231",
+    "D8-BLENDER-OBJECT-0232",
+    "D8-BLENDER-OBJECT-0233",
+    "D8-BLENDER-OBJECT-0235",
+    "D8-BLENDER-OBJECT-0236",
+    "D8-BLENDER-OBJECT-0237",
+    "D8-BLENDER-OBJECT-0238",
+    "D8-BLENDER-OBJECT-0240",
+    "D8-BLENDER-OBJECT-0241",
+    "D8-BLENDER-OBJECT-0242",
+    "D8-BLENDER-OBJECT-0243",
+    "D8-BLENDER-OBJECT-0244",
+    "D8-BLENDER-OBJECT-0249",
+    "D8-BLENDER-OBJECT-0250"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: object (30 rows)",
+  "wave": 1
+}

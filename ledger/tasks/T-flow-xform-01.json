@@ -1,0 +1,283 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-xform-01",
+  "corpora": [
+    "corpus/gh/xform/transform-affine",
+    "corpus/gh/xform/transform-array",
+    "corpus/gh/xform/transform-morph"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 23,
+    "rows": 23,
+    "with_existing_hint": 14,
+    "with_hint": 14,
+    "without_hint": 9
+  },
+  "deps": [],
+  "domains": [
+    "xform"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Scale",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ScaleNU",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Flow",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Mirror",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Move",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Orient",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Project",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rotate",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Shear",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Plane",
+        "rows": 1,
+        "score": 0.8,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayLinear",
+        "rows": 1,
+        "score": 0.745,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayPolar",
+        "rows": 1,
+        "score": 0.72,
+        "status": "implemented"
+      },
+      {
+        "name": "SoftTransform",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/features.h:1031",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::CurveArrayStation"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:1936",
+        "rows": 1,
+        "score": 0.659,
+        "symbol": "dino8::kernel::Brep::Transform"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:810",
+        "rows": 1,
+        "score": 0.659,
+        "symbol": "dino8::kernel::Mesh::Transform"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:592",
+        "rows": 1,
+        "score": 0.609,
+        "symbol": "dino8::kernel::SubD::Transform"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/features.h:1029",
+        "rows": 1,
+        "score": 0.606,
+        "symbol": "dino8::kernel::CurveArrayOrientation"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-xform-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/xform.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-XFORM-0001": {
+      "commands": [
+        "SoftTransform"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Transform",
+        "dino8::kernel::Mesh::Transform",
+        "dino8::kernel::SubD::Transform"
+      ]
+    },
+    "D8-GH-XFORM-0002": {
+      "commands": [
+        "Shear"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0004": {
+      "commands": [
+        "Project"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0005": {
+      "commands": [
+        "Mirror"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0006": {
+      "commands": [
+        "Scale",
+        "ScaleNU"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0007": {
+      "commands": [
+        "ScaleNU",
+        "Scale"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0008": {
+      "commands": [
+        "Rotate"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0010": {
+      "commands": [
+        "Move"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0012": {
+      "commands": [
+        "Orient"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0013": {
+      "commands": [
+        "Plane"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0015": {
+      "commands": [
+        "ArrayLinear"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0017": {
+      "commands": [
+        "ArrayPolar"
+      ],
+      "kernel": []
+    },
+    "D8-GH-XFORM-0018": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::CurveArrayStation",
+        "dino8::kernel::CurveArrayOrientation"
+      ]
+    },
+    "D8-GH-XFORM-0023": {
+      "commands": [
+        "Flow"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-XFORM-0001",
+    "D8-GH-XFORM-0002",
+    "D8-GH-XFORM-0003",
+    "D8-GH-XFORM-0004",
+    "D8-GH-XFORM-0005",
+    "D8-GH-XFORM-0006",
+    "D8-GH-XFORM-0007",
+    "D8-GH-XFORM-0008",
+    "D8-GH-XFORM-0009",
+    "D8-GH-XFORM-0010",
+    "D8-GH-XFORM-0011",
+    "D8-GH-XFORM-0012",
+    "D8-GH-XFORM-0013",
+    "D8-GH-XFORM-0014",
+    "D8-GH-XFORM-0015",
+    "D8-GH-XFORM-0016",
+    "D8-GH-XFORM-0017",
+    "D8-GH-XFORM-0018",
+    "D8-GH-XFORM-0019",
+    "D8-GH-XFORM-0020",
+    "D8-GH-XFORM-0021",
+    "D8-GH-XFORM-0022",
+    "D8-GH-XFORM-0023"
+  ],
+  "rows_without_hint": [
+    "D8-GH-XFORM-0003",
+    "D8-GH-XFORM-0009",
+    "D8-GH-XFORM-0011",
+    "D8-GH-XFORM-0014",
+    "D8-GH-XFORM-0016",
+    "D8-GH-XFORM-0019",
+    "D8-GH-XFORM-0020",
+    "D8-GH-XFORM-0021",
+    "D8-GH-XFORM-0022"
+  ],
+  "status": "open",
+  "title": "flow: xform (23 rows)",
+  "wave": 1
+}

@@ -1,0 +1,157 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-lisp-11",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 38,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 35
+  },
+  "deps": [],
+  "domains": [
+    "lisp"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Align",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rotate3D",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1478",
+        "rows": 1,
+        "score": 0.604,
+        "symbol": "dino8::kernel::NurbsCurve::ClosestPoint"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-lisp-11",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/lisp.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-LISP-0383": {
+      "commands": [
+        "Align"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-LISP-0386": {
+      "commands": [
+        "Rotate3D"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-LISP-0404": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::ClosestPoint"
+      ]
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-LISP-0376",
+    "D8-AUTOCAD-LISP-0377",
+    "D8-AUTOCAD-LISP-0378",
+    "D8-AUTOCAD-LISP-0379",
+    "D8-AUTOCAD-LISP-0380",
+    "D8-AUTOCAD-LISP-0381",
+    "D8-AUTOCAD-LISP-0382",
+    "D8-AUTOCAD-LISP-0383",
+    "D8-AUTOCAD-LISP-0384",
+    "D8-AUTOCAD-LISP-0385",
+    "D8-AUTOCAD-LISP-0386",
+    "D8-AUTOCAD-LISP-0387",
+    "D8-AUTOCAD-LISP-0388",
+    "D8-AUTOCAD-LISP-0389",
+    "D8-AUTOCAD-LISP-0390",
+    "D8-AUTOCAD-LISP-0391",
+    "D8-AUTOCAD-LISP-0392",
+    "D8-AUTOCAD-LISP-0393",
+    "D8-AUTOCAD-LISP-0394",
+    "D8-AUTOCAD-LISP-0395",
+    "D8-AUTOCAD-LISP-0396",
+    "D8-AUTOCAD-LISP-0397",
+    "D8-AUTOCAD-LISP-0398",
+    "D8-AUTOCAD-LISP-0399",
+    "D8-AUTOCAD-LISP-0400",
+    "D8-AUTOCAD-LISP-0401",
+    "D8-AUTOCAD-LISP-0402",
+    "D8-AUTOCAD-LISP-0403",
+    "D8-AUTOCAD-LISP-0404",
+    "D8-AUTOCAD-LISP-0405",
+    "D8-AUTOCAD-LISP-0406",
+    "D8-AUTOCAD-LISP-0407",
+    "D8-AUTOCAD-LISP-0408",
+    "D8-AUTOCAD-LISP-0409",
+    "D8-AUTOCAD-LISP-0410",
+    "D8-AUTOCAD-LISP-0411",
+    "D8-AUTOCAD-LISP-0412",
+    "D8-AUTOCAD-LISP-0413"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-LISP-0376",
+    "D8-AUTOCAD-LISP-0377",
+    "D8-AUTOCAD-LISP-0378",
+    "D8-AUTOCAD-LISP-0379",
+    "D8-AUTOCAD-LISP-0380",
+    "D8-AUTOCAD-LISP-0381",
+    "D8-AUTOCAD-LISP-0382",
+    "D8-AUTOCAD-LISP-0384",
+    "D8-AUTOCAD-LISP-0385",
+    "D8-AUTOCAD-LISP-0387",
+    "D8-AUTOCAD-LISP-0388",
+    "D8-AUTOCAD-LISP-0389",
+    "D8-AUTOCAD-LISP-0390",
+    "D8-AUTOCAD-LISP-0391",
+    "D8-AUTOCAD-LISP-0392",
+    "D8-AUTOCAD-LISP-0393",
+    "D8-AUTOCAD-LISP-0394",
+    "D8-AUTOCAD-LISP-0395",
+    "D8-AUTOCAD-LISP-0396",
+    "D8-AUTOCAD-LISP-0397",
+    "D8-AUTOCAD-LISP-0398",
+    "D8-AUTOCAD-LISP-0399",
+    "D8-AUTOCAD-LISP-0400",
+    "D8-AUTOCAD-LISP-0401",
+    "D8-AUTOCAD-LISP-0402",
+    "D8-AUTOCAD-LISP-0403",
+    "D8-AUTOCAD-LISP-0405",
+    "D8-AUTOCAD-LISP-0406",
+    "D8-AUTOCAD-LISP-0407",
+    "D8-AUTOCAD-LISP-0408",
+    "D8-AUTOCAD-LISP-0409",
+    "D8-AUTOCAD-LISP-0410",
+    "D8-AUTOCAD-LISP-0411",
+    "D8-AUTOCAD-LISP-0412",
+    "D8-AUTOCAD-LISP-0413"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: lisp (38 rows)",
+  "wave": 3
+}

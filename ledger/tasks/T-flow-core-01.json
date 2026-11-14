@@ -1,0 +1,153 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-core-01",
+  "corpora": [
+    "corpus/gh/core/solver-and-canvas-engine"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 25,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 22
+  },
+  "deps": [],
+  "domains": [
+    "core"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "DocumentProperties",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GrasshopperPlayer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DocumentPropertiesPage",
+        "rows": 1,
+        "score": 0.795,
+        "status": "implemented"
+      },
+      {
+        "name": "Grasshopper",
+        "rows": 1,
+        "score": 0.7,
+        "status": "implemented"
+      },
+      {
+        "name": "ObjectDisplayModes",
+        "rows": 1,
+        "score": 0.653,
+        "status": "implemented"
+      },
+      {
+        "name": "Properties",
+        "rows": 1,
+        "score": 0.6,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-core-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/core.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-CORE-0009": {
+      "commands": [
+        "ObjectDisplayModes"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CORE-0019": {
+      "commands": [
+        "DocumentProperties",
+        "DocumentPropertiesPage",
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CORE-0025": {
+      "commands": [
+        "GrasshopperPlayer",
+        "Grasshopper"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-CORE-0001",
+    "D8-GH-CORE-0002",
+    "D8-GH-CORE-0003",
+    "D8-GH-CORE-0004",
+    "D8-GH-CORE-0005",
+    "D8-GH-CORE-0006",
+    "D8-GH-CORE-0007",
+    "D8-GH-CORE-0008",
+    "D8-GH-CORE-0009",
+    "D8-GH-CORE-0010",
+    "D8-GH-CORE-0011",
+    "D8-GH-CORE-0012",
+    "D8-GH-CORE-0013",
+    "D8-GH-CORE-0014",
+    "D8-GH-CORE-0015",
+    "D8-GH-CORE-0016",
+    "D8-GH-CORE-0017",
+    "D8-GH-CORE-0018",
+    "D8-GH-CORE-0019",
+    "D8-GH-CORE-0020",
+    "D8-GH-CORE-0021",
+    "D8-GH-CORE-0022",
+    "D8-GH-CORE-0023",
+    "D8-GH-CORE-0024",
+    "D8-GH-CORE-0025"
+  ],
+  "rows_without_hint": [
+    "D8-GH-CORE-0001",
+    "D8-GH-CORE-0002",
+    "D8-GH-CORE-0003",
+    "D8-GH-CORE-0004",
+    "D8-GH-CORE-0005",
+    "D8-GH-CORE-0006",
+    "D8-GH-CORE-0007",
+    "D8-GH-CORE-0008",
+    "D8-GH-CORE-0010",
+    "D8-GH-CORE-0011",
+    "D8-GH-CORE-0012",
+    "D8-GH-CORE-0013",
+    "D8-GH-CORE-0014",
+    "D8-GH-CORE-0015",
+    "D8-GH-CORE-0016",
+    "D8-GH-CORE-0017",
+    "D8-GH-CORE-0018",
+    "D8-GH-CORE-0020",
+    "D8-GH-CORE-0021",
+    "D8-GH-CORE-0022",
+    "D8-GH-CORE-0023",
+    "D8-GH-CORE-0024"
+  ],
+  "status": "open",
+  "title": "flow: core (25 rows)",
+  "wave": 1
+}

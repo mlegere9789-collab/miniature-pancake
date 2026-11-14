@@ -1,0 +1,350 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-mesh-01",
+  "corpora": [
+    "corpus/gh/mesh/mesh-analysis",
+    "corpus/gh/mesh/mesh-primitive",
+    "corpus/gh/mesh/mesh-triangulation"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 32,
+    "rows": 32,
+    "with_existing_hint": 16,
+    "with_hint": 16,
+    "without_hint": 16
+  },
+  "deps": [],
+  "domains": [
+    "mesh"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ConvexHull",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshSphere",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBox",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshPlane",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelMeshEdges",
+        "rows": 1,
+        "score": 0.733,
+        "status": "implemented"
+      },
+      {
+        "name": "UnifyMeshNormals",
+        "rows": 1,
+        "score": 0.719,
+        "status": "implemented"
+      },
+      {
+        "name": "RebuildMeshNormals",
+        "rows": 1,
+        "score": 0.683,
+        "status": "implemented"
+      },
+      {
+        "name": "Curvature",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractMeshEdges",
+        "rows": 1,
+        "score": 0.648,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:315",
+        "rows": 2,
+        "score": 1.0,
+        "symbol": "dino8::kernel::ConvexHull"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:272",
+        "rows": 2,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::ClosestPoint"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:164",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::Area"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:143",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh::Volume"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:594",
+        "rows": 1,
+        "score": 0.896,
+        "symbol": "dino8::kernel::Mesh::SetTextureCoordinates"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:603",
+        "rows": 1,
+        "score": 0.821,
+        "symbol": "dino8::kernel::Mesh::HasTextureCoordinates"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2941",
+        "rows": 2,
+        "score": 0.799,
+        "symbol": "dino8::kernel::MeshClosestPointIndex::ClosestPoint"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2932",
+        "rows": 2,
+        "score": 0.793,
+        "symbol": "dino8::kernel::MeshClosestPointIndex"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:609",
+        "rows": 1,
+        "score": 0.772,
+        "symbol": "dino8::kernel::Mesh::TextureCoordinateAt"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:789",
+        "rows": 1,
+        "score": 0.706,
+        "symbol": "dino8::kernel::Mesh::IsClosedManifold"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/convex_hull.h:96",
+        "rows": 1,
+        "score": 0.704,
+        "symbol": "dino8::kernel::ExactConvexHull"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:775",
+        "rows": 1,
+        "score": 0.685,
+        "symbol": "dino8::kernel::Mesh::FlipNormals"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2182",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::Mesh::UnifyNormals"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:122",
+        "rows": 1,
+        "score": 0.645,
+        "symbol": "dino8::kernel::MeshQuadQuality"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-mesh-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/mesh.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-MESH-0004": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::ClosestPoint",
+        "dino8::kernel::MeshClosestPointIndex::ClosestPoint",
+        "dino8::kernel::MeshClosestPointIndex"
+      ]
+    },
+    "D8-GH-MESH-0006": {
+      "commands": [
+        "SelMeshEdges",
+        "ExtractMeshEdges"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0008": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::Volume"
+      ]
+    },
+    "D8-GH-MESH-0009": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::Area"
+      ]
+    },
+    "D8-GH-MESH-0010": {
+      "commands": [
+        "Curvature"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0011": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::ClosestPoint",
+        "dino8::kernel::MeshClosestPointIndex",
+        "dino8::kernel::MeshClosestPointIndex::ClosestPoint"
+      ]
+    },
+    "D8-GH-MESH-0012": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::IsClosedManifold"
+      ]
+    },
+    "D8-GH-MESH-0015": {
+      "commands": [
+        "UnifyMeshNormals",
+        "RebuildMeshNormals"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::FlipNormals",
+        "dino8::kernel::Mesh::UnifyNormals"
+      ]
+    },
+    "D8-GH-MESH-0018": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::SetTextureCoordinates",
+        "dino8::kernel::Mesh::HasTextureCoordinates",
+        "dino8::kernel::Mesh::TextureCoordinateAt"
+      ]
+    },
+    "D8-GH-MESH-0020": {
+      "commands": [
+        "MeshBox"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0021": {
+      "commands": [
+        "MeshSphere"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0022": {
+      "commands": [
+        "MeshSphere"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0023": {
+      "commands": [
+        "MeshPlane"
+      ],
+      "kernel": []
+    },
+    "D8-GH-MESH-0024": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::MeshQuadQuality"
+      ]
+    },
+    "D8-GH-MESH-0030": {
+      "commands": [
+        "ConvexHull"
+      ],
+      "kernel": [
+        "dino8::kernel::ConvexHull",
+        "dino8::kernel::ExactConvexHull"
+      ]
+    },
+    "D8-GH-MESH-0031": {
+      "commands": [
+        "ConvexHull"
+      ],
+      "kernel": [
+        "dino8::kernel::ConvexHull"
+      ]
+    }
+  },
+  "rows": [
+    "D8-GH-MESH-0001",
+    "D8-GH-MESH-0002",
+    "D8-GH-MESH-0003",
+    "D8-GH-MESH-0004",
+    "D8-GH-MESH-0005",
+    "D8-GH-MESH-0006",
+    "D8-GH-MESH-0007",
+    "D8-GH-MESH-0008",
+    "D8-GH-MESH-0009",
+    "D8-GH-MESH-0010",
+    "D8-GH-MESH-0011",
+    "D8-GH-MESH-0012",
+    "D8-GH-MESH-0013",
+    "D8-GH-MESH-0014",
+    "D8-GH-MESH-0015",
+    "D8-GH-MESH-0016",
+    "D8-GH-MESH-0017",
+    "D8-GH-MESH-0018",
+    "D8-GH-MESH-0019",
+    "D8-GH-MESH-0020",
+    "D8-GH-MESH-0021",
+    "D8-GH-MESH-0022",
+    "D8-GH-MESH-0023",
+    "D8-GH-MESH-0024",
+    "D8-GH-MESH-0025",
+    "D8-GH-MESH-0026",
+    "D8-GH-MESH-0027",
+    "D8-GH-MESH-0028",
+    "D8-GH-MESH-0029",
+    "D8-GH-MESH-0030",
+    "D8-GH-MESH-0031",
+    "D8-GH-MESH-0032"
+  ],
+  "rows_without_hint": [
+    "D8-GH-MESH-0001",
+    "D8-GH-MESH-0002",
+    "D8-GH-MESH-0003",
+    "D8-GH-MESH-0005",
+    "D8-GH-MESH-0007",
+    "D8-GH-MESH-0013",
+    "D8-GH-MESH-0014",
+    "D8-GH-MESH-0016",
+    "D8-GH-MESH-0017",
+    "D8-GH-MESH-0019",
+    "D8-GH-MESH-0025",
+    "D8-GH-MESH-0026",
+    "D8-GH-MESH-0027",
+    "D8-GH-MESH-0028",
+    "D8-GH-MESH-0029",
+    "D8-GH-MESH-0032"
+  ],
+  "status": "open",
+  "title": "flow: mesh (32 rows)",
+  "wave": 1
+}

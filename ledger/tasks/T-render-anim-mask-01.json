@@ -1,0 +1,233 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-mask-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 29,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 10,
+    "with_hint": 10,
+    "without_hint": 30
+  },
+  "deps": [],
+  "domains": [
+    "mask"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Select",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "New",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Circle",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "Layer",
+        "rows": 1,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "LayerOn",
+        "rows": 1,
+        "score": 0.673,
+        "status": "implemented"
+      },
+      {
+        "name": "DuplicateMacro",
+        "rows": 2,
+        "score": 0.669,
+        "status": "implemented"
+      },
+      {
+        "name": "NewLayer",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "SelCircle",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-mask-01",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/mask.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-MASK-0007": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0008": {
+      "commands": [
+        "DuplicateMacro"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0009": {
+      "commands": [
+        "DuplicateMacro"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0015": {
+      "commands": [
+        "Layer",
+        "LayerOn",
+        "NewLayer"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0018": {
+      "commands": [
+        "New"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0023": {
+      "commands": [
+        "Circle"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0025": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0026": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0027": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MASK-0028": {
+      "commands": [
+        "SelCircle"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-MASK-0001",
+    "D8-BLENDER-MASK-0002",
+    "D8-BLENDER-MASK-0003",
+    "D8-BLENDER-MASK-0004",
+    "D8-BLENDER-MASK-0005",
+    "D8-BLENDER-MASK-0006",
+    "D8-BLENDER-MASK-0007",
+    "D8-BLENDER-MASK-0008",
+    "D8-BLENDER-MASK-0009",
+    "D8-BLENDER-MASK-0010",
+    "D8-BLENDER-MASK-0011",
+    "D8-BLENDER-MASK-0012",
+    "D8-BLENDER-MASK-0013",
+    "D8-BLENDER-MASK-0014",
+    "D8-BLENDER-MASK-0015",
+    "D8-BLENDER-MASK-0016",
+    "D8-BLENDER-MASK-0017",
+    "D8-BLENDER-MASK-0018",
+    "D8-BLENDER-MASK-0019",
+    "D8-BLENDER-MASK-0020",
+    "D8-BLENDER-MASK-0021",
+    "D8-BLENDER-MASK-0022",
+    "D8-BLENDER-MASK-0023",
+    "D8-BLENDER-MASK-0024",
+    "D8-BLENDER-MASK-0025",
+    "D8-BLENDER-MASK-0026",
+    "D8-BLENDER-MASK-0027",
+    "D8-BLENDER-MASK-0028",
+    "D8-BLENDER-MASK-0029",
+    "D8-BLENDER-MASK-0030",
+    "D8-BLENDER-MASK-0031",
+    "D8-BLENDER-MASK-0032",
+    "D8-BLENDER-MASK-0033",
+    "D8-BLENDER-MASK-0034",
+    "D8-BLENDER-MASK-0035",
+    "D8-BLENDER-MASK-0036",
+    "D8-BLENDER-MASK-0037",
+    "D8-BLENDER-MASK-0038",
+    "D8-BLENDER-MASK-0039",
+    "D8-BLENDER-MASK-0040"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-MASK-0001",
+    "D8-BLENDER-MASK-0002",
+    "D8-BLENDER-MASK-0003",
+    "D8-BLENDER-MASK-0004",
+    "D8-BLENDER-MASK-0005",
+    "D8-BLENDER-MASK-0006",
+    "D8-BLENDER-MASK-0010",
+    "D8-BLENDER-MASK-0011",
+    "D8-BLENDER-MASK-0012",
+    "D8-BLENDER-MASK-0013",
+    "D8-BLENDER-MASK-0014",
+    "D8-BLENDER-MASK-0016",
+    "D8-BLENDER-MASK-0017",
+    "D8-BLENDER-MASK-0019",
+    "D8-BLENDER-MASK-0020",
+    "D8-BLENDER-MASK-0021",
+    "D8-BLENDER-MASK-0022",
+    "D8-BLENDER-MASK-0024",
+    "D8-BLENDER-MASK-0029",
+    "D8-BLENDER-MASK-0030",
+    "D8-BLENDER-MASK-0031",
+    "D8-BLENDER-MASK-0032",
+    "D8-BLENDER-MASK-0033",
+    "D8-BLENDER-MASK-0034",
+    "D8-BLENDER-MASK-0035",
+    "D8-BLENDER-MASK-0036",
+    "D8-BLENDER-MASK-0037",
+    "D8-BLENDER-MASK-0038",
+    "D8-BLENDER-MASK-0039",
+    "D8-BLENDER-MASK-0040"
+  ],
+  "status": "open",
+  "title": "render-anim: mask (40 rows)",
+  "wave": 2
+}

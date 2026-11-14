@@ -1,0 +1,120 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-grease-pencil-03",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 31,
+    "rows": 31,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 30
+  },
+  "deps": [],
+  "domains": [
+    "grease_pencil"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Select",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-grease-pencil-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/grease_pencil.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GREASEPE-0071": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-GREASEPE-0063",
+    "D8-BLENDER-GREASEPE-0064",
+    "D8-BLENDER-GREASEPE-0065",
+    "D8-BLENDER-GREASEPE-0066",
+    "D8-BLENDER-GREASEPE-0067",
+    "D8-BLENDER-GREASEPE-0068",
+    "D8-BLENDER-GREASEPE-0069",
+    "D8-BLENDER-GREASEPE-0070",
+    "D8-BLENDER-GREASEPE-0071",
+    "D8-BLENDER-GREASEPE-0072",
+    "D8-BLENDER-GREASEPE-0073",
+    "D8-BLENDER-GREASEPE-0074",
+    "D8-BLENDER-GREASEPE-0075",
+    "D8-BLENDER-GREASEPE-0076",
+    "D8-BLENDER-GREASEPE-0077",
+    "D8-BLENDER-GREASEPE-0078",
+    "D8-BLENDER-GREASEPE-0079",
+    "D8-BLENDER-GREASEPE-0080",
+    "D8-BLENDER-GREASEPE-0081",
+    "D8-BLENDER-GREASEPE-0082",
+    "D8-BLENDER-GREASEPE-0083",
+    "D8-BLENDER-GREASEPE-0084",
+    "D8-BLENDER-GREASEPE-0085",
+    "D8-BLENDER-GREASEPE-0086",
+    "D8-BLENDER-GREASEPE-0087",
+    "D8-BLENDER-GREASEPE-0088",
+    "D8-BLENDER-GREASEPE-0089",
+    "D8-BLENDER-GREASEPE-0090",
+    "D8-BLENDER-GREASEPE-0091",
+    "D8-BLENDER-GREASEPE-0092",
+    "D8-BLENDER-GREASEPE-0093"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-GREASEPE-0063",
+    "D8-BLENDER-GREASEPE-0064",
+    "D8-BLENDER-GREASEPE-0065",
+    "D8-BLENDER-GREASEPE-0066",
+    "D8-BLENDER-GREASEPE-0067",
+    "D8-BLENDER-GREASEPE-0068",
+    "D8-BLENDER-GREASEPE-0069",
+    "D8-BLENDER-GREASEPE-0070",
+    "D8-BLENDER-GREASEPE-0072",
+    "D8-BLENDER-GREASEPE-0073",
+    "D8-BLENDER-GREASEPE-0074",
+    "D8-BLENDER-GREASEPE-0075",
+    "D8-BLENDER-GREASEPE-0076",
+    "D8-BLENDER-GREASEPE-0077",
+    "D8-BLENDER-GREASEPE-0078",
+    "D8-BLENDER-GREASEPE-0079",
+    "D8-BLENDER-GREASEPE-0080",
+    "D8-BLENDER-GREASEPE-0081",
+    "D8-BLENDER-GREASEPE-0082",
+    "D8-BLENDER-GREASEPE-0083",
+    "D8-BLENDER-GREASEPE-0084",
+    "D8-BLENDER-GREASEPE-0085",
+    "D8-BLENDER-GREASEPE-0086",
+    "D8-BLENDER-GREASEPE-0087",
+    "D8-BLENDER-GREASEPE-0088",
+    "D8-BLENDER-GREASEPE-0089",
+    "D8-BLENDER-GREASEPE-0090",
+    "D8-BLENDER-GREASEPE-0091",
+    "D8-BLENDER-GREASEPE-0092",
+    "D8-BLENDER-GREASEPE-0093"
+  ],
+  "status": "open",
+  "title": "render-anim: grease_pencil (31 rows)",
+  "wave": 2
+}

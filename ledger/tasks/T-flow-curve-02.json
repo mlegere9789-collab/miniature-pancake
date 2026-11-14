@@ -1,0 +1,353 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-curve-02",
+  "corpora": [
+    "corpus/gh/curve/curve-division",
+    "corpus/gh/curve/curve-primitive"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 27,
+    "rows": 27,
+    "with_existing_hint": 19,
+    "with_hint": 19,
+    "without_hint": 8
+  },
+  "deps": [],
+  "domains": [
+    "curve"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Circle",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rectangle",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Contour",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Ellipse",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rectangle3Pt",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Arc",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Arc3Pt",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Circle3Pt",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Helix",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Line",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Polygon",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Polyline",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Spiral",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CircleD",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "SelPolyline",
+        "rows": 1,
+        "score": 0.666,
+        "status": "implemented"
+      },
+      {
+        "name": "Distance",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshPolyline",
+        "rows": 1,
+        "score": 0.64,
+        "status": "implemented"
+      },
+      {
+        "name": "PolygonStar",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "SelCircle",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:149",
+        "rows": 2,
+        "score": 1.0,
+        "symbol": "dino8::kernel::PointCloud::Contour"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:976",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::ContourBrep"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1993",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::LoopPolygon"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1994",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::PointInPolygon"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-curve-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/curve.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-CURVE-0032": {
+      "commands": [
+        "Distance"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0035": {
+      "commands": [
+        "Contour"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud::Contour",
+        "dino8::kernel::ContourBrep"
+      ]
+    },
+    "D8-GH-CURVE-0036": {
+      "commands": [
+        "Contour"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud::Contour"
+      ]
+    },
+    "D8-GH-CURVE-0038": {
+      "commands": [
+        "Line"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0041": {
+      "commands": [
+        "Circle",
+        "CircleD",
+        "SelCircle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0042": {
+      "commands": [
+        "Circle3Pt"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0043": {
+      "commands": [
+        "Circle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0044": {
+      "commands": [
+        "Circle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0045": {
+      "commands": [
+        "Arc"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0046": {
+      "commands": [
+        "Arc3Pt"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0048": {
+      "commands": [
+        "Ellipse"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0049": {
+      "commands": [
+        "Ellipse"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0050": {
+      "commands": [
+        "Rectangle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0051": {
+      "commands": [
+        "Rectangle3Pt",
+        "Rectangle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0052": {
+      "commands": [
+        "Rectangle",
+        "Rectangle3Pt"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0054": {
+      "commands": [
+        "Polygon",
+        "PolygonStar"
+      ],
+      "kernel": [
+        "dino8::kernel::LoopPolygon",
+        "dino8::kernel::PointInPolygon"
+      ]
+    },
+    "D8-GH-CURVE-0055": {
+      "commands": [
+        "Polyline",
+        "SelPolyline",
+        "MeshPolyline"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0056": {
+      "commands": [
+        "Spiral"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0057": {
+      "commands": [
+        "Helix"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-CURVE-0031",
+    "D8-GH-CURVE-0032",
+    "D8-GH-CURVE-0033",
+    "D8-GH-CURVE-0034",
+    "D8-GH-CURVE-0035",
+    "D8-GH-CURVE-0036",
+    "D8-GH-CURVE-0037",
+    "D8-GH-CURVE-0038",
+    "D8-GH-CURVE-0039",
+    "D8-GH-CURVE-0040",
+    "D8-GH-CURVE-0041",
+    "D8-GH-CURVE-0042",
+    "D8-GH-CURVE-0043",
+    "D8-GH-CURVE-0044",
+    "D8-GH-CURVE-0045",
+    "D8-GH-CURVE-0046",
+    "D8-GH-CURVE-0047",
+    "D8-GH-CURVE-0048",
+    "D8-GH-CURVE-0049",
+    "D8-GH-CURVE-0050",
+    "D8-GH-CURVE-0051",
+    "D8-GH-CURVE-0052",
+    "D8-GH-CURVE-0053",
+    "D8-GH-CURVE-0054",
+    "D8-GH-CURVE-0055",
+    "D8-GH-CURVE-0056",
+    "D8-GH-CURVE-0057"
+  ],
+  "rows_without_hint": [
+    "D8-GH-CURVE-0031",
+    "D8-GH-CURVE-0033",
+    "D8-GH-CURVE-0034",
+    "D8-GH-CURVE-0037",
+    "D8-GH-CURVE-0039",
+    "D8-GH-CURVE-0040",
+    "D8-GH-CURVE-0047",
+    "D8-GH-CURVE-0053"
+  ],
+  "status": "open",
+  "title": "flow: curve (27 rows)",
+  "wave": 1
+}

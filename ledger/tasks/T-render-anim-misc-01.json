@@ -1,0 +1,189 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-misc-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 20,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 34
+  },
+  "deps": [],
+  "domains": [
+    "camera",
+    "constraint",
+    "cycles",
+    "editors",
+    "gp_effects"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Copy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Flip",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConstraintDelete",
+        "rows": 1,
+        "score": 0.9,
+        "status": "implemented"
+      },
+      {
+        "name": "Distance",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "HBarSetDistance",
+        "rows": 1,
+        "score": 0.6,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-misc-01",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/camera.jsonl",
+    "blender/constraint.jsonl",
+    "blender/cycles.jsonl",
+    "blender/editors.jsonl",
+    "blender/gp_effects.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-CONSTRAI-0005": {
+      "commands": [
+        "Copy"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CONSTRAI-0007": {
+      "commands": [
+        "Delete",
+        "ConstraintDelete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-CONSTRAI-0010": {
+      "commands": [
+        "Distance",
+        "HBarSetDistance"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GPEFFECT-0003": {
+      "commands": [
+        "Flip"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-CAMERA-0001",
+    "D8-BLENDER-CAMERA-0002",
+    "D8-BLENDER-CONSTRAI-0001",
+    "D8-BLENDER-CONSTRAI-0002",
+    "D8-BLENDER-CONSTRAI-0003",
+    "D8-BLENDER-CONSTRAI-0004",
+    "D8-BLENDER-CONSTRAI-0005",
+    "D8-BLENDER-CONSTRAI-0006",
+    "D8-BLENDER-CONSTRAI-0007",
+    "D8-BLENDER-CONSTRAI-0008",
+    "D8-BLENDER-CONSTRAI-0009",
+    "D8-BLENDER-CONSTRAI-0010",
+    "D8-BLENDER-CONSTRAI-0011",
+    "D8-BLENDER-CONSTRAI-0012",
+    "D8-BLENDER-CONSTRAI-0013",
+    "D8-BLENDER-CONSTRAI-0014",
+    "D8-BLENDER-CONSTRAI-0015",
+    "D8-BLENDER-CONSTRAI-0016",
+    "D8-BLENDER-CONSTRAI-0017",
+    "D8-BLENDER-CONSTRAI-0018",
+    "D8-BLENDER-CYCLES-0001",
+    "D8-BLENDER-CYCLES-0002",
+    "D8-BLENDER-CYCLES-0003",
+    "D8-BLENDER-EDITOR-0001",
+    "D8-BLENDER-EDITOR-0003",
+    "D8-BLENDER-EDITOR-0005",
+    "D8-BLENDER-EDITOR-0006",
+    "D8-BLENDER-EDITOR-0008",
+    "D8-BLENDER-EDITOR-0014",
+    "D8-BLENDER-GPEFFECT-0001",
+    "D8-BLENDER-GPEFFECT-0002",
+    "D8-BLENDER-GPEFFECT-0003",
+    "D8-BLENDER-GPEFFECT-0004",
+    "D8-BLENDER-GPEFFECT-0005",
+    "D8-BLENDER-GPEFFECT-0006",
+    "D8-BLENDER-GPEFFECT-0007",
+    "D8-BLENDER-GPEFFECT-0008",
+    "D8-BLENDER-GPEFFECT-0009"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-CAMERA-0001",
+    "D8-BLENDER-CAMERA-0002",
+    "D8-BLENDER-CONSTRAI-0001",
+    "D8-BLENDER-CONSTRAI-0002",
+    "D8-BLENDER-CONSTRAI-0003",
+    "D8-BLENDER-CONSTRAI-0004",
+    "D8-BLENDER-CONSTRAI-0006",
+    "D8-BLENDER-CONSTRAI-0008",
+    "D8-BLENDER-CONSTRAI-0009",
+    "D8-BLENDER-CONSTRAI-0011",
+    "D8-BLENDER-CONSTRAI-0012",
+    "D8-BLENDER-CONSTRAI-0013",
+    "D8-BLENDER-CONSTRAI-0014",
+    "D8-BLENDER-CONSTRAI-0015",
+    "D8-BLENDER-CONSTRAI-0016",
+    "D8-BLENDER-CONSTRAI-0017",
+    "D8-BLENDER-CONSTRAI-0018",
+    "D8-BLENDER-CYCLES-0001",
+    "D8-BLENDER-CYCLES-0002",
+    "D8-BLENDER-CYCLES-0003",
+    "D8-BLENDER-EDITOR-0001",
+    "D8-BLENDER-EDITOR-0003",
+    "D8-BLENDER-EDITOR-0005",
+    "D8-BLENDER-EDITOR-0006",
+    "D8-BLENDER-EDITOR-0008",
+    "D8-BLENDER-EDITOR-0014",
+    "D8-BLENDER-GPEFFECT-0001",
+    "D8-BLENDER-GPEFFECT-0002",
+    "D8-BLENDER-GPEFFECT-0004",
+    "D8-BLENDER-GPEFFECT-0005",
+    "D8-BLENDER-GPEFFECT-0006",
+    "D8-BLENDER-GPEFFECT-0007",
+    "D8-BLENDER-GPEFFECT-0008",
+    "D8-BLENDER-GPEFFECT-0009"
+  ],
+  "status": "open",
+  "title": "render-anim: camera, constraint, cycles, editors, ... (38 rows)",
+  "wave": 2
+}

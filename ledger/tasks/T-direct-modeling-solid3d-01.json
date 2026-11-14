@@ -1,0 +1,362 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-solid3d-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 32,
+    "countable": 32,
+    "rows": 32,
+    "with_existing_hint": 12,
+    "with_hint": 12,
+    "without_hint": 20
+  },
+  "deps": [],
+  "domains": [
+    "solid3d"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Box",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cone",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cylinder",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Extrude",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Intersect",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Loft",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Pyramid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Revolve",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Section",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Sphere",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Thicken",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Torus",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "IntersectSelf",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshIntersect",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "DigSection",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeCrv",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSrf",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshCylinder",
+        "rows": 1,
+        "score": 0.64,
+        "status": "implemented"
+      },
+      {
+        "name": "RailRevolve",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "SectionView",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2672",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Mesh::Cylinder"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:180",
+        "rows": 1,
+        "score": 0.637,
+        "symbol": "dino8::kernel::IntersectBreps"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:152",
+        "rows": 1,
+        "score": 0.637,
+        "symbol": "dino8::kernel::IntersectFaces"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:409",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Brep::Extrude"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:926",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Brep::Revolve"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:785",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Brep::Thicken"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:715",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::IntersectCurves"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2353",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Mesh::Thicken"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-solid3d-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/solid3d.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-SOLID3D-0001": {
+      "commands": [
+        "Box"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0002": {
+      "commands": [
+        "Sphere"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0003": {
+      "commands": [
+        "Cylinder",
+        "MeshCylinder"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Cylinder"
+      ]
+    },
+    "D8-AUTOCAD-SOLID3D-0004": {
+      "commands": [
+        "Cone",
+        "TCone"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0006": {
+      "commands": [
+        "Pyramid"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0007": {
+      "commands": [
+        "Torus"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0009": {
+      "commands": [
+        "Extrude",
+        "ExtrudeCrv",
+        "ExtrudeSrf"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Extrude"
+      ]
+    },
+    "D8-AUTOCAD-SOLID3D-0010": {
+      "commands": [
+        "Revolve",
+        "RailRevolve"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Revolve"
+      ]
+    },
+    "D8-AUTOCAD-SOLID3D-0012": {
+      "commands": [
+        "Loft"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0019": {
+      "commands": [
+        "Intersect",
+        "IntersectSelf",
+        "MeshIntersect"
+      ],
+      "kernel": [
+        "dino8::kernel::IntersectBreps",
+        "dino8::kernel::IntersectFaces",
+        "dino8::kernel::IntersectCurves"
+      ]
+    },
+    "D8-AUTOCAD-SOLID3D-0022": {
+      "commands": [
+        "Section",
+        "DigSection",
+        "SectionView"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-SOLID3D-0023": {
+      "commands": [
+        "Thicken"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Thicken",
+        "dino8::kernel::Mesh::Thicken"
+      ]
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-SOLID3D-0001",
+    "D8-AUTOCAD-SOLID3D-0002",
+    "D8-AUTOCAD-SOLID3D-0003",
+    "D8-AUTOCAD-SOLID3D-0004",
+    "D8-AUTOCAD-SOLID3D-0005",
+    "D8-AUTOCAD-SOLID3D-0006",
+    "D8-AUTOCAD-SOLID3D-0007",
+    "D8-AUTOCAD-SOLID3D-0008",
+    "D8-AUTOCAD-SOLID3D-0009",
+    "D8-AUTOCAD-SOLID3D-0010",
+    "D8-AUTOCAD-SOLID3D-0011",
+    "D8-AUTOCAD-SOLID3D-0012",
+    "D8-AUTOCAD-SOLID3D-0013",
+    "D8-AUTOCAD-SOLID3D-0014",
+    "D8-AUTOCAD-SOLID3D-0015",
+    "D8-AUTOCAD-SOLID3D-0016",
+    "D8-AUTOCAD-SOLID3D-0017",
+    "D8-AUTOCAD-SOLID3D-0018",
+    "D8-AUTOCAD-SOLID3D-0019",
+    "D8-AUTOCAD-SOLID3D-0020",
+    "D8-AUTOCAD-SOLID3D-0021",
+    "D8-AUTOCAD-SOLID3D-0022",
+    "D8-AUTOCAD-SOLID3D-0023",
+    "D8-AUTOCAD-SOLID3D-0024",
+    "D8-AUTOCAD-SOLID3D-0025",
+    "D8-AUTOCAD-SOLID3D-0026",
+    "D8-AUTOCAD-SOLID3D-0027",
+    "D8-AUTOCAD-SOLID3D-0028",
+    "D8-AUTOCAD-SOLID3D-0029",
+    "D8-AUTOCAD-SOLID3D-0030",
+    "D8-AUTOCAD-SOLID3D-0031",
+    "D8-AUTOCAD-SOLID3D-0032"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-SOLID3D-0005",
+    "D8-AUTOCAD-SOLID3D-0008",
+    "D8-AUTOCAD-SOLID3D-0011",
+    "D8-AUTOCAD-SOLID3D-0013",
+    "D8-AUTOCAD-SOLID3D-0014",
+    "D8-AUTOCAD-SOLID3D-0015",
+    "D8-AUTOCAD-SOLID3D-0016",
+    "D8-AUTOCAD-SOLID3D-0017",
+    "D8-AUTOCAD-SOLID3D-0018",
+    "D8-AUTOCAD-SOLID3D-0020",
+    "D8-AUTOCAD-SOLID3D-0021",
+    "D8-AUTOCAD-SOLID3D-0024",
+    "D8-AUTOCAD-SOLID3D-0025",
+    "D8-AUTOCAD-SOLID3D-0026",
+    "D8-AUTOCAD-SOLID3D-0027",
+    "D8-AUTOCAD-SOLID3D-0028",
+    "D8-AUTOCAD-SOLID3D-0029",
+    "D8-AUTOCAD-SOLID3D-0030",
+    "D8-AUTOCAD-SOLID3D-0031",
+    "D8-AUTOCAD-SOLID3D-0032"
+  ],
+  "status": "open",
+  "title": "direct-modeling: solid3d (32 rows)",
+  "wave": 1
+}

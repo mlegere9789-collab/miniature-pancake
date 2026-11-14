@@ -1,0 +1,255 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-render-03",
+  "corpora": [
+    "render fixtures: materials, texture mappings, lights, environments, baked textures"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 1,
+    "countable": 31,
+    "rows": 31,
+    "with_existing_hint": 11,
+    "with_hint": 11,
+    "without_hint": 20
+  },
+  "deps": [],
+  "domains": [
+    "RENDER",
+    "render"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ViewFirstFrame",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewLastFrame",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewNextFrame",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CloseRenderWindow",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Render",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UVEditor",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewFrameNumber",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewPreviousFrame",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderWindow",
+        "rows": 1,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "Rendering",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "PlayAnimation",
+        "rows": 1,
+        "score": 0.653,
+        "status": "implemented"
+      },
+      {
+        "name": "SaveRenderWindowAs",
+        "rows": 1,
+        "score": 0.64,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderedViewport",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-render-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender",
+    "rhino"
+  ],
+  "register_files": [
+    "blender/render.jsonl",
+    "rhino/RENDER.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-RENDER-0009": {
+      "commands": [
+        "RenderedViewport"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-RENDER-0010": {
+      "commands": [
+        "PlayAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-RENDER-0012": {
+      "commands": [
+        "Render"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0061": {
+      "commands": [
+        "UVEditor"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0062": {
+      "commands": [
+        "ViewFirstFrame",
+        "ViewLastFrame",
+        "ViewNextFrame"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0063": {
+      "commands": [
+        "ViewFrameNumber"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0064": {
+      "commands": [
+        "ViewLastFrame",
+        "ViewFirstFrame",
+        "ViewNextFrame"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0065": {
+      "commands": [
+        "ViewNextFrame",
+        "ViewLastFrame",
+        "ViewFirstFrame"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0066": {
+      "commands": [
+        "ViewPreviousFrame"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0067": {
+      "commands": [
+        "CloseRenderWindow",
+        "RenderWindow",
+        "SaveRenderWindowAs"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0070": {
+      "commands": [
+        "Rendering"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-RENDER-0061",
+    "D8-RHINO-RENDER-0062",
+    "D8-RHINO-RENDER-0063",
+    "D8-RHINO-RENDER-0064",
+    "D8-RHINO-RENDER-0065",
+    "D8-RHINO-RENDER-0066",
+    "D8-RHINO-RENDER-0067",
+    "D8-RHINO-RENDER-0068",
+    "D8-RHINO-RENDER-0069",
+    "D8-RHINO-RENDER-0070",
+    "D8-RHINO-RENDER-0071",
+    "D8-RHINO-RENDER-0072",
+    "D8-RHINO-RENDER-0073",
+    "D8-RHINO-RENDER-0074",
+    "D8-RHINO-RENDER-0075",
+    "D8-BLENDER-RENDER-0001",
+    "D8-BLENDER-RENDER-0002",
+    "D8-BLENDER-RENDER-0003",
+    "D8-BLENDER-RENDER-0004",
+    "D8-BLENDER-RENDER-0005",
+    "D8-BLENDER-RENDER-0006",
+    "D8-BLENDER-RENDER-0007",
+    "D8-BLENDER-RENDER-0008",
+    "D8-BLENDER-RENDER-0009",
+    "D8-BLENDER-RENDER-0010",
+    "D8-BLENDER-RENDER-0011",
+    "D8-BLENDER-RENDER-0012",
+    "D8-BLENDER-RENDER-0013",
+    "D8-BLENDER-RENDER-0014",
+    "D8-BLENDER-RENDER-0015",
+    "D8-BLENDER-RENDER-0016"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-RENDER-0068",
+    "D8-RHINO-RENDER-0069",
+    "D8-RHINO-RENDER-0071",
+    "D8-RHINO-RENDER-0072",
+    "D8-RHINO-RENDER-0073",
+    "D8-RHINO-RENDER-0074",
+    "D8-RHINO-RENDER-0075",
+    "D8-BLENDER-RENDER-0001",
+    "D8-BLENDER-RENDER-0002",
+    "D8-BLENDER-RENDER-0003",
+    "D8-BLENDER-RENDER-0004",
+    "D8-BLENDER-RENDER-0005",
+    "D8-BLENDER-RENDER-0006",
+    "D8-BLENDER-RENDER-0007",
+    "D8-BLENDER-RENDER-0008",
+    "D8-BLENDER-RENDER-0011",
+    "D8-BLENDER-RENDER-0013",
+    "D8-BLENDER-RENDER-0014",
+    "D8-BLENDER-RENDER-0015",
+    "D8-BLENDER-RENDER-0016"
+  ],
+  "status": "open",
+  "title": "render-anim: RENDER, render (31 rows)",
+  "wave": 2
+}

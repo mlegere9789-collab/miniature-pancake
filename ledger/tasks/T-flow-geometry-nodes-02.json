@@ -1,0 +1,149 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-geometry-nodes-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 34
+  },
+  "deps": [],
+  "domains": [
+    "geometry_nodes"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ExtrudeMesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Extrude",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:2115",
+        "rows": 1,
+        "score": 0.76,
+        "symbol": "dino8::kernel::Brep::EdgesOfVertex"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-geometry-nodes-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/geometry_nodes.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GEONODE-0051": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Brep::EdgesOfVertex"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0053": {
+      "commands": [
+        "ExtrudeMesh",
+        "Extrude"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-GEONODE-0036",
+    "D8-BLENDER-GEONODE-0037",
+    "D8-BLENDER-GEONODE-0038",
+    "D8-BLENDER-GEONODE-0039",
+    "D8-BLENDER-GEONODE-0040",
+    "D8-BLENDER-GEONODE-0041",
+    "D8-BLENDER-GEONODE-0042",
+    "D8-BLENDER-GEONODE-0043",
+    "D8-BLENDER-GEONODE-0044",
+    "D8-BLENDER-GEONODE-0045",
+    "D8-BLENDER-GEONODE-0046",
+    "D8-BLENDER-GEONODE-0047",
+    "D8-BLENDER-GEONODE-0048",
+    "D8-BLENDER-GEONODE-0049",
+    "D8-BLENDER-GEONODE-0050",
+    "D8-BLENDER-GEONODE-0051",
+    "D8-BLENDER-GEONODE-0052",
+    "D8-BLENDER-GEONODE-0053",
+    "D8-BLENDER-GEONODE-0054",
+    "D8-BLENDER-GEONODE-0055",
+    "D8-BLENDER-GEONODE-0056",
+    "D8-BLENDER-GEONODE-0057",
+    "D8-BLENDER-GEONODE-0058",
+    "D8-BLENDER-GEONODE-0059",
+    "D8-BLENDER-GEONODE-0060",
+    "D8-BLENDER-GEONODE-0061",
+    "D8-BLENDER-GEONODE-0062",
+    "D8-BLENDER-GEONODE-0063",
+    "D8-BLENDER-GEONODE-0064",
+    "D8-BLENDER-GEONODE-0065",
+    "D8-BLENDER-GEONODE-0066",
+    "D8-BLENDER-GEONODE-0067",
+    "D8-BLENDER-GEONODE-0068",
+    "D8-BLENDER-GEONODE-0069",
+    "D8-BLENDER-GEONODE-0070",
+    "D8-BLENDER-GEONODE-0071"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-GEONODE-0036",
+    "D8-BLENDER-GEONODE-0037",
+    "D8-BLENDER-GEONODE-0038",
+    "D8-BLENDER-GEONODE-0039",
+    "D8-BLENDER-GEONODE-0040",
+    "D8-BLENDER-GEONODE-0041",
+    "D8-BLENDER-GEONODE-0042",
+    "D8-BLENDER-GEONODE-0043",
+    "D8-BLENDER-GEONODE-0044",
+    "D8-BLENDER-GEONODE-0045",
+    "D8-BLENDER-GEONODE-0046",
+    "D8-BLENDER-GEONODE-0047",
+    "D8-BLENDER-GEONODE-0048",
+    "D8-BLENDER-GEONODE-0049",
+    "D8-BLENDER-GEONODE-0050",
+    "D8-BLENDER-GEONODE-0052",
+    "D8-BLENDER-GEONODE-0054",
+    "D8-BLENDER-GEONODE-0055",
+    "D8-BLENDER-GEONODE-0056",
+    "D8-BLENDER-GEONODE-0057",
+    "D8-BLENDER-GEONODE-0058",
+    "D8-BLENDER-GEONODE-0059",
+    "D8-BLENDER-GEONODE-0060",
+    "D8-BLENDER-GEONODE-0061",
+    "D8-BLENDER-GEONODE-0062",
+    "D8-BLENDER-GEONODE-0063",
+    "D8-BLENDER-GEONODE-0064",
+    "D8-BLENDER-GEONODE-0065",
+    "D8-BLENDER-GEONODE-0066",
+    "D8-BLENDER-GEONODE-0067",
+    "D8-BLENDER-GEONODE-0068",
+    "D8-BLENDER-GEONODE-0069",
+    "D8-BLENDER-GEONODE-0070",
+    "D8-BLENDER-GEONODE-0071"
+  ],
+  "status": "open",
+  "title": "flow: geometry_nodes (36 rows)",
+  "wave": 1
+}

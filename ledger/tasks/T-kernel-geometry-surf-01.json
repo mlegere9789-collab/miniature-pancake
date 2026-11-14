@@ -1,0 +1,504 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-kernel-geometry-surf-01",
+  "corpora": [
+    "surface fixtures: planar, ruled, loft, sweep, trimmed, periodic and high-degree NURBS surfaces"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 36,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 36,
+    "with_hint": 36,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "SURF"
+  ],
+  "factory": "kernel-geometry",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ExtrudeCrv",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSrf",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeCrvAlongCrv",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeCrvTapered",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSrfTapered",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSrfToPoint",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FilletSrf",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FilletSrfCrv",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FilletSrfToRail",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractBadSrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractSrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeCrvToPoint",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSrfAlongCrv",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplyCrv",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BlendEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BlendSrf",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferSrf",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConnectSrf",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConvertExtrusion",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/fillet.h:892",
+        "rows": 1,
+        "score": 0.65,
+        "symbol": "dino8::kernel::ChamferConvexEdge"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:572",
+        "rows": 2,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Brep::ExtrudeTapered"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:872",
+        "rows": 2,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Brep::ExtrudeToPoint"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/fillet.h:964",
+        "rows": 1,
+        "score": 0.634,
+        "symbol": "dino8::kernel::ChamferConcaveEdge"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/fillet.h:164",
+        "rows": 1,
+        "score": 0.631,
+        "symbol": "dino8::kernel::FilletConvexEdge"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/fillet.h:274",
+        "rows": 1,
+        "score": 0.615,
+        "symbol": "dino8::kernel::FilletConcaveEdge"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-kernel-geometry-surf-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SURF.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SURF-0001": {
+      "commands": [
+        "ApplyCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0002": {
+      "commands": [
+        "BlendEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0003": {
+      "commands": [
+        "BlendSrf",
+        "VariableBlendSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0004": {
+      "commands": [
+        "ChamferEdge",
+        "Chamfer"
+      ],
+      "kernel": [
+        "dino8::kernel::ChamferConvexEdge",
+        "dino8::kernel::ChamferConcaveEdge"
+      ]
+    },
+    "D8-RHINO-SURF-0005": {
+      "commands": [
+        "ChamferSrf",
+        "VariableChamferSrf",
+        "Chamfer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0006": {
+      "commands": [
+        "ConnectSrf",
+        "Connect"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0007": {
+      "commands": [
+        "ConvertExtrusion"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0008": {
+      "commands": [
+        "ConvertToBeziers"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0009": {
+      "commands": [
+        "ConvertToSingleSpans"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0010": {
+      "commands": [
+        "CreateUVCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0011": {
+      "commands": [
+        "CutPlane"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0012": {
+      "commands": [
+        "DevLoft"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0013": {
+      "commands": [
+        "Drape",
+        "DrapePt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0014": {
+      "commands": [
+        "EdgeSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0015": {
+      "commands": [
+        "ExtendSrf",
+        "ExtendCrvOnSrf",
+        "Extend"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0016": {
+      "commands": [
+        "ExtractBadSrf",
+        "ExtractSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0017": {
+      "commands": [
+        "ExtractControlPolygon",
+        "CullControlPolygon"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0018": {
+      "commands": [
+        "ExtractSrf",
+        "ExtractBadSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0019": {
+      "commands": [
+        "ExtractWireframe"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0020": {
+      "commands": [
+        "ExtractCustomMappingObject"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0021": {
+      "commands": [
+        "ExtrudeCrv",
+        "ExtrudeCrvAlongCrv",
+        "ExtrudeCrvTapered"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0022": {
+      "commands": [
+        "ExtrudeCrvAlongCrv",
+        "ExtrudeSrfAlongCrv",
+        "ExtrudeCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0023": {
+      "commands": [
+        "ExtrudeCrvTapered",
+        "ExtrudeSrfTapered",
+        "ExtrudeCrv"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::ExtrudeTapered"
+      ]
+    },
+    "D8-RHINO-SURF-0024": {
+      "commands": [
+        "ExtrudeCrvToPoint",
+        "ExtrudeSrfToPoint",
+        "ExtrudeCrv"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::ExtrudeToPoint"
+      ]
+    },
+    "D8-RHINO-SURF-0025": {
+      "commands": [
+        "ExtrudeSrf",
+        "ExtrudeSrfTapered",
+        "ExtrudeSrfToPoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0026": {
+      "commands": [
+        "ExtrudeSrfAlongCrv",
+        "ExtrudeCrvAlongCrv",
+        "ExtrudeSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0027": {
+      "commands": [
+        "ExtrudeSrfTapered",
+        "ExtrudeCrvTapered",
+        "ExtrudeSrf"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::ExtrudeTapered"
+      ]
+    },
+    "D8-RHINO-SURF-0028": {
+      "commands": [
+        "ExtrudeSrfToPoint",
+        "ExtrudeCrvToPoint",
+        "ExtrudeSrf"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::ExtrudeToPoint"
+      ]
+    },
+    "D8-RHINO-SURF-0029": {
+      "commands": [
+        "FilletEdge"
+      ],
+      "kernel": [
+        "dino8::kernel::FilletConvexEdge",
+        "dino8::kernel::FilletConcaveEdge"
+      ]
+    },
+    "D8-RHINO-SURF-0030": {
+      "commands": [
+        "FilletSrf",
+        "FilletSrfCrv",
+        "FilletSrfToRail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0031": {
+      "commands": [
+        "FilletSrfCrv",
+        "FilletSrf",
+        "FilletSrfToRail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0032": {
+      "commands": [
+        "FilletSrfToRail",
+        "FilletSrf",
+        "FilletSrfCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0033": {
+      "commands": [
+        "Fin"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0034": {
+      "commands": [
+        "FitSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0035": {
+      "commands": [
+        "FlattenSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SURF-0036": {
+      "commands": [
+        "FlowAlongSrf"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SURF-0001",
+    "D8-RHINO-SURF-0002",
+    "D8-RHINO-SURF-0003",
+    "D8-RHINO-SURF-0004",
+    "D8-RHINO-SURF-0005",
+    "D8-RHINO-SURF-0006",
+    "D8-RHINO-SURF-0007",
+    "D8-RHINO-SURF-0008",
+    "D8-RHINO-SURF-0009",
+    "D8-RHINO-SURF-0010",
+    "D8-RHINO-SURF-0011",
+    "D8-RHINO-SURF-0012",
+    "D8-RHINO-SURF-0013",
+    "D8-RHINO-SURF-0014",
+    "D8-RHINO-SURF-0015",
+    "D8-RHINO-SURF-0016",
+    "D8-RHINO-SURF-0017",
+    "D8-RHINO-SURF-0018",
+    "D8-RHINO-SURF-0019",
+    "D8-RHINO-SURF-0020",
+    "D8-RHINO-SURF-0021",
+    "D8-RHINO-SURF-0022",
+    "D8-RHINO-SURF-0023",
+    "D8-RHINO-SURF-0024",
+    "D8-RHINO-SURF-0025",
+    "D8-RHINO-SURF-0026",
+    "D8-RHINO-SURF-0027",
+    "D8-RHINO-SURF-0028",
+    "D8-RHINO-SURF-0029",
+    "D8-RHINO-SURF-0030",
+    "D8-RHINO-SURF-0031",
+    "D8-RHINO-SURF-0032",
+    "D8-RHINO-SURF-0033",
+    "D8-RHINO-SURF-0034",
+    "D8-RHINO-SURF-0035",
+    "D8-RHINO-SURF-0036"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "kernel-geometry: SURF (36 rows)",
+  "wave": 1
+}

@@ -1,0 +1,120 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-analysis-site-sandbox-terrain-geolocation-01",
+  "corpora": [
+    "golden/sketchup/site"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 21,
+    "rows": 21,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 19
+  },
+  "deps": [],
+  "domains": [
+    "sandbox-terrain-geolocation"
+  ],
+  "factory": "analysis-site",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Drape",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Detail",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "DrapePt",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-analysis-site-sandbox-terrain-geolocation-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "sketchup"
+  ],
+  "register_files": [
+    "sketchup/sandbox-terrain-geolocation.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-SKETCHUP-SITE-0004": {
+      "commands": [
+        "Detail"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-SITE-0007": {
+      "commands": [
+        "Drape",
+        "DrapePt"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-SITE-0001",
+    "D8-SKETCHUP-SITE-0002",
+    "D8-SKETCHUP-SITE-0003",
+    "D8-SKETCHUP-SITE-0004",
+    "D8-SKETCHUP-SITE-0005",
+    "D8-SKETCHUP-SITE-0006",
+    "D8-SKETCHUP-SITE-0007",
+    "D8-SKETCHUP-SITE-0008",
+    "D8-SKETCHUP-SITE-0009",
+    "D8-SKETCHUP-SITE-0010",
+    "D8-SKETCHUP-SITE-0011",
+    "D8-SKETCHUP-SITE-0012",
+    "D8-SKETCHUP-SITE-0013",
+    "D8-SKETCHUP-SITE-0014",
+    "D8-SKETCHUP-SITE-0015",
+    "D8-SKETCHUP-SITE-0016",
+    "D8-SKETCHUP-SITE-0017",
+    "D8-SKETCHUP-SITE-0018",
+    "D8-SKETCHUP-SITE-0019",
+    "D8-SKETCHUP-SITE-0020",
+    "D8-SKETCHUP-SITE-0021"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-SITE-0001",
+    "D8-SKETCHUP-SITE-0002",
+    "D8-SKETCHUP-SITE-0003",
+    "D8-SKETCHUP-SITE-0005",
+    "D8-SKETCHUP-SITE-0006",
+    "D8-SKETCHUP-SITE-0008",
+    "D8-SKETCHUP-SITE-0009",
+    "D8-SKETCHUP-SITE-0010",
+    "D8-SKETCHUP-SITE-0011",
+    "D8-SKETCHUP-SITE-0012",
+    "D8-SKETCHUP-SITE-0013",
+    "D8-SKETCHUP-SITE-0014",
+    "D8-SKETCHUP-SITE-0015",
+    "D8-SKETCHUP-SITE-0016",
+    "D8-SKETCHUP-SITE-0017",
+    "D8-SKETCHUP-SITE-0018",
+    "D8-SKETCHUP-SITE-0019",
+    "D8-SKETCHUP-SITE-0020",
+    "D8-SKETCHUP-SITE-0021"
+  ],
+  "status": "open",
+  "title": "analysis-site: sandbox-terrain-geolocation (21 rows)",
+  "wave": 2
+}

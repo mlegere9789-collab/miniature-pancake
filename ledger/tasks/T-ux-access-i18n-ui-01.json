@@ -1,0 +1,345 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-ui-01",
+  "corpora": [
+    "ui fixtures: default and customized workspaces, localized builds"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 23,
+    "rows": 23,
+    "with_existing_hint": 22,
+    "with_hint": 22,
+    "without_hint": 1
+  },
+  "deps": [],
+  "domains": [
+    "UI"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "CommandPrompt",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DisplayCommandPrompt",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DocumentProperties",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DocumentPropertiesPage",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Options",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OptionsPage",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "About",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Alerter",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CommandHelp",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CommandHistory",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CommandList",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Commands",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ContentFilter",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DecimalPoint",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Exit",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FileExplorer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Login",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Logout",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Menus",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PackageManager",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:5073",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Brep::HealOptions"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-ui-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/UI.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-UI-0001": {
+      "commands": [
+        "About"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0002": {
+      "commands": [
+        "Alerter"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0003": {
+      "commands": [
+        "CommandHelp"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0004": {
+      "commands": [
+        "CommandHistory"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0005": {
+      "commands": [
+        "CommandList"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0006": {
+      "commands": [
+        "CommandPrompt",
+        "DisplayCommandPrompt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0007": {
+      "commands": [
+        "Commands"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0009": {
+      "commands": [
+        "ContentFilter"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0010": {
+      "commands": [
+        "DisplayCommandPrompt",
+        "CommandPrompt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0011": {
+      "commands": [
+        "DocumentProperties",
+        "DocumentPropertiesPage",
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0012": {
+      "commands": [
+        "DocumentPropertiesPage",
+        "DocumentProperties",
+        "PropertiesPage"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0013": {
+      "commands": [
+        "DocumentUserText",
+        "GetDocumentUserText",
+        "SetDocumentUserText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0014": {
+      "commands": [
+        "DecimalPoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0015": {
+      "commands": [
+        "Exit"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0016": {
+      "commands": [
+        "FileExplorer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0017": {
+      "commands": [
+        "Login"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0018": {
+      "commands": [
+        "Logout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0019": {
+      "commands": [
+        "Menus"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0020": {
+      "commands": [
+        "Options",
+        "GridOptions",
+        "OptionsPage"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::HealOptions"
+      ]
+    },
+    "D8-RHINO-UI-0021": {
+      "commands": [
+        "OptionsPage",
+        "Options"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0022": {
+      "commands": [
+        "PackageManager"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-UI-0023": {
+      "commands": [
+        "PlugInManager"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-UI-0001",
+    "D8-RHINO-UI-0002",
+    "D8-RHINO-UI-0003",
+    "D8-RHINO-UI-0004",
+    "D8-RHINO-UI-0005",
+    "D8-RHINO-UI-0006",
+    "D8-RHINO-UI-0007",
+    "D8-RHINO-UI-0008",
+    "D8-RHINO-UI-0009",
+    "D8-RHINO-UI-0010",
+    "D8-RHINO-UI-0011",
+    "D8-RHINO-UI-0012",
+    "D8-RHINO-UI-0013",
+    "D8-RHINO-UI-0014",
+    "D8-RHINO-UI-0015",
+    "D8-RHINO-UI-0016",
+    "D8-RHINO-UI-0017",
+    "D8-RHINO-UI-0018",
+    "D8-RHINO-UI-0019",
+    "D8-RHINO-UI-0020",
+    "D8-RHINO-UI-0021",
+    "D8-RHINO-UI-0022",
+    "D8-RHINO-UI-0023"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-UI-0008"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: UI (23 rows)",
+  "wave": 3
+}

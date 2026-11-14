@@ -1,0 +1,487 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-mesh-01",
+  "corpora": [
+    "mesh fixtures: triangle, quad and n-gon meshes with holes, non-manifold edges, duplicate faces"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 35,
+    "with_hint": 35,
+    "without_hint": 1
+  },
+  "deps": [],
+  "domains": [
+    "MESH"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ExtractMeshFaces",
+        "rows": 7,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractConnectedMeshFaces",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractMeshEdges",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractMeshPart",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplyMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplyMeshUVN",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ClearAllMeshes",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ClearAnalysisMeshes",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CollapseMeshFacesByAspectRatio",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CollapseMeshFacesByEdgeLength",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractMeshFacesByArea",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractMeshFacesByAspectRatio",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractMeshFacesByEdgeLength",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractRenderMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractUVMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FillMeshHole",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "FillMeshHoles",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "3DFace",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddNgonsToMesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AlignVertices",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:5176",
+        "rows": 1,
+        "score": 0.738,
+        "symbol": "dino8::kernel::Brep::DeleteFaces"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1517",
+        "rows": 1,
+        "score": 0.675,
+        "symbol": "dino8::kernel::SubD::InsertEdge"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2138",
+        "rows": 1,
+        "score": 0.633,
+        "symbol": "dino8::kernel::Mesh::RemoveDegenerateFaces"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:621",
+        "rows": 1,
+        "score": 0.605,
+        "symbol": "dino8::kernel::Mesh::SetVertexColors"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-mesh-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/MESH.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-MESH-0001": {
+      "commands": [
+        "AddNgonsToMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0002": {
+      "commands": [
+        "AlignVertices"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0003": {
+      "commands": [
+        "ApplyMesh",
+        "ApplyMeshUVN"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0004": {
+      "commands": [
+        "ApplyMeshUVN",
+        "ApplyMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0005": {
+      "commands": [
+        "ClearAllMeshes",
+        "ClearAnalysisMeshes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0006": {
+      "commands": [
+        "ClearAnalysisMeshes",
+        "ClearAllMeshes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0007": {
+      "commands": [
+        "CollapseMeshFacesByAspectRatio",
+        "SelMeshFacesByAspectRatio",
+        "ExtractMeshFacesByAspectRatio"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0008": {
+      "commands": [
+        "CollapseMeshFacesByEdgeLength",
+        "SelMeshFacesByEdgeLength",
+        "ExtractMeshFacesByEdgeLength"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0009": {
+      "commands": [
+        "CollapseMeshVertex",
+        "CollapseMeshEdge",
+        "CollapseMeshFace"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0010": {
+      "commands": [
+        "ComputeVertexColors"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::SetVertexColors"
+      ]
+    },
+    "D8-RHINO-MESH-0011": {
+      "commands": [
+        "CullDegenerateMeshFaces"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::RemoveDegenerateFaces"
+      ]
+    },
+    "D8-RHINO-MESH-0012": {
+      "commands": [
+        "DeleteFaces"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::DeleteFaces"
+      ]
+    },
+    "D8-RHINO-MESH-0013": {
+      "commands": [
+        "DeleteMeshNgons"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0014": {
+      "commands": [
+        "ExtractAnalysisMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0015": {
+      "commands": [
+        "ExtractRenderMesh",
+        "ExtractUVMesh",
+        "HideRenderMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0016": {
+      "commands": [
+        "ExtractUVMesh",
+        "ExtractRenderMesh",
+        "ExtractMeshPart"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0017": {
+      "commands": [
+        "ExtractConnectedMeshFaces",
+        "SelConnectedMeshFaces",
+        "ExtractMeshFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0018": {
+      "commands": [
+        "ExtractDuplicateMeshFaces",
+        "ExtractMeshFaces",
+        "ExtractConnectedMeshFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0019": {
+      "commands": [
+        "ExtractMeshEdges",
+        "ExtractMeshFaces",
+        "ExtractMeshPart"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0020": {
+      "commands": [
+        "ExtractMeshFacesByArea",
+        "ExtractMeshFaces",
+        "SelMeshFacesByArea"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0021": {
+      "commands": [
+        "ExtractMeshFacesByAspectRatio",
+        "SelMeshFacesByAspectRatio",
+        "CollapseMeshFacesByAspectRatio"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0022": {
+      "commands": [
+        "ExtractMeshFacesByDraftAngle",
+        "SelMeshFacesByDraftAngle",
+        "ExtractMeshFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0023": {
+      "commands": [
+        "ExtractMeshFacesByEdgeLength",
+        "SelMeshFacesByEdgeLength",
+        "CollapseMeshFacesByEdgeLength"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0024": {
+      "commands": [
+        "ExtractMeshFaces",
+        "ExtractMeshFacesByArea",
+        "ExtractConnectedMeshFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0025": {
+      "commands": [
+        "ExtractMeshPart",
+        "ExtractMeshEdges",
+        "ExtractMeshFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0026": {
+      "commands": [
+        "ExtractNonManifoldMeshEdges",
+        "ExtractMeshEdges"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0027": {
+      "commands": [
+        "ExtrudeMesh",
+        "Extrude"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0028": {
+      "commands": [
+        "FillMeshHole",
+        "FillMeshHoles"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0029": {
+      "commands": [
+        "FillMeshHoles",
+        "FillMeshHole"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0030": {
+      "commands": [
+        "3DFace"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0032": {
+      "commands": [
+        "InsertPoint",
+        "InsertEditPoint",
+        "InsertControlPoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0033": {
+      "commands": [
+        "InsertEdge"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::InsertEdge"
+      ]
+    },
+    "D8-RHINO-MESH-0034": {
+      "commands": [
+        "Inset"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0035": {
+      "commands": [
+        "Merge2MeshFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0036": {
+      "commands": [
+        "MergeFaces"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-MESH-0001",
+    "D8-RHINO-MESH-0002",
+    "D8-RHINO-MESH-0003",
+    "D8-RHINO-MESH-0004",
+    "D8-RHINO-MESH-0005",
+    "D8-RHINO-MESH-0006",
+    "D8-RHINO-MESH-0007",
+    "D8-RHINO-MESH-0008",
+    "D8-RHINO-MESH-0009",
+    "D8-RHINO-MESH-0010",
+    "D8-RHINO-MESH-0011",
+    "D8-RHINO-MESH-0012",
+    "D8-RHINO-MESH-0013",
+    "D8-RHINO-MESH-0014",
+    "D8-RHINO-MESH-0015",
+    "D8-RHINO-MESH-0016",
+    "D8-RHINO-MESH-0017",
+    "D8-RHINO-MESH-0018",
+    "D8-RHINO-MESH-0019",
+    "D8-RHINO-MESH-0020",
+    "D8-RHINO-MESH-0021",
+    "D8-RHINO-MESH-0022",
+    "D8-RHINO-MESH-0023",
+    "D8-RHINO-MESH-0024",
+    "D8-RHINO-MESH-0025",
+    "D8-RHINO-MESH-0026",
+    "D8-RHINO-MESH-0027",
+    "D8-RHINO-MESH-0028",
+    "D8-RHINO-MESH-0029",
+    "D8-RHINO-MESH-0030",
+    "D8-RHINO-MESH-0031",
+    "D8-RHINO-MESH-0032",
+    "D8-RHINO-MESH-0033",
+    "D8-RHINO-MESH-0034",
+    "D8-RHINO-MESH-0035",
+    "D8-RHINO-MESH-0036"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-MESH-0031"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: MESH (36 rows)",
+  "wave": 1
+}

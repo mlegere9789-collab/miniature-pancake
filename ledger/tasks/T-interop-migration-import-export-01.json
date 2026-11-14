@@ -1,0 +1,117 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-import-export-01",
+  "corpora": [
+    "golden/sketchup/io"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 23,
+    "rows": 23,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 21
+  },
+  "deps": [],
+  "domains": [
+    "import-export"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Export",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Import",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-import-export-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "sketchup"
+  ],
+  "register_files": [
+    "sketchup/import-export.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-SKETCHUP-IO-0005": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-IO-0009": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-IO-0001",
+    "D8-SKETCHUP-IO-0002",
+    "D8-SKETCHUP-IO-0003",
+    "D8-SKETCHUP-IO-0004",
+    "D8-SKETCHUP-IO-0005",
+    "D8-SKETCHUP-IO-0006",
+    "D8-SKETCHUP-IO-0007",
+    "D8-SKETCHUP-IO-0008",
+    "D8-SKETCHUP-IO-0009",
+    "D8-SKETCHUP-IO-0010",
+    "D8-SKETCHUP-IO-0011",
+    "D8-SKETCHUP-IO-0012",
+    "D8-SKETCHUP-IO-0013",
+    "D8-SKETCHUP-IO-0014",
+    "D8-SKETCHUP-IO-0015",
+    "D8-SKETCHUP-IO-0016",
+    "D8-SKETCHUP-IO-0017",
+    "D8-SKETCHUP-IO-0018",
+    "D8-SKETCHUP-IO-0019",
+    "D8-SKETCHUP-IO-0020",
+    "D8-SKETCHUP-IO-0021",
+    "D8-SKETCHUP-IO-0022",
+    "D8-SKETCHUP-IO-0023"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-IO-0001",
+    "D8-SKETCHUP-IO-0002",
+    "D8-SKETCHUP-IO-0003",
+    "D8-SKETCHUP-IO-0004",
+    "D8-SKETCHUP-IO-0006",
+    "D8-SKETCHUP-IO-0007",
+    "D8-SKETCHUP-IO-0008",
+    "D8-SKETCHUP-IO-0010",
+    "D8-SKETCHUP-IO-0011",
+    "D8-SKETCHUP-IO-0012",
+    "D8-SKETCHUP-IO-0013",
+    "D8-SKETCHUP-IO-0014",
+    "D8-SKETCHUP-IO-0015",
+    "D8-SKETCHUP-IO-0016",
+    "D8-SKETCHUP-IO-0017",
+    "D8-SKETCHUP-IO-0018",
+    "D8-SKETCHUP-IO-0019",
+    "D8-SKETCHUP-IO-0020",
+    "D8-SKETCHUP-IO-0021",
+    "D8-SKETCHUP-IO-0022",
+    "D8-SKETCHUP-IO-0023"
+  ],
+  "status": "open",
+  "title": "interop-migration: import-export (23 rows)",
+  "wave": 1
+}

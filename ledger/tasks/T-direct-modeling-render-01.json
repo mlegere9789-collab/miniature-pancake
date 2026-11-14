@@ -1,0 +1,182 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-render-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 28,
+    "countable": 33,
+    "rows": 33,
+    "with_existing_hint": 5,
+    "with_hint": 5,
+    "without_hint": 28
+  },
+  "deps": [],
+  "domains": [
+    "render"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Camera",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Materials",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PointLight",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Render",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BackgroundBitmap",
+        "rows": 1,
+        "score": 0.635,
+        "status": "implemented"
+      },
+      {
+        "name": "BillOfMaterials",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "DigCamera",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-render-01",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/render.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-RENDER-0002": {
+      "commands": [
+        "BackgroundBitmap"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-RENDER-0003": {
+      "commands": [
+        "Camera",
+        "DigCamera"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-RENDER-0020": {
+      "commands": [
+        "Materials",
+        "BillOfMaterials"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-RENDER-0026": {
+      "commands": [
+        "PointLight"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-RENDER-0027": {
+      "commands": [
+        "Render"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-RENDER-0001",
+    "D8-AUTOCAD-RENDER-0002",
+    "D8-AUTOCAD-RENDER-0003",
+    "D8-AUTOCAD-RENDER-0004",
+    "D8-AUTOCAD-RENDER-0005",
+    "D8-AUTOCAD-RENDER-0006",
+    "D8-AUTOCAD-RENDER-0007",
+    "D8-AUTOCAD-RENDER-0008",
+    "D8-AUTOCAD-RENDER-0009",
+    "D8-AUTOCAD-RENDER-0010",
+    "D8-AUTOCAD-RENDER-0011",
+    "D8-AUTOCAD-RENDER-0012",
+    "D8-AUTOCAD-RENDER-0013",
+    "D8-AUTOCAD-RENDER-0014",
+    "D8-AUTOCAD-RENDER-0015",
+    "D8-AUTOCAD-RENDER-0016",
+    "D8-AUTOCAD-RENDER-0017",
+    "D8-AUTOCAD-RENDER-0018",
+    "D8-AUTOCAD-RENDER-0019",
+    "D8-AUTOCAD-RENDER-0020",
+    "D8-AUTOCAD-RENDER-0021",
+    "D8-AUTOCAD-RENDER-0022",
+    "D8-AUTOCAD-RENDER-0023",
+    "D8-AUTOCAD-RENDER-0024",
+    "D8-AUTOCAD-RENDER-0025",
+    "D8-AUTOCAD-RENDER-0026",
+    "D8-AUTOCAD-RENDER-0027",
+    "D8-AUTOCAD-RENDER-0028",
+    "D8-AUTOCAD-RENDER-0029",
+    "D8-AUTOCAD-RENDER-0030",
+    "D8-AUTOCAD-RENDER-0031",
+    "D8-AUTOCAD-RENDER-0032",
+    "D8-AUTOCAD-RENDER-0033"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-RENDER-0001",
+    "D8-AUTOCAD-RENDER-0004",
+    "D8-AUTOCAD-RENDER-0005",
+    "D8-AUTOCAD-RENDER-0006",
+    "D8-AUTOCAD-RENDER-0007",
+    "D8-AUTOCAD-RENDER-0008",
+    "D8-AUTOCAD-RENDER-0009",
+    "D8-AUTOCAD-RENDER-0010",
+    "D8-AUTOCAD-RENDER-0011",
+    "D8-AUTOCAD-RENDER-0012",
+    "D8-AUTOCAD-RENDER-0013",
+    "D8-AUTOCAD-RENDER-0014",
+    "D8-AUTOCAD-RENDER-0015",
+    "D8-AUTOCAD-RENDER-0016",
+    "D8-AUTOCAD-RENDER-0017",
+    "D8-AUTOCAD-RENDER-0018",
+    "D8-AUTOCAD-RENDER-0019",
+    "D8-AUTOCAD-RENDER-0021",
+    "D8-AUTOCAD-RENDER-0022",
+    "D8-AUTOCAD-RENDER-0023",
+    "D8-AUTOCAD-RENDER-0024",
+    "D8-AUTOCAD-RENDER-0025",
+    "D8-AUTOCAD-RENDER-0028",
+    "D8-AUTOCAD-RENDER-0029",
+    "D8-AUTOCAD-RENDER-0030",
+    "D8-AUTOCAD-RENDER-0031",
+    "D8-AUTOCAD-RENDER-0032",
+    "D8-AUTOCAD-RENDER-0033"
+  ],
+  "status": "open",
+  "title": "direct-modeling: render (33 rows)",
+  "wave": 1
+}

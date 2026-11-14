@@ -1,0 +1,157 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-object-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 6,
+    "with_hint": 6,
+    "without_hint": 19
+  },
+  "deps": [],
+  "domains": [
+    "object"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Align",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Join",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DuplicateMacro",
+        "rows": 2,
+        "score": 0.637,
+        "status": "implemented"
+      },
+      {
+        "name": "SetObjectDisplayMode",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-object-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/object.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-OBJECT-0004": {
+      "commands": [
+        "Align"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OBJECT-0033": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OBJECT-0037": {
+      "commands": [
+        "DuplicateMacro"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OBJECT-0038": {
+      "commands": [
+        "DuplicateMacro"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OBJECT-0077": {
+      "commands": [
+        "Join"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OBJECT-0114": {
+      "commands": [
+        "SetObjectDisplayMode"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-OBJECT-0001",
+    "D8-BLENDER-OBJECT-0003",
+    "D8-BLENDER-OBJECT-0004",
+    "D8-BLENDER-OBJECT-0025",
+    "D8-BLENDER-OBJECT-0026",
+    "D8-BLENDER-OBJECT-0033",
+    "D8-BLENDER-OBJECT-0037",
+    "D8-BLENDER-OBJECT-0038",
+    "D8-BLENDER-OBJECT-0039",
+    "D8-BLENDER-OBJECT-0040",
+    "D8-BLENDER-OBJECT-0041",
+    "D8-BLENDER-OBJECT-0043",
+    "D8-BLENDER-OBJECT-0073",
+    "D8-BLENDER-OBJECT-0074",
+    "D8-BLENDER-OBJECT-0075",
+    "D8-BLENDER-OBJECT-0077",
+    "D8-BLENDER-OBJECT-0096",
+    "D8-BLENDER-OBJECT-0097",
+    "D8-BLENDER-OBJECT-0114",
+    "D8-BLENDER-OBJECT-0115",
+    "D8-BLENDER-OBJECT-0140",
+    "D8-BLENDER-OBJECT-0141",
+    "D8-BLENDER-OBJECT-0142",
+    "D8-BLENDER-OBJECT-0143",
+    "D8-BLENDER-OBJECT-0144"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-OBJECT-0001",
+    "D8-BLENDER-OBJECT-0003",
+    "D8-BLENDER-OBJECT-0025",
+    "D8-BLENDER-OBJECT-0026",
+    "D8-BLENDER-OBJECT-0039",
+    "D8-BLENDER-OBJECT-0040",
+    "D8-BLENDER-OBJECT-0041",
+    "D8-BLENDER-OBJECT-0043",
+    "D8-BLENDER-OBJECT-0073",
+    "D8-BLENDER-OBJECT-0074",
+    "D8-BLENDER-OBJECT-0075",
+    "D8-BLENDER-OBJECT-0096",
+    "D8-BLENDER-OBJECT-0097",
+    "D8-BLENDER-OBJECT-0115",
+    "D8-BLENDER-OBJECT-0140",
+    "D8-BLENDER-OBJECT-0141",
+    "D8-BLENDER-OBJECT-0142",
+    "D8-BLENDER-OBJECT-0143",
+    "D8-BLENDER-OBJECT-0144"
+  ],
+  "status": "open",
+  "title": "direct-modeling: object (25 rows)",
+  "wave": 1
+}
