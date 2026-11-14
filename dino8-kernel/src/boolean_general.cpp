@@ -783,6 +783,20 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
           continue;
         }
       }
+      // A trim BuildLoop() made is ONE segment of a dense polyline: its edge is the straight 3D chord between two welded loop points
+      // and its trim is the straight (u, v) segment between the same two points. It IS its start point: the next trim starts at
+      // its end. Re-expanding it here (start + midpoint for a segment straight in 3D, 24 samples of the (u, v) line's image for one on
+      // a curved face) put new points into a loop the previous operation had already settled, and the two faces sharing a rim were
+      // re-expanded at different densities (a planar face doubles, a cylinder wall multiplies by 24), so ReconcileFragmentBoundaries()
+      // then handed the denser side's points to the sparser one: every Boolean multiplied the point count of every rim it walked
+      // (measured, drilling four holes one after another into a slab: the first hole's rim 62 -> 1150 -> 13825 points, the
+      // fourth drilling 31 s, a trim polygon of 34113 vertices). A loop is now read back exactly as it was written, so an operation
+      // that does not cut a rim leaves its points alone and both faces of a shared edge keep the identical point sequence.
+      if (trim.m_ei >= 0 && trim.m_ei < brep.m_E.Count() && c2->IsLinear() && ON_LineCurve::Cast(brep.m_E[trim.m_ei].EdgeCurveOf()) != nullptr) {
+        const ON_2dPoint uv = c2->PointAt(d.Min());
+        out.push_back({s->PointAt(uv.x, uv.y), uv});
+        continue;
+      }
       // c2->IsLinear() only says the trim's own 2D (u, v) path is a
       // straight line - true for every edge of a periodic surface's own
       // full-sweep trim rectangle, including the two that run ALONG the
