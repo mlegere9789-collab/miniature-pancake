@@ -1,6 +1,6 @@
 # CHH: closed hollow with a thickness of its own per face (nothing removed) of revolved solids, through
 # kernel::ShellClosedRevolvedArcProfile. Before: refused ("a per-face thickness on a cylinder has no exact construction" / "at least one face must be
-# removed") and a mesh used. Markers CHHBEGIN_<name>; chhblock in sections/89_chh.sh slices the output.
+# removed") and a mesh used.  Closed=Yes (Shell option) asks for the closed hollow; without it the per-face-thickness-nothing-removed request keeps its old refusal (RVSH_closedvary, ARCSH_closed). Markers CHHBEGIN_<name>; chhblock in sections/89_chh.sh slices the output.
 # ===================== cylinder r5 h10: floor 2, top 1, wall 0.5 (default) =====================
 New
 CHHBEGIN_cyl
@@ -8,6 +8,7 @@ Cylinder 0,0,0 5 10
 SelAll
 Shell
 Mode=Thickness
+Closed=Yes
 2,0,0
 2
 2,0,10
@@ -31,6 +32,7 @@ Enter
 SelAll
 Shell
 Mode=Thickness
+Closed=Yes
 1,0,0
 0.5
 Enter
@@ -49,6 +51,7 @@ BooleanUnion
 SelAll
 Shell
 Mode=Thickness
+Closed=Yes
 5,0,2
 1
 Enter

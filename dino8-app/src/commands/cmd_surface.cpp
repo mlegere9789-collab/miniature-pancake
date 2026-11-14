@@ -2245,7 +2245,7 @@ std::optional<kernel::Mesh> BuildShell(const ON_Brep& brep, const std::vector<in
 // ---------------------------------------------------------------------------
 std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vector<int>& removed,
                                            const std::map<int, double>& overrides, double t, std::string& why,
-                                           const ShellPickPoints* picks = nullptr) {
+                                           const ShellPickPoints* picks = nullptr, bool closed_hollow = false) {
   if (o.kind != ObjectKind::Brep || !o.brep) { why = "the object is not a polysurface"; return std::nullopt; }
   const ON_Brep& b = o.brep->raw();
   if (!b.IsSolid()) { why = "the polysurface is not a closed solid"; return std::nullopt; }
@@ -2274,9 +2274,11 @@ std::optional<kernel::Brep> TryExactShell(const SceneObject& o, const std::vecto
       return std::nullopt;
     }
   }
-  // A per-face thickness with NOTHING removed on a revolved solid (cylinder, cone / frustum, sphere cap, stepped shaft ...): the closed
-  // hollow with its own thickness per face, kernel::ShellClosedRevolvedArcProfile (the original + the per-face cavity reversed).
-  if (removed.empty() && !overrides.empty()) {
+  // A per-face thickness with NOTHING removed on a revolved solid (cylinder, cone / frustum, sphere cap, stepped shaft ...) is a closed
+  // hollow (the original + the per-face cavity reversed, two lumps), kernel::ShellClosedRevolvedArcProfile. Only when asked for with the
+  // Shell option Closed=Yes: without it the request keeps being refused with the open-shell kernel's reason below (a Shell is meant to
+  // open at least one face), exactly as before.
+  if (closed_hollow && removed.empty() && !overrides.empty()) {
     revolved::RevMeridian rm;
     bool have = false;
     PlainRevolved prc;
@@ -2565,7 +2567,8 @@ class ShellCommand : public Command {
       DeselectAll(ctx, ids_);
       accept_preselection = false;
       phase_ = Phase::Picking;
-      options = {{"Mode", "Remove", {"Remove", "Thickness"}, false, false}, {"Exact", exact_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+      options = {{"Mode", "Remove", {"Remove", "Thickness"}, false, false}, {"Exact", exact_ ? "Yes" : "No", {"Yes", "No"}, false, true},
+                 {"Closed", closed_hollow_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
       WantPoint("Click face(s) to remove/open, or set Mode=Thickness first to give clicked face(s) their own wall thickness (Enter for the default Thickness)");
     } else {
       StartThickness();
@@ -2604,6 +2607,7 @@ class ShellCommand : public Command {
     if (n == "Thickness") { double d; if (ParseNumber(v, d) && d > 0) { thickness_ = d; options[0].value = FormatNumber(d); default_number = d; } else ctx.Warn("Thickness must be positive"); }
     if (n == "Mode") { override_mode_ = (v == "Thickness"); options[0].value = v; }
     if (n == "Exact") { exact_ = (v == "Yes"); for (auto& op : options) if (op.name == "Exact") op.value = v; }
+    if (n == "Closed") { closed_hollow_ = (v == "Yes"); for (auto& op : options) if (op.name == "Closed") op.value = v; }
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     if (phase_ != Phase::Thickness && phase_ != Phase::OverrideValue) return;
@@ -2667,7 +2671,7 @@ class ShellCommand : public Command {
         if (const auto rp = removed_points_.find(id); rp != removed_points_.end()) picks.removed = &rp->second;
         if (const auto op = override_points_.find(id); op != override_points_.end()) picks.overridden = &op->second;
         std::optional<kernel::Brep> ex = TryExactShell(*o, has_remove ? rem_it->second : kNoRemoveExact,
-                                                        has_overrides ? fth_it->second : kNoOverridesExact, t, why, &picks);
+                                                        has_overrides ? fth_it->second : kNoOverridesExact, t, why, &picks, closed_hollow_);
         if (ex) {
           exact_results.push_back({id, *ex});
           exact_notes_.push_back({has_remove ? rem_it->second.size() : size_t(0), has_overrides ? fth_it->second.size() : size_t(0)});
@@ -2779,6 +2783,7 @@ class ShellCommand : public Command {
   std::set<ObjectId> plain_;  // ids whose result is a plain uniform shell (RebuildShell): the only ones that record history
   std::vector<std::pair<size_t, size_t>> exact_notes_;  // per exact result: (faces removed, per-face overrides)
   bool exact_ = true;  // Exact=No keeps the mesh constructions only
+  bool closed_hollow_ = false;  // Closed=Yes: a per-face thickness with nothing removed is the exact closed hollow of a revolved solid
   std::map<ObjectId, std::vector<int>> open_faces_;
   std::map<ObjectId, std::map<int, double>> face_thickness_;
   std::map<ObjectId, std::map<int, std::vector<Point3d>>> removed_points_;
