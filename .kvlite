@@ -1,0 +1,2 @@
+SECTIONS=BASE
+FILTERS=PlanarCurveBoolean;PlanarRegionBoolean
