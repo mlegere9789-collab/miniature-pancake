@@ -1,0 +1,36 @@
+# glTF 2.0 / GLB at the app level (io/File3dm.cpp ExportGltfFile / ImportGltfFile, kernel gltf.h) - see sections/89_gltf.sh.
+# Two boxes with distinct colours in a millimetre document: 0..10 x 0..10 x 0..10 and 20..30 x 0..10 x 0..10.
+# smoke: @TMP@ is replaced with a scratch directory.
+Box 0,0,0 10,10,0 10
+SelLast
+SetRenderColor 255,0,0
+Box 20,0,0 30,10,0 10
+SelLast
+SetRenderColor 128,64,255
+SelAll
+Export @TMP@/gltf_a.glb
+SelAll
+Export @TMP@/gltf_a.gltf
+SelAll
+SaveAs @TMP@/gltf_sa.glb
+# Import the GLB into a fresh document, list what came in, re-export it as .gltf (the shell oracle compares this with the first export).
+New
+@expect_objects 0
+Import @TMP@/gltf_a.glb
+@expect_objects 2
+SelAll
+List
+SelAll
+Export @TMP@/gltf_rt.gltf
+# Open the embedded-buffer .gltf as a document (OpenDocument path), list it, and re-export as GLB.
+New
+Open @TMP@/gltf_a.gltf
+@expect_objects 2
+SelAll
+List
+SelAll
+Export @TMP@/gltf_rt2.glb
+# A file that is not a glTF must be refused with a message and add nothing.
+New
+Import @TMP@/gltf_bad.glb
+@expect_objects 0

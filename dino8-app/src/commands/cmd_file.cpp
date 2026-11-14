@@ -25,8 +25,8 @@ std::string LowerExt(const std::string& path) {
   return e;
 }
 
-const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step", ".sat", ".sab", ".ifc", ".xyz", ".pts", ".las"};
-const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step", ".sat", ".sab", ".ifc", ".xyz", ".pts", ".las"};
+const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".gltf", ".glb", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step", ".sat", ".sab", ".ifc", ".xyz", ".pts", ".las"};
+const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".gltf", ".glb", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step", ".sat", ".sab", ".ifc", ".xyz", ".pts", ".las"};
 
 void SaveTo(CommandContext& ctx, const std::string& path, int dm_version = 0) {
   std::string err;

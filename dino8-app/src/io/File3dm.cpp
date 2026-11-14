@@ -1,11 +1,13 @@
 #include "io/File3dm.h"
 
 #include "geom/BrepMesher.h"
+#include "dino8/kernel/gltf.h"
 
 #include <opennurbs.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -3446,11 +3448,128 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
   return true;
 }
 
+// ---- glTF 2.0 / GLB (kernel gltf.h): metres, Y-up; the document is in its own unit and Z-up ----
+
+// Metres per document unit (1 for "None" or an unknown name: coordinates are then taken as metres).
+double DocUnitMeters(const std::string& u) {
+  if (u == "Microns") return 1e-6;
+  if (u == "Millimeters") return 1e-3;
+  if (u == "Centimeters") return 1e-2;
+  if (u == "Meters") return 1.0;
+  if (u == "Kilometers") return 1e3;
+  if (u == "Microinches") return 2.54e-8;
+  if (u == "Mils") return 2.54e-5;
+  if (u == "Inches") return 0.0254;
+  if (u == "Feet") return 0.3048;
+  if (u == "Miles") return 1609.344;
+  return 1.0;
+}
+
+// The sRGB transfer function (IEC 61966-2-1) and its inverse on one channel in 0..1.
+float SrgbToLinear(float c) {
+  const double s = std::clamp(static_cast<double>(c), 0.0, 1.0);
+  return static_cast<float>(s <= 0.04045 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4));
+}
+float LinearToSrgb(float c) {
+  const double l = std::clamp(static_cast<double>(c), 0.0, 1.0);
+  return static_cast<float>(l <= 0.0031308 ? l * 12.92 : 1.055 * std::pow(l, 1.0 / 2.4) - 0.055);
+}
+
+bool ExportGltfFile(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::GltfModel model;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    kernel::Mesh m;
+    if (o.kind == ObjectKind::Mesh && o.mesh) {
+      m = *o.mesh;
+    } else if (o.kind == ObjectKind::Brep && o.brep) {
+      BrepMeshOptions opt; opt.chord_tolerance = 0.01; m = MeshBrepClosed(o.brep->raw(), opt);
+    } else if (o.kind == ObjectKind::Surface && o.surface) {
+      m = o.surface->TessellateGridAdaptive(0.01);
+    } else if (o.kind == ObjectKind::SubD && o.subd) {
+      m = o.subd->ToApproximateMesh();
+    } else {
+      continue;
+    }
+    if (m.VertexCount() == 0 || m.FaceCount() == 0) continue;
+    kernel::GltfPart part;
+    part.name = o.name.empty() ? "Object" : o.name;
+    part.mesh = std::move(m);
+    // Display colour (sRGB, the object's own else its layer's) -> material baseColorFactor, which glTF defines as LINEAR RGB; the
+    // alpha is kept as the coverage. The material is named after the object so a viewer's material list reads like the model's.
+    const Color* shown = nullptr;
+    if (!o.color_by_layer) {
+      shown = &o.color;
+    } else if (!doc.Layers().empty()) {
+      const size_t li = static_cast<size_t>(std::clamp(o.layer_index, 0, static_cast<int>(doc.Layers().size()) - 1));
+      shown = &doc.Layers()[li].color;
+    }
+    if (shown) {
+      kernel::GltfMaterial mat;
+      mat.name = part.name;
+      mat.base_color = {SrgbToLinear(shown->r), SrgbToLinear(shown->g), SrgbToLinear(shown->b), std::clamp(shown->a, 0.0f, 1.0f)};
+      mat.metallic = 0.0f;
+      mat.roughness = 0.6f;
+      if (shown->a < 1.0f) mat.alpha_mode = kernel::GltfMaterial::AlphaMode::Blend;
+      part.material = mat;
+    }
+    model.parts.push_back(std::move(part));
+  }
+  if (model.parts.empty()) {
+    error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";
+    return false;
+  }
+  kernel::GltfWriteOptions opt;
+  opt.binary = LowerExt(path) == ".glb";
+  opt.scale = DocUnitMeters(doc.Settings().unit_system);
+  opt.z_up_to_y_up = true;
+  if (kernel::SaveGltfModel(path, model, opt) != kernel::Result::Ok) {
+    error = "Could not write " + path;
+    return false;
+  }
+  return true;
+}
+
+bool ImportGltfFile(Document& doc, const std::string& path, std::string& error) {
+  kernel::GltfModel model;
+  kernel::GltfReadOptions opt;
+  opt.scale = 1.0 / DocUnitMeters(doc.Settings().unit_system);
+  opt.y_up_to_z_up = true;
+  if (kernel::LoadGltfModel(path, model, opt) != kernel::Result::Ok) {
+    error = "Could not read a glTF model from " + path + " (unsupported feature, compressed geometry or a damaged file)";
+    return false;
+  }
+  const std::string stem = std::filesystem::path(path).stem().string();
+  int imported = 0;
+  for (size_t i = 0; i < model.parts.size(); ++i) {
+    kernel::GltfPart& part = model.parts[i];
+    if (part.mesh.FaceCount() == 0) continue;
+    if (part.mesh.raw().m_N.Count() != part.mesh.raw().m_V.Count()) part.mesh.raw().ComputeVertexNormals();  // the file's own normals stay
+    SceneObject o = SceneObject::MakeMesh(part.mesh);
+    o.name = !part.name.empty() ? part.name : (model.parts.size() == 1 ? stem : stem + "_" + std::to_string(i + 1));
+    if (part.material) {
+      const std::array<float, 4>& c = part.material->base_color;  // linear RGB in the file, sRGB in the document
+      o.color = Color{LinearToSrgb(c[0]), LinearToSrgb(c[1]), LinearToSrgb(c[2]), c[3]};
+      o.color_by_layer = false;
+    }
+    doc.Add(std::move(o));
+    ++imported;
+  }
+  if (imported == 0) {
+    error = "No geometry found in " + path;
+    return false;
+  }
+  error = "glTF: " + std::to_string(imported) + " part(s), metres Y-up converted to the document unit " + doc.Settings().unit_system + " Z-up";
+  return true;
+}
+
 }  // namespace
 
 bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) {
   const std::string ext = LowerExt(path);
   if (ext == ".obj") return ImportObjMulti(doc, path, error);
+  if (ext == ".gltf" || ext == ".glb") return ImportGltfFile(doc, path, error);
   if (ext != ".stl") {
     error = "Unsupported mesh format: " + ext;
     return false;
@@ -3480,6 +3599,7 @@ bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) 
 bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   const std::string ext = LowerExt(path);
   if (ext == ".obj") return ExportObjMulti(doc, path, selected_only, error);
+  if (ext == ".gltf" || ext == ".glb") return ExportGltfFile(doc, path, selected_only, error);
   if (ext != ".stl") {
     error = "Unsupported export format: " + ext;
     return false;

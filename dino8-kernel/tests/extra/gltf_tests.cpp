@@ -1,7 +1,7 @@
 // glTF 2.0 read/write. Oracles independent of src/gltf.cpp: every input file is assembled here byte by byte (little-endian packing written out
 // below, JSON as text) with the expected geometry computed from closed forms (quaternion / TRS / matrix compositions, triangle-strip and fan
 // orderings per the specification); files the writer produces are decoded here with a separate scan of the GLB container and the BIN chunk, and
-// by the Python oracle (tests/gltf_oracle.py: struct + json, accessor counts / bounds / min / max) when run on them.
+// by the Python oracle (dino8-app/tests/gltf_oracle.py: struct + json, accessor counts / bounds / min / max) when run on them.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
