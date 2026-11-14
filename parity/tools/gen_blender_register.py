@@ -1007,7 +1007,7 @@ def main():
                 rc = subprocess_main(args.input, sub)
             diffs = []
             names = sorted(f for f in os.listdir(sub) if os.path.isfile(os.path.join(sub, f)))
-            old = sorted(f for f in os.listdir(OUT) if os.path.isfile(os.path.join(OUT, f)))
+            old = sorted(f for f in os.listdir(OUT) if os.path.isfile(os.path.join(OUT, f)) and f != "REVIEW.md")
             if names != old:
                 diffs.append("file lists differ: %s" % sorted(set(names) ^ set(old)))
             for n in names:
