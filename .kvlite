@@ -1,0 +1,2 @@
+SECTIONS=BOSSRIB_EXACT SDBOOL THK OTS OPS
+FILTERS=QcEmbossRing;QcExtrudeFaceInPlane;QcThickenWelded;QcExtrudeFaceWelded;QcShellRevolved;QcOffsetSolidPlanar;QcRemoveBlendMitre;QcRib;Boolean;Offset;Fillet;Intersect;Rib;Boss;Pocket;Emboss;Thicken;Sweep;Extrude
