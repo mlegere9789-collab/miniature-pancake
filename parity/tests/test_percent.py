@@ -116,16 +116,23 @@ class RowPassRule(PercentBase):
         verdict = self.verdict(row)[0]
         self.assertEqual(verdict["reasons"], ["conflicting:t.a"])
 
-    def test_the_suite_is_not_part_of_the_test_id(self):
-        row = make_row(1, acceptance=[{"test_id": "kernel/t.a"}])
-        write_run(
-            self.evidence,
-            "100",
-            checks=[
-                {"suite": "kernel", "test": "t.a", "name": "x", "result": "ok", "ms": 1}
-            ],
-        )
-        self.assertFalse(self.verdict(row)[0]["passing"])
+    def test_a_test_id_may_be_qualified_by_its_suite(self):
+        checks = [
+            {"suite": "kernel", "test": "t.a", "name": "x", "result": "ok", "ms": 1},
+            {"suite": "app", "test": "t.a", "name": "x", "result": "fail", "ms": 1},
+        ]
+        write_run(self.evidence, "100", checks=checks[:1], checks_name="kernel.jsonl")
+        write_run(self.evidence, "100", checks=checks[1:], checks_name="app.jsonl")
+        by_id = {}
+        for test_id in ("t.a", "kernel/t.a", "app/t.a", "other/t.a"):
+            row = make_row(1, acceptance=[{"test_id": test_id}])
+            by_id[test_id] = self.verdict(row)[0]["reasons"]
+        self.assertEqual(by_id["kernel/t.a"], [])  # the kernel run alone passed
+        self.assertEqual(by_id["app/t.a"], ["failing:app/t.a"])
+        self.assertEqual(
+            by_id["t.a"], ["conflicting:t.a"]
+        )  # the bare id sees both suites
+        self.assertEqual(by_id["other/t.a"], ["missing:other/t.a"])
 
     def test_alias_rows_are_not_counted(self):
         a = make_row(1)
@@ -226,9 +233,22 @@ class RunOrderAndAntiGaming(PercentBase):
         self.assertFalse(verdict["passing"])
         self.assertEqual(verdict["reasons"], ["failing:t.a"])
 
-    def test_flaky_same_run_blocks_crediting(self):
+    def test_a_failed_check_inside_one_execution_is_a_failure_not_a_flake(self):
         row = self.one()
-        write_run(self.evidence, "10", checks=[("t.a", "fail"), ("t.a", "ok")])
+        write_run(
+            self.evidence, "10", checks=[("t.a", "ok"), ("t.a", "fail"), ("t.a", "ok")]
+        )
+        verdict = self.verdict(row)[0]
+        self.assertEqual(verdict["reasons"], ["failing:t.a"])
+
+    def test_flaky_two_executions_in_one_run_block_crediting(self):
+        row = self.one()
+        write_run(
+            self.evidence, "10", checks=[("t.a", "fail")], checks_name="attempt1.jsonl"
+        )
+        write_run(
+            self.evidence, "10", checks=[("t.a", "ok")], checks_name="attempt2.jsonl"
+        )
         verdict, result, _ = self.verdict(row)
         self.assertEqual(verdict["reasons"], ["conflicting:t.a"])
         self.assertEqual(result["flaky_tests"], {"count": 1, "ids": ["t.a"]})
@@ -393,6 +413,182 @@ class Reporting(PercentBase):
         )
         self.assertEqual(first["evidence"], second["evidence"])
         self.assertEqual(first["evidence"]["malformed"][0]["file"], "10/bad.jsonl")
+
+
+def runner_lines(
+    test,
+    results,
+    suite="kernel",
+    pid=1,
+    sha=None,
+    checks=None,
+    test_result=None,
+    **extra,
+):
+    """The lines dino8_kernel_tests (DINO8_TEST_JSONL) writes for one test."""
+    lines = []
+    if sha is not None:
+        lines.append({"kind": "run", "suite": suite, "pid": pid, "sha": sha})
+    for number, result in enumerate(results, 1):
+        lines.append(
+            {
+                "kind": "check",
+                "suite": suite,
+                "pid": pid,
+                "test": test,
+                "name": "c%d" % number,
+                "result": result,
+                "n": number,
+                "ms": 0.1,
+            }
+        )
+    failed = sum(1 for r in results if r != "ok")
+    line = {
+        "kind": "test",
+        "suite": suite,
+        "pid": pid,
+        "test": test,
+        "name": test,
+        "result": test_result or ("fail" if failed else "ok"),
+        "checks": len(results) if checks is None else checks,
+        "failed": failed,
+        "ms": 1.0,
+    }
+    line.update(extra)
+    lines.append(line)
+    return lines
+
+
+class RunnerFormat(PercentBase):
+    def one(self, test="TestCurveLength"):
+        return make_row(1, acceptance=[{"test_id": test}])
+
+    def run_with(self, lines, run="10", **manifest):
+        write_run(self.evidence, run, manifest=manifest or None, checks=lines)
+
+    def test_a_clean_test_credits_its_row(self):
+        lines = runner_lines("TestCurveLength", ["ok", "ok", "ok"], sha="abc1234")
+        lines.append(
+            {
+                "kind": "summary",
+                "suite": "kernel",
+                "pid": 1,
+                "tests": 1,
+                "checks": 3,
+                "ok": 3,
+                "failed": 0,
+                "thrown": 0,
+                "ms": 2.0,
+            }
+        )
+        self.run_with(lines)
+        verdict, result, _ = self.verdict(self.one())
+        self.assertTrue(verdict["passing"])
+        self.assertEqual(result["evidence"]["checks"], 3)  # the three check lines
+        self.assertEqual(
+            (result["evidence"]["malformed_count"], result["evidence"]["tests"]), (0, 1)
+        )
+
+    def test_one_failed_check_fails_the_test(self):
+        self.run_with(runner_lines("TestCurveLength", ["ok", "fail", "ok"]))
+        verdict, result, _ = self.verdict(self.one())
+        self.assertEqual(verdict["reasons"], ["failing:TestCurveLength"])
+        self.assertEqual(result["flaky_tests"]["count"], 0)
+        self.assertEqual(result["failing_tests"]["ids"], ["TestCurveLength"])
+
+    def test_a_test_that_threw_fails(self):
+        self.run_with(
+            runner_lines("TestCurveLength", ["ok"], test_result="throw", error="boom")
+        )
+        self.assertEqual(
+            self.verdict(self.one())[0]["reasons"], ["failing:TestCurveLength"]
+        )
+
+    def test_a_test_that_ran_no_check_proves_nothing(self):
+        self.run_with(runner_lines("TestCurveLength", [], checks=0))
+        verdict, result, _ = self.verdict(self.one())
+        self.assertEqual(verdict["reasons"], ["empty:TestCurveLength"])
+        self.assertEqual(result["not_passing_by_reason"], {"empty": 1})
+        self.assertEqual(result["failing_tests"]["ids"], ["TestCurveLength"])
+
+    def test_a_process_that_died_inside_the_test_leaves_no_credit(self):
+        lines = runner_lines("TestCurveLength", ["ok", "ok"])[
+            :-1
+        ]  # the test line never came
+        self.run_with(lines)
+        verdict, result, _ = self.verdict(self.one())
+        self.assertEqual(verdict["reasons"], ["failing:TestCurveLength"])
+        self.assertEqual(result["evidence"]["incomplete_tests"], 1)
+
+    def test_a_section_that_never_finished_is_incomplete(self):
+        self.run_with(
+            runner_lines(
+                "SME", ["ok", "ok"], suite="app", incomplete=True, test_result="fail"
+            )
+        )
+        self.assertEqual(self.verdict(self.one("SME"))[0]["reasons"], ["failing:SME"])
+
+    def test_a_result_flipped_by_hand_is_caught(self):
+        lines = runner_lines(
+            "TestCurveLength", ["ok", "fail"], test_result="ok"
+        )  # test line says ok, a check says fail
+        self.run_with(lines)
+        verdict, result, _ = self.verdict(self.one())
+        self.assertFalse(verdict["passing"])
+        self.assertEqual(result["evidence"]["malformed_count"], 1)
+        self.assertIn(
+            "says ok but one of its check lines",
+            result["evidence"]["malformed"][0]["message"],
+        )
+
+    def test_unknown_kinds_are_counted_and_ignored(self):
+        lines = runner_lines("TestCurveLength", ["ok"]) + [
+            {"kind": "artifact", "suite": "kernel", "url": "x"}
+        ]
+        self.run_with(lines)
+        verdict, result, _ = self.verdict(self.one())
+        self.assertTrue(verdict["passing"])
+        self.assertEqual(
+            (
+                result["evidence"]["ignored_lines"],
+                result["evidence"]["malformed_count"],
+            ),
+            (1, 0),
+        )
+
+    def test_two_processes_that_disagree_are_a_flake(self):
+        lines = runner_lines("TestCurveLength", ["ok"], pid=1) + runner_lines(
+            "TestCurveLength", ["fail"], pid=2
+        )
+        self.run_with(lines)
+        self.assertEqual(
+            self.verdict(self.one())[0]["reasons"], ["conflicting:TestCurveLength"]
+        )
+
+    def test_the_commit_of_the_run_line_ties_results_of_different_runs_together(self):
+        self.run_with(
+            runner_lines("TestCurveLength", ["fail"], sha="aaa1111"), run="10"
+        )
+        self.run_with(runner_lines("TestCurveLength", ["ok"], sha="aaa1111"), run="11")
+        self.assertEqual(
+            self.verdict(self.one())[0]["reasons"], ["conflicting:TestCurveLength"]
+        )
+        self.run_with(runner_lines("TestCurveLength", ["ok"], sha="bbb2222"), run="12")
+        self.assertTrue(
+            self.verdict(self.one())[0]["passing"]
+        )  # a new commit that passes cleanly
+
+    def test_app_sections_and_kernel_tests_share_one_evidence_directory(self):
+        self.run_with(
+            runner_lines("SME", ["ok", "ok"], suite="app")
+            + runner_lines("TestCurveLength", ["ok"], suite="kernel", pid=2)
+        )
+        rows = [
+            make_row(1, acceptance=[{"test_id": "SME"}]),
+            make_row(2, acceptance=[{"test_id": "TestCurveLength"}]),
+        ]
+        result, _ = self.compute({"blender/mesh.jsonl": rows})
+        self.assertEqual(result["passing"], 2)
 
 
 class BestTier(PercentBase):

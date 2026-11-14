@@ -97,26 +97,41 @@ Everything below `ledger/evidence/` is written by CI. A run is a directory named
 
 ```
 ledger/evidence/43486663063/run.json              {"run_id","sha","kind":"full"|"lite","finished_at"}
-ledger/evidence/43486663063/<anything>.jsonl      one line per check: {"suite","test","name","result","ms"[,"commit","time"]}
+ledger/evidence/43486663063/<anything>.jsonl      the check lines of the test runners (below)
 ledger/evidence/43486663063/<task-id>.json        {"run_id","task","sha","finished_at","kind","passed":[ids],"failed":[ids],"skipped":[ids],"artifacts":[urls]}
 ```
 
-* `test` is the test id that Register rows name in `acceptance[].test_id`; it must be unique
-  across suites. `result` is `ok` for a pass (any case). `fail`, `skip` and everything else
-  never count. The raw check lines can stay CI artifacts (`--checks FILE` reads loose files as
-  the newest run, `adhoc`); the per-task JSON and `run.json` are what the repository keeps.
-* `kind: full` means the run covers every test. `lite` runs only the tests of one change.
+The check lines are either **plain**, one per check, `{"suite","test","name","result","ms"}`, or
+the **kinded** lines that `dino8_kernel_tests` (`DINO8_TEST_JSONL`) and `run_sections.sh`
+(`DINO8_SECTION_JSONL`) write: `run` (the commit and shard of one process), `check`, `test` (one
+per test, carrying the result of the whole test and its check count), `summary` and `job`
+(`ledger/examples/evidence/43486663001` is a kernel run in this format, `43486663063` is plain).
+
+* `test` is the test id that Register rows name in `acceptance[].test_id` (a kernel test name, an
+  app section name, or any name a runner emits). When two suites use the same name, a row can name
+  `<suite>/<test>`, for example `kernel/TestCurveLength` or `app/SME`; the bare name sees both.
+* All the check lines of one test in one process are one **execution**, folded into one result:
+  `ok` only if every check is ok. In the kinded format the `test` line is the verdict and the check
+  lines must agree with it (a test line that says ok over a failed check is reported as malformed
+  and fails). Check lines without their `test` line mean the process died inside the test: fail.
+  A test that ran no check (`checks: 0`) proves nothing and is reported as `empty`.
+* `result` is `ok` for a pass (any case); `fail`, `throw`, `skip` and anything else never count.
+  Lines of a kind this tool does not know are counted in `evidence.ignored_lines` and ignored.
+* The raw check lines can stay CI artifacts (`--checks FILE` reads loose files as the newest run,
+  `adhoc`); `run.json` and the per-task JSON are what the repository keeps.
+* `kind: full` in `run.json` means the run covers every test, `lite` only the tests of one change.
+  Without a `run.json` a run is `lite`, and the deleted-test rule below cannot work.
 * A task file must agree with its directory (`run_id`) and its name (`task`).
 
 ### When a test counts (the rule of `percent.py`)
 
-The latest run that contains a test decides it. The test is **ok** only if every observation of
-it in that run, and in any other run at the same commit, is `ok`. It does **not** count when it is
+The latest run that contains a test decides it. The test is **ok** only if every execution of it in
+that run, and in any other run at the same commit, is ok. It does **not** count when it is
 
 * `missing`: no evidence at all;
-* `failing` or `skipped`;
-* `conflicting`: both ok and not ok for the same commit or run (a flaky test, or an id used by
-  two suites). A flaky test blocks crediting until a new commit passes cleanly (plan 7.4);
+* `failing`, `empty` or `skipped`;
+* `conflicting`: several executions for the same commit or run that disagree (a flaky test, or an
+  id used by two suites). A flaky test blocks crediting until a new commit passes cleanly (plan 7.4);
 * `vanished`: it ran in an earlier run but is absent from the latest `full` run (deleted or
   disabled after crediting; the row reverts automatically).
 
@@ -140,11 +155,12 @@ python3 parity/tools/percent.py [--register DIR] [--evidence DIR] [--checks FILE
 | `headline`, `total`, `passing`, `percent`, `best`, `target_met`, `target_met_percent` | the numbers; `total` leaves out alias rows |
 | `by_program`, `by_factory`, `by_wave` | the same five numbers per bucket. A row that names two programs counts in both, so program totals can add up to more than `total` |
 | `register` | file, row and alias counts; the tiers written in the Register and the tiers computed; rows that pass but are not yet written by CI |
-| `not_passing_by_reason` | why the others do not pass: `spec-changed`, `conflicting`, `vanished`, `failing`, `skipped`, `missing`, `no-tests` |
-| `flaky_tests`, `vanished_tests`, `failing_tests` | count and the first 200 ids |
+| `not_passing_by_reason` | why the others do not pass: `spec-changed`, `conflicting`, `vanished`, `failing`, `empty`, `skipped`, `missing`, `no-tests` |
+| `flaky_tests`, `vanished_tests`, `failing_tests` | count and the first 200 ids (`failing_tests` includes `empty` ones) |
+| `most_shared_tests` | tests that more than one row leans on, for the reviewers' oracle check |
 | `unproven_claims` | rows whose Register tier is higher than the evidence supports (a typed credit) |
 | `reverted` | rows credited at the previous computation (`--previous`, default the credits file) that lost it, with the reason; a credited row that disappeared from the Register is listed as `row-removed` (needs a written rationale, plan 4.4 step 7) |
-| `evidence` | runs, files, checks, a digest, and `malformed` entries (skipped and reported) |
+| `evidence` | runs, files, check lines, distinct tests, `incomplete_tests` (a process died inside a test), `ignored_lines`, a digest, and `malformed` entries (skipped and reported) |
 | `legacy` | the frozen legacy map numbers next to the Register number, never added: `kernel_pct`, `app_pct`, `as_of_commit`, `status` (`frozen`, or `placeholder` with nulls when `ledger/legacy.json` is absent) and a ready sentence `dual` |
 | `trajectory` | rows required today by the plan 6.4 line, rows passing, `status` wave0, ahead, on_pace, behind or hardening (plan 1.5) |
 | `produced_by` | `run_id` and `commit` of the CI run (from `GITHUB_RUN_ID` and `GITHUB_SHA`) |

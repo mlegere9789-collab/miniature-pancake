@@ -12,7 +12,8 @@ A row PASSES when it names at least one acceptance test and EVERY acceptance tes
 result "ok" in the evidence, judged by the latest run that contains the test. A test does not
 count when it:
   - is missing from the evidence, failed, or was skipped;
-  - has mixed results for the same commit or run (flaky: it blocks crediting, plan 7.4);
+  - has mixed results in several executions of the same commit or run (flaky: it blocks
+    crediting, plan 7.4);
   - ran in an earlier run but is absent from the latest FULL run (deleted or disabled);
   - belongs to a row whose evidence seal (evidence.spec_sha) no longer matches the row's
     acceptance list, tolerances, superiority tests or target (weakened after credit).
@@ -23,9 +24,21 @@ Evidence layout (everything below --evidence, default ledger/evidence):
   <run>/run.json        optional manifest {"run_id","sha","kind":"full"|"lite","finished_at"}
   <run>/<task>.json     {"run_id","task","sha","finished_at","kind","passed":[ids],
                          "failed":[ids],"skipped":[ids],"artifacts":[urls]}
-  <run>/**/*.jsonl      one line per check {"suite","test","name","result","ms"[,"commit"]}
+  <run>/**/*.jsonl      the lines of the test runners, either plain, one per check:
+                           {"suite","test","name","result","ms"[,"commit"]}
+                        or the kinded lines of dino8_kernel_tests (DINO8_TEST_JSONL) and
+                        run_sections.sh (DINO8_SECTION_JSONL): run (commit of one process),
+                        check, test (one per test, with the result of the whole test),
+                        summary and job. The checks of one test in one process are one
+                        execution with one result: a failed check fails the test; a test
+                        line that says ok over a failed check is flagged as malformed;
+                        check lines without their test line (the process died) fail; a test
+                        that ran no check proves nothing ("empty"). A test is identified by
+                        its "test" value, or by "<suite>/<test>" when suites share names.
 Runs are ordered by their directory name, numbers numerically (GitHub run ids increase).
 --checks adds loose JSONL files as one extra run called "adhoc" (the newest run).
+Two executions of one test (two files, two processes, two runs) that disagree for the same
+commit are a flake: they block crediting until a new commit passes cleanly.
 
 Outputs: ledger/percent.json (summary) and ledger/credits.jsonl (one line per passing row:
 id, tier, run, time of credit, tests). The previous credits file is used to list rows that
@@ -109,6 +122,10 @@ class Evidence:
         self.checks = 0
         self.digest = hashlib.sha256()
         self.root = None
+        self.tests = set()  # bare test ids seen
+        self.qualified = set()  # the suite/id aliases of them
+        self.incomplete = 0  # tests whose process died before their test line
+        self.ignored = 0  # lines of a kind this tool does not know
 
     def rel(self, path):
         """The path as it is written into percent.json: below the evidence directory when
@@ -217,11 +234,57 @@ def _read_json_file(ev, run, path):
                     path,
                 )
             )
+            ev.tests.add(test)
             ev.checks += 1
             info["checks"] += 1
 
 
+def _add_obs(ev, info, run, suite, test, result, sha, when, source):
+    """One observation per test execution, under the bare id and under suite/id."""
+    for test_id in (test, "%s/%s" % (suite, test)) if suite else (test,):
+        ev.obs[test_id].append(Obs(run, test_id, result, sha, when, source))
+    ev.tests.add(test)
+    if suite:
+        ev.qualified.update(["%s/%s" % (suite, test)])
+
+
+def _execution_result(ev, path, execution):
+    """The result of one execution of one test: its check lines folded into one verdict."""
+    checks = [norm_result(r) for r in execution["checks"]]
+    if execution["test_result"] is not None:
+        base = norm_result(execution["test_result"])
+        if execution["incomplete"]:
+            base = "fail"
+        declared = execution["declared_checks"]
+        if base == "ok" and any(c != "ok" for c in checks):
+            ev.bad(
+                path,
+                execution["line"],
+                "test %s says ok but one of its check lines is not ok"
+                % execution["test"],
+            )
+            return "fail"
+        if base == "ok" and (declared == 0 or (declared is None and not checks)):
+            return "empty"  # a test that ran no check proves nothing
+        return base
+    if execution["kinded"]:
+        ev.incomplete += (
+            1  # check lines but no test line: the process died inside the test
+        )
+        return "fail"
+    if all(c == "ok" for c in checks):
+        return "ok"
+    return "fail" if any(c in ("fail", "other") for c in checks) else "skip"
+
+
 def _read_checks_file(ev, run, path):
+    """JSONL lines of a test runner (plan 7.5).
+
+    Plain lines {"suite","test","name","result","ms"} are one check each. The runners of the
+    kernel and the app write kinded lines: run (the commit and shard of one process), check,
+    test (the end of one test, with the result of the whole test), summary and job. All the
+    checks of one test in one process are folded into the one result of that execution.
+    """
     raw = _read_text(path)
     ev.digest.update(ev.rel(path).encode("utf-8") + b"\0" + raw + b"\0")
     ev.files += 1
@@ -230,25 +293,75 @@ def _read_checks_file(ev, run, path):
     for line, message in problems:
         ev.bad(path, line, message)
     info = ev.run_info(run)
+    process_sha = {}  # (suite, pid) -> commit named by the run line
+    open_runs = {}  # (suite, pid, test) -> execution still collecting its checks
+    finished = []
     for line, obj in items:
+        kind = obj.get("kind")
+        suite = obj.get("suite") if isinstance(obj.get("suite"), str) else None
+        pid = obj.get("pid")
+        if kind == "run":
+            if isinstance(obj.get("sha"), str):
+                process_sha[(suite, pid)] = obj["sha"]
+            continue
+        if kind in ("summary", "job"):
+            continue
+        if kind not in (None, "check", "test"):
+            ev.ignored += 1  # a kind this tool does not know: reported, never credited
+            continue
         test, result = obj.get("test"), obj.get("result")
         if not (isinstance(test, str) and test.strip()) or not isinstance(result, str):
             ev.bad(path, line, "a check needs a string 'test' and a string 'result'")
             continue
-        sha = obj.get("commit") if isinstance(obj.get("commit"), str) else None
-        when = norm_time(obj.get("time"))
-        ev.obs[test].append(
-            Obs(
-                run,
-                test,
-                norm_result(result),
-                sha or info["sha"],
-                when or info["finished_at"],
-                "%s:%d" % (path, line),
-            )
+        key = (suite, pid, obj.get("job"), test)
+        execution = open_runs.get(key)
+        if execution is None:
+            execution = {
+                "suite": suite,
+                "pid": pid,
+                "test": test,
+                "checks": [],
+                "test_result": None,
+                "declared_checks": None,
+                "incomplete": False,
+                "kinded": False,
+                "line": line,
+                "sha": (
+                    obj.get("commit") if isinstance(obj.get("commit"), str) else None
+                ),
+                "time": norm_time(obj.get("time")),
+            }
+            open_runs[key] = execution
+        if kind == "test":
+            execution["test_result"] = result
+            execution["incomplete"] = obj.get("incomplete") is True
+            checks = obj.get("checks")
+            if isinstance(checks, int) and not isinstance(checks, bool):
+                execution["declared_checks"] = checks
+            execution["kinded"] = True
+            finished.append(open_runs.pop(key))
+        else:
+            execution["checks"].append(result)
+            execution["kinded"] = execution["kinded"] or kind == "check"
+            ev.checks += 1
+            info["checks"] += 1
+    finished.extend(open_runs.values())
+    for execution in finished:
+        result = _execution_result(ev, path, execution)
+        sha = execution["sha"] or process_sha.get(
+            (execution["suite"], execution["pid"])
         )
-        ev.checks += 1
-        info["checks"] += 1
+        _add_obs(
+            ev,
+            info,
+            run,
+            execution["suite"],
+            execution["test"],
+            result,
+            sha or info["sha"],
+            execution["time"] or info["finished_at"],
+            "%s:%d" % (path, execution["line"]),
+        )
 
 
 def _read_run_dir(ev, run, directory):
@@ -287,8 +400,8 @@ def load_evidence(root, extra_checks=()):
 def judge_tests(ev):
     """test id -> {"state", "run", "sha", "since"}.
 
-    state: ok | failing | skipped | conflicting | vanished. A test with no observation has
-    no entry (the caller reads that as "missing").
+    state: ok | failing | skipped | empty | conflicting | vanished. A test with no observation
+    has no entry (the caller reads that as "missing"). "empty" is a test that ran no check.
     """
     order = sorted(ev.runs, key=run_order)
     rank = {run: index for index, run in enumerate(order)}
@@ -325,6 +438,8 @@ def judge_tests(ev):
             state = "conflicting"
         elif non_ok & {"fail", "other"}:
             state = "failing"
+        elif "empty" in non_ok:
+            state = "empty"
         else:
             state = "skipped"
         if (
@@ -409,6 +524,7 @@ def primary_reason(reasons):
         "conflicting",
         "vanished",
         "failing",
+        "empty",
         "skipped",
         "missing",
         "no-tests",
@@ -589,9 +705,14 @@ def compute(
         else:
             reverted.append({"id": row_id, "reasons": ["now an alias row"]})
 
-    flaky = sorted(t for t, s in states.items() if s["state"] == "conflicting")
-    vanished = sorted(t for t, s in states.items() if s["state"] == "vanished")
-    failing = sorted(t for t, s in states.items() if s["state"] == "failing")
+    bare = {
+        t: s
+        for t, s in states.items()
+        if t not in evidence.qualified or t in evidence.tests
+    }
+    flaky = sorted(t for t, s in bare.items() if s["state"] == "conflicting")
+    vanished = sorted(t for t, s in bare.items() if s["state"] == "vanished")
+    failing = sorted(t for t, s in bare.items() if s["state"] in ("failing", "empty"))
 
     total = overall["total"]
     passing = overall["passing"]
@@ -650,7 +771,9 @@ def compute(
             "latest_run": max(evidence.runs, key=run_order) if evidence.runs else None,
             "files": evidence.files,
             "checks": evidence.checks,
-            "tests": len(evidence.obs),
+            "tests": len(evidence.tests),
+            "incomplete_tests": evidence.incomplete,
+            "ignored_lines": evidence.ignored,
             "sha256": evidence.digest.hexdigest(),
             "malformed_count": len(evidence.malformed),
             "malformed": evidence.malformed[:LIST_LIMIT],
