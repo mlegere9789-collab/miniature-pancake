@@ -1096,6 +1096,18 @@ impl Workspace {
         self.checkout_idx(t, Some(name))
     }
 
+    /// Restore named design options and the current head after importing a log.
+    pub fn restore_refs(&mut self, refs: &[(String, OpId)], head: OpId, branch: Option<&str>) -> Result<()> {
+        for (n, t) in refs {
+            self.idx(*t)?;
+            self.refs.insert(n.clone(), *t);
+            self.write_ref(REF_BRANCH_SET, n, Some(*t), None)?;
+        }
+        let h = self.idx(head)?;
+        self.checkout_idx(h, branch)?;
+        Ok(())
+    }
+
     /// Objects that differ between two operations' states (structural diff).
     pub fn diff_ops(&self, a: OpId, b: OpId) -> Result<Vec<DiffEntry>> {
         let ra = self.state_at(self.idx(a)?)?;
