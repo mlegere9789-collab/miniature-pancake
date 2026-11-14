@@ -1268,8 +1268,27 @@ bool BuildBlendedBoss(const HolePlatePlan& g, const std::optional<HoleRimBlend>&
 
 struct EdgePick { ObjectId id = kNoObject; int edge = -1; double dist = 0; };
 
+// True for an edge the fillet family can act on: its two trims lie on two DIFFERENT faces. The seam of a cylinder, cone,
+// torus or sphere (and a slit) has both trims on the SAME face: it separates nothing, and Run() refuses it with "Edge does
+// not separate two distinct faces".
+bool EdgeSeparatesTwoFaces(const ON_Brep& b, const ON_BrepEdge& e) {
+  if (e.TrimCount() != 2) return false;
+  const int f0 = b.m_T[e.m_ti[0]].FaceIndexOf(), f1 = b.m_T[e.m_ti[1]].FaceIndexOf();
+  return f0 >= 0 && f1 >= 0 && f0 != f1;
+}
+
+// The edge nearest to `p`. A point at a vertex is exactly as near to every edge that ends there (measured: the three edges
+// meeting at the seam vertex of a box with a cylinder boss all report d = 1.9860273225978185e-15), and the scan keeps the
+// first of equally near edges, so the answer depends on nothing but the order of the edges in the B-rep. A plain cylinder
+// lists its seam before its top rim, so a pick at the rim's start vertex (r, 0, h) was refused as a seam; smoke check
+// PTF_R_boxboss (the same pick at the seam vertex of a box with a cylinder boss) was refused that way on Windows only. The
+// seam can never be filleted, so when it ties, within the model tolerance, with an edge that can be, the pick is that edge;
+// a point nearer to the seam than to every such edge still gets the seam and its refusal.
 std::optional<EdgePick> PickEdge(CommandContext& ctx, Point3d p) {
-  std::optional<EdgePick> best;
+  std::optional<EdgePick> best;       // the nearest of all the two-trim edges (the first one wins an exact tie)
+  bool best_separates = false;        // ... and whether that edge separates two distinct faces
+  std::optional<EdgePick> best_real;  // the nearest of the edges that separate two distinct faces
+  const double tie = std::max(ctx.Settings().absolute_tolerance, 1e-5);
   for (const SceneObject& o : ctx.Doc().Objects()) {
     if (!ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
     std::optional<ON_Brep> b = BrepOfObject(o);
@@ -1282,9 +1301,12 @@ std::optional<EdgePick> PickEdge(CommandContext& ctx, Point3d p) {
       ON_NurbsCurve enc;
       e.GetNurbForm(enc);
       const double d = enc.PointAt(t).DistanceTo(p);
-      if (!best || d < best->dist) best = EdgePick{o.id, i, d};
+      const bool separates = EdgeSeparatesTwoFaces(*b, e);
+      if (!best || d < best->dist) { best = EdgePick{o.id, i, d}; best_separates = separates; }
+      if (separates && (!best_real || d < best_real->dist)) best_real = EdgePick{o.id, i, d};
     }
   }
+  if (best && !best_separates && best_real && best_real->dist <= best->dist + tie) return best_real;
   return best;
 }
 

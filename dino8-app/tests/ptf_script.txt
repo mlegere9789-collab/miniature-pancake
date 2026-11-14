@@ -197,6 +197,21 @@ List
 Volume
 Check
 
+# control: the same cylinder picked exactly at the start vertex of its top rim, (5,0,4), where the cylinder's seam line
+# (an edge whose two trims lie on the same face, never filleted) begins too. The point is as near to the seam as to the rim, and
+# the edge order of the B-rep must not decide: the rim is taken, exactly as above.
+New
+PTFBEGIN_ctl_seam
+Cylinder 0,0,0 5 4
+FilletEdge
+Radius=1
+5,0,4
+Enter
+SelAll
+List
+Volume
+Check
+
 # control: a cone frustum still takes the kernel cap-rim torus
 New
 PTFBEGIN_ctl_tcone
