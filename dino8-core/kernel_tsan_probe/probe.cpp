@@ -19,7 +19,7 @@
 // -fsanitize=thread, any data race is reported by the runtime with both stacks.
 //
 // usage: probe [--threads N] [--iters N] [--seconds T] [--phase indep|shared|both] [--ops a,b|all]
-//              [--stagger 0|1|2] [--cold] [--stack-report] [--list]
+//              [--stagger 0|1|2] [--cold] [--prewarm-bbox] [--stack-report] [--list]
 //   phases: indep (8 ops above), features (fillet/chamfer, revolve/extrude/pipe, convex hull, SubD, 3dm/STEP/IGES I/O),
 //           shared (one const object read by all threads), both = indep + shared (default), all = every phase
 //   --stagger 0: every thread runs the same op at the same time (hits one engine's globals hardest)
@@ -572,6 +572,7 @@ struct Options {
   std::string phase = "both";  // indep | features | shared | both (= indep + shared) | all
   std::string ops = "all";
   int stagger = 2;
+  bool prewarm_bbox = false;  // shared phase: compute every shared Brep's cached bounding box on the main thread first
   bool stack_report = false;  // print each op's peak stack use on a pattern-filled private stack, then exit
   bool cold = false;  // skip the serial reference: the first call of every op happens concurrently (first-use races)
 };
@@ -704,6 +705,7 @@ int main(int argc, char** argv) {
     else if (a == "--stagger") o.stagger = std::atoi(next().c_str());
     else if (a == "--cold") o.cold = true;
     else if (a == "--stack-report") o.stack_report = true;
+    else if (a == "--prewarm-bbox") o.prewarm_bbox = true;
     else if (a == "--list") {
       for (const OpDef& d : kOps) std::printf("%s\n", d.name);
       for (const OpDef& d : kFeatureOps) std::printf("%s\n", d.name);
@@ -744,6 +746,13 @@ int main(int argc, char** argv) {
   }
   if (o.phase == "shared" || o.phase == "both" || o.phase == "all") {
     SharedInputs shared;  // built once, then only read through const references
+    if (o.prewarm_bbox) {
+      // openNURBS fills ON_Brep::m_bbox lazily inside the const BoundingBox() call; doing it once up front, before the
+      // object is visible to other threads, is the warm-up the engine should do when it publishes an immutable Brep.
+      for (const Brep* b : {&shared.sphere, &shared.torus, &shared.box, &shared.big_box, &shared.analytic_hole, &shared.slab,
+                            &shared.cyl_z, &shared.sphere_welded, &shared.cyl_welded, &shared.torus_welded})
+        (void)b->raw().BoundingBox();
+    }
     std::vector<Task> tasks;
     for (const SharedDef& d : kShared)
       if (Selected(o, d.name)) tasks.push_back({d.name, [&shared, fn = d.fn](int tid) { return fn(shared, tid); }});
