@@ -1,0 +1,2 @@
+SECTIONS=ARCSH RVSH CHH OPS OSE OTS QC2 QC3A RVCH B2S HSO KWR OFR SBL SO2 SR SX SATF BASE
+FILTERS=OffsetRuledSolid;ClosedHollowRevolved;ShellRevolved;ShellClosed;ShellArc
