@@ -22,6 +22,7 @@
 
 #include <opennurbs.h>
 
+#include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/offset_solid.h"
 #include "test_registry.h"
@@ -193,4 +194,27 @@ D8_EXTRA_TEST(QcOffsetSolidPlanarRectilinearPrismsFarAndSmallMatchTheMitreAreaFo
   }
   d8test::Check(ok == total, ("random rectilinear prisms: all " + std::to_string(total) + " offsets accepted, accepted " + std::to_string(ok) + " " + first_bad).c_str());
   d8test::Check(within == total, ("random rectilinear prisms: volume_after = (A + P d + 4 d^2)(H + 2 d) to 1e-8 for all " + std::to_string(total) + ", matched " + std::to_string(within) + " " + first_bad).c_str());
+}
+
+// A collapsing offset of a solid with several equally-short edges names the SAME edge wherever the solid sits. The cube [0,10]^3
+// minus the block [5,11]^2 x [0,6] has three vertical edges (x,y) = (5,10), (10,5), (10,10) of length 4 above the notch ceiling z = 6;
+// an offset of -3 moves the ceiling plane to z = 9 and the top to z = 7, so each has new length 7 - 9 = -2, ratio -0.5 (closed form). The
+// refusal names the lexicographically smallest of the tied edges, lower end point first: (5,10,6)-(5,10,10), before the fix the edge
+// named changed with the frame the rounding noise was taken in (a 1e-15 difference decided which of the three it was).
+D8_EXTRA_TEST(QcOffsetSolidPlanarCollapseNamesTheSameTiedEdgeAtAnyPlace) {
+  for (const double off : {0.0, 1000.0, 1e6}) {
+    const std::string tag = "notch cube at " + S(off) + ": ";
+    const Brep cube = Brep::Box(off, off, off, off + 10, off + 10, off + 10);
+    const Brep block = Brep::Box(off + 5, off + 5, off, off + 11, off + 11, off + 6);
+    const Brep notched = dino8::kernel::BooleanCombinePlanar(cube, block, dino8::kernel::BooleanOp::Difference);
+    Brep out;
+    PlanarSolidOffsetReport rep;
+    const Result r = dino8::kernel::OffsetSolidPlanar(notched, -3.0, out, &rep);
+    d8test::Check(r == Result::Failed, (tag + "the offset that turns the ceiling edges inside out is refused").c_str());
+    d8test::Check(std::fabs(rep.min_edge_length_ratio + 0.5) < 1e-9, (tag + "smallest edge ratio " + S(rep.min_edge_length_ratio) + " is (7 - 9) / 4 = -0.5").c_str());
+    if (off <= 1000.0) {
+      const std::string want = "the edge between (" + S(off + 5) + ", " + S(off + 10) + ", " + S(off + 6) + ") and (" + S(off + 5) + ", " + S(off + 10) + ", " + S(off + 10) + ") reverses";
+      d8test::Check(rep.refusal_reason.find(want) != std::string::npos, (tag + "names the edge (5,10,6)-(5,10,10) translated: " + rep.refusal_reason).c_str());
+    }
+  }
 }
