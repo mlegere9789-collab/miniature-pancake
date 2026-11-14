@@ -137,7 +137,19 @@ public static class ToolManifest
             new[] { "potrace.exe", "potrace" },
             "Raster to vector tracing, used by PNG to SVG.",
             "GPL-2.0",
-            "https://potrace.sourceforge.net/#downloading"));
+            "https://potrace.sourceforge.net/#downloading"),
+        new ToolDescriptor(
+            ExternalToolId.GfpganFaceEnhance,
+            "GFPGAN Face Enhance",
+            "gfpgan",
+            new[] { "face_enhance.exe" },
+            "Optional face-restoration pass on the AI upscaler's output — detects faces and "
+            + "runs GFPGAN on each one, CPU-only. Compiled from source at installer build time "
+            + "(no official prebuilt Windows binary exists), so unlike every other bundled tool "
+            + "this one is genuinely allowed to be missing: the upscaler works exactly as before "
+            + "without it, the faceEnhance option just has nothing to run.",
+            "BSD-3-Clause",
+            "https://github.com/Qengineering/GFPGAN-ncnn-Raspberry-Pi-4"));
 
     /// <summary>Every tool the app knows how to use.</summary>
     public static IReadOnlyList<ToolDescriptor> All => Tools;

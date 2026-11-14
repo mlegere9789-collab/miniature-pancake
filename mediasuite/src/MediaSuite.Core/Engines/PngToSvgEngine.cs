@@ -44,7 +44,7 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
 
         var workingDirectory = ResolveWorkingDirectory(spec);
@@ -76,14 +76,16 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
                 var target = spec.Output with { Format = "svg" };
                 var outputPath = OutputPathResolver.Resolve(inputPath, target, index + 1, batchRoot);
 
-                await RunToolAsync(potrace, BuildTraceArguments(spec, bitmap, outputPath), "Potrace", cancellationToken)
+                await RunToolAsync(
+                    potrace, BuildTraceArguments(spec, bitmap, outputPath), "Potrace", cancellationToken,
+                    outputPathToDeleteOnCancel: outputPath)
                     .ConfigureAwait(false);
 
                 outputs.Add(outputPath);
             }
             catch (ToolExecutionException ex)
             {
-                return JobResult.Failure(ex.Message);
+                return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
             }
         }
 

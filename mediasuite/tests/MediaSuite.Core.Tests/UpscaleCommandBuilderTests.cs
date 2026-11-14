@@ -83,4 +83,14 @@ public class UpscaleCommandBuilderTests
 
         Assert.Equal(new[] { "upscaled.png", "-unsharp", "0x1", "final.png" }, arguments);
     }
+
+    [Fact]
+    public void Face_enhance_mirrors_the_upscaler_pass_its_own_flag_shapes()
+    {
+        var arguments = UpscaleCommandBuilder.FaceEnhance("upscaled.png", "final.png", @"C:\tools\gfpgan\models");
+
+        Assert.Equal(
+            new[] { "-i", "upscaled.png", "-o", "final.png", "-m", @"C:\tools\gfpgan\models" },
+            arguments);
+    }
 }
