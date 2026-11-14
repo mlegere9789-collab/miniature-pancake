@@ -34,6 +34,10 @@ class Paths(unittest.TestCase):
         paths = ["ledger/heartbeats/2026-11-18/a.jsonl", "ledger/tasks/T-1.json", "ledger/incidents/x.md", "ledger/usage/2026-11-18.json", "ledger/tools/x.py"]
         self.assertEqual(guard.check_paths(paths, "owner"), [])
 
+    def test_gitkeep_placeholders_are_not_evidence(self):
+        self.assertEqual(guard.check_paths(["ledger/evidence/.gitkeep"], "owner"), [])
+        self.assertEqual(len(guard.check_paths(["ledger/evidence/.gitkeep.json"], "owner")), 1)
+
     def test_lookalike_names_are_not_protected(self):
         self.assertEqual(guard.check_paths(["ledger/evidence_notes.md", "ledger/percent.json.bak", "docs/ledger/percent.json"], "owner"), [])
 

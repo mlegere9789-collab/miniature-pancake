@@ -50,6 +50,8 @@ def check_paths(changed, actor, allowed=None):
     found = []
     for path in changed:
         path = path.strip().replace("\\", "/")
+        if path.rsplit("/", 1)[-1] == ".gitkeep":
+            continue  # keeps an empty directory in git; it holds no evidence
         if path in PROTECTED_FILES or path.startswith(PROTECTED_PREFIXES):
             found.append("%s: written by CI only, not by %s" % (path, actor))
     return found
