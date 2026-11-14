@@ -2137,11 +2137,7 @@ Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness) {
   Brep outer = Brep::Sphere(center, outer_radius);
   Brep inner = Brep::Sphere(center, outer_radius - thickness);
   inner.raw().FlipFace(inner.raw().m_F[0]);
-  Brep shell = Brep::Compound({outer, inner});
-  if (!shell.raw().IsValid()) {  // a 1e12 radius: the two spheres no longer form a valid compound
-    throw std::invalid_argument("dino8::kernel::ShellClosedSphere: the two spheres do not form a valid B-rep at this radius / thickness ratio");
-  }
-  return shell;
+  return Brep::Compound({outer, inner});
 }
 
 Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness) {
