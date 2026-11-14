@@ -11,19 +11,24 @@
 //   mass_props        exact and mesh mass properties               Volume/Area/VolumeMassProperties
 //   mesh_boolean      Manifold mesh boolean, split, hull           BooleanCombine and friends
 // The `shared` phase instead gives every thread the SAME const object (what an incremental engine does when
-// two derived-data queries read one input snapshot): Brep tessellation and mass properties, Mesh queries, and
-// a PointCloud nearest-neighbour query.
+// two derived-data queries read one input snapshot): Brep tessellation and mass properties, welded solids, the
+// same operands fed to concurrent booleans, Mesh queries, and a PointCloud nearest-neighbour query.
 //
 // Every thread's results are compared with a serial reference computed before any thread starts, so
 // cross-thread interference shows up as a value divergence even in a build without ThreadSanitizer. Built with
 // -fsanitize=thread, any data race is reported by the runtime with both stacks.
 //
 // usage: probe [--threads N] [--iters N] [--seconds T] [--phase indep|shared|both] [--ops a,b|all]
-//              [--stagger 0|1|2] [--list]
+//              [--stagger 0|1|2] [--cold] [--stack-report] [--list]
+//   phases: indep (8 ops above), features (fillet/chamfer, revolve/extrude/pipe, convex hull, SubD, 3dm/STEP/IGES I/O),
+//           shared (one const object read by all threads), both = indep + shared (default), all = every phase
 //   --stagger 0: every thread runs the same op at the same time (hits one engine's globals hardest)
 //   --stagger 1: thread t starts at op t, so different engines overlap (cross-engine interference)
 //   --stagger 2: alternate 0 and 1 per iteration (default)
 //   --seconds T: stop starting new iterations after T seconds (the shared build machine is small)
+//   --cold:      no serial warm-up/reference pass; iteration 0 is the first call of each op in the process, made by all
+//                threads at once, and later iterations are compared with each thread's own iteration 0 (this is how
+//                lazily initialised statics, e.g. openNURBS's ON__isnand, are exposed to the sanitizer)
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -32,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -40,11 +46,21 @@
 #include <thread>
 #include <vector>
 
+#include <pthread.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/convex_hull.h"
+#include "dino8/kernel/curve.h"
+#include "dino8/kernel/features.h"
+#include "dino8/kernel/file_io.h"
+#include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/point_cloud.h"
+#include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
 
 using namespace dino8::kernel;
@@ -256,6 +272,97 @@ Sig OpMeshBoolean(int tid) {
   });
 }
 
+// ---- `features` phase: other kernel subsystems, each on thread-private inputs
+
+Sig OpFilletChamfer(int tid) {
+  return Guard([&](std::vector<double>& v) {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    const double r = 1.0 + 0.1 * tid;
+    const Brep f = FilletConvexEdge(box, Point3d(0, 0, 0), Point3d(10, 0, 0), r);
+    v.push_back(f.FaceCount());
+    v.push_back(f.TessellateToClosedMesh(8, 8).Volume());
+    v.push_back(1000.0 - (1.0 - ON_PI / 4.0) * r * r * 10.0);
+    const Brep c = ChamferConvexEdge(box, Point3d(0, 0, 10), Point3d(10, 0, 10), 1.0 + 0.1 * tid, 1.0 + 0.1 * tid);
+    v.push_back(c.FaceCount());
+    v.push_back(c.TessellateToClosedMesh(2, 2).Volume());
+  });
+}
+
+Sig OpSweepFamily(int tid) {
+  return Guard([&](std::vector<double>& v) {
+    const double r0 = 1.0, r1 = 2.0 + 0.1 * tid, h = 3.0;
+    const NurbsCurve profile = NurbsCurve::FromControlPoints(
+        {Point3d(r0, 0, 0), Point3d(r1, 0, 0), Point3d(r1, 0, h), Point3d(r0, 0, h), Point3d(r0, 0, 0)}, 1);
+    const Brep rev = Brep::Revolve(profile, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+    v.push_back(rev.FaceCount());
+    v.push_back(rev.TessellateToClosedMesh(48, 16).Volume());
+    v.push_back(ON_PI * (r1 * r1 - r0 * r0) * h);
+    const NurbsCurve square = NurbsCurve::FromControlPoints(
+        {Point3d(0, 0, 0), Point3d(2 + tid, 0, 0), Point3d(2 + tid, 2, 0), Point3d(0, 2, 0), Point3d(0, 0, 0)}, 1);
+    const Brep ext = Brep::Extrude(square, Vector3d(0, 0, 5));
+    v.push_back(ext.FaceCount());
+    v.push_back(ext.TessellateToClosedMesh(16, 16).Volume());
+    const NurbsCurve rail = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 6)}, 1);
+    const Brep pipe = Brep::Pipe(rail, 0.5 + 0.05 * tid);
+    v.push_back(pipe.FaceCount());
+    v.push_back(pipe.TessellateToClosedMesh(32, 8).Volume());
+  });
+}
+
+Sig OpConvexHull(int tid) {
+  return Guard([&](std::vector<double>& v) {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < 40; ++i) {
+      const double a = 0.7 * i + tid, b = 0.31 * i;
+      pts.emplace_back((3 + tid) * std::sin(b) * std::cos(a), 3 * std::sin(b) * std::sin(a), 3 * std::cos(b));
+    }
+    const Brep hull = ExactConvexHull(pts);
+    v.push_back(hull.FaceCount());
+    v.push_back(hull.TessellateToClosedMesh(2, 2).Volume());
+  });
+}
+
+Sig OpSubD(int tid) {
+  return Guard([&](std::vector<double>& v) {
+    const Brep box = Brep::Box(0, 0, 0, 4 + tid, 4, 4);
+    const SubD sd = SubD::FromBrep(box, 1);
+    const Mesh m = sd.ToApproximateMesh();
+    v.push_back(m.VertexCount());
+    v.push_back(m.FaceCount());
+    v.push_back(m.Area());
+  });
+}
+
+std::string TempPath(int tid, const char* ext) {
+  const char* dir = std::getenv("TMPDIR");
+  return std::string(dir && *dir ? dir : "/tmp") + "/dino8_kprobe_" + std::to_string(static_cast<long>(::getpid())) +
+         "_t" + std::to_string(tid) + ext;
+}
+
+Sig OpFileIo(int tid) {
+  return Guard([&](std::vector<double>& v) {
+    // 3dm round trip through openNURBS' archive code (zlib, ON_CreateUuid for object ids), plus STEP and IGES curve export
+    // (the kernel stamps the export time with std::localtime).
+    const std::string p3 = TempPath(tid, ".3dm"), pi = TempPath(tid, ".igs"), ps = TempPath(tid, ".stp");
+    Model m;
+    m.AddBrep(Brep::Box(0, 0, 0, 2 + tid, 3, 4), "box");
+    v.push_back(static_cast<double>(m.Save(p3)));
+    Model back;
+    v.push_back(static_cast<double>(Model::Load(p3, back)));
+    v.push_back(back.ObjectCount());
+    const NurbsCurve c = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 2 + tid, 0), Point3d(3, 1, 0), Point3d(4, 4, 0)}, 3);
+    v.push_back(static_cast<double>(c.SaveIges(pi)));
+    NurbsCurve ci;
+    v.push_back(static_cast<double>(NurbsCurve::LoadIges(pi, ci)));
+    v.push_back(static_cast<double>(c.SaveStep(ps)));
+    NurbsCurve cs;
+    v.push_back(static_cast<double>(NurbsCurve::LoadStep(ps, cs)));
+    std::remove(p3.c_str());
+    std::remove(pi.c_str());
+    std::remove(ps.c_str());
+  });
+}
+
 struct OpDef {
   const char* name;
   Sig (*fn)(int);
@@ -268,12 +375,26 @@ const OpDef kOps[] = {
 };
 constexpr int kOpCount = sizeof(kOps) / sizeof(kOps[0]);
 
+const OpDef kFeatureOps[] = {
+    {"fillet_chamfer", OpFilletChamfer}, {"sweep_family", OpSweepFamily}, {"convex_hull", OpConvexHull},
+    {"subd", OpSubD},                    {"file_io", OpFileIo},
+};
+
 // ---------------------------------------------------------------- shared-const-input phase
 
 struct SharedInputs {
   Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 2.0);
   Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 0.7);
   Brep box = Brep::Box(0, 0, 0, 3, 4, 5);
+  // Operands of the booleans below: every thread cuts with the SAME const cutter / union operand.
+  Brep big_box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep analytic_hole = MakeAnalyticHole(2.0, -1.0, 12.0);
+  Brep slab = Brep::Box(-2, -2, -1, 2, 2, 1);
+  Brep cyl_z = MakeCylinderZ(0, 0, -2, 2, 1.0);
+  // Welded (ON_RevSurface based) solids: openNURBS caches a bounding box lazily inside const ON_RevSurface methods.
+  Brep sphere_welded = Brep::SphereWelded(Point3d(0, 0, 0), 2.0);
+  Brep cyl_welded = Brep::CylinderWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 3.0);
+  Brep torus_welded = Brep::TorusWelded(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 0.7);
   Mesh mesh = Brep::Sphere(Point3d(0, 0, 0), 2.0).TessellateToClosedMesh(32, 64);
   PointCloud cloud;
   SharedInputs() {
@@ -295,6 +416,35 @@ Sig SharedBrepQueries(const SharedInputs& in, int tid) {
     v.push_back(mp.volume);
     v.push_back(mp.ixx);
     v.push_back(in.sphere.TessellateToClosedMeshAdaptive(0.02).FaceCount());
+  });
+}
+
+Sig SharedBooleanOperands(const SharedInputs& in, int tid) {
+  return Guard([&](std::vector<double>& v) {
+    // Each thread runs its own boolean, but all of them read the same operand objects.
+    const BooleanOp ops[3] = {BooleanOp::Difference, BooleanOp::Union, BooleanOp::Intersection};
+    const Brep a = BooleanCombineMixed(in.big_box, in.analytic_hole, ops[tid % 3]);
+    v.push_back(a.FaceCount());
+    v.push_back(a.TessellateToClosedMesh(16, 16).Volume());
+    const Brep b = BooleanCombineGeneral(in.sphere, in.big_box, ops[tid % 3]);
+    v.push_back(b.FaceCount());
+    v.push_back(b.TessellateToClosedMesh(16, 32).Volume());
+    const Brep c = BooleanCombineGeneral(in.slab, in.cyl_z, ops[tid % 3]);
+    v.push_back(c.FaceCount());
+    v.push_back(TessellateGeneralBooleanClosedMesh(c, 8, 32).Volume());
+  });
+}
+
+Sig SharedWeldedQueries(const SharedInputs& in, int tid) {
+  return Guard([&](std::vector<double>& v) {
+    const Brep* solids[3] = {&in.sphere_welded, &in.cyl_welded, &in.torus_welded};
+    const Brep& s = *solids[tid % 3];
+    v.push_back(s.FaceCount());
+    v.push_back(s.TessellateToClosedMesh(16, 16).Volume());
+    v.push_back(s.VolumeOfSealedSolid());
+    const ON_BoundingBox bb = s.raw().BoundingBox();
+    v.push_back(bb.m_max.x - bb.m_min.x);
+    v.push_back(s.raw().IsValid() ? 1 : 0);
   });
 }
 
@@ -324,10 +474,56 @@ struct SharedDef {
 };
 const SharedDef kShared[] = {
     {"shared_brep_queries", SharedBrepQueries},
+    {"shared_welded_queries", SharedWeldedQueries},
+    {"shared_boolean_operands", SharedBooleanOperands},
     {"shared_mesh_queries", SharedMeshQueries},
     {"shared_pointcloud_knearest", SharedPointCloudQuery},
 };
 constexpr int kSharedCount = sizeof(kShared) / sizeof(kShared[0]);
+
+// ---------------------------------------------------------------- stack high-water mark
+
+// Runs `fn` on a thread whose stack is a private 32 MiB mapping pre-filled with a pattern (lowest page protected),
+// then reports how many bytes of that stack were touched. Worker threads of an engine usually have a smaller stack
+// (a Rust thread: 2 MiB by default) than the 8 MiB main thread, so the kernel's peak stack use is a hard requirement.
+struct StackProbe {
+  std::function<void()> fn;
+  void* base = nullptr;
+  size_t size = 0;
+  size_t used = 0;
+};
+
+void* StackProbeMain(void* arg) {
+  StackProbe* p = static_cast<StackProbe*>(arg);
+  p->fn();
+  return nullptr;
+}
+
+size_t PeakStackBytes(const std::function<void()>& fn) {
+  const size_t size = 32u << 20;
+  void* mem = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+  if (mem == MAP_FAILED) return 0;
+  const unsigned long long kPattern = 0xA5A5A5A5A5A5A5A5ull;
+  unsigned long long* w = static_cast<unsigned long long*>(mem);
+  for (size_t i = 0; i < size / 8; ++i) w[i] = kPattern;
+  mprotect(mem, 4096, PROT_NONE);  // overflow faults instead of corrupting
+  StackProbe probe;
+  probe.fn = fn;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstack(&attr, static_cast<char*>(mem) + 4096, size - 4096);
+  pthread_t th;
+  size_t used = 0;
+  if (pthread_create(&th, &attr, StackProbeMain, &probe) == 0) {
+    pthread_join(th, nullptr);
+    size_t i = 4096 / 8;
+    while (i < size / 8 && w[i] == kPattern) ++i;
+    used = size - i * 8;  // bytes from the lowest touched word to the top of the mapping
+  }
+  pthread_attr_destroy(&attr);
+  munmap(mem, size);
+  return used;
+}
 
 // ---------------------------------------------------------------- harness
 
@@ -373,9 +569,11 @@ struct Options {
   int threads = 4;
   long iters = 200;
   double seconds = 1e18;
-  std::string phase = "both";
+  std::string phase = "both";  // indep | features | shared | both (= indep + shared) | all
   std::string ops = "all";
   int stagger = 2;
+  bool stack_report = false;  // print each op's peak stack use on a pattern-filled private stack, then exit
+  bool cold = false;  // skip the serial reference: the first call of every op happens concurrently (first-use races)
 };
 
 bool Selected(const Options& o, const char* name) {
@@ -405,11 +603,14 @@ int RunPhase(const char* phase_name, const Options& o, const std::vector<Task>& 
 
   // Serial reference per (task, tid), twice: the second pass proves the kernel is deterministic single-threaded.
   std::vector<std::vector<Sig>> ref(K, std::vector<Sig>(T));
+  std::vector<std::vector<char>> have_ref(K, std::vector<char>(T, o.cold ? 0 : 1));
   bool deterministic = true;
-  for (int k = 0; k < K; ++k) {
+  for (int k = 0; k < K && !o.cold; ++k) {
     for (int t = 0; t < T; ++t) {
       const auto t0 = Clock::now();
+      const int err0 = ON_GetErrorCount(), warn0 = ON_GetWarningCount();
       ref[k][t] = tasks[k].fn(t);
+      const int err_delta = ON_GetErrorCount() - err0, warn_delta = ON_GetWarningCount() - warn0;
       const double ms = Ms(Clock::now() - t0);
       const Sig again = tasks[k].fn(t);
       if (!SameSig(ref[k][t], again)) {
@@ -417,10 +618,16 @@ int RunPhase(const char* phase_name, const Options& o, const std::vector<Task>& 
         std::printf("NOTE serial run of %s tid=%d is not reproducible: %s vs %s\n", tasks[k].name, t,
                     SigText(ref[k][t]).c_str(), SigText(again).c_str());
       }
-      if (t == 0) std::printf("ref  %-26s %8.1f ms  tid0 -> %s\n", tasks[k].name, ms, SigText(ref[k][t]).c_str());
+      if (t == 0) {
+        std::printf("ref  %-26s %8.1f ms  tid0 -> %s\n", tasks[k].name, ms, SigText(ref[k][t]).c_str());
+        if (err_delta || warn_delta)
+          std::printf("     ^ this call raised %d ON_ERROR and %d ON_WARNING events (openNURBS' global counters)\n", err_delta,
+                      warn_delta);
+      }
     }
   }
-  std::printf("serial reference deterministic: %s\n", deterministic ? "yes" : "NO");
+  if (o.cold) std::printf("cold start: no serial reference; iteration 0 of each (op, thread) becomes its reference\n");
+  else std::printf("serial reference deterministic: %s\n", deterministic ? "yes" : "NO");
   std::fflush(stdout);
 
   std::vector<OpStats> stats(K);
@@ -449,6 +656,11 @@ int RunPhase(const char* phase_name, const Options& o, const std::vector<Task>& 
         long prev = stats[k].max_us.load();
         while (us > prev && !stats[k].max_us.compare_exchange_weak(prev, us)) {}
         if (!got.err.empty()) stats[k].threw++;
+        if (!have_ref[k][tid]) {  // cold mode: only thread `tid` ever touches (k, tid)
+          ref[k][tid] = got;
+          have_ref[k][tid] = 1;
+          continue;
+        }
         if (!SameSig(got, ref[k][tid])) {
           stats[k].divergences++;
           ReportDivergence(tasks[k].name, tid, it, got, ref[k][tid]);
@@ -490,8 +702,11 @@ int main(int argc, char** argv) {
     else if (a == "--phase") o.phase = next();
     else if (a == "--ops") o.ops = next();
     else if (a == "--stagger") o.stagger = std::atoi(next().c_str());
+    else if (a == "--cold") o.cold = true;
+    else if (a == "--stack-report") o.stack_report = true;
     else if (a == "--list") {
       for (const OpDef& d : kOps) std::printf("%s\n", d.name);
+      for (const OpDef& d : kFeatureOps) std::printf("%s\n", d.name);
       for (const SharedDef& d : kShared) std::printf("%s\n", d.name);
       return 0;
     } else {
@@ -501,14 +716,33 @@ int main(int argc, char** argv) {
   }
   if (o.threads < 1) o.threads = 1;
 
+  if (o.stack_report) {
+    std::printf("peak stack use per operation on a worker thread (32 MiB pattern-filled private stack):\n");
+    auto report = [&](const OpDef& d) {
+      if (!Selected(o, d.name)) return;
+      const size_t first = PeakStackBytes([&] { d.fn(0); });  // includes first-call initialisation
+      const size_t again = PeakStackBytes([&] { d.fn(3); });
+      std::printf("  %-18s %8.1f KiB (first call %8.1f KiB)\n", d.name, again / 1024.0, first / 1024.0);
+    };
+    for (const OpDef& d : kOps) report(d);
+    for (const OpDef& d : kFeatureOps) report(d);
+    return 0;
+  }
+
   int divergences = 0;
-  if (o.phase == "indep" || o.phase == "both") {
+  if (o.phase == "indep" || o.phase == "both" || o.phase == "all") {
     std::vector<Task> tasks;
     for (const OpDef& d : kOps)
       if (Selected(o, d.name)) tasks.push_back({d.name, [fn = d.fn](int tid) { return fn(tid); }});
     divergences += RunPhase("indep", o, tasks);
   }
-  if (o.phase == "shared" || o.phase == "both") {
+  if (o.phase == "features" || o.phase == "all") {
+    std::vector<Task> tasks;
+    for (const OpDef& d : kFeatureOps)
+      if (Selected(o, d.name)) tasks.push_back({d.name, [fn = d.fn](int tid) { return fn(tid); }});
+    divergences += RunPhase("features", o, tasks);
+  }
+  if (o.phase == "shared" || o.phase == "both" || o.phase == "all") {
     SharedInputs shared;  // built once, then only read through const references
     std::vector<Task> tasks;
     for (const SharedDef& d : kShared)
@@ -519,6 +753,10 @@ int main(int argc, char** argv) {
       shared.mesh = copy;  // copy-assignment drops the Mesh's lazily built spatial index
     });
   }
-  std::printf("\nPROBE DONE divergences=%d\n", divergences);
+  // openNURBS keeps process-global, non-atomic error counters (opennurbs_error.cpp): non-zero values mean ON_ERROR /
+  // ON_WARNING fired during the run, i.e. those increments were exposed to concurrent execution.
+  std::printf("\nopenNURBS global counters after the run: errors=%d warnings=%d math_errors=%d\n", ON_GetErrorCount(),
+              ON_GetWarningCount(), ON_GetMathErrorCount());
+  std::printf("PROBE DONE divergences=%d\n", divergences);
   return divergences ? 1 : 0;
 }
