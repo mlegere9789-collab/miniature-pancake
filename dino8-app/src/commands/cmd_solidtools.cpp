@@ -471,11 +471,10 @@ void SetObjectPoints(SceneObject& o, const std::vector<Point3d>& pts) {
 
 // Curves with few control points are re-sampled before a non-affine map so
 // a straight line can actually bend (a two-point line would stay straight).
-bool ResampleCurve(SceneObject& o) {
+bool ResampleCurve(SceneObject& o, int n = 24) {
   if (o.kind != ObjectKind::Curve || o.curve->ControlPointCount() >= 12) return false;
   const kernel::NurbsCurve& c = *o.curve;
   const bool closed = c.IsClosed();
-  const int n = 24;
   std::vector<Point3d> pts;
   const double len = c.Length();
   const kernel::Interval d = c.Domain();
@@ -489,7 +488,7 @@ bool ResampleCurve(SceneObject& o) {
   return true;
 }
 
-int DeformObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& label, const PointMap& fn, bool copy, bool resample = true) {
+int DeformObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& label, const PointMap& fn, bool copy, bool resample = true, int samples = 24) {
   ctx.Doc().BeginChange(label);
   int done = 0, converted = 0;
   for (ObjectId id : ids) {
@@ -506,7 +505,7 @@ int DeformObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, const s
       work = std::move(n);
       ++converted;
     }
-    if (resample) ResampleCurve(work);
+    if (resample) ResampleCurve(work, samples);
     std::vector<Point3d> pts = ObjectPoints(work);
     for (Point3d& p : pts) p = fn(p);
     SetObjectPoints(work, pts);
@@ -2050,7 +2049,9 @@ void FlowAlongSrf(CommandContext& ctx, const Input& in) {
   const kernel::NurbsSurface b = *base, t = *target;
   PointMap fn = [=](Point3d p) { return kernel::FlowPointAlongSurface(b, t, p); };  // (u, v, normal offset) of the base re-mapped onto the target
   ctx.Print("FlowAlongSrf: (u, v, normal offset) re-mapped from the base surface to the target surface");
-  DeformObjects(ctx, in.O(0), "FlowAlongSrf", fn, in.Yes("Copy"));
+  // The map moves control points, so the image of a curve is only as exact as the sampling: 24 samples of a 0.75 rad arc of a sphere / cylinder flow
+  // measured 3.76915 against the closed form 3.769911 (2e-4 short); a finer sampling (96) closes that gap, pinned by the OFS_3 section.
+  DeformObjects(ctx, in.O(0), "FlowAlongSrf", fn, in.Yes("Copy"), true, 96);
 }
 
 // Base frame of a set of objects: bottom centre of their bounding box on the CPlane.
