@@ -1,0 +1,175 @@
+# Viewport display "close" QC (PARITY_MAP.md app_display: "Per-object display mode
+# override" + "View-dependent adaptive tessellation"). tests/smoke.sh's section
+# "viewport close" reads this output and the captured bitmaps.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+#
+# ---- Part A: per-object RayTraced, measured on pixels ------------------------
+# Box A (red, left) is never overridden. Box B (blue, right) goes to Pen. A green
+# sphere sits over B's centre: first ABOVE B (z 7..13, nearer a Top camera), then
+# BELOW it (z -8..-2). In a RayTraced viewport the sphere is traced and B is
+# rasterized (Pen = flat white) and depth-composited over/under the traced frame.
+GroundPlane Off
+Box -19.3,-4.3,0 -10.7,4.3,0 5
+SelLast
+SetRenderColor 230,30,30
+Box 10.7,-4.3,0 19.3,4.3,0 5
+SelLast
+SetRenderColor 30,30,230
+Sphere 15,0,10 3
+SelLast
+SetRenderColor 30,200,30
+SelNone
+SetActiveViewport Top
+Top
+ZoomExtentsAll
+RayTracedViewport
+@wait 10
+ViewCaptureToFile @TMP@/a_all_traced.bmp
+SelID 2
+SetObjectDisplayMode Pen
+SelNone
+@wait 10
+ViewCaptureToFile @TMP@/a_sphere_front.bmp
+ObjectDisplayModes
+SelID 3
+Delete
+Sphere 15,0,-5 3
+SelLast
+SetRenderColor 30,200,30
+SelNone
+@wait 10
+ViewCaptureToFile @TMP@/a_sphere_back.bmp
+# Same scene, the viewport back to Shaded: the sphere is the ONE traced object (override
+# RayTraced), everything else is rasterized as the viewport says. Sphere above B again.
+SelLast
+Delete
+Sphere 15,0,10 3
+SelLast
+SetRenderColor 30,200,30
+SelNone
+SelID 2
+SetObjectDisplayMode UseViewport
+SelNone
+ShadedViewport
+@wait 6
+ViewCaptureToFile @TMP@/a_shaded_base.bmp
+SelLast
+SetObjectDisplayMode RayTraced
+SelNone
+@wait 10
+ViewCaptureToFile @TMP@/a_shaded_rtsphere.bmp
+ObjectDisplayModes
+Save @TMP@/rtobj.3dm
+New
+Open @TMP@/rtobj.3dm
+ObjectDisplayModes
+ClearAllObjectDisplayModes
+SelAll
+Delete
+
+# ---- Part B: face-level refinement on an exact multi-face brep ---------------
+# A radius-500 sphere with a radius-100 cylinder through it (exact general-engine union:
+# the big sphere face, two cylinder pieces sticking out of it, two end caps). Front view,
+# deep zoom (a 12-unit window in the view plane: "x,z" typed as 2-D) into the +Z cylinder tip (the "visible corner"); the sphere and the -Z piece
+# are far outside the frustum. FaceLevel Off = the previous whole-object refinement.
+Sphere 0,0,0 500
+Cylinder 0,0,-800 100 1600
+SelAll
+BooleanUnion
+SelNone
+SetActiveViewport Front
+Front
+MaxViewport
+ZoomExtentsAll
+ShadedViewport
+@wait 4
+SelLast
+LodStats
+# Measurement commands must not depend on the camera: same numbers here (zoom extents) and at the deepest zoom below.
+BoundingBox
+Volume
+Area
+Zoom
+-6,774
+6,786
+@wait 6
+AdaptiveTessellation FaceLevel Off
+@wait 8
+LodStats
+LodSagitta Cylinder 0,0,0 100 -10,-150,765 10,0,790
+AdaptiveTessellation FaceLevel On
+@wait 8
+LodStats
+LodSagitta Cylinder 0,0,0 100 -10,-150,765 10,0,790
+# Steady state: ten more frames must not rebuild anything (hysteresis + cached face set).
+@wait 10
+LodStats
+# Move the window to the sphere (a different face becomes the visible one), then back.
+Zoom
+200,452
+212,464
+@wait 8
+LodStats
+LodSagitta Sphere 0,0,0 500 190,-20,440 215,20,470
+@wait 10
+LodStats
+Zoom
+-6,774
+6,786
+@wait 8
+LodStats
+LodSagitta Cylinder 0,0,0 100 -10,-150,765 10,0,790
+@wait 10
+LodStats
+BoundingBox
+Volume
+Area
+SelAll
+Delete
+MaxViewport
+
+# ---- Part D: curves, SubD, mesh at deep zoom --------------------------------
+SetActiveViewport Top
+Top
+MaxViewport
+Circle 0,0,0 500
+SelLast
+ZoomExtentsAll
+@wait 6
+LodSagitta Circle 0,0,0 500
+Zoom
+494,-6,0
+506,6,0
+@wait 8
+LodSagitta Circle 0,0,0 500
+LodStats
+SelAll
+Delete
+SubDBox 0,0,0 1000,1000,0 1000
+SelLast
+Top
+ZoomExtentsAll
+@wait 6
+LodStats
+Zoom
+490,490
+494,494
+@wait 8
+LodStats
+SelAll
+Delete
+MeshSphere 0,0,0 500
+SelLast
+Top
+ZoomExtentsAll
+@wait 6
+LodStats
+LodSagitta Sphere 0,0,0 500
+Zoom
+494,-6,0
+506,6,0
+@wait 8
+LodStats
+LodSagitta Sphere 0,0,0 500
+SelAll
+Delete

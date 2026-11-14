@@ -1,0 +1,22 @@
+# Native .3dm solid-fill HATCH export QC: Save3dm had no ON_Hatch writer at
+# all before this change (see BuildOnHatchForGroup in File3dm.cpp) - a solid
+# hatch made in-app (Hatch Pattern=Solid, drafting::BuildSolidHatch's own
+# trimmed-planar-Brep) round-tripped out through .3dm as a bare Brep plus
+# Hatch=Solid user_text metadata, never a real ON_Hatch object a genuinely
+# independent Rhino/OpenNURBS-based reader would recognize as one hatch.
+# Makes a real solid hatch, saves it, and reopens the saved file in a fresh
+# document: SelHatch/Area must find the exact same hatch back, proving the
+# new writer and the existing ON_Hatch reader (added for externally-authored
+# files - see hatch3dm_fixture_gen.cpp) agree on the wire format.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Rectangle 0,0,0 10,10,0
+SelLast
+Hatch Pattern=Solid
+SelNone
+SelHatch
+SaveAs @TMP@/hatch3dm_export_solid.3dm
+New
+Open @TMP@/hatch3dm_export_solid.3dm
+SelHatch
+List
+Area

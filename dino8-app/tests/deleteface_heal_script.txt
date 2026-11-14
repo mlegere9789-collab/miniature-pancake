@@ -1,0 +1,93 @@
+# DeleteFaces Heal=Yes through the exact kernel heal (the "DFH_" section, tests/sections/84_deleteface_heal.sh).
+#
+# FacePickCommand's DeleteFaces gained the option Heal (default No: the old plain delete that leaves the solid open is unchanged). With
+# Heal=Yes it calls kernel::DeleteFaceHealConvexPlanar: the picked face's plane is dropped and every neighbour regrows until they meet, so a
+# chamfer disappears and the solid stays closed. When the kernel declines it says why (not planar, unbounded, not convex ...) and the face is
+# simply deleted. Expected values are closed forms of a 10 x 10 x 10 cube (V = 1000, S = 600) whose top edges carry distance-2 chamfers:
+#   one chamfer removes a 2 x 2 / 2 x 10 prism : 1000 - 20 = 980 ; healing it restores the cube : V = 1000, S = 600
+#   two chamfers on OPPOSITE top edges (planes y + z = 18 and (10 - y) + z = 18 never overlap inside the cube) : 1000 - 40 = 960,
+#     one heal gives 980, the second gives 1000
+#   a plain cube's top face has nothing to regrow into : the kernel declines ("genuinely unbounded"), the face is deleted, 5 faces are left
+#   a cylinder's wall is not planar : the kernel declines naming it
+#   default (no Heal) : unchanged plain delete, 6 faces left, no kernel heal message
+
+SetActiveViewport Top
+
+New
+DFHBEGIN_one
+Box 0,0,0 10,10,0 10
+ChamferEdge
+Radius=2
+5,10,10
+Enter
+SelAll
+Volume
+DeleteFaces
+Heal=Yes
+5,9,9
+Enter
+SelAll
+Volume
+Area
+
+New
+DFHBEGIN_two
+Box 0,0,0 10,10,0 10
+ChamferEdge
+Radius=2
+5,10,10
+Enter
+ChamferEdge
+Radius=2
+5,0,10
+Enter
+SelAll
+Volume
+DeleteFaces
+Heal=Yes
+5,9,9
+Enter
+SelAll
+Volume
+DFHBEGIN_two_second
+DeleteFaces
+Heal=Yes
+5,1,9
+Enter
+SelAll
+Volume
+Area
+
+New
+DFHBEGIN_plain
+Box 0,0,0 10,10,0 10
+DeleteFaces
+Heal=Yes
+5,5,10
+Enter
+SelAll
+Area
+
+New
+DFHBEGIN_cyl
+Circle 0,0,0 3
+SelLast
+ExtrudeCrv
+8
+SelLast
+DeleteFaces
+Heal=Yes
+1,1,8
+Enter
+
+New
+DFHBEGIN_default
+Box 0,0,0 10,10,0 10
+ChamferEdge
+Radius=2
+5,10,10
+Enter
+DeleteFaces
+5,9,9
+Enter
+DFHBEGIN_end

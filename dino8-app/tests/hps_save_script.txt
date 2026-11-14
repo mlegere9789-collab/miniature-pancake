@@ -1,0 +1,120 @@
+# History persistence, part 1 (tests/smoke.sh section HPS_): construction history
+# is written into the .3dm ("Dino8.HistoryMeta") and comes back after Save/New/Open.
+# This script builds three documents and saves each (@TMP@ is the test temp dir):
+#   OFF  History Off while building -> nothing recorded (negative control)
+#   DEL  History On, then the root curve is deleted before Save (dangling source)
+#   ON   History On: curve -> Extrude -> OffsetSrf, and curve -> Extrude ->
+#        BooleanIntersection with a box. A throw-away box is built and deleted
+#        first so the saved object ids are NOT 1,2,3...: the reopened document
+#        must remap them (the file stores object uuids, Open assigns fresh ids).
+# ON is last; it is then reopened in this same process (New, Open) and its source
+# curve is moved - the dependents must follow with no UpdateHistory call.
+SetActiveViewport Top
+
+# ============================================================ OFF
+History Off
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 1
+Extrude
+10
+SelNone
+SelID 2
+OffsetSrf
+1
+SelNone
+SelID 3
+Volume
+History
+Save @TMP@/hps_off.3dm
+
+# ============================================================ DEL
+New
+History On
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 1
+Extrude
+10
+SelNone
+SelID 2
+OffsetSrf
+1
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 1
+Delete
+History
+Save @TMP@/hps_del.3dm
+
+# ============================================================ ON
+New
+History On
+Box 100,100,0 110,110,0 10
+SelNone
+SelID 1
+Delete
+Rectangle 0,0,0 10,10,0
+SelNone
+SelID 2
+Extrude
+10
+SelNone
+SelID 3
+OffsetSrf
+1
+Rectangle 30,0,0 40,10,0
+SelNone
+SelID 5
+Extrude
+10
+Box 35,5,0 45,15,0 10
+SelNone
+SelID 6
+BooleanIntersection
+SelID 7
+Enter
+# before Save: the offset solid (4) and the intersection (8)
+SelNone
+SelID 4
+Volume
+SelNone
+SelID 4
+BoundingBox
+SelNone
+SelID 8
+Volume
+History
+Save @TMP@/hps_on.3dm
+# In-process reopen: New (records cleared), Open (records loaded + remapped).
+New
+Open @TMP@/hps_on.3dm
+History On
+History
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 1
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 7
+Volume
+SelNone
+SelID 4
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 7
+Volume

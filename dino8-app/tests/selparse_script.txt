@@ -1,0 +1,63 @@
+# SELP_: SelSmall / SelID / SelChain argument parsing and reporting (sections/58_selparse.sh slices the output on the SELPBEGIN_ markers).
+# Before: SelSmall silently replaced "abc", "-5", "1x" by the grid size; SelID dropped a non-numeric token without a word and counted a
+# hidden or locked object as selected; SelChain on a selection with no curve ran anyway and reported the whole selection (box included)
+# as "chained curve(s)". Everything below is hand-computed from the geometry written here.
+SetActiveViewport Top
+
+# SelSmall: 1-unit line (diagonal 1) and 100-unit line (diagonal 100); "SelSmall 2" selects exactly the first.
+New
+SELPBEGIN_small
+Line 0,0,0 1,0,0
+Line 0,0,0 100,0,0
+SelNone
+SelSmall abc
+SelNone
+SelSmall -5
+SelNone
+SelSmall 1x
+SelNone
+SelSmall 2
+@expect_selected 1
+SelNone
+SelSmall 200
+@expect_selected 2
+
+# SelID: tokens that are not whole numbers are named; a valid id after a bad token is still selected; a hidden object is refused
+# with its reason instead of being counted; a missing id still says so.
+New
+SELPBEGIN_id
+Box 0,0,0 10,10,0 10
+Line 20,0,0 30,0,0
+SelNone
+SelID abc 1
+@expect_selected 1
+SelNone
+SelID 2x
+@expect_selected 0
+SelNone
+SelID 2
+Hide
+SelNone
+SelID 2
+@expect_selected 0
+SelID 99
+SelNone
+SelID 1
+@expect_selected 1
+
+# SelChain: a selection with no curve is refused; with the box AND one line selected the chain grows to the three connected lines and
+# the report counts curves only (3), not the selection (the box and the 3 curves = 4, which stays selected).
+New
+SELPBEGIN_chain
+Box 0,0,0 10,10,0 10
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+Line 10,10,0 0,10,0
+Line 50,50,0 60,50,0
+SelNone
+SelID 1
+SelChain
+SelNone
+SelID 1 2
+SelChain
+@expect_selected 4

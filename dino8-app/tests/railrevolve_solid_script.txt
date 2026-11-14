@@ -1,0 +1,52 @@
+# RailRevolve: RailRevolveCommand (cmd_srfedit.cpp) now builds a genuine
+# B-rep via kernel::Brep::RailRevolve (brep.h) whenever the picked profile
+# is planar through the picked axis - the common real workflow (profile
+# drawn in a plane, axis picked in that same plane) - instead of always
+# falling back to the command's long-standing approximate
+# curve-through-points fit (SurfaceThroughRows). A closed profile off-axis
+# with a constant-radius rail (this script's own circle) reproduces a
+# plain torus-like closed solid exactly, and - unlike the singular-apex
+# cone ExtrudeCrvToPoint's own Solid=Yes wiring builds (see
+# extrude_to_point_solid_script.txt) - this doubly-periodic single-face
+# topology has no apex/seam mesh-closure gap: Volume measures it directly
+# (confirmed ~224.7, matching the Pappus-theorem estimate for this profile/
+# radius within ordinary mesh tolerance). Anything the kernel itself
+# refuses (profile not planar through the axis - this script's own second
+# block, which deliberately picks an axis outside the profile's plane) is
+# caught and falls back to the exact same approximate surface this command
+# has always built, so no existing result changes.
+
+# --- Profile planar through the picked axis, closed, off-axis, rail at a
+# constant distance from the axis: a real closed-solid polysurface.
+Polyline 5,0,0 7,0,0 7,0,3 5,0,3 5,0,0
+Enter
+SelLast
+Circle 0,0,0 2
+SelCrv
+RailRevolve
+0,0,0
+0,0,1
+SelLast
+List
+SelLast
+Check
+SelLast
+Volume
+@expect_objects 3
+SelAll
+Delete
+
+# --- Identical curves, but the picked axis does NOT lie in the profile's
+# own plane: the kernel refuses (profile not planar through the axis) -
+# falls back to the pre-existing approximate surface, unchanged.
+Polyline 5,0,0 7,0,0 7,0,3 5,0,3 5,0,0
+Enter
+SelLast
+Circle 0,0,0 2
+SelCrv
+RailRevolve
+1,1,0
+1,1,1
+SelLast
+List
+@expect_objects 3

@@ -1,0 +1,354 @@
+# QC3A_: hostile-input probes of Divide / Array / ArrayPolar / PointGrid / Helix / Circle / Line / Polygon
+# (smoke section tests/sections/61_qc3a.sh cuts the output at each "Unknown command: QC3ABEGIN_<name>" marker line).
+SetActiveViewport Top
+New
+
+QC3ABEGIN_divide_count
+Line 0,0,0 10,0,0
+SelAll
+Divide
+100000000
+4
+SelAll
+Cancel
+New
+
+QC3ABEGIN_divide_len
+Line 0,0,0 10,0,0
+SelAll
+Divide
+Mode=SegmentLength
+1e-9
+2.5
+Cancel
+New
+
+QC3ABEGIN_divide_noop_undo
+Box 0,0,0 10,10,0 5
+SelAll
+Divide
+3
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_array_count
+Box 0,0,0 1,1,0 1
+SelAll
+Array
+4
+1e12
+3
+1
+5
+SelAll
+Cancel
+New
+
+QC3ABEGIN_array_product
+Box 0,0,0 1,1,0 1
+SelAll
+Array
+400
+400
+2
+1
+1
+Cancel
+New
+
+QC3ABEGIN_arraypolar_count
+Box 0,0,0 1,1,0 1
+SelAll
+ArrayPolar
+0,0,0
+100000000
+4
+360
+SelAll
+Cancel
+New
+
+QC3ABEGIN_pointgrid_count
+PointGrid
+CountX=100000
+CountX=3
+CountY=3
+0,0,0
+10,10,0
+Cancel
+New
+
+QC3ABEGIN_helix_turns
+Helix
+Turns=1e9
+Pitch=1e-9
+0,0,0
+0,0,10
+3,0,0
+Cancel
+New
+
+QC3ABEGIN_circle_zero
+Circle
+0,0,0
+0
+Cancel
+New
+
+QC3ABEGIN_circle_huge
+Circle
+0,0,0
+1e308
+Cancel
+New
+
+QC3ABEGIN_line_zero
+Line 0,0,0 0,0,0
+SelAll
+Cancel
+New
+
+QC3ABEGIN_polygon_zero
+Polygon
+0,0,0
+0,0,0
+Cancel
+New
+
+QC3ABEGIN_extrude_big
+Circle 0,0,0 3
+SelAll
+ExtrudeCrv
+1e308
+SelAll
+Cancel
+New
+
+QC3ABEGIN_extrude_srf_big
+Box 0,0,0 10,10,0 5
+SelAll
+ExtrudeSrf
+1e308
+Cancel
+New
+
+QC3ABEGIN_mirror_same_point
+Box 0,0,0 10,10,0 5
+SelAll
+Mirror
+3,3,0
+3,3,0
+3,20,0
+SelAll
+Cancel
+New
+
+QC3ABEGIN_explode_noop_undo
+Line 0,0,0 5,0,0
+SelAll
+Explode
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_arraylinear_count
+Box 0,0,0 1,1,0 1
+SelAll
+ArrayLinear
+100000000
+3
+0,0,0
+5,0,0
+Cancel
+New
+
+QC3ABEGIN_ungroup_noop_undo
+Box 0,0,0 10,10,0 5
+SelAll
+Ungroup
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_rotate_huge
+Box 0,0,0 10,10,0 5
+SelAll
+Rotate
+0,0,0
+1e300
+Cancel
+BoundingBox
+New
+
+QC3ABEGIN_fillet_bad_radius
+Line 0,0,0 5,0,0
+Line 5,0,0 5,5,0
+Fillet
+Radius=inf
+Radius=-1
+Radius=1e-300
+Radius=nan
+Radius=1
+2.5,0,0
+5,2.5,0
+Cancel
+New
+
+QC3ABEGIN_chamfer_bad_distance
+Line 0,0,0 5,0,0
+Line 5,0,0 5,5,0
+Chamfer
+Distance=inf
+Distance=1e-300
+Distance=1
+2.5,0,0
+5,2.5,0
+Cancel
+New
+
+QC3ABEGIN_join_zero_length
+Polyline 0,0,0 0,0,0
+Enter
+Line 0,0,0 5,0,0
+SelAll
+Join
+Cancel
+New
+
+QC3ABEGIN_join_noop_undo
+Line 0,0,0 5,0,0
+Line 50,0,0 55,0,0
+SelAll
+Join
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_extend_behind_undo
+Line 0,0,0 5,0,0
+SelAll
+Extend
+2,0,0
+Undo
+SelAll
+Cancel
+New
+
+QC3ABEGIN_extend_closed
+Circle 0,0,0 3
+SelAll
+Extend
+Enter
+Cancel
+New
+
+QC3ABEGIN_extend_far
+Line 0,0,0 5,0,0
+SelAll
+Extend
+1e300,0,0
+Cancel
+New
+
+QC3ABEGIN_sphere_huge
+Sphere
+0,0,0
+1e300
+Cancel
+New
+
+QC3ABEGIN_sphere_big_bbox
+Sphere
+0,0,0
+1e6
+SelAll
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_scale_overflow
+Box 0,0,0 10,10,0 5
+SelAll
+Scale
+0,0,0
+1e30
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_move_overflow
+Box 0,0,0 10,10,0 5
+SelAll
+Move
+0,0,0
+1e300,0,0
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_dxf_no_radius
+Import @TMP@/qc3a_norad.dxf
+SelAll
+Cancel
+New
+
+QC3ABEGIN_dxf_no_arc_radius
+Import @TMP@/qc3a_noarc.dxf
+SelAll
+Cancel
+New
+
+QC3ABEGIN_dxf_no_line_end
+Import @TMP@/qc3a_noline.dxf
+SelAll
+Cancel
+New
+
+QC3ABEGIN_import_once
+Import @TMP@/qc3a_ok.dxf
+Cancel
+New
+
+QC3ABEGIN_array_locked
+Box 0,0,0 10,10,0 10
+SelAll
+Lock
+SelAll
+Array
+2
+1
+1
+5
+Cancel
+Unlock
+SelAll
+Cancel
+New
+
+QC3ABEGIN_offset_huge
+Line 0,0,0 5,0,0
+SelAll
+Offset
+1e308
+1
+0,1,0
+SelAll
+BoundingBox
+Cancel
+New
+
+QC3ABEGIN_offsetsrf_huge
+Box 0,0,0 10,10,0 5
+SelAll
+OffsetSrf
+1e300
+2
+Cancel
+New
+
+QC3ABEGIN_end

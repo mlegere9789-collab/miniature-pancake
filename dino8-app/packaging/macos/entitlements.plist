@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened-runtime signature of Dino8.app (used only by
+  packaging/macos/sign-dmg.sh, i.e. only when Apple signing secrets exist).
+
+  com.apple.security.cs.disable-library-validation
+      Dino 8 dlopen()s user-installed plug-ins (src/plugins/PluginManager.cpp)
+      and the embedded CPython loads its own extension modules. Under the
+      hardened runtime those would be refused unless they were signed with the
+      same Team ID as the app. This entitlement lifts that restriction. It does
+      not weaken the signature of the app itself.
+
+  Deliberately NOT requested: allow-jit, allow-unsigned-executable-memory,
+  allow-dyld-environment-variables, and any App Sandbox entitlement. If a first
+  notarized build crashes at launch under the hardened runtime, the crash log
+  names the missing entitlement; add only that one. This cannot be tested
+  without a Developer ID certificate and a Mac, so it is unverified.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

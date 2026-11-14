@@ -1,0 +1,29 @@
+# Tutorial 4: Organize a model with layers - verifies the exact command
+# sequence quoted in docs/site/tutorials.html "Organize with layers" tutorial.
+SetActiveViewport Top
+NewLayer Structure
+NewLayer Fixtures
+SetLayer Structure
+Box 0,0,0 20,20,0 10
+@expect_objects 1
+SetLayer Fixtures
+Sphere 30,10,5 5
+@expect_objects 2
+SelID 1
+ChangeLayer Fixtures
+SelID 1
+List
+# hide the layer the box is now on, then bring it back
+SelAll
+LayerOff
+SelAll
+@expect_selected 0
+SelNone
+AllLayersOn
+SelAll
+@expect_selected 2
+SelNone
+# lock every selected object's layer, then release it
+SelAll
+LayerLock
+LayerUnlock

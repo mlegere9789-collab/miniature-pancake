@@ -1,0 +1,38 @@
+#title: First shapes
+#summary: Draw a box and a sphere, move and copy them, rotate, and undo - the basic loop of every Dino 8 session.
+#level: Beginner
+# Source: extends docs/tutorial_scripts/01_first_shapes.txt (same commands, plus narration).
+#narrate: Welcome to Dino 8. This is the empty workspace: four viewports, the command line at the top, and the object snaps along the bottom.
+SetActiveViewport Top
+#narrate: Every action in Dino 8 is a command. We make the Top view active so the points we type land on the ground plane.
+Box 0,0,0 10,10,0 5
+@expect_objects 1
+#narrate: The Box command takes two opposite corners and a height. Corners 0,0,0 and 10,10,0, five units tall. One object now exists in the document.
+Sphere 20,0,5 5
+@expect_objects 2
+#narrate: A sphere takes a centre and a radius. It sits to the right of the box, and the document now holds two objects.
+SelNone
+SelID 1
+#narrate: Objects are selected by clicking, or by a command. Here we select the box by its identifier, number one.
+Move 0,0,0 5,5,0
+#narrate: Move takes a start point and an end point. The box slides five units in X and five in Y.
+SelLast
+List
+#narrate: List prints what is selected to the command history, so you can always check what a command really did.
+SelNone
+SelID 1
+Copy 5,5,0 5,25,0
+Enter
+@expect_objects 3
+#narrate: Copy works like Move but leaves the original behind. Pressing Enter ends the command, and we have three objects.
+SelNone
+SelID 3
+Rotate 5,25,0 45
+#narrate: Rotate takes a pivot point and an angle in degrees. The copy turns forty-five degrees about its own corner.
+SelAll
+List
+Undo
+Undo
+@expect_objects 2
+#narrate: Nothing is permanent. Two Undos step back through the rotate and the copy, and we are down to two objects again.
+#narrate: That is the whole loop: pick a command, give it points, press Enter. The next tutorial covers selection and snaps.

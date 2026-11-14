@@ -1,0 +1,186 @@
+# CN2_: G0 / G1 / G2 edge continuity against CURVED adjacent surfaces (see the "CN2_" section at the end of smoke.sh).
+# cnt_script.txt only used a flat degree-1 plane. Here the adjacent surface is
+#   * a 270 degree cylinder wall (radius 5, axis z, height 10; RATIONAL): `Revolve Angle=270` of the line (5,0,0)-(5,0,10);
+#     its edge at 270 degrees is the vertical line x = 0, y = -5, picked with a click at 0,-5,5;
+#   * a bicubic (non-rational, degree 3 x 1) wall made by the app's own Loft of four straight sections.
+# Every case starts from `New` and is bracketed by an unknown-command marker "CN2BEGIN_<name>" that smoke.sh uses to slice the
+# output. The "without the option" figure of each pair is the SAME construction with Continuity=Position (G0): the kernel
+# glues the first section / curve to the edge but leaves the tangent plane alone, and reports the angle it MEASURED.
+#
+# Points on the cylinder (radius 5): 270 deg (0,-5)  285 (1.294095,-4.829629)  290 (1.710101,-4.698463)  300 (2.5,-4.330127)
+#   310 (3.213938,-3.830222)  315 (3.535534,-3.535534)  330 (4.330127,-2.5)  345 (4.829629,-1.294095)
+
+SetActiveViewport Top
+
+# ===== Loft against the cylinder wall ======================================================================================
+New
+CN2BEGIN_cyl_loft_g0
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Line 2.5,-4.330127,0 2.5,-4.330127,10
+Line 4.330127,-2.5,0 4.330127,-2.5,10
+SelNone
+SelCrv
+Loft Continuity=Position
+0,-5,5
+SelAll
+List
+
+New
+CN2BEGIN_cyl_loft_g1
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Line 2.5,-4.330127,0 2.5,-4.330127,10
+Line 4.330127,-2.5,0 4.330127,-2.5,10
+SelNone
+SelCrv
+Loft Continuity=Tangency
+0,-5,5
+SelAll
+List
+
+New
+CN2BEGIN_cyl_loft_g2
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Line 1.710101,-4.698463,0 1.710101,-4.698463,10
+Line 3.213938,-3.830222,0 3.213938,-3.830222,10
+Line 4.330127,-2.5,0 4.330127,-2.5,10
+SelNone
+SelCrv
+Loft Continuity=Curvature
+0,-5,5
+SelAll
+List
+
+# ===== Patch against the cylinder wall =====================================================================================
+New
+CN2BEGIN_cyl_patch_g0
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Point 2.5,-4.330127,2
+Point 2.5,-4.330127,8
+Point 3.535534,-3.535534,2
+Point 3.535534,-3.535534,8
+Point 4.330127,-2.5,2
+Point 4.330127,-2.5,8
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Position
+0,-5,5
+SelAll
+List
+
+New
+CN2BEGIN_cyl_patch_g1
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Point 2.5,-4.330127,2
+Point 2.5,-4.330127,8
+Point 3.535534,-3.535534,2
+Point 3.535534,-3.535534,8
+Point 4.330127,-2.5,2
+Point 4.330127,-2.5,8
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Tangency
+0,-5,5
+SelAll
+List
+
+New
+CN2BEGIN_cyl_patch_g2
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Point 2.5,-4.330127,2
+Point 2.5,-4.330127,8
+Point 3.535534,-3.535534,2
+Point 3.535534,-3.535534,8
+Point 4.330127,-2.5,2
+Point 4.330127,-2.5,8
+SelNone
+SelCrv
+SelPt
+Patch Continuity=Curvature
+0,-5,5
+SelAll
+List
+
+# ===== NetworkSrf against the cylinder wall ================================================================================
+New
+CN2BEGIN_cyl_net_g0
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Line 4.330127,-2.5,0 4.330127,-2.5,10
+Arc 0,0,0 0,-5,0 4.330127,-2.5,0
+Arc 0,0,10 0,-5,10 4.330127,-2.5,10
+SelNone
+SelCrv
+NetworkSrf Continuity=Position
+0,-5,5
+SelAll
+List
+
+New
+CN2BEGIN_cyl_net_g1
+Line 5,0,0 5,0,10
+SelLast
+Revolve Angle=270
+0,0,0
+0,0,1
+SelID 1
+Delete
+Line 0,-5,0 0,-5,10
+Line 4.330127,-2.5,0 4.330127,-2.5,10
+Arc 0,0,0 0,-5,0 4.330127,-2.5,0
+Arc 0,0,10 0,-5,10 4.330127,-2.5,10
+SelNone
+SelCrv
+NetworkSrf Continuity=Tangency
+0,-5,5
+SelAll
+List
