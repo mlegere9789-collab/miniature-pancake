@@ -1,5 +1,8 @@
 # AutoCAD Parity Register: coverage
 
+> **Status update (verification pass):** this file describes the original 616-row batch. The register has since been verified against the AutoCAD 2025 help site (help.autodesk.com was reachable in that pass) and extended; see `VERIFY.md` for current counts, rejected rows and unreachable pages. The statement below that help.autodesk.com is not reachable no longer holds.
+
+
 Job `autocad` (Wave 0, HORDE4). Branch `w0-autocad`, from `cand2`. Program id `autocad`, ids `D8-AUTOCAD-<DOMAIN>-<nnnn>`, files `parity/register/autocad/<domain>.jsonl`, validated against `row.schema.json` (draft-07, 0 errors, 0 duplicate ids).
 
 Total rows: **616** (plan estimate: about 600). Every row is `status: open`, `tier_now: None`; no credit is taken from existing code.
