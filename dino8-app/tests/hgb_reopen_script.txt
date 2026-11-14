@@ -48,7 +48,7 @@ SelNone
 SelID 2
 Move
 0,0,0
-0,0,-5
+-5,-5,0
 SelNone
 SelID 3
 Check

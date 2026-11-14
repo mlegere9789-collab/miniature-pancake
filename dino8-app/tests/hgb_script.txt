@@ -249,10 +249,10 @@ SelID 3
 Check
 Volume
 HGBEND
-# ---------------------------------------------------------------- fallback: the cylinder moved up 5 (z 0..20) so its bottom cap lies exactly IN the box's bottom face: the exact engine still declines that coplanar configuration (gaps between faces), the result becomes the mesh boolean and the reason is printed; Undo -> sealed; moving back -> sealed again. (This used to be 'everything moved 100000 away', which the exact engine now seals.)
+# ---------------------------------------------------------------- flush: the cylinder moved up 5 (z 0..20) so its bottom cap lies exactly IN the box's bottom face. The exact engine used to decline this coplanar configuration (the rebuild became the mesh boolean, see 'fallback' below for a configuration that is declined for a reason that cannot go away); box minus a cylinder cut exactly through now seals (kernel: flush_through_hole_tests), so every state here is the SEALED 7-face through hole: Undo / Redo / moving back step between sealed B-reps.
 New
 History On
-HGBBEGIN_fallback
+HGBBEGIN_flush
 Box 0,0,0 10,10,0 10
 Cylinder 5,5,-5 2 20
 SelNone
@@ -266,6 +266,53 @@ SelID 2
 Move
 0,0,0
 0,0,5
+SelNone
+SelID 3
+Check
+Volume
+List
+Undo
+SelNone
+SelID 3
+Check
+Volume
+List
+Redo
+SelNone
+SelID 3
+Check
+Volume
+List
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,-5
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND
+# ---------------------------------------------------------------- fallback: a union with NO closed B-rep. Box 1 = [0,10]^3 and box 2 = [5,15] x [5,15] x [0,10] overlap, so the union is a sealed B-rep (planar engine, 1000 + 1000 - 5*5*10 = 1750). Box 2 moved by (5,5,0) is [10,20]^2 x [0,10]: it meets box 1 only ALONG AN EDGE (x = y = 10, z 0..10), so the union has an edge shared by four faces: it is not a 2-manifold, and no closed B-rep solid of it exists (the planar engine throws 'an edge is shared by 3 or more faces', the general engine refuses with its typed 'an edge is claimed by 3 or more fragment loops (non-manifold result)'). The rebuild must fall back to the mesh boolean (volume 2 x 1000 = 2000 exactly), print that reason and List a mesh; Undo -> the sealed B-rep; Redo -> the mesh; moving back -> the sealed B-rep again. Unlike a refusal that is an engine limitation (it changes with every engine improvement) this one is a property of the geometry.
+New
+History On
+HGBBEGIN_fallback
+Box 0,0,0 10,10,0 10
+Box 5,5,0 15,15,0 10
+SelAll
+BooleanUnion
+Show
+SelNone
+SelID 3
+Check
+Volume
+List
+SelNone
+SelID 2
+Move
+0,0,0
+5,5,0
 SelNone
 SelID 3
 Volume
@@ -285,7 +332,7 @@ SelNone
 SelID 2
 Move
 0,0,0
-0,0,-5
+-5,-5,0
 SelNone
 SelID 3
 Check

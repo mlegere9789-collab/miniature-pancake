@@ -13495,9 +13495,12 @@ if [ "$(sot_nth "$SOT_BOXES" 3)" = "Bounding box min -3,-3,0 max 3,3,0" ]; then 
 #   through hole 1000 - 4 pi 10 = 874.34    blind (cylinder z 5..25) 1000 - 4 pi 5 = 937.17    Scale 1.5 (r 3): 1000 - 9 pi 10 = 717.26
 #   union 1000 + 4 pi 10 = 1125.66   (cylinder moved up 10: 1000 + 4 pi 15 = 1188.50; Scale 1.5: 1000 + 9 pi 20 = 1565.49)
 #   intersection 4 pi 10 = 125.66    (moved up 10: 4 pi 5 = 62.83; Scale 1.5: 9 pi 10 = 282.74)
-# Also: the declined rebuild (a hole 100000 away from the origin: the result becomes the mesh boolean, the reason is
-# printed, Undo / moving back give the sealed B-rep again), a deleted source (old geometry kept, reason printed), History
-# Off (nothing recorded, operands consumed), Save / New / Open with remapped ids and hidden operands, a fresh process.
+# Also: the declined rebuild (two overlapping boxes, 1000 + 1000 - 5*5*10 = 1750, one moved so they meet only along an edge: the
+# union is then not a 2-manifold, so no exact engine can seal it - a property of the geometry, not of an engine version; the result
+# becomes the mesh boolean, 2 x 1000 = 2000, the reason is printed, Undo / moving back give the sealed B-rep again), the old
+# declined fixture (a cylinder whose bottom cap lies in the box's bottom face) which the exact engine now SEALS, a deleted source
+# (old geometry kept, reason printed), History Off (nothing recorded, operands consumed), Save / New / Open with remapped ids
+# and hidden operands, a fresh process.
 # ---------------------------------------------------------------------------
 HGB_DIR="$TMPW/hgb"
 mkdir -p "$HGB_DIR"
@@ -13585,16 +13588,32 @@ hgb_vol intersect 3 282.74 "cylinder scaled 1.5 (r 3, z -10..20): 9 pi 10"
 hgb_has intersect "^history: ! History: source object\(s\) 2 changed - 0 dependent\(s\) re-evaluated, 1 kept as they were: object 3 - the boolean of the operands' current shapes is empty$" "cylinder moved 50 out of the box: the intersection is empty, the old geometry is kept and the reason is printed"
 hgb_vol intersect 4 125.66 "...and the kept result still measures 4 pi 10"
 hgb_cnt intersect "^history: History rebuild of a boolean: .*$HGBSEAL" 2 "both non-empty rebuilds sealed"
-# --- Declined rebuild: the whole model 100000 away from the origin
-hgb_vol fallback 1 874.34 "engine declines the coplanar tool (cylinder bottom cap in the box bottom face): the result is the MESH boolean (mesh volume 874.9)"
-hgb_has fallback "^history: History rebuild of a boolean: exact B-rep boolean declined \(dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more fragment loops \(non-manifold result\).*\); using the mesh boolean, so the result is a mesh$" "...and the engine's own reason is printed (CI full34: this coplanar-cap configuration is now declined with the non-manifold-edge reason, with an edge coordinate in the text, not the old 'gaps between faces' sewing reason)"
+# --- Flush cap: the cylinder moved up 5 (z 0..20), its bottom cap IN the box's bottom face. The exact engine used to decline this
+# configuration (mesh fallback); box minus a cylinder cut exactly through now seals (kernel flush_through_hole_tests), so every
+# state is the sealed 7-face through hole, exact volume 1000 - 4 pi 10 = 874.34.
+hgb_has flush "^history: History rebuild of a boolean: exact B-rep boolean \(no tessellation, general engine\), 7 face\(s\), $HGBSEAL 874" "cylinder moved up 5 (bottom cap flush with the box bottom face): rebuilt SEALED by the general engine, 7 faces, exact volume 874 (it used to be declined to the mesh boolean)"
+hgb_cnt flush "^history: History rebuild of a boolean: .*$HGBSEAL" 2 "both rebuilds (flush cap, moved back) print the SEALED line"
+hgb_cnt flush "^history: History rebuild of a boolean: exact B-rep boolean declined" 0 "...and no rebuild of this fixture is declined any more"
+hgb_vol flush 1 874.34 "flush cap: the sealed through hole, 1000 - 4 pi 10"
+hgb_vol flush 2 874.34 "Undo: the through hole before the move"
+hgb_vol flush 3 874.34 "Redo: the flush-cap result again"
+hgb_vol flush 4 874.34 "cylinder moved back: the sealed through hole is rebuilt"
+hgb_cnt flush "^history: Object 3 \(polysurface\) layer Default$" 4 "List: a polysurface at every stage (never a mesh)"
+hgb_cnt flush "^history:   7 faces, [0-9]* edges, closed solid$" 4 "...a closed 7-face solid at every stage"
+hgb_cnt flush "^history: Object 3: valid$" 4 "Check: valid B-rep at every stage"
+# --- Declined rebuild: a union that has no closed B-rep. Closed forms: overlapping boxes 1000 + 1000 - 5*5*10 = 1750; meeting only
+# along an edge (not a 2-manifold: the edge belongs to four faces) 1000 + 1000 = 2000, which only the mesh boolean can represent.
+hgb_has fallback "^history: BooleanUnion: exact B-rep boolean \(no tessellation\), [0-9]* face\(s\)$" "live: the two overlapping boxes unite exactly (planar engine)"
+hgb_vol fallback 1 1750 "live exact union of the overlapping boxes: 1000 + 1000 - 5 x 5 x 10"
+hgb_vol fallback 2 2000 "box 2 moved so the boxes meet only along an edge: the union is not a manifold, the result is the MESH boolean, 2 x 1000"
+hgb_has fallback "^history: History rebuild of a boolean: exact B-rep boolean declined \(dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more fragment loops \(non-manifold result\) - out of scope; see boolean_general.h's own disclosed limitations \[edge .*\]\); using the mesh boolean, so the result is a mesh$" "...and the general engine's own typed reason is printed in full: the union has an edge claimed by 3 or more loops (non-manifold result)"
 hgb_has fallback "^history: Object 3 \(mesh\) layer Default$" "...List shows the object is a mesh now"
-hgb_vol fallback 2 874.34 "Undo restores the sealed B-rep"
+hgb_vol fallback 3 1750 "Undo restores the sealed B-rep"
 hgb_has fallback "^history: Object 3 \(polysurface\) layer Default$" "...which List shows as a polysurface again"
-hgb_vol fallback 3 874.34 "Redo gives the mesh result again"
-hgb_vol fallback 4 874.34 "cylinder moved back: the sealed B-rep is rebuilt (the object follows the engine, mesh -> B-rep)"
-hgb_has fallback "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face solid"
-hgb_cnt fallback "^history: Object 3: valid$" 2 "Check: valid B-rep after Undo and after moving back"
+hgb_vol fallback 4 2000 "Redo gives the mesh result again"
+hgb_vol fallback 5 1750 "box 2 moved back: the exact B-rep is rebuilt (the object follows the engine, mesh -> B-rep)"
+hgb_has fallback "^history:   [0-9]* faces, [0-9]* edges, closed solid$" "...a closed solid"
+hgb_cnt fallback "^history: Object 3: valid$" 3 "Check: valid B-rep live, after Undo and after moving back"
 # --- Deleted source
 hgb_has deleted "^history: ! History: source object\(s\) 2 changed - 0 dependent\(s\) re-evaluated, 1 kept as they were: object 3 - source object 2 no longer exists$" "deleting the cylinder keeps the result and prints the reason"
 hgb_vol deleted 1 874.34 "...the kept result still measures the through hole"
@@ -13634,11 +13653,11 @@ hgb_vol save 5 1000 "cylinder moved out of the box"
 hgb_cnt save "^history: History: source object\(s\) 2 changed - 1 dependent\(s\) re-evaluated \(3\)$" 2 "two automatic rebuilds after Open"
 hgb_cnt save "^history: Object 3: valid$" 4 "Check: valid B-rep after Open and after each rebuild"
 # --- the mesh-fallback result is saved with its record and rebuilt to a sealed B-rep after Open
-hgb_vol mesh 1 874.34 "the coplanar-tool model saved as a MESH result (mesh volume 874.9)"
-hgb_vol mesh 2 874.34 "after Open: still the mesh result"
+hgb_vol mesh 1 2000 "the edge-touching union (no closed B-rep exists) saved as a MESH result, 2 x 1000"
+hgb_vol mesh 2 2000 "after Open: still the mesh result"
 hgb_has mesh "^history: Object 3 \(mesh\) layer Default$" "...List: a mesh"
-hgb_vol mesh 3 874.34 "after Open, cylinder moved back: the sealed through hole is rebuilt from the record"
-hgb_has mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
+hgb_vol mesh 3 1750 "after Open, box 2 moved back: the exact union is rebuilt from the record (1000 + 1000 - 5 x 5 x 10)"
+hgb_has mesh "^history:   [0-9]* faces, [0-9]* edges, closed solid$" "...a closed solid B-rep"
 hgb_has mesh "^history: Object 3: valid$" "...Check valid"
 # --- a brand-new process opens the saved document
 hgb_has fresh "^history:   object 3: BooleanDifference <- 1,2  \[operation=difference, levels=0\]$" "fresh process: the record was read from the .3dm"
@@ -13648,9 +13667,10 @@ hgb_vol fresh 2 717.26 "fresh process: cylinder scaled 1.5: rebuilt (through hol
 hgb_vol fresh 3 874.34 "fresh process: Undo"
 hgb_vol fresh 4 1000 "fresh process: the BOX moved 8 in x away from the cylinder: the result is the plain box"
 hgb_cnt fresh "^history: Object 3: valid$" 4 "Check: valid B-rep at every stage"
-hgb_vol fresh_mesh 1 874.34 "fresh process: the mesh-fallback document opens as a mesh (874.9)"
-hgb_vol fresh_mesh 2 874.34 "fresh process: moved back, the sealed B-rep is rebuilt"
-hgb_has fresh_mesh "^history:   7 faces, [0-9]* edges, closed solid$" "...a closed 7-face B-rep"
+hgb_vol fresh_mesh 1 2000 "fresh process: the mesh-fallback document opens as a mesh (2 x 1000)"
+hgb_has fresh_mesh "^history: Object 3 \(mesh\) layer Default$" "...List: a mesh"
+hgb_vol fresh_mesh 2 1750 "fresh process: box 2 moved back, the exact B-rep union is rebuilt"
+hgb_has fresh_mesh "^history:   [0-9]* faces, [0-9]* edges, closed solid$" "...a closed solid B-rep"
 rm -f "$HGB_DIR"/*.3dm 2>/dev/null || true
 
 # TS6_: ToNURBS of every ToSubD cage kind, arc-profile revolves, sharp-pole teardrop, curved-profile extrusions and lofts
