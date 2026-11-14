@@ -79,7 +79,7 @@ jobs:
           restore-keys: nightly-san-ccache-
       - name: Configure
         run: |
-          SAN="-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer"
+          SAN="-fsanitize=address,undefined -fsanitize-recover=address -fno-sanitize=vptr -fno-omit-frame-pointer"
           cmake -S dino8-kernel -B dino8-kernel/build-san -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG" -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG" \
             -DCMAKE_CXX_FLAGS="$SAN" -DCMAKE_C_FLAGS="$SAN" -DCMAKE_EXE_LINKER_FLAGS="$SAN" \

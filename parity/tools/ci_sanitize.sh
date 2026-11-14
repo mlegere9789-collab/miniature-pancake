@@ -7,11 +7,13 @@
 # is in this repository's own code (dino8-kernel/, dino8-app/). UBSan findings located in fetched third-party code
 # (openNURBS, manifold) are listed and counted but do not fail the run: they are not ours to change here. Leak detection is off
 # (openNURBS keeps process-lifetime tables) - the point is out-of-bounds, use-after-free, overflow, misaligned and null access.
+# The build uses -fsanitize-recover=address and halt_on_error=0, so one finding does not hide every later test of the run;
+# each distinct report is counted and its SUMMARY line listed.
 set -u
 BIN=$(readlink -f "${1:?test binary}"); MODE=${2:?subset or shard:K/N}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 LIST=${3:-$ROOT/parity/tools/sanitizer_subset.txt}
-export ASAN_OPTIONS=detect_leaks=0:strict_string_checks=1:detect_stack_use_after_return=1:abort_on_error=0
+export ASAN_OPTIONS=detect_leaks=0:strict_string_checks=1:detect_stack_use_after_return=1:abort_on_error=0:halt_on_error=0
 export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=0
 W=$(mktemp -d); cd "$W" || exit 2
 # run_one returns 0 when the run has a PROBLEM (it is used as "run_one ... && bad=1"), 1 when clean.
