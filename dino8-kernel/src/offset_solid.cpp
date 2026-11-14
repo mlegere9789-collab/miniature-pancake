@@ -302,21 +302,45 @@ Result OffsetSolidPlanar(const Brep& solid, double distance, Brep& out, PlanarSo
 
   // Edges keep their direction (they are the intersection of two translated planes) and must not shrink to nothing or reverse.
   double min_ratio = 1e300;
-  int min_edge = -1;
+  std::vector<double> edge_ratio(edges.size(), 0.0);
   for (size_t e = 0; e < edges.size(); ++e) {
     const Vec w0(V[edges[e].second].x - V[edges[e].first].x, V[edges[e].second].y - V[edges[e].first].y, V[edges[e].second].z - V[edges[e].first].z);
     const Vec w1(W[edges[e].second].x - W[edges[e].first].x, W[edges[e].second].y - W[edges[e].first].y, W[edges[e].second].z - W[edges[e].first].z);
     const double l2 = w0.Length() * w0.Length();
     if (!(l2 > 0.0)) return refuse("an edge of the input has zero length at " + PtWorld(V[edges[e].first]));
-    const double ratio = ON_DotProduct(w0, w1) / l2;
-    if (ratio < min_ratio) {
-      min_ratio = ratio;
-      min_edge = static_cast<int>(e);
+    edge_ratio[e] = ON_DotProduct(w0, w1) / l2;
+    min_ratio = std::min(min_ratio, edge_ratio[e]);
+  }
+  // Symmetric solids have several edges with the same ratio, told apart only by rounding noise that depends on the frame the
+  // coordinates are held in. Among the edges within 1e-9 (relative) of the smallest ratio the one named is the lexicographically
+  // smallest (lower end point, then upper end point, coordinates compared within the weld tolerance), so the refusal message does
+  // not depend on the local frame or on the order of the input's faces.
+  const double tie = 1e-9 * std::max(1.0, std::fabs(min_ratio));
+  auto lower_first = [&](const std::pair<int, int>& ed) {
+    const Point3d& a = V[ed.first];
+    const Point3d& b = V[ed.second];
+    const bool a_low = std::fabs(a.x - b.x) > wtol ? a.x < b.x : std::fabs(a.y - b.y) > wtol ? a.y < b.y : a.z <= b.z;
+    return a_low ? std::make_pair(ed.first, ed.second) : std::make_pair(ed.second, ed.first);
+  };
+  auto key_less = [&](const std::pair<int, int>& p, const std::pair<int, int>& q) {
+    const int pv[2] = {p.first, p.second}, qv[2] = {q.first, q.second};
+    for (int k = 0; k < 2; ++k) {
+      const Point3d& a = V[pv[k]];
+      const Point3d& b = V[qv[k]];
+      if (std::fabs(a.x - b.x) > wtol) return a.x < b.x;
+      if (std::fabs(a.y - b.y) > wtol) return a.y < b.y;
+      if (std::fabs(a.z - b.z) > wtol) return a.z < b.z;
     }
+    return false;
+  };
+  int min_edge = -1;
+  for (size_t e = 0; e < edges.size(); ++e) {
+    if (edge_ratio[e] > min_ratio + tie) continue;
+    if (min_edge < 0 || key_less(lower_first(edges[e]), lower_first(edges[min_edge]))) min_edge = static_cast<int>(e);
   }
   R.min_edge_length_ratio = min_ratio;
   if (min_ratio <= 1e-9) {
-    const auto& e = edges[min_edge];
+    const auto e = lower_first(edges[min_edge]);  // named lower end point first, whatever direction the input's loops gave it
     return refuse("the edge between " + PtWorld(V[e.first]) + " and " + PtWorld(V[e.second]) + " " + (min_ratio < 0 ? "reverses" : "collapses") +
                   " under this offset: new length / old length = " + Num(min_ratio) + " (a wall or gap closes; the topology would have to change)");
   }
