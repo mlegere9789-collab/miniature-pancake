@@ -105,6 +105,7 @@ pub struct Wal {
     unsynced: u32,
     buf: Vec<u8>,
     poisoned: bool,
+    slow: Option<std::time::Duration>,
     pub syncs: u64,
 }
 
@@ -162,6 +163,7 @@ impl Wal {
                 unsynced: 0,
                 buf: Vec::with_capacity(4096),
                 poisoned: false,
+                slow: None,
                 syncs: 0,
             },
             report,
@@ -235,7 +237,18 @@ impl Wal {
             return Err(Error::Invalid("log has a failed append; reopen to recover".into()));
         }
         self.fill_frame(payload)?;
-        if let Err(e) = (&*self.file).write_all(&self.buf) {
+        let written = match self.slow {
+            None => (&*self.file).write_all(&self.buf),
+            Some(pause) => {
+                // test hook: widen the window in which a crash tears the frame
+                let half = self.buf.len() / 2;
+                (&*self.file).write_all(&self.buf[..half]).and_then(|()| {
+                    std::thread::sleep(pause);
+                    (&*self.file).write_all(&self.buf[half..])
+                })
+            }
+        };
+        if let Err(e) = written {
             self.poisoned = true;
             return Err(e.into());
         }
@@ -263,6 +276,12 @@ impl Wal {
         (&*self.file).write_all(&self.buf[..keep])?;
         self.poisoned = true;
         Ok(())
+    }
+
+    /// Fault-injection hook: write every frame in two halves with a pause in between.
+    #[doc(hidden)]
+    pub fn set_slow_write(&mut self, pause: Option<std::time::Duration>) {
+        self.slow = pause;
     }
 
     pub fn sync(&mut self) -> Result<()> {
