@@ -2907,12 +2907,36 @@ Point3d NurbsCurve::PointAt(double t) const {
 
 Vector3d NurbsCurve::CurvatureAt(double t) const { return curve_.CurvatureAt(t); }
 
+namespace {
+// A NURBS curve whose every control point coincides to within round-off
+// relative to the size of its own coordinates: the collapsed isocurve at the
+// pole of a sphere or of a cone apex (a revolved surface's degenerate edge).
+// Its geometry is a single point, but its evaluated position carries a few
+// ulps of noise, and a curvature taken from that noise (a second difference
+// of positions that differ by 1e-13) is huge and arbitrary, and scales with
+// where the object sits in world space. A sampling-density estimate must
+// treat it as a point (one segment), not as a circle of radius 1e-13.
+// The test is relative (extent against the largest coordinate magnitude),
+// so it does not depend on the unit or on the translation of the object.
+bool IsNumericallyAPoint(const ON_Curve& curve) {
+  const ON_BoundingBox box = curve.BoundingBox();
+  if (!box.IsValid()) return false;
+  const double extent = box.Diagonal().Length();
+  const double scale = std::max({std::fabs(box.m_min.x), std::fabs(box.m_min.y), std::fabs(box.m_min.z),
+                                 std::fabs(box.m_max.x), std::fabs(box.m_max.y), std::fabs(box.m_max.z)});
+  return extent <= 1e-10 * scale;
+}
+
+}  // namespace
+
 int NurbsCurve::SuggestedSamples(double chord_tolerance, int curvature_samples) const {
   if (chord_tolerance <= 0.0) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsCurve::SuggestedSamples: chord_tolerance must "
         "be positive");
   }
+
+  if (IsNumericallyAPoint(curve_)) return 1;
 
   const ON_Interval domain = curve_.Domain();
   double max_kappa = 0.0;
@@ -2958,6 +2982,8 @@ int NurbsCurve::SuggestedSamplesByAngle(double angle_tolerance, int curvature_sa
         "dino8::kernel::NurbsCurve::SuggestedSamplesByAngle: angle_tolerance "
         "must be in (0, pi]");
   }
+
+  if (IsNumericallyAPoint(curve_)) return 1;
 
   const ON_Interval domain = curve_.Domain();
   double max_kappa = 0.0;
