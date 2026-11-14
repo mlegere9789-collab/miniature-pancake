@@ -29,12 +29,34 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 # Pin to a specific OpenNURBS tag rather than tracking a moving branch, so
 # builds are reproducible. Bump this deliberately when the kernel needs a
 # newer OpenNURBS feature.
+#
+# Two defects in that release are patched at configure time (cmake/patches/opennurbs-8.34.26223-thread-safety.patch):
+# ON_Surface::IsSphere reads one double past its allocation (AddressSanitizer heap-buffer-overflow, reached from SAT export
+# and from any caller that classifies a NURBS surface), and ON_NextContentSerialNumber is a non-atomic counter shared by all
+# threads. PATCH_COMMAND runs cmake/ApplyPatch.cmake: idempotent (an already-patched tree is accepted) and a hard configure
+# error when the patch no longer applies, so a version bump cannot silently drop the fixes. The check after
+# FetchContent_MakeAvailable guards the one path PATCH_COMMAND does not cover (FETCHCONTENT_SOURCE_DIR_OPENNURBS pointing at
+# an unpatched checkout).
 FetchContent_Declare(
   opennurbs
   GIT_REPOSITORY https://github.com/mcneel/opennurbs.git
   GIT_TAG        v8.34.26223.11001
+  PATCH_COMMAND  ${CMAKE_COMMAND}
+                   -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/opennurbs-8.34.26223-thread-safety.patch
+                   -DPATCH_NAME=opennurbs-thread-safety
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ApplyPatch.cmake
 )
 FetchContent_MakeAvailable(opennurbs)
+
+file(READ ${opennurbs_SOURCE_DIR}/opennurbs_revsurface.cpp _on_rev)
+file(READ ${opennurbs_SOURCE_DIR}/opennurbs_statics.cpp _on_statics)
+if(NOT _on_rev MATCHES "int j = 0; j < sc1; j\\+\\+" OR _on_rev MATCHES "int j = 0; j <= sc1; j\\+\\+"
+   OR NOT _on_statics MATCHES "std::atomic<ON__UINT64> serial_number")
+  message(FATAL_ERROR "openNURBS in ${opennurbs_SOURCE_DIR} does not carry cmake/patches/opennurbs-8.34.26223-thread-safety.patch "
+                      "(IsSphere span loop bound / atomic content serial number). Remove FETCHCONTENT_SOURCE_DIR_OPENNURBS or apply the patch to it.")
+endif()
+unset(_on_rev)
+unset(_on_statics)
 
 # Manifold provides the real mesh-boolean algorithm OpenNURBS doesn't
 # (see brep.h's comment for why). Scoped down to just the boolean engine:
