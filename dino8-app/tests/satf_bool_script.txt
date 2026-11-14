@@ -1,0 +1,21 @@
+# SATF boolean: a box with a square through-hole (BooleanDifference) written
+# to .sat and read back. Whether the app's boolean result is a Brep the
+# writer accepts is reported by the SATF_ checks in smoke.sh, not assumed.
+#   Volume lines: [0] the boolean result, [1] the result re-opened (only if it was written).
+SetActiveViewport Top
+Box 0,0,0 20,20,0 10
+Box 5,5,-2 15,15,-2 14
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Volume
+List
+Export @TMP@/satf_bool.sat
+New
+Open @TMP@/satf_bool.sat
+SelAll
+Volume
+List

@@ -1,0 +1,39 @@
+name: Plug-in loading or SDK bug
+description: A plug-in fails to build against the SDK, fails to load, or the marketplace misbehaves.
+title: "[Plugin bug] "
+labels: ["plugin"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Dino 8 version, platform, and SDK version
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where does it fail?
+      options:
+        - Installing the SDK / find_package
+        - Generating from a template
+        - Building the plug-in
+        - Loading in Dino 8 (GrasshopperPluginList shows failed)
+        - Running a plug-in command or node
+        - PluginMarketplace* commands or panel
+        - tools/site generator
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands. For a Dino 8 script, attach the script.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      render: text
+    validations:
+      required: true

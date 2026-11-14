@@ -1,0 +1,62 @@
+# Revolve Angle/StartAngle: RevolveCommand (cmd_solids.cpp) now exposes
+# Angle and StartAngle options (degrees), neither previously available
+# anywhere in the app. A genuinely non-default combination (Angle != 360
+# and/or StartAngle != 0) routes RebuildRevolve through
+# kernel::Brep::Revolve (brep.h), which has supported both since before
+# the app exposed either; the plain default full 0..360 revolve (the
+# overwhelmingly common case, and the only one this command has ever
+# built) is left on the exact same pre-existing ON_BrepRevSurface
+# construction, untouched.
+#
+# Note: a partial-angle revolve's own two planar pie-slice end caps hit
+# the same pre-existing app-level mesh-closure gap already disclosed for
+# ExtrudeCrvToPoint's cone and the plain full-Revolve cylinder case (see
+# extrude_to_point_solid_script.txt's own header comment) - Volume reports
+# it as not-closed/zero despite List/Check correctly treating it as a
+# genuine closed solid. A full revolve at a nonzero StartAngle has no such
+# gap (same single doubly-periodic-face torus topology as the default
+# case), so Volume measures it directly there.
+
+# --- Default (Angle=360, StartAngle=0) on a closed off-axis square:
+# unchanged, pre-existing ON_BrepRevSurface path.
+Polyline 5,0,0 7,0,0 7,0,2 5,0,2 5,0,0
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelLast
+List
+@expect_objects 2
+SelAll
+Delete
+
+# --- Angle=90 on the same square: kernel::Brep::Revolve path, a real
+# capped solid (3 faces: wall + 2 pie-slice caps).
+Polyline 5,0,0 7,0,0 7,0,2 5,0,2 5,0,0
+Enter
+SelLast
+Revolve Angle=90
+0,0,0
+0,0,1
+SelLast
+List
+SelLast
+Check
+@expect_objects 2
+SelAll
+Delete
+
+# --- StartAngle=45, full angle: also the kernel path - same torus
+# topology as the default case, just rotated, so Volume works here.
+Polyline 5,0,0 7,0,0 7,0,2 5,0,2 5,0,0
+Enter
+SelLast
+Revolve StartAngle=45
+0,0,0
+0,0,1
+SelLast
+List
+SelLast
+Volume
+@expect_objects 2

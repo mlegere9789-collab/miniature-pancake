@@ -1,0 +1,58 @@
+# Sweep1 ScaleX / ScaleY with History On (tests/smoke.sh section SPS_, part 2): the per-axis scale pairs are recorded with the
+# construction (num sx0 sx1 sy0 sy1), so moving the section rebuilds the SCALED wall automatically, and the rebuilt wall
+# equals the same sweep built fresh from the moved section. Bounding boxes, in order:
+#  1 fresh scaled wall (ScaleX=1,2 ScaleY=1,0.5, circle r=1 centred on the rail start)
+#  2 the section moved +1 in Y with History On: rebuilt automatically (no UpdateHistory), scale still applied
+#  3 the same sweep built fresh from the moved section (History Off) (= 2)
+#  4 History Off control: a section moved after the sweep leaves the wall alone (= the wall's own box before the move)
+SetActiveViewport Top
+History On
+Line 0,0,0 0,0,10
+Circle 0,0,0 1
+SelNone
+SelID 1
+Sweep1 ScaleX=1,2 ScaleY=1,0.5
+SelID 2
+Enter
+History
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 2
+Move
+0,0,0
+0,1,0
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 3
+Area
+# fresh control from the same moved section, History Off
+SelAll
+Delete
+History Off
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSHRail
+Circle 0,1,0 1
+SelLast
+SetObjectName SPSHSec
+SelNone
+SelName SPSHRail
+Sweep1 ScaleX=1,2 ScaleY=1,0.5
+SelName SPSHSec
+Enter
+SelSrf
+BoundingBox
+Area
+# History Off: the section moved afterwards does not move the wall
+SelNone
+SelName SPSHSec
+Move
+0,0,0
+0,1,0
+SelNone
+SelSrf
+BoundingBox

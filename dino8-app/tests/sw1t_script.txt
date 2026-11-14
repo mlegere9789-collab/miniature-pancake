@@ -1,0 +1,102 @@
+# SW1T: Sweep1 Style=Top/Front/Right and Twist through the app command. Every case starts from New and is bracketed by an
+# unknown-command marker (SW1TBEGIN_<name>). Helix rail: radius 3, z = t, one turn; section the radial segment (3,0,0)-(5,0,0).
+# Straight rail: (0,0,0)-(0,0,6); section the radial segment (1,0,0)-(3,0,0).
+SetActiveViewport Top
+New
+SW1TBEGIN_top
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+SelNone
+SelID 1
+Sweep1
+Style=Top
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1TBEGIN_right
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+SelNone
+SelID 1
+Sweep1
+Style=Right
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1TBEGIN_road_x
+Helix Turns=1 0,0,0 0,0,6.283185307179586 3,0,0
+Line 3,0,0 5,0,0
+SelNone
+SelID 1
+Sweep1
+Style=Roadlike
+Up=1,0,0
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1TBEGIN_twist_pos
+Line 0,0,0 0,0,6
+Line 1,0,0 3,0,0
+SelNone
+SelID 1
+Sweep1
+Twist=180
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1TBEGIN_twist_neg
+Line 0,0,0 0,0,6
+Line 1,0,0 3,0,0
+SelNone
+SelID 1
+Sweep1
+Twist=-180
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1TBEGIN_twist_zero
+Line 0,0,0 0,0,6
+Line 1,0,0 3,0,0
+SelNone
+SelID 1
+Sweep1
+SelID 2
+Enter
+SelLast
+Area
+New
+SW1TBEGIN_twist_bad
+Line 0,0,0 0,0,6
+Line 1,0,0 3,0,0
+SelNone
+SelID 1
+Sweep1
+Twist=abc
+SelID 2
+Enter
+SelAll
+What
+New
+SW1TBEGIN_twist_two_sections
+Line 0,0,0 0,0,6
+Line 1,0,0 3,0,0
+Line 1,0,6 3,0,6
+SelNone
+SelID 1
+Sweep1
+Twist=90
+SelID 2
+SelID 3
+Enter
+SelAll
+What

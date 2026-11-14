@@ -1,0 +1,107 @@
+# History / RecordHistory / UpdateHistory: a real, intentionally-scoped
+# constructional-history mechanism for Extrude/ExtrudeCrv, ExtrudeCrvToPoint,
+# Revolve, Loft and SubDLoft (see cmd_history.cpp's own header comment for
+# exactly why this set and the honest scope limit versus every other
+# construction command). This script proves the whole loop for real:
+#  - History defaults Off: a construction command's result carries NO
+#    recorded history - UpdateHistory finds nothing to redo for it.
+#  - History On: the SAME construction, run again, DOES get a HistoryRecord
+#    (source curve id + parameters).
+#  - Moving the source curve, then running UpdateHistory, genuinely
+#    re-derives the dependent surface's geometry (a real bounding-box
+#    check, not just an object count) from the curve's NEW position - the
+#    exact check that would catch a fake/no-op implementation.
+# Object ids below are the deterministic 1-based counter Document::Add
+# assigns, in creation order (see provenance_script.txt's header comment
+# for the same assumption).
+
+# --- History defaults Off: Extrude while off records nothing, so
+# UpdateHistory has 0 objects to redo.
+History
+Line 0,0,0 10,0,0
+SelNone
+SelID 1
+Extrude
+5
+@expect_objects 2
+UpdateHistory
+History
+
+# --- History On: a fresh Extrude DOES get tracked.
+History On
+Line 20,0,0 30,0,0
+SelNone
+SelID 3
+Extrude
+5
+@expect_objects 4
+SelNone
+SelID 4
+BoundingBox
+@expect_objects 4
+
+# Move the source curve (id 3) straight up 20 units in Z - the extruded
+# surface (id 4) is NOT touched by Move itself, so its bounding box must
+# still read the pre-move value until UpdateHistory runs.
+SelNone
+SelID 3
+Move
+20,0,0
+20,0,20
+SelNone
+SelID 4
+BoundingBox
+@expect_objects 4
+
+# UpdateHistory re-derives object 4 from curve 3's new position - the
+# money check: min/max must move from z=0..5 to z=20..25, not stay put.
+UpdateHistory
+SelNone
+SelID 4
+BoundingBox
+@expect_objects 4
+History
+
+# --- RecordHistory is the same toggle as History (Rhino's alternate name).
+RecordHistory Off
+History
+
+# --- Undo must never let a NEW object reuse an undone object's id. The
+# HistoryRecord side table (like Provenance/HoleFeature/PipeFeature/
+# SymmetryLink) is keyed by ObjectId and deliberately not part of the undo
+# history, so before Document::ApplyDelta kept the id counter monotonic a
+# Box drawn right after undoing a tracked Extrude was handed the undone
+# extrusion's own id (6 here), History listed the Box as "object 6: Extrude
+# <- 5", SelExtrusion selected it, and UpdateHistory silently rebuilt the
+# user's Box into the extrusion of line 5. Now the Box must get a fresh id
+# (7), UpdateHistory must report the undone extrusion's record as orphaned,
+# and the Box's own geometry must be untouched.
+History On
+Line 40,0,0 50,0,0
+SelNone
+SelID 5
+Extrude
+5
+@expect_objects 6
+# An Undo/Redo round trip keeps both the tracked object (same id 6) and its
+# record: the record is still listed after Redo.
+Undo
+@expect_objects 5
+Redo
+@expect_objects 6
+History
+Undo
+@expect_objects 5
+Box 50,50,0 60,60,0 10
+@expect_objects 6
+SelNone
+SelLast
+What
+SelNone
+SelExtrusion
+@expect_selected 2
+UpdateHistory
+SelNone
+SelLast
+What
+History

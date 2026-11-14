@@ -1,0 +1,73 @@
+# MGST: MergeSrf Smooth=Yes - two planar patches meeting at 30 degrees are merged exactly and the seam is smoothed to G1 (see sections/79_mgst.sh).
+# Each case starts from New and is bracketed by MGSTBEGIN_<name> markers; the merged surface is then probed with EvaluateUVPt at u = 0.5 and
+# normalized v = t (SrfPt indexes u from corner 1 to corner 4 and v from corner 1 to corner 2: here u runs along x, v along y and then up the tilted patch).
+SetActiveViewport Top
+New
+MGSTBEGIN_smooth
+SrfPt 0,0,0 0,3,0 4,3,0 4,0,0
+SrfPt 0,3,0 0,5.598076211353316,1.5 4,5.598076211353316,1.5 4,3,0
+SelSrf
+MergeSrf Smooth=Yes
+MGSTBEGIN_smooth_t0
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0
+MGSTBEGIN_smooth_t45
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0.45
+MGSTBEGIN_smooth_t50
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+MGSTBEGIN_smooth_t55
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0.55
+MGSTBEGIN_smooth_t100
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,1
+New
+MGSTBEGIN_plain
+SrfPt 0,0,0 0,3,0 4,3,0 4,0,0
+SrfPt 0,3,0 0,5.598076211353316,1.5 4,5.598076211353316,1.5 4,3,0
+SelSrf
+MergeSrf
+MGSTBEGIN_plain_t0
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0
+MGSTBEGIN_plain_t45
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0.45
+MGSTBEGIN_plain_t50
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+MGSTBEGIN_plain_t55
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0.55
+MGSTBEGIN_plain_t100
+SelNone
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,1
+New
+MGSTBEGIN_apart
+Plane 0,0,0 10,10,0
+Plane 50,0,0 60,10,0
+SelSrf
+MergeSrf Smooth=Yes
+New

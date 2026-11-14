@@ -1,0 +1,243 @@
+# Rolling-ball fillet of the SADDLE edge of a perpendicular pipe tee (see the "PTF_" section at the end of smoke.sh).
+#
+# kernel::FilletPipeTee is wired into FilletEdge (cmd_fillet.cpp TryPipeTeeFillet / OnPipeTeeSaddle) as the last exact
+# attempt, after the capped-cylinder / frustum, hole-plate and revolve-rim paths declined. The solid is the app's own
+# sealed Boolean union (TryGeneralBrepBoolean) of a main cylinder (radius R = 2, axis z, z = -3 .. 3) and a branch
+# cylinder (radius rb = 1, from the axis crossing along +y to y = 5, ending in its own planar cap). The branch is the
+# second Cylinder (axis z) turned with Rotate3D about the x axis by -90 degrees: a branch turned about y, or one whose
+# seam lies on the saddle curve (a further 90 degrees about z first), is declined by the Boolean engine itself.
+#
+# Picks: FilletEdge picks the edge nearest the point on the construction plane (z = 0 in the Top viewport), so the
+# saddle is picked where it crosses z = 0: (+-1, sqrt(3), 0) (x^2 + y^2 = R^2 and x^2 + z^2 = rb^2).
+#
+# Every case starts from `New` and is bracketed by a marker line ("PTFBEGIN_<name>", an unknown command) that smoke.sh
+# uses to slice this script's output into per-case blocks.
+
+SetActiveViewport Top
+
+# fixture: the sealed union itself (no fillet)
+New
+PTFBEGIN_base
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+Check
+
+# fillet r = 0.4
+New
+PTFBEGIN_F_r04
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.4
+1,1.7320508,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# fillet r = 1 picked on the other side of the saddle (-1, sqrt(3), 0)
+New
+PTFBEGIN_F_r1
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+FilletEdge
+Radius=1
+-1,1.7320508,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# the whole tee turned 37 degrees about its main axis, then filleted r = 0.4 (the kernel reads the frame back)
+New
+PTFBEGIN_F_rot
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+SelAll
+Rotate3D 0,0,0 0,0,1 37
+FilletEdge
+Radius=0.4
+-0.2437387,1.9850923,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# two picks on the saddle in ONE run: the kernel fillets the whole edge once, the second pick is refused, the first applies
+New
+PTFBEGIN_F_two
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.4
+1,1.7320508,0
+-1,1.7320508,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# refusal: r = 3 -> the blend would reach z = +-(rb + r) = 4 > 3
+New
+PTFBEGIN_R_toobig
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+FilletEdge
+Radius=3
+1,1.7320508,0
+Enter
+SelAll
+List
+
+# refusal: a branch ending at y = 2.2 < R + r = 2.4 for r = 0.4
+New
+PTFBEGIN_R_shortbranch
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 2.2
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.4
+1,1.7320508,0
+Enter
+SelAll
+List
+
+# refusal: the branch tilted 20 degrees out of the perpendicular (the saddle crosses z = 0 at (0.7763, 1.8432, 0))
+New
+PTFBEGIN_R_nonperp
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelID 2
+Rotate3D 0,0,0 1,0,0 20
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.4
+0.7762583,1.8432100,0
+Enter
+SelAll
+List
+
+# refusal: a box with a cylinder boss on top is not a tee (one cylinder face); the boss rim at z = 10 is picked at (7,5,10)
+New
+PTFBEGIN_R_boxboss
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,5 2 8
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.5
+7,5,10
+Enter
+SelAll
+List
+
+# refusal: a pick on the tee but NOT on the saddle edge is not hijacked: the rim of the branch's end cap, picked at (-1, 5, 0)
+New
+PTFBEGIN_R_offsaddle
+Cylinder 0,0,-3 2 6
+Cylinder 0,0,0 1 5
+SelID 2
+Rotate3D 0,0,0 1,0,0 -90
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.4
+-1,5,0
+Enter
+SelAll
+List
+
+# control: a plain cylinder still takes the app's own exact quarter torus
+New
+PTFBEGIN_ctl_cyl
+Cylinder 0,0,0 5 4
+FilletEdge
+Radius=1
+0,5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a cone frustum still takes the kernel cap-rim torus
+New
+PTFBEGIN_ctl_tcone
+TCone 0,0,0 5 10 3
+FilletEdge
+Radius=1
+0,3,10
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a polygonal solid of revolution (the app's chamfered cylinder) still takes the kernel revolve-rim fillet
+New
+PTFBEGIN_ctl_rev
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=3
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a box edge is still the kernel's exact planar fillet
+New
+PTFBEGIN_ctl_box
+Box 0,0,0 6,6,0 4
+FilletEdge
+Radius=1
+6,3,4
+Enter
+SelAll
+List
+Volume
+Check
+
+PTFBEGIN_end

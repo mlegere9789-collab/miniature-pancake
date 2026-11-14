@@ -1,0 +1,32 @@
+#title: SubD basics
+#summary: Make a subdivision-surface box, crease an edge, extrude a face, and convert the result to exact NURBS.
+#level: Intermediate
+# Source: extends docs/tutorial_scripts/08_subd_basics.txt.
+#narrate: Subdivision surfaces are for organic, smooth shapes. You edit a coarse cage and the program smooths it. We start with the simplest cage there is, a box.
+SubDBox 0,0,0 10,10,0 10
+@expect_objects 1
+#narrate: SubDBox makes a ten unit cube as a SubD. Note how soft it looks: the corners are rounded by the smoothing.
+SetActiveViewport Perspective
+MaxViewport
+ZoomExtents
+SelLast
+Crease
+5,0,0
+5,10,0
+Enter
+#narrate: A crease keeps an edge sharp. We select the box, run Crease, and pick the edges we want to keep crisp.
+SelLast
+What
+#narrate: What describes the selection, which is now a SubD with a creased edge.
+SelLast
+ExtrudeSubD
+5,5,10
+Enter
+3
+@expect_objects 1
+#narrate: ExtrudeSubD pulls a face outward. We pick the top face and extrude three units, and the smoothing reshapes the whole form around it.
+ZoomExtents
+SelLast
+ToNURBS
+@expect_objects 2
+#narrate: When you need exact geometry, ToNURBS converts the SubD to a NURBS surface. The SubD stays, so you can keep editing the original.

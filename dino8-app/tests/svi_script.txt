@@ -1,0 +1,103 @@
+# SubDVertexInfo / SubDCorner / SubDRemoveCorner (the "SVI_" section, tests/sections/77_svi.sh).
+#
+# The kernel's SubD::VertexInfoAt() / SetVertexCorner() had no app command: a user could crease edges but could not see how
+# a vertex ended up classified (which decides its limit rule) nor pin a sharp corner where a crease chain turns.
+# Fixture: the app's own SubD box 0,0,0 - 10,10,0 - 10 (the plain 8-vertex cube cage). The vertex at the origin is read
+# in four states; the section compares the printed limit points with values derived by hand (not by the kernel):
+#   smooth cube vertex, valence 3:   (n^2 v + 4 * sum(edge neighbours) + sum(face diagonals)) / (n (n + 5))
+#                                    = (9*0 + 4*(10,10,10) + (20,20,20)) / 24 = (2.5, 2.5, 2.5)
+#   two creased edges meet there:    cubic B-spline crease rule (a + 4 v + b) / 6 with a = (10,0,0), b = (0,10,0) = (10/6, 10/6, 0)
+#   pinned as a corner:              the limit point is the control point (0, 0, 0)
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+# the smooth cube vertex at the origin, and (a second pick) the opposite corner
+New
+SVIBEGIN_smooth
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SubDVertexInfo
+0,0,0
+10,10,10
+Enter
+
+# two edges creased at the origin -> a Crease vertex; pin it; read it; release it; read it
+New
+SVIBEGIN_corner
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+0,5,0
+Enter
+SelLast
+SubDVertexInfo
+0,0,0
+Enter
+SelLast
+SubDCorner
+0,0,0
+Enter
+SelLast
+SubDVertexInfo
+0,0,0
+Enter
+SelLast
+SubDRemoveCorner
+0,0,0
+Enter
+SelLast
+SubDVertexInfo
+0,0,0
+Enter
+
+# negative controls: a smooth vertex cannot be pinned, a pick far from every vertex does nothing
+New
+SVIBEGIN_refused
+SubDBox 0,0,0 10,10,0 10
+SelLast
+SubDCorner
+10,10,10
+50,50,50
+Enter
+SelLast
+SubDVertexInfo
+10,10,10
+Enter
+
+# a pinned corner survives later net-rebuilding commands (Crease/RemoveCrease/ExtrudeSubD/Inset rebuild the SubD from a vertex/face/crease net)
+New
+SVIBEGIN_survives
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+0,5,0
+Enter
+SelLast
+SubDCorner
+0,0,0
+Enter
+SelLast
+Crease
+10,5,0
+Enter
+SelLast
+RemoveCrease
+10,5,0
+Enter
+SelLast
+ExtrudeSubD
+5,5,10
+Enter
+3
+SelLast
+Inset
+5,5,13
+Enter
+1
+SelLast
+SubDVertexInfo
+0,0,0
+Enter

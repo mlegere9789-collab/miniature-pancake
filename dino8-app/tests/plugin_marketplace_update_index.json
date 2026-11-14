@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "index_name": "Update Test Index (version-check regression fixture)",
+  "plugins": [
+    {
+      "id": "hellodino",
+      "name": "HelloDino",
+      "version": "1.1.0",
+      "author": "Dino 8 Project",
+      "description": "Same sample plug-in as plugin-index/index.json's hellodino entry, but with a bumped version - so Marketplace::CheckForUpdates sees the already-loaded 1.0.0 copy as out of date.",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino"
+    }
+  ]
+}

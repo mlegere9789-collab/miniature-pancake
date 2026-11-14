@@ -1,0 +1,47 @@
+# History / UpdateHistory extended to Patch (the free Patch function,
+# cmd_surface.cpp; RebuildPatch, history_rebuild.h), single-closed-planar-
+# curve case only - the same source-curve-moves -> UpdateHistory-rederives
+# loop history_script.txt/history_pipe_script.txt/history_sweep1_script.txt/
+# history_sweep2_script.txt already prove, now for Patch as a ninth tracked
+# command - see cmd_history.cpp's own header comment for the full scope
+# list. The money check is a real bounding-box move (z 0..0 -> 5..5), not
+# just an object count - a stale/no-op rebuild would fail this the same
+# way it would in every other history_*_script.txt fixture. Patch's own
+# exact-trim result is a flat (zero-height) Brep but still has real X/Y
+# extent, so (unlike history_script.txt's own fully-degenerate flat
+# Extrude case) BoundingBox DOES add a real box object each time it runs
+# here - ON_BrepBox only fails when every axis collapses, the same
+# behavior history_pipe_script.txt's own capped-pipe case already
+# exercises. Object ids below are the deterministic 1-based counter
+# Document::Add assigns, in creation order, and account for that extra
+# object each time BoundingBox runs.
+
+History On
+Circle 0,0,0 5
+SelNone
+SelID 1
+Patch
+@expect_objects 2
+SelNone
+SelID 2
+BoundingBox
+@expect_objects 3
+History
+
+# Move the source circle (id 1) straight up 5 units in Z - the patch
+# (id 2) is NOT touched by Move itself, so it must still read the
+# pre-move bounding box until UpdateHistory runs.
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,5
+
+# UpdateHistory re-derives object 2 from curve 1's new position - the
+# money check: min/max z must move from 0..0 to 5..5, not stay put.
+UpdateHistory
+SelNone
+SelID 2
+BoundingBox
+@expect_objects 4
+History

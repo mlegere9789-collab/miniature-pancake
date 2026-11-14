@@ -1,0 +1,122 @@
+# ToSubD of arc-profile revolves, a sharp-pole teardrop, curved-profile extrusions and a loft (tests/smoke.sh section TS6_).
+# The Arc command draws in the active (Top, XY) plane, so every arc here lies in XY and is revolved about the X or Y axis.
+# Printed per solid, in this order: Volume of the source, List of the source, the ToSubD status line, the SubD's List line.
+# --- 1 hemisphere: Arc from the pole (5,0,0) to (0,5,0), revolved about the X axis (rim circle of radius 5 at x = 0)
+Arc 0,0,0 5,0,0 0,5,0
+SelLast
+Revolve
+0,0,0
+1,0,0
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 2 sphere segment smaller than a hemisphere: pole (5,0,0) to (3,4,0), rim radius 4 at x = 3
+Arc 0,0,0 5,0,0 3,4,0
+SelLast
+Revolve
+0,0,0
+1,0,0
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 3 sphere segment taller than a hemisphere: pole (5,0,0) to (-3,4,0), rim radius 4 at x = -3
+Arc 0,0,0 5,0,0 -3,4,0
+SelLast
+Revolve
+0,0,0
+1,0,0
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 4 dome about the Y axis, off the origin: pole (20,5,0) to (15,0,0)
+Arc 20,0,0 20,5,0 15,0,0
+SelLast
+Revolve
+20,0,0
+20,1,0
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 5 teardrop: sharp tip at the bottom (profile meets the axis at an angle), smooth top pole
+Curve 50,0,0 51,0,4 55,0,10 50,0,10
+Enter
+SelLast
+Revolve
+50,0,0
+50,0,1
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 6 extruded circle (a cylinder built by ExtrudeCrv)
+Circle 80,0,0 4
+SelLast
+ExtrudeCrv
+8
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 7 extruded ellipse
+Ellipse 100,0,0 106,0,0 100,3,0
+SelLast
+ExtrudeCrv
+8
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 8 loft through three circles (bulging vase), capped
+Circle3Pt 129,0,0 125,4,0 121,0,0
+Circle3Pt 130,0,5 125,5,5 120,0,5
+Circle3Pt 128,0,10 125,3,10 122,0,10
+SelNone
+SelCrv
+Loft
+SelLast
+Volume
+List
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 9 negative control: Sphere
+Sphere 150,0,0 4
+SelLast
+Volume
+ToSubD
+SelLast
+List

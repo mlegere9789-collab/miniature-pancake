@@ -1,0 +1,21 @@
+@PACKAGE_INIT@
+
+# Dino8PluginSdk: the public Dino 8 plug-in ABI header, as a CMake package.
+#   find_package(Dino8PluginSdk 2 REQUIRED)
+#   dino8_add_plugin(my_plugin SOURCES my_plugin.c)
+# Provides: Dino8::PluginSdk (INTERFACE target), dino8_add_plugin(),
+#           Dino8PluginSdk_API_VERSION (the DINO8_PLUGIN_API_VERSION this SDK ships).
+set(Dino8PluginSdk_API_VERSION @DINO8_SDK_API_VERSION@)
+
+set(_dino8_sdk_inc "${PACKAGE_PREFIX_DIR}/include/@DINO8_SDK_INCLUDE_SUBDIR@")
+if(NOT EXISTS "${_dino8_sdk_inc}/dino8_plugin.h")
+  set(Dino8PluginSdk_FOUND FALSE)
+  set(Dino8PluginSdk_NOT_FOUND_MESSAGE "the SDK header dino8_plugin.h is missing from ${_dino8_sdk_inc}")
+  return()
+endif()
+if(NOT TARGET Dino8::PluginSdk)
+  add_library(Dino8::PluginSdk INTERFACE IMPORTED)
+  set_target_properties(Dino8::PluginSdk PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_dino8_sdk_inc}")
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/Dino8PluginSdkMacros.cmake")

@@ -1,0 +1,40 @@
+#title: Fillets and chamfers
+#summary: Round one edge with FilletEdge and bevel another with ChamferEdge, and check the volume change numerically.
+#level: Intermediate
+# Source: extends tests/fillet_script.txt (FilletEdge / ChamferEdge sections) and docs/tutorial_scripts/10_profile_extrude.txt.
+#narrate: Sharp edges rarely survive in real parts. Fillets round an edge and chamfers bevel it. We will use both, on two identical blocks.
+SetActiveViewport Perspective
+MaxViewport
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+ZoomExtents
+@expect_objects 2
+#narrate: Two ten-unit cubes side by side. Each has a volume of one thousand cubic units.
+SelNone
+SelID 1
+Volume
+#narrate: The first cube will get a fillet. Volume confirms we start at exactly one thousand.
+SelNone
+FilletEdge
+Radius=2
+10,10,5
+Enter
+@expect_objects 2
+#narrate: FilletEdge asks for a radius and then for an edge to round. We set Radius to two, then point at the middle of one vertical edge. Enter accepts.
+SelNone
+SelID 1
+Volume
+#narrate: A rolling ball of radius two rounded the edge, so the volume dropped to nine hundred ninety-one point four cubic units.
+SelNone
+ChamferEdge
+Radius=2
+30,10,5
+Enter
+@expect_objects 2
+#narrate: ChamferEdge works the same way, but cuts a flat bevel instead of a curve. Distance two on each face.
+SelNone
+SelID 2
+Volume
+#narrate: A bevel of distance two on a ten unit edge removes two times two over two, times ten, which is exactly twenty cubic units. Nine hundred eighty remain.
+ZoomExtents
+#narrate: Use fillets where a smooth, flowing surface or stress relief matters, and chamfers where you want a cheap, crisp, machinable bevel.

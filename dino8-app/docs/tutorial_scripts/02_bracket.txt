@@ -1,0 +1,25 @@
+# Tutorial 2: Model a simple bracket - flat plate with a mounting hole and
+# a rounded corner. Verifies the exact command sequence quoted in
+# docs/site/tutorials.html "Model a simple bracket" tutorial.
+SetActiveViewport Top
+# 40x20x5 plate
+Box 0,0,0 40,20,0 5
+@expect_objects 1
+# 4-unit-diameter mounting hole through the plate, centred at 10,10
+Cylinder 10,10,-1 2 7
+@expect_objects 2
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+@expect_objects 1
+SelAll
+Volume
+# round one vertical corner edge of the plate
+FilletEdge
+Radius=3
+40,20,2.5
+Enter
+@expect_objects 1
+SelAll
+Volume

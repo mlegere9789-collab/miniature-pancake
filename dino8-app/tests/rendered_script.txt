@@ -1,0 +1,47 @@
+# SetObjectDisplayMode Rendered QC: two distinctly-coloured boxes in a
+# Wireframe (fills nothing at all) Top view. Box A (screen-left, plain red
+# via SetRenderColor, no material) is left alone throughout - Wireframe
+# draws no fill for it in any capture. Box B (screen-right) gets a real
+# glass-like material (Color=30,30,230, Transparency=0.5) and the Rendered
+# override toggled on then off - the one per-object mode that routes
+# through the full material/texture/lighting/transparency path
+# (Viewport.cpp's force_rendered handling and SetObjectDisplayModeCommand),
+# honoured even though the viewport itself is never switched to Rendered.
+# The material's own 50% transparency (not a fixed Ghosted/X-Ray-style
+# alpha) is what proves this is genuinely the same material-driven path a
+# Rendered viewport uses, not just another flat-colour override: the final
+# capture sets the same material's Transparency to 0 (fully opaque) while
+# force_rendered stays on, so smoke.sh can confirm the 50%-transparency
+# capture reads as the real alpha-blended midpoint between the unfilled
+# background and this fully-opaque capture - proof the blend amount tracks
+# the material's own field, not a hardcoded override alpha. SelNone before
+# every capture so the selection-colour tint never muddies the sample. This
+# script only builds the scene and captures screenshots; smoke.sh does the
+# actual pixel-level verification.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box -20,-5,0 -10,5,0 5
+SelLast
+SetRenderColor 230,30,30
+Box 10,-5,0 20,5,0 5
+SelLast
+RenderAssignMaterialToObjects RenderedTestMat Color=30,30,230 Transparency=0.5
+SelNone
+Wireframe
+Top
+ZoomExtentsAll
+ViewCaptureToFile @TMP@/rendered_off.bmp
+SelID 2
+SetObjectDisplayMode Rendered
+SelNone
+ViewCaptureToFile @TMP@/rendered_on.bmp
+SelID 2
+SetObjectDisplayMode UseViewport
+SelNone
+ViewCaptureToFile @TMP@/rendered_off2.bmp
+SelID 2
+SetObjectDisplayMode Rendered
+SelID 2
+RenderAssignMaterialToObjects RenderedTestMat Transparency=0
+SelNone
+ViewCaptureToFile @TMP@/rendered_opaque.bmp
+@expect_objects 2
