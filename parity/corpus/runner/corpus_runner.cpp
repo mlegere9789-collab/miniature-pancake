@@ -3,6 +3,7 @@
 //   corpus_runner --emit [corpus.json]            write the manifest (recipes + closed-form oracles + tolerances)
 //   corpus_runner --run  [corpus.json] [options]  build every case with the kernel API, run it, print one JSON line per case
 //   corpus_runner --list [corpus.json]            list case ids
+//   corpus_runner --selfcheck [corpus.json] [--filter s]   verify the manifest's closed forms against implicit-geometry sampling (no kernel)
 //
 // run options: --only id[,id...]   --filter substring   --timeout-scale k   --out results.jsonl
 //
@@ -45,6 +46,7 @@
 #include "geom/BrepMesher.h"
 
 #include "corpus_build.h"
+#include "corpus_selfcheck.h"
 #include "json.h"
 
 using namespace dino8::kernel;
@@ -507,7 +509,7 @@ int main(int argc, char** argv) {
   double tscale = 1.0;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
-    if (a == "--emit" || a == "--run" || a == "--list") { mode = a; if (i + 1 < argc && argv[i + 1][0] != '-') manifest = argv[++i]; }
+    if (a == "--emit" || a == "--run" || a == "--list" || a == "--selfcheck") { mode = a; if (i + 1 < argc && argv[i + 1][0] != '-') manifest = argv[++i]; }
     else if (a == "--filter" && i + 1 < argc) filter = argv[++i];
     else if (a == "--only" && i + 1 < argc) only = argv[++i];
     else if (a == "--out" && i + 1 < argc) outpath = argv[++i];
@@ -515,6 +517,24 @@ int main(int argc, char** argv) {
   }
   try {
     if (mode == "--emit") { Emit(argc > 2 && argv[2][0] != '-' ? argv[2] : ""); return 0; }
+    if (mode == "--selfcheck") {
+      const J m = corpus::ParseJson(ReadFile(manifest));
+      int bad = 0, skipped = 0, checked = 0, areas = 0;
+      for (const J& c : m.get("cases")->a) {
+        const std::string id = c.str("id");
+        if (!filter.empty() && id.find(filter) == std::string::npos) continue;
+        const int plates = static_cast<int>(c.get("operands")->a.size());
+        const corpus::selfcheck::Report r = corpus::selfcheck::check_case(c, plates > 20 ? 150 : plates > 3 ? 160 : 220);
+        if (r.skipped) { ++skipped; std::printf("skip     %-34s %s\n", id.c_str(), r.skip_reason.c_str()); continue; }
+        ++checked;
+        if (r.area_checked) ++areas;
+        if (r.mismatch) { ++bad; std::printf("MISMATCH %-34s %s\n", id.c_str(), r.detail.c_str()); }
+        else std::printf("match    %-34s%s\n", id.c_str(), r.area_checked ? " (volume, centroid, area)" : " (volume, centroid)");
+        std::fflush(stdout);
+      }
+      std::printf("selfcheck: %d checked (%d with an area check), %d mismatches, %d skipped (volume too small for the sampling grid)\n", checked, areas, bad, skipped);
+      return bad ? 1 : 0;
+    }
     if (mode != "--run" && mode != "--list") { std::fprintf(stderr, "usage: corpus_runner --emit [file] | --run [manifest] [--only ids] [--filter s] [--timeout-scale k] [--out file] | --list [manifest]\n"); return 2; }
     const J m = corpus::ParseJson(ReadFile(manifest));
     std::set<std::string> want;

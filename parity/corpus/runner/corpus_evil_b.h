@@ -233,7 +233,7 @@ inline Pair apex_cyl() {
   p.Va = cf::cone_vol(r, h); p.Vb = cyl_vol(rc, 5); p.Vi = Vi;
   p.cA = {0, 0, 4 - 0.75}; p.cB = {0, 0, 2.5}; p.cI = {0, 0, zi};
   p.Sa = cf::cone_area(r, h); p.Sb = cyl_area(rc, 5);
-  p.SaIn = PI * rc * slant; p.SbIn = 2 * PI * rc * 2;
+  p.SaIn = PI * rc * slant + PI * rc * rc; p.SbIn = 2 * PI * rc * 2;  // A inside B: small cone wall + the base disk of radius rc
   p.tU = T(2, 1); p.tI = T(2, 1); p.tAB = T(0, 1); p.tBA = T(4, 2);
   p.L = std::sqrt(9 + 9 + 25);
   return p;

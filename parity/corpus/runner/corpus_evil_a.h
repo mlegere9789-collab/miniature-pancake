@@ -24,8 +24,8 @@ inline std::string tag(double d) {
 inline bool within_tol(double d) { return std::fabs(d) <= 1e-6; }
 
 // Overrides for a result whose topology is merged-or-separated below the model tolerance.
-inline Ov amb_union() { Ov o; o.topo = true; o.t = TA({2, 4}, {1, 2}); return o; }
-inline Ov amb_inter() { Ov o; o.empty = Ex::Either; return o; }
+inline Ov amb_union() { Ov o; o.topo = true; o.t = TA({2, 4}, {1, 2}); o.noarea = true; return o; }
+inline Ov amb_inter() { Ov o; o.empty = Ex::Either; o.noarea = true; return o; }
 
 // ---- cylinder against a box face: z-axis cylinder r=1 whose wall passes `delta` inside the face x=0 of [0,4]^3
 inline Pair tan_cyl_box(double delta) {

@@ -179,12 +179,12 @@ inline Pair sph_box_edge(const Frame& f) {
   Pair p;
   p.stem = "SPH-BOX-EDGE"; p.category = "curved";
   p.descr = "sphere r=2 centred on the edge x=y=0 of the box [0,10]^2 x [-5,5] (generic pole axis)";
-  p.oracle = "overlap = quarter sphere, centroid (3r/8, 3r/8, 0); A's two faces inside B = two quarter disks; B's surface inside A = quarter sphere";
+  p.oracle = "overlap = quarter sphere, centroid (3r/8, 3r/8, 0); A's two faces inside B = two half disks (x=0, y>=0 and y=0, x>=0); B's surface inside A = quarter sphere";
   p.a = op_box("A", f.P(0, 0, -5), f.P(10, 10, 5));
   p.b = op_sphere("B", f.P(0, 0, 0), f.L(2), gen_axis2());
   p.Va = f.V(1000); p.Vb = f.V(sph_vol(2)); p.Vi = f.V(sph_vol(2) / 4);
   p.cA = f.P(5, 5, 0); p.cB = f.P(0, 0, 0); p.cI = f.P(0.75, 0.75, 0);
-  p.Sa = f.A(600); p.Sb = f.A(sph_area(2)); p.SaIn = f.A(PI * 4 / 2); p.SbIn = f.A(sph_area(2) / 4);
+  p.Sa = f.A(600); p.Sb = f.A(sph_area(2)); p.SaIn = f.A(2 * (PI * 4 / 2)); p.SbIn = f.A(sph_area(2) / 4);
   p.tU = p.tI = p.tAB = p.tBA = T(2, 1);
   p.L = f.L(std::sqrt(100 + 100 + 100)); p.far = f.far();
   return p;
@@ -269,7 +269,7 @@ inline Pair torus_box_half(const Frame& f) {
   p.oracle = "overlap = half torus pi^2 R r^2, centroid x = (2R/pi)(1 + r^2/(4R^2)); A's face inside B = two tube disks";
   p.a = op_box("A", f.P(0, -10, -10), f.P(10, 10, 10));
   p.b = op_torus("B", f.P(0, 0, 0), {0, 0, 1}, f.L(R), f.L(r));
-  p.Va = f.V(8000); p.Vb = f.V(Vt); p.Vi = f.V(Vt / 2);
+  p.Va = f.V(4000); p.Vb = f.V(Vt); p.Vi = f.V(Vt / 2);
   p.cA = f.P(5, 0, 0); p.cB = f.P(0, 0, 0); p.cI = f.P(2 * R / PI * (1 + r * r / (4 * R * R)), 0, 0);
   p.Sa = f.A(1600); p.Sb = f.A(cf::torus_area(R, r)); p.SaIn = f.A(2 * PI * r * r); p.SbIn = f.A(cf::torus_area(R, r) / 2);
   p.tU = T(0, 1); p.tI = T(2, 1); p.tAB = T(0, 1); p.tBA = T(2, 1);
