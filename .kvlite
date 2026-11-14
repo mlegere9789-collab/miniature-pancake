@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=PointCloud;SaveIges;LoadIges;SaveStep;LoadStep;IgesWrites;IgesConverts;StepWrites;StepReads;ModelAddPointCloud
