@@ -3,7 +3,7 @@
 
   python3 -I parity/tools/perf_compare.py --current cur.json --baseline parity/perf_baseline.json
           [--threshold 3.0] [--min-abs-ms 0.25] [--gates parity/tools/perf_gates.json]
-          [--strict-gates] [--summary out.md] [--write-baseline new_baseline.json]
+          [--no-noise-floor] [--strict-gates] [--summary out.md] [--write-baseline new_baseline.json]
 
 Exit status
   0  no metric regressed more than --threshold percent (and, with --strict-gates, every gate is met)
@@ -14,6 +14,10 @@ Rules (Master Plan section 9.1 'No benchmark regresses more than 3%', Appendix B
   * a metric is identified by (metric, dataset); the value is lower-is-better (milliseconds).
   * REGRESSION: current > baseline * (1 + threshold/100) and current - baseline > --min-abs-ms. The absolute floor only
     keeps a 3% move of a 0.1 ms measurement (timer jitter) from blocking a merge; it is never applied to anything slower.
+  * NOISY: a move over the threshold that is not larger than the measured spread (max-min over the median of the repetitions)
+    of the baseline or of the current measurement is reported as `noisy` and does not fail: on a shared hosted runner the
+    measurement cannot distinguish it from run-to-run variation (run 43537005900 re-measured an unchanged tree and moved
+    tessellate_ms by 6-8% inside a 12-33% spread). --no-noise-floor makes every move over the threshold count.
   * MISSING: in the baseline but absent or errored in the current run. Removing a benchmark must be a deliberate baseline edit.
   * NEW: in the current run only. Reported, never failing; add it to the baseline with --write-baseline.
   * GATE: every perf_gates.json entry whose dataset exists in the current run is checked against its Appendix B maximum.
@@ -66,6 +70,7 @@ def main():
     ap.add_argument("--threshold", type=float, default=3.0, help="allowed regression in percent (default 3.0)")
     ap.add_argument("--min-abs-ms", type=float, default=0.25, help="ignore regressions smaller than this many ms (default 0.25)")
     ap.add_argument("--gates", default=None, help="Appendix B gate table (default: perf_gates.json next to this script)")
+    ap.add_argument("--no-noise-floor", action="store_true", help="count every move over the threshold, even one inside the measured spread")
     ap.add_argument("--strict-gates", action="store_true", help="a missed Appendix B gate also fails the run")
     ap.add_argument("--summary", default=None, help="write a markdown report to this file (for $GITHUB_STEP_SUMMARY)")
     ap.add_argument("--write-baseline", default=None, help="write the current metrics as a new baseline file and exit 0")
@@ -92,7 +97,7 @@ def main():
         gates = json.load(f).get("gates", [])
 
     lines, md = [], []
-    regress, missing, errored, improved, steady, new = [], [], [], [], [], []
+    regress, noisy, missing, errored, improved, steady, new = [], [], [], [], [], [], []
 
     for key in sorted(base):
         b = base[key]
@@ -109,8 +114,12 @@ def main():
             continue
         pct = (cv - bv) / bv * 100.0
         row = (name, bv, cv, pct)
+        noise = 100.0 * max(float(b.get("spread", 0) or 0), float(c.get("spread", 0) or 0))
         if pct > args.threshold and (cv - bv) > args.min_abs_ms:
-            regress.append(row)
+            if not args.no_noise_floor and pct <= noise:
+                noisy.append(row + (noise,))
+            else:
+                regress.append(row)
         elif pct < -args.threshold and (bv - cv) > args.min_abs_ms:
             improved.append(row)
         else:
@@ -147,9 +156,11 @@ def main():
 
     out(f"baseline commit {base_doc.get('commit', '?')}  vs  current commit {cur_doc.get('commit', '?')}  (threshold {args.threshold:g}%)")
     out(f"{len(steady)} within threshold, {len(improved)} improved, {len(regress)} REGRESSED, {len(missing)} missing, "
-        f"{len(errored)} errored, {len(new)} new")
+        f"{len(errored)} errored, {len(new)} new, {len(noisy)} noisy (over the threshold but inside the measured spread, not failing)")
     for name, bv, cv, pct in regress:
         out(f"REGRESSION  {name}: {bv:.3f} -> {cv:.3f} ms ({pct:+.1f}%)")
+    for name, bv, cv, pct, noise in noisy:
+        out(f"noisy       {name}: {bv:.3f} -> {cv:.3f} ms ({pct:+.1f}%, spread {noise:.0f}%)")
     for name in missing:
         out(f"MISSING     {name}: in the baseline, absent from the current run")
     for e in errored:
@@ -173,8 +184,8 @@ def main():
         md.append("")
         md.append("| metric [dataset] | baseline ms | current ms | change |")
         md.append("|---|---:|---:|---:|")
-        for name, bv, cv, pct in regress + improved + steady:
-            flag = "**REGRESSION** " if (name, bv, cv, pct) in regress else ""
+        for name, bv, cv, pct in regress + improved + [n[:4] for n in noisy] + steady:
+            flag = "**REGRESSION** " if (name, bv, cv, pct) in regress else ("noisy " if any(n[0] == name for n in noisy) else "")
             md.append(f"| {name} | {bv:.3f} | {cv:.3f} | {flag}{pct:+.1f}% |")
         md.append("")
         md.append(f"### Appendix B gates ({len(met)} met, {len(misses)} missed)")
