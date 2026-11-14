@@ -334,6 +334,54 @@ inline int OrientBrepFaces(ON_Brep& b) {
   return flipped;
 }
 
+// Finishes a brep after CombineCoincidentVertices / CombineCoincidentEdges merged parts of it (JoinNakedEdges and its hashed twin in
+// cmd_solids.cpp). Those two only MARK the merged-away vertices and edges deleted (index -1) and leave them in the arrays, so without
+// this a Join / JoinEdge / Cap / ToNURBS result lists dead edge slots (List printed 8 edges for two joined quads, 24 for a joined cube)
+// and Check (ON_Brep::IsValid) reports "Corrupt ON_BrepVertex.m_vertex_index back pointer" (measured with a probe on two joined quads
+// and on an exploded then joined cube; the originals were INVALID, the same shapes compacted and measured are valid).
+inline void FinishJoinedBrep(ON_Brep& b) {
+  // CombineCoincidentVertices / CombineCoincidentEdges only MARK the merged-away components deleted (index -1) and leave
+  // them in the arrays; Check (ON_Brep::IsValid) then reports "Corrupt ON_BrepVertex.m_vertex_index back pointer" on
+  // the ToNURBS polysurface (measured on the cylinder's: 5632 faces, 0 naked edges, closed solid, yet INVALID). Compact()
+  // removes them and re-indexes.
+  b.Compact();
+  OrientBrepFaces(b);
+  // This openNURBS build's ON_Brep::SetEdgeTolerance only ever stores ON_UNSET_VALUE (the real implementation is an
+  // override of the full SDK), so SetTolerancesBoxesAndFlags() with its default bLazy = false left EVERY edge at
+  // -1.2e308 and Check (ON_Brep::IsValid) reported "brep.m_E[0] edge is not valid. edge.m_tolerance=-1.23432e+308"
+  // (measured on the cylinder's ToNURBS polysurface after the Compact fix). Each edge tolerance is therefore MEASURED:
+  // the largest distance of the surface points under the edge's trims (at 5 parameters) from the edge curve.
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    ON_BrepEdge& e = b.m_E[i];
+    if (e.m_edge_index < 0) continue;
+    double tol_e = 0.0;
+    // The edge curve as 129 points (this openNURBS build has no curve closest-point query); the distance to this polyline
+    // exceeds the distance to the curve by less than its chord sag, which is far below the 1e-6 join tolerance here.
+    std::vector<ON_3dPoint> ep(129);
+    for (size_t j = 0; j < ep.size(); ++j) ep[j] = e.PointAt(e.Domain().ParameterAt(static_cast<double>(j) / 128.0));
+    for (int k = 0; k < e.m_ti.Count(); ++k) {
+      const int ti = e.m_ti[k];
+      if (ti < 0 || ti >= b.m_T.Count()) continue;
+      const ON_BrepTrim& tr = b.m_T[ti];
+      if (tr.m_li < 0 || tr.m_li >= b.m_L.Count()) continue;
+      const int fi = b.m_L[tr.m_li].m_fi;
+      if (fi < 0 || fi >= b.m_F.Count()) continue;
+      const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+      if (srf == nullptr || tr.TrimCurveOf() == nullptr) continue;
+      for (int j = 0; j <= 4; ++j) {
+        const ON_3dPoint uv = tr.PointAt(tr.Domain().ParameterAt(j / 4.0));
+        const ON_3dPoint sp = srf->PointAt(uv.x, uv.y);
+        double dmin = 1e300;
+        for (const ON_3dPoint& q : ep) dmin = std::min(dmin, sp.DistanceTo(q));
+        tol_e = std::max(tol_e, dmin);
+      }
+    }
+    e.m_tolerance = tol_e <= ON_ZERO_TOLERANCE ? 0.0 : 1.001 * tol_e;
+  }
+  b.SetVertexTolerances(false);
+  b.SetTolerancesBoxesAndFlags(false, false, false, true, true, true, true, true);
+}
+
 // Joins coincident naked edges of a brep (OpenNURBS ships no JoinEdges) and
 // orients the faces consistently afterwards.
 inline int JoinNakedEdges(ON_Brep& b, double tol) {
@@ -365,10 +413,7 @@ inline int JoinNakedEdges(ON_Brep& b, double tol) {
       if (b.CombineCoincidentEdges(e0, e1)) { ++joined; break; }
     }
   }
-  if (joined) {
-    OrientBrepFaces(b);
-    b.SetTolerancesBoxesAndFlags();
-  }
+  if (joined) FinishJoinedBrep(b);
   return joined;
 }
 
