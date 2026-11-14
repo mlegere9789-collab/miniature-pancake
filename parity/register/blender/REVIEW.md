@@ -62,7 +62,7 @@ Defects found in the old assignment:
 | view3d | 0 | 4 | 66 | 62 |
 | **Total** | **833** | **996** | **2143** | **1991** |
 
-Unchanged files (all Strong unless listed): every file not in the table keeps its previous split, for example mesh 171 -> 166 Best is in the table, uv/paint/brush/curve/surface/font/geometry/node (except the compositor items) stay Strong.
+Files not in the table keep their previous split (all Strong except the Appendix B compositor nodes and constraints, which stay all Best).
 
 ## 2. Factory assignment
 
@@ -89,7 +89,7 @@ Not changed, flagged for the factory leads: `curves` (hair) and `pointcloud` sta
 
 ## 3. Statement quality
 
-Before: every operator row read `User can \"<UI label>\" in <area> with the same outcome as Blender 5.3 bpy.ops.x.y`, every node, modifier and constraint row read `User can use the \"<label>\" ... with the same results as Blender 5.3`. That repeats the label, says nothing a test can check, and 50 labels collide inside one module (for example mesh `Add Cube` twice) so statements were told apart only by the operator path.
+Before: every operator row read `User can "<UI label>" in <area> with the same outcome as Blender 5.3 bpy.ops.x.y`, every node, modifier and constraint row read `User can use the "<label>" ... with the same results as Blender 5.3`. That repeats the label, says nothing a test can check, and 50 labels collide inside one module (for example mesh `Add Cube` twice) so statements were told apart only by the operator path.
 
 After: each statement states what the user can observe and verify. Operators get a verb class (select, view, create, remove, copy, paste, place, toggle, set, process, load, store, run) from the UI label's first word, falling back to the operator name, and a class template says what changes, what must not change and that one undo step restores it. The label stays quoted so rows remain searchable. Colliding labels get a `Variant: operator module.name` suffix. Appendix B kinds have their own templates (graph output values or image within tolerance, modifier stack re-evaluation, constraint transform and influence, effect rendering, area type). Group rows say that every member behaves as in Blender 5.3 and is covered by common tests.
 
