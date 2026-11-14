@@ -54,6 +54,11 @@
 #define D8_MAX_PARAMS_LEN (1 << 20)
 
 /**
+ * Largest number of operations in one batch append.
+ */
+#define D8_MAX_BATCH_OPS (1 << 20)
+
+/**
  * Largest number of input ids (and of output ids) of one operation.
  */
 #define D8_MAX_OBJECT_IDS 65535
@@ -365,7 +370,7 @@ typedef struct {
 #define D8_ERR_NULL_ARG 1
 
 /**
- * An argument was invalid: unknown flag, misaligned pointer, bad UTF-8, or a size over a limit.
+ * An argument was invalid: unknown flag, misaligned pointer, bad UTF-8.
  */
 #define D8_ERR_INVALID_ARG 2
 
@@ -410,7 +415,7 @@ typedef struct {
 #define D8_ERR_PANIC 10
 
 /**
- * A size limit was exceeded.
+ * A size limit was exceeded: a blob, an id list or a batch is larger than the documented maximum.
  */
 #define D8_ERR_LIMIT 11
 

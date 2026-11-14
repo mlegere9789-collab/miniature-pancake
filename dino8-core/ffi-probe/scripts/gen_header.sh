@@ -8,7 +8,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$here/include/dino8_probe.h"
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-cbindgen --config "$here/cbindgen.toml" --crate dino8-ffi-probe --output "$tmp" "$here"
+# cbindgen prints one "Skip <item> (not pub)" notice per private item; hide those, keep real warnings.
+cbindgen --config "$here/cbindgen.toml" --crate dino8-ffi-probe --output "$tmp" "$here" 2> >(grep -v '^WARN: Skip' >&2)
 if [[ "${1:-}" == "--check" ]]; then
   if ! diff -u "$out" "$tmp"; then
     echo "include/dino8_probe.h is out of date: run scripts/gen_header.sh" >&2
