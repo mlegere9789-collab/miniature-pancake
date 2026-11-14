@@ -4160,8 +4160,12 @@ void RegisterSrfEditCommands(CommandEngine& e) {
           double max_section_area = 0;
           const int kStations = 60;
           if (lmax > lmin) {
+            // The two end stations sit a hair (1e-6 of the length) inside the extremes: a plane exactly through a flat end cap
+            // (a cone's base, a cylinder's end) has every cap vertex at distance ~0, and whether the slicer's sign test then
+            // sees a crossing is down to rounding (the same cone mirrored end for end gave Cp 0.3447 instead of 1/3).
+            const double edge_inset = (lmax - lmin) * 1e-6;
             for (int s = 0; s <= kStations; ++s) {
-              double t = lmin + (lmax - lmin) * s / kStations;
+              double t = lmin + edge_inset + (lmax - lmin - 2 * edge_inset) * s / kStations;
               ON_Plane station(base_wl.origin + longaxis * t, longaxis);
               std::vector<std::vector<Point3d>> station_chains = drafting::SliceMeshToChains(mesh, station, ctx.Settings().absolute_tolerance * 10);
               double area = 0;
