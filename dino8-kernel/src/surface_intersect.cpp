@@ -2210,7 +2210,11 @@ std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep
   return out;
 }
 
-std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& caller_opt) {
+namespace {
+// IntersectBrepByPlane() with an optional per-face skip mask (`skip_face[i] != 0`: face i is not intersected at all). The section
+// driver uses it for the faces it answers analytically; the public function passes no mask.
+std::vector<BrepPlaneIntersection> IntersectBrepByPlaneImpl(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& caller_opt,
+                                                            const std::vector<char>* skip_face) {
   IntersectOptions opt = caller_opt;
   opt.refuse_overshoot = true;  // a plane section is a visible curve: never let a slid sample fold its chain (FinishCurve)
   std::vector<BrepPlaneIntersection> out;
@@ -2254,6 +2258,7 @@ std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const 
   const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
   const int nf = b.m_F.Count();
   for (int i = 0; i < nf; ++i) {
+    if (skip_face && static_cast<size_t>(i) < skip_face->size() && (*skip_face)[static_cast<size_t>(i)]) continue;
     const ON_BrepFace& f = b.m_F[i];
     const ON_Surface* s = f.SurfaceOf();
     const ON_BoundingBox fb = s->BoundingBox();
@@ -2266,6 +2271,11 @@ std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const 
     }
   }
   return out;
+}
+}  // namespace
+
+std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& caller_opt) {
+  return IntersectBrepByPlaneImpl(b, plane, caller_opt, nullptr);
 }
 
 namespace {
@@ -2571,11 +2581,59 @@ bool PlanarFaceSectionLines(const ON_Brep& b, int fi, const ON_Plane& plane, dou
   return true;
 }
 
+// What the section driver can tell about one face WITHOUT the generic surface-vs-plane intersection.
+enum class FastFace { kUnknown, kMisses, kCrosses };
+
+// A planar face whose boundary is all straight edges is a convex-hull-bounded polygon in its plane. When every boundary vertex is
+// farther than `margin` on ONE side of the section plane, the plane cannot meet the face (kMisses). When there are vertices farther
+// than `margin` on BOTH sides, the plane crosses it transversally, no vertex or edge is anywhere near the section line, and
+// PlanarFaceSectionLines() answers exactly (kCrosses, `pieces` filled; the generic intersection of such a face is replaced by
+// those same pieces by the caller anyway, so computing it first only costs time). Anything else (a curved face or edge, a plane
+// through a vertex or edge, a parallel face, a vertex within `margin`) is kUnknown and takes the generic route.
+FastFace ClassifyStraightPlanarFace(const ON_Brep& b, int fi, const ON_Plane& plane, double jtol, double margin,
+                                    std::vector<IntersectionCurve>& pieces) {
+  const ON_BrepFace& f = b.m_F[fi];
+  const ON_Surface* s = f.SurfaceOf();
+  if (!s || f.LoopCount() == 0) return FastFace::kUnknown;
+  ON_Plane fp;
+  if (!s->IsPlanar(&fp, jtol)) return FastFace::kUnknown;
+  if (ON_CrossProduct(fp.zaxis, plane.zaxis).Length() < 1e-9) return FastFace::kUnknown;
+  double dmin = std::numeric_limits<double>::max(), dmax = -std::numeric_limits<double>::max();
+  for (int li = 0; li < f.LoopCount(); ++li) {
+    const ON_BrepLoop* loop = f.Loop(li);
+    if (!loop) return FastFace::kUnknown;
+    for (int k = 0; k < loop->m_ti.Count(); ++k) {
+      const ON_BrepTrim& trim = b.m_T[loop->m_ti[k]];
+      const ON_BrepEdge* e = trim.Edge();
+      const ON_Curve* ec = e ? e->EdgeCurveOf() : nullptr;
+      if (!ec) return FastFace::kUnknown;
+      const bool straight = ON_LineCurve::Cast(ec) || ON_PolylineCurve::Cast(ec) ||
+                            (ON_NurbsCurve::Cast(ec) && ON_NurbsCurve::Cast(ec)->Degree() == 1 && !ON_NurbsCurve::Cast(ec)->IsRational());
+      if (!straight) return FastFace::kUnknown;
+      for (const ON_3dPoint& p : EdgePolylinePoints(*ec, 0.02)) {
+        const double d = plane.DistanceTo(p);
+        dmin = std::min(dmin, d);
+        dmax = std::max(dmax, d);
+      }
+    }
+  }
+  if (!(dmin <= dmax)) return FastFace::kUnknown;
+  if (dmin > margin || dmax < -margin) return FastFace::kMisses;
+  if (dmin < -margin && dmax > margin) {
+    std::vector<IntersectionCurve> out;
+    if (PlanarFaceSectionLines(b, fi, plane, jtol, out) && !out.empty()) {
+      pieces = std::move(out);
+      return FastFace::kCrosses;
+    }
+  }
+  return FastFace::kUnknown;
+}
+
 }  // namespace
 
 std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
   std::vector<BrepSectionContour> out;
-  std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, plane, opt);
+  std::vector<BrepPlaneIntersection> hits;
   {
     // Planar faces lying IN the section plane contribute their exact boundary loops (see CoincidentFaceLoops()); the generic
     // pieces of those faces, and the pieces any other face runs along the same boundary, are the duplicates / fits they replace.
@@ -2592,6 +2650,25 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
     std::vector<std::vector<ON_3dPoint>> loops;
     std::vector<int> faces;
     std::vector<BrepPlaneIntersection> exact = CoincidentFaceLoops(b, plane, ctol, opt, loops, faces);
+    const int nf = b.m_F.Count();
+    // Straight-edged planar faces that the plane clearly crosses are answered analytically BELOW (exact lines instead of fitted
+    // cubics) and the generic surface-vs-plane intersection those faces would be given is thrown away; so it is not run for them.
+    // A face that the plane clearly misses is not intersected either (the generic route finds nothing there). Not used when a face
+    // lies in the plane (the pieces other faces run along its boundary are filtered against the generic hits) or for an unusable
+    // plane or body box, where every face takes the generic route exactly as before.
+    std::vector<char> skip(static_cast<size_t>(nf), 0);
+    std::vector<std::vector<IntersectionCurve>> fast_pieces(static_cast<size_t>(nf));
+    if (exact.empty() && plane.IsValid() && diag > 0.0) {
+      const double margin = 4.0 * ctol;
+      for (int fi = 0; fi < nf; ++fi) {
+        std::vector<IntersectionCurve> pieces;
+        const FastFace kind = ClassifyStraightPlanarFace(b, fi, plane, ctol, margin, pieces);
+        if (kind == FastFace::kUnknown) continue;
+        skip[static_cast<size_t>(fi)] = 1;
+        if (kind == FastFace::kCrosses) fast_pieces[static_cast<size_t>(fi)] = std::move(pieces);
+      }
+    }
+    hits = IntersectBrepByPlaneImpl(b, plane, opt, &skip);
     if (!exact.empty()) {
       std::vector<BrepPlaneIntersection> kept;
       for (BrepPlaneIntersection& h : hits) {
@@ -2612,16 +2689,22 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
       for (BrepPlaneIntersection& h : exact) hits.push_back(std::move(h));
     }
     // Straight-edged planar faces cut by the plane: exact lines instead of fitted cubics (see PlanarFaceSectionLines()).
-    std::vector<int> line_faces;
+    std::vector<char> in_faces(static_cast<size_t>(nf), 0), has_hit(static_cast<size_t>(nf), 0), is_line_face(static_cast<size_t>(nf), 0);
+    for (int fi : faces) in_faces[static_cast<size_t>(fi)] = 1;
+    for (const BrepPlaneIntersection& h : hits) has_hit[static_cast<size_t>(h.face_index)] = 1;
     std::vector<BrepPlaneIntersection> lines;
-    for (int fi = 0; fi < b.m_F.Count(); ++fi) {
-      if (std::find(faces.begin(), faces.end(), fi) != faces.end()) continue;
-      bool has_hit = false;
-      for (const BrepPlaneIntersection& h : hits) has_hit = has_hit || h.face_index == fi;
-      if (!has_hit) continue;  // the plane does not meet this face at all (the generic route already knew)
+    bool any_line_face = false;
+    for (int fi = 0; fi < nf; ++fi) {
+      if (in_faces[static_cast<size_t>(fi)]) continue;
       std::vector<IntersectionCurve> pieces;
-      if (!PlanarFaceSectionLines(b, fi, plane, ctol, pieces)) continue;
-      line_faces.push_back(fi);
+      if (!fast_pieces[static_cast<size_t>(fi)].empty()) {
+        pieces = std::move(fast_pieces[static_cast<size_t>(fi)]);  // the plane clearly crosses it: answered above
+      } else {
+        if (!has_hit[static_cast<size_t>(fi)]) continue;  // the plane does not meet this face at all (the generic route already knew)
+        if (!PlanarFaceSectionLines(b, fi, plane, ctol, pieces)) continue;
+      }
+      is_line_face[static_cast<size_t>(fi)] = 1;
+      any_line_face = true;
       for (IntersectionCurve& ic : pieces) {
         BrepPlaneIntersection h;
         h.face_index = fi;
@@ -2629,10 +2712,10 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
         lines.push_back(std::move(h));
       }
     }
-    if (!line_faces.empty()) {
+    if (any_line_face) {
       std::vector<BrepPlaneIntersection> kept;
       for (BrepPlaneIntersection& h : hits)
-        if (std::find(line_faces.begin(), line_faces.end(), h.face_index) == line_faces.end()) kept.push_back(std::move(h));
+        if (!is_line_face[static_cast<size_t>(h.face_index)]) kept.push_back(std::move(h));
       hits = std::move(kept);
       for (BrepPlaneIntersection& h : lines) hits.push_back(std::move(h));
     }
@@ -2662,33 +2745,50 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
   // edges): two OPEN contours of total length 68.2 instead of one closed contour of length 48.28 - each vertical edge was
   // counted twice. A piece coincident with an earlier one (same ends in either order, same midpoint, same length within
   // the join tolerance) is that duplicate and is dropped.
+  // Each piece's NURBS curve and its end points, computed once (the join loop below looks at every unused piece for every growth
+  // step, which used to rebuild the curve of every piece each time).
+  std::vector<ON_NurbsCurve> pcs(n);
+  std::vector<ON_3dPoint> ps(n), pe(n), pm(n);
+  std::vector<char> pc_ok(n, 0);
   {
-    std::vector<ON_3dPoint> ps(n), pe(n), pm(n);
-    std::vector<double> pl(n, 0.0);
-    std::vector<bool> ok(n, false);
     for (size_t i = 0; i < n; ++i) {
       if (!usable(i)) continue;
-      const ON_NurbsCurve pc = PieceCurve(hits[i].curve);
-      if (!pc.IsValid()) continue;
-      ps[i] = pc.PointAtStart();
-      pe[i] = pc.PointAtEnd();
-      pm[i] = pc.PointAt(pc.Domain().ParameterAt(0.5));
-      NurbsCurve tmp;
-      tmp.raw() = pc;
-      const double len = tmp.Length();
-      if (!(len >= 0.0)) continue;
-      pl[i] = len;
-      ok[i] = true;
+      pcs[i] = PieceCurve(hits[i].curve);
+      if (!pcs[i].IsValid()) continue;
+      ps[i] = pcs[i].PointAtStart();
+      pe[i] = pcs[i].PointAtEnd();
+      pm[i] = pcs[i].PointAt(pcs[i].Domain().ParameterAt(0.5));
+      pc_ok[i] = 1;
     }
+    // The length (an adaptive-free sampled arc length, the expensive part) is only needed once two pieces already agree on both
+    // ends and the mid-point, so it is computed on demand.
+    std::vector<double> pl(n, 0.0);
+    std::vector<char> pl_done(n, 0), ok(n, 0);
+    auto length_of = [&](size_t i) -> double {
+      if (!pl_done[i]) {
+        pl_done[i] = 1;
+        NurbsCurve tmp;
+        tmp.raw() = pcs[i];
+        const double len = tmp.Length();
+        if (!(len >= 0.0)) { ok[i] = 0; pl[i] = 0.0; } else { ok[i] = 1; pl[i] = len; }
+      }
+      return pl[i];
+    };
     for (size_t i = 0; i < n; ++i) {
-      if (!ok[i] || used[i]) continue;
+      if (!pc_ok[i] || used[i]) continue;
       for (size_t j = 0; j < i; ++j) {
-        if (!ok[j] || used[j]) continue;
+        if (!pc_ok[j] || used[j]) continue;
         const bool same_ends = (ps[i].DistanceTo(ps[j]) <= jtol && pe[i].DistanceTo(pe[j]) <= jtol) ||
                                (ps[i].DistanceTo(pe[j]) <= jtol && pe[i].DistanceTo(ps[j]) <= jtol);
-        if (same_ends && pm[i].DistanceTo(pm[j]) <= jtol && std::fabs(pl[i] - pl[j]) <= 10.0 * jtol) {
-          used[i] = true;
-          break;
+        if (same_ends && pm[i].DistanceTo(pm[j]) <= jtol) {
+          // a piece whose length is NaN or negative never took part in the comparison (it was not `ok`)
+          const double li = length_of(i), lj = length_of(j);
+          if (!ok[i]) break;  // later j cannot revive a piece that has no usable length
+          if (!ok[j]) continue;
+          if (std::fabs(li - lj) <= 10.0 * jtol) {
+            used[i] = true;
+            break;
+          }
         }
       }
     }
@@ -2697,7 +2797,7 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
     if (used[i] || !usable(i)) continue;
     used[i] = true;
     BrepSectionContour c;
-    c.curve.raw() = PieceCurve(hits[i].curve);
+    c.curve.raw() = pc_ok[i] ? pcs[i] : PieceCurve(hits[i].curve);
     c.piece_count = 1;
     c.face_indices.push_back(hits[i].face_index);
     if (hits[i].curve.closed || c.curve.raw().PointAtStart().DistanceTo(c.curve.raw().PointAtEnd()) <= jtol) {
@@ -2713,8 +2813,13 @@ std::vector<BrepSectionContour> SectionBrepByPlaneJoined(const ON_Brep& b, const
         const Point3d tail = c.curve.raw().PointAtEnd();
         for (size_t j = 0; j < n; ++j) {
           if (used[j] || !usable(j)) continue;
+          if (pc_ok[j]) {
+            // cheap reject on the cached end points before copying the piece's curve
+            const double ds0 = ps[j].DistanceTo(tail), de0 = pe[j].DistanceTo(tail);
+            if (std::min(ds0, de0) > jtol) continue;
+          }
           NurbsCurve q;
-          q.raw() = PieceCurve(hits[j].curve);
+          q.raw() = pc_ok[j] ? pcs[j] : PieceCurve(hits[j].curve);
           const double ds = q.raw().PointAtStart().DistanceTo(tail), de = q.raw().PointAtEnd().DistanceTo(tail);
           if (std::min(ds, de) > jtol) continue;
           try {
