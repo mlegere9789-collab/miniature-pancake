@@ -40,7 +40,7 @@ fn main() {
     if slow_us > 0 {
         ws.set_slow_write(Some(Duration::from_micros(slow_us)));
     }
-    let mut script = Script::new(seed, ScriptOptions { navigate, geom_bytes: 96, max_objects: 5_000 });
+    let mut script = Script::new(seed, ScriptOptions { navigate, geom_bytes: 96, max_objects: 5_000, ..ScriptOptions::default() });
     let out = std::io::stdout();
     let say = |s: &str| {
         let mut o = out.lock();

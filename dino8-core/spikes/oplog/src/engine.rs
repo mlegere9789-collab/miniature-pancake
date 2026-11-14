@@ -338,7 +338,12 @@ impl Workspace {
 
     /// A fresh document held in memory only (no durability).
     pub fn in_memory(session: u64, doc_id: &str) -> Workspace {
-        let mut ws = Workspace::blank(session, Options::default());
+        Workspace::in_memory_with(session, doc_id, Options::default())
+    }
+
+    /// Like [`in_memory`](Self::in_memory) with explicit options (checkpoint interval, tool version).
+    pub fn in_memory_with(session: u64, doc_id: &str, opts: Options) -> Workspace {
+        let mut ws = Workspace::blank(session, opts);
         ws.append_op(&genesis_op(doc_id), &[], true)
             .expect("genesis append cannot fail in memory");
         ws

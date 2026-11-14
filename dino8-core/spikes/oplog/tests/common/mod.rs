@@ -61,7 +61,7 @@ pub fn drive(ws: &mut Workspace, script: &mut Script, n: usize) -> Vec<(oplog::i
 }
 
 pub fn script(seed: u64, navigate: bool) -> Script {
-    Script::new(seed, ScriptOptions { navigate, geom_bytes: 64, max_objects: 10_000 })
+    Script::new(seed, ScriptOptions { navigate, geom_bytes: 64, max_objects: 10_000, ..ScriptOptions::default() })
 }
 
 pub fn v3(a: f64, b: f64, c: f64) -> Value {

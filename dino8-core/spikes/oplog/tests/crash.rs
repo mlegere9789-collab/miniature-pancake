@@ -85,7 +85,7 @@ fn acks(lines: &[String]) -> usize {
 fn regenerate(seed: u64, navigate: bool, until_len: usize) -> Workspace {
     let mut ws = Workspace::in_memory(7, "crash-doc")
         .with_clock(Box::new(StepClock { next: 1_700_000_000_000 + 7 * 100_000, step: 7 }));
-    let mut sc = Script::new(seed, ScriptOptions { navigate, geom_bytes: 96, max_objects: 5_000 });
+    let mut sc = Script::new(seed, ScriptOptions { navigate, geom_bytes: 96, max_objects: 5_000, ..ScriptOptions::default() });
     while ws.len() < until_len {
         sc.step(&mut ws).unwrap();
     }

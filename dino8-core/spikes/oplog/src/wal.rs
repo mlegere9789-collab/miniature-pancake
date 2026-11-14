@@ -16,7 +16,9 @@ use crate::ids::DOM_FRAME;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub const MAGIC: [u8; 8] = *b"D8OPLOG\0";
 pub const VERSION: u32 = 1;
@@ -33,6 +35,9 @@ pub enum SyncPolicy {
     EveryAppend,
     /// `fdatasync` after every N frames (group commit): at most N-1 frames at risk on power loss.
     EveryN(u32),
+    /// A background thread calls `fdatasync` every interval, off the append path: appends cost a
+    /// plain `write`, and a power cut loses at most the last interval plus one sync.
+    Background(Duration),
 }
 
 #[derive(Debug, Default, Clone)]
@@ -97,6 +102,11 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<bool> {
     Ok(true)
 }
 
+struct Syncer {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
 pub struct Wal {
     file: Arc<File>,
     path: PathBuf,
@@ -107,6 +117,22 @@ pub struct Wal {
     poisoned: bool,
     slow: Option<std::time::Duration>,
     pub syncs: u64,
+    /// Bytes of the file known to be on stable storage.
+    durable: Arc<AtomicU64>,
+    /// Bytes written (published for the background syncer).
+    written: Arc<AtomicU64>,
+    syncer: Option<Syncer>,
+}
+
+impl Drop for Wal {
+    fn drop(&mut self) {
+        if let Some(mut s) = self.syncer.take() {
+            s.stop.store(true, Ordering::Release);
+            if let Some(h) = s.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
 }
 
 impl Wal {
@@ -154,9 +180,33 @@ impl Wal {
             file.set_len(report.valid_len)?;
             file.sync_all()?;
         }
+        let file = Arc::new(file);
+        let durable = Arc::new(AtomicU64::new(report.valid_len));
+        let written = Arc::new(AtomicU64::new(report.valid_len));
+        let syncer = match policy {
+            SyncPolicy::Background(every) => {
+                let stop = Arc::new(AtomicBool::new(false));
+                let (f, st, d, w) = (file.clone(), stop.clone(), durable.clone(), written.clone());
+                let handle = std::thread::spawn(move || {
+                    while !st.load(Ordering::Acquire) {
+                        std::thread::sleep(every);
+                        let target = w.load(Ordering::Acquire);
+                        if f.sync_data().is_ok() {
+                            d.store(target, Ordering::Release);
+                        }
+                    }
+                    let target = w.load(Ordering::Acquire);
+                    if f.sync_data().is_ok() {
+                        d.store(target, Ordering::Release);
+                    }
+                });
+                Some(Syncer { stop, handle: Some(handle) })
+            }
+            _ => None,
+        };
         Ok((
             Wal {
-                file: Arc::new(file),
+                file,
                 path: path.to_path_buf(),
                 len: report.valid_len,
                 policy,
@@ -165,6 +215,9 @@ impl Wal {
                 poisoned: false,
                 slow: None,
                 syncs: 0,
+                durable,
+                written,
+                syncer,
             },
             report,
         ))
@@ -240,7 +293,7 @@ impl Wal {
         let written = match self.slow {
             None => (&*self.file).write_all(&self.buf),
             Some(pause) => {
-                // test hook: widen the window in which a crash tears the frame
+                // test-only behavior: widen the window in which a crash tears the frame
                 let half = self.buf.len() / 2;
                 (&*self.file).write_all(&self.buf[..half]).and_then(|()| {
                     std::thread::sleep(pause);
@@ -254,8 +307,9 @@ impl Wal {
         }
         let off = self.len + 4;
         self.len += self.buf.len() as u64;
+        self.written.store(self.len, Ordering::Release);
         match self.policy {
-            SyncPolicy::Never => {}
+            SyncPolicy::Never | SyncPolicy::Background(_) => {}
             SyncPolicy::EveryAppend => self.sync()?,
             SyncPolicy::EveryN(n) => {
                 self.unsynced += 1;
@@ -267,7 +321,7 @@ impl Wal {
         Ok(off)
     }
 
-    /// Fault-injection hook: write only the first `keep` bytes of the frame, as a crash in the
+    /// Fault-injection entry point: write only the first `keep` bytes of the frame, as a crash in the
     /// middle of a write would. The log refuses further appends afterwards.
     #[doc(hidden)]
     pub fn append_partial(&mut self, payload: &[u8], keep: usize) -> Result<()> {
@@ -278,7 +332,7 @@ impl Wal {
         Ok(())
     }
 
-    /// Fault-injection hook: write every frame in two halves with a pause in between.
+    /// Fault-injection entry point: write every frame in two halves with a pause in between.
     #[doc(hidden)]
     pub fn set_slow_write(&mut self, pause: Option<std::time::Duration>) {
         self.slow = pause;
@@ -288,7 +342,13 @@ impl Wal {
         self.file.sync_data()?;
         self.unsynced = 0;
         self.syncs += 1;
+        self.durable.store(self.len, Ordering::Release);
         Ok(())
+    }
+
+    /// Bytes of the log that are on stable storage (a power cut keeps at least this much).
+    pub fn durable_len(&self) -> u64 {
+        self.durable.load(Ordering::Acquire)
     }
 
     pub fn len(&self) -> u64 {
@@ -412,6 +472,27 @@ mod tests {
         let (got, rep) = collect(&p);
         assert_eq!(got, vec![b"one".to_vec()]);
         assert_eq!(rep.discarded_bytes, 9);
+    }
+
+    #[test]
+    fn background_sync_makes_data_durable_within_the_interval_and_stops_on_drop() {
+        let p = tmp("bg");
+        let (mut w, _) =
+            Wal::open(&p, SyncPolicy::Background(Duration::from_millis(5)), &mut |_, _| Ok(())).unwrap();
+        for i in 0..20u8 {
+            w.append(&[i; 40]).unwrap();
+        }
+        let want = w.len();
+        let t = std::time::Instant::now();
+        while w.durable_len() < want {
+            assert!(t.elapsed() < Duration::from_secs(5), "background sync never caught up");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(w.durable_len(), want);
+        assert_eq!(w.syncs, 0, "the appender itself never synced");
+        drop(w); // joins the syncer thread; must not hang
+        let (got, _) = collect(&p);
+        assert_eq!(got.len(), 20);
     }
 
     #[test]

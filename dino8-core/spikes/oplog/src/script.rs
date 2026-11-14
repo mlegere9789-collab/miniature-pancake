@@ -16,11 +16,13 @@ pub struct ScriptOptions {
     pub geom_bytes: usize,
     /// Never create more than this many objects (edits dominate afterwards).
     pub max_objects: usize,
+    /// Share of steps (per mille) that are navigation when `navigate` is on.
+    pub nav_permille: u64,
 }
 
 impl Default for ScriptOptions {
     fn default() -> Self {
-        ScriptOptions { navigate: true, geom_bytes: 256, max_objects: 100_000 }
+        ScriptOptions { navigate: true, geom_bytes: 256, max_objects: 100_000, nav_permille: 70 }
     }
 }
 
@@ -77,8 +79,8 @@ impl Script {
     pub fn step(&mut self, ws: &mut Workspace) -> Result<Step> {
         self.steps += 1;
         let roll = self.rng.below(1000);
-        if self.opts.navigate && roll < 70 {
-            return match roll {
+        if self.opts.navigate && roll < self.opts.nav_permille {
+            return match self.rng.below(70) {
                 0..=29 => Ok(ws.undo()?.map_or(Step::Skipped, |_| Step::Undo)),
                 30..=54 => Ok(ws.redo()?.map_or(Step::Skipped, |_| Step::Redo)),
                 55..=59 => {
