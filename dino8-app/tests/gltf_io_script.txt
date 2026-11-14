@@ -30,6 +30,14 @@ SelAll
 List
 SelAll
 Export @TMP@/gltf_rt2.glb
+# A mesh source with known counts (two boxes of 8 vertices and 12 triangles, written by the shell): its glTF export must have exactly those counts.
+New
+Import @TMP@/gltf_fix.obj
+@expect_objects 2
+SelAll
+List
+SelAll
+Export @TMP@/gltf_fix.glb
 # A file that is not a glTF must be refused with a message and add nothing.
 New
 Import @TMP@/gltf_bad.glb
