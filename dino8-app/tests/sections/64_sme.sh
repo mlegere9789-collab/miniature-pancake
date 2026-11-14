@@ -9,10 +9,9 @@
 # accepts a polyline, gives the face ONE edge for its whole boundary, so the commands ran on the two curves (Area 0, "no shared
 # edges ... found"). Each quad is now one SrfPt surface, whose four sides Join turns into four edges. Controls: the naked sibling
 # leaves the fixture alone, a plain box has nothing to close, a second run finds nothing, Undo restores the 7-edge fixture in one step.
-# Where the 7 is read: List prints the edge SLOTS of a polysurface and Join leaves the edge it merged away behind as a deleted slot
-# (List says 8 for these 7 edges), so the fixture's edges are counted by ShowEdges, which skips deleted slots and counts the naked
-# edges too (7 edges, 6 naked = exactly one shared edge). The kernel method compacts, so after the command List's "6 edges" is the
-# real count and ShowEdges agrees.
+# Where the 7 is read: the fixture's edges are counted by ShowEdges, which also counts the naked edges (7 edges, 6 naked = exactly
+# one shared edge). Join used to leave the edge it merged away behind as a deleted slot that List counted (8 for these 7 edges; see
+# JOINFIX_); it compacts now, so List and ShowEdges agree throughout, and ShowEdges stays the check that also tells naked from shared.
 # NOT checked here: edges the kernel refuses, several objects at once.
 # ---------------------------------------------------------------------------
 sme_ok() { echo "ok   $1"; }

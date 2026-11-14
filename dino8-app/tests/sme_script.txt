@@ -13,9 +13,9 @@
 # Join only saw the two curves ("Curve ends do not meet") and every command ran on curves (Area 0, "no shared edges ... found"). And
 # where PlanarSrf does accept a polyline (a 0.05 segment) it gives the face ONE edge for its whole boundary ("1 faces, 1 edges"; two
 # such faces joined are "2 faces, 2 edges", both naked), so no polyline segment is an edge two faces could share.
-# Edge counts: List prints the polysurface's edge SLOTS, and Join leaves the edge it merged away behind as a deleted slot (List says 8
-# for these 7 edges), so the fixture's 7 edges and 6 naked edges are read from ShowEdges, which skips deleted slots (srfedit_script.txt
-# reads two joined planes the same way). The kernel method compacts, so after the command List's 6 and ShowEdges' 6 agree.
+# Edge counts: the fixture's 7 edges and 6 naked edges are read from ShowEdges (srfedit_script.txt reads two joined planes the same
+# way). Join used to leave the edge it merged away behind as a deleted slot that List counted (8 for these 7 edges; JOINFIX_); it
+# compacts now, so List and ShowEdges agree, before and after the command.
 # Cases (each starts at `New`, bracketed by a marker line):
 #  split   the fixture only, then RemoveAllNakedMicroEdges (the micro edge is shared, the naked command must leave it alone)
 #  close   RemoveAllSharedMicroEdges on it
