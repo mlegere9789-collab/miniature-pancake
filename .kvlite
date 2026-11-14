@@ -1,0 +1,2 @@
+SECTIONS=ARRAYS ORIENTFLOW
+FILTERS=ArrayAlongCurve;ArrayOnSurface;OrientBoxOntoSphere;FlowLineFromPlane;FlowPreserves;ProjectCircleToPlane;PullCircleAndHelix;SplitSolidBy;SplitBrepBy;SplitBySheet;PullbackCurveToSurface;Sealed;Sliver
