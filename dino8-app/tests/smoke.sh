@@ -2163,7 +2163,8 @@ stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $
 stcheck "RoundHole: radius 3, through, cut 1 solid(s)" "RoundHole cut the box"
 stcheck "Volume = 37[12][0-9] cubic" "box minus a r=3 through hole has volume ~ 4000 - 90*pi"
 stcheck "CurveBoolean: Union of 2 region(s) -> 1 closed curve(s)" "CurveBoolean united two overlapping circles into one curve"
-stcheck "degree 1, [0-9]* control points, non-rational, closed" "the union outline is a closed polyline"
+stcheck "degree 2, [0-9]* control points, rational, closed" "the union outline is one closed exact arc curve (CurveBoolean keeps the circles' arcs as rational degree-2 curves; it used to be a tessellated polyline)"
+stcheck "Total length = 44.286" "the union outline measures 2 * 5 * (2 pi - 2 acos(3/5)) = 44.286 exactly (Length exact)"
 stcheck "Clash: objects 6 and 7 intersect" "Clash found the overlapping spheres"
 stcheck "Clash: 1 clashing pair(s) among 2 object(s)" "Clash reported one pair"
 stcheck "Cage: object 9, 2 x 2 x 2 divisions (27 control points)" "Cage built a 3x3x3 lattice"
@@ -2258,7 +2259,7 @@ echo "$RBC" | grep -q "^smoke:" || { echo "$RBC"; echo "FAIL: regionboolean-exac
 [ "$(echo "$RBC" | grep -c "exact curved boundaries (no tessellation)")" = "4" ] || { echo "$RBC"; echo "FAIL: regionboolean-exact-curved script did not take the exact curved path for all 4 operations"; fail=1; }
 [ "$(echo "$RBC" | grep "Total length = " | sed -n 1p | grep -c "Total length = 25.13")" = "1" ] && echo "ok   two-circle union perimeter = 8 pi" || { echo "FAIL two-circle union perimeter is not 8 pi (25.13)"; fail=1; }
 [ "$(echo "$RBC" | grep "Total length = " | sed -n 2p | grep -c "Total length = 6.28")" = "1" ] && echo "ok   two-circle lens perimeter = 2 pi" || { echo "FAIL two-circle lens perimeter is not 2 pi (6.28)"; fail=1; }
-[ "$(echo "$RBC" | grep "Total length = " | sed -n 3p | grep -c "Total length = 24.87")" = "1" ] && echo "ok   circle minus square = four caps of total length 24.87" || { echo "FAIL circle minus square caps length is not 24.87"; fail=1; }
+[ "$(echo "$RBC" | grep "Total length = " | sed -n 3p | grep -c "Total length = 24.87002")" = "1" ] && echo "ok   circle minus square = four caps of total length 12 + 20 acos(0.8) = 24.87002 (Length exact)" || { echo "FAIL circle minus square caps length is not 24.87002"; fail=1; }
 
 # RegionBoolean exact N-region / symmetric-difference path (regionboolean_exact_nway_script.txt): three-circle union with a hole,
 # two-circle symmetric difference (two crescents) and a three-circle intersection, all through kernel::PlanarRegionBooleanN.
@@ -2271,7 +2272,7 @@ echo "$RBN" | grep -E "^(ok|FAIL)"
 if echo "$RBN" | grep -q "^FAIL"; then fail=1; fi
 echo "$RBN" | grep -q "^smoke:" || { echo "$RBN"; echo "FAIL: regionboolean-exact-nway script produced no smoke line"; fail=1; }
 [ "$(echo "$RBN" | grep -c "exact curved boundaries (no tessellation)")" = "3" ] || { echo "$RBN"; echo "FAIL: regionboolean-exact-nway script did not take the exact curved path for all 3 operations"; fail=1; }
-[ "$(echo "$RBN" | grep "Total length = " | sed -n 1p | grep -c "Total length = 26.87")" = "1" ] && echo "ok   three-circle union (outer loop + hole) boundary = 26.874" || { echo "FAIL three-circle union boundary is not 26.87"; fail=1; }
+[ "$(echo "$RBN" | grep "Total length = " | sed -n 1p | grep -c "Total length = 26.874")" = "1" ] && echo "ok   three-circle union (outer loop + hole) boundary = 26.874" || { echo "FAIL three-circle union boundary is not 26.874"; fail=1; }
 [ "$(echo "$RBN" | grep "Total length = " | sed -n 2p | grep -c "Total length = 31.4")" = "1" ] && echo "ok   two-circle symmetric difference boundary = 2 pi (3 + 2)" || { echo "FAIL two-circle symmetric difference boundary is not 31.4"; fail=1; }
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,

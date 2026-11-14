@@ -253,12 +253,17 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
                                       [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) { ctx.AddPreviewLine(p[0], h); if (p.size() > 1) ctx.AddPreviewLine(p[0], p[1]); }));
   // `Length digits=N` (5..15) prints the lengths with N significant digits instead of the default 4 (FormatNumber's "%.4g", which
   // rounds a 166.3711 total to 166.4 and so cannot tell a 1e-5 error from none); without it the output is unchanged.
+  // `Length exact` measures each curve by adaptive Gauss-Legendre quadrature of its real speed (NurbsCurve::LengthToTolerance, 1e-9)
+  // instead of the default 1000 equal-parameter chords, which under-measure a rational arc chain whose parameter speed is not
+  // uniform (four circular caps of true length 24.87002 read 24.856 that way); without it the output is unchanged.
   Reg(e, "Length", OnSelection("Select curves to measure", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         int digits = 0;
+        bool exact = false;
         {
           std::vector<std::string> rest;
           while (std::optional<std::string> tok = ctx.Engine().TakePendingInput()) {
             if (tok->size() > 7 && ToLower(tok->substr(0, 7)) == "digits=") digits = std::clamp(std::atoi(tok->c_str() + 7), 0, 15);
+            else if (ToLower(*tok) == "exact") exact = true;
             else rest.push_back(*tok);
           }
           for (const std::string& t : rest) ctx.Engine().PendingInputs().push_back(t);
@@ -270,7 +275,7 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
           return std::string(buf);
         };
         double total = 0;
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { double l = o->curve->Length(); total += l; ctx.Print("Curve " + std::to_string(id) + " length = " + fmt(l)); } }
+        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { double l = exact ? o->curve->LengthToTolerance(1e-9) : o->curve->Length(); total += l; ctx.Print("Curve " + std::to_string(id) + " length = " + fmt(l)); } }
         ctx.Print("Total length = " + fmt(total) + " " + ctx.Settings().unit_system);
       }));
   Reg(e, "Area", OnSelection("Select surfaces, polysurfaces or meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {

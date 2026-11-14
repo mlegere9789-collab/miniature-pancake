@@ -2,7 +2,7 @@
 # (arcs stay arcs, no tessellated slab) when an input is a curved closed curve, and falls back to the mesh-slab path only when that
 # call refuses. Closed forms (checked by smoke.sh against the printed lengths and the object counts):
 #   circles r=3 at (0,0) and r=2 at (4,0): lens perimeter 2 pi (= 6.2832), union perimeter 8 pi (= 25.133);
-#   circle r=2.5 minus the square [-2,2]^2: four separate caps, total length 4 chords of 3 + 4 arcs of 2.5 * 2 acos(0.8) = 24.870;
+#   circle r=2.5 minus the square [-2,2]^2: four separate caps, total length 4 chords of 3 + 4 arcs of 2.5 * 2 acos(0.8) = 24.870022 (measured with Length exact: the default 1000 equal-parameter chords read 24.856 on these rational caps);
 #   disc r=3 minus the disc r=1 at (0.5,0): a ring, one outer loop plus one hole (two curves).
 SetActiveViewport Top
 Circle 0,0,0 3
@@ -50,7 +50,7 @@ SelID 3
 SelID 4
 SelID 5
 SelID 6
-Length
+Length exact digits=7
 SelAll
 Delete
 @expect_objects 0
