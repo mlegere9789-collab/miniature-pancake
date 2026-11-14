@@ -1,0 +1,2 @@
+SECTIONS=BASE MSDG SRFPX
+FILTERS=MatchEdge;Unroll;ReplaceBrepSurface;SimplifyPlanar;TrimmedOffset;Fillet
