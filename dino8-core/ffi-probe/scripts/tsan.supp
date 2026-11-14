@@ -1,0 +1,6 @@
+# ThreadSanitizer cannot see synchronization inside the Rust library because the Rust standard
+# library is not instrumented: its Mutex and atomics look like unsynchronized accesses, and the
+# allocator calls made under the Rust mutex are reported as races. Frames of the Rust library are
+# suppressed so TSan checks the C++ side only. The Rust side is covered by loom (see tests/) and, with a nightly
+# toolchain, by building the crate with -Zsanitizer=thread -Zbuild-std.
+race:dino8_ffi_probe
