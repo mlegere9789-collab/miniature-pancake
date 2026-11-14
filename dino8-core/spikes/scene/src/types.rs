@@ -161,6 +161,21 @@ impl RelKind {
     }
 }
 
+/// Spatial overlay entry: the current box of an entity edited since the BVH
+/// was built (an empty box marks a deleted or geometry-less entity).
+#[derive(Copy, Clone, Debug)]
+pub struct DirtyEnt {
+    pub ix: u32,
+    pub bbox: Aabb,
+}
+
+impl Keyed for DirtyEnt {
+    type K = u32;
+    fn key(&self) -> u32 {
+        self.ix
+    }
+}
+
 /// Entry of the UUID map.
 #[derive(Copy, Clone, Debug)]
 pub struct IdEntry {

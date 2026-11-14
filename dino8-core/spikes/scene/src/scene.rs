@@ -61,7 +61,7 @@ impl Schema {
 #[derive(Clone, Default)]
 pub(crate) struct Spatial {
     pub bvh: Option<Arc<Bvh>>,
-    pub dirty: Table<()>,
+    pub dirty: Sorted<DirtyEnt>,
 }
 
 /// Optional components supplied when an entity is created.
@@ -251,7 +251,7 @@ impl Scene {
             self.sem.remove(ix);
         }
         self.geom.remove(ix);
-        self.mark_dirty(ix);
+        self.mark_dirty(ix, Aabb::empty());
         self.proc_.remove(ix);
         self.pres.remove(ix);
         for c in self.props.iter_mut() {
@@ -284,16 +284,16 @@ impl Scene {
         }
     }
 
-    pub(crate) fn mark_dirty(&mut self, ix: Ix) {
+    pub(crate) fn mark_dirty(&mut self, ix: Ix, bbox: Aabb) {
         if self.spatial.bvh.is_some() {
-            self.spatial.dirty.set(ix, ());
+            self.spatial.dirty.insert(DirtyEnt { ix, bbox });
         }
     }
 
     pub fn set_geometry(&mut self, ix: Ix, g: Geometry) {
         debug_assert!(self.ids.contains(ix));
         self.geom.set(ix, g);
-        self.mark_dirty(ix);
+        self.mark_dirty(ix, g.bbox);
     }
 
     pub fn set_semantic(&mut self, ix: Ix, s: Semantic) {
@@ -479,7 +479,7 @@ impl Scene {
         let mut items = Vec::with_capacity(self.geom.len());
         self.geom.scan(|ix, g| items.push((ix, g.bbox)));
         self.spatial.bvh = Some(Arc::new(Bvh::build(items.into_iter())));
-        self.spatial.dirty = Table::new();
+        self.spatial.dirty = Sorted::new();
     }
 
     pub fn edge_count(&self) -> usize {
@@ -629,6 +629,13 @@ impl Scene {
             let mut inbvh: HashMap<Ix, Aabb> = HashMap::new();
             for (ix, bb) in b.items() {
                 inbvh.insert(ix, bb);
+            }
+            self.spatial.dirty.check()?;
+            for d in self.spatial.dirty.iter() {
+                match self.geom.get(d.ix) {
+                    Some(g) => ensure!(g.bbox == d.bbox, "dirty box for {} is stale", d.ix),
+                    None => ensure!(d.bbox == Aabb::empty(), "dirty entry for geometry-less {} has a box", d.ix),
+                }
             }
             let mut bad = None;
             self.geom.scan(|ix, g| {

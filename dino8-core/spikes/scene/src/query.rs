@@ -258,13 +258,11 @@ impl Scene {
                     }
                     true
                 });
-                self.spatial.dirty.scan(|ix, _| {
-                    if let Some(g) = self.geom.get(ix) {
-                        if g.bbox.intersects(q) {
-                            out.push(ix);
-                        }
+                for d in self.spatial.dirty.iter() {
+                    if d.bbox.intersects(q) {
+                        out.push(d.ix);
                     }
-                });
+                }
             }
         }
         out
@@ -286,13 +284,11 @@ impl Scene {
                         out.push((ix, t));
                     }
                 });
-                self.spatial.dirty.scan(|ix, _| {
-                    if let Some(g) = self.geom.get(ix) {
-                        if let Some(t) = g.bbox.ray_hit(origin, inv) {
-                            out.push((ix, t));
-                        }
+                for d in self.spatial.dirty.iter() {
+                    if let Some(t) = d.bbox.ray_hit(origin, inv) {
+                        out.push((d.ix, t));
                     }
-                });
+                }
             }
         }
         out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
