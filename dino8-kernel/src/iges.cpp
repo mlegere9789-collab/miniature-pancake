@@ -189,7 +189,13 @@ Result NurbsCurve::SaveIges(const std::string& path, UnitSystem units) const {
 
   std::time_t now = std::time(nullptr);
   char date[32];
-  std::strftime(date, sizeof(date), "%Y%m%d.%H%M%S", std::localtime(&now));
+  std::tm local_tm{};
+#if defined(_WIN32)
+  localtime_s(&local_tm, &now);  // std::localtime returns a shared static buffer: a data race between concurrent exports
+#else
+  localtime_r(&now, &local_tm);
+#endif
+  std::strftime(date, sizeof(date), "%Y%m%d.%H%M%S", &local_tm);
   // Global section: the 24 parameters every real IGES reader expects, with
   // the same field values FileIgesStep.cpp's own IgesWriter::Write uses for
   // everything this Document-free function has no caller-supplied

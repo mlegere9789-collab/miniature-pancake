@@ -171,7 +171,13 @@ Result NurbsCurve::SaveStep(const std::string& path, UnitSystem units) const {
 
   std::time_t now = std::time(nullptr);
   char date[32];
-  std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", std::localtime(&now));
+  std::tm local_tm{};
+#if defined(_WIN32)
+  localtime_s(&local_tm, &now);  // std::localtime returns a shared static buffer: a data race between concurrent exports
+#else
+  localtime_r(&now, &local_tm);
+#endif
+  std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", &local_tm);
 
   out << "ISO-10303-21;\n";
   out << "HEADER;\n";
@@ -720,7 +726,13 @@ Result NurbsSurface::SaveStep(const std::string& path) const {
 
   std::time_t now = std::time(nullptr);
   char date[32];
-  std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", std::localtime(&now));
+  std::tm local_tm{};
+#if defined(_WIN32)
+  localtime_s(&local_tm, &now);  // std::localtime returns a shared static buffer: a data race between concurrent exports
+#else
+  localtime_r(&now, &local_tm);
+#endif
+  std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", &local_tm);
 
   out << "ISO-10303-21;\n";
   out << "HEADER;\n";
