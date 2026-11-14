@@ -427,6 +427,16 @@ bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double&
     return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
   };
   const bool ok = NewtonSolve(res, x, lo, hi, tol, max_iter);
+  if (ok) {
+    // `tol` is the caller's acceptance tolerance (the Boolean pipeline passes 1e-3), and NewtonSolve() returns the moment the residual
+    // is inside it: a seed that sits on a facet of the other surface's seed mesh, up to a chord sagitta (measured 5.6e-4 .. 6.9e-4 for
+    // the top rim of a hole cut by a cylinder tool) off the true curve, came back UNTOUCHED, so the chain point lay on one surface and
+    // that far off the other. The two faces sharing the rim then evaluated the same trim vertex at points 6e-4 apart, far outside
+    // the weld tolerance, and the tessellated rims did not close. Keep iterating to the floating-point floor. NewtonSolve() only
+    // accepts a step that lowers the residual, so this can never move a converged point to a worse one.
+    const double scale = std::max({1.0, a.PointAt(x[0], x[1]).DistanceTo(Point3d::Origin)});
+    NewtonSolve(res, x, lo, hi, 1e-11 * scale, 8);
+  }
   ua = x[0]; va = x[1]; ub = x[2]; vb = x[3];
   return ok;
 }
