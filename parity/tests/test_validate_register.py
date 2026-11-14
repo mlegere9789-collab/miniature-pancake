@@ -484,6 +484,24 @@ class CommandLine(TempDirCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("engine: builtin", result.stdout)
 
+    def test_review_directories_are_not_read_as_rows(self):
+        root = self.path("register")
+        row = make_row(1)
+        write_register(
+            root,
+            {
+                "blender/mesh.jsonl": [row],
+                # same id and a fix-list shape: would be a duplicate and a schema error
+                "review/fixes_blender.jsonl": [
+                    {"id": row["id"], "field": "statement", "old": "a", "new": "b"}
+                ],
+                "blender/review/more.jsonl": [row],
+            },
+        )
+        result = self.run_tool("--register", root, "--strict")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("1 rows in 1 files", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

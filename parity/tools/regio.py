@@ -18,10 +18,13 @@ CREDITED_TIERS = ("Strong", "Best")
 
 
 def register_files(root):
-    """Every *.jsonl file below root, in a stable (sorted) order."""
+    """Every *.jsonl file below root, in a stable (sorted) order.
+
+    A directory named "review" holds reviewer outputs (fix lists, not rows) and is skipped.
+    """
     found = []
     for dirpath, dirnames, filenames in os.walk(str(root)):
-        dirnames.sort()
+        dirnames[:] = sorted(d for d in dirnames if d != "review")
         for name in sorted(filenames):
             if name.endswith(".jsonl"):
                 found.append(Path(dirpath) / name)
