@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=Tessellate;Mesh;Sphere;Suggested;Divisions;Adaptive;Cone;Revolve;Torus;Cylinder;Pole;Isocurve;Apex
