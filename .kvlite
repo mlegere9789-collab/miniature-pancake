@@ -1,0 +1,2 @@
+SECTIONS=BASE SEC2 SRFSEC
+FILTERS=PlanarCurveBoolean;PlanarRegionBoolean;TestCurveLength;TestCurveParameterAtArcLength;TestCurveDivide;TestCurveReduceDegree;SplitNakedEdge
