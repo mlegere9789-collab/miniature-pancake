@@ -197,15 +197,46 @@ int TableRecord(const Document& doc, const std::string& table, int index, std::v
   return -1;
 }
 
-// Start and end angle of an arc as DXF reports them: counter-clockwise about +Z from the world X axis (the fitted plane's own x axis
-// need not be the world one, and its normal may point down, which swaps the ends).
-void ArcAngles(const ON_Arc& arc, double& s, double& e) {
-  const ON_3dPoint c = arc.Center();
+// A circle / arc the way DXF reports it (AutoCAD DXF reference, "Arbitrary Axis Algorithm"): group 210 is the extrusion direction N, the
+// centre (group 10) is in the object coordinate system (OCS) whose X axis is Wy x N (Wz x N when N is nearer the Y axis than 1/64), and
+// groups 50 / 51 are the angles in radians, counter-clockwise about N, from that OCS X axis. A vertical normal pointing down is reported
+// as +Z with the two ends swapped, which draws the same arc. The end angle is the start angle plus the sweep (it may pass 2 pi).
+struct ArcFrame {
+  ON_3dVector ax, ay, n;   // the OCS axes (world components)
+  ON_3dPoint centre_wcs;
+  ON_3dVector centre_ocs;
+  double start = 0, end = 0;
+};
+
+void OcsAxes(ON_3dVector n, ON_3dVector& ax, ON_3dVector& ay) {
+  if (std::fabs(n.x) < 1.0 / 64 && std::fabs(n.y) < 1.0 / 64) ax = ON_CrossProduct(ON_3dVector(0, 1, 0), n);
+  else ax = ON_CrossProduct(ON_3dVector(0, 0, 1), n);
+  ax.Unitize();
+  ay = ON_CrossProduct(n, ax);
+  ay.Unitize();
+}
+
+ON_3dVector Snap01(ON_3dVector n) {   // a normal within 1e-9 of a coordinate axis is that axis exactly
+  n.Unitize();
+  if (std::fabs(n.x) < 1e-9 && std::fabs(n.y) < 1e-9) return ON_3dVector(0, 0, n.z < 0 ? -1 : 1);
+  return n;
+}
+
+void ArcFrameOf(const ON_Arc& arc, ArcFrame& f) {
+  ON_3dVector n = Snap01(arc.Plane().Normal());
   ON_3dPoint p0 = arc.StartPoint(), p1 = arc.EndPoint();
-  if (arc.Plane().Normal().z < -0.999) std::swap(p0, p1);
-  s = std::atan2(p0.y - c.y, p0.x - c.x);
+  if (n.x == 0 && n.y == 0 && n.z < 0) { n = ON_3dVector(0, 0, 1); std::swap(p0, p1); }
+  f.n = n;
+  OcsAxes(n, f.ax, f.ay);
+  f.centre_wcs = arc.Center();
+  const ON_3dVector c(f.centre_wcs.x, f.centre_wcs.y, f.centre_wcs.z);
+  f.centre_ocs = ON_3dVector(ON_DotProduct(c, f.ax), ON_DotProduct(c, f.ay), ON_DotProduct(c, f.n));
+  const ON_3dVector v = p0 - f.centre_wcs;
+  double s = std::atan2(ON_DotProduct(v, f.ay), ON_DotProduct(v, f.ax));
   if (s < 0) s += 2 * ON_PI;
-  e = s + arc.AngleRadians();
+  if (std::fabs(s) < 1e-12 || std::fabs(s - 2 * ON_PI) < 1e-12) s = 0;   // a start on the X axis is 0, not 2 pi minus rounding
+  f.start = s;
+  f.end = s + arc.AngleRadians();
 }
 
 bool GetEntity(const Document& doc, long long id, std::vector<DxfItem>& out) {
@@ -242,17 +273,15 @@ bool GetEntity(const Document& doc, long long id, std::vector<DxfItem>& out) {
   } else if (type == "CIRCLE" || type == "ARC") {
     ON_Arc arc;
     o->curve->raw().IsArc(nullptr, &arc, kEntTol);
-    out.push_back(DP(10, arc.Center()));
+    ArcFrame fr;
+    ArcFrameOf(arc, fr);
+    out.push_back(DP(10, fr.centre_ocs.x, fr.centre_ocs.y, fr.centre_ocs.z));
     out.push_back(DR(40, arc.Radius()));
     if (type == "ARC") {
-      double s0, e0;
-      ArcAngles(arc, s0, e0);
-      out.push_back(DR(50, s0));
-      out.push_back(DR(51, e0));
+      out.push_back(DR(50, fr.start));
+      out.push_back(DR(51, fr.end));
     }
-    ON_3dVector n = arc.Plane().Normal();
-    if (n.z < -0.999) n = ON_3dVector(0, 0, 1);
-    out.push_back(DP(210, n.x, n.y, n.z));
+    out.push_back(DP(210, fr.n.x, fr.n.y, fr.n.z));
   } else if (type == "ELLIPSE") {
     EllipseFit ef;
     FitEllipse(*o->curve, ef);
@@ -354,8 +383,9 @@ std::string ModEntity(Document& doc, long long id, const std::vector<DxfItem>& i
   if (type == "ARC" && (a50 || a51)) {
     ON_Arc a;
     doc.Find(static_cast<ObjectId>(id))->curve->raw().IsArc(nullptr, &a, kEntTol);
-    double s = 0, e = 0;
-    ArcAngles(a, s, e);
+    ArcFrame fr;
+    ArcFrameOf(a, fr);
+    double s = fr.start, e = fr.end;
     if (a50) s = *a50;
     if (a51) e = *a51;
     if (!(e > s) || e - s > 2 * ON_PI + 1e-9) return "groups 50/51: the end angle must be greater than the start angle and the sweep at most 2 pi";
@@ -392,13 +422,13 @@ std::string ModEntity(Document& doc, long long id, const std::vector<DxfItem>& i
   if ((type == "CIRCLE" || type == "ARC") && (p10 || r40 || a50 || a51)) {
     ON_Arc arc;
     o->curve->raw().IsArc(nullptr, &arc, kEntTol);
-    ON_Plane plane = arc.Plane();
-    double s0 = 0, e0 = 0;
-    ArcAngles(arc, s0, e0);
-    if (std::fabs(plane.Normal().z) > 0.999) plane = ON_Plane(arc.Center(), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));   // world frame: the angles are measured from +X
-    if (p10) { plane.origin = *p10; plane.UpdateEquation(); }
+    ArcFrame fr;
+    ArcFrameOf(arc, fr);
+    ON_3dPoint centre = fr.centre_wcs;
+    if (p10) centre = ON_3dPoint(fr.ax * p10->x + fr.ay * p10->y + fr.n * p10->z);   // group 10 is in the OCS
+    const ON_Plane plane(centre, fr.ax, fr.ay);
     const double r = r40 ? *r40 : arc.Radius();
-    const ON_Interval dom(a50 ? *a50 : s0, a51 ? *a51 : e0);
+    const ON_Interval dom(a50 ? *a50 : fr.start, a51 ? *a51 : fr.end);
     ON_Arc na(ON_Circle(plane, r), dom);
     ON_ArcCurve ac(na);
     kernel::NurbsCurve k;
