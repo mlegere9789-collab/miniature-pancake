@@ -19,6 +19,8 @@ SelID 4
 CurveBoolean
 SelLast
 List
+# perimeter of the union of two r=5 circles 6 apart: 2 * 5 * (2 pi - 2 acos(3/5)) = 44.28595
+Length exact digits=5
 @expect_objects 4
 # --- Clash between two overlapping spheres
 SelNone
