@@ -113,6 +113,93 @@ def dump_json(obj, path=None):
 
 
 # --------------------------------------------------------------------------------------
+# Heartbeats: ledger/heartbeats/<date>/<agent>.jsonl, append-only (plan 7.2, 7.6)
+# --------------------------------------------------------------------------------------
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _text(value):
+    if isinstance(value, str):
+        return value if value.strip() else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def read_heartbeats(root, lookback_days=2, now=None):
+    """Read the heartbeat files of the last `lookback_days` UTC days (None = all days).
+
+    Each line is one JSON object: {"time", "what", "commit", "evidence"} and optionally
+    "agent", "task", "metric", "state", "waiting_on". Returns ({agent: [beat, ...]}, problems)
+    with the beats sorted by time. A beat is a dict with: time (aware datetime), agent, task,
+    what, commit, evidence, metric, state, waiting_on, file, line. problems lists lines that
+    were skipped as {"file", "line", "message"}.
+    """
+    import os
+
+    beats = {}
+    problems = []
+    if not root or not os.path.isdir(str(root)):
+        return beats, problems
+    now = now or utcnow()
+    today = now.date()
+    for day in sorted(os.listdir(str(root))):
+        folder = os.path.join(str(root), day)
+        if not (os.path.isdir(folder) and _DATE_RE.match(day)):
+            continue
+        try:
+            when = datetime.date.fromisoformat(day)
+        except ValueError:
+            continue
+        if lookback_days is not None and not (
+            today - datetime.timedelta(days=lookback_days) <= when <= today + datetime.timedelta(days=1)
+        ):
+            continue
+        for name in sorted(os.listdir(folder)):
+            if not name.endswith(".jsonl"):
+                continue
+            agent = name[: -len(".jsonl")]
+            path = os.path.join(folder, name)
+            if not _AGENT_RE.match(agent):
+                problems.append({"file": path, "line": None, "message": "file name is not an agent name"})
+                continue
+            items, bad = read_jsonl(path)
+            for line, message in bad:
+                problems.append({"file": path, "line": line, "message": message})
+            for line, obj in items:
+                moment = try_parse_time(obj.get("time"))
+                if moment is None:
+                    problems.append({"file": path, "line": line, "message": "missing or unusable 'time'"})
+                    continue
+                if obj.get("agent") not in (None, agent):
+                    problems.append({"file": path, "line": line, "message": "agent %r does not match the file %s" % (obj.get("agent"), name)})
+                    continue
+                metric = obj.get("metric")
+                if isinstance(metric, bool) or not isinstance(metric, (int, float)):
+                    metric = None
+                beats.setdefault(agent, []).append(
+                    {
+                        "time": moment,
+                        "agent": agent,
+                        "task": _text(obj.get("task")),
+                        "what": _text(obj.get("what")),
+                        "commit": _text(obj.get("commit")),
+                        "evidence": _text(obj.get("evidence")),
+                        "metric": metric,
+                        "state": _text(obj.get("state")),
+                        "waiting_on": _text(obj.get("waiting_on")),
+                        "file": path,
+                        "line": line,
+                    }
+                )
+    for agent in beats:
+        beats[agent].sort(key=lambda b: (b["time"], b["file"], b["line"]))
+    return beats, problems
+
+
+# --------------------------------------------------------------------------------------
 # The pace line (plan 6.4 and 7.6)
 # --------------------------------------------------------------------------------------
 
