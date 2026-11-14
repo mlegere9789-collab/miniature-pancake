@@ -2167,13 +2167,13 @@ bool BuildMTextGlyphs(const std::vector<std::string>& lines, double height, int 
 // always produce at least the line/arrow curves independent of the font).
 bool AddDimensionGroupToDoc(Document& doc, const std::string& kind, int layer,
                             const std::vector<kernel::NurbsCurve>& curves, const DimGlyphSpec& text,
-                            const std::map<std::string, std::string>& tags) {
+                            const std::map<std::string, std::string>& tags, const std::string& style = "Standard") {
   std::vector<ObjectId> ids;
   for (const kernel::NurbsCurve& c : curves) {
     SceneObject o = SceneObject::MakeCurve(c);
     o.layer_index = layer;
     o.user_text["Annotation"] = kind;
-    o.user_text["Style"] = "Standard";
+    o.user_text["Style"] = style;
     for (const auto& [k, v] : tags) o.user_text[k] = v;
     ids.push_back(doc.Add(std::move(o)));
   }
@@ -2188,7 +2188,7 @@ bool AddDimensionGroupToDoc(Document& doc, const std::string& kind, int layer,
         SceneObject o = SceneObject::MakeCurve(gc);
         o.layer_index = layer;
         o.user_text["Annotation"] = kind;
-        o.user_text["Style"] = "Standard";
+        o.user_text["Style"] = style;
         ids.push_back(doc.Add(std::move(o)));
       }
     }
@@ -3041,6 +3041,16 @@ class DxfImporter {
   //     with the wrong offset, an honest format limitation rather than a
   //     guess this importer could get right with more code.
   // The first three fall into the ordinary skipped-entity count.
+  // The annotation style a DIMENSION is made with: group 3 names its DIMSTYLE record (DXF reference, DIMENSION entity), which the
+  // exporter writes as the annotation style's name. A name no annotation style of the document answers to (or STANDARD) stays Standard.
+  std::string DimStyleFor(const DxfEntity& e) const {
+    const std::string n = e.S(3);
+    if (n.empty() || Upper(n) == "STANDARD") return "Standard";
+    for (const AnnotationStyle& st : doc_.AnnotationStyles())
+      if (Upper(DxfLayerName(st.name)) == Upper(n)) return st.name;
+    return "Standard";
+  }
+
   void Dimension(const DxfEntity& e) {
     const int type = e.I(70) & 7;
     const double h = ImportDimTextHeight(doc_);
@@ -3070,7 +3080,7 @@ class DxfImporter {
       DimGlyphSpec text;
       std::map<std::string, std::string> tags;
       if (!BuildLinearDimensionGeometry(p0, p1, L, h, curves, text, tags)) { ++stats_.skipped; return; }
-      if (AddDimensionGroupToDoc(doc_, L.aligned ? "DimAligned" : "DimLinear", layer, curves, text, tags)) ++stats_.dimensions;
+      if (AddDimensionGroupToDoc(doc_, L.aligned ? "DimAligned" : "DimLinear", layer, curves, text, tags, DimStyleFor(e))) ++stats_.dimensions;
       else ++stats_.skipped;
       return;
     }
@@ -3090,7 +3100,7 @@ class DxfImporter {
       DimGlyphSpec text;
       std::map<std::string, std::string> tags;
       if (!BuildRadiusDimensionGeometry(center, radius, L, h, curves, text, tags)) { ++stats_.skipped; return; }
-      if (AddDimensionGroupToDoc(doc_, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags)) ++stats_.dimensions;
+      if (AddDimensionGroupToDoc(doc_, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags, DimStyleFor(e))) ++stats_.dimensions;
       else ++stats_.skipped;
       return;
     }
@@ -3110,7 +3120,7 @@ class DxfImporter {
       DimGlyphSpec text;
       std::map<std::string, std::string> tags;
       if (!BuildAngleDimensionGeometry(vertex, p1, p2, pl, h, curves, text, tags)) { ++stats_.skipped; return; }
-      if (AddDimensionGroupToDoc(doc_, "DimAngle", layer, curves, text, tags)) ++stats_.dimensions;
+      if (AddDimensionGroupToDoc(doc_, "DimAngle", layer, curves, text, tags, DimStyleFor(e))) ++stats_.dimensions;
       else ++stats_.skipped;
       return;
     }
@@ -3130,7 +3140,7 @@ class DxfImporter {
       DimGlyphSpec text;
       std::map<std::string, std::string> tags;
       if (!BuildOrdinateDimensionGeometry(Point3d(0, 0, 0), feature, use_x ? 'X' : 'Y', pl, h, curves, text, tags)) { ++stats_.skipped; return; }
-      if (AddDimensionGroupToDoc(doc_, "DimOrdinate", layer, curves, text, tags)) ++stats_.dimensions;
+      if (AddDimensionGroupToDoc(doc_, "DimOrdinate", layer, curves, text, tags, DimStyleFor(e))) ++stats_.dimensions;
       else ++stats_.skipped;
       return;
     }
