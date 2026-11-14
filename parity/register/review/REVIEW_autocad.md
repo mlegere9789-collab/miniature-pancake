@@ -54,7 +54,7 @@ B is a lower bound. I read every sampled statement against the first part of its
 7. **Style.** 633 statements (23%) begin "Dino 8 must", others "The program must provide", others are bare imperatives. `WEB-0008` puts an editorial note into the requirement ("this page documents the web app"). `NET-0260` requires an obsolete call "to be accepted without crashing".
 8. Some rows name a command but cite a concept page (`BLOCK-0015` BPARAMETER, `BLOCK-0016` BACTION and `BLOCK-0018` BCPARAMETER cite dynamic-block overviews): relevant, but not the command page.
 
-What is good: page identity is right. Of 1,605 rows whose page is in the AutoCAD table of contents, only 12 have a ref that shares no word with the page title (and 7 of those are one-word AutoLISP names such as  and ). I found no verbatim copying above 7 words in the sample (script overlap 0 rows of 150). Statements are specific and, where I checked, correct; I did not run or validate the acceptance sketches.
+What is good: page identity is right. Of 1,605 rows whose page is in the AutoCAD table of contents, only 12 have a ref that shares no word with the page title (and 7 of those are one-word AutoLISP names such as `if` and `or`). I found no verbatim copying above 7 words in the sample (script overlap 0 rows of 150). Statements are specific and, where I checked, correct; I did not run or validate the acceptance sketches.
 
 ## Rows added in the verification pass (extra checks)
 
