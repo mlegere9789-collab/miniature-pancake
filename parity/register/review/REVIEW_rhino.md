@@ -51,7 +51,7 @@ Rows may appear under several criteria. "Content defect rate" counts rows with a
 - **All-criteria defect rate: 78/211 = 37.0%** (30.7% to 43.7%), driven almost entirely by (c).
 - Unreachable pages: **0 of 192** distinct source pages returned an error. Details below for index pages that were refused to the review proxy.
 
-Confirmed defects (checked on the page; proposed fixes are in `fixes_rhino.jsonl`):
+Confirmed defects (checked on the page; proposed fixes are in `fixes_rhino.ndjson`):
 
 - **CURVE-0043 ExtractPipedCurve**: the row says it recovers the underlying curve. The page says it copies the piping display mesh out as a separate mesh object. Wrong outcome.
 - **RENDER-0061 UVEditor** and **RENDER-0059 Unwrap**: the statements follow the one-line stub descriptions, which McNeel evidently copied between commands. The texture-mapping page says UVEditor opens the UV Editor and Unwrap projects onto the world XY plane. SELECT-0052 (SelExtrusion) has the same stub-description error on the vendor side, but there the row is right and the page body confirms it.
@@ -114,7 +114,7 @@ Reasons for not accepting outright: a content defect rate of 13% (about 1 row in
 
 Conditions before the rows are used to measure parity:
 
-1. Re-tier `Best`: keep it only where a row-specific exceed-Rhino claim is written (the SOLID Boolean class is a fair starting set). Apply `fixes_rhino.jsonl` for the sampled rows and repeat the rule on the remaining Best rows (the 4 SOLID Boolean-class rows listed above are the only sampled ones I would keep).
+1. Re-tier `Best`: keep it only where a row-specific exceed-Rhino claim is written (the SOLID Boolean class is a fair starting set). Apply `fixes_rhino.ndjson` for the sampled rows and repeat the rule on the remaining Best rows (the 4 SOLID Boolean-class rows listed above are the only sampled ones I would keep).
 2. Replace the per-domain `acceptance` block with per-row corpora and tolerances, at least for rows that will be credited.
 3. Repoint redirect-stub `source.doc` values to their targets and apply the doc and statement fixes in the fixes file; re-run the sampling after fixes.
 4. Decide the factory mapping for SELECT/VIEW/SETTING/ORG/DIGIT explicitly, because it sets their wave.

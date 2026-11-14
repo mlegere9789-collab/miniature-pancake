@@ -53,7 +53,7 @@ Sample composition:
 - Sampled rows self-labelled VERIFIED, CORRECTED or ADDED+VERIFIED: 205. Of those, 14 (6.8%) contain a claim I could not find on the cited page or cite an empty page: GDL-0034, HOTLINK-0012, HOTLINK-0018, IFC-0033, PROPS-0028, RENO-0001, SCHED-0036, SEO-0017, STRUCT-0007, TOOLBOX-0013, TOOLBOX-0026, UI-0007, VIZ-0001, VIZ-0003. So the second-pass verification in `VERIFY.md` is real but not complete.
 - Unreachable (a): 4 rows cite hosts my client could not reach; 7 rows cite `help.graphisoft.com/AC/29/INT/_AC29_Help/`, which returns 404; PROPS-0028 cites a real page whose body is empty apart from a one-line note.
 
-Selected confirmed defects (page read; proposed fixes in `fixes_archicad.jsonl`):
+Selected confirmed defects (page read; proposed fixes in `fixes_archicad.ndjson`):
 
 - **HOTLINK-0012** says missing files are reported and a cached copy is kept; its cited page (About Hotlink Modules) has no such text, and HOTLINK-0018 repeats the idea from the Module Manager page, which only says a missing source blocks updates until relinked. The "cached copy" behavior is not stated on either page.
 - **IFC-0033** claims issue views store camera position, cutting planes and a snapshot; the cited page describes name, status, priority, type, description and highlighting only.
@@ -138,7 +138,7 @@ Reasons: the rows are well paraphrased (no copying), mostly tied to real topic p
 
 Blocking conditions (before any row counts toward parity scoring):
 
-1. Remove or withdraw the 36 `REJECTED` rows (the sampled 11 are in `fixes_archicad.jsonl` as `field: row`).
+1. Remove or withdraw the 36 `REJECTED` rows (the sampled 11 are in `fixes_archicad.ndjson` as `field: row`).
 2. Do not credit or count the 52 `UNVERIFIED` rows until each has a page; repoint the 28 `_AC29_Help/` rows to a real topic page or drop them.
 
-Other fixes: apply `fixes_archicad.jsonl`; add `alias_of` for the duplicate pairs listed in section 3; give `new2930` rows their functional factory; move pure 2D rows to `cad-2d` or document why not; add rows for the gaps above; expand fragment statements into checkable outcomes. A re-sample after fixes is advised because this review's rate was measured on the sample only.
+Other fixes: apply `fixes_archicad.ndjson`; add `alias_of` for the duplicate pairs listed in section 3; give `new2930` rows their functional factory; move pure 2D rows to `cad-2d` or document why not; add rows for the gaps above; expand fragment statements into checkable outcomes. A re-sample after fixes is advised because this review's rate was measured on the sample only.
