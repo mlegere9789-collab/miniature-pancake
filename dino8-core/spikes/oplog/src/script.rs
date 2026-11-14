@@ -80,7 +80,10 @@ impl Script {
         self.steps += 1;
         let roll = self.rng.below(1000);
         if self.opts.navigate && roll < self.opts.nav_permille {
-            return match self.rng.below(70) {
+            // Map the roll onto the 0..70 navigation menu without drawing again, so the random stream
+            // (and every seeded script the tests rely on) is unchanged at the default share.
+            let sub = roll * 70 / self.opts.nav_permille.max(1);
+            return match sub {
                 0..=29 => Ok(ws.undo()?.map_or(Step::Skipped, |_| Step::Undo)),
                 30..=54 => Ok(ws.redo()?.map_or(Step::Skipped, |_| Step::Redo)),
                 55..=59 => {
