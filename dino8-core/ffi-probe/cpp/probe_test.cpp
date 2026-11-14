@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <cinttypes>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +35,18 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+// Layout pins: the same numbers are asserted on the Rust side (src/ffi.rs). If either side changes a
+// struct, both builds fail until the change is made on purpose and the ABI version is bumped.
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
+static_assert(sizeof(D8Error) == 256 && offsetof(D8Error, message) == 16, "D8Error layout");
+static_assert(sizeof(D8LogHandle) == 8, "D8LogHandle layout");
+static_assert(sizeof(D8ObjectId) == 16 && alignof(D8ObjectId) == 1, "D8ObjectId layout");
+static_assert(sizeof(D8OpRecord) == 64, "D8OpRecord layout");
+static_assert(sizeof(D8OpRead) == 112, "D8OpRead layout");
+static_assert(sizeof(D8OpView) == 88, "D8OpView layout");
+static_assert(sizeof(D8LogInfo) == 56, "D8LogInfo layout");
 #endif
 
 namespace {

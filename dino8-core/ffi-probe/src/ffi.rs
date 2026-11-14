@@ -837,3 +837,18 @@ pub extern "C" fn d8_probe_drop_count() -> u64 {
 pub extern "C" fn d8_probe_unguarded_panic() {
     panic!("probe: deliberate panic in an unguarded extern C function");
 }
+
+// Layout pins (64-bit). probe_test.cpp asserts the same numbers against the generated header, so
+// a field change that alters the ABI fails both builds until the numbers and the ABI version are
+// updated on purpose.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(std::mem::size_of::<D8Error>() == 256);
+    assert!(std::mem::offset_of!(D8Error, message) == 16);
+    assert!(std::mem::size_of::<D8LogHandle>() == 8);
+    assert!(std::mem::size_of::<D8ObjectId>() == 16 && std::mem::align_of::<D8ObjectId>() == 1);
+    assert!(std::mem::size_of::<D8OpRecord>() == 64);
+    assert!(std::mem::size_of::<D8OpRead>() == 112);
+    assert!(std::mem::size_of::<D8OpView>() == 88);
+    assert!(std::mem::size_of::<D8LogInfo>() == 56);
+};
