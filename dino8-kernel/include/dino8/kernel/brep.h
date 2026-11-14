@@ -3580,7 +3580,25 @@ class Brep {
   // Brep like Box(). Tessellate() alone leaves each face's tessellation
   // as a separate mesh with its own copy of shared-edge vertices; this
   // is what welds those seams shut.
+  //
+  // A Brep marked IsGeneralBooleanSolid() (a Union / Difference / Intersection
+  // BooleanCombineGeneral() built from closed solids) gets one more chance
+  // when that weld is not a closed manifold: its keyholed faces and its
+  // independently sampled cut rims leave cracks no fixed weld tolerance
+  // closes (a hole's rim is a polyline of chords on the cap and the circle
+  // itself on the wall), and TessellateGeneralBooleanClosedMesh() - the
+  // mesher written for exactly those results - is tried. Its mesh replaces
+  // the weld only if it IS a closed manifold; otherwise the weld is returned
+  // as before, so no mesh that was closed changes and no open one gets worse.
   Mesh TessellateToClosedMesh(int u_divisions = 8, int v_divisions = 8) const;
+
+  // True when this Brep is the Union / Difference / Intersection result of
+  // BooleanCombineGeneral() on closed solids, i.e. it encloses a volume even
+  // though its plain per-face tessellation may be cracked along keyholes and
+  // cut rims (see TessellateToClosedMesh()). Copies and transforms keep it;
+  // every other factory leaves it false.
+  bool IsGeneralBooleanSolid() const { return general_boolean_solid_; }
+  void SetGeneralBooleanSolid(bool value) { general_boolean_solid_ = value; }
 
   // Tessellate(), but picking each face's own u_divisions/v_divisions
   // via NurbsSurface::SuggestedDivisions(chord_tolerance) instead of one
@@ -6448,6 +6466,7 @@ class Brep {
   Result RemoveHoleLoopNoFinalize(int loop_index);
 
   ON_Brep brep_;
+  bool general_boolean_solid_ = false;  // see IsGeneralBooleanSolid()
   // Appends `count` "untrimmed face" entries to every per-face side
   // table below, keeping them in lockstep with brep_.m_F for a face
   // whose trims live entirely in brep_'s own real loop topology (the

@@ -4010,13 +4010,22 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
                             bool allow_non_manifold_result) {
+  // A Union / Difference / Intersection of closed solids encloses a volume (see Brep::IsGeneralBooleanSolid()); the plain
+  // tessellation of such a result is the one that needs the dedicated closed mesher. Not the symmetric difference (two lumps).
+  const bool solid_result = op != BooleanOp::SymmetricDifference;
   ON_3dVector shift;
-  if (!GeneralBooleanFrameShift(a, b, shift)) return BooleanCombineGeneralLocalFrame(a, b, op, tolerance, allow_non_manifold_result);
+  if (!GeneralBooleanFrameShift(a, b, shift)) {
+    Brep r = BooleanCombineGeneralLocalFrame(a, b, op, tolerance, allow_non_manifold_result);
+    if (r.raw().m_F.Count() > 0) r.SetGeneralBooleanSolid(solid_result);
+    return r;
+  }
   const Brep la = a.Transform(ON_Xform::TranslationTransformation(-shift));
   const Brep lb = b.Transform(ON_Xform::TranslationTransformation(-shift));
   const Brep local = BooleanCombineGeneralLocalFrame(la, lb, op, tolerance, allow_non_manifold_result);
   if (local.raw().m_F.Count() == 0) return local;
-  return local.Transform(ON_Xform::TranslationTransformation(shift));
+  Brep r = local.Transform(ON_Xform::TranslationTransformation(shift));
+  r.SetGeneralBooleanSolid(solid_result);
+  return r;
 }
 
 static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,

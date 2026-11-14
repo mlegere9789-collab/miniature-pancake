@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/cap_fan.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
@@ -7806,7 +7807,18 @@ Mesh StitchedIfThatClosesIt(const ON_Brep& brep, Mesh welded, bool geometry_pres
 // its T-junction cracks are stitched (see StitchedIfThatClosesIt above) and the
 // stitched mesh is returned only when it is then a closed manifold.
 Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
-  return StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions)));
+  Mesh welded = StitchedIfThatClosesIt(brep_, Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions)));
+  if (general_boolean_solid_ && !welded.IsClosedManifold()) {
+    // The result of a general Boolean of closed solids: its cracks are the engine's own keyholes and rim sampling, which the
+    // dedicated mesher closes. Used only if it really is closed (never replaces a weld with something no better).
+    try {
+      Mesh general = TessellateGeneralBooleanClosedMesh(*this, u_divisions, v_divisions);
+      if (general.IsClosedManifold()) return general;
+    } catch (const std::exception&) {
+      // keep the weld
+    }
+  }
+  return welded;
 }
 
 std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, int boundary_samples) const {
