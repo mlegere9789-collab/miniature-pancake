@@ -1,0 +1,19 @@
+# Spike C regeneration benchmark
+machine: 4 logical cpus, load average at start 17.85 16.62 12.91, burn 1.50 ns/iter, kernel cost 0.0 us (geom, join) / 0.0 us (tag)
+model: 1000000 walls, 20 levels, 16 types, 40x40 tiles per level, schedule tree depth 4 (leaf 64, fan-in 64), engine threads 1
+build: 378 ms, 1032078 input nodes, RSS 3 MB -> 285 MB
+cold: engine 1551.5 ms (2547895 computed, 3179745 steps, 631850 restarts, parallel=false), global recompute 112.5 ms parallel / 108.6 ms serial; engine/baseline = 13.79x parallel, 14.29x serial
+graph: 3579952 nodes (2547895 queries), node record 224 B, RSS 1088 MB (+759 MB for derived data = 312 B per derived node)
+clock: thread CPU time (load independent); global recompute (all views, tags, joins, schedule): 112.51 ms with 1 thread(s), 108.58 ms serial
+verification: after the first edit of every scenario the engine output equals the global recompute bit for bit
+
+scenario        reps |   marked computed verified  cutoff |    edit us  to-visible ms      to-all ms |  x par all  x ser all |  x par vis
+level_on           3 |   127398   127382       16   27382 |    13302.9  62.650(59.636)  62.654(59.639) |        1.8        1.7 |        1.8
+level_on_vp        3 |   127398   127382       16   27382 |    11629.4  12.330(11.554)  58.787(57.844) |        1.9        1.8 |        9.1
+(medians over reps; parentheses are the minimum; x par/ser = global recompute time / incremental time to a fully consistent state; x par vis = same, to the visible views only)
+
+scenario descriptions:
+  level_on        change the elevation of a visible level (1/levels of all walls)
+  level_on_vp     same edit, but only a 5x5 block of tiles of the view is on screen (demanded first)
+
+load average at end 18.18 16.71 12.96, RSS 1112 MB

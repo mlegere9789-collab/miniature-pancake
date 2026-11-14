@@ -1,36 +1,25 @@
 # Spike C regeneration benchmark
-machine: 4 logical cpus, load average at start 12.80 9.73 6.88, burn 5.54 ns/iter, kernel cost 25.0 us (geom, join) / 12.5 us (tag)
+machine: 4 logical cpus, load average at start 17.52 13.32 10.15, burn 1.49 ns/iter, kernel cost 25.0 us (geom, join) / 12.5 us (tag)
 model: 100000 walls, 20 levels, 16 types, 13x13 tiles per level, schedule tree depth 3 (leaf 64, fan-in 64), engine threads 4
-build: 101 ms, 103458 input nodes, RSS 3 MB -> 32 MB
-cold: engine 3469.8 ms (254989 computed, 316572 steps, 61583 restarts, parallel=true), global recompute 2511.2 ms parallel / 3053.9 ms serial; engine/baseline = 1.38x parallel, 1.14x serial
+build: 85 ms, 103458 input nodes, RSS 3 MB -> 32 MB
+cold: engine 10615.3 ms (254989 computed, 316609 steps, 61620 restarts, parallel=true), global recompute 9999.1 ms parallel / 10600.0 ms serial; engine/baseline = 1.06x parallel, 1.00x serial
 graph: 358426 nodes (254989 queries), node record 224 B, RSS 130 MB (+79 MB for derived data = 326 B per derived node)
-
-explain (tile of wall 413 after edit "move_wall_on"):
-tile[11] recomputed at r2
-  0. tile[11] recomputed at r2 (changed) because join[412] changed at r2
-  1. join[412] recomputed at r2 (changed) because geom[413] changed at r2
-  2. geom[413] recomputed at r2 (changed) because wall[413] changed at r2
-  3. wall[413] was set at r2 by "move_wall_on"
-explain (schedule root):
-rnode[25] did NOT recompute at r2: it was last computed at r1 and no dependency changed after that; recomputed dependencies with an unchanged result (early cutoff): rnode[0]
-  0. rnode[25] was evaluated for the first time at r1
-
-global recompute (all views, tags, joins, schedule): 2511.25 ms with 4 thread(s), 3053.92 ms serial
+clock: wall clock; global recompute (all views, tags, joins, schedule): 9999.09 ms with 4 thread(s), 10600.05 ms serial
 verification: after the first edit of every scenario the engine output equals the global recompute bit for bit
 
 scenario        reps |   marked computed verified  cutoff |    edit us  to-visible ms      to-all ms |  x par all  x ser all |  x par vis
-move_wall_on       9 |       11       11        1       3 |        3.1   0.077(0.071)   0.078(0.072) |    32236.4    39202.6 |    32749.7
-move_wall_off      9 |       11       11        1       3 |        3.1   0.026(0.024)   0.082(0.070) |    30603.7    37217.1 |    96286.5
-move_wall_tile     9 |       11        9        2       5 |        3.5   0.074(0.067)   0.075(0.068) |    33640.3    40909.9 |    34017.6
-height_wall_on     9 |       11        9        2       4 |        2.8   0.066(0.062)   0.067(0.063) |    37383.1    45461.5 |    37860.5
-cosmetic_on        9 |       11        1       10       1 |        2.3   0.022(0.020)   0.023(0.021) |   107857.6   131165.4 |   113950.8
-batch100           9 |      842      812       24     160 |      191.4   2.612(2.088)  11.191(6.073) |      224.4      272.9 |      961.3
-view_cut           3 |      170      170        0       0 |       11.0   0.773(0.675)   0.776(0.677) |     3237.8     3937.5 |     3248.3
-type_edit          3 |    34368    34071      323   17142 |     9364.2 180.731(167.323) 471.456(432.700) |        5.3        6.5 |       13.9
-level_off          3 |    12752    12748        4    2748 |     1398.0  72.113(68.104) 163.380(155.974) |       15.4       18.7 |       34.8
-level_on           3 |    12752    12748        4    2748 |     1492.8 172.364(167.964) 172.369(167.970) |       14.6       17.7 |       14.6
-tag_style          3 |    53400    53400        0       0 |    16831.6  68.034(60.081) 363.843(329.543) |        6.9        8.4 |       36.9
-noop               9 |        0        0        0       0 |        0.6   0.001(0.001)   0.002(0.001) |  1613912.5  1962675.4 |  3650069.5
+move_wall_on       9 |       11       11        1       3 |        3.2   0.180(0.174)   0.181(0.175) |    55172.0    58487.9 |    55426.1
+move_wall_off      9 |       11       11        1       3 |        4.2   0.053(0.051)   0.218(0.186) |    45807.9    48561.0 |   189491.6
+move_wall_tile     9 |       11        9        2       5 |        5.7   0.190(0.167)   0.191(0.168) |    52443.5    55595.4 |    52733.9
+height_wall_on     9 |       11        9        2       4 |        3.0   0.168(0.160)   0.169(0.161) |    59085.1    62636.2 |    59407.0
+cosmetic_on        9 |       11        1       10       1 |        3.4   0.046(0.043)   0.047(0.044) |   210746.8   223412.9 |   216107.8
+batch100           9 |      842      812       24     160 |      215.9   9.142(5.397)  36.221(29.834) |      276.1      292.6 |     1093.8
+view_cut           3 |      170      170        0       0 |       16.9   0.724(0.669)   0.726(0.671) |    13780.9    14609.1 |    13811.1
+type_edit          3 |    34368    34071      323   17142 |    21085.3 557.732(509.505) 1570.828(1418.540) |        6.4        6.7 |       17.9
+level_off          3 |    12752    12748        4    2748 |     1575.9 226.261(198.324) 491.282(424.055) |       20.4       21.6 |       44.2
+level_on           3 |    12752    12748        4    2748 |     1407.1 415.023(401.454) 415.027(401.458) |       24.1       25.5 |       24.1
+tag_style          3 |    53400    53400        0       0 |    23658.7 135.345(119.685) 1050.042(1006.020) |        9.5       10.1 |       73.9
+noop               9 |        0        0        0       0 |        0.6   0.001(0.001)   0.002(0.002) |  5057710.1  5361683.5 | 10514293.2
 (medians over reps; parentheses are the minimum; x par/ser = global recompute time / incremental time to a fully consistent state; x par vis = same, to the visible views only)
 
 scenario descriptions:
@@ -47,4 +36,4 @@ scenario descriptions:
   tag_style       change the tag style (every tag)
   noop            set an input to its current value
 
-load average at end 15.52 11.03 7.49, RSS 149 MB
+load average at end 18.92 16.03 11.82, RSS 149 MB

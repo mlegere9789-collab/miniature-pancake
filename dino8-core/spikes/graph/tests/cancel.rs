@@ -200,12 +200,14 @@ fn cancel_after_an_edit_then_resume_recomputes_each_affected_node_once() {
 
 #[test]
 fn cancellation_latency_is_bounded_by_one_query() {
-    // 64 independent 5 ms queries on 4 threads would take 80 ms; cancel after 20 ms.
+    // 256 independent 5 ms queries on 4 threads would take 320 ms.  Another thread cancels as soon as 8 of them
+    // have run, so the cancel cannot arrive after the work is over even on a heavily loaded machine.
+    const N: u64 = 256;
     let ran = Arc::new(AtomicUsize::new(0));
     let r2 = ran.clone();
     let mut db = Db::<i64>::new(Config { threads: 4, serial_budget: 0, split_threshold: 2, max_nodes: 1 << 10 });
     let inp = db.register_input("x", Some(1));
-    let q = db.register_query("sleepy", Some(64), move |ctx| {
+    let q = db.register_query("sleepy", Some(N as usize), move |ctx| {
         let v = ctx.read(inp, 0)?;
         ctx.check_cancel()?;
         std::thread::sleep(Duration::from_millis(5));
@@ -213,13 +215,16 @@ fn cancellation_latency_is_bounded_by_one_query() {
         Ok(v + ctx.arg() as i64)
     });
     db.create_input(inp, 0, 1);
-    let roots: Vec<NodeId> = (0..64).map(|i| db.node(q, i)).collect();
+    let roots: Vec<NodeId> = (0..N).map(|i| db.node(q, i)).collect();
     let tok = CancelToken::new();
     let t2 = tok.clone();
+    let r3 = ran.clone();
     let stamp = Arc::new(std::sync::Mutex::new(None::<Instant>));
     let s2 = stamp.clone();
     let canceller = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(20));
+        while r3.load(Ordering::SeqCst) < 8 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         *s2.lock().unwrap() = Some(Instant::now());
         t2.cancel();
     });
@@ -230,7 +235,7 @@ fn cancellation_latency_is_bounded_by_one_query() {
     assert_eq!(r.unwrap_err(), EvalError::Cancelled);
     let latency = returned.duration_since(stamp.lock().unwrap().expect("cancel stamp"));
     assert!(latency < Duration::from_millis(250), "cancel took {latency:?} to take effect");
-    assert!(ran.load(Ordering::SeqCst) < 64, "all queries ran: the cancel did not stop any work");
+    assert!((ran.load(Ordering::SeqCst) as u64) < N, "all queries ran: the cancel did not stop any work");
     // The database is consistent and the work can be resumed.
     let done: usize = roots.iter().filter(|&&n| db.is_clean(n)).count();
     assert_eq!(done, ran.load(Ordering::SeqCst), "every completed query is kept, every other one is back to fresh");

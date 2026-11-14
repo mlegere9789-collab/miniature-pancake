@@ -1,36 +1,25 @@
 # Spike C regeneration benchmark
-machine: 4 logical cpus, load average at start 11.48 9.22 6.63, burn 1.64 ns/iter, kernel cost 5.0 us (geom, join) / 2.5 us (tag)
+machine: 4 logical cpus, load average at start 15.38 12.31 9.70, burn 1.47 ns/iter, kernel cost 5.0 us (geom, join) / 2.5 us (tag)
 model: 100000 walls, 20 levels, 16 types, 13x13 tiles per level, schedule tree depth 3 (leaf 64, fan-in 64), engine threads 4
 build: 34 ms, 103458 input nodes, RSS 3 MB -> 32 MB
-cold: engine 1335.2 ms (254989 computed, 316285 steps, 61296 restarts, parallel=true), global recompute 1384.2 ms parallel / 1658.8 ms serial; engine/baseline = 0.96x parallel, 0.80x serial
-graph: 358426 nodes (254989 queries), node record 224 B, RSS 130 MB (+79 MB for derived data = 325 B per derived node)
-
-explain (tile of wall 413 after edit "move_wall_on"):
-tile[11] recomputed at r2
-  0. tile[11] recomputed at r2 (changed) because join[412] changed at r2
-  1. join[412] recomputed at r2 (changed) because geom[413] changed at r2
-  2. geom[413] recomputed at r2 (changed) because wall[413] changed at r2
-  3. wall[413] was set at r2 by "move_wall_on"
-explain (schedule root):
-rnode[25] did NOT recompute at r2: it was last computed at r1 and no dependency changed after that; recomputed dependencies with an unchanged result (early cutoff): rnode[0]
-  0. rnode[25] was evaluated for the first time at r1
-
-global recompute (all views, tags, joins, schedule): 1384.18 ms with 4 thread(s), 1658.79 ms serial
+cold: engine 2080.5 ms (254989 computed, 317102 steps, 62113 restarts, parallel=true), global recompute 1945.6 ms parallel / 2024.3 ms serial; engine/baseline = 1.07x parallel, 1.03x serial
+graph: 358426 nodes (254989 queries), node record 224 B, RSS 130 MB (+79 MB for derived data = 326 B per derived node)
+clock: wall clock; global recompute (all views, tags, joins, schedule): 1945.65 ms with 4 thread(s), 2024.32 ms serial
 verification: after the first edit of every scenario the engine output equals the global recompute bit for bit
 
 scenario        reps |   marked computed verified  cutoff |    edit us  to-visible ms      to-all ms |  x par all  x ser all |  x par vis
-move_wall_on       9 |       11       11        1       3 |        3.1   0.071(0.065)   0.072(0.066) |    19129.1    22924.1 |    19465.9
-move_wall_off      9 |       11       11        1       3 |        3.5   0.026(0.023)   0.067(0.062) |    20507.6    24576.1 |    53882.4
-move_wall_tile     9 |       11        9        2       5 |        4.3   0.073(0.066)   0.074(0.067) |    18604.4    22295.2 |    18848.6
-height_wall_on     9 |       11        9        2       4 |        3.4   0.066(0.056)   0.067(0.057) |    20787.3    24911.2 |    21070.5
-cosmetic_on        9 |       11        1       10       1 |        4.7   0.032(0.022)   0.033(0.023) |    41784.2    50073.5 |    43518.2
-batch100           9 |      842      812       24     160 |      231.7   2.461(2.061)  13.935(7.983) |       99.3      119.0 |      562.4
-view_cut           3 |      170      170        0       0 |       14.3   0.735(0.523)   0.736(0.525) |     1879.5     2252.4 |     1883.9
-type_edit          3 |    34368    34071      323   17142 |    18023.1  99.123(87.140) 219.406(200.378) |        6.3        7.6 |       14.0
-level_off          3 |    12752    12748        4    2748 |     1279.5  44.117(38.892)  94.850(86.404) |       14.6       17.5 |       31.4
-level_on           3 |    12752    12748        4    2748 |     1284.0  85.742(81.727)  85.747(81.731) |       16.1       19.3 |       16.1
-tag_style          3 |    53400    53400        0       0 |    13192.6  52.877(40.620) 294.270(272.371) |        4.7        5.6 |       26.2
-noop               9 |        0        0        0       0 |        0.7   0.001(0.001)   0.002(0.002) |   654770.0   784666.7 |  1734566.1
+move_wall_on       9 |       11       11        1       3 |        3.1   0.068(0.064)   0.069(0.064) |    28070.5    29205.5 |    28482.6
+move_wall_off      9 |       11       11        1       3 |        3.8   0.030(0.026)   0.081(0.070) |    23981.0    24950.6 |    64719.1
+move_wall_tile     9 |       11        9        2       5 |        4.6   0.080(0.071)   0.081(0.072) |    24039.9    25012.0 |    24310.6
+height_wall_on     9 |       11        9        2       4 |        2.3   0.056(0.051)   0.056(0.052) |    34469.2    35862.9 |    35016.4
+cosmetic_on        9 |       11        1       10       1 |        2.2   0.022(0.020)   0.022(0.021) |    86481.0    89977.7 |    89665.4
+batch100           9 |      842      812       24     160 |      175.6   2.070(1.836)   8.542(4.947) |      227.8      237.0 |      939.8
+view_cut           3 |      170      170        0       0 |        9.5   0.668(0.514)   0.670(0.515) |     2905.2     3022.7 |     2911.2
+type_edit          3 |    34368    34071      323   17142 |     5146.0 128.118(112.126) 360.722(350.151) |        5.4        5.6 |       15.2
+level_off          3 |    12752    12748        4    2748 |     6862.3  55.444(48.063) 111.877(96.854) |       17.4       18.1 |       35.1
+level_on           3 |    12752    12748        4    2748 |     1685.3  88.014(68.003)  88.020(68.007) |       22.1       23.0 |       22.1
+tag_style          3 |    53400    53400        0       0 |    28654.6  64.010(52.003) 264.476(264.332) |        7.4        7.7 |       30.4
+noop               9 |        0        0        0       0 |        0.9   0.001(0.001)   0.003(0.002) |   753835.4   784315.2 |  1562770.4
 (medians over reps; parentheses are the minimum; x par/ser = global recompute time / incremental time to a fully consistent state; x par vis = same, to the visible views only)
 
 scenario descriptions:
@@ -47,4 +36,4 @@ scenario descriptions:
   tag_style       change the tag style (every tag)
   noop            set an input to its current value
 
-load average at end 12.80 9.73 6.88, RSS 149 MB
+load average at end 17.52 13.32 10.15, RSS 149 MB

@@ -1,0 +1,33 @@
+# Spike C regeneration benchmark
+machine: 4 logical cpus, load average at start 18.35 17.61 13.71, burn 1.47 ns/iter, kernel cost 0.0 us (geom, join) / 0.0 us (tag)
+model: 1000000 walls, 20 levels, 16 types, 40x40 tiles per level, schedule tree depth 4 (leaf 64, fan-in 64), engine threads 4
+build: 526 ms, 1032078 input nodes, RSS 3 MB -> 285 MB
+cold: engine 1787.4 ms (2547895 computed, 3173000 steps, 625105 restarts, parallel=true), global recompute 137.3 ms parallel / 109.4 ms serial; engine/baseline = 13.01x parallel, 16.34x serial
+graph: 3579952 nodes (2547895 queries), node record 224 B, RSS 1161 MB (+787 MB for derived data = 324 B per derived node)
+clock: process CPU time summed over all threads (load independent; divide by the core count for an idle-machine wall-time estimate); global recompute (all views, tags, joins, schedule): 137.34 ms with 4 thread(s), 109.41 ms serial
+verification: after the first edit of every scenario the engine output equals the global recompute bit for bit
+
+scenario        reps |   marked computed verified  cutoff |    edit us  to-visible ms      to-all ms |  x par all  x ser all |  x par vis
+move_wall_on       9 |       12       12        1       3 |        6.0   0.168(0.156)   0.170(0.157) |      807.9      643.6 |      817.5
+move_wall_off      9 |       13       12        1       3 |        6.0   0.042(0.026)   0.179(0.156) |      767.3      611.2 |     3270.0
+batch100           9 |      908      885       22     185 |      336.0   3.327(3.119)   6.928(6.196) |       19.8       15.8 |       41.3
+view_cut           3 |     1601     1601        0       0 |       83.0   7.744(7.566)   7.747(7.568) |       17.7       14.1 |       17.7
+type_edit          3 |   339632   336384     3169  170188 |    67891.0 260.124(233.397) 509.662(467.550) |        0.3        0.2 |        0.5
+level_off          3 |   127399   127382       17   27382 |    15547.0  45.608(45.475)  76.843(74.892) |        1.8        1.4 |        3.0
+level_on           3 |   127398   127382       16   27382 |    15876.0  78.842(75.119)  78.845(75.122) |        1.7        1.4 |        1.7
+level_on_vp        3 |   127398   127382       16   27382 |    15057.0  16.815(15.036)  75.724(70.053) |        1.8        1.4 |        8.2
+tag_style          3 |   532020   532020        0       0 |    83106.0 119.707(112.181) 440.584(440.396) |        0.3        0.2 |        1.1
+(medians over reps; parentheses are the minimum; x par/ser = global recompute time / incremental time to a fully consistent state; x par vis = same, to the visible views only)
+
+scenario descriptions:
+  move_wall_on    nudge one wall on a visible level
+  move_wall_off   nudge one wall on an off-screen level
+  batch100        nudge 100 random walls in one transaction
+  view_cut        change the cut height of one view
+  type_edit       change the thickness of one wall type (about 1/types of all walls)
+  level_off       change the elevation of an off-screen level (1/levels of all walls)
+  level_on        change the elevation of a visible level (1/levels of all walls)
+  level_on_vp     same edit, but only a 5x5 block of tiles of the view is on screen (demanded first)
+  tag_style       change the tag style (every tag)
+
+load average at end 18.13 17.59 13.77, RSS 1169 MB

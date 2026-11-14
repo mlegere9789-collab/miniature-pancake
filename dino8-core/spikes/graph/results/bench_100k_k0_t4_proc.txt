@@ -1,0 +1,41 @@
+# Spike C regeneration benchmark
+machine: 4 logical cpus, load average at start 16.46 16.20 12.58, burn 1.46 ns/iter, kernel cost 0.0 us (geom, join) / 0.0 us (tag)
+model: 100000 walls, 20 levels, 16 types, 13x13 tiles per level, schedule tree depth 3 (leaf 64, fan-in 64), engine threads 4
+build: 75 ms, 103458 input nodes, RSS 3 MB -> 32 MB
+cold: engine 185.3 ms (254989 computed, 317860 steps, 62871 restarts, parallel=true), global recompute 10.0 ms parallel / 5.9 ms serial; engine/baseline = 18.49x parallel, 31.63x serial
+graph: 358426 nodes (254989 queries), node record 224 B, RSS 148 MB (+79 MB for derived data = 325 B per derived node)
+clock: process CPU time summed over all threads (load independent; divide by the core count for an idle-machine wall-time estimate); global recompute (all views, tags, joins, schedule): 10.02 ms with 4 thread(s), 5.86 ms serial
+verification: after the first edit of every scenario the engine output equals the global recompute bit for bit
+
+scenario        reps |   marked computed verified  cutoff |    edit us  to-visible ms      to-all ms |  x par all  x ser all |  x par vis
+move_wall_on      15 |       11       11        1       3 |        3.0   0.038(0.028)   0.040(0.029) |      250.5      146.4 |      263.6
+move_wall_off     15 |       11       10        1       1 |        3.0   0.018(0.013)   0.038(0.030) |      263.6      154.1 |      556.6
+move_wall_tile    15 |       12        9        2       5 |        4.0   0.042(0.035)   0.043(0.036) |      233.0      136.2 |      238.5
+height_wall_on    15 |       11        9        1       4 |        3.0   0.034(0.022)   0.035(0.023) |      286.2      167.3 |      294.6
+cosmetic_on       15 |       11        1       10       1 |        3.0   0.019(0.013)   0.020(0.014) |      500.9      292.9 |      527.3
+batch100          15 |      836      813       24     152 |      151.0   1.146(1.025)   2.095(1.937) |        4.8        2.8 |        8.7
+view_cut           5 |      170      170        0       0 |        8.0   0.512(0.419)   0.513(0.420) |       19.5       11.4 |       19.6
+type_edit          5 |    33978    33637      322   16921 |     3817.0  19.033(18.192)  39.842(37.122) |        0.3        0.1 |        0.5
+level_off          5 |    12752    12748        4    2748 |     1020.0   4.176(3.183)   7.650(6.417) |        1.3        0.8 |        2.4
+level_on           5 |    12752    12748        4    2748 |      759.0   7.434(6.522)   7.436(6.528) |        1.3        0.8 |        1.3
+level_on_vp        5 |    12752    12748        4    2748 |      701.0   1.955(1.680)   6.550(6.301) |        1.5        0.9 |        5.1
+tag_style          5 |    53400    53400        0       0 |     5025.0   8.357(6.687)  36.180(32.671) |        0.3        0.2 |        1.2
+noop              15 |        0        0        0       0 |        1.0   0.002(0.000)   0.003(0.001) |     3339.3     1952.3 |     5009.0
+(medians over reps; parentheses are the minimum; x par/ser = global recompute time / incremental time to a fully consistent state; x par vis = same, to the visible views only)
+
+scenario descriptions:
+  move_wall_on    nudge one wall on a visible level
+  move_wall_off   nudge one wall on an off-screen level
+  move_wall_tile  move one wall across a tile boundary (spatial index changes)
+  height_wall_on  change the height of one wall on a visible level
+  cosmetic_on     edit a field nothing derives from (cutoff at the geometry)
+  batch100        nudge 100 random walls in one transaction
+  view_cut        change the cut height of one view
+  type_edit       change the thickness of one wall type (about 1/types of all walls)
+  level_off       change the elevation of an off-screen level (1/levels of all walls)
+  level_on        change the elevation of a visible level (1/levels of all walls)
+  level_on_vp     same edit, but only a 5x5 block of tiles of the view is on screen (demanded first)
+  tag_style       change the tag style (every tag)
+  noop            set an input to its current value
+
+load average at end 16.46 16.20 12.58, RSS 158 MB
