@@ -9,9 +9,9 @@ into an empty document and exported again. Two kinds of check, both from the Aut
        ARC        10/20/30 centre, 40 radius, 50 / 51 start / end angle in DEGREES, counter-clockwise from the OCS X axis
        LWPOLYLINE 90 vertex count, 70 bit 1 = closed, one 10/20 pair per vertex
        ELLIPSE    10 centre, 11 end of the major axis RELATIVE to the centre, 40 ratio minor/major, 41/42 start/end parameter (radians)
-       SPLINE     71 degree, 73 control-point count
+       SPLINE     71 degree, 72 knot count, 73 control-point count; knots = control points + degree + 1 (group 40 repeated)
        HATCH      2 pattern name, 70 = 1 solid fill
-       DIMENSION  70 bits 0..2 (value & 7): 0 linear, 1 aligned, 3 diameter, 4 radius (bits 32/64/128 are flags, not part of the type)
+       DIMENSION  3 name of its DIMSTYLE record (the annotation style it was made with), 70 bits 0..2 (value & 7): 0 linear, 1 aligned, 3 diameter, 4 radius (bits 32/64/128 are flags, not part of the type)
   2. rt_b.dxf equals rt_a.dxf: per entity type the same count, and the same multiset of entities by their key group values (every group
      except handles, owner / subclass markers and the anonymous *D block names, numbers compared to 5 decimals).
 prints "ok   ..." / "FAIL ..." lines; exit status 1 when any FAIL
@@ -137,8 +137,11 @@ if ell:
     check(near(num(e, 40), 3.0 / 8.0), 'DXRT ellipse: minor/major ratio 3/8 (group 40)')
     check(near(num(e, 41), 0.0) and near(num(e, 42), 2 * math.pi, 1e-5), 'DXRT ellipse: full ellipse, parameters 0 .. 2 pi (groups 41, 42)')
 spl = of(a, 'SPLINE')
-check(len(spl) == 1 and near(num(spl[0], 71), 3) and num(spl[0], 73, 0) >= 4,
-      'DXRT spline: one SPLINE, degree 3 (group 71), at least 4 control points (group 73)')
+check(len(spl) == 1, 'DXRT spline: the interpolated curve is one SPLINE')
+if spl:
+    deg, nk, ncp = num(spl[0], 71, 0), num(spl[0], 72, -1), num(spl[0], 73, 0)
+    check(deg >= 1 and ncp > deg and nk == ncp + deg + 1 and len([1 for c, v in spl[0][1] if c == 40]) == nk,
+          'DXRT spline: knot count (72) = control points (73) + degree (71) + 1, and as many group 40 values (degree %d, %d control points, %d knots)' % (deg, ncp, nk))
 hat = of(a, 'HATCH')
 check(len(hat) == 1 and txt(hat[0], 2) == 'SOLID' and near(num(hat[0], 70), 1), 'DXRT hatch: one SOLID HATCH with group 70 = 1')
 dims = of(a, 'DIMENSION')
