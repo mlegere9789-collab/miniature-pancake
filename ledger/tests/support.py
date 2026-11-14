@@ -15,7 +15,7 @@ REPO_ROOT = os.path.dirname(LEDGER_DIR)
 TOOLS_DIR = os.path.join(LEDGER_DIR, "tools")
 PARITY_TOOLS_DIR = os.path.join(REPO_ROOT, "parity", "tools")
 
-for _path in (TOOLS_DIR, PARITY_TOOLS_DIR):
+for _path in (TOOLS_DIR, PARITY_TOOLS_DIR, REPO_ROOT):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
