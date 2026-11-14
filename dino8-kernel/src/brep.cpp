@@ -1615,6 +1615,77 @@ double IntegrateRegionByGreen(const std::vector<Point2d>& outer, const std::vect
 
 }  // namespace
 
+// A PLANAR face outlined by exactly ONE closed, genuinely curved trim (degree >= 2: a circle, an ellipse, a rational conic): the circular
+// cap of a cylinder or a cone, a disc - what the application's ON_BrepCylinder / ON_BrepCone primitives carry on an ON_PlaneSurface. The
+// (u, v) chord polygon of such a trim is short of the true cap by (2 pi / n)^2 / 6 of its area, and the divergence theorem charges that
+// deficit to the volume (measured in VolumeOfSealedSolid(): a capped cylinder 0.38% and a cone 1.14% low), so such a face takes its area from
+// the trim itself (PlanarCurvedCapArea). Not taken, each keeping the path it had: a polyline trim (degree 1: the polygon path follows the
+// neighbours' true curves there), a face with holes or several trims (a boolean's cap), and a plane with a non-affine NURBS parametrization
+// (a sweep cap's FAN, handled by its own block in VolumeImpl()).
+static bool IsPlanarCurvedCap(const ON_Brep& brep, const ON_BrepFace& face, const ON_Surface& sf) {
+  if (face.m_li.Count() != 1 || !sf.IsPlanar(nullptr, 1e-9)) return false;
+  if (const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(&sf)) {
+    if (ns->Order(0) > 2 || ns->Order(1) > 2 || ns->IsRational()) return false;
+  }
+  const int li = face.m_li[0];
+  if (li < 0 || li >= brep.m_L.Count()) return false;
+  const ON_BrepLoop& loop = brep.m_L[li];
+  if (loop.m_type != ON_BrepLoop::outer) return false;
+  int real = 0;
+  for (int ti = 0; ti < loop.m_ti.Count(); ++ti) {
+    const int tix = loop.m_ti[ti];
+    if (tix < 0 || tix >= brep.m_T.Count()) return false;
+    const ON_BrepTrim& trim = brep.m_T[tix];
+    if (trim.m_type == ON_BrepTrim::singular) continue;
+    if (++real > 1 || trim.Degree() < 2 || trim.IsLinear(1e-12) || !trim.IsClosed()) return false;
+  }
+  return real == 1;
+}
+
+// Area of a face accepted by IsPlanarCurvedCap(), from its true boundary: A = |1/2 n . closed-integral (P - P0) x dP| with P(t) the plane
+// evaluated at the trim's own (u, v) pcurve, integrated by composite Gauss-Legendre (8 panels per span, 5 points), which for a circle or a
+// rational conic is exact to round-off: no chord error. `nrm` receives the unit normal Su x Sv of the plane and `p0` a point of the
+// boundary (every point of a plane has the same p . n). Returns false when the trim cannot be evaluated (the caller keeps the polygon path).
+static bool PlanarCurvedCapArea(const ON_Brep& brep, const ON_BrepFace& face, const ON_Surface& sf, ON_3dVector& nrm, ON_3dPoint& p0,
+                                double& area) {
+  const ON_BrepLoop& loop = brep.m_L[face.m_li[0]];
+  const ON_BrepTrim* trim = nullptr;
+  for (int ti = 0; ti < loop.m_ti.Count(); ++ti) {
+    const ON_BrepTrim& t = brep.m_T[loop.m_ti[ti]];
+    if (t.m_type != ON_BrepTrim::singular) trim = &t;
+  }
+  if (trim == nullptr) return false;
+  ON_3dPoint pc;
+  ON_3dVector su, sv;
+  if (!sf.Ev1Der(sf.Domain(0).ParameterAt(0.5), sf.Domain(1).ParameterAt(0.5), pc, su, sv)) return false;
+  nrm = ON_CrossProduct(su, sv);
+  if (!nrm.Unitize()) return false;
+  const int spans = trim->SpanCount();
+  if (spans < 1) return false;
+  std::vector<double> kn(static_cast<size_t>(spans) + 1);
+  if (!trim->GetSpanVector(kn.data())) return false;
+  const ON_3dPoint uv0 = trim->PointAt(kn.front());
+  p0 = sf.PointAt(uv0.x, uv0.y);
+  constexpr int kPanels = 8;
+  ON_3dVector vec(0, 0, 0);
+  for (int sp = 0; sp < spans; ++sp) {
+    const double k0 = kn[static_cast<size_t>(sp)], k1 = kn[static_cast<size_t>(sp) + 1];
+    for (int pn = 0; pn < kPanels; ++pn) {
+      const double ta = k0 + (k1 - k0) * pn / kPanels, tb = k0 + (k1 - k0) * (pn + 1) / kPanels;
+      const double mid = 0.5 * (ta + tb), half = 0.5 * (tb - ta);
+      for (int g = 0; g < kMassPropsGaussPoints; ++g) {
+        ON_3dPoint uv, pt;
+        ON_3dVector duv, a, b;
+        if (!trim->Ev1Der(mid + half * kMassPropsGaussNodes[g], uv, duv)) return false;
+        if (!sf.Ev1Der(uv.x, uv.y, pt, a, b)) return false;
+        vec += (0.5 * half * kMassPropsGaussWeights[g]) * ON_CrossProduct(pt - p0, a * duv.x + b * duv.y);
+      }
+    }
+  }
+  area = std::fabs(vec * nrm);
+  return area > 0.0;
+}
+
 // True iff face `i` covers its ENTIRE underlying surface parameter
 // domain, in either of the two ways this kernel's own factories express
 // that: (a) a real ON_Brep loop that runs along the surface's own
@@ -1823,6 +1894,19 @@ double Brep::VolumeImpl(bool allow_analytic) const {
           " is trimmed by this kernel's own pseudo-trim side tables (TrimmedPlanarFace()'s own bare-surface "
           "convention), not real ON_Brep loop topology - exact integration over that convention's own trim "
           "region is a materially different problem this does not attempt");
+    }
+    // A PLANAR face outlined by one closed curved trim (the circular cap of the application's cylinder / cone primitives, see
+    // IsPlanarCurvedCap()): its (u, v) chord polygon is short of the cap by (2 pi / n)^2 / 6 of the area (measured: a capped cylinder 0.38% and
+    // a cone 1.14% low). On a plane the divergence integrand p.n is the constant p0.n, so the face contributes (p0.n / 3) x area, with the area
+    // taken along the trim itself (exact for a circle). Every other planar face keeps the paths below, unchanged.
+    if (g_trimmed_face_follow_neighbor_curves && sf && IsPlanarCurvedCap(brep_, face, *sf)) {
+      ON_3dVector nrm;
+      ON_3dPoint p0;
+      double area = 0.0;
+      if (PlanarCurvedCapArea(brep_, face, *sf, nrm, p0, area)) {
+        total += sign * (ON_3dVector(p0) * nrm) / 3.0 * area;
+        continue;
+      }
     }
     // VolumeOfSealedSolid(): outer loop and each hole integrated as separate simple polygons (hole subtracted),
     // see TrimmedFaceUVPolygon(). Volume() keeps the single slit-bridged polygon, bit-for-bit.
