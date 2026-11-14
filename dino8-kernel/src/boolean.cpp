@@ -658,6 +658,26 @@ double RelativeTol(const std::vector<Brep::PlanarFace>& faces) {
   return std::max(kConvexTol, max_extent * 1e-9);
 }
 
+// The size of one operand's own bounding box (0 for no geometry).
+double OperandDiagonal(const std::vector<Brep::PlanarFace>& faces) {
+  ON_BoundingBox bb;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) bb.Set(p, true);
+  }
+  return bb.IsValid() ? bb.Diagonal().Length() : 0.0;
+}
+
+// The auto-derived tolerance of a Boolean, `rel` = RelativeTol of the two operands (1e-9 x the largest COORDINATE). That is a
+// statement about the coordinates' precision, not about the bodies: a 10 cube sharing a corner with a 1e12 cube (or a 10 cube 1e12 from
+// the origin) got a tolerance of 1e3, larger than the cube itself, and every operation answered with an EMPTY Brep. When `rel` exceeds
+// 0.1 percent of the smaller operand it is lowered to 1e-9 x that operand's size, but never below what the coordinates can resolve
+// (about 8 ulp, 1.8e-6 x rel). Operands of comparable size, where `rel` is already small against both, keep `rel` bit for bit.
+double AutoBooleanTol(double rel, double diag_a, double diag_b) {
+  const double small = std::min(diag_a, diag_b);
+  if (!(small > 0.0) || !(rel > 1e-3 * small)) return rel;
+  return std::min(rel, std::max({kConvexTol, 1e-9 * small, 1.8e-6 * rel}));
+}
+
 // Every vertex of every face must lie on the inside (or exactly on) of
 // every one of this solid's own half-spaces - the direct definition of
 // convexity for a solid already given as a set of outward-facing planes.
@@ -1255,7 +1275,7 @@ Brep FoldViaUnionRobust(const std::vector<Brep>& group, UnionFn union_fn) {
 std::vector<Brep::PlanarFace> PlanarBooleanFaces(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
   const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
-  const double tol = tolerance >= 0.0 ? tolerance : std::max(RelativeTol(fa), RelativeTol(fb));
+  const double tol = tolerance >= 0.0 ? tolerance : AutoBooleanTol(std::max(RelativeTol(fa), RelativeTol(fb)), OperandDiagonal(fa), OperandDiagonal(fb));
 
   // Split every face of A against every plane of B, classify each
   // survivor against B; then the same the other way around.
@@ -5379,6 +5399,22 @@ double RelativeTolMixed(const std::vector<MixedFace>& faces) {
     }
   }
   return std::max(kConvexTol, max_extent * 1e-9);
+}
+
+double OperandDiagonalMixed(const std::vector<MixedFace>& faces) {
+  ON_BoundingBox bb;
+  for (const MixedFace& f : faces) {
+    if (!f.is_cyl) {
+      for (const Point3d& p : f.planar.loop) bb.Set(p, true);
+      continue;
+    }
+    const Brep::CylindricalFace& cf = f.cyl;
+    for (const Point3d& e : {cf.frame.origin, cf.frame.origin + cf.length * cf.frame.zaxis}) {
+      bb.Set(Point3d(e.x - cf.radius, e.y - cf.radius, e.z - cf.radius), true);
+      bb.Set(Point3d(e.x + cf.radius, e.y + cf.radius, e.z + cf.radius), true);
+    }
+  }
+  return bb.IsValid() ? bb.Diagonal().Length() : 0.0;
 }
 
 // How closely `dir` has to align with `normal` (or vice versa) to count
@@ -9952,7 +9988,7 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
 std::vector<MixedFace> MixedBooleanFaces(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   std::vector<MixedFace> fa = ToMixed(a.MixedFaces());
   std::vector<MixedFace> fb = ToMixed(b.MixedFaces());
-  const double tol = tolerance >= 0.0 ? tolerance : std::max(RelativeTolMixed(fa), RelativeTolMixed(fb));
+  const double tol = tolerance >= 0.0 ? tolerance : AutoBooleanTol(std::max(RelativeTolMixed(fa), RelativeTolMixed(fb)), OperandDiagonalMixed(fa), OperandDiagonalMixed(fb));
 
   const ClassifiedBucketsMixed from_a = SplitAndBucketMixed(fa, fb, tol);
   const ClassifiedBucketsMixed from_b = SplitAndBucketMixed(fb, fa, tol);
