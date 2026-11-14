@@ -52,16 +52,19 @@ bool ByDistanceThenIndex(const PointCloudNeighbor& a, const PointCloudNeighbor& 
 }  // namespace
 
 const ON_RTree& PointCloud::SpatialIndex() const {
-  if (!spatial_index_) {
+  // Locked: this runs inside const queries, which several threads may issue on one shared cloud. The reference stays
+  // valid after the lock is released because only a mutator (AppendPoint/SetPointAt/Transform's copy) ever resets it.
+  std::lock_guard<std::mutex> lock(spatial_index_.mutex);
+  if (!spatial_index_.tree) {
     auto tree = std::make_shared<ON_RTree>(static_cast<size_t>(cloud_.PointCount()));
     for (int i = 0; i < cloud_.PointCount(); ++i) {
       const ON_3dPoint& p = cloud_.m_P[i];
       const double box[3] = {p.x, p.y, p.z};
       tree->Insert(box, box, i);
     }
-    spatial_index_ = std::move(tree);
+    spatial_index_.tree = std::move(tree);
   }
-  return *spatial_index_;
+  return *spatial_index_.tree;
 }
 
 std::vector<PointCloudNeighbor> PointCloud::KNearest(Point3d query, int k) const {

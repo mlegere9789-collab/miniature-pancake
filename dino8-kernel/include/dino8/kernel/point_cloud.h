@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,36 @@
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
+
+namespace detail {
+// The lazily built R-tree a PointCloud keeps for KNearest()/PointsWithinRadius() (see PointCloud::SpatialIndex()).
+// It is built inside const methods, so two threads querying one shared const cloud for the first time would race on a
+// bare shared_ptr; the mutex makes the build happen once and every thread use the same tree - the same arrangement
+// Mesh's own MeshSpatialCache already uses (mesh.h). Copying a cloud still shares the built tree with the copy (never
+// the mutex), exactly as the plain shared_ptr member did.
+struct PointCloudSpatialCache {
+  PointCloudSpatialCache() = default;
+  PointCloudSpatialCache(const PointCloudSpatialCache& other) : tree(other.Get()) {}
+  PointCloudSpatialCache& operator=(const PointCloudSpatialCache& other) {
+    if (this != &other) {
+      std::shared_ptr<ON_RTree> shared = other.Get();
+      std::lock_guard<std::mutex> lock(mutex);
+      tree = std::move(shared);
+    }
+    return *this;
+  }
+  std::shared_ptr<ON_RTree> Get() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return tree;
+  }
+  void reset() {
+    std::lock_guard<std::mutex> lock(mutex);
+    tree.reset();
+  }
+  mutable std::mutex mutex;
+  std::shared_ptr<ON_RTree> tree;  // guarded by `mutex`
+};
+}  // namespace detail
 
 // One neighbor found by PointCloud::KNearest() or
 // PointsWithinRadius(): the index of a point in this cloud (exactly what
@@ -401,7 +432,7 @@ class PointCloud {
   // never a correctness risk, since resetting one shared_ptr never
   // touches the tree another copy's own pointer still points at.
   const ON_RTree& SpatialIndex() const;
-  mutable std::shared_ptr<ON_RTree> spatial_index_;
+  mutable detail::PointCloudSpatialCache spatial_index_;
 
   ON_PointCloud cloud_;
 };
