@@ -380,6 +380,15 @@ std::string ModEntity(Document& doc, long long id, const std::vector<DxfItem>& i
       return "group " + std::to_string(d.code) + " of a " + type + " cannot be changed";
     }
   }
+  if (type == "LWPOLYLINE" && !poly_changed) {
+    // removing or reordering vertices leaves no changed group 10 behind, so compare the whole vertex lists
+    std::vector<const DxfItem*> now, given;
+    for (const DxfItem& c : cur) if (c.code == 10 && c.k == DxfItem::K::Point) now.push_back(&c);
+    for (const DxfItem& d : items) if (d.code == 10 && d.k == DxfItem::K::Point) given.push_back(&d);
+    bool same = now.size() == given.size();
+    for (size_t k = 0; same && k < now.size(); ++k) same = SameItem(*now[k], *given[k]);
+    if (!same) { poly_changed = true; changed.push_back(given.empty() ? items.front() : *given.front()); }
+  }
   if (type == "ARC" && (a50 || a51)) {
     ON_Arc a;
     doc.Find(static_cast<ObjectId>(id))->curve->raw().IsArc(nullptr, &a, kEntTol);
