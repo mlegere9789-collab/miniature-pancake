@@ -151,10 +151,10 @@ proptest! {
         pull(&mut reps, 1, 0);
         let h = reps[0].head();
         reps[1].checkout(h).unwrap();
-        for r in 0..2 {
+        for (r, ws) in reps.iter_mut().enumerate() {
             let mut s = script(seed + 7 + r as u64, false);
             s.adopt(base.iter().copied());
-            drive(&mut reps[r], &mut s, per_round);
+            drive(ws, &mut s, per_round);
         }
         let (ha, hb) = (reps[0].head(), reps[1].head());
         pull(&mut reps, 0, 1);
