@@ -21,6 +21,11 @@
 # files sourced, as smoke.sh itself does) + `exit $fail`, run with SIGPIPE ignored (`trap '' PIPE`, like the
 # CI runner) under `timeout`. Exit status is nonzero if any job exits nonzero or prints a FAIL line.
 #
+# Evidence (master plan 7.5): with DINO8_SECTION_JSONL=<file> set, every check line a job prints (a line starting `ok` or
+# `FAIL`, whoever printed it) is also appended to <file> as one JSON line {"kind":"check","suite":"app","section":NAME,
+# "name":<check label>,"result":"ok|fail",...}, plus one "test" line per section and "run" / "summary" / "job" lines;
+# see evidence_filter.py. The job log itself is unchanged. Without the variable nothing changes at all.
+#
 # Limits: a section that uses a helper function or variable defined in ANOTHER section of smoke.sh is not
 # self-contained; it then fails here with "command not found" (name the defining section too, in the same job).
 set -u
@@ -113,6 +118,17 @@ declare -a UNIQ=(); declare -A SEEN=()
 for s in "${SEL[@]}"; do [ -n "${SEEN[$s]:-}" ] || { SEEN[$s]=1; UNIQ+=("$s"); }; done
 SEL=("${UNIQ[@]}")
 
+# --- evidence (DINO8_SECTION_JSONL) ----------------------------------------------------------------------------
+EVF="$HERE/evidence_filter.py"; EVJ="${DINO8_SECTION_JSONL:-}"
+if [ -n "$EVJ" ]; then
+  if ! command -v python3 >/dev/null 2>&1 || [ ! -f "$EVF" ]; then
+    echo "run_sections: DINO8_SECTION_JSONL is set but python3 or $EVF is missing; no evidence will be written" >&2; EVJ=""
+  else
+    case "$EVJ" in /*) ;; *) EVJ="$PWD/$EVJ";; esac
+    { : >> "$EVJ"; } 2>/dev/null || { echo "run_sections: cannot append to $EVJ; no evidence will be written" >&2; EVJ=""; }
+  fi
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/run_sections.XXXXXX")"
 cleanup() {
   local pf
@@ -131,6 +147,8 @@ assemble() {
   for e in "$@"; do
     IFS='|' read -r n kind a b <<<"$e"
     echo "" >> "$out"
+    # evidence mode only: the section's name goes to the evidence filter (which removes the line again)
+    [ -n "$EVJ" ] && echo "echo \"@@d8ev-section $n\"" >> "$out"
     # wall time of every section on stdout ("section_time NAME 12s"), so the CI planner can weight by measured seconds
     echo "__sec_t0=\$SECONDS" >> "$out"
     if [ "$kind" = smoke ]; then sed -n "${a},${b}p" "$SMOKE" >> "$out"
@@ -157,6 +175,14 @@ start_xvfb() {  # $1 = job dir; prints display number, records pid in $1/xvfb.pi
   return 1
 }
 
+job_body() (  # $1 = job directory, $2 = its Xvfb display number or ""; stdout and stderr of the assembled script are the job log
+  trap '' PIPE
+  cd "$1" || exit 99
+  export TMPDIR="$1/tmp"
+  if [ -n "$2" ]; then export DISPLAY=":$2"; export PATH="$1/shim:$PATH"; else unset DISPLAY; fi
+  exec timeout "$TMO" bash "$1/script.sh" "$BIN"
+)
+
 run_job() {  # $1 = job index; rest = SEL entries (one job)
   local idx="$1"; shift
   local jd="$WORK/job$idx"; mkdir -p "$jd/tmp" "$jd/shim"
@@ -181,15 +207,17 @@ SHIM
     chmod +x "$jd/shim/xvfb-run"
   fi
   local s0; s0=$(date +%s)
-  (
-    trap '' PIPE
-    cd "$jd" || exit 99
-    export TMPDIR="$jd/tmp"
-    if [ -n "$disp" ]; then export DISPLAY=":$disp"; export PATH="$jd/shim:$PATH"; else unset DISPLAY; fi
-    exec timeout "$TMO" bash "$jd/script.sh" "$BIN"
-  ) > "$jd/log" 2>&1
-  echo $? > "$jd/rc"
-  echo $(( $(date +%s) - s0 )) > "$jd/secs"
+  if [ -n "$EVJ" ]; then
+    local names="" e; for e in "$@"; do names+="${e%%|*} "; done; names="${names% }"
+    job_body "$jd" "$disp" 2>&1 | python3 "$EVF" --jsonl "$EVJ" --pid "$$" --job "$idx" --sections "$names" > "$jd/log"
+    echo "${PIPESTATUS[0]}" > "$jd/rc"
+    echo $(( $(date +%s) - s0 )) > "$jd/secs"
+    printf '{"kind":"job","suite":"app","pid":%s,"job":%s,"sections":"%s","exit":%s,"secs":%s}\n' "$$" "$idx" "$names" "$(cat "$jd/rc")" "$(cat "$jd/secs")" >> "$EVJ" 2>/dev/null || true
+  else
+    job_body "$jd" "$disp" > "$jd/log" 2>&1
+    echo $? > "$jd/rc"
+    echo $(( $(date +%s) - s0 )) > "$jd/secs"
+  fi
   [ -f "$jd/xvfb.pid" ] && kill "$(cat "$jd/xvfb.pid")" 2>/dev/null
   return 0
 }
