@@ -114,6 +114,20 @@ impl CancelToken {
     }
 }
 
+/// Live view of the cancellation state of one evaluation.
+#[derive(Clone, Debug)]
+pub struct CancelProbe {
+    token: Option<CancelToken>,
+    internal: Arc<AtomicBool>,
+}
+
+impl CancelProbe {
+    /// True when the evaluation was cancelled or has failed elsewhere and should wind down.
+    pub fn requested(&self) -> bool {
+        self.internal.load(Ordering::Relaxed) || self.token.as_ref().is_some_and(CancelToken::is_cancelled)
+    }
+}
+
 /// Engine configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -379,7 +393,7 @@ struct Eval<'a, V: Value> {
     db: &'a Db<V>,
     rev: Rev,
     token: Option<&'a CancelToken>,
-    internal_stop: AtomicBool,
+    internal_stop: Arc<AtomicBool>,
     aborted: AtomicBool,
     error: Mutex<Option<EvalError>>,
     journal: Mutex<Vec<NodeId>>,
@@ -455,6 +469,12 @@ impl<V: Value> Ctx<'_, V> {
     /// Finds or creates the node `(kind, arg)`.  Creating a node does not evaluate it.
     pub fn node(&self, kind: Kind, arg: u64) -> NodeId {
         self.ev.db.node(kind, arg)
+    }
+
+    /// A cheap, thread-safe view of the evaluation's cancellation state that can be handed to
+    /// foreign kernels (see the C ABI sketch).
+    pub fn cancel_probe(&self) -> CancelProbe {
+        CancelProbe { token: self.ev.token.cloned(), internal: self.ev.internal_stop.clone() }
     }
 
     /// Cooperative cancellation point for long-running query functions.
@@ -1170,7 +1190,7 @@ impl<V: Value> Db<V> {
             db: self,
             rev: self.rev,
             token: opts.cancel,
-            internal_stop: AtomicBool::new(false),
+            internal_stop: Arc::new(AtomicBool::new(false)),
             aborted: AtomicBool::new(false),
             error: Mutex::new(None),
             journal: Mutex::new(Vec::new()),
@@ -1287,7 +1307,7 @@ impl<V: Value> Db<V> {
                         db: self,
                         rev: self.rev,
                         token: None,
-                        internal_stop: AtomicBool::new(false),
+                        internal_stop: Arc::new(AtomicBool::new(false)),
                         aborted: AtomicBool::new(false),
                         error: Mutex::new(None),
                         journal: Mutex::new(Vec::new()),
