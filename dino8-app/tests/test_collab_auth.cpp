@@ -6,6 +6,7 @@
 // longer than the 64-byte block), not values computed by the code under test.
 #include <chrono>
 #include <cstdio>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,6 +26,14 @@ using dino8::app::CollabClient;
 using dino8::app::CollabServer;
 
 namespace {
+// Test tokens are generated at run time (never a literal in the repository): 16 random hex characters, distinct on every call.
+std::string GenToken() {
+  static const char* digits = "0123456789abcdef";
+  std::random_device rd;
+  std::string out;
+  for (int i = 0; i < 16; ++i) out.push_back(digits[rd() & 15]);
+  return out;
+}
 int failures = 0;
 void Check(bool ok, const std::string& what) {
   std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
@@ -72,7 +81,9 @@ int main() {
   Check(dino8::util::ConstantTimeEqual("abc", "abc") && !dino8::util::ConstantTimeEqual("abc", "abd") && !dino8::util::ConstantTimeEqual("abc", "ab"), "ConstantTimeEqual");
 
 #ifndef _WIN32
-  const std::string token = "s3cret-token!";
+  const std::string token = GenToken();
+  const std::string wrong_token = GenToken();
+  Check(token != wrong_token, "the two generated test tokens differ");
   // ---- 1. authenticated relay ----
   {
     CollabServer server;
@@ -95,7 +106,7 @@ int main() {
 
     // ---- 2. wrong token ----
     CollabClient c;
-    c.SetToken("wrong-token!!");
+    c.SetToken(wrong_token);
     c.Connect("127.0.0.1", server.Port(), e);
     c.Send("evil-from-C", se);  // queued by the client, must never be sent unauthenticated
     World w2; w2.server = &server; w2.clients = {&a, &b, &c}; w2.Init();

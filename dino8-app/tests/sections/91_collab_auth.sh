@@ -11,7 +11,8 @@
 # ---------------------------------------------------------------------------
 col_ok() { echo "ok   $1"; }
 col_bad() { echo "FAIL $1"; fail=1; }
-COL_DIR="$TMPW/col"; COL_CFG="$COL_DIR/config"; mkdir -p "$COL_CFG"
+COL_DIR="$TMPW/col"; COL_TOK="col$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"; COL_BAD="bad$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')";  # tokens are generated at test time
+ COL_CFG="$COL_DIR/config"; mkdir -p "$COL_CFG"
 cat > "$COL_DIR/s.txt" <<EOS
 @wait 3
 COLBEGIN_lan
@@ -19,7 +20,7 @@ CollabHost Lan=Yes
 COLBEGIN_short
 CollabHost Token=abc
 COLBEGIN_host
-CollabHost Token=correct-horse-9
+CollabHost Token=$COL_TOK
 CollabStatus
 CollabLeave
 COLBEGIN_plain
@@ -27,7 +28,7 @@ CollabHost
 CollabStatus
 CollabLeave
 COLBEGIN_lanok
-CollabHost Lan=Yes Token=correct-horse-9
+CollabHost Lan=Yes Token=$COL_TOK
 CollabStatus
 CollabLeave
 COLBEGIN_joinshort
@@ -59,7 +60,7 @@ col_line lanok "CollabStatus: Host, 0 peer(s), 1 snapshot(s) sent, 0 applied thi
 col_line joinshort "! CollabJoin: the Token must be at least 8 characters" "COL_join: a too-short token is refused before connecting"
 
 # ---- two real processes: a token host, one joiner with the right token, one with a wrong token -------------------------------------
-#   host   : CollabHost Token=correct-horse-9, then idles ~1500 frames and reports CollabStatus and its object count
+#   host   : CollabHost Token=<generated>, then idles ~1500 frames and reports CollabStatus and its object count
 #   joiner A (right token): authenticates (no "waiting for the host" in its status),
 #            then draws one Point; the host must end with exactly 1 object - the Point crossed the authenticated relay
 #   joiner B (wrong token): is turned away; its CollabStatus then says the session ended because the host rejected the token, and
@@ -75,7 +76,7 @@ else
     fi
   }
   mkdir -p "$COL_DIR/cfg_host" "$COL_DIR/cfg_a" "$COL_DIR/cfg_b"
-  printf '%s\n' '@wait 3' 'CollabHost Token=correct-horse-9' '@wait 1500' 'COLBEGIN_hostend' 'CollabStatus' > "$COL_DIR/host.txt"
+  printf '%s\n' '@wait 3' "CollabHost Token=$COL_TOK" '@wait 1500' 'COLBEGIN_hostend' 'CollabStatus' > "$COL_DIR/host.txt"
   col_app "$COL_DIR/cfg_host" "$COL_DIR/host.txt" 1520 > "$COL_DIR/host.out" 2>&1 &
   COL_HPID=$!
   COL_PORT=""
@@ -87,8 +88,8 @@ else
   if [ -z "$COL_PORT" ]; then
     col_bad "COL_xproc: the host process never reported its port"; kill "$COL_HPID" 2>/dev/null || true
   else
-    printf '%s\n' '@wait 3' "CollabJoin Port=$COL_PORT Token=correct-horse-9" '@wait 80' 'COLBEGIN_a1' 'CollabStatus' 'Point 5,6,7' '@wait 60' 'COLBEGIN_a2' 'CollabStatus' > "$COL_DIR/ja.txt"
-    printf '%s\n' '@wait 3' "CollabJoin Port=$COL_PORT Token=wrong-token-xyz" '@wait 80' 'COLBEGIN_b1' 'CollabStatus' > "$COL_DIR/jb.txt"
+    printf '%s\n' '@wait 3' "CollabJoin Port=$COL_PORT Token=$COL_TOK" '@wait 80' 'COLBEGIN_a1' 'CollabStatus' 'Point 5,6,7' '@wait 60' 'COLBEGIN_a2' 'CollabStatus' > "$COL_DIR/ja.txt"
+    printf '%s\n' '@wait 3' "CollabJoin Port=$COL_PORT Token=$COL_BAD" '@wait 80' 'COLBEGIN_b1' 'CollabStatus' > "$COL_DIR/jb.txt"
     COL_JA="$(col_app "$COL_DIR/cfg_a" "$COL_DIR/ja.txt" 160)" || { echo "$COL_JA" | tail -5; col_bad "COL_xproc: joiner A exited non-zero"; COL_JA=""; }
     COL_JB="$(col_app "$COL_DIR/cfg_b" "$COL_DIR/jb.txt" 100)" || { echo "$COL_JB" | tail -5; col_bad "COL_xproc: joiner B exited non-zero"; COL_JB=""; }
     wait "$COL_HPID" || col_bad "COL_xproc: the host exited non-zero"
