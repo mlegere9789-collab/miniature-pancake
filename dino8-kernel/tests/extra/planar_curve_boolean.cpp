@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/planar_curve_boolean.h"
 #include "opennurbs.h"
 #include "test_registry.h"
@@ -24,6 +25,7 @@
 namespace {
 
 using dino8::kernel::CurveRegionOp;
+using dino8::kernel::NurbsCurve;
 using dino8::kernel::PlanarCurveBoolean;
 using dino8::kernel::PlanarCurveBooleanResult;
 
@@ -258,6 +260,33 @@ D8_EXTRA_TEST(PlanarCurveBooleanCrossingsAreNotOnlyAsGoodAsTheTolerance) {
     char buf[200];
     std::snprintf(buf, sizeof(buf), "circle - square at tolerance %g: perimeter %.9f vs closed form %.9f", tol, Sum(caps, pl).length, want);
     d8test::Check(caps.ok && caps.loops.size() == 4 && Near(Sum(caps, pl).length, want, 1e-6), buf);
+  }
+}
+
+// NurbsCurve::LengthToTolerance on the loops a boolean returns. A circle made from an ON_ArcCurve (what the app's Circle command stores) is
+// parametrized by arc length, so its cap loops join a rational arc to a straight side at a knot; the old whole-interval adaptive rule stopped
+// at its first agreement across that knot and read the four caps of a circle minus a square as 24.877160 at a requested 1e-9 (closed form
+// 12 + 20 acos(0.8) = 24.870022). Integrated span by span it matches the closed form to 1e-8, for both circle parametrizations.
+D8_EXTRA_TEST(PlanarCurveBooleanLoopsMeasureToTheirClosedFormLengthAcrossKnots) {
+  const ON_Plane pl = XY();
+  const double r = 2.5, h = 2.0;
+  const double want = 4 * (2 * std::sqrt(r * r - h * h)) + 4 * r * 2 * std::acos(h / r);
+  const ON_PolylineCurve S = Rect(pl, -2, -2, 2, 2);
+  ON_NurbsCurve by_angle = Circle(pl, 0, 0, r), by_length;
+  ON_ArcCurve(ON_Circle(pl, r)).GetNurbForm(by_length);
+  const ON_NurbsCurve circles[2] = {by_angle, by_length};
+  const char* names[2] = {"angle-parametrized circle", "arc-length-parametrized circle"};
+  for (int k = 0; k < 2; ++k) {
+    const PlanarCurveBooleanResult caps = PlanarCurveBoolean(circles[k], S, pl, CurveRegionOp::Difference);
+    double total = 0;
+    for (const ON_NurbsCurve& loop : caps.loops) {
+      NurbsCurve nc;
+      nc.raw() = loop;
+      total += nc.LengthToTolerance(1e-9);
+    }
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "%s: four caps measure %.9f vs closed form %.9f", names[k], total, want);
+    d8test::Check(caps.ok && caps.loops.size() == 4 && Near(total, want, 1e-8), buf);
   }
 }
 
