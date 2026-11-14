@@ -1453,35 +1453,35 @@ impl<V: Value> Db<V> {
         };
 
         // Verification: a node that has a value revalidates without running its function when
-        // no dependency changed since it was last verified.
+        // no dependency changed since it was last verified.  Every previous dependency is first
+        // brought up to date (as one parallel batch) and only then are the revisions compared.
+        // Deciding on the first changed dependency instead would make the set of evaluated nodes
+        // depend on which dependencies happened to be clean at scan time, i.e. on scheduling.
         if has_value {
             let mut missing: Vec<NodeId> = Vec::new();
             let mut changed_dep = false;
             for &d in &old_deps {
                 let g = lock(&self.arena.get(d).inner);
                 if g.state == State::Clean {
-                    if g.changed_at > verified_at {
-                        changed_dep = true;
-                        break;
-                    }
+                    changed_dep |= g.changed_at > verified_at;
                 } else {
                     missing.push(d);
                 }
             }
+            if !missing.is_empty() {
+                self.park(n, &missing, old_deps, out, ls);
+                return;
+            }
             if !changed_dep {
-                if missing.is_empty() {
-                    let waiters = {
-                        let mut g = lock(&node.inner);
-                        g.deps = old_deps;
-                        g.verified_at = ev.rev;
-                        g.state = State::Clean;
-                        std::mem::take(&mut g.waiters)
-                    };
-                    ls.verified += 1;
-                    self.wake(waiters, out);
-                } else {
-                    self.park(n, &missing, old_deps, out, ls);
-                }
+                let waiters = {
+                    let mut g = lock(&node.inner);
+                    g.deps = old_deps;
+                    g.verified_at = ev.rev;
+                    g.state = State::Clean;
+                    std::mem::take(&mut g.waiters)
+                };
+                ls.verified += 1;
+                self.wake(waiters, out);
                 return;
             }
         }
