@@ -1,0 +1,4 @@
+{"time": "2026-11-18T09:00:00Z", "task": "T-1", "what": "work", "commit": "a001", "evidence": "4 checks ok"}
+{"time": "2026-11-18T09:08:00Z", "task": "T-1", "what": "work", "commit": "a002", "evidence": "9 checks ok"}
+{"time": "2026-11-18T09:17:00Z", "task": "T-1", "what": "work", "commit": "a003", "evidence": "12 checks ok"}
+{"time": "2026-11-18T09:26:00Z", "task": "T-1", "what": "work", "commit": "a004", "evidence": "15 checks ok"}

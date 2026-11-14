@@ -96,7 +96,9 @@ jobs:
         run: |
           python ledger/tools/guard.py paths --actor "$ACTOR" --changed "$RUNNER_TEMP/changed.txt"
           rm -rf "$RUNNER_TEMP/base" && mkdir -p "$RUNNER_TEMP/base"
-          git archive "$BASE" parity/register 2>/dev/null | tar -x -C "$RUNNER_TEMP/base" || true
+          if git cat-file -e "$BASE:parity/register" 2>/dev/null; then
+            git archive "$BASE" parity/register | tar -x -C "$RUNNER_TEMP/base"
+          fi
           python ledger/tools/guard.py rows --actor "$ACTOR" --base "$RUNNER_TEMP/base/parity/register" --head parity/register
 
       - name: A pushed percent.json must equal what the Register and the evidence compute

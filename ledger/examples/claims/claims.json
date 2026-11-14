@@ -1,0 +1,38 @@
+[
+ {
+  "task": "T-1",
+  "agent": "alpha",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "branch": "task/T-1",
+  "claimed_at": "2026-11-18T08:50:00Z",
+  "renewed_at": "2026-11-18T08:50:00Z",
+  "attempt": 1
+ },
+ {
+  "task": "T-2",
+  "agent": "beta",
+  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "branch": "task/T-2",
+  "claimed_at": "2026-11-18T08:00:00Z",
+  "renewed_at": "2026-11-18T08:00:00Z",
+  "attempt": 1
+ },
+ {
+  "task": "T-3",
+  "agent": "gamma",
+  "sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "branch": "task/T-3",
+  "claimed_at": "2026-11-18T08:30:00Z",
+  "renewed_at": "2026-11-18T08:30:00Z",
+  "attempt": 2
+ },
+ {
+  "task": "T-4",
+  "agent": "delta",
+  "sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "branch": "task/T-4",
+  "claimed_at": "2026-11-18T08:30:00Z",
+  "renewed_at": "2026-11-18T08:30:00Z",
+  "attempt": 3
+ }
+]

@@ -76,7 +76,7 @@ import ledgerlib  # noqa: E402
 
 NAMESPACE = "refs/heads/claim/"
 EXPIRY_MINUTES = 45
-FINISHED_STATES = ("done", "verified", "merged", "closed", "cancelled")
+FINISHED_STATES = ("done", "verified", "merged", "counted", "closed", "cancelled")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 ZERO_SHA = "0" * 40
 GIT_TIMEOUT = 120
