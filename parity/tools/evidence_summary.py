@@ -346,7 +346,9 @@ def main(argv):
         p("evidence printed %s: printed ok=%d FAIL=%d, JSONL ok=%d fail+throw=%d: %s" %
           (v["suite"], v["printed_ok"], v["printed_fail"], v["json_ok"], v["json_fail"], "EQUAL" if v["equal"] else "DIFFERENT"))
     for si in shard_info:
-        if si["missing"]:
+        if si["missing"] and len(si["present"]) == 1:
+            p("evidence %s shards: this evidence is shard %d of %d" % (si["suite"], si["present"][0], si["of"]))
+        elif si["missing"]:
             p("evidence %s shards: %d of %d present (missing %s)" % (si["suite"], len(si["present"]), si["of"], si["missing"]))
         else:
             p("evidence %s shards: all %d present, %d registration indexes, %d duplicated, %d missing" %
