@@ -6,6 +6,7 @@
 #include <set>
 #include <utility>
 
+#include "dino8/kernel/brep_seam.h"
 #include "geom/BrepMesher.h"
 
 namespace dino8::app {
@@ -356,12 +357,11 @@ ON_NurbsSurface* OwnNurbsSurface(ON_Brep& b, int fi) {
   ON_NurbsSurface* fresh = new ON_NurbsSurface;
   if (b.m_S[si]->GetNurbForm(*fresh) <= 0) { delete fresh; return nullptr; }
   if (users == 1) {
-    delete b.m_S[si];
-    b.m_S[si] = fresh;
+    kernel::ReplaceBrepSurface(b, si, fresh, true);  // swaps the slot and repoints the faces' cached surface proxy
   } else {
     f.m_si = b.AddSurface(fresh);
+    f.SetProxySurface(fresh);
   }
-  f.SetProxySurface(fresh);
   return fresh;
 }
 

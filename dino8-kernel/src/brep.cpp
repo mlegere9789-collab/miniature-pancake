@@ -1,4 +1,5 @@
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/brep_seam.h"
 
 #include <algorithm>
 #include <array>
@@ -10765,8 +10766,7 @@ Result Brep::SimplifyPlanarFace(int face_index, double tolerance) {
   auto* new_srf = new ON_NurbsSurface(canonical.raw());
   int si = face.m_si;
   if (si >= 0 && si < brep_.m_S.Count() && brep_.SurfaceUseCount(si, 2) <= 1) {
-    delete brep_.m_S[si];
-    brep_.m_S[si] = new_srf;
+    ReplaceBrepSurface(brep_, si, new_srf, true);  // swaps the slot and repoints the faces' cached proxy
   } else {
     si = brep_.AddSurface(new_srf);
   }

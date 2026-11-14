@@ -21,6 +21,7 @@
 
 #include <opennurbs.h>
 
+#include "dino8/kernel/brep_seam.h"
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/surface_intersect.h"
 
@@ -119,8 +120,7 @@ Result OffsetTrimmedFace(const Brep& sheet, double distance, Brep& out, double t
     auto* ns = new ON_NurbsSurface(off.raw());
     int si = face.m_si;
     if (si >= 0 && si < b.m_S.Count() && b.SurfaceUseCount(si, 2) <= 1) {
-      delete b.m_S[si];
-      b.m_S[si] = ns;
+      ReplaceBrepSurface(b, si, ns, true);  // swaps the slot and repoints the faces' cached proxy
     } else {
       si = b.AddSurface(ns);
     }
