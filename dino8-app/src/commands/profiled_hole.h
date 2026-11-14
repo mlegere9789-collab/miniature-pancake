@@ -359,8 +359,8 @@ inline bool RecognizeProfiledHole(const ON_Brep& b, ProfiledHole& ph, std::strin
   if (blind) {
     if (!(pts.back().r < 10 * tol)) { why = "a blind hole whose floor is not a disc on the axis"; return false; }
   } else {
-    const Cap& far = entry_top ? cap[0] : cap[1];
-    if (std::fabs(ch - far.h) > 10 * tol || std::fabs(cr - far.ri) > 10 * tol) { why = "the hole wall does not end on the far cap's rim"; return false; }
+    const Cap& far_cap = entry_top ? cap[0] : cap[1];  // not `far`: <windows.h> defines `far` (and `near`) as empty macros
+    if (std::fabs(ch - far_cap.h) > 10 * tol || std::fabs(cr - far_cap.ri) > 10 * tol) { why = "the hole wall does not end on the far cap's rim"; return false; }
   }
   for (size_t i = 0; i + 1 < pts.size(); ++i) {
     if (pts[i + 1].d < pts[i].d - 10 * tol) { why = "the hole profile has an undercut"; return false; }
