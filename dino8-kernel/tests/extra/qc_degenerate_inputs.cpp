@@ -271,8 +271,8 @@ D8_EXTRA_TEST(QcDegenerateShellOffset) {
     Add(std::string("OffsetSolidConvexPlanar ") + b.tag + " distances wrong count", [b] { return Judge(dino8::kernel::OffsetSolidConvexPlanar(b.make(), std::vector<double>{1.0})); });
   }
   for (const Num& a : Sizes()) {
-    Add(std::string("ShellClosedSphere r=") + a.tag, [a] { return Judge(dino8::kernel::ShellClosedSphere(Point3d(0, 0, 0), a.v, 1.0)); });
-    Add(std::string("ShellClosedSphere t=") + a.tag, [a] { return Judge(dino8::kernel::ShellClosedSphere(Point3d(0, 0, 0), 5.0, a.v)); });
+    Add(std::string("ShellClosedSphere r=") + a.tag, [a] { return Judge(dino8::kernel::ShellClosedSphere(Point3d(0, 0, 0), a.v, 1.0), false); });
+    Add(std::string("ShellClosedSphere t=") + a.tag, [a] { return Judge(dino8::kernel::ShellClosedSphere(Point3d(0, 0, 0), 5.0, a.v), false); });
     Add(std::string("ShellClosedTorus t=") + a.tag, [a] { return Judge(dino8::kernel::ShellClosedTorus(ON_Plane::World_xy, 10.0, 2.0, a.v)); });
     for (const Profile& p : Profiles()) {
       Add(std::string("ShellClosedExtrusion ") + p.tag + " t=" + a.tag, [p, a] { return Judge(dino8::kernel::ShellClosedExtrusion(p.make(), Vector3d(0, 0, 10), a.v)); });
