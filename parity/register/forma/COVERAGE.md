@@ -1,26 +1,28 @@
 # Autodesk Forma: Parity Register coverage
 
-Rows: 136, ids D8-FORMA-<DOMAIN>-<nnnn>, one JSONL file per domain, each row validated against the Register row schema (draft-07). All rows start at tier None, status open.
+Rows: 186 (136 original plus 50 added in the verification pass; see VERIFY.md), ids D8-FORMA-<DOMAIN>-<nnnn>, one JSONL file per domain, each row validated against the Register row schema (draft-07). All rows start at tier None, status open.
 
 | File | Domain code | Rows | Covers |
 |---|---|---|---|
-| site.jsonl | SITE | 17 | Site Design project setup, terrain, context, proposals, drawing tools, constraints, export |
-| analysis.jsonl | ANALYSIS | 39 | Sun and shadow, daylight potential, wind (rapid and detailed, comfort scales), microclimate, noise, solar energy, operational energy, program and area, views, regulatory checks, cost, overlay, refresh, export, transparency, custom analysis |
-| buildingdesign.jsonl | BLDG | 14 | Building Design massing, levels, facade, floor plan, LOD 200, Revit handoff, Connected Client |
-| board.jsonl | BOARD | 7 | Forma Board |
-| datamanagement.jsonl | DATA | 10 | Data Management (common data environment) |
+| site.jsonl | SITE | 21 | Site Design project setup, terrain, context, proposals, drawing tools, constraints, export |
+| analysis.jsonl | ANALYSIS | 41 | Sun and shadow, daylight potential, wind (rapid and detailed, comfort scales), microclimate, noise, solar energy, operational energy, program and area, views, regulatory checks, cost, overlay, refresh, export, transparency, custom analysis |
+| buildingdesign.jsonl | BLDG | 17 | Building Design massing, levels, facade, floor plan, LOD 200, Revit handoff, Connected Client |
+| board.jsonl | BOARD | 16 | Forma Board |
+| datamanagement.jsonl | DATA | 22 | Data Management (common data environment) |
 | carbon.jsonl | CARBON | 8 | Carbon Insights, total/embodied/operational carbon |
 | streetdesign.jsonl | STREET | 5 | Street Design (beta) |
+| interop.jsonl | INTEROP | 8 | Data Exchanges, connectors, datasets, viewer formats, Revit handoff, BCF |
 | layoutexplorer.jsonl | LAYOUT | 5 | Building Layout Explorer |
 | marketplace.jsonl | MARKET | 6 | Data Marketplace and context data |
-| extensions.jsonl | EXT | 25 | Extensions, embedded view SDK, HTTP API, authentication, MCP and AI agents, bridges |
+| extensions.jsonl | EXT | 37 | Extensions, embedded view SDK, HTTP API, authentication, MCP and AI agents, bridges |
 
-Factories used: analysis-site 64, collab-cloud 41, simulation 17, interop-migration 14.
+Factories used: collab-cloud 74, analysis-site 73, interop-migration 22, simulation 17.
 
 ## Method and limits (clean room)
 
-- Public sources only: Autodesk Forma learning pages and blog posts, the Autodesk Platform Services Forma v1 documentation index and its published SDK package page, the public developer forum, trade press, plus the type declarations of the public Apache-2.0 npm package forma-embedded-view-sdk 0.96.0 (method names, wind comfort scale identifiers, raster sizes; read from the registry tarball, no site scraping), plus open standards and datasets named in the acceptance sketches. No competitor code or non-public material was read. Statements are in our own words.
-- In this session direct page fetches were blocked (hosts such as www.autodesk.com and aps.autodesk.com were not resolvable), so facts were taken from web-search result summaries of those public pages, and the URL in each row is the page the summary pointed to. Pages were not read in full. Rows whose behavior could not be confirmed carry the words "unverified" or "confirm" in notes. Those rows need a pass with a trial account or a page read before acceptance tests are frozen: D8-FORMA-SITE-0010, D8-FORMA-SITE-0013, D8-FORMA-SITE-0015, D8-FORMA-STREET-0001, D8-FORMA-STREET-0003, D8-FORMA-ANALYSIS-0007, D8-FORMA-ANALYSIS-0008, D8-FORMA-ANALYSIS-0014, D8-FORMA-ANALYSIS-0023, D8-FORMA-ANALYSIS-0026, D8-FORMA-ANALYSIS-0030, D8-FORMA-ANALYSIS-0032, D8-FORMA-BOARD-0006, D8-FORMA-EXT-0015, D8-FORMA-BLDG-0006, D8-FORMA-BLDG-0008, D8-FORMA-BLDG-0012.
+- Verification pass of 2026-11-14 (details and counts in VERIFY.md): rows were checked against Autodesk Forma help pages on help.autodesk.com (Forma for Design and Forma Data Management help), the APS Forma v1 developer documentation, and the type declarations of the public Apache-2.0 npm package forma-embedded-view-sdk 0.96.0 read from the registry. Every row note now starts with VERIFIED, PARTIAL or UNVERIFIED; added rows carry no tag and cite the page they were written from.
+- Several original source hosts (www.autodesk.com, forums.autodesk.com, www.npmjs.com, blogs.autodesk.com, adsknews.autodesk.com, trade press) could not be read from the verification environment, so rows that depended on them are marked UNVERIFIED with the original URL kept. The Site Design analysis, Street Design, Layout Explorer and Carbon Insights rows are mostly in this state.
+- Statements are in our own words. No competitor code or non-public material was read.
 - Forma's internal solver settings (mesh, turbulence model, ML model details) are not public. Rows are defined by outcome and measurable accuracy against public references, never by copying a method.
 - Where a row has "key=<name>" in notes, it is a stable label used by the generator, not product wording.
 
