@@ -5669,7 +5669,7 @@
    "toolbars": "Mesh Tools",
    "menu": "Mesh | Mesh Repair Tools > | Patch Single Face",
    "status": "Implemented",
-   "note": "Real (non-planar) Coons patch through a single 3- or 4-edge face's own boundary curves, spliced back in place of that face's surface; a face with a more complex (holed/multi-loop) boundary is out of scope.",
+   "note": "Real (non-planar) Coons patch through an untrimmed 4-edge face's own boundary curves, spliced back in place of that face's surface with the face's own parameterization; a trimmed, 3-edge, holed or singular face is refused.",
    "source": "cmd_srfedit.cpp",
    "aliases": []
   },

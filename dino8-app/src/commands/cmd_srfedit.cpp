@@ -2286,25 +2286,32 @@ class FitCurveToSurfaceCommand : public Command {
 
 // ---------------------------------------------------------------------------
 // PatchSingleFace: a real (non-planar) Coons patch through a single face's
-// own 3- or 4-edge outer boundary loop, spliced back in place of that
-// face's surface - the rest of the polysurface (and the face's own trim
-// loop, which already runs exactly along the new surface's parameter
-// boundary by construction) is left untouched. Scoped to a simple loop with
-// no holes; a face with a more complex boundary is out of scope.
+// own four boundary edges, spliced back in place of that face's surface - the
+// rest of the polysurface is left untouched. The face must be a whole
+// 4-sided surface: its four trims are the four sides of its surface's
+// parameter domain. The patch is built from the surface's own boundary
+// isocurves and given the surface's own domain, so its (u, v) sides are the
+// old ones and every existing trim (2D curves in that domain) still lands on
+// the matching 3D edge. A face with a trimmed boundary, fewer or more than
+// four edges, a singular side or holes is refused: its trims would no longer
+// match a patch built from its edge loop (the mesher reads the stored surface
+// itself, so such a face used to come out garbled or open).
 // ---------------------------------------------------------------------------
 
-bool BuildCoonsPatch(const ON_Curve& c0, const ON_Curve& d1, const ON_Curve& c1rev, const ON_Curve* d0rev, ON_NurbsSurface& out) {
+// Coons patch through the four boundary isocurves of `srf` (its v = min, u = max, v = max and u = min sides), as the bicubic surface through a
+// 17 x 17 blended grid. The patch carries `srf`'s own domain. False when the surface cannot be evaluated (the result must be a valid surface).
+bool BuildCoonsPatch(const ON_Surface& srf, ON_NurbsSurface& out) {
   const int n = 16;
-  auto sample = [&](const ON_Curve& c, bool reverse) {
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  auto side = [&](auto at) {  // n + 1 points along one boundary isocurve, parameter 0 .. 1 of that side
     std::vector<Point3d> pts(static_cast<size_t>(n) + 1);
-    const ON_Interval d = c.Domain();
-    for (int i = 0; i <= n; ++i) { const double f = reverse ? 1.0 - static_cast<double>(i) / n : static_cast<double>(i) / n; pts[static_cast<size_t>(i)] = c.PointAt(d.ParameterAt(f)); }
+    for (int i = 0; i <= n; ++i) pts[static_cast<size_t>(i)] = at(static_cast<double>(i) / n);
     return pts;
   };
-  const std::vector<Point3d> C0 = sample(c0, false);   // v=0 edge, P00 -> P10
-  const std::vector<Point3d> D1 = sample(d1, false);   // u=1 edge, P10 -> P11
-  const std::vector<Point3d> C1 = sample(c1rev, true);  // v=1 edge, P01 -> P11 (curve itself runs P11 -> P01)
-  const std::vector<Point3d> D0 = d0rev ? sample(*d0rev, true) : std::vector<Point3d>(static_cast<size_t>(n) + 1, C0.front());  // u=0 edge, P00 -> P01
+  const std::vector<Point3d> C0 = side([&](double t) { return srf.PointAt(du.ParameterAt(t), dv.Min()); });  // v=0 edge, P00 -> P10
+  const std::vector<Point3d> D1 = side([&](double t) { return srf.PointAt(du.Max(), dv.ParameterAt(t)); });  // u=1 edge, P10 -> P11
+  const std::vector<Point3d> C1 = side([&](double t) { return srf.PointAt(du.ParameterAt(t), dv.Max()); });  // v=1 edge, P01 -> P11
+  const std::vector<Point3d> D0 = side([&](double t) { return srf.PointAt(du.Min(), dv.ParameterAt(t)); });  // u=0 edge, P00 -> P01
   const Point3d P00 = C0.front(), P10 = C0.back(), P01 = C1.front(), P11 = C1.back();
   auto V = [](Point3d p) { return Vector3d(p.x, p.y, p.z); };
   std::vector<std::vector<Point3d>> rows(static_cast<size_t>(n) + 1, std::vector<Point3d>(static_cast<size_t>(n) + 1));
@@ -2318,14 +2325,53 @@ bool BuildCoonsPatch(const ON_Curve& c0, const ON_Curve& d1, const ON_Curve& c1r
     }
   }
   out = SurfaceThroughRows(rows).raw();
-  // SurfaceThroughRows' own clamped-uniform knot vectors give a CV-count-
-  // dependent domain (e.g. [0,14] for a 17-CV cubic), not the [0,1]x[0,1]
-  // every simple flat-quad face in this app is built with (FromControlGrid's
-  // 2x2 case) and whose existing trim 2D curves already assume - rescale so
-  // the spliced-back face's old trims stay in range.
-  out.SetDomain(0, 0.0, 1.0);
-  out.SetDomain(1, 0.0, 1.0);
-  return true;
+  // SurfaceThroughRows' own clamped-uniform knot vectors give a CV-count-dependent domain (e.g. [0,14] for a 17-CV cubic): give the patch the
+  // surface's own domain, which the face's trims are written in (a box face's is [0, edge length], not [0, 1]).
+  out.SetDomain(0, du.Min(), du.Max());
+  out.SetDomain(1, dv.Min(), dv.Max());
+  return out.IsValid();
+}
+
+// True when the four trims of `loop` are the four sides of `srf`'s parameter domain, one trim per side and each running from one corner to the
+// other: the face is the whole 4-sided surface.
+bool LoopIsWholeSurface(const ON_BrepLoop& loop, const ON_Surface& srf) {
+  if (loop.TrimCount() != 4) return false;
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const double eps = 1e-9 * (std::fabs(du.Length()) + std::fabs(dv.Length()));
+  auto same = [&](double a, double b) { return std::fabs(a - b) <= eps; };
+  int seen = 0;  // one bit per side: 1 v = min, 2 u = max, 4 v = max, 8 u = min
+  for (int k = 0; k < 4; ++k) {
+    const ON_BrepTrim* t = loop.Trim(k);
+    if (!t) return false;
+    const ON_Interval td = t->Domain();
+    const ON_3dPoint a = t->PointAt(td.Min()), m = t->PointAt(td.Mid()), z = t->PointAt(td.Max());
+    auto corner_to_corner = [&](double a0, double z0, double lo, double hi) { return (same(a0, lo) && same(z0, hi)) || (same(a0, hi) && same(z0, lo)); };
+    int bit = 0;
+    if (same(a.y, dv.Min()) && same(m.y, dv.Min()) && same(z.y, dv.Min()) && corner_to_corner(a.x, z.x, du.Min(), du.Max())) bit = 1;
+    else if (same(a.x, du.Max()) && same(m.x, du.Max()) && same(z.x, du.Max()) && corner_to_corner(a.y, z.y, dv.Min(), dv.Max())) bit = 2;
+    else if (same(a.y, dv.Max()) && same(m.y, dv.Max()) && same(z.y, dv.Max()) && corner_to_corner(a.x, z.x, du.Min(), du.Max())) bit = 4;
+    else if (same(a.x, du.Min()) && same(m.x, du.Min()) && same(z.x, du.Min()) && corner_to_corner(a.y, z.y, dv.Min(), dv.Max())) bit = 8;
+    if (bit == 0 || (seen & bit)) return false;
+    seen |= bit;
+  }
+  return seen == 15;
+}
+
+// Largest distance from the points of `srf` under `trim` (33 parameters along it) to the trim's 3D edge. The edge is a 129-point polyline (this
+// openNURBS build has no curve closest-point query): its sag only makes the result larger, never smaller.
+double TrimEdgeDeviation(const ON_Brep& b, const ON_BrepTrim& trim, const ON_Surface& srf) {
+  const ON_BrepEdge& e = b.m_E[trim.m_ei];
+  std::vector<ON_3dPoint> ep(129);
+  for (size_t j = 0; j < ep.size(); ++j) ep[j] = e.PointAt(e.Domain().ParameterAt(static_cast<double>(j) / 128.0));
+  double worst = 0;
+  for (int j = 0; j <= 32; ++j) {
+    const ON_3dPoint uv = trim.PointAt(trim.Domain().ParameterAt(j / 32.0));
+    const ON_3dPoint sp = srf.PointAt(uv.x, uv.y);
+    double dmin = 1e300;
+    for (const ON_3dPoint& q : ep) dmin = std::min(dmin, sp.DistanceTo(q));
+    worst = std::max(worst, dmin);
+  }
+  return worst;
 }
 
 class PatchSingleFaceCommand : public Command {
@@ -2340,64 +2386,51 @@ class PatchSingleFaceCommand : public Command {
     const ON_BrepFace& f = b.m_F[pick->face];
     const ON_BrepLoop* outer = nullptr;
     for (int li = 0; li < f.LoopCount(); ++li) if (f.Loop(li) && f.Loop(li)->m_type == ON_BrepLoop::outer) outer = f.Loop(li);
-    if (!outer || f.LoopCount() != 1 || (outer->TrimCount() != 3 && outer->TrimCount() != 4)) {
-      ctx.Warn("PatchSingleFace: only a face with a single 3- or 4-edge outer loop (no holes) is supported");
+    if (!outer || f.LoopCount() != 1 || outer->TrimCount() != 4) {
+      ctx.Warn("PatchSingleFace: only a face with a single 4-edge outer loop (no holes) is supported");
       Finish();
       return;
     }
-    std::vector<ON_Curve*> edges;
-    bool bad = false;
     for (int k = 0; k < outer->TrimCount(); ++k) {
       const ON_BrepTrim* t = outer->Trim(k);
-      const ON_BrepEdge* e = t ? t->Edge() : nullptr;
-      if (!e) { bad = true; break; }
-      ON_Curve* c = e->DuplicateCurve();
-      if (!c) { bad = true; break; }
-      if (t->m_bRev3d) c->Reverse();
-      edges.push_back(c);
+      if (!t || !t->Edge()) { ctx.Warn("PatchSingleFace: a singular boundary is not supported"); Finish(); return; }
     }
-    if (bad) { ctx.Warn("PatchSingleFace: a singular boundary is not supported"); for (ON_Curve* c : edges) delete c; Finish(); return; }
-    // A 4-edge face keeps ITS OWN surface parameterization: the boundary curves are the old surface's own boundary isocurves, so the patch's (u, v)
-    // sides are the old ones and the face's existing trims (which run along the parameter-domain boundary) still land on the matching 3D edges. Taking
-    // them from the loop's trim order instead can rotate or mirror the patch relative to the trims (the open mesh then lost the box's volume).
-    ON_Interval keep_u, keep_v;
-    bool keep_domain = false;
-    if (edges.size() == 4) {
-      const ON_Surface* old_srf = b.m_S[f.m_si];
-      if (old_srf) {
-        keep_u = old_srf->Domain(0);
-        keep_v = old_srf->Domain(1);
-        auto iso = [&](auto at) {
-          ON_PolylineCurve* pl = new ON_PolylineCurve;
-          for (int k = 0; k <= 32; ++k) pl->m_pline.Append(at(k / 32.0));
-          return pl;
-        };
-        for (ON_Curve* c : edges) delete c;
-        edges.clear();
-        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.ParameterAt(t), keep_v.Min()); }));
-        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.Max(), keep_v.ParameterAt(t)); }));
-        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.ParameterAt(1.0 - t), keep_v.Max()); }));
-        edges.push_back(iso([&](double t) { return old_srf->PointAt(keep_u.Min(), keep_v.ParameterAt(1.0 - t)); }));
-        keep_domain = true;
-      }
+    const int si = f.m_si;
+    const ON_Surface* old_srf = (si >= 0 && si < b.m_S.Count()) ? b.m_S[si] : nullptr;
+    if (!old_srf || !LoopIsWholeSurface(*outer, *old_srf)) {
+      ctx.Warn("PatchSingleFace: only an untrimmed face is supported (its four edges must run along its surface's four parameter sides)");
+      Finish();
+      return;
     }
     ON_NurbsSurface patch;
-    const bool ok = edges.size() == 4 ? BuildCoonsPatch(*edges[0], *edges[1], *edges[2], edges[3], patch)
-                                       : BuildCoonsPatch(*edges[0], *edges[1], *edges[2], nullptr, patch);
-    for (ON_Curve* c : edges) delete c;
-    if (!ok) { ctx.Warn("PatchSingleFace: could not build a surface through the face's boundary"); Finish(); return; }
+    if (!BuildCoonsPatch(*old_srf, patch)) { ctx.Warn("PatchSingleFace: could not build a surface through the face's boundary"); Finish(); return; }
     ctx.Doc().BeginChange("PatchSingleFace");
-    // Replace the surface in place at the face's existing surface slot (the
-    // same technique MatchSrf/SetSurfaceTangent/SoftEditSrf use) rather than
-    // adding a new one and compacting - AddSurface()+Compact() was seen to
-    // leave stale vertex tolerances pointing at freed surface memory.
-    if (keep_domain) { patch.SetDomain(0, keep_u.Min(), keep_u.Max()); patch.SetDomain(1, keep_v.Min(), keep_v.Max()); }
-    const int patch_si = b.m_F[pick->face].m_si;
-    b.m_S[patch_si] = new ON_NurbsSurface(patch);
-    // The faces cache their surface pointer (ON_SurfaceProxy; ON_BrepFace::SurfaceOf() returns it first): repoint every face using this slot, or the
-    // mesher, Area() and Volume() keep reading the replaced surface.
-    for (int fi = 0; fi < b.m_F.Count(); ++fi) if (b.m_F[fi].m_si == patch_si) b.m_F[fi].SetProxySurface(b.m_S[patch_si]);
-    b.SetTolerancesBoxesAndFlags();
+    // Replace the surface in place at the face's existing surface slot (the same technique MatchSrf/SetSurfaceTangent/SoftEditSrf use) rather than
+    // adding a new one and compacting - AddSurface()+Compact() was seen to leave stale vertex tolerances pointing at freed surface memory. A slot
+    // another face also uses is left alone: this face gets a slot of its own.
+    int users = 0;
+    for (int fi = 0; fi < b.m_F.Count(); ++fi) if (b.m_F[fi].m_si == si) ++users;
+    ON_NurbsSurface* fresh = new ON_NurbsSurface(patch);
+    ON_Surface* replaced = nullptr;
+    if (users <= 1) { replaced = b.m_S[si]; b.m_S[si] = fresh; }
+    else b.m_F[pick->face].m_si = b.AddSurface(fresh);
+    // The face caches its surface pointer (ON_SurfaceProxy; ON_BrepFace::SurfaceOf() returns it first): repoint it, or Area(), Volume(), the
+    // tolerances below and everything else that evaluates the face keep reading the replaced surface. Only then is the old surface freed.
+    b.m_F[pick->face].SetProxySurface(fresh);
+    delete replaced;
+    // This openNURBS build's ON_Brep::SetEdgeTolerance only ever stores ON_UNSET_VALUE (the real one is an override of the full SDK), so the default
+    // SetTolerancesBoxesAndFlags() left every edge of the patched polysurface at -1.2e308 and ON_Brep::IsValid() false (measured). The patch is a fit
+    // rather than the old surface, so the four edges of this face get their tolerance MEASURED, and the edge recompute is switched off.
+    for (int k = 0; k < outer->TrimCount(); ++k) {
+      const ON_BrepTrim* t = outer->Trim(k);
+      ON_BrepEdge& e = b.m_E[t->m_ei];
+      const double dev = TrimEdgeDeviation(b, *t, *fresh);
+      const double keep = e.m_tolerance >= 0.0 ? e.m_tolerance : 0.0;
+      e.m_tolerance = std::max(keep, dev <= ON_ZERO_TOLERANCE ? 0.0 : 1.001 * dev);
+    }
+    b.ClearBoundingBox();
+    b.DestroyMesh(ON::any_mesh);
+    b.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
     o->InvalidateDisplay();
     ctx.Print("PatchSingleFace: face " + std::to_string(pick->face) + " of object " + std::to_string(pick->id) + " replaced with a Coons patch through its own boundary edges");
     Finish();
@@ -3982,7 +4015,7 @@ void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "FitCurveToSurface", Make<FitCurveToSurfaceCommand>(), CommandStatus::Implemented,
       "Pulls the curve onto the surface at a coarse fixed sample count and interpolates a fresh curve through those points - a coarser, smoother fit than Pull's dense exact projection.");
   Reg(e, "PatchSingleFace", Make<PatchSingleFaceCommand>(), CommandStatus::Implemented,
-      "Real (non-planar) Coons patch through a single 3- or 4-edge face's own boundary curves, spliced back in place of that face's surface; a face with a more complex (holed/multi-loop) boundary is out of scope.");
+      "Real (non-planar) Coons patch through an untrimmed 4-edge face's own boundary curves, spliced back in place of that face's surface with the face's own parameterization; a trimmed, 3-edge, holed or singular face is refused.");
   Reg(e, "ExtractBadSrf", OnSelection("Select surfaces or polysurfaces to check (Enter to check the whole document)", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         std::vector<ObjectId> targets = ids;
         if (targets.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (o.kind == ObjectKind::Brep || o.kind == ObjectKind::Surface) targets.push_back(o.id);
