@@ -13,15 +13,15 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "oplog-bench"
-path = "src/bin/bench.rs"
+path = "src/tools/bench.rs"
 
 [[bin]]
 name = "oplog-crashwriter"
-path = "src/bin/crashwriter.rs"
+path = "src/tools/crashwriter.rs"
 
 [[bin]]
 name = "oplog-demo"
-path = "src/bin/demo.rs"
+path = "src/tools/demo.rs"
 
 [dependencies]
 blake3 = "1"

@@ -3,5 +3,6 @@
 //!
 //! See `RESULTS.md` for what was measured and the recommendation.
 
+pub mod crdt;
 pub mod ids;
 pub mod value;
