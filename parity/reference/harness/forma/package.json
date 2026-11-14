@@ -1,0 +1,17 @@
+{
+  "name": "dino8-forma-reference-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference-output harness for Autodesk Forma, written as an embedded-view extension that uses the public embedded-view SDK. Untested against the real service.",
+  "scripts": {
+    "build": "esbuild src/harness.js --bundle --format=esm --outfile=dist/harness.js",
+    "serve": "python3 serve.py"
+  },
+  "dependencies": {
+    "forma-embedded-view-sdk": "0.96.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.21.5"
+  }
+}
