@@ -1,0 +1,41 @@
+# MSDG: MatchSrf Continuity=Curvature against a degree-1 (flat, planar) target (see sections/81_msdg.sh).
+# A flat plane (y -10..0, z = 0) is matched to the near edge of a box's vertical front face (y = 0): the click on the plane picks its y = 0 edge, the click
+# on the target is on the face's bottom edge z = 0. The cross direction of the matched surface is u (u = 1 is the matched edge); it is probed with
+# EvaluateUVPt at normalized u = 0.98 / 0.99 / 1 along the middle of the edge (v = 0.5). Case g2 uses Continuity=Curvature, g1 Continuity=Tangency.
+New
+MSDGBEGIN_g2
+Box 2600,0,0 2610,10,0 10
+Plane 2600,-10,0 2610,0,0
+MatchSrf
+Continuity=Curvature
+2605,-0.5,0
+2605,0,1
+MSDGBEGIN_g2_u100
+SelSrf
+EvaluateUVPt Normalized=Yes
+1,0.5
+MSDGBEGIN_g2_u99
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.99,0.5
+MSDGBEGIN_g2_u98
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.98,0.5
+New
+MSDGBEGIN_g1
+Box 2600,0,0 2610,10,0 10
+Plane 2600,-10,0 2610,0,0
+MatchSrf
+Continuity=Tangency
+2605,-0.5,0
+2605,0,1
+MSDGBEGIN_g1_u99
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.99,0.5
+MSDGBEGIN_g1_u98
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.98,0.5
+MSDGBEGIN_end
