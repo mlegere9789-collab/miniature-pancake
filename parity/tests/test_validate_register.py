@@ -450,6 +450,23 @@ class CommandLine(TempDirCase):
         result = self.run_tool("--register", root, "--github")
         self.assertIn("::error file=", result.stdout)
 
+    def test_paths_are_shown_relative_to_the_working_directory(self):
+        root = self.path("register")
+        write_register(root, {"blender/mesh.jsonl": [make_row(1, tier_now="Strong")]})
+        result = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(support.TOOLS_DIR, "validate_register.py"),
+                "--register",
+                root,
+                "--github",
+            ],
+            cwd=self.tmp,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("file=register/blender/mesh.jsonl,line=1", result.stdout)
+
     def test_builtin_engine_flag_works_without_jsonschema(self):
         root = self.path("register")
         write_register(root, {"blender/mesh.jsonl": [make_row(1)]})

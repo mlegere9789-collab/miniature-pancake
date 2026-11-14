@@ -189,7 +189,8 @@ throw-away bare repository and never touches a ref of the repository it runs in.
 ## Heartbeats and the watchdog
 
 Heartbeats are written with `ledger/tools/heartbeat.py --agent A --what "..." --evidence "..."`
-(commit defaults to `HEAD`). One JSON line: `time`, `what`, `commit`, `evidence`; optional
+(commit defaults to `HEAD`). Use the same agent name for `claims.py --agent`, for the heartbeat
+file and for the branch owner: a claim is kept alive only by heartbeats of the agent that holds it. One JSON line: `time`, `what`, `commit`, `evidence`; optional
 `task`, `metric` (a number that moves when work moves), `state` and `waiting_on`.
 
 `python3 ledger/tools/watchdog.py [--ledger ledger] [--remote R | --claims-file FILE] [--now T]

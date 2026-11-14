@@ -560,6 +560,12 @@ def check_records(records, validate, register_root=None, inventory=None):
     return issues
 
 
+def _display_path(path):
+    """A path relative to the current directory when it lies below it (for annotations)."""
+    relative = os.path.relpath(path)
+    return path if relative.startswith("..") else relative
+
+
 def run(argv=None, out=None):
     parser = argparse.ArgumentParser(description="Validate the Parity Register.")
     parser.add_argument(
@@ -583,7 +589,7 @@ def run(argv=None, out=None):
     out = out or sys.stdout
 
     explicit_register = args.register is not None
-    register = args.register or DEFAULT_REGISTER
+    register = _display_path(args.register or DEFAULT_REGISTER)
     schema_path = args.schema or DEFAULT_SCHEMA
     try:
         with open(schema_path, "r", encoding="utf-8") as handle:

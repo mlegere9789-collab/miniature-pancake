@@ -492,12 +492,14 @@ def evaluate(
     for problem in problems:
         by_file.setdefault(problem["file"], []).append(problem)
     for path, items in sorted(by_file.items()):
+        # the day folder of the file gives a start time that stays the same between runs
+        day = ledgerlib.try_parse_time(os.path.basename(os.path.dirname(path)))
         incidents.append(
             _incident(
                 "malformed_heartbeat",
                 "info",
                 os.path.splitext(os.path.basename(path))[0],
-                now,
+                day or now,
                 now,
                 "%d unusable heartbeat lines in %s (first: line %s: %s)"
                 % (len(items), path, items[0]["line"], items[0]["message"]),

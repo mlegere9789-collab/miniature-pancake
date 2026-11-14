@@ -536,6 +536,16 @@ class Malformed(WatchdogCase):
         self.assertEqual(report["agents"][0]["beats"], 1)
         self.assertEqual(self.types(report, "no_heartbeat"), [])
 
+    def test_the_incident_id_is_stable_between_runs(self):
+        folder = os.path.join(self.heartbeats, iso(0)[:10])
+        os.makedirs(folder)
+        with open(os.path.join(folder, "alpha.jsonl"), "w") as handle:
+            handle.write("{broken\n")
+        first = self.run_dog(1)["incidents"][0]["id"]
+        second = self.run_dog(30)["incidents"][0]["id"]
+        self.assertEqual(first, second)
+        self.assertEqual(first, "malformed_heartbeat-alpha-20261118T000000Z")
+
     def test_a_file_that_is_not_an_agent_name_is_reported(self):
         folder = os.path.join(self.heartbeats, iso(0)[:10])
         os.makedirs(folder)

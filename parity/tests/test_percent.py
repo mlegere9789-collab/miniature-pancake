@@ -355,6 +355,46 @@ class RunOrderAndAntiGaming(PercentBase):
         self.assertEqual(result["unproven_claims"]["count"], 0)
 
 
+class Reporting(PercentBase):
+    def test_tests_that_many_rows_lean_on_are_listed_for_the_reviewers(self):
+        rows = [
+            make_row(
+                i, acceptance=[{"test_id": "shared.true"}, {"test_id": "own.%d" % i}]
+            )
+            for i in range(1, 5)
+        ]
+        rows.append(make_row(5, acceptance=[{"test_id": "own.5"}]))
+        result, _ = self.compute({"blender/mesh.jsonl": rows})
+        self.assertEqual(
+            result["most_shared_tests"], [{"test": "shared.true", "rows": 4}]
+        )
+
+    def test_evidence_paths_in_the_output_do_not_depend_on_the_checkout_location(self):
+        write_run(self.evidence, "10", checks=[("t.a", "ok")])
+        with open(os.path.join(self.evidence, "10", "bad.jsonl"), "w") as handle:
+            handle.write("{broken\n")
+        first, _ = self.compute({})
+        moved = self.path("elsewhere", "evidence")
+        os.makedirs(os.path.dirname(moved))
+        import shutil
+
+        shutil.copytree(self.evidence, moved)
+        shutil.rmtree(self.evidence)
+        records, _ = regio.read_register(self.register)
+        second, _ = percent.compute(
+            records,
+            percent.load_evidence(moved),
+            NOW,
+            None,
+            None,
+            None,
+            "run-1",
+            "abc1234",
+        )
+        self.assertEqual(first["evidence"], second["evidence"])
+        self.assertEqual(first["evidence"]["malformed"][0]["file"], "10/bad.jsonl")
+
+
 class BestTier(PercentBase):
     def row(self, target="Best"):
         return make_row(

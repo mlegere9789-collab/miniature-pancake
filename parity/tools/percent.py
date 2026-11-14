@@ -108,6 +108,17 @@ class Evidence:
         self.files = 0
         self.checks = 0
         self.digest = hashlib.sha256()
+        self.root = None
+
+    def rel(self, path):
+        """The path as it is written into percent.json: below the evidence directory when
+        it lies there, so the output does not depend on where the repository is checked out.
+        """
+        if self.root:
+            relative = os.path.relpath(path, self.root)
+            if not relative.startswith(".."):
+                return relative.replace(os.sep, "/")
+        return os.path.basename(path)
 
     def run_info(self, run):
         return self.runs.setdefault(
@@ -116,7 +127,9 @@ class Evidence:
         )
 
     def bad(self, path, line, message):
-        self.malformed.append({"file": path, "line": line, "message": message})
+        self.malformed.append(
+            {"file": self.rel(path), "line": line, "message": message}
+        )
 
 
 def _read_text(path):
@@ -133,7 +146,7 @@ def _string_list(value):
 def _read_json_file(ev, run, path):
     """A run manifest or a task evidence file."""
     raw = _read_text(path)
-    ev.digest.update(path.encode("utf-8") + b"\0" + raw + b"\0")
+    ev.digest.update(ev.rel(path).encode("utf-8") + b"\0" + raw + b"\0")
     ev.files += 1
     ev.run_info(run)["files"] += 1
     try:
@@ -210,7 +223,7 @@ def _read_json_file(ev, run, path):
 
 def _read_checks_file(ev, run, path):
     raw = _read_text(path)
-    ev.digest.update(path.encode("utf-8") + b"\0" + raw + b"\0")
+    ev.digest.update(ev.rel(path).encode("utf-8") + b"\0" + raw + b"\0")
     ev.files += 1
     ev.run_info(run)["files"] += 1
     items, problems = ledgerlib.read_jsonl(path)
@@ -256,6 +269,7 @@ def _read_run_dir(ev, run, directory):
 
 def load_evidence(root, extra_checks=()):
     ev = Evidence()
+    ev.root = root
     if root and os.path.isdir(root):
         for entry in sorted(os.listdir(root), key=ledgerlib.natural_key):
             full = os.path.join(root, entry)
@@ -492,6 +506,7 @@ def compute(
     by_factory = collections.defaultdict(_bucket)
     by_wave = collections.defaultdict(_bucket)
     typed = collections.Counter()
+    shared = collections.Counter()
     computed = collections.Counter()
     breakdown = collections.Counter()
     credits = []
@@ -502,6 +517,8 @@ def compute(
     for row in counted:
         verdict = evaluate_row(row, states)
         verdicts[row["id"]] = verdict
+        for test in regio.acceptance_ids(row) + regio.superiority_ids(row):
+            shared[test] += 1
         _add(overall, verdict)
         programs = row.get("program") if isinstance(row.get("program"), list) else []
         for program in programs or ["unknown"]:
@@ -621,6 +638,13 @@ def compute(
             "rows_passing_but_not_yet_written": pending,
         },
         "not_passing_by_reason": dict(sorted(breakdown.items())),
+        "most_shared_tests": [
+            {"test": test, "rows": count}
+            for test, count in sorted(shared.items(), key=lambda kv: (-kv[1], kv[0]))[
+                :10
+            ]
+            if count > 1
+        ],
         "evidence": {
             "runs": len(evidence.runs),
             "latest_run": max(evidence.runs, key=run_order) if evidence.runs else None,
