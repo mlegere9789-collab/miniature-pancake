@@ -232,23 +232,29 @@ impl ContentHash for Val {
 
 // ---- synthetic kernel cost ---------------------------------------------------------------------
 
-/// Burns `iters` iterations of a dependent multiply-add chain (about one nanosecond each);
-/// stands in for the cost of a real kernel call.  Deterministic.
+/// Burns `iters` iterations of a dependent xorshift chain (a few nanoseconds each, not foldable by
+/// the optimizer); stands in for the cost of a real kernel call.  Deterministic.
 #[inline(never)]
 pub fn burn(iters: u32, seed: u32) -> u32 {
-    let mut x = u64::from(seed) | 1;
+    let mut x = u64::from(seed) | 0x9E37_79B9_0000_0001;
     for _ in 0..iters {
-        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
     }
     std::hint::black_box((x >> 40) as u32)
 }
 
-/// Nanoseconds per `burn` iteration on this machine.
+/// Nanoseconds per `burn` iteration on this machine (best of several short runs, so that a
+/// busy machine does not inflate the estimate).
 pub fn calibrate_burn_ns() -> f64 {
-    let t0 = std::time::Instant::now();
-    let r = burn(20_000_000, 7);
-    std::hint::black_box(r);
-    t0.elapsed().as_secs_f64() * 1e9 / 20_000_000.0
+    let mut best = f64::MAX;
+    for _ in 0..9 {
+        let t0 = std::time::Instant::now();
+        std::hint::black_box(burn(500_000, 7));
+        best = best.min(t0.elapsed().as_secs_f64() * 1e9 / 500_000.0);
+    }
+    best
 }
 
 /// Extra synthetic work (in `burn` iterations) per kernel call.

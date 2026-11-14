@@ -31,9 +31,11 @@ codegen-units = 4
 panic = "unwind"
 
 [profile.dev]
-opt-level = 1
+opt-level = 2
 debug = false
+incremental = false
 
 [profile.test]
 opt-level = 2
 debug = false
+incremental = false

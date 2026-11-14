@@ -354,6 +354,10 @@ struct KindInfo<V: Value> {
 #[derive(Default)]
 struct Local {
     claimed: Vec<NodeId>,
+    /// Reusable buffers (cleared between uses) so that an attempt that is thrown away allocates nothing.
+    deps_buf: Vec<NodeId>,
+    changed_buf: Vec<Rev>,
+    missing_buf: Vec<NodeId>,
     steps: u64,
     computed: u64,
     verified: u64,
@@ -659,10 +663,10 @@ pub struct Db<V: Value> {
     eval_lock: Mutex<()>,
 }
 
-struct Commit<V> {
+struct Commit<'a, V> {
     value: V,
-    deps: Vec<NodeId>,
-    dep_changed: Vec<Rev>,
+    deps: &'a [NodeId],
+    dep_changed: &'a [Rev],
     old_deps: Vec<NodeId>,
     prev_verified: Rev,
     first: bool,
@@ -1458,7 +1462,7 @@ impl<V: Value> Db<V> {
         // Deciding on the first changed dependency instead would make the set of evaluated nodes
         // depend on which dependencies happened to be clean at scan time, i.e. on scheduling.
         if has_value {
-            let mut missing: Vec<NodeId> = Vec::new();
+            let mut missing = std::mem::take(&mut ls.missing_buf);
             let mut changed_dep = false;
             for &d in &old_deps {
                 let g = lock(&self.arena.get(d).inner);
@@ -1470,8 +1474,11 @@ impl<V: Value> Db<V> {
             }
             if !missing.is_empty() {
                 self.park(n, &missing, old_deps, out, ls);
+                missing.clear();
+                ls.missing_buf = missing;
                 return;
             }
+            ls.missing_buf = missing;
             if !changed_dep {
                 let waiters = {
                     let mut g = lock(&node.inner);
@@ -1490,16 +1497,22 @@ impl<V: Value> Db<V> {
             ev,
             arg,
             arg_value,
-            deps: Vec::with_capacity(old_deps.len().max(2)),
-            dep_changed: Vec::with_capacity(old_deps.len().max(2)),
-            missing: Vec::new(),
+            deps: std::mem::take(&mut ls.deps_buf),
+            dep_changed: std::mem::take(&mut ls.changed_buf),
+            missing: std::mem::take(&mut ls.missing_buf),
         };
         let result = catch_unwind(AssertUnwindSafe(|| compute(&mut ctx)));
         match result {
             Ok(Ok(value)) if ctx.missing.is_empty() => {
-                let Ctx { deps, dep_changed, .. } = ctx;
-                let commit = Commit { value, deps, dep_changed, old_deps, prev_verified: verified_at, first: !has_value };
+                let Ctx { mut deps, mut dep_changed, missing, .. } = ctx;
+                dedup_keep_first(&mut deps, &mut dep_changed);
+                let commit = Commit { value, deps: &deps, dep_changed: &dep_changed, old_deps, prev_verified: verified_at, first: !has_value };
                 self.finish(ev, n, commit, out, ls);
+                deps.clear();
+                dep_changed.clear();
+                ls.deps_buf = deps;
+                ls.changed_buf = dep_changed;
+                ls.missing_buf = missing;
             }
             Ok(Ok(_)) | Ok(Err(Interrupt::Missing)) => {
                 if ctx.missing.is_empty() {
@@ -1508,9 +1521,15 @@ impl<V: Value> Db<V> {
                     return;
                 }
                 ls.restarts += 1;
-                let mut missing = std::mem::take(&mut ctx.missing);
+                let Ctx { mut deps, mut dep_changed, mut missing, .. } = ctx;
                 dedup_ids(&mut missing);
                 self.park(n, &missing, old_deps, out, ls);
+                deps.clear();
+                dep_changed.clear();
+                missing.clear();
+                ls.deps_buf = deps;
+                ls.changed_buf = dep_changed;
+                ls.missing_buf = missing;
             }
             Ok(Err(Interrupt::Cancelled)) => {
                 lock(&node.inner).deps = old_deps;
@@ -1530,9 +1549,8 @@ impl<V: Value> Db<V> {
     }
 
     /// Stores the result of a completed computation, maintains the reverse edges and wakes dependents.
-    fn finish(&self, ev: &Eval<'_, V>, n: NodeId, c: Commit<V>, out: &mut Vec<NodeId>, ls: &mut Local) {
-        let Commit { value, mut deps, mut dep_changed, old_deps, prev_verified, first } = c;
-        dedup_keep_first(&mut deps, &mut dep_changed);
+    fn finish(&self, ev: &Eval<'_, V>, n: NodeId, c: Commit<'_, V>, out: &mut Vec<NodeId>, ls: &mut Local) {
+        let Commit { value, deps, dep_changed, old_deps, prev_verified, first } = c;
         let new_hash = value.hash128();
         let trigger = if first {
             Cause::Initial
@@ -1542,7 +1560,13 @@ impl<V: Value> Db<V> {
                 .position(|&r| r > prev_verified)
                 .map_or(Cause::None, |i| Cause::Dep(deps[i]))
         };
-        let (added, removed) = diff_deps(&old_deps, &deps);
+        // The dependency list is usually unchanged by a recomputation: keep the old allocation.
+        let (added, removed, stored) = if old_deps.as_slice() == deps {
+            (Vec::new(), Vec::new(), old_deps)
+        } else {
+            let (a, r) = diff_deps(&old_deps, deps);
+            (a, r, deps.to_vec())
+        };
         let node = self.arena.get(n);
         let (waiters, changed) = {
             let mut g = lock(&node.inner);
@@ -1558,7 +1582,7 @@ impl<V: Value> Db<V> {
             g.verified_at = ev.rev;
             g.computed_at = ev.rev;
             g.computes += 1;
-            g.deps = deps;
+            g.deps = stored;
             g.state = State::Clean;
             (std::mem::take(&mut g.waiters), changed)
         };
