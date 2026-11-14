@@ -26,6 +26,8 @@ run_one() {  # label env-assignment...
   ub_3p=$(( $(grep -c 'runtime error:' "$W/$label.err") - ub_own ))
   echo "run $label: exit=$rc ok=$ok FAILED=$failed asan=$asan ubsan_own=$ub_own ubsan_thirdparty=$ub_3p"
   grep -E '^FAILED|ERROR: AddressSanitizer|SUMMARY: ' "$W/$label.err" | cut -c1-300 | sort | uniq -c | head -20
+  # the first AddressSanitizer report in full (error line, access, stack), so a finding can be read without the raw log
+  awk '/ERROR: AddressSanitizer/{on=1} on{print "   asan| " substr($0,1,220); if(++n>=26) exit}' "$W/$label.err"
   grep 'runtime error:' "$W/$label.err" | grep -v '/_deps/' | grep -E '/dino8-(kernel|app)/' | cut -c1-300 | sort | uniq -c | sort -rn | head -20
   grep 'runtime error:' "$W/$label.err" | awk '!(!/_deps/ && /\/dino8-(kernel|app)\//)' | sed 's/^.*\/_deps\///' | cut -c1-200 | sort | uniq -c | sort -rn | head -8 | sed 's/^/   third-party: /'
   [ $rc -ne 0 ] || [ "$failed" -ne 0 ] || [ "$asan" -ne 0 ] || [ "$ub_own" -ne 0 ]
