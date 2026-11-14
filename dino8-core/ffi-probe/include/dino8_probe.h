@@ -27,7 +27,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 /* Initializer for a D8Error: D8Error err = D8_ERROR_INIT; */
+#ifdef __cplusplus
+#define D8_ERROR_INIT {}
+#else
 #define D8_ERROR_INIT { 0 }
+#endif
 
 /**
  * Bytes of one object id.
@@ -251,6 +255,72 @@ typedef struct {
 } D8OpRead;
 
 /**
+ * A record lent to a visitor callback. The pointers are valid only until the callback returns.
+ */
+typedef struct {
+  /**
+   * Sequence number of the record.
+   */
+  uint64_t seq;
+  /**
+   * For an undo marker, the sequence number of the undone operation; zero for an operation.
+   */
+  uint64_t ref_seq;
+  /**
+   * Random seed.
+   */
+  uint64_t random_seed;
+  /**
+   * 0 for an operation, 1 for an undo marker.
+   */
+  uint32_t kind;
+  /**
+   * Command identifier.
+   */
+  uint32_t command_id;
+  /**
+   * Tool version.
+   */
+  uint32_t tool_version;
+  /**
+   * Reserved, always zero.
+   */
+  uint32_t reserved;
+  /**
+   * Parameter blob.
+   */
+  const uint8_t *params;
+  /**
+   * Bytes at `params`.
+   */
+  size_t params_len;
+  /**
+   * Input ids.
+   */
+  const D8ObjectId *inputs;
+  /**
+   * Number of input ids.
+   */
+  size_t n_inputs;
+  /**
+   * Output ids.
+   */
+  const D8ObjectId *outputs;
+  /**
+   * Number of output ids.
+   */
+  size_t n_outputs;
+} D8OpView;
+
+/**
+ * Visitor callback for `d8_log_visit`. Return 0 to continue or any other value to stop. It must
+ * not let a C++ exception escape: catch everything inside and return a non-zero value. If one
+ * escapes anyway, the library aborts the process with a message (the type is declared
+ * "C-unwind" so that case is defined behavior instead of undefined behavior).
+ */
+typedef int32_t (*D8VisitFn)(void *user, const D8OpView *op);
+
+/**
  * Counters describing an open log.
  */
 typedef struct {
@@ -354,6 +424,11 @@ typedef struct {
  */
 #define D8_ERR_FAILED 13
 
+/**
+ * A callback passed to the library returned a non-zero value; the detail field holds that value.
+ */
+#define D8_ERR_CALLBACK 14
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -434,6 +509,23 @@ D8Status d8_log_read(D8LogHandle h,
                      uint64_t seq,
                      D8OpRead *io,
                      D8Error *err);
+
+/**
+ * Calls `cb(user, op)` for each record `first_seq..=last_seq` (clamped to the log length) in
+ * order. The callback runs on the calling thread with no library lock held, so it may call back
+ * into the library. It must not let a C++ exception escape (an escaping exception aborts the
+ * process); a non-zero return stops the walk and yields `D8_ERR_CALLBACK` with the value in the
+ * detail field.
+ *
+ * # Safety
+ * Pointer rules: see the preamble of this header; `cb` must be a valid function.
+ */
+D8Status d8_log_visit(D8LogHandle h,
+                      uint64_t first_seq,
+                      uint64_t last_seq,
+                      D8VisitFn cb,
+                      void *user,
+                      D8Error *err);
 
 /**
  * Number of committed records, which is also the newest sequence number. A lock-free read.

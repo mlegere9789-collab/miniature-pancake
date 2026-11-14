@@ -119,6 +119,19 @@ pub struct ReadBuffers<'a> {
     pub outputs: &'a mut [D8ObjectId],
 }
 
+/// An owned, decoded copy of a stored record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordCopy {
+    /// Fixed-size part; `copied` is always true.
+    pub meta: RecordMeta,
+    /// Parameter blob.
+    pub params: Vec<u8>,
+    /// Input ids.
+    pub inputs: Vec<D8ObjectId>,
+    /// Output ids.
+    pub outputs: Vec<D8ObjectId>,
+}
+
 struct Inner {
     segments: Vec<Vec<u8>>,
     index_pages: Vec<Box<[u64]>>,
@@ -489,6 +502,50 @@ impl Log {
             meta.copied = true;
         }
         Ok(meta)
+    }
+
+    /// Copies records `first..=last` (clamped to the log length) out under the lock. The caller
+    /// can then work on them without holding any lock, for example to run callbacks.
+    pub fn copy_range(&self, first: u64, last: u64) -> Result<Vec<RecordCopy>, BoundaryError> {
+        if first == 0 {
+            return Err(BoundaryError::new(
+                D8_ERR_INVALID_ARG,
+                "sequence numbers start at 1",
+            ));
+        }
+        let g = self.lock()?;
+        g.check_open()?;
+        let last = last.min(g.count);
+        let mut out = Vec::new();
+        for seq in first..=last {
+            let Some(rec) = g.record(seq) else {
+                return Err(BoundaryError::new(
+                    D8_ERR_CORRUPT,
+                    "index points outside the arena",
+                ));
+            };
+            let mut meta = parse_header(rec)?;
+            meta.copied = true;
+            let i_start = HEADER_LEN + meta.params_len;
+            let o_start = i_start + meta.n_inputs * D8_OBJECT_ID_LEN;
+            let ids = |start: usize, n: usize| -> Vec<D8ObjectId> {
+                (0..n)
+                    .map(|k| {
+                        let mut id = D8ObjectId::default();
+                        let s = start + k * D8_OBJECT_ID_LEN;
+                        id.bytes.copy_from_slice(&rec[s..s + D8_OBJECT_ID_LEN]);
+                        id
+                    })
+                    .collect()
+            };
+            out.push(RecordCopy {
+                meta,
+                params: rec[HEADER_LEN..i_start].to_vec(),
+                inputs: ids(i_start, meta.n_inputs),
+                outputs: ids(o_start, meta.n_outputs),
+            });
+        }
+        Ok(out)
     }
 
     /// Number of committed records, read without taking the lock.

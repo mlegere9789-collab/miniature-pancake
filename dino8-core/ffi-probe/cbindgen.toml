@@ -31,10 +31,14 @@ header = """
  */"""
 after_includes = """
 /* Initializer for a D8Error: D8Error err = D8_ERROR_INIT; */
-#define D8_ERROR_INIT { 0 }"""
+#ifdef __cplusplus
+#define D8_ERROR_INIT {}
+#else
+#define D8_ERROR_INIT { 0 }
+#endif"""
 
 [export]
-include = ["D8ObjectId", "D8Error", "D8LogHandle", "D8OpRecord", "D8OpRead", "D8LogInfo"]
+include = ["D8ObjectId", "D8Error", "D8LogHandle", "D8OpRecord", "D8OpRead", "D8OpView", "D8LogInfo"]
 
 [enum]
 prefix_with_name = false

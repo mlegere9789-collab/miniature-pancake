@@ -19,12 +19,12 @@ use crate::handle::HandleTable;
 use crate::log::{D8LogInfo, D8ObjectId, Log, OpInput, ReadBuffers};
 use crate::status::{
     truncate_utf8, BoundaryError, D8Error, D8Status, D8_ABI_VERSION, D8_ERROR_MESSAGE_LEN,
-    D8_ERR_BAD_HANDLE, D8_ERR_BUFFER_TOO_SMALL, D8_ERR_INVALID_ARG, D8_ERR_NULL_ARG, D8_ERR_PANIC,
-    D8_OK,
+    D8_ERR_BAD_HANDLE, D8_ERR_BUFFER_TOO_SMALL, D8_ERR_CALLBACK, D8_ERR_INVALID_ARG,
+    D8_ERR_NULL_ARG, D8_ERR_PANIC, D8_OK,
 };
 use crate::wal::SyncMode;
 use std::any::Any;
-use std::ffi::{c_char, CStr};
+use std::ffi::{c_char, c_void, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr::{self, addr_of_mut};
@@ -114,6 +114,45 @@ pub struct D8OpRead {
     /// Capacity of `outputs_buf` in ids.
     pub outputs_cap: usize,
 }
+
+/// A record lent to a visitor callback. The pointers are valid only until the callback returns.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct D8OpView {
+    /// Sequence number of the record.
+    pub seq: u64,
+    /// For an undo marker, the sequence number of the undone operation; zero for an operation.
+    pub ref_seq: u64,
+    /// Random seed.
+    pub random_seed: u64,
+    /// 0 for an operation, 1 for an undo marker.
+    pub kind: u32,
+    /// Command identifier.
+    pub command_id: u32,
+    /// Tool version.
+    pub tool_version: u32,
+    /// Reserved, always zero.
+    pub reserved: u32,
+    /// Parameter blob.
+    pub params: *const u8,
+    /// Bytes at `params`.
+    pub params_len: usize,
+    /// Input ids.
+    pub inputs: *const D8ObjectId,
+    /// Number of input ids.
+    pub n_inputs: usize,
+    /// Output ids.
+    pub outputs: *const D8ObjectId,
+    /// Number of output ids.
+    pub n_outputs: usize,
+}
+
+/// Visitor callback for `d8_log_visit`. Return 0 to continue or any other value to stop. It must
+/// not let a C++ exception escape: catch everything inside and return a non-zero value. If one
+/// escapes anyway, the library aborts the process with a message (the type is declared
+/// "C-unwind" so that case is defined behavior instead of undefined behavior).
+pub type D8VisitFn =
+    Option<unsafe extern "C-unwind" fn(user: *mut c_void, op: *const D8OpView) -> i32>;
 
 static LOGS: RwLock<HandleTable<Log>> = RwLock::new(HandleTable::new());
 static DROPS_DURING_UNWIND: AtomicU64 = AtomicU64::new(0);
@@ -367,6 +406,7 @@ pub extern "C" fn d8_status_name(code: D8Status) -> *const c_char {
         crate::status::D8_ERR_LIMIT => c"D8_ERR_LIMIT",
         crate::status::D8_ERR_CLOSED => c"D8_ERR_CLOSED",
         crate::status::D8_ERR_FAILED => c"D8_ERR_FAILED",
+        crate::status::D8_ERR_CALLBACK => c"D8_ERR_CALLBACK",
         _ => c"D8_ERR_UNKNOWN",
     };
     name.as_ptr()
@@ -588,6 +628,70 @@ pub unsafe extern "C" fn d8_log_read(
             io.command_id = meta.command_id;
             io.tool_version = meta.tool_version;
             io.reserved = 0;
+            Ok(())
+        })
+    }
+}
+
+/// Calls `cb(user, op)` for each record `first_seq..=last_seq` (clamped to the log length) in
+/// order. The callback runs on the calling thread with no library lock held, so it may call back
+/// into the library. It must not let a C++ exception escape (an escaping exception aborts the
+/// process); a non-zero return stops the walk and yields `D8_ERR_CALLBACK` with the value in the
+/// detail field.
+///
+/// # Safety
+/// Pointer rules: see the preamble of this header; `cb` must be a valid function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn d8_log_visit(
+    h: D8LogHandle,
+    first_seq: u64,
+    last_seq: u64,
+    cb: D8VisitFn,
+    user: *mut c_void,
+    err: *mut D8Error,
+) -> D8Status {
+    // SAFETY: see `d8_log_open`.
+    unsafe {
+        guarded(err, || {
+            let log = lookup(h)?;
+            let cb = cb.ok_or_else(|| null_arg("cb"))?;
+            if first_seq == 0 {
+                return Err(BoundaryError::new(
+                    D8_ERR_INVALID_ARG,
+                    "sequence numbers start at 1",
+                ));
+            }
+            let last = last_seq.min(log.len());
+            let mut next = first_seq;
+            while next <= last {
+                let batch = log.copy_range(next, (next + 255).min(last))?;
+                for rec in &batch {
+                    let view = D8OpView {
+                        seq: rec.meta.seq,
+                        ref_seq: rec.meta.ref_seq,
+                        random_seed: rec.meta.random_seed,
+                        kind: rec.meta.kind,
+                        command_id: rec.meta.command_id,
+                        tool_version: rec.meta.tool_version,
+                        reserved: 0,
+                        params: rec.params.as_ptr(),
+                        params_len: rec.params.len(),
+                        inputs: rec.inputs.as_ptr(),
+                        n_inputs: rec.inputs.len(),
+                        outputs: rec.outputs.as_ptr(),
+                        n_outputs: rec.outputs.len(),
+                    };
+                    let rc = cb(user, &view);
+                    if rc != 0 {
+                        return Err(BoundaryError::new(
+                            D8_ERR_CALLBACK,
+                            format!("visitor returned {rc} at record {}", rec.meta.seq),
+                        )
+                        .with_detail(i64::from(rc)));
+                    }
+                }
+                next += batch.len() as u64;
+            }
             Ok(())
         })
     }

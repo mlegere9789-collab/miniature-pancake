@@ -38,6 +38,9 @@ pub const D8_ERR_CLOSED: D8Status = 12;
 /// An earlier write failed; the log is fail-stopped and refuses new appends.
 pub const D8_ERR_FAILED: D8Status = 13;
 
+/// A callback passed to the library returned a non-zero value; the detail field holds that value.
+pub const D8_ERR_CALLBACK: D8Status = 14;
+
 /// Version of this C ABI: major in the high 16 bits, minor in the low 16 bits.
 pub const D8_ABI_VERSION: u32 = 0x0001_0000;
 
@@ -125,6 +128,7 @@ pub fn status_name_str(code: D8Status) -> &'static str {
         D8_ERR_LIMIT => "D8_ERR_LIMIT",
         D8_ERR_CLOSED => "D8_ERR_CLOSED",
         D8_ERR_FAILED => "D8_ERR_FAILED",
+        D8_ERR_CALLBACK => "D8_ERR_CALLBACK",
         _ => "D8_ERR_UNKNOWN",
     }
 }
@@ -158,12 +162,12 @@ mod tests {
     #[test]
     fn every_code_has_a_distinct_name() {
         let mut names = Vec::new();
-        for c in 0..=13 {
+        for c in 0..=14 {
             names.push(status_name_str(c));
         }
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 14);
+        assert_eq!(names.len(), 15);
         assert_eq!(status_name_str(999), "D8_ERR_UNKNOWN");
     }
 
