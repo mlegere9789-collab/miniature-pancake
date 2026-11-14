@@ -130,7 +130,7 @@ struct CaseOut {
   J operands = J::Array();
   J op = J::Object();
   Ex ex;
-  double timeout = 30;
+  double timeout = 30;  // CPU seconds of the case process (see corpus_runner.cpp)
   std::vector<std::string> tags;
 };
 inline J to_json(const CaseOut& c) {

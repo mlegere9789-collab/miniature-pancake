@@ -7,8 +7,8 @@
 //
 // run options: --only id[,id...]   --filter substring   --timeout-scale k   --out results.jsonl
 //
-// Each case runs in a forked child with a wall-clock timeout (SIGKILL on expiry) and an address-space
-// limit, so a hang, a crash or an allocation blow-up in the kernel is recorded, not fatal.
+// Each case runs in a forked child with a CPU-time timeout (SIGKILL on expiry; wall-clock backstop) and an
+// address-space limit, so a hang, a crash or an allocation blow-up in the kernel is recorded, not fatal.
 // Result values: ok | fail (ran, an invariant failed) | throw (exception, refusal or crash) | timeout.
 //
 // Build (kernel base objects in $OBJ, see parity/corpus/README block in BASELINE.md):
@@ -405,7 +405,23 @@ std::string RunCase(const J& c) {
   return out.dump();
 }
 
-// ------------------------------------------------------------------ isolation: fork + wall-clock timeout
+// ------------------------------------------------------------------ isolation: fork + CPU-time timeout
+// The timeout is CPU seconds (user + system) of the case process, read from /proc, so a loaded shared
+// machine does not turn slow cases into timeouts; a wall-clock backstop of max(4 x timeout, 120 s)
+// still catches a process that sleeps or blocks.  Each case reports cpu_ms (from wait4) and wall_ms.
+double CpuSeconds(pid_t pid) {
+  std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  if (!std::getline(f, line)) return -1;
+  const size_t rp = line.rfind(')');
+  if (rp == std::string::npos) return -1;
+  std::istringstream ss(line.substr(rp + 2));
+  std::string tok;
+  unsigned long ut = 0, st = 0;
+  for (int i = 0; ss >> tok; ++i) { if (i == 11) ut = std::strtoul(tok.c_str(), nullptr, 10); if (i == 12) { st = std::strtoul(tok.c_str(), nullptr, 10); break; } }
+  return static_cast<double>(ut + st) / static_cast<double>(sysconf(_SC_CLK_TCK));
+}
+
 std::string RunIsolated(const J& c, double timeout_s) {
   using clock = std::chrono::steady_clock;
   const auto t0 = clock::now();
@@ -420,7 +436,7 @@ std::string RunIsolated(const J& c, double timeout_s) {
     dup2(dn, 2);
     rlimit as{6ull << 30, 6ull << 30};
     setrlimit(RLIMIT_AS, &as);
-    rlimit cpu{static_cast<rlim_t>(timeout_s) + 10, static_cast<rlim_t>(timeout_s) + 10};
+    rlimit cpu{static_cast<rlim_t>(timeout_s) + 10, static_cast<rlim_t>(timeout_s) + 10};  // backstop if the parent dies
     setrlimit(RLIMIT_CPU, &cpu);
     const std::string line = RunCase(c);
     size_t off = 0;
@@ -429,13 +445,14 @@ std::string RunIsolated(const J& c, double timeout_s) {
   }
   close(fd[1]);
   std::string buf;
-  bool timed_out = false;
+  bool timed_out = false, wall_out = false;
+  const double wall_limit = std::fmax(4 * timeout_s, 120.0);
   for (;;) {
-    const double elapsed = std::chrono::duration<double>(clock::now() - t0).count();
-    const double left = timeout_s - elapsed;
-    if (left <= 0) { timed_out = true; break; }
+    const double wall = std::chrono::duration<double>(clock::now() - t0).count();
+    if (wall > wall_limit) { timed_out = wall_out = true; break; }
+    if (CpuSeconds(pid) > timeout_s) { timed_out = true; break; }
     pollfd p{fd[0], POLLIN, 0};
-    const int r = poll(&p, 1, static_cast<int>(std::min(left, 1.0) * 1000) + 1);
+    const int r = poll(&p, 1, 250);
     if (r > 0) {
       char tmp[4096];
       const ssize_t n = read(fd[0], tmp, sizeof tmp);
@@ -445,18 +462,23 @@ std::string RunIsolated(const J& c, double timeout_s) {
   }
   if (timed_out) kill(pid, SIGKILL);
   int status = 0;
-  waitpid(pid, &status, 0);
+  rusage ru{};
+  wait4(pid, &status, 0, &ru);
   close(fd[0]);
-  const double wall = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+  const double wall_ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
+  const double cpu_ms = ru.ru_utime.tv_sec * 1e3 + ru.ru_utime.tv_usec / 1e3 + ru.ru_stime.tv_sec * 1e3 + ru.ru_stime.tv_usec / 1e3;
   J o = J::Object();
   o.set("id", c.str("id")).set("set", c.str("set")).set("category", c.str("category"));
   if (timed_out) {
-    o.set("result", "timeout").set("ms", wall).set("reason", "no result within " + Num(timeout_s) + " s");
-    return o.dump();
+    o.set("result", "timeout").set("ms", cpu_ms).set("reason", wall_out ? "no result within the wall-clock backstop of " + Num(wall_limit) + " s" : "no result within " + Num(timeout_s) + " CPU seconds");
+  } else if (!buf.empty()) {
+    try { o = corpus::ParseJson(buf); } catch (const std::exception&) { o.set("result", "throw").set("reason", "unparseable result line"); }
+  } else if (WIFSIGNALED(status)) {
+    o.set("result", "throw").set("reason", std::string("crash: signal ") + std::to_string(WTERMSIG(status)) + " (" + strsignal(WTERMSIG(status)) + ")");
+  } else {
+    o.set("result", "throw").set("reason", "no output, exit code " + std::to_string(WEXITSTATUS(status)));
   }
-  if (!buf.empty()) return buf;
-  if (WIFSIGNALED(status)) o.set("result", "throw").set("ms", wall).set("reason", std::string("crash: signal ") + std::to_string(WTERMSIG(status)) + " (" + strsignal(WTERMSIG(status)) + ")");
-  else o.set("result", "throw").set("ms", wall).set("reason", "no output, exit code " + std::to_string(WEXITSTATUS(status)));
+  o.set("cpu_ms", cpu_ms).set("wall_ms", wall_ms);
   return o.dump();
 }
 
@@ -484,6 +506,7 @@ J Header(size_t total, size_t golden) {
                                    {"far_origin", "volume/area relative widened to 160 eps D/L (divergence-theorem noise floor about the world origin)"},
                                    {"ambiguity", "|delta| <= 1e-6 (the kernel model tolerance): merged and separated topologies are both listed as allowed; empty may be 'either'"}}));
   h.set("operand_kinds", "box (optional rot), cylinder, cone, sphere, torus, prism - built as the app builds them (ON_BrepBox, ON_BrepCylinder, ON_BrepCone, ON_BrepSphere, ON_BrepTorus, trimmed plane + extrude); the seam of a round primitive is on the world x axis projected perpendicular to its axis");
+  h.set("timeout", "timeout_s is CPU seconds (user+system) of the case process, so a loaded shared machine does not turn slow cases into timeouts; a wall-clock backstop of max(4 x timeout, 120 s) also applies; results carry cpu_ms and wall_ms");
   h.set("operations", "boolean: steps of union/intersection/difference over groups of operand ids (N-ary folds as BooleanCombine*NAry), engine 'auto' = the app's order (planar engine, then general engine + kernel sealing, then plain sewing); measure: no operation, the operand itself is checked");
   return h;
 }

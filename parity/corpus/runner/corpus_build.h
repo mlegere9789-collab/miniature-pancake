@@ -60,7 +60,7 @@ inline J plate_grid(int N) {
   std::snprintf(id, sizeof id, "E-HOLES-%dx%d-AB", N, N);
   std::snprintf(d, sizeof d, "plate %dx%dx0.5 minus %d through cylinders r=0.3 on a unit grid (N-ary difference)", N, N, N * N);
   return to_json(multi(id, "evil", "many-holes", d, "V = N^2 t (1 - pi r^2); genus N^2 so chi = 2 - 2 N^2; area = 2N^2 + 2N + N^2 (2 pi r t - 2 pi r^2)", ops,
-                       boolean_op({stepv("difference", {"A"}, ids)}), V, S, {N / 2.0, N / 2.0, t / 2}, T(2 - 2 * N * N, 1), false, std::sqrt(2.0) * N, N >= 8 ? 60 : 45));
+                       boolean_op({stepv("difference", {"A"}, ids)}), V, S, {N / 2.0, N / 2.0, t / 2}, T(2 - 2 * N * N, 1), false, std::sqrt(2.0) * N, 30));
 }
 
 inline J plate_ring() {
