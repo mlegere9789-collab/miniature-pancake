@@ -1,0 +1,2 @@
+SECTIONS=BASE SX SR B2S SATF RVCH THK MRM ARCSH
+FILTERS=CapNakedLoops;RegionAdaptive;MeshQuality;RevSurface;Welded;Tessellat;Sphere;Topology;Boolean
