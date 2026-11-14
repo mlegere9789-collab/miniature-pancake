@@ -20,14 +20,14 @@ glt_bad() { echo "FAIL $1"; fail=1; }
 GLT_ORACLE="$HERE/gltf_oracle.py"
 GLT_DIR="$TMPW/glt"; mkdir -p "$GLT_DIR"
 printf 'this is not a glTF file' > "$TMPW/gltf_bad.glb"
-# Fixture: two boxes (corner (x0,0,0), 10 mm cube, x0 = 0 and 20), each 8 vertices and 6 quads split into 12 outward-facing triangles.
+# Fixture (OBJ face indices are global, so the second box adds 8): two boxes (corner (x0,0,0), 10 mm cube, x0 = 0 and 20), each 8 vertices and 6 quads split into 12 outward-facing triangles.
 awk 'BEGIN {
   split("0 3 2 1  4 5 6 7  0 1 5 4  3 7 6 2  0 4 7 3  1 2 6 5", q, " ")
   for (b = 0; b < 2; b++) {
     x0 = b * 20
     printf "o box%d\n", b + 1
     for (k = 0; k < 8; k++) printf "v %d %d %d\n", x0 + (k == 1 || k == 2 || k == 5 || k == 6) * 10, (k == 2 || k == 3 || k == 6 || k == 7) * 10, (k >= 4) * 10
-    for (f = 0; f < 6; f++) { a = q[f * 4 + 1] + 1; bq = q[f * 4 + 2] + 1; c = q[f * 4 + 3] + 1; d = q[f * 4 + 4] + 1
+    for (f = 0; f < 6; f++) { a = q[f * 4 + 1] + 1 + 8 * b; bq = q[f * 4 + 2] + 1 + 8 * b; c = q[f * 4 + 3] + 1 + 8 * b; d = q[f * 4 + 4] + 1 + 8 * b
       printf "f %d %d %d\nf %d %d %d\n", a, bq, c, a, c, d }
   }
 }' > "$TMPW/gltf_fix.obj"
