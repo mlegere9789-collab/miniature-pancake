@@ -1,0 +1,2 @@
+SECTIONS=TYPED KWR RVSH SR TS2 TS3 TS5 TS6 BASE
+FILTERS=Classify;ReduceDegree;KnotRemoval;RemoveKnot;Simplify;Elevate;FitToTolerance
