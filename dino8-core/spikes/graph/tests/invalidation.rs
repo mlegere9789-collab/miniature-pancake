@@ -407,3 +407,33 @@ fn priorities_run_visible_before_nearby_before_background() {
     assert!(rep.class_done[0].unwrap() <= rep.class_done[1].unwrap());
     assert!(rep.class_done[1].unwrap() <= rep.class_done[2].unwrap());
 }
+
+#[test]
+fn parallel_visible_phase_finishes_before_any_background_query_starts() {
+    // 16 visible and 64 background queries on 4 threads: with ordered phases no background query
+    // may start before every visible query has finished, so the visible result is not delayed by
+    // the (larger) background workload.
+    let starts = Arc::new((0..80).map(|_| AtomicUsize::new(usize::MAX)).collect::<Vec<_>>());
+    let ends = Arc::new((0..80).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+    let seq = Arc::new(AtomicUsize::new(0));
+    let mut db = Db::<i64>::new(Config { threads: 4, serial_budget: 0, split_threshold: 2, max_nodes: 1 << 10 });
+    let inp = db.register_input("x", Some(1));
+    let (s2, e2, q2) = (starts.clone(), ends.clone(), seq.clone());
+    let q = db.register_query("q", Some(80), move |ctx| {
+        let v = ctx.read(inp, 0)?;
+        let a = ctx.arg() as usize;
+        s2[a].store(q2.fetch_add(1, Ordering::SeqCst), Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        e2[a].store(q2.fetch_add(1, Ordering::SeqCst), Ordering::SeqCst);
+        Ok(v + a as i64)
+    });
+    db.create_input(inp, 0, 1);
+    let reqs: Vec<(NodeId, Priority)> = (0..80).map(|i| (db.node(q, i), if i < 16 { Priority::Visible } else { Priority::Background })).collect();
+    let rep = db.evaluate_with(&reqs, &Default::default()).unwrap();
+    let last_visible_end = (0..16).map(|i| ends[i].load(Ordering::SeqCst)).max().unwrap();
+    let first_background_start = (16..80).map(|i| starts[i].load(Ordering::SeqCst)).min().unwrap();
+    assert!(last_visible_end < first_background_start, "a background query started ({first_background_start}) before the visible phase ended ({last_visible_end})");
+    let visible = rep.class_done[0].unwrap();
+    assert!(visible < rep.elapsed, "visible {visible:?} must be ready before the whole evaluation {:?}", rep.elapsed);
+    assert!(rep.parallel);
+}

@@ -281,8 +281,10 @@ impl<V> Node<V> {
     }
 }
 
+type Chunk<V> = Box<[Node<V>]>;
+
 struct Arena<V> {
-    chunks: Box<[OnceLock<Box<[Node<V>]>>]>,
+    chunks: Box<[OnceLock<Chunk<V>>]>,
     len: AtomicU32,
     cap: u32,
 }

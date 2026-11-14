@@ -1,0 +1,12 @@
+== leaf=64 fan_in=64
+model: 100000 walls, 20 levels, 16 types, 13x13 tiles per level, schedule tree depth 3 (leaf 64, fan-in 64), engine threads 1
+cold: engine 170.6 ms (254989 computed, 319715 steps, 64726 restarts, parallel=false), global recompute 5.9 ms parallel / 5.9 ms serial; engine/baseline = 28.86x parallel, 29.05x serial
+move_wall_on      15 |       11       11        1       3 |        2.9   0.046(0.032)   0.047(0.033) |      125.8      125.0 |      128.8
+move_wall_off     15 |       11       10        1       1 |        3.0   0.023(0.017)   0.049(0.036) |      121.9      121.1 |      262.2
+height_wall_on    15 |       11        9        2       4 |        3.0   0.041(0.030)   0.042(0.031) |      140.4      139.5 |      144.8
+== leaf=100000 fan_in=64
+model: 100000 walls, 20 levels, 16 types, 13x13 tiles per level, schedule tree depth 1 (leaf 100000, fan-in 64), engine threads 1
+cold: engine 150.5 ms (253401 computed, 318101 steps, 64700 restarts, parallel=false), global recompute 5.2 ms parallel / 5.2 ms serial; engine/baseline = 28.67x parallel, 28.74x serial
+move_wall_on      15 |        9        9        0       3 |        3.6   6.949(6.564)   6.951(6.567) |        0.8        0.8 |        0.8
+move_wall_off     15 |        9        9        0       1 |        3.9   6.815(6.480)   6.853(6.514) |        0.8        0.8 |        0.8
+height_wall_on    15 |        9        7        2       4 |        3.9   6.807(6.478)   6.810(6.480) |        0.8        0.8 |        0.8

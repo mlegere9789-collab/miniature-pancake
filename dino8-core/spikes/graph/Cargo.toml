@@ -19,6 +19,7 @@ path = "src/bin/regen_bench.rs"
 
 [dependencies]
 rayon = "1.10"
+libc = "0.2"
 
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }
