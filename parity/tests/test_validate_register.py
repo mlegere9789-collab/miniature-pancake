@@ -291,6 +291,16 @@ class Warnings(CheckBase):
         issues = self.check({"blender/other.jsonl": [make_row(1)]})
         self.assertEqual(codes(issues), ["path-mismatch"])
 
+    def test_layout_problems_are_reported_once_per_file_not_once_per_row(self):
+        rows = [make_row(i, domain="mesh") for i in range(1, 6)]
+        issues = self.check({"blender/other.jsonl": rows})
+        self.assertEqual(codes(issues), ["path-mismatch"])
+        self.assertIn("5 of 5 rows", issues[0]["message"])
+
+    def test_a_file_name_may_carry_a_prefix_around_the_domain(self):
+        rows = [make_row(1, domain="shader_nodes", id="D8-BLENDER-SHDNODE-0001")]
+        self.assertEqual(self.check({"blender/b_shader_nodes.jsonl": rows}), [])
+
     def test_multi_program_row_may_live_in_either_directory(self):
         row = make_row(1, program="rhino")
         row["program"] = ["rhino", "grasshopper"]

@@ -375,6 +375,47 @@ class RunOrderAndAntiGaming(PercentBase):
         self.assertEqual(result["unproven_claims"]["count"], 0)
 
 
+class Waves(PercentBase):
+    def test_a_rows_own_wave_wins_over_the_factory_map(self):
+        rows = [
+            make_row(1, wave=3, factory="mesh-subd-sculpt"),
+            make_row(2, factory="mesh-subd-sculpt"),
+            make_row(3, factory="performance"),
+            make_row(4, factory="flow"),
+        ]
+        waves = {"mesh-subd-sculpt": 1, "performance": 3}
+        shutil_rmtree(self.register)
+        write_register(self.register, {"blender/mesh.jsonl": rows})
+        records, _ = regio.read_register(self.register)
+        result, _ = percent.compute(
+            records, percent.load_evidence(self.evidence), NOW, factory_waves=waves
+        )
+        self.assertEqual(
+            {k: v["total"] for k, v in result["by_wave"].items()},
+            {"1": 1, "3": 2, "unassigned": 1},
+        )
+        self.assertEqual(
+            result["register"]["wave_source"],
+            {"factory_map": 2, "row": 1, "unassigned": 1},
+        )
+
+    def test_the_shipped_map_covers_every_factory_of_the_schema(self):
+        with open(support.SCHEMA_PATH, encoding="utf-8") as handle:
+            factories = json.load(handle)["properties"]["factory"]["enum"]
+        table = percent.load_waves(
+            os.path.join(support.REPO_ROOT, "ledger", "waves.json")
+        )
+        self.assertEqual(sorted(table), sorted(factories))
+
+    def test_a_bad_wave_in_the_map_is_refused(self):
+        path = self.path("waves.json")
+        with open(path, "w") as handle:
+            json.dump({"factory": {"flow": 9}}, handle)
+        with self.assertRaises(ValueError):
+            percent.load_waves(path)
+        self.assertEqual(percent.load_waves(self.path("absent.json")), {})
+
+
 class Reporting(PercentBase):
     def test_tests_that_many_rows_lean_on_are_listed_for_the_reviewers(self):
         rows = [

@@ -2,7 +2,8 @@
 """Compute ledger/percent.json from the Register and the CI evidence (plan section 7).
 
     python3 parity/tools/percent.py [--register DIR] [--evidence DIR] [--checks FILE ...]
-        [--legacy FILE] [--pace FILE] [--previous FILE] [--out FILE] [--credits-out FILE]
+        [--legacy FILE] [--pace FILE] [--waves FILE] [--previous FILE] [--out FILE]
+        [--credits-out FILE]
         [--now TIME] [--run-id ID] [--commit SHA] [--check] [--strict]
 
 Nothing in the output is typed by hand: the numbers come from the Register rows and from
@@ -72,6 +73,7 @@ DEFAULT_OUT = os.path.join(REPO_ROOT, "ledger", "percent.json")
 DEFAULT_CREDITS = os.path.join(REPO_ROOT, "ledger", "credits.jsonl")
 DEFAULT_LEGACY = os.path.join(REPO_ROOT, "ledger", "legacy.json")
 DEFAULT_PACE = os.path.join(REPO_ROOT, "ledger", "pace.json")
+DEFAULT_WAVES = os.path.join(REPO_ROOT, "ledger", "waves.json")
 
 SCHEMA_VERSION = 1
 LIST_LIMIT = 200  # longest list written into percent.json; the count is always exact
@@ -557,6 +559,30 @@ def _add(bucket, verdict):
         bucket["target_met"] += 1
 
 
+def load_waves(path):
+    """Factory -> wave for rows that name no wave (ledger/waves.json); {} when absent."""
+    if not path or not os.path.isfile(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    table = data.get("factory", {})
+    for factory, wave in table.items():
+        if isinstance(wave, bool) or wave not in (0, 1, 2, 3, 4):
+            raise ValueError("waves.json: %s has wave %r, not 0 to 4" % (factory, wave))
+    return table
+
+
+def wave_of(row, factory_waves):
+    """(wave or None, where it came from: row, factory_map or unassigned)."""
+    wave = row.get("wave")
+    if isinstance(wave, int) and not isinstance(wave, bool):
+        return wave, "row"
+    mapped = factory_waves.get(row.get("factory"))
+    if mapped is not None:
+        return mapped, "factory_map"
+    return None, "unassigned"
+
+
 def read_credits(path):
     """Previous credits: id -> credit line. Missing or unreadable file gives {}."""
     if not path or not os.path.isfile(path):
@@ -597,9 +623,12 @@ def compute(
     pace=None,
     run_id=None,
     commit=None,
+    factory_waves=None,
 ):
     """Return (percent dict, credits list). Pure: no file access."""
     previous = previous or {}
+    factory_waves = factory_waves or {}
+    wave_source = collections.Counter()
     states = judge_tests(evidence)
     first = {}
     duplicate_ids = 0
@@ -640,17 +669,9 @@ def compute(
         for program in programs or ["unknown"]:
             _add(by_program[str(program)], verdict)
         _add(by_factory[str(row.get("factory") or "unknown")], verdict)
-        wave = row.get("wave")
-        _add(
-            by_wave[
-                (
-                    str(wave)
-                    if isinstance(wave, int) and not isinstance(wave, bool)
-                    else "unassigned"
-                )
-            ],
-            verdict,
-        )
+        wave, source = wave_of(row, factory_waves)
+        wave_source[source] += 1
+        _add(by_wave[str(wave) if wave is not None else "unassigned"], verdict)
         claimed = regio.tier_of(row)
         if not isinstance(claimed, str) or claimed not in regio.TIER_RANK:
             claimed = "invalid"
@@ -752,6 +773,7 @@ def compute(
             "files": len({r["file"] for r in records}),
             "rows": len(rows),
             "aliases": len(alias_rows),
+            "wave_source": dict(sorted(wave_source.items())),
             "duplicate_ids_ignored": duplicate_ids,
             "rows_without_id_ignored": without_id,
             "tiers_written_in_register": dict(sorted(typed.items())),
@@ -825,6 +847,10 @@ def run(argv=None, out=None):
         help="pace line (default ledger/pace.json, else the plan 6.4 defaults)",
     )
     parser.add_argument(
+        "--waves",
+        help="factory to wave map for rows without a wave (default ledger/waves.json)",
+    )
+    parser.add_argument(
         "--previous", help="previous credits file (default: the --credits-out file)"
     )
     parser.add_argument(
@@ -874,6 +900,7 @@ def run(argv=None, out=None):
             args.pace or (DEFAULT_PACE if os.path.isfile(DEFAULT_PACE) else None)
         )
         legacy = load_legacy(args.legacy or DEFAULT_LEGACY)
+        factory_waves = load_waves(args.waves or DEFAULT_WAVES)
     except (OSError, ValueError, KeyError) as exc:
         print("percent: %s" % exc, file=sys.stderr)
         return 2
@@ -902,7 +929,15 @@ def run(argv=None, out=None):
         )
 
     result, credits = compute(
-        records, evidence, now, previous, legacy, pace, args.run_id, args.commit
+        records,
+        evidence,
+        now,
+        previous,
+        legacy,
+        pace,
+        args.run_id,
+        args.commit,
+        factory_waves,
     )
 
     status = 0

@@ -39,7 +39,7 @@ The ledger turns "how far are we" into a computed number. Three rules carry ever
 | `ledger/percent.json`, `ledger/credits.jsonl` | **CI only** | computed progress, one line per credited row |
 | `ledger/incidents/<id>.md` | watchdog, then the owner of the task | stalls, failed gates, re-plans, root cause |
 | `ledger/usage/<date>.json` | sessions, audited against billing | usage per task (format not defined here) |
-| `ledger/pace.json`, `ledger/legacy.json` | orchestrator | plan 6.4 line; frozen legacy map numbers |
+| `ledger/pace.json`, `ledger/legacy.json`, `ledger/waves.json` | orchestrator | plan 6.4 line; frozen legacy map numbers; planned wave per factory for rows that name none (proposed, to be confirmed) |
 | `ledger/tools/` | ledger owner | `claims.py`, `watchdog.py`, `heartbeat.py`, `guard.py`, `ledgerlib.py` |
 | `ledger/examples/` | ledger owner | every format, by example (tests assert the hand count) |
 
@@ -54,7 +54,10 @@ The schema is the coordinator's `row.schema.json` plus these optional fields (ro
 against the original schema stay valid):
 
 * `wave` (0 to 4): the wave in which the row is planned to complete (plan 6.2). It is what
-  `by_wave` in `percent.json` groups by; rows without it fall in `unassigned`.
+  `by_wave` in `percent.json` groups by. A row without it takes the wave of its factory from
+  `ledger/waves.json` (`register.wave_source` says how many rows got theirs from the row, from
+  the map, or from neither: `unassigned`). The map is a proposal made from the wave
+  descriptions of plan 6.2 and 6.3 and is for the orchestrator to confirm.
 * `superiority_tests`: test ids that machine-check the Best tier. A row reaches Best only when
   all of them pass as well.
 * `evidence`: `null` until CI counts the row, then an object with `run_id` and `commit`
@@ -144,8 +147,8 @@ target (Best for rows whose target is Best). The headline number is `passing / t
 
 ```
 python3 parity/tools/percent.py [--register DIR] [--evidence DIR] [--checks FILE ...]
-        [--legacy FILE] [--pace FILE] [--previous FILE] [--out FILE|-] [--credits-out FILE]
-        [--now TIME] [--run-id ID] [--commit SHA] [--check] [--strict]
+        [--legacy FILE] [--pace FILE] [--waves FILE] [--previous FILE] [--out FILE|-]
+        [--credits-out FILE] [--now TIME] [--run-id ID] [--commit SHA] [--check] [--strict]
 ```
 
 `ledger/percent.json` (all keys sorted, output reproducible for equal inputs):

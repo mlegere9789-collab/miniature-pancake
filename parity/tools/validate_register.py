@@ -329,6 +329,7 @@ def check_records(records, validate, register_root=None, inventory=None):
 
     alias_target = {}
     seen_statements = {}
+    layout = {}
     for record in records:
         row = record["row"]
         row_id = row.get("id") if isinstance(row.get("id"), str) else None
@@ -489,50 +490,73 @@ def check_records(records, validate, register_root=None, inventory=None):
                 seen_statements[key] = row_id
 
         if register_root is not None:
+            slot = layout.setdefault(
+                record["file"],
+                {"record": record, "rows": 0, "bad_program": [], "bad_domain": []},
+            )
+            slot["rows"] += 1
             relative = os.path.relpath(record["file"], str(register_root)).replace(
                 os.sep, "/"
             )
             parts = relative.split("/")
-            program_list = (
-                [_norm(p) for p in programs] if isinstance(programs, list) else []
-            )
-            domain = row.get("domain")
-            if len(parts) != 2:
-                issues.append(
-                    _issue(
-                        "warning",
-                        "path-layout",
-                        record,
-                        "expected parity/register/<program>/<domain>.jsonl, found %s"
-                        % relative,
-                        row_id,
-                    )
+            if len(parts) == 2:
+                program_list = (
+                    [_norm(p) for p in programs] if isinstance(programs, list) else []
                 )
-            else:
                 if program_list and _norm(parts[0]) not in program_list:
-                    issues.append(
-                        _issue(
-                            "warning",
-                            "path-mismatch",
-                            record,
-                            "directory %s is not one of the row's programs %s"
-                            % (parts[0], program_list),
-                            row_id,
-                        )
-                    )
-                if isinstance(domain, str) and _norm(
-                    parts[1][: -len(".jsonl")]
-                ) != _norm(domain):
-                    issues.append(
-                        _issue(
-                            "warning",
-                            "path-mismatch",
-                            record,
-                            "file %s does not match the row's domain %r"
-                            % (parts[1], domain),
-                            row_id,
-                        )
-                    )
+                    slot["bad_program"].append(row_id)
+                domain = row.get("domain")
+                stem = _norm(parts[1][: -len(".jsonl")])
+                # a file name may carry a prefix or suffix around the domain (b_shader_nodes)
+                if isinstance(domain, str) and _norm(domain) not in stem:
+                    slot["bad_domain"].append(domain)
+
+    # file layout: one warning per file, not one per row
+    for name, slot in sorted(layout.items()):
+        relative = os.path.relpath(name, str(register_root)).replace(os.sep, "/")
+        parts = relative.split("/")
+        first = slot["record"]
+        if len(parts) != 2:
+            issues.append(
+                _issue(
+                    "warning",
+                    "path-layout",
+                    first,
+                    "expected parity/register/<program>/<domain>.jsonl, found %s"
+                    % relative,
+                )
+            )
+            continue
+        if slot["bad_program"]:
+            issues.append(
+                _issue(
+                    "warning",
+                    "path-mismatch",
+                    first,
+                    "directory %s is not one of the programs of %d of %d rows (first: %s)"
+                    % (
+                        parts[0],
+                        len(slot["bad_program"]),
+                        slot["rows"],
+                        slot["bad_program"][0],
+                    ),
+                )
+            )
+        if slot["bad_domain"]:
+            issues.append(
+                _issue(
+                    "warning",
+                    "path-mismatch",
+                    first,
+                    "file %s does not match the domain of %d of %d rows (domains: %s)"
+                    % (
+                        parts[1],
+                        len(slot["bad_domain"]),
+                        slot["rows"],
+                        ", ".join(sorted(set(slot["bad_domain"]))[:5]),
+                    ),
+                )
+            )
 
     # alias loops: follow each chain once
     reported = set()
