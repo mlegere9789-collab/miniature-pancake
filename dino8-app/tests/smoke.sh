@@ -2275,7 +2275,15 @@ flcheck "degree 2 x 1, CVs 3 x 2" "the matched floor plane's real G1 bend toward
 # but unreachable from any app command.
 flcheck "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's new Curvature option reaches kernel::NurbsSurface::MatchEdge()'s own G2 level for the first time, matched against a genuinely curved quarter-cylinder panel (not a trivial zero-curvature planar target) with every residual self-checked at ~0"
 flcheck "degree 1 x 3, CVs 2 x 4" "the matched flat panel's real G2 bend toward the quarter-cylinder's own curvature: degree elevated 1->3 and two control points added in the edge-crossing direction to hold position+tangent+curvature rows, the other direction (degree 1, 2 CVs) untouched"
-flcheck "MatchSrf: Curvature continuity needs an exact edge match against a target SURFACE edge (kernel::NurbsSurface::MatchEdge) - the exact match failed (periodic edge, or the target's degree is too low to carry a curvature row); nothing was changed" "MatchSrf's Curvature option fails closed, not silently downgraded to G1/G0, against a target whose own degree structurally can't carry a curvature row (two flat planar faces)"
+# MatchSrf Curvature against a FLAT target (two planar faces, degree 1 across the edge): matched exactly, no longer refused. The kernel
+# elevates the target's degree (exact: the elevated plane is the same plane) and its second cross derivative is the plane's own, 0, so
+# the floor leaves the box's front face with the face's tangent plane and zero normal curvature. The block of the script between the
+# FLBEGIN_/FLEND_ markers is sliced so these checks cannot be satisfied by the quarter-cylinder case above.
+FL_G2FLAT="$(awk '/Unknown command: FLBEGIN_matchsrf_g2_flat$/ { on = 1; next } on && /Unknown command: FLEND_matchsrf_g2_flat$/ { exit } on { print }' <<<"$FL")"
+flslice() { if grep -q -- "$1" <<<"$FL_G2FLAT"; then echo "ok   $2"; else echo "FAIL $2"; near "$FL_G2FLAT" "$1"; fail=1; fi; }
+flslice "MatchSrf: exact edge match (G2) to the target surface, max position error 0, max tangent error 0, max curvature error 0" "MatchSrf's Curvature option against a target whose own degree is below a curvature row's (two flat planar faces) is matched EXACTLY by kernel::NurbsSurface::MatchEdge (the flat target is elevated exactly; it used to fail closed), every residual self-checked at ~0"
+flslice "degree 3 x 1, CVs 4 x 2" "...the floor was degree-elevated 1->3 in the edge-crossing direction (4 x 2 net: the edge row, the two matched rows, the far row) - the last three rows lie in the box face's plane, so position, tangent plane and (zero) normal curvature equal the plane's"
+if grep -q "MatchSrf: Curvature continuity needs an exact edge match" <<<"$FL_G2FLAT"; then echo "FAIL ...no refusal is printed for the flat target"; near "$FL_G2FLAT" "MatchSrf: Curvature continuity needs"; fail=1; else echo "ok   ...no refusal is printed for the flat target"; fi
 flcheck "MatchSrf: exact edge match (G2) to the target curve, max position error 0" "MatchSrf's Curvature option now reaches kernel MatchEdgeToCurve for a target CURVE (it used to fail closed): a flat plane matched to a straight line preserves its own zero S_vv, G2 with residuals ~0"
 flcheck "SplitFace: face 0 split into 2 surfaces along the curve's crossing" "SplitFace found a real CSX crossing of a piercing polyline (a coplanar line can't cross a flat face twice)"
 flcheck "MergeFaces: 2 coplanar face.s. merged into 1" "MergeFaces recombined two joined coplanar planes"
@@ -12294,8 +12302,10 @@ if grep -q "gl_error=0" <<<"$PTFO"; then echo "ok   PTF script ran without OpenG
 #   Patch fixture (edge line + 2 points at z = 0.5, x = 10): plain 0.05 rad (z = 0.05 x), Tangency 1.2e-12 rad
 #   Network fixture (curves with zero slope at the edge): the exact Coons patch is ALREADY G1 (0 rad) - a negative control
 #     that the option does not claim an improvement the data do not allow; the fitted result measures 5.9e-08 rad.
-# Not verified here: Curvature (G2) on a curved adjacent surface from the app (the flat plane here is degree 1, so G2 is the
-# refusal case); the kernel's own G2 numbers are pinned by edge_continuity_tests in dino8-kernel/tests/test_basic.cpp.
+# Not verified here: Curvature (G2) on a curved adjacent surface from the app; the kernel's own G2 numbers are pinned by
+# edge_continuity_tests in dino8-kernel/tests/test_basic.cpp. G2 on the FLAT plane: a Loft builds it (MatchEdge elevates the
+# degree-1 plane exactly, whose own second cross derivative is 0: the loft leaves it with zero normal curvature, see loft_g2_flat);
+# Patch and NetworkSrf still refuse it (their fits have no degree elevation of the adjacent surface).
 # ---------------------------------------------------------------------------
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CNTO="$(timeout 900 "$BIN" --smoke 60 --script "$HERE/cnt_script.txt" 2>&1)" || { echo "$CNTO"; echo "FAIL: cnt script exited non-zero"; exit 1; }
@@ -12344,8 +12354,18 @@ cntobjs loft_g1 5 "CNT_loft_g1: one new surface"
 cntcheck loft_g0 "(position only: the tangent angle and curvature above are reported, not constrained)" "CNT_loft_g0: Continuity=Position says it constrains position only"
 cntnum loft_g0 "$LOFTM" "tangent angle " 4e-5 9e-5 "CNT_loft_g0: G0 leaves the tangent angle where the plain loft has it (6.37e-05 rad)"
 # refusals carry the kernel's reason and build nothing
-cntcheck loft_g2_flat "refused by the kernel .*MatchEdge refused (non-clamped surface, adjacent surface of too low a degree, or a self-check failure); nothing was built" "CNT_loft_g2_flat: G2 against a degree-1 plane is refused WITH the kernel's reason"
-cntobjs loft_g2_flat 4 "CNT_loft_g2_flat: nothing was built"
+# Curvature against the degree-1 plane: no longer a refusal. Degree elevation is exact, so MatchEdge raises the plane to the degree the
+# curvature row needs and the plane's own second cross derivative there is 0; a G2 loft therefore leaves the plane with zero normal
+# curvature. Closed form of what the kernel built (read from its control net, not from its own report): the cross-section is the cubic
+# Bezier with z rows 0, 0, 0, 0.4 (the rows next to the edge lie IN the plane z = 0), so z(t) = 0.4 t^3 and z(0) = z'(0) = z''(0) = 0:
+# position, tangent plane and curvature all equal the plane's, and the cubic still passes through the middle section (x = 5, z = 0.1) and
+# the last one (x = 10, z = 0.4) to 5e-13.
+cntcheck loft_g2_flat "Loft: G2 continuity to object 1, V=max edge: kernel LoftMatched through 3 curves (degree 2 in the loft direction), the first section made identical to the edge and the next rows rewritten by MatchEdge as tangent plane and curvature continuity" "CNT_loft_g2_flat: Continuity=Curvature against the degree-1 plane is built by the kernel's LoftMatched (the flat plane is elevated exactly; it used to be refused as 'adjacent surface of too low a degree')"
+cntnum loft_g2_flat "$LOFTM" "position gap " 0 1e-6 "CNT_loft_g2_flat: MEASURED position gap 0"
+cntnum loft_g2_flat "$LOFTM" "tangent angle " 0 1e-6 "CNT_loft_g2_flat: MEASURED tangent angle 0 (the plane's tangent plane)"
+cntnum loft_g2_flat "$LOFTM" "cross-edge curvature difference " 0 1e-6 "CNT_loft_g2_flat: MEASURED cross-edge curvature difference 0 (the plane has none, closed form: the plain loft's was 0.00796)"
+cntnum loft_g2_flat "$LOFTM" "from the finished surface " 0 1e-3 "CNT_loft_g2_flat: every section still within the document tolerance 0.001 of the finished surface (printed 5.28e-13)"
+cntobjs loft_g2_flat 5 "CNT_loft_g2_flat: plane + 3 sections + 1 loft"
 cntcheck loft_incompat "matching the adjacent surface moves section 2 by 0.0463" "CNT_loft_incompat: a straight ramp z = 0.5 x does not leave the plane tangentially: refused, section 2 would move 0.0463 > 0.001"
 cntnum loft_incompat "^history: ! Loft: " "moves section 2 by " 0.044 0.049 "CNT_loft_incompat: ...the stated section move"
 cntobjs loft_incompat 4 "CNT_loft_incompat: nothing was built"
