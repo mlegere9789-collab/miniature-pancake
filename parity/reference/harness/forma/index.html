@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dino 8 reference harness</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; color: #222; background: #fff; }
+  button { font: inherit; padding: 6px 12px; margin: 4px 4px 4px 0; }
+  pre { background: #f4f4f4; padding: 8px; overflow: auto; max-height: 40vh; }
+  @media (prefers-color-scheme: dark) { body { background: #1b1b1b; color: #ddd; } pre { background: #262626; } }
+</style>
+</head>
+<body>
+<h3>Dino 8 reference harness for Forma</h3>
+<p>Read-only by default. It reads from the open project with your own signed-in session; it stores no credentials and calls no other service.
+Untested against the real service. Counsel must confirm that scripted observation is permitted.</p>
+<label><input type="checkbox" id="sandbox"> Allow scenarios that trigger analyses (only runs when the project name starts with D8-REF)</label><br>
+<button id="pick">1. Choose output folder (optional)</button>
+<button id="run">2. Run 20 scenarios</button>
+<button id="save">3. Download results (if no folder chosen)</button>
+<pre id="log">Waiting.</pre>
+<script type="module" src="./dist/harness.js"></script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+# Wall seconds per smoke section, used by the CI planner (kernel-verify.yml, "Plan the section groups") to balance the 12 app groups.
+# Format: NAME SECONDS. A section missing from this file is planned at 60 s.
+# SEED, not measurement: run 41948783723 (full22) measured only whole-group times (BASE 573 s, SSAO 324, group "RTA SVS SPS TS5 QCA" 676,
+# "B2S LSPC SVI CNT TS6 OFR" 515, ...); each group's time is split over its sections by line count. BSEC SEC2 DIM DIMWR were added after
+# that run and take the 60 s default. run_sections.sh now prints `section_time NAME Ns` after every section: replace these numbers with
+# those (grep section_time in the group logs) after the next CI run.
+BASE 573
+RTA 392
+SSAO 324
+B2S 177
+SX 164
+SPS 110
+LSP2 103
+CNT 102
+TS6 90
+TS5 83
+BSEC 60
+DIM 60
+DIMWR 60
+SEC2 60
+OFR 59
+SVI 55
+SR 54
+SATS 50
+QCA 47
+SVS 45
+FSR 45
+H3R 35
+LSPC 33
+MRM 33
+PTF 30
+QC3A 28
+HGB 24
+S2C 23
+SATF 21
+TS3 20
+LSP3 18
+TS2 17
+HSO 16
+LSP 16
+SCP 15
+MSCV 15
+THK 15
+LAW 14
+SW2R 12
+RVR 11
+TS4 11
+MSCF 9
+QRM 9
+SPE 8
+CSK 8
+FRH 8
+SPLITSUBD 8
+DXF 8
+KWR 8
+TUTV 7
+SABF 7
+SO2 6
+S1S 6
+LOFTOPT 5
+SBL 5
+SW1S 4
+SCULPT 4
+XAL 4
+QC2 2
+OSE 2
+SOT 2

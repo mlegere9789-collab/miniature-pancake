@@ -1,0 +1,42 @@
+# DwgCompare / XrefCompare / CompareClear QC (compare/DwgCompare.h,
+# src/commands/cmd_compare.cpp). Saves a "v1" .3dm (a line, a circle, a
+# closed 4-point polyline, all on layer Default), then edits the in-memory
+# document into "v2": moves the line, deletes the circle, leaves the
+# polyline untouched, and adds a brand-new circle on a different layer
+# ("Added"). The new circle is deliberately put on its own layer rather
+# than Default: the matcher only pairs same-layer candidates (see
+# DwgCompare.h's "Matching heuristic"), and with the deleted/added circles
+# both left as same-layer, same-count leftovers on Default, the greedy
+# nearest-bbox-center pairing would happily (mis)pair them into a single
+# bogus "modified" instead of a genuine "removed" + "added" - exactly the
+# heuristic's disclosed mis-pairing limit, not something this script means
+# to exercise. DwgCompare then diffs the currently open v2 document against
+# the saved v1 file and must land exactly: the moved line as "modified",
+# the deleted circle as "removed", the untouched polyline as "unchanged"
+# (not printed - see smoke.sh's stats-line check), and the new circle as
+# "added". CompareClear then restores the document to its plain by-layer
+# colouring and removes the removed-object ghost.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Line 0,0,0 10,0,0
+Circle 5,5,0 2.5
+Polyline 0,20,0 10,20,0 10,30,0 0,30,0 0,20,0
+Enter
+SelAll
+Export @TMP@/cmp_v1.3dm
+SelNone
+SelID 1
+Move 0,0,0 5,5,0
+SelNone
+SelID 2
+Delete
+Enter
+NewLayer Added
+Circle 40,40,0 4
+SelAll
+List
+DwgCompare Path=@TMP@/cmp_v1.3dm
+SelAll
+List
+CompareClear
+SelAll
+List

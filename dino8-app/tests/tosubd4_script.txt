@@ -1,0 +1,117 @@
+# ToSubD of a torus and of right prisms (tests/smoke.sh section TS4_). Before:
+# the torus went through the dense 24/48/96/192-division grid tessellation (an
+# 18432-face triangle cage at the default 0.001 tolerance) and an extruded
+# L or a box with FilletEdge-rounded vertical edges went through the dense
+# chord-tolerance / grid path (thousands of triangles, usually unverified).
+# Now the torus gets an analytic N x M quad grid of its own parametrisation and
+# a prism over a profile of lines and arcs gets one quad ring per profile
+# column plus ear-clipped flat caps, both interpolated onto the exact surface
+# and MEASURED against it. Printed per solid, in this order: the ToSubD status
+# line, the SubD's List line, then Volumes of the control net (an interpolated
+# cage's net is not the limit surface) before and after SubDivide rounds.
+# --- 1 torus R=5 r=2 (volume 2 pi^2 R r^2 = 394.78), with refinement volumes
+Torus 0,0,0 5 2
+SelLast
+ToSubD
+SelLast
+List
+Volume
+SubDivide
+Volume
+SubDivide
+Volume
+SelAll
+Hide
+# --- 2 the TS2 torus (R=6 r=2) and a thin one (R=20 r=1)
+Torus 100,0,0 6 2
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+Torus 200,0,0 20 1
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 3 extruded L (area 64, height 6: volume 384)
+Polyline 300,0,0 310,0,0 310,4,0 304,4,0 304,10,0 300,10,0 300,0,0
+Enter
+SelLast
+ExtrudeCrv
+6
+SelLast
+ToSubD
+SelLast
+List
+Volume
+SubDivide
+Volume
+SubDivide
+Volume
+SelAll
+Hide
+# --- 4 box 10 x 10 x 6 with its four vertical edges rounded r=1 (area 100 - 4 (1 - pi/4) = 99.1416, volume 594.85)
+Box 400,0,0 410,10,0 6
+FilletEdge
+Radius=1
+410,10,3
+400,10,3
+400,0,3
+410,0,3
+Enter
+SelAll
+Volume
+SelAll
+ToSubD
+SelLast
+List
+Volume
+SubDivide
+Volume
+SubDivide
+Volume
+SelAll
+Hide
+# --- 5 box 10 x 10 x 6 with TWO ADJACENT vertical edges rounded r=2 (a line tangent at one end and sharp at the other:
+# before, the 7.5 degree rung verified at 0.00096 by luck and every finer rung blew up to 0.13-0.24 because a
+# sliver column next to a sharp corner made the interpolating crease overshoot; area 100 - 2 (4 - pi) = 98.283, volume about 589.7)
+Box 500,0,0 510,10,0 6
+FilletEdge
+Radius=2
+510,10,3
+500,10,3
+Enter
+SelAll
+Volume
+SelAll
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 6 box with two OPPOSITE vertical edges rounded r=1.5 and one edge rounded r=3
+Box 600,0,0 610,10,0 6
+FilletEdge
+Radius=1.5
+610,10,3
+600,0,3
+Enter
+SelAll
+ToSubD
+SelLast
+List
+SelAll
+Hide
+Box 700,0,0 710,10,0 6
+FilletEdge
+Radius=3
+710,10,3
+Enter
+SelAll
+ToSubD
+SelLast
+List

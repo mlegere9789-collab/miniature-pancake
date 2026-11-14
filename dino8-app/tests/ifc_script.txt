@@ -1,0 +1,22 @@
+# IFC (BIM) exchange at the app level (io/FileIgesStep.cpp's ExportIfc/
+# ImportIfc): a real IFC4 Part 21 file, verified during development against
+# IfcOpenShell's own schema validator and geometry engine, not just this
+# app's own reader - see smoke.sh. @TMP@ is replaced by smoke.sh with a
+# scratch directory.
+SetActiveViewport Top
+Box 0,0,0 10,10,0 10
+SelAll
+List
+Export @TMP@/box.ifc
+New
+Import @TMP@/box.ifc
+SelAll
+List
+@expect_objects 1
+# A selection with nothing IFC-shaped (a bare point, no mesh/surface/brep/
+# SubD) fails cleanly rather than writing an empty/bogus file.
+New
+Point 0,0,0
+SelAll
+Export @TMP@/nothing.ifc
+@expect_objects 1

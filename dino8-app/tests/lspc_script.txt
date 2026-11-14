@@ -1,0 +1,62 @@
+# Loft Spacing option (tests/sections/61_lsp.sh, section LSPC_): the kernel's Brep::LoftSpacing from the app.
+# Three coaxial circles: (r=1, z=0), (r=1, z=1), (r=3, z=4). Every spacing interpolates the three sections; only the
+# loft-direction station parameters v_k differ, so the lateral AREA differs and has a closed form for Uniform
+# (v = 0, 1/2, 1: z(v) = 4 v^2, r(v) = 1 - 2 v + 4 v^2, area = integral 2 pi r sqrt(r'^2 + z'^2) dv = 50.860).
+# Cases, in order (the section cuts the output at each "Command: Loft"):
+#  1 Spacing=Uniform Cap=No          -> area 50.86 (+-1 percent), message names the spacing
+#  2 default (no Spacing) Cap=No      -> a different area (chord stations), no Spacing text in the message
+#  3 Spacing=Centripetal Cap=No       -> builds, message names the spacing, area differs from Uniform
+#  4 Spacing=Uniform (Cap default)    -> the start cap plane is parallel to the sweep (z'(0) = 0, r'(0) = -2): refused with the
+#                                        kernel's reason, the uncapped wall is still built
+SetActiveViewport Top
+
+# --- 1
+Circle 0,0,0 1
+Circle 0,0,1 1
+Circle 0,0,4 3
+SelCrv
+Loft Spacing=Uniform Cap=No
+SelLast
+List
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- 2
+Circle 0,0,0 1
+Circle 0,0,1 1
+Circle 0,0,4 3
+SelCrv
+Loft Cap=No
+SelLast
+List
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- 3
+Circle 0,0,0 1
+Circle 0,0,1 1
+Circle 0,0,4 3
+SelCrv
+Loft Spacing=Centripetal Cap=No
+SelLast
+List
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- 4
+Circle 0,0,0 1
+Circle 0,0,1 1
+Circle 0,0,4 3
+SelCrv
+Loft Spacing=Uniform
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0

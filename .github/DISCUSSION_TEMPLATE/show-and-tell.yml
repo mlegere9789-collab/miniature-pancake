@@ -1,0 +1,25 @@
+title: "[Show] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share something you made with Dino 8. Pictures and command scripts welcome.
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you make?
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How? (commands, plug-ins, workflow)
+    validations:
+      required: false
+  - type: checkboxes
+    id: license
+    attributes:
+      label: Sharing
+      options:
+        - label: I am happy for others to learn from the files or scripts I attach.
+          required: false

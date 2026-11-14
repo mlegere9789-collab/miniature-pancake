@@ -1,0 +1,310 @@
+# ExtrudeSrfAlongCrv / ExtrudeSrfTapered / ExtrudeSrfToPoint, Contour, Section and OffsetMultiple record construction
+# history (tests/smoke.sh section H4R_, part 1). With History On each result is recorded with the object it was cut or
+# swept from; editing a source (Move / Scale / EditHistory) rebuilds the result automatically (no UpdateHistory), and a
+# result that cannot be rebuilt (a contour plane the edited source no longer meets) keeps its old geometry. Every claim
+# is a measured Bounding box / Volume / Length, compared with the SAME operation performed fresh (History Off) on the
+# source in its edited position. @TMP@ is the test temp directory.
+# Objects: 1 plane A, 2 path line, 3 plane B, 4 plane C, 5 box (contoured), 6 box (sectioned), 7 curve, 8 second box (contoured, moved) |
+# 9 AlongCrv, 10 Tapered, 11 ToPoint, 12-15 Contour of the box, 16 Section, 17-18 OffsetMultiple, 19-22 Contour of the second box |
+# controls (History Off) 35 AlongCrv, 37 Tapered, 39 ToPoint, 41-44 Contour of the box, 46 Section, 47-48 OffsetMultiple
+# (BoundingBox itself adds a box/rectangle object each time it runs, which is why the numbers skip).
+SetActiveViewport Top
+
+# ============================================================ sources and constructions (History On)
+History On
+Plane 0,0,0 10,10,0
+Line 0,0,0 0,0,5
+Plane 20,0,0 30,10,0
+Plane 40,0,0 50,10,0
+Box 60,0,0 70,10,0 10
+Box 80,0,0 90,10,0 10
+Curve 100,0,0 103,2,0 106,0,0 110,3,0 Enter
+Box 130,0,0 140,10,0 10
+SelNone
+SelID 1
+ExtrudeSrfAlongCrv
+SelID 2
+Enter
+SelNone
+SelID 3
+ExtrudeSrfTapered DraftAngle=5
+5
+SelNone
+SelID 4
+ExtrudeSrfToPoint
+45,5,10
+SelNone
+SelID 5
+Contour
+60,0,-1.25
+60,0,0
+2.5
+SelNone
+SelID 6
+Section
+75,5,0
+95,5,0
+SelNone
+SelID 7
+OffsetMultiple Distance=2 Count=2
+105,50,0
+SelNone
+SelID 8
+Contour
+130,5,-1.25
+130,5,0
+2.5
+History
+# ---- M1: the initial results (BoundingBox + Volume for the three mesh solids)
+SelNone
+SelID 9
+BoundingBox
+Volume
+SelNone
+SelID 10
+BoundingBox
+Volume
+SelNone
+SelID 11
+BoundingBox
+Volume
+# ---- Lengths: box contour 12-15 (sum), section 16, offsets 17-18 (sum), second-box contour 19-22 (sum)
+SelNone
+SelID 12
+SelID 13
+SelID 14
+SelID 15
+Length
+BoundingBox
+SelNone
+SelID 16
+Length
+BoundingBox
+SelNone
+SelID 17
+SelID 18
+Length
+BoundingBox
+SelNone
+SelID 19
+SelID 20
+SelID 21
+SelID 22
+Length
+BoundingBox
+
+# ============================================================ edits: every source changed once
+# AlongCrv: plane A moved +3 X and the path scaled 2x (its length, and so the height, doubles).
+SelNone
+SelID 1
+Move
+0,0,0
+3,0,0
+SelNone
+SelID 2
+Scale 0,0,0 2
+# Tapered: EditHistory changes the distance and the draft; plane B also moved +4 Y.
+SelNone
+SelID 3
+Move
+0,0,0
+0,4,0
+EditHistory 10 distance=8
+EditHistory 10 draft=10
+# ToPoint: apex raised by EditHistory, plane C moved +2 Y.
+EditHistory 11 apexz=20
+SelNone
+SelID 4
+Move
+0,0,0
+0,2,0
+# Contour of the box: moved (+5, +3, +1); the same four planes still cut it.
+SelNone
+SelID 5
+Move
+0,0,0
+5,3,1
+# Section: the box scaled 2x about its corner (the rectangle at y=5 grows from 10x10 to 20x20).
+SelNone
+SelID 6
+Scale 80,0,0 2
+# OffsetMultiple: the curve scaled 2x about its start.
+SelNone
+SelID 7
+Scale 100,0,0 2
+# Contour of a second box: moved (+4, 0, +0.5). (A box, not a tessellated sphere: a sphere's section chains split at
+# platform-dependent planes, which changed the piece count and shifted every later object id on Windows.)
+SelNone
+SelID 8
+Move
+0,0,0
+4,0,0.5
+# ---- M2: the rebuilt results
+SelNone
+SelID 9
+BoundingBox
+Volume
+SelNone
+SelID 10
+BoundingBox
+Volume
+SelNone
+SelID 11
+BoundingBox
+Volume
+SelNone
+SelID 12
+SelID 13
+SelID 14
+SelID 15
+Length
+BoundingBox
+SelNone
+SelID 16
+Length
+BoundingBox
+SelNone
+SelID 17
+SelID 18
+Length
+BoundingBox
+SelNone
+SelID 19
+SelID 20
+SelID 21
+SelID 22
+Length
+BoundingBox
+
+# ============================================================ controls: the same operations fresh (History Off) on the edited sources
+History Off
+SelNone
+SelID 1
+ExtrudeSrfAlongCrv
+SelID 2
+Enter
+SelLast
+BoundingBox
+Volume
+SelNone
+SelID 3
+ExtrudeSrfTapered DraftAngle=10
+8
+SelLast
+BoundingBox
+Volume
+SelNone
+SelID 4
+ExtrudeSrfToPoint
+45,5,20
+SelLast
+BoundingBox
+Volume
+SelNone
+SelID 5
+Contour
+60,0,-1.25
+60,0,0
+2.5
+SelNone
+SelID 41
+SelID 42
+SelID 43
+SelID 44
+Length
+BoundingBox
+SelNone
+SelID 6
+Section
+75,5,0
+95,5,0
+SelNone
+SelID 46
+Length
+BoundingBox
+SelNone
+SelID 7
+OffsetMultiple Distance=2 Count=2
+105,50,0
+SelNone
+SelID 47
+SelID 48
+Length
+BoundingBox
+# the second-box control last: only its own report line is used
+SelNone
+SelID 8
+Contour
+130,5,-1.25
+130,5,0
+2.5
+
+# ============================================================ negative control: a contour plane the edited source no longer meets
+History On
+SelNone
+SelID 5
+Move
+0,0,0
+0,0,20
+SelNone
+SelID 12
+SelID 13
+SelID 14
+SelID 15
+Length
+BoundingBox
+SelNone
+SelID 5
+Move
+0,0,0
+0,0,-20
+SelNone
+SelID 12
+SelID 13
+SelID 14
+SelID 15
+Length
+BoundingBox
+
+# ============================================================ Save, New, Open: records read back, sources still drive the results
+Save @TMP@/h4r_ext.3dm
+New
+Open @TMP@/h4r_ext.3dm
+History On
+History
+SelNone
+SelID 1
+Move
+0,0,0
+0,5,0
+SelNone
+SelID 9
+BoundingBox
+Volume
+SelNone
+SelID 5
+Move
+0,0,0
+0,1,-0.5
+SelNone
+SelID 12
+SelID 13
+SelID 14
+SelID 15
+Length
+BoundingBox
+SelNone
+SelID 7
+Scale 100,0,0 0.5
+SelNone
+SelID 17
+SelID 18
+Length
+BoundingBox
+SelNone
+SelID 6
+Scale 80,0,0 0.5
+SelNone
+SelID 16
+Length
+BoundingBox

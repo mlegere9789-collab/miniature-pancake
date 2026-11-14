@@ -1,0 +1,293 @@
+# Cap option of Sweep1 / Sweep2 and the exact closed circular rail (tests/smoke.sh section SCP_).
+# Every figure is MEASURED by the app and compared in smoke.sh with the analytic value. The smoke section cuts the output
+# apart per case at each "Command: Sweep" line (cases, in order):
+#  1 Sweep1 Cap=Yes, circle r=2 down a straight rail of 10 (cylinder, volume 40 pi = 125.664)
+#  2 the same without Cap (stays an uncapped surface: default unchanged)
+#  3 Sweep1 Cap=Yes, the circle sitting HALF WAY along the rail (rail split, both halves swept and joined, then capped)
+#  4 Sweep2 Cap=Yes, circle r=2 between two straight rails converging 2 -> 1 (cone frustum, volume 70/3 pi = 73.304)
+#  5 Sweep1 Cap=Yes with TWO circles r=2 / r=1 (Brep::Sweep1Sections wall, capped: the same frustum)
+#  6 Sweep1 Cap=Yes with an OPEN section: refused with the reason, the uncapped surface is kept
+#  7 Sweep1 Cap=No: circle section r=1 on a circle rail R=10 (torus; surface of revolution, ClosestPt of 5 exact torus points)
+#  8 Sweep1 Cap=Yes on the same closed rail: closed torus solid, volume 2 pi^2 R r^2 = 197.392
+#  9 control: an ELLIPSE rail (not a circle) keeps the kernel's ordinary skin
+# 10 Sweep1 Cap=Yes with History On, then the section moved: the capped solid is rebuilt (still a solid)
+SetActiveViewport Top
+
+# --- 1: capped cylinder
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail1
+Circle 0,0,0 2
+SelLast
+SetObjectName SCPSec1
+SelNone
+SelName SCPRail1
+Sweep1 Cap=Yes
+SelName SCPSec1
+Enter
+SelLast
+Volume
+Check
+List
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 2: default (no Cap) stays a surface
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail2
+Circle 0,0,0 2
+SelLast
+SetObjectName SCPSec2
+SelNone
+SelName SCPRail2
+Sweep1
+SelName SCPSec2
+Enter
+SelLast
+Volume
+List
+SelAll
+Delete
+@expect_objects 0
+
+# --- 3: section half way along the rail
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail3
+Circle 0,0,5 2
+SelLast
+SetObjectName SCPSec3
+SelNone
+SelName SCPRail3
+Sweep1 Cap=Yes
+SelName SCPSec3
+Enter
+SelLast
+Volume
+Check
+List
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 4: Sweep2 frustum
+Line 2,0,0 1,0,10
+SelLast
+SetObjectName SCPRail4a
+Line -2,0,0 -1,0,10
+SelLast
+SetObjectName SCPRail4b
+Circle 0,0,0 2
+SelLast
+SetObjectName SCPSec4
+SelNone
+SelName SCPRail4a
+Sweep2 Cap=Yes
+SelName SCPRail4b
+Enter
+SelName SCPSec4
+Enter
+SelLast
+Volume
+Check
+List
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 5: two sections, capped
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail5
+Circle 0,0,0 2
+SelLast
+SetObjectName SCPSec5
+Circle 0,0,10 1
+SelLast
+SetObjectName SCPSec5
+SelNone
+SelName SCPRail5
+Sweep1 Cap=Yes
+SelName SCPSec5
+Enter
+SelLast
+Volume
+Check
+List
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 6: open section
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail6
+Arc 2,0,0 0,2,0 -2,0,0
+SelLast
+SetObjectName SCPSec6
+SelNone
+SelName SCPRail6
+Sweep1 Cap=Yes
+SelName SCPSec6
+Enter
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0
+
+# --- 7: torus, uncapped (surface of revolution)
+Circle 0,0,0 10
+SelLast
+SetObjectName SCPRail7
+Circle3Pt 11,0,0 10,0,1 9,0,0
+SelLast
+SetObjectName SCPSec7
+SelNone
+SelName SCPRail7
+Sweep1
+SelName SCPSec7
+Enter
+SelLast
+Area
+BoundingBox
+Check
+SelNone
+SelSrf
+ClosestPt
+10.655549135485,1.049479987895,0.707106781187
+Enter
+SelNone
+SelSrf
+ClosestPt
+9.779035252493,0.963150905497,0.984807753012
+Enter
+SelNone
+SelSrf
+ClosestPt
+9.049490616559,0.442593929752,-0.342020143326
+Enter
+SelNone
+SelSrf
+ClosestPt
+10.177748407848,3.111649956446,-0.766044443119
+Enter
+SelNone
+SelSrf
+ClosestPt
+-1.828243897973,10.060176355972,0.974370064785
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- 8: torus, Cap=Yes
+Circle 0,0,0 10
+SelLast
+SetObjectName SCPRail8
+Circle3Pt 11,0,0 10,0,1 9,0,0
+SelLast
+SetObjectName SCPSec8
+SelNone
+SelName SCPRail8
+Sweep1 Cap=Yes
+SelName SCPSec8
+Enter
+SelLast
+Volume
+Check
+List
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 9: ellipse rail (control)
+Ellipse 0,0,0 10,0,0 0,6,0
+SelLast
+SetObjectName SCPRail9
+Circle3Pt 11,0,0 10,0,1 9,0,0
+SelLast
+SetObjectName SCPSec9
+SelNone
+SelName SCPRail9
+Sweep1
+SelName SCPSec9
+Enter
+SelLast
+Area
+SelAll
+Delete
+@expect_objects 0
+
+# --- 10: History On + Cap=Yes, section moved
+New
+SetActiveViewport Top
+History On
+Line 0,0,0 0,0,10
+Circle 0,0,0 2
+SelNone
+SelID 1
+Sweep1 Cap=Yes
+SelID 2
+Enter
+SelNone
+SelID 3
+Volume
+List
+SelNone
+SelID 2
+Move
+0,0,0
+1,0,0
+SelNone
+SelID 3
+Volume
+Check
+List
+BoundingBox
+History
+
+# --- 11: a BOW-TIE section (closed but crossing itself): Cap=Yes refused with the reason, the surface is kept
+SelAll
+Delete
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail11
+Polyline 0,0,0 4,4,0 4,0,0 0,4,0 0,0,0
+Enter
+SelLast
+SetObjectName SCPSec11
+SelNone
+SelName SCPRail11
+Sweep1 Cap=Yes
+SelName SCPSec11
+Enter
+SelLast
+List
+
+# --- 12: a CONCAVE simple L-shaped section (area 5) swept 10: still capped, volume 50
+SelAll
+Delete
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SCPRail12
+Polyline 0,0,0 3,0,0 3,1,0 1,1,0 1,3,0 0,3,0 0,0,0
+Enter
+SelLast
+SetObjectName SCPSec12
+SelNone
+SelName SCPRail12
+Sweep1 Cap=Yes
+SelName SCPSec12
+Enter
+SelLast
+Volume
+Check
+List

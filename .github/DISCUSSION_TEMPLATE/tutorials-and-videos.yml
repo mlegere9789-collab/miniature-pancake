@@ -1,0 +1,25 @@
+title: "[Tutorial] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a written or video tutorial. Link to it; do not upload third-party video here.
+  - type: input
+    id: link
+    attributes:
+      label: Link
+      description: URL of the tutorial or video.
+    validations:
+      required: true
+  - type: textarea
+    id: covers
+    attributes:
+      label: What does it teach?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Dino 8 version it was made with
+    validations:
+      required: false

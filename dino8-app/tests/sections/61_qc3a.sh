@@ -1,0 +1,166 @@
+# QC3A_: hostile-input probes of Divide / Array / ArrayPolar / PointGrid / Helix / Circle / Line / Polygon
+# (qc3a_script.txt). Each check FAILs on the build that has the bug: Divide 100000000, Divide by length 1e-9,
+# Array 3000 x 3000, ArrayPolar 100000000 never returned; PointGrid CountX=100000 CountY=100000 was killed for memory;
+# Helix Pitch=1e-9 / Turns=1e9 asked the exact-interpolation search for billions of turns; Circle radius 0 / 1e308,
+# Polygon with the corner on the center and a Line of zero length finished silently (the Line made a zero-length curve);
+# Divide with nothing to divide left an empty undo step.
+# DXF fixtures with a CIRCLE / ARC that has no radius (group 40), a LINE that has no end point, and one good CIRCLE.
+printf '0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_norad.dxf"
+printf '0\nSECTION\n2\nENTITIES\n0\nARC\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_noarc.dxf"
+printf '0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_noline.dxf"
+printf '0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n0\n20\n0\n40\n2\n0\nENDSEC\n0\nEOF\n' > "$TMPW/qc3a_ok.dxf"
+sed "s|@TMP@|$TMPW|g" "$HERE/qc3a_script.txt" > "$TMPW/qc3a_script.txt"
+qc3a_ok() { echo "ok   $1"; }
+qc3a_bad() { echo "FAIL $1"; fail=1; }
+# Every script case runs in its OWN app process under `timeout` (QC3A_TMO seconds, default 60), at most QC3A_JOBS
+# (default 4) at a time, so a command that hangs or crashes fails only its own checks and does not hide the others.
+# The script is cut at each QC3ABEGIN_<name> marker into qc3a_cases/<name>.txt (each with the same SetActiveViewport
+# Top / New preamble); the output of case <name> is qc3a_cases/<name>.out ("" when the process failed or timed out).
+QC3A_TMO="${QC3A_TMO:-60}"
+QC3A_JOBS="${QC3A_JOBS:-4}"
+QC3A_DIR="$TMPW/qc3a_cases"
+mkdir -p "$QC3A_DIR"
+awk -v d="$QC3A_DIR" '
+  /^QC3ABEGIN_/ { if (out != "") close(out); name = substr($0, 11); out = ""
+                  if (name != "end") { out = d "/" name ".txt"; print "SetActiveViewport Top\nNew" > out; print $0 > out }
+                  next }
+  out != "" { print > out }' "$TMPW/qc3a_script.txt"
+QC3A_PLAIN=0
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then QC3A_PLAIN=1; fi
+qc3a_run_one() {  # $1 = case name; writes $QC3A_DIR/$1.out and $1.rc (own working directory and config dir)
+  local n="$1" w="$QC3A_DIR/run_$1" rc=1 try
+  mkdir -p "$w/cfg"
+  for try in 1 2; do
+    if [ "$QC3A_PLAIN" = 1 ]; then
+      (cd "$w" && XDG_CONFIG_HOME="$w/cfg" timeout "$QC3A_TMO" "$BIN" --smoke 30 --script "$QC3A_DIR/$n.txt" >"$QC3A_DIR/$n.out" 2>&1); rc=$?
+    else
+      (cd "$w" && XDG_CONFIG_HOME="$w/cfg" timeout "$QC3A_TMO" xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$QC3A_DIR/$n.txt" >"$QC3A_DIR/$n.out" 2>&1); rc=$?
+    fi
+    # xvfb-run -a can lose a race for a display number when several start together: retry once if the app never started
+    if [ "$rc" != 0 ] && [ "$rc" != 124 ] && ! grep -q '^smoke:' "$QC3A_DIR/$n.out" 2>/dev/null; then continue; fi
+    break
+  done
+  echo "$rc" >"$QC3A_DIR/$n.rc"
+}
+QC3A_NAMES="$(cd "$QC3A_DIR" && ls ./*.txt | sed 's|^\./||; s|\.txt$||')"
+for n in $QC3A_NAMES; do
+  while [ "$(jobs -rp | wc -l)" -ge "$QC3A_JOBS" ]; do sleep 0.2; done
+  qc3a_run_one "$n" &
+done
+wait
+for n in $QC3A_NAMES; do
+  rc="$(cat "$QC3A_DIR/$n.rc" 2>/dev/null || echo 1)"
+  if [ "$rc" = 124 ]; then
+    echo "FAIL QC3A_${n}_run: the script case did not finish in ${QC3A_TMO} s (a hang)"; fail=1; : >"$QC3A_DIR/$n.out"
+  elif [ "$rc" != 0 ]; then
+    tail -5 "$QC3A_DIR/$n.out" 2>/dev/null; echo "FAIL QC3A_${n}_run: the app exited with status $rc (a crash, or a hang the app's own 30 s smoke watchdog stopped)"; fail=1; : >"$QC3A_DIR/$n.out"
+  fi
+done
+qc3a_case() { [ -f "$QC3A_DIR/$1.out" ] && awk -v n="QC3ABEGIN_$1" 'index($0, "Unknown command: " n) { on = 1; next } on' "$QC3A_DIR/$1.out"; }
+qc3a_has() { if grep -qF -- "$2" <<<"$1"; then qc3a_ok "$3"; else qc3a_bad "$3"; fi; }
+qc3a_hasnot() { if [ -z "$1" ] || grep -qF -- "$2" <<<"$1"; then qc3a_bad "$3"; else qc3a_ok "$3"; fi; }  # an empty case (the script died earlier) must not pass
+A="$(qc3a_case divide_count)"
+qc3a_has "$A" "Divide: number of segments must be a number from 1 to 100000" "QC3A_divide_count: 100000000 segments is refused with the allowed range"
+qc3a_has "$A" "Divide: 1 curve(s) divided" "QC3A_divide_count: 4 segments typed afterwards still divides"
+qc3a_has "$A" "6 object(s) selected" "QC3A_divide_count: the line plus its 5 division points"
+A="$(qc3a_case divide_len)"
+qc3a_has "$A" "would make about" "QC3A_divide_len: a 1e-9 segment length on a 10 unit line is refused with the point count"
+qc3a_has "$A" "Divide: 1 curve(s) divided" "QC3A_divide_len: segment length 2.5 typed afterwards still divides"
+A="$(qc3a_case divide_noop_undo)"
+qc3a_has "$A" "Divide: 0 curve(s) divided" "QC3A_divide_noop_undo: Divide with no curve selected reports 0 curves"
+qc3a_has "$A" "0 object(s) selected" "QC3A_divide_noop_undo: Undo after it removes the Box (the previous step), it did not undo an empty Divide step"
+A="$(qc3a_case array_count)"
+qc3a_has "$A" "Array: the number must be a number from 1 to 100000" "QC3A_array_count: Y count 1e12 is refused with the allowed range"
+qc3a_has "$A" "Array created 11 object(s)" "QC3A_array_count: 4 x 3 x 1 afterwards still arrays (11 new objects)"
+A="$(qc3a_case array_product)"
+qc3a_has "$A" "that would create more than 100000 objects" "QC3A_array_product: 400 x 400 cells is refused"
+A="$(qc3a_case arraypolar_count)"
+qc3a_has "$A" "ArrayPolar: the number of items must be a number from 2 to" "QC3A_arraypolar_count: 100000000 items is refused with the allowed range"
+qc3a_has "$A" "4 object(s) selected" "QC3A_arraypolar_count: 4 items afterwards still arrays (original + 3 copies)"
+A="$(qc3a_case pointgrid_count)"
+qc3a_has "$A" "PointGrid: CountX must be a whole number from 2 to 1000, '100000' ignored" "QC3A_pointgrid_count: CountX=100000 is refused"
+qc3a_has "$A" "PointGrid: 3 x 3 grid of points" "QC3A_pointgrid_count: CountX=3 CountY=3 afterwards still builds the grid"
+A="$(qc3a_case helix_turns)"
+qc3a_has "$A" "Helix: Turns must be a number above 0 and at most 1000" "QC3A_helix_turns: Turns=1e9 is refused"
+qc3a_has "$A" "turns (limit 1000)" "QC3A_helix_turns: Pitch=1e-9 on a 10 unit axis is refused with the turn count"
+A="$(qc3a_case circle_zero)"
+qc3a_has "$A" "Circle: the radius must be greater than zero" "QC3A_circle_zero: radius 0 says so"
+A="$(qc3a_case circle_huge)"
+qc3a_has "$A" "cannot be built" "QC3A_circle_huge: radius 1e308 says it cannot be built"
+A="$(qc3a_case line_zero)"
+qc3a_has "$A" "no line created" "QC3A_line_zero: a line from a point to itself is refused with a message"
+qc3a_has "$A" "0 object(s) selected" "QC3A_line_zero: no zero-length curve was added"
+A="$(qc3a_case polygon_zero)"
+qc3a_has "$A" "Polygon: the corner is on the center" "QC3A_polygon_zero: a polygon whose corner is the center says so"
+A="$(qc3a_case extrude_big)"
+qc3a_has "$A" "Extrude: the distance must be a number between -100000000 and 100000000" "QC3A_extrude_big: ExtrudeCrv 1e308 is refused with the allowed range"
+qc3a_has "$A" "1 object(s) selected" "QC3A_extrude_big: no solid was made (only the circle is left)"
+A="$(qc3a_case extrude_srf_big)"
+qc3a_has "$A" "Extrude: the distance must be a number between" "QC3A_extrude_srf_big: ExtrudeSrf 1e308 is refused (it never returned)"
+A="$(qc3a_case mirror_same_point)"
+qc3a_has "$A" "Mirror: the end of the mirror plane is the same point as its start" "QC3A_mirror_same_point: a mirror plane from a point to itself is refused"
+qc3a_has "$A" "Copied 1 object(s)" "QC3A_mirror_same_point: the next point 3,20,0 then mirrors"
+A="$(qc3a_case explode_noop_undo)"
+qc3a_has "$A" "Exploded into 0 object(s)" "QC3A_explode_noop_undo: exploding a straight line makes nothing"
+qc3a_has "$A" "0 object(s) selected" "QC3A_explode_noop_undo: Undo after it removes the Line (the previous step), not an empty Explode step"
+A="$(qc3a_case arraylinear_count)"
+qc3a_has "$A" "ArrayLinear: the number of items must be a number from 2 to" "QC3A_arraylinear_count: 100000000 items is refused with the allowed range"
+qc3a_has "$A" "ArrayLinear created 2 object(s)" "QC3A_arraylinear_count: 3 items afterwards still arrays (2 copies)"
+A="$(qc3a_case ungroup_noop_undo)"
+qc3a_has "$A" "Ungroup: none of the selected objects is in a group" "QC3A_ungroup_noop_undo: Ungroup of a plain box says so"
+qc3a_has "$A" "0 object(s) selected" "QC3A_ungroup_noop_undo: Undo after it removes the Box (the previous step), not an empty Ungroup step"
+A="$(qc3a_case rotate_huge)"
+qc3a_has "$A" "Rotate: the angle must be a number between -1000000 and 1000000 degrees" "QC3A_rotate_huge: a 1e300 degree angle is refused"
+qc3a_has "$A" "Bounding box min 0,0,0 max 10,10,5" "QC3A_rotate_huge: the box was not rotated"
+A="$(qc3a_case fillet_bad_radius)"
+qc3a_has "$A" "Fillet: Radius must be 0 (a sharp corner) or at least the tolerance" "QC3A_fillet_bad_radius: inf / negative / 1e-300 / nan radius are refused with a message"
+qc3a_has "$A" "'inf' ignored" "QC3A_fillet_bad_radius: Radius=inf is named in the message"
+qc3a_has "$A" "'-1' ignored" "QC3A_fillet_bad_radius: Radius=-1 is named in the message"
+qc3a_has "$A" "'1e-300' ignored" "QC3A_fillet_bad_radius: Radius=1e-300 is named in the message (it used to make a degenerate arc)"
+qc3a_hasnot "$A" "failed" "QC3A_fillet_bad_radius: no kernel failure message leaks out (inf used to give 'p0/p1 must be distinct from corner')"
+qc3a_has "$A" "Fillet: Radius=1, arc added" "QC3A_fillet_bad_radius: Radius=1 afterwards still fillets the corner"
+A="$(qc3a_case chamfer_bad_distance)"
+qc3a_has "$A" "Chamfer: Distance must be 0 (a sharp corner) or at least the tolerance" "QC3A_chamfer_bad_distance: inf / 1e-300 distance are refused with a message"
+qc3a_has "$A" "Chamfer: Distance=1, chamfer line added" "QC3A_chamfer_bad_distance: Distance=1 afterwards still chamfers the corner"
+A="$(qc3a_case join_zero_length)"
+qc3a_has "$A" "has zero length and was left out" "QC3A_join_zero_length: a zero-length polyline is not joined"
+qc3a_hasnot "$A" "Joined 2 curves" "QC3A_join_zero_length: no 3-point curve is made from it and the line"
+A="$(qc3a_case join_noop_undo)"
+qc3a_has "$A" "Curve ends do not meet" "QC3A_join_noop_undo: two lines that do not meet are not joined"
+qc3a_has "$A" "1 object(s) selected" "QC3A_join_noop_undo: Undo after it removes the second Line (the previous step), not an empty Join step"
+A="$(qc3a_case extend_behind_undo)"
+qc3a_has "$A" "Extend: nothing was extended" "QC3A_extend_behind_undo: a point behind the end says why nothing was extended"
+qc3a_has "$A" "0 object(s) selected" "QC3A_extend_behind_undo: Undo after it removes the Line (the previous step), not an empty Extend step"
+A="$(qc3a_case extend_closed)"
+qc3a_has "$A" "closed curves cannot be extended" "QC3A_extend_closed: Extend on a circle says why nothing was extended"
+A="$(qc3a_case extend_far)"
+qc3a_has "$A" "Extend: the point is more than 1e12 units from the origin" "QC3A_extend_far: a target 1e300 away is refused"
+A="$(qc3a_case sphere_huge)"
+qc3a_has "$A" "Sphere: the radius must be at most 1000000000" "QC3A_sphere_huge: radius 1e300 is refused with the limit"
+A="$(qc3a_case sphere_big_bbox)"
+qc3a_has "$A" "Bounding box min" "QC3A_sphere_big_bbox: a sphere of radius 1e6 can be measured (the display mesher used to hang on it)"
+A="$(qc3a_case scale_overflow)"
+qc3a_has "$A" "Scale: the result would lie more than 1000000000000 units from the origin (overflow)" "QC3A_scale_overflow: Scale 1e30 says overflow"
+qc3a_has "$A" "Bounding box min 0,0,0 max 10,10,5" "QC3A_scale_overflow: the box was not scaled"
+A="$(qc3a_case move_overflow)"
+qc3a_has "$A" "Move: the result would lie more than 1000000000000 units from the origin (overflow)" "QC3A_move_overflow: Move 1e300 says overflow, not 'xform is singular'"
+qc3a_hasnot "$A" "singular" "QC3A_move_overflow: the kernel's 'singular' wording is gone"
+A="$(qc3a_case dxf_no_radius)"
+qc3a_has "$A" "1 malformed entity skipped" "QC3A_dxf_no_radius: a CIRCLE without a radius is reported as malformed"
+qc3a_has "$A" "0 object(s) selected" "QC3A_dxf_no_radius: no radius-1 circle was invented"
+A="$(qc3a_case dxf_no_arc_radius)"
+qc3a_has "$A" "1 malformed entity skipped" "QC3A_dxf_no_arc_radius: an ARC without a radius is reported as malformed"
+A="$(qc3a_case dxf_no_line_end)"
+qc3a_has "$A" "1 malformed entity skipped" "QC3A_dxf_no_line_end: a LINE without an end point is reported as malformed"
+qc3a_has "$A" "0 object(s) selected" "QC3A_dxf_no_line_end: no zero-length line was added"
+A="$(qc3a_case import_once)"
+if [ "$(grep -c 'Imported ' <<<"$A")" = 1 ]; then qc3a_ok "QC3A_import_once: the Imported line is printed once"; else qc3a_bad "QC3A_import_once: the Imported line is printed once (saw $(grep -c 'Imported ' <<<"$A"))"; fi
+A="$(qc3a_case array_locked)"
+qc3a_hasnot "$A" "Array created 0 object(s)" "QC3A_array_locked: with the only object locked, Array waits for objects instead of 'creating 0 objects' from numbers typed too early"
+qc3a_has "$A" "1 object(s) selected" "QC3A_array_locked: after Unlock the box is selectable and untouched (no copies)"
+A="$(qc3a_case offset_huge)"
+qc3a_has "$A" "Offset: the distance must be a number above 0 and at most 1000000000" "QC3A_offset_huge: Offset 1e308 is refused with the limit"
+qc3a_has "$A" "max 5,1,0" "QC3A_offset_huge: distance 1 typed afterwards still offsets (the new line is at y = 1)"
+A="$(qc3a_case offsetsrf_huge)"
+qc3a_has "$A" "OffsetSrf: the distance must be a number between -1000000000 and 1000000000" "QC3A_offsetsrf_huge: OffsetSrf 1e300 is refused with the limit"
+qc3a_has "$A" "OffsetSrf: distance 2, 1 object(s)" "QC3A_offsetsrf_huge: distance 2 typed afterwards still offsets"

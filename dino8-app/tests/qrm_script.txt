@@ -1,0 +1,82 @@
+# QuadrangulateMesh wired to the kernel's quad-remesh pipeline (the "QRM_" section, tests/sections/80_qrm.sh).
+#
+# QuadrangulateMesh used to be a placeholder (ON_Mesh::ConvertTrianglesToQuads at a fixed 2 degrees, silent). It now runs
+# kernel::Mesh::TrisToQuads / TrisToQuadsAligned and, with RelaxIterations > 0, kernel::Mesh::RelaxQuadVertices, and prints
+# the measured quad quality. Fixtures are OBJ files the section generates with awk (an independent writer):
+#   qrm_noisy.obj  8 x 8 unit cells in z = 0, every interior vertex jittered in-plane (amplitude 0.18), each cell split
+#                  into two triangles; its exact area is 64 whatever the jitter (the boundary is the fixed 8 x 8 square)
+#   qrm_hex.obj    8 x 8 rhombic cells of equilateral triangles (unit edges), area 64 * sqrt(3)/2
+# Each case exports its result to an OBJ; the section re-parses that file in awk (quad/triangle counts, area, smallest
+# corner angle, worst aspect, aligned-quad fraction), so the oracles never echo the command's own printout.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+
+SetActiveViewport Top
+
+# pairing only (RelaxIterations 0): all 64 cells pair, but the jitter leaves skewed quads
+New
+QRMBEGIN_noisy_pair
+Import @TMP@/qrm_noisy.obj
+SelNone
+QuadrangulateMesh
+SelAll
+Enter
+SelAll
+Export @TMP@/qrm_noisy_pair.obj
+
+# pairing + 400 relaxation passes: the regular grid
+New
+QRMBEGIN_noisy_relax
+Import @TMP@/qrm_noisy.obj
+SelNone
+QuadrangulateMesh
+RelaxIterations=400
+SelAll
+Enter
+SelAll
+Export @TMP@/qrm_noisy_relax.obj
+
+# same, but the result is a SubD control cage instead of a mesh
+New
+QRMBEGIN_noisy_subd
+Import @TMP@/qrm_noisy.obj
+SelNone
+QuadrangulateMesh
+RelaxIterations=400
+ConvertToSubD=Yes
+SelAll
+Enter
+SelAll
+List
+
+# equilateral lattice, no direction: the plain pairing does not follow 120 degrees
+New
+QRMBEGIN_hex_plain
+Import @TMP@/qrm_hex.obj
+SelNone
+QuadrangulateMesh
+SelAll
+Enter
+SelAll
+Export @TMP@/qrm_hex_plain.obj
+
+# the same lattice with a 120-degree direction: the quads follow it
+New
+QRMBEGIN_hex_aligned
+Import @TMP@/qrm_hex.obj
+SelNone
+QuadrangulateMesh
+DirectionX=-0.5
+DirectionY=0.8660254
+SelAll
+Enter
+SelAll
+Export @TMP@/qrm_hex_aligned.obj
+
+# negative control: a solid is not a mesh and is skipped with a warning
+New
+QRMBEGIN_not_a_mesh
+Box 0,0,0 10,10,0 10
+SelNone
+QuadrangulateMesh
+SelAll
+Enter

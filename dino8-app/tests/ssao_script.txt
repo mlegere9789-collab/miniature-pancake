@@ -1,0 +1,29 @@
+# SSAO (ambient occlusion) QC: a flat floor slab and a wall meeting it at a
+# real 90-degree inside corner, lit only by a dim overhead DirectionalLight
+# plus Skylight's ambient term (the one thing GlRenderer::EndSsaoPass's AO
+# buffer actually darkens - see Shade() in GlRenderer.cpp) - so the corner's
+# own real occlusion, not direct lighting, dominates any visible difference
+# between AmbientOcclusion on and off. GroundPlane is off: this is testing
+# object-on-object SSAO, not the separate ground-plane contact-shadow
+# feature (DrawGroundPlane's own ShadowBlob mechanism, unrelated code).
+# This script only builds the scene and captures screenshots; smoke.sh does
+# the actual pixel-level verification.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+DirectionalLight 0,0,30 0,0,-1 Intensity=0.15
+GroundPlane Off
+Box -30,-30,-2 30,30,0
+SelLast
+SetRenderColor 200,200,200
+Box -30,-30,0 -28,30,20
+SelLast
+SetRenderColor 200,200,200
+SelNone
+RenderedViewport
+Isometric
+ZoomExtentsAll
+ViewCaptureToFile @TMP@/ssao_on.bmp
+AmbientOcclusion
+ViewCaptureToFile @TMP@/ssao_off.bmp
+AmbientOcclusion
+ViewCaptureToFile @TMP@/ssao_on2.bmp
+@expect_objects 2

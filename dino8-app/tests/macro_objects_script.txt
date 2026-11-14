@@ -1,0 +1,176 @@
+# Named macro OBJECTS (commands/cmd_macros.cpp, app/MacroLibrary.h) -
+# PARITY_MAP.md's "VBA-style macro recorder and editor" item, the gap that
+# "a saved macro is still plain ;-separated text, not a recorded, editable
+# object with properties". smoke.sh runs this against a PRIVATE config
+# directory (so the library starts empty) and then runs
+# macro_objects_persist_script.txt against the same directory in a second
+# process to prove persistence across a restart. @MODIR@ is replaced by a
+# scratch directory by smoke.sh.
+#
+# Everything below is asserted by smoke.sh against this script's real
+# output - measured numbers (a macro that draws a box from {size} and then
+# reports Volume), not just confirmation messages.
+
+# ---- record -> SaveMacro -> edit into a parameterised macro --------------
+RecordMacro Clear
+RecordMacro On
+Box 0,0,0 2,2,0 2
+RecordMacro Off
+SaveMacro cube Description="Draws a cube and reads its volume" Tags=geometry,demo
+# The recorded Box has its numbers baked in; make the edge a parameter.
+EditMacro cube Replace 1 Box 0,0,0 {size},{size},0 {size}
+EditMacro cube Append SelLast
+EditMacro cube Append Volume
+# Insert at position 2 (before SelLast) and delete it again: structured
+# steps, not a text blob.
+EditMacro cube Insert 2 SelNone
+EditMacro cube Append ZoomExtents
+EditMacro cube Delete 5
+ShowMacro cube
+ListMacros
+
+# ---- run with arguments: Volume must read size^3 -------------------------
+RunMacro cube size=2
+RunMacro cube size=5
+# A default makes the argument optional; a bare value fills the next parameter.
+EditMacro cube Param size Default=3 Prompt="Edge length"
+RunMacro cube
+RunMacro cube 4
+ShowMacro cube
+
+# ---- error handling: nothing runs on a bad call --------------------------
+RunMacro cube bogus=1
+RunMacro cube 1 2
+RunMacro nosuch
+EditMacro cube Delete 99
+EditMacro cube Insert 9 Foo
+EditMacro nosuch Append Foo
+SaveMacro cube
+RecordMacro Clear
+RecordMacro On
+ZoomExtents
+RecordMacro Off
+SaveMacro spare
+SaveMacro spare
+RecordMacro Clear
+RecordMacro On
+SelNone
+RecordMacro Off
+SaveMacro spare Overwrite=Yes
+ShowMacro spare
+DeleteMacro spare
+
+# ---- a required parameter is PROMPTED for --------------------------------
+RecordMacro Clear
+RecordMacro On
+SelNone
+Box 0,0,0 1,1,0 1
+SelLast
+Volume
+RecordMacro Off
+SaveMacro tall
+EditMacro tall Replace 2 Box 0,0,0 1,1,0 {h}
+EditMacro tall Param h Prompt="Height of the bar"
+RunMacro tall
+7
+RunMacro tall
+Enter
+RunMacro tall h=9
+
+# ---- the recorder does not record what a macro runs ----------------------
+RecordMacro Clear
+RecordMacro On
+RunMacro cube size=11
+RecordMacro Off
+RecordMacro
+
+# ---- duplicate / rename / delete -----------------------------------------
+DuplicateMacro cube cube2
+EditMacro cube2 Describe "the copy"
+EditMacro cube2 Tags copy
+RenameMacro cube2 cube_b
+RenameMacro cube_b cube
+RenameMacro nosuch other
+ListMacros
+ShowMacro cube
+ShowMacro cube_b
+ListMacros Tag=copy
+DeleteMacro cube_b
+ShowMacro cube_b
+DeleteMacro cube_b
+
+# ---- quotes (\q), literal braces (\{) ------------------------------------
+RecordMacro Clear
+RecordMacro On
+ZoomExtents
+RecordMacro Off
+SaveMacro quoted
+EditMacro quoted Append Echo \qhello\q
+EditMacro quoted Append = print('\{lit}')
+ShowMacro quoted
+
+# ---- a macro that runs itself is stopped, not a stack overflow -----------
+RecordMacro Clear
+RecordMacro On
+ZoomExtents
+RecordMacro Off
+SaveMacro loopy
+EditMacro loopy Replace 1 RunMacro loopy
+RunMacro loopy
+
+# ---- export / import round trip ------------------------------------------
+ShowMacro cube
+ExportMacro cube @MODIR@/cube.json
+ExportMacro * @MODIR@/library.json
+DeleteMacro cube
+ImportMacro @MODIR@/cube.json
+ShowMacro cube
+ImportMacro @MODIR@/cube.json
+ImportMacro @MODIR@/cube.json Conflict=Skip
+ImportMacro @MODIR@/cube.json Conflict=Replace
+ImportMacro @MODIR@/missing.json
+ImportMacro @MODIR@/bad_format.json
+ImportMacro @MODIR@/future.json
+ImportMacro @MODIR@/garbage.json
+ListMacros
+
+# ---- binding by NAME to an alias and a toolbar button --------------------
+BindMacro cube cubea Toolbar=Yes
+BindMacro cube box
+BindMacro cube cube5 Args=size=5
+cubea size=6
+cube5
+# Editing the macro changes what the bound alias does.
+EditMacro cube Append Area
+cubea size=3
+# Renaming keeps the binding.
+RenameMacro cube cubic
+cubea size=2
+ShowMacro cubic
+OptionsExport @MODIR@/opts_bound.json
+# In-process settings reload: delete a macro, import the options file, it is back.
+DuplicateMacro cubic temp
+OptionsExport @MODIR@/opts_with_temp.json
+DeleteMacro temp
+ShowMacro temp
+OptionsImport @MODIR@/opts_with_temp.json
+ShowMacro temp
+DeleteMacro temp
+# Deleting a bound macro removes its aliases and toolbar buttons.
+DuplicateMacro cubic doomed
+BindMacro doomed doomedalias Toolbar=Yes
+DeleteMacro doomed
+doomedalias
+UnbindMacro cube5
+UnbindMacro cube5
+OptionsExport @MODIR@/opts_after.json
+
+# ---- the older commands are the same store -------------------------------
+RecordMacro Clear
+RecordMacro On
+Circle 0,0,0 3
+RecordMacro Off
+MacroSave oldstyle
+ListMacros Filter=oldstyle
+MacroLoad oldstyle
+RecordMacro

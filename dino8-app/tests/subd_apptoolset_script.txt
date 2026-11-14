@@ -1,0 +1,147 @@
+# SubD app-toolset QC (app_subd_toolset): two app-level gaps of the SubD
+# bullets, measured end to end through the real app.
+#  (1) SubD booleans: SplitByObject with a SubD target/cutter now returns the
+#      two halves as SubDs (creased seam), not two flat Meshes.
+#  (2) SubD symmetry: Symmetry Mode=Radial|TwoPlane on a NON-SubD object (it
+#      used to skip it as "radial symmetry needs a SubD cage" / make one
+#      plain mirror) now builds live image copies, one per rotation/reflection.
+# --- (2a) Radial on a Brep box (id 1): 4-fold about the Z axis through the origin
+Box 8,-2,-2 12,2,-2 4
+SelLast
+Symmetry
+Mode=Radial
+Count=4
+0,0,0
+0,0,1
+SelAll
+List
+SelNone
+SelID 1
+What
+SelNone
+SelID 2
+What
+Volume
+SelNone
+SelID 3
+What
+SelNone
+SelID 4
+What
+# live: moving the source moves every image
+SelNone
+SelID 1
+Move 0,0,0 0,5,0
+SelNone
+SelID 2
+What
+SelNone
+SelID 4
+What
+# RemoveSymmetry on the source frees all three images
+SelNone
+SelID 1
+RemoveSymmetry
+SelNone
+SelID 1
+Move 0,0,0 0,5,0
+SelNone
+SelID 2
+What
+SelAll
+Hide
+# --- (2b) TwoPlane on a Brep box (id 5; copies 6, 7, 8)
+Box 52,2,0 54,4,0 3
+SelLast
+Symmetry
+Mode=TwoPlane
+50,0,0
+50,1,0
+SelNone
+SelID 6
+What
+Volume
+SelNone
+SelID 7
+What
+SelNone
+SelID 8
+What
+SelNone
+SelID 5
+Move 0,0,0 0,1,0
+SelNone
+SelID 8
+What
+SelAll
+Hide
+# --- (2c) Radial on a curve (id 9; copies 10, 11): Count=3 about Z at origin
+Line 10,0,0 10,0,5
+SelLast
+Symmetry
+Mode=Radial
+Count=3
+0,0,0
+0,0,1
+SelNone
+SelID 10
+What
+SelNone
+SelID 11
+What
+SelAll
+Hide
+# --- (1) SplitByObject with SubD operands: two SubD halves, creased seam
+SubDBox 1000,0,0 1004,4,0 4
+SelLast
+SetObjectName SplitTarget
+Volume
+SubDBox 1001,1,1 1005,5,1 4
+SelLast
+SetObjectName SplitCutter
+SelNone
+SelName SplitTarget
+SplitByObject
+SelName SplitCutter
+Enter
+SelAll
+List
+SelLast
+What
+Volume
+SelNone
+SelID 14
+What
+Volume
+SelAll
+Hide
+# mixed: a SubD cutter through a Brep box target also splits into SubD halves
+Box 1100,0,0 1104,4,0 4
+SelLast
+SetObjectName MixTarget
+SubDBox 1101,1,1 1105,5,1 4
+SelLast
+SetObjectName MixCutter
+SelNone
+SelName MixTarget
+SplitByObject
+SelName MixCutter
+Enter
+SelAll
+List
+SelAll
+Hide
+# a SubD target missed by the cutter: unchanged document, no pieces
+SubDBox 1200,0,0 1204,4,0 4
+SelLast
+SetObjectName MissTarget
+SubDBox 1300,0,0 1304,4,0 4
+SelLast
+SetObjectName MissCutter
+SelNone
+SelName MissTarget
+SplitByObject
+SelName MissCutter
+Enter
+SelAll
+List
