@@ -1161,16 +1161,53 @@ struct Builtins {
       NeedArgs("distance", a, 2, 2);
       const List& p = NeedList("distance", a[0]); const List& q = NeedList("distance", a[1]);
       if (p.size() < 2 || q.size() < 2) Fail("bad point argument");
+      // Documented: when either point is 2D the Z coordinates of any 3D point are ignored.
+      const size_t dim = (p.size() > 2 && q.size() > 2) ? 3 : 2;
       double s = 0;
-      for (size_t k = 0; k < 3; ++k) { const double u = k < p.size() ? NeedNum("distance", p[k]) : 0, w = k < q.size() ? NeedNum("distance", q[k]) : 0; s += (u - w) * (u - w); }
+      for (size_t k = 0; k < dim; ++k) { const double u = NeedNum("distance", p[k]), w = NeedNum("distance", q[k]); s += (u - w) * (u - w); }
       return Real(std::sqrt(s));
+    };
+    // (inters p1 p2 p3 p4 [onseg]): the intersection of line p1-p2 with line p3-p4. Without onseg, or with a non-nil onseg, the
+    // point must lie on BOTH segments; with onseg nil the lines are extended. Four 3D points give a 3D point (nil when the lines
+    // are skew); if any point is 2D the Z values are ignored and the result is 2D. nil for parallel lines.
+    t["inters"] = [](Interp&, List& a) {
+      NeedArgs("inters", a, 4, 5);
+      std::array<std::array<double, 3>, 4> q{};
+      bool all3 = true;
+      for (size_t k = 0; k < 4; ++k) {
+        const List& p = NeedList("inters", a[k]);
+        if (p.size() < 2) Fail("bad point argument");
+        q[k][0] = NeedNum("inters", p[0]); q[k][1] = NeedNum("inters", p[1]);
+        if (p.size() > 2) q[k][2] = NeedNum("inters", p[2]); else all3 = false;
+      }
+      const bool onseg = a.size() < 5 || Truthy(a[4]);
+      std::array<double, 3> d1{}, d2{}, w{};
+      const size_t dim = all3 ? 3 : 2;
+      for (size_t k = 0; k < dim; ++k) { d1[k] = q[1][k] - q[0][k]; d2[k] = q[3][k] - q[2][k]; w[k] = q[2][k] - q[0][k]; }
+      // p1 + t d1 = p3 + s d2  ->  t d1 - s d2 = w, least squares on the dim coordinates
+      double a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0;
+      for (size_t k = 0; k < dim; ++k) { a11 += d1[k] * d1[k]; a12 -= d1[k] * d2[k]; a22 += d2[k] * d2[k]; b1 += d1[k] * w[k]; b2 -= d2[k] * w[k]; }
+      const double det = a11 * a22 - a12 * a12;
+      if (a11 == 0 || a22 == 0 || std::fabs(det) <= 1e-12 * a11 * a22) return Nil();
+      const double tt = (b1 * a22 - a12 * b2) / det, ss = (a11 * b2 - a12 * b1) / det;
+      double scale = 1;
+      for (size_t k = 0; k < dim; ++k) {
+        const double u = q[0][k] + tt * d1[k], v = q[2][k] + ss * d2[k];
+        scale = std::max(scale, std::max(std::fabs(u), std::fabs(v)));
+      }
+      for (size_t k = 0; k < dim; ++k) if (std::fabs((q[0][k] + tt * d1[k]) - (q[2][k] + ss * d2[k])) > 1e-9 * scale) return Nil();
+      const double eps = 1e-12;
+      if (onseg && (tt < -eps || tt > 1 + eps || ss < -eps || ss > 1 + eps)) return Nil();
+      List r{Real(q[0][0] + tt * d1[0]), Real(q[0][1] + tt * d1[1])};
+      if (all3) r.push_back(Real(q[0][2] + tt * d1[2]));
+      return MakeList(std::move(r));
     };
     t["polar"] = [](Interp&, List& a) {
       NeedArgs("polar", a, 3, 3);
       const List& p = NeedList("polar", a[0]);
       if (p.size() < 2) Fail("bad point argument");
       const double ang = NeedNum("polar", a[1]), d = NeedNum("polar", a[2]);
-      return MakeList({Real(NeedNum("polar", p[0]) + d * std::cos(ang)), Real(NeedNum("polar", p[1]) + d * std::sin(ang)), p.size() > 2 ? p[2] : Real(0)});
+      return MakeList({Real(NeedNum("polar", p[0]) + d * std::cos(ang)), Real(NeedNum("polar", p[1]) + d * std::sin(ang)), p.size() > 2 ? Real(NeedNum("polar", p[2])) : Real(0)});
     };
     // strings
     t["strcat"] = [](Interp&, List& a) { std::string s; for (const Value& v : a) s += NeedStr("strcat", v); return Str(s); };
@@ -1974,8 +2011,9 @@ Value Interp::EvalList(const Value& form) {
     return items.size() == 4 ? Eval(items[3]) : Nil();
   }
   if (n == "progn") { Value r = Nil(); for (size_t k = 1; k < items.size(); ++k) r = Eval(items[k]); return r; }
-  if (n == "and") { Value r = True(); for (size_t k = 1; k < items.size(); ++k) { r = Eval(items[k]); if (!Truthy(r)) return Nil(); } return r; }
-  if (n == "or") { for (size_t k = 1; k < items.size(); ++k) { Value r = Eval(items[k]); if (Truthy(r)) return r; } return Nil(); }
+  // AutoLISP's and / or return T or nil, not the last value (Autodesk help, "and" and "or"): (and 1 2) is T, (or nil 7) is T.
+  if (n == "and") { for (size_t k = 1; k < items.size(); ++k) { if (!Truthy(Eval(items[k]))) return Nil(); } return True(); }
+  if (n == "or") { for (size_t k = 1; k < items.size(); ++k) { if (Truthy(Eval(items[k]))) return True(); } return Nil(); }
   if (n == "cond") {
     for (size_t k = 1; k < items.size(); ++k) {
       if (!IsList(items[k])) Fail("bad cond clause");

@@ -127,7 +127,7 @@ lsp_is "$LSP_A" "(list s)" 1 "($LSP_SUM)" "LSP_loop: while accumulated 0+1+2+3+4
 lsp_is "$LSP_A" "(list s)" 2 "($((LSP_SUM+30)))" "LSP_loop: repeat 3 added 10 three times"
 lsp_is "$LSP_A" "(cond ((= 1 2) \"a\") ((= 2 2) \"b\") (T \"c\"))" 1 '"b"' "LSP_cond: first true clause wins"
 lsp_is "$LSP_A" "(and 1 nil)" 1 "nil" "LSP_logic: and"
-lsp_is "$LSP_A" "(or nil 7)" 1 "7" "LSP_logic: or"
+lsp_is "$LSP_A" "(or nil 7)" 1 "T" "LSP_logic: or (AutoLISP's or returns T, not the first non-nil value; Autodesk help \"or\", recalled, see RW3ACS_LOG)"
 lsp_is "$LSP_A" "(= 3 3.0)" 1 "T" "LSP_logic: = compares numerically"
 lsp_is "$LSP_A" "(< 1 2 3)" 1 "T" "LSP_logic: < chains"
 lsp_is "$LSP_A" "(equal 1.0 1.0000001 0.001)" 1 "T" "LSP_logic: equal with a fuzz"
