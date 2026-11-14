@@ -37,12 +37,20 @@ def write_beats(root, agent, beats, day=None):
         folder_day = day or beat["time"][:10]
         folder = os.path.join(root, folder_day)
         os.makedirs(folder, exist_ok=True)
-        with open(os.path.join(folder, agent + ".jsonl"), "a", encoding="utf-8") as handle:
+        with open(
+            os.path.join(folder, agent + ".jsonl"), "a", encoding="utf-8"
+        ) as handle:
             handle.write(json.dumps(beat) + "\n")
 
 
 def beat(minutes, task="T-1", commit="c1", evidence="e1", **extra):
-    out = {"time": iso(minutes), "task": task, "what": "work", "commit": commit, "evidence": evidence}
+    out = {
+        "time": iso(minutes),
+        "task": task,
+        "what": "work",
+        "commit": commit,
+        "evidence": evidence,
+    }
     out.update(extra)
     return out
 
@@ -61,7 +69,16 @@ def git(*args, cwd=None):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     for key in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"):
         env.pop(key, None)
-    done = subprocess.run(["git"] + list(args), cwd=cwd, env=env, capture_output=True, text=True)
+    # a CI runner has no git identity configured
+    env.update(
+        GIT_AUTHOR_NAME="test",
+        GIT_AUTHOR_EMAIL="test@example.invalid",
+        GIT_COMMITTER_NAME="test",
+        GIT_COMMITTER_EMAIL="test@example.invalid",
+    )
+    done = subprocess.run(
+        ["git"] + list(args), cwd=cwd, env=env, capture_output=True, text=True
+    )
     return done
 
 
@@ -75,7 +92,13 @@ class RemoteCase(TempDirCase):
         assert done.returncode == 0, done.stderr
 
     def claim_refs(self):
-        done = git("--git-dir", self.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/claim/")
+        done = git(
+            "--git-dir",
+            self.remote,
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads/claim/",
+        )
         return dict(line.split(" ") for line in done.stdout.splitlines())
 
     def read_claim_json(self, sha):
@@ -86,7 +109,13 @@ class RemoteCase(TempDirCase):
         env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
         env.update(extra_env or {})
         return subprocess.run(
-            [sys.executable, os.path.join(TOOLS_DIR, "claims.py"), "--remote", self.remote] + list(args),
+            [
+                sys.executable,
+                os.path.join(TOOLS_DIR, "claims.py"),
+                "--remote",
+                self.remote,
+            ]
+            + list(args),
             capture_output=True,
             text=True,
             env=env,

@@ -61,7 +61,6 @@ state of the claim, 4 refused because of the task file, 2 usage or git problem)
 from __future__ import annotations
 
 import argparse
-import datetime
 import json
 import os
 import re
@@ -92,7 +91,12 @@ class ClaimError(Exception):
 
 
 def valid_name(text):
-    return bool(NAME_RE.match(text)) and ".." not in text and not text.endswith(".lock") and not text.endswith(".")
+    return (
+        bool(NAME_RE.match(text))
+        and ".." not in text
+        and not text.endswith(".lock")
+        and not text.endswith(".")
+    )
 
 
 def ref_for(task, namespace=NAMESPACE):
@@ -129,7 +133,8 @@ def _git(args, git_dir=None, cwd=None, env=None, input_text=None, check=True):
         raise ClaimError("git %s failed: %s" % (" ".join(args[:2]), exc), code=2)
     if check and done.returncode != 0:
         raise ClaimError(
-            "git %s failed: %s" % (" ".join(args[:2]), (done.stderr or done.stdout).strip()[-400:]),
+            "git %s failed: %s"
+            % (" ".join(args[:2]), (done.stderr or done.stdout).strip()[-400:]),
             code=2,
         )
     return done
@@ -142,7 +147,9 @@ def resolve_remote(remote):
     done = _git(["config", "--get", "remote.%s.url" % remote], check=False)
     url = done.stdout.strip()
     if done.returncode != 0 or not url:
-        raise ClaimError("no such remote: %s (give --remote URL or path)" % remote, code=2)
+        raise ClaimError(
+            "no such remote: %s (give --remote URL or path)" % remote, code=2
+        )
     return url
 
 
@@ -175,7 +182,7 @@ class Workspace:
         for line in done.stdout.splitlines():
             sha, _, ref = line.partition("\t")
             if ref.startswith(namespace):
-                found[ref[len(namespace):]] = sha
+                found[ref[len(namespace) :]] = sha
         return found
 
     def fetch_claims(self, namespace=NAMESPACE):
@@ -183,7 +190,16 @@ class Workspace:
         shas = self.remote_claims(namespace)
         if not shas:
             return {}
-        _git(["fetch", "-q", "--no-tags", self.remote, "+%s*:refs/fetched/*" % namespace], git_dir=self.git_dir)
+        _git(
+            [
+                "fetch",
+                "-q",
+                "--no-tags",
+                self.remote,
+                "+%s*:refs/fetched/*" % namespace,
+            ],
+            git_dir=self.git_dir,
+        )
         records = {}
         for task, sha in shas.items():
             records[task] = self.read_claim(sha, task)
@@ -203,8 +219,13 @@ class Workspace:
 
     # writes -------------------------------------------------------------------------
     def make_claim_commit(self, body, parent, now):
-        blob = self.git(["hash-object", "-w", "--stdin"], input_text=json.dumps(body, sort_keys=True, indent=1) + "\n").stdout.strip()
-        tree = self.git(["mktree"], input_text="100644 blob %s\tclaim.json\n" % blob).stdout.strip()
+        blob = self.git(
+            ["hash-object", "-w", "--stdin"],
+            input_text=json.dumps(body, sort_keys=True, indent=1) + "\n",
+        ).stdout.strip()
+        tree = self.git(
+            ["mktree"], input_text="100644 blob %s\tclaim.json\n" % blob
+        ).stdout.strip()
         stamp = ledgerlib.format_time(now)
         agent = body.get("agent") or "claims"
         env = {
@@ -215,7 +236,13 @@ class Workspace:
             "GIT_AUTHOR_DATE": stamp,
             "GIT_COMMITTER_DATE": stamp,
         }
-        args = ["commit-tree", tree, "-m", "claim %s by %s (attempt %s)" % (body["task"], agent, body.get("attempt", 1))]
+        args = [
+            "commit-tree",
+            tree,
+            "-m",
+            "claim %s by %s (attempt %s)"
+            % (body["task"], agent, body.get("attempt", 1)),
+        ]
         if parent:
             args += ["-p", parent]
         return self.git(args, env=env).stdout.strip()
@@ -227,27 +254,62 @@ class Workspace:
         the ref is not in the expected state. Other failures raise ClaimError.
         """
         done = self.git(
-            ["push", "-q", "--force-with-lease=%s:%s" % (ref, expect), self.remote, "%s:%s" % (sha, ref)],
+            [
+                "push",
+                "-q",
+                "--force-with-lease=%s:%s" % (ref, expect),
+                self.remote,
+                "%s:%s" % (sha, ref),
+            ],
             check=False,
         )
         if done.returncode == 0:
             return True
         message = (done.stderr or "") + (done.stdout or "")
-        if any(word in message for word in ("stale info", "rejected", "already exists", "cannot lock ref", "failed to update ref", "reference already")):
+        if any(
+            word in message
+            for word in (
+                "stale info",
+                "rejected",
+                "already exists",
+                "cannot lock ref",
+                "failed to update ref",
+                "reference already",
+            )
+        ):
             return False
-        raise ClaimError("push of %s failed: %s" % (ref, message.strip()[-400:]), code=2)
+        raise ClaimError(
+            "push of %s failed: %s" % (ref, message.strip()[-400:]), code=2
+        )
 
     def delete_lease(self, ref, expect):
         done = self.git(
-            ["push", "-q", "--force-with-lease=%s:%s" % (ref, expect), self.remote, ":%s" % ref],
+            [
+                "push",
+                "-q",
+                "--force-with-lease=%s:%s" % (ref, expect),
+                self.remote,
+                ":%s" % ref,
+            ],
             check=False,
         )
         if done.returncode == 0:
             return True
         message = (done.stderr or "") + (done.stdout or "")
-        if any(word in message for word in ("stale info", "rejected", "failed to delete", "cannot lock ref", "failed to update ref")):
+        if any(
+            word in message
+            for word in (
+                "stale info",
+                "rejected",
+                "failed to delete",
+                "cannot lock ref",
+                "failed to update ref",
+            )
+        ):
             return False
-        raise ClaimError("delete of %s failed: %s" % (ref, message.strip()[-400:]), code=2)
+        raise ClaimError(
+            "delete of %s failed: %s" % (ref, message.strip()[-400:]), code=2
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -314,9 +376,13 @@ def _check_task_file(tasks_dir, task):
         raise ClaimError("task %s is already %s" % (task, status), code=4)
 
 
-def claim_task(remote, task, agent, now, branch=None, note="", tasks_dir=None, namespace=NAMESPACE):
+def claim_task(
+    remote, task, agent, now, branch=None, note="", tasks_dir=None, namespace=NAMESPACE
+):
     if not valid_name(task) or not valid_name(agent):
-        raise ClaimError("task and agent names use letters, digits, '.', '_' and '-' only", code=2)
+        raise ClaimError(
+            "task and agent names use letters, digits, '.', '_' and '-' only", code=2
+        )
     if tasks_dir:
         _check_task_file(tasks_dir, task)
     ref = ref_for(task, namespace)
@@ -328,9 +394,14 @@ def claim_task(remote, task, agent, now, branch=None, note="", tasks_dir=None, n
                 result["already_yours"] = True
                 return result
             raise ClaimError(
-                "task %s is claimed by %s since %s" % (task, existing.get("agent"), existing.get("claimed_at")),
+                "task %s is claimed by %s since %s"
+                % (task, existing.get("agent"), existing.get("claimed_at")),
                 code=3,
-                detail={"held_by": existing.get("agent"), "claimed_at": existing.get("claimed_at"), "sha": existing.get("sha")},
+                detail={
+                    "held_by": existing.get("agent"),
+                    "claimed_at": existing.get("claimed_at"),
+                    "sha": existing.get("sha"),
+                },
             )
         body = {
             "schema": 1,
@@ -347,11 +418,23 @@ def claim_task(remote, task, agent, now, branch=None, note="", tasks_dir=None, n
         if not ws.push_lease(sha, ref, ""):
             winner = ws.fetch_claims(namespace).get(task, {})
             raise ClaimError(
-                "task %s was claimed by %s a moment earlier" % (task, winner.get("agent")),
+                "task %s was claimed by %s a moment earlier"
+                % (task, winner.get("agent")),
                 code=3,
-                detail={"held_by": winner.get("agent"), "claimed_at": winner.get("claimed_at"), "sha": winner.get("sha")},
+                detail={
+                    "held_by": winner.get("agent"),
+                    "claimed_at": winner.get("claimed_at"),
+                    "sha": winner.get("sha"),
+                },
             )
-        return {"claimed": True, "task": task, "agent": agent, "sha": sha, "ref": ref, "attempt": 1}
+        return {
+            "claimed": True,
+            "task": task,
+            "agent": agent,
+            "sha": sha,
+            "ref": ref,
+            "attempt": 1,
+        }
 
 
 def _renew(ws, claim, agent, now, namespace):
@@ -360,8 +443,18 @@ def _renew(ws, claim, agent, now, namespace):
     sha = ws.make_claim_commit(body, claim["sha"], now)
     ref = ref_for(claim["task"], namespace)
     if not ws.push_lease(sha, ref, claim["sha"]):
-        raise ClaimError("claim on %s changed hands: the task is no longer yours" % claim["task"], code=3)
-    return {"renewed": True, "task": claim["task"], "agent": agent, "sha": sha, "ref": ref, "attempt": body.get("attempt", 1)}
+        raise ClaimError(
+            "claim on %s changed hands: the task is no longer yours" % claim["task"],
+            code=3,
+        )
+    return {
+        "renewed": True,
+        "task": claim["task"],
+        "agent": agent,
+        "sha": sha,
+        "ref": ref,
+        "attempt": body.get("attempt", 1),
+    }
 
 
 def renew_task(remote, task, agent, now, namespace=NAMESPACE):
@@ -370,7 +463,10 @@ def renew_task(remote, task, agent, now, namespace=NAMESPACE):
         if claim is None:
             raise ClaimError("task %s has no claim" % task, code=3)
         if claim.get("agent") != agent:
-            raise ClaimError("task %s is claimed by %s, not %s" % (task, claim.get("agent"), agent), code=3)
+            raise ClaimError(
+                "task %s is claimed by %s, not %s" % (task, claim.get("agent"), agent),
+                code=3,
+            )
         return _renew(ws, claim, agent, now, namespace)
 
 
@@ -380,13 +476,23 @@ def release_task(remote, task, agent, force=False, namespace=NAMESPACE):
         if claim is None:
             raise ClaimError("task %s has no claim" % task, code=3)
         if claim.get("agent") != agent and not force:
-            raise ClaimError("task %s is claimed by %s, not %s" % (task, claim.get("agent"), agent), code=3)
+            raise ClaimError(
+                "task %s is claimed by %s, not %s" % (task, claim.get("agent"), agent),
+                code=3,
+            )
         if not ws.delete_lease(ref_for(task, namespace), claim["sha"]):
             raise ClaimError("claim on %s changed hands while releasing" % task, code=3)
-        return {"released": True, "task": task, "agent": claim.get("agent"), "sha": claim["sha"]}
+        return {
+            "released": True,
+            "task": task,
+            "agent": claim.get("agent"),
+            "sha": claim["sha"],
+        }
 
 
-def show_task(remote, task, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, namespace=NAMESPACE):
+def show_task(
+    remote, task, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, namespace=NAMESPACE
+):
     with Workspace(remote) as ws:
         claim = ws.fetch_claims(namespace).get(task)
     if claim is None:
@@ -396,15 +502,30 @@ def show_task(remote, task, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, name
     return info
 
 
-def list_claims(remote, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, namespace=NAMESPACE):
+def list_claims(
+    remote, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, namespace=NAMESPACE
+):
     with Workspace(remote) as ws:
         records = ws.fetch_claims(namespace)
-    return [describe(records[task], heartbeats, now, expiry_minutes) for task in sorted(records)]
+    return [
+        describe(records[task], heartbeats, now, expiry_minutes)
+        for task in sorted(records)
+    ]
 
 
-def takeover_task(remote, task, agent, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, namespace=NAMESPACE):
+def takeover_task(
+    remote,
+    task,
+    agent,
+    heartbeats,
+    now,
+    expiry_minutes=EXPIRY_MINUTES,
+    namespace=NAMESPACE,
+):
     if not valid_name(agent):
-        raise ClaimError("agent names use letters, digits, '.', '_' and '-' only", code=2)
+        raise ClaimError(
+            "agent names use letters, digits, '.', '_' and '-' only", code=2
+        )
     with Workspace(remote) as ws:
         claim = ws.fetch_claims(namespace).get(task)
         if claim is None:
@@ -412,7 +533,8 @@ def takeover_task(remote, task, agent, heartbeats, now, expiry_minutes=EXPIRY_MI
         info = describe(claim, heartbeats, now, expiry_minutes)
         if not info["expired"]:
             raise ClaimError(
-                "claim on %s is alive: %s was last seen %s minutes ago (expiry %d)" % (task, claim.get("agent"), info["idle_minutes"], expiry_minutes),
+                "claim on %s is alive: %s was last seen %s minutes ago (expiry %d)"
+                % (task, claim.get("agent"), info["idle_minutes"], expiry_minutes),
                 code=3,
                 detail=info,
             )
@@ -430,10 +552,24 @@ def takeover_task(remote, task, agent, heartbeats, now, expiry_minutes=EXPIRY_MI
         sha = ws.make_claim_commit(body, claim["sha"], now)
         if not ws.push_lease(sha, ref_for(task, namespace), claim["sha"]):
             raise ClaimError("another agent took over %s first" % task, code=3)
-        return {"taken_over": True, "task": task, "agent": agent, "previous_agent": claim.get("agent"), "attempt": body["attempt"], "sha": sha}
+        return {
+            "taken_over": True,
+            "task": task,
+            "agent": agent,
+            "previous_agent": claim.get("agent"),
+            "attempt": body["attempt"],
+            "sha": sha,
+        }
 
 
-def reap_claims(remote, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, apply=False, namespace=NAMESPACE):
+def reap_claims(
+    remote,
+    heartbeats,
+    now,
+    expiry_minutes=EXPIRY_MINUTES,
+    apply=False,
+    namespace=NAMESPACE,
+):
     with Workspace(remote) as ws:
         records = ws.fetch_claims(namespace)
         expired = []
@@ -443,7 +579,9 @@ def reap_claims(remote, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, apply=Fa
                 continue
             info["deleted"] = False
             if apply:
-                info["deleted"] = ws.delete_lease(ref_for(task, namespace), records[task]["sha"])
+                info["deleted"] = ws.delete_lease(
+                    ref_for(task, namespace), records[task]["sha"]
+                )
             expired.append(info)
     return {"applied": bool(apply), "expired": expired}
 
@@ -455,9 +593,15 @@ def reap_claims(remote, heartbeats, now, expiry_minutes=EXPIRY_MINUTES, apply=Fa
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Atomic task claims on a git remote.")
-    parser.add_argument("--remote", default="origin", help="URL, path or remote name (default origin)")
+    parser.add_argument(
+        "--remote", default="origin", help="URL, path or remote name (default origin)"
+    )
     parser.add_argument("--now", help="time to use instead of the clock (ISO 8601 UTC)")
-    parser.add_argument("--namespace", default=NAMESPACE, help="ref prefix of claims (default %s)" % NAMESPACE)
+    parser.add_argument(
+        "--namespace",
+        default=NAMESPACE,
+        help="ref prefix of claims (default %s)" % NAMESPACE,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add(name, help_text, task=True, agent=False):
@@ -471,10 +615,19 @@ def build_parser():
     p = add("claim", "create the claim ref; fails if it exists", agent=True)
     p.add_argument("--branch")
     p.add_argument("--note", default="")
-    p.add_argument("--tasks", help="directory of task files (ledger/tasks); refuse unknown or finished tasks")
-    add("renew", "move the claim forward (a sign of life); fails if the claim changed hands", agent=True)
+    p.add_argument(
+        "--tasks",
+        help="directory of task files (ledger/tasks); refuse unknown or finished tasks",
+    )
+    add(
+        "renew",
+        "move the claim forward (a sign of life); fails if the claim changed hands",
+        agent=True,
+    )
     p = add("release", "delete the claim (owner only)", agent=True)
-    p.add_argument("--force", action="store_true", help="release a claim held by another agent")
+    p.add_argument(
+        "--force", action="store_true", help="release a claim held by another agent"
+    )
     for name, text, with_task, with_agent in (
         ("show", "show one claim and whether it expired", True, False),
         ("list", "list every claim", False, False),
@@ -482,7 +635,10 @@ def build_parser():
         ("reap", "find (and with --apply delete) expired claims", False, False),
     ):
         p = add(name, text, task=with_task, agent=with_agent)
-        p.add_argument("--heartbeats", help="heartbeat directory (ledger/heartbeats) that keeps claims alive")
+        p.add_argument(
+            "--heartbeats",
+            help="heartbeat directory (ledger/heartbeats) that keeps claims alive",
+        )
         p.add_argument("--expiry-minutes", type=float, default=EXPIRY_MINUTES)
         if name == "reap":
             p.add_argument("--apply", action="store_true")
@@ -503,19 +659,40 @@ def run(argv=None, out=None):
             heartbeats = read_heartbeats(args.heartbeats, now=now)
         ns = args.namespace if args.namespace.endswith("/") else args.namespace + "/"
         if args.command == "claim":
-            result = claim_task(args.remote, args.task, args.agent, now, args.branch, args.note, args.tasks, ns)
+            result = claim_task(
+                args.remote,
+                args.task,
+                args.agent,
+                now,
+                args.branch,
+                args.note,
+                args.tasks,
+                ns,
+            )
         elif args.command == "renew":
             result = renew_task(args.remote, args.task, args.agent, now, ns)
         elif args.command == "release":
             result = release_task(args.remote, args.task, args.agent, args.force, ns)
         elif args.command == "show":
-            result = show_task(args.remote, args.task, heartbeats, now, args.expiry_minutes, ns)
+            result = show_task(
+                args.remote, args.task, heartbeats, now, args.expiry_minutes, ns
+            )
         elif args.command == "list":
             result = list_claims(args.remote, heartbeats, now, args.expiry_minutes, ns)
         elif args.command == "takeover":
-            result = takeover_task(args.remote, args.task, args.agent, heartbeats, now, args.expiry_minutes, ns)
+            result = takeover_task(
+                args.remote,
+                args.task,
+                args.agent,
+                heartbeats,
+                now,
+                args.expiry_minutes,
+                ns,
+            )
         else:
-            result = reap_claims(args.remote, heartbeats, now, args.expiry_minutes, args.apply, ns)
+            result = reap_claims(
+                args.remote, heartbeats, now, args.expiry_minutes, args.apply, ns
+            )
     except ClaimError as exc:
         print("claims: %s" % exc, file=sys.stderr)
         json.dump({"error": str(exc), **exc.detail}, out, indent=2, sort_keys=True)

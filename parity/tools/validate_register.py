@@ -84,7 +84,9 @@ def _type_ok(value, name):
     if name == "integer":
         if isinstance(value, bool):
             return False
-        return isinstance(value, int) or (isinstance(value, float) and value.is_integer())
+        return isinstance(value, int) or (
+            isinstance(value, float) and value.is_integer()
+        )
     if name == "number":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
     if name == "boolean":
@@ -131,24 +133,44 @@ def mini_validate(instance, schema, path="$"):
     if declared is not None:
         names = declared if isinstance(declared, list) else [declared]
         if not any(_type_ok(instance, name) for name in names):
-            errors.append((path, "%s is not of type %s" % (_short(instance), ", ".join(names))))
+            errors.append(
+                (path, "%s is not of type %s" % (_short(instance), ", ".join(names)))
+            )
             return sorted(errors)
     if "enum" in schema and not any(_json_equal(instance, o) for o in schema["enum"]):
-        errors.append((path, "%s is not one of %s" % (_short(instance), _short(schema["enum"]))))
+        errors.append(
+            (path, "%s is not one of %s" % (_short(instance), _short(schema["enum"])))
+        )
     if isinstance(instance, str):
         if "minLength" in schema and len(instance) < schema["minLength"]:
-            errors.append((path, "%s is too short (minLength %d)" % (_short(instance), schema["minLength"])))
+            errors.append(
+                (
+                    path,
+                    "%s is too short (minLength %d)"
+                    % (_short(instance), schema["minLength"]),
+                )
+            )
         if "pattern" in schema and re.search(schema["pattern"], instance) is None:
-            errors.append((path, "%s does not match %r" % (_short(instance), schema["pattern"])))
+            errors.append(
+                (path, "%s does not match %r" % (_short(instance), schema["pattern"]))
+            )
     if isinstance(instance, list):
         if "minItems" in schema and len(instance) < schema["minItems"]:
-            errors.append((path, "%s is too short (minItems %d)" % (_short(instance), schema["minItems"])))
+            errors.append(
+                (
+                    path,
+                    "%s is too short (minItems %d)"
+                    % (_short(instance), schema["minItems"]),
+                )
+            )
         if "items" in schema:
             item_schema = schema["items"]
             if not isinstance(item_schema, dict):
                 raise UnsupportedSchema("only a schema object is supported for 'items'")
             for index, item in enumerate(instance):
-                errors.extend(mini_validate(item, item_schema, "%s[%d]" % (path, index)))
+                errors.extend(
+                    mini_validate(item, item_schema, "%s[%d]" % (path, index))
+                )
     if isinstance(instance, dict):
         properties = schema.get("properties", {})
         for name in schema.get("required", []):
@@ -156,11 +178,15 @@ def mini_validate(instance, schema, path="$"):
                 errors.append((path, "%r is a required property" % name))
         for name, value in instance.items():
             if name in properties:
-                errors.extend(mini_validate(value, properties[name], "%s.%s" % (path, name)))
+                errors.extend(
+                    mini_validate(value, properties[name], "%s.%s" % (path, name))
+                )
             elif "additionalProperties" in schema:
                 extra = schema["additionalProperties"]
                 if extra is False:
-                    errors.append((path, "additional property %r is not allowed" % name))
+                    errors.append(
+                        (path, "additional property %r is not allowed" % name)
+                    )
                 elif isinstance(extra, dict):
                     errors.extend(mini_validate(value, extra, "%s.%s" % (path, name)))
     return sorted(errors)
@@ -187,7 +213,9 @@ def make_validator(schema, prefer="auto"):
             validator = cls(schema)
 
             def run(row):
-                found = [(_jsonschema_path(e), e.message) for e in validator.iter_errors(row)]
+                found = [
+                    (_jsonschema_path(e), e.message) for e in validator.iter_errors(row)
+                ]
                 return sorted(found)
 
             return run, "jsonschema"
@@ -281,7 +309,9 @@ def check_records(records, validate, register_root=None, inventory=None):
         row = record["row"]
         row_id = row.get("id") if isinstance(row.get("id"), str) else None
         for where, message in validate(row):
-            issues.append(_issue("error", "schema", record, "%s: %s" % (where, message), row_id))
+            issues.append(
+                _issue("error", "schema", record, "%s: %s" % (where, message), row_id)
+            )
         if row_id is not None:
             if row_id in first_by_id:
                 other = first_by_id[row_id]
@@ -318,55 +348,104 @@ def check_records(records, validate, register_root=None, inventory=None):
                     "tier-without-evidence",
                     record,
                     "tier_now is %s but the row has no evidence (run_id and commit): only CI "
-                    "may credit a row, an agent's own statement counts as nothing" % tier,
+                    "may credit a row, an agent's own statement counts as nothing"
+                    % tier,
                     row_id,
                 )
             )
         if credited and not tests:
             issues.append(
-                _issue("error", "no-acceptance", record,
-                       "tier_now is %s but the row names no acceptance test" % tier, row_id)
+                _issue(
+                    "error",
+                    "no-acceptance",
+                    record,
+                    "tier_now is %s but the row names no acceptance test" % tier,
+                    row_id,
+                )
             )
         if tier == "Best" and not regio.superiority_ids(row):
             issues.append(
-                _issue("error", "best-without-superiority-test", record,
-                       "tier_now is Best but the row has no superiority_tests", row_id)
+                _issue(
+                    "error",
+                    "best-without-superiority-test",
+                    record,
+                    "tier_now is Best but the row has no superiority_tests",
+                    row_id,
+                )
             )
         if status == "verified":
             if not has_ev:
                 issues.append(
-                    _issue("error", "verified-without-evidence", record,
-                           "status is verified but the row has no evidence (run_id and commit)", row_id)
+                    _issue(
+                        "error",
+                        "verified-without-evidence",
+                        record,
+                        "status is verified but the row has no evidence (run_id and commit)",
+                        row_id,
+                    )
                 )
-            if target in regio.TIER_RANK and regio.TIER_RANK[tier] < regio.TIER_RANK[target]:
+            if (
+                target in regio.TIER_RANK
+                and regio.TIER_RANK[tier] < regio.TIER_RANK[target]
+            ):
                 issues.append(
-                    _issue("error", "verified-below-target", record,
-                           "status is verified but tier_now %s is below target %s" % (tier, target), row_id)
+                    _issue(
+                        "error",
+                        "verified-below-target",
+                        record,
+                        "status is verified but tier_now %s is below target %s"
+                        % (tier, target),
+                        row_id,
+                    )
                 )
             if not tests and not credited:
                 issues.append(
-                    _issue("error", "no-acceptance", record,
-                           "status is verified but the row names no acceptance test", row_id)
+                    _issue(
+                        "error",
+                        "no-acceptance",
+                        record,
+                        "status is verified but the row names no acceptance test",
+                        row_id,
+                    )
                 )
 
         evidence = row.get("evidence")
         if isinstance(evidence, dict) and isinstance(evidence.get("spec_sha"), str):
             if evidence["spec_sha"] != regio.spec_sha(row):
                 issues.append(
-                    _issue("warning", "spec-changed", record,
-                           "acceptance list, superiority tests or target changed after the row "
-                           "was credited (evidence.spec_sha no longer matches): the credit is void "
-                           "until CI verifies the row again", row_id)
+                    _issue(
+                        "warning",
+                        "spec-changed",
+                        record,
+                        "acceptance list, superiority tests or target changed after the row "
+                        "was credited (evidence.spec_sha no longer matches): the credit is void "
+                        "until CI verifies the row again",
+                        row_id,
+                    )
                 )
 
         alias = row.get("alias_of")
         if isinstance(alias, str) and row_id is not None:
             alias_target[row_id] = alias
             if alias == row_id:
-                issues.append(_issue("error", "alias-self", record, "alias_of names the row itself", row_id))
+                issues.append(
+                    _issue(
+                        "error",
+                        "alias-self",
+                        record,
+                        "alias_of names the row itself",
+                        row_id,
+                    )
+                )
             elif alias not in first_by_id:
                 issues.append(
-                    _issue("error", "alias-missing", record, "alias_of %s does not exist in the Register" % alias, row_id)
+                    _issue(
+                        "error",
+                        "alias-missing",
+                        record,
+                        "alias_of %s does not exist in the Register" % alias,
+                        row_id,
+                    )
                 )
 
         if inventory is not None and (
@@ -378,42 +457,81 @@ def check_records(records, validate, register_root=None, inventory=None):
             for test_id in wanted:
                 if test_id not in inventory:
                     issues.append(
-                        _issue("error", "unknown-test", record,
-                               "test id %s is not in the test inventory" % test_id, row_id)
+                        _issue(
+                            "error",
+                            "unknown-test",
+                            record,
+                            "test id %s is not in the test inventory" % test_id,
+                            row_id,
+                        )
                     )
 
         statement = row.get("statement")
         programs = row.get("program")
-        if isinstance(statement, str) and isinstance(programs, list) and not isinstance(alias, str):
+        if (
+            isinstance(statement, str)
+            and isinstance(programs, list)
+            and not isinstance(alias, str)
+        ):
             key = (tuple(sorted(str(p) for p in programs)), _norm_statement(statement))
             if key in seen_statements and row_id is not None:
                 issues.append(
-                    _issue("warning", "duplicate-statement", record,
-                           "same statement as %s (merge into an alias row?)" % seen_statements[key], row_id)
+                    _issue(
+                        "warning",
+                        "duplicate-statement",
+                        record,
+                        "same statement as %s (merge into an alias row?)"
+                        % seen_statements[key],
+                        row_id,
+                    )
                 )
             elif row_id is not None:
                 seen_statements[key] = row_id
 
         if register_root is not None:
-            relative = os.path.relpath(record["file"], str(register_root)).replace(os.sep, "/")
+            relative = os.path.relpath(record["file"], str(register_root)).replace(
+                os.sep, "/"
+            )
             parts = relative.split("/")
-            program_list = [_norm(p) for p in programs] if isinstance(programs, list) else []
+            program_list = (
+                [_norm(p) for p in programs] if isinstance(programs, list) else []
+            )
             domain = row.get("domain")
             if len(parts) != 2:
                 issues.append(
-                    _issue("warning", "path-layout", record,
-                           "expected parity/register/<program>/<domain>.jsonl, found %s" % relative, row_id)
+                    _issue(
+                        "warning",
+                        "path-layout",
+                        record,
+                        "expected parity/register/<program>/<domain>.jsonl, found %s"
+                        % relative,
+                        row_id,
+                    )
                 )
             else:
                 if program_list and _norm(parts[0]) not in program_list:
                     issues.append(
-                        _issue("warning", "path-mismatch", record,
-                               "directory %s is not one of the row's programs %s" % (parts[0], program_list), row_id)
+                        _issue(
+                            "warning",
+                            "path-mismatch",
+                            record,
+                            "directory %s is not one of the row's programs %s"
+                            % (parts[0], program_list),
+                            row_id,
+                        )
                     )
-                if isinstance(domain, str) and _norm(parts[1][: -len(".jsonl")]) != _norm(domain):
+                if isinstance(domain, str) and _norm(
+                    parts[1][: -len(".jsonl")]
+                ) != _norm(domain):
                     issues.append(
-                        _issue("warning", "path-mismatch", record,
-                               "file %s does not match the row's domain %r" % (parts[1], domain), row_id)
+                        _issue(
+                            "warning",
+                            "path-mismatch",
+                            record,
+                            "file %s does not match the row's domain %r"
+                            % (parts[1], domain),
+                            row_id,
+                        )
                     )
 
     # alias loops: follow each chain once
@@ -425,27 +543,42 @@ def check_records(records, validate, register_root=None, inventory=None):
             chain.append(node)
             node = alias_target[node]
         if node in chain and node != alias_target.get(node):  # a loop, not a self alias
-            loop = chain[chain.index(node):]
+            loop = chain[chain.index(node) :]
             marker = frozenset(loop)
             if marker not in reported:
                 reported.add(marker)
                 record = first_by_id.get(loop[0])
                 issues.append(
-                    _issue("error", "alias-cycle", record,
-                           "alias_of loops: %s" % " -> ".join(loop + [loop[0]]), loop[0])
+                    _issue(
+                        "error",
+                        "alias-cycle",
+                        record,
+                        "alias_of loops: %s" % " -> ".join(loop + [loop[0]]),
+                        loop[0],
+                    )
                 )
     return issues
 
 
 def run(argv=None, out=None):
     parser = argparse.ArgumentParser(description="Validate the Parity Register.")
-    parser.add_argument("--register", help="register directory (default parity/register)")
-    parser.add_argument("--schema", help="row schema (default parity/schema/row.schema.json)")
-    parser.add_argument("--inventory", help="file of test ids that exist (one per line, or JSONL)")
+    parser.add_argument(
+        "--register", help="register directory (default parity/register)"
+    )
+    parser.add_argument(
+        "--schema", help="row schema (default parity/schema/row.schema.json)"
+    )
+    parser.add_argument(
+        "--inventory", help="file of test ids that exist (one per line, or JSONL)"
+    )
     parser.add_argument("--strict", action="store_true", help="warnings are errors")
-    parser.add_argument("--github", action="store_true", help="print GitHub Actions annotations")
+    parser.add_argument(
+        "--github", action="store_true", help="print GitHub Actions annotations"
+    )
     parser.add_argument("--json", action="store_true", help="print one JSON report")
-    parser.add_argument("--engine", choices=("auto", "jsonschema", "builtin"), default="auto")
+    parser.add_argument(
+        "--engine", choices=("auto", "jsonschema", "builtin"), default="auto"
+    )
     args = parser.parse_args(argv)
     out = out or sys.stdout
 
@@ -457,7 +590,10 @@ def run(argv=None, out=None):
             schema = json.load(handle)
         validate, engine = make_validator(schema, args.engine)
     except (OSError, ValueError, UnsupportedSchema, ImportError) as exc:
-        print("validate_register: cannot load the schema %s: %s" % (schema_path, exc), file=sys.stderr)
+        print(
+            "validate_register: cannot load the schema %s: %s" % (schema_path, exc),
+            file=sys.stderr,
+        )
         return 2
 
     inventory = None
@@ -465,12 +601,18 @@ def run(argv=None, out=None):
         try:
             inventory = load_inventory(args.inventory)
         except OSError as exc:
-            print("validate_register: cannot read the inventory: %s" % exc, file=sys.stderr)
+            print(
+                "validate_register: cannot read the inventory: %s" % exc,
+                file=sys.stderr,
+            )
             return 2
 
     if not os.path.isdir(register):
         if explicit_register:
-            print("validate_register: no such register directory: %s" % register, file=sys.stderr)
+            print(
+                "validate_register: no such register directory: %s" % register,
+                file=sys.stderr,
+            )
             return 2
         records, problems = [], []
     else:
@@ -487,7 +629,9 @@ def run(argv=None, out=None):
         }
         for p in problems
     ]
-    issues += check_records(records, validate, register if os.path.isdir(register) else None, inventory)
+    issues += check_records(
+        records, validate, register if os.path.isdir(register) else None, inventory
+    )
     if args.strict:
         for issue in issues:
             if issue["severity"] == "warning":
@@ -499,23 +643,48 @@ def run(argv=None, out=None):
 
     if args.json:
         json.dump(
-            {"rows": len(records), "files": files, "engine": engine, "errors": errors, "warnings": warnings},
-            out, indent=2, sort_keys=True,
+            {
+                "rows": len(records),
+                "files": files,
+                "engine": engine,
+                "errors": errors,
+                "warnings": warnings,
+            },
+            out,
+            indent=2,
+            sort_keys=True,
         )
         out.write("\n")
     else:
         for issue in errors + warnings:
-            where = "%s:%s" % (issue["file"], issue["line"]) if issue["file"] else "register"
+            where = (
+                "%s:%s" % (issue["file"], issue["line"])
+                if issue["file"]
+                else "register"
+            )
             if args.github:
                 level = "error" if issue["severity"] == "error" else "warning"
                 out.write(
                     "::%s file=%s,line=%s,title=%s::%s %s\n"
-                    % (level, issue["file"], issue["line"], issue["code"], issue["id"] or "", issue["message"])
+                    % (
+                        level,
+                        issue["file"],
+                        issue["line"],
+                        issue["code"],
+                        issue["id"] or "",
+                        issue["message"],
+                    )
                 )
             else:
                 out.write(
                     "%s: %s [%s] %s%s\n"
-                    % (where, issue["severity"].upper(), issue["code"], (issue["id"] + ": ") if issue["id"] else "", issue["message"])
+                    % (
+                        where,
+                        issue["severity"].upper(),
+                        issue["code"],
+                        (issue["id"] + ": ") if issue["id"] else "",
+                        issue["message"],
+                    )
                 )
         out.write(
             "validate_register: %d rows in %d files, %d errors, %d warnings (engine: %s)\n"

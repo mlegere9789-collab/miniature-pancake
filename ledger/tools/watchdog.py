@@ -88,11 +88,20 @@ def _incident(kind, severity, subject, since, now, detail, rule, action, **extra
 
 def fingerprint(beat):
     """What counts as a measurable change between two heartbeats."""
-    return (beat["task"], beat["commit"], beat["evidence"], beat["metric"], beat["state"], beat["waiting_on"])
+    return (
+        beat["task"],
+        beat["commit"],
+        beat["evidence"],
+        beat["metric"],
+        beat["state"],
+        beat["waiting_on"],
+    )
 
 
 def is_active(beats):
-    return bool(beats) and (beats[-1]["state"] or "working").lower() not in TERMINAL_STATES
+    return (
+        bool(beats) and (beats[-1]["state"] or "working").lower() not in TERMINAL_STATES
+    )
 
 
 def unchanged_tail(beats, count):
@@ -128,7 +137,9 @@ def read_task_files(directory):
         for name in sorted(os.listdir(directory)):
             if name.endswith(".json"):
                 try:
-                    with open(os.path.join(directory, name), "r", encoding="utf-8") as handle:
+                    with open(
+                        os.path.join(directory, name), "r", encoding="utf-8"
+                    ) as handle:
                         data = json.load(handle)
                 except (OSError, ValueError):
                     continue
@@ -184,11 +195,18 @@ def check_pace(pace, total, credit_times, now, config):
     if summary["met"]:
         return summary, incidents
     due = now + datetime.timedelta(hours=config["root_cause_hours"])
-    detail = "%d rows verified in the six hours to %s; the minimum is %.1f (50%% of a quarter of %.0f rows per day)" % (
-        verified, summary["window_end"], minimum, summary["required_per_day"])
+    detail = (
+        "%d rows verified in the six hours to %s; the minimum is %.1f (50%% of a quarter of %.0f rows per day)"
+        % (verified, summary["window_end"], minimum, summary["required_per_day"])
+    )
     incidents.append(
         _incident(
-            "pace_miss", "high", "register", current_start, now, detail,
+            "pace_miss",
+            "high",
+            "register",
+            current_start,
+            now,
+            detail,
             "7.6 pace: rows verified per six-hour window >= 50% of one quarter of the day's required rows",
             "reallocate",
             root_cause_due=ledgerlib.format_time(due),
@@ -209,7 +227,11 @@ def check_pace(pace, total, credit_times, now, config):
         if previous_verified < previous_min:
             incidents.append(
                 _incident(
-                    "replan_trigger", "critical", "register", previous_start, now,
+                    "replan_trigger",
+                    "critical",
+                    "register",
+                    previous_start,
+                    now,
                     "two consecutive six-hour pace misses (%d of %.1f, then %d of %.1f): the re-plan of plan 11.2 is due"
                     % (previous_verified, previous_min, verified, minimum),
                     "11.2 re-plan trigger 2: two consecutive six-hour pace misses",
@@ -220,7 +242,17 @@ def check_pace(pace, total, credit_times, now, config):
     return summary, incidents
 
 
-def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit_times=None, pace=None, total=None, problems=None):
+def evaluate(
+    beats_by_agent,
+    claim_records,
+    now,
+    config,
+    task_files=None,
+    credit_times=None,
+    pace=None,
+    total=None,
+    problems=None,
+):
     """Apply every rule. Returns the report dict (see the module docstring)."""
     task_files = task_files or {}
     problems = problems or []
@@ -239,17 +271,27 @@ def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit
         # a claim newer than the last heartbeat is the agent's latest launch and sign of life
         fresh = []
         for claim in owned:
-            times = [ledgerlib.try_parse_time(claim.get(k)) for k in ("claimed_at", "renewed_at")]
+            times = [
+                ledgerlib.try_parse_time(claim.get(k))
+                for k in ("claimed_at", "renewed_at")
+            ]
             times = [t for t in times if t]
             if times and (last is None or max(times) > last["time"]):
                 fresh.append(max(times))
         info = {
             "agent": name,
-            "task": (last["task"] if last and last["task"] else (owned[0]["task"] if owned else None)),
+            "task": (
+                last["task"]
+                if last and last["task"]
+                else (owned[0]["task"] if owned else None)
+            ),
             "beats": len(beats),
             "last_heartbeat": ledgerlib.format_time(last["time"]) if last else None,
-            "minutes_since_heartbeat": round(ledgerlib.minutes_between(last["time"], now), 1) if last else None,
-            "state": (last["state"] if last else None) or ("claimed" if owned else "unknown"),
+            "minutes_since_heartbeat": (
+                round(ledgerlib.minutes_between(last["time"], now), 1) if last else None
+            ),
+            "state": (last["state"] if last else None)
+            or ("claimed" if owned else "unknown"),
             "status": "ok",
         }
         active = bool(fresh) or (bool(beats) and is_active(beats))
@@ -275,10 +317,18 @@ def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit
                 stalled = True
                 incidents.append(
                     _incident(
-                        "no_heartbeat", "high", name, sign, now,
-                        "%s has written no heartbeat for %.0f minutes (limit %.0f); task %s" % (name, idle, config["heartbeat_timeout"], task),
-                        "7.6 heartbeat: none for 15 minutes marks the agent stalled", action,
-                        agent=name, task=task, relaunches=relaunches,
+                        "no_heartbeat",
+                        "high",
+                        name,
+                        sign,
+                        now,
+                        "%s has written no heartbeat for %.0f minutes (limit %.0f); task %s"
+                        % (name, idle, config["heartbeat_timeout"], task),
+                        "7.6 heartbeat: none for 15 minutes marks the agent stalled",
+                        action,
+                        agent=name,
+                        task=task,
+                        relaunches=relaunches,
                     )
                 )
 
@@ -293,13 +343,27 @@ def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit
                     info["waiting_on"] = waiting
                 else:
                     stalled = True
-                    reason = "waiting on %s for %.0f minutes (grace %.0f)" % (waiting, span, config["ci_wait_grace"]) if waiting else "no change"
+                    reason = (
+                        "waiting on %s for %.0f minutes (grace %.0f)"
+                        % (waiting, span, config["ci_wait_grace"])
+                        if waiting
+                        else "no change"
+                    )
                     incidents.append(
                         _incident(
-                            "no_change", "high", name, tail[0]["time"], now,
-                            "the last %d heartbeats of %s show no measurable change (%s); task %s" % (len(tail), name, reason, task),
-                            "7.6 heartbeat: three heartbeats with no measurable change marks the agent stalled", action,
-                            agent=name, task=task, relaunches=relaunches, heartbeats_unchanged=len(tail),
+                            "no_change",
+                            "high",
+                            name,
+                            tail[0]["time"],
+                            now,
+                            "the last %d heartbeats of %s show no measurable change (%s); task %s"
+                            % (len(tail), name, reason, task),
+                            "7.6 heartbeat: three heartbeats with no measurable change marks the agent stalled",
+                            action,
+                            agent=name,
+                            task=task,
+                            relaunches=relaunches,
+                            heartbeats_unchanged=len(tail),
                         )
                     )
 
@@ -314,10 +378,17 @@ def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit
             if age > config["commit_interval"] and not (info["status"] == "waiting"):
                 incidents.append(
                     _incident(
-                        "commit_overdue", "warn", name, same[-1]["time"], now,
-                        "%s has not committed since %s (%.0f minutes; limit %.0f)" % (name, beats[-1]["commit"], age, config["commit_interval"]),
-                        "7.3 work: commit and push at least every 30 minutes", "none",
-                        agent=name, task=task,
+                        "commit_overdue",
+                        "warn",
+                        name,
+                        same[-1]["time"],
+                        now,
+                        "%s has not committed since %s (%.0f minutes; limit %.0f)"
+                        % (name, beats[-1]["commit"], age, config["commit_interval"]),
+                        "7.3 work: commit and push at least every 30 minutes",
+                        "none",
+                        agent=name,
+                        task=task,
                     )
                 )
 
@@ -329,17 +400,36 @@ def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit
             launch = max(launches) if launches else None
         if launch is None and beats:
             launch = beats[0]["time"]
-        if launch is not None and ledgerlib.minutes_between(launch, now) > config["first_output"]:
-            proofs = [b for b in beats if b["time"] >= launch and (b["commit"] or b["evidence"])]
+        if (
+            launch is not None
+            and ledgerlib.minutes_between(launch, now) > config["first_output"]
+        ):
+            proofs = [
+                b
+                for b in beats
+                if b["time"] >= launch and (b["commit"] or b["evidence"])
+            ]
             if not proofs:
                 stalled = True
                 incidents.append(
                     _incident(
-                        "late_first_output", "high", name, launch, now,
+                        "late_first_output",
+                        "high",
+                        name,
+                        launch,
+                        now,
                         "%s has produced no commit or evidence %.0f minutes after launch (limit %.0f); task %s"
-                        % (name, ledgerlib.minutes_between(launch, now), config["first_output"], task),
-                        "7.6 first verifiable output after launch: 10 minutes", action,
-                        agent=name, task=task, relaunches=relaunches,
+                        % (
+                            name,
+                            ledgerlib.minutes_between(launch, now),
+                            config["first_output"],
+                            task,
+                        ),
+                        "7.6 first verifiable output after launch: 10 minutes",
+                        action,
+                        agent=name,
+                        task=task,
+                        relaunches=relaunches,
                     )
                 )
         if stalled:
@@ -357,19 +447,43 @@ def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit
             relaunches = relaunches_for(row["task"], claim_by_task, task_files)
             incidents.append(
                 _incident(
-                    "claim_expired", "high", row["task"], alive, now,
+                    "claim_expired",
+                    "high",
+                    row["task"],
+                    alive,
+                    now,
                     "claim on %s by %s has had no sign of life for %s minutes (limit %.0f)%s"
-                    % (row["task"], row["agent"], row["idle_minutes"], config["claim_expiry"],
-                       "; the owner finished but never released it" if finished else ""),
+                    % (
+                        row["task"],
+                        row["agent"],
+                        row["idle_minutes"],
+                        config["claim_expiry"],
+                        (
+                            "; the owner finished but never released it"
+                            if finished
+                            else ""
+                        ),
+                    ),
                     "7.3 claims expire after 45 minutes without a heartbeat",
-                    "reap_claim" if finished else ("takeover" if relaunches < MAX_RELAUNCHES else "split_task"),
-                    agent=row["agent"], task=row["task"], relaunches=relaunches, attempt=row["attempt"],
+                    (
+                        "reap_claim"
+                        if finished
+                        else (
+                            "takeover" if relaunches < MAX_RELAUNCHES else "split_task"
+                        )
+                    ),
+                    agent=row["agent"],
+                    task=row["task"],
+                    relaunches=relaunches,
+                    attempt=row["attempt"],
                 )
             )
 
     pace_summary = {"evaluated": False, "status": "not_configured"}
     if pace is not None and credit_times is not None and total:
-        pace_summary, pace_incidents = check_pace(pace, total, credit_times, now, config)
+        pace_summary, pace_incidents = check_pace(
+            pace, total, credit_times, now, config
+        )
         incidents.extend(pace_incidents)
     elif pace is not None:
         pace_summary = {"evaluated": False, "status": "no_credits_or_total"}
@@ -380,13 +494,22 @@ def evaluate(beats_by_agent, claim_records, now, config, task_files=None, credit
     for path, items in sorted(by_file.items()):
         incidents.append(
             _incident(
-                "malformed_heartbeat", "info", os.path.splitext(os.path.basename(path))[0], now, now,
-                "%d unusable heartbeat lines in %s (first: line %s: %s)" % (len(items), path, items[0]["line"], items[0]["message"]),
-                "7.2 heartbeats are append-only JSON lines", "none", file=path,
+                "malformed_heartbeat",
+                "info",
+                os.path.splitext(os.path.basename(path))[0],
+                now,
+                now,
+                "%d unusable heartbeat lines in %s (first: line %s: %s)"
+                % (len(items), path, items[0]["line"], items[0]["message"]),
+                "7.2 heartbeats are append-only JSON lines",
+                "none",
+                file=path,
             )
         )
 
-    incidents.sort(key=lambda i: (SEVERITY_RANK.get(i["severity"], 9), i["since"], i["id"]))
+    incidents.sort(
+        key=lambda i: (SEVERITY_RANK.get(i["severity"], 9), i["since"], i["id"])
+    )
     return {
         "now": ledgerlib.format_time(now),
         "thresholds": config,
@@ -412,14 +535,23 @@ def write_incident_files(incidents, directory):
             "",
             "- type: %s" % incident["type"],
             "- severity: %s" % incident["severity"],
-            "- since: %s (first detected %s)" % (incident["since"], incident["detected_at"]),
+            "- since: %s (first detected %s)"
+            % (incident["since"], incident["detected_at"]),
             "- rule: %s" % incident["rule"],
             "- action: %s" % incident["action"],
         ]
         for key in ("agent", "task", "relaunches", "root_cause_due"):
             if incident.get(key) is not None:
                 lines.append("- %s: %s" % (key, incident[key]))
-        lines += ["", incident["detail"], "", "## Root cause", "", "(to be written by the owner of the task; the plan asks for it within two hours for a pace miss)", ""]
+        lines += [
+            "",
+            incident["detail"],
+            "",
+            "## Root cause",
+            "",
+            "(to be written by the owner of the task; the plan asks for it within two hours for a pace miss)",
+            "",
+        ]
         with open(path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("\n".join(lines))
         written.append(path)
@@ -427,23 +559,51 @@ def write_incident_files(incidents, directory):
 
 
 def run(argv=None, out=None):
-    parser = argparse.ArgumentParser(description="Apply the stall and pace rules of plan 7.6.")
-    parser.add_argument("--ledger", default=os.path.join(REPO_ROOT, "ledger"), help="ledger directory")
-    parser.add_argument("--remote", help="git remote (URL, path or name) holding the claim refs")
+    parser = argparse.ArgumentParser(
+        description="Apply the stall and pace rules of plan 7.6."
+    )
+    parser.add_argument(
+        "--ledger", default=os.path.join(REPO_ROOT, "ledger"), help="ledger directory"
+    )
+    parser.add_argument(
+        "--remote", help="git remote (URL, path or name) holding the claim refs"
+    )
     parser.add_argument("--claims-file", help="JSON list of claims instead of --remote")
     parser.add_argument("--now", help="time to use instead of the clock (ISO 8601 UTC)")
-    parser.add_argument("--credits", help="credits JSONL (default <ledger>/credits.jsonl)")
-    parser.add_argument("--percent", help="percent.json for the Register size (default <ledger>/percent.json)")
-    parser.add_argument("--total", type=int, help="Register size, instead of percent.json")
-    parser.add_argument("--pace", help="pace line (default <ledger>/pace.json, else the plan 6.4 defaults)")
-    parser.add_argument("--write-incidents", metavar="DIR", help="write incident stubs there (default none)")
+    parser.add_argument(
+        "--credits", help="credits JSONL (default <ledger>/credits.jsonl)"
+    )
+    parser.add_argument(
+        "--percent",
+        help="percent.json for the Register size (default <ledger>/percent.json)",
+    )
+    parser.add_argument(
+        "--total", type=int, help="Register size, instead of percent.json"
+    )
+    parser.add_argument(
+        "--pace",
+        help="pace line (default <ledger>/pace.json, else the plan 6.4 defaults)",
+    )
+    parser.add_argument(
+        "--write-incidents",
+        metavar="DIR",
+        help="write incident stubs there (default none)",
+    )
     parser.add_argument("--fail-on-incident", action="store_true")
-    parser.add_argument("--heartbeat-timeout", type=float, default=DEFAULTS["heartbeat_timeout"])
-    parser.add_argument("--no-change-beats", type=int, default=DEFAULTS["no_change_beats"])
+    parser.add_argument(
+        "--heartbeat-timeout", type=float, default=DEFAULTS["heartbeat_timeout"]
+    )
+    parser.add_argument(
+        "--no-change-beats", type=int, default=DEFAULTS["no_change_beats"]
+    )
     parser.add_argument("--first-output", type=float, default=DEFAULTS["first_output"])
     parser.add_argument("--claim-expiry", type=float, default=DEFAULTS["claim_expiry"])
-    parser.add_argument("--commit-interval", type=float, default=DEFAULTS["commit_interval"])
-    parser.add_argument("--ci-wait-grace", type=float, default=DEFAULTS["ci_wait_grace"])
+    parser.add_argument(
+        "--commit-interval", type=float, default=DEFAULTS["commit_interval"]
+    )
+    parser.add_argument(
+        "--ci-wait-grace", type=float, default=DEFAULTS["ci_wait_grace"]
+    )
     parser.add_argument("--lookback-days", type=int, default=DEFAULTS["lookback_days"])
     args = parser.parse_args(argv)
     out = out or sys.stdout
@@ -464,7 +624,9 @@ def run(argv=None, out=None):
         lookback_days=args.lookback_days,
     )
     ledger = args.ledger
-    beats, problems = ledgerlib.read_heartbeats(os.path.join(ledger, "heartbeats"), config["lookback_days"], now)
+    beats, problems = ledgerlib.read_heartbeats(
+        os.path.join(ledger, "heartbeats"), config["lookback_days"], now
+    )
 
     claim_records = []
     try:
@@ -487,7 +649,9 @@ def run(argv=None, out=None):
         print("watchdog: bad pace file: %s" % exc, file=sys.stderr)
         return 2
     credits_path = args.credits or os.path.join(ledger, "credits.jsonl")
-    credit_times = read_credit_times(credits_path) if os.path.isfile(credits_path) else None
+    credit_times = (
+        read_credit_times(credits_path) if os.path.isfile(credits_path) else None
+    )
     total = args.total
     percent_path = args.percent or os.path.join(ledger, "percent.json")
     if total is None and os.path.isfile(percent_path):
@@ -498,14 +662,25 @@ def run(argv=None, out=None):
             total = None
 
     report = evaluate(
-        beats, claim_records, now, config, read_task_files(os.path.join(ledger, "tasks")),
-        credit_times, pace, total, problems,
+        beats,
+        claim_records,
+        now,
+        config,
+        read_task_files(os.path.join(ledger, "tasks")),
+        credit_times,
+        pace,
+        total,
+        problems,
     )
     if args.write_incidents:
-        report["written"] = write_incident_files(report["incidents"], args.write_incidents)
+        report["written"] = write_incident_files(
+            report["incidents"], args.write_incidents
+        )
     json.dump(report, out, indent=2, sort_keys=True)
     out.write("\n")
-    if args.fail_on_incident and any(i["severity"] in ("critical", "high") for i in report["incidents"]):
+    if args.fail_on_incident and any(
+        i["severity"] in ("critical", "high") for i in report["incidents"]
+    ):
         return 1
     return 0
 

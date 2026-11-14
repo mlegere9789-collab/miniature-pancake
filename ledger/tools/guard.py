@@ -39,7 +39,11 @@ NEW_ROW_STATUS = ("open", "in_progress")
 
 
 def ci_actors(allowed):
-    names = [n.strip() for n in (allowed or os.environ.get("LEDGER_CI_ACTORS") or "").split(",") if n.strip()]
+    names = [
+        n.strip()
+        for n in (allowed or os.environ.get("LEDGER_CI_ACTORS") or "").split(",")
+        if n.strip()
+    ]
     return tuple(names) or DEFAULT_CI_ACTORS
 
 
@@ -84,19 +88,39 @@ def check_rows(base_rows, head_rows, actor, allowed=None):
         old = base_rows.get(row_id)
         if old is None:
             if _rank(row) > 0:
-                found.append("%s: a new row must start at tier None, not %s" % (where, regio.tier_of(row)))
-            if row.get("status") not in NEW_ROW_STATUS and row.get("status") is not None:
-                found.append("%s: a new row must start with status open, not %s" % (where, row.get("status")))
+                found.append(
+                    "%s: a new row must start at tier None, not %s"
+                    % (where, regio.tier_of(row))
+                )
+            if (
+                row.get("status") not in NEW_ROW_STATUS
+                and row.get("status") is not None
+            ):
+                found.append(
+                    "%s: a new row must start with status open, not %s"
+                    % (where, row.get("status"))
+                )
             if row.get("evidence") is not None:
                 found.append("%s: a new row must start with evidence null" % where)
             continue
         before = old["row"]
         if _rank(row) > _rank(before):
-            found.append("%s: tier_now raised from %s to %s by %s; only CI may credit a row" % (where, regio.tier_of(before), regio.tier_of(row), actor))
+            found.append(
+                "%s: tier_now raised from %s to %s by %s; only CI may credit a row"
+                % (where, regio.tier_of(before), regio.tier_of(row), actor)
+            )
         if row.get("status") == "verified" and before.get("status") != "verified":
-            found.append("%s: status set to verified by %s; only CI may verify a row" % (where, actor))
-        if row.get("evidence") is not None and row.get("evidence") != before.get("evidence"):
-            found.append("%s: evidence set or changed by %s; evidence is written by CI only" % (where, actor))
+            found.append(
+                "%s: status set to verified by %s; only CI may verify a row"
+                % (where, actor)
+            )
+        if row.get("evidence") is not None and row.get("evidence") != before.get(
+            "evidence"
+        ):
+            found.append(
+                "%s: evidence set or changed by %s; evidence is written by CI only"
+                % (where, actor)
+            )
     return found
 
 
@@ -107,12 +131,21 @@ def run(argv=None, stdin=None, out=None):
     for name in ("paths", "rows"):
         p = sub.add_parser(name)
         p.add_argument("--actor", required=True)
-        p.add_argument("--allowed", help="comma separated CI actors (default LEDGER_CI_ACTORS or github-actions[bot])")
+        p.add_argument(
+            "--allowed",
+            help="comma separated CI actors (default LEDGER_CI_ACTORS or github-actions[bot])",
+        )
         if name == "paths":
-            p.add_argument("--changed", default="-", help="file with changed paths, or - for stdin")
+            p.add_argument(
+                "--changed", default="-", help="file with changed paths, or - for stdin"
+            )
         else:
-            p.add_argument("--base", required=True, help="Register directory before the push")
-            p.add_argument("--head", required=True, help="Register directory after the push")
+            p.add_argument(
+                "--base", required=True, help="Register directory before the push"
+            )
+            p.add_argument(
+                "--head", required=True, help="Register directory after the push"
+            )
     args = parser.parse_args(argv)
 
     if args.command == "paths":
@@ -121,9 +154,15 @@ def run(argv=None, stdin=None, out=None):
         else:
             with open(args.changed, "r", encoding="utf-8") as handle:
                 text = handle.read()
-        violations = check_paths([line for line in text.splitlines() if line.strip()], args.actor, args.allowed)
+        violations = check_paths(
+            [line for line in text.splitlines() if line.strip()],
+            args.actor,
+            args.allowed,
+        )
     else:
-        violations = check_rows(_rows_by_id(args.base), _rows_by_id(args.head), args.actor, args.allowed)
+        violations = check_rows(
+            _rows_by_id(args.base), _rows_by_id(args.head), args.actor, args.allowed
+        )
     for line in violations:
         out.write("guard: %s\n" % line)
     return 1 if violations else 0

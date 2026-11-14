@@ -59,7 +59,9 @@ class Workflow(unittest.TestCase):
             self.assertIn("parity/**", on[event]["paths"])
             self.assertIn("ledger/**", on[event]["paths"])
             self.assertIn(".github/workflows/ledger-check.yml", on[event]["paths"])
-        self.assertNotIn("branches", on["push"])  # task branches and throw-away refs must be checked too
+        self.assertNotIn(
+            "branches", on["push"]
+        )  # task branches and throw-away refs must be checked too
 
     def test_steps_are_named_and_actions_are_pinned_to_a_version(self):
         for step in load()["jobs"]["check"]["steps"]:
@@ -71,10 +73,14 @@ class Workflow(unittest.TestCase):
         for line in commands(load()):
             for token in shlex.split(line, posix=True) if "<<" not in line else []:
                 if token.endswith(".py"):
-                    self.assertTrue(os.path.isfile(os.path.join(support.REPO_ROOT, token)), token)
+                    self.assertTrue(
+                        os.path.isfile(os.path.join(support.REPO_ROOT, token)), token
+                    )
             match = re.search(r"unittest discover -s (\S+)", line)
             if match:
-                self.assertTrue(os.path.isdir(os.path.join(support.REPO_ROOT, match.group(1))), line)
+                self.assertTrue(
+                    os.path.isdir(os.path.join(support.REPO_ROOT, match.group(1))), line
+                )
 
     def test_every_option_it_passes_is_defined_by_the_tool(self):
         checked = 0
@@ -85,15 +91,20 @@ class Workflow(unittest.TestCase):
             script = next((t for t in tokens if t.endswith(".py")), None)
             if script is None or script.startswith("-"):
                 continue
-            rest = tokens[tokens.index(script) + 1:]
+            rest = tokens[tokens.index(script) + 1 :]
             sub = [rest[0]] if rest and not rest[0].startswith("-") else []
             help_text = subprocess.run(
-                [sys.executable, os.path.join(support.REPO_ROOT, script)] + sub + ["--help"],
-                capture_output=True, text=True,
+                [sys.executable, os.path.join(support.REPO_ROOT, script)]
+                + sub
+                + ["--help"],
+                capture_output=True,
+                text=True,
             ).stdout
             for token in rest:
                 if token.startswith("--"):
-                    self.assertIn(token, help_text, "%s does not define %s" % (script, token))
+                    self.assertIn(
+                        token, help_text, "%s does not define %s" % (script, token)
+                    )
                     checked += 1
         self.assertGreater(checked, 8)  # the check really looked at options
 

@@ -11,11 +11,11 @@ import subprocess
 import sys
 import unittest
 
-from . import support
-from .support import TempDirCase, make_row, write_jsonl, write_register
-
 import regio  # noqa: E402
 import validate_register as vr  # noqa: E402
+
+from . import support
+from .support import TempDirCase, make_row, write_jsonl, write_register
 
 try:
     import jsonschema  # noqa: F401
@@ -59,7 +59,9 @@ class CheckBase(TempDirCase):
 
     def check(self, files, inventory=None):
         root = self.path("register")
-        shutil.rmtree(root, ignore_errors=True)  # every call starts from an empty Register
+        shutil.rmtree(
+            root, ignore_errors=True
+        )  # every call starts from an empty Register
         write_register(root, files)
         records, problems = regio.read_register(root)
         issues = [dict(p) for p in problems]
@@ -80,7 +82,9 @@ class SchemaRules(CheckBase):
         self.assertIn("statement", issues[0]["message"])
 
     def test_bad_id_pattern(self):
-        issues = self.check({"blender/mesh.jsonl": [make_row(1, id="D8-blender-mesh-1")]})
+        issues = self.check(
+            {"blender/mesh.jsonl": [make_row(1, id="D8-blender-mesh-1")]}
+        )
         self.assertEqual(codes(issues, "error"), ["schema"])
 
     def test_unknown_program_and_factory_and_tier(self):
@@ -127,12 +131,16 @@ class SchemaRules(CheckBase):
         )
         records, problems = regio.read_register(root)
         self.assertEqual(len(records), 1)
-        self.assertEqual(sorted(p["code"] for p in problems), ["bad-json", "not-object"])
+        self.assertEqual(
+            sorted(p["code"] for p in problems), ["bad-json", "not-object"]
+        )
 
 
 class UniqueIds(CheckBase):
     def test_duplicate_id_in_one_file(self):
-        issues = self.check({"blender/mesh.jsonl": [make_row(1), make_row(2, id=make_row(1)["id"])]})
+        issues = self.check(
+            {"blender/mesh.jsonl": [make_row(1), make_row(2, id=make_row(1)["id"])]}
+        )
         self.assertEqual(codes(issues, "error"), ["duplicate-id"])
         self.assertIn("mesh.jsonl:1", issues[0]["message"])
 
@@ -140,7 +148,9 @@ class UniqueIds(CheckBase):
         issues = self.check(
             {
                 "blender/mesh.jsonl": [make_row(1)],
-                "blender/nodes.jsonl": [make_row(1, domain="nodes", id=make_row(1)["id"])],
+                "blender/nodes.jsonl": [
+                    make_row(1, domain="nodes", id=make_row(1)["id"])
+                ],
             }
         )
         self.assertIn("duplicate-id", codes(issues, "error"))
@@ -173,10 +183,15 @@ class EvidenceGate(CheckBase):
     def test_verified_without_evidence(self):
         row = make_row(1, status="verified", tier_now="Strong")
         issues = self.check({"blender/mesh.jsonl": [row]})
-        self.assertEqual(codes(issues, "error"), ["tier-without-evidence", "verified-without-evidence"])
+        self.assertEqual(
+            codes(issues, "error"),
+            ["tier-without-evidence", "verified-without-evidence"],
+        )
 
     def test_verified_below_target(self):
-        row = credited(make_row(1, target="Best", superiority_tests=["perf.1"]), tier="Strong")
+        row = credited(
+            make_row(1, target="Best", superiority_tests=["perf.1"]), tier="Strong"
+        )
         issues = self.check({"blender/mesh.jsonl": [row]})
         self.assertEqual(codes(issues, "error"), ["verified-below-target"])
 
@@ -194,12 +209,16 @@ class EvidenceGate(CheckBase):
         row = credited(make_row(1, target="Best"), tier="Best")
         issues = self.check({"blender/mesh.jsonl": [row]})
         self.assertEqual(codes(issues, "error"), ["best-without-superiority-test"])
-        row = credited(make_row(1, target="Best", superiority_tests=["perf.1"]), tier="Best")
+        row = credited(
+            make_row(1, target="Best", superiority_tests=["perf.1"]), tier="Best"
+        )
         self.assertEqual(self.check({"blender/mesh.jsonl": [row]}), [])
 
     def test_changed_acceptance_voids_the_seal(self):
         row = credited(make_row(1))
-        row["acceptance"][0]["tolerance"]["volume_rel"] = 1e-2  # loosened after the credit
+        row["acceptance"][0]["tolerance"][
+            "volume_rel"
+        ] = 1e-2  # loosened after the credit
         issues = self.check({"blender/mesh.jsonl": [row]})
         self.assertEqual(codes(issues), ["spec-changed"])
         self.assertEqual(issues[0]["severity"], "warning")
@@ -232,26 +251,36 @@ class Aliases(CheckBase):
         self.assertEqual(self.check({"blender/mesh.jsonl": [a, b, c]}), [])
 
     def test_alias_null_is_a_normal_row(self):
-        self.assertEqual(self.check({"blender/mesh.jsonl": [make_row(1, alias_of=None)]}), [])
+        self.assertEqual(
+            self.check({"blender/mesh.jsonl": [make_row(1, alias_of=None)]}), []
+        )
 
 
 class Inventory(CheckBase):
     def test_unknown_test_for_active_rows_only(self):
         active = make_row(1, status="in_progress")
         idle = make_row(2)  # open rows may have tests that do not exist yet
-        issues = self.check({"blender/mesh.jsonl": [active, idle]}, inventory={"other.test"})
+        issues = self.check(
+            {"blender/mesh.jsonl": [active, idle]}, inventory={"other.test"}
+        )
         self.assertEqual(codes(issues, "error"), ["unknown-test"])
         self.assertEqual(issues[0]["id"], active["id"])
 
     def test_known_test_passes(self):
         active = make_row(1, status="in_progress")
         wanted = {active["acceptance"][0]["test_id"]}
-        self.assertEqual(self.check({"blender/mesh.jsonl": [active]}, inventory=wanted), [])
+        self.assertEqual(
+            self.check({"blender/mesh.jsonl": [active]}, inventory=wanted), []
+        )
 
     def test_load_inventory_formats(self):
         path = self.path("inv.txt")
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write("# comment\nplain.test\n" + json.dumps({"suite": "k", "test": "json.test"}) + "\n")
+            handle.write(
+                "# comment\nplain.test\n"
+                + json.dumps({"suite": "k", "test": "json.test"})
+                + "\n"
+            )
         self.assertEqual(vr.load_inventory(path), {"plain.test", "json.test"})
 
 
@@ -272,12 +301,18 @@ class Warnings(CheckBase):
         self.assertEqual(codes(issues), ["path-layout"])
 
     def test_duplicate_statement(self):
-        rows = [make_row(1), make_row(2, statement=make_row(1)["statement"].upper() + ".")]
+        rows = [
+            make_row(1),
+            make_row(2, statement=make_row(1)["statement"].upper() + "."),
+        ]
         issues = self.check({"blender/mesh.jsonl": rows})
         self.assertEqual(codes(issues), ["duplicate-statement"])
 
     def test_alias_rows_may_repeat_a_statement(self):
-        rows = [make_row(1), make_row(2, statement=make_row(1)["statement"], alias_of=make_row(1)["id"])]
+        rows = [
+            make_row(1),
+            make_row(2, statement=make_row(1)["statement"], alias_of=make_row(1)["id"]),
+        ]
         self.assertEqual(self.check({"blender/mesh.jsonl": rows}), [])
 
 
@@ -286,14 +321,19 @@ class BuiltinValidator(unittest.TestCase):
         with self.assertRaises(vr.UnsupportedSchema):
             vr.make_validator({"type": "object", "oneOf": []}, "builtin")
         with self.assertRaises(vr.UnsupportedSchema):
-            vr.make_validator({"type": "object", "properties": {"a": {"minimum": 1}}}, "builtin")
+            vr.make_validator(
+                {"type": "object", "properties": {"a": {"minimum": 1}}}, "builtin"
+            )
 
     def test_row_schema_uses_only_supported_keywords(self):
         with open(support.SCHEMA_PATH, "r", encoding="utf-8") as handle:
             vr.make_validator(json.load(handle), "builtin")
 
     def test_bool_is_not_a_number(self):
-        schema = {"type": "object", "properties": {"n": {"enum": [0, 1]}, "i": {"type": "integer"}}}
+        schema = {
+            "type": "object",
+            "properties": {"n": {"enum": [0, 1]}, "i": {"type": "integer"}},
+        }
         check, _ = vr.make_validator(schema, "builtin")
         self.assertEqual(check({"n": 1, "i": 3}), [])
         self.assertTrue(check({"n": True}))
@@ -308,7 +348,11 @@ class BuiltinValidator(unittest.TestCase):
         self.assertEqual(engine, "jsonschema")
 
         good = make_row(1)
-        cases = [good, credited(good), credited(make_row(2, target="Best", superiority_tests=["p"]), tier="Best")]
+        cases = [
+            good,
+            credited(good),
+            credited(make_row(2, target="Best", superiority_tests=["p"]), tier="Best"),
+        ]
         bad = []
 
         def broken(**over):
@@ -335,7 +379,9 @@ class BuiltinValidator(unittest.TestCase):
         bad.append(broken(status="done"))
         bad.append(broken(evidence="x"))
         bad.append(broken(evidence={"run_id": "1", "commit": "NOTHEX!"}))
-        bad.append(broken(evidence={"run_id": "1", "commit": "abc1234", "spec_sha": "short"}))
+        bad.append(
+            broken(evidence={"run_id": "1", "commit": "abc1234", "spec_sha": "short"})
+        )
         bad.append(broken(wave=5))
         bad.append(broken(wave=True))
         bad.append(broken(superiority_tests=[""]))
@@ -357,7 +403,8 @@ class BuiltinValidator(unittest.TestCase):
 class CommandLine(TempDirCase):
     def run_tool(self, *args):
         return subprocess.run(
-            [sys.executable, os.path.join(support.TOOLS_DIR, "validate_register.py")] + list(args),
+            [sys.executable, os.path.join(support.TOOLS_DIR, "validate_register.py")]
+            + list(args),
             capture_output=True,
             text=True,
         )
@@ -371,7 +418,9 @@ class CommandLine(TempDirCase):
 
     def test_exit_one_on_an_error_and_names_the_file_line(self):
         root = self.path("register")
-        write_register(root, {"blender/mesh.jsonl": [make_row(1), make_row(2, tier_now="Strong")]})
+        write_register(
+            root, {"blender/mesh.jsonl": [make_row(1), make_row(2, tier_now="Strong")]}
+        )
         result = self.run_tool("--register", root)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("mesh.jsonl:2", result.stdout)

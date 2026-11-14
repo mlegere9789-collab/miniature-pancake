@@ -111,7 +111,8 @@ class Evidence:
 
     def run_info(self, run):
         return self.runs.setdefault(
-            run, {"kind": None, "sha": None, "finished_at": None, "files": 0, "checks": 0}
+            run,
+            {"kind": None, "sha": None, "finished_at": None, "files": 0, "checks": 0},
         )
 
     def bad(self, path, line, message):
@@ -124,7 +125,9 @@ def _read_text(path):
 
 
 def _string_list(value):
-    return isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)
+    return isinstance(value, list) and all(
+        isinstance(v, str) and v.strip() for v in value
+    )
 
 
 def _read_json_file(ev, run, path):
@@ -158,7 +161,9 @@ def _read_json_file(ev, run, path):
     # task evidence
     declared = data.get("run_id")
     if declared is not None and str(declared) != run:
-        ev.bad(path, None, "run_id %s does not match the directory %s" % (declared, run))
+        ev.bad(
+            path, None, "run_id %s does not match the directory %s" % (declared, run)
+        )
         return
     task = data.get("task")
     stem = os.path.splitext(os.path.basename(path))[0]
@@ -189,7 +194,16 @@ def _read_json_file(ev, run, path):
         info["sha"] = sha
     for key, result in (("passed", "ok"), ("failed", "fail"), ("skipped", "skip")):
         for test in lists.get(key, []):
-            ev.obs[test].append(Obs(run, test, result, sha or info["sha"], finished or info["finished_at"], path))
+            ev.obs[test].append(
+                Obs(
+                    run,
+                    test,
+                    result,
+                    sha or info["sha"],
+                    finished or info["finished_at"],
+                    path,
+                )
+            )
             ev.checks += 1
             info["checks"] += 1
 
@@ -210,7 +224,16 @@ def _read_checks_file(ev, run, path):
             continue
         sha = obj.get("commit") if isinstance(obj.get("commit"), str) else None
         when = norm_time(obj.get("time"))
-        ev.obs[test].append(Obs(run, test, norm_result(result), sha or info["sha"], when or info["finished_at"], "%s:%d" % (path, line)))
+        ev.obs[test].append(
+            Obs(
+                run,
+                test,
+                norm_result(result),
+                sha or info["sha"],
+                when or info["finished_at"],
+                "%s:%d" % (path, line),
+            )
+        )
         ev.checks += 1
         info["checks"] += 1
 
@@ -290,7 +313,11 @@ def judge_tests(ev):
             state = "failing"
         else:
             state = "skipped"
-        if latest_full is not None and test not in in_full and rank[latest] < rank[latest_full]:
+        if (
+            latest_full is not None
+            and test not in in_full
+            and rank[latest] < rank[latest_full]
+        ):
             state = "vanished"
         since = None
         if state == "ok":
@@ -332,7 +359,9 @@ def evaluate_row(row, states):
     if passing:
         tier = "Strong"
         superiority = regio.superiority_ids(row)
-        if superiority and all(states.get(t, {}).get("state") == "ok" for t in superiority):
+        if superiority and all(
+            states.get(t, {}).get("state") == "ok" for t in superiority
+        ):
             tier = "Best"
             used += [t for t in superiority if t not in used]
     target_met = passing and (row.get("target") != "Best" or tier == "Best")
@@ -342,7 +371,11 @@ def evaluate_row(row, states):
         ranked = [states[t] for t in used]
         run = max((s["run"] for s in ranked), key=run_order)
         times = [s["since"] for s in ranked]
-        at = None if any(t is None for t in times) else max(times, key=ledgerlib.try_parse_time)
+        at = (
+            None
+            if any(t is None for t in times)
+            else max(times, key=ledgerlib.try_parse_time)
+        )
     return {
         "passing": passing,
         "tier": tier,
@@ -357,7 +390,15 @@ def evaluate_row(row, states):
 def primary_reason(reasons):
     """One word for why a row does not pass, most serious first."""
     kinds = [r.split(":", 1)[0] for r in reasons]
-    for kind in ("spec-changed", "conflicting", "vanished", "failing", "skipped", "missing", "no-tests"):
+    for kind in (
+        "spec-changed",
+        "conflicting",
+        "vanished",
+        "failing",
+        "skipped",
+        "missing",
+        "no-tests",
+    ):
         if kind in kinds:
             return kind
     return "unknown"
@@ -370,7 +411,9 @@ def _bucket():
 def _finish(bucket):
     total = bucket["total"]
     bucket["percent"] = round(100.0 * bucket["passing"] / total, 3) if total else 0.0
-    bucket["target_met_percent"] = round(100.0 * bucket["target_met"] / total, 3) if total else 0.0
+    bucket["target_met_percent"] = (
+        round(100.0 * bucket["target_met"] / total, 3) if total else 0.0
+    )
     return bucket
 
 
@@ -407,11 +450,24 @@ def load_legacy(path):
         data = json.load(handle)
     result = dict(placeholder)
     result.update({k: data[k] for k in placeholder if k in data})
-    result["status"] = "frozen" if data.get("kernel_pct") is not None or data.get("app_pct") is not None else "placeholder"
+    result["status"] = (
+        "frozen"
+        if data.get("kernel_pct") is not None or data.get("app_pct") is not None
+        else "placeholder"
+    )
     return result
 
 
-def compute(records, evidence, now, previous=None, legacy=None, pace=None, run_id=None, commit=None):
+def compute(
+    records,
+    evidence,
+    now,
+    previous=None,
+    legacy=None,
+    pace=None,
+    run_id=None,
+    commit=None,
+):
     """Return (percent dict, credits list). Pure: no file access."""
     previous = previous or {}
     states = judge_tests(evidence)
@@ -452,7 +508,16 @@ def compute(records, evidence, now, previous=None, legacy=None, pace=None, run_i
             _add(by_program[str(program)], verdict)
         _add(by_factory[str(row.get("factory") or "unknown")], verdict)
         wave = row.get("wave")
-        _add(by_wave[str(wave) if isinstance(wave, int) and not isinstance(wave, bool) else "unassigned"], verdict)
+        _add(
+            by_wave[
+                (
+                    str(wave)
+                    if isinstance(wave, int) and not isinstance(wave, bool)
+                    else "unassigned"
+                )
+            ],
+            verdict,
+        )
         claimed = regio.tier_of(row)
         if not isinstance(claimed, str) or claimed not in regio.TIER_RANK:
             claimed = "invalid"
@@ -461,7 +526,10 @@ def compute(records, evidence, now, previous=None, legacy=None, pace=None, run_i
         if not verdict["passing"]:
             breakdown[primary_reason(verdict["reasons"])] += 1
         if claimed in regio.CREDITED_TIERS:
-            if regio.TIER_RANK[claimed] > regio.TIER_RANK[verdict["tier"] if verdict["passing"] else "None"]:
+            if (
+                regio.TIER_RANK[claimed]
+                > regio.TIER_RANK[verdict["tier"] if verdict["passing"] else "None"]
+            ):
                 unproven.append(
                     {
                         "id": row["id"],
@@ -474,7 +542,11 @@ def compute(records, evidence, now, previous=None, legacy=None, pace=None, run_i
             pending += 1
         if verdict["passing"]:
             before = previous.get(row["id"])
-            at = verdict["at"] or (before.get("at") if before else None) or ledgerlib.format_time(now)
+            at = (
+                verdict["at"]
+                or (before.get("at") if before else None)
+                or ledgerlib.format_time(now)
+            )
             credits.append(
                 {
                     "id": row["id"],
@@ -492,7 +564,9 @@ def compute(records, evidence, now, previous=None, legacy=None, pace=None, run_i
         if row_id in credited_now:
             continue
         if row_id not in first:
-            reverted.append({"id": row_id, "reasons": ["row-removed (needs a written rationale)"]})
+            reverted.append(
+                {"id": row_id, "reasons": ["row-removed (needs a written rationale)"]}
+            )
         elif row_id in verdicts:
             reverted.append({"id": row_id, "reasons": verdicts[row_id]["reasons"]})
         else:
@@ -509,20 +583,24 @@ def compute(records, evidence, now, previous=None, legacy=None, pace=None, run_i
     legacy["register_percent"] = overall["percent"]
     kernel = legacy.get("kernel_pct")
     app = legacy.get("app_pct")
-    legacy["dual"] = "Register %d/%d rows passing (%.2f%%); legacy parity map Kernel %s App %s (frozen at %s, not Register credit)" % (
-        passing,
-        total,
-        overall["percent"],
-        "%.1f%%" % kernel if isinstance(kernel, (int, float)) else "n/a",
-        "%.1f%%" % app if isinstance(app, (int, float)) else "n/a",
-        legacy.get("as_of_commit") or "n/a",
+    legacy["dual"] = (
+        "Register %d/%d rows passing (%.2f%%); legacy parity map Kernel %s App %s (frozen at %s, not Register credit)"
+        % (
+            passing,
+            total,
+            overall["percent"],
+            "%.1f%%" % kernel if isinstance(kernel, (int, float)) else "n/a",
+            "%.1f%%" % app if isinstance(app, (int, float)) else "n/a",
+            legacy.get("as_of_commit") or "n/a",
+        )
     )
 
     out = {
         "schema": SCHEMA_VERSION,
         "generated_at": ledgerlib.format_time(now),
         "produced_by": {"run_id": run_id, "commit": commit},
-        "headline": "%d of %d Register rows passing (%.2f%%)" % (passing, total, overall["percent"]),
+        "headline": "%d of %d Register rows passing (%.2f%%)"
+        % (passing, total, overall["percent"]),
         "total": total,
         "passing": passing,
         "percent": overall["percent"],
@@ -577,20 +655,50 @@ def _stable(data):
 
 
 def run(argv=None, out=None):
-    parser = argparse.ArgumentParser(description="Compute ledger/percent.json from the Register and the evidence.")
-    parser.add_argument("--register", help="register directory (default parity/register)")
-    parser.add_argument("--evidence", help="evidence directory (default ledger/evidence)")
-    parser.add_argument("--checks", nargs="*", default=[], help="extra JSONL check files, one run called 'adhoc'")
-    parser.add_argument("--legacy", help="frozen legacy numbers (default ledger/legacy.json)")
-    parser.add_argument("--pace", help="pace line (default ledger/pace.json, else the plan 6.4 defaults)")
-    parser.add_argument("--previous", help="previous credits file (default: the --credits-out file)")
-    parser.add_argument("--out", help="output file (default ledger/percent.json, '-' for stdout)")
-    parser.add_argument("--credits-out", help="credits JSONL (default ledger/credits.jsonl)")
+    parser = argparse.ArgumentParser(
+        description="Compute ledger/percent.json from the Register and the evidence."
+    )
+    parser.add_argument(
+        "--register", help="register directory (default parity/register)"
+    )
+    parser.add_argument(
+        "--evidence", help="evidence directory (default ledger/evidence)"
+    )
+    parser.add_argument(
+        "--checks",
+        nargs="*",
+        default=[],
+        help="extra JSONL check files, one run called 'adhoc'",
+    )
+    parser.add_argument(
+        "--legacy", help="frozen legacy numbers (default ledger/legacy.json)"
+    )
+    parser.add_argument(
+        "--pace",
+        help="pace line (default ledger/pace.json, else the plan 6.4 defaults)",
+    )
+    parser.add_argument(
+        "--previous", help="previous credits file (default: the --credits-out file)"
+    )
+    parser.add_argument(
+        "--out", help="output file (default ledger/percent.json, '-' for stdout)"
+    )
+    parser.add_argument(
+        "--credits-out", help="credits JSONL (default ledger/credits.jsonl)"
+    )
     parser.add_argument("--now", help="time to use instead of the clock (ISO 8601 UTC)")
     parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID"))
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA"))
-    parser.add_argument("--check", action="store_true", help="do not write; fail when percent.json differs")
-    parser.add_argument("--strict", action="store_true", help="fail on malformed evidence or unproven claims")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="do not write; fail when percent.json differs",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail on malformed evidence or unproven claims",
+    )
     args = parser.parse_args(argv)
     out = out or sys.stdout
 
@@ -615,22 +723,40 @@ def run(argv=None, out=None):
     out_path = args.out or DEFAULT_OUT
     credits_path = args.credits_out or DEFAULT_CREDITS
     try:
-        pace = ledgerlib.load_pace(args.pace or (DEFAULT_PACE if os.path.isfile(DEFAULT_PACE) else None))
+        pace = ledgerlib.load_pace(
+            args.pace or (DEFAULT_PACE if os.path.isfile(DEFAULT_PACE) else None)
+        )
         legacy = load_legacy(args.legacy or DEFAULT_LEGACY)
     except (OSError, ValueError, KeyError) as exc:
         print("percent: %s" % exc, file=sys.stderr)
         return 2
 
-    records, problems = regio.read_register(register) if os.path.isdir(register) else ([], [])
+    records, problems = (
+        regio.read_register(register) if os.path.isdir(register) else ([], [])
+    )
     for problem in problems:
         if problem["severity"] == "error":
-            print("percent: %s:%s: %s" % (problem["file"], problem["line"], problem["message"]), file=sys.stderr)
+            print(
+                "percent: %s:%s: %s"
+                % (problem["file"], problem["line"], problem["message"]),
+                file=sys.stderr,
+            )
     previous = read_credits(args.previous or credits_path)
     evidence = load_evidence(evidence_dir, args.checks)
     for item in evidence.malformed:
-        print("percent: malformed evidence %s%s: %s" % (item["file"], (":%s" % item["line"]) if item["line"] else "", item["message"]), file=sys.stderr)
+        print(
+            "percent: malformed evidence %s%s: %s"
+            % (
+                item["file"],
+                (":%s" % item["line"]) if item["line"] else "",
+                item["message"],
+            ),
+            file=sys.stderr,
+        )
 
-    result, credits = compute(records, evidence, now, previous, legacy, pace, args.run_id, args.commit)
+    result, credits = compute(
+        records, evidence, now, previous, legacy, pace, args.run_id, args.commit
+    )
 
     status = 0
     if args.check:
@@ -646,11 +772,19 @@ def run(argv=None, out=None):
             left.pop(volatile, None)
             right.pop(volatile, None)
         if left != right:
-            keys = sorted(k for k in set(left) | set(right) if left.get(k) != right.get(k))
-            print("percent: %s is not what the Register and the evidence compute (differs in: %s). "
-                  "It is written by CI only." % (out_path, ", ".join(keys)), file=sys.stderr)
+            keys = sorted(
+                k for k in set(left) | set(right) if left.get(k) != right.get(k)
+            )
+            print(
+                "percent: %s is not what the Register and the evidence compute (differs in: %s). "
+                "It is written by CI only." % (out_path, ", ".join(keys)),
+                file=sys.stderr,
+            )
             return 1
-        out.write("percent: %s matches the recomputation (%s)\n" % (out_path, result["headline"]))
+        out.write(
+            "percent: %s matches the recomputation (%s)\n"
+            % (out_path, result["headline"])
+        )
         return 0
 
     text = ledgerlib.dump_json(result)
@@ -665,7 +799,11 @@ def run(argv=None, out=None):
                 handle.write(json.dumps(credit, sort_keys=True) + "\n")
         out.write("percent: %s\n" % result["headline"])
     if args.strict and (evidence.malformed or result["unproven_claims"]["count"]):
-        print("percent: strict: %d malformed evidence entries, %d unproven claims" % (len(evidence.malformed), result["unproven_claims"]["count"]), file=sys.stderr)
+        print(
+            "percent: strict: %d malformed evidence entries, %d unproven claims"
+            % (len(evidence.malformed), result["unproven_claims"]["count"]),
+            file=sys.stderr,
+        )
         status = 1
     return status
 

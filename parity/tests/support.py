@@ -25,7 +25,8 @@ def make_row(n=1, program="blender", domain="mesh", **over):
     row = {
         "id": "D8-%s-%s-%04d" % (program.upper()[:8], domain.upper()[:8], n),
         "program": [program],
-        "statement": "Bevel the selected edges with width, segments and profile (case %d)" % n,
+        "statement": "Bevel the selected edges with width, segments and profile (case %d)"
+        % n,
         "source": {
             "kind": "operator",
             "ref": "bpy.ops.mesh.bevel",
@@ -76,7 +77,9 @@ class TempDirCase(unittest.TestCase):
         return os.path.join(self.tmp, *parts)
 
 
-def write_run(root, run, manifest=None, tasks=None, checks=None, checks_name="checks.jsonl"):
+def write_run(
+    root, run, manifest=None, tasks=None, checks=None, checks_name="checks.jsonl"
+):
     """Write one evidence run directory below root.
 
     manifest: dict for run.json (or None); tasks: {task id: dict with passed/failed/skipped};
@@ -90,7 +93,9 @@ def write_run(root, run, manifest=None, tasks=None, checks=None, checks_name="ch
     for task, body in (tasks or {}).items():
         body = dict(body)
         body.setdefault("task", task)
-        with open(os.path.join(directory, task + ".json"), "w", encoding="utf-8") as handle:
+        with open(
+            os.path.join(directory, task + ".json"), "w", encoding="utf-8"
+        ) as handle:
             json.dump(body, handle)
     if checks is not None:
         lines = []
@@ -99,6 +104,14 @@ def write_run(root, run, manifest=None, tasks=None, checks=None, checks_name="ch
                 lines.append(item)
             else:
                 test, result = item
-                lines.append({"suite": "s", "test": test, "name": test, "result": result, "ms": 1})
+                lines.append(
+                    {
+                        "suite": "s",
+                        "test": test,
+                        "name": test,
+                        "result": result,
+                        "ms": 1,
+                    }
+                )
         write_jsonl(os.path.join(directory, checks_name), lines)
     return directory

@@ -154,7 +154,9 @@ def read_heartbeats(root, lookback_days=2, now=None):
         except ValueError:
             continue
         if lookback_days is not None and not (
-            today - datetime.timedelta(days=lookback_days) <= when <= today + datetime.timedelta(days=1)
+            today - datetime.timedelta(days=lookback_days)
+            <= when
+            <= today + datetime.timedelta(days=1)
         ):
             continue
         for name in sorted(os.listdir(folder)):
@@ -163,7 +165,13 @@ def read_heartbeats(root, lookback_days=2, now=None):
             agent = name[: -len(".jsonl")]
             path = os.path.join(folder, name)
             if not _AGENT_RE.match(agent):
-                problems.append({"file": path, "line": None, "message": "file name is not an agent name"})
+                problems.append(
+                    {
+                        "file": path,
+                        "line": None,
+                        "message": "file name is not an agent name",
+                    }
+                )
                 continue
             items, bad = read_jsonl(path)
             for line, message in bad:
@@ -171,10 +179,23 @@ def read_heartbeats(root, lookback_days=2, now=None):
             for line, obj in items:
                 moment = try_parse_time(obj.get("time"))
                 if moment is None:
-                    problems.append({"file": path, "line": line, "message": "missing or unusable 'time'"})
+                    problems.append(
+                        {
+                            "file": path,
+                            "line": line,
+                            "message": "missing or unusable 'time'",
+                        }
+                    )
                     continue
                 if obj.get("agent") not in (None, agent):
-                    problems.append({"file": path, "line": line, "message": "agent %r does not match the file %s" % (obj.get("agent"), name)})
+                    problems.append(
+                        {
+                            "file": path,
+                            "line": line,
+                            "message": "agent %r does not match the file %s"
+                            % (obj.get("agent"), name),
+                        }
+                    )
                     continue
                 metric = obj.get("metric")
                 if isinstance(metric, bool) or not isinstance(metric, (int, float)):
@@ -249,12 +270,17 @@ def validate_pace(pace):
         start = parse_time(period["from"])
         end = parse_time(period["to"]) + datetime.timedelta(days=1)
         if end <= start:
-            raise ValueError("pace period %s..%s ends before it starts" % (period["from"], period["to"]))
+            raise ValueError(
+                "pace period %s..%s ends before it starts"
+                % (period["from"], period["to"])
+            )
         if previous_end is not None and start < previous_end:
             raise ValueError("pace periods must be in order and must not overlap")
         cum = float(period["cumulative_pct"])
         if not previous_cum <= cum <= 100:
-            raise ValueError("cumulative_pct must rise from period to period and stay <= 100")
+            raise ValueError(
+                "cumulative_pct must rise from period to period and stay <= 100"
+            )
         previous_end, previous_cum = end, cum
 
 
@@ -332,13 +358,19 @@ def trajectory(pace, total_rows, passing, when):
     periods = _periods(pace)
     block = {
         "as_of": format_time(when),
-        "required_cumulative_rows": round(required_cumulative(pace, total_rows, when), 1),
+        "required_cumulative_rows": round(
+            required_cumulative(pace, total_rows, when), 1
+        ),
         "required_rows_per_day": round(required_per_day(pace, total_rows, when), 1),
         "passing": passing,
     }
     period = period_at(pace, when)
     if period is not None:
-        block["period"] = {"from": period["from"], "to": period["to"], "cumulative_pct": period["cumulative_pct"]}
+        block["period"] = {
+            "from": period["from"],
+            "to": period["to"],
+            "cumulative_pct": period["cumulative_pct"],
+        }
     if start is not None and when < start:
         block["status"] = "wave0"
     elif periods and when >= periods[-1]["end"]:

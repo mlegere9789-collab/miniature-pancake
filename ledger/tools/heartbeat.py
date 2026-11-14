@@ -34,7 +34,12 @@ AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 def head_commit():
     try:
-        done = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=20)
+        done = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return done.stdout.strip() or None if done.returncode == 0 else None
@@ -62,18 +67,33 @@ def run(argv=None, out=None):
     out = out or sys.stdout
     parser = argparse.ArgumentParser(description="Append a heartbeat to the ledger.")
     parser.add_argument("--agent", required=True)
-    parser.add_argument("--what", required=True, help="what changed since the last heartbeat")
+    parser.add_argument(
+        "--what", required=True, help="what changed since the last heartbeat"
+    )
     parser.add_argument("--task")
-    parser.add_argument("--commit", help="commit hash (default: HEAD of the current directory)")
-    parser.add_argument("--evidence", help="a measurement or test result that shows the change")
-    parser.add_argument("--metric", type=float, help="any number that moves when work moves")
-    parser.add_argument("--state", help="working, waiting, idle, done, released or handoff")
-    parser.add_argument("--waiting-on", help="CI run id (or other external wait) you are waiting for")
+    parser.add_argument(
+        "--commit", help="commit hash (default: HEAD of the current directory)"
+    )
+    parser.add_argument(
+        "--evidence", help="a measurement or test result that shows the change"
+    )
+    parser.add_argument(
+        "--metric", type=float, help="any number that moves when work moves"
+    )
+    parser.add_argument(
+        "--state", help="working, waiting, idle, done, released or handoff"
+    )
+    parser.add_argument(
+        "--waiting-on", help="CI run id (or other external wait) you are waiting for"
+    )
     parser.add_argument("--ledger", default=os.path.join(REPO_ROOT, "ledger"))
     parser.add_argument("--now", help="time to use instead of the clock")
     args = parser.parse_args(argv)
     if not AGENT_RE.match(args.agent):
-        print("heartbeat: agent names use letters, digits, '.', '_' and '-' only", file=sys.stderr)
+        print(
+            "heartbeat: agent names use letters, digits, '.', '_' and '-' only",
+            file=sys.stderr,
+        )
         return 2
     if not args.what.strip():
         print("heartbeat: --what must say what changed", file=sys.stderr)
