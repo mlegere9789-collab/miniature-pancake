@@ -5,6 +5,7 @@
 
 pub mod engine;
 pub mod hash;
+pub mod workload;
 
 pub use engine::{
     CancelToken, Config, Ctx, Db, EditReport, EvalError, EvalOptions, EvalReport, Explanation, Interrupt, Kind, NodeId, NodeLabel,
