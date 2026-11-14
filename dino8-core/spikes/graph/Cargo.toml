@@ -32,6 +32,8 @@ panic = "unwind"
 
 [profile.dev]
 opt-level = 1
+debug = false
 
 [profile.test]
 opt-level = 2
+debug = false
