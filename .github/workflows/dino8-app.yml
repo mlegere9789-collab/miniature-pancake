@@ -187,13 +187,16 @@ jobs:
       # launching the next --script child process) on the same commit: with no
       # step timeout, GitHub's default 6-hour job timeout is what finally ends
       # it, eating six hours of this shared branch's Windows CI capacity for a
-      # run that was never coming back. A normal full run of this step takes a
-      # few minutes; 20 is generous headroom, not a tight bound - a real hang
-      # still fails fast instead of blocking every other agent's Windows CI on
-      # this branch for hours. See RHINO8_KILLER_AUDIT.md row L.
+      # run that was never coming back. A full run of this step took 30 to 40
+      # minutes on the 11 runs of the pull-request head 53a680b4 and the commits
+      # before it, and the suite has since grown by about half (the same step on
+      # Linux went from 23 to 34 minutes), so the limit is 90 minutes, the Linux
+      # job's own: headroom for the slower runner, not a tight bound - a real
+      # hang still fails fast instead of blocking every other agent's Windows CI
+      # on this branch for hours. See RHINO8_KILLER_AUDIT.md row L.
       - name: Smoke test (headless)
         shell: bash
-        timeout-minutes: 60
+        timeout-minutes: 90
         run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
       # Authenticode signing, inert until a signing secret exists: when none is
       # configured WINDOWS_SIGN_METHOD is 'none' and the step is skipped, so
