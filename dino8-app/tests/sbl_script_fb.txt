@@ -1,0 +1,17 @@
+# Fallback control for the "SBL_" section of smoke.sh: the same through-hole Boolean with the sealed path switched
+# off (DINO8_NO_SEALED_BOOLEAN=1) takes the previous sewing path, with its keyhole-slit structure.
+SetActiveViewport Top
+New
+SBLBEGIN_fb_cut_through
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Check
+List
+Volume
+SBLEND

@@ -1,0 +1,14 @@
+# DataLink / DataLinkUpdate to .xlsx: stage 3 (see smoke.sh) - the table
+# (not the .xlsx file) is the only side that changed since stage 2's sync
+# (a TableEdit here, nothing external touching the file), so
+# DataLinkUpdate with no Direction= should auto-push the table's new cells
+# back out to the real .xlsx file this time - the reverse direction from
+# stage 2, and WriteXlsxCells's own write path exercised end to end through
+# the real running app. smoke.sh verifies the result independently, again
+# via Python's own zipfile/xml, not this app's own reader.
+Open @TMP@/xlsx_datalink.3dm
+SelAll
+TableEdit Data=U,V;W,X
+SelAll
+DataLinkUpdate
+Save @TMP@/xlsx_datalink.3dm

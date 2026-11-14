@@ -1,0 +1,124 @@
+# ToNURBS of the new SubD of every ToSubD cage kind (tests/smoke.sh section TS6_). The cages of the
+# TS2_ - TS5_ sections were measured against the exact Brep (ToSubD), but the SubD -> NURBS direction
+# was only checked for the cone: here every kind goes Brep -> ToSubD -> ToNURBS and the result is
+# checked (Check: ON_Brep::IsValid), listed (closed solid or open) and its Volume compared with the
+# source Brep's own Volume.
+# Printed per solid, in this order: Volume of the source Brep, the ToSubD status line, the SubD's
+# List line, the ToNURBS status line, the polysurface's List line, Check, Volume of the polysurface.
+# --- 1 cylinder
+Cylinder 0,0,0 4 10
+SelLast
+Volume
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Check
+Volume
+SelAll
+Hide
+# --- 2 cone
+Cone 30,0,0 4 10
+SelLast
+Volume
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Check
+Volume
+SelAll
+Hide
+# --- 3 torus
+Torus 60,0,0 6 2
+SelLast
+Volume
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Check
+Volume
+SelAll
+Hide
+# --- 4 right prism (extruded L)
+Polyline 100,0,0 110,0,0 110,4,0 104,4,0 104,10,0 100,10,0 100,0,0
+Enter
+SelLast
+ExtrudeCrv
+6
+SelLast
+Volume
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Check
+Volume
+SelAll
+Hide
+# --- 5 vase (spline profile revolved, two flat caps)
+Curve 133,0,0 136,0,3 132,0,6 134,0,10
+Enter
+SelLast
+Revolve
+130,0,0
+130,0,1
+SelLast
+Volume
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Check
+Volume
+SelAll
+Hide
+# --- 6 bottle (profile starts on the axis: smooth pole, one flat cap)
+Curve 160,0,0 165,0,0 165,0,5 162,0,8 162,0,12
+Enter
+SelLast
+Revolve
+160,0,0
+160,0,1
+SelLast
+Volume
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Check
+Volume
+SelAll
+Hide
+# --- 7 egg (profile meets the axis at both ends: two smooth poles, no cap)
+Curve 200,0,-5 205,0,-5 205,0,5 200,0,5
+Enter
+SelLast
+Revolve
+200,0,0
+200,0,1
+SelLast
+Volume
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Check
+Volume
+SelAll
+Hide

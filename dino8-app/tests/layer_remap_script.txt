@@ -1,0 +1,63 @@
+# Layer removal must keep every OTHER holder of a layer index consistent, not
+# just the live objects. Document::RemoveLayer (called by Purge, the Layers
+# panel's delete button and rs.DeleteLayer) erases the layer from the
+# document's layer vector, so every layer after it shifts down by one; it
+# already re-pointed live objects, layer parents and the current layer, but
+# NOT: a layout detail's per-detail hidden layers (HideLayersInDetail), a
+# block definition's own member objects (what Insert copies each instance
+# from), or a cage binding's captive originals. And its "in use" check only
+# looked at live objects, so a layer referenced only by a block definition's
+# members could be purged out from under them. Before the fix, this script
+# ended with the detail's hidden-layer entry pointing at nothing (so Walls
+# quietly became visible in the detail again) and the inserted block member
+# landing on Roof instead of Walls.
+#
+# Layer indices, in creation order: Default 0, Spare 1, Walls 2, Roof 3.
+# Purge removes the empty Spare (1) - Walls becomes 1 and Roof becomes 2.
+SetActiveViewport Top
+NewLayer Spare
+NewLayer Walls
+Point 0,0,0
+SelLast
+Block
+0,0,0
+Bk
+NewLayer Roof
+Point 50,0,0
+SetLayer Default
+Layout Name=Sheet1 Width=297 Height=210
+Detail Name=Det1 20,20 150,120
+SelDetail Det1
+HideLayersInDetail Walls
+Purge
+# The detail's hidden entry must have followed Walls to its new index: un-
+# hiding Walls finds exactly one entry (0 before the fix - the stale index
+# 2 now named Roof, or nothing).
+SelDetail Det1
+ShowLayersInDetail Walls
+Layouts Model
+# A fresh instance of Bk must still land on Walls (index 1 now), not Roof.
+Insert
+Bk
+100,0,0
+Enter
+SelLast
+What
+# A layer used only by a block definition's members is "in use": move both
+# live instances' points (found by the Block tag every instance member
+# carries) off Walls, so no live object is on Walls any more but the
+# definition Bk (still referenced by those instances, so not itself
+# purgeable) keeps its member on it. Purge must now leave Walls alone
+# ("nothing to remove"), and the next Insert must still land on Walls
+# (index 1) - not on whatever Add() falls back to for a dangling index.
+SelNone
+SelKeyValue Block Bk
+@expect_selected 2
+ChangeLayer Default
+Purge
+Insert
+Bk
+200,0,0
+Enter
+SelLast
+What

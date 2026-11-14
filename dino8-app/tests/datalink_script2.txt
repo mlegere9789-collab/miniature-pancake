@@ -1,0 +1,12 @@
+# DataLink / DataLinkUpdate: stage 2 (see smoke.sh) - smoke.sh has rewritten
+# @TMP@/datalink.csv on disk (simulating an external spreadsheet edit) since
+# stage 1's push, so the file is now the only side that changed since the
+# link's last sync: DataLinkUpdate with no Direction= should auto-pull it.
+# Then TableEdit changes the table itself, setting up stage 3's push test.
+Open @TMP@/datalink.3dm
+SelAll
+DataLinkUpdate
+SelAll
+TableEdit Data=M,N;O,P
+SelAll
+Save @TMP@/datalink.3dm

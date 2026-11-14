@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "index_name": "Version-Constrained Dependency Test Index (min-version dependency resolution fixture)",
+  "plugins": [
+    {
+      "id": "meshtools",
+      "name": "MeshTools",
+      "version": "2.0.0",
+      "author": "Dino 8 Project",
+      "description": "Same sample plug-in as plugin-index/index.json's meshtools entry (auto-loaded from next to the executable, reporting 1.0.0), but this index advertises 2.0.0 as the latest available - so a dependency requiring 1.5.0 or newer is not satisfied by the auto-loaded copy and must trigger a fresh install, while one requiring 9.9.9 can never be satisfied even by installing, since this index's own version is only 2.0.0.",
+      "api_version": 2,
+      "bundled_path": "plugins/mesh_tools"
+    },
+    {
+      "id": "curvetools",
+      "name": "CurveTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on meshtools >= 1.5.0. The auto-loaded meshtools only reports 1.0.0, so installing this must (re)install meshtools fresh from this index - adding a second, independently-loaded MeshTools copy - rather than treating the stale auto-loaded one as already satisfied.",
+      "api_version": 2,
+      "bundled_path": "plugins/curve_tools",
+      "dependencies": ["meshtools@1.5.0"]
+    },
+    {
+      "id": "analysistools",
+      "name": "AnalysisTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on meshtools >= 9.9.9, which this index cannot satisfy even by installing (its own meshtools entry is only 2.0.0) - a genuine version conflict. Installing this must fail cleanly and install nothing.",
+      "api_version": 2,
+      "bundled_path": "plugins/analysis_tools",
+      "dependencies": ["meshtools@9.9.9"]
+    }
+  ]
+}

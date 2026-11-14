@@ -1,0 +1,26 @@
+# STEP AP242 (tessellated geometry) exchange at the app level
+# (io/FileIgesStep.cpp's ExportStepAp242/ImportStepAp242): wires the
+# kernel's own Mesh::SaveStepAp242/LoadStepAp242 into the app - the same
+# "kernel support already existed, nothing at the app level ever called it"
+# gap ExportXyz/ImportXyz closed for point clouds. Plain Export/SaveAs to
+# .stp/.step still writes AP214; ExportStepAp242 is the only way to pick
+# AP242's own COORDINATES_LIST/TRIANGULATED_FACE schema on write, but
+# ImportStep auto-detects either schema on read (see ap242check below).
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+SetActiveViewport Top
+Box 0,0,0 10,10,0 10
+SelAll
+List
+ExportStepAp242 @TMP@/box.stp
+New
+Import @TMP@/box.stp
+SelAll
+List
+@expect_objects 1
+# A selection with nothing tessellatable (a bare point, no mesh/surface/
+# brep/SubD) fails cleanly rather than writing an empty/bogus file.
+New
+Point 0,0,0
+SelAll
+ExportStepAp242 @TMP@/nothing.stp
+@expect_objects 1

@@ -1,0 +1,48 @@
+# Command-line autocomplete regression: fuzzy/subsequence matching.
+#
+# "bdiff" is neither a prefix nor a contiguous substring of any command
+# name in the catalog, but its letters b-d-i-f-f do appear in order inside
+# "BooleanDifference" (...ooleanDifference) and "MeshBooleanDifference") -
+# those are the only two matches. A prefix-only autocomplete would show
+# nothing for this query and the popup would stay empty; real fuzzy
+# matching finds both, ranks the shorter/tighter match (BooleanDifference)
+# first, and highlighting it (Down arrow, exactly like a user browsing the
+# popup) then Enter runs it.
+@wait 5
+@text bdiff
+@wait 2
+@key Down
+@wait 1
+@key Enter
+@wait 2
+@text cancel
+@wait 1
+@key Enter
+@wait 2
+
+# A literal prefix must still work and still rank top (no regression from
+# adding fuzzy matching): "Box" is an exact prefix/name match, and the
+# first popup row (reached the same way, via Down then Enter) must still
+# be Box itself.
+@text Box
+@wait 2
+@key Down
+@wait 1
+@key Enter
+@wait 2
+@text cancel
+@wait 1
+@key Enter
+@wait 2
+
+# A second, independent scattered subsequence: "zmanif" is not a prefix or
+# substring of any command, but matches "ZoomNonManifold" (Z-o-o-m-N-o-n-
+# M-a-n-i-f-...) uniquely among the catalog. ZoomNonManifold runs and
+# finishes immediately (no selection/points to gather), so no cancel step
+# is needed.
+@text zmanif
+@wait 2
+@key Down
+@wait 1
+@key Enter
+@wait 2

@@ -1,0 +1,33 @@
+#title: Dimensions and layouts
+#summary: Dimension a part, then lay it out on a print sheet with a detail view and a title block.
+#level: Intermediate
+# Source: extends tests/drafting2_script.txt (DimLinear) and tests/titleblock_scale_script.txt (Layout / Detail / TitleBlock).
+#narrate: A drawing is a model plus measurements on a sheet. We will dimension a small plate, then put it on an A4 layout with a title block.
+SetActiveViewport Top
+MaxViewport
+Box 0,0,0 40,20,0 5
+@expect_objects 1
+ZoomExtents
+#narrate: The part is a forty by twenty plate, five units thick, seen from above in the Top view.
+SelNone
+DimLinear
+0,0,0
+40,0,0
+0,-6,0
+#narrate: DimLinear takes the two points to measure and a third point that places the dimension line. The text reads forty, measured from the geometry itself.
+SelNone
+DimLinear
+0,0,0
+0,20,0
+-8,10,0
+#narrate: A second dimension, for the height. Dimensions are associative: they remember which points they measure, so UpdateDimensions refreshes them after an edit.
+ZoomExtents
+Layout Name=Sheet1 Width=297 Height=210
+#narrate: Now the sheet. Layout creates a named page, here 297 by 210 millimeters, which is A4 landscape.
+Detail Name=D1 Scale=2 20,20 200,150
+#narrate: Detail places a window onto the model. Scale two shows the part twice its size, and the window covers most of the page.
+TitleBlock Sheet=Sheet1
+10,180
+#narrate: TitleBlock adds a standard block with the document name, date and scale. The scale is read from the detail, so it stays correct if you change it.
+Layouts Sheet1
+#narrate: Layouts switches to the sheet, so you can check how it will print. Model brings you back to the model space.

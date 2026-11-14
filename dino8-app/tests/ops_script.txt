@@ -1,0 +1,109 @@
+# OPS: OffsetSrf of a closed solid bounded by planar faces that is NEITHER convex NOR a right prism (kernel::OffsetSolidPlanar
+# wired into the app's exact solid offset). Fixture: the cube [0,10]^3 minus the block [5,10] x [5,10] x [0,6] (the app's Box takes
+# its base on z = 0 whatever the third coordinate of the corners says, so Box 5,5,0 11,11,0 6 is [5,11]^2 x [0,6]; it overlaps the
+# cube in 5 x 5 x 6). The boolean engine leaves 24 planar faces, several vertices of which join more than three of them. Closed forms
+# for the mitre offset by d (every face plane moves by d along its outward normal, corners sharp; the notch keeps its 5 x 5 x 6 size):
+#   volume (10 + 2d)^3 - 150  ->  d = +1: 1578,  d = -1: 362;   source 1000 - 150 = 850
+#   bounding box [-d, 10 + d]^3 ->  d = +1: -1..11,  d = -1: 1..9
+#   shortest edge ratio: d = +1: 1 (the notch's own edges), d = -1: 0.5 (the ceiling edge z 6..10 at the notch becomes 7..9: 4 -> 2)
+#   Solid=Yes (the hollow wall between the source and the offset, as the prism and convex constructions give): volume V(offset) - V(source)
+#   = 1578 - 850 = 728 for d = +1 and 850 - 362 = 488 for d = -1, bounding box that of the outer shell.
+# Negative controls: d = -3 pushes the notch ceiling (z 6 -> 9) above the top (z 10 -> 7): the 4-long edge becomes -2 long (ratio
+# -0.5), the offset is refused naming it and the command uses the mesh offset; Exact=No never runs the kernel construction.
+# Every case starts from `New` and is bracketed by an unknown-command marker (OPSBEGIN_<name>).
+SetActiveViewport Top
+New
+OPSBEGIN_notch_out
+Box 0,0,0 10,10,0 10
+Box 5,5,0 11,11,0 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+BoundingBox
+OffsetSrf
+1
+SelLast
+Volume
+BoundingBox
+Check
+New
+OPSBEGIN_notch_in
+Box 0,0,0 10,10,0 10
+Box 5,5,0 11,11,0 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+-1
+SelLast
+Volume
+BoundingBox
+Check
+New
+OPSBEGIN_notch_gone
+Box 0,0,0 10,10,0 10
+Box 5,5,0 11,11,0 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+-3
+New
+OPSBEGIN_notch_exact_no
+Box 0,0,0 10,10,0 10
+Box 5,5,0 11,11,0 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+Exact=No
+1
+New
+OPSBEGIN_notch_hollow_out
+Box 0,0,0 10,10,0 10
+Box 5,5,0 11,11,0 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+Solid=Yes
+1
+SelLast
+Volume
+BoundingBox
+Check
+New
+OPSBEGIN_notch_hollow_in
+Box 0,0,0 10,10,0 10
+Box 5,5,0 11,11,0 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+Solid=Yes
+-1
+SelLast
+Volume
+BoundingBox
+Check
+OPSEND

@@ -1,0 +1,7 @@
+GrasshopperPluginList
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_dependency_index.json
+PluginMarketplaceList
+PluginMarketplaceInstall analysistools
+GrasshopperPluginList
+PluginMarketplaceInstall curvetools
+GrasshopperPluginList

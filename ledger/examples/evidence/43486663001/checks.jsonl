@@ -1,0 +1,17 @@
+{"kind": "run", "suite": "kernel", "pid": 4242, "sha": "1111111"}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "mesh.bevel.width_segments_profile", "name": "check 1", "result": "ok", "n": 1, "ms": 0.2}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "mesh.bevel.width_segments_profile", "name": "check 2", "result": "ok", "n": 2, "ms": 0.2}
+{"kind": "test", "suite": "kernel", "pid": 4242, "test": "mesh.bevel.width_segments_profile", "name": "mesh.bevel.width_segments_profile", "result": "ok", "checks": 2, "failed": 0, "idx": 0, "ms": 3.1}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "mesh.bevel.clamp_overlap", "name": "check 1", "result": "ok", "n": 1, "ms": 0.2}
+{"kind": "test", "suite": "kernel", "pid": 4242, "test": "mesh.bevel.clamp_overlap", "name": "mesh.bevel.clamp_overlap", "result": "ok", "checks": 1, "failed": 0, "idx": 1, "ms": 3.1}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "mesh.bevel.segments", "name": "check 1", "result": "ok", "n": 1, "ms": 0.2}
+{"kind": "test", "suite": "kernel", "pid": 4242, "test": "mesh.bevel.segments", "name": "mesh.bevel.segments", "result": "ok", "checks": 1, "failed": 0, "idx": 2, "ms": 3.1}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "mesh.inset.thickness", "name": "check 1", "result": "ok", "n": 1, "ms": 0.2}
+{"kind": "test", "suite": "kernel", "pid": 4242, "test": "mesh.inset.thickness", "name": "mesh.inset.thickness", "result": "ok", "checks": 1, "failed": 0, "idx": 3, "ms": 3.1}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "mesh.extrude.region", "name": "check 1", "result": "ok", "n": 1, "ms": 0.2}
+{"kind": "test", "suite": "kernel", "pid": 4242, "test": "mesh.extrude.region", "name": "mesh.extrude.region", "result": "ok", "checks": 1, "failed": 0, "idx": 4, "ms": 3.1}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "mesh.loopcut.count", "name": "check 1", "result": "ok", "n": 1, "ms": 0.2}
+{"kind": "test", "suite": "kernel", "pid": 4242, "test": "mesh.loopcut.count", "name": "mesh.loopcut.count", "result": "ok", "checks": 1, "failed": 0, "idx": 5, "ms": 3.1}
+{"kind": "check", "suite": "kernel", "pid": 4242, "test": "perf.loopcut.1M", "name": "check 1", "result": "ok", "n": 1, "ms": 0.2}
+{"kind": "test", "suite": "kernel", "pid": 4242, "test": "perf.loopcut.1M", "name": "perf.loopcut.1M", "result": "ok", "checks": 1, "failed": 0, "idx": 6, "ms": 3.1}
+{"kind": "summary", "suite": "kernel", "pid": 4242, "tests": 7, "checks": 8, "ok": 8, "failed": 0, "thrown": 0, "ms": 40.0}

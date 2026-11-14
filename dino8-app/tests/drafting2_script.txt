@@ -1,0 +1,354 @@
+# Second wave of 2D drafting tools: hatch pattern library, tables, GD&T,
+# multi-leaders, live section views (see smoke.sh).
+# --- Hatch from the ANSI31 pattern library
+Rectangle 0,0,0 20,10,0
+SelLast
+Hatch Pattern=ANSI31 Scale=1 Rotation=45
+SelNone
+# --- Table, then TableEdit rebuilds it in place
+Table Rows=2 Cols=2 Data=A,B;C,D
+40,0,0
+SelAll
+TableEdit Data=X,Y;Z,W
+SelNone
+# --- RevisionTable: create, then append a row
+RevisionTable
+80,0,0
+RevisionTable Add=1,2026-09-06,Fixed
+Enter
+# --- TitleBlock
+TitleBlock Name=Widget Date=2026-09-06 Scale=1:2 Sheet=A1
+120,0,0
+# --- TitleBlock associativity: without Name=, the Name field defaults to
+# (and stays associative to) the document's current Settings().title
+# ("Untitled" here, since it was never set) rather than a one-time
+# snapshot; without Date=, the Date field is likewise associative to
+# today's date - UpdateTitleBlock re-derives both later, independently.
+# The Name=Widget/Date=2026-09-06 block above is a frozen override (no
+# Name=/Date= omitted) and must be left untouched.
+TitleBlock Sheet=A2
+160,0,0
+UpdateTitleBlock
+# --- GD&T: FeatureControlFrame, DatumFeature, SurfaceFinish, WeldSymbol
+FeatureControlFrame Symbol=Position Tolerance=0.1 Datums=A,B
+0,20,0
+10,25,0
+DatumFeature Letter=A
+0,30,0
+SurfaceFinish Value=1.6
+20,30,0
+WeldSymbol Type=Fillet Side=Above
+30,30,0
+40,30,0
+WeldSymbol Type=Groove Side=Below
+50,30,0
+60,30,0
+WeldSymbol Type=Spot Side=Above
+70,30,0
+80,30,0
+# --- MultiLeader: two arrows, one landing, then text
+MultiLeader
+0,40,0
+10,40,0
+Enter
+20,40,0
+Note
+# --- DimTolerance appends a tolerance to an existing dimension
+Line 0,-60,0 20,-60,0
+SelLast
+DimLinear
+0,-60,0
+20,-60,0
+0,-65,0
+SelLast
+DimTolerance Type=Symmetric Value=0.02
+SelLast
+DimTolerance Type=Symmetric Value=0.03
+SelLast
+GetUserText
+SelNone
+# --- BillOfMaterials over every real (non-annotation) object so far
+Box 0,-40,0 10,-30,0 5
+SelAll
+BillOfMaterials By=Layer
+SelNone
+# --- SectionView through a fresh box, then UpdateSectionViews regenerates it
+Box 200,0,0 220,20,0 10
+SectionView
+210,-5,0
+210,25,0
+UpdateSectionViews
+# --- BillOfMaterials associativity: change a selected object's material,
+# then UpdateBillOfMaterials re-derives that row from the current state
+# instead of the frozen count/material baked at creation time.
+SelNone
+Sphere 300,0,0 5
+SelLast
+SetObjectName BomBall
+SelName BomBall
+BillOfMaterials By=Material
+UpdateBillOfMaterials
+SelName BomBall
+RenderAssignMaterialToObjects NewMaterial
+UpdateBillOfMaterials
+SelNone
+# --- Associative DimLinear: the dimension is anchored to the two endpoints
+# of a real Line object. Stretching that line (Scale1D about its start
+# point, so the start stays put and the end moves from x=20 to x=40) and
+# running UpdateDimensions redraws the dimension line/arrows/text from the
+# new 40-unit length instead of leaving the original 20-unit static
+# measurement baked at creation time. A DimTolerance suffix added right
+# after creation must survive that same UpdateDimensions rebuild instead of
+# being silently dropped - it used to vanish whenever UpdateDimensions
+# regenerated a dimension's text from a moved anchor, since the rebuilt
+# text was always the freshly recomputed measurement alone
+# (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h, fix
+# this) - so the redrawn text below must carry both the new 40 measurement
+# and the 0.02 tolerance, not just one or the other.
+SelNone
+Line 0,-90,0 20,-90,0
+SelLast
+SetObjectName MovingLine
+DimLinear
+0,-90,0
+20,-90,0
+0,-95,0
+SelLast
+DimTolerance Type=Symmetric Value=0.02
+SelName MovingLine
+Length
+Scale1D 0,-90,0 2
+UpdateDimensions
+SelName MovingLine
+Length
+SelLast
+GetUserText
+SelNone
+# --- Associative DimRadius: always associative to the selected arc/circle
+# (not coincident-point matching). Doubling the circle's radius via a
+# uniform Scale about its center, then UpdateDimensions, must pick up the
+# new radius instead of the 5 baked at creation time.
+Circle 0,0,0 5
+SelLast
+SetObjectName AssocCircle
+DimRadius
+10,0,0
+SelName AssocCircle
+Scale 0,0,0 2
+UpdateDimensions
+# --- Associative DimAngle: anchored to three real Point objects (vertex +
+# two direction points) via coincident-point matching, same rule as
+# DimLinear. Placed in an unused part of the plane (500,500 area) so
+# FindPointAnchor can't accidentally match an earlier object's coincident
+# corner/endpoint instead of these. Moving one direction point from
+# (500,510,0) to (510,510,0) changes the angle between (1,0,0) and the new
+# (1,1,0) direction from 90 to 45 degrees; UpdateDimensions must redraw it
+# as 45, not the original 90.
+Point 500,500,0
+SelLast
+SetObjectName AngleVertex
+Point 510,500,0
+SelLast
+SetObjectName AngleDir1
+Point 500,510,0
+SelLast
+SetObjectName AngleDir2
+SelNone
+DimAngle
+500,500,0
+510,500,0
+500,510,0
+SelName AngleDir2
+Move 500,510,0 510,510,0
+UpdateDimensions
+# --- Associative MultiLeader: arrow 1's point coincides with a real Point
+# object (FindPointAnchor, same coincidence rule Leader/DimLinear use);
+# arrow 2's point doesn't. Moving the anchored point and running
+# UpdateMultiLeaders must drag just that one arrow to the point's *current*
+# position - not the (700,0,0) baked at creation - while the free arrow and
+# the shared landing point stay exactly where they were built.
+SelNone
+Point 700,0,0
+SelLast
+SetObjectName MLeaderAnchor
+SelNone
+MultiLeader
+700,0,0
+710,10,0
+Enter
+720,5,0
+AssocNote
+SelName MLeaderAnchor
+Move 700,0,0 705,0,0
+UpdateMultiLeaders
+SelAll
+GetUserText
+SelNone
+# --- Associative GD&T: FeatureControlFrame's feature point, and DatumFeature/
+# SurfaceFinish/WeldSymbol's own anchor point, each coincide with a real
+# Point object (FindPointAnchor, same coincidence rule as Leader/MultiLeader
+# above). Moving each anchor and running UpdateGdtSymbols must drag that
+# symbol's leader/glyph to the anchor's *current* position, not the position
+# baked at creation time.
+SelNone
+Point 900,0,0
+SelLast
+SetObjectName FcfAnchor
+SelNone
+FeatureControlFrame Symbol=Flatness Tolerance=0.1
+900,0,0
+910,10,0
+SelNone
+Point 950,0,0
+SelLast
+SetObjectName DatumAnchor
+SelNone
+DatumFeature Letter=B
+950,0,0
+SelNone
+Point 980,0,0
+SelLast
+SetObjectName FinishAnchor
+SelNone
+SurfaceFinish Value=3.2
+980,0,0
+SelNone
+Point 1010,0,0
+SelLast
+SetObjectName WeldAnchor
+SelNone
+WeldSymbol Type=Fillet Side=Above
+1010,0,0
+1020,10,0
+SelName FcfAnchor
+Move 900,0,0 905,0,0
+SelName DatumAnchor
+Move 950,0,0 955,0,0
+SelName FinishAnchor
+Move 980,0,0 985,0,0
+SelName WeldAnchor
+Move 1010,0,0 1015,0,0
+UpdateGdtSymbols
+SelAll
+GetUserText
+SelNone
+Save @TMP@/drafting2.3dm
+New
+Open @TMP@/drafting2.3dm
+# Prove associative-dimension/multi-leader/GD&T references (DimRefObj1/2/3,
+# group_id - see cmd_annotate.cpp/cmd_drafting2.cpp/File3dm.cpp) actually
+# survive a .3dm round trip: rerunning UpdateDimensions/UpdateMultiLeaders/
+# UpdateGdtSymbols here must find the same associative annotations and
+# reproduce the exact same measured values as the pre-save runs above, not
+# report "no associative dimensions"/"no multi-leaders"/"no GD&T symbols"
+# (what happens if the group_id/object-id references didn't come back
+# resolvable).
+SelNone
+UpdateDimensions
+UpdateMultiLeaders
+UpdateGdtSymbols
+# --- Associative FindPointAnchor: a curve's midpoint, and an arc/circle's
+# center or quadrant point - the same candidate points the viewport's own
+# Mid/Cen/Quad object snaps compute (Viewport.cpp), now recognized by
+# FindPointAnchor/ResolveAnchor (annotate_common.h) alongside a Point object
+# or a curve's start/end. A Leader anchored to each of the three must drag
+# its arrowhead to the anchor's *current* position after the source curve
+# moves, exactly like the Point-object-anchored Leader/MultiLeader/GD&T tests
+# above.
+SelNone
+Line 1200,0,0 1220,0,0
+SelLast
+SetObjectName MidAnchorLine
+SelNone
+Leader
+1210,0,0
+1210,-10,0
+Enter
+MidLeader
+SelNone
+Circle 1300,0,0 5
+SelLast
+SetObjectName CenterAnchorCircle
+SelNone
+Leader
+1300,0,0
+1300,-10,0
+Enter
+CenterLeader
+SelNone
+Circle 1400,0,0 5
+SelLast
+SetObjectName QuadAnchorCircle
+SelNone
+Leader
+1400,5,0
+1410,5,0
+Enter
+QuadLeader
+SelAll
+GetUserText
+SelName MidAnchorLine
+Move 1200,0,0 1200,20,0
+SelName CenterAnchorCircle
+Move 1300,0,0 1300,30,0
+SelName QuadAnchorCircle
+Move 1400,0,0 1400,40,0
+UpdateDimensions
+SelNone
+# --- Associative FindPointAnchor, second round: an interior knot point (any
+# curve span boundary strictly between its two ends - for a degree-1 curve
+# this is exactly an interior control point, invisible to the pre-existing
+# exact start/end match above) and a B-rep's vertex - the same candidates
+# the viewport's own "Knot"/"Vertex" object snaps compute (Viewport.cpp).
+# A Leader anchored to each must drag its arrowhead to the anchor's
+# *current* position after the source polyline/box moves, same as the
+# Mid/Cen/Quad anchors above.
+SelNone
+Polyline 1500,0,0 1510,0,0 1520,0,0
+Enter
+SelLast
+SetObjectName KnotAnchorPolyline
+SelNone
+Leader
+1510,0,0
+1510,-10,0
+Enter
+KnotLeader
+SelNone
+Box 1600,0,0 1610,10,0 10
+SelLast
+SetObjectName VertexAnchorBox
+SelNone
+Leader
+1600,0,0
+1600,-10,0
+Enter
+VertexLeader
+SelAll
+GetUserText
+SelName KnotAnchorPolyline
+Move 1500,0,0 1500,20,0
+SelName VertexAnchorBox
+Move 1600,0,0 1600,30,0
+UpdateDimensions
+SelNone
+# --- SectionView iterator-invalidation regression: BuildSectionGroup used
+# to slice-and-Add() in a single pass over Document::Objects() itself, so
+# Add()'s vector reallocation could invalidate that very loop's own
+# reference/iterator into Objects() partway through. Each of these 120 flat
+# single-quad meshes sits at a distinct, non-overlapping Y band but shares
+# the same x=[600,620] span, so the x=610 cut plane crosses every one of
+# them in exactly one open (non-closed) 2-point segment - never a closed
+# loop, so no hatch curves and no per-object count ambiguity. Slicing all
+# 120 in one SectionView call drives Document::Objects() through several
+# reallocations partway through the pass; every one of the 120 must still
+# produce its own curve, not silently go missing after a reallocation (or
+# crash outright, the more likely symptom before this fix).
+SelAll
+Hide
+= for i = 0, 119 do local y0 = i * 15; rs.AddMesh({{600, y0, 0}, {620, y0, 0}, {620, y0 + 10, 0}, {600, y0 + 10, 0}}, {{1, 2, 3, 4}}) end
+SectionView
+610,-5,0
+610,5,0
+Show
+SelAll

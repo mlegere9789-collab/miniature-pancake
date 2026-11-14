@@ -1,0 +1,11 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('step_recursive_fixture.stp','2026-01-01T00:00:00',('Dino 8 tests'),(''),'hand-written','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));
+ENDSEC;
+DATA;
+#1=TRIMMED_CURVE('',#1,(0.),(1.),.T.,.PARAMETER.);
+#2=GEOMETRIC_CURVE_SET('SelfRef',(#1));
+ENDSEC;
+END-ISO-10303-21;

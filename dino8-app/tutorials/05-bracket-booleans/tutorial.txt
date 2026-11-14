@@ -1,0 +1,42 @@
+#title: Booleans on a bracket
+#summary: Build a mounting bracket from a plate, a hole, a rib and a slot using boolean difference and union.
+#level: Beginner
+# Source: extends docs/tutorial_scripts/02_bracket.txt.
+#narrate: Boolean operations add and subtract solids. We will build a small mounting bracket: a plate, a screw hole, a stiffening rib and a slot.
+SetActiveViewport Top
+Box 0,0,0 40,20,0 5
+@expect_objects 1
+#narrate: The plate is a box forty by twenty, five units thick.
+Cylinder 10,10,-1 2 7
+@expect_objects 2
+#narrate: A cylinder of radius two, taller than the plate, will become the screw hole. It starts below and ends above the plate so the cut is clean.
+SelID 1
+BooleanDifference
+#cont
+SelID 2
+Enter
+@expect_objects 1
+SelAll
+Volume
+#narrate: BooleanDifference subtracts the second object from the first. The cylinder is consumed, and Volume reports the plate minus the hole.
+Box 0,0,4 40,4,4 16
+@expect_objects 2
+#narrate: A rib: a thin box standing along one long edge, overlapping the plate by one unit so the two solids truly share volume.
+SelAll
+BooleanUnion
+@expect_objects 1
+#narrate: BooleanUnion fuses everything selected into one solid. Plate and rib are now a single part.
+SelAll
+Volume
+Box 25,8,-1 35,12,-1 8
+SelNone
+SelID 5
+BooleanDifference
+#cont
+SelID 6
+Enter
+@expect_objects 1
+#narrate: Finally a slot, cut with another box in the same way. Select the part, run BooleanDifference, then pick the cutter.
+SelAll
+Volume
+#narrate: Three booleans, one finished bracket. The volume readouts in the command history show each step really removed or added material.

@@ -1,0 +1,145 @@
+# RVCH: Shell and OffsetSrf of a STEPPED SHAFT (two coaxial cylinders united: bottom disc r5, wall r5 z 0..4, a flat ring at z=4,
+# wall r3 z 4..8, top disc r3; volume 136 pi) and the uniform closed hollow / Solid=Yes offset of a sphere dome, through the kernel's
+# revolved-solid routes (kernel::ShellRevolvedArcProfile / OffsetRevolvedArcProfile). Every case is bracketed by an RVCHBEGIN_<name>
+# marker; rvchblock in sections/74_rvch.sh slices the output by it.
+# ===================== shaft: top removed, wall 0.5 =====================
+New
+RVCHBEGIN_shell_top
+Cylinder 0,0,0 5 4
+Cylinder 0,0,4 3 4
+SelAll
+BooleanUnion
+SelAll
+Shell
+1,0,8
+Enter
+0.5
+SelAll
+List
+Volume
+Check
+# ===================== shaft: top removed, floor 2 thick, wall 0.5 =====================
+New
+RVCHBEGIN_shell_vary
+Cylinder 0,0,0 5 4
+Cylinder 0,0,4 3 4
+SelAll
+BooleanUnion
+SelAll
+Shell
+1,0,8
+Mode=Thickness
+1,0,0
+2
+Enter
+0.5
+SelAll
+List
+Volume
+Check
+# ===================== shaft: uniform closed hollow, wall 0.5 =====================
+New
+RVCHBEGIN_shell_closed
+Cylinder 0,0,0 5 4
+Cylinder 0,0,4 3 4
+SelAll
+BooleanUnion
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+Volume
+Check
+# ===================== shaft: OffsetSrf +1 =====================
+New
+RVCHBEGIN_off_out
+Cylinder 0,0,0 5 4
+Cylinder 0,0,4 3 4
+SelAll
+BooleanUnion
+SelAll
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+# ===================== shaft: OffsetSrf -0.5 =====================
+New
+RVCHBEGIN_off_in
+Cylinder 0,0,0 5 4
+Cylinder 0,0,4 3 4
+SelAll
+BooleanUnion
+SelAll
+OffsetSrf
+-0.5
+SelLast
+List
+Volume
+Check
+# ===================== shaft: OffsetSrf Solid=Yes +1 (the hollow wall) =====================
+New
+RVCHBEGIN_off_solid
+Cylinder 0,0,0 5 4
+Cylinder 0,0,4 3 4
+SelAll
+BooleanUnion
+SelAll
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+Check
+# ===================== negative: shrinking the shaft past its upper radius =====================
+New
+RVCHBEGIN_off_collapse
+Cylinder 0,0,0 5 4
+Cylinder 0,0,4 3 4
+SelAll
+BooleanUnion
+SelAll
+OffsetSrf
+-3
+SelLast
+List
+# ===================== dome: uniform closed hollow, wall 1 =====================
+New
+RVCHBEGIN_dome_closed
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+Check
+# ===================== dome: OffsetSrf Solid=Yes +1 =====================
+New
+RVCHBEGIN_dome_offsolid
+Sphere 0,0,-2 5
+Box -10,-10,0 10,10,0 10
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+Check

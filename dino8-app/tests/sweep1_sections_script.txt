@@ -1,0 +1,189 @@
+# Sweep1 with SEVERAL cross-sections -> the kernel's exact Brep::Sweep1Sections
+# (Sweep1Command::Build, cmd_surface.cpp). Every case builds its rail and
+# sections on its own layer, runs Sweep1 (rail by name, sections by layer),
+# measures the result with the app's own commands (Area / BoundingBox /
+# ClosestPt on the finished surface) and clears the
+# document. smoke.sh cuts the output
+# apart per case at each "Command: Sweep1" line.
+
+# --- Case A: two circles on a straight rail = a cone frustum.
+# rail (0,0,0)-(0,0,10); circle r = 2 at z = 0 and r = 1 at z = 10.
+# Closed form: lateral area pi (r0 + r1) sqrt(h^2 + (r0 - r1)^2) = 94.72 (the
+# solid's volume 73.304 is checked in the kernel test; Cap does not take a Surface).
+NewLayer S1ARail
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName S1ARail
+NewLayer S1ASections
+Circle 0,0,0 2
+Circle 0,0,10 1
+SelNone
+SelName S1ARail
+Sweep1
+SelLayer
+Enter
+@expect_objects 4
+SelSrf
+Area
+BoundingBox
+# points ON the two section circles (seam point, quarter, half): the surface
+# must pass through them
+SelNone
+SelSrf
+ClosestPt
+2,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,2,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+-1,0,10
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,1,10
+Enter
+# a point on the cone half way up (r = 1.5 at z = 5): on the surface too
+SelNone
+SelSrf
+ClosestPt
+1.5,0,5
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case B: three DIFFERENT sections on a straight rail: circle r = 2 at
+# z = 0, a 6 x 3 rectangle (closed polyline starting on its +x edge, so its
+# seam lines up with the circles') at z = 5 and a circle r = 1 at z = 10.
+NewLayer S1BRail
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName S1BRail
+NewLayer S1BSections
+Circle 0,0,0 2
+Polyline 3,0,5 3,1.5,5 -3,1.5,5 -3,-1.5,5 3,-1.5,5 3,0,5
+Enter
+Circle 0,0,10 1
+SelNone
+SelName S1BRail
+Sweep1
+SelLayer
+Enter
+SelSrf
+BoundingBox
+# on the rectangle: the middle of its +y edge, a point of its +x edge, a corner
+SelNone
+SelSrf
+ClosestPt
+0,1.5,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+3,-1,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+-3,1.5,5
+Enter
+# on the two circles
+SelNone
+SelSrf
+ClosestPt
+0,-2,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+-1,0,10
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case C: a CURVED rail (cubic through (0,0,0) (0,0,4) (3,0,6) (3,0,10);
+# its z = 5 point is exactly (1.5,0,5)) with circles r = 1.5, 2, 1 centred on
+# it at z = 0, 5, 10.
+NewLayer S1CRail
+Curve 0,0,0 0,0,4 3,0,6 3,0,10 Enter
+SelLast
+SetObjectName S1CRail
+NewLayer S1CSections
+Circle 0,0,0 1.5
+Circle 1.5,0,5 2
+Circle 3,0,10 1
+SelNone
+SelName S1CRail
+Sweep1
+SelLayer
+Enter
+SelSrf
+BoundingBox
+SelNone
+SelSrf
+ClosestPt
+3.5,0,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+1.5,-2,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+1.5,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+4,0,10
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case D (refusal -> fallback): the second circle sits in the plane
+# z = 20, which the rail (z = 0..10) never reaches. The kernel refuses with
+# that reason, the command prints it and still builds the old sampled sweep.
+NewLayer S1DRail
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName S1DRail
+NewLayer S1DSections
+Circle 0,0,0 2
+Circle 0,0,20 1
+SelNone
+SelName S1DRail
+Sweep1
+SelLayer
+Enter
+@expect_objects 4
+SelAll
+Delete
+@expect_objects 0
+
+# --- Case E (refusal -> fallback): a closed rail is not supported with
+# several sections.
+NewLayer S1ERail
+Circle 0,0,0 10
+SelLast
+SetObjectName S1ERail
+NewLayer S1ESections
+Circle 10,0,0 1
+Circle 10,0,0 2
+SelNone
+SelName S1ERail
+Sweep1
+SelLayer
+Enter
+SelAll
+Delete
+@expect_objects 0

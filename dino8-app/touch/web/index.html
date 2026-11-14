@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src *; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#1d2733">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Dino 8 Touch">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Dino 8 Touch</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="gl" aria-label="3D viewport"></canvas>
+  <canvas id="overlay" aria-hidden="true"></canvas>
+
+  <header id="topbar">
+    <button id="btn-connect" class="chip" aria-label="Connection">
+      <span id="conn-dot" class="dot off"></span><span id="conn-label">Not connected</span>
+    </button>
+    <span id="hint" aria-live="polite"></span>
+    <span id="stats"></span>
+  </header>
+
+  <nav id="toolbar" aria-label="Tools">
+    <button data-tool="select" class="tool active"><i>&#9995;</i><span>Select</span></button>
+    <button data-tool="move" class="tool"><i>&#10021;</i><span>Move</span></button>
+    <button data-tool="rotate" class="tool"><i>&#10227;</i><span>Rotate</span></button>
+    <button data-tool="scale" class="tool"><i>&#10530;</i><span>Scale</span></button>
+    <button data-tool="measure" class="tool"><i>&#128207;</i><span>Measure</span></button>
+    <span class="sep"></span>
+    <button id="btn-layers" class="act"><i>&#9776;</i><span>Layers</span></button>
+    <button id="btn-display" class="act"><i>&#9713;</i><span>Display</span></button>
+    <button id="btn-cmd" class="act"><i>&gt;_</i><span>Command</span></button>
+    <span class="sep"></span>
+    <button id="btn-undo" class="act"><i>&#8630;</i><span>Undo</span></button>
+    <button id="btn-redo" class="act"><i>&#8631;</i><span>Redo</span></button>
+    <button id="btn-extents" class="act"><i>&#9974;</i><span>Extents</span></button>
+  </nav>
+
+  <section id="panel-connect" class="panel" role="dialog" aria-label="Connect">
+    <h2>Dino 8 Touch</h2>
+    <p class="muted">Connect to a running Dino 8 desktop session, or open a model on this device.</p>
+    <label>Desktop address <input id="in-host" type="text" inputmode="url" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="192.168.1.20:8080"></label>
+    <label>Pairing token <input id="in-token" type="password" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="from the desktop's startup line"></label>
+    <div class="row">
+      <button id="btn-do-connect" class="primary">Connect</button>
+      <button id="btn-disconnect">Disconnect</button>
+    </div>
+    <p id="connect-msg" class="msg" role="status"></p>
+    <hr>
+    <p class="muted">Standalone</p>
+    <div class="row">
+      <label class="filebtn">Open model (.obj .stl)<input id="in-file" type="file" accept=".obj,.stl,model/obj,model/stl"></label>
+      <button id="btn-demo">Load demo</button>
+    </div>
+    <div class="row"><button id="btn-close-connect">Close</button></div>
+  </section>
+
+  <section id="panel-layers" class="panel side" role="dialog" aria-label="Layers">
+    <h2>Layers</h2>
+    <ul id="layer-list"></ul>
+    <div class="row"><button data-close="panel-layers">Close</button></div>
+  </section>
+
+  <section id="panel-display" class="panel side" role="dialog" aria-label="Display modes">
+    <h2>Display</h2>
+    <div id="display-modes">
+      <button data-mode="shaded" class="mode active">Shaded</button>
+      <button data-mode="wireframe" class="mode">Wireframe</button>
+      <button data-mode="ghosted" class="mode">Ghosted</button>
+      <button data-mode="xray" class="mode">X-Ray</button>
+    </div>
+    <div class="row"><button data-close="panel-display">Close</button></div>
+  </section>
+
+  <section id="panel-cmd" class="panel bottom" role="dialog" aria-label="Command line">
+    <pre id="cmd-log" aria-live="polite"></pre>
+    <form id="cmd-form" autocomplete="off">
+      <span id="cmd-prompt">Command</span>
+      <input id="in-cmd" type="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Box 0,0,0 10,10,0 10">
+      <button type="submit" class="primary">Send</button>
+      <button type="button" data-close="panel-cmd">&#10005;</button>
+    </form>
+  </section>
+
+  <div id="toast" role="status"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

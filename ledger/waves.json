@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "note": "Planned wave of a row that has no wave field of its own, by factory (plan 6.2 and 6.3). Proposed by the ledger job from the wave descriptions: wave 1 = the first row factories at scale (modeling, 2D CAD, Flow, interop), wave 2 = all other factories running (BIM, rendering, animation, simulation, analysis, collaboration, documentation), wave 3 = the remaining rows (UX, scripting, performance). The orchestrator confirms or changes it. A row's own wave always wins.",
+  "factory": {
+    "kernel-geometry": 1,
+    "mesh-subd-sculpt": 1,
+    "direct-modeling": 1,
+    "cad-2d": 1,
+    "flow": 1,
+    "interop-migration": 1,
+    "bim-arch": 2,
+    "bim-struct-mep": 2,
+    "drafting-docs": 2,
+    "render-anim": 2,
+    "simulation": 2,
+    "analysis-site": 2,
+    "collab-cloud": 2,
+    "ux-access-i18n": 3,
+    "scripting-api-ai": 3,
+    "performance": 3
+  }
+}
