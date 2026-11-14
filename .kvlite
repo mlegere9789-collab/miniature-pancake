@@ -1,0 +1,2 @@
+SECTIONS=QCR QCR_ENTER BOSSRIB_EXACT SDBOOL OPS OSE
+FILTERS=QcDegenerate;Boolean;Shell;Loft;Extrude;Sweep;Pipe;OffsetSolid;ArrayAlong;SplitBrep
