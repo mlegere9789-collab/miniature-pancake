@@ -152,9 +152,103 @@ Duplicate modifier names: Anchor Modifier, Armature Modifier, Build Modifier, Ca
 | Mapping lines in MAPPING.csv | 3170 |
 | Check: mapping lines = items printed | PASS |
 | Check: rows = printed - group members + group rows | PASS |
-| Target Best / Strong rows | 997 / 1990 |
+| Target Best / Strong rows | 996 / 1991 |
 
 Identity: rows = printed operators - group members + group rows + printed Appendix B items (alias rows are Appendix B printed items that point to a primary row, so they are rows too).
+
+## Targets and factories per file
+
+Best follows the rule in the Targets section of the generator (report matrix, chapter 8).
+
+| File | Rows | Best | Strong | Factories (rows) |
+|---|---:|---:|---:|---|
+| action | 37 | 23 | 14 | render-anim 37 |
+| anim | 68 | 64 | 4 | render-anim 68 |
+| armature | 49 | 44 | 5 | render-anim 49 |
+| asset | 22 | 0 | 22 | render-anim 22 |
+| boid | 8 | 8 | 0 | simulation 8 |
+| brush | 11 | 0 | 11 | mesh-subd-sculpt 11 |
+| buttons | 1 | 0 | 1 | ux-access-i18n 1 |
+| cachefile | 5 | 0 | 5 | interop-migration 5 |
+| camera | 2 | 0 | 2 | render-anim 2 |
+| clip | 91 | 65 | 26 | render-anim 91 |
+| cloth | 1 | 0 | 1 | simulation 1 |
+| collection | 16 | 0 | 16 | interop-migration 11, ux-access-i18n 5 |
+| console | 3 | 2 | 1 | scripting-api-ai 3 |
+| constraint | 18 | 18 | 0 | render-anim 18 |
+| curve | 51 | 0 | 51 | kernel-geometry 51 |
+| curves | 31 | 0 | 31 | mesh-subd-sculpt 31 |
+| cycles | 3 | 2 | 1 | render-anim 3 |
+| dpaint | 5 | 5 | 0 | simulation 5 |
+| ed | 13 | 0 | 13 | ux-access-i18n 13 |
+| export_anim | 1 | 0 | 1 | interop-migration 1 |
+| export_scene | 2 | 0 | 2 | interop-migration 2 |
+| extensions | 36 | 0 | 36 | interop-migration 36 |
+| file | 40 | 0 | 40 | interop-migration 11, ux-access-i18n 29 |
+| fluid | 14 | 13 | 1 | simulation 14 |
+| font | 23 | 0 | 23 | kernel-geometry 23 |
+| geometry | 9 | 0 | 9 | flow 9 |
+| gizmogroup | 1 | 0 | 1 | ux-access-i18n 1 |
+| gpencil | 7 | 0 | 7 | render-anim 7 |
+| graph | 67 | 52 | 15 | render-anim 67 |
+| grease_pencil | 124 | 0 | 124 | render-anim 124 |
+| image | 48 | 0 | 48 | render-anim 48 |
+| import_anim | 1 | 0 | 1 | interop-migration 1 |
+| import_curve | 1 | 0 | 1 | interop-migration 1 |
+| import_scene | 2 | 0 | 2 | interop-migration 2 |
+| info | 1 | 0 | 1 | ux-access-i18n 1 |
+| lattice | 8 | 0 | 8 | mesh-subd-sculpt 8 |
+| marker | 11 | 0 | 11 | render-anim 11 |
+| mask | 40 | 29 | 11 | render-anim 40 |
+| material | 3 | 0 | 3 | render-anim 3 |
+| mball | 8 | 0 | 8 | mesh-subd-sculpt 8 |
+| mesh | 171 | 166 | 5 | mesh-subd-sculpt 171 |
+| nla | 39 | 33 | 6 | render-anim 39 |
+| node | 189 | 16 | 173 | flow 168, interop-migration 1, render-anim 20 |
+| object | 250 | 31 | 219 | direct-modeling 50, flow 9, interop-migration 5, mesh-subd-sculpt 89, render-anim 71, simulation 12, ux-access-i18n 14 |
+| outliner | 74 | 0 | 74 | ux-access-i18n 74 |
+| paint | 55 | 13 | 42 | mesh-subd-sculpt 55 |
+| paintcurve | 8 | 0 | 8 | mesh-subd-sculpt 8 |
+| palette | 7 | 0 | 7 | mesh-subd-sculpt 7 |
+| particle | 37 | 31 | 6 | simulation 37 |
+| pointcloud | 7 | 0 | 7 | mesh-subd-sculpt 7 |
+| pose | 51 | 48 | 3 | render-anim 51 |
+| poselib | 9 | 9 | 0 | render-anim 9 |
+| preferences | 37 | 0 | 37 | scripting-api-ai 14, ux-access-i18n 23 |
+| project | 11 | 0 | 11 | ux-access-i18n 11 |
+| ptcache | 7 | 7 | 0 | simulation 7 |
+| render | 16 | 1 | 15 | render-anim 16 |
+| rigidbody | 13 | 13 | 0 | simulation 13 |
+| scene | 48 | 11 | 37 | interop-migration 1, render-anim 44, ux-access-i18n 3 |
+| screen | 10 | 9 | 1 | render-anim 9, ux-access-i18n 1 |
+| script | 3 | 2 | 1 | scripting-api-ai 3 |
+| sculpt | 39 | 39 | 0 | mesh-subd-sculpt 39 |
+| sculpt_curves | 4 | 4 | 0 | mesh-subd-sculpt 4 |
+| sequencer | 116 | 99 | 17 | render-anim 116 |
+| sound | 7 | 0 | 7 | render-anim 7 |
+| spreadsheet | 1 | 0 | 1 | ux-access-i18n 1 |
+| surface | 6 | 0 | 6 | kernel-geometry 6 |
+| text | 43 | 0 | 43 | scripting-api-ai 43 |
+| text_editor | 1 | 0 | 1 | scripting-api-ai 1 |
+| texture | 4 | 0 | 4 | render-anim 4 |
+| transform | 27 | 0 | 27 | direct-modeling 27 |
+| ui | 1 | 0 | 1 | ux-access-i18n 1 |
+| uilist | 1 | 0 | 1 | ux-access-i18n 1 |
+| uv | 55 | 0 | 55 | mesh-subd-sculpt 55 |
+| view2d | 1 | 0 | 1 | ux-access-i18n 1 |
+| view3d | 66 | 4 | 62 | direct-modeling 9, mesh-subd-sculpt 4, render-anim 11, ux-access-i18n 42 |
+| wm | 70 | 0 | 70 | interop-migration 40, scripting-api-ai 2, ux-access-i18n 28 |
+| workspace | 1 | 0 | 1 | ux-access-i18n 1 |
+| world | 2 | 0 | 2 | render-anim 2 |
+| b_modifiers | 83 | 16 | 67 | flow 1, interop-migration 2, mesh-subd-sculpt 43, render-anim 27, simulation 10 |
+| b_geometry_nodes | 284 | 0 | 284 | flow 284 |
+| b_shader_nodes | 106 | 0 | 106 | render-anim 106 |
+| b_compositor_nodes | 90 | 90 | 0 | render-anim 90 |
+| b_constraints | 29 | 29 | 0 | render-anim 29 |
+| b_gp_effects | 9 | 0 | 9 | render-anim 9 |
+| b_editors | 17 | 0 | 17 | flow 1, interop-migration 1, render-anim 6, scripting-api-ai 2, ux-access-i18n 7 |
+
+Rows per factory: direct-modeling 86, flow 472, interop-migration 120, kernel-geometry 80, mesh-subd-sculpt 540, render-anim 1256, scripting-api-ai 68, simulation 107, ux-access-i18n 258.
 
 ## Forbidden-term substitution
 

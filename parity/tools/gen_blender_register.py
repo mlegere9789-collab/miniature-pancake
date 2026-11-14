@@ -15,6 +15,7 @@ no randomness, no dict-order dependence). Exit status is non-zero if a count
 does not reconcile or a row fails schema validation.
 
 Usage: python3 parity/tools/gen_blender_register.py [--input FILE] [--check]
+       --check regenerates into a temporary directory and fails if the committed output differs.
 """
 import argparse
 import csv
@@ -146,6 +147,9 @@ OP_FACTORY_OVERRIDE = [
     ("node", r"shader_script|test_inlining_shader", "render-anim"),
     ("node", r"gltf", "interop-migration"),
     ("collection", r"export|import", "interop-migration"),
+    ("file", r"^(select.*|next|previous|parent|filenum|highlight|hidedot|smoothscroll|sort_column_ui_context|start_filter|"
+             r"mouse_execute|execute|cancel|refresh|bookmark_.*|directory_new|rename|delete|edit_directory_path|"
+             r"filepath_drop|reset_recent|view_selected)$", "ux-access-i18n"),
     ("wm", r"obj_|ply_|stl_|usd_|alembic|fbx|otio|spz|import|export|append|^link$|lib_|recover|read_|revert|open_mainfile|save_|drop_|blend_strings|collection_export|path_open|id_linked", "interop-migration"),
     ("wm", r"owner_(en|dis)able", "scripting-api-ai"),
     ("wm", r".*", "ux-access-i18n"),
@@ -210,6 +214,7 @@ BEST_OP_RULES = [
     ("render", r"^render$", "path tracing"),
     ("render", r".*", None),
     ("script", r"^execute_preset$", None),
+    ("cycles", r"^use_shading_nodes$", None),
     ("scene", r"compositor_effect|new_sequencer", "compositing and video"),
     ("object", _OBJ_PHYS, "physics"),
     ("object", r"^(constraint_add|constraint_add_with_targets|constraints_clear|constraints_copy|armature_add|"
@@ -490,7 +495,7 @@ VERB_CLASSES = [
     ("copy", {"duplicate", "copy", "clone", "mirror"}),
     ("paste", {"paste"}),
     ("place", {"move", "slide", "snap", "align", "rotate", "scale", "resize", "translate", "transform", "flip",
-               "push", "shrink", "bend", "rip", "swap", "randomize", "offset", "shear", "pull", "trim", "extend"}),
+               "push", "shrink", "bend", "rip", "swap", "randomize", "offset", "shear", "pull", "extend"}),
     ("toggle", {"toggle", "hide", "show", "hide/show", "enable", "disable", "mute", "unmute", "lock", "unlock",
                 "reveal", "isolate", "pin", "expand", "collapse", "cycle", "open/close"}),
     ("set", {"set", "assign", "change", "switch", "activate", "mark", "rename", "replace", "reset", "restore",
@@ -502,7 +507,7 @@ VERB_CLASSES = [
                  "interpolate", "stash", "bind", "unbind", "track", "detect", "refine", "stabilize", "make", "generate",
                  "apply", "convert", "calculate", "recalculate", "normalize", "sample", "spin", "bisect", "intersect",
                  "flatten", "poke", "wireframe", "solidify", "screw", "to", "beautify", "reverse", "quick",
-                 "symmetrize", "corrective", "laplacian", "mesh", "voxel", "quadriflow", "multires", "un-subdivide",
+                 "symmetrize", "trim", "corrective", "laplacian", "mesh", "voxel", "quadriflow", "multires", "un-subdivide",
                  "unsubdivide", "skin", "butterworth", "gaussian", "breakdown", "ease", "euler",
                  "keys", "samples", "sound", "time", "equalize", "reproject", "trace", "setup"}),
     ("load", {"open", "load", "import", "install", "download", "link", "drop", "read", "recover", "revert",
@@ -573,7 +578,7 @@ KIND_STATEMENT = {
     "modifiers": 'Add the "{label}" modifier to an object stack, set its parameters and get the same resulting geometry or data as Blender 5.3; reordering, disabling or removing it re-evaluates the result non-destructively.',
     "constraints": 'Add the "{label}" constraint to an object or bone and get the same resulting transform as Blender 5.3 for the same targets and influence; disabling or removing it restores the unconstrained transform.',
     "gp_effects": 'Add the "{label}" shader effect to a Grease Pencil object and get the same rendered result as Blender 5.3 for the same settings; removing it restores the original look.',
-    "editors": 'Open the "{label}" editor in a workspace area with the same panels, tools and display options as Blender 5.3; its layout and settings are saved with the workspace.',
+    "editors": 'Switch a workspace area to the "{label}" area type with the same panels, tools and display options as Blender 5.3; its layout and settings are saved with the workspace.',
 }
 
 
@@ -876,6 +881,26 @@ def reconcile(raw, ops, bsec, files, mapping, stats, problems):
     w("Identity: rows = printed operators - group members + group rows + printed Appendix B items "
       "(alias rows are Appendix B printed items that point to a primary row, so they are rows too).")
     w("")
+    w("## Targets and factories per file")
+    w("")
+    w("Best follows the rule in the Targets section of the generator (report matrix, chapter 8).")
+    w("")
+    w("| File | Rows | Best | Strong | Factories (rows) |")
+    w("|---|---:|---:|---:|---|")
+    for fn, rs in files.items():
+        fc = OrderedDict()
+        for r in rs:
+            fc[r["factory"]] = fc.get(r["factory"], 0) + 1
+        w("| %s | %d | %d | %d | %s |" % (fn[:-6], len(rs), sum(1 for r in rs if r["target"] == "Best"),
+                                         sum(1 for r in rs if r["target"] == "Strong"),
+                                         ", ".join("%s %d" % kv for kv in sorted(fc.items()))))
+    w("")
+    fall = OrderedDict()
+    for rs in files.values():
+        for r in rs:
+            fall[r["factory"]] = fall.get(r["factory"], 0) + 1
+    w("Rows per factory: " + ", ".join("%s %d" % kv for kv in sorted(fall.items())) + ".")
+    w("")
     sub_rows = sum(1 for rs in files.values() for r in rs if "placeholder token" in r.get("notes", ""))
     w("## Forbidden-term substitution")
     w("")
@@ -922,13 +947,76 @@ def validate(files):
     return n, bad, errs
 
 
+def check_invariants(files, mapping):
+    """Register-level checks beyond the JSON schema; returns a list of problem strings."""
+    errs = []
+    rows = [r for rs in files.values() for r in rs]
+    ids = {r["id"] for r in rows}
+    seen = {}
+    for r in rows:
+        if r["statement"] in seen:
+            errs.append("duplicate statement: %s and %s" % (seen[r["statement"]], r["id"]))
+        seen[r["statement"]] = r["id"]
+        if r["target"] == "Best" and not r.get("superiority"):
+            errs.append("%s: Best without superiority" % r["id"])
+        if r["target"] != "Best" and r.get("superiority"):
+            errs.append("%s: superiority on a non-Best row" % r["id"])
+        if _SUBST_RX.search(json.dumps(r)):
+            errs.append("%s: contains the forbidden term" % r["id"])
+    by_row = {}
+    for sec, mod, item, label, rid, rel in mapping:
+        if rid not in ids:
+            errs.append("mapping %s/%s -> missing row %s" % (mod, item, rid))
+        by_row.setdefault(rid, []).append((mod, item, rel))
+    for r in rows:
+        if r["id"] not in by_row:
+            errs.append("%s: no mapping line" % r["id"])
+    for r in rows:
+        for mod, item, rel in by_row.get(r["id"], []):
+            if rel == "group_member" and ("bpy.ops.%s.%s =" % (mod, item)) not in r.get("notes", ""):
+                errs.append("%s: group row does not list member %s.%s" % (r["id"], mod, item))
+    return errs
+
+
+def subprocess_main(inp, out):
+    """Run the generator in-process into `out` (used by --check)."""
+    saved = sys.argv
+    try:
+        sys.argv = [saved[0], "--input", inp, "--out", out]
+        return main()
+    finally:
+        sys.argv = saved
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", default=DEFAULT_IN)
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--check", action="store_true",
+                    help="generate into a temporary directory and fail if the committed output differs")
     ap.add_argument("--extract", action="store_true",
                     help="also (re)write the committed appendix extract from --input")
     args = ap.parse_args()
+    if args.check:
+        import filecmp
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = os.path.join(tmp, "out")
+            os.makedirs(os.path.join(sub, "source"))
+            for _ in range(2):      # two runs into the same directory must also agree
+                rc = subprocess_main(args.input, sub)
+            diffs = []
+            names = sorted(f for f in os.listdir(sub) if os.path.isfile(os.path.join(sub, f)))
+            old = sorted(f for f in os.listdir(OUT) if os.path.isfile(os.path.join(OUT, f)))
+            if names != old:
+                diffs.append("file lists differ: %s" % sorted(set(names) ^ set(old)))
+            for n in names:
+                if n in old and not filecmp.cmp(os.path.join(sub, n), os.path.join(OUT, n), shallow=False):
+                    diffs.append("differs from committed: " + n)
+            for d in diffs:
+                print("CHECK:", d)
+            print("check: %s" % ("FAIL" if diffs or rc else "OK (deterministic, matches committed output)"))
+            return 1 if diffs or rc else 0
 
     raw, lines = load_appendix(args.input)
     if args.extract:
@@ -985,6 +1073,9 @@ def main():
         f.write(sio.getvalue())
 
     n, bad, errs = validate(files)
+    for e in check_invariants(files, mapping):
+        bad += 1
+        errs.append(e)
     if bad:
         problems.extend("schema: " + e for e in errs[:50])
     with io.open(os.path.join(args.out, "RECONCILE.md"), "w", encoding="utf-8", newline="\n") as f:
