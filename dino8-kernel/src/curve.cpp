@@ -3226,6 +3226,27 @@ double AdaptiveGaussLength(const ON_NurbsCurve& c, double a, double b, double wh
          AdaptiveGaussLength(c, mid, b, right, tolerance * 0.5, depth + 1, subintervals);
 }
 
+// Arc length of [a, b] by the adaptive Gauss rule above, run separately on every knot span inside [a, b]. A rule applied across a knot
+// sees a speed that is not smooth there (a line joined to an arc, a rational arc chain parametrized by arc length), and the whole-interval
+// estimate can agree with its two halves by coincidence and stop at once: the four circular caps of a circle minus a square (true length
+// 12 + 20 acos(0.8) = 24.870022) read 24.877160 that way, 7e-3 off at a requested 1e-9. The budget `tolerance` is shared out over the spans.
+double SpanAwareArcLength(const ON_NurbsCurve& c, double a, double b, double tolerance, int& subintervals) {
+  std::vector<double> cuts{a};
+  const int span_count = c.SpanCount();
+  if (span_count > 0) {
+    std::vector<double> sv(static_cast<size_t>(span_count) + 1);
+    if (c.GetSpanVector(sv.data()))
+      for (int k = 1; k < span_count; ++k)
+        if (sv[k] > a && sv[k] < b) cuts.push_back(sv[k]);
+  }
+  cuts.push_back(b);
+  const double share = tolerance / static_cast<double>(cuts.size() - 1);
+  double total = 0.0;
+  for (size_t i = 0; i + 1 < cuts.size(); ++i)
+    total += AdaptiveGaussLength(c, cuts[i], cuts[i + 1], GaussSegmentLength(c, cuts[i], cuts[i + 1]), share, 0, subintervals);
+  return total;
+}
+
 }  // namespace
 
 double NurbsCurve::LengthToTolerance(double tolerance, int* out_subintervals) const {
@@ -3234,8 +3255,7 @@ double NurbsCurve::LengthToTolerance(double tolerance, int* out_subintervals) co
   }
   const ON_Interval domain = curve_.Domain();
   int subintervals = 0;
-  const double whole = GaussSegmentLength(curve_, domain.Min(), domain.Max());
-  const double length = AdaptiveGaussLength(curve_, domain.Min(), domain.Max(), whole, tolerance, 0, subintervals);
+  const double length = SpanAwareArcLength(curve_, domain.Min(), domain.Max(), tolerance, subintervals);
   if (out_subintervals) *out_subintervals = subintervals;
   return length;
 }
@@ -3287,8 +3307,7 @@ namespace {
 // Newton search without duplicating the recursion.
 double AdaptiveArcLength(const ON_NurbsCurve& c, double a, double b, double tolerance) {
   int subintervals = 0;
-  const double whole = GaussSegmentLength(c, a, b);
-  return AdaptiveGaussLength(c, a, b, whole, tolerance, 0, subintervals);
+  return SpanAwareArcLength(c, a, b, tolerance, subintervals);
 }
 
 }  // namespace
