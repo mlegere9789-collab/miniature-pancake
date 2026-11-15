@@ -1636,8 +1636,47 @@ std::vector<Brep::PlanarFace> PlanarBooleanFaces(const Brep& a, const Brep& b, B
 
 }  // namespace
 
+static Brep BooleanCombinePlanarLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                                           bool allow_non_manifold_result);
+
+// The planar engine's welding and coincidence tests are absolute while the coordinates are doubles: two unit-overlap cubes a billion
+// units from the origin (spacing between doubles there ~1.2e-7) came back as an open shell. Both operands are moved by the
+// (dyadic-rounded, so x - shift is exact) centre of their joint vertex box, combined near the origin and the result moved back -
+// the frame shift BooleanCombineGeneral() already applies. A body within 4 half-diagonals of the origin is left alone (bit-identical).
+static bool PlanarBooleanFrameShift(const Brep& a, const Brep& b, ON_3dVector& shift) {
+  ON_BoundingBox bb;
+  for (const Brep* x : {&a, &b}) {
+    const ON_Brep& r = x->raw();
+    for (int vi = 0; vi < r.m_V.Count(); ++vi) bb.Set(r.m_V[vi].point, true);
+  }
+  if (!bb.IsValid()) return false;
+  const ON_3dPoint c = bb.Center();
+  const double half = 0.5 * bb.Diagonal().Length();
+  const double dist = std::max({std::fabs(c.x), std::fabs(c.y), std::fabs(c.z)});
+  if (!(dist > 4.0 * half) || !(dist > 0.0) || !std::isfinite(dist)) return false;
+  auto quantize = [](double v) {
+    if (v == 0.0) return 0.0;
+    const double q = std::ldexp(1.0, std::ilogb(std::fabs(v)) - 30);
+    return std::round(v / q) * q;
+  };
+  shift = ON_3dVector(quantize(c.x), quantize(c.y), quantize(c.z));
+  return true;
+}
+
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
                            bool allow_non_manifold_result) {
+  ON_3dVector shift;
+  if (op == BooleanOp::SymmetricDifference || !PlanarBooleanFrameShift(a, b, shift))
+    return BooleanCombinePlanarLocalFrame(a, b, op, tolerance, allow_non_manifold_result);
+  const Brep la = a.Transform(ON_Xform::TranslationTransformation(-shift));
+  const Brep lb = b.Transform(ON_Xform::TranslationTransformation(-shift));
+  const Brep local = BooleanCombinePlanarLocalFrame(la, lb, op, tolerance, allow_non_manifold_result);
+  if (local.raw().m_F.Count() == 0) return local;
+  return local.Transform(ON_Xform::TranslationTransformation(shift));
+}
+
+static Brep BooleanCombinePlanarLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                                           bool allow_non_manifold_result) {
   // A caller-supplied `tolerance` of exactly 0.0 is the one value this
   // function's own negative-sentinel convention cannot tell apart from a
   // genuine mistake: it is not negative (so it is NOT treated as "use the

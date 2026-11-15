@@ -657,6 +657,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -3773,6 +3774,71 @@ bool ChainLiesAlongFaceBoundary(const ON_Brep& brep, int face_index, const std::
   return true;
 }
 
+// A 3D-closed chain that is a FULL SWEEP of one periodic direction at a fixed value of the other, which is a domain end of the surface (a
+// seam side, or the rim circle of a cylinder wall): the meridian circle of a torus lying exactly on the face's own seam, or a plane
+// coincident with a cylinder wall's own end circle. It is not an island and not a cut: it IS the face boundary's own edge (both seam
+// sides are that one circle), e.g. a plane through a torus axis that contains the seam meridian. Treated as an open chain it bisected the
+// face's own left edge into a spray of zero-width fragments.
+bool ChainIsFullSweepAlongSeamSide(const Chain& c, const ON_Surface* s) {
+  if (!s || c.size() < 3) return false;
+  for (int dir = 0; dir < 2; ++dir) {
+    const int other = 1 - dir;
+    const ON_Interval dd = s->Domain(dir), dother = s->Domain(other);
+    if (!s->IsClosed(other)) continue;  // the swept direction must be the periodic one (a seam LINE of a cylinder is not a closed chain)
+    const double eps = 1e-6 * std::max(dd.Length(), 1.0);  // the tracer's own accuracy
+    bool at_min = true, at_max = true;
+    double lo = 1e300, hi = -1e300;
+    for (const UVPt& q : c) {
+      at_min = at_min && std::fabs(q.uv[dir] - dd.Min()) <= eps;
+      at_max = at_max && std::fabs(q.uv[dir] - dd.Max()) <= eps;
+      lo = std::min(lo, q.uv[other]);
+      hi = std::max(hi, q.uv[other]);
+    }
+    // 3D-closed and constant in `dir`: it has gone round the whole periodic direction (the span is short of a period by one sample step)
+    if ((at_min || at_max) && hi - lo >= 0.5 * dother.Length()) return true;
+  }
+  return false;
+}
+
+// An OPEN chain that runs across a periodic seam carries the crossing as two consecutive samples with the same 3D point and (u, v)
+// a full period apart (one on each seam side), e.g. the rim of a notch cut into a cylinder wall by a parallel cylinder: two rulings
+// joined by an arc through the seam meridian. SpliceOpenChain() treats a chain as one run inside the (u, v) rectangle, so such a chain
+// bisected the wall along a polygon that jumps a whole period (the cut-off notch and the rest swapped their boundaries, and the
+// result shared one 3D edge between three faces). Cutting the chain at each jump gives open pieces whose ends lie ON the two seam
+// sides of the face's own boundary loop, which SplitFaceLoop() then splices one after the other (the notch comes out as one piece
+// on each side of the seam, each closed by its own seam edge).
+std::vector<Chain> SplitChainAtSeamJumps(const Chain& c, const ON_Surface* s, double tol) {
+  std::vector<Chain> out;
+  if (!s || c.size() < 4) { out.push_back(c); return out; }
+  Chain cur;
+  for (size_t k = 0; k < c.size(); ++k) {
+    cur.push_back(c[k]);
+    if (k + 1 == c.size()) break;
+    bool jump = false;
+    for (int dir = 0; dir < 2 && !jump; ++dir) {
+      if (!s->IsClosed(dir)) continue;
+      const ON_Interval d = s->Domain(dir);
+      const double L = d.Length();
+      const double a = c[k].uv[dir], b = c[k + 1].uv[dir];
+      // One sample on each seam side, same position along the seam (a pole line also repeats a 3D point with a (u, v) jump, but
+      // there the cross coordinate moves with no seam involved, and the two samples are not both exactly on the domain ends).
+      const bool ends = (std::fabs(a - d.Min()) <= 1e-6 * L && std::fabs(b - d.Max()) <= 1e-6 * L) ||
+                        (std::fabs(a - d.Max()) <= 1e-6 * L && std::fabs(b - d.Min()) <= 1e-6 * L);
+      if (ends && (c[k].p - c[k + 1].p).Length() <= std::max(tol, 1e-9) &&
+          std::fabs(c[k].uv[1 - dir] - c[k + 1].uv[1 - dir]) <= 1e-6 * s->Domain(1 - dir).Length() + 1e-9) jump = true;
+    }
+    if (jump && cur.size() >= 2 && c.size() - (k + 1) >= 2) {
+      out.push_back(std::move(cur));
+      cur.clear();
+    }
+  }
+  if (!cur.empty()) {
+    if (cur.size() >= 2 || out.empty()) out.push_back(std::move(cur));
+    else out.back().push_back(cur.front());
+  }
+  return out;
+}
+
 // Distance from `p` to the nearest point of the open polyline `poly`.
 double PointToPolylineDistance(const Point3d& p, const std::vector<UVPt>& poly) {
   double best = 1e300;
@@ -3894,6 +3960,16 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
           continue;
         }
       }
+      if ((c.front().p - c.back().p).Length() <= stitch_tol && ChainIsFullSweepAlongSeamSide(c, face_surface)) {
+        // The seam circle is already an edge of this face's boundary; the other face's copy of the circle was sampled by the tracer, so
+        // the boundary's own samples over that side (and its seam twin) are replaced by the chain's points - the same splice an untrimmed
+        // face gets - so both faces then share one polyline. Nothing is left to cut the face with.
+        std::vector<Chain> cut;
+        if (face_surface) CutChainAtDomainBoundary(c, *face_surface, opt.tolerance, boundary, cut);
+        for (Chain& oc : cut) open_chains.push_back(std::move(oc));
+        if (debug) std::fprintf(stderr, "  face idx=%d: chain of %zu pts is the face's own seam circle (%zu left to cut with)\n", i, c.size(), cut.size());
+        continue;
+      }
       if ((c.front().p - c.back().p).Length() <= stitch_tol) {
         Chain wrap_open, wrap_second;
         if (face_surface && SplitPeriodicWrapChain(c, *face_surface, wrap_open)) {
@@ -3905,7 +3981,7 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
           closed_chains.push_back(c);
         }
       } else {
-        open_chains.push_back(c);
+        for (Chain& piece : SplitChainAtSeamJumps(c, face_surface, stitch_tol)) open_chains.push_back(std::move(piece));
       }
     }
     // This op's own FRESH closed chains (just collected above) can
@@ -4102,8 +4178,8 @@ static bool GeneralBooleanFrameShift(const Brep& a, const Brep& b, ON_3dVector& 
 static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
                                             bool allow_non_manifold_result);
 
-Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
-                            bool allow_non_manifold_result) {
+static Brep BooleanCombineGeneralOneTolerance(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                                              bool allow_non_manifold_result) {
   ON_3dVector shift;
   if (!GeneralBooleanFrameShift(a, b, shift)) return BooleanCombineGeneralLocalFrame(a, b, op, tolerance, allow_non_manifold_result);
   const Brep la = a.Transform(ON_Xform::TranslationTransformation(-shift));
@@ -4111,6 +4187,49 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   const Brep local = BooleanCombineGeneralLocalFrame(la, lb, op, tolerance, allow_non_manifold_result);
   if (local.raw().m_F.Count() == 0) return local;
   return local.Transform(ON_Xform::TranslationTransformation(shift));
+}
+
+// The engine's tolerance is absolute (0.001 by default), but it merges every feature smaller than a few of it: a bar 2e-3 across (or a
+// whole model 1e-3 across) collapsed into slivers and came back with the wrong volume or topology. It is therefore capped at 1/200 of
+// the thinnest extent of either operand's bounding box; an operand at least 0.2 across leaves the default untouched.
+static double ScaleAwareTolerance(const Brep& a, const Brep& b, double tolerance) {
+  double thin = 1e300;
+  for (const Brep* x : {&a, &b}) {
+    ON_BoundingBox bb;
+    if (!x->raw().GetBoundingBox(bb) || !bb.IsValid()) continue;
+    const ON_3dVector d = bb.Diagonal();
+    for (const double e : {d.x, d.y, d.z}) {
+      if (e > 1e-9) thin = std::min(thin, e);
+    }
+  }
+  if (!(thin < 1e300)) return tolerance;
+  return std::min(tolerance, thin * 0.005);
+}
+
+Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
+                            bool allow_non_manifold_result) {
+  tolerance = ScaleAwareTolerance(a, b, tolerance);
+  // The 0.001 default is about the size of the thinnest features the corpus of near-tangent and sliver operands carries (a cap
+  // 1e-3 deep, a bar 2e-3 across): fragments of that size collapse into one another and the engine refuses with "an edge is claimed by
+  // 3 or more fragment loops". That refusal is a statement about the tolerance, not about the shape, so a refused call is retried with
+  // the tolerance 10x and 100x finer - only a call that would have thrown that refusal anyway can change, and only when the first
+  // attempt gave up quickly (a slow refusal is a big model, where two more attempts would only multiply the wait).
+  const auto t0 = std::chrono::steady_clock::now();
+  try {
+    return BooleanCombineGeneralOneTolerance(a, b, op, tolerance, allow_non_manifold_result);
+  } catch (const std::runtime_error& first) {
+    const bool refusal = std::string(first.what()).find("claimed by 3 or more fragment loops") != std::string::npos;
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (!refusal || allow_non_manifold_result || !(tolerance > 1e-6) || secs > 2.0) throw;
+    for (const double factor : {0.1, 0.01}) {
+      try {
+        return BooleanCombineGeneralOneTolerance(a, b, op, tolerance * factor, allow_non_manifold_result);
+      } catch (const std::runtime_error&) {
+        // try the next finer tolerance; the original refusal is what the caller gets if none works
+      }
+    }
+    throw;
+  }
 }
 
 static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
