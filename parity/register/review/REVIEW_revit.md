@@ -55,7 +55,7 @@ Not read: `REL-0021` (404), the 5 API pseudo-citations, and 40 non-pages (above)
 
 ## Fix file
 
-`parity/register/review/fixes_revit.jsonl` (28 proposals): 10 link repairs, 2 row removals (release tracking), 1 reworded statement, 13 factory moves, 2 alias links. Same note as for AutoCAD about the validator scanning `review/`.
+`parity/register/review/fixes_revit.jsonl.txt` (28 proposals): 10 link repairs, 2 row removals (release tracking), 1 reworded statement, 13 factory moves, 2 alias links. Same note as for AutoCAD about the validator scanning `review/`.
 
 ## Missing coverage (40 documented topics with no row)
 
@@ -101,3 +101,18 @@ Of about 4,180 non-API, non-troubleshooting help topics in the Revit 2027 table 
 38. Arrays of Elements - https://help.autodesk.com/view/RVT/2027/ENU/?guid=GUID-4029D78F-BE9D-4802-88E9-2881561CDFBD
 39. Split Walls Horizontally - https://help.autodesk.com/view/RVT/2027/ENU/?guid=GUID-719EDC0D-BB98-4B25-B7A6-35AF208970D7
 40. Copy an Array - https://help.autodesk.com/view/RVT/2027/ENU/?guid=GUID-D0D3D594-7430-409A-9E76-6F4F450725FE
+
+## Second pass (independent re-check, branch `w0-review-b2`)
+
+Same sample reproduced (150 ids; all cited ids are in it). Every row's page re-fetched through the static route (all 1,034 rows, not only the sample) and a word-overlap test run on the 150.
+
+- First-review findings reproduced: `COLLAB-0014`, `IFC-0015`, `MASS-0023`, `WSHARE-0016`, `REL-0021` have no readable page; `INSERT-0036` is fixed by the `GUID-` prefix; the low-overlap rows `STRUCT-0080`, `MANAGE-0028`, `SYS-0078`, `FORMA-0010`, `MODIFY-0027` reproduce as B defects (statement content not on the cited page).
+- **Missed by the first review: 4 more rows cite Revit API reference pages that are script-rendered and absent from the table of contents, so nothing can be checked:** `API-0009` (NewFamilyInstance), `MANAGE-0015` (UniqueId), `PARAM-0007` (Visible property), `SYS-0023` (PipeInsulation). Their `doc` is `?guid=<lowercase-guid>`. Treat as UNVERIFIED like the other 45 non-pages. Whole register: 51 Revit rows resolve to an empty or stub page (the 46 non-pages and 4 API rows above, plus `STRUCT-0096`, a one-sentence roadmap stub whose statement does match). In the sample A becomes 7/150 = 4.7% (adds `MANAGE-0015`); defect-row rate 30/150 = 20.0%.
+- Weak but not defective (checked): `ARCH-0056`, `STRUCT-0034`, `ARCH-0003`: the details named in each statement (depth and material, nature and orientation, setback and offset) are partly absent from the page opening but fit the page's topic; I left them out of B.
+- The 55-row count is confirmed in substance (46 + 9 prefix-less links) and is the main defect of this program.
+- Unreachable from here: `forums.autodesk.com`, `www.autodesk.com` (403). Not needed by any Revit row.
+- Validator: same problem as AutoCAD (1,674 errors from the `review/` files; rows untouched).
+
+**Verdict unchanged: ACCEPT WITH FIXES.**
+
+**Note on file names (CI):** the fix file is named `fixes_revit.jsonl.txt` (same JSON-lines content) because `validate_register.py` collects every `*.jsonl` below `parity/register` and has no exclusion for `review/`; with the `.jsonl` name the register check fails on duplicate row ids. If the validator is later taught to skip `review/`, rename back.
