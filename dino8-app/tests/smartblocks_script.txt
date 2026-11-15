@@ -1,0 +1,70 @@
+# Smart Blocks (SmartBlockDetect / SmartBlockConvert) QC: three copies of the
+# same "bracket" shape (two lines + a circle) scattered around the drawing -
+# one translated, one translated-then-rotated in place - among unrelated
+# noise objects (a different-shaped two-line L, a lone circle, a lone
+# point). SmartBlockDetect must find exactly the 3 real bracket occurrences
+# and report them as one repeated group; it must not fold in any of the
+# noise. SmartBlockConvert must then turn all 3 into tagged instances of one
+# new block, in place (object count unchanged - see TagExistingAsBlockInstance
+# in cmd_smartblocks.cpp), without touching the noise objects.
+
+# --- Bracket instance A, at the origin: ids 1,2,3
+Line 0,0,0 10,0,0
+Line 10,0,0 10,5,0
+Circle 10,5,0 2
+@expect_objects 3
+
+# --- Noise: a different two-line L (no circle, different leg length) - same
+# object *count* per group as a bracket's curves alone would suggest, but a
+# different composition (no Circle node), so it must not be flagged.
+Line 500,0,0 510,0,0
+Line 510,0,0 510,3,0
+@expect_objects 5
+
+# --- Bracket instance B: a translated copy of A (ids 6,7,8)
+SelNone
+SelID 1 2 3
+Copy 0,0,0 100,0,0
+Enter
+@expect_objects 8
+
+# --- Noise: a lone circle (cluster size 1, below the 2-object minimum for a
+# "block-like" candidate group - must not appear in any detected group).
+# Radius 4, not 3: Circle's inline distance arg goes through the same
+# option-dispatch as its interactive prompt, and a bare "3" is a valid
+# unambiguous prefix of the command's own "3Point" option, so it switches
+# to 3-point mode instead of being read as a radius - not something to fix
+# here (that's CommandEngine's pre-existing option-matching, unrelated to
+# Smart Blocks), just something this script must not collide with.
+Circle 700,0,0 4
+@expect_objects 9
+
+# --- Bracket instance C: another translated copy of A, then rotated in
+# place (no Copy) - same shape, different placement AND orientation (ids
+# 10,11,12 after the copy; Rotate below transforms those same 3 in place).
+SelNone
+SelID 1 2 3
+Copy 0,0,0 200,0,0
+Enter
+@expect_objects 12
+SelNone
+SelID 10 11 12
+Rotate 205,0,0 47
+@expect_objects 12
+
+# --- Noise: a lone point (also below the 2-object minimum).
+Point 800,0,0
+@expect_objects 13
+
+SelNone
+SmartBlockDetect
+SmartBlockConvert
+@expect_objects 13
+SelNone
+SelBlockInstance
+@expect_selected 9
+
+# The noise objects (the different L, the lone circle, the lone point) must
+# never have been tagged as block instances - only the 9 real bracket
+# objects (3 instances x 3 objects each) are.
+BlockManager

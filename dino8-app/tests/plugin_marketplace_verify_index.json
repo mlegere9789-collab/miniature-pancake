@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "index_name": "Verify Test Index (sha256 integrity-check fixture)",
+  "plugins": [
+    {
+      "id": "hellodino",
+      "name": "HelloDino",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Same sample plug-in as plugin-index/index.json's hellodino entry, but with a sha256 that deliberately does not match the built library, so Marketplace::VerifyInstalled reports a mismatch against what is actually on disk (a bundled_path entry is never sha256-checked at install time, only on-demand by VerifyInstalled/PluginMarketplaceVerify - see plugin-index/SCHEMA.md).",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

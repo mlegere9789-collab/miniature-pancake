@@ -1,0 +1,32 @@
+NewLayer Walls
+Point 1,0,0
+NewLayer Roof
+Point 2,0,0
+SetLayer Default
+Point 0,0,0
+SetLayer Walls
+OneLayerOff
+LayerState Save HiddenWalls
+SelNone
+SelAll
+@expect_selected 2
+AllLayersOn
+SelNone
+SelAll
+@expect_selected 3
+LayerState Restore HiddenWalls
+SelNone
+SelAll
+@expect_selected 2
+Save @TMP@/layerstate_test.3dm
+New
+Open @TMP@/layerstate_test.3dm
+LayerState List
+AllLayersOn
+SelNone
+SelAll
+@expect_selected 3
+LayerState Restore HiddenWalls
+SelNone
+SelAll
+@expect_selected 2

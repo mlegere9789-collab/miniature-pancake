@@ -1,0 +1,97 @@
+# Pipe EndRadius= (tapered) and InnerRadius= (hollow) (tests/sections/65_pipev.sh, section PIPEV; checks PIV_): the kernel's exact
+# Brep::PipeVariable and Brep::PipeThickWalled from the app. Rail: a straight line (0,0,0)-(0,0,10).
+# Cases, in order (the section cuts the output at each "Command: Pipe"):
+#  1 Radius 2, EndRadius=1: the exact cone frustum, volume pi 10/3 (4 + 2 + 1) = 73.3038
+#  2 Radius 2, InnerRadius=1: the exact hollow cylinder, volume pi (4 - 1) 10 = 94.2478
+#  3 EndRadius= and InnerRadius= together: refused, nothing built
+#  4 InnerRadius=3 with Radius 2 (inner >= outer): refused with the kernel's reason, nothing built
+#  5 control: plain Radius 2, the solid cylinder pi 4 10 = 125.664
+#  6 a CLOSED rail (circle r=5) with EndRadius=1 and Radius 2: the tube cannot meet itself at the seam: refused, nothing built
+#  7 History On, case 1 recorded; the rail scaled by 2 about the origin (length 20): the taper follows, volume pi 20/3 (4 + 2 + 1) = 146.608
+SetActiveViewport Top
+
+# --- 1
+New
+Line 0,0,0 0,0,10
+SelLast
+Pipe EndRadius=1
+2
+SelLast
+Volume
+SelAll
+Delete
+@expect_objects 0
+
+# --- 2
+New
+Line 0,0,0 0,0,10
+SelLast
+Pipe InnerRadius=1
+2
+SelLast
+Volume
+SelAll
+Delete
+@expect_objects 0
+
+# --- 3
+New
+Line 0,0,0 0,0,10
+SelLast
+Pipe EndRadius=1 InnerRadius=0.5
+2
+@expect_objects 1
+SelAll
+Delete
+
+# --- 4
+New
+Line 0,0,0 0,0,10
+SelLast
+Pipe InnerRadius=3
+2
+@expect_objects 1
+SelAll
+Delete
+
+# --- 5
+New
+Line 0,0,0 0,0,10
+SelLast
+Pipe
+2
+SelLast
+Volume
+SelAll
+Delete
+@expect_objects 0
+
+# --- 6
+New
+Circle 0,0,0 5
+SelLast
+Pipe EndRadius=1
+2
+@expect_objects 1
+SelAll
+Delete
+
+# --- 7
+New
+History On
+Line 0,0,0 0,0,10
+SelLast
+Pipe EndRadius=1
+2
+SelNone
+SelID 2
+Volume
+SelNone
+SelID 1
+Scale 0,0,0 2
+SelNone
+SelID 2
+Volume
+SelAll
+Delete
+History Off

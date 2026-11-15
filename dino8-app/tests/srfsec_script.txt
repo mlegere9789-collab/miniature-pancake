@@ -1,0 +1,54 @@
+# SRFSEC_: a single NURBS SURFACE object (not a B-rep) is cut by a clipping plane on the exact route too (it is wrapped into a
+# one-face B-rep for kernel::SectionBrepByPlaneJoined), so the section is the true circle / arc, not a chord polygon of its render
+# mesh. The surfaces are `ExtrudeCrv Solid=No` of a circle / a 270 degree arc of radius 5 (an exact rational degree 2 x 1 wall,
+# listed as "(surface)"); cut at z = 4 the closed forms are the full circle 2 pi 5 = 31.4159265 and the OPEN arc 5 x 3 pi / 2 =
+# 23.5619449. Every case starts from `New` and is bracketed by an unknown-command marker SRFBEGIN_<name> that
+# sections/59_srfsec.sh slices the output on.
+SetActiveViewport Top
+
+New
+SRFBEGIN_arc270
+Arc 0,0,0 5,0,0 0,-5,0
+SelLast
+Length digits=9
+ExtrudeCrv Solid=No
+10
+SelID 1
+Delete
+SelAll
+List
+ClippingPlane Name=P -20,-20,4 20,20,4
+ClippingSections
+SelCrv
+Length digits=9
+SelLast
+List
+
+New
+SRFBEGIN_full
+Circle 0,0,0 5
+SelLast
+ExtrudeCrv Solid=No
+10
+SelID 1
+Delete
+SelAll
+List
+ClippingPlane Name=P -20,-20,4 20,20,4
+ClippingSections
+SelCrv
+Length digits=9
+SelLast
+List
+
+# negative control: a plane above the wall makes no curve and claims no route
+New
+SRFBEGIN_miss
+Arc 0,0,0 5,0,0 0,-5,0
+SelLast
+ExtrudeCrv Solid=No
+10
+SelID 1
+Delete
+ClippingPlane Name=P -20,-20,30 20,20,30
+ClippingSections

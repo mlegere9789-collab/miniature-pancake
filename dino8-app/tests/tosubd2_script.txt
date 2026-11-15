@@ -1,0 +1,61 @@
+# ToSubD of a revolved solid (second pass, NURBS/Brep to SubD): the app's
+# Cylinder, Cone and TCone are one surface-of-revolution wall plus trimmed
+# planar caps, which the kernel's grid tessellation cannot weld into a closed
+# manifold. ToSubD now builds the cage from the Brep's own wall
+# parametrisation and rim ring (all-quad O-grid caps, creased rims) and
+# MEASURES the Catmull-Clark limit surface against the exact surface.
+# Printed per solid, in this order: the ToSubD status line, the SubD's List
+# line, the SubD's Volume. The cylinder is then also run through ToNURBS (the
+# watertight bicubic conversion of the SubD's limit surface, which is slow:
+# minutes) for its status line, List line and Volume.
+Cylinder 0,0,0 4 10
+SelLast
+ToSubD
+SelLast
+List
+Volume
+ToNURBS
+SelLast
+List
+Volume
+SelAll
+Hide
+Cone 30,0,0 4 10
+SelLast
+ToSubD
+SelLast
+List
+Volume
+SelAll
+Hide
+TCone 60,0,0 4 10 2
+SelLast
+ToSubD
+SelLast
+List
+Volume
+SelAll
+Hide
+# A big cylinder (radius 40, height 120) needs more reference segments for the same tolerance.
+Cylinder 100,0,0 40 120
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# The torus (one face, both directions closed) keeps its verified grid cage; only the ToSubD line is checked.
+Torus 400,0,0 6 2
+SelLast
+ToSubD
+# An extruded circle (ExtrudeCrv, capped) is the same wall + two caps shape: same analytic cage.
+SelAll
+Hide
+Circle 500,0,0 4
+SelLast
+ExtrudeCrv
+10
+SelLast
+ToSubD
+SelLast
+List

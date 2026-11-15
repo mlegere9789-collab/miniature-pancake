@@ -1,0 +1,9 @@
+# Second process: a fresh config directory whose acad.lsp (written by smoke.sh,
+# not by the app) defines a c: command, a helper and a variable. They exist from
+# the first frame. The same expressions run in a process WITHOUT acad.lsp
+# (lisp_nopersist_script.txt) fail, so the autoload is what supplies them.
+autobox
+SelLast
+Volume
+(list auto_loaded)
+(autobox_helper 5)

@@ -1,0 +1,174 @@
+# Sequential exact Booleans (second hole cut in the result of the first, box + sphere).
+# Every case starts from `New` (operands are ids 1 and 2, a Boolean result is 3) and is
+# bracketed by a marker line (an unknown command, "B2SBEGIN_<name>") that smoke.sh uses to
+# slice this script's output into per-case blocks.
+SetActiveViewport Top
+
+# two sequential holes: box 10x10x10 minus two through-holes r1.5, both cut one after the
+# other (the second Boolean's first operand is the sewn result of the first): 858.62
+New
+B2SBEGIN_chain2
+Box 0,0,0 10,10,0 10
+Cylinder 3,5,-5 1.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Cylinder 7,5,-5 1.5 20
+SelNone
+SelID 3
+BooleanDifference
+SelID 4
+Enter
+SelAll
+List
+Volume
+Area
+
+# three sequential holes r1.2 at (3,3), (7,3), (5,7): 1000 - 3*pi*1.44*10 = 864.28
+New
+B2SBEGIN_chain3
+Box 0,0,0 10,10,0 10
+Cylinder 3,3,-5 1.2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Cylinder 7,3,-5 1.2 20
+SelNone
+SelID 3
+BooleanDifference
+SelID 4
+Enter
+Cylinder 5,7,-5 1.2 20
+SelNone
+SelID 5
+BooleanDifference
+SelID 6
+Enter
+SelAll
+List
+Volume
+
+# the first result MOVED before the second hole: the geometry no longer matches the recorded
+# operands, so the sequential shortcut must NOT apply (declined with the engine's reason, mesh
+# result with the right volume 1000 - 2*pi*1.5^2*10 = 858.62)
+New
+B2SBEGIN_moved
+Box 0,0,0 10,10,0 10
+Cylinder 3,5,-5 1.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelNone
+SelID 3
+Move
+0,0,0
+20,0,0
+Cylinder 27,5,-5 1.5 20
+SelNone
+SelID 3
+BooleanDifference
+SelID 4
+Enter
+SelAll
+List
+Volume
+
+# box + sphere: the sphere's centre on the top face, upper hemisphere stands on the box:
+# 1000 + 2/3*pi*64 = 1134.04, exact and closed (before: declined, mesh)
+New
+B2SBEGIN_box_sphere
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 4
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+Area
+
+# the same box + sphere result is a closed solid a following Shell can take
+New
+B2SBEGIN_box_sphere_shell
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 4
+SelAll
+BooleanUnion
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+
+# box + sphere on the top, THEN a second sphere on the bottom united with that result: 1268.08
+New
+B2SBEGIN_box_sphere_sphere
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 4
+SelAll
+BooleanUnion
+Sphere 5,5,0 4
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+
+# box + sphere in a single Boolean with two spheres selected: 1000 + 2*(2/3*pi*64) = 1268.08
+New
+B2SBEGIN_box_two_spheres
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 4
+Sphere 5,5,0 4
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+
+# a hole drilled through the box + sphere result (op differs from the recorded Union: no
+# shortcut; must be exact or declined with a reason, never a wrong or open solid)
+New
+B2SBEGIN_sphere_then_hole
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 4
+SelAll
+BooleanUnion
+Cylinder 2,2,-5 1 30
+SelNone
+SelID 3
+BooleanDifference
+SelID 4
+Enter
+SelAll
+List
+Volume
+# other sphere placements are still declined WITH the reason (never an open or wrong solid); the mesh
+# fallback has the right volume. Sphere r4 centred at z=8 (cap of height 2 above the top face): 1000 + pi*4*(12-2)/3 = 1041.89
+New
+B2SBEGIN_sph_cap
+Box 0,0,0 10,10,0 10
+Sphere 5,5,8 4
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+# sphere r3 centred on a side face: 1000 + 2/3*pi*27 = 1056.55
+New
+B2SBEGIN_sph_side
+Box 0,0,0 10,10,0 10
+Sphere 10,5,5 3
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
+New
+B2SEND

@@ -1,0 +1,313 @@
+# Construction history survives Save / New / Open for every construction kind that has its own smoke script
+# (tests/smoke.sh section H4R_, part 2). One document holds one small chain of each kind, built with History On;
+# every result's Bounding box is measured, the document is saved, a new one opened from the file, then the SOURCE objects
+# of each chain are moved +2 in Y (and only them): the dependents must rebuild from the records read back out of the .3dm,
+# so each result's bounding box must be its saved one shifted by (0,2,0). @TMP@ is the test temp directory.
+# Chains (sources -> result): 1,2,3 Sweep1 (rail + 2 sections) -> 4 | 5-13 nine points, non-planar Patch -> 14 |
+# 15,16 FilletSrf -> 17 | 18 rectangle -> 19 PlanarSrf -> 20 ExtrudeSrf | 21 Pipe -> 22 | 23-25 Loft -> 26 | 27 Revolve -> 28 |
+# 29 Extrude -> 30 | 31,32 -> 33,34 Extrude -> 35 BooleanUnion | 36 Offset -> 37 | 38 ExtrudeCrvTapered -> 39 |
+# 40,41 NetworkSrf -> 42 | 43 OffsetSrf -> 44 | 45 ExtrudeCrvToPoint -> 46.
+SetActiveViewport Top
+History On
+
+# 1 Sweep1 with two cross sections
+Curve 0,0,0 2,0,3 -2,0,7 0,0,10 Enter
+Circle 0,0,0 1
+Circle 0,0,10 1.5
+SelNone
+SelID 1
+Sweep1
+SelID 2
+SelID 3
+Enter
+# 2 non-planar Patch through nine points
+Point 18,-2,1
+Point 18,0,0
+Point 18,2,-1
+Point 20,-2,0
+Point 20,0,0
+Point 20,2,0
+Point 22,-2,-1
+Point 22,0,0
+Point 22,2,1
+SelNone
+SelPt
+Patch
+# 3 FilletSrf between a floor and a wall
+Plane3Pt 40,0,0 60,0,0 60,10,0
+Plane3Pt 40,0,0 40,10,0 40,10,10
+FilletSrf
+Radius=1
+Trim=No
+55,5,0
+40,5,8
+# 4 PlanarSrf then ExtrudeSrf (a chain two deep)
+Rectangle 70,0,0 80,10,0
+SelNone
+SelID 18
+PlanarSrf
+SelNone
+SelID 19
+ExtrudeSrf
+5
+# 5 Pipe
+Line 90,0,0 100,0,0
+SelNone
+SelID 21
+Pipe
+1
+# 6 Loft through three lines
+Line 110,0,0 120,0,0
+Line 110,5,3 120,5,3
+Line 110,10,0 120,10,0
+SelNone
+SelID 23
+SelID 24
+SelID 25
+Loft
+# 7 Revolve
+Polyline 135,0,0 137,0,0 137,0,3 135,0,3 135,0,0
+Enter
+SelNone
+SelID 27
+Revolve
+130,0,0
+130,0,1
+# 8 Extrude
+Circle 150,5,0 3
+SelNone
+SelID 29
+Extrude
+5
+# 9 BooleanUnion of two extruded rectangles
+Rectangle 160,0,0 170,10,0
+Rectangle 165,0,0 175,10,0
+SelNone
+SelID 31
+Extrude
+10
+SelNone
+SelID 32
+Extrude
+10
+SelNone
+SelID 33
+SelID 34
+BooleanUnion
+# 10 Offset of a circle
+Circle 190,5,0 4
+SelNone
+SelID 36
+Offset Distance=2 190,5,0
+# 11 ExtrudeCrvTapered
+Circle 210,5,0 4
+SelNone
+SelID 38
+ExtrudeCrvTapered
+5
+# 12 NetworkSrf between two lines
+Line 230,0,0 240,0,0
+Line 230,10,0 240,10,0
+SelNone
+SelID 40 41
+NetworkSrf
+# 13 OffsetSrf
+Plane 250,0,0 260,10,0
+SelNone
+SelID 43
+OffsetSrf
+1
+# 14 ExtrudeCrvToPoint
+Circle 270,5,0 4
+SelNone
+SelID 45
+ExtrudeCrvToPoint
+270,5,8
+History
+
+# ---- saved results: B1..B14 (result ids 4 14 17 20 22 26 28 30 35 37 39 42 44 46)
+SelNone
+SelID 4
+BoundingBox
+SelNone
+SelID 14
+BoundingBox
+SelNone
+SelID 17
+BoundingBox
+SelNone
+SelID 20
+BoundingBox
+SelNone
+SelID 22
+BoundingBox
+SelNone
+SelID 26
+BoundingBox
+SelNone
+SelID 28
+BoundingBox
+SelNone
+SelID 30
+BoundingBox
+SelNone
+SelID 35
+BoundingBox
+SelNone
+SelID 37
+BoundingBox
+SelNone
+SelID 39
+BoundingBox
+SelNone
+SelID 42
+BoundingBox
+SelNone
+SelID 44
+BoundingBox
+SelNone
+SelID 46
+BoundingBox
+
+Save @TMP@/h4r_persist.3dm
+New
+Open @TMP@/h4r_persist.3dm
+History On
+History
+
+# ---- sources moved +2 Y: A1..A14, in the same order
+SelNone
+SelID 1
+SelID 2
+SelID 3
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 4
+BoundingBox
+SelNone
+SelID 5
+SelID 6
+SelID 7
+SelID 8
+SelID 9
+SelID 10
+SelID 11
+SelID 12
+SelID 13
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 14
+BoundingBox
+SelNone
+SelID 15
+SelID 16
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 17
+BoundingBox
+SelNone
+SelID 18
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 20
+BoundingBox
+SelNone
+SelID 21
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 22
+BoundingBox
+SelNone
+SelID 23
+SelID 24
+SelID 25
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 26
+BoundingBox
+SelNone
+SelID 27
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 28
+BoundingBox
+SelNone
+SelID 29
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 30
+BoundingBox
+SelNone
+SelID 31
+SelID 32
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 35
+BoundingBox
+SelNone
+SelID 36
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 37
+BoundingBox
+SelNone
+SelID 38
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 39
+BoundingBox
+SelNone
+SelID 40
+SelID 41
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 42
+BoundingBox
+SelNone
+SelID 43
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 44
+BoundingBox
+SelNone
+SelID 45
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 46
+BoundingBox
+History Off
+SelNone
+SelID 27
+Revolve
+130,0,0
+130,0,1
+SelLast
+BoundingBox

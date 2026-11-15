@@ -1,0 +1,112 @@
+# PlotStyleTable/LayerPlotStyle command-line wiring (PARITY_MAP.md "Print
+# and plot output" item - the named, reusable CTB/STB-table half of "plot
+# styles", alongside LayerPrintWidth/LayerPlotColor's own flat
+# per-layer-only fields, which test_print_width.cpp/plot_color_script.txt
+# already cover). The pure ResolvePlotStyle/EffectivePlotColor/
+# EffectivePrintWidthMm overloads themselves are unit-tested directly in
+# dino8_plot_style/test_plot_style.cpp; this instead exercises the real
+# scriptable commands end to end, through a real ExportSvg call, and shows
+# that two different layers sharing one named style change together when
+# the style's own row is edited - the whole point of a *shared, reusable*
+# row versus LayerPlotColor's own flat per-layer-only field.
+#
+# Two lines on two different layers (Default, SecondLayer), neither with
+# its own flat plot color ever set, both pointed instead at the same named
+# style "Mono". Exported to SVG, both must stroke the style's own color
+# (red) - not their shared black display color. Editing the style's own
+# color to blue and re-exporting (no change to either layer) must flip
+# both lines to blue in the new file.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Line 0,0,0 10,0,0
+SelLast
+NewLayer
+SecondLayer
+Line 0,5,0 10,5,0
+SelLast
+PlotStyleTable Mono 255,0,0 0.5
+LayerPlotStyle Default Mono
+LayerPlotStyle SecondLayer Mono
+SelAll
+Export @TMP@/plot_style_red.svg
+PlotStyleTable Mono 0,0,255 0.5
+SelAll
+Export @TMP@/plot_style_blue.svg
+LayerPlotStyle Default None
+SelAll
+Export @TMP@/plot_style_cleared.svg
+# --- Transparency: the third real CTB/STB plot-style column (PlotStyle::
+# transparency, no flat per-layer equivalent). Setting Mono's own
+# transparency to 50% (the optional 4th PlotStyleTable token) must halve
+# both lines' stroke-opacity in a re-exported SVG, and a re-exported PDF
+# must carry a real /ExtGState resource (/CA 0.5) switched in via "gs"
+# before the stroked paths - not just a printed command confirmation.
+LayerPlotStyle Default Mono
+PlotStyleTable Mono 0,0,255 0.5 50
+SelAll
+Export @TMP@/plot_style_transparent.svg
+Export @TMP@/plot_style_transparent.pdf
+
+# --- Linetype override: the fourth and last real CTB/STB column this
+# bullet's own wording named as missing (alongside color/width/
+# transparency above) - a style can force a different linetype than the
+# object's own, the same way a real CTB/STB table's own linetype column
+# works. A line on the real "Dashed" (5,3) linetype (SetCustomLinetype/
+# SetLinetype, the same fixture dash_export_script.txt's own linetype-
+# for-print test already proved), on a fresh layer pointed at a style
+# whose own linetype column names "Hidden" (2,2): printed from a forced
+# Scale=1 parallel view, the exported SVG must carry the STYLE's own
+# "2,2" dasharray, not the object's real "5,3" - proving the override
+# actually drives the printed dash pattern, not merely the object's
+# pre-existing one. Re-saving the style with the linetype token omitted
+# (PlotStyleTable's own "one-shot, set every field" convention - a later
+# call without a token resets it, same as transparency above already
+# does) must revert the same line back to its own real "5,3" in a second
+# export.
+LinetypeDisplay Enable=No
+SetCustomLinetype Dashed 5,3
+SetCustomLinetype Hidden 2,2
+NewLayer
+LinetypeLayer
+Line 0,20,0 100,20,0
+SelLast
+SetLinetype Dashed
+PlotStyleTable LTStyle ByLayer 0.5 0 Hidden
+LayerPlotStyle LinetypeLayer LTStyle
+Top
+Print @TMP@/plot_style_linetype_override.svg Scale=1
+PlotStyleTable LTStyle ByLayer 0.5
+Print @TMP@/plot_style_linetype_cleared.svg Scale=1
+
+# .3dm persistence: a PlotStyle row (including this round's new linetype
+# column) is a document-level user string (Dino8.PlotStyle.<name>,
+# io/File3dm.cpp), round-tripped through a real Save/Open, not just kept
+# in memory for the rest of this one process - re-set LTStyle's own
+# linetype column back to Hidden first (cleared just above) so the saved
+# file actually has a real override to round-trip.
+PlotStyleTable LTStyle ByLayer 0.5 0 Hidden
+SaveAs @TMP@/plot_style_persist.3dm
+New
+Open @TMP@/plot_style_persist.3dm
+PlotStyleTable
+
+# Screening (PlotStyleTable's own sixth token, alongside color/width/
+# transparency above) - the fifth and last real CTB/STB column (real
+# AutoCAD's own CTB "Screening" percentage): a style lightens its own
+# color toward white by (100 - screening)% without making it see-through
+# the way Transparency does (a screened color still fully occludes
+# whatever is behind it on a printed page). A line colored pure black,
+# printed through a layer pointed at a style whose own color is black and
+# whose screening column is 50%, must stroke exactly mid-gray (#808080) -
+# not black - and re-saving the style with the screening token omitted
+# (the same "one-shot, set every field" convention transparency/linetype
+# above already have - resets to the 100% full-intensity-ink default) must
+# revert the same line to full black.
+NewLayer
+ScreenLayer
+Line 0,40,0 100,40,0
+SelLast
+PlotStyleTable ScreenStyle 0,0,0 0.5 0 None 50
+LayerPlotStyle ScreenLayer ScreenStyle
+Export @TMP@/plot_style_screening_on.svg
+PlotStyleTable ScreenStyle 0,0,0 0.5
+Export @TMP@/plot_style_screening_cleared.svg

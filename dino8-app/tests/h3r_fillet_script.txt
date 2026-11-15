@@ -1,0 +1,149 @@
+# FilletSrf / ChamferSrf between two surfaces (Trim=No) record construction history (tests/smoke.sh section H3R_, part 4).
+# With History On the fillet is recorded as {surface A, surface B} with the picked face indices and the radii; the two
+# sources are not touched. Moving either surface rebuilds the fillet automatically (no UpdateHistory), EditHistory changes the
+# radius, and a rebuild that cannot be done keeps the old fillet. Trim=Yes (which cuts the sources) is not recorded.
+# Every claim is a measured Bounding box / Area, compared with the SAME fillet built fresh (History Off) between the
+# surfaces in their moved positions.
+# @TMP@ is the test temp directory.
+# Bounding boxes, in order (Area in order of the Area lines):
+#  1 fillet radius 1 between the floor and the wall   2 wall moved +3 X   3 fresh control (History Off) (= 2)
+#  4 EditHistory radius=2   5 fresh control radius 2 (= 4)   6 reopened, wall moved +2 X more   7 fresh control (= 6)
+#  8 a source is deleted: refused, old fillet kept (= 6)   9 ChamferSrf (ruled)   10 chamfer after the wall moved +2 X   11 fresh chamfer control (= 10)
+#  (Trim=Yes cuts the sources: nothing is recorded, the History listing stays empty)
+SetActiveViewport Top
+
+# ============================================================ F1: floor + wall, fillet
+History On
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSrf
+Radius=1
+Trim=No
+15,5,0
+0,5,8
+History
+SelNone
+SelID 3
+BoundingBox
+Area
+# The wall moved +3 in X: the fillet follows with no UpdateHistory.
+SelNone
+SelID 2
+Move
+0,0,0
+3,0,0
+SelNone
+SelID 3
+BoundingBox
+Area
+# The SAME fillet built fresh (History Off) between the moved surfaces.
+History Off
+FilletSrf
+Radius=1
+Trim=No
+15,5,0
+3,5,8
+SelLast
+BoundingBox
+Area
+SelLast
+Delete
+History On
+EditHistory 3
+EditHistory 3 radius=2
+SelNone
+SelID 3
+BoundingBox
+Area
+History Off
+FilletSrf
+Radius=2
+Trim=No
+15,5,0
+3,5,8
+SelLast
+BoundingBox
+Area
+SelLast
+Delete
+History On
+Save @TMP@/h3r_fillet.3dm
+New
+Open @TMP@/h3r_fillet.3dm
+History On
+History
+# Reopened: the wall moved +2 more in X, the radius-2 fillet follows (x 3 .. 5 becomes 5 .. 7).
+SelNone
+SelID 2
+Move
+0,0,0
+2,0,0
+SelNone
+SelID 3
+BoundingBox
+Area
+History Off
+FilletSrf
+Radius=2
+Trim=No
+15,5,0
+5,5,8
+SelLast
+BoundingBox
+Area
+SelLast
+Delete
+History On
+# A source deleted: the rebuild is refused and the old fillet is kept.
+SelNone
+SelID 1
+Delete
+SelNone
+SelID 3
+BoundingBox
+History
+
+# ============================================================ F2: ChamferSrf (ruled between the contact curves)
+New
+History On
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+ChamferSrf
+Radius=1
+Trim=No
+15,5,0
+0,5,8
+SelNone
+SelID 3
+BoundingBox
+Area
+SelNone
+SelID 2
+Move
+0,0,0
+2,0,0
+SelNone
+SelID 3
+BoundingBox
+Area
+History Off
+ChamferSrf
+Radius=1
+Trim=No
+15,5,0
+2,5,8
+SelLast
+BoundingBox
+Area
+
+# ============================================================ F3: Trim=Yes cuts the sources: nothing is recorded
+New
+History On
+Plane3Pt 0,0,0 20,0,0 20,10,0
+Plane3Pt 0,0,0 0,10,0 0,10,10
+FilletSrf
+Radius=1
+Trim=Yes
+15,5,0
+0,5,8
+History

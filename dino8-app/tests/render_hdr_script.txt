@@ -1,0 +1,29 @@
+# Render Hdr=Yes QC (PARITY_MAP.md's "Environments and image-based
+# lighting" item - the interactive rasterizer's own half of the long-
+# disclosed HDR gap, after the CPU path tracer and GPU raytraced preview
+# already had real HDR range): a glossy sphere lit by a strong point light
+# genuinely produces a specular highlight whose real linear value exceeds
+# 1.0 (GlRenderer's own Shade() soft-shoulder roll-off folds this under 1.0
+# for the ordinary 8-bit capture, but Viewport::RenderToImage's own second
+# HDR pass - GlRenderer::SetHdrOutput(true), a float-format RenderTarget -
+# skips that roll-off and captures the real value). Saved as both .hdr and
+# .exr via SaveRenderWindowAs so both codecs get a real end-to-end
+# exercise, not just their own standalone unit tests; a bare BMP save
+# (unaffected by any of this) and a second Render with no Hdr=Yes (whose
+# own later .hdr save attempt must fail with a clear message, not silently
+# write an empty/wrong file) both round out the check.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Sphere 0,0,0 5
+SelLast
+RenderAssignMaterialToObjects HdrTestMat Gloss=1 Reflectivity=0
+SelNone
+PointLight Intensity=20
+10,0,10
+RenderedViewport
+Render Width=48 Height=48 Hdr=Yes
+SaveRenderWindowAs @TMP@/render_hdr.hdr
+SaveRenderWindowAs @TMP@/render_hdr.exr
+SaveRenderWindowAs @TMP@/render_hdr.bmp
+Render Width=48 Height=48
+SaveRenderWindowAs @TMP@/render_nohdr.hdr
+@expect_objects 1

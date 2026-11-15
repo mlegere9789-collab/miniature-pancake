@@ -1,0 +1,72 @@
+# OSE: exact open / variable-thickness Shell of a NON-CONVEX right prism (an extruded L, profile area 300,
+# 8 high) through kernel::ShellPolylineExtrusion. Before this, a prism shell with a clicked (removed) face or a
+# per-face thickness fell to the mesh construction ("exact B-rep shell not used"). Every case is bracketed by an
+# OSEBEGIN_<name> marker; oseblock in smoke.sh slices the output by it.
+# NOTE (measured with ON_BrepExtrudeFace on a degree-1 NURBS curve, which is what ExtrudeCrv extrudes): the extruded L has
+# THREE faces - bottom, top and ONE non-planar wall over all six profile edges - not one face per edge. A click on
+# that wall therefore means the profile edge nearest the click (prism_solid.h ShellSpecFromPicks): (10,0,4) is the
+# y=0 edge, (15,10,4) the y=10 edge that ends at the reflex corner.
+# ===================== cup: top face removed =====================
+New
+OSEBEGIN_cup
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Shell
+5,5,8
+Enter
+1
+SelLast
+List
+Volume
+Check
+# ===================== window: wall y=0 AND the top removed (two faces) =====================
+New
+OSEBEGIN_window
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Shell
+5,5,8
+10,0,4
+Enter
+1
+SelLast
+List
+Volume
+Check
+# ===================== variable thickness: the top cap 3 thick, everything else 1 =====================
+New
+OSEBEGIN_vary
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Shell
+Mode=Thickness
+5,5,8
+3
+Enter
+1
+SelLast
+List
+Volume
+Check
+# ===================== negative: removing the wall that ends at the reflex corner =====================
+New
+OSEBEGIN_reflex
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Shell
+15,10,4
+Enter
+1
+OSEEND

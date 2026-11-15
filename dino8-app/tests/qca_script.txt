@@ -1,0 +1,155 @@
+# QCA_: adversarial QC cases for recent app wiring (see the "QCA_" section at the end of smoke.sh).
+# Every case starts from `New` and is bracketed by a marker line ("QCABEGIN_<name>", an unknown command) that smoke.sh
+# uses to slice this script's output into per-case blocks.
+SetActiveViewport Top
+
+# --- Sweep1: a REFUSED ScaleX followed by a VALID ScaleY used to forgive the refusal (one shared refusal string was
+# cleared by the later valid option), so the command built a sweep whose X scale was silently dropped (1,1) while only
+# the ScaleY took effect. Both refused axes must keep the command from building until each is replaced by a valid value.
+New
+QCABEGIN_scale_forgive
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName QRail
+Circle 0,0,0 1
+SelLast
+SetObjectName QSec
+SelNone
+SelName QRail
+Sweep1 ScaleX=-1,2
+ScaleY=2,2
+SelName QSec
+Enter
+SelAll
+List
+
+# control: the refused ScaleX is REPLACED by a valid one afterwards: the sweep is built, scaled on both axes
+New
+QCABEGIN_scale_replaced
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName QRail
+Circle 0,0,0 1
+SelLast
+SetObjectName QSec
+SelNone
+SelName QRail
+Sweep1 ScaleX=-1,2
+ScaleX=2,2
+ScaleY=2,2
+SelName QSec
+Enter
+SelAll
+List
+
+# --- ToSubD of TWO different curved-profile revolves in one run: the cage figures printed (profile control points, rings,
+# faces) were those of the last solid only, yet the sentence read as the description of both SubDs.
+New
+QCABEGIN_two_vases
+Curve 3,0,0 6,0,3 2,0,6 4,0,10
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+Curve 0,0,0 5,0,0 5,0,5 2,0,8 2,0,12
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelAll
+ToSubD
+SelAll
+List
+
+# --- Sweep1 ScaleX with the section NOT at the rail start is refused after the undo step was opened: the empty step made the
+# next Undo do nothing (the section kept the name given just before). Undo must revert that SetObjectName.
+New
+QCABEGIN_sweep_undo
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName QRail
+Circle 0,0,5 1
+SelLast
+SetObjectName QSec
+SelNone
+SelName QRail
+Sweep1 ScaleX=1,2
+SelName QSec
+Enter
+Undo
+SelAll
+List
+
+# --- Loft options typed before the curves are selected (nothing preselected) were dropped silently: Cap=No and Style=Straight
+# only worked with a preselection.
+New
+QCABEGIN_loft_typed_cap
+Circle 0,0,0 3
+Circle 0,0,10 2
+SelNone
+Loft Cap=No
+SelAll
+Enter
+SelAll
+List
+New
+QCABEGIN_loft_typed_style
+Circle 0,0,0 3
+Circle 0,0,10 2
+Circle 0,0,20 3
+SelNone
+Loft Style=Straight Cap=No
+SelAll
+Enter
+SelAll
+List
+# control: the same with a preselection (always worked)
+New
+QCABEGIN_loft_pre_cap
+Circle 0,0,0 3
+Circle 0,0,10 2
+SelAll
+Loft Cap=No
+SelAll
+List
+
+# --- ToSubD with a SubD in the selection: the SubD was converted again into a crease-less copy (64 creases became 0).
+New
+QCABEGIN_subd_again
+Curve 3,0,0 6,0,3 2,0,6 4,0,10
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelLast
+ToSubD
+SelAll
+ToSubD
+SelAll
+List
+
+# --- Importing a .sab file that does not exist said "SAT import refused" (the encoding is read from content, and there is none).
+New
+QCABEGIN_sab_missing
+Import /nonexistent_qca_dir/qca_missing.sab
+# (no SelAll/List here: List on an EMPTY selection opens its "Select objects to list" prompt, which swallowed the next
+# case's New / marker / Box lines and made QCA_same_twice vacuously fail)
+
+# --- BooleanDifference with the base picked again among the tools (SelID 1 as base, then SelID 1 and 2 as tools) HUNG the
+# application: the engine returned stray faces for solid-minus-itself and their sewing never ended. Last case of the script,
+# so a regression cannot take the other cases down with it (the whole script then times out and QCA_run fails).
+New
+QCABEGIN_same_twice
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 1
+SelID 2
+Enter
+SelAll
+List

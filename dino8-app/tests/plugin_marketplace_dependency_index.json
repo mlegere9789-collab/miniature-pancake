@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "index_name": "Dependency Test Index (plugin dependency resolution fixture)",
+  "plugins": [
+    {
+      "id": "meshtools",
+      "name": "MeshTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Same sample plug-in as plugin-index/index.json's meshtools entry, used here as a dependency that is already satisfied (it's auto-loaded from next to the executable like every sample plug-in) - see the 'meshtools already satisfied' checks in tests/smoke.sh.",
+      "api_version": 2,
+      "bundled_path": "plugins/mesh_tools"
+    },
+    {
+      "id": "curvetools",
+      "name": "CurveTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on meshtools. Installing this must succeed without reinstalling meshtools, since it's already satisfied.",
+      "api_version": 2,
+      "bundled_path": "plugins/curve_tools",
+      "dependencies": ["meshtools"]
+    },
+    {
+      "id": "analysistools",
+      "name": "AnalysisTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Depends on an id that is not in this index. Installing this must fail cleanly - and install nothing - because the dependency is missing.",
+      "api_version": 2,
+      "bundled_path": "plugins/analysis_tools",
+      "dependencies": ["doesnotexist"]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# DataLink / DataLinkUpdate: stage 4 (see smoke.sh) - the ambiguous case.
+# smoke.sh has rewritten @TMP@/datalink.csv on disk again since stage 3's
+# push, and this script also edits the table itself (TableEdit) before
+# calling DataLinkUpdate - so *both* sides changed since the last sync.
+# DataLinkUpdate with no Direction= must refuse to guess; only an explicit
+# Direction=Push resolves it (here, pushing the table's edit and discarding
+# the file's outside edit - the caller's explicit choice, not a silent one).
+Open @TMP@/datalink.3dm
+SelAll
+TableEdit Data=Q,R;S,T
+SelAll
+DataLinkUpdate
+SelAll
+DataLinkUpdate Direction=Push
+SelAll
+Save @TMP@/datalink.3dm

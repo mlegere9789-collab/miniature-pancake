@@ -1,0 +1,116 @@
+name: Ledger check
+
+# Validates the Parity Register and the progress ledger on every change to parity/ or ledger/
+# (plan sections 4, 7 and Appendix C): row schema, unique ids, no credit without evidence,
+# alias targets, percent.json recomputation, the "written by CI only" guards, and the unit
+# tests of the tools. It reads the repository only and writes nothing.
+
+on:
+  push:
+    paths:
+      - 'parity/**'
+      - 'ledger/**'
+      - '.github/workflows/ledger-check.yml'
+  pull_request:
+    paths:
+      - 'parity/**'
+      - 'ledger/**'
+      - '.github/workflows/ledger-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ledger-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Register and ledger checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install jsonschema and PyYAML
+        run: python -m pip install jsonschema pyyaml
+
+      - name: Validate the Register (jsonschema)
+        run: python parity/tools/validate_register.py --github
+
+      - name: Validate the Register (built-in validator, same verdict)
+        run: python parity/tools/validate_register.py --engine builtin --github
+
+      - name: Compute progress from the Register and the evidence (dry run)
+        run: |
+          python parity/tools/percent.py --strict \
+            --out "$RUNNER_TEMP/percent.json" --credits-out "$RUNNER_TEMP/credits.jsonl" \
+            --previous ledger/credits.jsonl
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          data = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "percent.json")))
+          print("### " + data["headline"])
+          print()
+          print(data["legacy"]["dual"])
+          print()
+          print("| program | passing | total | percent |")
+          print("|---|---:|---:|---:|")
+          for name, b in data["by_program"].items():
+              print("| %s | %d | %d | %.2f |" % (name, b["passing"], b["total"], b["percent"]))
+          PY
+
+      - name: Work out the changed files
+        id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          zero=0000000000000000000000000000000000000000
+          if [ -n "$BASE_SHA" ]; then
+            base="$BASE_SHA"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "$zero" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          elif git rev-parse -q --verify "$GITHUB_SHA^" >/dev/null; then
+            base=$(git rev-parse "$GITHUB_SHA^")
+          else
+            base=$(git hash-object -t tree /dev/null)
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          git diff --name-only "$base" "$GITHUB_SHA" > "$RUNNER_TEMP/changed.txt" || true
+          echo "changed files:"; cat "$RUNNER_TEMP/changed.txt"
+
+      - name: Evidence, percent.json and credit fields are written by CI only
+        env:
+          ACTOR: ${{ github.actor }}
+          LEDGER_CI_ACTORS: ${{ vars.LEDGER_CI_ACTORS }}
+          BASE: ${{ steps.diff.outputs.base }}
+        run: |
+          python ledger/tools/guard.py paths --actor "$ACTOR" --changed "$RUNNER_TEMP/changed.txt"
+          rm -rf "$RUNNER_TEMP/base" && mkdir -p "$RUNNER_TEMP/base"
+          if git cat-file -e "$BASE:parity/register" 2>/dev/null; then
+            git archive "$BASE" parity/register | tar -x -C "$RUNNER_TEMP/base"
+          fi
+          python ledger/tools/guard.py rows --actor "$ACTOR" --base "$RUNNER_TEMP/base/parity/register" --head parity/register
+
+      - name: A pushed percent.json must equal what the Register and the evidence compute
+        run: |
+          if grep -qx 'ledger/percent.json' "$RUNNER_TEMP/changed.txt"; then
+            python parity/tools/percent.py --check
+          else
+            echo "percent.json not part of this change"
+          fi
+
+      - name: Unit tests, parity tools
+        run: python -m unittest discover -s parity/tests -t .
+
+      - name: Unit tests, ledger tools
+        run: python -m unittest discover -s ledger/tests -t .

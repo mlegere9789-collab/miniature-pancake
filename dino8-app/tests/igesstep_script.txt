@@ -1,0 +1,155 @@
+# IGES / STEP round-trip QC.
+# --- A box alone: round-trip and check the reimported solid's volume.
+Box 0,0,0 10,10,0 10
+SelAll
+Export @TMP@/box.igs
+Export @TMP@/box.stp
+Open @TMP@/box.igs
+SelPolysrf
+Volume
+Open @TMP@/box.stp
+SelPolysrf
+Volume
+# --- Everything together: Box, Sphere, Cylinder, a trimmed planar surface
+# (Circle -> PlanarSrf), a free NURBS curve and a point.
+New
+Box 0,0,0 10,10,0 10
+Sphere 30,0,0 5
+Cylinder 50,0,0 5 10
+Circle 70,0,0 5
+SelLast
+PlanarSrf
+Curve 90,0,0 95,5,0 100,0,0
+Enter
+Point 110,0,0
+SelAll
+Export @TMP@/t.igs
+Export @TMP@/t.stp
+Open @TMP@/t.igs
+SelAll
+List
+Open @TMP@/t.stp
+SelAll
+List
+# --- A hand-written STEP file: a PLANE-bounded ADVANCED_FACE square and a
+# free CIRCLE.
+Open @TMP@/step_plane_face.stp
+SelAll
+List
+# --- A hand-crafted malformed IGES file: a type-102 composite curve whose
+# own parameter list references itself (a self-referencing DE), used as a
+# type-122 tabulated cylinder's directrix. Regression for a real crash this
+# session's audit found: unbounded recursion in BuildIgesCurve's composite-
+# curve case, given a crafted/corrupted file, drove a stack overflow
+# (confirmed: reverting the fix reproduces a real segfault on this exact
+# fixture). Must now be rejected cleanly (0 objects, "unsupported entity
+# skipped"), not hang or crash.
+New
+Open @TMP@/iges_recursive_fixture.igs
+@expect_objects 0
+SelAll
+List
+# --- A hand-written STEP file: a FACETED_BREP whose one face is a POLY_LOOP
+# with 5 vertices (a pentagon) - well past the 4-vertex cap DXF's 3DFACE/
+# POLYFACE MESH have but STEP's POLY_LOOP does not. Regression:
+# BuildMeshFromFacetedBrep used to always build a single quad from just the
+# loop's first 4 vertices for any POLY_LOOP with more than 4 points,
+# silently discarding vertex 5 onward - a wrong, truncated face, not a
+# crash (see the fix's own comment in FileIgesStep.cpp). Must now
+# fan-triangulate the whole polygon: 5 vertices, 3 triangular faces, not
+# 1 quad missing a corner. ("cancel" first: the List above ran on an empty
+# selection - OnSelection's default min=1 leaves it sitting in its own
+# WantObjects prompt rather than finishing, which would otherwise silently
+# swallow the New/Open lines below as failed picks fed to that prompt.)
+cancel
+New
+Open @TMP@/step_pentagon_fixture.stp
+@expect_objects 1
+SelAll
+List
+# --- A hand-crafted malformed STEP file: a TRIMMED_CURVE whose own basis-
+# curve reference is itself (#1 = TRIMMED_CURVE(..., #1, ...)), reached via
+# a GEOMETRIC_CURVE_SET. Regression for the STEP analogue of the IGES
+# composite-curve bug above: StepModel::Curve()/BuildCurve() recursed into
+# each other with no depth bound and no cycle check, so a self-referencing
+# (or merely very deeply chained) TRIMMED_CURVE/COMPOSITE_CURVE drove
+# unbounded recursion and a stack overflow on import - confirmed: reverting
+# the depth-guard fix reproduces a real segfault on this exact fixture.
+# Must now be rejected cleanly (0 objects), not hang or crash.
+cancel
+New
+Open @TMP@/step_recursive_fixture.stp
+@expect_objects 0
+SelAll
+List
+# --- A hand-crafted malformed IGES file: a single type-116 (POINT) entity
+# whose directory entry's own Parameter Data pointer (columns 9-16 of the
+# first DE line) is blank, with no Parameter Data section at all.
+# Regression for a real out-of-bounds read this session's audit found:
+# ImportIges only bounds-checked the *upper* end of the parameter-line
+# index it computed from that pointer, so a blank/zero/negative pointer -
+# reachable from any malformed or hostile .igs file, no valid P section
+# required - underflowed to a negative index that, once cast to size_t,
+# read plines[SIZE_MAX] (confirmed: reverting the fix reproduces the same
+# out-of-bounds vector access on this exact fixture). Must now be handled
+# cleanly (the entity's parameter list is left empty, same as any other
+# entity with insufficient parameters), not crash.
+cancel
+New
+Open @TMP@/iges_bad_pd_ptr_fixture.igs
+@expect_objects 1
+SelAll
+List
+# --- A hand-crafted malformed IGES file: a single type-102 composite curve
+# whose own N field (how many child-curve DE pointers follow) declares
+# 2000000000 segments while the file supplies only one. Regression for a
+# real crash this session's audit found: BuildIgesCurve's composite-curve
+# case did `segs.reserve(n)` - and even the per-segment read loop below it -
+# straight from that untrusted N, with only a *depth* cap on how deeply
+# composite curves can nest, never a cap on how wide any single one of them
+# claims to be. A hostile/corrupt file's N alone, with no actual segment
+# data behind it, drove an unbounded reserve()/loop (confirmed: reverting
+# the fix reproduces a multi-gigabyte allocation attempt on this exact
+# fixture). Must now be rejected cleanly (0 objects), not hang or crash.
+cancel
+New
+Open @TMP@/iges_huge_composite_fixture.igs
+@expect_objects 0
+SelAll
+List
+# --- A hand-crafted malformed IGES file: a single type-116 (POINT) entity
+# whose Transformation Matrix pointer (field 7 of its directory entry)
+# points at a type-124 transform entity whose OWN Transformation Matrix
+# pointer points back at itself. Regression for a real crash this session's
+# audit found: IgesImporter::TransformOf composed a referenced transform's
+# own xform with no depth cap and no cycle check (unlike BuildIgesCurve's
+# composite-curve depth<=64 guard above, or the STEP importer's
+# kMaxCurveDepth), so a self-referencing (or longer-cycle) chain of 124
+# entities drove unbounded recursion and a stack overflow on import
+# (confirmed: reverting the depth-guard fix reproduces a real segfault on
+# this exact fixture). Must now be rejected cleanly - the point still
+# imports (with an identity transform once the depth cap trips), not
+# hang or crash.
+cancel
+New
+Open @TMP@/iges_cyclic_xform_fixture.igs
+@expect_objects 1
+SelAll
+List
+# --- A hand-written STEP file: a B_SPLINE_CURVE_WITH_KNOTS whose knot
+# multiplicity list declares one multiplicity of 2000000000 alongside two
+# real multiplicities of 1. Regression for a real crash this session's audit
+# found: StepModel::BuildCurve (and BuildSurface's B_SPLINE_SURFACE_WITH_
+# KNOTS sibling) expanded each knot by its declared multiplicity with no
+# upper bound - unlike every comparable IGES count field in this file
+# (102/106/112/126/128/...), which all reject anything outside
+# [0, 100000] - so a single huge multiplicity turned a few-hundred-byte
+# STEP file into a multi-gigabyte push_back loop (confirmed: reverting the
+# fix reproduces a multi-gigabyte allocation attempt on this exact
+# fixture). Must now be rejected cleanly (0 objects), not hang or crash.
+cancel
+New
+Open @TMP@/step_huge_knot_multiplicity_fixture.stp
+@expect_objects 0
+SelAll
+List

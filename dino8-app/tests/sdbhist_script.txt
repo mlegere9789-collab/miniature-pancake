@@ -1,0 +1,102 @@
+# History rebuild of a recorded SubD boolean replays the Levels option (the "SDH_" section, tests/sections/83_sdbhist.sh).
+#
+# With History On the boolean is recorded with its operands and its parameters; moving an operand re-runs it (no UpdateHistory needed). The typed
+# Levels option is now a recorded parameter ("levels", editable with EditHistory), so the rebuild uses it instead of the automatic value.
+# Fixture 1: two fully creased SubD boxes A = [0,10]^3 and B = [5,15]^3 (ids 1 and 2), BooleanIntersection = the box [5,10]^3 = 125 (id 3).
+#   Moving B by (-2,0,0) makes B = [3,13] x [5,15] x [5,15]: the overlap is 7 x 5 x 5 = 175, and the rebuilt cage is still exact (rounds 0).
+# Fixture 2: two smooth boxes, BooleanDifference with Levels=2 (rounds first 2, second 2); a Move rebuild must say 2 again (before: the automatic 3);
+#   EditHistory 3 levels=1 rebuilds with 1 round.
+# SubDBox places its base corners on the active CPlane (the z of the typed corners is projected to the CPlane, as for Box), so box B is built at
+# z = 0..10 and then moved up by (0,0,5) to occupy [5,15]^3; typing 5,5,5 15,15,5 gives [5,15]x[5,15]x[0,10], whose overlaps with A are 250 / 1750 / 750.
+# With History On the operands of a recorded boolean are hidden, so the script runs Show before it selects B (SelID 2) to Move it; without that Move
+# finds nothing to move, waits for objects, and swallows the rest of the script (every later command, New included, is fed to it).
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+New
+History On
+SDHBEGIN_creased
+SubDBox 0,0,0 10,10,0 10
+SelNone
+SelID 1
+Crease
+5,0,0
+10,5,0
+5,10,0
+0,5,0
+5,0,10
+10,5,10
+5,10,10
+0,5,10
+0,0,5
+10,0,5
+10,10,5
+0,10,5
+Enter
+SubDBox 5,5,0 15,15,0 10
+SelLast
+Move
+0,0,0
+0,0,5
+SelNone
+SelID 2
+Crease
+10,5,5
+15,10,5
+10,15,5
+5,10,5
+10,5,15
+15,10,15
+10,15,15
+5,10,15
+5,5,10
+15,5,10
+15,15,10
+5,15,10
+Enter
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+Show
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+-2,0,0
+SelNone
+SelID 3
+Volume
+
+New
+History On
+SDHBEGIN_levels
+SubDBox 0,0,0 10,10,0 10
+SubDBox 5,5,0 15,15,0 10
+SelLast
+Move
+0,0,0
+0,0,5
+SelNone
+SelID 1
+BooleanDifference
+Levels=2
+SelID 2
+Enter
+Show
+SelNone
+SelID 2
+Move
+0,0,0
+-2,0,0
+SelNone
+SelID 3
+EditHistory 3 levels=1
+SelNone
+SelID 3
+EditHistory 3 levels=7

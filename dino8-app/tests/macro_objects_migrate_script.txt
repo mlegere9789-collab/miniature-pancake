@@ -1,0 +1,16 @@
+# Third process, against a settings.json written by a build from BEFORE macro
+# objects (smoke.sh seeds it by hand): a "macros" name -> text map from
+# MacroSave and the single "macro_text" editor buffer. Both must migrate -
+# each saved text into a macro object of the same name, the editor buffer into
+# a macro named 'Scratch' - and the plain-text editor buffer must keep
+# working (MacroLoad puts a macro back into it; RecordMacro dumps it).
+ListMacros
+ShowMacro Scratch
+ShowMacro oldone
+RunMacro Scratch
+@expect_objects 2
+RunMacro oldone
+RecordMacro
+MacroLoad oldone
+RecordMacro
+OptionsExport @MODIR@/opts_migrated.json

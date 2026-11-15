@@ -1,0 +1,89 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('step_assembly_fixture.stp','2026-01-01T00:00:00',('Dino 8 tests'),(''),'hand-written','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));
+ENDSEC;
+DATA;
+/* The "Bracket" component's own 10x10 square face, defined relative to
+   its own local origin - the exact same proven square-face entities
+   step_plane_face.stp already uses (renamed/renumbered only), since that
+   fixture already proves this entity text imports correctly. */
+#1=CARTESIAN_POINT('',(0.,0.,0.));
+#2=DIRECTION('',(0.,0.,1.));
+#3=DIRECTION('',(1.,0.,0.));
+#4=AXIS2_PLACEMENT_3D('',#1,#2,#3);
+#5=PLANE('',#4);
+#6=CARTESIAN_POINT('',(0.,0.,0.));
+#7=CARTESIAN_POINT('',(10.,0.,0.));
+#8=CARTESIAN_POINT('',(10.,10.,0.));
+#9=CARTESIAN_POINT('',(0.,10.,0.));
+#10=VERTEX_POINT('',#6);
+#11=VERTEX_POINT('',#7);
+#12=VERTEX_POINT('',#8);
+#13=VERTEX_POINT('',#9);
+#14=DIRECTION('',(1.,0.,0.));
+#15=VECTOR('',#14,10.);
+#16=LINE('',#6,#15);
+#17=DIRECTION('',(0.,1.,0.));
+#18=VECTOR('',#17,10.);
+#19=LINE('',#7,#18);
+#20=DIRECTION('',(-1.,0.,0.));
+#21=VECTOR('',#20,10.);
+#22=LINE('',#8,#21);
+#23=DIRECTION('',(0.,-1.,0.));
+#24=VECTOR('',#23,10.);
+#25=LINE('',#9,#24);
+#26=EDGE_CURVE('',#10,#11,#16,.T.);
+#27=EDGE_CURVE('',#11,#12,#19,.T.);
+#28=EDGE_CURVE('',#12,#13,#22,.T.);
+#29=EDGE_CURVE('',#13,#10,#25,.T.);
+#30=ORIENTED_EDGE('',*,*,#26,.T.);
+#31=ORIENTED_EDGE('',*,*,#27,.T.);
+#32=ORIENTED_EDGE('',*,*,#28,.T.);
+#33=ORIENTED_EDGE('',*,*,#29,.T.);
+#34=EDGE_LOOP('',(#30,#31,#32,#33));
+#35=FACE_OUTER_BOUND('',#34,.T.);
+#36=ADVANCED_FACE('',(#35),#5,.T.);
+#37=OPEN_SHELL('',(#36));
+#38=SHELL_BASED_SURFACE_MODEL('Bracket',(#37));
+
+/* The component's own shape representation ("the part definition") and
+   the REPRESENTATION_MAP a MAPPED_ITEM instances it through below - the
+   real STEP AP214 assembly idiom (see ResolveMappedItem's own comment in
+   FileIgesStep.cpp). The origin axis (#39) is plain identity - the common
+   real-world-exporter case - so every placement difference below comes
+   entirely from each instance's own mapping_target axis. */
+#39=AXIS2_PLACEMENT_3D('',#1,#2,#3);
+#40=REPRESENTATION_CONTEXT('','3D');
+#41=SHAPE_REPRESENTATION('BracketPart',(#38),#40);
+#42=REPRESENTATION_MAP(#39,#41);
+
+/* Instance 1: identity placement - same position the component's own raw
+   coordinates already have, so this instance's bounding box should be
+   bit-for-bit the same as step_plane_face.stp's own ungrouped "Square". */
+#50=CARTESIAN_POINT('',(0.,0.,0.));
+#51=DIRECTION('',(0.,0.,1.));
+#52=DIRECTION('',(1.,0.,0.));
+#53=AXIS2_PLACEMENT_3D('',#50,#51,#52);
+#54=MAPPED_ITEM('Bracket #1',#42,#53);
+
+/* Instance 2: pure translation to (50,0,0) - same rotation as the part's
+   own local frame. */
+#60=CARTESIAN_POINT('',(50.,0.,0.));
+#61=DIRECTION('',(0.,0.,1.));
+#62=DIRECTION('',(1.,0.,0.));
+#63=AXIS2_PLACEMENT_3D('',#60,#61,#62);
+#64=MAPPED_ITEM('Bracket #2',#42,#63);
+
+/* Instance 3: translated to (0,50,0) AND rotated 90 degrees about Z (its
+   own local X axis now points along world +Y) - proves the reader applies
+   the real rotation a MAPPED_ITEM's target axis carries, not just the
+   translation part of it. */
+#70=CARTESIAN_POINT('',(0.,50.,0.));
+#71=DIRECTION('',(0.,0.,1.));
+#72=DIRECTION('',(0.,1.,0.));
+#73=AXIS2_PLACEMENT_3D('',#70,#71,#72);
+#74=MAPPED_ITEM('Bracket #3',#42,#73);
+ENDSEC;
+END-ISO-10303-21;

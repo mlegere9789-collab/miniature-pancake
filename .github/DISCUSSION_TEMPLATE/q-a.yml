@@ -1,0 +1,27 @@
+title: "[Q&A] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask how to do something in Dino 8. Search existing posts and `dino8-app/docs/site/` first.
+        For a reproducible bug, open an issue instead.
+  - type: input
+    id: version
+    attributes:
+      label: Dino 8 version and platform
+      description: For example "0.1.0, Linux x86_64".
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Paste the commands you ran. A short command script is ideal.
+    validations:
+      required: false

@@ -1,0 +1,9 @@
+{
+  "name": "dino8-touch-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Test-only dependencies for the Dino 8 Touch PWA (tests/touch_gestures.test.js). The PWA itself has no dependencies and no build step.",
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

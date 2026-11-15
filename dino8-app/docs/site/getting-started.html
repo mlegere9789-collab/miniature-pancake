@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting Started</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html"><span class="brand-mark">🦖</span> Dino 8 Docs</a>
+    <nav class="toplinks">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html" class="active">Getting Started</a>
+      <a href="commands.html">Command Reference</a>
+      <a href="tutorials.html">Tutorials</a>
+      <a href="coming-from-rhino.html">Coming from Rhino</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1>Getting started</h1>
+  <p class="lede">This page assumes no prior 3D modeling experience. If you have used Rhino
+  before, look for the <span class="verified">Rhino tip</span> boxes &mdash; the rest still
+  applies to you.</p>
+
+  <h2>1. Install</h2>
+  <p>Grab the installer for your platform (<code>Dino8Setup-*.exe</code> on Windows, a
+  <code>.deb</code> or <code>.tar.gz</code> on Linux, a <code>.dmg</code> on macOS) from the
+  project's releases, or build it yourself:</p>
+  <pre><code>cmake -S dino8-app -B dino8-app/build -DCMAKE_BUILD_TYPE=Release
+cmake --build dino8-app/build --parallel
+dino8-app/build/Dino8</code></pre>
+  <p>On Linux you need the OpenGL/X11 development headers:
+  <code>libgl1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev</code>.
+  Dependencies (GLFW, Dear ImGui, OpenNURBS, Manifold) are fetched automatically by CMake.</p>
+  <div class="callout">
+    <h4>Nothing phones home</h4>
+    <p>No account, no license key, no telemetry, no update nag. Settings are stored locally
+    (<code>%APPDATA%\Dino8</code> on Windows, <code>~/.config/dino8</code> on Linux,
+    <code>~/Library/Application Support/Dino8</code> on macOS).</p>
+  </div>
+
+  <h2>2. The screen layout</h2>
+  <p>On first launch you will see:</p>
+  <ul>
+    <li><strong>Four viewports</strong> (Top, Front, Right, Perspective) filling most of the
+    window.</li>
+    <li>A <strong>toolbar</strong> across the top with icon buttons for common commands.</li>
+    <li>A <strong>command line</strong> just under the toolbar &mdash; this is the fastest way to
+    do anything in Dino 8, and the rest of this guide leans on it.</li>
+    <li><strong>Layers</strong> and <strong>Properties</strong> panels docked on the right.</li>
+    <li>A <strong>Command History</strong> panel at the bottom, showing everything you have
+    typed and every message the app has printed back.</li>
+    <li>Object snap and grid/ortho toggles along the very bottom (status bar).</li>
+  </ul>
+  <p>Every panel can be dragged by its tab to re-dock or float it, and the layout is remembered
+  between sessions.</p>
+
+  <h2>3. The command line, in one minute</h2>
+  <p>Almost everything in Dino 8 is a <em>command</em>: a short, typed word that starts an
+  operation, which then asks you for the input it needs (usually points you click in a
+  viewport, sometimes a typed number). You never have to memorize menus.</p>
+  <ol>
+    <li>Click in the command line (or anywhere in a viewport) and type <code>Box</code>, then
+    press <kbd>Enter</kbd>.</li>
+    <li>The command line now prompts <code>First corner of base</code>. Click a point in the
+    Top viewport.</li>
+    <li>It prompts <code>Other corner of base</code>. Click a second point.</li>
+    <li>It prompts for a height. Type <code>10</code> and press <kbd>Enter</kbd> (or click a
+    third point to set the height visually).</li>
+  </ol>
+  <p>You now have a box. Press <kbd>Esc</kbd> at any point during a command to cancel it, and
+  press <kbd>Enter</kbd> on an <em>empty</em> command line to repeat whatever command you last
+  ran &mdash; useful for placing several boxes in a row.</p>
+
+  <div class="callout">
+    <h4><span class="verified">Rhino tip</span> muscle memory carries over</h4>
+    <p>Dino 8 deliberately uses Rhino 8's own command names, aliases, and prefixes: type
+    <code>b</code> for Box, <code>c</code> for Circle, <code>l</code> for Line, <code>co</code>
+    for Copy, <code>m</code> for Move; prefix with <code>_</code>/<code>-</code>/<code>!</code>
+    for macros exactly like Rhino; type relative coordinates as <code>@5,0</code> and polar
+    coordinates as <code>20&lt;45</code>. The full alias list and every command's exact option
+    syntax is on the <a href="commands.html">Command Reference</a> page.</p>
+  </div>
+
+  <h3>Typing coordinates</h3>
+  <table>
+    <tr><th>What you type</th><th>Meaning</th></tr>
+    <tr><td><code>10,5,0</code></td><td>An absolute point in world coordinates (x, y, z)</td></tr>
+    <tr><td><code>@5,0</code></td><td>A point 5 units in x, 0 in y, relative to the last point you placed</td></tr>
+    <tr><td><code>20&lt;45</code></td><td>A point 20 units away at a 45&deg; angle (polar) from the last point</td></tr>
+    <tr><td>a bare number, e.g. <code>10</code></td><td>A distance along the direction your cursor is currently pointing</td></tr>
+  </table>
+
+  <h3>Command-line options</h3>
+  <p>Many commands offer options while they run &mdash; for example, typing <code>Box</code>
+  then clicking <code>Deformable</code> or setting <code>NumSides=8</code> before completing a
+  Polygon. Options appear as clickable words after the prompt; you can click them with the mouse
+  or type the option's name (and, for a value option, the new value) on the command line.</p>
+
+  <h2>4. Navigating the viewports</h2>
+  <table>
+    <tr><th>Action</th><th>How</th></tr>
+    <tr><td>Orbit (Perspective view)</td><td>Right-click and drag</td></tr>
+    <tr><td>Pan (Top/Front/Right)</td><td>Right-click and drag, or Shift + middle-drag</td></tr>
+    <tr><td>Zoom</td><td>Mouse wheel (zooms toward the cursor), or Page Up / Page Down</td></tr>
+    <tr><td>Zoom to fit everything</td><td>Type <code>ZoomExtents</code> (alias <code>ze</code>)</td></tr>
+    <tr><td>Select an object</td><td>Left-click it</td></tr>
+    <tr><td>Window / crossing select</td><td>Left-drag left-to-right (window: fully inside) or right-to-left (crossing: touches the box)</td></tr>
+    <tr><td>Add / remove from selection</td><td>Shift-click to add, Ctrl-click to toggle</td></tr>
+    <tr><td>Confirm / finish a command</td><td>Right-click, or press Enter</td></tr>
+    <tr><td>Cancel</td><td>Esc</td></tr>
+  </table>
+  <p>Useful toggles, all in the status bar or on function keys: <kbd>F7</kbd> grid,
+  <kbd>F8</kbd> ortho (snap to 0/90/180/270&deg;), <kbd>F9</kbd> grid snap, <kbd>F10</kbd> turns
+  on control points for the selected curve/surface, <kbd>Home</kbd> resets the active view.
+  Object snaps (End, Mid, Cen, Quad, Near, Vertex) live in the status bar and make your clicks
+  land exactly on existing geometry.</p>
+
+  <h2>5. Your first few shapes</h2>
+  <p>Try these directly on the command line, one at a time:</p>
+  <ul>
+    <li><code>Box</code>, <code>Sphere</code>, <code>Cylinder</code>, <code>Cone</code>,
+    <code>Torus</code> &mdash; solid primitives.</li>
+    <li><code>Line</code>, <code>Circle</code>, <code>Arc</code>, <code>Rectangle</code>,
+    <code>Polygon</code> &mdash; curves you can later extrude, revolve, or loft into
+    surfaces.</li>
+    <li><code>Move</code>, <code>Copy</code>, <code>Rotate</code>, <code>Scale</code>,
+    <code>Mirror</code> &mdash; select an object first (click it, or type <code>SelLast</code>
+    right after creating it), then run the transform.</li>
+    <li>Drag the <strong>Gumball</strong> that appears on a selected object instead of typing:
+    arrows move it, the rings rotate it, the small cubes scale it. Hold Shift for 15&deg; rotation
+    steps or uniform scaling.</li>
+  </ul>
+  <p>When you are ready for full worked examples with exact command sequences, move on to the
+  <a href="tutorials.html">Tutorials</a> page &mdash; every sequence there has been run through
+  the real application to confirm it produces the stated result.</p>
+
+  <h2>6. Saving your work</h2>
+  <p><code>Save</code> and <code>Open</code> read and write native <code>.3dm</code> files
+  (round-tripping layers, names, colors, user text, notes, named views, and units).
+  <code>Export</code> and <code>Import</code> handle OBJ, STL, STEP/IGES, DXF, and more.
+  Undo (<code>Undo</code>, alias <code>u</code>) snapshots the whole document on every change, so
+  it can never desync from what you actually did &mdash; press it as many times as you like.</p>
+
+  <h2>7. Where to go next</h2>
+  <div class="grid-cards">
+    <a href="tutorials.html" style="text-decoration:none;color:inherit"><div class="card"><h3>Tutorials</h3><p>Ten concrete, verified walkthroughs.</p></div></a>
+    <a href="commands.html" style="text-decoration:none;color:inherit"><div class="card"><h3>Command Reference</h3><p>Search all 1055 commands.</p></div></a>
+    <a href="coming-from-rhino.html" style="text-decoration:none;color:inherit"><div class="card"><h3>Coming from Rhino</h3><p>Honest differences from Rhino 8.</p></div></a>
+  </div>
+</main>
+
+<footer>
+  Dino 8 is free software with no telemetry. This site is static HTML/CSS/JS with no build
+  step.
+</footer>
+</body>
+</html>

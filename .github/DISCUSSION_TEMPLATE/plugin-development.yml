@@ -1,0 +1,39 @@
+title: "[Plugin] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions about writing, packaging or listing a Dino 8 plug-in.
+        Read `dino8-app/docs/PLUGIN_GUIDE.md` first; it covers the SDK, ABI versioning, packaging and listing.
+  - type: input
+    id: sdk
+    attributes:
+      label: SDK / plug-in API version
+      description: "`Dino8PluginSdk_API_VERSION` from CMake, or the DINO8_PLUGIN_API_VERSION in your header."
+    validations:
+      required: true
+  - type: dropdown
+    id: template
+    attributes:
+      label: Started from template
+      options:
+        - command
+        - import-export
+        - panel
+        - none (own project)
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: "`GrasshopperPluginList` output, build errors, or the `dino8_plugin_init returned N` line."
+      render: text
+    validations:
+      required: false

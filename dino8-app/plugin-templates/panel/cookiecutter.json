@@ -1,0 +1,9 @@
+{
+  "plugin_name": "My Report Panel",
+  "plugin_slug": "my_report_panel",
+  "command_name": "MyReport",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "Prints a table of the selection (sizes and box volumes).",
+  "index_tags": "\"report\", \"panel\""
+}

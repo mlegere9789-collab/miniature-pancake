@@ -1,0 +1,39 @@
+#title: Organize with layers
+#summary: Create layers, draw on the current layer, move objects between layers, hide, show and lock them.
+#level: Beginner
+# Source: extends docs/tutorial_scripts/04_layers.txt.
+#narrate: Layers keep a model manageable. The Layers panel on the right lists them; right now there is only the Default layer.
+SetActiveViewport Top
+NewLayer Structure
+NewLayer Fixtures
+#narrate: NewLayer adds a layer by name. We create two, Structure and Fixtures, and both appear in the panel.
+SetLayer Structure
+Box 0,0,0 20,20,0 10
+@expect_objects 1
+#narrate: SetLayer makes Structure the current layer. Anything we draw from now on lands on it, like this box.
+SetLayer Fixtures
+Sphere 30,10,5 5
+@expect_objects 2
+#narrate: Switch the current layer to Fixtures and draw a sphere. The panel's object counts track each layer.
+SelID 1
+ChangeLayer Fixtures
+#narrate: Changed our mind? ChangeLayer moves the selected box onto Fixtures. Both objects now share one layer.
+SelID 1
+List
+#narrate: List reports the layer name for each object, a quick way to confirm the move.
+SelAll
+LayerOff
+SelAll
+@expect_selected 0
+#narrate: LayerOff hides the layer of every selected object. Select all again and nothing is selected, because everything on that layer is hidden.
+SelNone
+AllLayersOn
+SelAll
+@expect_selected 2
+#narrate: AllLayersOn brings every layer back, and both objects can be selected again.
+SelNone
+SelAll
+LayerLock
+#narrate: LayerLock locks the layer: its objects stay visible and snappable but can no longer be selected or edited by accident.
+LayerUnlock
+#narrate: LayerUnlock releases it. Layers are the simplest way to keep order in a model as it grows.

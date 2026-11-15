@@ -1,0 +1,19 @@
+# TitleBlock's Scale field closes 2D drafting's own last remaining
+# "Associative annotation updating" gap half: left unset, Scale now
+# defaults to (and stays associative to) the active sheet's own single
+# detail view's current scale (LayoutDetail::scale, page mm per model
+# unit), formatted as a human "1:N"/"N:1" ratio - mirroring Name/Date's
+# own existing live-document-title/today's-date associativity, rather
+# than the previous bare static "1:1" default. A sheet with zero or more
+# than one detail still has no single well-defined scale to track, so it
+# keeps the old static default, unchanged.
+Layout Name=ScaleSheet Width=297 Height=210
+Detail Name=D1 Scale=0.02 20,20 150,120
+TitleBlock Sheet=ScaleSheet
+10,180
+# A second sheet with no detail at all: Scale has nothing to derive from,
+# stays the plain static "1:1" default, same as before this change.
+Layout Name=NoDetailSheet Width=297 Height=210
+TitleBlock Sheet=NoDetailSheet
+10,180
+UpdateTitleBlock

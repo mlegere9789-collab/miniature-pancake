@@ -1,0 +1,139 @@
+name: Sign Windows binaries
+description: >-
+  Authenticode-signs the given files with whichever method the caller selected
+  (PFX certificate, Azure Trusted Signing, or SignPath) and verifies the result.
+  Local composite action: it is only resolved when a step that uses it actually
+  runs, so a workflow whose signing steps are all skipped never touches it, nor
+  the third-party actions it calls. See docs/CODE_SIGNING.md.
+
+inputs:
+  method:
+    description: >-
+      pfx, azure or signpath for real signing. 'test-pfx' is the CI self-test:
+      same step and script as 'pfx' but with a throwaway self-signed certificate
+      on scratch copies (see dino8-app/packaging/windows/test-signing.ps1); its
+      output is NOT trusted-signed and is never published.
+    required: true
+  label:
+    description: Short unique name for this call (used to name the SignPath upload)
+    required: true
+  files:
+    description: Newline-separated paths (relative to the workspace) of the files to sign in place
+    required: true
+  # PFX
+  pfx-base64:
+    required: false
+    default: ''
+  pfx-password:
+    required: false
+    default: ''
+  # Azure Trusted Signing
+  azure-tenant-id:
+    required: false
+    default: ''
+  azure-client-id:
+    required: false
+    default: ''
+  azure-client-secret:
+    required: false
+    default: ''
+  azure-endpoint:
+    required: false
+    default: ''
+  azure-account:
+    required: false
+    default: ''
+  azure-profile:
+    required: false
+    default: ''
+  # SignPath
+  signpath-api-token:
+    required: false
+    default: ''
+  signpath-organization-id:
+    required: false
+    default: ''
+  signpath-project-slug:
+    required: false
+    default: ''
+  signpath-policy-slug:
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Sign with PFX certificate or Azure Trusted Signing
+      if: ${{ inputs.method == 'pfx' || inputs.method == 'azure' || inputs.method == 'test-pfx' }}
+      shell: pwsh
+      env:
+        SIGN_METHOD: ${{ inputs.method }}
+        SIGN_FILES: ${{ inputs.files }}
+        WINDOWS_CERT_BASE64: ${{ inputs.pfx-base64 }}
+        WINDOWS_CERT_PASSWORD: ${{ inputs.pfx-password }}
+        AZURE_TENANT_ID: ${{ inputs.azure-tenant-id }}
+        AZURE_CLIENT_ID: ${{ inputs.azure-client-id }}
+        AZURE_CLIENT_SECRET: ${{ inputs.azure-client-secret }}
+        AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ inputs.azure-endpoint }}
+        AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ inputs.azure-account }}
+        AZURE_TRUSTED_SIGNING_PROFILE: ${{ inputs.azure-profile }}
+      run: |
+        $files = $env:SIGN_FILES -split "\r?\n" | Where-Object { $_.Trim() } | ForEach-Object { (Resolve-Path -Path $_.Trim()).Path }
+        & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\sign.ps1" -Method $env:SIGN_METHOD -Files $files
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    # SignPath: the files are uploaded as a workflow artifact, SignPath
+    # fetches that artifact from GitHub, signs it under the project's signing
+    # policy and hands the signed files back. The origin of the unsigned
+    # artifact (this repository, this run) is what SignPath verifies - which is
+    # why the official action is used rather than a hand-rolled REST call.
+    - name: SignPath - stage unsigned files
+      if: ${{ inputs.method == 'signpath' }}
+      shell: pwsh
+      env:
+        SIGN_FILES: ${{ inputs.files }}
+      run: |
+        $stage = Join-Path $env:RUNNER_TEMP 'signpath-in'
+        Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $stage | Out-Null
+        $files = $env:SIGN_FILES -split "\r?\n" | Where-Object { $_.Trim() } | ForEach-Object { (Resolve-Path -Path $_.Trim()).Path }
+        foreach ($f in $files) {
+          $dest = Join-Path $stage (Split-Path -Leaf $f)
+          if (Test-Path $dest) { throw "two files to sign share the name $(Split-Path -Leaf $f)" }
+          Copy-Item -LiteralPath $f -Destination $dest
+        }
+    - name: SignPath - upload unsigned artifact
+      id: signpath-upload
+      if: ${{ inputs.method == 'signpath' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: signpath-unsigned-${{ inputs.label }}
+        path: ${{ runner.temp }}/signpath-in
+        if-no-files-found: error
+    - name: SignPath - submit signing request
+      if: ${{ inputs.method == 'signpath' }}
+      uses: signpath/github-action-submit-signing-request@v1
+      with:
+        api-token: ${{ inputs.signpath-api-token }}
+        organization-id: ${{ inputs.signpath-organization-id }}
+        project-slug: ${{ inputs.signpath-project-slug }}
+        signing-policy-slug: ${{ inputs.signpath-policy-slug }}
+        github-artifact-id: ${{ steps.signpath-upload.outputs.artifact-id }}
+        wait-for-completion: true
+        output-artifact-directory: ${{ runner.temp }}/signpath-out
+    - name: SignPath - put signed files back and verify
+      if: ${{ inputs.method == 'signpath' }}
+      shell: pwsh
+      env:
+        SIGN_FILES: ${{ inputs.files }}
+      run: |
+        $out = Join-Path $env:RUNNER_TEMP 'signpath-out'
+        $files = $env:SIGN_FILES -split "\r?\n" | Where-Object { $_.Trim() } | ForEach-Object { (Resolve-Path -Path $_.Trim()).Path }
+        foreach ($f in $files) {
+          $name = Split-Path -Leaf $f
+          $signed = Get-ChildItem -Path $out -Recurse -File -Filter $name | Select-Object -First 1
+          if (-not $signed) { throw "SignPath returned no signed file named $name" }
+          Copy-Item -LiteralPath $signed.FullName -Destination $f -Force
+        }
+        & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\sign.ps1" -Method verify -Files $files
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

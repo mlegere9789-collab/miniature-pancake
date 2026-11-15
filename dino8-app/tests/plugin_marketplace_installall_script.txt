@@ -1,0 +1,7 @@
+PluginMarketplaceInstallAll
+GrasshopperPluginList
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_installall_index.json
+PluginMarketplaceInstallAll
+GrasshopperPluginList
+PluginMarketplaceUninstall alpha
+PluginMarketplaceUninstall beta

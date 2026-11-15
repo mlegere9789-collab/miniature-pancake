@@ -1,0 +1,62 @@
+# OffsetCrvOnSrf records construction history (tests/smoke.sh section H4R_, part 3). With History On the offset curve is
+# recorded as {curve, surface} with the in-surface distance; moving the curve rebuilds the offset automatically (no
+# UpdateHistory), EditHistory changes the distance, and the record survives Save / New / Open. Every claim is a measured
+# Bounding box / Length, compared with the SAME offset built fresh (History Off) from the curve in its edited position.
+# @TMP@ is the test temp directory.
+# Bounding boxes (and Total length lines), in order:
+#  1 offset of a 16-long line by 3   2 curve moved +4 Y   3 EditHistory distance=-2   4 fresh control (distance -2) (= 3)
+#  5 reopened, curve moved +2 Y more
+SetActiveViewport Top
+History On
+Plane 0,0,0 20,20,0
+Line 2,5,0 18,5,0
+SelNone
+SelID 2
+OffsetCrvOnSrf
+SelID 1
+Enter
+3
+History
+SelNone
+SelID 3
+BoundingBox
+Length
+SelNone
+SelID 2
+Move
+0,0,0
+0,4,0
+SelNone
+SelID 3
+BoundingBox
+Length
+EditHistory 3 distance=-2
+SelNone
+SelID 3
+BoundingBox
+Length
+History Off
+SelNone
+SelID 2
+OffsetCrvOnSrf
+SelID 1
+Enter
+-2
+SelLast
+BoundingBox
+Length
+History On
+Save @TMP@/h4r_offsrf.3dm
+New
+Open @TMP@/h4r_offsrf.3dm
+History On
+History
+SelNone
+SelID 2
+Move
+0,0,0
+0,2,0
+SelNone
+SelID 3
+BoundingBox
+Length

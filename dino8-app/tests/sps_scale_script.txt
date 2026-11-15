@@ -1,0 +1,226 @@
+# Per-axis (non-uniform) scale of Sweep1: the ScaleX / ScaleY options (tests/smoke.sh section SPS_).
+# "ScaleX=a,b" scales the section along its X axis by a at the rail start and b at the rail end, linear in the rail's arc
+# length in between (ScaleY likewise along Y); the X axis is world X seen in the section plane at the rail start.
+# Every figure is MEASURED by the app (ClosestPt on the finished surface, BoundingBox, the kernel's exact volume of the
+# capped solid) and compared in smoke.sh with the closed form. The smoke section cuts the output apart per case at each
+# "Command: Sweep1" line (cases, in order):
+#  1 circle r=1 on a straight rail z = 0..10, ScaleX=1,2 ScaleY=1,0.5: elliptic frustum, semi-axes (1+f, 1-f/2) at z = 10 f;
+#    ClosestPt of points ON the ellipses at z = 0, 5, 10 (distance ~0) and of the swapped-axes point (far)
+#  2 the same with Cap=Yes: volume pi * 10 * integral (1+f)(1-f/2) df = 10 pi 13/12 = 34.0339
+#  3 ScaleX=2,2 only (ScaleY untouched): elliptic cylinder, volume pi 2 1 10 = 62.8319
+#  4 control, no scale option: the plain cylinder, volume 31.4159, and no per-axis message
+#  5 THREE circles r=1 (z = 0, 5, 10) on the same rail with the scales of case 1, Cap=Yes: Brep::Sweep1Sections, ~34.034
+#  6 closed circle rail R=10, circle r=1 at its start, ScaleX=1.5,1.5 ScaleY=0.8,0.8 Cap=Yes: volume 2 pi^2 R r^2 * 1.5 * 0.8
+#  7 closed rail with a ramp ScaleX=1,2: refused by the kernel with its reason, no surface
+#  8 section NOT at the rail start with a scale: refused with its reason, no surface
+#  9 ScaleX=0,2: refused, no surface        10 ScaleX=-1,2: refused, no surface        11 ScaleY=abc: refused, no surface
+SetActiveViewport Top
+
+# --- 1: elliptic frustum, surface
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSRail1
+Circle 0,0,0 1
+SelLast
+SetObjectName SPSSec1
+SelNone
+SelName SPSRail1
+Sweep1 ScaleX=1,2 ScaleY=1,0.5
+SelName SPSSec1
+Enter
+SelLast
+BoundingBox
+SelNone
+SelSrf
+ClosestPt
+1.5,0,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,0.75,5
+Enter
+SelNone
+SelSrf
+ClosestPt
+2,0,10
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,0.5,10
+Enter
+SelNone
+SelSrf
+ClosestPt
+-1,0,0
+Enter
+SelNone
+SelSrf
+ClosestPt
+0,1.5,5
+Enter
+SelAll
+Delete
+@expect_objects 0
+
+# --- 2: the same, capped
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSRail2
+Circle 0,0,0 1
+SelLast
+SetObjectName SPSSec2
+SelNone
+SelName SPSRail2
+Sweep1 ScaleX=1,2 ScaleY=1,0.5 Cap=Yes
+SelName SPSSec2
+Enter
+SelLast
+Volume
+Check
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 3: X only, constant 2
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSRail3
+Circle 0,0,0 1
+SelLast
+SetObjectName SPSSec3
+SelNone
+SelName SPSRail3
+Sweep1 ScaleX=2,2 Cap=Yes
+SelName SPSSec3
+Enter
+SelLast
+Volume
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 4: control, no scale option
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSRail4
+Circle 0,0,0 1
+SelLast
+SetObjectName SPSSec4
+SelNone
+SelName SPSRail4
+Sweep1 Cap=Yes
+SelName SPSSec4
+Enter
+SelLast
+Volume
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 5: three sections, same scales, capped
+NewLayer SPSRail5L
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSRail5
+NewLayer SPSSecs5
+Circle 0,0,0 1
+Circle 0,0,5 1
+Circle 0,0,10 1
+SelNone
+SelName SPSRail5
+Sweep1 ScaleX=1,2 ScaleY=1,0.5 Cap=Yes
+SelLayer
+Enter
+SelSrf
+Volume
+BoundingBox
+SelAll
+Delete
+@expect_objects 0
+
+# --- 6: closed circle rail, constant per-axis scale, capped
+Circle 0,0,0 10
+SelLast
+SetObjectName SPSRail6
+Circle3Pt 11,0,0 10,0,1 9,0,0
+SelLast
+SetObjectName SPSSec6
+SelNone
+SelName SPSRail6
+Sweep1 ScaleX=1.5,1.5 ScaleY=0.8,0.8 Cap=Yes
+SelName SPSSec6
+Enter
+SelLast
+Volume
+Check
+SelAll
+Delete
+@expect_objects 0
+
+# --- 7: closed rail, one-way ramp: refused
+Circle 0,0,0 10
+SelLast
+SetObjectName SPSRail7
+Circle3Pt 11,0,0 10,0,1 9,0,0
+SelLast
+SetObjectName SPSSec7
+SelNone
+SelName SPSRail7
+Sweep1 ScaleX=1,2
+SelName SPSSec7
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
+
+# --- 8: section half way along the rail with a scale: refused
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSRail8
+Circle 0,0,5 1
+SelLast
+SetObjectName SPSSec8
+SelNone
+SelName SPSRail8
+Sweep1 ScaleX=1,2
+SelName SPSSec8
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
+
+# --- 9, 10, 11: invalid scale values: refused, nothing built
+Line 0,0,0 0,0,10
+SelLast
+SetObjectName SPSRail9
+Circle 0,0,0 1
+SelLast
+SetObjectName SPSSec9
+SelNone
+SelName SPSRail9
+Sweep1 ScaleX=0,2
+SelName SPSSec9
+Enter
+@expect_objects 2
+SelNone
+SelName SPSRail9
+Sweep1 ScaleX=-1,2
+SelName SPSSec9
+Enter
+@expect_objects 2
+SelNone
+SelName SPSRail9
+Sweep1 ScaleY=abc
+SelName SPSSec9
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0

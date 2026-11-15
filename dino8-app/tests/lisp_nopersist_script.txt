@@ -1,0 +1,9 @@
+# Third process, no acad.lsp: nothing from earlier processes is present.
+autobox
+(list auto_loaded)
+(autobox_helper 5)
+mybox
+(fact 3)
+Box 0,0,0 1,1,0 2
+SelLast
+Volume

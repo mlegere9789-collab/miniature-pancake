@@ -1,0 +1,102 @@
+# SubD live symmetric editing (the "SDSYM_" section, tests/sections/86_sdsym.sh): SubDSymmetryCheck, SubDMoveSymmetric, SubDCreaseSymmetric.
+#
+# Fixture: the app's SubD box 0,0,0 - 4,2,0 - 2, i.e. the 8-vertex cage [0,4] x [0,2] x [0,2], which is mirror symmetric across the plane x = 2
+# (the plane is given by the picks (2,0,0) and (2,1,0): vertical through that line, normal (1,0,0), offset 2).
+# smoke.sh runs this script; there is no @TMP@ substitution here.
+
+SetActiveViewport Top
+
+# --- the box is symmetric: 8 vertices, none on the plane, 8 paired
+New
+SDSBEGIN_box
+SubDBox 0,0,0 4,2,0 2
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+
+# --- a symmetric move: the vertex (0,0,0) goes to (-0.3,0.2,0.1), its partner (4,0,0) to the reflection (4.3,0.2,0.1); both limit points are mirror images
+New
+SDSBEGIN_move
+SubDBox 0,0,0 4,2,0 2
+SelLast
+SubDMoveSymmetric
+2,0,0
+2,1,0
+0,0,0
+-0.3,0.2,0.1
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+SelLast
+SubDVertexInfo
+-0.3,0.2,0.1
+4.3,0.2,0.1
+Enter
+
+# --- negative control: the same move done to ONE vertex only (SubDSculpt with a radius below the edge length) breaks the symmetry, and the
+# symmetric move refuses the vertex that now has no partner
+New
+SDSBEGIN_onesided
+SubDBox 0,0,0 4,2,0 2
+SelLast
+SubDSculpt
+Radius=0.5
+Falloff=Constant
+0,0,0
+-0.3,0.2,0.1
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+SelLast
+SubDMoveSymmetric
+2,0,0
+2,1,0
+-0.3,0.2,0.1
+-0.5,0,0
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+
+# --- creases: a symmetric crease (the edge at x = 0 and its mirror at x = 4), a one-sided crease that breaks the symmetry, and the repair
+New
+SDSBEGIN_crease
+SubDBox 0,0,0 4,2,0 2
+SelLast
+SubDCreaseSymmetric
+2,0,0
+2,1,0
+0,1,0
+Enter
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+SelLast
+What
+SelLast
+Crease
+0,0,1
+Enter
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+SelLast
+SubDCreaseSymmetric
+2,0,0
+2,1,0
+0,0,1
+Enter
+SelLast
+SubDSymmetryCheck
+2,0,0
+2,1,0
+SelLast
+What
+
+New
+SDSBEGIN_end

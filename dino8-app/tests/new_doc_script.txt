@@ -1,0 +1,47 @@
+# New must start a genuinely empty document. Document::Clear() (what New
+# runs) resets the object list and the id counter to 1, but used to leave
+# several id-keyed and name-keyed tables from the OLD document in place:
+# block definitions (Insert/BlockManager still offered the old block), the
+# HistoryRecord/Provenance side tables (so the new document's first objects,
+# handed the same small ids, inherited the old extrusion's record - History
+# listed a fresh Circle as "object 2: Extrude <- 1", SelExtrusion selected
+# it, and UpdateHistory silently rebuilt that Circle into an extrusion of
+# whatever object 1 now was), cage bindings, named selections/positions and
+# the previous-selection list. Every one of those is now cleared.
+#
+# Setup in document A: a tracked Extrude (History On) of line 1 -> surface
+# 2, and a block definition made from circle 3. Save so New needs no
+# confirm-discard dialog (never auto-confirmed headlessly).
+History On
+Line 0,0,0 10,0,0
+SelNone
+SelID 1
+Extrude
+5
+@expect_objects 2
+Circle 30,0,0 5
+SelLast
+Block
+0,0,0
+LeakBk
+@expect_objects 3
+History
+BlockManager
+Save @TMP@/new_doc_leak.3dm
+New
+@expect_objects 0
+# Document B: a Line as object 1 and a Circle as object 2 - the exact ids
+# document A's tracked pair had. The Circle must NOT be treated as A's
+# extrusion, and the block table must be empty.
+Line 200,0,0 210,0,0
+Circle 300,0,0 5
+@expect_objects 2
+History
+SelNone
+SelExtrusion
+@expect_selected 0
+UpdateHistory
+SelNone
+SelLast
+What
+BlockManager

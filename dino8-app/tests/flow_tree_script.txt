@@ -1,0 +1,11 @@
+# Dino Flow data-tree QC: Range -> Graft Tree -> Flatten Tree -> List Item ->
+# Construct Point -> Bake (see flow_tree_graph.dflow). AttachGHSData/GetUserText
+# surface each node's Tree::Summary() as plain text so Graft's branch-per-item
+# structure and Flatten's collapse back to one branch are directly checkable.
+Grasshopper
+GrasshopperPlayer @TREEFILE@ Bake=Yes
+@expect_objects 1
+SelAll
+AttachGHSData
+GetUserText
+List

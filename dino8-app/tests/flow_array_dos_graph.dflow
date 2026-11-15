@@ -1,0 +1,149 @@
+{"format":"dflow1","nodes":[
+{"id":1,"type":"Range","x":0,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Number","num":1e300}}
+]},
+{"id":2,"type":"List Length","x":150,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}}
+]},
+{"id":3,"type":"Construct Point","x":300,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":4,"type":"Bake","x":450,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Text","text":""}},
+  {"has":true,"value":{"kind":"Text","text":"RangeLenPt"}}
+]},
+
+{"id":5,"type":"Series","x":0,"y":150,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Integer","num":2000000000}}
+]},
+{"id":6,"type":"List Length","x":150,"y":150,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}}
+]},
+{"id":7,"type":"Construct Point","x":300,"y":150,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":8,"type":"Bake","x":450,"y":150,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Text","text":""}},
+  {"has":true,"value":{"kind":"Text","text":"SeriesLenPt"}}
+]},
+
+{"id":9,"type":"Random","x":0,"y":300,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Integer","num":2000000000}}
+]},
+{"id":10,"type":"List Length","x":150,"y":300,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}}
+]},
+{"id":11,"type":"Construct Point","x":300,"y":300,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":12,"type":"Bake","x":450,"y":300,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Text","text":""}},
+  {"has":true,"value":{"kind":"Text","text":"RandomLenPt"}}
+]},
+
+{"id":13,"type":"Line","x":0,"y":450,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[]},
+{"id":14,"type":"Divide Curve","x":150,"y":450,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Integer","num":2000000000}}
+]},
+{"id":15,"type":"List Length","x":300,"y":450,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}}
+]},
+{"id":16,"type":"Construct Point","x":450,"y":450,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":17,"type":"Bake","x":600,"y":450,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Text","text":""}},
+  {"has":true,"value":{"kind":"Text","text":"DivideLenPt"}}
+]},
+
+{"id":18,"type":"Construct Point","x":0,"y":600,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":true,"value":{"kind":"Number","num":1}},
+  {"has":true,"value":{"kind":"Number","num":2}},
+  {"has":true,"value":{"kind":"Number","num":3}}
+]},
+
+{"id":19,"type":"Linear Array","x":150,"y":600,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Integer","num":2000000000}}
+]},
+{"id":20,"type":"List Length","x":300,"y":600,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}}
+]},
+{"id":21,"type":"Construct Point","x":450,"y":600,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":22,"type":"Bake","x":600,"y":600,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Text","text":""}},
+  {"has":true,"value":{"kind":"Text","text":"LinArrLenPt"}}
+]},
+
+{"id":23,"type":"Polar Array","x":150,"y":750,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Integer","num":2000000000}}
+]},
+{"id":24,"type":"List Length","x":300,"y":750,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}}
+]},
+{"id":25,"type":"Construct Point","x":450,"y":750,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":26,"type":"Bake","x":600,"y":750,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Text","text":""}},
+  {"has":true,"value":{"kind":"Text","text":"PolarArrLenPt"}}
+]}
+],"wires":[
+{"from":1,"fp":0,"to":2,"tp":0},
+{"from":2,"fp":0,"to":3,"tp":0},
+{"from":3,"fp":0,"to":4,"tp":0},
+
+{"from":5,"fp":0,"to":6,"tp":0},
+{"from":6,"fp":0,"to":7,"tp":0},
+{"from":7,"fp":0,"to":8,"tp":0},
+
+{"from":9,"fp":0,"to":10,"tp":0},
+{"from":10,"fp":0,"to":11,"tp":0},
+{"from":11,"fp":0,"to":12,"tp":0},
+
+{"from":13,"fp":0,"to":14,"tp":0},
+{"from":14,"fp":0,"to":15,"tp":0},
+{"from":15,"fp":0,"to":16,"tp":0},
+{"from":16,"fp":0,"to":17,"tp":0},
+
+{"from":18,"fp":0,"to":19,"tp":0},
+{"from":19,"fp":0,"to":20,"tp":0},
+{"from":20,"fp":0,"to":21,"tp":0},
+{"from":21,"fp":0,"to":22,"tp":0},
+
+{"from":18,"fp":0,"to":23,"tp":0},
+{"from":23,"fp":0,"to":24,"tp":0},
+{"from":24,"fp":0,"to":25,"tp":0},
+{"from":25,"fp":0,"to":26,"tp":0}
+]}

@@ -1,0 +1,126 @@
+# Shell records construction history (tests/smoke.sh section HPS_, part 3).
+# With History On, a plain Shell (closed solid, one uniform thickness, no opened
+# faces) hides its source instead of deleting it and records {source, thickness};
+# editing the source then re-shells it automatically, EditHistory changes the
+# thickness, and the record survives Save/New/Open. A Shell with an opened face
+# stays one-shot. Every claim is a measured Volume / Bounding box.
+# @TMP@ is the test temp directory.
+SetActiveViewport Top
+
+# ============================================================ S1: box -> Shell
+History On
+Box 0,0,0 20,20,0 10
+SelNone
+SelID 1
+Shell
+Enter
+1
+SelNone
+SelID 2
+Volume
+SelNone
+SelID 2
+BoundingBox
+History
+# The source box (id 1) is hidden while its shell exists; Show it so it can be edited
+# (Move does not pick hidden objects), then move it +5 in X: the shell follows.
+Show
+SelNone
+SelID 1
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 2
+BoundingBox
+# Scale the source 2x about (5,0,0): 40x40x20 outer, the wall stays 1 thick:
+# 40*40*20 - 38*38*18 = 6008.
+SelNone
+SelID 1
+Scale 5,0,0 2
+SelNone
+SelID 2
+Volume
+Undo
+SelNone
+SelID 2
+Volume
+# Save, New, Open, then the shell must still follow its (reopened) source.
+Save @TMP@/hps_shell.3dm
+New
+Open @TMP@/hps_shell.3dm
+History On
+History
+Show
+SelNone
+SelID 1
+Move
+0,0,0
+0,5,0
+SelNone
+SelID 2
+BoundingBox
+# EditHistory changes the recorded thickness: 20*20*10 - 16*16*6 = 2464.
+EditHistory 2 thickness=2
+SelNone
+SelID 2
+Volume
+
+# ============================================================ S2: curve -> Extrude -> Shell (mesh path)
+New
+History On
+Rectangle 0,0,0 20,20,0
+SelNone
+SelID 1
+Extrude
+10
+SelNone
+SelID 2
+Shell
+Enter
+1
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 1
+Move
+0,0,0
+7,0,0
+SelNone
+SelID 3
+BoundingBox
+SelNone
+SelID 3
+Volume
+
+# ============================================================ S3: negative controls
+# History Off: Shell deletes its source as it always did and records nothing.
+New
+History Off
+Box 0,0,0 20,20,0 10
+SelNone
+SelID 1
+Shell
+Enter
+1
+History
+SelNone
+SelID 2
+Volume
+
+# An opened-face Shell (clicked top face) stays one-shot: it deletes its source as it
+# always did and records nothing.
+New
+History On
+Box 300,0,0 320,20,0 10
+SelNone
+SelID 1
+Shell
+310,10,10
+Enter
+1
+History
+SelNone
+SelID 2
+Volume

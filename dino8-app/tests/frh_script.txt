@@ -1,0 +1,348 @@
+# Exact fillet / chamfer of the rim of a cylindrical hole (see the "FRH" section at the end of smoke.sh).
+#
+# Every case starts from `New` (object ids restart at 1: the box is 1, the cutter 2, the Boolean result 3) and is
+# bracketed by a marker line (an unknown command, "FRHBEGIN_<name>") that smoke.sh uses to slice this script's
+# output into per-case blocks. The solid is a 6 x 6 x 4 box with a through-hole of radius 1.5 on its axis (cut by
+# BooleanDifference, the exact General-engine result the app already produced): V0 = 144 - pi*1.5^2*4 = 115.726.
+# A rim blend removes the closed-form (Pappus) volume
+#   fillet radius r:            2*pi*r^2*(R + r/2 - (pi/4)*(R + r) + r/3)
+#   chamfer wall w / cap c:     pi*w*c*(R + c/3)
+SetActiveViewport Top
+
+# control: the Boolean result itself
+New
+FRHBEGIN_base
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+
+# fillet r = 1 on the upper rim: removes 2.3238 -> 113.402
+New
+FRHBEGIN_F_top
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+3,4.5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# both rims in one run (upper r = 1, lower r = 0.5): removes 2.3238 + 0.5433 -> 112.859
+New
+FRHBEGIN_F_both
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+3,4.5,4
+Radius=0.5
+3,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# lower rim only (r = 0.5): removes 0.5433 -> 115.183
+New
+FRHBEGIN_F_bottom
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=0.5
+3,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfer 1 x 1 on the upper rim: removes pi*1*1*(1.5 + 1/3) = 5.7596 -> 109.966
+New
+FRHBEGIN_C_top
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ChamferEdge
+Radius=1
+3,4.5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# asymmetric chamfer (1.5 along the wall, 0.5 across the cap): removes pi*1.5*0.5*(1.5 + 0.5/3) = 3.9270 -> 111.799
+New
+FRHBEGIN_C_asym
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ChamferEdge
+Radius=1.5
+Distance2=0.5
+3,4.5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# a radius that would run off the end face (1.5 + 2 > 3): refused with the reason, the old approximate path runs
+New
+FRHBEGIN_F_toobig
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=2
+3,4.5,4
+Enter
+SelAll
+List
+
+# Exact=No keeps the approximate mesh fillet
+New
+FRHBEGIN_F_exactno
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Exact=No
+Radius=1
+3,4.5,4
+Enter
+SelAll
+List
+
+# a vertical box edge of the SAME holed solid (item 2: before, "could not build a watertight result"): the prism's
+# outer polygon gets an exact tangent arc, the hole is untouched: removes (1 - pi/4)*1^2*4 = 0.8584 -> 114.868
+New
+FRHBEGIN_E_corner
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+6,6,2
+Enter
+SelAll
+List
+Volume
+Check
+
+# two different corners in one run (r = 1 and r = 0.5): removes 0.8584 + 0.2146 -> 114.653
+New
+FRHBEGIN_E_corner2
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+6,6,2
+Radius=0.5
+0,0,2
+Enter
+SelAll
+List
+Volume
+Check
+
+# a corner edge together with the hole's upper rim (r = 0.5): removes 0.8584 + 0.5433 -> 114.325
+New
+FRHBEGIN_E_corner_rim
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+6,6,2
+Radius=0.5
+3,4.5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# a corner radius longer than the plate's own edge (7 > 6): refused with the reason, the old path runs
+New
+FRHBEGIN_E_corner_toobig
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=7
+6,6,2
+Enter
+SelAll
+List
+
+# a hole sitting in the wedge a large corner rounding removes (hole at (9,9) r 0.5, corner (10,10) rounded with r 5):
+# every sample of the arc clears the hole, yet the hole would be outside the plate -> refused, solid unchanged
+New
+FRHBEGIN_E_corner_wedge
+Box 0,0,0 10,10,0 4
+Cylinder 9,9,-1 0.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=5
+10,10,2
+Enter
+SelAll
+List
+
+# an OFF-CENTRE hole in a plate rotated 30 degrees about z (the outer polygon is not axis-aligned): rim fillet r = 0.4
+# removes 2*pi*0.4^2*(1.5 + 0.2 - (pi/4)*1.9 + 0.4/3) = 0.3428 -> 115.383
+New
+FRHBEGIN_R_rot
+Box 0,0,0 6,6,0 4
+Cylinder 4,2,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Rotate 3,3,0 30
+FilletEdge
+Radius=0.4
+4.366,4.134,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# BLIND hole (pocket opening at the top, floor at z = 1, depth 3): V0 = 144 - pi*1.5^2*3 = 122.794. Rim fillet r = 1
+# removes 2.3238 -> 120.470 (the 8-face Boolean result, 127 edges, becomes 9 exact faces)
+New
+FRHBEGIN_B_top
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,1 1.5 4
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+3,4.5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# blind hole opening at the BOTTOM (pocket z in [0, 2], depth 2): V0 = 144 - pi*1.5^2*2 = 129.863; r = 1 -> 127.539
+New
+FRHBEGIN_B_bottom
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 3
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+3,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfer 1 x 1 on the blind hole's rim: removes 5.7596 -> 117.034
+New
+FRHBEGIN_B_chamfer
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,1 1.5 4
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ChamferEdge
+Radius=1
+3,4.5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a plain box edge is still the kernel's exact planar fillet (volume 144 - (1-pi/4)*1*4 = 143.142)
+New
+FRHBEGIN_control_box
+Box 0,0,0 6,6,0 4
+FilletEdge
+Radius=1
+6,6,2
+Enter
+SelAll
+List
+Volume
+New
+FRHEND

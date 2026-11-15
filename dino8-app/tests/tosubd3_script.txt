@@ -1,0 +1,56 @@
+# ToSubD of a revolved solid (third pass): ToNURBS of the cone's SubD, and
+# what the SubD's Volume actually measures.
+#
+# Printed in this order: (1) the radius-4 cone's ToSubD line, SubD List line,
+# SubD Volume, then its ToNURBS line, polysurface List line and Volume;
+# (2) the radius-2 cone (same shape, 32 segments around: ToNURBS, List, Volume);
+# (3) the cylinder's and the TCone's Volume after 0, 1, 2 and 3 SubDivide
+# rounds (Volume of a SubD is the volume of the CURRENT control net, so it
+# approaches the exact limit-surface volume as the net is refined).
+Cone 30,0,0 4 10
+SelLast
+ToSubD
+SelLast
+List
+Volume
+ToNURBS
+SelLast
+List
+Volume
+SelAll
+Hide
+Cone 60,0,0 2 10
+SelLast
+ToSubD
+SelLast
+List
+ToNURBS
+SelLast
+List
+Volume
+SelAll
+Hide
+Cylinder 100,0,0 4 10
+SelLast
+ToSubD
+SelLast
+Volume
+SubDivide
+Volume
+SubDivide
+Volume
+SubDivide
+Volume
+SelAll
+Hide
+TCone 140,0,0 4 10 2
+SelLast
+ToSubD
+SelLast
+Volume
+SubDivide
+Volume
+SubDivide
+Volume
+SubDivide
+Volume

@@ -1,0 +1,26 @@
+# Background::Image lat-long unwarp QC (PARITY_MAP.md's "Environments and
+# image-based lighting" item): the Rendered-mode environment-image backdrop
+# is now a real per-pixel equirectangular sample of the camera's own view
+# direction (GlRenderer::DrawEnvironmentBackground via Viewport.cpp's
+# DrawBackgroundImage), not a flat UV-stretched quad (DrawFullscreenTexture)
+# - a flat stretch shows the exact same static image regardless of which
+# way the camera is looking; the real unwarp changes with it, and (since
+# Back/Left/Front below are all orthographic standard views, where
+# Camera::ScreenRay's own ortho branch returns one constant direction for
+# every screen point) should fill the WHOLE frame with one flat colour per
+# view - the texture's own colour at that one direction's equirectangular
+# (u, v).
+# @TMP@ is replaced by smoke.sh with a scratch directory, which also writes
+# @TMP@/env_longitude.ppm: a texture with three distinct colour bands at
+# three different longitudes (u = 0.25 red, u = 0.5 green, u = 0.75 blue),
+# chosen to land exactly on Back/Left/Front's own computed equirectangular
+# u (see smoke.sh's own comment for the exact derivation).
+Environments Background=Image Image=@TMP@/env_longitude.ppm
+RenderedViewport
+Back
+ViewCaptureToFile @TMP@/env_back.bmp
+Left
+ViewCaptureToFile @TMP@/env_left.bmp
+Front
+ViewCaptureToFile @TMP@/env_front.bmp
+@expect_objects 0

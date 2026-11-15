@@ -1,0 +1,47 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('step_rational_standard_layout_fixture.stp','2026-10-30T00:00:00',('Dino 8 tests'),(''),'hand-written','','');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));
+ENDSEC;
+DATA;
+/* A rational quarter-cylinder patch (radius 10 about Z, height 20, u = the
+   arc, v = the ruling) written in the STANDARD ISO 10303-21 complex-entity
+   layout real CAD exporters emit: the attributes are distributed over their
+   own supertypes - B_SPLINE_SURFACE(u_degree, v_degree, control_points_list,
+   surface_form, u_closed, v_closed, self_intersect), then
+   B_SPLINE_SURFACE_WITH_KNOTS(u_multiplicities, v_multiplicities, u_knots,
+   v_knots, knot_spec), then RATIONAL_B_SPLINE_SURFACE(weights_data). The
+   middle row's weight is sqrt(2)/2 at full double precision, so the patch
+   is an exact quarter cylinder: Area = 100*pi, bounding box 0,0,0 - 10,10,20. */
+#1=CARTESIAN_POINT('',(10.,0.,0.));
+#2=CARTESIAN_POINT('',(10.,0.,20.));
+#3=CARTESIAN_POINT('',(10.,10.,0.));
+#4=CARTESIAN_POINT('',(10.,10.,20.));
+#5=CARTESIAN_POINT('',(0.,10.,0.));
+#6=CARTESIAN_POINT('',(0.,10.,20.));
+#7=(BOUNDED_SURFACE()B_SPLINE_SURFACE(2,1,((#1,#2),(#3,#4),(#5,#6)),.UNSPECIFIED.,.F.,.F.,.F.)B_SPLINE_SURFACE_WITH_KNOTS((3,3),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.)GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(((1.,1.),(0.70710678118654757,0.70710678118654757),(1.,1.)))REPRESENTATION_ITEM('')SURFACE());
+#8=ADVANCED_FACE('',(),#7,.T.);
+#9=OPEN_SHELL('',(#8));
+#10=SHELL_BASED_SURFACE_MODEL('QuarterCylinder',(#9));
+/* A rational quarter-circle arc (radius 5, centre 30,0,0, in the XY plane)
+   in the same standard split layout for curves: B_SPLINE_CURVE(degree,
+   control_points_list, curve_form, closed_curve, self_intersect), then
+   B_SPLINE_CURVE_WITH_KNOTS(knot_multiplicities, knots, knot_spec), then
+   RATIONAL_B_SPLINE_CURVE(weights_data). Length = 5*pi/2. */
+#11=CARTESIAN_POINT('',(35.,0.,0.));
+#12=CARTESIAN_POINT('',(35.,5.,0.));
+#13=CARTESIAN_POINT('',(30.,5.,0.));
+#14=(BOUNDED_CURVE()B_SPLINE_CURVE(2,(#11,#12,#13),.UNSPECIFIED.,.F.,.F.)B_SPLINE_CURVE_WITH_KNOTS((3,3),(0.,1.),.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,0.70710678118654757,1.))REPRESENTATION_ITEM(''));
+#15=GEOMETRIC_CURVE_SET('QuarterArcStandard',(#14));
+/* The same arc (centre 50,0,0) in the FLAT layout Dino 8's own ExportStep
+   wrote before this fixture existed: every attribute packed into the
+   B_SPLINE_CURVE_WITH_KNOTS part behind a leading empty field, B_SPLINE_CURVE
+   left empty. Older Dino 8 files must keep importing. */
+#16=CARTESIAN_POINT('',(55.,0.,0.));
+#17=CARTESIAN_POINT('',(55.,5.,0.));
+#18=CARTESIAN_POINT('',(50.,5.,0.));
+#19=(BOUNDED_CURVE()B_SPLINE_CURVE()B_SPLINE_CURVE_WITH_KNOTS(,2,(#16,#17,#18),.UNSPECIFIED.,.F.,.F.,.F.,(3,3),(0.,1.),.UNSPECIFIED.)CURVE()GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_CURVE((1.,0.70710678118654757,1.))REPRESENTATION_ITEM(''));
+#20=GEOMETRIC_CURVE_SET('QuarterArcFlat',(#19));
+ENDSEC;
+END-ISO-10303-21;

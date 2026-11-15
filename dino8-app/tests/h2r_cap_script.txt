@@ -1,0 +1,104 @@
+# Cap records construction history (tests/smoke.sh section H2R_, part 2).
+# With History On, Cap hides the open polysurface it capped (the recorded source)
+# and the capped copy is a new object; editing the open polysurface re-caps it
+# automatically (the loops are re-derived from the source's current naked edges,
+# so Move, Scale and Rotate all work). Every claim is a measured Bounding box or
+# List face count. (Cap's result is a 6-face polysurface that the app does not
+# report as a closed solid - Volume says "not closed" with or without History -
+# so volume is not used here.)
+# @TMP@ is the test temp directory.
+SetActiveViewport Top
+
+# ============================================================ K1: open box (top and bottom removed) -> Cap
+History On
+Box 0,0,0 10,10,0 10
+DeleteFaces
+5,5,10
+5,5,0
+Enter
+SelPolysrf
+Cap
+History
+SelNone
+SelID 2
+List
+SelNone
+SelID 2
+BoundingBox
+# Show the hidden open box and scale it 2x about the origin: the capped copy is re-capped.
+Show
+SelNone
+SelID 1
+Scale 0,0,0 2
+SelNone
+SelID 2
+List
+SelNone
+SelID 2
+BoundingBox
+# Rotating the (now 20-wide) open box 90 degrees about Z: the caps follow.
+SelNone
+SelID 1
+Rotate 5,5,0 90
+SelNone
+SelID 2
+List
+Save @TMP@/h2r_cap.3dm
+New
+Open @TMP@/h2r_cap.3dm
+History On
+History
+Show
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,4
+SelNone
+SelID 2
+BoundingBox
+
+# ============================================================ K2: the SAME operations performed fresh (controls, History Off)
+New
+History Off
+Box 0,0,0 20,20,0 20
+DeleteFaces
+5,5,20
+5,5,0
+Enter
+SelPolysrf
+Cap
+SelNone
+SelID 1
+List
+SelNone
+SelID 1
+BoundingBox
+History
+
+# ============================================================ K3: History Off, Cap edits in place and records nothing
+New
+History Off
+Box 0,0,0 10,10,0 10
+DeleteFaces
+5,5,10
+5,5,0
+Enter
+SelPolysrf
+Cap
+History
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 1
+BoundingBox
+
+# ============================================================ K4: Cap of a closed solid does nothing and records nothing
+New
+History On
+Box 0,0,0 10,10,0 10
+SelNone
+SelID 1
+Cap
+History

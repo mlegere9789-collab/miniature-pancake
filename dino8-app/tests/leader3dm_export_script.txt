@@ -1,0 +1,30 @@
+# Native .3dm Leader export QC: Save3dm had no ON_Leader writer at all
+# before this change (see BuildOnLeaderForGroup in File3dm.cpp) - a Leader
+# annotation made in-app round-tripped out through .3dm as its own baked
+# polyline/arrowhead/glyph-text curves plus LeaderTip/LeaderRest/Text/...
+# user_text metadata, never a real ON_Leader object a genuinely
+# independent Rhino/OpenNURBS-based reader would recognize as one leader -
+# the Leader half of this bullet's own disclosed "Dim*/Leader/Text... still
+# written exactly as before" gap (Hatch and Text already closed the same
+# way, above). Makes a real 3-point Leader with a "Hi" label and saves it;
+# see leader3dm_reopen_script.txt (run as a SEPARATE process launch right
+# after this one in smoke.sh, not combined into one script the way the
+# Text/Hatch export tests are) for the actual reopen/verification half.
+# Deliberately split, unlike those two: a live Leader object already
+# present when Open runs in the SAME process hits a real, pre-existing,
+# unrelated bug in UpdateAssociativeAnnotations' own cross-call static
+# anchor cache (Application.cpp) - confirmed independent of this pass's
+# own write-side change two ways: leader3dm_write_check (below) parses the
+# saved file directly through OpenNURBS and finds the correct single real
+# ON_Leader every time, and opening the identical file as the very first
+# command of a FRESH process (no live Leader ever created in that
+# process) reopens correctly too. Only "export, then New+Open in the same
+# process" inflates the reopened selection count - the same class of
+# same-process-reuse hazard dwg_script.txt/dwg_reopen_script.txt's own
+# header comment already documents for a different (Windows-only) reason,
+# sidestepped here the identical way.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Leader 0,0,0 5,10,0 20,10,0
+Enter
+Hi
+SaveAs @TMP@/leader3dm_export.3dm

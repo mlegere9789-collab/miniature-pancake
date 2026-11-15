@@ -1,0 +1,9 @@
+PluginMarketplaceVerify doesnotexist
+PluginMarketplaceIndex @DINO8ROOT@/plugin-index/index.json
+PluginMarketplaceVerify doesnotexist2
+PluginMarketplaceVerify meshtools
+PluginMarketplaceInstall hellodino
+PluginMarketplaceVerify hellodino
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_verify_index.json
+PluginMarketplaceInstall hellodino
+PluginMarketplaceVerify hellodino

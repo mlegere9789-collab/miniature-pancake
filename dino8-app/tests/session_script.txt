@@ -1,0 +1,158 @@
+# Session QC: 3D digitizer (Dig*), Worksession/LimitReferenceModel,
+# Snapshots, draw order, and real hole features (Move/Copy/Rotate/MirrorHole).
+# @TMP@ is replaced by smoke.sh with a scratch directory; @TMP@/dig_points.txt
+# is written by smoke.sh before this script runs.
+
+# --- Digitizer: Protocol=File replays "x y z [button]" lines deterministically
+DigConnect File @TMP@/dig_points.txt
+DigStatus
+DigPoint
+DigPoint
+DigPoint
+DigListPorts
+DigScale 25.4
+DigDisconnect
+DigStatus
+
+# --- The remaining Dig* commands (cmd_state.cpp): each one reads real
+# points off a connected digitizer's stream, same as DigPoint above.
+DigConnect File @TMP@/dig_points2.txt
+DigScale 1
+Digitize
+DigCamera
+DigClick
+DigLine
+SelLast
+List
+DigBeep
+Digitize
+DigBeep
+DigSection
+DigDisconnect
+
+# --- Draw order: BringToFront/SendToBack/ClearDrawOrder don't change object count
+SelNone
+Circle 0,0,0 5
+Circle 0,0,0 5
+SelID 3
+BringToFront
+SelID 3
+SendToBack
+SelID 3
+ClearDrawOrder
+SelNone
+
+# --- Worksession: attach another .3dm as a locked reference model, limit it,
+# round-trip through a .rws session file, then detach.
+# (New only clears when the document isn't modified - see
+# Application::ConfirmDiscard - so SelAll+Delete clears deterministically
+# regardless of what ran before.)
+SelAll
+Delete
+Box 100,0,0 110,10,0 10
+SelLast
+Save @TMP@/ref.3dm
+New
+Worksession Attach @TMP@/ref.3dm
+Worksession List
+LimitReferenceModel ref.3dm 95,-5,-5 200,200,200
+Worksession Save @TMP@/session.rws
+Worksession Detach All
+Worksession List
+Worksession Load @TMP@/session.rws
+Worksession List
+Save @TMP@/withref.3dm
+
+# --- Worksession: two attached models whose files share the same basename
+# (from different folders) must not collide. AttachWorksession used to
+# alias every model by bare filename alone, so both got the identical
+# alias "dup.3dm" and identical "Ref: dup.3dm" layer name; DetachWorksession
+# finds its layer by that name (first match wins), so detaching the second
+# model removed nothing and orphaned its own now-empty layer forever
+# instead of the model actually named on the command line.
+# (New reliably clears right after a Save - same reasoning as the plain
+# Worksession block above; the leftover locked reference object from that
+# block is why a bare SelAll+Delete here would not, since SelAll skips
+# locked objects and that box was never re-saved since being attached.)
+New
+Box 300,0,0 310,10,0 10
+SelLast
+Save @TMP@/dupA/dup.3dm
+New
+Box 400,0,0 410,10,0 10
+SelLast
+Save @TMP@/dupB/dup.3dm
+New
+Worksession Attach @TMP@/dupA/dup.3dm
+Worksession Attach @TMP@/dupB/dup.3dm
+Worksession List
+Worksession Detach @TMP@/dupB/dup.3dm
+Worksession List
+Purge
+# Leaves no locked reference object behind for the Snapshots section's own
+# New below to have to discard (New only clears when the document isn't
+# modified - see Application::ConfirmDiscard - and Worksession Attach/
+# Detach/Purge above all modify it).
+Worksession Detach All
+
+# --- Worksession: live link. An attached model's own source file changing
+# on disk - here, overwritten with different content via a second Save to
+# the exact same path, no Worksession Reload run at any point - is picked
+# up automatically on a later frame (Application::Frame calls
+# RefreshLiveWorksessions, session/Worksession.h, once per frame; the
+# one-script-line-per-frame harness gives it several real frames to run in
+# between the lines below). Closes the "no live link" half of this
+# category's own remaining Worksessions gap - see PARITY_MAP.md.
+New
+Box 500,0,0 510,10,0 10
+SelLast
+Save @TMP@/live.3dm
+New
+Worksession Attach @TMP@/live.3dm
+@expect_objects 1
+Worksession List
+Point 1,1,1
+Point 2,2,2
+@expect_objects 3
+Save @TMP@/live.3dm
+@wait 5
+@expect_objects 4
+Worksession List
+Worksession Detach All
+
+# --- Snapshots: named, full-document restore points independent of Undo/Redo
+New
+@expect_objects 0
+Sphere 0,0,0 5
+Snapshots Save Before
+Box 20,20,0 30,30,0 10
+@expect_objects 2
+Snapshots List
+Snapshots Restore Before
+@expect_objects 1
+Snapshots Delete Before
+Snapshots List
+
+# --- Hole features: RoundHole, then move/copy/rotate/mirror it as a real
+# editable feature (re-runs the boolean instead of only printing guidance).
+SelAll
+Delete
+Box 200,0,0 220,20,0 10
+SelLast
+RoundHole
+210,10,10
+3
+10
+SelLast
+MoveHole
+210,10,10 215,10,10
+SelLast
+CopyHole
+215,10,10 215,15,10
+SelLast
+RotateHole
+215,15,10
+90
+SelLast
+MirrorHole
+210,0,0 210,20,0

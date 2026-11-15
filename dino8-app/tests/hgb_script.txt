@@ -1,0 +1,421 @@
+# History for the GENERAL (curved) and SEALED Boolean engine (see the "HGB_" section at the end of smoke.sh).
+#
+# With History On, BooleanUnion/BooleanDifference/BooleanIntersection of a box and a cylinder take the General
+# engine (TryGeneralBrepBoolean + SealGeneralBooleanResult), hide the operands as the result's recorded sources and
+# rebuild the sealed result when a source moves, scales or is changed (no UpdateHistory call anywhere). Every case
+# starts from `New` (operands 1 and 2, result 3) and is bracketed by an unknown-command marker HGBBEGIN_<name> that
+# smoke.sh slices the output on. The claims are measured numbers against closed forms:
+#   box 10^3, cylinder r = 2:  through hole 1000 - 4 pi 10 = 874.34, blind (5 deep) 1000 - 4 pi 5 = 937.17
+SetActiveViewport Top
+# ---------------------------------------------------------------- diff: Move the cylinder tool out of the box (the result becomes the plain box), Undo, Redo, Move back
+New
+History On
+HGBBEGIN_diff
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+History
+Show
+SelNone
+SelID 3
+Check
+Volume
+List
+SelNone
+SelID 2
+Move
+0,0,0
+20,0,0
+SelNone
+SelID 3
+Check
+Volume
+List
+Undo
+SelNone
+SelID 3
+Check
+Volume
+Redo
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+-20,0,0
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND
+# ---------------------------------------------------------------- blind: Move the cylinder up 10 (z 5..25): a blind hole 5 deep, 1000 - 4 pi 5 = 937.17
+New
+History On
+HGBBEGIN_blind
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Show
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,10
+SelNone
+SelID 3
+Check
+Volume
+List
+Undo
+SelNone
+SelID 3
+Check
+Volume
+Redo
+SelNone
+SelID 3
+Volume
+HGBEND
+# ---------------------------------------------------------------- scale: Scale the cylinder 1.5 about (5,5,5): r = 3, z -10..20, a through hole, 1000 - 9 pi 10 = 717.26
+New
+History On
+HGBBEGIN_scale
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Show
+SelNone
+SelID 2
+Scale 5,5,5 1.5
+SelNone
+SelID 3
+Check
+Volume
+Undo
+SelNone
+SelID 3
+Check
+Volume
+Redo
+SelNone
+SelID 3
+Volume
+HGBEND
+# ---------------------------------------------------------------- radius: circle (r 2) -> Extrude 20 -> BooleanDifference with a box; ModifyRadius 3 (717.26), EditHistory distance=12 (blind, 1000 - 9 pi 7 = 802.12), operation=union (1000 + 9 pi 5 = 1141.37)
+New
+History On
+HGBBEGIN_radius
+Circle 5,5,-5 2
+SelNone
+SelID 1
+Extrude
+20
+Box 0,0,0 10,10,0 10
+SelNone
+SelID 3
+BooleanDifference
+SelID 2
+Enter
+SelNone
+SelID 4
+Check
+Volume
+History
+SelNone
+SelID 1
+ModifyRadius
+3
+SelNone
+SelID 4
+Check
+Volume
+Undo
+SelNone
+SelID 4
+Check
+Volume
+Redo
+SelNone
+SelID 4
+Volume
+EditHistory 2 distance=12
+SelNone
+SelID 4
+Check
+Volume
+EditHistory 4 operation=union
+SelNone
+SelID 4
+Check
+Volume
+Undo
+SelNone
+SelID 4
+Check
+Volume
+HGBEND
+# ---------------------------------------------------------------- union: box + piercing cylinder = 1125.66; Move up 10 (z 5..25) = 1000 + 4 pi 15 = 1188.50; Scale 1.5 = 1000 + 9 pi 10 = 1282.74
+New
+History On
+HGBBEGIN_union
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelAll
+BooleanUnion
+Show
+SelNone
+SelID 3
+Check
+Volume
+List
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,10
+SelNone
+SelID 3
+Check
+Volume
+Undo
+SelNone
+SelID 3
+Check
+Volume
+SelNone
+SelID 2
+Scale 5,5,5 1.5
+SelNone
+SelID 3
+Check
+Volume
+HGBEND
+# ---------------------------------------------------------------- intersect: box ^ piercing cylinder = 4 pi 10 = 125.66; Move up 10 = 4 pi 5 = 62.83; Scale 1.5 = 9 pi 10 = 282.74; Move out of the box: empty -> kept, reason printed
+New
+History On
+HGBBEGIN_intersect
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+Show
+SelNone
+SelID 3
+Check
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,10
+SelNone
+SelID 3
+Check
+Volume
+Undo
+SelNone
+SelID 2
+Scale 5,5,5 1.5
+SelNone
+SelID 3
+Check
+Volume
+Undo
+SelNone
+SelID 2
+Move
+0,0,0
+50,0,0
+SelNone
+SelID 3
+Check
+Volume
+HGBEND
+# ---------------------------------------------------------------- fallback: the cylinder moved up 5 (z 0..20) so its bottom cap lies exactly IN the box's bottom face: the exact engine still declines that coplanar configuration (gaps between faces), the result becomes the mesh boolean and the reason is printed; Undo -> sealed; moving back -> sealed again. (This used to be 'everything moved 100000 away', which the exact engine now seals.)
+New
+History On
+HGBBEGIN_fallback
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Show
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,5
+SelNone
+SelID 3
+Volume
+List
+Undo
+SelNone
+SelID 3
+Check
+Volume
+List
+Redo
+SelNone
+SelID 3
+Volume
+List
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,-5
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND
+# ---------------------------------------------------------------- deleted: the cylinder is deleted: the result keeps its geometry and the reason is printed; Undo brings the cylinder back and the boolean follows again
+New
+History On
+HGBBEGIN_deleted
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Show
+SelNone
+SelID 2
+Delete
+SelNone
+SelID 3
+Check
+Volume
+Undo
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+20,0,0
+SelNone
+SelID 3
+Check
+Volume
+HGBEND
+# ---------------------------------------------------------------- off: History Off records nothing and the operands are consumed
+New
+History Off
+HGBBEGIN_off
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+History
+Show
+SelNone
+SelID 3
+Check
+Volume
+List
+HGBEND
+# ---------------------------------------------------------------- chain: box - cylinder A - cylinder B (4 = 1 - 2, 5 = 4 - 3) = 1000 - 4 pi 10 - 2.25 pi 10 = 803.65; B up 10 (blind) = 1000 - 4 pi 10 - 2.25 pi 5 = 839.00; A out = 1000 - 2.25 pi 10 = 929.31
+New
+History On
+HGBBEGIN_chain
+Box 0,0,0 10,10,0 10
+Cylinder 3,5,-5 2 20
+Cylinder 7,5,-5 1.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelNone
+SelID 4
+BooleanDifference
+SelID 3
+Enter
+SelNone
+SelID 5
+Check
+Volume
+History
+Show
+SelNone
+SelID 3
+Move
+0,0,0
+0,0,10
+SelNone
+SelID 5
+Check
+Volume
+Undo
+SelNone
+SelID 2
+Move
+0,0,0
+20,0,0
+SelNone
+SelID 5
+Check
+Volume
+List
+HGBEND
+# ---------------------------------------------------------------- sphere: box + sphere centred on the top face (r 3) = 1000 + 2/3 pi 27 = 1056.55; sphere up 2 = 1000 + 4/3 pi 27 - pi (9 - 1)/3 = 1104.72; Scale 0.5 about its centre = 1000 + 2/3 pi 3.375 = 1007.07
+New
+History On
+HGBBEGIN_sphere
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 3
+SelAll
+BooleanUnion
+Show
+SelNone
+SelID 3
+Check
+Volume
+SelNone
+SelID 2
+Move
+0,0,0
+0,0,2
+SelNone
+SelID 3
+Check
+Volume
+Undo
+SelNone
+SelID 2
+Scale 5,5,10 0.5
+SelNone
+SelID 3
+Check
+Volume
+HGBEND
