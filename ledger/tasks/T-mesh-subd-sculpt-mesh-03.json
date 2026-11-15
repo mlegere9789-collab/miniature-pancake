@@ -1,0 +1,474 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-mesh-03",
+  "corpora": [
+    "mesh fixtures: triangle, quad and n-gon meshes with holes, non-manifold edges, duplicate faces"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 33,
+    "with_hint": 33,
+    "without_hint": 2
+  },
+  "deps": [],
+  "domains": [
+    "MESH"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "CollapseMeshFace",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RebuildMeshNormals",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CollapseMeshEdge",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CollapseMeshFacesByArea",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "HideRenderMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RebuildMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ToggleRenderMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UnifyMeshNormals",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UnweldEdge",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "WeldEdge",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AutomaticSubDFromMesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ReducePointCloud",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RefreshAllTextures",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RefreshShade",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveAllNakedMicroEdges",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RepairSubD",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShrinkWrap",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Slide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SplitDisjointMesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SplitMeshEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:4616",
+        "rows": 1,
+        "score": 0.859,
+        "symbol": "dino8::kernel::Brep::RemoveAllNakedMicroEdges"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2182",
+        "rows": 1,
+        "score": 0.781,
+        "symbol": "dino8::kernel::Mesh::UnifyNormals"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:46",
+        "rows": 1,
+        "score": 0.685,
+        "symbol": "dino8::kernel::PointCloud"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2122",
+        "rows": 1,
+        "score": 0.68,
+        "symbol": "dino8::kernel::Mesh::SplitDisjointPieces"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:4622",
+        "rows": 1,
+        "score": 0.655,
+        "symbol": "dino8::kernel::Brep::RemoveAllSharedMicroEdges"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:4536",
+        "rows": 1,
+        "score": 0.647,
+        "symbol": "dino8::kernel::Brep::RemoveNakedMicroEdge"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-mesh-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/MESH.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-MESH-0073": {
+      "commands": [
+        "ReducePointCloud",
+        "PointCloud"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud"
+      ]
+    },
+    "D8-RHINO-MESH-0074": {
+      "commands": [
+        "RebuildMeshNormals",
+        "RebuildMesh",
+        "UnifyMeshNormals"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0075": {
+      "commands": [
+        "RebuildMesh",
+        "RebuildMeshNormals",
+        "Rebuild"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0076": {
+      "commands": [
+        "RefreshShade"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0077": {
+      "commands": [
+        "RefreshAllTextures"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0078": {
+      "commands": [
+        "ShrinkWrap"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0079": {
+      "commands": [
+        "Slide"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0080": {
+      "commands": [
+        "SplitDisjointMesh"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::SplitDisjointPieces"
+      ]
+    },
+    "D8-RHINO-MESH-0081": {
+      "commands": [
+        "SplitMeshEdge",
+        "SplitEdge",
+        "DupMeshEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0082": {
+      "commands": [
+        "SplitMeshWithCurve"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0083": {
+      "commands": [
+        "Stitch"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0084": {
+      "commands": [
+        "SwapMeshEdge",
+        "DupMeshEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0085": {
+      "commands": [
+        "TriangulateMesh",
+        "QuadrangulateMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0086": {
+      "commands": [
+        "TriangulateNonPlanarQuads"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0087": {
+      "commands": [
+        "TriangulateRenderMeshes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0088": {
+      "commands": [
+        "UnifyMeshNormals",
+        "RebuildMeshNormals"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::UnifyNormals"
+      ]
+    },
+    "D8-RHINO-MESH-0089": {
+      "commands": [
+        "Unweld"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0090": {
+      "commands": [
+        "UnweldEdge",
+        "WeldEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0091": {
+      "commands": [
+        "UnweldVertex"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0092": {
+      "commands": [
+        "Weld"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0093": {
+      "commands": [
+        "WeldEdge",
+        "UnweldEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0094": {
+      "commands": [
+        "WeldVertices"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0095": {
+      "commands": [
+        "RemoveAllNakedMicroEdges",
+        "RemoveAllSharedMicroEdges"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::RemoveAllNakedMicroEdges",
+        "dino8::kernel::Brep::RemoveAllSharedMicroEdges",
+        "dino8::kernel::Brep::RemoveNakedMicroEdge"
+      ]
+    },
+    "D8-RHINO-MESH-0096": {
+      "commands": [
+        "RepairSubD"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0097": {
+      "commands": [
+        "ToggleRenderMesh",
+        "HideRenderMesh",
+        "ShowRenderMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0098": {
+      "commands": [
+        "HideRenderMesh",
+        "ToggleRenderMesh",
+        "ShowRenderMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0099": {
+      "commands": [
+        "CollapseMeshEdge",
+        "CollapseMeshFace",
+        "CollapseMeshVertex"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0100": {
+      "commands": [
+        "CollapseMeshFace",
+        "CollapseMeshFacesByArea",
+        "CollapseMeshEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0101": {
+      "commands": [
+        "CollapseMeshFacesByArea",
+        "SelMeshFacesByArea",
+        "CollapseMeshFace"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0102": {
+      "commands": [
+        "AutomaticSubDFromMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0103": {
+      "commands": [
+        "MeshSplit"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0104": {
+      "commands": [
+        "MeshIntersect"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-MESH-0107": {
+      "commands": [
+        "ReduceMesh"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-MESH-0073",
+    "D8-RHINO-MESH-0074",
+    "D8-RHINO-MESH-0075",
+    "D8-RHINO-MESH-0076",
+    "D8-RHINO-MESH-0077",
+    "D8-RHINO-MESH-0078",
+    "D8-RHINO-MESH-0079",
+    "D8-RHINO-MESH-0080",
+    "D8-RHINO-MESH-0081",
+    "D8-RHINO-MESH-0082",
+    "D8-RHINO-MESH-0083",
+    "D8-RHINO-MESH-0084",
+    "D8-RHINO-MESH-0085",
+    "D8-RHINO-MESH-0086",
+    "D8-RHINO-MESH-0087",
+    "D8-RHINO-MESH-0088",
+    "D8-RHINO-MESH-0089",
+    "D8-RHINO-MESH-0090",
+    "D8-RHINO-MESH-0091",
+    "D8-RHINO-MESH-0092",
+    "D8-RHINO-MESH-0093",
+    "D8-RHINO-MESH-0094",
+    "D8-RHINO-MESH-0095",
+    "D8-RHINO-MESH-0096",
+    "D8-RHINO-MESH-0097",
+    "D8-RHINO-MESH-0098",
+    "D8-RHINO-MESH-0099",
+    "D8-RHINO-MESH-0100",
+    "D8-RHINO-MESH-0101",
+    "D8-RHINO-MESH-0102",
+    "D8-RHINO-MESH-0103",
+    "D8-RHINO-MESH-0104",
+    "D8-RHINO-MESH-0105",
+    "D8-RHINO-MESH-0106",
+    "D8-RHINO-MESH-0107"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-MESH-0105",
+    "D8-RHINO-MESH-0106"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: MESH (35 rows)",
+  "wave": 1
+}

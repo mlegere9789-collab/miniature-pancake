@@ -1,0 +1,149 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-dwgfid-06",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 40,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 38
+  },
+  "deps": [],
+  "domains": [
+    "dwgfid"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Section",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "Render",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-dwgfid-06",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/dwgfid.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-DWGFID-0202": {
+      "commands": [
+        "Render"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0208": {
+      "commands": [
+        "Section"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-DWGFID-0200",
+    "D8-AUTOCAD-DWGFID-0201",
+    "D8-AUTOCAD-DWGFID-0202",
+    "D8-AUTOCAD-DWGFID-0203",
+    "D8-AUTOCAD-DWGFID-0204",
+    "D8-AUTOCAD-DWGFID-0205",
+    "D8-AUTOCAD-DWGFID-0206",
+    "D8-AUTOCAD-DWGFID-0207",
+    "D8-AUTOCAD-DWGFID-0208",
+    "D8-AUTOCAD-DWGFID-0209",
+    "D8-AUTOCAD-DWGFID-0210",
+    "D8-AUTOCAD-DWGFID-0211",
+    "D8-AUTOCAD-DWGFID-0212",
+    "D8-AUTOCAD-DWGFID-0213",
+    "D8-AUTOCAD-DWGFID-0214",
+    "D8-AUTOCAD-DWGFID-0215",
+    "D8-AUTOCAD-DWGFID-0216",
+    "D8-AUTOCAD-DWGFID-0217",
+    "D8-AUTOCAD-DWGFID-0218",
+    "D8-AUTOCAD-DWGFID-0219",
+    "D8-AUTOCAD-DWGFID-0220",
+    "D8-AUTOCAD-DWGFID-0221",
+    "D8-AUTOCAD-DWGFID-0222",
+    "D8-AUTOCAD-DWGFID-0223",
+    "D8-AUTOCAD-DWGFID-0224",
+    "D8-AUTOCAD-DWGFID-0225",
+    "D8-AUTOCAD-DWGFID-0226",
+    "D8-AUTOCAD-DWGFID-0227",
+    "D8-AUTOCAD-DWGFID-0228",
+    "D8-AUTOCAD-DWGFID-0229",
+    "D8-AUTOCAD-DWGFID-0230",
+    "D8-AUTOCAD-DWGFID-0231",
+    "D8-AUTOCAD-DWGFID-0232",
+    "D8-AUTOCAD-DWGFID-0233",
+    "D8-AUTOCAD-DWGFID-0234",
+    "D8-AUTOCAD-DWGFID-0235",
+    "D8-AUTOCAD-DWGFID-0236",
+    "D8-AUTOCAD-DWGFID-0237",
+    "D8-AUTOCAD-DWGFID-0238",
+    "D8-AUTOCAD-DWGFID-0239"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-DWGFID-0200",
+    "D8-AUTOCAD-DWGFID-0201",
+    "D8-AUTOCAD-DWGFID-0203",
+    "D8-AUTOCAD-DWGFID-0204",
+    "D8-AUTOCAD-DWGFID-0205",
+    "D8-AUTOCAD-DWGFID-0206",
+    "D8-AUTOCAD-DWGFID-0207",
+    "D8-AUTOCAD-DWGFID-0209",
+    "D8-AUTOCAD-DWGFID-0210",
+    "D8-AUTOCAD-DWGFID-0211",
+    "D8-AUTOCAD-DWGFID-0212",
+    "D8-AUTOCAD-DWGFID-0213",
+    "D8-AUTOCAD-DWGFID-0214",
+    "D8-AUTOCAD-DWGFID-0215",
+    "D8-AUTOCAD-DWGFID-0216",
+    "D8-AUTOCAD-DWGFID-0217",
+    "D8-AUTOCAD-DWGFID-0218",
+    "D8-AUTOCAD-DWGFID-0219",
+    "D8-AUTOCAD-DWGFID-0220",
+    "D8-AUTOCAD-DWGFID-0221",
+    "D8-AUTOCAD-DWGFID-0222",
+    "D8-AUTOCAD-DWGFID-0223",
+    "D8-AUTOCAD-DWGFID-0224",
+    "D8-AUTOCAD-DWGFID-0225",
+    "D8-AUTOCAD-DWGFID-0226",
+    "D8-AUTOCAD-DWGFID-0227",
+    "D8-AUTOCAD-DWGFID-0228",
+    "D8-AUTOCAD-DWGFID-0229",
+    "D8-AUTOCAD-DWGFID-0230",
+    "D8-AUTOCAD-DWGFID-0231",
+    "D8-AUTOCAD-DWGFID-0232",
+    "D8-AUTOCAD-DWGFID-0233",
+    "D8-AUTOCAD-DWGFID-0234",
+    "D8-AUTOCAD-DWGFID-0235",
+    "D8-AUTOCAD-DWGFID-0236",
+    "D8-AUTOCAD-DWGFID-0237",
+    "D8-AUTOCAD-DWGFID-0238",
+    "D8-AUTOCAD-DWGFID-0239"
+  ],
+  "status": "open",
+  "title": "interop-migration: dwgfid (40 rows)",
+  "wave": 1
+}
