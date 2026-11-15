@@ -10530,13 +10530,33 @@ b2s_num box_two_spheres Volume 1264 1272 "1000 + 2*(2/3*pi*64) = 1268.08"
 b2s_check sphere_then_hole "BooleanDifference: exact B-rep boolean declined (the engine's result has gaps between faces that sewing could not close" "a hole drilled in the box + sphere result (Difference after a Union) is declined WITH the reason"
 b2s_check sphere_then_hole "(mesh)" "...mesh fallback"
 b2s_num sphere_then_hole Volume 1098 1106 "...with the right volume 1134.04 - pi*10 = 1102.6"
-# --- other sphere placements: declined honestly, with the reason; the mesh fallback has the right volume
-b2s_check sph_cap "BooleanUnion: exact B-rep boolean declined (the engine's result has gaps between faces that sewing could not close" "a sphere poking out of the top as a cap is declined WITH the reason"
-b2s_check sph_cap "(mesh)" "...mesh fallback"
-b2s_num sph_cap Volume 1038 1046 "...with the right volume 1000 + pi*4*(12-2)/3 = 1041.89"
-b2s_check sph_side "BooleanUnion: exact B-rep boolean declined (the engine's result has gaps between faces that sewing could not close" "a sphere centred on a side face is declined WITH the reason"
-b2s_num sph_side Volume 1052 1060 "...with the right volume 1000 + 2/3*pi*27 = 1056.55"
-
+# --- other sphere placements. Before the seam-vertex reuse and the tolerated post-join tessellation refusal in the
+# kernel's sealing both were declined ("gaps between faces that sewing could not close") and fell back to a mesh;
+# the old pin asserted that decline. sph_cap is now an exact, sealed (valid + closed solid) result held to closed forms:
+# the kernel's exact divergence-theorem volume to +-0.1%, the display-mesh volume and area to the +-0.5% / +-0.7% windows
+# of box_sphere; the app's independent Manifold mesh boolean (the "mesh cross-check") is printed on the same line and
+# the exact result is refused if it disagrees by more than 2%. sph_side is sealed by the kernel too (see below) but is
+# still declined by the app, now for a more precise reason.
+# b2s_exactvol NAME MIN MAX DESC: the case's "exact volume V" (sealed result, divergence theorem, no tessellation)
+b2s_exactvol() {
+  local blk v; blk="$(b2s_block "$1")"
+  v="$({ grep -oE "exact volume [0-9.eE+-]+" <<<"$blk" || true; } | tail -1 | awk '{print $3}')"
+  if [ -n "$v" ] && awk -v v="$v" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; then echo "ok   b2s_$1: $4 (exact volume $v in [$2, $3])"; else echo "FAIL b2s_$1: $4 (exact volume '${v:-none}' not in [$2, $3])"; fail=1; fi
+}
+b2s_check sph_cap "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sealed: valid B-rep with real inner loops" "a sphere poking out of the top as a cap is exact and sealed (before: declined, mesh)"
+b2s_check sph_cap "7 faces, [0-9]* edges, closed solid" "...7 faces (5 box + box top with the circle removed + the sphere's cap), closed solid"
+b2s_check sph_cap "(polysurface)" "...result is a polysurface, not a mesh"
+b2s_check sph_cap "mesh cross-check" "...with its independent mesh-boolean cross-check volume printed"
+b2s_exactvol sph_cap 1040.85 1042.93 "...exact volume equals 1000 + pi*4*(12-2)/3 = 1041.89 to 0.1%"
+b2s_num sph_cap Volume 1038 1046 "...display-mesh volume 1041.89"
+b2s_num sph_cap Area 608.3 616.9 "...area = 600 - pi*12 + 2*pi*4*2 = 612.57"
+# sph_side: the KERNEL seals this one (valid, closed, exact volume 1057.02 = closed form + 4.5e-4; tests/extra/sphere_box_sealed.cpp),
+# but it is sewn at 0.0192 (0.1% of the diagonal) and the display mesher does not weld it into a closed mesh, so the app declines it
+# with that (new, more precise) reason instead of "gaps between faces": never an open or wrong solid, the fallback is the mesh boolean.
+b2s_check sph_side "BooleanUnion: exact B-rep boolean declined (the sewn result does not tessellate to a closed mesh)" "a sphere centred on a side face is declined WITH the reason (the sealed solid does not tessellate to a closed mesh)"
+b2s_check sph_side "(mesh)" "...mesh fallback"
+b2s_num sph_side Volume 1052 1060 "...display-mesh volume 1056.55"
+b2s_num sph_side Area 623.9 632.7 "...area = 600 - pi*9 + 2*pi*9 = 628.27"
 
 # History / associative re-execution, round 2 (H2R_): FilletEdge, ChamferEdge, Cap,
 # BlendSrf and Project/Pull record construction history (tests/h2r_edge_script.txt,
