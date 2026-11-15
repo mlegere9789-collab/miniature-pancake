@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=Boolean;QcDegenerate;Sliver;SSX;TestBoolean;NearTangent;Ssx;Intersect;Boss;Hole;Contains
