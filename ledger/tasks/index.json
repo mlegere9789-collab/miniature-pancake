@@ -1,0 +1,3077 @@
+{
+  "by_factory": {
+    "analysis-site": {
+      "aliases": 0,
+      "countable": 265,
+      "points": 16,
+      "rows": 265,
+      "tasks": 9,
+      "with_existing_hint": 55,
+      "with_hint": 55,
+      "without_hint": 210
+    },
+    "bim-arch": {
+      "aliases": 16,
+      "countable": 711,
+      "points": 46,
+      "rows": 727,
+      "tasks": 23,
+      "with_existing_hint": 17,
+      "with_hint": 17,
+      "without_hint": 710
+    },
+    "bim-struct-mep": {
+      "aliases": 0,
+      "countable": 261,
+      "points": 16,
+      "rows": 261,
+      "tasks": 8,
+      "with_existing_hint": 4,
+      "with_hint": 4,
+      "without_hint": 257
+    },
+    "cad-2d": {
+      "aliases": 0,
+      "countable": 923,
+      "points": 74,
+      "rows": 923,
+      "tasks": 30,
+      "with_existing_hint": 83,
+      "with_hint": 83,
+      "without_hint": 840
+    },
+    "collab-cloud": {
+      "aliases": 0,
+      "countable": 240,
+      "points": 18,
+      "rows": 240,
+      "tasks": 9,
+      "with_existing_hint": 3,
+      "with_hint": 3,
+      "without_hint": 237
+    },
+    "direct-modeling": {
+      "aliases": 0,
+      "countable": 742,
+      "points": 54,
+      "rows": 742,
+      "tasks": 25,
+      "with_existing_hint": 212,
+      "with_hint": 212,
+      "without_hint": 530
+    },
+    "drafting-docs": {
+      "aliases": 0,
+      "countable": 860,
+      "points": 64,
+      "rows": 860,
+      "tasks": 29,
+      "with_existing_hint": 107,
+      "with_hint": 107,
+      "without_hint": 753
+    },
+    "flow": {
+      "aliases": 0,
+      "countable": 1202,
+      "points": 75,
+      "rows": 1202,
+      "tasks": 38,
+      "with_existing_hint": 273,
+      "with_hint": 273,
+      "without_hint": 929
+    },
+    "interop-migration": {
+      "aliases": 1,
+      "countable": 791,
+      "points": 56,
+      "rows": 792,
+      "tasks": 23,
+      "with_existing_hint": 96,
+      "with_hint": 96,
+      "without_hint": 696
+    },
+    "kernel-geometry": {
+      "aliases": 0,
+      "countable": 424,
+      "points": 27,
+      "rows": 424,
+      "tasks": 13,
+      "with_existing_hint": 316,
+      "with_hint": 316,
+      "without_hint": 108
+    },
+    "mesh-subd-sculpt": {
+      "aliases": 4,
+      "countable": 696,
+      "points": 50,
+      "rows": 700,
+      "tasks": 23,
+      "with_existing_hint": 255,
+      "with_hint": 255,
+      "without_hint": 445
+    },
+    "render-anim": {
+      "aliases": 2,
+      "countable": 1402,
+      "points": 99,
+      "rows": 1404,
+      "tasks": 45,
+      "with_existing_hint": 272,
+      "with_hint": 272,
+      "without_hint": 1132
+    },
+    "scripting-api-ai": {
+      "aliases": 0,
+      "countable": 1319,
+      "points": 98,
+      "rows": 1319,
+      "tasks": 38,
+      "with_existing_hint": 90,
+      "with_hint": 90,
+      "without_hint": 1229
+    },
+    "simulation": {
+      "aliases": 0,
+      "countable": 143,
+      "points": 11,
+      "rows": 143,
+      "tasks": 4,
+      "with_existing_hint": 16,
+      "with_hint": 16,
+      "without_hint": 127
+    },
+    "ux-access-i18n": {
+      "aliases": 0,
+      "countable": 658,
+      "points": 39,
+      "rows": 658,
+      "tasks": 21,
+      "with_existing_hint": 342,
+      "with_hint": 342,
+      "without_hint": 316
+    }
+  },
+  "by_status": {
+    "open": 338
+  },
+  "by_wave": {
+    "1": {
+      "aliases": 5,
+      "countable": 4778,
+      "points": 336,
+      "rows": 4783,
+      "tasks": 152,
+      "with_existing_hint": 1235,
+      "with_hint": 1235,
+      "without_hint": 3548
+    },
+    "2": {
+      "aliases": 18,
+      "countable": 3882,
+      "points": 270,
+      "rows": 3900,
+      "tasks": 127,
+      "with_existing_hint": 474,
+      "with_hint": 474,
+      "without_hint": 3426
+    },
+    "3": {
+      "aliases": 0,
+      "countable": 1977,
+      "points": 137,
+      "rows": 1977,
+      "tasks": 59,
+      "with_existing_hint": 432,
+      "with_hint": 432,
+      "without_hint": 1545
+    }
+  },
+  "by_wave_factory": {
+    "1": {
+      "cad-2d": {
+        "aliases": 0,
+        "countable": 923,
+        "points": 74,
+        "rows": 923,
+        "tasks": 30,
+        "with_existing_hint": 83,
+        "with_hint": 83,
+        "without_hint": 840
+      },
+      "direct-modeling": {
+        "aliases": 0,
+        "countable": 742,
+        "points": 54,
+        "rows": 742,
+        "tasks": 25,
+        "with_existing_hint": 212,
+        "with_hint": 212,
+        "without_hint": 530
+      },
+      "flow": {
+        "aliases": 0,
+        "countable": 1202,
+        "points": 75,
+        "rows": 1202,
+        "tasks": 38,
+        "with_existing_hint": 273,
+        "with_hint": 273,
+        "without_hint": 929
+      },
+      "interop-migration": {
+        "aliases": 1,
+        "countable": 791,
+        "points": 56,
+        "rows": 792,
+        "tasks": 23,
+        "with_existing_hint": 96,
+        "with_hint": 96,
+        "without_hint": 696
+      },
+      "kernel-geometry": {
+        "aliases": 0,
+        "countable": 424,
+        "points": 27,
+        "rows": 424,
+        "tasks": 13,
+        "with_existing_hint": 316,
+        "with_hint": 316,
+        "without_hint": 108
+      },
+      "mesh-subd-sculpt": {
+        "aliases": 4,
+        "countable": 696,
+        "points": 50,
+        "rows": 700,
+        "tasks": 23,
+        "with_existing_hint": 255,
+        "with_hint": 255,
+        "without_hint": 445
+      }
+    },
+    "2": {
+      "analysis-site": {
+        "aliases": 0,
+        "countable": 265,
+        "points": 16,
+        "rows": 265,
+        "tasks": 9,
+        "with_existing_hint": 55,
+        "with_hint": 55,
+        "without_hint": 210
+      },
+      "bim-arch": {
+        "aliases": 16,
+        "countable": 711,
+        "points": 46,
+        "rows": 727,
+        "tasks": 23,
+        "with_existing_hint": 17,
+        "with_hint": 17,
+        "without_hint": 710
+      },
+      "bim-struct-mep": {
+        "aliases": 0,
+        "countable": 261,
+        "points": 16,
+        "rows": 261,
+        "tasks": 8,
+        "with_existing_hint": 4,
+        "with_hint": 4,
+        "without_hint": 257
+      },
+      "collab-cloud": {
+        "aliases": 0,
+        "countable": 240,
+        "points": 18,
+        "rows": 240,
+        "tasks": 9,
+        "with_existing_hint": 3,
+        "with_hint": 3,
+        "without_hint": 237
+      },
+      "drafting-docs": {
+        "aliases": 0,
+        "countable": 860,
+        "points": 64,
+        "rows": 860,
+        "tasks": 29,
+        "with_existing_hint": 107,
+        "with_hint": 107,
+        "without_hint": 753
+      },
+      "render-anim": {
+        "aliases": 2,
+        "countable": 1402,
+        "points": 99,
+        "rows": 1404,
+        "tasks": 45,
+        "with_existing_hint": 272,
+        "with_hint": 272,
+        "without_hint": 1132
+      },
+      "simulation": {
+        "aliases": 0,
+        "countable": 143,
+        "points": 11,
+        "rows": 143,
+        "tasks": 4,
+        "with_existing_hint": 16,
+        "with_hint": 16,
+        "without_hint": 127
+      }
+    },
+    "3": {
+      "scripting-api-ai": {
+        "aliases": 0,
+        "countable": 1319,
+        "points": 98,
+        "rows": 1319,
+        "tasks": 38,
+        "with_existing_hint": 90,
+        "with_hint": 90,
+        "without_hint": 1229
+      },
+      "ux-access-i18n": {
+        "aliases": 0,
+        "countable": 658,
+        "points": 39,
+        "rows": 658,
+        "tasks": 21,
+        "with_existing_hint": 342,
+        "with_hint": 342,
+        "without_hint": 316
+      }
+    }
+  },
+  "note": "Generated by ledger/tools/gen_tasks.py; do not edit. Hints are not evidence.",
+  "register_sha256": "87adef18675bc80e620c8fd9879deb06d3e1e653e2524b0f7f80d7d370d96277",
+  "settings": {
+    "hints": true,
+    "max_rows": 40,
+    "min_rows": 20,
+    "min_score": 0.6
+  },
+  "task_size": {
+    "max": 40,
+    "min": 20,
+    "outside_window": 0
+  },
+  "tasks": [
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-block-01",
+      "points": 3,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-block-02",
+      "points": 3,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-block-03",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-block-04",
+      "points": 3,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-cmdline-01",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-cmdline-02",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-cmdline-03",
+      "points": 3,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-cmdline-04",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-cmdline-05",
+      "points": 3,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-cmdline-06",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-constr-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-constr-02",
+      "points": 3,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-draw-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-draw-02",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-express-01",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-express-02",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-layer-01",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-layer-02",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-mobile-01",
+      "points": 2,
+      "rows": 20,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-modify-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-modify-02",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-modify-03",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-snap-01",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-snap-02",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-sysvar-01",
+      "points": 2,
+      "rows": 20,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-sysvar-02",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-web-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-web-02",
+      "points": 3,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-web-03",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "cad-2d",
+      "id": "T-cad-2d-web-04",
+      "points": 3,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-drawing-tools-01",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-drawing-tools-02",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-dynamic-components-01",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-edit-tools-01",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-groups-components-tags-01",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-inference-engine-01",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-misc-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-object-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-object-02",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-org-01",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-org-02",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-org-03",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-render-01",
+      "points": 3,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-render-02",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-solid-tools-procedures-01",
+      "points": 1,
+      "rows": 20,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-solid3d-01",
+      "points": 2,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-solid3d-02",
+      "points": 3,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-solid3d-03",
+      "points": 3,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-solid3d-04",
+      "points": 3,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-solid3d-05",
+      "points": 3,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-top-extensions-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-top-extensions-02",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-transform-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-xform-01",
+      "points": 1,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "direct-modeling",
+      "id": "T-direct-modeling-xform-02",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-core-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-curve-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-curve-02",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-curve-03",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-display-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-01",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-02",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-03",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-04",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-05",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-06",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-07",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-geometry-nodes-08",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-maths-01",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-maths-02",
+      "points": 2,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-maths-03",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-mesh-01",
+      "points": 2,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-mesh-02",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-misc-01",
+      "points": 1,
+      "rows": 22,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-misc-02",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-node-01",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-node-02",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-node-03",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-node-04",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-node-05",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-params-01",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-params-02",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-sets-01",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-sets-02",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-sets-03",
+      "points": 3,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-surface-01",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-surface-02",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-trees-01",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-vector-01",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-vector-02",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-vector-03",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-xform-01",
+      "points": 1,
+      "rows": 23,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "flow",
+      "id": "T-flow-xsect-01",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-cloud-01",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-cloud-02",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-dwgfid-01",
+      "points": 3,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-dwgfid-02",
+      "points": 3,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-dwgfid-03",
+      "points": 3,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-dwgfid-04",
+      "points": 3,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-dwgfid-05",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-dwgfid-06",
+      "points": 3,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-extensions-01",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-file-01",
+      "points": 1,
+      "rows": 24,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-file-02",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-ifc-01",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-ifc-02",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-import-export-01",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-misc-01",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-misc-02",
+      "points": 2,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-revit-ifc-01",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-revit-insert-01",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-revit-interop-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-wm-01",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-xref-01",
+      "points": 3,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-xref-02",
+      "points": 3,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "interop-migration",
+      "id": "T-interop-migration-xref-03",
+      "points": 3,
+      "rows": 32,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-curve-01",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-curve-02",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-curve-03",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-curve-04",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-curve-05",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-curve-06",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-font-01",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-solid-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-solid-02",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-surf-01",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-surf-02",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-surf-03",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "kernel-geometry",
+      "id": "T-kernel-geometry-surf-04",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-curves-01",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-01",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-02",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-03",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-04",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-05",
+      "points": 3,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-06",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-07",
+      "points": 3,
+      "rows": 35,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-mesh-08",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-misc-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-misc-02",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-modifiers-01",
+      "points": 1,
+      "rows": 21,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-modifiers-02",
+      "points": 1,
+      "rows": 22,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-object-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-object-02",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-object-03",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-paint-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-paint-02",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-sculpt-01",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-subd-01",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-subd-02",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-uv-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "mesh-subd-sculpt",
+      "id": "T-mesh-subd-sculpt-uv-02",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 1
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-analysis-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-analysis-02",
+      "points": 2,
+      "rows": 32,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-analyze-01",
+      "points": 1,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-analyze-02",
+      "points": 1,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-misc-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-misc-02",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-revit-analyze-01",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-revit-massing-site-01",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "analysis-site",
+      "id": "T-analysis-site-sandbox-terrain-geolocation-01",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-attrib-01",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-attrib-02",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-edit-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-edit-02",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-new2930-01",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-props-01",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-props-02",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-architecture-01",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-architecture-02",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-architecture-03",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-architecture-04",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-family-editor-01",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-family-editor-02",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-manage-01",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-modify-01",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-parameters-01",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-revit-ui-performance-01",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-seo-01",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-toolbox-01",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-toolbox-02",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-toolbox-03",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-toolbox-04",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-arch",
+      "id": "T-bim-arch-toolbox-05",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-mep-01",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-revit-structure-01",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-revit-structure-02",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-revit-structure-03",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-revit-systems-01",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-revit-systems-02",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-revit-systems-03",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "bim-struct-mep",
+      "id": "T-bim-struct-mep-struct-01",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-datamanagement-01",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-extensions-01",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-hotlink-01",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-misc-01",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-misc-02",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-revit-collaborate-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-revit-worksharing-01",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-team-01",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "collab-cloud",
+      "id": "T-collab-cloud-team-02",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-annot-01",
+      "points": 1,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-annot-02",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-cad2d-01",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-dim-01",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-dim-02",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-graphic-01",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-graphic-02",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-hatch-01",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-layout-01",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-layout-02",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-layout-03",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-layout-documentation-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-layout-documentation-02",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-misc-01",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-nav-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-nav-02",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-plot-01",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-plot-02",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-reno-01",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-revit-annotate-01",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-revit-annotate-02",
+      "points": 2,
+      "rows": 32,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-revit-schedules-tags-01",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-revit-view-01",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-revit-view-02",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-revit-view-control-01",
+      "points": 1,
+      "rows": 20,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-revit-view-control-02",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-sched-01",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-text-01",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "drafting-docs",
+      "id": "T-drafting-docs-text-02",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-action-01",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-anim-01",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-anim-02",
+      "points": 3,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-armature-01",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-armature-02",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-asset-01",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-clip-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-clip-02",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-clip-03",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-compositor-nodes-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-compositor-nodes-02",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-compositor-nodes-03",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-constraints-01",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-graph-01",
+      "points": 3,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-graph-02",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-grease-pencil-01",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-grease-pencil-02",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-grease-pencil-03",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-grease-pencil-04",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-image-01",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-image-02",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-mask-01",
+      "points": 3,
+      "rows": 40,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-misc-01",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-misc-02",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-misc-03",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-modifiers-01",
+      "points": 2,
+      "rows": 27,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-nla-01",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-node-01",
+      "points": 2,
+      "rows": 20,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-object-01",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-object-02",
+      "points": 3,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-pose-01",
+      "points": 2,
+      "rows": 25,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-pose-02",
+      "points": 2,
+      "rows": 26,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-render-01",
+      "points": 1,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-render-02",
+      "points": 1,
+      "rows": 30,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-render-03",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-scene-01",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-scene-02",
+      "points": 2,
+      "rows": 22,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-scenes-styles-materials-01",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-sequencer-01",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-sequencer-02",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-sequencer-03",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-shader-nodes-01",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-shader-nodes-02",
+      "points": 2,
+      "rows": 35,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-shader-nodes-03",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "render-anim",
+      "id": "T-render-anim-viz-01",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "simulation",
+      "id": "T-simulation-misc-01",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "simulation",
+      "id": "T-simulation-misc-02",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "simulation",
+      "id": "T-simulation-misc-03",
+      "points": 3,
+      "rows": 33,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "simulation",
+      "id": "T-simulation-particle-01",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 2
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-api-01",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-api-02",
+      "points": 2,
+      "rows": 21,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-gdl-01",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-gdl-02",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-01",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-02",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-03",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-04",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-05",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-06",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-07",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-08",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-09",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-10",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-11",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-12",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-13",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-14",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-lisp-15",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-misc-01",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-misc-02",
+      "points": 2,
+      "rows": 36,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-misc-03",
+      "points": 3,
+      "rows": 39,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-net-01",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-net-02",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-net-03",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-net-04",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-net-05",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-net-06",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-net-07",
+      "points": 3,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-revit-api-01",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-ruby-api-01",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-ruby-api-02",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-ruby-api-03",
+      "points": 2,
+      "rows": 33,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-ruby-api-04",
+      "points": 2,
+      "rows": 34,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-script-01",
+      "points": 3,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-script-02",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-text-01",
+      "points": 1,
+      "rows": 21,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "scripting-api-ai",
+      "id": "T-scripting-api-ai-text-02",
+      "points": 1,
+      "rows": 22,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-file-01",
+      "points": 2,
+      "rows": 29,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-misc-01",
+      "points": 2,
+      "rows": 39,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-misc-02",
+      "points": 2,
+      "rows": 40,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-outliner-01",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-outliner-02",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-preferences-01",
+      "points": 2,
+      "rows": 23,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-select-01",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-select-02",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-select-03",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-select-04",
+      "points": 2,
+      "rows": 32,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-setting-01",
+      "points": 2,
+      "rows": 30,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-setting-02",
+      "points": 2,
+      "rows": 31,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-ui-01",
+      "points": 1,
+      "rows": 23,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-ui-02",
+      "points": 2,
+      "rows": 24,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-view-01",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-view-02",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-view-03",
+      "points": 2,
+      "rows": 37,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-view-04",
+      "points": 2,
+      "rows": 38,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-view3d-01",
+      "points": 1,
+      "rows": 21,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-view3d-02",
+      "points": 1,
+      "rows": 21,
+      "status": "open",
+      "wave": 3
+    },
+    {
+      "factory": "ux-access-i18n",
+      "id": "T-ux-access-i18n-wm-01",
+      "points": 2,
+      "rows": 28,
+      "status": "open",
+      "wave": 3
+    }
+  ],
+  "total": {
+    "aliases": 23,
+    "countable": 10637,
+    "points": 743,
+    "rows": 10660,
+    "tasks": 338,
+    "with_existing_hint": 2141,
+    "with_hint": 2141,
+    "without_hint": 8519
+  },
+  "version": 1
+}
