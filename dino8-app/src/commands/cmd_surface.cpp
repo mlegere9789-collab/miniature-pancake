@@ -3905,22 +3905,34 @@ std::optional<SceneObject> RebuildSweep2Sections(CommandContext& ctx, const std:
 // refit otherwise; the first-order Greville-normal fit only when a freeform
 // refit refuses, with a warning), a convex planar solid through OffsetSolidConvexPlanar (exact
 // B-rep), anything else through the mesh offset. Layer is the caller's.
-// Faces of `off` (an offset of `base`: same vertices, same faces) whose orientation reversed against `base`'s. A closed solid offset by
-// more than it is thick (a 10 cube by -6) has every face turned inside out: the mesh is then a mirror image, not an offset.
-static int CountFlippedOffsetFaces(const kernel::Mesh& base, const kernel::Mesh& off) {
+// Faces of `off` (an offset of `base`: same vertices, same faces) whose orientation reversed against `base`'s, and the share of the base's
+// area that they cover. A closed solid offset by more than it is thick (a 10 cube by -6) has every face turned inside out: the mesh is then
+// a mirror image, not an offset. A handful of thin tessellation triangles at the poles of a sphere, the rim of a cylinder or the apex of a cone
+// also reverse in an ordinary offset (measured on the display mesh: 0.25 percent of a sphere's area, 0.8 percent of a cylinder's, 4 percent
+// of a cone's, outward by 1), so a refusal must look at the AREA that turned over, not at the count.
+struct FlippedOffsetFaces { int count = 0; double area_fraction = 0.0; };
+static FlippedOffsetFaces CountFlippedOffsetFaces(const kernel::Mesh& base, const kernel::Mesh& off) {
   const ON_Mesh& a = base.raw();
   const ON_Mesh& b = off.raw();
-  if (a.FaceCount() != b.FaceCount() || a.VertexCount() != b.VertexCount()) return 0;
+  FlippedOffsetFaces r;
+  if (a.FaceCount() != b.FaceCount() || a.VertexCount() != b.VertexCount()) return r;
   auto normal = [](const ON_Mesh& m, const ON_MeshFace& f) {
     const ON_3dPoint p0(m.m_V[f.vi[0]]), p1(m.m_V[f.vi[1]]), p2(m.m_V[f.vi[2]]);
     return ON_CrossProduct(p1 - p0, p2 - p0);
   };
-  int flipped = 0;
+  double total = 0.0, flipped_area = 0.0;
   for (int i = 0; i < a.FaceCount(); ++i) {
-    if (ON_DotProduct(normal(a, a.m_F[i]), normal(b, b.m_F[i])) < 0.0) ++flipped;
+    const ON_3dVector na = normal(a, a.m_F[i]);
+    const double len = na.Length();
+    total += len;
+    if (ON_DotProduct(na, normal(b, b.m_F[i])) < 0.0) { ++r.count; flipped_area += len; }
   }
-  return flipped;
+  if (total > 0.0) r.area_fraction = flipped_area / total;
+  return r;
 }
+
+// A offset that turned over more than this share of the body's area is a different body, not an offset of it.
+static constexpr double kOffsetFlippedAreaLimit = 0.2;
 
 std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObject& o, const HistoryRecord& rec) {
   auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
@@ -4054,16 +4066,17 @@ std::optional<SceneObject> RebuildOffsetSrf(CommandContext& ctx, const SceneObje
     kernel::Mesh base = *m;
     if (base.IsClosedManifold() && base.Volume() < 0) base = base.FlipNormals();
     kernel::Mesh off = OffsetMesh(base, d);
-    if (base.IsClosedManifold()) {
+    if (!solid_ && base.IsClosedManifold()) {
       // Offsetting a closed solid inward by more than it is thick used to "succeed": OffsetSrf -6 on a 10 cube printed 1 object and left
-      // an inside-out 2 cube (volume 8) as a mesh. Nothing is built when faces turned over.
-      // Two signs of it: single faces that reversed (a thin box offset along one axis only), and the whole body turned inside out (every
-      // face keeps its own orientation, but the signed volume went from positive to negative, as for the cube).
-      const int flipped = CountFlippedOffsetFaces(base, off);
+      // an inside-out 2 cube (volume 8) as a mesh. Nothing is built when the body turned over. Two signs of it: a large share of the area
+      // reversed (a thin box offset along one axis only), or the whole body turned inside out (every face keeps its own orientation, but the
+      // signed volume went from positive to negative, as for the cube). A few thin triangles that reverse at a pole, a rim or an apex do
+      // not count (see CountFlippedOffsetFaces). Solid=Yes is exempt: its shell is re-oriented by Outward() below, as it always was.
+      const FlippedOffsetFaces fl = CountFlippedOffsetFaces(base, off);
       const bool inside_out = off.IsClosedManifold() && off.Volume() <= 0.0;
-      if (flipped > 0 || inside_out) {
+      if (fl.area_fraction > kOffsetFlippedAreaLimit || inside_out) {
         ctx.Warn("OffsetSrf: object " + std::to_string(o.id) + " - an offset of " + FormatNumber(d) + " passes through the solid (" +
-                 (inside_out ? std::string("the offset body would be inside out") : std::to_string(flipped) + " of " + std::to_string(base.FaceCount()) + " face(s) would turn inside out") +
+                 (inside_out ? std::string("the offset body would be inside out") : std::to_string(fl.count) + " of " + std::to_string(base.FaceCount()) + " face(s) would turn inside out") +
                  "); skipped");
         return std::nullopt;
       }
