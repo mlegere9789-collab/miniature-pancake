@@ -1,0 +1,17 @@
+{
+  "schema": "dino8-perf-gates/1",
+  "source": "Dino 8 Master Plan Revision 2, Appendix B (Unified performance budgets); rule 'any benchmark regression more than 3% blocks merge' is section 9.1",
+  "note": "Only rows a kernel CI job can measure are listed. 'gate' entries are the Appendix B numbers and count as misses; 'indicative' entries scale a gate to the smaller synthetic dataset and are printed but never fail. The 20-view section gate is stated for parallel views; the harness runs them serially, which is stricter.",
+  "gates": [
+    {"metric": "nurbs_boolean_ms",    "dataset": "prism_faces_1000", "max": 1000, "unit": "ms", "row": "NURBS boolean, 1,000 faces: under 1 s with automatic healing"},
+    {"metric": "planar_boolean_ms",   "dataset": "prism_faces_1000", "max": 1000, "unit": "ms", "row": "NURBS boolean, 1,000 faces: under 1 s (planar engine, same operands)"},
+    {"metric": "nurbs_boolean_ms",    "dataset": "prism_faces_300",  "max": 300,  "unit": "ms", "indicative": true, "row": "NURBS boolean 1,000 faces under 1 s, scaled linearly"},
+    {"metric": "nurbs_boolean_ms",    "dataset": "prism_faces_100",  "max": 100,  "unit": "ms", "indicative": true, "row": "NURBS boolean 1,000 faces under 1 s, scaled linearly"},
+    {"metric": "planar_boolean_ms",   "dataset": "prism_faces_300",  "max": 300,  "unit": "ms", "indicative": true, "row": "scaled linearly"},
+    {"metric": "planar_boolean_ms",   "dataset": "prism_faces_100",  "max": 100,  "unit": "ms", "indicative": true, "row": "scaled linearly"},
+    {"metric": "section_ms",          "dataset": "prism_faces_1000", "max": 1000, "unit": "ms", "row": "Section or elevation regeneration: under 1 s per view (necessary, not sufficient: the row names 50,000-element views)"},
+    {"metric": "section_20_views_ms", "dataset": "prism_faces_1000", "max": 3000, "unit": "ms", "row": "20 views in parallel under 3 s (measured serially)"},
+    {"metric": "brep_copy_ms",        "dataset": "*",                "max": 30,   "unit": "ms", "row": "Undo or redo under 30 ms (kernel-side snapshot copy only)"},
+    {"metric": "mesh_boolean_ms",     "dataset_regex": "_(\\d+)_tris_each$", "max_per_million_tris": 2000, "unit": "ms", "indicative": true, "row": "Mesh boolean, two 1 M-triangle meshes under 2 s, scaled linearly to the dataset size"}
+  ]
+}
