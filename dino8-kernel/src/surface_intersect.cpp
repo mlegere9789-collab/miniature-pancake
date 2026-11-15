@@ -2034,16 +2034,172 @@ std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface&
   return out;
 }
 
+// --- exact circle seeds for sphere/sphere and plane/sphere ---------------------------------
+//
+// The mesh-seeded search below cannot see a near-tangent contact: the inscribed seed meshes sit
+// up to `mesh_tolerance` inside their surfaces, so two spheres that overlap by 1e-3 (a lens
+// whose rim has radius ~0.03) produce no triangle crossing at all, a sphere sunk 1e-3 into a
+// plane produces a 3-point sliver, and two spheres that are 1e-6 apart (strictly nested, never
+// touching) produce dozens of spurious fragments. For these pairs the intersection is a circle
+// in closed form, and whether it exists is a sign decision on exact numbers (centre distance
+// against R1 + R2 and |R1 - R2|; centre height against R), never a resolution question. The
+// circle is sampled (CircleSeeds) and handed to the normal refine / seam / pole / fit stages. Only a rim within a few seed-mesh
+// cells (kExactRimCells) takes this path: a larger rim is resolved by the mesh search, whose behaviour is kept as it was; a rim
+// narrower than a few tolerances (kMinRimTolerances) is a touch within the kernel's own tolerance and returns no curve.
+constexpr double kMinRimTolerances = 4.0;  // a rim narrower than this many tolerances is a touch, not a curve
+constexpr double kExactRimCells = 12.0;  // rim radius, in seed-mesh chord tolerances, below which the exact circle replaces the mesh search
+
+struct ExactSeedResult {
+  bool handled = false;  // true: the pair is an analytic circle pair; `chains` is the whole answer
+  bool circle = false;   // true: the pair really crosses along a circle (a transversal contact, not a touch)
+  std::vector<SeedPolyline> chains;
+};
+
+void CircleSeeds(const ON_Surface& a, const ON_Surface& b, const Point3d& centre, const Vector3d& xax, const Vector3d& yax, double radius,
+                 const IntersectOptions& opt, ExactSeedResult& res) {
+  // Sample count: a fixed 24. The points are Newton-refined onto both surfaces, so only the spacing matters, and a tiny rim must
+  // not become a ring of points closer together than the weld tolerances downstream (measured on the sunk-sphere / lens corpus
+  // cases: 24 points keep every one of them closed, 28 and 32 and 48 each lose a different one).
+  const int n0 = 24;
+  const double gate = std::max(opt.tolerance, 1e-9);
+  struct Sample {
+    double t;
+    SeedPoint sp;
+    bool ok;
+  };
+  auto eval = [&](double t) {
+    Sample sm;
+    sm.t = t;
+    const Point3d p = centre + xax * (radius * std::cos(t)) + yax * (radius * std::sin(t));
+    double ua = 0, va = 0, ub = 0, vb = 0;
+    // A pole (or any point the coarse grid's nearest node leads Newton astray from) needs a finer start grid.
+    auto project = [&](const ON_Surface& s, double& u, double& v) {
+      for (int grid : {24, 96, 256}) {
+        SurfaceClosestPointGlobal(s, p, u, v, grid);
+        if (s.PointAt(u, v).DistanceTo(p) <= gate * 1e-3) break;
+      }
+      return s.PointAt(u, v).DistanceTo(p) <= gate;
+    };
+    sm.ok = project(a, ua, va) && project(b, ub, vb);
+    sm.sp = {p, ON_2dPoint(ua, va), ON_2dPoint(ub, vb)};
+    return sm;
+  };
+  std::vector<Sample> smp;
+  for (int i = 0; i < n0; ++i) smp.push_back(eval(2 * kPi * static_cast<double>(i) / n0));
+  // A circle that passes close to a pole swings that surface's azimuth by up to half a turn within a step or two, which the
+  // seam logic downstream cannot tell from a wrap across the seam (it reads any jump over half a period as one). Bisect every
+  // step where a periodic parameter moves by a quarter to three quarters of its period until the swing is resolved.
+  auto swings = [&](const Sample& p, const Sample& q) {
+    if (!p.ok || !q.ok) return false;
+    for (int which = 0; which < 2; ++which) {
+      const ON_Surface& s = which == 0 ? a : b;
+      const ON_2dPoint& pu = which == 0 ? p.sp.uva : p.sp.uvb;
+      const ON_2dPoint& qu = which == 0 ? q.sp.uva : q.sp.uvb;
+      for (int d = 0; d < 2; ++d) {
+        if (!s.IsClosed(d)) continue;
+        const double L = s.Domain(d).Length(), du = std::fabs(pu[d] - qu[d]);
+        if (du > 0.25 * L && du < 0.75 * L) return true;
+      }
+    }
+    return false;
+  };
+  for (int pass = 0; pass < 14; ++pass) {
+    std::vector<Sample> next;
+    bool any = false;
+    for (size_t i = 0; i < smp.size(); ++i) {
+      next.push_back(smp[i]);
+      const bool wrap = i + 1 == smp.size();
+      const Sample& q = wrap ? smp[0] : smp[i + 1];
+      if (!swings(smp[i], q)) continue;
+      const double t1 = wrap ? 2 * kPi : q.t;
+      if (t1 - smp[i].t < 1e-9) continue;
+      next.push_back(eval(0.5 * (smp[i].t + t1)));
+      any = true;
+    }
+    smp.swap(next);
+    if (!any) break;
+  }
+  const int n = static_cast<int>(smp.size());
+  const int bad = static_cast<int>(std::count_if(smp.begin(), smp.end(), [](const Sample& sm) { return !sm.ok; }));
+  if (bad == 0) {
+    SeedPolyline pl;
+    for (const Sample& sm : smp) pl.pts.push_back(sm.sp);
+    pl.closed = true;
+    res.chains.push_back(std::move(pl));
+    return;
+  }
+  // Part of the circle lies off a patch: keep the runs of good samples as open chains.
+  int first_bad = 0;
+  while (first_bad < n && smp[static_cast<size_t>(first_bad)].ok) ++first_bad;
+  SeedPolyline cur;
+  for (int k = 1; k <= n; ++k) {
+    const Sample& sm = smp[static_cast<size_t>((first_bad + k) % n)];
+    if (sm.ok) { cur.pts.push_back(sm.sp); continue; }
+    if (cur.pts.size() >= 2) res.chains.push_back(std::move(cur));
+    cur = SeedPolyline();
+  }
+}
+
+ExactSeedResult ExactCircleSeeds(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt, bool want_seeds = true) {
+  ExactSeedResult res;
+  const double scale = std::max(SurfaceScale(a), SurfaceScale(b));
+  const double ctol = std::max(1e-9, 1e-8 * scale);
+  ON_Sphere sa, sb;
+  ON_Plane pa;
+  const bool a_sph = a.IsSphere(&sa, ctol), b_sph = b.IsSphere(&sb, ctol);
+  if (a_sph && b_sph) {
+    const Vector3d d = sb.plane.origin - sa.plane.origin;
+    const double dist = d.Length(), r1 = sa.radius, r2 = sb.radius;
+    if (dist <= 1e-12 * scale) return res;  // concentric: coincident or nested, no proper circle (left to the general path)
+    res.handled = true;
+    const double slack = 1e-12 * scale;
+    if (dist > r1 + r2 + slack || dist < std::fabs(r1 - r2) - slack) return res;  // disjoint or strictly nested: no curve, exactly
+    if (dist >= r1 + r2 - slack || dist <= std::fabs(r1 - r2) + slack) return res;  // tangent: a point, not a curve
+    const double x = (dist * dist + r1 * r1 - r2 * r2) / (2 * dist);
+    const double rc2 = r1 * r1 - x * x;
+    if (rc2 <= 0) return res;
+    // A rim the seed mesh resolves is left to the mesh search (unchanged behaviour); only a rim within a few mesh cells is
+    // under-sampled by it.
+    if (std::sqrt(rc2) < kMinRimTolerances * opt.tolerance) return res;  // a lens thinner than the kernel's own tolerance: a touch
+    if (std::sqrt(rc2) >= kExactRimCells * opt.mesh_tolerance) { res.handled = false; return res; }
+    Vector3d ax = d / dist, ux, uy;
+    ux = std::fabs(ax.x) < 0.9 ? Vector3d(1, 0, 0) : Vector3d(0, 1, 0);
+    ux = ux - (ux * ax) * ax;
+    ux.Unitize();
+    uy = ON_CrossProduct(ax, ux);
+    res.circle = true;
+    if (want_seeds) CircleSeeds(a, b, sa.plane.origin + ax * x, ux, uy, std::sqrt(rc2), opt, res);
+    return res;
+  }
+  if ((a_sph && b.IsPlanar(&pa, ctol)) || (b_sph && a.IsPlanar(&pa, ctol))) {
+    const ON_Sphere& s = a_sph ? sa : sb;
+    const double h = pa.zaxis * (s.plane.origin - pa.origin);  // signed height of the centre above the plane
+    res.handled = true;
+    const double slack = 1e-12 * scale;
+    if (std::fabs(h) >= s.radius - slack) return res;  // no contact, or a single tangent point
+    const Point3d centre = s.plane.origin - pa.zaxis * h;
+    if (std::sqrt(s.radius * s.radius - h * h) < kMinRimTolerances * opt.tolerance) return res;
+    if (std::sqrt(s.radius * s.radius - h * h) >= kExactRimCells * opt.mesh_tolerance) { res.handled = false; return res; }
+    res.circle = true;
+    if (want_seeds) CircleSeeds(a, b, centre, pa.xaxis, pa.yaxis, std::sqrt(s.radius * s.radius - h * h), opt, res);
+    return res;
+  }
+  return res;
+}
+
 }  // namespace
 
 std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
   std::vector<IntersectionCurve> out;
-  const SurfaceMesh ma = TessellateWithUV(a, opt), mb = TessellateWithUV(b, opt);
+  std::vector<SeedPolyline> chains;
+  const ExactSeedResult exact = ExactCircleSeeds(a, b, opt);
+  if (exact.handled && exact.chains.empty()) return out;
+  const SurfaceMesh ma = exact.handled ? SurfaceMesh() : TessellateWithUV(a, opt), mb = exact.handled ? SurfaceMesh() : TessellateWithUV(b, opt);
   ON_BoundingBox both = ma.bbox;
   both.Union(mb.bbox);
   const double diag = both.IsValid() ? both.Diagonal().Length() : 1;
   const double eps = std::max(1e-9 * diag, 1e-12);
-  const std::vector<Seg> segs = MeshSegments(ma, mb, eps);
+  const std::vector<Seg> segs = exact.handled ? std::vector<Seg>() : MeshSegments(ma, mb, eps);
   // A completely empty crossing search is genuinely ambiguous on its own: two
   // surfaces that never meet at all, and two surfaces that COINCIDE over a
   // real patch (which produces no clean triangle-pair crossing either - the
@@ -2086,14 +2242,14 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
   // Two perpendicular (or any other non-coplanar) flat faces fall through
   // to the ordinary empty result below, exactly as every caller already
   // relied on before 878ecdb ever touched this function.
-  if (segs.empty()) {
+  if (!exact.handled && segs.empty()) {
     ON_Plane pa, pb;
     const bool coplanar = a.IsPlanar(&pa, opt.tolerance) && b.IsPlanar(&pb, opt.tolerance) &&
                            pa.zaxis.IsParallelTo(pb.zaxis, 1e-6) != 0 &&
                            std::fabs(pa.DistanceTo(pb.origin)) <= opt.tolerance;
     return coplanar ? CoincidentOverlapBoundaryCurves(a, b, opt) : out;
   }
-  std::vector<SeedPolyline> chains = ChainSegments(segs, std::max(eps * 100, 1e-7 * diag));
+  chains = exact.handled ? exact.chains : ChainSegments(segs, std::max(eps * 100, 1e-7 * diag));
   for (const SeedPolyline& pl : chains) {
     IntersectionCurve ic;
     ic.closed = pl.closed;
@@ -2777,6 +2933,42 @@ bool SegTri(const Point3d& p0, const Point3d& p1, const Point3d& a, const Point3
   return s >= -1e-9 && s <= 1 + 1e-9;
 }
 
+// Closest point of triangle (a, b, c) to p, as barycentrics (bu, bv) of b and c (point = a + bu (b - a) + bv (c - a)).
+Point3d ClosestOnTriangle(const Point3d& p, const Point3d& a, const Point3d& b, const Point3d& c, double& bu, double& bv) {
+  const Vector3d ab = b - a, ac = c - a, ap = p - a;
+  const double d1 = ab * ap, d2 = ac * ap;
+  if (d1 <= 0 && d2 <= 0) { bu = bv = 0; return a; }
+  const Vector3d bp = p - b;
+  const double d3 = ab * bp, d4 = ac * bp;
+  if (d3 >= 0 && d4 <= d3) { bu = 1; bv = 0; return b; }
+  const double vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) { const double v = d1 / (d1 - d3); bu = v; bv = 0; return a + ab * v; }
+  const Vector3d cp = p - c;
+  const double d5 = ab * cp, d6 = ac * cp;
+  if (d6 >= 0 && d5 <= d6) { bu = 0; bv = 1; return c; }
+  const double vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) { const double w = d2 / (d2 - d6); bu = 0; bv = w; return a + ac * w; }
+  const double va = d3 * d6 - d5 * d4;
+  if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) { const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); bu = 1 - w; bv = w; return b + (c - b) * w; }
+  const double denom = 1 / (va + vb + vc);
+  bu = vb * denom; bv = vc * denom;
+  return a + ab * bu + ac * bv;
+}
+
+// Approximate nearest approach of segment p0-p1 to triangle (a, b, c): the point of the segment, its distance to the triangle, and the
+// triangle's barycentrics there. Found by a short ternary search on the segment parameter (the distance is convex along a segment).
+double SegmentTriangleNearest(const Point3d& p0, const Point3d& p1, const Point3d& a, const Point3d& b, const Point3d& c, double& s, double& bu, double& bv) {
+  double lo = 0, hi = 1;
+  auto dist = [&](double t, double& u, double& v) { return (p0 + (p1 - p0) * t).DistanceTo(ClosestOnTriangle(p0 + (p1 - p0) * t, a, b, c, u, v)); };
+  double u = 0, v = 0;
+  for (int it = 0; it < 24; ++it) {
+    const double m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+    if (dist(m1, u, v) <= dist(m2, u, v)) hi = m2; else lo = m1;
+  }
+  s = 0.5 * (lo + hi);
+  return dist(s, bu, bv);
+}
+
 }  // namespace
 
 std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt) {
@@ -2796,8 +2988,9 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
   const int n = static_cast<int>(Clamp(std::ceil(clen / std::max(opt.mesh_tolerance, 1e-6)), 64, 2000));
   std::vector<Point3d> samples(static_cast<size_t>(n) + 1);
   for (int i = 0; i <= n; ++i) samples[static_cast<size_t>(i)] = c.PointAt(d.ParameterAt(static_cast<double>(i) / n));
-  struct Seed { double t; ON_2dPoint uv; };
+  struct Seed { double t; ON_2dPoint uv; bool near; };
   std::vector<Seed> seeds;
+  const double near_miss = std::max(opt.mesh_tolerance, 1e-9) * 1.5;
   for (int i = 0; i < n; ++i) {
     const Point3d& p0 = samples[static_cast<size_t>(i)];
     const Point3d& p1 = samples[static_cast<size_t>(i) + 1];
@@ -2808,12 +3001,22 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     grid.Query(sb, stamp, mark, [&](int ti) {
       const auto& tr = m.tris[static_cast<size_t>(ti)];
       double sp, bu, bv;
-      if (!SegTri(p0, p1, m.pts[static_cast<size_t>(tr[0])], m.pts[static_cast<size_t>(tr[1])], m.pts[static_cast<size_t>(tr[2])], sp, bu, bv)) return;
+      const Point3d& ta = m.pts[static_cast<size_t>(tr[0])];
+      const Point3d& tb = m.pts[static_cast<size_t>(tr[1])];
+      const Point3d& tc = m.pts[static_cast<size_t>(tr[2])];
+      bool near = false;
+      if (!SegTri(p0, p1, ta, tb, tc, sp, bu, bv)) {
+        near = true;
+        // The seed mesh is inscribed in the surface (up to the chord tolerance inside it), so a curve that meets the true surface
+        // within that sag layer - a ray starting 1e-3 inside a sphere, say - crosses no triangle. Keep the near misses as Newton
+        // seeds: the polish below accepts only a genuine root, so a seed that does not lead to one costs a failed solve and no hit.
+        if (SegmentTriangleNearest(p0, p1, ta, tb, tc, sp, bu, bv) > near_miss) return;
+      }
       const ON_2dPoint& u0 = m.uv[static_cast<size_t>(tr[0])];
       const ON_2dPoint& u1 = m.uv[static_cast<size_t>(tr[1])];
       const ON_2dPoint& u2 = m.uv[static_cast<size_t>(tr[2])];
       ON_2dPoint uv(u0.x + (u1.x - u0.x) * bu + (u2.x - u0.x) * bv, u0.y + (u1.y - u0.y) * bu + (u2.y - u0.y) * bv);
-      seeds.push_back({d.ParameterAt((i + Clamp(sp, 0, 1)) / n), uv});
+      seeds.push_back({d.ParameterAt((i + Clamp(sp, 0, 1)) / n), uv, near});
     });
   }
   const std::vector<double> lo = {d.Min(), s.Domain(0).Min(), s.Domain(1).Min()}, hi = {d.Max(), s.Domain(0).Max(), s.Domain(1).Max()};
@@ -2825,6 +3028,10 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     };
     double err = 0;
     if (!NewtonSolve(res, x, lo, hi, opt.tolerance, 40, &err)) continue;
+    // A hit found only through a near miss is polished to a tight residual: the caller compares its parameter with the curve's
+    // start (a ray origin sitting ON the surface), and a hit that is merely within the solve tolerance of the origin can land on
+    // either side of that comparison.
+    if (sd.near) NewtonSolve(res, x, lo, hi, 1e-11, 40, &err);
     CurveSurfaceHit h;
     h.t = x[0]; h.uv = ON_2dPoint(x[1], x[2]); h.point = c.PointAt(h.t); h.error = err;
     bool dup = false;
@@ -4238,6 +4445,9 @@ bool RefineClosestApproach(const ON_Surface& a, const ON_Surface& b, double& ua,
 
 std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
   std::vector<SurfaceTangentContact> out;
+  // A sphere/sphere or plane/sphere pair that really crosses along a circle has no tangent-only contact, however
+  // shallow the overlap (the exact closed form decides it; the grid search below cannot tell a 1e-3 lens from a touch).
+  if (ExactCircleSeeds(a, b, opt, false).circle) return out;
   const ON_Interval dua = a.Domain(0), dva = a.Domain(1), dub = b.Domain(0), dvb = b.Domain(1);
   if (!dua.IsIncreasing() || !dva.IsIncreasing() || !dub.IsIncreasing() || !dvb.IsIncreasing()) return out;
 
@@ -4336,6 +4546,7 @@ std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& 
 
 std::vector<SurfaceTangentCurve> FindSurfaceTangentCurves(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
   std::vector<SurfaceTangentCurve> out;
+  if (ExactCircleSeeds(a, b, opt, false).circle) return out;  // see FindSurfaceTangentContacts()
   const ON_Interval dua = a.Domain(0), dva = a.Domain(1), dub = b.Domain(0), dvb = b.Domain(1);
   if (!dua.IsIncreasing() || !dva.IsIncreasing() || !dub.IsIncreasing() || !dvb.IsIncreasing()) return out;
 
