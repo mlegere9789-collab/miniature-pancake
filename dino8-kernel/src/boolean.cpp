@@ -983,14 +983,22 @@ std::vector<Vector3d> GenericRayDirections() {
 // would exceed tol) nor lie inside it, so the exact edge-distance and
 // parity tests are only run for hits near the face. Every value that
 // decides a classification (denominators, hit parameters, edge distances,
-// parity) is computed by the same expressions as before, in the same
-// order, so the result for every point is identical.
+// parity) is computed by the same expressions as before, so the result for
+// every point is identical. The faces a ray can matter for are found through
+// a bounding-volume tree (a face whose box, grown past tol, the ray misses
+// can neither graze nor be crossed); faces the direction runs parallel to are
+// checked separately, since they spoil a direction for any point in their
+// plane. Which faces are visited and in which order cannot change the answer:
+// a direction is abandoned if ANY visited face spoils it, otherwise the
+// crossing count is order-independent.
 class SolidClassifier {
  public:
   SolidClassifier(const std::vector<Brep::PlanarFace>& faces, double tol) : faces_(faces), tol_(tol), dirs_(GenericRayDirections()) {
     loops2d_.reserve(faces.size());
     boxes_.reserve(faces.size());
-    for (const Brep::PlanarFace& f : faces) {
+    std::vector<Aabb> face_boxes(faces.size());
+    for (size_t fi = 0; fi < faces.size(); ++fi) {
+      const Brep::PlanarFace& f = faces[fi];
       loops2d_.push_back(ProjectLoopOntoPlaneAxes(f.plane, f.loop));
       double box[4] = {1e300, -1e300, 1e300, -1e300};
       for (const Point2d& q : loops2d_.back()) {
@@ -999,7 +1007,30 @@ class SolidClassifier {
       }
       const double grow = 2.0 * tol;
       boxes_.push_back({box[0] - grow, box[1] + grow, box[2] - grow, box[3] + grow});
+      // 3D box of the loop, grown well past tol: a ray hit that grazes the
+      // loop (within tol of its boundary) or lies inside it is within tol of
+      // the loop's own region, hence inside this box.
+      Aabb& ab = face_boxes[fi];
+      for (int k = 0; k < 3; ++k) { ab.lo[k] = 1e300; ab.hi[k] = -1e300; }
+      for (const Point3d& v : f.loop) {
+        ab.lo[0] = std::min(ab.lo[0], v.x); ab.hi[0] = std::max(ab.hi[0], v.x);
+        ab.lo[1] = std::min(ab.lo[1], v.y); ab.hi[1] = std::max(ab.hi[1], v.y);
+        ab.lo[2] = std::min(ab.lo[2], v.z); ab.hi[2] = std::max(ab.hi[2], v.z);
+      }
+      for (int k = 0; k < 3; ++k) { ab.lo[k] -= 4.0 * tol; ab.hi[k] += 4.0 * tol; }
     }
+    // Faces whose plane the ray direction runs (almost) parallel to: they
+    // make a direction unusable when the point lies in their plane, whether
+    // or not the ray comes near their loop, so they are checked per point.
+    parallel_.resize(dirs_.size());
+    for (size_t di = 0; di < dirs_.size(); ++di) {
+      for (size_t fi = 0; fi < faces.size(); ++fi) {
+        if (std::fabs(faces[fi].plane.zaxis * dirs_[di]) < 1e-9) parallel_[di].push_back(static_cast<int>(fi));
+      }
+    }
+    order_.resize(faces.size());
+    for (size_t i = 0; i < faces.size(); ++i) order_[i] = static_cast<int>(i);
+    if (!faces.empty()) BuildNode(face_boxes, 0, static_cast<int>(faces.size()));
   }
 
   PointClass Classify(const Point3d& p) const {
@@ -1012,28 +1043,47 @@ class SolidClassifier {
       }
     }
 
-    for (const Vector3d& d : dirs_) {
+    std::vector<int> stack;
+    for (size_t di = 0; di < dirs_.size(); ++di) {
+      const Vector3d& d = dirs_[di];
       bool clean = true;
       int crossings = 0;
-      for (size_t fi = 0; fi < faces_.size(); ++fi) {
-        const Brep::PlanarFace& f = faces_[fi];
-        const double denom = f.plane.zaxis * d;
-        if (std::fabs(denom) < 1e-9) {
-          if (std::fabs(f.plane.DistanceTo(p)) <= tol) { clean = false; break; }
-          continue;
+      for (int fi : parallel_[di]) {
+        if (std::fabs(faces_[static_cast<size_t>(fi)].plane.DistanceTo(p)) <= tol) { clean = false; break; }
+      }
+      if (clean && !nodes_.empty()) {
+        const double pc[3] = {p.x, p.y, p.z};
+        const double dc[3] = {d.x, d.y, d.z};
+        stack.clear();
+        stack.push_back(0);
+        while (!stack.empty() && clean) {
+          const Node& nd = nodes_[static_cast<size_t>(stack.back())];
+          stack.pop_back();
+          if (!RayMeetsBox(pc, dc, nd.box)) continue;
+          if (nd.left >= 0) {
+            stack.push_back(nd.left);
+            stack.push_back(nd.right);
+            continue;
+          }
+          for (int k = nd.begin; k < nd.end; ++k) {
+            const size_t fi = static_cast<size_t>(order_[static_cast<size_t>(k)]);
+            const Brep::PlanarFace& f = faces_[fi];
+            const double denom = f.plane.zaxis * d;
+            if (std::fabs(denom) < 1e-9) continue;  // handled through parallel_[di]
+            const double t = ((f.plane.origin - p) * f.plane.zaxis) / denom;
+            if (t <= tol) continue;  // behind (or at) the ray's own origin
+            const Point3d hit = p + t * d;
+            const Point2d hit2d = ProjectOntoPlaneAxes(f.plane, hit);
+            const Box2& bx = boxes_[fi];
+            if (hit2d.x < bx.minx || hit2d.x > bx.maxx || hit2d.y < bx.miny || hit2d.y > bx.maxy) continue;
+            const std::vector<Point2d>& loop2d = loops2d_[fi];
+            if (DistanceToPolygonBoundary2D(hit2d.x, hit2d.y, loop2d) <= tol) {
+              clean = false;  // grazes an edge or vertex
+              break;
+            }
+            if (PointInPolygon2D(hit2d.x, hit2d.y, loop2d)) ++crossings;
+          }
         }
-        const double t = ((f.plane.origin - p) * f.plane.zaxis) / denom;
-        if (t <= tol) continue;  // behind (or at) the ray's own origin
-        const Point3d hit = p + t * d;
-        const Point2d hit2d = ProjectOntoPlaneAxes(f.plane, hit);
-        const Box2& bx = boxes_[fi];
-        if (hit2d.x < bx.minx || hit2d.x > bx.maxx || hit2d.y < bx.miny || hit2d.y > bx.maxy) continue;
-        const std::vector<Point2d>& loop2d = loops2d_[fi];
-        if (DistanceToPolygonBoundary2D(hit2d.x, hit2d.y, loop2d) <= tol) {
-          clean = false;
-          break;
-        }
-        if (PointInPolygon2D(hit2d.x, hit2d.y, loop2d)) ++crossings;
       }
       if (clean) return (crossings % 2 == 1) ? PointClass::kIn : PointClass::kOut;
     }
@@ -1052,11 +1102,66 @@ class SolidClassifier {
 
  private:
   struct Box2 { double minx, maxx, miny, maxy; };
+  struct Aabb { double lo[3], hi[3]; };
+  struct Node { Aabb box; int left = -1, right = -1, begin = 0, end = 0; };
+
+  // Median-split bounding-volume tree over face boxes (leaves hold <= 4 faces).
+  int BuildNode(const std::vector<Aabb>& fb, int begin, int end) {
+    const int me = static_cast<int>(nodes_.size());
+    nodes_.emplace_back();
+    Aabb box;
+    for (int k = 0; k < 3; ++k) { box.lo[k] = 1e300; box.hi[k] = -1e300; }
+    for (int i = begin; i < end; ++i) {
+      const Aabb& b = fb[static_cast<size_t>(order_[static_cast<size_t>(i)])];
+      for (int k = 0; k < 3; ++k) { box.lo[k] = std::min(box.lo[k], b.lo[k]); box.hi[k] = std::max(box.hi[k], b.hi[k]); }
+    }
+    nodes_[static_cast<size_t>(me)].box = box;
+    if (end - begin <= 4) {
+      nodes_[static_cast<size_t>(me)].begin = begin;
+      nodes_[static_cast<size_t>(me)].end = end;
+      return me;
+    }
+    int axis = 0;
+    for (int k = 1; k < 3; ++k) if (box.hi[k] - box.lo[k] > box.hi[axis] - box.lo[axis]) axis = k;
+    const int mid = (begin + end) / 2;
+    std::nth_element(order_.begin() + begin, order_.begin() + mid, order_.begin() + end, [&](int x, int y) {
+      const Aabb& bx = fb[static_cast<size_t>(x)];
+      const Aabb& by = fb[static_cast<size_t>(y)];
+      return bx.lo[axis] + bx.hi[axis] < by.lo[axis] + by.hi[axis];
+    });
+    const int l = BuildNode(fb, begin, mid);
+    const int r = BuildNode(fb, mid, end);
+    nodes_[static_cast<size_t>(me)].left = l;
+    nodes_[static_cast<size_t>(me)].right = r;
+    return me;
+  }
+
+  // Slab test of the half-line p + t d (t >= 0) against a box.
+  static bool RayMeetsBox(const double* p, const double* d, const Aabb& b) {
+    double t0 = 0.0, t1 = 1e300;
+    for (int k = 0; k < 3; ++k) {
+      if (std::fabs(d[k]) < 1e-300) {
+        if (p[k] < b.lo[k] || p[k] > b.hi[k]) return false;
+        continue;
+      }
+      double ta = (b.lo[k] - p[k]) / d[k];
+      double tb = (b.hi[k] - p[k]) / d[k];
+      if (ta > tb) std::swap(ta, tb);
+      t0 = std::max(t0, ta);
+      t1 = std::min(t1, tb);
+      if (t0 > t1) return false;
+    }
+    return true;
+  }
+
   const std::vector<Brep::PlanarFace>& faces_;
   double tol_;
   std::vector<Vector3d> dirs_;
   std::vector<std::vector<Point2d>> loops2d_;
   std::vector<Box2> boxes_;
+  std::vector<std::vector<int>> parallel_;
+  std::vector<int> order_;
+  std::vector<Node> nodes_;
 };
 
 [[maybe_unused]] PointClass ClassifyPointVsSolid(const Point3d& p, const std::vector<Brep::PlanarFace>& faces, double tol) {
@@ -1074,7 +1179,45 @@ class SolidClassifier {
 // inside the polygon.
 Point3d RepresentativeInteriorPoint(const Brep::PlanarFace& face) {
   const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(face.plane, face.loop);
-  const std::vector<std::array<int, 3>> tris = dino8::kernel::detail::EarClipTriangulate(loop2d);
+  // Only the FIRST triangle EarClipTriangulate() emits is used here, so find
+  // that ear directly (the same scan, in the same order, with the same
+  // tests: the first valid ear of the full polygon) instead of clipping
+  // the whole loop - fragments of a large cap can have hundreds of
+  // vertices, and a complete clip is quadratic in them. A polygon of three
+  // vertices, or one with no ear found, takes the full routine unchanged.
+  std::array<int, 3> first_tri = {-1, -1, -1};
+  if (loop2d.size() > 3) {
+    const size_t n = loop2d.size();
+    std::vector<int> order(n);
+    for (size_t i = 0; i < n; ++i) order[i] = static_cast<int>(i);
+    if (dino8::kernel::detail::SignedArea(loop2d) < 0.0) std::reverse(order.begin(), order.end());
+    for (size_t i = 0; i < n && first_tri[0] < 0; ++i) {
+      const int ia = order[(i + n - 1) % n];
+      const int ib = order[i];
+      const int ic = order[(i + 1) % n];
+      const Point2d& a = loop2d[static_cast<size_t>(ia)];
+      const Point2d& b = loop2d[static_cast<size_t>(ib)];
+      const Point2d& c = loop2d[static_cast<size_t>(ic)];
+      const double turn = dino8::kernel::detail::Cross2d(Point2d(b.x - a.x, b.y - a.y), Point2d(c.x - b.x, c.y - b.y));
+      if (turn <= 1e-15) continue;
+      bool contains_other = false;
+      for (size_t k = 0; k < n; ++k) {
+        const int idx = order[k];
+        if (idx == ia || idx == ib || idx == ic) continue;
+        if (dino8::kernel::detail::PointInTriangle(loop2d[static_cast<size_t>(idx)], a, b, c)) {
+          contains_other = true;
+          break;
+        }
+      }
+      if (!contains_other) first_tri = {ia, ib, ic};
+    }
+  }
+  std::vector<std::array<int, 3>> tris;
+  if (first_tri[0] >= 0) {
+    tris.push_back(first_tri);
+  } else {
+    tris = dino8::kernel::detail::EarClipTriangulate(loop2d);
+  }
   if (!tris.empty()) {
     const std::array<int, 3>& t = tris.front();
     const Point2d c2d((loop2d[t[0]].x + loop2d[t[1]].x + loop2d[t[2]].x) / 3.0,
