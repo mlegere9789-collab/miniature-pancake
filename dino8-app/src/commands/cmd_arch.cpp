@@ -10,6 +10,7 @@
 #include <sstream>
 
 #include "arch/ArchComponents.h"
+#include "dino8/kernel/arch_calc.h"
 #include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
 
@@ -608,6 +609,158 @@ std::string MechLabel(const arch::ArchComponent& c) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Design-rule and quantity commands over dino8/kernel/arch_calc.h. Each is a one-line, script-friendly "Name=Value" command that
+// prints its result; lists use '/' between items and ':' between the fields of an item (a polygon is "x,y/x,y/..."), so a whole
+// call fits one command line.
+namespace calc {
+
+using dino8::kernel::ArchPt2;
+
+double Num(const std::map<std::string, std::string>& o, const char* key, double def) {
+  const std::string v = OptionOr(o, key);
+  if (v.empty()) return def;
+  char* end = nullptr;
+  const double d = std::strtod(v.c_str(), &end);
+  return (end && end != v.c_str() && *end == 0) ? d : def;
+}
+
+std::vector<std::string> Split(const std::string& s, char sep) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (char ch : s) {
+    if (ch == sep) { out.push_back(cur); cur.clear(); }
+    else cur += ch;
+  }
+  if (!cur.empty() || !out.empty()) out.push_back(cur);
+  return out;
+}
+
+std::vector<double> Fields(const std::string& item) {
+  std::vector<double> v;
+  for (const std::string& f : Split(item, ':')) v.push_back(std::atof(f.c_str()));
+  return v;
+}
+
+std::string F4(double v) {
+  char b[64];
+  std::snprintf(b, sizeof b, "%.4f", v);
+  return b;
+}
+
+kernel::StairRules Rules(const std::map<std::string, std::string>& o) {
+  kernel::StairRules r;
+  r.max_riser = Num(o, "maxriser", r.max_riser);
+  r.min_riser = Num(o, "minriser", r.min_riser);
+  r.min_tread = Num(o, "mintread", r.min_tread);
+  r.min_width = Num(o, "minwidth", r.min_width);
+  r.blondel_min = Num(o, "blondelmin", r.blondel_min);
+  r.blondel_max = Num(o, "blondelmax", r.blondel_max);
+  return r;
+}
+
+std::string OptionLine(const kernel::StairOption& o) {
+  return std::to_string(o.risers) + " risers x " + F4(o.riser) + ", tread " + F4(o.tread) + ", run " + F4(o.run);
+}
+
+void StairCheckCmd(CommandContext& ctx) {
+  const auto o = TakeOptionTokens(ctx);
+  const kernel::StairRules rules = Rules(o);
+  const double riser = Num(o, "riser", 0.18), tread = Num(o, "tread", 0.28), width = Num(o, "width", rules.min_width);
+  const kernel::StairCheck c = kernel::CheckStair(riser, tread, width, rules);
+  ctx.Print("StairCheck: riser " + F4(riser) + " tread " + F4(tread) + " width " + F4(width) + " 2R+T=" + F4(c.blondel) + " -> " + (c.ok ? "PASS" : "FAIL"));
+  for (const std::string& v : c.violations) ctx.Print("  violation: " + v);
+}
+
+void StairFitCmd(CommandContext& ctx) {
+  const auto o = TakeOptionTokens(ctx);
+  const kernel::StairRules rules = Rules(o);
+  const double rise = Num(o, "rise", 0), tread = Num(o, "tread", 0);
+  const int risers = static_cast<int>(Num(o, "risers", 0));
+  if (risers > 0 && tread > 0) {  // a story-linked stair: keep the riser count, follow the new story height
+    const kernel::StairRelink r = kernel::RelinkStairToStory(risers, tread, rise, rules);
+    ctx.Print("StairFit: " + std::to_string(risers) + " risers over rise " + F4(rise) + " -> riser " + F4(r.riser) + " 2R+T=" + F4(r.blondel) + " " + (r.valid ? "VALID" : "INVALID"));
+    for (const std::string& why : r.reasons) ctx.Print("  reason: " + why);
+    if (!r.fixes.empty()) ctx.Print("  fix: " + OptionLine(r.fixes.front()));
+    return;
+  }
+  const std::vector<kernel::StairOption> opts = kernel::ProposeStairOptions(rise, rules, tread, 0);
+  ctx.Print("StairFit: rise " + F4(rise) + " -> " + std::to_string(opts.size()) + " option(s)");
+  if (!opts.empty()) ctx.Print("  first: " + OptionLine(opts.front()));
+}
+
+void RampPlanCmd(CommandContext& ctx) {
+  const auto o = TakeOptionTokens(ctx);
+  const kernel::RampPlan p = kernel::PlanRamp(Num(o, "rise", 0), Num(o, "maxslope", 1.0 / 12.0), Num(o, "maxrun", 9.0), Num(o, "landing", 1.5));
+  if (!p.ok) { ctx.Warn("RampPlan: need a positive Rise, MaxSlope, MaxRun and a non-negative Landing"); return; }
+  ctx.Print("RampPlan: " + std::to_string(p.flights) + " flight(s), " + std::to_string(p.landings) + " landing(s), run per flight " + F4(p.run_per_flight) +
+            ", total run " + F4(p.total_run) + ", footprint " + F4(p.total_length) + ", slope " + F4(p.slope));
+}
+
+void RoofPitchCmd(CommandContext& ctx) {
+  const auto o = TakeOptionTokens(ctx);
+  kernel::RoofPitch p;
+  if (o.count("degrees")) p = kernel::PitchFromDegrees(Num(o, "degrees", 0));
+  else if (o.count("percent")) p = kernel::PitchFromPercent(Num(o, "percent", 0));
+  else if (o.count("rise") && o.count("run")) p = kernel::PitchFromRiseRun(Num(o, "rise", 0), Num(o, "run", 0));
+  else if (o.count("elevation") && o.count("distance")) p = kernel::PitchFromElevation(Num(o, "eave", 0), Num(o, "elevation", 0), Num(o, "distance", 0));
+  if (!p.valid) { ctx.Warn("RoofPitchConv: give Degrees=, Percent=, Rise= and Run=, or Elevation= and Distance= (Eave=); a vertical plane or a zero run is not a pitch"); return; }
+  ctx.Print("RoofPitchConv: " + F4(p.degrees) + " degrees = " + F4(p.percent) + " percent = " + F4(p.rise_per_run) + " rise per run");
+}
+
+void ZoneAreaCmd(CommandContext& ctx) {
+  const auto o = TakeOptionTokens(ctx);
+  std::vector<ArchPt2> poly;
+  for (const std::string& v : Split(OptionOr(o, "poly"), '/')) {
+    const std::vector<std::string> xy = Split(v, ',');
+    if (xy.size() >= 2) poly.push_back({std::atof(xy[0].c_str()), std::atof(xy[1].c_str())});
+  }
+  if (poly.size() < 3) { ctx.Warn("ZoneArea: Poly=x,y/x,y/x,y/... needs at least three vertices"); return; }
+  std::vector<kernel::ZoneElement> els;
+  for (const std::string& item : Split(OptionOr(o, "elem"), '/')) {
+    const std::vector<std::string> f = Split(item, ':');
+    if (f.size() < 2) continue;
+    const std::string e = ToLower(f[1]);
+    els.push_back({std::atof(f[0].c_str()), e == "none" ? kernel::ZoneEffect::None : e == "reduce" ? kernel::ZoneEffect::ReduceArea : kernel::ZoneEffect::Subtract});
+  }
+  const kernel::ZoneQuantities q = kernel::ComputeZone(poly, Num(o, "height", 0), els, Num(o, "minelem", 0));
+  ctx.Print("ZoneArea: gross area " + F4(q.gross_area) + ", net area " + F4(q.net_area) + ", volume " + F4(q.volume) + " (" + std::to_string(q.elements_counted) + " element(s) counted)");
+  if (o.count("limit1") && o.count("ceiling")) {
+    const std::vector<double> c = Fields(OptionOr(o, "ceiling")), l1 = Fields(OptionOr(o, "limit1")), l2 = Fields(OptionOr(o, "limit2"));
+    if (c.size() >= 3 && l1.size() >= 2) {
+      kernel::LowCeilingRule rule;
+      rule.limit1 = l1[0]; rule.pct1 = l1[1];
+      if (l2.size() >= 2) { rule.two_limits = true; rule.limit2 = l2[0]; rule.pct2 = l2[1]; }
+      const kernel::LowCeilingResult r = kernel::ZoneAreaUnderLowCeilings(poly, c[0], c[1], c[2], rule);
+      ctx.Print("ZoneArea: under limit 1 " + F4(r.area_below1) + ", under limit 2 " + F4(r.area_below2) + ", counted area " + F4(r.counted_area));
+    }
+  }
+  if (o.count("recess")) {
+    std::vector<kernel::WallRecess> rec;
+    for (const std::string& item : Split(OptionOr(o, "recess"), '/')) {
+      const std::vector<double> f = Fields(item);
+      if (f.size() >= 2) rec.push_back({f[0], f[1]});
+    }
+    const bool any = ToLower(OptionOr(o, "rule", "and")) == "or";
+    ctx.Print("ZoneArea: recess area added " + F4(kernel::RecessAddedArea(rec, Num(o, "mindepth", 0), Num(o, "minrecessarea", 0), any ? kernel::RecessRule::DepthOrArea : kernel::RecessRule::DepthAndArea)));
+  }
+}
+
+void WallQuantitiesCmd(CommandContext& ctx) {
+  const auto o = TakeOptionTokens(ctx);
+  std::vector<kernel::WallOpening> ops;
+  for (const std::string& item : Split(OptionOr(o, "open"), '/')) {
+    const std::vector<double> f = Fields(item);  // x0:width:sill:height
+    if (f.size() >= 4) ops.push_back({f[0], f[1], f[2], f[3]});
+  }
+  const double h1 = Num(o, "h1", 2.8);
+  const kernel::WallQuantitiesResult q = kernel::ComputeWallQuantities(Num(o, "length", 0), h1, Num(o, "h2", h1), Num(o, "thickness", 0.2), ops);
+  ctx.Print("WallQuantities: gross face " + F4(q.gross_side_area) + ", net face " + F4(q.net_side_area) + ", gross volume " + F4(q.gross_volume) + ", net volume " + F4(q.net_volume) +
+            ", " + std::to_string(q.openings_counted) + " opening(s)" + (q.ok ? "" : " (OVERLAPPING openings: quantities are not reliable)"));
+}
+
+}  // namespace calc
+
 void RegisterArchCommands(CommandEngine& e) {
   Reg(e, "Wall", WallFactory());
   Reg(e, "Door", Make<OpeningCommand>(false));
@@ -646,6 +799,18 @@ void RegisterArchCommands(CommandEngine& e) {
       "Re-derives a Duct's diameter from an airflow (CFM) input via a fixed ~6 m/s velocity assumption (area = flow/velocity, diameter from area) - a plausible starting-point heuristic, explicitly NOT an ASHRAE code-compliance calculation (real duct sizing depends on friction loss, fittings, and noise criteria this project has no license or basis to reproduce).");
   Reg(e, "SizePipe", Make<MepSizeCommand>(ArchType::Pipe), CommandStatus::Implemented,
       "Re-derives a Pipe's diameter from a flow (GPM) input via a fixed ~1.5 m/s velocity assumption, the same heuristic-only caveat as SizeDuct (explicitly NOT an NEC/plumbing-code-compliant calculation).");
+  Reg(e, "StairCheck", Immediate(calc::StairCheckCmd), CommandStatus::Implemented,
+      "Riser=, Tread=, Width= against MaxRiser=/MinRiser=/MinTread=/MinWidth= and the Blondel range 2R+T (BlondelMin=/BlondelMax=); prints PASS or FAIL with one line per broken rule. The limits are inputs, not a building code.");
+  Reg(e, "StairFit", Immediate(calc::StairFitCmd), CommandStatus::Implemented,
+      "Rise= [Tread=]: counts the riser counts that satisfy the stair rules and prints the one with the fewest risers. With Risers= and Tread= it relinks an existing stair to a new story height (Rise=): the riser follows, and an invalid result is flagged with the nearest valid fix instead of being changed silently.");
+  Reg(e, "RampPlan", Immediate(calc::RampPlanCmd), CommandStatus::Implemented,
+      "Rise=, MaxSlope= (rise per run, default 1/12), MaxRun= (longest flight, default 9), Landing= (default 1.5): the fewest equal flights and landings that climb Rise at no more than MaxSlope.");
+  Reg(e, "RoofPitchConv", Immediate(calc::RoofPitchCmd), CommandStatus::Implemented,
+      "Converts a roof pitch between degrees, percent and rise per run; accepts Degrees=, Percent=, Rise= with Run=, or Elevation= with Distance= and Eave=. Negative pitches (down-sloping planes) are allowed.");
+  Reg(e, "ZoneArea", Immediate(calc::ZoneAreaCmd), CommandStatus::Implemented,
+      "Poly=x,y/x,y/... Height= [Elem=area:subtract|reduce|none/...] [MinElem=]: shoelace area, net area and volume of a zone. Ceiling=h0:gx:gy with Limit1=height:fraction [Limit2=height:fraction] reduces area under low ceilings; Recess=depth:area/... with MinDepth=, MinRecessArea= and Rule=and|or adds wall recesses.");
+  Reg(e, "WallQuantities", Immediate(calc::WallQuantitiesCmd), CommandStatus::Implemented,
+      "Length= H1= [H2= for a sloping top] Thickness= Open=x0:width:sill:height/...: gross and net face area and volume of a wall with rectangular openings (clipped to the wall; overlapping openings are flagged).");
   Reg(e, "ArchEdit", Make<ArchEditCommand>());
   Reg(e, "ArchDelete", OnSelection("Select an architectural component to delete", [](CommandContext& ctx, const std::vector<ObjectId>& objs) {
         int removed = 0;
