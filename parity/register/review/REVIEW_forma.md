@@ -98,3 +98,14 @@ The Forma Data Management help (the Autodesk Docs table of contents) has 680 pag
 33. What can Autodesk Assistant do? (Autodesk Assistant > About Autodesk Assistant) - https://help.autodesk.com/cloudhelp/ENU/Assistant-User-Guide/files/assistant-topics/AA_Capabilities.html
 34. Autodesk Assistant limitations and best practices (Autodesk Assistant > About Autodesk Assistant) - https://help.autodesk.com/cloudhelp/ENU/Assistant-User-Guide/files/assistant-topics/AA_Limitations.html
 35. Trust, privacy, and your data (Autodesk Assistant > About Autodesk Assistant) - https://help.autodesk.com/cloudhelp/ENU/Assistant-User-Guide/files/assistant-topics/AA_Trust_Privacy.html
+
+## Second pass (independent re-check, branch `w0-review-b2`)
+
+Same sample reproduced (60 ids; all cited ids are in it). Re-fetched all sampled pages and ran a word-overlap test.
+
+- The 10 A defects are confirmed as unreachable, not refuted: `www.autodesk.com`, `blogs.autodesk.com` and `adsknews.autodesk.com` return HTTP 403 to both curl and the fetch tool (tried on `analysis-in-forma` and `forma-street-design`). They stay UNVERIFIED; the row notes already say so.
+- Many sampled rows cite script-rendered `aps.autodesk.com` pages (8 in the sample) or the SDK type declarations on npm (14 in the sample). The static route returns nothing for the aps pages, so the second pass adds no evidence for or against rows `EXT-0001`, `EXT-0010`, `EXT-0013`, `EXT-0014`, `EXT-0026` (the first review used a summariser for these; treat as good, not perfect). The npm-declared rows (`ANALYSIS-0012`, `-0015`, `-0033`, `-0041`, `EXT-0018`, `-0021`, `-0022`, `-0024`) cite a package version, not a help page; the statements match the type names as the first review found.
+- No new defect found; no new fixes. Because most Forma pages cannot be opened, the 5.0% B rate is a lower bound.
+- Validator: the `review/` files make `--strict` fail (see AutoCAD section).
+
+**Verdict unchanged: ACCEPT WITH FIXES.**

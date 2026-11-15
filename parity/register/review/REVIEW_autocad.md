@@ -114,3 +114,17 @@ Independent of VERIFY.md, which lists 928 uncovered system-variable pages: 1,218
 38. XFADECTL (System Variable) - https://help.autodesk.com/view/ACD/2025/ENU/?guid=GUID-8B353FAC-0AC4-43AC-8E80-18999A4A7AA1
 39. ACTPATH (System Variable) - https://help.autodesk.com/view/ACD/2025/ENU/?guid=GUID-E63ED007-A45B-46EE-9777-3665AA593B6C
 40. STEPSIZE (System Variable) - https://help.autodesk.com/view/ACD/2025/ENU/?guid=GUID-C181AF04-E45C-4468-B924-3FB4CA858664
+
+## Second pass (independent re-check, branch `w0-review-b2`)
+
+A second reviewer re-read the first review before relying on it. Method: same `Random(8)` sample (the 150 ids reproduce; every id the first review cites is in it; Best-without-superiority 111/136 Best rows reproduces); every sampled page fetched again through the static `/cloudhelp/2025/ENU/<book>/files/<id>.htm` route (the `?guid=` links are still script-rendered); then a scripted test of every command or variable name in each statement against the page text, plus manual reading of the flagged rows.
+
+- B defects reproduced independently: `DIM-0016`, `DWGFID-0018`, `LAYOUT-0022`, `MODIFY-0029`, `SOLID3D-0033`, `TEXT-0010`, `SCR-0008` (named commands absent from the page). The stub-page rows `NET-0017`, `NET-0101`, `NET-0113` reproduce (page text is a sentence or two).
+- **One B defect the first review missed: `TOOLSETS-0012`** (cited page lists drawing-cleanup actions; it has no object-data tables and no MAPCLEAN). B becomes 12/150 = 8.0%; rows with at least one defect become 125/150 = 83.3%. Fix added to `fixes_autocad.jsonl` (now 144 lines).
+- False alarms from my script, checked and cleared: `MOBILE-0011` (all five commands are on the mobile page), `WEB-0008` (page matches; only the editorial clause in the statement is a problem, already noted), `DWGFID-0180` (the page says "CLASS section").
+- The 25 short pages my route returned are real short pages (palette-close commands and class stubs) or non-static sources; the ones I could open (`LAYER-0036`, `CMDLINE-0041`, `RENDER-0013`, `CLOUD-0001`, mobile, web, Map 3D) agree with the first review, including the factory findings (`RENDER-0013` is a render palette under direct-modeling, `CLOUD-0001` an Activity Insights palette under interop-migration).
+- Unreachable here: `forums.autodesk.com`, `www.autodesk.com` (HTTP 403 by curl and by the fetch tool). No sampled AutoCAD row needed them.
+- Not independently re-done: duplicates (F) and the full 2,393-topic coverage count; the 40 missing items above were spot-checked as present on the help site (first 10 opened) but not recounted.
+- Validator: `python3 parity/tools/validate_register.py --register parity/register --strict` reports 1,674 errors on this branch because it does not skip `review/` (the fix files repeat row ids). Rows themselves were not changed. The validator must skip `review/` or the fix files must live elsewhere.
+
+**Verdict unchanged: ACCEPT WITH FIXES** (REJECT if the Best default is not corrected before the register is used for weighting).
