@@ -361,6 +361,24 @@ double SurfaceScale(const ON_Surface& s) {
 
 }  // namespace
 
+// Whether RefineSurfaceSurfacePoint() polishes its points past the acceptance tolerance (see there). Set for the duration of one
+// IntersectSurfaces() / IntersectFaces() call by PolishScope, and only for a plane meeting a cylinder wall: the cut is then an
+// exact circle or ellipse and a seed sitting on a facet of the cylinder's seed mesh is a visible, measurable (up to 7e-4) error of the
+// chain. Every other surface pair keeps exactly the acceptance-tolerance behaviour the rest of the Boolean pipeline (the freeform and
+// sphere meshing in particular) was tuned against.
+namespace {
+thread_local bool g_polish_refined_points = false;
+
+struct PolishScope {
+  bool previous;
+  PolishScope(const ON_Surface& a, const ON_Surface& b) : previous(g_polish_refined_points) {
+    ON_Cylinder cyl;
+    g_polish_refined_points = (a.IsPlanar(nullptr, 1e-9) && b.IsCylinder(&cyl, 1e-6)) || (b.IsPlanar(nullptr, 1e-9) && a.IsCylinder(&cyl, 1e-6));
+  }
+  ~PolishScope() { g_polish_refined_points = previous; }
+};
+}  // namespace
+
 // --- Newton ----------------------------------------------------------------------
 
 bool NewtonSolve(const Residual& residual, std::vector<double>& x, const std::vector<double>& lo, const std::vector<double>& hi, double tol, int max_iter, double* final_norm) {
@@ -427,15 +445,16 @@ bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double&
     return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
   };
   const bool ok = NewtonSolve(res, x, lo, hi, tol, max_iter);
-  if (ok) {
+  if (ok && g_polish_refined_points && tol <= 1e-3) {
     // `tol` is the caller's acceptance tolerance (the Boolean pipeline passes 1e-3), and NewtonSolve() returns the moment the residual
     // is inside it: a seed that sits on a facet of the other surface's seed mesh, up to a chord sagitta (measured 5.6e-4 .. 6.9e-4 for
     // the top rim of a hole cut by a cylinder tool) off the true curve, came back UNTOUCHED, so the chain point lay on one surface and
     // that far off the other. The two faces sharing the rim then evaluated the same trim vertex at points 6e-4 apart, far outside
-    // the weld tolerance, and the tessellated rims did not close. Keep iterating to a thousandth of the requested tolerance: still
-    // proportional to what the caller asked for (a loose tolerance still gives a measurably looser chain), but no longer left at the
-    // acceptance threshold itself. NewtonSolve() only accepts a step that lowers the residual, so a converged point never gets worse.
-    NewtonSolve(res, x, lo, hi, 1e-3 * tol, 8);
+    // the weld tolerance, and the tessellated rims did not close. For the default tolerance and any tighter one, keep iterating to
+    // 1e-8 of it. A caller who asks for a LOOSER tolerance than the default gets exactly that looseness (the tolerance parameter is
+    // a real control: see the loose-tolerance Boolean test). NewtonSolve() only accepts a step that lowers the residual, so a
+    // converged point never gets worse.
+    NewtonSolve(res, x, lo, hi, 1e-8 * tol, 8);
   }
   ua = x[0]; va = x[1]; ub = x[2]; vb = x[3];
   return ok;
@@ -2104,6 +2123,7 @@ std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface&
 }  // namespace
 
 std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  const PolishScope polish_scope(a, b);
   std::vector<IntersectionCurve> out;
   const SurfaceMesh ma = TessellateWithUV(a, opt), mb = TessellateWithUV(b, opt);
   ON_BoundingBox both = ma.bbox;
@@ -2195,6 +2215,7 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
 }
 
 std::vector<IntersectionCurve> IntersectFaces(const ON_BrepFace* face_a, const ON_Surface& a, const ON_BrepFace* face_b, const ON_Surface& b, const IntersectOptions& opt) {
+  const PolishScope polish_scope(a, b);
   std::vector<IntersectionCurve> raw = IntersectSurfaces(a, b, opt);
   if (!face_a && !face_b) return raw;
   std::vector<IntersectionCurve> out;
