@@ -13,3 +13,4 @@ topology_shell_tests::
 TestBooleanCombinePlanar
 TestSplitBrepByPlane
 TestTessellate
+OpenNurbsIsSphere
