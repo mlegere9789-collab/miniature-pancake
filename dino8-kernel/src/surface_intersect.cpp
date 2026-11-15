@@ -855,6 +855,11 @@ std::vector<ON_2dPoint> LoopPolygon(const ON_Brep& b, int loop_index, int sample
 namespace {
 thread_local bool g_keyhole_tolerant_trim_test = false;
 bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v);
+// A curved (non-iso, non-polyline) trim is sampled at this many points per trim for the containment test. 24 left chords up to
+// 0.0086 inside a unit circle: a curve crossing a cylinder cap's rim was clipped 1.5e-3 short of the corner the adjacent wall's
+// own rim gives, more than the SSX tolerance, so the corners of two faces never met and the result stayed open (two parallel
+// unit cylinders 1 apart, intersected). 96 samples keep the chord error under 6e-4 of the radius.
+constexpr int kContainmentSamplesPerTrim = 96;
 }  // namespace
 
 // A face with a hole built by the general Boolean (a drilled plate's top/
@@ -904,12 +909,12 @@ bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v) {
   bool inside_outer = false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::outer) inside_outer = PointInPolygon(LoopPolygon(*b, f.m_li[li]), p);
+    if (loop.m_type == ON_BrepLoop::outer) inside_outer = PointInPolygon(LoopPolygon(*b, f.m_li[li], kContainmentSamplesPerTrim), p);
   }
   if (!inside_outer) return false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::inner && PointInPolygon(LoopPolygon(*b, f.m_li[li]), p)) return false;
+    if (loop.m_type == ON_BrepLoop::inner && PointInPolygon(LoopPolygon(*b, f.m_li[li], kContainmentSamplesPerTrim), p)) return false;
   }
   return true;
 }
@@ -2101,7 +2106,10 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
       double ua = sp.uva.x, va = sp.uva.y, ub = sp.uvb.x, vb = sp.uvb.y;
       if (!RefineSurfaceSurfacePoint(a, b, ua, va, ub, vb, opt.tolerance)) continue;
       const Point3d p = a.PointAt(ua, va);
-      if (p.DistanceTo(sp.p) > std::max(opt.mesh_tolerance * 20, opt.tolerance * 100)) continue;  // wandered off the seed
+      // The seed is a point of a chord mesh capped at max_mesh_divisions, so its distance to the true curve grows with the
+      // size of the surfaces (about 2e-4 of a sphere's radius at 160 divisions): a fixed absolute bound rejected every point
+      // of a sphere of radius 2e8 cut by a plane through its centre.
+      if (p.DistanceTo(sp.p) > std::max({opt.mesh_tolerance * 20, opt.tolerance * 100, 1e-3 * diag})) continue;  // wandered off the seed
       if (!ic.points.empty() && ic.points.back().DistanceTo(p) <= opt.tolerance) continue;
       ic.points.push_back(p);
       ic.uv_a.emplace_back(ua, va);
