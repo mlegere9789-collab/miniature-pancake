@@ -1,0 +1,2 @@
+SECTIONS=BSEC SEC2 SRFSEC QC2 DXF
+FILTERS=body_section_tests;body_section_untrimmed;TestIntersectBrepByPlane;TestSectionBrepByPlanes;TestContourBrep;TestSectionThroughBodyEdges

@@ -1,0 +1,250 @@
+name: Kverify lite
+
+# Fast verification for one change: a push to `kvlite/**` builds the app and runs ONLY the smoke sections named in
+# `.kvlite` (SECTIONS=...), and/or builds the kernel tests and runs ONLY the test filters named there (FILTERS=a;b).
+# It never publishes anything.
+#
+# Evidence (master plan 7.5): both jobs also write one JSON line per check (DINO8_TEST_JSONL for the kernel runner,
+# DINO8_SECTION_JSONL for run_sections.sh), print the validator's summary (parity/tools/evidence_summary.py: JSONL counts
+# against the printed ok / FAIL counts) and upload the JSONL files as the artifacts evidence-kernel / evidence-app. A branch whose
+# test runners predate those variables writes nothing; the jobs then say so and carry on.
+
+on:
+  push:
+    branches: ['kvlite/**']
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-22.04
+    outputs:
+      sections: ${{ steps.p.outputs.sections }}
+      filters: ${{ steps.p.outputs.filters }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        run: |
+          s=$(sed -n 's/^SECTIONS=//p' .kvlite | head -1 | tr -cd 'A-Za-z0-9_ ')
+          f=$(sed -n 's/^FILTERS=//p' .kvlite | head -1 | tr -cd 'A-Za-z0-9_:;.-')
+          echo "sections=$s" >> "$GITHUB_OUTPUT"
+          echo "filters=$f" >> "$GITHUB_OUTPUT"
+          echo "sections: $s"; echo "filters: $f"
+
+  app:
+    name: App sections (lite)
+    needs: plan
+    if: needs.plan.outputs.sections != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Evidence settings
+        run: |
+          s=$(git log -1 --format=%s)
+          case "$s" in "kvlite: "*) ev=$(git rev-parse -q --verify HEAD^ || git rev-parse HEAD);; *) ev=$(git rev-parse HEAD);; esac
+          echo "DINO8_EVIDENCE_SHA=$ev" >> "$GITHUB_ENV"
+          echo "evidence sha (the commit under test): $ev"
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          if ! timeout 20 getent hosts azure.archive.ubuntu.com >/dev/null 2>&1; then
+            printf '%s\n' 'http://mirrors.edge.kernel.org/ubuntu/	priority:1' 'http://us.archive.ubuntu.com/ubuntu/	priority:2' 'http://archive.ubuntu.com/ubuntu/	priority:3' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          for try in 1 2; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y ninja-build ccache libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils libgl1-mesa-dri; then break; fi
+            echo "apt attempt $try failed"
+          done
+          command -v ninja >/dev/null || pip install --user ninja || true
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-app-ccache-${{ github.sha }}
+          restore-keys: kverify-app-ccache-
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER="$(command -v ccache || true)"
+      - name: Build
+        run: cmake --build dino8-app/build
+      - name: Run the named sections
+        shell: bash
+        timeout-minutes: 120
+        run: |
+          BIN=$(find dino8-app/build -maxdepth 3 -type f -name Dino8 | head -1)
+          set +e
+          DINO8_SECTION_JSONL="$PWD/evidence-app.jsonl" bash dino8-app/tests/run_sections.sh -b "$PWD/$BIN" -t 6000 ${{ needs.plan.outputs.sections }} > group.log 2>&1
+          rc=$?
+          set -e
+          echo "lite-app exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
+          grep -E '^FAIL' group.log | sort | uniq -c | head -80 || true
+          echo "---- FAIL context ----"
+          grep -A6 -E '^FAIL' group.log | cut -c1-400 | head -300 || true
+          echo "---- evidence ----"
+          EVT=parity/tools/evidence_summary.py
+          if [ -s evidence-app.jsonl ] && [ -f "$EVT" ]; then
+            python3 "$EVT" --log app=group.log --tests --failed evidence-app.jsonl > evidence-app.txt 2>&1 || true
+            grep -vE '^evidence (test|section) ' evidence-app.txt | cut -c1-300 | head -60 || true
+            echo "---- evidence detail ----"
+            grep -E '^evidence (test|section) ' evidence-app.txt | cut -c1-300 | head -400 || true
+          else
+            echo "evidence: none written (this branch has no DINO8_SECTION_JSONL support in run_sections.sh or no validator)"
+          fi
+          echo "---- every ok line ----"
+          grep -E '^ok' group.log | cut -c1-200 | head -4000 || true
+          echo "---- tail ----"
+          tail -n 80 group.log | cut -c1-300 || true
+          echo "---- end ----"
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        id: evup1
+        if: always()
+        continue-on-error: true
+        with:
+          name: evidence-app
+          path: |
+            evidence-app.jsonl
+            evidence-app.txt
+            group.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: evup2
+        if: always() && steps.evup1.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-app
+          path: |
+            evidence-app.jsonl
+            evidence-app.txt
+            group.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evup1.outcome == 'failure' && steps.evup2.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-app
+          path: |
+            evidence-app.jsonl
+            evidence-app.txt
+            group.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+  kernel:
+    name: Kernel filters (lite)
+    needs: plan
+    if: needs.plan.outputs.filters != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Evidence settings
+        run: |
+          s=$(git log -1 --format=%s)
+          case "$s" in "kvlite: "*) ev=$(git rev-parse -q --verify HEAD^ || git rev-parse HEAD);; *) ev=$(git rev-parse HEAD);; esac
+          echo "DINO8_EVIDENCE_SHA=$ev" >> "$GITHUB_ENV"
+          echo "evidence sha (the commit under test): $ev"
+      - name: Install dependencies
+        run: |
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          for try in 1 2; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 update && sudo timeout 300 apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 install -y ninja-build ccache; then break; fi
+            echo "apt attempt $try failed"
+          done
+          command -v ninja >/dev/null || pip install --user ninja || true
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: kverify-ccache-${{ github.sha }}
+          restore-keys: kverify-ccache-
+      - name: Configure
+        run: cmake -S dino8-kernel -B dino8-kernel/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_CXX_COMPILER_LAUNCHER="$(command -v ccache || true)"
+      - name: Build
+        run: cmake --build dino8-kernel/build --target dino8_kernel_tests
+      - name: Run the named filters
+        shell: bash
+        timeout-minutes: 150
+        run: |
+          EVK="$PWD/evidence-kernel.jsonl"
+          mkdir -p scratch && cd scratch
+          rcall=0
+          : > ../all.log; : > ../all.err
+          IFS=';' read -ra FS <<< "${{ needs.plan.outputs.filters }}"
+          for f in "${FS[@]}"; do
+            [ -z "$f" ] && continue
+            set +e
+            DINO8_TEST_JSONL="$EVK" DINO8_TEST_TIMING=1 DINO8_TEST_WATCHDOG=900 DINO8_TEST_FILTER="$f" timeout 1500 ../dino8-kernel/build/tests/dino8_kernel_tests > ../f.log 2> ../f.err
+            frc=$?
+            set -e
+            cat ../f.log >> ../all.log; cat ../f.err >> ../all.err
+            echo "filter $f: exit=$frc ok=$(grep -c '^ok' ../f.log) FAILED=$(grep -c '^FAILED' ../f.err)"
+            grep -E '^FAILED|threw|exception|did not finish' ../f.err ../f.log 2>/dev/null | cut -c1-320 | sort | uniq -c | head -40 || true
+            grep '^timing:' ../f.log | sort -k3 -nr | head -6 || true
+            if [ $frc -ne 0 ]; then rcall=1; fi
+          done
+          cd ..
+          echo "---- evidence ----"
+          EVT=parity/tools/evidence_summary.py
+          if [ -s evidence-kernel.jsonl ] && [ -f "$EVT" ]; then
+            python3 "$EVT" --log kernel=all.log --log kernel=all.err --tests --failed evidence-kernel.jsonl > evidence-kernel.txt 2>&1 || true
+            grep -vE '^evidence (test|section) ' evidence-kernel.txt | cut -c1-300 | head -60 || true
+            echo "---- evidence detail ----"
+            grep -E '^evidence (test|section) ' evidence-kernel.txt | cut -c1-300 | head -600 || true
+          else
+            echo "evidence: none written (this branch has no DINO8_TEST_JSONL support in the kernel test runner or no validator)"
+          fi
+          echo "---- end ----"
+          exit $rcall
+      - uses: actions/upload-artifact@v4
+        id: evup1
+        if: always()
+        continue-on-error: true
+        with:
+          name: evidence-kernel
+          path: |
+            evidence-kernel.jsonl
+            evidence-kernel.txt
+            all.log
+            all.err
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: evup2
+        if: always() && steps.evup1.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-kernel
+          path: |
+            evidence-kernel.jsonl
+            evidence-kernel.txt
+            all.log
+            all.err
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evup1.outcome == 'failure' && steps.evup2.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-kernel
+          path: |
+            evidence-kernel.jsonl
+            evidence-kernel.txt
+            all.log
+            all.err
+          if-no-files-found: ignore
+          retention-days: 3
