@@ -5171,6 +5171,44 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
               }
             }
           }
+          // A face that no SSX curve touched lies wholly on one side of the other operand - unless the solve DROPPED a contact
+          // smaller than its own tolerance (IntersectSurfaces() discards a curve no longer than 4 tolerances: a cone tip sunk
+          // 1e-3 into a face leaves a circle of radius 5e-4, a sphere pole sunk 1e-6 one of radius 1.4e-3). The representative
+          // point is the face centroid, which is exactly where such a tip or pole usually lands, so one ray-cast there would
+          // call the whole face In and drop it, leaving a hole in the result that no sewing can close. Re-classify at spread
+          // samples of the face and take the majority: the tiny contact covers a vanishing share of the face, the rest of it
+          // is on the other side.
+          if (!coplanar_overlap && !coincident_fragment && ff.frags.size() == 1 &&
+              (a_side ? untouched_a[static_cast<size_t>(ff.face_index)] : untouched_b[static_cast<size_t>(ff.face_index)])) {
+            const ON_BoundingBox& my_box = a_side ? boxes_a[static_cast<size_t>(ff.face_index)] : boxes_b[static_cast<size_t>(ff.face_index)];
+            const std::vector<ON_BoundingBox>& other_boxes = a_side ? boxes_b : boxes_a;
+            ON_BoundingBox grown = my_box;
+            grown.m_min -= ON_3dVector(2.0 * opt.tolerance, 2.0 * opt.tolerance, 2.0 * opt.tolerance);
+            grown.m_max += ON_3dVector(2.0 * opt.tolerance, 2.0 * opt.tolerance, 2.0 * opt.tolerance);
+            bool near_other = false;
+            for (const ON_BoundingBox& ob : other_boxes) {
+              if (!grown.IsDisjoint(ob)) { near_other = true; break; }
+            }
+            if (near_other) {
+              const std::vector<Point2d> alts = AlternateRepresentativeUVs(frag, uv);
+              int votes_in = cls == Cls::In ? 1 : 0, votes_out = cls == Cls::In ? 0 : 1;
+              if (alts.size() >= 4) {
+                for (int k = 1; k <= 4; ++k) {
+                  const Point2d& q = alts[alts.size() * static_cast<size_t>(k) / 5];
+                  const Point3d qp = ff.surface->PointAt(q.x, q.y);
+                  bool q_on_boundary = false;
+                  const Cls qc = ClassifyPointVsBrep(qp, other, ray_length, opt, tol, other_index, &q_on_boundary);
+                  if (q_on_boundary) continue;
+                  (qc == Cls::In ? votes_in : votes_out)++;
+                }
+              }
+              const Cls majority = votes_in > votes_out ? Cls::In : Cls::Out;
+              if (votes_in != votes_out && majority != cls) {
+                if (debug) std::fprintf(stderr, "  frag: untouched face, centroid says %s but the spread samples vote %d In / %d Out; taking %s\n", cls == Cls::In ? "In" : "Out", votes_in, votes_out, majority == Cls::In ? "In" : "Out");
+                cls = majority;
+              }
+            }
+          }
           if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
           if (!coplanar_overlap && !coincident_fragment) switch (op) {
             case BooleanOp::Union:
