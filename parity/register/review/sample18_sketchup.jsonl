@@ -1,0 +1,100 @@
+{"id": "D8-SKETCHUP-EDIT-0033", "verdict": "MAJOR", "note": "projected texturing not on page", "doc": "https://help.sketchup.com/en/sketchup/positioning-textures"}
+{"id": "D8-SKETCHUP-DYNCOMP-0008", "verdict": "MAJOR", "note": "lookup functions not on page; logical are", "doc": "https://help.sketchup.com/en/sketchup/dynamic-component-supported-functions"}
+{"id": "D8-SKETCHUP-RUBY-0058", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/ConstructionLine.html"}
+{"id": "D8-SKETCHUP-LAYOUT-0036", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/release-notes/sketchup-desktop-20260"}
+{"id": "D8-SKETCHUP-EXT-0053", "verdict": "OK", "note": "", "doc": "https://sketchucation.com/pluginstore?pln=SketchyPhysics"}
+{"id": "D8-SKETCHUP-EXT-0010", "verdict": "UNV", "note": "", "doc": "https://community.sketchucation.com/post/1485269"}
+{"id": "D8-SKETCHUP-RUBY-0100", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/OptionsProvider.html"}
+{"id": "D8-SKETCHUP-STYLEB-0006", "verdict": "LABEL", "note": "label only", "doc": "https://help.sketchup.com/en/style-builder/creating-opening-and-saving-style-builder-files"}
+{"id": "D8-SKETCHUP-RUBY-0104", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Pages.html"}
+{"id": "D8-SKETCHUP-EDIT-0035", "verdict": "MAJOR", "note": "dim/hide per model info not on page", "doc": "https://help.sketchup.com/en/sketchup/grouping-geometry"}
+{"id": "D8-SKETCHUP-RUBY-0090", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Licensing/ExtensionLicense.html"}
+{"id": "D8-SKETCHUP-IO-0020", "verdict": "MINOR", "note": "extension migrator searches a folder, only preferences ask for a version", "doc": "https://help.sketchup.com/en/migrating-to-new-version"}
+{"id": "D8-SKETCHUP-RUBY-0068", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Entities.html"}
+{"id": "D8-SKETCHUP-INFER-0012", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/introducing-drawing-basics-and-concepts"}
+{"id": "D8-SKETCHUP-EXT-0008", "verdict": "UNV", "note": "", "doc": "https://forums.sketchup.com/t/exposing-cleanup3-functionality-for-automation/26870"}
+{"id": "D8-SKETCHUP-INFER-0001", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/introducing-drawing-basics-and-concepts"}
+{"id": "D8-SKETCHUP-DYNCOMP-0003", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/dynamic-component-predefined-attributes"}
+{"id": "D8-SKETCHUP-LAYOUT-0026", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/layout/automate-titleblocks"}
+{"id": "D8-SKETCHUP-RUBY-0133", "verdict": "MAJOR", "note": "count introduced by my re-review was wrong: AppObserver lists 8 and ModelObserver 15 non-deprecated, total 49", "doc": "https://ruby.sketchup.com/Sketchup/AppObserver.html"}
+{"id": "D8-SKETCHUP-EDIT-0026", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/extruding-follow-me"}
+{"id": "D8-SKETCHUP-EXT-0048", "verdict": "UNV", "note": "", "doc": "https://extensions.sketchup.com/"}
+{"id": "D8-SKETCHUP-EDIT-0021", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/pushing-and-pulling-shapes-3d"}
+{"id": "D8-SKETCHUP-EXT-0051", "verdict": "UNV", "note": "", "doc": "https://extensions.sketchup.com/"}
+{"id": "D8-SKETCHUP-EXT-0013", "verdict": "UNV", "note": "", "doc": "https://sketchucation.com/pluginstore?pln=Curviloft"}
+{"id": "D8-SKETCHUP-ORG-0006", "verdict": "MAJOR", "note": "page is about dynamic component attributes; Set Component Axes and insertion point not on it", "doc": "https://help.sketchup.com/en/sketchup/component-axes"}
+{"id": "D8-SKETCHUP-SCENE-0027", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/importing-and-exporting-image-files"}
+{"id": "D8-SKETCHUP-RUBY-0118", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Texture.html"}
+{"id": "D8-SKETCHUP-EXT-0014", "verdict": "UNV", "note": "", "doc": "https://sketchucation.com/pluginstore?pln=Curviloft"}
+{"id": "D8-SKETCHUP-UX-0010", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/accessibility-0"}
+{"id": "D8-SKETCHUP-EXT-0029", "verdict": "UNV", "note": "", "doc": "https://support.mindsightstudios.com/hc/en-us/articles/360020989374-What-is-Artisan"}
+{"id": "D8-SKETCHUP-IO-0024", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/importing-exporting-and-deleting-classifications"}
+{"id": "D8-SKETCHUP-INFER-0013", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/introducing-drawing-basics-and-concepts"}
+{"id": "D8-SKETCHUP-AI-0007", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/ai-help"}
+{"id": "D8-SKETCHUP-LAYOUT-0044", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/layout/sketchup-model-effects"}
+{"id": "D8-SKETCHUP-RUBY-0014", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Layout/Document.html"}
+{"id": "D8-SKETCHUP-EXT-0033", "verdict": "UNV", "note": "", "doc": "https://www.toolfarm.com/buy/lindale_skatter"}
+{"id": "D8-SKETCHUP-SOLID-0011", "verdict": "MINOR", "note": "preselection context menu not on page", "doc": "https://help.sketchup.com/en/sketchup/modeling-complex-3d-shapes-solid-tools"}
+{"id": "D8-SKETCHUP-SCAN-0003", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/scan-essentials-sketchup/point-cloud-manager"}
+{"id": "D8-SKETCHUP-LAYOUT-0048", "verdict": "MAJOR", "note": "extended to groups in 2026.2 not on page", "doc": "https://help.sketchup.com/en/layout/making-clipping-mask"}
+{"id": "D8-SKETCHUP-SITE-0011", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/add-location-crs"}
+{"id": "D8-SKETCHUP-SCENE-0024", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/hatch-patterns"}
+{"id": "D8-SKETCHUP-RUBY-0138", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Geom/Vector2d.html"}
+{"id": "D8-SKETCHUP-INFER-0020", "verdict": "MAJOR", "note": "pick radius, snap distance, ScreenTip delay not on the preferences page", "doc": "https://help.sketchup.com/en/sketchup/preferences"}
+{"id": "D8-SKETCHUP-INFER-0018", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/introducing-drawing-basics-and-concepts"}
+{"id": "D8-SKETCHUP-SITE-0018", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/estimating-height"}
+{"id": "D8-SKETCHUP-LAYOUT-0004", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/layout/managing-and-navigating-pages"}
+{"id": "D8-SKETCHUP-SCENE-0003", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/animating-scenes"}
+{"id": "D8-SKETCHUP-DRAW-0045", "verdict": "MAJOR", "note": "page says erasing an edge erases adjacent faces, not merges coplanar faces", "doc": "https://help.sketchup.com/en/sketchup/introducing-drawing-basics-and-concepts"}
+{"id": "D8-SKETCHUP-IO-0006", "verdict": "MINOR", "note": "selection-only option not on page", "doc": "https://help.sketchup.com/en/importing-and-exporting-ifc-files"}
+{"id": "D8-SKETCHUP-RUBY-0087", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/LayerFolder.html"}
+{"id": "D8-SKETCHUP-SCENE-0019", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/editing-materials"}
+{"id": "D8-SKETCHUP-RUBY-0111", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Set.html"}
+{"id": "D8-SKETCHUP-ECO-0010", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/extension-warehouse/extension-migrator-developers"}
+{"id": "D8-SKETCHUP-RUBY-0106", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Procedure.html"}
+{"id": "D8-SKETCHUP-EDIT-0012", "verdict": "MINOR", "note": "rotation respects component axes not on page", "doc": "https://help.sketchup.com/en/sketchup/flipping-mirroring-rotating-and-arrays"}
+{"id": "D8-SKETCHUP-EXT-0002", "verdict": "UNV", "note": "", "doc": "https://mindsightstudios.com/profile-builder/"}
+{"id": "D8-SKETCHUP-EXT-0019", "verdict": "UNV", "note": "", "doc": "https://sketchucation.com/pluginstore?pln=JointPushPull"}
+{"id": "D8-SKETCHUP-RUBY-0046", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/AttributeDictionary.html"}
+{"id": "D8-SKETCHUP-DYNCOMP-0017", "verdict": "MAJOR", "note": "page is about losing textures in Choose Options and OnClick, not scaling; statement is a label", "doc": "https://help.sketchup.com/en/sketchup/preserving-textures-dynamic-component"}
+{"id": "D8-SKETCHUP-RUBY-0015", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Layout/Ellipse.html"}
+{"id": "D8-SKETCHUP-RUBY-0124", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/View.html"}
+{"id": "D8-SKETCHUP-UX-0008", "verdict": "LABEL", "note": "label only", "doc": "https://help.sketchup.com/en/context-menu-items-entities"}
+{"id": "D8-SKETCHUP-SCENE-0025", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/ai-materials"}
+{"id": "D8-SKETCHUP-DRAW-0031", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/selecting-geometry"}
+{"id": "D8-SKETCHUP-SOLID-0018", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup-copy-along"}
+{"id": "D8-SKETCHUP-INFER-0007", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/introducing-drawing-basics-and-concepts"}
+{"id": "D8-SKETCHUP-RUBY-0146", "verdict": "MINOR", "note": "ModelObserver count 17 includes 2 deprecated, not said", "doc": "https://ruby.sketchup.com/Sketchup/ModelObserver.html"}
+{"id": "D8-SKETCHUP-LAYOUT-0041", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/layout/perspective-and-scale"}
+{"id": "D8-SKETCHUP-SCAN-0010", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup-desktop-20262"}
+{"id": "D8-SKETCHUP-RUBY-0079", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Http/Request.html"}
+{"id": "D8-SKETCHUP-DRAW-0018", "verdict": "MAJOR", "note": "double-click guide point not on page", "doc": "https://help.sketchup.com/en/using-guides"}
+{"id": "D8-SKETCHUP-RUBY-0102", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/OverlaysManager.html"}
+{"id": "D8-SKETCHUP-ECO-0013", "verdict": "UNV", "note": "", "doc": "https://developer.sketchup.com/learn"}
+{"id": "D8-SKETCHUP-RUBY-0088", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Sketchup/Layers.html"}
+{"id": "D8-SKETCHUP-EDIT-0003", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/stretching-geometry"}
+{"id": "D8-SKETCHUP-UX-0012", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/release-notes/sketchup-desktop-202612"}
+{"id": "D8-SKETCHUP-DRAW-0008", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/drawing-arcs"}
+{"id": "D8-SKETCHUP-EXT-0063", "verdict": "UNV", "note": "", "doc": "https://extensions.sketchup.com/"}
+{"id": "D8-SKETCHUP-DRAW-0022", "verdict": "MINOR", "note": "leaders not on page", "doc": "https://help.sketchup.com/en/sketchup/adding-text-labels-and-dimensions-model"}
+{"id": "D8-SKETCHUP-SCAN-0009", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/release-notes/sketchup-desktop-20260"}
+{"id": "D8-SKETCHUP-LAYOUT-0054", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/layout/presenting-your-layout-document"}
+{"id": "D8-SKETCHUP-EXT-0016", "verdict": "OK", "note": "", "doc": "https://sketchucation.com/pluginstore?pln=LibFredo6"}
+{"id": "D8-SKETCHUP-RUBY-0001", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Array.html"}
+{"id": "D8-SKETCHUP-RUBY-0144", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Layout.html"}
+{"id": "D8-SKETCHUP-SOLID-0004", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/modeling-complex-3d-shapes-solid-tools"}
+{"id": "D8-SKETCHUP-SOLID-0013", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/editing-component-solid-tools"}
+{"id": "D8-SKETCHUP-DYNCOMP-0019", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/release-notes/sketchup-desktop-202612"}
+{"id": "D8-SKETCHUP-DRAW-0017", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/using-guides"}
+{"id": "D8-SKETCHUP-SOLID-0020", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/procedural-tools"}
+{"id": "D8-SKETCHUP-RUBY-0008", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/LanguageHandler.html"}
+{"id": "D8-SKETCHUP-RUBY-0013", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Layout/Dictionary.html"}
+{"id": "D8-SKETCHUP-UX-0018", "verdict": "MAJOR", "note": "extension loading policy not on the silent-install page; statement near-label", "doc": "https://help.sketchup.com/en/sketchup/performing-silent-install-sketchup"}
+{"id": "D8-SKETCHUP-ORG-0026", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/trimble-creator"}
+{"id": "D8-SKETCHUP-RUBY-0025", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Layout/Layers.html"}
+{"id": "D8-SKETCHUP-DYNCOMP-0015", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/creating-dynamic-component-snaps-specific-size"}
+{"id": "D8-SKETCHUP-INFER-0019", "verdict": "MAJOR", "note": "cited page has no typed-suffix content", "doc": "https://help.sketchup.com/en/using-measurements-box"}
+{"id": "D8-SKETCHUP-RUBY-0005", "verdict": "OK", "note": "", "doc": "https://ruby.sketchup.com/Geom/PolygonMesh.html"}
+{"id": "D8-SKETCHUP-ORG-0001", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/sketchup/grouping-geometry"}
+{"id": "D8-SKETCHUP-ECO-0008", "verdict": "OK", "note": "", "doc": "https://developer.sketchup.com/article-entity-overview"}
+{"id": "D8-SKETCHUP-LAYOUT-0037", "verdict": "OK", "note": "", "doc": "https://help.sketchup.com/en/layout/working-scrapbooks-reusable-entities"}
