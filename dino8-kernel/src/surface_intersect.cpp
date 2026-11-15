@@ -8,6 +8,8 @@
 #include <map>
 #include <numeric>
 #include <set>
+#include <cstdio>
+#include <cstdlib>
 
 namespace dino8::kernel {
 
@@ -892,6 +894,43 @@ bool FaceContainsUV(const ON_BrepFace& f, double u, double v) {
 }
 
 namespace {
+// Distance from p to the polygon's boundary, and the polygon's bounding-box diagonal.
+double PolygonEdgeDistance(const std::vector<ON_2dPoint>& poly, const ON_2dPoint& p, double& diag) {
+  double best = std::numeric_limits<double>::max(), minx = poly[0].x, maxx = poly[0].x, miny = poly[0].y, maxy = poly[0].y;
+  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+    const ON_2dPoint& a = poly[i];
+    const ON_2dPoint& c = poly[j];
+    minx = std::min(minx, a.x); maxx = std::max(maxx, a.x); miny = std::min(miny, a.y); maxy = std::max(maxy, a.y);
+    const double vx = c.x - a.x, vy = c.y - a.y, len2 = vx * vx + vy * vy;
+    double t = len2 > 1e-300 ? ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2 : 0;
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    best = std::min(best, std::hypot(p.x - (a.x + vx * t), p.y - (a.y + vy * t)));
+  }
+  diag = std::hypot(maxx - minx, maxy - miny);
+  return best;
+}
+
+// Is p inside loop `li` of `b`? The loop polygon samples every curved trim at a fixed count (LoopPolygon's default), so its chords
+// sit up to ~1% of a circular trim's radius inside the true boundary: a point that is truly inside but within that sag of the rim
+// tested "outside". That clipped a curve that runs along a rim at near-tangent (a wall 1e-3 inside a cap's rim) many mesh steps
+// short of where the true boundary lets it go. A point close to the polygon is therefore re-decided on a dense polygon.
+bool LoopContainsRefined(const ON_Brep& b, int li, const ON_2dPoint& p) {
+  const std::vector<ON_2dPoint> poly = LoopPolygon(b, li);
+  const bool in = PointInPolygon(poly, p);
+  if (poly.size() < 3) return in;
+  const ON_BrepLoop& loop = b.m_L[li];
+  bool curved = false;
+  for (int k = 0; k < loop.m_ti.Count() && !curved; ++k) {
+    const ON_BrepTrim& trim = b.m_T[loop.m_ti[k]];
+    curved = trim.m_iso == ON_Surface::not_iso && ON_PolylineCurve::Cast(trim.TrimCurveOf()) == nullptr && !trim.TrimCurveOf()->IsLinear();
+  }
+  if (!curved) return in;
+  double diag = 0;
+  const double d = PolygonEdgeDistance(poly, p, diag);
+  if (d > 0.05 * diag) return in;
+  return PointInPolygon(LoopPolygon(b, li, 1536), p);
+}
+
 bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v) {
   const ON_Brep* b = f.Brep();
   if (!b) return true;
@@ -914,12 +953,12 @@ bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v) {
   bool inside_outer = false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::outer) inside_outer = PointInPolygon(LoopPolygon(*b, f.m_li[li]), p);
+    if (loop.m_type == ON_BrepLoop::outer) inside_outer = LoopContainsRefined(*b, f.m_li[li], p);
   }
   if (!inside_outer) return false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::inner && PointInPolygon(LoopPolygon(*b, f.m_li[li]), p)) return false;
+    if (loop.m_type == ON_BrepLoop::inner && LoopContainsRefined(*b, f.m_li[li], p)) return false;
   }
   return true;
 }
@@ -2044,6 +2083,194 @@ std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface&
   return out;
 }
 
+// --- continuing a seed chain past the end of the seed mesh ------------------------------
+//
+// The seed chains come from the triangle/triangle crossings of two coarse tessellations (chord tolerance mesh_tolerance, 0.02 by
+// default). Where the surfaces meet at a shallow angle (a near-tangent overlap: a cylinder 1e-3 inside a box face, two spheres overlapping
+// by 1e-3) the crossing curve is only a few mesh sagittae wide, so the facets cross over just part of it: the chain that comes out is a
+// stub that ends in the INTERIOR of both surfaces although the true curve runs on to a surface boundary (or round into a closed loop).
+// A stub end that is not on a domain boundary is therefore marched on along the intersection curve (tangent = nA x nB, predictor
+// by the local Jacobians, corrector by the same Newton solve that refines the seeds) until the curve reaches a domain boundary, closes
+// up with its own other end, or the surfaces become tangent (|nA x nB| ~ 0, nothing sensible to follow). A periodic seam is not a stopping
+// place: the (u, v) is wrapped, exactly the jump SplitAtSeams() already cuts at.
+
+struct MarchPt {
+  Point3d p;
+  ON_2dPoint ua, ub;
+};
+
+// (u, v) after moving by the 3D vector dp in the tangent plane of s at uv; wraps a closed direction, clamps an open one. `outside` is set
+// (and `frac` the fraction of the move that stays inside) when an open direction would have left its domain.
+ON_2dPoint PredictUV(const ON_Surface& s, const ON_2dPoint& uv, const Vector3d& dp, bool& outside, double& frac) {
+  ON_3dPoint P;
+  ON_3dVector du, dv;
+  ON_2dPoint r = uv;
+  if (!s.Ev1Der(uv.x, uv.y, P, du, dv)) return r;
+  const double a = du * du, b = du * dv, c = dv * dv, ri = du * dp, rj = dv * dp;
+  const double reg = 1e-12 * (a + c) + 1e-300;
+  const double det = (a + reg) * (c + reg) - b * b;
+  if (!(std::fabs(det) > 0)) return r;
+  const double x = (ri * (c + reg) - rj * b) / det, y = (rj * (a + reg) - ri * b) / det;
+  const double d[2] = {x, y};
+  for (int k = 0; k < 2; ++k) {
+    const ON_Interval dom = s.Domain(k);
+    double v = uv[k] + d[k];
+    if (s.IsClosed(k) && dom.Length() > 0) {
+      const double L = dom.Length();
+      while (v < dom.Min()) v += L;
+      while (v > dom.Max()) v -= L;
+    } else if (v < dom.Min() || v > dom.Max()) {
+      outside = true;
+      const double bound = v < dom.Min() ? dom.Min() : dom.Max();
+      if (std::fabs(d[k]) > 0) frac = std::min(frac, std::max(0.0, (bound - uv[k]) / d[k]));
+      v = Clamp(v, dom.Min(), dom.Max());
+    }
+    r[k] = v;
+  }
+  return r;
+}
+
+// Newton on |A(ua, va) - B(ub, vb)| with optionally one coordinate pinned (fixed_index in 0..3, -1 for none).
+bool MarchSolve(const ON_Surface& a, const ON_Surface& b, double x[4], int fixed_index, double tol) {
+  std::vector<double> xv = {x[0], x[1], x[2], x[3]};
+  std::vector<double> lo = {a.Domain(0).Min(), a.Domain(1).Min(), b.Domain(0).Min(), b.Domain(1).Min()};
+  std::vector<double> hi = {a.Domain(0).Max(), a.Domain(1).Max(), b.Domain(0).Max(), b.Domain(1).Max()};
+  if (fixed_index >= 0) lo[static_cast<size_t>(fixed_index)] = hi[static_cast<size_t>(fixed_index)] = xv[static_cast<size_t>(fixed_index)];
+  Residual res = [&](const std::vector<double>& p) {
+    const Point3d pa = a.PointAt(p[0], p[1]), pb = b.PointAt(p[2], p[3]);
+    return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
+  };
+  const bool ok = NewtonSolve(res, xv, lo, hi, tol, 25);
+  if (ok) {
+    const double scale = std::max({1.0, a.PointAt(xv[0], xv[1]).DistanceTo(Point3d::Origin)});
+    NewtonSolve(res, xv, lo, hi, 1e-11 * scale, 8);
+  }
+  for (int k = 0; k < 4; ++k) x[k] = xv[static_cast<size_t>(k)];
+  return ok;
+}
+
+bool UVOnDomainBoundary(const ON_Surface& s, const ON_2dPoint& uv) {
+  for (int k = 0; k < 2; ++k) {
+    const ON_Interval d = s.Domain(k);
+    const double eps = 1e-7 * std::max(d.Length(), 1e-300);
+    if (uv[k] <= d.Min() + eps || uv[k] >= d.Max() - eps) return true;
+  }
+  return false;
+}
+
+bool SurfaceNormalUnit(const ON_Surface& s, const ON_2dPoint& uv, Vector3d& n) {
+  ON_3dPoint P;
+  ON_3dVector du, dv;
+  if (!s.Ev1Der(uv.x, uv.y, P, du, dv)) return false;
+  n = ON_CrossProduct(du, dv);
+  const double L = n.Length();
+  if (!(L > 1e-14)) return false;
+  n /= L;
+  return true;
+}
+
+// Marches from the last point of `ic` along the intersection curve. Appends the points found; returns the number appended.
+// `closing` (may be null) is the chain's own other end: coming within a step of it closes the loop (reported through `closed`).
+size_t MarchChainEnd(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt, double diag, bool& closed) {
+  closed = false;
+  const size_t n0 = ic.points.size();
+  if (n0 < 2) return 0;
+  const double hmax = 0.02 * diag, hmin = std::max(1e-9 * diag, 1e-12);
+  Point3d p = ic.points.back();
+  ON_2dPoint uva = ic.uv_a.back(), uvb = ic.uv_b.back();
+  Vector3d dir = p - ic.points[n0 - 2];
+  const double dl = dir.Length();
+  if (!(dl > 0)) return 0;
+  dir /= dl;
+  const Point3d start = ic.points.front();
+  double h = Clamp(dl, std::max(opt.tolerance, 1e-3 * diag * 0.1), hmax);
+  size_t added = 0;
+  double path = 0;
+  for (int iter = 0; iter < 4000; ++iter) {
+    Vector3d na, nb;
+    if (!SurfaceNormalUnit(a, uva, na) || !SurfaceNormalUnit(b, uvb, nb)) break;
+    Vector3d t = ON_CrossProduct(na, nb);
+    const double sn = t.Length();
+    if (!(sn > 1e-5)) break;  // tangent contact: the curve direction is undefined here
+    t /= sn;
+    if (t * dir < 0) t = -t;
+    bool stepped = false, hit_boundary = false;
+    for (int attempt = 0; attempt < 24 && h >= hmin; ++attempt, h *= 0.5) {
+      const Vector3d move = t * h;
+      bool oa = false, ob = false;
+      double fa = 1.0, fb = 1.0;
+      const ON_2dPoint pa = PredictUV(a, uva, move, oa, fa), pb = PredictUV(b, uvb, move, ob, fb);
+      double x[4] = {pa.x, pa.y, pb.x, pb.y};
+      int fixed = -1;
+      if (oa || ob) {
+        // The step would leave an open domain: land exactly on that boundary instead (pin the violating coordinate) and stop there.
+        const double f = std::min(oa ? fa : 1.0, ob ? fb : 1.0);
+        const ON_2dPoint qa = PredictUV(a, uva, move * f, oa, fa), qb = PredictUV(b, uvb, move * f, ob, fb);
+        x[0] = qa.x; x[1] = qa.y; x[2] = qb.x; x[3] = qb.y;
+        const ON_Surface* ss[2] = {&a, &b};
+        const ON_2dPoint* qq[2] = {&qa, &qb};
+        for (int k = 0; k < 4 && fixed < 0; ++k) {
+          const ON_Surface& s = *ss[k / 2];
+          const ON_Interval d = s.Domain(k % 2);
+          if (s.IsClosed(k % 2)) continue;
+          const double v = (*qq[k / 2])[k % 2];
+          if (v <= d.Min() || v >= d.Max()) fixed = k;
+        }
+        if (fixed < 0) continue;
+        hit_boundary = true;
+      }
+      if (!MarchSolve(a, b, x, fixed, opt.tolerance)) { hit_boundary = false; continue; }
+      const Point3d q = a.PointAt(x[0], x[1]);
+      Vector3d d = q - p;
+      const double dd = d.Length();
+      if (!(dd > 0.2 * h * (hit_boundary ? 0.0 : 1.0)) || dd > 2.5 * h) { hit_boundary = false; continue; }
+      d /= dd;
+      if (d * dir < (attempt > 12 ? 0.0 : 0.96) || d * t < 0.5) { hit_boundary = false; continue; }
+      if (!hit_boundary && dd < 0.2 * h) continue;
+      if (hit_boundary && dd < 1e-9 * diag) { stepped = false; break; }
+      // accept
+      ic.points.push_back(q);
+      ic.uv_a.emplace_back(x[0], x[1]);
+      ic.uv_b.emplace_back(x[2], x[3]);
+      ++added;
+      path += dd;
+      dir = d;
+      p = q;
+      uva = ON_2dPoint(x[0], x[1]);
+      uvb = ON_2dPoint(x[2], x[3]);
+      stepped = true;
+      break;
+    }
+    if (std::getenv("DINO8_MARCH_DEBUG")) std::fprintf(stderr, "march iter %d stepped=%d bnd=%d h=%g p=(%g %g %g) added=%zu sn=%g\n", iter, (int)stepped, (int)hit_boundary, h, p.x, p.y, p.z, added, sn);
+    if (!stepped || hit_boundary) break;
+    if (path > 3 * h && p.DistanceTo(start) < 1.5 * h && (start - p) * dir > 0) { closed = true; break; }
+    h = std::min(h * 1.6, hmax);
+  }
+  return added;
+}
+
+// Extends every open chain whose end lies in the interior of both surfaces. A chain that wraps back onto its own start becomes closed.
+void ExtendInteriorChainEnds(std::vector<IntersectionCurve>& chains, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt, double diag) {
+  for (IntersectionCurve& ic : chains) {
+    if (ic.closed || ic.points.size() < 2) continue;
+    for (int end = 0; end < 2 && !ic.closed; ++end) {
+      const size_t last = ic.points.size() - 1;
+      if (UVOnDomainBoundary(a, ic.uv_a[last]) || UVOnDomainBoundary(b, ic.uv_b[last])) {
+        std::reverse(ic.points.begin(), ic.points.end());
+        std::reverse(ic.uv_a.begin(), ic.uv_a.end());
+        std::reverse(ic.uv_b.begin(), ic.uv_b.end());
+        continue;
+      }
+      bool closed = false;
+      MarchChainEnd(ic, a, b, opt, diag, closed);
+      if (closed) { ic.closed = true; break; }
+      std::reverse(ic.points.begin(), ic.points.end());
+      std::reverse(ic.uv_a.begin(), ic.uv_a.end());
+      std::reverse(ic.uv_b.begin(), ic.uv_b.end());
+    }
+  }
+}
+
 }  // namespace
 
 std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
@@ -2122,6 +2349,7 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
     if (ic.closed && ic.points.size() < 3) ic.closed = false;
     out.push_back(std::move(ic));
   }
+  ExtendInteriorChainEnds(out, a, b, opt, diag);
   SplitAtSeams(out, a, b, opt);
   SplitAtPoles(out, a, b, opt);
   std::vector<IntersectionCurve> finished;
