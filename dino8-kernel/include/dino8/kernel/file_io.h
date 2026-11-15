@@ -356,6 +356,10 @@ struct DimensionLinearInfo {
   double measurement = 0.0;
 };
 
+namespace detail {
+class OnGlobalStateGuard;
+}
+
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
 // OpenNURBS directly rather than a reimplementation. This is the
 // "can open/save .3dm" exit criterion for chunk 1 — nothing more.
@@ -1443,6 +1447,9 @@ class Model {
   const ONX_Model& raw() const { return model_; }
 
  private:
+  // Delegation target of Model(): builds the ONX_Model member while the caller's guard is held.
+  explicit Model(const detail::OnGlobalStateGuard&);
+
   ONX_Model model_;
 };
 

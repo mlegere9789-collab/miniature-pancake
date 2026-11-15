@@ -242,6 +242,15 @@ struct SubDPlaneSplit;
 
 class SubD {
  public:
+  SubD() = default;
+  // Copying builds a new ON_SubD heap (openNURBS' SubD heap constructor sets process-wide offset statics), so the
+  // copy operations hold the kernel's openNURBS global-state guard like every other SubD entry point.
+  SubD(const SubD& other);
+  SubD& operator=(const SubD& other);
+  SubD(SubD&&) noexcept = default;
+  SubD& operator=(SubD&&) noexcept = default;
+  ~SubD() = default;
+
   // Builds a SubD control cage directly from `control_mesh`'s own faces -
   // each mesh face (triangle, quad, or n-gon) becomes one SubD face at
   // level 0. Throws std::runtime_error if OpenNURBS' own

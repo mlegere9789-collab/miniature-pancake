@@ -16,6 +16,7 @@
 
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/detail/on_global_state.h"
 
 namespace dino8::kernel {
 
@@ -100,7 +101,23 @@ std::vector<ON_3dPoint> UnclampUniformCubicRow(const std::vector<ON_3dPoint>& cv
 
 }  // namespace
 
+namespace {
+ON_SubD CopyOnSubDGuarded(const ON_SubD& src) {
+  const detail::OnGlobalStateGuard on_state_guard;
+  return ON_SubD(src);
+}
+}  // namespace
+
+SubD::SubD(const SubD& other) : subd_(CopyOnSubDGuarded(other.subd_)) {}
+
+SubD& SubD::operator=(const SubD& other) {
+  const detail::OnGlobalStateGuard on_state_guard;
+  subd_ = other.subd_;
+  return *this;
+}
+
 SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges) {
+  const detail::OnGlobalStateGuard on_state_guard;
   SubD result;
   const ON_SubDFromMeshParameters& params = crease_at_double_edges
                                                  ? ON_SubDFromMeshParameters::InteriorCreases
@@ -115,6 +132,7 @@ SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges
 }
 
 SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (u_divisions < 1 || v_divisions < 1) {
     throw std::invalid_argument(
         "dino8::kernel::SubD::FromNurbsSurface: u_divisions and v_divisions "
@@ -257,6 +275,7 @@ SubD SubD::FromNurbsSurfaceToTolerance(const NurbsSurface& surface, double toler
 }
 
 SubD SubD::FromUniformBicubicSurface(const NurbsSurface& surface) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_NurbsSurface& raw = surface.raw();
   if (!raw.IsValid()) {
     throw std::invalid_argument(
@@ -352,6 +371,7 @@ SubD SubD::FromUniformBicubicSurface(const NurbsSurface& surface) {
 }
 
 SubD SubD::FromBrep(const Brep& brep, int divisions, double weld_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (divisions < 1) {
     throw std::invalid_argument("dino8::kernel::SubD::FromBrep: divisions must be at least 1");
   }
@@ -464,6 +484,7 @@ SubD SubD::FromBrep(const Brep& brep, int divisions, double weld_tolerance) {
 }
 
 SubD SubD::FromMeshQuadRemeshed(const Mesh& mesh, double max_dihedral_deg, bool crease_at_double_edges) {
+  const detail::OnGlobalStateGuard on_state_guard;
   Mesh result = mesh;
   // See this method's own doc comment (subd.h) for why this composition
   // - already proven by BooleanToSubD() - is always safe to expose
@@ -474,6 +495,7 @@ SubD SubD::FromMeshQuadRemeshed(const Mesh& mesh, double max_dihedral_deg, bool 
 }
 
 SubD SubD::FromBrepTessellated(const Brep& brep, int u_divisions, int v_divisions, double max_dihedral_deg) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (brep.FaceCount() <= 0) {
     throw std::invalid_argument("dino8::kernel::SubD::FromBrepTessellated: brep has no faces");
   }
@@ -486,6 +508,7 @@ SubD SubD::FromBrepTessellated(const Brep& brep, int u_divisions, int v_division
 }
 
 void SubD::Subdivide(int levels) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (levels <= 0) {
     return;
   }
@@ -497,6 +520,7 @@ void SubD::Subdivide(int levels) {
 }
 
 Mesh SubD::ToApproximateMesh() const {
+  const detail::OnGlobalStateGuard on_state_guard;
   Mesh result;
   const ON_Mesh* out =
       subd_.GetControlNetMesh(&result.raw(), ON_SubDGetControlNetMeshPriority::Geometry);
@@ -528,6 +552,7 @@ Mesh SubD::ToApproximateMesh() const {
 }
 
 Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   // Both ToApproximateMesh() calls, and BooleanCombine() itself, throw
   // std::runtime_error on their own respective failures (an unbuildable
   // control-net mesh; a non-closed/non-manifold operand) - none of that is
@@ -537,6 +562,7 @@ Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
 }
 
 SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_deg) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   // Delegates to FromMeshQuadRemeshed() (this class's own general
   // TrisToQuads()+FromControlMesh() composition - BooleanToSubD() was
   // that composition's only caller before FromMeshQuadRemeshed() existed)
@@ -547,6 +573,7 @@ SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op, double max_dihedral_de
 }
 
 SubD SubD::Transform(const ON_Xform& xform) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   SubD result = *this;  // ON_SubD's copy ctor deep-copies (verified in SetEdgeSharpness()'s own comment)
   if (!result.subd_.Transform(xform)) {
     throw std::invalid_argument("dino8::kernel::SubD::Transform: ON_SubD::Transform failed (xform is not a valid transform)");
@@ -555,6 +582,7 @@ SubD SubD::Transform(const ON_Xform& xform) const {
 }
 
 SubD SubD::Offset(double distance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!ON_IsValid(distance)) {
     throw std::invalid_argument("dino8::kernel::SubD::Offset: distance must be finite");
   }
@@ -588,12 +616,14 @@ SubD SubD::Offset(double distance) const {
 }
 
 Mesh SubD::Thicken(double distance, double tessellation_tolerance, int max_resolution) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   const Mesh tessellated = Tessellate(tessellation_tolerance, max_resolution);
   return tessellated.Thicken(distance);
 }
 
 SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance,
                        double weld_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!plane_normal.Unitize()) {
     throw std::invalid_argument(
         "dino8::kernel::SubD::Symmetrize: plane_normal must be nonzero");
@@ -922,6 +952,7 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
 
 SubDPlaneSplit SubD::SplitByPlane(Vector3d plane_normal, double plane_offset, bool cap, bool crease_cut,
                                   double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!plane_normal.Unitize()) {
     throw std::invalid_argument("dino8::kernel::SubD::SplitByPlane: plane_normal must be nonzero and finite");
   }
@@ -1277,6 +1308,7 @@ bool LimitSurfaceIsCageImpl(const ON_SubD& sd) {
 bool SubD::LimitSurfaceIsCage() const { return LimitSurfaceIsCageImpl(subd_); }
 
 SubD SubD::BooleanSubD(const SubD& other, BooleanOp op, int levels, SubDBooleanReport* report) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (levels < 0 || levels > 5) {
     throw std::invalid_argument("dino8::kernel::SubD::BooleanSubD: levels must be in [0, 5]");
   }
@@ -1287,6 +1319,7 @@ SubD SubD::BooleanSubD(const SubD& other, BooleanOp op, int levels, SubDBooleanR
 
 SubDPlaneSplit SubD::SplitByPlaneRefined(Vector3d plane_normal, double plane_offset, int levels, bool cap, bool crease_cut,
                                          double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (levels < 0 || levels > 5) {
     throw std::invalid_argument("dino8::kernel::SubD::SplitByPlaneRefined: levels must be in [0, 5]");
   }
@@ -1300,6 +1333,7 @@ int SubD::VertexCount() const { return static_cast<int>(subd_.VertexCount()); }
 int SubD::EdgeCount() const { return static_cast<int>(subd_.EdgeCount()); }
 
 bool SubD::IsValid() const {
+  const detail::OnGlobalStateGuard on_state_guard;
   // Low bit set -> ON_SubD::IsValid() suppresses its own ON_Error() call
   // on failure (masked off again before use - never actually
   // dereferenced as a real ON_TextLog*, see this method's own header
@@ -1383,6 +1417,7 @@ std::vector<size_t> GroupByProximity(const std::vector<ON_3dPoint>& points, doub
 }  // namespace
 
 SubD::SubDCheckReport SubD::Check(double duplicate_vertex_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   SubDCheckReport report;
 
   ON_SubDEdgeIterator eit = subd_.EdgeIterator();
@@ -1522,6 +1557,7 @@ SubD::SubDCheckReport SubD::Check(double duplicate_vertex_tolerance) const {
 }
 
 std::vector<SubD> SubD::SplitDisjointPieces() const {
+  const detail::OnGlobalStateGuard on_state_guard;
   std::vector<const ON_SubDFace*> all_faces;
   {
     ON_SubDFaceIterator fit = subd_.FaceIterator();
@@ -1650,6 +1686,7 @@ std::vector<SubD> SubD::SplitDisjointPieces() const {
 }
 
 bool SubD::SplitNonManifoldVertex(unsigned int vertex_id) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* target = subd_.VertexFromId(vertex_id);
   if (target == nullptr) return false;
 
@@ -1865,6 +1902,7 @@ bool SubD::SplitNonManifoldVertex(unsigned int vertex_id) {
 }
 
 int SubD::SplitNonManifoldVertices(double tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const std::vector<unsigned int> to_split = Check(tolerance).non_manifold_vertex_list;
   int count = 0;
   for (const unsigned int id : to_split) {
@@ -1874,6 +1912,7 @@ int SubD::SplitNonManifoldVertices(double tolerance) {
 }
 
 int SubD::MergeDuplicateVertices(double tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   std::vector<unsigned int> ids;
   std::vector<ON_3dPoint> points;
   {
@@ -1919,6 +1958,7 @@ int SubD::MergeDuplicateVertices(double tolerance) {
 }
 
 int SubD::CreaseEdgeCount() const {
+  const detail::OnGlobalStateGuard on_state_guard;
   int count = 0;
   ON_SubDEdgeIterator eit = subd_.EdgeIterator();
   for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
@@ -1931,12 +1971,14 @@ int SubD::CreaseEdgeCount() const {
 
 bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1, double sharpness,
                             double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   return SetEdgeSharpness(p0, p1, sharpness, sharpness, point_tolerance);
 }
 
 bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1,
                             double sharpness_at_p0, double sharpness_at_p1,
                             double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!(sharpness_at_p0 >= 0.0) || sharpness_at_p0 > ON_SubDEdgeSharpness::MaximumValue) {
     return false;
   }
@@ -1971,6 +2013,7 @@ bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1,
 
 SubDEdgeSharpnessInfo SubD::EdgeSharpnessAt(const Point3d& p0, const Point3d& p1,
                                             double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   SubDEdgeSharpnessInfo info;
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
@@ -1991,6 +2034,7 @@ SubDEdgeSharpnessInfo SubD::EdgeSharpnessAt(const Point3d& p0, const Point3d& p1
 }
 
 SubDVertexInfo SubD::VertexInfoAt(const Point3d& p, double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   SubDVertexInfo info;
   const ON_SubDVertex* v = subd_.FindVertex(&p.x, point_tolerance);
   if (v == nullptr) return info;
@@ -2111,6 +2155,7 @@ SubDEdgeChain AssembleChain(const ON_SubDEdge* start, const std::vector<const ON
 }  // namespace
 
 SubDEdgeChain SubD::EdgeLoopThrough(const Point3d& p0, const Point3d& p1, double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
   if (v0 == nullptr || v1 == nullptr) return SubDEdgeChain();
@@ -2123,6 +2168,7 @@ SubDEdgeChain SubD::EdgeLoopThrough(const Point3d& p0, const Point3d& p1, double
 }
 
 SubDEdgeChain SubD::EdgeRingThrough(const Point3d& p0, const Point3d& p1, double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
   if (v0 == nullptr || v1 == nullptr) return SubDEdgeChain();
@@ -2236,6 +2282,7 @@ SubDSymmetryReport CheckSymmetryImpl(const ON_SubD& subd_, const std::function<O
 }  // namespace
 
 SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "CheckSymmetry");
   return CheckSymmetryImpl(
       subd_, [&](const ON_3dPoint& p) { return pl.Reflect(p); },
@@ -2243,6 +2290,7 @@ SubDSymmetryReport SubD::CheckSymmetry(Vector3d plane_normal, double plane_offse
 }
 
 bool SubD::MoveVertexSymmetric(const Point3d& from, const Point3d& to, Vector3d plane_normal, double plane_offset, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "MoveVertexSymmetric");
   if (!from.IsValid() || !to.IsValid()) return false;
   const ON_SubDVertex* v = subd_.FindVertex(&from.x, point_tolerance);
@@ -2290,6 +2338,7 @@ bool MirrorEdgeEnds(const SubD&, const ON_SubD& sd, const MirrorPlane& pl, const
 }  // namespace
 
 bool SubD::SetCreaseSymmetric(const Point3d& p0, const Point3d& p1, bool crease, Vector3d plane_normal, double plane_offset, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "SetCreaseSymmetric");
   Point3d m0, m1;
   if (!MirrorEdgeEnds(*this, subd_, pl, p0, p1, point_tolerance, &m0, &m1)) return false;
@@ -2302,6 +2351,7 @@ bool SubD::SetCreaseSymmetric(const Point3d& p0, const Point3d& p1, bool crease,
 }
 
 bool SubD::SetEdgeSharpnessSymmetric(const Point3d& p0, const Point3d& p1, double sharpness, Vector3d plane_normal, double plane_offset, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const MirrorPlane pl = MakeMirrorPlane(plane_normal, plane_offset, point_tolerance, "SetEdgeSharpnessSymmetric");
   Point3d m0, m1;
   if (!MirrorEdgeEnds(*this, subd_, pl, p0, p1, point_tolerance, &m0, &m1)) return false;
@@ -2372,6 +2422,7 @@ Point3d EdgeEnd(const ON_SubDEdge* e, unsigned int i) {
 }  // namespace
 
 SubDSymmetryReport SubD::CheckRadialSymmetry(Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "CheckRadialSymmetry");
   return CheckSymmetryImpl(
       subd_, [&](const ON_3dPoint& p) { return g.Rot(p, 1); }, [&](const ON_3dPoint& p) { return g.AxisDistance(p) <= point_tolerance; },
@@ -2379,6 +2430,7 @@ SubDSymmetryReport SubD::CheckRadialSymmetry(Point3d axis_point, Vector3d axis_d
 }
 
 bool SubD::MoveVertexRadial(const Point3d& from, const Point3d& to, Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "MoveVertexRadial");
   if (!from.IsValid() || !to.IsValid()) return false;
   const ON_SubDVertex* v = subd_.FindVertex(&from.x, point_tolerance);
@@ -2404,6 +2456,7 @@ bool SubD::MoveVertexRadial(const Point3d& from, const Point3d& to, Point3d axis
 }
 
 bool SubD::SetCreaseRadial(const Point3d& p0, const Point3d& p1, bool crease, Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "SetCreaseRadial");
   std::vector<const ON_SubDEdge*> orbit;
   if (!RadialEdgeOrbit(subd_, g, p0, p1, point_tolerance, &orbit)) return false;
@@ -2416,6 +2469,7 @@ bool SubD::SetCreaseRadial(const Point3d& p0, const Point3d& p1, bool crease, Po
 }
 
 bool SubD::SetEdgeSharpnessRadial(const Point3d& p0, const Point3d& p1, double sharpness, Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const RotationGroup g = MakeRotationGroup(axis_point, axis_dir, count, point_tolerance, "SetEdgeSharpnessRadial");
   std::vector<const ON_SubDEdge*> orbit;
   if (!RadialEdgeOrbit(subd_, g, p0, p1, point_tolerance, &orbit)) return false;
@@ -2431,6 +2485,7 @@ bool SubD::SetEdgeSharpnessRadial(const Point3d& p0, const Point3d& p1, double s
 }
 
 bool SubD::SetVertexCorner(const Point3d& p, bool corner, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v = subd_.FindVertex(&p.x, point_tolerance);
   if (v == nullptr) return false;
   int creases = 0;
@@ -2451,6 +2506,7 @@ bool SubD::SetVertexCorner(const Point3d& p, bool corner, double point_tolerance
 }
 
 bool SubD::SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
   if (v0 == nullptr || v1 == nullptr) {
@@ -2487,6 +2543,7 @@ const ON_SubDEdge* OtherNakedEdge(const ON_SubDVertex* v, const ON_SubDEdge* exc
 }  // namespace
 
 bool SubD::CapBoundaryLoop(const Point3d& start, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v0 = subd_.FindVertex(&start.x, point_tolerance);
   if (v0 == nullptr) return false;
 
@@ -2562,6 +2619,7 @@ const ON_SubDFace* FindSharedFace(const ON_SubDVertex* v0, const ON_SubDVertex* 
 }  // namespace
 
 bool SubD::InsertEdge(const Point3d& p0, const Point3d& p1, double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
   if (v0 == nullptr || v1 == nullptr || v0 == v1) return false;
@@ -2581,6 +2639,7 @@ bool SubD::InsertEdge(const Point3d& p0, const Point3d& p1, double point_toleran
 
 bool SubD::SpinEdge(const Point3d& p0, const Point3d& p1, bool spin_clockwise,
                     double point_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
   if (v0 == nullptr || v1 == nullptr) return false;
@@ -2594,6 +2653,7 @@ bool SubD::SpinEdge(const Point3d& p0, const Point3d& p1, bool spin_clockwise,
 }
 
 bool SubD::ExtrudeFace(unsigned int face_id, double distance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (distance == 0.0) return false;
   const ON_SubDFace* face = subd_.FaceFromId(face_id);
   if (face == nullptr) return false;
@@ -2608,6 +2668,7 @@ bool SubD::ExtrudeFace(unsigned int face_id, double distance) {
 }
 
 bool SubD::ExpandFaces(const std::vector<unsigned int>& face_ids, double distance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (distance == 0.0) return false;
   if (face_ids.empty()) return false;
 
@@ -2640,6 +2701,7 @@ bool SubD::ExpandFaces(const std::vector<unsigned int>& face_ids, double distanc
 }
 
 bool SubD::Weld(unsigned int keep_vertex_id, unsigned int discard_vertex_id, double weld_tolerance) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_SubDVertex* v0 = subd_.VertexFromId(keep_vertex_id);
   const ON_SubDVertex* v1 = subd_.VertexFromId(discard_vertex_id);
   if (v0 == nullptr || v1 == nullptr || v0 == v1) return false;
@@ -2797,6 +2859,7 @@ bool SubD::Weld(unsigned int keep_vertex_id, unsigned int discard_vertex_id, dou
 }
 
 std::vector<SubDLimitPoint> SubD::LimitPoints() const {
+  const detail::OnGlobalStateGuard on_state_guard;
   std::vector<SubDLimitPoint> out;
   ON_SubDVertexIterator vit = subd_.VertexIterator();
   for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
@@ -3088,6 +3151,7 @@ void BuildFaceBezierGrid(const ON_SubDFace* f, ON_3dPoint grid[4][4], bool& regu
 }  // namespace
 
 std::vector<SubDNurbsPatch> SubD::ToNurbsPatches() const {
+  const detail::OnGlobalStateGuard on_state_guard;
   std::vector<SubDNurbsPatch> patches;
   ON_SubDFaceIterator fit = subd_.FaceIterator();
   for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
@@ -3741,6 +3805,7 @@ AdaptiveResult EvaluateFaceAdaptive(ON_SubD& s, const ON_SubDFace* f, double u, 
 
 SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
                                     int max_adaptive_levels) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!(u >= 0.0 && u <= 1.0) || !(v >= 0.0 && v <= 1.0)) {
     throw std::invalid_argument("dino8::kernel::SubD::EvaluateFace: u and v must both be in [0, 1]");
   }
@@ -3873,6 +3938,7 @@ Mesh GridToFaceMesh(const std::vector<std::vector<ON_3dPoint>>& grid, int res) {
 }  // namespace
 
 Mesh SubD::Tessellate(double tolerance, int max_resolution) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!(tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::SubD::Tessellate: tolerance must be strictly positive");
   }
@@ -4086,6 +4152,7 @@ void ToNurbsPatchesAdaptiveRecurse(const ON_SubD& s, unsigned int face_id, int d
 }  // namespace
 
 std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesAdaptive(int max_adaptive_levels) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (max_adaptive_levels < 0) {
     throw std::invalid_argument(
         "dino8::kernel::SubD::ToNurbsPatchesAdaptive: max_adaptive_levels must be >= 0");
@@ -4161,6 +4228,7 @@ double PointSegmentDistance(const ON_3dPoint& p, const ON_3dPoint& a, const ON_3
 
 SubD SubD::InterpolateControlNet(double tolerance, int max_iterations,
                                  SubDInterpolationReport* report) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!(tolerance > 0.0) || !std::isfinite(tolerance)) {
     throw std::invalid_argument("dino8::kernel::SubD::InterpolateControlNet: tolerance must be positive and finite");
   }
@@ -4220,6 +4288,7 @@ SubD SubD::InterpolateControlNet(double tolerance, int max_iterations,
 }
 
 int SubD::SetCreasesByDihedral(double min_dihedral_deg) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!(min_dihedral_deg >= 0.0) || !(min_dihedral_deg < 180.0)) {
     throw std::invalid_argument("dino8::kernel::SubD::SetCreasesByDihedral: min_dihedral_deg must be in [0, 180)");
   }
@@ -4276,6 +4345,7 @@ int SubD::SetCreasesByDihedral(double min_dihedral_deg) {
 SubD SubD::BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this, int levels_other,
                                 double sharp_angle_deg, double quad_dihedral_deg, bool interpolate,
                                 SubDBooleanReport* report) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (levels_this < 0 || levels_other < 0 || levels_this > 6 || levels_other > 6) {
     throw std::invalid_argument("dino8::kernel::SubD::BooleanToSubDCreased: refinement levels must be in [0, 6]");
   }
@@ -4439,6 +4509,7 @@ SubD SubD::BooleanToSubDCreased(const SubD& other, BooleanOp op, int levels_this
 
 SubD SubD::SymmetrizeRadial(Point3d axis_point, Vector3d axis_dir, int count, double point_tolerance,
                             double weld_tolerance) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (count < 2 || count > 360) {
     throw std::invalid_argument("dino8::kernel::SubD::SymmetrizeRadial: count must be in [2, 360]");
   }
@@ -4843,6 +4914,7 @@ bool FitInteriorToLimit(const SubD& sd, const ON_SubDFace* f, ON_3dPoint grid[4]
 }  // namespace
 
 std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport* report, bool fit_interior) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   std::vector<const ON_SubDFace*> faces;
   {
     ON_SubDFaceIterator fit = subd_.FaceIterator();
@@ -4937,6 +5009,7 @@ std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesWatertight(SubDWatertightReport*
 }
 
 SubD SubD::TransformOriented(const ON_Xform& xform) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!xform.IsValid() || xform.Determinant() == 0.0) {
     throw std::invalid_argument("dino8::kernel::SubD::TransformOriented: xform must be valid and invertible");
   }
@@ -5043,6 +5116,7 @@ Mesh LimitPointMeshOf(const ON_SubD& s) {
 
 std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesToTolerance(double tolerance, SubDFitReport* report, int max_levels,
                                                             int face_budget, bool fit_interior) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (!std::isfinite(tolerance) || tolerance <= 0.0) {
     throw std::invalid_argument("dino8::kernel::SubD::ToNurbsPatchesToTolerance: tolerance must be finite and positive");
   }
