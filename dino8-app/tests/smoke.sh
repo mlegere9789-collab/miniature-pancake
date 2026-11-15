@@ -11,6 +11,9 @@ set -euo pipefail
 echo() { builtin echo "$@" 2>/dev/null || true; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="${1:-$HERE/../build/Dino8}"
+# Absolute: a section that runs the app from its own working directory (QC3A_ does, one directory per case) cannot find a relative
+# `dino8-app/build/Dino8[.exe]` ("timeout: failed to run command ... No such file or directory"; run_sections.sh does the same).
+if [ -e "$BIN" ]; then BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"; fi
 TMP="$(mktemp -d)"
 # The real, OS-native form of $TMP - needed wherever a path is embedded as
 # literal TEXT inside a script file the app itself parses (Save/Open/Export/
@@ -13949,7 +13952,13 @@ spe_num "$SPE_1" "Area" 599.9 600.1 "SPE_1: area stays exactly the box's 600"
 # 2: curved shared arc between the fillet cylinder and the top plane
 spe_has "$SPE_2" "kernel exact split: 2 trim(s) cut on their own faces' surfaces" "SPE_2: both trims of the curved cylinder/plane arc are cut by the kernel"
 spe_has "$SPE_2" ": valid" "SPE_2: the filleted box with a split arc is still a valid object"
-spe_num "$SPE_2" "Volume" 991.40 991.43 "SPE_2: volume stays 1000 - r^2 (1 - pi/4) h = 991.4159"
+# Volume is the volume of the closed display mesh at chord tolerance 0.005 (cmd_analyze.cpp: MeshOf(o, 0.005)), printed to 4 significant digits. The
+# quarter cylinder of the r = 2 fillet (length 10) is meshed with n chords of angle phi = pi / (2 n) each; the mesh is inscribed, so it reads LOW by
+# n h (r^2 / 2) (phi - sin phi). Chord tolerance 0.005 needs sagitta r (1 - cos(phi / 2)) <= 0.005, i.e. n >= 12 (n = 11 has sagitta 0.0051), and
+# then the volume is >= 1000 - r^2 (1 - pi/4) h - 0.0898 = 991.326, which prints as 991.3. The old lower bound 991.40 held only for a mesh of
+# n >= 14 chords (what Linux produces); Windows meshes the same fillet with the minimum n = 12 and read 991.3. The lower bound below is that minimum
+# mesh less half a unit of the 4th printed digit: 991.326 - 0.05 = 991.27. The upper bound (a mesh cannot exceed the exact volume) is unchanged.
+spe_num "$SPE_2" "Volume" 991.27 991.43 "SPE_2: volume stays 1000 - r^2 (1 - pi/4) h = 991.4159"
 spe_num "$SPE_2" "Area" 589.65 589.75 "SPE_2: area stays 600 - 40 + pi/2 r h - 2 r^2 (1 - pi/4) = 589.6991"
 SPE_2V="$({ grep -o "new vertex [-0-9.e+]*,[-0-9.e+]*,[-0-9.e+]*" <<<"$SPE_2" || true; } | head -1 | sed 's/new vertex //')"
 if [ -n "$SPE_2V" ] && awk -v v="$SPE_2V" 'BEGIN { split(v, a, ","); dx = a[1] - 8; dy = a[2] - 8; r = sqrt(dx * dx + dy * dy); th = atan2(dy, dx) * 180 / 3.14159265358979;
@@ -13965,7 +13974,7 @@ spe_has "$SPE_3" ": valid" "SPE_3: the open box is still a valid object"
 SPE_4N="$(grep -c "kernel exact split: 2 trim(s)" <<<"$SPE_4" || true)"
 if [ "$SPE_4N" = "2" ]; then spe_ok "SPE_4: both cuts of the fillet arc (the second on a half the first left) went through the kernel"; else spe_bad "SPE_4: expected 2 kernel splits, got $SPE_4N"; fi
 spe_has "$SPE_4" ": valid" "SPE_4: still valid after two cuts"
-spe_num "$SPE_4" "Volume" 991.40 991.43 "SPE_4: volume still 991.4159 after two cuts"
+spe_num "$SPE_4" "Volume" 991.27 991.43 "SPE_4: volume still 991.4159 after two cuts"
 # 5: closed rim refused
 spe_has "$SPE_5" "is closed (both ends are one vertex); a closed edge is not split - nothing changed" "SPE_5: a closed rim is refused with the reason"
 spe_hasnot "$SPE_5" "kernel exact split" "SPE_5: ...and nothing was split"

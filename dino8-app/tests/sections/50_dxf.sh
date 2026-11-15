@@ -124,7 +124,8 @@ for u, code in m['codes'].items():
 res, marker = {}, None
 for l in out:
     mm = re.search(r'Command: (Import|Insert) (\S.*)$', l)
-    if mm: marker = mm.group(2).strip(); continue
+    # python on Windows joins the path with a backslash (os.path.join), the markers below end in '/name.dxf': compare in one form
+    if mm: marker = mm.group(2).strip().replace('\\', '/'); continue
     mt = re.search(r'Total length = (\S+) (\S+)\s*$', l)
     if mt and marker is not None: res[marker] = (float(mt.group(1)), mt.group(2)); marker = None
 for e in m['expect']:
