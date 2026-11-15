@@ -9,6 +9,7 @@ next to each check. Prints "ok   ..." / "FAIL ..." lines, exit status 1 when any
   dd_check.py dimchain FILE KIND     DIMCONTINUE / DIMBASELINE   (KIND = continue | baseline)
   dd_check.py dimspace F1 F2 F3 H    DIMSPACE    exports after Spacing=10, Spacing=Auto (H = the text height) and Spacing=0
   dd_check.py dimdis FILE            DIMDISASSOCIATE
+  dd_check.py hatchback FILE         HATCHTOBACK the app output of dd_hatchback_script.txt (two GetUserText dumps, before and after the command)
   dd_check.py usertext FILE          prints "id key value" rows of a GetUserText listing read from FILE (helper for the shell)
 """
 import math
@@ -227,6 +228,38 @@ def dimdis(path):
     check(len(b) == 1 and near(b[0][1][1], 20) and near(b[0][2][0], 10) and near(b[0][2][1], 20), "DDDA_free: the disassociated dimension kept (0,20)-(10,20): %s" % b)
 
 
+def user_text_dumps(path):
+    """[(before, after)]: {id: {key: value}} of the GetUserText lines printed before / after the line 'Command: HatchToBack'."""
+    before, after, cur = {}, {}, None
+    cur = before
+    for line in open(path, encoding='latin-1'):
+        line = line.rstrip('\n')
+        if re.match(r'^(history: )?Command: HatchToBack', line):
+            cur = after
+            continue
+        m = re.match(r'^(?:history: )?(\d+): (\S+) = (.*)$', line)
+        if m:
+            cur.setdefault(m.group(1), {})[m.group(2)] = m.group(3)
+    return before, after
+
+
+def hatchback(path):
+    # Two solid hatches (Hatch=Solid), their two boundary rectangles, a circle sent to the back before (DrawOrder -1) and a line (no DrawOrder).
+    # HatchToBack must give the hatches a draw order below every other object: the lowest other draw order is -1 (circle) -> hatches get -2; the others keep theirs.
+    before, after = user_text_dumps(path)
+    hat = [i for i, t in after.items() if t.get('Hatch') == 'Solid']
+    circ = [i for i, t in after.items() if t.get('Role') == 'Circle']
+    line = [i for i, t in after.items() if t.get('Role') == 'Line']
+    check(len(hat) == 2 and len(circ) == 1 and len(line) == 1, "DDHB_objects: 2 hatch objects, 1 circle, 1 line listed: %d %d %d" % (len(hat), len(circ), len(line)))
+    check(all('DrawOrder' not in before.get(i, {}) for i in hat), "DDHB_before: the hatches had no draw order before the command")
+    check(before.get(circ[0], {}).get('DrawOrder') == '-1' if circ else False, "DDHB_before: the circle was sent to the back: draw order -1")
+    check(all(after[i].get('DrawOrder') == '-2' for i in hat), "DDHB_after: both hatches have draw order -2, behind the circle at -1: %s" % [after[i].get('DrawOrder') for i in hat])
+    check(circ and after[circ[0]].get('DrawOrder') == '-1', "DDHB_after: the circle keeps -1")
+    check(line and 'DrawOrder' not in after[line[0]], "DDHB_after: the line still has no draw order")
+    others = [i for i in after if i not in hat]
+    check(all('DrawOrder' not in after[i] or after[i]['DrawOrder'] == '-1' for i in others), "DDHB_after: no other object was given a draw order")
+
+
 def usertext(path):
     for line in open(path, encoding='latin-1'):
         m = re.match(r'^(?:history: )?(\d+): (\S+) = (.*)$', line.rstrip('\n'))
@@ -248,6 +281,8 @@ if __name__ == '__main__':
         dimspace(args[0], args[1], args[2], float(args[3]))
     elif mode == 'dimdis':
         dimdis(args[0])
+    elif mode == 'hatchback':
+        hatchback(args[0])
     elif mode == 'usertext':
         usertext(args[0])
     else:
