@@ -6671,6 +6671,22 @@ Brep MakeHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d 
 
 namespace {
 
+// A counterbore cut's raw Boolean result keeps the top face's hole as a keyhole (the hole bridged into the face outline by a thin
+// corridor) whenever the cut chain is clean enough to bridge, and a keyholed result is not ON_Brep::IsSolid() until its corridor
+// edges are sewn and the keyholes opened again. The sealing pass does exactly that; if it refuses, the raw result is returned
+// unchanged, as before.
+Brep SealedIfPossible(Brep raw) {
+  if (raw.raw().m_F.Count() == 0) return raw;
+  try {
+    SealedGeneralBoolean sealed = SealGeneralBooleanResult(raw, BooleanOp::Difference, std::numeric_limits<double>::quiet_NaN(),
+                                                          std::numeric_limits<double>::quiet_NaN());
+    sealed.brep.SetGeneralBooleanSolid(true);
+    return sealed.brep;
+  } catch (const std::exception&) {
+    return raw;
+  }
+}
+
 // The compound stepped-profile Brep::Revolve() tool MakeCounterboreHole()
 // itself builds, factored out so MakeCounterboreHoles() below can build one
 // per center and fold them into a single compound tool. `dir` must already
@@ -6737,7 +6753,7 @@ Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   const double diagonal = (bbox.max - bbox.min).Length();
   const Brep tool = BuildCounterboreTool(center, dir, bore_radius, bore_depth, bore_through, counterbore_radius,
                                           counterbore_depth, diagonal);
-  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+  return SealedIfPossible(BooleanCombineGeneral(solid, tool, BooleanOp::Difference));
 }
 
 Brep MakeCounterboreHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double bore_radius,
@@ -6765,7 +6781,7 @@ Brep MakeCounterboreHoles(const Brep& solid, const std::vector<Point3d>& centers
   // above uses, for the identical "avoid drilling into an already-holed
   // target a second time" reason - see that function's own doc comment.
   const Brep folded_tool = BooleanCombineGeneralNAry(tools, {}, BooleanOp::Union, tolerance);
-  return BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance);
+  return SealedIfPossible(BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance));
 }
 
 namespace {
