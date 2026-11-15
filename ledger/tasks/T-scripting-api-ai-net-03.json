@@ -1,0 +1,134 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-net-03",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 38,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 37
+  },
+  "deps": [],
+  "domains": [
+    "net"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Notifications",
+        "rows": 1,
+        "score": 0.616,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-net-03",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/net.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-NET-0108": {
+      "commands": [
+        "Notifications"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-NET-0077",
+    "D8-AUTOCAD-NET-0078",
+    "D8-AUTOCAD-NET-0079",
+    "D8-AUTOCAD-NET-0080",
+    "D8-AUTOCAD-NET-0081",
+    "D8-AUTOCAD-NET-0082",
+    "D8-AUTOCAD-NET-0083",
+    "D8-AUTOCAD-NET-0084",
+    "D8-AUTOCAD-NET-0085",
+    "D8-AUTOCAD-NET-0086",
+    "D8-AUTOCAD-NET-0087",
+    "D8-AUTOCAD-NET-0088",
+    "D8-AUTOCAD-NET-0089",
+    "D8-AUTOCAD-NET-0090",
+    "D8-AUTOCAD-NET-0091",
+    "D8-AUTOCAD-NET-0092",
+    "D8-AUTOCAD-NET-0093",
+    "D8-AUTOCAD-NET-0094",
+    "D8-AUTOCAD-NET-0095",
+    "D8-AUTOCAD-NET-0096",
+    "D8-AUTOCAD-NET-0097",
+    "D8-AUTOCAD-NET-0098",
+    "D8-AUTOCAD-NET-0099",
+    "D8-AUTOCAD-NET-0100",
+    "D8-AUTOCAD-NET-0101",
+    "D8-AUTOCAD-NET-0102",
+    "D8-AUTOCAD-NET-0103",
+    "D8-AUTOCAD-NET-0104",
+    "D8-AUTOCAD-NET-0105",
+    "D8-AUTOCAD-NET-0106",
+    "D8-AUTOCAD-NET-0107",
+    "D8-AUTOCAD-NET-0108",
+    "D8-AUTOCAD-NET-0109",
+    "D8-AUTOCAD-NET-0110",
+    "D8-AUTOCAD-NET-0111",
+    "D8-AUTOCAD-NET-0112",
+    "D8-AUTOCAD-NET-0113",
+    "D8-AUTOCAD-NET-0114"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-NET-0077",
+    "D8-AUTOCAD-NET-0078",
+    "D8-AUTOCAD-NET-0079",
+    "D8-AUTOCAD-NET-0080",
+    "D8-AUTOCAD-NET-0081",
+    "D8-AUTOCAD-NET-0082",
+    "D8-AUTOCAD-NET-0083",
+    "D8-AUTOCAD-NET-0084",
+    "D8-AUTOCAD-NET-0085",
+    "D8-AUTOCAD-NET-0086",
+    "D8-AUTOCAD-NET-0087",
+    "D8-AUTOCAD-NET-0088",
+    "D8-AUTOCAD-NET-0089",
+    "D8-AUTOCAD-NET-0090",
+    "D8-AUTOCAD-NET-0091",
+    "D8-AUTOCAD-NET-0092",
+    "D8-AUTOCAD-NET-0093",
+    "D8-AUTOCAD-NET-0094",
+    "D8-AUTOCAD-NET-0095",
+    "D8-AUTOCAD-NET-0096",
+    "D8-AUTOCAD-NET-0097",
+    "D8-AUTOCAD-NET-0098",
+    "D8-AUTOCAD-NET-0099",
+    "D8-AUTOCAD-NET-0100",
+    "D8-AUTOCAD-NET-0101",
+    "D8-AUTOCAD-NET-0102",
+    "D8-AUTOCAD-NET-0103",
+    "D8-AUTOCAD-NET-0104",
+    "D8-AUTOCAD-NET-0105",
+    "D8-AUTOCAD-NET-0106",
+    "D8-AUTOCAD-NET-0107",
+    "D8-AUTOCAD-NET-0109",
+    "D8-AUTOCAD-NET-0110",
+    "D8-AUTOCAD-NET-0111",
+    "D8-AUTOCAD-NET-0112",
+    "D8-AUTOCAD-NET-0113",
+    "D8-AUTOCAD-NET-0114"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: net (38 rows)",
+  "wave": 3
+}

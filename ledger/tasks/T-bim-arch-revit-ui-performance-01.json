@@ -1,0 +1,123 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-bim-arch-revit-ui-performance-01",
+  "corpora": [
+    "golden/revit/ui-perf-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 8,
+    "countable": 28,
+    "rows": 28,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 27
+  },
+  "deps": [],
+  "domains": [
+    "revit.ui-performance"
+  ],
+  "factory": "bim-arch",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "PropertiesPage",
+        "rows": 1,
+        "score": 0.647,
+        "status": "implemented"
+      },
+      {
+        "name": "Properties",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-bim-arch-revit-ui-performance-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.ui-performance.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-UI-0006": {
+      "commands": [
+        "PropertiesPage",
+        "Properties"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-UI-0001",
+    "D8-REVIT-UI-0002",
+    "D8-REVIT-UI-0003",
+    "D8-REVIT-UI-0004",
+    "D8-REVIT-UI-0005",
+    "D8-REVIT-UI-0006",
+    "D8-REVIT-UI-0007",
+    "D8-REVIT-UI-0008",
+    "D8-REVIT-UI-0009",
+    "D8-REVIT-UI-0010",
+    "D8-REVIT-UI-0011",
+    "D8-REVIT-UI-0012",
+    "D8-REVIT-UI-0013",
+    "D8-REVIT-UI-0014",
+    "D8-REVIT-UI-0015",
+    "D8-REVIT-UI-0016",
+    "D8-REVIT-UI-0017",
+    "D8-REVIT-UI-0018",
+    "D8-REVIT-UI-0019",
+    "D8-REVIT-UI-0020",
+    "D8-REVIT-UI-0021",
+    "D8-REVIT-UI-0022",
+    "D8-REVIT-UI-0023",
+    "D8-REVIT-UI-0024",
+    "D8-REVIT-UI-0025",
+    "D8-REVIT-UI-0026",
+    "D8-REVIT-UI-0027",
+    "D8-REVIT-UI-0028"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-UI-0001",
+    "D8-REVIT-UI-0002",
+    "D8-REVIT-UI-0003",
+    "D8-REVIT-UI-0004",
+    "D8-REVIT-UI-0005",
+    "D8-REVIT-UI-0007",
+    "D8-REVIT-UI-0008",
+    "D8-REVIT-UI-0009",
+    "D8-REVIT-UI-0010",
+    "D8-REVIT-UI-0011",
+    "D8-REVIT-UI-0012",
+    "D8-REVIT-UI-0013",
+    "D8-REVIT-UI-0014",
+    "D8-REVIT-UI-0015",
+    "D8-REVIT-UI-0016",
+    "D8-REVIT-UI-0017",
+    "D8-REVIT-UI-0018",
+    "D8-REVIT-UI-0019",
+    "D8-REVIT-UI-0020",
+    "D8-REVIT-UI-0021",
+    "D8-REVIT-UI-0022",
+    "D8-REVIT-UI-0023",
+    "D8-REVIT-UI-0024",
+    "D8-REVIT-UI-0025",
+    "D8-REVIT-UI-0026",
+    "D8-REVIT-UI-0027",
+    "D8-REVIT-UI-0028"
+  ],
+  "status": "open",
+  "title": "bim-arch: revit.ui-performance (28 rows)",
+  "wave": 2
+}
