@@ -9,6 +9,7 @@ void RegisterVectorNodes();
 void RegisterCurveNodes();
 void RegisterSurfaceNodes();
 void RegisterSolverNodes();
+void RegisterRowNodes();
 
 namespace {
 
@@ -62,6 +63,7 @@ void RegisterBuiltinNodes() {
   RegisterCurveNodes();
   RegisterSurfaceNodes();
   RegisterSolverNodes();
+  RegisterRowNodes();
   AddDisplay();
   AddOutput();
 }

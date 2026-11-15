@@ -1,0 +1,8 @@
+{"format":"dflow1","nodes":[
+{"id":1,"type":"Fibonacci","x":150,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":true,"value":{"kind":"Integer","num":10}}]},
+{"id":2,"type":"Construct Point","x":300,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":false,"value":{"kind":"Null"}},{"has":true,"value":{"kind":"Number","num":1.0}},{"has":true,"value":{"kind":"Number","num":0.0}}]},
+{"id":3,"type":"Bake","x":450,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[]}
+],"wires":[
+{"from":1,"fp":0,"to":2,"tp":0},
+{"from":2,"fp":0,"to":3,"tp":0}
+]}
