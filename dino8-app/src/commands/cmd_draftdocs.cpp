@@ -772,11 +772,14 @@ class DimArcCommand : public Command {
 // ---------------------------------------------------------------------------
 
 void DoDimDisassociate(CommandContext& ctx, const std::vector<ObjectId>& ids) {
-  int stripped = 0, already = 0, skipped = 0;
+  int converted = 0, already = 0, locked = 0, other = 0;
   ctx.Doc().BeginChange("DimDisassociate");
   for (int g : AnnotationGroupsOf(ctx, ids)) {
     const std::string kind = GroupAnnotationKind(ctx.Doc(), g);
-    if (kind.compare(0, 3, "Dim") != 0) { ++skipped; continue; }
+    if (kind.compare(0, 3, "Dim") != 0) { ++other; continue; }
+    bool any_locked = false;
+    for (const SceneObject& o : ctx.Doc().Objects()) if (o.group_id == g && ctx.Doc().IsObjectLocked(o)) any_locked = true;
+    if (any_locked) { ++locked; continue; }  // only dimensions on unlocked layers (and objects) are processed
     bool had = false;
     for (SceneObject& o : ctx.Doc().Objects()) {
       if (o.group_id != g) continue;
@@ -784,11 +787,11 @@ void DoDimDisassociate(CommandContext& ctx, const std::vector<ObjectId>& ids) {
         if (o.user_text.erase(k)) had = true;
       }
     }
-    if (had) ++stripped; else ++already;
+    if (had) ++converted; else ++already;
   }
   ctx.Doc().Touch();
-  ctx.Print("DimDisassociate: " + std::to_string(stripped) + " dimension(s) disassociated, " + std::to_string(already) + " already not associative" +
-            (skipped ? ", " + std::to_string(skipped) + " non-dimension annotation(s) ignored" : ""));
+  ctx.Print("DimDisassociate: " + std::to_string(converted) + " dimension(s) disassociated, " + std::to_string(already + locked + other) + " skipped (" +
+            std::to_string(already) + " not associative, " + std::to_string(locked) + " locked, " + std::to_string(other) + " not dimensions)");
 }
 
 }  // namespace
@@ -813,7 +816,7 @@ void RegisterDraftDocsCommands(CommandEngine& e) {
   Reg(e, "DimArc", Make<DimArcCommand>(), CommandStatus::Implemented,
       "AutoCAD's DIMARC: arc-length dimension of a selected arc, with a dimension arc through the picked location, radial extension lines, arrowheads and an arc symbol above the text. Partial=Yes measures only between two picked points on the arc. Polyline arc segments are not selectable here (only arc curves).");
   Reg(e, "DimDisassociate", OnSelection("Select dimensions to disassociate", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { DoDimDisassociate(ctx, ids); }), CommandStatus::Implemented,
-      "AutoCAD's DIMDISASSOCIATE: removes the object anchors from the selected dimensions; they keep their current geometry and no longer follow the objects they measured (UpdateDimensions then rebuilds them from their own recorded points).");
+      "AutoCAD's DIMDISASSOCIATE: removes the object anchors from the selected dimensions; they keep their current geometry and no longer follow the objects they measured (UpdateDimensions then rebuilds them from their own recorded points). Dimensions that are not associative, are locked, or are not dimensions are skipped and counted in the report.");
 }
 
 }  // namespace dino8::app
