@@ -682,7 +682,6 @@ namespace dino8::kernel {
 
 namespace {
 
-bool TfOff(const char* what) { const char* e = std::getenv("DINO8_TF_OFF"); return e && std::strstr(e, what); }
 
 constexpr double kWeldTol = 1e-6;
 
@@ -1975,7 +1974,7 @@ bool CurvesAreTangentContactNoise(const std::vector<IntersectionCurve>& curves, 
                                   const ON_Surface& b, const IntersectOptions& opt) {
   // A curve along which one surface passes to the far side of the other is a real (if shallow) crossing, never debris: a penetration of
   // 1e-3 against the 0.02 mesh tolerance is exactly such a crossing and has to fragment the faces.
-  if (!TfOff("noise")) for (const IntersectionCurve& c : curves) {
+  for (const IntersectionCurve& c : curves) {
     if (c.points.size() < 3 || c.uv_a.size() != c.points.size() || c.uv_b.size() != c.points.size()) continue;
     for (size_t k : {c.points.size() / 2, c.points.size() / 4, (3 * c.points.size()) / 4}) {
       if (SurfacesCrossAtPoint(a, b, c.uv_a[k], c.uv_b[k], opt.tolerance)) return false;
@@ -3874,7 +3873,7 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
         }
       } else {
         std::vector<Chain> seam_pieces;
-        if (!TfOff("seamcut") && face_surface && SplitOpenChainAtSeams(c, *face_surface, seam_pieces)) {
+        if (face_surface && SplitOpenChainAtSeams(c, *face_surface, seam_pieces)) {
           if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: open chain n=%zu crosses a seam in its interior: cut into %zu pieces\n", i, c.size(), seam_pieces.size());
           for (Chain& pc : seam_pieces) open_chains.push_back(std::move(pc));
         } else {
@@ -3933,7 +3932,7 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
     ff.face_index = i;
     ff.surface = brep.m_F[i].SurfaceOf()->DuplicateSurface();
     ff.base_rev = brep.m_F[i].m_bRev;
-    if (!TfOff("insert")) InsertChainEndsIntoLoop(boundary, open_chains);
+    InsertChainEndsIntoLoop(boundary, open_chains);
     ff.frags = SplitFaceLoop(boundary, closed_chains, open_chains);
     if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
       for (size_t fi = 0; fi < ff.frags.size(); ++fi) {

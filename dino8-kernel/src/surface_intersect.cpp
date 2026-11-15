@@ -8,15 +8,11 @@
 #include <map>
 #include <numeric>
 #include <set>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 
 namespace dino8::kernel {
 
 namespace {
 
-bool TfOff(const char* what) { const char* e = std::getenv("DINO8_TF_OFF"); return e && std::strstr(e, what); }
 
 constexpr double kPi = 3.14159265358979323846;
 
@@ -432,7 +428,7 @@ bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double&
     return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
   };
   const bool ok = NewtonSolve(res, x, lo, hi, tol, max_iter);
-  if (ok && !TfOff("polishssx")) {
+  if (ok) {
     // `tol` is the caller's acceptance tolerance (the Boolean pipeline passes 1e-3), and NewtonSolve() returns the moment the residual
     // is inside it: a seed that sits on a facet of the other surface's seed mesh, up to a chord sagitta (measured 5.6e-4 .. 6.9e-4 for
     // the top rim of a hole cut by a cylinder tool) off the true curve, came back UNTOUCHED, so the chain point lay on one surface and
@@ -938,7 +934,7 @@ bool LoopContainsRefined(const ON_Brep& b, int li, const ON_2dPoint& p) {
   if (!curved) return in;
   double diag = 0;
   const double d = PolygonEdgeDistance(poly, p, diag);
-  if (d > 0.05 * diag || TfOff("dense")) return in;
+  if (d > 0.05 * diag) return in;
   // A point within a few sagittae of even the dense polygon (a curve 1e-6 inside a rim: coaxial cylinders whose radii differ by 1e-6) is
   // not decidable on any polygon of reasonable size, so it keeps the coarse answer, exactly as before.
   const std::vector<ON_2dPoint> dense = LoopPolygon(b, li, 1536);
@@ -2261,17 +2257,12 @@ size_t MarchChainEnd(IntersectionCurve& ic, const ON_Surface& a, const ON_Surfac
       stepped = true;
       break;
     }
-    if (std::getenv("DINO8_MARCH_DEBUG")) std::fprintf(stderr, "march iter %d stepped=%d bnd=%d h=%g p=(%g %g %g) added=%zu sn=%g\n", iter, (int)stepped, (int)hit_boundary, h, p.x, p.y, p.z, added, sn);
     if (!stepped || hit_boundary) break;
     if (path > 3 * h && p.DistanceTo(start) < 1.5 * h && (start - p) * dir > 0) { closed = true; break; }
     h = std::min(h * 1.6, hmax);
   }
   return added;
 }
-
-}  // namespace
-bool SurfacesCrossAtPoint(const ON_Surface& a, const ON_Surface& b, const ON_2dPoint& uv_a, const ON_2dPoint& uv_b, double step);
-namespace {
 
 // Surfaces that overlap by less than the seed meshes' sagitta (two spheres 1e-3 into each other against a chord tolerance of 0.02) have
 // meshes that never cross, so no seed chain exists at all although the crossing curve (a small closed loop) does. Where the crossing
@@ -2481,7 +2472,7 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
                            pa.zaxis.IsParallelTo(pb.zaxis, 1e-6) != 0 &&
                            std::fabs(pa.DistanceTo(pb.origin)) <= opt.tolerance;
     if (coplanar) return CoincidentOverlapBoundaryCurves(a, b, opt);
-    if (!TfOff("seeds")) PenetrationSeedCurves(a, b, ma, mb, opt, diag, out);
+    PenetrationSeedCurves(a, b, ma, mb, opt, diag, out);
     if (out.empty()) return out;
   }
   std::vector<SeedPolyline> chains = ChainSegments(segs, std::max(eps * 100, 1e-7 * diag));
@@ -2503,7 +2494,7 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
     if (ic.closed && ic.points.size() < 3) ic.closed = false;
     out.push_back(std::move(ic));
   }
-  if (!TfOff("march")) ExtendInteriorChainEnds(out, a, b, opt, diag);
+  ExtendInteriorChainEnds(out, a, b, opt, diag);
   SplitAtSeams(out, a, b, opt);
   SplitAtPoles(out, a, b, opt);
   std::vector<IntersectionCurve> finished;
@@ -3211,7 +3202,7 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     });
   };
   for (int i = 0; i < n; ++i) try_segment(samples[static_cast<size_t>(i)], samples[static_cast<size_t>(i) + 1], d.ParameterAt(static_cast<double>(i) / n), d.ParameterAt(static_cast<double>(i + 1) / n));
-  if (!TfOff("runin")) {
+  {
     const double run = opt.mesh_tolerance * 1.5;
     const Vector3d t_start = c.TangentAt(d.Min()), t_end = c.TangentAt(d.Max());
     if (t_start.IsValid() && t_start.Length() > 0.5) try_segment(samples[0] - t_start * run, samples[0], d.Min(), d.Min());
@@ -3230,7 +3221,7 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     // came back up to a chord sagitta off the true crossing: its ray parameter was wrong by far more than the 1e-6 a caller compares
     // it with (a ray started 3e-4 inside a cylinder wall reported its exit as "behind the origin", so the point classified Out).
     // Keep iterating to the floating-point floor; a step is only taken if it lowers the residual.
-    if (!TfOff("polishray")) {
+    {
       const double scale = std::max({1.0, s.PointAt(x[1], x[2]).DistanceTo(Point3d::Origin)});
       NewtonSolve(res, x, lo, hi, 1e-11 * scale, 8, &err);
     }
