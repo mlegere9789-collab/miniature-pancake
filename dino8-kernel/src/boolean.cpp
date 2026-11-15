@@ -771,23 +771,113 @@ std::vector<Point3d> ClipByAllHalfspaces(const std::vector<Point3d>& poly, const
 // one side of every plane of `other` - see ClassifyPointVsSolid's own
 // comment for why that's exactly what makes single-point classification
 // of each survivor valid, even when `loop` (or `other`) is non-convex.
+//
+// Performance (planar boolean gate, Appendix B): a face of one operand can
+// be cut into thousands of fragments by the other operand's planes, and
+// the plain worklist above then spends nearly all its time running
+// SplitByHalfspace + two CleanPolygon calls (four heap allocations) on
+// fragments the plane does not touch at all. Every worklist entry here
+// therefore carries a bounding sphere, and a plane that provably misses
+// the sphere (with a rounding margin, so the answer can never differ from
+// the per-vertex test) leaves the fragment untouched: exactly the polygon
+// the full path would return, because CleanPolygon is idempotent (each
+// kept vertex is more than `tol` from its predecessor, and the closing
+// pair was reduced the same way), so a fragment that has been cleaned once
+// is never cleaned again. Anything the sphere cannot decide takes the
+// original SplitByHalfspace/CleanPolygon path unchanged. The output (the
+// polygons, their vertex order and their order in the list) is identical
+// to the plain worklist's.
+struct SplitPiece {
+  std::vector<Point3d> pts;
+  Point3d center;
+  double radius = 0.0;
+  bool clean = false;  // pts is already a CleanPolygon() output
+};
+
+void SetPieceSphere(SplitPiece& piece) {
+  double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+  for (const Point3d& p : piece.pts) {
+    lo[0] = std::min(lo[0], p.x); hi[0] = std::max(hi[0], p.x);
+    lo[1] = std::min(lo[1], p.y); hi[1] = std::max(hi[1], p.y);
+    lo[2] = std::min(lo[2], p.z); hi[2] = std::max(hi[2], p.z);
+  }
+  piece.center = Point3d(0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]));
+  double r2 = 0.0;
+  for (const Point3d& p : piece.pts) {
+    const double dx = p.x - piece.center.x, dy = p.y - piece.center.y, dz = p.z - piece.center.z;
+    r2 = std::max(r2, dx * dx + dy * dy + dz * dz);
+  }
+  piece.radius = std::sqrt(r2);
+}
+
 std::vector<std::vector<Point3d>> SplitAgainstAllPlanes(std::vector<Point3d> loop,
                                                          const std::vector<Brep::PlanarFace>& other, double tol) {
-  std::vector<std::vector<Point3d>> worklist;
-  worklist.push_back(std::move(loop));
+  if (other.empty()) return {std::move(loop)};
+  if (loop.size() < 3) return {};  // SplitByHalfspace of fewer than 3 vertices yields nothing
+  double scale = 1.0;
+  for (const Point3d& p : loop) scale = std::max({scale, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+
+  std::vector<SplitPiece> worklist(1);
+  worklist[0].pts = std::move(loop);
+  worklist[0].clean = false;
+  SetPieceSphere(worklist[0]);
   for (const Brep::PlanarFace& f : other) {
-    std::vector<std::vector<Point3d>> next;
-    next.reserve(worklist.size() * 2);
-    for (const std::vector<Point3d>& poly : worklist) {
-      const HalfspaceSplit split = SplitByHalfspace(poly, f.plane, tol);
+    const ON_Plane& pl = f.plane;
+    const ON_PlaneEquation& eq = pl.plane_equation;
+    const double normal_len = std::sqrt(eq.x * eq.x + eq.y * eq.y + eq.z * eq.z);
+    const double margin = 1e-9 * (1.0 + scale + std::fabs(eq.d)) * std::max(1.0, normal_len);
+    std::vector<SplitPiece> next;
+    bool rebuilt = false;  // `next` is only started once a fragment actually changes
+    auto start_rebuild = [&](size_t upto) {
+      next.reserve(worklist.size() + 8);
+      for (size_t k = 0; k < upto; ++k) next.push_back(std::move(worklist[k]));
+      rebuilt = true;
+    };
+    for (size_t i = 0; i < worklist.size(); ++i) {
+      SplitPiece& piece = worklist[i];
+      const double dc = pl.DistanceTo(piece.center);
+      const double bound = normal_len * piece.radius + margin;
+      const bool all_in = dc + bound <= tol;
+      const bool all_out = dc - bound > tol;
+      if (all_in || all_out) {
+        if (piece.clean) {
+          if (rebuilt) next.push_back(std::move(piece));
+          continue;
+        }
+        std::vector<Point3d> cleaned = CleanPolygon(piece.pts, tol);
+        if (!rebuilt) start_rebuild(i);
+        if (cleaned.size() >= 3) {
+          piece.pts = std::move(cleaned);
+          piece.clean = true;
+          next.push_back(std::move(piece));
+        }
+        continue;
+      }
+      if (!rebuilt) start_rebuild(i);
+      const HalfspaceSplit split = SplitByHalfspace(piece.pts, pl, tol);
       std::vector<Point3d> inside = CleanPolygon(split.inside, tol);
       std::vector<Point3d> outside = CleanPolygon(split.outside, tol);
-      if (inside.size() >= 3) next.push_back(std::move(inside));
-      if (outside.size() >= 3) next.push_back(std::move(outside));
+      if (inside.size() >= 3) {
+        SplitPiece c;
+        c.pts = std::move(inside);
+        c.clean = true;
+        SetPieceSphere(c);
+        next.push_back(std::move(c));
+      }
+      if (outside.size() >= 3) {
+        SplitPiece c;
+        c.pts = std::move(outside);
+        c.clean = true;
+        SetPieceSphere(c);
+        next.push_back(std::move(c));
+      }
     }
-    worklist = std::move(next);
+    if (rebuilt) worklist = std::move(next);
   }
-  return worklist;
+  std::vector<std::vector<Point3d>> result;
+  result.reserve(worklist.size());
+  for (SplitPiece& p : worklist) result.push_back(std::move(p.pts));
+  return result;
 }
 
 // Projects a 3D point already known to lie in `plane` onto the plane's
@@ -903,58 +993,94 @@ std::vector<Vector3d> GenericRayDirections() {
 // direction without a clean pass - only possible on adversarial input,
 // since the directions are generic and non-parallel to any real input
 // plane - falls back to the sign of the distance to the nearest face.
-PointClass ClassifyPointVsSolid(const Point3d& p, const std::vector<Brep::PlanarFace>& faces, double tol) {
-  for (const Brep::PlanarFace& f : faces) {
-    if (std::fabs(f.plane.DistanceTo(p)) <= tol) {
-      const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.plane, f.loop);
-      const Point2d p2d = ProjectOntoPlaneAxes(f.plane, p);
-      if (PointInPolygon2D(p2d.x, p2d.y, loop2d)) return PointClass::kOn;
-    }
-  }
-
-  for (const Vector3d& d : GenericRayDirections()) {
-    bool clean = true;
-    int crossings = 0;
+//
+// Performance: the same classification, run through a SolidClassifier that
+// is built once per `faces` list instead of once per query point. It keeps
+// each face's loop projected into the face's own 2D frame (the plain form
+// re-projected every loop for every ray hit: a heap allocation per face
+// per fragment) and a 2D bounding box per loop; a ray hit outside that box
+// grown by 2 * tol can neither graze the loop (distance to its boundary
+// would exceed tol) nor lie inside it, so the exact edge-distance and
+// parity tests are only run for hits near the face. Every value that
+// decides a classification (denominators, hit parameters, edge distances,
+// parity) is computed by the same expressions as before, in the same
+// order, so the result for every point is identical.
+class SolidClassifier {
+ public:
+  SolidClassifier(const std::vector<Brep::PlanarFace>& faces, double tol) : faces_(faces), tol_(tol), dirs_(GenericRayDirections()) {
+    loops2d_.reserve(faces.size());
+    boxes_.reserve(faces.size());
     for (const Brep::PlanarFace& f : faces) {
-      const double denom = f.plane.zaxis * d;
-      if (std::fabs(denom) < 1e-9) {
-        // The ray runs parallel to this face's own plane. If p is also IN
-        // that plane, the ray can't cross this face cleanly at all -
-        // abandon this direction rather than guess. Otherwise the ray
-        // simply never meets this face's (infinite) plane - not a
-        // degenerate case, just skip it.
-        if (std::fabs(f.plane.DistanceTo(p)) <= tol) { clean = false; break; }
-        continue;
+      loops2d_.push_back(ProjectLoopOntoPlaneAxes(f.plane, f.loop));
+      double box[4] = {1e300, -1e300, 1e300, -1e300};
+      for (const Point2d& q : loops2d_.back()) {
+        box[0] = std::min(box[0], q.x); box[1] = std::max(box[1], q.x);
+        box[2] = std::min(box[2], q.y); box[3] = std::max(box[3], q.y);
       }
-      const double t = ((f.plane.origin - p) * f.plane.zaxis) / denom;
-      if (t <= tol) continue;  // behind (or at) the ray's own origin
-      const Point3d hit = p + t * d;
-      const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.plane, f.loop);
-      const Point2d hit2d = ProjectOntoPlaneAxes(f.plane, hit);
-      if (DistanceToPolygonBoundary2D(hit2d.x, hit2d.y, loop2d) <= tol) {
-        // Grazes an edge or vertex - can't be parity-counted reliably.
-        clean = false;
-        break;
-      }
-      if (PointInPolygon2D(hit2d.x, hit2d.y, loop2d)) ++crossings;
+      const double grow = 2.0 * tol;
+      boxes_.push_back({box[0] - grow, box[1] + grow, box[2] - grow, box[3] + grow});
     }
-    if (clean) return (crossings % 2 == 1) ? PointClass::kIn : PointClass::kOut;
   }
 
-  // Fallback: sign of the distance to the nearest face. DistanceTo > 0
-  // means p is on the side the face's own outward normal points toward -
-  // i.e. outside that face's half-space - matching every other half-space
-  // convention in this file (see ClipByHalfspace's own `dc <= tol` test).
-  double best_abs = std::numeric_limits<double>::infinity();
-  double best_signed = 0.0;
-  for (const Brep::PlanarFace& f : faces) {
-    const double dist = f.plane.DistanceTo(p);
-    if (std::fabs(dist) < best_abs) {
-      best_abs = std::fabs(dist);
-      best_signed = dist;
+  PointClass Classify(const Point3d& p) const {
+    const double tol = tol_;
+    for (size_t fi = 0; fi < faces_.size(); ++fi) {
+      const Brep::PlanarFace& f = faces_[fi];
+      if (std::fabs(f.plane.DistanceTo(p)) <= tol) {
+        const Point2d p2d = ProjectOntoPlaneAxes(f.plane, p);
+        if (PointInPolygon2D(p2d.x, p2d.y, loops2d_[fi])) return PointClass::kOn;
+      }
     }
+
+    for (const Vector3d& d : dirs_) {
+      bool clean = true;
+      int crossings = 0;
+      for (size_t fi = 0; fi < faces_.size(); ++fi) {
+        const Brep::PlanarFace& f = faces_[fi];
+        const double denom = f.plane.zaxis * d;
+        if (std::fabs(denom) < 1e-9) {
+          if (std::fabs(f.plane.DistanceTo(p)) <= tol) { clean = false; break; }
+          continue;
+        }
+        const double t = ((f.plane.origin - p) * f.plane.zaxis) / denom;
+        if (t <= tol) continue;  // behind (or at) the ray's own origin
+        const Point3d hit = p + t * d;
+        const Point2d hit2d = ProjectOntoPlaneAxes(f.plane, hit);
+        const Box2& bx = boxes_[fi];
+        if (hit2d.x < bx.minx || hit2d.x > bx.maxx || hit2d.y < bx.miny || hit2d.y > bx.maxy) continue;
+        const std::vector<Point2d>& loop2d = loops2d_[fi];
+        if (DistanceToPolygonBoundary2D(hit2d.x, hit2d.y, loop2d) <= tol) {
+          clean = false;
+          break;
+        }
+        if (PointInPolygon2D(hit2d.x, hit2d.y, loop2d)) ++crossings;
+      }
+      if (clean) return (crossings % 2 == 1) ? PointClass::kIn : PointClass::kOut;
+    }
+
+    double best_abs = std::numeric_limits<double>::infinity();
+    double best_signed = 0.0;
+    for (const Brep::PlanarFace& f : faces_) {
+      const double dist = f.plane.DistanceTo(p);
+      if (std::fabs(dist) < best_abs) {
+        best_abs = std::fabs(dist);
+        best_signed = dist;
+      }
+    }
+    return (best_signed > 0.0) ? PointClass::kOut : PointClass::kIn;
   }
-  return (best_signed > 0.0) ? PointClass::kOut : PointClass::kIn;
+
+ private:
+  struct Box2 { double minx, maxx, miny, maxy; };
+  const std::vector<Brep::PlanarFace>& faces_;
+  double tol_;
+  std::vector<Vector3d> dirs_;
+  std::vector<std::vector<Point2d>> loops2d_;
+  std::vector<Box2> boxes_;
+};
+
+[[maybe_unused]] PointClass ClassifyPointVsSolid(const Point3d& p, const std::vector<Brep::PlanarFace>& faces, double tol) {
+  return SolidClassifier(faces, tol).Classify(p);
 }
 
 // A point guaranteed to lie in `face.loop`'s own interior (not just its
@@ -996,12 +1122,13 @@ struct ClassifiedFace {
 std::vector<ClassifiedFace> SplitAndClassify(const std::vector<Brep::PlanarFace>& self_faces,
                                               const std::vector<Brep::PlanarFace>& other_faces, double tol) {
   std::vector<ClassifiedFace> result;
+  const SolidClassifier classifier(other_faces, tol);
   for (const Brep::PlanarFace& f : self_faces) {
     for (std::vector<Point3d>& piece : SplitAgainstAllPlanes(f.loop, other_faces, tol)) {
       Brep::PlanarFace fragment;
       fragment.plane = f.plane;
       fragment.loop = std::move(piece);
-      const PointClass cls = ClassifyPointVsSolid(RepresentativeInteriorPoint(fragment), other_faces, tol);
+      const PointClass cls = classifier.Classify(RepresentativeInteriorPoint(fragment));
       result.push_back({std::move(fragment), cls});
     }
   }
