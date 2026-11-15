@@ -1,0 +1,177 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-simulation-misc-02",
+  "corpora": [
+    "corpus/gh/core/galapagos-and-optimisation",
+    "synthetic height raster (single block); output grid shape 200x200; wake and acceleration signs vs AIJ benchmark"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 34,
+    "countable": 37,
+    "rows": 37,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 34
+  },
+  "deps": [],
+  "domains": [
+    "cloth",
+    "core",
+    "dpaint",
+    "extensions",
+    "fluid",
+    "modifiers"
+  ],
+  "factory": "simulation",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Bake",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Explode",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:62",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::SurfaceMesh"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:65",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::SurfaceSize"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-simulation-misc-02",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender",
+    "forma",
+    "grasshopper"
+  ],
+  "register_files": [
+    "blender/cloth.jsonl",
+    "blender/dpaint.jsonl",
+    "blender/fluid.jsonl",
+    "blender/modifiers.jsonl",
+    "forma/extensions.jsonl",
+    "grasshopper/core.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-DPAINT-0001": {
+      "commands": [
+        "Bake"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MODIFIER-0016": {
+      "commands": [
+        "Explode"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MODIFIER-0070": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SurfaceMesh",
+        "dino8::kernel::SurfaceSize"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-CLOTH-0001",
+    "D8-GH-CORE-0033",
+    "D8-GH-CORE-0034",
+    "D8-GH-CORE-0035",
+    "D8-GH-CORE-0036",
+    "D8-GH-CORE-0037",
+    "D8-GH-CORE-0038",
+    "D8-BLENDER-DPAINT-0001",
+    "D8-BLENDER-DPAINT-0002",
+    "D8-BLENDER-DPAINT-0003",
+    "D8-BLENDER-DPAINT-0004",
+    "D8-BLENDER-DPAINT-0005",
+    "D8-FORMA-EXT-0018",
+    "D8-BLENDER-FLUID-0001",
+    "D8-BLENDER-FLUID-0002",
+    "D8-BLENDER-FLUID-0003",
+    "D8-BLENDER-FLUID-0004",
+    "D8-BLENDER-FLUID-0005",
+    "D8-BLENDER-FLUID-0006",
+    "D8-BLENDER-FLUID-0007",
+    "D8-BLENDER-FLUID-0008",
+    "D8-BLENDER-FLUID-0009",
+    "D8-BLENDER-FLUID-0010",
+    "D8-BLENDER-FLUID-0011",
+    "D8-BLENDER-FLUID-0012",
+    "D8-BLENDER-FLUID-0013",
+    "D8-BLENDER-FLUID-0014",
+    "D8-BLENDER-MODIFIER-0007",
+    "D8-BLENDER-MODIFIER-0008",
+    "D8-BLENDER-MODIFIER-0014",
+    "D8-BLENDER-MODIFIER-0016",
+    "D8-BLENDER-MODIFIER-0017",
+    "D8-BLENDER-MODIFIER-0057",
+    "D8-BLENDER-MODIFIER-0058",
+    "D8-BLENDER-MODIFIER-0059",
+    "D8-BLENDER-MODIFIER-0066",
+    "D8-BLENDER-MODIFIER-0070"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-CLOTH-0001",
+    "D8-GH-CORE-0033",
+    "D8-GH-CORE-0034",
+    "D8-GH-CORE-0035",
+    "D8-GH-CORE-0036",
+    "D8-GH-CORE-0037",
+    "D8-GH-CORE-0038",
+    "D8-BLENDER-DPAINT-0002",
+    "D8-BLENDER-DPAINT-0003",
+    "D8-BLENDER-DPAINT-0004",
+    "D8-BLENDER-DPAINT-0005",
+    "D8-FORMA-EXT-0018",
+    "D8-BLENDER-FLUID-0001",
+    "D8-BLENDER-FLUID-0002",
+    "D8-BLENDER-FLUID-0003",
+    "D8-BLENDER-FLUID-0004",
+    "D8-BLENDER-FLUID-0005",
+    "D8-BLENDER-FLUID-0006",
+    "D8-BLENDER-FLUID-0007",
+    "D8-BLENDER-FLUID-0008",
+    "D8-BLENDER-FLUID-0009",
+    "D8-BLENDER-FLUID-0010",
+    "D8-BLENDER-FLUID-0011",
+    "D8-BLENDER-FLUID-0012",
+    "D8-BLENDER-FLUID-0013",
+    "D8-BLENDER-FLUID-0014",
+    "D8-BLENDER-MODIFIER-0007",
+    "D8-BLENDER-MODIFIER-0008",
+    "D8-BLENDER-MODIFIER-0014",
+    "D8-BLENDER-MODIFIER-0017",
+    "D8-BLENDER-MODIFIER-0057",
+    "D8-BLENDER-MODIFIER-0058",
+    "D8-BLENDER-MODIFIER-0059",
+    "D8-BLENDER-MODIFIER-0066"
+  ],
+  "status": "open",
+  "title": "simulation: cloth, core, dpaint, extensions, ... (37 rows)",
+  "wave": 2
+}

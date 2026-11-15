@@ -1,0 +1,187 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-text-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 22,
+    "rows": 22,
+    "with_existing_hint": 8,
+    "with_hint": 8,
+    "without_hint": 14
+  },
+  "deps": [],
+  "domains": [
+    "text"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SaveAs",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "New",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Open",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Paste",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RunScript",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Save",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Select",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "RunPythonScript",
+        "rows": 1,
+        "score": 0.667,
+        "status": "implemented"
+      },
+      {
+        "name": "ReplaceEdge",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-text-02",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/text.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-TEXT-0022": {
+      "commands": [
+        "New"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0023": {
+      "commands": [
+        "Open"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0025": {
+      "commands": [
+        "Paste"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0027": {
+      "commands": [
+        "ReplaceEdge"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0030": {
+      "commands": [
+        "RunScript",
+        "RunPythonScript"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0031": {
+      "commands": [
+        "Save",
+        "SaveAs"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0032": {
+      "commands": [
+        "SaveAs"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0035": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-TEXT-0022",
+    "D8-BLENDER-TEXT-0023",
+    "D8-BLENDER-TEXT-0024",
+    "D8-BLENDER-TEXT-0025",
+    "D8-BLENDER-TEXT-0026",
+    "D8-BLENDER-TEXT-0027",
+    "D8-BLENDER-TEXT-0028",
+    "D8-BLENDER-TEXT-0029",
+    "D8-BLENDER-TEXT-0030",
+    "D8-BLENDER-TEXT-0031",
+    "D8-BLENDER-TEXT-0032",
+    "D8-BLENDER-TEXT-0033",
+    "D8-BLENDER-TEXT-0034",
+    "D8-BLENDER-TEXT-0035",
+    "D8-BLENDER-TEXT-0036",
+    "D8-BLENDER-TEXT-0037",
+    "D8-BLENDER-TEXT-0038",
+    "D8-BLENDER-TEXT-0039",
+    "D8-BLENDER-TEXT-0040",
+    "D8-BLENDER-TEXT-0041",
+    "D8-BLENDER-TEXT-0042",
+    "D8-BLENDER-TEXT-0043"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-TEXT-0024",
+    "D8-BLENDER-TEXT-0026",
+    "D8-BLENDER-TEXT-0028",
+    "D8-BLENDER-TEXT-0029",
+    "D8-BLENDER-TEXT-0033",
+    "D8-BLENDER-TEXT-0034",
+    "D8-BLENDER-TEXT-0036",
+    "D8-BLENDER-TEXT-0037",
+    "D8-BLENDER-TEXT-0038",
+    "D8-BLENDER-TEXT-0039",
+    "D8-BLENDER-TEXT-0040",
+    "D8-BLENDER-TEXT-0041",
+    "D8-BLENDER-TEXT-0042",
+    "D8-BLENDER-TEXT-0043"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: text (22 rows)",
+  "wave": 3
+}

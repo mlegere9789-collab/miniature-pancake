@@ -1,0 +1,476 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-org-02",
+  "corpora": [
+    "organization fixtures: nested layers, blocks with attributes, groups, linked blocks, worksessions"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 39,
+    "rows": 39,
+    "with_existing_hint": 38,
+    "with_hint": 38,
+    "without_hint": 1
+  },
+  "deps": [],
+  "domains": [
+    "ORG"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "GetDocumentUserText",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetDocumentUserText",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShowInDetail",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShowSelectedInDetail",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GetUserText",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OneLayerOff",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OneLayerOn",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetUserText",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShowLayersInDetail",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ShowSelected",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Ungroup",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UngroupAll",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Unisolate",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UnisolateLock",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Layer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "LimitReferenceModel",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Lock",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "LockSwap",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MatchLayer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MatchProperties",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:81",
+        "rows": 1,
+        "score": 0.633,
+        "symbol": "dino8::kernel::MassProperties"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-org-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/ORG.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-ORG-0040": {
+      "commands": [
+        "Layer",
+        "LayerOn",
+        "NewLayer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0041": {
+      "commands": [
+        "Lock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0042": {
+      "commands": [
+        "LockSwap"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0043": {
+      "commands": [
+        "MatchLayer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0044": {
+      "commands": [
+        "MatchProperties",
+        "Properties"
+      ],
+      "kernel": [
+        "dino8::kernel::MassProperties"
+      ]
+    },
+    "D8-RHINO-ORG-0045": {
+      "commands": [
+        "NamedSelections"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0046": {
+      "commands": [
+        "NamedPosition"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0047": {
+      "commands": [
+        "OneLayerOff",
+        "OneLayerOn",
+        "LayerOff"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0048": {
+      "commands": [
+        "OneLayerOn",
+        "OneLayerOff",
+        "LayerOn"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0049": {
+      "commands": [
+        "Paste"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0050": {
+      "commands": [
+        "LimitReferenceModel"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0051": {
+      "commands": [
+        "ModelBasepoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0052": {
+      "commands": [
+        "Notes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0053": {
+      "commands": [
+        "GetDocumentUserText",
+        "SetDocumentUserText",
+        "DocumentUserText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0054": {
+      "commands": [
+        "GetUserText",
+        "SetUserText",
+        "GetDocumentUserText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0055": {
+      "commands": [
+        "Purge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0057": {
+      "commands": [
+        "RemoveFromGroup"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0058": {
+      "commands": [
+        "ReplaceBlock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0059": {
+      "commands": [
+        "RescueBlockOrphans"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0060": {
+      "commands": [
+        "SetGroupName"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0061": {
+      "commands": [
+        "SetLayerToObject",
+        "SetLayer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0062": {
+      "commands": [
+        "SetObjectName"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0063": {
+      "commands": [
+        "SetUserText",
+        "GetUserText",
+        "SetDocumentUserText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0064": {
+      "commands": [
+        "SetDocumentUserText",
+        "GetDocumentUserText",
+        "DocumentUserText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0065": {
+      "commands": [
+        "Ungroup",
+        "UngroupAll"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0066": {
+      "commands": [
+        "UngroupAll",
+        "Ungroup"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0067": {
+      "commands": [
+        "Unisolate",
+        "UnisolateLock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0068": {
+      "commands": [
+        "UnisolateLock",
+        "IsolateLock",
+        "Unisolate"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0069": {
+      "commands": [
+        "Unlock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0070": {
+      "commands": [
+        "UnlockSelected"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0071": {
+      "commands": [
+        "Show"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0072": {
+      "commands": [
+        "ShowSelected",
+        "ShowSelectedInDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0073": {
+      "commands": [
+        "ShowInDetail",
+        "ShowLayersInDetail",
+        "ShowSelectedInDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0074": {
+      "commands": [
+        "ShowLayersInDetail",
+        "HideLayersInDetail",
+        "ShowInDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0075": {
+      "commands": [
+        "ShowSelectedInDetail",
+        "ShowSelected",
+        "ShowInDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0076": {
+      "commands": [
+        "ShowRenderMesh",
+        "HideRenderMesh",
+        "ToggleRenderMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0077": {
+      "commands": [
+        "ShowPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0078": {
+      "commands": [
+        "SendBackward"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-ORG-0040",
+    "D8-RHINO-ORG-0041",
+    "D8-RHINO-ORG-0042",
+    "D8-RHINO-ORG-0043",
+    "D8-RHINO-ORG-0044",
+    "D8-RHINO-ORG-0045",
+    "D8-RHINO-ORG-0046",
+    "D8-RHINO-ORG-0047",
+    "D8-RHINO-ORG-0048",
+    "D8-RHINO-ORG-0049",
+    "D8-RHINO-ORG-0050",
+    "D8-RHINO-ORG-0051",
+    "D8-RHINO-ORG-0052",
+    "D8-RHINO-ORG-0053",
+    "D8-RHINO-ORG-0054",
+    "D8-RHINO-ORG-0055",
+    "D8-RHINO-ORG-0056",
+    "D8-RHINO-ORG-0057",
+    "D8-RHINO-ORG-0058",
+    "D8-RHINO-ORG-0059",
+    "D8-RHINO-ORG-0060",
+    "D8-RHINO-ORG-0061",
+    "D8-RHINO-ORG-0062",
+    "D8-RHINO-ORG-0063",
+    "D8-RHINO-ORG-0064",
+    "D8-RHINO-ORG-0065",
+    "D8-RHINO-ORG-0066",
+    "D8-RHINO-ORG-0067",
+    "D8-RHINO-ORG-0068",
+    "D8-RHINO-ORG-0069",
+    "D8-RHINO-ORG-0070",
+    "D8-RHINO-ORG-0071",
+    "D8-RHINO-ORG-0072",
+    "D8-RHINO-ORG-0073",
+    "D8-RHINO-ORG-0074",
+    "D8-RHINO-ORG-0075",
+    "D8-RHINO-ORG-0076",
+    "D8-RHINO-ORG-0077",
+    "D8-RHINO-ORG-0078"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-ORG-0056"
+  ],
+  "status": "open",
+  "title": "direct-modeling: ORG (39 rows)",
+  "wave": 1
+}
