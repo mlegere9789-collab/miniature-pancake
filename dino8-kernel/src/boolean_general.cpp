@@ -926,8 +926,22 @@ Vector3d ChainEndTangent(const Chain& c) {
   return len > 1e-12 ? v / len : v;
 }
 
-std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
+std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol, const ON_Surface* surface) {
   const double tol2 = tol * tol;
+  // Two chain ends that meet in 3D but sit a period apart in (u, v) on a closed surface are the two sides of its seam: joining
+  // them makes one chain that jumps across the whole domain (the U-shaped curve of two parallel cylinders, which crosses the seam
+  // of each wall at its lowest point), and a chain like that cannot cut the face's (u, v) rectangle. Keep them as two chains, each
+  // ending on the seam edge, which the loop splitter handles.
+  auto across_seam = [surface](const UVPt& a, const UVPt& b) {
+    if (!surface) return false;
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!surface->IsClosed(dir)) continue;
+      const double half = 0.5 * surface->Domain(dir).Length();
+      const double da = dir == 0 ? a.uv.x : a.uv.y, db = dir == 0 ? b.uv.x : b.uv.y;
+      if (half > 0 && std::fabs(da - db) > half) return true;
+    }
+    return false;
+  };
   bool changed = true;
   while (changed) {
     changed = false;
@@ -973,22 +987,22 @@ std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
           best_j = j;
           best_merged = std::move(candidate);
         };
-        if ((bi - aj).LengthSquared() <= tol2) {
+        if ((bi - aj).LengthSquared() <= tol2 && !across_seam(chains[i].back(), chains[j].front())) {
           Chain merged = chains[i];
           AppendStitched(merged, chains[j]);
           consider(ON_DotProduct(ChainEndTangent(chains[i]), ChainStartTangent(chains[j])), std::move(merged));
         }
-        if ((bi - bj).LengthSquared() <= tol2) {
+        if ((bi - bj).LengthSquared() <= tol2 && !across_seam(chains[i].back(), chains[j].back())) {
           Chain merged = chains[i];
           AppendStitched(merged, ReverseChain(chains[j]));
           consider(ON_DotProduct(ChainEndTangent(chains[i]), -ChainEndTangent(chains[j])), std::move(merged));
         }
-        if ((ai - aj).LengthSquared() <= tol2) {
+        if ((ai - aj).LengthSquared() <= tol2 && !across_seam(chains[i].front(), chains[j].front())) {
           Chain merged = ReverseChain(chains[i]);
           AppendStitched(merged, chains[j]);
           consider(ON_DotProduct(-ChainStartTangent(chains[i]), ChainStartTangent(chains[j])), std::move(merged));
         }
-        if ((ai - bj).LengthSquared() <= tol2) {
+        if ((ai - bj).LengthSquared() <= tol2 && !across_seam(chains[i].front(), chains[j].back())) {
           Chain merged = chains[j];
           AppendStitched(merged, chains[i]);
           consider(ON_DotProduct(ChainEndTangent(chains[j]), ChainStartTangent(chains[i])), std::move(merged));
@@ -1712,7 +1726,9 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
       // Both endpoints must actually sit close to this fragment's own
       // boundary (not just closest-of-the-worklist) for it to be a
       // candidate at all.
-      if (std::sqrt(Dist2(proj0, c.front().uv)) > 1e-3 * (1.0 + std::sqrt(Dist2(e0a, e0b))) &&
+      // A curved boundary is a polygon here (24 samples a trim), so a chain end sitting exactly on the true rim can be a
+      // chord's sagitta away from the polygon (0.0086 for a unit circle): allow up to a quarter of the edge length squared.
+      if (std::sqrt(Dist2(proj0, c.front().uv)) > std::max(1e-3 * (1.0 + std::sqrt(Dist2(e0a, e0b))), 0.25 * Dist2(e0a, e0b)) &&
           std::sqrt(Dist2(proj0, c.front().uv)) > 1e-6) {
         continue;
       }
@@ -1720,7 +1736,7 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
       const Point2d& e1a = outers[i][h1.edge_index].uv;
       const Point2d& e1b = outers[i][(h1.edge_index + 1) % outers[i].size()].uv;
       const Point2d proj1(e1a.x + (e1b.x - e1a.x) * h1.t, e1a.y + (e1b.y - e1a.y) * h1.t);
-      if (std::sqrt(Dist2(proj1, c.back().uv)) > 1e-3 * (1.0 + std::sqrt(Dist2(e1a, e1b))) &&
+      if (std::sqrt(Dist2(proj1, c.back().uv)) > std::max(1e-3 * (1.0 + std::sqrt(Dist2(e1a, e1b))), 0.25 * Dist2(e1a, e1b)) &&
           std::sqrt(Dist2(proj1, c.back().uv)) > 1e-6) {
         continue;
       }
@@ -3940,8 +3956,8 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
                                 }),
                  mine.end());
     }
-    const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol);
     const ON_Surface* face_surface = brep.m_F[i].SurfaceOf();
+    const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol, face_surface);
     const bool untrimmed = brep.m_F[i].m_li.Count() == 0;
     std::vector<Chain> open_chains;
     for (const Chain& c : stitched) {
@@ -5093,17 +5109,35 @@ static Brep BooleanCombineGeneralLocalFrame(const Brep& a, const Brep& b, Boolea
             // the other solid, so classify an interior point that is NOT
             // on its boundary instead. If every candidate is on the
             // boundary (a genuinely coincident fragment) keep the original.
-            for (const Point2d& alt : AlternateRepresentativeUVs(frag, uv)) {
+            // The centroid sits on the other operand's boundary: take the majority verdict of up to five spread points of the
+            // fragment instead of the first one off the boundary. For a lens-thin overlap (a sphere cap 1e-3 deep, the SSX
+            // tolerance) the nearest alternate can fall in the ring where the traced loop is a tolerance off the surface, and
+            // that one point then drops the whole fragment.
+            const std::vector<Point2d> alts = AlternateRepresentativeUVs(frag, uv);
+            struct Vote { Point2d uv; Point3d p3; Cls cls; };
+            std::vector<Vote> votes;
+            const size_t want = 5;
+            for (size_t k = 0; k < 2 * want && !alts.empty() && votes.size() < want; ++k) {
+              const Point2d& alt = alts[k * alts.size() / (2 * want)];
               const Point3d alt_p3 = ff.surface->PointAt(alt.x, alt.y);
               bool alt_on_boundary = false;
               const Cls alt_cls = ClassifyPointVsBrep(alt_p3, other, ray_length, opt, tol, other_index, &alt_on_boundary);
               if (alt_on_boundary) continue;
-              if (debug) std::fprintf(stderr, "  frag: representative on other's boundary (tangent contact); reclassified at uv=(%f,%f)\n", alt.x, alt.y);
-              uv = alt;
-              p3 = alt_p3;
-              cls = alt_cls;
+              votes.push_back({alt, alt_p3, alt_cls});
+            }
+            if (!votes.empty()) {
+              size_t n_in = 0;
+              for (const Vote& v : votes) n_in += v.cls == Cls::In ? 1 : 0;
+              const Cls major = (2 * n_in > votes.size()) ? Cls::In : Cls::Out;
+              const Vote* pick = &votes.front();
+              for (const Vote& v : votes) {
+                if (v.cls == major) { pick = &v; break; }
+              }
+              if (debug) std::fprintf(stderr, "  frag: representative on other's boundary (tangent contact); %zu of %zu alternates In; reclassified at uv=(%f,%f)\n", n_in, votes.size(), pick->uv.x, pick->uv.y);
+              uv = pick->uv;
+              p3 = pick->p3;
+              cls = major;
               on_other_boundary = false;
-              break;
             }
           }
           // The fragment lies on the SAME curved surface as a face of the other solid (the shared stretch of two coaxial
