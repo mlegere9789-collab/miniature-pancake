@@ -1,0 +1,2 @@
+SECTIONS=B2S OPS OSE SR LAW LAWH BSEC
+FILTERS=SplitBrepBySolid;SplitBrepByPlane
