@@ -173,17 +173,10 @@ std::string ToStdString(const ON_wString& wide) {
 
 }  // namespace
 
-// The guard is a constructor argument of the delegating call, so it is held while the delegated constructor
-// builds the ONX_Model member (hash table and component manifest serial numbers, the creation-time clock and the
-// time zone behind it).
-Model::Model() : Model(detail::OnGlobalStateGuard()) {}
-
-Model::Model(const detail::OnGlobalStateGuard&) {}
-
-Model::~Model() {
-  const detail::OnGlobalStateGuard on_state_guard;
-  model_.Reset();
-}
+// construction_lock_ holds the guard while model_ is built (hash table and component manifest serial numbers, the
+// creation-time clock and the time zone behind it); the constructor releases it as its last statement. The guard is
+// taken again when destruction starts and released after model_ is gone.
+Model::Model() { construction_lock_.EndConstruction(); }
 
 int Model::AddLayer(const std::string& name, Color color, int linetype_index) {
   const detail::OnGlobalStateGuard on_state_guard;
