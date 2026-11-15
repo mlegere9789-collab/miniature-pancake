@@ -9,6 +9,7 @@
 
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/on_global_state.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/point_cloud.h"
 #include "dino8/kernel/subd.h"
@@ -356,24 +357,12 @@ struct DimensionLinearInfo {
   double measurement = 0.0;
 };
 
-namespace detail {
-class OnGlobalStateGuard;
-}
-
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
 // OpenNURBS directly rather than a reimplementation. This is the
 // "can open/save .3dm" exit criterion for chunk 1 — nothing more.
 class Model {
  public:
   Model();
-  // Destroying the ONX_Model reaches openNURBS' error counters, so the destructor holds the kernel's openNURBS
-  // global-state guard like every other Model entry point. The copy and move operations stay what the ONX_Model
-  // member allows (defaulted, possibly deleted).
-  ~Model();
-  Model(const Model&) = default;
-  Model& operator=(const Model&) = default;
-  Model(Model&&) = default;
-  Model& operator=(Model&&) = default;
 
   // Adds a layer to the model and returns its index (>= 0) for use as the
   // Add*() methods' `layer_index` parameter below - the object-organization
@@ -1455,10 +1444,11 @@ class Model {
   const ONX_Model& raw() const { return model_; }
 
  private:
-  // Delegation target of Model(): builds the ONX_Model member while the caller's guard is held.
-  explicit Model(const detail::OnGlobalStateGuard&);
-
+  // The kernel's openNURBS global-state guard is held while model_ is constructed and while it is destroyed (both reach
+  // openNURBS' process-wide statics); see detail/on_global_state.h. Member order matters: do not reorder.
+  detail::OnGlobalStateConstructionLock construction_lock_;
   ONX_Model model_;
+  detail::OnGlobalStateDestructionLock destruction_lock_;
 };
 
 }  // namespace dino8::kernel

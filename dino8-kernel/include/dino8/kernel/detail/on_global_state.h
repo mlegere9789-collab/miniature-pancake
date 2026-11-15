@@ -38,4 +38,29 @@ class OnGlobalStateGuard {
   std::lock_guard<std::recursive_mutex> lock_;
 };
 
+// Holds the guard across the whole construction and the whole destruction of an object that owns an ONX_Model, whose
+// constructor and destructor both reach the statics above (hash table and manifest serial numbers, the clock, the
+// error counter in ONX_Model::Reset()). C++ destroys members in reverse declaration order, so declare, in this order,
+//   OnGlobalStateConstructionLock first;  ONX_Model;  OnGlobalStateDestructionLock last;
+// and call EndConstruction() as the last statement of every constructor of the owner. The first member locks before the
+// ONX_Model is built (and unlocks if that construction throws); the last member locks first when destruction starts, and
+// the first member unlocks after the ONX_Model is gone. Both members must be neither copied nor moved (the owner is
+// not copyable: ONX_Model is not).
+class OnGlobalStateConstructionLock {
+ public:
+  OnGlobalStateConstructionLock() { OnGlobalStateMutex().lock(); }
+  OnGlobalStateConstructionLock(const OnGlobalStateConstructionLock&) = delete;
+  OnGlobalStateConstructionLock& operator=(const OnGlobalStateConstructionLock&) = delete;
+  ~OnGlobalStateConstructionLock() { OnGlobalStateMutex().unlock(); }  // pairs with the lock taken by the destruction member
+  void EndConstruction() { OnGlobalStateMutex().unlock(); }              // pairs with the lock taken by this constructor
+};
+
+class OnGlobalStateDestructionLock {
+ public:
+  OnGlobalStateDestructionLock() = default;
+  OnGlobalStateDestructionLock(const OnGlobalStateDestructionLock&) = delete;
+  OnGlobalStateDestructionLock& operator=(const OnGlobalStateDestructionLock&) = delete;
+  ~OnGlobalStateDestructionLock() { OnGlobalStateMutex().lock(); }
+};
+
 }  // namespace dino8::kernel::detail
