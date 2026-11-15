@@ -618,7 +618,15 @@ int OrientFaces(ON_Brep& b) {
           const int ofi = ot.FaceIndexOf();
           if (ofi < 0 || done[static_cast<size_t>(ofi)]) continue;
           ON_BrepFace& of = b.m_F[ofi];
-          const bool cw0 = b.LoopDirection(loop) < 0, cw1 = b.LoopDirection(b.m_L[ot.m_li]) < 0;
+          // A loop is wound the wrong way when it is not what its place in the face says: the first loop is the outer one and
+          // runs counter-clockwise in (u, v), every other loop is a hole and runs clockwise. (The direction was folded in as
+          // "clockwise" whatever the loop's role, so the wall of a bore - one counter-clockwise loop - was flipped against the
+          // top face's clockwise hole loop and the imported solid came out inside out.)
+          auto wrong_way = [&](const ON_BrepLoop& lp) {
+            const bool outer = b.m_F[lp.m_fi].m_li.Count() > 0 && b.m_F[lp.m_fi].m_li[0] == lp.m_loop_index;
+            return (b.LoopDirection(lp) < 0) == outer;
+          };
+          const bool cw0 = wrong_way(loop), cw1 = wrong_way(b.m_L[ot.m_li]);
           const bool d0 = (t.m_bRev3d != f.m_bRev) != cw0, d1 = (ot.m_bRev3d != of.m_bRev) != cw1;
           if (d0 == d1) { b.FlipFace(of); ++flipped; }
           done[static_cast<size_t>(ofi)] = 1;
@@ -2193,21 +2201,56 @@ struct ChordArcRun {
   bool full = false;
 };
 
+// Least-squares circle (Kasa) through pts[i..last] in the plane through three of them a third of the run apart. The circle
+// through three points is not usable here: the vertices of a sewn rim carry up to 1e-3 of noise, which is larger than the
+// chord that fixes the circle's tangent wherever a run closes on itself, so every run stopped a few chords short of the seam.
 bool FitChordRun(const std::vector<ON_3dPoint>& pts, size_t i, size_t j, ON_Circle& out, double& angle) {
   // chords i..j use vertices pts[i..j+1]
   const size_t last = j + 1;
+  const size_t span = last - i;
   const ON_3dPoint& p = pts[i];
-  const ON_3dPoint& q = pts[(i + last) / 2];
-  const ON_3dPoint& r = pts[last];
-  ON_Circle three(p, q, r);
-  if (!three.IsValid() || three.Radius() <= 0.0) return false;
+  const ON_3dPoint& q = pts[i + span / 3];
+  const ON_3dPoint& r = pts[i + (2 * span) / 3];
   ON_3dVector normal = ON_CrossProduct(q - p, r - q);
   if (!normal.Unitize()) return false;
-  const ON_3dPoint c = three.Center();
-  const double rad = three.Radius();
+  ON_3dPoint centroid(0, 0, 0);
+  for (size_t k = i; k <= last; ++k) centroid += pts[k];
+  centroid = centroid / static_cast<double>(span + 1);
+  ON_3dVector ux = p - centroid;
+  ux = ux - ON_DotProduct(ux, normal) * normal;
+  if (!ux.Unitize()) return false;
+  const ON_3dVector uy = ON_CrossProduct(normal, ux);
+  // x^2 + y^2 = 2 a x + 2 b y + c, least squares over the run's vertices (coordinates relative to the centroid)
+  double m[3][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+  for (size_t k = i; k <= last; ++k) {
+    const ON_3dVector d = pts[k] - centroid;
+    const double x = ON_DotProduct(d, ux), y = ON_DotProduct(d, uy);
+    const double row[3] = {2 * x, 2 * y, 1.0}, rhs = x * x + y * y;
+    for (int a = 0; a < 3; ++a) {
+      for (int b = 0; b < 3; ++b) m[a][b] += row[a] * row[b];
+      m[a][3] += row[a] * rhs;
+    }
+  }
+  for (int col = 0; col < 3; ++col) {
+    int piv = col;
+    for (int rr = col + 1; rr < 3; ++rr) if (std::fabs(m[rr][col]) > std::fabs(m[piv][col])) piv = rr;
+    if (std::fabs(m[piv][col]) < 1e-12) return false;
+    for (int cc = 0; cc < 4; ++cc) std::swap(m[col][cc], m[piv][cc]);
+    for (int rr = 0; rr < 3; ++rr) {
+      if (rr == col) continue;
+      const double f = m[rr][col] / m[col][col];
+      for (int cc = col; cc < 4; ++cc) m[rr][cc] -= f * m[col][cc];
+    }
+  }
+  const double ca = m[0][3] / m[0][0], cb = m[1][3] / m[1][1], cc3 = m[2][3] / m[2][2];
+  const double rad2 = cc3 + ca * ca + cb * cb;
+  if (!(rad2 > 0.0)) return false;
+  const double rad = std::sqrt(rad2);
+  const ON_3dPoint c = centroid + ca * ux + cb * uy;
   const double tol = 2e-3 * rad;
   double swept = 0.0;
   ON_3dVector xaxis = p - c;
+  xaxis = xaxis - ON_DotProduct(xaxis, normal) * normal;
   if (!xaxis.Unitize()) return false;
   const ON_3dVector yaxis = ON_CrossProduct(normal, xaxis);
   double prev = 0.0;
@@ -2261,7 +2304,8 @@ std::vector<ChordArcRun> FindChordArcRuns(const std::vector<LoopSeg>& segs) {
       run.count = best_end - i + 1;
       run.circle = best;
       run.angle = best_angle;
-      run.full = run.count == n && pts[0].DistanceTo(pts[n]) < 1e-6 * (1.0 + best.Radius());
+      // A run that ends where it began (a whole rim, however many other segments the loop has besides) is a full circle.
+      run.full = pts[i].DistanceTo(pts[best_end + 1]) < 1e-6 * (1.0 + best.Radius());
       runs.push_back(run);
       i = best_end + 1;
     } else {
@@ -2291,12 +2335,14 @@ int WriteStepFace(StepWriter& w, const ON_Brep& b, const ON_BrepFace& face, doub
         const ChordArcRun& run = chord_arcs[next_arc++];
         const ON_3dPoint a0 = segs[k].c3.PointAtStart();
         const ON_3dPoint a1 = segs[k + run.count - 1].c3.PointAtEnd();
-        ON_NurbsCurve arc_curve;
-        if (run.full) ON_ArcCurve(run.circle).GetNurbForm(arc_curve);
-        else ON_ArcCurve(ON_Arc(run.circle, ON_Interval(0.0, run.angle))).GetNurbForm(arc_curve);
+        // The exact circle as a CIRCLE; the EDGE_CURVE's two vertices cut the arc out of it (counter-clockwise about the circle's
+        // axis, same_sense .T.), the standard way STEP carries a circular arc edge.
+        ON_Plane circle_plane = run.circle.plane;
+        circle_plane.origin = run.circle.Center();
+        const int axis_id = WriteAxis2Placement3D(w, circle_plane);
+        const int c3 = w.Add("CIRCLE", "'',#" + std::to_string(axis_id) + "," + Num(run.circle.Radius()));
         const int v0 = WriteVertexPoint(w, a0);
         const int v1 = run.full ? v0 : WriteVertexPoint(w, a1);
-        const int c3 = WriteStepCurve(w, arc_curve);
         const int ec = w.Add("EDGE_CURVE", "'',#" + std::to_string(v0) + ",#" + std::to_string(v1) + ",#" + std::to_string(c3) + ",.T.");
         oriented.push_back(w.Add("ORIENTED_EDGE", "'',*,*,#" + std::to_string(ec) + ",.T."));
         k += run.count - 1;
@@ -3162,6 +3208,14 @@ bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImp
       seg.c3 = c3;
       segs.push_back(std::move(seg));
     }
+    // STEP loops run counter-clockwise about the FACE's normal; a face with same_sense .F. (the wall of a bored hole on its exact
+    // cylinder, whose own normal points away from the axis) therefore runs clockwise in the surface's parameter space. The brep
+    // wants every outer loop counter-clockwise in (u, v) and the face flipped, so the loop is reversed here: left as it was, the
+    // wall's loop typed itself "inner" and the imported solid was invalid.
+    if (!same_sense) {
+      std::reverse(segs.begin(), segs.end());
+      for (LoopSeg& seg : segs) seg.c3.Reverse();
+    }
     // The whole loop at once, so the pcurves stay continuous across a seam.
     if (!segs.empty() && !ProjectLoopToSurface(srf, segs, tol)) segs.clear();
     DropInteriorSingulars(srf, segs, tol);
@@ -3169,6 +3223,31 @@ bool BuildFaceInto(StepModel& m, ON_Brep& brep, int face_id, double tol, StepImp
     if (!segs.empty()) loops.push_back(std::move(segs));
   }
   if (loops.empty()) { brep.NewFace(srf); ++stats.faces_untrimmed_fallback; return true; }
+  // An unbounded analytic surface (a cylinder or cone from STEP has no extent of its own) is read with a +-1e5 range; meshed
+  // over that range it came out as a handful of facets (the bore wall of a cut box measured 7 percent short in area). The
+  // surface is cut down to the extent its loops use, with a margin, in each direction where the range is that large.
+  if (!srf.IsPlanar(nullptr, 1e-9)) {
+    for (int dir = 0; dir < 2; ++dir) {
+      const ON_Interval dom = srf.Domain(dir);
+      if (srf.Degree(dir) != 1 || dom.Length() < 1e4) continue;
+      double lo = ON_DBL_MAX, hi = -ON_DBL_MAX;
+      for (const std::vector<LoopSeg>& segs : loops) {
+        for (const LoopSeg& seg : segs) {
+          ON_BoundingBox bb;
+          if (!seg.c2.GetBoundingBox(bb) || !bb.IsValid()) continue;
+          lo = std::min(lo, dir == 0 ? bb.m_min.x : bb.m_min.y);
+          hi = std::max(hi, dir == 0 ? bb.m_max.x : bb.m_max.y);
+        }
+      }
+      if (!(hi >= lo)) continue;
+      const double pad = std::max(1.0, 0.1 * (hi - lo));
+      const ON_Interval want(std::max(dom.Min(), lo - pad), std::min(dom.Max(), hi + pad));
+      if (want.Length() > 0.0 && want.Length() < dom.Length()) {
+        ON_NurbsSurface cut = srf;
+        if (cut.Trim(dir, want) && cut.IsValid()) srf = cut;
+      }
+    }
+  }
   ON_Brep test;
   const int fi = AddTrimmedFace(test, new ON_NurbsSurface(srf), loops, tol);
   // Must run before IsValid(): see the matching comment in the IGES 144
@@ -3450,7 +3529,14 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
         if (const StepPart* cp = fe->Find("COLOUR_RGB")) {
           if (cp->args.size() >= 4) { found = ColorFromBytes(static_cast<int>(std::lround(StepReal(cp->args[1]) * 255)), static_cast<int>(std::lround(StepReal(cp->args[2]) * 255)), static_cast<int>(std::lround(StepReal(cp->args[3]) * 255))); have = true; break; }
         }
-        for (const StepPart& part : fe->parts) for (const std::string& a : part.args) if (IsRef(a)) next.push_back(StepRef(a));
+        // A style entity names the next one as a plain reference (SURFACE_STYLE_FILL_AREA(#337)) or inside a list
+        // (PRESENTATION_STYLE_ASSIGNMENT((#340))): both are followed.
+        for (const StepPart& part : fe->parts) {
+          for (const std::string& a : part.args) {
+            if (IsRef(a)) next.push_back(StepRef(a));
+            else if (a.find('#') != std::string::npos) for (int r : StepRefList(a)) next.push_back(r);
+          }
+        }
       }
       frontier = next;
     }

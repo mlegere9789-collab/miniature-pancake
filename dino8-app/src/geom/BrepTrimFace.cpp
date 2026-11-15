@@ -1,5 +1,7 @@
 #include "geom/BrepTrimFace.h"
 
+#include <algorithm>
+
 namespace dino8::app {
 
 int AddTrimmedFace(ON_Brep& brep, ON_NurbsSurface* srf, const std::vector<std::vector<LoopSeg>>& loops, double tol) {
@@ -68,7 +70,40 @@ int AddTrimmedFace(ON_Brep& brep, ON_NurbsSurface* srf, const std::vector<std::v
   return fi;
 }
 
+// The tolerance of every edge that has none (negative / unset): the largest distance, over samples along the edge, between
+// the edge curve and the surface point of each of the edge's trims.
+void SetEdgeTolerancesFromTrims(ON_Brep& b) {
+  const int kSamples = 8;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0 || e.m_tolerance >= 0.0) continue;
+    double dev = 0.0;
+    bool ok = e.m_ti.Count() > 0 && e.EdgeCurveOf() != nullptr;
+    const ON_Interval ed = e.Domain();
+    for (int k = 0; ok && k < e.m_ti.Count(); ++k) {
+      const ON_BrepTrim& t = b.m_T[e.m_ti[k]];
+      const ON_Curve* pc = t.TrimCurveOf();
+      const ON_Surface* srf = t.SurfaceOf();
+      if (!pc || !srf) { ok = false; break; }
+      const ON_Interval td = t.Domain();
+      for (int i = 0; i <= kSamples; ++i) {
+        const double s = static_cast<double>(i) / kSamples;
+        const ON_3dPoint pe = e.PointAt(ed.ParameterAt(s));
+        const ON_3dPoint uv = pc->PointAt(td.ParameterAt(t.m_bRev3d ? 1.0 - s : s));
+        const ON_3dPoint ps = srf->PointAt(uv.x, uv.y);
+        const double d = pe.DistanceTo(ps);
+        if (!ON_IsValid(d)) { ok = false; break; }
+        dev = std::max(dev, d);
+      }
+    }
+    e.m_tolerance = ok ? dev : 0.0;
+  }
+}
+
 void FinishBrepTrims(ON_Brep& b) {
+  // Joining and healing leave the vertices / edges / trims they merged away behind as deleted slots, and ON_Brep::IsValid calls
+  // such a slot a corrupt back pointer: the brep is compacted before anything reads it.
+  b.Compact();
   for (int ei = 0; ei < b.m_E.Count(); ++ei) {
     ON_BrepEdge& e = b.m_E[ei];
     if (e.m_edge_index < 0) continue;
@@ -83,7 +118,14 @@ void FinishBrepTrims(ON_Brep& b) {
     }
   }
   b.SetTrimIsoFlags();
-  b.SetTolerancesBoxesAndFlags();
+  // ON_Brep::SetTolerancesBoxesAndFlags() with its default (not lazy) edge pass does not compute an edge tolerance: it resets
+  // EVERY edge's m_tolerance to ON_UNSET_VALUE (the real computation lives in the commercial subclass), and IsValid then
+  // rejects each edge ("edge.m_tolerance=-1.2e308 (should be >= 0.0)"), so a STEP / IGES import was never a valid brep.
+  // The edge pass is left out of that call; an edge that has no tolerance gets the largest distance between the edge curve
+  // and the surface point of each of its trims, sampled along the edge, so the tolerance is what the brep really has.
+  b.SetTolerancesBoxesAndFlags(false, false, false, true, true, true, true, true);
+  SetEdgeTolerancesFromTrims(b);
+  b.SetVertexTolerances(false);
 }
 
 }  // namespace dino8::app
