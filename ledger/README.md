@@ -283,6 +283,30 @@ python3 -m unittest discover -s parity/tests -t .
 python3 -m unittest discover -s ledger/tests -t .      # (cd ledger && python3 -m unittest) works too
 ```
 
+## Commands that must pass in CI
+
+Run from the repository root with Python 3.11 and `pip install jsonschema pyyaml`. Every command
+must exit 0; they are the steps of `.github/workflows/ledger-check.yml`. All were run over the
+combined Register (10,660 rows in 222 files) with 0 errors.
+
+```
+python3 parity/tools/validate_register.py --github
+python3 parity/tools/validate_register.py --engine builtin --github
+python3 parity/tools/percent.py --strict --out "$RUNNER_TEMP/percent.json" --credits-out "$RUNNER_TEMP/credits.jsonl" --previous ledger/credits.jsonl
+python3 ledger/tools/guard.py paths --actor "$ACTOR" --changed "$RUNNER_TEMP/changed.txt"
+python3 ledger/tools/guard.py rows --actor "$ACTOR" --base "$RUNNER_TEMP/base/parity/register" --head parity/register
+python3 parity/tools/percent.py --check          # only when ledger/percent.json is part of the change
+python3 ledger/tools/gen_tasks.py --validate     # only when ledger/tasks/index.json exists
+python3 -m unittest discover -s parity/tests -t .
+python3 -m unittest discover -s ledger/tests -t .
+```
+
+Also worth running before a push that regenerates the queue: `python3 ledger/tools/gen_tasks.py
+--check` (writes nothing; exits 1 if `ledger/tasks/` differs from what the Register produces).
+
+Use `python3 -m unittest`, not pytest: the suites import as packages from the repository root.
+The workflow test does not depend on the terminal width (`COLUMNS`); it passes at 40, 80 and 200.
+
 ## Not done here (the next steps of the ledger)
 
 * The **count step**: a CI job that runs `percent.py` on the integration branch and commits

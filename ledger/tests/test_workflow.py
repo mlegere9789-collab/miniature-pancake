@@ -83,15 +83,26 @@ class Workflow(unittest.TestCase):
                 )
 
     def test_every_option_it_passes_is_defined_by_the_tool(self):
+        # Two sources of flakiness are removed without weakening the check:
+        # shell punctuation (";", "&&", "|") is split off the tokens instead of
+        # being glued to an option ("--validate;"), and the help text is
+        # rendered at a fixed wide width so argparse never wraps an option away.
+        env = dict(os.environ, COLUMNS="1000")
         checked = 0
         for line in commands(load()):
             if "<<" in line or ".py" not in line:
                 continue
-            tokens = shlex.split(line, posix=True)
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
             script = next((t for t in tokens if t.endswith(".py")), None)
             if script is None or script.startswith("-"):
                 continue
-            rest = tokens[tokens.index(script) + 1 :]
+            rest = []
+            for token in tokens[tokens.index(script) + 1 :]:
+                if token and set(token) <= set(";&|()"):
+                    break  # the command ends at a shell separator
+                rest.append(token)
             sub = [rest[0]] if rest and not rest[0].startswith("-") else []
             help_text = subprocess.run(
                 [sys.executable, os.path.join(support.REPO_ROOT, script)]
@@ -99,11 +110,15 @@ class Workflow(unittest.TestCase):
                 + ["--help"],
                 capture_output=True,
                 text=True,
+                env=env,
             ).stdout
             for token in rest:
                 if token.startswith("--"):
-                    self.assertIn(
-                        token, help_text, "%s does not define %s" % (script, token)
+                    option = token.split("=", 1)[0]
+                    self.assertRegex(
+                        help_text,
+                        r"(?<![\w-])" + re.escape(option) + r"(?![\w-])",
+                        "%s does not define %s" % (script, option),
                     )
                     checked += 1
         self.assertGreater(checked, 8)  # the check really looked at options
