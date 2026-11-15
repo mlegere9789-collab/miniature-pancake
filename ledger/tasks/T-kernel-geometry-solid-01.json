@@ -1,0 +1,394 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-kernel-geometry-solid-01",
+  "corpora": [
+    "solid fixtures: primitives, tangent-contact booleans, coincident faces, thin walls, high-degree faces"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 21,
+    "countable": 27,
+    "rows": 27,
+    "with_existing_hint": 24,
+    "with_hint": 24,
+    "without_hint": 3
+  },
+  "deps": [],
+  "domains": [
+    "SOLID",
+    "surface"
+  ],
+  "factory": "kernel-geometry",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "MergeAllCoplanarFaces",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Boolean2Objects",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanDifference",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanIntersection",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanSplit",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BooleanUnion",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Boss",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Box",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cap",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cone",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CreateRegions",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CreateSolid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CutVolume",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cylinder",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Ellipsoid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Pipe",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Pyramid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Slab",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Sphere",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SphereTangentToThreeSurfaces",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:4206",
+        "rows": 2,
+        "score": 0.713,
+        "symbol": "dino8::kernel::Brep::MergeCoplanarFaces"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2672",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Mesh::Cylinder"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:899",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::NurbsSurface::IsCylinder"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:885",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::NurbsSurface::IsSphere"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:938",
+        "rows": 1,
+        "score": 0.604,
+        "symbol": "dino8::kernel::NurbsSurface::IsTorus"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-kernel-geometry-solid-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender",
+    "rhino"
+  ],
+  "register_files": [
+    "blender/surface.jsonl",
+    "rhino/SOLID.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-SURFACE-0003": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::IsCylinder"
+      ]
+    },
+    "D8-BLENDER-SURFACE-0004": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::IsSphere"
+      ]
+    },
+    "D8-BLENDER-SURFACE-0006": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::IsTorus"
+      ]
+    },
+    "D8-RHINO-SOLID-0001": {
+      "commands": [
+        "Boolean2Objects"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0002": {
+      "commands": [
+        "BooleanDifference",
+        "MeshBooleanDifference"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0003": {
+      "commands": [
+        "BooleanIntersection",
+        "MeshBooleanIntersection"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0004": {
+      "commands": [
+        "BooleanSplit",
+        "MeshBooleanSplit"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0005": {
+      "commands": [
+        "BooleanUnion",
+        "MeshBooleanUnion"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0006": {
+      "commands": [
+        "Boss"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0007": {
+      "commands": [
+        "Box"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0008": {
+      "commands": [
+        "Cap"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0009": {
+      "commands": [
+        "Cone",
+        "TCone"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0010": {
+      "commands": [
+        "CreateRegions"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0011": {
+      "commands": [
+        "CreateSolid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0012": {
+      "commands": [
+        "CutVolume",
+        "Volume"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0013": {
+      "commands": [
+        "Cylinder",
+        "MeshCylinder"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Cylinder"
+      ]
+    },
+    "D8-RHINO-SOLID-0014": {
+      "commands": [
+        "Ellipsoid",
+        "MeshEllipsoid",
+        "SubDEllipsoid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0015": {
+      "commands": [
+        "Pipe"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0016": {
+      "commands": [
+        "MergeCoplanarFace",
+        "MergeAllCoplanarFaces"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::MergeCoplanarFaces"
+      ]
+    },
+    "D8-RHINO-SOLID-0017": {
+      "commands": [
+        "MergeAllCoplanarFaces",
+        "MergeCoplanarFace"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::MergeCoplanarFaces"
+      ]
+    },
+    "D8-RHINO-SOLID-0018": {
+      "commands": [
+        "Pyramid"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0019": {
+      "commands": [
+        "Slab"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0020": {
+      "commands": [
+        "Sphere"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SOLID-0021": {
+      "commands": [
+        "SphereTangentToThreeSurfaces"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SOLID-0001",
+    "D8-RHINO-SOLID-0002",
+    "D8-RHINO-SOLID-0003",
+    "D8-RHINO-SOLID-0004",
+    "D8-RHINO-SOLID-0005",
+    "D8-RHINO-SOLID-0006",
+    "D8-RHINO-SOLID-0007",
+    "D8-RHINO-SOLID-0008",
+    "D8-RHINO-SOLID-0009",
+    "D8-RHINO-SOLID-0010",
+    "D8-RHINO-SOLID-0011",
+    "D8-RHINO-SOLID-0012",
+    "D8-RHINO-SOLID-0013",
+    "D8-RHINO-SOLID-0014",
+    "D8-RHINO-SOLID-0015",
+    "D8-RHINO-SOLID-0016",
+    "D8-RHINO-SOLID-0017",
+    "D8-RHINO-SOLID-0018",
+    "D8-RHINO-SOLID-0019",
+    "D8-RHINO-SOLID-0020",
+    "D8-RHINO-SOLID-0021",
+    "D8-BLENDER-SURFACE-0001",
+    "D8-BLENDER-SURFACE-0002",
+    "D8-BLENDER-SURFACE-0003",
+    "D8-BLENDER-SURFACE-0004",
+    "D8-BLENDER-SURFACE-0005",
+    "D8-BLENDER-SURFACE-0006"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-SURFACE-0001",
+    "D8-BLENDER-SURFACE-0002",
+    "D8-BLENDER-SURFACE-0005"
+  ],
+  "status": "open",
+  "title": "kernel-geometry: SOLID, surface (27 rows)",
+  "wave": 1
+}
