@@ -180,6 +180,11 @@ Model::Model() : Model(detail::OnGlobalStateGuard()) {}
 
 Model::Model(const detail::OnGlobalStateGuard&) {}
 
+Model::~Model() {
+  const detail::OnGlobalStateGuard on_state_guard;
+  model_.Reset();
+}
+
 int Model::AddLayer(const std::string& name, Color color, int linetype_index) {
   const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {

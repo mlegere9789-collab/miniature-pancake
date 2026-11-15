@@ -366,6 +366,14 @@ class OnGlobalStateGuard;
 class Model {
  public:
   Model();
+  // Destroying the ONX_Model reaches openNURBS' error counters, so the destructor holds the kernel's openNURBS
+  // global-state guard like every other Model entry point. The copy and move operations stay what the ONX_Model
+  // member allows (defaulted, possibly deleted).
+  ~Model();
+  Model(const Model&) = default;
+  Model& operator=(const Model&) = default;
+  Model(Model&&) = default;
+  Model& operator=(Model&&) = default;
 
   // Adds a layer to the model and returns its index (>= 0) for use as the
   // Add*() methods' `layer_index` parameter below - the object-organization
