@@ -149,8 +149,11 @@ Enter
 SelAll
 List
 Volume
-# other sphere placements are still declined WITH the reason (never an open or wrong solid); the mesh
-# fallback has the right volume. Sphere r4 centred at z=8 (cap of height 2 above the top face): 1000 + pi*4*(12-2)/3 = 1041.89
+# other sphere placements: the engine now seals them (a seam vertex within 1e-5 of the periodic seam is reused,
+# and a tessellation refusal after the naked edges were joined no longer discards the join), so they are
+# exact, closed and valid, and checked against closed forms (exact divergence-theorem volume, display-mesh
+# volume and area). Sphere r4 centred at z=8 (cap of height 2 above the top face): V = 1000 + pi*4*(12-2)/3 = 1041.89,
+# A = 600 - pi*12 + 2*pi*4*2 = 600 + 4*pi = 612.57
 New
 B2SBEGIN_sph_cap
 Box 0,0,0 10,10,0 10
@@ -160,7 +163,8 @@ BooleanUnion
 SelAll
 List
 Volume
-# sphere r3 centred on a side face: 1000 + 2/3*pi*27 = 1056.55
+Area
+# sphere r3 centred on a side face: V = 1000 + 2/3*pi*27 = 1056.55, A = 600 - pi*9 + 2*pi*9 = 600 + 9*pi = 628.27
 New
 B2SBEGIN_sph_side
 Box 0,0,0 10,10,0 10
@@ -170,5 +174,6 @@ BooleanUnion
 SelAll
 List
 Volume
+Area
 New
 B2SEND
