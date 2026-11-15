@@ -55,7 +55,7 @@ Not read: `REL-0021` (404), the 5 API pseudo-citations, and 40 non-pages (above)
 
 ## Fix file
 
-`parity/register/review/fixes_revit.jsonl` (28 proposals): 10 link repairs, 2 row removals (release tracking), 1 reworded statement, 13 factory moves, 2 alias links. Same note as for AutoCAD about the validator scanning `review/`.
+`parity/register/review/fixes_revit.jsonl.txt` (28 proposals): 10 link repairs, 2 row removals (release tracking), 1 reworded statement, 13 factory moves, 2 alias links. Same note as for AutoCAD about the validator scanning `review/`.
 
 ## Missing coverage (40 documented topics with no row)
 
@@ -114,3 +114,5 @@ Same sample reproduced (150 ids; all cited ids are in it). Every row's page re-f
 - Validator: same problem as AutoCAD (1,674 errors from the `review/` files; rows untouched).
 
 **Verdict unchanged: ACCEPT WITH FIXES.**
+
+**Note on file names (CI):** the fix file is named `fixes_revit.jsonl.txt` (same JSON-lines content) because `validate_register.py` collects every `*.jsonl` below `parity/register` and has no exclusion for `review/`; with the `.jsonl` name the register check fails on duplicate row ids. If the validator is later taught to skip `review/`, rename back.

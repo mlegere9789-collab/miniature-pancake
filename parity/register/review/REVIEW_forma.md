@@ -57,7 +57,7 @@ What is good: page identity is right for every readable page; statements are spe
 
 ## Fix file
 
-`parity/register/review/fixes_forma.jsonl` (15 proposals): 3 narrowed statements, 11 factory moves, 1 alias link. Same note about the validator scanning `review/`.
+`parity/register/review/fixes_forma.jsonl.txt` (15 proposals): 3 narrowed statements, 11 factory moves, 1 alias link. Same note about the validator scanning `review/`.
 
 ## Missing coverage (35 documented topics with no row)
 
@@ -109,3 +109,5 @@ Same sample reproduced (60 ids; all cited ids are in it). Re-fetched all sampled
 - Validator: the `review/` files make `--strict` fail (see AutoCAD section).
 
 **Verdict unchanged: ACCEPT WITH FIXES.**
+
+**Note on file names (CI):** the fix file is named `fixes_forma.jsonl.txt` (same JSON-lines content) because `validate_register.py` collects every `*.jsonl` below `parity/register` and has no exclusion for `review/`; with the `.jsonl` name the register check fails on duplicate row ids. If the validator is later taught to skip `review/`, rename back.
