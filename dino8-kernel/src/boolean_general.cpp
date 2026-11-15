@@ -1363,6 +1363,43 @@ bool SplitPeriodicTwoCrossingChain(const Chain& c, const ON_Surface& s, Chain& p
   return true;
 }
 
+// An OPEN chain (both ends on the face's boundary) that crosses a periodic seam in its interior - e.g. the sliver of a cylinder wall
+// that a near-tangent second cylinder cuts off across the wall's own seam: the chain runs from the top rim, down one side line, round
+// the arc over the seam and back up to the rim - is not a simple curve in the flat (u, v) rectangle: it jumps from one side of the
+// domain to the other. Spliced as it is, the polygon it makes with the boundary is garbage (two fragments each as big as the face).
+// Cut it at every crossing instead, each side ending exactly on the seam (FinishSeamCrossing, the same end handling a closed chain gets
+// from SplitPeriodicWrapChain), so every piece is an ordinary open chain whose two ends lie on the loop.
+bool SplitOpenChainAtSeams(const Chain& c, const ON_Surface& s, std::vector<Chain>& pieces) {
+  if (c.size() < 3) return false;
+  std::vector<size_t> cuts;
+  std::vector<int> dirs;
+  for (size_t i = 0; i + 1 < c.size(); ++i) {
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!s.IsClosed(dir)) continue;
+      const double L = s.Domain(dir).Length();
+      if (L <= 0) continue;
+      const double vi = dir == 0 ? c[i].uv.x : c[i].uv.y;
+      const double vj = dir == 0 ? c[i + 1].uv.x : c[i + 1].uv.y;
+      if (std::fabs(vi - vj) > 0.5 * L) {
+        cuts.push_back(i);
+        dirs.push_back(dir);
+        break;
+      }
+    }
+  }
+  if (cuts.empty()) return false;
+  pieces.clear();
+  size_t start = 0;
+  for (size_t cut : cuts) {
+    pieces.emplace_back(c.begin() + static_cast<long>(start), c.begin() + static_cast<long>(cut) + 1);
+    start = cut + 1;
+  }
+  pieces.emplace_back(c.begin() + static_cast<long>(start), c.end());
+  for (const Chain& pc : pieces) if (pc.empty()) return false;
+  for (size_t k = 0; k < cuts.size(); ++k) FinishSeamCrossing(s, dirs[k], pieces[k], pieces[k + 1]);
+  return true;
+}
+
 // --- chains that run ALONG an untrimmed face's own domain boundary ------
 //
 // An untrimmed periodic/singular face (a full sphere from Brep::Sphere(),
@@ -1931,8 +1968,52 @@ bool RepresentativeUV(const Fragment& frag, Point2d& out_uv) {
 // shallower than the SSX mesh tolerance's own resolution, which
 // IntersectSurfaces() already documents as "only touch tangentially
 // within the mesh tolerance".
+// True when surface `a` lies on BOTH sides of surface `b` next to the curve point (uv_a on a, uv_b on b): a transversal crossing, however
+// shallow, as opposed to a one-sided tangent touch. The signed separation g(s) = (A(uv_a + s w) - P) . nB along the in-surface direction w
+// perpendicular to the curve is s sin(theta) + O(s^2) at a crossing (opposite signs at +-s while s < 2 sin(theta) / curvature) and keeps
+// one sign at a tangent contact. Probed at several small steps so the curvature term cannot hide a real crossing, and only a clearly
+// signed pair (|g| above rounding) counts.
+bool SurfaceCrossesAtPoint(const ON_Surface& a, const ON_Surface& b, const ON_2dPoint& uv_a, const ON_2dPoint& uv_b) {
+  ON_3dPoint P, Pb;
+  ON_3dVector du, dv, bu, bv;
+  if (!a.Ev1Der(uv_a.x, uv_a.y, P, du, dv) || !b.Ev1Der(uv_b.x, uv_b.y, Pb, bu, bv)) return false;
+  ON_3dVector na = ON_CrossProduct(du, dv), nb = ON_CrossProduct(bu, bv);
+  if (!na.Unitize() || !nb.Unitize()) return false;
+  ON_3dVector t = ON_CrossProduct(na, nb);
+  if (!t.Unitize()) return false;  // parallel normals: no crossing direction to speak of
+  ON_3dVector d = ON_CrossProduct(t, na);  // in A's tangent plane, perpendicular to the curve
+  if (!d.Unitize()) return false;
+  const double aa = du * du, ab = du * dv, bb2 = dv * dv, ri = du * d, rj = dv * d;
+  const double det = aa * bb2 - ab * ab;
+  if (!(std::fabs(det) > 1e-300)) return false;
+  const double wu = (ri * bb2 - rj * ab) / det, wv = (rj * aa - ri * ab) / det;
+  const ON_Interval du_dom = a.Domain(0), dv_dom = a.Domain(1);
+  for (double step : {1e-6, 1e-5, 1e-4, 1e-3}) {
+    double g[2];
+    bool in_dom = true;
+    for (int k = 0; k < 2; ++k) {
+      const double sgn = k == 0 ? 1.0 : -1.0;
+      const double u = uv_a.x + sgn * step * wu, v = uv_a.y + sgn * step * wv;
+      if (u < du_dom.Min() || u > du_dom.Max() || v < dv_dom.Min() || v > dv_dom.Max()) in_dom = false;
+      g[k] = (a.PointAt(u, v) - P) * nb;
+    }
+    if (!in_dom) continue;
+    const double floor = 1e-12 * std::max(1.0, P.DistanceTo(ON_3dPoint::Origin));
+    if (std::fabs(g[0]) > floor && std::fabs(g[1]) > floor) return g[0] * g[1] < 0.0;
+  }
+  return false;
+}
+
 bool CurvesAreTangentContactNoise(const std::vector<IntersectionCurve>& curves, const ON_Surface& a,
                                   const ON_Surface& b, const IntersectOptions& opt) {
+  // A curve along which one surface passes to the far side of the other is a real (if shallow) crossing, never debris: a penetration of
+  // 1e-3 against the 0.02 mesh tolerance is exactly such a crossing and has to fragment the faces.
+  for (const IntersectionCurve& c : curves) {
+    if (c.points.size() < 3 || c.uv_a.size() != c.points.size() || c.uv_b.size() != c.points.size()) continue;
+    for (size_t k : {c.points.size() / 2, c.points.size() / 4, (3 * c.points.size()) / 4}) {
+      if (SurfaceCrossesAtPoint(a, b, c.uv_a[k], c.uv_b[k])) return false;
+    }
+  }
   const double band = 4.0 * opt.mesh_tolerance;
   for (const IntersectionCurve& c : curves) {
     if (c.closed || c.points.empty() || c.uv_a.size() != c.points.size() || c.uv_b.size() != c.points.size()) return false;
@@ -3744,6 +3825,34 @@ bool ChainLiesAlongFaceBoundary(const ON_Brep& brep, int face_index, const std::
   return true;
 }
 
+// The face boundary loop samples a curved trim (a cap's circular rim) with a fixed number of chords, so a point that truly lies ON the
+// rim can sit up to ~1% of the radius off the nearest chord - while an open chain's ends, clipped against the true trim by
+// IntersectFaces(), lie exactly on it. SplitFaceLoop() only splices a chain whose ends are within ~1e-3 of a loop edge, so a chain
+// ending on a curved rim between two samples (a wall 1e-3 inside the rim: the chord of the cap it cuts off) was silently dropped and the
+// face came back unsplit. Each end that is near the loop but not on it becomes a vertex of the loop (bulging it out to the true rim).
+void InsertChainEndsIntoLoop(std::vector<UVPt>& loop, const std::vector<Chain>& open_chains) {
+  if (loop.size() < 3) return;
+  double minx = loop[0].uv.x, maxx = minx, miny = loop[0].uv.y, maxy = miny;
+  for (const UVPt& q : loop) {
+    minx = std::min(minx, q.uv.x); maxx = std::max(maxx, q.uv.x);
+    miny = std::min(miny, q.uv.y); maxy = std::max(maxy, q.uv.y);
+  }
+  const double diag = std::hypot(maxx - minx, maxy - miny);
+  for (const Chain& c : open_chains) {
+    if (c.size() < 2) continue;
+    for (const UVPt* end : {&c.front(), &c.back()}) {
+      const BoundaryHit h = NearestOnLoop(loop, end->uv);
+      const Point2d& a = loop[h.edge_index].uv;
+      const Point2d& b = loop[(h.edge_index + 1) % loop.size()].uv;
+      const Point2d proj(a.x + (b.x - a.x) * h.t, a.y + (b.y - a.y) * h.t);
+      const double d = std::sqrt(Dist2(proj, end->uv));
+      const double edge = std::sqrt(Dist2(a, b));
+      if (d <= 1e-3 * (1.0 + edge) || d > 0.02 * diag) continue;  // already on the loop, or not near it at all
+      loop.insert(loop.begin() + static_cast<long>(h.edge_index) + 1, *end);
+    }
+  }
+}
+
 std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw,
                                       double stitch_tol, const IntersectOptions& opt, bool debug) {
   std::vector<FaceFrags> out;
@@ -3797,7 +3906,13 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
           closed_chains.push_back(c);
         }
       } else {
-        open_chains.push_back(c);
+        std::vector<Chain> seam_pieces;
+        if (face_surface && SplitOpenChainAtSeams(c, *face_surface, seam_pieces)) {
+          if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: open chain n=%zu crosses a seam in its interior: cut into %zu pieces\n", i, c.size(), seam_pieces.size());
+          for (Chain& pc : seam_pieces) open_chains.push_back(std::move(pc));
+        } else {
+          open_chains.push_back(c);
+        }
       }
     }
     // This op's own FRESH closed chains (just collected above) can
@@ -3851,6 +3966,7 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
     ff.face_index = i;
     ff.surface = brep.m_F[i].SurfaceOf()->DuplicateSurface();
     ff.base_rev = brep.m_F[i].m_bRev;
+    InsertChainEndsIntoLoop(boundary, open_chains);
     ff.frags = SplitFaceLoop(boundary, closed_chains, open_chains);
     if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
       for (size_t fi = 0; fi < ff.frags.size(); ++fi) {

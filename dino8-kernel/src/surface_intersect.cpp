@@ -3036,9 +3036,11 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
   for (int i = 0; i <= n; ++i) samples[static_cast<size_t>(i)] = c.PointAt(d.ParameterAt(static_cast<double>(i) / n));
   struct Seed { double t; ON_2dPoint uv; };
   std::vector<Seed> seeds;
-  for (int i = 0; i < n; ++i) {
-    const Point3d& p0 = samples[static_cast<size_t>(i)];
-    const Point3d& p1 = samples[static_cast<size_t>(i) + 1];
+  // The seed mesh is inscribed in the surface (up to opt.mesh_tolerance inside it), so a curve that starts closer to the surface than that
+  // sagitta - a classification ray from a point 3e-4 inside a cylinder wall - starts OUTSIDE the mesh and never crosses it going out:
+  // the genuine hit just ahead of the origin had no seed and was never found. A short run-in before the start and a run-out past the
+  // end are tested too; their seeds are clamped to the curve's own domain, and Newton keeps only a root that is really on the curve.
+  auto try_segment = [&](const Point3d& p0, const Point3d& p1, double t0, double t1) {
     ON_BoundingBox sb;
     sb.Set(p0, true); sb.Set(p1, true);
     sb.m_min -= ON_3dVector(pad, pad, pad); sb.m_max += ON_3dVector(pad, pad, pad);
@@ -3051,8 +3053,15 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
       const ON_2dPoint& u1 = m.uv[static_cast<size_t>(tr[1])];
       const ON_2dPoint& u2 = m.uv[static_cast<size_t>(tr[2])];
       ON_2dPoint uv(u0.x + (u1.x - u0.x) * bu + (u2.x - u0.x) * bv, u0.y + (u1.y - u0.y) * bu + (u2.y - u0.y) * bv);
-      seeds.push_back({d.ParameterAt((i + Clamp(sp, 0, 1)) / n), uv});
+      seeds.push_back({Clamp(t0 + (t1 - t0) * Clamp(sp, 0, 1), d.Min(), d.Max()), uv});
     });
+  };
+  for (int i = 0; i < n; ++i) try_segment(samples[static_cast<size_t>(i)], samples[static_cast<size_t>(i) + 1], d.ParameterAt(static_cast<double>(i) / n), d.ParameterAt(static_cast<double>(i + 1) / n));
+  {
+    const double run = opt.mesh_tolerance * 1.5;
+    const Vector3d t_start = c.TangentAt(d.Min()), t_end = c.TangentAt(d.Max());
+    if (t_start.IsValid() && t_start.Length() > 0.5) try_segment(samples[0] - t_start * run, samples[0], d.Min(), d.Min());
+    if (t_end.IsValid() && t_end.Length() > 0.5) try_segment(samples[static_cast<size_t>(n)], samples[static_cast<size_t>(n)] + t_end * run, d.Max(), d.Max());
   }
   const std::vector<double> lo = {d.Min(), s.Domain(0).Min(), s.Domain(1).Min()}, hi = {d.Max(), s.Domain(0).Max(), s.Domain(1).Max()};
   for (const Seed& sd : seeds) {
@@ -3063,6 +3072,14 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     };
     double err = 0;
     if (!NewtonSolve(res, x, lo, hi, opt.tolerance, 40, &err)) continue;
+    // NewtonSolve() returns as soon as the residual is inside `opt.tolerance`, so a hit seeded from a facet of the (inscribed) seed mesh
+    // came back up to a chord sagitta off the true crossing: its ray parameter was wrong by far more than the 1e-6 a caller compares
+    // it with (a ray started 3e-4 inside a cylinder wall reported its exit as "behind the origin", so the point classified Out).
+    // Keep iterating to the floating-point floor; a step is only taken if it lowers the residual.
+    {
+      const double scale = std::max({1.0, s.PointAt(x[1], x[2]).DistanceTo(Point3d::Origin)});
+      NewtonSolve(res, x, lo, hi, 1e-11 * scale, 8, &err);
+    }
     CurveSurfaceHit h;
     h.t = x[0]; h.uv = ON_2dPoint(x[1], x[2]); h.point = c.PointAt(h.t); h.error = err;
     bool dup = false;
