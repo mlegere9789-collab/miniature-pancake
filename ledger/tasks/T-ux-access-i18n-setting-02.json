@@ -1,0 +1,273 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-setting-02",
+  "corpora": [
+    "options fixtures: default and customized option files and document properties"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 31,
+    "rows": 31,
+    "with_existing_hint": 18,
+    "with_hint": 18,
+    "without_hint": 13
+  },
+  "deps": [],
+  "domains": [
+    "SETTING"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "DocumentUserText",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "GetDocumentUserText",
+        "rows": 1,
+        "score": 0.9,
+        "status": "implemented"
+      },
+      {
+        "name": "SetDocumentUserText",
+        "rows": 1,
+        "score": 0.9,
+        "status": "implemented"
+      },
+      {
+        "name": "ObjectDisplayModes",
+        "rows": 2,
+        "score": 0.813,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDDisplayToggle",
+        "rows": 1,
+        "score": 0.725,
+        "status": "implemented"
+      },
+      {
+        "name": "SetDisplayMode",
+        "rows": 12,
+        "score": 0.7,
+        "status": "implemented"
+      },
+      {
+        "name": "PrintDisplay",
+        "rows": 1,
+        "score": 0.675,
+        "status": "implemented"
+      },
+      {
+        "name": "WebBrowser",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "StepUnitsAndTolerance",
+        "rows": 1,
+        "score": 0.638,
+        "status": "implemented"
+      },
+      {
+        "name": "SetObjectDisplayMode",
+        "rows": 2,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "ClearAllObjectDisplayModes",
+        "rows": 1,
+        "score": 0.605,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-setting-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SETTING.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SETTING-0032": {
+      "commands": [
+        "ObjectDisplayModes",
+        "SetObjectDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0034": {
+      "commands": [
+        "PrintDisplay"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0036": {
+      "commands": [
+        "SubDDisplayToggle"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0039": {
+      "commands": [
+        "ObjectDisplayModes",
+        "SetDisplayMode",
+        "ClearAllObjectDisplayModes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0040": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0041": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0042": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0043": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0044": {
+      "commands": [
+        "SetDisplayMode",
+        "SetObjectDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0045": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0046": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0047": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0048": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0049": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0050": {
+      "commands": [
+        "SetDisplayMode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0058": {
+      "commands": [
+        "StepUnitsAndTolerance"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0059": {
+      "commands": [
+        "DocumentUserText",
+        "GetDocumentUserText",
+        "SetDocumentUserText"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0060": {
+      "commands": [
+        "WebBrowser"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SETTING-0031",
+    "D8-RHINO-SETTING-0032",
+    "D8-RHINO-SETTING-0033",
+    "D8-RHINO-SETTING-0034",
+    "D8-RHINO-SETTING-0035",
+    "D8-RHINO-SETTING-0036",
+    "D8-RHINO-SETTING-0037",
+    "D8-RHINO-SETTING-0038",
+    "D8-RHINO-SETTING-0039",
+    "D8-RHINO-SETTING-0040",
+    "D8-RHINO-SETTING-0041",
+    "D8-RHINO-SETTING-0042",
+    "D8-RHINO-SETTING-0043",
+    "D8-RHINO-SETTING-0044",
+    "D8-RHINO-SETTING-0045",
+    "D8-RHINO-SETTING-0046",
+    "D8-RHINO-SETTING-0047",
+    "D8-RHINO-SETTING-0048",
+    "D8-RHINO-SETTING-0049",
+    "D8-RHINO-SETTING-0050",
+    "D8-RHINO-SETTING-0051",
+    "D8-RHINO-SETTING-0052",
+    "D8-RHINO-SETTING-0053",
+    "D8-RHINO-SETTING-0054",
+    "D8-RHINO-SETTING-0055",
+    "D8-RHINO-SETTING-0056",
+    "D8-RHINO-SETTING-0057",
+    "D8-RHINO-SETTING-0058",
+    "D8-RHINO-SETTING-0059",
+    "D8-RHINO-SETTING-0060",
+    "D8-RHINO-SETTING-0061"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-SETTING-0031",
+    "D8-RHINO-SETTING-0033",
+    "D8-RHINO-SETTING-0035",
+    "D8-RHINO-SETTING-0037",
+    "D8-RHINO-SETTING-0038",
+    "D8-RHINO-SETTING-0051",
+    "D8-RHINO-SETTING-0052",
+    "D8-RHINO-SETTING-0053",
+    "D8-RHINO-SETTING-0054",
+    "D8-RHINO-SETTING-0055",
+    "D8-RHINO-SETTING-0056",
+    "D8-RHINO-SETTING-0057",
+    "D8-RHINO-SETTING-0061"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: SETTING (31 rows)",
+  "wave": 3
+}

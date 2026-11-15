@@ -1,0 +1,204 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-geometry-nodes-06",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 5,
+    "with_hint": 5,
+    "without_hint": 31
+  },
+  "deps": [],
+  "domains": [
+    "geometry_nodes"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Points",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PointsOn",
+        "rows": 1,
+        "score": 0.8,
+        "status": "implemented"
+      },
+      {
+        "name": "PointCloud",
+        "rows": 1,
+        "score": 0.715,
+        "status": "implemented"
+      },
+      {
+        "name": "Sphere",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "PointsOff",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:46",
+        "rows": 1,
+        "score": 0.715,
+        "symbol": "dino8::kernel::PointCloud"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:55",
+        "rows": 1,
+        "score": 0.653,
+        "symbol": "dino8::kernel::PointCloud::SetPointAt"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1254",
+        "rows": 1,
+        "score": 0.6,
+        "symbol": "dino8::kernel::NurbsCurve::Reverse"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:1223",
+        "rows": 1,
+        "score": 0.6,
+        "symbol": "dino8::kernel::OffsetFace"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-geometry-nodes-06",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/geometry_nodes.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GEONODE-0178": {
+      "commands": [
+        "Sphere"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0182": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::OffsetFace"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0184": {
+      "commands": [
+        "Points",
+        "PointsOn",
+        "PointsOff"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0186": {
+      "commands": [
+        "PointCloud"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud",
+        "dino8::kernel::PointCloud::SetPointAt"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0201": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::Reverse"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-GEONODE-0178",
+    "D8-BLENDER-GEONODE-0179",
+    "D8-BLENDER-GEONODE-0180",
+    "D8-BLENDER-GEONODE-0181",
+    "D8-BLENDER-GEONODE-0182",
+    "D8-BLENDER-GEONODE-0183",
+    "D8-BLENDER-GEONODE-0184",
+    "D8-BLENDER-GEONODE-0185",
+    "D8-BLENDER-GEONODE-0186",
+    "D8-BLENDER-GEONODE-0187",
+    "D8-BLENDER-GEONODE-0188",
+    "D8-BLENDER-GEONODE-0189",
+    "D8-BLENDER-GEONODE-0190",
+    "D8-BLENDER-GEONODE-0191",
+    "D8-BLENDER-GEONODE-0192",
+    "D8-BLENDER-GEONODE-0193",
+    "D8-BLENDER-GEONODE-0194",
+    "D8-BLENDER-GEONODE-0195",
+    "D8-BLENDER-GEONODE-0196",
+    "D8-BLENDER-GEONODE-0197",
+    "D8-BLENDER-GEONODE-0198",
+    "D8-BLENDER-GEONODE-0199",
+    "D8-BLENDER-GEONODE-0200",
+    "D8-BLENDER-GEONODE-0201",
+    "D8-BLENDER-GEONODE-0202",
+    "D8-BLENDER-GEONODE-0203",
+    "D8-BLENDER-GEONODE-0204",
+    "D8-BLENDER-GEONODE-0205",
+    "D8-BLENDER-GEONODE-0206",
+    "D8-BLENDER-GEONODE-0207",
+    "D8-BLENDER-GEONODE-0208",
+    "D8-BLENDER-GEONODE-0209",
+    "D8-BLENDER-GEONODE-0210",
+    "D8-BLENDER-GEONODE-0211",
+    "D8-BLENDER-GEONODE-0212",
+    "D8-BLENDER-GEONODE-0213"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-GEONODE-0179",
+    "D8-BLENDER-GEONODE-0180",
+    "D8-BLENDER-GEONODE-0181",
+    "D8-BLENDER-GEONODE-0183",
+    "D8-BLENDER-GEONODE-0185",
+    "D8-BLENDER-GEONODE-0187",
+    "D8-BLENDER-GEONODE-0188",
+    "D8-BLENDER-GEONODE-0189",
+    "D8-BLENDER-GEONODE-0190",
+    "D8-BLENDER-GEONODE-0191",
+    "D8-BLENDER-GEONODE-0192",
+    "D8-BLENDER-GEONODE-0193",
+    "D8-BLENDER-GEONODE-0194",
+    "D8-BLENDER-GEONODE-0195",
+    "D8-BLENDER-GEONODE-0196",
+    "D8-BLENDER-GEONODE-0197",
+    "D8-BLENDER-GEONODE-0198",
+    "D8-BLENDER-GEONODE-0199",
+    "D8-BLENDER-GEONODE-0200",
+    "D8-BLENDER-GEONODE-0202",
+    "D8-BLENDER-GEONODE-0203",
+    "D8-BLENDER-GEONODE-0204",
+    "D8-BLENDER-GEONODE-0205",
+    "D8-BLENDER-GEONODE-0206",
+    "D8-BLENDER-GEONODE-0207",
+    "D8-BLENDER-GEONODE-0208",
+    "D8-BLENDER-GEONODE-0209",
+    "D8-BLENDER-GEONODE-0210",
+    "D8-BLENDER-GEONODE-0211",
+    "D8-BLENDER-GEONODE-0212",
+    "D8-BLENDER-GEONODE-0213"
+  ],
+  "status": "open",
+  "title": "flow: geometry_nodes (36 rows)",
+  "wave": 1
+}

@@ -1,0 +1,265 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-curve-01",
+  "corpora": [
+    "corpus/gh/curve/curve-analysis"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 10,
+    "with_hint": 10,
+    "without_hint": 20
+  },
+  "deps": [],
+  "domains": [
+    "curve"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "CurvatureGraph",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AreaMoments",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Curvature",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Length",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CurvatureGraphOff",
+        "rows": 1,
+        "score": 0.787,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractCurvatureGraph",
+        "rows": 1,
+        "score": 0.72,
+        "status": "implemented"
+      },
+      {
+        "name": "Planar",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "ClosestPt",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Points",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "SelControlPoint",
+        "rows": 1,
+        "score": 0.6,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1478",
+        "rows": 1,
+        "score": 0.799,
+        "symbol": "dino8::kernel::NurbsCurve::ClosestPoint"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:272",
+        "rows": 2,
+        "score": 0.75,
+        "symbol": "dino8::kernel::Mesh::ClosestPoint"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1346",
+        "rows": 1,
+        "score": 0.719,
+        "symbol": "dino8::kernel::NurbsCurve::Domain"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:367",
+        "rows": 1,
+        "score": 0.713,
+        "symbol": "dino8::kernel::ClosestPointOnBrep"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1951",
+        "rows": 1,
+        "score": 0.697,
+        "symbol": "dino8::kernel::SurfaceClosestPoint"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1968",
+        "rows": 1,
+        "score": 0.694,
+        "symbol": "dino8::kernel::CurveClosestParam"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-curve-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/curve.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-CURVE-0001": {
+      "commands": [
+        "ClosestPt"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::ClosestPoint",
+        "dino8::kernel::ClosestPointOnBrep",
+        "dino8::kernel::SurfaceClosestPoint"
+      ]
+    },
+    "D8-GH-CURVE-0002": {
+      "commands": [
+        "SelControlPoint"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0003": {
+      "commands": [
+        "Curvature",
+        "CurvatureGraph"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0004": {
+      "commands": [
+        "CurvatureGraph",
+        "CurvatureGraphOff",
+        "ExtractCurvatureGraph"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0005": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::ClosestPoint",
+        "dino8::kernel::CurveClosestParam",
+        "dino8::kernel::Mesh::ClosestPoint"
+      ]
+    },
+    "D8-GH-CURVE-0006": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::Domain"
+      ]
+    },
+    "D8-GH-CURVE-0011": {
+      "commands": [
+        "Points"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0018": {
+      "commands": [
+        "Planar"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0020": {
+      "commands": [
+        "Length"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0028": {
+      "commands": [
+        "AreaMoments"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-CURVE-0001",
+    "D8-GH-CURVE-0002",
+    "D8-GH-CURVE-0003",
+    "D8-GH-CURVE-0004",
+    "D8-GH-CURVE-0005",
+    "D8-GH-CURVE-0006",
+    "D8-GH-CURVE-0007",
+    "D8-GH-CURVE-0008",
+    "D8-GH-CURVE-0009",
+    "D8-GH-CURVE-0010",
+    "D8-GH-CURVE-0011",
+    "D8-GH-CURVE-0012",
+    "D8-GH-CURVE-0013",
+    "D8-GH-CURVE-0014",
+    "D8-GH-CURVE-0015",
+    "D8-GH-CURVE-0016",
+    "D8-GH-CURVE-0017",
+    "D8-GH-CURVE-0018",
+    "D8-GH-CURVE-0019",
+    "D8-GH-CURVE-0020",
+    "D8-GH-CURVE-0021",
+    "D8-GH-CURVE-0022",
+    "D8-GH-CURVE-0023",
+    "D8-GH-CURVE-0024",
+    "D8-GH-CURVE-0025",
+    "D8-GH-CURVE-0026",
+    "D8-GH-CURVE-0027",
+    "D8-GH-CURVE-0028",
+    "D8-GH-CURVE-0029",
+    "D8-GH-CURVE-0030"
+  ],
+  "rows_without_hint": [
+    "D8-GH-CURVE-0007",
+    "D8-GH-CURVE-0008",
+    "D8-GH-CURVE-0009",
+    "D8-GH-CURVE-0010",
+    "D8-GH-CURVE-0012",
+    "D8-GH-CURVE-0013",
+    "D8-GH-CURVE-0014",
+    "D8-GH-CURVE-0015",
+    "D8-GH-CURVE-0016",
+    "D8-GH-CURVE-0017",
+    "D8-GH-CURVE-0019",
+    "D8-GH-CURVE-0021",
+    "D8-GH-CURVE-0022",
+    "D8-GH-CURVE-0023",
+    "D8-GH-CURVE-0024",
+    "D8-GH-CURVE-0025",
+    "D8-GH-CURVE-0026",
+    "D8-GH-CURVE-0027",
+    "D8-GH-CURVE-0029",
+    "D8-GH-CURVE-0030"
+  ],
+  "status": "open",
+  "title": "flow: curve (30 rows)",
+  "wave": 1
+}
