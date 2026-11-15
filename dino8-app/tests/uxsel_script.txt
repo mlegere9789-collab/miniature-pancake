@@ -1,0 +1,44 @@
+# UXSEL: SelAll, SelNone, SelPrev, SelLast, SelClosedCrv and SelOpenCrv on a hand-built scene, one block per row opened by a marker command
+# (UXBEGIN_<block>, reported as "Unknown command"). Scene: id1 Line 0,0,0-10,0,0 (open), id2 Line 20,0,0-20,5,0 (open), id3 Circle at 40,0,0 r5
+# (closed), id4 Arc 60,0,0..65,0,0 (open), id5 closed 4-edge Polyline, id6 Box, id7 Sphere, id8 MeshBox, id9 Point 0,-10,0: 9 objects, 5 curves.
+@wait 2
+SetActiveViewport Top
+Line 0,0,0 10,0,0
+Line 20,0,0 20,5,0
+Circle 40,0,0 5
+Arc 60,0,0 60,5,0 65,0,0
+Polyline 0,40,0 5,40,0 5,45,0 0,45,0 0,40,0
+Enter
+Box 0,20,0 10,30,0 10
+Sphere 40,20,10 5
+MeshBox 60,20,0 70,30,0 10
+Point 0,-10,0
+UXBEGIN_selall
+SelAll
+@expect_selected 9
+UXBEGIN_selnone
+SelNone
+@expect_selected 0
+UXBEGIN_closed
+SelClosedCrv
+@expect_selected 2
+SelNone
+UXBEGIN_open
+SelOpenCrv
+@expect_selected 3
+SelNone
+UXBEGIN_prev
+SelCrv
+SelNone
+SelPrev
+@expect_selected 5
+SelNone
+UXBEGIN_last
+SelLast
+@expect_selected 1
+Hyperlink https://dino8.example/last
+SelNone
+SelKeyValue Hyperlink https://dino8.example/last
+@expect_selected 1
+UXBEGIN_end
+
