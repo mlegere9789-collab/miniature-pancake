@@ -1993,4 +1993,12 @@ bool FaceContainsUV(const ON_BrepFace& f, double u, double v);
 std::vector<ON_2dPoint> LoopPolygon(const ON_Brep& b, int loop_index, int samples_per_trim = 24);
 bool PointInPolygon(const std::vector<ON_2dPoint>& poly, ON_2dPoint p);
 
+
+// True when surface `a` lies on BOTH sides of surface `b` at distance `step` (in-surface, perpendicular to the intersection curve) from the
+// curve point (uv_a on a, uv_b on b): a transversal crossing that is resolvable at that scale, as opposed to a one-sided tangent touch or an
+// overlap shallower than `step` could ever resolve. The signed separation g(s) = (A(uv_a + s w) - P) . nB is s sin(theta) + O(s^2) at a
+// crossing; the two signs g(+step), g(-step) differ exactly when sin(theta) exceeds about step * curvature. Callers pass the SSX tolerance
+// as `step`: an overlap whose crossing curves lie closer together than the tolerance is tangent for every purpose of the Boolean pipeline.
+bool SurfacesCrossAtPoint(const ON_Surface& a, const ON_Surface& b, const ON_2dPoint& uv_a, const ON_2dPoint& uv_b, double step);
+
 }  // namespace dino8::kernel
