@@ -1,0 +1,22 @@
+# RWIORG (sections/94_rwiorg.sh): export with a chosen origin. @TMP@ = scratch. Two 10 mm boxes (0..10 and 20..30 in x, 0..10 in y and z) in a millimetre document.
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+SelAll
+ExportWithOrigin 5,5,0 @TMP@/org.obj
+SelAll
+ExportWithOrigin 5,5,0 @TMP@/org.stl
+SelAll
+ExportWithOrigin 5,5,0 @TMP@/org.ply
+SelAll
+ExportWithOrigin 5,5,0 @TMP@/org.igs
+SelAll
+ExportWithOrigin 5,5,0 @TMP@/org.sat
+SelAll
+ExportWithOrigin 5,5,0 @TMP@/org.3dm
+# the point may also have a z: -5,0,4 moves the boxes by (+5,0,-4)
+SelAll
+ExportWithOrigin -5,0,4 @TMP@/orgz.obj
+# the drawing itself is not moved by exporting
+SelAll
+Export @TMP@/orig.obj
+@expect_objects 2
