@@ -5,6 +5,12 @@ name: Kernel verify
 # (DINO8_TEST_SHARD=k/N, each shard in its own scratch directory) and reports the
 # exact ok / FAILED line counts per shard. It never publishes anything and does not
 # run on the main or claude/* branches.
+#
+# Evidence (master plan 7.5): every shard and every app-section group also writes one JSON line per check
+# (DINO8_TEST_JSONL for the kernel runner, DINO8_SECTION_JSONL for run_sections.sh), prints the validator's summary
+# (parity/tools/evidence_summary.py: the JSONL counts against the printed ok / FAIL counts of that shard or group) and uploads the
+# JSONL files as the artifacts evidence-shard-K / evidence-group-G. A branch whose test runners predate those variables writes
+# nothing; the step then says so and carries on.
 
 on:
   push:
@@ -54,7 +60,25 @@ jobs:
           cp dino8-kernel/build/tests/dino8_continuity2_tests bundle/ || true
           cp dino8-kernel/build/tests/dino8_surface_fillet_extra bundle/ || true
       - uses: actions/upload-artifact@v4
+        id: up1
+        continue-on-error: true
         with:
+          name: kernel-test-binaries
+          path: bundle/
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: up2
+        if: steps.up1.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: kernel-test-binaries
+          path: bundle/
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: steps.up1.outcome == 'failure' && steps.up2.outcome == 'failure'
+        with:
+          overwrite: true
           name: kernel-test-binaries
           path: bundle/
           retention-days: 3
@@ -69,6 +93,14 @@ jobs:
         k: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Evidence settings
+        run: |
+          s=$(git log -1 --format=%s)
+          case "$s" in "kverify: "*|"kvlite: "*) ev=$(git rev-parse -q --verify HEAD^ || git rev-parse HEAD);; *) ev=$(git rev-parse HEAD);; esac
+          echo "DINO8_EVIDENCE_SHA=$ev" >> "$GITHUB_ENV"
+          echo "evidence sha (the commit under test): $ev"
       - uses: actions/download-artifact@v4
         with:
           name: kernel-test-binaries
@@ -79,12 +111,17 @@ jobs:
           chmod +x bundle/*
           mkdir -p scratch && cd scratch
           set +e
-          DINO8_TEST_SHARD="${{ matrix.k }}/12" timeout 3000 ../bundle/dino8_kernel_tests > ../shard.log 2> ../shard.err
+          # DINO8_TEST_TIMING prints "timing: <test> <s>" per test; DINO8_TEST_WATCHDOG=900 names a test that hangs (exit 124) after 15 min
+          # instead of letting it sit until this step's 3000 s limit. Shard assignment is time-weighted (kHeavyTests in test_registry.cpp).
+          DINO8_TEST_JSONL="$GITHUB_WORKSPACE/evidence-shard.jsonl" DINO8_TEST_TIMING=1 DINO8_TEST_WATCHDOG=900 DINO8_TEST_SHARD="${{ matrix.k }}/12" timeout 3000 ../bundle/dino8_kernel_tests > ../shard.log 2> ../shard.err
           rc=$?
           set -e
           echo "shard ${{ matrix.k }}/12 exit=$rc ok=$(grep -c '^ok' ../shard.log) FAILED=$(grep -c '^FAILED' ../shard.err)"
+          echo "---- slowest tests of this shard (seconds; total $(grep '^timing:' ../shard.log | awk '{s+=$3} END{printf "%d", s}')) ----"
+          grep '^timing:' ../shard.log | sort -k3 -nr | head -12 || true
+          grep 'did not finish within DINO8_TEST_WATCHDOG' ../shard.err || true
           grep '^FAILED' ../shard.err | sort | uniq -c | head -50 || true
-          if [ "${{ matrix.k }}" = "0" ]; then ../bundle/dino8_continuity2_tests 2>&1 | tail -3 || true; fi
+          if [ "${{ matrix.k }}" = "0" ]; then DINO8_TEST_JSONL="$GITHUB_WORKSPACE/evidence-continuity2.jsonl" ../bundle/dino8_continuity2_tests > ../c2.log 2>&1 || true; tail -3 ../c2.log || true; fi
           if [ "${{ matrix.k }}" = "1" ] && [ -x ../bundle/dino8_surface_fillet_extra ]; then (../bundle/dino8_surface_fillet_extra > ../fillet_extra.log 2>&1; echo "surface_fillet_extra exit=$? ok=$(grep -c '^ok' ../fillet_extra.log) FAILED=$(grep -c '^FAILED' ../fillet_extra.log)"; grep -E '^\[probe|^FAILED' ../fillet_extra.log | head -40) || true; fi
           cd ..
           # Per-feature evidence: every non-empty line of .kverify_filters (a file in the repo root of the
@@ -102,14 +139,70 @@ jobs:
             done < ../.kverify_filters
             cd ..
           fi
+          # Evidence summary (master plan 7.5): the JSONL counts of this shard against its printed ok / FAILED counts.
+          EVT=parity/tools/evidence_summary.py
+          if [ -s evidence-shard.jsonl ] && [ -f "$EVT" ]; then
+            python3 "$EVT" --log kernel=shard.log --log kernel=shard.err --tests --failed evidence-shard.jsonl > evidence-shard.txt 2>&1 || true
+            grep -vE '^evidence (test|section) ' evidence-shard.txt | cut -c1-300 | head -60 || true
+            if [ -s evidence-continuity2.jsonl ]; then python3 "$EVT" --log continuity2=c2.log evidence-continuity2.jsonl 2>&1 | cut -c1-300 | head -12 || true; fi
+          else
+            echo "evidence: none written (this branch has no DINO8_TEST_JSONL support in the kernel test runner or no validator)"
+          fi
           exit $rc
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: shard-${{ matrix.k }}-logs
           path: |
             shard.log
             shard.err
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: evup1
+        if: always()
+        continue-on-error: true
+        with:
+          name: evidence-shard-${{ matrix.k }}
+          path: |
+            evidence-shard.jsonl
+            evidence-shard.txt
+            evidence-continuity2.jsonl
+            c2.log
+            shard.log
+            shard.err
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: evup2
+        if: always() && steps.evup1.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-shard-${{ matrix.k }}
+          path: |
+            evidence-shard.jsonl
+            evidence-shard.txt
+            evidence-continuity2.jsonl
+            c2.log
+            shard.log
+            shard.err
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evup1.outcome == 'failure' && steps.evup2.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-shard-${{ matrix.k }}
+          path: |
+            evidence-shard.jsonl
+            evidence-shard.txt
+            evidence-continuity2.jsonl
+            c2.log
+            shard.log
+            shard.err
+          if-no-files-found: ignore
           retention-days: 3
 
   app-build:
@@ -152,6 +245,15 @@ jobs:
                   # section FILES (tests/sections/NN_name.sh) are listed as "  NAME /path/to/file.sh": schedule them too
                   m = re.match(r'\s+(\S+)\s+(\S+\.sh)\s*$', line)
                   if m: items.append((m.group(1), 150))
+          # weight by measured seconds when dino8-app/tests/section_weights.txt lists the section (NAME SECONDS); else 60 s
+          weights = {}
+          try:
+              for wl in open('dino8-app/tests/section_weights.txt'):
+                  wm = re.match(r'\s*([A-Za-z0-9_]+)\s+(\d+)\s*$', wl)
+                  if wm: weights[wm.group(1)] = int(wm.group(2))
+          except OSError:
+              pass
+          if weights: items = [(n, weights.get(n, 60)) for n, _ in items]
           items.sort(key=lambda t: -t[1])
           G = 12
           groups = [[] for _ in range(G)]; load = [0] * G
@@ -161,7 +263,37 @@ jobs:
           print({i: (load[i], groups[i]) for i in range(G)})
           PY
       - uses: actions/upload-artifact@v4
+        id: up1
+        continue-on-error: true
         with:
+          name: app-binary
+          path: |
+            dino8-app/build/
+            !dino8-app/build/**/*.o
+            !dino8-app/build/**/*.a
+            !dino8-app/build/CMakeFiles/**
+            !dino8-app/build/_deps/**
+            section_groups.json
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: up2
+        if: steps.up1.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: app-binary
+          path: |
+            dino8-app/build/
+            !dino8-app/build/**/*.o
+            !dino8-app/build/**/*.a
+            !dino8-app/build/CMakeFiles/**
+            !dino8-app/build/_deps/**
+            section_groups.json
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: steps.up1.outcome == 'failure' && steps.up2.outcome == 'failure'
+        with:
+          overwrite: true
           name: app-binary
           path: |
             dino8-app/build/
@@ -182,6 +314,14 @@ jobs:
         g: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Evidence settings
+        run: |
+          s=$(git log -1 --format=%s)
+          case "$s" in "kverify: "*|"kvlite: "*) ev=$(git rev-parse -q --verify HEAD^ || git rev-parse HEAD);; *) ev=$(git rev-parse HEAD);; esac
+          echo "DINO8_EVIDENCE_SHA=$ev" >> "$GITHUB_ENV"
+          echo "evidence sha (the commit under test): $ev"
       - name: Install dependencies
         run: |
           sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
@@ -211,7 +351,7 @@ jobs:
           NAMES=$(python3 -c "import json;print(' '.join(json.load(open('$JSON'))[${{ matrix.g }}]))")
           echo "group ${{ matrix.g }}: $NAMES"
           set +e
-          bash dino8-app/tests/run_sections.sh -b "$PWD/$BIN" -t 6000 $NAMES > group.log 2>&1
+          DINO8_SECTION_JSONL="$PWD/evidence-group.jsonl" bash dino8-app/tests/run_sections.sh -b "$PWD/$BIN" -t 6000 $NAMES > group.log 2>&1
           rc=$?
           set -e
           echo "group ${{ matrix.g }} exit=$rc ok=$(grep -c '^ok' group.log) FAIL=$(grep -c '^FAIL' group.log)"
@@ -222,10 +362,56 @@ jobs:
           grep -A4 -E '^FAIL' group.log | cut -c1-400 | head -120 || true
           echo "---- run_sections summary (tail) ----"
           tail -n 40 group.log | cut -c1-200 || true
+          # Evidence summary (master plan 7.5): the JSONL counts of this group against its printed ok / FAIL counts.
+          EVT=parity/tools/evidence_summary.py
+          if [ -s evidence-group.jsonl ] && [ -f "$EVT" ]; then
+            python3 "$EVT" --log app=group.log --tests --failed evidence-group.jsonl > evidence-group.txt 2>&1 || true
+            grep -vE '^evidence (test|section) ' evidence-group.txt | cut -c1-300 | head -60 || true
+          else
+            echo "evidence: none written (this branch has no DINO8_SECTION_JSONL support in run_sections.sh or no validator)"
+          fi
           exit $rc
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: group-${{ matrix.g }}-log
           path: group.log
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: evup1
+        if: always()
+        continue-on-error: true
+        with:
+          name: evidence-group-${{ matrix.g }}
+          path: |
+            evidence-group.jsonl
+            evidence-group.txt
+            group.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        id: evup2
+        if: always() && steps.evup1.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-group-${{ matrix.g }}
+          path: |
+            evidence-group.jsonl
+            evidence-group.txt
+            group.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evup1.outcome == 'failure' && steps.evup2.outcome == 'failure'
+        continue-on-error: true
+        with:
+          overwrite: true
+          name: evidence-group-${{ matrix.g }}
+          path: |
+            evidence-group.jsonl
+            evidence-group.txt
+            group.log
+          if-no-files-found: ignore
           retention-days: 3
