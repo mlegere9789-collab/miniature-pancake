@@ -7,7 +7,7 @@
 //
 // The oracle is independent of the intersector: the closed form of the cut. A plane z = c meets the wall of the r = 0.5 cylinder
 // about the vertical line (x0, y0) in the circle of radius 0.5 about that line, so EVERY chain point has z == c and a radial distance
-// of exactly 0.5 from the axis, to the floating-point floor, not merely to the acceptance tolerance.
+// of exactly 0.5 from the axis. The solve now iterates to a thousandth of the caller's tolerance (1e-6 at the default 1e-3).
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -56,6 +56,6 @@ D8_EXTRA_TEST(SsxChainPointsLieOnBothSurfaces) {
     }
   }
   d8test::Check(curves_seen >= 8, "fixture: each of the four hole axes is cut by both the z = 0 and the z = 4 plane");
-  d8test::Check(worst < 1e-8,
-                "every chain point lies on the cut circle (radius 0.5 about the axis, on the plane) to 1e-8, not merely within the 1e-3 acceptance tolerance");
+  d8test::Check(worst < 1e-6,
+                "every chain point lies on the cut circle (radius 0.5 about the axis, on the plane) to 1e-6 (a thousandth of the 1e-3 tolerance), not merely within the tolerance");
 }

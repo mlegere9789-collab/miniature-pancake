@@ -748,6 +748,10 @@ class VertexWelder {
 // surface's own full parameter domain rectangle for an untrimmed face) --
 // `loop_slot` selects which of the face's loops to sample (0 = the outer loop; > 0 = a pre-existing inner loop, for which no
 // whole-domain fallback is made - the result may be short and the caller must check).
+// ON_BrepEdge::m_edge_user.i of an edge BuildLoop() made: one segment of a dense polyline (see FaceBoundaryLoop()). An edge of any other
+// origin (a Box() edge, a revolve seam) keeps the default 0 and is still re-sampled on read.
+constexpr int kLoopChordEdgeMarker = 0x44384c43;
+
 std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samples_per_edge = 24, int loop_slot = 0) {
   const ON_BrepFace& face = brep.m_F[face_index];
   const ON_Surface* s = face.SurfaceOf();
@@ -792,7 +796,8 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
       // (measured, drilling four holes one after another into a slab: the first hole's rim 62 -> 1150 -> 13825 points, the
       // fourth drilling 31 s, a trim polygon of 34113 vertices). A loop is now read back exactly as it was written, so an operation
       // that does not cut a rim leaves its points alone and both faces of a shared edge keep the identical point sequence.
-      if (trim.m_ei >= 0 && trim.m_ei < brep.m_E.Count() && c2->IsLinear() && ON_LineCurve::Cast(brep.m_E[trim.m_ei].EdgeCurveOf()) != nullptr) {
+      if (trim.m_ei >= 0 && trim.m_ei < brep.m_E.Count() && brep.m_E[trim.m_ei].m_edge_user.i == kLoopChordEdgeMarker && c2->IsLinear() &&
+          ON_LineCurve::Cast(brep.m_E[trim.m_ei].EdgeCurveOf()) != nullptr) {
         const ON_2dPoint uv = c2->PointAt(d.Min());
         out.push_back({s->PointAt(uv.x, uv.y), uv});
         continue;
@@ -3054,6 +3059,7 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
       const int c3i = brep.AddEdgeCurve(c3);
       ON_BrepEdge& edge = brep.NewEdge(brep.m_V[vid_from], brep.m_V[vid_to], c3i);
       edge.m_tolerance = 0.0;
+      edge.m_edge_user.i = kLoopChordEdgeMarker;
       edge_index = edge.m_edge_index;
       edge_of_pair.emplace(key, edge_index);
     } else {
