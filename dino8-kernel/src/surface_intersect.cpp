@@ -855,11 +855,6 @@ std::vector<ON_2dPoint> LoopPolygon(const ON_Brep& b, int loop_index, int sample
 namespace {
 thread_local bool g_keyhole_tolerant_trim_test = false;
 bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v);
-// A curved (non-iso, non-polyline) trim is sampled at this many points per trim for the containment test. 24 left chords up to
-// 0.0086 inside a unit circle: a curve crossing a cylinder cap's rim was clipped 1.5e-3 short of the corner the adjacent wall's
-// own rim gives, more than the SSX tolerance, so the corners of two faces never met and the result stayed open (two parallel
-// unit cylinders 1 apart, intersected). 96 samples keep the chord error under 6e-4 of the radius.
-constexpr int kContainmentSamplesPerTrim = 96;
 }  // namespace
 
 // A face with a hole built by the general Boolean (a drilled plate's top/
@@ -909,12 +904,12 @@ bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v) {
   bool inside_outer = false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::outer) inside_outer = PointInPolygon(LoopPolygon(*b, f.m_li[li], kContainmentSamplesPerTrim), p);
+    if (loop.m_type == ON_BrepLoop::outer) inside_outer = PointInPolygon(LoopPolygon(*b, f.m_li[li]), p);
   }
   if (!inside_outer) return false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::inner && PointInPolygon(LoopPolygon(*b, f.m_li[li], kContainmentSamplesPerTrim), p)) return false;
+    if (loop.m_type == ON_BrepLoop::inner && PointInPolygon(LoopPolygon(*b, f.m_li[li]), p)) return false;
   }
   return true;
 }
