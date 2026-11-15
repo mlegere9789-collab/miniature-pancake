@@ -18,7 +18,9 @@
 # so Area and Volume read 0 and SrfSeam answered "no surface near that point" for the face.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then SFSM_RUN=(timeout 900 "$BIN" --smoke 60 --script); else SFSM_RUN=(timeout 900 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script); fi
 SFSM_DIR="$(mktemp -d)"
-sed -e "s|@SFSMFILE@|$HERE/sfsm_graph.dflow|g" -e "s|@SFSMBOXFILE@|$HERE/sfsm_box_graph.dflow|g" "$HERE/sfsm_script.txt" > "$SFSM_DIR/sfsm_script.txt"
+# The two .dflow paths become literal TEXT inside the script the app parses, so they need the OS-native form ($HEREW, see smoke.sh):
+# on Windows the POSIX form /d/a/... of $HERE is not a path the app can open ("no such file"), and every SFSM_ check read nothing.
+sed -e "s|@SFSMFILE@|${HEREW:-$HERE}/sfsm_graph.dflow|g" -e "s|@SFSMBOXFILE@|${HEREW:-$HERE}/sfsm_box_graph.dflow|g" "$HERE/sfsm_script.txt" > "$SFSM_DIR/sfsm_script.txt"
 SFSMO="$("${SFSM_RUN[@]}" "$SFSM_DIR/sfsm_script.txt" 2>&1)" || { echo "$SFSMO"; echo "FAIL: sfsm script exited non-zero"; rm -rf "$SFSM_DIR"; exit 1; }
 rm -rf "$SFSM_DIR"
 sfsm_blk() { awk -v name="$1" '$0 ~ ("Unknown command: SFSMBEGIN_" name "$") { on = 1; next } on && /Unknown command: SFSMBEGIN_/ { exit } on { print }' <<<"$SFSMO"; }
