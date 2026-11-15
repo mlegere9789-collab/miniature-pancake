@@ -142,3 +142,16 @@ Blocking conditions (before any row counts toward parity scoring):
 2. Do not credit or count the 52 `UNVERIFIED` rows until each has a page; repoint the 28 `_AC29_Help/` rows to a real topic page or drop them.
 
 Other fixes: apply `fixes_archicad.ndjson`; add `alias_of` for the duplicate pairs listed in section 3; give `new2930` rows their functional factory; move pure 2D rows to `cad-2d` or document why not; add rows for the gaps above; expand fragment statements into checkable outcomes. A re-sample after fixes is advised because this review's rate was measured on the sample only.
+
+## 7. Second-session verification (2026-11-15)
+
+A second independent session continued after the first was cut off by a usage limit and checked the first pass instead of redoing it.
+
+- The sample is reproducible: re-running the sampling over the current register gives exactly the 224 ids in `sample_ids_archicad.txt` (924 rows). The strict validator passes on the untouched register.
+- Counts re-derived from the rows: 36 `REJECTED`, 52 `UNVERIFIED`, 28 rows citing `_AC29_Help/` (the page still returns 404), 24 `Best` of 924. All match section 3.
+- Re-read on the live pages: IFC-0033 (the Issue Manager page has no camera, clipping plane or snapshot wording, so the statement fix stands); HOTLINK-0012 (the cited About Hotlink Modules page does not report missing files or any cached copy, as the first pass said; but it does say that a module stays in the host project and stays visible when its source is missing, and that it cannot be updated until the source returns. The `alias_of` fix to HOTLINK-0018 is still sensible, but its reason text overstates: the page says something about missing sources, only not what the row claims).
+- Gap sample re-checked: PARAM-O manager, Model Compare view comparison and Licensing license-types pages return 200. The first pass says no row mentions these subjects; this is slightly too strong. GDL-0047 describes the PARAM-O node editor in one row, TEAM-0049 describes comparing the local copy before and after a receive, and HOTLINK-0003 mentions refreshing placed modules. The gaps listed are therefore finer-grained topics inside areas with one coarse row, not wholly absent areas (the first pass says this for PARAM-O only). Gaps 4 to 6 and 11 to 13 should be read that way.
+- Brief deviation: fixes files use `.ndjson`, not `.jsonl`, for the validator reason given in the Rhino review.
+- Hosts outside the allowed list (`archicadapi.graphisoft.com`, `gdl.graphisoft.com`, `github.com`, pypi page) were not reachable; rows that cite them (18 + 12 + n/a + 12) remain unchecked, and that is stated as unchecked, not as defects.
+
+Verdict unchanged: **ACCEPT WITH FIXES**, blocking conditions 1 and 2 as in section 6.

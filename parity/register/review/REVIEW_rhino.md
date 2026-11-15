@@ -119,3 +119,38 @@ Conditions before the rows are used to measure parity:
 3. Repoint redirect-stub `source.doc` values to their targets and apply the doc and statement fixes in the fixes file; re-run the sampling after fixes.
 4. Decide the factory mapping for SELECT/VIEW/SETTING/ORG/DIGIT explicitly, because it sets their wave.
 5. Add rows for the 20 gaps above.
+
+## 7. Second-session verification and additions (2026-11-15)
+
+A second independent session continued after the first was cut off by a usage limit. It did not redo the sample; it checked the first pass instead.
+
+- The sample is reproducible: re-running the sampling over the current register gives exactly the 211 ids in `sample_ids_rhino.txt` (1,356 rows). The strict validator passes on the untouched register (10,660 rows, 0 errors, 0 warnings).
+- Re-checked on the live pages: ExtractPipedCurve (the page says the command copies the piping display mesh into a separate mesh object, so CURVE-0043 is a real defect); ChangeDegree (the page has no mention of any deviation report, so CURVE-0129 is real); SelClosedSubD (the stub redirects to the selection-commands page, which fixes SELECT-0024). Not re-checked: the other fixes, which I leave as proposals.
+- Gap claims re-checked against the rows: no row mentions STL, OBJ, text fields, focal blur, edge softening, thickening, the SVG editor, the button editor, drag and drop of files, the select-color dialog, or naming conventions. The gap table in section 5 holds.
+- Deviation from the brief: the brief asks for `fixes_*.jsonl`; the first session used `.ndjson` because `validate_register.py` globs every `parity/register/**/*.jsonl` and does not skip `review/` (no mention of "review" in the tool). I kept `.ndjson` so the register validator stays green.
+- The first pass stopped at 20 gaps and said the sweep had run dry. It had not: the file-format section of the help (reached by following links from the cited pages) lists far more formats than the 37 FILE rows cover. Rows exist only for DWG/DXF, IGES options, STEP, SketchUp and the Rhino 9 list in FILE-0034 (E57, glTF, FBX, PLY, USD). Gaps 21 to 40 below all have a reachable page (HTTP 200 on `https://docs.mcneel.com/rhino/8/help/en-us/fileio/`) and no row that names the format.
+
+| # | Feature (page under `fileio/`) |
+|---|---|
+| 21 | 3D Studio import/export, `3dstudio_3dsimportexport.htm` |
+| 22 | 3MF export, `3mf.htm` |
+| 23 | Adobe Illustrator import/export, `ai_ai_import_export.htm` |
+| 24 | Microstation DGN import, `microstation_dgn_import.htm` |
+| 25 | DirectX import/export, `directx_x_import_export.htm` |
+| 26 | Encapsulated PostScript import, `encapsulated_postscript_eps_import.htm` |
+| 27 | LightWave import/export, `lightwave_lwo_import_export.htm` |
+| 28 | Geomview OFF import, `geomview_off_import.htm` |
+| 29 | Point file import (asc, csv, xyz, pts), `points_file_asc_csv_txt_xyz_cgo_import.htm` |
+| 30 | SOLIDWORKS part and assembly import, `solidworks_sldprt_sldasm_import.htm` |
+| 31 | Slice (SLC) import/export, `slice_slc_import_export.htm` |
+| 32 | VRML import/export, `vrml_vrml_import_export.htm` |
+| 33 | ACIS SAT export, `acis_sat_export.htm` |
+| 34 | Parasolid export, `parasolid_x_t_export.htm` |
+| 35 | COLLADA export, `collada_dae_export.htm` |
+| 36 | Google Earth KMZ export, `google_earth_kml_kmz_export.htm` |
+| 37 | Object properties CSV export, `object_properties_csv_export.htm` |
+| 38 | POV-Ray and RenderMan RIB export, `pov-ray_pov_export.htm`, `renderman_rib_export.htm` |
+| 39 | X3D and XAML export, `x3d_x3dv_export.htm`, `xaml_xaml_export.htm` |
+| 40 | Windows metafile (WMF/EMF) export, `windows_metafile_wmf_emf_export.htm` |
+
+Consequence for the verdict: the "command index is fully covered" statement in section 6 is true for commands only. Import and export formats are a real hole in FILE (about 40 formats on the index, roughly a quarter with any row). The verdict stays **ACCEPT WITH FIXES**, with condition 5 widened to "add rows for the file formats above and for the 20 gaps in section 5".
