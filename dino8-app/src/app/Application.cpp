@@ -99,6 +99,7 @@ void RegisterStateCommands(CommandEngine&);
 void RegisterViewToolsCommands(CommandEngine&);
 void RegisterFlowCommands(CommandEngine&);
 void RegisterDrafting2Commands(CommandEngine&);  // hatch library, tables, BoM, GD&T, multi-leaders, section views
+void RegisterDraftDocsCommands(CommandEngine&);  // TCount, TextAlign, Txt2Mtxt, HatchToBack, SpaceTrans, DimContinue/Baseline/Space/Arc/Disassociate
 void RegisterExchange2Commands(CommandEngine&);
 void RegisterConstraintCommands(CommandEngine&);  // cmd_constraints.cpp
 void ConstraintsFrame(Application&);              // cmd_constraints.cpp: auto re-solve + glyph overlay
@@ -406,6 +407,7 @@ void Application::RegisterCommands() {
   RegisterSmartBlockCommands(*engine_);
   RegisterAnnotate2Commands(*engine_);  // dimensions, linetypes, hatch and block extras
   RegisterDrafting2Commands(*engine_);  // re-registers Hatch against the pattern library; adds tables/BoM/GD&T/leaders/sections
+  RegisterDraftDocsCommands(*engine_);  // AutoCAD drafting/documentation commands (TCount, TextAlign, DimContinue, HatchToBack...)
   RegisterSelect2Commands(*engine_);
   RegisterStateCommands(*engine_);
   RegisterCurves2Commands(*engine_);

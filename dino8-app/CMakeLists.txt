@@ -281,6 +281,7 @@ set(DINO8_SOURCES
   src/commands/cmd_drafting.cpp
   src/commands/cmd_smartblocks.cpp
   src/commands/cmd_drafting2.cpp
+  src/commands/cmd_draftdocs.cpp
   src/drafting/HatchLibrary.cpp
   src/drafting/Table.cpp
   src/drafting/Gdt.cpp

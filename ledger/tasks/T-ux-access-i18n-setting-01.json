@@ -1,0 +1,238 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-setting-01",
+  "corpora": [
+    "options fixtures: default and customized option files and document properties"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 9,
+    "with_hint": 9,
+    "without_hint": 21
+  },
+  "deps": [],
+  "domains": [
+    "SETTING"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "FileExplorer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Libraries",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Licenses",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Nudge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderSettings",
+        "rows": 1,
+        "score": 0.735,
+        "status": "implemented"
+      },
+      {
+        "name": "ClippingPlane",
+        "rows": 1,
+        "score": 0.725,
+        "status": "implemented"
+      },
+      {
+        "name": "LinetypeDisplay",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "3DconnexionOptions",
+        "rows": 1,
+        "score": 0.68,
+        "status": "implemented"
+      },
+      {
+        "name": "SpaceMouseOptions",
+        "rows": 1,
+        "score": 0.68,
+        "status": "implemented"
+      },
+      {
+        "name": "SelClippingPlane",
+        "rows": 1,
+        "score": 0.64,
+        "status": "implemented"
+      },
+      {
+        "name": "DisableClippingPlane",
+        "rows": 1,
+        "score": 0.631,
+        "status": "implemented"
+      },
+      {
+        "name": "Options",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:126",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::ClippingPlaneInfo"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-setting-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SETTING.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SETTING-0001": {
+      "commands": [
+        "3DconnexionOptions",
+        "SpaceMouseOptions"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0006": {
+      "commands": [
+        "FileExplorer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0012": {
+      "commands": [
+        "Libraries"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0013": {
+      "commands": [
+        "Licenses"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0016": {
+      "commands": [
+        "Nudge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0019": {
+      "commands": [
+        "RenderSettings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0024": {
+      "commands": [
+        "Options"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SETTING-0025": {
+      "commands": [
+        "ClippingPlane",
+        "SelClippingPlane",
+        "DisableClippingPlane"
+      ],
+      "kernel": [
+        "dino8::kernel::ClippingPlaneInfo"
+      ]
+    },
+    "D8-RHINO-SETTING-0030": {
+      "commands": [
+        "LinetypeDisplay"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SETTING-0001",
+    "D8-RHINO-SETTING-0002",
+    "D8-RHINO-SETTING-0003",
+    "D8-RHINO-SETTING-0004",
+    "D8-RHINO-SETTING-0005",
+    "D8-RHINO-SETTING-0006",
+    "D8-RHINO-SETTING-0007",
+    "D8-RHINO-SETTING-0008",
+    "D8-RHINO-SETTING-0009",
+    "D8-RHINO-SETTING-0010",
+    "D8-RHINO-SETTING-0011",
+    "D8-RHINO-SETTING-0012",
+    "D8-RHINO-SETTING-0013",
+    "D8-RHINO-SETTING-0014",
+    "D8-RHINO-SETTING-0015",
+    "D8-RHINO-SETTING-0016",
+    "D8-RHINO-SETTING-0017",
+    "D8-RHINO-SETTING-0018",
+    "D8-RHINO-SETTING-0019",
+    "D8-RHINO-SETTING-0020",
+    "D8-RHINO-SETTING-0021",
+    "D8-RHINO-SETTING-0022",
+    "D8-RHINO-SETTING-0023",
+    "D8-RHINO-SETTING-0024",
+    "D8-RHINO-SETTING-0025",
+    "D8-RHINO-SETTING-0026",
+    "D8-RHINO-SETTING-0027",
+    "D8-RHINO-SETTING-0028",
+    "D8-RHINO-SETTING-0029",
+    "D8-RHINO-SETTING-0030"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-SETTING-0002",
+    "D8-RHINO-SETTING-0003",
+    "D8-RHINO-SETTING-0004",
+    "D8-RHINO-SETTING-0005",
+    "D8-RHINO-SETTING-0007",
+    "D8-RHINO-SETTING-0008",
+    "D8-RHINO-SETTING-0009",
+    "D8-RHINO-SETTING-0010",
+    "D8-RHINO-SETTING-0011",
+    "D8-RHINO-SETTING-0014",
+    "D8-RHINO-SETTING-0015",
+    "D8-RHINO-SETTING-0017",
+    "D8-RHINO-SETTING-0018",
+    "D8-RHINO-SETTING-0020",
+    "D8-RHINO-SETTING-0021",
+    "D8-RHINO-SETTING-0022",
+    "D8-RHINO-SETTING-0023",
+    "D8-RHINO-SETTING-0026",
+    "D8-RHINO-SETTING-0027",
+    "D8-RHINO-SETTING-0028",
+    "D8-RHINO-SETTING-0029"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: SETTING (30 rows)",
+  "wave": 3
+}

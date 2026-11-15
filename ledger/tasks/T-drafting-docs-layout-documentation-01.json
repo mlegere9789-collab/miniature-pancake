@@ -1,0 +1,200 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-drafting-docs-layout-documentation-01",
+  "corpora": [
+    "golden/sketchup/layout"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 5,
+    "with_hint": 5,
+    "without_hint": 25
+  },
+  "deps": [],
+  "domains": [
+    "layout-documentation"
+  ],
+  "factory": "drafting-docs",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Chamfer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Extend",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Fillet",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Trim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferSrf",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferEdge",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtendSrf",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "FilletSrf",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:351",
+        "rows": 1,
+        "score": 0.653,
+        "symbol": "dino8::kernel::DimensionLinearInfo"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:1338",
+        "rows": 1,
+        "score": 0.605,
+        "symbol": "dino8::kernel::Model::AddDimensionLinear"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-drafting-docs-layout-documentation-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "sketchup"
+  ],
+  "register_files": [
+    "sketchup/layout-documentation.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-SKETCHUP-LAYOUT-0014": {
+      "commands": [
+        "Trim"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-LAYOUT-0015": {
+      "commands": [
+        "Extend",
+        "ExtendSrf"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-LAYOUT-0016": {
+      "commands": [
+        "Fillet",
+        "FilletSrf"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-LAYOUT-0017": {
+      "commands": [
+        "Chamfer",
+        "ChamferSrf",
+        "ChamferEdge"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-LAYOUT-0029": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::DimensionLinearInfo",
+        "dino8::kernel::Model::AddDimensionLinear"
+      ]
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-LAYOUT-0001",
+    "D8-SKETCHUP-LAYOUT-0002",
+    "D8-SKETCHUP-LAYOUT-0003",
+    "D8-SKETCHUP-LAYOUT-0004",
+    "D8-SKETCHUP-LAYOUT-0005",
+    "D8-SKETCHUP-LAYOUT-0006",
+    "D8-SKETCHUP-LAYOUT-0007",
+    "D8-SKETCHUP-LAYOUT-0008",
+    "D8-SKETCHUP-LAYOUT-0009",
+    "D8-SKETCHUP-LAYOUT-0010",
+    "D8-SKETCHUP-LAYOUT-0011",
+    "D8-SKETCHUP-LAYOUT-0012",
+    "D8-SKETCHUP-LAYOUT-0013",
+    "D8-SKETCHUP-LAYOUT-0014",
+    "D8-SKETCHUP-LAYOUT-0015",
+    "D8-SKETCHUP-LAYOUT-0016",
+    "D8-SKETCHUP-LAYOUT-0017",
+    "D8-SKETCHUP-LAYOUT-0018",
+    "D8-SKETCHUP-LAYOUT-0019",
+    "D8-SKETCHUP-LAYOUT-0020",
+    "D8-SKETCHUP-LAYOUT-0021",
+    "D8-SKETCHUP-LAYOUT-0022",
+    "D8-SKETCHUP-LAYOUT-0023",
+    "D8-SKETCHUP-LAYOUT-0024",
+    "D8-SKETCHUP-LAYOUT-0025",
+    "D8-SKETCHUP-LAYOUT-0026",
+    "D8-SKETCHUP-LAYOUT-0027",
+    "D8-SKETCHUP-LAYOUT-0028",
+    "D8-SKETCHUP-LAYOUT-0029",
+    "D8-SKETCHUP-LAYOUT-0030"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-LAYOUT-0001",
+    "D8-SKETCHUP-LAYOUT-0002",
+    "D8-SKETCHUP-LAYOUT-0003",
+    "D8-SKETCHUP-LAYOUT-0004",
+    "D8-SKETCHUP-LAYOUT-0005",
+    "D8-SKETCHUP-LAYOUT-0006",
+    "D8-SKETCHUP-LAYOUT-0007",
+    "D8-SKETCHUP-LAYOUT-0008",
+    "D8-SKETCHUP-LAYOUT-0009",
+    "D8-SKETCHUP-LAYOUT-0010",
+    "D8-SKETCHUP-LAYOUT-0011",
+    "D8-SKETCHUP-LAYOUT-0012",
+    "D8-SKETCHUP-LAYOUT-0013",
+    "D8-SKETCHUP-LAYOUT-0018",
+    "D8-SKETCHUP-LAYOUT-0019",
+    "D8-SKETCHUP-LAYOUT-0020",
+    "D8-SKETCHUP-LAYOUT-0021",
+    "D8-SKETCHUP-LAYOUT-0022",
+    "D8-SKETCHUP-LAYOUT-0023",
+    "D8-SKETCHUP-LAYOUT-0024",
+    "D8-SKETCHUP-LAYOUT-0025",
+    "D8-SKETCHUP-LAYOUT-0026",
+    "D8-SKETCHUP-LAYOUT-0027",
+    "D8-SKETCHUP-LAYOUT-0028",
+    "D8-SKETCHUP-LAYOUT-0030"
+  ],
+  "status": "open",
+  "title": "drafting-docs: layout-documentation (30 rows)",
+  "wave": 2
+}
