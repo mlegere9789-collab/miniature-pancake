@@ -1,0 +1,191 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-mesh-07",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 30,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 6,
+    "with_hint": 6,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "mesh"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Select",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "SelNonManifold",
+        "rows": 1,
+        "score": 0.742,
+        "status": "implemented"
+      },
+      {
+        "name": "Plane",
+        "rows": 1,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "Torus",
+        "rows": 1,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "ZoomNonManifold",
+        "rows": 1,
+        "score": 0.637,
+        "status": "implemented"
+      },
+      {
+        "name": "TriangulateMesh",
+        "rows": 1,
+        "score": 0.602,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:1776",
+        "rows": 1,
+        "score": 0.716,
+        "symbol": "dino8::kernel::EdgeMove"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-mesh-07",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/mesh.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-MESH-0103": {
+      "commands": [
+        "Plane"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MESH-0105": {
+      "commands": [
+        "Torus"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MESH-0107": {
+      "commands": [
+        "TriangulateMesh"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MESH-0115": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::EdgeMove"
+      ]
+    },
+    "D8-BLENDER-MESH-0118": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MESH-0135": {
+      "commands": [
+        "SelNonManifold",
+        "ZoomNonManifold"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-MESH-0101",
+    "D8-BLENDER-MESH-0102",
+    "D8-BLENDER-MESH-0103",
+    "D8-BLENDER-MESH-0104",
+    "D8-BLENDER-MESH-0105",
+    "D8-BLENDER-MESH-0106",
+    "D8-BLENDER-MESH-0107",
+    "D8-BLENDER-MESH-0108",
+    "D8-BLENDER-MESH-0109",
+    "D8-BLENDER-MESH-0110",
+    "D8-BLENDER-MESH-0111",
+    "D8-BLENDER-MESH-0112",
+    "D8-BLENDER-MESH-0113",
+    "D8-BLENDER-MESH-0114",
+    "D8-BLENDER-MESH-0115",
+    "D8-BLENDER-MESH-0116",
+    "D8-BLENDER-MESH-0117",
+    "D8-BLENDER-MESH-0118",
+    "D8-BLENDER-MESH-0119",
+    "D8-BLENDER-MESH-0120",
+    "D8-BLENDER-MESH-0121",
+    "D8-BLENDER-MESH-0122",
+    "D8-BLENDER-MESH-0123",
+    "D8-BLENDER-MESH-0124",
+    "D8-BLENDER-MESH-0125",
+    "D8-BLENDER-MESH-0126",
+    "D8-BLENDER-MESH-0127",
+    "D8-BLENDER-MESH-0128",
+    "D8-BLENDER-MESH-0129",
+    "D8-BLENDER-MESH-0130",
+    "D8-BLENDER-MESH-0131",
+    "D8-BLENDER-MESH-0132",
+    "D8-BLENDER-MESH-0133",
+    "D8-BLENDER-MESH-0134",
+    "D8-BLENDER-MESH-0135"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-MESH-0101",
+    "D8-BLENDER-MESH-0102",
+    "D8-BLENDER-MESH-0104",
+    "D8-BLENDER-MESH-0106",
+    "D8-BLENDER-MESH-0108",
+    "D8-BLENDER-MESH-0109",
+    "D8-BLENDER-MESH-0110",
+    "D8-BLENDER-MESH-0111",
+    "D8-BLENDER-MESH-0112",
+    "D8-BLENDER-MESH-0113",
+    "D8-BLENDER-MESH-0114",
+    "D8-BLENDER-MESH-0116",
+    "D8-BLENDER-MESH-0117",
+    "D8-BLENDER-MESH-0119",
+    "D8-BLENDER-MESH-0120",
+    "D8-BLENDER-MESH-0121",
+    "D8-BLENDER-MESH-0122",
+    "D8-BLENDER-MESH-0123",
+    "D8-BLENDER-MESH-0124",
+    "D8-BLENDER-MESH-0125",
+    "D8-BLENDER-MESH-0126",
+    "D8-BLENDER-MESH-0127",
+    "D8-BLENDER-MESH-0128",
+    "D8-BLENDER-MESH-0129",
+    "D8-BLENDER-MESH-0130",
+    "D8-BLENDER-MESH-0131",
+    "D8-BLENDER-MESH-0132",
+    "D8-BLENDER-MESH-0133",
+    "D8-BLENDER-MESH-0134"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: mesh (35 rows)",
+  "wave": 1
+}
