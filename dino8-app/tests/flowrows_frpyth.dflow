@@ -1,0 +1,18 @@
+{"format":"dflow1","nodes":[
+{"id":1,"type":"Pythagorean","x":150,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":true,"value":{"kind":"Number","num":3.0}},{"has":true,"value":{"kind":"Number","num":4.0}}]},
+{"id":2,"type":"Construct Point","x":300,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":false,"value":{"kind":"Null"}},{"has":true,"value":{"kind":"Number","num":1.0}},{"has":true,"value":{"kind":"Number","num":0.0}}]},
+{"id":3,"type":"Bake","x":450,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[]},
+{"id":4,"type":"Pythagorean","x":600,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":true,"value":{"kind":"Number","num":5.0}},{"has":true,"value":{"kind":"Number","num":12.0}}]},
+{"id":5,"type":"Construct Point","x":750,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":false,"value":{"kind":"Null"}},{"has":true,"value":{"kind":"Number","num":2.0}},{"has":true,"value":{"kind":"Number","num":0.0}}]},
+{"id":6,"type":"Bake","x":900,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[]},
+{"id":7,"type":"Pythagorean","x":1050,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":true,"value":{"kind":"Number","num":1.0}},{"has":true,"value":{"kind":"Number","num":1.0}}]},
+{"id":8,"type":"Construct Point","x":1200,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[{"has":false,"value":{"kind":"Null"}},{"has":true,"value":{"kind":"Number","num":3.0}},{"has":true,"value":{"kind":"Number","num":0.0}}]},
+{"id":9,"type":"Bake","x":1350,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[]}
+],"wires":[
+{"from":1,"fp":0,"to":2,"tp":0},
+{"from":2,"fp":0,"to":3,"tp":0},
+{"from":4,"fp":0,"to":5,"tp":0},
+{"from":5,"fp":0,"to":6,"tp":0},
+{"from":7,"fp":0,"to":8,"tp":0},
+{"from":8,"fp":0,"to":9,"tp":0}
+]}
