@@ -2,7 +2,7 @@
 
 Question: can the incremental engine (plan 5.2 threads bullet, 5.4) call the kernel from several worker threads on
 independent inputs? Answer, measured: **yes for tessellation, mass properties and the mesh and B-rep booleans; not for
-SubD and file I/O (3dm, STEP, IGES), which stay behind one lock.** Conditions and the one-time warm-up for shared inputs
+SubD and file I/O (3dm, STEP, IGES), which the kernel itself now serialises behind one internal guard (section 6.1), so the caller needs no lock for them.** Conditions and the one-time warm-up for shared inputs
 are in section 8.
 
 | | |
@@ -105,7 +105,7 @@ function-local `static const std::regex` in the OBJ reader (unused). Cooperative
 Every static-storage symbol of the 26 kernel objects, of the 171 openNURBS members and the 16 Manifold members the probe
 links (`nm -C --defined-only`, data, bss and TLS) is in exactly one row. Verdicts: **OK** = safe as it is; **WARM** = safe
 once warmed or published (a rule, section 8); **FIXED** = unsafe, fixed on this branch; **PATCH** = unsafe, fixed by the
-openNURBS patch, verified; **LOCK** = unsafe, not fixed, keep behind the engine's kernel lock; **N/A** = not reachable
+openNURBS patch, verified; **GUARDED** = unsafe inside openNURBS, made safe by the kernel's own internal guard (section 6.1); **LOCK** = unsafe, not fixed, keep behind the engine's kernel lock; **N/A** = not reachable
 from the kernel.
 
 | symbol(s) | count | verdict |
@@ -125,14 +125,14 @@ from the kernel.
 | openNURBS named constants (`ON_3dPoint::Origin`, `ON_Interval::ZeroToOne`, `ON_UnitSystem::*`, `ON_Linetype::*`, `ON_HatchPattern::*`, `ON_SubD*::Empty`, `ON_PlaneEquation::*`, `ON_DBL_QNAN`, ..., the `UnitVector(int)` locals, `Unset`/`Empty`/`Default*` objects) | about 430 | OK (initialised before `main`, read only; C++11 guards for function-local ones) |
 | openNURBS `ON_RenderContentType_*`, `ON_UniversalRenderEngineId` | 57 | OK (const ids) |
 | openNURBS `ON_UnitSystem::UnitSystemName()::s_name` | 27 | OK (function-local, guarded) |
-| openNURBS `ON_ERROR_COUNT`, `ON_WARNING_COUNT`, `ON_MATH_ERROR_COUNT` (plain `int`), `ON_ACTIVE_ERROR_LOG`, `ON_DEBUG_ERROR_MESSAGE_OPTION` | 5 | LOCK for file I/O (races there); 0 events on every other path |
+| openNURBS `ON_ERROR_COUNT`, `ON_WARNING_COUNT`, `ON_MATH_ERROR_COUNT` (plain `int`), `ON_ACTIVE_ERROR_LOG`, `ON_DEBUG_ERROR_MESSAGE_OPTION` | 5 | GUARDED (kernel-internal guard, `detail/on_global_state.h`; 0 events on every other path) |
 | openNURBS `ON_NextContentSerialNumber` | 1 | PATCH |
 | openNURBS `ON_Surface::IsSphere` out-of-bounds read (not a symbol; code defect) | 1 | PATCH |
 | openNURBS `ON_Brep::m_bbox`, `ON_RevSurface::m_bbox` (lazy cache in const `BoundingBox()`) | per object | WARM |
-| openNURBS `ON_Hash32Table_NewSerialNumber()::sn`, `ON_ComponentManifestTableIndex_sn_generator`, `ON_ComponentManifestImpl_SerialNumberGenerator()::manifest_impl_sn` | 3 | LOCK (plain integers, 3dm/STEP/IGES I/O) |
-| openNURBS `s_most_recent_class_id_create_uuid` | 1 | LOCK (written by `ON_ClassId::Create`, 3dm reading) |
-| openNURBS `ON_3dmRevisionHistory::NewRevision`, `ON_SunEngine` default time (libc `localtime`/`tzset`) | 2 | LOCK |
-| openNURBS bundled libuuid `get_random_fd` `static int fd`, `srand` seed | 2 | LOCK |
+| openNURBS `ON_Hash32Table_NewSerialNumber()::sn`, `ON_ComponentManifestTableIndex_sn_generator`, `ON_ComponentManifestImpl_SerialNumberGenerator()::manifest_impl_sn` | 3 | GUARDED (kernel-internal guard) (plain integers, 3dm/STEP/IGES I/O) |
+| openNURBS `s_most_recent_class_id_create_uuid` | 1 | GUARDED (kernel-internal guard) (written by `ON_ClassId::Create`, 3dm reading) |
+| openNURBS `ON_3dmRevisionHistory::NewRevision`, `ON_SunEngine` default time (libc `localtime`/`tzset`) | 2 | GUARDED (kernel-internal guard) |
+| openNURBS bundled libuuid `get_random_fd` `static int fd`, `srand` seed | 2 | GUARDED (kernel-internal guard) |
 | openNURBS `ON_ModelComponent::Internal_RuntimeSerialNumberGenerator`, `ON_SubDimple::Internal_RuntimeSerialNumberGenerator` | 2 | OK (`std::atomic<ON__UINT64>`, `opennurbs_statics.cpp:377,379`) |
 | openNURBS `ON__isnand::b6/b7`, `ON__isnanf::b2/b3`, `ValidateSizesHelper()::bSizedValidated` | 5 | OK in practice: lazily computed constants, every writer stores the same value (formal race on first call only; 0 reports in 6 cold runs) |
 | openNURBS `g_mutex` (`opennurbs_3dm_attributes`), `g_data_list` + `g_data_list_lock` + `AppendNew()::serial_number` (clipping planes), `ON_TestClass::internal_*` | 6 | N/A (not reachable; the clipping-plane list has its lock) |
@@ -140,7 +140,7 @@ from the kernel.
 | openNURBS `static_randcontext` (`on_rand`) | 1 | N/A (no caller in the linked members; documented "not thread safe") |
 | openNURBS `g__bLeakUserData` (`ON__EnableLeakUserData`, never called), `g_bDisableDemotion` (set inside `ON_ClassId` construction, i.e. static initialisation) | 2 | OK |
 | openNURBS `Internal_func_ModelLengthUnitSystemCallback` (`ON::RegisterModelLengthUnitSystemCallback`), `ON_NumberFormatter::bFormatIsAccurate` | 2 | OK (set once by the host application, never by the kernel) |
-| openNURBS SubD globals: `ON_SubD_FixedSizeHeap::m__sn_factory` (plain `unsigned`, `opennurbs_subd_heap.cpp:76`), `ON_SubDHeap::m_offset_*_id`, `g_sizeof_fragment`, `LimitPointPool` (`limit_point_fsp`, `initialize_lock`), `QuadGridFromDisplayDensity` (`grid_cache`, `lock`), `ON_SubDMatrix::FromCache` (`hash_table`, `lock`), `Internal_TransientIdHelper` (`src`, `global_resource_lock`), `ON_SubDLevel::Read()::format` | 14 | LOCK: SubD stays behind the engine lock. Most are guarded by their own `ON_SleepLock`; `m__sn_factory` is an unprotected counter, and TSan reported only `ON_NextContentSerialNumber` for the SubD operations probed |
+| openNURBS SubD globals: `ON_SubD_FixedSizeHeap::m__sn_factory` (plain `unsigned`, `opennurbs_subd_heap.cpp:76`), `ON_SubDHeap::m_offset_*_id`, `g_sizeof_fragment`, `LimitPointPool` (`limit_point_fsp`, `initialize_lock`), `QuadGridFromDisplayDensity` (`grid_cache`, `lock`), `ON_SubDMatrix::FromCache` (`hash_table`, `lock`), `Internal_TransientIdHelper` (`src`, `global_resource_lock`), `ON_SubDLevel::Read()::format` | 14 | GUARDED: every `SubD` entry point and the SubD copy operations hold the kernel-internal guard (`detail/on_global_state.h`); SubD no longer needs the engine lock. Most are guarded by their own `ON_SleepLock`; `m__sn_factory` is an unprotected counter, and TSan reported only `ON_NextContentSerialNumber` for the SubD operations probed |
 | openNURBS `ON_TextRunPool::thePool`, `RtfComposer::m_*`, `empty_astring`, `ON_TextStyle::binary_archive_opennurbs_version`, `ON_Big5*` tables (+lock), `ON_MapUnicodeToMSSBCP::utocp10000`, `sglb_asets`, `UNSET_4D_POINT`, `ON_PointGrid::m_no_point` | about 20 | N/A (annotation text, code pages and obsolete V5 code, or const) |
 | openNURBS font name maps, `ON_Font::*` lazy tables, `ON_ManagedFonts::List`, `ON_CRT_LOCALE::m_validation_*`, `ON_ParseSettings::*`, `GetFunction()::f`, dimension-style and arrowhead tables, `ON_Bezier` `Tcache`, `ON_MD5::padding`, `Default*Private` objects | about 45 | N/A (font, parsing, dimension and rendering code; no kernel entry point calls it) |
 
@@ -270,6 +270,27 @@ file I/O counts include item 2's `tzset`. Items 1 to 13 are the total: 13.
 |---|---|---|
 | `9555319d` | `detail::PointCloudSpatialCache` with `std::mutex`, same pattern as `MeshSpatialCache`; copying a cloud still shares the built tree | TSan: 8 reports before, 0 after (50 iterations, 4 threads, index reset every iteration); kernel CI run 43533020521: filters `PointCloud` 195 ok, `ModelAddPointCloud` 18 ok, 0 failed |
 | `7f75a3bd` | `localtime_r`/`localtime_s` at three call sites in `iges.cpp` and `step_curve.cpp` | TSan: writer reports 15 before, 0 after; CI: `SaveIges` 13, `LoadIges` 6, `SaveStep` 91, `LoadStep` 54, `IgesWrites` 46, `IgesConverts` 354, `StepWrites` 309, `StepReads` 50 ok, 0 failed |
+
+## 6.1 Kernel-internal guard for file I/O and SubD (branch w0-threadfix)
+
+openNURBS' own statics cannot be changed from the kernel, so the kernel takes one process-wide recursive mutex
+(`include/dino8/kernel/detail/on_global_state.h`) around the code that reaches them: `Model` construction and destruction,
+every mutating `Model` method, `Model::Save`/`Load`, every `SubD` entry point and the `SubD` copy operations. Tessellation, mass
+properties, booleans, fillets, sweeps, hull, mesh and point-cloud queries do not take it. The mutex is never held while waiting
+for another thread and is the only lock, so it cannot deadlock. File I/O and SubD calls from different threads therefore run one
+after another (file I/O is dominated by disk and zlib; a 3dm round trip costs about 60 ms of CPU), everything else stays parallel.
+Not guarded: const read accessors of `Model` (`ObjectCount`, `LayerAt`, ...), which showed no events in any run.
+
+| run (`run_probe.sh`, KT_PATCH=1, phase `features`, ops `file_io,subd`, 4 threads) | ThreadSanitizer reports |
+|---|---|
+| before: 30 iterations (120 calls per op) | 124 (all in `ONX_Model` construction, `Model::Save`/`Load`: locations: `ON_Hash32Table` and component-manifest serial numbers, `ON_ErrorEx`, `tzset`/`localtime`/`free`, `ON_ClassId::Create`) |
+| guard on `Model` mutators and construction only, 50 iterations | 45 (the `ONX_Model` destructor ran after the guarded body had ended) |
+| guard held across the `ONX_Model` member's construction and destruction, 50 iterations (200 calls per op) | 0 |
+| same, 1000 iterations (4000 calls per op, 586 s wall) | 0, 0 divergences |
+| plain `-O1` build, all phases, 60 iterations x 4 threads (3120 calls) | 0 divergences, 0 exceptions |
+
+`tests/extra/threadsafe_file_io_subd.cpp` runs the same two workloads on 4 threads in the kernel test binary and compares each
+result with a serial run.
 
 ## 7. Unsafe items not fixed in the repository, with the minimal fix
 
