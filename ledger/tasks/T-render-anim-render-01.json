@@ -1,0 +1,398 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-render-01",
+  "corpora": [
+    "render fixtures: materials, texture mappings, lights, environments, baked textures"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 30,
+    "with_hint": 30,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "RENDER"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ApplyBoxMapping",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplyOcsMapping",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplyCustomMapping",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplyCylindricalMapping",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplySphericalMapping",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "EditLightByHighlight",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "EditLightByLooking",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MappingWidget",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MappingWidgetOff",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderAssignMaterialToLayersOfObjects",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplyPlanarMapping",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ApplySurfaceMapping",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AssignBlankTexture",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Bake",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BakeMapping",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BatchRenderNamedViews",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CopyRenderWindowToClipboard",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DirectionalLight",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DownloadLibraryTextures",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Environments",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-render-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/RENDER.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-RENDER-0001": {
+      "commands": [
+        "ApplyBoxMapping",
+        "ApplyOcsMapping",
+        "ApplyCustomMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0002": {
+      "commands": [
+        "ApplyCustomMapping",
+        "ApplyBoxMapping",
+        "ApplyOcsMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0003": {
+      "commands": [
+        "ApplyCylindricalMapping",
+        "ApplySphericalMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0004": {
+      "commands": [
+        "ApplyOcsMapping",
+        "ApplyBoxMapping",
+        "ApplyCustomMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0005": {
+      "commands": [
+        "ApplyPlanarMapping",
+        "ApplyBoxMapping",
+        "ApplyOcsMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0006": {
+      "commands": [
+        "ApplySphericalMapping",
+        "ApplyCylindricalMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0007": {
+      "commands": [
+        "ApplySurfaceMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0008": {
+      "commands": [
+        "AssignBlankTexture"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0009": {
+      "commands": [
+        "Bake"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0010": {
+      "commands": [
+        "BakeMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0011": {
+      "commands": [
+        "BatchRenderNamedViews"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0012": {
+      "commands": [
+        "DirectionalLight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0013": {
+      "commands": [
+        "EditLightByHighlight",
+        "EditLightByLooking"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0014": {
+      "commands": [
+        "EditLightByLooking",
+        "EditLightByHighlight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0015": {
+      "commands": [
+        "CopyRenderWindowToClipboard"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0016": {
+      "commands": [
+        "DownloadLibraryTextures"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0017": {
+      "commands": [
+        "Environments"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0018": {
+      "commands": [
+        "LinearLight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0019": {
+      "commands": [
+        "MappingWidget",
+        "MappingWidgetOff",
+        "SelMappingWidget"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0020": {
+      "commands": [
+        "MappingWidgetOff",
+        "MappingWidget",
+        "SelMappingWidget"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0021": {
+      "commands": [
+        "MatchMapping"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0022": {
+      "commands": [
+        "PlayAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0023": {
+      "commands": [
+        "PointLight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0024": {
+      "commands": [
+        "HideRenderMesh",
+        "ToggleRenderMesh",
+        "ShowRenderMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0025": {
+      "commands": [
+        "RecordAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0026": {
+      "commands": [
+        "RectangularLight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0027": {
+      "commands": [
+        "Render"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0028": {
+      "commands": [
+        "RenderArctic"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0029": {
+      "commands": [
+        "RenderAssignMaterialToObjects",
+        "RenderAssignMaterialToLayersOfObjects"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0030": {
+      "commands": [
+        "RenderAssignMaterialToLayersOfObjects",
+        "RenderAssignMaterialToObjects"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-RENDER-0001",
+    "D8-RHINO-RENDER-0002",
+    "D8-RHINO-RENDER-0003",
+    "D8-RHINO-RENDER-0004",
+    "D8-RHINO-RENDER-0005",
+    "D8-RHINO-RENDER-0006",
+    "D8-RHINO-RENDER-0007",
+    "D8-RHINO-RENDER-0008",
+    "D8-RHINO-RENDER-0009",
+    "D8-RHINO-RENDER-0010",
+    "D8-RHINO-RENDER-0011",
+    "D8-RHINO-RENDER-0012",
+    "D8-RHINO-RENDER-0013",
+    "D8-RHINO-RENDER-0014",
+    "D8-RHINO-RENDER-0015",
+    "D8-RHINO-RENDER-0016",
+    "D8-RHINO-RENDER-0017",
+    "D8-RHINO-RENDER-0018",
+    "D8-RHINO-RENDER-0019",
+    "D8-RHINO-RENDER-0020",
+    "D8-RHINO-RENDER-0021",
+    "D8-RHINO-RENDER-0022",
+    "D8-RHINO-RENDER-0023",
+    "D8-RHINO-RENDER-0024",
+    "D8-RHINO-RENDER-0025",
+    "D8-RHINO-RENDER-0026",
+    "D8-RHINO-RENDER-0027",
+    "D8-RHINO-RENDER-0028",
+    "D8-RHINO-RENDER-0029",
+    "D8-RHINO-RENDER-0030"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "render-anim: RENDER (30 rows)",
+  "wave": 2
+}
