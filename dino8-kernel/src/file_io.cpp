@@ -1,5 +1,7 @@
 #include "dino8/kernel/file_io.h"
 
+#include "dino8/kernel/detail/on_global_state.h"
+
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -171,9 +173,15 @@ std::string ToStdString(const ON_wString& wide) {
 
 }  // namespace
 
-Model::Model() = default;
+// The guard is a constructor argument of the delegating call, so it is held while the delegated constructor
+// builds the ONX_Model member (hash table and component manifest serial numbers, the creation-time clock and the
+// time zone behind it).
+Model::Model() : Model(detail::OnGlobalStateGuard()) {}
+
+Model::Model(const detail::OnGlobalStateGuard&) {}
 
 int Model::AddLayer(const std::string& name, Color color, int linetype_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -189,6 +197,7 @@ int Model::AddLayer(const std::string& name, Color color, int linetype_index) {
 }
 
 int Model::AddLinetype(const std::string& name, const LinetypePattern& pattern) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -205,6 +214,7 @@ int Model::AddLinetype(const std::string& name, const LinetypePattern& pattern) 
 }
 
 int Model::AddGroup(const std::string& name) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -220,6 +230,7 @@ int Model::AddMaterial(const std::string& name, Color diffuse_color,
                         std::optional<double> shine, std::optional<double> transparency,
                         std::optional<double> reflectivity,
                         std::optional<std::string> texture_filename) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -294,6 +305,7 @@ void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer
                       std::optional<Color> render_color, const UserStrings& user_strings,
                       std::optional<int> linetype_index, const std::vector<int>& group_indices,
                       std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   RequireFiniteCurve(curve.raw(), "AddCurve");
   auto* geometry = new ON_NurbsCurve(curve.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
@@ -305,6 +317,7 @@ void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
                      std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   RequireFiniteBrep(brep.raw());
   auto* geometry = new ON_Brep(brep.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
@@ -316,6 +329,7 @@ void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
                      std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   RequireFiniteMesh(mesh.raw());
   auto* geometry = new ON_Mesh(mesh.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
@@ -327,6 +341,7 @@ void Model::AddSubD(const SubD& subd, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
                      std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   auto* geometry = new ON_SubD(subd.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
       name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
@@ -338,6 +353,7 @@ void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int 
                            std::optional<int> linetype_index,
                            const std::vector<int>& group_indices,
                            std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   auto* geometry = new ON_PointCloud(cloud.raw());
   ON_3dmObjectAttributes attributes = MakeAttributes(
       name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
@@ -519,6 +535,7 @@ MaterialInfo Model::MaterialAt(int material_index) const {
 
 int Model::AddNamedView(const std::string& name, Point3d camera_location, Point3d target_point,
                          Vector3d camera_up) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -556,6 +573,7 @@ NamedViewInfo Model::NamedViewAt(int view_index) const {
 }
 
 int Model::AddLayout(const std::string& name, double page_width_mm, double page_height_mm) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty() || !(page_width_mm > 0.0) || !(page_height_mm > 0.0)) {
     return -1;
   }
@@ -604,6 +622,7 @@ int Model::AddDetailView(int layout_index, double x_mm, double y_mm, double widt
                           std::optional<int> linetype_index, const std::vector<int>& group_indices,
                           std::optional<int> material_index, std::optional<Point3d> camera_location,
                           std::optional<Point3d> target_point, Vector3d camera_up) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty() || layout_index < 0 || layout_index >= model_.m_settings.m_views.Count() ||
       !(width_mm > 0.0) || !(height_mm > 0.0)) {
     return -1;
@@ -709,6 +728,7 @@ int Model::AddExtrusion(const std::vector<Point2d>& profile, double path_length,
                          const std::string& name, int layer_index, std::optional<Color> render_color,
                          const UserStrings& user_strings, std::optional<int> linetype_index,
                          const std::vector<int>& group_indices, std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty() || profile.size() < 3 || !(path_length > 0.0)) {
     return -1;
   }
@@ -801,6 +821,7 @@ int Model::AddLight(const std::string& name, LightStyle style, Point3d location,
                      std::optional<Color> render_color, const UserStrings& user_strings,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
                      std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -868,6 +889,7 @@ int Model::AddClippingPlane(const std::string& name, Point3d origin, Vector3d no
                              const UserStrings& user_strings, std::optional<int> linetype_index,
                              const std::vector<int>& group_indices,
                              std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -928,6 +950,7 @@ ClippingPlaneInfo Model::ClippingPlaneAt(int clipping_plane_index) const {
 }
 
 int Model::AddInstanceDefinition(const std::string& name, const std::vector<Mesh>& member_meshes) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty() || member_meshes.empty()) {
     return -1;
   }
@@ -994,6 +1017,7 @@ int Model::AddInstanceReference(int definition_index, const ON_Xform& xform, con
                                  int layer_index, std::optional<Color> render_color,
                                  const UserStrings& user_strings, std::optional<int> linetype_index,
                                  const std::vector<int>& group_indices, std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   const ON_ModelComponentReference idef_ref =
       model_.ComponentFromIndex(ON_ModelComponent::Type::InstanceDefinition, definition_index);
   const ON_InstanceDefinition* idef = ON_InstanceDefinition::Cast(idef_ref.ModelComponent());
@@ -1056,6 +1080,7 @@ InstanceReferenceInfo Model::InstanceReferenceAt(int index) const {
 
 int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
                             const std::vector<HatchPatternLine>& lines, const std::string& description) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -1136,6 +1161,7 @@ int Model::AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary,
                      std::optional<int> linetype_index, const std::vector<int>& group_indices,
                      std::optional<int> material_index,
                      const std::vector<std::vector<Point2d>>& hole_boundaries) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty() || boundary.size() < 3 || pattern_index < 0) {
     return -1;
   }
@@ -1272,6 +1298,7 @@ int Model::AddTextDot(Point3d center, const std::string& primary_text, const std
                        const std::string& name, int layer_index, std::optional<Color> render_color,
                        const UserStrings& user_strings, std::optional<int> linetype_index,
                        const std::vector<int>& group_indices, std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -1329,6 +1356,7 @@ int Model::AddText(const std::string& text, const ON_Plane& plane, const std::st
                     std::optional<Color> render_color, const UserStrings& user_strings,
                     std::optional<int> linetype_index, const std::vector<int>& group_indices,
                     std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty() || text.empty() || !plane.IsValid()) {
     return -1;
   }
@@ -1389,6 +1417,7 @@ int Model::AddLeader(const std::string& text, const std::vector<Point3d>& points
                       const std::string& name, int layer_index, std::optional<Color> render_color,
                       const UserStrings& user_strings, std::optional<int> linetype_index,
                       const std::vector<int>& group_indices, std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty() || text.empty() || !plane.IsValid() || points.size() < 2) {
     return -1;
   }
@@ -1457,6 +1486,7 @@ int Model::AddDimensionLinear(const Point3d& extension_point0, const Point3d& ex
                                const std::string& name, int layer_index, std::optional<Color> render_color,
                                const UserStrings& user_strings, std::optional<int> linetype_index,
                                const std::vector<int>& group_indices, std::optional<int> material_index) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (name.empty()) {
     return -1;
   }
@@ -1521,6 +1551,7 @@ DimensionLinearInfo Model::DimensionLinearAt(int dimension_index) const {
 }
 
 void Model::SetUnitSystem(UnitSystem units) {
+  const detail::OnGlobalStateGuard on_state_guard;
   model_.m_settings.m_ModelUnitsAndTolerances.m_unit_system = ON_UnitSystem(ToLengthUnitSystem(units));
 }
 
@@ -1533,6 +1564,7 @@ double Model::UnitConversionFactor(UnitSystem from, UnitSystem to) {
 }
 
 Result Model::ConvertUnits(UnitSystem to) {
+  const detail::OnGlobalStateGuard on_state_guard;
   if (to == UnitSystem::None || GetUnitSystem() == UnitSystem::None) {
     return Result::Failed;
   }
@@ -1555,12 +1587,14 @@ Result Model::ConvertUnits(UnitSystem to) {
 }
 
 Result Model::Save(const std::string& path, int version) const {
+  const detail::OnGlobalStateGuard on_state_guard;
   ON_TextLog error_log;
   const bool ok = model_.Write(path.c_str(), version, &error_log);
   return ok ? Result::Ok : Result::Failed;
 }
 
 Result Model::Load(const std::string& path, Model& out_model) {
+  const detail::OnGlobalStateGuard on_state_guard;
   ON_TextLog error_log;
   const bool ok = out_model.model_.Read(path.c_str(), &error_log);
   if (!ok) {
