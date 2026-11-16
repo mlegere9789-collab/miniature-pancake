@@ -17,8 +17,11 @@ if ! command -v python3 >/dev/null 2>&1; then
 else
   HLP_DIR="$TMPW/hlp"; HLP_CFG="$HLP_DIR/config"; mkdir -p "$HLP_CFG"
   HLP_I18N="$HERE/../data/i18n"; HLP_CAT="$HERE/../data/commands.json"
-  hlp_desc() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["cmddesc."+sys.argv[2]])' "$HLP_I18N/$1.json" "$2"; }
+  # UTF-8 with plain \n on stdout: python on Windows prints through the ANSI code page (cp1252 cannot encode the Japanese and Arabic
+  # descriptions: UnicodeEncodeError, and under `set -e` that ended the whole smoke run here) and ends lines with \r\n.
+  hlp_desc() { python3 -I -c 'import json,sys; sys.stdout.reconfigure(encoding="utf-8", newline="\n"); print(json.load(open(sys.argv[1], encoding="utf-8"))["cmddesc."+sys.argv[2]])' "$HLP_I18N/$1.json" "$2"; }
   hlp_cat() { python3 -I -c 'import json,sys
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 d={c["name"]:c for c in json.load(open(sys.argv[1], encoding="utf-8"))}
 c=d[sys.argv[2]]
 print(c["description"] if sys.argv[3]=="desc" else ", ".join(c["options"]))' "$HLP_CAT" "$1" "$2"; }
