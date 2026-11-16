@@ -1,0 +1,21 @@
+# RWISAT (sections/94_rwisat.sh): ACIS SAT export and import of solids. @TMP@ = scratch. Two 10 mm boxes (0..10 and 20..30 in x) and a line.
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+SelLast
+Export @TMP@/one.sat
+Line 40,0,0 50,0,0
+SelAll
+Export @TMP@/mixed.sat
+# a selection of only a line holds no solid: nothing may be written, and the earlier file stays as it was
+SelLast
+Export @TMP@/mixed.sat
+New
+@expect_objects 0
+Import @TMP@/mixed.sat
+@expect_objects 2
+SelAll
+Export @TMP@/rt.sat
+Undo
+@expect_objects 0
+Import @TMP@/bad.sat
+@expect_objects 0
