@@ -48,7 +48,12 @@ std::string Lower(std::string s) {
 GLFWwindow* Window(CommandContext& ctx) { return static_cast<GLFWwindow*>(ctx.App().native_window); }
 
 CommandFactory Toggle(std::function<bool&(CommandContext&)> get, const char* label) {
-  return Immediate([get, label](CommandContext& ctx) { bool& b = get(ctx); b = !b; ctx.Print(std::string(label) + (b ? " on" : " off")); });
+  return Immediate([get, label](CommandContext& ctx) {
+    bool& b = get(ctx);
+    std::string word;
+    if (auto tok = ctx.Engine().TakePendingInput()) word = *tok;
+    ApplySwitchWord(ctx, b, label, word);
+  });
 }
 
 CommandFactory SetFlag(std::function<bool&(CommandContext&)> get, bool value, const char* label) {
@@ -162,10 +167,20 @@ class TextArgCommand : public Command {
 // Takes the next typed number, or prompts for one (Enter keeps the default).
 class NumberArgCommand : public Command {
  public:
-  NumberArgCommand(std::string prompt, std::function<double(CommandContext&)> current, std::function<void(CommandContext&, double)> fn)
-      : prompt_(std::move(prompt)), current_(std::move(current)), fn_(std::move(fn)) {}
+  using WordFn = std::function<bool(CommandContext&, const std::string&)>;
+  // `word` (optional) takes a typed non-number first: it returns true when it handled the word, else the usual "Expected a number" warning follows.
+  NumberArgCommand(std::string prompt, std::function<double(CommandContext&)> current, std::function<void(CommandContext&, double)> fn, WordFn word = nullptr)
+      : prompt_(std::move(prompt)), current_(std::move(current)), fn_(std::move(fn)), word_(std::move(word)) {}
   void Begin(CommandContext& ctx) override {
-    if (auto t = ctx.Engine().TakePendingInput()) { char* e = nullptr; double v = std::strtod(t->c_str(), &e); if (e && *e == 0) fn_(ctx, v); else ctx.Warn("Expected a number, got '" + *t + "'"); Finish(); return; }
+    if (auto t = ctx.Engine().TakePendingInput()) {
+      char* e = nullptr;
+      double v = std::strtod(t->c_str(), &e);
+      if (e && e != t->c_str() && *e == 0) fn_(ctx, v);
+      else if (word_) word_(ctx, *t);
+      else ctx.Warn("Expected a number, got '" + *t + "'");
+      Finish();
+      return;
+    }
     WantNumber(prompt_, current_(ctx));
   }
   void OnNumber(CommandContext& ctx, double v) override { fn_(ctx, v); Finish(); }
@@ -176,6 +191,7 @@ class NumberArgCommand : public Command {
   std::string prompt_;
   std::function<double(CommandContext&)> current_;
   std::function<void(CommandContext&, double)> fn_;
+  WordFn word_;
 };
 
 // Takes the next typed point, or prompts for one.
@@ -818,14 +834,36 @@ void RegisterStateCommands(CommandEngine& e) {
       }), CommandStatus::Implemented, "Type the new lens length; recomputes the camera distance so the target keeps its on-screen size (the 'Vertigo' effect).");
 
   // ---- snaps / drag ----------------------------------------------------
-  Reg(e, "SetOrtho", Immediate([](CommandContext& ctx) { ctx.Snaps().ortho = true; ctx.Settings().ortho = true; ctx.Print("Ortho on (angle " + FormatNumber(ctx.App().State().ortho_angle) + " deg)"); }));
+  // SetOrtho [On|Off|Toggle|Status]: no word turns ortho on (the long-standing meaning); the word forms set it explicitly.
+  Reg(e, "SetOrtho", Immediate([](CommandContext& ctx) {
+        std::string word;
+        if (auto tok = ctx.Engine().TakePendingInput()) word = *tok;
+        bool b = ctx.Snaps().ortho;
+        if (!ApplySwitchWord(ctx, b, "Ortho", word, true, " (angle " + FormatNumber(ctx.App().State().ortho_angle) + " deg)")) return;
+        ctx.Snaps().ortho = b;
+        ctx.Settings().ortho = b;
+      }), CommandStatus::Implemented, "SetOrtho [On|Off|Toggle|Status]: sets ortho mode explicitly; with no word it turns ortho on.");
   Reg(e, "OrthoAngle", Make<NumberArgCommand>("Ortho angle in degrees", [](CommandContext& ctx) { return ctx.App().State().ortho_angle; }, [](CommandContext& ctx, double v) {
         ctx.App().State().ortho_angle = std::clamp(v, 1.0, 180.0);
         ctx.Snaps().ortho_angle_deg = ctx.App().State().ortho_angle;
         ctx.Print("Ortho angle = " + FormatNumber(ctx.App().State().ortho_angle) + " deg");
       }), CommandStatus::Implemented, "Sets the angle step Ortho constrains to (default every 90 degrees); any step from 1 to 180 works.");
-  Reg(e, "SnapSize", Make<NumberArgCommand>("Grid snap size", [](CommandContext& ctx) { return ctx.Settings().grid_spacing; }, [](CommandContext& ctx, double v) { if (v > 0) { ctx.Settings().grid_spacing = v; ctx.Print("Grid snap size = " + FormatNumber(v)); } }));
-  Reg(e, "SetSnap", Make<NumberArgCommand>("Grid snap size", [](CommandContext& ctx) { return ctx.Settings().grid_spacing; }, [](CommandContext& ctx, double v) { if (v > 0) { ctx.Settings().grid_spacing = v; ctx.Snaps().grid_snap = true; ctx.Print("Grid snap on, size = " + FormatNumber(v)); } }));
+  Reg(e, "SnapSize", Make<NumberArgCommand>("Grid snap size", [](CommandContext& ctx) { return ctx.Settings().grid_spacing; }, [](CommandContext& ctx, double v) {
+        if (v > 0) { ctx.Settings().grid_spacing = v; ctx.Print("Grid snap size = " + FormatNumber(v)); }
+        else ctx.Warn("SnapSize: the grid snap size must be greater than zero (kept " + FormatNumber(ctx.Settings().grid_spacing) + ")");
+      }));
+  // SetSnap [size|On|Off|Toggle|Status]: a number sets the grid snap size and turns grid snap on (as before); a word sets the switch.
+  Reg(e, "SetSnap", Make<NumberArgCommand>("Grid snap size", [](CommandContext& ctx) { return ctx.Settings().grid_spacing; }, [](CommandContext& ctx, double v) {
+        if (v > 0) { ctx.Settings().grid_spacing = v; ctx.Snaps().grid_snap = true; ctx.Print("Grid snap on, size = " + FormatNumber(v)); }
+        else ctx.Warn("SetSnap: the grid snap size must be greater than zero (kept " + FormatNumber(ctx.Settings().grid_spacing) + ")");
+      }, [](CommandContext& ctx, const std::string& word) {
+        bool b = ctx.Snaps().grid_snap;
+        const bool ok = ApplySwitchWord(ctx, b, "Grid snap", word);
+        if (ok) { ctx.Snaps().grid_snap = b; ctx.Settings().grid_snap = b; }
+        return ok;
+      }));
+  Reg(e, "ProjectOsnap", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().project; }, "Project osnap"), CommandStatus::Implemented,
+      "ProjectOsnap [On|Off|Toggle|Status]: when on, every picked point (object snaps included) is projected onto the construction plane.");
   Reg(e, "OrthoSnapToCPlaneZ", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().ortho_snap_to_cplane_z; }, "Ortho snap to CPlane Z"), CommandStatus::Implemented, "While Ortho is on, also offers the CPlane's vertical (Z) direction from the last point as a constraint, alongside the in-plane ortho directions.");
   Reg(e, "SnapToLocked", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_locked; }, "Snap to locked objects"), CommandStatus::Implemented, "Off excludes locked objects from every object snap.");
   Reg(e, "SnapToOccluded", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_occluded; }, "Snap to occluded objects"), CommandStatus::Implemented, "Off excludes snap candidates that are hidden behind another object along the line of sight (a real depth test against every visible object's bounding box).");

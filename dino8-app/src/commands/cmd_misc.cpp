@@ -184,7 +184,12 @@ class HelpCommand : public Command {
 };
 
 CommandFactory Toggle(std::function<bool&(CommandContext&)> get, const char* label) {
-  return Immediate([get, label](CommandContext& ctx) { bool& b = get(ctx); b = !b; ctx.Print(std::string(label) + (b ? " on" : " off")); });
+  return Immediate([get, label](CommandContext& ctx) {
+    bool& b = get(ctx);
+    std::string word;
+    if (auto tok = ctx.Engine().TakePendingInput()) word = *tok;
+    ApplySwitchWord(ctx, b, label, word);
+  });
 }
 
 bool ParseMiscColor(const std::string& text, Color& out) {
