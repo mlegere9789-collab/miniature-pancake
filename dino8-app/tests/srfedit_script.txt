@@ -253,15 +253,16 @@ ShrinkTrimmedSrfToEdge
 # closed circle profile along a straight rail). Both curves must exist before
 # Sweep1 starts (typing a new curve-creation command mid-selection doesn't
 # work - it's swallowed as a bogus option token), so they're created first
-# and picked by their known object IDs (70, 71: this script has created
-# exactly 69 objects by this point).
+# and picked by their known object IDs (68, 69: this script has created
+# exactly 67 objects by this point; the Silhouette of the sphere above is ONE closed curve, a sphere's outline,
+# which is what an earlier pin counted as three because the chain broke on a coarser mesh).
 SelAll
 Hide
 Line 2300,0,0 2300,0,10
 Circle 2300,0,0 4
-SelID 70
+SelID 68
 Sweep1
-SelID 71
+SelID 69
 Enter
 SrfSeam
 2304,0,5
@@ -313,11 +314,11 @@ SelAll
 Hide
 Line 2900,0,0 2900,10,0
 Arc 2950,0,0 2950,15,5 2950,30,0
-SelID 83
+SelID 81
 ApplyCrv
-SelID 83
+SelID 81
 Enter
-SelID 84
+SelID 82
 Enter
 # --- ApplyMesh / ApplyMeshUVN: reshape a mesh sphere onto a same-topology
 # bigger mesh sphere (identical tessellation regardless of radius); both
@@ -326,21 +327,21 @@ SelAll
 Hide
 MeshSphere 3000,0,0 5
 MeshSphere 3000,0,0 8
-SelID 85
+SelID 83
 ApplyMesh
-SelID 85
+SelID 83
 Enter
-SelID 86
+SelID 84
 Enter
 SelAll
 Hide
 MeshSphere 3100,0,0 5
 MeshSphere 3100,0,0 9
-SelID 88
+SelID 86
 ApplyMeshUVN
-SelID 88
+SelID 86
 Enter
-SelID 89
+SelID 87
 Enter
 # --- Boss: a closed circle footprint on a box's top face, extruded upward
 # following the (flat) surface normal and fused with the box by the exact kernel route (MakeBoss; the result is a B-rep, so SelLast) (curve
@@ -448,7 +449,7 @@ SoftEditSrf Radius=8
 3505,5,0
 3505,5,3
 SelNone
-@expect_objects 104
+@expect_objects 102
 # --- UnjoinEdge: splits a shared edge into two naked copies while keeping
 # both faces in the same polysurface (real Brep::UnjoinEdge(), not the
 # ExtractSrf-into-a-separate-object workaround)
@@ -483,7 +484,7 @@ ReplaceEdge
 SelPolysrf
 List
 SelNone
-@expect_objects 106
+@expect_objects 104
 # --- Squish / SquishInfo: Squish now stores its own flattening report
 # (area, distortion) plus each flattened vertex's own source-surface
 # (u,v) in a real Document-level side table keyed by the flattened
@@ -542,7 +543,7 @@ SplitEdge
 3800.02,0,10
 SelPolysrf
 RemoveAllNakedMicroEdges
-@expect_objects 116
+@expect_objects 114
 # --- SplitRefitSurface: split a plane by a curve crossing it twice (same
 # V-shaped-polyline-through-z=0 cutter SplitFace's own test uses), then
 # confirm both resulting pieces are genuinely refit - a fresh 4x4-CV
