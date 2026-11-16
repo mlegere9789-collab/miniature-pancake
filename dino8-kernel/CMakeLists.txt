@@ -123,6 +123,7 @@ add_library(dino8_kernel STATIC
   src/tessellation_refine.cpp
   src/arch_calc.cpp
   src/struct_calc.cpp
+  src/ifc_writer.cpp
 )
 
 # windows.h (pulled in by opennurbs.h) defines min/max macros that break
