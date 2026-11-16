@@ -105,6 +105,25 @@ PointMap MakeTaper(Point3d axis_start, Point3d axis_end, double d0, double d1, b
   };
 }
 
+PointMap MakeToSphere(Point3d center, double radius, double factor) {
+  if (!std::isfinite(radius) || radius < 0.0 || !std::isfinite(factor) || factor < 0.0 || factor > 1.0) {
+    throw std::invalid_argument("dino8::kernel::MakeToSphere: the radius must be finite and non-negative and the factor within [0, 1]");
+  }
+  return [=](Point3d p) {
+    const Vector3d rel = p - center;
+    const double d = rel.Length();
+    if (!(d > 1e-300)) return p;
+    return center + rel * (((1.0 - factor) * d + factor * radius) / d);
+  };
+}
+
+double MeanDistanceFrom(Point3d center, const std::vector<Point3d>& points) {
+  if (points.empty()) return 0.0;
+  double sum = 0.0;
+  for (const Point3d& p : points) sum += p.DistanceTo(center);
+  return sum / static_cast<double>(points.size());
+}
+
 Mesh DeformMesh(const Mesh& mesh, const PointMap& map) {
   Mesh out = mesh;
   ON_Mesh& raw = out.raw();

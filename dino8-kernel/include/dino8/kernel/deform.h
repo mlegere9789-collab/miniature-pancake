@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
@@ -36,6 +37,16 @@ void BendRadiusAndAngle(Point3d spine_start, Point3d spine_end, Point3d through,
 // Taper along `axis_start -> axis_end`: the offset of a point from the axis is scaled by ((1 - t) d0 + t d1) / d0 with t the
 // axial fraction (clamped to [0, 1] unless `infinite`). Throws std::invalid_argument for a zero-length axis or d0 <= 0.
 PointMap MakeTaper(Point3d axis_start, Point3d axis_end, double d0, double d1, bool infinite = false);
+
+// To Sphere about `center`: a point at distance d from the centre (d > 0) moves along its own radial line to the distance
+// (1 - factor) d + factor radius, so factor 0 leaves every point where it is, factor 1 puts every point on the sphere of the given
+// radius and a value in between interpolates linearly in the radius. A point at the centre itself has no radial direction and stays.
+// Blender's To Sphere takes the mean distance of the selection as the radius: MeanDistanceFrom() gives that value for a point list.
+// Throws std::invalid_argument for a negative or non-finite radius or a factor outside [0, 1].
+PointMap MakeToSphere(Point3d center, double radius, double factor);
+
+// Mean of |p - center| over `points` (0 for an empty list).
+double MeanDistanceFrom(Point3d center, const std::vector<Point3d>& points);
 
 // What DeformSurface()/DeformCurve() measured.
 struct DeformReport {
