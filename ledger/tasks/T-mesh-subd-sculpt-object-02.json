@@ -1,0 +1,157 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-object-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 29,
+    "rows": 29,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 27
+  },
+  "deps": [],
+  "domains": [
+    "object"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "PointCloud",
+        "rows": 1,
+        "score": 0.848,
+        "status": "implemented"
+      },
+      {
+        "name": "FlatShade",
+        "rows": 1,
+        "score": 0.689,
+        "status": "implemented"
+      },
+      {
+        "name": "ReducePointCloud",
+        "rows": 1,
+        "score": 0.634,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:46",
+        "rows": 1,
+        "score": 0.848,
+        "symbol": "dino8::kernel::PointCloud"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:629",
+        "rows": 1,
+        "score": 0.742,
+        "symbol": "dino8::kernel::Model::AddPointCloud"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:54",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::PointCloud::PointAt"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-object-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/object.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-OBJECT-0153": {
+      "commands": [
+        "PointCloud",
+        "ReducePointCloud"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud",
+        "dino8::kernel::Model::AddPointCloud",
+        "dino8::kernel::PointCloud::PointAt"
+      ]
+    },
+    "D8-BLENDER-OBJECT-0177": {
+      "commands": [
+        "FlatShade"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-OBJECT-0124",
+    "D8-BLENDER-OBJECT-0125",
+    "D8-BLENDER-OBJECT-0126",
+    "D8-BLENDER-OBJECT-0127",
+    "D8-BLENDER-OBJECT-0128",
+    "D8-BLENDER-OBJECT-0129",
+    "D8-BLENDER-OBJECT-0131",
+    "D8-BLENDER-OBJECT-0132",
+    "D8-BLENDER-OBJECT-0133",
+    "D8-BLENDER-OBJECT-0134",
+    "D8-BLENDER-OBJECT-0135",
+    "D8-BLENDER-OBJECT-0136",
+    "D8-BLENDER-OBJECT-0137",
+    "D8-BLENDER-OBJECT-0138",
+    "D8-BLENDER-OBJECT-0153",
+    "D8-BLENDER-OBJECT-0155",
+    "D8-BLENDER-OBJECT-0157",
+    "D8-BLENDER-OBJECT-0176",
+    "D8-BLENDER-OBJECT-0177",
+    "D8-BLENDER-OBJECT-0178",
+    "D8-BLENDER-OBJECT-0179",
+    "D8-BLENDER-OBJECT-0200",
+    "D8-BLENDER-OBJECT-0201",
+    "D8-BLENDER-OBJECT-0202",
+    "D8-BLENDER-OBJECT-0203",
+    "D8-BLENDER-OBJECT-0205",
+    "D8-BLENDER-OBJECT-0207",
+    "D8-BLENDER-OBJECT-0215",
+    "D8-BLENDER-OBJECT-0216"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-OBJECT-0124",
+    "D8-BLENDER-OBJECT-0125",
+    "D8-BLENDER-OBJECT-0126",
+    "D8-BLENDER-OBJECT-0127",
+    "D8-BLENDER-OBJECT-0128",
+    "D8-BLENDER-OBJECT-0129",
+    "D8-BLENDER-OBJECT-0131",
+    "D8-BLENDER-OBJECT-0132",
+    "D8-BLENDER-OBJECT-0133",
+    "D8-BLENDER-OBJECT-0134",
+    "D8-BLENDER-OBJECT-0135",
+    "D8-BLENDER-OBJECT-0136",
+    "D8-BLENDER-OBJECT-0137",
+    "D8-BLENDER-OBJECT-0138",
+    "D8-BLENDER-OBJECT-0155",
+    "D8-BLENDER-OBJECT-0157",
+    "D8-BLENDER-OBJECT-0176",
+    "D8-BLENDER-OBJECT-0178",
+    "D8-BLENDER-OBJECT-0179",
+    "D8-BLENDER-OBJECT-0200",
+    "D8-BLENDER-OBJECT-0201",
+    "D8-BLENDER-OBJECT-0202",
+    "D8-BLENDER-OBJECT-0203",
+    "D8-BLENDER-OBJECT-0205",
+    "D8-BLENDER-OBJECT-0207",
+    "D8-BLENDER-OBJECT-0215",
+    "D8-BLENDER-OBJECT-0216"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: object (29 rows)",
+  "wave": 1
+}

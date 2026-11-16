@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "note": "Plan 6.4 (Revision 2): required cumulative share of the frozen Register passing at the end of each period. Targets implied by the date, not forecasts; recomputed on freeze day (30 Nov) and published when they change. Wave 0 (14-17 Nov) has no row target.",
+  "pace_rules_start": "2026-11-18T00:00:00Z",
+  "periods": [
+    {"from": "2026-11-18", "to": "2026-11-24", "cumulative_pct": 10},
+    {"from": "2026-11-25", "to": "2026-11-30", "cumulative_pct": 25},
+    {"from": "2026-12-01", "to": "2026-12-07", "cumulative_pct": 50},
+    {"from": "2026-12-08", "to": "2026-12-14", "cumulative_pct": 80},
+    {"from": "2026-12-15", "to": "2026-12-18", "cumulative_pct": 100}
+  ],
+  "window_hours": 6,
+  "window_fraction": 0.5,
+  "ahead_factor": 1.1,
+  "behind_factor": 0.9
+}
