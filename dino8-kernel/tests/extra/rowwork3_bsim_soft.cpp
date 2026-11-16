@@ -28,13 +28,13 @@ HairStrand Strand(const std::vector<Vec3>& pts, bool sel) {
 }  // namespace
 
 // ---------------------------------------------------------------------------------------- MODIFIER-0007 (Cloth)
-// One particle of mass m hangs from a pinned particle on a Hooke spring (k, rest length R) under gravity g.
+// One particle of mass m hangs from a pinned particle on a linear spring (k, rest length R) under gravity g.
 //   equilibrium z_eq = -(R + m g / k);  oscillation about it has omega = sqrt(k/m), T = 2 pi sqrt(m/k).
 // Velocity Verlet on a linear oscillator has the exact invariant I = m v^2 + k (1 - (omega h)^2/4) x^2, so
 //   * the numerical frequency is Omega with cos(Omega h) = 1 - (omega h)^2/2, i.e. T_num = T (1 - (omega h)^2/24 ...)
 //   * the true energy stays within E_osc (omega h)^2 / 4 of its start value (E = I/2 + k (omega h)^2 x^2 / 8).
 // Both bounds come from the scheme, not from the run.
-D8_EXTRA_TEST(RowClothModifierSpringMassMatchesHookeOscillatorAndConservesMomentum) {
+D8_EXTRA_TEST(RowClothModifierSpringMassMatchesLinearSpringOscillatorAndConservesMomentum) {
   const double m = 2.0, k = 200.0, R = 1.0, g = 9.81, A = 0.05, h = 1e-3;
   ClothSystem c;
   c.gravity = Vec3(0, 0, -g);

@@ -29,7 +29,7 @@ struct ClothParticle {
 struct ClothSpring {
   int i = 0, j = 0;
   double rest = 1.0;
-  double stiffness = 1.0;  // Hooke constant k (force per unit stretch)
+  double stiffness = 1.0;  // spring constant k (force per unit stretch)
   double damping = 0.0;    // force per unit relative speed along the spring
 };
 
@@ -39,7 +39,7 @@ class ClothSystem {
   std::vector<ClothParticle> p;
   std::vector<ClothSpring> springs;
 
-  // Hooke's law force on every particle from the springs and gravity (pinned particles: zero).
+  // Linear spring law force on every particle from the springs and gravity (pinned particles: zero).
   void Accel(std::vector<Vec3>* a) const {
     a->assign(p.size(), Vec3());
     std::vector<Vec3> f(p.size());
