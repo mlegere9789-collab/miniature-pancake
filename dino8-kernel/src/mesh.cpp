@@ -4886,9 +4886,8 @@ std::vector<std::pair<int, int>> Mesh::ExtractValidatedBoundaryEdges(const ON_Me
   std::set<std::pair<int, int>> directed_edges;
   for (int i = 0; i < cap.m_F.Count(); ++i) {
     const ON_MeshFace& f = cap.m_F[i];
-    directed_edges.insert({f.vi[0], f.vi[1]});
-    directed_edges.insert({f.vi[1], f.vi[2]});
-    directed_edges.insert({f.vi[2], f.vi[0]});
+    const int corners = f.IsQuad() ? 4 : 3;  // a quad cap face contributes its four directed edges, not a truncated triangle's three
+    for (int k = 0; k < corners; ++k) directed_edges.insert({f.vi[k], f.vi[(k + 1) % corners]});
   }
 
   std::vector<std::pair<int, int>> boundary_edges;
@@ -4951,13 +4950,7 @@ Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
 
   // Near-end faces keep the cap's own winding/orientation.
   for (int i = 0; i < in.m_F.Count(); ++i) {
-    const ON_MeshFace& f = in.m_F[i];
-    ON_MeshFace near_face;
-    near_face.vi[0] = f.vi[0];
-    near_face.vi[1] = f.vi[1];
-    near_face.vi[2] = f.vi[2];
-    near_face.vi[3] = f.vi[2];
-    out.m_F.Append(near_face);
+    out.m_F.Append(in.m_F[i]);  // a quad keeps its fourth corner (a triangle has vi[3] == vi[2])
   }
   // Far-end faces are the same triangles, translated and wound the
   // opposite way (so their normal points away from the solid, into +offset,
@@ -4965,10 +4958,17 @@ Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
   for (int i = 0; i < in.m_F.Count(); ++i) {
     const ON_MeshFace& f = in.m_F[i];
     ON_MeshFace far_face;
-    far_face.vi[0] = f.vi[0] + n;
-    far_face.vi[1] = f.vi[2] + n;
-    far_face.vi[2] = f.vi[1] + n;
-    far_face.vi[3] = far_face.vi[2];
+    if (f.IsQuad()) {
+      far_face.vi[0] = f.vi[0] + n;
+      far_face.vi[1] = f.vi[3] + n;
+      far_face.vi[2] = f.vi[2] + n;
+      far_face.vi[3] = f.vi[1] + n;
+    } else {
+      far_face.vi[0] = f.vi[0] + n;
+      far_face.vi[1] = f.vi[2] + n;
+      far_face.vi[2] = f.vi[1] + n;
+      far_face.vi[3] = far_face.vi[2];
+    }
     out.m_F.Append(far_face);
   }
 
@@ -5226,13 +5226,7 @@ Mesh Mesh::ConeToApex(const Mesh& cap, Point3d apex) {
 
   // Base faces keep the cap's own winding/orientation.
   for (int i = 0; i < in.m_F.Count(); ++i) {
-    const ON_MeshFace& f = in.m_F[i];
-    ON_MeshFace base_face;
-    base_face.vi[0] = f.vi[0];
-    base_face.vi[1] = f.vi[1];
-    base_face.vi[2] = f.vi[2];
-    base_face.vi[3] = f.vi[2];
-    out.m_F.Append(base_face);
+    out.m_F.Append(in.m_F[i]);  // a quad keeps its fourth corner (a triangle has vi[3] == vi[2])
   }
 
   // One triangle per boundary edge, to the shared apex vertex - the

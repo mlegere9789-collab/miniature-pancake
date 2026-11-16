@@ -2526,7 +2526,11 @@ class Mesh {
   // leaving it and one arriving. Throws std::invalid_argument otherwise
   // (a self-intersecting or "bowtie" boundary, or a cap with no boundary
   // at all - i.e. already closed) rather than emitting overlapping or
-  // malformed wall geometry.
+  // malformed wall geometry. `cap` faces may be triangles or quads (a quad
+  // keeps its four corners at both ends; earlier only its first three were
+  // read, which dropped the fourth corner and made the boundary wrong).
+  // The solid is wound outward when `offset` points away from the side the
+  // cap's own normals face (the near end is the cap as given).
   static Mesh ExtrudeCappedSolid(const Mesh& cap, Vector3d offset);
 
   // Builds a real cylinder: a circular disk cap (Brep::TrimmedPlanarFace()

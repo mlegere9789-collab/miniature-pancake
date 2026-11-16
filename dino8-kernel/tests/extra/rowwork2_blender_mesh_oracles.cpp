@@ -400,3 +400,32 @@ D8_EXTRA_TEST(Rw2MeshBooleanBoxAndPrismMatchPolygonClosedForms) {
   d8test::Check(CountsOf(diff).Euler() == 0, "a box with a through-hole has Euler characteristic 0 (genus 1)");
   d8test::Check(diff.SplitDisjointPieces().size() == 1, "one connected body");
 }
+
+// ---- Blender mesh.extrude_region and mesh.extrude_region_move (D8-BLENDER-MESH-0045, D8-BLENDER-MESH-0046) --------------------------------
+// Extruding a flat 2 x 2 region of quads (area 16, 9 vertices, 4 quads, normal +z) along an offset o pointing away from the side the region
+// faces: the volume is area * |o . n| whether the offset is normal to the region or sheared, V = 2 * 9, F = 4 + 4 + 8 boundary edges * 2
+// wall triangles, Euler characteristic 2; the shear changes the wall areas only. A cone from the same region to an apex: V = 9 + 1,
+// volume area * h / 3.
+D8_EXTRA_TEST(Rw2MeshExtrudeRegionAndMoveHasClosedFormCountsVolumeAndArea) {
+  const Mesh region = FlatSheet(2, 2.0);
+  d8test::Check(region.FaceCount() == 4 && region.VertexCount() == 9 && Near(region.Area(), 16.0, 1e-9), "setup: 4 quads, 9 vertices, area 16");
+  for (const Vector3d offset : {Vector3d(0, 0, -3), Vector3d(1, 0, -3)}) {
+    const Mesh solid = Mesh::ExtrudeCappedSolid(region, offset);
+    const Counts c = CountsOf(solid);
+    char what[160];
+    std::snprintf(what, sizeof what, "offset (%g, %g, %g): V = 18, F = 4 + 4 + 16, Euler 2, closed", offset.x, offset.y, offset.z);
+    d8test::Check(c.v == 18 && c.f == 4 + 4 + 16 && c.Euler() == 2 && solid.IsClosedManifold(), what);
+    std::snprintf(what, sizeof what, "offset (%g, %g, %g): volume = area * height = 48 (positive, outward)", offset.x, offset.y, offset.z);
+    d8test::Check(Near(solid.Volume(), 48.0, 1e-6), what);
+  }
+  const Mesh straight = Mesh::ExtrudeCappedSolid(region, Vector3d(0, 0, -3));
+  d8test::Check(Near(straight.Area(), 2 * 16.0 + 4 * 4.0 * 3.0, 1e-6), "straight extrusion: area = 2 * 16 + perimeter 16 * height 3 = 80");
+  const Mesh sheared = Mesh::ExtrudeCappedSolid(region, Vector3d(1, 0, -3));
+  d8test::Check(Near(sheared.Area(), 2 * 16.0 + 2 * std::sqrt(160.0) + 2 * 12.0, 1e-4), "sheared extrusion: walls are parallelograms: area = 32 + 2 sqrt(160) + 24");
+  const ON_BoundingBox bb = sheared.raw().BoundingBox();
+  d8test::Check(Near(bb.Max().x - bb.Min().x, 5.0, 1e-6) && Near(std::abs(bb.Max().z - bb.Min().z), 3.0, 1e-6), "extent: 4 + 1 in x, the height 3 in z");
+  const Mesh cone = Mesh::ConeToApex(region, Point3d(2, 2, -3));
+  const Counts cc = CountsOf(cone);
+  d8test::Check(cc.v == 10 && cc.f == 4 + 8 && cc.Euler() == 2 && cone.IsClosedManifold(), "cone of the region: V = 10, F = 4 + 8, Euler 2, closed");
+  d8test::Check(Near(cone.Volume(), 16.0, 1e-6) && Near(cone.Area(), 16.0 + 8.0 * std::sqrt(13.0), 1e-6), "cone volume = area * h / 3 = 16, area = 16 + 8 sqrt(13)");
+}
