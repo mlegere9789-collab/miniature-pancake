@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=Fillet;Sweep;Intersect;Chamfer;Thicken;Offset;Imprint;Revolve;Loft;Body;Brep;Section;Draft;Sub;Heal;Trim;Fold;Inset;Remove;Replace;Acis;Merge;Exact;Mixed;Mesh;Surface;Curve;Nurbs;Model
