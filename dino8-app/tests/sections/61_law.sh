@@ -13,8 +13,12 @@
 #        1 + 2 (3 s^2 - 2 s^3)         9.4820
 #        PCHIP through 0:1, 0.3:1.5, 1:3   8.5148        (s = position along the 10 mm edge / 10)
 #    (the same program printed the kernel's own removed volume for the sampled bodies at LawTol 0.003: 6.5551, 9.4722,
-#    8.5262, i.e. within 0.15% of these.)  The app prints Volume with 4 significant digits (993.4 for a 1000 box), so
-#    the removed volume carries a +-0.05 rounding band plus the mesh chord error: the check allows 0.08.
+#    8.5262, i.e. within 0.15% of these.)  The app's Volume is the volume of a closed MESH of the body, and the default
+#    mesh (chord tolerance 0.005) of a fillet of radius 1..3 and area ~30 can be off by up to ~0.15 either way (measured
+#    on the samples case: 8.54 with a dense mesh, 8.65 and 8.71 with a coarse one, kernel-exact 8.526), on top of the 4
+#    significant digits the default print carries (+-0.05 on 1000). So the three removed volumes are read with
+#    `Volume tolerance=0.0005 digits=8` (mesh error ~10x smaller, no rounding); the pin and the 0.08 window are unchanged.
+#    The default `Volume` reading is still taken and printed as a diagnostic.
 #  * Negative controls: the box stays exactly box-sized (Volume 1000 / 6000 = w*d*h) and the message names the reason.
 law_ok() { echo "ok   $1"; }
 law_bad() { echo "FAIL $1"; fail=1; }
@@ -28,7 +32,7 @@ law_exec() {  # law_exec <script>
 # law_case <name> <box x0> <box y0> <box z-height> <FilletEdge option lines, \n separated> <pick x,y,z>
 law_case() {
   local x0="$1" h="$3" opts="$4" pick="$5"
-  printf 'Box %s,0,0 %s,10,0 %s\nFilletEdge\n%b\n%s\nEnter\nSelAll\nVolume\nSelAll\nDelete\n' "$x0" "$((x0 + 10))" "$h" "$opts" "$pick"
+  printf 'Box %s,0,0 %s,10,0 %s\nFilletEdge\n%b\n%s\nEnter\nSelAll\nVolume\nVolume digits=8\nVolume tolerance=0.0005 digits=8\nSelAll\nDelete\n' "$x0" "$((x0 + 10))" "$h" "$opts" "$pick"
 }
 # law_removed_ok <description> <box volume> <app volume text> <expected removed volume>
 law_removed_ok() {
@@ -51,7 +55,10 @@ law_removed_ok() {
 } > "$TMPW/law_script.txt"
 LAW_OUT="$(law_exec "$TMPW/law_script.txt" 2>&1 || true)"
 mapfile -t LAW_MSG < <(grep -E '^history: ! ?FilletEdge:|^history: FilletEdge:' <<<"$LAW_OUT" | sed 's/^history: //')
-mapfile -t LAW_VOL < <(grep -oE '^history: Volume = [-0-9.e+]+' <<<"$LAW_OUT" | sed 's/^history: Volume = //')
+mapfile -t LAW_ALLV < <(grep -oE '^history: Volume = [-0-9.e+]+' <<<"$LAW_OUT" | sed 's/^history: Volume = //')
+# three readings per case: default (4 digits), default mesh with 8 digits (diagnostic), fine mesh with 8 digits
+LAW_VOL=(); LAW_VOLD=(); LAW_VOLF=()
+for ((k = 0; k + 2 < ${#LAW_ALLV[@]}; k += 3)); do LAW_VOL+=("${LAW_ALLV[k]}"); LAW_VOLD+=("${LAW_ALLV[k + 1]}"); LAW_VOLF+=("${LAW_ALLV[k + 2]}"); done
 
 if [ "${#LAW_MSG[@]}" = 7 ]; then law_ok "LAW: the script ran 7 FilletEdge commands and printed 7 results"; else law_bad "LAW: expected 7 FilletEdge result lines, got ${#LAW_MSG[@]}"; echo "$LAW_OUT" | grep -n 'FilletEdge' | head -12 | sed 's/^/     /'; fi
 # (case 7's Volume is not used: the app meshes in float32, so a body 1.5e6 from the origin has no usable volume)
@@ -66,7 +73,8 @@ for i in 0 1 2; do
   else
     law_bad "LAW ${names[$i]}: expected the fillet to be applied, got '${LAW_MSG[$i]:-<none>}'"
   fi
-  law_removed_ok "LAW ${names[$i]} on the 10-wide box" 1000 "${LAW_VOL[$i]:-0}" "${wants[$i]}"
+  echo "diag LAW ${names[$i]}: Volume default ${LAW_VOL[$i]:-?}, default mesh 8 digits ${LAW_VOLD[$i]:-?} (removed $(awk -v v="${LAW_VOLD[$i]:-0}" 'BEGIN { printf "%.4f", 1000 - v }')), fine mesh ${LAW_VOLF[$i]:-?} (removed $(awk -v v="${LAW_VOLF[$i]:-0}" 'BEGIN { printf "%.4f", 1000 - v }'))"
+  law_removed_ok "LAW ${names[$i]} on the 10-wide box" 1000 "${LAW_VOLF[$i]:-0}" "${wants[$i]}"
 done
 # the three laws remove clearly different volumes (a law-independent result could not satisfy all three checks above)
 if awk -v a="${LAW_VOL[0]:-0}" -v b="${LAW_VOL[1]:-0}" -v c="${LAW_VOL[2]:-0}" 'BEGIN { exit !(a > 0 && b > 0 && c > 0 && (1000 - b) - (1000 - c) > 0.5 && (1000 - c) - (1000 - a) > 0.5) }'; then
