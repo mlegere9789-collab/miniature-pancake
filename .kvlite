@@ -1,0 +1,2 @@
+SECTIONS=IFCEXP ARCHCALC
+FILTERS=extra::Struct;extra::Arch;extra::Ifc
