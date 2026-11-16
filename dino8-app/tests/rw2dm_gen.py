@@ -135,7 +135,7 @@ def verify_lines(expected):
                 points.append((nid, p)); nid += 1
     for pid, p in points:
         lines += ["SelNone", "SelID %d" % pid, "Move %s 0,0,0" % fmt(p)]
-    lines += ["SelNone", "SelPt", "List"]
+    if points: lines += ["SelNone", "SelPt", "List"]   # List with nothing selected would wait for a selection and swallow the next lines
     boxes = []
     for k, o in enumerate(expected, 1):
         if o.kind != "box": continue
