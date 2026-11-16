@@ -3,6 +3,7 @@
 //   TCount            number selected texts in X / Y / selection order, with prefix, suffix, overwrite or find-and-replace
 //   TextAlign         align texts to a base text (Left / Center / Right / Top / Middle / Bottom)
 //   Txt2Mtxt          merge or convert single-line texts into MTEXT (multi-line), sorted top-down or in selection order
+//   TableExport       write a table's cell text to a CSV file (RFC 4180 quoting)
 //   HatchToBack       send every hatch behind every other object (draw order)
 //   SpaceTrans        convert a length between model space and paper space with a layout detail's scale
 //   DimContinue       chain linear dimensions from the second extension line of the base dimension
@@ -15,10 +16,12 @@
 // treat the results exactly like the output of Text / Dim / DimAligned.
 #include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
+#include "drafting/Table.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -448,6 +451,67 @@ class FindReplaceCommand : public Command {
   }
   std::string find_, repl_;
   bool have_find_ = false, have_repl_ = false, match_case_ = false, whole_word_ = false, selection_only_ = false;
+};
+
+// ---------------------------------------------------------------------------
+// TableExport
+// ---------------------------------------------------------------------------
+
+// RFC 4180: a field with a comma, a double quote or a line break is quoted, quotes inside it doubled.
+std::string CsvQuote(const std::string& s) {
+  if (s.find_first_of(",\"\r\n") == std::string::npos) return s;
+  std::string out = "\"";
+  for (char c : s) { if (c == '"') out += "\"\""; else out += c; }
+  return out + "\"";
+}
+
+class TableExportCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    auto o = TakeOptionTokens(ctx);
+    file_ = OptionOr(o, "file");
+    options = {{"File", file_, {}, false, false}};
+    WantObjects("Select the table to export");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (Lc(n) == "file") { file_ = v; options[0].value = v; }
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (file_.empty()) { ctx.Warn("TableExport: give the file with File=<path.csv>"); Finish(); return; }
+    // The first selected group that carries table data (Table, RevisionTable, BillOfMaterials ... all do).
+    drafting::TableSpec spec;
+    bool found = false;
+    for (ObjectId id : ids) {
+      const SceneObject* sel = ctx.Doc().Find(id);
+      if (!sel || sel->group_id < 0) continue;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != sel->group_id) continue;
+        auto it = o.user_text.find("TableData");
+        if (it != o.user_text.end() && drafting::ParseTableDataJson(it->second, spec)) { found = true; break; }
+      }
+      if (found) break;
+    }
+    if (!found) { ctx.Warn("TableExport: select a table"); Finish(); return; }
+    // Binary mode: the same bytes on every platform. Formatting is discarded; a title banner becomes the first row.
+    std::ofstream f(file_, std::ios::trunc | std::ios::binary);
+    if (!f) { ctx.Warn("TableExport: could not write " + file_); Finish(); return; }
+    int lines = 0;
+    if (!spec.title.empty()) {
+      f << CsvQuote(spec.title);
+      for (int c = 1; c < spec.cols; ++c) f << ",";
+      f << "\n";
+      ++lines;
+    }
+    for (int r = 0; r < spec.rows; ++r) {
+      for (int c = 0; c < spec.cols; ++c) f << (c ? "," : "") << CsvQuote(spec.Cell(r, c));
+      f << "\n";
+      ++lines;
+    }
+    f.close();
+    ctx.Print("TableExport: " + std::to_string(spec.rows) + " x " + std::to_string(spec.cols) + " table written as " + std::to_string(lines) + " CSV line(s) to " + file_);
+    Finish();
+  }
+  std::string file_;
 };
 
 // ---------------------------------------------------------------------------
@@ -892,6 +956,8 @@ void RegisterDraftDocsCommands(CommandEngine& e) {
       "AutoCAD's TXT2MTXT: Combine=Yes (default) merges the selected single-line texts into ONE multi-line text object, Order=TopDown (default, larger Y first, then X) or Selection; Combine=No converts each text on its own. The result keeps the first line's text height and baseline position, lines are 1.5 text heights apart (the layout the DXF MTEXT reader uses), and ExportDxf writes it as one MTEXT. Word wrap, mixed sizes and fonts inside one object are not implemented.");
   Reg(e, "FindReplace", Make<FindReplaceCommand>(), CommandStatus::Implemented,
       "AutoCAD's FIND with Replace All, on the command line: FindReplace Find=<text> Replace=<text> MatchCase=Yes|No (default No) WholeWord=Yes|No (default No) Scope=All|Selection (default All). Replaces every occurrence in every single-line text of the drawing (or of the selection) and rebuilds those texts in place, keeping position, height, layer and style. Texts inside MText objects, dimensions, table cells and block definitions, wildcards, other layouts and the zoom-to-result option are not covered (FindText still finds and selects).");
+  Reg(e, "TableExport", Make<TableExportCommand>(), CommandStatus::Implemented,
+      "AutoCAD's TABLEEXPORT: writes the selected table (Table, RevisionTable, BillOfMaterials ...) to a CSV file, File=<path>. Cell text only, formatting discarded; fields with a comma, a double quote or a line break are quoted with quotes doubled (RFC 4180); a title banner becomes the first row. DataLink still links a table to a CSV or XLSX file in both directions.");
   Reg(e, "HatchToBack", Immediate([](CommandContext& ctx) { DoHatchToBack(ctx); }), CommandStatus::Implemented,
       "AutoCAD's HATCHTOBACK: gives every hatch (solid, pattern, bitmap, section-view hatching) a draw order behind every other object, locked layers included. Uses the same per-object DrawOrder as BringToFront / SendToBack.");
   Reg(e, "SpaceTrans", Make<SpaceTransCommand>(), CommandStatus::Implemented,
