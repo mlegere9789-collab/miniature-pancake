@@ -1,0 +1,113 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-object-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 23
+  },
+  "deps": [],
+  "domains": [
+    "object"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Select",
+        "rows": 2,
+        "score": 0.767,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-object-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/object.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-OBJECT-0164": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-OBJECT-0165": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-OBJECT-0145",
+    "D8-BLENDER-OBJECT-0148",
+    "D8-BLENDER-OBJECT-0154",
+    "D8-BLENDER-OBJECT-0160",
+    "D8-BLENDER-OBJECT-0162",
+    "D8-BLENDER-OBJECT-0163",
+    "D8-BLENDER-OBJECT-0164",
+    "D8-BLENDER-OBJECT-0165",
+    "D8-BLENDER-OBJECT-0167",
+    "D8-BLENDER-OBJECT-0168",
+    "D8-BLENDER-OBJECT-0169",
+    "D8-BLENDER-OBJECT-0170",
+    "D8-BLENDER-OBJECT-0171",
+    "D8-BLENDER-OBJECT-0172",
+    "D8-BLENDER-OBJECT-0173",
+    "D8-BLENDER-OBJECT-0174",
+    "D8-BLENDER-OBJECT-0175",
+    "D8-BLENDER-OBJECT-0210",
+    "D8-BLENDER-OBJECT-0211",
+    "D8-BLENDER-OBJECT-0212",
+    "D8-BLENDER-OBJECT-0213",
+    "D8-BLENDER-OBJECT-0214",
+    "D8-BLENDER-OBJECT-0239",
+    "D8-BLENDER-OBJECT-0245",
+    "D8-BLENDER-OBJECT-0246"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-OBJECT-0145",
+    "D8-BLENDER-OBJECT-0148",
+    "D8-BLENDER-OBJECT-0154",
+    "D8-BLENDER-OBJECT-0160",
+    "D8-BLENDER-OBJECT-0162",
+    "D8-BLENDER-OBJECT-0163",
+    "D8-BLENDER-OBJECT-0167",
+    "D8-BLENDER-OBJECT-0168",
+    "D8-BLENDER-OBJECT-0169",
+    "D8-BLENDER-OBJECT-0170",
+    "D8-BLENDER-OBJECT-0171",
+    "D8-BLENDER-OBJECT-0172",
+    "D8-BLENDER-OBJECT-0173",
+    "D8-BLENDER-OBJECT-0174",
+    "D8-BLENDER-OBJECT-0175",
+    "D8-BLENDER-OBJECT-0210",
+    "D8-BLENDER-OBJECT-0211",
+    "D8-BLENDER-OBJECT-0212",
+    "D8-BLENDER-OBJECT-0213",
+    "D8-BLENDER-OBJECT-0214",
+    "D8-BLENDER-OBJECT-0239",
+    "D8-BLENDER-OBJECT-0245",
+    "D8-BLENDER-OBJECT-0246"
+  ],
+  "status": "open",
+  "title": "direct-modeling: object (25 rows)",
+  "wave": 1
+}
