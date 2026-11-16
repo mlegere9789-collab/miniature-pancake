@@ -1,0 +1,236 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-geometry-nodes-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 6,
+    "with_hint": 6,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "geometry_nodes"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Arc",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Bake",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BoundingBox",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConvexHull",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Spiral",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DimCurveLength",
+        "rows": 1,
+        "score": 0.76,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:30",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::BoundingBox"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:315",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::ConvexHull"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1542",
+        "rows": 1,
+        "score": 0.719,
+        "symbol": "dino8::kernel::NurbsCurve::Length"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/convex_hull.h:96",
+        "rows": 1,
+        "score": 0.704,
+        "symbol": "dino8::kernel::ExactConvexHull"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:174",
+        "rows": 1,
+        "score": 0.683,
+        "symbol": "dino8::kernel::Mesh::GetBoundingBox"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:31",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::OrientedBoundingBox"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:79",
+        "rows": 1,
+        "score": 0.612,
+        "symbol": "dino8::kernel::IntersectionCurve::Length"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-geometry-nodes-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/geometry_nodes.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GEONODE-0005": {
+      "commands": [
+        "Bake"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0008": {
+      "commands": [
+        "BoundingBox"
+      ],
+      "kernel": [
+        "dino8::kernel::BoundingBox",
+        "dino8::kernel::Mesh::GetBoundingBox",
+        "dino8::kernel::OrientedBoundingBox"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0018": {
+      "commands": [
+        "ConvexHull"
+      ],
+      "kernel": [
+        "dino8::kernel::ConvexHull",
+        "dino8::kernel::ExactConvexHull"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0023": {
+      "commands": [
+        "Arc"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0026": {
+      "commands": [
+        "DimCurveLength"
+      ],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::Length",
+        "dino8::kernel::IntersectionCurve::Length"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0034": {
+      "commands": [
+        "Spiral"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-GEONODE-0001",
+    "D8-BLENDER-GEONODE-0002",
+    "D8-BLENDER-GEONODE-0003",
+    "D8-BLENDER-GEONODE-0004",
+    "D8-BLENDER-GEONODE-0005",
+    "D8-BLENDER-GEONODE-0006",
+    "D8-BLENDER-GEONODE-0007",
+    "D8-BLENDER-GEONODE-0008",
+    "D8-BLENDER-GEONODE-0009",
+    "D8-BLENDER-GEONODE-0010",
+    "D8-BLENDER-GEONODE-0011",
+    "D8-BLENDER-GEONODE-0012",
+    "D8-BLENDER-GEONODE-0013",
+    "D8-BLENDER-GEONODE-0014",
+    "D8-BLENDER-GEONODE-0015",
+    "D8-BLENDER-GEONODE-0016",
+    "D8-BLENDER-GEONODE-0017",
+    "D8-BLENDER-GEONODE-0018",
+    "D8-BLENDER-GEONODE-0019",
+    "D8-BLENDER-GEONODE-0020",
+    "D8-BLENDER-GEONODE-0021",
+    "D8-BLENDER-GEONODE-0022",
+    "D8-BLENDER-GEONODE-0023",
+    "D8-BLENDER-GEONODE-0024",
+    "D8-BLENDER-GEONODE-0025",
+    "D8-BLENDER-GEONODE-0026",
+    "D8-BLENDER-GEONODE-0027",
+    "D8-BLENDER-GEONODE-0028",
+    "D8-BLENDER-GEONODE-0029",
+    "D8-BLENDER-GEONODE-0030",
+    "D8-BLENDER-GEONODE-0031",
+    "D8-BLENDER-GEONODE-0032",
+    "D8-BLENDER-GEONODE-0033",
+    "D8-BLENDER-GEONODE-0034",
+    "D8-BLENDER-GEONODE-0035"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-GEONODE-0001",
+    "D8-BLENDER-GEONODE-0002",
+    "D8-BLENDER-GEONODE-0003",
+    "D8-BLENDER-GEONODE-0004",
+    "D8-BLENDER-GEONODE-0006",
+    "D8-BLENDER-GEONODE-0007",
+    "D8-BLENDER-GEONODE-0009",
+    "D8-BLENDER-GEONODE-0010",
+    "D8-BLENDER-GEONODE-0011",
+    "D8-BLENDER-GEONODE-0012",
+    "D8-BLENDER-GEONODE-0013",
+    "D8-BLENDER-GEONODE-0014",
+    "D8-BLENDER-GEONODE-0015",
+    "D8-BLENDER-GEONODE-0016",
+    "D8-BLENDER-GEONODE-0017",
+    "D8-BLENDER-GEONODE-0019",
+    "D8-BLENDER-GEONODE-0020",
+    "D8-BLENDER-GEONODE-0021",
+    "D8-BLENDER-GEONODE-0022",
+    "D8-BLENDER-GEONODE-0024",
+    "D8-BLENDER-GEONODE-0025",
+    "D8-BLENDER-GEONODE-0027",
+    "D8-BLENDER-GEONODE-0028",
+    "D8-BLENDER-GEONODE-0029",
+    "D8-BLENDER-GEONODE-0030",
+    "D8-BLENDER-GEONODE-0031",
+    "D8-BLENDER-GEONODE-0032",
+    "D8-BLENDER-GEONODE-0033",
+    "D8-BLENDER-GEONODE-0035"
+  ],
+  "status": "open",
+  "title": "flow: geometry_nodes (35 rows)",
+  "wave": 1
+}
