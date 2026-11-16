@@ -726,7 +726,8 @@ inline double ThreePhaseCurrent(double va, double line_to_line_volts) { return v
 
 // ---- run splitting between a minimum and a maximum piece length. Full pieces of max length; a leftover shorter than min is
 // stretched to min and the last full piece shortened by the same amount. ok = false when that is impossible (run shorter than
-// min, or the shortened piece would fall below min).
+// min, or the shortened piece would fall below min); the pieces are then empty, except for a run shorter than min, which is
+// returned as one flagged piece.
 struct SplitResult {
   bool ok = false;
   std::vector<double> pieces;
@@ -752,7 +753,10 @@ inline SplitResult SplitRun(double length, double min_len, double max_len) {
     return s;
   }
   const double shortened = max_len - (min_len - rest);
-  if (shortened < min_len) return s;
+  if (shortened < min_len) {
+    s.pieces.clear(); // not splittable by one adjustment: no layout is proposed
+    return s;
+  }
   s.pieces.back() = shortened;
   s.pieces.push_back(min_len);
   s.ok = true;
