@@ -1,0 +1,13 @@
+# TABLEEXPORT: a table is filled from a hand-built CSV (commas, a double quote and a line break inside cells) and exported again; then a 2 x 2 table with a title.
+# @TMP@ is substituted by the section.
+Table Rows=1 Cols=1
+0,0,0
+SelAll
+DataLink File=@TMP@/dd_te_in.csv Mode=Pull
+SelAll
+TableExport File=@TMP@/dd_te1.csv
+New
+Table Rows=2 Cols=2 Title=Parts Data=a,b;c,d
+0,0,0
+SelAll
+TableExport File=@TMP@/dd_te2.csv
