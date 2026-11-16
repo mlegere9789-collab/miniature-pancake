@@ -978,14 +978,18 @@ void RegisterStateCommands(CommandEngine& e) {
         ctx.Doc().Touch();
         ctx.Print("Hyperlink '" + url + "' set on " + std::to_string(ids.size()) + " object(s)");
       }));
-  Reg(e, "SetDocumentUserText", Immediate([](CommandContext& ctx) {
+  // DocumentText [key [value]]: the Document User Text panel's command line form, the same as SetDocumentUserText (no key lists the
+  // keys and opens the panel, key and value set it, key alone removes it).
+  const CommandFactory set_document_user_text = Immediate([](CommandContext& ctx) {
         auto k = ctx.Engine().TakePendingInput();
         auto v = ctx.Engine().TakePendingInput();
         if (!k) { ctx.Print(std::to_string(ctx.Doc().UserText().size()) + " document user text key(s):"); for (auto& kv : ctx.Doc().UserText()) ctx.Print("  " + kv.first + " = " + kv.second); ctx.App().Panels().document_user_text = true; return; }
         if (!v) { ctx.Doc().UserText().erase(*k); ctx.Print("Document user text '" + *k + "' removed"); }
         else { ctx.Doc().UserText()[*k] = *v; ctx.Print("Document user text " + *k + " = " + *v); }
         ctx.Doc().Touch();
-      }));
+      });
+  Reg(e, "SetDocumentUserText", set_document_user_text);
+  Reg(e, "DocumentText", set_document_user_text);
   Reg(e, "ModelBasepoint", Make<PointArgCommand>("Model base point", [](CommandContext& ctx, Point3d p) { ctx.Doc().UserText()["ModelBasepoint"] = FormatPoint(p); ctx.Doc().Touch(); ctx.Print("Model base point " + FormatPoint(p)); }));
   Reg(e, "EarthAnchorPoint", Make<EarthAnchorCommand>(), CommandStatus::Implemented, "Stores the model point, latitude and longitude in document user text (EarthAnchorPoint/Latitude/Longitude). Dino 8's Sun takes Azimuth/Altitude directly rather than deriving them from this, unlike Rhino's solar calculator.");
 

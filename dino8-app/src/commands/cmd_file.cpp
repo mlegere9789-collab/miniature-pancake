@@ -484,7 +484,13 @@ void RegisterFileCommands(CommandEngine& e) {
       "geometry, not AP214's B-rep entities - tessellating Breps/Surfaces/SubDs exactly like ExportIfc. Plain Export/"
       "SaveAs to .stp/.step still writes AP214.");
   Reg(e, "Exit", Immediate([](CommandContext& ctx) { ctx.App().RequestQuit(); }));
-  Reg(e, "Notes", Immediate([](CommandContext& ctx) { ctx.App().Panels().notes = true; }));
+  // Notes ["text"]: with text, replaces the document notes (saved in the 3dm); without, opens the Notes panel. Either way the
+  // current notes are reported on one line so a script can read them back.
+  Reg(e, "Notes", Immediate([](CommandContext& ctx) {
+        if (auto tok = ctx.Engine().TakePendingInput()) { ctx.Doc().Notes() = *tok; ctx.Doc().Touch(); }
+        else ctx.App().Panels().notes = true;
+        ctx.Print("Notes: " + (ctx.Doc().Notes().empty() ? std::string("(empty)") : ctx.Doc().Notes()));
+      }), CommandStatus::Implemented, "Notes [\"text\"]: sets the notes saved with the model (3dm), or opens the Notes panel when no text is typed; always reports the current notes.");
   Reg(e, "ActivityLog", Immediate([](CommandContext& ctx) { ctx.App().Panels().activity_log = true; }));
   // ActivityExport: writes the document's full Activity Log (see
   // Document::ActivityLog / RecordActivityLogEntry) as CSV - the same
@@ -517,7 +523,41 @@ void RegisterFileCommands(CommandEngine& e) {
       CommandStatus::Implemented,
       "Exports the local Activity Log (a persisted, labeled record of every edit made to this document - Dino 8's analogue of AutoCAD's Activity Insights) to CSV. No cross-machine/user sync, single-user local history only.");
   Reg(e, "DocumentProperties", Immediate([](CommandContext& ctx) { ctx.App().Panels().document_properties = true; }));
-  Reg(e, "Units", Immediate([](CommandContext& ctx) { ctx.App().Panels().document_properties = true; }));
+  // Units [Millimeters|Centimeters|Meters|Inches|Feet]: with a name, sets the model units (long or singular names and the abbreviations
+  // mm cm m in ft are accepted); without, opens Document Properties. Either way one line reports units and both tolerances.
+  Reg(e, "Units", Immediate([](CommandContext& ctx) {
+        DocumentSettings& s = ctx.Settings();
+        if (auto tok = ctx.Engine().TakePendingInput()) {
+          std::string w = *tok;
+          for (char& c : w) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          static const char* const kNames[][3] = {{"Millimeters", "millimeter", "mm"}, {"Centimeters", "centimeter", "cm"}, {"Meters", "meter", "m"},
+                                                  {"Inches", "inch", "in"}, {"Feet", "foot", "ft"}};
+          const char* found = nullptr;
+          for (const auto& n : kNames) {
+            std::string full = n[0];
+            for (char& c : full) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (w == full || w == n[1] || w == n[2]) found = n[0];
+          }
+          if (!found) { ctx.Warn("Units: unknown unit system '" + *tok + "' (use Millimeters, Centimeters, Meters, Inches or Feet)"); return; }
+          s.unit_system = found;
+          ctx.Doc().Touch();
+        } else {
+          ctx.App().Panels().document_properties = true;
+        }
+        ctx.Print("Units: " + s.unit_system + ", absolute tolerance " + FormatNumber(s.absolute_tolerance) + ", angle tolerance " + FormatNumber(s.angle_tolerance_degrees) + " degrees");
+      }), CommandStatus::Implemented, "Units [name]: sets the model unit system (Millimeters, Centimeters, Meters, Inches, Feet), or opens Document Properties when no name is typed; always reports units and tolerances.");
+  // SetTolerance <absolute> [angle degrees]: the document's absolute tolerance (at least 1e-8) and, when given, angle tolerance (at least 0.001).
+  Reg(e, "SetTolerance", Immediate([](CommandContext& ctx) {
+        DocumentSettings& s = ctx.Settings();
+        auto number = [&](const std::string& t, double& out) { char* end = nullptr; const double v = std::strtod(t.c_str(), &end); if (end == t.c_str() || *end) return false; out = v; return true; };
+        double absolute = s.absolute_tolerance, angle = s.angle_tolerance_degrees;
+        std::optional<std::string> a = ctx.Engine().TakePendingInput();
+        std::optional<std::string> g = ctx.Engine().TakePendingInput();
+        if (a && !number(*a, absolute)) { ctx.Warn("SetTolerance: expected a number for the absolute tolerance, got '" + *a + "'"); return; }
+        if (g && !number(*g, angle)) { ctx.Warn("SetTolerance: expected a number for the angle tolerance, got '" + *g + "'"); return; }
+        if (a) { s.absolute_tolerance = std::max(1e-8, absolute); if (g) s.angle_tolerance_degrees = std::max(0.001, angle); ctx.Doc().Touch(); }
+        ctx.Print("Units: " + s.unit_system + ", absolute tolerance " + FormatNumber(s.absolute_tolerance) + ", angle tolerance " + FormatNumber(s.angle_tolerance_degrees) + " degrees");
+      }), CommandStatus::Implemented, "SetTolerance <absolute> [angle degrees]: sets the document absolute tolerance and optionally the angle tolerance; with no number only reports them.");
   Reg(e, "Audit3dmFile", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
         app.ShowFileDialog("Audit .3dm file", {".3dm"}, false, [&app](const std::string& path) {

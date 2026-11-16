@@ -1779,6 +1779,9 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     ON_wString v;
     if (model.GetDocumentUserString(L"Dino8.Title", v)) doc.Settings().title = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.Comments", v)) doc.Settings().comments = FromWide(v);
+    if (model.GetDocumentUserString(L"Dino8.GridSpacing", v)) doc.Settings().grid_spacing = std::max(1e-3, std::atof(FromWide(v).c_str()));
+    if (model.GetDocumentUserString(L"Dino8.GridMajorEvery", v)) doc.Settings().grid_major_every = std::max(1, std::atoi(FromWide(v).c_str()));
+    if (model.GetDocumentUserString(L"Dino8.GridExtents", v)) doc.Settings().grid_extents = std::max(1, std::atoi(FromWide(v).c_str()));
     if (model.GetDocumentUserString(L"Dino8.LinetypeScale", v)) doc.Settings().linetype_scale = std::max(1e-6, std::atof(FromWide(v).c_str()));
     if (model.GetDocumentUserString(L"Dino8.LinetypeDisplay", v)) doc.Settings().linetype_display = FromWide(v) != "0";
     if (model.GetDocumentUserString(L"Dino8.DimensionLayer", v)) doc.Settings().dimension_layer = FromWide(v);
@@ -1970,6 +1973,10 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   }
   if (model.m_settings.m_ModelUnitsAndTolerances.m_absolute_tolerance > 0) {
     doc.Settings().absolute_tolerance = model.m_settings.m_ModelUnitsAndTolerances.m_absolute_tolerance;
+  }
+  // The angle tolerance is stored in radians; a file that carries none (0) keeps the document default.
+  if (model.m_settings.m_ModelUnitsAndTolerances.m_angle_tolerance > 0) {
+    doc.Settings().angle_tolerance_degrees = model.m_settings.m_ModelUnitsAndTolerances.m_angle_tolerance * 180.0 / ON_PI;
   }
   if (skipped > 0) error = std::to_string(skipped) + " unsupported object(s) were skipped";
   if (corrupt_meshes > 0) {
@@ -2535,6 +2542,12 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     char buf[256];
     std::snprintf(buf, sizeof(buf), "%g", doc.Settings().linetype_scale);
     model.SetDocumentUserString(L"Dino8.LinetypeScale", ON_wString(buf));
+    std::snprintf(buf, sizeof(buf), "%.17g", doc.Settings().grid_spacing);
+    model.SetDocumentUserString(L"Dino8.GridSpacing", ON_wString(buf));
+    std::snprintf(buf, sizeof(buf), "%d", doc.Settings().grid_major_every);
+    model.SetDocumentUserString(L"Dino8.GridMajorEvery", ON_wString(buf));
+    std::snprintf(buf, sizeof(buf), "%d", doc.Settings().grid_extents);
+    model.SetDocumentUserString(L"Dino8.GridExtents", ON_wString(buf));
     model.SetDocumentUserString(L"Dino8.LinetypeDisplay", doc.Settings().linetype_display ? L"1" : L"0");
     if (!doc.Settings().dimension_layer.empty()) model.SetDocumentUserString(L"Dino8.DimensionLayer", ON_wString(doc.Settings().dimension_layer.c_str()));
     if (!doc.Settings().center_layer.empty()) model.SetDocumentUserString(L"Dino8.CenterLayer", ON_wString(doc.Settings().center_layer.c_str()));

@@ -367,7 +367,28 @@ void RegisterViewCommands(CommandEngine& e) {
   Reg(e, "RefreshShade", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
   Reg(e, "ClearAllMeshes", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
   Reg(e, "Grid", Immediate([](CommandContext& ctx) { ctx.Settings().show_grid = !ctx.Settings().show_grid; ctx.Print(std::string("Grid ") + (ctx.Settings().show_grid ? "on" : "off")); }));
-  Reg(e, "GridOptions", Immediate([](CommandContext& ctx) { ctx.App().Panels().document_properties = true; }));
+  // GridOptions [spacing [major-every [extents]]]: the document grid. Numbers set the grid (and grid snap) spacing, how many minor lines
+  // make a major one and how many lines the grid extends from the origin; without numbers the Document Properties panel opens.
+  // One line reports the grid either way.
+  Reg(e, "GridOptions", Immediate([](CommandContext& ctx) {
+        DocumentSettings& s = ctx.Settings();
+        std::optional<std::string> sp = ctx.Engine().TakePendingInput();
+        std::optional<std::string> me = ctx.Engine().TakePendingInput();
+        std::optional<std::string> ex = ctx.Engine().TakePendingInput();
+        auto number = [](const std::string& t, double& out) { char* end = nullptr; const double v = std::strtod(t.c_str(), &end); if (end == t.c_str() || *end) return false; out = v; return true; };
+        double spacing = s.grid_spacing, major = s.grid_major_every, extents = s.grid_extents;
+        if ((sp && !number(*sp, spacing)) || (me && !number(*me, major)) || (ex && !number(*ex, extents))) { ctx.Warn("GridOptions: expected numbers for spacing, major-every and extents"); return; }
+        if (sp) {
+          if (spacing <= 0 || (me && major < 1) || (ex && extents < 1)) { ctx.Warn("GridOptions: spacing must be greater than zero, major-every and extents at least 1"); return; }
+          s.grid_spacing = spacing;
+          if (me) s.grid_major_every = static_cast<int>(major);
+          if (ex) s.grid_extents = static_cast<int>(extents);
+          ctx.Doc().Touch();
+        } else {
+          ctx.App().Panels().document_properties = true;
+        }
+        ctx.Print("Grid: spacing " + FormatNumber(s.grid_spacing) + ", major line every " + std::to_string(s.grid_major_every) + ", extents " + std::to_string(s.grid_extents));
+      }), CommandStatus::Implemented, "GridOptions [spacing [major-every [extents]]]: sets the document grid spacing (also the grid snap spacing), major-line interval and extent; with no numbers it opens Document Properties. Always reports the grid.");
   Reg(e, "CPlane", Make<CPlaneCommand>());
   Reg(e, "CPlaneToWorld", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->CPlane() = ConstructionPlane{}; }));
   Reg(e, "CPlaneToView", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) { ConstructionPlane& cp = vp->CPlane(); cp.origin = vp->GetCamera().State().target; cp.x_axis = vp->GetCamera().Right(); cp.y_axis = vp->GetCamera().Up(); } }));
