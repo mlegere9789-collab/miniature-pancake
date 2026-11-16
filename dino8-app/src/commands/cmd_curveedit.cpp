@@ -320,6 +320,31 @@ std::vector<double> CutParams(CommandContext& ctx, const CurveRef& target, const
   return params;
 }
 
+
+// A straight curve prolonged by `extra` at both ends (the implied, natural-path extension of a cutting edge or a boundary edge).
+// Anything that is not a straight line is returned unchanged: AutoCAD's Edge=Extend continues arcs and circles along their circle,
+// which this build does not do.
+CurveRef ExtendedEdge(const CurveRef& c, double extra) {
+  if (!c.curve.IsLinear()) return c;
+  const Point3d a = c.curve.PointAt(c.curve.Domain().min), b = c.curve.PointAt(c.curve.Domain().max);
+  Vector3d d = b - a;
+  if (!d.Unitize()) return c;
+  CurveRef r = c;
+  r.curve = PolylineCurve({a - d * extra, b + d * extra});
+  return r;
+}
+
+// Extent of the whole document, used to size the prolongation of an edge so it reaches anything in the drawing.
+double DocumentReach(CommandContext& ctx) {
+  double reach = 1.0;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (o.kind != ObjectKind::Curve || !o.curve) continue;
+    const kernel::BoundingBox bb = o.curve->GetTightBoundingBox();
+    reach = std::max(reach, (bb.max - bb.min).Length() + std::max({std::fabs(bb.min.x), std::fabs(bb.min.y), std::fabs(bb.max.x), std::fabs(bb.max.y)}));
+  }
+  return reach * 10.0;
+}
+
 std::string Plural(size_t n, const char* word) { return std::to_string(n) + " " + word + (n == 1 ? "" : "s"); }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +468,14 @@ class SplitCommand : public Command {
 
 class TrimCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select cutting objects"); }
+  void Begin(CommandContext&) override {
+    WantObjects("Select cutting objects");
+    // AutoCAD TRIM, Edge option: Extend lets a straight cutting edge cut along its natural prolongation.
+    options = {{"EdgeExtend", "No", {"Yes", "No"}, false, true}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "EdgeExtend") { edge_extend_ = (v == "Yes"); options[0].value = edge_extend_ ? "Yes" : "No"; }
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     for (ObjectId id : ids) {
       if (std::optional<CurveRef> c = CopyCurve(ctx, id)) cutters_.push_back(*c);
@@ -461,6 +493,13 @@ class TrimCommand : public Command {
     const kernel::NurbsCurve& c = target->curve;
     const kernel::Interval dom = c.Domain();
     std::vector<double> params = CleanParams(c, CutParams(ctx, *target, cutters_, points_));
+    if (params.empty() && edge_extend_) {
+      // Edge = Extend: look again with every straight cutting edge (other than the target itself) prolonged along its line.
+      const double extra = DocumentReach(ctx);
+      std::vector<CurveRef> longer;
+      for (const CurveRef& cut : cutters_) longer.push_back(cut.id == target->id ? cut : ExtendedEdge(cut, extra));
+      params = CleanParams(c, CutParams(ctx, *target, longer, points_));
+    }
     if (params.empty()) { ctx.Warn("Cutting objects do not intersect curve " + std::to_string(target->id)); return; }
     std::vector<kernel::NurbsCurve> result;
     if (c.IsClosed()) {
@@ -501,6 +540,7 @@ class TrimCommand : public Command {
  private:
   std::vector<CurveRef> cutters_;
   std::vector<Point3d> points_;
+  bool edge_extend_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -514,6 +554,12 @@ class FilletChamferCommand : public Command {
   const char* SizeName() const { return chamfer_ ? "Distance" : "Radius"; }
   void Begin(CommandContext&) override {
     options = {{SizeName(), FormatNumber(size_), {}, true, false}, {"Join", join_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+    // AutoCAD CHAMFER: a second distance, or a distance and an angle (the angle between the chamfer line and the FIRST line).
+    if (chamfer_) {
+      options.push_back({"Distance2", "same as Distance", {}, true, false});
+      options.push_back({"Angle", FormatNumber(angle_), {}, true, false});
+      options.push_back({"Method", "Distance", {"Distance", "Angle"}, false, false});
+    }
     WantPoint(std::string("Select first curve to ") + (chamfer_ ? "chamfer" : "fillet") + " (or type the " + SizeName() + ")");
   }
   // 0 means a sharp corner. nan, inf, negative values and values between 0 and the tolerance used to be taken silently
@@ -533,6 +579,17 @@ class FilletChamferCommand : public Command {
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == SizeName()) SetSize(ctx, std::atof(v.c_str()), v);
     if (n == "Join") { join_ = (v == "Yes"); options[1].value = join_ ? "Yes" : "No"; }
+    if (chamfer_ && n == "Distance2") {
+      const double d = std::atof(v.c_str());
+      if (std::isfinite(d) && d >= ctx.Settings().absolute_tolerance) { size2_ = d; options[2].value = FormatNumber(d); ctx.Print("Distance2=" + FormatNumber(d)); }
+      else ctx.Warn("Chamfer: the second distance must be at least the tolerance, '" + v + "' ignored");
+    }
+    if (chamfer_ && n == "Angle") {
+      const double a = std::atof(v.c_str());
+      if (std::isfinite(a) && a > 0 && a < 180) { angle_ = a; options[3].value = FormatNumber(a); ctx.Print("Angle=" + FormatNumber(a)); }
+      else ctx.Warn("Chamfer: the angle must be between 0 and 180 degrees, '" + v + "' ignored");
+    }
+    if (chamfer_ && n == "Method") { by_angle_ = (v == "Angle"); options[4].value = by_angle_ ? "Angle" : "Distance"; ctx.Print(std::string("Method=") + options[4].value); }
   }
   void OnNumber(CommandContext& ctx, double v) override { SetSize(ctx, v, FormatNumber(v)); }
   void OnText(CommandContext& ctx, const std::string& t) override {
@@ -620,7 +677,16 @@ class FilletChamferCommand : public Command {
     if (size_ > 0) {
       if (chamfer_) {
         kernel::NurbsCurve chamfer_curve;
-        if (kernel::NurbsCurve::ChamferCorner(ray_far_A, corner, ray_far_B, dist, dist, chamfer_curve) !=
+        // First distance on the first line; the second is Distance2 (when set), or follows from the angle (law of sines in the
+        // triangle corner / tangent point 1 / tangent point 2: the corner angle is 2*half, the angle at tangent point 1 is angle_).
+        double dist_b = size2_ > 0 ? size2_ : dist;
+        if (by_angle_) {
+          const double a = angle_ * ON_PI / 180.0, s3 = std::sin(2 * half + a);
+          if (!(s3 > 1e-9)) { ctx.Warn("Chamfer: the angle does not reach the second line"); return; }
+          dist_b = dist * std::sin(a) / s3;
+        }
+        const double reach = std::max(dist, dist_b) * 2 + 1;
+        if (kernel::NurbsCurve::ChamferCorner(corner + dirA * reach, corner, corner + dirB * reach, dist, dist_b, chamfer_curve) !=
             kernel::Result::Ok) {
           ctx.Warn("Could not build the chamfer segment");
           return;
@@ -669,6 +735,9 @@ class FilletChamferCommand : public Command {
 
   bool chamfer_;
   double size_;
+  double size2_ = -1;      // Chamfer: second distance (< 0: same as the first)
+  double angle_ = 45;      // Chamfer: angle in degrees for Method=Angle
+  bool by_angle_ = false;
   bool join_ = false;
   std::optional<CurveRef> first_;
   double t1_ = 0;
@@ -764,6 +833,51 @@ class FilletCornersCommand : public Command {
 };
 
 }  // namespace
+
+// AutoCAD EXTEND to boundary edges (used by ExtendCommand in cmd_edit.cpp). The straight curve `target_id` is extended at the end
+// nearest to `pick` along its own line until it meets the nearest of the boundary curves (apparent intersection in the
+// construction plane, on the part of the boundary that really exists; with `edge_extend` straight boundaries count along their
+// whole line). Returns false, with the reason in `why`, when nothing was changed. Curves that are not straight are not extended.
+bool ExtendToBoundary(CommandContext& ctx, ObjectId target_id, Point3d pick, const std::vector<ObjectId>& boundary_ids,
+                      bool edge_extend, std::string& why) {
+  std::optional<CurveRef> target = CopyCurve(ctx, target_id);
+  if (!target) { why = "the picked object is not a curve"; return false; }
+  if (!target->curve.IsLinear()) { why = "only straight lines can be extended to a boundary here"; return false; }
+  std::vector<CurveRef> edges;
+  const double extra = edge_extend ? DocumentReach(ctx) : 0.0;
+  for (ObjectId id : boundary_ids) {
+    if (id == target_id) continue;
+    if (std::optional<CurveRef> b = CopyCurve(ctx, id)) edges.push_back(edge_extend ? ExtendedEdge(*b, extra) : *b);
+  }
+  if (edges.empty()) { why = "there is no boundary edge"; return false; }
+  const kernel::Interval dom = target->curve.Domain();
+  const Point3d p0 = target->curve.PointAt(dom.min), p1 = target->curve.PointAt(dom.max);
+  const bool at_start = pick.DistanceTo(p0) < pick.DistanceTo(p1);
+  const Point3d fixed = at_start ? p1 : p0, tip = at_start ? p0 : p1;
+  Vector3d dir = tip - fixed;
+  if (!dir.Unitize()) { why = "the line has no length"; return false; }
+  // A ray from the tip along the line, long enough to reach every boundary.
+  const double reach = DocumentReach(ctx) * 4 + tip.DistanceTo(fixed);
+  CurveRef ray = *target;
+  ray.curve = PolylineCurve({tip, tip + dir * reach});
+  ray.id = kNoObject;
+  const ON_Plane plane = ActivePlane(ctx);
+  const double tol = ctx.Settings().absolute_tolerance;
+  double best = std::numeric_limits<double>::max();
+  Point3d best_pt = tip;
+  for (const CurveRef& e : edges) {
+    for (const CurveHit& h : IntersectCurves(ray.curve, e.curve, plane, tol, kApparent)) {
+      const double along = ON_DotProduct(h.point - tip, dir);
+      if (along > tol * 10 && along < best) { best = along; best_pt = tip + dir * along; }
+    }
+  }
+  if (best == std::numeric_limits<double>::max()) { why = "the line does not meet a boundary edge when extended"; return false; }
+  ctx.Doc().BeginChange("Extend");
+  const CurveRef old = *target;
+  ctx.Doc().Remove(target_id);
+  ctx.Doc().Select(AddLike(ctx, PolylineCurve({fixed, best_pt}), old.attrs), true);
+  return true;
+}
 
 // Exposed so cmd_fillet.cpp's Intersect wrapper can delegate pure-curve (and
 // closed-solid) selections to the existing curve/curve intersector instead
