@@ -1,4 +1,5 @@
 // Drafting and documentation commands from the AutoCAD column of the Parity Register (factory drafting-docs):
+//   FindReplace       find and replace text in every single-line text of the drawing (match case, whole word)
 //   TCount            number selected texts in X / Y / selection order, with prefix, suffix, overwrite or find-and-replace
 //   TextAlign         align texts to a base text (Left / Center / Right / Top / Middle / Bottom)
 //   Txt2Mtxt          merge or convert single-line texts into MTEXT (multi-line), sorted top-down or in selection order
@@ -358,6 +359,95 @@ class Txt2MtxtCommand : public Command {
   }
   bool combine_ = true;
   std::string order_ = "topdown";
+};
+
+// ---------------------------------------------------------------------------
+// FindReplace
+// ---------------------------------------------------------------------------
+
+bool IsWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+// Replaces every occurrence of `find` in `text`; returns the number replaced (0 leaves `out` equal to `text`).
+int ReplaceAllIn(const std::string& text, const std::string& find, const std::string& repl, bool match_case, bool whole_word, std::string& out) {
+  out.clear();
+  const std::string hay = match_case ? text : Lc(text), needle = match_case ? find : Lc(find);
+  size_t pos = 0;
+  int n = 0;
+  while (pos <= text.size()) {
+    const size_t hit = needle.empty() ? std::string::npos : hay.find(needle, pos);
+    if (hit == std::string::npos) break;
+    const size_t end = hit + needle.size();
+    const bool ok = !whole_word || ((hit == 0 || !IsWordChar(text[hit - 1])) && (end >= text.size() || !IsWordChar(text[end])));
+    if (!ok) { out += text.substr(pos, hit + 1 - pos); pos = hit + 1; continue; }
+    out += text.substr(pos, hit - pos) + repl;
+    pos = end;
+    ++n;
+  }
+  out += text.substr(std::min(pos, text.size()));
+  return n;
+}
+
+class FindReplaceCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    auto o = TakeOptionTokens(ctx);
+    have_find_ = o.count("find") > 0;
+    have_repl_ = o.count("replace") > 0;
+    find_ = OptionOr(o, "find");
+    repl_ = OptionOr(o, "replace");
+    match_case_ = IsYes(OptionOr(o, "matchcase", "No"));
+    whole_word_ = IsYes(OptionOr(o, "wholeword", "No"));
+    selection_only_ = Lc(OptionOr(o, "scope", "all")) == "selection";
+    options = {{"Find", find_, {}, false, false}, {"Replace", repl_, {}, false, false}, {"MatchCase", match_case_ ? "Yes" : "No", {"Yes", "No"}, false, true},
+               {"WholeWord", whole_word_ ? "Yes" : "No", {"Yes", "No"}, false, true}, {"Scope", selection_only_ ? "Selection" : "All", {"All", "Selection"}, false, false}};
+    if (!have_find_ || find_.empty()) { WantText("Text to find"); return; }
+    if (!have_repl_) { WantText("Replace with"); return; }
+    Apply(ctx);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    const std::string k = Lc(n);
+    if (k == "find") { find_ = v; have_find_ = true; options[0].value = v; }
+    else if (k == "replace") { repl_ = v; have_repl_ = true; options[1].value = v; }
+    else if (k == "matchcase") { match_case_ = IsYes(v); options[2].value = match_case_ ? "Yes" : "No"; }
+    else if (k == "wholeword") { whole_word_ = IsYes(v); options[3].value = whole_word_ ? "Yes" : "No"; }
+    else if (k == "scope") { selection_only_ = Lc(v) == "selection"; options[4].value = v; }
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (find_.empty()) { find_ = t; have_find_ = true; WantText("Replace with"); return; }
+    repl_ = t;
+    have_repl_ = true;
+    Apply(ctx);
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (have_find_ && !find_.empty() && !have_repl_) { repl_.clear(); have_repl_ = true; Apply(ctx); return; }
+    Finish();
+  }
+  void Apply(CommandContext& ctx) {
+    if (find_.empty()) { ctx.Warn("FindReplace: nothing to find"); Finish(); return; }
+    // The single-line Text groups in the drawing, or among the selected objects.
+    std::vector<ObjectId> ids;
+    if (selection_only_) ids = ctx.Selected();
+    else for (const SceneObject& o : ctx.Doc().Objects()) if (o.group_id >= 0 && o.user_text.count("Annotation")) ids.push_back(o.id);
+    std::vector<TextItem> items = TextItemsOf(ctx, ids);
+    ctx.Doc().BeginChange("FindReplace");
+    int matched_texts = 0, replacements = 0, changed = 0, skipped = 0;
+    for (TextItem& t : items) {
+      std::string out;
+      const int n = ReplaceAllIn(t.spec.text, find_, repl_, match_case_, whole_word_, out);
+      if (n == 0) continue;
+      ++matched_texts;
+      replacements += n;
+      if (out.empty()) { ++skipped; continue; }  // a text cannot be replaced by nothing here: delete it with Delete
+      GlyphSpec spec = t.spec;
+      spec.text = out;
+      if (RebuildGroupText(ctx, t.group, spec) > 0) ++changed;
+    }
+    ctx.Print("FindReplace: " + std::to_string(matched_texts) + " text(s) contain \"" + find_ + "\", " + std::to_string(replacements) + " replacement(s) made in " + std::to_string(changed) + " text(s)" +
+              (skipped ? ", " + std::to_string(skipped) + " left alone because the result would be empty" : ""));
+    Finish();
+  }
+  std::string find_, repl_;
+  bool have_find_ = false, have_repl_ = false, match_case_ = false, whole_word_ = false, selection_only_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -803,6 +893,8 @@ void RegisterDraftDocsCommands(CommandEngine& e) {
       "AutoCAD's TEXTALIGN: moves the selected single-line texts so one edge of their layout box (advance width x text height, centred texts included) lines up with the same edge of the base text. Mode=Left|Center|Right|Top|Middle|Bottom; only the aligned axis moves, so the other placement is kept. The base is picked at the second prompt, or is the first selected text with Base=First. Distribute and spacing options are not implemented.");
   Reg(e, "Txt2Mtxt", Make<Txt2MtxtCommand>(), CommandStatus::Implemented,
       "AutoCAD's TXT2MTXT: Combine=Yes (default) merges the selected single-line texts into ONE multi-line text object, Order=TopDown (default, larger Y first, then X) or Selection; Combine=No converts each text on its own. The result keeps the first line's text height and baseline position, lines are 1.5 text heights apart (the layout the DXF MTEXT reader uses), and ExportDxf writes it as one MTEXT. Word wrap, mixed sizes and fonts inside one object are not implemented.");
+  Reg(e, "FindReplace", Make<FindReplaceCommand>(), CommandStatus::Implemented,
+      "AutoCAD's FIND with Replace All, on the command line: FindReplace Find=<text> Replace=<text> MatchCase=Yes|No (default No) WholeWord=Yes|No (default No) Scope=All|Selection (default All). Replaces every occurrence in every single-line text of the drawing (or of the selection) and rebuilds those texts in place, keeping position, height, layer and style. Texts inside MText objects, dimensions, table cells and block definitions, wildcards, other layouts and the zoom-to-result option are not covered (FindText still finds and selects).");
   Reg(e, "HatchToBack", Immediate([](CommandContext& ctx) { DoHatchToBack(ctx); }), CommandStatus::Implemented,
       "AutoCAD's HATCHTOBACK: gives every hatch (solid, pattern, bitmap, section-view hatching) a draw order behind every other object, locked layers included. Uses the same per-object DrawOrder as BringToFront / SendToBack.");
   Reg(e, "SpaceTrans", Make<SpaceTransCommand>(), CommandStatus::Implemented,
