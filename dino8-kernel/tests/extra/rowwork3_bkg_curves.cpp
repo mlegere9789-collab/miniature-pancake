@@ -365,3 +365,39 @@ D8_EXTRA_TEST(RowBkgSpinAndExtrudeFollowPappusAndThePrismFormulas) {
   }
   d8test::Check(NearRel(sla, 4.0 * 2.0, 1e-9), Msg("the slanted wall has area 4 x 2 (shear keeps base and height)", sla).c_str());
 }
+
+// CURVE-0004 Decimate Curve. Removing points within an error bound: a cubic Bezier that was subdivided at 1/4, 1/2 and 3/4 (seven
+// control points) has exactly the original four control points as its simplest form, and
+// the simplified curve equals the original within the bound at 101 parameters; six collinear control points at uneven spacing
+// collapse to a straight line of two control points; a wavy curve whose five control points all matter keeps them (negative control).
+// The Blender ratio and error-threshold options of the operator are not covered.
+D8_EXTRA_TEST(RowBkgDecimateRemovesOnlyTheRedundantPoints) {
+  const std::vector<Point3d> p = {P(0, 0, 0), P(1, 3, 1), P(4, 3, -1), P(5, 0, 2)};
+  const NurbsCurve orig = NurbsCurve::FromControlPoints(p, 3);
+  NurbsCurve dense = orig;
+  for (double f : {0.25, 0.5, 0.75}) dense.InsertKnotAt(At(orig, f), 1);
+  d8test::Check(dense.ControlPointCount() == 7, "three inserted knots give seven control points");
+  const double tol = 1e-6;
+  d8test::Check(dense.Simplify(tol) == Result::Ok, "simplify reports a change");
+  d8test::Check(dense.ControlPointCount() == 4, Msg("the simplified curve has the original four control points", dense.ControlPointCount()).c_str());
+  double dev = 0.0;
+  for (int i = 0; i <= 100; ++i) {
+    const double f = i / 100.0;
+    dev = std::max(dev, orig.PointAt(At(orig, f)).DistanceTo(dense.PointAt(At(dense, f))));
+  }
+  d8test::Check(dev <= tol, Msg("the simplified curve stays within the bound of the original", dev).c_str());
+
+  const std::vector<Point3d> collinear = {P(0, 0, 0), P(0.5, 1, 2), P(2.5, 5, 10), P(3, 6, 12), P(4.5, 9, 18), P(5, 10, 20)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(collinear, 3);
+  d8test::Check(line.IsLinear(1e-9), "the six collinear points give a linear curve");
+  line.Simplify(tol);
+  d8test::Check(line.ControlPointCount() == 2 && Near(line.PointAt(line.Domain().min), collinear.front(), 1e-9) && Near(line.PointAt(line.Domain().max), collinear.back(), 1e-9),
+                "a straight curve decimates to its two end points");
+
+  NurbsCurve wavy = NurbsCurve::FromControlPoints(std::vector<Point3d>{P(0, 0, 0), P(1, 2, 0), P(2, -2, 1), P(3, 2, 0), P(4, -1, 2)}, 3);
+  const NurbsCurve before = wavy;
+  wavy.Simplify(tol);
+  double wdev = 0.0;
+  for (int i = 0; i <= 100; ++i) wdev = std::max(wdev, before.PointAt(At(before, i / 100.0)).DistanceTo(wavy.PointAt(At(wavy, i / 100.0))));
+  d8test::Check(wavy.ControlPointCount() == 5 && wdev <= tol, "a curve with no redundant point keeps its five control points");
+}
