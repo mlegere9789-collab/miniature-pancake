@@ -92,9 +92,16 @@ void RegisterSelectCommands(CommandEngine& e) {
         ctx.Doc().SelectWhere([&](const SceneObject& o) { return o.name == name; });
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) named '" + name + "' selected");
       }));
+  // SelLayer [name]: a typed layer name (or full path) selects every visible object on that layer, the way Rhino's SelLayer
+  // takes a layer by name; with no name it uses the layer of the first selected object, else the current layer.
   Reg(e, "SelLayer", Immediate([](CommandContext& ctx) {
         int layer = ctx.Doc().CurrentLayer();
-        for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) { layer = o.layer_index; break; }
+        if (auto tok = ctx.Engine().TakePendingInput()) {
+          layer = ctx.Doc().FindLayer(*tok);
+          if (layer < 0) { ctx.Warn("SelLayer: no layer named '" + *tok + "'"); return; }
+        } else {
+          for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) { layer = o.layer_index; break; }
+        }
         ctx.Doc().SelectWhere([&](const SceneObject& o) { return o.layer_index == layer && ctx.Doc().IsObjectVisible(o); });
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) on layer " + ctx.Doc().LayerFullPath(layer));
       }));
@@ -105,7 +112,12 @@ void RegisterSelectCommands(CommandEngine& e) {
         Color c = ctx.Doc().EffectiveColor(*ref);
         ctx.Doc().SelectWhere([&](const SceneObject& o) { Color oc = ctx.Doc().EffectiveColor(o); return std::fabs(oc.r - c.r) < 0.01 && std::fabs(oc.g - c.g) < 0.01 && std::fabs(oc.b - c.b) < 0.01; });
       }));
-  Reg(e, "SelLast", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Objects().empty()) { ctx.Doc().SelectNone(); ctx.Doc().Select(ctx.Doc().Objects().back().id, true); } }));
+  Reg(e, "SelLast", Immediate([](CommandContext& ctx) {
+        if (ctx.Doc().Objects().empty()) { ctx.Warn("SelLast: the document has no objects"); return; }
+        ctx.Doc().SelectNone();
+        ctx.Doc().Select(ctx.Doc().Objects().back().id, true);
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected (last created)");
+      }));
   Reg(e, "SelPrev", Immediate([](CommandContext& ctx) {
         if (ctx.Doc().RestorePreviousSelection()) ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected (previous selection)");
         else ctx.Warn("SelPrev: no previous selection to restore");
