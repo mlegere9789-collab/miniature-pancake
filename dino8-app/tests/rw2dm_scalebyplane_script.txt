@@ -235,9 +235,6 @@ SelNone
 SelAll
 ScaleByPlane XFactor=2 YFactor=3 1,1,0 1,1,1 0.5
 SelNone
-SelPt
-List
-SelNone
 SelID 1
 Move 3,1,0 0,0,0
 BoundingBox
