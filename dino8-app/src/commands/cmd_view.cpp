@@ -309,15 +309,33 @@ void RegisterViewCommands(CommandEngine& e) {
       "Builds a turntable camera animation (SetTurntableAnimation) and plays it (PlayAnimation), 3 loops by default; pass Loops=/Frames=/Degrees=/Direction= to shape the spin.");
   Reg(e, "Turntable", Immediate([turntable](CommandContext& ctx) { turntable(ctx, "Turntable", ""); }), CommandStatus::Implemented,
       "Builds a turntable camera animation (SetTurntableAnimation: Frames=/Degrees=/Direction=) and plays it once (PlayAnimation: Loops=).");
-  Reg(e, "4View", Immediate([](CommandContext& ctx) { ctx.App().SetViewportLayout(4); }));
-  Reg(e, "3View", Immediate([](CommandContext& ctx) { ctx.App().SetViewportLayout(3); }));
+  // 3View / 4View lay the workspace out as the standard viewports and say which they are ("4View: Top, Perspective (active), Front, Right").
+  auto layout_line = [](CommandContext& ctx, const char* label) {
+    std::string names;
+    for (auto& vp : ctx.Viewports()) names += (names.empty() ? "" : ", ") + vp->Name() + (vp->IsActive() ? " (active)" : "");
+    ctx.Print(std::string(label) + ": " + names);
+  };
+  Reg(e, "4View", Immediate([layout_line](CommandContext& ctx) { ctx.App().SetViewportLayout(4); layout_line(ctx, "4View"); }));
+  Reg(e, "3View", Immediate([layout_line](CommandContext& ctx) { ctx.App().SetViewportLayout(3); layout_line(ctx, "3View"); }));
   Reg(e, "MaxViewport", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) { vp->SetMaximized(!vp->Maximized()); ctx.Print(vp->Name() + (vp->Maximized() ? " maximized" : " restored")); } }));
   Reg(e, "NewViewport", Immediate([](CommandContext& ctx) {
         Viewport* nv = ctx.App().AddViewport("Viewport", "Perspective", false);
         ctx.Print("NewViewport: added " + nv->Name());
       }));
-  Reg(e, "NextViewport", Immediate([](CommandContext& ctx) { auto& v = ctx.Viewports(); for (size_t i = 0; i < v.size(); ++i) if (v[i]->IsActive()) { v[i]->SetActive(false); v[(i + 1) % v.size()]->SetActive(true); return; } }));
-  Reg(e, "PrevViewport", Immediate([](CommandContext& ctx) { auto& v = ctx.Viewports(); for (size_t i = 0; i < v.size(); ++i) if (v[i]->IsActive()) { v[i]->SetActive(false); v[(i + v.size() - 1) % v.size()]->SetActive(true); return; } }));
+  // NextViewport / PrevViewport step through the viewports in layout order, wrapping around, and report the one now active.
+  auto step_viewport = [](CommandContext& ctx, int step) {
+    auto& v = ctx.Viewports();
+    const size_t n = v.size();
+    for (size_t i = 0; i < n; ++i) if (v[i]->IsActive()) {
+      Viewport* next = v[(i + (step > 0 ? 1 : n - 1)) % n].get();
+      v[i]->SetActive(false);
+      next->SetActive(true);
+      ctx.Print("Active viewport: " + next->Name());
+      return;
+    }
+  };
+  Reg(e, "NextViewport", Immediate([step_viewport](CommandContext& ctx) { step_viewport(ctx, 1); }));
+  Reg(e, "PrevViewport", Immediate([step_viewport](CommandContext& ctx) { step_viewport(ctx, -1); }));
   Reg(e, "SetView", Immediate([](CommandContext& ctx) {
         Viewport* vp = ctx.ActiveViewport();
         if (!vp) return;
