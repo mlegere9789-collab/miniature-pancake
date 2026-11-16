@@ -2634,7 +2634,19 @@ bool SubD::InsertEdge(const Point3d& p0, const Point3d& p1, double point_toleran
   const ON_SubDEdge* inserted = subd_.SplitFace(const_cast<ON_SubDFace*>(face),
                                                  const_cast<ON_SubDVertex*>(v0),
                                                  const_cast<ON_SubDVertex*>(v1));
-  return inserted != nullptr;
+  if (inserted == nullptr) return false;
+
+  // ON_SubDimple::SplitFace() calls UpdateEdgeSectorCoefficientsForExperts(true)
+  // on every edge at both end vertices: that resets their sector coefficients
+  // to ON_SubDSectorType::UnsetSectorCoefficient (the vertex valences just
+  // changed) but never recomputes them. ON_SubD::IsValid() rejects an unset
+  // coefficient, so without this a successful InsertEdge left the whole SubD
+  // invalid until the next subdivision happened to rebuild the tags. Refill the
+  // unset values (and drop evaluation caches built on the old face) the way
+  // every other editing entry point in this file does.
+  subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  subd_.ClearEvaluationCache();
+  return true;
 }
 
 bool SubD::SpinEdge(const Point3d& p0, const Point3d& p1, bool spin_clockwise,

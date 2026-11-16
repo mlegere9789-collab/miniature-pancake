@@ -350,11 +350,23 @@ D8_EXTRA_TEST(RwmSubDInsertEdgeSplitsFaceIntoTwo) {
   d8test::Check(s.InsertEdge(Point3d(0, 0, 0), Point3d(10, 10, 0)), "diagonal of the bottom face inserted");
   d8test::Check(s.VertexCount() == 8 && s.EdgeCount() == 13 && s.FaceCount() == 7, "V=8 E=13 F=7");
   d8test::Check(s.VertexCount() - s.EdgeCount() + s.FaceCount() == 2, "Euler 2");
+  // Root-cause regression: ON_SubDimple::SplitFace unsets the sector coefficients of every edge at both end vertices; InsertEdge must
+  // refill them, otherwise ON_SubD::IsValid() stayed false until the next subdivision.
+  d8test::Check(s.IsValid(), "the SubD is valid immediately after InsertEdge (sector coefficients refilled)");
   d8test::Check(s.VertexInfoAt(Point3d(0, 0, 0)).valence == 4 && s.VertexInfoAt(Point3d(10, 10, 0)).valence == 4, "end valences 3 -> 4");
   int tri = 0;
   ON_SubDFaceIterator fit = s.raw().FaceIterator();
   for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) tri += f->EdgeCount() == 3 ? 1 : 0;
   d8test::Check(tri == 2, "the bottom face became two triangles");
+  // A second insert on the already edited SubD keeps it valid, and one Catmull-Clark step then follows the closed-form counts:
+  // V' = V + E + F, E' = 2E + sum(face sizes), F' = sum(face sizes) with 4 quads and 4 triangles (sum 28).
+  d8test::Check(s.InsertEdge(Point3d(0, 0, 10), Point3d(10, 10, 10)) && s.IsValid(), "a second insert (top face) stays valid");
+  d8test::Check(s.VertexCount() == 8 && s.EdgeCount() == 14 && s.FaceCount() == 8, "V=8 E=14 F=8 after two inserts");
+  s.Subdivide(1);
+  d8test::Check(s.IsValid() && s.VertexCount() == 8 + 14 + 8 && s.FaceCount() == 4 * 4 + 4 * 3 && s.EdgeCount() == 2 * 14 + (4 * 4 + 4 * 3),
+                "one subdivision after two inserts: V=30 F=28 E=56, valid");
+  s = SubD::FromControlMesh(Cube(10.0));
+  d8test::Check(s.InsertEdge(Point3d(0, 0, 0), Point3d(10, 10, 0)), "re-insert the first diagonal on a fresh cube");
   d8test::Check(!s.InsertEdge(Point3d(0, 0, 0), Point3d(10, 10, 10)), "corners with no common face refused");
   d8test::Check(!s.InsertEdge(Point3d(0, 0, 0), Point3d(10, 0, 0)), "already adjacent: refused");
   }
