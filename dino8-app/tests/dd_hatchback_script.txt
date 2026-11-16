@@ -1,0 +1,24 @@
+# HATCHTOBACK: two solid hatches, a circle sent to the back (draw order -1), a line without a draw order.
+Rectangle 0,0,0 10,6,0
+SelLast
+Hatch Pattern=Solid
+SelNone
+Rectangle 20,0,0 30,6,0
+SelLast
+Hatch Pattern=Solid
+SelNone
+Circle 50,0,0 5
+SelLast
+SetUserText Role Circle
+SendToBack
+SelNone
+Line 60,0,0 70,0,0
+SelLast
+SetUserText Role Line
+SelNone
+SelAll
+GetUserText
+SelNone
+HatchToBack
+SelAll
+GetUserText
