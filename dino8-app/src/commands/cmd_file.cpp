@@ -89,6 +89,7 @@ std::optional<std::string> TakePathAndVersion(CommandContext& ctx, std::string& 
       }
       if (lower.rfind("units=", 0) == 0) {
         if (!MeshExportUnitFactor(ctx.Doc(), t->substr(6), units_factor)) bad("Units=" + t->substr(6) + " is not a known unit (mm, cm, m, km, in, ft, mi, um)");
+        else mesh->units_name = t->substr(6);
         continue;
       }
       if (lower.rfind("tolerance=", 0) == 0) {
@@ -399,6 +400,7 @@ void RegisterFileCommands(CommandEngine& e) {
             for (const std::string& w : written) ctx.Print("  " + w);
           } else {
             ctx.Print("Exported " + *p + (normalized.empty() ? "" : " (Version=" + normalized + ")"));
+            if (is_mesh_ext) for (const std::string& line : LastMeshExportReport()) ctx.Print(line);
           }
           return;
         }
@@ -432,7 +434,9 @@ void RegisterFileCommands(CommandEngine& e) {
             ScopedMeshExportOptions scoped(mesh_options);
             ok = app.ExportSelected(*p, err);
           }
-          if (!ok) ctx.Warn(err.empty() ? "StlOut: nothing to export" : err); else ctx.Print("Exported " + *p);
+          if (!ok) { ctx.Warn(err.empty() ? "StlOut: nothing to export" : err); return; }
+          ctx.Print("Exported " + *p);
+          for (const std::string& line : LastMeshExportReport()) ctx.Print(line);
           return;
         }
         app.ShowFileDialog("Write STL file", {".stl"}, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });

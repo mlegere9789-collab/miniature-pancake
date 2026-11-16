@@ -321,12 +321,16 @@ struct Material {
   std::string texture_path;    // BMP / PPM / PNG image, empty = none
   TextureMapping mapping = TextureMapping::Surface;
   float mapping_scale = 1.0f;  // texture repeats across the object
+  // Physically based factors (glTF pbrMetallicRoughness): carried to and from glTF files and saved with the material; the Blinn-Phong
+  // renderers do not use them. The defaults are what glTF export always wrote (dielectric, roughness 0.6).
+  float metallic = 0.0f;       // 0..1
+  float roughness = 0.6f;      // 0..1
 
   bool SameAppearance(const Material& o) const {
     auto eq = [](const Color& a, const Color& b) { return a.r == b.r && a.g == b.g && a.b == b.b; };
     return eq(diffuse, o.diffuse) && eq(specular, o.specular) && gloss == o.gloss && reflectivity == o.reflectivity &&
            transparency == o.transparency && eq(emission, o.emission) && texture_path == o.texture_path &&
-           mapping == o.mapping && mapping_scale == o.mapping_scale;
+           mapping == o.mapping && mapping_scale == o.mapping_scale && metallic == o.metallic && roughness == o.roughness;
   }
 };
 
@@ -1070,6 +1074,7 @@ class Document {
   std::map<ObjectId, CageBinding>& CageBindings() { return cage_bindings_; }
   const std::map<ObjectId, CageBinding>& CageBindings() const { return cage_bindings_; }
   std::map<std::string, std::string>& UserText() { return user_text_; }
+  const std::map<std::string, std::string>& UserText() const { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
   const DocumentSettings& Settings() const { return settings_; }

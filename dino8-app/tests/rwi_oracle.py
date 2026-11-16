@@ -423,7 +423,7 @@ def do_iges(path):
     des = []
     for k in range(0, len(sec["D"]), 2):
         a, b = sec["D"][k], sec["D"][k + 1]
-        des.append({"type": int(a[0:8]), "pd": int(a[8:16]), "seq": k + 1, "lines": int(b[24:32])})
+        des.append({"type": int(a[0:8]), "pd": int(a[8:16]), "seq": k + 1, "lines": int(b[24:32]), "level": int(a[32:40])})
     praw = []
     for line in raw:
         if line[72] == "P":
@@ -459,6 +459,22 @@ def do_iges(path):
             for q in range(n1 * n2):
                 pts.append([num(x) for x in v[off + 3 * q: off + 3 * q + 3]])
     out = {"counts": counts, "faces": counts.get(144, 0), "parts": counts.get(144, 0), "unit_flag": unit_flag, "unit_name": unit_name}
+    # levels: the level field (columns 33-40) of every trimmed surface, and the level definitions (406 form 3: "2,<level>,<name>")
+    level_counts, level_names = {}, {}
+    for d in des:
+        if d["type"] == 144:
+            level_counts[d["level"]] = level_counts.get(d["level"], 0) + 1
+        if d["type"] == 406:
+            v = ents[d["seq"]][1]
+            mh = re.match(r"(\d+)H(.*)", v[2]) if len(v) > 2 else None
+            if mh and v[0] == "2":
+                level_names[int(v[1])] = mh.group(2)[:int(mh.group(1))] if mh.group(2) else ""
+    out["level_counts"] = level_counts
+    out["level_names"] = level_names
+    out["named_counts"] = {}
+    for lv, n in level_counts.items():
+        nm = level_names.get(lv, "?%d" % lv)
+        out["named_counts"][nm] = out["named_counts"].get(nm, 0) + n
     if pts:
         out["min"] = [min(p[k] for p in pts) for k in range(3)]
         out["max"] = [max(p[k] for p in pts) for k in range(3)]
@@ -522,7 +538,7 @@ def main():
     flags = set()
     i = 2
     while i < len(a):
-        if a[i] in ("--closed", "--json"):
+        if a[i] in ("--closed", "--json", "--open"):
             flags.add(a[i]); i += 1
         else:
             opts[a[i]] = a[i + 1]; i += 2
@@ -555,6 +571,8 @@ def main():
         errs.append("vertices %d != %s" % (m["verts"], opts["--verts"]))
     if "--tris-multiple-of" in opts and m["tris"] % int(opts["--tris-multiple-of"]):
         errs.append("triangles %d not a multiple of %s" % (m["tris"], opts["--tris-multiple-of"]))
+    if "--open" in flags and m.get("closed"):
+        errs.append("closed, but an open mesh was expected")
     if "--closed" in flags and not m.get("closed"):
         errs.append("not closed (an edge is not shared by exactly two oppositely directed faces)")
     if "--same-as" in opts:
@@ -578,6 +596,18 @@ def main():
         errs.append("Euler numbers %s != %s" % (m.get("euler"), opts["--euler"]))
     if "--unit-flag" in opts and m.get("unit_flag") != int(opts["--unit-flag"]):
         errs.append("unit flag %s != %s" % (m.get("unit_flag"), opts["--unit-flag"]))
+    if "--level-counts" in opts:
+        w = {int(x.split(":")[0]): int(x.split(":")[1]) for x in opts["--level-counts"].split(",")}
+        if m.get("level_counts") != w:
+            errs.append("trimmed surfaces per level %s != %s" % (m.get("level_counts"), w))
+    if "--level-names" in opts:
+        w = {int(x.split("=")[0]): x.split("=")[1] for x in opts["--level-names"].split(",")}
+        if m.get("level_names") != w:
+            errs.append("level definitions %s != %s" % (m.get("level_names"), w))
+    if "--named-counts" in opts:
+        w = {x.split(":")[0]: int(x.split(":")[1]) for x in opts["--named-counts"].split(",")}
+        if m.get("named_counts") != w:
+            errs.append("trimmed surfaces per named level %s != %s" % (m.get("named_counts"), w))
     if "--types" in opts:
         w = [int(x) for x in opts["--types"].split(",")]
         if m.get("types") != w:

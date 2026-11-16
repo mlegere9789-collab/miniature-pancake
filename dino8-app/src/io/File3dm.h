@@ -3,6 +3,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "doc/Document.h"
 
@@ -37,7 +38,11 @@ struct MeshExportOptions {
   double scale = 1.0;                                    // positions multiplied by this (document units -> file units)
   double chord_tolerance = 0.01;                         // tessellation chord tolerance of Breps and Surfaces, in document units
   bool per_object = false;                               // one file per object (the Export command writes <stem>_<n>_<name>.<ext>)
+  std::string units_name;                                // the Units= name as typed, for the file header / report; empty = the document's unit
 };
+// What the last mesh export (STL: solid check and unit; OBJ: unit) has to report, one line per entry; cleared at the start of every
+// ExportMeshFile call. The Export and StlOut commands print it after "Exported <path>".
+const std::vector<std::string>& LastMeshExportReport();
 const MeshExportOptions& ActiveMeshExportOptions();
 class ScopedMeshExportOptions {
  public:

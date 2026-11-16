@@ -1041,6 +1041,47 @@ int WriteIgesTrimmedFace(IgesWriter& w, const ExportFace& f, const IgesAttr& a, 
 
 }  // namespace
 
+const char* const kIgesLevelMapKey = "dino8.iges_level_map";
+
+std::map<std::string, int> IgesLayerLevelMap(const Document& doc) {
+  std::map<std::string, int> out;
+  const auto it = doc.UserText().find(kIgesLevelMapKey);
+  if (it == doc.UserText().end()) return out;
+  std::istringstream lines(it->second);
+  std::string line;
+  while (std::getline(lines, line)) {
+    const size_t eq = line.rfind('=');
+    if (eq == std::string::npos || eq == 0) continue;
+    const int level = std::atoi(line.c_str() + eq + 1);
+    if (level >= 1) out[line.substr(0, eq)] = level;
+  }
+  return out;
+}
+
+int IgesLevelForLayer(const Document& doc, int layer_index) {
+  const int index = std::max(0, layer_index);
+  if (index < static_cast<int>(doc.Layers().size())) {
+    const std::map<std::string, int> map = IgesLayerLevelMap(doc);
+    const auto it = map.find(doc.LayerFullPath(index));
+    if (it != map.end()) return it->second;
+  }
+  return index;
+}
+
+bool SetIgesLayerLevel(Document& doc, const std::string& layer, int level, std::string& error) {
+  const int index = doc.FindLayer(layer);
+  if (index < 0) { error = "No layer named '" + layer + "'"; return false; }
+  if (level < 1 || level > 9999999) { error = "Level " + std::to_string(level) + " is out of range (1 to 9999999)"; return false; }
+  std::map<std::string, int> map = IgesLayerLevelMap(doc);
+  map[doc.LayerFullPath(index)] = level;
+  std::string text;
+  for (const auto& [name, lv] : map) text += name + "=" + std::to_string(lv) + "\n";
+  doc.UserText()[kIgesLevelMapKey] = text;
+  return true;
+}
+
+void ClearIgesLayerLevelMap(Document& doc) { doc.UserText().erase(kIgesLevelMapKey); }
+
 bool ExportIges(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   std::vector<const SceneObject*> objs = ExportObjects(doc, selected_only);
   if (objs.empty()) { error = "Nothing to export"; return false; }
@@ -1054,7 +1095,8 @@ bool ExportIges(const Document& doc, const std::string& path, bool selected_only
   for (const SceneObject* o : objs) levels_used.insert(std::max(0, o->layer_index));
   for (int li : levels_used) {
     if (li >= static_cast<int>(doc.Layers().size())) continue;
-    w.Add(406, "2," + std::to_string(li) + "," + HString(doc.LayerFullPath(li)), 3, li, 0, 0, kIndependent, "");
+    const int level = IgesLevelForLayer(doc, li);
+    w.Add(406, "2," + std::to_string(level) + "," + HString(doc.LayerFullPath(li)), 3, level, 0, 0, kIndependent, "");
   }
   std::map<int, int> colors;  // rgb key -> 314 DE
   auto color_de = [&](const Color& c) {
@@ -1076,7 +1118,7 @@ bool ExportIges(const Document& doc, const std::string& path, bool selected_only
   std::vector<std::string> notes;
   for (const SceneObject* o : objs) {
     IgesAttr a;
-    a.level = std::max(0, o->layer_index);
+    a.level = IgesLevelForLayer(doc, o->layer_index);
     a.color_de = -color_de(doc.EffectiveColor(*o));
     a.label = o->name;
     switch (o->kind) {
