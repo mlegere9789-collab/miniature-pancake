@@ -595,6 +595,65 @@ Export @T@/prg_c.dxf
     return s, chk
 
 
+# MODIFY-0051 legacy ARRAY ---------------------------------------------------------------------------------------------------
+@case('array')
+def array():
+    s = PRE + """Circle 0,0,0 1
+SelLast
+Array 4 3 1 9,9,0
+SelAll
+Export @T@/arr.dxf
+SelAll
+Array 400 300 1 9,9,0
+"""
+
+    def chk(d, log):
+        f = d + '/arr.dxf'
+        # the unit cell runs from the circle's lower left corner (-1,-1) to the picked corner (9,9): 10 units between centres, 4 columns, 3 rows
+        want = sorted((10.0 * i, 10.0 * j) for i in range(4) for j in range(3))
+        got = sorted((gf(r, 10), gf(r, 20)) for r in entities(f, 'CIRCLE') if close(gf(r, 40), 1) and close(gf(r, 30) or 0.0, 0.0))
+        check(len(entities(f, 'CIRCLE')) == 12, 'ARR_1: 4 columns x 3 rows make exactly 12 circle objects (found %d)' % len(entities(f, 'CIRCLE')))
+        check(len(got) == 12 and all(close(a[0], b[0]) and close(a[1], b[1]) for a, b in zip(got, want)), 'ARR_2: the centres are the grid (10 i, 10 j), i = 0..3, j = 0..2, all r=1 in the plane z=0')
+        check('more than 100000 objects' in log, 'ARR_3: a 400 x 300 request (120000 elements) is rejected with the over-limit message')
+        check('smoke: frames=30 objects=12 ' in log, 'ARR_4: the rejected request added nothing: 12 objects at the end (%s)' % ([l for l in log.split('\n') if l.startswith('smoke:')] or ['no smoke line']))
+    return s, chk
+
+
+# CMDLINE-0022 selection sets and Previous ----------------------------------------------------------------------------------------
+@case('select')
+def select():
+    s = PRE + """Line 1,1,0 3,1,0
+Line 4,1,0 8,1,0
+Line 20,20,0 22,22,0
+Circle 2,3,0 1
+SelNone
+SelWindow 0,0,0 5,5,0
+SelNone
+SelCrossing 0,0,0 5,5,0
+SelNone
+SelAll
+SelNone
+SelWindow 0,0,0 5,5,0
+SelNone
+SelPrev
+Move 0,0,0 100,0,0
+SelAll
+Export @T@/sel.dxf
+"""
+
+    def chk(d, log):
+        sel = [l.split('history: ')[1] for l in log.split('\n') if 'object(s) selected' in l and 'history:' in l]
+        # window (0,0)-(5,5) holds fully: line (1,1)-(3,1) and circle (2,3) r=1 -> 2; crossing adds the line (4,1)-(8,1) that crosses x=5 -> 3;
+        # All -> 4; window again -> 2; Previous brings that 2 back
+        want = ['2 object(s) selected', '3 object(s) selected', '4 object(s) selected', '2 object(s) selected', '2 object(s) selected (previous selection)']
+        check(sel[:5] == want, 'SEL_1: Window 2, Crossing 3, All 4, Window 2, Previous 2 (log: %s)' % sel[:6])
+        f = d + '/sel.dxf'
+        # Move on the Previous set shifts exactly the two windowed objects by (100,0); the crossing line and the far line stay
+        check(has_line(f, 101, 1, 103, 1) and has_circle(f, 102, 3, 1), 'SEL_2: Move 100,0 on the Previous selection moves the enclosed line and circle: (101,1)-(103,1) and (102,3) r=1')
+        check(has_line(f, 4, 1, 8, 1) and has_line(f, 20, 20, 22, 22), 'SEL_3: the crossing line (4,1)-(8,1) and the far line (20,20)-(22,22) were not in the set and stay')
+    return s, chk
+
+
 def main():
     if len(sys.argv) < 4:
         print(__doc__)
