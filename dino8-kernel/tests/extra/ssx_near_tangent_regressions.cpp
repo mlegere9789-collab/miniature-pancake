@@ -64,7 +64,7 @@ double CapVolume(double r, double h) { return ON_PI * h * h * (3.0 * r - h) / 3.
 
 // Two unit spheres overlapping by 1e-3: the lens rim is a circle of radius sqrt(d - d^2/4) = 0.0316 about the line of centres, far below
 // one seed-mesh cell. The curve pieces (the rim is cut at the seams of both spheres) must add up to that circle and lie on both surfaces.
-D8_EXTRA_TEST(SsxSphereSphereLensRimIsTheExactCircle) {
+D8_EXTRA_TEST(SSXSphereSphereLensRimIsTheExactCircle) {
   ON_Brep* a = RawSphere(ON_3dPoint(0, 0, 0), 1.0, kAxis1);
   ON_Brep* b = RawSphere(ON_3dPoint(2.0 - 1e-3, 0, 0), 1.0, kAxis2);
   const IntersectOptions opt;
@@ -87,7 +87,7 @@ D8_EXTRA_TEST(SsxSphereSphereLensRimIsTheExactCircle) {
 
 // A unit sphere 1e-6 inside a sphere of radius 2 along their internal tangency never touches it: no intersection curve exists, however
 // close the surfaces come. The seed meshes used to produce dozens of spurious fragments that tore the boundary of the 2-1 difference.
-D8_EXTRA_TEST(SsxNestedSpheresMicroGapHaveNoIntersectionAndBooleanKeepsTheVoid) {
+D8_EXTRA_TEST(SSXNestedSpheresMicroGapHaveNoIntersectionAndBooleanKeepsTheVoid) {
   ON_Brep* a = RawSphere(ON_3dPoint(0, 0, 0), 2.0, kAxis1);
   ON_Brep* b = RawSphere(ON_3dPoint(1.0 - 1e-6, 0, 0), 1.0, kAxis2);
   const IntersectOptions opt;
