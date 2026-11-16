@@ -183,7 +183,7 @@ Enter
 SelAll
 List
 Volume
-# off-axis cylinder union: the engine refuses it (non-manifold result), reason printed, mesh used
+# off-axis cylinder union (R=3, h=10, axes 4 apart, second raised 2): exact, sealed closed solid, volume 515.927 by the lens closed form
 New
 SXBEGIN_B_cyl_offaxis
 Cylinder 0,0,0 3 10
