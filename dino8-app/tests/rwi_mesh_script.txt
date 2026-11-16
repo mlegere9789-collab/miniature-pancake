@@ -1,0 +1,32 @@
+# RWI mesh interchange (sections/94_rwiobj.sh, 94_rwistl.sh, 94_rwiply.sh, 94_rwiglb.sh): one script for every mesh format, @EXT@ = obj | stl | ply | glb | gltf, @TMP@ = scratch.
+# Two boxes with distinct colours in a millimetre document: 0..10 x 0..10 x 0..10 (red) and 20..30 x 0..10 x 0..10 (violet).
+Box 0,0,0 10,10,0 10
+SelLast
+SetRenderColor 255,0,0
+Box 20,0,0 30,10,0 10
+SelLast
+SetRenderColor 128,64,255
+# the whole drawing
+SelAll
+Export @TMP@/all.@EXT@
+# the selection only: the last box
+SelLast
+Export @TMP@/one.@EXT@
+# a failed export must leave the previous file intact: a line holds no mesh, so there is nothing to write into all.@EXT@
+Line 0,0,0 5,5,0
+SelLast
+Export @TMP@/all.@EXT@
+# read it back into an empty document: the content, then one undo step restores the empty document
+New
+@expect_objects 0
+Import @TMP@/all.@EXT@
+@expect_objects @NOBJ@
+SelAll
+List
+SelAll
+Export @TMP@/rt.@EXT@
+Undo
+@expect_objects 0
+# a damaged file is reported and adds nothing
+Import @TMP@/bad.@EXT@
+@expect_objects 0

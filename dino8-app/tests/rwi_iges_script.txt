@@ -1,0 +1,20 @@
+# RWIIGS (sections/94_rwiigs.sh): IGES export of solids, the .igs and .iges spellings. @TMP@ = scratch. Two 10 mm boxes (0..10 and 20..30 in x).
+Box 0,0,0 10,10,0 10
+Box 20,0,0 30,10,0 10
+SelLast
+Export @TMP@/one.igs
+SelAll
+Export @TMP@/all.igs
+SelAll
+Export @TMP@/all.iges
+New
+@expect_objects 0
+Import @TMP@/all.igs
+SelAll
+List
+SelAll
+Export @TMP@/rt.igs
+Undo
+@expect_objects 0
+Import @TMP@/bad.igs
+@expect_objects 0
