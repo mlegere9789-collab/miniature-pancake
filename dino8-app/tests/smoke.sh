@@ -8835,7 +8835,18 @@ kwcheck "ChamferEdge: edge .* of object .* replaced with an exact chamfer (dista
 kwcheck "ChamferEdge: edge .* of object .* replaced with an exact chamfer (distance1 0.4, distance2 0.6; exact cone on the cylinder rim" "...and the swapped distances are a different, equally exact chamfer"
 kwcheck "ChamferSrf: faces .* and .* of object .* replaced with an exact chamfer (distance 0.5; exact cone on the cylinder rim)" "ChamferSrf on a cylinder's cap and wall now reaches the exact cone instead of the approximate 'contact points off by' ruled surface"
 kwcount "4 faces, 7 edges, closed solid" 4 "every rim chamfer (top, bottom, ChamferSrf, and since the KWR wiring the Distance/Angle bevel: count was 3) is a true closed 4-face/7-edge solid with exact circular caps, not the kernel's raw 261-edge open polygon shell"
-kwcheck "Area = 84.01 square" "the top-rim chamfer's area (84.01) matches the closed form 2*pi*R*(L-dw)+pi*R^2+pi*(R-dc)^2+pi*(2R-dc)*sqrt(dw^2+dc^2) = 84.056 to the display mesh's 0.05"
+# The top-rim chamfer's area. Closed form 2*pi*R*(L-dw)+pi*R^2+pi*(R-dc)^2+pi*(2R-dc)*sqrt(dw^2+dc^2) = 84.056443. The Area command reads the
+# display mesh (chord tolerance 0.005), an inscribed polyhedron, so it is below the exact area: it read 84.01 while the mesher over-sampled
+# (kernel NurbsSurface::SuggestedDivisions took a round-off curvature from collapsed isocurves: 16040 triangles, barely changing from tolerance
+# 0.005 to 0.1) and reads 83.99 since that was fixed (5394 triangles, 498 at 0.05, 240 at 0.1: it now follows the tolerance). The exact kernel
+# area (kernel::Brep::Area, not the mesh) is 84.056455, which matches the closed form to 1.1e-5 (1.3e-7 relative); only the display mesh moved.
+# So the window is: the mesh is inscribed (never above the closed form, plus 1e-4 of slack) and within 0.1 of it (0.12 percent).
+KW_AREAS="$(echo "$KW" | grep -oE "Area = [0-9.]+ square" | awk '{printf "%s ", $3}')"
+if echo "$KW_AREAS" | awk 'BEGIN { exact = 84.056443 } { for (i = 1; i <= NF; i++) if ($i >= exact - 0.1 && $i <= exact + 1e-4) found = 1 } END { exit !found }'; then
+  echo "ok   the top-rim chamfer's area is an inscribed display mesh within 0.1 of the closed form 2*pi*R*(L-dw)+pi*R^2+pi*(R-dc)^2+pi*(2R-dc)*sqrt(dw^2+dc^2) = 84.0564 (reads 83.99; the exact kernel area is 84.056455, matching to 1.1e-5)"
+else
+  echo "FAIL the top-rim chamfer's area is not within [83.956, 84.0565] (closed form 84.0564); Area lines: $KW_AREAS"; fail=1
+fi
 kwcheck "ChamferSrf: built between object .* and .*, radius 3" "a ChamferSrf cap setback of 3 on the R=2 cylinder is refused by the kernel and falls through to the approximate surface exactly as before"
 kwcheck "ChamferEdge: edge .* of object .* replaced with an exact chamfer (distance1 0.6, angle 45 degrees from face 1; exact kernel cap-rim bevel (cone), distance 0.6 across the cap, 45 degrees from the cap plane)" "ChamferEdge Angle= on a cylinder rim is now an exact kernel::ChamferCapRimAngle bevel (CHANGED PIN, KWR wiring: it used to be refused with 'cylinder-rim attempt: Distance/Angle mode has no cylinder-rim construction' and leave the cylinder untouched)"
 # Curve MakeUniform
@@ -9079,7 +9090,14 @@ sxvol B_scale_small 0.870 0.880 "1/10-size hole Volume = 1 - pi*0.04*1 = 0.8743"
 sxcheck B_sphere_plus_box "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 7 face(s), sealed: valid B-rep with real inner loops" "box + sphere is now an exact B-rep (before: declined 'the sewn result does not tessellate to a closed mesh' because the display mesh's keyhole-corridor gaps were only closeable by a weld that also fused the sphere's pole fan; the mesher now re-welds only boundary vertices)"
 sxcheck B_sphere_plus_box "(polysurface)" "...and the result is a polysurface, not a mesh"
 sxvol B_sphere_plus_box 1130 1136 "box + sphere exact result is a closed solid with Volume = 1000 + 2/3*pi*64 = 1134.04"
-sxcheck B_cyl_offaxis "exact B-rep boolean declined (dino8::kernel::BooleanCombineGeneral: an edge is claimed by 3 or more fragment loops" "off-axis cylinder union: the engine's own refusal is printed as the reason"
+# Two parallel cylinders R=3, h=10, axes 4 apart, the second raised by 2 (so their common height is 8): the engine used to refuse this
+# ("an edge is claimed by 3 or more fragment loops"); since the parallel-cylinder intersection closes (seam-split chains, rim containment)
+# it is an exact, sealed, valid closed solid. Independent oracle: union = 2*pi*R^2*h - lens*8 with lens = 2R^2*acos(d/2R) - (d/2)*sqrt(4R^2-d^2)
+# = 6.19497, i.e. 565.4867 - 49.5598 = 515.9270 (kernel probe: sealed exact volume 515.9287, Brep::IsValid and IsSolid true, 6 faces).
+sxcheck B_cyl_offaxis "BooleanUnion: exact B-rep boolean (no tessellation, general engine), 6 face(s), sealed: valid B-rep with real inner loops, exact volume 515.9 (kernel divergence theorem)" "off-axis cylinder union: now exact and sealed, with the exact volume 515.9 = 2*pi*9*10 - lens(R=3, d=4)*8 = 515.927 (before: declined 'an edge is claimed by 3 or more fragment loops')"
+sxcheck B_cyl_offaxis "(polysurface)" "...and the result is a polysurface, not a mesh"
+sxcheck B_cyl_offaxis "faces, [0-9]* edges, closed solid" "...List reports a closed solid"
+sxvol B_cyl_offaxis 514.5 516.5 "...and its Volume (display mesh) = 515.927 closed form to the mesh's 0.14 percent"
 sxcheck B_chain "re-evaluated from the recorded original operands (the base and 2 tool(s) in one pass" "a second SEQUENTIAL hole is now exact (before: declined 'gaps between faces that sewing could not close'): re-evaluated as base minus both cutters in one pass"
 sxcheck B_chain "(polysurface)" "...and the result is a polysurface, not a mesh"
 sxvol B_chain 857 861 "...and its Volume is 1000 - 2*pi*1.5^2*10 = 858.62"

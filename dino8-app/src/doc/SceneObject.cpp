@@ -756,6 +756,25 @@ void SceneObject::BuildDisplay(double curve_tolerance, double surface_tolerance)
       const int u = std::clamp(div.u, 4, max_div);
       const int v = std::clamp(div.v, 4, max_div);
       AppendSurfaceGrid(*surface, u, v, cache_.triangles, cache_.uvs, cache_.bbox, cache_.has_bbox);
+      // The grid's vertices need not land on the surface's extreme points, so the box of the display grid alone sat
+      // inside the true one (the imported rational sphere of radius 2.5 read x from -1.409 against the exact -1.5 on an
+      // 11-division grid). It used to be exact only by accident: the collapsed pole isocurves made SuggestedDivisions
+      // ask for over a million divisions, clamped to 96, which is a multiple of the quadrant count. The span boundaries
+      // are where a spline's analytic features (the quadrant points of a rational circle, a sheet's corners and creases)
+      // sit, so every point of the knot lattice also grows the box.
+      {
+        const ON_NurbsSurface& ns = surface->raw();
+        const int su = ns.SpanCount(0), sv = ns.SpanCount(1);
+        if (su > 0 && sv > 0 && (su + 1) * (sv + 1) <= 4096) {
+          std::vector<double> ku(static_cast<size_t>(su) + 1), kv(static_cast<size_t>(sv) + 1);
+          if (ns.GetSpanVector(0, ku.data()) && ns.GetSpanVector(1, kv.data())) {
+            for (double ui : ku)
+              for (double vj : kv) {
+                try { ExpandBox(cache_.bbox, cache_.has_bbox, surface->PointAt(ui, vj)); } catch (const std::exception&) {}
+              }
+          }
+        }
+      }
       AppendSurfaceIsocurves(*surface, surface_tolerance, cache_.lines);
       AppendSurfaceBoundary(*surface, surface_tolerance, cache_.edges);
       cache_.naked_edges = cache_.edges;  // an untrimmed surface's edges are all naked
