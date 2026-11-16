@@ -1,0 +1,29 @@
+# FIND with Replace All (FindReplace). @TMP@ is substituted by the section.
+Text DOOR 0,0,0
+Text Door2 0,10,0
+Text INDOORS 0,20,0
+Text door 0,30,0
+Text WINDOW 0,40,0
+FindReplace Find=DOOR Replace=WINDOW
+SelAll
+Export @TMP@/dd_fr1.dxf
+# case-sensitive: only the lower-case "door" matches
+Text Door 100,0,0
+Text DOOR 100,10,0
+Text DOORS 100,20,0
+Text adoorb 100,30,0
+FindReplace Find=door Replace=PORT MatchCase=Yes
+SelAll
+Export @TMP@/dd_fr2.dxf
+# whole word, case-insensitive (an underscore is a word character)
+Text a_door_b 200,0,0
+Text Door.x 200,10,0
+FindReplace Find=door Replace=D WholeWord=Yes
+SelAll
+Export @TMP@/dd_fr3.dxf
+# the selection only
+Text Dxyz 300,0,0
+SelLast
+FindReplace Find=D Replace=Z Scope=Selection
+SelAll
+Export @TMP@/dd_fr4.dxf
