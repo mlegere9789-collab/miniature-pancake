@@ -121,6 +121,7 @@ add_library(dino8_kernel STATIC
   src/split_by_curve.cpp
   src/planar_curve_boolean.cpp
   src/tessellation_refine.cpp
+  src/site_analysis.cpp
 )
 
 # windows.h (pulled in by opennurbs.h) defines min/max macros that break
