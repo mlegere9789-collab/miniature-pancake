@@ -5,12 +5,14 @@
 // cmd_solids.cpp's BoxCommand; ArchEdit re-opens an existing component's
 // parameters by picking one of its built objects in the viewport.
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <sstream>
 
 #include "arch/ArchComponents.h"
 #include "dino8/kernel/arch_calc.h"
+#include "dino8/kernel/ifc_writer.h"
 #include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
 
@@ -761,6 +763,143 @@ void WallQuantitiesCmd(CommandContext& ctx) {
 
 }  // namespace calc
 
+// ---------------------------------------------------------------------------------------------------------------------------
+// ExportIfc: the Wall / ArchSlab / Column / Beam components of the document as an IFC4 STEP file (kernel/ifc_writer.h). Each
+// component becomes one IfcWall / IfcSlab / IfcColumn / IfcBeam with an extruded rectangle body that has the dimensions of the
+// component's own mesh, the standard base quantities, a Pset_Dino8Component property set, and for a wall with hosted Door/Window
+// components the net face area and volume of kernel::ComputeWallQuantities (the same opening positions the wall's mesh is cut at).
+// Doors and windows are not separate IFC elements, and Roof, Stair and the mechanical / MEP types are not exported (reported).
+namespace ifc_export {
+
+struct V3 {
+  double x = 0, y = 0, z = 0;
+};
+V3 Sub(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+V3 Add(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+V3 Mul(V3 a, double k) { return {a.x * k, a.y * k, a.z * k}; }
+double Dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+V3 Cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+double Len(V3 a) { return std::sqrt(Dot(a, a)); }
+V3 Unit(V3 a, V3 fallback) { const double l = Len(a); return l > 1e-9 ? Mul(a, 1.0 / l) : fallback; }
+V3 Of(const dino8::kernel::Point3d& p) { return {p.x, p.y, p.z}; }
+V3 OfV(const dino8::kernel::Vector3d& p) { return {p.x, p.y, p.z}; }
+kernel::IfcVec3 ToIfc(V3 a) { return {a.x, a.y, a.z}; }
+
+// The same frames ArchComponents.cpp builds its meshes in.
+struct Frame {
+  V3 forward, right, up;
+  double length = 0;
+};
+Frame RunFrame(V3 p0, V3 p1, V3 up_in) {
+  Frame f;
+  V3 d = Sub(p1, p0);
+  f.length = Len(d);
+  f.forward = f.length > 1e-9 ? Mul(d, 1.0 / f.length) : V3{1, 0, 0};
+  f.up = Unit(up_in, {0, 0, 1});
+  V3 r = Cross(f.up, f.forward);
+  f.right = Len(r) < 1e-9 ? V3{0, 1, 0} : Unit(r, {0, 1, 0});
+  return f;
+}
+
+kernel::IfcPropertySetSpec Pset(const ArchComponent& c) {
+  kernel::IfcPropertySetSpec ps;
+  ps.name = "Pset_Dino8Component";
+  ps.properties.push_back({"ComponentId", std::to_string(c.id), false, 0});
+  ps.properties.push_back({"ComponentType", arch::ArchTypeName(c.type), false, 0});
+  return ps;
+}
+
+void ExportIfcCmd(CommandContext& ctx) {
+  const auto o = TakeOptionTokens(ctx);
+  const std::string path = OptionOr(o, "file", "");
+  if (path.empty()) { ctx.Warn("ExportIfc: File=path.ifc is required"); return; }
+  const std::vector<ArchComponent> list = arch::LoadArch(ctx.Doc());
+  kernel::IfcModelSpec model;
+  model.project_name = OptionOr(o, "name", "Dino 8 project");
+  model.file_name = path;
+  kernel::IfcStoreySpec storey;
+  storey.name = OptionOr(o, "storey", "Level 0");
+  int walls = 0, slabs = 0, columns = 0, beams = 0, skipped = 0;
+  for (const ArchComponent& c : list) {
+    kernel::IfcElementSpec e;
+    e.name = std::string(arch::ArchTypeName(c.type)) + " " + std::to_string(c.id);
+    e.property_sets.push_back(Pset(c));
+    const V3 p0 = Of(c.p0), p1 = Of(c.p1);
+    if (c.type == ArchType::Wall) {
+      const Frame f = RunFrame(p0, p1, OfV(c.normal));
+      e.kind = kernel::IfcElementKind::Wall;
+      e.origin = ToIfc(Add(p0, Mul(f.forward, f.length / 2.0)));
+      e.axis_z = ToIfc(f.up);
+      e.ref_x = ToIfc(f.forward);
+      e.x_dim = f.length; e.y_dim = c.thickness; e.depth = c.height;
+      std::vector<kernel::WallOpening> ops;
+      for (const ArchComponent& other : list) {
+        if (other.host != static_cast<ObjectId>(c.id)) continue;
+        if (other.type != ArchType::Door && other.type != ArchType::Window) continue;
+        const double z0 = other.type == ArchType::Window ? other.sill_height : 0.0;
+        double z1 = other.type == ArchType::Window ? other.sill_height + other.height : other.height;
+        z1 = std::min(z1, c.height);
+        if (z1 <= z0) continue;
+        const double along = Dot(Sub(Of(other.p0), p0), f.forward);
+        ops.push_back({along - other.width / 2.0, other.width, z0, z1 - z0});
+      }
+      if (!ops.empty()) {
+        const kernel::WallQuantitiesResult q = kernel::ComputeWallQuantities(f.length, c.height, c.height, c.thickness, ops);
+        e.extra_quantities.push_back({kernel::IfcQuantityKind::Area, "NetSideArea", q.net_side_area});
+        e.extra_quantities.push_back({kernel::IfcQuantityKind::Volume, "NetVolume", q.net_volume});
+      }
+      ++walls;
+    } else if (c.type == ArchType::Slab) {
+      const V3 up = Unit(OfV(c.normal), {0, 0, 1});
+      const V3 ref = std::fabs(up.z) < 0.9 ? V3{0, 0, 1} : V3{1, 0, 0};
+      const V3 ei = Unit(Cross(ref, up), {1, 0, 0});
+      const V3 ej = Unit(Cross(up, ei), {0, 1, 0});
+      const V3 rel = Sub(p1, p0);
+      const double iu = Dot(rel, ei), jv = Dot(rel, ej);
+      e.kind = kernel::IfcElementKind::Slab;
+      e.origin = ToIfc(Add(p0, Add(Mul(ei, iu / 2.0), Mul(ej, jv / 2.0))));  // centre of the top face; the slab extrudes downward
+      e.axis_z = ToIfc(Mul(up, -1.0));
+      e.ref_x = ToIfc(ei);
+      e.x_dim = std::fabs(iu); e.y_dim = std::fabs(jv); e.depth = c.thickness;
+      ++slabs;
+    } else if (c.type == ArchType::Column) {
+      const V3 up = Unit(OfV(c.normal), {0, 0, 1});
+      const V3 ref = std::fabs(up.z) < 0.9 ? V3{0, 0, 1} : V3{1, 0, 0};
+      const V3 right = Unit(Cross(up, ref), {0, 1, 0});
+      const V3 forward = Unit(Cross(right, up), {1, 0, 0});
+      e.kind = kernel::IfcElementKind::Column;
+      e.origin = ToIfc(p0);
+      e.axis_z = ToIfc(up);
+      e.ref_x = ToIfc(forward);
+      e.x_dim = c.width; e.y_dim = c.thickness; e.depth = c.height;
+      ++columns;
+    } else if (c.type == ArchType::Beam) {
+      const Frame f = RunFrame(p0, p1, OfV(c.normal));
+      e.kind = kernel::IfcElementKind::Beam;
+      e.origin = ToIfc(p0);
+      e.axis_z = ToIfc(f.forward);  // the beam runs along the extrusion axis; the section's x is the width (right), its y the depth (up)
+      e.ref_x = ToIfc(f.right);
+      e.x_dim = c.width; e.y_dim = c.thickness; e.depth = f.length;
+      ++beams;
+    } else {
+      if (c.type != ArchType::Door && c.type != ArchType::Window) ++skipped;
+      continue;
+    }
+    if (e.x_dim <= 0 || e.y_dim <= 0 || e.depth <= 0) { ++skipped; continue; }
+    storey.elements.push_back(e);
+  }
+  model.storeys.push_back(storey);
+  const std::string text = kernel::WriteIfc4(model);
+  std::ofstream f(path, std::ios::binary);
+  if (!f) { ctx.Warn("ExportIfc: cannot write " + path); return; }
+  f << text;
+  f.close();
+  ctx.Print("ExportIfc: wrote " + path + " (" + std::to_string(storey.elements.size()) + " element(s): " + std::to_string(walls) + " wall(s), " + std::to_string(slabs) + " slab(s), " +
+            std::to_string(columns) + " column(s), " + std::to_string(beams) + " beam(s); " + std::to_string(skipped) + " component(s) not exported)");
+}
+
+}  // namespace ifc_export
+
 void RegisterArchCommands(CommandEngine& e) {
   Reg(e, "Wall", WallFactory());
   Reg(e, "Door", Make<OpeningCommand>(false));
@@ -811,6 +950,8 @@ void RegisterArchCommands(CommandEngine& e) {
       "Poly=x,y/x,y/... Height= [Elem=area:subtract|reduce|none/...] [MinElem=]: shoelace area, net area and volume of a zone. Ceiling=h0:gx:gy with Limit1=height:fraction [Limit2=height:fraction] reduces area under low ceilings; Recess=depth:area/... with MinDepth=, MinRecessArea= and Rule=and|or adds wall recesses.");
   Reg(e, "WallQuantities", Immediate(calc::WallQuantitiesCmd), CommandStatus::Implemented,
       "Length= H1= [H2= for a sloping top] Thickness= Open=x0:width:sill:height/...: gross and net face area and volume of a wall with rectangular openings (clipped to the wall; overlapping openings are flagged).");
+  Reg(e, "ExportIfc", Immediate(ifc_export::ExportIfcCmd), CommandStatus::Implemented,
+      "File=path.ifc [Name=project] [Storey=name]: writes the Wall, ArchSlab, Column and Beam components as an IFC4 STEP file (IfcProject / Site / Building / BuildingStorey, extruded rectangle bodies, length / area / volume quantities and a property set); a wall with hosted doors or windows also gets its net face area and volume. Doors and windows are not separate IFC elements; Roof, Stair and mechanical / MEP components are not exported.");
   Reg(e, "ArchEdit", Make<ArchEditCommand>());
   Reg(e, "ArchDelete", OnSelection("Select an architectural component to delete", [](CommandContext& ctx, const std::vector<ObjectId>& objs) {
         int removed = 0;

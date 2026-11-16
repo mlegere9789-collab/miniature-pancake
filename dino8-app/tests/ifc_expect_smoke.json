@@ -1,0 +1,12 @@
+{
+  "total_entities": 121,
+  "counts": {"IFCPROJECT": 1, "IFCSITE": 1, "IFCBUILDING": 1, "IFCBUILDINGSTOREY": 1, "IFCWALL": 1, "IFCSLAB": 1, "IFCCOLUMN": 1, "IFCBEAM": 1,
+             "IFCEXTRUDEDAREASOLID": 4, "IFCRECTANGLEPROFILEDEF": 4, "IFCELEMENTQUANTITY": 4, "IFCPROPERTYSET": 4,
+             "IFCRELDEFINESBYPROPERTIES": 8, "IFCRELAGGREGATES": 3, "IFCRELCONTAINEDINSPATIALSTRUCTURE": 1},
+  "quantities": {
+    "Wall 1": {"Length": 5.0, "Width": 0.2, "Height": 2.4, "GrossFootprintArea": 1.0, "GrossSideArea": 12.0, "GrossVolume": 2.4, "NetSideArea": 8.67, "NetVolume": 1.734},
+    "Slab 4": {"Depth": 0.25, "Perimeter": 20.0, "GrossArea": 24.0, "GrossVolume": 6.0},
+    "Column 5": {"Length": 3.0, "CrossSectionArea": 0.12, "GrossVolume": 0.36},
+    "Beam 6": {"Length": 5.0, "CrossSectionArea": 0.06, "GrossVolume": 0.3}
+  }
+}
