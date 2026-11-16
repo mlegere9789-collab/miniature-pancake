@@ -1,0 +1,382 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-curve-03",
+  "corpora": [
+    "corpus/gh/curve/curve-spline",
+    "corpus/gh/curve/curve-util"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 18,
+    "with_hint": 18,
+    "without_hint": 22
+  },
+  "deps": [],
+  "domains": [
+    "curve"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Chamfer",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Fillet",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Catenary",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Explode",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Trim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "VariableOffsetSrf",
+        "rows": 1,
+        "score": 0.787,
+        "status": "implemented"
+      },
+      {
+        "name": "TweenCurves",
+        "rows": 1,
+        "score": 0.75,
+        "status": "implemented"
+      },
+      {
+        "name": "CurveThroughPolyline",
+        "rows": 1,
+        "score": 0.68,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferSrf",
+        "rows": 2,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "ChamferEdge",
+        "rows": 2,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "FilletSrf",
+        "rows": 2,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "SimplifyCrv",
+        "rows": 2,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "FitCurveToSurface",
+        "rows": 1,
+        "score": 0.606,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:109",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::NurbsCurve"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:2214",
+        "rows": 1,
+        "score": 0.748,
+        "symbol": "dino8::kernel::NurbsCurve::raw"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1044",
+        "rows": 1,
+        "score": 0.725,
+        "symbol": "dino8::kernel::NurbsCurve::Fair"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:2216",
+        "rows": 1,
+        "score": 0.698,
+        "symbol": "dino8::kernel::Brep::PlanarFace"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1974",
+        "rows": 1,
+        "score": 0.669,
+        "symbol": "dino8::kernel::InterpolateCubic"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:892",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::ProjectCurveToSurface"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:238",
+        "rows": 1,
+        "score": 0.634,
+        "symbol": "dino8::kernel::CurveSurfaceHit"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/features.h:1045",
+        "rows": 1,
+        "score": 0.629,
+        "symbol": "dino8::kernel::ArrayAlongCurveOnSurface"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:328",
+        "rows": 2,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Simplify"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1078",
+        "rows": 2,
+        "score": 0.606,
+        "symbol": "dino8::kernel::NurbsCurve::Simplify"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1254",
+        "rows": 1,
+        "score": 0.6,
+        "symbol": "dino8::kernel::NurbsCurve::Reverse"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-curve-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/curve.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-CURVE-0058": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::InterpolateCubic"
+      ]
+    },
+    "D8-GH-CURVE-0059": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsCurve",
+        "dino8::kernel::NurbsCurve::raw",
+        "dino8::kernel::NurbsCurve::Fair"
+      ]
+    },
+    "D8-GH-CURVE-0060": {
+      "commands": [
+        "FitCurveToSurface"
+      ],
+      "kernel": [
+        "dino8::kernel::CurveSurfaceHit",
+        "dino8::kernel::ArrayAlongCurveOnSurface"
+      ]
+    },
+    "D8-GH-CURVE-0062": {
+      "commands": [
+        "TweenCurves"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0065": {
+      "commands": [
+        "Catenary"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0070": {
+      "commands": [
+        "Fillet",
+        "FilletSrf"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0071": {
+      "commands": [
+        "Chamfer",
+        "ChamferSrf",
+        "ChamferEdge"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0074": {
+      "commands": [
+        "SimplifyCrv"
+      ],
+      "kernel": [
+        "dino8::kernel::Simplify",
+        "dino8::kernel::NurbsCurve::Simplify"
+      ]
+    },
+    "D8-GH-CURVE-0079": {
+      "commands": [
+        "VariableOffsetSrf"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0080": {
+      "commands": [
+        "Fillet",
+        "FilletSrf"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0081": {
+      "commands": [
+        "Chamfer",
+        "ChamferSrf",
+        "ChamferEdge"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0083": {
+      "commands": [
+        "Explode"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0085": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsCurve::Reverse"
+      ]
+    },
+    "D8-GH-CURVE-0089": {
+      "commands": [
+        "SimplifyCrv"
+      ],
+      "kernel": [
+        "dino8::kernel::Simplify",
+        "dino8::kernel::NurbsCurve::Simplify"
+      ]
+    },
+    "D8-GH-CURVE-0091": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::ProjectCurveToSurface"
+      ]
+    },
+    "D8-GH-CURVE-0093": {
+      "commands": [
+        "CurveThroughPolyline"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CURVE-0094": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Brep::PlanarFace"
+      ]
+    },
+    "D8-GH-CURVE-0097": {
+      "commands": [
+        "Trim"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-CURVE-0058",
+    "D8-GH-CURVE-0059",
+    "D8-GH-CURVE-0060",
+    "D8-GH-CURVE-0061",
+    "D8-GH-CURVE-0062",
+    "D8-GH-CURVE-0063",
+    "D8-GH-CURVE-0064",
+    "D8-GH-CURVE-0065",
+    "D8-GH-CURVE-0066",
+    "D8-GH-CURVE-0067",
+    "D8-GH-CURVE-0068",
+    "D8-GH-CURVE-0069",
+    "D8-GH-CURVE-0070",
+    "D8-GH-CURVE-0071",
+    "D8-GH-CURVE-0072",
+    "D8-GH-CURVE-0073",
+    "D8-GH-CURVE-0074",
+    "D8-GH-CURVE-0075",
+    "D8-GH-CURVE-0076",
+    "D8-GH-CURVE-0077",
+    "D8-GH-CURVE-0078",
+    "D8-GH-CURVE-0079",
+    "D8-GH-CURVE-0080",
+    "D8-GH-CURVE-0081",
+    "D8-GH-CURVE-0082",
+    "D8-GH-CURVE-0083",
+    "D8-GH-CURVE-0084",
+    "D8-GH-CURVE-0085",
+    "D8-GH-CURVE-0086",
+    "D8-GH-CURVE-0087",
+    "D8-GH-CURVE-0088",
+    "D8-GH-CURVE-0089",
+    "D8-GH-CURVE-0090",
+    "D8-GH-CURVE-0091",
+    "D8-GH-CURVE-0092",
+    "D8-GH-CURVE-0093",
+    "D8-GH-CURVE-0094",
+    "D8-GH-CURVE-0095",
+    "D8-GH-CURVE-0096",
+    "D8-GH-CURVE-0097"
+  ],
+  "rows_without_hint": [
+    "D8-GH-CURVE-0061",
+    "D8-GH-CURVE-0063",
+    "D8-GH-CURVE-0064",
+    "D8-GH-CURVE-0066",
+    "D8-GH-CURVE-0067",
+    "D8-GH-CURVE-0068",
+    "D8-GH-CURVE-0069",
+    "D8-GH-CURVE-0072",
+    "D8-GH-CURVE-0073",
+    "D8-GH-CURVE-0075",
+    "D8-GH-CURVE-0076",
+    "D8-GH-CURVE-0077",
+    "D8-GH-CURVE-0078",
+    "D8-GH-CURVE-0082",
+    "D8-GH-CURVE-0084",
+    "D8-GH-CURVE-0086",
+    "D8-GH-CURVE-0087",
+    "D8-GH-CURVE-0088",
+    "D8-GH-CURVE-0090",
+    "D8-GH-CURVE-0092",
+    "D8-GH-CURVE-0095",
+    "D8-GH-CURVE-0096"
+  ],
+  "status": "open",
+  "title": "flow: curve (40 rows)",
+  "wave": 1
+}

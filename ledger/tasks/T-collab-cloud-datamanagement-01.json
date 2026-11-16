@@ -1,0 +1,100 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-collab-cloud-datamanagement-01",
+  "corpora": [
+    "add a file to two packages; no copies are created and fixed versions stay fixed after a new upload",
+    "compare two versions of a fixture drawing; the diff overlay marks the changed region",
+    "corpus: IFC4 samples, DWG/DXF samples (ODA public samples), glTF, OBJ, PDF; viewer opens and bounding box matches",
+    "create three attribute types, mark one required, verify upload validation",
+    "create/move/delete operations on folder tree; model-based state check",
+    "edit offline on two devices; merge preserves all non-conflicting edits (property test)",
+    "feature flags by tier honoured (config test)",
+    "link expires at set time (clock-injected test)",
+    "locked file rejects each listed action for another user",
+    "perform five actions; the filtered export contains exactly those five entries",
+    "report rows equal the permission table of a fixture project",
+    "restore returns byte-identical content (hash)"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 1,
+    "countable": 21,
+    "rows": 21,
+    "with_existing_hint": 0,
+    "with_hint": 0,
+    "without_hint": 21
+  },
+  "deps": [],
+  "domains": [
+    "datamanagement"
+  ],
+  "factory": "collab-cloud",
+  "handoff": "",
+  "hints": {
+    "commands": [],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-collab-cloud-datamanagement-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "forma"
+  ],
+  "register_files": [
+    "forma/datamanagement.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {},
+  "rows": [
+    "D8-FORMA-DATA-0015",
+    "D8-FORMA-DATA-0021",
+    "D8-FORMA-DATA-0002",
+    "D8-FORMA-DATA-0013",
+    "D8-FORMA-DATA-0001",
+    "D8-FORMA-DATA-0010",
+    "D8-FORMA-DATA-0005",
+    "D8-FORMA-DATA-0008",
+    "D8-FORMA-DATA-0016",
+    "D8-FORMA-DATA-0022",
+    "D8-FORMA-DATA-0011",
+    "D8-FORMA-DATA-0003",
+    "D8-FORMA-DATA-0004",
+    "D8-FORMA-DATA-0017",
+    "D8-FORMA-DATA-0019",
+    "D8-FORMA-DATA-0020",
+    "D8-FORMA-DATA-0009",
+    "D8-FORMA-DATA-0007",
+    "D8-FORMA-DATA-0018",
+    "D8-FORMA-DATA-0012",
+    "D8-FORMA-DATA-0014"
+  ],
+  "rows_without_hint": [
+    "D8-FORMA-DATA-0015",
+    "D8-FORMA-DATA-0021",
+    "D8-FORMA-DATA-0002",
+    "D8-FORMA-DATA-0013",
+    "D8-FORMA-DATA-0001",
+    "D8-FORMA-DATA-0010",
+    "D8-FORMA-DATA-0005",
+    "D8-FORMA-DATA-0008",
+    "D8-FORMA-DATA-0016",
+    "D8-FORMA-DATA-0022",
+    "D8-FORMA-DATA-0011",
+    "D8-FORMA-DATA-0003",
+    "D8-FORMA-DATA-0004",
+    "D8-FORMA-DATA-0017",
+    "D8-FORMA-DATA-0019",
+    "D8-FORMA-DATA-0020",
+    "D8-FORMA-DATA-0009",
+    "D8-FORMA-DATA-0007",
+    "D8-FORMA-DATA-0018",
+    "D8-FORMA-DATA-0012",
+    "D8-FORMA-DATA-0014"
+  ],
+  "status": "open",
+  "title": "collab-cloud: datamanagement (21 rows)",
+  "wave": 2
+}

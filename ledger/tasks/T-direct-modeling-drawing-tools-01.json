@@ -1,0 +1,174 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-drawing-tools-01",
+  "corpora": [
+    "golden/sketchup/draw"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 22,
+    "rows": 22,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 18
+  },
+  "deps": [],
+  "domains": [
+    "drawing-tools"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Circle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Line",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Polygon",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rectangle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CircleD",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "PolygonStar",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "SelCircle",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1993",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::LoopPolygon"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1994",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::PointInPolygon"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-drawing-tools-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "sketchup"
+  ],
+  "register_files": [
+    "sketchup/drawing-tools.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-SKETCHUP-DRAW-0001": {
+      "commands": [
+        "Line"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-DRAW-0004": {
+      "commands": [
+        "Rectangle"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-DRAW-0006": {
+      "commands": [
+        "Circle",
+        "CircleD",
+        "SelCircle"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-DRAW-0007": {
+      "commands": [
+        "Polygon",
+        "PolygonStar"
+      ],
+      "kernel": [
+        "dino8::kernel::LoopPolygon",
+        "dino8::kernel::PointInPolygon"
+      ]
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-DRAW-0001",
+    "D8-SKETCHUP-DRAW-0002",
+    "D8-SKETCHUP-DRAW-0003",
+    "D8-SKETCHUP-DRAW-0004",
+    "D8-SKETCHUP-DRAW-0005",
+    "D8-SKETCHUP-DRAW-0006",
+    "D8-SKETCHUP-DRAW-0007",
+    "D8-SKETCHUP-DRAW-0008",
+    "D8-SKETCHUP-DRAW-0009",
+    "D8-SKETCHUP-DRAW-0010",
+    "D8-SKETCHUP-DRAW-0011",
+    "D8-SKETCHUP-DRAW-0012",
+    "D8-SKETCHUP-DRAW-0013",
+    "D8-SKETCHUP-DRAW-0014",
+    "D8-SKETCHUP-DRAW-0015",
+    "D8-SKETCHUP-DRAW-0016",
+    "D8-SKETCHUP-DRAW-0017",
+    "D8-SKETCHUP-DRAW-0018",
+    "D8-SKETCHUP-DRAW-0019",
+    "D8-SKETCHUP-DRAW-0020",
+    "D8-SKETCHUP-DRAW-0021",
+    "D8-SKETCHUP-DRAW-0022"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-DRAW-0002",
+    "D8-SKETCHUP-DRAW-0003",
+    "D8-SKETCHUP-DRAW-0005",
+    "D8-SKETCHUP-DRAW-0008",
+    "D8-SKETCHUP-DRAW-0009",
+    "D8-SKETCHUP-DRAW-0010",
+    "D8-SKETCHUP-DRAW-0011",
+    "D8-SKETCHUP-DRAW-0012",
+    "D8-SKETCHUP-DRAW-0013",
+    "D8-SKETCHUP-DRAW-0014",
+    "D8-SKETCHUP-DRAW-0015",
+    "D8-SKETCHUP-DRAW-0016",
+    "D8-SKETCHUP-DRAW-0017",
+    "D8-SKETCHUP-DRAW-0018",
+    "D8-SKETCHUP-DRAW-0019",
+    "D8-SKETCHUP-DRAW-0020",
+    "D8-SKETCHUP-DRAW-0021",
+    "D8-SKETCHUP-DRAW-0022"
+  ],
+  "status": "open",
+  "title": "direct-modeling: drawing-tools (22 rows)",
+  "wave": 1
+}

@@ -1,0 +1,428 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-params-01",
+  "corpora": [
+    "corpus/gh/params/params-geometry",
+    "corpus/gh/params/params-input"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 11,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 19,
+    "with_hint": 19,
+    "without_hint": 16
+  },
+  "deps": [],
+  "domains": [
+    "params"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Arc",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Box",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Circle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Curve",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Field",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Group",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Line",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Mesh",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Plane",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Point",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rectangle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ToSubD",
+        "rows": 1,
+        "score": 0.72,
+        "status": "implemented"
+      },
+      {
+        "name": "DupMeshEdge",
+        "rows": 1,
+        "score": 0.716,
+        "status": "implemented"
+      },
+      {
+        "name": "SwapMeshEdge",
+        "rows": 1,
+        "score": 0.69,
+        "status": "implemented"
+      },
+      {
+        "name": "CircleD",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "AddToGroup",
+        "rows": 1,
+        "score": 0.673,
+        "status": "implemented"
+      },
+      {
+        "name": "MatchMeshEdge",
+        "rows": 1,
+        "score": 0.667,
+        "status": "implemented"
+      },
+      {
+        "name": "CPlane",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "MPlane",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "SoftTransform",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:98",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Brep"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:40",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Interval"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:134",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Mesh"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:224",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::SubD"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:137",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::Mesh::FaceCount"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:473",
+        "rows": 1,
+        "score": 0.666,
+        "symbol": "dino8::kernel::Mesh::Faceted"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:1936",
+        "rows": 1,
+        "score": 0.659,
+        "symbol": "dino8::kernel::Brep::Transform"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:810",
+        "rows": 1,
+        "score": 0.659,
+        "symbol": "dino8::kernel::Mesh::Transform"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:62",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::SurfaceMesh"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:65",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::SurfaceSize"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:592",
+        "rows": 1,
+        "score": 0.609,
+        "symbol": "dino8::kernel::SubD::Transform"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2599",
+        "rows": 1,
+        "score": 0.6,
+        "symbol": "dino8::kernel::Mesh::InsetFace"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-params-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/params.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-PARAMS-0001": {
+      "commands": [
+        "Point"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0003": {
+      "commands": [
+        "Plane",
+        "CPlane",
+        "MPlane"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0004": {
+      "commands": [
+        "Line"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0005": {
+      "commands": [
+        "Circle",
+        "CircleD",
+        "SelCircle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0006": {
+      "commands": [
+        "Arc"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0007": {
+      "commands": [
+        "Curve"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0008": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SurfaceMesh",
+        "dino8::kernel::SurfaceSize"
+      ]
+    },
+    "D8-GH-PARAMS-0009": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Brep"
+      ]
+    },
+    "D8-GH-PARAMS-0010": {
+      "commands": [
+        "Mesh"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh"
+      ]
+    },
+    "D8-GH-PARAMS-0011": {
+      "commands": [
+        "CollapseMeshFace"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::FaceCount",
+        "dino8::kernel::Mesh::Faceted",
+        "dino8::kernel::Mesh::InsetFace"
+      ]
+    },
+    "D8-GH-PARAMS-0012": {
+      "commands": [
+        "DupMeshEdge",
+        "SwapMeshEdge",
+        "MatchMeshEdge"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0013": {
+      "commands": [
+        "ToSubD"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD"
+      ]
+    },
+    "D8-GH-PARAMS-0014": {
+      "commands": [
+        "Box"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0015": {
+      "commands": [
+        "Rectangle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0017": {
+      "commands": [
+        "Field"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0021": {
+      "commands": [
+        "Group",
+        "AddToGroup"
+      ],
+      "kernel": []
+    },
+    "D8-GH-PARAMS-0022": {
+      "commands": [
+        "SoftTransform"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Transform",
+        "dino8::kernel::Mesh::Transform",
+        "dino8::kernel::SubD::Transform"
+      ]
+    },
+    "D8-GH-PARAMS-0024": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Interval"
+      ]
+    },
+    "D8-GH-PARAMS-0049": {
+      "commands": [
+        "GradientView"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-PARAMS-0001",
+    "D8-GH-PARAMS-0002",
+    "D8-GH-PARAMS-0003",
+    "D8-GH-PARAMS-0004",
+    "D8-GH-PARAMS-0005",
+    "D8-GH-PARAMS-0006",
+    "D8-GH-PARAMS-0007",
+    "D8-GH-PARAMS-0008",
+    "D8-GH-PARAMS-0009",
+    "D8-GH-PARAMS-0010",
+    "D8-GH-PARAMS-0011",
+    "D8-GH-PARAMS-0012",
+    "D8-GH-PARAMS-0013",
+    "D8-GH-PARAMS-0014",
+    "D8-GH-PARAMS-0015",
+    "D8-GH-PARAMS-0016",
+    "D8-GH-PARAMS-0017",
+    "D8-GH-PARAMS-0018",
+    "D8-GH-PARAMS-0019",
+    "D8-GH-PARAMS-0020",
+    "D8-GH-PARAMS-0021",
+    "D8-GH-PARAMS-0022",
+    "D8-GH-PARAMS-0023",
+    "D8-GH-PARAMS-0024",
+    "D8-GH-PARAMS-0041",
+    "D8-GH-PARAMS-0042",
+    "D8-GH-PARAMS-0043",
+    "D8-GH-PARAMS-0044",
+    "D8-GH-PARAMS-0045",
+    "D8-GH-PARAMS-0046",
+    "D8-GH-PARAMS-0047",
+    "D8-GH-PARAMS-0048",
+    "D8-GH-PARAMS-0049",
+    "D8-GH-PARAMS-0050",
+    "D8-GH-PARAMS-0051"
+  ],
+  "rows_without_hint": [
+    "D8-GH-PARAMS-0002",
+    "D8-GH-PARAMS-0016",
+    "D8-GH-PARAMS-0018",
+    "D8-GH-PARAMS-0019",
+    "D8-GH-PARAMS-0020",
+    "D8-GH-PARAMS-0023",
+    "D8-GH-PARAMS-0041",
+    "D8-GH-PARAMS-0042",
+    "D8-GH-PARAMS-0043",
+    "D8-GH-PARAMS-0044",
+    "D8-GH-PARAMS-0045",
+    "D8-GH-PARAMS-0046",
+    "D8-GH-PARAMS-0047",
+    "D8-GH-PARAMS-0048",
+    "D8-GH-PARAMS-0050",
+    "D8-GH-PARAMS-0051"
+  ],
+  "status": "open",
+  "title": "flow: params (35 rows)",
+  "wave": 1
+}
