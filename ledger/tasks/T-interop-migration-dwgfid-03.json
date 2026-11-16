@@ -1,0 +1,179 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-dwgfid-03",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 36,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 36
+  },
+  "deps": [],
+  "domains": [
+    "dwgfid"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SaveAs",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Save",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Standards",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Units",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CheckStandards",
+        "rows": 1,
+        "score": 0.637,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-dwgfid-03",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/dwgfid.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-DWGFID-0086": {
+      "commands": [
+        "Save",
+        "SaveAs"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0087": {
+      "commands": [
+        "SaveAs"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0090": {
+      "commands": [
+        "Standards",
+        "CheckStandards"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-DWGFID-0093": {
+      "commands": [
+        "Units"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-DWGFID-0081",
+    "D8-AUTOCAD-DWGFID-0082",
+    "D8-AUTOCAD-DWGFID-0083",
+    "D8-AUTOCAD-DWGFID-0084",
+    "D8-AUTOCAD-DWGFID-0085",
+    "D8-AUTOCAD-DWGFID-0086",
+    "D8-AUTOCAD-DWGFID-0087",
+    "D8-AUTOCAD-DWGFID-0088",
+    "D8-AUTOCAD-DWGFID-0089",
+    "D8-AUTOCAD-DWGFID-0090",
+    "D8-AUTOCAD-DWGFID-0091",
+    "D8-AUTOCAD-DWGFID-0092",
+    "D8-AUTOCAD-DWGFID-0093",
+    "D8-AUTOCAD-DWGFID-0094",
+    "D8-AUTOCAD-DWGFID-0095",
+    "D8-AUTOCAD-DWGFID-0096",
+    "D8-AUTOCAD-DWGFID-0097",
+    "D8-AUTOCAD-DWGFID-0098",
+    "D8-AUTOCAD-DWGFID-0099",
+    "D8-AUTOCAD-DWGFID-0100",
+    "D8-AUTOCAD-DWGFID-0101",
+    "D8-AUTOCAD-DWGFID-0102",
+    "D8-AUTOCAD-DWGFID-0103",
+    "D8-AUTOCAD-DWGFID-0104",
+    "D8-AUTOCAD-DWGFID-0105",
+    "D8-AUTOCAD-DWGFID-0106",
+    "D8-AUTOCAD-DWGFID-0107",
+    "D8-AUTOCAD-DWGFID-0108",
+    "D8-AUTOCAD-DWGFID-0109",
+    "D8-AUTOCAD-DWGFID-0110",
+    "D8-AUTOCAD-DWGFID-0111",
+    "D8-AUTOCAD-DWGFID-0112",
+    "D8-AUTOCAD-DWGFID-0113",
+    "D8-AUTOCAD-DWGFID-0114",
+    "D8-AUTOCAD-DWGFID-0115",
+    "D8-AUTOCAD-DWGFID-0116",
+    "D8-AUTOCAD-DWGFID-0117",
+    "D8-AUTOCAD-DWGFID-0118",
+    "D8-AUTOCAD-DWGFID-0119",
+    "D8-AUTOCAD-DWGFID-0120"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-DWGFID-0081",
+    "D8-AUTOCAD-DWGFID-0082",
+    "D8-AUTOCAD-DWGFID-0083",
+    "D8-AUTOCAD-DWGFID-0084",
+    "D8-AUTOCAD-DWGFID-0085",
+    "D8-AUTOCAD-DWGFID-0088",
+    "D8-AUTOCAD-DWGFID-0089",
+    "D8-AUTOCAD-DWGFID-0091",
+    "D8-AUTOCAD-DWGFID-0092",
+    "D8-AUTOCAD-DWGFID-0094",
+    "D8-AUTOCAD-DWGFID-0095",
+    "D8-AUTOCAD-DWGFID-0096",
+    "D8-AUTOCAD-DWGFID-0097",
+    "D8-AUTOCAD-DWGFID-0098",
+    "D8-AUTOCAD-DWGFID-0099",
+    "D8-AUTOCAD-DWGFID-0100",
+    "D8-AUTOCAD-DWGFID-0101",
+    "D8-AUTOCAD-DWGFID-0102",
+    "D8-AUTOCAD-DWGFID-0103",
+    "D8-AUTOCAD-DWGFID-0104",
+    "D8-AUTOCAD-DWGFID-0105",
+    "D8-AUTOCAD-DWGFID-0106",
+    "D8-AUTOCAD-DWGFID-0107",
+    "D8-AUTOCAD-DWGFID-0108",
+    "D8-AUTOCAD-DWGFID-0109",
+    "D8-AUTOCAD-DWGFID-0110",
+    "D8-AUTOCAD-DWGFID-0111",
+    "D8-AUTOCAD-DWGFID-0112",
+    "D8-AUTOCAD-DWGFID-0113",
+    "D8-AUTOCAD-DWGFID-0114",
+    "D8-AUTOCAD-DWGFID-0115",
+    "D8-AUTOCAD-DWGFID-0116",
+    "D8-AUTOCAD-DWGFID-0117",
+    "D8-AUTOCAD-DWGFID-0118",
+    "D8-AUTOCAD-DWGFID-0119",
+    "D8-AUTOCAD-DWGFID-0120"
+  ],
+  "status": "open",
+  "title": "interop-migration: dwgfid (40 rows)",
+  "wave": 1
+}
