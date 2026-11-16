@@ -1,0 +1,148 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-sculpt-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 39,
+    "countable": 39,
+    "rows": 39,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 37
+  },
+  "deps": [],
+  "domains": [
+    "sculpt"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Rebuild",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:747",
+        "rows": 1,
+        "score": 0.625,
+        "symbol": "dino8::kernel::SubD::Symmetrize"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-sculpt-01",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/sculpt.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-SCULPT-0024": {
+      "commands": [
+        "Rebuild"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-SCULPT-0032": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SubD::Symmetrize"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-SCULPT-0001",
+    "D8-BLENDER-SCULPT-0002",
+    "D8-BLENDER-SCULPT-0003",
+    "D8-BLENDER-SCULPT-0004",
+    "D8-BLENDER-SCULPT-0005",
+    "D8-BLENDER-SCULPT-0006",
+    "D8-BLENDER-SCULPT-0007",
+    "D8-BLENDER-SCULPT-0008",
+    "D8-BLENDER-SCULPT-0009",
+    "D8-BLENDER-SCULPT-0010",
+    "D8-BLENDER-SCULPT-0011",
+    "D8-BLENDER-SCULPT-0012",
+    "D8-BLENDER-SCULPT-0013",
+    "D8-BLENDER-SCULPT-0014",
+    "D8-BLENDER-SCULPT-0015",
+    "D8-BLENDER-SCULPT-0016",
+    "D8-BLENDER-SCULPT-0017",
+    "D8-BLENDER-SCULPT-0018",
+    "D8-BLENDER-SCULPT-0019",
+    "D8-BLENDER-SCULPT-0020",
+    "D8-BLENDER-SCULPT-0021",
+    "D8-BLENDER-SCULPT-0022",
+    "D8-BLENDER-SCULPT-0023",
+    "D8-BLENDER-SCULPT-0024",
+    "D8-BLENDER-SCULPT-0025",
+    "D8-BLENDER-SCULPT-0026",
+    "D8-BLENDER-SCULPT-0027",
+    "D8-BLENDER-SCULPT-0028",
+    "D8-BLENDER-SCULPT-0029",
+    "D8-BLENDER-SCULPT-0030",
+    "D8-BLENDER-SCULPT-0031",
+    "D8-BLENDER-SCULPT-0032",
+    "D8-BLENDER-SCULPT-0033",
+    "D8-BLENDER-SCULPT-0034",
+    "D8-BLENDER-SCULPT-0035",
+    "D8-BLENDER-SCULPT-0036",
+    "D8-BLENDER-SCULPT-0037",
+    "D8-BLENDER-SCULPT-0038",
+    "D8-BLENDER-SCULPT-0039"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-SCULPT-0001",
+    "D8-BLENDER-SCULPT-0002",
+    "D8-BLENDER-SCULPT-0003",
+    "D8-BLENDER-SCULPT-0004",
+    "D8-BLENDER-SCULPT-0005",
+    "D8-BLENDER-SCULPT-0006",
+    "D8-BLENDER-SCULPT-0007",
+    "D8-BLENDER-SCULPT-0008",
+    "D8-BLENDER-SCULPT-0009",
+    "D8-BLENDER-SCULPT-0010",
+    "D8-BLENDER-SCULPT-0011",
+    "D8-BLENDER-SCULPT-0012",
+    "D8-BLENDER-SCULPT-0013",
+    "D8-BLENDER-SCULPT-0014",
+    "D8-BLENDER-SCULPT-0015",
+    "D8-BLENDER-SCULPT-0016",
+    "D8-BLENDER-SCULPT-0017",
+    "D8-BLENDER-SCULPT-0018",
+    "D8-BLENDER-SCULPT-0019",
+    "D8-BLENDER-SCULPT-0020",
+    "D8-BLENDER-SCULPT-0021",
+    "D8-BLENDER-SCULPT-0022",
+    "D8-BLENDER-SCULPT-0023",
+    "D8-BLENDER-SCULPT-0025",
+    "D8-BLENDER-SCULPT-0026",
+    "D8-BLENDER-SCULPT-0027",
+    "D8-BLENDER-SCULPT-0028",
+    "D8-BLENDER-SCULPT-0029",
+    "D8-BLENDER-SCULPT-0030",
+    "D8-BLENDER-SCULPT-0031",
+    "D8-BLENDER-SCULPT-0033",
+    "D8-BLENDER-SCULPT-0034",
+    "D8-BLENDER-SCULPT-0035",
+    "D8-BLENDER-SCULPT-0036",
+    "D8-BLENDER-SCULPT-0037",
+    "D8-BLENDER-SCULPT-0038",
+    "D8-BLENDER-SCULPT-0039"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: sculpt (39 rows)",
+  "wave": 1
+}

@@ -1,0 +1,87 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-api-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 1,
+    "countable": 21,
+    "rows": 21,
+    "with_existing_hint": 0,
+    "with_hint": 0,
+    "without_hint": 21
+  },
+  "deps": [],
+  "domains": [
+    "api"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-api-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "archicad"
+  ],
+  "register_files": [
+    "archicad/api.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {},
+  "rows": [
+    "D8-ARCHICAD-API-0001",
+    "D8-ARCHICAD-API-0002",
+    "D8-ARCHICAD-API-0003",
+    "D8-ARCHICAD-API-0004",
+    "D8-ARCHICAD-API-0005",
+    "D8-ARCHICAD-API-0006",
+    "D8-ARCHICAD-API-0007",
+    "D8-ARCHICAD-API-0008",
+    "D8-ARCHICAD-API-0009",
+    "D8-ARCHICAD-API-0010",
+    "D8-ARCHICAD-API-0011",
+    "D8-ARCHICAD-API-0012",
+    "D8-ARCHICAD-API-0013",
+    "D8-ARCHICAD-API-0014",
+    "D8-ARCHICAD-API-0015",
+    "D8-ARCHICAD-API-0016",
+    "D8-ARCHICAD-API-0017",
+    "D8-ARCHICAD-API-0018",
+    "D8-ARCHICAD-API-0019",
+    "D8-ARCHICAD-API-0020",
+    "D8-ARCHICAD-API-0021"
+  ],
+  "rows_without_hint": [
+    "D8-ARCHICAD-API-0001",
+    "D8-ARCHICAD-API-0002",
+    "D8-ARCHICAD-API-0003",
+    "D8-ARCHICAD-API-0004",
+    "D8-ARCHICAD-API-0005",
+    "D8-ARCHICAD-API-0006",
+    "D8-ARCHICAD-API-0007",
+    "D8-ARCHICAD-API-0008",
+    "D8-ARCHICAD-API-0009",
+    "D8-ARCHICAD-API-0010",
+    "D8-ARCHICAD-API-0011",
+    "D8-ARCHICAD-API-0012",
+    "D8-ARCHICAD-API-0013",
+    "D8-ARCHICAD-API-0014",
+    "D8-ARCHICAD-API-0015",
+    "D8-ARCHICAD-API-0016",
+    "D8-ARCHICAD-API-0017",
+    "D8-ARCHICAD-API-0018",
+    "D8-ARCHICAD-API-0019",
+    "D8-ARCHICAD-API-0020",
+    "D8-ARCHICAD-API-0021"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: api (21 rows)",
+  "wave": 3
+}
