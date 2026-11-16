@@ -47,8 +47,8 @@ double ObjectArea(const SceneObject& o) {
   }
 }
 
-double ObjectVolume(const SceneObject& o, bool& closed) {
-  std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
+double ObjectVolume(const SceneObject& o, bool& closed, double chord_tolerance = 0.005) {
+  std::optional<kernel::Mesh> m = MeshOf(o, chord_tolerance);
   closed = m && m->IsClosedManifold();
   return closed ? std::fabs(m->Volume()) : 0;
 }
@@ -314,10 +314,28 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) total += ObjectArea(*o);
         ctx.Print("Area = " + FormatNumber(total) + " square " + ctx.Settings().unit_system);
       }));
+  // `Volume digits=N` (5..15) prints with N significant digits instead of the default 4 (FormatNumber's "%.4g"), and
+  // `Volume tolerance=<t>` meshes the solid at chord tolerance t instead of the default 0.005: the volume is that of the
+  // closed mesh, whose error is bounded by (about) 2/3 of the chord tolerance times the curved area, so a 0.005 mesh of a
+  // curved fillet reads up to ~0.15 mm^3 off an exact solid; a tighter tolerance makes the mesh error negligible. Without
+  // either token the output is unchanged.
   Reg(e, "Volume", OnSelection("Select closed solids", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        int digits = 0;
+        double tol = 0.005;
+        {
+          std::vector<std::string> rest;
+          while (std::optional<std::string> tok = ctx.Engine().TakePendingInput()) {
+            if (tok->size() > 7 && ToLower(tok->substr(0, 7)) == "digits=") digits = std::clamp(std::atoi(tok->c_str() + 7), 0, 15);
+            else if (tok->size() > 10 && ToLower(tok->substr(0, 10)) == "tolerance=") { const double t = std::atof(tok->c_str() + 10); if (t > 0 && std::isfinite(t)) tol = t; }
+            else rest.push_back(*tok);
+          }
+          for (const std::string& t : rest) ctx.Engine().PendingInputs().push_back(t);
+        }
         double total = 0;
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; bool closed; double v = ObjectVolume(*o, closed); if (!closed) ctx.Warn("Object " + std::to_string(id) + " is not closed"); total += v; }
-        ctx.Print("Volume = " + FormatNumber(total) + " cubic " + ctx.Settings().unit_system);
+        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; bool closed; double v = ObjectVolume(*o, closed, tol); if (!closed) ctx.Warn("Object " + std::to_string(id) + " is not closed"); total += v; }
+        std::string text = FormatNumber(total);
+        if (digits >= 5) { char buf[64]; std::snprintf(buf, sizeof buf, "%.*g", digits, total); text = buf; }
+        ctx.Print("Volume = " + text + " cubic " + ctx.Settings().unit_system);
       }));
   Reg(e, "VolumeCentroid", OnSelection("Select closed solids", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; std::optional<kernel::Mesh> m = MeshOf(*o, 0.005); if (!m) continue; Point3d c = m->GetCentroid(); ctx.Print("Centroid " + FormatPoint(c)); AddObject(ctx, SceneObject::MakePoint(c), "VolumeCentroid"); }
