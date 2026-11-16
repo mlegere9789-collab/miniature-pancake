@@ -331,13 +331,50 @@ class SetUserTextCommand : public Command {
 // falls back to a fixed 10% of the domain at both ends).
 class ExtendCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select curves to extend"); }
+  // AutoCAD EXTEND to boundary edges: the Boundary option first asks for the boundary edges, then each pick names a straight
+  // line to extend (at the end nearest the pick) up to the nearest boundary; EdgeExtend=Yes prolongs straight boundary edges
+  // along their line, as the Edge option of EXTEND does.
+  void Begin(CommandContext&) override {
+    WantObjects("Select curves to extend");
+    options = {{"Boundary", "", {}, false, false}, {"EdgeExtend", "No", {"Yes", "No"}, false, true}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Boundary" && !boundary_mode_ && ids_.empty()) {
+      boundary_mode_ = true;
+      accept_preselection = false;
+      WantObjects("Select boundary edges (press Enter when done)");
+    } else if (n == "EdgeExtend") {
+      edge_extend_ = (v == "Yes");
+      for (OptionSpec& o : options) if (o.name == "EdgeExtend") o.value = edge_extend_ ? "Yes" : "No";
+    }
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (boundary_mode_) {
+      boundary_ = ids;
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      WantPoint("Select object to extend (press Enter when done)");
+      return;
+    }
     for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) ids_.push_back(id); }
     if (ids_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
     WantPoint("Point to extend towards (Enter for 10% of the domain at both ends)");
   }
   void OnPoint(CommandContext& ctx, Point3d target) override {
+    if (boundary_mode_) {
+      const SceneObject* best = nullptr;
+      double best_d = 1e300;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.kind != ObjectKind::Curve || !o.curve || !ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+        const double d = o.curve->PointAt(o.curve->ClosestPointParameter(target)).DistanceTo(target);
+        if (d < best_d) { best_d = d; best = &o; }
+      }
+      if (!best) { ctx.Warn("Extend: no curve to extend near that point"); return; }
+      std::string why;
+      if (ExtendToBoundary(ctx, best->id, target, boundary_, edge_extend_, why)) ctx.Print("Extend: extended to the boundary edge");
+      else ctx.Warn("Extend: nothing was extended: " + why);
+      WantPoint("Select object to extend (press Enter when done)");
+      return;
+    }
     if (!std::isfinite(target.DistanceTo(Point3d(0, 0, 0))) || target.DistanceTo(Point3d(0, 0, 0)) > 1e12) {
       ctx.Warn("Extend: the point is more than 1e12 units from the origin; pick a nearer point");
       return;
@@ -371,6 +408,7 @@ class ExtendCommand : public Command {
     Finish();
   }
   void OnEnter(CommandContext& ctx) override {
+    if (boundary_mode_) { Finish(); return; }
     ctx.Doc().BeginChange("Extend");
     int done = 0;
     for (ObjectId id : ids_) {
@@ -390,6 +428,9 @@ class ExtendCommand : public Command {
   }
   void OnCancel(CommandContext&) override {}
   std::vector<ObjectId> ids_;
+  std::vector<ObjectId> boundary_;
+  bool boundary_mode_ = false;
+  bool edge_extend_ = false;
 };
 
 // MakePeriodic: Smooth=Yes is the old periodic-uniform refit through the

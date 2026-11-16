@@ -444,6 +444,9 @@ ObjectId ConvertObjectToSubD(CommandContext& ctx, ObjectId id);
 // (mesh boolean); defined in cmd_curveedit.cpp. cmd_fillet.cpp's Intersect
 // wrapper delegates to this when the selection has no surfaces/breps.
 void CurveOrSolidIntersect(CommandContext& ctx, const std::vector<ObjectId>& ids);
+// AutoCAD EXTEND to boundary edges (cmd_curveedit.cpp): see the definition there.
+bool ExtendToBoundary(CommandContext& ctx, ObjectId target_id, Point3d pick, const std::vector<ObjectId>& boundary_ids,
+                      bool edge_extend, std::string& why);
 
 // Tags `result_id` as an editable hole feature: stores `pre_cut_parent`
 // (the solid as it was before this hole) and `cutter` (the tool that made
