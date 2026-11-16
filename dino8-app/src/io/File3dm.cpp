@@ -3301,9 +3301,46 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     }
   }
 
+  // Atomic replacement: the archive is written to a sibling temporary file and only a complete write is renamed over `path`
+  // (rename within one directory replaces the old file in a single step), so a failure at any point - a full disk, a killed
+  // process, an unwritable directory - leaves the previous file exactly as it was. The temporary file is removed on failure.
+  // DINO8_TEST_FAULT_SAVE3DM (tests only) injects a failure: "write" = the temporary file is cut in half and the save fails as
+  // if the write had been interrupted, "rename" = the temporary file is complete but the final rename fails.
+  namespace fs = std::filesystem;
+  const std::string tmp_path = path + ".d8tmp";
+  const char* fault_env = std::getenv("DINO8_TEST_FAULT_SAVE3DM");
+  const std::string fault = fault_env ? fault_env : "";
+  const std::string what = "OpenNURBS could not write " + path + (version != 0 ? " at archive version " + std::to_string(version) : "");
+  std::error_code ec;
   ON_TextLog log;
-  if (!model.Write(path.c_str(), version, &log)) {
-    error = "OpenNURBS could not write " + path + (version != 0 ? " at archive version " + std::to_string(version) : "");
+  if (!model.Write(tmp_path.c_str(), version, &log)) {
+    fs::remove(tmp_path, ec);  // a failed remove (the name is a directory, say) changes nothing about the outcome
+    error = what + " (the previous file was not touched)";
+    return false;
+  }
+  if (fault == "write") {
+    const auto full = fs::file_size(tmp_path, ec);
+    if (!ec) fs::resize_file(tmp_path, full / 2, ec);
+    fs::remove(tmp_path, ec);
+    error = what + " (injected write failure; the previous file was not touched)";
+    return false;
+  }
+  const auto written_size = fs::file_size(tmp_path, ec);
+  if (ec || written_size == 0) {
+    fs::remove(tmp_path, ec);
+    error = what + " (the archive written is empty; the previous file was not touched)";
+    return false;
+  }
+  if (fault == "rename") {
+    fs::remove(tmp_path, ec);
+    error = what + " (injected rename failure; the previous file was not touched)";
+    return false;
+  }
+  fs::rename(tmp_path, path, ec);
+  if (ec) {
+    std::error_code ec2;
+    fs::remove(tmp_path, ec2);
+    error = what + ": could not replace the file (" + ec.message() + "); the previous file was not touched";
     return false;
   }
   (void)written;
@@ -3472,6 +3509,11 @@ std::string ObjTrim(const std::string& s) {
   return s.substr(a, b - a);
 }
 
+MeshImportOptions& MutableMeshImportOptions() {
+  static MeshImportOptions options;
+  return options;
+}
+
 bool ImportObjMulti(Document& doc, const std::string& path, std::string& error) {
   std::ifstream in(path);
   if (!in) {
@@ -3492,7 +3534,9 @@ bool ImportObjMulti(Document& doc, const std::string& path, std::string& error) 
     if (tag == "v") {
       double x, y, z;
       if (!(ss >> x >> y >> z)) { error = "Malformed .obj: bad v line in " + path; return false; }
-      positions.push_back(ON_3fPoint(x, y, z));
+      const MeshImportOptions& io = ActiveMeshImportOptions();
+      if (io.y_up) { const double ny = -z; z = y; y = ny; }
+      positions.push_back(ON_3fPoint(x * io.scale, y * io.scale, z * io.scale));
     } else if (tag == "vt") {
       double u, v;
       if (!(ss >> u >> v)) { error = "Malformed .obj: bad vt line in " + path; return false; }
@@ -3912,6 +3956,10 @@ bool ImportGltfFile(Document& doc, const std::string& path, std::string& error) 
 
 }  // namespace
 
+const MeshImportOptions& ActiveMeshImportOptions() { return MutableMeshImportOptions(); }
+ScopedMeshImportOptions::ScopedMeshImportOptions(const MeshImportOptions& options) : saved_(MutableMeshImportOptions()) { MutableMeshImportOptions() = options; }
+ScopedMeshImportOptions::~ScopedMeshImportOptions() { MutableMeshImportOptions() = saved_; }
+
 const MeshExportOptions& ActiveMeshExportOptions() { return MutableMeshExportOptions(); }
 
 ScopedMeshExportOptions::ScopedMeshExportOptions(const MeshExportOptions& options) : saved_(MutableMeshExportOptions()) {
@@ -3925,6 +3973,14 @@ bool MeshExportUnitFactor(const Document& doc, const std::string& units, double&
   const double source = UnitNameMillimetres(doc.Settings().unit_system);
   if (target <= 0.0 || source <= 0.0) return false;
   factor = source / target;
+  return true;
+}
+
+bool MeshImportUnitFactor(const Document& doc, const std::string& units, double& factor) {
+  const double file_mm = UnitNameMillimetres(units);
+  const double doc_mm = UnitNameMillimetres(doc.Settings().unit_system);
+  if (file_mm <= 0.0 || doc_mm <= 0.0) return false;
+  factor = file_mm / doc_mm;
   return true;
 }
 

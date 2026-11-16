@@ -49,6 +49,29 @@ class ScopedMeshExportOptions {
  private:
   MeshExportOptions saved_;
 };
+// Options of the OBJ import, set from the Import command's tokens (Units=<name>, Scale=<factor>, UpAxis=Y|Z) and in effect for the
+// ImportMeshFile calls made while a ScopedMeshImportOptions is alive. A coordinate (x, y, z) of the file becomes scale * (x, y, z) in
+// document units, or scale * (x, -z, y) when the file's up axis is Y (a +90 degree turn about X: the file's Y axis becomes the
+// document's Z axis). The defaults are what the importer always did: no scaling, Z up.
+struct MeshImportOptions {
+  double scale = 1.0;
+  bool y_up = false;
+};
+const MeshImportOptions& ActiveMeshImportOptions();
+class ScopedMeshImportOptions {
+ public:
+  explicit ScopedMeshImportOptions(const MeshImportOptions& options);
+  ~ScopedMeshImportOptions();
+  ScopedMeshImportOptions(const ScopedMeshImportOptions&) = delete;
+  ScopedMeshImportOptions& operator=(const ScopedMeshImportOptions&) = delete;
+
+ private:
+  MeshImportOptions saved_;
+};
+// Multiplier that converts a length written in `units` (the file's unit) to the document's unit system; false when the name is not
+// recognised (same names as MeshExportUnitFactor).
+bool MeshImportUnitFactor(const Document& doc, const std::string& units, double& factor);
+
 // Multiplier that converts a length in the document's unit system to `units` ("mm", "cm", "m", "km", "in", "ft", "mi", "um",
 // or the full unit names the document settings use); false when the name is not recognised.
 bool MeshExportUnitFactor(const Document& doc, const std::string& units, double& factor);
