@@ -1,0 +1,155 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-paint-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 2,
+    "countable": 28,
+    "rows": 28,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 24
+  },
+  "deps": [],
+  "domains": [
+    "paint"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Weight",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "ComputeVertexColors",
+        "rows": 3,
+        "score": 0.653,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:621",
+        "rows": 3,
+        "score": 0.776,
+        "symbol": "dino8::kernel::Mesh::SetVertexColors"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:629",
+        "rows": 1,
+        "score": 0.603,
+        "symbol": "dino8::kernel::Mesh::HasVertexColors"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-paint-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/paint.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-PAINT-0038": {
+      "commands": [
+        "ComputeVertexColors"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::SetVertexColors"
+      ]
+    },
+    "D8-BLENDER-PAINT-0043": {
+      "commands": [
+        "ComputeVertexColors"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::SetVertexColors",
+        "dino8::kernel::Mesh::HasVertexColors"
+      ]
+    },
+    "D8-BLENDER-PAINT-0044": {
+      "commands": [
+        "ComputeVertexColors"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::SetVertexColors"
+      ]
+    },
+    "D8-BLENDER-PAINT-0055": {
+      "commands": [
+        "Weight"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-PAINT-0028",
+    "D8-BLENDER-PAINT-0029",
+    "D8-BLENDER-PAINT-0030",
+    "D8-BLENDER-PAINT-0031",
+    "D8-BLENDER-PAINT-0032",
+    "D8-BLENDER-PAINT-0033",
+    "D8-BLENDER-PAINT-0034",
+    "D8-BLENDER-PAINT-0035",
+    "D8-BLENDER-PAINT-0036",
+    "D8-BLENDER-PAINT-0037",
+    "D8-BLENDER-PAINT-0038",
+    "D8-BLENDER-PAINT-0039",
+    "D8-BLENDER-PAINT-0040",
+    "D8-BLENDER-PAINT-0041",
+    "D8-BLENDER-PAINT-0042",
+    "D8-BLENDER-PAINT-0043",
+    "D8-BLENDER-PAINT-0044",
+    "D8-BLENDER-PAINT-0045",
+    "D8-BLENDER-PAINT-0046",
+    "D8-BLENDER-PAINT-0047",
+    "D8-BLENDER-PAINT-0048",
+    "D8-BLENDER-PAINT-0049",
+    "D8-BLENDER-PAINT-0050",
+    "D8-BLENDER-PAINT-0051",
+    "D8-BLENDER-PAINT-0052",
+    "D8-BLENDER-PAINT-0053",
+    "D8-BLENDER-PAINT-0054",
+    "D8-BLENDER-PAINT-0055"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-PAINT-0028",
+    "D8-BLENDER-PAINT-0029",
+    "D8-BLENDER-PAINT-0030",
+    "D8-BLENDER-PAINT-0031",
+    "D8-BLENDER-PAINT-0032",
+    "D8-BLENDER-PAINT-0033",
+    "D8-BLENDER-PAINT-0034",
+    "D8-BLENDER-PAINT-0035",
+    "D8-BLENDER-PAINT-0036",
+    "D8-BLENDER-PAINT-0037",
+    "D8-BLENDER-PAINT-0039",
+    "D8-BLENDER-PAINT-0040",
+    "D8-BLENDER-PAINT-0041",
+    "D8-BLENDER-PAINT-0042",
+    "D8-BLENDER-PAINT-0045",
+    "D8-BLENDER-PAINT-0046",
+    "D8-BLENDER-PAINT-0047",
+    "D8-BLENDER-PAINT-0048",
+    "D8-BLENDER-PAINT-0049",
+    "D8-BLENDER-PAINT-0050",
+    "D8-BLENDER-PAINT-0051",
+    "D8-BLENDER-PAINT-0052",
+    "D8-BLENDER-PAINT-0053",
+    "D8-BLENDER-PAINT-0054"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: paint (28 rows)",
+  "wave": 1
+}

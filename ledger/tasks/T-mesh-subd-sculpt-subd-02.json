@@ -1,0 +1,297 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-subd-02",
+  "corpora": [
+    "SubD fixtures: boxes, sculpted forms, creased edges, n-gon faces, extraordinary vertices"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 23,
+    "countable": 23,
+    "rows": 23,
+    "with_existing_hint": 14,
+    "with_hint": 14,
+    "without_hint": 9
+  },
+  "deps": [],
+  "domains": [
+    "SUBD"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SubDPlane",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDSweep1",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDSweep2",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDSphere",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDSpinEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDTorus",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDTruncatedCone",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDUnfriend",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ToNURBS",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ToSubD",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SoftTransform",
+        "rows": 1,
+        "score": 0.76,
+        "status": "implemented"
+      },
+      {
+        "name": "TruncatedCone",
+        "rows": 1,
+        "score": 0.71,
+        "status": "implemented"
+      },
+      {
+        "name": "MoveUVN",
+        "rows": 1,
+        "score": 0.667,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshTruncatedCone",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "CurvatureGraph",
+        "rows": 1,
+        "score": 0.642,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshToSubD",
+        "rows": 1,
+        "score": 0.637,
+        "status": "implemented"
+      },
+      {
+        "name": "CurvatureGraphOff",
+        "rows": 1,
+        "score": 0.605,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1543",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::SubD::SpinEdge"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:2145",
+        "rows": 1,
+        "score": 0.712,
+        "symbol": "dino8::kernel::SubDPlaneSplit"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:1074",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::SubD::SplitByPlane"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-subd-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SUBD.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SUBD-0024": {
+      "commands": [
+        "SubDPlane"
+      ],
+      "kernel": [
+        "dino8::kernel::SubDPlaneSplit",
+        "dino8::kernel::SubD::SplitByPlane"
+      ]
+    },
+    "D8-RHINO-SUBD-0025": {
+      "commands": [
+        "SubDSphere"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0026": {
+      "commands": [
+        "SubDSpinEdge"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::SpinEdge"
+      ]
+    },
+    "D8-RHINO-SUBD-0027": {
+      "commands": [
+        "SubDSweep1",
+        "SubDSweep2"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0028": {
+      "commands": [
+        "SubDSweep2",
+        "SubDSweep1"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0029": {
+      "commands": [
+        "SubDTorus"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0030": {
+      "commands": [
+        "SubDTruncatedCone",
+        "TruncatedCone",
+        "MeshTruncatedCone"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0031": {
+      "commands": [
+        "SubDUnfriend"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0032": {
+      "commands": [
+        "ToSubD",
+        "MeshToSubD"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0033": {
+      "commands": [
+        "ToNURBS"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0037": {
+      "commands": [
+        "MoveUVN"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0038": {
+      "commands": [
+        "SoftTransform"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0039": {
+      "commands": [
+        "SubDPlane"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SUBD-0042": {
+      "commands": [
+        "CurvatureGraph",
+        "CurvatureGraphOff"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SUBD-0024",
+    "D8-RHINO-SUBD-0025",
+    "D8-RHINO-SUBD-0026",
+    "D8-RHINO-SUBD-0027",
+    "D8-RHINO-SUBD-0028",
+    "D8-RHINO-SUBD-0029",
+    "D8-RHINO-SUBD-0030",
+    "D8-RHINO-SUBD-0031",
+    "D8-RHINO-SUBD-0032",
+    "D8-RHINO-SUBD-0033",
+    "D8-RHINO-SUBD-0034",
+    "D8-RHINO-SUBD-0035",
+    "D8-RHINO-SUBD-0036",
+    "D8-RHINO-SUBD-0037",
+    "D8-RHINO-SUBD-0038",
+    "D8-RHINO-SUBD-0039",
+    "D8-RHINO-SUBD-0040",
+    "D8-RHINO-SUBD-0041",
+    "D8-RHINO-SUBD-0042",
+    "D8-RHINO-SUBD-0043",
+    "D8-RHINO-SUBD-0044",
+    "D8-RHINO-SUBD-0045",
+    "D8-RHINO-SUBD-0046"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-SUBD-0034",
+    "D8-RHINO-SUBD-0035",
+    "D8-RHINO-SUBD-0036",
+    "D8-RHINO-SUBD-0040",
+    "D8-RHINO-SUBD-0041",
+    "D8-RHINO-SUBD-0043",
+    "D8-RHINO-SUBD-0044",
+    "D8-RHINO-SUBD-0045",
+    "D8-RHINO-SUBD-0046"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: SUBD (23 rows)",
+  "wave": 1
+}

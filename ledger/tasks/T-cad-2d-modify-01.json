@@ -1,0 +1,347 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-cad-2d-modify-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 30,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 19,
+    "with_hint": 19,
+    "without_hint": 11
+  },
+  "deps": [],
+  "domains": [
+    "modify"
+  ],
+  "factory": "cad-2d",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Align",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArrayPolar",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Blend",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Chamfer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Copy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Explode",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Extend",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Fillet",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Group",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Join",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Mirror",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Move",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Offset",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Properties",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rotate",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Scale",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Stretch",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Trim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Undo",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ObjectProperties",
+        "rows": 1,
+        "score": 0.785,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:81",
+        "rows": 1,
+        "score": 0.675,
+        "symbol": "dino8::kernel::MassProperties"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:557",
+        "rows": 1,
+        "score": 0.635,
+        "symbol": "dino8::kernel::NurbsCurve::RegionProperties"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-cad-2d-modify-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/modify.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-MODIFY-0001": {
+      "commands": [
+        "Move"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0002": {
+      "commands": [
+        "Copy"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0003": {
+      "commands": [
+        "Rotate"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0004": {
+      "commands": [
+        "Scale",
+        "ScaleNU"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0005": {
+      "commands": [
+        "Mirror"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0006": {
+      "commands": [
+        "Stretch"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0007": {
+      "commands": [
+        "Trim"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0008": {
+      "commands": [
+        "Extend",
+        "ExtendSrf"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0009": {
+      "commands": [
+        "Fillet",
+        "FilletSrf"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0010": {
+      "commands": [
+        "Chamfer",
+        "ChamferSrf",
+        "ChamferEdge"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0011": {
+      "commands": [
+        "Blend"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0012": {
+      "commands": [
+        "Offset",
+        "OffsetSrf"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0014": {
+      "commands": [
+        "ArrayPolar"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0018": {
+      "commands": [
+        "Align"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0021": {
+      "commands": [
+        "Join"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0022": {
+      "commands": [
+        "Explode"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0024": {
+      "commands": [
+        "Group",
+        "AddToGroup"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0026": {
+      "commands": [
+        "Undo"
+      ],
+      "kernel": []
+    },
+    "D8-AUTOCAD-MODIFY-0029": {
+      "commands": [
+        "Properties",
+        "ObjectProperties",
+        "PropertiesPage"
+      ],
+      "kernel": [
+        "dino8::kernel::MassProperties",
+        "dino8::kernel::NurbsCurve::RegionProperties"
+      ]
+    }
+  },
+  "rows": [
+    "D8-AUTOCAD-MODIFY-0001",
+    "D8-AUTOCAD-MODIFY-0002",
+    "D8-AUTOCAD-MODIFY-0003",
+    "D8-AUTOCAD-MODIFY-0004",
+    "D8-AUTOCAD-MODIFY-0005",
+    "D8-AUTOCAD-MODIFY-0006",
+    "D8-AUTOCAD-MODIFY-0007",
+    "D8-AUTOCAD-MODIFY-0008",
+    "D8-AUTOCAD-MODIFY-0009",
+    "D8-AUTOCAD-MODIFY-0010",
+    "D8-AUTOCAD-MODIFY-0011",
+    "D8-AUTOCAD-MODIFY-0012",
+    "D8-AUTOCAD-MODIFY-0013",
+    "D8-AUTOCAD-MODIFY-0014",
+    "D8-AUTOCAD-MODIFY-0015",
+    "D8-AUTOCAD-MODIFY-0016",
+    "D8-AUTOCAD-MODIFY-0017",
+    "D8-AUTOCAD-MODIFY-0018",
+    "D8-AUTOCAD-MODIFY-0019",
+    "D8-AUTOCAD-MODIFY-0020",
+    "D8-AUTOCAD-MODIFY-0021",
+    "D8-AUTOCAD-MODIFY-0022",
+    "D8-AUTOCAD-MODIFY-0023",
+    "D8-AUTOCAD-MODIFY-0024",
+    "D8-AUTOCAD-MODIFY-0025",
+    "D8-AUTOCAD-MODIFY-0026",
+    "D8-AUTOCAD-MODIFY-0027",
+    "D8-AUTOCAD-MODIFY-0028",
+    "D8-AUTOCAD-MODIFY-0029",
+    "D8-AUTOCAD-MODIFY-0030"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-MODIFY-0013",
+    "D8-AUTOCAD-MODIFY-0015",
+    "D8-AUTOCAD-MODIFY-0016",
+    "D8-AUTOCAD-MODIFY-0017",
+    "D8-AUTOCAD-MODIFY-0019",
+    "D8-AUTOCAD-MODIFY-0020",
+    "D8-AUTOCAD-MODIFY-0023",
+    "D8-AUTOCAD-MODIFY-0025",
+    "D8-AUTOCAD-MODIFY-0027",
+    "D8-AUTOCAD-MODIFY-0028",
+    "D8-AUTOCAD-MODIFY-0030"
+  ],
+  "status": "open",
+  "title": "cad-2d: modify (30 rows)",
+  "wave": 1
+}
