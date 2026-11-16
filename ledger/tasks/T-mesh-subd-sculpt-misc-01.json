@@ -1,0 +1,176 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-misc-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 27,
+    "rows": 27,
+    "with_existing_hint": 7,
+    "with_hint": 7,
+    "without_hint": 20
+  },
+  "deps": [],
+  "domains": [
+    "brush",
+    "lattice",
+    "mball"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Flip",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Select",
+        "rows": 2,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "ShadeSelected",
+        "rows": 1,
+        "score": 0.654,
+        "status": "implemented"
+      },
+      {
+        "name": "DuplicateMacro",
+        "rows": 1,
+        "score": 0.637,
+        "status": "implemented"
+      },
+      {
+        "name": "SoftTransform",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-misc-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/brush.jsonl",
+    "blender/lattice.jsonl",
+    "blender/mball.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-BRUSH-0011": {
+      "commands": [
+        "SoftTransform"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-LATTICE-0001": {
+      "commands": [
+        "Flip"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-LATTICE-0003": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MBALL-0001": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MBALL-0003": {
+      "commands": [
+        "DuplicateMacro"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MBALL-0004": {
+      "commands": [
+        "ShadeSelected"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-MBALL-0006": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-BRUSH-0001",
+    "D8-BLENDER-BRUSH-0002",
+    "D8-BLENDER-BRUSH-0003",
+    "D8-BLENDER-BRUSH-0004",
+    "D8-BLENDER-BRUSH-0005",
+    "D8-BLENDER-BRUSH-0006",
+    "D8-BLENDER-BRUSH-0007",
+    "D8-BLENDER-BRUSH-0008",
+    "D8-BLENDER-BRUSH-0009",
+    "D8-BLENDER-BRUSH-0010",
+    "D8-BLENDER-BRUSH-0011",
+    "D8-BLENDER-LATTICE-0001",
+    "D8-BLENDER-LATTICE-0002",
+    "D8-BLENDER-LATTICE-0003",
+    "D8-BLENDER-LATTICE-0004",
+    "D8-BLENDER-LATTICE-0005",
+    "D8-BLENDER-LATTICE-0006",
+    "D8-BLENDER-LATTICE-0007",
+    "D8-BLENDER-LATTICE-0008",
+    "D8-BLENDER-MBALL-0001",
+    "D8-BLENDER-MBALL-0002",
+    "D8-BLENDER-MBALL-0003",
+    "D8-BLENDER-MBALL-0004",
+    "D8-BLENDER-MBALL-0005",
+    "D8-BLENDER-MBALL-0006",
+    "D8-BLENDER-MBALL-0007",
+    "D8-BLENDER-MBALL-0008"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-BRUSH-0001",
+    "D8-BLENDER-BRUSH-0002",
+    "D8-BLENDER-BRUSH-0003",
+    "D8-BLENDER-BRUSH-0004",
+    "D8-BLENDER-BRUSH-0005",
+    "D8-BLENDER-BRUSH-0006",
+    "D8-BLENDER-BRUSH-0007",
+    "D8-BLENDER-BRUSH-0008",
+    "D8-BLENDER-BRUSH-0009",
+    "D8-BLENDER-BRUSH-0010",
+    "D8-BLENDER-LATTICE-0002",
+    "D8-BLENDER-LATTICE-0004",
+    "D8-BLENDER-LATTICE-0005",
+    "D8-BLENDER-LATTICE-0006",
+    "D8-BLENDER-LATTICE-0007",
+    "D8-BLENDER-LATTICE-0008",
+    "D8-BLENDER-MBALL-0002",
+    "D8-BLENDER-MBALL-0005",
+    "D8-BLENDER-MBALL-0007",
+    "D8-BLENDER-MBALL-0008"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: brush, lattice, mball (27 rows)",
+  "wave": 1
+}

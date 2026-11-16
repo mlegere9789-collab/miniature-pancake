@@ -1,0 +1,15 @@
+{
+ "run_id": "43486663099",
+ "task": "T-rhino-curves-0001",
+ "sha": "3333333",
+ "finished_at": "2026-11-18T10:00:00Z",
+ "kind": "lite",
+ "passed": [
+  "curves.fillet.g2"
+ ],
+ "failed": [],
+ "skipped": [],
+ "artifacts": [
+  "https://github.com/example/actions/runs/43486663099/artifacts/1"
+ ]
+}

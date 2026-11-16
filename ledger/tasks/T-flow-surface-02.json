@@ -1,0 +1,415 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-surface-02",
+  "corpora": [
+    "corpus/gh/surface/surface-primitive",
+    "corpus/gh/surface/surface-subd",
+    "corpus/gh/surface/surface-util"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 6,
+    "countable": 37,
+    "rows": 37,
+    "with_existing_hint": 20,
+    "with_hint": 20,
+    "without_hint": 17
+  },
+  "deps": [],
+  "domains": [
+    "surface"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Sphere",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BoundingBox",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cone",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cylinder",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MergeFaces",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Torus",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Untrim",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "UntrimAll",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "AutomaticSubDFromMesh",
+        "rows": 1,
+        "score": 0.692,
+        "status": "implemented"
+      },
+      {
+        "name": "Rectangle",
+        "rows": 1,
+        "score": 0.683,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshToSubD",
+        "rows": 1,
+        "score": 0.682,
+        "status": "implemented"
+      },
+      {
+        "name": "DupBorder",
+        "rows": 1,
+        "score": 0.666,
+        "status": "implemented"
+      },
+      {
+        "name": "Wireframe",
+        "rows": 1,
+        "score": 0.659,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshCylinder",
+        "rows": 1,
+        "score": 0.64,
+        "status": "implemented"
+      },
+      {
+        "name": "Domain",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "TCone",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:388",
+        "rows": 3,
+        "score": 1.0,
+        "symbol": "dino8::kernel::SubD::FromBrep"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:30",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::BoundingBox"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:1165",
+        "rows": 1,
+        "score": 0.742,
+        "symbol": "dino8::kernel::NurbsSurface::Extend"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:1019",
+        "rows": 1,
+        "score": 0.731,
+        "symbol": "dino8::kernel::NurbsSurface::Split"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:174",
+        "rows": 1,
+        "score": 0.683,
+        "symbol": "dino8::kernel::Mesh::GetBoundingBox"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:245",
+        "rows": 1,
+        "score": 0.677,
+        "symbol": "dino8::kernel::SubD::FromControlMesh"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:31",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::OrientedBoundingBox"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:451",
+        "rows": 1,
+        "score": 0.665,
+        "symbol": "dino8::kernel::SubD::FromBrepTessellated"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2672",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Mesh::Cylinder"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean.h:1223",
+        "rows": 1,
+        "score": 0.637,
+        "symbol": "dino8::kernel::OffsetFace"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:416",
+        "rows": 1,
+        "score": 0.633,
+        "symbol": "dino8::kernel::SubD::FromMeshQuadRemeshed"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:1934",
+        "rows": 1,
+        "score": 0.624,
+        "symbol": "dino8::kernel::NurbsSurface::Rebuild"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:2806",
+        "rows": 1,
+        "score": 0.606,
+        "symbol": "dino8::kernel::NurbsSurface::Offset"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-surface-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/surface.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-SURFACE-0042": {
+      "commands": [
+        "Sphere"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0044": {
+      "commands": [
+        "Sphere"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0045": {
+      "commands": [
+        "Cylinder",
+        "MeshCylinder"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Cylinder"
+      ]
+    },
+    "D8-GH-SURFACE-0046": {
+      "commands": [
+        "Cone",
+        "TCone"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0047": {
+      "commands": [
+        "BoundingBox"
+      ],
+      "kernel": [
+        "dino8::kernel::BoundingBox",
+        "dino8::kernel::Mesh::GetBoundingBox",
+        "dino8::kernel::OrientedBoundingBox"
+      ]
+    },
+    "D8-GH-SURFACE-0050": {
+      "commands": [
+        "Domain"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0051": {
+      "commands": [
+        "Rectangle"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0052": {
+      "commands": [
+        "Torus"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0055": {
+      "commands": [
+        "MergeFaces"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0059": {
+      "commands": [
+        "AutomaticSubDFromMesh"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::FromControlMesh",
+        "dino8::kernel::SubD::FromMeshQuadRemeshed",
+        "dino8::kernel::SubD::FromBrep"
+      ]
+    },
+    "D8-GH-SURFACE-0060": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SubD::FromBrep",
+        "dino8::kernel::SubD::FromBrepTessellated"
+      ]
+    },
+    "D8-GH-SURFACE-0061": {
+      "commands": [
+        "MeshToSubD"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0062": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SubD::FromBrep"
+      ]
+    },
+    "D8-GH-SURFACE-0065": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::OffsetFace",
+        "dino8::kernel::NurbsSurface::Offset"
+      ]
+    },
+    "D8-GH-SURFACE-0069": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::Rebuild"
+      ]
+    },
+    "D8-GH-SURFACE-0070": {
+      "commands": [
+        "DupBorder"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0073": {
+      "commands": [
+        "Untrim",
+        "UntrimAll"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0074": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::Split"
+      ]
+    },
+    "D8-GH-SURFACE-0076": {
+      "commands": [
+        "Wireframe"
+      ],
+      "kernel": []
+    },
+    "D8-GH-SURFACE-0077": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::NurbsSurface::Extend"
+      ]
+    }
+  },
+  "rows": [
+    "D8-GH-SURFACE-0041",
+    "D8-GH-SURFACE-0042",
+    "D8-GH-SURFACE-0043",
+    "D8-GH-SURFACE-0044",
+    "D8-GH-SURFACE-0045",
+    "D8-GH-SURFACE-0046",
+    "D8-GH-SURFACE-0047",
+    "D8-GH-SURFACE-0048",
+    "D8-GH-SURFACE-0049",
+    "D8-GH-SURFACE-0050",
+    "D8-GH-SURFACE-0051",
+    "D8-GH-SURFACE-0052",
+    "D8-GH-SURFACE-0053",
+    "D8-GH-SURFACE-0054",
+    "D8-GH-SURFACE-0055",
+    "D8-GH-SURFACE-0056",
+    "D8-GH-SURFACE-0057",
+    "D8-GH-SURFACE-0058",
+    "D8-GH-SURFACE-0059",
+    "D8-GH-SURFACE-0060",
+    "D8-GH-SURFACE-0061",
+    "D8-GH-SURFACE-0062",
+    "D8-GH-SURFACE-0063",
+    "D8-GH-SURFACE-0064",
+    "D8-GH-SURFACE-0065",
+    "D8-GH-SURFACE-0066",
+    "D8-GH-SURFACE-0067",
+    "D8-GH-SURFACE-0068",
+    "D8-GH-SURFACE-0069",
+    "D8-GH-SURFACE-0070",
+    "D8-GH-SURFACE-0071",
+    "D8-GH-SURFACE-0072",
+    "D8-GH-SURFACE-0073",
+    "D8-GH-SURFACE-0074",
+    "D8-GH-SURFACE-0075",
+    "D8-GH-SURFACE-0076",
+    "D8-GH-SURFACE-0077"
+  ],
+  "rows_without_hint": [
+    "D8-GH-SURFACE-0041",
+    "D8-GH-SURFACE-0043",
+    "D8-GH-SURFACE-0048",
+    "D8-GH-SURFACE-0049",
+    "D8-GH-SURFACE-0053",
+    "D8-GH-SURFACE-0054",
+    "D8-GH-SURFACE-0056",
+    "D8-GH-SURFACE-0057",
+    "D8-GH-SURFACE-0058",
+    "D8-GH-SURFACE-0063",
+    "D8-GH-SURFACE-0064",
+    "D8-GH-SURFACE-0066",
+    "D8-GH-SURFACE-0067",
+    "D8-GH-SURFACE-0068",
+    "D8-GH-SURFACE-0071",
+    "D8-GH-SURFACE-0072",
+    "D8-GH-SURFACE-0075"
+  ],
+  "status": "open",
+  "title": "flow: surface (37 rows)",
+  "wave": 1
+}
