@@ -52,41 +52,80 @@ inline std::vector<std::array<int, 3>> EarClipTriangulate(const std::vector<Poin
     std::reverse(order.begin(), order.end());
   }
 
-  while (order.size() > 3) {
-    bool ear_found = false;
+  // The classic loop (scan from the front for the first vertex that is a convex tip whose triangle holds no other remaining point, clip
+  // it, rescan from the front) tests every candidate against every remaining point again after every clip: cubic, and 60+ s for the
+  // ~3000-vertex bridged outline of a plate with 64 holes. The set of clipped ears is unchanged here - always the FIRST ear of the
+  // current order - but each vertex's "is an ear" verdict is cached and recomputed only when it can have changed: its neighbour was
+  // clipped (a new triangle), or the clipped tip itself lay inside its triangle (that point no longer blocks it). A point is never
+  // ADDED, so no other verdict changes.
+  std::vector<char> ear(poly.size(), 0);
+  auto is_ear = [&](size_t pos) {
     const size_t n = order.size();
-    for (size_t i = 0; i < n; ++i) {
-      const int ia = order[(i + n - 1) % n];
-      const int ib = order[i];
-      const int ic = order[(i + 1) % n];
-      const Point2d& a = poly[static_cast<size_t>(ia)];
-      const Point2d& b = poly[static_cast<size_t>(ib)];
-      const Point2d& c = poly[static_cast<size_t>(ic)];
-      const double turn = Cross2d(Point2d(b.x - a.x, b.y - a.y), Point2d(c.x - b.x, c.y - b.y));
-      if (turn <= 1e-15) {
-        continue;  // reflex or degenerate vertex - not a valid ear tip
-      }
-      bool contains_other = false;
-      for (size_t k = 0; k < n; ++k) {
-        const int idx = order[k];
-        if (idx == ia || idx == ib || idx == ic) {
-          continue;
-        }
-        if (PointInTriangle(poly[static_cast<size_t>(idx)], a, b, c)) {
-          contains_other = true;
-          break;
-        }
-      }
-      if (contains_other) {
+    const int ia = order[(pos + n - 1) % n];
+    const int ib = order[pos];
+    const int ic = order[(pos + 1) % n];
+    const Point2d& a = poly[static_cast<size_t>(ia)];
+    const Point2d& b = poly[static_cast<size_t>(ib)];
+    const Point2d& c = poly[static_cast<size_t>(ic)];
+    const double turn = Cross2d(Point2d(b.x - a.x, b.y - a.y), Point2d(c.x - b.x, c.y - b.y));
+    if (turn <= 1e-15) {
+      return false;  // reflex or degenerate vertex - not a valid ear tip
+    }
+    // A point outside the triangle's bounding box (padded far above rounding) cannot pass PointInTriangle: skip it without the three cross
+    // products. The pad keeps this exactly equivalent for the nearly-degenerate triangles whose sign tests could accept a point 1e-17 outside.
+    const double lox = std::min({a.x, b.x, c.x}), hix = std::max({a.x, b.x, c.x});
+    const double loy = std::min({a.y, b.y, c.y}), hiy = std::max({a.y, b.y, c.y});
+    const double pad = 1e-9 * std::max({hix - lox, hiy - loy, 1e-300}) + 1e-300;
+    for (size_t k = 0; k < n; ++k) {
+      const int idx = order[k];
+      if (idx == ia || idx == ib || idx == ic) {
         continue;
       }
-      triangles.push_back({ia, ib, ic});
-      order.erase(order.begin() + static_cast<long>(i));
-      ear_found = true;
+      const Point2d& q = poly[static_cast<size_t>(idx)];
+      if (q.x < lox - pad || q.x > hix + pad || q.y < loy - pad || q.y > hiy + pad) {
+        continue;
+      }
+      if (PointInTriangle(q, a, b, c)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (order.size() > 3) {
+    for (size_t pos = 0; pos < order.size(); ++pos) ear[static_cast<size_t>(order[pos])] = is_ear(pos) ? 1 : 0;
+  }
+  while (order.size() > 3) {
+    size_t at = order.size();
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (ear[static_cast<size_t>(order[i])]) { at = i; break; }
+    }
+    if (at == order.size()) {
       break;
     }
-    if (!ear_found) {
-      break;
+    const size_t n = order.size();
+    const int ia = order[(at + n - 1) % n];
+    const int ib = order[at];
+    const int ic = order[(at + 1) % n];
+    triangles.push_back({ia, ib, ic});
+    const Point2d clipped = poly[static_cast<size_t>(ib)];
+    order.erase(order.begin() + static_cast<long>(at));
+    ear[static_cast<size_t>(ib)] = 0;
+    if (order.size() <= 3) break;
+    // Verdicts that can have changed: the two neighbours (new triangle), and every vertex whose (unchanged) triangle held the clipped tip.
+    const size_t m = order.size();
+    const size_t pa = (at + m - 1) % m, pc = at % m;
+    for (size_t pos = 0; pos < m; ++pos) {
+      const int v = order[pos];
+      if (pos == pa || pos == pc) {
+        ear[static_cast<size_t>(v)] = is_ear(pos) ? 1 : 0;
+        continue;
+      }
+      if (ear[static_cast<size_t>(v)]) continue;  // a blocker was removed, never added: an ear stays an ear
+      const int ia2 = order[(pos + m - 1) % m];
+      const int ic2 = order[(pos + 1) % m];
+      if (PointInTriangle(clipped, poly[static_cast<size_t>(ia2)], poly[static_cast<size_t>(v)], poly[static_cast<size_t>(ic2)])) {
+        ear[static_cast<size_t>(v)] = is_ear(pos) ? 1 : 0;
+      }
     }
   }
   if (order.size() == 3) {
