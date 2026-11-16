@@ -333,4 +333,42 @@ WallQuantitiesResult ComputeWallQuantities(double length, double h0, double h1, 
   return q;
 }
 
+// --- composite wall skins and thermal data ----------------------------------------------------------------------------------
+
+WallSkinQuantities ComputeWallSkinQuantities(double length, double height_start, double height_end, const std::vector<WallSkin>& skins,
+                                             const std::vector<WallOpening>& openings) {
+  WallSkinQuantities out;
+  // The face areas do not depend on the thickness: ask for a unit-thickness wall and scale by each skin.
+  const WallQuantitiesResult unit = ComputeWallQuantities(length, height_start, height_end, 1.0, openings);
+  out.ok = unit.ok;
+  for (const WallSkin& s : skins) {
+    WallSkinRow r;
+    r.material = s.material;
+    r.thickness = s.thickness;
+    r.gross_volume = unit.gross_side_area * s.thickness;
+    r.net_volume = unit.net_side_area * s.thickness;
+    out.total_thickness += s.thickness;
+    out.gross_volume += r.gross_volume;
+    out.net_volume += r.net_volume;
+    out.rows.push_back(r);
+  }
+  return out;
+}
+
+ThermalResult ComputeThermal(const std::vector<ThermalLayer>& layers, double r_si, double r_se) {
+  ThermalResult t;
+  if (layers.empty() || r_si < 0 || r_se < 0) return t;
+  for (const ThermalLayer& l : layers) {
+    if (!(l.conductivity > 0) || l.thickness < 0) return ThermalResult{};
+    t.r_layers += l.thickness / l.conductivity;
+    t.areal_heat_capacity += l.density * l.heat_capacity * l.thickness;
+    t.mass_per_area += l.density * l.thickness;
+  }
+  t.r_total = r_si + t.r_layers + r_se;
+  if (!(t.r_total > 0)) return ThermalResult{};
+  t.u_value = 1.0 / t.r_total;
+  t.valid = true;
+  return t;
+}
+
 }  // namespace dino8::kernel

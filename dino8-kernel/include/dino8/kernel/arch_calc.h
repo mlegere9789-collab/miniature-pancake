@@ -188,4 +188,50 @@ struct WallQuantitiesResult {
 WallQuantitiesResult ComputeWallQuantities(double length, double height_start, double height_end, double thickness,
                                            const std::vector<WallOpening>& openings);
 
+// ---------------------------------------------------------------------------------------------------------------------------
+// Composite wall skins: each skin becomes one component row (building material, thickness, net and gross volume). The skins run
+// across the wall's thickness; every skin spans the same elevation face, so skin volume = skin thickness * face area (net face
+// area has the openings removed, gross does not). The sum of the skin volumes equals the wall volume of ComputeWallQuantities
+// when the skin thicknesses add up to the wall thickness.
+struct WallSkin {
+  std::string material;
+  double thickness = 0;
+};
+struct WallSkinRow {
+  std::string material;
+  double thickness = 0;
+  double gross_volume = 0;
+  double net_volume = 0;
+};
+struct WallSkinQuantities {
+  bool ok = true;  // false when the openings overlap (see ComputeWallQuantities)
+  double total_thickness = 0;
+  std::vector<WallSkinRow> rows;
+  double gross_volume = 0;  // sum of the rows
+  double net_volume = 0;
+};
+WallSkinQuantities ComputeWallSkinQuantities(double length, double height_start, double height_end, const std::vector<WallSkin>& skins,
+                                             const std::vector<WallOpening>& openings);
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Thermal data of the layers of a composite skin: conductivity lambda (W/mK), density (kg/m^3), specific heat capacity (J/kgK).
+// U-value = 1 / (R_si + sum(thickness / lambda) + R_se) in W/m^2K with the inner and outer surface resistances as inputs (the
+// defaults are the common horizontal heat-flow values 0.13 and 0.04 m^2K/W). A layer with a non-positive conductivity or a
+// negative thickness makes the result invalid.
+struct ThermalLayer {
+  double thickness = 0;
+  double conductivity = 0;
+  double density = 0;
+  double heat_capacity = 0;
+};
+struct ThermalResult {
+  bool valid = false;
+  double r_layers = 0;       // sum(thickness / lambda)
+  double r_total = 0;        // r_si + r_layers + r_se
+  double u_value = 0;        // 1 / r_total
+  double areal_heat_capacity = 0;  // sum(density * heat_capacity * thickness), J/m^2K
+  double mass_per_area = 0;        // sum(density * thickness), kg/m^2
+};
+ThermalResult ComputeThermal(const std::vector<ThermalLayer>& layers, double r_si = 0.13, double r_se = 0.04);
+
 }  // namespace dino8::kernel
