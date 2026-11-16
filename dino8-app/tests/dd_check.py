@@ -12,6 +12,8 @@ next to each check. Prints "ok   ..." / "FAIL ..." lines, exit status 1 when any
   dd_check.py hatchback FILE         HATCHTOBACK the app output of dd_hatchback_script.txt (two GetUserText dumps, before and after the command)
   dd_check.py dimarc FILE            DIMARC      the app output of dd_dimarc_script.txt (two GetUserText dumps, one per document)
   dd_check.py findrep F1 F2 F3 F4    FINDREPLACE exports after the four passes
+  dd_check.py tblfix OUT             TABLEEXPORT writes the hand-built CSV the table is filled from
+  dd_check.py tblexp IN F1 F2        TABLEEXPORT the exported CSV files against what Python's csv module writes for the same cells
   dd_check.py usertext FILE          prints "id key value" rows of a GetUserText listing read from FILE (helper for the shell)
 """
 import math
@@ -320,6 +322,35 @@ def findrep(f1, f2, f3, f4):
     check(len(t) == 12, "DDFR_pass4: 12 TEXT entities in all: %d" % len(t))
 
 
+TABLE_ROWS = [['Item', 'Qty', 'Note'], ['Bolt', '10', '5" long, zinc'], ['Nut', '20', 'M8'], ['Washer, flat', '', 'two\nlines']]
+
+
+def csv_text(rows):
+    import csv
+    import io
+    b = io.StringIO()
+    csv.writer(b, quoting=csv.QUOTE_MINIMAL, lineterminator='\n').writerows(rows)
+    return b.getvalue()
+
+
+def tblfix(out):
+    open(out, 'w', encoding='utf-8', newline='').write(csv_text(TABLE_ROWS))
+    check(True, "DDTE_fixture: wrote the hand-built CSV (4 rows; commas, a quote and a line break inside cells)")
+
+
+def tblexp(src, f1, f2):
+    import csv
+    import io
+    got = open(f1, encoding='utf-8', newline='').read()
+    # RFC 4180 reference output written by Python's csv module for the same cells: fields with , " or a line break quoted, quotes doubled, rows end with \n
+    check(got == csv_text(TABLE_ROWS), "DDTE_exact: the exported CSV equals the csv module's output byte for byte: %r" % got[:80])
+    back = list(csv.reader(io.StringIO(got, newline='')))
+    check(back == TABLE_ROWS, "DDTE_parse: parsing the export gives the same 4 x 3 cells: %d rows" % len(back))
+    check('"5"" long, zinc"' in got and '"Washer, flat"' in got and 'Item,Qty,Note\n' in got, "DDTE_quotes: the quoted fields are doubled / quoted and the plain header line is not")
+    got2 = open(f2, encoding='utf-8', newline='').read()
+    check(got2 == csv_text([['Parts', ''], ['a', 'b'], ['c', 'd']]), "DDTE_title: a title banner is the first row, padded to the table's width: %r" % got2)
+
+
 def usertext(path):
     for line in open(path, encoding='latin-1'):
         m = re.match(r'^(?:history: )?(\d+): (\S+) = (.*)$', line.rstrip('\n'))
@@ -341,6 +372,10 @@ if __name__ == '__main__':
         dimspace(args[0], args[1], args[2], float(args[3]))
     elif mode == 'dimdis':
         dimdis(args[0])
+    elif mode == 'tblfix':
+        tblfix(args[0])
+    elif mode == 'tblexp':
+        tblexp(*args)
     elif mode == 'findrep':
         findrep(*args)
     elif mode == 'dimarc':
