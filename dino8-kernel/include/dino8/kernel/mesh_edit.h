@@ -99,4 +99,46 @@ Mesh ExtrudeIndividualFaces(const Mesh& mesh, const std::vector<int>& faces, dou
 // the mesh.
 Mesh ExtrudeMeshEdges(const Mesh& mesh, const std::vector<MeshEdgeKey>& edges, Vector3d offset);
 
+// Dissolve Faces: every group of listed faces that touch along edges becomes ONE polygon bounded by the group's outline (stored,
+// when it has more than four corners, as the triangles of its ear-clipping triangulation). Vertices that only the dissolved
+// faces used and that are not on the outline disappear. A listed face alone, or unlisted faces, stay. Throws
+// std::invalid_argument for an index out of range or a group whose outline is not one simple loop (a hole, or two groups meeting
+// at a single vertex).
+Mesh DissolveFaces(const Mesh& mesh, const std::vector<int>& faces);
+
+// Make Edge/Face: adds one face on the listed vertices (3 or more, in loop order). When an edge of the new loop already exists in
+// the mesh the face is wound opposite to the existing faces on that edge, so it closes a hole consistently; with no existing edge
+// the given order is kept. Throws std::invalid_argument for fewer than three vertices, a repeated vertex or an index out of range.
+Mesh MakeFace(const Mesh& mesh, const std::vector<int>& vertices);
+
+// Select More / Select Less on a vertex selection (sorted vertex ids in and out). With `face_step` (the Blender default) More adds
+// every vertex of every face that touches a selected vertex, Less removes every selected vertex that shares a face with an
+// unselected vertex; without it, More adds the edge neighbours and Less removes the vertices with an unselected edge neighbour.
+// Throws std::invalid_argument for a vertex out of range.
+std::vector<int> GrowVertexSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step = true);
+std::vector<int> ShrinkVertexSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step = true);
+
+// Select Non-Manifold: edges with exactly one face (`boundary`), with three or more faces (`multiple_faces`), and edges with two
+// faces wound against each other (`non_contiguous`). Sorted.
+std::vector<MeshEdgeKey> NonManifoldMeshEdges(const Mesh& mesh, bool boundary = true, bool multiple_faces = true, bool non_contiguous = true);
+
+// Select Linked Flat Faces: the faces reachable from `seed_face` across shared edges whose two faces have normals at most
+// `angle_degrees` apart (edges with more than two faces are not crossed). Sorted. Throws std::invalid_argument for a seed out of
+// range or a negative angle.
+std::vector<int> FlatLinkedFaces(const Mesh& mesh, int seed_face, double angle_degrees);
+
+// Select Shortest Path: the vertex path from `from` to `to` along mesh edges with the smallest total edge length (or the fewest
+// edges when `topology_distance`); empty when `to` cannot be reached. Throws std::invalid_argument for a vertex out of range.
+std::vector<int> ShortestEdgePath(const Mesh& mesh, int from, int to, bool topology_distance = false);
+
+// Loop Select: the edge loop through the edge (a, b) as a vertex sequence. At a vertex with four edges the loop continues along
+// the edge that shares no face with the edge it came in on; along a boundary it continues along the next boundary edge; anywhere
+// else it stops. `closed` is true when the walk returns to its start. Throws std::invalid_argument for an edge that is not in
+// the mesh.
+struct MeshEdgeLoop {
+  std::vector<int> vertices;
+  bool closed = false;
+};
+MeshEdgeLoop EdgeLoopThrough(const Mesh& mesh, int a, int b);
+
 }  // namespace dino8::kernel

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <deque>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <set>
@@ -578,6 +580,288 @@ Mesh ExtrudeMeshEdges(const Mesh& mesh, const std::vector<MeshEdgeKey>& edges, V
     s.f.push_back({k.first, k.second, dup(k.second), dup(k.first)});
   }
   return FromSoup(s);
+}
+
+Mesh DissolveFaces(const Mesh& mesh, const std::vector<int>& faces) {
+  Soup s = ToSoup(mesh);
+  std::set<int> sel;
+  for (int fi : faces) {
+    CheckFaceIndex(s, fi, "DissolveFaces");
+    sel.insert(fi);
+  }
+  const auto ef = EdgeFaces(s);
+  Dsu dsu(s.f.size());
+  for (const auto& [edge, fl] : ef) {
+    (void)edge;
+    int first = -1;
+    for (int fi : fl) {
+      if (sel.count(fi) == 0) continue;
+      if (first < 0) first = fi; else dsu.Union(first, fi);
+    }
+  }
+  std::map<int, std::vector<int>> groups;
+  for (int fi : sel) groups[dsu.Find(fi)].push_back(fi);
+  std::vector<char> dropped(s.f.size(), 0);
+  std::vector<std::vector<int>> added;
+  for (const auto& [root, members] : groups) {
+    (void)root;
+    if (members.size() < 2) continue;
+    // directed outline edges: an edge of a member face whose reverse is not an edge of another member
+    std::set<std::pair<int, int>> directed;
+    for (int fi : members) {
+      const auto& poly = s.f[static_cast<size_t>(fi)];
+      for (size_t k = 0; k < poly.size(); ++k) directed.insert({poly[k], poly[(k + 1) % poly.size()]});
+    }
+    std::map<int, int> next;
+    bool simple = true;
+    for (const auto& d : directed) {
+      if (directed.count({d.second, d.first}) != 0) continue;
+      if (!next.emplace(d.first, d.second).second) simple = false;
+    }
+    std::vector<int> loop;
+    if (simple && !next.empty()) {
+      const int start = next.begin()->first;
+      int cur = start;
+      do {
+        loop.push_back(cur);
+        auto it = next.find(cur);
+        if (it == next.end()) { simple = false; break; }
+        cur = it->second;
+      } while (cur != start && loop.size() <= next.size());
+      simple = simple && loop.size() == next.size();
+    } else {
+      simple = false;
+    }
+    if (!simple) throw std::invalid_argument("dino8::kernel::DissolveFaces: the outline of the faces is not one simple loop");
+    for (int fi : members) dropped[static_cast<size_t>(fi)] = 1;
+    added.push_back(loop);
+  }
+  std::vector<std::vector<int>> out;
+  for (size_t fi = 0; fi < s.f.size(); ++fi)
+    if (!dropped[fi]) out.push_back(s.f[fi]);
+  for (const auto& poly : added) out.push_back(poly);
+  s.f = out;
+  return FromSoup(s);
+}
+
+Mesh MakeFace(const Mesh& mesh, const std::vector<int>& vertices) {
+  Soup s = ToSoup(mesh);
+  if (vertices.size() < 3) throw std::invalid_argument("dino8::kernel::MakeFace: at least three vertices are needed");
+  if (std::set<int>(vertices.begin(), vertices.end()).size() != vertices.size()) throw std::invalid_argument("dino8::kernel::MakeFace: a vertex is repeated");
+  for (int v : vertices)
+    if (v < 0 || v >= static_cast<int>(s.p.size())) throw std::invalid_argument("dino8::kernel::MakeFace: vertex index out of range");
+  std::set<std::pair<int, int>> directed;
+  for (const auto& poly : s.f)
+    for (size_t k = 0; k < poly.size(); ++k) directed.insert({poly[k], poly[(k + 1) % poly.size()]});
+  int same = 0;
+  const size_t n = vertices.size();
+  for (size_t k = 0; k < n; ++k)
+    if (directed.count({vertices[k], vertices[(k + 1) % n]}) != 0) ++same;
+  std::vector<int> loop = vertices;
+  if (same > 0) std::reverse(loop.begin(), loop.end());  // an existing face already walks this way: wind the new one against it
+  s.f.push_back(loop);
+  return FromSoup(s);
+}
+
+namespace {
+std::vector<int> StepSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step, bool grow) {
+  const Soup s = ToSoup(mesh);
+  std::vector<char> in(s.p.size(), 0);
+  for (int v : selected) {
+    if (v < 0 || v >= static_cast<int>(s.p.size())) throw std::invalid_argument("dino8::kernel: selected vertex index out of range");
+    in[static_cast<size_t>(v)] = 1;
+  }
+  std::vector<char> out = in;
+  auto visit = [&](const std::vector<int>& group) {
+    // a group is a face (face step) or an edge (no face step): its vertices see each other
+    bool any_in = false, any_out = false;
+    for (int v : group) (in[static_cast<size_t>(v)] ? any_in : any_out) = true;
+    if (grow && any_in)
+      for (int v : group) out[static_cast<size_t>(v)] = 1;
+    if (!grow && any_out)
+      for (int v : group) out[static_cast<size_t>(v)] = 0;
+  };
+  if (face_step) {
+    for (const auto& poly : s.f) visit(poly);
+  } else {
+    for (const auto& [edge, fl] : EdgeFaces(s)) {
+      (void)fl;
+      visit({edge.first, edge.second});
+    }
+  }
+  std::vector<int> result;
+  for (size_t v = 0; v < out.size(); ++v)
+    if (out[v]) result.push_back(static_cast<int>(v));
+  return result;
+}
+}  // namespace
+
+std::vector<int> GrowVertexSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step) {
+  return StepSelection(mesh, selected, face_step, true);
+}
+
+std::vector<int> ShrinkVertexSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step) {
+  return StepSelection(mesh, selected, face_step, false);
+}
+
+std::vector<MeshEdgeKey> NonManifoldMeshEdges(const Mesh& mesh, bool boundary, bool multiple_faces, bool non_contiguous) {
+  const Soup s = ToSoup(mesh);
+  std::map<MeshEdgeKey, std::vector<std::pair<int, int>>> uses;  // directed uses of each edge
+  for (const auto& poly : s.f)
+    for (size_t k = 0; k < poly.size(); ++k) {
+      const int a = poly[k], b = poly[(k + 1) % poly.size()];
+      uses[Key(a, b)].push_back({a, b});
+    }
+  std::vector<MeshEdgeKey> out;
+  for (const auto& [edge, u] : uses) {
+    if (u.size() == 1 && boundary) out.push_back(edge);
+    else if (u.size() >= 3 && multiple_faces) out.push_back(edge);
+    else if (u.size() == 2 && non_contiguous && u[0] == u[1]) out.push_back(edge);
+  }
+  return out;
+}
+
+std::vector<int> FlatLinkedFaces(const Mesh& mesh, int seed_face, double angle_degrees) {
+  const Soup s = ToSoup(mesh);
+  CheckFaceIndex(s, seed_face, "FlatLinkedFaces");
+  if (!std::isfinite(angle_degrees) || angle_degrees < 0.0) throw std::invalid_argument("dino8::kernel::FlatLinkedFaces: angle must be finite and >= 0");
+  std::vector<Vector3d> normals;
+  for (const auto& poly : s.f) {
+    Vector3d n = Newell(s, poly);
+    n.Unitize();
+    normals.push_back(n);
+  }
+  const double limit = angle_degrees * ON_PI / 180.0;
+  const auto ef = EdgeFaces(s);
+  std::vector<char> seen(s.f.size(), 0);
+  std::vector<int> stack{seed_face};
+  seen[static_cast<size_t>(seed_face)] = 1;
+  while (!stack.empty()) {
+    const int fi = stack.back();
+    stack.pop_back();
+    const auto& poly = s.f[static_cast<size_t>(fi)];
+    for (size_t k = 0; k < poly.size(); ++k) {
+      const auto& fl = ef.at(Key(poly[k], poly[(k + 1) % poly.size()]));
+      if (fl.size() != 2) continue;
+      const int other = fl[0] == fi ? fl[1] : fl[0];
+      if (seen[static_cast<size_t>(other)]) continue;
+      double c = normals[static_cast<size_t>(fi)] * normals[static_cast<size_t>(other)];
+      c = std::max(-1.0, std::min(1.0, c));
+      if (std::acos(c) <= limit + 1e-9) {
+        seen[static_cast<size_t>(other)] = 1;
+        stack.push_back(other);
+      }
+    }
+  }
+  std::vector<int> out;
+  for (size_t i = 0; i < seen.size(); ++i)
+    if (seen[i]) out.push_back(static_cast<int>(i));
+  return out;
+}
+
+std::vector<int> ShortestEdgePath(const Mesh& mesh, int from, int to, bool topology_distance) {
+  const Soup s = ToSoup(mesh);
+  const int n = static_cast<int>(s.p.size());
+  if (from < 0 || from >= n || to < 0 || to >= n) throw std::invalid_argument("dino8::kernel::ShortestEdgePath: vertex index out of range");
+  std::vector<std::vector<int>> nb(static_cast<size_t>(n));
+  for (const auto& [edge, fl] : EdgeFaces(s)) {
+    (void)fl;
+    nb[static_cast<size_t>(edge.first)].push_back(edge.second);
+    nb[static_cast<size_t>(edge.second)].push_back(edge.first);
+  }
+  const double inf = std::numeric_limits<double>::infinity();
+  std::vector<double> dist(static_cast<size_t>(n), inf);
+  std::vector<int> prev(static_cast<size_t>(n), -1);
+  std::set<std::pair<double, int>> queue;
+  dist[static_cast<size_t>(from)] = 0.0;
+  queue.insert({0.0, from});
+  while (!queue.empty()) {
+    const auto [d, v] = *queue.begin();
+    queue.erase(queue.begin());
+    if (v == to) break;
+    for (int w : nb[static_cast<size_t>(v)]) {
+      const double step = topology_distance ? 1.0 : s.p[static_cast<size_t>(v)].DistanceTo(s.p[static_cast<size_t>(w)]);
+      if (d + step < dist[static_cast<size_t>(w)] - 1e-12) {
+        queue.erase({dist[static_cast<size_t>(w)], w});
+        dist[static_cast<size_t>(w)] = d + step;
+        prev[static_cast<size_t>(w)] = v;
+        queue.insert({dist[static_cast<size_t>(w)], w});
+      }
+    }
+  }
+  std::vector<int> path;
+  if (dist[static_cast<size_t>(to)] == inf) return path;
+  for (int v = to; v >= 0; v = prev[static_cast<size_t>(v)]) path.push_back(v);
+  std::reverse(path.begin(), path.end());
+  return path;
+}
+
+MeshEdgeLoop EdgeLoopThrough(const Mesh& mesh, int a, int b) {
+  const Soup s = ToSoup(mesh);
+  const auto ef = EdgeFaces(s);
+  if (ef.find(Key(a, b)) == ef.end()) throw std::invalid_argument("dino8::kernel::EdgeLoopThrough: the edge is not in the mesh");
+  std::map<int, std::vector<int>> nb;
+  for (const auto& [edge, fl] : ef) {
+    (void)fl;
+    nb[edge.first].push_back(edge.second);
+    nb[edge.second].push_back(edge.first);
+  }
+  auto share_face = [&](int u, int v, int w) {  // do edges (u, v) and (v, w) lie in one face?
+    for (int fi : ef.at(Key(u, v)))
+      for (int gj : ef.at(Key(v, w)))
+        if (fi == gj) return true;
+    return false;
+  };
+  // the vertex that follows `v` when the walk arrives from `u`, or -1
+  auto next_vertex = [&](int u, int v) {
+    const auto& around = nb.at(v);
+    if (around.size() == 4) {
+      int found = -1, count = 0;
+      for (int w : around) {
+        if (w == u || share_face(u, v, w)) continue;
+        found = w;
+        ++count;
+      }
+      return count == 1 ? found : -1;
+    }
+    if (ef.at(Key(u, v)).size() == 1) {  // walking along the boundary
+      int found = -1, count = 0;
+      for (int w : around) {
+        if (w == u || ef.at(Key(v, w)).size() != 1) continue;
+        found = w;
+        ++count;
+      }
+      return count == 1 ? found : -1;
+    }
+    return -1;
+  };
+  MeshEdgeLoop loop;
+  std::deque<int> seq{a, b};
+  // forward from b
+  bool closed = false;
+  for (;;) {
+    const int u = seq[seq.size() - 2], v = seq.back();
+    const int w = next_vertex(u, v);
+    if (w < 0) break;
+    if (w == seq.front() && seq.size() >= 3) {
+      closed = true;
+      break;
+    }
+    if (std::find(seq.begin(), seq.end(), w) != seq.end()) break;
+    seq.push_back(w);
+  }
+  if (!closed) {
+    for (;;) {
+      const int u = seq[1], v = seq.front();
+      const int w = next_vertex(u, v);
+      if (w < 0) break;
+      if (std::find(seq.begin(), seq.end(), w) != seq.end()) break;
+      seq.push_front(w);
+    }
+  }
+  loop.vertices.assign(seq.begin(), seq.end());
+  loop.closed = closed;
+  return loop;
 }
 
 }  // namespace dino8::kernel

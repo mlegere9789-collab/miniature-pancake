@@ -559,3 +559,225 @@ D8_EXTRA_TEST(Rw3MeshSimpleDeformTwistAndTaperMapEveryVertexByTheAxialFraction) 
   d8test::Check(taper_ok, "taper 1 -> 2: the offset from the axis is scaled by 1 + z / 20");
   d8test::Check(Near(tapered.GetBoundingBox().max.x, 15.0, 1e-4) && Near(tapered.GetBoundingBox().min.x, -5.0, 1e-4), "the far end spans -5 .. 15 (twice the width)");
 }
+
+// ---- Select Sharp Edges (D8-BLENDER-MESH-0037) ------------------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshSelectSharpEdgesListsExactlyTheEdgesAboveTheAngle) {
+  using namespace dino8::kernel;
+  const Mesh box = QuadBox(0, 0, 0, 10, 10, 10);
+  d8test::Check(SharpMeshEdges(box, 89.0).size() == 12 && SharpMeshEdges(box, 30.0).size() == 12, "cube: all 12 edges are 90 degree edges, sharp above 89 and 30");
+  d8test::Check(SharpMeshEdges(box, 91.0).empty(), "cube: none above 91 degrees");
+  const auto edges = SharpMeshEdges(box, 45.0);
+  std::set<std::pair<int, int>> got(edges.begin(), edges.end());
+  d8test::Check(got.count({0, 1}) == 1 && got.count({6, 7}) == 1 && got.count({0, 4}) == 1 && got.count({0, 7}) == 0, "cube: (0,1), (6,7), (0,4) are edges; the space diagonal (0,7) is not listed");
+  d8test::Check(SharpMeshEdges(FlatSheet(3, 1.0), 0.0).empty(), "a flat sheet has no edge above 0 degrees");
+  d8test::Check(SharpMeshEdges(TriBox(0, 0, 0, 10, 10, 10), 45.0).size() == 12, "triangulated cube: the 12 cube edges, but not the 6 coplanar face diagonals");
+  bool threw = false;
+  try { (void)SharpMeshEdges(box, -1.0); } catch (const std::invalid_argument&) { threw = true; }
+  d8test::Check(threw, "a negative angle is a clear error");
+}
+
+// ---- Dissolve Faces (D8-BLENDER-MESH-0025) --------------------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshDissolveFacesMergesTouchingFacesIntoOneOutlinePolygon) {
+  using namespace dino8::kernel;
+  const Mesh sheet = FlatSheet(2, 1.0);  // 3 x 3 vertices; faces 0, 1 in the bottom row, 2, 3 in the top row
+  {
+    const Mesh m = DissolveFaces(sheet, {0, 1, 2, 3});
+    d8test::Check(m.VertexCount() == 8 && m.FaceCount() == 6, "four quads dissolved: the centre vertex is gone, the 8-corner outline is stored as 8 - 2 = 6 triangles");
+    d8test::Check(Near(m.Area(), 4.0, 1e-5), "area stays 4");
+    d8test::Check(m.NakedEdgeLoops().size() == 1 && m.NakedEdgeLoops()[0].size() == 8, "one boundary loop of 8 vertices");
+  }
+  {
+    const Mesh m = DissolveFaces(sheet, {0, 1});
+    d8test::Check(m.VertexCount() == 9 && m.FaceCount() == 4 + 2 && Near(m.Area(), 4.0, 1e-5), "two bottom quads dissolved: hexagon (4 triangles) + 2 quads, all 9 vertices still on an outline");
+  }
+  {
+    const Mesh m = DissolveFaces(sheet, {0, 3});
+    d8test::Check(m.FaceCount() == 4 && m.VertexCount() == 9, "two faces that only meet at a vertex are two groups of one: nothing changes");
+  }
+  {
+    const Mesh grid = FlatSheet(3, 1.0);  // faces 0..8; the middle face is 4
+    bool threw = false;
+    try { (void)DissolveFaces(grid, {0, 1, 2, 3, 5, 6, 7, 8}); } catch (const std::invalid_argument&) { threw = true; }
+    d8test::Check(threw, "a ring of faces around a hole has two outline loops: a clear error");
+    const Mesh m = DissolveFaces(grid, {0, 1, 3, 4});
+    d8test::Check(Near(m.Area(), 9.0, 1e-5) && m.VertexCount() == 16 - 1, "a 2 x 2 block of a 3 x 3 grid dissolved: its one interior vertex is gone (V 15), area 9");
+  }
+}
+
+// ---- Make Edge/Face (D8-BLENDER-MESH-0033) ----------------------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshMakeFaceClosesAHoleWithConsistentWinding) {
+  using namespace dino8::kernel;
+  Mesh open = QuadBox(0, 0, 0, 10, 10, 10);
+  open.raw().m_F.SetCount(5);  // drop the top face (index 5)
+  d8test::Check(!open.IsClosedManifold() && NonManifoldMeshEdges(open).size() == 4, "the lidless box has 4 boundary edges");
+  const Mesh a = MakeFace(open, {4, 5, 7, 6});
+  const Mesh b = MakeFace(open, {6, 7, 5, 4});
+  d8test::Check(a.IsClosedManifold() && Near(a.Volume(), 1000.0, 1e-3), "a lid given in the matching order closes the box, volume 1000");
+  d8test::Check(b.IsClosedManifold() && Near(b.Volume(), 1000.0, 1e-3), "a lid given in the opposite order is wound against its neighbours and closes the box as well");
+  // On free vertices the given order is kept: a triangle from the origin along +x, +y faces +z.
+  Mesh loose;
+  loose.raw().m_V.Append(ON_3fPoint(0, 0, 0)); loose.raw().m_V.Append(ON_3fPoint(1, 0, 0)); loose.raw().m_V.Append(ON_3fPoint(0, 1, 0));
+  const Mesh t = MakeFace(loose, {0, 1, 2});
+  const Vector3d n = t.ComputeFaceNormals()[0];
+  d8test::Check(t.FaceCount() == 1 && Near(n.z, 1.0, 1e-9) && Near(t.Area(), 0.5, 1e-9), "free triangle keeps its order: normal +z, area 1/2");
+  // Five vertices become 3 triangles (n - 2).
+  Mesh pent;
+  for (int i = 0; i < 5; ++i) pent.raw().m_V.Append(ON_3fPoint(float(std::cos(2 * kPi * i / 5)), float(std::sin(2 * kPi * i / 5)), 0));
+  const Mesh p = MakeFace(pent, {0, 1, 2, 3, 4});
+  d8test::Check(p.FaceCount() == 3 && Near(p.Area(), 2.5 * std::sin(2 * kPi / 5), 1e-5), "regular pentagon of radius 1: 3 triangles, area (5/2) sin(72 degrees)");
+  bool few = false, repeated = false;
+  try { (void)MakeFace(open, {0, 1}); } catch (const std::invalid_argument&) { few = true; }
+  try { (void)MakeFace(open, {0, 1, 1}); } catch (const std::invalid_argument&) { repeated = true; }
+  d8test::Check(few && repeated, "fewer than three or a repeated vertex are clear errors");
+}
+
+// ---- Select More / Select Less (D8-BLENDER-MESH-0133, -0127) ------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshSelectMoreAndLessGrowAndShrinkTheVertexBlock) {
+  using namespace dino8::kernel;
+  const Mesh sheet = FlatSheet(6, 1.0);  // 7 x 7 vertices, vertex (i, j) = 7 j + i
+  auto block = [](int lo, int hi) {
+    std::vector<int> v;
+    for (int j = lo; j <= hi; ++j)
+      for (int i = lo; i <= hi; ++i) v.push_back(7 * j + i);
+    return v;
+  };
+  const std::vector<int> centre = {7 * 3 + 3};
+  d8test::Check(GrowVertexSelection(sheet, centre) == block(2, 4), "one vertex grows through its four faces to the 3 x 3 block");
+  d8test::Check(GrowVertexSelection(sheet, GrowVertexSelection(sheet, centre)) == block(1, 5), "grown twice: the 5 x 5 block");
+  d8test::Check(GrowVertexSelection(sheet, centre, false).size() == 5, "without face step: the vertex and its 4 edge neighbours");
+  d8test::Check(ShrinkVertexSelection(sheet, block(1, 5)) == block(2, 4), "the 5 x 5 block shrinks to the 3 x 3 block");
+  d8test::Check(ShrinkVertexSelection(sheet, block(2, 4)) == centre, "the 3 x 3 block shrinks to its centre");
+  d8test::Check(ShrinkVertexSelection(sheet, block(1, 5), false) == block(2, 4), "without face step the block shrinks the same way (edge neighbours of the rim lie outside)");
+  d8test::Check(ShrinkVertexSelection(sheet, block(2, 4), false).size() == 1, "3 x 3 block without face step: only the centre keeps all four edge neighbours");
+  std::vector<int> all(49);
+  for (int i = 0; i < 49; ++i) all[static_cast<size_t>(i)] = i;
+  d8test::Check(ShrinkVertexSelection(sheet, all) == all && GrowVertexSelection(sheet, all) == all, "selecting everything: nothing to shrink, nothing to grow");
+  d8test::Check(ShrinkVertexSelection(sheet, {}).empty(), "an empty selection stays empty");
+  bool threw = false;
+  try { (void)GrowVertexSelection(sheet, {99}); } catch (const std::invalid_argument&) { threw = true; }
+  d8test::Check(threw, "a vertex out of range is a clear error");
+}
+
+// ---- Select Non-Manifold (D8-BLENDER-MESH-0135) -----------------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshSelectNonManifoldFindsBoundaryMultiFaceAndFlippedEdges) {
+  using namespace dino8::kernel;
+  const Mesh box = QuadBox(0, 0, 0, 10, 10, 10);
+  d8test::Check(NonManifoldMeshEdges(box).empty(), "a closed, consistently wound cube has no non-manifold edge");
+  Mesh open = QuadBox(0, 0, 0, 10, 10, 10);
+  open.raw().m_F.SetCount(5);
+  const auto boundary = NonManifoldMeshEdges(open);
+  d8test::Check(boundary.size() == 4, "the lidless box has the 4 rim edges");
+  std::set<std::pair<int, int>> rim(boundary.begin(), boundary.end());
+  d8test::Check(rim.count({4, 5}) && rim.count({5, 7}) && rim.count({6, 7}) && rim.count({4, 6}), "the rim edges are the top square (4,5), (5,7), (6,7), (4,6)");
+  d8test::Check(NonManifoldMeshEdges(open, false, true, true).empty(), "with the boundary option off the open box lists nothing");
+  // A fin glued to edge (4, 5): that edge now has three faces; the fin's other two edges are boundary.
+  Mesh fin = QuadBox(0, 0, 0, 10, 10, 10);
+  fin.raw().m_V.Append(ON_3fPoint(5, -5, 10));
+  AddTri(fin, 5, 4, 8);
+  const auto multi = NonManifoldMeshEdges(fin, false, true, false);
+  d8test::Check(multi.size() == 1 && multi[0] == std::make_pair(4, 5), "multiple-faces option: exactly the edge (4,5) with three faces");
+  d8test::Check(NonManifoldMeshEdges(fin, true, false, false).size() == 2, "boundary option: the two free edges of the fin");
+  // Top face wound the wrong way: its four edges are used in the same direction by their neighbours.
+  Mesh flipped = QuadBox(0, 0, 0, 10, 10, 10);
+  flipped.raw().m_F[5].vi[0] = 4; flipped.raw().m_F[5].vi[1] = 6; flipped.raw().m_F[5].vi[2] = 7; flipped.raw().m_F[5].vi[3] = 5;
+  d8test::Check(NonManifoldMeshEdges(flipped, false, false, true).size() == 4 && NonManifoldMeshEdges(flipped, true, true, false).empty(),
+                "a reversed lid: its 4 edges are non-contiguous, none are boundary or multi-face");
+}
+
+// ---- Select Linked Flat Faces (D8-BLENDER-MESH-0053) --------------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshSelectLinkedFlatFollowsEdgesBelowTheAngle) {
+  using namespace dino8::kernel;
+  const Mesh box = QuadBox(0, 0, 0, 10, 10, 10);
+  d8test::Check(FlatLinkedFaces(box, 0, 30.0) == std::vector<int>{0}, "cube, 30 degrees: a face stays alone (its neighbours are 90 degrees away)");
+  d8test::Check(FlatLinkedFaces(box, 0, 91.0).size() == 6, "cube, 91 degrees: all six faces");
+  d8test::Check(FlatLinkedFaces(box, 0, 90.0).size() == 6, "cube, exactly 90 degrees: the 90 degree edges are crossed (at most the angle)");
+  d8test::Check(FlatLinkedFaces(FlatSheet(3, 1.0), 4, 0.0).size() == 9, "flat 3 x 3 sheet, 0 degrees: all nine quads");
+  const Mesh tri = TriBox(0, 0, 0, 10, 10, 10);
+  d8test::Check(FlatLinkedFaces(tri, 0, 1.0) == std::vector<int>({0, 1}), "triangulated cube, 1 degree: the two coplanar triangles of the face");
+  d8test::Check(FlatLinkedFaces(tri, 5, 1.0).size() == 2, "any triangle reaches exactly its partner");
+  bool threw = false;
+  try { (void)FlatLinkedFaces(box, 6, 10.0); } catch (const std::invalid_argument&) { threw = true; }
+  d8test::Check(threw, "a seed face out of range is a clear error");
+}
+
+// ---- Select Shortest Path (D8-BLENDER-MESH-0147) ------------------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshShortestPathHasTheClosedFormLengthOnGridAndTriangleGrid) {
+  using namespace dino8::kernel;
+  auto length_of = [](const Mesh& m, const std::vector<int>& path) {
+    double len = 0;
+    for (size_t i = 0; i + 1 < path.size(); ++i) len += Vertex(m, path[i]).DistanceTo(Vertex(m, path[i + 1]));
+    return len;
+  };
+  // 4 x 3 quads, unit pitch: from (0,0) to (4,3) only edges along axes exist: length 4 + 3 = 7 in 7 edges.
+  {
+    Mesh grid;
+    for (int j = 0; j <= 3; ++j)
+      for (int i = 0; i <= 4; ++i) grid.raw().m_V.Append(ON_3fPoint(float(i), float(j), 0));
+    for (int j = 0; j < 3; ++j)
+      for (int i = 0; i < 4; ++i) AddQuad(grid, j * 5 + i, j * 5 + i + 1, (j + 1) * 5 + i + 1, (j + 1) * 5 + i);
+    const auto path = ShortestEdgePath(grid, 0, 3 * 5 + 4);
+    d8test::Check(path.size() == 8 && path.front() == 0 && path.back() == 19, "grid corner to corner: 7 edges, 8 vertices");
+    d8test::Check(Near(length_of(grid, path), 7.0, 1e-6), "grid corner to corner: length 4 + 3 = 7");
+    d8test::Check(ShortestEdgePath(grid, 6, 6) == std::vector<int>{6}, "a vertex to itself: the one-vertex path");
+  }
+  // The same lattice with each cell cut by the diagonal (i, j)-(i+1, j+1) into two triangles: 3 diagonals + 1 step along x.
+  {
+    Mesh tg;
+    for (int j = 0; j <= 3; ++j)
+      for (int i = 0; i <= 4; ++i) tg.raw().m_V.Append(ON_3fPoint(float(i), float(j), 0));
+    for (int j = 0; j < 3; ++j)
+      for (int i = 0; i < 4; ++i) {
+        AddTri(tg, j * 5 + i, j * 5 + i + 1, (j + 1) * 5 + i + 1);
+        AddTri(tg, j * 5 + i, (j + 1) * 5 + i + 1, (j + 1) * 5 + i);
+      }
+    const auto path = ShortestEdgePath(tg, 0, 19);
+    d8test::Check(path.size() == 5 && Near(length_of(tg, path), 3.0 * std::sqrt(2.0) + 1.0, 1e-5), "triangulated lattice: 3 diagonals + 1 axis step, length 3 sqrt 2 + 1, 4 edges");
+    const auto topo = ShortestEdgePath(tg, 0, 19, true);
+    d8test::Check(topo.size() == 5, "fewest edges: also 4 (a diagonal covers one step in x and y)");
+  }
+  // Two separate cubes: no path between them.
+  {
+    const Mesh a = QuadBox(0, 0, 0, 1, 1, 1);
+    const Mesh b = QuadBox(5, 0, 0, 6, 1, 1);
+    const Mesh both = Mesh::MergeAndWeld({a, b});
+    d8test::Check(ShortestEdgePath(both, 0, both.VertexCount() - 1).empty(), "vertices of two disjoint cubes: no path (empty)");
+  }
+  bool threw = false;
+  try { (void)ShortestEdgePath(QuadBox(0, 0, 0, 1, 1, 1), 0, 20); } catch (const std::invalid_argument&) { threw = true; }
+  d8test::Check(threw, "a vertex out of range is a clear error");
+}
+
+// ---- Loop Select (D8-BLENDER-MESH-0069) ---------------------------------------------------------------------------------------------
+D8_EXTRA_TEST(Rw3MeshLoopSelectWalksStraightThroughFourValentVertices) {
+  using namespace dino8::kernel;
+  // Flat 4 x 4 sheet (5 x 5 vertices, vertex (i, j) = 5 j + i): the loop through an interior horizontal edge runs across the sheet.
+  const Mesh sheet = FlatSheet(4, 1.0);
+  {
+    const MeshEdgeLoop l = EdgeLoopThrough(sheet, 12, 13);
+    std::vector<int> v = l.vertices;
+    std::sort(v.begin(), v.end());
+    d8test::Check(!l.closed && v == std::vector<int>({10, 11, 12, 13, 14}), "interior row: the 5 vertices of row 2, open, ending at the boundary");
+    d8test::Check(EdgeLoopThrough(sheet, 7, 12).vertices.size() == 5, "an interior vertical edge gives the column: 5 vertices");
+  }
+  // A boundary edge: the whole 16-edge boundary loop.
+  {
+    const MeshEdgeLoop l = EdgeLoopThrough(sheet, 0, 1);
+    std::set<int> distinct(l.vertices.begin(), l.vertices.end());
+    d8test::Check(l.closed && l.vertices.size() == 16 && distinct.size() == 16, "boundary edge: the closed boundary loop of 16 vertices");
+  }
+  // A torus (8 turns of a 4-point profile): every vertex has four edges. Vertex id = 4 * copy + profile index.
+  {
+    const std::vector<Point3d> profile = {Point3d(2, 0, 0), Point3d(5, 0, 0), Point3d(5, 0, 4), Point3d(2, 0, 4)};
+    const Mesh torus = ScrewPolyline(profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 2.0 * kPi, 8, 0.0, 1, true);
+    const MeshEdgeLoop around = EdgeLoopThrough(torus, 0, 4);
+    const MeshEdgeLoop profile_loop = EdgeLoopThrough(torus, 0, 1);
+    d8test::Check(around.closed && around.vertices.size() == 8, "torus: the loop along the turn closes after the 8 steps");
+    d8test::Check(profile_loop.closed && profile_loop.vertices.size() == 4, "torus: the loop along the profile closes after its 4 points");
+    std::set<int> steps;
+    for (int v : around.vertices) steps.insert(v % 4);
+    d8test::Check(steps.size() == 1, "the turn loop keeps the same profile index on every copy");
+  }
+  bool threw = false;
+  try { (void)EdgeLoopThrough(sheet, 0, 12); } catch (const std::invalid_argument&) { threw = true; }
+  d8test::Check(threw, "a pair of vertices that is not an edge is a clear error");
+}
