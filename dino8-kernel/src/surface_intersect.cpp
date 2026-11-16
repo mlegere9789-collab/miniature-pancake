@@ -13,6 +13,7 @@ namespace dino8::kernel {
 
 namespace {
 
+
 constexpr double kPi = 3.14159265358979323846;
 
 double Clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -427,6 +428,30 @@ bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double&
     return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
   };
   const bool ok = NewtonSolve(res, x, lo, hi, tol, max_iter);
+  if (ok) {
+    // `tol` is the caller's acceptance tolerance (the Boolean pipeline passes 1e-3), and NewtonSolve() returns the moment the residual
+    // is inside it: a seed that sits on a facet of the other surface's seed mesh, up to a chord sagitta (measured 5.6e-4 .. 6.9e-4 for
+    // the top rim of a hole cut by a cylinder tool) off the true curve, came back UNTOUCHED, so the chain point lay on one surface and
+    // that far off the other. The two faces sharing the rim then evaluated the same trim vertex at points 6e-4 apart, far outside
+    // the weld tolerance, and the tessellated rims did not close. Keep iterating to the floating-point floor. NewtonSolve() only
+    // accepts a step that lowers the residual, so this can never move a converged point to a worse one.
+    // Where the two normals are parallel to 1e-3 the surfaces only touch (an exact tangent contact, or the pinch where two crossing curves
+    // meet): the system is singular there, so polishing slides the point along the touch instead of settling it, and the curves that meet
+    // at such a vertex stop agreeing about where it is. Such a point keeps the accepted-within-tolerance position it always had.
+    ON_3dPoint P;
+    ON_3dVector du, dv, na, nb;
+    a.Ev1Der(x[0], x[1], P, du, dv); na = ON_CrossProduct(du, dv); na.Unitize();
+    b.Ev1Der(x[2], x[3], P, du, dv); nb = ON_CrossProduct(du, dv); nb.Unitize();
+    const double sine = ON_CrossProduct(na, nb).Length();
+    // A caller that asks for a LOOSER tolerance than the default wants the cheap solve (tolerant Booleans / gap healing): its points stay
+    // accepted-within-tolerance, measurably looser than a tight call (TestBooleanCombineGeneralCallerTolerance).
+    const bool do_polish = sine > 1e-3 && tol <= 1.0e-3 * (1.0 + 1e-9);
+    const double scale = std::max({1.0, a.PointAt(x[0], x[1]).DistanceTo(Point3d::Origin)});
+    // Down to 1e-7 of residual, not the rounding floor: a solve that had to iterate converges quadratically well below that anyway, and a
+    // point already inside it (the 1e-8 a sphere centred on a box face comes back with) stays exactly as it always was - re-polishing those
+    // to 1e-16 changed which ears the planar cap's triangulation clipped and its closed mesh no longer closed.
+    if (do_polish) NewtonSolve(res, x, lo, hi, std::max(1e-7, 1e-12 * scale), 8);
+  }
   ua = x[0]; va = x[1]; ub = x[2]; vb = x[3];
   return ok;
 }
@@ -882,6 +907,47 @@ bool FaceContainsUV(const ON_BrepFace& f, double u, double v) {
 }
 
 namespace {
+// Distance from p to the polygon's boundary, and the polygon's bounding-box diagonal.
+double PolygonEdgeDistance(const std::vector<ON_2dPoint>& poly, const ON_2dPoint& p, double& diag) {
+  double best = std::numeric_limits<double>::max(), minx = poly[0].x, maxx = poly[0].x, miny = poly[0].y, maxy = poly[0].y;
+  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+    const ON_2dPoint& a = poly[i];
+    const ON_2dPoint& c = poly[j];
+    minx = std::min(minx, a.x); maxx = std::max(maxx, a.x); miny = std::min(miny, a.y); maxy = std::max(maxy, a.y);
+    const double vx = c.x - a.x, vy = c.y - a.y, len2 = vx * vx + vy * vy;
+    double t = len2 > 1e-300 ? ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2 : 0;
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    best = std::min(best, std::hypot(p.x - (a.x + vx * t), p.y - (a.y + vy * t)));
+  }
+  diag = std::hypot(maxx - minx, maxy - miny);
+  return best;
+}
+
+// Is p inside loop `li` of `b`? The loop polygon samples every curved trim at a fixed count (LoopPolygon's default), so its chords
+// sit up to ~1% of a circular trim's radius inside the true boundary: a point that is truly inside but within that sag of the rim
+// tested "outside". That clipped a curve that runs along a rim at near-tangent (a wall 1e-3 inside a cap's rim) many mesh steps
+// short of where the true boundary lets it go. A point close to the polygon is therefore re-decided on a dense polygon.
+bool LoopContainsRefined(const ON_Brep& b, int li, const ON_2dPoint& p) {
+  const std::vector<ON_2dPoint> poly = LoopPolygon(b, li);
+  const bool in = PointInPolygon(poly, p);
+  if (poly.size() < 3) return in;
+  const ON_BrepLoop& loop = b.m_L[li];
+  bool curved = false;
+  for (int k = 0; k < loop.m_ti.Count() && !curved; ++k) {
+    const ON_BrepTrim& trim = b.m_T[loop.m_ti[k]];
+    curved = trim.m_iso == ON_Surface::not_iso && ON_PolylineCurve::Cast(trim.TrimCurveOf()) == nullptr && !trim.TrimCurveOf()->IsLinear();
+  }
+  if (!curved) return in;
+  double diag = 0;
+  const double d = PolygonEdgeDistance(poly, p, diag);
+  if (d > 0.05 * diag) return in;
+  // A point within a few sagittae of even the dense polygon (a curve 1e-6 inside a rim: coaxial cylinders whose radii differ by 1e-6) is
+  // not decidable on any polygon of reasonable size, so it keeps the coarse answer, exactly as before.
+  const std::vector<ON_2dPoint> dense = LoopPolygon(b, li, 1536);
+  if (PolygonEdgeDistance(dense, p, diag) < 1e-5 * diag) return in;
+  return PointInPolygon(dense, p);
+}
+
 bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v) {
   const ON_Brep* b = f.Brep();
   if (!b) return true;
@@ -904,12 +970,12 @@ bool FaceContainsUVExact(const ON_BrepFace& f, double u, double v) {
   bool inside_outer = false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::outer) inside_outer = PointInPolygon(LoopPolygon(*b, f.m_li[li]), p);
+    if (loop.m_type == ON_BrepLoop::outer) inside_outer = LoopContainsRefined(*b, f.m_li[li], p);
   }
   if (!inside_outer) return false;
   for (int li = 0; li < f.m_li.Count(); ++li) {
     const ON_BrepLoop& loop = b->m_L[f.m_li[li]];
-    if (loop.m_type == ON_BrepLoop::inner && PointInPolygon(LoopPolygon(*b, f.m_li[li]), p)) return false;
+    if (loop.m_type == ON_BrepLoop::inner && LoopContainsRefined(*b, f.m_li[li], p)) return false;
   }
   return true;
 }
@@ -2034,7 +2100,327 @@ std::vector<IntersectionCurve> CoincidentOverlapBoundaryCurves(const ON_Surface&
   return out;
 }
 
+// --- continuing a seed chain past the end of the seed mesh ------------------------------
+//
+// The seed chains come from the triangle/triangle crossings of two coarse tessellations (chord tolerance mesh_tolerance, 0.02 by
+// default). Where the surfaces meet at a shallow angle (a near-tangent overlap: a cylinder 1e-3 inside a box face, two spheres overlapping
+// by 1e-3) the crossing curve is only a few mesh sagittae wide, so the facets cross over just part of it: the chain that comes out is a
+// stub that ends in the INTERIOR of both surfaces although the true curve runs on to a surface boundary (or round into a closed loop).
+// A stub end that is not on a domain boundary is therefore marched on along the intersection curve (tangent = nA x nB, predictor
+// by the local Jacobians, corrector by the same Newton solve that refines the seeds) until the curve reaches a domain boundary, closes
+// up with its own other end, or the surfaces become tangent (|nA x nB| ~ 0, nothing sensible to follow). A periodic seam is not a stopping
+// place: the (u, v) is wrapped, exactly the jump SplitAtSeams() already cuts at.
+
+struct MarchPt {
+  Point3d p;
+  ON_2dPoint ua, ub;
+};
+
+// (u, v) after moving by the 3D vector dp in the tangent plane of s at uv; wraps a closed direction, clamps an open one. `outside` is set
+// (and `frac` the fraction of the move that stays inside) when an open direction would have left its domain.
+ON_2dPoint PredictUV(const ON_Surface& s, const ON_2dPoint& uv, const Vector3d& dp, bool& outside, double& frac) {
+  ON_3dPoint P;
+  ON_3dVector du, dv;
+  ON_2dPoint r = uv;
+  if (!s.Ev1Der(uv.x, uv.y, P, du, dv)) return r;
+  const double a = du * du, b = du * dv, c = dv * dv, ri = du * dp, rj = dv * dp;
+  const double reg = 1e-12 * (a + c) + 1e-300;
+  const double det = (a + reg) * (c + reg) - b * b;
+  if (!(std::fabs(det) > 0)) return r;
+  const double x = (ri * (c + reg) - rj * b) / det, y = (rj * (a + reg) - ri * b) / det;
+  const double d[2] = {x, y};
+  for (int k = 0; k < 2; ++k) {
+    const ON_Interval dom = s.Domain(k);
+    double v = uv[k] + d[k];
+    if (s.IsClosed(k) && dom.Length() > 0) {
+      const double L = dom.Length();
+      while (v < dom.Min()) v += L;
+      while (v > dom.Max()) v -= L;
+    } else if (v < dom.Min() || v > dom.Max()) {
+      outside = true;
+      const double bound = v < dom.Min() ? dom.Min() : dom.Max();
+      if (std::fabs(d[k]) > 0) frac = std::min(frac, std::max(0.0, (bound - uv[k]) / d[k]));
+      v = Clamp(v, dom.Min(), dom.Max());
+    }
+    r[k] = v;
+  }
+  return r;
+}
+
+// Newton on |A(ua, va) - B(ub, vb)| with optionally one coordinate pinned (fixed_index in 0..3, -1 for none).
+bool MarchSolve(const ON_Surface& a, const ON_Surface& b, double x[4], int fixed_index, double tol) {
+  std::vector<double> xv = {x[0], x[1], x[2], x[3]};
+  std::vector<double> lo = {a.Domain(0).Min(), a.Domain(1).Min(), b.Domain(0).Min(), b.Domain(1).Min()};
+  std::vector<double> hi = {a.Domain(0).Max(), a.Domain(1).Max(), b.Domain(0).Max(), b.Domain(1).Max()};
+  if (fixed_index >= 0) lo[static_cast<size_t>(fixed_index)] = hi[static_cast<size_t>(fixed_index)] = xv[static_cast<size_t>(fixed_index)];
+  Residual res = [&](const std::vector<double>& p) {
+    const Point3d pa = a.PointAt(p[0], p[1]), pb = b.PointAt(p[2], p[3]);
+    return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
+  };
+  const bool ok = NewtonSolve(res, xv, lo, hi, tol, 25);
+  if (ok) {
+    const double scale = std::max({1.0, a.PointAt(xv[0], xv[1]).DistanceTo(Point3d::Origin)});
+    NewtonSolve(res, xv, lo, hi, 1e-11 * scale, 8);
+  }
+  for (int k = 0; k < 4; ++k) x[k] = xv[static_cast<size_t>(k)];
+  return ok;
+}
+
+bool UVOnDomainBoundary(const ON_Surface& s, const ON_2dPoint& uv) {
+  for (int k = 0; k < 2; ++k) {
+    const ON_Interval d = s.Domain(k);
+    const double eps = 1e-7 * std::max(d.Length(), 1e-300);
+    if (uv[k] <= d.Min() + eps || uv[k] >= d.Max() - eps) return true;
+  }
+  return false;
+}
+
+bool SurfaceNormalUnit(const ON_Surface& s, const ON_2dPoint& uv, Vector3d& n) {
+  ON_3dPoint P;
+  ON_3dVector du, dv;
+  if (!s.Ev1Der(uv.x, uv.y, P, du, dv)) return false;
+  n = ON_CrossProduct(du, dv);
+  const double L = n.Length();
+  if (!(L > 1e-14)) return false;
+  n /= L;
+  return true;
+}
+
+// Marches from the last point of `ic` along the intersection curve. Appends the points found; returns the number appended.
+// `closing` (may be null) is the chain's own other end: coming within a step of it closes the loop (reported through `closed`).
+size_t MarchChainEnd(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt, double diag, bool& closed,
+                     const Vector3d* initial_dir = nullptr) {
+  closed = false;
+  const size_t n0 = ic.points.size();
+  if (n0 < 1 || (n0 < 2 && !initial_dir)) return 0;
+  const double hmax = 0.02 * diag, hmin = std::max(1e-9 * diag, 1e-12);
+  Point3d p = ic.points.back();
+  ON_2dPoint uva = ic.uv_a.back(), uvb = ic.uv_b.back();
+  Vector3d dir = initial_dir ? *initial_dir : p - ic.points[n0 - 2];
+  double dl = dir.Length();
+  if (!(dl > 0)) return 0;
+  if (initial_dir) dl = std::max(opt.tolerance, 1e-3 * diag * 0.1) * 2;  // no previous segment to size the first step by
+  dir /= dir.Length();
+  const Point3d start = ic.points.front();
+  double h = Clamp(dl, std::max(opt.tolerance, 1e-3 * diag * 0.1), hmax);
+  size_t added = 0;
+  double path = 0;
+  for (int iter = 0; iter < 4000; ++iter) {
+    Vector3d na, nb;
+    if (!SurfaceNormalUnit(a, uva, na) || !SurfaceNormalUnit(b, uvb, nb)) break;
+    Vector3d t = ON_CrossProduct(na, nb);
+    const double sn = t.Length();
+    if (!(sn > 1e-5)) break;  // tangent contact: the curve direction is undefined here
+    t /= sn;
+    if (t * dir < 0) t = -t;
+    bool stepped = false, hit_boundary = false;
+    for (int attempt = 0; attempt < 24 && h >= hmin; ++attempt, h *= 0.5) {
+      const Vector3d move = t * h;
+      bool oa = false, ob = false;
+      double fa = 1.0, fb = 1.0;
+      const ON_2dPoint pa = PredictUV(a, uva, move, oa, fa), pb = PredictUV(b, uvb, move, ob, fb);
+      double x[4] = {pa.x, pa.y, pb.x, pb.y};
+      int fixed = -1;
+      if (oa || ob) {
+        // The step would leave an open domain: land exactly on that boundary instead (pin the violating coordinate) and stop there.
+        const double f = std::min(oa ? fa : 1.0, ob ? fb : 1.0);
+        const ON_2dPoint qa = PredictUV(a, uva, move * f, oa, fa), qb = PredictUV(b, uvb, move * f, ob, fb);
+        x[0] = qa.x; x[1] = qa.y; x[2] = qb.x; x[3] = qb.y;
+        const ON_Surface* ss[2] = {&a, &b};
+        const ON_2dPoint* qq[2] = {&qa, &qb};
+        for (int k = 0; k < 4 && fixed < 0; ++k) {
+          const ON_Surface& s = *ss[k / 2];
+          const ON_Interval d = s.Domain(k % 2);
+          if (s.IsClosed(k % 2)) continue;
+          const double v = (*qq[k / 2])[k % 2];
+          if (v <= d.Min() || v >= d.Max()) fixed = k;
+        }
+        if (fixed < 0) continue;
+        hit_boundary = true;
+      }
+      if (!MarchSolve(a, b, x, fixed, opt.tolerance)) { hit_boundary = false; continue; }
+      const Point3d q = a.PointAt(x[0], x[1]);
+      // A point must be ON both surfaces. NewtonSolve() accepts anything inside opt.tolerance, so a solve that ran into an open domain
+      // bound (the surface ends there) stopped short with a residual of 1e-4: reject it, the shorter step lands on the bound exactly.
+      if (q.DistanceTo(b.PointAt(x[2], x[3])) > 1e-8 * std::max(1.0, q.DistanceTo(Point3d::Origin))) { hit_boundary = false; continue; }
+      Vector3d d = q - p;
+      const double dd = d.Length();
+      if (!(dd > 0.2 * h * (hit_boundary ? 0.0 : 1.0)) || dd > 2.5 * h) { hit_boundary = false; continue; }
+      d /= dd;
+      if (d * dir < (attempt > 12 ? 0.0 : 0.96) || d * t < 0.5) { hit_boundary = false; continue; }
+      if (!hit_boundary && dd < 0.2 * h) continue;
+      if (hit_boundary && dd < 1e-9 * diag) { stepped = false; break; }
+      // accept
+      ic.points.push_back(q);
+      ic.uv_a.emplace_back(x[0], x[1]);
+      ic.uv_b.emplace_back(x[2], x[3]);
+      ++added;
+      path += dd;
+      dir = d;
+      p = q;
+      uva = ON_2dPoint(x[0], x[1]);
+      uvb = ON_2dPoint(x[2], x[3]);
+      stepped = true;
+      break;
+    }
+    if (!stepped || hit_boundary) break;
+    if (path > 3 * h && p.DistanceTo(start) < 1.5 * h && (start - p) * dir > 0) { closed = true; break; }
+    h = std::min(h * 1.6, hmax);
+  }
+  return added;
+}
+
+// Surfaces that overlap by less than the seed meshes' sagitta (two spheres 1e-3 into each other against a chord tolerance of 0.02) have
+// meshes that never cross, so no seed chain exists at all although the crossing curve (a small closed loop) does. Where the crossing
+// search found nothing, a few of the closest vertex pairs of the two seed meshes are tried as starting guesses for the plain
+// S1 = S2 Newton solve; a pair that converges lies on the true curve, and the curve is marched out in both directions from it.
+double PolylineLength(const IntersectionCurve& c) {
+  double len = 0;
+  for (size_t i = 1; i < c.points.size(); ++i) len += c.points[i].DistanceTo(c.points[i - 1]);
+  return len;
+}
+
+void PenetrationSeedCurves(const ON_Surface& a, const ON_Surface& b, const SurfaceMesh& ma, const SurfaceMesh& mb, const IntersectOptions& opt, double diag,
+                           std::vector<IntersectionCurve>& out) {
+  const double pad = std::max(opt.mesh_tolerance * 4, 1e-9);
+  ON_BoundingBox ba = ma.bbox, bb = mb.bbox;
+  ba.m_min -= ON_3dVector(pad, pad, pad); ba.m_max += ON_3dVector(pad, pad, pad);
+  bb.m_min -= ON_3dVector(pad, pad, pad); bb.m_max += ON_3dVector(pad, pad, pad);
+  std::vector<size_t> ia, ib;
+  for (size_t i = 0; i < ma.pts.size(); ++i) if (bb.IsPointIn(ma.pts[i])) ia.push_back(i);
+  for (size_t j = 0; j < mb.pts.size(); ++j) if (ba.IsPointIn(mb.pts[j])) ib.push_back(j);
+  if (ia.empty() || ib.empty() || ia.size() * ib.size() > 6000000) return;
+  struct Pair { double d; size_t i, j; };
+  std::vector<Pair> best;
+  const size_t keep = 8;
+  for (size_t i : ia) {
+    double bd = std::numeric_limits<double>::max();
+    size_t bj = 0;
+    for (size_t j : ib) {
+      const double d = ma.pts[i].DistanceTo(mb.pts[j]);
+      if (d < bd) { bd = d; bj = j; }
+    }
+    best.push_back({bd, i, bj});
+  }
+  std::sort(best.begin(), best.end(), [](const Pair& x, const Pair& y) { return x.d < y.d; });
+  std::vector<std::pair<Point3d, ON_2dPoint>> used_seeds;
+  auto near_existing = [&](const Point3d& q) {
+    for (const IntersectionCurve& c : out)
+      for (size_t k = 0; k < c.points.size(); ++k)
+        if (q.DistanceTo(c.points[k]) <= std::max(opt.tolerance * 8, 0.05 * PolylineLength(c))) return true;
+    return false;
+  };
+  size_t tried = 0;
+  for (const Pair& pr : best) {
+    if (tried >= keep) break;
+    if (pr.d > 0.25 * diag) break;
+    ++tried;
+    double ua = ma.uv[pr.i].x, va = ma.uv[pr.i].y, ub = mb.uv[pr.j].x, vb = mb.uv[pr.j].y;
+    if (!RefineSurfaceSurfacePoint(a, b, ua, va, ub, vb, opt.tolerance)) continue;
+    const Point3d q = a.PointAt(ua, va);
+    if (q.DistanceTo(b.PointAt(ub, vb)) > 1e-8 * std::max(1.0, q.DistanceTo(Point3d::Origin))) continue;  // only a touch within tolerance, not a crossing
+    // A converged point on a domain edge is a contact along the edge of a face (a box edge lying on another box's face), not an interior crossing.
+    if (UVOnDomainBoundary(a, ON_2dPoint(ua, va)) || UVOnDomainBoundary(b, ON_2dPoint(ub, vb))) continue;
+    if (near_existing(q)) continue;
+    if (!SurfacesCrossAtPoint(a, b, ON_2dPoint(ua, va), ON_2dPoint(ub, vb), 3.0 * opt.tolerance)) continue;  // a touch, or an overlap whose curve is smaller than a few tolerances
+    Vector3d na, nb;
+    if (!SurfaceNormalUnit(a, ON_2dPoint(ua, va), na) || !SurfaceNormalUnit(b, ON_2dPoint(ub, vb), nb)) continue;
+    Vector3d t = ON_CrossProduct(na, nb);
+    if (!(t.Length() > 1e-5)) continue;
+    t.Unitize();
+    IntersectionCurve fwd, bwd;
+    fwd.points.push_back(q); fwd.uv_a.emplace_back(ua, va); fwd.uv_b.emplace_back(ub, vb);
+    bwd = fwd;
+    bool closed_f = false, closed_b = false;
+    MarchChainEnd(fwd, a, b, opt, diag, closed_f, &t);
+    if (closed_f) { fwd.closed = true; if (fwd.points.size() >= 3) out.push_back(std::move(fwd)); continue; }
+    const Vector3d mt = -t;
+    MarchChainEnd(bwd, a, b, opt, diag, closed_b, &mt);
+    IntersectionCurve whole;
+    for (size_t k = bwd.points.size(); k-- > 1;) { whole.points.push_back(bwd.points[k]); whole.uv_a.push_back(bwd.uv_a[k]); whole.uv_b.push_back(bwd.uv_b[k]); }
+    for (size_t k = 0; k < fwd.points.size(); ++k) { whole.points.push_back(fwd.points[k]); whole.uv_a.push_back(fwd.uv_a[k]); whole.uv_b.push_back(fwd.uv_b[k]); }
+    if (whole.points.size() >= 2) out.push_back(std::move(whole));
+  }
+}
+
+// Extends every open chain whose end lies in the interior of both surfaces. A chain that wraps back onto its own start becomes closed.
+void ExtendInteriorChainEnds(std::vector<IntersectionCurve>& chains, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt, double diag) {
+  for (size_t ci = 0; ci < chains.size(); ++ci) {
+    IntersectionCurve& ic = chains[ci];
+    if (ic.closed || ic.points.size() < 2) continue;
+    // End 0 is the back of the polyline, end 1 its front (the chain is reversed between the two passes).
+    for (int end = 0; end < 2 && !ic.closed; ++end) {
+      // A chain end with ANOTHER chain end just ahead of it is a gap in the seed chain (the mesh crossing missed one cell, typically where the
+      // curve passes exactly through a mesh vertex), not a stub: the chains are joined downstream, so marching on would only trace the neighbour twice.
+      bool gap_ahead = false;
+      {
+        const size_t nn = ic.points.size();
+        Vector3d dir = ic.points[nn - 1] - ic.points[nn - 2];
+        if (dir.Unitize()) {
+          for (size_t cj = 0; cj < chains.size() && !gap_ahead; ++cj) {
+            const IntersectionCurve& oc = chains[cj];
+            if (oc.points.size() < 2) continue;
+            for (int e2 = 0; e2 < 2 && !gap_ahead; ++e2) {
+              const Point3d& tp = e2 == 0 ? oc.points.front() : oc.points.back();
+              if (cj == ci && e2 == 1) continue;  // this very end (the current back)
+              const Vector3d d = tp - ic.points[nn - 1];
+              const double dist = d.Length();
+              if (dist <= 10.0 * opt.tolerance && d * dir >= 0.5 * dist) gap_ahead = true;  // within what StitchChains() joins
+            }
+          }
+        }
+      }
+      if (!gap_ahead && !UVOnDomainBoundary(a, ic.uv_a.back()) && !UVOnDomainBoundary(b, ic.uv_b.back())) {
+        bool closed = false;
+        MarchChainEnd(ic, a, b, opt, diag, closed);
+        if (closed) { ic.closed = true; break; }
+      }
+      std::reverse(ic.points.begin(), ic.points.end());
+      std::reverse(ic.uv_a.begin(), ic.uv_a.end());
+      std::reverse(ic.uv_b.begin(), ic.uv_b.end());
+    }
+  }
+}
+
 }  // namespace
+
+bool SurfacesCrossAtPoint(const ON_Surface& a, const ON_Surface& b, const ON_2dPoint& uv_a, const ON_2dPoint& uv_b, double step) {
+  ON_3dPoint P, Pb;
+  ON_3dVector du, dv, bu, bv;
+  if (!a.Ev1Der(uv_a.x, uv_a.y, P, du, dv) || !b.Ev1Der(uv_b.x, uv_b.y, Pb, bu, bv)) return false;
+  ON_3dVector na = ON_CrossProduct(du, dv), nb = ON_CrossProduct(bu, bv);
+  if (!na.Unitize() || !nb.Unitize()) return false;
+  ON_3dVector t = ON_CrossProduct(na, nb);
+  if (!t.Unitize()) return false;  // parallel normals: no crossing direction to speak of
+  ON_3dVector d = ON_CrossProduct(t, na);  // in A's tangent plane, perpendicular to the curve
+  if (!d.Unitize()) return false;
+  const double aa = du * du, ab = du * dv, bb2 = dv * dv, ri = du * d, rj = dv * d;
+  const double det = aa * bb2 - ab * ab;
+  if (!(std::fabs(det) > 1e-300)) return false;
+  const double wu = (ri * bb2 - rj * ab) / det, wv = (rj * aa - ri * ab) / det;
+  double g[2];
+  for (int k = 0; k < 2; ++k) {
+    const double sgn = k == 0 ? 1.0 : -1.0;
+    double u = uv_a.x + sgn * step * wu, v = uv_a.y + sgn * step * wv;
+    const ON_Interval du_dom = a.Domain(0), dv_dom = a.Domain(1);
+    if (a.IsClosed(0) && du_dom.Length() > 0) { while (u < du_dom.Min()) u += du_dom.Length(); while (u > du_dom.Max()) u -= du_dom.Length(); }
+    if (a.IsClosed(1) && dv_dom.Length() > 0) { while (v < dv_dom.Min()) v += dv_dom.Length(); while (v > dv_dom.Max()) v -= dv_dom.Length(); }
+    if (u < du_dom.Min() || u > du_dom.Max() || v < dv_dom.Min() || v > dv_dom.Max()) return false;  // the probe leaves the surface: undecidable
+    // Signed separation from the SECOND surface itself (not its tangent plane at P, which would drop its curvature - a cylinder 1e-9 into a
+    // plane would then look like a crossing): closest point on b, signed by b's normal there.
+    const ON_3dPoint Q = a.PointAt(u, v);
+    double cu = uv_b.x, cv = uv_b.y;
+    if (!SurfaceClosestPoint(b, Q, cu, cv, 30)) return false;
+    ON_3dPoint Cb;
+    ON_3dVector cbu, cbv;
+    if (!b.Ev1Der(cu, cv, Cb, cbu, cbv)) return false;
+    ON_3dVector ncb = ON_CrossProduct(cbu, cbv);
+    if (!ncb.Unitize()) return false;
+    g[k] = (Q - Cb) * ncb;
+  }
+  const double floor = 1e-12 * std::max(1.0, P.DistanceTo(ON_3dPoint::Origin));
+  return std::fabs(g[0]) > floor && std::fabs(g[1]) > floor && g[0] * g[1] < 0.0;
+}
 
 std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
   std::vector<IntersectionCurve> out;
@@ -2091,7 +2477,9 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
     const bool coplanar = a.IsPlanar(&pa, opt.tolerance) && b.IsPlanar(&pb, opt.tolerance) &&
                            pa.zaxis.IsParallelTo(pb.zaxis, 1e-6) != 0 &&
                            std::fabs(pa.DistanceTo(pb.origin)) <= opt.tolerance;
-    return coplanar ? CoincidentOverlapBoundaryCurves(a, b, opt) : out;
+    if (coplanar) return CoincidentOverlapBoundaryCurves(a, b, opt);
+    PenetrationSeedCurves(a, b, ma, mb, opt, diag, out);
+    if (out.empty()) return out;
   }
   std::vector<SeedPolyline> chains = ChainSegments(segs, std::max(eps * 100, 1e-7 * diag));
   for (const SeedPolyline& pl : chains) {
@@ -2112,6 +2500,7 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
     if (ic.closed && ic.points.size() < 3) ic.closed = false;
     out.push_back(std::move(ic));
   }
+  ExtendInteriorChainEnds(out, a, b, opt, diag);
   SplitAtSeams(out, a, b, opt);
   SplitAtPoles(out, a, b, opt);
   std::vector<IntersectionCurve> finished;
@@ -2798,9 +3187,11 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
   for (int i = 0; i <= n; ++i) samples[static_cast<size_t>(i)] = c.PointAt(d.ParameterAt(static_cast<double>(i) / n));
   struct Seed { double t; ON_2dPoint uv; };
   std::vector<Seed> seeds;
-  for (int i = 0; i < n; ++i) {
-    const Point3d& p0 = samples[static_cast<size_t>(i)];
-    const Point3d& p1 = samples[static_cast<size_t>(i) + 1];
+  // The seed mesh is inscribed in the surface (up to opt.mesh_tolerance inside it), so a curve that starts closer to the surface than that
+  // sagitta - a classification ray from a point 3e-4 inside a cylinder wall - starts OUTSIDE the mesh and never crosses it going out:
+  // the genuine hit just ahead of the origin had no seed and was never found. A short run-in before the start and a run-out past the
+  // end are tested too; their seeds are clamped to the curve's own domain, and Newton keeps only a root that is really on the curve.
+  auto try_segment = [&](const Point3d& p0, const Point3d& p1, double t0, double t1) {
     ON_BoundingBox sb;
     sb.Set(p0, true); sb.Set(p1, true);
     sb.m_min -= ON_3dVector(pad, pad, pad); sb.m_max += ON_3dVector(pad, pad, pad);
@@ -2813,8 +3204,15 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
       const ON_2dPoint& u1 = m.uv[static_cast<size_t>(tr[1])];
       const ON_2dPoint& u2 = m.uv[static_cast<size_t>(tr[2])];
       ON_2dPoint uv(u0.x + (u1.x - u0.x) * bu + (u2.x - u0.x) * bv, u0.y + (u1.y - u0.y) * bu + (u2.y - u0.y) * bv);
-      seeds.push_back({d.ParameterAt((i + Clamp(sp, 0, 1)) / n), uv});
+      seeds.push_back({Clamp(t0 + (t1 - t0) * Clamp(sp, 0, 1), d.Min(), d.Max()), uv});
     });
+  };
+  for (int i = 0; i < n; ++i) try_segment(samples[static_cast<size_t>(i)], samples[static_cast<size_t>(i) + 1], d.ParameterAt(static_cast<double>(i) / n), d.ParameterAt(static_cast<double>(i + 1) / n));
+  {
+    const double run = opt.mesh_tolerance * 1.5;
+    const Vector3d t_start = c.TangentAt(d.Min()), t_end = c.TangentAt(d.Max());
+    if (t_start.IsValid() && t_start.Length() > 0.5) try_segment(samples[0] - t_start * run, samples[0], d.Min(), d.Min());
+    if (t_end.IsValid() && t_end.Length() > 0.5) try_segment(samples[static_cast<size_t>(n)], samples[static_cast<size_t>(n)] + t_end * run, d.Max(), d.Max());
   }
   const std::vector<double> lo = {d.Min(), s.Domain(0).Min(), s.Domain(1).Min()}, hi = {d.Max(), s.Domain(0).Max(), s.Domain(1).Max()};
   for (const Seed& sd : seeds) {
@@ -2825,6 +3223,14 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     };
     double err = 0;
     if (!NewtonSolve(res, x, lo, hi, opt.tolerance, 40, &err)) continue;
+    // NewtonSolve() returns as soon as the residual is inside `opt.tolerance`, so a hit seeded from a facet of the (inscribed) seed mesh
+    // came back up to a chord sagitta off the true crossing: its ray parameter was wrong by far more than the 1e-6 a caller compares
+    // it with (a ray started 3e-4 inside a cylinder wall reported its exit as "behind the origin", so the point classified Out).
+    // Keep iterating to the floating-point floor; a step is only taken if it lowers the residual.
+    {
+      const double scale = std::max({1.0, s.PointAt(x[1], x[2]).DistanceTo(Point3d::Origin)});
+      NewtonSolve(res, x, lo, hi, 1e-11 * scale, 8, &err);
+    }
     CurveSurfaceHit h;
     h.t = x[0]; h.uv = ON_2dPoint(x[1], x[2]); h.point = c.PointAt(h.t); h.error = err;
     bool dup = false;
