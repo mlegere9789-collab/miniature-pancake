@@ -1,0 +1,128 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-ruby-api-04",
+  "corpora": [
+    "golden/sketchup/ruby"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 34,
+    "rows": 34,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 33
+  },
+  "deps": [],
+  "domains": [
+    "ruby-api"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Toolbar",
+        "rows": 1,
+        "score": 0.675,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-ruby-api-04",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "sketchup"
+  ],
+  "register_files": [
+    "sketchup/ruby-api.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-SKETCHUP-RUBY-0130": {
+      "commands": [
+        "Toolbar"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-RUBY-0101",
+    "D8-SKETCHUP-RUBY-0102",
+    "D8-SKETCHUP-RUBY-0103",
+    "D8-SKETCHUP-RUBY-0104",
+    "D8-SKETCHUP-RUBY-0105",
+    "D8-SKETCHUP-RUBY-0106",
+    "D8-SKETCHUP-RUBY-0107",
+    "D8-SKETCHUP-RUBY-0108",
+    "D8-SKETCHUP-RUBY-0109",
+    "D8-SKETCHUP-RUBY-0110",
+    "D8-SKETCHUP-RUBY-0111",
+    "D8-SKETCHUP-RUBY-0112",
+    "D8-SKETCHUP-RUBY-0113",
+    "D8-SKETCHUP-RUBY-0114",
+    "D8-SKETCHUP-RUBY-0115",
+    "D8-SKETCHUP-RUBY-0116",
+    "D8-SKETCHUP-RUBY-0117",
+    "D8-SKETCHUP-RUBY-0118",
+    "D8-SKETCHUP-RUBY-0119",
+    "D8-SKETCHUP-RUBY-0120",
+    "D8-SKETCHUP-RUBY-0121",
+    "D8-SKETCHUP-RUBY-0122",
+    "D8-SKETCHUP-RUBY-0123",
+    "D8-SKETCHUP-RUBY-0124",
+    "D8-SKETCHUP-RUBY-0125",
+    "D8-SKETCHUP-RUBY-0126",
+    "D8-SKETCHUP-RUBY-0127",
+    "D8-SKETCHUP-RUBY-0128",
+    "D8-SKETCHUP-RUBY-0129",
+    "D8-SKETCHUP-RUBY-0130",
+    "D8-SKETCHUP-RUBY-0131",
+    "D8-SKETCHUP-RUBY-0132",
+    "D8-SKETCHUP-RUBY-0133",
+    "D8-SKETCHUP-RUBY-0134"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-RUBY-0101",
+    "D8-SKETCHUP-RUBY-0102",
+    "D8-SKETCHUP-RUBY-0103",
+    "D8-SKETCHUP-RUBY-0104",
+    "D8-SKETCHUP-RUBY-0105",
+    "D8-SKETCHUP-RUBY-0106",
+    "D8-SKETCHUP-RUBY-0107",
+    "D8-SKETCHUP-RUBY-0108",
+    "D8-SKETCHUP-RUBY-0109",
+    "D8-SKETCHUP-RUBY-0110",
+    "D8-SKETCHUP-RUBY-0111",
+    "D8-SKETCHUP-RUBY-0112",
+    "D8-SKETCHUP-RUBY-0113",
+    "D8-SKETCHUP-RUBY-0114",
+    "D8-SKETCHUP-RUBY-0115",
+    "D8-SKETCHUP-RUBY-0116",
+    "D8-SKETCHUP-RUBY-0117",
+    "D8-SKETCHUP-RUBY-0118",
+    "D8-SKETCHUP-RUBY-0119",
+    "D8-SKETCHUP-RUBY-0120",
+    "D8-SKETCHUP-RUBY-0121",
+    "D8-SKETCHUP-RUBY-0122",
+    "D8-SKETCHUP-RUBY-0123",
+    "D8-SKETCHUP-RUBY-0124",
+    "D8-SKETCHUP-RUBY-0125",
+    "D8-SKETCHUP-RUBY-0126",
+    "D8-SKETCHUP-RUBY-0127",
+    "D8-SKETCHUP-RUBY-0128",
+    "D8-SKETCHUP-RUBY-0129",
+    "D8-SKETCHUP-RUBY-0131",
+    "D8-SKETCHUP-RUBY-0132",
+    "D8-SKETCHUP-RUBY-0133",
+    "D8-SKETCHUP-RUBY-0134"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: ruby-api (34 rows)",
+  "wave": 3
+}

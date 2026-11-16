@@ -1,0 +1,432 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-drafting-docs-layout-01",
+  "corpora": [
+    "layout fixtures: multi-sheet layouts with detail viewports, clipping planes and Make2D output"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 28,
+    "with_hint": 28,
+    "without_hint": 10
+  },
+  "deps": [],
+  "domains": [
+    "LAYOUT"
+  ],
+  "factory": "drafting-docs",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ClippingDrawings",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "EditClippingDrawings",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExportClippingDrawings",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ClippingSections",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ClearClippingSections",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DisableClippingPlane",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "EnableClippingPlane",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractClippingSections",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ImportLayout",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SaveClippingSectionCPlanes",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SaveClippingSectionViews",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ChangeSpace",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ClippingPlaneProperties",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CopyDetailToViewport",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CopyLayout",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Detail",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExportClippingSectionInfo",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtractClippingSlices",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Layout",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "LayoutProperties",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:126",
+        "rows": 3,
+        "score": 0.628,
+        "symbol": "dino8::kernel::ClippingPlaneInfo"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:988",
+        "rows": 2,
+        "score": 0.62,
+        "symbol": "dino8::kernel::Model::AddClippingPlane"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-drafting-docs-layout-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/LAYOUT.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-LAYOUT-0001": {
+      "commands": [
+        "ChangeSpace"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0002": {
+      "commands": [
+        "ClearClippingSections",
+        "ClippingSections",
+        "ViewClippingSections"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0003": {
+      "commands": [
+        "CopyDetailToViewport",
+        "CopyViewportToDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0004": {
+      "commands": [
+        "CopyLayout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0005": {
+      "commands": [
+        "Detail",
+        "SelDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0006": {
+      "commands": [
+        "DisableClippingPlane",
+        "EnableClippingPlane",
+        "ClippingPlane"
+      ],
+      "kernel": [
+        "dino8::kernel::ClippingPlaneInfo",
+        "dino8::kernel::Model::AddClippingPlane"
+      ]
+    },
+    "D8-RHINO-LAYOUT-0007": {
+      "commands": [
+        "EnableClippingPlane",
+        "DisableClippingPlane",
+        "ClippingPlane"
+      ],
+      "kernel": [
+        "dino8::kernel::ClippingPlaneInfo",
+        "dino8::kernel::Model::AddClippingPlane"
+      ]
+    },
+    "D8-RHINO-LAYOUT-0008": {
+      "commands": [
+        "EditClippingDrawings",
+        "ClippingDrawings",
+        "ExportClippingDrawings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0009": {
+      "commands": [
+        "ExportClippingDrawings",
+        "ClippingDrawings",
+        "EditClippingDrawings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0010": {
+      "commands": [
+        "ExportClippingSectionInfo"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0011": {
+      "commands": [
+        "ExtractClippingSections",
+        "ClippingSections",
+        "ViewClippingSections"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0012": {
+      "commands": [
+        "ExtractClippingSlices",
+        "ExtractClippingSections"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0013": {
+      "commands": [
+        "ImportLayout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0014": {
+      "commands": [
+        "Layout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0015": {
+      "commands": [
+        "LayoutProperties",
+        "Properties",
+        "TextProperties"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0016": {
+      "commands": [
+        "NestedClippingDrawing"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0017": {
+      "commands": [
+        "Make2D"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0018": {
+      "commands": [
+        "Print"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0019": {
+      "commands": [
+        "SaveClippingSectionCPlanes",
+        "SaveClippingSectionViews"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0020": {
+      "commands": [
+        "SaveClippingSectionViews",
+        "SaveClippingSectionCPlanes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0021": {
+      "commands": [
+        "ClippingDrawings",
+        "EditClippingDrawings",
+        "ExportClippingDrawings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0022": {
+      "commands": [
+        "ClippingPlaneProperties",
+        "ClippingPlane"
+      ],
+      "kernel": [
+        "dino8::kernel::ClippingPlaneInfo"
+      ]
+    },
+    "D8-RHINO-LAYOUT-0023": {
+      "commands": [
+        "ClippingSections",
+        "ClearClippingSections",
+        "ViewClippingSections"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0025": {
+      "commands": [
+        "ImportLayout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0030": {
+      "commands": [
+        "ClippingDrawings",
+        "EditClippingDrawings",
+        "ExportClippingDrawings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0031": {
+      "commands": [
+        "DocumentProperties"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0032": {
+      "commands": [
+        "UpdateClippingDrawings"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-LAYOUT-0036": {
+      "commands": [
+        "NamedView"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-LAYOUT-0001",
+    "D8-RHINO-LAYOUT-0002",
+    "D8-RHINO-LAYOUT-0003",
+    "D8-RHINO-LAYOUT-0004",
+    "D8-RHINO-LAYOUT-0005",
+    "D8-RHINO-LAYOUT-0006",
+    "D8-RHINO-LAYOUT-0007",
+    "D8-RHINO-LAYOUT-0008",
+    "D8-RHINO-LAYOUT-0009",
+    "D8-RHINO-LAYOUT-0010",
+    "D8-RHINO-LAYOUT-0011",
+    "D8-RHINO-LAYOUT-0012",
+    "D8-RHINO-LAYOUT-0013",
+    "D8-RHINO-LAYOUT-0014",
+    "D8-RHINO-LAYOUT-0015",
+    "D8-RHINO-LAYOUT-0016",
+    "D8-RHINO-LAYOUT-0017",
+    "D8-RHINO-LAYOUT-0018",
+    "D8-RHINO-LAYOUT-0019",
+    "D8-RHINO-LAYOUT-0020",
+    "D8-RHINO-LAYOUT-0021",
+    "D8-RHINO-LAYOUT-0022",
+    "D8-RHINO-LAYOUT-0023",
+    "D8-RHINO-LAYOUT-0024",
+    "D8-RHINO-LAYOUT-0025",
+    "D8-RHINO-LAYOUT-0026",
+    "D8-RHINO-LAYOUT-0027",
+    "D8-RHINO-LAYOUT-0028",
+    "D8-RHINO-LAYOUT-0029",
+    "D8-RHINO-LAYOUT-0030",
+    "D8-RHINO-LAYOUT-0031",
+    "D8-RHINO-LAYOUT-0032",
+    "D8-RHINO-LAYOUT-0033",
+    "D8-RHINO-LAYOUT-0034",
+    "D8-RHINO-LAYOUT-0035",
+    "D8-RHINO-LAYOUT-0036",
+    "D8-RHINO-LAYOUT-0037",
+    "D8-RHINO-LAYOUT-0038"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-LAYOUT-0024",
+    "D8-RHINO-LAYOUT-0026",
+    "D8-RHINO-LAYOUT-0027",
+    "D8-RHINO-LAYOUT-0028",
+    "D8-RHINO-LAYOUT-0029",
+    "D8-RHINO-LAYOUT-0033",
+    "D8-RHINO-LAYOUT-0034",
+    "D8-RHINO-LAYOUT-0035",
+    "D8-RHINO-LAYOUT-0037",
+    "D8-RHINO-LAYOUT-0038"
+  ],
+  "status": "open",
+  "title": "drafting-docs: LAYOUT (38 rows)",
+  "wave": 2
+}
