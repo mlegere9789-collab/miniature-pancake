@@ -69,7 +69,7 @@ History
 # Now move the section SIDEWAYS (+3 in X, still at z=5). The circle no longer
 # encircles the rail, but it still sits half way along it; UpdateHistory
 # re-derives the surface from the section's new shape/position, so the
-# bounding box now moves in X (x: -0.9073..1 becomes 2.093..4) while z stays
+# bounding box now moves in X (x: -1..1 becomes 2..4) while z stays
 # 0..10 - a real geometry change a no-op rebuild could not produce.
 SelNone
 SelID 2
