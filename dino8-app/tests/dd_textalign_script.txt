@@ -1,0 +1,51 @@
+# TEXTALIGN: B "Hi" (10,10) height 4 is the base; T1 "Hi" (30,25) height 4; T2 "Hi" (-5,40) height 2. @TMP@ is substituted by the section.
+Text Height=4 Hi 10,10,0
+SelLast
+SetObjectName DD_BASE
+SelNone
+Text Height=4 Hi 30,25,0
+Text Height=2 Hi -5,40,0
+# step 1 Left, the base picked at the second prompt
+SelAll
+TextAlign Mode=Left
+SelName DD_BASE
+Enter
+SelAll
+Export @TMP@/dd_ta1.dxf
+# step 2 Top
+SelAll
+TextAlign Mode=Top Base=First
+SelAll
+Export @TMP@/dd_ta2.dxf
+# step 3 Bottom
+SelAll
+TextAlign Mode=Bottom Base=First
+SelAll
+Export @TMP@/dd_ta3.dxf
+# step 4 Middle
+SelAll
+TextAlign Mode=Middle Base=First
+SelAll
+Export @TMP@/dd_ta4.dxf
+# step 5 Right
+SelAll
+TextAlign Mode=Right Base=First
+SelAll
+Export @TMP@/dd_ta5.dxf
+# step 6 Left again
+SelAll
+TextAlign Mode=Left Base=First
+SelAll
+Export @TMP@/dd_ta6.dxf
+# step 7 Center
+SelAll
+TextAlign Mode=Center Base=First
+SelAll
+Export @TMP@/dd_ta7.dxf
+# step 8 Left with the base picked, after the texts were moved around
+SelAll
+TextAlign Mode=Left
+SelName DD_BASE
+Enter
+SelAll
+Export @TMP@/dd_ta8.dxf

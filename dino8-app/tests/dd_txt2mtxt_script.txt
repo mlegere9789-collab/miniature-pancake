@@ -1,0 +1,26 @@
+# TXT2MTXT: AAA (0,0), BBB (0,20), CCC (0,10), all height 3. @TMP@ is substituted by the section.
+Text Height=3 AAA 0,0,0
+Text Height=3 BBB 0,20,0
+Text Height=3 CCC 0,10,0
+SelAll
+Txt2Mtxt Order=TopDown
+SelLast
+GetUserText
+SelAll
+Export @TMP@/dd_tm1.dxf
+New
+Text Height=3 AAA 0,0,0
+Text Height=3 BBB 0,20,0
+Text Height=3 CCC 0,10,0
+SelAll
+Txt2Mtxt Order=Selection
+SelAll
+Export @TMP@/dd_tm2.dxf
+New
+Text Height=3 AAA 0,0,0
+Text Height=3 BBB 0,20,0
+Text Height=3 CCC 0,10,0
+SelAll
+Txt2Mtxt Combine=No
+SelAll
+Export @TMP@/dd_tm3.dxf
