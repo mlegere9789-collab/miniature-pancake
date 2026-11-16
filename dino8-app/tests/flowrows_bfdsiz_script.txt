@@ -1,0 +1,6 @@
+# Flow Register row Domain Size (Blender Geometry Nodes): player + bake, read back by sections/96_bfdsiz.sh (see flowrows3_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 34
+SelAll
+List
