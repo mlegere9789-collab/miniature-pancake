@@ -44,6 +44,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
@@ -269,11 +270,81 @@ std::vector<Point3d> SampleCurve(const kernel::NurbsCurve& c, double tol) {
 // DXF writer
 // ---------------------------------------------------------------------------
 
+// UTF-8 text with every non-ASCII character written as the DXF \U+XXXX escape (uppercase hexadecimal, four digits per UTF-16 code unit).
+// A byte that does not start a valid UTF-8 sequence is taken as the Latin-1 character of the same value.
+std::string DxfEscapeNonAscii(const std::string& v) {
+  bool plain = true;
+  for (unsigned char c : v) if (c >= 0x80) { plain = false; break; }
+  if (plain) return v;
+  std::string out;
+  char buf[16];
+  auto unit = [&](unsigned u) { std::snprintf(buf, sizeof(buf), "\\U+%04X", u & 0xFFFFu); out += buf; };
+  for (size_t i = 0; i < v.size();) {
+    const unsigned char c = static_cast<unsigned char>(v[i]);
+    if (c < 0x80) { out += static_cast<char>(c); ++i; continue; }
+    int extra = c >= 0xF0 && c < 0xF8 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
+    if (c >= 0xF8) extra = -1;
+    unsigned cp = extra == 3 ? (c & 0x07u) : extra == 2 ? (c & 0x0Fu) : (c & 0x1Fu);
+    bool ok = extra > 0 && i + static_cast<size_t>(extra) < v.size() + 0;
+    for (int k = 1; ok && k <= extra; ++k) {
+      const unsigned char d = static_cast<unsigned char>(v[i + static_cast<size_t>(k)]);
+      if ((d & 0xC0) != 0x80) ok = false; else cp = (cp << 6) | (d & 0x3Fu);
+    }
+    if (!ok) { unit(c); ++i; continue; }
+    i += static_cast<size_t>(extra) + 1;
+    if (cp > 0xFFFF) { cp -= 0x10000; unit(0xD800u + (cp >> 10)); unit(0xDC00u + (cp & 0x3FFu)); }
+    else unit(cp);
+  }
+  return out;
+}
+
+// The reverse of DxfEscapeNonAscii for reading: every \U+XXXX (four hexadecimal digits) becomes its character as UTF-8, a high and a low
+// surrogate in a row becoming one character above U+FFFF. Text without the escape is returned as it is.
+std::string DxfDecodeUnicodeEscapes(const std::string& v) {
+  if (v.find("\\U+") == std::string::npos) return v;
+  auto hex4 = [&](size_t at, unsigned& out) {
+    if (at + 7 > v.size() || v.compare(at, 3, "\\U+") != 0) return false;
+    unsigned x = 0;
+    for (size_t k = at + 3; k < at + 7; ++k) {
+      const char h = v[k];
+      const int d = h >= '0' && h <= '9' ? h - '0' : h >= 'A' && h <= 'F' ? h - 'A' + 10 : h >= 'a' && h <= 'f' ? h - 'a' + 10 : -1;
+      if (d < 0) return false;
+      x = x * 16 + static_cast<unsigned>(d);
+    }
+    out = x;
+    return true;
+  };
+  auto utf8 = [](unsigned cp, std::string& dst) {
+    if (cp < 0x80) dst += static_cast<char>(cp);
+    else if (cp < 0x800) { dst += static_cast<char>(0xC0 | (cp >> 6)); dst += static_cast<char>(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { dst += static_cast<char>(0xE0 | (cp >> 12)); dst += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); dst += static_cast<char>(0x80 | (cp & 0x3F)); }
+    else { dst += static_cast<char>(0xF0 | (cp >> 18)); dst += static_cast<char>(0x80 | ((cp >> 12) & 0x3F)); dst += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); dst += static_cast<char>(0x80 | (cp & 0x3F)); }
+  };
+  std::string out;
+  for (size_t i = 0; i < v.size();) {
+    unsigned a = 0, b = 0;
+    if (hex4(i, a)) {
+      if (a >= 0xD800 && a < 0xDC00 && hex4(i + 7, b) && b >= 0xDC00 && b < 0xE000) { utf8(0x10000 + ((a - 0xD800) << 10) + (b - 0xDC00), out); i += 14; continue; }
+      utf8(a, out);
+      i += 7;
+      continue;
+    }
+    out += v[i++];
+  }
+  return out;
+}
+
 class DxfWriter {
  public:
   explicit DxfWriter(std::ostream& os) : os_(os) {}
 
-  void G(int code, const std::string& v) { os_ << code << "\n" << v << "\n"; }
+  void G(int code, const std::string& v) {
+    if (ascii_only_) { os_ << code << "\n" << DxfEscapeNonAscii(v) << "\n"; return; }
+    os_ << code << "\n" << v << "\n";
+  }
+  // Releases up to AutoCAD 2004 (AC1018) store DXF strings in a code page, so a character outside ASCII is written as the \U+XXXX
+  // escape (a UTF-16 code unit, a surrogate pair above U+FFFF); 2007 and later (AC1021 on) store UTF-8 as it is.
+  void SetAsciiOnly(bool on) { ascii_only_ = on; }
   void G(int code, double v) { G(code, Num(v, 9)); }
   void G(int code, int v) { G(code, std::to_string(v)); }
   void G(int code, long long v) { G(code, std::to_string(v)); }
@@ -311,6 +382,7 @@ class DxfWriter {
 
  private:
   std::ostream& os_;
+  bool ascii_only_ = false;
   std::string linetype_;
   std::string text_style_ = "Standard", dim_style_ = "Standard";
   // DXF handles are hex strings with no fixed width; 64-bit (not `long`,
@@ -331,6 +403,18 @@ double DxfAngleDeg(Point3d center, Point3d p) {
   double a = std::atan2(p.y - center.y, p.x - center.x) * 180.0 / ON_PI;
   if (a < 0) a += 360.0;
   return a;
+}
+
+// The DXF lineweight enumeration (group 370, hundredths of a millimetre) nearest to a print width in millimetres: AutoCAD stores only
+// these 24 values (0.00, 0.05, 0.09, 0.13, 0.15, 0.18, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.53, 0.60, 0.70, 0.80, 0.90, 1.00, 1.06, 1.20,
+// 1.40, 1.58, 2.00, 2.11 mm); -3 is "default" (a print width of 0, or a layer that does not print, which carries no width).
+int DxfLineweight(double print_width_mm) {
+  if (!(print_width_mm > 0.0)) return -3;
+  static const int kValues[] = {0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211};
+  const double hundredths = print_width_mm * 100.0;
+  int best = kValues[0];
+  for (int v : kValues) if (std::fabs(v - hundredths) < std::fabs(best - hundredths)) best = v;
+  return best;
 }
 
 void WriteDxfPolyline(DxfWriter& w, const std::vector<Point3d>& pts, bool closed, const std::string& layer,
@@ -1446,6 +1530,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
 
   // HEADER
   const AcadScheme& scheme = EffectiveAcadScheme(doc);
+  w.SetAsciiOnly(scheme.acadver <= std::string("AC1018"));  // 2004 and earlier: code-page text, so \U+XXXX escapes; 2007 and later: UTF-8
   w.G(0, "SECTION"); w.G(2, "HEADER");
   w.G(9, "$ACADVER"); w.G(1, scheme.acadver);
   w.G(9, "$INSUNITS");
@@ -1455,7 +1540,42 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   }
   // The document multiplies every linetype pattern by this for display; the LTYPE records below hold the raw lengths.
   w.G(9, "$LTSCALE"); w.G(40, doc.Settings().linetype_scale > 0 ? doc.Settings().linetype_scale : 1.0);
-  w.G(9, "$HANDSEED"); w.G(5, "FFFF");
+  // Extents of what is written (world coordinates, group codes 10/20/30), the world coordinate system as the UCS in effect (everything
+  // below is written in WCS), the current layer and the default style names, with the group codes and value types of the DXF reference's
+  // header-variable table: $EXTMIN/$EXTMAX/$UCSORG/$UCSXDIR/$UCSYDIR 10+20+30 (reals), $CLAYER 8, $DIMSTYLE 2, $TEXTSTYLE 7, $CELTYPE 6
+  // (names), $CECOLOR 62 (integer, 256 = ByLayer), $TDUPDATE/$TDINDWG 40 (reals: Julian date and elapsed days).
+  {
+    bool have_ext = false;
+    Point3d ext_lo(0, 0, 0), ext_hi(0, 0, 0);
+    for (const SceneObject* o : objs) {
+      const kernel::BoundingBox bb = o->BoundingBox();
+      if (!std::isfinite(bb.min.x) || !std::isfinite(bb.max.x) || bb.max.x < bb.min.x) continue;
+      if (!have_ext) { ext_lo = bb.min; ext_hi = bb.max; have_ext = true; continue; }
+      ext_lo = Point3d(std::min(ext_lo.x, bb.min.x), std::min(ext_lo.y, bb.min.y), std::min(ext_lo.z, bb.min.z));
+      ext_hi = Point3d(std::max(ext_hi.x, bb.max.x), std::max(ext_hi.y, bb.max.y), std::max(ext_hi.z, bb.max.z));
+    }
+    w.G(9, "$EXTMIN"); w.Point(10, ext_lo);
+    w.G(9, "$EXTMAX"); w.Point(10, ext_hi);
+    w.G(9, "$UCSORG"); w.Point(10, Point3d(0, 0, 0));
+    w.G(9, "$UCSXDIR"); w.Point(10, Point3d(1, 0, 0));
+    w.G(9, "$UCSYDIR"); w.Point(10, Point3d(0, 1, 0));
+    const int cur = doc.CurrentLayer();
+    w.G(9, "$CLAYER"); w.G(8, cur >= 0 && static_cast<size_t>(cur) < layer_names.size() ? layer_names[static_cast<size_t>(cur)] : layer_names.front());
+    w.G(9, "$DIMSTYLE"); w.G(2, std::string("Standard"));
+    w.G(9, "$TEXTSTYLE"); w.G(7, std::string("Standard"));
+    w.G(9, "$CELTYPE"); w.G(6, std::string("ByLayer"));
+    w.G(9, "$CECOLOR"); w.G(62, 256);
+    // Julian date of this save (Unix epoch = JD 2440587.5) and the editing time, which a one-shot export does not accumulate.
+    const double jd = 2440587.5 + static_cast<double>(std::time(nullptr)) / 86400.0;
+    w.G(9, "$TDUPDATE"); w.G(40, jd);
+    w.G(9, "$TDINDWG"); w.G(40, 0.0);
+  }
+  // The next handle to assign: the value is only known once every entity is written, so a fixed-width hex field is reserved here and
+  // filled in below (a handle with leading zeros is the same number).
+  w.G(9, "$HANDSEED");
+  os << 5 << "\n";
+  const std::streampos handseed_pos = os.tellp();
+  os << "00000000\n";
   w.G(0, "ENDSEC");
 
   // TABLES (LAYER, plus BLOCK_RECORD when there's a named block to write -
@@ -1472,6 +1592,36 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   // or the 330 tags (it finds blocks by the BLOCKS section's own structure
   // instead), so neither one changes anything it reads.
   w.G(0, "SECTION"); w.G(2, "TABLES");
+  // VPORT: the one *ACTIVE record (the current viewport configuration) a DXF reader expects, describing the view that shows everything that
+  // was written: centred on the extents, as high as the extents (a non-degenerate 1 x 1 minimum), looking down -Z with the target at the
+  // origin, the default 50 mm lens (codes per the DXF reference, VPORT group codes).
+  {
+    double cx = 0.0, cy = 0.0, height = 1.0;
+    bool have = false;
+    double lox = 0, loy = 0, hix = 0, hiy = 0;
+    for (const SceneObject* o : objs) {
+      const kernel::BoundingBox bb = o->BoundingBox();
+      if (!std::isfinite(bb.min.x) || !std::isfinite(bb.max.x) || bb.max.x < bb.min.x) continue;
+      if (!have) { lox = bb.min.x; loy = bb.min.y; hix = bb.max.x; hiy = bb.max.y; have = true; continue; }
+      lox = std::min(lox, bb.min.x); loy = std::min(loy, bb.min.y); hix = std::max(hix, bb.max.x); hiy = std::max(hiy, bb.max.y);
+    }
+    if (have) { cx = 0.5 * (lox + hix); cy = 0.5 * (loy + hiy); height = std::max(1.0, std::max(hix - lox, hiy - loy)); }
+    const std::string ctrl = w.Handle();
+    w.G(0, "TABLE"); w.G(2, "VPORT"); w.G(5, ctrl); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+    w.G(70, 1);
+    w.G(0, "VPORT"); w.G(5, w.Handle()); w.G(330, ctrl);
+    w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbViewportTableRecord");
+    w.G(2, std::string("*ACTIVE")); w.G(70, 0);
+    w.G(10, 0.0); w.G(20, 0.0); w.G(11, 1.0); w.G(21, 1.0);  // the viewport fills the window (fractions of it)
+    w.G(12, cx); w.G(22, cy);                                  // view centre
+    w.G(13, 0.0); w.G(23, 0.0); w.G(14, 1.0); w.G(24, 1.0); w.G(15, 1.0); w.G(25, 1.0);  // snap base, snap spacing, grid spacing
+    w.G(16, 0.0); w.G(26, 0.0); w.G(36, 1.0);                  // view direction (from the target towards the camera)
+    w.G(17, 0.0); w.G(27, 0.0); w.G(37, 0.0);                  // view target
+    w.G(40, height); w.G(41, 1.0); w.G(42, 50.0);              // view height, aspect ratio, lens length
+    w.G(43, 0.0); w.G(44, 0.0); w.G(50, 0.0); w.G(51, 0.0);    // front and back clipping, snap rotation, view twist
+    w.G(71, 0); w.G(72, 100); w.G(73, 1); w.G(74, 3); w.G(75, 0); w.G(76, 0); w.G(77, 0); w.G(78, 0);
+    w.G(0, "ENDTAB");
+  }
   {
     const std::string ltype_ctrl = w.Handle();
     w.G(0, "TABLE"); w.G(2, "LTYPE"); w.G(5, ltype_ctrl); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
@@ -1521,6 +1671,22 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
     }
     w.G(0, "ENDTAB");
   }
+  // VIEW and UCS: empty (the document keeps no named views in this export and everything is written in the world coordinate system);
+  // APPID: ACAD, the registration every entity's extended data and every AutoCAD reader assumes (AcDbRegAppTableRecord).
+  for (const char* empty_table : {"VIEW", "UCS"}) {
+    w.G(0, "TABLE"); w.G(2, std::string(empty_table)); w.G(5, w.Handle()); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+    w.G(70, 0);
+    w.G(0, "ENDTAB");
+  }
+  {
+    const std::string ctrl = w.Handle();
+    w.G(0, "TABLE"); w.G(2, "APPID"); w.G(5, ctrl); w.G(330, "0"); w.G(100, "AcDbSymbolTable");
+    w.G(70, 1);
+    w.G(0, "APPID"); w.G(5, w.Handle()); w.G(330, ctrl);
+    w.G(100, "AcDbSymbolTableRecord"); w.G(100, "AcDbRegAppTableRecord");
+    w.G(2, std::string("ACAD")); w.G(70, 0);
+    w.G(0, "ENDTAB");
+  }
   // DIMSTYLE: the same annotation styles as dimension styles (text height DIMTXT, arrow size DIMASZ, extension-line gap DIMEXO and
   // overshoot DIMEXE, text above/centred DIMTAD 1/0, decimals DIMDEC/DIMADEC, the unit suffix as DIMPOST "<> suffix"), which
   // DIMENSION and LEADER name in group 3.
@@ -1564,6 +1730,10 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
       const std::string lt = L ? dxf_linetype_of(L->linetype) : std::string();
       w.G(6, lt.empty() ? std::string("Continuous") : lt);
     }
+    // Plot flag (290: 0 = never plotted, the layer's negative print width) and lineweight (370, hundredths of a millimetre; -3 = the
+    // default pen) from the layer's print width.
+    w.G(290, L && L->print_width_mm < 0 ? 0 : 1);
+    w.G(370, L ? DxfLineweight(L->print_width_mm) : -3);
   }
   w.G(0, "ENDTAB");
   std::map<std::string, std::string> block_record_handles;
@@ -1598,7 +1768,8 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
       const BlockDefinition* def = doc.FindBlock(name);
       if (!def) continue;
       const std::string& owner = block_record_handles.at(name);
-      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
+      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(330, owner); w.G(100, "AcDbEntity"); w.G(8, "0");
+      w.G(100, "AcDbBlockBegin");
       w.G(2, name);
       w.G(70, 0);
       w.Point(10, def->base);
@@ -1611,13 +1782,14 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         w.SetLinetype(std::string());
       }
       w.SetLinetype(std::string());
-      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
+      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(100, "AcDbEntity"); w.G(8, "0"); w.G(100, "AcDbBlockEnd");
     }
     // The anonymous *D blocks of the DIMENSION entities (flag 1 = anonymous), at the origin like AutoCAD's own: members are
     // the dimension group's curves in world coordinates.
     for (const auto& db : dim_blocks) {
       const std::string& owner = block_record_handles.at(db.first);
-      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
+      w.G(0, "BLOCK"); w.G(5, w.Handle()); w.G(330, owner); w.G(100, "AcDbEntity"); w.G(8, "0");
+      w.G(100, "AcDbBlockBegin");
       w.G(2, db.first);
       w.G(70, 1);
       w.Point(10, Point3d(0, 0, 0));
@@ -1629,7 +1801,7 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         WriteDxfCurve(w, *mo->curve, layer_names[li], mcolor, &owner);
       }
       w.SetLinetype(std::string());
-      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(8, "0");
+      w.G(0, "ENDBLK"); w.G(5, w.Handle()); w.G(330, owner); w.G(100, "AcDbEntity"); w.G(8, "0"); w.G(100, "AcDbBlockEnd");
     }
     w.G(0, "ENDSEC");
   }
@@ -1892,6 +2064,13 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   }
   w.G(0, "ENDSEC");
   w.G(0, "EOF");
+  if (handseed_pos != std::streampos(-1)) {
+    char seed[16];
+    std::snprintf(seed, sizeof(seed), "%08llX", static_cast<unsigned long long>(w.NextHandleValue()));
+    os.seekp(handseed_pos);
+    os.write(seed, 8);
+    os.seekp(0, std::ios::end);
+  }
   if (!os) {
     error = "Could not write " + path;
     return false;
@@ -2321,6 +2500,10 @@ class DxfImporter {
     const int flags = e.I(70);
     if (flags & 1) L.visible = false;   // frozen
     if (flags & 4) L.locked = true;
+    // Lineweight (370, hundredths of a millimetre; negative = default / ByLayer / ByBlock = no explicit pen width) and plot flag (290,
+    // 0 = the layer is never plotted, which is a negative print width here).
+    if (e.Has(370) && e.I(370) >= 0) L.print_width_mm = e.I(370) / 100.0;
+    if (e.Has(290) && e.I(290) == 0) L.print_width_mm = -std::max(std::fabs(L.print_width_mm), 0.01);
   }
 
   void ApplyAttributes(SceneObject& o, const DxfEntity& e) {
@@ -3355,11 +3538,31 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
       char* end = nullptr;
       const long code = std::strtol(c.c_str(), &end, 10);
       if (end == c.c_str()) continue;
-      groups.push_back({static_cast<int>(code), Trim(value_line)});
+      groups.push_back({static_cast<int>(code), DxfDecodeUnicodeEscapes(Trim(value_line))});
     }
   }
   if (groups.empty()) {
     summary = "Not a DXF file: " + path;
+    return false;
+  }
+
+  // $ACADVER (HEADER, group 1) names the release the file was written by: AC1006 (R10), AC1009 (R11/R12), AC1012 (R13), AC1014 (R14),
+  // AC1015 (2000), AC1018 (2004), AC1021 (2007), AC1024 (2010), AC1027 (2013), AC1032 (2018 and later). A name beyond AC1032 is a
+  // release newer than this reader knows (its entities may mean something else), and a name that is none of these is not a version ID at
+  // all: both stop the import before anything is added, so no drawing data is lost or half-read. A file without $ACADVER (R10 and
+  // hand-written files) is read as it is.
+  for (size_t i = 0; i + 1 < groups.size(); ++i) {
+    if (groups[i].code != 9 || Upper(groups[i].value) != "$ACADVER" || groups[i + 1].code != 1) continue;
+    const std::string id = Upper(groups[i + 1].value);
+    static const char* const kKnown[] = {"AC1006", "AC1009", "AC1012", "AC1014", "AC1015", "AC1018", "AC1021", "AC1024", "AC1027", "AC1032"};
+    bool known = false;
+    for (const char* k : kKnown) if (id == k) known = true;
+    if (known) break;
+    const bool numeric = id.size() == 6 && id.compare(0, 2, "AC") == 0 && std::isdigit(static_cast<unsigned char>(id[2])) &&
+                         std::isdigit(static_cast<unsigned char>(id[3])) && std::isdigit(static_cast<unsigned char>(id[4])) &&
+                         std::isdigit(static_cast<unsigned char>(id[5]));
+    if (numeric && id > "AC1032") summary = "Unsupported DXF version " + id + ": it was written by a release newer than AutoCAD 2018 (AC1032), which this reader does not know; nothing was imported";
+    else summary = "Unsupported DXF version ID '" + groups[i + 1].value + "' ($ACADVER); nothing was imported";
     return false;
   }
 
@@ -3373,6 +3576,14 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   for (size_t i = 0; i + 1 < groups.size(); ++i) {
     if (groups[i].code == 9 && Upper(groups[i].value) == "$INSUNITS" && groups[i + 1].code == 70) {
       file_insunits = std::atoi(groups[i + 1].value.c_str());
+      break;
+    }
+  }
+  // $LTSCALE (HEADER, group 40): the global linetype scale, restored into the document when it is a positive number.
+  for (size_t i = 0; i + 1 < groups.size(); ++i) {
+    if (groups[i].code == 9 && Upper(groups[i].value) == "$LTSCALE" && groups[i + 1].code == 40) {
+      const double ls = std::atof(groups[i + 1].value.c_str());
+      if (ls > 0.0 && std::isfinite(ls)) doc.Settings().linetype_scale = ls;
       break;
     }
   }
