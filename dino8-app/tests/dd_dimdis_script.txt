@@ -1,0 +1,28 @@
+# DIMDISASSOCIATE: two lines, each with a dimension anchored at both ends; the second dimension is disassociated; both lines are scaled x2 about the origin.
+Line 0,0,0 10,0,0
+SelLast
+SetObjectName DD_L1
+SelNone
+Dim 0,0,0 10,0,0 5,-3,0
+SelNone
+Line 0,20,0 10,20,0
+SelLast
+SetObjectName DD_L2
+SelNone
+Dim 0,20,0 10,20,0 5,17,0
+SelLast
+DimDisassociate
+SelNone
+SelName DD_L1
+Scale 0,0,0 2
+SelNone
+SelName DD_L2
+Scale 0,0,0 2
+SelNone
+UpdateDimensions
+SelAll
+Export @TMP@/dd_dd.dxf
+# a dimension that is already free, and a non-dimension annotation
+Text Hi 0,60,0
+SelAll
+DimDisassociate

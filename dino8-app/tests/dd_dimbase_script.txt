@@ -1,0 +1,15 @@
+# DIMBASELINE: base (0,0)-(4,0) with its line below at y=-5, baselines to x=9 and x=15 with Spacing=3; then a base above (y=56) with the default spacing.
+Dim 0,0,0 4,0,0 2,-5,0
+SelLast
+DimBaseline Spacing=3
+9,0,0
+15,0,0
+Enter
+SelNone
+Dim 0,50,0 4,50,0 2,56,0
+SelLast
+DimBaseline
+10,50,0
+Enter
+SelAll
+Export @TMP@/dd_db.dxf
