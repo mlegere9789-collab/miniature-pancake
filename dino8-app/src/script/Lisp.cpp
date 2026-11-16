@@ -871,6 +871,656 @@ std::vector<double> CurveOp(Interp& in, const char* fn, const Value& e, const ch
 
 using BuiltinFn = std::function<Value(Interp&, List&)>;
 
+// ===== ROW2SCR: number / angle / distance conversion, units, wildcards, symbols, file names ===========================
+// Everything below follows the AutoLISP reference pages named in the Parity Register rows D8-AUTOCAD-LISP-0112 (angtof),
+// -0113 (angtos), -0152 (distof), -0141 (cvunit), -0266 (rtos), -0267 (set), -0277 (snvalid), -0309 / -0310 (vl-bb-ref /
+// vl-bb-set), -0330 to -0332 (vl-filename-*), -0334 (vl-list*), -0367 / -0368 (vl-symbol-value / vl-symbolp), -0374
+// (wcmatch) and -0125 (atoms-family).
+bool IsBuiltinName(const std::string& n);              // defined after struct Builtins
+std::vector<std::string> BuiltinNames();               // likewise
+
+constexpr double kRw2Pi = 3.14159265358979323846;
+
+// A numeric system variable (AUNITS, AUPREC, LUNITS, LUPREC, UNITMODE) when the host has it, else the AutoCAD default.
+double HostNum(Interp& in, const char* name, double def) {
+  if (!in.host.getvar) return def;
+  DxfItem d;
+  if (!in.host.getvar(name, d)) return def;
+  if (d.k == DxfItem::K::Int) return static_cast<double>(d.i);
+  if (d.k == DxfItem::K::Real) return d.x;
+  return def;
+}
+long long NeedWhole(const char* fn, const Value& v) {
+  if (v.t != Value::T::Int) Fail(std::string("bad argument type: integerp: ") + Interp::Format(v, true) + " in " + fn);
+  return v.i;
+}
+
+std::string Trim(const std::string& s) {
+  size_t b = 0, e = s.size();
+  while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+  while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+  return s.substr(b, e - b);
+}
+
+long long Gcd64(long long a, long long b) { while (b) { const long long t = a % b; a = b; b = t; } return a; }
+
+// ---- rtos ------------------------------------------------------------------------------------------------------
+// mode 1 scientific, 2 decimal, 3 engineering (feet and decimal inches), 4 architectural (feet, inches and a fraction
+// of an inch with denominator 2^precision), 5 fractional (units and a fraction with denominator 2^precision). The
+// drawing unit of modes 3 to 5 is the inch.
+std::string RtosFormat(double x, int mode, int prec) {
+  char buf[96];
+  if (mode == 1) { std::snprintf(buf, sizeof buf, "%.*E", prec, x); return buf; }
+  if (mode == 2) { std::snprintf(buf, sizeof buf, "%.*f", prec, x); return buf; }
+  const bool neg = x < 0;
+  const double ax = std::fabs(x);
+  if (mode == 3) {
+    double scale = 1;
+    for (int k = 0; k < prec; ++k) scale *= 10;
+    if (ax * scale > 9e15) Fail("bad argument value: the number is too large for engineering units at this precision");
+    const long long units = std::llround(ax * scale);
+    const long long per_foot = 12 * static_cast<long long>(scale);
+    const long long feet = units / per_foot, rem = units % per_foot;
+    const long long whole = rem / static_cast<long long>(scale), frac = rem % static_cast<long long>(scale);
+    std::string s = (neg && units != 0 ? "-" : "") + std::to_string(feet) + "'-" + std::to_string(whole);
+    if (prec > 0) { std::string f = std::to_string(frac); s += "." + std::string(static_cast<size_t>(prec) - std::min(static_cast<size_t>(prec), f.size()), '0') + f; }
+    return s + "\"";
+  }
+  if (prec > 8) Fail("bad argument value: precision of at most 8 for fractional units");
+  const long long den = 1LL << prec;
+  if (ax * static_cast<double>(den) > 9e15) Fail("bad argument value: the number is too large for these units");
+  const long long units = std::llround(ax * static_cast<double>(den));
+  long long whole = units / den, num = units % den, d = den;
+  if (num) { const long long g = Gcd64(num, d); num /= g; d /= g; }
+  const std::string sign = neg && units != 0 ? "-" : "";
+  std::string frac = num ? std::to_string(num) + "/" + std::to_string(d) : "";
+  if (mode == 5) {
+    if (!num) return sign + std::to_string(whole);
+    return sign + (whole ? std::to_string(whole) + " " : "") + frac;
+  }
+  return sign + std::to_string(whole / 12) + "'-" + std::to_string(whole % 12) + (num ? " " + frac : "") + "\"";
+}
+
+// ---- distof ----------------------------------------------------------------------------------------------------
+bool ParsePlain(const std::string& s, bool allow_exp, double& out) {
+  if (s.empty()) return false;
+  size_t digits = 0;
+  for (char c : s) {
+    if (std::isdigit(static_cast<unsigned char>(c))) ++digits;
+    else if (c == '+' || c == '-' || c == '.') continue;
+    else if ((c == 'e' || c == 'E') && allow_exp) continue;
+    else return false;
+  }
+  if (!digits) return false;
+  char* end = nullptr;
+  out = std::strtod(s.c_str(), &end);
+  return end && *end == 0;
+}
+bool ParseWholeDigits(const std::string& s, long long& out) {
+  if (s.empty() || s.size() > 15) return false;
+  for (char c : s) if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+  out = std::atoll(s.c_str());
+  return true;
+}
+// "17", "17.5", "1/2", "17 1/2" (the inches or the units part, no sign).
+bool ParseMixed(const std::string& in_s, bool allow_decimal, double& out) {
+  const std::string s = Trim(in_s);
+  if (s.empty()) return false;
+  const size_t sp = s.find_first_of(" \t");
+  auto frac = [](const std::string& t, double& v) {
+    const size_t sl = t.find('/');
+    if (sl == std::string::npos) return false;
+    long long n, d;
+    if (!ParseWholeDigits(t.substr(0, sl), n) || !ParseWholeDigits(t.substr(sl + 1), d) || d == 0) return false;
+    v = static_cast<double>(n) / static_cast<double>(d);
+    return true;
+  };
+  if (sp == std::string::npos) {
+    if (s.find('/') != std::string::npos) return frac(s, out);
+    if (s.find_first_of("+-") != std::string::npos) return false;
+    return allow_decimal && ParsePlain(s, false, out);
+  }
+  long long w;
+  double f;
+  if (!ParseWholeDigits(s.substr(0, sp), w) || !frac(Trim(s.substr(sp + 1)), f)) return false;
+  out = static_cast<double>(w) + f;
+  return true;
+}
+// mode 1..5 as rtos writes them (3 and 4 are interchangeable); false: not in that format.
+bool DistOf(const std::string& in_s, int mode, double& out) {
+  std::string s = Trim(in_s);
+  if (s.empty()) return false;
+  if (mode == 1) return ParsePlain(s, true, out);
+  if (mode == 2) return ParsePlain(s, false, out);
+  bool neg = false;
+  if (s[0] == '-') { neg = true; s.erase(0, 1); s = Trim(s); }
+  else if (s[0] == '+') { s.erase(0, 1); s = Trim(s); }
+  if (s.empty()) return false;
+  double v = 0;
+  if (mode == 5) {
+    if (!ParseMixed(s, true, v)) return false;
+  } else {
+    double feet = 0;
+    const size_t q = s.find('\'');
+    std::string rest = s;
+    if (q != std::string::npos) {
+      if (!ParsePlain(Trim(s.substr(0, q)), false, feet) || feet < 0) return false;
+      rest = Trim(s.substr(q + 1));
+      if (!rest.empty() && rest[0] == '-') rest = Trim(rest.substr(1));
+    }
+    double inches = 0;
+    if (!rest.empty() && rest.back() == '"') rest = Trim(rest.substr(0, rest.size() - 1));
+    if (!rest.empty()) { if (!ParseMixed(rest, true, inches)) return false; }
+    else if (q == std::string::npos) return false;
+    v = feet * 12 + inches;
+  }
+  out = neg ? -v : v;
+  return true;
+}
+
+// ---- angtos / angtof -------------------------------------------------------------------------------------------
+double NormAngle(double a) {
+  a = std::fmod(a, 2 * kRw2Pi);
+  if (a < 0) a += 2 * kRw2Pi;
+  return a;
+}
+// Non-negative degrees as degrees, minutes and seconds: precision 0 whole degrees, 1-2 minutes, 3-4 seconds, 5 and
+// more decimals of a second (precision - 4 of them).
+std::string DmsFormat(double deg, int prec) {
+  long long per_deg;
+  int sec_dec = 0;
+  if (prec <= 0) per_deg = 1;
+  else if (prec <= 2) per_deg = 60;
+  else if (prec <= 4) per_deg = 3600;
+  else { sec_dec = std::min(prec - 4, 6); per_deg = 3600; for (int k = 0; k < sec_dec; ++k) per_deg *= 10; }
+  long long n = std::llround(deg * static_cast<double>(per_deg));
+  char buf[64];
+  if (prec <= 0) return std::to_string(n) + "d";
+  if (prec <= 2) return std::to_string(n / 60) + "d" + std::to_string(n % 60) + "'";
+  const long long deg_i = n / (per_deg), rem = n % per_deg;
+  long long unit = per_deg / 60;                       // one minute, in the lowest unit
+  const long long minutes = rem / unit, sec_units = rem % unit;
+  std::string s = std::to_string(deg_i) + "d" + std::to_string(minutes) + "'";
+  if (sec_dec == 0) return s + std::to_string(sec_units) + "\"";
+  long long sd = 1;
+  for (int k = 0; k < sec_dec; ++k) sd *= 10;
+  std::snprintf(buf, sizeof buf, "%lld.%0*lld", sec_units / sd, sec_dec, sec_units % sd);
+  return s + buf + "\"";
+}
+std::string AngTos(double rad, int mode, int prec, bool compact) {
+  const double a = NormAngle(rad);
+  const double deg = a * 180.0 / kRw2Pi;
+  char buf[96];
+  if (mode == 0 || mode == 2 || mode == 3) {
+    const double v = mode == 0 ? deg : mode == 2 ? a * 200.0 / kRw2Pi : a;
+    const double full = mode == 0 ? 360.0 : mode == 2 ? 400.0 : 2 * kRw2Pi;
+    std::snprintf(buf, sizeof buf, "%.*f", prec, v);
+    // a value that rounds up to a full turn is the start of the next one
+    if (mode != 3 && std::atof(buf) >= full) std::snprintf(buf, sizeof buf, "%.*f", prec, 0.0);
+    return std::string(buf) + (mode == 2 ? "g" : mode == 3 ? "r" : "");
+  }
+  if (mode == 1) {
+    std::string s = DmsFormat(deg, prec);
+    if (s.rfind("360d", 0) == 0) s = DmsFormat(0, prec);   // a rounded-up full turn is the start of the next
+    return s;
+  }
+  // surveyor's units: a bearing from north or south toward east or west
+  const double eps = 1e-9;
+  const char* sp = compact ? "" : " ";
+  auto cardinal = [&](const char* c) { return std::string(c); };
+  if (deg < eps || deg > 360.0 - eps) return cardinal("E");
+  if (std::fabs(deg - 90.0) < eps) return cardinal("N");
+  if (std::fabs(deg - 180.0) < eps) return cardinal("W");
+  if (std::fabs(deg - 270.0) < eps) return cardinal("S");
+  char ns, ew;
+  double th;
+  if (deg < 90) { ns = 'N'; ew = 'E'; th = 90 - deg; }
+  else if (deg < 180) { ns = 'N'; ew = 'W'; th = deg - 90; }
+  else if (deg < 270) { ns = 'S'; ew = 'W'; th = 270 - deg; }
+  else { ns = 'S'; ew = 'E'; th = deg - 270; }
+  return std::string(1, ns) + sp + DmsFormat(th, prec) + sp + std::string(1, ew);
+}
+
+// "30d30'15\"", "30d30'", "30d", "30.5" (degrees); false when it is not that.
+bool ParseDms(const std::string& s, double& deg) {
+  size_t i = 0;
+  bool neg = false;
+  if (i < s.size() && (s[i] == '-' || s[i] == '+')) { neg = s[i] == '-'; ++i; }
+  auto number = [&](double& v) {
+    const size_t b = i;
+    while (i < s.size() && (std::isdigit(static_cast<unsigned char>(s[i])) || s[i] == '.')) ++i;
+    if (i == b) return false;
+    return ParsePlain(s.substr(b, i - b), false, v);
+  };
+  double d = 0, m = 0, sec = 0;
+  if (!number(d)) return false;
+  if (i == s.size()) { deg = neg ? -d : d; return true; }
+  if (s[i] != 'd' && s[i] != 'D') return false;
+  ++i;
+  if (i < s.size()) {
+    if (!number(m) || i >= s.size() || s[i] != '\'') return false;
+    ++i;
+    if (i < s.size()) {
+      if (!number(sec) || i >= s.size() || s[i] != '"') return false;
+      ++i;
+      if (i != s.size()) return false;
+    }
+  }
+  const double v = d + m / 60.0 + sec / 3600.0;
+  deg = neg ? -v : v;
+  return true;
+}
+bool AngToF(const std::string& in_s, int mode, double& rad) {
+  std::string s = Trim(in_s);
+  if (s.empty()) return false;
+  double v = 0;
+  if (mode == 0 || mode == 2 || mode == 3) {
+    const char suffix = mode == 0 ? 'd' : mode == 2 ? 'g' : 'r';
+    if (std::tolower(static_cast<unsigned char>(s.back())) == suffix) s.pop_back();
+    if (!ParsePlain(Trim(s), false, v)) return false;
+    rad = mode == 0 ? v * kRw2Pi / 180.0 : mode == 2 ? v * kRw2Pi / 200.0 : v;
+  } else if (mode == 1) {
+    if (!ParseDms(s, v)) return false;
+    rad = v * kRw2Pi / 180.0;
+  } else {
+    s = Upper(s);
+    s.erase(std::remove_if(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c); }), s.end());
+    if (s == "E") rad = 0;
+    else if (s == "N") rad = kRw2Pi / 2;
+    else if (s == "W") rad = kRw2Pi;
+    else if (s == "S") rad = 3 * kRw2Pi / 2;
+    else {
+      if (s.size() < 3 || (s.front() != 'N' && s.front() != 'S') || (s.back() != 'E' && s.back() != 'W')) return false;
+      double th;
+      if (!ParseDms(Lower(s.substr(1, s.size() - 2)), th) || th < 0 || th > 90) return false;
+      const bool north = s.front() == 'N', east = s.back() == 'E';
+      const double deg = north ? (east ? 90 - th : 90 + th) : (east ? 270 + th : 270 - th);
+      rad = deg * kRw2Pi / 180.0;
+    }
+  }
+  rad = NormAngle(rad);
+  return true;
+}
+
+// ---- cvunit ----------------------------------------------------------------------------------------------------
+// Dimensions: length, mass, time, temperature, angle. Factors to the SI unit (meter, kilogram, second, kelvin, radian).
+struct UnitDef { const char* names; double f; int d[5]; double off; };
+const UnitDef kUnits[] = {
+  {"meter|meters|metre|metres|m", 1, {1, 0, 0, 0, 0}, 0},
+  {"kilometer|kilometers|km", 1000, {1, 0, 0, 0, 0}, 0},
+  {"centimeter|centimeters|cm", 0.01, {1, 0, 0, 0, 0}, 0},
+  {"millimeter|millimeters|mm", 0.001, {1, 0, 0, 0, 0}, 0},
+  {"micrometer|micrometers|micron|microns", 1e-6, {1, 0, 0, 0, 0}, 0},
+  {"inch|inches|in", 0.0254, {1, 0, 0, 0, 0}, 0},
+  {"mil|thou", 0.0000254, {1, 0, 0, 0, 0}, 0},
+  {"foot|feet|ft", 0.3048, {1, 0, 0, 0, 0}, 0},
+  {"yard|yards|yd", 0.9144, {1, 0, 0, 0, 0}, 0},
+  {"mile|miles|mi", 1609.344, {1, 0, 0, 0, 0}, 0},
+  {"furlong|furlongs", 201.168, {1, 0, 0, 0, 0}, 0},
+  {"acre|acres", 4046.8564224, {2, 0, 0, 0, 0}, 0},
+  {"hectare|hectares|ha", 10000, {2, 0, 0, 0, 0}, 0},
+  {"liter|liters|litre|litres|l", 0.001, {3, 0, 0, 0, 0}, 0},
+  {"milliliter|milliliters|ml", 1e-6, {3, 0, 0, 0, 0}, 0},
+  {"gallon|gallons|gal", 0.003785411784, {3, 0, 0, 0, 0}, 0},
+  {"quart|quarts|qt", 0.000946352946, {3, 0, 0, 0, 0}, 0},
+  {"pint|pints|pt", 0.000473176473, {3, 0, 0, 0, 0}, 0},
+  {"cup|cups", 0.0002365882365, {3, 0, 0, 0, 0}, 0},
+  {"second|seconds|sec|s", 1, {0, 0, 1, 0, 0}, 0},
+  {"minute|minutes|min", 60, {0, 0, 1, 0, 0}, 0},
+  {"hour|hours|hr|h", 3600, {0, 0, 1, 0, 0}, 0},
+  {"day|days", 86400, {0, 0, 1, 0, 0}, 0},
+  {"week|weeks", 604800, {0, 0, 1, 0, 0}, 0},
+  {"kilogram|kilograms|kg", 1, {0, 1, 0, 0, 0}, 0},
+  {"gram|grams|g", 0.001, {0, 1, 0, 0, 0}, 0},
+  {"milligram|milligrams|mg", 1e-6, {0, 1, 0, 0, 0}, 0},
+  {"tonne|tonnes", 1000, {0, 1, 0, 0, 0}, 0},
+  {"pound|pounds|lb|lbs", 0.45359237, {0, 1, 0, 0, 0}, 0},
+  {"ounce|ounces|oz", 0.028349523125, {0, 1, 0, 0, 0}, 0},
+  {"radian|radians|rad", 1, {0, 0, 0, 0, 1}, 0},
+  {"degree|degrees|deg", kRw2Pi / 180.0, {0, 0, 0, 0, 1}, 0},
+  {"grad|grads|gradian|gradians", kRw2Pi / 200.0, {0, 0, 0, 0, 1}, 0},
+  {"circle|circles|revolution|revolutions", 2 * kRw2Pi, {0, 0, 0, 0, 1}, 0},
+  {"arcminute|arcminutes|arcmin", kRw2Pi / 10800.0, {0, 0, 0, 0, 1}, 0},
+  {"arcsecond|arcseconds|arcsec", kRw2Pi / 648000.0, {0, 0, 0, 0, 1}, 0},
+  {"kelvin|k", 1, {0, 0, 0, 1, 0}, 0},
+  {"celsius|c|degc", 1, {0, 0, 0, 1, 0}, 273.15},
+  {"fahrenheit|f|degf", 5.0 / 9.0, {0, 0, 0, 1, 0}, 459.67 * 5.0 / 9.0},
+  {"rankin|rankine|r", 5.0 / 9.0, {0, 0, 0, 1, 0}, 0},
+  {"newton|newtons|n", 1, {1, 1, -2, 0, 0}, 0},
+  {"kilonewton|kilonewtons|kn", 1000, {1, 1, -2, 0, 0}, 0},
+  {"lbf", 4.4482216152605, {1, 1, -2, 0, 0}, 0},
+  {"pascal|pascals|pa", 1, {-1, 1, -2, 0, 0}, 0},
+  {"kilopascal|kilopascals|kpa", 1000, {-1, 1, -2, 0, 0}, 0},
+  {"bar", 100000, {-1, 1, -2, 0, 0}, 0},
+  {"psi", 6894.757293168, {-1, 1, -2, 0, 0}, 0},
+  {"joule|joules|j", 1, {2, 1, -2, 0, 0}, 0},
+  {"kilojoule|kilojoules|kj", 1000, {2, 1, -2, 0, 0}, 0},
+  {"watt|watts|w", 1, {2, 1, -3, 0, 0}, 0},
+  {"kilowatt|kilowatts|kw", 1000, {2, 1, -3, 0, 0}, 0},
+  {"horsepower|hp", 745.69987158227, {2, 1, -3, 0, 0}, 0},
+};
+
+struct UnitExpr { double f = 1; int d[5] = {0, 0, 0, 0, 0}; double off = 0; };
+
+bool UnitName(const std::string& name, const UnitDef*& out) {
+  for (const UnitDef& u : kUnits) {
+    std::string all = std::string("|") + u.names + "|";
+    if (all.find("|" + name + "|") != std::string::npos) { out = &u; return true; }
+  }
+  return false;
+}
+// "inch", "sq ft", "cu in", "ft^2", "m/s", "kg*m/s^2"
+bool ParseUnitExpr(const std::string& text, UnitExpr& out) {
+  const std::string s = Lower(Trim(text));
+  if (s.empty()) return false;
+  UnitExpr r;
+  size_t i = 0;
+  int sign = 1, terms = 0;
+  for (;;) {
+    size_t j = i;
+    while (j < s.size() && s[j] != '*' && s[j] != '/') ++j;
+    std::string term = Trim(s.substr(i, j - i));
+    int power = 1;
+    const size_t caret = term.find('^');
+    if (caret != std::string::npos) {
+      const std::string e = Trim(term.substr(caret + 1));
+      char* end = nullptr;
+      const long p = std::strtol(e.c_str(), &end, 10);
+      if (e.empty() || *end != 0 || p < -6 || p > 6) return false;
+      power = static_cast<int>(p);
+      term = Trim(term.substr(0, caret));
+    }
+    if (term.rfind("sq ", 0) == 0) { power *= 2; term = Trim(term.substr(3)); }
+    else if (term.rfind("cu ", 0) == 0) { power *= 3; term = Trim(term.substr(3)); }
+    const UnitDef* u = nullptr;
+    if (!UnitName(term, u)) return false;
+    ++terms;
+    const int p = sign * power;
+    r.f *= std::pow(u->f, p);
+    for (int k = 0; k < 5; ++k) r.d[k] += u->d[k] * p;
+    if (terms == 1 && p == 1) r.off = u->off;
+    if (j >= s.size()) break;
+    sign = s[j] == '/' ? -1 : 1;
+    i = j + 1;
+  }
+  if (terms != 1 || r.d[3] == 0) r.off = 0;
+  out = r;
+  return true;
+}
+bool CvUnit(double v, const UnitExpr& from, const UnitExpr& to, double& out) {
+  for (int k = 0; k < 5; ++k) if (from.d[k] != to.d[k]) return false;
+  out = ((v * from.f + from.off) - to.off) / to.f;
+  return true;
+}
+
+// ---- wcmatch ---------------------------------------------------------------------------------------------------
+bool WcOne(const std::string& p, size_t pi, const std::string& s, size_t si) {
+  while (pi < p.size()) {
+    const char c = p[pi];
+    if (c == '*') {
+      while (pi < p.size() && p[pi] == '*') ++pi;
+      if (pi == p.size()) return true;
+      for (size_t k = si; k <= s.size(); ++k) if (WcOne(p, pi, s, k)) return true;
+      return false;
+    }
+    if (si >= s.size()) return false;
+    const unsigned char ch = static_cast<unsigned char>(s[si]);
+    if (c == '`') {
+      ++pi;
+      if (pi >= p.size() || p[pi] != s[si]) return false;
+    } else if (c == '#') {
+      if (!std::isdigit(ch)) return false;
+    } else if (c == '@') {
+      if (!std::isalpha(ch)) return false;
+    } else if (c == '.') {
+      if (std::isalnum(ch)) return false;
+    } else if (c == '?') {
+    } else if (c == '[' && p.find(']', pi + 1) != std::string::npos) {
+      const size_t close = p.find(']', pi + 1);
+      size_t k = pi + 1;
+      bool neg = false;
+      if (k < close && p[k] == '~') { neg = true; ++k; }
+      bool hit = false;
+      for (; k < close; ++k) {
+        if (k + 2 < close && p[k + 1] == '-') {
+          if (ch >= static_cast<unsigned char>(p[k]) && ch <= static_cast<unsigned char>(p[k + 2])) hit = true;
+          k += 2;
+        } else if (static_cast<unsigned char>(p[k]) == ch) hit = true;
+      }
+      if (hit == neg) return false;
+      pi = close;
+    } else if (p[pi] != s[si]) {
+      return false;
+    }
+    ++pi; ++si;
+  }
+  return si == s.size();
+}
+bool WcMatch(std::string s, std::string pattern) {
+  if (s.size() > 500) s.resize(500);
+  if (pattern.size() > 500) pattern.resize(500);
+  size_t from = 0;
+  for (;;) {
+    size_t c = from;
+    bool in_set = false;
+    for (; c < pattern.size(); ++c) {
+      if (pattern[c] == '`') { ++c; continue; }
+      if (pattern[c] == '[') in_set = true;
+      else if (pattern[c] == ']') in_set = false;
+      else if (pattern[c] == ',' && !in_set) break;
+    }
+    std::string alt = pattern.substr(from, std::min(c, pattern.size()) - from);
+    bool neg = false;
+    if (!alt.empty() && alt[0] == '~') { neg = true; alt.erase(0, 1); }
+    if (WcOne(alt, 0, s, 0) != neg) return true;
+    if (c >= pattern.size()) return false;
+    from = c + 1;
+  }
+}
+
+// ---- snvalid -----------------------------------------------------------------------------------------------------
+bool SnValid(const std::string& s, bool bar_ok) {
+  if (s.empty() || s.size() > 255) return false;
+  static const std::string bad = "<>/\\\":;?*,=`";
+  for (size_t k = 0; k < s.size(); ++k) {
+    const unsigned char c = static_cast<unsigned char>(s[k]);
+    if (c < 32 || c == 127) return false;
+    if (bad.find(s[k]) != std::string::npos) return false;
+    if (s[k] == '|' && !(bar_ok && k != 0 && k + 1 != s.size())) return false;
+  }
+  return true;
+}
+
+// ---- file names -----------------------------------------------------------------------------------------------
+size_t LastSep(const std::string& s) { return s.find_last_of("/\\"); }
+std::string FileCase(std::string s) {
+#ifdef _WIN32
+  return Upper(std::move(s));    // the reference pages: upper case on Windows, as typed on Mac OS and the web
+#else
+  return s;
+#endif
+}
+std::map<std::string, Value>& Blackboard() { static std::map<std::string, Value> bb; return bb; }
+
+const std::string& NeedSymName(const char* fn, const Value& v) {
+  if (v.t != Value::T::Sym) Fail(std::string("bad argument type: symbolp: ") + Interp::Format(v, true) + " in " + fn);
+  return v.s;
+}
+
+void AddRw2(std::map<std::string, BuiltinFn>& t) {
+  // (angtos angle [mode [precision]]): mode 0 degrees, 1 degrees / minutes / seconds, 2 grads, 3 radians, 4 surveyor's units.
+  t["angtos"] = [](Interp& in, List& a) {
+    NeedArgs("angtos", a, 1, 3);
+    const double ang = NeedNum("angtos", a[0]);
+    const long long mode = a.size() >= 2 && !IsNil(a[1]) ? NeedWhole("angtos", a[1]) : static_cast<long long>(HostNum(in, "AUNITS", 0));
+    const long long prec = a.size() == 3 && !IsNil(a[2]) ? NeedWhole("angtos", a[2]) : static_cast<long long>(HostNum(in, "AUPREC", 0));
+    if (mode < 0 || mode > 4) Fail("bad argument value: angtos mode must be 0 to 4");
+    if (prec < 0 || prec > 8) Fail("bad argument value: angtos precision must be 0 to 8");
+    return Str(AngTos(ang, static_cast<int>(mode), static_cast<int>(prec), HostNum(in, "UNITMODE", 0) != 0));
+  };
+  // (angtof string [mode]): the angle in radians (0 to 2 pi), nil when the string is not in that format.
+  t["angtof"] = [](Interp& in, List& a) {
+    NeedArgs("angtof", a, 1, 2);
+    const std::string& s = NeedStr("angtof", a[0]);
+    const long long mode = a.size() == 2 && !IsNil(a[1]) ? NeedWhole("angtof", a[1]) : static_cast<long long>(HostNum(in, "AUNITS", 0));
+    if (mode < 0 || mode > 4) Fail("bad argument value: angtof mode must be 0 to 4");
+    double r;
+    return AngToF(s, static_cast<int>(mode), r) ? Real(r) : Nil();
+  };
+  // (distof string [mode]): mode 1 scientific, 2 decimal, 3 engineering, 4 architectural, 5 fractional.
+  t["distof"] = [](Interp& in, List& a) {
+    NeedArgs("distof", a, 1, 2);
+    const std::string& s = NeedStr("distof", a[0]);
+    const long long mode = a.size() == 2 && !IsNil(a[1]) ? NeedWhole("distof", a[1]) : static_cast<long long>(HostNum(in, "LUNITS", 2));
+    if (mode < 1 || mode > 5) Fail("bad argument value: distof mode must be 1 to 5");
+    double r;
+    return DistOf(s, static_cast<int>(mode), r) ? Real(r) : Nil();
+  };
+  // (rtos number [mode [precision]]): every unit mode (replaces the decimal-only version).
+  t["rtos"] = [](Interp& in, List& a) {
+    NeedArgs("rtos", a, 1, 3);
+    const double x = NeedNum("rtos", a[0]);
+    const long long mode = a.size() >= 2 && !IsNil(a[1]) ? NeedWhole("rtos", a[1]) : static_cast<long long>(HostNum(in, "LUNITS", 2));
+    const long long prec = a.size() == 3 && !IsNil(a[2]) ? NeedWhole("rtos", a[2]) : static_cast<long long>(HostNum(in, "LUPREC", 4));
+    if (mode < 1 || mode > 5) Fail("bad argument value: rtos mode must be 1 to 5");
+    if (prec < 0 || prec > 16) Fail("bad argument value: precision in rtos must be 0 to 16");
+    return Str(RtosFormat(x, static_cast<int>(mode), static_cast<int>(prec)));
+  };
+  // (cvunit value from-unit to-unit): a number or a list of numbers; nil for an unknown or incompatible unit.
+  t["cvunit"] = [](Interp&, List& a) {
+    NeedArgs("cvunit", a, 3, 3);
+    const std::string& from = NeedStr("cvunit", a[1]);
+    const std::string& to = NeedStr("cvunit", a[2]);
+    if (!IsNum(a[0]) && !IsList(a[0])) Fail("bad argument type: numberp or point list: " + Interp::Format(a[0], true) + " in cvunit");
+    UnitExpr f, g;
+    if (!ParseUnitExpr(from, f) || !ParseUnitExpr(to, g)) return Nil();
+    List vals;
+    if (IsNum(a[0])) vals.push_back(a[0]); else vals = *a[0].l;
+    if (vals.size() < 1 || (IsList(a[0]) && (vals.size() < 2 || vals.size() > 3))) Fail("bad argument type: a point of two or three numbers in cvunit");
+    List out;
+    for (const Value& v : vals) {
+      double r;
+      if (!CvUnit(NeedNum("cvunit", v), f, g, r)) return Nil();
+      out.push_back(Real(r));
+    }
+    return IsNum(a[0]) ? out[0] : MakeList(out);
+  };
+  // (vl-list* obj [obj ...]): like list, the last argument being the tail. A tail that is a list is joined on, one atom after
+  // one object makes a dotted pair; a dotted list of more terms cannot be represented by this interpreter and is refused.
+  t["vl-list*"] = [](Interp&, List& a) {
+    if (a.empty()) Fail("too few arguments to vl-list*");
+    if (a.size() == 1) return a[0];
+    const Value& tail = a.back();
+    if (IsNil(tail) || (IsList(tail) && !tail.dotted)) {
+      List l(a.begin(), a.end() - 1);
+      for (const Value& v : Items(tail)) l.push_back(v);
+      return MakeList(l);
+    }
+    if (a.size() == 2) return Pair(a[0], tail);
+    Fail("vl-list*: a dotted list of more than two terms is not supported");
+  };
+  t["vl-symbolp"] = [](Interp&, List& a) {
+    NeedArgs("vl-symbolp", a, 1, 1);
+    return Bool(a[0].t == Value::T::Sym || a[0].t == Value::T::True);
+  };
+  // (vl-symbol-value sym): the value bound to the symbol; the symbol T is itself, nil is nil.
+  t["vl-symbol-value"] = [](Interp& in, List& a) {
+    NeedArgs("vl-symbol-value", a, 1, 1);
+    if (IsNil(a[0])) return Nil();
+    if (a[0].t == Value::T::True) return True();
+    const std::string& n = NeedSymName("vl-symbol-value", a[0]);
+    auto it = in.Globals().find(n);
+    return it != in.Globals().end() ? it->second : Nil();
+  };
+  // (set sym value): sets the symbol named by the (evaluated) first argument.
+  t["set"] = [](Interp& in, List& a) {
+    NeedArgs("set", a, 2, 2);
+    const std::string& n = NeedSymName("set", a[0]);
+    if (IsBuiltinName(n) && n != "pi") Fail("cannot redefine the built-in function " + Upper(n));
+    in.Globals()[n] = a[1];
+    return a[1];
+  };
+  // (atoms-family format [symlist]): format 0 gives symbols, 1 strings; with a list of names nil stands for an undefined one.
+  t["atoms-family"] = [](Interp& in, List& a) {
+    NeedArgs("atoms-family", a, 1, 2);
+    const long long fmt = NeedWhole("atoms-family", a[0]);
+    if (fmt != 0 && fmt != 1) Fail("bad argument value: atoms-family format must be 0 or 1");
+    static const char* kForms[] = {"quote", "function", "setq", "if", "progn", "and", "or", "cond", "while", "repeat", "foreach", "vlax-for", "lambda", "defun"};
+    auto defined = [&](const std::string& n) {
+      if (IsBuiltinName(n) || in.Globals().count(n)) return true;
+      for (const char* f : kForms) if (n == f) return true;
+      return false;
+    };
+    auto make = [&](const std::string& n) { return fmt == 1 ? Str(Upper(n)) : Sym(n); };
+    List out;
+    if (a.size() == 2) {
+      for (const Value& v : NeedList("atoms-family", a[1])) {
+        const std::string n = Lower(NeedStr("atoms-family", v));
+        out.push_back(defined(n) ? make(n) : Nil());
+      }
+      return MakeList(out);
+    }
+    std::vector<std::string> names = BuiltinNames();
+    for (const auto& kv : in.Globals()) names.push_back(kv.first);
+    for (const char* f : kForms) names.push_back(f);
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    for (const std::string& n : names) out.push_back(make(n));
+    return MakeList(out);
+  };
+  // (snvalid name [bar-flag]): T when the string is a valid symbol-table name.
+  t["snvalid"] = [](Interp&, List& a) {
+    NeedArgs("snvalid", a, 1, 2);
+    const std::string& s = NeedStr("snvalid", a[0]);
+    const bool bar = a.size() == 2 && !IsNil(a[1]) && !(a[1].t == Value::T::Int && a[1].i == 0);
+    return Bool(SnValid(s, bar));
+  };
+  // (wcmatch string pattern): case-sensitive; # digit, @ letter, . non-alphanumeric, * run, ? any one, [..] / [~..] sets, ~ first = not, ` escape, , alternatives.
+  t["wcmatch"] = [](Interp&, List& a) {
+    NeedArgs("wcmatch", a, 2, 2);
+    return Bool(WcMatch(NeedStr("wcmatch", a[0]), NeedStr("wcmatch", a[1])));
+  };
+  t["vl-filename-base"] = [](Interp&, List& a) {
+    NeedArgs("vl-filename-base", a, 1, 1);
+    std::string s = NeedStr("vl-filename-base", a[0]);
+    const size_t sep = LastSep(s);
+    if (sep != std::string::npos) s.erase(0, sep + 1);
+    const size_t dot = s.find_last_of('.');
+    if (dot != std::string::npos && dot > 0) s.erase(dot);
+    return Str(FileCase(s));
+  };
+  t["vl-filename-directory"] = [](Interp&, List& a) {
+    NeedArgs("vl-filename-directory", a, 1, 1);
+    const std::string& s = NeedStr("vl-filename-directory", a[0]);
+    const size_t sep = LastSep(s);
+    if (sep == std::string::npos) return Str("");
+    return Str(FileCase(sep == 0 ? s.substr(0, 1) : s.substr(0, sep)));
+  };
+  t["vl-filename-extension"] = [](Interp&, List& a) {
+    NeedArgs("vl-filename-extension", a, 1, 1);
+    std::string s = NeedStr("vl-filename-extension", a[0]);
+    const size_t sep = LastSep(s);
+    if (sep != std::string::npos) s.erase(0, sep + 1);
+    const size_t dot = s.find_last_of('.');
+    if (dot == std::string::npos || dot == 0) return Nil();
+    return Str(FileCase(s.substr(dot)));
+  };
+  // The blackboard shared by every namespace.
+  t["vl-bb-set"] = [](Interp&, List& a) {
+    NeedArgs("vl-bb-set", a, 2, 2);
+    const std::string& n = NeedSymName("vl-bb-set", a[0]);
+    if (a[1].t == Value::T::Lambda || a[1].t == Value::T::Subr) Fail("bad argument type: a function cannot be stored on the blackboard");
+    Blackboard()[n] = a[1];
+    return a[1];
+  };
+  t["vl-bb-ref"] = [](Interp&, List& a) {
+    NeedArgs("vl-bb-ref", a, 1, 1);
+    const std::string& n = NeedSymName("vl-bb-ref", a[0]);
+    auto it = Blackboard().find(n);
+    return it != Blackboard().end() ? it->second : Nil();
+  };
+}
+
 }  // namespace
 
 // ---- builtins ---------------------------------------------------------------
@@ -1192,14 +1842,6 @@ struct Builtins {
     t["itoa"] = [](Interp&, List& a) { NeedArgs("itoa", a, 1, 1); if (a[0].t != Value::T::Int) Fail("bad argument type: fixnump in itoa"); return Str(std::to_string(a[0].i)); };
     t["atoi"] = [](Interp&, List& a) { NeedArgs("atoi", a, 1, 1); return Int(std::atoll(NeedStr("atoi", a[0]).c_str())); };
     t["atof"] = [](Interp&, List& a) { NeedArgs("atof", a, 1, 1); return Real(std::atof(NeedStr("atof", a[0]).c_str())); };
-    t["rtos"] = [](Interp&, List& a) {
-      NeedArgs("rtos", a, 1, 3);
-      const double x = NeedNum("rtos", a[0]);
-      int prec = 4;
-      if (a.size() == 3) { if (a[2].t != Value::T::Int || a[2].i < 0 || a[2].i > 16) Fail("bad argument: precision in rtos"); prec = static_cast<int>(a[2].i); }
-      if (a.size() >= 2 && (a[1].t != Value::T::Int || a[1].i != 2)) Fail("only rtos mode 2 (decimal) is supported");
-      char buf[64]; std::snprintf(buf, sizeof buf, "%.*f", prec, x); return Str(buf);
-    };
     t["strcase"] = [](Interp&, List& a) {
       NeedArgs("strcase", a, 1, 2);
       return Str(a.size() == 2 && Truthy(a[1]) ? Lower(NeedStr("strcase", a[0])) : Upper(NeedStr("strcase", a[0])));
@@ -1938,9 +2580,19 @@ struct Builtins {
     // (vl-some pred list ...) the first non-nil result; (vl-every pred list ...) T when every result is non-nil.
     t["vl-some"] = [](Interp& in, List& a) { return SomeEvery(in, "vl-some", a, true); };
     t["vl-every"] = [](Interp& in, List& a) { return SomeEvery(in, "vl-every", a, false); };
+    AddRw2(t);
     return t;
   }
 };
+
+namespace {
+bool IsBuiltinName(const std::string& n) { return Builtins::Table().count(n) != 0; }
+std::vector<std::string> BuiltinNames() {
+  std::vector<std::string> v;
+  for (const auto& kv : Builtins::Table()) v.push_back(kv.first);
+  return v;
+}
+}  // namespace
 
 // ---- interpreter ------------------------------------------------------------
 Interp::Interp() {
@@ -2144,8 +2796,9 @@ Value Interp::EvalList(const Value& form) {
   }
   if (n == "while") {
     if (items.size() < 2) Fail("while needs a test");
-    while (Truthy(Eval(items[1]))) for (size_t k = 2; k < items.size(); ++k) Eval(items[k]);
-    return Nil();
+    Value r = Nil();   // the value of the last body form evaluated, nil when the body never ran
+    while (Truthy(Eval(items[1]))) for (size_t k = 2; k < items.size(); ++k) r = Eval(items[k]);
+    return r;
   }
   if (n == "repeat") {
     if (items.size() < 2) Fail("repeat needs a count");
