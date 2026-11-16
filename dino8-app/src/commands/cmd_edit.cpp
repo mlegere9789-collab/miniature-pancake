@@ -157,7 +157,9 @@ class OffsetCommand : public Command {
     options = {{"Distance", FormatNumber(distance_), {}, true, false},
                {"BothSides", "No", {"Yes", "No"}, false, true},
                {"Corner", "Sharp", {"Sharp", "Round", "Chamfer", "Smooth"}, false, false},
-               {"Tolerance", "document", {}, true, false}};
+               {"Tolerance", "document", {}, true, false},
+               {"Through", "", {}, false, false},
+               {"Erase", "No", {"Yes", "No"}, false, true}};
   }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Distance") { double d = std::atof(v.c_str()); if (std::isfinite(d) && d > 0 && d <= kMaxOffsetDistance) distance_ = d; else ctx.Warn("Offset: the distance must be a number above 0 and at most " + FormatNumber(kMaxOffsetDistance) + ", '" + v + "' ignored"); options[0].value = FormatNumber(distance_); }
@@ -169,6 +171,9 @@ class OffsetCommand : public Command {
                      : kernel::CurveOffsetCornerStyle::Sharp;
       options[2].value = v;
     }
+    // AutoCAD OFFSET: Through makes the picked point (not a typed distance) set the distance and side; Erase=Yes deletes the source.
+    if (n == "Through") { through_ = true; WantPoint("Through point"); }
+    if (n == "Erase") { erase_source_ = (v == "Yes"); options[5].value = erase_source_ ? "Yes" : "No"; }
     // Tolerance= overrides the document's absolute tolerance for this offset ("document" restores it).
     if (n == "Tolerance") {
       char* e; double t = std::strtod(v.c_str(), &e);
@@ -193,9 +198,15 @@ class OffsetCommand : public Command {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
       const int sign = SideSign(ctx, *o->curve, side);
-      Make(ctx, id, *o->curve, distance_ * sign, o->layer_index);
-      if (both_) Make(ctx, id, *o->curve, -distance_ * sign, o->layer_index);
+      double dist = distance_;
+      if (through_) {
+        dist = o->curve->PointAt(o->curve->ClosestPointParameter(side)).DistanceTo(side);
+        if (!(dist > 0)) { ctx.Warn("Offset: the through point lies on the curve, nothing to offset"); continue; }
+      }
+      Make(ctx, id, *o->curve, dist * sign, o->layer_index);
+      if (both_) Make(ctx, id, *o->curve, -dist * sign, o->layer_index);
     }
+    if (erase_source_) for (ObjectId id : ids_) ctx.Doc().Remove(id);
     Finish();
   }
   int SideSign(CommandContext& ctx, const kernel::NurbsCurve& c, Point3d side) {
@@ -261,6 +272,8 @@ class OffsetCommand : public Command {
   std::vector<ObjectId> ids_;
   double distance_ = 1.0;
   bool both_ = false;
+  bool through_ = false;
+  bool erase_source_ = false;
   double tolerance_ = 0;  // 0 = the document's absolute tolerance
   kernel::CurveOffsetCornerStyle corner_style_ = kernel::CurveOffsetCornerStyle::Sharp;
 };
@@ -431,6 +444,41 @@ class ExtendCommand : public Command {
   std::vector<ObjectId> boundary_;
   bool boundary_mode_ = false;
   bool edge_extend_ = false;
+};
+
+// JoinClose: AutoCAD JOIN with a single arc selected and the Close option: the arc becomes the full circle it lies on.
+// (Closing an elliptical arc to an ellipse is not offered here.)
+class JoinCloseCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an arc to close into a circle"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    ctx.Doc().BeginChange("JoinClose");
+    int done = 0;
+    std::vector<SceneObject> made;
+    std::vector<ObjectId> gone;
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+      ON_Arc arc;
+      if (!o->curve->raw().IsArc(nullptr, &arc, ctx.Settings().absolute_tolerance) || !arc.IsValid()) { ctx.Warn("JoinClose: curve " + std::to_string(id) + " is not an arc"); continue; }
+      if (arc.IsCircle()) { ctx.Warn("JoinClose: curve " + std::to_string(id) + " is already a full circle"); continue; }
+      ON_Circle circle = arc;
+      ON_ArcCurve ac(circle);
+      kernel::NurbsCurve k;
+      if (!CurveFromON(ac, k)) continue;
+      SceneObject n = SceneObject::MakeCurve(k);
+      n.layer_index = o->layer_index;
+      n.color = o->color;
+      n.color_by_layer = o->color_by_layer;
+      made.push_back(std::move(n));
+      gone.push_back(id);
+    }
+    for (ObjectId id : gone) ctx.Doc().Remove(id);
+    for (SceneObject& n : made) { ctx.Doc().Add(std::move(n)); ++done; }
+    if (done == 0) ctx.Doc().AbandonChange();
+    else ctx.Print("JoinClose: " + std::to_string(done) + " arc(s) closed into circle(s)");
+    Finish();
+  }
 };
 
 // MakePeriodic: Smooth=Yes is the old periodic-uniform refit through the
@@ -864,6 +912,8 @@ void RegisterEditCommands(CommandEngine& e) {
         ctx.Print("Exploded into " + std::to_string(made) + " object(s)");
       }));
   Reg(e, "Rebuild", Make<RebuildCommand>());
+  Reg(e, "JoinClose", Make<JoinCloseCommand>(), CommandStatus::Implemented,
+      "AutoCAD JOIN, Close option: closes a selected arc into the full circle it lies on.");
   Reg(e, "ChangeDegree", Make<ChangeDegreeCommand>(), CommandStatus::Implemented,
       "Elevates curves/surfaces to a typed target degree (elevation only - it never lowers a degree, which is a lossy refit, not a plain elevation).");
   Reg(e, "Flip", OnSelection("Select curves, surfaces or meshes to flip", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
