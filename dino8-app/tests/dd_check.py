@@ -10,6 +10,7 @@ next to each check. Prints "ok   ..." / "FAIL ..." lines, exit status 1 when any
   dd_check.py dimspace F1 F2 F3 H    DIMSPACE    exports after Spacing=10, Spacing=Auto (H = the text height) and Spacing=0
   dd_check.py dimdis FILE            DIMDISASSOCIATE
   dd_check.py hatchback FILE         HATCHTOBACK the app output of dd_hatchback_script.txt (two GetUserText dumps, before and after the command)
+  dd_check.py dimarc FILE            DIMARC      the app output of dd_dimarc_script.txt (two GetUserText dumps, one per document)
   dd_check.py usertext FILE          prints "id key value" rows of a GetUserText listing read from FILE (helper for the shell)
 """
 import math
@@ -260,6 +261,43 @@ def hatchback(path):
     check(all('DrawOrder' not in after[i] or after[i]['DrawOrder'] == '-1' for i in others), "DDHB_after: no other object was given a draw order")
 
 
+def dumps_split(path, marker):
+    """[{id: {key: value}}]: the GetUserText lines of the app output, a new dump after every line 'Command: <marker>'."""
+    out, cur = [{}], None
+    cur = out[0]
+    for line in open(path, encoding='latin-1'):
+        line = line.rstrip('\n')
+        if re.match(r'^(history: )?Command: ' + marker, line):
+            cur = {}
+            out.append(cur)
+            continue
+        m = re.match(r'^(?:history: )?(\d+): (\S+) = (.*)$', line)
+        if m:
+            cur.setdefault(m.group(1), {})[m.group(2)] = m.group(3)
+    return out
+
+
+def dimarc(path):
+    # Arc of radius 10 about the origin from 0 to 90 degrees. Whole arc: length = 10 * pi / 2 = 15.708 -> text "15.71" (4 significant digits). Dimension line through
+    # a point at radius 14, text on the ray of the mid angle (45 degrees) at radius 14 + 0.6 h (h = the text height).
+    # Partial between the points at 0 and 45 degrees: length 10 * pi / 4 = 7.854, mid angle 22.5 degrees.
+    docs = dumps_split(path, 'New')
+    check(len(docs) == 2, "DDAR_docs: two documents listed: %d" % len(docs))
+    for doc, want_text, want_len, mid_deg, name in [(docs[0], '15.71', 10 * math.pi / 2, 45.0, 'whole'), (docs[1] if len(docs) > 1 else {}, '7.854', 10 * math.pi / 4, 22.5, 'partial')]:
+        glyphs = [t for t in doc.values() if t.get('Annotation') == 'DimArc' and 'Text' in t]
+        check(len(glyphs) > 0 and all(t['Text'] == want_text for t in glyphs), "DDAR_%s: the dimension text reads %s (%.5f rounded to 4 digits): %s" % (name, want_text, want_len, sorted(set(t['Text'] for t in glyphs))))
+        tags = [t for t in doc.values() if t.get('Annotation') == 'DimArc' and 'DimArcLength' in t]
+        check(len(tags) > 0 and all(t['DimArcLength'] == want_text and t['DimArcRadius'] == '10' for t in tags), "DDAR_%s: the dimension records length %s on radius 10" % (name, want_text))
+        if glyphs:
+            g = glyphs[0]
+            h = float(g['TextHeight'])
+            x, y, _ = [float(v) for v in g['TextOrigin'].split(',')]
+            r, ang = math.hypot(x, y), math.degrees(math.atan2(y, x))
+            check(near(r, 14.0 + 0.6 * h, 1e-5), "DDAR_%s: the text sits at radius 14 + 0.6 h = %.4f (dimension line through radius 14): %.4f" % (name, 14.0 + 0.6 * h, r))
+            check(near(ang, mid_deg, 1e-4), "DDAR_%s: the text is on the ray of the mid angle %g degrees: %.5f" % (name, mid_deg, ang))
+            check(g.get('TextAlign') == 'Center', "DDAR_%s: the text is centred on its anchor" % name)
+
+
 def usertext(path):
     for line in open(path, encoding='latin-1'):
         m = re.match(r'^(?:history: )?(\d+): (\S+) = (.*)$', line.rstrip('\n'))
@@ -281,6 +319,8 @@ if __name__ == '__main__':
         dimspace(args[0], args[1], args[2], float(args[3]))
     elif mode == 'dimdis':
         dimdis(args[0])
+    elif mode == 'dimarc':
+        dimarc(args[0])
     elif mode == 'hatchback':
         hatchback(args[0])
     elif mode == 'usertext':

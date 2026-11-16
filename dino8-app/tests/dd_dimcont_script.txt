@@ -1,0 +1,9 @@
+# DIMCONTINUE: base dimension (0,0)-(4,0), dimension line at y=-5, continued to x=9 and x=15.
+Dim 0,0,0 4,0,0 2,-5,0
+SelLast
+DimContinue
+9,0,0
+15,0,0
+Enter
+SelAll
+Export @TMP@/dd_dc.dxf
