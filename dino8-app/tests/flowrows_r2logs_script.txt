@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-MATHS-0022 (Log, Natural Log, Exponent): player + bake, read back by sections/95_r2logs.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 9
+SelAll
+List
