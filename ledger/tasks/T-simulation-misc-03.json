@@ -1,0 +1,174 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-simulation-misc-03",
+  "corpora": [
+    "grid cells inside circle count vs pi r^2 / cell area"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 29,
+    "countable": 33,
+    "rows": 33,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "object",
+    "ptcache",
+    "rigidbody",
+    "site"
+  ],
+  "factory": "simulation",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Bake",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Connect",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConnectSrf",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "DigConnect",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "ConstraintSolve",
+        "rows": 2,
+        "score": 0.602,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-simulation-misc-03",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender",
+    "forma"
+  ],
+  "register_files": [
+    "blender/object.jsonl",
+    "blender/ptcache.jsonl",
+    "blender/rigidbody.jsonl",
+    "forma/site.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-PTCACHE-0002": {
+      "commands": [
+        "Bake"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-RIGIDBOD-0002": {
+      "commands": [
+        "Connect",
+        "ConnectSrf",
+        "DigConnect"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-RIGIDBOD-0003": {
+      "commands": [
+        "ConstraintSolve"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-RIGIDBOD-0004": {
+      "commands": [
+        "ConstraintSolve"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-OBJECT-0042",
+    "D8-BLENDER-OBJECT-0045",
+    "D8-BLENDER-OBJECT-0047",
+    "D8-BLENDER-OBJECT-0139",
+    "D8-BLENDER-OBJECT-0146",
+    "D8-BLENDER-OBJECT-0147",
+    "D8-BLENDER-OBJECT-0156",
+    "D8-BLENDER-OBJECT-0158",
+    "D8-BLENDER-OBJECT-0159",
+    "D8-BLENDER-OBJECT-0197",
+    "D8-BLENDER-OBJECT-0198",
+    "D8-BLENDER-OBJECT-0199",
+    "D8-BLENDER-PTCACHE-0001",
+    "D8-BLENDER-PTCACHE-0002",
+    "D8-BLENDER-PTCACHE-0003",
+    "D8-BLENDER-PTCACHE-0004",
+    "D8-BLENDER-PTCACHE-0005",
+    "D8-BLENDER-PTCACHE-0006",
+    "D8-BLENDER-PTCACHE-0007",
+    "D8-BLENDER-RIGIDBOD-0001",
+    "D8-BLENDER-RIGIDBOD-0002",
+    "D8-BLENDER-RIGIDBOD-0003",
+    "D8-BLENDER-RIGIDBOD-0004",
+    "D8-BLENDER-RIGIDBOD-0005",
+    "D8-BLENDER-RIGIDBOD-0006",
+    "D8-BLENDER-RIGIDBOD-0007",
+    "D8-BLENDER-RIGIDBOD-0008",
+    "D8-BLENDER-RIGIDBOD-0009",
+    "D8-BLENDER-RIGIDBOD-0010",
+    "D8-BLENDER-RIGIDBOD-0011",
+    "D8-BLENDER-RIGIDBOD-0012",
+    "D8-BLENDER-RIGIDBOD-0013",
+    "D8-FORMA-SITE-0016"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-OBJECT-0042",
+    "D8-BLENDER-OBJECT-0045",
+    "D8-BLENDER-OBJECT-0047",
+    "D8-BLENDER-OBJECT-0139",
+    "D8-BLENDER-OBJECT-0146",
+    "D8-BLENDER-OBJECT-0147",
+    "D8-BLENDER-OBJECT-0156",
+    "D8-BLENDER-OBJECT-0158",
+    "D8-BLENDER-OBJECT-0159",
+    "D8-BLENDER-OBJECT-0197",
+    "D8-BLENDER-OBJECT-0198",
+    "D8-BLENDER-OBJECT-0199",
+    "D8-BLENDER-PTCACHE-0001",
+    "D8-BLENDER-PTCACHE-0003",
+    "D8-BLENDER-PTCACHE-0004",
+    "D8-BLENDER-PTCACHE-0005",
+    "D8-BLENDER-PTCACHE-0006",
+    "D8-BLENDER-PTCACHE-0007",
+    "D8-BLENDER-RIGIDBOD-0001",
+    "D8-BLENDER-RIGIDBOD-0005",
+    "D8-BLENDER-RIGIDBOD-0006",
+    "D8-BLENDER-RIGIDBOD-0007",
+    "D8-BLENDER-RIGIDBOD-0008",
+    "D8-BLENDER-RIGIDBOD-0009",
+    "D8-BLENDER-RIGIDBOD-0010",
+    "D8-BLENDER-RIGIDBOD-0011",
+    "D8-BLENDER-RIGIDBOD-0012",
+    "D8-BLENDER-RIGIDBOD-0013",
+    "D8-FORMA-SITE-0016"
+  ],
+  "status": "open",
+  "title": "simulation: object, ptcache, rigidbody, site (33 rows)",
+  "wave": 2
+}
