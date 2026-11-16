@@ -765,7 +765,9 @@ Export @T@/lin.dxf
         f = d + '/lin.dxf'
         check(has_line(f, 0, 0, 10, 0) and has_line(f, 10, 0, 10, 5) and has_line(f, 10, 5, 0, 0), 'LIN_1: Close after three points makes the third segment back to the start: (10,5)-(0,0)')
         check(has_line(f, 100, 0, 110, 0) and has_line(f, 110, 0, 120, 0) and not has_line(f, 110, 0, 110, 5), 'LIN_2: Undo removes only the last segment (110,0)-(110,5); the chain continues from (110,0) to (120,0)')
-        check(has_line(f, 200, 0, 210, 0) and not has_line(f, 210, 0, 200, 0) and len([1 for r in entities(f, 'LINE') if close(gf(r, 10), 200)]) == 1, 'LIN_3: Close with a single segment is refused (a closing segment needs two): only (200,0)-(210,0) exists')
+        # has_line ignores direction, so a closing segment would be a second LINE inside x = 200..210 (counted here)
+        near = [r for r in entities(f, 'LINE') if min(gf(r, 10), gf(r, 11)) >= 199.9 and max(gf(r, 10), gf(r, 11)) <= 210.1]
+        check(has_line(f, 200, 0, 210, 0) and len(near) == 1, 'LIN_3: Close with a single segment is refused (a closing segment needs two): exactly one line (200,0)-(210,0) in x = 200..210 (found %d)' % len(near))
         check(len(entities(f, 'LINE')) == 6, 'LIN_4: 3 + 2 + 1 = 6 separate LINE objects, found %d' % len(entities(f, 'LINE')))
     return s, chk
 
