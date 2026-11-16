@@ -1,0 +1,7 @@
+{
+  "kernel_pct": 79.3,
+  "app_pct": 86.5,
+  "as_of_commit": "53a680b4",
+  "frozen": true,
+  "source": "Plan Rev 2 section 1.2: the hand-counted legacy parity-map percentages at the PR branch tip 53a680b4. Reported next to the Register percentage until the map is retired (plan 4.4 step 5); never added to it and never credit."
+}

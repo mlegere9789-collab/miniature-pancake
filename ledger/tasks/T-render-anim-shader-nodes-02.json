@@ -1,0 +1,169 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-shader-nodes-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 31
+  },
+  "deps": [],
+  "domains": [
+    "shader_nodes"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "MatchMapping",
+        "rows": 1,
+        "score": 0.666,
+        "status": "implemented"
+      },
+      {
+        "name": "BakeMapping",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "RunScript",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:59",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::Color"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:110",
+        "rows": 1,
+        "score": 1.0,
+        "symbol": "dino8::kernel::LightInfo"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-shader-nodes-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/shader_nodes.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-SHDNODE-0042": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::LightInfo"
+      ]
+    },
+    "D8-BLENDER-SHDNODE-0047": {
+      "commands": [
+        "MatchMapping",
+        "BakeMapping"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-SHDNODE-0063": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Color"
+      ]
+    },
+    "D8-BLENDER-SHDNODE-0068": {
+      "commands": [
+        "RunScript"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-SHDNODE-0036",
+    "D8-BLENDER-SHDNODE-0037",
+    "D8-BLENDER-SHDNODE-0038",
+    "D8-BLENDER-SHDNODE-0039",
+    "D8-BLENDER-SHDNODE-0040",
+    "D8-BLENDER-SHDNODE-0041",
+    "D8-BLENDER-SHDNODE-0042",
+    "D8-BLENDER-SHDNODE-0043",
+    "D8-BLENDER-SHDNODE-0044",
+    "D8-BLENDER-SHDNODE-0045",
+    "D8-BLENDER-SHDNODE-0046",
+    "D8-BLENDER-SHDNODE-0047",
+    "D8-BLENDER-SHDNODE-0048",
+    "D8-BLENDER-SHDNODE-0049",
+    "D8-BLENDER-SHDNODE-0050",
+    "D8-BLENDER-SHDNODE-0051",
+    "D8-BLENDER-SHDNODE-0052",
+    "D8-BLENDER-SHDNODE-0053",
+    "D8-BLENDER-SHDNODE-0054",
+    "D8-BLENDER-SHDNODE-0055",
+    "D8-BLENDER-SHDNODE-0056",
+    "D8-BLENDER-SHDNODE-0057",
+    "D8-BLENDER-SHDNODE-0058",
+    "D8-BLENDER-SHDNODE-0059",
+    "D8-BLENDER-SHDNODE-0060",
+    "D8-BLENDER-SHDNODE-0061",
+    "D8-BLENDER-SHDNODE-0062",
+    "D8-BLENDER-SHDNODE-0063",
+    "D8-BLENDER-SHDNODE-0064",
+    "D8-BLENDER-SHDNODE-0065",
+    "D8-BLENDER-SHDNODE-0066",
+    "D8-BLENDER-SHDNODE-0067",
+    "D8-BLENDER-SHDNODE-0068",
+    "D8-BLENDER-SHDNODE-0069",
+    "D8-BLENDER-SHDNODE-0070"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-SHDNODE-0036",
+    "D8-BLENDER-SHDNODE-0037",
+    "D8-BLENDER-SHDNODE-0038",
+    "D8-BLENDER-SHDNODE-0039",
+    "D8-BLENDER-SHDNODE-0040",
+    "D8-BLENDER-SHDNODE-0041",
+    "D8-BLENDER-SHDNODE-0043",
+    "D8-BLENDER-SHDNODE-0044",
+    "D8-BLENDER-SHDNODE-0045",
+    "D8-BLENDER-SHDNODE-0046",
+    "D8-BLENDER-SHDNODE-0048",
+    "D8-BLENDER-SHDNODE-0049",
+    "D8-BLENDER-SHDNODE-0050",
+    "D8-BLENDER-SHDNODE-0051",
+    "D8-BLENDER-SHDNODE-0052",
+    "D8-BLENDER-SHDNODE-0053",
+    "D8-BLENDER-SHDNODE-0054",
+    "D8-BLENDER-SHDNODE-0055",
+    "D8-BLENDER-SHDNODE-0056",
+    "D8-BLENDER-SHDNODE-0057",
+    "D8-BLENDER-SHDNODE-0058",
+    "D8-BLENDER-SHDNODE-0059",
+    "D8-BLENDER-SHDNODE-0060",
+    "D8-BLENDER-SHDNODE-0061",
+    "D8-BLENDER-SHDNODE-0062",
+    "D8-BLENDER-SHDNODE-0064",
+    "D8-BLENDER-SHDNODE-0065",
+    "D8-BLENDER-SHDNODE-0066",
+    "D8-BLENDER-SHDNODE-0067",
+    "D8-BLENDER-SHDNODE-0069",
+    "D8-BLENDER-SHDNODE-0070"
+  ],
+  "status": "open",
+  "title": "render-anim: shader_nodes (35 rows)",
+  "wave": 2
+}

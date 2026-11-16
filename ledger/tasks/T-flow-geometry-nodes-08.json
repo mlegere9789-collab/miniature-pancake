@@ -1,0 +1,197 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-geometry-nodes-08",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 36,
+    "rows": 36,
+    "with_existing_hint": 7,
+    "with_hint": 7,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "geometry_nodes"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Switch",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SplitEdge",
+        "rows": 1,
+        "score": 0.739,
+        "status": "implemented"
+      },
+      {
+        "name": "TriangulateMesh",
+        "rows": 1,
+        "score": 0.688,
+        "status": "implemented"
+      },
+      {
+        "name": "Unwrap",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "SelectionFilter",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface.h:44",
+        "rows": 1,
+        "score": 0.685,
+        "symbol": "dino8::kernel::SurfaceDivisions"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:143",
+        "rows": 1,
+        "score": 0.682,
+        "symbol": "dino8::kernel::Mesh::Volume"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-geometry-nodes-08",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/geometry_nodes.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GEONODE-0252": {
+      "commands": [
+        "SplitEdge"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0260": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SurfaceDivisions"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0261": {
+      "commands": [
+        "Switch"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0267": {
+      "commands": [
+        "SelectionFilter"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0273": {
+      "commands": [
+        "TriangulateMesh"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0277": {
+      "commands": [
+        "Unwrap"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0282": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::Volume"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-GEONODE-0249",
+    "D8-BLENDER-GEONODE-0250",
+    "D8-BLENDER-GEONODE-0251",
+    "D8-BLENDER-GEONODE-0252",
+    "D8-BLENDER-GEONODE-0253",
+    "D8-BLENDER-GEONODE-0254",
+    "D8-BLENDER-GEONODE-0255",
+    "D8-BLENDER-GEONODE-0256",
+    "D8-BLENDER-GEONODE-0257",
+    "D8-BLENDER-GEONODE-0258",
+    "D8-BLENDER-GEONODE-0259",
+    "D8-BLENDER-GEONODE-0260",
+    "D8-BLENDER-GEONODE-0261",
+    "D8-BLENDER-GEONODE-0262",
+    "D8-BLENDER-GEONODE-0263",
+    "D8-BLENDER-GEONODE-0264",
+    "D8-BLENDER-GEONODE-0265",
+    "D8-BLENDER-GEONODE-0266",
+    "D8-BLENDER-GEONODE-0267",
+    "D8-BLENDER-GEONODE-0268",
+    "D8-BLENDER-GEONODE-0269",
+    "D8-BLENDER-GEONODE-0270",
+    "D8-BLENDER-GEONODE-0271",
+    "D8-BLENDER-GEONODE-0272",
+    "D8-BLENDER-GEONODE-0273",
+    "D8-BLENDER-GEONODE-0274",
+    "D8-BLENDER-GEONODE-0275",
+    "D8-BLENDER-GEONODE-0276",
+    "D8-BLENDER-GEONODE-0277",
+    "D8-BLENDER-GEONODE-0278",
+    "D8-BLENDER-GEONODE-0279",
+    "D8-BLENDER-GEONODE-0280",
+    "D8-BLENDER-GEONODE-0281",
+    "D8-BLENDER-GEONODE-0282",
+    "D8-BLENDER-GEONODE-0283",
+    "D8-BLENDER-GEONODE-0284"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-GEONODE-0249",
+    "D8-BLENDER-GEONODE-0250",
+    "D8-BLENDER-GEONODE-0251",
+    "D8-BLENDER-GEONODE-0253",
+    "D8-BLENDER-GEONODE-0254",
+    "D8-BLENDER-GEONODE-0255",
+    "D8-BLENDER-GEONODE-0256",
+    "D8-BLENDER-GEONODE-0257",
+    "D8-BLENDER-GEONODE-0258",
+    "D8-BLENDER-GEONODE-0259",
+    "D8-BLENDER-GEONODE-0262",
+    "D8-BLENDER-GEONODE-0263",
+    "D8-BLENDER-GEONODE-0264",
+    "D8-BLENDER-GEONODE-0265",
+    "D8-BLENDER-GEONODE-0266",
+    "D8-BLENDER-GEONODE-0268",
+    "D8-BLENDER-GEONODE-0269",
+    "D8-BLENDER-GEONODE-0270",
+    "D8-BLENDER-GEONODE-0271",
+    "D8-BLENDER-GEONODE-0272",
+    "D8-BLENDER-GEONODE-0274",
+    "D8-BLENDER-GEONODE-0275",
+    "D8-BLENDER-GEONODE-0276",
+    "D8-BLENDER-GEONODE-0278",
+    "D8-BLENDER-GEONODE-0279",
+    "D8-BLENDER-GEONODE-0280",
+    "D8-BLENDER-GEONODE-0281",
+    "D8-BLENDER-GEONODE-0283",
+    "D8-BLENDER-GEONODE-0284"
+  ],
+  "status": "open",
+  "title": "flow: geometry_nodes (36 rows)",
+  "wave": 1
+}
