@@ -2,6 +2,7 @@
 // quantities; the stand-alone Python oracle dino8-app/tests/ifc_oracle.py parses the same kind of file with a separate STEP
 // tokenizer (run by the IFCEXPORT app section on a file written from real app components).
 #include <cctype>
+#include <cstdlib>
 #include <cmath>
 #include <map>
 #include <set>
