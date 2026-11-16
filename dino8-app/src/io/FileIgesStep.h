@@ -5,6 +5,7 @@
 // surface, with a count in the summary, when a face cannot be validated.
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,18 @@ namespace dino8::app {
 // colours as 314 entities, layers as levels (with 406 form 3 level names),
 // multi-face breps kept together by a 402 group and units in the G section.
 bool ExportIges(const Document& doc, const std::string& path, bool selected_only, std::string& error);
+
+// The layer-to-level map of IGES export (SetIgesLayerLevelMap). It lives in the document's user text under kIgesLevelMapKey, one
+// "<layer full path>=<level>" per line, so it is saved with the document and undone with it. A layer the map does not name keeps the
+// level it always had: its index in the layer list. Levels are 1 to 9999999 (the directory entry's 8-column field).
+extern const char* const kIgesLevelMapKey;
+int IgesLevelForLayer(const Document& doc, int layer_index);
+// The map as written (layer full path -> level).
+std::map<std::string, int> IgesLayerLevelMap(const Document& doc);
+// Sets the level of the layer named `layer` (name or full path); false with `error` for an unknown layer or a level out of range.
+bool SetIgesLayerLevel(Document& doc, const std::string& layer, int level, std::string& error);
+// Removes the whole map.
+void ClearIgesLayerLevelMap(Document& doc);
 
 // Reads 100, 102, 104, 106, 110, 112, 116, 118, 120, 122, 124, 126, 128,
 // 140, 141, 142, 143, 144, 308/408, 314, 402 and 406 (level names). On

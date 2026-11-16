@@ -750,6 +750,8 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       ON_wString v;
       if (om->GetUserString(L"Dino8.Mapping", v)) ParseTextureMapping(FromWide(v), m.mapping);
       if (om->GetUserString(L"Dino8.MappingScale", v)) m.mapping_scale = static_cast<float>(std::atof(FromWide(v).c_str()));
+      if (om->GetUserString(L"Dino8.Metallic", v)) m.metallic = static_cast<float>(std::clamp(std::atof(FromWide(v).c_str()), 0.0, 1.0));
+      if (om->GetUserString(L"Dino8.Roughness", v)) m.roughness = static_cast<float>(std::clamp(std::atof(FromWide(v).c_str()), 0.0, 1.0));
       if (m.mapping == TextureMapping::Default) m.mapping = TextureMapping::Surface;
       // Names collide? Keep the first; later ones get a suffix.
       std::string base = m.name;
@@ -2666,6 +2668,8 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     }
     om.SetUserString(L"Dino8.Mapping", ON_wString(TextureMappingName(m.mapping)));
     om.SetUserString(L"Dino8.MappingScale", ON_wString(std::to_string(m.mapping_scale).c_str()));
+    om.SetUserString(L"Dino8.Metallic", ON_wString(std::to_string(m.metallic).c_str()));
+    om.SetUserString(L"Dino8.Roughness", ON_wString(std::to_string(m.roughness).c_str()));
     ON_ModelComponentReference ref = model.AddModelComponent(om, true);
     if (const ON_Material* stored = ON_Material::Cast(ref.ModelComponent())) material_index[m.name] = stored->Index();
   }
@@ -3312,34 +3316,35 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
   const std::string fault = fault_env ? fault_env : "";
   const std::string what = "OpenNURBS could not write " + path + (version != 0 ? " at archive version " + std::to_string(version) : "");
   std::error_code ec;
+  // Only a regular file is ours to delete: a directory that happens to sit on the temporary name is left alone (and is what makes the write fail).
+  auto remove_tmp = [&]() { std::error_code e; if (fs::is_regular_file(tmp_path, e)) fs::remove(tmp_path, e); };
   ON_TextLog log;
   if (!model.Write(tmp_path.c_str(), version, &log)) {
-    fs::remove(tmp_path, ec);  // a failed remove (the name is a directory, say) changes nothing about the outcome
+    remove_tmp();
     error = what + " (the previous file was not touched)";
     return false;
   }
   if (fault == "write") {
     const auto full = fs::file_size(tmp_path, ec);
     if (!ec) fs::resize_file(tmp_path, full / 2, ec);
-    fs::remove(tmp_path, ec);
+    remove_tmp();
     error = what + " (injected write failure; the previous file was not touched)";
     return false;
   }
   const auto written_size = fs::file_size(tmp_path, ec);
   if (ec || written_size == 0) {
-    fs::remove(tmp_path, ec);
+    remove_tmp();
     error = what + " (the archive written is empty; the previous file was not touched)";
     return false;
   }
   if (fault == "rename") {
-    fs::remove(tmp_path, ec);
+    remove_tmp();
     error = what + " (injected rename failure; the previous file was not touched)";
     return false;
   }
   fs::rename(tmp_path, path, ec);
   if (ec) {
-    std::error_code ec2;
-    fs::remove(tmp_path, ec2);
+    remove_tmp();
     error = what + ": could not replace the file (" + ec.message() + "); the previous file was not touched";
     return false;
   }
@@ -3622,6 +3627,17 @@ MeshExportOptions& MutableMeshExportOptions() {
   return options;
 }
 
+std::vector<std::string>& MutableMeshExportReport() {
+  static std::vector<std::string> report;
+  return report;
+}
+
+// "m", "Millimeters", ...: the unit the exported coordinates are in - the Units= name when one was given, else the document's unit system.
+std::string MeshExportUnitText(const Document& doc) {
+  const std::string& typed = ActiveMeshExportOptions().units_name;
+  return typed.empty() ? doc.Settings().unit_system : typed;
+}
+
 // Positions multiplied by `scale` about the world origin (document units -> file units).
 void ScaleMeshForExport(kernel::Mesh& mesh, double scale) {
   if (scale == 1.0 || !(scale > 0.0)) return;
@@ -3651,6 +3667,7 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
     kernel::Mesh mesh;
     bool has_color = false;
     Color color;
+    std::string texture;  // the texture file of the object's assigned material (map_Kd), empty = none
   };
   std::vector<ExportGroup> groups;
   std::map<std::string, int> used_names;
@@ -3685,6 +3702,7 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
       g.has_color = true;
       g.color = doc.Layers()[li].color;
     }
+    if (!o.material_name.empty() || !doc.Layers().empty()) g.texture = doc.MaterialFor(o).texture_path;
     groups.push_back(std::move(g));
   }
   if (groups.empty()) {
@@ -3697,6 +3715,8 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
     error = "Could not write " + path;
     return false;
   }
+  // OBJ has no unit field: say it in a comment (importers skip comments) and in the report, so the coordinates are never of unknown scale.
+  out << "# Dino 8 OBJ export\n# length unit: " << MeshExportUnitText(doc) << "\n";
   out.precision(9);  // the default 6 significant digits rounded coordinates of 1000 and more to 0.01 or worse
   const std::string mtl_name = std::filesystem::path(path).stem().string() + ".mtl";
   const std::string mtl_path = (std::filesystem::path(path).parent_path() / mtl_name).string();
@@ -3711,11 +3731,19 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
   for (const ExportGroup& g : groups) {
     const ON_Mesh& m = g.mesh.raw();
     out << "o " << g.name << "\n";
-    if (g.has_color) {
+    if (g.has_color || !g.texture.empty()) {
       out << "usemtl " << g.name << "\n";
       mtl << "newmtl " << g.name << "\n";
       mtl << "Kd " << g.color.r << ' ' << g.color.g << ' ' << g.color.b << "\n";
-      mtl << "d " << g.color.a << "\n\n";
+      mtl << "d " << g.color.a << "\n";
+      if (!g.texture.empty()) {
+        // a texture next to the .mtl is named relative to it (the folder can then move), any other by the path the material holds
+        const std::filesystem::path tex(g.texture);
+        const std::filesystem::path rel = tex.is_absolute() ? tex.lexically_relative(std::filesystem::path(path).parent_path().lexically_normal()) : tex;
+        const std::string shown = (!rel.empty() && rel.native().compare(0, 2, "..") != 0) ? rel.generic_string() : tex.generic_string();
+        mtl << "map_Kd " << shown << "\n";
+      }
+      mtl << "\n";
     }
     for (int i = 0; i < m.m_V.Count(); ++i) {
       const ON_3fPoint& v = m.m_V[i];
@@ -3899,8 +3927,9 @@ bool ExportGltfFile(const Document& doc, const std::string& path, bool selected_
       kernel::GltfMaterial mat;
       mat.name = part.name;
       mat.base_color = {SrgbToLinear(shown->r), SrgbToLinear(shown->g), SrgbToLinear(shown->b), std::clamp(shown->a, 0.0f, 1.0f)};
-      mat.metallic = 0.0f;
-      mat.roughness = 0.6f;
+      const Material pbr = doc.MaterialFor(o);  // the assigned material's physically based factors (the defaults: dielectric, 0.6)
+      mat.metallic = std::clamp(pbr.metallic, 0.0f, 1.0f);
+      mat.roughness = std::clamp(pbr.roughness, 0.0f, 1.0f);
       if (shown->a < 1.0f) mat.alpha_mode = kernel::GltfMaterial::AlphaMode::Blend;
       part.material = mat;
     }
@@ -3942,6 +3971,16 @@ bool ImportGltfFile(Document& doc, const std::string& path, std::string& error) 
       const std::array<float, 4>& c = part.material->base_color;  // linear RGB in the file, sRGB in the document
       o.color = Color{LinearToSrgb(c[0]), LinearToSrgb(c[1]), LinearToSrgb(c[2]), c[3]};
       o.color_by_layer = false;
+      // The file's metallic and roughness factors become a document material (named after the glTF material, a number appended when
+      // the name is taken by a different one) assigned to the object, so they survive a save and a glTF export.
+      Material m;
+      m.name = part.material->name.empty() ? o.name : part.material->name;
+      m.diffuse = o.color;
+      m.metallic = std::clamp(part.material->metallic, 0.0f, 1.0f);
+      m.roughness = std::clamp(part.material->roughness, 0.0f, 1.0f);
+      const std::string base = m.name;
+      for (int k = 2; doc.FindMaterial(m.name) && !doc.FindMaterial(m.name)->SameAppearance(m); ++k) m.name = base + " " + std::to_string(k);
+      o.material_name = doc.AddMaterial(m);
     }
     doc.Add(std::move(o));
     ++imported;
@@ -4015,9 +4054,16 @@ bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) 
   return true;
 }
 
+const std::vector<std::string>& LastMeshExportReport() { return MutableMeshExportReport(); }
+
 bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   const std::string ext = LowerExt(path);
-  if (ext == ".obj") return ExportObjMulti(doc, path, selected_only, error);
+  MutableMeshExportReport().clear();
+  if (ext == ".obj") {
+    if (!ExportObjMulti(doc, path, selected_only, error)) return false;
+    MutableMeshExportReport().push_back("OBJ length unit: " + MeshExportUnitText(doc) + " (written as a comment in the file; the format has no unit field)");
+    return true;
+  }
   if (ext == ".3mf") return ExportThreeMfFile(doc, path, selected_only, error);
   if (ext == ".gltf" || ext == ".glb") return ExportGltfFile(doc, path, selected_only, error);
   if (ext != ".stl") {
@@ -4044,12 +4090,18 @@ bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_
   }
   const MeshExportOptions& options = ActiveMeshExportOptions();
   kernel::Mesh merged = meshes.size() == 1 ? meshes[0] : kernel::Mesh::MergeAndWeld(meshes);
+  // The solid check a printing workflow needs before it trusts the file: is the mesh that is about to be written closed and manifold?
+  const bool closed = merged.IsClosedManifold();
+  const int facets = merged.raw().TriangleCount() + 2 * merged.raw().QuadCount();
   ScaleMeshForExport(merged, options.scale);
   const bool ascii = options.format == MeshExportFormat::Ascii;
   if ((ascii ? merged.SaveStl(path) : merged.SaveStlBinary(path)) != kernel::Result::Ok) {
     error = "Could not write " + path;
     return false;
   }
+  MutableMeshExportReport().push_back("STL solid check: " + std::to_string(facets) + " facets, " +
+                                      (closed ? "mesh is closed and manifold" : "mesh is NOT closed and manifold: open or non-manifold, no volume"));
+  MutableMeshExportReport().push_back("STL units: coordinates are in " + MeshExportUnitText(doc) + " (the STL format records no unit)");
   return true;
 }
 

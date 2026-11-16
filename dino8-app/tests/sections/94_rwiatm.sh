@@ -4,7 +4,7 @@
 # are the statements this section proves further than RWIFIL could (which could not make a write fail half way). Files are compared by SHA-256 and read by the
 # stand-alone rwi_oracle.py (openNURBS chunk walker). Failures are injected three ways: DINO8_TEST_FAULT_SAVE3DM=write (the temporary file is cut in half and the save
 # fails, as an interrupted write would), =rename (a complete temporary file whose final rename fails), and a real one (a directory sits where the temporary file
-# has to be created, so the write itself fails). Expected values are counts and equalities of the script:
+# has to be created, so the write itself fails; the application deletes only a regular temporary file, so the directory stays). Expected values are counts and equalities of the script:
 #   a.3dm  saved with one box (1 object); three failed overwrites by a document of box + sphere leave the SHA-256 as it was and the oracle still reads 1 object
 #   no a.3dm.d8tmp is left by the injected failures; the failed SaveAs to a new name b.3dm writes no b.3dm and no b.3dm.d8tmp
 #   a clean overwrite by the same document then succeeds: the file changes and holds 2 objects, with no temporary file left
@@ -51,7 +51,7 @@ mkdir "$RWI_D/a.3dm.d8tmp"
 rwi_app "$TMPW/rwiatm_f.txt"
 rwi_has "OpenNURBS could not write $RWI_D/a.3dm" "RWIATM: a write that really fails is reported"
 if [ "$(sha256sum "$RWI_D/a.3dm" | cut -d' ' -f1)" = "$H1" ]; then rwi_ok "RWIATM: a.3dm is byte for byte the same after the real write failure"; else rwi_bad "RWIATM: a.3dm changed after a real write failure"; fi
-rmdir "$RWI_D/a.3dm.d8tmp"
+rmdir "$RWI_D/a.3dm.d8tmp" 2>/dev/null || true
 rwi_oracle "RWIATM: a.3dm still holds 1 object after all three failures" 3dm "$RWI_D/a.3dm" --parts 1
 # and a clean overwrite works and leaves no temporary file
 rwi_app "$TMPW/rwiatm_f.txt"

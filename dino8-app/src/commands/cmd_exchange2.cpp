@@ -6,7 +6,11 @@
 #include "commands/cmd_common.h"
 #include "io/FileIgesStep.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -32,9 +36,48 @@ void RegisterExchange2Commands(CommandEngine& e) {
   Reg(e, "ReadEveryIGESEntity", Immediate([](CommandContext& ctx) {
         ctx.Print("Dino 8's IGES reader always reads every supported entity type - ReadEveryIGESEntity has nothing extra to enable.");
       }), CommandStatus::Implemented, "No partial-read mode exists to turn off.");
+  // SetIgesLayerLevelMap [<layer>=<level> ...] [Reset]: the layer-to-level table of IGES export. With no argument it lists every layer with the
+  // level the next IGES export gives it; <layer>=<level> pairs (level 1 to 9999999, a layer name or full path, quote names with spaces) set
+  // levels, Reset forgets all of them (a layer then keeps its index as its level). Nothing changes when any pair is invalid. The table is saved
+  // with the document; IGES export writes the mapped level in the directory entry of every entity and in the level definition (406 form 3).
   Reg(e, "SetIgesLayerLevelMap", Immediate([](CommandContext& ctx) {
-        ctx.Print("IGES levels map 1:1 to Dino 8 layers by number on import, and layers map to the DE level field by index on export; there is no separate remapping table.");
-      }), CommandStatus::Implemented, "The level<->layer mapping is fixed (by index), not user-editable.");
+        Document& doc = ctx.Doc();
+        bool reset = false;
+        std::vector<std::pair<std::string, int>> pairs;
+        bool bad = false;
+        while (auto t = ctx.Engine().TakePendingInput()) {
+          std::string lower = *t;
+          for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          if (lower == "reset") { reset = true; continue; }
+          const size_t eq = t->rfind('=');
+          std::string layer = eq == std::string::npos ? "" : t->substr(0, eq);
+          const std::string number = eq == std::string::npos ? "" : t->substr(eq + 1);
+          const bool digits = !number.empty() && number.size() <= 9 && std::all_of(number.begin(), number.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+          if (layer.empty() || !digits) { ctx.Warn("SetIgesLayerLevelMap: '" + *t + "' is not <layer>=<level> (a whole number from 1 to 9999999)"); bad = true; continue; }
+          const int level = std::atoi(number.c_str());
+          if (doc.FindLayer(layer) < 0) { ctx.Warn("SetIgesLayerLevelMap: no layer named '" + layer + "'"); bad = true; continue; }
+          if (level < 1 || level > 9999999) { ctx.Warn("SetIgesLayerLevelMap: level " + number + " is out of range (1 to 9999999)"); bad = true; continue; }
+          pairs.emplace_back(layer, level);
+        }
+        if (bad) return;
+        if (!reset && pairs.empty()) {
+          const std::map<std::string, int> map = IgesLayerLevelMap(doc);
+          ctx.Print("IGES level of each layer on export:");
+          for (int i = 0; i < static_cast<int>(doc.Layers().size()); ++i) {
+            const std::string path = doc.LayerFullPath(i);
+            ctx.Print("  " + path + " -> level " + std::to_string(IgesLevelForLayer(doc, i)) + (map.count(path) ? " (mapped)" : " (layer index)"));
+          }
+          return;
+        }
+        doc.BeginChange("SetIgesLayerLevelMap");
+        if (reset) ClearIgesLayerLevelMap(doc);
+        for (const auto& [layer, level] : pairs) {
+          std::string error;
+          if (!SetIgesLayerLevel(doc, layer, level, error)) { ctx.Warn("SetIgesLayerLevelMap: " + error); return; }
+          ctx.Print("SetIgesLayerLevelMap: layer '" + doc.LayerFullPath(doc.FindLayer(layer)) + "' -> IGES level " + std::to_string(level));
+        }
+        if (reset && pairs.empty()) ctx.Print("SetIgesLayerLevelMap: every layer is back to its index as IGES level");
+      }), CommandStatus::Implemented, "Edits the layer-to-level table used by IGES export: <layer>=<level> pairs set levels, Reset clears them, no argument lists them. Import still maps levels to layers by number and the level names in the file.");
   // STEPTree <file.stp>: prints the file's product structure (one line per occurrence, indented per assembly level) without importing it;
   // with no file name the file dialog asks, and the same listing goes to the notification line.
   Reg(e, "STEPTree", Immediate([](CommandContext& ctx) {

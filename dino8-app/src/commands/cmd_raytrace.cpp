@@ -276,6 +276,8 @@ class LibraryAwareAssignMaterialCommand : public Command {
         else if (k == "gloss" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->gloss = static_cast<float>(std::clamp(d, 0.0, 1.0));
         else if (k == "transparency" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->transparency = static_cast<float>(std::clamp(d, 0.0, 1.0));
         else if (k == "reflectivity" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->reflectivity = static_cast<float>(std::clamp(d, 0.0, 1.0));
+        else if (k == "metallic" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->metallic = static_cast<float>(std::clamp(d, 0.0, 1.0));
+        else if (k == "roughness" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->roughness = static_cast<float>(std::clamp(d, 0.0, 1.0));
         else if (k == "texture") { m->texture_path = v; ctx.App().Renderer().RefreshTextures(); }
         else if (k == "mapping") ParseTextureMapping(v, m->mapping);
         else if (k == "scale" && std::sscanf(v.c_str(), "%lf", &d) == 1 && d > 0) m->mapping_scale = static_cast<float>(d);
