@@ -1,0 +1,341 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-file-01",
+  "corpora": [
+    "file fixtures: 3dm of several versions, DWG, STEP, IGES, OBJ, STL round trips"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 24,
+    "rows": 24,
+    "with_existing_hint": 24,
+    "with_hint": 24,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "FILE"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "OptionsImport",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "IgesImportOptions",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OptionsExport",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SaveAs",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AcadSchemes",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Autosave",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "EarthAnchorPoint",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Export",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExportBitmaps",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExportRuiFile",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ExportWithOrigin",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "IncrementalSave",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MigratePlugins",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "New",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Open",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OpenURL",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ReadEveryIGESEntity",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rescue3dmFile",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Revert",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Save",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-file-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/FILE.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-FILE-0001": {
+      "commands": [
+        "AcadSchemes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0002": {
+      "commands": [
+        "Autosave"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0003": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0004": {
+      "commands": [
+        "ExportWithOrigin"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0005": {
+      "commands": [
+        "ExportBitmaps"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0006": {
+      "commands": [
+        "ExportRuiFile"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0007": {
+      "commands": [
+        "EarthAnchorPoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0008": {
+      "commands": [
+        "IgesImportOptions",
+        "OptionsImport"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0009": {
+      "commands": [
+        "IncrementalSave"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0010": {
+      "commands": [
+        "New"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0011": {
+      "commands": [
+        "Open"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0012": {
+      "commands": [
+        "OptionsExport",
+        "OptionsImport"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0013": {
+      "commands": [
+        "OptionsImport",
+        "IgesImportOptions",
+        "OptionsExport"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0014": {
+      "commands": [
+        "MigratePlugins"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0015": {
+      "commands": [
+        "OpenURL"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0016": {
+      "commands": [
+        "ReadEveryIGESEntity"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0017": {
+      "commands": [
+        "Rescue3dmFile"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0018": {
+      "commands": [
+        "Revert"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0019": {
+      "commands": [
+        "Save",
+        "SaveAs"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0020": {
+      "commands": [
+        "SaveACopy"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0021": {
+      "commands": [
+        "SaveAs"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0022": {
+      "commands": [
+        "SaveAsTemplate"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0023": {
+      "commands": [
+        "SaveSmall"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-FILE-0024": {
+      "commands": [
+        "SetIgesLayerLevelMap"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-FILE-0001",
+    "D8-RHINO-FILE-0002",
+    "D8-RHINO-FILE-0003",
+    "D8-RHINO-FILE-0004",
+    "D8-RHINO-FILE-0005",
+    "D8-RHINO-FILE-0006",
+    "D8-RHINO-FILE-0007",
+    "D8-RHINO-FILE-0008",
+    "D8-RHINO-FILE-0009",
+    "D8-RHINO-FILE-0010",
+    "D8-RHINO-FILE-0011",
+    "D8-RHINO-FILE-0012",
+    "D8-RHINO-FILE-0013",
+    "D8-RHINO-FILE-0014",
+    "D8-RHINO-FILE-0015",
+    "D8-RHINO-FILE-0016",
+    "D8-RHINO-FILE-0017",
+    "D8-RHINO-FILE-0018",
+    "D8-RHINO-FILE-0019",
+    "D8-RHINO-FILE-0020",
+    "D8-RHINO-FILE-0021",
+    "D8-RHINO-FILE-0022",
+    "D8-RHINO-FILE-0023",
+    "D8-RHINO-FILE-0024"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "interop-migration: FILE (24 rows)",
+  "wave": 1
+}
