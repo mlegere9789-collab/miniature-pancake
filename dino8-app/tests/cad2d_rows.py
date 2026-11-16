@@ -654,6 +654,380 @@ Export @T@/sel.dxf
     return s, chk
 
 
+# ---------------------------------------------------------------------------------------------------------------- round 2
+# Rows whose AutoCAD behaviour was implemented after the first measurement (register notes "needs implementation").
+# Every expected number below is a closed form written next to its check.
+def lwpolys(path):
+    """-> [(closed, [(x, y), ...])] for every LWPOLYLINE (group 70 bit 1 = closed; vertices are the 10/20 pairs in order)."""
+    out = []
+    for r in entities(path, 'LWPOLYLINE'):
+        xs = [float(v) for c, v in r[1] if c == 10]
+        ys = [float(v) for c, v in r[1] if c == 20]
+        out.append((int(g(r, 70, '0')) & 1 == 1, list(zip(xs, ys))))
+    return out
+
+
+def same_points(got, want, tol=TOL):
+    """The two point lists hold the same points, in any order (each wanted point is matched once)."""
+    if len(got) != len(want):
+        return False
+    rest = list(got)
+    for w in want:
+        hit = None
+        for i, q in enumerate(rest):
+            if abs(q[0] - w[0]) <= tol and abs(q[1] - w[1]) <= tol:
+                hit = i
+                break
+        if hit is None:
+            return False
+        rest.pop(hit)
+    return True
+
+
+def has_poly(path, want):
+    return any(same_points(pts, want) for _, pts in lwpolys(path))
+
+
+# MODIFY-0001 MOVE with a displacement -------------------------------------------------------------------------------------
+# MOVE help: Enter at the second-point prompt takes the first point as a displacement from the origin, so "Move 3,4,0" shifts by (3,4).
+@case('move')
+def move():
+    s = PRE + """Line 0,0,0 4,0,0
+Circle 10,10,0 2
+SelAll
+Move 3,4,0
+Enter
+Line 100,0,0 101,0,0
+SelLast
+Move 0,0,0 3,4,0
+Line 200,0,0 206,0,0
+SelLast
+Move -5,2,0
+Enter
+SelAll
+Export @T@/mov.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/mov.dxf'
+        check(has_line(f, 3, 4, 7, 4), 'MOV_1: displacement 3,4,0 (Enter at the second point) moves the line (0,0)-(4,0) to (3,4)-(7,4)')
+        check(has_circle(f, 13, 14, 2), 'MOV_2: the same displacement moves the circle (10,10) r=2 to (13,14)')
+        check(has_line(f, 103, 4, 104, 4), 'MOV_3: the two-point form still works: base (0,0) to (3,4) moves (100,0)-(101,0) to (103,4)-(104,4)')
+        check(has_line(f, 195, 2, 201, 2), 'MOV_4: a negative displacement -5,2,0 moves (200,0)-(206,0) to (195,2)-(201,2)')
+        check(len(entities(f, 'LINE')) == 3 and len(entities(f, 'CIRCLE')) == 1, 'MOV_5: exactly 3 lines and 1 circle remain (nothing was copied)')
+    return s, chk
+
+
+# MODIFY-0002 COPY: Mode Single/Multiple and the linear Array option -----------------------------------------------------
+# Array: the item count INCLUDES the original; the second point is the spacing between items (Fit=Yes: the position of the last item).
+@case('copy')
+def copy():
+    s = PRE + """Circle 0,0,0 1
+SelLast
+Copy Mode=Single 0,0,0 10,0,0 20,0,0
+Circle 0,50,0 1
+SelLast
+Copy 0,50,0 5,50,0 5,60,0
+Enter
+Circle 0,100,0 1
+SelLast
+Copy 0,100,0 Array 4 10,100,0
+Circle 0,150,0 1
+SelLast
+Copy 0,150,0 Array 4 Fit=Yes 90,150,0
+SelAll
+Export @T@/cpy.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/cpy.dxf'
+        check(has_circle(f, 0, 0, 1) and has_circle(f, 10, 0, 1) and not has_circle(f, 20, 0, 1), 'CPY_1: Mode=Single makes one copy (10,0) and ends: no circle at (20,0)')
+        check(has_circle(f, 0, 50, 1) and has_circle(f, 5, 50, 1) and has_circle(f, 5, 60, 1), 'CPY_2: Multiple (the default) keeps copying until Enter: copies at (5,50) and (5,60)')
+        check(all(has_circle(f, 10.0 * i, 100, 1) for i in range(4)) and not has_circle(f, 40, 100, 1), 'CPY_3: Array of 4 items (original included) with spacing 10 gives centres x = 0, 10, 20, 30 and no 5th')
+        # Fit: the last of the 4 items sits on the second point (90): the spacing is 90 / (4 - 1) = 30
+        check(all(has_circle(f, 30.0 * i, 150, 1) for i in range(4)), 'CPY_4: Array 4 with Fit to x=90 spreads the items at 0, 30, 60, 90')
+        n = len(entities(f, 'CIRCLE'))
+        check(n == 2 + 3 + 4 + 4, 'CPY_5: 13 circles in all (2 + 3 + 4 + 4), found %d' % n)
+    return s, chk
+
+
+# DRAW-0001 LINE with Close and Undo ------------------------------------------------------------------------------------------
+@case('lines')
+def lines():
+    s = PRE + """Lines 0,0,0 10,0,0 10,5,0 Close
+Lines 100,0,0 110,0,0 110,5,0 Undo 120,0,0 Enter
+Lines 200,0,0 210,0,0 Close Enter
+SelAll
+Export @T@/lin.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/lin.dxf'
+        check(has_line(f, 0, 0, 10, 0) and has_line(f, 10, 0, 10, 5) and has_line(f, 10, 5, 0, 0), 'LIN_1: Close after three points makes the third segment back to the start: (10,5)-(0,0)')
+        check(has_line(f, 100, 0, 110, 0) and has_line(f, 110, 0, 120, 0) and not has_line(f, 110, 0, 110, 5), 'LIN_2: Undo removes only the last segment (110,0)-(110,5); the chain continues from (110,0) to (120,0)')
+        check(has_line(f, 200, 0, 210, 0) and not has_line(f, 210, 0, 200, 0) and len([1 for r in entities(f, 'LINE') if close(gf(r, 10), 200)]) == 1, 'LIN_3: Close with a single segment is refused (a closing segment needs two): only (200,0)-(210,0) exists')
+        check(len(entities(f, 'LINE')) == 6, 'LIN_4: 3 + 2 + 1 = 6 separate LINE objects, found %d' % len(entities(f, 'LINE')))
+    return s, chk
+
+
+# DRAW-0005 CIRCLE 2-point and tangent-tangent-radius ------------------------------------------------------------------------
+# 2P: centre = midpoint of the diameter, radius = half its length. TTR for two lines: the centre is at distance r from both lines.
+@case('circle')
+def circle():
+    s = PRE + """Circle 2Point 0,0,0 6,0,0
+Circle 2P 10,10,0 10,18,0
+Line 100,0,0 120,0,0
+Line 100,0,0 100,20,0
+Circle TTR 110,0,0 100,10,0 5
+Line 300,0,0 320,0,0
+Line 300,0,0 310,10,0
+Circle TTR 310,0,0 308,8,0 5
+SelAll
+Export @T@/cir.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/cir.dxf'
+        check(has_circle(f, 3, 0, 3), 'CIR_1: 2Point (0,0)-(6,0): centre = midpoint (3,0), radius = 6/2 = 3')
+        check(has_circle(f, 10, 14, 4), 'CIR_2: 2P (10,10)-(10,18): centre (10,14), radius 4')
+        # lines along the two axes from (100,0), r=5: the circle nearest the picks is in the quadrant of the picks: centre (105,5)
+        check(has_circle(f, 105, 5, 5), 'CIR_3: TTR r=5 between the lines y=0 and x=100 (picks near (110,0) and (100,10)) has its centre at (105,5)')
+        # lines y=0 and y=x-300 (45 degrees): the centre lies on the 22.5 degree bisector at height r: x = 300 + r / tan(22.5 deg) = 300 + 5 (1 + sqrt 2)
+        check(has_circle(f, 300 + 5 * (1 + math.sqrt(2)), 5, 5), 'CIR_4: TTR r=5 between the lines y=0 and y=x-300 has its centre at (300 + 5(1+sqrt 2), 5) = (%.9f, 5)' % (300 + 5 * (1 + math.sqrt(2))))
+        check(len(entities(f, 'CIRCLE')) == 4 and len(entities(f, 'LINE')) == 4, 'CIR_5: 4 circles and the 4 construction lines remain')
+    return s, chk
+
+
+# DRAW-0009 POLYGON: Inscribed, Circumscribed and Edge ----------------------------------------------------------------------
+@case('polygon')
+def polygon():
+    s = PRE + """Polygon NumSides=6 0,0,0 10,0,0
+Polygon NumSides=6 Circumscribed=Yes 100,0,0 110,0,0
+Polygon NumSides=4 Edge 200,0,0 204,0,0
+Polygon NumSides=5 Edge 300,0,0 304,0,0
+Polygon NumSides=4 Circumscribed=Yes 400,0,0 400,5,0
+SelAll
+Export @T@/plg.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/plg.dxf'
+        ps = lwpolys(f)
+        check(len(ps) == 5 and all(c for c, _ in ps), 'PLG_0: five closed polylines (found %d)' % len(ps))
+        # inscribed: corners on the circle of radius 10 from angle 0 in steps of 60 degrees; the side is then 10
+        check(has_poly(f, [(10 * math.cos(math.radians(60 * k)), 10 * math.sin(math.radians(60 * k))) for k in range(6)]), 'PLG_1: inscribed hexagon in R=10: corners (10 cos 60k, 10 sin 60k)')
+        # circumscribed about the circle of radius 10: corners at R = 10 / cos 30 = 11.547005 at angles 30 + 60k (the picked direction 0 is an edge middle)
+        R = 10 / math.cos(math.radians(30))
+        check(has_poly(f, [(100 + R * math.cos(math.radians(30 + 60 * k)), R * math.sin(math.radians(30 + 60 * k))) for k in range(6)]), 'PLG_2: circumscribed hexagon about the radius-10 circle: corners at R=%.9f, angles 30 + 60k' % R)
+        # edge (200,0)-(204,0), 4 sides, counterclockwise: the square on the left (above) of the edge
+        check(has_poly(f, [(200, 0), (204, 0), (204, 4), (200, 4)]), 'PLG_3: Edge (200,0)-(204,0) with 4 sides gives the square (200,0),(204,0),(204,4),(200,4)')
+        # edge (300,0)-(304,0), 5 sides: side 4 everywhere, area = n s^2 / (4 tan(pi/n)), the edge is one of the sides, all on the left (y >= 0)
+        pent = [pts for _, pts in ps if len(pts) == 5 and all(abs(x - 302) < 5 for x, _ in pts)]
+        ok = False
+        if pent:
+            q = pent[0]
+            sides = [math.hypot(q[(i + 1) % 5][0] - q[i][0], q[(i + 1) % 5][1] - q[i][1]) for i in range(5)]
+            area = abs(sum(q[i][0] * q[(i + 1) % 5][1] - q[(i + 1) % 5][0] * q[i][1] for i in range(5))) / 2
+            ok = (all(abs(x - 4) < 1e-8 for x in sides) and abs(area - 5 * 16 / (4 * math.tan(math.pi / 5))) < 1e-7 and all(y > -1e-9 for _, y in q)
+                  and any(abs(x - 300) < TOL and abs(y) < TOL for x, y in q) and any(abs(x - 304) < TOL and abs(y) < TOL for x, y in q))
+        check(ok, 'PLG_4: Edge (300,0)-(304,0) with 5 sides: all sides 4, area 5*16/(4 tan 36 deg) = %.6f, on the left of the edge, edge endpoints are corners' % (5 * 16 / (4 * math.tan(math.pi / 5))))
+        # 4 sides circumscribed about the radius-5 circle at (400,0), picked direction 90 degrees (an edge middle): the square [395,405] x [-5,5]
+        check(has_poly(f, [(395, 5), (395, -5), (405, -5), (405, 5)]), 'PLG_5: circumscribed square about the radius-5 circle at (400,0) is [395,405] x [-5,5]')
+    return s, chk
+
+
+# MODIFY-0010 CHAMFER with two distances and with distance and angle ----------------------------------------------------------
+# Perpendicular lines meeting at the corner K: tangent points K + d1 u and K + d2 v. Angle method: law of sines in the triangle
+# K, P (on line 1, KP = d1), Q (on line 2): KQ = d1 sin(a) / sin(corner angle + a) with a the angle at P.
+@case('chamfer')
+def chamfer():
+    s = PRE + """Line 0,0,0 20,0,0
+Line 0,0,0 0,20,0
+Chamfer Distance=3 Distance2=4 10,0,0 0,10,0
+Line 100,0,0 120,0,0
+Line 100,0,0 100,20,0
+Chamfer Distance=3 Distance2=4 100,10,0 110,0,0
+Line 200,0,0 220,0,0
+Line 200,0,0 200,20,0
+Chamfer Method=Angle Distance=3 Angle=30 210,0,0 200,10,0
+SelAll
+Export @T@/chm.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/chm.dxf'
+        check(has_line(f, 3, 0, 0, 4) and has_line(f, 3, 0, 20, 0) and has_line(f, 0, 4, 0, 20), 'CHM_1: distances 3 (first line, x axis) and 4 (second line): chamfer (3,0)-(0,4) of length 5, lines trimmed to (3,0)-(20,0) and (0,4)-(0,20)')
+        # the first distance belongs to the first PICKED line: picking the vertical line first puts 3 on it: tangent points (100,3) and (104,0)
+        check(has_line(f, 100, 3, 104, 0) and has_line(f, 100, 3, 100, 20) and has_line(f, 104, 0, 120, 0), 'CHM_2: picking the vertical line first puts distance 3 on it: chamfer (100,3)-(104,0)')
+        # a = 30 deg at the first tangent point (3 from K): KQ = 3 sin 30 / sin(90 + 30) = 1.5 / 0.8660254 = sqrt 3
+        check(has_line(f, 203, 0, 200, math.sqrt(3)) and has_line(f, 203, 0, 220, 0) and has_line(f, 200, math.sqrt(3), 200, 20), 'CHM_3: distance 3 and angle 30: second tangent point at 3 sin 30 / sin 120 = sqrt 3 = %.9f: chamfer (203,0)-(200,%.9f)' % (math.sqrt(3), math.sqrt(3)))
+        check(len(entities(f, 'LINE')) == 9, 'CHM_4: three chamfers make 3 lines each (9 in all), found %d' % len(entities(f, 'LINE')))
+    return s, chk
+
+
+# MODIFY-0007 TRIM with Edge = Extend ---------------------------------------------------------------------------------------
+@case('trim')
+def trim():
+    s = PRE + """Line 0,30,0 10,30,0
+Line 5,32,0 5,38,0
+SelLast
+Trim 8,30,0
+Enter
+SelNone
+Line 0,0,0 10,0,0
+Line 5,2,0 5,8,0
+SelLast
+Trim EdgeExtend=Yes 8,0,0
+Enter
+SelAll
+Export @T@/trm.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/trm.dxf'
+        # the cutter x=5 stops at y=32, 2 above the line y=30 it never reaches: without Edge Extend there is no intersection, nothing is trimmed
+        check(has_line(f, 0, 30, 10, 30), 'TRM_1: without Edge=Extend a cutter that stops short of the line trims nothing: (0,30)-(10,30) stays whole')
+        # with Edge=Extend the cutter x=5 is prolonged down to y=0 (the implied intersection (5,0)); the pick at x=8 removes the part from 5 to 10
+        check(has_line(f, 0, 0, 5, 0) and not has_line(f, 0, 0, 10, 0), 'TRM_2: with Edge=Extend the implied intersection (5,0) trims the line at the pick x=8: (0,0)-(5,0)')
+        check(has_line(f, 5, 2, 5, 8) and has_line(f, 5, 32, 5, 38), 'TRM_3: the cutting edges themselves are unchanged')
+        check(len(entities(f, 'LINE')) == 4, 'TRM_4: 4 lines remain, found %d' % len(entities(f, 'LINE')))
+    return s, chk
+
+
+# MODIFY-0008 EXTEND to boundary edges ----------------------------------------------------------------------------------------
+@case('extend')
+def extend():
+    s = PRE + """Line 0,0,0 5,0,0
+Line 0,20,0 3,20,0
+Line 0,60,0 5,60,0
+Line 0,80,0 5,80,0
+Line 10,-5,0 10,30,0
+SelNone
+Extend Boundary SelLast Enter 4,0,0 2,20,0 4,60,0 EdgeExtend=Yes 4,80,0 Enter
+SelAll
+Export @T@/ext.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/ext.dxf'
+        check(has_line(f, 0, 0, 10, 0), 'EXT_1: the line (0,0)-(5,0) is extended at its picked end up to the boundary line x=10: (0,0)-(10,0)')
+        check(has_line(f, 0, 20, 10, 20), 'EXT_2: the short line (0,20)-(3,20) reaches the boundary at (10,20)')
+        # the boundary x=10 only spans y -5..30: the lines at y=60 and y=80 do not reach it unless its line is prolonged (Edge=Extend)
+        check(has_line(f, 0, 60, 5, 60), 'EXT_3: without Edge=Extend a line whose extension misses the boundary is left alone: (0,60)-(5,60)')
+        check(has_line(f, 0, 80, 10, 80), 'EXT_4: with Edge=Extend the boundary line x=10 is prolonged and the line at y=80 ends at (10,80)')
+        check(has_line(f, 10, -5, 10, 30) and len(entities(f, 'LINE')) == 5, 'EXT_5: the boundary is unchanged and 5 lines remain (found %d)' % len(entities(f, 'LINE')))
+    return s, chk
+
+
+# MODIFY-0012 OFFSET Through and Erase ---------------------------------------------------------------------------------------
+@case('offset')
+def offset():
+    s = PRE + """Line 0,0,0 20,0,0
+SelLast
+Offset Through 5,3,0
+Circle 0,100,0 5
+SelLast
+Offset Through 0,112,0
+Circle 0,200,0 5
+SelLast
+Offset Through 0,202,0
+Line 300,0,0 320,0,0
+SelLast
+Offset Erase=Yes Distance=2 305,10,0
+SelAll
+Export @T@/off.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/off.dxf'
+        check(has_line(f, 0, 0, 20, 0) and has_line(f, 0, 3, 20, 3), 'OFF_1: Through (5,3) offsets the line y=0 to y=3 (distance 3 from the point to the line): (0,3)-(20,3); the source stays')
+        # (0,112) is 7 outside the circle (centre (0,100), r=5: the nearest point is (0,105)) -> r = 5 + 7 = 12
+        check(has_circle(f, 0, 100, 5) and has_circle(f, 0, 100, 12), 'OFF_2: Through (0,112) offsets the circle r=5 to r=5+7=12')
+        # (0,202) is 3 inside the circle (centre (0,200), r=5: nearest point (0,205)): r = 5 - 3 = 2
+        check(has_circle(f, 0, 200, 5) and has_circle(f, 0, 200, 2), 'OFF_3: Through (0,202) offsets the circle r=5 inward to r=5-3=2')
+        check(has_line(f, 300, 2, 320, 2) and not has_line(f, 300, 0, 320, 0), 'OFF_4: Erase=Yes with distance 2 towards y>0 leaves only the offset (300,2)-(320,2); the source (300,0)-(320,0) is deleted')
+        check(len(entities(f, 'LINE')) == 3 and len(entities(f, 'CIRCLE')) == 4, 'OFF_5: 3 lines and 4 circles remain (found %d and %d)' % (len(entities(f, 'LINE')), len(entities(f, 'CIRCLE'))))
+    return s, chk
+
+
+# MODIFY-0021 JOIN, Close option: one arc becomes a circle ----------------------------------------------------------------------
+@case('joinclose')
+def joinclose():
+    s = PRE + """Arc 0,0,0 5,0,0 0,5,0
+SelLast
+JoinClose
+Arc 20,0,0 25,0,0 15,0,0
+SelLast
+JoinClose
+Line 50,0,0 60,0,0
+SelLast
+JoinClose
+SelAll
+Export @T@/jcl.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/jcl.dxf'
+        check(has_circle(f, 0, 0, 5), 'JCL_1: closing the quarter arc (centre (0,0), r=5, 0 to 90 degrees) gives the circle centre (0,0) r=5')
+        check(has_circle(f, 20, 0, 5), 'JCL_2: closing the half arc about (20,0) r=5 gives the circle centre (20,0) r=5')
+        check(not arcs(f), 'JCL_3: no ARC object remains')
+        check(has_line(f, 50, 0, 60, 0) and len(entities(f, 'LINE')) == 1 and len(entities(f, 'CIRCLE')) == 2, 'JCL_4: a line is not an arc: it stays, 1 line and 2 circles in all')
+    return s, chk
+
+
+# MODIFY-0014 ARRAYPOLAR with Rotate Items off ---------------------------------------------------------------------------------
+# Rotate Items = No: the copies keep their orientation; the base point (middle of the selection) goes round the centre.
+@case('arraypolar')
+def arraypolar():
+    s = PRE + """Line 10,0,0 14,0,0
+SelLast
+ArrayPolar RotateItems=No 0,0,0 4 360
+Line 110,0,0 114,0,0
+SelLast
+ArrayPolar 100,0,0 4 360
+SelAll
+Export @T@/arp.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/arp.dxf'
+        # base point = middle (12,0); it goes to (0,12), (-12,0), (0,-12): the copies are the same horizontal 4-long line centred there
+        check(has_line(f, 10, 0, 14, 0) and has_line(f, -2, 12, 2, 12) and has_line(f, -14, 0, -10, 0) and has_line(f, -2, -12, 2, -12), 'ARP_1: RotateItems=No: 4 horizontal lines centred at (12,0), (0,12), (-12,0), (0,-12)')
+        # rotated copies about (100,0): (110,0)-(114,0) turned by 90, 180, 270 degrees
+        check(has_line(f, 110, 0, 114, 0) and has_line(f, 100, 10, 100, 14) and has_line(f, 90, 0, 86, 0) and has_line(f, 100, -10, 100, -14), 'ARP_2: the default rotates the items: (100,10)-(100,14), (90,0)-(86,0), (100,-10)-(100,-14)')
+        check(len(entities(f, 'LINE')) == 8, 'ARP_3: 8 lines in all, found %d' % len(entities(f, 'LINE')))
+    return s, chk
+
+
+# MODIFY-0018 ALIGN with source / destination point pairs ---------------------------------------------------------------------
+# Pair 1 moves s1 onto d1; pair 2 turns about d1 so that s1->s2 points along d1->d2 (and Scale=Yes scales by |d1d2|/|s1s2|).
+@case('alignpts')
+def alignpts():
+    s = PRE + """Line 0,0,0 4,0,0
+SelLast
+AlignPoints 0,0,0 10,10,0 4,0,0 10,20,0
+Line 100,0,0 104,0,0
+SelLast
+AlignPoints Scale=Yes 100,0,0 110,10,0 104,0,0 110,20,0
+Line 200,0,0 204,0,0
+SelLast
+AlignPoints 200,0,0 210,5,0
+Enter
+SelAll
+Export @T@/aln.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/aln.dxf'
+        # source direction (4,0) = angle 0, destination direction (0,10) = angle 90: a quarter turn about (10,10); length stays 4
+        check(has_line(f, 10, 10, 10, 14), 'ALN_1: two pairs without Scale: (0,0)-(4,0) becomes (10,10)-(10,14) (turned 90 degrees, length 4)')
+        # with Scale the length becomes |d1 d2| = 10: the line is (110,10)-(110,20)
+        check(has_line(f, 110, 10, 110, 20), 'ALN_2: two pairs with Scale=Yes: (100,0)-(104,0) becomes (110,10)-(110,20), length 10 = the destination distance')
+        check(has_line(f, 210, 5, 214, 5), 'ALN_3: one pair then Enter is a plain move by d1 - s1 = (10,5): (210,5)-(214,5)')
+        check(len(entities(f, 'LINE')) == 3, 'ALN_4: 3 lines, found %d' % len(entities(f, 'LINE')))
+    return s, chk
+
+
 def main():
     if len(sys.argv) < 4:
         print(__doc__)
