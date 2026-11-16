@@ -1,5 +1,5 @@
 // Round 3 row work, Blender simulation rows: rigid body world (bpy.ops.rigidbody.*), cloth, fluid, hair.
-// Oracles are closed forms (free fall, pendulum period series, Hooke oscillator, impulse algebra, polyline
+// Oracles are closed forms (free fall, pendulum period series, linear spring oscillator, impulse algebra, polyline
 // geometry, exact counts). Tolerances are derived from the integrator (velocity Verlet, second order) as stated at
 // each check; none is tuned. Blender defaults that could not be fetched (docs.blender.org is outside the network
 // policy) are marked "recollection" and are listed in each row's notes as needing an owner check.
