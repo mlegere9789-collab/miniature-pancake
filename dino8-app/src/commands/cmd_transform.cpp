@@ -644,7 +644,16 @@ class ArrayLinearCommand : public Command {
 class ArrayPolarCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to array"); }
-  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantPoint("Center of polar array"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantPoint("Center of polar array");
+    // AutoCAD ARRAYPOLAR "Rotate items": No keeps every copy's orientation and only moves the copy's base point (the middle of
+    // the selection's bounding box) around the centre.
+    options = {{"RotateItems", "Yes", {"Yes", "No"}, false, true}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "RotateItems") { rotate_items_ = (v == "Yes"); options[0].value = rotate_items_ ? "Yes" : "No"; }
+  }
   void OnPoint(CommandContext& ctx, Point3d p) override { center_ = p; WantNumber("Number of items", 6); }
   void OnNumber(CommandContext& ctx, double v) override {
     if (!count_) {
@@ -662,9 +671,19 @@ class ArrayPolarCommand : public Command {
     const std::vector<SceneObject> sources = ResolveObjects(ctx, ids_);
     const int n = *count_;
     const bool full = std::fabs(v - 360.0) < 1e-9;
+    Point3d base_pt = center_;
+    if (!rotate_items_) {
+      kernel::BoundingBox bb;
+      if (ctx.Doc().BoundingBoxOf(ids_, bb)) base_pt = Point3d((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
+    }
     for (int i = 1; i < n; ++i) {
       ON_Xform xf;
       xf.Rotation(fill * i / (full ? n : n - 1), ActiveNormal(ctx), center_);
+      if (!rotate_items_) {
+        Point3d moved = base_pt;
+        moved.Transform(xf);
+        xf = ON_Xform::TranslationTransformation(moved - base_pt);
+      }
       std::vector<ObjectId> step;
       for (const SceneObject& src : sources) { SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); step.push_back(ctx.Doc().Add(std::move(dup))); }
       RegroupCopies(ctx, step);
@@ -675,6 +694,60 @@ class ArrayPolarCommand : public Command {
   std::vector<ObjectId> ids_;
   Point3d center_;
   std::optional<int> count_;
+  bool rotate_items_ = true;
+};
+
+// AlignPoints: AutoCAD ALIGN with one or two source/destination point pairs (2D). Pair 1 moves the first source point onto the
+// first destination point; Enter there ends the command (move only). Pair 2 then turns the objects about the first destination
+// point so the source direction (source 1 to source 2) matches the destination direction, and Scale=Yes also scales about that
+// point by |destination 2 - destination 1| / |source 2 - source 1|. Three pairs (3D tilt) are not offered.
+class AlignPointsCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to align"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"Scale", "No", {"Yes", "No"}, false, true}};
+    WantPoint("First source point");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Scale") { scale_ = (v == "Yes"); options[0].value = scale_ ? "Yes" : "No"; }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    pts_.push_back(p);
+    switch (pts_.size()) {
+      case 1: WantPoint("First destination point"); break;
+      case 2: WantPoint("Second source point (Enter to move only)"); break;
+      case 3: WantPoint("Second destination point"); break;
+      default: Apply(ctx); break;
+    }
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (pts_.size() == 2) { Apply(ctx); return; }
+    ctx.ClearPreview();
+    Finish();
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  void Apply(CommandContext& ctx) {
+    ctx.ClearPreview();
+    ON_Xform xf = ON_Xform::TranslationTransformation(pts_[1] - pts_[0]);
+    if (pts_.size() >= 4) {
+      const ON_Plane pl = ActivePlane(ctx);
+      const Vector3d u = pts_[2] - pts_[0], v = pts_[3] - pts_[1];
+      if (u.Length() <= 1e-12 || v.Length() <= 1e-12) { ctx.Warn("AlignPoints: the second source or destination point equals the first"); Finish(); return; }
+      const double au = std::atan2(ON_DotProduct(u, pl.yaxis), ON_DotProduct(u, pl.xaxis));
+      const double av = std::atan2(ON_DotProduct(v, pl.yaxis), ON_DotProduct(v, pl.xaxis));
+      ON_Xform rot;
+      rot.Rotation(av - au, ActiveNormal(ctx), pts_[1]);
+      xf = rot * xf;
+      if (scale_) xf = ON_Xform::ScaleTransformation(pts_[1], v.Length() / u.Length()) * xf;
+    }
+    ApplyXform(ctx, ids_, xf, false, "AlignPoints");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  std::vector<Point3d> pts_;
+  bool scale_ = false;
 };
 
 class Orient3PtCommand : public Command {
@@ -824,6 +897,8 @@ void RegisterTransformCommands(CommandEngine& e) {
   Reg(e, "Array", Make<ArrayCommand>());
   Reg(e, "ArrayLinear", Make<ArrayLinearCommand>());
   Reg(e, "ArrayPolar", Make<ArrayPolarCommand>());
+  Reg(e, "AlignPoints", Make<AlignPointsCommand>(), CommandStatus::Implemented,
+      "AutoCAD ALIGN with one or two source/destination point pairs: move, then rotate (and with Scale=Yes scale) about the first destination point.");
   Reg(e, "Orient3Pt", Make<Orient3PtCommand>());
   Reg(e, "Orient", Make<OrientCommand>());
   Reg(e, "ProjectToCPlane", OnSelection("Select objects to project", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
