@@ -266,9 +266,23 @@ D8_EXTRA_TEST(SplitSolidBySheetTiltedPlaneHalves) {
   }
 }
 
-// SplitBrepByPlaneSealed hands back closed halves or refuses with a typed reason. Where the plane stays between the caps it succeeds; the
-// measured refusal is the plane that crosses the planar end caps (z = z0 + s x with z0 +- 3 s outside [0, 8]): the engine leaves the cap chords
-// and the wall's rim arcs unpaired, so the halves are valid but open.
+// SplitBrepByPlaneSealed hands back closed halves or refuses with a typed reason. Where the plane stays between the caps it succeeds; a plane
+// that crosses the planar end caps (z = z0 + s x with z0 +- 3 s outside [0, 8]) used to be refused (the cap chords and the wall's rim arcs
+// stayed unpaired, so the halves were valid but open). With the seam-crossing chain handling of the Boolean engine the four placements with the
+// wall seam at 0 degrees now seal: both halves are valid closed solids of Euler characteristic 2 whose volumes match the closed form (the
+// integral of clamp(z0 + s x, 0, 8) over the disk) and add up to pi r^2 h. The seam turned 10 degrees is still refused with the typed reason.
+// Closed form: the part of the cylinder below the plane, x-slices of the disk with the height clamped to the caps.
+double VolumeBelowPlane(double z0, double slope) {
+  const int n = 20000;
+  double v = 0.0;
+  for (int i = 0; i < n; ++i) {
+    const double x = -kR + (i + 0.5) * 2.0 * kR / n;
+    const double w = 2.0 * std::sqrt(std::max(0.0, kR * kR - x * x));
+    v += w * std::min(std::max(z0 + slope * x, 0.0), kH) * (2.0 * kR / n);
+  }
+  return v;
+}
+
 D8_EXTRA_TEST(SplitSolidByPlaneSealedClosedOrTypedRefusal) {
   using dino8::kernel::BooleanFailureReason;
   using dino8::kernel::BooleanOperationError;
@@ -293,7 +307,30 @@ D8_EXTRA_TEST(SplitSolidByPlaneSealedClosedOrTypedRefusal) {
   struct Cross {
     double z0, slope, rotate_deg;
   };
-  for (const Cross& c : {Cross{4.0, 1.5, 0.0}, Cross{4.0, 2.0, 0.0}, Cross{3.0, 1.2, 0.0}, Cross{4.0, 1.5, 10.0}, Cross{4.0, 1.4, 0.0}}) {
+  for (const Cross& c : {Cross{4.0, 1.5, 0.0}, Cross{4.0, 2.0, 0.0}, Cross{3.0, 1.2, 0.0}, Cross{4.0, 1.4, 0.0}}) {
+    Vector3d n(-c.slope, 0, 1);
+    n.Unitize();
+    char label[120];
+    std::snprintf(label, sizeof label, "plane z = %.1f + %.1f x through the caps (seam turned %.0f degrees)", c.z0, c.slope, c.rotate_deg);
+    try {
+      const auto [plus, minus] = dino8::kernel::SplitBrepByPlaneSealed(Cylinder(kR, kH), n, n.z * c.z0);
+      d8test::Check(Closed(plus) && Closed(minus), (std::string(label) + ": both halves are valid, closed, oriented solids").c_str());
+      d8test::Check(Count(plus).Euler() == 2 && Count(minus).Euler() == 2, (std::string(label) + ": Euler characteristic 2 on both halves").c_str());
+      const double want_minus = VolumeBelowPlane(c.z0, c.slope), want_plus = kCylVol - want_minus;  // the plus side is above the plane
+      const double vp = Vol(plus), vm = Vol(minus);
+      char buf[200];
+      std::snprintf(buf, sizeof buf, ": above %.4f (closed form %.4f), below %.4f (closed form %.4f), to 3e-3", vp, want_plus, vm, want_minus);
+      d8test::Check(std::fabs(vp - want_plus) <= 3e-3 * want_plus && std::fabs(vm - want_minus) <= 3e-3 * want_minus, (std::string(label) + buf).c_str());
+      d8test::Check(std::fabs(vp + vm - kCylVol) <= 1e-4 * kCylVol, (std::string(label) + ": the halves add up to pi r^2 h within 1e-4").c_str());
+      d8test::Check(OnSide(plus, n, n.z * c.z0, true, 2e-3) && OnSide(minus, n, n.z * c.z0, false, 2e-3),
+                    (std::string(label) + ": each half lies on its own side of the plane").c_str());
+    } catch (const std::exception& e) {
+      d8test::Check(false, (std::string(label) + ": threw " + e.what()).c_str());
+    }
+  }
+  {
+    // The same plane with the wall seam turned 10 degrees: still the measured refusal, typed and naming the open half.
+    const Cross c{4.0, 1.5, 10.0};
     ON_Xform turn;
     turn.Rotation(c.rotate_deg * ON_PI / 180.0, ON_3dVector(0, 0, 1), ON_3dPoint(0, 0, 0));
     Vector3d n(-c.slope, 0, 1);
