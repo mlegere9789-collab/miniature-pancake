@@ -60,3 +60,23 @@ for QCRE_VARIANT in empty presel; do
   done
   if [ "$QCRE_BAD" = 0 ]; then echo "ok   QCRE_${QCRE_VARIANT}: ${#QCRE_ALL[@]} commands survived Enter / a number at the first prompt (nothing selected / box, circle, line selected)"; fi
 done
+
+# QCRE_squish_box: Squish of a six-faced box, with 0..9 other objects in the document before it. Squish adds a mesh and an outline curve per face,
+# so the document's object vector reallocates somewhere inside the loop whenever the count reaches a power of two; the loop used to read the
+# SceneObject it had looked up before the loop (a dangling pointer after the first reallocation) for the whole-object area of every later face,
+# and QCRE_presel_Squish died with a segmentation fault once a merged branch moved the command into a different chunk (a different object
+# count at that point). Every count from 0 to 9 other objects puts the reallocation on a different face; each face must still report the
+# box's whole-object area 600 and the app must exit cleanly.
+{
+  printf 'SetActiveViewport Top\n'
+  for QCRE_N in 0 1 2 3 4 5 6 7 8 9; do
+    printf 'New\n'
+    for QCRE_P in $(seq 1 "$QCRE_N"); do printf 'Point %s,50,0\n' "$((QCRE_P * 3))"; done
+    printf 'Box 0,0,0 10,10,0 10\nSelPolysrf\nSquish\nQCREEND_%s\n' "$QCRE_N"
+  done
+} > "$QCRE_DIR/sq.txt"
+QCRE_RC=0
+qcre_run "$QCRE_DIR/sq.txt" "$QCRE_DIR/sq.out" || QCRE_RC=$?
+QCRE_SQ="$(grep -c 'Squish: face [0-5] flattened, area 100 (whole object 3D area 600)' "$QCRE_DIR/sq.out" || true)"
+if [ "$QCRE_RC" = 0 ] && [ "$QCRE_SQ" -ge 60 ]; then echo "ok   QCRE_squish_box: 10 boxes (0..9 other objects before them) squished face by face, $QCRE_SQ face reports, each of area 100 with whole-object area 600, clean exit"
+else echo "FAIL QCRE_squish_box: exit status $QCRE_RC, $QCRE_SQ of at least 60 expected 'Squish: face N flattened, area 100 (whole object 3D area 600)' lines"; tail -5 "$QCRE_DIR/sq.out" | cut -c1-200; fail=1; fi
