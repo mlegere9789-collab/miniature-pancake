@@ -447,10 +447,13 @@ bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double&
     // accepted-within-tolerance, measurably looser than a tight call (TestBooleanCombineGeneralCallerTolerance).
     const bool do_polish = sine > 1e-3 && tol <= 1.0e-3 * (1.0 + 1e-9);
     const double scale = std::max({1.0, a.PointAt(x[0], x[1]).DistanceTo(Point3d::Origin)});
-    // Down to 1e-7 of residual, not the rounding floor: a solve that had to iterate converges quadratically well below that anyway, and a
-    // point already inside it (the 1e-8 a sphere centred on a box face comes back with) stays exactly as it always was - re-polishing those
-    // to 1e-16 changed which ears the planar cap's triangulation clipped and its closed mesh no longer closed.
-    if (do_polish) NewtonSolve(res, x, lo, hi, std::max(1e-7, 1e-12 * scale), 8);
+    // An oblique crossing (sine < 0.99) is polished to the rounding floor: its position error is the residual divided by the sine, and the
+    // curves of the face pairs that meet at one vertex must agree about it (three overlapping slot cylinders, E-NEST-SLOT-CHAIN-AB). A
+    // perpendicular one (the rim circle of a cylinder or sphere against a plane) is polished only down to a 1e-7 residual: its position
+    // error equals the residual, a point that had to iterate is already at 1e-8 by quadratic convergence, and re-polishing those to
+    // 1e-16 (the equator of a sphere centred on a box face) changed which ears the planar cap's triangulation clipped, so the closed
+    // mesh of the Boolean no longer closed.
+    if (do_polish) NewtonSolve(res, x, lo, hi, (sine < 0.99 ? 1e-11 * scale : 1e-7), 8);
   }
   ua = x[0]; va = x[1]; ub = x[2]; vb = x[3];
   return ok;
