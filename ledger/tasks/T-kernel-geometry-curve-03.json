@@ -1,0 +1,478 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-kernel-geometry-curve-03",
+  "corpora": [
+    "curve fixtures: lines, arcs, splines, degree 1-11 NURBS, closed and periodic cases"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 35,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 34,
+    "with_hint": 34,
+    "without_hint": 1
+  },
+  "deps": [],
+  "domains": [
+    "CURVE"
+  ],
+  "factory": "kernel-geometry",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "MakeNonPeriodic",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MakePeriodic",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Join",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "JoinCopy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "JoinEdge",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Length",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Line",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "LineThroughPt",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Lines",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MakeSubDFriendly",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MakeUniform",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MarkFoci",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Match",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MatchCrvDir",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MergeCrv",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ModifyRadius",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MoveCrv",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Offset",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OffsetCrvOnSrf",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "OffsetMultiple",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:189",
+        "rows": 1,
+        "score": 0.726,
+        "symbol": "dino8::kernel::PointCloud::ContourAtPlane"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:46",
+        "rows": 2,
+        "score": 0.667,
+        "symbol": "dino8::kernel::PointCloud"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:55",
+        "rows": 1,
+        "score": 0.653,
+        "symbol": "dino8::kernel::PointCloud::SetPointAt"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:67",
+        "rows": 1,
+        "score": 0.628,
+        "symbol": "dino8::kernel::PointCloud::SetColors"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/point_cloud.h:384",
+        "rows": 1,
+        "score": 0.62,
+        "symbol": "dino8::kernel::PointCloud::raw"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1993",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::LoopPolygon"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1994",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::PointInPolygon"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-kernel-geometry-curve-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/CURVE.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-CURVE-0071": {
+      "commands": [
+        "Join"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0072": {
+      "commands": [
+        "JoinCopy"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0073": {
+      "commands": [
+        "JoinEdge",
+        "UnjoinEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0074": {
+      "commands": [
+        "Length"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0075": {
+      "commands": [
+        "Line"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0076": {
+      "commands": [
+        "Lines"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0077": {
+      "commands": [
+        "LineThroughPt",
+        "PlaneThroughPt",
+        "CurveThroughPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0078": {
+      "commands": [
+        "Match"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0079": {
+      "commands": [
+        "MatchCrvDir"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0080": {
+      "commands": [
+        "MakeNonPeriodic",
+        "MakePeriodic"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0081": {
+      "commands": [
+        "MakePeriodic",
+        "MakeNonPeriodic"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0082": {
+      "commands": [
+        "MakeSubDFriendly"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0083": {
+      "commands": [
+        "MakeUniform",
+        "MakeUniformUV"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0084": {
+      "commands": [
+        "MarkFoci"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0085": {
+      "commands": [
+        "MergeCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0086": {
+      "commands": [
+        "ModifyRadius"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0087": {
+      "commands": [
+        "MoveCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0088": {
+      "commands": [
+        "Offset",
+        "OffsetSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0089": {
+      "commands": [
+        "OffsetCrvOnSrf",
+        "OffsetSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0090": {
+      "commands": [
+        "OffsetMultiple"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0091": {
+      "commands": [
+        "OffsetNormal"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0092": {
+      "commands": [
+        "Parabola"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0093": {
+      "commands": [
+        "Parabola3Pt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0094": {
+      "commands": [
+        "PointCloudContour",
+        "PointCloud"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud::ContourAtPlane",
+        "dino8::kernel::PointCloud",
+        "dino8::kernel::PointCloud::raw"
+      ]
+    },
+    "D8-RHINO-CURVE-0095": {
+      "commands": [
+        "PointCloudSection",
+        "PointCloud"
+      ],
+      "kernel": [
+        "dino8::kernel::PointCloud",
+        "dino8::kernel::PointCloud::SetPointAt",
+        "dino8::kernel::PointCloud::SetColors"
+      ]
+    },
+    "D8-RHINO-CURVE-0096": {
+      "commands": [
+        "Polygon",
+        "PolygonStar"
+      ],
+      "kernel": [
+        "dino8::kernel::LoopPolygon",
+        "dino8::kernel::PointInPolygon"
+      ]
+    },
+    "D8-RHINO-CURVE-0097": {
+      "commands": [
+        "Polyline",
+        "SelPolyline",
+        "MeshPolyline"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0098": {
+      "commands": [
+        "PolylineOnMesh",
+        "MeshPolyline"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0099": {
+      "commands": [
+        "Project"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0100": {
+      "commands": [
+        "ProjectToCPlane"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0101": {
+      "commands": [
+        "Pull"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0102": {
+      "commands": [
+        "RebuildCrvNonUniform"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0104": {
+      "commands": [
+        "Radius",
+        "DimRadius"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0105": {
+      "commands": [
+        "ReducePolyline"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-CURVE-0071",
+    "D8-RHINO-CURVE-0072",
+    "D8-RHINO-CURVE-0073",
+    "D8-RHINO-CURVE-0074",
+    "D8-RHINO-CURVE-0075",
+    "D8-RHINO-CURVE-0076",
+    "D8-RHINO-CURVE-0077",
+    "D8-RHINO-CURVE-0078",
+    "D8-RHINO-CURVE-0079",
+    "D8-RHINO-CURVE-0080",
+    "D8-RHINO-CURVE-0081",
+    "D8-RHINO-CURVE-0082",
+    "D8-RHINO-CURVE-0083",
+    "D8-RHINO-CURVE-0084",
+    "D8-RHINO-CURVE-0085",
+    "D8-RHINO-CURVE-0086",
+    "D8-RHINO-CURVE-0087",
+    "D8-RHINO-CURVE-0088",
+    "D8-RHINO-CURVE-0089",
+    "D8-RHINO-CURVE-0090",
+    "D8-RHINO-CURVE-0091",
+    "D8-RHINO-CURVE-0092",
+    "D8-RHINO-CURVE-0093",
+    "D8-RHINO-CURVE-0094",
+    "D8-RHINO-CURVE-0095",
+    "D8-RHINO-CURVE-0096",
+    "D8-RHINO-CURVE-0097",
+    "D8-RHINO-CURVE-0098",
+    "D8-RHINO-CURVE-0099",
+    "D8-RHINO-CURVE-0100",
+    "D8-RHINO-CURVE-0101",
+    "D8-RHINO-CURVE-0102",
+    "D8-RHINO-CURVE-0103",
+    "D8-RHINO-CURVE-0104",
+    "D8-RHINO-CURVE-0105"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-CURVE-0103"
+  ],
+  "status": "open",
+  "title": "kernel-geometry: CURVE (35 rows)",
+  "wave": 1
+}
