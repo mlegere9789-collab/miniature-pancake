@@ -1,0 +1,397 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-render-02",
+  "corpora": [
+    "render fixtures: materials, texture mappings, lights, environments, baked textures"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 30,
+    "with_hint": 30,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "RENDER"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "RenderPreviewInWindow",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderPreviewWindow",
+        "rows": 4,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderPreview",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderWindow",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderReportImageFiles",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderReportMissingImageFiles",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SaveRenderWindowAs",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetSpotlightToView",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetViewToSpotlight",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveMappingChannel",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderAssignMaterialToObjects",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderBlowup",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderMergeIdenticalMaterials",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderOpenLastRendering",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RenderOpenRenderImage",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Rendering",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetCurrentRenderPlugIn",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetFlythroughAnimation",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetMeshSurfaceParameters",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SetOneDaySunAnimation",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-render-02",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/RENDER.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-RENDER-0031": {
+      "commands": [
+        "RenderAssignMaterialToObjects",
+        "RenderAssignMaterialToLayersOfObjects"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0032": {
+      "commands": [
+        "RenderBlowup"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0033": {
+      "commands": [
+        "Rendering"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0034": {
+      "commands": [
+        "RenderWindow",
+        "RenderPreviewInWindow",
+        "RenderPreviewWindow"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0035": {
+      "commands": [
+        "RenderMergeIdenticalMaterials"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0036": {
+      "commands": [
+        "RenderOpenLastRendering"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0037": {
+      "commands": [
+        "RenderOpenRenderImage"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0038": {
+      "commands": [
+        "RenderPreview",
+        "RenderPreviewWindow",
+        "RenderPreviewInWindow"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0039": {
+      "commands": [
+        "RenderPreviewInWindow",
+        "RenderPreviewWindow",
+        "RenderPreview"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0040": {
+      "commands": [
+        "RenderPreviewWindow",
+        "RenderPreviewInWindow",
+        "RenderPreview"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0041": {
+      "commands": [
+        "RenderReportImageFiles",
+        "RenderReportMissingImageFiles"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0042": {
+      "commands": [
+        "RenderReportMissingImageFiles",
+        "RenderReportImageFiles"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0043": {
+      "commands": [
+        "RenderWindow",
+        "CloseRenderWindow",
+        "SaveRenderWindowAs"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0044": {
+      "commands": [
+        "RemoveMappingChannel"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0045": {
+      "commands": [
+        "SaveRenderWindowAs",
+        "RenderWindow",
+        "CloseRenderWindow"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0046": {
+      "commands": [
+        "SetCurrentRenderPlugIn"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0047": {
+      "commands": [
+        "SetFlythroughAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0048": {
+      "commands": [
+        "SetOneDaySunAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0049": {
+      "commands": [
+        "SetPathAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0050": {
+      "commands": [
+        "SetSeasonalSunAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0051": {
+      "commands": [
+        "SetSpotlightToView",
+        "SetViewToSpotlight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0052": {
+      "commands": [
+        "SetTurntableAnimation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0053": {
+      "commands": [
+        "SetViewToSpotlight",
+        "SetSpotlightToView"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0054": {
+      "commands": [
+        "Spotlight"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0055": {
+      "commands": [
+        "SynchronizeRenderColors"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0056": {
+      "commands": [
+        "SetMeshSurfaceParameters"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0057": {
+      "commands": [
+        "Sun"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0058": {
+      "commands": [
+        "Textures",
+        "PackTextures"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0059": {
+      "commands": [
+        "Unwrap"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-RENDER-0060": {
+      "commands": [
+        "UnpackTextures",
+        "PackTextures"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-RENDER-0031",
+    "D8-RHINO-RENDER-0032",
+    "D8-RHINO-RENDER-0033",
+    "D8-RHINO-RENDER-0034",
+    "D8-RHINO-RENDER-0035",
+    "D8-RHINO-RENDER-0036",
+    "D8-RHINO-RENDER-0037",
+    "D8-RHINO-RENDER-0038",
+    "D8-RHINO-RENDER-0039",
+    "D8-RHINO-RENDER-0040",
+    "D8-RHINO-RENDER-0041",
+    "D8-RHINO-RENDER-0042",
+    "D8-RHINO-RENDER-0043",
+    "D8-RHINO-RENDER-0044",
+    "D8-RHINO-RENDER-0045",
+    "D8-RHINO-RENDER-0046",
+    "D8-RHINO-RENDER-0047",
+    "D8-RHINO-RENDER-0048",
+    "D8-RHINO-RENDER-0049",
+    "D8-RHINO-RENDER-0050",
+    "D8-RHINO-RENDER-0051",
+    "D8-RHINO-RENDER-0052",
+    "D8-RHINO-RENDER-0053",
+    "D8-RHINO-RENDER-0054",
+    "D8-RHINO-RENDER-0055",
+    "D8-RHINO-RENDER-0056",
+    "D8-RHINO-RENDER-0057",
+    "D8-RHINO-RENDER-0058",
+    "D8-RHINO-RENDER-0059",
+    "D8-RHINO-RENDER-0060"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "render-anim: RENDER (30 rows)",
+  "wave": 2
+}

@@ -1,0 +1,225 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-misc-01",
+  "corpora": [
+    "golden/sketchup/ux"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 39,
+    "rows": 39,
+    "with_existing_hint": 5,
+    "with_hint": 5,
+    "without_hint": 34
+  },
+  "deps": [],
+  "domains": [
+    "buttons",
+    "collection",
+    "ed",
+    "editors",
+    "gizmogroup",
+    "info",
+    "interface-preferences"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Project",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Properties",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Redo",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Undo",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ObjectProperties",
+        "rows": 1,
+        "score": 0.785,
+        "status": "implemented"
+      },
+      {
+        "name": "PropertiesPage",
+        "rows": 1,
+        "score": 0.675,
+        "status": "implemented"
+      },
+      {
+        "name": "History",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:81",
+        "rows": 1,
+        "score": 0.675,
+        "symbol": "dino8::kernel::MassProperties"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:557",
+        "rows": 1,
+        "score": 0.635,
+        "symbol": "dino8::kernel::NurbsCurve::RegionProperties"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-misc-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender",
+    "sketchup"
+  ],
+  "register_files": [
+    "blender/buttons.jsonl",
+    "blender/collection.jsonl",
+    "blender/ed.jsonl",
+    "blender/editors.jsonl",
+    "blender/gizmogroup.jsonl",
+    "blender/info.jsonl",
+    "sketchup/interface-preferences.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-ED-0009": {
+      "commands": [
+        "Redo"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-ED-0010": {
+      "commands": [
+        "Undo"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-ED-0011": {
+      "commands": [
+        "History"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-EDITOR-0012": {
+      "commands": [
+        "Project"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-EDITOR-0013": {
+      "commands": [
+        "Properties",
+        "ObjectProperties",
+        "PropertiesPage"
+      ],
+      "kernel": [
+        "dino8::kernel::MassProperties",
+        "dino8::kernel::NurbsCurve::RegionProperties"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-BUTTONS-0001",
+    "D8-BLENDER-COLLECTI-0001",
+    "D8-BLENDER-COLLECTI-0013",
+    "D8-BLENDER-COLLECTI-0014",
+    "D8-BLENDER-COLLECTI-0015",
+    "D8-BLENDER-COLLECTI-0016",
+    "D8-BLENDER-ED-0001",
+    "D8-BLENDER-ED-0002",
+    "D8-BLENDER-ED-0003",
+    "D8-BLENDER-ED-0004",
+    "D8-BLENDER-ED-0005",
+    "D8-BLENDER-ED-0006",
+    "D8-BLENDER-ED-0007",
+    "D8-BLENDER-ED-0008",
+    "D8-BLENDER-ED-0009",
+    "D8-BLENDER-ED-0010",
+    "D8-BLENDER-ED-0011",
+    "D8-BLENDER-ED-0012",
+    "D8-BLENDER-ED-0013",
+    "D8-BLENDER-EDITOR-0007",
+    "D8-BLENDER-EDITOR-0010",
+    "D8-BLENDER-EDITOR-0011",
+    "D8-BLENDER-EDITOR-0012",
+    "D8-BLENDER-EDITOR-0013",
+    "D8-BLENDER-EDITOR-0015",
+    "D8-BLENDER-EDITOR-0017",
+    "D8-BLENDER-GIZMOGRO-0001",
+    "D8-BLENDER-INFO-0001",
+    "D8-SKETCHUP-UX-0001",
+    "D8-SKETCHUP-UX-0002",
+    "D8-SKETCHUP-UX-0003",
+    "D8-SKETCHUP-UX-0004",
+    "D8-SKETCHUP-UX-0005",
+    "D8-SKETCHUP-UX-0006",
+    "D8-SKETCHUP-UX-0007",
+    "D8-SKETCHUP-UX-0008",
+    "D8-SKETCHUP-UX-0009",
+    "D8-SKETCHUP-UX-0010",
+    "D8-SKETCHUP-UX-0011"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-BUTTONS-0001",
+    "D8-BLENDER-COLLECTI-0001",
+    "D8-BLENDER-COLLECTI-0013",
+    "D8-BLENDER-COLLECTI-0014",
+    "D8-BLENDER-COLLECTI-0015",
+    "D8-BLENDER-COLLECTI-0016",
+    "D8-BLENDER-ED-0001",
+    "D8-BLENDER-ED-0002",
+    "D8-BLENDER-ED-0003",
+    "D8-BLENDER-ED-0004",
+    "D8-BLENDER-ED-0005",
+    "D8-BLENDER-ED-0006",
+    "D8-BLENDER-ED-0007",
+    "D8-BLENDER-ED-0008",
+    "D8-BLENDER-ED-0012",
+    "D8-BLENDER-ED-0013",
+    "D8-BLENDER-EDITOR-0007",
+    "D8-BLENDER-EDITOR-0010",
+    "D8-BLENDER-EDITOR-0011",
+    "D8-BLENDER-EDITOR-0015",
+    "D8-BLENDER-EDITOR-0017",
+    "D8-BLENDER-GIZMOGRO-0001",
+    "D8-BLENDER-INFO-0001",
+    "D8-SKETCHUP-UX-0001",
+    "D8-SKETCHUP-UX-0002",
+    "D8-SKETCHUP-UX-0003",
+    "D8-SKETCHUP-UX-0004",
+    "D8-SKETCHUP-UX-0005",
+    "D8-SKETCHUP-UX-0006",
+    "D8-SKETCHUP-UX-0007",
+    "D8-SKETCHUP-UX-0008",
+    "D8-SKETCHUP-UX-0009",
+    "D8-SKETCHUP-UX-0010",
+    "D8-SKETCHUP-UX-0011"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: buttons, collection, ed, editors, ... (39 rows)",
+  "wave": 3
+}

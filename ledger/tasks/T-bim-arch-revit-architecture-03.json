@@ -1,0 +1,151 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-bim-arch-revit-architecture-03",
+  "corpora": [
+    "golden/revit/arch-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 2,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 4,
+    "with_hint": 4,
+    "without_hint": 34
+  },
+  "deps": [],
+  "domains": [
+    "revit.architecture"
+  ],
+  "factory": "bim-arch",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Properties",
+        "rows": 4,
+        "score": 0.6,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-bim-arch-revit-architecture-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.architecture.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-ARCH-0104": {
+      "commands": [
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-ARCH-0105": {
+      "commands": [
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-ARCH-0110": {
+      "commands": [
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-ARCH-0113": {
+      "commands": [
+        "Properties"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-ARCH-0076",
+    "D8-REVIT-ARCH-0077",
+    "D8-REVIT-ARCH-0078",
+    "D8-REVIT-ARCH-0079",
+    "D8-REVIT-ARCH-0080",
+    "D8-REVIT-ARCH-0081",
+    "D8-REVIT-ARCH-0082",
+    "D8-REVIT-ARCH-0083",
+    "D8-REVIT-ARCH-0084",
+    "D8-REVIT-ARCH-0085",
+    "D8-REVIT-ARCH-0086",
+    "D8-REVIT-ARCH-0087",
+    "D8-REVIT-ARCH-0088",
+    "D8-REVIT-ARCH-0089",
+    "D8-REVIT-ARCH-0090",
+    "D8-REVIT-ARCH-0091",
+    "D8-REVIT-ARCH-0092",
+    "D8-REVIT-ARCH-0093",
+    "D8-REVIT-ARCH-0094",
+    "D8-REVIT-ARCH-0095",
+    "D8-REVIT-ARCH-0096",
+    "D8-REVIT-ARCH-0097",
+    "D8-REVIT-ARCH-0098",
+    "D8-REVIT-ARCH-0099",
+    "D8-REVIT-ARCH-0100",
+    "D8-REVIT-ARCH-0101",
+    "D8-REVIT-ARCH-0102",
+    "D8-REVIT-ARCH-0103",
+    "D8-REVIT-ARCH-0104",
+    "D8-REVIT-ARCH-0105",
+    "D8-REVIT-ARCH-0106",
+    "D8-REVIT-ARCH-0107",
+    "D8-REVIT-ARCH-0108",
+    "D8-REVIT-ARCH-0109",
+    "D8-REVIT-ARCH-0110",
+    "D8-REVIT-ARCH-0111",
+    "D8-REVIT-ARCH-0112",
+    "D8-REVIT-ARCH-0113"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-ARCH-0076",
+    "D8-REVIT-ARCH-0077",
+    "D8-REVIT-ARCH-0078",
+    "D8-REVIT-ARCH-0079",
+    "D8-REVIT-ARCH-0080",
+    "D8-REVIT-ARCH-0081",
+    "D8-REVIT-ARCH-0082",
+    "D8-REVIT-ARCH-0083",
+    "D8-REVIT-ARCH-0084",
+    "D8-REVIT-ARCH-0085",
+    "D8-REVIT-ARCH-0086",
+    "D8-REVIT-ARCH-0087",
+    "D8-REVIT-ARCH-0088",
+    "D8-REVIT-ARCH-0089",
+    "D8-REVIT-ARCH-0090",
+    "D8-REVIT-ARCH-0091",
+    "D8-REVIT-ARCH-0092",
+    "D8-REVIT-ARCH-0093",
+    "D8-REVIT-ARCH-0094",
+    "D8-REVIT-ARCH-0095",
+    "D8-REVIT-ARCH-0096",
+    "D8-REVIT-ARCH-0097",
+    "D8-REVIT-ARCH-0098",
+    "D8-REVIT-ARCH-0099",
+    "D8-REVIT-ARCH-0100",
+    "D8-REVIT-ARCH-0101",
+    "D8-REVIT-ARCH-0102",
+    "D8-REVIT-ARCH-0103",
+    "D8-REVIT-ARCH-0106",
+    "D8-REVIT-ARCH-0107",
+    "D8-REVIT-ARCH-0108",
+    "D8-REVIT-ARCH-0109",
+    "D8-REVIT-ARCH-0111",
+    "D8-REVIT-ARCH-0112"
+  ],
+  "status": "open",
+  "title": "bim-arch: revit.architecture (38 rows)",
+  "wave": 2
+}

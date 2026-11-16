@@ -1,0 +1,359 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-view-04",
+  "corpora": [
+    "view fixtures: multi-viewport files with named views, cplanes, display modes, background bitmaps"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 38,
+    "rows": 38,
+    "with_existing_hint": 20,
+    "with_hint": 20,
+    "without_hint": 18
+  },
+  "deps": [],
+  "domains": [
+    "VIEW"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ScreenCaptureToClipboard",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ScreenCaptureToFile",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewCaptureToClipboard",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewCaptureToFile",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SaveWindowLayout",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "WindowLayout",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AutoAlignCPlane",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CloseViewport",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PrintDisplay",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "RemoveGuide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Reset",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ResetMessageBoxes",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Restore",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ToggleRightSidebar",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Tutorials",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewClippingSections",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewportProperties",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ViewportTabs",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "WalkAbout",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "WebBrowser",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-view-04",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/VIEW.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-VIEW-0113": {
+      "commands": [
+        "ToggleRightSidebar",
+        "ToggleLeftSidebar"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0114": {
+      "commands": [
+        "ViewportProperties",
+        "Properties"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0115": {
+      "commands": [
+        "ViewportTabs"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0116": {
+      "commands": [
+        "WalkAbout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0117": {
+      "commands": [
+        "WebBrowser"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0118": {
+      "commands": [
+        "WindowLayout",
+        "SaveWindowLayout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0119": {
+      "commands": [
+        "SaveWindowLayout",
+        "WindowLayout"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0120": {
+      "commands": [
+        "Reset"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0121": {
+      "commands": [
+        "Restore"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0122": {
+      "commands": [
+        "ResetMessageBoxes"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0123": {
+      "commands": [
+        "ScreenCaptureToClipboard",
+        "ViewCaptureToClipboard",
+        "ScreenCaptureToFile"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0124": {
+      "commands": [
+        "ScreenCaptureToFile",
+        "ViewCaptureToFile",
+        "ScreenCaptureToClipboard"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0125": {
+      "commands": [
+        "ViewCaptureToClipboard",
+        "ScreenCaptureToClipboard",
+        "ViewCaptureToFile"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0126": {
+      "commands": [
+        "ViewCaptureToFile",
+        "ScreenCaptureToFile",
+        "ViewCaptureToClipboard"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0127": {
+      "commands": [
+        "ViewClippingSections",
+        "ClippingSections",
+        "ClearClippingSections"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0128": {
+      "commands": [
+        "PrintDisplay"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0129": {
+      "commands": [
+        "Tutorials"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0130": {
+      "commands": [
+        "AutoAlignCPlane"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0131": {
+      "commands": [
+        "CloseViewport"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-VIEW-0132": {
+      "commands": [
+        "RemoveGuide"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-VIEW-0113",
+    "D8-RHINO-VIEW-0114",
+    "D8-RHINO-VIEW-0115",
+    "D8-RHINO-VIEW-0116",
+    "D8-RHINO-VIEW-0117",
+    "D8-RHINO-VIEW-0118",
+    "D8-RHINO-VIEW-0119",
+    "D8-RHINO-VIEW-0120",
+    "D8-RHINO-VIEW-0121",
+    "D8-RHINO-VIEW-0122",
+    "D8-RHINO-VIEW-0123",
+    "D8-RHINO-VIEW-0124",
+    "D8-RHINO-VIEW-0125",
+    "D8-RHINO-VIEW-0126",
+    "D8-RHINO-VIEW-0127",
+    "D8-RHINO-VIEW-0128",
+    "D8-RHINO-VIEW-0129",
+    "D8-RHINO-VIEW-0130",
+    "D8-RHINO-VIEW-0131",
+    "D8-RHINO-VIEW-0132",
+    "D8-RHINO-VIEW-0133",
+    "D8-RHINO-VIEW-0134",
+    "D8-RHINO-VIEW-0135",
+    "D8-RHINO-VIEW-0136",
+    "D8-RHINO-VIEW-0137",
+    "D8-RHINO-VIEW-0138",
+    "D8-RHINO-VIEW-0139",
+    "D8-RHINO-VIEW-0140",
+    "D8-RHINO-VIEW-0141",
+    "D8-RHINO-VIEW-0142",
+    "D8-RHINO-VIEW-0143",
+    "D8-RHINO-VIEW-0144",
+    "D8-RHINO-VIEW-0145",
+    "D8-RHINO-VIEW-0146",
+    "D8-RHINO-VIEW-0147",
+    "D8-RHINO-VIEW-0148",
+    "D8-RHINO-VIEW-0149",
+    "D8-RHINO-VIEW-0150"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-VIEW-0133",
+    "D8-RHINO-VIEW-0134",
+    "D8-RHINO-VIEW-0135",
+    "D8-RHINO-VIEW-0136",
+    "D8-RHINO-VIEW-0137",
+    "D8-RHINO-VIEW-0138",
+    "D8-RHINO-VIEW-0139",
+    "D8-RHINO-VIEW-0140",
+    "D8-RHINO-VIEW-0141",
+    "D8-RHINO-VIEW-0142",
+    "D8-RHINO-VIEW-0143",
+    "D8-RHINO-VIEW-0144",
+    "D8-RHINO-VIEW-0145",
+    "D8-RHINO-VIEW-0146",
+    "D8-RHINO-VIEW-0147",
+    "D8-RHINO-VIEW-0148",
+    "D8-RHINO-VIEW-0149",
+    "D8-RHINO-VIEW-0150"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: VIEW (38 rows)",
+  "wave": 3
+}
