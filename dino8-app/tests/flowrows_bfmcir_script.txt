@@ -1,0 +1,6 @@
+# Flow Register row Mesh Circle (Blender Geometry Nodes): player + bake, read back by sections/96_bfmcir.sh (see flowrows3_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 24
+SelAll
+List
