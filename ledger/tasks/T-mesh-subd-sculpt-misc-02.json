@@ -1,0 +1,219 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-mesh-subd-sculpt-misc-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 8,
+    "countable": 30,
+    "rows": 30,
+    "with_existing_hint": 11,
+    "with_hint": 11,
+    "without_hint": 19
+  },
+  "deps": [],
+  "domains": [
+    "paintcurve",
+    "palette",
+    "pointcloud",
+    "sculpt_curves",
+    "view3d"
+  ],
+  "factory": "mesh-subd-sculpt",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "New",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Select",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Join",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Slide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Point",
+        "rows": 1,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "DuplicateMacro",
+        "rows": 2,
+        "score": 0.637,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:59",
+        "rows": 1,
+        "score": 0.731,
+        "symbol": "dino8::kernel::Color"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-mesh-subd-sculpt-misc-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/paintcurve.jsonl",
+    "blender/palette.jsonl",
+    "blender/pointcloud.jsonl",
+    "blender/sculpt_curves.jsonl",
+    "blender/view3d.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-PAINTCUR-0001": {
+      "commands": [
+        "Point"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-PAINTCUR-0006": {
+      "commands": [
+        "New"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-PAINTCUR-0007": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-PAINTCUR-0008": {
+      "commands": [
+        "Slide"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-PALETTE-0001": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Color"
+      ]
+    },
+    "D8-BLENDER-PALETTE-0005": {
+      "commands": [
+        "Join"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-PALETTE-0006": {
+      "commands": [
+        "New"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POINTCLO-0002": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POINTCLO-0003": {
+      "commands": [
+        "DuplicateMacro"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POINTCLO-0004": {
+      "commands": [
+        "DuplicateMacro"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POINTCLO-0005": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-PAINTCUR-0001",
+    "D8-BLENDER-PAINTCUR-0002",
+    "D8-BLENDER-PAINTCUR-0003",
+    "D8-BLENDER-PAINTCUR-0004",
+    "D8-BLENDER-PAINTCUR-0005",
+    "D8-BLENDER-PAINTCUR-0006",
+    "D8-BLENDER-PAINTCUR-0007",
+    "D8-BLENDER-PAINTCUR-0008",
+    "D8-BLENDER-PALETTE-0001",
+    "D8-BLENDER-PALETTE-0002",
+    "D8-BLENDER-PALETTE-0003",
+    "D8-BLENDER-PALETTE-0004",
+    "D8-BLENDER-PALETTE-0005",
+    "D8-BLENDER-PALETTE-0006",
+    "D8-BLENDER-PALETTE-0007",
+    "D8-BLENDER-POINTCLO-0001",
+    "D8-BLENDER-POINTCLO-0002",
+    "D8-BLENDER-POINTCLO-0003",
+    "D8-BLENDER-POINTCLO-0004",
+    "D8-BLENDER-POINTCLO-0005",
+    "D8-BLENDER-POINTCLO-0006",
+    "D8-BLENDER-POINTCLO-0007",
+    "D8-BLENDER-SCULPTCU-0001",
+    "D8-BLENDER-SCULPTCU-0002",
+    "D8-BLENDER-SCULPTCU-0003",
+    "D8-BLENDER-SCULPTCU-0004",
+    "D8-BLENDER-VIEW3D-0012",
+    "D8-BLENDER-VIEW3D-0013",
+    "D8-BLENDER-VIEW3D-0014",
+    "D8-BLENDER-VIEW3D-0015"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-PAINTCUR-0002",
+    "D8-BLENDER-PAINTCUR-0003",
+    "D8-BLENDER-PAINTCUR-0004",
+    "D8-BLENDER-PAINTCUR-0005",
+    "D8-BLENDER-PALETTE-0002",
+    "D8-BLENDER-PALETTE-0003",
+    "D8-BLENDER-PALETTE-0004",
+    "D8-BLENDER-PALETTE-0007",
+    "D8-BLENDER-POINTCLO-0001",
+    "D8-BLENDER-POINTCLO-0006",
+    "D8-BLENDER-POINTCLO-0007",
+    "D8-BLENDER-SCULPTCU-0001",
+    "D8-BLENDER-SCULPTCU-0002",
+    "D8-BLENDER-SCULPTCU-0003",
+    "D8-BLENDER-SCULPTCU-0004",
+    "D8-BLENDER-VIEW3D-0012",
+    "D8-BLENDER-VIEW3D-0013",
+    "D8-BLENDER-VIEW3D-0014",
+    "D8-BLENDER-VIEW3D-0015"
+  ],
+  "status": "open",
+  "title": "mesh-subd-sculpt: paintcurve, palette, pointcloud, sculpt_curves, ... (30 rows)",
+  "wave": 1
+}

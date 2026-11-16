@@ -1,0 +1,382 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-interop-migration-misc-01",
+  "corpora": [
+    "IFC4 sample with Qto quantities; carbon from quantities by hand",
+    "RICS WLCA template field coverage check",
+    "buildingSMART sample IFC and glTF Khronos sample models; counts and bounding boxes preserved",
+    "corpus/gh/core/file-formats-and-persistence",
+    "digitizer protocol replay logs",
+    "export IFC4 for element classes and counts; counts match source model",
+    "open, edit, save via connector API; content hash and version number correct",
+    "round trip numeric equality; GeoTIFF georeference check"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 7,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 18,
+    "with_hint": 18,
+    "without_hint": 22
+  },
+  "deps": [],
+  "domains": [
+    "DIGIT",
+    "analysis",
+    "buildingdesign",
+    "cachefile",
+    "carbon",
+    "collection",
+    "core",
+    "datamanagement"
+  ],
+  "factory": "interop-migration",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Export",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigBeep",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigCalibrate",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigCamera",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigClick",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigDisconnect",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigLine",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigPause",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigScale",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigSection",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DigSketch",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Digitize",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Import",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Open",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "PackageManager",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Layer",
+        "rows": 2,
+        "score": 0.731,
+        "status": "implemented"
+      },
+      {
+        "name": "LayerOn",
+        "rows": 1,
+        "score": 0.673,
+        "status": "implemented"
+      },
+      {
+        "name": "NewLayer",
+        "rows": 2,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "SetLayer",
+        "rows": 1,
+        "score": 0.65,
+        "status": "implemented"
+      },
+      {
+        "name": "Section",
+        "rows": 1,
+        "score": 0.644,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:395",
+        "rows": 2,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Model::AddLayer"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-interop-migration-misc-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender",
+    "forma",
+    "grasshopper",
+    "rhino"
+  ],
+  "register_files": [
+    "blender/cachefile.jsonl",
+    "blender/collection.jsonl",
+    "forma/analysis.jsonl",
+    "forma/buildingdesign.jsonl",
+    "forma/carbon.jsonl",
+    "forma/datamanagement.jsonl",
+    "grasshopper/core.jsonl",
+    "rhino/DIGIT.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-CACHEFIL-0001": {
+      "commands": [
+        "Layer",
+        "LayerOn",
+        "NewLayer"
+      ],
+      "kernel": [
+        "dino8::kernel::Model::AddLayer"
+      ]
+    },
+    "D8-BLENDER-CACHEFIL-0003": {
+      "commands": [
+        "Layer",
+        "NewLayer",
+        "SetLayer"
+      ],
+      "kernel": [
+        "dino8::kernel::Model::AddLayer"
+      ]
+    },
+    "D8-BLENDER-CACHEFIL-0004": {
+      "commands": [
+        "Open"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-COLLECTI-0002": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-COLLECTI-0004": {
+      "commands": [
+        "Export"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-COLLECTI-0009": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-GH-CORE-0032": {
+      "commands": [
+        "PackageManager"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0001": {
+      "commands": [
+        "DigBeep"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0002": {
+      "commands": [
+        "DigCalibrate"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0003": {
+      "commands": [
+        "DigCamera",
+        "Camera"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0004": {
+      "commands": [
+        "DigClick"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0005": {
+      "commands": [
+        "DigDisconnect",
+        "DigConnect"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0006": {
+      "commands": [
+        "Digitize"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0007": {
+      "commands": [
+        "DigLine"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0008": {
+      "commands": [
+        "DigPause"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0009": {
+      "commands": [
+        "DigScale"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0010": {
+      "commands": [
+        "DigSection",
+        "Section"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-DIGIT-0011": {
+      "commands": [
+        "DigSketch",
+        "Sketch"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-FORMA-ANALYSIS-0035",
+    "D8-FORMA-BLDG-0013",
+    "D8-FORMA-BLDG-0009",
+    "D8-BLENDER-CACHEFIL-0001",
+    "D8-BLENDER-CACHEFIL-0002",
+    "D8-BLENDER-CACHEFIL-0003",
+    "D8-BLENDER-CACHEFIL-0004",
+    "D8-BLENDER-CACHEFIL-0005",
+    "D8-FORMA-CARBON-0006",
+    "D8-FORMA-CARBON-0007",
+    "D8-BLENDER-COLLECTI-0002",
+    "D8-BLENDER-COLLECTI-0003",
+    "D8-BLENDER-COLLECTI-0004",
+    "D8-BLENDER-COLLECTI-0005",
+    "D8-BLENDER-COLLECTI-0006",
+    "D8-BLENDER-COLLECTI-0007",
+    "D8-BLENDER-COLLECTI-0008",
+    "D8-BLENDER-COLLECTI-0009",
+    "D8-BLENDER-COLLECTI-0010",
+    "D8-BLENDER-COLLECTI-0011",
+    "D8-BLENDER-COLLECTI-0012",
+    "D8-GH-CORE-0026",
+    "D8-GH-CORE-0027",
+    "D8-GH-CORE-0028",
+    "D8-GH-CORE-0029",
+    "D8-GH-CORE-0030",
+    "D8-GH-CORE-0031",
+    "D8-GH-CORE-0032",
+    "D8-FORMA-DATA-0006",
+    "D8-RHINO-DIGIT-0001",
+    "D8-RHINO-DIGIT-0002",
+    "D8-RHINO-DIGIT-0003",
+    "D8-RHINO-DIGIT-0004",
+    "D8-RHINO-DIGIT-0005",
+    "D8-RHINO-DIGIT-0006",
+    "D8-RHINO-DIGIT-0007",
+    "D8-RHINO-DIGIT-0008",
+    "D8-RHINO-DIGIT-0009",
+    "D8-RHINO-DIGIT-0010",
+    "D8-RHINO-DIGIT-0011"
+  ],
+  "rows_without_hint": [
+    "D8-FORMA-ANALYSIS-0035",
+    "D8-FORMA-BLDG-0013",
+    "D8-FORMA-BLDG-0009",
+    "D8-BLENDER-CACHEFIL-0002",
+    "D8-BLENDER-CACHEFIL-0005",
+    "D8-FORMA-CARBON-0006",
+    "D8-FORMA-CARBON-0007",
+    "D8-BLENDER-COLLECTI-0003",
+    "D8-BLENDER-COLLECTI-0005",
+    "D8-BLENDER-COLLECTI-0006",
+    "D8-BLENDER-COLLECTI-0007",
+    "D8-BLENDER-COLLECTI-0008",
+    "D8-BLENDER-COLLECTI-0010",
+    "D8-BLENDER-COLLECTI-0011",
+    "D8-BLENDER-COLLECTI-0012",
+    "D8-GH-CORE-0026",
+    "D8-GH-CORE-0027",
+    "D8-GH-CORE-0028",
+    "D8-GH-CORE-0029",
+    "D8-GH-CORE-0030",
+    "D8-GH-CORE-0031",
+    "D8-FORMA-DATA-0006"
+  ],
+  "status": "open",
+  "title": "interop-migration: DIGIT, analysis, buildingdesign, cachefile, ... (40 rows)",
+  "wave": 1
+}

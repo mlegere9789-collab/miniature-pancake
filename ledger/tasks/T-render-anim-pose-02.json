@@ -1,0 +1,126 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-pose-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 23,
+    "countable": 26,
+    "rows": 26,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 23
+  },
+  "deps": [],
+  "domains": [
+    "pose"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Select",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "SelConnected",
+        "rows": 2,
+        "score": 0.688,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-pose-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/pose.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-POSE-0029": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POSE-0033": {
+      "commands": [
+        "SelConnected"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-POSE-0034": {
+      "commands": [
+        "SelConnected"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-POSE-0026",
+    "D8-BLENDER-POSE-0027",
+    "D8-BLENDER-POSE-0028",
+    "D8-BLENDER-POSE-0029",
+    "D8-BLENDER-POSE-0030",
+    "D8-BLENDER-POSE-0031",
+    "D8-BLENDER-POSE-0032",
+    "D8-BLENDER-POSE-0033",
+    "D8-BLENDER-POSE-0034",
+    "D8-BLENDER-POSE-0035",
+    "D8-BLENDER-POSE-0036",
+    "D8-BLENDER-POSE-0037",
+    "D8-BLENDER-POSE-0038",
+    "D8-BLENDER-POSE-0039",
+    "D8-BLENDER-POSE-0040",
+    "D8-BLENDER-POSE-0041",
+    "D8-BLENDER-POSE-0042",
+    "D8-BLENDER-POSE-0043",
+    "D8-BLENDER-POSE-0044",
+    "D8-BLENDER-POSE-0045",
+    "D8-BLENDER-POSE-0046",
+    "D8-BLENDER-POSE-0047",
+    "D8-BLENDER-POSE-0048",
+    "D8-BLENDER-POSE-0049",
+    "D8-BLENDER-POSE-0050",
+    "D8-BLENDER-POSE-0051"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-POSE-0026",
+    "D8-BLENDER-POSE-0027",
+    "D8-BLENDER-POSE-0028",
+    "D8-BLENDER-POSE-0030",
+    "D8-BLENDER-POSE-0031",
+    "D8-BLENDER-POSE-0032",
+    "D8-BLENDER-POSE-0035",
+    "D8-BLENDER-POSE-0036",
+    "D8-BLENDER-POSE-0037",
+    "D8-BLENDER-POSE-0038",
+    "D8-BLENDER-POSE-0039",
+    "D8-BLENDER-POSE-0040",
+    "D8-BLENDER-POSE-0041",
+    "D8-BLENDER-POSE-0042",
+    "D8-BLENDER-POSE-0043",
+    "D8-BLENDER-POSE-0044",
+    "D8-BLENDER-POSE-0045",
+    "D8-BLENDER-POSE-0046",
+    "D8-BLENDER-POSE-0047",
+    "D8-BLENDER-POSE-0048",
+    "D8-BLENDER-POSE-0049",
+    "D8-BLENDER-POSE-0050",
+    "D8-BLENDER-POSE-0051"
+  ],
+  "status": "open",
+  "title": "render-anim: pose (26 rows)",
+  "wave": 2
+}
