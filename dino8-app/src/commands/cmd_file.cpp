@@ -5,6 +5,7 @@
 #include "io/FileExchange.h"
 #include "io/FileIgesStep.h"
 #include "io/FileSat.h"
+#include "viewport/Viewport.h"
 
 #include <algorithm>
 #include <cctype>
@@ -176,7 +177,32 @@ int ExportPerObject(CommandContext& ctx, const std::string& path, std::vector<st
 // callback below never has to close over `this`: the Command that started
 // it is destroyed (Finish() + AfterCallback()) as soon as OnPoint returns,
 // same as every other dialog-based export in this file.
-void RunExportWithOrigin(Application& app, Document& doc, const std::vector<ObjectId>& ids, Point3d origin, const std::string& path) {
+//
+// `plane` is the construction plane that was active when the origin was picked: its x and y axes (not its own origin, which the picked
+// point replaces) give the orientation of the written file's axes, so an object sits against the new frame exactly as it sat against
+// the construction plane. A world-aligned plane leaves a plain translation.
+ON_Xform OriginFrameTransform(Point3d origin, const ConstructionPlane& plane) {
+  Vector3d x = plane.x_axis, y = plane.y_axis;
+  Vector3d z = ON_CrossProduct(x, y);
+  if (!x.Unitize() || !z.Unitize()) return ON_Xform::TranslationTransformation(ON_3dPoint::Origin - origin);  // degenerate plane: translation only
+  y = ON_CrossProduct(z, x);
+  y.Unitize();
+  ON_Xform xf = ON_Xform::IdentityTransformation;
+  const Vector3d axes[3] = {x, y, z};
+  for (int r = 0; r < 3; ++r) {
+    xf.m_xform[r][0] = axes[r].x;
+    xf.m_xform[r][1] = axes[r].y;
+    xf.m_xform[r][2] = axes[r].z;
+    xf.m_xform[r][3] = -(axes[r].x * origin.x + axes[r].y * origin.y + axes[r].z * origin.z);
+  }
+  return xf;
+}
+
+bool IsWorldAlignedPlane(const ConstructionPlane& plane) {
+  return plane.x_axis.x == 1.0 && plane.x_axis.y == 0.0 && plane.x_axis.z == 0.0 && plane.y_axis.x == 0.0 && plane.y_axis.y == 1.0 && plane.y_axis.z == 0.0;
+}
+
+void RunExportWithOrigin(Application& app, Document& doc, const std::vector<ObjectId>& ids, Point3d origin, const ConstructionPlane& plane, const std::string& path) {
   if (path.empty()) return;
   const std::string ext = LowerExt(path);
   std::string error;
@@ -186,7 +212,7 @@ void RunExportWithOrigin(Application& app, Document& doc, const std::vector<Obje
   } else {
     Document tmp;
     tmp.Layers() = doc.Layers();
-    const ON_Xform xf = ON_Xform::TranslationTransformation(ON_3dPoint::Origin - origin);
+    const ON_Xform xf = OriginFrameTransform(origin, plane);
     for (ObjectId id : ids) {
       const SceneObject* o = doc.Find(id);
       if (!o) continue;
@@ -199,14 +225,16 @@ void RunExportWithOrigin(Application& app, Document& doc, const std::vector<Obje
     ok = ExportDocument(tmp, path, error);
   }
   if (ok) {
-    app.Notify("Exported " + path + " (origin at " + FormatPoint(origin) + ")");
+    app.Notify("Exported " + path + " (origin at " + FormatPoint(origin) +
+               (IsWorldAlignedPlane(plane) ? std::string() : ", axes of the construction plane x " + FormatPoint(plane.x_axis) + " y " + FormatPoint(plane.y_axis)) + ")");
     if (!error.empty()) app.Notify(error);  // ExportSat reports its summary through `error` on success
   } else app.Notify(error);
 }
 
 // ExportWithOrigin: select objects, pick a point to become the new origin,
-// then export copies of the selection translated so that point lands at
-// (0,0,0) - the vector/CAD interchange formats (.3dm/.obj/.stl/.dxf/.ply/
+// then export copies of the selection re-expressed in the frame made of that
+// point and the axes of the active construction plane (a world-aligned plane
+// gives a plain translation: the point lands at (0,0,0)) - the vector/CAD interchange formats (.3dm/.obj/.stl/.dxf/.ply/
 // .igs/.stp/.ifc/.xyz/.pts/.las) support this exactly since it's a plain
 // object translation.
 // SVG/PDF (page-space drawings of the *view*, not object-space geometry)
@@ -222,11 +250,13 @@ class ExportWithOriginCommand : public Command {
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
-    if (auto path = ctx.Engine().TakePendingInput()) { RunExportWithOrigin(ctx.App(), ctx.Doc(), ids_, p, *path); Finish(); return; }
+    ConstructionPlane plane;  // world aligned unless a viewport with its own construction plane is active
+    if (Viewport* vp = ctx.ActiveViewport()) plane = vp->CPlane();
+    if (auto path = ctx.Engine().TakePendingInput()) { RunExportWithOrigin(ctx.App(), ctx.Doc(), ids_, p, plane, *path); Finish(); return; }
     Application& app = ctx.App();
     Document& doc = ctx.Doc();
     std::vector<ObjectId> ids = ids_;
-    app.ShowFileDialog("Export selected (with origin)", kExportExts, true, [&app, &doc, ids, p](const std::string& path) { RunExportWithOrigin(app, doc, ids, p, path); });
+    app.ShowFileDialog("Export selected (with origin)", kExportExts, true, [&app, &doc, ids, p, plane](const std::string& path) { RunExportWithOrigin(app, doc, ids, p, plane, path); });
     Finish();
   }
   std::vector<ObjectId> ids_;
@@ -284,11 +314,50 @@ void RegisterFileCommands(CommandEngine& e) {
         Application& app = ctx.App();
         app.ShowFileDialog("Save template", {".3dm"}, true, [&app](const std::string& path) { std::string err; if (!app.SaveDocument(path, err)) app.Notify(err); });
       }), CommandStatus::Implemented, "Saves a normal .3dm you can open as a starting point.");
+  // Import <path> [Units=<mm|cm|m|km|in|ft|mi|um>] [Scale=<factor>] [UpAxis=Y|Z]: the three tokens are OBJ settings. Units= names the length
+  // unit the file's coordinates are written in (they are converted to the document's unit), Scale= multiplies them further, UpAxis=Y
+  // says the file is Y-up (it is turned to the document's Z up). A bad value, or one of the tokens for another format, refuses the
+  // import with a message rather than ignoring the setting.
   Reg(e, "Import", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
-        if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ImportFile(*p, err)) ctx.Warn(err); return; }  // ImportFile itself notifies Imported <path>
-        app.ShowFileDialog("Import", kModelExts, false, [&app](const std::string& path) { std::string err; if (!app.ImportFile(path, err)) app.Notify(err); });
-      }));
+        MeshImportOptions opts;
+        double units_factor = 1.0;
+        bool have_opts = false, bad = false;
+        std::optional<std::string> path;
+        while (auto t = ctx.Engine().TakePendingInput()) {
+          std::string lower = *t;
+          for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          auto refuse = [&](const std::string& why) { ctx.Warn("Import: " + why); bad = true; };
+          if (lower.rfind("units=", 0) == 0) {
+            have_opts = true;
+            if (!MeshImportUnitFactor(ctx.Doc(), t->substr(6), units_factor)) refuse("Units=" + t->substr(6) + " is not a known unit (mm, cm, m, km, in, ft, mi, um)");
+          } else if (lower.rfind("scale=", 0) == 0) {
+            have_opts = true;
+            char* end = nullptr;
+            const std::string v = t->substr(6);
+            opts.scale = std::strtod(v.c_str(), &end);
+            if (end == v.c_str() || *end != '\0' || !(opts.scale > 0.0) || !std::isfinite(opts.scale)) refuse("Scale=" + v + " is not a positive number");
+          } else if (lower.rfind("upaxis=", 0) == 0) {
+            have_opts = true;
+            const std::string v = lower.substr(7);
+            if (v == "y") opts.y_up = true;
+            else if (v == "z") opts.y_up = false;
+            else refuse("UpAxis=" + t->substr(7) + " is not Y or Z");
+          } else if (!path) {
+            path = *t;
+          }
+        }
+        if (bad) return;
+        opts.scale *= units_factor;
+        auto run = [have_opts, opts](Application& a, const std::string& file, std::string& err) {
+          if (have_opts && LowerExt(file) != ".obj") { err = "Import: Units=, Scale= and UpAxis= apply to .obj files only"; return false; }
+          ScopedMeshImportOptions scoped(opts);
+          return a.ImportFile(file, err);
+        };
+        if (path) { std::string err; if (!run(app, *path, err)) ctx.Warn(err); return; }  // ImportFile itself notifies Imported <path>
+        app.ShowFileDialog("Import", kModelExts, false, [&app, run](const std::string& file) { std::string err; if (!run(app, file, err)) app.Notify(err); });
+      }), CommandStatus::Implemented,
+      "Imports a model file. For .obj: Units=<unit> names the unit of the file's coordinates, Scale=<factor> multiplies them, UpAxis=Y turns a Y-up file to the document's Z up.");
   Reg(e, "Export", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
@@ -344,7 +413,46 @@ void RegisterFileCommands(CommandEngine& e) {
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
         app.ShowFileDialog("Export selected", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
       }));
-  Reg(e, "ExportWithOrigin", Make<ExportWithOriginCommand>(), CommandStatus::Implemented, "Translates copies of the selection so the picked point lands at 0,0,0 before writing them; SVG/PDF (page-space view drawings, not object-space geometry) export the plain view instead.");
+  // STLOut / IgesExport: the fixed-format export commands of AutoCAD (STLOUT, IGESEXPORT). They write the selection to one
+  // format only: the file name must end in the command's extension (.stl; .igs or .iges), otherwise nothing is written and the
+  // command says why. With no path token a file dialog asks for the file. StlOut also takes Export's mesh tokens
+  // (Format=Ascii|Binary|BinaryBigEndian, Units=, Scale=, Tolerance=); both announce "Exported <path>" when the file is done.
+  Reg(e, "StlOut", OnSelection("Select solids or meshes to write as STL", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        Application& app = ctx.App();
+        for (ObjectId id : ids) ctx.Doc().Select(id, true);
+        std::string unused_scheme;
+        MeshExportOptions mesh_options;
+        bool mesh_options_bad = false;
+        if (auto p = TakePathAndVersion(ctx, unused_scheme, &mesh_options, &mesh_options_bad)) {
+          if (mesh_options_bad) return;
+          if (LowerExt(*p) != ".stl") { ctx.Warn("StlOut: " + *p + " is not a .stl file name; nothing written"); return; }
+          std::string err;
+          bool ok = false;
+          {
+            ScopedMeshExportOptions scoped(mesh_options);
+            ok = app.ExportSelected(*p, err);
+          }
+          if (!ok) ctx.Warn(err.empty() ? "StlOut: nothing to export" : err); else ctx.Print("Exported " + *p);
+          return;
+        }
+        app.ShowFileDialog("Write STL file", {".stl"}, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
+      }), CommandStatus::Implemented,
+      "Writes the selected solids, surfaces and meshes to a stereolithography .stl file (binary by default; Format=Ascii, Units=, Scale= and Tolerance= as for Export).");
+  Reg(e, "IgesExport", OnSelection("Select objects to write as IGES", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        Application& app = ctx.App();
+        for (ObjectId id : ids) ctx.Doc().Select(id, true);
+        std::string unused_scheme;
+        if (auto p = TakePathAndVersion(ctx, unused_scheme)) {
+          const std::string ext = LowerExt(*p);
+          if (ext != ".igs" && ext != ".iges") { ctx.Warn("IgesExport: " + *p + " is not a .igs or .iges file name; nothing written"); return; }
+          std::string err;
+          if (!app.ExportSelected(*p, err)) ctx.Warn(err.empty() ? "IgesExport: nothing to export" : err); else ctx.Print("Exported " + *p);
+          return;
+        }
+        app.ShowFileDialog("Write IGES file", {".igs", ".iges"}, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
+      }), CommandStatus::Implemented,
+      "Writes the selection to a new .igs or .iges file (the same IGES writer as Export) and announces it when done.");
+  Reg(e, "ExportWithOrigin", Make<ExportWithOriginCommand>(), CommandStatus::Implemented, "Writes copies of the selection re-expressed in the frame of the picked point and the active construction plane (the picked point lands at 0,0,0, the plane's axes become X, Y, Z; a world plane is a plain translation) before writing them; SVG/PDF (page-space view drawings, not object-space geometry) export the plain view instead.");
   // ExportStepAp242: a separate command from Export/SaveAs's own .stp/.step
   // dispatch (which stays AP214, unchanged, so no existing round trip
   // breaks) because AP214 and AP242 share the same file extension - this is

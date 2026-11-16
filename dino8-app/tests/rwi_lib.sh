@@ -5,6 +5,8 @@
 # rwi_hasnt TEXT LABEL the application output does not contain TEXT
 # rwi_oracle LABEL FMT FILE ARGS...   run the stand-alone parser rwi_oracle.py and compare with the hand-computed values in ARGS
 # rwi_exists FILE      the file exists and is not empty
+# rwi_line TEXT LABEL  the application output has a line that is exactly TEXT (leading blanks count)
+# rwi_absent FILE LABEL  the file does not exist
 rwi_ok() { echo "ok   $1"; }
 rwi_bad() { echo "FAIL $1"; fail=1; }
 rwi_app() {
@@ -24,3 +26,5 @@ rwi_oracle() {
   local r
   r="$(python3 -I "$HERE/rwi_oracle.py" "$fmt" "$file" "$@" 2>&1)" && rwi_ok "$label: $r" || { rwi_bad "$label"; echo "     $r"; }
 }
+rwi_line() { if printf '%s\n' "$RWI_LOG" | grep -qxF -- "$1"; then rwi_ok "$2"; else rwi_bad "$2"; echo "     expected as a whole line in the application output: $1"; fi; }
+rwi_absent() { if [ -e "$1" ]; then rwi_bad "$2"; else rwi_ok "$2"; fi; }

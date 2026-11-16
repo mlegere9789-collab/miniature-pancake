@@ -4114,4 +4114,162 @@ bool ImportStepAp242(Document& doc, const std::string& path, std::string& summar
   return true;
 }
 
+namespace {
+
+// "MILLI METRE", "INCH", ... for a length unit entity (the name the file gives it); empty when it has none.
+std::string StepLengthUnitName(const StepModel& model, int id) {
+  const StepEntity* e = model.Get(id);
+  if (!e) return "";
+  if (const StepPart* cb = e->Find("CONVERSION_BASED_UNIT")) return cb->args.empty() ? "" : StepString(cb->args[0]);
+  if (const StepPart* si = e->Find("SI_UNIT")) {
+    if (si->args.size() < 2) return "";
+    std::string prefix = Trim(si->args[si->args.size() - 2]);
+    std::string name = Trim(si->args[si->args.size() - 1]);
+    auto bare = [](std::string t) {
+      while (!t.empty() && t.front() == '.') t.erase(t.begin());
+      while (!t.empty() && t.back() == '.') t.pop_back();
+      return t;
+    };
+    prefix = bare(prefix);
+    name = bare(name);
+    return (prefix.empty() || prefix == "$" || prefix == "*") ? name : prefix + " " + name;
+  }
+  return "";
+}
+
+}  // namespace
+
+bool ReadStepUnitsAndTolerance(const std::string& path, StepUnitsInfo& info, std::string& error) {
+  info = StepUnitsInfo{};
+  error.clear();
+  std::ifstream is(path, std::ios::binary);
+  if (!is) { error = "Could not open " + path; return false; }
+  std::ostringstream buf;
+  buf << is.rdbuf();
+  StepModel model;
+  if (!ParseStepPhysicalFile(buf.str(), model, error)) { error += ": " + path; return false; }
+  std::string why;
+  double metres = 0.0;
+  const int rc = StepFileLengthUnitMetres(model, &metres, &why);
+  if (rc < 0) { error = "Unsupported STEP length unit (" + why + "): " + path; return false; }
+  if (rc == 1) {
+    info.length_unit_found = true;
+    info.length_metres = metres;
+    for (const auto& [id, e] : model.entities) {
+      (void)id;
+      const StepPart* g = e.Find("GLOBAL_UNIT_ASSIGNED_CONTEXT");
+      if (!g || g->args.empty()) continue;
+      for (int ref : StepRefList(g->args[0])) {
+        double m = 0.0;
+        std::string ignore;
+        if (StepLengthUnitMetres(model, ref, 0, &m, &ignore) == 1 && info.length_unit_name.empty()) info.length_unit_name = StepLengthUnitName(model, ref);
+      }
+    }
+  }
+  for (const auto& [id, e] : model.entities) {
+    (void)id;
+    const StepPart* g = e.Find("GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT");
+    if (!g || g->args.empty()) continue;
+    for (int ref : StepRefList(g->args[0])) {
+      const StepEntity* ue = model.Get(ref);
+      const StepPart* up = ue ? ue->Find("UNCERTAINTY_MEASURE_WITH_UNIT") : nullptr;
+      if (!up || up->args.size() < 2 || !IsRef(up->args[1])) continue;
+      const std::string v = Trim(up->args[0]);
+      const size_t lp = v.find('(');
+      if (lp == std::string::npos) continue;
+      const double value = StepReal(v.substr(lp + 1));
+      double unit_m = 0.0;
+      std::string ignore;
+      if (StepLengthUnitMetres(model, StepRef(up->args[1]), 0, &unit_m, &ignore) != 1 || !(value > 0.0)) continue;
+      if (!info.tolerance_found || value * unit_m < info.tolerance_metres) {
+        info.tolerance_found = true;
+        info.tolerance_file_units = value;
+        info.tolerance_metres = value * unit_m;
+      }
+    }
+  }
+  return true;
+}
+
+std::string DescribeStepUnits(const Document& doc, const StepUnitsInfo& info, const std::string& path) {
+  std::string out = "StepUnitsAndTolerance " + path + ": ";
+  const double doc_m = DocMetresPerUnit(doc);
+  if (info.length_unit_found) {
+    out += "length unit " + FormatUnitFactor(info.length_metres) + " m" + (info.length_unit_name.empty() ? "" : " (" + info.length_unit_name + ")");
+  } else {
+    out += "no length unit declared (import takes the geometry as document units)";
+  }
+  out += "; ";
+  if (info.tolerance_found) {
+    out += "model tolerance " + FormatUnitFactor(info.tolerance_file_units) + " file units = " + FormatUnitFactor(info.tolerance_metres) + " m";
+  } else {
+    out += "no model tolerance declared";
+  }
+  out += "; document unit " + doc.Settings().unit_system + " (" + FormatUnitFactor(doc_m) + " m)";
+  const double scale = info.length_unit_found ? info.length_metres / doc_m : 1.0;
+  out += ": geometry scale x" + FormatUnitFactor(scale);
+  if (info.tolerance_found) out += ", tolerance " + FormatUnitFactor(info.tolerance_metres / doc_m) + " document units";
+  out += " (document absolute tolerance " + FormatUnitFactor(doc.Settings().absolute_tolerance) + ")";
+  return out;
+}
+
+bool ReadStepProductTree(const std::string& path, std::vector<std::string>& lines, std::string& error) {
+  lines.clear();
+  error.clear();
+  std::ifstream is(path, std::ios::binary);
+  if (!is) { error = "Could not open " + path; return false; }
+  std::ostringstream buf;
+  buf << is.rdbuf();
+  StepModel model;
+  if (!ParseStepPhysicalFile(buf.str(), model, error)) { error += ": " + path; return false; }
+  // PRODUCT_DEFINITION(id, description, #formation, #context) -> PRODUCT_DEFINITION_FORMATION(id, description, #product) -> PRODUCT(id, name, ...)
+  std::map<int, std::string> pd_name;  // product definition entity -> product name (the product id when the name is empty)
+  std::vector<int> pd_order;
+  for (const auto& [id, e] : model.entities) {
+    const StepPart* pd = e.Find("PRODUCT_DEFINITION");
+    if (!pd || pd->args.size() < 3 || !IsRef(pd->args[2])) continue;
+    std::string name;
+    if (const StepEntity* fe = model.Get(StepRef(pd->args[2]))) {
+      const StepPart* fp = fe->Find("PRODUCT_DEFINITION_FORMATION");
+      if (!fp) fp = fe->Find("PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE");
+      if (fp && fp->args.size() >= 3 && IsRef(fp->args[2])) {
+        if (const StepEntity* pe = model.Get(StepRef(fp->args[2]))) {
+          if (const StepPart* pp = pe->Find("PRODUCT")) {
+            if (pp->args.size() >= 2) name = StepString(pp->args[1]);
+            if (name.empty() && !pp->args.empty()) name = StepString(pp->args[0]);
+          }
+        }
+      }
+    }
+    pd_name[id] = name.empty() ? "#" + std::to_string(id) : name;
+    pd_order.push_back(id);
+  }
+  // NEXT_ASSEMBLY_USAGE_OCCURRENCE(id, name, description, #relating, #related, reference designator): one child occurrence each.
+  std::map<int, std::vector<int>> children;
+  std::set<int> is_child;
+  int links = 0;
+  for (const auto& [id, e] : model.entities) {
+    (void)id;
+    const StepPart* nu = e.Find("NEXT_ASSEMBLY_USAGE_OCCURRENCE");
+    if (!nu || nu->args.size() < 5 || !IsRef(nu->args[3]) || !IsRef(nu->args[4])) continue;
+    const int parent = StepRef(nu->args[3]), child = StepRef(nu->args[4]);
+    if (!pd_name.count(parent) || !pd_name.count(child)) continue;
+    children[parent].push_back(child);
+    is_child.insert(child);
+    ++links;
+  }
+  if (pd_order.empty()) {
+    lines.push_back("STEP product structure of " + path + ": no PRODUCT_DEFINITION in the file");
+    return true;
+  }
+  lines.push_back("STEP product structure of " + path + ": " + std::to_string(pd_order.size()) + " product definitions, " + std::to_string(links) + " assembly usages");
+  std::function<void(int, int)> walk = [&](int pd, int depth) {
+    lines.push_back(std::string(static_cast<size_t>(depth) * 2, ' ') + "- " + pd_name[pd]);
+    if (depth >= 32) return;  // a cyclic file must not run away
+    for (int c : children[pd]) walk(c, depth + 1);
+  };
+  for (int pd : pd_order) if (!is_child.count(pd)) walk(pd, 0);
+  return true;
+}
+
 }  // namespace dino8::app

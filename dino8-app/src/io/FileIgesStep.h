@@ -6,6 +6,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "doc/Document.h"
 
@@ -40,6 +41,30 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
 // face, shell and solid entities; colours, names, layers and the length
 // unit are honoured. `summary` describes the result.
 bool ImportStep(Document& doc, const std::string& path, std::string& summary);
+
+// What a STEP file declares about its units and tolerance, read without importing any geometry (StepUnitsAndTolerance).
+// The length unit is the one every GLOBAL_UNIT_ASSIGNED_CONTEXT of the file names (SI_UNIT with a prefix, or a
+// CONVERSION_BASED_UNIT such as INCH); the tolerance is the smallest UNCERTAINTY_MEASURE_WITH_UNIT a
+// GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT lists, in the unit of that measure.
+struct StepUnitsInfo {
+  bool length_unit_found = false;
+  double length_metres = 0.0;         // metres per file length unit
+  std::string length_unit_name;       // "MILLI METRE", "METRE", "INCH", ...
+  bool tolerance_found = false;
+  double tolerance_file_units = 0.0;  // the number as written in the file
+  double tolerance_metres = 0.0;      // the same tolerance in metres
+};
+// Parses `path` (a STEP Part 21 file) for its declared length unit and uncertainty. False with `error` set when the file cannot be
+// read, is not Part 21, or declares a length unit this reader refuses (the same refusals ImportStep makes).
+bool ReadStepUnitsAndTolerance(const std::string& path, StepUnitsInfo& info, std::string& error);
+// One line saying what importing `path` into `doc` would do with these units: the file's unit in metres, its tolerance, the geometry
+// scale factor into the document's unit and the tolerance in document units.
+std::string DescribeStepUnits(const Document& doc, const StepUnitsInfo& info, const std::string& path);
+
+// The product structure of a STEP file (PRODUCT / PRODUCT_DEFINITION / NEXT_ASSEMBLY_USAGE_OCCURRENCE) as indented lines, one per
+// occurrence, "- <product name>" with two more spaces of indent per assembly level, roots first in file order. Returns false with
+// `error` set when the file is not a readable Part 21 file; a file with no product definitions gives one explanatory line.
+bool ReadStepProductTree(const std::string& path, std::vector<std::string>& lines, std::string& error);
 
 // ---- IFC (BIM) --------------------------------------------------------------
 // A real, valid IFC4 file - the same ISO-10303-21 Part 21 physical-file
