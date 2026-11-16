@@ -928,17 +928,25 @@ Vector3d ChainEndTangent(const Chain& c) {
 
 std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol, const ON_Surface* surface) {
   const double tol2 = tol * tol;
-  // Two chain ends that meet in 3D but sit a period apart in (u, v) on a closed surface are the two sides of its seam: joining
-  // them makes one chain that jumps across the whole domain (the U-shaped curve of two parallel cylinders, which crosses the seam
-  // of each wall at its lowest point), and a chain like that cannot cut the face's (u, v) rectangle. Keep them as two chains, each
-  // ending on the seam edge, which the loop splitter handles.
+  // Two chain ends that meet in 3D and sit EXACTLY on the two opposite domain ends of a closed direction (one on each side of the
+  // seam) are the two sides of its seam: joining them makes one chain that jumps across the whole domain (the U-shaped curve of two
+  // parallel cylinders, which crosses the seam of each wall at its lowest point), and a chain like that cannot cut the face's
+  // (u, v) rectangle. Keep them as two chains, each ending on the seam edge, which the loop splitter handles. Ends that are merely
+  // a period apart (a traced circle whose two halves end a tolerance short of the seam on either side) are an ordinary continuation
+  // across the seam and are still merged: refusing those left the hole walls of ExtrudeProfileWithHoles with seam trims that carry
+  // no iso status (ON_Brep::IsValid false).
   auto across_seam = [surface](const UVPt& a, const UVPt& b) {
     if (!surface) return false;
     for (int dir = 0; dir < 2; ++dir) {
       if (!surface->IsClosed(dir)) continue;
-      const double half = 0.5 * surface->Domain(dir).Length();
+      const ON_Interval dom = surface->Domain(dir);
+      const double len = dom.Length();
+      if (!(len > 0)) continue;
       const double da = dir == 0 ? a.uv.x : a.uv.y, db = dir == 0 ? b.uv.x : b.uv.y;
-      if (half > 0 && std::fabs(da - db) > half) return true;
+      const double e = 1e-6 * len;
+      const bool a_lo = std::fabs(da - dom.Min()) <= e, a_hi = std::fabs(da - dom.Max()) <= e;
+      const bool b_lo = std::fabs(db - dom.Min()) <= e, b_hi = std::fabs(db - dom.Max()) <= e;
+      if ((a_lo && b_hi) || (a_hi && b_lo)) return true;
     }
     return false;
   };
@@ -1695,6 +1703,29 @@ bool FindChainBoundaryCrossing(const Chain& c, const std::vector<UVPt>& outer, s
   return false;
 }
 
+// How far a point lying exactly on the TRUE curve can sit from the chord of edge `k` of a sampled polygon: the chord's sagitta,
+// (len / 2) tan(turn / 4) where `turn` is the turning angle at the chord's ends (a regular polygon turns the same at every vertex). Only
+// an edge whose both ends turn gently (between 1 mrad and 46 degrees) is a chord of a curve: a straight run (no turning) or a polygon
+// corner (a large turn) gets no allowance, so a long straight boundary edge never widens the gate. A quarter-turn-safe 1.25 margin.
+double ChordSagittaAllowance(const std::vector<UVPt>& poly, size_t k) {
+  const size_t n = poly.size();
+  if (n < 4) return 0.0;
+  const Point2d& a = poly[(k + n - 1) % n].uv;
+  const Point2d& b = poly[k].uv;
+  const Point2d& c = poly[(k + 1) % n].uv;
+  const Point2d& d = poly[(k + 2) % n].uv;
+  const double len = std::sqrt(Dist2(b, c));
+  if (!(len > 0)) return 0.0;
+  auto turn = [](const Point2d& p, const Point2d& q, const Point2d& r) {
+    const double ux = q.x - p.x, uy = q.y - p.y, vx = r.x - q.x, vy = r.y - q.y;
+    if (ux * ux + uy * uy <= 0 || vx * vx + vy * vy <= 0) return -1.0;
+    return std::fabs(std::atan2(ux * vy - uy * vx, ux * vx + uy * vy));
+  };
+  const double t0 = turn(a, b, c), t1 = turn(b, c, d);
+  if (t0 < 1e-3 || t1 < 1e-3 || t0 > 0.8 || t1 > 0.8) return 0.0;
+  return 1.25 * 0.5 * len * std::tan(0.25 * std::min(t0, t1));
+}
+
 std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std::vector<Chain>& closed_chains,
                                      const std::vector<Chain>& open_chains) {
   std::vector<std::vector<UVPt>> outers = {boundary};
@@ -1727,8 +1758,9 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
       // boundary (not just closest-of-the-worklist) for it to be a
       // candidate at all.
       // A curved boundary is a polygon here (24 samples a trim), so a chain end sitting exactly on the true rim can be a
-      // chord's sagitta away from the polygon (0.0086 for a unit circle): allow up to a quarter of the edge length squared.
-      if (std::sqrt(Dist2(proj0, c.front().uv)) > std::max(1e-3 * (1.0 + std::sqrt(Dist2(e0a, e0b))), 0.25 * Dist2(e0a, e0b)) &&
+      // chord's sagitta away from the polygon (0.0086 for a unit circle): the allowance is the sagitta the edge's own turning
+      // implies (zero for a straight run of the boundary, so a long straight edge keeps the plain 1e-3 gate).
+      if (std::sqrt(Dist2(proj0, c.front().uv)) > std::max(1e-3 * (1.0 + std::sqrt(Dist2(e0a, e0b))), ChordSagittaAllowance(outers[i], h0.edge_index)) &&
           std::sqrt(Dist2(proj0, c.front().uv)) > 1e-6) {
         continue;
       }
@@ -1736,7 +1768,7 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
       const Point2d& e1a = outers[i][h1.edge_index].uv;
       const Point2d& e1b = outers[i][(h1.edge_index + 1) % outers[i].size()].uv;
       const Point2d proj1(e1a.x + (e1b.x - e1a.x) * h1.t, e1a.y + (e1b.y - e1a.y) * h1.t);
-      if (std::sqrt(Dist2(proj1, c.back().uv)) > std::max(1e-3 * (1.0 + std::sqrt(Dist2(e1a, e1b))), 0.25 * Dist2(e1a, e1b)) &&
+      if (std::sqrt(Dist2(proj1, c.back().uv)) > std::max(1e-3 * (1.0 + std::sqrt(Dist2(e1a, e1b))), ChordSagittaAllowance(outers[i], h1.edge_index)) &&
           std::sqrt(Dist2(proj1, c.back().uv)) > 1e-6) {
         continue;
       }
@@ -3816,6 +3848,37 @@ bool ChainIsFullSweepAlongSeamSide(const Chain& c, const ON_Surface* s) {
   return false;
 }
 
+// ChainIsFullSweepAlongSeamSide() AND the face really has a SEAM trim there: the chain lies on the seam edge the face shares with itself
+// (the torus meridian circle at the face's own seam), not on a rim a neighbouring face meets (a cylinder wall's end circle, which
+// is a boundary trim and which a flush end cap re-finds without dividing anything). Only the former is spliced into the boundary as
+// the shared polyline; the latter is dropped as lying along the boundary.
+bool ChainIsFullSweepAlongSeamTrim(const ON_Brep& brep, int face_index, const Chain& c) {
+  const ON_BrepFace& face = brep.m_F[face_index];
+  const ON_Surface* s = face.SurfaceOf();
+  if (!ChainIsFullSweepAlongSeamSide(c, s)) return false;
+  for (int dir = 0; dir < 2; ++dir) {
+    if (!s->IsClosed(1 - dir)) continue;
+    const ON_Interval dd = s->Domain(dir);
+    const double eps = 1e-6 * std::max(dd.Length(), 1.0);
+    double fixed = c.front().uv[dir];
+    bool constant = true;
+    for (const UVPt& q : c) constant = constant && std::fabs(q.uv[dir] - fixed) <= eps;
+    if (!constant) continue;
+    for (int li = 0; li < face.m_li.Count(); ++li) {
+      const ON_BrepLoop& loop = brep.m_L[face.m_li[li]];
+      for (int k = 0; k < loop.m_ti.Count(); ++k) {
+        const ON_BrepTrim& t = brep.m_T[loop.m_ti[k]];
+        if (t.m_type != ON_BrepTrim::seam) continue;
+        const ON_Curve* c2 = t.TrimCurveOf();
+        if (!c2) continue;
+        const ON_Interval d = c2->Domain();
+        if (std::fabs(c2->PointAt(d.Min())[dir] - fixed) <= eps && std::fabs(c2->PointAt(d.Max())[dir] - fixed) <= eps) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // An OPEN chain that runs across a periodic seam carries the crossing as two consecutive samples with the same 3D point and (u, v)
 // a full period apart (one on each seam side), e.g. the rim of a notch cut into a cylinder wall by a parallel cylinder: two rulings
 // joined by an arc through the seam meridian. SpliceOpenChain() treats a chain as one run inside the (u, v) rectangle, so such a chain
@@ -3949,7 +4012,10 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
                                     std::vector<UVPt> probe = boundary;
                                     rediscovers_keyhole = !UnbridgeKeyholes(probe, &probe_targets, stitch_tol).empty();
                                   }
-                                  const bool along = !(is_closed && rediscovers_keyhole) && ChainLiesAlongFaceBoundary(brep, i, c, opt.tolerance);
+                                  bool along = !(is_closed && rediscovers_keyhole) && ChainLiesAlongFaceBoundary(brep, i, c, opt.tolerance);
+                                  // The torus meridian circle on the face's own seam is a closed chain along the face's trims too, but it is not a flush
+                                  // rim: it is the seam edge both sides of the face share, and it is spliced into the boundary as one polyline below.
+                                  if (along && is_closed && ChainIsFullSweepAlongSeamTrim(brep, i, c)) along = false;
                                   if (debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: raw chain n=%zu front_p=(%.4f,%.4f,%.4f) back_p=(%.4f,%.4f,%.4f) along_boundary=%d\n", i, c.size(), c.front().p.x, c.front().p.y, c.front().p.z, c.back().p.x, c.back().p.y, c.back().p.z, along);
                                   if (along && debug) std::fprintf(stderr, "  FragmentFaces face idx=%d: dropped a chain of %zu pts lying along its own boundary\n", i, c.size());
                                   return along;
@@ -4239,7 +4305,11 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
     if (!refusal || allow_non_manifold_result || !(tolerance > 1e-6) || secs > 2.0) throw;
     for (const double factor : {0.1, 0.01}) {
       try {
-        return BooleanCombineGeneralOneTolerance(a, b, op, tolerance * factor, allow_non_manifold_result);
+        Brep retried = BooleanCombineGeneralOneTolerance(a, b, op, tolerance * factor, allow_non_manifold_result);
+        // A finer tolerance can get past the refusal and still hand back an open shell (a box and a sphere poking 0.01 out of each of its
+        // faces: 13 faces, IsSolid() false): that is a wrong answer, not a rescue, so only a closed solid (or an empty result) ends the
+        // retries; otherwise the original typed refusal is what the caller gets.
+        if (retried.raw().m_F.Count() == 0 || retried.raw().IsSolid()) return retried;
       } catch (const std::runtime_error&) {
         // try the next finer tolerance; the original refusal is what the caller gets if none works
       }
