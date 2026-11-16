@@ -1,0 +1,133 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-drafting-docs-revit-annotate-01",
+  "corpora": [
+    "golden/revit/annot-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 31,
+    "rows": 31,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "revit.annotate"
+  ],
+  "factory": "drafting-docs",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Materials",
+        "rows": 1,
+        "score": 0.683,
+        "status": "implemented"
+      },
+      {
+        "name": "TextProperties",
+        "rows": 1,
+        "score": 0.667,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-drafting-docs-revit-annotate-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "revit"
+  ],
+  "register_files": [
+    "revit/revit.annotate.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-REVIT-ANNOT-0017": {
+      "commands": [
+        "TextProperties"
+      ],
+      "kernel": []
+    },
+    "D8-REVIT-ANNOT-0029": {
+      "commands": [
+        "Materials"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-ANNOT-0001",
+    "D8-REVIT-ANNOT-0002",
+    "D8-REVIT-ANNOT-0003",
+    "D8-REVIT-ANNOT-0004",
+    "D8-REVIT-ANNOT-0005",
+    "D8-REVIT-ANNOT-0006",
+    "D8-REVIT-ANNOT-0007",
+    "D8-REVIT-ANNOT-0008",
+    "D8-REVIT-ANNOT-0009",
+    "D8-REVIT-ANNOT-0010",
+    "D8-REVIT-ANNOT-0011",
+    "D8-REVIT-ANNOT-0012",
+    "D8-REVIT-ANNOT-0013",
+    "D8-REVIT-ANNOT-0014",
+    "D8-REVIT-ANNOT-0015",
+    "D8-REVIT-ANNOT-0016",
+    "D8-REVIT-ANNOT-0017",
+    "D8-REVIT-ANNOT-0018",
+    "D8-REVIT-ANNOT-0019",
+    "D8-REVIT-ANNOT-0020",
+    "D8-REVIT-ANNOT-0021",
+    "D8-REVIT-ANNOT-0022",
+    "D8-REVIT-ANNOT-0023",
+    "D8-REVIT-ANNOT-0024",
+    "D8-REVIT-ANNOT-0025",
+    "D8-REVIT-ANNOT-0026",
+    "D8-REVIT-ANNOT-0027",
+    "D8-REVIT-ANNOT-0028",
+    "D8-REVIT-ANNOT-0029",
+    "D8-REVIT-ANNOT-0030",
+    "D8-REVIT-ANNOT-0031"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-ANNOT-0001",
+    "D8-REVIT-ANNOT-0002",
+    "D8-REVIT-ANNOT-0003",
+    "D8-REVIT-ANNOT-0004",
+    "D8-REVIT-ANNOT-0005",
+    "D8-REVIT-ANNOT-0006",
+    "D8-REVIT-ANNOT-0007",
+    "D8-REVIT-ANNOT-0008",
+    "D8-REVIT-ANNOT-0009",
+    "D8-REVIT-ANNOT-0010",
+    "D8-REVIT-ANNOT-0011",
+    "D8-REVIT-ANNOT-0012",
+    "D8-REVIT-ANNOT-0013",
+    "D8-REVIT-ANNOT-0014",
+    "D8-REVIT-ANNOT-0015",
+    "D8-REVIT-ANNOT-0016",
+    "D8-REVIT-ANNOT-0018",
+    "D8-REVIT-ANNOT-0019",
+    "D8-REVIT-ANNOT-0020",
+    "D8-REVIT-ANNOT-0021",
+    "D8-REVIT-ANNOT-0022",
+    "D8-REVIT-ANNOT-0023",
+    "D8-REVIT-ANNOT-0024",
+    "D8-REVIT-ANNOT-0025",
+    "D8-REVIT-ANNOT-0026",
+    "D8-REVIT-ANNOT-0027",
+    "D8-REVIT-ANNOT-0028",
+    "D8-REVIT-ANNOT-0030",
+    "D8-REVIT-ANNOT-0031"
+  ],
+  "status": "open",
+  "title": "drafting-docs: revit.annotate (31 rows)",
+  "wave": 2
+}

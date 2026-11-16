@@ -1,0 +1,149 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-misc-03",
+  "corpora": [
+    "golden/revit/ai-prompts",
+    "golden/revit/dynamo-sample"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 10,
+    "countable": 39,
+    "rows": 39,
+    "with_existing_hint": 1,
+    "with_hint": 1,
+    "without_hint": 38
+  },
+  "deps": [],
+  "domains": [
+    "revit.ai-assistant",
+    "revit.dynamo",
+    "scr",
+    "text_editor",
+    "wm"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "RunScript",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-misc-03",
+  "points": 3,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "autocad",
+    "blender",
+    "revit"
+  ],
+  "register_files": [
+    "autocad/scr.jsonl",
+    "blender/text_editor.jsonl",
+    "blender/wm.jsonl",
+    "revit/revit.ai-assistant.jsonl",
+    "revit/revit.dynamo.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-AUTOCAD-SCR-0001": {
+      "commands": [
+        "RunScript"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-REVIT-AI-0001",
+    "D8-REVIT-AI-0002",
+    "D8-REVIT-AI-0003",
+    "D8-REVIT-AI-0004",
+    "D8-REVIT-AI-0005",
+    "D8-REVIT-AI-0006",
+    "D8-REVIT-AI-0007",
+    "D8-REVIT-AI-0008",
+    "D8-REVIT-DYNAMO-0001",
+    "D8-REVIT-DYNAMO-0002",
+    "D8-REVIT-DYNAMO-0003",
+    "D8-REVIT-DYNAMO-0004",
+    "D8-REVIT-DYNAMO-0005",
+    "D8-REVIT-DYNAMO-0006",
+    "D8-REVIT-DYNAMO-0007",
+    "D8-REVIT-DYNAMO-0008",
+    "D8-REVIT-DYNAMO-0009",
+    "D8-REVIT-DYNAMO-0010",
+    "D8-REVIT-DYNAMO-0011",
+    "D8-REVIT-DYNAMO-0012",
+    "D8-REVIT-DYNAMO-0013",
+    "D8-REVIT-DYNAMO-0014",
+    "D8-REVIT-DYNAMO-0015",
+    "D8-REVIT-DYNAMO-0016",
+    "D8-REVIT-DYNAMO-0017",
+    "D8-REVIT-DYNAMO-0018",
+    "D8-AUTOCAD-SCR-0001",
+    "D8-AUTOCAD-SCR-0002",
+    "D8-AUTOCAD-SCR-0003",
+    "D8-AUTOCAD-SCR-0004",
+    "D8-AUTOCAD-SCR-0005",
+    "D8-AUTOCAD-SCR-0006",
+    "D8-AUTOCAD-SCR-0007",
+    "D8-AUTOCAD-SCR-0008",
+    "D8-AUTOCAD-SCR-0009",
+    "D8-AUTOCAD-SCR-0010",
+    "D8-BLENDER-TEXTED-0001",
+    "D8-BLENDER-WM-0024",
+    "D8-BLENDER-WM-0025"
+  ],
+  "rows_without_hint": [
+    "D8-REVIT-AI-0001",
+    "D8-REVIT-AI-0002",
+    "D8-REVIT-AI-0003",
+    "D8-REVIT-AI-0004",
+    "D8-REVIT-AI-0005",
+    "D8-REVIT-AI-0006",
+    "D8-REVIT-AI-0007",
+    "D8-REVIT-AI-0008",
+    "D8-REVIT-DYNAMO-0001",
+    "D8-REVIT-DYNAMO-0002",
+    "D8-REVIT-DYNAMO-0003",
+    "D8-REVIT-DYNAMO-0004",
+    "D8-REVIT-DYNAMO-0005",
+    "D8-REVIT-DYNAMO-0006",
+    "D8-REVIT-DYNAMO-0007",
+    "D8-REVIT-DYNAMO-0008",
+    "D8-REVIT-DYNAMO-0009",
+    "D8-REVIT-DYNAMO-0010",
+    "D8-REVIT-DYNAMO-0011",
+    "D8-REVIT-DYNAMO-0012",
+    "D8-REVIT-DYNAMO-0013",
+    "D8-REVIT-DYNAMO-0014",
+    "D8-REVIT-DYNAMO-0015",
+    "D8-REVIT-DYNAMO-0016",
+    "D8-REVIT-DYNAMO-0017",
+    "D8-REVIT-DYNAMO-0018",
+    "D8-AUTOCAD-SCR-0002",
+    "D8-AUTOCAD-SCR-0003",
+    "D8-AUTOCAD-SCR-0004",
+    "D8-AUTOCAD-SCR-0005",
+    "D8-AUTOCAD-SCR-0006",
+    "D8-AUTOCAD-SCR-0007",
+    "D8-AUTOCAD-SCR-0008",
+    "D8-AUTOCAD-SCR-0009",
+    "D8-AUTOCAD-SCR-0010",
+    "D8-BLENDER-TEXTED-0001",
+    "D8-BLENDER-WM-0024",
+    "D8-BLENDER-WM-0025"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: revit.ai-assistant, revit.dynamo, scr, text_editor, ... (39 rows)",
+  "wave": 3
+}

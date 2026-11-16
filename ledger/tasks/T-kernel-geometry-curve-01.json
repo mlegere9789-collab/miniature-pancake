@@ -1,0 +1,411 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-kernel-geometry-curve-01",
+  "corpora": [
+    "curve fixtures: lines, arcs, splines, degree 1-11 NURBS, closed and periodic cases"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 35,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 31,
+    "with_hint": 31,
+    "without_hint": 4
+  },
+  "deps": [],
+  "domains": [
+    "CURVE"
+  ],
+  "factory": "kernel-geometry",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "CurveThroughPt",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CurveThroughPolyline",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DupBorder",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "DupFaceBorder",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddGuide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Arc",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ArcBlend",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Blend",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BlendCrv",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CSec",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Catenary",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Chamfer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Circle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Conic",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Connect",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ContinueCurve",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ContinueInterpCrv",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Convert",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CrvDeviation",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CrvEnd",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-kernel-geometry-curve-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/CURVE.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-CURVE-0001": {
+      "commands": [
+        "AddGuide"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0002": {
+      "commands": [
+        "Arc"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0004": {
+      "commands": [
+        "ArcBlend"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0005": {
+      "commands": [
+        "Blend"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0006": {
+      "commands": [
+        "BlendCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0007": {
+      "commands": [
+        "Catenary"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0008": {
+      "commands": [
+        "Chamfer",
+        "ChamferSrf",
+        "ChamferEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0009": {
+      "commands": [
+        "Circle",
+        "CircleD",
+        "SelCircle"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0010": {
+      "commands": [
+        "Conic"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0011": {
+      "commands": [
+        "Connect",
+        "ConnectSrf",
+        "DigConnect"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0012": {
+      "commands": [
+        "ContinueCurve"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0013": {
+      "commands": [
+        "ContinueInterpCrv",
+        "InterpCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0016": {
+      "commands": [
+        "Convert",
+        "ConvertDots"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0017": {
+      "commands": [
+        "CrvDeviation"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0018": {
+      "commands": [
+        "CrvEnd"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0019": {
+      "commands": [
+        "CrvStart"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0020": {
+      "commands": [
+        "CrvSeam"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0021": {
+      "commands": [
+        "CSec"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0022": {
+      "commands": [
+        "CurveBoolean"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0023": {
+      "commands": [
+        "Curve"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0025": {
+      "commands": [
+        "CurveThroughPolyline",
+        "CurveThroughPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0026": {
+      "commands": [
+        "CurveThroughPt",
+        "CurveThroughPolyline",
+        "LineThroughPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0027": {
+      "commands": [
+        "CurveThroughSrfControlPt",
+        "CurveThroughPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0028": {
+      "commands": [
+        "DeleteSubCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0029": {
+      "commands": [
+        "DupBorder",
+        "DupFaceBorder"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0030": {
+      "commands": [
+        "DupEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0031": {
+      "commands": [
+        "DupFaceBorder",
+        "DupBorder"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0032": {
+      "commands": [
+        "DupMeshEdge",
+        "SwapMeshEdge",
+        "MatchMeshEdge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0033": {
+      "commands": [
+        "DupMeshHoleBoundary"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0034": {
+      "commands": [
+        "Divide",
+        "SubDivide"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-CURVE-0035": {
+      "commands": [
+        "DivideAlongCreases"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-CURVE-0001",
+    "D8-RHINO-CURVE-0002",
+    "D8-RHINO-CURVE-0003",
+    "D8-RHINO-CURVE-0004",
+    "D8-RHINO-CURVE-0005",
+    "D8-RHINO-CURVE-0006",
+    "D8-RHINO-CURVE-0007",
+    "D8-RHINO-CURVE-0008",
+    "D8-RHINO-CURVE-0009",
+    "D8-RHINO-CURVE-0010",
+    "D8-RHINO-CURVE-0011",
+    "D8-RHINO-CURVE-0012",
+    "D8-RHINO-CURVE-0013",
+    "D8-RHINO-CURVE-0014",
+    "D8-RHINO-CURVE-0015",
+    "D8-RHINO-CURVE-0016",
+    "D8-RHINO-CURVE-0017",
+    "D8-RHINO-CURVE-0018",
+    "D8-RHINO-CURVE-0019",
+    "D8-RHINO-CURVE-0020",
+    "D8-RHINO-CURVE-0021",
+    "D8-RHINO-CURVE-0022",
+    "D8-RHINO-CURVE-0023",
+    "D8-RHINO-CURVE-0024",
+    "D8-RHINO-CURVE-0025",
+    "D8-RHINO-CURVE-0026",
+    "D8-RHINO-CURVE-0027",
+    "D8-RHINO-CURVE-0028",
+    "D8-RHINO-CURVE-0029",
+    "D8-RHINO-CURVE-0030",
+    "D8-RHINO-CURVE-0031",
+    "D8-RHINO-CURVE-0032",
+    "D8-RHINO-CURVE-0033",
+    "D8-RHINO-CURVE-0034",
+    "D8-RHINO-CURVE-0035"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-CURVE-0003",
+    "D8-RHINO-CURVE-0014",
+    "D8-RHINO-CURVE-0015",
+    "D8-RHINO-CURVE-0024"
+  ],
+  "status": "open",
+  "title": "kernel-geometry: CURVE (35 rows)",
+  "wave": 1
+}
