@@ -2990,7 +2990,9 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
   for (int i = 0; i <= n; ++i) samples[static_cast<size_t>(i)] = c.PointAt(d.ParameterAt(static_cast<double>(i) / n));
   struct Seed { double t; ON_2dPoint uv; bool near; };
   std::vector<Seed> seeds;
-  const double near_miss = std::max(opt.mesh_tolerance, 1e-9) * 1.5;
+  // Only a sphere's seed mesh is searched for near misses: it is the one surface family whose inscribed mesh leaves a sag layer a
+  // closed-form lens or a tangent rim can live in (the exact-circle cases above), and a planar mesh has no sag at all.
+  const double near_miss = s.IsSphere(nullptr, std::max(1e-9, 1e-8 * SurfaceScale(s))) ? std::max(opt.mesh_tolerance, 1e-9) * 1.5 : -1.0;
   for (int i = 0; i < n; ++i) {
     const Point3d& p0 = samples[static_cast<size_t>(i)];
     const Point3d& p1 = samples[static_cast<size_t>(i) + 1];
@@ -3020,6 +3022,8 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     });
   }
   const std::vector<double> lo = {d.Min(), s.Domain(0).Min(), s.Domain(1).Min()}, hi = {d.Max(), s.Domain(0).Max(), s.Domain(1).Max()};
+  // Crossings of the mesh come first and win a tie: a near-miss seed only ADDS a hit the mesh did not find.
+  std::stable_partition(seeds.begin(), seeds.end(), [](const Seed& sd) { return !sd.near; });
   for (const Seed& sd : seeds) {
     std::vector<double> x = {sd.t, sd.uv.x, sd.uv.y};
     Residual res = [&](const std::vector<double>& q) {
@@ -3031,7 +3035,12 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     // A hit found only through a near miss is polished to a tight residual: the caller compares its parameter with the curve's
     // start (a ray origin sitting ON the surface), and a hit that is merely within the solve tolerance of the origin can land on
     // either side of that comparison.
-    if (sd.near) NewtonSolve(res, x, lo, hi, 1e-11, 40, &err);
+    if (sd.near) {
+      NewtonSolve(res, x, lo, hi, 1e-11, 60, &err);
+      // A near-miss seed that does not polish to a true root of curve = surface is the closest approach of a curve that does not
+      // meet the surface there (a ray passing just outside a trimmed face's edge converges onto the clamped boundary): no hit.
+      if (err > 1e-9 * std::max(1.0, clen)) continue;
+    }
     CurveSurfaceHit h;
     h.t = x[0]; h.uv = ON_2dPoint(x[1], x[2]); h.point = c.PointAt(h.t); h.error = err;
     bool dup = false;
