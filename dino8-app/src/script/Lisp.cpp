@@ -76,6 +76,10 @@ double NeedNum(const char* fn, const Value& v) {
   if (!IsNum(v)) Fail(std::string("bad argument type: numberp: ") + Interp::Format(v, true) + " in " + fn);
   return D(v);
 }
+long long NeedInt(const char* fn, const Value& v) {
+  if (v.t != Value::T::Int) Fail(std::string("bad argument type: integerp: ") + Interp::Format(v, true) + " in " + fn);
+  return v.i;
+}
 const std::string& NeedStr(const char* fn, const Value& v) {
   if (v.t != Value::T::Str) Fail(std::string("bad argument type: stringp: ") + Interp::Format(v, true) + " in " + fn);
   return v.s;
@@ -1777,6 +1781,159 @@ struct Builtins {
         cur = std::move(next);
       }
       return MakeList(cur);
+    };
+    // ---- bitwise and number-theory functions (AutoLISP integers: whole numbers; lsh works on 32 bits) ----
+    // (~ int): the one's complement.
+    t["~"] = [](Interp&, List& a) {
+      NeedArgs("~", a, 1, 1);
+      return Int(~NeedInt("~", a[0]));
+    };
+    // (logand [int ...]) and (logior [int ...]): bitwise AND / inclusive OR of all arguments, 0 with none.
+    t["logand"] = [](Interp&, List& a) {
+      if (a.empty()) return Int(0);
+      long long r = NeedInt("logand", a[0]);
+      for (size_t k = 1; k < a.size(); ++k) r &= NeedInt("logand", a[k]);
+      return Int(r);
+    };
+    t["logior"] = [](Interp&, List& a) {
+      long long r = 0;
+      for (const Value& v : a) r |= NeedInt("logior", v);
+      return Int(r);
+    };
+    // (lsh int numbits): shifts the 32-bit pattern of int left (positive) or right (negative), filling with zero
+    // bits and dropping what leaves the word; the result is read back as a signed 32-bit integer.
+    t["lsh"] = [](Interp&, List& a) {
+      NeedArgs("lsh", a, 0, 2);
+      if (a.empty()) return Int(0);
+      const std::uint32_t w = static_cast<std::uint32_t>(NeedInt("lsh", a[0]));
+      const long long n = a.size() == 2 ? NeedInt("lsh", a[1]) : 0;
+      std::uint32_t r = w;
+      if (n >= 32 || n <= -32) r = 0;
+      else if (n > 0) r = w << n;
+      else if (n < 0) r = w >> (-n);
+      return Int(static_cast<long long>(static_cast<std::int32_t>(r)));
+    };
+    // (gcd int1 int2): greatest common divisor of two positive integers.
+    t["gcd"] = [](Interp&, List& a) {
+      NeedArgs("gcd", a, 2, 2);
+      long long x = NeedInt("gcd", a[0]), y = NeedInt("gcd", a[1]);
+      if (x <= 0 || y <= 0) Fail("bad argument value: gcd needs positive integers");
+      while (y != 0) { const long long r = x % y; x = y; y = r; }
+      return Int(x);
+    };
+    // (boole operator int1 [int2 ...]): operator 0-15 is a truth table, bit 1 for (1,1), bit 2 for (1,0), bit 4 for (0,1),
+    // bit 8 for (0,0) of the two argument bits; the function is applied across the arguments from the left.
+    t["boole"] = [](Interp&, List& a) {
+      if (a.size() < 2) Fail("too few arguments to boole");
+      const long long op = NeedInt("boole", a[0]);
+      if (op < 0 || op > 15) Fail("bad argument value: boole operator must be 0 to 15");
+      long long r = NeedInt("boole", a[1]);
+      for (size_t k = 2; k < a.size(); ++k) {
+        const long long b = NeedInt("boole", a[k]);
+        long long out = 0;
+        if (op & 1) out |= r & b;
+        if (op & 2) out |= r & ~b;
+        if (op & 4) out |= ~r & b;
+        if (op & 8) out |= ~r & ~b;
+        r = out;
+      }
+      return Int(r);
+    };
+    // ---- list and symbol utilities ----
+    t["acad_strlsort"] = [](Interp&, List& a) {
+      NeedArgs("acad_strlsort", a, 1, 1);
+      if (!IsList(a[0])) return Nil();
+      std::vector<std::string> v;
+      for (const Value& x : *a[0].l) { if (x.t != Value::T::Str) return Nil(); v.push_back(x.s); }
+      std::stable_sort(v.begin(), v.end());
+      List out;
+      for (std::string& x : v) out.push_back(Str(std::move(x)));
+      return MakeList(out);
+    };
+    t["vl-consp"] = [](Interp&, List& a) { NeedArgs("vl-consp", a, 1, 1); return Bool(IsList(a[0])); };
+    t["vl-list-length"] = [](Interp&, List& a) {
+      NeedArgs("vl-list-length", a, 1, 1);
+      if (!IsList(a[0]) && !IsNil(a[0])) Fail("bad argument type: listp: " + Interp::Format(a[0], true) + " in vl-list-length");
+      if (a[0].dotted) return Nil();
+      return Int(static_cast<long long>(Items(a[0]).size()));
+    };
+    t["vl-member-if-not"] = [](Interp& in, List& a) {
+      NeedArgs("vl-member-if-not", a, 2, 2);
+      const List src = NeedList("vl-member-if-not", a[1]);
+      for (size_t k = 0; k < src.size(); ++k) if (!Truthy(in.Apply(a[0], {src[k]}))) return MakeList(List(src.begin() + static_cast<long>(k), src.end()));
+      return Nil();
+    };
+    // (vl-sort-i list less-p): like vl-sort but returns the original zero-based indexes in sorted order.
+    t["vl-sort-i"] = [](Interp& in, List& a) {
+      NeedArgs("vl-sort-i", a, 2, 2);
+      const List src = NeedList("vl-sort-i", a[0]);
+      const size_t n = src.size();
+      std::vector<size_t> cur(n);
+      for (size_t k = 0; k < n; ++k) cur[k] = k;
+      for (size_t w = 1; w < n; w *= 2) {
+        std::vector<size_t> next;
+        for (size_t lo = 0; lo < n; lo += 2 * w) {
+          const size_t mid = std::min(lo + w, n), hi = std::min(lo + 2 * w, n);
+          size_t i = lo, j = mid;
+          while (i < mid && j < hi) {
+            if (Truthy(in.Apply(a[1], {src[cur[j]], src[cur[i]]}))) next.push_back(cur[j++]); else next.push_back(cur[i++]);
+          }
+          while (i < mid) next.push_back(cur[i++]);
+          while (j < hi) next.push_back(cur[j++]);
+        }
+        cur = std::move(next);
+      }
+      List out;
+      for (size_t k : cur) out.push_back(Int(static_cast<long long>(k)));
+      return MakeList(out);
+    };
+    // (vl-string-elt string position): the character code at a zero-based position.
+    t["vl-string-elt"] = [](Interp&, List& a) {
+      NeedArgs("vl-string-elt", a, 2, 2);
+      const std::string& s = NeedStr("vl-string-elt", a[0]);
+      const long long p = NeedInt("vl-string-elt", a[1]);
+      if (p < 0 || static_cast<size_t>(p) >= s.size()) Fail("vl-string-elt: position " + std::to_string(p) + " is outside the string");
+      return Int(static_cast<unsigned char>(s[static_cast<size_t>(p)]));
+    };
+    // (vl-string-mismatch str1 str2 [pos1 pos2 ignore-case-p]): how many characters match, counting from pos1 / pos2.
+    t["vl-string-mismatch"] = [](Interp&, List& a) {
+      NeedArgs("vl-string-mismatch", a, 2, 5);
+      const std::string& s1 = NeedStr("vl-string-mismatch", a[0]);
+      const std::string& s2 = NeedStr("vl-string-mismatch", a[1]);
+      long long p1 = 0, p2 = 0;
+      if (a.size() > 2 && !IsNil(a[2])) p1 = NeedInt("vl-string-mismatch", a[2]);
+      if (a.size() > 3 && !IsNil(a[3])) p2 = NeedInt("vl-string-mismatch", a[3]);
+      const bool nocase = a.size() > 4 && Truthy(a[4]);
+      if (p1 < 0 || p2 < 0 || static_cast<size_t>(p1) > s1.size() || static_cast<size_t>(p2) > s2.size()) Fail("bad argument value: start position in vl-string-mismatch");
+      long long n = 0;
+      while (static_cast<size_t>(p1 + n) < s1.size() && static_cast<size_t>(p2 + n) < s2.size()) {
+        unsigned char c1 = static_cast<unsigned char>(s1[static_cast<size_t>(p1 + n)]);
+        unsigned char c2 = static_cast<unsigned char>(s2[static_cast<size_t>(p2 + n)]);
+        if (nocase) { c1 = static_cast<unsigned char>(std::tolower(c1)); c2 = static_cast<unsigned char>(std::tolower(c2)); }
+        if (c1 != c2) break;
+        ++n;
+      }
+      return Int(n);
+    };
+    // (vl-string-translate source-set dest-set str): each character of str found in source-set becomes the character
+    // at the same position in dest-set; characters without a counterpart are left alone.
+    t["vl-string-translate"] = [](Interp&, List& a) {
+      NeedArgs("vl-string-translate", a, 3, 3);
+      const std::string& from = NeedStr("vl-string-translate", a[0]);
+      const std::string& to = NeedStr("vl-string-translate", a[1]);
+      std::string s = NeedStr("vl-string-translate", a[2]);
+      for (char& c : s) {
+        const size_t at = from.find(c);
+        if (at != std::string::npos && at < to.size()) c = to[at];
+      }
+      return Str(s);
+    };
+    // (vl-symbol-name sym): the symbol's name in upper case.
+    t["vl-symbol-name"] = [](Interp&, List& a) {
+      NeedArgs("vl-symbol-name", a, 1, 1);
+      if (a[0].t == Value::T::True) return Str("T");
+      if (a[0].t != Value::T::Sym) Fail("bad argument type: symbolp: " + Interp::Format(a[0], true) + " in vl-symbol-name");
+      return Str(Upper(a[0].s));
     };
     // (vl-some pred list ...) the first non-nil result; (vl-every pred list ...) T when every result is non-nil.
     t["vl-some"] = [](Interp& in, List& a) { return SomeEvery(in, "vl-some", a, true); };
