@@ -1,0 +1,289 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-geometry-nodes-05",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 35,
+    "rows": 35,
+    "with_existing_hint": 9,
+    "with_hint": 9,
+    "without_hint": 26
+  },
+  "deps": [],
+  "domains": [
+    "geometry_nodes"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Cone",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cylinder",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Grid",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanSplit",
+        "rows": 1,
+        "score": 0.719,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanUnion",
+        "rows": 1,
+        "score": 0.719,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshCylinder",
+        "rows": 1,
+        "score": 0.64,
+        "status": "implemented"
+      },
+      {
+        "name": "MeshBooleanDifference",
+        "rows": 1,
+        "score": 0.637,
+        "status": "implemented"
+      },
+      {
+        "name": "MaxViewport",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "NewViewport",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "PenViewport",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "Sphere",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      },
+      {
+        "name": "TCone",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:143",
+        "rows": 1,
+        "score": 0.809,
+        "symbol": "dino8::kernel::Mesh::Volume"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_diagnostics.h:99",
+        "rows": 1,
+        "score": 0.7,
+        "symbol": "dino8::kernel::MeshBooleanReport"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/boolean_diagnostics.h:113",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::DiagnoseMeshBoolean"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1974",
+        "rows": 1,
+        "score": 0.659,
+        "symbol": "dino8::kernel::InterpolateCubic"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/mesh.h:2672",
+        "rows": 1,
+        "score": 0.64,
+        "symbol": "dino8::kernel::Mesh::Cylinder"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/surface_intersect.h:1220",
+        "rows": 1,
+        "score": 0.606,
+        "symbol": "dino8::kernel::SurfaceTangentCurve"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/curve.h:1677",
+        "rows": 1,
+        "score": 0.602,
+        "symbol": "dino8::kernel::NurbsCurve::TangentAt"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-geometry-nodes-05",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/geometry_nodes.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-GEONODE-0148": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SurfaceTangentCurve",
+        "dino8::kernel::NurbsCurve::TangentAt"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0153": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::InterpolateCubic"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0154": {
+      "commands": [
+        "MaxViewport",
+        "NewViewport",
+        "PenViewport"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0164": {
+      "commands": [
+        "MeshBooleanSplit",
+        "MeshBooleanUnion",
+        "MeshBooleanDifference"
+      ],
+      "kernel": [
+        "dino8::kernel::MeshBooleanReport",
+        "dino8::kernel::DiagnoseMeshBoolean"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0166": {
+      "commands": [
+        "Cone",
+        "TCone"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0168": {
+      "commands": [
+        "Cylinder",
+        "MeshCylinder"
+      ],
+      "kernel": [
+        "dino8::kernel::Mesh::Cylinder"
+      ]
+    },
+    "D8-BLENDER-GEONODE-0170": {
+      "commands": [
+        "Grid"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0171": {
+      "commands": [
+        "Sphere"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-GEONODE-0177": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Mesh::Volume"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-GEONODE-0143",
+    "D8-BLENDER-GEONODE-0144",
+    "D8-BLENDER-GEONODE-0145",
+    "D8-BLENDER-GEONODE-0146",
+    "D8-BLENDER-GEONODE-0147",
+    "D8-BLENDER-GEONODE-0148",
+    "D8-BLENDER-GEONODE-0149",
+    "D8-BLENDER-GEONODE-0150",
+    "D8-BLENDER-GEONODE-0151",
+    "D8-BLENDER-GEONODE-0152",
+    "D8-BLENDER-GEONODE-0153",
+    "D8-BLENDER-GEONODE-0154",
+    "D8-BLENDER-GEONODE-0155",
+    "D8-BLENDER-GEONODE-0156",
+    "D8-BLENDER-GEONODE-0157",
+    "D8-BLENDER-GEONODE-0158",
+    "D8-BLENDER-GEONODE-0159",
+    "D8-BLENDER-GEONODE-0160",
+    "D8-BLENDER-GEONODE-0161",
+    "D8-BLENDER-GEONODE-0162",
+    "D8-BLENDER-GEONODE-0163",
+    "D8-BLENDER-GEONODE-0164",
+    "D8-BLENDER-GEONODE-0165",
+    "D8-BLENDER-GEONODE-0166",
+    "D8-BLENDER-GEONODE-0167",
+    "D8-BLENDER-GEONODE-0168",
+    "D8-BLENDER-GEONODE-0169",
+    "D8-BLENDER-GEONODE-0170",
+    "D8-BLENDER-GEONODE-0171",
+    "D8-BLENDER-GEONODE-0172",
+    "D8-BLENDER-GEONODE-0173",
+    "D8-BLENDER-GEONODE-0174",
+    "D8-BLENDER-GEONODE-0175",
+    "D8-BLENDER-GEONODE-0176",
+    "D8-BLENDER-GEONODE-0177"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-GEONODE-0143",
+    "D8-BLENDER-GEONODE-0144",
+    "D8-BLENDER-GEONODE-0145",
+    "D8-BLENDER-GEONODE-0146",
+    "D8-BLENDER-GEONODE-0147",
+    "D8-BLENDER-GEONODE-0149",
+    "D8-BLENDER-GEONODE-0150",
+    "D8-BLENDER-GEONODE-0151",
+    "D8-BLENDER-GEONODE-0152",
+    "D8-BLENDER-GEONODE-0155",
+    "D8-BLENDER-GEONODE-0156",
+    "D8-BLENDER-GEONODE-0157",
+    "D8-BLENDER-GEONODE-0158",
+    "D8-BLENDER-GEONODE-0159",
+    "D8-BLENDER-GEONODE-0160",
+    "D8-BLENDER-GEONODE-0161",
+    "D8-BLENDER-GEONODE-0162",
+    "D8-BLENDER-GEONODE-0163",
+    "D8-BLENDER-GEONODE-0165",
+    "D8-BLENDER-GEONODE-0167",
+    "D8-BLENDER-GEONODE-0169",
+    "D8-BLENDER-GEONODE-0172",
+    "D8-BLENDER-GEONODE-0173",
+    "D8-BLENDER-GEONODE-0174",
+    "D8-BLENDER-GEONODE-0175",
+    "D8-BLENDER-GEONODE-0176"
+  ],
+  "status": "open",
+  "title": "flow: geometry_nodes (35 rows)",
+  "wave": 1
+}
