@@ -1,0 +1,453 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-direct-modeling-org-01",
+  "corpora": [
+    "organization fixtures: nested layers, blocks with attributes, groups, linked blocks, worksessions"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 39,
+    "rows": 39,
+    "with_existing_hint": 38,
+    "with_hint": 38,
+    "without_hint": 1
+  },
+  "deps": [],
+  "domains": [
+    "ORG"
+  ],
+  "factory": "direct-modeling",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "AddToGroup",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ChangeLayer",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ChangeToCurrentLayer",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Group",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "HideInDetail",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "HideLayersInDetail",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Invert",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "InvertPt",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Isolate",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "IsolateLock",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddMissingBlockAttributeKeys",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "AddObjectsToBlock",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Block",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BlockEdit",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BlockManager",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "BlockResetScale",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "ConvertTextToBlockAttribute",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CopyToClipboard",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CopyToLayer",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "CreateUniqueBlock",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-direct-modeling-org-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/ORG.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-ORG-0001": {
+      "commands": [
+        "AddMissingBlockAttributeKeys"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0002": {
+      "commands": [
+        "AddObjectsToBlock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0003": {
+      "commands": [
+        "AddToGroup",
+        "Group"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0004": {
+      "commands": [
+        "Block"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0005": {
+      "commands": [
+        "BlockEdit"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0006": {
+      "commands": [
+        "BlockManager"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0007": {
+      "commands": [
+        "BlockResetScale"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0008": {
+      "commands": [
+        "ChangeLayer",
+        "ChangeToCurrentLayer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0009": {
+      "commands": [
+        "ChangeToCurrentLayer",
+        "ChangeLayer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0010": {
+      "commands": [
+        "CopyToLayer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0012": {
+      "commands": [
+        "CreateUniqueBlock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0013": {
+      "commands": [
+        "DupLayer"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0014": {
+      "commands": [
+        "ExplodeBlock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0015": {
+      "commands": [
+        "Explode"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0016": {
+      "commands": [
+        "ExportLinkedBlocks"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0017": {
+      "commands": [
+        "ConvertTextToBlockAttribute"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0018": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0019": {
+      "commands": [
+        "Cut"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0020": {
+      "commands": [
+        "CopyToClipboard"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0021": {
+      "commands": [
+        "Group",
+        "AddToGroup"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0022": {
+      "commands": [
+        "Hide"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0023": {
+      "commands": [
+        "HideInDetail",
+        "HideLayersInDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0024": {
+      "commands": [
+        "HideLayersInDetail",
+        "ShowLayersInDetail",
+        "HideInDetail"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0025": {
+      "commands": [
+        "HideSwap"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0026": {
+      "commands": [
+        "HighlightObjectLayers"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0027": {
+      "commands": [
+        "History",
+        "ListHistory",
+        "EditHistory"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0028": {
+      "commands": [
+        "HistoryPurge"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0029": {
+      "commands": [
+        "HistoryUpdate",
+        "UpdateHistory"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0030": {
+      "commands": [
+        "Hyperlink"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0031": {
+      "commands": [
+        "Import"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0032": {
+      "commands": [
+        "Insert"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0033": {
+      "commands": [
+        "Invert",
+        "InvertPt"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0034": {
+      "commands": [
+        "InvertPt",
+        "Invert"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0035": {
+      "commands": [
+        "Isolate",
+        "IsolateLock"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0036": {
+      "commands": [
+        "IsolateLock",
+        "UnisolateLock",
+        "Isolate"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0037": {
+      "commands": [
+        "Lasso"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0038": {
+      "commands": [
+        "LayerBook"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-ORG-0039": {
+      "commands": [
+        "LayerStateManager",
+        "LayerState"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-ORG-0001",
+    "D8-RHINO-ORG-0002",
+    "D8-RHINO-ORG-0003",
+    "D8-RHINO-ORG-0004",
+    "D8-RHINO-ORG-0005",
+    "D8-RHINO-ORG-0006",
+    "D8-RHINO-ORG-0007",
+    "D8-RHINO-ORG-0008",
+    "D8-RHINO-ORG-0009",
+    "D8-RHINO-ORG-0010",
+    "D8-RHINO-ORG-0011",
+    "D8-RHINO-ORG-0012",
+    "D8-RHINO-ORG-0013",
+    "D8-RHINO-ORG-0014",
+    "D8-RHINO-ORG-0015",
+    "D8-RHINO-ORG-0016",
+    "D8-RHINO-ORG-0017",
+    "D8-RHINO-ORG-0018",
+    "D8-RHINO-ORG-0019",
+    "D8-RHINO-ORG-0020",
+    "D8-RHINO-ORG-0021",
+    "D8-RHINO-ORG-0022",
+    "D8-RHINO-ORG-0023",
+    "D8-RHINO-ORG-0024",
+    "D8-RHINO-ORG-0025",
+    "D8-RHINO-ORG-0026",
+    "D8-RHINO-ORG-0027",
+    "D8-RHINO-ORG-0028",
+    "D8-RHINO-ORG-0029",
+    "D8-RHINO-ORG-0030",
+    "D8-RHINO-ORG-0031",
+    "D8-RHINO-ORG-0032",
+    "D8-RHINO-ORG-0033",
+    "D8-RHINO-ORG-0034",
+    "D8-RHINO-ORG-0035",
+    "D8-RHINO-ORG-0036",
+    "D8-RHINO-ORG-0037",
+    "D8-RHINO-ORG-0038",
+    "D8-RHINO-ORG-0039"
+  ],
+  "rows_without_hint": [
+    "D8-RHINO-ORG-0011"
+  ],
+  "status": "open",
+  "title": "direct-modeling: ORG (39 rows)",
+  "wave": 1
+}
