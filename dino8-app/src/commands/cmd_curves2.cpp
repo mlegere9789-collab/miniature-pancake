@@ -1073,20 +1073,51 @@ class ArrayCrvCommand : public Command {
     for (ObjectId id : ids) if (auto c = CopyCurveObj(ctx, id)) { path_ = *c; break; }
     if (!path_) { ctx.Warn("Select a curve as the path"); Finish(); return; }
     for (ObjectId id : ids) ctx.Doc().Select(id, false);
-    options = {{"Orientation", "Freeform", {"Freeform", "NoRotation"}, false, false}};
+    options = {{"Orientation", "Freeform", {"Freeform", "NoRotation"}, false, false}, {"Distance", "0", {}, true, false}};
     WantNumber("Number of items", 5);
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Orientation") freeform_ = (v != "NoRotation"); }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Orientation") freeform_ = (v != "NoRotation");
+    else if (n == "Distance") {
+      char* e = nullptr;
+      const double d = std::strtod(v.c_str(), &e);
+      if (e && !*e && std::isfinite(d) && d >= 0) { distance_ = d; for (OptionSpec& o : options) if (o.name == "Distance") o.value = FormatNumber(d); }
+    }
+  }
+  // Stations every `distance_` units of arc length from the start (Distance > 0): the maps of the kernel's ArrayAlongCurveTransforms,
+  // for the parameters kernel::NurbsCurve::DivideByLength gives (its end-of-curve entry is dropped unless it is itself a multiple).
+  std::vector<ON_Xform> DistanceMaps(const kernel::NurbsCurve& path, Vector3d up) const {
+    const std::vector<double> all = path.DivideByLength(distance_);
+    const double total = path.Length();
+    const size_t n = std::min(all.size(), static_cast<size_t>(std::floor(total / distance_ + 1e-9)) + 1);
+    if (n < 2) throw std::invalid_argument("the distance is longer than the path");
+    std::vector<double> params(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(n));
+    const kernel::CurveArrayFrame f0 = kernel::ArrayFrameOnCurve(path, params.front(), up);
+    const ON_Plane p0(f0.origin, f0.tangent, f0.normal);
+    std::vector<ON_Xform> out;
+    for (size_t i = 0; i < params.size(); ++i) {
+      if (i == 0) { out.push_back(ON_Xform::IdentityTransformation); continue; }
+      if (freeform_) {
+        const kernel::CurveArrayFrame fi = kernel::ArrayFrameOnCurve(path, params[i], up);
+        ON_Xform xf;
+        xf.Rotation(p0, ON_Plane(fi.origin, fi.tangent, fi.normal));
+        out.push_back(xf);
+      } else {
+        out.push_back(ON_Xform::TranslationTransformation(path.PointAt(params[i]) - f0.origin));
+      }
+    }
+    return out;
+  }
   void OnNumber(CommandContext& ctx, double v) override {
     if (!path_) return;
     int count = 2;
     std::string why;
-    if (!CountInRange(v, 2, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, ids_.size())), count, why)) { ctx.Warn("ArrayCrv: the number of items " + why); return; }
+    if (distance_ <= 0 && !CountInRange(v, 2, kMaxCreatedItems / static_cast<double>(std::max<size_t>(1, ids_.size())), count, why)) { ctx.Warn("ArrayCrv: the number of items " + why); return; }
     // The placement maths is the kernel's (pattern.h): arc-length-even stations, frame x = tangent, y = up x tangent, copy i = the map
     // carrying the start frame onto the frame at station i (a pure translation for NoRotation).
     std::vector<ON_Xform> maps;
     try {
-      maps = kernel::ArrayAlongCurveTransforms(path_->curve, count, freeform_, ActiveNormal(ctx));
+      maps = distance_ > 0 ? DistanceMaps(path_->curve, ActiveNormal(ctx)) : kernel::ArrayAlongCurveTransforms(path_->curve, count, freeform_, ActiveNormal(ctx));
     } catch (const std::exception& e) {
       ctx.Warn(std::string("ArrayCrv: ") + e.what());
       Finish();
@@ -1112,6 +1143,7 @@ class ArrayCrvCommand : public Command {
   std::vector<ObjectId> ids_;
   std::optional<CurveCopy> path_;
   bool freeform_ = true;
+  double distance_ = 0;
 };
 
 // ArrayCrvOnSrf: like ArrayCrv, but each copy is placed at the path curve's
