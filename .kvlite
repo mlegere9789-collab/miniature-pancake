@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=extra::;Boolean;Sealed;Tangent;Split;Hole;Boss;Pocket;Pipe;Torus;Emboss;Union;Shell;Rib;Counterbore;Extrude;Pattern
