@@ -1058,7 +1058,13 @@ struct Builtins {
       }
       return Real(std::pow(D(a[0]), D(a[1])));
     };
-    t["fix"] = [](Interp&, List& a) { NeedArgs("fix", a, 1, 1); return Int(static_cast<long long>(NeedNum("fix", a[0]))); };
+    // Integers are 32-bit: a value outside -2147483648..2147483647 comes back as the truncated REAL (Autodesk help, "fix").
+    t["fix"] = [](Interp&, List& a) {
+      NeedArgs("fix", a, 1, 1);
+      const double x = std::trunc(NeedNum("fix", a[0]));
+      if (x < -2147483648.0 || x > 2147483647.0) return Real(x);
+      return Int(static_cast<long long>(x));
+    };
     t["float"] = [](Interp&, List& a) { NeedArgs("float", a, 1, 1); return Real(NeedNum("float", a[0])); };
     t["min"] = [](Interp&, List& a) {
       if (a.empty()) Fail("too few arguments to min");
@@ -1207,7 +1213,10 @@ struct Builtins {
       const List& p = NeedList("polar", a[0]);
       if (p.size() < 2) Fail("bad point argument");
       const double ang = NeedNum("polar", a[1]), d = NeedNum("polar", a[2]);
-      return MakeList({Real(NeedNum("polar", p[0]) + d * std::cos(ang)), Real(NeedNum("polar", p[1]) + d * std::sin(ang)), p.size() > 2 ? Real(NeedNum("polar", p[2])) : Real(0)});
+      // The result has the dimension of the input point: a 2D point gives a 2D point, a 3D point keeps its Z (as a real).
+      List r{Real(NeedNum("polar", p[0]) + d * std::cos(ang)), Real(NeedNum("polar", p[1]) + d * std::sin(ang))};
+      if (p.size() > 2) r.push_back(Real(NeedNum("polar", p[2])));
+      return MakeList(std::move(r));
     };
     // strings
     t["strcat"] = [](Interp&, List& a) { std::string s; for (const Value& v : a) s += NeedStr("strcat", v); return Str(s); };
@@ -1365,8 +1374,10 @@ struct Builtins {
     t["ssname"] = [](Interp&, List& a) {
       NeedArgs("ssname", a, 2, 2);
       const List& l = NeedList("ssname", a[0]);
-      if (a[1].t != Value::T::Int || a[1].i < 0) Fail("bad argument type: index in ssname");
-      return static_cast<size_t>(a[1].i) < l.size() ? l[static_cast<size_t>(a[1].i)] : Nil();
+      // The index is an integer or a real (reals reach past 32767); a negative or too large index gives nil.
+      if (!IsNum(a[1])) Fail("bad argument type: index in ssname");
+      const double ix = std::trunc(D(a[1]));
+      return (ix >= 0 && ix < static_cast<double>(l.size())) ? l[static_cast<size_t>(ix)] : Nil();
     };
     // (ssadd) a new empty set; (ssadd e) a set holding e; (ssadd e ss) adds e to ss IN PLACE and returns ss.
     t["ssadd"] = [](Interp& in, List& a) {
