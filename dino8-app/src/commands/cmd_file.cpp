@@ -67,7 +67,7 @@ std::optional<std::string> TakePathAndVersion(CommandContext& ctx, std::string& 
     if (lower.rfind("version=", 0) == 0) { scheme_override = t->substr(8); continue; }
     if (mesh) {
       // Export's mesh-format tokens (.stl / .obj / .ply): Format=Ascii|Binary|BinaryBigEndian, Scale=<factor>,
-      // Units=<mm|cm|m|km|in|ft|mi|um>, Tolerance=<chord tolerance>, PerObject=Yes|No. A bad value warns and sets
+      // Units=<mm|cm|m|km|in|ft|mi|um>, Tolerance=<chord tolerance>, PerObject=Yes|No, Group=Layer|Object (OBJ). A bad value warns and sets
       // *mesh_options_bad so the export is refused rather than written with a silently different setting.
       auto bad = [&](const std::string& why) { ctx.Warn("Export: " + why); if (mesh_options_bad) *mesh_options_bad = true; };
       auto number = [&](const std::string& text, double& out) {
@@ -94,6 +94,13 @@ std::optional<std::string> TakePathAndVersion(CommandContext& ctx, std::string& 
       }
       if (lower.rfind("tolerance=", 0) == 0) {
         if (!number(lower.substr(10), mesh->chord_tolerance)) bad("Tolerance=" + t->substr(10) + " is not a positive number");
+        continue;
+      }
+      if (lower.rfind("group=", 0) == 0) {
+        const std::string v = lower.substr(6);
+        if (v == "layer") mesh->group_by_layer = true;
+        else if (v == "object") mesh->group_by_layer = false;
+        else bad("Group=" + t->substr(6) + " is not Layer or Object");
         continue;
       }
       if (lower.rfind("perobject=", 0) == 0) {
@@ -384,6 +391,7 @@ void RegisterFileCommands(CommandEngine& e) {
           bool ok = false;
           const std::string ext = LowerExt(*p);
           const bool is_mesh_ext = ext == ".stl" || ext == ".obj" || ext == ".ply";
+          if (mesh_options.group_by_layer && ext != ".obj") { ctx.Warn("Export: Group=Layer applies to .obj files only"); return; }
           if (mesh_options.per_object && !is_mesh_ext) { ctx.Warn("Export: PerObject=Yes applies to .stl, .obj and .ply files only"); return; }
           std::vector<std::string> written;
           {

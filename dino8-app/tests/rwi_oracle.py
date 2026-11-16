@@ -596,6 +596,8 @@ def main():
         errs.append("Euler numbers %s != %s" % (m.get("euler"), opts["--euler"]))
     if "--unit-flag" in opts and m.get("unit_flag") != int(opts["--unit-flag"]):
         errs.append("unit flag %s != %s" % (m.get("unit_flag"), opts["--unit-flag"]))
+    if "--names" in opts and m.get("names") != opts["--names"].split(","):
+        errs.append("group names %s != %s" % (m.get("names"), opts["--names"].split(",")))
     if "--level-counts" in opts:
         w = {int(x.split(":")[0]): int(x.split(":")[1]) for x in opts["--level-counts"].split(",")}
         if m.get("level_counts") != w:

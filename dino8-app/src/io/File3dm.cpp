@@ -3668,6 +3668,7 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
     bool has_color = false;
     Color color;
     std::string texture;  // the texture file of the object's assigned material (map_Kd), empty = none
+    int layer = 0;        // the object's layer index (clamped), for Group=Layer
   };
   std::vector<ExportGroup> groups;
   std::map<std::string, int> used_names;
@@ -3703,7 +3704,35 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
       g.color = doc.Layers()[li].color;
     }
     if (!o.material_name.empty() || !doc.Layers().empty()) g.texture = doc.MaterialFor(o).texture_path;
+    g.layer = doc.Layers().empty() ? 0 : std::clamp(o.layer_index, 0, static_cast<int>(doc.Layers().size()) - 1);
     groups.push_back(std::move(g));
+  }
+  if (ActiveMeshExportOptions().group_by_layer && !groups.empty()) {
+    // Group=Layer: the objects of one layer become one "o" group named after the layer (its full path), in the order the layers first appear;
+    // their meshes are merged (welded by position) and the group takes the layer's colour, no texture.
+    std::vector<ExportGroup> by_layer;
+    std::map<int, size_t> at;
+    std::vector<std::vector<kernel::Mesh>> parts;
+    for (ExportGroup& g : groups) {
+      auto it = at.find(g.layer);
+      if (it == at.end()) {
+        it = at.emplace(g.layer, by_layer.size()).first;
+        ExportGroup ng;
+        ng.layer = g.layer;
+        if (!doc.Layers().empty()) {
+          ng.name = ObjSanitizeName(doc.LayerFullPath(g.layer));
+          ng.has_color = true;
+          ng.color = doc.Layers()[static_cast<size_t>(g.layer)].color;
+        } else {
+          ng.name = "Layer";
+        }
+        by_layer.push_back(std::move(ng));
+        parts.emplace_back();
+      }
+      parts[it->second].push_back(std::move(g.mesh));
+    }
+    for (size_t i = 0; i < by_layer.size(); ++i) by_layer[i].mesh = parts[i].size() == 1 ? std::move(parts[i][0]) : kernel::Mesh::MergeAndWeld(parts[i]);
+    groups = std::move(by_layer);
   }
   if (groups.empty()) {
     error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";

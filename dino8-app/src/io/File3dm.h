@@ -29,7 +29,7 @@ bool ImportMeshFile(Document& doc, const std::string& path, std::string& error);
 bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_only, std::string& error);
 
 // Options of the mesh export formats (.stl / .obj / .ply), set from the Export command's tokens
-// (Format=Ascii|Binary|BinaryBigEndian, Scale=<factor>, Units=<name>, Tolerance=<chord>, PerObject=Yes) and in effect for the
+// (Format=Ascii|Binary|BinaryBigEndian, Scale=<factor>, Units=<name>, Tolerance=<chord>, PerObject=Yes, Group=Layer|Object for OBJ) and in effect for the
 // ExportMeshFile / ExportPly calls made while a ScopedMeshExportOptions is alive; every field's default is what these
 // exporters always did (STL binary, PLY ascii, no scaling, chord tolerance 0.01, one file).
 enum class MeshExportFormat { Default, Ascii, Binary, BinaryBigEndian };
@@ -38,6 +38,7 @@ struct MeshExportOptions {
   double scale = 1.0;                                    // positions multiplied by this (document units -> file units)
   double chord_tolerance = 0.01;                         // tessellation chord tolerance of Breps and Surfaces, in document units
   bool per_object = false;                               // one file per object (the Export command writes <stem>_<n>_<name>.<ext>)
+  bool group_by_layer = false;                           // OBJ: one "o" group per layer (its objects merged) instead of one per object
   std::string units_name;                                // the Units= name as typed, for the file header / report; empty = the document's unit
 };
 // What the last mesh export (STL: solid check and unit; OBJ: unit) has to report, one line per entry; cleared at the start of every
