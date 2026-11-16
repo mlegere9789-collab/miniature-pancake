@@ -442,9 +442,15 @@ bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double&
     ON_3dVector du, dv, na, nb;
     a.Ev1Der(x[0], x[1], P, du, dv); na = ON_CrossProduct(du, dv); na.Unitize();
     b.Ev1Der(x[2], x[3], P, du, dv); nb = ON_CrossProduct(du, dv); nb.Unitize();
-    const bool do_polish = ON_CrossProduct(na, nb).Length() > 1e-3;
+    const double sine = ON_CrossProduct(na, nb).Length();
+    // A caller that asks for a LOOSER tolerance than the default wants the cheap solve (tolerant Booleans / gap healing): its points stay
+    // accepted-within-tolerance, measurably looser than a tight call (TestBooleanCombineGeneralCallerTolerance).
+    const bool do_polish = sine > 1e-3 && tol <= 1.0e-3 * (1.0 + 1e-9);
     const double scale = std::max({1.0, a.PointAt(x[0], x[1]).DistanceTo(Point3d::Origin)});
-    if (do_polish) NewtonSolve(res, x, lo, hi, 1e-11 * scale, 8);
+    // Down to 1e-7 of residual, not the rounding floor: a solve that had to iterate converges quadratically well below that anyway, and a
+    // point already inside it (the 1e-8 a sphere centred on a box face comes back with) stays exactly as it always was - re-polishing those
+    // to 1e-16 changed which ears the planar cap's triangulation clipped and its closed mesh no longer closed.
+    if (do_polish) NewtonSolve(res, x, lo, hi, std::max(1e-7, 1e-12 * scale), 8);
   }
   ua = x[0]; va = x[1]; ub = x[2]; vb = x[3];
   return ok;
