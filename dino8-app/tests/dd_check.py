@@ -11,6 +11,7 @@ next to each check. Prints "ok   ..." / "FAIL ..." lines, exit status 1 when any
   dd_check.py dimdis FILE            DIMDISASSOCIATE
   dd_check.py hatchback FILE         HATCHTOBACK the app output of dd_hatchback_script.txt (two GetUserText dumps, before and after the command)
   dd_check.py dimarc FILE            DIMARC      the app output of dd_dimarc_script.txt (two GetUserText dumps, one per document)
+  dd_check.py findrep F1 F2 F3 F4    FINDREPLACE exports after the four passes
   dd_check.py usertext FILE          prints "id key value" rows of a GetUserText listing read from FILE (helper for the shell)
 """
 import math
@@ -298,6 +299,27 @@ def dimarc(path):
             check(g.get('TextAlign') == 'Center', "DDAR_%s: the text is centred on its anchor" % name)
 
 
+def findrep(f1, f2, f3, f4):
+    # Pass 1 (case-insensitive, any position): DOOR -> WINDOW everywhere: DOOR, Door2 -> WINDOW2, INDOORS -> INWINDOWS, door; WINDOW has no DOOR.
+    t = texts(f1)
+    check(len(t) == 5, "DDFR_pass1: 5 TEXT entities (no text lost or duplicated): %d" % len(t))
+    for x, y, s in [(0, 0, 'WINDOW'), (0, 10, 'WINDOW2'), (0, 20, 'INWINDOWS'), (0, 30, 'WINDOW'), (0, 40, 'WINDOW')]:
+        check(has_text(t, x, y, s), "DDFR_pass1: the text at (%g,%g) reads %s" % (x, y, s))
+    # Pass 2 (MatchCase): of Door, DOOR, DOORS, adoorb only the lower-case "door" inside adoorb matches -> aPORTb.
+    t = texts(f2)
+    for x, y, s in [(100, 0, 'Door'), (100, 10, 'DOOR'), (100, 20, 'DOORS'), (100, 30, 'aPORTb'), (0, 20, 'INWINDOWS')]:
+        check(has_text(t, x, y, s), "DDFR_pass2: MatchCase=Yes: the text at (%g,%g) reads %s" % (x, y, s))
+    # Pass 3 (WholeWord, case-insensitive): Door -> D, DOOR -> D, Door.x -> D.x ('.' ends a word); DOORS, aPORTb and a_door_b ('_' is a word character) stay.
+    t = texts(f3)
+    for x, y, s in [(100, 0, 'D'), (100, 10, 'D'), (100, 20, 'DOORS'), (100, 30, 'aPORTb'), (200, 0, 'a_door_b'), (200, 10, 'D.x')]:
+        check(has_text(t, x, y, s), "DDFR_pass3: WholeWord=Yes: the text at (%g,%g) reads %s" % (x, y, s))
+    # Pass 4 (Scope=Selection): only the selected Dxyz changes (D -> Z); the other texts holding a D stay.
+    t = texts(f4)
+    for x, y, s in [(300, 0, 'Zxyz'), (100, 0, 'D'), (100, 10, 'D'), (200, 10, 'D.x')]:
+        check(has_text(t, x, y, s), "DDFR_pass4: Scope=Selection: the text at (%g,%g) reads %s" % (x, y, s))
+    check(len(t) == 12, "DDFR_pass4: 12 TEXT entities in all: %d" % len(t))
+
+
 def usertext(path):
     for line in open(path, encoding='latin-1'):
         m = re.match(r'^(?:history: )?(\d+): (\S+) = (.*)$', line.rstrip('\n'))
@@ -319,6 +341,8 @@ if __name__ == '__main__':
         dimspace(args[0], args[1], args[2], float(args[3]))
     elif mode == 'dimdis':
         dimdis(args[0])
+    elif mode == 'findrep':
+        findrep(*args)
     elif mode == 'dimarc':
         dimarc(args[0])
     elif mode == 'hatchback':
