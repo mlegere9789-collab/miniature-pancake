@@ -479,3 +479,69 @@ D8_EXTRA_TEST(RowPyramidWithNSidesHasTheRegularPolygonClosedFormVolume) {
     d8test::Check(Rel(m.Volume(), want) < 1e-6, Msg("pyramid with " + std::to_string(n) + " sides, relative volume error", Rel(m.Volume(), want)).c_str());
   }
 }
+
+// SURF-0044 MergeSrf: two halves of one surface merge into one surface that equals the original everywhere. Oracle: the Bernstein
+// double sum of the 4 x 4 bicubic control grid.
+D8_EXTRA_TEST(RowMergeSrfJoinsTheTwoHalvesOfABicubicPatchBackIntoTheOriginalSurface) {
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) grid.push_back(P(i * 1.0, j * 1.2, std::sin(0.7 * i) + 0.3 * j * j - 0.5 * i * j));
+  const NurbsSurface whole = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  const auto bern = [](int i, double t) {
+    const double c[4] = {1, 3, 3, 1};
+    return c[i] * std::pow(t, i) * std::pow(1.0 - t, 3 - i);
+  };
+  const auto du = whole.Domain(0), dv = whole.Domain(1);
+  NurbsSurface west, east;
+  d8test::Check(whole.Split(0, du.min + 0.4 * (du.max - du.min), west, east) == Result::Ok, "split the patch at 40 percent of u");
+  NurbsSurface merged = west;
+  d8test::Check(merged.Join(east) == Result::Ok, "Join accepts the two halves along their shared edge");
+  const auto mu = merged.Domain(0), mv = merged.Domain(1);
+  double worst = 0.0;
+  for (int a = 0; a <= 20; ++a)
+    for (int b = 0; b <= 20; ++b) {
+      const double u = a / 20.0, v = b / 20.0;
+      Point3d want(0, 0, 0);
+      for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) want += bern(i, u) * bern(j, v) * grid[static_cast<size_t>(i * 4 + j)];
+      worst = std::max(worst, merged.PointAt(mu.min + u * (mu.max - mu.min), mv.min + v * (mv.max - mv.min)).DistanceTo(want));
+    }
+  d8test::Check(worst < 1e-9, Msg("the merged surface equals the Bernstein sum of the original grid", worst).c_str());
+  d8test::Check(std::fabs((mu.max - mu.min) - (du.max - du.min)) < 1e-12 && std::fabs(mu.min - du.min) < 1e-12, "the merged u domain is the original one");
+  // Two patches that do not share an edge are refused and the first one is unchanged.
+  const NurbsSurface far_patch = NurbsSurface::FromControlGrid({P(20, 0, 0), P(20, 1, 0), P(21, 0, 0), P(21, 1, 0)}, 2, 2, 1, 1);
+  NurbsSurface kept = west;
+  bool refused = false;
+  try {
+    refused = kept.Join(far_patch) == Result::Failed;
+  } catch (const std::exception&) {
+    refused = true;
+  }
+  d8test::Check(refused, "patches without a shared edge are refused");
+}
+
+// SURF-0113 VariableOffsetSrf: the offset distance varies linearly along u. Oracle: a flat patch offsets to the plane
+// z = d0 + (d1 - d0) (x - x0) / (x1 - x0) (the u direction runs along x, the surface normal is +z).
+D8_EXTRA_TEST(RowVariableOffsetSrfOfAFlatPatchIsTheLinearlyTiltedPlane) {
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) grid.push_back(P(3.0 * i, 2.0 * j, 0.0));
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  const double d0 = 0.5, d1 = 2.0;
+  NurbsSurface out;
+  d8test::Check(flat.OffsetVariable(d0, d1, out) == Result::Ok, "OffsetVariable succeeds on a flat patch");
+  const auto du = out.Domain(0), dv = out.Domain(1);
+  double worst = 0.0;
+  for (int a = 0; a <= 10; ++a)
+    for (int b = 0; b <= 10; ++b) {
+      const Point3d q = out.PointAt(du.min + a / 10.0 * (du.max - du.min), dv.min + b / 10.0 * (dv.max - dv.min));
+      const double want_z = d0 + (d1 - d0) * q.x / 9.0;
+      worst = std::max(worst, std::fabs(q.z - want_z));
+      worst = std::max(worst, std::fabs(q.y - 6.0 * b / 10.0));  // the plane position in y is unchanged
+    }
+  d8test::Check(worst < 1e-9, Msg("offset surface is the closed-form tilted plane", worst).c_str());
+  NurbsSurface uniform;
+  d8test::Check(flat.OffsetVariable(1.25, 1.25, uniform) == Result::Ok, "an equal pair is a plain offset");
+  const Point3d c = uniform.PointAt(0.5 * (uniform.Domain(0).min + uniform.Domain(0).max), 0.5 * (uniform.Domain(1).min + uniform.Domain(1).max));
+  d8test::Check(std::fabs(c.z - 1.25) < 1e-9, "an equal pair moves the flat patch by exactly that distance");
+}

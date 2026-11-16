@@ -373,3 +373,58 @@ D8_EXTRA_TEST(RowMergeCrvJoinsEndToEndCurvesIntoOneCurveOfSummedLength) {
   d8test::Check(refused, "a gap larger than the tolerance is refused");
   d8test::Check(kept.ControlPointCount() == cps, "the refused curve is unchanged");
 }
+
+namespace {
+
+// Derivatives of a cubic Bezier with control points b[0..3] at the end u = 0 or u = 1, from the forward / backward difference
+// closed forms (order 1, 2, 3).
+Vector3d CubicBezierDerivative(const Point3d* b, bool at_end, int order) {
+  if (!at_end) {
+    if (order == 1) return 3.0 * (b[1] - b[0]);
+    if (order == 2) return 6.0 * ((b[2] - b[1]) - (b[1] - b[0]));
+    return 6.0 * (b[3] - b[0]) - 18.0 * (b[2] - b[1]);
+  }
+  if (order == 1) return 3.0 * (b[3] - b[2]);
+  if (order == 2) return 6.0 * ((b[3] - b[2]) - (b[2] - b[1]));
+  return 6.0 * (b[3] - b[0]) - 18.0 * (b[2] - b[1]);
+}
+
+}  // namespace
+
+// CURVE-0006 BlendCrv: a blend between two curves matches position and derivatives of the chosen order at both ends. Oracle: the
+// derivatives of the two source cubic Beziers from their closed-form difference formulas, and the cubic Hermite basis for G1.
+D8_EXTRA_TEST(RowBlendCrvMatchesPositionAndDerivativesAtBothEndsAndIsTheHermiteCubicForG1) {
+  const Point3d a[4] = {P(0, 0, 0), P(1, 1, 0), P(2, 1.5, 0.5), P(3, 1, 1)};
+  const Point3d c[4] = {P(6, -1, 1), P(7, -2, 0.5), P(8, -1.5, 0), P(9, 0, 0.5)};
+  const NurbsCurve c0 = NurbsCurve::FromControlPoints(std::vector<Point3d>(a, a + 4), 3);
+  const NurbsCurve c1 = NurbsCurve::FromControlPoints(std::vector<Point3d>(c, c + 4), 3);
+  d8test::Check(std::fabs(c0.Domain().max - c0.Domain().min - 1.0) < 1e-12, "a 4-point cubic has the unit domain, so parameter derivatives are the Bernstein ones");
+  for (int g = 1; g <= 3; ++g) {
+    NurbsCurve out;
+    d8test::Check(NurbsCurve::BlendCurves(c0, c0.Domain().max, false, c1, c1.Domain().min, false, g, out) == Result::Ok, ("blend with continuity " + std::to_string(g)).c_str());
+    d8test::Check(out.Degree() == 2 * g + 1, "the blend has degree 2 g + 1");
+    double buf[12] = {0};
+    const double u0 = out.Domain().min, u1 = out.Domain().max;
+    const double scale = u1 - u0;  // derivative of the blend with respect to its own parameter
+    double worst = 0.0;
+    out.raw().Evaluate(u0, 3, 3, buf);
+    worst = std::max(worst, Point3d(buf[0], buf[1], buf[2]).DistanceTo(a[3]));
+    for (int k = 1; k <= g; ++k) worst = std::max(worst, (Vector3d(buf[3 * k], buf[3 * k + 1], buf[3 * k + 2]) * std::pow(1.0 / scale, k) - CubicBezierDerivative(a, true, k)).Length() / (1.0 + CubicBezierDerivative(a, true, k).Length()));
+    out.raw().Evaluate(u1, 3, 3, buf);
+    worst = std::max(worst, Point3d(buf[0], buf[1], buf[2]).DistanceTo(c[0]));
+    for (int k = 1; k <= g; ++k) worst = std::max(worst, (Vector3d(buf[3 * k], buf[3 * k + 1], buf[3 * k + 2]) * std::pow(1.0 / scale, k) - CubicBezierDerivative(c, false, k)).Length() / (1.0 + CubicBezierDerivative(c, false, k).Length()));
+    d8test::Check(worst < 1e-9, Msg("G" + std::to_string(g) + " blend: position and derivatives up to order " + std::to_string(g) + " match both curves", worst).c_str());
+  }
+  // G1 is the cubic Hermite curve through (a3, d0) and (c0, d1) on [0, 1].
+  NurbsCurve g1;
+  NurbsCurve::BlendCurves(c0, c0.Domain().max, false, c1, c1.Domain().min, false, 1, g1);
+  const Vector3d d0 = CubicBezierDerivative(a, true, 1), d1 = CubicBezierDerivative(c, false, 1);
+  double worst = 0.0;
+  for (int i = 0; i <= 50; ++i) {
+    const double u = i / 50.0;
+    const double h00 = 2 * u * u * u - 3 * u * u + 1, h10 = u * u * u - 2 * u * u + u, h01 = -2 * u * u * u + 3 * u * u, h11 = u * u * u - u * u;
+    const Point3d want = h00 * a[3] + h10 * d0 + h01 * c[0] + h11 * d1;
+    worst = std::max(worst, g1.PointAt(g1.Domain().min + u * (g1.Domain().max - g1.Domain().min)).DistanceTo(want));
+  }
+  d8test::Check(worst < 1e-9, Msg("the G1 blend equals the cubic Hermite curve through the two end states", worst).c_str());
+}
