@@ -1,0 +1,228 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-armature-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 20,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 8,
+    "with_hint": 8,
+    "without_hint": 17
+  },
+  "deps": [],
+  "domains": [
+    "armature"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Extrude",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Fill",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Hide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Split",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SubDivide",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Select",
+        "rows": 1,
+        "score": 0.767,
+        "status": "implemented"
+      },
+      {
+        "name": "ShadeSelected",
+        "rows": 1,
+        "score": 0.654,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeCrv",
+        "rows": 2,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "ExtrudeSrf",
+        "rows": 2,
+        "score": 0.644,
+        "status": "implemented"
+      },
+      {
+        "name": "SplitByObject",
+        "rows": 1,
+        "score": 0.611,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:462",
+        "rows": 1,
+        "score": 0.73,
+        "symbol": "dino8::kernel::SubD::Subdivide"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/subd.h:747",
+        "rows": 1,
+        "score": 0.625,
+        "symbol": "dino8::kernel::SubD::Symmetrize"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/brep.h:409",
+        "rows": 2,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Brep::Extrude"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-armature-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/armature.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-ARMATURE-0025": {
+      "commands": [
+        "Extrude",
+        "ExtrudeCrv",
+        "ExtrudeSrf"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Extrude"
+      ]
+    },
+    "D8-BLENDER-ARMATURE-0027": {
+      "commands": [
+        "Extrude",
+        "ExtrudeCrv",
+        "ExtrudeSrf"
+      ],
+      "kernel": [
+        "dino8::kernel::Brep::Extrude"
+      ]
+    },
+    "D8-BLENDER-ARMATURE-0028": {
+      "commands": [
+        "Fill"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-ARMATURE-0030": {
+      "commands": [
+        "Hide",
+        "ShadeSelected"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-ARMATURE-0036": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-ARMATURE-0046": {
+      "commands": [
+        "Split",
+        "SplitByObject"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-ARMATURE-0047": {
+      "commands": [
+        "SubDivide"
+      ],
+      "kernel": [
+        "dino8::kernel::SubD::Subdivide"
+      ]
+    },
+    "D8-BLENDER-ARMATURE-0049": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::SubD::Symmetrize"
+      ]
+    }
+  },
+  "rows": [
+    "D8-BLENDER-ARMATURE-0025",
+    "D8-BLENDER-ARMATURE-0026",
+    "D8-BLENDER-ARMATURE-0027",
+    "D8-BLENDER-ARMATURE-0028",
+    "D8-BLENDER-ARMATURE-0029",
+    "D8-BLENDER-ARMATURE-0030",
+    "D8-BLENDER-ARMATURE-0031",
+    "D8-BLENDER-ARMATURE-0032",
+    "D8-BLENDER-ARMATURE-0033",
+    "D8-BLENDER-ARMATURE-0034",
+    "D8-BLENDER-ARMATURE-0035",
+    "D8-BLENDER-ARMATURE-0036",
+    "D8-BLENDER-ARMATURE-0037",
+    "D8-BLENDER-ARMATURE-0038",
+    "D8-BLENDER-ARMATURE-0039",
+    "D8-BLENDER-ARMATURE-0040",
+    "D8-BLENDER-ARMATURE-0041",
+    "D8-BLENDER-ARMATURE-0042",
+    "D8-BLENDER-ARMATURE-0043",
+    "D8-BLENDER-ARMATURE-0044",
+    "D8-BLENDER-ARMATURE-0045",
+    "D8-BLENDER-ARMATURE-0046",
+    "D8-BLENDER-ARMATURE-0047",
+    "D8-BLENDER-ARMATURE-0048",
+    "D8-BLENDER-ARMATURE-0049"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-ARMATURE-0026",
+    "D8-BLENDER-ARMATURE-0029",
+    "D8-BLENDER-ARMATURE-0031",
+    "D8-BLENDER-ARMATURE-0032",
+    "D8-BLENDER-ARMATURE-0033",
+    "D8-BLENDER-ARMATURE-0034",
+    "D8-BLENDER-ARMATURE-0035",
+    "D8-BLENDER-ARMATURE-0037",
+    "D8-BLENDER-ARMATURE-0038",
+    "D8-BLENDER-ARMATURE-0039",
+    "D8-BLENDER-ARMATURE-0040",
+    "D8-BLENDER-ARMATURE-0041",
+    "D8-BLENDER-ARMATURE-0042",
+    "D8-BLENDER-ARMATURE-0043",
+    "D8-BLENDER-ARMATURE-0044",
+    "D8-BLENDER-ARMATURE-0045",
+    "D8-BLENDER-ARMATURE-0048"
+  ],
+  "status": "open",
+  "title": "render-anim: armature (25 rows)",
+  "wave": 2
+}
