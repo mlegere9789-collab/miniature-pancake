@@ -1,0 +1,87 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-cad-2d-sysvar-02",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 21,
+    "countable": 21,
+    "rows": 21,
+    "with_existing_hint": 0,
+    "with_hint": 0,
+    "without_hint": 21
+  },
+  "deps": [],
+  "domains": [
+    "sysvar"
+  ],
+  "factory": "cad-2d",
+  "handoff": "",
+  "hints": {
+    "commands": [],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-cad-2d-sysvar-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "autocad"
+  ],
+  "register_files": [
+    "autocad/sysvar.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {},
+  "rows": [
+    "D8-AUTOCAD-SYSVAR-0021",
+    "D8-AUTOCAD-SYSVAR-0022",
+    "D8-AUTOCAD-SYSVAR-0023",
+    "D8-AUTOCAD-SYSVAR-0024",
+    "D8-AUTOCAD-SYSVAR-0025",
+    "D8-AUTOCAD-SYSVAR-0026",
+    "D8-AUTOCAD-SYSVAR-0027",
+    "D8-AUTOCAD-SYSVAR-0028",
+    "D8-AUTOCAD-SYSVAR-0029",
+    "D8-AUTOCAD-SYSVAR-0030",
+    "D8-AUTOCAD-SYSVAR-0031",
+    "D8-AUTOCAD-SYSVAR-0032",
+    "D8-AUTOCAD-SYSVAR-0033",
+    "D8-AUTOCAD-SYSVAR-0034",
+    "D8-AUTOCAD-SYSVAR-0035",
+    "D8-AUTOCAD-SYSVAR-0036",
+    "D8-AUTOCAD-SYSVAR-0037",
+    "D8-AUTOCAD-SYSVAR-0038",
+    "D8-AUTOCAD-SYSVAR-0039",
+    "D8-AUTOCAD-SYSVAR-0040",
+    "D8-AUTOCAD-SYSVAR-0041"
+  ],
+  "rows_without_hint": [
+    "D8-AUTOCAD-SYSVAR-0021",
+    "D8-AUTOCAD-SYSVAR-0022",
+    "D8-AUTOCAD-SYSVAR-0023",
+    "D8-AUTOCAD-SYSVAR-0024",
+    "D8-AUTOCAD-SYSVAR-0025",
+    "D8-AUTOCAD-SYSVAR-0026",
+    "D8-AUTOCAD-SYSVAR-0027",
+    "D8-AUTOCAD-SYSVAR-0028",
+    "D8-AUTOCAD-SYSVAR-0029",
+    "D8-AUTOCAD-SYSVAR-0030",
+    "D8-AUTOCAD-SYSVAR-0031",
+    "D8-AUTOCAD-SYSVAR-0032",
+    "D8-AUTOCAD-SYSVAR-0033",
+    "D8-AUTOCAD-SYSVAR-0034",
+    "D8-AUTOCAD-SYSVAR-0035",
+    "D8-AUTOCAD-SYSVAR-0036",
+    "D8-AUTOCAD-SYSVAR-0037",
+    "D8-AUTOCAD-SYSVAR-0038",
+    "D8-AUTOCAD-SYSVAR-0039",
+    "D8-AUTOCAD-SYSVAR-0040",
+    "D8-AUTOCAD-SYSVAR-0041"
+  ],
+  "status": "open",
+  "title": "cad-2d: sysvar (21 rows)",
+  "wave": 1
+}

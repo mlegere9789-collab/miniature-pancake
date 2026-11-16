@@ -1,0 +1,144 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-scripting-api-ai-text-01",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 21,
+    "rows": 21,
+    "with_existing_hint": 5,
+    "with_hint": 5,
+    "without_hint": 16
+  },
+  "deps": [],
+  "domains": [
+    "text"
+  ],
+  "factory": "scripting-api-ai",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "Copy",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Cut",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Insert",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Move",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-scripting-api-ai-text-01",
+  "points": 1,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/text.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-TEXT-0004": {
+      "commands": [
+        "Copy"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0006": {
+      "commands": [
+        "Cut"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0007": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0013": {
+      "commands": [
+        "Insert"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-TEXT-0019": {
+      "commands": [
+        "Move"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-TEXT-0001",
+    "D8-BLENDER-TEXT-0002",
+    "D8-BLENDER-TEXT-0003",
+    "D8-BLENDER-TEXT-0004",
+    "D8-BLENDER-TEXT-0005",
+    "D8-BLENDER-TEXT-0006",
+    "D8-BLENDER-TEXT-0007",
+    "D8-BLENDER-TEXT-0008",
+    "D8-BLENDER-TEXT-0009",
+    "D8-BLENDER-TEXT-0010",
+    "D8-BLENDER-TEXT-0011",
+    "D8-BLENDER-TEXT-0012",
+    "D8-BLENDER-TEXT-0013",
+    "D8-BLENDER-TEXT-0014",
+    "D8-BLENDER-TEXT-0015",
+    "D8-BLENDER-TEXT-0016",
+    "D8-BLENDER-TEXT-0017",
+    "D8-BLENDER-TEXT-0018",
+    "D8-BLENDER-TEXT-0019",
+    "D8-BLENDER-TEXT-0020",
+    "D8-BLENDER-TEXT-0021"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-TEXT-0001",
+    "D8-BLENDER-TEXT-0002",
+    "D8-BLENDER-TEXT-0003",
+    "D8-BLENDER-TEXT-0005",
+    "D8-BLENDER-TEXT-0008",
+    "D8-BLENDER-TEXT-0009",
+    "D8-BLENDER-TEXT-0010",
+    "D8-BLENDER-TEXT-0011",
+    "D8-BLENDER-TEXT-0012",
+    "D8-BLENDER-TEXT-0014",
+    "D8-BLENDER-TEXT-0015",
+    "D8-BLENDER-TEXT-0016",
+    "D8-BLENDER-TEXT-0017",
+    "D8-BLENDER-TEXT-0018",
+    "D8-BLENDER-TEXT-0020",
+    "D8-BLENDER-TEXT-0021"
+  ],
+  "status": "open",
+  "title": "scripting-api-ai: text (21 rows)",
+  "wave": 3
+}
