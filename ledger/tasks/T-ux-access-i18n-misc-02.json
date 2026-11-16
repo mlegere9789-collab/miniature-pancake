@@ -1,0 +1,203 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-misc-02",
+  "corpora": [
+    "golden/sketchup/ux"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 40,
+    "rows": 40,
+    "with_existing_hint": 5,
+    "with_hint": 5,
+    "without_hint": 35
+  },
+  "deps": [],
+  "domains": [
+    "interface-preferences",
+    "object",
+    "project",
+    "scene",
+    "screen",
+    "spreadsheet",
+    "uilist",
+    "view2d",
+    "workspace"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "New",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Delete",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Open",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Project",
+        "rows": 2,
+        "score": 0.794,
+        "status": "implemented"
+      },
+      {
+        "name": "Notifications",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-misc-02",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": true,
+  "programs": [
+    "blender",
+    "sketchup"
+  ],
+  "register_files": [
+    "blender/object.jsonl",
+    "blender/project.jsonl",
+    "blender/scene.jsonl",
+    "blender/screen.jsonl",
+    "blender/spreadsheet.jsonl",
+    "blender/uilist.jsonl",
+    "blender/view2d.jsonl",
+    "blender/workspace.jsonl",
+    "sketchup/interface-preferences.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-PROJECT-0005": {
+      "commands": [
+        "New",
+        "Project"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-PROJECT-0006": {
+      "commands": [
+        "Open",
+        "Project"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-SCENE-0004": {
+      "commands": [
+        "Delete"
+      ],
+      "kernel": []
+    },
+    "D8-BLENDER-SCENE-0033": {
+      "commands": [
+        "New"
+      ],
+      "kernel": []
+    },
+    "D8-SKETCHUP-UX-0012": {
+      "commands": [
+        "Notifications"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-SKETCHUP-UX-0012",
+    "D8-SKETCHUP-UX-0013",
+    "D8-SKETCHUP-UX-0014",
+    "D8-SKETCHUP-UX-0015",
+    "D8-SKETCHUP-UX-0016",
+    "D8-SKETCHUP-UX-0017",
+    "D8-SKETCHUP-UX-0018",
+    "D8-BLENDER-OBJECT-0013",
+    "D8-BLENDER-OBJECT-0014",
+    "D8-BLENDER-OBJECT-0015",
+    "D8-BLENDER-OBJECT-0016",
+    "D8-BLENDER-OBJECT-0017",
+    "D8-BLENDER-OBJECT-0018",
+    "D8-BLENDER-OBJECT-0019",
+    "D8-BLENDER-OBJECT-0062",
+    "D8-BLENDER-OBJECT-0063",
+    "D8-BLENDER-OBJECT-0064",
+    "D8-BLENDER-OBJECT-0065",
+    "D8-BLENDER-OBJECT-0076",
+    "D8-BLENDER-OBJECT-0095",
+    "D8-BLENDER-OBJECT-0130",
+    "D8-BLENDER-PROJECT-0001",
+    "D8-BLENDER-PROJECT-0002",
+    "D8-BLENDER-PROJECT-0003",
+    "D8-BLENDER-PROJECT-0004",
+    "D8-BLENDER-PROJECT-0005",
+    "D8-BLENDER-PROJECT-0006",
+    "D8-BLENDER-PROJECT-0007",
+    "D8-BLENDER-PROJECT-0008",
+    "D8-BLENDER-PROJECT-0009",
+    "D8-BLENDER-PROJECT-0010",
+    "D8-BLENDER-PROJECT-0011",
+    "D8-BLENDER-SCENE-0004",
+    "D8-BLENDER-SCENE-0005",
+    "D8-BLENDER-SCENE-0033",
+    "D8-BLENDER-SCREEN-0001",
+    "D8-BLENDER-SPREADSH-0001",
+    "D8-BLENDER-UILIST-0001",
+    "D8-BLENDER-VIEW2D-0001",
+    "D8-BLENDER-WORKSPAC-0001"
+  ],
+  "rows_without_hint": [
+    "D8-SKETCHUP-UX-0013",
+    "D8-SKETCHUP-UX-0014",
+    "D8-SKETCHUP-UX-0015",
+    "D8-SKETCHUP-UX-0016",
+    "D8-SKETCHUP-UX-0017",
+    "D8-SKETCHUP-UX-0018",
+    "D8-BLENDER-OBJECT-0013",
+    "D8-BLENDER-OBJECT-0014",
+    "D8-BLENDER-OBJECT-0015",
+    "D8-BLENDER-OBJECT-0016",
+    "D8-BLENDER-OBJECT-0017",
+    "D8-BLENDER-OBJECT-0018",
+    "D8-BLENDER-OBJECT-0019",
+    "D8-BLENDER-OBJECT-0062",
+    "D8-BLENDER-OBJECT-0063",
+    "D8-BLENDER-OBJECT-0064",
+    "D8-BLENDER-OBJECT-0065",
+    "D8-BLENDER-OBJECT-0076",
+    "D8-BLENDER-OBJECT-0095",
+    "D8-BLENDER-OBJECT-0130",
+    "D8-BLENDER-PROJECT-0001",
+    "D8-BLENDER-PROJECT-0002",
+    "D8-BLENDER-PROJECT-0003",
+    "D8-BLENDER-PROJECT-0004",
+    "D8-BLENDER-PROJECT-0007",
+    "D8-BLENDER-PROJECT-0008",
+    "D8-BLENDER-PROJECT-0009",
+    "D8-BLENDER-PROJECT-0010",
+    "D8-BLENDER-PROJECT-0011",
+    "D8-BLENDER-SCENE-0005",
+    "D8-BLENDER-SCREEN-0001",
+    "D8-BLENDER-SPREADSH-0001",
+    "D8-BLENDER-UILIST-0001",
+    "D8-BLENDER-VIEW2D-0001",
+    "D8-BLENDER-WORKSPAC-0001"
+  ],
+  "status": "open",
+  "title": "ux-access-i18n: interface-preferences, object, project, scene, ... (40 rows)",
+  "wave": 3
+}
