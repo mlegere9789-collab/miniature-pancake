@@ -3545,11 +3545,11 @@ else
 fi
 ftcheck() { if echo "$FT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FT" "$1"; fail=1; fi; }
 ftcheck "^ok   expect_objects 1" "the tree graph baked exactly one point"
-ftcheck "Range=5 items" "Range produced a 5-item, single-branch list"
-ftcheck "Graft Tree=5 items in 5 branches" "Graft Tree wrapped each item in its own branch"
-ftcheck "Flatten Tree=5 items;" "Flatten Tree collapsed the 5 grafted branches back into one"
+ftcheck "Range=6 items" "Range(0,10,5) produced a 6-item, single-branch list (Grasshopper Range returns Steps + 1 numbers: 0 2 4 6 8 10)"
+ftcheck "Graft Tree=6 items in 6 branches" "Graft Tree wrapped each item in its own branch"
+ftcheck "Flatten Tree=6 items;" "Flatten Tree collapsed the 6 grafted branches back into one"
 ftcheck "List Item=1 item" "List Item picked a single value out of the flattened list"
-ftcheck "  4,0,0" "List Item(index 2) of Range(0,10,5) read back as 4 via the baked point's coordinates"
+ftcheck "  4,0,0" "List Item(index 2) of Range(0,10,5) = 0 2 4 6 8 10 read back as 4 via the baked point's coordinates"
 
 # Dino Flow evolutionary solver: Gene Pool -> (x-3)^2 fitness -> Evolutionary
 # Solver, a known-optimum problem (minimum 0 at x=3) checked two ways: the

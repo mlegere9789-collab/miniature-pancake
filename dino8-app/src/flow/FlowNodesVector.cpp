@@ -22,8 +22,13 @@ void AddVector() {
   {
     NodeDef d; d.name = "Vector XYZ"; d.nick = "Vec"; d.category = "Vector"; d.subcategory = "Vector";
     d.inputs = {In("X", Kind::Number, Access::Item, Value::Number(0)), In("Y", Kind::Number, Access::Item, Value::Number(0)), In("Z", Kind::Number, Access::Item, Value::Number(1))};
-    d.outputs = {Out("V", Kind::Vector)};
-    d.eval = [](EvalContext& c) { c.Out(0, Value::Vector(Vector3d(c.Num(0), c.Num(1), c.Num(2)))); };
+    d.description = "A vector from its X, Y, Z components, and its length.";
+    d.outputs = {Out("V", Kind::Vector), Out("Length", Kind::Number)};
+    d.eval = [](EvalContext& c) {
+      const Vector3d v(c.Num(0), c.Num(1), c.Num(2));
+      c.Out(0, Value::Vector(v));
+      c.Out(1, Value::Number(v.Length()));
+    };
     r.Add(d);
   }
   {

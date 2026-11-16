@@ -113,19 +113,19 @@ void AddMaths() {
 
   {
     NodeDef d; d.name = "Range"; d.nick = "Range"; d.category = "Maths"; d.subcategory = "Sequence";
-    d.description = "A range of numbers.";
+    d.description = "Divides a numeric domain into Steps equal segments and returns the Steps + 1 numbers that bound them, both Domain Start and Domain End included.";
     d.inputs = {In("Domain Start", Kind::Number, Access::Item, Value::Number(0)), In("Domain End", Kind::Number, Access::Item, Value::Number(10)), In("Steps", Kind::Integer, Access::Item, Value::Integer(10))};
     d.outputs = {Out("Range", Kind::Number)};
     d.eval = [](EvalContext& c) {
       const double a = c.Num(0), b = c.Num(1);
-      // Clamped, not just floored: Steps can come straight from a .dflow
-      // file's JSON straight into this loop and the output vector's push_backs,
-      // so an unbounded untrusted-file count would force unbounded
-      // allocation/looping here, the same bug class already fixed for
-      // RunSolverNode's gene_count/Population/Generations.
-      const int n = std::clamp(c.Int(2), 1, 100000);
+      // Grasshopper's Range returns Steps + 1 numbers (the Steps segments' end points plus the start), so
+      // Range(0, 1, 10) is 0, 0.1, ... 1: eleven values. Steps is clamped to [1, 99999] so the list never
+      // exceeds 100000 items: it can come straight from a .dflow file's JSON, and an unbounded count would force
+      // unbounded allocation/looping here, the same bug class already fixed for RunSolverNode's
+      // gene_count/Population/Generations.
+      const int n = std::clamp(c.Int(2), 1, 99999);
       std::vector<Value> out;
-      for (int i = 0; i < n; ++i) out.push_back(Value::Number(a + (b - a) * i / n));
+      for (int i = 0; i <= n; ++i) out.push_back(Value::Number(i == n ? b : a + (b - a) * i / n));
       c.OutList(0, out);
     };
     r.Add(d);
