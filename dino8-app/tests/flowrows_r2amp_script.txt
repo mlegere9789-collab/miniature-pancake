@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-VECTOR-0005 (Amplitude): player + bake, read back by sections/95_r2amp.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 11
+SelAll
+List
