@@ -1,0 +1,6 @@
+{"suite": "kernel", "test": "mesh.bevel.width_segments_profile", "name": "mesh.bevel.width_segments_profile", "result": "ok", "ms": 12}
+{"suite": "kernel", "test": "mesh.bevel.clamp_overlap", "name": "mesh.bevel.clamp_overlap", "result": "ok", "ms": 12}
+{"suite": "kernel", "test": "mesh.bevel.segments", "name": "mesh.bevel.segments", "result": "FAIL", "ms": 12}
+{"suite": "kernel", "test": "mesh.extrude.region", "name": "mesh.extrude.region", "result": "FAIL", "ms": 12}
+{"suite": "kernel", "test": "mesh.loopcut.count", "name": "mesh.loopcut.count", "result": "ok", "ms": 12}
+{"suite": "kernel", "test": "perf.loopcut.1M", "name": "perf.loopcut.1M", "result": "ok", "ms": 12}

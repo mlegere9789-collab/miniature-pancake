@@ -1,0 +1,435 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-ux-access-i18n-select-01",
+  "corpora": [
+    "selection fixtures: mixed-object models with layers, blocks, groups, user text and history"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 0,
+    "countable": 31,
+    "rows": 31,
+    "with_existing_hint": 31,
+    "with_hint": 31,
+    "without_hint": 0
+  },
+  "deps": [],
+  "domains": [
+    "SELECT"
+  ],
+  "factory": "ux-access-i18n",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "SelClosedSrf",
+        "rows": 5,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelClosedCrv",
+        "rows": 3,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelBlockInstance",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelBlockInstanceNamed",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelBrush",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelBrushPoints",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelClippingPlane",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelClippingPlaneInViewport",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelClosedMesh",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelClosedPolysrf",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelConnected",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelConnectedMeshFaces",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelControlPoint",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelControlPointRegion",
+        "rows": 2,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelAll",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelAnnotationStyle",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelBadObjects",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelBoundary",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelBox",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelCaptives",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:126",
+        "rows": 1,
+        "score": 0.667,
+        "symbol": "dino8::kernel::ClippingPlaneInfo"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:1006",
+        "rows": 1,
+        "score": 0.656,
+        "symbol": "dino8::kernel::Model::ClippingPlaneAt"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:988",
+        "rows": 1,
+        "score": 0.654,
+        "symbol": "dino8::kernel::Model::AddClippingPlane"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-ux-access-i18n-select-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "rhino"
+  ],
+  "register_files": [
+    "rhino/SELECT.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-RHINO-SELECT-0001": {
+      "commands": [
+        "Select"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0002": {
+      "commands": [
+        "SelAll"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0003": {
+      "commands": [
+        "SelNone"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0004": {
+      "commands": [
+        "SelPrev"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0005": {
+      "commands": [
+        "SelLast"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0006": {
+      "commands": [
+        "SelAnnotationStyle",
+        "DupAnnotationStyle",
+        "AnnotationStyles"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0007": {
+      "commands": [
+        "SelBadObjects"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0008": {
+      "commands": [
+        "SelBlockInstance",
+        "SelBlockInstanceOf",
+        "SelBlockInstanceNamed"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0009": {
+      "commands": [
+        "SelBlockInstanceNamed",
+        "SelBlockInstance",
+        "SelBlockInstanceOf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0010": {
+      "commands": [
+        "SelBoundary",
+        "SelFacesToBoundary"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0011": {
+      "commands": [
+        "SelBox"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0012": {
+      "commands": [
+        "SelBrush",
+        "SelBrushPoints"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0013": {
+      "commands": [
+        "SelBrushPoints",
+        "SelBrush"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0014": {
+      "commands": [
+        "SelCaptives"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0015": {
+      "commands": [
+        "SelChildren"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0016": {
+      "commands": [
+        "SelParents"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0017": {
+      "commands": [
+        "SelCircular"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0018": {
+      "commands": [
+        "SelClippingPlane",
+        "ClippingPlane",
+        "SelClippingPlaneInViewport"
+      ],
+      "kernel": [
+        "dino8::kernel::ClippingPlaneInfo",
+        "dino8::kernel::Model::ClippingPlaneAt",
+        "dino8::kernel::Model::AddClippingPlane"
+      ]
+    },
+    "D8-RHINO-SELECT-0019": {
+      "commands": [
+        "SelClippingPlaneInViewport",
+        "SelClippingPlane"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0020": {
+      "commands": [
+        "SelClosedCrv",
+        "SelClosedSrf",
+        "SelClosedMesh"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0021": {
+      "commands": [
+        "SelClosedMesh",
+        "SelClosedCrv",
+        "SelClosedSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0022": {
+      "commands": [
+        "SelClosedPolysrf",
+        "SelClosedSrf",
+        "SelPolysrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0023": {
+      "commands": [
+        "SelClosedSrf",
+        "SelClosedPolysrf",
+        "SelClosedCrv"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0024": {
+      "commands": [
+        "SelClosedSubD",
+        "SelClosedSrf"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0025": {
+      "commands": [
+        "SelColor"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0026": {
+      "commands": [
+        "SelConnected",
+        "SelConnectedMeshFaces"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0027": {
+      "commands": [
+        "SelConnectedMeshFaces",
+        "ExtractConnectedMeshFaces",
+        "SelConnected"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0028": {
+      "commands": [
+        "SelControlPoint",
+        "SelControlPointRegion",
+        "InsertControlPoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0029": {
+      "commands": [
+        "SelControlPointRegion",
+        "SelControlPoint"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0030": {
+      "commands": [
+        "SelControls"
+      ],
+      "kernel": []
+    },
+    "D8-RHINO-SELECT-0031": {
+      "commands": [
+        "SelCrossing"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-RHINO-SELECT-0001",
+    "D8-RHINO-SELECT-0002",
+    "D8-RHINO-SELECT-0003",
+    "D8-RHINO-SELECT-0004",
+    "D8-RHINO-SELECT-0005",
+    "D8-RHINO-SELECT-0006",
+    "D8-RHINO-SELECT-0007",
+    "D8-RHINO-SELECT-0008",
+    "D8-RHINO-SELECT-0009",
+    "D8-RHINO-SELECT-0010",
+    "D8-RHINO-SELECT-0011",
+    "D8-RHINO-SELECT-0012",
+    "D8-RHINO-SELECT-0013",
+    "D8-RHINO-SELECT-0014",
+    "D8-RHINO-SELECT-0015",
+    "D8-RHINO-SELECT-0016",
+    "D8-RHINO-SELECT-0017",
+    "D8-RHINO-SELECT-0018",
+    "D8-RHINO-SELECT-0019",
+    "D8-RHINO-SELECT-0020",
+    "D8-RHINO-SELECT-0021",
+    "D8-RHINO-SELECT-0022",
+    "D8-RHINO-SELECT-0023",
+    "D8-RHINO-SELECT-0024",
+    "D8-RHINO-SELECT-0025",
+    "D8-RHINO-SELECT-0026",
+    "D8-RHINO-SELECT-0027",
+    "D8-RHINO-SELECT-0028",
+    "D8-RHINO-SELECT-0029",
+    "D8-RHINO-SELECT-0030",
+    "D8-RHINO-SELECT-0031"
+  ],
+  "rows_without_hint": [],
+  "status": "open",
+  "title": "ux-access-i18n: SELECT (31 rows)",
+  "wave": 3
+}
