@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -465,6 +466,21 @@ inline void Reg(CommandEngine& e, const char* name, CommandFactory f, CommandSta
 template <typename T, typename... Args>
 CommandFactory Make(Args... args) {
   return [=]() -> std::unique_ptr<Command> { return std::make_unique<T>(args...); };
+}
+
+// The optional word after a switch command ("Snap Off", "SnapToLocked Status"): On, Off, Toggle (also the meaning of no word) or
+// Status (report only). Anything else warns and leaves the switch unchanged; the one-line report is "<label> on" / "<label> off".
+inline bool ApplySwitchWord(CommandContext& ctx, bool& b, const std::string& label, std::string word, bool bare_means_on = false,
+                              const std::string& suffix = std::string()) {
+  for (char& c : word) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (word.empty()) b = bare_means_on ? true : !b;
+  else if (word == "on" || word == "yes" || word == "true" || word == "1") b = true;
+  else if (word == "off" || word == "no" || word == "false" || word == "0") b = false;
+  else if (word == "toggle") b = !b;
+  else if (word == "status" || word == "?") {}
+  else { ctx.Warn(label + ": expected On, Off, Toggle or Status, got '" + word + "'"); return false; }
+  ctx.Print(label + (b ? " on" : " off") + suffix);
+  return true;
 }
 
 inline CommandFactory Immediate(std::function<void(CommandContext&)> fn) {
