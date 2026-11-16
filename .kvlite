@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=RowRigidBody;RowConnectRigid;RowCalculateMass;RowChangeCollisionShape;RowClothModifier;RowFluid;RowParticle;RowText
