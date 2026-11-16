@@ -713,7 +713,10 @@ void Unroll(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* l
       }
       double avg_distortion = cells > 0 ? sum_distortion / cells : 0;
       kernel::Mesh km; km.raw() = m;
-      double area3d = MeshOf(*o, 0.01) ? MeshOf(*o, 0.01)->Area() : 0;
+      // `like` (a copy), never `o`: the Doc().Add / AddCurve of an earlier face of this object can reallocate the object vector, so `o` dangles
+      // from the second face on (a box's six faces; the QCRE_presel run died with a segmentation fault here once the heap layout changed).
+      const std::optional<kernel::Mesh> whole_mesh = MeshOf(like, 0.01);
+      double area3d = whole_mesh ? whole_mesh->Area() : 0;
       double flat = km.Area();
       // Squish alone also records, on the flattened mesh itself, each
       // vertex's own source-surface (u, v) as a texture coordinate (the
