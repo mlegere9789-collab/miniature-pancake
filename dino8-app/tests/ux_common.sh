@@ -21,7 +21,7 @@ ux_launch() {  # script [env assignments...]
 }
 ux_lines() {  # block
   awk -v name="$1" '$0 ~ ("Unknown command: UXBEGIN_" name "$") { on = 1; next } on && /Unknown command: UXBEGIN_/ { exit } on { print }' <<<"$UX_OUT" |
-    grep -v '^history: Command: ' | grep -v '^GLFW error' | sed -e 's/^history: //'
+    { grep -v '^history: Command: ' || true; } | { grep -v '^GLFW error' || true; } | sed -e 's/^history: //'
 }
 ux_eq() {  # prefix block label expected-lines...
   local prefix="$1" block="$2" label="$3"; shift 3
