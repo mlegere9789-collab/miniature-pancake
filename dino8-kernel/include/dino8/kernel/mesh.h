@@ -2224,7 +2224,9 @@ class Mesh {
   // order - see that field's own comment), so no separate orientation
   // logic is needed for the walls. Multiple disjoint boundary loops
   // (e.g. an annulus-shaped input) are all walled up the same way, with
-  // no special-casing.
+  // no special-casing. A negative `distance` thickens to the other side of
+  // the sheet (against its vertex normals) and is wound outward too: the
+  // result always has a positive Volume().
   //
   // Throws std::invalid_argument if `distance` is exactly 0 (a
   // zero-thickness "solid" is meaningless), if `distance` is not finite

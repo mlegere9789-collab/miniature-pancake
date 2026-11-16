@@ -7178,6 +7178,13 @@ Mesh Mesh::Thicken(double distance) const {
     f.vi[3] = a + n;
     raw.m_F.Append(f);
   }
+  // The construction above assumes the offset layer lies on the side the
+  // vertex normals point to (distance > 0): the original becomes the inner
+  // wall and is flipped. For distance < 0 the offset layer lies on the other
+  // side, so the sheet itself is the outer wall; the very same closed
+  // surface, with every face reversed, is then wound outward (a negative
+  // distance used to give a closed but inside-out shell of negative volume).
+  if (distance < 0.0) return result.FlipNormals();
   return result;
 }
 
