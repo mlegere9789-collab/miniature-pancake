@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-MATHS-0018 (Mass Multiplication): player + bake, read back by sections/94_frmassmul.sh (see flowrows_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 6
+SelAll
+List
