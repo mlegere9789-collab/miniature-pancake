@@ -2416,14 +2416,24 @@ void Bounce(CommandContext& ctx, const Input& in) {
 // ScaleByPlane / ScalePositions
 // ---------------------------------------------------------------------------
 
+// ScaleByPlane: scales about the origin of a plane built from the picked origin and the point on its normal. The plane's x axis is the
+// construction plane's x axis projected into it (its y axis when that is parallel to the normal), y = normal x x. The factor argument
+// scales along the plane's normal; the options XFactor and YFactor (default 1) scale non-uniformly in the plane's two directions.
 void ScaleByPlane(CommandContext& ctx, const Input& in) {
   Vector3d n = in.P(2) - in.P(1);
   if (!n.Unitize()) n = ActiveNormal(ctx);
   const double f = in.N(3, 2);
-  if (f == 0) { ctx.Warn("ScaleByPlane: the scale factor must be non-zero"); return; }
-  ON_Plane pl(in.P(1), n);
-  ctx.Print("ScaleByPlane: factor " + FormatNumber(f) + " along the normal of the plane through " + FormatPoint(in.P(1)));
-  ApplyXform(ctx, in.O(0), ON_Xform::ScaleTransformation(pl, 1.0, 1.0, f), in.Yes("Copy"), "ScaleByPlane");
+  const double fx = in.OptNum("XFactor", 1), fy = in.OptNum("YFactor", 1);
+  if (f == 0 || fx == 0 || fy == 0) { ctx.Warn("ScaleByPlane: the scale factors must be non-zero"); return; }
+  const ON_Plane cp = ActivePlane(ctx);
+  Vector3d x = cp.xaxis - n * ON_DotProduct(cp.xaxis, n);
+  if (!x.Unitize()) { x = cp.yaxis - n * ON_DotProduct(cp.yaxis, n); x.Unitize(); }
+  Vector3d y = ON_CrossProduct(n, x);
+  y.Unitize();
+  ON_Plane pl(in.P(1), x, y);
+  ctx.Print("ScaleByPlane: factor " + FormatNumber(f) + " along the normal of the plane through " + FormatPoint(in.P(1)) +
+            (fx != 1 || fy != 1 ? ", in-plane factors " + FormatNumber(fx) + " and " + FormatNumber(fy) : std::string()));
+  ApplyXform(ctx, in.O(0), ON_Xform::ScaleTransformation(pl, fx, fy, f), in.Yes("Copy"), "ScaleByPlane");
 }
 
 void ScalePositions(CommandContext& ctx, const Input& in) {
@@ -2837,7 +2847,7 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
                          {Toggle("DeleteInput", true)}, Guarded("Reflect", Reflect)), CommandStatus::Implemented,
       "A one-shot 'make symmetric' tool: mirrors the selection across the picked plane and welds the original and its mirror image into a single symmetric whole. A selection made entirely of SubDs (one or more) comes back as a real, editable SubD (kernel::SubD::Symmetrize, folded together via SubD::BooleanToSubD when there's more than one); any other input kind comes back as a single mesh (CreateSolid's MergeAndWeld). Rhino's live symmetric-SubD-editing mode - where every later edit to one half re-applies to the other - needs an ongoing mirror-constraint system this app doesn't have; this covers the one-shot case honestly instead of only printing guidance.");
   Reg(e, "ScaleByPlane", Tool({ObjectsStep("Select objects to scale"), PointStep("Origin of the scaling plane"), PointStep("Point on the plane normal"), NumberStep("Scale factor", 2)},
-                              {Toggle("Copy", false)}, Guarded("ScaleByPlane", ScaleByPlane)));
+                              {Toggle("Copy", false), Numeric("XFactor", 1), Numeric("YFactor", 1)}, Guarded("ScaleByPlane", ScaleByPlane)));
   Reg(e, "ScalePositions", Tool({ObjectsStep("Select objects"), PointStep("Base point"), NumberStep("Scale factor", 2)}, {Toggle("Copy", false)}, Guarded("ScalePositions", ScalePositions)));
   Reg(e, "OrientOnCrv", Tool({ObjectsStep("Select objects to orient"), PointStep("Base point"), ObjectsStep("Select target curve"), PointsStep("Points on the curve")},
                              {Toggle("Copy", true), Toggle("Perpendicular", false)}, Guarded("OrientOnCrv", OrientOnCrv)));

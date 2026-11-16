@@ -1,6 +1,7 @@
 // Transform commands: Move, Copy, Rotate, Scale, Mirror, Array...
 #include "commands/cmd_common.h"
 #include "commands/count_limits.h"
+#include "doc/SubObjectEdit.h"
 
 namespace dino8::app {
 
@@ -576,9 +577,21 @@ class ArrayLinearCommand : public Command {
   std::optional<Point3d> start_;
 };
 
+// ArrayPolar: copies around a centre. RotateItems=Yes (the default) turns each copy with the array; RotateItems=No keeps every copy
+// in the attitude of the original and only moves it: the whole selection is translated by (R(c) - c), c being the centre of the
+// selection's bounding box and R the rotation of that step, so the objects of one step keep their mutual layout.
 class ArrayPolarCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select objects to array"); }
+  void Begin(CommandContext&) override {
+    options = {{"RotateItems", "Yes", {"Yes", "No"}, false, true}};
+    WantObjects("Select objects to array");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "RotateItems") return;
+    const std::string l = ToLower(v);
+    rotate_ = l.empty() ? !rotate_ : !(l == "no" || l == "n" || l == "false" || l == "0");
+    for (OptionSpec& o : options) if (o.name == "RotateItems") o.value = rotate_ ? "Yes" : "No";
+  }
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantPoint("Center of polar array"); }
   void OnPoint(CommandContext& ctx, Point3d p) override { center_ = p; WantNumber("Number of items", 6); }
   void OnNumber(CommandContext& ctx, double v) override {
@@ -597,9 +610,12 @@ class ArrayPolarCommand : public Command {
     const std::vector<SceneObject> sources = ResolveObjects(ctx, ids_);
     const int n = *count_;
     const bool full = std::fabs(v - 360.0) < 1e-9;
+    Point3d ref = center_;
+    if (!rotate_) { kernel::BoundingBox bb; if (ctx.Doc().BoundingBoxOf(ids_, bb)) ref = (bb.min + bb.max) * 0.5; }
     for (int i = 1; i < n; ++i) {
       ON_Xform xf;
       xf.Rotation(fill * i / (full ? n : n - 1), ActiveNormal(ctx), center_);
+      if (!rotate_) { Point3d moved = ref; moved.Transform(xf); xf = ON_Xform::TranslationTransformation(moved - ref); }
       std::vector<ObjectId> step;
       for (const SceneObject& src : sources) { SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); step.push_back(ctx.Doc().Add(std::move(dup))); }
       RegroupCopies(ctx, step);
@@ -610,6 +626,7 @@ class ArrayPolarCommand : public Command {
   std::vector<ObjectId> ids_;
   Point3d center_;
   std::optional<int> count_;
+  bool rotate_ = true;
 };
 
 class Orient3PtCommand : public Command {
@@ -634,9 +651,24 @@ class Orient3PtCommand : public Command {
 
 // Rhino's real Orient: two reference points (base + direction/scale) mapped
 // to two target points, unlike Orient3Pt's plane-to-plane (3+3 point) form.
+// Options: Copy=Yes leaves the originals and places oriented copies; Scale=No keeps the size (a rigid map: rotation about the first
+// reference point, then translation onto the first target point), Scale=Yes (the default) also scales by |target| / |reference|.
 class OrientCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select objects to orient"); }
+  void Begin(CommandContext&) override {
+    options = {{"Copy", "No", {"Yes", "No"}, false, true}, {"Scale", "Yes", {"Yes", "No"}, false, true}};
+    WantObjects("Select objects to orient");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    const std::string l = ToLower(v);
+    auto flag = [&](bool cur) { return l.empty() ? !cur : !(l == "no" || l == "n" || l == "false" || l == "0"); };
+    if (n == "Copy") copy_ = flag(copy_);
+    else if (n == "Scale") scale_ = flag(scale_);
+    for (OptionSpec& o : options) {
+      if (o.name == "Copy") o.value = copy_ ? "Yes" : "No";
+      else if (o.name == "Scale") o.value = scale_ ? "Yes" : "No";
+    }
+  }
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantPoint("Reference point 1"); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     pts_.push_back(p);
@@ -648,18 +680,35 @@ class OrientCommand : public Command {
     double lr = vr.Length();
     if (lr <= 1e-9) { ctx.Warn("Orient: reference points coincide"); Finish(); return; }
     double lt = vt.Length();
-    double scale = lt > 1e-9 ? lt / lr : 1.0;
+    double scale = (scale_ && lt > 1e-9) ? lt / lr : 1.0;
     ON_Plane pl = ActivePlane(ctx);
     double a0 = std::atan2(ON_DotProduct(vr, pl.yaxis), ON_DotProduct(vr, pl.xaxis));
     double a1 = lt > 1e-9 ? std::atan2(ON_DotProduct(vt, pl.yaxis), ON_DotProduct(vt, pl.xaxis)) : a0;
     ON_Xform r; r.Rotation(a1 - a0, pl.zaxis, r1);
+    // A reference or target direction leaving the construction plane: the planar turn above cannot carry the reference direction
+    // onto the target direction, so use the shortest 3-D rotation between the two directions (about their cross product; a half
+    // turn about any axis perpendicular to the reference direction when they are opposite).
+    const bool planar = std::fabs(ON_DotProduct(vr, pl.zaxis)) <= 1e-9 * lr && (lt <= 1e-9 || std::fabs(ON_DotProduct(vt, pl.zaxis)) <= 1e-9 * lt);
+    if (!planar && lt > 1e-9) {
+      Vector3d ur = vr, ut = vt; ur.Unitize(); ut.Unitize();
+      Vector3d ax = ON_CrossProduct(ur, ut);
+      const double dp = ON_DotProduct(ur, ut);
+      if (ax.Unitize()) r.Rotation(std::atan2(ON_CrossProduct(ur, ut).Length(), dp), ax, r1);
+      else if (dp < 0) {
+        Vector3d perp = ON_CrossProduct(ur, pl.zaxis);
+        if (!perp.Unitize()) perp = ON_CrossProduct(ur, pl.xaxis);
+        perp.Unitize();
+        r.Rotation(ON_PI, perp, r1);
+      } else r = ON_Xform::IdentityTransformation;
+    }
     ON_Xform s = ON_Xform::ScaleTransformation(r1, scale);
     ON_Xform t = ON_Xform::TranslationTransformation(t1 - r1);
-    ApplyXform(ctx, ids_, t * r * s, false, "Orient");
+    ApplyXform(ctx, ids_, t * r * s, copy_, "Orient");
     Finish();
   }
   std::vector<ObjectId> ids_;
   std::vector<Point3d> pts_;
+  bool copy_ = false, scale_ = true;
 };
 
 // SetPt: real Rhino asks which world coordinates to set and to what value in
@@ -699,9 +748,23 @@ class SetPtCommand : public Command {
     // O(selection size) undo recording, FindMany() for one O(document size)
     // resolve instead of one Find() per id.
     ctx.Doc().BeginChangeForObjects("SetPt", ids);
-    int done = 0;
+    int done = 0, control_points = 0;
+    const SubObjectSelection& sub = ctx.App().SubSelection();
     for (SceneObject* o : ctx.Doc().FindMany(ids)) {
       if (!o) continue;
+      // An object with selected control points / vertices (SelControlPoint, SelControlPointRegion, a Ctrl+Shift pick): only those
+      // points go to the coordinate - each one gets the chosen world X / Y / Z, the other coordinates stay as they are.
+      bool moved_points = false;
+      for (const SubObjectRef& r : sub.ItemsOf(o->id)) {
+        if (r.kind != SubObjectKind::Vertex) continue;
+        Point3d cp;
+        if (!ControlPointPosition(*o, r.index, cp)) continue;
+        if (set_x_) cp.x = x_;
+        if (set_y_) cp.y = y_;
+        if (set_z_) cp.z = z_;
+        if (SetControlPointPosition(*o, r.index, cp)) { moved_points = true; ++control_points; }
+      }
+      if (moved_points) { ++done; continue; }
       kernel::BoundingBox bb = o->BoundingBox();
       Vector3d d(0, 0, 0);
       if (set_x_) d.x = x_ - bb.min.x;
@@ -710,7 +773,7 @@ class SetPtCommand : public Command {
       o->Transform(ON_Xform::TranslationTransformation(d));
       ++done;
     }
-    ctx.Print("SetPt: set " + std::to_string(done) + " object(s)");
+    ctx.Print("SetPt: set " + std::to_string(done) + " object(s)" + (control_points > 0 ? ", " + std::to_string(control_points) + " selected control point(s) moved" : std::string()));
     Finish();
   }
   bool set_x_ = false, set_y_ = false, set_z_ = true;

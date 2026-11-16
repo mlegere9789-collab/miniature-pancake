@@ -5,6 +5,7 @@
 #include "commands/count_limits.h"
 #include "commands/history_rebuild.h"
 #include "commands/section_exact.h"
+#include "doc/SubObjectEdit.h"
 #include "dino8/kernel/pattern.h"
 #include "dino8/kernel/surface_intersect.h"
 
@@ -1275,11 +1276,53 @@ class ArraySrfCommand : public Command {
   std::optional<int> nu_;
 };
 
+// Align: objects by their bounding boxes (two or more objects), or - when control points / vertices are selected
+// (SelControlPoint, SelControlPointRegion, a Ctrl+Shift pick) - those control points to one another: Left / Right set every
+// selected point's CPlane x to the smallest / largest x among them, Bottom / Top the y likewise, HorizCenter / VertCenter / Concentric
+// the mid-value of the selected points' extent in y, x, or both. One object with two selected control points is enough.
 class AlignCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantObjects("Select objects to align", 2); }
+  void Begin(CommandContext& ctx) override {
+    bool cps = false;
+    for (const SubObjectRef& r : ctx.App().SubSelection().Items()) if (r.kind == SubObjectKind::Vertex) { cps = true; break; }
+    WantObjects(cps ? "Select objects whose selected control points to align" : "Select objects to align", cps ? 1 : 2);
+  }
+  void AlignControlPoints(CommandContext& ctx) {
+    ON_Plane pl = ActivePlane(ctx);
+    struct Cp { ObjectId id; int index; double x, y; Point3d p; };
+    std::vector<Cp> cps;
+    for (const SubObjectRef& r : ctx.App().SubSelection().Items()) {
+      if (r.kind != SubObjectKind::Vertex || std::find(ids_.begin(), ids_.end(), r.id) == ids_.end()) continue;
+      const SceneObject* o = ctx.Doc().Find(r.id);
+      Point3d p;
+      if (!o || !ControlPointPosition(*o, r.index, p)) continue;
+      cps.push_back({r.id, r.index, ON_DotProduct(p - pl.origin, pl.xaxis), ON_DotProduct(p - pl.origin, pl.yaxis), p});
+    }
+    if (cps.size() < 2) { ctx.Warn("Align: select at least two control points"); Finish(); return; }
+    double lo_x = 1e300, hi_x = -1e300, lo_y = 1e300, hi_y = -1e300;
+    for (const Cp& c : cps) { lo_x = std::min(lo_x, c.x); hi_x = std::max(hi_x, c.x); lo_y = std::min(lo_y, c.y); hi_y = std::max(hi_y, c.y); }
+    std::vector<ObjectId> touched;
+    for (const Cp& c : cps) touched.push_back(c.id);
+    ctx.Doc().BeginChangeForObjects("Align", touched);
+    for (const Cp& c : cps) {
+      double dx = 0, dy = 0;
+      if (mode_ == "Left") dx = lo_x - c.x;
+      else if (mode_ == "Right") dx = hi_x - c.x;
+      else if (mode_ == "Bottom") dy = lo_y - c.y;
+      else if (mode_ == "Top") dy = hi_y - c.y;
+      else if (mode_ == "HorizCenter") dy = (lo_y + hi_y) / 2 - c.y;
+      else if (mode_ == "VertCenter") dx = (lo_x + hi_x) / 2 - c.x;
+      else if (mode_ == "Concentric") { dx = (lo_x + hi_x) / 2 - c.x; dy = (lo_y + hi_y) / 2 - c.y; }
+      if (SceneObject* o = ctx.Doc().Find(c.id)) SetControlPointPosition(*o, c.index, c.p + pl.xaxis * dx + pl.yaxis * dy);
+    }
+    ctx.Print("Align: " + std::to_string(cps.size()) + " control point(s) aligned " + mode_);
+    Finish();
+  }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     ids_ = ids;
+    cps_ = false;
+    for (const SubObjectRef& r : ctx.App().SubSelection().Items()) if (r.kind == SubObjectKind::Vertex && std::find(ids.begin(), ids.end(), r.id) != ids.end()) { cps_ = true; break; }
+    if (!cps_ && ids.size() < 2) { ctx.Warn("Align: select at least two objects (or select control points)"); Finish(); return; }
     options = {{"Mode", mode_, {"Left", "Right", "Top", "Bottom", "HorizCenter", "VertCenter", "Concentric"}, false, false}};
     WantText("Alignment (Left/Right/Top/Bottom/HorizCenter/VertCenter/Concentric)", mode_);
     (void)ctx;
@@ -1288,6 +1331,7 @@ class AlignCommand : public Command {
   void OnText(CommandContext& ctx, const std::string& t) override { if (!t.empty()) mode_ = t; Apply(ctx); }
   void OnEnter(CommandContext& ctx) override { Apply(ctx); }
   void Apply(CommandContext& ctx) {
+    if (cps_) { AlignControlPoints(ctx); return; }
     ON_Plane pl = ActivePlane(ctx);
     struct Item { ObjectId id; double lo_x, hi_x, lo_y, hi_y; };
     std::vector<Item> items;
@@ -1322,6 +1366,7 @@ class AlignCommand : public Command {
   }
   std::vector<ObjectId> ids_;
   std::string mode_ = "Bottom";
+  bool cps_ = false;
 };
 
 class DistributeCommand : public Command {
