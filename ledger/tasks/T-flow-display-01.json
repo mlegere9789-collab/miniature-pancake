@@ -1,0 +1,187 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-flow-display-01",
+  "corpora": [
+    "corpus/gh/display/display-colour",
+    "corpus/gh/display/display-dimensions",
+    "corpus/gh/display/display-graphs",
+    "corpus/gh/display/display-preview",
+    "corpus/gh/display/display-vector"
+  ],
+  "counts": {
+    "aliases": 0,
+    "best_target": 6,
+    "countable": 25,
+    "rows": 25,
+    "with_existing_hint": 3,
+    "with_hint": 3,
+    "without_hint": 22
+  },
+  "deps": [],
+  "domains": [
+    "display"
+  ],
+  "factory": "flow",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ClippingPlane",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "Leader",
+        "rows": 1,
+        "score": 1.0,
+        "status": "implemented"
+      },
+      {
+        "name": "SelClippingPlane",
+        "rows": 1,
+        "score": 0.779,
+        "status": "implemented"
+      },
+      {
+        "name": "EnableClippingPlane",
+        "rows": 1,
+        "score": 0.725,
+        "status": "implemented"
+      },
+      {
+        "name": "SelLeader",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:126",
+        "rows": 1,
+        "score": 0.76,
+        "symbol": "dino8::kernel::ClippingPlaneInfo"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:988",
+        "rows": 1,
+        "score": 0.694,
+        "symbol": "dino8::kernel::Model::AddClippingPlane"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:351",
+        "rows": 1,
+        "score": 0.653,
+        "symbol": "dino8::kernel::DimensionLinearInfo"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:1006",
+        "rows": 1,
+        "score": 0.617,
+        "symbol": "dino8::kernel::Model::ClippingPlaneAt"
+      },
+      {
+        "header": "dino8-kernel/include/dino8/kernel/file_io.h:1338",
+        "rows": 1,
+        "score": 0.605,
+        "symbol": "dino8::kernel::Model::AddDimensionLinear"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-flow-display-01",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "grasshopper"
+  ],
+  "register_files": [
+    "grasshopper/display.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-GH-DISPLAY-0015": {
+      "commands": [
+        "ClippingPlane",
+        "SelClippingPlane",
+        "EnableClippingPlane"
+      ],
+      "kernel": [
+        "dino8::kernel::ClippingPlaneInfo",
+        "dino8::kernel::Model::AddClippingPlane",
+        "dino8::kernel::Model::ClippingPlaneAt"
+      ]
+    },
+    "D8-GH-DISPLAY-0016": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::DimensionLinearInfo",
+        "dino8::kernel::Model::AddDimensionLinear"
+      ]
+    },
+    "D8-GH-DISPLAY-0019": {
+      "commands": [
+        "Leader",
+        "SelLeader"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-GH-DISPLAY-0001",
+    "D8-GH-DISPLAY-0002",
+    "D8-GH-DISPLAY-0003",
+    "D8-GH-DISPLAY-0004",
+    "D8-GH-DISPLAY-0005",
+    "D8-GH-DISPLAY-0006",
+    "D8-GH-DISPLAY-0007",
+    "D8-GH-DISPLAY-0008",
+    "D8-GH-DISPLAY-0009",
+    "D8-GH-DISPLAY-0016",
+    "D8-GH-DISPLAY-0017",
+    "D8-GH-DISPLAY-0018",
+    "D8-GH-DISPLAY-0019",
+    "D8-GH-DISPLAY-0020",
+    "D8-GH-DISPLAY-0023",
+    "D8-GH-DISPLAY-0024",
+    "D8-GH-DISPLAY-0025",
+    "D8-GH-DISPLAY-0010",
+    "D8-GH-DISPLAY-0011",
+    "D8-GH-DISPLAY-0012",
+    "D8-GH-DISPLAY-0013",
+    "D8-GH-DISPLAY-0014",
+    "D8-GH-DISPLAY-0015",
+    "D8-GH-DISPLAY-0021",
+    "D8-GH-DISPLAY-0022"
+  ],
+  "rows_without_hint": [
+    "D8-GH-DISPLAY-0001",
+    "D8-GH-DISPLAY-0002",
+    "D8-GH-DISPLAY-0003",
+    "D8-GH-DISPLAY-0004",
+    "D8-GH-DISPLAY-0005",
+    "D8-GH-DISPLAY-0006",
+    "D8-GH-DISPLAY-0007",
+    "D8-GH-DISPLAY-0008",
+    "D8-GH-DISPLAY-0009",
+    "D8-GH-DISPLAY-0017",
+    "D8-GH-DISPLAY-0018",
+    "D8-GH-DISPLAY-0020",
+    "D8-GH-DISPLAY-0023",
+    "D8-GH-DISPLAY-0024",
+    "D8-GH-DISPLAY-0025",
+    "D8-GH-DISPLAY-0010",
+    "D8-GH-DISPLAY-0011",
+    "D8-GH-DISPLAY-0012",
+    "D8-GH-DISPLAY-0013",
+    "D8-GH-DISPLAY-0014",
+    "D8-GH-DISPLAY-0021",
+    "D8-GH-DISPLAY-0022"
+  ],
+  "status": "open",
+  "title": "flow: display (25 rows)",
+  "wave": 1
+}

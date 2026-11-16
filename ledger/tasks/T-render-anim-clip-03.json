@@ -1,0 +1,132 @@
+{
+  "alias_rows": [],
+  "branch": "task/T-render-anim-clip-03",
+  "corpora": [],
+  "counts": {
+    "aliases": 0,
+    "best_target": 21,
+    "countable": 31,
+    "rows": 31,
+    "with_existing_hint": 2,
+    "with_hint": 2,
+    "without_hint": 29
+  },
+  "deps": [],
+  "domains": [
+    "clip"
+  ],
+  "factory": "render-anim",
+  "handoff": "",
+  "hints": {
+    "commands": [
+      {
+        "name": "ShowSelected",
+        "rows": 1,
+        "score": 0.617,
+        "status": "implemented"
+      }
+    ],
+    "kernel": [
+      {
+        "header": "dino8-kernel/include/dino8/kernel/types.h:59",
+        "rows": 1,
+        "score": 0.65,
+        "symbol": "dino8::kernel::Color"
+      }
+    ],
+    "label": "HINTS, NOT EVIDENCE: fuzzy name match against what Dino 8 ships (parity/tools/catalog). A row is verified only by its named tests with CI evidence.",
+    "source": "parity/tools/catalog/map_rows.py, min score 0.6"
+  },
+  "id": "T-render-anim-clip-03",
+  "points": 2,
+  "points_basis": "provisional: rows weighted 1.0 with an existing counterpart, 1.5 without, +0.5 for a Best target, per 30 weighted rows; the factory lead sets the real value",
+  "pooled_domains": false,
+  "programs": [
+    "blender"
+  ],
+  "register_files": [
+    "blender/clip.jsonl"
+  ],
+  "retries": 0,
+  "row_hints": {
+    "D8-BLENDER-CLIP-0075": {
+      "commands": [],
+      "kernel": [
+        "dino8::kernel::Color"
+      ]
+    },
+    "D8-BLENDER-CLIP-0087": {
+      "commands": [
+        "ShowSelected"
+      ],
+      "kernel": []
+    }
+  },
+  "rows": [
+    "D8-BLENDER-CLIP-0061",
+    "D8-BLENDER-CLIP-0062",
+    "D8-BLENDER-CLIP-0063",
+    "D8-BLENDER-CLIP-0064",
+    "D8-BLENDER-CLIP-0065",
+    "D8-BLENDER-CLIP-0066",
+    "D8-BLENDER-CLIP-0067",
+    "D8-BLENDER-CLIP-0068",
+    "D8-BLENDER-CLIP-0069",
+    "D8-BLENDER-CLIP-0070",
+    "D8-BLENDER-CLIP-0071",
+    "D8-BLENDER-CLIP-0072",
+    "D8-BLENDER-CLIP-0073",
+    "D8-BLENDER-CLIP-0074",
+    "D8-BLENDER-CLIP-0075",
+    "D8-BLENDER-CLIP-0076",
+    "D8-BLENDER-CLIP-0077",
+    "D8-BLENDER-CLIP-0078",
+    "D8-BLENDER-CLIP-0079",
+    "D8-BLENDER-CLIP-0080",
+    "D8-BLENDER-CLIP-0081",
+    "D8-BLENDER-CLIP-0082",
+    "D8-BLENDER-CLIP-0083",
+    "D8-BLENDER-CLIP-0084",
+    "D8-BLENDER-CLIP-0085",
+    "D8-BLENDER-CLIP-0086",
+    "D8-BLENDER-CLIP-0087",
+    "D8-BLENDER-CLIP-0088",
+    "D8-BLENDER-CLIP-0089",
+    "D8-BLENDER-CLIP-0090",
+    "D8-BLENDER-CLIP-0091"
+  ],
+  "rows_without_hint": [
+    "D8-BLENDER-CLIP-0061",
+    "D8-BLENDER-CLIP-0062",
+    "D8-BLENDER-CLIP-0063",
+    "D8-BLENDER-CLIP-0064",
+    "D8-BLENDER-CLIP-0065",
+    "D8-BLENDER-CLIP-0066",
+    "D8-BLENDER-CLIP-0067",
+    "D8-BLENDER-CLIP-0068",
+    "D8-BLENDER-CLIP-0069",
+    "D8-BLENDER-CLIP-0070",
+    "D8-BLENDER-CLIP-0071",
+    "D8-BLENDER-CLIP-0072",
+    "D8-BLENDER-CLIP-0073",
+    "D8-BLENDER-CLIP-0074",
+    "D8-BLENDER-CLIP-0076",
+    "D8-BLENDER-CLIP-0077",
+    "D8-BLENDER-CLIP-0078",
+    "D8-BLENDER-CLIP-0079",
+    "D8-BLENDER-CLIP-0080",
+    "D8-BLENDER-CLIP-0081",
+    "D8-BLENDER-CLIP-0082",
+    "D8-BLENDER-CLIP-0083",
+    "D8-BLENDER-CLIP-0084",
+    "D8-BLENDER-CLIP-0085",
+    "D8-BLENDER-CLIP-0086",
+    "D8-BLENDER-CLIP-0088",
+    "D8-BLENDER-CLIP-0089",
+    "D8-BLENDER-CLIP-0090",
+    "D8-BLENDER-CLIP-0091"
+  ],
+  "status": "open",
+  "title": "render-anim: clip (31 rows)",
+  "wave": 2
+}
