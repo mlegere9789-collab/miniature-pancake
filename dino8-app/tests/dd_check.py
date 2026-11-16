@@ -117,15 +117,6 @@ def tcount(f1, f2, f3):
 def textalign(files):
     # Base B "Hi" at (10,10) height 4. T1 "Hi" at (30,25) height 4. T2 "Hi" at (-5,40) height 2. (Text widths are proportional to the
     # height: wB = 2 * w2, and T1 has the width of B.)
-    def get(p, name):
-        t = texts(p)
-        return {'B': 10, 'T1': 30, 'T2': -5}[name], t
-    def find(t, h):
-        return [x for x in t if near(x[2], h)]
-    def pos(p):
-        t = texts(p)
-        b = [x for x in t if near(x[2], 4) and near(x[0], 10) and (near(x[1], 10))]
-        return t
     # Step 1 Left: every text gets B's left edge x = 10, y untouched (25 and 40).
     t = texts(files[0])
     check(len(t) == 3, "DDTA_left: 3 TEXT entities: %d" % len(t))
