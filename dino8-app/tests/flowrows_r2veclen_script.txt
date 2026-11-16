@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-VECTOR-0006 (Vector Length): player + bake, read back by sections/95_r2veclen.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 7
+SelAll
+List

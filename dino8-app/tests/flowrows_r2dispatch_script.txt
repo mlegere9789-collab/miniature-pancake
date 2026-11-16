@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-SETS-0011 (Dispatch): player + bake, read back by sections/95_r2dispatch.sh (see flowrows2_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 20
+SelAll
+List
