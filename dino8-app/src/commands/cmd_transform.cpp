@@ -134,6 +134,12 @@ void PreviewXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const O
 }
 
 // Select objects, base point, then target point (Move / Copy).
+// AutoCAD behaviours added on top of the base/second point pick:
+//  * Enter at the second-point prompt uses the base point as a displacement from the origin (MOVE and COPY help: "use first
+//    point as displacement"), so "Move 3,4,0" then Enter shifts the objects by (3,4,0).
+//  * Copy only: Mode=Single|Multiple (Single ends the command after one copy) and Array: a number of items INCLUDING the
+//    original, then a second point giving the spacing between items (Fit=Yes: the second point is where the LAST item lands
+//    and the items are spread evenly between the base point and it).
 class MoveCommand : public Command {
  public:
   explicit MoveCommand(bool copy) : copy_(copy) {}
@@ -142,24 +148,83 @@ class MoveCommand : public Command {
     ids_ = ids;
     WantPoint("Point to move from");
     options = {{"Vertical", "No", {"Yes", "No"}, false, true}};
+    if (copy_) {
+      options.push_back({"Mode", multiple_ ? "Multiple" : "Single", {"Single", "Multiple"}, false, false});
+      options.push_back({"Array", "", {}, false, false});
+    }
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    if (!copy_) return;
+    if (n == "Mode") {
+      multiple_ = (v != "Single");
+      for (OptionSpec& o : options) if (o.name == "Mode") o.value = multiple_ ? "Multiple" : "Single";
+    } else if (n == "Array") {
+      if (!base_) { ctx.Warn("Copy: pick the base point first, then choose Array"); return; }
+      stage_ = Stage::ArrayCount;
+      WantNumber("Number of items to array (including the original)", 2);
+    } else if (n == "Fit") {
+      fit_ = (v == "Yes");
+      for (OptionSpec& o : options) if (o.name == "Fit") o.value = fit_ ? "Yes" : "No";
+    }
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (stage_ != Stage::ArrayCount) return;
+    int c = 2;
+    std::string why;
+    if (!CountInRange(v, 2, kMaxCreatedItems, c, why)) { ctx.Warn("Copy: the number of items " + why); return; }
+    if (static_cast<double>(c - 1) * static_cast<double>(std::max<size_t>(1, ids_.size())) > kMaxCreatedItems) {
+      ctx.Warn("Copy: that would create more than " + FormatNumber(kMaxCreatedItems) + " objects; give a smaller number");
+      return;
+    }
+    items_ = c;
+    stage_ = Stage::ArrayPoint;
+    options = {{"Fit", fit_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+    WantPoint("Second point (the spacing between items; with Fit the position of the last item)");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e = nullptr;
+    const double v = std::strtod(t.c_str(), &e);
+    if (e && e != t.c_str() && !*e) OnNumber(ctx, v);
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
     if (!base_) { base_ = p; WantPoint(copy_ ? "Point to copy to. Press Enter when done" : "Point to move to"); return; }
+    if (stage_ == Stage::ArrayPoint) {
+      Vector3d step = p - *base_;
+      if (fit_) step = step * (1.0 / (items_ - 1));
+      for (int i = 1; i < items_; ++i) ApplyXform(ctx, ids_, ON_Xform::TranslationTransformation(step * i), true, "Copy");
+      ctx.ClearPreview();
+      Finish();
+      return;
+    }
     ON_Xform xf = ON_Xform::TranslationTransformation(p - *base_);
     ApplyXform(ctx, ids_, xf, copy_, copy_ ? "Copy" : "Move");
-    if (copy_) { ctx.ClearPreview(); return; }
+    done_one_ = true;
     ctx.ClearPreview();
+    if (copy_ && multiple_) return;
     Finish();
   }
-  void OnEnter(CommandContext& ctx) override { ctx.ClearPreview(); Finish(); }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    if (base_ && !done_one_ && stage_ == Stage::Points) {
+      // Enter at the second-point prompt: the first point is a displacement from the origin.
+      ApplyXform(ctx, ids_, ON_Xform::TranslationTransformation(*base_ - Point3d(0, 0, 0)), copy_, copy_ ? "Copy" : "Move");
+    }
+    Finish();
+  }
   void OnHover(CommandContext& ctx, Point3d h) override {
-    if (!base_) return;
+    if (!base_ || stage_ == Stage::ArrayCount) return;
     PreviewXform(ctx, ids_, ON_Xform::TranslationTransformation(h - *base_));
     ctx.AddPreviewLine(*base_, h);
   }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  enum class Stage { Points, ArrayCount, ArrayPoint };
   bool copy_;
+  bool multiple_ = true;
+  bool fit_ = false;
+  bool done_one_ = false;
+  int items_ = 2;
+  Stage stage_ = Stage::Points;
   std::vector<ObjectId> ids_;
   std::optional<Point3d> base_;
 };

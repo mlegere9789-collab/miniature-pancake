@@ -44,14 +44,34 @@ class MultiPointCurveCommand : public Command {
     pts_.push_back(p);
     ctx.SetLastPoint(p);
     WantPoint(pts_.size() == 1 ? "Next point" : "Next point. Press Enter when done");
+    if (kind_ == Kind::Lines && pts_.size() == 1 && segs_.empty()) first_ = p;
     if (kind_ == Kind::Lines && pts_.size() == 2) {
-      AddCurve(ctx, PolylineCurve(pts_), "Lines");
+      segs_.push_back(AddCurve(ctx, PolylineCurve(pts_), "Lines"));
+      seg_starts_.push_back(pts_.front());
       Point3d last = pts_.back();
       pts_.clear();
       pts_.push_back(last);
     }
   }
   void OnOption(CommandContext& ctx, const std::string& name, const std::string& value) override {
+    if (kind_ == Kind::Lines && name == "Close") {
+      // AutoCAD LINE, Close option: a closing segment from the last point back to the start of the chain (needs two segments).
+      if (segs_.size() < 2 || !first_ || pts_.empty()) { ctx.Warn("Lines: Close needs at least two segments; keep picking points"); return; }
+      if (pts_.back().DistanceTo(*first_) > 1e-12) AddCurve(ctx, PolylineCurve({pts_.back(), *first_}), "Lines");
+      ctx.ClearPreview();
+      Finish();
+      return;
+    }
+    if (kind_ == Kind::Lines && name == "Undo" && !segs_.empty()) {
+      // AutoCAD LINE, Undo option: removes only the last segment and continues from its start.
+      ctx.Doc().BeginChange("Lines");
+      ctx.Doc().Remove(segs_.back());
+      segs_.pop_back();
+      pts_.assign(1, seg_starts_.back());
+      seg_starts_.pop_back();
+      ctx.SetLastPoint(pts_.back());
+      return;
+    }
     if (name == "Close") { closed_ = true; OnEnter(ctx); }
     else if (name == "Undo" && !pts_.empty()) { pts_.pop_back(); if (!pts_.empty()) ctx.SetLastPoint(pts_.back()); }
     else if (name == "Degree") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 11) degree_ = d; options[2].value = std::to_string(degree_); }
@@ -94,6 +114,10 @@ class MultiPointCurveCommand : public Command {
   int degree_;
   bool closed_ = false;
   std::vector<Point3d> pts_;
+  // Lines only: the segments made so far (for Undo), their start points, and the first point of the chain (for Close).
+  std::vector<ObjectId> segs_;
+  std::vector<Point3d> seg_starts_;
+  std::optional<Point3d> first_;
 };
 
 // CurveThroughPt: interpolate a curve through selected point OBJECTS (real
@@ -141,6 +165,21 @@ void PreviewCircle(CommandContext& ctx, const ON_Circle& c) {
   ctx.AddPreviewPolyline(CirclePoints(c));
 }
 
+// A visible, unlocked LINEAR curve object nearest to `p`, as its two end points; used by Circle's TTR option.
+bool NearestLineEnds(CommandContext& ctx, Point3d p, Point3d& a, Point3d& b) {
+  double best = 1e300;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (o.kind != ObjectKind::Curve || !o.curve || !ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+    if (!o.curve->IsLinear()) continue;
+    const double t = o.curve->ClosestPointParameter(p);
+    const double d = o.curve->PointAt(t).DistanceTo(p);
+    if (d < best) { best = d; a = o.curve->PointAt(o.curve->Domain().min); b = o.curve->PointAt(o.curve->Domain().max); }
+  }
+  return best < 1e299;
+}
+
+// AutoCAD CIRCLE options added here: 2Point (the two ends of a diameter) and TTR (tangent, tangent, radius, for two straight
+// lines: of the four circles of that radius tangent to both lines, the one whose tangent points lie nearest to the picks).
 class CircleCommand : public PointThenDistanceCommand {
  public:
   CircleCommand()
@@ -158,44 +197,161 @@ class CircleCommand : public PointThenDistanceCommand {
   }
   void Begin(CommandContext& ctx) override {
     PointThenDistanceCommand::Begin(ctx);
-    options = {{"Diameter", "", {}, false, false}, {"3Point", "", {}, false, false}, {"Vertical", "", {}, false, false}};
+    options = {{"Diameter", "", {}, false, false}, {"3Point", "", {}, false, false}, {"Vertical", "", {}, false, false},
+               {"2Point", "", {}, false, false}, {"TTR", "", {}, false, false}};
   }
   void OnOption(CommandContext& ctx, const std::string& name, const std::string&) override {
     if (name == "Diameter") { diameter_ = true; p2_ = "Diameter"; if (base_) WantPoint("Diameter"); }
     else if (name == "3Point") { ctx.Engine().Execute("Circle3Pt"); }
+    else if (name == "2Point" && !base_) { two_point_ = true; WantPoint("First end point of circle's diameter"); }
+    else if (name == "TTR" && !base_) { ttr_ = true; WantPoint("Point on object for the first tangent"); }
   }
-  void OnNumber(CommandContext& ctx, double v) override { PointThenDistanceCommand::OnNumber(ctx, diameter_ ? v / 2 : v); }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (ttr_) {
+      if (ttr_stage_ != 2) return;
+      if (!std::isfinite(v) || !(v > 0)) { ctx.Warn("Circle: the radius must be greater than zero"); return; }
+      BuildTtr(ctx, v);
+      return;
+    }
+    if (two_point_) return;
+    PointThenDistanceCommand::OnNumber(ctx, diameter_ ? v / 2 : v);
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (two_point_ || ttr_) return;
+    PointThenDistanceCommand::OnEnter(ctx);
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (two_point_ || ttr_) return;
+    PointThenDistanceCommand::OnHover(ctx, h);
+  }
   void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (two_point_) {
+      ctx.SetLastPoint(p);
+      if (!tp_a_) { tp_a_ = p; WantPoint("Second end point of circle's diameter"); return; }
+      ctx.ClearPreview();
+      const double d = tp_a_->DistanceTo(p);
+      if (!(d > 0)) { ctx.Warn("Circle: the two diameter end points coincide"); Finish(); return; }
+      AddCircle(ctx, ON_Circle(ActivePlaneAt(ctx, (*tp_a_ + p) * 0.5), d / 2), "Circle");
+      Finish();
+      return;
+    }
+    if (ttr_) {
+      Point3d a, b;
+      if (!NearestLineEnds(ctx, p, a, b)) { ctx.Warn("Circle TTR: pick a straight line"); return; }
+      ctx.SetLastPoint(p);
+      if (ttr_stage_ == 0) { tl_[0] = {a, b}; tpick_[0] = p; ttr_stage_ = 1; WantPoint("Point on object for the second tangent"); return; }
+      if (ttr_stage_ == 1) { tl_[1] = {a, b}; tpick_[1] = p; ttr_stage_ = 2; WantNumber("Radius of circle", 10.0); return; }
+      return;
+    }
     if (base_ && diameter_) { OnNumber(ctx, (p - *base_).Length()); return; }
     PointThenDistanceCommand::OnPoint(ctx, p);
   }
+  void BuildTtr(CommandContext& ctx, double r) {
+    const ON_Plane pl = ActivePlane(ctx);
+    auto uv = [&](Point3d q, double& u, double& v) { u = ON_DotProduct(q - pl.origin, pl.xaxis); v = ON_DotProduct(q - pl.origin, pl.yaxis); };
+    double ax[2], ay[2], dx[2], dy[2], px[2], py[2];
+    for (int i = 0; i < 2; ++i) {
+      double bx, by;
+      uv(tl_[i].first, ax[i], ay[i]);
+      uv(tl_[i].second, bx, by);
+      const double len = std::hypot(bx - ax[i], by - ay[i]);
+      if (!(len > 0)) { ctx.Warn("Circle TTR: a picked line has no length in the construction plane"); Finish(); return; }
+      dx[i] = (bx - ax[i]) / len;
+      dy[i] = (by - ay[i]) / len;
+      uv(tpick_[i], px[i], py[i]);
+    }
+    // Unit normals (-dy, dx); centre c satisfies n_i . (c - a_i) = s_i r with s_i = +-1.
+    const double n1x = -dy[0], n1y = dx[0], n2x = -dy[1], n2y = dx[1];
+    const double det = n1x * n2y - n1y * n2x;
+    if (std::fabs(det) < 1e-12) { ctx.Warn("Circle TTR: the two lines are parallel"); Finish(); return; }
+    double best = 1e300, bcx = 0, bcy = 0;
+    for (int s1 = -1; s1 <= 1; s1 += 2) {
+      for (int s2 = -1; s2 <= 1; s2 += 2) {
+        const double r1 = n1x * ax[0] + n1y * ay[0] + s1 * r, r2 = n2x * ax[1] + n2y * ay[1] + s2 * r;
+        const double cx = (r1 * n2y - n1y * r2) / det, cy = (n1x * r2 - r1 * n2x) / det;
+        // Tangent points: the centre moved back along the normal by s_i r.
+        const double t1x = cx - s1 * r * n1x, t1y = cy - s1 * r * n1y, t2x = cx - s2 * r * n2x, t2y = cy - s2 * r * n2y;
+        const double score = std::hypot(t1x - px[0], t1y - py[0]) + std::hypot(t2x - px[1], t2y - py[1]);
+        if (score < best) { best = score; bcx = cx; bcy = cy; }
+      }
+    }
+    ctx.ClearPreview();
+    AddCircle(ctx, ON_Circle(ActivePlaneAt(ctx, pl.PointAt(bcx, bcy)), r), "Circle");
+    Finish();
+  }
   bool diameter_ = false;
+  bool two_point_ = false;
+  bool ttr_ = false;
+  int ttr_stage_ = 0;
+  std::optional<Point3d> tp_a_;
+  std::pair<Point3d, Point3d> tl_[2];
+  Point3d tpick_[2];
 };
 
 
-// Polygon / star with a NumSides option, centre and corner (or edge) picks.
+// Polygon / star with a NumSides option, centre and corner picks. AutoCAD POLYGON options: Inscribed (the picked point is a corner,
+// the default) or Circumscribed (Circumscribed=Yes: the radius is the distance from the centre to the MIDDLE of an edge, so the
+// corners lie at radius / cos(pi / n) and the picked direction points at an edge midpoint), and Edge: two endpoints of one edge,
+// the polygon being drawn counterclockwise from the first endpoint to the second (it lies on the left of that edge).
 class PolygonCommand : public Command {
  public:
   explicit PolygonCommand(bool star) : star_(star) {}
   void Begin(CommandContext&) override {
     WantPoint("Center of polygon");
     options = {{"NumSides", std::to_string(sides_), {}, true, false}, {"Edge", "", {}, false, false}};
+    if (!star_) options.push_back({"Circumscribed", "No", {"Yes", "No"}, false, true});
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
     if (n == "NumSides") { int k = std::atoi(v.c_str()); if (k >= 3 && k <= 360) sides_ = k; options[0].value = std::to_string(sides_); }
-    if (n == "Edge") edge_mode_ = true;
+    if (n == "Edge" && !star_) {
+      edge_mode_ = true;
+      if (!center_) WantPoint("First endpoint of edge");
+    }
+    if (n == "Circumscribed" && !star_) {
+      circumscribed_ = (v == "Yes");
+      for (OptionSpec& o : options) if (o.name == "Circumscribed") o.value = circumscribed_ ? "Yes" : "No";
+    }
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
     if (!center_) { int k = std::atoi(t.c_str()); if (k >= 3 && k <= 360) { sides_ = k; options[0].value = std::to_string(sides_); ctx.Print("NumSides=" + std::to_string(sides_)); } }
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
-    if (!center_) { center_ = p; WantPoint(star_ ? "Corner of star" : (edge_mode_ ? "End of edge" : "Corner of polygon")); return; }
+    if (edge_mode_ && !star_ && !center_) {
+      if (!edge0_) { edge0_ = p; WantPoint("Second endpoint of edge"); return; }
+      ctx.ClearPreview();
+      std::vector<Point3d> pts = BuildEdge(ctx, *edge0_, p, true);
+      if (pts.size() >= 4) AddCurve(ctx, PolylineCurve(pts), "Polygon");
+      else ctx.Warn("Polygon: the two edge endpoints coincide, so the polygon has no size");
+      Finish();
+      return;
+    }
+    if (!center_) { center_ = p; WantPoint(star_ ? "Corner of star" : (circumscribed_ ? "Middle of an edge (the radius of the circle the polygon surrounds)" : "Corner of polygon")); return; }
     ctx.ClearPreview();
     std::vector<Point3d> pts = Build(ctx, p, true);
     if (pts.size() >= 4) AddCurve(ctx, PolylineCurve(pts), star_ ? "PolygonStar" : "Polygon");
     else ctx.Warn(std::string(star_ ? "PolygonStar" : "Polygon") + ": the corner is on the center, so the polygon has no size");
     Finish();
+  }
+  // The polygon through the edge a-b, counterclockwise about the construction plane's normal, built in plane coordinates:
+  // side s, apothem s / (2 tan(pi/n)), centre = edge midpoint + apothem * (left normal of the edge); corner k is the first
+  // endpoint turned by 2 pi k / n about the centre.
+  std::vector<Point3d> BuildEdge(CommandContext& ctx, Point3d a, Point3d b, bool close) {
+    ON_Plane pl = ActivePlane(ctx);
+    const double ex = ON_DotProduct(b - a, pl.xaxis), ey = ON_DotProduct(b - a, pl.yaxis);
+    const double side = std::hypot(ex, ey);
+    if (!(side > 0)) return {};
+    const double ux = ex / side, uy = ey / side;
+    const double ax = ON_DotProduct(a - pl.origin, pl.xaxis), ay = ON_DotProduct(a - pl.origin, pl.yaxis);
+    const double apothem = side / (2 * std::tan(ON_PI / sides_));
+    const double cx = ax + ex / 2 - uy * apothem, cy = ay + ey / 2 + ux * apothem;
+    const double rx = ax - cx, ry = ay - cy;
+    std::vector<Point3d> pts;
+    for (int k = 0; k < sides_ + (close ? 1 : 0); ++k) {
+      const double ang = 2 * ON_PI * k / sides_;
+      pts.push_back(pl.PointAt(cx + rx * std::cos(ang) - ry * std::sin(ang), cy + rx * std::sin(ang) + ry * std::cos(ang)));
+    }
+    return pts;
   }
   std::vector<Point3d> Build(CommandContext& ctx, Point3d p, bool close) {
     ON_Plane pl = ActivePlane(ctx);
@@ -203,8 +359,8 @@ class PolygonCommand : public Command {
     double r = (p - *center_).Length();
     if (r <= 0) return {};
     double a0 = std::atan2(ON_DotProduct(p - *center_, pl.yaxis), ON_DotProduct(p - *center_, pl.xaxis));
-    if (edge_mode_ && !star_) {
-      // p is an edge endpoint: circumradius from the edge length.
+    if (circumscribed_ && !star_) {
+      // p is the middle of an edge: the corners are at r / cos(pi/n), half a step either side of that direction.
       const double half = ON_PI / sides_;
       r = r / std::cos(half);
       a0 += half;
@@ -219,6 +375,13 @@ class PolygonCommand : public Command {
     return pts;
   }
   void OnHover(CommandContext& ctx, Point3d h) override {
+    if (edge_mode_ && !star_ && !center_) {
+      if (!edge0_) return;
+      ctx.ClearPreview();
+      std::vector<Point3d> pv = BuildEdge(ctx, *edge0_, h, false);
+      if (!pv.empty()) ctx.AddPreviewPolyline(pv, true);
+      return;
+    }
     if (!center_) return;
     ctx.ClearPreview();
     std::vector<Point3d> pts = Build(ctx, h, false);
@@ -227,8 +390,9 @@ class PolygonCommand : public Command {
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   bool star_;
   bool edge_mode_ = false;
+  bool circumscribed_ = false;
   int sides_ = 6;
-  std::optional<Point3d> center_;
+  std::optional<Point3d> center_, edge0_;
 };
 
 // Divide: places point objects along each selected curve, either by a
