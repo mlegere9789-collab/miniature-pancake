@@ -11,8 +11,9 @@ You are the OBSERVER in the Dino 8 Rhino clean-room protocol. Read parity/oracle
 * Do not write Dino 8 implementation code. Do not copy your own notes/transcripts into the repo.
 
 Steps:
-1. git fetch origin w0-rhino-oracle and check it out in a fresh clone/worktree. Do NOT start until parity/oracle/rhino/REVIEW_LOG.md
-   has a signed G0 entry (owner fills it in); if it is unsigned, stop and tell the owner.
+1. git fetch origin w0-rhino-oracle and check it out in a fresh clone/worktree. Check that parity/oracle/rhino/REVIEW_LOG.md contains
+   the G0 entry recorded from the owner's statement (owner decision to proceed at own risk, scope limited to scripted cases and
+   numeric results). If it is missing, stop and tell the owner.
 2. In Rhino 8, open the Script Editor (Python 3) and set the environment variables D8_CASES=<path to cases.jsonl>,
    D8_OUT=<path>\smoke.jsonl, D8_LIMIT=5; run run_rhino.py. If it errors, fix ONLY the runner (public API call signatures)
    and report what you changed; the runner was written without access to Rhino and is untested.
