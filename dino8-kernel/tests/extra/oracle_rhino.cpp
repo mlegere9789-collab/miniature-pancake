@@ -203,7 +203,14 @@ Point3d P3(const J& v) { return Point3d(v.a.at(0).num(), v.a.at(1).num(), v.a.at
 // Measuring a B-rep: exactly the fields listed in the case.
 bool Wants(const std::vector<std::string>& want, const char* key) { return std::find(want.begin(), want.end(), key) != want.end(); }
 
+// The last measured B-rep, kept so the child can add a tessellation-based bounding box as a diagnostic after the record is written.
+Brep* g_last_brep = nullptr;
+bool g_last_wants_bbox = false;
+
 void MeasureBrep(const Brep& b, const std::vector<std::string>& want, Rec& rec) {
+  delete g_last_brep;
+  g_last_brep = new Brep(b);
+  g_last_wants_bbox = Wants(want, "bbox");
   const bool solid = b.raw().IsSolid();
   const bool valid = b.raw().IsValid();
   if (Wants(want, "area")) {
@@ -581,8 +588,17 @@ std::string Render(const std::string& id, bool ok, const std::string& error, con
   return line + "}";
 }
 
+void WriteAll(int fd, const std::string& text) {
+  size_t off = 0;
+  while (off < text.size()) {
+    const ssize_t w = write(fd, text.data() + off, text.size() - off);
+    if (w <= 0) break;
+    off += static_cast<size_t>(w);
+  }
+}
+
 // Runs one case in a forked child (alarm = timeout) and returns its record line.
-std::string RunIsolated(const J& c, int timeout_s, const std::string& build) {
+std::string RunIsolated(const J& c, int timeout_s, const std::string& build, bool diagnostics) {
   const std::string id = c.at("id").str();
   int fd[2];
   if (pipe(fd) != 0) throw std::runtime_error("pipe failed");
@@ -612,12 +628,17 @@ std::string RunIsolated(const J& c, int timeout_s, const std::string& build) {
       rec.out.clear();
     }
     const long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-    const std::string line = Render(id, ok, error, rec, ms, build);
-    size_t off = 0;
-    while (off < line.size()) {
-      const ssize_t w = write(fd[1], line.data() + off, line.size() - off);
-      if (w <= 0) break;
-      off += static_cast<size_t>(w);
+    WriteAll(fd[1], Render(id, ok, error, rec, ms, build) + "\n");
+    // Diagnostic, after the record is safely written (a hang or crash here loses only this line): the bounding box of the closed
+    // tessellation, to tell a kernel tight box that ignores face trims from a genuinely different shape.
+    if (ok && g_last_brep && g_last_wants_bbox && diagnostics) {
+      alarm(8);
+      try {
+        const k::BoundingBox bb = g_last_brep->TessellateToClosedMeshAdaptive(1e-4).GetBoundingBox();
+        WriteAll(fd[1], "BBOXMESH [" + Num(bb.min.x) + "," + Num(bb.min.y) + "," + Num(bb.min.z) + "," + Num(bb.max.x) + "," + Num(bb.max.y) + "," +
+                            Num(bb.max.z) + "]\n");
+      } catch (...) {
+      }
     }
     _exit(0);
   }
@@ -634,7 +655,16 @@ std::string RunIsolated(const J& c, int timeout_s, const std::string& build) {
   int status = 0;
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
   const long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-  if (!got.empty() && got.back() == '}') return got;
+  const size_t nl = got.find('\n');
+  if (nl != std::string::npos && nl > 0 && got[nl - 1] == '}') {  // the record line is complete, whatever happened to the diagnostic after it
+    std::string record = got.substr(0, nl);
+    const size_t d = got.find("BBOXMESH [", nl);
+    if (d != std::string::npos) {
+      const size_t e = got.find(']', d);
+      if (e != std::string::npos) record.insert(record.size() - 1, ",\"bbox_mesh\":" + got.substr(d + 9, e - (d + 9) + 1));
+    }
+    return record;
+  }
   Rec rec;
   std::string error = "ChildLost";
   if (WIFSIGNALED(status)) {
@@ -690,7 +720,7 @@ D8_EXTRA_TEST(OracleRhino) {
         Rec r;
         rec = Render(c.at("id").str(), false, "BudgetExceeded", r, 0, build);
       } else {
-        rec = RunIsolated(c, 60, build);
+        rec = RunIsolated(c, 60, build, used < 600);
       }
     } catch (const std::exception& e) {
       std::printf("D8ERR line %d: %s\n", total, e.what());
