@@ -2,9 +2,9 @@
 # UXSNAP_: grid snap, ortho and the object-snap switches, proved headlessly through the app's command layer and settings model.
 # Rows D8-RHINO-VIEW-0042 Ortho, 0043 OrthoAngle, 0044 OrthoSnapToCPlaneZ, 0083 SetOrtho, 0085 SetSnap, 0086 Snap, 0087 SnapSize,
 # 0088 SnapToLocked, 0089 SnapToMeshes, 0091 SnapToOccluded, 0093 SmartTrack, 0009 DisableOsnap, 0063 ProjectOsnap.
-# Oracle: the Rhino 8 help text kept in data/commands.json ("The SetSnap command turns grid snap on, off, or toggles the current state",
-# options On / Off / Toggle; the same for SetOrtho; "The default angle is 90 degrees"; SnapSize "specifies the grid snap spacing"), and a
-# truth table written here by hand: from a known state each of Off / bare / Toggle / On / Status gives off, flipped, flipped again, on, unchanged.
+# Oracle: a truth table written here by hand: from a known state each of Off / bare / Toggle / On / Status gives off, flipped, flipped again, on,
+# unchanged. That Rhino offers the On / Off / Toggle words on these commands, and the 90 degree default ortho angle, is recalled (needs owner check);
+# no vendor wording is used.
 # Persistence ("settings persist across sessions"): a hand-chosen pattern of nine switches is exported with OptionsExport, every switch is
 # flipped, OptionsImport restores them, and the exported JSON file is read back with python for the exact booleans.
 # Not tested (needs a real window or a pick): that a switched-off snap really stops a pointer snap, and the hash marks of OrthoAngle.

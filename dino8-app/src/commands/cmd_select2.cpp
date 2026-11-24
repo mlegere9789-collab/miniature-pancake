@@ -842,17 +842,68 @@ void RegisterSelect2Commands(CommandEngine& e) {
         }
         ReportSub(ctx, "SelFacesToBoundary", added);
       }), CommandStatus::Implemented, "Grows the selected seed face(s) until it reaches the selected boundary edges.");
+  // SelMeshEdges [angle]: every edge of the selected meshes / SubDs, or with an angle in degrees only the interior edges where the two
+  // neighbouring faces' normals differ by at least that angle (a flat join is 0, a cube edge 90).
   Reg(e, "SelMeshEdges", Immediate([](CommandContext& ctx) {
-        size_t added = 0;
+        std::optional<double> angle;
+        if (auto tok = ctx.Engine().TakePendingInput()) {
+          char* end = nullptr;
+          const double v = std::strtod(tok->c_str(), &end);
+          if (end == tok->c_str() || *end || v < 0 || v > 180) { ctx.Warn("SelMeshEdges: the angle must be a number from 0 to 180 degrees, got '" + *tok + "'"); return; }
+          angle = v;
+        }
+        size_t added = 0, matching = 0;
         int objs = 0;
         for (const SceneObject& o : ctx.Doc().Objects()) {
           if (!o.selected || (o.kind != ObjectKind::Mesh && o.kind != ObjectKind::SubD)) continue;
           ++objs;
-          for (const SubObjectRef& r : AllEdges(o)) { if (!Sub(ctx).Contains(r)) ++added; Sub(ctx).Add(r); }
+          for (const SubObjectRef& r : angle ? MeshEdgesByDihedral(o, *angle) : AllEdges(o)) { ++matching; if (!Sub(ctx).Contains(r)) ++added; Sub(ctx).Add(r); }
         }
         if (objs == 0) ctx.Warn("Select meshes or SubDs first");
+        else if (angle) ctx.Print("SelMeshEdges: " + std::to_string(matching) + " matching edge(s) (neighbouring faces at least " + FormatNumber(*angle) + " degrees apart), " + std::to_string(Sub(ctx).CountOf(SubObjectKind::Edge)) + " edge(s) selected");
         else ReportSub(ctx, "SelMeshEdges", added);
-      }), CommandStatus::Implemented, "Selects every edge of the selected meshes / SubDs.");
+      }), CommandStatus::Implemented, "SelMeshEdges [angle]: selects every edge of the selected meshes / SubDs, or with an angle in degrees only the interior edges whose two faces' normals differ by at least that angle.");
+  // SelMeshFacesBy*: faces of the selected meshes / SubDs chosen by a measure; the faces are added to the sub-object selection and one line reports how
+  // many matched (independent of what was selected before) and how many faces are selected in all.
+  //   SelMeshFacesByArea min [max]        area in [min, max] (max defaults to unlimited)
+  //   SelMeshFacesByAspectRatio limit     longest side / shortest side greater than limit
+  //   SelMeshFacesByEdgeLength min [max]  every side of the face in [min, max]
+  //   SelMeshFacesByDraftAngle min [max]  angle between the face plane and the CPlane Z axis in [min, max] degrees (max defaults to 90)
+  auto face_select = [](const char* name, size_t min_args, size_t max_args, double default_max, std::function<bool(const MeshFaceMeasure&, double, double)> pred) {
+    return Immediate([name, min_args, max_args, default_max, pred](CommandContext& ctx) {
+      std::vector<double> nums;
+      while (auto tok = ctx.Engine().TakePendingInput()) {
+        char* end = nullptr;
+        const double v = std::strtod(tok->c_str(), &end);
+        if (end == tok->c_str() || *end) { ctx.Warn(std::string(name) + ": expected a number, got '" + *tok + "'"); return; }
+        nums.push_back(v);
+      }
+      if (nums.size() < min_args || nums.size() > max_args) {
+        ctx.Warn(std::string(name) + ": expected " + (min_args == max_args ? std::to_string(min_args) : std::to_string(min_args) + " or " + std::to_string(max_args)) + " number(s), got " + std::to_string(nums.size()));
+        return;
+      }
+      const double lo = nums[0], hi = nums.size() > 1 ? nums[1] : default_max;
+      const ON_3dVector pull = ActiveNormal(ctx);
+      size_t matching = 0;
+      int objs = 0;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (!o.selected || (o.kind != ObjectKind::Mesh && o.kind != ObjectKind::SubD)) continue;
+        ++objs;
+        for (const MeshFaceMeasure& f : MeshFaceMeasures(o, pull.x, pull.y, pull.z)) if (pred(f, lo, hi)) { ++matching; Sub(ctx).Add(SubObjectRef::Face(o.id, f.face)); }
+      }
+      if (objs == 0) ctx.Warn(std::string(name) + ": select meshes or SubDs first");
+      else ctx.Print(std::string(name) + ": " + std::to_string(matching) + " matching face(s), " + std::to_string(Sub(ctx).CountOf(SubObjectKind::Face)) + " face(s) selected");
+    });
+  };
+  const double kEps = 1e-9;
+  Reg(e, "SelMeshFacesByArea", face_select("SelMeshFacesByArea", 1, 2, 1e300, [kEps](const MeshFaceMeasure& f, double lo, double hi) { return f.area >= lo - kEps && f.area <= hi + kEps; }),
+      CommandStatus::Implemented, "SelMeshFacesByArea min [max]: adds the faces of the selected meshes / SubDs whose area is in [min, max] to the sub-object selection.");
+  Reg(e, "SelMeshFacesByAspectRatio", face_select("SelMeshFacesByAspectRatio", 1, 1, 0, [kEps](const MeshFaceMeasure& f, double lo, double) { return f.min_edge > 0 ? f.max_edge / f.min_edge > lo + kEps : true; }),
+      CommandStatus::Implemented, "SelMeshFacesByAspectRatio limit: adds the faces whose longest side divided by the shortest side is greater than the limit.");
+  Reg(e, "SelMeshFacesByEdgeLength", face_select("SelMeshFacesByEdgeLength", 1, 2, 1e300, [kEps](const MeshFaceMeasure& f, double lo, double hi) { return f.min_edge >= lo - kEps && f.max_edge <= hi + kEps; }),
+      CommandStatus::Implemented, "SelMeshFacesByEdgeLength min [max]: adds the faces whose every side is within [min, max].");
+  Reg(e, "SelMeshFacesByDraftAngle", face_select("SelMeshFacesByDraftAngle", 1, 2, 90.0, [kEps](const MeshFaceMeasure& f, double lo, double hi) { return f.draft_degrees >= lo - kEps && f.draft_degrees <= hi + kEps; }),
+      CommandStatus::Implemented, "SelMeshFacesByDraftAngle min [max]: adds the faces whose plane makes an angle in [min, max] degrees with the construction plane Z axis (0 = a wall parallel to Z, 90 = a face square to it).");
   Reg(e, "SelSubDEdges", [] {
         return std::make_unique<SelSubDByTypeCommand>(
             std::vector<OptionSpec>{{"Type", "Crease", {"Crease", "Boundary", "Soft", "Smooth", "All"}, false, false}},

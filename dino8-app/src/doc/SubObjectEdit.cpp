@@ -877,6 +877,70 @@ std::vector<SubObjectRef> AllEdges(const SceneObject& o) {
   return out;
 }
 
+namespace {
+// Unnormalised normal (Newell) of a mesh face, taken relative to its first vertex so far-from-origin models keep their precision.
+Vector3d FaceNewell(const ON_Mesh& m, const std::vector<int>& v) {
+  Vector3d n(0, 0, 0);
+  if (v.size() < 3) return n;
+  const Point3d o = MeshVertex(m, v[0]);
+  for (size_t k = 1; k + 1 < v.size(); ++k) {
+    const Vector3d a = MeshVertex(m, v[k]) - o, b = MeshVertex(m, v[k + 1]) - o;
+    n = n + Vector3d(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+  }
+  return n;
+}
+}  // namespace
+
+std::vector<MeshFaceMeasure> MeshFaceMeasures(const SceneObject& o, double pull_x, double pull_y, double pull_z) {
+  std::vector<MeshFaceMeasure> out;
+  kernel::Mesh scratch;
+  const ON_Mesh* m = TopologyMesh(o, scratch);
+  if (!m) return out;
+  double al = std::sqrt(pull_x * pull_x + pull_y * pull_y + pull_z * pull_z);
+  if (al <= 0) { pull_x = pull_y = 0; pull_z = 1; al = 1; }
+  for (int fi = 0; fi < m->m_F.Count(); ++fi) {
+    const std::vector<int> v = FaceVertices(m->m_F[fi]);
+    MeshFaceMeasure f;
+    f.face = fi;
+    f.min_edge = 1e300;
+    for (size_t k = 0; k < v.size(); ++k) {
+      const double len = MeshVertex(*m, v[k]).DistanceTo(MeshVertex(*m, v[(k + 1) % v.size()]));
+      f.min_edge = std::min(f.min_edge, len);
+      f.max_edge = std::max(f.max_edge, len);
+    }
+    const Vector3d n = FaceNewell(*m, v);
+    const double nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    f.area = 0.5 * nl;
+    if (nl > 0) {
+      const double c = std::min(1.0, std::fabs(n.x * pull_x + n.y * pull_y + n.z * pull_z) / (nl * al));
+      f.draft_degrees = std::asin(c) * 180.0 / 3.14159265358979323846;
+    }
+    out.push_back(f);
+  }
+  return out;
+}
+
+std::vector<SubObjectRef> MeshEdgesByDihedral(const SceneObject& o, double min_degrees) {
+  std::vector<SubObjectRef> out;
+  kernel::Mesh scratch;
+  const ON_Mesh* m = TopologyMesh(o, scratch);
+  if (!m) return out;
+  std::vector<Vector3d> normals(static_cast<size_t>(m->m_F.Count()));
+  for (int fi = 0; fi < m->m_F.Count(); ++fi) {
+    Vector3d n = FaceNewell(*m, FaceVertices(m->m_F[fi]));
+    const double nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    normals[static_cast<size_t>(fi)] = nl > 0 ? Vector3d(n.x / nl, n.y / nl, n.z / nl) : n;
+  }
+  for (const auto& [k, faces] : EdgeFaces(*m)) {
+    if (faces.size() != 2) continue;
+    const Vector3d& a = normals[static_cast<size_t>(faces[0])];
+    const Vector3d& b = normals[static_cast<size_t>(faces[1])];
+    const double c = std::max(-1.0, std::min(1.0, a.x * b.x + a.y * b.y + a.z * b.z));
+    if (std::acos(c) * 180.0 / 3.14159265358979323846 >= min_degrees - 1e-9) out.push_back(SubObjectRef::MeshEdge(o.id, k.first, k.second));
+  }
+  return out;
+}
+
 std::vector<SubObjectRef> NakedEdges(const SceneObject& o) {
   std::vector<SubObjectRef> out;
   if (o.kind == ObjectKind::Brep && o.brep) {
