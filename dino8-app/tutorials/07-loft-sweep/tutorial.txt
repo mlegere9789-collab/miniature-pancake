@@ -1,0 +1,38 @@
+#title: Loft and sweep
+#summary: Skin a smooth surface through three circles with Loft, then pull a circle along a rail with Sweep1.
+#level: Intermediate
+# Source: extends tests/history_script.txt (Loft) and tests/history_sweep1_script.txt (Sweep1).
+#narrate: Two ways to make shapes that change along their length. Loft blends between several cross sections, and sweep drags one section along a path.
+SetActiveViewport Perspective
+MaxViewport
+Circle 0,0,0 10
+Circle 0,0,20 6
+Circle 0,0,40 9
+@expect_objects 3
+#narrate: Three circles stacked in height: wide at the bottom, narrow in the middle, wider again at the top.
+SelAll
+Loft
+Enter
+Enter
+@expect_objects 4
+#narrate: Select all three and run Loft. Dino 8 interpolates exactly through every section and caps the ends, giving a closed solid with a waist.
+SelNone
+ZoomExtents
+#narrate: In the Perspective view the waisted shape is clear.
+Line 40,0,0 40,0,30
+Circle 40,0,0 3
+@expect_objects 6
+ZoomExtents
+#narrate: Now a sweep. A vertical line is the rail, thirty units long, and a small circle at its base is the cross section.
+SelNone
+SelID 5
+Sweep1
+#cont
+SelID 6
+Enter
+@expect_objects 7
+#narrate: Sweep1 first takes the rail, then the shape to sweep. The circle travels the whole length of the rail and leaves a tube.
+ZoomExtents
+SelLast
+List
+#narrate: Loft needs several sections, sweep needs a rail and one section. Between them they cover most blended and extruded-along-a-path shapes.

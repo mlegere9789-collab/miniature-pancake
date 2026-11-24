@@ -1,0 +1,468 @@
+# HSO: exact Shell / OffsetSrf of a right prism with a cylindrical THROUGH-HOLE (box minus cylinder, the sewn
+# Boolean result; prism_solid.h RecognizeHole / OffsetHoleSolid). Every case is bracketed by an HSOBEGIN_<name> marker.
+New
+HSOBEGIN_shell
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_offset_out
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+New
+HSOBEGIN_offset_in
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+-1
+SelLast
+List
+Volume
+Check
+New
+HSOBEGIN_offset_solid
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+Check
+New
+HSOBEGIN_offset_solid_in
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+Solid=Yes
+-1
+SelLast
+List
+Volume
+Check
+New
+HSOBEGIN_offset_vanish
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+2
+SelAll
+List
+New
+HSOBEGIN_offset_wall
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+-3
+SelAll
+List
+New
+HSOBEGIN_shell_wall
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+3
+SelAll
+List
+New
+HSOBEGIN_shell_collapse
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+5
+SelAll
+List
+New
+HSOBEGIN_rect
+Box 0,0,0 20,12,0 8
+Cylinder 7,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+1
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_rect_offset
+Box 0,0,0 20,12,0 8
+Cylinder 7,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+New
+HSOBEGIN_tilted_shell
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Rotate3D 0,0,0 1,2,3 37
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_tilted_offset
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Rotate3D 0,0,0 1,2,3 37
+SelAll
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+New
+HSOBEGIN_chain
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+OffsetSrf
+1
+SelLast
+Shell
+Enter
+0.5
+SelLast
+List
+Volume
+Check
+# ===================== both rims of ONE hole =====================
+# 6 x 6 x 4 plate, hole R = 1.5 on its axis: V0 = 144 - pi*1.5^2*4 = 115.726. A chamfer (wall w, cap c) removes
+# pi*w*c*(R + c/3), a fillet of radius r removes 2*pi*r^2*(R + r/2 - (pi/4)*(R + r) + r/3).
+# chamfer both rims in ONE ChamferEdge run (top 1 x 1: 5.7596, bottom 0.5 x 0.5: 1.3090) -> 108.657
+New
+HSOBEGIN_C_both
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ChamferEdge
+Radius=1
+3,4.5,4
+Radius=0.5
+3,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+# FilletEdge on the upper rim, then ChamferEdge on the lower rim of the same hole (2.3238 + 1.3090) -> 112.093
+New
+HSOBEGIN_M_fc
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+3,4.5,4
+Enter
+ChamferEdge
+Radius=0.5
+3,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+# ChamferEdge on the upper rim, then FilletEdge on the lower rim (5.7596 + 0.5433) -> 109.423
+New
+HSOBEGIN_M_cf
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ChamferEdge
+Radius=1
+3,4.5,4
+Enter
+FilletEdge
+Radius=0.5
+3,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+# two FilletEdge runs, one per rim (2.3238 + 0.5433) -> 112.859 (the same as both rims in one run)
+New
+HSOBEGIN_F_two_runs
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=1
+3,4.5,4
+Enter
+FilletEdge
+Radius=0.5
+3,4.5,0
+Enter
+SelAll
+List
+Volume
+Check
+# ===================== a cylindrical BOSS on a plate (BooleanUnion of a box and a cylinder resting on its top face) =====================
+# 10 x 10 x 4 plate, boss R = 2, 4 high (z 4..8): V0 = 400 + 16 pi = 450.265. Blend cross-section areas (Pappus):
+#   base fillet r (adds):    2*pi*(R*r^2*(1 - pi/4) + r^3*(5/6 - pi/4))     r = 0.5: +0.7118
+#   top fillet r (removes):  2*pi*(R*r^2*(1 - pi/4) - r^3*(5/6 - pi/4))     r = 0.5: -0.6365
+#   base chamfer w x c (adds):  pi*w*c*(R + c/3)   top chamfer (removes):  pi*w*c*(R - c/3)
+New
+HSOBEGIN_BOSS_base
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.5
+5,7,4
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_BOSS_top
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.5
+5,7,8
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_BOSS_both
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.5
+5,7,4
+Radius=0.5
+5,7,8
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_BOSS_chamfer_base
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+ChamferEdge
+Radius=0.5
+5,7,4
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_BOSS_chamfer_top
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+ChamferEdge
+Radius=0.5
+5,7,8
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_BOSS_toobig
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+FilletEdge
+Radius=3
+5,7,4
+Enter
+SelAll
+List
+# two SEPARATE runs on one boss: the second sees the first one's cone / torus and keeps it
+New
+HSOBEGIN_BOSS_seq_c
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+ChamferEdge
+Radius=0.5
+5,7,4
+Enter
+ChamferEdge
+Radius=0.5
+5,7,8
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_BOSS_seq_f
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.5
+5,7,4
+Enter
+FilletEdge
+Radius=0.5
+5,7,8
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOBEGIN_BOSS_mixed
+Box 0,0,0 10,10,0 4
+Cylinder 5,5,4 2 4
+SelAll
+BooleanUnion
+FilletEdge
+Radius=0.5
+5,7,4
+Enter
+ChamferEdge
+Radius=0.5
+5,7,8
+Enter
+SelAll
+List
+Volume
+Check
+New
+HSOEND

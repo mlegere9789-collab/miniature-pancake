@@ -1,0 +1,46 @@
+# SATF: ACIS SAT (.sat text) through the app's Import/Export/Open/SaveAs paths
+# (io/FileSat.cpp over the kernel's ReadAcisSat/WriteAcisSat). @TMP@ is
+# replaced by smoke.sh. Printed in this order, see the SATF_ checks:
+#   Volume lines: [0] the box before export, [1] the box re-opened from the
+#   .sat file, [2] the sphere imported from its .sat file (r 8: 2144.7; the
+#   app's Volume is tessellation based), [3] the cylinder re-opened from its
+#   .sat file.
+SetActiveViewport Top
+# --- a box: documented layouts only (planes + straight curves)
+Box 0,0,0 20,20,0 10
+SelAll
+Volume
+Export @TMP@/satf_box.sat
+New
+Open @TMP@/satf_box.sat
+SelAll
+Volume
+List
+# --- a sphere: needs sphere-surface, an UNVERIFIED layout; the app writes it
+# only with a loud note and reads it back with the same note
+New
+Sphere 10,10,10 8
+SelAll
+Export @TMP@/satf_sphere.sat
+New
+Import @TMP@/satf_sphere.sat
+SelAll
+List
+Volume
+# --- a cylinder (cone-surface + ellipse-curve, UNVERIFIED), via Open
+New
+Cylinder 0,0,0 5 10
+SelAll
+Export @TMP@/satf_cyl.sat
+New
+Open @TMP@/satf_cyl.sat
+SelAll
+Volume
+# --- a mesh has no ACIS body representation here: refused with the reason
+New
+MeshBox 0,0,0 10,10,0 10
+SelAll
+Export @TMP@/satf_mesh.sat
+# --- a file that is not an ACIS save file: refused with the reason
+New
+Import @TMP@/satf_bad.sat

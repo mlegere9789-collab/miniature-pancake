@@ -1,0 +1,39 @@
+# Parametric architectural components QC (arch/ArchComponents.h, cmd_arch.cpp).
+# Component ids are assigned in one shared counter across every type, so
+# they run 1..8 in creation order below regardless of how many mesh
+# objects each type actually builds. Every edit/delete below reselects its
+# target with SelLast right after creating it, rather than guessing the
+# mesh's doc-assigned object id (which shifts every time a Wall's shell is
+# rebuilt to cut in a new opening).
+# --- Wall: a 5-unit wall, 2.4 tall, 0.2 thick
+Wall 0,0,0 5,0,0 2.4 0.2
+# --- Door: cut into that wall (rebuilds its mesh, replacing its object id)
+SelLast
+Door 2.5,0,0 0.9 2.1
+# --- Window: a second opening in the same wall (rebuilds it again)
+SelLast
+Window 4,0,0 1.2 1.2 0.9
+# --- ArchSlab: a floor slab (named ArchSlab - "Slab" is already a mesh-tools command)
+ArchSlab 0,10,0 5,15,0 0.2
+# --- Roof: a gable roof over a footprint, ridge 1 unit above the eaves
+Roof
+Type=Gable
+20,0,0
+25,5,0
+1.0
+# --- Stair: 3 risers, so the QC stays fast (each riser is its own mesh object)
+Stair 40,0,0 43,0,0 3 0.18 0.28 1.0
+# --- Column: a 3-unit post, then ArchEdit raises it to 5 units
+Column 60,0,0 3.0 0.3 0.3
+SelLast
+ArchEdit
+5
+# --- Beam: spans between two points, then ArchDelete removes it again
+Beam 80,0,3 85,0,3 0.2 0.3
+# --- ArchSchedule before and after the delete
+ArchSchedule
+SelLast
+ArchDelete
+ArchSchedule
+SelAll
+List

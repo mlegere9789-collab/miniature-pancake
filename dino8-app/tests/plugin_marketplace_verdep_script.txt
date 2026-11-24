@@ -1,0 +1,6 @@
+GrasshopperPluginList
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_verdep_index.json
+PluginMarketplaceInstall analysistools
+GrasshopperPluginList
+PluginMarketplaceInstall curvetools
+GrasshopperPluginList

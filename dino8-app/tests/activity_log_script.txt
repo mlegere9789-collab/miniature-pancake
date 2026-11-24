@@ -1,0 +1,12 @@
+Box 0,0,0 10,10,0 5
+SelLast
+Move 0,0,0 5,0,0
+Sphere 30,0,0 5
+SelLast
+Delete
+Snapshots Save MySnap
+Save @TMP@/activity_test.3dm
+New
+Open @TMP@/activity_test.3dm
+Snapshots List
+ActivityExport @TMP@/activity_export.csv

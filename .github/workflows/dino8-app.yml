@@ -1,0 +1,628 @@
+name: Dino 8 App
+
+on:
+  push:
+    branches: [main, 'claude/pdf-audit-i2bvwm']
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml', '.github/actions/**', 'scripts/**']
+  pull_request:
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml', '.github/actions/**', 'scripts/**']
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+# Least privilege by default: the build/test/package jobs only read the
+# repository (artifact upload uses the Actions runtime token, not this one).
+# The write scopes - contents (create the release), id-token (keyless Sigstore
+# signing) and attestations (build-provenance) - are granted ONLY to the
+# `release` job, which never runs for pull_request events.
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux (build, smoke test, .deb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          # The runner image preinstalls a Google Chrome apt source we never use
+          # (nothing below comes from it); its mirror has been repeatedly failing
+          # "Hash Sum mismatch" on `apt-get update`, which aborts the whole step -
+          # drop it first so a third-party repo we don't need can't break a build
+          # that has nothing to do with it. The exact filename varies by runner
+          # image, so find it by content instead of guessing a path.
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils ffmpeg
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+      - name: Build
+        run: cmake --build dino8-app/build
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure
+      # Dino 8 Touch's browser test (dino8-app/touch/tests/touch_gestures.test.js)
+      # needs node, the pinned `playwright` package (dino8-app/touch/package.json
+      # + package-lock.json) and a Chromium. Node is the runner image's own
+      # preinstalled one (Playwright 1.63 needs >= 20). Without these steps
+      # smoke.sh's TCH_ block could only skip.
+      - name: Install Dino 8 Touch test dependencies (node, Playwright, Chromium)
+        working-directory: dino8-app/touch
+        run: |
+          node --version
+          node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 20) { console.error("node >= 20 is required for Playwright, found " + process.version); process.exit(1); }'
+          npm ci
+          npx playwright install --with-deps chromium
+          node -e 'require("playwright"); console.log("playwright resolves from dino8-app/touch")'
+      # DINO8_REQUIRE_TOUCH / DINO8_REQUIRE_TUTORIALS turn a skipped TCH_ / TUT_
+      # block into a FAIL in smoke.sh (they only exist here, never locally).
+      # DINO8_TUTORIAL_VIDEO_DIR makes smoke.sh's TUTV_ section record all ten
+      # tutorials there and ffprobe each video (non-zero duration and frames).
+      - name: Smoke test (headless)
+        shell: bash
+        timeout-minutes: 90
+        env:
+          DINO8_REQUIRE_TOUCH: "1"
+          DINO8_REQUIRE_TUTORIALS: "1"
+          DINO8_TUTORIAL_VIDEO_DIR: ${{ github.workspace }}/tutorial-videos
+        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8 2>&1 | tee smoke.log
+      # Evidence gate: the smoke run above must have actually RUN the touch
+      # browser test and recorded + probed all ten tutorial videos, not skipped.
+      - name: Check that the touch and tutorial checks ran
+        shell: bash
+        run: |
+          grep -E '^ok +TCH_touch: .* passed \([0-9]+ checks' smoke.log
+          if grep -E '^skip (TCH_|TUT_|TUTV_)' smoke.log; then echo "a required check was skipped"; exit 1; fi
+          grep -E '^ok +TUTV_count: all 10 tutorials' smoke.log
+          grep -E '^ok +TUT_selftest' smoke.log
+          test "$(grep -cE '^ok +TUTV_[0-9]{2}-' smoke.log)" -eq 10
+          echo "touch test + tutorial pipeline ran (see smoke.log in the artifact)"
+      - name: Package
+        run: cd dino8-app/build && cpack
+      # The tutorial videos the smoke run produced: silent, one still per
+      # command with caption files, NOT narrated and NOT published anywhere.
+      # Kept for 14 days so a reviewer can watch them. always(): also
+      # uploaded when a later check failed, to see what was recorded.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Dino8-tutorial-videos
+          path: |
+            tutorial-videos/
+            smoke.log
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-linux
+          path: |
+            dino8-app/build/*.deb
+            dino8-app/build/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows (build, installer .exe)
+    runs-on: windows-latest
+    env:
+      # Which Authenticode method is configured, decided from which secrets
+      # exist ('none' today). GitHub does not allow `secrets` inside `if:`, so
+      # the decision is made here once and the steps test env.WINDOWS_SIGN_METHOD.
+      # Precedence if several are configured: signpath > azure > pfx.
+      WINDOWS_SIGN_METHOD: ${{ (secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORGANIZATION_ID != '' && secrets.SIGNPATH_PROJECT_SLUG != '' && secrets.SIGNPATH_SIGNING_POLICY_SLUG != '' && 'signpath') || (secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT != '' && secrets.AZURE_TRUSTED_SIGNING_PROFILE != '' && 'azure') || (secrets.WINDOWS_CERT_BASE64 != '' && 'pfx') || 'none' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure (Ninja + MSVC)
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build dino8-app/build --parallel
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure -C Release
+      - name: Version check
+        run: dino8-app\build\Dino8.exe --version
+      # GitHub's windows-latest runner has no real GPU: WGL reports "The
+      # driver does not appear to support OpenGL" and GLFW can't create even
+      # a hidden 3.3 core window (confirmed by actually running the smoke
+      # test without this step first). Drop in Mesa's llvmpipe software
+      # OpenGL implementation as opengl32.dll right next to Dino8.exe -
+      # Windows' DLL search order checks the executable's own directory
+      # before System32, so this shadows the real (non-functional) driver
+      # for this one binary only, with no system-wide install. Queried
+      # dynamically (not a pinned version) since this workflow step runs on
+      # the Actions runner itself, which has full internet access unlike
+      # this repo's own sandboxed dev environment.
+      - name: Install Mesa (software OpenGL) for the headless smoke test
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Authenticated: the anonymous api.github.com quota is shared by
+          # Pinned to 26.2.5: 26.2.6 (released 2026-11) ships a WGL driver that
+          # cannot create a GL 3.3 window on the runner ("WGL: The driver does
+          # not appear to support OpenGL"); 26.2.5 passed every earlier run.
+          # Unpinned "latest" made the build depend on upstream timing.
+          # every runner behind the same egress IP and has already failed a
+          # build outright ("API rate limit exceeded for 172.185.150.240",
+          # run 531). GITHUB_TOKEN is per-job and gets the authenticated quota.
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/tags/26.2.5" -Headers @{ "User-Agent" = "dino8-ci"; "Authorization" = "Bearer $env:GITHUB_TOKEN" }
+          $asset = $release.assets | Where-Object { $_.name -match "release-msvc\.7z$" } | Select-Object -First 1
+          if (-not $asset) { throw "mesa-dist-win: no release-msvc .7z asset found in latest release $($release.tag_name)" }
+          Write-Host "Using $($asset.name) from mesa-dist-win $($release.tag_name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\mesa.7z"
+          7z x "$env:RUNNER_TEMP\mesa.7z" -o"$env:RUNNER_TEMP\mesa" -y | Out-Null
+          $x64 = Get-ChildItem -Path "$env:RUNNER_TEMP\mesa" -Recurse -Directory -Filter "x64" | Select-Object -First 1
+          if (-not $x64) { throw "mesa-dist-win archive had no x64 directory" }
+          Copy-Item "$($x64.FullName)\*.dll" -Destination "dino8-app\build" -Force
+          "MESA_GL_VERSION_OVERRIDE=3.3" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "MESA_GLSL_VERSION_OVERRIDE=330" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      # Historical note (kept because the Defender step below still runs):
+      # smoke.sh's DWG reopen used to die on this runner with exit 127 and
+      # zero output. Excluding the build/temp dirs from Windows Defender was
+      # tried as a fix and did NOT change anything; the real cause was found
+      # later by local MinGW+Wine reproduction and fixed at the source: a
+      # LibreDWG cvt_TIMEBLL fallback left struct tm's tm_mday at 0, which
+      # MSVC's CRT parameter validation aborts on (glibc/Darwin tolerate it)
+      # - see cmake/patch_libredwg.cmake round 5. The exclusion is retained
+      # only as harmless hardening against real-time-scan latency on the
+      # freshly written test files.
+      - name: Exclude build/temp dirs from Windows Defender
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath (Resolve-Path "dino8-app\build").Path
+          Add-MpPreference -ExclusionPath $env:TEMP
+          Add-MpPreference -ExclusionProcess "Dino8.exe"
+      # The same functional QC Linux already runs (~1500 checks over the
+      # real app, not just a build check) - smoke.sh's own xvfb-run guard
+      # falls through to a direct run whenever xvfb-run isn't on PATH, which
+      # is always true here, so no virtual display setup is needed beyond
+      # the software-GL swap above.
+      # A genuine hang (not a crash, not a script failure - the process just
+      # never produces another line of output) has been observed here twice,
+      # independently, at the exact same point (right after ScreenCaptureToFile,
+      # launching the next --script child process) on the same commit: with no
+      # step timeout, GitHub's default 6-hour job timeout is what finally ends
+      # it, eating six hours of this shared branch's Windows CI capacity for a
+      # run that was never coming back. A normal full run of this step takes a
+      # few minutes; 20 is generous headroom, not a tight bound - a real hang
+      # still fails fast instead of blocking every other agent's Windows CI on
+      # this branch for hours. See RHINO8_KILLER_AUDIT.md row L.
+      - name: Smoke test (headless)
+        shell: bash
+        timeout-minutes: 60
+        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
+      # Authenticode signing, inert until a signing secret exists: when none is
+      # configured WINDOWS_SIGN_METHOD is 'none' and the step is skipped, so
+      # today's builds are unchanged. Never runs for pull_request events. Signing
+      # the built exe here (before the install tree, installer and portable zip
+      # are made from it) means all three downstream artifacts carry the signed
+      # binary. The composite action signs (PFX / Azure Trusted Signing /
+      # SignPath), timestamps, and verifies the signature. See docs/CODE_SIGNING.md
+      # for the exact secret names.
+      - name: Sign Dino8.exe (Authenticode)
+        if: ${{ github.event_name != 'pull_request' && env.WINDOWS_SIGN_METHOD != 'none' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          method: ${{ env.WINDOWS_SIGN_METHOD }}
+          label: windows-exe
+          files: dino8-app/build/Dino8.exe
+          pfx-base64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          signpath-api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+      - name: Install tree
+        run: cmake --install dino8-app/build --prefix dino8-app/build/install --component app
+      # The installed exe must run on a machine that has nothing but Windows
+      # on it: no Visual C++ redistributable (the CRT is linked statically,
+      # see CMakeLists.txt), no CI-runner Python (DINO8_ENABLE_PYTHON is OFF
+      # on Windows), no sanitizer runtime. Every one of those has shipped
+      # broken before: the same exe passed "--version" here (the runner has
+      # them all on PATH) and then failed to start on a clean machine with
+      # "python314.dll was not found". dumpbin lists the DLLs the loader
+      # will demand up front; anything outside the OS-provided set fails
+      # the build.
+      - name: Dependents check (installed exe imports only OS DLLs)
+        shell: pwsh
+        run: |
+          $out = & dumpbin /NOLOGO /DEPENDENTS dino8-app\build\install\Dino8.exe
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
+          $dlls = $out | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLowerInvariant() }
+          Write-Host "Dino8.exe imports:"; $dlls | ForEach-Object { Write-Host "  $_" }
+          # Denylist, not an allowlist: an allowlist has to enumerate every
+          # legitimate OS DLL a GUI app can pull in (dwrite, d3d11,
+          # windowscodecs, combase, ...) and missed one on its first run
+          # (dwrite.dll, from GDI/ImGui text rendering, broke a real
+          # Windows-on-ARM build here). What this check actually needs to
+          # catch is the two concrete failure modes that shipped broken
+          # exes before: a dynamically-linked CRT/C++ runtime (meaning the
+          # static-CRT build in CMakeLists.txt regressed) and a bundled
+          # interpreter/sanitizer runtime nothing installs
+          # (python*.dll from an accidentally-enabled DINO8_ENABLE_PYTHON,
+          # clang_rt.*.dll from AddressSanitizer). A denylist for exactly
+          # those stays correct without having to predict every OS DLL a
+          # future code change might legitimately start importing.
+          $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
+          $bad = $dlls | Where-Object { $_ -match $denied }
+          if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the installer does not ship: $($bad -join ', ')" }
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Compile installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dino8-app\packaging\windows\Dino8.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Same gate as above: signs the installer wrapper itself once ISCC has
+      # produced it (the payload it embeds, build\install\Dino8.exe, is already
+      # the signed binary from the step above).
+      - name: Sign Windows installer (Authenticode)
+        if: ${{ github.event_name != 'pull_request' && env.WINDOWS_SIGN_METHOD != 'none' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          method: ${{ env.WINDOWS_SIGN_METHOD }}
+          label: windows-installer
+          files: dino8-app/dist/*.exe
+          pfx-base64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          signpath-api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+      # ---------------------------------------------------------------------
+      # Authenticode SELF-TEST with a THROWAWAY certificate (no secret needed,
+      # runs on every event including pull requests). Purpose: prove the real
+      # signing code path (.github/actions/sign-windows -> packaging/windows/
+      # sign.ps1) actually executes and that its output is checked, even though
+      # no trusted certificate exists. It signs SCRATCH COPIES of Dino8.exe and
+      # the installer with a self-signed certificate generated in this job; the
+      # files that are uploaded below are never touched, so the published
+      # installer is exactly as unsigned as before unless real secrets exist
+      # (then the production steps above already ran, unchanged). Nothing it
+      # produces is trusted-signed: the certificate is self-signed and not in any
+      # trust store. See docs/CODE_SIGNING.md "What CI proves today".
+      # ---------------------------------------------------------------------
+      - name: Authenticode self-test 1/4 - create throwaway TEST certificate and scratch copies
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\test-signing.ps1" -Mode prepare -Source 'dino8-app\build\Dino8.exe', 'dino8-app\dist\*.exe'
+      - name: Authenticode self-test 2/4 - sign the scratch copies (real sign-windows action, method test-pfx)
+        uses: ./.github/actions/sign-windows
+        with:
+          method: test-pfx
+          label: windows-selftest
+          files: ${{ runner.temp }}\dino8-signtest\signed\*.exe
+          pfx-base64: ${{ env.DINO8_TEST_PFX_BASE64 }}
+          pfx-password: ${{ env.DINO8_TEST_PFX_PASSWORD }}
+      - name: Authenticode self-test 3/4 - assert signature present, untrusted, tamper-evident (TEST certificate, NOT trusted)
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\test-signing.ps1" -Mode verify
+      - name: Authenticode self-test 4/4 - remove the throwaway certificate and scratch copies
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\dino8-app\packaging\windows\test-signing.ps1" -Mode cleanup
+      # The PowerShell verifier must also be able to say "no": modified file,
+      # wrong checksum entry, missing checksum, missing signature -> exit 1.
+      - name: verify-release.ps1 negative (tamper) test
+        shell: pwsh
+        run: scripts\test-verify-release.ps1
+      - name: Portable zip
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-installer
+          path: dino8-app/dist/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-portable
+          path: dino8-app/build/*.zip
+          if-no-files-found: error
+
+  windows-arm:
+    name: Windows on ARM (build, portable zip)
+    runs-on: windows-11-arm
+    continue-on-error: true
+    env:
+      # See the x64 job: which Authenticode method the configured secrets allow.
+      WINDOWS_SIGN_METHOD: ${{ (secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORGANIZATION_ID != '' && secrets.SIGNPATH_PROJECT_SLUG != '' && secrets.SIGNPATH_SIGNING_POLICY_SLUG != '' && 'signpath') || (secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT != '' && secrets.AZURE_TRUSTED_SIGNING_PROFILE != '' && 'azure') || (secrets.WINDOWS_CERT_BASE64 != '' && 'pfx') || 'none' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Configure (Ninja + MSVC arm64)
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCPACK_SYSTEM_NAME=win-arm64
+      - name: Build
+        run: cmake --build dino8-app/build --parallel
+      - name: Version check
+        run: dino8-app\build\Dino8.exe --version
+      # Same self-containment gate as the x64 job (see its comment).
+      - name: Dependents check (exe imports only OS DLLs)
+        shell: pwsh
+        run: |
+          $out = & dumpbin /NOLOGO /DEPENDENTS dino8-app\build\Dino8.exe
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
+          $dlls = $out | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLowerInvariant() }
+          Write-Host "Dino8.exe imports:"; $dlls | ForEach-Object { Write-Host "  $_" }
+          # Denylist, see the x64 job's own "Dependents check" step for why
+          # (an allowlist here already broke a real build once, on the
+          # legitimate dwrite.dll).
+          $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
+          $bad = $dlls | Where-Object { $_ -match $denied }
+          if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the portable zip does not ship: $($bad -join ', ')" }
+      # Same optional Authenticode signing as the x64 job (inert, event-gated,
+      # verified); signs the exe before the portable zip is cut from it.
+      - name: Sign Dino8.exe (Authenticode)
+        if: ${{ github.event_name != 'pull_request' && env.WINDOWS_SIGN_METHOD != 'none' }}
+        uses: ./.github/actions/sign-windows
+        with:
+          method: ${{ env.WINDOWS_SIGN_METHOD }}
+          label: windows-arm-exe
+          files: dino8-app/build/Dino8.exe
+          pfx-base64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          pfx-password: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          azure-endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          azure-account: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          azure-profile: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          signpath-api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          signpath-organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          signpath-project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signpath-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+      - name: Portable zip
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-arm64
+          path: dino8-app/build/*.zip
+          if-no-files-found: error
+  macos:
+    name: macOS (build, .dmg)
+    runs-on: macos-15
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_BASE64 != '' && secrets.APPLE_CERT_PASSWORD != '' && secrets.APPLE_KEYCHAIN_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+      HAS_APPLE_NOTARY: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Build
+        run: cmake --build dino8-app/build
+      # NOT run here (Linux and Windows both run the same tests/smoke.sh
+      # QC suite): GitHub's macos-14 Actions runner cannot create a native
+      # GLFW/OpenGL window at all - "GLFW error 65545: NSGL: Failed to
+      # find a suitable pixel format" persists even for the simplest
+      # possible 3.3 core request (0 samples, no other hints), confirmed
+      # by two separate attempts (one dropping 4x MSAA first, suspecting
+      # that was the cause; it was not). This is a documented, systemic
+      # limitation of GitHub's hosted macOS runners' virtualized/no-GPU
+      # environment for any app requesting a native NSGL context - not
+      # something fixable by more Dino 8 code, unlike Windows (which has
+      # no GPU either, but a real fix exists: Mesa's llvmpipe software
+      # OpenGL can fully replace opengl32.dll since Windows' WGL/GDI model
+      # allows a drop-in software implementation; macOS's NSGL model
+      # brokers pixel formats through the OS/WindowServer itself with no
+      # equivalent drop-in swap available). ctest's own kernel/geometry
+      # unit tests above still give real coverage on this platform.
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure
+      # Developer ID signing + notarization. Inert until the Apple secrets exist:
+      # every step below is skipped (and the .dmg stays exactly as CPack made it)
+      # when HAS_APPLE_CERT is not 'true', and none of them ever runs for a
+      # pull_request event. See docs/CODE_SIGNING.md for the exact secret names.
+      #
+      # NOTE the order: the app is signed INSIDE the .dmg after `cpack`, not in
+      # the build tree before it. CPack's DragNDrop generator stages its own
+      # fresh copy of the app, so a signature applied to build/Dino8.app was
+      # never part of the shipped image (see packaging/macos/sign-dmg.sh).
+      - name: Package
+        run: cd dino8-app/build && cpack
+      - name: Import Developer ID certificate
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/dino8-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/dino8-signing.keychain-db"
+          echo -n "$APPLE_CERT_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+      - name: Code-sign the app inside the disk image (hardened runtime)
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          DMG="$(ls dino8-app/build/*.dmg | head -1)"
+          dino8-app/packaging/macos/sign-dmg.sh sign "$DMG"
+      # Apple refuses to notarize an unsigned bundle, so this additionally needs
+      # the signing step above. Without the three notary secrets the image is
+      # signed but NOT notarized (Gatekeeper will still warn).
+      - name: Notarize and staple the disk image
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_NOTARY == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          DMG="$(ls dino8-app/build/*.dmg | head -1)"
+          dino8-app/packaging/macos/sign-dmg.sh notarize "$DMG"
+      - name: Warn - signed but not notarized
+        if: ${{ github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' && env.HAS_APPLE_NOTARY != 'true' }}
+        run: echo "::warning::The .dmg is Developer-ID signed but NOT notarized (APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD missing). Gatekeeper will still warn users."
+      - name: Remove the temporary signing keychain
+        if: ${{ always() && github.event_name != 'pull_request' && env.HAS_APPLE_CERT == 'true' }}
+        run: security delete-keychain "$RUNNER_TEMP/dino8-signing.keychain-db" || true
+      # Ad-hoc signing SELF-TEST (no certificate, no secret, every event
+      # including pull requests): runs the real packaging/macos/sign-dmg.sh in
+      # `adhoc` mode (codesign --sign -) on a COPY of the .dmg, then requires
+      # `codesign --verify --deep --strict` to pass, `codesign -dv` to say
+      # Signature=adhoc, and a tampered copy to FAIL verification. The .dmg
+      # uploaded below is not touched. NOT Developer ID signing and NOT
+      # notarization: notarization is skipped because it needs Apple
+      # credentials. See docs/CODE_SIGNING.md "What CI proves today".
+      - name: macOS ad-hoc signing self-test (copy of the .dmg; not Developer ID, not notarized)
+        run: |
+          echo "::notice title=macOS signing self-test::Ad-hoc signature on a COPY of the disk image to prove the sign-dmg.sh code path and tamper detection. Not Developer ID, not notarized (no Apple credentials); the published .dmg is unaffected."
+          dino8-app/packaging/macos/test-adhoc-signing.sh "$(ls dino8-app/build/*.dmg | head -1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-macos
+          path: dino8-app/build/*.dmg
+          if-no-files-found: error
+
+  release-tooling:
+    name: Release tooling negative tests (verify-release must reject tampering)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # cosign makes the garbage-signature-bundle case run as well; the other
+      # cases need no network and no signature at all.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+      # Staged fixture of fake artifacts; a modified file, a wrong SHA256SUMS or
+      # .sha256 entry, a missing checksum or a missing/garbage signature bundle
+      # must each make scripts/verify-release.sh exit 1. No release involved.
+      - name: verify-release.sh negative (tamper) test
+        run: scripts/test-verify-release.sh
+      # The platform-independent parts of the macOS signing self-test (argument
+      # handling, the scratch-copy guard of sign-dmg.sh, byte-flip helper); the
+      # codesign parts run in the macos job.
+      - name: macOS signing script helpers (platform independent)
+        run: dino8-app/packaging/macos/test-adhoc-signing.sh --check-helpers
+
+  release:
+    name: Publish beta pre-release
+    # Every push to the development branch (or a manual run) that builds on
+    # all three platforms publishes a downloadable pre-release with the
+    # installers attached. Free software: no licence keys involved.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [linux, windows, windows-arm, macos, release-tooling]
+    runs-on: ubuntu-latest
+    # The ONLY job with write scopes. id-token lets the job obtain the
+    # workflow's OIDC identity token (keyless Sigstore signing + build
+    # provenance); attestations lets it store the provenance attestations;
+    # contents lets it create the release. It never runs for pull_request.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # Only for the repository's own scripts/ (checksums, verification). This
+      # job runs on push / workflow_dispatch only, i.e. on code that is already
+      # in the repository, never on a pull request's untrusted head.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Only the release artifacts: SignPath's temporary "signpath-unsigned-*"
+      # uploads (Windows signing hand-off) must never be published.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Dino8-*
+          path: dist
+      - name: List files
+        run: find dist -type f | sort
+      # Flattens the per-platform artifacts into release/ (same file names as
+      # before) and writes <file>.sha256 for every artifact plus SHA256SUMS.
+      - name: Stage release files and write SHA-256 checksums
+        run: scripts/stage-release.sh dist release
+      # GitHub build-provenance attestation: a signed statement, stored by
+      # GitHub, that these exact file digests were produced by this workflow
+      # run of this repository at this commit. Check with
+      # `gh attestation verify <file> --repo <owner>/<repo>`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release/*.exe
+            release/*.zip
+            release/*.deb
+            release/*.tar.gz
+            release/*.dmg
+            release/SHA256SUMS
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+      # Keyless Sigstore signing with this run's OIDC identity: no key to
+      # store or leak. Writes <file>.sigstore.json (signature + short-lived
+      # certificate + transparency-log proof) next to every artifact and
+      # next to SHA256SUMS.
+      - name: Sign release files with cosign (keyless)
+        working-directory: release
+        run: |
+          set -euo pipefail
+          # cosign 2.4.x writes the new Sigstore bundle format only with
+          # --new-bundle-format; cosign 3.x does by default.
+          flag=""
+          if cosign sign-blob --help 2>&1 | grep -q -e '--new-bundle-format'; then flag="--new-bundle-format"; fi
+          for f in $(ls -1 | grep -v -e '\.sha256$' -e '\.sigstore\.json$'); do
+            echo "cosign sign-blob $f"
+            cosign sign-blob --yes $flag --bundle "$f.sigstore.json" "$f" > /dev/null
+          done
+          ls -l
+      # Fail the release rather than publish a signature that does not verify:
+      # runs the same script users are told to run, against the files about to
+      # be uploaded, pinned to this repository.
+      - name: Verify what is about to be published
+        env:
+          REPO: ${{ github.repository }}
+        run: scripts/verify-release.sh --repo "$REPO" release
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dino8-beta-${{ github.run_number }}
+          name: "Dino 8 beta build ${{ github.run_number }}"
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          body: |
+            Dino 8 beta test build from commit ${{ github.sha }}.
+
+            * **Windows**: `Dino8Setup-0.1.0.exe` (installer) or the portable `Dino8-0.1.0-win64.zip`
+            * **Windows on ARM**: portable `Dino8-0.1.0-win-arm64.zip` (when the ARM runner is available)
+            * **Linux**: `dino8_0.1.0_amd64.deb` or `Dino8-0.1.0-Linux.tar.gz`
+            * **macOS** (Apple Silicon): `Dino8-0.1.0-Darwin.dmg`
+
+            Totally free. No subscription, no payment, no licence keys, no accounts.
+
+            **Verifying your download.** Every file has a `.sha256` checksum, a
+            keyless Sigstore signature (`.sigstore.json`) made by this repository's
+            release workflow, and a GitHub build-provenance attestation. Run
+            `scripts/verify-release.sh` (or `verify-release.ps1` on Windows) from
+            the repository on the files you downloaded. Windows and macOS
+            installers carry a publisher signature (Authenticode / Developer ID)
+            only once the project has configured a code-signing certificate;
+            until then SmartScreen / Gatekeeper will warn. What each signature
+            does and does not prove is in `docs/CODE_SIGNING.md`.
+          files: release/*

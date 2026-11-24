@@ -1,0 +1,6 @@
+PluginMarketplaceVerifyAll
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_verifyall_index.json
+PluginMarketplaceVerifyAll
+PluginMarketplaceInstall hellodino
+PluginMarketplaceInstall meshtools
+PluginMarketplaceVerifyAll

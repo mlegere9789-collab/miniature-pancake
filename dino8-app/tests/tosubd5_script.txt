@@ -1,0 +1,102 @@
+# ToSubD of a revolve of a CURVED profile (tests/smoke.sh section TS5_). Before: a vase
+# or bottle (a spline profile revolved about an axis) was caged by the straight-wall
+# ladder of at most 12 evenly spaced rings (2700-3800 faces, measured 0.011 and 0.026
+# off the surface, unverified), and a profile that meets the axis at both ends (an egg)
+# went through the dense grid tessellation (18240 faces). Now the rings follow the
+# profile (count from its NURBS control points), the cage is interpolated onto the wall
+# and the Catmull-Clark limit surface is MEASURED against the exact wall; a profile too
+# wiggly for the ring ladder is refused with the reason and takes the existing path.
+# Printed per solid, in this order: the ToSubD status line, the SubD's List line (the
+# vase also: Volume of the Brep, then of the control net after 0, 1 and 2 SubDivide
+# rounds). Negative controls last: Cylinder, Cone, Torus and an extruded L keep the
+# cages the TS2_ and TS4_ sections pin.
+# --- 1 vase: spline profile, both ends off the axis (two flat O-grid caps)
+Curve 3,0,0 6,0,3 2,0,6 4,0,10
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelLast
+Volume
+SelLast
+ToSubD
+SelLast
+List
+Volume
+SubDivide
+Volume
+SubDivide
+Volume
+SelAll
+Hide
+# --- 2 bottle: the profile starts ON the axis (a smooth pole) and ends off it (one flat cap)
+Curve 0,0,0 5,0,0 5,0,5 2,0,8 2,0,12
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 3 egg: the profile meets the axis at both ends (two smooth poles, no cap)
+Curve 0,0,-5 5,0,-5 5,0,5 0,0,5
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 4 fallback: a 7-point zig-zag profile no ring ladder within the limits can follow
+Curve 3,0,0 8,0,2 1,0,4 8,0,6 1,0,8 8,0,10 2,0,12
+Enter
+SelLast
+Revolve
+0,0,0
+0,0,1
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+# --- 5-8 negative controls: the existing analytic cages are unchanged
+Cylinder 100,0,0 4 10
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+Cone 130,0,0 4 10
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+Torus 200,0,0 6 2
+SelLast
+ToSubD
+SelLast
+List
+SelAll
+Hide
+Polyline 300,0,0 310,0,0 310,4,0 304,4,0 304,10,0 300,10,0 300,0,0
+Enter
+SelLast
+ExtrudeCrv
+6
+SelLast
+ToSubD
+SelLast
+List

@@ -1,0 +1,182 @@
+# Exact fillet / chamfer of ONE rim of a polygonal solid of revolution (see the "RVR_" section at the end of smoke.sh).
+#
+# kernel::FilletRevolveRim / ChamferRevolveRim are wired into FilletEdge / ChamferEdge (cmd_fillet.cpp) as the LAST exact
+# attempt, after the capped-cylinder / frustum paths (FilletCapRim / ChamferCapRim) and the app's own cylinder / hole
+# classifiers declined. The solid here is a capped cylinder (radius 5, height 4, axis z; V0 = 100 pi = 314.159) whose
+# top rim was chamfered 1 x 1 by the app's own exact cone bevel: a 4-face solid of revolution (bottom cap, wall, cone
+# bevel, top cap) that FilletCapRim refuses ("not a plain capped cylinder or cone frustum"). Its (rho, z) profile is
+# (0,0) (5,0) (5,3) (4,4) (0,4), V1 = 299.498 (Green integral of the profile).
+# Rims: wall / bottom cap (0,5,0), bevel / top cap (0,4,4) -- 135 degrees, bevel / wall (0,5,3).
+#
+# Every case starts from `New` and is bracketed by a marker line ("RVRBEGIN_<name>", an unknown command) that smoke.sh uses
+# to slice this script's output into per-case blocks.
+
+SetActiveViewport Top
+
+# fixture: the app's own chamfered cylinder (control for the kernel path below)
+New
+RVRBEGIN_base
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# fillet r = 3 on the 135-degree bevel / cap rim: setback 3 / tan(67.5) = 1.2426 (< bevel length 1.4142)
+New
+RVRBEGIN_F_bevelcap
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=3
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# fillet r = 1.5 on the 90-degree wall / bottom rim
+New
+RVRBEGIN_F_bottom
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# chamfer 1 along the wall x 0.5 across the bottom cap
+New
+RVRBEGIN_C_bottom
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+ChamferEdge
+Radius=1
+Distance2=0.5
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+
+# refusal: r = 4 on the bevel / cap rim needs a 1.657 setback on the 1.414-long bevel
+New
+RVRBEGIN_F_toobig
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=4
+0,4,4
+Enter
+SelAll
+List
+
+# refusal: a solid that already carries the kernel's torus blend is not re-read
+New
+RVRBEGIN_F_blended
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Enter
+FilletEdge
+Radius=0.5
+0,4,4
+Enter
+SelAll
+List
+
+# two rims of the solid in ONE run: the kernel blends one revolve rim per run -> the second pick is refused, the first applies
+New
+RVRBEGIN_F_two
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+FilletEdge
+Radius=1.5
+0,5,0
+Radius=0.5
+0,4,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a plain cylinder still takes the app's own exact quarter torus (not the revolve path)
+New
+RVRBEGIN_ctl_cyl
+Cylinder 0,0,0 5 4
+FilletEdge
+Radius=1
+0,5,4
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a plain cylinder chamfer is still the app's own exact cone
+New
+RVRBEGIN_ctl_cyl_chamfer
+Cylinder 0,0,0 5 4
+ChamferEdge
+Radius=1
+0,5,4
+Enter
+SelAll
+List
+
+# control: a cone frustum still takes the kernel cap-rim torus
+New
+RVRBEGIN_ctl_tcone
+TCone 0,0,0 5 10 3
+FilletEdge
+Radius=1
+0,3,10
+Enter
+SelAll
+List
+Volume
+Check
+
+# control: a box edge is still the kernel's exact planar fillet
+New
+RVRBEGIN_ctl_box
+Box 0,0,0 6,6,0 4
+FilletEdge
+Radius=1
+6,3,4
+Enter
+SelAll
+List
+
+RVRBEGIN_end

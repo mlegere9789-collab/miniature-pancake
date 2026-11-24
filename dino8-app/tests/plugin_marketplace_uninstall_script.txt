@@ -1,0 +1,6 @@
+PluginMarketplaceIndex @DINO8ROOT@/tests/plugin_marketplace_uninstall_index.json
+PluginMarketplaceInstall othersuite
+PluginMarketplaceInstall toolboxpro
+PluginMarketplaceUninstall toolboxpro
+PluginMarketplaceUninstall orphanlib
+PluginMarketplaceUninstall shareddeps

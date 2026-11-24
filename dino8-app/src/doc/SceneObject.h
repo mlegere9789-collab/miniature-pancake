@@ -1,0 +1,463 @@
+// A single object in a Dino 8 document: one piece of kernel geometry plus
+// the attributes every CAD object carries (name, layer, color, visibility,
+// lock state, group, user text) and a lazily-rebuilt display cache the
+// viewports draw from.
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "dino8/kernel/brep.h"
+#include "dino8/kernel/curve.h"
+#include "dino8/kernel/mesh.h"
+#include "dino8/kernel/point_cloud.h"
+#include "dino8/kernel/subd.h"
+#include "dino8/kernel/surface.h"
+#include "dino8/kernel/types.h"
+
+namespace dino8::app {
+
+using ObjectId = std::uint64_t;
+constexpr ObjectId kNoObject = 0;
+
+enum class ObjectKind { Point, Curve, Surface, Brep, Mesh, SubD, PointCloud };
+
+const char* ObjectKindName(ObjectKind kind);
+
+struct Color {
+  float r = 0.f, g = 0.f, b = 0.f, a = 1.f;
+  static Color FromBytes(int r, int g, int b) {
+    return Color{r / 255.f, g / 255.f, b / 255.f, 1.f};
+  }
+};
+
+// Surface-analysis display (Rhino's Zebra / EMap / CurvatureAnalysis /
+// DraftAngleAnalysis). Zebra and EMap are pure shader effects; Curvature
+// and DraftAngle colour the display mesh per vertex (DisplayCache::colors).
+enum class AnalysisMode { None, Zebra, EMap, Curvature, DraftAngle, Thickness };
+enum class ZebraDirection { Horizontal, Vertical };
+enum class CurvatureStyle { Gaussian, Mean };
+
+const char* AnalysisModeName(AnalysisMode mode);
+
+// How a material's texture is projected onto an object. `Default` on an
+// object means "use the material's own mapping"; Surface uses the mesh's
+// own texture coordinates (NURBS parameter space for surfaces) and falls
+// back to Box when there are none.
+enum class TextureMapping { Default, Surface, Planar, Box, Cylindrical, Spherical, Custom };
+const char* TextureMappingName(TextureMapping m);
+bool ParseTextureMapping(const std::string& text, TextureMapping& out);
+
+struct AnalysisSettings {
+  AnalysisMode mode = AnalysisMode::None;
+  // Zebra
+  ZebraDirection zebra_direction = ZebraDirection::Horizontal;
+  float zebra_density = 4.0f;  // stripe frequency over the reflection vector (2*density stripes)
+  // CurvatureAnalysis
+  CurvatureStyle curvature_style = CurvatureStyle::Gaussian;
+  bool auto_range = true;
+  double range_min = -1.0, range_max = 1.0;  // used when !auto_range
+  // DraftAngleAnalysis: draft angle = 90 deg - angle(normal, pull direction),
+  // so a vertical wall is 0, a cap facing the pull is +90, an undercut < 0.
+  kernel::Vector3d draft_direction{0, 0, 1};
+  double draft_min = -5.0, draft_max = 5.0;  // degrees, blue .. red
+  // ThicknessAnalysis: distance from each display vertex through the
+  // object along -normal to the far side (red = thin .. blue = thick).
+  double thickness_min = 0.0, thickness_max = 1.0;
+
+  bool SameColoring(const AnalysisSettings& o) const {
+    return mode == o.mode && curvature_style == o.curvature_style && auto_range == o.auto_range &&
+           range_min == o.range_min && range_max == o.range_max && draft_direction == o.draft_direction &&
+           draft_min == o.draft_min && draft_max == o.draft_max && thickness_min == o.thickness_min &&
+           thickness_max == o.thickness_max;
+  }
+};
+
+// Tessellated / sampled geometry ready for the renderer. Positions are in
+// world space; triangles carry per-vertex normals for shading.
+struct DisplayCache {
+  std::vector<float> triangles;  // x,y,z,nx,ny,nz per vertex, 3 vertices per tri
+  std::vector<float> lines;      // x,y,z per vertex, 2 vertices per segment
+  std::vector<float> points;     // x,y,z per point
+  std::vector<float> control_polygon;  // x,y,z per vertex, 2 per segment (when shown)
+  std::vector<float> control_points;   // x,y,z per control point (when shown)
+  // Brep / mesh: the face index each display triangle came from (one entry
+  // per triangle; brep faces are ON_Brep::m_F indices, mesh faces m_F
+  // indices). Empty for other kinds.
+  std::vector<int> triangle_face;
+  // Brep / surface / mesh edges for ShowEdges: all edges, and the naked
+  // ones (brep edges with a single trim, mesh edges with a single face).
+  std::vector<float> edges;        // x,y,z pairs
+  std::vector<float> naked_edges;  // x,y,z pairs
+  // Per-vertex analysis colour (r,g,b per triangle vertex), empty when no
+  // colour-based analysis is active. Rebuilt lazily by EnsureAnalysisColors.
+  std::vector<float> colors;
+  AnalysisSettings colors_settings;  // settings the colours were computed with
+  bool colors_valid = false;
+  // Value range the colours were normalised over (for the command report).
+  double colors_min = 0, colors_max = 0;
+  // Per-vertex colours (r,g,b per triangle vertex, aligned with `triangles`)
+  // taken straight from a mesh's own ON_Mesh::m_C array (e.g. set by
+  // ComputeVertexColors); empty when the mesh carries no vertex colours.
+  // Independent of `colors` above, which holds an active surface analysis
+  // ramp and takes priority when both are present.
+  std::vector<float> mesh_vertex_colors;
+  // Texture coordinates the geometry itself carries (u,v per triangle
+  // vertex, aligned with `triangles`); empty when the mesh has none.
+  std::vector<float> uvs;
+  // Projected texture coordinates for the last requested mapping (see
+  // EnsureMappedUVs), u,v per triangle vertex.
+  std::vector<float> mapped_uvs;
+  TextureMapping mapped_type = TextureMapping::Default;
+  float mapped_scale = 0.f;
+  kernel::BoundingBox bbox{};
+  bool has_bbox = false;
+  bool dirty = true;
+  // The curve_tolerance/surface_tolerance EnsureDisplay actually rebuilt
+  // this cache with (whichever caller triggered the rebuild - a viewport
+  // redraw, a measurement command, a live-drag preview, ...), so a later
+  // caller can tell whether what is cached still matches what it needs
+  // rather than just whether *a* build has ever happened. -1 until the
+  // first real build. See SceneObject::EnsureAdaptiveDisplay.
+  double built_curve_tolerance = -1.0;
+  double built_surface_tolerance = -1.0;
+  // Region-limited (face-level) brep build: fine_faces[f] != 0 means brep face f
+  // was tessellated at built_surface_tolerance, every other face at the coarse
+  // base level. Empty = the whole object was built at built_surface_tolerance.
+  std::vector<char> fine_faces;
+};
+
+// Answers "does this world-space box (a brep face's bounds) intersect the view
+// frustum?". `guard` = false is the tight frustum (what must be fine now);
+// `guard` = true is the frustum grown by a guard band (what a build keeps fine
+// so a small pan does not rebuild). Supplied by Viewport::DrawObjects.
+using FaceVisibilityFn = std::function<bool(const kernel::BoundingBox& box, bool guard)>;
+
+class SceneObject {
+ public:
+  SceneObject();
+  ~SceneObject();
+  SceneObject(const SceneObject& other);
+  SceneObject& operator=(const SceneObject& other);
+  SceneObject(SceneObject&&) noexcept;
+  SceneObject& operator=(SceneObject&&) noexcept;
+
+  // Construction helpers (each produces an object of the matching kind).
+  static SceneObject MakePoint(kernel::Point3d point);
+  static SceneObject MakeCurve(const kernel::NurbsCurve& curve);
+  static SceneObject MakeSurface(const kernel::NurbsSurface& surface);
+  static SceneObject MakeBrep(const kernel::Brep& brep);
+  static SceneObject MakeMesh(const kernel::Mesh& mesh);
+  static SceneObject MakeSubD(const kernel::SubD& subd);
+  static SceneObject MakePointCloud(const kernel::PointCloud& point_cloud);
+
+  ObjectId id = kNoObject;
+  std::string name;
+  int layer_index = -1;  // -1: use the current layer when added to a document
+  ObjectKind kind = ObjectKind::Point;
+  Color color;
+  bool color_by_layer = true;
+  bool visible = true;
+  bool locked = false;
+  bool selected = false;
+  bool show_control_points = false;
+  // Control points hidden with HidePt (indices as in SubObjectRef); cleared by ShowPt.
+  std::vector<int> hidden_control_points;
+  // Dir: draws a clickable direction-arrow glyph at this curve's start
+  // point / tangent or this surface's domain-centre point / normal
+  // (ui/DirectionArrows.cpp); clicking the glyph calls the same
+  // FlipObject() reversal the Flip command itself uses (cmd_common.h).
+  // Like show_control_points, this is display state carried through
+  // CopyFrom (so it survives undo/redo snapshots) but never written to
+  // the .3dm.
+  bool show_direction_arrow = false;
+  bool show_control_net = false;  // SubD: draw the control polygon instead of the smoothed surface
+  bool highlight_edges = false;  // ShowEdges: draw brep/mesh edges thick, naked edges in a second colour
+  bool force_shaded = false;     // ShadeSelected: filled even in a display mode that otherwise draws no fills
+  bool force_wireframe = false;  // SetObjectDisplayMode Wireframe: never filled, even in a shaded/rendered viewport
+  // SetObjectDisplayMode Ghosted/X-Ray: filled at a fixed transparency (the
+  // same alpha the viewport-wide Ghosted/X-Ray modes use) regardless of the
+  // viewport's own display mode - mutually exclusive with force_shaded/
+  // force_wireframe and each other; Viewport::DrawObjects honours these the
+  // same mode-agnostic way it already honours the other two overrides.
+  bool force_ghosted = false;
+  bool force_xray = false;
+  // SetObjectDisplayMode Monochrome: filled in the same flat grey the
+  // viewport-wide Monochrome display mode uses, fully opaque, regardless of
+  // the viewport's own display mode or this object's own material/colour -
+  // mutually exclusive with the four overrides above; Viewport::DrawObjects
+  // honours it the same mode-agnostic way.
+  bool force_monochrome = false;
+  bool force_raytraced = false;  // per-object RayTraced: traced by the path tracer, composited with the rasterized objects (Viewport)
+  // SetObjectDisplayMode Pen/Arctic: the two other viewport-wide "force
+  // white" modes (ModeStyle::force_white in Viewport.cpp), given the same
+  // per-object treatment as Monochrome above - a fixed fill colour,
+  // regardless of the viewport's own display mode or this object's own
+  // material/colour, mutually exclusive with every override above and each
+  // other. Pen also draws its fill fully unlit (flat, like Monochrome's own
+  // colour is flat), matching the viewport-wide Pen mode's own
+  // `s.lit = false`; Arctic keeps normal lighting, matching the
+  // viewport-wide Arctic mode (force_white alone, lit left at its default).
+  bool force_pen = false;
+  bool force_arctic = false;
+  // SetObjectDisplayMode Rendered: the one remaining per-object-meaningful
+  // viewport-wide mode (Technical/Artistic would be no-op aliases of
+  // Monochrome here, and RayTraced is a whole-frame path-traced image, not
+  // a per-object concept at all - see SetObjectDisplayModeCommand's own
+  // file comment). Forces this object through the exact same material/
+  // texture/lighting/reflectivity path (Viewport::DrawObjects' own
+  // draw_rendered lambda) a Rendered viewport already gives every object,
+  // including the back-to-front transparent sort for a transparent
+  // material - even in a Wireframe/Shaded/Ghosted/etc. viewport that would
+  // otherwise never run that path at all, not just a viewport whose own
+  // mode happens to already be Rendered. Mutually exclusive with every
+  // override above and each other, same convention.
+  bool force_rendered = false;
+  // SetObjectDisplayMode Technical/Artistic: the two remaining per-object-
+  // meaningful viewport-wide modes. Both fill in the same flat grey as
+  // Monochrome (lit, fully opaque) - what makes each a genuine mode of its
+  // own is the line work, exactly as the viewport-wide versions: Technical
+  // draws dark (20,20,20) edges, Artistic warm brown (60,50,40) ones (see
+  // Viewport.cpp's StyleFor/ObjectStyleFor). Mutually exclusive with every
+  // override above and each other. RayTraced has no flag: it is a whole-
+  // frame path-traced image, not a per-object concept.
+  bool force_technical = false;
+  bool force_artistic = false;
+  // Per-VIEWPORT scope, as Rhino has it ("SetObjectDisplayMode: sets how the
+  // selected objects display in the current viewport. Their display in other
+  // viewports won't be affected"): viewport name -> canonical mode name
+  // (never "UseViewport"; that erases the entry). The ten flags above are the
+  // ALL-VIEWPORTS override; a viewport's own entry wins over them in that
+  // viewport. Carried through CopyFrom (undo/redo) and saved in the .3dm.
+  std::map<std::string, std::string> viewport_display_overrides;
+  // The one name-based entry point to all ten flags (used by
+  // SetObjectDisplayMode, the Properties panel and the .3dm round trip so
+  // none of them re-lists the flags): exactly one override is set, or none
+  // for "UseViewport". Returns false (and changes nothing) for a name that is
+  // not one of DisplayOverrideNames() - case-insensitive, "X-Ray"/"XRay",
+  // "UseView" for UseViewport. This sets the ALL-VIEWPORTS override.
+  bool SetDisplayOverride(const std::string& name);
+  // Same, for ONE viewport (by Viewport::Name()): "UseViewport" removes that
+  // viewport's entry (an all-viewports override still applies there).
+  bool SetViewportDisplayOverride(const std::string& viewport, const std::string& name);
+  // "UseViewport" when no all-viewports override is set, else its canonical name.
+  const char* DisplayOverrideName() const;
+  // What `viewport` actually applies: its own entry, else the all-viewports one.
+  std::string DisplayOverrideNameFor(const std::string& viewport) const;
+  // The flags `viewport` actually applies (own entry, else the all-viewports
+  // flags) - what Viewport::DrawObjects reads instead of the raw bools.
+  struct DisplayOverrideFlags {
+    bool wireframe = false, shaded = false, rendered = false, ghosted = false, xray = false, technical = false,
+         artistic = false, pen = false, arctic = false, monochrome = false, raytraced = false;
+  };
+  DisplayOverrideFlags DisplayOverrideFlagsFor(const std::string& viewport) const;
+  bool HasDisplayOverride() const;          // the all-viewports override
+  bool HasAnyDisplayOverride() const { return HasDisplayOverride() || !viewport_display_overrides.empty(); }
+  void ClearDisplayOverrides() { SetDisplayOverride("UseViewport"); viewport_display_overrides.clear(); }
+  static const std::vector<std::string>& DisplayOverrideNames();  // canonical, "UseViewport" first
+  // Canonical spelling of a mode name ("" when unknown); "UseViewport" for
+  // UseViewport/UseView/viewport/default/none.
+  static std::string CanonicalDisplayOverrideName(const std::string& name);
+  bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
+  // Per-object display tolerance override for surface/brep/SubD tessellation
+  // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".
+  double custom_mesh_tolerance = 0.0;
+  AnalysisSettings analysis;     // per-object surface analysis (None = use the app-wide fallback)
+  int group_id = -1;
+  std::string material_name;
+  // Per-object texture mapping override (Default = the material's mapping).
+  TextureMapping mapping = TextureMapping::Default;
+  float mapping_scale = 1.0f;
+  // ApplyCustomMapping's reference frame (world space): a plane placed
+  // anywhere in the scene rather than the object's own bounding box, used
+  // only when `mapping` (or the material's) is TextureMapping::Custom.
+  // Falls back to the same bounding-box projection as Planar when unset.
+  bool has_custom_mapping_frame = false;
+  kernel::Point3d custom_mapping_origin{0, 0, 0};
+  kernel::Vector3d custom_mapping_x{1, 0, 0};
+  kernel::Vector3d custom_mapping_y{0, 1, 0};
+  double custom_mapping_size = 1.0;  // world-space size of one tile before Scale
+  std::string linetype = "ByLayer";  // linetype name, or "ByLayer"
+  std::map<std::string, std::string> user_text;
+
+  // Exactly one of these is non-null / meaningful, matching `kind`.
+  kernel::Point3d point{0, 0, 0};
+  std::unique_ptr<kernel::NurbsCurve> curve;
+  std::unique_ptr<kernel::NurbsSurface> surface;
+  std::unique_ptr<kernel::Brep> brep;
+  std::unique_ptr<kernel::Mesh> mesh;
+  std::unique_ptr<kernel::SubD> subd;
+  std::unique_ptr<kernel::PointCloud> point_cloud;
+
+  // Applies a transform to the geometry in place and invalidates display.
+  void Transform(const ON_Xform& xform);
+
+  // World-space bounding box (computed from the display cache).
+  kernel::BoundingBox BoundingBox() const;
+
+  // Rebuilds the display cache if dirty. `curve_tolerance` and
+  // `surface_tolerance` are chord tolerances for curve sampling and
+  // surface tessellation, in model units.
+  void EnsureDisplay(double curve_tolerance, double surface_tolerance) const;
+  // View-dependent adaptive tessellation entry point (Viewport::DrawObjects):
+  // behaves exactly like EnsureDisplay, except it first forces a rebuild if
+  // the cache's own Display().built_curve_tolerance/built_surface_tolerance
+  // (whatever actually produced the mesh that is cached right now, from
+  // whichever call site last rebuilt it) has drifted from the tolerance
+  // requested here by more than a hysteresis band - so zooming in/out
+  // meaningfully re-tessellates for a sharper/coarser mesh, the same
+  // frustum culling already keeps up-to-date for object count, while an
+  // unrelated tolerance request from a measurement command or a live-drag
+  // preview elsewhere in the app does not thrash it every frame. Only ever
+  // called from Viewport.cpp; every other existing EnsureDisplay call site
+  // is unchanged.
+  //
+  // Multi-level cache + budget (this pass): the previous cache level is kept
+  // in a small LRU stash rather than thrown away, so a zoom back to a level
+  // already tessellated (or a second viewport at a different zoom) swaps it
+  // in with no re-tessellation. `base_surface_tolerance` (> 0) enables the
+  // per-object triangle budget for refinements finer than the base: the
+  // mesher's per-face cap is raised to the budget (split across the faces),
+  // and a mesh that saturates the budget records its request as a floor so
+  // finer requests stop re-tessellating the same capped mesh. `adaptive =
+  // false` is the user toggle: the cache is rebuilt whenever it was not built
+  // at EXACTLY the requested tolerances (no hysteresis, stash or budget) -
+  // i.e. plain fixed-tolerance tessellation.
+  //
+  // Face-level refinement (brep only): with `face_visible` set, a refinement
+  // (finer than the base) tessellates only the faces the view frustum can see
+  // at the requested tolerance and keeps every other face at the coarse base
+  // level; the per-object triangle budget is split over the FINE faces only.
+  // The per-face level set is cached with the level (stash included), and a
+  // cached level is reused for as long as every face visible NOW is fine in it,
+  // so panning inside the guard band never rebuilds.
+  void EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance, double base_surface_tolerance = 0.0,
+                             bool adaptive = true, const FaceVisibilityFn* face_visible = nullptr) const;
+  // Read-only view of the multi-level cache for diagnostics (LodStats).
+  struct AdaptiveLodInfo {
+    std::size_t stashed_levels = 0;    // extra tessellation levels held besides the current one
+    double surface_floor = 0.0;        // tolerance at which the triangle budget saturated (0 = never)
+    std::size_t current_triangles = 0;
+    std::size_t fine_faces = 0;        // brep faces of the current level built at the fine tolerance (0 = whole-object build)
+    std::size_t total_faces = 0;       // brep face count (0 for non-brep)
+  };
+  AdaptiveLodInfo LodInfo() const;
+  // Process-wide counters (monotonic) of what EnsureAdaptiveDisplay did:
+  // re-tessellations it forced because the zoom drifted, stash swaps that
+  // avoided one, and budget clamps. For LodStats and tests.
+  struct AdaptiveLodCounters { unsigned long long rebuilds = 0, stash_hits = 0, budget_clamps = 0; };
+  static AdaptiveLodCounters LodCounters();
+  // Process-wide switch for face-level (region-limited) brep refinement; off = the previous
+  // whole-object refinement (AdaptiveTessellation FaceLevel Off|On), kept for A/B measurement.
+  static void SetFaceLevelRefinement(bool on);
+  static bool FaceLevelRefinement();
+  // Display-only triangle count of the viewport's current level, for tests.
+  static void ResetLodCounters();
+  // Per-object triangle budget for view-dependent refinement (only applies to
+  // requests finer than the app-wide base tolerance).
+  static constexpr std::size_t kAdaptiveTriangleBudget = 150000;
+  // The mesher stops refining a single brep face at this many triangles
+  // (BrepMeshOptions::max_triangles_per_face's default). At deep zoom that cap
+  // - not the requested tolerance - decides the accuracy (measured: a sphere
+  // stays at ~11k triangles and its worst chord sagitta GROWS), so adaptive
+  // refinement raises it to kAdaptiveTriangleBudget for the one build.
+  static constexpr int kDefaultFaceTriangleCap = 12000;
+  static constexpr std::size_t kLodStashCapacity = 3;
+  // A level at the full budget must be stashable: with several viewports at
+  // different zooms drawing the same object every frame, dropping the
+  // saturated (largest, most expensive) level when a coarser viewport draws
+  // forced a full re-tessellation on every following frame.
+  static constexpr std::size_t kLodStashMaxTriangles = kAdaptiveTriangleBudget + kAdaptiveTriangleBudget / 10;
+  // const: only ever touches the mutable display cache, and marking it so
+  // lets EnsureAdaptiveDisplay (itself const, like EnsureDisplay) call it
+  // directly - every existing non-const caller is unaffected, since a
+  // const method can still be called on a non-const object.
+  // Also drops the multi-level LOD stash and the discovered budget floor:
+  // both describe the OLD geometry/settings.
+  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; other_cache_.dirty = true; other_cache_.colors_valid = false; lod_stash_.clear(); lod_surface_floor_ = 0.0; base_bbox_valid_ = false; face_boxes_.clear(); }
+  // Dash pattern (dash, gap... in model units, already scaled) the display
+  // polylines of a curve are split with; empty draws continuous. Set by the
+  // viewport from Document::EffectiveDashes before EnsureDisplay; a change
+  // invalidates the display cache.
+  void SetDisplayDashes(const std::vector<double>& dashes) const;
+  const std::vector<double>& DisplayDashes() const { return display_dashes_; }
+  // The display cache of the CURRENT level: the fixed base level (0.02/0.05 or whatever the
+  // first non-viewport EnsureDisplay caller asked for) for every command, export, pick and
+  // snap; the viewport's zoom-dependent level only between Viewport::DrawObjects'
+  // EnsureAdaptiveDisplay and the next EnsureDisplay. EnsureDisplay always makes the fixed level
+  // current again, so nothing outside the draw path can depend on the camera.
+  const DisplayCache& Display() const { return cache_; }
+  // The viewport's zoom-dependent level as last installed by EnsureAdaptiveDisplay
+  // (diagnostics: LodSagitta). Same as Display() while that level is current.
+  const DisplayCache& ViewDisplay() const { return view_current_ ? cache_ : other_cache_; }
+
+  // Fills Display().colors for a Curvature / DraftAngle analysis (no-op for
+  // other modes: colors is cleared). Recomputes only when `settings` differ
+  // from the last computation or the display mesh was rebuilt. Call after
+  // EnsureDisplay().
+  void EnsureAnalysisColors(const AnalysisSettings& settings) const;
+
+  // Fills Display().mapped_uvs for the given projection (Surface uses the
+  // geometry's own uvs when present, else Box). `scale` tiles the texture.
+  // Call after EnsureDisplay(); recomputes only when the request changes.
+  void EnsureMappedUVs(TextureMapping mapping, float scale) const;
+
+  // Human-readable summary used by What/List/Properties.
+  std::string Describe() const;
+
+ private:
+  mutable DisplayCache cache_;
+  // The level that is NOT current: the fixed level while the viewport's is installed in cache_
+  // (view_current_), or the viewport's level while the fixed one is. EnsureDisplay and
+  // EnsureAdaptiveDisplay swap them as needed (O(1) moves), so the two never overwrite each other.
+  mutable DisplayCache other_cache_;
+  mutable bool view_current_ = false;
+  void BuildDisplay(double curve_tolerance, double surface_tolerance) const;
+  // BoundingBox() of the fixed base tessellation (0.05 / 0.1), kept apart from
+  // cache_ because the viewport swaps cache_ to zoom-dependent levels: a
+  // measured bounding box must not change with the camera.
+  mutable kernel::BoundingBox base_bbox_;
+  mutable bool base_bbox_valid_ = false;
+  mutable std::vector<DisplayCache> lod_stash_;  // other tessellation levels, least-recently-used first
+  mutable double lod_surface_floor_ = 0.0;       // budget floor (see EnsureAdaptiveDisplay)
+  mutable std::vector<char> display_fine_faces_;                  // region build input (see EnsureAdaptiveDisplay); empty = whole object
+  mutable double display_coarse_tol_ = 0.0;                       // tolerance of the non-fine faces in a region build
+  mutable std::vector<kernel::BoundingBox> face_boxes_;           // per-face world bounds, lazily filled, cleared by InvalidateDisplay
+  mutable int display_face_cap_ = kDefaultFaceTriangleCap;        // BrepMeshOptions::max_triangles_per_face for the next display build
+  mutable std::vector<double> display_dashes_;
+  void CopyFrom(const SceneObject& other);
+};
+
+// Splits a polyline into the visible dashes of a (dash, gap, ...) pattern,
+// measured along the polyline in model units. An empty or all-zero pattern
+// returns the polyline unchanged.
+std::vector<std::vector<kernel::Point3d>> DashPolyline(const std::vector<kernel::Point3d>& points,
+                                                       const std::vector<double>& pattern);
+
+// Reverses a curve's parameter direction, a surface's U direction, flips a
+// mesh's face normals, or flips a brep's orientation - the Flip command's
+// entire reversal logic (cmd_edit.cpp), factored out here so the Dir
+// command's clickable direction-arrow glyph (ui/DirectionArrows.cpp) can
+// call the exact same function on a click instead of a second,
+// independent reversal implementation.
+void FlipObject(SceneObject& o);
+
+// The location and direction Dir reports/draws: a curve's start point and
+// tangent, or a surface's domain-centre point and normal. Returns
+// std::nullopt for a kind Dir has nothing to show for (Point/Brep/Mesh/
+// SubD) or an object missing its geometry pointer. Shared by the Dir
+// command's own printed text (cmd_edit.cpp) and its direction-arrow glyph
+// (ui/DirectionArrows.cpp) so the two can never disagree about where the
+// arrow actually is.
+struct DirArrow {
+  kernel::Point3d origin;
+  kernel::Vector3d direction;
+};
+std::optional<DirArrow> ComputeDirArrow(const SceneObject& o);
+
+}  // namespace dino8::app

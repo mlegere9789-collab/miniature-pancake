@@ -1,0 +1,22 @@
+# LayerPlotColor command-line wiring (PARITY_MAP.md "Print and plot
+# output" item - the color half of "plot styles (CTB/STB)", alongside
+# print_width_mm/LayerPrintWidth's lineweight half). The pure
+# EffectivePlotColor function itself is unit-tested directly in
+# dino8_plot_color/test_plot_color.cpp; this instead exercises the real
+# scriptable command end to end, through a real ExportSvg call.
+#
+# A Line on the Default layer (display color black, the default) exported
+# to SVG with no plot color override must stroke black; overriding the
+# layer's plot color to red (255,0,0) and re-exporting must stroke red -
+# not the line's own unchanged on-screen display color - and clearing the
+# override back to ByLayer must return to black.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Line 0,0,0 10,0,0
+SelLast
+Export @TMP@/plot_color_off.svg
+LayerPlotColor 255,0,0
+SelLast
+Export @TMP@/plot_color_on.svg
+LayerPlotColor ByLayer
+SelLast
+Export @TMP@/plot_color_cleared.svg

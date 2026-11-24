@@ -1,0 +1,47 @@
+# SABF: ACIS SAB (.sab binary) through the app's Import/Export/Open/SaveAs paths
+# (io/FileSat.cpp over the kernel's ReadAcis/WriteAcisSab). @TMP@ is replaced by
+# smoke.sh. The SAB byte layout is UNVERIFIED and only ever read back by this
+# program's own reader. Volume lines, in order: [0] the box before export, [1]
+# the box re-opened from the .sab file, [2] the sphere imported from its .sab
+# file (r 8: 2144.7; the app's Volume is tessellation based), [3] the cylinder
+# re-opened from its .sab file.
+SetActiveViewport Top
+# --- a box: documented layouts only (planes + straight curves)
+Box 0,0,0 20,20,0 10
+SelAll
+Volume
+Export @TMP@/sabf_box.sab
+New
+Open @TMP@/sabf_box.sab
+SelAll
+Volume
+List
+# --- a sphere: sphere-surface is an UNVERIFIED layout
+New
+Sphere 10,10,10 8
+SelAll
+Export @TMP@/sabf_sphere.sab
+New
+Import @TMP@/sabf_sphere.sab
+SelAll
+List
+Volume
+# --- a cylinder (cone-surface + ellipse-curve, UNVERIFIED), via Open
+New
+Cylinder 0,0,0 5 10
+SelAll
+Export @TMP@/sabf_cyl.sab
+New
+Open @TMP@/sabf_cyl.sab
+SelAll
+Volume
+# --- a mesh has no ACIS body representation here: refused with the reason
+New
+MeshBox 0,0,0 10,10,0 10
+SelAll
+Export @TMP@/sabf_mesh.sab
+# --- a text file that is not an ACIS save file, and a truncated binary header: both refused with the reason
+New
+Import @TMP@/sabf_bad.sab
+New
+Import @TMP@/sabf_trunc.sab

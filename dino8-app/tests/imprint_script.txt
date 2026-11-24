@@ -1,0 +1,40 @@
+# Imprint/MutualImprint QC (see smoke.sh): PARITY_MAP.md's "kernel: Boolean
+# operations" category names "Face-face imprint" as partial specifically
+# because kernel::ImprintFaces()/MutualImprintFaces() - real, tested kernel
+# code - had zero references anywhere in dino8-app/src. This exercises the
+# new Imprint/MutualImprint commands (cmd_boolean.cpp) end to end through
+# the real app, not just the kernel's own unit tests.
+SetActiveViewport Top
+# --- Imprint: a box (id 1) imprinted by a piercing cylinder (id 2) keeps
+# its own face count plus the pierced top/bottom caps' own extra fragments
+# (an annulus-with-hole plus a separate interior disk per face the cylinder
+# fully crosses); the cylinder itself (id 2) is read-only and stays in the
+# document untouched, so exactly 2 objects remain (the imprinted box,
+# unchanged as an object count, plus the untouched cylinder).
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+Imprint
+SelID 2
+Enter
+@expect_objects 2
+SelAll
+Delete
+# --- MutualImprint: two overlapping boxes (id 3, id 4) each imprint the
+# other; both objects remain (2), each with more faces than it started
+# with, and neither loses any material (their own tessellated volumes are
+# unaffected - not checked here directly, since a general-engine result
+# isn't yet routed through the app's own closed-mesh Volume pipeline; see
+# PARITY_MAP.md's own "Face-face imprint" bullet).
+Box 0,0,0 2,2,0 2
+Box 1,1,1 3,3,1 2
+SelNone
+SelID 4
+MutualImprint
+SelID 5
+Enter
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0

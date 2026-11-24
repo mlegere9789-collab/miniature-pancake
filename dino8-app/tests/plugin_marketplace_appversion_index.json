@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "index_name": "App Version Test Index (min_app_version enforcement fixture)",
+  "plugins": [
+    {
+      "id": "futureplugin",
+      "name": "FuturePlugin",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Declares a min_app_version far ahead of any real Dino 8 release, so CheckCompatibility must report AppTooOld and Install must refuse it - see the 'min_app_version enforcement' checks in tests/smoke.sh.",
+      "api_version": 1,
+      "min_app_version": "99.0.0",
+      "bundled_path": "plugins/mesh_tools"
+    }
+  ]
+}

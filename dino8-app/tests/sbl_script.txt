@@ -1,0 +1,166 @@
+# Sealed exact Booleans (see the "SBL_" section at the end of smoke.sh).
+#
+# The app's exact general-Boolean path now tries kernel::SealGeneralBooleanResult (the sewing half of
+# BooleanCombineGeneralSealed) first: a result that seals is ON_Brep::IsValid + IsSolid with REAL inner loops
+# (no keyhole slits) and an exact divergence-theorem volume. Every case starts from `New` (operands are 1 and 2,
+# a Boolean result is 3) and is bracketed by an unknown-command marker SBLBEGIN_<name> that smoke.sh slices the
+# output on. Each case runs Check, List, Volume and Area so the checks read measured numbers against closed forms.
+SetActiveViewport Top
+
+# box 10^3 minus a through-hole cylinder r2: V = 1000 - pi*4*10 = 874.34, A = 600 - 2*pi*4 + 2*pi*2*10 = 700.53
+New
+SBLBEGIN_cut_through
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Check
+List
+Volume
+Area
+# union with a piercing cylinder: V = 1000 + pi*4*10 = 1125.66
+New
+SBLBEGIN_union_pierce
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelAll
+BooleanUnion
+SelAll
+Check
+List
+Volume
+# intersection with the piercing cylinder: V = pi*4*10 = 125.66 (no keyhole at all)
+New
+SBLBEGIN_intersect_pierce
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanIntersection
+SelID 2
+Enter
+SelAll
+Check
+List
+Volume
+# blind hole (cylinder z 5..15): V = 1000 - pi*4*5 = 937.17
+New
+SBLBEGIN_blind
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,5 2 10
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Check
+List
+Volume
+# boss r3 h5 on the top face: V = 1000 + pi*9*5 = 1141.37
+New
+SBLBEGIN_boss
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,10 3 5
+SelAll
+BooleanUnion
+SelAll
+Check
+List
+Volume
+# tube: cylinder r5 h10 minus a coaxial r2 cylinder: V = pi*21*10 = 659.73
+New
+SBLBEGIN_tube
+Cylinder 0,0,0 5 10
+Cylinder 0,0,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Check
+List
+Volume
+# stacked cylinders: r3 h8 and r2 h8 on top (z 8..16): V = pi*9*8 + pi*4*8 = 326.73
+New
+SBLBEGIN_stack
+Cylinder 0,0,0 3 8
+Cylinder 0,0,8 2 8
+SelAll
+BooleanUnion
+SelAll
+Check
+List
+Volume
+# two holes in ONE Boolean (cutters selected together): V = 1000 - 2*pi*2.25*10 = 858.62
+New
+SBLBEGIN_two_holes
+Box 0,0,0 10,10,0 10
+Cylinder 3,5,-5 1.5 20
+Cylinder 7,5,-5 1.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+SelID 3
+Enter
+SelAll
+Check
+List
+Volume
+# a SECOND hole cut in the result of the first (sequential Booleans, re-evaluated from the recorded operands)
+New
+SBLBEGIN_sequential
+Box 0,0,0 10,10,0 10
+Cylinder 3,5,-5 1.5 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+Cylinder 7,5,-5 1.5 20
+SelNone
+SelID 3
+BooleanDifference
+SelID 4
+Enter
+SelAll
+Check
+List
+Volume
+# Shell of the sealed result (exact path reading the end faces' real inner loops): the through-hole plate, wall 0.5
+New
+SBLBEGIN_shell
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+Volume
+# a hole 100000 units from the origin still declines to the mesh boolean (old behaviour, unchanged)
+New
+SBLBEGIN_far_decline
+Box 100000,100000,0 100010,100010,0 10
+Cylinder 100005,100005,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+List
+Volume
+SBLEND

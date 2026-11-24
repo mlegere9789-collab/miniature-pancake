@@ -1,0 +1,228 @@
+# SO2: exact Shell / OffsetSrf of RIGHT PRISMS - an extruded L (non-convex) and a box whose
+# parallel edges were rounded with FilletEdge (planar faces + cylindrical strips). Every case is
+# bracketed by an SO2BEGIN_<name> marker; so2block in smoke.sh slices the output by it.
+# ===================== L extrusion =====================
+New
+SO2BEGIN_L_shell
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Shell
+Enter
+1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_L_offset_out
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_L_offset_in
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+OffsetSrf
+-1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_L_offset_solid
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_L_shell_toothick
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Shell
+Enter
+5
+SelAll
+List
+# ===================== box with one rounded vertical edge =====================
+New
+SO2BEGIN_F1_shell
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelAll
+Shell
+Enter
+1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_F1_offset
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelAll
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_F1_offset_in
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelAll
+OffsetSrf
+-0.5
+SelLast
+List
+Volume
+Check
+# ===================== four rounded vertical edges =====================
+New
+SO2BEGIN_F4_shell
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+0,0,5
+10,0,5
+0,10,5
+Enter
+SelAll
+Shell
+Enter
+1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_F4_offset_solid
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+0,0,5
+10,0,5
+0,10,5
+Enter
+SelAll
+OffsetSrf
+Solid=Yes
+1
+SelLast
+List
+Volume
+Check
+# ===================== tall L: a thinner arm than the wall declines =====================
+New
+SO2BEGIN_L_arm_toothin
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 30
+SelPolysrf
+Shell
+Enter
+5
+SelAll
+List
+# ===================== box with a through hole (Boolean result: keyhole cap loop): stays declined =====================
+New
+SO2BEGIN_H_shell
+Box 0,0,0 10,10,0 10
+Cylinder 5,5,-5 2 20
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+# ===================== tilted prisms: the axis is not a coordinate axis =====================
+New
+SO2BEGIN_R_F1_shell
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelAll
+Rotate3D 0,0,0 1,2,3 37
+SelAll
+Shell
+Enter
+1
+SelLast
+List
+Volume
+Check
+New
+SO2BEGIN_R_L_offset
+Polyline 0,0,0 20,0,0 20,10,0 10,10,0 10,20,0 0,20,0 0,0,0
+Enter
+SelLast
+ExtrudeCrv 8
+SelPolysrf
+Rotate3D 0,0,0 3,-1,2 61
+SelPolysrf
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+# ===================== NOT a prism (a box with a sphere fused on top): stays declined =====================
+New
+SO2BEGIN_X_notprism
+Box 0,0,0 10,10,0 10
+Sphere 5,5,10 4
+SelAll
+BooleanUnion
+SelAll
+Shell
+Enter
+0.5
+SelAll
+List
+New
+SO2END

@@ -1,0 +1,14 @@
+# DWG BLOCK_HEADER/INSERT (block instance) QC. Dino 8 has no live
+# block/instance object of its own - a block instance placed in-app is
+# already-flattened geometry (see InstantiateBlock in cmd_drafting.cpp), so
+# Dino8-authored DWG exports never contain a real INSERT entity. This
+# fixture is built independently through GNU LibreDWG's own dwg_add_* API
+# (see tests/dwg_fixture_gen.c) so ImportDwg's block-flattening code
+# (WalkDwgEntities in FileExchange.cpp) has a real INSERT to prove itself
+# against.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this
+# and generates @TMP@/dwg_insert_fixture.dwg with the dwg_fixture_gen tool
+# before this script runs.
+Open @TMP@/dwg_insert_fixture.dwg
+SelAll
+List

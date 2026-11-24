@@ -1,0 +1,277 @@
+# FilletEdge / ChamferEdge record construction history (tests/smoke.sh section H2R_).
+# With History On an exact planar fillet / chamfer hides the solid it was applied
+# to (instead of editing it in place) and records {source, radius or distances,
+# one geometric signature per edge}. Editing the source then rebuilds the result
+# automatically: each recorded edge is re-found by direction + both face normals
+# (+ position relative to the solid's bounding box). Every claim below is a
+# measured Volume or Bounding box, compared in smoke.sh with the SAME operation
+# performed fresh on the moved/scaled source (the "control" boxes).
+# @TMP@ is the test temp directory.
+SetActiveViewport Top
+
+# ============================================================ F1: box -> FilletEdge r=2
+History On
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelNone
+SelID 2
+Volume
+SelNone
+SelID 2
+BoundingBox
+History
+ListHistory 2
+# Show the hidden source, move it +5 in X: the fillet follows (no UpdateHistory).
+Show
+SelNone
+SelID 1
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 2
+Volume
+SelNone
+SelID 2
+BoundingBox
+# Scale the source 2x about (5,0,0): 20x20x20 at x 5..25, the same fillet edge (the
+# one at the +x,+y corner) is re-found and the radius stays 2.
+SelNone
+SelID 1
+Scale 5,0,0 2
+SelNone
+SelID 2
+Volume
+Undo
+SelNone
+SelID 2
+Volume
+# EditHistory changes the recorded radius.
+EditHistory 2 radius=3
+SelNone
+SelID 2
+Volume
+# Save, New, Open: the record is read back and the fillet still follows its source.
+Save @TMP@/h2r_fillet.3dm
+New
+Open @TMP@/h2r_fillet.3dm
+History On
+History
+Show
+SelNone
+SelID 1
+Move
+0,0,0
+0,5,0
+SelNone
+SelID 2
+Volume
+SelNone
+SelID 2
+BoundingBox
+
+# ============================================================ C1: box -> two ChamferEdge picks in one run
+New
+History On
+Box 0,0,0 10,10,0 10
+ChamferEdge
+Radius=3
+10,10,5
+0,10,5
+Enter
+SelNone
+SelID 2
+Volume
+History
+Show
+SelNone
+SelID 1
+Move
+0,0,0
+7,0,0
+SelNone
+SelID 2
+Volume
+SelNone
+SelID 2
+BoundingBox
+SelNone
+SelID 1
+Scale 7,0,0 2
+SelNone
+SelID 2
+Volume
+EditHistory 2 distance=2
+SelNone
+SelID 2
+Volume
+
+# ============================================================ C2: asymmetric chamfer (distance 2 / distance2 4)
+New
+History On
+Box 0,0,0 10,10,0 10
+ChamferEdge
+Radius=2
+Distance2=4
+10,10,5
+Enter
+SelNone
+SelID 2
+Volume
+History
+Show
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,3
+SelNone
+SelID 2
+Volume
+EditHistory 2 distance2=1
+SelNone
+SelID 2
+Volume
+
+# ============================================================ N1: History Off records nothing, edits in place
+New
+History Off
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelNone
+SelID 1
+Volume
+History
+SelAll
+Move
+0,0,0
+5,0,0
+SelNone
+SelID 1
+Volume
+
+# ============================================================ N2: a rotated source is still followed
+# Rotating the source 30 degrees about Z: no edge keeps the recorded direction/normals, but the
+# solid kept its topology and the same edge (same position in the edge list) keeps its dihedral
+# angle and relative length, so the edge is re-found that way and the rebuild says so.
+New
+History On
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+Show
+SelNone
+SelID 1
+Rotate 5,5,0 30
+SelNone
+SelID 2
+Volume
+SelNone
+SelID 2
+BoundingBox
+
+# ============================================================ N3: the recorded edge vanished from the source: refused, old result kept
+# The source box is edited in place (History Off) with a chamfer on the very edge the fillet was recorded on,
+# so no edge has the recorded direction between faces with the recorded normals any more.
+New
+History On
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+Show
+SelNone
+SelID 2
+Hide
+History Off
+SelNone
+ChamferEdge
+Radius=3
+10,10,5
+Enter
+History On
+UpdateHistory
+Show
+SelNone
+SelID 2
+Volume
+# A Rho fillet and an angle chamfer are not what the rebuild re-runs: nothing is recorded.
+New
+History On
+Box 0,0,0 10,10,0 10
+FilletEdge
+Rho=0.6
+10,10,5
+Enter
+History
+New
+History On
+Box 0,0,0 10,10,0 10
+ChamferEdge
+Radius=3
+Angle=30
+10,10,5
+Enter
+History
+
+# ============================================================ X: the SAME operations performed fresh on the moved/scaled source (History Off controls)
+# X1: the 20^3 box at x 5..25 (the first box moved +5 and scaled 2x about (5,0,0)), fillet radius 2.
+New
+History Off
+Box 5,0,0 25,20,0 20
+FilletEdge
+Radius=2
+25,20,10
+Enter
+SelNone
+SelID 1
+Volume
+# X2: the 20^3 box at x 7..27 (the chamfered box moved +7 and scaled 2x about (7,0,0)), two chamfers of 3.
+New
+History Off
+Box 7,0,0 27,20,0 20
+ChamferEdge
+Radius=3
+27,20,10
+7,20,10
+Enter
+SelNone
+SelID 1
+Volume
+# X3: the 10^3 box at (5,5,0) (the reopened source moved +5 in Y after +5 in X), fillet radius 3.
+New
+History Off
+Box 5,5,0 15,15,0 10
+FilletEdge
+Radius=3
+15,15,5
+Enter
+SelNone
+SelID 1
+Volume
+# X4: the 10^3 box rotated 30 degrees about (5,5,0) (the N2 source), fillet radius 2 on the rotated edge.
+New
+History Off
+Box 0,0,0 10,10,0 10
+SelNone
+SelID 1
+Rotate 5,5,0 30
+FilletEdge
+Radius=2
+6.830,11.830,5
+Enter
+SelNone
+SelID 1
+Volume
+SelNone
+SelID 1
+BoundingBox

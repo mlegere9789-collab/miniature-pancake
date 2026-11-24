@@ -1,0 +1,46 @@
+# Extended selection + state QC: SelDupAll, SelShortCrv, SelKeyValue,
+# SelVolumeSphere, Dot, Camera, SetActiveViewport, CheckOutLicense.
+Line 0,0,0 10,0,0
+Line 0,0,0 10,0,0
+Line 20,0,0 22,0,0
+Circle 50,50,0 5
+SelDupAll
+@expect_selected 2
+SelNone
+SelShortCrv 5
+@expect_selected 1
+SelNone
+SelID 4
+Hyperlink https://example.org/dino8
+SelNone
+SelKeyValue Hyperlink https://example.org/dino8
+@expect_selected 1
+SelNone
+SelVolumeSphere 0,0,0 15
+@expect_selected 2
+SelNone
+Dot Hello 5,5,0
+@expect_objects 5
+SelDot
+@expect_selected 1
+NamedSelections Save dots
+SelNone
+NamedSelections Restore dots
+@expect_selected 1
+SelNone
+Camera
+Enter
+SetActiveViewport Top
+Camera
+Enter
+ZoomLens 35
+SetActiveViewport Perspective
+PerspectiveAngle 60
+CheckOutLicense
+Login
+SelectionFilterEdges
+Cancel
+SetDocumentUserText Project Dino
+GumballSettings
+SelAll
+@expect_selected 5

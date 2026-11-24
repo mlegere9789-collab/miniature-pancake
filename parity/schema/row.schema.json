@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Dino 8 Parity Register row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "program", "statement", "source", "target", "factory", "domain", "status"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^D8-[A-Z0-9]{2,8}-[A-Z0-9]{2,8}-[0-9]{4}$" },
+    "program": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "enum": ["rhino", "grasshopper", "archicad", "sketchup", "forma", "revit", "blender", "autocad"] }
+    },
+    "statement": { "type": "string", "minLength": 10 },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref", "doc"],
+      "properties": {
+        "kind": { "enum": ["command", "operator", "node", "component", "tool", "feature", "setting", "modifier", "constraint", "editor"] },
+        "ref": { "type": "string", "minLength": 1 },
+        "doc": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tier_now": { "enum": ["None", "Basic", "Partial", "Strong", "Best"] },
+    "target": { "enum": ["Strong", "Best"] },
+    "superiority": { "type": "string" },
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["test_id"],
+        "properties": {
+          "test_id": { "type": "string" },
+          "corpus": { "type": "string" },
+          "tolerance": { "type": "string" }
+        }
+      }
+    },
+    "budget_ref": { "type": ["string", "null"] },
+    "links": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pain_points": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 25 } },
+        "wishes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "factory": {
+      "enum": ["kernel-geometry", "mesh-subd-sculpt", "direct-modeling", "flow", "bim-arch", "bim-struct-mep", "drafting-docs", "cad-2d", "render-anim", "simulation", "analysis-site", "interop-migration", "collab-cloud", "ux-access-i18n", "scripting-api-ai", "performance"]
+    },
+    "domain": { "type": "string", "pattern": "^[A-Z0-9]{2,8}$" },
+    "status": { "enum": ["open", "in_progress", "verified"] },
+    "alias_of": { "type": "string" },
+    "evidence": { "type": ["null", "string", "object", "array"] },
+    "notes": { "type": "string" }
+  }
+}

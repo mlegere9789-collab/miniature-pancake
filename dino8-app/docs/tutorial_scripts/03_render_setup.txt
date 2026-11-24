@@ -1,0 +1,18 @@
+# Tutorial 3: Set up a render - materials, a light, a ground plane, and a
+# rendered image file. Verifies the exact command sequence quoted in
+# docs/site/tutorials.html "Set up a render" tutorial.
+SetActiveViewport Perspective
+Box 0,0,0 20,20,0 10
+Sphere 35,10,8 8
+@expect_objects 2
+SelID 1
+RenderAssignMaterialToObjects Plastic Color=220,60,50 Gloss=0.7
+SelNone
+SelID 2
+RenderAssignMaterialToObjects Glass Color=200,225,240 Transparency=0.6 Reflectivity=0.3 Gloss=0.9
+SelNone
+PointLight 10,-30,40 Intensity=1.5
+GroundPlane On Color=150,158,168
+ZoomExtents
+Render 160 120
+SaveRenderWindowAs @TMP@/tutorial_render.bmp

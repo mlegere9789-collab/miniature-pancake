@@ -1,0 +1,239 @@
+# KWR: kernel capabilities wired into the app - NurbsSurface::Offset (exact analytic, tolerance-controlled
+# otherwise) behind OffsetSrf of a surface, and the kernel cap-rim blends (ChamferCapRimAngle / FilletCapRim(s))
+# behind ChamferEdge Distance/Angle and FilletEdge on a plain capped cylinder or cone frustum.
+# Every case starts from `New` and is bracketed by an unknown-command marker ("KWRBEGIN_<name>") that smoke.sh
+# uses to slice the output into per-case blocks. Closed forms (Pappus: V = 2*pi*rho*A for the (r,z) corner
+# region cut away at a rim) are in smoke.sh next to each range.
+# NB the app's Cone puts its APEX at the clicked base point and the flat cap at z = height; TCone 0,0,0 5 10 3 is
+# the frustum r5 (z=0) -> r3 (z=10).
+SetActiveViewport Top
+
+# ===================== OffsetSrf of an analytic SURFACE object =====================
+# cylinder surface r3 h8 (ExtrudeCrv Solid=No): +1 -> r4 (area 2*pi*4*8), -1 -> r2 (2*pi*2*8), -3 -> r0 refused
+New
+KWRBEGIN_O_cyl
+Circle 30,0,0 3
+SelLast
+ExtrudeCrv
+Solid=No
+8
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Area
+SelNone
+SelID 2
+OffsetSrf
+-1
+SelLast
+Area
+SelNone
+SelID 2
+OffsetSrf
+-3
+SelAll
+List
+# cone-frustum surface (tapered extrusion of a circle r4, h8, default draft): +1 along the normal
+New
+KWRBEGIN_O_cone
+Circle 0,0,0 4
+SelLast
+ExtrudeCrvTapered
+Solid=No
+8
+SelLast
+OffsetSrf
+1
+SelLast
+List
+BoundingBox
+Area
+# control: a plain Brep sphere still takes the exact B-rep offset (r5 -> r6)
+New
+KWRBEGIN_O_sphere
+Sphere 0,0,0 5
+SelLast
+OffsetSrf
+1
+SelLast
+List
+Volume
+Check
+# history: the offset of a surface is rebuilt by UpdateHistory through the same function
+New
+KWRBEGIN_O_hist
+History On
+Circle 30,0,0 3
+SelLast
+ExtrudeCrv
+Solid=No
+8
+SelLast
+OffsetSrf
+1
+SelLast
+Area
+SelNone
+SelID 1
+Scale 30,0,0 2
+UpdateHistory
+SelNone
+SelID 3
+Area
+History Off
+
+# ===================== ChamferEdge Distance/Angle on a plain capped cylinder =====================
+# cylinder r5 h20, top rim, 2 across the cap at 45 degrees from the cap: wall distance 2, V = 1516.34
+New
+KWRBEGIN_C_cyl45
+Cylinder 0,0,0 5 20
+ChamferEdge
+Radius=2
+Angle=45
+0,5,20
+Enter
+SelAll
+List
+Volume
+Check
+# bottom rim, 2 at 30 degrees: wall distance 1.1547, V = 1539.36
+New
+KWRBEGIN_C_cyl30
+Cylinder 0,0,0 5 20
+ChamferEdge
+Radius=2
+Angle=30
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+# ===================== ChamferEdge Distance/Angle on a cone frustum (obtuse top rim, acute bottom rim) =====================
+New
+KWRBEGIN_C_tc_top30
+TCone 0,0,0 5 10 3
+ChamferEdge
+Radius=1
+Angle=30
+0,3,10
+Enter
+SelAll
+List
+Volume
+Check
+New
+KWRBEGIN_C_tc_bot60
+TCone 0,0,0 5 10 3
+ChamferEdge
+Radius=1
+Angle=60
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+# control: Distance1/Distance2 on the frustum still takes the app's own exact revolved bevel
+New
+KWRBEGIN_C_tc_dist
+TCone 0,0,0 5 10 3
+ChamferEdge
+Radius=1
+Distance2=2
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+# refusals fall through cleanly with the printed reason and leave the solid untouched
+# (full cone with an apex: not a capped frustum; hole plate: not a plain capped cylinder)
+New
+KWRBEGIN_C_cone_refused
+Cone 0,0,0 5 10
+ChamferEdge
+Radius=1
+Angle=45
+0,5,10
+Enter
+SelAll
+List
+Volume
+New
+KWRBEGIN_C_hole_refused
+Box 0,0,0 6,6,0 4
+Cylinder 3,3,-1 1.5 6
+SelNone
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+ChamferEdge
+Radius=0.5
+Angle=45
+3,4.5,4
+Enter
+SelAll
+List
+Volume
+
+# ===================== FilletEdge on a cone frustum (kernel FilletCapRim / FilletCapRims) =====================
+New
+KWRBEGIN_F_tc_both
+TCone 0,0,0 5 10 3
+FilletEdge
+Radius=1
+0,5,0
+0,3,10
+Enter
+SelAll
+List
+Volume
+Check
+New
+KWRBEGIN_F_tc_top
+TCone 0,0,0 5 10 3
+FilletEdge
+Radius=1
+0,3,10
+Enter
+SelAll
+List
+Volume
+Check
+New
+KWRBEGIN_F_tc_bot
+TCone 0,0,0 5 10 3
+FilletEdge
+Radius=1
+0,5,0
+Enter
+SelAll
+List
+Volume
+Check
+# a radius that consumes the small cap is refused with the kernel's reason (printed) and the old path runs
+New
+KWRBEGIN_F_tc_big
+TCone 0,0,0 5 10 3
+FilletEdge
+Radius=4
+0,3,10
+Enter
+# control: the plain cylinder keeps the app's own exact torus fillet
+New
+KWRBEGIN_F_cyl
+Cylinder 0,0,0 5 20
+FilletEdge
+Radius=1
+0,5,20
+Enter
+SelAll
+List
+Volume
+Check
+SelNone
+SelAll

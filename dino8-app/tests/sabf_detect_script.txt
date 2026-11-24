@@ -1,0 +1,12 @@
+# SABF detection: the encoding is read from the file's first bytes, not from the
+# extension. @TMP@/sabf_text_as.sab is a SAT text file under a .sab name and
+# @TMP@/sabf_bin_as.sat is a SAB file under a .sat name; both must open and the
+# summary must name the encoding that was actually read.
+SetActiveViewport Top
+Open @TMP@/sabf_text_as.sab
+SelAll
+Volume
+New
+Open @TMP@/sabf_bin_as.sat
+SelAll
+Volume
