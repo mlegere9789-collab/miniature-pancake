@@ -564,14 +564,19 @@ class StretchCrossingCommand : public Command {
       } else if (o.kind == ObjectKind::Curve && o.curve) {
         ON_NurbsCurve& nc = o.curve->raw();
         const int n = nc.CVCount();
+        {
+          // A circle moves whole when its CENTRE is inside the window, whichever of its nine control points are inside, and stays when
+          // the centre is outside (a window can hold some control points of a circle whose centre lies beyond its edge).
+          ON_Arc arc;
+          if (nc.IsClosed() && nc.IsArc(nullptr, &arc, 1e-9)) {
+            if (inside(arc.Center())) { o.Transform(shift); o.InvalidateDisplay(); ++moved; ++whole; }
+            continue;
+          }
+        }
         std::vector<char> in(static_cast<size_t>(n), 0);
         int count = 0;
         for (int i = 0; i < n; ++i) { ON_3dPoint q; nc.GetCV(i, q); if (inside(q)) { in[static_cast<size_t>(i)] = 1; ++count; } }
-        if (count == 0) {
-          ON_Arc arc;  // a circle whose centre is inside moves although none of its control points need be
-          if (nc.IsClosed() && nc.IsArc(nullptr, &arc, 1e-9) && inside(arc.Center())) { o.Transform(shift); o.InvalidateDisplay(); ++moved; ++whole; }
-          continue;
-        }
+        if (count == 0) continue;
         if (count == n) { o.Transform(shift); o.InvalidateDisplay(); ++moved; ++whole; continue; }
         if (nc.Degree() == 1 && !nc.IsRational()) {
           for (int i = 0; i < n; ++i) if (in[static_cast<size_t>(i)]) { ON_3dPoint q; nc.GetCV(i, q); nc.SetCV(i, q + d); }

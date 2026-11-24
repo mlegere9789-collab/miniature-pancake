@@ -155,6 +155,13 @@ int KeyShortcutFromName(const std::string& name);
 // Small app-wide switches set by commands (SelectionFilter*, Echo, DragMode,
 // SetRedrawOff, SetWorkingFolder...). Plain data so cmd_state.cpp and
 // cmd_select2.cpp can read and toggle them without UI code.
+// What Delete keeps for Oops: the removed object (with its original id, so Oops can tell an object Undo has brought back) and the full
+// path of its layer (layer numbers change when layers are purged; the name is what identifies the layer again).
+struct ErasedObject {
+  SceneObject object;
+  std::string layer_path;
+};
+
 struct AppState {
   // Sub-object selection filter (SelectionFilterEdges/Faces/Vertices/...).
   bool filter_enabled = true;
@@ -178,7 +185,7 @@ struct AppState {
   bool message_boxes_reset = false;
   bool camera_shown = false;         // Camera Show: draw the active camera frustum
   bool decimal_comma = false;        // DecimalPoint: print numbers with a decimal comma
-  std::vector<SceneObject> last_erased;  // Oops: the objects the most recent Delete removed (copies, restored by Oops)
+  std::vector<ErasedObject> last_erased;  // Oops: the objects the most recent Delete removed (copies with their layer path); emptied by New and Open
   bool crease_splitting = true;      // CreaseSplitting: AutomaticSubDFromMesh creases sharp edges
   bool check_new_objects = false;    // CheckNewObjects: validate objects every command adds
   bool history_recording = false;    // History On/Off: whether NEW construction commands record a HistoryRecord (doc/Document.h) for UpdateHistory to rebuild later
