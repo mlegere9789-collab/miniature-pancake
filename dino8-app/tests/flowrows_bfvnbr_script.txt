@@ -1,0 +1,6 @@
+# Flow Register row Vertex Neighbors (Blender Geometry Nodes): player + bake, read back by sections/98_bfvnbr.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 24
+SelAll
+List

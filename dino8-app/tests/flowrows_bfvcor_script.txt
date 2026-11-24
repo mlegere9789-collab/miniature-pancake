@@ -1,0 +1,6 @@
+# Flow Register row Vertex of Corner (Blender Geometry Nodes): player + bake, read back by sections/98_bfvcor.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 14
+SelAll
+List

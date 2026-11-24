@@ -1,0 +1,6 @@
+# Flow Register row Corners of Face (Blender Geometry Nodes): player + bake, read back by sections/98_bfcfac.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 28
+SelAll
+List

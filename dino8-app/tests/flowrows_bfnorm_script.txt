@@ -1,0 +1,6 @@
+# Flow Register row Normal (Blender Geometry Nodes): player + bake, read back by sections/98_bfnorm.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 43
+SelAll
+List

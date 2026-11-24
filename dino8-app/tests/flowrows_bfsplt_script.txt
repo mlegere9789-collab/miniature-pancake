@@ -1,0 +1,6 @@
+# Flow Register row Split Edges (Blender Geometry Nodes): player + bake, read back by sections/98_bfsplt.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 22
+SelAll
+List

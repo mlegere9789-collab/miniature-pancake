@@ -1,0 +1,6 @@
+# Flow Register row Spline Length (Blender Geometry Nodes): player + bake, read back by sections/98_bfslen.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 11
+SelAll
+List

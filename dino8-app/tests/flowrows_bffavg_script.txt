@@ -1,0 +1,6 @@
+# Flow Register row Field Average (Blender Geometry Nodes): player + bake, read back by sections/98_bffavg.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 9
+SelAll
+List
