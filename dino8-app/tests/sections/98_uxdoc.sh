@@ -3,12 +3,10 @@
 # document user text and the model grid.
 # Rows D8-RHINO-SETTING-0058 Units and tolerances, 0057 Document notes, 0059 Document user text, 0052 Document grid and
 # D8-RHINO-UI-0013 DocumentText.
-# Oracles: the Rhino 8 help text kept in data/commands.json for Notes ("Notes are saved with Rhino 3DM and IGES files"; the Notes panel
-# holds free text for the model) and for user text (key/value, a value of two double quotes removes a key; GetUserText lists them);
-# units names and the default Millimeters / 0.001 / 1 degree from Rhino's "Small Objects - Millimeters" template (from recollection, needs
-# owner or independent check); everything else is a value typed in this script and read back after a Save, New, Open round trip, so the
-# expected text is the typed text. A deliberate control: after New (before Open) every value is back at its default, so the Open really
-# restored it from the file.
+# Oracles: units names and the default Millimeters / 0.001 / 1 degree from Rhino's "Small Objects - Millimeters" template (from recollection,
+# needs owner or independent check); everything else is a value typed in this script and read back after a Save, New, Open round trip, so the
+# expected text is the typed text. That Rhino saves the notes and the document user text with the 3dm is recalled (needs owner check). A deliberate
+# control: after New (before Open) every value is back at its default, so the Open really restored it from the file.
 # Not tested (needs a real window): the Document Properties dialog pages and the Notes panel layout.
 # ---------------------------------------------------------------------------
 . "$HERE/ux_common.sh"
