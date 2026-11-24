@@ -116,7 +116,9 @@ void RegisterSelectCommands(CommandEngine& e) {
         if (ctx.Doc().Objects().empty()) { ctx.Warn("SelLast: the document has no objects"); return; }
         ctx.Doc().SelectNone();
         ctx.Doc().Select(ctx.Doc().Objects().back().id, true);
-        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected (last created)");
+        // Worded without "N object(s) selected": several existing scripts read the first and last such line of a run as the
+        // before and after selection counts of a Hatch round trip, and a SelLast in front of the Hatch must not become the "before".
+        ctx.Print("SelLast: last created object selected (" + std::to_string(ctx.Doc().SelectedCount()) + " selected)");
       }));
   Reg(e, "SelPrev", Immediate([](CommandContext& ctx) {
         if (ctx.Doc().RestorePreviousSelection()) ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected (previous selection)");
