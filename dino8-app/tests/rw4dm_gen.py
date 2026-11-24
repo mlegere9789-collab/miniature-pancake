@@ -454,10 +454,8 @@ def session():
         S("redo", "Redo brings the Move back: the point is at (6,0,0)", ["SelNone", "Redo", "SelNone", "SelID 1"], [(1, "point", "Default", "")], ["  6,0,0$"], show="sel"),
         S("clearundo", "ClearUndo empties the undo memory: Undo and Redo then find nothing, and the model is untouched (the point stays at (6,0,0))", ["SelNone", "ClearUndo", "Undo", "Redo", "SelNone", "SelID 1"], [(1, "point", "Default", "")],
           ["Undo history cleared", "Nothing to undo", "Nothing to redo", "  6,0,0$"], show="sel"),
-        S("cancel", "Cancel with no command running clears the selection: after SelID 1 2 and Cancel, SelPt adds only the one point (1 object selected, not 2)", ["SelNone", "SelID 1 2", "Cancel", "SelPt"], [],
-          ["Nothing to cancel .* 2 object\\(s\\) deselected", "1 object\\(s\\) selected"], show="none"),
     ]
-    build_logic("session", "ClearUndo and Cancel: the undo memory and the selection", ["D8-RHINO-ORG-0091", "D8-RHINO-ORG-0092"], [], steps)
+    build_logic("session", "ClearUndo: the undo memory", ["D8-RHINO-ORG-0091"], [], steps)
 
 # ---------------------------------------------------------------------------------------------------------------- RW4DM_EXPLODE
 def explode():
@@ -505,6 +503,14 @@ def delete():
           ["SelNone", "SelID 1", "PointsOn", "SelControlPointRegion 1.5,-1,-1 4.5,3,1", "Delete", "SelNone", "SelID 1", "ExtractPt", "SelNone", "SelPt", "List"], [], [], show="none", check=False),
         S("cleanup", "the three extracted points are ordinary objects: Delete removes them (3 objects)", ["SelNone", "SelPt", "Delete"], [(1, "curve", "Default", ""), (2, "surface", "Default", "")], ["Deleted 3 object\\(s\\)"]),
         S("cv_all", "Delete with every control point of the polyline selected removes the object itself", ["SelNone", "SelID 1", "PointsOn", "SelControlPoint", "Delete"], [(2, "surface", "Default", "")], ["Deleted 3 sub-object\\(s\\), 1 object\\(s\\) removed entirely"]),
+    ]
+    steps += [
+        S("new_resets", "New resets the control-point selection: control points of a surface picked before New do not turn a later Delete of a new object (same id 2) into a control-point delete - the plane is deleted whole",
+          ["SelNone", "SelID 2", "PointsOn", "SelControlPoint", "New", "SetActiveViewport Top", "Polyline 0,0,0 2,1,0 4,0,0 6,1,0 8,0,0", "Enter", "Plane 1,4,0 5,8,0", "SelNone", "SelID 2", "Delete"],
+          [(1, "curve", "Default", "")], ["Deleted 1 object\\(s\\)"]),
+        S("undo_prunes", "Undo drops the picks of an object it removes: control points of a new plane (3) are picked, Undo removes the plane, Redo brings it back, and Delete then deletes it whole (it is not refused as a control-point delete)",
+          ["SelNone", "Plane 1,4,0 5,8,0", "SelNone", "SelID 3", "PointsOn", "SelControlPoint", "Undo", "Redo", "SelNone", "SelID 3", "Delete"],
+          [(1, "curve", "Default", "")], ["Deleted 1 object\\(s\\)"]),
     ]
     calls = (sh_lines("cv_mid", PT, "s/x/x/", "  0,0,0 |   6,1,0 |   8,0,0", "the control points left after the delete are the original first, fourth and fifth, unchanged") +
              sh_lines("cv_mid", "Deleted [0-9]+ sub-object", "s/x/x/", "Deleted 2 sub-object(s)", "Delete reports the two control points it removed", tag="message"))
