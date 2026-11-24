@@ -6,6 +6,7 @@
 // Everything here works on kernel::Mesh; breps, surfaces and SubDs are
 // converted through MeshOf() first (and the command line says so).
 #include "commands/cmd_common.h"
+#include "doc/SubObjectEdit.h"
 #include "render/ImageIO.h"
 
 #include <algorithm>
@@ -1145,22 +1146,26 @@ class ExtractMeshFacesCommand : public Command {
   int total_ = 0;
 };
 
-using FaceMetric = std::function<double(const RawMesh&, const Face&)>;
-void ExtractByMetric(CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in, const char* label, const FaceMetric& metric) {
+// ExtractMeshFacesBy*: the faces whose measure is in [lo, hi]. The measures and the range test are the ones SelMeshFacesBy* uses (doc/SubObjectEdit.h),
+// so a face is "in range" for Extract exactly when it is for Sel.
+void ExtractByMeasure(CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in, const char* label, FaceMeasureKind kind) {
   std::vector<Target> ts = Targets(ctx, ids, label);
   if (ts.empty()) return;
-  const double lo = in.N(0, 0), hi = in.N(1, 1e300);
+  const double lo = in.N(0, 0), hi = in.N(1, kind == FaceMeasureKind::DraftAngle ? 90.0 : 1e300);
+  const ON_3dVector pull = ActiveNormal(ctx);
   ctx.Doc().BeginChange(label);
   for (const Target& t : ts) {
     RawMesh r = Unpack(t.mesh.raw());
     std::vector<int> faces;
-    for (size_t i = 0; i < r.f.size(); ++i) { const double m = metric(r, r.f[i]); if (m >= lo && m <= hi) faces.push_back(static_cast<int>(i)); }
+    for (size_t i = 0; i < r.f.size(); ++i) {
+      std::vector<Point3d> corners;
+      for (int k = 0; k < RawMesh::Corners(r.f[i]); ++k) corners.push_back(r.v[r.f[i][static_cast<size_t>(k)]]);
+      if (FaceMeasureInRange(kind, MeasurePolygon(corners, pull.x, pull.y, pull.z), lo, hi)) faces.push_back(static_cast<int>(i));
+    }
     ExtractFaces(ctx, t, faces, label);
   }
 }
 
-double LongestEdge(const RawMesh& r, const Face& f) { double m = 0; const int n = RawMesh::Corners(f); for (int k = 0; k < n; ++k) m = std::max(m, (r.v[f[(k + 1) % n]] - r.v[f[k]]).Length()); return m; }
-double ShortestEdge(const RawMesh& r, const Face& f) { double m = 1e300; const int n = RawMesh::Corners(f); for (int k = 0; k < n; ++k) m = std::min(m, (r.v[f[(k + 1) % n]] - r.v[f[k]]).Length()); return m; }
 
 void ExtractEdgeCurves(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* label, int mode, const std::optional<Point3d>& near_pt) {
   // mode 0: naked chains and loops, 1: closed loops only, 2: non-manifold edges
@@ -2220,23 +2225,19 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
   Reg(e, "ExtractMeshEdges", MeshAction("Select meshes", "ExtractMeshEdges", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ExtractEdgeCurves(ctx, ids, "ExtractMeshEdges", 0, std::nullopt); }));
   Reg(e, "DupMeshEdge", Make<DupMeshEdgeCommand>(), CommandStatus::Implemented, "Duplicates the single naked edge nearest each pick; pick as many as wanted, Enter to finish.");
   Reg(e, "DupMeshHoleBoundary", MeshAction("Select meshes", "DupMeshHoleBoundary", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ExtractEdgeCurves(ctx, ids, "DupMeshHoleBoundary", 1, std::nullopt); }));
-  struct Metric { const char* extract; const char* sel; const char* what; double def_hi; FaceMetric fn; };
+  struct Metric { const char* extract; const char* what; FaceMeasureKind kind; double def_hi; };
   const Metric metrics[] = {
-      {"ExtractMeshFacesByArea", "SelMeshFacesByArea", "area", 1e300, [](const RawMesh& r, const Face& f) { return r.FaceArea(f); }},
-      {"ExtractMeshFacesByAspectRatio", "SelMeshFacesByAspectRatio", "aspect ratio", 1e300, [](const RawMesh& r, const Face& f) { const double s = ShortestEdge(r, f); return s > 0 ? LongestEdge(r, f) / s : 1e300; }},
-      {"ExtractMeshFacesByEdgeLength", "SelMeshFacesByEdgeLength", "edge length", 1e300, [](const RawMesh& r, const Face& f) { return LongestEdge(r, f); }},
-      {"ExtractMeshFacesByDraftAngle", "SelMeshFacesByDraftAngle", "draft angle in degrees", 90, nullptr},
+      {"ExtractMeshFacesByArea", "area", FaceMeasureKind::Area, 1e300},
+      {"ExtractMeshFacesByAspectRatio", "aspect ratio", FaceMeasureKind::AspectRatio, 1e300},
+      {"ExtractMeshFacesByEdgeLength", "edge length", FaceMeasureKind::EdgeLength, 1e300},
+      {"ExtractMeshFacesByDraftAngle", "draft angle in degrees", FaceMeasureKind::DraftAngle, 90},
   };
   for (const Metric& m : metrics) {
     const std::string what = m.what;
-    FaceMetric fn = m.fn;
+    const FaceMeasureKind kind = m.kind;
     const char* label = m.extract;
-    auto action = [what, fn, label](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
-      FaceMetric metric = fn;
-      if (!metric) { const Vector3d up = ActiveNormal(ctx); metric = [up](const RawMesh& r, const Face& f) { return Deg(std::acos(std::max(-1.0, std::min(1.0, ON_DotProduct(r.FaceNormal(f), up))))); }; }
-      ExtractByMetric(ctx, ids, in, label, metric);
-    };
-    // The Sel* twins of these (SelMeshFacesByArea and the others) select faces into the sub-object selection and live in cmd_select2.cpp.
+    auto action = [kind, label](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { ExtractByMeasure(ctx, ids, in, label, kind); };
+    // The Sel* twins (SelMeshFacesByArea and the others) select faces into the sub-object selection and live in cmd_select2.cpp.
     const std::vector<Step> steps = {NumberStep(("Minimum " + what).c_str(), 0), NumberStep(("Maximum " + what).c_str(), m.def_hi)};
     Reg(e, m.extract, Tool("Select meshes", steps, {}, action));
   }

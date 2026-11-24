@@ -1,6 +1,8 @@
 // Selection commands.
 #include "commands/cmd_common.h"
 
+#include <cctype>
+#include <set>
 #include <sstream>
 
 namespace dino8::app {
@@ -52,6 +54,54 @@ class SelWindowCommand : public Command {
 
 }  // namespace
 
+bool SameGeometry(const SceneObject& a, const SceneObject& b, double tol) {
+  if (a.kind != b.kind) return false;
+  switch (a.kind) {
+    case ObjectKind::Point: return a.point.DistanceTo(b.point) <= tol;
+    case ObjectKind::Curve: return a.curve && b.curve && a.curve->raw().IsDuplicate(b.curve->raw(), true, tol);
+    case ObjectKind::Surface: return a.surface && b.surface && a.surface->raw().IsDuplicate(b.surface->raw(), true, tol);
+    case ObjectKind::Mesh: {
+      if (!a.mesh || !b.mesh) return false;
+      const ON_Mesh& ma = a.mesh->raw();
+      const ON_Mesh& mb = b.mesh->raw();
+      if (ma.m_V.Count() != mb.m_V.Count() || ma.m_F.Count() != mb.m_F.Count()) return false;
+      for (int i = 0; i < ma.m_V.Count(); ++i) {
+        const ON_3dPoint pa = ma.HasDoublePrecisionVertices() && i < ma.m_dV.Count() ? ma.m_dV[i] : ON_3dPoint(ma.m_V[i]);
+        const ON_3dPoint pb = mb.HasDoublePrecisionVertices() && i < mb.m_dV.Count() ? mb.m_dV[i] : ON_3dPoint(mb.m_V[i]);
+        if (pa.DistanceTo(pb) > tol) return false;
+      }
+      for (int i = 0; i < ma.m_F.Count(); ++i)
+        for (int k = 0; k < 4; ++k) if (ma.m_F[i].vi[k] != mb.m_F[i].vi[k]) return false;
+      return true;
+    }
+    case ObjectKind::Brep: {
+      if (!a.brep || !b.brep) return false;
+      const ON_Brep& ba = a.brep->raw();
+      const ON_Brep& bb = b.brep->raw();
+      if (ba.m_F.Count() != bb.m_F.Count() || ba.m_E.Count() != bb.m_E.Count() || ba.m_V.Count() != bb.m_V.Count() || ba.m_S.Count() != bb.m_S.Count()) return false;
+      for (int i = 0; i < ba.m_S.Count(); ++i) {
+        const ON_Surface* sa = ba.m_S[i];
+        const ON_Surface* sb = bb.m_S[i];
+        if (!sa || !sb) return sa == sb;
+        ON_NurbsSurface na, nb;
+        if (!sa->GetNurbForm(na) || !sb->GetNurbForm(nb)) return false;
+        if (!na.IsDuplicate(nb, true, tol)) return false;
+      }
+      return true;
+    }
+    default: break;
+  }
+  const kernel::BoundingBox ba = a.BoundingBox(), bb = b.BoundingBox();
+  if ((ba.min - bb.min).Length() > tol || (ba.max - bb.max).Length() > tol) return false;
+  auto shape = [](const SceneObject& o) {
+    std::istringstream in(o.Describe());
+    std::string out, line;
+    while (std::getline(in, line)) if (line.find("ID:") == std::string::npos) out += line + "\n";
+    return out;
+  };
+  return shape(a) == shape(b);
+}
+
 void RegisterSelectCommands(CommandEngine& e) {
   Reg(e, "SelAll", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([&](const SceneObject& o) { return ctx.Doc().IsObjectVisible(o) && !ctx.Doc().IsObjectLocked(o); }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected"); }));
   Reg(e, "SelNone", Immediate([](CommandContext& ctx) { ctx.Doc().SelectNone(); }));
@@ -76,7 +126,20 @@ void RegisterSelectCommands(CommandEngine& e) {
   Reg(e, "SelArc", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsArc() && !o.curve->IsCircle(); }));
   Reg(e, "SelPlanarCrv", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsPlanar(1e-6); }));
   Reg(e, "SelPlanarSrf", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::Surface && o.surface->IsPlanar(1e-6); }));
-  Reg(e, "SelGroup", SelWhere([](const SceneObject& o) { return o.group_id >= 0; }));
+  // SelGroup [name]: with a name, the members of the group(s) of that name (case ignored); without, every grouped object.
+  Reg(e, "SelGroup", Immediate([](CommandContext& ctx) {
+        auto lower = [](std::string t) { for (char& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return t; };
+        const std::optional<std::string> name = ctx.Engine().TakePendingInput();
+        std::set<int> wanted;
+        if (name) {
+          for (const Group& g : ctx.Doc().Groups()) if (lower(g.name) == lower(*name)) wanted.insert(g.id);
+          if (wanted.empty()) { ctx.Warn("SelGroup: no group named '" + *name + "'"); return; }
+        }
+        ctx.Doc().SelectWhere([&](const SceneObject& o) {
+          return o.group_id >= 0 && (!name || wanted.count(o.group_id) > 0) && ctx.Doc().IsObjectVisible(o) && !ctx.Doc().IsObjectLocked(o);
+        }, true);
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected");
+      }), CommandStatus::Implemented, "SelGroup [name]: selects the members of the group with that name, or every grouped object when no name is typed.");
   Reg(e, "SelName", Immediate([](CommandContext& ctx) {
         std::string name;
         if (auto tok = ctx.Engine().TakePendingInput()) name = *tok;
@@ -124,23 +187,13 @@ void RegisterSelectCommands(CommandEngine& e) {
         if (ctx.Doc().RestorePreviousSelection()) ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected (previous selection)");
         else ctx.Warn("SelPrev: no previous selection to restore");
       }));
+  // SelDup: of every set of geometrically identical objects (SameGeometry) the first is left alone and each later copy is selected.
   Reg(e, "SelDup", Immediate([](CommandContext& ctx) {
         ctx.Doc().SelectNone();
         const auto& objs = ctx.Doc().Objects();
         int n = 0;
-        // Describe() embeds "ID: <n>", which is unique per object by
-        // construction, so comparing full descriptions never found a
-        // duplicate; drop that one line before comparing shape.
-        auto shape = [](const SceneObject& o) {
-          std::istringstream in(o.Describe());
-          std::string out, line;
-          while (std::getline(in, line)) if (line.find("ID:") == std::string::npos) out += line + "\n";
-          return out;
-        };
         for (size_t i = 0; i < objs.size(); ++i) for (size_t j = 0; j < i; ++j) {
-          if (objs[i].kind != objs[j].kind) continue;
-          kernel::BoundingBox a = objs[i].BoundingBox(), b = objs[j].BoundingBox();
-          if ((a.min - b.min).Length() < 1e-6 && (a.max - b.max).Length() < 1e-6 && shape(objs[i]) == shape(objs[j])) { ctx.Doc().Select(objs[i].id, true); ++n; break; }
+          if (SameGeometry(objs[i], objs[j], 1e-6)) { ctx.Doc().Select(objs[i].id, true); ++n; break; }
         }
         ctx.Print(std::to_string(n) + " duplicate(s) selected");
       }));

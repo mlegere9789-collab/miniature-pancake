@@ -458,6 +458,13 @@ bool ExtendToBoundary(CommandContext& ctx, ObjectId target_id, Point3d pick, con
 // Defined in cmd_solidtools.cpp.
 void TagHoleFeature(CommandContext& ctx, ObjectId result_id, const kernel::Mesh& pre_cut_parent, const kernel::Mesh& cutter);
 
+// True when two objects are the same geometry within `tol`: the same kind and, for a point, the same position; for a curve or surface the same NURBS
+// form (control points, weights and knots, parameterisation and direction ignored); for a mesh the same vertices and faces in the same order; for a
+// brep the same face / edge / vertex counts and the same NURBS surface on every face; for any other kind the same bounding box and description.
+// This is what SelDup and SelDupAll mean by "identical" (a text summary of the object is not enough: two crossing diagonals share every statistic).
+// Defined in cmd_select.cpp.
+bool SameGeometry(const SceneObject& a, const SceneObject& b, double tol);
+
 inline void Reg(CommandEngine& e, const char* name, CommandFactory f, CommandStatus s = CommandStatus::Implemented,
                 const char* note = "") {
   e.Register(name, std::move(f), s, note);

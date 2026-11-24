@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # UXMESHSEL_: selecting mesh faces by measure and mesh edges by the angle between the two faces, on two meshes whose face geometry is known in closed form.
 # Rows D8-RHINO-SELECT-0070 SelMeshFacesByArea, 0071 SelMeshFacesByAspectRatio, 0072 SelMeshFacesByDraftAngle, 0073 SelMeshFacesByEdgeLength,
-# 0069 SelMeshEdges.
+# 0069 SelMeshEdges. The ExtractMeshFacesBy* commands share the measures and the range test, and the same box is used to show that they pick the same faces.
 # Scene: id 1 = MeshBox 0,0,0 10,6,0 4, a 10 x 6 x 4 box of six quads: two of 10 x 6 (area 60, sides 10 and 6, aspect 10/6 = 1.667, face plane square to Z),
 # two of 10 x 4 (area 40, aspect 2.5, parallel to Z), two of 6 x 4 (area 24, aspect 1.5, parallel to Z); its 12 edges are all 90 degree joins (Euler V - E + F
 # = 8 - 12 + 6 = 2). id 2 = MeshPlane over 10 x 10, tessellated 8 x 8 into 128 right triangles with legs 1.25 and hypotenuse 1.25 sqrt 2 = 1.7678: area
@@ -30,6 +30,12 @@ UXMS_S="$TMPW/uxmeshsel_script.txt"
   echo "SelMeshFacesByArea 0.78 0.79"; echo "SelMeshFacesByEdgeLength 1.2 1.8"; echo "SelMeshFacesByEdgeLength 1.2 1.5"
   echo "SelMeshFacesByAspectRatio 1.4"; echo "SelMeshFacesByAspectRatio 1.5"; echo "SelMeshFacesByDraftAngle 89"
   echo "SelMeshEdges 0"; echo "SelMeshEdges 1"
+  # The Extract twins on fresh copies of the box (each extraction takes the faces out of its box): the same measures and ranges must pick the same number of faces.
+  x=200
+  ext() { local b="$1" c="$2" a="$3"; x=$((x + 20)); echo "UXBEGIN_$b"; echo "MeshBox $x,0,0 $((x + 10)),6,0 4"; echo "SelLast"; echo "$c $a"; }
+  ext xdraft80 ExtractMeshFacesByDraftAngle "80 90"; ext xdraft0 ExtractMeshFacesByDraftAngle "0 1"
+  ext xedge510 ExtractMeshFacesByEdgeLength "5 10"; ext xedge46 ExtractMeshFacesByEdgeLength "4 6"
+  ext xarea ExtractMeshFacesByArea "30 50"; ext xaspect ExtractMeshFacesByAspectRatio "2 1000"
   echo "UXBEGIN_end"
 } > "$UXMS_S"
 if ux_launch "$UXMS_S"; then
@@ -47,6 +53,12 @@ if ux_launch "$UXMS_S"; then
   ux_has UXMESHSEL_badargs bad "a non-number is refused" "SelMeshFacesByArea: expected a number, got 'abc'"
   ux_has UXMESHSEL_badargs bad "a missing number is refused" "SelMeshFacesByArea: expected 1 or 2 number(s), got 0"
   ux_has UXMESHSEL_badargs bad "an angle above 180 is refused" "SelMeshEdges: the angle must be a number from 0 to 180 degrees, got '200'"
+  ux_has UXMESHSEL_ExtractDraft xdraft80 "ExtractMeshFacesByDraftAngle 80 90 takes the top and bottom, as the Sel command does" "ExtractMeshFacesByDraftAngle: extracted 2 of 6 faces"
+  ux_has UXMESHSEL_ExtractDraft xdraft0 "ExtractMeshFacesByDraftAngle 0 1 takes the four walls, as the Sel command does" "ExtractMeshFacesByDraftAngle: extracted 4 of 6 faces"
+  ux_has UXMESHSEL_ExtractEdge xedge510 "ExtractMeshFacesByEdgeLength 5 10 takes only the two faces whose every side is in range (not all six, whose longest side is)" "ExtractMeshFacesByEdgeLength: extracted 2 of 6 faces"
+  ux_has UXMESHSEL_ExtractEdge xedge46 "ExtractMeshFacesByEdgeLength 4 6 takes the two 6 x 4 faces" "ExtractMeshFacesByEdgeLength: extracted 2 of 6 faces"
+  ux_has UXMESHSEL_ExtractArea xarea "ExtractMeshFacesByArea 30 50 takes the two 10 x 4 faces" "ExtractMeshFacesByArea: extracted 2 of 6 faces"
+  ux_has UXMESHSEL_ExtractAspect xaspect "ExtractMeshFacesByAspectRatio 2 and up takes the two faces at 2.5" "ExtractMeshFacesByAspectRatio: extracted 2 of 6 faces"
   got="$(ux_lines boxedges | sed -n 's/.*: \([0-9][0-9]*\) matching.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
   if [ "$got" = "12 12 0" ]; then ux_ok "UXMESHSEL_SelMeshEdges: all 12 box edges are 90 degree joins (45 and 90 select 12, 91 selects 0)"; else ux_bad "UXMESHSEL_SelMeshEdges: box edges by angle gave '$got', expected '12 12 0'"; fi
   got="$(ux_lines plane | { grep -E "matching (face|edge)" || true; } | sed -n 's/.*: \([0-9][0-9]*\) matching.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"

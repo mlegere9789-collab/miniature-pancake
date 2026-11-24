@@ -106,6 +106,16 @@ struct MeshFaceMeasure {
   double area = 0, min_edge = 0, max_edge = 0, draft_degrees = 0;
 };
 std::vector<MeshFaceMeasure> MeshFaceMeasures(const SceneObject& o, double pull_x, double pull_y, double pull_z);
+// The same measures of one polygon given by its corners in order (3 or more); used by every command that chooses mesh faces by a measure, so
+// SelMeshFacesBy* and ExtractMeshFacesBy* cannot disagree about what "area", "aspect ratio", "edge length" or "draft angle" mean.
+MeshFaceMeasure MeasurePolygon(const std::vector<kernel::Point3d>& corners, double pull_x, double pull_y, double pull_z);
+enum class FaceMeasureKind { Area, AspectRatio, EdgeLength, DraftAngle };
+// Whether a face is chosen by the range [lo, hi] (both inclusive, with a 1e-9 slack for the rounding of the measure):
+//   Area         area in [lo, hi]
+//   AspectRatio  longest side / shortest side in [lo, hi] (a face with a zero side counts as unbounded)
+//   EdgeLength   every side in [lo, hi], i.e. shortest side >= lo and longest side <= hi
+//   DraftAngle   draft angle (see MeshFaceMeasure) in [lo, hi] degrees
+bool FaceMeasureInRange(FaceMeasureKind kind, const MeshFaceMeasure& f, double lo, double hi);
 // Interior edges (exactly two faces) whose two face normals differ by at least `min_degrees`; a flat join is 0, a cube edge 90.
 std::vector<SubObjectRef> MeshEdgesByDihedral(const SceneObject& o, double min_degrees);
 std::vector<SubObjectRef> NakedEdges(const SceneObject& o);
