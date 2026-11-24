@@ -4,6 +4,10 @@
 // CreateUVCrv, UnrollSrf/Smash (developable approximation), Fin, Ribbon,
 // Silhouette, 3DFace, MakeUniformUV and friends.
 #include "commands/cmd_common.h"
+#include <cstring>
+#include <cstdio>
+#include <functional>
+#include <set>
 #include "commands/history_rebuild.h"
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep_seam.h"
@@ -1520,6 +1524,45 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       }
       if (sil) segs.emplace_back(mesh.Vertex(e.first), mesh.Vertex(e.second));
     }
+    if (std::getenv("DINO8_SIL_DEBUG")) {
+      // debug: mesh and silhouette-graph statistics (platform comparison)
+      auto fnv = [](uint64_t h, uint64_t v) { h ^= v; h *= 1099511628211ULL; return h; };
+      uint64_t hx = 1469598103934665603ULL, hr = 1469598103934665603ULL;
+      for (int i = 0; i < mesh.VertexCount(); ++i) {
+        const ON_3fPoint q = mesh.m_V[i];
+        uint32_t bx, by, bz; std::memcpy(&bx, &q.x, 4); std::memcpy(&by, &q.y, 4); std::memcpy(&bz, &q.z, 4);
+        hx = fnv(hx, bx); hx = fnv(hx, by); hx = fnv(hx, bz);
+        hr = fnv(hr, (uint64_t)(int64_t)std::llround(q.x * 1000.0)); hr = fnv(hr, (uint64_t)(int64_t)std::llround(q.y * 1000.0)); hr = fnv(hr, (uint64_t)(int64_t)std::llround(q.z * 1000.0));
+      }
+      int ties9 = 0, ties6 = 0, ties4 = 0, ties3 = 0; double mind = 1e9;
+      for (int fi = 0; fi < mesh.FaceCount(); ++fi) {
+        const double d = std::fabs(ON_DotProduct(ON_3dVector(mesh.m_FN[fi]), view));
+        if (d < 1e-9) ++ties9; if (d < 1e-6) ++ties6; if (d < 1e-4) ++ties4; if (d < 1e-3) ++ties3; mind = std::min(mind, d);
+      }
+      int e1 = 0, e2 = 0, e3 = 0;
+      for (const auto& [e, fs] : edges) { if (fs.size() == 1) ++e1; else if (fs.size() == 2) ++e2; else ++e3; }
+      std::map<int, int> deg;
+      for (const auto& [e, fs] : edges) {
+        bool sil = false;
+        if (fs.size() == 1) sil = true;
+        else if (fs.size() == 2) { double d0 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[0]]), view), d1 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[1]]), view); sil = (d0 < 0) != (d1 < 0); }
+        if (sil) { ++deg[e.first]; ++deg[e.second]; }
+      }
+      int dh[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+      for (const auto& kv : deg) ++dh[std::min(kv.second, 7)];
+      std::vector<int> par(static_cast<size_t>(mesh.VertexCount()));
+      for (size_t i = 0; i < par.size(); ++i) par[i] = static_cast<int>(i);
+      std::function<int(int)> fnd = [&](int x) { while (par[static_cast<size_t>(x)] != x) { par[static_cast<size_t>(x)] = par[static_cast<size_t>(par[static_cast<size_t>(x)])]; x = par[static_cast<size_t>(x)]; } return x; };
+      for (const auto& [e, fs] : edges) {
+        bool sil = fs.size() == 1;
+        if (fs.size() == 2) { double d0 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[0]]), view), d1 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[1]]), view); sil = (d0 < 0) != (d1 < 0); }
+        if (sil) par[static_cast<size_t>(fnd(e.first))] = fnd(e.second);
+      }
+      std::set<int> comps; for (const auto& kv : deg) comps.insert(fnd(kv.first));
+      std::printf("SILDBG sphere? verts=%d faces=%d closed=%d hashbits=%016llx hash1e-3=%016llx view=(%a,%a,%a) ties<1e-9:%d <1e-6:%d <1e-4:%d <1e-3:%d mind=%.3e edges1=%d edges2=%d edgesN=%d silsegs=%zu silverts=%zu deg1=%d deg2=%d deg3=%d deg4=%d deg5+=%d comps=%zu tol=%g\n",
+                  mesh.VertexCount(), mesh.FaceCount(), (int)m->IsClosedManifold(), (unsigned long long)hx, (unsigned long long)hr, view.x, view.y, view.z, ties9, ties6, ties4, ties3, mind, e1, e2, e3, segs.size(), deg.size(),
+                  dh[1], dh[2], dh[3], dh[4], dh[5] + dh[6] + dh[7], comps.size(), tol);
+    }
     // Chain into polylines.
     std::vector<bool> used(segs.size(), false);
     for (size_t i = 0; i < segs.size(); ++i) {
@@ -1537,6 +1580,7 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
           else if (segs[j].first.DistanceTo(pl.front()) <= tol) { pl.insert(pl.begin(), segs[j].second); used[j] = true; grew = true; }
         }
       }
+      if (std::getenv("DINO8_SIL_DEBUG")) { double len = 0; for (size_t q = 1; q < pl.size(); ++q) len += pl[q].DistanceTo(pl[q - 1]); std::printf("SILDBG chain pts=%zu len=%.4f closed=%d\n", pl.size(), len, (int)(pl.front().DistanceTo(pl.back()) <= tol)); }
       SceneObject n = SceneObject::MakeCurve(PolylineCurve(pl));
       n.layer_index = like.layer_index;
       ctx.Doc().Add(std::move(n));
