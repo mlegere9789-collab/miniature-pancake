@@ -152,8 +152,8 @@ Volume
 # other sphere placements: the engine now seals them (a seam vertex within 1e-5 of the periodic seam is reused,
 # and a tessellation refusal after the naked edges were joined no longer discards the join), so the cap is
 # exact, closed and valid, and checked against closed forms (exact divergence-theorem volume, display-mesh
-# volume and area); the side case is sealed by the kernel but does not tessellate to a closed mesh, so the app
-# still declines it (with that reason) and falls back to the mesh. Sphere r4 centred at z=8 (cap of height 2 above the top face): V = 1000 + pi*4*(12-2)/3 = 1041.89,
+# volume and area); the side case (a sphere centred on a box face: the cut circle runs through both poles and
+# across the seam) is exact and sealed too, now that the mesher closes it. Sphere r4 centred at z=8 (cap of height 2 above the top face): V = 1000 + pi*4*(12-2)/3 = 1041.89,
 # A = 600 - pi*12 + 2*pi*4*2 = 600 + 4*pi = 612.57
 New
 B2SBEGIN_sph_cap
