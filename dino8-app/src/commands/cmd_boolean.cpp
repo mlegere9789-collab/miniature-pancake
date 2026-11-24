@@ -86,12 +86,22 @@ std::optional<kernel::Brep> TryExactBrepBoolean(CommandContext& ctx, const std::
 // Boolean sees "not a closed solid". Brep::SewTJunctions + JoinNakedEdges
 // (brep.h) close those pairs. The sewing tolerance is escalated from 0.02% to
 // 1% of the bounding-box diagonal and the FIRST tolerance that yields
-// IsSolid() wins (a corridor is 0.1% of an edge long, so the larger steps are
-// only reached by results with long edges); nothing else is changed. Returns
-// false (leaving `r` untouched) when no tolerance closes it.
-bool HealGeneralBooleanResult(kernel::Brep& r, double& used_tolerance) {
+// a body that is both IsSolid() AND ON_Brep::IsValid() wins (a corridor is 0.1% of an edge long, so the larger steps are
+// only reached by results with long edges); nothing else is changed. A rung that closes the shell but leaves an invalid ON_Brep (the 1%
+// rung of a sphere sunk 1e-3 into a box face collapses a micro edge into a vertex that is both ends of a non-closed edge: "edge.m_vi[0] =
+// edge.m_vi[1] but edge.IsClosed() is false") is not a result: it used to be returned and handed on as a solid whose Volume, Shell and next
+// Boolean all refuse it. Returns false (leaving `r` untouched) when no tolerance closes it into a valid solid; `sewn_invalid` then says
+// whether some rung did close it into an invalid one (a refusal with its own reason, not "gaps between faces"). `require_valid` is false only
+// when the sealed path was switched off on purpose (DINO8_NO_SEALED_BOOLEAN, the control that reproduces the previous keyhole-slit result
+// bit for bit): that result is IsSolid but a Check-invalid slit structure, and is what the control pins.
+bool HealGeneralBooleanResult(kernel::Brep& r, double& used_tolerance, bool* sewn_invalid = nullptr, bool require_valid = true) {
   used_tolerance = 0;
-  if (r.raw().IsSolid()) return true;
+  if (sewn_invalid) *sewn_invalid = false;
+  if (r.raw().IsSolid()) {
+    if (!require_valid || r.raw().IsValid()) return true;
+    if (sewn_invalid) *sewn_invalid = true;
+    return false;
+  }
   ON_BoundingBox bb;
   r.raw().GetBoundingBox(bb);
   const double diag = bb.Diagonal().Length();
@@ -108,6 +118,10 @@ bool HealGeneralBooleanResult(kernel::Brep& r, double& used_tolerance) {
       continue;
     }
     if (c.raw().IsSolid()) {
+      if (require_valid && !c.raw().IsValid()) {
+        if (sewn_invalid) *sewn_invalid = true;
+        continue;
+      }
       r = std::move(c);
       used_tolerance = tol;
       return true;
@@ -250,8 +264,10 @@ std::optional<GeneralBooleanResult> TryGeneralBrepBoolean(CommandContext& ctx, c
         if (std::getenv("DINO8_SEALED_DEBUG")) std::fprintf(stderr, "[sealed boolean declined] %s\n", ex.what());
       }
     }
-    if (!sealed && !HealGeneralBooleanResult(res.brep, res.heal_tolerance)) {
-      fail = "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
+    bool sewn_invalid = false;
+    if (!sealed && !HealGeneralBooleanResult(res.brep, res.heal_tolerance, &sewn_invalid, !std::getenv("DINO8_NO_SEALED_BOOLEAN"))) {
+      fail = sewn_invalid ? "sewing closed the engine's result into a shell that is not a valid B-rep (a collapsed edge), so it is not a usable solid"
+                          : "the engine's result has gaps between faces that sewing could not close, so it is not a closed solid";
       return std::nullopt;
     }
     ON_BoundingBox bb;

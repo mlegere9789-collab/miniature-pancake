@@ -10599,6 +10599,13 @@ b2s_check sph_side "mesh cross-check" "...with its independent mesh-boolean cros
 b2s_exactvol sph_side 1055.49 1057.61 "...exact volume equals 1000 + 2/3*pi*27 = 1056.55 to 0.1%"
 b2s_num sph_side Volume 1052 1060 "...display-mesh volume 1056.55"
 b2s_num sph_side Area 623.9 632.7 "...area = 600 - pi*9 + 2*pi*9 = 628.27"
+# sph_tangent: the sealer refuses (1e-3 sink), and the sewing fallback closes the shell only at its 1% rung into a body that is NOT a valid
+# ON_Brep (edge.m_vi[0] = edge.m_vi[1] but the edge is not closed). That used to be returned; the fallback now needs IsValid() too (the
+# DINO8_NO_SEALED_BOOLEAN control keeps the old slit-structure result), so the operation is declined WITH its reason and the mesh boolean
+# gives the closed-form volume 64 + 4/3*pi - 3.1e-6 = 68.1888.
+b2s_check sph_tangent "BooleanUnion: exact B-rep boolean declined (sewing closed the engine's result into a shell that is not a valid B-rep" "a sphere sunk 1e-3 into a box face is declined WITH the reason (sewing gives an invalid B-rep), never accepted as a solid"
+b2s_check sph_tangent "(mesh)" "...mesh fallback"
+b2s_num sph_tangent Volume 67.85 68.53 "...volume 64 + 4/3*pi = 68.19"
 
 # History / associative re-execution, round 2 (H2R_): FilletEdge, ChamferEdge, Cap,
 # BlendSrf and Project/Pull record construction history (tests/h2r_edge_script.txt,
