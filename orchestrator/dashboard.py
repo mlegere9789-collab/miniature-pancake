@@ -61,7 +61,8 @@ def render_page() -> str:
             if pending
             else ""
         )
-        cards.append(f"""
+        cards.append(
+            f"""
         <div class="card">
           <div class="card-head">
             <h3>{_esc(m['display_name'])}</h3>
@@ -72,7 +73,8 @@ def render_page() -> str:
           <p class="last">{_esc(m.get('last_activity') or 'No activity yet')}</p>
           <p class="ts">{_esc(m.get('last_activity_at') or '')}</p>
           {badge}
-        </div>""")
+        </div>"""
+        )
 
     if reviews:
         rows = []
@@ -87,7 +89,8 @@ def render_page() -> str:
                     )
                 except (json.JSONDecodeError, TypeError):
                     payload = "<pre>" + _esc(r["payload"]) + "</pre>"
-            rows.append(f"""
+            rows.append(
+                f"""
             <tr>
               <td>{_esc(r['module'])}</td>
               <td><strong>{_esc(r['title'])}</strong><br><span class="muted">{_esc(r['description'])}</span>{payload}</td>
@@ -99,7 +102,8 @@ def render_page() -> str:
                   <button name="decision" value="rejected" class="reject">Reject</button>
                 </form>
               </td>
-            </tr>""")
+            </tr>"""
+            )
         review_html = f"""
         <table class="review">
           <thead><tr><th>Module</th><th>Item</th><th>Flagged</th><th></th></tr></thead>
@@ -111,12 +115,14 @@ def render_page() -> str:
     feed = []
     for a in activity:
         lvl = a.get("level") or "info"
-        feed.append(f"""
+        feed.append(
+            f"""
         <li class="lvl-{_esc(lvl)}">
           <span class="ts">{_esc(a['created_at'])}</span>
           <span class="mod">{_esc(a['module'])}</span>
           {_esc(a['message'])}
-        </li>""")
+        </li>"""
+        )
     feed_html = (
         f'<ul class="feed">{"".join(feed)}</ul>'
         if feed
