@@ -1,28 +1,38 @@
 # Rhino 8 observation-only clean-room protocol (v1, DRAFT for owner and counsel sign-off)
 
-Purpose: use the owner's licensed Rhino 8 as a **behavioural reference** so Dino 8's Rhino rows are verified against
-real results instead of recollection, and so divergences become a ranked work queue.
+Purpose: reach 100% behavioural parity with the nine baselines (see ../SCOPE.md) using the owner's licensed copies as
+references, with a clean-room firewall so that Dino 8's code is our own work. Owner decision and risk assumption: ../G0_BLANKET.md.
 
-This is **observation-only**. "Reverse engineering" here means characterising behaviour from outside the program.
-It does NOT include, and nobody working on Dino 8 may do, any of the following:
+Two phases, both run ONLY by the Observer (the dirty side):
 
-* decompiling, disassembling, or deobfuscating Rhino or any plug-in binary (native or .NET: no ILSpy/dnSpy/Ghidra/IDA);
-* reading method bodies, IL, symbols, memory, process state, network traffic, installers or licensing code;
-* extracting strings, resources, icons, localisation tables, help text, command-alias tables or any other asset;
-* defeating, bypassing or instrumenting licence checks, anti-tamper or anti-debug measures;
-* copying vendor documentation, code samples or UI text into the repository (public API *names* and documented
-  signatures may be used for interoperability; prose may not be pasted).
+* **Phase B (black-box).** Run scripted cases through the program's public interfaces; record numbers and flags. Always first:
+  it produces the test vectors that every other claim must be checked against.
+* **Phase D (disassembly-derived functional specs).** Where Phase B cannot determine a behaviour (an algorithm, a default, a
+  tolerance policy, an edge-case rule, a file-format field needed for interoperability), the Observer MAY decompile or
+  disassemble the owner's licensed copy on the owner's machine to understand the FUNCTION, then writes an **algorithm card**
+  (below). The code itself never leaves the Observer's machine.
 
-Why: a commercial licence permits use, not reverse engineering (McNeel's licence terms are the owner's to check with
-counsel: gate G0 below). Dino 8 is a competing product, so anything derived from Rhino's internals would
-put the whole project at legal risk and could not be shipped. Observing outputs of operations on geometry
-WE generate is a far safer basis; the owner/counsel still confirm it (G0).
+Algorithm card (the only product of Phase D): purpose; inputs/outputs; the mathematical method in our own words and notation;
+defaults and parameter ranges; edge-case and failure behaviour; and **at least one black-box test vector per claim** that
+Phase B confirmed. It contains NO code or pseudocode transcribed from decompiled output, NO vendor identifiers (class, function,
+variable or file names that are not public API), NO verbatim strings, NO control-flow structure copied step by step, NO
+screenshots. Where several algorithms would produce the same observable behaviour, the card states the behaviour and leaves the
+design to the Implementer.
+
+Hard lines (Observer and everyone else), even with the owner's risk assumption, because they ARE the clean room:
+* no circumvention of licence checks, DRM or anti-tamper; no patching or redistributing vendor binaries;
+* no vendor code, comments, internal identifiers, strings, icons, textures, materials, shaders, help text or sample files in the
+  repository or passed to Implementers (assets are re-created independently; public API names and documented signatures are fine);
+* no interference with vendor servers or cloud services beyond ordinary licensed use (no traffic interception, no probing);
+* no decompiler output, memory dumps or Observer notes outside the Observer's machine; the Observer's chat transcripts never
+  enter the repository;
+* Implementers never see Rhino/any baseline program, its installation, or Phase D material other than reviewed algorithm cards.
 
 ## Roles and the firewall
 
 | Team | Who | May see | May write | May NOT |
 |---|---|---|---|---|
-| **Observers** ("O") | the local session on the owner's computer (has Rhino) | Rhino's behaviour via its normal UI, commands, public RhinoCommon scripting, saved .3dm files made from OUR inputs | `golden/*.jsonl` (numbers/flags only), `specs/*.md` (behaviour statements in our own words) | Dino 8 implementation code; any binary-derived data |
+| **Observers** ("O", dirty side) | the local session on the owner's computer (has the programs) | the programs' behaviour, public APIs, saved files made from OUR inputs, and (Phase D) their binaries on that machine | `golden/*.jsonl` (numbers/flags only), `specs/*.md` (behaviour statements and algorithm cards in our own words) | Dino 8 implementation code; anything that carries decompiled code, identifiers or assets |
 | **Implementers** ("I") | cloud agents/sessions | `cases.jsonl`, `golden/`, `specs/`, public docs, openNURBS source, existing Dino 8 code | Dino 8 code and tests | Rhino installation, Rhino binaries, any O raw session transcripts |
 | **Reviewer** ("R") | coordinator session + independent review agent | everything in the repo (not the Rhino installation) | `REVIEW_LOG.md`, rejections | change code or golden data |
 
@@ -44,17 +54,15 @@ Everything else is rejected by R.
 
 ## Gates
 
-* **G0 (before anything runs):** the owner records, in `REVIEW_LOG.md`, (a) that they own the licence and have read the
-  licence terms, (b) counsel's answer (or an explicit owner decision to proceed at their own risk) on whether running
-  scripted test cases against the licensed program and storing the numeric results is permitted, and (c) the Rhino build
-  string. Nothing else starts until this entry exists.
+* **G0:** satisfied for all nine programs and both phases by `../G0_BLANKET.md` (owner's explicit assumption of risk). The Observer
+  records each program's build string in its golden files and does not stop to ask for sign-off.
 * **G1 (case authoring):** `cases.jsonl` is generated by `gen_cases.py` from closed forms and parameter sweeps that we
   wrote. Cases never come from Rhino's own sample files, templates or help examples.
 * **G2 (golden intake):** R checks every golden file: schema valid (`compare.py --check-golden`), only allowed
   fields, no strings longer than 200 characters outside `build`, no binary blobs, case ids all exist in `cases.jsonl`.
-* **G3 (spec intake):** R scans every spec for verbatim vendor text (any 8+ word span found in McNeel's public help is
-  rejected: the check is `specs_scan.py` against a local copy of the help the owner supplies, never committed),
-  code snippets, screenshots, internal names (class/function names that are not public API).
+* **G3 (spec and algorithm-card intake):** R rejects any spec or card containing code or pseudocode, vendor-internal names,
+  verbatim vendor text, step-by-step control flow, screenshots, or any claim without a confirming Phase B test vector. R also
+  samples cards for leakage by asking a fresh agent to re-derive the behaviour from the card alone and comparing it to the golden vectors.
 * **G4 (implementation):** I writes tests that load `golden/` and compare; implementation commits must cite case ids.
   An implementer who needs a fact not in golden/specs files a case request instead of guessing from memory of Rhino
   internals; O fulfils it through G1 to G2.
@@ -93,5 +101,5 @@ Everything else is rejected by R.
 
 Gives: independently verified expected values for the Rhino rows that are measurable (geometry, Booleans, blends,
 offsets, intersections, I/O round trips, command results), differential sweeps that find kernel defects fast.
-Does not give: Rhino's algorithms, internal data structures, UI look-and-feel or performance tuning; those stay our own
-designs, validated only by their outputs.
+Does not give: the vendors' code or data structures; those stay our own designs, validated by their outputs and by algorithm
+cards. Where neither clean room nor research resolves a behaviour, Dino 8's own R&D fills the gap and is checked against golden vectors.

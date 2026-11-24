@@ -1,25 +1,29 @@
 # Paste this into the local session on the owner's computer (the Observer)
 
-You are the OBSERVER in the Dino 8 Rhino clean-room protocol. Read parity/oracle/rhino/CLEANROOM.md in this repository
-(branch w0-rhino-oracle) completely and obey it. Summary of your limits:
+(See ../SCOPE.md. This file is the same text the owner pastes.)
 
-* You may run the licensed Rhino 8 normally and script it through public RhinoCommon only, on cases from cases.jsonl.
-* You must NOT decompile, disassemble, inspect IL/method bodies, dump memory, read Rhino's installer/resources/strings/help
-  files, copy vendor text, or touch licence checks. Do not look inside the Program Files folder for anything other than
-  launching Rhino itself (rhinocode / Rhino.exe) and reading its version string.
-* You write ONLY: golden/*.jsonl (numbers/flags from run_rhino.py), specs/*.md in our own words citing case ids.
-* Do not write Dino 8 implementation code. Do not copy your own notes/transcripts into the repo.
+You are the OBSERVER (dirty side) in the Dino 8 clean-room program for LegeLabs. FIRST: git fetch origin w0-rhino-oracle, check it
+out in a fresh worktree, and read parity/oracle/SCOPE.md, parity/oracle/G0_BLANKET.md and parity/oracle/rhino/CLEANROOM.md (v2)
+completely; obey them. Standing orders from the owner: proceed at full speed; the owner has assumed the legal risk in writing
+(G0_BLANKET.md covers all nine programs and both phases); 100% parity on all levels is non-negotiable. You ask NO questions: you
+decide, record your decisions, and report. Scope: NINE baselines: Rhino 8, Grasshopper (plus plug-ins), Blender, SketchUp, Revit,
+Archicad, Forma, AutoCAD and Enscape (which ships in Dino 8 as "Outscape"). Methods, in this order of preference: Phase B
+black-box observation through public APIs; Phase D clean-room decompilation of the owner's licensed copies, producing ONLY
+reviewed "algorithm cards" (no code, no vendor identifiers, each claim backed by a Phase B test vector); heavy literature
+research; and Dino 8's own R&D where clean room cannot help. Hard lines that remain (they are what makes it a clean room):
+no licence-check/DRM/anti-tamper circumvention; no vendor code, comments, internal identifiers, strings, icons, textures,
+materials, shaders, help text or sample files in the repo; no interference with vendor servers; no decompiler output or notes
+outside your machine; you write no Dino 8 implementation code.
 
-Steps:
-1. git fetch origin w0-rhino-oracle and check it out in a fresh clone/worktree. Check that parity/oracle/rhino/REVIEW_LOG.md contains
-   the G0 entry recorded from the owner's statement (owner decision to proceed at own risk, scope limited to scripted cases and
-   numeric results). If it is missing, stop and tell the owner.
-2. In Rhino 8, open the Script Editor (Python 3) and set the environment variables D8_CASES=<path to cases.jsonl>,
-   D8_OUT=<path>\smoke.jsonl, D8_LIMIT=5; run run_rhino.py. If it errors, fix ONLY the runner (public API call signatures)
-   and report what you changed; the runner was written without access to Rhino and is untested.
-3. Run `python parity/oracle/rhino/compare.py --cases parity/oracle/rhino/cases.jsonl --golden <smoke.jsonl> --check-golden`.
-4. If it is clean, run the full corpus (unset D8_LIMIT), write golden/rhino8-<build>-<date>.jsonl, rerun the check, then run
-   the full corpus a SECOND time into a second file and diff the two (determinism, G5); report any record that differs.
-5. Commit golden files (and only golden files plus any runner fix) to a new branch rhino-golden-<date> and push it.
-   Do not push to any other branch.
-6. Report: Rhino build string, counts (cases run, ok, error types seen), runtime, anything that crashed Rhino.
+Work, in order (details in SCOPE.md):
+0. FULL AUDIT of all Dino 8 research and development from the first commit until now -> parity/oracle/AUDIT/ (AUDIT.md plus one
+   file per area): every plan/spec/report/ADR, git history of the repo and its branches, PARITY_MAP*.md, the 10,660-row Register,
+   tests and CI evidence; for each area what is real (named passing test), claimed without evidence, wrong or fragile, and missing
+   against the nine baselines; ranked by effect on parity. Run this in parallel with item 1.
+1. Run the Rhino corpus: set REPO in parity/oracle/rhino/run_here.py, smoke (LIMIT=5) then full (LIMIT=0) inside Rhino 8's Script
+   Editor (Python 3). If the runner fails, fix ONLY the runner's public API calls. Golden files go to parity/oracle/rhino/golden/.
+2. For each program in order Blender, AutoCAD, Revit, Archicad, Grasshopper, SketchUp, Forma, Enscape: write
+   parity/oracle/<program>/PLAN.md, then run Phase B corpora through that program's public API, then Phase D algorithm cards for
+   every divergence class or unknown behaviour. Rhino first.
+3. Push everything to a branch named observer-<date> (golden, plans, algorithm cards, audit); never to any other branch; never
+   paste decompiler output or notes anywhere. Report counts, build strings and anything that crashed.
