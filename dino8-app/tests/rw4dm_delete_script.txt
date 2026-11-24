@@ -51,6 +51,63 @@ Delete
 SelNone
 SelAll
 List
+RW4BEGIN_one_line_new
+Alias
+nrst
+"New;Polyline 0,0,0 2,1,0 4,0,0 6,1,0 8,0,0;Enter;Plane 1,4,0 5,8,0;SelNone;SelID 2;PointsOn;SelControlPoint;New;Polyline 0,0,0 2,1,0 4,0,0 6,1,0 8,0,0;Enter;Plane 1,4,0 5,8,0;SelNone;SelID 2;Delete"
+nrst
+SelNone
+SelAll
+List
+RW4BEGIN_one_line_open
+New
+Polyline 0,0,0 2,1,0 4,0,0 6,1,0 8,0,0
+Enter
+Plane 1,4,0 5,8,0
+Save @TMP@/rw4dm_delete_open.3dm
+Alias
+opn
+"SelNone;SelID 2;PointsOn;SelControlPoint;Open @TMP@/rw4dm_delete_open.3dm;SelNone;SelID 2;Delete"
+opn
+SelNone
+SelAll
+List
+RW4BEGIN_one_line_undo
+New
+Polyline 0,0,0 2,1,0 4,0,0 6,1,0 8,0,0
+Enter
+Plane 1,4,0 5,8,0
+Alias
+upr
+"SelNone;SelID 2;PointsOn;SelControlPoint;Undo;Redo;SelNone;SelID 2;Delete"
+upr
+SelNone
+SelAll
+List
+RW4BEGIN_one_line_range
+New
+Polyline 0,0,0 1,0,0 2,0,0 3,0,0 4,1,0
+Enter
+Alias
+prg
+"SelNone;SelID 1;ReducePolyline;Undo;SelNone;SelID 1;PointsOn;SelControlPoint;Redo;SelNone;SelID 1;Delete"
+prg
+SelNone
+SelAll
+List
+Cancel
+RW4BEGIN_guard_range
+New
+Polyline 0,0,0 1,0,0 2,0,0 3,0,0 4,1,0
+Enter
+Alias
+grd
+"SelNone;SelID 1;PointsOn;SelControlPointRegion 2.5,-1,-1 4.5,3,1;ReducePolyline;Delete"
+grd
+SelNone
+SelAll
+List
+Cancel
 RW4BEGIN_new_resets
 SelNone
 SelID 2
