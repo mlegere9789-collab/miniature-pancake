@@ -40,12 +40,14 @@ next to `MediaSuite.exe`.
 | `realesrgan` | `realesrgan-ncnn-vulkan.exe` | AI upscaling | BSD-3-Clause | **yes** | — |
 | `rsvg` | `rsvg-convert.exe` | SVG rasterising | LGPL-2.1 | attempted (inclusion unconfirmed) | see note below |
 | `potrace` | `potrace.exe` | PNG to SVG tracing | GPL-2.0 | **yes** | — |
+| `gfpgan` | `face_enhance.exe` | AI upscaler's optional face-restoration pass | BSD-3-Clause | attempted (compiled from source, plus a Google Drive model download) | see note below |
 
-"Not yet" is a real gap, not a permanent one. `libraw` is the one tool with no official
-or actively-maintained prebuilt Windows binary at all, so `fetch-tools.ps1` compiles
-`dcraw_emu.exe` from LibRaw's own source instead — real, but meaningfully more
-speculative than every plain-download tool above it: it needs a working MSVC + vcpkg
-toolchain in CI (set up as a dedicated workflow step) and is written to fail soft rather
+"Not yet" is a real gap, not a permanent one. `libraw` and `gfpgan` are the two tools
+with no official or actively-maintained prebuilt Windows binary at all, so
+`fetch-tools.ps1` compiles `dcraw_emu.exe`/`face_enhance.exe` from source instead — real,
+but meaningfully more speculative than every plain-download tool above them: each needs a
+working MSVC + vcpkg toolchain in CI (set up as a dedicated workflow step) and is written
+to fail soft rather
 than take the rest of the fetch down if that compile doesn't work on a given run. If it
 fails, ImageMagick's own bundled LibRaw delegate (`magick.exe photo.CR2 out.jpg`) is the
 practical fallback for camera RAW. `ghostscript` is attempted the same fail-soft way, for
@@ -69,7 +71,17 @@ directly — that domain is unreachable from this environment too, and the "port
 installer's exact silent-install behavior couldn't be confirmed, but Chocolatey is
 already proven working in this same pipeline (the Inno Setup install step uses it) and
 its Calibre package wraps the same problem with already-solved community-maintained
-flags. Still fail-soft, same as everything else in this list.
+flags. Still fail-soft, same as everything else in this list. `gfpgan` is the most
+speculative of all of them: like `libraw`, there is no official or actively-maintained
+prebuilt Windows binary for a GFPGAN face-restoration pipeline over `ncnn` anywhere, so
+`installer/native/face-enhance/` vendors real source for one (see its own README.md) and
+`fetch-tools.ps1` compiles it with vcpkg-built `opencv4` and `ncnn` — two vcpkg ports this
+pipeline had never exercised before this was written, on top of everything `libraw`
+already risks. Its model weights (>100 MB) come from the same source repository's own
+Google Drive link rather than a GitHub release, fetched and validated the same fail-soft
+way. If the compile or the model download does not come out this run, the AI Photo
+Upscaler works exactly as it did before this tool existed; its `faceEnhance` option just
+has nothing to run.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.

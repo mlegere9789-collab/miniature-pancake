@@ -91,6 +91,28 @@ public class ImageMagickEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancelling_mid_convert_deletes_the_truncated_output_file()
+    {
+        var input = _temp.CreateFile("photo.jpg");
+        var outputPath = Path.Combine(_temp.Combine("out"), "photo.png");
+
+        var runner = new FakeProcessRunner(request =>
+        {
+            // Mirrors what the real ProcessRunner sees: the killed tool had already
+            // written some of the output file by the time cancellation landed.
+            File.WriteAllText(request.Arguments[^1], "a truncated, half-written file");
+            throw new OperationCanceledException();
+        });
+
+        var engine = new ImageMagickEngine(runner, Tools());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Run(engine, Spec("image.convert", new[] { input }, format: "png")));
+
+        Assert.False(File.Exists(outputPath), "a cancelled job must not leave a truncated file at the final output path");
+    }
+
+    [Fact]
     public async Task Progress_names_the_file_being_worked_on_and_finishes_at_100()
     {
         var inputs = new[] { _temp.CreateFile("a.jpg"), _temp.CreateFile("b.jpg") };

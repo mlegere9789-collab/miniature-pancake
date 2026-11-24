@@ -118,10 +118,22 @@ public static class FFmpegCommandBuilder
     {
         // Duration rather than an end time: as an output option -t is measured from the
         // seek point, which is what "from here, this long" actually means.
+        var durationRequested = spec.GetOption("duration") is { Length: > 0 } || spec.GetOption("end") is { Length: > 0 };
+
         if (TryReadDuration(spec, out var duration) && duration > TimeSpan.Zero)
         {
             arguments.Add("-t");
             arguments.Add(MediaTime.Format(duration));
+        }
+        else if (durationRequested)
+        {
+            // An "end"/"duration" option was actually given but resolved to zero, negative,
+            // or unparseable rather than simply being absent — silently falling through to
+            // "no -t flag" here would export everything from the seek point to the end of
+            // the file instead, which is not what an explicit (if invalid) end point or
+            // duration means. Omitting both options entirely is the real "trim to EOF"
+            // case, and is deliberately left alone below.
+            throw new ArgumentException("Trimming needs an end point after the start point (or a positive duration).");
         }
 
         if (spec.GetBool("reencode", false))

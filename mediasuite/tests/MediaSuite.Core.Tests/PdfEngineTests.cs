@@ -251,6 +251,28 @@ public class PdfEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Removing_pages_understands_qpdfs_own_from_the_end_syntax()
+    {
+        // "r1" (qpdf's own "last page, counting from the end" syntax) already works in
+        // organize, extract-pages, rotate and split-ranges, since those hand the user's
+        // text straight through to qpdf's own --pages option. "remove" is the one feature
+        // that pre-resolves its page list itself, so without explicit support for "rN" it
+        // would reject the exact same token every other PDF page-selection field accepts.
+        _runner.PageCount = 5;
+        var input = _temp.CreateFile("in.pdf");
+
+        var result = await Run(
+            new PdfEngine(_runner, Tools()),
+            Spec("pdf.remove-pages", new[] { input }, options: ("remove", "r1")));
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+
+        var selectCall = _runner.RequestsFor("qpdf").First(c => c.Arguments.Contains("--pages"));
+        var pageListIndex = selectCall.Arguments.ToList().IndexOf(".") + 1;
+        Assert.Equal("1,2,3,4", selectCall.Arguments[pageListIndex]);
+    }
+
+    [Fact]
     public async Task Removing_every_page_is_refused_rather_than_producing_an_empty_pdf()
     {
         _runner.PageCount = 2;

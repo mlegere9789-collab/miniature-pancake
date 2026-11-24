@@ -3,6 +3,7 @@ using System.Windows.Threading;
 using MediaSuite.App.Services;
 using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Engines;
+using MediaSuite.Core.Formats;
 using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
@@ -25,10 +26,36 @@ public partial class App : Application
     private MainViewModel? _mainViewModel;
     private GoogleDriveClient? _driveClient;
     private GitHubReleaseUpdateChecker? _updateChecker;
+    private SingleInstanceGuard? _singleInstance;
+    private MainWindow? _window;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        var openedFiles = ResolveOpenWithFiles(e.Args);
+
+        var singleInstance = SingleInstanceGuard.Acquire();
+        _singleInstance = singleInstance;
+        if (!singleInstance.IsFirstInstance)
+        {
+            // A window is already open somewhere — hand this launch's file off to it and
+            // stop immediately, before any of the real startup work below (settings load,
+            // tool discovery, queue, Drive client) that a second window would otherwise
+            // duplicate for nothing.
+            SingleInstanceGuard.ForwardToRunningInstance(openedFiles);
+            singleInstance.Dispose();
+            _singleInstance = null;
+            Shutdown();
+            return;
+        }
+
+        // Started this early, not after the window is up: everything below (settings
+        // load, tool discovery, engine registry, Drive client) is real I/O that can take
+        // a visible moment, and a second launch racing in during that window would
+        // otherwise find nobody listening yet. OnFilesForwardedFromAnotherLaunch already
+        // tolerates _window/_mainViewModel still being null this early.
+        singleInstance.StartListening(OnFilesForwardedFromAnotherLaunch);
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
@@ -60,14 +87,60 @@ public partial class App : Application
         _mainViewModel = new MainViewModel(
             settings, store, _themeService, toolLocator, _queue, engines, launcher, _driveClient, _updateChecker, Dispatcher);
 
-        var window = new MainWindow(_themeService)
+        if (openedFiles.Count > 0)
+        {
+            _mainViewModel.OpenWithFiles(openedFiles);
+        }
+
+        _window = new MainWindow(_themeService, settings, store)
         {
             DataContext = _mainViewModel,
         };
 
-        this.MainWindow = window;
-        window.Show();
+        this.MainWindow = _window;
+        _window.Show();
     }
+
+    /// <summary>
+    /// Runs on a background thread inside <see cref="SingleInstanceGuard"/> whenever a
+    /// second launch hands this instance its files instead of opening its own window.
+    /// Brings the existing window to the front regardless of whether any files came with
+    /// it — a plain second double-click with nothing to open should still surface the
+    /// window rather than silently do nothing.
+    /// </summary>
+    private void OnFilesForwardedFromAnotherLaunch(IReadOnlyList<string> files)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (files.Count > 0)
+            {
+                _mainViewModel?.OpenWithFiles(files);
+            }
+
+            if (_window is null)
+            {
+                return;
+            }
+
+            if (_window.WindowState == WindowState.Minimized)
+            {
+                _window.WindowState = WindowState.Normal;
+            }
+
+            _window.Activate();
+        });
+    }
+
+    /// <summary>
+    /// Windows puts a file path on the command line for "Open with MediaSuite" (see the
+    /// installer's <c>SupportedTypes</c> registration) and for a file dragged onto the
+    /// exe or a shortcut to it — either way, this app is being told to do something with
+    /// a specific file, not just launched idle. Filters to paths the format catalogue
+    /// actually recognises, so a file passed this way that the app can never act on lands
+    /// nowhere silently rather than showing up staged for an operation it can't complete.
+    /// </summary>
+    private static IReadOnlyList<string> ResolveOpenWithFiles(string[] args) =>
+        InputCollector.Expand(args).Where(file => FormatCatalog.FromPath(file) is not null).ToList();
 
     protected override void OnExit(ExitEventArgs e)
     {
@@ -77,6 +150,7 @@ public partial class App : Application
         _themeService?.Dispose();
         _driveClient?.Dispose();
         _updateChecker?.Dispose();
+        _singleInstance?.Dispose();
         base.OnExit(e);
     }
 

@@ -93,9 +93,29 @@ public class FFmpegCommandBuilderTests
     }
 
     [Fact]
-    public void An_end_before_the_start_is_treated_as_no_duration_at_all()
+    public void An_end_before_or_at_the_start_is_a_real_error_not_a_silent_full_length_export()
     {
-        var command = Command(Spec("video.trim", options: new[] { ("start", "60"), ("end", "30") }));
+        // An explicit end that resolves to zero or negative length is a real, reachable user
+        // mistake (typo'd end time, both trim handles dragged to the same point) -- silently
+        // falling through to "no -t flag" here would export everything from the seek point to
+        // the end of the file instead of the (admittedly odd) empty clip the user asked for.
+        Assert.Throws<ArgumentException>(() =>
+            Command(Spec("video.trim", options: new[] { ("start", "60"), ("end", "30") })));
+        Assert.Throws<ArgumentException>(() =>
+            Command(Spec("video.trim", options: new[] { ("start", "30"), ("end", "30") })));
+    }
+
+    [Fact]
+    public void An_explicit_zero_duration_is_a_real_error_not_a_silent_full_length_export()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            Command(Spec("video.trim", options: new[] { ("start", "30"), ("duration", "00:00:00") })));
+    }
+
+    [Fact]
+    public void No_end_or_duration_at_all_legitimately_means_trim_to_the_end_of_the_file()
+    {
+        var command = Command(Spec("video.trim", options: new[] { ("start", "30") }));
 
         Assert.DoesNotContain("-t ", command, StringComparison.Ordinal);
     }

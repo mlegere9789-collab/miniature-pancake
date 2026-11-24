@@ -12,6 +12,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MediaSuite.App", "src\Media
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MediaSuite.Core.Tests", "tests\MediaSuite.Core.Tests\MediaSuite.Core.Tests.csproj", "{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E03}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MediaSuite.App.Tests", "tests\MediaSuite.App.Tests\MediaSuite.App.Tests.csproj", "{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E04}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -30,6 +32,10 @@ Global
 		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E03}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E03}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E03}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E04}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E04}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E04}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E04}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -38,5 +44,6 @@ Global
 		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E01} = {6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E10}
 		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E02} = {6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E10}
 		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E03} = {6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E11}
+		{6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E04} = {6E1A2C71-9F3D-4B22-8C5E-1A2B3C4D5E11}
 	EndGlobalSection
 EndGlobal

@@ -11,6 +11,12 @@
     <!-- Argument builders and format resolution are internal to the engines but are
          exactly what the tests need to check without the tools installed. -->
     <InternalsVisibleTo Include="MediaSuite.Core.Tests" />
+    <!-- QueuedJob's constructor and state-transition methods (MarkRunning, ReportProgress,
+         Finish) are internal to the queue on purpose — nothing outside JobQueueManager
+         should be able to fake a job's lifecycle in production — but App.Tests needs
+         exactly that to drive JobRowViewModel's computed properties without standing up a
+         full JobQueueManager and a real engine for every test. -->
+    <InternalsVisibleTo Include="MediaSuite.App.Tests" />
   </ItemGroup>
 
   <ItemGroup>

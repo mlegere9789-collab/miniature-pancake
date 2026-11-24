@@ -1,8 +1,11 @@
 # Income Orchestrator — Setup Guide
 
-This is the shared foundation for five semi-autonomous income programs. The
-foundation is built; the individual programs come later. This guide walks you
-through everything **you** need to do to get it running locally.
+This is the shared foundation for five semi-autonomous income programs, all
+five of which are already built (see the table in the root
+[`README.md`](README.md) — each has a documented scope, and some
+deliberately stop short of live uploads/publishing where no reliable public
+API exists to build against). This guide walks you through everything
+**you** need to do to get it running locally.
 
 Estimated time: ~10 minutes. No accounts or paid services are required just to
 run the foundation — you only need API keys later, per program.
@@ -77,10 +80,29 @@ python3 -m orchestrator dashboard     # start the dashboard
 ```
 
 Open **http://127.0.0.1:8787** in your browser. You'll see:
-- a summary strip (total earnings, items awaiting review),
-- a card per module (status, last activity, earnings, pending reviews),
+- a summary strip (total earnings, items awaiting review) with a **Download
+  CSV** link for the full earnings ledger (bookkeeping/taxes — also
+  available as `python3 -m orchestrator export-earnings`),
+- a card per module (status, last activity, earnings, pending reviews) with
+  a **Run now** button — trigger that module immediately instead of waiting
+  for its schedule — and a **View log** link showing its recent output,
 - the **review queue** with working **Approve** / **Reject** buttons,
-- a recent-activity feed.
+- **Recently resolved**, an audit trail of your last few approve/reject
+  decisions (so you can see what you decided, and when), with its own
+  **Download CSV** link for the complete decision log (also available as
+  `python3 -m orchestrator export-reviews`),
+- a recent-activity feed,
+- whether the portable scheduler daemon (below) is actually running, via
+  its heartbeat — a status cron doesn't need, since a missed cron run just
+  doesn't happen, but a long-lived process can die silently.
+
+Want a push notification the moment anything lands in the review queue, or
+a module errors out, instead of checking the dashboard? Set
+`NOTIFY_WEBHOOK_URL` in `.env` to a Slack or Discord incoming webhook URL
+(`NOTIFY_FORMAT` picks the payload shape — `slack`, `discord`, or the
+default `generic`, which works with most other webhook receivers too).
+Blank = off, no notifications sent, same idle-by-default rule as everything
+else here.
 
 Stop the dashboard with **Ctrl-C**. To wipe the sample data and start clean,
 delete `data/orchestrator.db` and run `init` again.
@@ -149,8 +171,9 @@ what it needs; in summary:
 | Micro-SaaS | Stripe, plus wherever the SaaS itself is hosted |
 | Any (AI copy/automation) | Anthropic API key ([console.anthropic.com](https://console.anthropic.com/)) |
 
-When you're ready to build the first program, tell me which one and I'll scaffold
-it on top of this foundation.
+Set the keys for whichever program you want to run in `.env`, enable its job
+in `jobs.json` (step 6), and it'll pick them up automatically — `doctor`
+(step 7) confirms what's set.
 
 ---
 
@@ -174,16 +197,17 @@ miniature-pancake/
 │  ├─ config.py           #   secure credentials from .env
 │  ├─ database.py         #   shared SQLite store
 │  ├─ logger.py           #   get_logger(...) API for modules
+│  ├─ notifier.py         #   optional webhook push on review-flag
 │  ├─ scheduler.py        #   cron + portable daemon
 │  ├─ dashboard.py        #   local web dashboard + review queue
 │  ├─ demo.py, cli.py     #   helpers / CLI
 │  └─ jobs.example.json   #   scheduler job templates
-├─ modules/               # the five income programs (empty stubs for now)
-│  ├─ stock_licensing/
-│  ├─ ecommerce_dropshipping/
-│  ├─ deal_alert_bot/
-│  ├─ digital_products/
-│  └─ micro_saas/
+├─ modules/               # the five income programs, all built
+│  ├─ stock_licensing/        #   built: AI metadata drafts for review
+│  ├─ ecommerce_dropshipping/ #   built: Shopify order sync + margin tracking
+│  ├─ deal_alert_bot/         #   built: CheapShark -> Discord deal alerts
+│  ├─ digital_products/       #   built: AI listing-copy drafts for review
+│  └─ micro_saas/             #   built: health checks + Stripe billing
 ├─ data/                  # local DB + logs (git-ignored)
 ├─ .env.example           # credentials template (copy to .env)
 └─ SETUP.md               # this file

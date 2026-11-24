@@ -1,5 +1,7 @@
 # MediaSuite
 
+[![MediaSuite CI](https://github.com/mlegere9789-collab/miniature-pancake/actions/workflows/mediasuite-ci.yml/badge.svg?branch=main)](https://github.com/mlegere9789-collab/miniature-pancake/actions/workflows/mediasuite-ci.yml)
+
 A local, offline Windows 11 media converter, compressor and toolbox — the FreeConvert
 Convert / Compress / Tools feature set running entirely on your own machine, plus an AI
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
@@ -28,7 +30,39 @@ mediasuite/
 │   ├── MediaSuite.Core/      net8.0        — domain model, engine contract, tools, settings
 │   └── MediaSuite.App/       net8.0-windows — WPF shell (UI only)
 ├── tests/
-│   └── MediaSuite.Core.Tests/              — xUnit tests for everything in Core
+│   ├── MediaSuite.Core.Tests/              — xUnit tests for everything in Core
+│   └── MediaSuite.App.Tests/               — xUnit tests for App-layer logic that does not
+│                                              need a real Window: SingleInstanceGuard's
+│                                              real mutex/pipe IPC, JobRowViewModel's
+│                                              computed properties (StatusText, Copy
+│                                              details visibility, live updates) driven
+│                                              through a real QueuedJob, and
+│                                              JobQueueViewModel's status strip and
+│                                              taskbar-progress state driven through a real
+│                                              JobQueueManager (pause/resume, cancel-one,
+│                                              cancel-all, clear-finished, running/progress
+│                                              state), and ModulePageViewModel -- the actual
+│                                              Convert/Compress/etc. screen -- driven
+│                                              through the real feature catalogue plus a
+│                                              real JobLauncher/JobQueueManager (which
+│                                              features are ready, staging and starting
+│                                              files, output-format resolution, saved
+│                                              presets, Google Drive folder loading), and
+│                                              SettingsViewModel -- theme switching,
+│                                              output/temp-directory and concurrency
+│                                              persistence (clamped, with the running
+│                                              queue notified), the Google Drive master
+│                                              switch, bundled-tool discovery, and Drive
+│                                              sign-in/out, and MainViewModel -- the wiring
+│                                              between Settings and the live queue/module
+│                                              pages (concurrency and the Drive switch both
+│                                              reaching an already-running queue/open
+│                                              pages without a restart), the dependency
+│                                              warning banner, "Open with" file routing,
+│                                              and the update-available banner. Anything
+│                                              that does need a real Window still has no
+│                                              automated coverage, only Build compiling it
+│                                              and QA.md
 └── tools/                                  — bundled third-party binaries (not in git)
 ```
 
@@ -122,7 +156,14 @@ Convert.
   resume, live progress, concurrency auto-tuned to the core count and adjustable while
   running, and a private scratch folder per job that is cleaned up afterwards
 - **Queue UI** — status strip plus a live panel: one row per job with its own progress
-  bar and cancel button
+  bar and cancel button. A failed row also gets a "Copy details" button carrying the
+  tool's full stderr/stdout, not just the one-line summary — `JobResult.Diagnostics`
+  was being captured in every engine's `ToolExecutionException` all along and then
+  discarded before this, which would have left a real failure with no way to see what
+  the underlying tool actually said. Closing the app while anything is still running or
+  queued asks for confirmation first — closing the window used to kill every in-flight
+  job's process outright with no warning at all, silently throwing away work that could
+  be most of the way through a long encode or upscale
 - **Image module** — convert (including camera RAW via LibRaw), compress, resize, crop,
   rotate, flip, enlarge and PNG-to-SVG tracing, driven by ImageMagick and Potrace
 - **Video and audio module** — convert, compress (by quality or by target size), extract
@@ -145,12 +186,20 @@ Convert.
 - **Unit and time converters** — length/mass/area/volume/temperature/data/speed, and time
   zones/Unix timestamps/durations/frame counts; pure arithmetic with no file to convert,
   so unlike every other module these never touch the job queue at all
-- **AI upscaler** — 2x/4x/8x with general or anime models, optional denoise and sharpen,
-  through Real-ESRGAN's ncnn-vulkan build (GPU via Vulkan, with a CPU fallback); 8x is two
-  chained passes rather than trusting every build to accept a single "-s 8"; sharpening is
-  an ordinary ImageMagick unsharp pass afterwards, since Real-ESRGAN has none of its own.
-  "Face enhance" from the brief is not implemented — it needs a second bundled model
-  (GFPGAN) the tool manifest does not carry yet, so it is a follow-up, not a fake
+- **AI upscaler** — 2x/4x/8x with general or anime models, optional denoise, sharpen and
+  face enhance, through Real-ESRGAN's ncnn-vulkan build (GPU via Vulkan, with a CPU
+  fallback); 8x is two chained passes rather than trusting every build to accept a single
+  "-s 8"; sharpening is an ordinary ImageMagick unsharp pass afterwards, since Real-ESRGAN
+  has none of its own. Face enhance is an extra pass, not a third model — detects faces in
+  the already-upscaled image and restores each one through GFPGAN, the same shape the real
+  upstream `realesrgan` Python CLI's own `--face_enhance` flag has. Its tool
+  (`gfpgan/face_enhance.exe`, CPU-only) has no official prebuilt Windows binary anywhere,
+  so `fetch-tools.ps1` compiles real vendored source for it against vcpkg-built `opencv4`
+  and `ncnn` — see `installer/native/face-enhance/README.md` and `tools/README.md` for
+  exactly where that source and its models come from, and why it's the most speculative,
+  most fail-soft entry in the whole fetch: unlike everything else bundled so far, this is
+  a real from-source compile confirmed working by real CI, not a known-good download, and
+  its actual visual output quality has not been verified by a human on a real photo
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each — except for
   tools that merge their inputs, which take the whole selection as a single job
@@ -179,6 +228,28 @@ Convert.
   elevation prompt, Start Menu shortcut, optional desktop shortcut, a proper uninstaller
   that never touches the tools folder or user settings, self-contained so a fresh
   Windows 11 machine does not also need the .NET runtime installed separately
+- **Explorer integration** — the installer registers MediaSuite as an "Open with" choice
+  in Explorer for every extension in the format catalogue, without ever overwriting a
+  file's actual default handler (a JPG still opens in Photos by default; MediaSuite is
+  only ever offered as a choice). Opening a file this way, or dragging one onto the exe
+  or its shortcut, launches straight into the Convert page with that file already staged
+  instead of an empty shell you then have to feed manually. The extension list is kept in
+  sync with the format catalogue by a real test (`InstallerFileAssociationTests`) that
+  reads the actual `.iss` file off disk and fails the moment they drift apart
+- **Single instance** — opening a second file while MediaSuite is already running (via
+  "Open with", a dragged file, or just launching it again) hands that file to the window
+  already open and brings it to the front, instead of spawning a redundant second process
+  with its own queue, settings writer and tool discovery. A named mutex decides who is
+  first; every later launch forwards its file arguments to that instance over a local
+  named pipe and exits immediately rather than doing any startup work of its own. Backed
+  by a real automated test (`MediaSuite.App.Tests`, new) that runs the actual mutex and
+  named-pipe handoff — not a fake standing in for them — since "compiles" was never proof
+  this specific mechanism (a second launch racing the first instance's listener startup)
+  actually worked; that gap is exactly what caught the real startup-race bug fixed earlier
+- **Real GitHub release** — every push to `main` publishes the CI-built installer to this
+  repo's Releases page, gated so a PR build never does it. Before this, the only way to
+  get the installer was a 90-day CI artifact behind a GitHub login, which quietly broke
+  the promise the README and the in-app update checker both already made
 - **Self-contained tool bundling** — `installer/fetch-tools.ps1` fetches all 14
   third-party tools during the CI build and packages them straight into the installer,
   so a fresh install needs zero manual downloads; a plain zip/7z download where one
@@ -267,6 +338,11 @@ installing Inno Setup via Chocolatey, and uploads the resulting `.exe` as a buil
 artifact. A green run there means a real installer really was produced, not just that
 the C# behind it compiles.
 
+On every push to `main`, a third `release` job takes that same installer and publishes
+it to this repo's Releases page — the actual download link for anyone who isn't building
+from source, and the same `releases/latest` endpoint the in-app update checker (see
+[What is done](#what-is-done)) already polls.
+
 ## Build order
 
 | Step | Work | State |
@@ -280,7 +356,7 @@ the C# behind it compiles.
 | 7 | PDF module | done |
 | 8 | Document / ebook module | done |
 | 9 | Archive / unit / time converters | done |
-| 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, no face-enhance yet |
+| 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, plus an optional face-enhance pass (GFPGAN-ncnn, compiled from source, CPU-only) |
 | 11 | Settings system — presets | done |
 | 12 | Google Drive integration | done |
 | 13 | Format-parity audit vs FreeConvert | done — spreadsheet/presentation/PostScript formats deliberately deferred, see the FormatCatalog doc comment |

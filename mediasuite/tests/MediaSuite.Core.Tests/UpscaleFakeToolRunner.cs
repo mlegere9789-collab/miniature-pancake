@@ -2,12 +2,21 @@ using MediaSuite.Core.Tooling;
 
 namespace MediaSuite.Core.Tests;
 
-/// <summary>Stands in for Real-ESRGAN and ImageMagick, so the upscale engine can be tested without either installed.</summary>
+/// <summary>Stands in for Real-ESRGAN, ImageMagick and the face-enhance tool, so the upscale engine can be tested without any of them installed.</summary>
 public sealed class UpscaleFakeToolRunner : IProcessRunner
 {
     public List<ProcessRequest> Requests { get; } = new();
 
     public string? NextFailure { get; set; }
+
+    /// <summary>
+    /// 1-based: the call with this number among all calls to this runner writes its output
+    /// file as usual (mirroring a real tool killed mid/after-write, not one that never got
+    /// that far) and then throws instead of returning, standing in for
+    /// <see cref="ProcessRunner"/> re-throwing after killing a cancelled process. Null means
+    /// no call is cancelled.
+    /// </summary>
+    public int? CancelOnCallNumber { get; set; }
 
     public IReadOnlyList<ProcessRequest> RequestsFor(string executableFragment) =>
         Requests.Where(r => r.FileName.Contains(executableFragment, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -16,9 +25,12 @@ public sealed class UpscaleFakeToolRunner : IProcessRunner
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        int callNumber;
+
         lock (Requests)
         {
             Requests.Add(request);
+            callNumber = Requests.Count;
         }
 
         if (NextFailure is { } failure)
@@ -29,16 +41,15 @@ public sealed class UpscaleFakeToolRunner : IProcessRunner
 
         var args = request.Arguments;
 
-        if (request.FileName.Contains("realesrgan", StringComparison.OrdinalIgnoreCase))
+        // Real-ESRGAN and the face-enhance tool both name their output with an explicit
+        // "-o" flag; only ImageMagick's sharpen pass, like every other ImageMagick call
+        // in this codebase, is positional and just ends with the output path.
+        var outputFlagIndex = args.ToList().IndexOf("-o");
+        Write(outputFlagIndex >= 0 && outputFlagIndex + 1 < args.Count ? args[outputFlagIndex + 1] : args[^1]);
+
+        if (callNumber == CancelOnCallNumber)
         {
-            var index = args.ToList().IndexOf("-o");
-            Write(index >= 0 && index + 1 < args.Count ? args[index + 1] : args[^1]);
-        }
-        else
-        {
-            // ImageMagick's sharpen pass, like every other ImageMagick call in this
-            // codebase, ends with the output path.
-            Write(args[^1]);
+            throw new OperationCanceledException();
         }
 
         return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty, TimeSpan.FromMilliseconds(1)));

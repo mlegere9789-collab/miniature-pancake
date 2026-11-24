@@ -13,7 +13,7 @@ public class UpscaleEngineTests : IDisposable
 
     public void Dispose() => _temp.Dispose();
 
-    private ToolLocator Tools(bool realEsrgan = true, bool imageMagick = true)
+    private ToolLocator Tools(bool realEsrgan = true, bool imageMagick = true, bool faceEnhance = false)
     {
         if (realEsrgan)
         {
@@ -23,6 +23,11 @@ public class UpscaleEngineTests : IDisposable
         if (imageMagick)
         {
             _temp.CreateFile("tools", "imagemagick", "magick.exe");
+        }
+
+        if (faceEnhance)
+        {
+            _temp.CreateFile("tools", "gfpgan", "face_enhance.exe");
         }
 
         return new ToolLocator(new[] { _temp.Combine("tools") }, pathVariable: string.Empty);
@@ -195,6 +200,117 @@ public class UpscaleEngineTests : IDisposable
 
         Assert.False(result.IsSuccess);
         Assert.Contains("ImageMagick", result.ErrorMessage!, StringComparison.Ordinal);
+        Assert.Empty(_runner.Requests);
+    }
+
+    [Fact]
+    public async Task Cancelling_the_raw_upscale_pass_never_touches_a_pre_existing_final_output()
+    {
+        // With sharpen on, the raw Real-ESRGAN pass (call 1) writes to its own scratch
+        // file, not outputPath -- an existing file already sitting at outputPath
+        // (OverwritePolicy.Overwrite reusing it) must survive a cancellation that this
+        // pass never reached.
+        var input = _temp.CreateFile("a.png");
+        var outputPath = Path.Combine(_temp.Combine("out"), "a.png");
+        Directory.CreateDirectory(_temp.Combine("out"));
+        File.WriteAllText(outputPath, "a pre-existing file this cancelled pass never touched");
+
+        _runner.CancelOnCallNumber = 1;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Run(
+            new UpscaleEngine(_runner, Tools()),
+            Spec("upscale.photo", new[] { input }, options: ("sharpen", "true"))));
+
+        Assert.Single(_runner.RequestsFor("realesrgan"));
+        Assert.Empty(_runner.RequestsFor("magick"));
+        Assert.Equal("a pre-existing file this cancelled pass never touched", File.ReadAllText(outputPath));
+    }
+
+    [Fact]
+    public async Task Cancelling_the_sharpen_pass_deletes_the_truncated_final_output()
+    {
+        // Sharpen is the last stage here (no face-enhance), so its call (call 2, after
+        // Real-ESRGAN's call 1) writes outputPath directly -- this is the pass whose
+        // cancellation must actually clean it up.
+        var input = _temp.CreateFile("a.png");
+        var outputPath = Path.Combine(_temp.Combine("out"), "a.png");
+
+        _runner.CancelOnCallNumber = 2;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Run(
+            new UpscaleEngine(_runner, Tools()),
+            Spec("upscale.photo", new[] { input }, options: ("sharpen", "true"))));
+
+        Assert.Single(_runner.RequestsFor("realesrgan"));
+        Assert.Single(_runner.RequestsFor("magick"));
+        Assert.False(File.Exists(outputPath), "a cancelled job must not leave a truncated file at the final output path");
+    }
+
+    // --- Face enhance --------------------------------------------------------------------
+
+    [Fact]
+    public async Task Face_enhance_runs_after_the_upscale()
+    {
+        var input = _temp.CreateFile("a.png");
+        var result = await Run(
+            new UpscaleEngine(_runner, Tools(faceEnhance: true)),
+            Spec("upscale.photo", new[] { input }, options: ("faceEnhance", "true")));
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.Single(_runner.RequestsFor("realesrgan"));
+
+        var faceEnhanceCall = Assert.Single(_runner.RequestsFor("face_enhance"));
+        var args = faceEnhanceCall.Arguments.ToList();
+        Assert.Contains("-m", args);
+        Assert.EndsWith("models", args[args.IndexOf("-m") + 1]);
+
+        // The upscale's own output is what face-enhance reads.
+        var upscaleOutput = _runner.RequestsFor("realesrgan").Single().Arguments.ToList();
+        var faceEnhanceInput = args[args.IndexOf("-i") + 1];
+        Assert.Equal(upscaleOutput[upscaleOutput.IndexOf("-o") + 1], faceEnhanceInput);
+
+        // The final output is what face-enhance wrote, not the raw upscale.
+        Assert.Equal("a.png", Path.GetFileName(Assert.Single(result.OutputPaths)));
+    }
+
+    [Fact]
+    public async Task Face_enhance_runs_after_sharpen_when_both_are_requested()
+    {
+        var input = _temp.CreateFile("a.png");
+        var result = await Run(
+            new UpscaleEngine(_runner, Tools(faceEnhance: true)),
+            Spec("upscale.photo", new[] { input }, options: new[] { ("sharpen", "true"), ("faceEnhance", "true") }));
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+
+        var sharpenCall = Assert.Single(_runner.RequestsFor("magick"));
+        var faceEnhanceCall = Assert.Single(_runner.RequestsFor("face_enhance"));
+
+        // Face-enhance reads whatever sharpen wrote, not the raw upscale.
+        var sharpenOutput = sharpenCall.Arguments[^1];
+        var faceEnhanceArgs = faceEnhanceCall.Arguments.ToList();
+        Assert.Equal(sharpenOutput, faceEnhanceArgs[faceEnhanceArgs.IndexOf("-i") + 1]);
+    }
+
+    [Fact]
+    public async Task Without_face_enhance_the_tool_is_never_touched()
+    {
+        var input = _temp.CreateFile("a.png");
+        await Run(new UpscaleEngine(_runner, Tools()), Spec("upscale.photo", new[] { input }));
+
+        Assert.Empty(_runner.RequestsFor("face_enhance"));
+    }
+
+    [Fact]
+    public async Task Face_enhance_without_the_tool_fails_before_the_upscale_ever_runs()
+    {
+        var input = _temp.CreateFile("a.png");
+        var result = await Run(
+            new UpscaleEngine(_runner, Tools(faceEnhance: false)),
+            Spec("upscale.photo", new[] { input }, options: ("faceEnhance", "true")));
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("GFPGAN Face Enhance", result.ErrorMessage!, StringComparison.Ordinal);
         Assert.Empty(_runner.Requests);
     }
 

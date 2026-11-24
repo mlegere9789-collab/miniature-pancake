@@ -216,6 +216,12 @@ public class FFmpegEngineTests : IDisposable
         Assert.Equal(JobStatus.Failed, result.Status);
         Assert.Contains("Invalid data found", result.ErrorMessage!, StringComparison.Ordinal);
         Assert.Contains("broken.mp4", result.ErrorMessage!, StringComparison.Ordinal);
+
+        // ErrorMessage is deliberately one line; Diagnostics is where the queue panel's
+        // "Copy details" button gets the full stderr FFmpeg actually wrote, not just the
+        // one summarised line.
+        Assert.Contains("Invalid data found when processing input", result.Diagnostics!, StringComparison.Ordinal);
+        Assert.Contains("Exit code: 1", result.Diagnostics!, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -269,6 +275,34 @@ public class FFmpegEngineTests : IDisposable
             () => Run(engine, Spec("video.compress", inputs), cancellationToken: cancellation.Token));
 
         Assert.True(runner.Requests.Count < inputs.Length * 2, "the batch should stop, not run to the end");
+    }
+
+    [Fact]
+    public async Task Cancelling_mid_encode_deletes_the_truncated_output_file()
+    {
+        var input = _temp.CreateFile("holiday.mov");
+        var outputPath = Path.Combine(_temp.Combine("out"), "holiday.mp4");
+
+        var runner = new FakeProcessRunner(request =>
+        {
+            if (request.FileName.Contains("ffprobe", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ProcessResult(0, ProbeJson, string.Empty, TimeSpan.Zero);
+            }
+
+            // Mirrors what the real ProcessRunner sees: WaitForExitAsync's cancellation
+            // lands after the OS process has already written some of the output file, so
+            // the file on disk is real by the time it gets killed -- just truncated.
+            File.WriteAllText(request.Arguments[^1], "a truncated, half-encoded file");
+            throw new OperationCanceledException();
+        });
+
+        var engine = new FFmpegEngine(runner, Tools());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Run(engine, Spec("video.convert", new[] { input }, format: "mp4")));
+
+        Assert.False(File.Exists(outputPath), "a cancelled job must not leave a truncated file at the final output path");
     }
 
     [Fact]

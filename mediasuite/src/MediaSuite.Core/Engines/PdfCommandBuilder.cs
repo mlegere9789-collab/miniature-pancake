@@ -80,18 +80,36 @@ public static class PdfCommandBuilder
         bool allowPrinting,
         bool allowCopying)
     {
-        var arguments = new List<string>
+        var effectiveOwnerPassword = string.IsNullOrEmpty(ownerPassword) ? userPassword : ownerPassword;
+
+        var arguments = new List<string> { "--encrypt" };
+
+        // qpdf's original "--encrypt user-password owner-password key-length" syntax takes
+        // both passwords as bare positional values -- a password beginning with '-' (a real
+        // password someone might genuinely choose) makes qpdf's own argument parser mistake
+        // it for an unrecognized option instead of the password value, failing the whole job
+        // with a confusing qpdf-internal error ("unrecognized argument ... encryption options
+        // must be terminated with --") rather than ever applying the protection the user
+        // asked for. qpdf 11.7.0 added --user-password=/--owner-password=/--bits= as
+        // single-token alternatives specifically so any text can be used as a password;
+        // using them here closes that gap, the same way Unlock just above already uses
+        // --password= rather than a bare positional argument for the same reason.
+        if (userPassword.Length > 0)
         {
-            "--encrypt",
-            userPassword,
-            string.IsNullOrEmpty(ownerPassword) ? userPassword : ownerPassword,
-            "256",
-            $"--print={(allowPrinting ? "full" : "none")}",
-            $"--extract={(allowCopying ? "y" : "n")}",
-            "--",
-            inputPath,
-            outputPath,
-        };
+            arguments.Add($"--user-password={userPassword}");
+        }
+
+        if (effectiveOwnerPassword.Length > 0)
+        {
+            arguments.Add($"--owner-password={effectiveOwnerPassword}");
+        }
+
+        arguments.Add("--bits=256");
+        arguments.Add($"--print={(allowPrinting ? "full" : "none")}");
+        arguments.Add($"--extract={(allowCopying ? "y" : "n")}");
+        arguments.Add("--");
+        arguments.Add(inputPath);
+        arguments.Add(outputPath);
 
         return arguments;
     }

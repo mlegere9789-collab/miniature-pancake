@@ -44,7 +44,7 @@ public sealed class FFmpegEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
 
         var ffprobe = ToolLocator.Locate(ExternalToolId.FFprobe).Path;
@@ -76,7 +76,7 @@ public sealed class FFmpegEngine : ExternalProcessEngine
             }
             catch (ToolExecutionException ex)
             {
-                return JobResult.Failure(ex.Message);
+                return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
             {
@@ -115,18 +115,29 @@ public sealed class FFmpegEngine : ExternalProcessEngine
         var expected = ExpectedOutputDuration(spec, probe);
         var stage = StageFor(spec.OperationId);
 
-        var result = await ProcessRunner.RunAsync(
-            new ProcessRequest
-            {
-                FileName = ffmpeg,
-                Arguments = arguments,
-                OnStandardOutputLine = line => ReportProgress(line, progress, expected, index, total, stage, fileName),
-            },
-            cancellationToken).ConfigureAwait(false);
+        ProcessResult result;
+
+        try
+        {
+            result = await ProcessRunner.RunAsync(
+                new ProcessRequest
+                {
+                    FileName = ffmpeg,
+                    Arguments = arguments,
+                    OnStandardOutputLine = line => ReportProgress(line, progress, expected, index, total, stage, fileName),
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            DeletePartialOutput(outputPath);
+            throw;
+        }
 
         if (!result.IsSuccess)
         {
-            throw new ToolExecutionException($"FFmpeg could not convert '{fileName}': {result.DescribeFailure()}");
+            throw new ToolExecutionException(
+                $"FFmpeg could not convert '{fileName}': {result.DescribeFailure()}", result.FullOutput());
         }
 
         if (!File.Exists(outputPath))

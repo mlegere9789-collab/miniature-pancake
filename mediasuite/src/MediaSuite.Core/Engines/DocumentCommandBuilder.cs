@@ -26,7 +26,7 @@ public static class DocumentCommandBuilder
     private static bool IsLegacyDoc(string extension) =>
         string.Equals(extension.TrimStart('.'), "doc", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Pandoc's own name for a document format, given its file extension.</summary>
+    /// <summary>Pandoc's own name for a document format when reading it (the <c>-f</c> flag).</summary>
     public static string PandocFormatFor(string extension) => extension.TrimStart('.').ToLowerInvariant() switch
     {
         "docx" => "docx",
@@ -44,6 +44,19 @@ public static class DocumentCommandBuilder
     };
 
     /// <summary>
+    /// Pandoc's own name for a document format when writing it (the <c>-t</c> flag). Differs
+    /// from <see cref="PandocFormatFor"/> only for .txt: reading .txt as markdown is a
+    /// harmless, even helpful, trick (see that method's own comment), but *writing* markdown
+    /// for a .txt target would leave literal "**bold**"/"# Heading" syntax sitting in a file
+    /// with no markup reader on the other end — "plain" is pandoc's actual plain-prose writer,
+    /// with all markup stripped rather than emitted.
+    /// </summary>
+    public static string PandocWriterFormatFor(string extension) =>
+        string.Equals(extension.TrimStart('.'), "txt", StringComparison.OrdinalIgnoreCase)
+            ? "plain"
+            : PandocFormatFor(extension);
+
+    /// <summary>
     /// Converts one document to another through Pandoc.
     /// </summary>
     /// <remarks>
@@ -56,7 +69,7 @@ public static class DocumentCommandBuilder
         {
             "--standalone",
             "-f", PandocFormatFor(fromExtension),
-            "-t", PandocFormatFor(toExtension),
+            "-t", PandocWriterFormatFor(toExtension),
             "-o", outputPath,
             inputPath,
         };

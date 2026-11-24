@@ -65,7 +65,7 @@ public sealed class PdfEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -89,7 +89,9 @@ public sealed class PdfEngine : ExternalProcessEngine
         if (operation == "pdf.merge")
         {
             var qpdf = RequireTool(ExternalToolId.QPdf);
-            await RunToolAsync(qpdf, PdfCommandBuilder.Merge(spec.InputPaths, outputPath), "QPDF", cancellationToken)
+            await RunToolAsync(
+                qpdf, PdfCommandBuilder.Merge(spec.InputPaths, outputPath), "QPDF", cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
         }
         else
@@ -100,7 +102,8 @@ public sealed class PdfEngine : ExternalProcessEngine
 
             var mutool = RequireTool(ExternalToolId.MuPdf);
             await RunToolAsync(
-                mutool, PdfCommandBuilder.ImagesToPdf(imagePaths, outputPath), "MuPDF", cancellationToken)
+                mutool, PdfCommandBuilder.ImagesToPdf(imagePaths, outputPath), "MuPDF", cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
         }
 
@@ -265,7 +268,9 @@ public sealed class PdfEngine : ExternalProcessEngine
 
         var toolId = PdfCommandBuilder.ToolFor(operation);
         var tool = RequireTool(toolId);
-        await RunToolAsync(tool, arguments, ToolManifest.Get(toolId).DisplayName, cancellationToken).ConfigureAwait(false);
+        await RunToolAsync(
+            tool, arguments, ToolManifest.Get(toolId).DisplayName, cancellationToken, outputPathToDeleteOnCancel: outputPath)
+            .ConfigureAwait(false);
         RequireOutput(outputPath, Path.GetFileName(inputPath));
         return outputPath;
     }
@@ -294,7 +299,9 @@ public sealed class PdfEngine : ExternalProcessEngine
         var outputPath = ResolveOutputPath(spec, inputPath, index, batchRoot);
         var pageList = string.Join(",", kept.Select(page => page.ToString(CultureInfo.InvariantCulture)));
 
-        await RunToolAsync(qpdf, PdfCommandBuilder.SelectPages(inputPath, outputPath, pageList), "QPDF", cancellationToken)
+        await RunToolAsync(
+            qpdf, PdfCommandBuilder.SelectPages(inputPath, outputPath, pageList), "QPDF", cancellationToken,
+            outputPathToDeleteOnCancel: outputPath)
             .ConfigureAwait(false);
 
         RequireOutput(outputPath, Path.GetFileName(inputPath));
@@ -310,7 +317,8 @@ public sealed class PdfEngine : ExternalProcessEngine
         if (!result.IsSuccess || !int.TryParse(result.StandardOutput.Trim(), out var pages) || pages <= 0)
         {
             throw new ToolExecutionException(
-                $"QPDF could not read the page count of '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}");
+                $"QPDF could not read the page count of '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}",
+                result.FullOutput());
         }
 
         return pages;
@@ -382,7 +390,8 @@ public sealed class PdfEngine : ExternalProcessEngine
         if (!result.IsSuccess)
         {
             throw new ToolExecutionException(
-                $"MuPDF could not extract images from '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}");
+                $"MuPDF could not extract images from '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}",
+                result.FullOutput());
         }
 
         var produced = NaturalSort(Directory.GetFiles(stepFolder));
@@ -477,7 +486,8 @@ public sealed class PdfEngine : ExternalProcessEngine
                 inputPath, spec.Output with { Format = "pdf" }, index, batchRoot);
 
             await RunToolAsync(
-                mutool, PdfCommandBuilder.ImagesToPdf(new[] { inputPath }, outputPath), "MuPDF", cancellationToken)
+                mutool, PdfCommandBuilder.ImagesToPdf(new[] { inputPath }, outputPath), "MuPDF", cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
 
             RequireOutput(outputPath, Path.GetFileName(inputPath));
@@ -490,7 +500,8 @@ public sealed class PdfEngine : ExternalProcessEngine
             inputPath, spec.Output with { Format = "pdf" }, index, batchRoot);
 
         await RunToolAsync(
-            qpdf, PdfCommandBuilder.PassThrough(inputPath, rewrittenPath), "QPDF", cancellationToken)
+            qpdf, PdfCommandBuilder.PassThrough(inputPath, rewrittenPath), "QPDF", cancellationToken,
+            outputPathToDeleteOnCancel: rewrittenPath)
             .ConfigureAwait(false);
 
         RequireOutput(rewrittenPath, Path.GetFileName(inputPath));
@@ -631,10 +642,34 @@ public sealed class PdfEngine : ExternalProcessEngine
         return pages;
     }
 
-    private static int ParsePageNumber(string token, int totalPages) =>
-        string.Equals(token.Trim(), "z", StringComparison.OrdinalIgnoreCase)
-            ? totalPages
-            : int.TryParse(token.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var page) && page > 0
-                ? page
-                : throw new ArgumentException($"'{token}' is not a valid page number.", nameof(token));
+    /// <summary>
+    /// Recognises the same page-number syntax qpdf's own <c>--pages</c> understands
+    /// natively — "z" for the last page, and "rN" counting from the end ("r1" is the last
+    /// page, "r2" the second-to-last, and so on. "remove" is the one PDF feature that
+    /// pre-resolves its page list itself rather than handing qpdf's own --pages syntax
+    /// straight through the way organize/extract-pages/rotate/split-ranges all do (see
+    /// <see cref="PdfCommandBuilder.SelectPages"/>) — without this, a user typing "r1" into
+    /// "remove" got a confusing "not a valid page number" error even though the exact same
+    /// token already works in every other PDF page-selection field.
+    /// </summary>
+    private static int ParsePageNumber(string token, int totalPages)
+    {
+        var trimmed = token.Trim();
+
+        if (string.Equals(trimmed, "z", StringComparison.OrdinalIgnoreCase))
+        {
+            return totalPages;
+        }
+
+        if (trimmed.Length > 1 && (trimmed[0] == 'r' || trimmed[0] == 'R')
+            && int.TryParse(trimmed.AsSpan(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out var fromEnd)
+            && fromEnd > 0)
+        {
+            return totalPages - fromEnd + 1;
+        }
+
+        return int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var page) && page > 0
+            ? page
+            : throw new ArgumentException($"'{token}' is not a valid page number.", nameof(token));
+    }
 }

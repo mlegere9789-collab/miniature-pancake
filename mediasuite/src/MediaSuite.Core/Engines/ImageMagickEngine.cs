@@ -44,7 +44,7 @@ public sealed class ImageMagickEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
 
         var workingDirectory = ResolveWorkingDirectory(spec);
@@ -80,7 +80,7 @@ public sealed class ImageMagickEngine : ExternalProcessEngine
             }
             catch (ToolExecutionException ex)
             {
-                return JobResult.Failure(ex.Message);
+                return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
             {
@@ -120,7 +120,8 @@ public sealed class ImageMagickEngine : ExternalProcessEngine
         var outputPath = OutputPathResolver.Resolve(inputPath, target, index, batchRoot);
         var arguments = ImageCommandBuilder.Build(spec, sourcePath, outputPath);
 
-        await RunToolAsync(magick, arguments, "ImageMagick", cancellationToken).ConfigureAwait(false);
+        await RunToolAsync(magick, arguments, "ImageMagick", cancellationToken, outputPathToDeleteOnCancel: outputPath)
+            .ConfigureAwait(false);
 
         if (!File.Exists(outputPath))
         {

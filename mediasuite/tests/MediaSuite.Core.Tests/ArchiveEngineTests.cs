@@ -64,7 +64,7 @@ public class ArchiveEngineTests : IDisposable
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal("photos.7z", Path.GetFileName(Assert.Single(result.OutputPaths)));
 
-        var extractCall = Assert.Single(_runner.RequestsFor("7z").Where(r => r.Arguments[0] == "x"));
+        var extractCall = Assert.Single(_runner.RequestsFor("7z"), r => r.Arguments[0] == "x");
         Assert.Equal(input, extractCall.Arguments[1]);
 
         var createCall = Assert.Single(_runner.CreateCalls);
