@@ -460,13 +460,21 @@ inline const Field* FindField(const ScheduleDef& d, const std::string& n) {
 
 // Evaluates calculated, percentage and combined fields into the records (a copy is used).
 inline std::vector<Record> Prepare(const ScheduleDef& def, std::vector<Record> recs) {
-  for (auto& f : def.fields) {
-    if (f.kind == FieldKind::Formula) {
+  // Expression-defined fields may use each other in any order: evaluate in passes until every chain has settled. A value that depends
+  // on itself (directly or through other fields) never gets a defined operand and stays not evaluated.
+  for (size_t pass = 0; pass <= def.fields.size(); ++pass) {
+    for (auto& f : def.fields) {
+      if (f.kind != FieldKind::Formula) continue;
       for (auto& r : recs) {
         Value v;
         if (!Formula::Eval(f.formula, r, v)) v = Value();
         r[f.name] = v;
       }
+    }
+  }
+  for (auto& f : def.fields) {
+    if (f.kind == FieldKind::Formula) {
+      continue;
     } else if (f.kind == FieldKind::Combined) {
       for (auto& r : recs) {
         std::string out;
