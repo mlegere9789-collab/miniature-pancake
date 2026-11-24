@@ -82,11 +82,27 @@ class Camera {
   kernel::Vector3d Right() const;
   kernel::Vector3d Up() const;
   double Distance() const;
-  // tan(fov_y / 2) for the current lens, written the same explicit
-  // atan-then-tan way every other fov call site in Camera.cpp already
-  // does. Meaningless (but harmless) when the camera is orthographic -
-  // callers ignore it in that case.
-  double TanHalfFovY() const;
+  // The lens convention is openNURBS' 35 mm lens (ON_Viewport::GetCamera35mmLensLength / SetCamera35mmLensLength, the functions the 3dm reader and
+  // writer call): a 36 x 24 mm film, the lens being measured against the half extent of the SHORT side of the view, 12 mm. So
+  //     tan(half angle of the short side) = 12 / lens
+  // whatever the shape of the viewport (a landscape view's short side is its height, a portrait view's its width) and the long side follows from the
+  // aspect ratio (width / height).
+  static constexpr double kFilmHalfShortMm = 12.0;
+  // tan(half angle of the short side) for a lens.
+  static double TanHalfShort(double lens_mm) { return kFilmHalfShortMm / lens_mm; }
+  // tan(vertical half angle) for a lens in a viewport of the given aspect: 12 / lens for a landscape (or square) view, 12 / (lens * aspect) for a portrait one.
+  static double TanHalfFovVertical(double lens_mm, double aspect) {
+    const double t = TanHalfShort(lens_mm);
+    return aspect >= 1.0 ? t : t / (aspect > 1e-3 ? aspect : 1e-3);
+  }
+  // The lens that gives a vertical half-angle tangent `tan_v` in a viewport of that aspect (the inverse of TanHalfFovVertical).
+  static double LensForTanHalfFovVertical(double tan_v, double aspect) {
+    const double t_short = aspect >= 1.0 ? tan_v : tan_v * (aspect > 1e-3 ? aspect : 1e-3);
+    return kFilmHalfShortMm / t_short;
+  }
+  // tan(fov_y / 2) for the current lens in a viewport of the given aspect. Meaningless (but harmless) when the camera is orthographic - callers
+  // ignore it in that case.
+  double TanHalfFovY(double aspect) const { return TanHalfFovVertical(state_.lens_mm, aspect); }
 
   // Picking: normalized device coords in [-1,1] -> world ray.
   Ray ScreenRay(double ndc_x, double ndc_y, double aspect) const;
@@ -94,7 +110,8 @@ class Camera {
   bool Project(kernel::Point3d world, double aspect, double& ndc_x, double& ndc_y, double& depth) const;
 
   // Size in world units of one pixel at the target distance.
-  double PixelSize(int viewport_height) const;
+  // `aspect` (width / height) matters only in a perspective view of a portrait window, where the short side is the width.
+  double PixelSize(int viewport_height, double aspect = 1.0) const;
 
   // Padding factor ZoomExtents leaves around the geometry (1 = tight;
   // SetZoomExtentsBorder changes it for every viewport).

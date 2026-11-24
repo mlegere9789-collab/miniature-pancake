@@ -383,13 +383,13 @@ class CameraCommand : public Command {
   static void Describe(CommandContext& ctx, Viewport& vp) {
     const CameraState& c = vp.GetCamera().State();
     ctx.Print("Camera (" + vp.Name() + "): location " + FormatPoint(c.eye) + ", target " + FormatPoint(c.target) + ", distance " + FormatNumber((c.eye - c.target).Length()) +
-              (c.perspective ? ", lens " + FormatNumber(c.lens_mm) + " mm (" + FormatNumber(2 * std::atan(18.0 / c.lens_mm) * 180 / ON_PI) + " deg)" : ", parallel projection, height " + FormatNumber(c.ortho_height)));
+              (c.perspective ? ", lens " + FormatNumber(c.lens_mm) + " mm (" + FormatNumber(2 * std::atan(Camera::TanHalfShort(c.lens_mm)) * 180 / ON_PI) + " deg)" : ", parallel projection, height " + FormatNumber(c.ortho_height)));
   }
   static void Frustum(CommandContext& ctx, Viewport& vp) {
     const Camera& cam = vp.GetCamera();
     const CameraState& c = cam.State();
     const double d = (c.target - c.eye).Length() * 0.5;
-    const double h = c.perspective ? d * std::tan(std::atan(18.0 / c.lens_mm)) : c.ortho_height * 0.5;
+    const double h = c.perspective ? d * Camera::TanHalfFovVertical(c.lens_mm, vp.Aspect()) : c.ortho_height * 0.5;
     const double w = h * vp.Aspect();
     const Vector3d f = cam.Forward(), r = cam.Right(), u = cam.Up();
     const Point3d ctr = c.eye + f * d;
@@ -805,12 +805,12 @@ void RegisterStateCommands(CommandEngine& e) {
 
   // ---- camera / lens ---------------------------------------------------
   Reg(e, "Camera", Make<CameraCommand>());
-  Reg(e, "PerspectiveAngle", Make<NumberArgCommand>("Lens angle in degrees", [](CommandContext& ctx) { Viewport* vp = ctx.ActiveViewport(); return vp ? 2 * std::atan(18.0 / vp->GetCamera().State().lens_mm) * 180 / ON_PI : 40.0; }, [](CommandContext& ctx, double deg) {
+  Reg(e, "PerspectiveAngle", Make<NumberArgCommand>("Lens angle in degrees", [](CommandContext& ctx) { Viewport* vp = ctx.ActiveViewport(); return vp ? 2 * std::atan(Camera::TanHalfShort(vp->GetCamera().State().lens_mm)) * 180 / ON_PI : 40.0; }, [](CommandContext& ctx, double deg) {
         Viewport* vp = ctx.ActiveViewport();
         if (!vp) return;
         deg = std::clamp(deg, 1.0, 170.0);
         CameraState& c = vp->GetCamera().State();
-        c.lens_mm = 18.0 / std::tan(deg * ON_PI / 360.0);
+        c.lens_mm = Camera::kFilmHalfShortMm / std::tan(deg * ON_PI / 360.0);
         ctx.App().State().perspective_angle = deg;
         ctx.Print("Perspective angle " + FormatNumber(deg) + " deg (lens " + FormatNumber(c.lens_mm) + " mm)" + (c.perspective ? "" : " - stored; " + vp->Name() + " is a parallel view"));
       }));

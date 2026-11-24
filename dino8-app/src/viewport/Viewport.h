@@ -128,7 +128,7 @@ class Viewport {
   // zoomed in is this viewport" input to view-dependent adaptive
   // tessellation (see FrameContext::lod_scale and LodScaleForPixelSize in
   // AdaptiveTessellation.h).
-  double ZoomPixelSize() const { return camera_.PixelSize(std::max(height_, 1)); }
+  double ZoomPixelSize() const { return camera_.PixelSize(std::max(height_, 1), Aspect()); }
   DisplayMode Mode() const { return mode_; }
   void SetMode(DisplayMode m) { mode_ = m; }
   ConstructionPlane& CPlane() { return cplane_; }

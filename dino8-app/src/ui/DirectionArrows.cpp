@@ -28,7 +28,7 @@ bool DirectionArrows::Update(Application& app, Viewport& vp, bool viewport_hover
   const ImVec2 origin(static_cast<float>(vp.ScreenX()), static_cast<float>(vp.ScreenY()));
   // Same "about 60/70 screen pixels regardless of zoom" convention Gumball
   // uses for its own axis length (Gumball::Update, ui/Gumball.cpp).
-  const double len = 60.0 * vp.GetCamera().PixelSize(vp.Height());
+  const double len = 60.0 * vp.GetCamera().PixelSize(vp.Height(), vp.Aspect());
 
   // Project every flagged object's glyph (ComputeDirArrow - cmd_common.h,
   // the exact same origin/direction Dir itself printed) into this
