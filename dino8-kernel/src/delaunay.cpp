@@ -243,12 +243,12 @@ Triangulation2D TriangulateConstrainedDelaunay(const std::vector<Point2d>& outer
   // --- Steiner points: split the containing triangle (or the two sharing the edge the point lies on)
   for (const P& s : steiner) {
     if (!std::isfinite(s.x) || !std::isfinite(s.y) || !inside_domain(s)) continue;
-    bool near = false;
-    for (const P& p : out.points) if (std::hypot(p.x - s.x, p.y - s.y) <= tol) near = true;
-    for (size_t li = 0; li < loops.size() && !near; ++li) {
-      for (size_t i = 0; i < loops[li].size(); ++i) if (DistanceToSegment(s, loops[li][i], loops[li][(i + 1) % loops[li].size()]) <= tol) near = true;
+    bool touches_existing = false;
+    for (const P& p : out.points) if (std::hypot(p.x - s.x, p.y - s.y) <= tol) touches_existing = true;
+    for (size_t li = 0; li < loops.size() && !touches_existing; ++li) {
+      for (size_t i = 0; i < loops[li].size(); ++i) if (DistanceToSegment(s, loops[li][i], loops[li][(i + 1) % loops[li].size()]) <= tol) touches_existing = true;
     }
-    if (near) continue;
+    if (touches_existing) continue;
     const int sid = static_cast<int>(out.points.size());
     bool placed = false;
     const double on_edge = 1e-12 * scale * scale;
