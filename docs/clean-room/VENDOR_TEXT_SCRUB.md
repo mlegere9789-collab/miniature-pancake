@@ -81,8 +81,12 @@ that only reports, or one that reuses another command's implementation).
   pages was searched for in all text files of the tree, excluding `.git` and `parity/oracle`. After
   the rewording above the only hits are the toolbar and menu label lists (listed below); none in
   source, tests, documentation or tutorials. A 6-word scan finds only everyday phrases.
-* Application checks: see the commit message of the last commit and the CI run ids in the job
-  report.
+* Application checks: CI run 45330938729 on the commit that introduced the checker (sections
+  BASE, HELP_CMDLINE, QCR_ENTER, VENDOR_TEXT, DIM): 2,342 ok, 0 FAIL. It covers the catalog load
+  (1,071 commands), the `Help` command in six languages, all 901 commands entered at their first
+  prompt, the hatch pattern library and the new check. The two C++ unit tests that read the
+  edited data, `test_i18n_cmddesc` and `test_accessibility_tree`, were compiled directly and pass.
+  A second run on the final commit repeats VENDOR_TEXT and HELP_CMDLINE.
 
 ## Unknown or owner decisions
 
