@@ -217,4 +217,54 @@ std::vector<float> GradientWeights(const Mesh& mesh, Point3d start, Point3d end,
   return out;
 }
 
+VertexGroupSet CopyVertexGroups(const VertexGroupSet& source, int vertex_count) {
+  if (vertex_count != source.VertexCount()) throw std::invalid_argument("dino8::kernel::CopyVertexGroups: the vertex counts differ");
+  return source;
+}
+
+std::vector<float> FloodFillMask(const std::vector<float>& mask, MaskFill mode, float value) {
+  std::vector<float> out(mask.size());
+  for (size_t i = 0; i < mask.size(); ++i)
+    out[i] = mode == MaskFill::Value ? value : (mode == MaskFill::ValueInverse ? 1.0f - value : 1.0f - mask[i]);
+  return out;
+}
+
+std::vector<float> FilterMask(const Mesh& mesh, const std::vector<float>& mask, MaskFilterKind kind, int iterations) {
+  const ON_Mesh& r = mesh.raw();
+  if (static_cast<int>(mask.size()) != r.m_V.Count()) throw std::invalid_argument("dino8::kernel::FilterMask: one mask value per vertex is required");
+  if (iterations < 0) throw std::invalid_argument("dino8::kernel::FilterMask: iterations must be >= 0");
+  std::vector<std::vector<int>> nb(mask.size());
+  for (int i = 0; i < r.m_F.Count(); ++i) {
+    const ON_MeshFace& f = r.m_F[i];
+    const int n = f.IsQuad() ? 4 : 3;
+    for (int k = 0; k < n; ++k) {
+      const int a = f.vi[k], b = f.vi[(k + 1) % n];
+      nb[static_cast<size_t>(a)].push_back(b);
+      nb[static_cast<size_t>(b)].push_back(a);
+    }
+  }
+  for (auto& l : nb) {
+    std::sort(l.begin(), l.end());
+    l.erase(std::unique(l.begin(), l.end()), l.end());
+  }
+  std::vector<float> cur = mask;
+  for (int it = 0; it < iterations; ++it) {
+    std::vector<float> next = cur;
+    for (size_t v = 0; v < cur.size(); ++v) {
+      if (nb[v].empty()) continue;
+      if (kind == MaskFilterKind::Smooth) {
+        double sum = 0;
+        for (int w : nb[v]) sum += cur[static_cast<size_t>(w)];
+        next[v] = static_cast<float>(sum / static_cast<double>(nb[v].size()));
+      } else {
+        float best = cur[v];
+        for (int w : nb[v]) best = kind == MaskFilterKind::Grow ? std::max(best, cur[static_cast<size_t>(w)]) : std::min(best, cur[static_cast<size_t>(w)]);
+        next[v] = best;
+      }
+    }
+    cur = next;
+  }
+  return cur;
+}
+
 }  // namespace dino8::kernel
