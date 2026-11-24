@@ -3786,7 +3786,8 @@ bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_
         // a texture next to the .mtl is named relative to it (the folder can then move), any other by the path the material holds
         const std::filesystem::path tex(g.texture);
         const std::filesystem::path rel = tex.is_absolute() ? tex.lexically_relative(std::filesystem::path(path).parent_path().lexically_normal()) : tex;
-        const std::string shown = (!rel.empty() && rel.native().compare(0, 2, "..") != 0) ? rel.generic_string() : tex.generic_string();
+        const std::string rel_text = rel.generic_string();  // native() is a wstring on Windows: compare the narrow generic form
+        const std::string shown = (!rel.empty() && rel_text.compare(0, 2, "..") != 0) ? rel_text : tex.generic_string();
         mtl << "map_Kd " << shown << "\n";
       }
       mtl << "\n";
