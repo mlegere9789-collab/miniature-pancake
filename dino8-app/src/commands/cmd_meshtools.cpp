@@ -2231,39 +2231,14 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
     const std::string what = m.what;
     FaceMetric fn = m.fn;
     const char* label = m.extract;
-    const char* sel_label = m.sel;
     auto action = [what, fn, label](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
       FaceMetric metric = fn;
       if (!metric) { const Vector3d up = ActiveNormal(ctx); metric = [up](const RawMesh& r, const Face& f) { return Deg(std::acos(std::max(-1.0, std::min(1.0, ON_DotProduct(r.FaceNormal(f), up))))); }; }
       ExtractByMetric(ctx, ids, in, label, metric);
     };
-    // Sel*: this mesh model has no per-face sub-selection, so "select" means
-    // selecting whole objects that contain at least one matching face
-    // (rather than extracting the faces into a new object, like the
-    // Extract* command above does).
-    auto sel_action = [fn, sel_label](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
-      FaceMetric metric = fn;
-      if (!metric) { const Vector3d up = ActiveNormal(ctx); metric = [up](const RawMesh& r, const Face& f) { return Deg(std::acos(std::max(-1.0, std::min(1.0, ON_DotProduct(r.FaceNormal(f), up))))); }; }
-      std::vector<Target> ts = Targets(ctx, ids, sel_label);
-      if (ts.empty()) return;
-      const double lo = in.N(0, 0), hi = in.N(1, 1e300);
-      ctx.Doc().SelectNone();
-      int objs = 0, faces = 0;
-      for (const Target& t : ts) {
-        RawMesh r = Unpack(t.mesh.raw());
-        int n = 0;
-        for (const Face& f : r.f) { const double v = metric(r, f); if (v >= lo && v <= hi) ++n; }
-        if (n > 0) {
-          if (SceneObject* o = ctx.Doc().Find(t.id)) { o->selected = true; ++objs; }
-          faces += n;
-        }
-      }
-      ctx.Print(std::string(sel_label) + ": " + std::to_string(objs) + " object(s) selected (" + std::to_string(faces) + " matching face(s) in total)");
-    };
+    // The Sel* twins of these (SelMeshFacesByArea and the others) select faces into the sub-object selection and live in cmd_select2.cpp.
     const std::vector<Step> steps = {NumberStep(("Minimum " + what).c_str(), 0), NumberStep(("Maximum " + what).c_str(), m.def_hi)};
     Reg(e, m.extract, Tool("Select meshes", steps, {}, action));
-    Reg(e, m.sel, Tool("Select meshes", steps, {}, sel_action), CommandStatus::Implemented,
-        "Selects whole objects containing a matching face; this mesh model has no per-face sub-selection, so it cannot highlight individual faces the way the Extract* command extracts them.");
   }
   Reg(e, "CollapseMeshFace", Tool("Select meshes", {PointStep("Point on the face to collapse")}, {}, CollapseFaceNear));
   Reg(e, "CollapseMeshEdge", Tool("Select meshes", {PointStep("Point near the edge to collapse")}, {}, CollapseEdgeNear));

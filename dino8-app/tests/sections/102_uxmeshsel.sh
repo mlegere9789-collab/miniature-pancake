@@ -35,7 +35,7 @@ UXMS_S="$TMPW/uxmeshsel_script.txt"
 if ux_launch "$UXMS_S"; then
   uxms_counts() {  # block command expected-counts-as-one-string label
     local got
-    got="$(ux_lines "$1" | grep -F "$2" | sed -n 's/.*: \([0-9][0-9]*\) matching.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+    got="$(ux_lines "$1" | { grep -F "$2" || true; } | sed -n 's/.*: \([0-9][0-9]*\) matching.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
     if [ "$got" = "$3" ]; then ux_ok "UXMESHSEL_$2: $4 (matches: $got)"; else ux_bad "UXMESHSEL_$2: $4 (matches '$got', expected '$3')"; ux_lines "$1" | head -8 | sed 's/^/     actual: /' || true; fi
   }
   uxms_counts area SelMeshFacesByArea "2 2 2 6 0" "box faces by area: [30,50] gets the two 10 x 4 faces, [20,30] the two 6 x 4, 55 and up the two 10 x 6, [0,100] all six, [100,200] none"
@@ -49,7 +49,7 @@ if ux_launch "$UXMS_S"; then
   ux_has UXMESHSEL_badargs bad "an angle above 180 is refused" "SelMeshEdges: the angle must be a number from 0 to 180 degrees, got '200'"
   got="$(ux_lines boxedges | sed -n 's/.*: \([0-9][0-9]*\) matching.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
   if [ "$got" = "12 12 0" ]; then ux_ok "UXMESHSEL_SelMeshEdges: all 12 box edges are 90 degree joins (45 and 90 select 12, 91 selects 0)"; else ux_bad "UXMESHSEL_SelMeshEdges: box edges by angle gave '$got', expected '12 12 0'"; fi
-  got="$(ux_lines plane | grep -E "matching (face|edge)" | sed -n 's/.*: \([0-9][0-9]*\) matching.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+  got="$(ux_lines plane | { grep -E "matching (face|edge)" || true; } | sed -n 's/.*: \([0-9][0-9]*\) matching.*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
   if [ "$got" = "128 128 0 128 0 128 176 0" ]; then ux_ok "UXMESHSEL_plane: the 128 flat triangles match area 0.78125, sides 1.25 / 1.768, aspect sqrt 2, draft 90; the 176 interior edges are flat joins"; else ux_bad "UXMESHSEL_plane: counts '$got', expected '128 128 0 128 0 128 176 0'"; ux_lines plane | head -12 | sed 's/^/     actual: /' || true; fi
 fi
 fi
