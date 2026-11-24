@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "dino8/kernel/boolean.h"
 #include "dino8/kernel/detail/polygon2d.h"
 
 namespace dino8::kernel {
@@ -1279,6 +1280,378 @@ Mesh MakeTorusMesh(int major_segments, int minor_segments, double major_radius, 
     profile.emplace_back(major_radius + minor_radius * std::cos(a), 0.0, minor_radius * std::sin(a));
   }
   return ScrewPolyline(profile, Point3d::Origin, Vector3d(0, 0, 1), 2.0 * ON_PI, major_segments, 0.0, 1, true);
+}
+
+Mesh SubdivideMeshEdges(const Mesh& mesh, int cuts) {
+  if (cuts < 1) throw std::invalid_argument("dino8::kernel::SubdivideMeshEdges: cuts must be >= 1");
+  Soup in = ToSoup(mesh);
+  Soup out;
+  out.p = in.p;
+  const int n = cuts + 1;
+  // points on each edge, ordered from the smaller vertex id to the larger
+  std::map<MeshEdgeKey, std::vector<int>> edge_points;
+  auto edge_point = [&](int a, int b, int t) {  // t-th point (1..cuts) walking from a to b
+    const MeshEdgeKey k = Key(a, b);
+    auto it = edge_points.find(k);
+    if (it == edge_points.end()) {
+      std::vector<int> ids;
+      for (int j = 1; j <= cuts; ++j) {
+        ids.push_back(static_cast<int>(out.p.size()));
+        out.p.push_back(in.p[static_cast<size_t>(k.first)] + (in.p[static_cast<size_t>(k.second)] - in.p[static_cast<size_t>(k.first)]) * (static_cast<double>(j) / n));
+      }
+      it = edge_points.emplace(k, ids).first;
+    }
+    return a == k.first ? it->second[static_cast<size_t>(t - 1)] : it->second[static_cast<size_t>(cuts - t)];
+  };
+  for (const auto& f : in.f) {
+    auto P = [&](int v) -> const Point3d& { return in.p[static_cast<size_t>(v)]; };
+    if (f.size() == 4) {
+      std::vector<std::vector<int>> g(static_cast<size_t>(n + 1), std::vector<int>(static_cast<size_t>(n + 1), -1));  // g[i][j]
+      for (int i = 0; i <= n; ++i)
+        for (int j = 0; j <= n; ++j) {
+          int id = -1;
+          if (j == 0) id = i == 0 ? f[0] : (i == n ? f[1] : edge_point(f[0], f[1], i));
+          else if (j == n) id = i == 0 ? f[3] : (i == n ? f[2] : edge_point(f[3], f[2], i));
+          else if (i == 0) id = edge_point(f[0], f[3], j);
+          else if (i == n) id = edge_point(f[1], f[2], j);
+          else {
+            const double s = static_cast<double>(i) / n, t = static_cast<double>(j) / n;
+            const Vector3d q = (1 - s) * (1 - t) * (P(f[0]) - Point3d::Origin) + s * (1 - t) * (P(f[1]) - Point3d::Origin) + s * t * (P(f[2]) - Point3d::Origin) + (1 - s) * t * (P(f[3]) - Point3d::Origin);
+            id = static_cast<int>(out.p.size());
+            out.p.push_back(Point3d::Origin + q);
+          }
+          g[static_cast<size_t>(i)][static_cast<size_t>(j)] = id;
+        }
+      for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+          out.f.push_back({g[static_cast<size_t>(i)][static_cast<size_t>(j)], g[static_cast<size_t>(i + 1)][static_cast<size_t>(j)], g[static_cast<size_t>(i + 1)][static_cast<size_t>(j + 1)], g[static_cast<size_t>(i)][static_cast<size_t>(j + 1)]});
+    } else if (f.size() == 3) {
+      std::vector<std::vector<int>> g(static_cast<size_t>(n + 1), std::vector<int>(static_cast<size_t>(n + 1), -1));  // g[i][j], i + j <= n
+      for (int i = 0; i <= n; ++i)
+        for (int j = 0; i + j <= n; ++j) {
+          int id = -1;
+          if (i == 0 && j == 0) id = f[0];
+          else if (i == n) id = f[1];
+          else if (j == n) id = f[2];
+          else if (j == 0) id = edge_point(f[0], f[1], i);
+          else if (i == 0) id = edge_point(f[0], f[2], j);
+          else if (i + j == n) id = edge_point(f[1], f[2], j);
+          else {
+            const double a = static_cast<double>(i) / n, b = static_cast<double>(j) / n;
+            const Vector3d q = (1 - a - b) * (P(f[0]) - Point3d::Origin) + a * (P(f[1]) - Point3d::Origin) + b * (P(f[2]) - Point3d::Origin);
+            id = static_cast<int>(out.p.size());
+            out.p.push_back(Point3d::Origin + q);
+          }
+          g[static_cast<size_t>(i)][static_cast<size_t>(j)] = id;
+        }
+      for (int i = 0; i < n; ++i)
+        for (int j = 0; i + j < n; ++j) {
+          out.f.push_back({g[static_cast<size_t>(i)][static_cast<size_t>(j)], g[static_cast<size_t>(i + 1)][static_cast<size_t>(j)], g[static_cast<size_t>(i)][static_cast<size_t>(j + 1)]});
+          if (i + j + 2 <= n) out.f.push_back({g[static_cast<size_t>(i + 1)][static_cast<size_t>(j)], g[static_cast<size_t>(i + 1)][static_cast<size_t>(j + 1)], g[static_cast<size_t>(i)][static_cast<size_t>(j + 1)]});
+        }
+    }
+  }
+  return FromSoup(out);
+}
+
+Mesh DuplicateFaces(const Mesh& mesh, const std::vector<int>& faces, Vector3d offset) {
+  Soup s = ToSoup(mesh);
+  std::map<int, int> copy;
+  std::vector<std::vector<int>> added;
+  for (int fi : faces) {
+    CheckFaceIndex(s, fi, "DuplicateFaces");
+    std::vector<int> poly;
+    for (int v : s.f[static_cast<size_t>(fi)]) {
+      auto it = copy.find(v);
+      if (it == copy.end()) {
+        it = copy.emplace(v, static_cast<int>(s.p.size())).first;
+        s.p.push_back(s.p[static_cast<size_t>(v)] + offset);
+      }
+      poly.push_back(it->second);
+    }
+    added.push_back(poly);
+  }
+  for (const auto& poly : added) s.f.push_back(poly);
+  return FromSoup(s);
+}
+
+Mesh FillGrid(const Mesh& mesh, const std::vector<int>& loop, int span) {
+  Soup s = ToSoup(mesh);
+  const int N = static_cast<int>(loop.size());
+  if (N < 4 || N % 2 != 0) throw std::invalid_argument("dino8::kernel::FillGrid: the loop needs an even number (>= 4) of vertices");
+  if (span < 1 || span > N / 2 - 1) throw std::invalid_argument("dino8::kernel::FillGrid: span must be between 1 and N / 2 - 1");
+  for (int v : loop)
+    if (v < 0 || v >= static_cast<int>(s.p.size())) throw std::invalid_argument("dino8::kernel::FillGrid: vertex index out of range");
+  const auto ef = EdgeFaces(s);
+  std::set<std::pair<int, int>> directed;
+  for (const auto& poly : s.f)
+    for (size_t k = 0; k < poly.size(); ++k) directed.insert({poly[k], poly[(k + 1) % poly.size()]});
+  int same = 0;
+  for (int k = 0; k < N; ++k) {
+    auto it = ef.find(Key(loop[static_cast<size_t>(k)], loop[static_cast<size_t>((k + 1) % N)]));
+    if (it == ef.end()) throw std::invalid_argument("dino8::kernel::FillGrid: the loop is not a chain of mesh edges");
+    if (directed.count({loop[static_cast<size_t>(k)], loop[static_cast<size_t>((k + 1) % N)]}) != 0) ++same;
+  }
+  const int a = span, b = N / 2 - span;
+  // sides: bottom loop[0..a], right loop[a..a+b], top reversed loop[a+b..2a+b], left reversed loop[2a+b..N] + loop[0]
+  auto L = [&](int k) { return loop[static_cast<size_t>(((k % N) + N) % N)]; };
+  std::vector<std::vector<int>> g(static_cast<size_t>(a + 1), std::vector<int>(static_cast<size_t>(b + 1), -1));
+  for (int i = 0; i <= a; ++i) {
+    g[static_cast<size_t>(i)][0] = L(i);
+    g[static_cast<size_t>(i)][static_cast<size_t>(b)] = L(2 * a + b - i);
+  }
+  for (int j = 0; j <= b; ++j) {
+    g[0][static_cast<size_t>(j)] = L(N - j);
+    g[static_cast<size_t>(a)][static_cast<size_t>(j)] = L(a + j);
+  }
+  auto P = [&](int v) { return s.p[static_cast<size_t>(v)] - Point3d::Origin; };
+  for (int i = 1; i < a; ++i)
+    for (int j = 1; j < b; ++j) {
+      const double u = static_cast<double>(i) / a, v = static_cast<double>(j) / b;
+      // Coons patch: ruled in both directions minus the bilinear corner term
+      const Vector3d bottom = P(g[static_cast<size_t>(i)][0]), top = P(g[static_cast<size_t>(i)][static_cast<size_t>(b)]);
+      const Vector3d left = P(g[0][static_cast<size_t>(j)]), right = P(g[static_cast<size_t>(a)][static_cast<size_t>(j)]);
+      const Vector3d c00 = P(g[0][0]), c10 = P(g[static_cast<size_t>(a)][0]), c01 = P(g[0][static_cast<size_t>(b)]), c11 = P(g[static_cast<size_t>(a)][static_cast<size_t>(b)]);
+      const Vector3d q = (1 - v) * bottom + v * top + (1 - u) * left + u * right - ((1 - u) * (1 - v) * c00 + u * (1 - v) * c10 + (1 - u) * v * c01 + u * v * c11);
+      g[static_cast<size_t>(i)][static_cast<size_t>(j)] = static_cast<int>(s.p.size());
+      s.p.push_back(Point3d::Origin + q);
+    }
+  // grid faces walk bottom -> right -> top -> left, the way the loop does; existing faces that use the loop in that direction need the opposite
+  const bool reverse = same * 2 > N;
+  for (int i = 0; i < a; ++i)
+    for (int j = 0; j < b; ++j) {
+      std::vector<int> q = {g[static_cast<size_t>(i)][static_cast<size_t>(j)], g[static_cast<size_t>(i + 1)][static_cast<size_t>(j)], g[static_cast<size_t>(i + 1)][static_cast<size_t>(j + 1)], g[static_cast<size_t>(i)][static_cast<size_t>(j + 1)]};
+      if (reverse) std::reverse(q.begin(), q.end());
+      s.f.push_back(q);
+    }
+  return FromSoup(s);
+}
+
+namespace {
+double FacePerimeter(const Soup& s, const std::vector<int>& poly) {
+  double len = 0;
+  for (size_t k = 0; k < poly.size(); ++k) len += s.p[static_cast<size_t>(poly[k])].DistanceTo(s.p[static_cast<size_t>(poly[(k + 1) % poly.size()])]);
+  return len;
+}
+}  // namespace
+
+std::vector<int> SimilarFaces(const Mesh& mesh, const std::vector<int>& seeds, SimilarFace type, SimilarCompare compare, double threshold) {
+  const Soup s = ToSoup(mesh);
+  if (!(threshold >= 0.0) || !std::isfinite(threshold)) throw std::invalid_argument("dino8::kernel::SimilarFaces: threshold must be finite and >= 0");
+  for (int fi : seeds) CheckFaceIndex(s, fi, "SimilarFaces");
+  const size_t count = s.f.size();
+  std::vector<Vector3d> normal(count);
+  std::vector<double> area(count), perimeter(count), plane_offset(count);
+  for (size_t i = 0; i < count; ++i) {
+    Vector3d n = Newell(s, s.f[i]);
+    area[i] = n.Length() / 2.0;
+    n.Unitize();
+    normal[i] = n;
+    perimeter[i] = FacePerimeter(s, s.f[i]);
+    plane_offset[i] = n * (s.p[static_cast<size_t>(s.f[i][0])] - Point3d::Origin);
+  }
+  auto compare_number = [&](double value, double seed) {
+    switch (compare) {
+      case SimilarCompare::Equal: return std::abs(value - seed) <= threshold;
+      case SimilarCompare::Greater: return value >= seed - threshold;
+      case SimilarCompare::Less: return value <= seed + threshold;
+    }
+    return false;
+  };
+  std::vector<int> out;
+  for (size_t i = 0; i < count; ++i) {
+    bool hit = false;
+    for (int sd : seeds) {
+      const size_t k = static_cast<size_t>(sd);
+      switch (type) {
+        case SimilarFace::Area: hit = compare_number(area[i], area[k]); break;
+        case SimilarFace::Perimeter: hit = compare_number(perimeter[i], perimeter[k]); break;
+        case SimilarFace::Sides: hit = compare_number(static_cast<double>(s.f[i].size()), static_cast<double>(s.f[k].size())) && (compare != SimilarCompare::Equal || s.f[i].size() == s.f[k].size()); break;
+        case SimilarFace::Normal: {
+          const double ang = std::acos(std::max(-1.0, std::min(1.0, normal[i] * normal[k]))) * 180.0 / ON_PI;
+          hit = compare == SimilarCompare::Equal ? ang <= threshold + 1e-9 : (compare == SimilarCompare::Greater ? ang >= threshold - 1e-9 : ang <= threshold + 1e-9);
+          break;
+        }
+        case SimilarFace::Coplanar: {
+          const double ang = std::acos(std::max(-1.0, std::min(1.0, normal[i] * normal[k]))) * 180.0 / ON_PI;
+          hit = ang <= threshold + 1e-9 && std::abs(plane_offset[i] - plane_offset[k]) <= threshold + 1e-9;
+          break;
+        }
+      }
+      if (hit) break;
+    }
+    if (hit) out.push_back(static_cast<int>(i));
+  }
+  return out;
+}
+
+namespace {
+std::vector<int> StepFaceSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step, bool grow) {
+  const Soup s = ToSoup(mesh);
+  std::vector<char> in(s.f.size(), 0);
+  for (int fi : selected) {
+    CheckFaceIndex(s, fi, "face selection");
+    in[static_cast<size_t>(fi)] = 1;
+  }
+  // neighbours of each face: through a shared vertex (face step) or a shared edge
+  std::vector<std::set<int>> nb(s.f.size());
+  if (face_step) {
+    std::vector<std::vector<int>> around(s.p.size());
+    for (size_t fi = 0; fi < s.f.size(); ++fi)
+      for (int v : s.f[fi]) around[static_cast<size_t>(v)].push_back(static_cast<int>(fi));
+    for (const auto& faces : around)
+      for (int a : faces)
+        for (int b : faces)
+          if (a != b) nb[static_cast<size_t>(a)].insert(b);
+  } else {
+    for (const auto& [edge, fl] : EdgeFaces(s)) {
+      (void)edge;
+      for (int a : fl)
+        for (int b : fl)
+          if (a != b) nb[static_cast<size_t>(a)].insert(b);
+    }
+  }
+  std::vector<char> out = in;
+  for (size_t fi = 0; fi < s.f.size(); ++fi) {
+    if (grow && in[fi]) {
+      for (int w : nb[fi]) out[static_cast<size_t>(w)] = 1;
+    } else if (!grow && in[fi]) {
+      for (int w : nb[fi])
+        if (!in[static_cast<size_t>(w)]) out[fi] = 0;
+    }
+  }
+  std::vector<int> result;
+  for (size_t i = 0; i < out.size(); ++i)
+    if (out[i]) result.push_back(static_cast<int>(i));
+  return result;
+}
+}  // namespace
+
+std::vector<int> GrowFaceSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step) { return StepFaceSelection(mesh, selected, face_step, true); }
+std::vector<int> ShrinkFaceSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step) { return StepFaceSelection(mesh, selected, face_step, false); }
+
+std::vector<int> LinkedFaces(const Mesh& mesh, int seed_face) {
+  const Soup s = ToSoup(mesh);
+  CheckFaceIndex(s, seed_face, "LinkedFaces");
+  const auto ef = EdgeFaces(s);
+  std::vector<char> seen(s.f.size(), 0);
+  std::vector<int> stack{seed_face};
+  seen[static_cast<size_t>(seed_face)] = 1;
+  while (!stack.empty()) {
+    const int fi = stack.back();
+    stack.pop_back();
+    const auto& poly = s.f[static_cast<size_t>(fi)];
+    for (size_t k = 0; k < poly.size(); ++k)
+      for (int other : ef.at(Key(poly[k], poly[(k + 1) % poly.size()])))
+        if (!seen[static_cast<size_t>(other)]) {
+          seen[static_cast<size_t>(other)] = 1;
+          stack.push_back(other);
+        }
+  }
+  std::vector<int> out;
+  for (size_t i = 0; i < seen.size(); ++i)
+    if (seen[i]) out.push_back(static_cast<int>(i));
+  return out;
+}
+
+Mesh ExtractFaces(const Mesh& mesh, const std::vector<int>& faces, double thickness) {
+  Soup s = ToSoup(mesh);
+  if (faces.empty()) throw std::invalid_argument("dino8::kernel::ExtractFaces: no faces");
+  if (!(thickness >= 0.0) || !std::isfinite(thickness)) throw std::invalid_argument("dino8::kernel::ExtractFaces: thickness must be finite and >= 0");
+  std::set<int> sel;
+  for (int fi : faces) {
+    CheckFaceIndex(s, fi, "ExtractFaces");
+    sel.insert(fi);
+  }
+  std::vector<std::vector<int>> kept;
+  for (int fi : sel) kept.push_back(s.f[static_cast<size_t>(fi)]);
+  s.f = kept;
+  Mesh patch = FromSoup(s);
+  return thickness > 0.0 ? patch.Thicken(thickness) : patch;
+}
+
+std::vector<int> FacesInSet(const std::vector<int>& face_sets, int set_id) {
+  std::vector<int> out;
+  for (size_t i = 0; i < face_sets.size(); ++i)
+    if (face_sets[i] == set_id) out.push_back(static_cast<int>(i));
+  return out;
+}
+
+std::vector<int> FacesAboveMask(const Mesh& mesh, const std::vector<float>& vertex_mask, float threshold) {
+  const Soup s = ToSoup(mesh);
+  if (vertex_mask.size() != s.p.size()) throw std::invalid_argument("dino8::kernel::FacesAboveMask: one mask value per vertex is required");
+  std::vector<int> out;
+  for (size_t i = 0; i < s.f.size(); ++i) {
+    bool all = true;
+    for (int v : s.f[i]) all = all && vertex_mask[static_cast<size_t>(v)] > threshold;
+    if (all) out.push_back(static_cast<int>(i));
+  }
+  return out;
+}
+
+Mesh TrimMeshByPlane(const Mesh& mesh, Point3d point, Vector3d normal) { return BisectMesh(mesh, point, normal, true, false, true); }
+
+Mesh TrimMeshByBox(const Mesh& mesh, Point3d lo, Point3d hi) {
+  if (!(hi.x > lo.x && hi.y > lo.y && hi.z > lo.z)) throw std::invalid_argument("dino8::kernel::TrimMeshByBox: the box must have a positive size on every axis");
+  Mesh box = MakeCubeMesh(1.0);
+  ON_Xform scale = ON_Xform::DiagonalTransformation(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z);
+  ON_Xform move = ON_Xform::TranslationTransformation((hi.x + lo.x) / 2, (hi.y + lo.y) / 2, (hi.z + lo.z) / 2);
+  return BooleanCombine(mesh, box.Transform(move * scale), BooleanOp::Difference);
+}
+
+Mesh InflateMesh(const Mesh& mesh, double strength) {
+  Soup s = ToSoup(mesh);
+  const std::vector<Vector3d> normals = mesh.ComputeVertexNormals();
+  for (size_t v = 0; v < s.p.size() && v < normals.size(); ++v) s.p[v] = s.p[v] + normals[v] * strength;
+  return FromSoup(s);
+}
+
+std::vector<Point2d> AverageUvIslandScales(const Mesh& mesh, const std::vector<Point2d>& uvs) {
+  const Soup s = ToSoup(mesh);
+  if (uvs.size() != s.p.size()) throw std::invalid_argument("dino8::kernel::AverageUvIslandScales: one UV per vertex is required");
+  Dsu dsu(s.p.size());
+  for (const auto& poly : s.f)
+    for (size_t k = 1; k < poly.size(); ++k) dsu.Union(poly[0], poly[k]);
+  struct Island { double a3 = 0, auv = 0; double cx = 0, cy = 0; int n = 0; };
+  std::map<int, Island> islands;
+  std::vector<char> used(s.p.size(), 0);
+  for (const auto& poly : s.f) {
+    Island& is = islands[dsu.Find(poly[0])];
+    is.a3 += Newell(s, poly).Length() / 2.0;
+    double a = 0;
+    for (size_t k = 0; k < poly.size(); ++k) {
+      const Point2d& p = uvs[static_cast<size_t>(poly[k])];
+      const Point2d& q = uvs[static_cast<size_t>(poly[(k + 1) % poly.size()])];
+      a += p.x * q.y - q.x * p.y;
+    }
+    is.auv += std::abs(a) / 2.0;
+    for (int v : poly) used[static_cast<size_t>(v)] = 1;
+  }
+  double total3 = 0, totaluv = 0;
+  for (auto& [root, is] : islands) {
+    (void)root;
+    total3 += is.a3;
+    totaluv += is.auv;
+  }
+  for (size_t v = 0; v < s.p.size(); ++v)
+    if (used[v]) {
+      Island& is = islands[dsu.Find(static_cast<int>(v))];
+      is.cx += uvs[v].x;
+      is.cy += uvs[v].y;
+      ++is.n;
+    }
+  std::vector<Point2d> out = uvs;
+  if (!(total3 > 0.0) || !(totaluv > 0.0)) return out;
+  const double density = totaluv / total3;
+  for (size_t v = 0; v < s.p.size(); ++v) {
+    if (!used[v]) continue;
+    const Island& is = islands[dsu.Find(static_cast<int>(v))];
+    if (!(is.a3 > 0.0) || !(is.auv > 0.0)) continue;
+    const double f = std::sqrt(density * is.a3 / is.auv);
+    const double cx = is.cx / is.n, cy = is.cy / is.n;
+    out[v] = Point2d(cx + (uvs[v].x - cx) * f, cy + (uvs[v].y - cy) * f);
+  }
+  return out;
 }
 
 }  // namespace dino8::kernel
