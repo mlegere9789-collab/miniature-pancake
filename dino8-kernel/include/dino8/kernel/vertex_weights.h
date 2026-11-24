@@ -80,10 +80,6 @@ std::vector<float> ProximityWeightsToMesh(const Mesh& mesh, const Mesh& target_s
 enum class GradientKind { Linear, Radial };
 std::vector<float> GradientWeights(const Mesh& mesh, Point3d start, Point3d end, float start_weight, float end_weight, GradientKind kind);
 
-// Copy Vertex Groups to Selected: a copy of `source` for another mesh with `vertex_count` vertices; throws std::invalid_argument when
-// the vertex counts differ (the groups only make sense on the same vertex order).
-VertexGroupSet CopyVertexGroups(const VertexGroupSet& source, int vertex_count);
-
 // Sculpt mask operators on one value (0..1) per vertex.
 // Mask Flood Fill: Value sets every vertex to `value`, ValueInverse to 1 - value, Invert replaces m by 1 - m.
 enum class MaskFill { Value, ValueInverse, Invert };

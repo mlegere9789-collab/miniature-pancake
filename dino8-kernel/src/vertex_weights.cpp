@@ -217,11 +217,6 @@ std::vector<float> GradientWeights(const Mesh& mesh, Point3d start, Point3d end,
   return out;
 }
 
-VertexGroupSet CopyVertexGroups(const VertexGroupSet& source, int vertex_count) {
-  if (vertex_count != source.VertexCount()) throw std::invalid_argument("dino8::kernel::CopyVertexGroups: the vertex counts differ");
-  return source;
-}
-
 std::vector<float> FloodFillMask(const std::vector<float>& mask, MaskFill mode, float value) {
   std::vector<float> out(mask.size());
   for (size_t i = 0; i < mask.size(); ++i)
