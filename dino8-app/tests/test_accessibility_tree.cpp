@@ -823,8 +823,8 @@ int main() {
   // HatchLibrary::Instance().Patterns() (see BuildHatchPatternsNode).
   {
     std::vector<HatchPatternSummary> patterns;
-    patterns.push_back({"ANSI31", "ANSI Iron, Brick, Stone masonry"});
-    patterns.push_back({"HONEY", "Honeycomb pattern"});
+    patterns.push_back({"ANSI31", "ANSI 31: 45-degree parallel lines"});
+    patterns.push_back({"HONEY", "Hexagonal cells"});
     const dino8::platform::AccessibleNode list = BuildHatchPatternsNode(patterns);
     Check(list.name == "Hatch Patterns", "hatch patterns list is named \"Hatch Patterns\"");
     Check(list.role == dino8::platform::AccessibleRole::List, "hatch patterns list role is List");
@@ -833,7 +833,7 @@ int main() {
     if (list.children.size() == 2) {
       Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "hatch row role is ListItem");
       Check(list.children[0].name == "ANSI31", "first row names the pattern");
-      Check(list.children[0].description == "ANSI Iron, Brick, Stone masonry",
+      Check(list.children[0].description == "ANSI 31: 45-degree parallel lines",
             "first row's own description text is its Description");
       Check(list.children[1].name == "HONEY", "second row names its own pattern");
     }

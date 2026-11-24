@@ -532,7 +532,7 @@ AccessibleNode BuildRedoHistoryNode(const std::vector<std::string>& labels);
 // to plain data the same way the summaries above keep this module
 // independent of its owning subsystem): the pattern's name and its own
 // human-readable description text (HatchPattern::description, e.g. "ANSI
-// Iron, Brick, Stone masonry" - already plain text parsed straight out of
+// 31: 45-degree parallel lines" - already plain text parsed straight out of
 // the .pat file, unlike Linetypes' dash array which BuildLinetypesNode has
 // to render into text itself).
 struct HatchPatternSummary {
