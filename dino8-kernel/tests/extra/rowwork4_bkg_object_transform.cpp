@@ -302,3 +302,73 @@ D8_EXTRA_TEST(RowBkgSurfaceCircleIsTheExactDisc) {
   for (int i = 0; i <= 12; ++i) on_plane = std::max(on_plane, std::fabs(tilted.PointAt(tilted.Domain(0).min + (tilted.Domain(0).max - tilted.Domain(0).min) * i / 12.0, 0.0).x));
   d8test::Check(on_plane < 1e-12, "a disc with normal x lies in the plane x = 0");
 }
+
+namespace {
+
+// A 4 x 4 matrix written out entry by entry: the upper 3 x 3 given row by row, the translation (tx, ty, tz) in the last column.
+ON_Xform Mat(const double (&a)[9], double tx, double ty, double tz) {
+  ON_Xform m = ON_Xform::IdentityTransformation;
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) m[i][j] = a[3 * i + j];
+  m[0][3] = tx;
+  m[1][3] = ty;
+  m[2][3] = tz;
+  return m;
+}
+
+double MaxEntryDiff(const ON_Xform& a, const ON_Xform& b) {
+  double d = 0.0;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) d = std::max(d, std::fabs(a[i][j] - b[i][j]));
+  return d;
+}
+
+}  // namespace
+
+// OBJECT-0162 Clear Rotation and OBJECT-0163 Clear Scale on MIRRORED matrices. Both rows require that the data that is not cleared is left untouched, so
+// a mirror (a negative scale, determinant -1) must survive Clear Rotation and the rotation must survive Clear Scale. The convention (a mirror has no unique
+// split into rotation and scale) is: the reflection is carried by the scale, on the axis or axes that leave the smallest rotation. Expected matrices, written out by hand
+// from c = cos 0.3, s = sin 0.3, c5 = cos 0.5, s5 = sin 0.5:
+//   diag(-1,1,1)                 Clear Rotation -> diag(-1,1,1)          Clear Scale -> identity
+//   Rz(0.3) diag(-1,1,1) = [[-c,-s,0],[-s,c,0],[0,0,1]]   Clear Rotation -> diag(-1,1,1)   Clear Scale -> Rz(0.3) = [[c,-s,0],[s,c,0],[0,0,1]]
+//   diag(1,-1,1) -> unchanged / identity;  diag(1,1,-1) + (1,2,3) -> unchanged / identity + (1,2,3);  -I (point inversion) -> -I / identity
+//   Rz(0.3) diag(-2,3,0.5) + (1,2,3) -> diag(-2,3,0.5) + (1,2,3) / Rz(0.3) + (1,2,3)
+//   Rx(0.5) diag(1,1,-1) = [[1,0,0],[0,c5,s5],[0,s5,-c5]]   Clear Rotation -> diag(1,1,-1)   Clear Scale -> Rx(0.5) = [[1,0,0],[0,c5,-s5],[0,s5,c5]]
+// All sixteen entries agree to 1e-12. Clear Location keeps the whole upper 3 x 3. The convention is this implementation's own choice (recalled, needs owner
+// check against what the application does with a negative scale channel): it is stated, not read from the vendor manual.
+D8_EXTRA_TEST(RowBkgClearRotationAndScaleOnAMirroredMatrixKeepTheMirrorAndTheRotation) {
+  const double c = std::cos(0.3), s = std::sin(0.3), c5 = std::cos(0.5), s5 = std::sin(0.5);
+  struct Case {
+    const char* name;
+    ON_Xform input, clear_rotation, clear_scale;
+  };
+  const double ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const double mx[9] = {-1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const double my[9] = {1, 0, 0, 0, -1, 0, 0, 0, 1};
+  const double mz[9] = {1, 0, 0, 0, 1, 0, 0, 0, -1};
+  const double inv[9] = {-1, 0, 0, 0, -1, 0, 0, 0, -1};
+  const double rz_mx[9] = {-c, -s, 0, -s, c, 0, 0, 0, 1};
+  const double rz[9] = {c, -s, 0, s, c, 0, 0, 0, 1};
+  const double rz_scaled[9] = {-2 * c, -3 * s, 0, -2 * s, 3 * c, 0, 0, 0, 0.5};  // Rz(0.3) diag(-2,3,0.5): column j is s_j times column j of Rz
+  const double scale_only[9] = {-2, 0, 0, 0, 3, 0, 0, 0, 0.5};
+  const double rx_mz[9] = {1, 0, 0, 0, c5, s5, 0, s5, -c5};
+  const double rx[9] = {1, 0, 0, 0, c5, -s5, 0, s5, c5};
+  const std::vector<Case> cases = {
+      {"diag(-1,1,1)", Mat(mx, 0, 0, 0), Mat(mx, 0, 0, 0), Mat(ident, 0, 0, 0)},
+      {"Rz(0.3) diag(-1,1,1)", Mat(rz_mx, 0, 0, 0), Mat(mx, 0, 0, 0), Mat(rz, 0, 0, 0)},
+      {"diag(1,-1,1)", Mat(my, 0, 0, 0), Mat(my, 0, 0, 0), Mat(ident, 0, 0, 0)},
+      {"diag(1,1,-1) + t", Mat(mz, 1, 2, 3), Mat(mz, 1, 2, 3), Mat(ident, 1, 2, 3)},
+      {"-I", Mat(inv, 0, 0, 0), Mat(inv, 0, 0, 0), Mat(ident, 0, 0, 0)},
+      {"Rz(0.3) diag(-2,3,0.5) + t", Mat(rz_scaled, 1, 2, 3), Mat(scale_only, 1, 2, 3), Mat(rz, 1, 2, 3)},
+      {"Rx(0.5) diag(1,1,-1)", Mat(rx_mz, 0, 0, 0), Mat(mz, 0, 0, 0), Mat(rx, 0, 0, 0)},
+  };
+  for (const Case& cs : cases) {
+    d8test::Check(MaxEntryDiff(k::ClearRotation(cs.input), cs.clear_rotation) < 1e-12, (std::string("Clear Rotation keeps the mirror and the scale: ") + cs.name).c_str());
+    d8test::Check(MaxEntryDiff(k::ClearScale(cs.input), cs.clear_scale) < 1e-12, (std::string("Clear Scale keeps the rotation and the location: ") + cs.name).c_str());
+    k::TrsParts p;
+    d8test::Check(k::DecomposeTrs(cs.input, p) && MaxEntryDiff(k::ComposeTrs(p), cs.input) < 1e-12, (std::string("the parts compose back to the input: ") + cs.name).c_str());
+  }
+  // Clear Location keeps the whole upper 3 x 3 of a mirrored matrix and drops only the translation.
+  const ON_Xform no_loc = k::ClearLocation(Mat(rz_mx, 4, 5, 6));
+  d8test::Check(MaxEntryDiff(no_loc, Mat(rz_mx, 0, 0, 0)) < 1e-12, "Clear Location on a mirror keeps the upper 3 x 3");
+}
