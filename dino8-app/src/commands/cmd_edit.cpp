@@ -781,6 +781,10 @@ std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel:
 
 void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Delete", OnSelection("Select objects to delete", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        // Selected control points / faces / vertices of the selected objects: delete those sub-objects, not the whole objects.
+        for (const SubObjectRef& r : ctx.App().SubSelection().Items()) {
+          if (std::find(ids.begin(), ids.end(), r.id) != ids.end()) { ctx.App().DeleteSubObjectSelection(); return; }
+        }
         ctx.Doc().BeginChange("Delete");
         ctx.App().State().last_erased.clear();  // Oops brings back exactly the objects of the most recent Delete
         if (ids.size() <= 20000) {  // a bulk delete of more objects than that is not kept for Oops (the copies would double the memory)
