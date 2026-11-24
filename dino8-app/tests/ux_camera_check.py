@@ -43,29 +43,37 @@ def report(label, ok, detail=""):
         failed += 1
 
 
-def fov_of(lens):  # horizontal field of view of a lens on the 36 mm film width, degrees
-    return 2 * math.degrees(math.atan(18.0 / lens))
-
-
-# ZoomLens (VIEW-0057): the lens and the field of view printed together obey fov = 2 atan(18 / lens)
+# ZoomLens (VIEW-0057), checked WITHOUT assuming a film size: for a pinhole camera tan(half field of view) = film half-size / lens, so doubling the lens
+# halves the tangent whatever the film is. The three lenses 24, 48, 96 therefore give tangent ratios of exactly 2 and 2, and lens * tan(half angle) is one
+# constant (the implied film half-size, reported below but not asserted to be any particular number: the app uses 18 mm on the vertical, openNURBS' 35 mm
+# lens uses 12 mm on the short side, see the row notes).
 c = cams("lens")
 ok = len(c) == 3 and all("lens" in x for x in c)
-report("UXCAM_ZoomLens: three Camera reports of the perspective viewport", ok, "got %d" % len(c))
+report("UXCAM_ZoomLens: three Camera reports (lens 24, 48, 96)", ok, "got %d" % len(c))
 if ok:
-    for want, x in zip((None, 70.0, 24.0), c):
-        if want is not None:
-            report("UXCAM_ZoomLens: ZoomLens %g reports lens %g mm" % (want, want), near(x["lens"], want), "lens %g" % x["lens"])
-        report("UXCAM_ZoomLens: lens %g mm gives field of view %.2f degrees (2 atan(18/lens))" % (x["lens"], fov_of(x["lens"])),
-               abs(x["fov"] - fov_of(x["lens"])) <= 0.06, "printed %g" % x["fov"])
+    for want, x in zip((24.0, 48.0, 96.0), c):
+        report("UXCAM_ZoomLens: ZoomLens %g reports lens %g mm" % (want, want), near(x["lens"], want), "lens %g" % x["lens"])
+    t = [math.tan(math.radians(x["fov"]) / 2.0) for x in c]
+    report("UXCAM_ZoomLens: doubling the lens halves tan(fov/2) (ratios %.4f and %.4f, both 2)" % (t[0] / t[1], t[1] / t[2]),
+           abs(t[0] / t[1] - 2.0) <= 0.006 and abs(t[1] / t[2] - 2.0) <= 0.006, "tangents %s" % (t,))
+    film = [x["lens"] * ti for x, ti in zip(c, t)]
+    report("UXCAM_ZoomLens: lens * tan(fov/2) is one constant (implied film half-size %.2f mm at every lens)" % film[1],
+           max(film) - min(film) <= 0.004 * film[1], "films %s" % (film,))
 
-# PerspectiveAngle (VIEW-0047): a 40 degree angle needs lens 18 / tan(20 degrees) = 49.4546 mm
+# PerspectiveAngle (VIEW-0047): the angle typed is the angle the Camera report gives back, and the lens it sets follows lens = k / tan(angle/2) for one
+# constant k, so lens(60 degrees) / lens(90) = tan 45 / tan 30 = sqrt 3 and lens(90) / lens(120) = tan 60 / tan 45 = sqrt 3.
 c = cams("angle")
-ok = len(c) == 1 and "lens" in c[0]
-report("UXCAM_PerspectiveAngle: one Camera report", ok, "got %d" % len(c))
+lines = re.findall(r"Perspective angle (%s) deg \(lens (%s) mm\)" % (NUM, NUM), block("angle"))
+ok = len(c) == 3 and len(lines) == 3 and all("lens" in x for x in c)
+report("UXCAM_PerspectiveAngle: three PerspectiveAngle reports and three Camera reports (60, 90, 120 degrees)", ok, "got %d camera, %d angle lines" % (len(c), len(lines)))
 if ok:
-    want = 18.0 / math.tan(math.radians(20.0))
-    report("UXCAM_PerspectiveAngle: 40 degrees gives lens %.4f mm" % want, abs(c[0]["lens"] - want) <= 0.02, "lens %g" % c[0]["lens"])
-    report("UXCAM_PerspectiveAngle: the reported angle is 40", abs(c[0]["fov"] - 40.0) <= 0.06, "angle %g" % c[0]["fov"])
+    for want, x, (a, l) in zip((60.0, 90.0, 120.0), c, lines):
+        report("UXCAM_PerspectiveAngle: %g degrees is reported back as %g degrees (lens %g mm)" % (want, x["fov"], x["lens"]),
+               abs(float(a) - want) <= 0.06 and abs(x["fov"] - want) <= 0.06 and near(x["lens"], float(l)), "typed %g, printed %s, camera %g, lens %s / %g" % (want, a, x["fov"], l, x["lens"]))
+    lens = [float(l) for _, l in lines]
+    root3 = math.sqrt(3.0)
+    report("UXCAM_PerspectiveAngle: lens ratios %.4f and %.4f are sqrt 3 = %.4f" % (lens[0] / lens[1], lens[1] / lens[2], root3),
+           abs(lens[0] / lens[1] - root3) <= 0.006 and abs(lens[1] / lens[2] - root3) <= 0.006, "lenses %s" % (lens,))
 
 # DollyZoom (VIEW-0011): the subject keeps its size, so the distance is proportional to the lens (d1 / d0 = L1 / L0) and the camera stays on its ray
 c = cams("dolly")

@@ -891,30 +891,55 @@ Vector3d FaceNewell(const ON_Mesh& m, const std::vector<int>& v) {
 }
 }  // namespace
 
+MeshFaceMeasure MeasurePolygon(const std::vector<Point3d>& corners, double pull_x, double pull_y, double pull_z) {
+  MeshFaceMeasure f;
+  double al = std::sqrt(pull_x * pull_x + pull_y * pull_y + pull_z * pull_z);
+  if (al <= 0) { pull_x = pull_y = 0; pull_z = 1; al = 1; }
+  if (corners.size() < 3) return f;
+  f.min_edge = 1e300;
+  for (size_t k = 0; k < corners.size(); ++k) {
+    const double len = corners[k].DistanceTo(corners[(k + 1) % corners.size()]);
+    f.min_edge = std::min(f.min_edge, len);
+    f.max_edge = std::max(f.max_edge, len);
+  }
+  Vector3d n(0, 0, 0);
+  for (size_t k = 1; k + 1 < corners.size(); ++k) {
+    const Vector3d a = corners[k] - corners[0], b = corners[k + 1] - corners[0];
+    n = n + Vector3d(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+  }
+  const double nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+  f.area = 0.5 * nl;
+  if (nl > 0) {
+    const double c = std::min(1.0, std::fabs(n.x * pull_x + n.y * pull_y + n.z * pull_z) / (nl * al));
+    f.draft_degrees = std::asin(c) * 180.0 / 3.14159265358979323846;
+  }
+  return f;
+}
+
+bool FaceMeasureInRange(FaceMeasureKind kind, const MeshFaceMeasure& f, double lo, double hi) {
+  const double eps = 1e-9;
+  switch (kind) {
+    case FaceMeasureKind::Area: return f.area >= lo - eps && f.area <= hi + eps;
+    case FaceMeasureKind::AspectRatio: {
+      const double ratio = f.min_edge > 0 ? f.max_edge / f.min_edge : 1e300;
+      return ratio >= lo - eps && ratio <= hi + eps;
+    }
+    case FaceMeasureKind::EdgeLength: return f.min_edge >= lo - eps && f.max_edge <= hi + eps;
+    case FaceMeasureKind::DraftAngle: return f.draft_degrees >= lo - eps && f.draft_degrees <= hi + eps;
+  }
+  return false;
+}
+
 std::vector<MeshFaceMeasure> MeshFaceMeasures(const SceneObject& o, double pull_x, double pull_y, double pull_z) {
   std::vector<MeshFaceMeasure> out;
   kernel::Mesh scratch;
   const ON_Mesh* m = TopologyMesh(o, scratch);
   if (!m) return out;
-  double al = std::sqrt(pull_x * pull_x + pull_y * pull_y + pull_z * pull_z);
-  if (al <= 0) { pull_x = pull_y = 0; pull_z = 1; al = 1; }
   for (int fi = 0; fi < m->m_F.Count(); ++fi) {
-    const std::vector<int> v = FaceVertices(m->m_F[fi]);
-    MeshFaceMeasure f;
+    std::vector<Point3d> corners;
+    for (int vi : FaceVertices(m->m_F[fi])) corners.push_back(MeshVertex(*m, vi));
+    MeshFaceMeasure f = MeasurePolygon(corners, pull_x, pull_y, pull_z);
     f.face = fi;
-    f.min_edge = 1e300;
-    for (size_t k = 0; k < v.size(); ++k) {
-      const double len = MeshVertex(*m, v[k]).DistanceTo(MeshVertex(*m, v[(k + 1) % v.size()]));
-      f.min_edge = std::min(f.min_edge, len);
-      f.max_edge = std::max(f.max_edge, len);
-    }
-    const Vector3d n = FaceNewell(*m, v);
-    const double nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
-    f.area = 0.5 * nl;
-    if (nl > 0) {
-      const double c = std::min(1.0, std::fabs(n.x * pull_x + n.y * pull_y + n.z * pull_z) / (nl * al));
-      f.draft_degrees = std::asin(c) * 180.0 / 3.14159265358979323846;
-    }
     out.push_back(f);
   }
   return out;

@@ -595,10 +595,8 @@ void RegisterSelect2Commands(CommandEngine& e) {
         auto& objs = ctx.Doc().Objects();
         int n = 0;
         for (size_t i = 0; i < objs.size(); ++i) for (size_t j = i + 1; j < objs.size(); ++j) {
-          if (objs[i].kind != objs[j].kind || PointCount(objs[i]) != PointCount(objs[j])) continue;
-          kernel::BoundingBox a = objs[i].BoundingBox(), b = objs[j].BoundingBox();
-          if ((a.min - b.min).Length() > tol || (a.max - b.max).Length() > tol) continue;
           if (!Selectable(ctx, objs[i]) || !Selectable(ctx, objs[j])) continue;
+          if (!SameGeometry(objs[i], objs[j], tol)) continue;
           if (!objs[i].selected) { objs[i].selected = true; ++n; }
           if (!objs[j].selected) { objs[j].selected = true; ++n; }
         }
@@ -864,13 +862,15 @@ void RegisterSelect2Commands(CommandEngine& e) {
         else ReportSub(ctx, "SelMeshEdges", added);
       }), CommandStatus::Implemented, "SelMeshEdges [angle]: selects every edge of the selected meshes / SubDs, or with an angle in degrees only the interior edges whose two faces' normals differ by at least that angle.");
   // SelMeshFacesBy*: faces of the selected meshes / SubDs chosen by a measure; the faces are added to the sub-object selection and one line reports how
-  // many matched (independent of what was selected before) and how many faces are selected in all.
-  //   SelMeshFacesByArea min [max]        area in [min, max] (max defaults to unlimited)
-  //   SelMeshFacesByAspectRatio limit     longest side / shortest side greater than limit
-  //   SelMeshFacesByEdgeLength min [max]  every side of the face in [min, max]
-  //   SelMeshFacesByDraftAngle min [max]  angle between the face plane and the CPlane Z axis in [min, max] degrees (max defaults to 90)
-  auto face_select = [](const char* name, size_t min_args, size_t max_args, double default_max, std::function<bool(const MeshFaceMeasure&, double, double)> pred) {
-    return Immediate([name, min_args, max_args, default_max, pred](CommandContext& ctx) {
+  // many matched (independent of what was selected before) and how many faces are selected in all. The measures and the range test are shared with
+  // ExtractMeshFacesBy* (doc/SubObjectEdit.h: MeasurePolygon, FaceMeasureInRange), so the two families agree on what a measure means:
+  //   SelMeshFacesByArea min [max]         area in [min, max]
+  //   SelMeshFacesByAspectRatio min [max]  longest side / shortest side in [min, max]
+  //   SelMeshFacesByEdgeLength min [max]   every side of the face in [min, max]
+  //   SelMeshFacesByDraftAngle min [max]   angle between the face plane and the CPlane Z axis in [min, max] degrees (0 = a wall parallel to Z, 90 = square to it)
+  // max defaults to unlimited, except for the draft angle where it is 90.
+  auto face_select = [](const char* name, FaceMeasureKind kind, double default_max) {
+    return Immediate([name, kind, default_max](CommandContext& ctx) {
       std::vector<double> nums;
       while (auto tok = ctx.Engine().TakePendingInput()) {
         char* end = nullptr;
@@ -878,10 +878,7 @@ void RegisterSelect2Commands(CommandEngine& e) {
         if (end == tok->c_str() || *end) { ctx.Warn(std::string(name) + ": expected a number, got '" + *tok + "'"); return; }
         nums.push_back(v);
       }
-      if (nums.size() < min_args || nums.size() > max_args) {
-        ctx.Warn(std::string(name) + ": expected " + (min_args == max_args ? std::to_string(min_args) : std::to_string(min_args) + " or " + std::to_string(max_args)) + " number(s), got " + std::to_string(nums.size()));
-        return;
-      }
+      if (nums.empty() || nums.size() > 2) { ctx.Warn(std::string(name) + ": expected 1 or 2 number(s), got " + std::to_string(nums.size())); return; }
       const double lo = nums[0], hi = nums.size() > 1 ? nums[1] : default_max;
       const ON_3dVector pull = ActiveNormal(ctx);
       size_t matching = 0;
@@ -889,20 +886,19 @@ void RegisterSelect2Commands(CommandEngine& e) {
       for (const SceneObject& o : ctx.Doc().Objects()) {
         if (!o.selected || (o.kind != ObjectKind::Mesh && o.kind != ObjectKind::SubD)) continue;
         ++objs;
-        for (const MeshFaceMeasure& f : MeshFaceMeasures(o, pull.x, pull.y, pull.z)) if (pred(f, lo, hi)) { ++matching; Sub(ctx).Add(SubObjectRef::Face(o.id, f.face)); }
+        for (const MeshFaceMeasure& f : MeshFaceMeasures(o, pull.x, pull.y, pull.z)) if (FaceMeasureInRange(kind, f, lo, hi)) { ++matching; Sub(ctx).Add(SubObjectRef::Face(o.id, f.face)); }
       }
       if (objs == 0) ctx.Warn(std::string(name) + ": select meshes or SubDs first");
       else ctx.Print(std::string(name) + ": " + std::to_string(matching) + " matching face(s), " + std::to_string(Sub(ctx).CountOf(SubObjectKind::Face)) + " face(s) selected");
     });
   };
-  const double kEps = 1e-9;
-  Reg(e, "SelMeshFacesByArea", face_select("SelMeshFacesByArea", 1, 2, 1e300, [kEps](const MeshFaceMeasure& f, double lo, double hi) { return f.area >= lo - kEps && f.area <= hi + kEps; }),
+  Reg(e, "SelMeshFacesByArea", face_select("SelMeshFacesByArea", FaceMeasureKind::Area, 1e300),
       CommandStatus::Implemented, "SelMeshFacesByArea min [max]: adds the faces of the selected meshes / SubDs whose area is in [min, max] to the sub-object selection.");
-  Reg(e, "SelMeshFacesByAspectRatio", face_select("SelMeshFacesByAspectRatio", 1, 1, 0, [kEps](const MeshFaceMeasure& f, double lo, double) { return f.min_edge > 0 ? f.max_edge / f.min_edge > lo + kEps : true; }),
-      CommandStatus::Implemented, "SelMeshFacesByAspectRatio limit: adds the faces whose longest side divided by the shortest side is greater than the limit.");
-  Reg(e, "SelMeshFacesByEdgeLength", face_select("SelMeshFacesByEdgeLength", 1, 2, 1e300, [kEps](const MeshFaceMeasure& f, double lo, double hi) { return f.min_edge >= lo - kEps && f.max_edge <= hi + kEps; }),
+  Reg(e, "SelMeshFacesByAspectRatio", face_select("SelMeshFacesByAspectRatio", FaceMeasureKind::AspectRatio, 1e300),
+      CommandStatus::Implemented, "SelMeshFacesByAspectRatio min [max]: adds the faces whose longest side divided by the shortest side is in [min, max].");
+  Reg(e, "SelMeshFacesByEdgeLength", face_select("SelMeshFacesByEdgeLength", FaceMeasureKind::EdgeLength, 1e300),
       CommandStatus::Implemented, "SelMeshFacesByEdgeLength min [max]: adds the faces whose every side is within [min, max].");
-  Reg(e, "SelMeshFacesByDraftAngle", face_select("SelMeshFacesByDraftAngle", 1, 2, 90.0, [kEps](const MeshFaceMeasure& f, double lo, double hi) { return f.draft_degrees >= lo - kEps && f.draft_degrees <= hi + kEps; }),
+  Reg(e, "SelMeshFacesByDraftAngle", face_select("SelMeshFacesByDraftAngle", FaceMeasureKind::DraftAngle, 90.0),
       CommandStatus::Implemented, "SelMeshFacesByDraftAngle min [max]: adds the faces whose plane makes an angle in [min, max] degrees with the construction plane Z axis (0 = a wall parallel to Z, 90 = a face square to it).");
   Reg(e, "SelSubDEdges", [] {
         return std::make_unique<SelSubDByTypeCommand>(
