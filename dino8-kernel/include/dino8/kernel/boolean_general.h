@@ -177,6 +177,13 @@ namespace dino8::kernel {
 // "reassemble" without risking the correctness this file's many other
 // disclosed fixes already depend on. A real, disclosed scope limit, not an
 // oversight - see PARITY_MAP.md's "Non-manifold boolean results" bullet.
+//
+// Coaxial cylinders whose walls are within two tolerances of each other (a 1 / 1.001 pair, 0.001 apart): two solid right circular cylinders on one
+// axis cross-section the same way at every angle, so the engine's own result is kept when SealGeneralBooleanResult can close it, and otherwise the
+// Boolean of the two cross-section rectangles in the (radius, height) half-plane is revolved - exact, with no intersection curve (a plain cylinder for
+// one disk-profile piece, the revolve of the stepped profile for a stepped piece, a Compound for separate pieces). A Difference that leaves a ring
+// (the tool narrower than the target over their shared heights) is not covered and keeps the engine's behaviour. Pairs with radii further apart than
+// two tolerances never take this path.
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001,
                             bool allow_non_manifold_result = false);
 
@@ -2014,7 +2021,10 @@ int OpenSewnKeyholes(Brep& brep);
 // snapped to their midpoint (as OpenSewnKeyholes() snaps the ends next to a slit); the merged vertex and the two
 // neighbour edges record the resulting gap as their tolerance. Longer naked edges are never touched (they stay naked,
 // so a genuine opening is still refused as not solid), and a sliver whose neighbours are more than 3 * tolerance
-// apart on the surface is skipped. Returns the number collapsed.
+// apart on the surface is skipped. Exception: a sliver lying on a SINGULAR side of its face (a sphere's pole line, every u of which is one 3D
+// point) between neighbours that reach the pole at different u: dragging both to their 2D midpoint would turn the seam trim leaving the pole into a
+// diagonal (ON_Brep::IsValid(): m_type = seam but m_iso is not N/E/W/S_iso), so the neighbours keep their own u, are clamped onto the pole line, and
+// the sliver becomes the singular trim bridging them (no edge, both ends the merged vertex). Returns the number collapsed.
 int CollapseSliverNakedEdges(Brep& brep, double tolerance);
 
 // The structured account of the one edge BooleanCombineGeneral's reassembly refused to build because a third fragment loop claimed it
