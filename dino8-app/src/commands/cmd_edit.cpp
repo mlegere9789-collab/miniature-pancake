@@ -802,7 +802,7 @@ void RegisterEditCommands(CommandEngine& e) {
         ctx.Doc().BeginChange("Delete");
         ctx.App().State().last_erased.clear();  // Oops brings back exactly the objects of the most recent Delete
         if (ids.size() <= 20000) {  // a bulk delete of more objects than that is not kept for Oops (the copies would double the memory)
-          for (const SceneObject* o : ctx.Doc().FindMany(ids)) if (o) ctx.App().State().last_erased.push_back(*o);
+          for (const SceneObject* o : ctx.Doc().FindMany(ids)) if (o) ctx.App().State().last_erased.push_back({*o, ctx.Doc().LayerFullPath(o->layer_index)});
         }
         ctx.Doc().RemoveMany(ids);
         std::vector<int> lights;
@@ -813,19 +813,36 @@ void RegisterEditCommands(CommandEngine& e) {
   // AutoCAD OOPS: restores the objects the most recent Delete removed, even after other commands have run (Undo cannot do that). The
   // restored objects keep their layer, colour and geometry; they get new object ids.
   Reg(e, "Oops", Immediate([](CommandContext& ctx) {
-        std::vector<SceneObject>& erased = ctx.App().State().last_erased;
+        std::vector<ErasedObject>& erased = ctx.App().State().last_erased;
         if (erased.empty()) { ctx.Warn("Oops: nothing has been erased"); return; }
-        ctx.Doc().BeginChange("Oops");
-        ctx.Doc().SelectNone();
-        for (SceneObject& saved : erased) {
-          SceneObject o = saved;
+        // An object that Undo (or an earlier Oops) has already brought back is in the document under its old id (ids are never reused
+        // inside one document), so it is not added a second time.
+        std::unordered_set<ObjectId> present;
+        for (const SceneObject& o : ctx.Doc().Objects()) present.insert(o.id);
+        std::vector<SceneObject> back;
+        int on_current = 0;
+        for (const ErasedObject& saved : erased) {
+          if (present.count(saved.object.id)) continue;
+          SceneObject o = saved.object;
           o.id = kNoObject;
           o.selected = false;
-          ctx.Doc().Select(ctx.Doc().Add(std::move(o)), true);
+          // The layer is found again by its name: the layer numbers may have changed since (Purge, layer delete). A layer that is gone
+          // puts the object on the current layer.
+          int layer = saved.layer_path.empty() ? -1 : ctx.Doc().FindLayer(saved.layer_path);
+          if (layer < 0) { layer = ctx.Doc().CurrentLayer(); ++on_current; }
+          o.layer_index = layer;
+          back.push_back(std::move(o));
         }
-        ctx.Print("Oops: " + std::to_string(erased.size()) + " object(s) restored");
+        const size_t kept = erased.size();
         erased.clear();
-      }), CommandStatus::Implemented, "Restores the objects of the most recent Delete, also after other commands; restored objects get new object ids.");
+        if (back.empty()) { ctx.Warn("Oops: nothing to restore, the " + std::to_string(kept) + " erased object(s) are already back"); return; }
+        ctx.Doc().BeginChange("Oops");
+        ctx.Doc().SelectNone();
+        for (SceneObject& o : back) ctx.Doc().Select(ctx.Doc().Add(std::move(o)), true);
+        ctx.Print("Oops: " + std::to_string(back.size()) + " object(s) restored" +
+                  (on_current > 0 ? " (" + std::to_string(on_current) + " on the current layer because their layer no longer exists)" : ""));
+      }), CommandStatus::Implemented,
+      "Restores the objects of the most recent Delete, also after other commands, and not twice when Undo has already brought them back; restored objects get new object ids and are put on their layer by name (the current layer when that layer is gone). New and Open forget the erased objects.");
   // Undo / Redo can remove an object or change its control point count: sub-object picks that no longer exist are dropped, so a
   // later Delete never acts on a stale control point.
   Reg(e, "Undo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); PruneSubSelection(ctx); }));
