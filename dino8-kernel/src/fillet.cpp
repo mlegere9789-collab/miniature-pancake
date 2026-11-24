@@ -4415,32 +4415,57 @@ Brep ChamferConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, 
   std::vector<Brep::PlanarFace> work = solid.PlanarFaces();
   const double tol = RelativeTol(work);
 
-  // SCOPE (v1, disclosed - see fillet.h's own doc comment): every edge's
-  // own two endpoints must be used by exactly that ONE edge in this call -
-  // no two of the supplied edges may share a vertex. A shared vertex is a
-  // genuine corner-fusion problem (m==1 end-notch vs. m==3 trihedral
-  // vertex-blend classification, the machinery FilletConvexEdges' own
-  // doc comment describes at length) this first increment does not
-  // attempt; throws naming the conflict rather than silently misbuilding
-  // a corner two independent single-edge calls would already fail at
-  // differently (ChamferEndAtVertex's own "two different third faces meet
-  // the edge at the same endpoint" check, triggered for the wrong reason).
-  std::vector<Point3d> endpoints;
-  endpoints.reserve(edges.size() * 2);
-  for (const std::pair<Point3d, Point3d>& ed : edges) {
-    const Point3d pts[2] = {ed.first, ed.second};
-    for (const Point3d& p : pts) {
-      for (const Point3d& q : endpoints) {
-        if (PointsEqual(p, q, tol)) {
-          throw std::invalid_argument(
-              "dino8::kernel::ChamferConvexEdges: two of the supplied edges share a vertex - batching edges "
-              "that meet at a corner is out of scope for this function (see fillet.h's own doc comment); "
-              "chamfer them individually via ChamferConvexEdge instead, or see ChamferConvexVertex for an "
-              "already-supported trihedral corner");
+  // SCOPE (see fillet.h's own doc comment): an endpoint is either used by exactly ONE of the supplied edges (the end condition ChamferEndAtVertex
+  // builds, as before) or it is a CONVEX TRIHEDRAL corner of `solid` (exactly three planar faces meet there, three edges) at which ALL THREE edges are
+  // supplied: the three chamfer strips then end on a planar triangular corner patch (no third face is notched). Any other shared endpoint - two supplied
+  // edges at a vertex, a vertex of valence other than three, a concave or mixed corner - is still refused with std::invalid_argument.
+  struct EndUse {
+    Point3d v;
+    std::vector<std::pair<size_t, int>> users;  // (edge index in `edges`, 0 for edge_p0 / 1 for edge_p1)
+  };
+  std::vector<EndUse> end_uses;
+  end_uses.reserve(edges.size() * 2);
+  for (size_t ei = 0; ei < edges.size(); ++ei) {
+    const Point3d pts[2] = {edges[ei].first, edges[ei].second};
+    for (int end = 0; end < 2; ++end) {
+      bool merged = false;
+      for (EndUse& u : end_uses) {
+        if (PointsEqual(pts[end], u.v, tol)) {
+          u.users.emplace_back(ei, end);
+          merged = true;
+          break;
         }
       }
-      endpoints.push_back(p);
+      if (!merged) end_uses.push_back({pts[end], {{ei, end}}});
     }
+  }
+  const std::vector<Brep::PlanarFace> orig = work;  // the faces before any re-trim: edge->face association is read from these
+  std::vector<std::array<bool, 2>> end_is_corner(edges.size(), std::array<bool, 2>{false, false});
+  std::vector<size_t> corner_uses;  // indices into end_uses of the trihedral corners
+  for (size_t ui = 0; ui < end_uses.size(); ++ui) {
+    const EndUse& u = end_uses[ui];
+    if (u.users.size() == 1) continue;
+    bool ok = u.users.size() == 3;
+    if (ok) {
+      int faces_here = 0;
+      for (const Brep::PlanarFace& f : orig) {
+        for (const Point3d& p : f.loop) {
+          if (PointsEqual(p, u.v, tol)) {
+            ++faces_here;
+            break;
+          }
+        }
+      }
+      ok = faces_here == 3;
+    }
+    if (!ok) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: two of the supplied edges share a vertex that is not a trihedral corner with all three of its edges "
+          "supplied - a corner with one or two chamfered edges out of three, or a vertex of another valence, is out of scope (see fillet.h's own "
+          "doc comment); chamfer such edges individually via ChamferConvexEdge instead, or see ChamferConvexVertex for a single trihedral corner");
+    }
+    for (const std::pair<size_t, int>& use : u.users) end_is_corner[use.first][static_cast<size_t>(use.second)] = true;
+    corner_uses.push_back(ui);
   }
 
   auto dedupe_consecutive = [tol](std::vector<Point3d>& loop) {
@@ -4459,15 +4484,22 @@ Brep ChamferConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, 
     return best;
   };
 
-  std::vector<Brep::PlanarFace> chamfer_quads;
-  chamfer_quads.reserve(edges.size());
+  // One record per supplied edge, finished after every face has been re-trimmed (the strips that end on a corner patch read their end points off the
+  // re-trimmed faces).
+  struct StripRec {
+    int idx_i = -1, idx_j = -1;
+    Vector3d e, n_i, n_j;
+    Point3d R_i0, R_j0, Q_i0, Q_j0, Q_i1, Q_j1;
+  };
+  std::vector<StripRec> strips(edges.size());
 
-  for (const std::pair<Point3d, Point3d>& ed : edges) {
+  for (size_t ei = 0; ei < edges.size(); ++ei) {
+    const std::pair<Point3d, Point3d>& ed = edges[ei];
     const Point3d& edge_p0 = ed.first;
     const Point3d& edge_p1 = ed.second;
 
     int idx_i = -1, idx_j = -1;
-    FindEdgeFaces(work, edge_p0, edge_p1, tol, "ChamferConvexEdges", idx_i, idx_j);
+    FindEdgeFaces(orig, edge_p0, edge_p1, tol, "ChamferConvexEdges", idx_i, idx_j);
     const ON_Plane plane_i = work[static_cast<size_t>(idx_i)].plane;
     const ON_Plane plane_j = work[static_cast<size_t>(idx_j)].plane;
     const Vector3d n_i = plane_i.zaxis;
@@ -4538,37 +4570,172 @@ Brep ChamferConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, 
       others.push_back(work[f]);
     }
 
-    Point3d Q_i0, Q_j0, Q_i1, Q_j1;
-    ChamferEndAtVertex(others, edge_p0, e, plane_i, plane_j, R_i0, R_j0, tol, Q_i0, Q_j0);
-    ChamferEndAtVertex(others, edge_p1, e, plane_i, plane_j, R_i1, R_j1, tol, Q_i1, Q_j1);
+    // A corner end (all three edges of a trihedral corner supplied) has no end condition here: its three strips meet on the corner patch built below
+    // from the re-trimmed faces. Every other end keeps ChamferEndAtVertex.
+    Point3d Q_i0 = R_i0, Q_j0 = R_j0, Q_i1 = R_i1, Q_j1 = R_j1;
+    if (!end_is_corner[ei][0]) ChamferEndAtVertex(others, edge_p0, e, plane_i, plane_j, R_i0, R_j0, tol, Q_i0, Q_j0);
+    if (!end_is_corner[ei][1]) ChamferEndAtVertex(others, edge_p1, e, plane_i, plane_j, R_i1, R_j1, tol, Q_i1, Q_j1);
 
     for (size_t k = 0; k < other_idx.size(); ++k) work[other_idx[k]] = std::move(others[k]);
     work[static_cast<size_t>(idx_i)] = std::move(retrimmed_i);
     work[static_cast<size_t>(idx_j)] = std::move(retrimmed_j);
 
-    Brep::PlanarFace chamfer;
-    std::vector<Point3d> quad = {Q_i0, Q_i1, Q_j1, Q_j0};
+    StripRec& sr = strips[ei];
+    sr.idx_i = idx_i;
+    sr.idx_j = idx_j;
+    sr.e = e;
+    sr.n_i = n_i;
+    sr.n_j = n_j;
+    sr.R_i0 = R_i0;
+    sr.R_j0 = R_j0;
+    sr.Q_i0 = Q_i0;
+    sr.Q_j0 = Q_j0;
+    sr.Q_i1 = Q_i1;
+    sr.Q_j1 = Q_j1;
+  }
+
+  // Corner ends: the end points of a strip's two rails are the vertices of the re-trimmed faces lying on those rails, the one nearest the edge's own
+  // start for end 0, the farthest for end 1. (A face whose two chamfered edges meet at the corner has exactly one vertex on both rails: the point
+  // where the two rails cross.)
+  const double line_tol = 10.0 * tol;
+  auto rail_vertex = [&](const std::vector<Point3d>& loop, const Point3d& on_rail, const Vector3d& e, bool far_end) {
+    bool found = false;
+    double best = 0.0, other_best = 0.0;
+    Point3d bp;
+    for (const Point3d& p : loop) {
+      const Vector3d w = p - on_rail;
+      const double t = w * e;
+      if ((w - t * e).Length() > line_tol) continue;
+      if (!found) {
+        found = true;
+        best = other_best = t;
+        bp = p;
+        continue;
+      }
+      if (far_end ? t > best : t < best) {
+        best = t;
+        bp = p;
+      }
+      other_best = far_end ? std::min(other_best, t) : std::max(other_best, t);
+    }
+    if (!found || std::fabs(best - other_best) <= tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: a face re-trimmed at a corner chamfer no longer has a rail edge on one of the supplied edges - the "
+          "distances are too large for this solid's geometry");
+    }
+    return bp;
+  };
+  for (size_t ei = 0; ei < edges.size(); ++ei) {
+    if (!end_is_corner[ei][0] && !end_is_corner[ei][1]) continue;
+    StripRec& sr = strips[ei];
+    const std::vector<Point3d>& li = work[static_cast<size_t>(sr.idx_i)].loop;
+    const std::vector<Point3d>& lj = work[static_cast<size_t>(sr.idx_j)].loop;
+    if (end_is_corner[ei][0]) {
+      sr.Q_i0 = rail_vertex(li, sr.R_i0, sr.e, false);
+      sr.Q_j0 = rail_vertex(lj, sr.R_j0, sr.e, false);
+    }
+    if (end_is_corner[ei][1]) {
+      sr.Q_i1 = rail_vertex(li, sr.R_i0, sr.e, true);
+      sr.Q_j1 = rail_vertex(lj, sr.R_j0, sr.e, true);
+    }
+  }
+
+  // No face may have collapsed to a sliver (a chamfer distance that eats a whole face leaves a zero-width loop, which is not a face).
+  auto loop_area = [](const std::vector<Point3d>& loop) {
     Vector3d newell(0, 0, 0);
-    for (size_t k = 0; k < quad.size(); ++k) {
-      const Point3d& a = quad[k];
-      const Point3d& b = quad[(k + 1) % quad.size()];
+    for (size_t k = 0; k < loop.size(); ++k) {
+      const Point3d& a = loop[k];
+      const Point3d& b = loop[(k + 1) % loop.size()];
       newell.x += (a.y - b.y) * (a.z + b.z);
       newell.y += (a.z - b.z) * (a.x + b.x);
       newell.z += (a.x - b.x) * (a.y + b.y);
     }
-    if (newell * (n_i + n_j) < 0.0) std::reverse(quad.begin(), quad.end());
-    Vector3d n_c = ON_CrossProduct(quad[1] - quad[0], quad[2] - quad[0]);
-    if (!n_c.Unitize() || n_c * (n_i + n_j) <= 0.0) {
-      throw std::runtime_error(
-          "dino8::kernel::ChamferConvexEdges: degenerate chamfer quad - please report this as a bug");
+    return 0.5 * newell.Length();
+  };
+  for (const Brep::PlanarFace& f : work) {
+    if (f.loop.size() < 3 || !(loop_area(f.loop) > 1e4 * tol * tol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: the chamfer distances leave a face of the solid with no area - they are too large for this solid's "
+          "geometry");
     }
-    chamfer.plane = ON_Plane(quad[0], n_c);
-    chamfer.loop = std::move(quad);
-    chamfer_quads.push_back(std::move(chamfer));
+  }
+
+  std::vector<Brep::PlanarFace> chamfer_faces;
+  chamfer_faces.reserve(edges.size() + corner_uses.size());
+  auto make_face = [&](std::vector<Point3d> pts, const Vector3d& outward, const char* what) {
+    Vector3d newell(0, 0, 0);
+    for (size_t k = 0; k < pts.size(); ++k) {
+      const Point3d& a = pts[k];
+      const Point3d& b = pts[(k + 1) % pts.size()];
+      newell.x += (a.y - b.y) * (a.z + b.z);
+      newell.y += (a.z - b.z) * (a.x + b.x);
+      newell.z += (a.x - b.x) * (a.y + b.y);
+    }
+    if (newell * outward < 0.0) std::reverse(pts.begin(), pts.end());
+    Vector3d n_c = ON_CrossProduct(pts[1] - pts[0], pts[2] - pts[0]);
+    if (!n_c.Unitize() || n_c * outward <= 0.0) {
+      throw std::runtime_error(std::string("dino8::kernel::ChamferConvexEdges: degenerate ") + what + " - please report this as a bug");
+    }
+    Brep::PlanarFace face;
+    face.plane = ON_Plane(pts[0], n_c);
+    face.loop = std::move(pts);
+    return face;
+  };
+  for (const StripRec& sr : strips) {
+    chamfer_faces.push_back(make_face({sr.Q_i0, sr.Q_i1, sr.Q_j1, sr.Q_j0}, sr.n_i + sr.n_j, "chamfer quad"));
+  }
+
+  // One planar triangle per trihedral corner, on the three face-corner points (each shared by the end edges of two of the three strips).
+  for (const size_t ui : corner_uses) {
+    const EndUse& u = end_uses[ui];
+    std::vector<Point3d> pts;
+    std::vector<int> face_ids;
+    Vector3d outward(0, 0, 0);
+    for (const std::pair<size_t, int>& use : u.users) {
+      const StripRec& sr = strips[use.first];
+      for (const int fid : {sr.idx_i, sr.idx_j}) {
+        if (std::find(face_ids.begin(), face_ids.end(), fid) == face_ids.end()) {
+          face_ids.push_back(fid);
+          outward += orig[static_cast<size_t>(fid)].plane.zaxis;
+        }
+      }
+      const Point3d q[2] = {use.second == 0 ? sr.Q_i0 : sr.Q_i1, use.second == 0 ? sr.Q_j0 : sr.Q_j1};
+      for (const Point3d& c : q) {
+        bool known = false;
+        for (const Point3d& p : pts) known = known || PointsEqual(p, c, line_tol);
+        if (!known) pts.push_back(c);
+      }
+    }
+    if (face_ids.size() != 3 || pts.size() != 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexEdges: the supplied edges at a shared vertex do not form the three edges of one trihedral corner");
+    }
+    for (const int fid : face_ids) {
+      // The three edges leave the corner on the inside of every face plane but the two they lie on: every end point of the supplied edges must lie
+      // behind (or on) each face's plane, strictly behind for one of them - a concave or mixed corner fails here.
+      const ON_Plane& pl = orig[static_cast<size_t>(fid)].plane;
+      bool strictly_behind = false;
+      for (const std::pair<size_t, int>& use : u.users) {
+        const Point3d& far_end = use.second == 0 ? edges[use.first].second : edges[use.first].first;
+        const double sd = pl.zaxis * (far_end - u.v);
+        if (sd > tol) {
+          throw std::invalid_argument("dino8::kernel::ChamferConvexEdges: a shared vertex is not a convex trihedral corner");
+        }
+        strictly_behind = strictly_behind || sd < -tol;
+      }
+      if (!strictly_behind) {
+        throw std::invalid_argument("dino8::kernel::ChamferConvexEdges: a shared vertex is not a convex trihedral corner");
+      }
+    }
+    Vector3d cr = ON_CrossProduct(pts[1] - pts[0], pts[2] - pts[0]);
+    if (!(cr.Length() > 1e4 * tol * tol)) {
+      throw std::invalid_argument("dino8::kernel::ChamferConvexEdges: the chamfer distances leave a corner patch with no area");
+    }
+    chamfer_faces.push_back(make_face(std::move(pts), outward, "corner patch"));
   }
 
   std::vector<Brep::PlanarFace> all = std::move(work);
-  for (Brep::PlanarFace& q : chamfer_quads) all.push_back(std::move(q));
+  for (Brep::PlanarFace& q : chamfer_faces) all.push_back(std::move(q));
   return Brep::FromMixedFaces(all, {});
 }
 
