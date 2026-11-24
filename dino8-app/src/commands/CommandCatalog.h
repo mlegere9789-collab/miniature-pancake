@@ -1,5 +1,6 @@
-// The catalog of every Rhino 8 command (name, description, toolbar/menu
-// placement, command-line options, full help text), loaded from
+// The catalog of every Rhino 8-compatible command name (name, original one-line
+// description, toolbar/menu placement, command-line options; the help field is
+// kept empty), loaded from
 // data/commands.json at startup. This is the authoritative list the
 // Command List panel, autocomplete, and Help panel are driven from.
 #pragma once

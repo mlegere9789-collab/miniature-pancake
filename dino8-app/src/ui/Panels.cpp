@@ -285,7 +285,7 @@ void DrawPropertiesPanel(Application& app) {
       for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) o->material_name = mat;
     }
     // Per-object display mode (SetObjectDisplayMode) for the ACTIVE viewport,
-    // as in Rhino ("their display in other viewports won't be affected"):
+    // as in Rhino (the other viewports keep their own display):
     // every viewport mode except RayTraced (a whole-frame image) can be
     // pinned to an object. The command's `All` word sets every viewport.
     {
