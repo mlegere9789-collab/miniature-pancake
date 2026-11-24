@@ -520,7 +520,7 @@ else()
   target_compile_options(Dino8 PRIVATE -Wall -Wextra)
 endif()
 
-# The command catalog (all 1055 Rhino 8 commands with help text) ships next
+# The command catalog (all 1071 commands: names, original descriptions and options) ships next
 # to the binary; the app also looks for it relative to the source tree when
 # run from a build directory. changelog.md ships alongside it: Panels.cpp's
 # Changelog()/DrawWhatsNewWindow() reads data/changelog.md next to the exe

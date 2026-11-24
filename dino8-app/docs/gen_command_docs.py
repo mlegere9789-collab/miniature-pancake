@@ -2,7 +2,7 @@
 """Generates docs/site/commands.json, the data file behind the searchable
 command reference page, from:
 
-  * data/commands.json        - the 1055-command Rhino 8 catalog (name,
+  * data/commands.json        - the 1071-command catalog (name,
                                  one-line description, toolbar/menu location)
   * src/commands/cmd_*.cpp    - the actual Dino 8 command registrations,
                                  each a `Reg(e, "Name", factory, status, note)`
@@ -11,7 +11,7 @@ command reference page, from:
 
 For every catalog command this cross-references the registration source to
 report whether Dino 8 actually implements it (Implemented / Partial), or
-whether it is still a stub that only opens the help text (Planned), plus any
+whether it is still a stub that only prints a not-implemented note (Planned), plus any
 implementor's note explaining the gap.
 
 Run it from dino8-app/:

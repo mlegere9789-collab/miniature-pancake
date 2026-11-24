@@ -477,9 +477,8 @@ class PythonScriptCommand : public Command {
 // work, exactly as the viewport-wide modes do), Pen/Arctic (flat white,
 // unlit/lit). Each override carries its mode's FULL style (Viewport.cpp's
 // ObjectStyleFor): fill, edges, isocurves and edge colour, not just a fill
-// colour. Scope follows Rhino ("sets how the selected objects display in the
-// current viewport; their display in other viewports won't be affected"): the
-// override applies to the ACTIVE viewport only, unless the word `All` is
+// colour. Scope follows Rhino: the override applies to the ACTIVE viewport
+// only and leaves the other viewports' display alone, unless the word `All` is
 // typed after the mode ("Pen All" / "All Pen"), which sets it for every
 // viewport (and clears any per-viewport entries). RayTraced is the one
 // viewport mode with no per-object form - it is a whole-frame path-traced

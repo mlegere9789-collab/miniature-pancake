@@ -319,7 +319,7 @@ int main() {
     SceneObject copy = o;
     Check(copy.force_xray && !copy.force_raytraced, "the override survives a copy (undo/redo snapshots)");
 
-    // Per-VIEWPORT scope (Rhino: "their display in other viewports won't be affected").
+    // Per-VIEWPORT scope (as in Rhino, an override in one viewport leaves the others alone).
     SceneObject v = SceneObject::MakeCurve(NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, 1));
     Check(v.SetViewportDisplayOverride("Top", "Pen") && v.DisplayOverrideNameFor("Top") == "Pen" && v.DisplayOverrideNameFor("Front") == "UseViewport",
           "a per-viewport override applies in that viewport only");

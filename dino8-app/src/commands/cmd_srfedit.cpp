@@ -1651,9 +1651,8 @@ class FitSrfCommand : public Command {
   int max_pts_ = 40;
 };
 
-// RebuildUV: the real command `data/commands.json` itself documents -
-// "Reconstructs selected surfaces to degree 3, with a specified control
-// point number, in EITHER the u or v direction" - a genuinely different
+// RebuildUV: rebuilds each selected surface to degree 3 with a typed
+// control-point count in EITHER the u or v direction - a genuinely different
 // operation from both `Rebuild` (rebuilds BOTH directions together) and
 // `MakeUniformUV` above (re-knots only, no refit of the control-point
 // count at all). PARITY_MAP.md's own "Rebuild/Refit" bullet named this

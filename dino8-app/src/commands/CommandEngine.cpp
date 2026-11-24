@@ -142,7 +142,7 @@ void CommandEngine::RegisterCatalogPlaceholders() {
     r.name = info.name;
     r.info = &info;
     r.status = CommandStatus::Planned;
-    r.note = "Not implemented in this build yet. The full Rhino 8 help for this command is available in the Help panel.";
+    r.note = "Not implemented in this build yet. The Help panel shows its description and options.";
     registry_[key] = std::move(r);
   }
 }

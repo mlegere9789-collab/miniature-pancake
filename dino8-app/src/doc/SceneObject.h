@@ -235,9 +235,8 @@ class SceneObject {
   // frame path-traced image, not a per-object concept.
   bool force_technical = false;
   bool force_artistic = false;
-  // Per-VIEWPORT scope, as Rhino has it ("SetObjectDisplayMode: sets how the
-  // selected objects display in the current viewport. Their display in other
-  // viewports won't be affected"): viewport name -> canonical mode name
+  // Per-VIEWPORT scope, as Rhino has it (an override set in one viewport does
+  // not change the others): viewport name -> canonical mode name
   // (never "UseViewport"; that erases the entry). The ten flags above are the
   // ALL-VIEWPORTS override; a viewport's own entry wins over them in that
   // viewport. Carried through CopyFrom (undo/redo) and saved in the .3dm.
