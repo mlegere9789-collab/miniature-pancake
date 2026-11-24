@@ -199,4 +199,65 @@ Mesh MakeCylinderMesh(int vertices = 32, double radius = 1.0, double depth = 2.0
 Mesh MakeIcoSphereMesh(int subdivisions = 2, double radius = 1.0);           // 1 = icosahedron; faces 20 * 4^(s - 1)
 Mesh MakeTorusMesh(int major_segments = 48, int minor_segments = 12, double major_radius = 1.0, double minor_radius = 0.25);
 
+// ---- Round 4 additions ----
+
+// Subdivide (every edge selected, smoothness 0): each edge gets `cuts` evenly spaced new vertices, a quad becomes (cuts + 1)^2 quads
+// (the interior vertices at the bilinear positions of its four corners) and a triangle (cuts + 1)^2 triangles on the barycentric lattice.
+// The surface does not move. Throws std::invalid_argument for cuts < 1.
+Mesh SubdivideMeshEdges(const Mesh& mesh, int cuts = 1);
+
+// Duplicate (and Move): the listed faces are copied with their own new vertices (shared among the copies), moved by `offset`; the
+// originals stay. Throws std::invalid_argument for an index out of range.
+Mesh DuplicateFaces(const Mesh& mesh, const std::vector<int>& faces, Vector3d offset = Vector3d(0, 0, 0));
+
+// Fill Grid: closes the boundary loop `loop` (vertex ids in order along the hole, an even count N >= 4) with a grid of `span` x (N / 2 - span)
+// quads. The loop's sides are the `span` edges from loop[0], the next N / 2 - span, then the opposite two; the interior vertices
+// are placed by bilinear (Coons) blending of the four sides. The faces are wound against the faces that already use the loop. Throws
+// std::invalid_argument for an odd or short loop, a span outside 1 .. N / 2 - 1, a vertex out of range or a loop that is not a closed
+// chain of mesh edges.
+Mesh FillGrid(const Mesh& mesh, const std::vector<int>& loop, int span);
+
+enum class SimilarFace { Area, Sides, Perimeter, Normal, Coplanar };
+enum class SimilarCompare { Equal, Greater, Less };
+
+// Select Similar for faces: the faces whose measure compares to that of any listed seed face: Area, Perimeter (compared as numbers
+// with `threshold` of slack: Equal |a - b| <= threshold, Greater a >= b - threshold, Less a <= b + threshold), Sides (corner
+// count, the threshold is ignored), Normal (angle between the face normals at most `threshold` degrees; Greater / Less compare
+// that angle) and Coplanar (normals within `threshold` degrees and the faces' planes within `threshold` of each other). Sorted,
+// seed faces included whenever they satisfy the comparison with themselves.
+std::vector<int> SimilarFaces(const Mesh& mesh, const std::vector<int>& seeds, SimilarFace type, SimilarCompare compare, double threshold = 0.0);
+
+// Select More / Less for faces. `face_step` (the default) counts faces that share a vertex as neighbours, otherwise only faces
+// that share an edge. More adds every neighbour of a selected face; Less removes every selected face that has an unselected
+// neighbour. Sorted; throws std::invalid_argument for an index out of range.
+std::vector<int> GrowFaceSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step = true);
+std::vector<int> ShrinkFaceSelection(const Mesh& mesh, const std::vector<int>& selected, bool face_step = true);
+
+// Select Linked Faces: the faces reachable from `seed_face` across shared edges, sorted.
+std::vector<int> LinkedFaces(const Mesh& mesh, int seed_face);
+
+// Extract Faces: a new mesh made of the listed faces and the vertices they use. With `thickness` > 0 the patch is thickened into a
+// closed solid (Mesh::Thicken). Throws std::invalid_argument for an index out of range, an empty list or a negative thickness.
+Mesh ExtractFaces(const Mesh& mesh, const std::vector<int>& faces, double thickness = 0.0);
+
+// The faces whose id in `face_sets` (one entry per face) equals `set_id`.
+std::vector<int> FacesInSet(const std::vector<int>& face_sets, int set_id);
+
+// Extract Mask: the faces whose corners ALL have a mask above `threshold`.
+std::vector<int> FacesAboveMask(const Mesh& mesh, const std::vector<float>& vertex_mask, float threshold = 0.5f);
+
+// Trim (Difference): the part of the mesh on the NEGATIVE side of the plane through `point` with `normal` is kept, closed by a cap
+// (the side the normal points to is removed); and the mesh minus the axis-aligned box [lo, hi] (a boolean difference).
+Mesh TrimMeshByPlane(const Mesh& mesh, Point3d point, Vector3d normal);
+Mesh TrimMeshByBox(const Mesh& mesh, Point3d lo, Point3d hi);
+
+// Mesh Filter, Inflate: every vertex moves along its vertex normal by `strength`.
+Mesh InflateMesh(const Mesh& mesh, double strength);
+
+// Average Islands Scale: the faces are grouped into islands that share vertices; `uvs` is one (u, v) per vertex. Every island is scaled
+// about its own UV centroid so that its UV area per unit of 3D area equals one common density, the total UV area over the total 3D
+// area (so the total UV area does not change). Islands of zero 3D or UV area are left alone. Returns the new UVs. Throws
+// std::invalid_argument for a wrong UV count.
+std::vector<Point2d> AverageUvIslandScales(const Mesh& mesh, const std::vector<Point2d>& uvs);
+
 }  // namespace dino8::kernel

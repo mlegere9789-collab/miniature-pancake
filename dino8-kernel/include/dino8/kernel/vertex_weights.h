@@ -80,4 +80,19 @@ std::vector<float> ProximityWeightsToMesh(const Mesh& mesh, const Mesh& target_s
 enum class GradientKind { Linear, Radial };
 std::vector<float> GradientWeights(const Mesh& mesh, Point3d start, Point3d end, float start_weight, float end_weight, GradientKind kind);
 
+// Copy Vertex Groups to Selected: a copy of `source` for another mesh with `vertex_count` vertices; throws std::invalid_argument when
+// the vertex counts differ (the groups only make sense on the same vertex order).
+VertexGroupSet CopyVertexGroups(const VertexGroupSet& source, int vertex_count);
+
+// Sculpt mask operators on one value (0..1) per vertex.
+// Mask Flood Fill: Value sets every vertex to `value`, ValueInverse to 1 - value, Invert replaces m by 1 - m.
+enum class MaskFill { Value, ValueInverse, Invert };
+std::vector<float> FloodFillMask(const std::vector<float>& mask, MaskFill mode, float value = 1.0f);
+
+// Mask Filter over the edge neighbours of `mesh`: Grow gives every vertex the largest value among itself and its neighbours (dilation),
+// Shrink the smallest (erosion), Smooth the mean of its neighbours' values. Repeated `iterations` times, each reading the previous
+// result. Throws std::invalid_argument for a wrong mask size or iterations < 0.
+enum class MaskFilterKind { Grow, Shrink, Smooth };
+std::vector<float> FilterMask(const Mesh& mesh, const std::vector<float>& mask, MaskFilterKind kind, int iterations = 1);
+
 }  // namespace dino8::kernel
