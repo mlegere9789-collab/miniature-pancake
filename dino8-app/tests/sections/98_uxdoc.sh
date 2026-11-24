@@ -12,6 +12,9 @@
 # Not tested (needs a real window): the Document Properties dialog pages and the Notes panel layout.
 # ---------------------------------------------------------------------------
 . "$HERE/ux_common.sh"
+if [ "${IS_WINDOWS:-0}" = 1 ]; then
+  echo "skip UXDOC (not run on Windows: needs python3 and the Linux headless launch)"
+else
 UXDOC_S="$TMPW/uxdoc_script.txt"
 UXDOC_F="$TMPW/uxdoc_a.3dm"
 rm -f "$UXDOC_F"
@@ -87,4 +90,5 @@ if ux_launch "$UXDOC_S"; then
   ux_eq UXDOC_roundtrip afteropen "Open restores units, both tolerances, notes, user text and the grid from the 3dm file" \
     "Units: Inches, absolute tolerance 0.01, angle tolerance 0.5 degrees" "Notes: Level 3 review notes" "Phase = Design Development" "Project = NorthTower" \
     "Grid: spacing 2.5, major line every 10, extents 80"
+fi
 fi

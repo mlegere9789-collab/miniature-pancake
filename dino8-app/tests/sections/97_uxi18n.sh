@@ -8,6 +8,9 @@
 # right-to-left text on screen.
 # ---------------------------------------------------------------------------
 . "$HERE/ux_common.sh"
+if [ "${IS_WINDOWS:-0}" = 1 ]; then
+  echo "skip UXI18N (not run on Windows: needs python3 and the Linux headless launch)"
+else
 UXI18N_S="$TMPW/uxi18n_script.txt"
 rm -f "$TMPW/uxi18n_ja.json"
 {
@@ -42,4 +45,5 @@ import json, sys
 sys.exit(0 if json.load(open(sys.argv[1])).get("language") == "ja" else 1)
 PYEOF
   then ux_ok "UXI18N_persist: the exported settings file carries language \"ja\""; else ux_bad "UXI18N_persist: the exported settings file does not carry language \"ja\""; fi
+fi
 fi

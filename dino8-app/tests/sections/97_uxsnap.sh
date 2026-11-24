@@ -10,6 +10,9 @@
 # Not tested (needs a real window or a pick): that a switched-off snap really stops a pointer snap, and the hash marks of OrthoAngle.
 # ---------------------------------------------------------------------------
 . "$HERE/ux_common.sh"
+if [ "${IS_WINDOWS:-0}" = 1 ]; then
+  echo "skip UXSNAP (not run on Windows: needs python3 and the Linux headless launch)"
+else
 UXSNAP_S="$TMPW/uxsnap_script.txt"
 {
   echo "@wait 2"
@@ -67,4 +70,5 @@ PYEOF
     if [ "$UXSNAP_J" = match ]; then ux_ok "UXSNAP_persist: the exported settings file holds the nine switches as booleans exactly as set"; else ux_bad "UXSNAP_persist: exported file $UXSNAP_J"; fi
   else ux_bad "UXSNAP_persist: OptionsExport did not write $TMPW/uxsnap_a.json"; fi
   if grep -q '^FAIL' <<<"$UX_OUT"; then ux_bad "UXSNAP_script: an @expect line failed"; fi
+fi
 fi
