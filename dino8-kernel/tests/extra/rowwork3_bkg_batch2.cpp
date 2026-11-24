@@ -14,6 +14,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/pattern.h"
 #include "dino8/kernel/surface.h"
 #include "test_registry.h"
 
@@ -472,4 +473,46 @@ D8_EXTRA_TEST(RowBkgLookAtSurfaceTurnsTheZAxisToTheSphereNormal) {
   const Vector3d cen = rodrigues(Vector3d(0, 0, 1));
   d8test::Check(Near(turned.VolumeMassProperties().centroid, P(cen.x, cen.y, cen.z), 1e-9) && NearRel(VolumeOf(turned, "turned box"), 8.0, 1e-9),
                 "the box centroid (0, 0, 1) goes to R z and the volume stays 8");
+}
+
+// OBJECT-0040 Make Instances Real. Instances turned into real objects are independent solids placed by their own transforms. An array of the box
+// [0,2] x [0,3] x [0,4] along the straight path (0,0,0) -> (9,0,0) with four stations (arc-length even, no rotation) gives four independent
+// solids whose centroids are (1 + 3 i, 1.5, 2) for i = 0..3, each of volume 24 (total 96); editing nothing about the source. Instances of
+// collections and the original hierarchy are not covered.
+D8_EXTRA_TEST(RowBkgMakeInstancesRealGivesIndependentSolidsAtTheStations) {
+  const Brep box = Brep::BoxWelded(0, 0, 0, 2, 3, 4);
+  const NurbsCurve path = NurbsCurve::FromControlPoints(std::vector<Point3d>{P(0, 0, 0), P(9, 0, 0)}, 1);
+  const std::vector<Brep> copies = dino8::kernel::ArrayBrepAlongCurve(box, path, 4, false);
+  d8test::Check(copies.size() == 4, "four copies");
+  double total = 0.0, worst = 0.0;
+  for (size_t i = 0; i < copies.size(); ++i) {
+    total += VolumeOf(copies[i], "array copy");
+    worst = std::max(worst, copies[i].VolumeMassProperties().centroid.DistanceTo(P(1.0 + 3.0 * static_cast<double>(i), 1.5, 2.0)));
+  }
+  d8test::Check(worst < 1e-9, Msg("copy i has its centroid at (1 + 3 i, 1.5, 2)", worst).c_str());
+  d8test::Check(NearRel(total, 96.0, 1e-9), "the four volumes add up to 96");
+}
+
+// OBJECT-0097 Make Instance Face. Instances placed on the faces of a surface take the frame of the surface at their lattice point: on the tilted
+// plane through (0,0,0), (0,4,0), (4,0,2), (4,4,2) (normal (-1, 0, 2) / sqrt 5) a 3 x 3 lattice carries the box [-0.1,0.1]^2 x [0,0.2] standing on the
+// reference plane, so copy (i, j) has its centroid at S(u_i, v_j) + 0.1 n with S = (4u, 4v, 2u) for u, v = 0, 1/2, 1, and the z axis of every copy is n.
+// Placement on mesh faces and the scaling by face size are not covered.
+D8_EXTRA_TEST(RowBkgMakeInstanceFacePlacesTheBoxOnTheSurfaceFrameOfEachLatticePoint) {
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 4, 0), P(4, 0, 2), P(4, 4, 2)};
+  const NurbsSurface plane = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep body = Brep::BoxWelded(-0.1, -0.1, 0, 0.1, 0.1, 0.2);
+  const ON_Plane reference(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Brep> copies = dino8::kernel::ArrayBrepOnSurface(body, plane, 3, 3, reference, true);
+  d8test::Check(copies.size() == 9, "nine copies for a 3 x 3 lattice");
+  Vector3d n(-1.0, 0.0, 2.0);
+  n.Unitize();
+  double worst = 0.0, vol = 0.0;
+  for (size_t k = 0; k < copies.size() && copies.size() == 9; ++k) {
+    const double fu = 0.5 * static_cast<double>(k / 3), fv = 0.5 * static_cast<double>(k % 3);  // i-major: index i * nv + j
+    const Point3d expect = P(4 * fu + 0.1 * n.x, 4 * fv + 0.1 * n.y, 2 * fu + 0.1 * n.z);
+    worst = std::max(worst, copies[k].VolumeMassProperties().centroid.DistanceTo(expect));
+    vol = std::max(vol, std::fabs(VolumeOf(copies[k], "instance") - 0.2 * 0.2 * 0.2));
+  }
+  d8test::Check(worst < 1e-9, Msg("every copy stands on the surface along the normal", worst).c_str());
+  d8test::Check(vol < 1e-12, "every copy keeps the volume 0.008");
 }
