@@ -94,6 +94,108 @@ class HairSystem {
     }
   }
 
+  // Select Linked All: every visible key of a strand that has a selected key becomes selected.
+  void SelectLinked() {
+    for (auto& s : strands) {
+      bool any = false;
+      for (auto& k : s.keys) any = any || (k.selected && !k.hidden);
+      if (!any) continue;
+      for (auto& k : s.keys) if (!k.hidden) k.selected = true;
+    }
+  }
+
+  // Select Random: every visible key (type Points) or strand (type Hair: all its visible keys) is selected
+  // independently with probability `ratio`, drawn from a counter-based hash of (seed, strand, key), so the same seed
+  // gives the same selection. select == false deselects the chosen ones instead. Returns the number of keys changed
+  // to the requested state by the draw (chosen keys, whether or not they already were in that state).
+  enum class RandomType { Points, Hair };
+  static unsigned long long Mix(unsigned long long x) {  // splitmix64 finaliser
+    x += 0x9E3779B97F4A7C15ull;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    return x ^ (x >> 31);
+  }
+  static double Unit(unsigned long long seed, unsigned long long a, unsigned long long b) {
+    const unsigned long long h = Mix(Mix(seed * 0x100000001B3ull + a) + b);
+    return static_cast<double>(h >> 11) / 9007199254740992.0;  // 53 bits -> [0, 1)
+  }
+  int SelectRandom(double ratio, unsigned long long seed, RandomType type, bool select = true) {
+    int n = 0;
+    for (std::size_t si = 0; si < strands.size(); ++si) {
+      auto& s = strands[si];
+      const bool strand_pick = Unit(seed, si, 0xFFFFFFFFull) < ratio;
+      for (std::size_t ki = 0; ki < s.keys.size(); ++ki) {
+        auto& k = s.keys[ki];
+        if (k.hidden) continue;
+        const bool pick = (type == RandomType::Hair) ? strand_pick : Unit(seed, si, ki) < ratio;
+        if (pick) { k.selected = select; ++n; }
+      }
+    }
+    return n;
+  }
+
+  // Hide Selected (unselected == false) or Hide Unselected: matching visible keys become hidden and deselected.
+  int Hide(bool unselected = false) {
+    int n = 0;
+    for (auto& s : strands)
+      for (auto& k : s.keys) {
+        if (k.hidden || k.selected == unselected) continue;
+        k.hidden = true;
+        k.selected = false;
+        ++n;
+      }
+    return n;
+  }
+  // Reveal: every hidden key becomes visible; with `select` the revealed keys are selected as well.
+  int Reveal(bool select = true) {
+    int n = 0;
+    for (auto& s : strands)
+      for (auto& k : s.keys)
+        if (k.hidden) { k.hidden = false; if (select) k.selected = true; ++n; }
+    return n;
+  }
+
+  // Delete: type Particle removes every strand that has a selected key; type Key removes the selected keys and then
+  // every strand left with fewer than 2 keys (a strand needs a root and one more key; this rule is the model's
+  // definition). Returns the number of keys removed in total (keys of removed strands included).
+  enum class DeleteType { Particle, Key };
+  int Delete(DeleteType type) {
+    int removed = 0;
+    std::vector<HairStrand> out;
+    for (auto& s : strands) {
+      bool any = false;
+      for (auto& k : s.keys) any = any || (k.selected && !k.hidden);
+      if (!any) { out.push_back(s); continue; }
+      if (type == DeleteType::Particle) { removed += static_cast<int>(s.keys.size()); continue; }
+      HairStrand kept;
+      for (auto& k : s.keys) if (!(k.selected && !k.hidden)) kept.keys.push_back(k);
+      removed += static_cast<int>(s.keys.size() - kept.keys.size());
+      if (kept.keys.size() >= 2) out.push_back(std::move(kept));
+      else removed += static_cast<int>(kept.keys.size());
+    }
+    strands = std::move(out);
+    return removed;
+  }
+
+  // Remove Doubles: a strand with a selected key is removed when the root of an earlier strand that survives is
+  // closer than `threshold` to its root (earlier = lower index; the first of a cluster is kept). Returns the number
+  // of strands removed.
+  int RemoveDoubles(double threshold) {
+    std::vector<HairStrand> out;
+    int removed = 0;
+    for (auto& s : strands) {
+      bool any = false;
+      for (auto& k : s.keys) any = any || (k.selected && !k.hidden);
+      bool dup = false;
+      if (any && !s.keys.empty())
+        for (auto& o : out)
+          if (!o.keys.empty() && (o.keys[0].pos - s.keys[0].pos).Length() < threshold) { dup = true; break; }
+      if (dup) ++removed; else out.push_back(s);
+    }
+    strands = std::move(out);
+    return removed;
+  }
+
   // Subdivide: between every pair of adjacent selected keys insert a new selected key at their midpoint.
   // A strand whose n keys are all selected becomes 2n - 1 keys; the polyline (shape and length) is unchanged.
   int Subdivide() {
