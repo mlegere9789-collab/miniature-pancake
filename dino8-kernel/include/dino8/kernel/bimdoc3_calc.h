@@ -247,26 +247,34 @@ inline std::string NumText(double v) { return FormatNumber(v, 17); }
 inline std::string Flag(bool b) { return b ? "1" : "0"; }
 }  // namespace detail
 
+// Every Field member and every ScheduleDef member that describes the scheme is written. The floor-plan selection (selectedOnly,
+// selection) is transient session state and is left out on purpose, as a saved view leaves it out (SaveAsView).
 inline std::string ExportSchemeXml(const ScheduleDef& d, const SchemeHeader& h) {
   using detail::XmlEsc;
-  std::string o = "<Scheme id=\"" + XmlEsc(h.id) + "\" name=\"" + XmlEsc(h.name) + "\" type=\"" + XmlEsc(h.type) + "\" itemize=\"" + detail::Flag(d.itemize) + "\" grandTotal=\"" +
-                  detail::Flag(d.grandTotal) + "\" rounded=\"" + detail::Flag(d.roundedGrandTotals) + "\" keepTogether=\"" + XmlEsc(d.keepTogetherBy) + "\">\n";
+  auto fl = [](bool b) { return std::string(b ? "1" : "0"); };
+  std::string o = "<Scheme id=\"" + XmlEsc(h.id) + "\" name=\"" + XmlEsc(h.name) + "\" type=\"" + XmlEsc(h.type) + "\" itemize=\"" + fl(d.itemize) + "\" grandTotal=\"" + fl(d.grandTotal) +
+                  "\" rounded=\"" + fl(d.roundedGrandTotals) + "\" keepTogether=\"" + XmlEsc(d.keepTogetherBy) + "\" filterBySheet=\"" + fl(d.filterBySheet) + "\" sheet=\"" + XmlEsc(d.sheet) +
+                  "\" idField=\"" + XmlEsc(d.idField) + "\">\n";
   for (auto& f : d.fields) {
     o += "<Field name=\"" + XmlEsc(f.name) + "\" kind=\"" + std::to_string((int)f.kind) + "\" formula=\"" + XmlEsc(f.formula) + "\" of=\"" + XmlEsc(f.percentOf) + "\" by=\"" + XmlEsc(f.percentBy) +
          "\" sep=\"" + XmlEsc(f.separator) + "\" aggregate=\"" + std::to_string((int)f.aggregate) + "\" decimals=\"" + std::to_string(f.decimals) + "\" scale=\"" + detail::NumText(f.scale) +
-         "\" unit=\"" + XmlEsc(f.unit) + "\" showUnit=\"" + detail::Flag(f.showUnit) + "\" mergeAny=\"" + detail::Flag(f.mergeAny) + "\" mergeShow=\"" + std::to_string((int)f.mergeShow) +
-         "\" hidden=\"" + detail::Flag(f.hidden) + "\" totalPrefix=\"" + XmlEsc(f.totalPrefix) + "\" totalSuffix=\"" + XmlEsc(f.totalSuffix) + "\" notEvaluated=\"" + XmlEsc(f.notEvaluated) + "\"/>\n";
+         "\" unit=\"" + XmlEsc(f.unit) + "\" showUnit=\"" + fl(f.showUnit) + "\" mergeAny=\"" + fl(f.mergeAny) + "\" mergeShow=\"" + std::to_string((int)f.mergeShow) +
+         "\" mergeQty=\"" + fl(f.mergeAppendQuantity) + "\" listSep=\"" + XmlEsc(f.listSeparator) +
+         "\" zeroValueText=\"" + fl(f.zeroValueText) + "\" zeroValue=\"" + XmlEsc(f.zeroValue) + "\" zeroTotalText=\"" + fl(f.zeroTotalText) + "\" zeroTotal=\"" + XmlEsc(f.zeroTotal) +
+         "\" zeroGrandText=\"" + fl(f.zeroGrandText) + "\" zeroGrand=\"" + XmlEsc(f.zeroGrand) + "\" notEvaluated=\"" + XmlEsc(f.notEvaluated) + "\" minMaxSep=\"" + XmlEsc(f.minMaxSeparator) +
+         "\" totalPrefix=\"" + XmlEsc(f.totalPrefix) + "\" totalSuffix=\"" + XmlEsc(f.totalSuffix) + "\" hidden=\"" + fl(f.hidden) + "\"/>\n";
     for (auto& p : f.parts) o += "<Part field=\"" + XmlEsc(p.field) + "\" prefix=\"" + XmlEsc(p.prefix) + "\" suffix=\"" + XmlEsc(p.suffix) + "\" decimals=\"" + std::to_string(p.decimals) + "\"/>\n";
   }
   for (auto& c : d.filters)
     o += "<Criterion field=\"" + XmlEsc(c.field) + "\" op=\"" + std::to_string((int)c.op) + "\" kind=\"" + std::to_string((int)c.value.kind) + "\" value=\"" +
          XmlEsc(c.value.kind == Value::Num ? detail::NumText(c.value.n) : c.value.s) + "\"/>\n";
   for (auto& k : d.sort)
-    o += "<Sort field=\"" + XmlEsc(k.field) + "\" descending=\"" + detail::Flag(k.descending) + "\" header=\"" + detail::Flag(k.header) + "\" footer=\"" + detail::Flag(k.footer) +
-         "\" blank=\"" + detail::Flag(k.blankAfter) + "\"/>\n";
+    o += "<Sort field=\"" + XmlEsc(k.field) + "\" descending=\"" + fl(k.descending) + "\" header=\"" + fl(k.header) + "\" footer=\"" + fl(k.footer) + "\" blank=\"" + fl(k.blankAfter) + "\"/>\n";
   return o + "</Scheme>\n";
 }
 
+// An attribute that is absent keeps the member's default (so a file written before a setting existed still loads); a malformed number is
+// an error.
 inline bool ImportSchemeXml(const std::string& xml, ScheduleDef& d, SchemeHeader& h) {
   std::vector<detail::XmlTag> tags;
   if (xml.find("<Scheme ") == std::string::npos || xml.find("</Scheme>") == std::string::npos || !detail::XmlTags(xml, tags)) return false;
@@ -275,29 +283,38 @@ inline bool ImportSchemeXml(const std::string& xml, ScheduleDef& d, SchemeHeader
   bool seen = false;
   try {
     for (auto& t : tags) {
-      auto& a = t.attrs;
+      const auto& a = t.attrs;
+      auto str = [&](const char* k, const std::string& dflt) { auto it = a.find(k); return it == a.end() ? dflt : it->second; };
+      auto flag = [&](const char* k, bool dflt) { auto it = a.find(k); return it == a.end() ? dflt : it->second == "1"; };
+      auto num = [&](const char* k, double dflt) { auto it = a.find(k); return it == a.end() ? dflt : std::stod(it->second); };
+      auto integer = [&](const char* k, int dflt) { auto it = a.find(k); return it == a.end() ? dflt : std::stoi(it->second); };
       if (t.name == "Scheme") {
         seen = true;
-        hh.id = a["id"]; hh.name = a["name"]; hh.type = a["type"];
-        out.itemize = a["itemize"] == "1"; out.grandTotal = a["grandTotal"] == "1"; out.roundedGrandTotals = a["rounded"] == "1"; out.keepTogetherBy = a["keepTogether"];
+        hh.id = str("id", ""); hh.name = str("name", ""); hh.type = str("type", "");
+        out.itemize = flag("itemize", out.itemize); out.grandTotal = flag("grandTotal", out.grandTotal); out.roundedGrandTotals = flag("rounded", out.roundedGrandTotals);
+        out.keepTogetherBy = str("keepTogether", out.keepTogetherBy); out.filterBySheet = flag("filterBySheet", out.filterBySheet); out.sheet = str("sheet", out.sheet);
+        out.idField = str("idField", out.idField);
       } else if (t.name == "Field") {
         Field f;
-        f.name = a["name"]; f.kind = (FieldKind)std::stoi(a["kind"]); f.formula = a["formula"]; f.percentOf = a["of"]; f.percentBy = a["by"]; f.separator = a["sep"];
-        f.aggregate = (Aggregate)std::stoi(a["aggregate"]); f.decimals = std::stoi(a["decimals"]); f.scale = std::stod(a["scale"]); f.unit = a["unit"]; f.showUnit = a["showUnit"] == "1";
-        f.mergeAny = a["mergeAny"] == "1"; f.mergeShow = (MergeShow)std::stoi(a["mergeShow"]); f.hidden = a["hidden"] == "1";
-        f.totalPrefix = a["totalPrefix"]; f.totalSuffix = a["totalSuffix"]; f.notEvaluated = a["notEvaluated"];
+        f.name = str("name", ""); f.kind = (FieldKind)integer("kind", (int)f.kind); f.formula = str("formula", ""); f.percentOf = str("of", ""); f.percentBy = str("by", "");
+        f.separator = str("sep", ""); f.aggregate = (Aggregate)integer("aggregate", (int)f.aggregate); f.decimals = integer("decimals", f.decimals); f.scale = num("scale", f.scale);
+        f.unit = str("unit", ""); f.showUnit = flag("showUnit", f.showUnit); f.mergeAny = flag("mergeAny", f.mergeAny); f.mergeShow = (MergeShow)integer("mergeShow", (int)f.mergeShow);
+        f.mergeAppendQuantity = flag("mergeQty", f.mergeAppendQuantity); f.listSeparator = str("listSep", f.listSeparator);
+        f.zeroValueText = flag("zeroValueText", f.zeroValueText); f.zeroValue = str("zeroValue", ""); f.zeroTotalText = flag("zeroTotalText", f.zeroTotalText); f.zeroTotal = str("zeroTotal", "");
+        f.zeroGrandText = flag("zeroGrandText", f.zeroGrandText); f.zeroGrand = str("zeroGrand", ""); f.notEvaluated = str("notEvaluated", f.notEvaluated);
+        f.minMaxSeparator = str("minMaxSep", f.minMaxSeparator); f.totalPrefix = str("totalPrefix", ""); f.totalSuffix = str("totalSuffix", ""); f.hidden = flag("hidden", f.hidden);
         out.fields.push_back(f);
       } else if (t.name == "Part") {
         if (out.fields.empty()) return false;
-        CombinedPart p; p.field = a["field"]; p.prefix = a["prefix"]; p.suffix = a["suffix"]; p.decimals = std::stoi(a["decimals"]);
+        CombinedPart p; p.field = str("field", ""); p.prefix = str("prefix", ""); p.suffix = str("suffix", ""); p.decimals = integer("decimals", p.decimals);
         out.fields.back().parts.push_back(p);
       } else if (t.name == "Criterion") {
-        Condition c; c.field = a["field"]; c.op = (Op)std::stoi(a["op"]);
-        int kind = std::stoi(a["kind"]);
-        if (kind == (int)Value::Num) c.value = Value::Of(std::stod(a["value"])); else if (kind == (int)Value::Str) c.value = Value::Of(a["value"]);
+        Condition c; c.field = str("field", ""); c.op = (Op)integer("op", (int)c.op);
+        int kind = integer("kind", (int)Value::Undef);
+        if (kind == (int)Value::Num) c.value = Value::Of(num("value", 0)); else if (kind == (int)Value::Str) c.value = Value::Of(str("value", ""));
         out.filters.push_back(c);
       } else if (t.name == "Sort") {
-        SortKey k; k.field = a["field"]; k.descending = a["descending"] == "1"; k.header = a["header"] == "1"; k.footer = a["footer"] == "1"; k.blankAfter = a["blank"] == "1";
+        SortKey k; k.field = str("field", ""); k.descending = flag("descending", false); k.header = flag("header", false); k.footer = flag("footer", false); k.blankAfter = flag("blank", false);
         out.sort.push_back(k);
       }
     }
@@ -491,21 +508,25 @@ struct ImportPreview { std::vector<PropChange> changes; std::vector<std::string>
 // Only the properties in `filter` (all when empty) are considered; a cell equal to the current value is not a change.
 inline ImportPreview PreviewImport(const std::vector<Record>& model, const std::string& idField, const Sheet& sheet, const std::set<std::string>& filter) {
   ImportPreview p;
-  if (sheet.empty()) return p;
+  if (sheet.empty() || sheet[0].empty()) return p;          // no header, no id column
   for (size_t r = 1; r < sheet.size(); ++r) {
+    const std::vector<std::string>& row = sheet[r];
+    bool blank = true;
+    for (auto& c : row) if (!c.empty()) blank = false;
+    if (blank) continue;                                    // an empty or all-blank row (a trailing blank line) is ignored
     const Record* rec = nullptr;
-    for (auto& m : model) if (CellText(Get(m, idField)) == sheet[r][0]) rec = &m;
-    if (!rec) { p.unmatched.push_back(sheet[r][0]); continue; }
-    for (size_t c = 1; c < sheet[0].size() && c < sheet[r].size(); ++c) {
+    if (!row[0].empty()) for (auto& m : model) if (CellText(Get(m, idField)) == row[0]) rec = &m;
+    if (!rec) { p.unmatched.push_back(row[0].empty() ? "row " + std::to_string(r + 1) : row[0]); continue; }
+    for (size_t c = 1; c < sheet[0].size() && c < row.size(); ++c) {   // a short row only carries the columns it has, extra cells are ignored
       const std::string& prop = sheet[0][c];
       if (!filter.empty() && !filter.count(prop)) continue;
       Value cur = Get(*rec, prop);
-      const std::string& cell = sheet[r][c];
+      const std::string& cell = row[c];
       if (CellText(cur) == cell) continue;
       if (cur.kind == Value::Num) {
-        try { size_t used = 0; std::stod(cell, &used); if (used != cell.size()) throw 1; } catch (...) { p.invalid.push_back(sheet[r][0] + "/" + prop); continue; }
+        try { size_t used = 0; std::stod(cell, &used); if (used != cell.size()) throw 1; } catch (...) { p.invalid.push_back(row[0] + "/" + prop); continue; }
       }
-      p.changes.push_back({sheet[r][0], prop, CellText(cur), cell});
+      p.changes.push_back({row[0], prop, CellText(cur), cell});
     }
   }
   return p;
@@ -514,7 +535,8 @@ inline void ApplyImport(std::vector<Record>& model, const std::string& idField, 
   for (auto& ch : changes)
     for (auto& m : model) if (CellText(Get(m, idField)) == ch.id) {
       Value cur = Get(m, ch.prop);
-      m[ch.prop] = cur.kind == Value::Num ? Value::Of(std::stod(ch.newText)) : Value::Of(ch.newText);
+      if (cur.kind != Value::Num) { m[ch.prop] = Value::Of(ch.newText); continue; }
+      try { m[ch.prop] = Value::Of(std::stod(ch.newText)); } catch (...) {}   // a change that is not a number is left out
     }
 }
 

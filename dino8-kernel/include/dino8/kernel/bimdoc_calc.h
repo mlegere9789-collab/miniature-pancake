@@ -459,22 +459,26 @@ inline const Field* FindField(const ScheduleDef& d, const std::string& n) {
 }
 
 // Evaluates calculated, percentage and combined fields into the records (a copy is used).
-inline std::vector<Record> Prepare(const ScheduleDef& def, std::vector<Record> recs) {
-  // Expression-defined fields may use each other in any order: evaluate in passes until every chain has settled. A value that depends
-  // on itself (directly or through other fields) never gets a defined operand and stays not evaluated.
-  for (size_t pass = 0; pass <= def.fields.size(); ++pass) {
-    for (auto& f : def.fields) {
-      if (f.kind != FieldKind::Formula) continue;
-      for (auto& r : recs) {
-        Value v;
-        if (!Formula::Eval(f.formula, r, v)) v = Value();
-        r[f.name] = v;
-      }
-    }
-  }
+//
+// Pass 0 walks the fields in declaration order and evaluates every Formula and Combined field exactly once, so a formula sees the
+// Combined fields declared before it and its own name, when the record already holds one, is read as the input value and replaced once.
+// Expression-defined properties may also use formula fields declared LATER: a formula field that came out not evaluated, whose name the
+// record did not hold beforehand, is tried again, in field order, until a whole sweep defines nothing new. In those retries the
+// Combined fields declared after the formula stay invisible, as in pass 0. A value that depends on itself (directly or through other
+// fields) never gets a defined operand and stays not evaluated. `evaluations` (optional) counts the formula evaluations.
+inline std::vector<Record> Prepare(const ScheduleDef& def, std::vector<Record> recs, int* evaluations = nullptr) {
+  const size_t nf = def.fields.size();
+  std::vector<std::set<std::string>> held(recs.size());   // keys each record held before any field was computed
+  for (size_t i = 0; i < recs.size(); ++i) for (auto& kv : recs[i]) held[i].insert(kv.first);
+  auto eval = [&](const Field& f, const Record& view) {
+    if (evaluations) ++*evaluations;
+    Value v;
+    if (!Formula::Eval(f.formula, view, v)) v = Value();
+    return v;
+  };
   for (auto& f : def.fields) {
     if (f.kind == FieldKind::Formula) {
-      continue;
+      for (auto& r : recs) r[f.name] = eval(f, r);
     } else if (f.kind == FieldKind::Combined) {
       for (auto& r : recs) {
         std::string out;
@@ -487,6 +491,22 @@ inline std::vector<Record> Prepare(const ScheduleDef& def, std::vector<Record> r
           first = false;
         }
         r[f.name] = Value::Of(out);
+      }
+    }
+  }
+  for (bool progress = true; progress;) {
+    progress = false;
+    for (size_t fi = 0; fi < nf; ++fi) {
+      const Field& f = def.fields[fi];
+      if (f.kind != FieldKind::Formula) continue;
+      for (size_t ri = 0; ri < recs.size(); ++ri) {
+        Record& r = recs[ri];
+        if (held[ri].count(f.name) || r[f.name].Defined()) continue;
+        Record view = r;
+        for (size_t j = fi + 1; j < nf; ++j)
+          if (def.fields[j].kind == FieldKind::Combined && !held[ri].count(def.fields[j].name)) view.erase(def.fields[j].name);
+        Value v = eval(f, view);
+        if (v.Defined()) { r[f.name] = v; progress = true; }
       }
     }
   }
