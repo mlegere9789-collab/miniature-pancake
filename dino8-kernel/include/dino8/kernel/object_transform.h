@@ -39,9 +39,12 @@ inline ON_Xform ComposeTrs(const TrsParts& p) {
 }
 
 // Splits an affine matrix with no shear into T * R * S: the location is the last column, the scale the lengths of the three columns of the
-// upper 3 x 3, the rotation the normalised columns. A matrix of negative determinant (a mirror) gets a negative scale on all three axes and the
-// negated rotation, so that the rotation is always proper and ComposeTrs() gives the matrix back. Returns false for a singular matrix, for
-// columns that are not mutually orthogonal (a shear), and for a projective last row.
+// upper 3 x 3, the rotation the normalised columns. A matrix of negative determinant (a mirror) cannot have a proper rotation and an all-positive scale, so
+// the reflection is carried by the scale: it gets a negative sign on one axis or on all three (an odd number of axes), whichever leaves the
+// SMALLEST rotation (the largest trace of R; ties go to x, then y, then z, then all three). A pure mirror diag(-1,1,1) therefore splits into the identity
+// rotation and the scale (-1,1,1), a point inversion into the identity and (-1,-1,-1), and Rz(a) diag(-1,1,1) into Rz(a) and (-1,1,1), so that Clear Rotation
+// keeps the mirror and Clear Scale keeps the rotation. The choice is a convention (the split of a mirror is not unique); ComposeTrs() always gives the matrix
+// back. Returns false for a singular matrix, for columns that are not mutually orthogonal (a shear), and for a projective last row.
 inline bool DecomposeTrs(const ON_Xform& m, TrsParts& out, double tolerance = 1e-9) {
   if (std::fabs(m[3][0]) > tolerance || std::fabs(m[3][1]) > tolerance || std::fabs(m[3][2]) > tolerance || std::fabs(m[3][3] - 1.0) > tolerance) return false;
   Vector3d c[3];
@@ -51,12 +54,24 @@ inline bool DecomposeTrs(const ON_Xform& m, TrsParts& out, double tolerance = 1e
   for (int j = 0; j < 3; ++j) c[j] = c[j] * (1.0 / len[j]);
   if (std::fabs(ON_DotProduct(c[0], c[1])) > tolerance || std::fabs(ON_DotProduct(c[0], c[2])) > tolerance || std::fabs(ON_DotProduct(c[1], c[2])) > tolerance) return false;
   const double det = ON_DotProduct(ON_CrossProduct(c[0], c[1]), c[2]);
-  const double sign = det < 0.0 ? -1.0 : 1.0;
+  // Sign patterns with an even number of negative signs have determinant +1 columns (det > 0: all positive); with det < 0 an odd number of axes carries the mirror.
+  static const double kPatterns[4][3] = {{-1, 1, 1}, {1, -1, 1}, {1, 1, -1}, {-1, -1, -1}};
+  double sign[3] = {1.0, 1.0, 1.0};
+  if (det < 0.0) {
+    double best_trace = -4.0;
+    for (const auto& pat : kPatterns) {
+      const double trace = pat[0] * c[0].x + pat[1] * c[1].y + pat[2] * c[2].z;
+      if (trace > best_trace + 1e-12) {
+        best_trace = trace;
+        for (int j = 0; j < 3; ++j) sign[j] = pat[j];
+      }
+    }
+  }
   ON_Xform r = ON_Xform::IdentityTransformation;
   for (int j = 0; j < 3; ++j)
-    for (int i = 0; i < 3; ++i) r[i][j] = sign * c[j][i];
+    for (int i = 0; i < 3; ++i) r[i][j] = sign[j] * c[j][i];
   out.rotation = r;
-  out.scale = Vector3d(sign * len[0], sign * len[1], sign * len[2]);
+  out.scale = Vector3d(sign[0] * len[0], sign[1] * len[1], sign[2] * len[2]);
   out.location = Vector3d(m[0][3], m[1][3], m[2][3]);
   return true;
 }
