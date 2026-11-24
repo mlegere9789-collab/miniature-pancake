@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/convex_hull.h"
 #include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
 #include "opennurbs.h"
@@ -114,6 +115,36 @@ D8_EXTRA_TEST(ChamferAllEdgesOfUnequalBoxAndMovedBox) {
   rot.Rotation(0.7, ON_3dVector(1.0, 2.0, 0.5), ON_3dPoint(0.2, 0.1, 0.3));
   const Brep turned = Brep::BoxWelded(0, 0, 0, 3, 2, 1.5).Transform(rot);
   CheckChamferAllEdges(turned, 3, 2, 1.5, 0.35, "box 3 x 2 x 1.5 turned");
+}
+
+// Tetrahedra and a triangular prism: every vertex trihedral, dihedral angles other than 90 degrees. Expected volumes come from the independent half-space
+// polytope computation in tests/extra/chamfer_polytope_volumes.py (original faces, one plane per edge through the two rails, one plane per vertex through the
+// three face corners), not from the kernel. Faces = F + E + V of the original body (each face, edge and vertex becomes one face).
+D8_EXTRA_TEST(ChamferAllEdgesOfTetrahedraAndPrism) {
+  struct Case { const char* name; std::vector<Point3d> pts; double d; double volume; int faces; };
+  const std::vector<Point3d> corner = {Point3d(0, 0, 0), Point3d(3, 0, 0), Point3d(0, 3, 0), Point3d(0, 0, 3)};
+  const std::vector<Point3d> regular = {Point3d(1, 1, 1), Point3d(1, -1, -1), Point3d(-1, 1, -1), Point3d(-1, -1, 1)};
+  const std::vector<Point3d> prism = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(0, 3, 0), Point3d(0, 0, 2), Point3d(4, 0, 2), Point3d(0, 3, 2)};
+  const Case cases[] = {{"corner tetrahedron", corner, 0.1, 4.408350066145, 14},       {"corner tetrahedron", corner, 0.3, 3.770759222010, 14},
+                        {"regular tetrahedron", regular, 0.1, 2.591747089837, 14},     {"regular tetrahedron", regular, 0.3, 2.083838092263, 14},
+                        {"3-4-5 triangular prism", prism, 0.2, 11.468800000000, 20},   {"3-4-5 triangular prism", prism, 0.5, 9.100000000000, 20}};
+  for (const Case& c : cases) {
+    const Brep body = dino8::kernel::ExactConvexHull(c.pts);
+    Brep out;
+    bool built = true;
+    try {
+      out = dino8::kernel::ChamferConvexEdges(body, AllEdges(body), c.d, c.d);
+    } catch (const std::exception& e) {
+      built = false;
+      std::fprintf(stderr, "%s all edges threw: %s\n", c.name, e.what());
+    }
+    const std::string t = std::string(c.name) + ", ";
+    Check(built, Fmt((t + "all edges chamfered in one call builds").c_str(), c.d).c_str());
+    if (!built) continue;
+    Check(out.raw().IsSolid() && out.raw().IsValid(), Fmt((t + "a valid closed solid").c_str(), c.d).c_str());
+    Check(out.LiveFaceCount() == c.faces, Fmt((t + "faces = F + E + V of the original").c_str(), c.d).c_str());
+    Check(RelErr(out.VolumeOfSealedSolid(), c.volume) < 1e-9, Fmt((t + "volume equals the independent half-space polytope volume").c_str(), c.d).c_str());
+  }
 }
 
 D8_EXTRA_TEST(ChamferAllEdgesRefusesDistancesThatEatAFace) {
