@@ -272,9 +272,24 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
                                          [](CommandContext& ctx, const std::vector<Point3d>& p) {
                                            Vector3d d = p[1] - p[0];
                                            ctx.Print("Distance = " + FormatNumber(d.Length()) + " " + ctx.Settings().unit_system + "  (dx " + FormatNumber(d.x) + ", dy " + FormatNumber(d.y) + ", dz " + FormatNumber(d.z) + ")");
+                                           // AutoCAD DIST also reports the angle in the XY plane and the angle from the XY plane (here: of the construction plane).
+                                           {
+                                             const ON_Plane pl = ActivePlane(ctx);
+                                             const double dx = ON_DotProduct(d, pl.xaxis), dy = ON_DotProduct(d, pl.yaxis), dz = ON_DotProduct(d, pl.zaxis);
+                                             double xy = std::atan2(dy, dx) * 180.0 / ON_PI;
+                                             if (xy < 0) xy += 360.0;
+                                             const double from_xy = std::atan2(dz, std::hypot(dx, dy)) * 180.0 / ON_PI;
+                                             ctx.Print("Angle in XY plane = " + FormatNumber(xy) + " degrees, angle from XY plane = " + FormatNumber(from_xy) + " degrees");
+                                           }
                                            ctx.App().Notify("Distance " + FormatNumber(d.Length()));
                                          },
                                          [](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) { ctx.AddPreviewLine(p[0], h); }));
+  // AutoCAD ID: reports the coordinates of a picked point and makes it the last point (for @ relative input).
+  Reg(e, "Id", Make<PointsCommand>(std::vector<std::string>{"Specify point"},
+                                   [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                                     ctx.Print("X = " + FormatNumber(p[0].x) + "  Y = " + FormatNumber(p[0].y) + "  Z = " + FormatNumber(p[0].z));
+                                     ctx.SetLastPoint(p[0]);
+                                   }), CommandStatus::Implemented, "Prints the X, Y and Z of a picked point and keeps it as the last point.");
   Reg(e, "Angle", Make<PointsCommand>(std::vector<std::string>{"Vertex of angle", "First direction point", "Second direction point"},
                                       [](CommandContext& ctx, const std::vector<Point3d>& p) {
                                         Vector3d a = p[1] - p[0], b = p[2] - p[0];
