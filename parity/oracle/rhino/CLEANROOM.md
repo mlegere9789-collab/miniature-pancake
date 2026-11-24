@@ -1,0 +1,105 @@
+# Rhino 8 observation-only clean-room protocol (v1, DRAFT for owner and counsel sign-off)
+
+Purpose: reach 100% behavioural parity with the nine baselines (see ../SCOPE.md) using the owner's licensed copies as
+references, with a clean-room firewall so that Dino 8's code is our own work. Owner decision and risk assumption: ../G0_BLANKET.md.
+
+Two phases, both run ONLY by the Observer (the dirty side):
+
+* **Phase B (black-box).** Run scripted cases through the program's public interfaces; record numbers and flags. Always first:
+  it produces the test vectors that every other claim must be checked against.
+* **Phase D (disassembly-derived functional specs).** Where Phase B cannot determine a behaviour (an algorithm, a default, a
+  tolerance policy, an edge-case rule, a file-format field needed for interoperability), the Observer MAY decompile or
+  disassemble the owner's licensed copy on the owner's machine to understand the FUNCTION, then writes an **algorithm card**
+  (below). The code itself never leaves the Observer's machine.
+
+Algorithm card (the only product of Phase D): purpose; inputs/outputs; the mathematical method in our own words and notation;
+defaults and parameter ranges; edge-case and failure behaviour; and **at least one black-box test vector per claim** that
+Phase B confirmed. It contains NO code or pseudocode transcribed from decompiled output, NO vendor identifiers (class, function,
+variable or file names that are not public API), NO verbatim strings, NO control-flow structure copied step by step, NO
+screenshots. Where several algorithms would produce the same observable behaviour, the card states the behaviour and leaves the
+design to the Implementer.
+
+Hard lines (Observer and everyone else), even with the owner's risk assumption, because they ARE the clean room:
+* no circumvention of licence checks, DRM or anti-tamper; no patching or redistributing vendor binaries;
+* no vendor code, comments, internal identifiers, strings, icons, textures, materials, shaders, help text or sample files in the
+  repository or passed to Implementers (assets are re-created independently; public API names and documented signatures are fine);
+* no interference with vendor servers or cloud services beyond ordinary licensed use (no traffic interception, no probing);
+* no decompiler output, memory dumps or Observer notes outside the Observer's machine; the Observer's chat transcripts never
+  enter the repository;
+* Implementers never see Rhino/any baseline program, its installation, or Phase D material other than reviewed algorithm cards.
+
+## Roles and the firewall
+
+| Team | Who | May see | May write | May NOT |
+|---|---|---|---|---|
+| **Observers** ("O", dirty side) | the local session on the owner's computer (has the programs) | the programs' behaviour, public APIs, saved files made from OUR inputs, and (Phase D) their binaries on that machine | `golden/*.jsonl` (numbers/flags only), `specs/*.md` (behaviour statements and algorithm cards in our own words) | Dino 8 implementation code; anything that carries decompiled code, identifiers or assets |
+| **Implementers** ("I") | cloud agents/sessions | `cases.jsonl`, `golden/`, `specs/`, public docs, openNURBS source, existing Dino 8 code | Dino 8 code and tests | Rhino installation, Rhino binaries, any O raw session transcripts |
+| **Reviewer** ("R") | coordinator session + independent review agent | everything in the repo (not the Rhino installation) | `REVIEW_LOG.md`, rejections | change code or golden data |
+
+The only channel from O to I is the repository, through R. O's chat transcripts and scratch notes never enter the
+repository; only files that pass the contamination checks below do.
+
+## What an O artefact may contain
+
+1. **Golden records** (`golden/<case>.jsonl`): the case id (from `cases.jsonl`, which WE authored), Rhino build string,
+   document tolerance, and measured outputs: area, volume, bounding box, counts (faces/edges/vertices), validity
+   flags, Euler characteristic, intersection counts and points, curve lengths, exception/refusal type, wall-clock.
+   Numbers and flags only. No geometry dumps of Rhino-created data structures beyond what the case's own numbers need.
+2. **Behaviour specs** (`specs/<topic>.md`): short statements in our own words of the form "given X, Rhino returns Y",
+   each citing the golden case ids that show it. No vendor prose, no screenshots of Rhino's UI/dialogs, no option lists
+   copied from help. Option *names* observed in the command line may be recorded as identifiers only.
+3. **Divergence tickets** produced by the comparer when Dino 8 differs from golden beyond the stated tolerance.
+
+Everything else is rejected by R.
+
+## Gates
+
+* **G0:** satisfied for all nine programs and both phases by `../G0_BLANKET.md` (owner's explicit assumption of risk). The Observer
+  records each program's build string in its golden files and does not stop to ask for sign-off.
+* **G1 (case authoring):** `cases.jsonl` is generated by `gen_cases.py` from closed forms and parameter sweeps that we
+  wrote. Cases never come from Rhino's own sample files, templates or help examples.
+* **G2 (golden intake):** R checks every golden file: schema valid (`compare.py --check-golden`), only allowed
+  fields, no strings longer than 200 characters outside `build`, no binary blobs, case ids all exist in `cases.jsonl`.
+* **G3 (spec and algorithm-card intake):** R rejects any spec or card containing code or pseudocode, vendor-internal names,
+  verbatim vendor text, step-by-step control flow, screenshots, or any claim without a confirming Phase B test vector. R also
+  samples cards for leakage by asking a fresh agent to re-derive the behaviour from the card alone and comparing it to the golden vectors.
+* **G4 (implementation):** I writes tests that load `golden/` and compare; implementation commits must cite case ids.
+  An implementer who needs a fact not in golden/specs files a case request instead of guessing from memory of Rhino
+  internals; O fulfils it through G1 to G2.
+* **G5 (independent check):** a sample of golden records is regenerated by O on a second run (determinism check) and
+  by an independent second pass when the owner can (different Rhino session). Records that differ between runs are
+  quarantined, not averaged.
+
+## Rules that keep the room clean
+
+1. No one carries information from the Rhino machine into the repo except through the artefact types above.
+2. Implementers do not look at Rhino, and O does not write Dino 8 implementation code. (The same person may fill both
+   roles only at different times with the repository as the sole carrier; a single Claude session must not do both
+   in one context.)
+3. A divergence is never "fixed" by tuning a Dino 8 tolerance to match a golden number. Tolerance classes are fixed in
+   `compare.py` and changed only by R with a written reason.
+4. Where Rhino's result is itself a tolerance-limited approximation, golden records store the Rhino document tolerance,
+   and the comparison window is derived from it, not from Dino 8's output.
+5. Every golden record carries the build string; if the owner upgrades Rhino, the corpus is regenerated and diffed.
+6. Anything a team member learns that cannot be expressed as a golden record or spec is **not** recorded.
+7. Breach handling: if anything outside the allowed artefact types is found in the repo, R removes it from all branches
+   (history rewrite on branches we own), logs it, and any code that depended on it is re-implemented from specs by a
+   fresh implementer.
+
+## Workflow
+
+1. R/I author cases (`gen_cases.py`, deterministic seed) and push `w0-rhino-oracle`.
+2. O (local session) runs `run_rhino.py` inside Rhino (smoke on 5 cases first, then full), writes `golden/`, commits
+   to a branch named `rhino-golden-<date>`.
+3. R runs G2 checks, merges golden into the oracle branch.
+4. I runs `compare.py` against Dino 8's result file (produced by the Dino 8 case runner, same `cases.jsonl`),
+   creates divergence tickets, and fixes the highest-ranked ones; each Register row's `acceptance[0].test_id` points
+   to a golden-backed test.
+5. Loop: new divergence classes drive new cases.
+
+## What this will and will not give us
+
+Gives: independently verified expected values for the Rhino rows that are measurable (geometry, Booleans, blends,
+offsets, intersections, I/O round trips, command results), differential sweeps that find kernel defects fast.
+Does not give: the vendors' code or data structures; those stay our own designs, validated by their outputs and by algorithm
+cards. Where neither clean room nor research resolves a behaviour, Dino 8's own R&D fills the gap and is checked against golden vectors.

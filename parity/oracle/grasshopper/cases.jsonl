@@ -1,0 +1,264 @@
+{"args":{"nodes":{"n":{"c":"Series","in":[[0],[1],[5]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[1],[2],[3]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0002","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[5],[-1],[4]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0003","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[0],[0.1],[4]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0004","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[0],[0],[3]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0005","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[0],[1],[0]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0006","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[0],[1],[1]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0007","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[3],[1],[-2]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0008","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[1000000000.0],[1],[3]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0009","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Series","in":[[0.5],[0.25],[6]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SERI-0010","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[0],[1]],"sub":"Domain"},"r":{"c":"Range","in":[null,[4]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0001","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[0],[10]],"sub":"Domain"},"r":{"c":"Range","in":[null,[5]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0002","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[-1],[1]],"sub":"Domain"},"r":{"c":"Range","in":[null,[2]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0003","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[5],[5]],"sub":"Domain"},"r":{"c":"Range","in":[null,[3]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0004","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[1],[0]],"sub":"Domain"},"r":{"c":"Range","in":[null,[4]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0005","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[0],[1]],"sub":"Domain"},"r":{"c":"Range","in":[null,[0]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0006","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[0],[1]],"sub":"Domain"},"r":{"c":"Range","in":[null,[1]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0007","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Construct Domain","in":[[0],[1]],"sub":"Domain"},"r":{"c":"Range","in":[null,[-3]],"sub":"Sequence"}},"outs":[["r",0]],"wires":[["d",0,"r",0]]},"family":"sets","id":"GH-RANG-0008","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[0],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0001","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[0],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0002","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[1],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0003","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[1],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0004","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[2],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0005","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[2],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0006","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[6],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0007","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[6],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0008","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[7],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0009","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[7],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0010","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[-1],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0011","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[-1],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0012","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[-7],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0013","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Shift List","in":[null,[-7],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-SHFT-0014","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[0],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0001","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[0],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0002","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[2],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0003","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[2],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0004","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[5],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0005","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[5],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0006","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[6],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0007","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[6],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0008","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[-1],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0009","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[-1],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0010","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[100],[true]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0011","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Item","in":[null,[100],[false]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LITM-0012","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Partition List","in":[null,[1]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-PART-0001","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Partition List","in":[null,[2]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-PART-0002","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Partition List","in":[null,[4]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-PART-0003","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Partition List","in":[null,[6]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-PART-0004","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Partition List","in":[null,[7]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-PART-0005","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Partition List","in":[null,[0]],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-PART-0006","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Cull Index","in":[null,[0],[false]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-CULL-0001","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Cull Index","in":[null,[0,5],[false]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-CULL-0002","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Cull Index","in":[null,[6],[false]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-CULL-0003","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Cull Index","in":[null,[-1],[false]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-CULL-0004","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Cull Index","in":[null,[1,1],[false]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-CULL-0005","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Cull Index","in":[null,[0,1,2,3,4,5],[false]],"sub":"Sequence"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-CULL-0006","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"Reverse List","in":[null],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-REVL-0001","op":"graph"}
+{"args":{"nodes":{"d":{"c":"Series","in":[[10],[10],[6]],"sub":"Sequence"},"n":{"c":"List Length","in":[null],"sub":"List"}},"outs":[["n",0]],"wires":[["d",0,"n",0]]},"family":"sets","id":"GH-LLEN-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Sort List","in":[[3,1,2]],"sub":"List"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SORT-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Sort List","in":[[1,1,1]],"sub":"List"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SORT-0002","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Sort List","in":[[-1,5,0]],"sub":"List"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SORT-0003","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Sort List","in":[[2.5,2.4999999,2.5]],"sub":"List"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SORT-0004","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Sort List","in":[[0]],"sub":"List"}},"outs":[["n",0]],"wires":[]},"family":"sets","id":"GH-SORT-0005","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Graft Tree","in":[{"0":[1,2,3]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Flatten Tree","in":[{"0":[1,2,3]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0002","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Simplify Tree","in":[{"0":[1,2,3]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0003","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0":[1,2,3]},[1]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0":[1,2,3]},[2]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0002","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Graft Tree","in":[{"0":[1,2],"1":[3,4]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0004","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Flatten Tree","in":[{"0":[1,2],"1":[3,4]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0005","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Simplify Tree","in":[{"0":[1,2],"1":[3,4]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0006","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0":[1,2],"1":[3,4]},[1]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0003","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0":[1,2],"1":[3,4]},[2]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0004","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Graft Tree","in":[{"0;0":[1],"0;1":[2,3],"1;0":[4]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0007","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Flatten Tree","in":[{"0;0":[1],"0;1":[2,3],"1;0":[4]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0008","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Simplify Tree","in":[{"0;0":[1],"0;1":[2,3],"1;0":[4]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0009","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0;0":[1],"0;1":[2,3],"1;0":[4]},[1]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0005","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0;0":[1],"0;1":[2,3],"1;0":[4]},[2]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0006","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Graft Tree","in":[{"0":[],"1":[5]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0010","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Flatten Tree","in":[{"0":[],"1":[5]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0011","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Simplify Tree","in":[{"0":[],"1":[5]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0012","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0":[],"1":[5]},[1]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0007","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0":[],"1":[5]},[2]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0008","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Graft Tree","in":[{"0;0;0":[1,2]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0013","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Flatten Tree","in":[{"0;0;0":[1,2]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0014","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Simplify Tree","in":[{"0;0;0":[1,2]}],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TREE-0015","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0;0;0":[1,2]},[1]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0009","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Trim Tree","in":[{"0;0;0":[1,2]},[2]],"sub":"Tree"}},"outs":[["n",0]],"wires":[]},"family":"tree","id":"GH-TRIM-0010","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[1,2,3],[10,20,30]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[1,2,3],[10,20]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0002","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[1,2],[10,20,30,40]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0003","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[5],[1,2,3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0004","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[1,2,3],[]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0005","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[7],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0006","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[-7],[3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0007","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[7.5],[2]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0008","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[0],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0009","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[2],[0.5]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0010","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[-8],[0.3333333333333333]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0011","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[[1e+308],[10]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0012","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[1,2,3],[10,20,30]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0013","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[1,2,3],[10,20]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0014","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[1,2],[10,20,30,40]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0015","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[5],[1,2,3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0016","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[1,2,3],[]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0017","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[7],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0018","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[-7],[3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0019","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[7.5],[2]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0020","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[0],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0021","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[2],[0.5]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0022","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[-8],[0.3333333333333333]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0023","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[[1e+308],[10]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0024","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[1,2,3],[10,20,30]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0025","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[1,2,3],[10,20]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0026","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[1,2],[10,20,30,40]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0027","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[5],[1,2,3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0028","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[1,2,3],[]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0029","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[7],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0030","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[-7],[3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0031","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[7.5],[2]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0032","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[0],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0033","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[2],[0.5]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0034","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[-8],[0.3333333333333333]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0035","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[[1e+308],[10]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0036","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[1,2,3],[10,20,30]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0037","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[1,2,3],[10,20]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0038","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[1,2],[10,20,30,40]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0039","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[5],[1,2,3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0040","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[1,2,3],[]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0041","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[7],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0042","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[-7],[3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0043","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[7.5],[2]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0044","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[0],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0045","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[2],[0.5]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0046","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[-8],[0.3333333333333333]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0047","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Division","in":[[1e+308],[10]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0048","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[1,2,3],[10,20,30]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0049","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[1,2,3],[10,20]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0050","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[1,2],[10,20,30,40]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0051","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[5],[1,2,3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0052","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[1,2,3],[]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0053","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[7],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0054","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[-7],[3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0055","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[7.5],[2]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0056","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[0],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0057","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[2],[0.5]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0058","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[-8],[0.3333333333333333]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0059","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Modulus","in":[[1e+308],[10]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0060","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[1,2,3],[10,20,30]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0061","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[1,2,3],[10,20]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0062","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[1,2],[10,20,30,40]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0063","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[5],[1,2,3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0064","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[1,2,3],[]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0065","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[7],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0066","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[-7],[3]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0067","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[7.5],[2]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0068","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[0],[0]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0069","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[2],[0.5]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0070","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[-8],[0.3333333333333333]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0071","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Power","in":[[1e+308],[10]],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-MATH-0072","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[{"0":[1,2],"1":[3,4]},{"0":[10,20,30]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[{"0":[1,2]},{"0":[10],"1":[20]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0002","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[{"0":[1,2],"1":[3]},{"0":[10],"1":[20,30,40]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0003","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Addition","in":[{"0;0":[1,2],"0;1":[3]},{"0":[100]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0004","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[{"0":[1,2],"1":[3,4]},{"0":[10,20,30]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0005","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[{"0":[1,2]},{"0":[10],"1":[20]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0006","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[{"0":[1,2],"1":[3]},{"0":[10],"1":[20,30,40]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0007","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Subtraction","in":[{"0;0":[1,2],"0;1":[3]},{"0":[100]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0008","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[{"0":[1,2],"1":[3,4]},{"0":[10,20,30]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0009","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[{"0":[1,2]},{"0":[10],"1":[20]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0010","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[{"0":[1,2],"1":[3]},{"0":[10],"1":[20,30,40]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0011","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Multiplication","in":[{"0;0":[1,2],"0;1":[3]},{"0":[100]}],"sub":"Operators"}},"outs":[["n",0]],"wires":[]},"family":"math","id":"GH-TMTH-0012","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x+y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0001","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x+y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0002","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x*y+2"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0003","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x*y+2"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0004","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x-y*2"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0005","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x-y*2"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0006","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["(x+y)*2"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0007","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["(x+y)*2"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0008","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x^2"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0009","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x^2"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0010","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x^y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0011","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x^y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0012","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x^y"],[0],[0]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0013","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x^y"],[2.5],[0.5]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0014","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["-x^2"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0015","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["-x^2"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0016","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x/y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0017","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x/y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0018","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x/y"],[0],[0]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0019","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x/y"],[2.5],[0.5]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0020","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x%y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0021","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x%y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0022","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x%y"],[0],[0]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0023","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x%y"],[2.5],[0.5]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0024","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["sqrt(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0025","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["sqrt(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0026","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["sqrt(x)"],[0],[0]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0027","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["sqrt(x)"],[2.5],[0.5]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0028","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["abs(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0029","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["abs(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0030","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["sin(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0031","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["sin(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0032","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["cos(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0033","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["cos(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0034","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["atan(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0035","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["atan(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0036","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["log(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0037","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["log(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0038","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["log(x)"],[0],[0]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0039","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["log(x)"],[2.5],[0.5]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0040","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["ln(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0041","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["ln(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0042","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["exp(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0043","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["exp(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0044","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["floor(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0045","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["floor(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0046","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["ceil(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0047","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["ceil(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0048","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["round(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0049","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["round(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0050","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["min(x,y)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0051","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["min(x,y)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0052","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["max(x,y)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0053","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["max(x,y)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0054","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["if(x>y,1,2)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0055","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["if(x>y,1,2)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0056","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x>y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0057","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x>y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0058","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x==y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0059","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x==y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0060","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x<>y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0061","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x<>y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0062","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x and y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0063","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x and y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0064","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x or y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0065","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x or y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0066","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["not(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0067","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["not(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0068","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["pi"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0069","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["pi"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0070","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["e"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0071","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["e"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0072","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["1/0"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0073","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["1/0"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0074","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x+"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0075","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x+"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0076","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["unknownfn(x)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0077","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["unknownfn(x)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0078","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["mod(x,y)"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0079","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["mod(x,y)"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0080","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x!"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0081","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x!"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0082","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x&y"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0083","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["x&y"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0084","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["0.1+0.2"],[3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0085","op":"graph"}
+{"args":{"nodes":{"n":{"c":"Evaluate","in":[["0.1+0.2"],[-3],[2]],"sub":"Script"}},"outs":[["n",0]],"wires":[]},"family":"expression","id":"GH-EVAL-0086","op":"graph"}
+{"args":{"nodes":{"c":{"c":"Circle","in":[null,[0.5]],"sub":"Primitive"},"l":{"c":"Length","in":[null],"sub":"Analysis"}},"outs":[["c",0],["l",0]],"wires":[["c",0,"l",0]]},"family":"geometry","id":"GH-CIRC-0001","op":"graph"}
+{"args":{"nodes":{"c":{"c":"Circle","in":[null,[1]],"sub":"Primitive"},"l":{"c":"Length","in":[null],"sub":"Analysis"}},"outs":[["c",0],["l",0]],"wires":[["c",0,"l",0]]},"family":"geometry","id":"GH-CIRC-0002","op":"graph"}
+{"args":{"nodes":{"c":{"c":"Circle","in":[null,[2.5]],"sub":"Primitive"},"l":{"c":"Length","in":[null],"sub":"Analysis"}},"outs":[["c",0],["l",0]],"wires":[["c",0,"l",0]]},"family":"geometry","id":"GH-CIRC-0003","op":"graph"}
+{"args":{"nodes":{"c":{"c":"Circle","in":[null,[10]],"sub":"Primitive"},"l":{"c":"Length","in":[null],"sub":"Analysis"}},"outs":[["c",0],["l",0]],"wires":[["c",0,"l",0]]},"family":"geometry","id":"GH-CIRC-0004","op":"graph"}
+{"args":{"nodes":{"c":{"c":"Circle","in":[null,[0]],"sub":"Primitive"},"l":{"c":"Length","in":[null],"sub":"Analysis"}},"outs":[["c",0],["l",0]],"wires":[["c",0,"l",0]]},"family":"geometry","id":"GH-CIRC-0005","op":"graph"}
+{"args":{"nodes":{"c":{"c":"Circle","in":[null,[-1]],"sub":"Primitive"},"l":{"c":"Length","in":[null],"sub":"Analysis"}},"outs":[["c",0],["l",0]],"wires":[["c",0,"l",0]]},"family":"geometry","id":"GH-CIRC-0006","op":"graph"}
