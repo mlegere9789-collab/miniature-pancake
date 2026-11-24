@@ -245,7 +245,7 @@
   "cmddesc.selnone": "Clears the selection.",
   "cmddesc.hide": "Hides the selected objects.",
   "cmddesc.show": "Makes every hidden object visible again.",
-  "cmddesc.lock": "Locks the selected objects so they cannot be selected or edited.",
+  "cmddesc.lock": "Prevents the selected objects from being picked or edited until unlocked.",
   "cmddesc.unlock": "Unlocks every locked object.",
   "cmddesc.open": "Opens a document from a file.",
   "cmddesc.save": "Saves the document to its file.",

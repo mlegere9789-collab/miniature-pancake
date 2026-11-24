@@ -73,6 +73,10 @@ that only reports, or one that reuses another command's implementation).
   product-name hits.
 * Wired into the application smoke run as the section `VENDOR_TEXT`
   (`dino8-app/tests/sections/94_vendor_text.sh`, no application process started).
+* Similarity pass: every new description was compared word by word with the one it replaced. 23
+  that kept a long common run or a near-identical shape were rewritten; the remaining close pairs
+  are one-line panel and toggle commands whose only sensible description is nearly the same few
+  words (for example opening a named panel).
 * Overlap scan: every run of 8 consecutive words (90,111 of them) of the old descriptions and help
   pages was searched for in all text files of the tree, excluding `.git` and `parity/oracle`. After
   the rewording above the only hits are the toolbar and menu label lists (listed below); none in
