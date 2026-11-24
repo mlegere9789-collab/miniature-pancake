@@ -590,8 +590,8 @@ without needing to see either popup at all.
 **Hatch Patterns**: a "Hatch Patterns" accessible (`ATSPI_ROLE_LIST`) with
 one `ATSPI_ROLE_LIST_ITEM` per pattern in the loaded Hatch Pattern library,
 named after the pattern (e.g. `"ANSI31"`) with its own human-readable
-description text (`HatchPattern::description`, e.g. `"ANSI Iron, Brick,
-Stone masonry"`, already plain text parsed straight out of the `.pat` file)
+description text (`HatchPattern::description`, e.g. `"ANSI 31: 45-degree
+parallel lines"`, already plain text parsed straight out of the `.pat` file)
 as its `Description` - the same two facts `DrawHatchPatternsPanel`'s
 thumbnail grid conveys visually per pattern (the name below the thumbnail,
 the description as its hover tooltip). Built from

@@ -48,55 +48,55 @@ std::vector<std::string> SplitCommas(const std::string& s) {
 const char* const kBuiltinPat = R"PAT(
 *SOLID, Solid fill
 45, 0,0, 0,1
-*ANSI31, ANSI Iron, Brick, Stone masonry
+*ANSI31, ANSI 31: 45-degree parallel lines
 45, 0,0, 0,.125
-*ANSI32, ANSI Steel
+*ANSI32, ANSI 32: 45-degree lines in closely spaced pairs
 45, 0,0, 0,.375
 45, .176776695,0, 0,.375
-*ANSI33, ANSI Bronze, Brass, Copper
+*ANSI33, ANSI 33: 45-degree lines alternating with dashed lines
 45, 0,0, 0,.25
 45, .176776695,0, 0,.25, .125,-.0625
-*ANSI34, ANSI Plastic, Rubber
+*ANSI34, ANSI 34: 45-degree lines in groups of four
 45, 0,0, 0,.75
 45, .176776695,0, 0,.75
 45, .353553391,0, 0,.75
 45, .530330086,0, 0,.75
-*ANSI35, ANSI Fire brick, Refractory material
+*ANSI35, ANSI 35: 45-degree lines alternating with dash-dot lines
 45, 0,0, 0,.25
 45, .176776695,0, 0,.25, .3125,-.0625,0,-.0625
-*ANSI36, ANSI Marble, Slate, Glass
+*ANSI36, ANSI 36: 45-degree staggered dashes
 45, 0,0, .21875,.125, .3125,-.0625,0,-.0625
-*ANSI37, ANSI Lead, Zinc, Magnesium, Sound/Heat/Elec Insulation
+*ANSI37, ANSI 37: lines crossing at 45 and 135 degrees
 45, 0,0, 0,.125
 135, 0,0, 0,.125
-*ANSI38, ANSI Aluminum
+*ANSI38, ANSI 38: 45-degree lines crossed by dashed 135-degree lines
 45, 0,0, 0,.125
 135, 0,0, .25,.125, .3125,-.1875
-*BRICK, Brick or masonry-type surface
+*BRICK, Staggered brick courses
 0, 0,0, 0,.25
 90, 0,0, 0,.5, .25,-.25
 90, .25,0, 0,.5, -.25,.25
-*HONEYCOMB, Honeycomb pattern
+*HONEYCOMB, Hexagonal cells
 0, 0,0, .1875,.108253175, .125,-.25
 120, 0,0, .1875,.108253175, .125,-.25
 60, 0,0, .1875,.108253175, -.25,.125
-*DOTS, A series of dots
+*DOTS, Evenly spaced dots
 0, 0,0, .03125,.0625, 0,-.0625
-*CROSS, A series of crosses
+*CROSS, Evenly spaced small crosses
 0, 0,0, .25,.25, .125,-.375
 90, .0625,-.0625, .25,.25, .125,-.375
-*GRASS, Grass area
+*GRASS, Grass tufts of three strokes
 90, 0,0, .707106781,.707106781, .1875,-1.226713563
 45, 0,0, 0,1, .1875,-.8125
 135, 0,0, 0,1, .1875,-.8125
-*GRAVEL, Cobble / gravel pattern
+*GRAVEL, Scattered gravel flecks at mixed angles
 228.0127875, 0,.75, 0,1, .1,-.9
 184.3987054, .25,.75, 0,1, .2,-.8
 120, 0,.5, 0,1, .12,-.88
 60, .5,.5, 0,1, .15,-.85
 0, .25,.25, 0,1, .3,-.7
 315, .75,.35, 0,1, .18,-.82
-*NET, Horizontal / vertical grid
+*NET, Square grid of fine lines
 0, 0,0, 0,.125
 90, 0,0, 0,.125
 )PAT";
