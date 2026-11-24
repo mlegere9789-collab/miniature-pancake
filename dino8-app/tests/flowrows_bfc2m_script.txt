@@ -1,0 +1,6 @@
+# Flow Register row Curve to Mesh (Blender Geometry Nodes): player + bake, read back by sections/97_bfc2m.sh (see flowrows4_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 35
+SelAll
+List

@@ -1,0 +1,6 @@
+# Flow Register row Transform Geometry (Blender Geometry Nodes): player + bake, read back by sections/97_bftrn.sh (see flowrows4_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 51
+SelAll
+List

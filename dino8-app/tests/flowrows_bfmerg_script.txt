@@ -1,0 +1,6 @@
+# Flow Register row Merge by Distance (Blender Geometry Nodes): player + bake, read back by sections/97_bfmerg.sh (see flowrows4_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 19
+SelAll
+List
