@@ -9,6 +9,9 @@
 # Not tested (needs a real window): the highlighted viewport title and Ctrl+Tab.
 # ---------------------------------------------------------------------------
 . "$HERE/ux_common.sh"
+if [ "${IS_WINDOWS:-0}" = 1 ]; then
+  echo "skip UXVIEW (not run on Windows: needs python3 and the Linux headless launch)"
+else
 UXVIEW_S="$TMPW/uxview_script.txt"
 cat > "$UXVIEW_S" <<EOS
 @wait 2
@@ -59,4 +62,5 @@ if ux_launch "$UXVIEW_S"; then
   ux_eq UXVIEW_3View layout3 "3View keeps the same standard views in three viewports" "3View: Top, Front, Perspective (active)"
   ux_eq UXVIEW_3View cycle3 "three steps of NextViewport go round the three viewports and come back" \
     "Active viewport: Top" "Active viewport: Front" "Active viewport: Perspective"
+fi
 fi
