@@ -1228,6 +1228,7 @@ kernel::Mesh WeldBoundaryVertices(const kernel::Mesh& in, double tol) {
 
 kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options) {
   kernel::Mesh m = MeshBrepClosedOnce(brep, options);
+  if (std::getenv("DINO8_SIL_DEBUG")) std::printf("SILDBG MeshBrepClosed first attempt: faces=%d verts=%d closed=%d chord=%g solid=%d\n", m.raw().FaceCount(), m.raw().VertexCount(), (int)m.IsClosedManifold(), options.chord_tolerance, (int)brep.IsSolid());
   // A closed brep that did not mesh watertight at this tolerance usually
   // does at a finer one: retry twice before giving up.
   if (brep.IsSolid() && !m.IsClosedManifold()) {

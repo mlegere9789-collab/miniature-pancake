@@ -4,6 +4,10 @@
 // CreateUVCrv, UnrollSrf/Smash (developable approximation), Fin, Ribbon,
 // Silhouette, 3DFace, MakeUniformUV and friends.
 #include "commands/cmd_common.h"
+#include <cstring>
+#include <cstdio>
+#include <functional>
+#include <set>
 #include "commands/history_rebuild.h"
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep_seam.h"
@@ -1489,6 +1493,44 @@ class RibbonCommand : public Command {
   std::vector<ObjectId> ids_;
 };
 
+// How much each (triangle) face of `mesh` faces along `view`: the dot product of the face's SMOOTHED normal with `view`.
+// A facet's own normal is the radial direction at the CIRCUMCENTRE of its triangle, which for a thin or obtuse triangle (every pole fan and seam strip
+// of a tessellated sphere) lies far from the facet: the facets within a few degrees of the outline then have signs that follow the mesh, not the
+// surface, and the outline came out as one long chain plus loose islands (a sphere gave 3 chains on one platform and 1 on another, where the
+// meshes differed by a vertex). The smoothed normal of a face is the area-weighted mean of the normals of the faces that touch it at its three
+// corners, counting only the neighbours within 30 degrees of the face itself, so a crease (a box edge) is never averaged away and every flat
+// face keeps exactly its own normal, while a curved surface gets a normal that varies smoothly from face to face.
+std::vector<double> SmoothedFaceFacing(const ON_Mesh& mesh, const ON_3dVector& view) {
+  const int nf = mesh.FaceCount();
+  std::vector<ON_3dVector> fn(static_cast<size_t>(nf));
+  std::vector<double> area(static_cast<size_t>(nf), 0.0);
+  std::vector<std::vector<int>> star(static_cast<size_t>(mesh.VertexCount()));
+  for (int fi = 0; fi < nf; ++fi) {
+    const ON_MeshFace& f = mesh.m_F[fi];
+    const ON_3dPoint a(mesh.m_V[f.vi[0]]), b(mesh.m_V[f.vi[1]]), c(mesh.m_V[f.vi[2]]);
+    ON_3dVector n = ON_CrossProduct(b - a, c - a);
+    const double len = n.Length();
+    area[static_cast<size_t>(fi)] = 0.5 * len;
+    if (len > 0.0) n *= 1.0 / len;
+    fn[static_cast<size_t>(fi)] = n;
+    for (int k = 0; k < 3; ++k) star[static_cast<size_t>(f.vi[k])].push_back(fi);
+  }
+  constexpr double kCreaseCos = 0.8660254037844386;  // cos 30 degrees
+  std::vector<double> facing(static_cast<size_t>(nf), 0.0);
+  for (int fi = 0; fi < nf; ++fi) {
+    const ON_MeshFace& f = mesh.m_F[fi];
+    ON_3dVector sum(0, 0, 0);
+    for (int k = 0; k < 3; ++k) {
+      for (int gi : star[static_cast<size_t>(f.vi[k])]) {
+        if (ON_DotProduct(fn[static_cast<size_t>(gi)], fn[static_cast<size_t>(fi)]) >= kCreaseCos) sum += fn[static_cast<size_t>(gi)] * area[static_cast<size_t>(gi)];
+      }
+    }
+    if (sum.Unitize()) facing[static_cast<size_t>(fi)] = ON_DotProduct(sum, view);
+    else facing[static_cast<size_t>(fi)] = ON_DotProduct(fn[static_cast<size_t>(fi)], view);
+  }
+  return facing;
+}
+
 void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   Vector3d view = ActiveNormal(ctx);
   if (Viewport* vp = ctx.ActiveViewport()) view = vp->GetCamera().Forward();
@@ -1504,6 +1546,8 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     ON_Mesh mesh = m->raw();
     mesh.ConvertQuadsToTriangles();
     mesh.ComputeFaceNormals();
+    const std::vector<double> facing = SmoothedFaceFacing(mesh, view);
+    constexpr double kFacingTie = 1e-9;
     // Edge -> faces map.
     std::map<std::pair<int, int>, std::vector<int>> edges;
     for (int fi = 0; fi < mesh.FaceCount(); ++fi) {
@@ -1515,10 +1559,41 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       bool sil = false;
       if (fs.size() == 1) sil = true;
       else if (fs.size() == 2) {
-        double d0 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[0]]), view), d1 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[1]]), view);
-        sil = (d0 < 0) != (d1 < 0);
+        // A face is "turned away" when it faces away by more than the noise floor: an exact tie (a face edge-on to the view, 0 or -1e-17
+        // depending on the platform's rounding) always counts as facing, so the result does not depend on the sign of a rounding error.
+        sil = (facing[static_cast<size_t>(fs[0])] < -kFacingTie) != (facing[static_cast<size_t>(fs[1])] < -kFacingTie);
       }
       if (sil) segs.emplace_back(mesh.Vertex(e.first), mesh.Vertex(e.second));
+    }
+    if (std::getenv("DINO8_SIL_DEBUG")) {
+      auto fnv = [](uint64_t h, uint64_t v) { h ^= v; h *= 1099511628211ULL; return h; };
+      uint64_t hx = 1469598103934665603ULL, hr = 1469598103934665603ULL;
+      for (int i = 0; i < mesh.VertexCount(); ++i) {
+        const ON_3fPoint q = mesh.m_V[i];
+        uint32_t bx, by, bz; std::memcpy(&bx, &q.x, 4); std::memcpy(&by, &q.y, 4); std::memcpy(&bz, &q.z, 4);
+        hx = fnv(hx, bx); hx = fnv(hx, by); hx = fnv(hx, bz);
+        hr = fnv(hr, (uint64_t)(int64_t)std::llround(q.x * 1000.0)); hr = fnv(hr, (uint64_t)(int64_t)std::llround(q.y * 1000.0)); hr = fnv(hr, (uint64_t)(int64_t)std::llround(q.z * 1000.0));
+      }
+      for (int variant = 0; variant < 2; ++variant) {
+        auto back = [&](int fi) { return variant == 0 ? ON_DotProduct(ON_3dVector(mesh.m_FN[fi]), view) < 0 : facing[static_cast<size_t>(fi)] < -kFacingTie; };
+        int ties6 = 0; double mind = 1e9;
+        for (int fi = 0; fi < mesh.FaceCount(); ++fi) { const double d = std::fabs(variant == 0 ? ON_DotProduct(ON_3dVector(mesh.m_FN[fi]), view) : facing[static_cast<size_t>(fi)]); if (d < 1e-6) ++ties6; mind = std::min(mind, d); }
+        std::map<int, int> deg; std::vector<int> par(static_cast<size_t>(mesh.VertexCount()));
+        for (size_t i = 0; i < par.size(); ++i) par[i] = static_cast<int>(i);
+        std::function<int(int)> fnd = [&](int x) { while (par[static_cast<size_t>(x)] != x) { par[static_cast<size_t>(x)] = par[static_cast<size_t>(par[static_cast<size_t>(x)])]; x = par[static_cast<size_t>(x)]; } return x; };
+        size_t nseg = 0;
+        for (const auto& [e, fs] : edges) {
+          bool sil = fs.size() == 1;
+          if (fs.size() == 2) sil = back(fs[0]) != back(fs[1]);
+          if (sil) { ++nseg; ++deg[e.first]; ++deg[e.second]; par[static_cast<size_t>(fnd(e.first))] = fnd(e.second); }
+        }
+        int dh[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        for (const auto& kv : deg) ++dh[std::min(kv.second, 7)];
+        std::set<int> comps; for (const auto& kv : deg) comps.insert(fnd(kv.first));
+        std::printf("SILDBG %s verts=%d faces=%d closed=%d hashbits=%016llx hash1e-3=%016llx view=(%a,%a,%a) ties<1e-6:%d mind=%.3e silsegs=%zu deg1=%d deg2=%d deg3=%d deg4+=%d comps=%zu\n",
+                    variant == 0 ? "OLD" : "NEW", mesh.VertexCount(), mesh.FaceCount(), (int)m->IsClosedManifold(), (unsigned long long)hx, (unsigned long long)hr, view.x, view.y, view.z, ties6, mind, nseg,
+                    dh[1], dh[2], dh[3], dh[4] + dh[5] + dh[6] + dh[7], comps.size());
+      }
     }
     // Chain into polylines.
     std::vector<bool> used(segs.size(), false);
@@ -1537,6 +1612,7 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
           else if (segs[j].first.DistanceTo(pl.front()) <= tol) { pl.insert(pl.begin(), segs[j].second); used[j] = true; grew = true; }
         }
       }
+      if (std::getenv("DINO8_SIL_DEBUG")) { double len = 0; for (size_t q = 1; q < pl.size(); ++q) len += pl[q].DistanceTo(pl[q - 1]); std::printf("SILDBG chain pts=%zu len=%.4f closed=%d\n", pl.size(), len, (int)(pl.front().DistanceTo(pl.back()) <= tol)); }
       SceneObject n = SceneObject::MakeCurve(PolylineCurve(pl));
       n.layer_index = like.layer_index;
       ctx.Doc().Add(std::move(n));
