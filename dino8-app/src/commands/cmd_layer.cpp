@@ -2,6 +2,7 @@
 #include "commands/cmd_common.h"
 
 #include <cstdio>
+#include <set>
 
 namespace dino8::app {
 
@@ -161,8 +162,27 @@ void RegisterLayerCommands(CommandEngine& e) {
   Reg(e, "SetLayerToObject", OnSelection("Select an object", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         if (const SceneObject* o = ctx.Doc().Find(ids.front())) { ctx.Doc().SetCurrentLayer(o->layer_index); ctx.Print("Current layer: " + ctx.Doc().LayerFullPath(o->layer_index)); }
       }));
-  Reg(e, "OneLayerOn", Immediate([](CommandContext& ctx) { for (Layer& L : ctx.Doc().Layers()) L.visible = false; ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].visible = true; }));
-  Reg(e, "OneLayerOff", Immediate([](CommandContext& ctx) { ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].visible = false; }));
+  // OneLayerOn: with objects selected, the layers of those objects stay on (with their parent layers, which a nested layer needs to be
+  // visible) and every other layer is turned off; with nothing selected the current layer is the one that stays on.
+  Reg(e, "OneLayerOn", Immediate([](CommandContext& ctx) {
+        std::set<int> keep;
+        for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) keep.insert(o.layer_index);
+        if (keep.empty()) keep.insert(ctx.Doc().CurrentLayer());
+        std::vector<Layer>& layers = ctx.Doc().Layers();
+        for (Layer& L : layers) L.visible = false;
+        for (int idx : keep) for (int i = idx; i >= 0 && i < static_cast<int>(layers.size()); i = layers[static_cast<size_t>(i)].parent) layers[static_cast<size_t>(i)].visible = true;
+        ctx.Doc().Touch();
+        ctx.Print("OneLayerOn: " + std::to_string(keep.size()) + " layer(s) on, all others off");
+      }));
+  // OneLayerOff: turns off the layer of each selected object; with nothing selected, the current layer.
+  Reg(e, "OneLayerOff", Immediate([](CommandContext& ctx) {
+        std::set<int> off;
+        for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) off.insert(o.layer_index);
+        if (off.empty()) off.insert(ctx.Doc().CurrentLayer());
+        for (int idx : off) ctx.Doc().Layers()[static_cast<size_t>(idx)].visible = false;
+        ctx.Doc().Touch();
+        ctx.Print("OneLayerOff: " + std::to_string(off.size()) + " layer(s) turned off");
+      }));
   Reg(e, "AllLayersOn", Immediate([](CommandContext& ctx) { for (Layer& L : ctx.Doc().Layers()) L.visible = true; }));
   // LayerOn/LayerOff/LayerLock/LayerUnlock take an optional layer-name
   // argument (e.g. "LayerOn Walls") read from any token already queued on
