@@ -176,5 +176,17 @@ SelAll
 List
 Volume
 Area
+# unit sphere sunk 1e-3 into the top face of a 4-cube (pole axis z; corpus E-TAN-SPH-BOX-POLE-OV1e-3-U): the cap inside the cube is
+# pi*d^2*(3-d)/3 = 3.1e-6, so V = 64 + 4/3*pi - 3.1e-6 = 68.1888. The kernel's sealing refuses it (a slit pair does not separate two
+# cycles), and the sewing fallback used to hand back a closed shell that is not a valid ON_Brep (a collapsed edge, found at the 1% rung).
+New
+B2SBEGIN_sph_tangent
+Box 0,0,0 4,4,0 4
+Sphere 2,2,4.999 1
+SelAll
+BooleanUnion
+SelAll
+List
+Volume
 New
 B2SEND
