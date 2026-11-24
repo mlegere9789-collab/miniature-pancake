@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <charconv>
+#include <clocale>
+#include <cstdio>
+#include <cstdlib>
+#include <locale>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -346,10 +350,15 @@ std::string Trim(const std::string& s) {
 bool ParseDouble(const std::string& text, double& out) {
   const std::string t = Trim(text);
   if (t.empty()) return false;
-  const char* b = t.data() + (t[0] == '+' ? 1 : 0);
-  const char* e = t.data() + t.size();
-  const auto r = std::from_chars(b, e, out);
-  return r.ec == std::errc() && r.ptr == e && std::isfinite(out);
+  // floating-point std::from_chars is deleted in some standard libraries (libc++ before its 2023 release), so the text is read through a
+  // classic-locale stream: the whole text must be consumed, and inf/nan/hex forms are refused (as std::from_chars with the default format did).
+  std::istringstream is(t[0] == '+' ? t.substr(1) : t);
+  is.imbue(std::locale::classic());
+  double v = 0;
+  is >> v;
+  if (is.fail() || !is.eof() || !std::isfinite(v)) return false;
+  out = v;
+  return true;
 }
 
 bool ParseId(const std::string& text, uint32_t& out) {
@@ -442,9 +451,16 @@ std::string XmlEscape(const std::string& s) {
 }
 
 void AppendFloat(std::string& s, float v) {
-  char buf[48];
-  const auto r = std::to_chars(buf, buf + sizeof(buf), v);
-  s.append(buf, r.ptr);
+  // The shortest decimal text that reads back as exactly `v` (floating-point std::to_chars needs macOS 13.3; the precision is searched with
+  // snprintf / strtof, as in gltf.cpp).
+  if (v == 0.0f) { s += std::signbit(v) ? "-0" : "0"; return; }
+  char buf[64];
+  for (int prec = 1; prec <= 9; ++prec) {
+    std::snprintf(buf, sizeof(buf), "%.*g", prec, static_cast<double>(v));
+    if (std::strtof(buf, nullptr) == v) break;
+  }
+  for (char* q = buf; *q; ++q) { if (*q == ',') *q = '.'; }  // a host program that changed the C locale's decimal point
+  s += buf;
 }
 
 }  // namespace
