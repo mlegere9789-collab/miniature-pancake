@@ -1455,6 +1455,9 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   }
   // The document multiplies every linetype pattern by this for display; the LTYPE records below hold the raw lengths.
   w.G(9, "$LTSCALE"); w.G(40, doc.Settings().linetype_scale > 0 ? doc.Settings().linetype_scale : 1.0);
+  // PDMODE / PDSIZE: the point display style (PType command); written only when changed from the default 0 / 0
+  if (doc.Settings().point_style != 0) { w.G(9, "$PDMODE"); w.G(70, doc.Settings().point_style); }
+  if (doc.Settings().point_size != 0.0) { w.G(9, "$PDSIZE"); w.G(40, doc.Settings().point_size); }
   w.G(9, "$HANDSEED"); w.G(5, "FFFF");
   w.G(0, "ENDSEC");
 
@@ -3375,6 +3378,12 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
       file_insunits = std::atoi(groups[i + 1].value.c_str());
       break;
     }
+  }
+  for (size_t i = 0; i + 1 < groups.size(); ++i) {
+    if (groups[i].code != 9) continue;
+    const std::string var = Upper(groups[i].value);
+    if (var == "$PDMODE" && groups[i + 1].code == 70) doc.Settings().point_style = std::atoi(groups[i + 1].value.c_str());
+    else if (var == "$PDSIZE" && groups[i + 1].code == 40) doc.Settings().point_size = std::atof(groups[i + 1].value.c_str());
   }
   const size_t first_new_object = doc.Objects().size();
   const size_t first_new_block = doc.Blocks().size();

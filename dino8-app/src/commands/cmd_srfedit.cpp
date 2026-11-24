@@ -3766,6 +3766,33 @@ class SplitRefitSurfaceCommand : public Command {
   bool have_targets_ = false;
 };
 
+// AutoCAD 3DFACE: four corners make a quad (planar or not), and Enter at the fourth-corner prompt closes the face as a triangle (the
+// fourth corner equals the third, exactly as the DXF 3DFACE entity stores it).
+class Face3DCommand : public PointsCommand {
+ public:
+  Face3DCommand()
+      : PointsCommand({"First corner", "Second corner", "Third corner", "Fourth corner. Press Enter for a triangle"},
+                      [](CommandContext& ctx, const std::vector<Point3d>& p) {
+                        ON_Mesh m;
+                        const bool tri = p.size() == 3;
+                        for (int i = 0; i < 3; ++i) m.SetVertex(i, p[i]);
+                        if (tri) {
+                          m.SetTriangle(0, 0, 1, 2);
+                        } else {
+                          m.SetVertex(3, p[3]);
+                          m.SetQuad(0, 0, 1, 2, 3);
+                        }
+                        m.ComputeFaceNormals();
+                        kernel::Mesh k; k.raw() = m;
+                        ctx.Doc().BeginChange("3DFace");
+                        ctx.Doc().Add(SceneObject::MakeMesh(k));
+                      }) {}
+  void OnEnter(CommandContext& ctx) override {
+    if (pts_.size() == 3) { ctx.ClearPreview(); build_(ctx, pts_); }
+    Finish();
+  }
+};
+
 }  // namespace
 
 // RailRevolve's exact kernel branch (see RailRevolveCommand::OnPoint), shared
@@ -3935,16 +3962,8 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "Reconstructs the selected surfaces to degree 3 at a typed control-point count, in ONE direction only (Direction=U or V) - the other direction's own point count and degree are left exactly as they were.");
   Reg(e, "SrfPtGrid", Make<SrfGridCommand>(true));
   Reg(e, "SrfControlPtGrid", Make<SrfGridCommand>(false));
-  Reg(e, "3DFace", Make<PointsCommand>(std::vector<std::string>{"First corner", "Second corner", "Third corner", "Fourth corner"},
-      [](CommandContext& ctx, const std::vector<Point3d>& p) {
-        ON_Mesh m;
-        for (int i = 0; i < 4; ++i) m.SetVertex(i, p[i]);
-        m.SetQuad(0, 0, 1, 2, 3);
-        m.ComputeFaceNormals();
-        kernel::Mesh k; k.raw() = m;
-        ctx.Doc().BeginChange("3DFace");
-        ctx.Doc().Add(SceneObject::MakeMesh(k));
-      }));
+  Reg(e, "3DFace", Make<Face3DCommand>(), CommandStatus::Implemented,
+      "Four corners make a (planar or non-planar) quad face; Enter after the third corner makes a triangle (AutoCAD 3DFACE: the fourth corner repeats the third).");
   // MergeAllCoplanarFaces, MergeCoplanarFace, MergeFaces, MergeAllEdges, MergeEdge,
   // SplitEdge, SplitFace, RebuildEdges, FilletEdge, ChamferEdge, BlendEdge, BlendSrf,
   // FilletSrf, ChamferSrf, VariableFilletSrf, VariableChamferSrf, VariableBlendSrf,

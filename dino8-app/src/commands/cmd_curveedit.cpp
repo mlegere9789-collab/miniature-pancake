@@ -462,6 +462,35 @@ class SplitCommand : public Command {
   std::unique_ptr<Command> inner_;
 };
 
+// BreakAtPoint (AutoCAD BREAKATPOINT): splits ONE open line, polyline, arc or spline into two objects at a picked point. A point that is
+// not on the object is projected onto it (the nearest point of the object is used). Closed objects (circles, closed polylines) are
+// refused, and so is a point at an end of the object (nothing to split).
+class BreakAtPointCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select the object to break"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) if (std::optional<CurveRef> c = CopyCurve(ctx, id)) { target_ = *c; break; }
+    if (!target_) { ctx.Warn("BreakAtPoint: select a line, arc, polyline or spline"); Finish(); return; }
+    if (target_->curve.IsClosed()) { ctx.Warn("BreakAtPoint: a closed object cannot be broken at a single point"); Finish(); return; }
+    ctx.Doc().SelectNone();
+    ctx.Doc().Select(target_->id, false);
+    accept_preselection = false;
+    WantPoint("Specify the break point");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    const double t = target_->curve.ClosestPointParameter(p);
+    std::vector<kernel::NurbsCurve> pieces = SplitAt(target_->curve, {t});
+    if (pieces.size() != 2) { ctx.Warn("BreakAtPoint: that point is at an end of the object, so there is nothing to break"); Finish(); return; }
+    ctx.Doc().BeginChange("BreakAtPoint");
+    ctx.Doc().Remove(target_->id);
+    ctx.Doc().SelectNone();
+    for (const kernel::NurbsCurve& piece : pieces) ctx.Doc().Select(AddLike(ctx, piece, target_->attrs), true);
+    ctx.Print("BreakAtPoint: the object was broken into 2 pieces at " + FormatPoint(target_->curve.PointAt(t)));
+    Finish();
+  }
+  std::optional<CurveRef> target_;
+};
+
 // ---------------------------------------------------------------------------
 // Trim: cutters first, then click the portions to remove.
 // ---------------------------------------------------------------------------
@@ -887,6 +916,8 @@ void CurveOrSolidIntersect(CommandContext& ctx, const std::vector<ObjectId>& ids
 void RegisterCurveEditCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectObjects, 1), CommandStatus::Implemented,
       "Curve/curve intersections as point objects (a single curve is self-intersected); two closed solids give the intersection volume.");
+  Reg(e, "BreakAtPoint", Make<BreakAtPointCommand>(), CommandStatus::Implemented,
+      "Breaks one open curve into two at a picked point (projected onto the curve if it is off it); closed curves are refused.");
   Reg(e, "Split", Make<SplitCommand>(), CommandStatus::Implemented,
       "Splits curves with curves or points; solids are split with a plane through two points (BooleanSplit), or by an arbitrary cutting solid/surface (SplitByObject).");
   Reg(e, "Trim", Make<TrimCommand>(), CommandStatus::Implemented,

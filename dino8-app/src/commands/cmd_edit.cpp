@@ -3,6 +3,7 @@
 #include "commands/cmd_common.h"
 #include "commands/count_limits.h"
 #include "commands/history_rebuild.h"
+#include "commands/lengthen_geom.h"
 #include "dino8/kernel/curve.h"
 #include "io/File3dm.h"
 
@@ -683,6 +684,77 @@ class InsertKnotCommand : public Command {
   std::vector<ObjectId> ids_;
 };
 
+// Lengthen (AutoCAD LENGTHEN): changes the length of an open line, polyline or arc at the end nearest the picked point, by Mode=Delta (add
+// or, negative, remove a length), Mode=Percent (the new length is that percentage of the old one: 150 makes it one and a half times as
+// long) or Mode=Total (the new total length). The number is typed first, then curves are picked (near the end to change) until Enter.
+// Closed curves are not changed. Dynamic dragging is not provided.
+class LengthenCommand : public Command {
+ public:
+  enum class Mode { Delta, Percent, Total };
+  void Begin(CommandContext&) override {
+    options = {{"Mode", "Delta", {"Delta", "Percent", "Total"}, false, false}};
+    Ask();
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Mode") return;
+    mode_ = v == "Percent" ? Mode::Percent : v == "Total" ? Mode::Total : Mode::Delta;
+    options[0].value = v;
+    have_value_ = false;
+    Ask();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e = nullptr;
+    const double v = std::strtod(t.c_str(), &e);
+    if (e && e != t.c_str() && !*e) OnNumber(ctx, v);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!std::isfinite(v)) { ctx.Warn("Lengthen: that is not a number"); return; }
+    if (mode_ == Mode::Percent && !(v > 0)) { ctx.Warn("Lengthen: the percentage must be greater than zero"); return; }
+    if (mode_ == Mode::Total && !(v > 0)) { ctx.Warn("Lengthen: the total length must be greater than zero"); return; }
+    value_ = v;
+    have_value_ = true;
+    WantPoint("Select an object near the end to change. Press Enter when done");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!have_value_) { ctx.Warn("Lengthen: type the length first"); return; }
+    const SceneObject* best = nullptr;
+    double best_d = 1e300;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      if (o.kind != ObjectKind::Curve || !o.curve || !ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+      const double d = o.curve->PointAt(o.curve->ClosestPointParameter(p)).DistanceTo(p);
+      if (d < best_d) { best_d = d; best = &o; }
+    }
+    if (!best) { ctx.Warn("Lengthen: no curve near that point"); return; }
+    SceneObject* o = ctx.Doc().Find(best->id);
+    const kernel::Interval dom = o->curve->Domain();
+    const bool at_start = p.DistanceTo(o->curve->PointAt(dom.min)) <= p.DistanceTo(o->curve->PointAt(dom.max));
+    const double len = o->curve->LengthToTolerance(1e-9);
+    const double target = mode_ == Mode::Delta ? len + value_ : mode_ == Mode::Percent ? len * value_ / 100.0 : value_;
+    ON_NurbsCurve out;
+    std::string why;
+    if (!LengthenCurveEnd(o->curve->raw(), at_start, target, out, why)) { ctx.Warn("Lengthen: " + why); return; }
+    ctx.Doc().BeginChange("Lengthen");
+    o = ctx.Doc().Find(best->id);
+    o->curve->raw() = out;
+    o->InvalidateDisplay();
+    ctx.Print("Lengthen: curve " + std::to_string(o->id) + " is now " + FormatNumber(target) + " long (changed at its " + (at_start ? "start" : "end") + ")");
+    WantPoint("Select an object near the end to change. Press Enter when done");
+  }
+  void OnEnter(CommandContext&) override { Finish(); }
+
+ private:
+  void Ask() {
+    switch (mode_) {
+      case Mode::Delta: WantNumber("Delta length (negative shortens)", 10.0); break;
+      case Mode::Percent: WantNumber("Percentage of the current length", 100.0); break;
+      case Mode::Total: WantNumber("Total length", 10.0); break;
+    }
+  }
+  Mode mode_ = Mode::Delta;
+  double value_ = 0;
+  bool have_value_ = false;
+};
+
 }  // namespace
 
 // Offset's construction for ONE curve (see OffsetCommand::Make): the kernel's
@@ -920,6 +992,22 @@ void RegisterEditCommands(CommandEngine& e) {
         ctx.Doc().BeginChange("Flip");
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; FlipObject(*o); }
       }));
+  // AutoCAD REVERSE: reverses the direction of lines, polylines, splines and helixes (any curve); surfaces, meshes and solids are not
+  // touched (Flip does those). The curve's own parameterization is reversed, so the exported start point becomes the old end point.
+  Reg(e, "Reverse", OnSelection("Select lines, polylines, splines or helixes to reverse", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        ctx.Doc().BeginChange("Reverse");
+        int n = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+          FlipObject(*o);
+          ++n;
+        }
+        if (n == 0) ctx.Warn("Reverse: select at least one curve");
+        else ctx.Print("Reverse: " + std::to_string(n) + " curve(s) reversed");
+      }), CommandStatus::Implemented, "Reverses the direction (start and end) of each selected curve; other object kinds are left alone (Flip handles surfaces and meshes).");
+  Reg(e, "Lengthen", Make<LengthenCommand>(), CommandStatus::Implemented,
+      "Changes the length of an open line, polyline or arc at the end nearest the pick: Mode=Delta, Percent or Total (type the number, then pick near the end); closed curves are left alone.");
   Reg(e, "Dir", OnSelection("Select objects to show direction", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         int shown = 0;
         for (ObjectId id : ids) {

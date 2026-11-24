@@ -408,10 +408,16 @@ class DivideCommand : public Command {
   void Begin(CommandContext&) override { WantObjects("Select curves to divide"); }
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
     ids_ = ids;
-    options = {{"Mode", "NumberOfSegments", {"NumberOfSegments", "SegmentLength"}, false, false}};
+    options = {{"Mode", "NumberOfSegments", {"NumberOfSegments", "SegmentLength"}, false, false},
+               {"Ends", ends_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
     WantNumber("Number of segments", count_);
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Ends") {  // Ends=No: only the interior points, as AutoCAD DIVIDE places them (n segments give n - 1 points)
+      ends_ = (v != "No");
+      for (OptionSpec& o : options) if (o.name == "Ends") o.value = ends_ ? "Yes" : "No";
+      return;
+    }
     if (n != "Mode") return;
     by_length_ = (v == "SegmentLength");
     options[0].value = v;
@@ -444,7 +450,19 @@ class DivideCommand : public Command {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->kind != ObjectKind::Curve) continue;
       const kernel::NurbsCurve curve = *o->curve;  // Add() may reallocate objects
-      const std::vector<double> params = by_length_ ? curve.DivideByLength(length_) : curve.DivideByCount(count_);
+      std::vector<double> params = by_length_ ? curve.DivideByLength(length_) : curve.DivideByCount(count_);
+      if (!ends_ && !params.empty()) {
+        // Interior points only. An open curve loses its first and last division parameter (the two end points); a closed
+        // curve keeps its start point (the seam is a real division point) and loses only the repeated last one.
+        const kernel::Interval dom = curve.Domain();
+        const double eps = 1e-12 * std::max(1.0, std::fabs(dom.max - dom.min));
+        if (curve.IsClosed()) {
+          if (params.size() > 1 && std::fabs(params.back() - dom.max) <= eps) params.pop_back();
+        } else {
+          if (!params.empty() && std::fabs(params.back() - dom.max) <= eps) params.pop_back();
+          if (!params.empty() && std::fabs(params.front() - dom.min) <= eps) params.erase(params.begin());
+        }
+      }
       for (double t : params) ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(t)));
       ++n;
     }
@@ -454,8 +472,102 @@ class DivideCommand : public Command {
   }
   std::vector<ObjectId> ids_;
   bool by_length_ = false;
+  bool ends_ = true;
   int count_ = 10;
   double length_ = 1.0;
+};
+
+// Measure (AutoCAD MEASURE): places point objects along each selected curve at multiples of a given distance, counted from the start of
+// the curve (From=Start, the default) or from its end (From=End): k * d for k = 1, 2, ... while k * d is short of the curve's length. The
+// curve is not cut. The start point itself and the end point are not marked. (The Block option is not provided.)
+class MeasureCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves to measure"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"From", from_end_ ? "End" : "Start", {"Start", "End"}, false, false}};
+    WantNumber("Length of segment", length_);
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "From") return;
+    from_end_ = (v == "End");
+    options[0].value = from_end_ ? "End" : "Start";
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e = nullptr;
+    const double v = std::strtod(t.c_str(), &e);
+    if (e && e != t.c_str() && !*e) OnNumber(ctx, v);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!std::isfinite(v) || !(v > 0)) { ctx.Warn("Measure: the segment length must be a positive number"); return; }
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+      const double segs = o->curve->Length(200) / v;
+      if (!(segs <= kMaxCreatedItems)) {
+        ctx.Warn("Measure: a segment length of " + FormatNumber(v) + " would make about " + FormatNumber(std::floor(segs)) + " points on curve " +
+                 std::to_string(id) + " (limit " + FormatNumber(kMaxCreatedItems) + "); give a longer segment length");
+        return;
+      }
+    }
+    length_ = v;
+    ctx.Doc().BeginChange("Measure");
+    int curves = 0, placed = 0;
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+      const kernel::NurbsCurve curve = *o->curve;  // Add() may reallocate objects
+      const double total = curve.LengthToTolerance(1e-9);
+      for (int k = 1; static_cast<double>(k) * v < total * (1.0 - 1e-12); ++k) {
+        const double s = from_end_ ? total - static_cast<double>(k) * v : static_cast<double>(k) * v;
+        ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(curve.ParameterAtArcLength(s, 1e-9))));
+        ++placed;
+      }
+      ++curves;
+    }
+    if (curves == 0) ctx.Doc().AbandonChange();
+    ctx.Print("Measure: " + std::to_string(placed) + " point(s) placed on " + std::to_string(curves) + " curve(s)");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  bool from_end_ = false;
+  double length_ = 10.0;
+};
+
+// PType (AutoCAD PTYPE / PDMODE and PDSIZE): sets the point display style and size stored in the document (and written to the file:
+// $PDMODE / $PDSIZE in DXF). Style is the PDMODE code: 0 dot, 1 nothing, 2 plus, 3 cross, 4 tick, and 32 added for a circle around it,
+// 64 for a square, 96 for both (so 35 is a cross in a circle). Size is PDSIZE: 0 = 5% of the viewport height, a positive number is an
+// absolute size in model units, a negative number is a percentage of the viewport height. Only the stored values are provided here;
+// the viewports still draw points as before.
+class PTypeCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    options = {{"Style", std::to_string(ctx.Settings().point_style), {}, true, false},
+               {"Size", FormatNumber(ctx.Settings().point_size), {}, true, false}};
+    WantEnter("Set Style= and Size=, then press Enter");
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    char* e = nullptr;
+    const double x = std::strtod(v.c_str(), &e);
+    if (!e || e == v.c_str() || *e || !std::isfinite(x)) { ctx.Warn("PType: '" + v + "' is not a number"); return; }
+    if (n == "Style") {
+      const int m = static_cast<int>(std::lround(x));
+      const int base = m % 32, ring = m - base;
+      if (std::fabs(x - m) > 1e-9 || base < 0 || base > 4 || (ring != 0 && ring != 32 && ring != 64 && ring != 96)) {
+        ctx.Warn("PType: the style must be 0-4, optionally plus 32 (circle), 64 (square) or 96 (both): '" + v + "' ignored");
+        return;
+      }
+      ctx.Settings().point_style = m;
+      options[0].value = std::to_string(m);
+    } else if (n == "Size") {
+      ctx.Settings().point_size = x;
+      options[1].value = FormatNumber(x);
+    }
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.Print("PType: PDMODE = " + std::to_string(ctx.Settings().point_style) + ", PDSIZE = " + FormatNumber(ctx.Settings().point_size));
+    Finish();
+  }
 };
 
 // PointGrid: two corner picks define a rectangular grid of point objects,
@@ -859,9 +971,13 @@ void RegisterCreateCommands(CommandEngine& e) {
   Reg(e, "Spiral", Make<HelixCommand>(true));
   Reg(e, "PointGrid", Make<PointGridCommand>(),
       CommandStatus::Implemented, "Rectangular grid of point objects between two picked corners; CountX/CountY options set the grid size (default 5 x 5).");
+  Reg(e, "PType", Make<PTypeCommand>(), CommandStatus::Implemented,
+      "Style= sets the point display style (PDMODE: 0-4, plus 32 circle / 64 square / 96 both) and Size= the size (PDSIZE: 0 = 5% of the viewport, positive absolute, negative percent); stored in the document and the DXF header. Viewports do not yet draw the style.");
   Reg(e, "Divide", Make<DivideCommand>(), CommandStatus::Implemented,
       "Places point objects along each selected curve; Mode=NumberOfSegments (default) divides by a fixed "
-      "segment count, Mode=SegmentLength by a fixed segment length.");
+      "segment count, Mode=SegmentLength by a fixed segment length; Ends=No leaves out the two end points (AutoCAD DIVIDE).");
+  Reg(e, "Measure", Make<MeasureCommand>(), CommandStatus::Implemented,
+      "Places point objects along each selected curve at multiples of a distance from its start (From=End: from its end); the curve is not cut.");
   Reg(e, "ClosestPt", Make<PointsCommand>(std::vector<std::string>{"Point to test"},
                                           [](CommandContext& ctx, const std::vector<Point3d>& p) {
                                             double best = 1e300; Point3d bp = p[0];
