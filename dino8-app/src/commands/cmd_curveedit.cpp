@@ -462,6 +462,143 @@ class SplitCommand : public Command {
   std::unique_ptr<Command> inner_;
 };
 
+// Break (AutoCAD BREAK): removes the part of ONE curve between two picked points. Both points are projected onto the curve (a point past
+// an end of an open curve means that end, so the end part is removed). An open curve leaves two pieces (or one when the cut reaches an end).
+// A closed curve (circle, closed polyline) loses the part counter-clockwise from the first point to the second and becomes an open curve
+// (a circle becomes an arc). The two points are given in order after the object.
+class BreakCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select the object to break"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) if (std::optional<CurveRef> c = CopyCurve(ctx, id)) { target_ = *c; break; }
+    if (!target_) { ctx.Warn("Break: select a line, arc, circle, polyline or spline"); Finish(); return; }
+    ctx.Doc().SelectNone();
+    ctx.Doc().Select(target_->id, false);
+    accept_preselection = false;
+    WantPoint("Specify the first break point");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!first_) { first_ = p; ctx.SetLastPoint(p); WantPoint("Specify the second break point"); return; }
+    const kernel::NurbsCurve& c = target_->curve;
+    const kernel::Interval dom = c.Domain();
+    const double eps = std::max(1e-9, (dom.max - dom.min) * 1e-9);
+    double t1 = c.ClosestPointParameter(*first_), t2 = c.ClosestPointParameter(p);
+    if (c.IsClosed()) {  // the seam point is parameter min and max at once: use min
+      if (t1 >= dom.max - eps) t1 = dom.min;
+      if (t2 >= dom.max - eps) t2 = dom.min;
+    }
+    const double lo = std::min(t1, t2), hi = std::max(t1, t2);
+    std::vector<kernel::NurbsCurve> keep;
+    if (c.IsClosed()) {
+      if (hi - lo <= eps) { ctx.Warn("Break: the two points are the same, nothing to remove from a closed object"); Finish(); return; }
+      kernel::NurbsCurve through_seam, middle;  // from hi round through the seam to lo, and from lo to hi
+      if (lo <= dom.min + eps) {
+        kernel::NurbsCurve l, r;
+        if (c.Split(hi, l, r) != kernel::Result::Ok) { ctx.Warn("Break: the closed object could not be cut at those points"); Finish(); return; }
+        middle = l;
+        through_seam = r;
+      } else {
+        std::vector<kernel::NurbsCurve> pieces = SplitAt(c, {lo, hi});
+        if (pieces.size() != 2) { ctx.Warn("Break: the closed object could not be cut at those points"); Finish(); return; }
+        through_seam = pieces[0];
+        middle = pieces[1];
+      }
+      // Counter-clockwise from the first point to the second is lo -> hi when the first point comes first; the other way round it goes
+      // through the seam. The removed part is that one, the other one stays.
+      keep.push_back(t1 < t2 ? through_seam : middle);
+    } else {
+      if (lo > dom.min + eps) { kernel::NurbsCurve l, r; if (c.Split(lo, l, r) == kernel::Result::Ok) keep.push_back(l); }
+      if (hi < dom.max - eps) { kernel::NurbsCurve l, r; if (c.Split(hi, l, r) == kernel::Result::Ok) keep.push_back(r); }
+      if (hi - lo <= eps && keep.size() == 2) {  // one point: a break with no gap
+        keep.clear();
+        for (kernel::NurbsCurve& piece : SplitAt(c, {lo})) keep.push_back(piece);
+      }
+      if (keep.empty()) { ctx.Warn("Break: that would remove the whole object"); Finish(); return; }
+    }
+    ctx.Doc().BeginChange("Break");
+    ctx.Doc().Remove(target_->id);
+    ctx.Doc().SelectNone();
+    for (const kernel::NurbsCurve& piece : keep) ctx.Doc().Select(AddLike(ctx, piece, target_->attrs), true);
+    ctx.Print("Break: the part between the two points was removed, " + Plural(keep.size(), "piece") + " left");
+    Finish();
+  }
+  std::optional<CurveRef> target_;
+  std::optional<Point3d> first_;
+};
+
+// StretchCrossing (AutoCAD STRETCH): a crossing window (two corners in the construction plane), then a base point and a second point. What
+// lies wholly inside the window moves by the displacement; a line or polyline that crosses the window moves only the vertices inside it,
+// so its other vertices stay put and it stretches. A circle moves when its centre is inside, a point when it is inside. Curves that are
+// not polylines and cross the window, and surfaces/meshes/solids that are only partly inside, are left unchanged (reported).
+class StretchCrossingCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("First corner of the crossing window"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (pts_.size() < 4) pts_.push_back(p);
+    switch (pts_.size()) {
+      case 1: WantPoint("Opposite corner of the crossing window"); break;
+      case 2: WantPoint("Base point"); break;
+      case 3: WantPoint("Second point of displacement"); break;
+      default: Apply(ctx); Finish(); break;
+    }
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  void Apply(CommandContext& ctx) {
+    const ON_Plane pl = ActivePlane(ctx);
+    auto uv = [&](const Point3d& q) { double u, v; pl.ClosestPointTo(q, &u, &v); return std::make_pair(u, v); };
+    const auto a = uv(pts_[0]), b = uv(pts_[1]);
+    const double u0 = std::min(a.first, b.first), u1 = std::max(a.first, b.first), v0 = std::min(a.second, b.second), v1 = std::max(a.second, b.second);
+    const double tol = 1e-9;
+    auto inside = [&](const Point3d& q) { const auto w = uv(q); return w.first >= u0 - tol && w.first <= u1 + tol && w.second >= v0 - tol && w.second <= v1 + tol; };
+    const Vector3d d = pts_[3] - pts_[2];
+    const ON_Xform shift = ON_Xform::TranslationTransformation(d);
+    ctx.Doc().BeginChange("StretchCrossing");
+    int moved = 0, whole = 0, skipped = 0;
+    for (SceneObject& o : ctx.Doc().Objects()) {
+      if (!ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+      if (o.kind == ObjectKind::Point) {
+        if (inside(o.point)) { o.Transform(shift); o.InvalidateDisplay(); ++moved; ++whole; }
+      } else if (o.kind == ObjectKind::Curve && o.curve) {
+        ON_NurbsCurve& nc = o.curve->raw();
+        const int n = nc.CVCount();
+        std::vector<char> in(static_cast<size_t>(n), 0);
+        int count = 0;
+        for (int i = 0; i < n; ++i) { ON_3dPoint q; nc.GetCV(i, q); if (inside(q)) { in[static_cast<size_t>(i)] = 1; ++count; } }
+        if (count == 0) {
+          ON_Arc arc;  // a circle whose centre is inside moves although none of its control points need be
+          if (nc.IsClosed() && nc.IsArc(nullptr, &arc, 1e-9) && inside(arc.Center())) { o.Transform(shift); o.InvalidateDisplay(); ++moved; ++whole; }
+          continue;
+        }
+        if (count == n) { o.Transform(shift); o.InvalidateDisplay(); ++moved; ++whole; continue; }
+        if (nc.Degree() == 1 && !nc.IsRational()) {
+          for (int i = 0; i < n; ++i) if (in[static_cast<size_t>(i)]) { ON_3dPoint q; nc.GetCV(i, q); nc.SetCV(i, q + d); }
+          o.InvalidateDisplay();
+          ++moved;
+        } else {
+          ++skipped;
+        }
+      } else {
+        const kernel::BoundingBox bb = o.BoundingBox();
+        if (inside(bb.min) && inside(bb.max) && inside(Point3d(bb.min.x, bb.max.y, bb.min.z)) && inside(Point3d(bb.max.x, bb.min.y, bb.max.z))) {
+          o.Transform(shift);
+          o.InvalidateDisplay();
+          ++moved;
+          ++whole;
+        } else if (inside(bb.min) || inside(bb.max)) {
+          ++skipped;
+        }
+      }
+    }
+    if (moved == 0) ctx.Doc().AbandonChange();
+    ctx.Print("StretchCrossing: " + std::to_string(moved) + " object(s) moved or stretched (" + std::to_string(whole) + " moved whole)" +
+              (skipped > 0 ? ", " + std::to_string(skipped) + " partly enclosed object(s) that are not polylines were left unchanged" : ""));
+  }
+  std::vector<Point3d> pts_;
+};
+
 // BreakAtPoint (AutoCAD BREAKATPOINT): splits ONE open line, polyline, arc or spline into two objects at a picked point. A point that is
 // not on the object is projected onto it (the nearest point of the object is used). Closed objects (circles, closed polylines) are
 // refused, and so is a point at an end of the object (nothing to split).
@@ -916,6 +1053,10 @@ void CurveOrSolidIntersect(CommandContext& ctx, const std::vector<ObjectId>& ids
 void RegisterCurveEditCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectObjects, 1), CommandStatus::Implemented,
       "Curve/curve intersections as point objects (a single curve is self-intersected); two closed solids give the intersection volume.");
+  Reg(e, "Break", Make<BreakCommand>(), CommandStatus::Implemented,
+      "Removes the part of one curve between two picked points (open curves leave two pieces; a closed curve loses the part counter-clockwise from the first point to the second and becomes open).");
+  Reg(e, "StretchCrossing", Make<StretchCrossingCommand>(), CommandStatus::Implemented,
+      "AutoCAD STRETCH: crossing window (two corners), base point, second point; polyline vertices inside the window move, objects wholly inside move whole.");
   Reg(e, "BreakAtPoint", Make<BreakAtPointCommand>(), CommandStatus::Implemented,
       "Breaks one open curve into two at a picked point (projected onto the curve if it is off it); closed curves are refused.");
   Reg(e, "Split", Make<SplitCommand>(), CommandStatus::Implemented,

@@ -813,6 +813,460 @@ Export @T@/ci3.dxf
     return s, chk
 
 
+def log_lines(log):
+    return [l.split('history: ', 1)[1] for l in log.split('\n') if l.startswith('history: ')]
+
+
+def g4(x):
+    """The 4-significant-digit text the app prints for a number (C printf %.4g; whole numbers print without decimals)."""
+    return str(int(round(x))) if abs(x - round(x)) < 1e-9 else '%.4g' % x
+
+
+# DRAW-0030 About Coordinate Entry ------------------------------------------------------------------------------------------------
+# AutoCAD coordinate entry: absolute x,y,z; relative @dx,dy,dz; polar @d<a; cylindrical @d<a,z (distance in the XY plane, angle in the XY
+# plane, Z); spherical @d<a<b (distance, angle in the XY plane, angle from the XY plane). Closed forms below.
+@case('coord')
+def coord():
+    s = PRE + """Line 1,2,0 @3,4,0
+Line 0,50,0 @10<30
+Line 0,60,0 @10<30,7
+Line 0,70,0 @10<30<45
+Line 100,100,100 @1,2,3
+Line 5,5,0 @-3,-4
+SelAll
+Export @T@/coo.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/coo.dxf'
+        ls = entities(f, 'LINE')
+        by_start = {(round(gf(r, 10), 6), round(gf(r, 20), 6), round(gf(r, 30) or 0.0, 6)): r for r in ls}
+
+        def end(start):
+            r = by_start.get(start)
+            return (gf(r, 11), gf(r, 21), gf(r, 31) or 0.0) if r is not None else None
+
+        def same(a, b):
+            return a is not None and all(abs(p - q) < 2e-9 for p, q in zip(a, b))
+
+        c30, s30 = math.cos(math.radians(30)), math.sin(math.radians(30))
+        c45 = math.cos(math.radians(45))
+        check(same(end((1, 2, 0)), (4, 6, 0)), 'COO_1: relative Cartesian @3,4,0 from (1,2,0) ends at (4,6,0)')
+        check(same(end((0, 50, 0)), (10 * c30, 50 + 10 * s30, 0)), 'COO_2: polar @10<30 from (0,50) ends at (10 cos 30, 50 + 10 sin 30) = (%.9f, %.9f)' % (10 * c30, 50 + 10 * s30))
+        check(same(end((0, 60, 0)), (10 * c30, 60 + 10 * s30, 7)), 'COO_3: cylindrical @10<30,7 adds Z = 7 to the polar offset: (%.9f, %.9f, 7)' % (10 * c30, 60 + 10 * s30))
+        check(same(end((0, 70, 0)), (10 * c45 * c30, 70 + 10 * c45 * s30, 10 * math.sin(math.radians(45)))),
+              'COO_4: spherical @10<30<45 gives dx = 10 cos45 cos30, dy = 10 cos45 sin30, dz = 10 sin45: (%.9f, %.9f, %.9f)' % (10 * c45 * c30, 70 + 10 * c45 * s30, 10 * math.sin(math.radians(45))))
+        check(same(end((100, 100, 100)), (101, 102, 103)), 'COO_5: relative 3D @1,2,3 from (100,100,100) ends at (101,102,103)')
+        check(same(end((5, 5, 0)), (2, 1, 0)), 'COO_6: relative @-3,-4 (Z omitted) from (5,5,0) ends at (2,1,0)')
+    return s, chk
+
+
+# SNAP-0027 DIST ---------------------------------------------------------------------------------------------------------------------
+# For the vector d = (3,4,12): |d| = 13, angle in the XY plane atan2(4,3) = 53.1301 deg, angle from the XY plane asin(12/13) = 67.3801 deg.
+@case('dist')
+def dist_case():
+    s = PRE + """Distance 0,0,0 3,4,12
+Distance 0,0,0 -3,-4,0
+Distance 1,1,1 1,1,6
+"""
+
+    def chk(d, log):
+        ln = log_lines(log)
+        # the printed numbers carry four significant digits; each is compared as text with the closed form formatted the same way
+        want = [
+            ('Distance = 13 ', 'Angle in XY plane = %s degrees, angle from XY plane = %s degrees' % (g4(math.degrees(math.atan2(4, 3))), g4(math.degrees(math.asin(12 / 13.0))))),
+            ('Distance = 5 ', 'Angle in XY plane = %s degrees, angle from XY plane = 0 degrees' % g4(math.degrees(math.atan2(-4, -3)) + 360.0)),
+            ('Distance = 5 ', 'Angle in XY plane = 0 degrees, angle from XY plane = 90 degrees'),
+        ]
+        got = [(l, ln[i + 1] if i + 1 < len(ln) else '') for i, l in enumerate(ln) if l.startswith('Distance = ')]
+        check(len(got) == 3, 'DIS_1: three Distance results were printed (found %d)' % len(got))
+        for i, (a, b) in enumerate(want):
+            ok = i < len(got) and got[i][0].startswith(a) and got[i][1] == b
+            check(ok, 'DIS_%d: Distance #%d prints the distance and "%s" (found %s)' % (i + 2, i + 1, b, got[i] if i < len(got) else None))
+        check(i < len(got) and '(dx 3, dy 4, dz 12)' in got[0][0], 'DIS_5: the deltas (dx 3, dy 4, dz 12) are printed')
+    return s, chk
+
+
+# SNAP-0026 ID ---------------------------------------------------------------------------------------------------------------------------
+@case('idpt')
+def idpt():
+    s = PRE + """Id 5,6,7
+Id -1.5,0,22
+Id 1,1,1
+"""
+
+    def chk(d, log):
+        ln = log_lines(log)
+        ids = [l for l in ln if l.startswith('X = ')]
+        check(ids == ['X = 5  Y = 6  Z = 7', 'X = -1.5  Y = 0  Z = 22', 'X = 1  Y = 1  Z = 1'], 'IDP_1: Id prints the X, Y and Z of each picked point (found %s)' % ids)
+    return s, chk
+
+
+# SNAP-0028 AREA, SNAP-0029 MASSPROP ----------------------------------------------------------------------------------------------------
+# Rectangle (10,10)-(14,13): area 12, perimeter 14, centroid (12,11.5); second moments about the centroid Ixx = b h^3 / 12 = 4*27/12 = 9,
+# Iyy = h b^3 / 12 = 3*64/12 = 16, Ixy = 0, Izz = Ixx + Iyy = 25; about the world origin (parallel axis theorem): Ixx = 9 + 12 * 11.5^2 = 1596,
+# Iyy = 16 + 12 * 12^2 = 1744, Ixy = 12 * 12 * 11.5 = 1656.
+@case('massprop')
+def massprop():
+    s = PRE + """Rectangle 10,10,0 14,13,0
+SelLast
+Length
+SelLast
+PlanarSrf
+SelLast
+Area
+SelLast
+AreaMoments
+SelLast
+BoundingBox
+"""
+
+    def chk(d, log):
+        ln = log_lines(log)
+        check('Total length = 14 Millimeters' in ln, 'MAS_1: the perimeter of the 4 x 3 rectangle is 14 (Length)')
+        check('Area = 12 square Millimeters' in ln, 'MAS_2: the area is 4 * 3 = 12')
+        mom = [l for l in ln if l.startswith('Object ') and 'area 12' in l]
+        txt = '\n'.join(l for l in log.split('\n') if 'about world axes' in l or 'about centroid' in l or 'radii of gyration' in l)
+        check(bool(mom) and 'centroid 12,11.5,0' in mom[0], 'MAS_3: the centroid is (12, 11.5, 0) (found %s)' % mom[:1])
+        check('about world axes: Ixx=1596 Iyy=1744 Izz=3340, Ixy=1656' in txt, 'MAS_4: about the origin Ixx = 9 + 12 * 11.5^2 = 1596, Iyy = 16 + 12 * 12^2 = 1744, Izz = 3340, Ixy = 1656')
+        check('about centroid:    Ixx=9 Iyy=16 Izz=25, Ixy=0' in txt, 'MAS_5: about the centroid Ixx = b h^3 / 12 = 9, Iyy = h b^3 / 12 = 16, Izz = 25, Ixy = 0')
+        rg = (g4(math.sqrt(9 / 12.0)), g4(math.sqrt(16 / 12.0)), g4(math.sqrt(25 / 12.0)))
+        check('radii of gyration about centroid: x=%s y=%s z=%s' % rg in txt, 'MAS_6: the radii of gyration are sqrt(I / A) = %s, %s, %s' % rg)
+        check(any(l.startswith('Bounding box min 10,10,0 max 14,13,0') for l in ln), 'MAS_7: the bounding box is (10,10,0)-(14,13,0)')
+    return s, chk
+
+
+# SNAP-0028 AREA (several shapes) ----------------------------------------------------------------------------------------------------------
+# Right triangle with legs 6 and 8: area 24. Regular hexagon with side 2: area (3 sqrt(3) / 2) * 4 = 10.3923. L-shape (6 x 4 square minus a 3 x 2 corner):
+# 24 - 6 = 18.
+@case('areas')
+def areas():
+    s = PRE + """Polyline 0,0,0 6,0,0 0,8,0 0,0,0
+Enter
+SelLast
+PlanarSrf
+SelLast
+Area
+Polyline 20,0,0 26,0,0 26,2,0 23,2,0 23,4,0 20,4,0 20,0,0
+Enter
+SelLast
+PlanarSrf
+SelLast
+Area
+"""
+
+    def chk(d, log):
+        ar = [l for l in log_lines(log) if l.startswith('Area = ')]
+        check(ar == ['Area = 24 square Millimeters', 'Area = 18 square Millimeters'], 'ARE_1: a right triangle with legs 6 and 8 has area 24 and the L-shape 6 x 4 less a 3 x 2 corner has area 18 (found %s)' % ar)
+    return s, chk
+
+
+# MODIFY-0005 MIRROR ---------------------------------------------------------------------------------------------------------------------
+# Reflection across the line through a and b: p' = a + M (p - a) with M = [[cos 2t, sin 2t], [sin 2t, -cos 2t]], t the angle of b - a.
+# x axis (t = 0): (x, y) -> (x, -y). The vertical line x = 12 (t = 90): (x, y) -> (24 - x, y). The line y = x (t = 45): (x, y) -> (y, x).
+@case('mirror')
+def mirror():
+    s = PRE + """Line 0,0,0 4,3,0
+Line 10,2,0 10,8,0
+Circle 7,3,0 2
+Arc 20,0,0 25,0,0 20,9,0
+SelID 1
+Mirror 0,0,0 1,0,0
+SelNone
+SelID 2
+Mirror Copy=No 12,0,0 12,1,0
+SelNone
+SelID 3
+Mirror Copy=No 0,0,0 1,1,0
+SelNone
+SelID 4
+Mirror Copy=No 0,0,0 1,0,0
+SelAll
+Export @T@/mir.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/mir.dxf'
+        check(has_line(f, 0, 0, 4, 3) and has_line(f, 0, 0, 4, -3), 'MIR_1: Mirror across the x axis keeps the source (0,0)-(4,3) and adds (0,0)-(4,-3)')
+        check(has_line(f, 14, 2, 14, 8) and not has_line(f, 10, 2, 10, 8), 'MIR_2: Mirror Copy=No across x = 12 turns (10,2)-(10,8) into (14,2)-(14,8) and removes the source')
+        check(R.has_circle(f, 3, 7, 2) and not R.has_circle(f, 7, 3, 2), 'MIR_3: Mirror Copy=No across y = x maps the circle (7,3) r=2 to (3,7) r=2 and removes the source')
+        # the quarter arc about (20,0) from 0 to 90 degrees is reflected across the x axis: the same centre and radius, from -90 to 0 degrees (270 -> 360)
+        ar = R.arcs(f)
+        ok = len(ar) == 1 and close(gf(ar[0], 10), 20, 1e-8) and close(gf(ar[0], 20), 0, 1e-8) and close(gf(ar[0], 40), 5, 1e-8) and close(gf(ar[0], 50) % 360, 270, 1e-6) and close(gf(ar[0], 51) % 360, 0, 1e-6)
+        check(ok, 'MIR_4: Mirror Copy=No across the x axis turns the arc 0 -> 90 degrees about (20,0) r=5 into 270 -> 360 degrees (the source is gone)')
+        check(len(entities(f, 'LINE')) == 3 and len(entities(f, 'CIRCLE')) == 1, 'MIR_5: exactly 3 lines and 1 circle remain (found %d, %d)' % (len(entities(f, 'LINE')), len(entities(f, 'CIRCLE'))))
+    return s, chk
+
+
+# MODIFY-0026 UNDO ----------------------------------------------------------------------------------------------------------------------------
+@case('undo')
+def undo():
+    s = PRE + """Line 0,1,0 10,1,0
+Line 0,2,0 10,2,0
+Line 0,3,0 10,3,0
+Line 0,4,0 10,4,0
+Line 0,5,0 10,5,0
+Undo
+Undo
+Undo
+SelAll
+Export @T@/und_1.dxf
+Redo
+SelAll
+Export @T@/und_2.dxf
+"""
+
+    def chk(d, log):
+        a, b = d + '/und_1.dxf', d + '/und_2.dxf'
+        check(len(entities(a, 'LINE')) == 2 and has_line(a, 0, 1, 10, 1) and has_line(a, 0, 2, 10, 2), 'UND_1: five lines then three Undo steps leave exactly the first two lines (y = 1, 2)')
+        check(len(entities(b, 'LINE')) == 3 and has_line(b, 0, 3, 10, 3) and not has_line(b, 0, 4, 10, 4), 'UND_2: Redo reverses the immediately preceding Undo: the third line (y = 3) comes back, the 4th and 5th stay undone')
+    return s, chk
+
+
+# MODIFY-0027 OOPS --------------------------------------------------------------------------------------------------------------------------------
+# Oops restores the objects of the most recent Delete although another command ran in between (Undo would also remove that line).
+@case('oops')
+def oops():
+    s = PRE + """Line 0,1,0 10,1,0
+Line 0,2,0 10,2,0
+Line 0,3,0 10,3,0
+Line 0,4,0 10,4,0
+SelID 1 2 3
+Delete
+Line 0,9,0 10,9,0
+SelNone
+SelAll
+Export @T@/oop_1.dxf
+Oops
+SelAll
+Export @T@/oop_2.dxf
+Oops
+"""
+
+    def chk(d, log):
+        a, b = d + '/oop_1.dxf', d + '/oop_2.dxf'
+        check(len(entities(a, 'LINE')) == 2 and has_line(a, 0, 4, 10, 4) and has_line(a, 0, 9, 10, 9), 'OOP_1: after Delete of three lines and a new line, two lines are left (y = 4 and y = 9)')
+        check(len(entities(b, 'LINE')) == 5 and all(has_line(b, 0, y, 10, y) for y in (1, 2, 3, 4, 9)), 'OOP_2: Oops brings back exactly the three erased lines (y = 1, 2, 3) and keeps the line drawn since (y = 9): five lines')
+        check(any('Oops: 3 object(s) restored' in l for l in log.split('\n')) and any('nothing has been erased' in l for l in log.split('\n')), 'OOP_3: a second Oops finds nothing left to restore')
+    return s, chk
+
+
+# MODIFY-0020 BREAK ---------------------------------------------------------------------------------------------------------------------------------
+# Break removes the part between the two points (both projected onto the object). A circle loses the part counter-clockwise from the first
+# point to the second and becomes an arc. A point beyond an end of an open object stands for that end.
+@case('break')
+def break_case():
+    s = PRE + """Line 0,0,0 10,0,0
+SelLast
+Break
+3,0,0
+7,0,0
+Circle 50,50,0 3
+SelLast
+Break
+53,50,0
+50,53,0
+Circle 80,50,0 3
+SelLast
+Break
+80,53,0
+83,50,0
+Polyline 0,30,0 10,30,0 10,40,0
+Enter
+SelLast
+Break
+5,30,0
+10,35,0
+Line 0,60,0 10,60,0
+SelLast
+Break
+6,60,0
+12,60,0
+Line 0,70,0 10,70,0
+SelLast
+Break
+4,70,0
+4,70,0
+SelAll
+Export @T@/brk.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/brk.dxf'
+        check(has_segment(f, (0, 0), (3, 0)) and has_segment(f, (7, 0), (10, 0)) and not has_segment(f, (0, 0), (10, 0)) and not has_segment(f, (3, 0), (7, 0)), 'BRK_1: Break (3,0) (7,0) on the line (0,0)-(10,0) leaves (0,0)-(3,0) and (7,0)-(10,0)')
+        ar = R.arcs(f)
+
+        def arc_at(cx, cy):
+            return [a for a in ar if close(gf(a, 10), cx, 1e-8) and close(gf(a, 20), cy, 1e-8) and close(gf(a, 40), 3, 1e-8)]
+
+        a1, a2 = arc_at(50, 50), arc_at(80, 50)
+        # first point (53,50) at 0 degrees, second (50,53) at 90 degrees: the part from 0 counter-clockwise to 90 is removed, the arc 90 -> 360 stays
+        check(len(a1) == 1 and close(gf(a1[0], 50) % 360, 90, 1e-5) and close(gf(a1[0], 51) % 360, 0, 1e-5), 'BRK_2: Break (53,50) then (50,53) on the circle (50,50) r=3 removes the quarter from 0 to 90 degrees, leaving the arc 90 -> 360')
+        # first point (80,53) at 90 degrees, second (83,50) at 0: the part from 90 counter-clockwise round to 360 is removed, the arc 0 -> 90 stays
+        check(len(a2) == 1 and close(gf(a2[0], 50) % 360, 0, 1e-5) and close(gf(a2[0], 51) % 360, 90, 1e-5), 'BRK_3: Break (80,53) then (83,50) on the circle (80,50) r=3 removes 90 -> 360 degrees, leaving the arc 0 -> 90 (the order of the picks decides)')
+        check(len(entities(f, 'CIRCLE')) == 0, 'BRK_4: no full circle is left')
+        check(any(same_chain(c, [(0, 30, 0), (5, 30, 0)]) for c in chains(f)) or has_segment(f, (0, 30), (5, 30)), 'BRK_5: on the polyline (0,30)-(10,30)-(10,40) the part between (5,30) and (10,35) is removed: (0,30)-(5,30) stays')
+        check(has_segment(f, (10, 35), (10, 40)) and not any(len(c) == 3 and abs(c[1][0] - 10) < 1e-9 and abs(c[1][1] - 30) < 1e-9 for c in chains(f)), 'BRK_6: and (10,35)-(10,40) stays, no piece still passes the removed corner (10,30)')
+        check(has_segment(f, (0, 60), (6, 60)) and not has_segment(f, (0, 60), (10, 60)) and not has_segment(f, (6, 60), (10, 60)), 'BRK_7: a second point beyond the end, (12,60), stands for the end: (0,60)-(10,60) is cut back to (0,60)-(6,60)')
+        check(has_segment(f, (0, 70), (4, 70)) and has_segment(f, (4, 70), (10, 70)), 'BRK_8: two equal points break the line (0,70)-(10,70) at (4,70) with no gap')
+    return s, chk
+
+
+# MODIFY-0006 STRETCH ----------------------------------------------------------------------------------------------------------------------------------
+# Crossing window x 8..12, y -1..12, displacement (5,2). A vertex inside moves, a vertex outside stays, an object wholly inside moves whole.
+@case('stretch')
+def stretch():
+    s = PRE + """Line 0,0,0 10,0,0
+Line 9,10,0 11,10,0
+Line 0,20,0 5,20,0
+Circle 10,5,0 1
+Point 9,2,0
+Polyline 0,3,0 10,3,0 10,8,0 0,8,0
+Enter
+SelNone
+StretchCrossing
+8,-1,0
+12,12,0
+0,0,0
+5,2,0
+SelAll
+Export @T@/str.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/str.dxf'
+        check(has_line(f, 0, 0, 15, 2), 'STR_1: the line (0,0)-(10,0) has only its right end (10,0) in the window: it stretches to (0,0)-(15,2)')
+        check(has_line(f, 14, 12, 16, 12), 'STR_2: the line (9,10)-(11,10) is wholly inside: it moves whole to (14,12)-(16,12)')
+        check(has_line(f, 0, 20, 5, 20), 'STR_3: the line (0,20)-(5,20) lies outside the window and stays')
+        check(R.has_circle(f, 15, 7, 1) and not R.has_circle(f, 10, 5, 1), 'STR_4: the circle (10,5) r=1 has its centre inside: it moves whole to (15,7)')
+        check(any(abs(p[0] - 14) < 1e-9 and abs(p[1] - 4) < 1e-9 for p in points(f)) and len(points(f)) == 1, 'STR_5: the point (9,2) is inside and moves to (14,4)')
+        check(any(same_chain(c, [(0, 3, 0), (15, 5, 0), (15, 10, 0), (0, 8, 0)]) for c in chains(f)), 'STR_6: the polyline (0,3) (10,3) (10,8) (0,8) moves only its two vertices inside the window: (0,3) (15,5) (15,10) (0,8)')
+    return s, chk
+
+
+# MODIFY-0045 FLATTEN, MODIFY-0046 PROJECTGEOMETRY ------------------------------------------------------------------------------------------------
+# Parallel projection along the construction plane normal (Z for the Top view) onto the plane z = 0: (x, y, z) -> (x, y, 0).
+@case('flatten')
+def flatten():
+    s = PRE + """Line 0,0,5 10,0,5
+Circle 20,20,5 3
+Point 1,2,3
+Polyline 0,50,1 10,50,4 10,60,7
+Enter
+SelAll
+ProjectToCPlane
+SelAll
+Export @T@/fla.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/fla.dxf'
+        ls = entities(f, 'LINE')
+        check(len(ls) == 1 and all(abs(v) < 1e-9 for v in (gf(ls[0], 30) or 0.0, gf(ls[0], 31) or 0.0)) and has_line(f, 0, 0, 10, 0), 'FLA_1: the line (0,0,5)-(10,0,5) becomes (0,0,0)-(10,0,0)')
+        cs = entities(f, 'CIRCLE')
+        check(len(cs) == 1 and R.has_circle(f, 20, 20, 3) and abs(gf(cs[0], 30) or 0.0) < 1e-9, 'FLA_2: the circle (20,20,5) r=3 projects to the circle (20,20,0) r=3 (equal size, Z = 0)')
+        pts = points(f)
+        check(len(pts) == 1 and dist(pts[0], (1, 2, 0)) < 1e-9, 'FLA_3: the point (1,2,3) becomes (1,2,0)')
+        check(any(same_chain(c, [(0, 50, 0), (10, 50, 0), (10, 60, 0)]) for c in chains(f)), 'FLA_4: the 3D polyline (0,50,1) (10,50,4) (10,60,7) becomes the planar polyline (0,50,0) (10,50,0) (10,60,0)')
+    return s, chk
+
+
+# LAYER-0008 LAYOFF, LAYER-0043 LAYON, LAYER-0009 lock and unlock ---------------------------------------------------------------------------------
+# DXF reference, LAYER table: group 70 bit 4 (value 4) = the layer is locked; group 62 negative = the layer is off.
+@case('layers')
+def layers():
+    s = PRE + """NewLayer A
+Line 0,0,0 10,0,0
+NewLayer B
+Line 0,5,0 10,5,0
+NewLayer C
+Line 0,9,0 10,9,0
+SelID 1
+LayerOff
+SelNone
+SelID 2
+LayerLock
+SelNone
+SelAll
+Export @T@/lay_1.dxf
+AllLayersOn
+LayerUnlock
+SelAll
+Export @T@/lay_2.dxf
+"""
+
+    def table(path):
+        return {g(r, 2): (g(r, 70), g(r, 62)) for r in R.parse(path).get('TABLES', []) if r[0] == 'LAYER'}
+
+    def chk(d, log):
+        a, b = table(d + '/lay_1.dxf'), table(d + '/lay_2.dxf')
+        check(a.get('A', (0, '7'))[1].startswith('-'), 'LAY_1: LayerOff with an object of layer A selected turns layer A off: LAYER table colour group 62 is negative (found %s)' % (a.get('A'),))
+        check(a.get('B', ('0',))[0] == '4' and not a.get('B', ('0', '7'))[1].startswith('-'), 'LAY_2: LayerLock with an object of layer B selected locks layer B: flags group 70 = 4 and the layer stays on (found %s)' % (a.get('B'),))
+        check(a.get('C') is not None and a['C'][0] == '0' and not a['C'][1].startswith('-'), 'LAY_3: the untouched layer C is on and unlocked (found %s)' % (a.get('C'),))
+        check(len(entities(d + '/lay_1.dxf', 'LINE')) == 1 and has_line(d + '/lay_1.dxf', 0, 9, 10, 9, 'C'), 'LAY_4: only the line on the on, unlocked layer C can be selected and exported')
+        check(all(v[0] == '0' and not v[1].startswith('-') for v in b.values()) and set(b) >= {'A', 'B', 'C'}, 'LAY_5: AllLayersOn and LayerUnlock turn every layer on and unlock it: all LAYER records have flags 0 and a positive colour (found %s)' % (b,))
+        check(len(entities(d + '/lay_2.dxf', 'LINE')) == 3, 'LAY_6: all three lines are selectable again')
+    return s, chk
+
+
+# LAYER-0010 LAYMCH, LAYER-0034 LAYCUR, LAYER-0041 LAYMCUR, LAYER-0006 About Layers ---------------------------------------------------------------
+@case('layermatch')
+def layermatch():
+    s = PRE + """Line 0,1,0 10,1,0
+Line 0,2,0 10,2,0
+NewLayer Walls
+Line 0,3,0 10,3,0
+SetLayer Default
+Line 0,4,0 10,4,0
+SelID 1 2 3
+MatchLayer
+SelNone
+NewLayer Cur
+SelID 4
+ChangeToCurrentLayer
+SelNone
+SetLayer Default
+SelID 3
+SetLayerToObject
+Line 0,9,0 10,9,0
+SelAll
+Export @T@/lmt.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/lmt.dxf'
+        check(has_line(f, 0, 1, 10, 1, 'Walls') and has_line(f, 0, 2, 10, 2, 'Walls') and has_line(f, 0, 3, 10, 3, 'Walls'), 'LMT_1: MatchLayer with the destination object (line 3, layer Walls) last moves lines 1 and 2 onto layer Walls')
+        check(has_line(f, 0, 4, 10, 4, 'Cur'), 'LMT_2: ChangeToCurrentLayer moves line 4 onto the current layer Cur')
+        check(has_line(f, 0, 9, 10, 9, 'Walls'), 'LMT_3: SetLayerToObject on line 3 makes Walls the current layer: the next line (y = 9) is drawn on Walls')
+        check(any('Current layer: Walls' in l for l in log.split('\n')), 'LMT_4: the command reports the new current layer Walls')
+    return s, chk
+
+
+# LAYER-0049 LTSCALE -----------------------------------------------------------------------------------------------------------------------------------
+# DXF reference: HEADER variable $LTSCALE (group 40) is the global linetype scale factor.
+@case('ltscale')
+def ltscale():
+    s = PRE + """Line 0,0,0 10,0,0
+SetLinetypeScale
+2.5
+SelAll
+Export @T@/lts_1.dxf
+SetLinetypeScale
+0
+SetLinetypeScale
+0.5
+SelAll
+Export @T@/lts_2.dxf
+"""
+
+    def chk(d, log):
+        h1, h2 = header_vars(d + '/lts_1.dxf'), header_vars(d + '/lts_2.dxf')
+        check(h1.get('$LTSCALE') and close(float(h1['$LTSCALE'][0][1]), 2.5, 1e-9), 'LTS_1: SetLinetypeScale 2.5 writes $LTSCALE = 2.5 in the DXF header (found %s)' % h1.get('$LTSCALE'))
+        check(h2.get('$LTSCALE') and close(float(h2['$LTSCALE'][0][1]), 0.5, 1e-9), 'LTS_2: a zero scale is refused and 0.5 replaces 2.5: $LTSCALE = 0.5 (found %s)' % h2.get('$LTSCALE'))
+        check(any('Scale must be positive' in l for l in log.split('\n')), 'LTS_3: the zero scale is refused with a message')
+    return s, chk
+
+
 def main():
     if len(sys.argv) < 4:
         print(__doc__)

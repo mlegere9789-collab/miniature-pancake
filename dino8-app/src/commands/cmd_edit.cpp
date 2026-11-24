@@ -782,12 +782,32 @@ std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel:
 void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Delete", OnSelection("Select objects to delete", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Delete");
+        ctx.App().State().last_erased.clear();  // Oops brings back exactly the objects of the most recent Delete
+        if (ids.size() <= 20000) {  // a bulk delete of more objects than that is not kept for Oops (the copies would double the memory)
+          for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) ctx.App().State().last_erased.push_back(*o);
+        }
         ctx.Doc().RemoveMany(ids);
         std::vector<int> lights;
         for (const Light& l : ctx.Doc().Lights()) if (l.selected) lights.push_back(l.id);
         for (int id : lights) ctx.Doc().RemoveLight(id);
         ctx.Print("Deleted " + std::to_string(ids.size()) + " object(s)" + (lights.empty() ? "" : " and " + std::to_string(lights.size()) + " light(s)"));
       }));
+  // AutoCAD OOPS: restores the objects the most recent Delete removed, even after other commands have run (Undo cannot do that). The
+  // restored objects keep their layer, colour and geometry; they get new object ids.
+  Reg(e, "Oops", Immediate([](CommandContext& ctx) {
+        std::vector<SceneObject>& erased = ctx.App().State().last_erased;
+        if (erased.empty()) { ctx.Warn("Oops: nothing has been erased"); return; }
+        ctx.Doc().BeginChange("Oops");
+        ctx.Doc().SelectNone();
+        for (SceneObject& saved : erased) {
+          SceneObject o = saved;
+          o.id = kNoObject;
+          o.selected = false;
+          ctx.Doc().Select(ctx.Doc().Add(std::move(o)), true);
+        }
+        ctx.Print("Oops: " + std::to_string(erased.size()) + " object(s) restored");
+        erased.clear();
+      }), CommandStatus::Implemented, "Restores the objects of the most recent Delete, also after other commands; restored objects get new object ids.");
   Reg(e, "Undo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); }));
   Reg(e, "Redo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Redo()) ctx.Print("Nothing to redo"); }));
   Reg(e, "UndoMultiple", Immediate([](CommandContext& ctx) { ctx.App().Panels().undo_multiple = true; }));
