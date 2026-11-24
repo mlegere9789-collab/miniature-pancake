@@ -112,7 +112,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "AddObjectsToBlock",
-   "description": "Adds selected objects to an existing block definition.",
+   "description": "Puts selected objects into a block definition that already exists.",
    "toolbars": "New in V8, Block",
    "menu": "",
    "status": "Implemented",
@@ -504,7 +504,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "BackgroundBitmap",
-   "description": "Places, aligns or removes a background image in a viewport, with grayscale and filter options.",
+   "description": "Places, aligns or removes a viewport's background picture, with grayscale and filter options.",
    "toolbars": "Background Bitmap",
    "menu": "View | Background Bitmap > | <Options>",
    "status": "Implemented",
@@ -1602,7 +1602,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "CrvEnd",
-   "description": "Places a point object at the end of each selected curve and prints its coordinates.",
+   "description": "Adds a point object where each selected curve ends and prints its coordinates.",
    "toolbars": "Curve Tools, Point",
    "menu": "",
    "status": "Implemented",
@@ -1622,7 +1622,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "CrvStart",
-   "description": "Places a point object at the start of each selected curve and prints its coordinates.",
+   "description": "Adds a point object where each selected curve begins and prints its coordinates.",
    "toolbars": "Curve Tools, Point",
    "menu": "Curve | Point Object > | Mark Curve Start",
    "status": "Implemented",
@@ -2048,7 +2048,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "DimCurveLength",
-   "description": "Adds a dimension showing the length of a selected curve.",
+   "description": "Adds a dimension giving a selected curve's length.",
    "toolbars": "Dimension",
    "menu": "",
    "status": "Implemented",
@@ -2460,7 +2460,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "EdgeSrf",
-   "description": "Creates a surface from two, three or four boundary edge curves; runs the NetworkSrf implementation.",
+   "description": "Makes a surface bounded by two to four edge curves; shares the NetworkSrf implementation.",
    "toolbars": "Surface Creation, Surface Sidebar",
    "menu": "Surface | Edge Curves",
    "status": "Implemented",
@@ -3216,7 +3216,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "FilletSrfCrv",
-   "description": "Creates a rolling-ball fillet between a surface and a separate curve.",
+   "description": "Builds a rolling-ball fillet joining a surface to an independent curve.",
    "toolbars": "Surface Fillets, New in V8",
    "menu": "",
    "status": "Implemented",
@@ -4336,7 +4336,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "Lock",
-   "description": "Locks the selected objects so they cannot be selected or edited.",
+   "description": "Prevents the selected objects from being picked or edited until unlocked.",
    "toolbars": "Lock, Visibility",
    "menu": "Edit | Visibility > | Unlock Selected",
    "status": "Implemented",
@@ -4740,7 +4740,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "MeshBooleanDifference",
-   "description": "Subtracts one set of objects from another, always producing mesh results.",
+   "description": "Removes the volume of a second set of objects from a first, returning a mesh.",
    "toolbars": "Mesh Booleans",
    "menu": "",
    "status": "Implemented",
@@ -6052,7 +6052,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "PopupToolbar",
-   "description": "Opens the popup toolbar at the cursor.",
+   "description": "Shows the popup toolbar at the cursor position.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
    "status": "Implemented",
@@ -6122,7 +6122,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "ProjectToCPlane",
-   "description": "Flattens selected objects onto the construction plane.",
+   "description": "Squashes selected objects flat onto the construction plane along its normal.",
    "toolbars": "Transform",
    "menu": "Transform | Project to CPlane",
    "status": "Implemented",
@@ -6252,7 +6252,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "RailRevolve",
-   "description": "Revolves a profile curve around an axis while following a rail curve.",
+   "description": "Spins a profile curve about an axis while a rail curve guides its path.",
    "toolbars": "Surface Creation, Surface Sidebar",
    "menu": "Surface | Rail Revolve",
    "status": "Implemented",
@@ -6344,7 +6344,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "RebuildUV",
-   "description": "Rebuilds surfaces to degree 3 with a typed control-point count in one chosen direction.",
+   "description": "Refits each selected surface as a cubic with a chosen control-point count along U or V only.",
    "toolbars": "Surface Tools",
    "menu": "",
    "status": "Implemented",
@@ -6646,7 +6646,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "RenderAssignMaterialToObjects",
-   "description": "Assigns a material to the selected objects, optionally from a material library preset.",
+   "description": "Applies a material, optionally a library preset, to the objects you select.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
    "status": "Implemented",
@@ -6896,7 +6896,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "RevolvedHole",
-   "description": "Cuts a hole into solids by revolving a profile curve around an axis.",
+   "description": "Cuts solids with a profile curve revolved about a chosen axis.",
    "toolbars": "Holes, Solid Tools",
    "menu": "",
    "status": "Implemented",
@@ -7392,7 +7392,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "SelClippingPlaneInViewport",
-   "description": "Selects the clipping planes that clip the active viewport.",
+   "description": "Selects every clipping plane that affects the active viewport.",
    "toolbars": "Not on toolbars",
    "menu": "",
    "status": "Implemented",
@@ -8256,7 +8256,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "SelShortCrv",
-   "description": "Selects curves shorter than a typed length.",
+   "description": "Selects every curve whose length is below a typed limit.",
    "toolbars": "Select Curves",
    "menu": "",
    "status": "Implemented",
@@ -8368,7 +8368,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "SelUV",
-   "description": "Selects control points of a surface in both the U and V directions.",
+   "description": "Selects the control points of a surface along both parameter directions.",
    "toolbars": "Select Points",
    "menu": "",
    "status": "Implemented",
@@ -9250,7 +9250,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "SolidPtOn",
-   "description": "Turns on control points for the selected polysurfaces.",
+   "description": "Shows control points on the selected polysurfaces.",
    "toolbars": "Solid Tools",
    "menu": "",
    "status": "Implemented",
@@ -9444,7 +9444,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "SrfControlPtGrid",
-   "description": "Creates a surface from a grid of picked control points.",
+   "description": "Builds a surface whose control-point grid is the picked points.",
    "toolbars": "Surface Creation, Surface Sidebar",
    "menu": "Not on menus.",
    "status": "Implemented",
@@ -9454,7 +9454,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "SrfPt",
-   "description": "Creates a surface through three or four picked corner points.",
+   "description": "Makes a surface spanning three or four picked corners.",
    "toolbars": "Main, Main1, Surface Creation, Surface Sidebar",
    "menu": "Surface | Corner Points",
    "status": "Implemented",
@@ -10004,7 +10004,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "ToggleFloatingViewport",
-   "description": "Toggles the active viewport between docked and floating in its own window.",
+   "description": "Switches the active viewport between a docked panel and a separate floating window.",
    "toolbars": "Not on toolbars",
    "menu": "",
    "status": "Implemented",
@@ -10280,7 +10280,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "Unisolate",
-   "description": "Shows the objects hidden by Isolate again.",
+   "description": "Makes every object in the document visible again.",
    "toolbars": "Visibility",
    "menu": "",
    "status": "Implemented",
@@ -10350,7 +10350,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "UnrollSrfUV",
-   "description": "Flattens a surface into a plane using its U-V mapping, with options to explode and label.",
+   "description": "Flattens surfaces into a plane, with explode and label options; shares the UnrollSrf implementation.",
    "toolbars": "Surface Tools",
    "menu": "Surface | Surface Flattening > | Unroll Developable Surface",
    "status": "Implemented",
@@ -10520,7 +10520,7 @@ window.DINO8_COMMANDS = {
   },
   {
    "name": "ViewCaptureToFile",
-   "description": "Saves an image of the active viewport to a file.",
+   "description": "Writes a picture of the active viewport to an image file.",
    "toolbars": "Display, Surface Analysis",
    "menu": "",
    "status": "Implemented",
