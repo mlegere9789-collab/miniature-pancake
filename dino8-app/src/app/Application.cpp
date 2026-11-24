@@ -910,6 +910,7 @@ bool Application::NewDocument(bool confirm_discard) {
     return true;
   }
   doc_.Clear();
+  sub_selection_.Clear();  // control points / faces picked in the old document mean nothing in the new one (object ids are reused)
   SetActiveLayout(-1);
   for (auto& vp : viewports_) vp->SetStandardView(vp->StandardView());
   engine_->Print("New document.");
@@ -941,6 +942,7 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   if (!ok) return false;
   SetActiveLayout(-1);
   doc_ = std::move(fresh);
+  sub_selection_.Clear();  // the sub-object selection belongs to the document that was replaced
   // A .sat/.sab export writes only the Brep bodies it can express, so a plain Save must never overwrite the source file in place:
   // the opened document stays untitled and Save asks for a name.
   doc_.SetPath((ext == ".sat" || ext == ".sab") ? std::string() : path);

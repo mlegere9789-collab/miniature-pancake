@@ -619,13 +619,7 @@ CommandFactory OpenUrl(const char* label) {
 
 void RegisterStateCommands(CommandEngine& e) {
   // ---- command-line control -------------------------------------------
-  // Cancel with no command running clears the selection (the same as pressing Esc at the command prompt); while a command runs, the
-  // engine itself cancels that command before this handler is reached.
-  Reg(e, "Cancel", Immediate([](CommandContext& ctx) {
-        const size_t n = ctx.Doc().SelectedCount();
-        ctx.Doc().SelectNone();
-        ctx.Print("Nothing to cancel (typing Cancel or pressing Esc while a command runs cancels it); " + std::to_string(n) + " object(s) deselected");
-      }));
+  Reg(e, "Cancel", Immediate([](CommandContext& ctx) { ctx.Print("Nothing to cancel (typing Cancel or pressing Esc while a command runs cancels it)"); }));
   Reg(e, "Enter", Immediate([](CommandContext&) {}));
   Reg(e, "EnterEnd", Immediate([](CommandContext&) {}));
   Reg(e, "Pause", Immediate([](CommandContext& ctx) { if (!ctx.ScriptMode()) ctx.Print("Pause: continuing"); }));

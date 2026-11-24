@@ -5,6 +5,7 @@
 #include "commands/history_rebuild.h"
 #include "commands/lengthen_geom.h"
 #include "dino8/kernel/curve.h"
+#include "doc/SubObjectEdit.h"
 #include "io/File3dm.h"
 
 #include <filesystem>
@@ -779,11 +780,24 @@ std::optional<SceneObject> RebuildOffsetCurve(CommandContext& ctx, const kernel:
   return SceneObject::MakeCurve(out);
 }
 
+// Drops the sub-object picks whose object is gone or whose control point index no longer exists.
+void PruneSubSelection(CommandContext& ctx) {
+  SubObjectSelection& sub = ctx.App().SubSelection();
+  std::vector<SubObjectRef> stale;
+  for (const SubObjectRef& r : sub.Items()) {
+    const SceneObject* o = ctx.Doc().Find(r.id);
+    if (!o || (r.kind == SubObjectKind::Vertex && r.index >= ControlPointCount(*o))) stale.push_back(r);
+  }
+  for (const SubObjectRef& r : stale) sub.Remove(r);
+}
+
 void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Delete", OnSelection("Select objects to delete", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         // Selected control points / faces / vertices of the selected objects: delete those sub-objects, not the whole objects.
         for (const SubObjectRef& r : ctx.App().SubSelection().Items()) {
-          if (std::find(ids.begin(), ids.end(), r.id) != ids.end()) { ctx.App().DeleteSubObjectSelection(); return; }
+          if (std::find(ids.begin(), ids.end(), r.id) == ids.end()) continue;
+          const SceneObject* so = ctx.Doc().Find(r.id);
+          if (so && !(r.kind == SubObjectKind::Vertex && r.index >= ControlPointCount(*so))) { ctx.App().DeleteSubObjectSelection(); return; }
         }
         ctx.Doc().BeginChange("Delete");
         ctx.App().State().last_erased.clear();  // Oops brings back exactly the objects of the most recent Delete
@@ -812,8 +826,10 @@ void RegisterEditCommands(CommandEngine& e) {
         ctx.Print("Oops: " + std::to_string(erased.size()) + " object(s) restored");
         erased.clear();
       }), CommandStatus::Implemented, "Restores the objects of the most recent Delete, also after other commands; restored objects get new object ids.");
-  Reg(e, "Undo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); }));
-  Reg(e, "Redo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Redo()) ctx.Print("Nothing to redo"); }));
+  // Undo / Redo can remove an object or change its control point count: sub-object picks that no longer exist are dropped, so a
+  // later Delete never acts on a stale control point.
+  Reg(e, "Undo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); PruneSubSelection(ctx); }));
+  Reg(e, "Redo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Redo()) ctx.Print("Nothing to redo"); PruneSubSelection(ctx); }));
   Reg(e, "UndoMultiple", Immediate([](CommandContext& ctx) { ctx.App().Panels().undo_multiple = true; }));
   Reg(e, "RedoMultiple", Immediate([](CommandContext& ctx) { ctx.App().Panels().redo_multiple = true; }));
   Reg(e, "ClearUndo", Immediate([](CommandContext& ctx) { ctx.Doc().ClearUndo(); ctx.Print("Undo history cleared"); }));
