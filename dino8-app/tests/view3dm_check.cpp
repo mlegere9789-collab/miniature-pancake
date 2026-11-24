@@ -10,7 +10,9 @@
 //                                   view of height 80 and a perspective view with a 35 mm lens. Evidence only.
 //   view3dm_check dump FILE.3dm     prints, per named view, one line
 //                                      view <i> name=<n> persp=<0|1> eye=(..) dir=(..) up=(..) target=(..) frustum_h=<t-b>
-//                                      frustum_w=<r-l> lens=<35 mm-film lens length, 0 for a parallel view>
+//                                      frustum_w=<r-l> near=<near distance> angle=<full field of view of the SHORT side of the frustum in
+//                                      degrees, 2 atan(min(frustum_h, frustum_w) / 2 / near), 0 for a parallel view; computed from the
+//                                      frustum alone, not from the lens> lens=<35 mm-film lens length, 0 for a parallel view>
 #include <opennurbs.h>
 
 #include <cmath>
@@ -122,12 +124,16 @@ int Dump(const char* path) {
     const ON_3dmView& v = model.m_settings.m_named_views[i];
     const ON_3dPoint e = v.m_vp.CameraLocation(), t = v.m_vp.TargetPoint();
     const ON_3dVector d = v.m_vp.CameraDirection(), u = v.m_vp.CameraUp();
-    double l = 0, r = 0, b = 0, tp = 0;
-    v.m_vp.GetFrustum(&l, &r, &b, &tp);
-    double lens = 0.0;
-    if (v.m_vp.IsPerspectiveProjection()) v.m_vp.GetCamera35mmLensLength(&lens);
-    std::printf("view %d name=%s persp=%d eye=(%.6g,%.6g,%.6g) dir=(%.6g,%.6g,%.6g) up=(%.6g,%.6g,%.6g) target=(%.6g,%.6g,%.6g) frustum_h=%.6g frustum_w=%.6g lens=%.6g\n",
-                i, Narrow(v.m_name).c_str(), v.m_vp.IsPerspectiveProjection() ? 1 : 0, e.x, e.y, e.z, d.x, d.y, d.z, u.x, u.y, u.z, t.x, t.y, t.z, tp - b, r - l, lens);
+    double l = 0, r = 0, b = 0, tp = 0, nr = 0, fr = 0;
+    v.m_vp.GetFrustum(&l, &r, &b, &tp, &nr, &fr);
+    double lens = 0.0, angle = 0.0;
+    if (v.m_vp.IsPerspectiveProjection()) {
+      v.m_vp.GetCamera35mmLensLength(&lens);
+      const double short_side = std::fmin(tp - b, r - l);
+      if (nr > 0.0) angle = 2.0 * std::atan(short_side / 2.0 / nr) * 180.0 / ON_PI;
+    }
+    std::printf("view %d name=%s persp=%d eye=(%.6g,%.6g,%.6g) dir=(%.6g,%.6g,%.6g) up=(%.6g,%.6g,%.6g) target=(%.6g,%.6g,%.6g) frustum_h=%.6g frustum_w=%.6g near=%.6g angle=%.6g lens=%.6g\n",
+                i, Narrow(v.m_name).c_str(), v.m_vp.IsPerspectiveProjection() ? 1 : 0, e.x, e.y, e.z, d.x, d.y, d.z, u.x, u.y, u.z, t.x, t.y, t.z, tp - b, r - l, nr, angle, lens);
   }
   return 0;
 }

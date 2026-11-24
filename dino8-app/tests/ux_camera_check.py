@@ -43,10 +43,10 @@ def report(label, ok, detail=""):
         failed += 1
 
 
-# ZoomLens (VIEW-0057), checked WITHOUT assuming a film size: for a pinhole camera tan(half field of view) = film half-size / lens, so doubling the lens
+# ZoomLens (VIEW-0057), first WITHOUT assuming a film size: for a pinhole camera tan(half field of view) = film half-size / lens, so doubling the lens
 # halves the tangent whatever the film is. The three lenses 24, 48, 96 therefore give tangent ratios of exactly 2 and 2, and lens * tan(half angle) is one
-# constant (the implied film half-size, reported below but not asserted to be any particular number: the app uses 18 mm on the vertical, openNURBS' 35 mm
-# lens uses 12 mm on the short side, see the row notes).
+# constant (the implied film half-size). That constant is then compared with 12 mm, the half-height of the 24 mm film height openNURBS' 35 mm lens uses on the
+# short side of the view (the Camera command prints the short-side angle); the check against a frustum read from a real file is the UXLENS section.
 c = cams("lens")
 ok = len(c) == 3 and all("lens" in x for x in c)
 report("UXCAM_ZoomLens: three Camera reports (lens 24, 48, 96)", ok, "got %d" % len(c))
@@ -59,6 +59,8 @@ if ok:
     film = [x["lens"] * ti for x, ti in zip(c, t)]
     report("UXCAM_ZoomLens: lens * tan(fov/2) is one constant (implied film half-size %.2f mm at every lens)" % film[1],
            max(film) - min(film) <= 0.004 * film[1], "films %s" % (film,))
+    report("UXCAM_ZoomLens: ...and it is 12 mm, openNURBS' 35 mm film (24 mm tall) on the short side, not 18 mm (implied %.3f mm)" % film[1],
+           abs(film[1] - 12.0) <= 0.05, "films %s" % (film,))
 
 # PerspectiveAngle (VIEW-0047): the angle typed is the angle the Camera report gives back, and the lens it sets follows lens = k / tan(angle/2) for one
 # constant k, so lens(60 degrees) / lens(90) = tan 45 / tan 30 = sqrt 3 and lens(90) / lens(120) = tan 60 / tan 45 = sqrt 3.

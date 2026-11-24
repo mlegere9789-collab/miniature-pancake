@@ -167,11 +167,6 @@ Vector3d Camera::Up() const {
   return u;
 }
 
-double Camera::TanHalfFovY() const {
-  const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);  // 36mm sensor
-  return std::tan(fov / 2.0);
-}
-
 namespace {
 // Rotates `v` by `yaw` (about world Z) then `pitch` (about the axis
 // perpendicular to both world Z and v, clamped so the result never flips
@@ -227,8 +222,7 @@ void Camera::TurnInPlace(double yaw_degrees, double pitch_degrees) {
 }
 
 void Camera::Pan(double dx, double dy, int w, int h) {
-  const double pixel = PixelSize(h);
-  (void)w;
+  const double pixel = PixelSize(h, h > 0 ? static_cast<double>(w) / h : 1.0);
   const Vector3d shift = Right() * (-dx * pixel) + Up() * (dy * pixel);
   state_.eye = state_.eye + shift;
   state_.target = state_.target + shift;
@@ -286,8 +280,7 @@ void Camera::ZoomExtents(const kernel::BoundingBox& box, double aspect) {
   half_h = std::max(half_h, 1e-3);
   state_.target = center;
   if (state_.perspective) {
-    const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);  // 36mm sensor
-    const double tan_v = std::tan(fov / 2.0), tan_h = tan_v * std::max(aspect, 0.1);
+    const double tan_v = TanHalfFovVertical(state_.lens_mm, std::max(aspect, 0.1)), tan_h = tan_v * std::max(aspect, 0.1);
     // Smallest eye distance along -dir from the center so every box corner is inside the frustum.
     double distance = 1e-3;
     for (int c = 0; c < 8; ++c) {
@@ -318,7 +311,7 @@ Mat4 Camera::ProjectionMatrix(double aspect) const {
   double far_z;
   const double near_z = NearFar(far_z);
   if (state_.perspective) {
-    const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);
+    const double fov = 2.0 * std::atan(TanHalfFovVertical(state_.lens_mm, aspect));
     return Mat4::Perspective(fov, aspect, near_z, far_z);
   }
   const double h = state_.ortho_height / 2.0;
@@ -330,8 +323,7 @@ Mat4 Camera::BlowupProjectionMatrix(double aspect, double ndc_x0, double ndc_y0,
   double far_z;
   const double near_z = NearFar(far_z);
   if (state_.perspective) {
-    const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);
-    const double ty = std::tan(fov / 2.0) * near_z;
+    const double ty = TanHalfFovVertical(state_.lens_mm, aspect) * near_z;
     const double tx = ty * aspect;
     return Mat4::Frustum(tx * ndc_x0, tx * ndc_x1, ty * ndc_y0, ty * ndc_y1, near_z, far_z);
   }
@@ -344,8 +336,7 @@ Ray Camera::ScreenRay(double ndc_x, double ndc_y, double aspect) const {
   Ray ray;
   const Vector3d f = Forward(), r = Right(), u = Up();
   if (state_.perspective) {
-    const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);
-    const double ty = std::tan(fov / 2.0);
+    const double ty = TanHalfFovVertical(state_.lens_mm, aspect);
     Vector3d dir = f + r * (ndc_x * ty * aspect) + u * (ndc_y * ty);
     dir.Unitize();
     ray.origin = state_.eye;
@@ -365,8 +356,7 @@ bool Camera::Project(Point3d p, double aspect, double& ndc_x, double& ndc_y, dou
   const double y = ON_DotProduct(rel, Up());
   if (state_.perspective) {
     if (z <= 1e-9) return false;
-    const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);
-    const double ty = std::tan(fov / 2.0);
+    const double ty = TanHalfFovVertical(state_.lens_mm, aspect);
     ndc_x = x / (z * ty * aspect);
     ndc_y = y / (z * ty);
   } else {
@@ -378,11 +368,10 @@ bool Camera::Project(Point3d p, double aspect, double& ndc_x, double& ndc_y, dou
   return true;
 }
 
-double Camera::PixelSize(int viewport_height) const {
+double Camera::PixelSize(int viewport_height, double aspect) const {
   if (viewport_height <= 0) return 1.0;
   if (state_.perspective) {
-    const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);
-    return 2.0 * Distance() * std::tan(fov / 2.0) / viewport_height;
+    return 2.0 * Distance() * TanHalfFovVertical(state_.lens_mm, aspect) / viewport_height;
   }
   return state_.ortho_height / viewport_height;
 }

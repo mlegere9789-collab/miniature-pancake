@@ -1214,9 +1214,11 @@ class PerspectiveMatchCommand : public Command {
     c.target = eye + forward_world * distance;
     c.up = up_world;
     c.perspective = true;
-    c.lens_mm = std::clamp(18.0 * f, 5.0, 1000.0);
+    // f is the focal length in units of the viewport's vertical half height, i.e. tan(vertical half angle) = 1 / f; the lens that gives that
+    // angle in this viewport follows the openNURBS 35 mm convention (Camera::LensForTanHalfFovVertical).
+    c.lens_mm = std::clamp(Camera::LensForTanHalfFovVertical(1.0 / f, vp.Aspect()), 5.0, 1000.0);
     ctx.Print("PerspectiveMatch: camera set to eye " + FormatPoint(c.eye) + ", target " + FormatPoint(c.target) +
-              ", lens " + FormatNumber(c.lens_mm) + " mm (" + FormatNumber(2.0 * std::atan(1.0 / f) * 180.0 / ON_PI) + " deg)");
+              ", lens " + FormatNumber(c.lens_mm) + " mm (" + FormatNumber(2.0 * std::atan(Camera::TanHalfShort(c.lens_mm)) * 180.0 / ON_PI) + " deg)");
     Finish();
   }
 

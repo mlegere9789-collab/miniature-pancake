@@ -823,8 +823,7 @@ GLuint GpuRaytracer::Render(const app::Camera& camera, double aspect, int width,
   glUniform3f(t_fwd_, static_cast<float>(fwd.x), static_cast<float>(fwd.y), static_cast<float>(fwd.z));
   glUniform3f(t_right_, static_cast<float>(right.x), static_cast<float>(right.y), static_cast<float>(right.z));
   glUniform3f(t_up_, static_cast<float>(up.x), static_cast<float>(up.y), static_cast<float>(up.z));
-  const double fov = 2.0 * std::atan(18.0 / cs.lens_mm);
-  glUniform1f(t_tan_fov_, static_cast<float>(std::tan(fov * 0.5)));
+  glUniform1f(t_tan_fov_, static_cast<float>(app::Camera::TanHalfFovVertical(cs.lens_mm, aspect)));
   glUniform1f(t_aspect_, static_cast<float>(aspect));
   glUniform1i(t_ortho_, cs.perspective ? 0 : 1);
   glUniform1f(t_ortho_h_, static_cast<float>(cs.ortho_height));
