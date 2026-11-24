@@ -784,7 +784,7 @@ void RegisterEditCommands(CommandEngine& e) {
         ctx.Doc().BeginChange("Delete");
         ctx.App().State().last_erased.clear();  // Oops brings back exactly the objects of the most recent Delete
         if (ids.size() <= 20000) {  // a bulk delete of more objects than that is not kept for Oops (the copies would double the memory)
-          for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) ctx.App().State().last_erased.push_back(*o);
+          for (const SceneObject* o : ctx.Doc().FindMany(ids)) if (o) ctx.App().State().last_erased.push_back(*o);
         }
         ctx.Doc().RemoveMany(ids);
         std::vector<int> lights;
