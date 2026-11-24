@@ -1784,6 +1784,8 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     if (model.GetDocumentUserString(L"Dino8.GridExtents", v)) doc.Settings().grid_extents = std::max(1, std::atoi(FromWide(v).c_str()));
     if (model.GetDocumentUserString(L"Dino8.LinetypeScale", v)) doc.Settings().linetype_scale = std::max(1e-6, std::atof(FromWide(v).c_str()));
     if (model.GetDocumentUserString(L"Dino8.LinetypeDisplay", v)) doc.Settings().linetype_display = FromWide(v) != "0";
+    if (model.GetDocumentUserString(L"Dino8.PointStyle", v)) doc.Settings().point_style = std::atoi(FromWide(v).c_str());
+    if (model.GetDocumentUserString(L"Dino8.PointSize", v)) doc.Settings().point_size = std::atof(FromWide(v).c_str());
     if (model.GetDocumentUserString(L"Dino8.DimensionLayer", v)) doc.Settings().dimension_layer = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.CenterLayer", v)) doc.Settings().center_layer = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.AnnotationStyle", v)) doc.Settings().annotation_style = FromWide(v);
@@ -2549,6 +2551,8 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     std::snprintf(buf, sizeof(buf), "%d", doc.Settings().grid_extents);
     model.SetDocumentUserString(L"Dino8.GridExtents", ON_wString(buf));
     model.SetDocumentUserString(L"Dino8.LinetypeDisplay", doc.Settings().linetype_display ? L"1" : L"0");
+    if (doc.Settings().point_style != 0) { std::snprintf(buf, sizeof(buf), "%d", doc.Settings().point_style); model.SetDocumentUserString(L"Dino8.PointStyle", ON_wString(buf)); }
+    if (doc.Settings().point_size != 0.0) { std::snprintf(buf, sizeof(buf), "%.17g", doc.Settings().point_size); model.SetDocumentUserString(L"Dino8.PointSize", ON_wString(buf)); }
     if (!doc.Settings().dimension_layer.empty()) model.SetDocumentUserString(L"Dino8.DimensionLayer", ON_wString(doc.Settings().dimension_layer.c_str()));
     if (!doc.Settings().center_layer.empty()) model.SetDocumentUserString(L"Dino8.CenterLayer", ON_wString(doc.Settings().center_layer.c_str()));
     model.SetDocumentUserString(L"Dino8.AnnotationStyle", ON_wString(doc.Settings().annotation_style.c_str()));

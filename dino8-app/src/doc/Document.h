@@ -841,6 +841,11 @@ struct DocumentSettings {
   // unrecognized value falls back to "2000" (AC1015), the prior hardcoded
   // behaviour.
   std::string dwg_export_scheme = "2000";
+  // AutoCAD PDMODE / PDSIZE (PType command): how point objects are drawn. point_style is the PDMODE code (0 dot, 1 nothing, 2 plus, 3 cross,
+  // 4 tick, plus 32 circle, 64 square, 96 both); point_size is PDSIZE (0 = 5% of the viewport height, positive = absolute size in model
+  // units, negative = percentage of the viewport height). Stored in the file ($PDMODE, $PDSIZE in DXF; document strings in 3dm).
+  int point_style = 0;
+  double point_size = 0.0;
 };
 
 class Document {
