@@ -29,38 +29,6 @@ using namespace bl;
 
 // ------------------------------------------------------------------------------------------------------- helpers
 
-struct MD {  // a mesh read back into doubles
-  std::vector<Point3d> v;
-  std::vector<std::array<int, 4>> f;
-  std::vector<std::vector<int>> ng;
-};
-
-MD ReadMesh(const ON_Mesh& m) {
-  MD d;
-  for (int i = 0; i < m.VertexCount(); ++i) d.v.push_back(Point3d(m.m_V[i].x, m.m_V[i].y, m.m_V[i].z));
-  for (int i = 0; i < m.FaceCount(); ++i) { const ON_MeshFace& f = m.m_F[i]; d.f.push_back({f.vi[0], f.vi[1], f.vi[2], f.vi[3]}); }
-  const ON_MeshNgon* const* ngons = m.Ngons();
-  for (int g = 0; g < m.NgonCount(); ++g) {
-    std::vector<int> list;
-    for (unsigned int k = 0; k < ngons[g]->m_Fcount; ++k) list.push_back(static_cast<int>(ngons[g]->m_fi[k]));
-    d.ng.push_back(list);
-  }
-  return d;
-}
-
-bool IsWire(const std::array<int, 4>& f) { return f[1] == f[2] && f[2] == f[3]; }
-bool IsTri(const std::array<int, 4>& f) { return f[2] == f[3] && !IsWire(f); }
-
-kernel::Mesh BuildMD(const MD& d) {
-  MB mb;
-  for (const Point3d& p : d.v) mb.V(p.x, p.y, p.z);
-  mb.f = d.f;
-  mb.ngon_faces = d.ng;
-  return mb.Build();
-}
-
-const kernel::Mesh* MeshOf(const Value& v) { return (v.kind == Kind::Mesh && v.mesh) ? v.mesh.get() : nullptr; }
-
 // Resampled positions along a poly line: n points, open: spacing L/(n-1), cyclic: L/n. Also the unit tangent of the edge
 // each point lies on (the outgoing edge at a vertex).
 void WalkPoly(const Poly& p, const std::vector<double>& s_list, std::vector<Point3d>& pos, std::vector<Vector3d>& tan) {
@@ -129,44 +97,6 @@ std::vector<std::array<int, 3>> EarClip(const std::vector<Point3d>& ring) {
   return tris;
 }
 
-// Polygon rings of a mesh: an n-gon is one ring walked around its boundary, any other face is its own ring.
-bool PolygonRings(const MD& d, std::vector<std::vector<int>>& rings, bool& has_wire) {
-  rings.clear();
-  has_wire = false;
-  std::vector<bool> in_ngon(d.f.size(), false);
-  for (const auto& g : d.ng) {
-    std::map<std::pair<int, int>, int> dir;
-    for (int fi : g) {
-      in_ngon[static_cast<size_t>(fi)] = true;
-      const auto& f = d.f[static_cast<size_t>(fi)];
-      const int n = IsTri(f) ? 3 : 4;
-      for (int e = 0; e < n; ++e) ++dir[{f[static_cast<size_t>(e)], f[static_cast<size_t>((e + 1) % n)]}];
-    }
-    std::map<int, int> next;
-    for (const auto& kv : dir) if (dir.find({kv.first.second, kv.first.first}) == dir.end()) next[kv.first.first] = kv.first.second;
-    if (next.empty()) return false;
-    std::vector<int> ring;
-    const int start = next.begin()->first;
-    int cur = start;
-    do { ring.push_back(cur); auto it = next.find(cur); if (it == next.end()) return false; cur = it->second; } while (cur != start && ring.size() <= next.size());
-    if (ring.size() != next.size()) return false;
-    rings.push_back(ring);
-  }
-  for (size_t i = 0; i < d.f.size(); ++i) {
-    if (in_ngon[i]) continue;
-    const auto& f = d.f[i];
-    if (IsWire(f)) { has_wire = true; continue; }
-    rings.push_back(IsTri(f) ? std::vector<int>{f[0], f[1], f[2]} : std::vector<int>{f[0], f[1], f[2], f[3]});
-  }
-  return true;
-}
-
-void AddRingFace(MB& mb, const std::vector<int>& ring) {
-  if (ring.size() == 3) mb.Tri(ring[0], ring[1], ring[2]);
-  else if (ring.size() == 4) mb.Quad(ring[0], ring[1], ring[2], ring[3]);
-  else if (ring.size() > 4) mb.Ngon(ring);
-}
-
 void Mat(const Vector3d& rot, const Vector3d& scl, double m[3][3]) {
   const double cx = std::cos(rot.x), sx = std::sin(rot.x), cy = std::cos(rot.y), sy = std::sin(rot.y), cz = std::cos(rot.z), sz = std::sin(rot.z);
   // R = Rz * Ry * Rx (the X rotation is applied first), then the columns are scaled: M = R * S
@@ -189,11 +119,6 @@ std::vector<Point3d> VertexPoints(const Value& g) {
   return pts;
 }
 
-kernel::Mesh PointsMesh(const std::vector<Point3d>& pts) {
-  MB mb;
-  for (const Point3d& p : pts) mb.V(p.x, p.y, p.z);
-  return mb.Build();
-}
 
 // ------------------------------------------------------------------------------------------------------- curves
 
