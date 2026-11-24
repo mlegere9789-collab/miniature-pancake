@@ -36,6 +36,11 @@ struct BrepMeshOptions {
   // uniformly (sample count from its length and the finest face spacing in the whole brep), so the
   // coincident copies agree vertex for vertex. MeshBrepClosed() sets it itself as a retry.
   bool unify_edge_spacing = false;
+  // Mesh every face on a sphere from the closed polylines of its loops' edge samples in a stereographic chart (no seam, no poles), instead of in
+  // the surface's (u, v) domain. A face whose loop runs through a pole and across the seam (a sphere cut by a plane through its axis) has a (u, v)
+  // polygon that is not the face; the chart does not depend on it. MeshBrepClosed() sets it itself as a retry, after the (u, v) meshing failed to
+  // close; DINO8_MESH_STEREO=1 forces it (measurement).
+  bool sphere_stereo_charts = false;
 };
 
 // Meshes each face separately (for display: per-face normals / colours).

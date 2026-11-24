@@ -91,7 +91,10 @@ class CDT {
 
   // Splits interior (unconstrained) edges longer than `max_len` measured in
   // the anisotropic metric (dx/hx, dy/hy).
-  void Refine(double hx, double hy, int max_tris, const std::function<bool(const Vec2&)>& inside) {
+  // `local_scale`, when given, returns the factor (plane length per model length) at a plane point: a chart that is not isometric
+  // (a stereographic one) then still splits edges at the same MODEL length everywhere.
+  void Refine(double hx, double hy, int max_tris, const std::function<bool(const Vec2&)>& inside,
+              const std::function<double(const Vec2&)>* local_scale = nullptr) {
     for (int round = 0; round < 80; ++round) {
       if (AliveCount() >= max_tris) return;
       // Collect long interior edges with the triangle that owns them.
@@ -105,7 +108,8 @@ class CDT {
           if (p > q) continue;  // each edge once
           if (constrained_.count(Key(p, q))) continue;
           const double dx = (pts_[p].x - pts_[q].x) / hx, dy = (pts_[p].y - pts_[q].y) / hy;
-          const double len = std::sqrt(dx * dx + dy * dy);
+          double len = std::sqrt(dx * dx + dy * dy);
+          if (local_scale) len /= std::max(1e-9, (*local_scale)(Vec2{(pts_[p].x + pts_[q].x) / 2, (pts_[p].y + pts_[q].y) / 2}));
           if (len > 1.4) longest.push_back({len, static_cast<int>(ti), e});
         }
       }
@@ -402,6 +406,22 @@ struct EdgeSamples {
   std::vector<Point3d> pts;   // 3D points (shared by both faces)
 };
 
+// A sewn brep's edge curve can end up to the sewing tolerance away from the vertex both of its end trims were welded to (the keyhole corridor
+// of a General Boolean result lands on a box edge at two points 0.01 apart, and the two edges meeting there each keep their own curve end).
+// Each face walking its loop takes "the first sample of the next trim" as the junction, so two faces meeting at that vertex took different
+// 3D points (one from each edge's curve) and the mesh was left with a hole one sewing tolerance wide. The end samples of an edge are therefore
+// the brep VERTEX positions (what both faces and the edge agree on), when the curve end is within `snap` of its vertex.
+void SnapEdgeEnds(const ON_Brep& brep, const ON_BrepEdge& edge, double snap, EdgeSamples& s) {
+  if (s.pts.size() < 2) return;
+  for (int end = 0; end < 2; ++end) {
+    const int vi = edge.m_vi[end];
+    if (vi < 0 || vi >= brep.m_V.Count()) continue;
+    const ON_3dPoint vp = brep.m_V[vi].point;
+    Point3d& q = end == 0 ? s.pts.front() : s.pts.back();
+    if (q.DistanceTo(vp) <= snap) q = vp;
+  }
+}
+
 EdgeSamples SampleEdge(const ON_BrepEdge& edge, double tol, double min_samples, double max_spacing) {
   EdgeSamples s;
   const ON_Interval d = edge.Domain();
@@ -593,6 +613,234 @@ static kernel::Mesh MeshWholeSurfaceFace(const FaceInfo& info, bool reversed) {
   return mesh;
 }
 
+// ---------------------------------------------------------------------------
+// Spherical faces through a stereographic chart
+// ---------------------------------------------------------------------------
+// A face on a sphere is normally triangulated in the surface's own (u, v) domain, where its boundary has to respect the periodic seam and
+// the two poles (singular sides). A General-boolean result bounded by a curve that runs THROUGH a pole and across the seam (a sphere cut by a
+// plane through its axis: the circle passes both poles, the seam meridian lies in the kept half) comes back with a loop whose (u, v) at the
+// pole is not the pole (the diagonal trim that joins the two arms is a different curve from the edge), so the (u, v) polygon is not the face
+// and the welded mesh is left open around the poles. The face's own region on the sphere does not depend on any of that: it is what the
+// closed 3D polyline of its edge samples bounds. This path therefore meshes the face from that polyline alone, in a chart where neither the
+// seam nor the poles exist: the stereographic projection from a point of the sphere that is NOT in the face (conformal, so the Delaunay
+// triangulation stays well shaped, and a model length is a known multiple of a chart length). The seam trims (each seam edge is walked twice by
+// the same loop, a zero-width slit) and the singular pole trims are not part of the boundary and are left out; the boundary vertices are the
+// shared edge samples, unchanged, so the neighbouring faces still meet this one vertex for vertex.
+struct StereoChart {
+  ON_3dPoint c;
+  double r = 1;
+  ON_3dVector dq, e1, e2;  // dq points from the centre to the projection point Q = c + r dq; (e1, e2) is a frame of the plane through c
+  Vec2 Map(const ON_3dPoint& p) const {
+    ON_3dVector d = p - c;
+    const double len = d.Length();
+    if (!(len > 0)) return {0, 0};
+    d *= r / len;
+    const double z = d * dq;
+    const double t = r / std::max(1e-12 * r, r - z);
+    const ON_3dVector x = dq * r + t * (d - dq * r);
+    return {x * e1, x * e2};
+  }
+  ON_3dPoint Unmap(const Vec2& x) const {
+    const double s = 2.0 * r * r / (x.x * x.x + x.y * x.y + r * r);
+    const ON_3dVector q = dq * r;
+    return c + q + s * (e1 * x.x + e2 * x.y - q);
+  }
+  double Scale(const Vec2& x) const { return (x.x * x.x + x.y * x.y + r * r) / (2.0 * r * r); }  // chart length per model length
+};
+
+static StereoChart MakeStereoChart(const ON_3dPoint& c, double r, ON_3dVector dq) {
+  StereoChart ch;
+  ch.c = c;
+  ch.r = r;
+  dq.Unitize();
+  ch.dq = dq;
+  ON_3dVector seed = std::fabs(dq.x) < 0.9 ? ON_3dVector(1, 0, 0) : ON_3dVector(0, 1, 0);
+  ch.e1 = seed - (seed * dq) * dq;
+  ch.e1.Unitize();
+  ch.e2 = ON_CrossProduct(dq, ch.e1);
+  // Make a counter-clockwise triangle of the chart an OUTWARD-facing one on the sphere (measured, not derived).
+  const ON_3dPoint p0 = c - dq * r;
+  const ON_3dPoint a = c + (-dq + 0.01 * ch.e1) * r, b = c + (-dq + 0.01 * ch.e2) * r;
+  const Vec2 m0 = ch.Map(p0), ma = ch.Map(a), mb = ch.Map(b);
+  const double chart_ccw = (ma.x - m0.x) * (mb.y - m0.y) - (ma.y - m0.y) * (mb.x - m0.x);
+  const double outward = ON_CrossProduct(a - p0, b - p0) * (p0 - c);
+  if ((chart_ccw > 0) != (outward > 0)) ch.e2 = -ch.e2;
+  return ch;
+}
+
+// Meshes `face` (on a sphere) from the closed polylines of its loops' edge samples. Returns false (and leaves `out` alone) when the face is not
+// a sphere face of that kind, when no projection point outside the face exists, or when the triangulation does not respect the boundary.
+static bool MeshSphereFaceStereo(const ON_Brep& brep, const ON_BrepFace& face, const FaceInfo& info, const std::vector<EdgeSamples>& edges, int max_tris,
+                                 kernel::Mesh& out) {
+  auto why = [&](const char* msg) { if (std::getenv("DINO8_MESH_DEBUG")) std::fprintf(stderr, "[mesh] face %d: sphere chart declined: %s\n", face.m_face_index, msg); return false; };
+  if (face.m_si < 0 || face.m_si >= brep.m_S.Count() || !brep.m_S[face.m_si]) return why("no surface");
+  const ON_Surface& srf = *brep.m_S[face.m_si];
+  ON_Sphere sph;
+  if (!srf.IsSphere(&sph) || !(sph.Radius() > 0)) return why("not a sphere");
+  const ON_3dPoint c = sph.Center();
+  const double r = sph.Radius();
+
+  struct Loop { std::vector<ON_3dPoint> pts; };
+  std::vector<Loop> loops;
+  std::vector<ON_2dPoint> probes;  // (u, v) in the surface's own domain of boundary points, where the surface normal is read
+  for (int li = 0; li < face.m_li.Count(); ++li) {
+    const ON_BrepLoop& loop = brep.m_L[face.m_li[li]];
+    if (loop.m_type != ON_BrepLoop::outer && loop.m_type != ON_BrepLoop::inner) continue;
+    Loop L;
+    for (int k = 0; k < loop.m_ti.Count(); ++k) {
+      const ON_BrepTrim& trim = brep.m_T[loop.m_ti[k]];
+      if (trim.m_type == ON_BrepTrim::seam || trim.m_ei < 0) continue;  // a seam edge is walked twice by the same loop; a singular trim is a point
+      const EdgeSamples& es = edges[static_cast<size_t>(trim.m_ei)];
+      const size_t n = es.pts.size();
+      if (n < 2) continue;
+      for (size_t i = 0; i + 1 < n; ++i) L.pts.push_back(es.pts[trim.m_bRev3d ? (n - 1 - i) : i]);
+      if (probes.size() < 12) {
+        const ON_Interval td = trim.Domain();
+        const ON_3dPoint uv = trim.PointAt(td.ParameterAt(0.5));
+        probes.push_back(ON_2dPoint(uv.x, uv.y));
+      }
+    }
+    // consecutive duplicates (a vertex both neighbouring trims report)
+    std::vector<ON_3dPoint> clean;
+    for (const ON_3dPoint& q : L.pts) if (clean.empty() || q.DistanceTo(clean.back()) > 1e-12 * r) clean.push_back(q);
+    while (clean.size() > 1 && clean.front().DistanceTo(clean.back()) <= 1e-12 * r) clean.pop_back();
+    L.pts.swap(clean);
+    if (L.pts.size() >= 3) loops.push_back(std::move(L));
+  }
+  // A loop made only of seam and pole trims (the "outer" loop of a sphere that has holes cut in it) bounds nothing and was dropped above.
+  if (loops.empty() || probes.empty()) return why("no loop of edge samples");
+
+  // Is the surface's own normal (du x dv) outward? The face's orientation flag reverses it. Read at the probe away from every pole.
+  bool surf_outward = true;
+  {
+    double best = 0;
+    for (const ON_2dPoint& uv : probes) {
+      ON_3dPoint pt;
+      ON_3dVector du, dv;
+      if (!srf.Ev1Der(uv.x, uv.y, pt, du, dv)) continue;
+      const ON_3dVector nrm = ON_CrossProduct(du, dv);
+      if (nrm.Length() > best) { best = nrm.Length(); surf_outward = nrm * (pt - c) > 0; }
+    }
+    if (!(best > 1e-9 * r * r)) return why("no surface normal");
+  }
+  const bool want_outward = surf_outward != face.m_bRev;
+
+  // The projection point must lie outside the face. Every loop has the face on its left seen from the side the surface normal points to, which
+  // in the chart (counter-clockwise = outward) is the loop's inside when the surface normal is outward and its outside when it is inward. The
+  // face is bounded in the chart exactly when the loop that encloses the largest area (the outermost one) has the face on its inside.
+  // Candidates: the coordinate axes, the sphere's own axes and the direction away from the loops' mean direction; the best is the one
+  // farthest from every boundary sample.
+  std::vector<ON_3dVector> cands;
+  auto add_cand = [&](ON_3dVector v) { if (v.Unitize()) cands.push_back(v); };
+  const ON_3dVector axes[3] = {ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0), ON_3dVector(0, 0, 1)};
+  for (const ON_3dVector& a : axes) { add_cand(a); add_cand(-a); }
+  add_cand(sph.plane.xaxis); add_cand(-sph.plane.xaxis);
+  add_cand(sph.plane.yaxis); add_cand(-sph.plane.yaxis);
+  add_cand(sph.plane.zaxis); add_cand(-sph.plane.zaxis);
+  {
+    ON_3dVector mean(0, 0, 0);
+    for (const Loop& L : loops) for (const ON_3dPoint& q : L.pts) { ON_3dVector d = q - c; if (d.Unitize()) mean += d; }
+    if (mean.Length() > 1e-6) { add_cand(-mean); add_cand(mean); }
+  }
+  const auto signed_area = [](const std::vector<Vec2>& poly) {
+    double a = 0;
+    for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) a += poly[j].x * poly[i].y - poly[i].x * poly[j].y;
+    return 0.5 * a;
+  };
+  bool found = false;
+  StereoChart chart;
+  double best_clear = -1;
+  for (const ON_3dVector& dq : cands) {
+    double clear = 1e300;  // smallest angle (radians) between the projection direction and a boundary sample
+    for (const Loop& L : loops) for (const ON_3dPoint& q : L.pts) {
+      ON_3dVector d = q - c;
+      if (!d.Unitize()) continue;
+      clear = std::min(clear, std::acos(std::clamp(d * dq, -1.0, 1.0)));
+    }
+    if (clear < 0.15 || clear <= best_clear) continue;
+    const StereoChart ch = MakeStereoChart(c, r, dq);
+    double biggest = 0;
+    for (const Loop& L : loops) {
+      std::vector<Vec2> poly;
+      for (const ON_3dPoint& q : L.pts) poly.push_back(ch.Map(q));
+      const double a = signed_area(poly);
+      if (std::fabs(a) > std::fabs(biggest)) biggest = a;
+    }
+    if (!(std::fabs(biggest) > 0) || (biggest > 0) != surf_outward) continue;
+    best_clear = clear;
+    chart = ch;
+    found = true;
+  }
+  if (!found) return why("no projection point outside the face");
+
+  // Chart points: boundary samples first (their model positions are the shared samples), then whatever refinement adds.
+  std::vector<Vec2> pts;
+  std::vector<ON_3dPoint> pos;
+  std::vector<std::vector<int>> loop_ids;
+  std::map<std::pair<long long, long long>, int> seen;
+  const double key_scale = 1e9 / (4.0 * r);
+  for (const Loop& L : loops) {
+    std::vector<int> ids;
+    for (const ON_3dPoint& q : L.pts) {
+      const Vec2 m = chart.Map(q);
+      const std::pair<long long, long long> key{std::llround(m.x * key_scale), std::llround(m.y * key_scale)};
+      auto it = seen.find(key);
+      if (it == seen.end()) { it = seen.emplace(key, static_cast<int>(pts.size())).first; pts.push_back(m); pos.push_back(q); }
+      ids.push_back(it->second);
+    }
+    loop_ids.push_back(std::move(ids));
+  }
+  if (pts.size() < 3) return why("fewer than 3 boundary points");
+  if (std::getenv("DINO8_MESH_DEBUG")) {
+    double rmin = 1e300, rmax = 0;
+    for (const Vec2& q : pts) { const double rho = std::hypot(q.x, q.y); rmin = std::min(rmin, rho); rmax = std::max(rmax, rho); }
+    std::fprintf(stderr, "[mesh] face %d: sphere chart dq (%.3f,%.3f,%.3f) clearance %.3f rad, %zu points, chart radius %.4g..%.4g, %zu loops\n", face.m_face_index, chart.dq.x, chart.dq.y, chart.dq.z, best_clear, pts.size(), rmin, rmax, loops.size());
+  }
+  CDT cdt(pts);
+  std::vector<std::vector<Vec2>> polys;
+  for (const std::vector<int>& ids : loop_ids) {
+    std::vector<Vec2> poly;
+    for (size_t k = 0; k < ids.size(); ++k) {
+      const int a = ids[k], b = ids[(k + 1) % ids.size()];
+      if (a != b && !cdt.Constrain(a, b)) {
+        if (std::getenv("DINO8_MESH_DEBUG")) std::fprintf(stderr, "[mesh]   constrain %d-%d failed: (%.5g,%.5g) -> (%.5g,%.5g), loop of %zu\n", a, b, pts[static_cast<size_t>(a)].x, pts[static_cast<size_t>(a)].y, pts[static_cast<size_t>(b)].x, pts[static_cast<size_t>(b)].y, ids.size());
+        return why("a boundary edge could not be constrained");
+      }
+      poly.push_back(pts[static_cast<size_t>(a)]);
+    }
+    polys.push_back(std::move(poly));
+  }
+  auto inside = [&](const Vec2& p) {  // the face is inside an odd number of its loops (an island inside a hole counts again)
+    bool in = false;
+    for (const std::vector<Vec2>& poly : polys) if (PointInPolygon(poly, p)) in = !in;
+    return in;
+  };
+  const std::function<double(const Vec2&)> scale = [&](const Vec2& x) { return chart.Scale(x); };
+  cdt.Refine(info.h3, info.h3, max_tris, inside, &scale);
+
+  kernel::Mesh mesh;
+  ON_Mesh& m = mesh.raw();
+  const std::vector<Vec2>& all = cdt.Points();
+  std::vector<int> mesh_index(all.size(), -1);
+  for (size_t i = 0; i < all.size(); ++i) {
+    mesh_index[i] = m.VertexCount();
+    m.SetVertex(mesh_index[i], i < pts.size() ? pos[i] : chart.Unmap(all[i]));
+  }
+  for (const std::array<int, 3>& t : cdt.Triangles(inside)) {
+    int a = mesh_index[static_cast<size_t>(t[0])], b = mesh_index[static_cast<size_t>(t[1])], cc = mesh_index[static_cast<size_t>(t[2])];
+    const Vec2& pa = all[static_cast<size_t>(t[0])]; const Vec2& pb = all[static_cast<size_t>(t[1])]; const Vec2& pc = all[static_cast<size_t>(t[2])];
+    const double orient = (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x);  // counter-clockwise in the chart: outward
+    if ((orient < 0) == want_outward) std::swap(b, cc);
+    m.SetTriangle(m.FaceCount(), a, b, cc);
+  }
+  m.CullDegenerateFaces();
+  if (m.FaceCount() == 0) return why("empty");
+  m.ComputeFaceNormals();
+  m.ComputeVertexNormals();
+  out = std::move(mesh);
+  return true;
+}
+
 std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptions& options) {
   std::vector<kernel::Mesh> result;
   const double tol = std::max(1e-6, options.chord_tolerance);
@@ -637,6 +885,12 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
     }
     edges[static_cast<size_t>(ei)] = options.unify_edge_spacing ? SampleEdgeUniform(e, tol, unified_spacing)
                                                                 : SampleEdge(e, tol, options.min_edge_samples, spacing);
+    double snap = 4.0 * tol;
+    for (int end = 0; end < 2; ++end) {
+      const int vi = e.m_vi[end];
+      if (vi >= 0 && vi < brep.m_V.Count() && brep.m_V[vi].m_tolerance > 0.0 && brep.m_V[vi].m_tolerance < 1e100) snap = std::max(snap, 2.0 * brep.m_V[vi].m_tolerance);
+    }
+    SnapEdgeEnds(brep, e, snap, edges[static_cast<size_t>(ei)]);
   }
 
   // Pass 3: faces.
@@ -645,6 +899,10 @@ std::vector<kernel::Mesh> MeshBrepFaces(const ON_Brep& brep, const BrepMeshOptio
     const FaceInfo& info = infos[static_cast<size_t>(fi)];
     if (face.m_face_index < 0 || !info.valid) continue;
     if (face.m_li.Count() == 0) { result.push_back(MeshWholeSurfaceFace(info, face.m_bRev)); continue; }
+    if (options.sphere_stereo_charts || std::getenv("DINO8_MESH_STEREO")) {  // MeshBrepClosed()'s retry (or DINO8_MESH_STEREO=1): a sphere face from its edge-sample polylines
+      kernel::Mesh stereo;
+      if (MeshSphereFaceStereo(brep, face, info, edges, face_cap(fi), stereo)) { result.push_back(std::move(stereo)); continue; }
+    }
     const ON_NurbsSurface& ns = info.ns;
     kernel::NurbsSurface ksrf;
     ksrf.raw() = ns;
@@ -1004,6 +1262,30 @@ kernel::Mesh MeshBrepClosed(const ON_Brep& brep, const BrepMeshOptions& options)
       uniform.unify_edge_spacing = true;
       kernel::Mesh um = MeshBrepClosedOnce(brep, uniform);
       if (um.IsClosedManifold()) return um;
+    }
+  }
+  // A solid with a sphere face whose (u, v) polygon is not the face (a loop through a pole and across the seam) meshes open in every variant
+  // above. Mesh its sphere faces from their edge-sample polylines in a stereographic chart instead (MeshSphereFaceStereo); the other faces stay as
+  // they were. Kept only if the result closes, so a mesh that was closed before is never replaced.
+  if (brep.IsSolid() && !m.IsClosedManifold() && !options.sphere_stereo_charts) {
+    bool has_sphere = false;
+    for (int fi = 0; fi < brep.m_F.Count() && !has_sphere; ++fi) {
+      const ON_BrepFace& f = brep.m_F[fi];
+      ON_Sphere sph;
+      has_sphere = f.m_si >= 0 && f.m_si < brep.m_S.Count() && brep.m_S[f.m_si] && f.m_li.Count() > 0 && brep.m_S[f.m_si]->IsSphere(&sph);
+    }
+    if (has_sphere) {
+      BrepMeshOptions stereo = options;
+      stereo.sphere_stereo_charts = true;
+      const std::vector<kernel::Mesh> faces = MeshBrepFaces(brep, stereo);
+      if (!faces.empty()) {
+        kernel::Mesh sm = MeshBrepClosedOnce(brep, stereo, 1e-8, &faces);
+        if (sm.IsClosedManifold()) return sm;
+        for (double fraction : {1e-4, 3e-4, 1e-3, 3e-3}) {
+          kernel::Mesh welded = MeshBrepClosedOnce(brep, stereo, fraction, &faces);
+          if (welded.IsClosedManifold()) return welded;
+        }
+      }
     }
   }
   // Last resort for a topologically closed brep (IsSolid) whose faces still do
