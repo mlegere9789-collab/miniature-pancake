@@ -1058,23 +1058,35 @@ ChamferDistanceLimit MaxChamferDistanceWithEnds(const Brep& solid, Point3d edge_
 // every derivation this reuses), just applied once per edge in a loop
 // instead of once.
 //
-// SCOPE (v1, stated plainly rather than silently narrowed - the same
-// "matching how FilletConvexEdges itself started before FilletConvexEdges
-// gained its own m==3 vertex-blend corner" increment this file's own
-// history already shows): every edge's own two endpoints must be used by
-// EXACTLY one of the supplied edges - no two edges in the SAME call may
-// share a vertex. Two edges MAY share an adjacent FACE (e.g. two
-// parallel, non-touching edges of the same box face - re-trimmed by two
-// independent half-space clips in sequence, exactly as two sequential
-// single-edge ChamferConvexEdge calls on the same solid already would),
-// just not an ENDPOINT. A shared vertex - whether a real m==2 corner (two
-// chamfers meeting with a third, un-chamfered edge) or a genuine m==3
-// trihedral corner (already covered by ChamferConvexVertex's own
-// per-edge-distance overload, a separate, already-existing entry point)
-// - throws std::invalid_argument naming the conflict, rather than
-// silently misbuilding a corner or guessing which of those two cases was
-// meant; batch several vertex-disjoint edges here, and chamfer a shared
-// corner separately via ChamferConvexEdge/ChamferConvexVertex.
+// SCOPE: every endpoint of a supplied edge is either used by exactly ONE of
+// the supplied edges (the per-edge end condition above) or is a CONVEX
+// TRIHEDRAL corner of `solid` - exactly three planar faces meet there -
+// with ALL THREE of its edges supplied. Two edges MAY also share an
+// adjacent FACE (e.g. two parallel, non-touching edges of the same box face -
+// re-trimmed by two independent half-space clips in sequence, exactly as two
+// sequential single-edge ChamferConvexEdge calls on the same solid already
+// would).
+//
+// A trihedral corner whose three edges are all supplied gets a CORNER PATCH:
+// each face is re-trimmed by the rail (the line parallel to a supplied edge
+// at its distance inside that face) of every supplied edge on it, so a face
+// keeps a polygon whose corner at the vertex is where its two rails cross;
+// the three chamfer strips end on the three sides of the planar triangle
+// through those three face corners. All twelve edges of a box therefore give
+// 6 + 12 + 8 = 26 faces, 48 edges and 24 vertices; with one setback d on both
+// faces of every edge the solid has volume abc - 2 d^2 (a+b+c) + 16 d^3 / 3
+// and (for equal d) the corner triangles are equilateral. This works for any
+// convex polytope with trihedral vertices (tetrahedra, prisms, ...); the
+// triangle is the planar face on the three face corners, so unequal
+// (distance_i, distance_j) still close up. Distances that leave a face with
+// no area (d >= half of a box side) are refused with std::invalid_argument.
+//
+// Still out of scope and refused with std::invalid_argument naming the
+// conflict, rather than silently misbuilding a corner: a shared vertex with
+// only one or two of its three edges supplied (a mitred two-edge corner), a
+// vertex where more or fewer than three faces meet, a concave or mixed
+// corner, and the same edge listed twice; chamfer such edges individually via
+// ChamferConvexEdge/ChamferConvexVertex.
 //
 // Every edge must independently satisfy everything ChamferConvexEdge's
 // own single-edge construction requires (a genuine shared boundary edge
