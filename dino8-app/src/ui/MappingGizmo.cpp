@@ -61,7 +61,7 @@ bool MappingGizmo::Update(Application& app, Viewport& vp, SceneObject& obj, bool
   const std::array<Vector3d, 3> axes = {x_axis, y_axis, z_axis};
   auto AxisDir = [&](int a) { return axes[static_cast<size_t>(a)]; };
 
-  const double axis_len = 80.0 * vp.GetCamera().PixelSize(vp.Height());
+  const double axis_len = 80.0 * vp.GetCamera().PixelSize(vp.Height(), vp.Aspect());
 
   double cx, cy;
   if (!vp.WorldToPixel(center, cx, cy)) return false;

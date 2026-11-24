@@ -263,7 +263,7 @@ void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode 
   if (!tex) return;
   renderer.EnableDepthTest(false);
   if (is_environment_image) {
-    renderer.DrawEnvironmentBackground(tex, camera.Forward(), camera.Right(), camera.Up(), camera.TanHalfFovY(),
+    renderer.DrawEnvironmentBackground(tex, camera.Forward(), camera.Right(), camera.Up(), camera.TanHalfFovY(aspect),
                                         aspect, !camera.State().perspective);
   } else {
     renderer.DrawFullscreenTexture(tex);
@@ -709,7 +709,7 @@ void Viewport::DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx) {
 
 void Viewport::DrawLightWidgets(GlRenderer& renderer, const Document& doc) {
   if (doc.Lights().empty()) return;
-  const double px = camera_.PixelSize(std::max(height_, 1));
+  const double px = camera_.PixelSize(std::max(height_, 1), Aspect());
   const double s = px * 10;  // widget size in world units
   std::vector<float> lines, sel_lines;
   auto seg = [&](std::vector<float>& v, Point3d a, Point3d b) {
@@ -1009,8 +1009,7 @@ kernel::BoundingBox FrustumWorldBox(const Camera& camera, double aspect) {
     box.min.z = std::min(box.min.z, p.z); box.max.z = std::max(box.max.z, p.z);
   };
   if (s.perspective) {
-    const double fov = 2.0 * std::atan(18.0 / s.lens_mm);
-    const double ty = std::tan(fov / 2.0), tx = ty * aspect;
+    const double ty = Camera::TanHalfFovVertical(s.lens_mm, aspect), tx = ty * aspect;
     for (double depth : {near_dist, far_dist})
       for (double sx : {-1.0, 1.0})
         for (double sy : {-1.0, 1.0}) expand(s.eye + f * depth + r * (sx * tx * depth) + u * (sy * ty * depth));

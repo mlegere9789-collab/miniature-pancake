@@ -119,7 +119,7 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
     // GumballRelocate: draw and drag from the relocated origin instead of
     // the selection's own centre/centroid.
     if (settings_.relocated) center_ = settings_.relocated_origin;
-    axis_len_ = 70.0 * vp.GetCamera().PixelSize(vp.Height());
+    axis_len_ = 70.0 * vp.GetCamera().PixelSize(vp.Height(), vp.Aspect());
     axes_ = GumballAxes(settings_, vp, doc, sub_mode_, sel);
   } else if (vp_index != drag_viewport_) {
     return false;
