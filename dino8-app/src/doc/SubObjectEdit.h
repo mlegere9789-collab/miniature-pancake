@@ -95,6 +95,19 @@ std::vector<SubObjectRef> ConnectedFaces(const SceneObject& o, int seed_face);
 std::vector<SubObjectRef> FacesToBoundary(const SceneObject& o, const std::vector<int>& seed_faces,
                                           const std::vector<SubObjectRef>& boundary_edges);
 std::vector<SubObjectRef> AllEdges(const SceneObject& o);
+
+// Measures of one polygon face of a mesh (or of a SubD's control net), all in model units / degrees.
+//   area         half the length of the Newell vector (the exact area of a planar polygon)
+//   min_edge / max_edge   shortest and longest side
+//   draft_degrees        angle between the face plane and the pull axis, 0 for a wall parallel to the axis, 90 for a face square to it
+//                        (unsigned: it does not depend on which way the face is oriented)
+struct MeshFaceMeasure {
+  int face = -1;
+  double area = 0, min_edge = 0, max_edge = 0, draft_degrees = 0;
+};
+std::vector<MeshFaceMeasure> MeshFaceMeasures(const SceneObject& o, double pull_x, double pull_y, double pull_z);
+// Interior edges (exactly two faces) whose two face normals differ by at least `min_degrees`; a flat join is 0, a cube edge 90.
+std::vector<SubObjectRef> MeshEdgesByDihedral(const SceneObject& o, double min_degrees);
 std::vector<SubObjectRef> NakedEdges(const SceneObject& o);
 std::vector<SubObjectRef> NakedEdgeVertices(const SceneObject& o);
 // Mesh / SubD control-net edges shared by more than two faces (SelNonManifold).

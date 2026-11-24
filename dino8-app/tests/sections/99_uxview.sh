@@ -1,11 +1,9 @@
 # ---------------------------------------------------------------------------
 # UXVIEW_: viewport activation commands proved through the command layer.
 # Rows D8-RHINO-VIEW-0039 NextViewport, 0062 PrevViewport, 0037 NextOrthoViewport, 0038 NextPerspectiveViewport, 0079 SetActiveViewport.
-# Oracles: the Rhino 8 help text kept in data/commands.json ("NextViewport activates the next viewport", "PrevViewport activates the previous
-# viewport", "NextOrthoViewport activates the next viewport with an orthogonal projection", "NextPerspectiveViewport ... perspective
-# projection", "SetActiveViewport activates a specified named viewport ... a viewport with the name you type must exist"), Rhino's standard
-# four-view layout (Top, Perspective, Front, Right) and the arithmetic of a cycle: N steps of Next return to the start, Prev undoes Next,
-# the ortho step never lands on the perspective viewport and the perspective step lands on it.
+# Oracles: Rhino's standard four-view layout (Top, Perspective, Front, Right; recalled, needs owner check) and the arithmetic of a cycle: N steps of
+# Next return to the start, Prev undoes Next, the ortho step never lands on the perspective viewport and the perspective step lands on it; a viewport
+# is activated by its name and an unknown name is refused.
 # Not tested (needs a real window): the highlighted viewport title and Ctrl+Tab.
 # ---------------------------------------------------------------------------
 . "$HERE/ux_common.sh"
