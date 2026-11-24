@@ -12803,7 +12803,11 @@ fsrrange "$(fsrint curved)" 12 40 "FSR_curved: interval count (18 on the referen
 fsrrange "$(fsralign curved)" 0.999 1.000001 "FSR_curved: normal alignment"
 fsrrange "$(fsrst curved)" 0.05 0.25 "FSR_curved: start trim (0.128 on the reference run: the contact points would leave the floor's domain)"
 fsrrange "$(fsret curved)" 0.02 0.15 "FSR_curved: end trim (0.060 on the reference run)"
-fsrsb curved 1 "3.678,0,-0.258,5.158,10,1.193" 0.01 "FSR_curved: blend bounding box (4 significant digits printed)"
+# The blend's box is the display grid (4 x 4 divisions) plus the surface's knot lattice (SceneObject::BuildDisplay), measured against 1000 x 1000
+# PointAt sampling of the same kernel blend (kernel probe, radius 0.8, tolerance 1e-4): true box 3.6748,0,-0.2580 .. 5.1679,10,1.1931 (control-net
+# hull bound x max 5.1727). The printed box sits inside it by at most 3.6e-3 (x min 3.678: no sample on the span interior's extreme), so the
+# window is +-0.005 about the true values; the old pin 3.678 / 5.158 was the grid-only box, 0.0099 short of the true x max.
+fsrsb curved 1 "3.675,0,-0.258,5.168,10,1.193" 0.005 "FSR_curved: blend bounding box = the dense-sampled true box (3.6748..5.1679 in x) to 0.005 (4 significant digits printed)"
 fsrcheck curved "degree 3 x 3, CVs 5 x 4" "FSR_curved: the parents keep their lofted control nets (5 x 4)"
 fsrcheck curved "$FSR_NOTRIM" "FSR_curved: the message says the parents are NOT trimmed"
 # contact curves vs the parents: the command's own 33-sample measurement, then ClosestPt of the printed contact points (second run)
@@ -12839,7 +12843,10 @@ if grep -q "FilletSurfaces: blend patch added as object 11" <<<"$FSRC"; then ech
 fsrcheck curved_under "object 5 face 0: side +1 (along the surface normal)" "FSR_under: a wall pick below the floor flips the floor's ball side to +1"
 fsrdevcheck curved_under "FSR_under"
 fsrrange "$(fsrdev curved_under)" 1e-7 1e-4 "FSR_under: deviation positive and within 1e-4 (measured 8.4e-05)"
-fsrsb curved_under 1 "3.566,0,-0.5287,4.563,10,0.3237" 0.01 "FSR_under: the underside blend's bounding box lies below the top blend's (z max 0.324 vs 1.193)"
+# Underside blend (radius 0.3): 1000 x 1000 PointAt sampling of the same kernel blend gives the true box 3.56591,0,-0.52867 .. 4.57455,10,0.32366
+# (control-net hull bound x max 4.5794). The old pin 4.563 was the grid-only box (4 x 4 divisions), 0.0116 short of the true x max; the grid plus knot
+# lattice prints 4.574 (inside the true box by 1.2e-4 at most), so the window is +-0.001 about the true values (tighter than the old 0.01).
+fsrsb curved_under 1 "3.566,0,-0.5287,4.5745,10,0.3237" 0.001 "FSR_under: the underside blend's bounding box = the dense-sampled true box (x max 4.5745) to 0.001, below the top blend's (z max 0.324 vs 1.193)"
 
 # --- the tolerance really controls the result: looser -> fewer intervals, tighter -> more, each printed deviation within its tolerance
 fsrdevcheck curved_tol_loose "FSR_tol 1e-3"
