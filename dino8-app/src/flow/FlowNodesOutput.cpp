@@ -12,6 +12,7 @@ void RegisterSolverNodes();
 void RegisterRowNodes();
 void RegisterRowNodes2();
 void RegisterBlenderNodes();
+void RegisterBlenderNodes2();
 
 namespace {
 
@@ -68,6 +69,7 @@ void RegisterBuiltinNodes() {
   RegisterRowNodes();
   RegisterRowNodes2();
   RegisterBlenderNodes();
+  RegisterBlenderNodes2();
   AddDisplay();
   AddOutput();
 }
