@@ -1,0 +1,6 @@
+# Flow Register row Trim Curve (Blender Geometry Nodes): player + bake, read back by sections/97_bftrmc.sh (see flowrows4_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 26
+SelAll
+List

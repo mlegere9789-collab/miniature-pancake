@@ -78,10 +78,10 @@ class T:
         self.point_exact(b, 0, lo, msg + ": min", scale)
         self.point_exact(b, 1, hi, msg + ": max", scale)
 
-    def clen(self, geo, c, msg):
+    def clen(self, geo, c, msg, scale=1e12):
         n = self.g.node("Curve Length (Blender)")
         self.g.wire(geo, 0, n, 0)
-        self.exact(n, 0, c, msg)
+        self.exact(n, 0, c, msg, scale)
 
     def dsize(self, geo, pt=None, ed=None, fa=None, co=None, sp=None, msg=""):
         n = self.g.node("Domain Size")
