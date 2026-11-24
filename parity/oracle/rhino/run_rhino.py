@@ -129,7 +129,8 @@ def run_case(c, tol):
         return measure_brep(piece, want)
     if op == "offset_solid":
         b = make_prim(a["shape"])
-        res = rg.Brep.CreateOffsetBrep(b, a["distance"], True, True, tol)
+        # solid=False: for an already-closed input the call returns the single closed offset brep; solid=True returns an empty array.
+        res = rg.Brep.CreateOffsetBrep(b, a["distance"], False, True, tol)
         # out-parameters are returned as extra tuple members in Python 3; first member is the Brep array
         arr = res[0] if isinstance(res, tuple) else res
         piece = _first(arr)
@@ -181,10 +182,10 @@ def run_case(c, tol):
             kind, circle = res[0], res[1]
         else:
             kind, circle = res, None
-        PSI = rg.Intersect.PlaneSphereIntersection
-        if kind == PSI.Circle:
+        kname = str(kind)  # enum member names are "None" / "Point" / "Circle"; compare by name (the Python binding exposes None as NONE)
+        if kname == "Circle":
             return {"count": 1, "length": circle.Circumference}
-        if kind == getattr(PSI, "None"):  # "None" is a Python keyword, so it cannot be written as an attribute
+        if kname == "None":
             return {"count": 0, "length": 0.0}
         return {"count": 1, "length": 0.0}  # Point (tangent contact)
     if op == "section_plane_box":
