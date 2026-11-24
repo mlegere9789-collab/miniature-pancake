@@ -4288,8 +4288,149 @@ static double ScaleAwareTolerance(const Brep& a, const Brep& b, double tolerance
   return std::min(tolerance, thin * 0.005);
 }
 
-Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance,
-                            bool allow_non_manifold_result) {
+// --- coaxial right circular cylinders whose walls lie within a couple of tolerances of one another ------------------------------------------
+//
+// Two solid cylinders on ONE axis cross-section the same way at every angle, so their Boolean is the Boolean of two rectangles in the (radius, height)
+// half-plane, revolved: exact, with no intersection curve at all. The SSX engine cannot do this when the two walls are closer than about the sewing
+// tolerance (r = 1 against r = 1.001): the rings between the walls are 1e-3 wide, their polyline edges and the walls' sample points all sit within the
+// sewing tolerance of one another, and the result stays open ("the engine's result could not be sewn into a closed solid") or is refused as
+// non-manifold. BooleanCombineGeneral therefore asks this exact construction ONLY when the engine's own result cannot be sealed, so every pair the engine
+// handles keeps the engine's result unchanged.
+struct CoaxialCylinder {
+  ON_3dPoint origin;   // on the axis, at the axial coordinate 0 of the pair's shared frame
+  ON_3dVector axis;    // unit
+  ON_3dVector ref;     // unit, perpendicular to the axis: the half-plane the profile is drawn in
+  double r = 0.0, z0 = 0.0, z1 = 0.0;
+};
+
+static bool ReadCoaxialCylinder(const Brep& brep, CoaxialCylinder& out) {
+  const ON_Brep& B = brep.raw();
+  if (B.m_F.Count() != 3) return false;  // wall + two caps (cheap test first: this runs on every general Boolean)
+  if (!B.IsSolid()) return false;
+  int live = 0, cyl_face = -1;
+  std::vector<ON_Plane> caps;
+  ON_Cylinder cyl;
+  for (int f = 0; f < B.m_F.Count(); ++f) {
+    if (B.m_F[f].m_face_index < 0) continue;
+    ++live;
+    const ON_Surface* srf = B.m_F[f].SurfaceOf();
+    if (!srf) return false;
+    ON_Plane pl;
+    if (srf->IsPlanar(&pl, 1e-9)) {
+      caps.push_back(pl);
+    } else if (cyl_face < 0 && srf->IsCylinder(&cyl, 1e-9) && (srf->IsClosed(0) || srf->IsClosed(1))) {
+      cyl_face = f;
+    } else {
+      return false;
+    }
+  }
+  if (live != 3 || cyl_face < 0 || caps.size() != 2) return false;
+  const ON_3dVector axis = cyl.Axis();
+  if (!(std::fabs(axis.Length() - 1.0) < 1e-9)) return false;
+  const double r = cyl.circle.Radius();
+  if (!(r > 0.0)) return false;
+  double z[2];
+  for (int k = 0; k < 2; ++k) {
+    const ON_3dVector n = caps[static_cast<size_t>(k)].Normal();
+    if (std::fabs(std::fabs(n * axis) - 1.0) > 1e-9) return false;
+    z[k] = (caps[static_cast<size_t>(k)].origin - cyl.circle.plane.origin) * axis;
+  }
+  out.origin = cyl.circle.plane.origin;
+  out.axis = axis;
+  out.ref = cyl.circle.plane.xaxis;
+  out.r = r;
+  out.z0 = std::min(z[0], z[1]);
+  out.z1 = std::max(z[0], z[1]);
+  return out.z1 - out.z0 > 0.0;
+}
+
+// True when a and b are coaxial cylinders (same axis line within 1e-7 of their size) with radii differing by at most 2 * tolerance. `b` is read in
+// a's frame (same origin, axis and reference direction), its axial coordinates shifted accordingly.
+static bool ReadCoaxialPair(const Brep& a, const Brep& b, double tolerance, CoaxialCylinder& ca, CoaxialCylinder& cb) {
+  CoaxialCylinder rb;
+  if (!ReadCoaxialCylinder(a, ca) || !ReadCoaxialCylinder(b, rb)) return false;
+  if (!(std::fabs(ON_CrossProduct(ca.axis, rb.axis).Length()) <= 1e-9)) return false;
+  const double size = std::max({ca.r, rb.r, ca.z1 - ca.z0, rb.z1 - rb.z0});
+  const ON_3dVector d = rb.origin - ca.origin;
+  const double along = d * ca.axis;
+  if ((d - along * ca.axis).Length() > 1e-7 * size) return false;
+  if (std::fabs(ca.r - rb.r) > 2.0 * tolerance) return false;
+  const double sign = (rb.axis * ca.axis) > 0 ? 1.0 : -1.0;  // b's axis may point the other way
+  cb = ca;
+  cb.r = rb.r;
+  cb.z0 = along + (sign > 0 ? rb.z0 : -rb.z1);
+  cb.z1 = along + (sign > 0 ? rb.z1 : -rb.z0);
+  return true;
+}
+
+// The exact Boolean of two coaxial cylinders as the revolve of the combined cross-section, or false when the result is not made of solid pieces
+// without holes (a Difference whose tool is the narrower of the two over their shared heights leaves a ring: out of scope here).
+static bool CoaxialCylinderBoolean(const CoaxialCylinder& a, const CoaxialCylinder& b, BooleanOp op, double tolerance, Brep& out) {
+  if (op != BooleanOp::Union && op != BooleanOp::Intersection && op != BooleanOp::Difference) return false;
+  std::vector<double> zs = {a.z0, a.z1, b.z0, b.z1};
+  std::sort(zs.begin(), zs.end());
+  const double merge = 1e-9 * std::max(1.0, a.z1 - a.z0);
+  std::vector<double> cuts;
+  for (const double z : zs) {
+    if (cuts.empty() || z - cuts.back() > merge) cuts.push_back(z);
+  }
+  struct Step { double lo, hi, radius; };
+  std::vector<std::vector<Step>> runs;  // maximal stacks of consecutive positive-radius slabs
+  bool open_run = false;
+  for (size_t i = 0; i + 1 < cuts.size(); ++i) {
+    const double mid = 0.5 * (cuts[i] + cuts[i + 1]);
+    const bool in_a = mid > a.z0 && mid < a.z1, in_b = mid > b.z0 && mid < b.z1;
+    double radius = 0.0;
+    if (op == BooleanOp::Union) {
+      radius = std::max(in_a ? a.r : 0.0, in_b ? b.r : 0.0);
+    } else if (op == BooleanOp::Intersection) {
+      radius = in_a && in_b ? std::min(a.r, b.r) : 0.0;
+    } else if (in_a && !in_b) {
+      radius = a.r;
+    } else if (in_a && in_b && b.r < a.r) {
+      return false;  // a ring is left: not a disk-profile solid
+    }
+    if (!(radius > 0.0)) {
+      open_run = false;
+      continue;
+    }
+    if (!open_run) {
+      runs.emplace_back();
+      open_run = true;
+    }
+    std::vector<Step>& run = runs.back();
+    if (!run.empty() && std::fabs(run.back().radius - radius) <= 1e-12 * std::max(1.0, radius)) {
+      run.back().hi = cuts[i + 1];  // same radius as the slab below: one step
+    } else {
+      run.push_back({cuts[i], cuts[i + 1], radius});
+    }
+  }
+  std::vector<Brep> lumps;
+  for (const std::vector<Step>& run : runs) {
+    if (run.empty()) continue;
+    const ON_3dPoint base = a.origin + run.front().lo * a.axis;
+    if (run.size() == 1) {
+      lumps.push_back(Brep::CylinderWelded(base, a.axis, run.front().radius, run.front().hi - run.front().lo));
+      continue;
+    }
+    auto at = [&](double radius, double z) { return a.origin + radius * a.ref + z * a.axis; };
+    std::vector<Point3d> prof;
+    prof.push_back(a.origin + run.front().lo * a.axis);
+    for (size_t k = 0; k < run.size(); ++k) {
+      prof.push_back(at(run[k].radius, run[k].lo));
+      prof.push_back(at(run[k].radius, run[k].hi));
+    }
+    prof.push_back(a.origin + run.back().hi * a.axis);
+    lumps.push_back(Brep::Revolve(NurbsCurve::FromControlPoints(prof, 1), a.origin, a.axis, 2.0 * ON_PI, true));
+  }
+  (void)tolerance;
+  if (lumps.empty()) return false;
+  out = lumps.size() == 1 ? lumps.front() : Brep::Compound(lumps);
+  return out.raw().IsSolid() && out.raw().IsValid();
+}
+
+// The engine proper: one attempt, retried at a finer tolerance when it refuses with "claimed by 3 or more fragment loops" (see below).
+static Brep BooleanCombineGeneralWithRetries(const Brep& a, const Brep& b, BooleanOp op, double tolerance, bool allow_non_manifold_result) {
   tolerance = ScaleAwareTolerance(a, b, tolerance);
   // The 0.001 default is about the size of the thinnest features the corpus of near-tangent and sliver operands carries (a cap
   // 1e-3 deep, a bar 2e-3 across): fragments of that size collapse into one another and the engine refuses with "an edge is claimed by
@@ -4314,6 +4455,29 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
         // try the next finer tolerance; the original refusal is what the caller gets if none works
       }
     }
+    throw;
+  }
+}
+
+Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance, bool allow_non_manifold_result) {
+  const double tol = ScaleAwareTolerance(a, b, tolerance);
+  CoaxialCylinder ca, cb;
+  if (allow_non_manifold_result || !ReadCoaxialPair(a, b, tol, ca, cb)) return BooleanCombineGeneralWithRetries(a, b, op, tolerance, allow_non_manifold_result);
+  // Two coaxial cylinders with walls within 2 tolerances of each other: the engine first (so every pair it handles keeps its result), the exact
+  // revolve of the combined cross-section only when the engine's result cannot be sealed into a closed solid (or the engine refuses).
+  try {
+    Brep general = BooleanCombineGeneralWithRetries(a, b, op, tolerance, allow_non_manifold_result);
+    try {
+      SealGeneralBooleanResult(general, op, std::nan(""), std::nan(""));
+      return general;
+    } catch (const std::exception&) {
+      Brep exact;
+      if (CoaxialCylinderBoolean(ca, cb, op, tol, exact)) return exact;
+      return general;
+    }
+  } catch (const std::runtime_error&) {
+    Brep exact;
+    if (CoaxialCylinderBoolean(ca, cb, op, tol, exact)) return exact;
     throw;
   }
 }
@@ -9393,7 +9557,10 @@ int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
         const double vside = side == 0 ? dv.Min() : dv.Max();
         const ON_3dPoint pole = srf->PointAt(srf->Domain(0).Min(), vside);
         const double near_v = 0.05 * dv.Length();
-        if (std::fabs(p_end.y - vside) <= near_v && std::fabs(n_start.y - vside) <= near_v &&
+        // The neighbours must reach the pole at genuinely different u (a pole line of real length); a sliver whose neighbours already agree in u is
+        // an ordinary tiny edge and keeps the midpoint snap.
+        if (std::fabs(p_end.x - n_start.x) > 1e-6 * srf->Domain(0).Length() && std::fabs(p_end.y - vside) <= near_v &&
+            std::fabs(n_start.y - vside) <= near_v &&
             srf->PointAt(p_end.x, p_end.y).DistanceTo(pole) <= 3.0 * tolerance && srf->PointAt(n_start.x, n_start.y).DistanceTo(pole) <= 3.0 * tolerance) {
           pole_side = side;
           pole_v = vside;
