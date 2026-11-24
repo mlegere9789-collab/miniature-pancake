@@ -51,6 +51,37 @@ Delete
 SelNone
 SelAll
 List
+RW4BEGIN_new_resets
+SelNone
+SelID 2
+PointsOn
+SelControlPoint
+New
+SetActiveViewport Top
+Polyline 0,0,0 2,1,0 4,0,0 6,1,0 8,0,0
+Enter
+Plane 1,4,0 5,8,0
+SelNone
+SelID 2
+Delete
+SelNone
+SelAll
+List
+RW4BEGIN_undo_prunes
+SelNone
+Plane 1,4,0 5,8,0
+SelNone
+SelID 3
+PointsOn
+SelControlPoint
+Undo
+Redo
+SelNone
+SelID 3
+Delete
+SelNone
+SelAll
+List
 RW4BEGIN_one_line_new
 Alias
 nrst
@@ -108,35 +139,4 @@ SelNone
 SelAll
 List
 Cancel
-RW4BEGIN_new_resets
-SelNone
-SelID 2
-PointsOn
-SelControlPoint
-New
-SetActiveViewport Top
-Polyline 0,0,0 2,1,0 4,0,0 6,1,0 8,0,0
-Enter
-Plane 1,4,0 5,8,0
-SelNone
-SelID 2
-Delete
-SelNone
-SelAll
-List
-RW4BEGIN_undo_prunes
-SelNone
-Plane 1,4,0 5,8,0
-SelNone
-SelID 3
-PointsOn
-SelControlPoint
-Undo
-Redo
-SelNone
-SelID 3
-Delete
-SelNone
-SelAll
-List
 Check
