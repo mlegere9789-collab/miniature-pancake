@@ -611,7 +611,7 @@ class WeightCommand : public Command {
     SceneObject* o = ctx.Doc().Find(id_);
     if (!o) { Finish(); return; }
     ctx.Doc().BeginChange("Weight");
-    const kernel::Result r = is_curve_ ? o->curve->SetWeightAt(i_, w) : o->surface->SetWeightAt(i_, j_, w);
+    const kernel::Result r = is_curve_ ? o->curve->SetWeightKeepingPositionAt(i_, w) : o->surface->SetWeightKeepingPositionAt(i_, j_, w);
     if (r != kernel::Result::Failed) { o->InvalidateDisplay(); ctx.Print("Weight: control point set to " + FormatNumber(w)); }
     else ctx.Warn("Weight: could not set that control point's weight");
     Finish();

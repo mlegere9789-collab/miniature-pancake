@@ -1413,7 +1413,7 @@ int main(int argc, char** argv) {
             ok = static_cast<int>(weights_json.Size()) == c.ControlPointCount();
             for (int i = 0; ok && i < c.ControlPointCount(); ++i) {
               const dino8::json::Value& wv = weights_json[static_cast<size_t>(i)];
-              ok = wv.type == dino8::json::Value::Type::Number && c.SetWeightAt(i, wv.number) == dino8::kernel::Result::Ok;
+              ok = wv.type == dino8::json::Value::Type::Number && c.SetWeightKeepingPositionAt(i, wv.number) != dino8::kernel::Result::Failed;
             }
           }
           if (ok) {
@@ -1468,7 +1468,7 @@ int main(int argc, char** argv) {
             for (int i = 0; ok && i < uc; ++i) {
               for (int j = 0; ok && j < vc; ++j) {
                 const dino8::json::Value& wv = weights_json[static_cast<size_t>(i * vc + j)];
-                ok = wv.type == dino8::json::Value::Type::Number && s.SetWeightAt(i, j, wv.number) == dino8::kernel::Result::Ok;
+                ok = wv.type == dino8::json::Value::Type::Number && s.SetWeightKeepingPositionAt(i, j, wv.number) != dino8::kernel::Result::Failed;
               }
             }
           }

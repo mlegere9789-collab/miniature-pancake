@@ -771,6 +771,15 @@ class NurbsCurve {
   // equals `WeightAt(i)`.
   Result SetWeightAt(int i, double weight);
 
+  // The edit a user means by "change the weight of this control point" (Rhino Weight, a NURBS editor's W field): the control point
+  // stays where it is and only its pull on the curve changes, so the curve is drawn toward the point for a larger weight and away from it
+  // for a smaller one. SetWeightAt() above is the raw homogeneous setter (it leaves the stored numerator alone, which moves
+  // the control point to position / weight, see its comment) and keeps that meaning for every caller and test that relies on it; this
+  // method rescales the numerator so that ControlPointAt(i) is unchanged by the call. A non-rational curve is made rational on demand.
+  // Returns Result::Failed for an index out of range or a weight that is not finite and positive, Result::NoOpAlreadySatisfied if the weight
+  // already equals `weight`, Result::Ok otherwise.
+  Result SetWeightKeepingPositionAt(int i, double weight);
+
   // Control point `i`'s actual Euclidean position - the real gap this
   // file's own `CVCountU()`/`CVCountV()` comment (on the surface side)
   // already flagged existed, and `SetWeightAt()` makes sharper: after
