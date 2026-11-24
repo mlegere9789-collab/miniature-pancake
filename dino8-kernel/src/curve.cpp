@@ -1731,6 +1731,28 @@ Result NurbsCurve::SetWeightAt(int i, double weight) {
   return curve_.SetWeight(i, weight) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::SetWeightKeepingPositionAt(int i, double weight) {
+  if (i < 0 || i >= ControlPointCount() || !std::isfinite(weight) || !(weight > 0.0)) {
+    return Result::Failed;
+  }
+  const Point3d position = ControlPointAt(i);
+  if (WeightAt(i) == weight) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  if (!curve_.IsRational() && !curve_.MakeRational()) {
+    return Result::Failed;
+  }
+  double* cv = curve_.CV(i);
+  if (cv == nullptr) {
+    return Result::Failed;
+  }
+  cv[0] = position.x * weight;
+  cv[1] = position.y * weight;
+  cv[2] = position.z * weight;
+  cv[3] = weight;
+  return Result::Ok;
+}
+
 Point3d NurbsCurve::ControlPointAt(int i) const {
   if (i < 0 || i >= ControlPointCount()) {
     throw std::out_of_range(

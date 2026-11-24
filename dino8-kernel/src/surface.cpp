@@ -649,6 +649,28 @@ Result NurbsSurface::SetWeightAt(int i, int j, double weight) {
   return surface_.SetWeight(i, j, weight) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::SetWeightKeepingPositionAt(int i, int j, double weight) {
+  if (i < 0 || i >= CVCountU() || j < 0 || j >= CVCountV() || !std::isfinite(weight) || !(weight > 0.0)) {
+    return Result::Failed;
+  }
+  const Point3d position = ControlPointAt(i, j);
+  if (WeightAt(i, j) == weight) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  if (!surface_.IsRational() && !surface_.MakeRational()) {
+    return Result::Failed;
+  }
+  double* cv = surface_.CV(i, j);
+  if (cv == nullptr) {
+    return Result::Failed;
+  }
+  cv[0] = position.x * weight;
+  cv[1] = position.y * weight;
+  cv[2] = position.z * weight;
+  cv[3] = weight;
+  return Result::Ok;
+}
+
 Point3d NurbsSurface::ControlPointAt(int i, int j) const {
   if (i < 0 || i >= CVCountU() || j < 0 || j >= CVCountV()) {
     throw std::out_of_range(

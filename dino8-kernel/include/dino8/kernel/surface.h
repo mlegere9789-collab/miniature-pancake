@@ -666,6 +666,12 @@ class NurbsSurface {
   // `weight` already equals `WeightAt(i, j)`.
   Result SetWeightAt(int i, int j, double weight);
 
+  // The weight edit that leaves control point (i, j) where it is (see NurbsCurve::SetWeightKeepingPositionAt): the stored numerator is
+  // rescaled so that ControlPointAt(i, j) is unchanged and only the pull of the point on the surface changes. SetWeightAt() above stays the
+  // raw homogeneous setter. Returns Result::Failed for an index out of range or a weight that is not finite and positive,
+  // Result::NoOpAlreadySatisfied if the weight already equals `weight`, Result::Ok otherwise. A non-rational surface is made rational.
+  Result SetWeightKeepingPositionAt(int i, int j, double weight);
+
   // Same reasoning as `NurbsCurve::ControlPointAt()` - control point
   // (i, j)'s actual Euclidean position, weight already divided out on a
   // rational surface. Delegates to `ON_NurbsSurface::GetCV(i, j,
