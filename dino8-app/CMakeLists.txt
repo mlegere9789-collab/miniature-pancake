@@ -1042,10 +1042,18 @@ if(DINO8_BUILD_TESTS)
   # same include dir and target Dino8 itself links a few hundred lines above.
   target_include_directories(dino8_test_collab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${opennurbs_SOURCE_DIR}/freetype263/include)
   target_link_libraries(dino8_test_collab PRIVATE dino8_kernel opennurbs_public_freetype)
+  if(WIN32)
+    # Winsock2 behind src/net/Collab.cpp (src/net/Sockets.h) - the same OS-provided DLL Dino8 itself links.
+    target_link_libraries(dino8_test_collab PRIVATE ws2_32)
+  endif()
   add_test(NAME dino8_collab COMMAND dino8_test_collab)
-  # Token authentication for that relay (HMAC-SHA256 challenge/response, rejection, LAN bind): standalone, Collab.cpp + Sha256.cpp only.
+  # Token authentication for that relay (HMAC-SHA256 challenge/response, rejection, LAN bind) and large frames through a slow reader:
+  # standalone, Collab.cpp + Sha256.cpp only.
   add_executable(dino8_test_collab_auth tests/test_collab_auth.cpp src/net/Collab.cpp src/util/Sha256.cpp)
   target_include_directories(dino8_test_collab_auth PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  if(WIN32)
+    target_link_libraries(dino8_test_collab_auth PRIVATE ws2_32)
+  endif()
   add_test(NAME dino8_collab_auth COMMAND dino8_test_collab_auth)
 
   # A real, small, trained neural network (src/ml/CommandPredictor.h/.cpp) -

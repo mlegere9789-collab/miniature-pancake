@@ -1,6 +1,9 @@
 // Token authentication for the collaboration relay (net/Collab.h): HMAC-SHA256 challenge/response, rejection of a wrong or missing
 // token, frames from an unauthenticated connection never relayed, an idle unauthenticated connection dropped, and the opt-in LAN bind.
-// Standalone (Collab.cpp + Sha256.cpp only), over real loopback sockets, like tests/test_collab.cpp.
+// Standalone (Collab.cpp + Sha256.cpp only), over real loopback sockets, like tests/test_collab.cpp. Runs on every platform the app
+// builds on (POSIX sockets and Winsock2 behind net/Sockets.h): the same checks, the same expected values. Also checks the relay's
+// delivery of a frame far larger than the OS socket buffers to a peer that is slow to read it (queued, never cut short), and the
+// bind semantics (a second host on a port in use is refused; a stopped host's port can be taken again).
 //
 // Independent expected values: the HMAC-SHA256 outputs are the published RFC 4231 test vectors (cases 1, 2 and 6, the last with a key
 // longer than the 64-byte block), not values computed by the code under test.
@@ -11,19 +14,14 @@
 #include <thread>
 #include <vector>
 
-#ifndef _WIN32
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-
 #include "net/Collab.h"
+#include "net/Sockets.h"
 #include "util/Hmac.h"
 
 using dino8::app::BuildFrame;
 using dino8::app::CollabClient;
 using dino8::app::CollabServer;
+namespace sock = dino8::app::sock;
 
 namespace {
 // Test tokens are generated at run time (never a literal in the repository): 16 random hex characters, distinct on every call.
@@ -64,6 +62,22 @@ struct World {
     return done();
   }
 };
+// A bare client socket that speaks no handshake (for the "raw connection" cases); sock::kInvalid if it cannot connect.
+sock::Native RawConnect(int port) {
+  std::string e;
+  sock::EnsureWinsock(e, "test");
+  const sock::Native s = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (sock::IsInvalid(s)) return sock::kInvalid;
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+  if (::connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    sock::Close(s);
+    return sock::kInvalid;
+  }
+  return s;
+}
 bool Has(const std::vector<std::string>& v, const std::string& s) {
   for (const std::string& x : v) if (x == s) return true;
   return false;
@@ -80,7 +94,6 @@ int main() {
         "RFC 4231 test case 6 (key longer than the block size)");
   Check(dino8::util::ConstantTimeEqual("abc", "abc") && !dino8::util::ConstantTimeEqual("abc", "abd") && !dino8::util::ConstantTimeEqual("abc", "ab"), "ConstantTimeEqual");
 
-#ifndef _WIN32
   const std::string token = GenToken();
   const std::string wrong_token = GenToken();
   Check(token != wrong_token, "the two generated test tokens differ");
@@ -119,18 +132,14 @@ int main() {
     Check(w2.Pump([&] { return Has(w2.got[1], "after-reject"); }), "the session keeps working for the authenticated clients");
 
     // ---- 3. a raw socket that skips the handshake ----
-    const int raw = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(server.Port()));
-    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-    Check(::connect(raw, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0, "a raw socket connects");
+    const sock::Native raw = RawConnect(server.Port());
+    Check(!sock::IsInvalid(raw), "a raw socket connects");
     const std::string wire = BuildFrame("raw-evil-frame");
-    ::send(raw, wire.data(), wire.size(), 0);
+    ::send(raw, wire.data(), static_cast<sock::IoLength>(wire.size()), 0);
     Check(w2.Pump([&] { return server.RejectedCount() == 2; }), "a frame sent without the handshake gets the connection rejected (2 rejected)");
     w2.Pump([] { return false; }, 150);
     Check(!Has(w2.got[0], "raw-evil-frame") && !Has(w2.got[1], "raw-evil-frame"), "the unauthenticated frame was not relayed");
-    ::close(raw);
+    sock::Close(raw);
 
     // ---- 4. no token against a token server ----
     CollabClient d;
@@ -146,17 +155,12 @@ int main() {
     server.SetAuthTimeoutMs(150);
     std::string e;
     server.Start(0, e);
-    const int raw = ::socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(server.Port()));
-    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-    ::connect(raw, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    const sock::Native raw = RawConnect(server.Port());
     World w; w.server = &server; w.Init();
     w.Pump([&] { return server.ClientCount() == 1; }, 500);
     Check(server.ClientCount() == 1, "the idle connection is accepted first");
     Check(w.Pump([&] { return server.ClientCount() == 0; }, 1500), "... and dropped once it has not authenticated within the timeout");
-    ::close(raw);
+    sock::Close(raw);
   }
   // ---- 6. no token at all: the old behaviour is unchanged ----
   {
@@ -198,7 +202,52 @@ int main() {
     World w; w.server = &server; w.clients = {&a}; w.Init();
     Check(w.Pump([&] { return a.IsAuthenticated(); }), "and authenticates");
   }
-#endif
+  // ---- 9. a frame far larger than the OS socket buffers reaches a slow reader whole, in order ----
+  {
+    CollabServer server;
+    std::string e;
+    Check(server.Start(0, e), "a tokenless relay starts for the large-frame check: " + e);
+    CollabClient a, b;
+    a.Connect("127.0.0.1", server.Port(), e); b.Connect("127.0.0.1", server.Port(), e);
+    // The sender and the relay run on this one thread (like a host talking to its own relay): while the sender waits for the OS to take
+    // its bytes, the relay is serviced through the wait callback - the relay must read the sender while it is still writing.
+    a.SetWaitCallback([&] { server.PollOnce(0); });
+    World w; w.server = &server; w.clients = {&a, &b}; w.Init();
+    w.Pump([&] { return server.ClientCount() == 2; });
+    std::string big(24u * 1024u * 1024u, '\0');  // well past loopback socket buffers on every platform
+    for (size_t i = 0; i < big.size(); ++i) big[i] = static_cast<char>((i * 31u + (i >> 12)) & 0xFF);
+    std::string se;
+    Check(a.Send(big, se), "a 24 MiB frame is sent through a relay whose reader is not reading yet: " + se);
+    Check(server.ClientCount() == 2, "the relay kept both connections");
+    // b did not read a single byte while the relay was filling its buffer; the rest sat in the relay's queue for b, and arrives now.
+    Check(w.Pump([&] { return !w.got[1].empty(); }, 30000), "the slow reader receives the frame");
+    Check(w.got[1].size() == 1 && w.got[1][0].size() == big.size() && w.got[1][0] == big, "... whole, byte for byte, as exactly one frame");
+    Check(w.alive[0] && w.alive[1], "both clients are still connected");
+    a.Send("small-after-big", se);
+    Check(w.Pump([&] { return Has(w.got[1], "small-after-big"); }), "a small frame sent after it still arrives, in order");
+    Check(w.got[0].empty(), "nothing was echoed back to the sender");
+  }
+  // ---- 10. bind semantics: a port in use is refused, a stopped host's port can be taken again ----
+  {
+    CollabServer first;
+    std::string e;
+    Check(first.Start(0, e), "a host starts on an OS-chosen port: " + e);
+    const int port = first.Port();
+    CollabServer second;
+    std::string e2;
+    Check(!second.Start(port, e2) && Contains(e2, "bind() failed"), "a second host on the same port is refused with a bind error: " + e2);
+    Check(!second.IsRunning(), "... and is not running");
+    {
+      CollabClient c;
+      c.Connect("127.0.0.1", port, e);
+      World w; w.server = &first; w.clients = {&c}; w.Init();
+      w.Pump([&] { return first.ClientCount() == 1; });
+    }
+    first.Stop();
+    CollabServer third;
+    std::string e3;
+    Check(third.Start(port, e3) && third.Port() == port, "once the first host has stopped (a client had connected to it), the same port can be bound again: " + e3);
+  }
   std::printf("%s\n", failures ? "SOME CHECKS FAILED" : "all collab auth checks passed");
   return failures ? 1 : 0;
 }

@@ -106,6 +106,9 @@ bool CollabSession::Host(int port, const CollabOptions& options, std::string& er
     server_.Stop();
     return false;
   }
+  // This process is both ends of that loopback connection: while the client waits for the OS to take a large snapshot, the relay (same
+  // thread) keeps reading it, so a document bigger than the loopback buffers cannot stall the host.
+  client_.SetWaitCallback([this] { server_.PollOnce(0); });
   hosting_ = true;
   role_ = CollabRole::Host;
   local_origin_ = RandomOrigin();
@@ -121,6 +124,7 @@ bool CollabSession::Join(const std::string& host, int port, const CollabOptions&
   last_error_.clear();
   if (!CheckOptions(options, false, error)) return false;
   client_.SetToken(options.token);
+  client_.SetWaitCallback(nullptr);
   if (!client_.Connect(host, port, error)) return false;
   hosting_ = false;
   role_ = CollabRole::Joined;
@@ -133,6 +137,7 @@ bool CollabSession::Join(const std::string& host, int port, const CollabOptions&
 }
 
 void CollabSession::Leave() {
+  client_.SetWaitCallback(nullptr);
   client_.Disconnect();
   if (hosting_) server_.Stop();
   hosting_ = false;

@@ -5,19 +5,26 @@
 // anywhere that let two running instances of the app share a document's
 // edits with each other.
 //
-// Same honestly-scoped, POSIX-sockets-only shape as net/ComputeServer.h:
-// one small, real building block, not a competing product (no encryption,
-// no NAT traversal). Access control: with a token set (SetToken) every
+// Same honestly-scoped shape as net/ComputeServer.h: one small, real
+// building block, not a competing product (no encryption, no NAT
+// traversal). BSD/POSIX sockets on Linux/macOS and Winsock2 on Windows,
+// behind the one small shim in net/Sockets.h (handle type, close call,
+// error source, non-blocking switch and the one-time WSAStartup are the
+// only things that differ; the wire behaviour is identical on every
+// platform, and tests/test_collab_auth.cpp plus the COL_ smoke section
+// are the same spec on each). Start()/Connect() still fail with a clear
+// message, never silently pretending to listen or connect, when the
+// socket layer itself refuses (WSAStartup, socket, bind, listen or
+// connect failing).
+//
+// Access control: with a token set (SetToken) every
 // connection must pass an HMAC-SHA256 challenge/response before a single
 // frame is relayed to or from it - the token itself never crosses the
 // wire, only HMAC(token, per-connection nonce). That is AUTHENTICATION,
 // not confidentiality: the document snapshots that follow travel in clear
 // text, and a party on the path could read or inject after the handshake.
 // Start() binds loopback unless `lan` is set; the session layer only allows
-// that together with a token. Start()
-// always fails with a clear message on a platform without POSIX sockets
-// (Windows) rather than silently pretending to listen, exactly like
-// ComputeServer::Start / AccessibilityLinux's AT-SPI2 bridge.
+// that together with a token.
 //
 // CollabServer is a pure byte relay (a "hub"): it never looks inside a
 // frame, it just forwards whatever one connected client sends to every
@@ -37,7 +44,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dino8::app {
@@ -78,8 +87,8 @@ class CollabServer {
 
   // Binds and listens on 127.0.0.1:`port` (0 asks the OS for a free
   // ephemeral port - see Port() below). Returns false, with `error` set to
-  // a human-readable reason, if the socket/bind/listen calls fail or this
-  // build has no POSIX socket support.
+  // a human-readable reason, if the socket/bind/listen calls fail (or Winsock
+  // cannot be initialised).
   // `lan` binds every interface (0.0.0.0) instead of loopback only.
   bool Start(int port, std::string& error, bool lan = false);
   void Stop();
@@ -110,18 +119,26 @@ class CollabServer {
   // ComputeServer::PollOnce). A client that disconnects, or that sends a
   // frame declaring a length over kMaxFrameBytes, is dropped. Returns the
   // number of frames relayed this call (0 if nothing was ready - not an
-  // error).
+  // error). A frame is never cut short for a slow reader: what the OS will
+  // not take right now waits in that peer's own queue and is sent as the
+  // peer drains it (a peer that falls more than a few frames behind is
+  // dropped instead - see kMaxQueuedBytes in Collab.cpp).
   int PollOnce(int timeout_ms = 0);
 
  private:
   struct ClientConn {
-    int fd = -1;
+    std::intptr_t fd = -1;  // a POSIX fd or a Winsock SOCKET (see net/Sockets.h); -1 = none
     std::string inbuf;
+    std::string outbuf;     // bytes accepted for this peer that the OS has not taken yet
+    size_t out_off = 0;     // outbuf[0, out_off) is already sent
     bool authed = true;
     std::string nonce;
     long long accepted_ms = 0;
   };
-  int listen_fd_ = -1;
+  // Appends `wire` to `c`'s queue and sends what the OS takes right now. False: the connection broke or the peer fell too far behind.
+  static bool QueueWire(ClientConn& c, const std::string& wire);
+  static bool FlushOut(ClientConn& c);
+  std::intptr_t listen_fd_ = -1;
   int port_ = 0;
   std::vector<ClientConn> clients_;
   std::string token_;
@@ -144,6 +161,10 @@ class CollabClient {
   bool Connect(const std::string& host, int port, std::string& error);
   void Disconnect();
   bool IsConnected() const { return fd_ >= 0; }
+  // Called repeatedly while Send() waits for the OS to take a large frame. A host whose own client talks to its own relay in the same
+  // thread sets it to the relay's PollOnce(0), so the relay keeps draining the very socket Send() is filling (otherwise a frame bigger
+  // than the loopback buffers could never finish). Unset (the default): Send() just waits.
+  void SetWaitCallback(std::function<void()> callback) { wait_callback_ = std::move(callback); }
 
   // With a token set the client answers the host's challenge (inside PollOnce); Send() then holds payloads back until the host has
   // accepted it, so nothing is ever sent unauthenticated. PollOnce returns false, with the reason, when the host rejects the token,
@@ -162,7 +183,11 @@ class CollabClient {
   bool PollOnce(std::vector<std::string>* out, std::string& error);
 
  private:
-  int fd_ = -1;
+  // Writes all of `wire`, waiting while the OS buffer is full (and calling wait_callback_); false with `error` set on a real failure or
+  // when the peer has not taken a single byte for kSendStallMs (Collab.cpp).
+  bool WriteAll(const std::string& wire, std::string& error);
+  std::intptr_t fd_ = -1;  // a POSIX fd or a Winsock SOCKET (see net/Sockets.h); -1 = none
+  std::function<void()> wait_callback_;
   std::string inbuf_;
   std::string token_;
   bool authed_ = false;

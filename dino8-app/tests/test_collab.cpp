@@ -169,7 +169,6 @@ int main() {
     Check(!TryDecodeSnapshotPayload("short", &origin, &seq, &body), "a payload shorter than the 16-byte header is rejected");
   }
 
-#ifndef _WIN32
   // ---- Real loopback relay: CollabServer forwards to every OTHER client,
   // never back to the sender ---------------------------------------------
   {
@@ -207,10 +206,8 @@ int main() {
     Check(b_frames.size() == 1 && b_frames[0] == "hello from A", "client B received exactly the one frame client A sent, over a real socket");
     Check(a_frames.empty(), "the relay never echoes a frame back to its own sender");
   }
-#endif
 
   // ---- Full CollabSession integration: two real Documents converge ------
-#ifndef _WIN32
   {
     CollabSession host_session;
     CollabSession join_session;
@@ -270,7 +267,6 @@ int main() {
     join_session.Leave();
     Check(!host_session.IsActive() && !join_session.IsActive(), "Leave() cleanly ends both sides of the session");
   }
-#endif
 
   // ---- CollabSession::Get() singleton sanity ----------------------------
   {
