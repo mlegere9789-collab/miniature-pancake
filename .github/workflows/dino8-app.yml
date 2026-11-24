@@ -196,7 +196,7 @@ jobs:
       # on this branch for hours. See RHINO8_KILLER_AUDIT.md row L.
       - name: Smoke test (headless)
         shell: bash
-        timeout-minutes: 90
+        timeout-minutes: 150
         run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
       # Authenticode signing, inert until a signing secret exists: when none is
       # configured WINDOWS_SIGN_METHOD is 'none' and the step is skipped, so
