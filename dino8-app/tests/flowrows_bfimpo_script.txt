@@ -1,0 +1,6 @@
+# Flow Register row Import OBJ (Blender Geometry Nodes): player + bake, read back by sections/98_bfimpo.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 24
+SelAll
+List

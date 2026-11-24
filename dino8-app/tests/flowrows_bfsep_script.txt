@@ -1,0 +1,6 @@
+# Flow Register row Shortest Edge Paths (Blender Geometry Nodes): player + bake, read back by sections/98_bfsep.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 16
+SelAll
+List

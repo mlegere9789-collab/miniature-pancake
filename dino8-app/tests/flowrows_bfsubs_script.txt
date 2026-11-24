@@ -1,0 +1,6 @@
+# Flow Register row Subdivision Surface (Blender Geometry Nodes): player + bake, read back by sections/98_bfsubs.sh (see flowrows5_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 27
+SelAll
+List
