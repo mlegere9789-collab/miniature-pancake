@@ -35,7 +35,10 @@ UXSNAP_S="$TMPW/uxsnap_script.txt"
   echo "UXBEGIN_end"
 } > "$UXSNAP_S"
 rm -f "$TMPW/uxsnap_a.json"
-if ux_launch "$UXSNAP_S"; then
+# The switches this section leaves on are saved to settings.json when the app exits; every later launch of the suite that shares the config directory
+# (the pointer-driven ui_script of BASE, for one) would start with ortho and grid snap on. So the app runs with a config directory of its own.
+mkdir -p "$TMPW/uxsnap_cfg"
+if ux_launch "$UXSNAP_S" XDG_CONFIG_HOME="$TMPW/uxsnap_cfg" HOME="$TMPW/uxsnap_cfg"; then
   P=UXSNAP_Ortho
   ux_eq $P ortho "Off, bare (toggle), Toggle, On, Status give off/on/off/on/on; an unknown word warns and changes nothing" \
     "Ortho off" "Ortho on" "Ortho off" "Ortho on" "Ortho on" "! Ortho: expected On, Off, Toggle or Status, got 'maybe'" "Ortho on"
