@@ -109,8 +109,18 @@ int main() {
     std::snprintf(label, sizeof(label), "sphere closed at tol %g", tol);
     Check(ms.IsClosedManifold(), label);
     const double vs = std::fabs(ms.Volume()), exact_s = 4.0 / 3.0 * ON_PI * 512;
-    std::snprintf(label, sizeof(label), "sphere volume %.1f within 5%% of %.1f", vs, exact_s);
-    Check(std::fabs(vs - exact_s) < 0.05 * exact_s, label);
+    if (tol <= 0.1) {
+      std::snprintf(label, sizeof(label), "sphere volume %.1f within 5%% of %.1f", vs, exact_s);
+      Check(std::fabs(vs - exact_s) < 0.05 * exact_s, label);
+    } else {
+      // At chord tolerance t every face of the inscribed mesh lies within t of the sphere, so its plane is at least r - t from the
+      // centre and the mesh contains the ball of radius r - t; its vertices are on the sphere, so it is inside the sphere. The
+      // guaranteed volume window is therefore [4/3 pi (r - t)^3, 4/3 pi r^3]: 10.9% below exact at t = 0.3, r = 8. A flat 5% only
+      // held here while the pole-collapsed isocurves over-sampled the sphere (the mesher asked for a 96 x 8 grid by accident).
+      const double lower = 4.0 / 3.0 * ON_PI * (8.0 - tol) * (8.0 - tol) * (8.0 - tol);
+      std::snprintf(label, sizeof(label), "sphere volume %.1f inside the guaranteed window [%.1f, %.1f] at tol %g", vs, lower, exact_s, tol);
+      Check(vs >= lower && vs <= exact_s * (1.0 + 1e-9), label);
+    }
     delete sphere;
 
     ON_Brep* cyl = ON_BrepCylinder(ON_Cylinder(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0), 10.0), true, true);
