@@ -249,6 +249,13 @@ class NurbsSurface {
                                        int u_count, int v_count, int u_degree,
                                        int v_degree);
 
+  // The exact flat disc of the given centre, normal and radius as one rational NURBS patch (a surface circle): the rational quadratic circle
+  // in u (OpenNURBS' own nine-point form, so the boundary is the exact circle), degree 1 in v, with S(u, 0) the circle and S(u, 1) the centre
+  // (a degenerate edge), i.e. S(u, v) = (1 - v) C(u) + v centre. The surface normal Su x Sv points along `normal`. The patch is planar, has area
+  // pi r^2 and every point is at distance (1 - v) r from the centre. Throws std::invalid_argument for a radius that is not positive and finite
+  // or a zero normal.
+  static NurbsSurface Disc(Point3d center, Vector3d normal, double radius);
+
   // Builds the exact bilinearly-blended Coons patch through 4 boundary
   // curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4 curves) -
   // as real NURBS algebra on the curves' own control points, not by

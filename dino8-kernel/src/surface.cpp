@@ -639,6 +639,39 @@ bool NurbsSurface::IsRational() const { return surface_.IsRational(); }
 
 double NurbsSurface::WeightAt(int i, int j) const { return surface_.Weight(i, j); }
 
+NurbsSurface NurbsSurface::Disc(Point3d center, Vector3d normal, double radius) {
+  if (!std::isfinite(radius) || !(radius > 0.0) || !(normal.Length() > 0.0) || !std::isfinite(normal.Length())) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::Disc: the radius must be positive and finite and the normal non-zero");
+  }
+  normal.Unitize();
+  const ON_Circle circle(ON_Plane(center, normal), radius);
+  ON_NurbsCurve rim;
+  circle.GetNurbForm(rim);
+  const int n = rim.CVCount();
+  ON_NurbsSurface patch(3, true, rim.Order(), 2, n, 2);
+  for (int i = 0; i < patch.KnotCount(0); ++i) patch.SetKnot(0, i, rim.Knot(i));
+  patch.SetKnot(1, 0, 0.0);
+  patch.SetKnot(1, 1, 1.0);
+  for (int i = 0; i < n; ++i) {
+    ON_3dPoint rim_point;
+    rim.GetCV(i, rim_point);
+    const double w = rim.Weight(i);
+    double* c0 = patch.CV(i, 0);
+    double* c1 = patch.CV(i, 1);
+    c0[0] = rim_point.x * w;
+    c0[1] = rim_point.y * w;
+    c0[2] = rim_point.z * w;
+    c0[3] = w;
+    c1[0] = center.x * w;
+    c1[1] = center.y * w;
+    c1[2] = center.z * w;
+    c1[3] = w;
+  }
+  NurbsSurface out;
+  out.raw() = patch;
+  return out;
+}
+
 Result NurbsSurface::SetWeightAt(int i, int j, double weight) {
   if (i < 0 || i >= CVCountU() || j < 0 || j >= CVCountV()) {
     return Result::Failed;
