@@ -1267,6 +1267,143 @@ Export @T@/lts_2.dxf
     return s, chk
 
 
+# MODIFY-0027 OOPS: identity, document and layer checks (QC round 1) -----------------------------------------------------------------------------
+# The objects Oops restores must be exactly the erased ones: not twice after an Undo, not from another document, and on the layer they
+# were erased from, found again by its name.
+def line_count_y(path, y):
+    return len([r for r in entities(path, 'LINE') if close(gf(r, 20), y) and close(gf(r, 21), y)])
+
+
+@case('oopsundo')
+def oopsundo():
+    s = PRE + """Line 0,1,0 10,1,0
+SelLast
+Delete
+Undo
+Oops
+SelAll
+Export @T@/ou_1.dxf
+New
+Line 0,2,0 10,2,0
+SelLast
+Delete
+Undo
+Redo
+Oops
+SelAll
+Export @T@/ou_2.dxf
+"""
+
+    def chk(d, log):
+        a, b = d + '/ou_1.dxf', d + '/ou_2.dxf'
+        # Delete then Undo brings the line back under its own id; Oops must not add a second coincident line
+        check(len(entities(a, 'LINE')) == 1 and line_count_y(a, 1) == 1, 'OUD_1: Line, Delete, Undo, Oops leaves exactly ONE line (y = 1), not a coincident duplicate (found %d lines)' % len(entities(a, 'LINE')))
+        check(any('Oops: nothing to restore' in l for l in log.split('\n')), 'OUD_2: Oops says there was nothing to restore, because Undo had already brought the line back')
+        # Delete, Undo, Redo removes the line again: now Oops restores it, once
+        check(len(entities(b, 'LINE')) == 1 and line_count_y(b, 2) == 1, 'OUD_3: Line, Delete, Undo, Redo, Oops leaves exactly one line (y = 2): the Redo erased it again and Oops brought it back once (found %d lines)' % len(entities(b, 'LINE')))
+        check(any('Oops: 1 object(s) restored' in l for l in log.split('\n')), 'OUD_4: that Oops reports 1 object restored')
+    return s, chk
+
+
+@case('oopsnew')
+def oopsnew():
+    s = PRE + """Line 0,7,0 10,7,0
+SelAll
+Export @T@/on_0.dxf
+New
+Line 0,1,0 10,1,0
+SelLast
+Delete
+New
+Line 0,5,0 10,5,0
+Oops
+SelAll
+Export @T@/on_1.dxf
+New
+Line 0,2,0 10,2,0
+SelLast
+Delete
+Open @T@/on_0.dxf
+Oops
+SelAll
+Export @T@/on_2.dxf
+"""
+
+    def chk(d, log):
+        a, b = d + '/on_1.dxf', d + '/on_2.dxf'
+        check(len(entities(a, 'LINE')) == 1 and line_count_y(a, 5) == 1, 'ONW_1: Delete in one document, New, a new line, Oops: the new document holds only its own line (y = 5), nothing from the old one (found %d lines)' % len(entities(a, 'LINE')))
+        check(len(entities(b, 'LINE')) == 1 and line_count_y(b, 7) == 1, 'ONW_2: Delete in one document, Open another file, Oops: the opened document holds only its own line (y = 7) (found %d lines)' % len(entities(b, 'LINE')))
+        check(len([l for l in log.split('\n') if 'Oops: nothing has been erased' in l]) == 2, 'ONW_3: both Oops commands found nothing erased in the new document (found %d such lines)' % len([l for l in log.split('\n') if 'Oops: nothing has been erased' in l]))
+    return s, chk
+
+
+@case('oopslayer')
+def oopslayer():
+    s = PRE + """NewLayer A
+NewLayer B
+Line 0,1,0 10,1,0
+NewLayer C
+Line 0,2,0 10,2,0
+NewLayer D
+Line 0,3,0 10,3,0
+Line 0,4,0 10,4,0
+SetLayer Default
+SelID 1 4
+Delete
+Purge
+Oops
+SelAll
+Export @T@/ol.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/ol.dxf'
+        names = layer_names_in(f)
+        # layers before: Default A B C D. A is empty, B only held the erased line 1: Purge removes both, C and D keep their index shifted by two
+        check('A' not in names and 'B' not in names and 'C' in names and 'D' in names, 'OLY_1: Purge removed the empty layers A and B and kept C and D (layers: %s)' % names)
+        lay = {round(gf(r, 20), 6): g(r, 8) for r in entities(f, 'LINE')}
+        check(len(entities(f, 'LINE')) == 4, 'OLY_2: all four lines are present after Oops (found %d)' % len(entities(f, 'LINE')))
+        # line 4 was on D (still there): Oops finds D by its name although its number changed from 4 to 2
+        check(lay.get(4.0) == 'D', 'OLY_3: the erased line y = 4 comes back on layer D, found by name although D moved from number 4 to number 2 (layer %s)' % lay.get(4.0))
+        # line 1 was on B, which Purge removed: it goes to the current layer (Default) and the command says so
+        check(lay.get(1.0) == 'Default', 'OLY_4: the erased line y = 1 lay on the purged layer B: it comes back on the current layer Default, not on the layer that took B number (layer %s)' % lay.get(1.0))
+        check(lay.get(2.0) == 'C' and lay.get(3.0) == 'D', 'OLY_5: the live lines y = 2 and y = 3 keep layers C and D')
+        check(any('Oops: 2 object(s) restored (1 on the current layer because their layer no longer exists)' in l for l in log.split('\n')), 'OLY_6: the command reports that one object went to the current layer')
+    return s, chk
+
+
+def layer_names_in(path):
+    return [g(r, 2) for r in R.parse(path).get('TABLES', []) if r[0] == 'LAYER']
+
+
+# MODIFY-0006 STRETCH: a circle moves by its centre (QC round 1) --------------------------------------------------------------------------------------
+# A circle has nine control points on the corners and edge midpoints of its bounding square. Window x 9.5..12, y -1..12 holds the centre of
+# the circle (10,5) r=1 but not its three control points at x = 9: it must still move whole. The circle (13,5) r=1 has its centre beyond the
+# window edge although its three control points at x = 12 are inside: it must stay. Displacement (5,2).
+@case('stretchcirc')
+def stretchcirc():
+    s = PRE + """Circle 10,5,0 1
+Circle 13,5,0 1
+Circle 10,-3,0 1
+SelNone
+StretchCrossing
+9.5,-1,0
+12,12,0
+0,0,0
+5,2,0
+SelAll
+Export @T@/stc.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/stc.dxf'
+        check(R.has_circle(f, 15, 7, 1) and not R.has_circle(f, 10, 5, 1), 'STC_1: the circle (10,5) r=1, centre inside the window and 3 of its 9 control points outside, moves whole to (15,7)')
+        check(R.has_circle(f, 13, 5, 1) and not R.has_circle(f, 18, 7, 1), 'STC_2: the circle (13,5) r=1, centre outside the window although its 3 control points at x = 12 are inside, stays')
+        check(R.has_circle(f, 10, -3, 1), 'STC_3: the circle (10,-3) r=1 lies below the window and stays')
+        check(len(entities(f, 'CIRCLE')) == 3, 'STC_4: three circles remain (found %d)' % len(entities(f, 'CIRCLE')))
+    return s, chk
+
+
 def main():
     if len(sys.argv) < 4:
         print(__doc__)
