@@ -582,29 +582,13 @@ Mesh ExtrudeMeshEdges(const Mesh& mesh, const std::vector<MeshEdgeKey>& edges, V
   return FromSoup(s);
 }
 
-Mesh DissolveFaces(const Mesh& mesh, const std::vector<int>& faces) {
-  Soup s = ToSoup(mesh);
-  std::set<int> sel;
-  for (int fi : faces) {
-    CheckFaceIndex(s, fi, "DissolveFaces");
-    sel.insert(fi);
-  }
-  const auto ef = EdgeFaces(s);
-  Dsu dsu(s.f.size());
-  for (const auto& [edge, fl] : ef) {
-    (void)edge;
-    int first = -1;
-    for (int fi : fl) {
-      if (sel.count(fi) == 0) continue;
-      if (first < 0) first = fi; else dsu.Union(first, fi);
-    }
-  }
-  std::map<int, std::vector<int>> groups;
-  for (int fi : sel) groups[dsu.Find(fi)].push_back(fi);
+namespace {
+// Replaces every group (two or more faces that touch along edges) by the polygon of its outline; throws when an outline is not
+// one simple loop. Faces of one-face groups stay.
+void DissolveGroups(Soup& s, const std::vector<std::vector<int>>& groups) {
   std::vector<char> dropped(s.f.size(), 0);
   std::vector<std::vector<int>> added;
-  for (const auto& [root, members] : groups) {
-    (void)root;
+  for (const auto& members : groups) {
     if (members.size() < 2) continue;
     // directed outline edges: an edge of a member face whose reverse is not an edge of another member
     std::set<std::pair<int, int>> directed;
@@ -632,7 +616,7 @@ Mesh DissolveFaces(const Mesh& mesh, const std::vector<int>& faces) {
     } else {
       simple = false;
     }
-    if (!simple) throw std::invalid_argument("dino8::kernel::DissolveFaces: the outline of the faces is not one simple loop");
+    if (!simple) throw std::invalid_argument("dino8::kernel: the outline of the dissolved faces is not one simple loop");
     for (int fi : members) dropped[static_cast<size_t>(fi)] = 1;
     added.push_back(loop);
   }
@@ -641,6 +625,159 @@ Mesh DissolveFaces(const Mesh& mesh, const std::vector<int>& faces) {
     if (!dropped[fi]) out.push_back(s.f[fi]);
   for (const auto& poly : added) out.push_back(poly);
   s.f = out;
+}
+
+std::vector<std::vector<int>> GroupsOf(Dsu& dsu, const std::set<int>& faces) {
+  std::map<int, std::vector<int>> groups;
+  for (int fi : faces) groups[dsu.Find(fi)].push_back(fi);
+  std::vector<std::vector<int>> out;
+  for (auto& g : groups) out.push_back(g.second);
+  return out;
+}
+}  // namespace
+
+Mesh DissolveFaces(const Mesh& mesh, const std::vector<int>& faces) {
+  Soup s = ToSoup(mesh);
+  std::set<int> sel;
+  for (int fi : faces) {
+    CheckFaceIndex(s, fi, "DissolveFaces");
+    sel.insert(fi);
+  }
+  Dsu dsu(s.f.size());
+  for (const auto& [edge, fl] : EdgeFaces(s)) {
+    (void)edge;
+    int first = -1;
+    for (int fi : fl) {
+      if (sel.count(fi) == 0) continue;
+      if (first < 0) first = fi; else dsu.Union(first, fi);
+    }
+  }
+  DissolveGroups(s, GroupsOf(dsu, sel));
+  return FromSoup(s);
+}
+
+Mesh DissolveEdges(const Mesh& mesh, const std::vector<MeshEdgeKey>& edges) {
+  Soup s = ToSoup(mesh);
+  const auto ef = EdgeFaces(s);
+  Dsu dsu(s.f.size());
+  std::set<int> sel;
+  for (const auto& e : edges) {
+    auto it = ef.find(Key(e.first, e.second));
+    if (it == ef.end()) throw std::invalid_argument("dino8::kernel::DissolveEdges: the edge is not in the mesh");
+    if (it->second.size() != 2) continue;
+    dsu.Union(it->second[0], it->second[1]);
+    sel.insert(it->second[0]);
+    sel.insert(it->second[1]);
+  }
+  DissolveGroups(s, GroupsOf(dsu, sel));
+  return FromSoup(s);
+}
+
+Mesh DissolveVertices(const Mesh& mesh, const std::vector<int>& vertices) {
+  Soup s = ToSoup(mesh);
+  const auto ef = EdgeFaces(s);
+  Dsu dsu(s.f.size());
+  std::set<int> sel;
+  for (int v : vertices) {
+    if (v < 0 || v >= static_cast<int>(s.p.size())) throw std::invalid_argument("dino8::kernel::DissolveVertices: vertex index out of range");
+    std::vector<int> around;
+    for (const auto& [edge, fl] : ef) {
+      if (edge.first != v && edge.second != v) continue;
+      if (fl.size() != 2) throw std::invalid_argument("dino8::kernel::DissolveVertices: the vertex is on the boundary or non-manifold");
+      for (int fi : fl) around.push_back(fi);
+    }
+    if (around.empty()) throw std::invalid_argument("dino8::kernel::DissolveVertices: the vertex has no face");
+    for (int fi : around) {
+      dsu.Union(around[0], fi);
+      sel.insert(fi);
+    }
+  }
+  DissolveGroups(s, GroupsOf(dsu, sel));
+  return FromSoup(s);
+}
+
+Mesh DeleteEdgeLoop(const Mesh& mesh, int a, int b) {
+  const MeshEdgeLoop loop = EdgeLoopThrough(mesh, a, b);
+  std::vector<MeshEdgeKey> edges;
+  for (size_t i = 0; i + 1 < loop.vertices.size(); ++i) edges.push_back(Key(loop.vertices[i], loop.vertices[i + 1]));
+  if (loop.closed) edges.push_back(Key(loop.vertices.back(), loop.vertices.front()));
+  Soup s = ToSoup(mesh);
+  {
+    const auto ef = EdgeFaces(s);
+    Dsu dsu(s.f.size());
+    std::set<int> sel;
+    for (const auto& e : edges) {
+      const auto& fl = ef.at(e);
+      if (fl.size() != 2) continue;
+      dsu.Union(fl[0], fl[1]);
+      sel.insert(fl[0]);
+      sel.insert(fl[1]);
+    }
+    DissolveGroups(s, GroupsOf(dsu, sel));
+  }
+  // a loop vertex left with two edges in a straight line carries no shape: drop it from the polygons that name it
+  for (int v : loop.vertices) {
+    std::set<int> nb;
+    for (const auto& poly : s.f)
+      for (size_t k = 0; k < poly.size(); ++k)
+        if (poly[k] == v) {
+          nb.insert(poly[(k + 1) % poly.size()]);
+          nb.insert(poly[(k + poly.size() - 1) % poly.size()]);
+        }
+    if (nb.size() != 2) continue;
+    const Vector3d d1 = s.p[static_cast<size_t>(v)] - s.p[static_cast<size_t>(*nb.begin())];
+    const Vector3d d2 = s.p[static_cast<size_t>(*nb.rbegin())] - s.p[static_cast<size_t>(v)];
+    if (ON_CrossProduct(d1, d2).Length() > 1e-6 * d1.Length() * d2.Length()) continue;
+    for (auto& poly : s.f) poly.erase(std::remove(poly.begin(), poly.end(), v), poly.end());
+  }
+  std::vector<std::vector<int>> faces;
+  for (const auto& poly : s.f)
+    if (poly.size() >= 3) faces.push_back(poly);
+  s.f = faces;
+  return FromSoup(s);
+}
+
+Mesh ExtrudeFaceRegion(const Mesh& mesh, const std::vector<int>& faces, double distance) {
+  Soup s = ToSoup(mesh);
+  std::set<int> sel;
+  for (int fi : faces) {
+    CheckFaceIndex(s, fi, "ExtrudeFaceRegion");
+    sel.insert(fi);
+  }
+  Dsu dsu(s.f.size());
+  for (const auto& [edge, fl] : EdgeFaces(s)) {
+    (void)edge;
+    int first = -1;
+    for (int fi : fl) {
+      if (sel.count(fi) == 0) continue;
+      if (first < 0) first = fi; else dsu.Union(first, fi);
+    }
+  }
+  const size_t original = s.f.size();
+  for (const auto& group : GroupsOf(dsu, sel)) {
+    Vector3d n(0, 0, 0);
+    std::set<std::pair<int, int>> directed;
+    std::set<int> verts;
+    for (int fi : group) {
+      n += Newell(s, s.f[static_cast<size_t>(fi)]);
+      const auto& poly = s.f[static_cast<size_t>(fi)];
+      for (size_t k = 0; k < poly.size(); ++k) {
+        directed.insert({poly[k], poly[(k + 1) % poly.size()]});
+        verts.insert(poly[k]);
+      }
+    }
+    n.Unitize();
+    std::map<int, int> moved;
+    for (int v : verts) {
+      moved[v] = static_cast<int>(s.p.size());
+      s.p.push_back(s.p[static_cast<size_t>(v)] + n * distance);
+    }
+    for (const auto& d : directed)
+      if (directed.count({d.second, d.first}) == 0) s.f.push_back({d.first, d.second, moved[d.second], moved[d.first]});
+    for (int fi : group)
+      for (int& v : s.f[static_cast<size_t>(fi)]) v = moved[v];
+  }
+  (void)original;
   return FromSoup(s);
 }
 
@@ -862,6 +999,286 @@ MeshEdgeLoop EdgeLoopThrough(const Mesh& mesh, int a, int b) {
   loop.vertices.assign(seq.begin(), seq.end());
   loop.closed = closed;
   return loop;
+}
+
+std::vector<int> LinkedVertices(const Mesh& mesh, int seed_vertex) {
+  const Soup s = ToSoup(mesh);
+  if (seed_vertex < 0 || seed_vertex >= static_cast<int>(s.p.size())) throw std::invalid_argument("dino8::kernel::LinkedVertices: vertex index out of range");
+  std::vector<std::vector<int>> nb(s.p.size());
+  for (const auto& poly : s.f)
+    for (size_t k = 0; k < poly.size(); ++k) {
+      const int a = poly[k], b = poly[(k + 1) % poly.size()];
+      nb[static_cast<size_t>(a)].push_back(b);
+      nb[static_cast<size_t>(b)].push_back(a);
+    }
+  std::vector<char> seen(s.p.size(), 0);
+  std::vector<int> stack{seed_vertex};
+  seen[static_cast<size_t>(seed_vertex)] = 1;
+  while (!stack.empty()) {
+    const int v = stack.back();
+    stack.pop_back();
+    for (int w : nb[static_cast<size_t>(v)])
+      if (!seen[static_cast<size_t>(w)]) {
+        seen[static_cast<size_t>(w)] = 1;
+        stack.push_back(w);
+      }
+  }
+  std::vector<int> out;
+  for (size_t i = 0; i < seen.size(); ++i)
+    if (seen[i]) out.push_back(static_cast<int>(i));
+  return out;
+}
+
+std::vector<int> FacesBySides(const Mesh& mesh, int sides, SidesCompare compare) {
+  const Soup s = ToSoup(mesh);
+  std::vector<int> out;
+  for (size_t i = 0; i < s.f.size(); ++i) {
+    const int n = static_cast<int>(s.f[i].size());
+    const bool hit = compare == SidesCompare::Less ? n < sides : compare == SidesCompare::Equal ? n == sides : compare == SidesCompare::Greater ? n > sides : n != sides;
+    if (hit) out.push_back(static_cast<int>(i));
+  }
+  return out;
+}
+
+std::vector<int> MirroredVertices(const Mesh& mesh, const std::vector<int>& selected, int axis, double threshold) {
+  if (axis < 0 || axis > 2) throw std::invalid_argument("dino8::kernel::MirroredVertices: axis must be 0, 1 or 2");
+  const Soup s = ToSoup(mesh);
+  std::set<int> out;
+  for (int v : selected) {
+    if (v < 0 || v >= static_cast<int>(s.p.size())) throw std::invalid_argument("dino8::kernel::MirroredVertices: vertex index out of range");
+    Point3d m = s.p[static_cast<size_t>(v)];
+    m[axis] = -m[axis];
+    int best = -1;
+    double best_d = threshold;
+    for (size_t w = 0; w < s.p.size(); ++w) {
+      const double d = s.p[w].DistanceTo(m);
+      if (d <= best_d) {
+        best_d = d;
+        best = static_cast<int>(w);
+      }
+    }
+    if (best >= 0) out.insert(best);
+  }
+  return std::vector<int>(out.begin(), out.end());
+}
+
+std::vector<int> VerticesByAxis(const Mesh& mesh, int active_vertex, int axis, AxisSide side, double threshold) {
+  if (axis < 0 || axis > 2) throw std::invalid_argument("dino8::kernel::VerticesByAxis: axis must be 0, 1 or 2");
+  const Soup s = ToSoup(mesh);
+  if (active_vertex < 0 || active_vertex >= static_cast<int>(s.p.size())) throw std::invalid_argument("dino8::kernel::VerticesByAxis: vertex index out of range");
+  const double c0 = s.p[static_cast<size_t>(active_vertex)][axis];
+  std::vector<int> out;
+  for (size_t v = 0; v < s.p.size(); ++v) {
+    const double c = s.p[v][axis];
+    const bool hit = side == AxisSide::Positive ? c > c0 + threshold : side == AxisSide::Negative ? c < c0 - threshold : std::abs(c - c0) <= threshold;
+    if (hit) out.push_back(static_cast<int>(v));
+  }
+  return out;
+}
+
+namespace {
+double SmallestAngle(const Point3d& a, const Point3d& b, const Point3d& c) {
+  auto angle = [](const Point3d& p, const Point3d& q, const Point3d& r) {
+    Vector3d u = q - p, w = r - p;
+    if (!u.Unitize() || !w.Unitize()) return 0.0;
+    return std::acos(std::max(-1.0, std::min(1.0, u * w)));
+  };
+  return std::min({angle(a, b, c), angle(b, c, a), angle(c, a, b)});
+}
+}  // namespace
+
+Mesh BeautifyTriangles(const Mesh& mesh, double angle_limit_degrees) {
+  Soup s = ToSoup(mesh);
+  const double limit = angle_limit_degrees * ON_PI / 180.0;
+  const size_t max_rounds = 4 * s.f.size() + 4;
+  for (size_t round = 0; round < max_rounds; ++round) {
+    bool flipped = false;
+    const auto ef = EdgeFaces(s);
+    for (const auto& [edge, fl] : ef) {
+      if (fl.size() != 2 || s.f[static_cast<size_t>(fl[0])].size() != 3 || s.f[static_cast<size_t>(fl[1])].size() != 3) continue;
+      auto& t1 = s.f[static_cast<size_t>(fl[0])];
+      auto& t2 = s.f[static_cast<size_t>(fl[1])];
+      // orient so that t1 walks a -> b along the shared edge and t2 walks b -> a
+      int a = -1, b = -1;
+      for (size_t k = 0; k < 3; ++k)
+        if (t1[k] == edge.first && t1[(k + 1) % 3] == edge.second) { a = edge.first; b = edge.second; }
+        else if (t1[k] == edge.second && t1[(k + 1) % 3] == edge.first) { a = edge.second; b = edge.first; }
+      int c = -1, d = -1;
+      for (int v : t1) if (v != a && v != b) c = v;
+      for (int v : t2) if (v != a && v != b) d = v;
+      if (a < 0 || c < 0 || d < 0 || c == d) continue;
+      const Point3d &pa = s.p[static_cast<size_t>(a)], &pb = s.p[static_cast<size_t>(b)], &pc = s.p[static_cast<size_t>(c)], &pd = s.p[static_cast<size_t>(d)];
+      Vector3d n1 = ON_CrossProduct(pb - pa, pc - pa), n2 = ON_CrossProduct(pa - pb, pd - pb);
+      if (!n1.Unitize() || !n2.Unitize()) continue;
+      if (std::acos(std::max(-1.0, std::min(1.0, n1 * n2))) > limit + 1e-9) continue;
+      // the flipped pair (c, a, d) and (d, b, c) must keep the orientation of the old pair (convex quad)
+      Vector3d m1 = ON_CrossProduct(pa - pc, pd - pc), m2 = ON_CrossProduct(pb - pd, pc - pd);
+      if (!m1.Unitize() || !m2.Unitize() || m1 * n1 < 1e-9 || m2 * n1 < 1e-9) continue;
+      const double old_min = std::min(SmallestAngle(pa, pb, pc), SmallestAngle(pb, pa, pd));
+      const double new_min = std::min(SmallestAngle(pc, pa, pd), SmallestAngle(pd, pb, pc));
+      if (new_min <= old_min + 1e-9) continue;
+      t1 = {c, a, d};
+      t2 = {d, b, c};
+      flipped = true;
+      break;
+    }
+    if (!flipped) break;
+  }
+  return FromSoup(s);
+}
+
+Mesh MakeFacesPlanar(const Mesh& mesh, const std::vector<int>& faces, double factor, int repeat) {
+  if (!std::isfinite(factor) || factor < 0.0 || factor > 1.0) throw std::invalid_argument("dino8::kernel::MakeFacesPlanar: factor must be in [0, 1]");
+  if (repeat < 0) throw std::invalid_argument("dino8::kernel::MakeFacesPlanar: repeat must be >= 0");
+  Soup s = ToSoup(mesh);
+  std::set<int> sel;
+  for (int fi : faces) {
+    CheckFaceIndex(s, fi, "MakeFacesPlanar");
+    sel.insert(fi);
+  }
+  for (int round = 0; round < repeat; ++round) {
+    std::vector<Vector3d> sum(s.p.size(), Vector3d(0, 0, 0));
+    std::vector<int> count(s.p.size(), 0);
+    for (int fi : sel) {
+      const auto& poly = s.f[static_cast<size_t>(fi)];
+      Vector3d n = Newell(s, poly);
+      if (!n.Unitize()) continue;
+      Vector3d c(0, 0, 0);
+      for (int v : poly) c += s.p[static_cast<size_t>(v)] - Point3d::Origin;
+      c /= static_cast<double>(poly.size());
+      for (int v : poly) {
+        const double dist = ((s.p[static_cast<size_t>(v)] - Point3d::Origin) - c) * n;
+        sum[static_cast<size_t>(v)] += n * (-dist * factor);
+        ++count[static_cast<size_t>(v)];
+      }
+    }
+    for (size_t v = 0; v < s.p.size(); ++v)
+      if (count[v] > 0) s.p[v] = s.p[v] + sum[v] / static_cast<double>(count[v]);
+  }
+  return FromSoup(s);
+}
+
+Mesh MakeCubeMesh(double size) {
+  if (!(size > 0.0) || !std::isfinite(size)) throw std::invalid_argument("dino8::kernel::MakeCubeMesh: size must be > 0");
+  const double h = size / 2.0;
+  Soup s;
+  for (int z = 0; z < 2; ++z)
+    for (int y = 0; y < 2; ++y)
+      for (int x = 0; x < 2; ++x) s.p.emplace_back(x ? h : -h, y ? h : -h, z ? h : -h);
+  s.f = {{0, 2, 3, 1}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 4, 6, 2}, {1, 3, 7, 5}, {4, 5, 7, 6}};
+  return FromSoup(s);
+}
+
+Mesh MakePlaneMesh(double size) {
+  if (!(size > 0.0) || !std::isfinite(size)) throw std::invalid_argument("dino8::kernel::MakePlaneMesh: size must be > 0");
+  const double h = size / 2.0;
+  Soup s;
+  s.p = {Point3d(-h, -h, 0), Point3d(h, -h, 0), Point3d(h, h, 0), Point3d(-h, h, 0)};
+  s.f = {{0, 1, 2, 3}};
+  return FromSoup(s);
+}
+
+namespace {
+void AddRing(Soup& s, int n, double radius, double z) {
+  for (int i = 0; i < n; ++i) {
+    const double a = 2.0 * ON_PI * i / n;
+    s.p.emplace_back(radius * std::cos(a), radius * std::sin(a), z);
+  }
+}
+void AddCap(Soup& s, int first, int n, double z, CapFill fill, bool up) {
+  if (fill == CapFill::Nothing) return;
+  std::vector<int> ring(static_cast<size_t>(n));
+  std::iota(ring.begin(), ring.end(), first);
+  if (!up) std::reverse(ring.begin(), ring.end());
+  if (fill == CapFill::NGon) {
+    s.f.push_back(ring);  // FromSoup triangulates it into n - 2 triangles
+  } else {
+    const int centre = static_cast<int>(s.p.size());
+    s.p.emplace_back(0, 0, z);
+    for (int i = 0; i < n; ++i) s.f.push_back({centre, ring[static_cast<size_t>(i)], ring[static_cast<size_t>((i + 1) % n)]});
+  }
+}
+}  // namespace
+
+Mesh MakeCircleMesh(int vertices, double radius, CapFill fill) {
+  if (vertices < 3 || !(radius > 0.0)) throw std::invalid_argument("dino8::kernel::MakeCircleMesh: at least 3 vertices and radius > 0");
+  Soup s;
+  AddRing(s, vertices, radius, 0.0);
+  AddCap(s, 0, vertices, 0.0, fill, true);
+  Mesh m = FromSoup(s);
+  if (fill == CapFill::Nothing)
+    for (const Point3d& p : s.p) m.raw().m_V.Append(ON_3fPoint(float(p.x), float(p.y), float(p.z)));
+  return m;
+}
+
+Mesh MakeCylinderMesh(int vertices, double radius, double depth, CapFill end_fill) {
+  if (vertices < 3 || !(radius > 0.0) || !(depth > 0.0)) throw std::invalid_argument("dino8::kernel::MakeCylinderMesh: at least 3 vertices, radius > 0, depth > 0");
+  Soup s;
+  AddRing(s, vertices, radius, -depth / 2.0);
+  AddRing(s, vertices, radius, depth / 2.0);
+  for (int i = 0; i < vertices; ++i) {
+    const int j = (i + 1) % vertices;
+    s.f.push_back({i, j, vertices + j, vertices + i});
+  }
+  AddCap(s, vertices, vertices, depth / 2.0, end_fill, true);
+  AddCap(s, 0, vertices, -depth / 2.0, end_fill, false);
+  return FromSoup(s);
+}
+
+Mesh MakeIcoSphereMesh(int subdivisions, double radius) {
+  if (subdivisions < 1 || subdivisions > 8 || !(radius > 0.0)) throw std::invalid_argument("dino8::kernel::MakeIcoSphereMesh: subdivisions 1..8 and radius > 0");
+  const double t = (1.0 + std::sqrt(5.0)) / 2.0;
+  Soup s;
+  s.p = {Point3d(-1, t, 0), Point3d(1, t, 0), Point3d(-1, -t, 0), Point3d(1, -t, 0), Point3d(0, -1, t), Point3d(0, 1, t),
+         Point3d(0, -1, -t), Point3d(0, 1, -t), Point3d(t, 0, -1), Point3d(t, 0, 1), Point3d(-t, 0, -1), Point3d(-t, 0, 1)};
+  s.f = {{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+         {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9}, {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1}};
+  for (auto& p : s.p) {
+    Vector3d v = p - Point3d::Origin;
+    v.Unitize();
+    p = Point3d::Origin + v;
+  }
+  for (int level = 1; level < subdivisions; ++level) {
+    std::map<MeshEdgeKey, int> mid;
+    auto midpoint = [&](int a, int b) {
+      const MeshEdgeKey k = Key(a, b);
+      auto it = mid.find(k);
+      if (it != mid.end()) return it->second;
+      Vector3d v = (s.p[static_cast<size_t>(a)] - Point3d::Origin) + (s.p[static_cast<size_t>(b)] - Point3d::Origin);
+      v.Unitize();
+      const int id = static_cast<int>(s.p.size());
+      s.p.push_back(Point3d::Origin + v);
+      mid[k] = id;
+      return id;
+    };
+    std::vector<std::vector<int>> next;
+    for (const auto& f : s.f) {
+      const int ab = midpoint(f[0], f[1]), bc = midpoint(f[1], f[2]), ca = midpoint(f[2], f[0]);
+      next.push_back({f[0], ab, ca});
+      next.push_back({f[1], bc, ab});
+      next.push_back({f[2], ca, bc});
+      next.push_back({ab, bc, ca});
+    }
+    s.f = next;
+  }
+  for (auto& f : s.f) {  // make every face wind outward
+    const Vector3d n = ON_CrossProduct(s.p[static_cast<size_t>(f[1])] - s.p[static_cast<size_t>(f[0])], s.p[static_cast<size_t>(f[2])] - s.p[static_cast<size_t>(f[0])]);
+    const Vector3d c = (s.p[static_cast<size_t>(f[0])] - Point3d::Origin) + (s.p[static_cast<size_t>(f[1])] - Point3d::Origin) + (s.p[static_cast<size_t>(f[2])] - Point3d::Origin);
+    if (n * c < 0.0) std::swap(f[1], f[2]);
+  }
+  for (auto& p : s.p) p = Point3d::Origin + (p - Point3d::Origin) * radius;
+  return FromSoup(s);
+}
+
+Mesh MakeTorusMesh(int major_segments, int minor_segments, double major_radius, double minor_radius) {
+  if (major_segments < 3 || minor_segments < 3 || !(major_radius > 0.0) || !(minor_radius > 0.0))
+    throw std::invalid_argument("dino8::kernel::MakeTorusMesh: at least 3 segments each and positive radii");
+  std::vector<Point3d> profile;
+  for (int j = 0; j < minor_segments; ++j) {
+    const double a = 2.0 * ON_PI * j / minor_segments;
+    profile.emplace_back(major_radius + minor_radius * std::cos(a), 0.0, minor_radius * std::sin(a));
+  }
+  return ScrewPolyline(profile, Point3d::Origin, Vector3d(0, 0, 1), 2.0 * ON_PI, major_segments, 0.0, 1, true);
 }
 
 }  // namespace dino8::kernel
