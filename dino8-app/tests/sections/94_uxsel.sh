@@ -29,7 +29,7 @@ else
   uxsel_exp open 3 "UXSEL_SelOpenCrv: two lines + arc = 3"
   uxsel_has prev "5 object(s) selected (previous selection)" "UXSEL_SelPrev: reports restoring the previous 5-curve selection"
   uxsel_exp prev 5 "UXSEL_SelPrev: after SelCrv (5) and SelNone, SelPrev brings back exactly 5"
-  uxsel_has last "1 object(s) selected (last created)" "UXSEL_SelLast: reports 1 object (last created)"
+  uxsel_has last "SelLast: last created object selected (1 selected)" "UXSEL_SelLast: reports the last created object, 1 selected"
   uxsel_exp last 1 "UXSEL_SelLast: exactly 1 selected, the newest object"
   if grep -q '^FAIL' <<<"$UXSEL_OUT"; then uxsel_bad "UXSEL_script: an @expect line failed"; echo "$UXSEL_OUT" | grep '^FAIL' | head -5; else uxsel_ok "UXSEL_script: no @expect line failed"; fi
 fi
