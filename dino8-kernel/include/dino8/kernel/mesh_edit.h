@@ -141,4 +141,62 @@ struct MeshEdgeLoop {
 };
 MeshEdgeLoop EdgeLoopThrough(const Mesh& mesh, int a, int b);
 
+// ---- Round 3, batch 2 ----
+
+// Dissolve Edges: the two faces on each listed edge (an edge with exactly two faces) become one polygon, as DissolveFaces does for
+// a face list, but only across the listed edges. Edges with one or three faces are ignored. Throws std::invalid_argument for an edge
+// that is not in the mesh or an outline that is not one simple loop.
+Mesh DissolveEdges(const Mesh& mesh, const std::vector<MeshEdgeKey>& edges);
+
+// Dissolve Vertices: every listed interior vertex (all its edges have two faces) disappears and the faces around it become one
+// polygon. Throws std::invalid_argument for a vertex out of range or on the boundary.
+Mesh DissolveVertices(const Mesh& mesh, const std::vector<int>& vertices);
+
+// Delete Edge Loop: the loop through the edge (a, b) (EdgeLoopThrough) is dissolved edge by edge, and the loop vertices that are
+// left with two edges in a straight line are removed, so a quad grid loses one row or column of quads. Throws std::invalid_argument
+// for an edge that is not in the mesh.
+Mesh DeleteEdgeLoop(const Mesh& mesh, int a, int b);
+
+// Extrude Region: each group of listed faces that touch along edges is extruded as one piece along its own (area weighted) normal
+// by `distance`; walls join the moved faces to the outline of the group, so edges between two listed faces get no wall. Throws
+// std::invalid_argument for an index out of range.
+Mesh ExtrudeFaceRegion(const Mesh& mesh, const std::vector<int>& faces, double distance);
+
+// Select Linked: the vertices reachable from `seed_vertex` along edges, sorted.
+std::vector<int> LinkedVertices(const Mesh& mesh, int seed_vertex);
+
+enum class SidesCompare { Less, Equal, Greater, NotEqual };
+
+// Select Faces by Sides: the faces whose corner count compares to `sides` (a mesh here holds triangles and quads only).
+std::vector<int> FacesBySides(const Mesh& mesh, int sides, SidesCompare compare);
+
+// Select Mirror: for every selected vertex the vertex at its position mirrored in the plane through the origin normal to `axis`
+// (0 x, 1 y, 2 z), within `threshold`; sorted, without duplicates. A vertex with no counterpart contributes nothing.
+std::vector<int> MirroredVertices(const Mesh& mesh, const std::vector<int>& selected, int axis, double threshold = 1e-4);
+
+enum class AxisSide { Positive, Negative, Aligned };
+
+// Select Axis: the vertices whose coordinate on `axis` is above (Positive), below (Negative) or within `threshold` of (Aligned) that
+// of `active_vertex`; sorted. The active vertex is listed only for Aligned.
+std::vector<int> VerticesByAxis(const Mesh& mesh, int active_vertex, int axis, AxisSide side, double threshold = 1e-4);
+
+// Beautify Faces on triangle pairs: every edge shared by exactly two triangles whose union is a convex quad within `angle_limit_degrees`
+// of coplanar is flipped when that raises the smallest of the six interior angles; repeated until no flip helps (at most 4 * faces
+// rounds). Quads and edges that do not qualify are untouched.
+Mesh BeautifyTriangles(const Mesh& mesh, double angle_limit_degrees = 180.0);
+
+// Make Planar Faces: for `repeat` rounds every corner of every listed face moves toward the plane through the face's corner mean
+// with the face's Newell normal by `factor` (1 puts it on the plane); a vertex shared by several listed faces moves by the mean of
+// their moves. Throws std::invalid_argument for a factor outside [0, 1], repeat < 0 or an index out of range.
+Mesh MakeFacesPlanar(const Mesh& mesh, const std::vector<int>& faces, double factor = 1.0, int repeat = 1);
+
+// Primitives (centred on the origin, axis +z, faces wound outward; vertices on the circle start at angle 0).
+enum class CapFill { Nothing, NGon, TriFan };
+Mesh MakeCubeMesh(double size = 2.0);                                         // 8 vertices, 6 quads
+Mesh MakePlaneMesh(double size = 2.0);                                        // 1 quad, normal +z
+Mesh MakeCircleMesh(int vertices = 32, double radius = 1.0, CapFill fill = CapFill::Nothing);
+Mesh MakeCylinderMesh(int vertices = 32, double radius = 1.0, double depth = 2.0, CapFill end_fill = CapFill::NGon);
+Mesh MakeIcoSphereMesh(int subdivisions = 2, double radius = 1.0);           // 1 = icosahedron; faces 20 * 4^(s - 1)
+Mesh MakeTorusMesh(int major_segments = 48, int minor_segments = 12, double major_radius = 1.0, double minor_radius = 0.25);
+
 }  // namespace dino8::kernel
