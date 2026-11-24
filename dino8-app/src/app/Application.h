@@ -178,6 +178,7 @@ struct AppState {
   bool message_boxes_reset = false;
   bool camera_shown = false;         // Camera Show: draw the active camera frustum
   bool decimal_comma = false;        // DecimalPoint: print numbers with a decimal comma
+  std::vector<SceneObject> last_erased;  // Oops: the objects the most recent Delete removed (copies, restored by Oops)
   bool crease_splitting = true;      // CreaseSplitting: AutomaticSubDFromMesh creases sharp edges
   bool check_new_objects = false;    // CheckNewObjects: validate objects every command adds
   bool history_recording = false;    // History On/Off: whether NEW construction commands record a HistoryRecord (doc/Document.h) for UpdateHistory to rebuild later

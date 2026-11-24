@@ -688,8 +688,21 @@ bool CommandEngine::TryParsePoint(const std::string& text, Point3d& out) {
   double u = 0, v = 0, w = 0;
   const size_t lt = t.find('<');
   if (lt != std::string::npos) {
-    double dist = 0, ang = 0;
-    if (lt > 0 && std::sscanf(t.c_str(), "%lf<%lf", &dist, &ang) == 2) {
+    double dist = 0, ang = 0, third = 0;
+    // "d<a<b" is spherical (distance from the origin or, with @, from the last point; angle in the XY plane; angle from the XY plane),
+    // "d<a,z" is cylindrical (distance in the XY plane, angle in the XY plane, Z), "d<a" is polar (AutoCAD coordinate entry).
+    if (lt > 0 && std::sscanf(t.c_str(), "%lf<%lf<%lf", &dist, &ang, &third) == 3) {
+      const double a = ang * ON_PI / 180.0, b = third * ON_PI / 180.0;
+      u = dist * std::cos(b) * std::cos(a);
+      v = dist * std::cos(b) * std::sin(a);
+      w = dist * std::sin(b);
+      relative = relative || last_point_.has_value();
+    } else if (lt > 0 && std::sscanf(t.c_str(), "%lf<%lf,%lf", &dist, &ang, &third) == 3) {
+      u = dist * std::cos(ang * ON_PI / 180.0);
+      v = dist * std::sin(ang * ON_PI / 180.0);
+      w = third;
+      relative = relative || last_point_.has_value();
+    } else if (lt > 0 && std::sscanf(t.c_str(), "%lf<%lf", &dist, &ang) == 2) {
       u = dist * std::cos(ang * ON_PI / 180.0);
       v = dist * std::sin(ang * ON_PI / 180.0);
       relative = relative || last_point_.has_value();
