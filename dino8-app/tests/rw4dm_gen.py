@@ -542,6 +542,9 @@ def delete():
           ["SelNone", "Plane 1,4,0 5,8,0", "SelNone", "SelID 3", "PointsOn", "SelControlPoint", "Undo", "Redo", "SelNone", "SelID 3", "Delete"],
           [(1, "curve", "Default", "")], ["Deleted 1 object\\(s\\)"]),
     ]
+    # the frame-path steps keep their original place (they rely on the state left by cv_all); the one-line steps build their own documents and come last
+    late = [t for t in steps if t["name"].startswith("one_line") or t["name"] == "guard_range"]
+    steps = [t for t in steps if t not in late] + late
     calls = (sh_lines("cv_mid", PT, "s/x/x/", "  0,0,0 |   6,1,0 |   8,0,0", "the control points left after the delete are the original first, fourth and fifth, unchanged") +
              sh_lines("cv_mid", "Deleted [0-9]+ sub-object", "s/x/x/", "Deleted 2 sub-object(s)", "Delete reports the two control points it removed", tag="message"))
     build_logic("delete", "Delete: whole objects and selected control points", ["D8-RHINO-ORG-0018"], [], steps, defs_sh=LINES_SH, calls_sh=calls, base=base, tmp=True)
