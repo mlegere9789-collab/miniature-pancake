@@ -1489,6 +1489,44 @@ class RibbonCommand : public Command {
   std::vector<ObjectId> ids_;
 };
 
+// How much each (triangle) face of `mesh` faces along `view`: the dot product of the face's SMOOTHED normal with `view`.
+// A facet's own normal is the radial direction at the CIRCUMCENTRE of its triangle, which for a thin or obtuse triangle (every pole fan and seam strip
+// of a tessellated sphere) lies far from the facet: the facets within a few degrees of the outline then have signs that follow the mesh, not the
+// surface, and the outline came out as one long chain plus loose islands (a sphere gave 3 chains on one platform and 1 on another, where the
+// meshes differed by a vertex). The smoothed normal of a face is the area-weighted mean of the normals of the faces that touch it at its three
+// corners, counting only the neighbours within 30 degrees of the face itself, so a crease (a box edge) is never averaged away and every flat
+// face keeps exactly its own normal, while a curved surface gets a normal that varies smoothly from face to face.
+std::vector<double> SmoothedFaceFacing(const ON_Mesh& mesh, const ON_3dVector& view) {
+  const int nf = mesh.FaceCount();
+  std::vector<ON_3dVector> fn(static_cast<size_t>(nf));
+  std::vector<double> area(static_cast<size_t>(nf), 0.0);
+  std::vector<std::vector<int>> star(static_cast<size_t>(mesh.VertexCount()));
+  for (int fi = 0; fi < nf; ++fi) {
+    const ON_MeshFace& f = mesh.m_F[fi];
+    const ON_3dPoint a(mesh.m_V[f.vi[0]]), b(mesh.m_V[f.vi[1]]), c(mesh.m_V[f.vi[2]]);
+    ON_3dVector n = ON_CrossProduct(b - a, c - a);
+    const double len = n.Length();
+    area[static_cast<size_t>(fi)] = 0.5 * len;
+    if (len > 0.0) n *= 1.0 / len;
+    fn[static_cast<size_t>(fi)] = n;
+    for (int k = 0; k < 3; ++k) star[static_cast<size_t>(f.vi[k])].push_back(fi);
+  }
+  constexpr double kCreaseCos = 0.8660254037844386;  // cos 30 degrees
+  std::vector<double> facing(static_cast<size_t>(nf), 0.0);
+  for (int fi = 0; fi < nf; ++fi) {
+    const ON_MeshFace& f = mesh.m_F[fi];
+    ON_3dVector sum(0, 0, 0);
+    for (int k = 0; k < 3; ++k) {
+      for (int gi : star[static_cast<size_t>(f.vi[k])]) {
+        if (ON_DotProduct(fn[static_cast<size_t>(gi)], fn[static_cast<size_t>(fi)]) >= kCreaseCos) sum += fn[static_cast<size_t>(gi)] * area[static_cast<size_t>(gi)];
+      }
+    }
+    if (sum.Unitize()) facing[static_cast<size_t>(fi)] = ON_DotProduct(sum, view);
+    else facing[static_cast<size_t>(fi)] = ON_DotProduct(fn[static_cast<size_t>(fi)], view);
+  }
+  return facing;
+}
+
 void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   Vector3d view = ActiveNormal(ctx);
   if (Viewport* vp = ctx.ActiveViewport()) view = vp->GetCamera().Forward();
@@ -1504,6 +1542,8 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     ON_Mesh mesh = m->raw();
     mesh.ConvertQuadsToTriangles();
     mesh.ComputeFaceNormals();
+    const std::vector<double> facing = SmoothedFaceFacing(mesh, view);
+    constexpr double kFacingTie = 1e-9;
     // Edge -> faces map.
     std::map<std::pair<int, int>, std::vector<int>> edges;
     for (int fi = 0; fi < mesh.FaceCount(); ++fi) {
@@ -1511,17 +1551,66 @@ void Silhouette(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       for (int k = 0; k < 3; ++k) { int a = f.vi[k], b = f.vi[(k + 1) % 3]; edges[{std::min(a, b), std::max(a, b)}].push_back(fi); }
     }
     std::vector<std::pair<Point3d, Point3d>> segs;
+    std::vector<std::pair<int, int>> seg_ids;  // the same segments by vertex index
     for (const auto& [e, fs] : edges) {
       bool sil = false;
       if (fs.size() == 1) sil = true;
       else if (fs.size() == 2) {
-        double d0 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[0]]), view), d1 = ON_DotProduct(ON_3dVector(mesh.m_FN[fs[1]]), view);
-        sil = (d0 < 0) != (d1 < 0);
+        // A face is "turned away" when it faces away by more than the noise floor: an exact tie (a face edge-on to the view, 0 or -1e-17
+        // depending on the platform's rounding) always counts as facing, so the result does not depend on the sign of a rounding error.
+        sil = (facing[static_cast<size_t>(fs[0])] < -kFacingTie) != (facing[static_cast<size_t>(fs[1])] < -kFacingTie);
       }
-      if (sil) segs.emplace_back(mesh.Vertex(e.first), mesh.Vertex(e.second));
+      if (sil) { segs.emplace_back(mesh.Vertex(e.first), mesh.Vertex(e.second)); seg_ids.emplace_back(e.first, e.second); }
     }
-    // Chain into polylines.
     std::vector<bool> used(segs.size(), false);
+    // The silhouette edges of a closed mesh meet an even number of times at every vertex. A connected piece of that graph is ONE closed curve:
+    // walk it as an Euler circuit (Hierholzer, neighbours in vertex-index order, so the same edge set always gives the same curve). Joining the
+    // segments end to end greedily instead leaves a loose chain behind at every vertex where four silhouette edges meet (a pinch between two
+    // facing regions), and which vertices pinch depends on the mesh down to a vertex, i.e. on the platform.
+    {
+      std::map<int, std::vector<std::pair<int, size_t>>> adj;  // vertex -> (neighbour, segment)
+      for (size_t i = 0; i < seg_ids.size(); ++i) {
+        adj[seg_ids[i].first].emplace_back(seg_ids[i].second, i);
+        adj[seg_ids[i].second].emplace_back(seg_ids[i].first, i);
+      }
+      for (auto& kv : adj) std::sort(kv.second.begin(), kv.second.end());
+      std::set<int> seen;
+      for (const auto& root : adj) {
+        if (seen.count(root.first)) continue;
+        std::vector<int> comp_vertices;  // the connected piece of the graph, found by a walk over the segments
+        std::vector<int> todo = {root.first};
+        seen.insert(root.first);
+        bool all_even = true;
+        while (!todo.empty()) {
+          const int v = todo.back();
+          todo.pop_back();
+          comp_vertices.push_back(v);
+          const auto& nb = adj[v];
+          if (nb.size() % 2 != 0) all_even = false;
+          for (const auto& [w, si] : nb) if (seen.insert(w).second) todo.push_back(w);
+        }
+        if (!all_even) continue;  // an open piece (naked mesh edges): left to the end-to-end chaining below
+        const int start = *std::min_element(comp_vertices.begin(), comp_vertices.end());
+        std::map<int, size_t> next_slot;
+        std::vector<int> stack = {start}, circuit;
+        while (!stack.empty()) {
+          const int v = stack.back();
+          size_t& k = next_slot[v];
+          const auto& nb = adj[v];
+          while (k < nb.size() && used[nb[k].second]) ++k;
+          if (k == nb.size()) { circuit.push_back(v); stack.pop_back(); continue; }
+          used[nb[k].second] = true;
+          stack.push_back(nb[k].first);
+        }
+        std::vector<Point3d> pl;
+        for (int v : circuit) pl.push_back(mesh.Vertex(v));
+        SceneObject n = SceneObject::MakeCurve(PolylineCurve(pl));
+        n.layer_index = like.layer_index;
+        ctx.Doc().Add(std::move(n));
+        ++made;
+      }
+    }
+    // Chain what is left (open pieces) into polylines.
     for (size_t i = 0; i < segs.size(); ++i) {
       if (used[i]) continue;
       used[i] = true;
