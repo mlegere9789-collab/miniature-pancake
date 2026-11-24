@@ -1,0 +1,2 @@
+SECTIONS=B2S SBL OPS OSE SR BASE
+FILTERS=Boolean;Sealed;TestBoolean;Sphere
