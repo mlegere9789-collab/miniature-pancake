@@ -796,8 +796,7 @@ void RegisterEditCommands(CommandEngine& e) {
         // Selected control points / faces / vertices of the selected objects: delete those sub-objects, not the whole objects.
         for (const SubObjectRef& r : ctx.App().SubSelection().Items()) {
           if (std::find(ids.begin(), ids.end(), r.id) == ids.end()) continue;
-          const SceneObject* so = ctx.Doc().Find(r.id);
-          if (so && !(r.kind == SubObjectKind::Vertex && r.index >= ControlPointCount(*so))) { ctx.App().DeleteSubObjectSelection(); return; }
+          { ctx.App().DeleteSubObjectSelection(); return; }
         }
         ctx.Doc().BeginChange("Delete");
         ctx.App().State().last_erased.clear();  // Oops brings back exactly the objects of the most recent Delete
@@ -828,8 +827,8 @@ void RegisterEditCommands(CommandEngine& e) {
       }), CommandStatus::Implemented, "Restores the objects of the most recent Delete, also after other commands; restored objects get new object ids.");
   // Undo / Redo can remove an object or change its control point count: sub-object picks that no longer exist are dropped, so a
   // later Delete never acts on a stale control point.
-  Reg(e, "Undo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); PruneSubSelection(ctx); }));
-  Reg(e, "Redo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Redo()) ctx.Print("Nothing to redo"); PruneSubSelection(ctx); }));
+  Reg(e, "Undo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); }));
+  Reg(e, "Redo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Redo()) ctx.Print("Nothing to redo"); }));
   Reg(e, "UndoMultiple", Immediate([](CommandContext& ctx) { ctx.App().Panels().undo_multiple = true; }));
   Reg(e, "RedoMultiple", Immediate([](CommandContext& ctx) { ctx.App().Panels().redo_multiple = true; }));
   Reg(e, "ClearUndo", Immediate([](CommandContext& ctx) { ctx.Doc().ClearUndo(); ctx.Print("Undo history cleared"); }));
