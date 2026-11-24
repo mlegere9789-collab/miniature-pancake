@@ -1,0 +1,2 @@
+SECTIONS=
+FILTERS=OracleRhino;Fillet;Chamfer;Boolean;Offset;Exact;Tangent;Coaxial;BoxUnionSphere
