@@ -145,8 +145,29 @@ Export @T@/ell.dxf
 
     def chk(d, log):
         f = d + '/ell.dxf'
+        el = entities(f, 'ELLIPSE')
         sp = entities(f, 'SPLINE')
-        check(len(sp) == 2, 'ELL_1: two ellipses give two SPLINE entities (found %d)' % len(sp))
+        check(len(el) + len(sp) == 2, 'ELL_1: two ellipses give two entities, ELLIPSE or its exact rational SPLINE form (found %d ELLIPSE, %d SPLINE)' % (len(el), len(sp)))
+        # first ellipse: the axis end (13,20) is 3 from the centre (10,20) along +x and the pick (10,22) is 2 from the first axis: a=3, b=2
+        # second: (3,4) from the centre (0,-50) has length 5 and direction (0.6,0.8); the pick (-1.5,2) from the centre lies at distance
+        # |(-1.5,2) x (0.6,0.8)| = |-1.5*0.8 - 2*0.6| = 2.4 from the first axis: a=5, b=2.4
+        want = [((10, 20), 3.0, 2.0, 1.0, 0.0), ((0, -50), 5.0, 2.4, 0.6, 0.8)]
+        if el:
+            # DXF ELLIPSE: group 10 centre, 11 end of the major axis relative to the centre, 40 ratio minor/major, 41/42 start/end parameter
+            for (cx, cy), a, b, ux, uy in want:
+                hit = None
+                for r in el:
+                    if close(gf(r, 10), cx, 1e-8) and close(gf(r, 20), cy, 1e-8):
+                        hit = r
+                ok = False
+                if hit is not None:
+                    mx, my = gf(hit, 11), gf(hit, 21)
+                    major = math.hypot(mx, my)
+                    parallel = abs(mx * uy - my * ux) < 1e-8 * max(1.0, major)
+                    ok = close(major, a, 1e-8) and parallel and close(gf(hit, 40) * major, b, 1e-8) and close(gf(hit, 41) or 0.0, 0.0, 1e-9) and close(gf(hit, 42), 2 * math.pi, 1e-8)
+                check(ok, 'ELL_%s: the ellipse about (%g,%g) has a major semi-axis %g along (%g,%g), minor semi-axis %g (ratio %g) and runs the full 0..2 pi' % ('2' if a == 3.0 else '4', cx, cy, a, ux, uy, b, b / a))
+                check(ok and abs(math.pi * major * gf(hit, 40) * major - math.pi * a * b) < 1e-8, 'ELL_%sa: its area pi a b = %.6f' % ('2' if a == 3.0 else '4', math.pi * a * b))
+            return
 
         def fit(rec, cx, cy, a, b, ux, uy, tag):
             n = 2000
@@ -164,9 +185,6 @@ Export @T@/ell.dxf
             area = abs(area) / 2
             check(abs(area - math.pi * a * b) < 1e-4, 'ELL_%s: its area is pi a b = %.6f (polygon of 2000 samples gives %.6f, bound 1e-4 = the inscribed-polygon deficit)' % (tag + 'a', math.pi * a * b, area))
 
-        # first ellipse: the axis end (13,20) is 3 from the centre (10,20) along +x and the pick (10,22) is 2 from the first axis: a=3, b=2
-        # second: (3,4) from the centre (0,-50) has length 5 and direction (0.6,0.8); the pick (-1.5,2) from the centre lies at distance
-        # |(-1.5,2) x (0.6,0.8)| = |-1.5*0.8 - 2*0.6| = 2.4 from the first axis: a=5, b=2.4
         for r in sp:
             c0 = spline_points(r, 4)[0]
             if abs(c0[1] - 20) < 1.5 and abs(c0[0] - 10) < 4:
@@ -770,6 +788,28 @@ Export @T@/f3d.dxf
         check(has_face([(0, 0, 0), (10, 0, 0), (10, 10, 5), (0, 10, 5)]), 'F3D_2: the planar quad keeps its four corners (0,0,0) (10,0,0) (10,10,5) (0,10,5)')
         check(has_face([(20, 0, 0), (30, 0, 0), (30, 10, 9), (20, 10, 2)]), 'F3D_3: the non-planar quad keeps its four corners (z = 0, 0, 9, 2)')
         check(has_face([(40, 0, 0), (50, 0, 0), (50, 10, 3), (50, 10, 3)]), 'F3D_4: three corners then Enter make a triangle: the fourth corner repeats the third (DXF 3DFACE)')
+    return s, chk
+
+
+# DRAW-0056 About Circles: centre-radius and three-point circles ----------------------------------------------------------------------------
+# Three points fix the circumscribed circle: (0,0),(4,0),(0,3) is a right triangle, so the hypotenuse (4,0)-(0,3) of length 5 is a diameter:
+# centre = its midpoint (2,1.5), radius 2.5. (100,0),(110,0),(105,5): the chord (100,0)-(110,0) has its perpendicular bisector x = 105 and
+# |(105,y) - (100,0)| = |(105,y) - (105,5)| gives y = 0, radius 5.
+@case('circles')
+def circles():
+    s = PRE + """Circle 5,5,0 2.5
+Circle 3Point 0,0,0 4,0,0 0,3,0
+Circle 3P 100,0,0 110,0,0 105,5,0
+SelAll
+Export @T@/ci3.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/ci3.dxf'
+        check(R.has_circle(f, 5, 5, 2.5), 'CI3_1: Circle centre (5,5) radius 2.5')
+        check(R.has_circle(f, 2, 1.5, 2.5), 'CI3_2: Circle 3Point through (0,0), (4,0), (0,3) has centre (2,1.5) and radius 2.5 (Thales: the hypotenuse is a diameter)')
+        check(R.has_circle(f, 105, 0, 5), 'CI3_3: Circle 3P through (100,0), (110,0), (105,5) has centre (105,0) and radius 5')
+        check(len(entities(f, 'CIRCLE')) == 3, 'CI3_4: exactly three circles (found %d)' % len(entities(f, 'CIRCLE')))
     return s, chk
 
 
