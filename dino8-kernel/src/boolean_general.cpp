@@ -9380,6 +9380,58 @@ int CollapseSliverNakedEdges(Brep& brep, double tolerance) {
     if (const ON_Surface* srf = b.m_F[L.m_fi].SurfaceOf()) {
       if (srf->PointAt(p_end.x, p_end.y).DistanceTo(srf->PointAt(n_start.x, n_start.y)) > 3.0 * tolerance) continue;
     }
+    // A sliver on a singular side (a sphere's pole line: every u is the same 3D point, so the two neighbours legitimately arrive at the pole at
+    // DIFFERENT u) must not have its neighbours' 2D ends dragged to their 2D midpoint: that turns the seam trim leaving the pole into a diagonal and
+    // the result is an invalid ON_Brep (m_type = seam but m_iso is not N/E/W/S_iso). The neighbours keep their own u and are clamped onto the pole
+    // line instead; the sliver itself becomes the singular trim bridging them (no edge, both ends one vertex).
+    int pole_side = -1;
+    double pole_v = 0.0;
+    if (const ON_Surface* srf = b.m_F[L.m_fi].SurfaceOf()) {
+      const ON_Interval dv = srf->Domain(1);
+      for (const int side : {0, 2}) {
+        if (!srf->IsSingular(side)) continue;
+        const double vside = side == 0 ? dv.Min() : dv.Max();
+        const ON_3dPoint pole = srf->PointAt(srf->Domain(0).Min(), vside);
+        const double near_v = 0.05 * dv.Length();
+        if (std::fabs(p_end.y - vside) <= near_v && std::fabs(n_start.y - vside) <= near_v &&
+            srf->PointAt(p_end.x, p_end.y).DistanceTo(pole) <= 3.0 * tolerance && srf->PointAt(n_start.x, n_start.y).DistanceTo(pole) <= 3.0 * tolerance) {
+          pole_side = side;
+          pole_v = vside;
+          break;
+        }
+      }
+    }
+    if (pole_side >= 0) {
+      ON_Curve* tc = const_cast<ON_Curve*>(t.TrimCurveOf());
+      if (!tc) continue;
+      const ON_3dPoint a_pole(p_end.x, pole_v, 0.0), b_pole(n_start.x, pole_v, 0.0);
+      if (!pc->SetEndPoint(a_pole)) continue;
+      if (!nc->SetStartPoint(b_pole)) {
+        pc->SetEndPoint(p_end);
+        continue;
+      }
+      if (!tc->SetStartPoint(a_pole) || !tc->SetEndPoint(b_pole)) {
+        pc->SetEndPoint(p_end);
+        nc->SetStartPoint(n_start);
+        continue;
+      }
+      const int va = e.m_vi[0], vb = e.m_vi[1];
+      e.m_ti.SetCount(0);  // detach first: ON_Brep::DeleteEdge would otherwise take the trims of the edge with it
+      t.m_ei = -1;
+      b.DeleteEdge(e, false);
+      if (va >= 0 && vb >= 0 && va != vb) b.CombineCoincidentVertices(b.m_V[va], b.m_V[vb]);
+      const int vkeep = va >= 0 ? va : vb;
+      t.m_type = ON_BrepTrim::singular;
+      t.m_iso = pole_side == 0 ? ON_Surface::S_iso : ON_Surface::N_iso;
+      t.m_bRev3d = false;
+      t.m_vi[0] = t.m_vi[1] = vkeep;
+      touched_faces.push_back(L.m_fi);
+      touched_vertices.push_back(vkeep);
+      touched_edges.push_back(b.m_T[prev_ti].m_ei);
+      touched_edges.push_back(b.m_T[next_ti].m_ei);
+      ++collapsed;
+      continue;
+    }
     const ON_3dPoint mid = 0.5 * (p_end + n_start);
     if (!pc->SetEndPoint(mid)) continue;
     if (!nc->SetStartPoint(mid)) {
