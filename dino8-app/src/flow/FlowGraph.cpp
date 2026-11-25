@@ -756,29 +756,34 @@ bool Graph::FromJson(const std::string& text, std::string& error, bool merge, fl
   return true;
 }
 
-// Rotate and Polar Array used to take their Angle in degrees (Rotate default 45, Polar Array default 360) and Linear Array took
+// Rotate, Polar Array and Arc used to take their angles in degrees (Rotate default 45, Polar Array default 360, Arc End Angle default 90) and Linear Array took
 // its spacing from a Distance input (default 5) applied to the unitized Direction. They now take radians and the length of
 // Direction. A "dflow1" file means the old meanings, so on load: a typed Angle is converted to radians; an Angle driven by a
 // wire gets a Radians node (degrees -> radians) put in the wire; an unset Linear Array Distance becomes the old default 5
-// (which, being given, still unitizes the direction). The defaults of the angles need no change (45 degrees = pi / 4, 360 = 2 pi).
+// (which, being given, still unitizes the direction). The defaults of the angles need no change (45 degrees = pi / 4, 360 = 2 pi, the Arc end 90 = pi / 2, the Arc start 0).
 void Graph::MigrateDflow1(const std::vector<NodeId>& ids) {
   for (NodeId id : ids) {
     Node* n = Find(id);
     if (!n) continue;
-    int angle_port = -1;
-    if (n->type == "Rotate") angle_port = 1;
-    else if (n->type == "Polar Array") angle_port = 3;
-    if (angle_port >= 0 && angle_port < static_cast<int>(n->inputs.size())) {
-      if (const Wire* w = WireInto(id, angle_port)) {
-        const Wire old = *w;
-        if (Node* r = Add("Radians", n->x - 150.0f, n->y + 18.0f * static_cast<float>(angle_port))) {
-          if (Connect(old.from, old.from_port, r->id, 0)) Connect(r->id, 0, id, angle_port);
-          else Remove(r->id);
+    // The input ports that held an angle in degrees: Rotate (Angle), Polar Array (Angle), Arc (Start Angle, End Angle).
+    std::vector<int> angle_ports;
+    if (n->type == "Rotate") angle_ports = {1};
+    else if (n->type == "Polar Array") angle_ports = {3};
+    else if (n->type == "Arc") angle_ports = {2, 3};
+    if (!angle_ports.empty()) {
+      for (int angle_port : angle_ports) {
+        if (angle_port >= static_cast<int>(n->inputs.size())) continue;
+        if (const Wire* w = WireInto(id, angle_port)) {
+          const Wire old = *w;
+          if (Node* r = Add("Radians", n->x - 150.0f, n->y + 18.0f * static_cast<float>(angle_port))) {
+            if (Connect(old.from, old.from_port, r->id, 0)) Connect(r->id, 0, id, angle_port);
+            else Remove(r->id);
+          }
+        } else if (n->inputs[static_cast<size_t>(angle_port)].has_user_value) {
+          Value& v = n->inputs[static_cast<size_t>(angle_port)].user_value;
+          double deg;
+          if (v.AsNumber(deg)) v = Value::Number(deg * 3.14159265358979323846 / 180.0);
         }
-      } else if (n->inputs[static_cast<size_t>(angle_port)].has_user_value) {
-        Value& v = n->inputs[static_cast<size_t>(angle_port)].user_value;
-        double deg;
-        if (v.AsNumber(deg)) v = Value::Number(deg * 3.14159265358979323846 / 180.0);
       }
     } else if (n->type == "Linear Array" && n->inputs.size() > 2) {
       Port& dist = n->inputs[2];

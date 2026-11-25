@@ -94,13 +94,13 @@ class T:
         self.g.wire(src, port, ln, 0)
         self.val(ln, 0, n, "%s: a value is there" % msg)
 
-    def exact(self, src, port, c, msg, check=True):
+    def exact(self, src, port, c, msg, check=True, scale=1e12):
         self.used_exact = True
         if c == 0 and check:
             self.present(src, port, msg)
         t = self._next()
         g = self.g
-        rm = g.node("Remap Numbers", None, float(c), float(c) + 1.0, 0.0, 1e12)
+        rm = g.node("Remap Numbers", None, float(c), float(c) + 1.0, 0.0, float(scale))
         g.wire(src, port, rm, 0)
         ro = g.node("Round To Multiple", None, 1.0)
         g.wire(rm, 0, ro, 0)
@@ -666,7 +666,7 @@ def make_rows():
         direction. Loading one must keep it doing what it did: typed angles become radians, an angle driven by a wire gets a
         Radians node (degrees -> radians) put in the wire, an unset Linear Array Distance becomes the old 5. The expected values
         below are what the OLD meanings give, worked out in degrees; the "dflow2" sections GHXROT, GHXPOLARR and GHXLINARR
-        carry the new meanings of the same nodes, so a migration applied to every file would fail them."""
+        (and the Arc sections of flowgeo_gen.py, whose graphs are written as dflow2) carry the new meanings of the same nodes, so a migration applied to every file would fail them."""
         g = t.g
         g.FORMAT = "dflow1"
 
@@ -689,14 +689,33 @@ def make_rows():
         p3 = g.node("Polar Array", None, None, ("i", 2)); g.wire(t.pt(1, 0, 0), 0, p3, 0); g.wire(series(g, 180, 0, 1), 0, p3, 3)
         t.extra_nodes += 1
         at(p3, 1, (0.0, 1.0, 0.0), "legacy Polar Array, Angle wired from a node giving 180, 2 copies: the second at 90 degrees (a Radians node is put in the wire)")
+        # Arc: Start Angle and End Angle were degrees (defaults 0 and 90). The ends of the arc are read with End Points.
+        def arc_ends(a, s, e, msg):
+            ep = g.node("End Points"); g.wire(a, 0, ep, 0)
+            t.comps(ep, s, msg + ": starts", port=0)
+            t.comps(ep, e, msg + ": ends", port=1)
+        a1 = g.node("Arc", None, 2.0, 0.0, 90.0)
+        arc_ends(a1, (2.0, 0.0, 0.0), (0.0, 2.0, 0.0), "legacy Arc of radius 2, typed Start 0 and End 90 (degrees)")
+        a2 = g.node("Arc", None, 1.0, None, 180.0); g.wire(series(g, 90, 0, 1), 0, a2, 2)
+        t.extra_nodes += 1
+        arc_ends(a2, (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), "legacy Arc of radius 1, Start Angle wired from a node giving 90, typed End 180 (a Radians node is put in the wire)")
+        a3 = g.node("Arc", None, 3.0)
+        arc_ends(a3, (3.0, 0.0, 0.0), (0.0, 3.0, 0.0), "legacy Arc of radius 3 with no angle typed (the old defaults 0 and 90 degrees)")
+        a4 = g.node("Arc", None, 2.0, 90.0); g.wire(series(g, 180, 0, 1), 0, a4, 3)
+        t.extra_nodes += 1
+        arc_ends(a4, (0.0, 2.0, 0.0), (-2.0, 0.0, 0.0), "legacy Arc of radius 2, typed Start 90, End Angle wired from a node giving 180 (a Radians node is put in the wire)")
+        a5 = g.node("Arc", None, 1.0, 0.0, 360.0)
+        ln5 = g.node("Curve Length"); g.wire(a5, 0, ln5, 0)
+        # the curve length is computed to 1e-10, so this one comparison is made to 5e-7 (the legacy reading 0 to 360 radians has length 360)
+        t.exact(ln5, 0, 2 * PI, "legacy Arc of radius 1 from 0 to 360 (degrees) is a full circle: length 2 pi (to 5e-7)", scale=1e6)
         l1 = g.node("Linear Array", None, None, None, ("i", 3)); g.wire(t.pt(0, 0, 0), 0, l1, 0); g.wire(t.vec(0, 0, 2), 0, l1, 1)
         d1 = g.node("Deconstruct Point"); g.wire(l1, 0, d1, 0)
         t.val(d1, 2, "0 5 10", "legacy Linear Array with no Distance typed: the old default 5 on the unitized direction (0,0,2): Z = 0, 5, 10 (not 0, 2, 4)")
         l2 = g.node("Linear Array", None, None, 3.0, ("i", 3)); g.wire(t.pt(0, 0, 0), 0, l2, 0); g.wire(t.vec(0, 0, 2), 0, l2, 1)
         d2 = g.node("Deconstruct Point"); g.wire(l2, 0, d2, 0)
         t.val(d2, 2, "0 3 6", "legacy Linear Array with a typed Distance 3: Z = 0, 3, 6")
-    row("ghxmigrate", "D8-GH-XFORM-0008, D8-GH-XFORM-0015, D8-GH-XFORM-0017", "Rotate, Linear Array, Polar Array: migration of dflow1 files",
-        "an older file ('format' dflow1) keeps its old meanings: Rotate typed 90 is a quarter turn (0,1,0); Rotate untyped is 45 degrees (sqrt 2 / 2, sqrt 2 / 2); a Rotate angle wired from a node giving 45 is 45 degrees; Polar Array typed 180 with 3 copies at 0, 60, 120 degrees; untyped it is a full circle (quarter turns for 4 copies); an angle wired from a node giving 180 with 2 copies puts the second at 90 degrees; Linear Array without a Distance spaces 5 apart along the unitized direction (Z = 0 5 10), with Distance 3 Z = 0 3 6", b_migrate)
+    row("ghxmigrate", "D8-GH-XFORM-0008, D8-GH-XFORM-0015, D8-GH-XFORM-0017", "Rotate, Linear Array, Polar Array, Arc: migration of dflow1 files",
+        "an older file ('format' dflow1) keeps its old meanings: Rotate typed 90 is a quarter turn (0,1,0); Rotate untyped is 45 degrees (sqrt 2 / 2, sqrt 2 / 2); a Rotate angle wired from a node giving 45 is 45 degrees; Polar Array typed 180 with 3 copies at 0, 60, 120 degrees; untyped it is a full circle (quarter turns for 4 copies); an angle wired from a node giving 180 with 2 copies puts the second at 90 degrees; Linear Array without a Distance spaces 5 apart along the unitized direction (Z = 0 5 10), with Distance 3 Z = 0 3 6; Arc: radius 2 typed 0 and 90 runs from (2,0,0) to (0,2,0); Start Angle wired from a node giving 90 with End 180 and radius 1 runs from (0,1,0) to (-1,0,0); End Angle wired from a node giving 180 with Start 90 and radius 2 runs from (0,2,0) to (-2,0,0); radius 3 with no angle typed runs from (3,0,0) to (0,3,0) (the old defaults 0 and 90 degrees); radius 1 from 0 to 360 has length 2 pi", b_migrate)
 
     # ================================================================ Sets > Tree
     def b_stats(t):

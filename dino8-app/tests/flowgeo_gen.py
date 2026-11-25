@@ -913,6 +913,10 @@ def rows():
 def main():
     for r in rows():
         g = r.g
+        # an Arc takes its angles in radians in this build; a "dflow1" file is migrated on load as if its Arc angles were degrees,
+        # so a graph that holds an Arc and carries radians is written with the current format tag
+        if any(n["type"] == "Arc" for n in g.nodes):
+            g.FORMAT = "dflow2"
         nobj = sum(len(vals.split()) if vals else 0 for _tag, vals, _msg in r.exp)
         with open(os.path.join(HERE, "flowgeo_%s.dflow" % r.name), "w") as f:
             f.write(g.text())
