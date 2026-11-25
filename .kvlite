@@ -1,0 +1,2 @@
+SECTIONS=UXVIEW
+FILTERS=extra::Su;PushPullFace;FoldFace;MoveEdgeConvex;MergeCoplanar;UnifyNormals;ArrayBrep;OffsetInPlane;ExtrudeFaceWelded
