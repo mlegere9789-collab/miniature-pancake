@@ -17,6 +17,7 @@
 //   glazing 78400 (sum 297664); by system: structure 180264, envelope 117400; by element: e1 147000, e2 33264, e3 39000, e4 78400.
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <iomanip>
 #include <locale>
 #include <map>
