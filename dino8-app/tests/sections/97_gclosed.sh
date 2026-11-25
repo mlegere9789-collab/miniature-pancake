@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # GCLOSED_: Flow Register row D8-GH-CURVE-0016 (Is Closed), flowgeo_gen.py. The graph flowgeo_gclosed.dflow bakes one point per value under test (X = value,
-# Y = case tag) and the section reads them back in baking order. Hand-computed oracle: closed: a circle, a rectangle, a polygon, a circle through three points, a polyline given Closed = true; open: a line, a 90 degree arc, a polyline of three vertices, a cubic NURBS curve through 4 control points; a NURBS curve given Closed = true repeats its first control point and closes.
+# Y = case tag) and the section reads them back in baking order. Hand-computed oracle: closed: a circle, a rectangle, a polygon, a circle through three points, a polyline given Closed = true; open: a line, a quarter-circle arc, a polyline of three vertices, a cubic NURBS curve through 4 control points; a NURBS curve given Closed = true repeats its first control point and closes.
 # ---------------------------------------------------------------------------
 sed "s|@GRAPH@|$HEREW/flowgeo_gclosed.dflow|g" "$HERE/flowgeo_gclosed_script.txt" > "$TMPW/flowgeo_gclosed_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -24,8 +24,8 @@ fr_chk 5 "1" "closed polyline: Is Closed = 1"
 fr_chk 6 "1" "NURBS curve with Closed = true: Is Closed = 1"
 fr_chk 7 "0" "line: Is Closed = 0"
 fr_chk 8 "1" "line: Is Closed = 0 (the node under test produced the value)"
-fr_chk 9 "0" "90 degree arc: Is Closed = 0"
-fr_chk 10 "1" "90 degree arc: Is Closed = 0 (the node under test produced the value)"
+fr_chk 9 "0" "quarter-circle arc: Is Closed = 0"
+fr_chk 10 "1" "quarter-circle arc: Is Closed = 0 (the node under test produced the value)"
 fr_chk 11 "0" "open polyline: Is Closed = 0"
 fr_chk 12 "1" "open polyline: Is Closed = 0 (the node under test produced the value)"
 fr_chk 13 "0" "cubic NURBS curve: Is Closed = 0"

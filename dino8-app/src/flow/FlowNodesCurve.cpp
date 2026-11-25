@@ -169,22 +169,25 @@ void AddCurve() {
   }
   {
     NodeDef d; d.name = "Arc"; d.nick = "Arc"; d.category = "Curve"; d.subcategory = "Primitive";
+    d.description = "An arc of a circle in a plane about the plane origin, from Start Angle to End Angle in RADIANS, counter-clockwise from the plane's X axis. The curve's parameter domain is that angle interval.";
     d.inputs = {In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{})), In("Radius", Kind::Number, Access::Item, Value::Number(5)),
-                In("Start Angle", Kind::Number, Access::Item, Value::Number(0)), In("End Angle", Kind::Number, Access::Item, Value::Number(90))};
+                In("Start Angle", Kind::Number, Access::Item, Value::Number(0)), In("End Angle", Kind::Number, Access::Item, Value::Number(ON_PI / 2.0))};
     d.outputs = {Out("Arc", Kind::Curve)};
     d.eval = [](EvalContext& c) {
-      c.Out(0, Value::Curve(ArcCurve(c.PlaneIn(0), std::max(1e-6, c.Num(1, 5)), c.Num(2) * ON_PI / 180.0, c.Num(3, 90) * ON_PI / 180.0)));
+      c.Out(0, Value::Curve(ArcCurve(c.PlaneIn(0), std::max(1e-6, c.Num(1, 5)), c.Num(2), c.Num(3, ON_PI / 2.0))));
     };
     r.Add(d);
   }
   {
     NodeDef d; d.name = "Rectangle"; d.nick = "Rec"; d.category = "Curve"; d.subcategory = "Primitive";
+    d.description = "A rectangle in a plane, centred on the plane origin: X Size along the plane's X axis, Y Size along its Y axis. The corners run counter-clockwise from (-X/2, -Y/2).";
     d.inputs = {In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{})), In("X Size", Kind::Number, Access::Item, Value::Number(10)), In("Y Size", Kind::Number, Access::Item, Value::Number(10))};
     d.outputs = {Out("Rectangle", Kind::Curve)};
     d.eval = [](EvalContext& c) {
       Plane pl = c.PlaneIn(0);
       const double sx = c.Num(1, 10), sy = c.Num(2, 10);
-      std::vector<Point3d> pts = {pl.At(0, 0), pl.At(sx, 0), pl.At(sx, sy), pl.At(0, sy)};
+      const double hx = 0.5 * sx, hy = 0.5 * sy;
+      std::vector<Point3d> pts = {pl.At(-hx, -hy), pl.At(hx, -hy), pl.At(hx, hy), pl.At(-hx, hy)};
       c.Out(0, Value::Curve(PolylineCurveOf(pts, true)));
     };
     r.Add(d);
@@ -227,15 +230,17 @@ void AddCurve() {
   }
   {
     NodeDef d; d.name = "Evaluate Curve"; d.nick = "Eval"; d.category = "Curve"; d.subcategory = "Analysis";
-    d.inputs = {In("Curve", Kind::Curve), In("t", Kind::Number, Access::Item, Value::Number(0.5))};
-    d.outputs = {Out("Point", Kind::Point), Out("Tangent", Kind::Vector)};
+    d.description = "The point and unit tangent at the curve's own parameter t, clamped to the curve's domain (the domain midpoint when t is not given); Parameter is the value actually evaluated.";
+    d.inputs = {In("Curve", Kind::Curve), In("t", Kind::Number, Access::Item, Value::Null(), true)};
+    d.outputs = {Out("Point", Kind::Point), Out("Tangent", Kind::Vector), Out("Parameter", Kind::Number)};
     d.eval = [](EvalContext& c) {
       if (!c.In(0).curve) return;
       const auto& crv = *c.In(0).curve;
       const kernel::Interval dm = crv.Domain();
-      const double t = dm.min + (dm.max - dm.min) * std::clamp(c.Num(1, 0.5), 0.0, 1.0);
+      const double t = c.Has(1) ? std::clamp(c.Num(1), dm.min, dm.max) : 0.5 * (dm.min + dm.max);
       c.Out(0, Value::Point(crv.PointAt(t)));
       c.Out(1, Value::Vector(crv.TangentAt(t)));
+      c.Out(2, Value::Number(t));
     };
     r.Add(d);
   }
@@ -465,16 +470,28 @@ void AddCurve() {
   }
   {
     NodeDef d; d.name = "Curve Curvature"; d.nick = "Crv"; d.category = "Curve"; d.subcategory = "Analysis";
-    d.description = "Curvature vector at the normalized parameter t (0 start .. 1 end): points to the centre of curvature, length 1/radius.";
-    d.inputs = {In("Curve", Kind::Curve), In("t", Kind::Number, Access::Item, Value::Number(0.5))};
-    d.outputs = {Out("Point", Kind::Point), Out("Curvature", Kind::Vector)};
+    d.description = "Curvature at the curve's own parameter t (clamped to the domain; the domain midpoint when t is not given): the point, the curvature vector (towards the centre of curvature, length 1/radius) and the osculating circle (centre = point + vector / |vector|^2, radius 1/|vector|, in the plane of the tangent and the vector, counter-clockwise from the point). A straight stretch has a zero vector and no circle.";
+    d.inputs = {In("Curve", Kind::Curve), In("t", Kind::Number, Access::Item, Value::Null(), true)};
+    d.outputs = {Out("Point", Kind::Point), Out("Curvature", Kind::Vector), Out("Circle", Kind::Curve)};
     d.eval = [](EvalContext& c) {
       if (!c.In(0).curve) return;
       const auto& crv = *c.In(0).curve;
       const kernel::Interval dm = crv.Domain();
-      const double t = dm.min + (dm.max - dm.min) * std::clamp(c.Num(1, 0.5), 0.0, 1.0);
-      c.Out(0, Value::Point(crv.PointAt(t)));
-      c.Out(1, Value::Vector(crv.CurvatureAt(t)));
+      const double t = c.Has(1) ? std::clamp(c.Num(1), dm.min, dm.max) : 0.5 * (dm.min + dm.max);
+      const Point3d p = crv.PointAt(t);
+      const Vector3d k = crv.CurvatureAt(t);
+      c.Out(0, Value::Point(p));
+      c.Out(1, Value::Vector(k));
+      const double kl = k.Length();
+      if (!(kl > 1e-12)) { c.Warn("Zero curvature here: no osculating circle"); return; }
+      const double rad = 1.0 / kl;
+      Vector3d x = k * (-1.0 / kl);                    // from the centre to the point
+      Vector3d y = crv.TangentAt(t);
+      y = y - x * ON_DotProduct(y, x);                 // the tangent is perpendicular to the curvature vector; clean up rounding
+      if (!(y.Length() > 1e-12)) return;
+      y.Unitize();
+      Plane pl; pl.origin = p + k * (rad * rad); pl.x = x; pl.y = y;
+      c.Out(2, Value::Curve(CircleCurve(pl, rad)));
     };
     r.Add(d);
   }
@@ -583,13 +600,14 @@ void AddCurve() {
   }
   {
     NodeDef d; d.name = "Polygon"; d.nick = "Pgon"; d.category = "Curve"; d.subcategory = "Primitive";
-    d.description = "A regular polygon in a plane, its corners on the circle of the given radius around the plane origin, the first on the plane's X axis, counter-clockwise about the normal.";
-    d.inputs = {In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{})), In("Radius", Kind::Number, Access::Item, Value::Number(5)), In("Segments", Kind::Integer, Access::Item, Value::Integer(6))};
+    d.description = "A regular polygon in a plane, its corners on the circle of the given radius around the plane origin, the first on the plane's X axis, counter-clockwise about the normal. When Edge Length is given it sets the size instead (radius = edge / (2 sin(pi / segments))).";
+    d.inputs = {In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{})), In("Radius", Kind::Number, Access::Item, Value::Number(5)), In("Segments", Kind::Integer, Access::Item, Value::Integer(6)),
+                In("Edge Length", Kind::Number, Access::Item, Value::Null(), true)};
     d.outputs = {Out("Polygon", Kind::Curve)};
     d.eval = [](EvalContext& c) {
       const int n = std::clamp(c.Int(2, 6), 3, 10000);
       const ON_Plane pl = c.PlaneIn(0).ToON();
-      const double rad = std::fabs(c.Num(1, 5));
+      const double rad = (c.Has(3) && c.Num(3) != 0.0) ? std::fabs(c.Num(3)) / (2.0 * std::sin(ON_PI / n)) : std::fabs(c.Num(1, 5));
       std::vector<Point3d> pts;
       for (int k = 0; k < n; ++k) { const double a = 2.0 * ON_PI * k / n; pts.push_back(pl.PointAt(rad * std::cos(a), rad * std::sin(a))); }
       c.Out(0, Value::Curve(PolylineCurveOf(pts, true)));

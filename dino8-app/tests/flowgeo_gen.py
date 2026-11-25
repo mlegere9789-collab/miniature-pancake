@@ -194,8 +194,8 @@ def rows():
         r.pt(ep, 1, b, "the end of the line is the end point given %s" % (b,))
         if first is None:
             first = (cl, 5.0)
-            ev = N(g, "Evaluate Curve", W(ln), 0.5)
-            r.pt(ev, 0, (1.5, 2.0, 0.0), "the middle of (0,0,0)->(3,4,0) is (1.5,2,0)")
+            ev = N(g, "Evaluate Curve", W(ln))
+            r.pt(ev, 0, (1.5, 2.0, 0.0), "the middle of (0,0,0)->(3,4,0) (t not given: the domain midpoint) is (1.5,2,0)")
             r.pt(ev, 1, (0.6, 0.8, 0.0), "its unit tangent is (0.6,0.8,0)")
     r.finish(decoy=(first[0], 0, first[1]))
     out.append(r)
@@ -233,8 +233,8 @@ def rows():
     r.pt(z0, 1, (1, 2, 3), "and its end")
     pl = XYPL(g, (1, 2, 3))
     ci = N(g, "Circle", W(pl), 2.0)
-    for tt, xyz, msg in [(0.0, (3, 2, 3), "the start of the circle of radius 2 at (1,2,3) is (3,2,3)"), (0.25, (1, 4, 3), "a quarter of the way round is (1,4,3)"),
-                         (0.5, (-1, 2, 3), "half way round is (-1,2,3)"), (0.75, (1, 0, 3), "three quarters of the way round is (1,0,3)")]:
+    for tt, xyz, msg in [(0.0, (3, 2, 3), "the start of the circle of radius 2 at (1,2,3) is (3,2,3)"), (PI / 2, (1, 4, 3), "at t = pi/2 (a quarter of the way round) it is (1,4,3)"),
+                         (PI, (-1, 2, 3), "at t = pi (half way round) it is (-1,2,3)"), (1.5 * PI, (1, 0, 3), "at t = 3 pi/2 (three quarters of the way round) it is (1,0,3)")]:
         ev = N(g, "Evaluate Curve", W(ci), float(tt))
         r.pt(ev, 0, xyz, msg)
     til = N(g, "Circle", W(PLN(g, (1, 2, 3), (1, 1, 1))), 2.0)
@@ -246,7 +246,7 @@ def rows():
     out.append(r)
 
     r = Row("glen", "D8-GH-CURVE-0020", "Curve Length",
-            "circle r = 1: 2 pi; r = 2.5: 5 pi; r = 10: 20 pi (within 1e-9, where the 400-chord sum was short by 6e-5 on r = 1); arc of radius 2 over 270 degrees: r * 3 pi / 2 = 3 pi; "
+            "circle r = 1: 2 pi; r = 2.5: 5 pi; r = 10: 20 pi (within 1e-9, where the 400-chord sum was short by 6e-5 on r = 1); arc of radius 2 from angle 0 to 3 pi/2 radians (270 degrees): r * 3 pi / 2 = 3 pi; "
             "line (0,0,0)-(3,4,0): 5; polyline (0,0,0),(6,0,0),(6,4,0),(0,4,0) closed: 6 + 4 + 6 + 4 = 20; a cubic curve whose four control points (0,0,0),(1,1,0),(5,5,0),(6,6,0) lie on one line is "
             "that segment: 6 sqrt 2 (a straight clamped curve between its end control points)")
     g = r.g
@@ -255,7 +255,7 @@ def rows():
         r.val(cl, 0, c, msg)
         if rad == 1.0:
             dec = (cl, 0, c)
-    r.val(N(g, "Curve Length", W(N(g, "Arc", None, 2.0, 0.0, 270.0))), 0, 3 * PI, "arc of radius 2 over 270 degrees: 3 pi")
+    r.val(N(g, "Curve Length", W(N(g, "Arc", None, 2.0, 0.0, 1.5 * PI))), 0, 3 * PI, "arc of radius 2 from 0 to 3 pi/2 radians: 3 pi")
     r.val(N(g, "Curve Length", W(N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 3, 4, 0))))), 0, 5.0, "line (0,0,0)-(3,4,0): 5")
     r.val(N(g, "Curve Length", W(POLY(g, [(0, 0, 0), (6, 0, 0), (6, 4, 0), (0, 4, 0)], True))), 0, 20.0, "closed rectangle polyline 6 x 4: 20")
     nb = N(g, "NURBS Curve", W(*PLIST(g, [(0, 0, 0), (1, 1, 0), (5, 5, 0), (6, 6, 0)])), ("i", 3), ("b", False))
@@ -274,7 +274,7 @@ def rows():
         r.val(cl, 0, 2 * PI * rad, "case %d: the length is 2 pi r" % (k + 1))
         if k == 0:
             dec = (cl, 0, 2 * PI * rad)
-        for tt in (0.0, 0.3):
+        for tt in (0.0, 1.9):
             ev = N(g, "Evaluate Curve", W(ci), float(tt))
             r.val(N(g, "Distance", W(ev, 0), W(pc)), 0, rad, "case %d, t = %g: the point is at distance r from the centre" % (k + 1, tt))
             rad_v = N(g, "Vector 2Pt", W(pc), W(ev, 0))
@@ -285,15 +285,16 @@ def rows():
     out.append(r)
 
     r = Row("garc", "D8-GH-CURVE-0045", "Arc",
-            "arc length r * (end - start) in radians: radius 2 from 30 to 120 degrees is 2 * pi/2 = pi, starting at 2 (cos 30, sin 30) = (sqrt 3, 1, 0) and ending at 2 (cos 120, sin 120) = (-1, sqrt 3, 0), "
-            "its point half way along at angle 75 degrees is (2 cos 75, 2 sin 75, 0); from 0 to 270 degrees (3 pi) it starts at (2,0,0), ends at (0,-2,0), half way is at 135 degrees: (-sqrt 2, sqrt 2, 0); "
-            "in the plane through (1,2,3) with axes (0,1,0) and (0,0,1) (normal (1,0,0)), radius 1.5 from 0 to 90 degrees starts at (1,3.5,3), ends at (1,2,4.5) and is 0.75 pi long")
+            "angles in RADIANS, counter-clockwise from the plane X axis, the curve's parameter domain being that angle interval: radius 2 from pi/6 to 2 pi/3 has the domain [pi/6, 2 pi/3], length 2 * pi/2 = pi, starts at "
+            "2 (cos pi/6, sin pi/6) = (sqrt 3, 1, 0), ends at 2 (cos 2 pi/3, sin 2 pi/3) = (-1, sqrt 3, 0) and half way along (angle 5 pi/12, 75 degrees) is (2 cos 75 degrees, 2 sin 75 degrees, 0); from 0 to 3 pi/2 it has the domain "
+            "[0, 3 pi/2], length 3 pi, starts at (2,0,0), ends at (0,-2,0), half way is at 3 pi/4: (-sqrt 2, sqrt 2, 0); in the plane through (1,2,3) with axes (0,1,0) and (0,0,1) (normal (1,0,0)), radius 1.5 from 0 to pi/2 "
+            "(domain [0, pi/2]) starts at (1,3.5,3), ends at (1,2,4.5) and is 0.75 pi long; without angles the arc runs from 0 to pi/2 (the defaults)")
     g = r.g
     d75 = math.radians(75.0)
     for k, (pl_, rad, a0, a1, length, st, en, mid) in enumerate([
-            (None, 2.0, 30.0, 120.0, PI, (SQ3, 1, 0), (-1, SQ3, 0), (2 * math.cos(d75), 2 * math.sin(d75), 0)),
-            (None, 2.0, 0.0, 270.0, 3 * PI, (2, 0, 0), (0, -2, 0), (-SQ2, SQ2, 0)),
-            (PLXY(g, (1, 2, 3), (0, 1, 0), (0, 0, 1)), 1.5, 0.0, 90.0, 0.75 * PI, (1, 3.5, 3), (1, 2, 4.5), (1, 2 + 1.5 * math.cos(math.radians(45)), 3 + 1.5 * math.sin(math.radians(45))))]):
+            (None, 2.0, PI / 6, 2 * PI / 3, PI, (SQ3, 1, 0), (-1, SQ3, 0), (2 * math.cos(d75), 2 * math.sin(d75), 0)),
+            (None, 2.0, 0.0, 1.5 * PI, 3 * PI, (2, 0, 0), (0, -2, 0), (-SQ2, SQ2, 0)),
+            (PLXY(g, (1, 2, 3), (0, 1, 0), (0, 0, 1)), 1.5, 0.0, PI / 2, 0.75 * PI, (1, 3.5, 3), (1, 2, 4.5), (1, 2 + 1.5 * math.cos(math.radians(45)), 3 + 1.5 * math.sin(math.radians(45))))]):
         ar = N(g, "Arc", W(pl_) if pl_ is not None else None, rad, a0, a1)
         cl = N(g, "Curve Length", W(ar))
         r.val(cl, 0, length, "arc %d: the length is r * angle = %.6g" % (k + 1, length))
@@ -304,6 +305,12 @@ def rows():
         r.pt(ep, 1, en, "arc %d: it ends at %s" % (k + 1, tuple(round(x, 6) for x in en)))
         el = N(g, "Evaluate Length", W(ar), 0.5, ("b", True))
         r.pt(el, 0, mid, "arc %d: the point half way along is %s" % (k + 1, tuple(round(x, 6) for x in mid)))
+        cp = N(g, "Control Points", W(ar))
+        r.val(N(g, "List Item", W(cp, 2), ("i", 0), ("b", False)), 0, a0, "arc %d: the parameter domain starts at the start angle %.6g" % (k + 1, a0))
+        r.val(N(g, "List Item", W(cp, 2), ("i", -1), ("b", True)), 0, a1, "arc %d: the parameter domain ends at the end angle %.6g" % (k + 1, a1))
+    dflt = N(g, "End Points", W(N(g, "Arc", None, 3.0)))
+    r.pt(dflt, 0, (3, 0, 0), "an arc with radius 3 and no angles starts at angle 0: (3,0,0)")
+    r.pt(dflt, 1, (0, 3, 0), "and ends at the default end angle pi/2: (0,3,0)")
     r.finish(decoy=dec)
     out.append(r)
 
@@ -387,16 +394,43 @@ def rows():
     out.append(r)
 
     r = Row("grec", "D8-GH-CURVE-0050", "Rectangle",
-            "a 6 x 4 rectangle has area 6 * 4 = 24 and perimeter 20; 3 x 7 in the plane through (0,0,0) with normal (1,2,2): area 21, perimeter 20; it is a closed curve")
+            "the rectangle is centred on the plane origin, X Size along the plane X axis and Y Size along its Y axis, corners counter-clockwise from (-X/2, -Y/2): 6 x 4 in the XY plane at the origin has the corners (-3,-2), (3,-2), (3,2), (-3,2); "
+            "in the plane through (1,2,3) with axes (0,1,0) and (0,0,1) the corners are origin + (+-3) (0,1,0) + (+-2) (0,0,1): (1,-1,1), (1,5,1), (1,5,5), (1,-1,5); area 24 and perimeter 20 in both; "
+            "3 x 7 in the plane through the origin with normal (1,2,2) has area 21, perimeter 20, the side from the first to the second corner 3 long (X Size) and from the first to the last 7 long (Y Size), the diagonal "
+            "sqrt(9 + 49) = sqrt 58, every corner sqrt(58)/2 from the origin and the area centroid at the origin; it is a closed curve with 4 corners (5 control points)")
     g = r.g
-    for k, (pl_, sx, sy) in enumerate([(None, 6.0, 4.0), (PLN(g, (0, 0, 0), (1, 2, 2)), 3.0, 7.0)]):
-        rc = N(g, "Rectangle", W(pl_) if pl_ is not None else None, sx, sy)
-        ar = N(g, "Curve Area", W(rc))
-        r.val(ar, 0, sx * sy, "case %d: %g x %g has area %g" % (k + 1, sx, sy, sx * sy))
-        if k == 0:
-            dec = (ar, 0, sx * sy)
-        r.val(N(g, "Curve Length", W(rc)), 0, 2 * (sx + sy), "case %d: perimeter %g" % (k + 1, 2 * (sx + sy)))
-        r.raw(N(g, "Is Closed", W(rc)), 0, "1", "case %d: the rectangle is a closed curve" % (k + 1))
+    rx = N(g, "Rectangle", None, 6.0, 4.0)
+    cpx = N(g, "Control Points", W(rx))
+    r.count(cpx, 0, 5, "6 x 4 at the origin: 4 corners and the closing point")
+    for k, c4 in enumerate([(-3, -2, 0), (3, -2, 0), (3, 2, 0), (-3, 2, 0)]):
+        r.pt(r.item(cpx, 0, k), 0, c4, "6 x 4 in the XY plane: corner %d is %s" % (k, c4))
+    ar = N(g, "Curve Area", W(rx))
+    r.val(ar, 0, 24.0, "6 x 4 has area 24")
+    dec = (ar, 0, 24.0)
+    r.pt(ar, 1, (0, 0, 0), "6 x 4 is centred on the plane origin")
+    r.val(N(g, "Curve Length", W(rx)), 0, 20.0, "6 x 4 has perimeter 20")
+    r.raw(N(g, "Is Closed", W(rx)), 0, "1", "6 x 4 is a closed curve")
+    ro = N(g, "Rectangle", W(PLXY(g, (1, 2, 3), (0, 1, 0), (0, 0, 1))), 6.0, 4.0)
+    cpo = N(g, "Control Points", W(ro))
+    for k, c4 in enumerate([(1, -1, 1), (1, 5, 1), (1, 5, 5), (1, -1, 5)]):
+        r.pt(r.item(cpo, 0, k), 0, c4, "6 x 4 in the plane at (1,2,3) with axes (0,1,0), (0,0,1): corner %d is %s" % (k, c4))
+    aro = N(g, "Curve Area", W(ro))
+    r.val(aro, 0, 24.0, "the same rectangle has area 24")
+    r.pt(aro, 1, (1, 2, 3), "and is centred on the plane origin (1,2,3)")
+    r.val(N(g, "Curve Length", W(ro)), 0, 20.0, "and perimeter 20")
+    rt = N(g, "Rectangle", W(PLN(g, (0, 0, 0), (1, 2, 2))), 3.0, 7.0)
+    cpt = N(g, "Control Points", W(rt))
+    c0, c1, c2, c3 = [r.item(cpt, 0, k) for k in range(4)]
+    r.val(N(g, "Distance", W(c0, 0), W(c1, 0)), 0, 3.0, "3 x 7 in the tilted plane: the first side (along the plane X axis) is 3 long")
+    r.val(N(g, "Distance", W(c0, 0), W(c3, 0)), 0, 7.0, "and the last side (along the plane Y axis) is 7 long")
+    r.val(N(g, "Distance", W(c0, 0), W(c2, 0)), 0, math.sqrt(58.0), "the diagonal is sqrt 58")
+    po = P(g, 0, 0, 0)
+    for k, cn in enumerate((c0, c1, c2, c3)):
+        r.val(N(g, "Distance", W(cn, 0), W(po)), 0, math.sqrt(58.0) / 2, "corner %d is sqrt(58)/2 from the origin" % k)
+    art = N(g, "Curve Area", W(rt))
+    r.val(art, 0, 21.0, "3 x 7 has area 21")
+    r.pt(art, 1, (0, 0, 0), "3 x 7 is centred on the plane origin (0,0,0)")
+    r.val(N(g, "Curve Length", W(rt)), 0, 20.0, "3 x 7 has perimeter 20")
     r.finish(decoy=dec)
     out.append(r)
 
@@ -418,8 +452,11 @@ def rows():
     out.append(r)
 
     r = Row("gpgon", "D8-GH-CURVE-0054", "Polygon",
-            "regular pentagon of circumradius 2 (Segments = 5): corners 2 (cos 72 k, sin 72 k), k = 0..4; side 2 R sin(36 degrees) = 2.35114100917, perimeter 5 * side, area (1/2) n R^2 sin(72 degrees) = 9.51056516295; "
-            "the angle between two edges at a corner is (n - 2) 180 / n = 108 degrees (cosine -0.309016994375); hexagon of circumradius 1: perimeter 6, area 3 sqrt 3 / 2; it is closed")
+            "by radius: regular pentagon of circumradius 2 (Segments = 5): corners 2 (cos 72 k, sin 72 k), k = 0..4; side 2 R sin(36 degrees) = 2.35114100917, perimeter 5 * side, area (1/2) n R^2 sin(72 degrees) = 9.51056516295; "
+            "the angle between two edges at a corner is (n - 2) 180 / n = 108 degrees (cosine -0.309016994375); hexagon of circumradius 1: perimeter 6, area 3 sqrt 3 / 2; it is closed; "
+            "by edge length e (Edge Length, which replaces the radius): R = e / (2 sin(pi / n)), perimeter n e, area n e^2 / (4 tan(pi / n)): pentagon with e = 3 has R = 2.55195, perimeter 15, area 15.4843, corners R (cos 72 k, sin 72 k); "
+            "square with e = 4 has R = 2 sqrt 2, corners (2 sqrt 2, 0), (0, 2 sqrt 2), (-2 sqrt 2, 0), (0, -2 sqrt 2), area 16; triangle with e = 2 about (1,2,3) has perimeter 6, area sqrt 3 and its centroid at (1,2,3); "
+            "a radius of 100 is ignored when e = 4 is given with 4 segments")
     g = r.g
     pg = N(g, "Polygon", None, 2.0, ("i", 5))
     side = 2 * 2.0 * math.sin(PI / 5)
@@ -427,27 +464,44 @@ def rows():
     r.val(cl, 0, 5 * side, "pentagon R = 2: perimeter 5 * 2 R sin 36 degrees")
     dec = (cl, 0, 5 * side)
     r.val(N(g, "Curve Area", W(pg)), 0, 0.5 * 5 * 4.0 * math.sin(2 * PI / 5), "pentagon R = 2: area (1/2) n R^2 sin(72 degrees)")
+    cpg = N(g, "Control Points", W(pg))
     for k in range(5):
-        ev = N(g, "Evaluate Curve", W(pg), k / 5.0)
-        r.pt(ev, 0, (2 * math.cos(2 * PI * k / 5), 2 * math.sin(2 * PI * k / 5), 0), "pentagon: corner %d is 2 (cos %d, sin %d) degrees" % (k, 72 * k, 72 * k))
+        r.pt(r.item(cpg, 0, k), 0, (2 * math.cos(2 * PI * k / 5), 2 * math.sin(2 * PI * k / 5), 0), "pentagon: corner %d is 2 (cos %d, sin %d) degrees" % (k, 72 * k, 72 * k))
     # corner 1: edges to corner 0 and to corner 2
-    e1 = N(g, "Evaluate Curve", W(pg), 0.2)
-    e0 = N(g, "Evaluate Curve", W(pg), 0.0)
-    e2 = N(g, "Evaluate Curve", W(pg), 0.4)
-    u = N(g, "Vector 2Pt", W(e1, 0), W(e0, 0), ("b", True))
-    v = N(g, "Vector 2Pt", W(e1, 0), W(e2, 0), ("b", True))
+    u = N(g, "Vector 2Pt", W(r.item(cpg, 0, 1), 0), W(r.item(cpg, 0, 0), 0), ("b", True))
+    v = N(g, "Vector 2Pt", W(r.item(cpg, 0, 1), 0), W(r.item(cpg, 0, 2), 0), ("b", True))
     r.val(N(g, "Dot Product", W(u), W(v)), 0, math.cos(math.radians(108.0)), "pentagon: the angle at a corner has cosine cos(108 degrees)")
     r.raw(N(g, "Is Closed", W(pg)), 0, "1", "pentagon is a closed curve")
     hx = N(g, "Polygon", None, 1.0, ("i", 6))
     r.val(N(g, "Curve Length", W(hx)), 0, 6.0, "hexagon R = 1: perimeter 6")
     r.val(N(g, "Curve Area", W(hx)), 0, 1.5 * SQ3, "hexagon R = 1: area 3 sqrt 3 / 2")
+    # by edge length
+    e5 = 3.0
+    pe = N(g, "Polygon", None, 100.0, ("i", 5), e5)
+    r.val(N(g, "Curve Length", W(pe)), 0, 5 * e5, "pentagon by edge 3 (the radius 100 is ignored): perimeter 15")
+    r.val(N(g, "Curve Area", W(pe)), 0, 5 * e5 * e5 / (4 * math.tan(PI / 5)), "pentagon by edge 3: area n e^2 / (4 tan(pi/n))")
+    cpe = N(g, "Control Points", W(pe))
+    R5 = e5 / (2 * math.sin(PI / 5))
+    for k in range(5):
+        r.pt(r.item(cpe, 0, k), 0, (R5 * math.cos(2 * PI * k / 5), R5 * math.sin(2 * PI * k / 5), 0), "pentagon by edge 3: corner %d is R (cos %d, sin %d) degrees with R = 3 / (2 sin 36 degrees)" % (k, 72 * k, 72 * k))
+    r.val(N(g, "Distance", W(r.item(cpe, 0, 0), 0), W(r.item(cpe, 0, 1), 0)), 0, e5, "pentagon by edge 3: the distance between corners 0 and 1 is the edge, 3")
+    sq = N(g, "Polygon", None, 100.0, ("i", 4), 4.0)
+    cps = N(g, "Control Points", W(sq))
+    for k, c4 in enumerate([(2 * SQ2, 0, 0), (0, 2 * SQ2, 0), (-2 * SQ2, 0, 0), (0, -2 * SQ2, 0)]):
+        r.pt(r.item(cps, 0, k), 0, c4, "square by edge 4: corner %d is %s" % (k, tuple(round(x, 6) for x in c4)))
+    r.val(N(g, "Curve Area", W(sq)), 0, 16.0, "square by edge 4: area 16")
+    tr = N(g, "Polygon", W(XYPL(g, (1, 2, 3))), 5.0, ("i", 3), 2.0)
+    r.val(N(g, "Curve Length", W(tr)), 0, 6.0, "triangle by edge 2: perimeter 6")
+    art = N(g, "Curve Area", W(tr))
+    r.val(art, 0, SQ3, "triangle by edge 2: area sqrt 3")
+    r.pt(art, 1, (1, 2, 3), "triangle by edge 2 about (1,2,3): centroid (1,2,3)")
     r.finish(decoy=dec)
     out.append(r)
 
     # ------------------------------------------------------------------ Curve > Analysis
     r = Row("gendp", "D8-GH-CURVE-0011", "End Points",
             "a circle of radius 3 at (1,2,0) starts and ends at (4,2,0) (its X axis point); the line (1,2,3)->(3,4,4) at its two points; the polyline (0,0,0),(4,0,0),(4,3,0) at (0,0,0) and (4,3,0); "
-            "the arc of radius 2 from 0 to 90 degrees at (2,0,0) and (0,2,0)")
+            "the arc of radius 2 from angle 0 to pi/2 at (2,0,0) and (0,2,0)")
     g = r.g
     ci = N(g, "Circle", W(XYPL(g, (1, 2, 0))), 3.0)
     ep = N(g, "End Points", W(ci))
@@ -461,21 +515,21 @@ def rows():
     ep = N(g, "End Points", W(POLY(g, [(0, 0, 0), (4, 0, 0), (4, 3, 0)])))
     r.pt(ep, 0, (0, 0, 0), "polyline: starts at its first vertex (0,0,0)")
     r.pt(ep, 1, (4, 3, 0), "polyline: ends at its last vertex (4,3,0)")
-    ep = N(g, "End Points", W(N(g, "Arc", None, 2.0, 0.0, 90.0)))
+    ep = N(g, "End Points", W(N(g, "Arc", None, 2.0, 0.0, PI / 2)))
     r.pt(ep, 0, (2, 0, 0), "arc: starts at (2,0,0)")
     r.pt(ep, 1, (0, 2, 0), "arc: ends at (0,2,0)")
     r.finish(decoy=dec)
     out.append(r)
 
     r = Row("gclosed", "D8-GH-CURVE-0016", "Is Closed",
-            "closed: a circle, a rectangle, a polygon, a circle through three points, a polyline given Closed = true; open: a line, a 90 degree arc, a polyline of three vertices, a cubic NURBS curve through 4 "
+            "closed: a circle, a rectangle, a polygon, a circle through three points, a polyline given Closed = true; open: a line, a quarter-circle arc, a polyline of three vertices, a cubic NURBS curve through 4 "
             "control points; a NURBS curve given Closed = true repeats its first control point and closes")
     g = r.g
     pts3 = [(0, 0, 0), (4, 0, 0), (4, 3, 0)]
     cases = [("circle", N(g, "Circle", None, 2.0), "1"), ("rectangle", N(g, "Rectangle", None, 6.0, 4.0), "1"), ("polygon", N(g, "Polygon", None, 2.0, ("i", 5)), "1"),
              ("circle through three points", N(g, "Circle 3Pt", W(P(g, 0, 0, 0)), W(P(g, 4, 0, 0)), W(P(g, 0, 3, 0))), "1"),
              ("closed polyline", POLY(g, pts3, True), "1"), ("NURBS curve with Closed = true", N(g, "NURBS Curve", W(*PLIST(g, [(0, 0, 0), (2, 1, 0), (3, 3, 0), (0, 4, 0)])), ("i", 3), ("b", True)), "1"),
-             ("line", N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 3, 4, 0))), "0"), ("90 degree arc", N(g, "Arc", None, 2.0, 0.0, 90.0), "0"), ("open polyline", POLY(g, pts3, False), "0"),
+             ("line", N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 3, 4, 0))), "0"), ("quarter-circle arc", N(g, "Arc", None, 2.0, 0.0, PI / 2), "0"), ("open polyline", POLY(g, pts3, False), "0"),
              ("cubic NURBS curve", N(g, "NURBS Curve", W(*PLIST(g, [(0, 0, 0), (2, 1, 0), (3, 3, 0), (0, 4, 0)])), ("i", 3), ("b", False)), "0")]
     for name, nid, want in cases:
         r.raw(N(g, "Is Closed", W(nid)), 0, want, "%s: Is Closed = %s" % (name, want))
@@ -510,9 +564,12 @@ def rows():
 
     # ------------------------------------------------------------------ Curve > Division
     r = Row("gdivc", "D8-GH-CURVE-0031", "Divide Curve",
-            "circle of radius 2 about (1,2,0) into 8: a closed curve gives 8 points (the ninth would be the first again), at angles 45 k degrees: (1 + 2 cos, 2 + 2 sin, 0), the tangent at k = 2 is (-1,0,0); "
-            "the line (0,0,0)-(10,0,0) into 4: 5 points at x = 0, 2.5, 5, 7.5, 10; the arc of radius 3 from 0 to 90 degrees into 3: 4 points at 0, 30, 60, 90 degrees, 3 (cos, sin); "
-            "the closed polyline (0,0),(6,0),(6,4),(0,4) (perimeter 20) into 10: 10 points 2 apart along the outline: (0,0),(2,0),(4,0),(6,0),(6,2),(6,4),(4,4),(2,4),(0,4),(0,2)")
+            "equal ARC LENGTH divisions (not equal parameter): circle of radius 2 about (1,2,0) into 8: a closed curve gives 8 points (the ninth would be the first again), at angles 45 k degrees: (1 + 2 cos, 2 + 2 sin, 0), the unit tangent "
+            "at each is (-sin, cos, 0), and the parameters are k pi/4 (the circle's own parameter, equal to the angle at these knots and mid-spans) with the curve at parameter k being point k; "
+            "the line (0,0,0)-(10,0,0) into 4: 5 points at x = 0, 2.5, 5, 7.5, 10, tangent (1,0,0), the curve at the given parameter being the point; the arc of radius 3 from 0 to pi/2 into 3: 4 points at 0, 30, 60, 90 degrees, "
+            "3 (cos, sin), tangent (-sin, cos), first parameter 0 and last pi/2 (the domain ends), the curve at the given parameter being the point; "
+            "the closed polyline (0,0),(6,0),(6,4),(0,4) (perimeter 20) into 10: 10 points 2 apart along the outline: (0,0),(2,0),(4,0),(6,0),(6,2),(6,4),(4,4),(2,4),(0,4),(0,2); with the polyline's vertex-index parameters "
+            "(vertex k at k) the parameters are 0, 1/3, 2/3, 1, 3/2, 2, 7/3, 8/3, 3, 7/2 and the tangents on the edges (1,0,0), (0,1,0), (-1,0,0), (0,-1,0)")
     g = r.g
     ci = N(g, "Circle", W(XYPL(g, (1, 2, 0))), 2.0)
     dv = N(g, "Divide Curve", W(ci), ("i", 8))
@@ -520,21 +577,44 @@ def rows():
     for k in range(8):
         a = PI * k / 4
         r.pt(r.item(dv, 0, k), 0, (1 + 2 * math.cos(a), 2 + 2 * math.sin(a), 0), "circle into 8: point %d at %d degrees" % (k, 45 * k))
-    r.pt(r.item(dv, 1, 2), 0, (-1, 0, 0), "circle into 8: the tangent at point 2 (90 degrees) is (-1,0,0)")
+        r.pt(r.item(dv, 1, k), 0, (-math.sin(a), math.cos(a), 0), "circle into 8: the tangent at point %d is (-sin, cos) of %d degrees" % (k, 45 * k))
+        r.val(r.item(dv, 2, k), 0, a, "circle into 8: parameter %d is %d pi/4" % (k, k))
+    for k in (1, 3, 5, 7):
+        a = PI * k / 4
+        ev = N(g, "Evaluate Curve", W(ci), W(r.item(dv, 2, k), 0))
+        r.pt(ev, 0, (1 + 2 * math.cos(a), 2 + 2 * math.sin(a), 0), "circle into 8: the curve at parameter %d is point %d" % (k, k))
     dec = (N(g, "Distance", W(r.item(dv, 0, 3)), W(P(g, 1 + 2 * math.cos(3 * PI / 4), 2 + 2 * math.sin(3 * PI / 4), 0))), 0, 0.0)
-    dl = N(g, "Divide Curve", W(N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 10, 0, 0)))), ("i", 4))
+    lnc = N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 10, 0, 0)))
+    dl = N(g, "Divide Curve", W(lnc), ("i", 4))
     r.count(dl, 0, 5, "line into 4: 5 points (open)")
     for k in range(5):
         r.pt(r.item(dl, 0, k), 0, (2.5 * k, 0, 0), "line into 4: point %d at x = %g" % (k, 2.5 * k))
-    da = N(g, "Divide Curve", W(N(g, "Arc", None, 3.0, 0.0, 90.0)), ("i", 3))
+    for k in (0, 2, 4):
+        r.pt(r.item(dl, 1, k), 0, (1, 0, 0), "line into 4: the tangent at point %d is (1,0,0)" % k)
+    for k in (1, 3):
+        ev = N(g, "Evaluate Curve", W(lnc), W(r.item(dl, 2, k), 0))
+        r.pt(ev, 0, (2.5 * k, 0, 0), "line into 4: the curve at parameter %d is point %d" % (k, k))
+    arc3 = N(g, "Arc", None, 3.0, 0.0, PI / 2)
+    da = N(g, "Divide Curve", W(arc3), ("i", 3))
     r.count(da, 0, 4, "arc into 3: 4 points (open)")
     for k in range(4):
         a = math.radians(30.0 * k)
         r.pt(r.item(da, 0, k), 0, (3 * math.cos(a), 3 * math.sin(a), 0), "arc into 3: point %d at %d degrees" % (k, 30 * k))
+        r.pt(r.item(da, 1, k), 0, (-math.sin(a), math.cos(a), 0), "arc into 3: the tangent at point %d is (-sin, cos) of %d degrees" % (k, 30 * k))
+    r.val(r.item(da, 2, 0), 0, 0.0, "arc into 3: the first parameter is the domain start 0")
+    r.val(N(g, "List Item", W(da, 2), ("i", -1), ("b", True)), 0, PI / 2, "arc into 3: the last parameter is the domain end pi/2")
+    for k in (1, 2):
+        a = math.radians(30.0 * k)
+        ev = N(g, "Evaluate Curve", W(arc3), W(r.item(da, 2, k), 0))
+        r.pt(ev, 0, (3 * math.cos(a), 3 * math.sin(a), 0), "arc into 3: the curve at parameter %d is point %d" % (k, k))
     dp = N(g, "Divide Curve", W(POLY(g, [(0, 0, 0), (6, 0, 0), (6, 4, 0), (0, 4, 0)], True)), ("i", 10))
     r.count(dp, 0, 10, "closed polyline into 10: 10 points")
     for k, xy in enumerate([(0, 0), (2, 0), (4, 0), (6, 0), (6, 2), (6, 4), (4, 4), (2, 4), (0, 4), (0, 2)]):
         r.pt(r.item(dp, 0, k), 0, (xy[0], xy[1], 0), "closed polyline into 10: point %d at %s" % (k, xy))
+    for k, tpar in enumerate([0.0, 1 / 3.0, 2 / 3.0, 1.0, 1.5, 2.0, 7 / 3.0, 8 / 3.0, 3.0, 3.5]):
+        r.val(r.item(dp, 2, k), 0, tpar, "closed polyline into 10: parameter %d is %.6g (vertex-index parameters)" % (k, tpar))
+    for k, tg in [(1, (1, 0, 0)), (4, (0, 1, 0)), (6, (-1, 0, 0)), (9, (0, -1, 0))]:
+        r.pt(r.item(dp, 1, k), 0, tg, "closed polyline into 10: the tangent at point %d is %s" % (k, tg))
     r.finish(decoy=dec)
     out.append(r)
 
@@ -579,15 +659,15 @@ def rows():
     cl = N(g, "Curve Length", W(rv))
     r.val(cl, 0, 5.0, "line: still 5 long")
     dec = (cl, 0, 5.0)
-    ev = N(g, "Evaluate Curve", W(rv), 0.5)
-    r.pt(ev, 0, (2.5, 4, 3), "line: the middle is (2.5,4,3)")
+    ev = N(g, "Evaluate Curve", W(rv))
+    r.pt(ev, 0, (2.5, 4, 3), "line: the middle (t not given: the domain midpoint) is (2.5,4,3)")
     r.pt(ev, 1, (-0.6, -0.8, 0), "line: the tangent is (-0.6,-0.8,0)")
     ci = N(g, "Circle", None, 2.0)
     rc = N(g, "Reverse Curve", W(ci))
-    e0 = N(g, "Evaluate Curve", W(rc), 0.0)
+    e0 = N(g, "Evaluate Length", W(rc), 0.0)
     r.pt(e0, 0, (2, 0, 0), "circle: starts at (2,0,0)")
     r.pt(e0, 1, (0, -1, 0), "circle: the tangent at the start is (0,-1,0)")
-    r.pt(N(g, "Evaluate Curve", W(rc), 0.25), 0, (0, -2, 0), "circle: a quarter of the way round is (0,-2,0)")
+    r.pt(N(g, "Evaluate Length", W(rc), 0.25, ("b", True)), 0, (0, -2, 0), "circle: a quarter of the length along is (0,-2,0)")
     pl_ = POLY(g, [(0, 0, 0), (4, 0, 0), (4, 3, 0)])
     rp = N(g, "Reverse Curve", W(pl_))
     ep = N(g, "End Points", W(rp))
@@ -621,52 +701,124 @@ def rows():
     out.append(r)
 
     r = Row("gcurv", "D8-GH-CURVE-0003", "Curve Curvature",
-            "a circle of radius R has curvature 1/R everywhere, the vector pointing at the centre: R = 2.5 at the origin gives length 0.4 at t = 0.1, 0.5, 0.9 and centre = point + vector * R^2 = (0,0,0); "
-            "the arc of radius 4 (0 to 90 degrees) has curvature 0.25; the circle of radius 2 about (1,2,3) in the plane with normal (1,1,1) has curvature 0.5 and the same centre property; "
-            "a straight line has curvature 0")
+            "t is the curve's own parameter (a circle's domain is 0..2 pi, so t = pi/2 is a quarter turn and a 0..1 fraction would not reach it). A circle of radius R has curvature 1/R everywhere, the vector pointing at the centre, and its "
+            "osculating circle is the circle itself: R = 2.5 at the origin, t = pi/2, pi/4, pi: points (0,2.5,0), 2.5 (cos 45 degrees, sin 45 degrees, 0), (-2.5,0,0); vector length 0.4; centre = point + vector * R^2 = (0,0,0); "
+            "the osculating circle has centre (0,0,0) (the area centroid), length 5 pi, area 6.25 pi, starts at the point with the curve's tangent; the arc of radius 4 (angles 0 to pi/2) at t = pi/4 has curvature 0.25 and the point "
+            "(2 sqrt 2, 2 sqrt 2, 0); the circle of radius 2 about (1,2,3) in the plane with normal (1,1,1) has curvature 0.5, the centre (1,2,3) and its osculating circle lies on the circle; "
+            "the parabola y = x^2 (the Bezier through (-1,1), (0,-1), (1,1), x = 2t - 1) has curvature 2 y''/(2 (1 + y'^2)^(3/2)): at t = 0.5 the point (0,0,0), the vector (0,2,0), the circle of radius 1/2 about (0,1/2,0); "
+            "at t = 0.25 the point (-1/2,1/4,0), the vector (1/2,1/2,0), the circle of radius sqrt 2 about (1/2,5/4,0) (the evolute (x - y'(1 + y'^2)/y'', y + (1 + y'^2)/y'')); a straight line has curvature 0 and no circle")
     g = r.g
+
+    def osc(cv, centre, rad, p, tg, tag):
+        """the osculating circle output of node cv: centre (area centroid), length 2 pi R, area pi R^2, start point and tangent"""
+        oc = (cv, 2)
+        ar = N(g, "Curve Area", W(*oc))
+        r.pt(ar, 1, centre, "%s: the osculating circle has its centre at %s" % (tag, tuple(round(x, 6) for x in centre)))
+        r.val(ar, 0, PI * rad * rad, "%s: the osculating circle has area pi R^2 (R = %.6g)" % (tag, rad))
+        r.val(N(g, "Curve Length", W(*oc)), 0, 2 * PI * rad, "%s: the osculating circle has length 2 pi R" % tag)
+        el = N(g, "Evaluate Length", W(*oc), 0.0)
+        r.pt(el, 0, p, "%s: the osculating circle starts at the curve point" % tag)
+        r.pt(el, 1, tg, "%s: and runs along the curve's tangent %s" % (tag, tuple(round(x, 6) for x in tg)))
+
     ci = N(g, "Circle", None, 2.5)
-    for tt in (0.1, 0.5, 0.9):
+    for k, (tt, xyz, tgv) in enumerate([(PI / 2, (0, 2.5, 0), (-1, 0, 0)), (PI / 4, (2.5 * SQ2 / 2, 2.5 * SQ2 / 2, 0), (-SQ2 / 2, SQ2 / 2, 0)), (PI, (-2.5, 0, 0), (0, -1, 0))]):
         cv = N(g, "Curve Curvature", W(ci), tt)
+        r.pt(cv, 0, xyz, "circle R = 2.5, t = %.6g: the point %s" % (tt, tuple(round(x, 6) for x in xyz)))
         vl = N(g, "Vector Length", W(cv, 1))
-        r.val(vl, 0, 0.4, "circle R = 2.5, t = %g: curvature 1/R = 0.4" % tt)
-        if tt == 0.1:
+        r.val(vl, 0, 0.4, "circle R = 2.5, t = %.6g: curvature 1/R = 0.4" % tt)
+        if k == 0:
             dec = (vl, 0, 0.4)
         mv = N(g, "Move", W(cv, 0), W(N(g, "Vector Scale", W(cv, 1), 6.25)))
-        r.pt(mv, 0, (0, 0, 0), "circle R = 2.5, t = %g: point + vector * R^2 is the centre" % tt)
-    arc = N(g, "Arc", None, 4.0, 0.0, 90.0)
-    cv = N(g, "Curve Curvature", W(arc), 0.37)
+        r.pt(mv, 0, (0, 0, 0), "circle R = 2.5, t = %.6g: point + vector * R^2 is the centre" % tt)
+        osc(cv, (0, 0, 0), 2.5, xyz, tgv, "circle R = 2.5, t = %.6g" % tt)
+    arc = N(g, "Arc", None, 4.0, 0.0, PI / 2)
+    cv = N(g, "Curve Curvature", W(arc), PI / 4)
+    r.pt(cv, 0, (2 * SQ2, 2 * SQ2, 0), "arc R = 4, t = pi/4: the point at 45 degrees (2 sqrt 2, 2 sqrt 2)")
     r.val(N(g, "Vector Length", W(cv, 1)), 0, 0.25, "arc R = 4: curvature 0.25")
     r.pt(N(g, "Move", W(cv, 0), W(N(g, "Vector Scale", W(cv, 1), 16.0))), 0, (0, 0, 0), "arc R = 4: point + vector * R^2 is the centre (0,0,0)")
+    osc(cv, (0, 0, 0), 4.0, (2 * SQ2, 2 * SQ2, 0), (-SQ2 / 2, SQ2 / 2, 0), "arc R = 4, t = pi/4")
     til = N(g, "Circle", W(PLN(g, (1, 2, 3), (1, 1, 1))), 2.0)
-    cv = N(g, "Curve Curvature", W(til), 0.6)
+    cv = N(g, "Curve Curvature", W(til), 2.0)
     r.val(N(g, "Vector Length", W(cv, 1)), 0, 0.5, "circle R = 2 in a tilted plane: curvature 0.5")
     r.pt(N(g, "Move", W(cv, 0), W(N(g, "Vector Scale", W(cv, 1), 4.0))), 0, (1, 2, 3), "tilted circle: point + vector * R^2 is the centre (1,2,3)")
-    cv = N(g, "Curve Curvature", W(N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 3, 4, 0)))), 0.5)
+    atl = N(g, "Curve Area", W(cv, 2))
+    r.pt(atl, 1, (1, 2, 3), "tilted circle: the osculating circle has its centre at (1,2,3)")
+    r.val(atl, 0, 4 * PI, "tilted circle: the osculating circle has area 4 pi")
+    for f in (0.1, 0.35, 0.6, 0.85):
+        q = N(g, "Evaluate Length", W(cv, 2), f, ("b", True))
+        cpq = N(g, "Curve Closest Point", W(til), W(q, 0))
+        r.val(cpq, 2, 0.0, "tilted circle: the osculating circle's point at %g of its length lies on the circle itself (same plane)" % f)
+    par = N(g, "NURBS Curve", W(*PLIST(g, [(-1, 1, 0), (0, -1, 0), (1, 1, 0)])), ("i", 2), ("b", False))
+    cv = N(g, "Curve Curvature", W(par), 0.5)
+    r.pt(cv, 0, (0, 0, 0), "parabola, t = 0.5: the point (0,0,0)")
+    r.pt(cv, 1, (0, 2, 0), "parabola, t = 0.5: the curvature vector (0,2,0)")
+    osc(cv, (0, 0.5, 0), 0.5, (0, 0, 0), (1, 0, 0), "parabola, t = 0.5")
+    cv = N(g, "Curve Curvature", W(par), 0.25)
+    r.pt(cv, 0, (-0.5, 0.25, 0), "parabola, t = 0.25: the point (-1/2,1/4,0)")
+    r.pt(cv, 1, (0.5, 0.5, 0), "parabola, t = 0.25: the curvature vector (1/2,1/2,0)")
+    osc(cv, (0.5, 1.25, 0), SQ2, (-0.5, 0.25, 0), (SQ2 / 2, -SQ2 / 2, 0), "parabola, t = 0.25")
+    cv = N(g, "Curve Curvature", W(N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 3, 4, 0)))))
     r.val(N(g, "Vector Length", W(cv, 1)), 0, 0.0, "line: curvature 0")
     r.guard(cv, 1, "line: the curvature vector exists")
+    r.count(cv, 2, 0, "line: no osculating circle")
     r.finish(decoy=dec)
     out.append(r)
 
     r = Row("geval", "D8-GH-CURVE-0012", "Evaluate Curve",
-            "the circle of radius 2 about (1,2,0) at t = 0, 0.25, 0.5, 0.75 (fractions of the domain) is (3,2,0), (1,4,0), (-1,2,0), (1,0,0) with unit tangents (0,1,0), (-1,0,0), (0,-1,0), (1,0,0); "
-            "the line (0,0,0)->(3,4,0) at t = 0, 0.5, 1 is (0,0,0), (1.5,2,0), (3,4,0), tangent (0.6,0.8,0); the arc of radius 2 from 0 to 90 degrees at t = 0.5 is at 45 degrees, (sqrt 2, sqrt 2, 0), tangent (-sqrt(1/2), sqrt(1/2), 0)")
+            "t is the curve's own parameter, clamped to its domain, the domain midpoint when not given, and the Parameter output is the value evaluated: the circle of radius 2 about (1,2,0) (domain 0..2 pi) at t = 0, pi/2, pi, 3 pi/2 is "
+            "(3,2,0), (1,4,0), (-1,2,0), (1,0,0) with unit tangents (0,1,0), (-1,0,0), (0,-1,0), (1,0,0), at t = pi/4 (the middle of the first span, 45 degrees) (1 + sqrt 2, 2 + sqrt 2, 0), tangent (-sqrt(1/2), sqrt(1/2), 0); "
+            "without t it is the midpoint pi, (-1,2,0); t = 100 clamps to 2 pi (the start point again) and t = -3 to 0; the line (0,0,0)->(3,4,0) at the midpoint is (1.5,2,0), tangent (0.6,0.8,0), clamped far past either end it is "
+            "(3,4,0) or (0,0,0); the arc of radius 2 from 0 to pi/2 (domain 0..pi/2) at t = 0, pi/4, pi/2 is (2,0,0), (sqrt 2, sqrt 2, 0), (0,2,0), tangent at pi/4 (-sqrt(1/2), sqrt(1/2), 0), and from pi/6 to 2 pi/3 at t = pi/6 and "
+            "2 pi/3 (domain ends) (sqrt 3, 1, 0) and (-1, sqrt 3, 0); the polyline (0,0,0),(4,0,0),(4,3,0) with vertex k at parameter k: t = 0.5 is (2,0,0) tangent (1,0,0), t = 1.5 is (4,1.5,0) tangent (0,1,0), t = 2 is (4,3,0); "
+            "the parabola y = x^2 (Bezier through (-1,1), (0,-1), (1,1), x = 2t - 1) at t = 0.25 is (-1/2,1/4,0), tangent (1,-1,0)/sqrt 2, t = 0.5 is (0,0,0)")
     g = r.g
     ci = N(g, "Circle", W(XYPL(g, (1, 2, 0))), 2.0)
-    for tt, p_, tg in [(0.0, (3, 2, 0), (0, 1, 0)), (0.25, (1, 4, 0), (-1, 0, 0)), (0.5, (-1, 2, 0), (0, -1, 0)), (0.75, (1, 0, 0), (1, 0, 0))]:
-        ev = N(g, "Evaluate Curve", W(ci), tt)
-        r.pt(ev, 0, p_, "circle, t = %g: the point %s" % (tt, p_))
-        r.pt(ev, 1, tg, "circle, t = %g: the unit tangent %s" % (tt, tg))
-        if tt == 0.25:
+    for tt, p_, tg in [(0.0, (3, 2, 0), (0, 1, 0)), (PI / 2, (1, 4, 0), (-1, 0, 0)), (PI, (-1, 2, 0), (0, -1, 0)), (1.5 * PI, (1, 0, 0), (1, 0, 0)),
+                       (PI / 4, (1 + SQ2, 2 + SQ2, 0), (-math.sqrt(0.5), math.sqrt(0.5), 0))]:
+        ev = N(g, "Evaluate Curve", W(ci), float(tt))
+        r.pt(ev, 0, p_, "circle, t = %.6g: the point %s" % (tt, tuple(round(x, 6) for x in p_)))
+        r.pt(ev, 1, tg, "circle, t = %.6g: the unit tangent %s" % (tt, tuple(round(x, 6) for x in tg)))
+        r.val(ev, 2, tt, "circle, t = %.6g: the Parameter output is t" % tt)
+        if tt == PI / 2:
             dec = (N(g, "Distance", W(ev, 0), W(P(g, 1, 4, 0))), 0, 0.0)
+    evm = N(g, "Evaluate Curve", W(ci))
+    r.pt(evm, 0, (-1, 2, 0), "circle, t not given: the domain midpoint pi, the point (-1,2,0)")
+    r.val(evm, 2, PI, "circle, t not given: the Parameter output is the midpoint pi")
+    evh = N(g, "Evaluate Curve", W(ci), 100.0)
+    r.pt(evh, 0, (3, 2, 0), "circle, t = 100: clamped to the end 2 pi, the start point (3,2,0)")
+    r.val(evh, 2, 2 * PI, "circle, t = 100: the Parameter output is the domain end 2 pi")
+    evl = N(g, "Evaluate Curve", W(ci), -3.0)
+    r.pt(evl, 0, (3, 2, 0), "circle, t = -3: clamped to the start 0, the point (3,2,0)")
+    r.val(evl, 2, 0.0, "circle, t = -3: the Parameter output is the domain start 0")
     ln = N(g, "Line", W(P(g, 0, 0, 0)), W(P(g, 3, 4, 0)))
-    for tt, p_ in [(0.0, (0, 0, 0)), (0.5, (1.5, 2, 0)), (1.0, (3, 4, 0))]:
-        ev = N(g, "Evaluate Curve", W(ln), tt)
-        r.pt(ev, 0, p_, "line, t = %g: the point %s" % (tt, p_))
-        r.pt(ev, 1, (0.6, 0.8, 0), "line, t = %g: the unit tangent (0.6,0.8,0)" % tt)
-    ev = N(g, "Evaluate Curve", W(N(g, "Arc", None, 2.0, 0.0, 90.0)), 0.5)
-    r.pt(ev, 0, (SQ2, SQ2, 0), "arc, t = 0.5: the point at 45 degrees (sqrt 2, sqrt 2)")
-    r.pt(ev, 1, (-math.sqrt(0.5), math.sqrt(0.5), 0), "arc, t = 0.5: the unit tangent (-sqrt(1/2), sqrt(1/2))")
+    evl2 = N(g, "Evaluate Curve", W(ln))
+    r.pt(evl2, 0, (1.5, 2, 0), "line, t not given: the midpoint (1.5,2,0)")
+    r.pt(evl2, 1, (0.6, 0.8, 0), "line, t not given: the unit tangent (0.6,0.8,0)")
+    r.pt(N(g, "Evaluate Curve", W(ln), 1000.0), 0, (3, 4, 0), "line, t = 1000: clamped to the end (3,4,0)")
+    r.pt(N(g, "Evaluate Curve", W(ln), -1000.0), 0, (0, 0, 0), "line, t = -1000: clamped to the start (0,0,0)")
+    arc = N(g, "Arc", None, 2.0, 0.0, PI / 2)
+    for tt, p_ in [(0.0, (2, 0, 0)), (PI / 4, (SQ2, SQ2, 0)), (PI / 2, (0, 2, 0))]:
+        ev = N(g, "Evaluate Curve", W(arc), float(tt))
+        r.pt(ev, 0, p_, "arc 0..pi/2, t = %.6g: the point %s" % (tt, tuple(round(x, 6) for x in p_)))
+        if tt == PI / 4:
+            r.pt(ev, 1, (-math.sqrt(0.5), math.sqrt(0.5), 0), "arc 0..pi/2, t = pi/4: the unit tangent (-sqrt(1/2), sqrt(1/2))")
+    arc2 = N(g, "Arc", None, 2.0, PI / 6, 2 * PI / 3)
+    r.pt(N(g, "Evaluate Curve", W(arc2), PI / 6), 0, (SQ3, 1, 0), "arc pi/6..2 pi/3, t = pi/6 (the domain start): (sqrt 3, 1, 0)")
+    r.pt(N(g, "Evaluate Curve", W(arc2), 2 * PI / 3), 0, (-1, SQ3, 0), "arc pi/6..2 pi/3, t = 2 pi/3 (the domain end): (-1, sqrt 3, 0)")
+    pl3 = POLY(g, [(0, 0, 0), (4, 0, 0), (4, 3, 0)])
+    e = N(g, "Evaluate Curve", W(pl3), 0.5)
+    r.pt(e, 0, (2, 0, 0), "polyline, t = 0.5: (2,0,0)")
+    r.pt(e, 1, (1, 0, 0), "polyline, t = 0.5: tangent (1,0,0)")
+    e = N(g, "Evaluate Curve", W(pl3), 1.5)
+    r.pt(e, 0, (4, 1.5, 0), "polyline, t = 1.5: (4,1.5,0)")
+    r.pt(e, 1, (0, 1, 0), "polyline, t = 1.5: tangent (0,1,0)")
+    r.pt(N(g, "Evaluate Curve", W(pl3), 2.0), 0, (4, 3, 0), "polyline, t = 2: the end (4,3,0)")
+    par = N(g, "NURBS Curve", W(*PLIST(g, [(-1, 1, 0), (0, -1, 0), (1, 1, 0)])), ("i", 2), ("b", False))
+    e = N(g, "Evaluate Curve", W(par), 0.25)
+    r.pt(e, 0, (-0.5, 0.25, 0), "parabola, t = 0.25: (-1/2,1/4,0)")
+    r.pt(e, 1, (SQ2 / 2, -SQ2 / 2, 0), "parabola, t = 0.25: the unit tangent (1,-1,0)/sqrt 2")
+    r.val(e, 2, 0.25, "parabola, t = 0.25: the Parameter output is 0.25")
+    r.pt(N(g, "Evaluate Curve", W(par), 0.5), 0, (0, 0, 0), "parabola, t = 0.5: the vertex (0,0,0)")
     r.finish(decoy=dec)
     out.append(r)
 
@@ -708,7 +860,7 @@ def rows():
         r.val(cl, 0, 2.0, "case %d: the segment is 2 long" % (k + 1))
         if k == 0:
             dec = (cl, 0, 2.0)
-        ev = N(g, "Evaluate Curve", W(x), 0.5)
+        ev = N(g, "Evaluate Curve", W(x))
         r.pt(ev, 0, pt_, "case %d: the segment is centred on that point" % (k + 1))
     r.finish(decoy=dec)
     out.append(r)

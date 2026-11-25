@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
 # GENDP_: Flow Register row D8-GH-CURVE-0011 (End Points), flowgeo_gen.py. The graph flowgeo_gendp.dflow bakes one point per value under test (X = value,
-# Y = case tag) and the section reads them back in baking order. Hand-computed oracle: a circle of radius 3 at (1,2,0) starts and ends at (4,2,0) (its X axis point); the line (1,2,3)->(3,4,4) at its two points; the polyline (0,0,0),(4,0,0),(4,3,0) at (0,0,0) and (4,3,0); the arc of radius 2 from 0 to 90 degrees at (2,0,0) and (0,2,0).
+# Y = case tag) and the section reads them back in baking order. Hand-computed oracle: a circle of radius 3 at (1,2,0) starts and ends at (4,2,0) (its X axis point); the line (1,2,3)->(3,4,4) at its two points; the polyline (0,0,0),(4,0,0),(4,3,0) at (0,0,0) and (4,3,0); the arc of radius 2 from angle 0 to pi/2 at (2,0,0) and (0,2,0).
 # ---------------------------------------------------------------------------
 sed "s|@GRAPH@|$HEREW/flowgeo_gendp.dflow|g" "$HERE/flowgeo_gendp_script.txt" > "$TMPW/flowgeo_gendp_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
