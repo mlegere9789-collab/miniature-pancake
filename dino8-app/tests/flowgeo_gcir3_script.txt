@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-CURVE-0042 (Circle 3Pt): player + bake, read back by sections/97_gcir3.sh (see flowgeo_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 27
+SelAll
+List

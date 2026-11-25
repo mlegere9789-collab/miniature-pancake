@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-XSECT-0003 (Curve x Plane): player + bake, read back by sections/97_gcxp.sh (see flowgeo_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 14
+SelAll
+List

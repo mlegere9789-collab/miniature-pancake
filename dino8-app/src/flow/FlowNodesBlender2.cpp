@@ -165,10 +165,16 @@ void AddCurveOps() {
   }
   {
     NodeDef d; d.name = "Reverse Curve"; d.nick = "RevCrv"; d.category = kCat; d.subcategory = "Curve";
-    d.description = "Reverses the direction of the poly spline: the last point becomes the first. A cyclic curve keeps its cyclic closing edge.";
+    d.description = "Reverses the direction of a curve. A poly spline: the last point becomes the first, a cyclic curve keeps its cyclic closing edge. Any other curve (a circle, an arc, a spline of higher degree) is reversed exactly: the same shape traced the other way, start and end swapped, the tangent turned round.";
     d.inputs = {In("Curve", Kind::Curve)};
     d.outputs = {Out("Curve", Kind::Curve)};
     d.eval = [](EvalContext& c) {
+      if (c.In(0).kind == Kind::Curve && c.In(0).curve && (c.In(0).curve->raw().Degree() != 1 || c.In(0).curve->raw().IsRational())) {
+        kernel::NurbsCurve rc = *c.In(0).curve;
+        if (rc.Reverse() == kernel::Result::Failed) { c.Fail("The curve could not be reversed"); return; }
+        c.Out(0, Value::Curve(rc));
+        return;
+      }
       Poly p;
       if (!CurvePoly(c.In(0), p)) { c.Fail("Reverse Curve needs a curve"); return; }
       std::reverse(p.pts.begin(), p.pts.end());
