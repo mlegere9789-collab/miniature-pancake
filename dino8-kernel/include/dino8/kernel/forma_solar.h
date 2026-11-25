@@ -146,6 +146,15 @@ inline SunPos SunPositionLocal(double latDeg, double lonDeg, double tzHours, int
   return SunPosition(latDeg, lonDeg, y, m, d, localHours - tzHours);
 }
 
+// Atmospheric refraction in degrees for a geometric (airless) elevation e0 in degrees, pressure in millibar and temperature in degrees
+// Celsius: (P / 1010) (283 / (273 + T)) 1.02 / (60 tan(e0 + 10.3 / (e0 + 5.11))). Zero below the apparent horizon of the sun's centre
+// (e0 < -0.83337 degree: the solar radius 0.26667 plus the horizon refraction 0.5667). The elevation of SunPositionAt stays geometric;
+// add this to get the apparent elevation.
+inline double RefractionDeg(double e0Deg, double pressureMb = 1010.0, double tempC = 10.0) {
+  if (e0Deg < -0.83337) return 0.0;
+  return (pressureMb / 1010.0) * (283.0 / (273.0 + tempC)) * 1.02 / (60.0 * std::tan(Rad(e0Deg + 10.3 / (e0Deg + 5.11))));
+}
+
 // ------------------------------------------------------------------------------------------------------------------------------
 // Studies: sun samples for a date or date range and a local-time window
 // ------------------------------------------------------------------------------------------------------------------------------
