@@ -662,17 +662,17 @@ Export @T@/ex.dxf
     return s, chk
 
 
-# The same four lines extended with one Extend command per line (one pick each).
+# The same four lines extended with one Extend command per line (one pick each): the boundary is drawn again before each command, so that it is the last object
+# (SelLast) and the extended line of the step before is not taken for it. The file then holds four boundary lines, all the same.
 @case('ext1')
 def ext1():
     s = PRE + """Line 0,5,0 10,5,0
 Line 0,8,0 10,8,0
 Line 0,30,0 10,20,0
 Line 0,45,0 10,35,0
-Line 20,0,0 80,24,0
 """
     for pick in ('9,5,0', '9,8,0', '9,21,0', '9,36,0'):
-        s += "SelNone\nExtend Boundary SelLast Enter %s Enter\n" % pick
+        s += "SelNone\nLine 20,0,0 80,24,0\nSelNone\nExtend Boundary SelLast Enter %s Enter\n" % pick
     s += "SelAll\nExport @T@/ex1.dxf\n"
 
     def chk(d, log):
@@ -681,8 +681,9 @@ Line 20,0,0 80,24,0
         want = [((0, 5), (20 + 5 / 0.4, 5)), ((0, 8), (20 + 8 / 0.4, 8)), ((0, 30), (t3, 30 - t3)), ((0, 45), (t4, 45 - t4))]
         for i, (a, b) in enumerate(want, 1):
             check(has_line(f, a[0], a[1], b[0], b[1]), 'EXT1_%d: the line from (%g,%g) is extended to (%.9f, %.9f) on the boundary y = 0.4 (x - 20)' % (i, a[0], a[1], b[0], b[1]))
-        check(has_line(f, 20, 0, 80, 24) and len(entities(f, 'LINE')) == 5, 'EXT1_5: the boundary is unchanged and there are 5 lines (found %d)' % len(entities(f, 'LINE')))
-        check(not has_line(f, 0, 45, 10, 35) and not has_line(f, 0, 30, 10, 20), 'EXT1_5d: decoy, the original sloping lines (to x = 10) are not left behind')
+        bl = [r for r in entities(f, 'LINE') if close(gf(r, 10), 20) and close(gf(r, 20), 0) and close(gf(r, 11), 80) and close(gf(r, 21), 24)]
+        check(len(bl) == 4 and len(entities(f, 'LINE')) == 8, 'EXT1_5: the four boundary lines are unchanged (20,0)-(80,24) and there are 8 lines in all (found %d boundary lines, %d lines)' % (len(bl), len(entities(f, 'LINE'))))
+        check(not has_line(f, 0, 45, 10, 35) and not has_line(f, 0, 30, 10, 20) and not has_line(f, 0, 5, 10, 5) and not has_line(f, 0, 8, 10, 8), 'EXT1_5d: decoy, none of the original short lines (to x = 10) is left behind')
         if R.failed:
             print('note EXT1: lines in the file: %s' % sorted((round(gf(r, 10), 6), round(gf(r, 20), 6), round(gf(r, 11), 6), round(gf(r, 21), 6)) for r in entities(f, 'LINE')))
             print('note EXT1: app lines: %s' % [x for x in log_lines(log) if 'Extend' in x][:12])
@@ -867,6 +868,9 @@ Export @T@/ed2.dxf
         check(all(has_line(f2, *ln) for ln in EDIT_LINES) and len(entities(f2, 'LINE')) == 3, 'EDIT_4: after Delete and Undo the same three lines are there again, unchanged (found %d lines)' % len(entities(f2, 'LINE')))
         a, b, c2, d2 = EDIT_LINES[0]
         check(not has_line(f1, a + 1e-6, b, c2, d2) and not has_line(f1, a, b, c2, d2 + 1e-6), 'EDIT_4d: decoy, a line moved by 1e-6 is not what the file holds')
+        if R.failed:
+            print('note EDIT: lines in the first file: %s' % sorted((round(gf(r, 10), 9), round(gf(r, 20), 9), round(gf(r, 11), 9), round(gf(r, 21), 9)) for r in entities(f1, 'LINE')))
+            print('note EDIT: app lines: %s' % [x for x in log_lines(log) if 'expect' in x or 'lipboard' in x or 'Copied' in x or '!' in x][:14])
     return s, chk
 
 
@@ -894,6 +898,9 @@ Export @T@/jn.dxf
             per = sum(math.dist(p[i], p[(i + 1) % len(p)]) for i in range(len(p)))
             check(abs(shoelace(p) - 5000) < 1e-6 and abs(per - 340) < 1e-6, 'JOIN_2: its area is 60 40 + 60 50 - 20 20 = 5000 and its perimeter 340 (found %.6f and %.6f)' % (shoelace(p), per))
         check(not any(R.same_points(p, rect_pts(0, 0, 100, 70)) for p in polys) and len(polys) == 1, 'JOIN_2d: decoy, the result is not the bounding rectangle of the two shapes')
+        if R.failed:
+            print('note JOIN: closed polylines in the file: %s' % [(c, len(p)) for c, p in lwpolys(f)])
+            print('note JOIN: app lines: %s' % [x for x in log_lines(log) if 'Planar' in x or 'egion' in x or '!' in x][:14])
     return s, chk
 
 
