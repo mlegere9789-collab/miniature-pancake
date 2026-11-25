@@ -155,6 +155,45 @@ def main():
                    blocks=[block('Part', 0, 0, [poly(S.rect_pts(0, 0, 10, 5))]), block('PartU', 0, 0, [poly(S.rect_pts(0, py, 10, py + 5))])])
     good_bad('uniq', {'uq.dxf': uniq_file()}, [('the edit in the wrong place (y 21)', {'uq.dxf': uniq_file(py=21)})])
 
+    # ---- edit
+    def edit_file(shift=0.0):
+        ls = [(a + shift, b, c, d) for a, b, c, d in S.EDIT_LINES]
+        return dxf([line(*t) for t in ls])
+    log_e = "ok   expect_objects 0 (got 0)\nok   expect_objects 3 (got 3)\nok   expect_selected 2 (got 2)\nok   expect_objects 1 (got 1)\nok   expect_objects 3 (got 3)\n"
+    good_bad('edit', {'ed1.dxf': edit_file(), 'ed2.dxf': edit_file()}, [('a pasted line shifted by 1e-6', {'ed1.dxf': edit_file(1e-6), 'ed2.dxf': edit_file()})], log_e)
+    n_bad, _ = run_case('edit', {'ed1.dxf': edit_file(), 'ed2.dxf': edit_file()}, log_e.replace("ok   expect_objects 1 (got 1)", "ok   expect_objects 2 (got 2)"))
+    report(n_bad > 0, 'SELF_edit: the checker rejects a Delete that left 2 objects')
+
+    # ---- join
+    def join_file(pts):
+        return dxf([poly(pts)])
+    union = [(0, 0), (60, 0), (60, 20), (100, 20), (100, 70), (40, 70), (40, 40), (0, 40)]
+    good_bad('join', {'jn.dxf': join_file(union)}, [('the bounding rectangle instead of the union', {'jn.dxf': join_file(S.rect_pts(0, 0, 100, 70))}), ('a corner missing (7 corners)', {'jn.dxf': join_file(union[:-1])})])
+
+    # ---- lstate
+    def ls_files(second=(1, 2)):
+        mk = lambda ys: dxf([line(0, y, 10, y) for y in ys])
+        return {'ls1.dxf': mk((0, 1)), 'ls2.dxf': mk(second), 'ls3.dxf': mk((0, 1))}
+    log_l = "history: Layer state 'S1' saved (4 layer(s))\nhistory: Layer state 'S2' saved (4 layer(s))\nhistory: Layer state 'S2' restored\n"
+    good_bad('lstate', ls_files(), [('a second scene that still shows A', ls_files(second=(0, 1, 2)))], log_l)
+
+    # ---- grptag
+    def gt_files(extra=False):
+        a = [line(0, 0, 10, 0, 'A'), line(0, 1, 10, 1, 'A')]
+        b = [line(0, 2, 10, 2, 'B'), line(0, 3, 10, 3, 'B')]
+        loose = line(0, 9, 10, 9, 'Default')
+        return {'gt1.dxf': dxf(a + b), 'gt2.dxf': dxf(b + [loose] + ([a[0]] if extra else [])), 'gt3.dxf': dxf(a + [loose])}
+    good_bad('grptag', gt_files(), [('a hidden-tag entity still exported', gt_files(extra=True))])
+
+    # ---- repl
+    def repl_files(n=20, a_used=False):
+        pts = [(10 * i, 0) for i in range(n)] + [(200, 50)]
+        f1 = dxf([insert('B', x, y) for x, y in pts] + ([insert('A', 5, 5)] if a_used else []), blocks=[block('B', 200, 50, [ent('CIRCLE', (8, '0'), (10, '200.0'), (20, '50.0'), (30, '0.0'), (40, '2.0'))])])
+        f2 = dxf([ent('CIRCLE', (8, '0'), (10, '%.9f' % x), (20, '%.9f' % y), (30, '0.0'), (40, '2.0')) for x, y in pts])
+        return {'rp1.dxf': f1, 'rp2.dxf': f2}
+    log_r = "history: Block 'A': 1 object(s), base (0, 0, 0), 0 object(s) in instances\nhistory: Block 'B': 1 object(s), base (200, 50, 0), 21 object(s) in instances\nhistory: ReplaceBlock: 20 instance(s) now 'B'\n"
+    good_bad('repl', repl_files(), [('only 19 replaced instances', repl_files(n=19)), ('an instance of A left behind', repl_files(a_used=True))], log_r)
+
     print('selftest: %d failure(s)' % bad)
     return 1 if bad else 0
 

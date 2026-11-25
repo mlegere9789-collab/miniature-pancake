@@ -764,6 +764,78 @@ def dxflay():
     return s, chk
 
 
+# ---------------------------------------------------------------------------------------------------------------- SKETCHUP-LAYOUT-0022
+# Standard editing: Paste in place reproduces the source coordinates exactly (Cut writes the clipboard, Paste reads it back where it was), Lock keeps an
+# object out of reach of edits, Delete (erase) removes the selection, Undo restores it. Coordinates have 9 decimals, so the 9-decimal DXF is exact.
+EDIT_LINES = [(0.123456789, 3.25, 17.5, 8.765432109), (2.5, -4.75, 11.111111111, 6.5), (-3.3, 0.7, 4.4, -9.987654321)]
+
+
+@case('edit')
+def edit():
+    s = PRE
+    for a, b, c, d in EDIT_LINES:
+        s += "Line %r,%r,0 %r,%r,0\n" % (a, b, c, d)
+    s += """SelAll
+Cut
+@expect_objects 0
+Paste
+@expect_objects 3
+SelAll
+Export @T@/ed1.dxf
+SelNone
+SelLast
+Lock
+SelAll
+@expect_selected 2
+Delete
+@expect_objects 1
+Undo
+@expect_objects 3
+Unlock
+SelAll
+Export @T@/ed2.dxf
+"""
+
+    def chk(d, log):
+        f1, f2 = d + '/ed1.dxf', d + '/ed2.dxf'
+        ex = expect_lines(log, 'objects')
+        check(ex == [(0, 0, True), (3, 3, True), (1, 1, True), (3, 3, True)], 'EDIT_1: the object counts the app reports are 0 after Cut, 3 after Paste, 1 after Delete of the 2 selectable objects (the locked one stays) and 3 after Undo (found %s)' % ex)
+        ex = expect_lines(log, 'selected')
+        check(ex == [(2, 2, True)], 'EDIT_2: with the last line locked, SelAll reaches only the other 2 (found %s)' % ex)
+        check(all(has_line(f1, *ln) for ln in EDIT_LINES) and len(entities(f1, 'LINE')) == 3, 'EDIT_3: Paste in place gives back the three lines at their coordinates, 9 decimals (found %d lines)' % len(entities(f1, 'LINE')))
+        check(all(has_line(f2, *ln) for ln in EDIT_LINES) and len(entities(f2, 'LINE')) == 3, 'EDIT_4: after Delete and Undo the same three lines are there again, unchanged (found %d lines)' % len(entities(f2, 'LINE')))
+        a, b, c2, d2 = EDIT_LINES[0]
+        check(not has_line(f1, a + 1e-6, b, c2, d2) and not has_line(f1, a, b, c2, d2 + 1e-6), 'EDIT_4d: decoy, a line moved by 1e-6 is not what the file holds')
+    return s, chk
+
+
+# ---------------------------------------------------------------------------------------------------------------- SKETCHUP-LAYOUT-0018
+# Join of overlapping shapes: the planar union of the rectangles (0,0)-(60,40) and (40,20)-(100,70) is the 8-corner outline
+# (0,0) (60,0) (60,20) (100,20) (100,70) (40,70) (40,40) (0,40): area 60 40 + 60 50 - 20 20 = 5000, perimeter 340.
+@case('join')
+def join():
+    s = PRE + """Rectangle 0,0,0 60,40,0
+Rectangle 40,20,0 100,70,0
+SelNone
+SelID 1 2
+PlanarUnion
+SelLast
+Export @T@/jn.dxf
+"""
+
+    def chk(d, log):
+        f = d + '/jn.dxf'
+        polys = [clean(p) for _, p in lwpolys(f)]
+        want = [(0, 0), (60, 0), (60, 20), (100, 20), (100, 70), (40, 70), (40, 40), (0, 40)]
+        check(len(polys) == 1 and R.same_points(polys[0], want), 'JOIN_1: the result is one closed outline with the 8 corners (0,0) (60,0) (60,20) (100,20) (100,70) (40,70) (40,40) (0,40) (found %s)' % (polys,))
+        if len(polys) == 1:
+            p = polys[0]
+            per = sum(math.dist(p[i], p[(i + 1) % len(p)]) for i in range(len(p)))
+            check(abs(shoelace(p) - 5000) < 1e-6 and abs(per - 340) < 1e-6, 'JOIN_2: its area is 60 40 + 60 50 - 20 20 = 5000 and its perimeter 340 (found %.6f and %.6f)' % (shoelace(p), per))
+        check(not any(R.same_points(p, rect_pts(0, 0, 100, 70)) for p in polys) and len(polys) == 1, 'JOIN_2d: decoy, the result is not the bounding rectangle of the two shapes')
+    return s, chk
+
+
 def main():
     if len(sys.argv) < 4:
         print(__doc__)
