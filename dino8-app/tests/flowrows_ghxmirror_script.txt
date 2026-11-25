@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-XFORM-0005 (Mirror): player + bake, read back by sections/104_ghxmirror.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 26
+SelAll
+List

@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-VECTOR-0055 (Plane Closest Point): player + bake, read back by sections/104_ghvplcp.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 30
+SelAll
+List

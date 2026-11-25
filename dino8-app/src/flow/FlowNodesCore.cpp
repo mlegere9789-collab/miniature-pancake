@@ -8,6 +8,9 @@
 
 namespace dino8::flow {
 
+// Defined in FlowNodesRows3.cpp: parses a path written as text, such as {0;1;3}.
+bool ParseFlowPathText(const std::string& text, std::vector<int>& out);
+
 namespace {
 
 PortDef In(std::string name, Kind k, Access acc = Access::Item, Value def = Value::Null(), bool optional = false) {
@@ -279,9 +282,21 @@ void AddSets() {
   }
   {
     NodeDef d; d.name = "Flatten Tree"; d.nick = "Flatten"; d.category = "Sets"; d.subcategory = "Tree";
-    d.inputs = {In("Tree", Kind::Any, Access::Tree)};
+    d.description = "Moves every item of a tree into one branch, keeping their order. The branch is {0}, or the path given as text such as {2;1}.";
+    d.inputs = {In("Tree", Kind::Any, Access::Tree), In("Path", Kind::Text, Access::Item, Value::Null(), true)};
     d.outputs = {Out("List", Kind::Any)};
-    d.eval = [](EvalContext& c) { if (const Tree* t = c.TreeIn(0)) c.OutList(0, t->AllItems()); };
+    d.eval = [](EvalContext& c) {
+      const Tree* t = c.TreeIn(0);
+      if (!t) return;
+      std::vector<int> path = {0};
+      if (c.Has(1)) {
+        std::vector<int> parsed;
+        if (!ParseFlowPathText(c.Text(1), parsed)) { c.Fail("Not a path: expected indices between braces such as {0;1;3}"); return; }
+        path = parsed;
+      }
+      c.outputs.resize(1);
+      for (const Value& v : t->AllItems()) c.outputs[0].push_back({path, v});
+    };
     r.Add(d);
   }
   {

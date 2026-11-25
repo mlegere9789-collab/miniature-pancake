@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-VECTOR-0004 (Unit X, Unit Y, Unit Z): player + bake, read back by sections/104_ghvunitxyz.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 36
+SelAll
+List

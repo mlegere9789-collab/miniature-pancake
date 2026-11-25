@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-SETS-0058 (Tree Statistics): player + bake, read back by sections/104_ghstats.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 39
+SelAll
+List

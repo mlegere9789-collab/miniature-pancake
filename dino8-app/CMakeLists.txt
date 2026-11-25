@@ -372,6 +372,7 @@ set(DINO8_SOURCES
   src/flow/FlowNodesSolver.cpp
   src/flow/FlowNodesRows.cpp
   src/flow/FlowNodesRows2.cpp
+  src/flow/FlowNodesRows3.cpp
   src/flow/FlowNodesBlender.cpp
   src/flow/FlowNodesBlender2.cpp
   src/flow/FlowNodesBlender3.cpp

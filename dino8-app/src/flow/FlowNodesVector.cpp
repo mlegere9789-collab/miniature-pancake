@@ -54,9 +54,15 @@ void AddVector() {
   }
   {
     NodeDef d; d.name = "Unit Vector"; d.nick = "Unit"; d.category = "Vector"; d.subcategory = "Vector";
+    d.description = "The vector scaled to length 1, keeping its direction. A zero-length vector has no direction: the node is flagged and gives nothing.";
     d.inputs = {In("Vector", Kind::Vector)};
     d.outputs = {Out("Vector", Kind::Vector)};
-    d.eval = [](EvalContext& c) { Vector3d v = c.Vec(0); if (v.Length() > 1e-12) v.Unitize(); c.Out(0, Value::Vector(v)); };
+    d.eval = [](EvalContext& c) {
+      Vector3d v = c.Vec(0);
+      if (!(v.Length() > 1e-12)) { c.Fail("A zero-length vector cannot be unitized"); return; }
+      v.Unitize();
+      c.Out(0, Value::Vector(v));
+    };
     r.Add(d);
   }
   {
@@ -75,9 +81,19 @@ void AddVector() {
   }
   {
     NodeDef d; d.name = "Cross Product"; d.nick = "Cross"; d.category = "Vector"; d.subcategory = "Vector";
-    d.inputs = {In("A", Kind::Vector), In("B", Kind::Vector)};
-    d.outputs = {Out("Result", Kind::Vector)};
-    d.eval = [](EvalContext& c) { c.Out(0, Value::Vector(ON_CrossProduct(c.Vec(0), c.Vec(1)))); };
+    d.description = "The cross product A x B (right-hand rule, perpendicular to both) and its length before unitizing. With Unitize on, the result has length 1; parallel vectors give the zero vector, which cannot be unitized and stays zero.";
+    d.inputs = {In("A", Kind::Vector), In("B", Kind::Vector), In("Unitize", Kind::Boolean, Access::Item, Value::Boolean(false), true)};
+    d.outputs = {Out("Result", Kind::Vector), Out("Length", Kind::Number)};
+    d.eval = [](EvalContext& c) {
+      Vector3d v = ON_CrossProduct(c.Vec(0), c.Vec(1));
+      const double len = v.Length();
+      if (c.Bool(2, false)) {
+        if (len > 1e-12) v.Unitize();
+        else c.Warn("Parallel vectors: the cross product is zero and cannot be unitized");
+      }
+      c.Out(0, Value::Vector(v));
+      c.Out(1, Value::Number(len));
+    };
     r.Add(d);
   }
   {

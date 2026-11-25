@@ -1,0 +1,6 @@
+# Flow Register row D8-GH-XFORM-0012 (Orient): player + bake, read back by sections/104_ghxorient.sh (see flowrows6_gen.py)
+Grasshopper
+GrasshopperPlayer @GRAPH@ Bake=Yes
+@expect_objects 22
+SelAll
+List

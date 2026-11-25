@@ -1,0 +1,347 @@
+{
+  "best": 0,
+  "by_factory": {
+    "analysis-site": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 265
+    },
+    "bim-arch": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 711
+    },
+    "bim-struct-mep": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 261
+    },
+    "cad-2d": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 923
+    },
+    "collab-cloud": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 240
+    },
+    "direct-modeling": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 742
+    },
+    "drafting-docs": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 860
+    },
+    "flow": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 1202
+    },
+    "interop-migration": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 791
+    },
+    "kernel-geometry": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 424
+    },
+    "mesh-subd-sculpt": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 696
+    },
+    "render-anim": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 1402
+    },
+    "scripting-api-ai": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 1319
+    },
+    "simulation": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 143
+    },
+    "ux-access-i18n": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 658
+    }
+  },
+  "by_program": {
+    "archicad": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 924
+    },
+    "autocad": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 2765
+    },
+    "blender": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 2981
+    },
+    "forma": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 186
+    },
+    "grasshopper": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 773
+    },
+    "revit": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 1018
+    },
+    "rhino": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 1356
+    },
+    "sketchup": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 634
+    }
+  },
+  "by_wave": {
+    "1": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 4778
+    },
+    "2": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 3882
+    },
+    "3": {
+      "best": 0,
+      "passing": 0,
+      "percent": 0.0,
+      "target_met": 0,
+      "target_met_percent": 0.0,
+      "total": 1977
+    }
+  },
+  "evidence": {
+    "checks": 0,
+    "files": 0,
+    "ignored_lines": 0,
+    "incomplete_tests": 0,
+    "latest_run": null,
+    "malformed": [],
+    "malformed_count": 0,
+    "runs": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests": 0
+  },
+  "failing_tests": {
+    "count": 0,
+    "ids": []
+  },
+  "flaky_tests": {
+    "count": 0,
+    "ids": []
+  },
+  "generated_at": "2026-11-25T04:26:35Z",
+  "headline": "0 of 10637 Register rows passing (0.00%)",
+  "legacy": {
+    "app_pct": 86.5,
+    "as_of_commit": "53a680b4",
+    "dual": "Register 0/10637 rows passing (0.00%); legacy parity map Kernel 79.3% App 86.5% (frozen at 53a680b4, not Register credit)",
+    "frozen": true,
+    "kernel_pct": 79.3,
+    "register_percent": 0.0,
+    "source": "Plan Rev 2 section 1.2: the hand-counted legacy parity-map percentages at the PR branch tip 53a680b4. Reported next to the Register percentage until the map is retired (plan 4.4 step 5); never added to it and never credit.",
+    "status": "frozen"
+  },
+  "most_shared_tests": [
+    {
+      "rows": 13,
+      "test": "app/UXSNAP"
+    },
+    {
+      "rows": 12,
+      "test": "extra::Rw3VertexGroupsAssignInvertNormalizeQuantizeLimitCleanSortAndPaste"
+    },
+    {
+      "rows": 11,
+      "test": "app/UXSEL2"
+    },
+    {
+      "rows": 9,
+      "test": "app/RW2SCR_FORMS"
+    },
+    {
+      "rows": 9,
+      "test": "app/UXCAM"
+    },
+    {
+      "rows": 6,
+      "test": "app/ROWSCR_BITS"
+    },
+    {
+      "rows": 6,
+      "test": "app/RW2SCR_SYM"
+    },
+    {
+      "rows": 6,
+      "test": "app/UXSEL"
+    },
+    {
+      "rows": 6,
+      "test": "extra::RowBkgTransformsMapTheBoxByTheMatrixClosedForms"
+    },
+    {
+      "rows": 6,
+      "test": "extra::Rw3MeshBlenderPrimitivesHaveTheirCountsAndClosedFormVolumes"
+    }
+  ],
+  "not_passing_by_reason": {
+    "missing": 7957,
+    "no-tests": 2680
+  },
+  "passing": 0,
+  "percent": 0.0,
+  "produced_by": {
+    "commit": null,
+    "run_id": null
+  },
+  "register": {
+    "aliases": 23,
+    "duplicate_ids_ignored": 0,
+    "files": 222,
+    "rows": 10660,
+    "rows_passing_but_not_yet_written": 0,
+    "rows_without_id_ignored": 0,
+    "tiers_computed": {
+      "None": 10637
+    },
+    "tiers_written_in_register": {
+      "None": 10637
+    },
+    "wave_source": {
+      "factory_map": 10637
+    }
+  },
+  "reverted": {
+    "count": 0,
+    "rows": []
+  },
+  "schema": 1,
+  "target_met": 0,
+  "target_met_percent": 0.0,
+  "total": 10637,
+  "trajectory": {
+    "as_of": "2026-11-25T04:26:35Z",
+    "gap_rows": 1112.9,
+    "passing": 0,
+    "period": {
+      "cumulative_pct": 25.0,
+      "from": "2026-11-25",
+      "to": "2026-11-30"
+    },
+    "required_cumulative_rows": 1112.9,
+    "required_rows_per_day": 265.9,
+    "status": "behind"
+  },
+  "unproven_claims": {
+    "count": 0,
+    "rows": []
+  },
+  "vanished_tests": {
+    "count": 0,
+    "ids": []
+  }
+}
